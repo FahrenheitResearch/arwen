@@ -165,6 +165,46 @@ extern "C" __global__ void tempo_columns(const double* blob, TempoCtx C, int nco
     tempo_subgrid_cloud_radii(P, c, nz, W[i], s.f[5], s.f[6], s.f[7], s.f[8],
                              s.f[12], s.f[2], qc_bl, fraction_bl, nt, first_global_col+i);
 }
+// Initial-state radar diagnosis: prepare only the native PSDs, then call
+// the same reflectivity_10cm used by tempo_main_column. Packed fields are
+// private copies; no tendencies, sedimentation or model writes occur.
+extern "C" __global__ void tempo_initial_refl(const double* blob, TempoCtx C,
+    int n, int nz, int c0, int nt, ColState* S, TempoWork* work, float* out) {
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= n) return;
+  TempoParams P{reinterpret_cast<const TempoBlob*>(blob)};
+  ColState& s = S[i];
+  TempoWork& W = work[i];
+  for (int k = 1; k <= nz; ++k) {
+    W.temp[k] = s.f[0][k];
+    W.qv[k] = tmax(PS(min_qv), s.f[4][k]);
+    W.pres[k] = s.f[1][k];
+    W.rho[k] = PS(roverrv) * W.pres[k] /
+      (PS(rdry) * W.temp[k] * (W.qv[k] + PS(roverrv)));
+    W.refl10cm[k] = -35.0;
+  }
+  rain_check_and_update(P, C, nz, W.rho, W.l_qr, s.f[6], s.f[11],
+    W.rr, W.nr, W.qrten, W.nrten, W.ilamr, W.mvd_r);
+  snow_check_and_update(P, C, nz, W.rho, W.l_qs, s.f[8], W.rs, W.qsten);
+  double sq = 0.0, sn = 0.0, sb = 0.0;
+  for (int k = 1; k <= nz; ++k) {
+    sq += s.f[9][k]; sn += s.f[15][k]; sb += s.f[16][k];
+    if (W.l_qs[k]) {
+      double tc = tmin(-0.1, W.temp[k] - PS(t0));
+      snow_moments(P, W.rs[k], tc, &W.smob[k], &W.smoc[k], nullptr,
+        nullptr, nullptr, &W.smo2[k], nullptr, nullptr, nullptr, &W.smoz[k]);
+    }
+  }
+  if (sq > PS(r1) && sn < PS(eps) && sb < PS(eps))
+    graupel_init(P, nz, W.rho, s.f[9], s.f[15], s.f[16]);
+  graupel_check_and_update(P, C, nz, W.rho, W.l_qg, s.f[9], s.f[15], s.f[16],
+    W.rg, W.ng, W.rb, W.idx_bg, W.qgten, W.ngten, W.qbten, W.ilamg, W.mvd_g);
+  reflectivity_10cm(P, C, nz, C.refl10cm_from_melting_flag, W.temp,
+    W.l_qr, W.rr, W.nr, W.ilamr, W.l_qs, W.rs, W.smoc, W.smob, W.smoz,
+    W.l_qg, W.rg, W.ng, W.idx_bg, W.ilamg, W.refl10cm);
+  for (int k = 1; k <= nz; ++k)
+    out[(long long)(k-1)*nt+c0+i] = (float)W.refl10cm[k];
+}
 extern "C" __global__ void tempo_sizes(long long* out) {
   out[0] = sizeof(TempoWork); out[1] = sizeof(ColState); out[2] = sizeof(TempoCtx);
   out[3] = TEMPO_NZ_MAX;
@@ -309,6 +349,41 @@ class TempoRuntime:
         n = pressure.size
         self.module.get_function("tempo_adapter_exner")(((n + 127) // 128,), (128,),
             (pressure, output, np.int32(n), np.float32(c.P0), np.float32(c.RCP)))
+
+    def reflectivity(self, state, cfg):
+        """Current-state native radar kernel, with bounded column work storage."""
+        nz, ny, nx = state.p.shape
+        thb = state.thb if state.thb.ndim == 3 else state.thb[:, None, None]
+        theta = cp.ascontiguousarray(thb + state.thp)
+        exner = cp.empty_like(state.p)
+        self.exner(state.p, exner)
+        # Only temperature, pressure, qv and precipitating moments are read.
+        fields = {"t": theta, "p": state.p, "qv": state.qv,
+                  "qr": state.qr, "nr": state.nr, "qs": state.qs,
+                  "qg": state.qg, "ng": state.ng, "qb": state.volg}
+        ptrs = cp.asarray(np.array([fields.get(n, state.qv).data.ptr
+                                    for n in STATE_FIELDS], dtype=np.uint64))
+        ctx = np.zeros(1, dtype=CTX_DTYPE)
+        ctx["global_dt"] = float(cfg.dt)
+        ctx["global_inverse_dt"] = 1 / float(cfg.dt)
+        ctx["hailaware_flag"] = 1
+        ctx["refl10cm_from_melting_flag"] = int(
+            getattr(state, "refl10cm_from_melting", False))
+        output = state.scratch((nz, ny, nx), "refl_10cm")
+        nt = ny * nx
+        pack = self.module.get_function("tempo_pack_adapter")
+        kernel = self.module.get_function("tempo_initial_refl")
+        for c0 in range(0, nt, self.batch):
+            n = min(self.batch, nt - c0)
+            cols, work = self._buffers(n)
+            work.fill(0)
+            grid = ((n + 63) // 64,)
+            dims = (np.int32(nz), np.int32(nt), np.int32(c0), np.int32(n))
+            pack(grid, (64,), (ptrs, exner, np.uint64(0), np.float64(cfg.dt),
+                              *dims, cols))
+            kernel(grid, (64,), (self.blob, ctx, np.int32(n), np.int32(nz),
+                                np.int32(c0), np.int32(nt), cols, work, output))
+        return output
 
     def initialize_mpas_surface_emission(self, nwfa, depth, area, output):
         depth = cp.ascontiguousarray(depth, dtype=cp.float64)

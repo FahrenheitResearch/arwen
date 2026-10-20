@@ -10,7 +10,7 @@ complete limited-area initial state.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 import hashlib
 import math
@@ -54,6 +54,7 @@ class SourceKind(str, Enum):
     SURFACE_ANALYSIS = "surface_analysis"
     POSTPROCESSED_GUIDANCE = "postprocessed_guidance"
     WRF_ARCHIVE = "wrf_archive"
+    HYDRO_FORCING = "hydro_forcing"
 
 
 class AdapterStatus(str, Enum):
@@ -90,6 +91,12 @@ class SourceAdapter:
     level_mapping: str
     cadence_mapping: str
     stock_wrf_gate: str
+    parent_family: str = "physics"
+    upstream_model_version: str | None = None
+    lineage_donor_source: str | None = None
+    lineage_receipts: tuple[str, ...] = ()
+    lineage_root_keys: tuple[str, ...] = ()
+    lineage_runtime_keys: tuple[str, ...] = ()
     runnable: bool = False
     runner: str | None = None
     #: The packaged profile (mapping + composition + provenance, shipped in
@@ -99,6 +106,9 @@ class SourceAdapter:
     #: is the arbitrary-acceptance seam -- adding a model whose mapping can
     #: be written is three JSON documents plus this row.
     packaged_profile: str | None = None
+    #: Row in data/hydro/forcing-sources.v1.json. This declares catchment
+    #: forcing independently of atmospheric initialization capability.
+    hydro_forcing_profile: str | None = None
     # A recommendation only; runtime capability never depends on this name.
     default_physics_profile: str | None = None
     #: Published static source selected by this source's configuration.
@@ -261,8 +271,24 @@ class SourceAdapter:
     # source registry owns product/time semantics independently of transport.
     time_axis: str | None = None
     selection_owner: str | None = None
+    selection_provider_hint: str | None = None
+    ensemble_physics_arms: tuple = ()
     forecast_time_owner: str | None = None
     forecast_time_cycle_argument: bool = False
+    #: The module whose ``fetch(args)`` produces this source's bytes when
+    #: they are not files at a URL: a model the fetch door RUNS (the
+    #: ``earth2`` row runs an NVIDIA Earth-2 model through earth2studio,
+    #: table-driven by ``gpuwm.earth2_run``).  The fetch door asks the row
+    #: instead of comparing a source id.
+    acquisition_owner: str | None = None
+    # Parameterized sources share one route and retain a model identity.
+    model_table: str | None = None
+    model_key: str | None = None
+    model_row: dict | None = field(default=None, compare=False)
+    acquisition_area: bool = False
+    ensemble_preparation_owner: str | None = None
+    acquisition_prep_handoff: bool = False
+    acquisition_hints: tuple = ()
     case_data_file: str | None = None
     case_data_vtable: str | None = None
     notes: str = ""
@@ -274,13 +300,15 @@ class SourceAdapter:
         return (self.display_name or "").strip() or self.source_id
 
     def __post_init__(self) -> None:
+        if self.parent_family not in ("ai", "physics"):
+            raise ValueError("parent_family must be ai or physics")
         if self.same_grid_pairing not in (None, "identity"):
             raise ValueError(
                 "same_grid_pairing must be 'identity' or None; an unknown "
                 "pairing cannot preserve the declared source indices")
         if type(self.forecast_time_cycle_argument) is not bool:
             raise TypeError("forecast_time_cycle_argument must be a boolean")
-        for name in ("selection_owner", "forecast_time_owner"):
+        for name in ("selection_owner", "forecast_time_owner", "acquisition_owner"):
             value = getattr(self, name)
             if value is not None and (not isinstance(value, str) or not value.strip()):
                 raise TypeError(f"{name} must name an owner or be None")
@@ -352,9 +380,16 @@ def _adapter(
     level_mapping: str = "pending",
     cadence_mapping: str = "pending",
     stock_wrf_gate: str = "not_run",
+    parent_family: str = "physics",
+    upstream_model_version: str | None = None,
+    lineage_donor_source: str | None = None,
+    lineage_receipts: tuple[str, ...] = (),
+    lineage_root_keys: tuple[str, ...] = (),
+    lineage_runtime_keys: tuple[str, ...] = (),
     runnable: bool = False,
     runner: str | None = None,
     packaged_profile: str | None = None,
+    hydro_forcing_profile: str | None = None,
     default_physics_profile: str | None = None,
     static_source: str | None = None,
     runtime_surface_fields: tuple[tuple, ...] = (),
@@ -379,8 +414,16 @@ def _adapter(
     boundary_species: tuple[str, ...] = (),
     time_axis: str | None = None,
     selection_owner: str | None = None,
+    selection_provider_hint: str | None = None,
+    ensemble_physics_arms: tuple = (),
+    acquisition_owner: str | None = None,
     forecast_time_owner: str | None = None,
     forecast_time_cycle_argument: bool = False,
+    model_table: str | None = None,
+    acquisition_area: bool = False,
+    ensemble_preparation_owner: str | None = None,
+    acquisition_prep_handoff: bool = False,
+    acquisition_hints: tuple = (),
     case_data_file: str | None = None,
     case_data_vtable: str | None = None,
 ) -> SourceAdapter:
@@ -406,9 +449,14 @@ def _adapter(
         level_mapping=level_mapping,
         cadence_mapping=cadence_mapping,
         stock_wrf_gate=stock_wrf_gate,
+        parent_family=parent_family, upstream_model_version=upstream_model_version,
+        lineage_donor_source=lineage_donor_source,
+        lineage_receipts=lineage_receipts, lineage_root_keys=lineage_root_keys,
+        lineage_runtime_keys=lineage_runtime_keys,
         runnable=runnable,
         runner=runner,
         packaged_profile=packaged_profile,
+        hydro_forcing_profile=hydro_forcing_profile,
         default_physics_profile=default_physics_profile,
         static_source=static_source,
         runtime_surface_fields=runtime_surface_fields,
@@ -434,6 +482,13 @@ def _adapter(
         seed_fields=tuple(seed_fields),
         boundary_species=tuple(boundary_species),
         time_axis=time_axis, selection_owner=selection_owner,
+        selection_provider_hint=selection_provider_hint,
+        ensemble_physics_arms=ensemble_physics_arms,
+        acquisition_owner=acquisition_owner, model_table=model_table,
+        acquisition_area=acquisition_area,
+        ensemble_preparation_owner=ensemble_preparation_owner,
+        acquisition_prep_handoff=acquisition_prep_handoff,
+        acquisition_hints=acquisition_hints,
         forecast_time_owner=forecast_time_owner,
         forecast_time_cycle_argument=forecast_time_cycle_argument,
         case_data_file=case_data_file, case_data_vtable=case_data_vtable,
@@ -683,9 +738,41 @@ _MSC_DATAMART_DOOR = ArchiveWindow(
 # source already decoded by gpuwm's native ingest path, the packaged 20CRv3
 # member profile, its complementary metadata-driven NetCDF-CF primitives, then
 # the declarative format-level adapter exposed by RW-WPS.
+
+
 _ADAPTERS = (
     _adapter(
+        "aorc", name="NOAA AORC catchment forcing",
+        upstream_model_id=None, kind=SourceKind.HYDRO_FORCING,
+        file_family="NetCDF", default_product="forcing", max_hour=0,
+        hydro_forcing_profile="aorc-grid", forcing_interval_seconds=3600.0,
+        notes="Hydro forcing declaration; local NetCDF input, area weights and time origin required.",
+    ),
+    _adapter(
+        "era5-land", name="ECMWF ERA5-Land hourly catchment forcing",
+        upstream_model_id=None, kind=SourceKind.HYDRO_FORCING,
+        file_family="NetCDF", default_product="forcing", max_hour=0,
+        hydro_forcing_profile="era5-land-hourly", forcing_interval_seconds=3600.0,
+        notes="CDS reanalysis-era5-land netCDF4 (CC BY 4.0, engine CDS credential); valid-cell area weights and time origin required.",
+    ),
+    _adapter(
+        "ngen-csv", name="NextGen catchment CSV forcing", aliases=("aorc-csv",),
+        upstream_model_id=None, kind=SourceKind.HYDRO_FORCING,
+        file_family="CSV", default_product="forcing", max_hour=0,
+        hydro_forcing_profile="ngen-catchment-csv", forcing_interval_seconds=3600.0,
+        notes="Ordered per-catchment CSV inputs; native ngen specific humidity and precip_rate units.",
+    ),
+    _adapter(
+        "nwm-retrospective-forcing", name="NOAA NWM retrospective forcing",
+        aliases=("nwm-forcing",), upstream_model_id=None,
+        kind=SourceKind.HYDRO_FORCING, file_family="NetCDF",
+        default_product="forcing", max_hour=0,
+        hydro_forcing_profile="decoded-canonical-grid", forcing_interval_seconds=3600.0,
+        notes="RAINRATE is kg m-2 s-1 (numerically mm/s); native grid area weights required.",
+    ),
+    _adapter(
         "hrrr",
+        hydro_forcing_profile="decoded-canonical-grid",
         static_source="hrrr-conus-v4",
         same_grid_pairing="identity",
         runtime_surface_fields=(("VEGFRA", "sfc", "VEG:surface", "percent", (
@@ -976,6 +1063,7 @@ _ADAPTERS = (
     ),
     _adapter(
         "gfs",
+        hydro_forcing_profile="decoded-canonical-grid",
         ensemble_source="gefs",
         forecast_time_owner="gfs_forecast_hours",
         seed_fields=('air_pressure', 'air_temperature', 'eastward_wind',
@@ -1140,7 +1228,7 @@ _ADAPTERS = (
         ),
     ),
     _adapter(
-        "aigfs",
+        "aigfs", parent_family="ai", lineage_donor_source="gdas",
         ensemble_source="aigefs",
         name="AIGFS (NOAA AI global forecast)", aliases=("ai-gfs",),
         decoder=(
@@ -1201,7 +1289,7 @@ _ADAPTERS = (
         ),
     ),
     _adapter(
-        "aigefs",
+        "aigefs", parent_family="ai", lineage_donor_source="gdas",
         ensemble_source="aigefs",
         archives=(_AIGEFS_ARCHIVE,),
         name="AIGEFS (NOAA AI global ensemble member)", aliases=("ai-gefs",),
@@ -1348,7 +1436,7 @@ _ADAPTERS = (
         ),
     ),
     _adapter(
-        "aifs",
+        "aifs", parent_family="ai",
         archives=(_ECMWF_OPEN_DOOR, _AIFS_OPEN_ARCHIVE),
         name="ECMWF AIFS single (open data)",
         aliases=("aifs-v2", "aifs-single"),
@@ -1392,6 +1480,79 @@ _ADAPTERS = (
             "constrained by a dynamical balance, so spin-up behaviour is "
             "not the certified-source baseline.  Not yet accepted by "
             "unchanged stock WRF."
+        ),
+    ),
+    _adapter(
+        "earth2", parent_family="ai",
+        lineage_donor_source="era5",
+        lineage_receipts=("earth2-batch.json", "earth2-run.json"),
+        lineage_root_keys=("earth2_batch_root",),
+        lineage_runtime_keys=("earth2studio", "torch"),
+        time_axis="supplied_times",
+        acquisition_owner="gpuwm.earth2_run",
+        selection_owner="gpuwm.earth2_members",
+        selection_provider_hint="model",
+        name="NVIDIA Earth-2 model output (Earth2Studio NetCDF)",
+        aliases=("earth2studio",),
+        model_table="earth2-models.v1.json", acquisition_area=True,
+        acquisition_prep_handoff=True,
+        acquisition_hints=(
+            ("model", "string", None, "model key from this source's declared model table"),
+            ("earth2_members", "string", None, "complete comma-separated noise-id roster"),
+            ("earth2_batch_root", "string", None, "shared generated-member batch directory"),
+            ("earth2_batch_size", "integer", None, "members per admitted GPU sub-batch"),
+            ("earth2_weights_package", "string", None, "local pinned model weight package"),
+        ),
+        cycles=CycleGrid(tuple(range(24)), 0.0, basis="caller-selected analysis initialization"),
+        upstream_model_id=None,
+        file_family="NetCDF (Earth2Studio NetCDF4Backend)",
+        decoder=(
+            "packaged Earth-2 13-level profile + rw_netcdf/netcrust "
+            "(mapped engine)"
+        ),
+        default_product="earth2studio deterministic forecast, NetCDF4Backend",
+        required_products=(
+            "one Earth2Studio forecast file: (time, lead_time, lat, lon) with "
+            "z/t/u/v/q on 50..1000 hPa, t2m, u10m, v10m, msl",
+            "the ERA5 analysis at that forecast's initialization (gpuwm fetch "
+            "--source era5 --era5-provider arco) over an area containing it",
+        ),
+        max_hour=8784,
+        upstream_ingest="declarative_mapping_v1_over_packaged_profile",
+        status=AdapterStatus.RUNNABLE_NOT_CERTIFIED,
+        field_mapping="packaged-rw-wps-earth2-pl13-q-netcdf-v1",
+        level_mapping="13-pressure-level-to-explicit-wrf-eta-v2",
+        cadence_mapping="uniform-six-hour-forecast-series-v1",
+        stock_wrf_gate="live-unchanged-stock-wrf-gate-pending",
+        runnable=True,
+        runner="mapped_composition_v1",
+        packaged_profile="earth2-pl13-q-netcdf-v1",
+        forcing_interval_seconds=21600.0,
+        composition=(
+            "Earth-2 models publish no soil, land mask, orography, skin "
+            "temperature, SST, sea ice, snow, surface pressure or 2 m "
+            "humidity; the profile borrows the land-surface state from the "
+            "ERA5 analysis AT the forecast's initialization (the caller's one "
+            "supplement, keyless from ARCO) through the cross-source "
+            "composition, and derives surface pressure at every lead from the "
+            "model's own mean-sea-level pressure at the analysis terrain."
+        ),
+        notes=(
+            "Any NVIDIA Earth-2 model run through Earth2Studio whose output "
+            "carries the 13-level z/t/u/v/q vocabulary -- FourCastNet 3, SFNO, "
+            "Pangu, Aurora, FengWu, GraphCast, AIFS -- as the initial and "
+            "lateral boundary source of an ArWen domain, read straight from "
+            "the file Earth2Studio's NetCDF4Backend writes (no reshaping).  "
+            "Which models qualify, their weights and what the others need is "
+            "gpuwm/authorities/earth2-models.v1.json; `gpuwm fetch --source "
+            "earth2 --model fcn3 --cycle C --hours N` runs the model and "
+            "writes the file and the analysis together.  Valid times are the "
+            "file's initialization plus lead_time; the source cycle is the "
+            "initialization, so a domain may start at any lead "
+            "(--forecast-start-hour).  The land surface is the initialization "
+            "analysis carried unchanged, the same frozen-surface class as the "
+            "AI-GFS row; an AI emulator publishes no hydrometeors, so runs "
+            "start cloud-free.  Not yet accepted by unchanged stock WRF."
         ),
     ),
     _adapter(
@@ -1672,9 +1833,12 @@ _ADAPTERS = (
     ),
     _adapter(
         "era5",
+        ensemble_preparation_owner="gpuwm.era5_preparation",
+        hydro_forcing_profile="decoded-canonical-grid",
         record="reanalysis",
         time_axis="analysis_times",
         selection_owner="gpuwm.era5_member",
+        selection_provider_hint="era5_provider",
         seed_fields=('air_pressure', 'air_temperature', 'eastward_wind',
                      'northward_wind', 'mean_sea_level_pressure'),
         archives=(_ERA5_ARCO_ARCHIVE, _ERA5_ARCHIVE),
@@ -1695,6 +1859,8 @@ _ADAPTERS = (
         ),
         runnable=True,
         runner="era5_combined_grib1_v1",
+        # fetch.ERA5_PRESSURE_LEVELS_HPA: the complete 37-level ladder.
+        certified_source_top_pa=100.0,
         case_data_file="era5-combined.grib",
         case_data_vtable="data/vtables/Vtable.ERA5_CDO",
         forcing_interval_seconds=21600.0,
@@ -1992,6 +2158,36 @@ _ADAPTERS = (
 )
 
 
+
+
+def _model_table_rows(base):
+    """Expand declared model inventories without changing dynamic route registration."""
+    import json
+    result = []
+    for template in base:
+        if template.model_table is None or template.model_key is not None:
+            continue
+        table = Path(__file__).with_name("authorities") / template.model_table
+        models = json.loads(table.read_text(encoding="utf-8"))["models"]
+        for key, row in models.items():
+            profile = row.get("profile")
+            result.append(replace(template, source_id=template.source_id + "-" + key,
+                model_key=key, model_row=row, display_name=row.get("name", key),
+                aliases=tuple(template.source_id + "-" + alias for alias in row.get("aliases", ())),
+                packaged_profile=profile, runnable=template.runnable and bool(profile),
+                status=template.status if profile else AdapterStatus.COMPOSITION_REQUIRED,
+                field_mapping="packaged-rw-wps-" + profile if profile else template.field_mapping,
+                forcing_interval_seconds=float(row["step_hours"]) * 3600
+                    if row.get("step_hours") else template.forcing_interval_seconds,
+                selection_owner=row.get("selection_owner", template.selection_owner),
+                notes=row.get("refusal") or row.get("needs") or template.notes))
+    return tuple(result)
+
+
+
+_ADAPTERS = _ADAPTERS + _model_table_rows(_ADAPTERS)
+
+
 def _build_alias_map() -> dict[str, SourceAdapter]:
     aliases: dict[str, SourceAdapter] = {}
     for adapter in _ADAPTERS:
@@ -2000,6 +2196,15 @@ def _build_alias_map() -> dict[str, SourceAdapter]:
             if name in aliases:
                 raise RuntimeError(f"duplicate source-adapter alias: {name}")
             aliases[name] = adapter
+    # Acquisition owners may expose table-derived model spellings. Existing
+    # source ids and explicit aliases keep priority over a model shorthand.
+    from importlib import import_module
+    for adapter in _ADAPTERS:
+        if adapter.acquisition_owner is not None and adapter.model_key is None:
+            names = getattr(import_module(adapter.acquisition_owner), "source_aliases", lambda: ())()
+            for name in names:
+                normalized = name.strip().lower().replace("_", "-")
+                aliases.setdefault(normalized, aliases.get(adapter.source_id + "-" + normalized, adapter))
     return aliases
 
 
@@ -2029,17 +2234,83 @@ def packaged_profile_sources() -> Mapping[str, str]:
     })
 
 
-def get_source_adapter(source: str) -> SourceAdapter:
-    """Resolve a source id/alias or raise a useful fail-closed error."""
+def model_rows(adapter):
+    """The declared model table for a route, with no model-specific code."""
+    import json
+    if adapter.model_table is None or adapter.model_key is not None:
+        return {}
+    rows = json.loads((Path(__file__).with_name("authorities") / adapter.model_table)
+                      .read_text(encoding="utf-8"))["models"]
+    return {key: row for key, row in rows.items() if row.get("kind") != "diagnostic"}
 
-    normalized = source.strip().lower().replace("_", "-")
+
+def _normalized_source(source):
+    return source.strip().lower().replace("_", "-")
+
+
+def get_source_adapter(source: str) -> SourceAdapter:
+    """Resolve ids, aliases and <row>-<model> using the row's model table."""
+    normalized = _normalized_source(source)
+    if normalized in _ALIASES:
+        return _ALIASES[normalized]
+    for adapter in _ADAPTERS:
+        if adapter.model_table is None:
+            continue
+        for prefix in (adapter.source_id, *adapter.aliases):
+            if not normalized.startswith(prefix + "-"):
+                continue
+            suffix = normalized[len(prefix) + 1:]
+            for key, row in model_rows(adapter).items():
+                if suffix in tuple(_normalized_source(v) for v in (key, *row.get("aliases", ()))):
+                    profile = row.get("profile")
+                    return replace(adapter, model_key=key, model_row=row,
+                        runnable=adapter.runnable and bool(profile),
+                        packaged_profile=profile,
+                        status=adapter.status if profile else AdapterStatus.COMPOSITION_REQUIRED,
+                        notes=row.get("refusal") or row.get("needs") or adapter.notes,
+                        forcing_interval_seconds=float(row["step_hours"]) * 3600
+                            if row.get("step_hours") else adapter.forcing_interval_seconds,
+                        selection_owner=row.get("selection_owner", adapter.selection_owner))
     try:
         return _ALIASES[normalized]
     except KeyError as exc:
         available = ", ".join(adapter.source_id for adapter in _ADAPTERS)
-        raise ValueError(
-            f"unknown native source {source!r}; available sources: {available}"
-        ) from exc
+        raise ValueError(f"unknown native source {source!r}; available sources: {available}") from exc
+
+
+def canonical_source_token(source):
+    """Route id plus model key when the caller selected a parameterized row."""
+    adapter = get_source_adapter(source)
+    suffix = "-" + adapter.model_key if adapter.model_key else ""
+    return adapter.source_id + (suffix if suffix and not adapter.source_id.endswith(suffix) else "")
+
+
+def ensemble_source_ids():
+    """Eligible family ids, derived from runnable planning/selection rows."""
+    planable = set(wizard_planable_source_ids())
+    result = []
+    for adapter in _ADAPTERS:
+        if not adapter.runnable or not (adapter.source_id in planable
+                                       or adapter.member_set or adapter.selection_owner):
+            continue
+        result.append(adapter.source_id)
+        for key in model_rows(adapter):
+            token = adapter.source_id + "-" + key
+            if get_source_adapter(token).runnable:
+                result.append(token)
+    return tuple(dict.fromkeys(result))
+
+
+def ensemble_source_argument(value):
+    """Validate a family id/alias; the refusal lists the same rows as help."""
+    try:
+        token = canonical_source_token(value)
+        if token in ensemble_source_ids():
+            return token
+    except ValueError:
+        pass
+    raise ValueError(f"ensemble source {value!r} is not eligible; eligible ids: "
+                     + ", ".join(ensemble_source_ids()))
 
 
 def wizard_planable_source_ids() -> tuple[str, ...]:

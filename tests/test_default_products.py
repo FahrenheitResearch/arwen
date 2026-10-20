@@ -258,9 +258,11 @@ def test_the_closing_note_states_each_products_own_recorded_reason(tmp_path):
     assert section in first and "cloud_cover" in first
     assert "do not carry their input fields" not in headline
     by_product = dict(line.strip().split(": ", 1) for line in reasons)
-    assert by_product[section] == " ".join(no_line.split())
+    # Since c34b071fbf7 each reason is ranked by how many frames or render
+    # attempts it affected, and says so ahead of the recorded cause.
+    assert by_product[section] == "1 render attempt(s): " + " ".join(no_line.split())
     assert "--section" in by_product[section]
-    assert by_product["cloud_cover"] == f"{frame}: not stored: CLDFRA"
+    assert by_product["cloud_cover"] == f"1 render attempt(s): {frame}: not stored: CLDFRA"
     assert f"{section}: skipped 1 time(s)" in detail
 
 

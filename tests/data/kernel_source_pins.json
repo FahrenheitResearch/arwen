@@ -5,10 +5,14 @@
     "nsas": "13d4580fcbe5c70b9921882f9f73f96a5383d8123d4f57252d943e8587965fc6",
     "lin": "54224a77822a0bd0c5ded4a2857a03f24ecb535658aeef0be7564e79775e63ca",
     "lin_refl": "789bd95b575aea27728eea4cc4f2915114f1dba01dcdc15dac0e7c13dd909a6d",
-    "fer_hires": "47ee958bc19f8f95367720b1ec0c2ec3751d799dc5e51a2d00bc03ba88eb9874",
+    "fer_hires": "a2cd966e5ef44664dbda044cfd193e8e743dac213425bc11a7f72eb4c64301b8",
     "wsm3": "df13c530aac2f4a2f44d3ddc42ed8e1a09d1424f0a920934b37c586286ead2b0",
     "wsm5": "2a096f417e2e57f28b2e170c7f56cfbcaa064069e8b8cbc7cb2f35e84a2e6704",
-    "wsm6r": "0551464ba27713acf90df5ece69ef3c9ab9cedb191ef838ed63fe506d48d0c2c"
+    "wsm6r": "0551464ba27713acf90df5ece69ef3c9ab9cedb191ef838ed63fe506d48d0c2c",
+    "nextgen_cfe": "0c8ab0a815548f9aa15f9028d1f6d53e9a54dfc6126a0d156d1d565e9807dcf5",
+    "nextgen_reservoirs": "18ee3d675bcc67d626b8191f2950644fb82530cb68fe2dad1cdd3e37c3613f0b",
+    "nextgen_inundation": "c30539e05eb6aacda729654bf4999dfc0b3e876e06d1e4baeb8a6bb0d50e1662",
+    "nextgen_terrain": "f462ce4cbf0d989dd0c40216ef6bfe756e68e84da0e1838fada7e9d3c5643cb4"
   },
   "headers": {
     "nsas_constants.cuh": "e50bd02c62e11ec3c4bf5619bab6e30805832401df930c1235a136db2fb4c907",
@@ -16,7 +20,9 @@
     "lin_wrf.cuh": "3954ddbef0420d1f88f0eba3ae81e5db9df3918a58f60779d1b5055e9ee8c2d0",
     "refl.cu": "1e2c45699a721b4b042769f9f868d85d8a6eb4960fc547ce9affb59b69f43f66"
   },
-  "composed_headers": {},
+  "composed_headers": {
+    "nextgen_reservoirs.cuh": "add8702c3e80c0514326e0cc2efbd0d149d2e1ca1228ce81d88a204c865a7526"
+  },
   "loader_headers": {
     "nsas": [
       "glibc_flt32.cuh",

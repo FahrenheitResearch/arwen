@@ -28,7 +28,14 @@ const DEG_PER_KM: f64 = 1.0 / 111.32;
 /// The source grid in index space: fractional 0-based (i, j) for a point.
 enum Inverse {
     Projected(Box<ProjectedGrid>),
-    Regular { lat0: f64, dlat: f64, lon0: f64, dlon: f64, nx: usize, periodic: bool },
+    Regular {
+        lat0: f64,
+        dlat: f64,
+        lon0: f64,
+        dlon: f64,
+        nx: usize,
+        periodic: bool,
+    },
 }
 
 impl Inverse {
@@ -38,7 +45,14 @@ impl Inverse {
                 let (x, y) = grid.latlon_to_ij(lat, lon);
                 (x - 1.0, y - 1.0)
             }
-            Inverse::Regular { lat0, dlat, lon0, dlon, nx, periodic } => {
+            Inverse::Regular {
+                lat0,
+                dlat,
+                lon0,
+                dlon,
+                nx,
+                periodic,
+            } => {
                 let mut i = (lon - lon0).rem_euclid(360.0) / dlon;
                 if !periodic && i > *nx as f64 + 0.5 {
                     i -= 360.0 / dlon;
@@ -52,6 +66,7 @@ impl Inverse {
 /// The target lattice and the sparse weights that fill it.
 #[derive(Debug, Clone)]
 pub struct Regrid {
+    pub shape: [usize; 2],
     pub lat: Vec<f64>,
     pub lon: Vec<f64>,
     pub deg: f64,
@@ -67,20 +82,23 @@ pub struct Regrid {
 
 impl Regrid {
     pub fn ny(&self) -> usize {
-        self.lat.len()
+        self.shape[0]
     }
 
     pub fn nx(&self) -> usize {
-        self.lon.len()
+        self.shape[1]
     }
 
     /// Apply to one `[ny_src, nx_src]` plane.
     pub fn apply(&self, plane: &[f32]) -> Vec<f32> {
-        (0..self.lat.len() * self.lon.len())
+        (0..self.ny() * self.nx())
             .into_par_iter()
             .with_min_len(4096)
             .map(|t| {
                 let (a, b) = (self.offsets[t] as usize, self.offsets[t + 1] as usize);
+                if a == b {
+                    return f32::NAN;
+                }
                 let mut sum = 0.0f64;
                 for e in a..b {
                     sum += self.weight[e] * f64::from(plane[self.index[e] as usize]);
@@ -92,7 +110,10 @@ impl Regrid {
 
     /// Apply to a stack of planes (`[levels, ny_src, nx_src]`).
     pub fn apply_stack(&self, stack: &[f32], src_cells: usize) -> Vec<f32> {
-        stack.chunks(src_cells).flat_map(|plane| self.apply(plane)).collect()
+        stack
+            .chunks(src_cells)
+            .flat_map(|plane| self.apply(plane))
+            .collect()
     }
 }
 
@@ -101,18 +122,30 @@ fn nearest_spacing(target: f64, table: &[f64]) -> f64 {
         .iter()
         .copied()
         .filter(|s| *s > 0.0)
-        .min_by(|a, b| (a.ln() - target.ln()).abs().total_cmp(&(b.ln() - target.ln()).abs()))
+        .min_by(|a, b| {
+            (a.ln() - target.ln())
+                .abs()
+                .total_cmp(&(b.ln() - target.ln()).abs())
+        })
         .unwrap_or(target)
 }
 
 /// Largest all-true rectangle in a row-major boolean grid: (r0, r1, c0, c1)
 /// inclusive, or None.
-fn largest_rectangle(mask: &[bool], rows: usize, cols: usize) -> Option<(usize, usize, usize, usize)> {
+fn largest_rectangle(
+    mask: &[bool],
+    rows: usize,
+    cols: usize,
+) -> Option<(usize, usize, usize, usize)> {
     let mut heights = vec![0usize; cols];
     let mut best: Option<(usize, (usize, usize, usize, usize))> = None;
     for r in 0..rows {
         for c in 0..cols {
-            heights[c] = if mask[r * cols + c] { heights[c] + 1 } else { 0 };
+            heights[c] = if mask[r * cols + c] {
+                heights[c] + 1
+            } else {
+                0
+            };
         }
         // Largest rectangle in the histogram `heights`.
         let mut stack: Vec<usize> = Vec::new();
@@ -146,11 +179,12 @@ pub fn plan(
     deg: Option<f64>,
     method: RegridMethod,
     spacings: &[f64],
+    target: Option<&serde_json::Value>,
 ) -> Result<Regrid> {
     let (nx, ny) = (meta.nx, meta.ny);
     let inverse = match (&native.regular, meta.map_proj) {
         (Some(regular), _) => {
-            if let Some(d) = deg {
+            if let Some(d) = deg.filter(|_| target.is_none()) {
                 if d + 1e-9 < regular.dlat.max(regular.dlon) {
                     return Err(refuse(format!(
                         "the history grid is a {:.4} degree latitude-longitude grid and {d} degree is finer; upsampling it would add bytes and no information",
@@ -220,7 +254,9 @@ pub fn plan(
             let (i, j) = inverse.index(xlat[k], xlong[k]);
             let (ei, ej) = ((k % nx) as f64, (k / nx) as f64);
             let di = match &inverse {
-                Inverse::Regular { periodic: true, nx, .. } => {
+                Inverse::Regular {
+                    periodic: true, nx, ..
+                } => {
                     let d = (i - ei).rem_euclid(*nx as f64);
                     d.min(*nx as f64 - d)
                 }
@@ -233,6 +269,10 @@ pub fn plan(
         return Err(refuse(format!(
             "the projection rebuilt from the file's attributes misplaces its own XLAT/XLONG by {worst:.3} cells (limit 0.01), so every regridded value would land in the wrong place (use --grid native)"
         )));
+    }
+
+    if let Some(profile) = target {
+        return explicit_plan(meta, &inverse, profile);
     }
 
     let source_deg = match &native.regular {
@@ -258,7 +298,8 @@ pub fn plan(
     };
     let unwrap = |l: f64| centre_lon + (l - centre_lon + 180.0).rem_euclid(360.0) - 180.0;
     let periodic = matches!(&native.regular, Some(r) if r.periodic);
-    let (mut lat_min, mut lat_max, mut lon_min, mut lon_max) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
+    let (mut lat_min, mut lat_max, mut lon_min, mut lon_max) =
+        (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
     for k in 0..nx * ny {
         lat_min = lat_min.min(xlat[k]);
         lat_max = lat_max.max(xlat[k]);
@@ -273,7 +314,11 @@ pub fn plan(
     let k_lat0 = (lat_min / deg).ceil() as i64;
     let k_lat1 = (lat_max / deg).floor() as i64;
     let k_lon0 = (lon_min / deg).ceil() as i64;
-    let k_lon1 = if periodic { ((360.0 / deg).round() as i64) - 1 } else { (lon_max / deg).floor() as i64 };
+    let k_lon1 = if periodic {
+        ((360.0 / deg).round() as i64) - 1
+    } else {
+        (lon_max / deg).floor() as i64
+    };
     if k_lat1 < k_lat0 || k_lon1 < k_lon0 {
         return Err(refuse(format!(
             "no {deg} degree lattice point lies inside the domain, so the regular grid would be empty"
@@ -300,12 +345,22 @@ pub fn plan(
         }
     };
     let offsets_in_cell: Vec<f64> = (0..samples)
-        .map(|s| if samples == 1 { 0.0 } else { -0.5 + (s as f64 + 0.5) / samples as f64 })
+        .map(|s| {
+            if samples == 1 {
+                0.0
+            } else {
+                -0.5 + (s as f64 + 0.5) / samples as f64
+            }
+        })
         .collect();
     let (lo_i, hi_i) = (boundary as f64, (nx - 1 - boundary.min(nx - 1)) as f64);
     let (lo_j, hi_j) = (boundary as f64, (ny - 1 - boundary.min(ny - 1)) as f64);
     let inside = |i: f64, j: f64| -> bool {
-        let i_ok = if periodic { true } else { i >= lo_i - 1e-9 && i <= hi_i + 1e-9 };
+        let i_ok = if periodic {
+            true
+        } else {
+            i >= lo_i - 1e-9 && i <= hi_i + 1e-9
+        };
         i_ok && j >= lo_j - 1e-9 && j <= hi_j + 1e-9
     };
     let lattice_lat = |r: usize| (k_lat0 + r as i64) as f64 * deg;
@@ -347,7 +402,9 @@ pub fn plan(
     let mut weight = Vec::new();
     for r in r0..=r1 {
         for c in c0..=c1 {
-            let samples = positions[r * cols + c].as_ref().expect("inside the rectangle");
+            let samples = positions[r * cols + c]
+                .as_ref()
+                .expect("inside the rectangle");
             let total: f64 = samples.iter().map(|s| s.2).sum();
             let mut entries: Vec<(u32, f64)> = Vec::new();
             for &(i, j, w) in samples {
@@ -401,7 +458,11 @@ pub fn plan(
     let crosses_prime = !periodic && meridian >= mn && meridian <= mx && mx - mn < 360.0;
     for l in lon.iter_mut() {
         let v = l.rem_euclid(360.0);
-        *l = if crosses_prime && v >= 180.0 { v - 360.0 } else { v };
+        *l = if crosses_prime && v >= 180.0 {
+            v - 360.0
+        } else {
+            v
+        };
     }
     // Lattice values are multiples of deg; round away the float residue.
     let tidy = |v: f64| (v / deg).round() * deg;
@@ -414,7 +475,18 @@ pub fn plan(
         ),
     };
     let description = format!("regular latitude-longitude {deg} deg, {method_text}");
-    Ok(Regrid { lat, lon, deg, method, description, boundary_rows: boundary, offsets, index, weight })
+    Ok(Regrid {
+        shape: [lat.len(), lon.len()],
+        lat,
+        lon,
+        deg,
+        method,
+        description,
+        boundary_rows: boundary,
+        offsets,
+        index,
+        weight,
+    })
 }
 
 #[cfg(test)]
@@ -440,4 +512,72 @@ mod tests {
         assert_eq!(nearest_spacing(0.2, &table), 0.25);
         assert_eq!(nearest_spacing(0.035, &table), 0.025);
     }
+}
+
+/// A consumer's declared target grid, including points outside a regional
+/// source (NaN, never fabricated weather). Weights and sampling use rayon.
+fn explicit_plan(
+    meta: &FileMeta,
+    inverse: &Inverse,
+    profile: &serde_json::Value,
+) -> Result<Regrid> {
+    let target = crate::earth2::target_coordinates(profile)?;
+    let (ny, nx) = (meta.ny, meta.nx);
+    let periodic = matches!(inverse, Inverse::Regular { periodic: true, .. });
+    let points: Vec<Vec<(u32, f64)>> = (0..target.ny * target.nx)
+        .into_par_iter()
+        .map(|k| {
+            let (lat, lon) = if target.axes {
+                (target.lat[k / target.nx], target.lon[k % target.nx])
+            } else {
+                (target.lat[k], target.lon[k])
+            };
+            let (mut i, mut j) = inverse.index(lat, lon);
+            if periodic {
+                i = i.rem_euclid(nx as f64);
+                j = j.clamp(0., (ny - 1) as f64);
+            }
+            if !i.is_finite()
+                || !j.is_finite()
+                || i < -1e-6
+                || j < -1e-6
+                || (!periodic && i > (nx - 1) as f64 + 1e-6)
+                || j > (ny - 1) as f64 + 1e-6
+            {
+                return Vec::new();
+            }
+            i = i.max(0.);
+            j = j.max(0.);
+            let i0 = (i.floor() as usize).min(nx - 1);
+            let j0 = (j.floor() as usize).min(ny - 1);
+            let i1 = if periodic {
+                (i0 + 1) % nx
+            } else {
+                (i0 + 1).min(nx - 1)
+            };
+            let j1 = (j0 + 1).min(ny - 1);
+            let (fx, fy) = (i - i0 as f64, j - j0 as f64);
+            [
+                (j0 * nx + i0, (1. - fx) * (1. - fy)),
+                (j0 * nx + i1, fx * (1. - fy)),
+                (j1 * nx + i0, (1. - fx) * fy),
+                (j1 * nx + i1, fx * fy),
+            ]
+            .into_iter()
+            .filter(|(_, w)| *w > 0.)
+            .map(|(k, w)| (k as u32, w))
+            .collect()
+        })
+        .collect();
+    let mut offsets = vec![0];
+    let mut index = Vec::new();
+    let mut weight = Vec::new();
+    for point in points {
+        for (i, w) in point {
+            index.push(i);
+            weight.push(w);
+        }
+        offsets.push(index.len() as u32);
+    }
+    Ok(Regrid { shape:[target.ny,target.nx], lat:target.lat, lon:target.lon, deg:profile["dlon"].as_f64().unwrap_or(0.), method:RegridMethod::Bilinear, description:format!("explicit profile {}; bilinear in source index space; uncovered regional points NaN; periodic polar edge held", profile), boundary_rows:0, offsets,index,weight })
 }

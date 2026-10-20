@@ -30,7 +30,7 @@ path = "src/main.rs"
 # `clock` is NOT enabled: this bin decodes CF reference times out of a
 # units string and never asks what time it is now.  A decoder whose
 # output depends on the wall clock is a decoder that cannot be tested.
-chrono = { version = "0.4", default-features = false, features = ["std", "alloc"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "alloc", "serde"] }
 serde.workspace = true
 serde_json.workspace = true
 netcrust = { path = "../../vendor/netcrust" }

@@ -45,11 +45,13 @@ Practicalities:
   own version, which PyPI does not carry until that version is published),
   then `pip install -e '.[gpu-cu12,render,dev]'`
   (`gpu-cu13` instead on a CUDA-13-only box);
-  build each vendored Rust workspace the installers build with
-  `cargo build --release --locked --offline` run inside its own directory
-  (the vendored, locked build is the supported one): `tools/grib1_bridge`,
-  `tools/rustwx`, `tools/arwen-tui`, `tools/zarr_bridge`, `tools/rw_wps`
-  and `tools/region_global_dealias`. `bash install.sh` (PowerShell:
+  build each native Rust workspace the installers build with
+  `cargo fetch --locked` then `cargo build --release --locked --offline`
+  inside its own directory
+  (the locked build is the supported one): `tools/grib1_bridge`,
+  `tools/rustwx`, `tools/arwen-tui`, `tools/zarr_bridge`, `tools/rw_wps`,
+  `tools/region_global_dealias`, `tools/nextgen_hydrofabric`,
+  `tools/nextgen_forcing` and `tools/nextgen_verify`. `bash install.sh` (PowerShell:
   `.\install.ps1`) does all of this except the `dev` extra.
 - This repository builds **two** distributions. `pyproject.toml` at the
   root builds `gpuwm`; `gpuwm-data/pyproject.toml` builds `gpuwm-data`,

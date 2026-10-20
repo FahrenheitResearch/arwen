@@ -967,6 +967,25 @@ def test_async_worker_releases_device_refs_after_d2h_before_write(
         writer.close()
 
 
+def test_queued_device_ownership_survives_unfinished_download(tmp_path):
+    from gpuwm.io.wrfout import AsyncDomainWrfoutWriter
+
+    event = SimpleNamespace(done=False)
+    device = SimpleNamespace()
+    pinned = np.zeros(1, np.float32)
+    ticket = _cpu_ticket(tmp_path / "queued", device_refs=(device,), pinned_refs=(pinned,))
+    ticket.event = event
+    tickets = AsyncDomainWrfoutWriter._new_ticket_queue()
+    tickets.put(ticket)
+    tickets.release_completed_device_refs(nullcontext())
+    assert ticket.device_refs == (device,)
+    event.done = True
+    tickets.release_completed_device_refs(nullcontext())
+    assert ticket.device_refs == ()
+    assert ticket.pinned_refs == (pinned,)
+    assert tickets.get_nowait() is ticket
+
+
 def test_async_write_failure_does_not_retain_field_backing(
         monkeypatch, tmp_path):
     import gpuwm.io.wrfout as wrfout

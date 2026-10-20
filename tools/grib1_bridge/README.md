@@ -27,6 +27,24 @@ Names are `<key>__YYYY-MM-DDTHHMMSSZ.f32le`, using portable basic ISO time.
 `stack.json` lists output hashes, levels, PDT, actual selector identifiers,
 reference time, forecast step/unit, valid time and encoded grid metadata.
 Its `coordinate_values` map stores coefficients once per key.
+Each output retains `time_processing`, scoped
+`decoder_all_statistical_specifications`: the encoded interval end,
+`number_of_time_ranges`, `number_of_missing_values` and ordered `time_ranges`.
+Each range carries the raw statistical-process code, increment-type code,
+range unit/length and increment unit/value. Missing sentinels and unknown codes
+remain raw; no sample count or rate is inferred. Instantaneous products have
+null header counts and an empty range list. The existing first-range summary
+fields remain available, with seconds null for calendar-relative units or a
+missing length. Complete declared descriptors are required, independently of
+NV coordinate-tail bytes. Equal valid times do not establish equal processing
+windows: levels differing in any descriptor or missing count refuse before
+output publication. This encoded witness does not qualify a weather product
+for hydro forcing without provider interval and geometry bindings. Field
+decoding and rounding are unchanged; no rate conversion or interpolation is
+performed. Descriptor layout follows the
+[NCEP PDT 4.8](https://www.nco.ncep.noaa.gov/pmb/docs/grib2/grib2_doc/grib2_temp4-8.shtml)
+and [PDT 4.11](https://www.nco.ncep.noaa.gov/pmb/docs/grib2/grib2_doc/grib2_temp4-11.shtml)
+tables.
 `gpuwm.grib2_stack.stack_grib2(input_file, select, output_dir)` calls
 `CpuPreprocessBackend.grib2_stack` through the already loaded CPU library.
 It retains the SPEC beside the output for review, verifies hashes and sizes,

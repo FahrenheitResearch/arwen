@@ -833,6 +833,9 @@ def test_a_bridge_that_predates_the_contract_is_missing_not_ok(
                      # own ladder, the mapped engine's reason.
                      "rw_projected_intermediate",
                      "rw_mlexport", "rw_simradar", "rw_grib2export",
+                     # 2.9.3: the tropical-cyclone field reader (7b6ffde29b2) builds in
+                     # tools/rustwx and resolves through gpuwm.tc_tracks, the MPAS binaries reason.
+                     "rw_tc_fields",
                      "rw_compare", "rw_verify", "rw_nowcast_frames",
                      # The ensemble reducer builds in tools/rustwx and
                      # resolves through GPUWM_ENSEMBLE_RENDERER, so it is
@@ -845,7 +848,14 @@ def test_a_bridge_that_predates_the_contract_is_missing_not_ok(
                      # verification scorer build in tools/rustwx and resolve
                      # through GPUWM_RW_SCORECARD / GPUWM_RW_SCOREBOARD, so
                      # they are off BRIDGE_ENV for the same reason.
-                     "rw_scorecard", "rw_scoreboard"}
+                     "rw_scorecard", "rw_scoreboard",
+                     # The sounding window renderer (2.9.3) builds in
+                     # tools/rustwx and resolves through GPUWM_SOUNDINGS
+                     # (gpuwm.soundings.find_binary), likewise.
+                     "rw_soundings",
+                     # Hydro consumers resolve from their own workspaces.
+                     "nextgen_hydrofabric", "arwen_nextgen_forcing",
+                     "rw_nextgen_verify"}
 
 
 def test_the_decoder_door_gates_the_contract_for_every_caller(
@@ -1729,10 +1739,10 @@ def _force_every_gap(monkeypatch, tmp_path, *, windows, shape, mode,
         # was measured missing on 2026-08-18: every checkout arm of this
         # test was red, and the paste it rejected carried `git clone
         # https://.../arwen gpuwm` from the mapped-engine remedy alone.
-        for crate in ("grib1_bridge", "rustwx", "region_global_dealias",
-                      "rw_wps", "arwen-tui"):
-            (root / "tools" / crate).mkdir(parents=True, exist_ok=True)
-            (root / "tools" / crate / "Cargo.toml").write_text(
+        from gpuwm import bridge_assets
+        for crate in {artifact.crate for artifact in bridge_assets.BUNDLED_ARTIFACTS}:
+            (root / crate).mkdir(parents=True, exist_ok=True)
+            (root / crate / "Cargo.toml").write_text(
                 "[package]\n", encoding="utf-8")
 
     # The shell under test (_force_shell).

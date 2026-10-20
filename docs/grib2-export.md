@@ -20,7 +20,9 @@ Per domain and valid time:
 
 - `wrfsfc_dNN_YYYYMMDDTHHMMSSZ.grib2`: surface, column and single-level fields;
 - `wrfprs_dNN_YYYYMMDDTHHMMSSZ.grib2`: height, temperature, dewpoint,
-  relative humidity and the two wind components on each pressure level;
+  relative humidity, the two horizontal wind components, specific humidity
+  (SPFH), pressure vertical velocity (VVEL) and geometric vertical velocity
+  (DZDT) on each pressure level;
 - `manifest.json`: the catalog, and for every frame the files, each field's
   GRIB2 code, level, units and method with its published source, the
   device each group ran on, the timings and every omitted field with the
@@ -142,6 +144,35 @@ Missing values are a GRIB2 bitmap: a carrier the history does not have
 omits its products (never zero), and a field missing in every cell is
 listed as omitted rather than written.
 
+The pressure and surface row inventories come from the Rust catalog, exposed by
+`gpuwm export-grib2 --list --json` as `pressure_rows` and `surface_fields`.
+Each entry includes its WMO code, fixed surface, units and method; the CLI reads
+that catalog directly. Pressure rows use product template 4.0 and level type 100.
+
+Specific humidity uses the ML exporter's moist-air normalization of QVAPOR
+(including available condensates) before log-pressure interpolation. Omega uses
+the same ML operator, `omega = -p g w / (Rd T (1 + 0.61 qv))`, with W averaged
+from interfaces to mass levels. DZDT uses that mass-level W in m s-1. Values
+below the lowest mass level hold that level, and values above the model top
+are missing.
+
+The surface catalog also includes UGRD/VGRD at 100 m AGL. These use U/V averaged
+to mass levels, linear interpolation in `mean(PH+PHB)/g - HGT`, then rotation
+with SINALPHA/COSALPHA. These two rows always carry earth-relative component
+flags, including with `--winds grid`; an unbracketed height is missing.
+
+The default `full` history preset and `severe` carry P, PB, PH, PHB, QVAPOR,
+W, U, V, T and HGT. Trimmed selections such as `minimal` cannot supply these
+rows. Export refuses them with the missing field's name and the affected rows,
+rather than inventing values. Hex full conversions carry the same fields
+through the conversion field map; surface conversions also retain the wind
+volumes required by the 100 m rows.
+
+The same diagnostics are available as maps through
+`gpuwm render WRFOUT --engine rust --products 850mb_specific_humidity,500mb_omega,100m_wind_speed`.
+Specific humidity is labelled in g/kg, omega in Pa/s (negative is ascent), and
+the wind product shows speed at 100 m AGL.
+
 ## Catalog `woof-post/v1`
 
 Surface file. Group letters follow the post-processor's modules: A column
@@ -151,6 +182,7 @@ boundary layer and isotherm levels. Section and D numbers refer to the
 post-processor specification; the method strings are the ones the
 manifest records.
 
+<!-- catalog:surface:start -->
 | id | group | GRIB2 | level | units | method |
 | --- | --- | --- | --- | --- | --- |
 | `terrain` | A | 0.3.5 | 1/0 | gpm | HGT, WRF geometric metres reported as gpm (D2) |
@@ -179,6 +211,8 @@ manifest records.
 | `leaf_area_index` | A | 0.7.198 | 1/0 | 1 | LAI |
 | `u10` | history | 0.2.2 | 103/10 | m s-1 | U10, the surface layer scheme's 10 m wind (history copy) |
 | `v10` | history | 0.2.3 | 103/10 | m s-1 | V10, the surface layer scheme's 10 m wind (history copy) |
+| `u100` | history | 0.2.2 | 103/100 | m s-1 | UGRD: unstagger U/V to mass levels; linear in z = mean(PH+PHB)/g - HGT to 100 m AGL; rotate to east/north with SINALPHA/COSALPHA |
+| `v100` | history | 0.2.3 | 103/100 | m s-1 | VGRD: unstagger U/V to mass levels; linear in z = mean(PH+PHB)/g - HGT to 100 m AGL; rotate to east/north with SINALPHA/COSALPHA |
 | `total_precipitation` | history | 0.1.8 | 1/0 | kg m-2 | RAINNC + RAINC plus the bucket counters times BUCKET_MM, accumulated from the simulation start (product template 4.8) |
 | `mslp` | B | 0.3.1 | 101/0 | Pa | SPEC 5.2 D6: NMC reduction of Wea. Forecasting 13 (1998) 833 and Mon. Wea. Rev. 123 (1995) 59 from ground pressure and height |
 | `maps_mslp` | B | 0.3.198 | 101/0 | Pa | SPEC 5.2: MAPS reduction of Mon. Wea. Rev. 118 (1990) 2099 from the 700 hPa temperature, 1-2-1 smoothing of Rev. Geophys. 8 (1970) 359 (D9) |
@@ -204,7 +238,7 @@ manifest records.
 | `bulk_shear_0_6km` | C | 0.192.2 | 103/6000-103/0 | m s-1 | SPEC 6.3: magnitude of the 0-6 km shear vector |
 | `stp` | C | 0.7.211 | 14/0 | 1 | SPEC 6.3, RULINGS 4: fixed-layer STP (WAF 18 (2003) 1243, WAF 27 (2012) 1136, SPC), floored at 0 |
 | `ehi_0_1km` | C | 0.7.9 | 103/1000-103/0 | 1 | SPEC 6.3 D16: sbCAPE x SRH 0-1 km / 160000 (SHARP v1.50, NWS 1991) |
-| `composite_reflectivity` | D | 0.16.196 | 200/0 (10/0 with `--upp-control rapr`) | dBZ | SPEC 7.1: column maximum of the reflectivity volume (AMS Glossary) |
+| `composite_reflectivity` | D | 0.16.196 | 200/0 | dBZ | SPEC 7.1: column maximum of the reflectivity volume (AMS Glossary) |
 | `reflectivity_1km` | D | 0.16.195 | 103/1000 | dBZ | SPEC 7.1, RULINGS 5: linear Z interpolated to 1000 m AGL, then dBZ |
 | `low_cloud` | D | 0.6.3 | 214/0 | % | SPEC 7.2, RULINGS 1: maximum cloud fraction in the ISCCP low layer (BAMS 80 (1999) 2261) |
 | `mid_cloud` | D | 0.6.4 | 224/0 | % | SPEC 7.2, RULINGS 1: maximum cloud fraction in the ISCCP middle layer |
@@ -213,6 +247,7 @@ manifest records.
 | `cloud_top` | D | 0.3.5 | 3/0 | gpm | SPEC 7.3 D20: highest level with the same thresholds |
 | `cloud_ceiling` | D | 0.3.5 | 215/0 | gpm | SPEC 7.3 D19: lowest height where cloud fraction reaches 0.5 (FMH-1, ECMWF ceiling) |
 | `visibility` | D | 0.19.0 | 1/0 | m | SPEC 7.4, RULINGS 6 and 10: hydrometeor extinction (JAM 38 (1999) 385), FRAM-L RH haze clear-air baseline (BAMS 90 (2009) 341), 550 nm aerosol extinction where the history carries it (the frame's group_d_sources.aerosol says which), 5 percent contrast meteorological optical range (WMO-No. 8) |
+| `simulated_ir` | D | 0.192.0 | 8/0 | K | window brightness temperature: where the column is opaque, the air temperature at unit infrared absorption optical depth below the model top (Eddington-Barbier emission level; 0.145 m2 g-1 cloud water, 0.272 m2 g-1 cloud ice plus snow, PROVISIONAL, kept by a GOES-16/18 band 13 score); elsewhere the model's own OLR through T_f = (OLR/sigma)^(1/4) = T_b (1.228 - 1.106e-3 T_b) (Ohring, Gruber and Ellingson, J. Climate Appl. Meteor. 23 (1984) 416; Yang and Slingo, Mon. Wea. Rev. 129 (2001) 784); no instrument band, not CRTM |
 | `pbl_height` | E | 0.3.18 | 1/0 | m | SPEC 8: bulk Richardson number 0.25 (BLM 81 (1996) 245) with b u*^2, b = 100 (D23) |
 | `gust` | E | 0.2.22 | 1/0 | m s-1 | SPEC 8 D22, RULINGS 7 (ASOS-scored): mixed-layer TKE gust (MWR 129 (2001) 5) where the history carries TKE, else surface-layer similarity gust (ECMWF IFS Part IV, BLM 11 (1977) 355); the frame's gust record says which |
 | `u80` | E | 0.2.2 | 103/80 | m s-1 | SPEC 8 D25: linear in height between bracketing mass levels, 10 m wind below the lowest level |
@@ -223,6 +258,7 @@ manifest records.
 | `highest_freezing_pressure` | E | 0.3.0 | 204/0 | Pa | SPEC 8 D24, RULINGS 8: pressure of that crossing |
 | `minus10_height` | E | 0.3.5 | 20/263 | gpm | SPEC 8 D24: highest 263.15 K crossing below the tropopause |
 | `minus20_height` | E | 0.3.5 | 20/253 | gpm | SPEC 8 D24: highest 253.15 K crossing below the tropopause |
+<!-- catalog:surface:end -->
 
 With `--extrema-interval-seconds N`, for each carrier the history has
 (product template 4.8 over the N s window):
@@ -241,14 +277,23 @@ With `--extrema-interval-seconds N`, for each carrier the history has
 
 Pressure file, every requested level:
 
+The surface and pressure tables are generated from the Rust catalog. After
+building the exporter, refresh them with
+`python tools/grib2_catalog_docs.py /path/to/rw_grib2export`.
+
+<!-- catalog:pressure:start -->
 | id | GRIB2 | level | units | method |
 | --- | --- | --- | --- | --- |
-| `height` | 0.3.5 | 100/<level Pa> | gpm | SPEC 5.1: hypsometric from the bracketing interface with the layer-mean virtual temperature (NCAR/TN-396); below ground per [R12] and the membrane reduction (D8) |
-| `temperature` | 0.0.0 | 100/<level Pa> | K | SPEC 5.1: linear in ln p between bracketing mass levels; below ground 6.5 K km-1 (ICAO, NCAR/TN-396) |
-| `dewpoint` | 0.0.6 | 100/<level Pa> | K | SPEC 5.1: AERK Magnus dewpoint of the interpolated q (JAM 35 (1996) 601) |
-| `rh` | 0.1.1 | 100/<level Pa> | % | SPEC 5.1: RH over water from the interpolated q and T (WMO-No. 8); lowest level held below ground (D7) |
-| `u` | 0.2.2 | 100/<level Pa> | m s-1 | SPEC 5.1: linear in ln p; lowest level held below ground (D7) |
-| `v` | 0.2.3 | 100/<level Pa> | m s-1 | SPEC 5.1: linear in ln p; lowest level held below ground (D7) |
+| `height` | 0.3.5 | 100/pressure_Pa | gpm | SPEC 5.1: hypsometric from the bracketing interface with the layer-mean virtual temperature (NCAR/TN-396); below ground per [R12] and the membrane reduction (D8) |
+| `temperature` | 0.0.0 | 100/pressure_Pa | K | SPEC 5.1: linear in ln p between bracketing mass levels; below ground 6.5 K km-1 (ICAO, NCAR/TN-396) |
+| `dewpoint` | 0.0.6 | 100/pressure_Pa | K | SPEC 5.1: AERK Magnus dewpoint of the interpolated q (JAM 35 (1996) 601) |
+| `rh` | 0.1.1 | 100/pressure_Pa | % | SPEC 5.1: RH over water from the interpolated q and T (WMO-No. 8); lowest level held below ground (D7) |
+| `u` | 0.2.2 | 100/pressure_Pa | m s-1 | SPEC 5.1: linear in ln p; lowest level held below ground (D7) |
+| `v` | 0.2.3 | 100/pressure_Pa | m s-1 | SPEC 5.1: linear in ln p; lowest level held below ground (D7) |
+| `specific_humidity` | 0.1.0 | 100/pressure_Pa | kg kg-1 | SPFH: rw-mlexport specific_humidity, QVAPOR/(1+QVAPOR+sum condensates), linear in ln(P+PB); lowest mass level held below ground, missing above top mass level |
+| `omega` | 0.2.8 | 100/pressure_Pa | Pa s-1 | VVEL: rw-mlexport omega operator, -rho*g*w with rho=(P+PB)/(Rd*T*(1+0.61*max(QVAPOR,0))), W unstaggered to mass levels; linear in ln(P+PB); lowest mass level held below ground, missing above top mass level |
+| `vertical_velocity` | 0.2.9 | 100/pressure_Pa | m s-1 | DZDT: w=(W[k]+W[k+1])/2 on mass levels, linear in ln(P+PB); lowest mass level held below ground, missing above top mass level |
+<!-- catalog:pressure:end -->
 
 Group D (reflectivity, cloud and visibility) runs from the same shared
 column state. The cloud fraction is the history's `CLDFRA` when present,

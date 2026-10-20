@@ -156,7 +156,8 @@ class CardSampler:
         self.proc = None
         self.interval = interval_ms / 1000.0
         exe = shutil.which("nvidia-smi")
-        if exe is None or os.environ.get("GPUWM_NO_LOCAL_GPU") == "1":
+        from gpuwm.local_gpu import no_local_gpu
+        if exe is None or no_local_gpu():
             return
         command = [exe, "--query-gpu=index,utilization.gpu", "--format=csv,noheader,nounits",
                    f"-lms={int(interval_ms)}"]
@@ -583,16 +584,17 @@ def selftest(*, interval=0.5, seconds=None, **limits):
                 "import subprocess, sys\n"
                 f"ps = [subprocess.Popen([sys.executable, '-c', {SERIAL.format(s=seconds)!r}]) for _ in range({n})]\n"
                 "sys.exit(max(p.wait() for p in ps))\n"]
-    old = os.environ.get("GPUWM_NO_LOCAL_GPU")
-    os.environ["GPUWM_NO_LOCAL_GPU"] = "1"     # the self-test judges CPU only; a busy shared card must not excuse it
+    from gpuwm.local_gpu import NO_LOCAL_GPU_ENV
+    old = os.environ.get(NO_LOCAL_GPU_ENV)
+    os.environ[NO_LOCAL_GPU_ENV] = "1"     # the self-test judges CPU only; a busy shared card must not excuse it
     try:
         _, one = watch(serial, interval=interval, **limits)
         _, many = watch(parallel, interval=interval, **limits)
     finally:
         if old is None:
-            os.environ.pop("GPUWM_NO_LOCAL_GPU", None)
+            os.environ.pop(NO_LOCAL_GPU_ENV, None)
         else:
-            os.environ["GPUWM_NO_LOCAL_GPU"] = old
+            os.environ[NO_LOCAL_GPU_ENV] = old
     bad_one, _ = verdict(one, [])
     bad_many, _ = verdict(many, [])
     ok = bool(bad_one) and not bad_many

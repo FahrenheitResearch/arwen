@@ -1566,6 +1566,16 @@ class RRTMGLegacyRadiation:
             return a.get()
         return np.asarray(a)
 
+    @classmethod
+    def _vertical_weight_device(cls, value):
+        """Keep canonical float32 weights on the device without conversion."""
+        import cupy as cp
+        if isinstance(value, cp.ndarray) and value.dtype == cp.float32:
+            return cp.ascontiguousarray(value)
+        # Preserve the host conversion semantics for noncanonical callers.
+        return cp.asarray(np.ascontiguousarray(
+            np.asarray(cls._host(value), np.float32)))
+
     def _cols(self, a, nk):
         """(nk, ny, nx) device/host -> host float32 (ny*nx, nk) columns."""
         h = np.asarray(self._host(a), np.float32)
@@ -1909,10 +1919,8 @@ class RRTMGLegacyRadiation:
         lat_flat = self.latitude_deg.reshape(-1)
         lon_flat = self.longitude_deg.reshape(-1)
         lat_d = cp.asarray(lat_flat)
-        fnm_d = cp.asarray(np.ascontiguousarray(
-            np.asarray(self._host(state.fnm), np.float32)))
-        fnp_d = cp.asarray(np.ascontiguousarray(
-            np.asarray(self._host(state.fnp), np.float32)))
+        fnm_d = self._vertical_weight_device(state.fnm)
+        fnp_d = self._vertical_weight_device(state.fnp)
 
         active_bl = icloud == 1 and mynn_bl_cloud_active(
             getattr(cfg, "bl_pbl_physics", 0), getattr(cfg, "icloud_bl", 0))
@@ -1996,19 +2004,30 @@ class RRTMGLegacyRadiation:
             if owner is not None and owner.mode == "parent-interpolated":
                 if driver.call_counts.get("cam_ozone", 0) == 0:
                     raise RuntimeError("child radiation ran before parent CAM ozone FORCE")
-                grid = cp.asnumpy(driver.o3rad)
-                o33d = np.ascontiguousarray(grid.transpose(1, 2, 0).reshape(-1, nz))
+                source = driver.o3rad
+                if (isinstance(source, cp.ndarray)
+                        and source.dtype == cp.float32
+                        and source.shape == (nz, ny, nx)):
+                    # Retain a snapshot, not an alias: a later parent FORCE
+                    # can update the carrier before this child radiates again.
+                    snapshot = source.copy(order="C")
+                    self.__dict__["_o33d_host"] = None
+                    self.__dict__["_o33d_device"] = snapshot
+                    grid_o3 = snapshot.reshape(nz, ncol)
+                else:
+                    grid = cp.asnumpy(source)
+                    o33d = np.ascontiguousarray(grid.transpose(1, 2, 0).reshape(-1, nz))
             else:
                 o33d = np.asarray(self._ozone_provider(), np.float32)
-            if o33d.shape != (ncol, nz):
-                raise ValueError(
-                    f"ozone_parent provider returned shape {o33d.shape}; "
-                    f"this child grid needs ({ncol}, {nz})")
-            # Retain for child domains (their providers read this field,
-            # so a nest's ozone updates exactly when its parent's does).
-            self._o33d_grid = np.ascontiguousarray(
-                o33d.reshape(ny, nx, nz).transpose(2, 0, 1))
-            grid_o3 = cp.asarray(self._o33d_grid.reshape(nz, ncol))
+            if grid_o3 is None:
+                if o33d.shape != (ncol, nz):
+                    raise ValueError(
+                        f"ozone_parent provider returned shape {o33d.shape}; "
+                        f"this child grid needs ({ncol}, {nz})")
+                # Host providers retain their existing conversion contract.
+                self._o33d_grid = np.ascontiguousarray(
+                    o33d.reshape(ny, nx, nz).transpose(2, 0, 1))
+                grid_o3 = cp.asarray(self._o33d_grid.reshape(nz, ncol))
         else:
             # One host buffer for every call (the native route fills it in
             # place): a fresh ~200 MB array per call per rank was faulted in

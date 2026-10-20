@@ -1,0 +1,56 @@
+[
+  {
+    "file": "rrtmg_legacy.py",
+    "name": "verdict",
+    "line": 1739,
+    "dtype": "float32",
+    "kind": 2,
+    "shape": "scalar",
+    "sha256": "6270ca552b88fb6bdfd7e31018b1de2cad311db30245f3075160be979f90a240"
+  },
+  {
+    "file": "rrtmg_legacy_device.py",
+    "name": "_night_verdict",
+    "line": 184,
+    "dtype": "bool",
+    "kind": 0,
+    "shape": "scalar",
+    "sha256": "b46e1d54451e45e3d880f34344f6e048b239473e149f053320eec79c25b5e869"
+  },
+  {
+    "file": "rrtmg_mcica.py",
+    "name": "_seed_verdict",
+    "line": 640,
+    "dtype": "bool",
+    "kind": 0,
+    "shape": "scalar",
+    "sha256": "3947f739003363e0902d1c058e80ca0111545c4e0b2acc0548891041fa0be7de"
+  },
+  {
+    "file": "rrtmg_sw.py",
+    "name": "_day_verdict",
+    "line": 3575,
+    "dtype": "bool",
+    "kind": 0,
+    "shape": "scalar",
+    "sha256": "4521cad52318b43c2fac6813c0a685bc092918084660ae5a348aa75530862997"
+  },
+  {
+    "file": "rrtmg_sw.py",
+    "name": "_cldprmc_verdict",
+    "line": 3873,
+    "dtype": "int32",
+    "kind": 1,
+    "shape": "one",
+    "sha256": "4521cad52318b43c2fac6813c0a685bc092918084660ae5a348aa75530862997"
+  },
+  {
+    "file": "rrtmg_lw.py",
+    "name": "_cldprmc_verdict",
+    "line": 4938,
+    "dtype": "int32",
+    "kind": 1,
+    "shape": "vector",
+    "sha256": "e899ce92bb2e09ed8d70a5368795fed21eb1bbd0c4faf8d3cd0195d3182bc6cd"
+  }
+]

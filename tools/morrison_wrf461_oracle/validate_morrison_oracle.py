@@ -6,7 +6,8 @@ It prints every field's observed FP32 total-order ULP maximum and a machine-
 readable JSON summary. The pytest gate (tests/test_morrison_wrf461_parity.py)
 imports :func:`measure_oracle`: WRF's arithmetic alone (``--row37-off``,
 the unit built with MORR_ROW37_OFF) is bitwise, and the production build
-differs only where the owner-ruled row-37 corrections fire.
+includes row-37 and nonnegative sedimentation corrections. The row-37
+contract can also be measured in isolation from the transport correction.
 """
 
 from __future__ import annotations
@@ -114,6 +115,7 @@ def measure_oracle(
     fixture_dir: Path = DEFAULT_FIXTURE_DIR,
     *,
     row37: bool = True,
+    nonnegative_sedimentation: bool = True,
 ) -> dict[str, object]:
     """Run every fixture column and return field/overall parity metrics.
 
@@ -123,7 +125,9 @@ def measure_oracle(
     """
     import cupy as cp
 
-    if row37:
+    # Disabling just the new transport correction isolates the older row-37
+    # contract; production and the raw WRF oracle are still measured separately.
+    if row37 and nonnegative_sedimentation:
         return _measure(fixture_dir, row37=True)
     from gpuwm.core import kernels
 
@@ -132,9 +136,13 @@ def measure_oracle(
     def row37_off_load_module(name: str):
         if name != "morrison":
             return original(name)
+        source = kernels.module_source("morrison")
+        if not nonnegative_sedimentation:
+            correction = "            dmass = FMAXK(dmass, 0.0f);"
+            assert source.count(correction) == 1
+            source = source.replace(correction, "")
         module = cp.RawModule(
-            code="#define MORR_ROW37_OFF 1" + chr(10)
-            + kernels.module_source("morrison"),
+            code=("" if row37 else "#define MORR_ROW37_OFF 1\n") + source,
             options=kernels.module_options("morrison"))
         module.compile()
         return module
@@ -147,7 +155,7 @@ def measure_oracle(
     kernels.load_module = row37_off_load_module
     kernels.get_kernel.cache_clear()
     try:
-        return _measure(fixture_dir, row37=False)
+        return _measure(fixture_dir, row37=row37)
     finally:
         kernels.load_module = original
         kernels.get_kernel.cache_clear()

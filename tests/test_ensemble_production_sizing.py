@@ -369,3 +369,101 @@ def test_bootstrap_array_ownership_guard_uses_only_metadata():
     require_bootstrap_device(node, array_module=SimpleNamespace(ndarray=Array), device_id=1)
     with pytest.raises(ValueError, match="another physical card"):
         require_bootstrap_device(node, array_module=SimpleNamespace(ndarray=Array), device_id=0)
+
+
+@pytest.fixture
+def hydro_members(tmp_path, monkeypatch):
+    """Real metadata plans and session orchestration; no forecast/device execution."""
+    import sys
+    from types import ModuleType
+    from gpuwm.hydro.memory import ArrayMemory, StageMemory
+    from gpuwm.hydro import runtime
+    from gpuwm.ensemble import nextgen_capture
+    from gpuwm import numerics
+    # Metadata resolution fixes a process mode too. Restore it along with the
+    # environment so these session checks cannot select later tests' numerics.
+    monkeypatch.setattr(numerics, "_mode", None)
+    monkeypatch.setenv(numerics.ENV, "fast")
+    monkeypatch.delenv("GPUWM_WRF_EXACT", raising=False)
+    monkeypatch.delenv("GPUWM_NEXTGEN_ENABLED", raising=False)
+    monkeypatch.delenv("GPUWM_NEXTGEN_SETTINGS", raising=False)
+    module = ModuleType("gpuwm.hydro._ensemble_memory_test")
+    module.prepare = lambda **kw: pytest.fail("hydro construction entered during metadata admission")
+    module.prepare_memory = lambda **kw: StageMemory((
+        ArrayMemory("storage", (kw["options"]["cells"],), "float64"),), "fixture metadata", 0)
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    class MetadataCollector:
+        def __init__(self, original, member_ids, **unused):
+            self.original = original
+            self.nextgen_points = SimpleNamespace(options={"device_budget_bytes": 4096}, receipt=lambda: {})
+            self.resident_inventory = SimpleNamespace(receipt=lambda: {})
+        def __getattr__(self, name):
+            return getattr(self.original, name)
+    monkeypatch.setattr(nextgen_capture, "NextGenCollector", MetadataCollector)
+    @dataclass(frozen=True)
+    class HydroInputs(Inputs):
+        experiment_config: object = None
+    base = prepared()
+    configs = []
+    for index, cells in enumerate((64, 4096)):
+        path = tmp_path / f"member-config-{index}.toml"
+        path.write_text('[hydro]\nenabled = true\n[[hydro.stages]]\nname = "runoff"\n'
+                        f'factory = "{module.__name__}:prepare"\n[hydro.stages.options]\ncells = {cells}\n')
+        configs.append(path)
+    members = tuple(HydroInputs(base.experiment, base.initial, base.boundaries,
+                               experiment_config=configs[index]) for index in (0, 1, 0))
+    assert all(member.experiment is base.experiment for member in members)
+    return base, members, runtime
+
+
+@pytest.mark.parametrize("ambient", [None, {"enabled": True, "stages": []}])
+def test_every_member_hydro_plan_is_priced_before_initialization(hydro_members, tmp_path, monkeypatch, ambient):
+    from gpuwm.hydro.memory import forecast_plan
+    from gpuwm.core import preflight as original
+    base, members, runtime = hydro_members
+    preflight(monkeypatch)
+    expected = []
+    for member in members[:2]:
+        with runtime.settings_scope(runtime.read_settings(member.experiment_config)):
+            expected.append(forecast_plan(base.experiment).inventory()["required_bytes"])
+    priced = []
+    def price(exp, **kwargs):
+        value = forecast_plan(exp)
+        size = 0 if value is None else value.inventory()["required_bytes"]
+        priced.append(size)
+        return estimate(10_000 + size)
+    monkeypatch.setattr(original, "estimate_experiment", price)
+    initialized = []
+    def runner(bound, **kwargs):
+        assert priced == expected  # including distinct hydro on the SAME Experiment
+        initialized.append(current_capture().member_id)
+        return {"status": "PASS"}
+    session = PreparedEnsembleSession(3, output_directory=tmp_path / "run", collector=Collector(3),
+        array_module=DeviceModule(1), input_provider=lambda member_id, **kw: members[member_id])
+    with runtime.settings_scope(ambient):
+        result = session.run_prepared(runner, base)
+        assert runtime.current_settings() is ambient
+    assert initialized == [0, 1, 2]
+    assert priced == expected and expected[0] < expected[1]
+    peak = result["ordinary_memory_inventory"][0]["components"][0]
+    assert peak["name"] == "ordinary_variant_forecast_peak"
+    assert peak["required_bytes"] >= expected[1]
+
+
+def test_member_hydro_scope_reaches_ordinary_tile_admission(hydro_members, tmp_path, monkeypatch):
+    from gpuwm.ensemble import prepared_execution
+    base, members, runtime = hydro_members
+    preflight(monkeypatch)
+    original = prepared_execution.ordinary_member_execution_inputs
+    seen = []
+    def tile_inputs(inputs, **kwargs):
+        settings = runtime.current_settings()
+        seen.append(None if settings is None else settings.get("settings_path"))
+        return original(inputs, **kwargs)
+    monkeypatch.setattr(prepared_execution, "ordinary_member_execution_inputs", tile_inputs)
+    session = PreparedEnsembleSession(3, output_directory=tmp_path / "run", collector=Collector(3),
+        array_module=DeviceModule(1), input_provider=lambda member_id, **kw: members[member_id])
+    with runtime.settings_scope(None):
+        session.run_prepared(lambda *args, **kwargs: {"status": "PASS"}, base)
+        assert runtime.current_settings() is None
+    assert seen == [str(member.experiment_config) for member in members]

@@ -1,0 +1,1104 @@
+{
+  "constants": {
+    "domain.itime": "1",
+    "domain.time_dbl": "0.d0",
+    "energy.alb": "0.6",
+    "energy.albold": "0.6",
+    "energy.ch": "0.0",
+    "energy.cm": "0.0",
+    "energy.cosz": "0.7",
+    "energy.fcev": "5.0",
+    "energy.fctr": "5.0",
+    "energy.frozen_canopy": ".false.",
+    "energy.frozen_ground": ".false.",
+    "energy.ice": "0",
+    "energy.imelt": "1",
+    "energy.stc": "298.0",
+    "energy.tg": "298.0",
+    "energy.tv": "298.0",
+    "forcing.eair": "0.0",
+    "forcing.foln": "1.0",
+    "forcing.fpice": "0.0",
+    "forcing.julian": "0.0",
+    "forcing.prcpconv": "0.0",
+    "forcing.prcpgrpl": "0.0",
+    "forcing.prcphail": "0.0",
+    "forcing.prcpnonc": "0.0",
+    "forcing.prcpshcv": "0.0",
+    "forcing.prcpsnow": "0.0",
+    "forcing.qair": "0.0",
+    "forcing.rhoair": "0.0",
+    "forcing.swdown": "0.0",
+    "forcing.tbot": "285.0",
+    "forcing.thair": "0.0",
+    "forcing.yearlen": "365",
+    "parameters.cice": "2.094e06",
+    "parameters.co2": "395.e-06",
+    "parameters.cpair": "1004.64",
+    "parameters.cwat": "4.188e06",
+    "parameters.denh2o": "1000.0",
+    "parameters.denice": "917.0",
+    "parameters.fsatmx": "0.38",
+    "parameters.grav": "9.80616",
+    "parameters.hfus": "0.3336e06",
+    "parameters.hsub": "2.8440e06",
+    "parameters.hvap": "2.5104e06",
+    "parameters.max_liq_mass_fraction": "0.4",
+    "parameters.mpe": "1.e-06",
+    "parameters.nband": "2",
+    "parameters.o2": "0.209",
+    "parameters.psiwlt": "-150.0",
+    "parameters.rair": "287.04",
+    "parameters.rw": "461.269",
+    "parameters.sb": "5.67e-08",
+    "parameters.snow_ret_fac": "5.e-5",
+    "parameters.tbot": "263.0",
+    "parameters.tfrz": "273.16",
+    "parameters.thko": "2.0",
+    "parameters.thkqtz": "7.7",
+    "parameters.thkw": "0.57",
+    "parameters.timean": "10.5",
+    "parameters.tkair": "0.023",
+    "parameters.tkice": "2.2",
+    "parameters.tkwat": "0.6",
+    "parameters.topt": "1.e-06",
+    "parameters.urban_flag": ".false.",
+    "parameters.vkc": "0.40",
+    "parameters.wslmax": "5000.0",
+    "water.bdfall": "0.0",
+    "water.bdsno": "0.0",
+    "water.btran": "0.0",
+    "water.btrani": "0.0",
+    "water.canice": "0.0",
+    "water.canliq": "0.0",
+    "water.cmc": "0.0",
+    "water.deeprech": "0.0",
+    "water.ecan": "0.0",
+    "water.etran": "0.0",
+    "water.etrani": "0.0",
+    "water.fb_snow": "0.0",
+    "water.fcrmax": "0.0",
+    "water.ficeold": "0.0",
+    "water.fp": "1.0",
+    "water.fsno": "0.0",
+    "water.fwet": "0.0",
+    "water.isnow": "0",
+    "water.ponding": "0.0",
+    "water.ponding1": "0.0",
+    "water.ponding2": "0.0",
+    "water.qdew": "0.0",
+    "water.qdrain": "0.0",
+    "water.qdripr": "0.0",
+    "water.qdrips": "0.0",
+    "water.qinsur": "0.0",
+    "water.qintr": "0.0",
+    "water.qints": "0.0",
+    "water.qrain": "0.0",
+    "water.qsdew": "0.0",
+    "water.qseva": "0.0",
+    "water.qsnbot": "0.0",
+    "water.qsnfro": "0.0",
+    "water.qsnow": "0.0",
+    "water.qsnsub": "0.0",
+    "water.qthror": "0.0",
+    "water.qthros": "0.0",
+    "water.qvap": "0.0",
+    "water.rain": "0.0",
+    "water.runsrf": "0.0",
+    "water.runsub": "0.0",
+    "water.smcwtd": "0.0",
+    "water.sneqv": "0.0",
+    "water.sneqvo": "0.0",
+    "water.snice": "0.0",
+    "water.snliq": "0.0",
+    "water.snoflow": "0.0",
+    "water.snow": "0.0",
+    "water.snowh": "0.0",
+    "water.snowhin": "0.0",
+    "water.wcnd": "0.0"
+  },
+  "defaults": {
+    "domain.azimuth": "huge(1.0)",
+    "domain.croptype": "huge(1)",
+    "domain.curr_datetime": "huge(1)",
+    "domain.dt": "huge(1.0)",
+    "domain.dzsnso": "huge(1.0)",
+    "domain.end_datetime": "huge(1)",
+    "domain.iloc": "huge(1)",
+    "domain.isltyp": "huge(1)",
+    "domain.ist": "huge(1)",
+    "domain.itime": "huge(1)",
+    "domain.jloc": "huge(1)",
+    "domain.lat": "huge(1.0)",
+    "domain.lon": "huge(1.0)",
+    "domain.ntime": "huge(1)",
+    "domain.start_datetime": "huge(1)",
+    "domain.start_day": "huge(1)",
+    "domain.start_hour": "huge(1)",
+    "domain.start_minute": "huge(1)",
+    "domain.start_month": "huge(1)",
+    "domain.start_year": "huge(1)",
+    "domain.terrain_slope": "huge(1.0)",
+    "domain.time_dbl": "huge(1.d0)",
+    "domain.vegtyp": "huge(1)",
+    "domain.zref": "huge(1.0)",
+    "domain.zsnso": "huge(1.0)",
+    "domain.zsoil": "huge(1.0)",
+    "energy.alb": "huge(1.0)",
+    "energy.albd": "huge(1.0)",
+    "energy.albgrd": "huge(1.0)",
+    "energy.albgri": "huge(1.0)",
+    "energy.albi": "huge(1.0)",
+    "energy.albold": "huge(1.0)",
+    "energy.albsnd": "huge(1.0)",
+    "energy.albsni": "huge(1.0)",
+    "energy.apar": "huge(1.0)",
+    "energy.bgap": "huge(1.0)",
+    "energy.cah2": "huge(1.0)",
+    "energy.ch": "huge(1.0)",
+    "energy.chb": "huge(1.0)",
+    "energy.chb2": "huge(1.0)",
+    "energy.chleaf": "huge(1.0)",
+    "energy.chuc": "huge(1.0)",
+    "energy.chv": "huge(1.0)",
+    "energy.chv2": "huge(1.0)",
+    "energy.cm": "huge(1.0)",
+    "energy.cmb": "huge(1.0)",
+    "energy.cmv": "huge(1.0)",
+    "energy.cosz": "huge(1.0)",
+    "energy.cosz_horiz": "huge(1.0)",
+    "energy.df": "huge(1.0)",
+    "energy.eah": "huge(1.0)",
+    "energy.ehb2": "huge(1.0)",
+    "energy.emg": "huge(1.0)",
+    "energy.emissi": "huge(1.0)",
+    "energy.emv": "huge(1.0)",
+    "energy.evb": "huge(1.0)",
+    "energy.evc": "huge(1.0)",
+    "energy.evg": "huge(1.0)",
+    "energy.fabd": "huge(1.0)",
+    "energy.fabi": "huge(1.0)",
+    "energy.fact": "huge(1.0)",
+    "energy.fage": "huge(1.0)",
+    "energy.fcev": "huge(1.0)",
+    "energy.fctr": "huge(1.0)",
+    "energy.fgev": "huge(1.0)",
+    "energy.fira": "huge(1.0)",
+    "energy.fregd": "huge(1.0)",
+    "energy.fregi": "huge(1.0)",
+    "energy.frevd": "huge(1.0)",
+    "energy.frevi": "huge(1.0)",
+    "energy.frozen_canopy": ".false.",
+    "energy.frozen_ground": ".false.",
+    "energy.fsa": "huge(1.0)",
+    "energy.fsh": "huge(1.0)",
+    "energy.fsha": "huge(1.0)",
+    "energy.fsr": "huge(1.0)",
+    "energy.fsrg": "huge(1.0)",
+    "energy.fsrv": "huge(1.0)",
+    "energy.fsun": "huge(1.0)",
+    "energy.ftdd": "huge(1.0)",
+    "energy.ftdi": "huge(1.0)",
+    "energy.ftid": "huge(1.0)",
+    "energy.ftii": "huge(1.0)",
+    "energy.gammag": "huge(1.0)",
+    "energy.gammav": "huge(1.0)",
+    "energy.gh": "huge(1.0)",
+    "energy.ghb": "huge(1.0)",
+    "energy.ghv": "huge(1.0)",
+    "energy.hcpct": "huge(1.0)",
+    "energy.ice": "huge(1)",
+    "energy.igs": "huge(1.0)",
+    "energy.imelt": "huge(1)",
+    "energy.irb": "huge(1.0)",
+    "energy.irc": "huge(1.0)",
+    "energy.irg": "huge(1.0)",
+    "energy.laisha": "huge(1.0)",
+    "energy.laisun": "huge(1.0)",
+    "energy.lathea": "huge(1.0)",
+    "energy.latheag": "huge(1.0)",
+    "energy.latheav": "huge(1.0)",
+    "energy.lh": "huge(1.0)",
+    "energy.pah": "huge(1.0)",
+    "energy.pahb": "huge(1.0)",
+    "energy.pahg": "huge(1.0)",
+    "energy.pahv": "huge(1.0)",
+    "energy.parsha": "huge(1.0)",
+    "energy.parsun": "huge(1.0)",
+    "energy.psn": "huge(1.0)",
+    "energy.psnsha": "huge(1.0)",
+    "energy.psnsun": "huge(1.0)",
+    "energy.q1": "huge(1.0)",
+    "energy.q2b": "huge(1.0)",
+    "energy.q2e": "huge(1.0)",
+    "energy.q2v": "huge(1.0)",
+    "energy.qmelt": "huge(1.0)",
+    "energy.qsfc": "huge(1.0)",
+    "energy.rb": "huge(1.0)",
+    "energy.rho": "huge(1.0)",
+    "energy.rhsur": "huge(1.0)",
+    "energy.rssha": "huge(1.0)",
+    "energy.rssun": "huge(1.0)",
+    "energy.rsurf": "huge(1.0)",
+    "energy.sag": "huge(1.0)",
+    "energy.sav": "huge(1.0)",
+    "energy.shb": "huge(1.0)",
+    "energy.shc": "huge(1.0)",
+    "energy.shg": "huge(1.0)",
+    "energy.snowt_avg": "huge(1.0)",
+    "energy.ssoil": "huge(1.0)",
+    "energy.stc": "huge(1.0)",
+    "energy.t2m": "huge(1.0)",
+    "energy.t2mb": "huge(1.0)",
+    "energy.t2mv": "huge(1.0)",
+    "energy.tah": "huge(1.0)",
+    "energy.tau": "huge(1.0)",
+    "energy.tauss": "huge(1.0)",
+    "energy.taux": "huge(1.0)",
+    "energy.tauxb": "huge(1.0)",
+    "energy.tauxv": "huge(1.0)",
+    "energy.tauy": "huge(1.0)",
+    "energy.tauyb": "huge(1.0)",
+    "energy.tauyv": "huge(1.0)",
+    "energy.tg": "huge(1.0)",
+    "energy.tgb": "huge(1.0)",
+    "energy.tgs": "huge(1.0)",
+    "energy.tr": "huge(1.0)",
+    "energy.trad": "huge(1.0)",
+    "energy.ts": "huge(1.0)",
+    "energy.tv": "huge(1.0)",
+    "energy.wgap": "huge(1.0)",
+    "energy.z0m": "huge(1.0)",
+    "energy.z0mg": "huge(1.0)",
+    "energy.z0wrf": "huge(1.0)",
+    "energy.zlvl": "huge(1.0)",
+    "energy.zpd": "huge(1.0)",
+    "forcing.co2pp": "huge(1.0)",
+    "forcing.eair": "huge(1.0)",
+    "forcing.foln": "huge(1.0)",
+    "forcing.fpice": "huge(1.0)",
+    "forcing.julian": "huge(1.0)",
+    "forcing.lwdn": "huge(1.0)",
+    "forcing.o2pp": "huge(1.0)",
+    "forcing.prcp": "huge(1.0)",
+    "forcing.prcpconv": "huge(1.0)",
+    "forcing.prcpgrpl": "huge(1.0)",
+    "forcing.prcphail": "huge(1.0)",
+    "forcing.prcpnonc": "huge(1.0)",
+    "forcing.prcpshcv": "huge(1.0)",
+    "forcing.prcpsnow": "huge(1.0)",
+    "forcing.q2": "huge(1.0)",
+    "forcing.qair": "huge(1.0)",
+    "forcing.rhoair": "huge(1.0)",
+    "forcing.sfcprs": "huge(1.0)",
+    "forcing.sfctmp": "huge(1.0)",
+    "forcing.solad": "huge(1.0)",
+    "forcing.solai": "huge(1.0)",
+    "forcing.soldn": "huge(1.0)",
+    "forcing.tbot": "huge(1.0)",
+    "forcing.thair": "huge(1.0)",
+    "forcing.ur": "huge(1.0)",
+    "forcing.uu": "huge(1.0)",
+    "forcing.vv": "huge(1.0)",
+    "forcing.yearlen": "huge(1)",
+    "levels.nsnow": "huge(1)",
+    "levels.nsoil": "huge(1)",
+    "levels.nveg": "huge(1)",
+    "options.dveg": "huge(1)",
+    "options.opt_alb": "huge(1)",
+    "options.opt_btr": "huge(1)",
+    "options.opt_crop": "huge(1)",
+    "options.opt_crs": "huge(1)",
+    "options.opt_drn": "huge(1)",
+    "options.opt_frz": "huge(1)",
+    "options.opt_inf": "huge(1)",
+    "options.opt_infdv": "huge(1)",
+    "options.opt_rad": "huge(1)",
+    "options.opt_rsf": "huge(1)",
+    "options.opt_run": "huge(1)",
+    "options.opt_sfc": "huge(1)",
+    "options.opt_snf": "huge(1)",
+    "options.opt_stc": "huge(1)",
+    "options.opt_sub": "huge(1)",
+    "options.opt_tbot": "huge(1)",
+    "parameters.bexp": "huge(1.0)",
+    "parameters.dksat": "huge(1.0)",
+    "parameters.dwsat": "huge(1.0)",
+    "parameters.elai": "huge(1.0)",
+    "parameters.esai": "huge(1.0)",
+    "parameters.fveg": "huge(1.0)",
+    "parameters.lai": "huge(1.0)",
+    "parameters.psisat": "huge(1.0)",
+    "parameters.sai": "huge(1.0)",
+    "parameters.scamax": "1.",
+    "parameters.smcmax": "huge(1.0)",
+    "parameters.smcref": "huge(1.0)",
+    "parameters.smcwlt": "huge(1.0)",
+    "parameters.vai": "huge(1.0)",
+    "parameters.veg": ".true.",
+    "water.acsnom": "huge(1.0)",
+    "water.asat": "huge(1.0)",
+    "water.bdfall": "huge(1.0)",
+    "water.bdsno": "huge(1.0)",
+    "water.btran": "huge(1.0)",
+    "water.btrani": "huge(1.0)",
+    "water.canice": "huge(1.0)",
+    "water.canliq": "huge(1.0)",
+    "water.cmc": "huge(1.0)",
+    "water.deeprech": "huge(1.0)",
+    "water.ecan": "huge(1.0)",
+    "water.epore": "huge(1.0)",
+    "water.etran": "huge(1.0)",
+    "water.etrani": "huge(1.0)",
+    "water.evapotrans": "huge(1.0)",
+    "water.facc": "huge(1.0)",
+    "water.fb_snow": "huge(1.0)",
+    "water.fcr": "huge(1.0)",
+    "water.fcrmax": "huge(1.0)",
+    "water.fice": "huge(1.0)",
+    "water.ficeold": "huge(1.0)",
+    "water.fp": "huge(1.0)",
+    "water.fsno": "huge(1.0)",
+    "water.fwet": "huge(1.0)",
+    "water.isnow": "huge(1)",
+    "water.pddum": "huge(1.0)",
+    "water.ponding": "huge(1.0)",
+    "water.ponding1": "huge(1.0)",
+    "water.ponding2": "huge(1.0)",
+    "water.qdew": "huge(1.0)",
+    "water.qdrain": "huge(1.0)",
+    "water.qdripr": "huge(1.0)",
+    "water.qdrips": "huge(1.0)",
+    "water.qinsur": "huge(1.0)",
+    "water.qintr": "huge(1.0)",
+    "water.qints": "huge(1.0)",
+    "water.qrain": "huge(1.0)",
+    "water.qsdew": "huge(1.0)",
+    "water.qseva": "huge(1.0)",
+    "water.qsnbot": "huge(1.0)",
+    "water.qsnfro": "huge(1.0)",
+    "water.qsnow": "huge(1.0)",
+    "water.qsnsub": "huge(1.0)",
+    "water.qthror": "huge(1.0)",
+    "water.qthros": "huge(1.0)",
+    "water.qvap": "huge(1.0)",
+    "water.rain": "huge(1.0)",
+    "water.runsrf": "huge(1.0)",
+    "water.runsrf_dt": "huge(1.0)",
+    "water.runsub": "huge(1.0)",
+    "water.sh2o": "huge(1.0)",
+    "water.sice": "huge(1.0)",
+    "water.sicemax": "huge(1.0)",
+    "water.smc": "huge(1.0)",
+    "water.smc_init": "huge(1.0)",
+    "water.smcwtd": "huge(1.0)",
+    "water.sneqv": "huge(1.0)",
+    "water.sneqvo": "huge(1.0)",
+    "water.snice": "huge(1.0)",
+    "water.snicev": "huge(1.0)",
+    "water.snliq": "huge(1.0)",
+    "water.snliqv": "huge(1.0)",
+    "water.snoflow": "huge(1.0)",
+    "water.snow": "huge(1.0)",
+    "water.snowh": "huge(1.0)",
+    "water.snowhin": "huge(1.0)",
+    "water.wcnd": "huge(1.0)",
+    "water.wslake": "huge(1.0)",
+    "water.zwt": "huge(1.0)"
+  },
+  "parameter_tables": {
+    "parameters.akc": [
+      {
+        "index": "namelist%vegtyp",
+        "table": "akc",
+        "target_index": null
+      }
+    ],
+    "parameters.ako": [
+      {
+        "index": "namelist%vegtyp",
+        "table": "ako",
+        "target_index": null
+      }
+    ],
+    "parameters.albdry": [
+      {
+        "index": "namelist%soilcolor, 1",
+        "table": "albdry",
+        "target_index": "1"
+      },
+      {
+        "index": "namelist%soilcolor, 2",
+        "table": "albdry",
+        "target_index": "2"
+      }
+    ],
+    "parameters.albice": [
+      {
+        "index": null,
+        "table": "albice",
+        "target_index": null
+      }
+    ],
+    "parameters.alblak": [
+      {
+        "index": null,
+        "table": "alblak",
+        "target_index": null
+      }
+    ],
+    "parameters.albsat": [
+      {
+        "index": "namelist%soilcolor, 1",
+        "table": "albsat",
+        "target_index": "1"
+      },
+      {
+        "index": "namelist%soilcolor, 2",
+        "table": "albsat",
+        "target_index": "2"
+      }
+    ],
+    "parameters.avcmx": [
+      {
+        "index": "namelist%vegtyp",
+        "table": "avcmx",
+        "target_index": null
+      }
+    ],
+    "parameters.axaj": [
+      {
+        "index": "namelist%isltyp",
+        "table": "axaj",
+        "target_index": null
+      }
+    ],
+    "parameters.bats_cosz": [
+      {
+        "index": null,
+        "table": "bats_cosz",
+        "target_index": null
+      }
+    ],
+    "parameters.bats_nir_age": [
+      {
+        "index": null,
+        "table": "bats_nir_age",
+        "target_index": null
+      }
+    ],
+    "parameters.bats_nir_dir": [
+      {
+        "index": null,
+        "table": "bats_nir_dir",
+        "target_index": null
+      }
+    ],
+    "parameters.bats_nir_new": [
+      {
+        "index": null,
+        "table": "bats_nir_new",
+        "target_index": null
+      }
+    ],
+    "parameters.bats_vis_age": [
+      {
+        "index": null,
+        "table": "bats_vis_age",
+        "target_index": null
+      }
+    ],
+    "parameters.bats_vis_dir": [
+      {
+        "index": null,
+        "table": "bats_vis_dir",
+        "target_index": null
+      }
+    ],
+    "parameters.bats_vis_new": [
+      {
+        "index": null,
+        "table": "bats_vis_new",
+        "target_index": null
+      }
+    ],
+    "parameters.bbvic": [
+      {
+        "index": "namelist%isltyp",
+        "table": "bbvic",
+        "target_index": null
+      }
+    ],
+    "parameters.betads": [
+      {
+        "index": null,
+        "table": "betads",
+        "target_index": null
+      }
+    ],
+    "parameters.betais": [
+      {
+        "index": null,
+        "table": "betais",
+        "target_index": null
+      }
+    ],
+    "parameters.bexp": [
+      {
+        "index": "namelist%isltyp",
+        "table": "bexp",
+        "target_index": null
+      }
+    ],
+    "parameters.bp": [
+      {
+        "index": "namelist%vegtyp",
+        "table": "bp",
+        "target_index": null
+      }
+    ],
+    "parameters.bvic": [
+      {
+        "index": "namelist%isltyp",
+        "table": "bvic",
+        "target_index": null
+      }
+    ],
+    "parameters.bxaj": [
+      {
+        "index": "namelist%isltyp",
+        "table": "bxaj",
+        "target_index": null
+      }
+    ],
+    "parameters.c3psn": [
+      {
+        "index": "namelist%vegtyp",
+        "table": "c3psn",
+        "target_index": null
+      }
+    ],
+    "parameters.ch2op": [
+      {
+        "index": "namelist%vegtyp",
+        "table": "ch2op",
+        "target_index": null
+      }
+    ],
+    "parameters.csoil": [
+      {
+        "index": null,
+        "table": "csoil",
+        "target_index": null
+      }
+    ],
+    "parameters.cwp": [
+      {
+        "index": "namelist%vegtyp",
+        "table": "cwpvt",
+        "target_index": null
+      }
+    ],
+    "parameters.czil": [
+      {
+        "index": null,
+        "table": "czil",
+        "target_index": null
+      }
+    ],
+    "parameters.dirt_soot": [
+      {
+        "index": null,
+        "table": "dirt_soot",
+        "target_index": null
+      }
+    ],
+    "parameters.dksat": [
+      {
+        "index": "namelist%isltyp",
+        "table": "dksat",
+        "target_index": null
+      }
+    ],
+    "parameters.dleaf": [
+      {
+        "index": "namelist%vegtyp",
+        "table": "dleaf",
+        "target_index": null
+      }
+    ],
+    "parameters.dwsat": [
+      {
+        "index": "namelist%isltyp",
+        "table": "dwsat",
+        "target_index": null
+      }
+    ],
+    "parameters.eblforest": [
+      {
+        "index": null,
+        "table": "eblforest",
+        "target_index": null
+      }
+    ],
+    "parameters.eg": [
+      {
+        "index": null,
+        "table": "eg",
+        "target_index": null
+      }
+    ],
+    "parameters.extra_growth": [
+      {
+        "index": null,
+        "table": "extra_growth",
+        "target_index": null
+      }
+    ],
+    "parameters.folnmx": [
+      {
+        "index": "namelist%vegtyp",
+        "table": "folnmx",
+        "target_index": null
+      }
+    ],
+    "parameters.g": [
+      {
+        "index": "namelist%isltyp",
+        "table": "gdvic",
+        "target_index": null
+      }
+    ],
+    "parameters.grain_growth": [
+      {
+        "index": null,
+        "table": "grain_growth",
+        "target_index": null
+      }
+    ],
+    "parameters.high_density_residential": [
+      {
+        "index": null,
+        "table": "lcz_2",
+        "target_index": null
+      }
+    ],
+    "parameters.high_intensity_industrial": [
+      {
+        "index": null,
+        "table": "lcz_3",
+        "target_index": null
+      }
+    ],
+    "parameters.hs": [
+      {
+        "index": "namelist%vegtyp",
+        "table": "hs",
+        "target_index": null
+      }
+    ],
+    "parameters.hvb": [
+      {
+        "index": "namelist%vegtyp",
+        "table": "hvb",
+        "target_index": null
+      }
+    ],
+    "parameters.hvt": [
+      {
+        "index": "namelist%vegtyp",
+        "table": "hvt",
+        "target_index": null
+      }
+    ],
+    "parameters.isbarren": [
+      {
+        "index": null,
+        "table": "isbarren",
+        "target_index": null
+      }
+    ],
+    "parameters.iscrop": [
+      {
+        "index": null,
+        "table": "iscrop",
+        "target_index": null
+      }
+    ],
+    "parameters.isice": [
+      {
+        "index": null,
+        "table": "isice",
+        "target_index": null
+      }
+    ],
+    "parameters.isurban": [
+      {
+        "index": null,
+        "table": "isurban",
+        "target_index": null
+      }
+    ],
+    "parameters.iswater": [
+      {
+        "index": null,
+        "table": "iswater",
+        "target_index": null
+      }
+    ],
+    "parameters.kc25": [
+      {
+        "index": "namelist%vegtyp",
+        "table": "kc25",
+        "target_index": null
+      }
+    ],
+    "parameters.ko25": [
+      {
+        "index": "namelist%vegtyp",
+        "table": "ko25",
+        "target_index": null
+      }
+    ],
+    "parameters.laim": [
+      {
+        "index": "namelist%vegtyp, ix",
+        "table": "laim",
+        "target_index": "ix"
+      }
+    ],
+    "parameters.low_density_residential": [
+      {
+        "index": null,
+        "table": "lcz_1",
+        "target_index": null
+      }
+    ],
+    "parameters.mfsno": [
+      {
+        "index": "namelist%vegtyp",
+        "table": "mfsno",
+        "target_index": null
+      }
+    ],
+    "parameters.mp": [
+      {
+        "index": "namelist%vegtyp",
+        "table": "mp",
+        "target_index": null
+      }
+    ],
+    "parameters.natural": [
+      {
+        "index": null,
+        "table": "natural",
+        "target_index": null
+      }
+    ],
+    "parameters.nroot": [
+      {
+        "index": "namelist%vegtyp",
+        "table": "nroot",
+        "target_index": null
+      }
+    ],
+    "parameters.omegas": [
+      {
+        "index": null,
+        "table": "omegas",
+        "target_index": null
+      }
+    ],
+    "parameters.psisat": [
+      {
+        "index": "namelist%isltyp",
+        "table": "psisat",
+        "target_index": null
+      }
+    ],
+    "parameters.qe25": [
+      {
+        "index": "namelist%vegtyp",
+        "table": "qe25",
+        "target_index": null
+      }
+    ],
+    "parameters.quartz": [
+      {
+        "index": "namelist%isltyp",
+        "table": "quartz",
+        "target_index": null
+      }
+    ],
+    "parameters.rc": [
+      {
+        "index": "namelist%vegtyp",
+        "table": "rc",
+        "target_index": null
+      }
+    ],
+    "parameters.refdk": [
+      {
+        "index": null,
+        "table": "refdk",
+        "target_index": null
+      }
+    ],
+    "parameters.refkdt": [
+      {
+        "index": null,
+        "table": "refkdt",
+        "target_index": null
+      }
+    ],
+    "parameters.rgl": [
+      {
+        "index": "namelist%vegtyp",
+        "table": "rgl",
+        "target_index": null
+      }
+    ],
+    "parameters.rhol": [
+      {
+        "index": "namelist%vegtyp, 1",
+        "table": "rhol",
+        "target_index": "1"
+      },
+      {
+        "index": "namelist%vegtyp, 2",
+        "table": "rhol",
+        "target_index": "2"
+      }
+    ],
+    "parameters.rhos": [
+      {
+        "index": "namelist%vegtyp, 1",
+        "table": "rhos",
+        "target_index": "1"
+      },
+      {
+        "index": "namelist%vegtyp, 2",
+        "table": "rhos",
+        "target_index": "2"
+      }
+    ],
+    "parameters.rsmax": [
+      {
+        "index": "namelist%vegtyp",
+        "table": "rsmax",
+        "target_index": null
+      }
+    ],
+    "parameters.rsmin": [
+      {
+        "index": "namelist%vegtyp",
+        "table": "rs",
+        "target_index": null
+      }
+    ],
+    "parameters.rsurf_exp": [
+      {
+        "index": null,
+        "table": "rsurf_exp",
+        "target_index": null
+      }
+    ],
+    "parameters.rsurf_snow": [
+      {
+        "index": null,
+        "table": "rsurf_snow",
+        "target_index": null
+      }
+    ],
+    "parameters.saim": [
+      {
+        "index": "namelist%vegtyp, ix",
+        "table": "saim",
+        "target_index": "ix"
+      }
+    ],
+    "parameters.shdfac": [
+      {
+        "index": "namelist%vegtyp",
+        "table": "shdfac",
+        "target_index": null
+      }
+    ],
+    "parameters.shdmax": [
+      {
+        "index": "namelist%vegtyp",
+        "table": "shdfac",
+        "target_index": null
+      }
+    ],
+    "parameters.slope": [
+      {
+        "index": "1",
+        "table": "slope",
+        "target_index": null
+      }
+    ],
+    "parameters.smcmax": [
+      {
+        "index": "namelist%isltyp",
+        "table": "smcmax",
+        "target_index": null
+      }
+    ],
+    "parameters.smcref": [
+      {
+        "index": "namelist%isltyp",
+        "table": "smcref",
+        "target_index": null
+      }
+    ],
+    "parameters.smcwlt": [
+      {
+        "index": "namelist%isltyp",
+        "table": "smcwlt",
+        "target_index": null
+      }
+    ],
+    "parameters.ssi": [
+      {
+        "index": null,
+        "table": "ssi",
+        "target_index": null
+      }
+    ],
+    "parameters.swemx": [
+      {
+        "index": null,
+        "table": "swemx",
+        "target_index": null
+      }
+    ],
+    "parameters.tau0": [
+      {
+        "index": null,
+        "table": "tau0",
+        "target_index": null
+      }
+    ],
+    "parameters.taul": [
+      {
+        "index": "namelist%vegtyp, 1",
+        "table": "taul",
+        "target_index": "1"
+      },
+      {
+        "index": "namelist%vegtyp, 2",
+        "table": "taul",
+        "target_index": "2"
+      }
+    ],
+    "parameters.taus": [
+      {
+        "index": "namelist%vegtyp, 1",
+        "table": "taus",
+        "target_index": "1"
+      },
+      {
+        "index": "namelist%vegtyp, 2",
+        "table": "taus",
+        "target_index": "2"
+      }
+    ],
+    "parameters.tmin": [
+      {
+        "index": "namelist%vegtyp",
+        "table": "tmin",
+        "target_index": null
+      }
+    ],
+    "parameters.vcmx25": [
+      {
+        "index": "namelist%vegtyp",
+        "table": "vcmx25",
+        "target_index": null
+      }
+    ],
+    "parameters.xl": [
+      {
+        "index": "namelist%vegtyp",
+        "table": "xl",
+        "target_index": null
+      }
+    ],
+    "parameters.xxaj": [
+      {
+        "index": "namelist%isltyp",
+        "table": "xxaj",
+        "target_index": null
+      }
+    ],
+    "parameters.z0": [
+      {
+        "index": null,
+        "table": "z0",
+        "target_index": null
+      }
+    ],
+    "parameters.z0mvt": [
+      {
+        "index": "namelist%vegtyp",
+        "table": "z0mvt",
+        "target_index": null
+      }
+    ],
+    "parameters.z0sno": [
+      {
+        "index": null,
+        "table": "z0sno",
+        "target_index": null
+      }
+    ],
+    "parameters.zbot": [
+      {
+        "index": null,
+        "table": "zbot",
+        "target_index": null
+      }
+    ]
+  },
+  "source_revision": "0242a96c2a90b2c1501ff56a1e457a932a49c8ac",
+  "transfer": {
+    "domain.azimuth": "azimuth",
+    "domain.croptype": "croptype",
+    "domain.dt": "dt",
+    "domain.dzsnso": "dzsnso",
+    "domain.enddate": "enddate",
+    "domain.isltyp": "isltyp",
+    "domain.ist": "sfctyp",
+    "domain.lat": "lat",
+    "domain.lon": "lon",
+    "domain.startdate": "startdate",
+    "domain.terrain_slope": "terrain_slope",
+    "domain.vegtyp": "vegtyp",
+    "domain.zref": "zref",
+    "domain.zsoil": "zsoil",
+    "levels.nsnow": "nsnow",
+    "levels.nsoil": "nsoil",
+    "levels.nveg": "nveg",
+    "options.dveg": "dynamic_veg_option",
+    "options.opt_alb": "snow_albedo_option",
+    "options.opt_btr": "stomatal_resistance_option",
+    "options.opt_crop": "crop_model_option",
+    "options.opt_crs": "canopy_stom_resist_option",
+    "options.opt_drn": "drainage_option",
+    "options.opt_frz": "supercooled_water_option",
+    "options.opt_inf": "frozen_soil_option",
+    "options.opt_infdv": "dynamic_vic_option",
+    "options.opt_rad": "radiative_transfer_option",
+    "options.opt_rsf": "evap_srfc_resistance_option",
+    "options.opt_run": "runoff_option",
+    "options.opt_sfc": "sfc_drag_coeff_option",
+    "options.opt_snf": "precip_phase_option",
+    "options.opt_stc": "snowsoil_temp_time_option",
+    "options.opt_sub": "subsurface_option",
+    "options.opt_tbot": "soil_temp_boundary_option",
+    "water.sh2o": "sh2o",
+    "water.sice": "sice",
+    "water.zwt": "zwt"
+  }
+}

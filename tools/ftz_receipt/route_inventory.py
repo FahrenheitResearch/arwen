@@ -191,6 +191,12 @@ def scan_source(path: str, text: str) -> list[dict]:
         kind = CONSTRUCTOR_KINDS.get(tail or "")
         if kind is None:
             continue
+        # Opening an existing PTX/cubin image performs no source compilation.
+        # Keep ambiguous/mixed constructors in the census; only the exact
+        # path-only API is outside this source/options inventory.
+        if (kind == "cupy.RawModule" and not node.args
+                and [keyword.arg for keyword in node.keywords] == ["path"]):
+            continue
         option_node = _option_argument(node, kind)
         options, option_elements = _literal_options(option_node, text)
         if option_node is None:

@@ -1,0 +1,142 @@
+{
+  "schema": "rw-wps.intermediate-fields.v1",
+  "bindings": [
+    {
+      "field": "air_temperature",
+      "wps": "TT",
+      "units": "K",
+      "axis": "pressure"
+    },
+    {
+      "field": "specific_humidity",
+      "wps": "SPECHUMD",
+      "units": "kg kg-1",
+      "axis": "pressure"
+    },
+    {
+      "field": "geopotential_height",
+      "wps": "GHT",
+      "units": "m",
+      "axis": "pressure"
+    },
+    {
+      "field": "air_pressure",
+      "wps": "PRES",
+      "units": "Pa",
+      "axis": "pressure"
+    },
+    {
+      "field": "eastward_wind",
+      "wps": "UU",
+      "units": "m s-1",
+      "axis": "pressure"
+    },
+    {
+      "field": "northward_wind",
+      "wps": "VV",
+      "units": "m s-1",
+      "axis": "pressure"
+    },
+    {
+      "field": "air_temperature_2m",
+      "wps": "TT",
+      "units": "K",
+      "axis": "surface"
+    },
+    {
+      "field": "specific_humidity_2m",
+      "wps": "SPECHUMD",
+      "units": "kg kg-1",
+      "axis": "surface"
+    },
+    {
+      "field": "terrain_height",
+      "wps": "GHT",
+      "units": "m",
+      "axis": "surface"
+    },
+    {
+      "field": "surface_pressure",
+      "wps": "PRES",
+      "units": "Pa",
+      "axis": "surface"
+    },
+    {
+      "field": "surface_pressure",
+      "wps": "PSFC",
+      "units": "Pa",
+      "axis": "surface"
+    },
+    {
+      "field": "air_pressure_at_mean_sea_level",
+      "wps": "PMSL",
+      "units": "Pa",
+      "axis": "surface"
+    },
+    {
+      "field": "eastward_wind_10m",
+      "wps": "UU",
+      "units": "m s-1",
+      "axis": "surface"
+    },
+    {
+      "field": "northward_wind_10m",
+      "wps": "VV",
+      "units": "m s-1",
+      "axis": "surface"
+    },
+    {
+      "field": "terrain_height",
+      "wps": "SOILHGT",
+      "units": "m",
+      "axis": "surface"
+    },
+    {
+      "field": "skin_temperature",
+      "wps": "SKINTEMP",
+      "units": "K",
+      "axis": "surface"
+    },
+    {
+      "field": "sea_surface_temperature",
+      "wps": "SST",
+      "units": "K",
+      "axis": "surface",
+      "missing": "preserve_mask"
+    },
+    {
+      "field": "sea_ice_fraction",
+      "wps": "SEAICE",
+      "units": "1",
+      "axis": "surface",
+      "missing": "preserve_mask"
+    },
+    {
+      "field": "snow_water_equivalent",
+      "wps": "SNOW",
+      "units": "kg m-2",
+      "axis": "surface"
+    },
+    {
+      "field": "land_fraction",
+      "wps": "LANDSEA",
+      "units": "1",
+      "axis": "surface",
+      "transform": "binary_land_fraction"
+    },
+    {
+      "field": "soil_temperature",
+      "wps": "ST",
+      "units": "K",
+      "axis": "soil",
+      "missing": "preserve_mask"
+    },
+    {
+      "field": "volumetric_soil_moisture",
+      "wps": "SM",
+      "units": "m3 m-3",
+      "axis": "soil",
+      "missing": "preserve_mask"
+    }
+  ]
+}

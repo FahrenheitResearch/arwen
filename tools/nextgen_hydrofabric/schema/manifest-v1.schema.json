@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:arwen:nextgen:hydrofabric:manifest:v1",
+  "title": "Prepared NextGen hydrofabric manifest",
+  "description": "Existing transport format, not a model initialization or GIS reconstruction certificate. Rust also checks shape*dtype width == bytes and confines resolved paths to the manifest directory.",
+  "type": "object",
+  "required": ["schema", "request_sha256", "input", "node_count", "catchment_count", "level_count", "node_order", "upstream_order", "numerics", "files", "auxiliary"],
+  "properties": {
+    "schema": {"const": "arwen.nextgen.hydrofabric.v1"},
+    "request_sha256": {"$ref": "#/$defs/sha256"},
+    "input": {
+      "type": "object",
+      "required": ["path", "sha256", "data_license"],
+      "properties": {
+        "path": {"type": "string"},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "data_license": {"type": "string", "pattern": "\\S"}
+      }
+    },
+    "node_count": {"type": "integer", "minimum": 0},
+    "catchment_count": {"type": "integer", "minimum": 0},
+    "level_count": {"type": "integer", "minimum": 0},
+    "node_order": {"type": "string"},
+    "upstream_order": {"type": "string"},
+    "numerics": {"type": "string"},
+    "files": {"type": "object", "additionalProperties": {"$ref": "#/$defs/field"}},
+    "auxiliary": {
+      "type": "object",
+      "description": "Relative metadata filenames, e.g. network.json; digest checked by read_auxiliary before consumption.",
+      "additionalProperties": {
+        "type": "object", "required": ["sha256"],
+        "properties": {"sha256": {"$ref": "#/$defs/sha256"}}
+      }
+    },
+    "grid": {"type": ["object", "null"]},
+    "parent_grid_contract": {"type": "object"},
+    "routing": {"type": "object"},
+    "reservoirs": {"type": "object"},
+    "replay_provenance": {"type": "object"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "field": {
+      "type": "object", "required": ["path", "dtype", "shape", "bytes", "sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1, "description": "Relative to manifest directory, without parent components; resolved symlinks must stay inside it."},
+        "dtype": {"enum": ["<f4", "<f8", "<i4", "<i8", "<u4", "<u8"]},
+        "shape": {"type": "array", "items": {"type": "integer", "minimum": 0}},
+        "bytes": {"type": "integer", "minimum": 0},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}

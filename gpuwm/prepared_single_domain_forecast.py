@@ -3894,7 +3894,7 @@ def _gfs_manifest_source_receipt(
 
     The identity comparison binds ``model``/``product``/``cycle`` and
     compares those three exactly.  The level fields are routed to the
-    contract they serve instead: ``gfs_direct._manifest_source_top_pa`` is
+    contract they serve instead: ``ingest.pressure_ladder.manifest_source_top_pa`` is
     the producing lane's own validator -- it refuses an unreadable or
     non-certified ladder and cross-checks the declared top against it --
     and the resulting source top is held to the same rule the vertical
@@ -3904,7 +3904,7 @@ def _gfs_manifest_source_receipt(
     defect this function exists to close.
     """
 
-    from gpuwm.gfs_direct import _manifest_source_top_pa
+    from gpuwm.ingest.pressure_ladder import manifest_source_top_pa
 
     identity = manifest.get("source")
     if not isinstance(identity, dict):
@@ -3948,7 +3948,7 @@ def _gfs_manifest_source_receipt(
     # Absent levels mean a directory fetched by an older ArWen, whose only
     # possible ladder is the certified 100 hPa one; the validator returns
     # that constant, which is exactly what the preparation assumed.
-    source_top_pa = _manifest_source_top_pa(manifest)
+    source_top_pa = manifest_source_top_pa(manifest, source="GFS")
     p_top_pa = float(exp.vertical.p_top)
     if source_top_pa > p_top_pa:
         raise ValueError(
@@ -5371,7 +5371,11 @@ def _validate_packaged_mapped_evidence(
                 "source_id": terrain_binding.get("source_id"),
                 "grid_alignment": terrain_binding.get("grid_alignment"),
                 "time_alignment": terrain_binding.get("time_alignment"),
-                "coordinate_match": "exact_equivalent_contiguous_subset",
+                "coordinate_match": (
+                    "exact_equivalent_regular_strided_subset"
+                    if terrain_binding.get("grid_alignment") == "exact_coordinate_strided_subset"
+                    else "exact_equivalent_contiguous_subset"
+                ),
             }
             matched = alignment.get("matched_primary_valid_times") \
                 if isinstance(alignment, dict) else None
@@ -6789,6 +6793,11 @@ def _retained_preflight_payload(reader, *, layout, head):
     """Use the additive native hasher for sealed direct immutable mappings."""
     if head is not None or layout not in _DIRECT_LAYOUTS:
         return None
+    return _sealed_preflight_payload(reader)
+
+
+def _sealed_preflight_payload(reader):
+    """Retain a sealed cache only when the native verifier is available."""
     from gpuwm.ingest.prepared_writer import native_hasher
     try:
         entry = native_hasher()
@@ -6800,6 +6809,18 @@ def _retained_preflight_payload(reader, *, layout, head):
         return None
     from gpuwm.ingest.prepared_store import _CachePayload
     return _CachePayload(reader, log=lambda _: None)
+
+
+def _resident_prepared_reader(inputs, boundary_source):
+    """Rebind sealed verified maps, keeping each restored host array writable."""
+    if boundary_source is not None:
+        return inputs.cache_reader
+    payload = getattr(inputs, "cache_payload", None)
+    if payload is None:
+        return None
+    payload.require_binding(inputs.prepared_cache_path, inputs.cache_identity,
+                            reader=inputs.cache_reader)
+    return payload.copying_reader()
 
 
 def preflight_restart_algorithms(restart: Path, cfg) -> None:
@@ -9305,6 +9326,10 @@ def _restore_single_checkpoint(model, restart):
     return restore_tree_restart(checkpoint, model)
 
 
+from gpuwm.hydro.runtime import forecast_scope as _hydro_forecast_scope
+
+
+@_hydro_forecast_scope
 def run_prepared_forecast(
         inputs: PreparedForecastInputs, *, output_directory: Path,
         observer=None, first_products=None, stream_init: str = "auto",
@@ -9728,8 +9753,7 @@ def run_prepared_forecast(
             inputs.prepared_cache_path,
             expected_identity=inputs.cache_identity,
             cfg=cfg, static=inputs.static,
-            reader=(inputs.cache_reader if boundary_source is not None
-                    else None),
+            reader=_resident_prepared_reader(inputs, boundary_source),
             boundary_source=boundary_source)
         if clock_guard is not None:
             from gpuwm.ingest.boundary_stream import keep_interval_check
@@ -10186,31 +10210,41 @@ def run_prepared_forecast(
                 outdir, tree, valid, auto_epssm=exp.auto_epssm,
                 defer_publish=True)
         # Taken now, on this thread: the frames up to this valid time.
-        history_durable = writers.durability_barrier()
+        try:
+            history_durable = writers.durability_barrier()
+        except BaseException:
+            pending.abandon()
+            raise
 
         def publish():
             # A checkpoint is published only after every history frame up
             # to its valid time is durable, so a resume never starts past a
             # frame that is missing.
-            if history_durable is None:
-                writers.drain()
-            else:
-                history_durable()
-            path = pending.publish()
-            checkpoints.append(str(Path(path).resolve()))
-            checkpoint_ticks[int(ticks)] = checkpoints[-1]
-            step_log.restart_written(
-                domain=exp.root.grid_id, valid_time=valid, path=path,
-                wall_seconds=time.perf_counter() - started)
+            try:
+                if history_durable is None:
+                    writers.drain()
+                else:
+                    history_durable()
+                path = pending.publish()
+                checkpoints.append(str(Path(path).resolve()))
+                checkpoint_ticks[int(ticks)] = checkpoints[-1]
+                step_log.restart_written(
+                    domain=exp.root.grid_id, valid_time=valid, path=path,
+                    wall_seconds=time.perf_counter() - started)
+            except BaseException:
+                # History can fail before publish() gets to release the
+                # borrowed ranked store. Never leave its next download locked.
+                pending.abandon()
+                raise
 
         if pending.deferrable and history_durable is not None:
-            checkpoint_publisher.submit(publish)
+            try:
+                checkpoint_publisher.submit(publish)
+            except BaseException:
+                pending.abandon()
+                raise
             return
-        try:
-            publish()
-        except BaseException:
-            pending.abandon()
-            raise
+        publish()
 
     # The executor's restart hook drains the history writers before calling
     # a handler; this one orders the checkpoint after the history itself.
@@ -10478,9 +10512,11 @@ def run_prepared_forecast(
         captured_paths=(cadence_paths if capture is not None and not capture.keep_member_files else None))
     timing["total"] = time.perf_counter() - total_started
     from gpuwm.correct_mode import run_receipt as _correct_mode_run_receipt
+    from gpuwm.hydro.runtime import current_settings as _hydro_settings, activation_receipt
     report = {
         "schema": REPORT_SCHEMA,
         "status": "PASS",
+        "hydro_activation": activation_receipt(_hydro_settings()),
         "pool_trim": getattr(model, "_pool_trim_policy", None),
         "source": inputs.source,
         "prepared_layout": inputs.layout,
@@ -10793,6 +10829,15 @@ def run_prepared_forecast(
     if boundary_stream_receipt is not None:
         # Only on a head binding, so a sealed run's report is unchanged.
         report["input"]["boundary_stream"] = boundary_stream_receipt
+    # Default-on hydro: per-step cost with parallelism named (5 percent budget)
+    # and the products, both at the output boundary, after device sync.
+    from gpuwm.hydro.cost import receipt as _hydro_cost_receipt
+    from gpuwm.hydro.forecast_products import publish as _hydro_products
+    report["hydro_cost"] = _hydro_cost_receipt(
+        driver, forecast_seconds=timing.get("forecast_execution_with_async_io", 0.0),
+        atmosphere_steps=int(execution.steps))
+    report["hydro_products"] = _hydro_products(
+        driver, _hydro_settings(), outdir=outdir, dx_m=float(cfg.dx))
     _atomic_json(outdir / "report.json", report)
     emit_run_capsule(
         outdir, emission_site="prepared_single_domain_forecast",
@@ -10847,6 +10892,8 @@ def run_prepared_forecast(
         "last_checkpoint": (None if model._last_checkpoint is None else
                             str(Path(model._last_checkpoint).resolve())),
     }, heartbeat=True)
+    from gpuwm.hydro.cost import refuse_if_over_budget as _refuse_hydro_cost
+    _refuse_hydro_cost(report["hydro_cost"])
     return report
 
 

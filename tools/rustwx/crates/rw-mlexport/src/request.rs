@@ -83,6 +83,8 @@ fn default_layout() -> Layout {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Layout {
+    /// Earth2Studio per-channel forecast layout.
+    Earth2,
     /// `time` is the valid time (ERA5's shape).
     Analysis,
     /// `time` is the one initialization time and `prediction_timedelta` the
@@ -155,6 +157,9 @@ pub enum RegridMethod {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GridRequest {
+    /// A resolved profile table row, independent of consumers.
+    #[serde(default)]
+    pub target: Option<serde_json::Value>,
     pub kind: GridKind,
     #[serde(default)]
     pub deg: Option<f64>,
@@ -180,6 +185,9 @@ pub enum VariableKind {
 /// One row of the variables table, as the front door resolved it.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct VariableRow {
+    /// Flatten this pressure slice into one Earth2Studio channel.
+    #[serde(default)]
+    pub pressure_hpa: Option<u32>,
     pub id: String,
     pub kind: VariableKind,
     /// Output name per naming scheme (`wb2`, `era5`, ...).

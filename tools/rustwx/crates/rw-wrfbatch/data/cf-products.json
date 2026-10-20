@@ -1,0 +1,10 @@
+[
+  {"names":["ws10m"],"standard_names":["wind_speed"],"product":"wind10","title":"10 m wind speed","recipe":"10m_wind_speed_and_direction","default_units":"m s-1","display_units":"kt","unit_factors":{"m s-1":1.9438445,"m/s":1.9438445,"kt":1.0,"knots":1.0,"mph":0.8689762}},
+  {"names":["fg10m"],"standard_names":["wind_speed_of_gust","wind_speed_of_gust_at_10m"],"product":"wind_gust","title":"10 m wind gust","recipe":"10m_wind_gusts","default_units":"m s-1","display_units":"kt","unit_factors":{"m s-1":1.9438445,"m/s":1.9438445,"kt":1.0,"knots":1.0,"mph":0.8689762}},
+  {"names":["tp"],"standard_names":["precipitation_amount","lwe_thickness_of_precipitation_amount"],"product":"qpf_6h","title":"6 h total precipitation","recipe":"total_qpf","default_units":"m","display_units":"in","unit_factors":{"m":39.3700787,"mm":0.0393700787,"kg m-2":0.0393700787,"in":1.0},"observation_product":"qpf6h"},
+  {"names":["tcwv","pwat"],"standard_names":["atmosphere_mass_content_of_water_vapor","lwe_thickness_of_atmosphere_mass_content_of_water_vapor"],"product":"precipitable_water","title":"Precipitable water","recipe":"precipitable_water","default_units":"kg m-2","display_units":"in","unit_factors":{"kg m-2":0.0393700787,"kg/m^2":0.0393700787,"mm":0.0393700787,"m":39.3700787,"in":1.0}},
+  {"names":["refc"],"standard_names":["equivalent_reflectivity_factor"],"product":"composite_reflectivity","title":"Composite reflectivity","recipe":"composite_reflectivity","default_units":"dBZ","display_units":"dBZ","unit_factors":{"dBZ":1.0},"observation_product":"refc"},
+  {"names":["climnet_ar"],"standard_names":[],"product":"ar_probability","title":"Atmospheric river probability","default_units":"1","display_units":"1","unit_factors":{"1":1.0},"contour_level":0.5},
+  {"names":["climnet_tc"],"standard_names":[],"product":"tc_probability","title":"Tropical cyclone probability","default_units":"1","display_units":"1","unit_factors":{"1":1.0},"contour_level":0.5},
+  {"names":["climnet_bg"],"standard_names":[],"product":"background_probability","title":"Background class probability","default_units":"1","display_units":"1","unit_factors":{"1":1.0},"contour_level":0.5}
+]

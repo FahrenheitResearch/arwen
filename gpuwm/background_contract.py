@@ -99,9 +99,15 @@ def capability(source: str) -> dict:
     # An analysis archive without a declared publication window can be
     # selected only from an inspected native time inventory, as plan()
     # requires below. A downloadable preparation chain alone does not
-    # make initialization without supplied inputs available.
-    automatic = (operation in preparation_chains()
-                 and (axis != "analysis_times" or grid is not None))
+    # make initialization without supplied inputs available.  Nor does a
+    # row whose valid times are only ever supplied (a generated forecast
+    # file, such as a model-table row): plan() binds a ladder only for
+    # declared forecast leads or a declared analysis window, so offering
+    # "automatic" there sent the local DA door into its refusal ("needs a
+    # supplied native time inventory rather than a fabricated forecast
+    # ladder") on every model-table row.
+    automatic = (operation in preparation_chains() and grid is not None
+                 and axis in ("forecast_leads", "analysis_times"))
     if axis == "analysis_times" and grid is None:
         obligations.append("Supply an inspected native time inventory; no analysis publication window is declared.")
     return dict(source=adapter.source_id, label=adapter.display_title, preparable=preparable,

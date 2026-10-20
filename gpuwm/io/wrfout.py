@@ -1714,6 +1714,17 @@ def _contiguous_preserving_shape(value, xp=np):
 class _AsyncTicketQueue(queue.Queue):
     """Bounded queue that records ticket admission under its mutex."""
 
+    def release_completed_device_refs(self, stream) -> None:
+        # A slow file write can leave the next ticket queued long after its
+        # download finishes. Reuse that snapshot storage before allocating
+        # another capture, without waiting for unfinished transfers. Hold the
+        # queue mutex so the worker cannot take a ticket during this handoff.
+        with self.mutex, stream:
+            for ticket in self.queue:
+                if (ticket is not None and ticket.device_refs
+                        and ticket.event.done):
+                    ticket.device_refs = ()
+
     def _put(self, item) -> None:
         if item is None:
             super()._put(item)
@@ -2024,6 +2035,7 @@ class AsyncDomainWrfoutWriter:
                                            global_attrs=global_attrs,
                                            completed_observer=completed_observer)
                     return
+                self._queue.release_completed_device_refs(self.stream)
                 device_fields = _device_state_frame(
                     state, include_diagnostic_pressure=True)
                 if refl_field is not None:
@@ -2042,24 +2054,49 @@ class AsyncDomainWrfoutWriter:
                 device_refs: list[object] = []
                 pinned_refs: list[object] = []
                 with self.stream:
+                    # Freeze live state in device memory before starting D2H.
+                    # The next step needs only this GPU copy to finish; waiting
+                    # for the PCIe download made history a step-stream barrier.
+                    # Share exact aliases (notably T/THM) in both staging tiers.
+                    snapshots = {}
+                    aliases = {}
                     for name, value in device_fields.items():
                         if name not in keep:
                             continue
+                        key = id(value)
+                        if key not in aliases:
+                            aliases[key] = (np.array(value, copy=True, order="C", subok=False)
+                                            if isinstance(value, np.ndarray)
+                                            else cp.array(value, copy=True, order="C"))
+                        snapshots[name] = aliases[key]
+                    captured = cp.cuda.Event()
+                    captured.record(self.stream)
+                producer.wait_event(captured)
+
+                with self.stream:
+                    staged = {}
+                    for name, value in device_fields.items():
+                        if name not in keep:
+                            continue
+                        key = id(value)
+                        if key in staged:
+                            host_fields[name] = staged[key]
+                            continue
+                        value = snapshots[name]
                         if isinstance(value, np.ndarray):
                             # Already on host: staging it through the device would
                             # be a pure bounce (measured ~1.8 GiB of cached device
                             # staging across the initial frames).  np.array preserves
                             # a scalar P_TOP's 0-D shape; np.ascontiguousarray would
                             # silently promote it to (1,) and give it a vertical dim.
-                            host_fields[name] = np.array(
-                                value, copy=True, order="C", subok=False)
+                            host_fields[name] = staged[key] = value
                             continue
-                        array = _contiguous_preserving_shape(value, cp)
+                        array = value
                         memory = cp.cuda.alloc_pinned_memory(int(array.nbytes))
                         host = np.frombuffer(memory, dtype=array.dtype,
                                              count=array.size).reshape(array.shape)
                         array.get(out=host, stream=self.stream, blocking=False)
-                        host_fields[name] = host
+                        host_fields[name] = staged[key] = host
                         device_refs.append(array)
                         pinned_refs.append(memory)
                     for name, value in (extra_fields or {}).items():
@@ -2069,9 +2106,9 @@ class AsyncDomainWrfoutWriter:
                             host_fields[name] = _contiguous_preserving_shape(value)
                     done = cp.cuda.Event()
                     done.record(self.stream)
-                # The next mutation on the producing stream waits for the snapshot,
-                # while the host remains free to write another domain/file.
-                producer.wait_event(done)
+                # Only the worker waits for D2H. Device snapshots remain owned
+                # by the ticket until that event completes, independently of
+                # the live state which the next step can already mutate.
                 ticket = _AsyncFrame(
                     path=Path(path),
                     time_str=valid_time.strftime("%Y-%m-%d_%H:%M:%S"),
@@ -2085,7 +2122,7 @@ class AsyncDomainWrfoutWriter:
             finally:
                 # CuPy stream contexts restore their context stack, which can
                 # differ from a producer selected with Stream.use(). Keep the
-                # caller on the stream that waits for this frame's snapshot.
+                # caller on the stream that waits for this frame's capture.
                 producer.use()
 
 

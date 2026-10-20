@@ -47,6 +47,8 @@ members = [
     "crates/rw-globe-pack",
     "crates/rw-grib2export",
     "crates/rw-store",
+    "crates/rw-soundings",
+    "crates/rustwx-sounding",
     "crates/rw-superob",
     "crates/rw-tempo",
     "crates/rw-wrfbatch",

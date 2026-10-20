@@ -1876,6 +1876,9 @@ const PARAMETER_DPT: &[ParameterCode] = &[ParameterCode {
     category: 0,
     number: 6,
 }];
+const PARAMETER_SPFH: &[ParameterCode] = &[ParameterCode { discipline: 0, category: 1, number: 0 }];
+const PARAMETER_VVEL: &[ParameterCode] = &[ParameterCode { discipline: 0, category: 2, number: 8 }];
+const PARAMETER_DZDT: &[ParameterCode] = &[ParameterCode { discipline: 0, category: 2, number: 9 }];
 const PARAMETER_RH: &[ParameterCode] = &[ParameterCode {
     discipline: 0,
     category: 1,
@@ -2409,6 +2412,17 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
                 level: LevelMatch::IsobaricHpa(level_hpa),
                 units: "K",
             }),
+            FieldSelector { field, vertical: VerticalSelector::IsobaricHpa(level_hpa), .. }
+                if is_supported_upper_air_level(level_hpa) && matches!(field,
+                    CanonicalField::SpecificHumidity | CanonicalField::Omega | CanonicalField::GeometricVerticalVelocity) => Ok(Self {
+                    parameters: match field {
+                        CanonicalField::SpecificHumidity => PARAMETER_SPFH,
+                        CanonicalField::Omega => PARAMETER_VVEL,
+                        _ => PARAMETER_DZDT,
+                    },
+                    level: LevelMatch::IsobaricHpa(level_hpa),
+                    units: field.native_units(),
+                }),
             FieldSelector {
                 field: CanonicalField::RelativeHumidity,
                 vertical: VerticalSelector::IsobaricHpa(level_hpa),
@@ -2492,20 +2506,20 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
             }),
             FieldSelector {
                 field: CanonicalField::UWind,
-                vertical: VerticalSelector::HeightAboveGroundMeters(10),
+                vertical: VerticalSelector::HeightAboveGroundMeters(height @ (10 | 100)),
                 ..
             } => Ok(Self {
                 parameters: PARAMETER_UGRD,
-                level: LevelMatch::HeightAboveGroundMeters(10),
+                level: LevelMatch::HeightAboveGroundMeters(height),
                 units: "m/s",
             }),
             FieldSelector {
                 field: CanonicalField::VWind,
-                vertical: VerticalSelector::HeightAboveGroundMeters(10),
+                vertical: VerticalSelector::HeightAboveGroundMeters(height @ (10 | 100)),
                 ..
             } => Ok(Self {
                 parameters: PARAMETER_VGRD,
-                level: LevelMatch::HeightAboveGroundMeters(10),
+                level: LevelMatch::HeightAboveGroundMeters(height),
                 units: "m/s",
             }),
             FieldSelector {

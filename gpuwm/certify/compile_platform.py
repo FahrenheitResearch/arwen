@@ -63,25 +63,13 @@ def nvrtc_banner() -> str:
         from cupy_backends.cuda.libs import nvrtc
     except Exception:
         return ""
-    program = None
+    from gpuwm.compiler_metadata import nvrtc_banner as retained_banner
+    # Load the library before resolving its bytes. getVersion compiles nothing.
     try:
-        program = nvrtc.createProgram("", "compile_platform_probe.cu", [], [])
-        nvrtc.compileProgram(program, [])
-        ptx = nvrtc.getPTX(program)
+        getattr(nvrtc, "getVersion", lambda: None)()
+        return retained_banner(nvrtc, nvrtc_library())
     except Exception:
         return ""
-    finally:
-        if program is not None:
-            try:
-                nvrtc.destroyProgram(program)
-            except Exception:
-                pass
-    if isinstance(ptx, bytes):
-        ptx = ptx.decode("ascii", "replace")
-    # The banner is the leading comment block; the body is irrelevant here and
-    # would make the fingerprint depend on the empty program's codegen.
-    return "\n".join(
-        line for line in ptx.splitlines()[:12] if line.startswith("//"))
 
 
 def nvrtc_build(banner: str | None = None) -> str:

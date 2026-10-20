@@ -330,6 +330,11 @@ def test_every_compared_inert_field_has_a_spelling_in_the_pair():
         for path in ("gpuwm/namelist_import.py", "gpuwm/namelist_chem.py"))
     # The &fire group is read by table, not key by key.
     table_read = set(imported_fire_fields())
+    # So are the ocean mixed layer's settings: the importer walks
+    # ocean_namelist_defaults() (gpuwm/surface_ocean.py) and names only
+    # sf_ocean_physics and oml_gamma by their own spelling.
+    from gpuwm.surface_ocean import ocean_namelist_defaults
+    table_read |= set(ocean_namelist_defaults())
     unspelled = sorted(
         field for field in _inert_run_fields() - round_trip_exempt_run_fields()
         if field not in PHYSICS_SELECTOR_VALUES and field not in table_read

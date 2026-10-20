@@ -431,9 +431,12 @@ def test_the_shipped_cyclone_config_is_the_shape_it_documents():
         assert dc.retire.trigger == "pressure"
         assert dc.retire.level_hpa == (850.0,)
         assert dc.rearm is not None
-        # Per-domain follow, on the same surface the slot was born on.
+        # Per-domain follow tracks the MSLP minimum (the eye), with the
+        # 850 hPa surface the slot was born on as its fallback.
         assert dc.follow.tracker.field == "pressure"
-        assert dc.follow.tracker.level_hpa == (850.0,)
+        assert dc.follow.tracker.level_hpa is None
+        assert dc.follow.tracker.pressure_center == "minimum"
+        assert dc.follow.tracker.fallback_level_hpa == 850.0
     # ...and the leg walk goes straight to the window rather than asking
     # once an hour until it opens.
     from gpuwm.core.spawn_runner import SpawnRunner

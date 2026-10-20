@@ -173,7 +173,7 @@ fi
 # The minimum is not a constant here: it is the newest `rust-version`
 # the workspaces below declare in their tools/<name>/Cargo.toml, the
 # same field cargo enforces, so this check and cargo cannot disagree.
-RUST_WORKSPACES='grib1_bridge rustwx arwen-tui zarr_bridge rw_wps region_global_dealias'
+RUST_WORKSPACES='grib1_bridge rustwx arwen-tui zarr_bridge rw_wps region_global_dealias nextgen_hydrofabric nextgen_forcing nextgen_verify'
 rust_minimum() {
     for ws in $RUST_WORKSPACES; do
         [ -f "tools/$ws/Cargo.toml" ] || continue
@@ -568,6 +568,14 @@ say "building the mapped-source decode engine in tools/rw_wps (offline, locked)"
 ( cd tools/rw_wps && cargo build --release --locked --offline )
 say "building the velocity dealiasing library (offline, locked)"
 ( cd tools/region_global_dealias && cargo build --release --locked --offline )
+for workspace in nextgen_hydrofabric nextgen_forcing nextgen_verify; do
+    # These workspaces include locked registry dependencies not all vendored
+    # with rustwx. Populate Cargo's cache before the offline build.
+    say "fetching locked NextGen dependencies in tools/$workspace"
+    ( cd "tools/$workspace" && cargo fetch --locked )
+    say "building NextGen tools/$workspace (offline, locked)"
+    ( cd "tools/$workspace" && cargo build --release --locked --offline )
+done
 if [ "$RUST_PINNED" = 1 ]; then
     say "built with Rust $RUST_MIN; a later hand-run cargo build in tools/ needs"
     say "it too: RUSTUP_TOOLCHAIN=$RUST_MIN cargo build, or rustup default $RUST_MIN"

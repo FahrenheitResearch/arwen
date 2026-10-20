@@ -12,7 +12,7 @@ import subprocess
 
 
 class DiagnosticProductConsumer:
-    """Drain durable diagnostic spills on one spare CPU owner.
+    """Drain durable diagnostic spills through one parallel Rust replay owner.
 
     Pending entries contain only a key, device and replay callback. They never
     retain model arrays. Only one replay task owns its bounded host buffers;
@@ -186,10 +186,11 @@ class DiagnosticProductConsumer:
                 task = threading.get_native_id()
                 self._cpu_priority = max(10, os.getpriority(os.PRIO_PROCESS, task))
                 os.setpriority(os.PRIO_PROCESS, task, self._cpu_priority)
-            if hasattr(os, "sched_setaffinity") and hasattr(os, "sched_getaffinity"):
+            if hasattr(os, "sched_getaffinity"):
                 task = threading.get_native_id()
-                self._cpu_affinity = sorted(os.sched_getaffinity(task))[-2:]
-                os.sched_setaffinity(task, self._cpu_affinity)
+                # Children inherit this thread's affinity. Keep the caller's
+                # full allocation so the Rust replay can use its CPU budget.
+                self._cpu_affinity = sorted(os.sched_getaffinity(task))
             while True:
                 with self._condition:
                     self._condition.wait_for(lambda: self._pending or self._closing)

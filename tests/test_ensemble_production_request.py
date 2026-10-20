@@ -86,3 +86,18 @@ def test_memory_profile_reads_requested_card_without_repricing_default_callers(m
     assert default.name == "card-0"
     assert selected.name == "card-1"
     assert selected.multiprocessor_count == 121
+
+
+def test_fast_card_refills_while_another_card_is_still_running():
+    """A slow first batch must not idle a free card behind a global wave."""
+    model = EnsembleMemoryModel((MemoryComponent("state", "state", per_member_bytes=100),))
+    plan = pack_members(4, (CardBudget(0, 100), CardBudget(1, 100)), model, batched=False)
+    fast_second = threading.Event()
+    def run(batch):
+        if batch.device_id == 1 and batch.wave == 0:
+            assert fast_second.wait(3), "free card never received its queued member"
+        if batch.device_id == 0 and batch.wave == 1:
+            fast_second.set()
+        return batch.member_indices
+    result = execute_member_packing(plan, run)
+    assert [members for batch, members in result] == [(0,), (1,), (2,), (3,)]

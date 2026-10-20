@@ -301,6 +301,72 @@ def test_production_collector_hold_blocks_other_member_submissions(tmp_path):
     assert acquired == [False]
 
 
+def test_retained_history_seal_hashes_files_concurrently_without_changing_proofs(tmp_path, monkeypatch):
+    import hashlib
+    import threading
+    from gpuwm.ingest import cpu_backend
+
+    identities = {"schema": restart_roster.CONTRACT, "member_order": [], "members": []}
+    restart_roster.atomic_json(tmp_path / restart_roster.IDENTITIES, identities)
+    restart_roster.atomic_json(tmp_path / "ensemble-run.json", {"members_completed": []})
+    histories = [tmp_path / f"history-{number}.nc" for number in range(2)]
+    for number, path in enumerate(histories):
+        path.write_bytes(bytes([number]) * 4096)
+    monkeypatch.setattr(cpu_backend, "available_cpu_count", lambda: 2)
+    original = restart_roster.digest_file
+    barrier = threading.Barrier(2)
+    threads = set()
+    lock = threading.Lock()
+
+    def digest(path):
+        if Path(path).name.startswith("history-"):
+            with lock:
+                threads.add(threading.get_ident())
+            # Serial sealing, verification or restoration cannot reach both
+            # readers; no timing/speed guess.
+            barrier.wait(timeout=5)
+        return original(path)
+
+    monkeypatch.setattr(restart_roster, "digest_file", digest)
+    record = restart_roster.seal(tmp_path, collector_files=[path.name for path in histories])
+    assert len(threads) == 2
+    assert [row["path"] for row in record["files"]] == sorted(row["path"] for row in record["files"])
+    for row in record["files"]:
+        snapshot = tmp_path / row["snapshot"]
+        assert row["sha256"] == hashlib.sha256(snapshot.read_bytes()).hexdigest()
+        assert row["bytes"] == snapshot.stat().st_size
+    assert restart_roster.verify_roster(tmp_path / restart_roster.ROSTER, identities,
+                                      root=tmp_path) == record
+    assert restart_roster.restore_roster(record, root=tmp_path)["restored"] == []
+
+
+def test_sealing_preserves_live_writer_revision_and_reuses_only_sealed_inodes(tmp_path):
+    from gpuwm.output_identity import completed_file_record, publication_revision
+
+    identities = {"schema": restart_roster.CONTRACT, "member_order": [], "members": []}
+    restart_roster.atomic_json(tmp_path / restart_roster.IDENTITIES, identities)
+    restart_roster.atomic_json(tmp_path / "ensemble-run.json", {"members_completed": []})
+    history = tmp_path / "wrfout_d01_frame"
+    history.write_bytes(b"writer-owned history")
+    published = publication_revision(history)
+    first = restart_roster.seal(tmp_path, collector_files=[history.name])
+    item = next(row for row in first["files"] if row["path"] == history.name)
+    snapshot = tmp_path / item["snapshot"]
+    sealed_inode = snapshot.stat().st_ino
+    assert sealed_inode != history.stat().st_ino
+    # A different member can seal after publication and before this writer's
+    # completion hash. Linking the live inode made this exact call fail.
+    completed_file_record(history, published=published)
+    second = restart_roster.seal(tmp_path, collector_files=[history.name])
+    item = next(row for row in second["files"] if row["path"] == history.name)
+    assert (tmp_path / item["snapshot"]).stat().st_ino == sealed_inode
+    assert not snapshot.exists()
+    completed_file_record(history, published=published)
+    # Later live writes cannot mutate the durable copy.
+    history.write_bytes(b"changed live history")
+    assert (tmp_path / item["snapshot"]).read_bytes() == b"writer-owned history"
+
+
 def test_seal_retries_when_another_member_retires_a_checkpoint_mid_pass(tmp_path, identity, monkeypatch):
     from gpuwm.io import restart
     from gpuwm import supervisor
@@ -476,3 +542,30 @@ def test_tampered_sealed_copy_refuses_and_names_the_remedy(tmp_path, identity):
         session(tmp_path, FrameWritingCollector(tmp_path), roster).run_prepared(
             lambda *args, **kwargs: invoked.append(1), prepared(0))
     assert not invoked
+
+
+def test_checkpointed_members_share_card_without_losing_durable_roster(tmp_path, identity, monkeypatch):
+    from contextlib import contextmanager
+    from threading import Barrier
+    from gpuwm.ensemble import member_stream
+    barrier = Barrier(2)
+    @contextmanager
+    def member_scope(**kwargs):
+        yield SimpleNamespace(receipt=lambda: {"member_id": kwargs["member_id"], "device_id": kwargs["device_id"]})
+    monkeypatch.setattr(member_stream, "member_cuda_scope", member_scope)
+    collector = HeldCollector(tmp_path)
+    run = session(tmp_path, collector)
+    run.array_module = SimpleNamespace(cuda=SimpleNamespace(Stream=lambda: None,
+        get_current_stream=lambda: SimpleNamespace(synchronize=lambda: None)),
+        get_default_memory_pool=lambda: SimpleNamespace(free_all_blocks=lambda: None))
+    def runner(inputs, **options):
+        member = current_capture().member_id
+        if member in (0, 1):
+            barrier.wait(timeout=5)
+        collector.submit(member_id=member)
+        return {"status": "PASS"}
+    report = run.run_prepared(runner, prepared(0))
+    assert report["packing"]["batches"][0]["member_indices"] == [0, 1]
+    assert sorted(report["members_completed"]) == [0, 1, 2]
+    roster = json.loads((tmp_path / restart_roster.ROSTER).read_text())
+    assert [row["status"] for row in roster["members"]] == ["completed"] * 3

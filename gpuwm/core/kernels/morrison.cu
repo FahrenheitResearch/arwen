@@ -1549,7 +1549,14 @@ __device__ __forceinline__ void mo_sediment_impl(
         for (int k = nz - 1; k >= 0; --k) {
             const float rho = rho_in[AT(k)];
             // :3360-3383
-            const float dmass = mo_add(qmass[AT(k)], mo_mul(WP(mten, k), dt));
+            float dmass = mo_add(qmass[AT(k)], mo_mul(WP(mten, k), dt));
+#ifndef MORR_ROW37_OFF
+            // A source tendency can cancel its category to a negative FP32
+            // residue. Inherited fall speed then exported negative water
+            // (measured -1.54e-14 mm in a regional forecast). Sedimentation
+            // transports nonnegative mass; retain the raw WRF oracle build.
+            dmass = FMAXK(dmass, 0.0f);
+#endif
             float dnum = mo_add(qnum[AT(k)], mo_mul(WP(nten, k), dt));
             if (cat == 0) dnum = qnum[AT(k)];   // iinum = 1 (:3372-3374)
             dnum = FMAXK(dnum, 0.0f);

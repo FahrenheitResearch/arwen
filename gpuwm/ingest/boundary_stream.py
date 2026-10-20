@@ -409,6 +409,27 @@ def chained_enabled(environ: Mapping[str, str] | None = None) -> bool:
     return str(value).strip().lower() not in {"0", "off", "false", "no"}
 
 
+def chained_resident_forcing_slots(exp, environ: Mapping[str, str] | None = None) -> int | None:
+    """Forcing intervals a chained ``gpuwm go`` forecast holds on the card.
+
+    A one-domain, one-card forecast started on a chained preparation's head
+    streams its root's lateral intervals through one device slot
+    (:func:`gpuwm.ingest.lateral_bc.attach_streaming_lateral_boundaries`),
+    so it holds 1.  ``None`` means the whole schedule: chaining off
+    (``GPUWM_CHAINED_PREP=0``, a sealed restore), a nested tree, or a split
+    across cards.  The go gate and ``gpuwm check`` both read this, so the two
+    never disagree about one card: the check priced all 19 hourly hrrr-prs
+    intervals of an 18 h full-grid HRRR (8.24 GiB of boundary tables) and
+    refused it on a 96 GB card by 0.5 GiB while ``gpuwm go`` prices one slot.
+    """
+    if not chained_enabled(environ) or len(exp.domains) != 1:
+        return None
+    devices = getattr(exp, "devices", None)
+    if getattr(devices, "enabled", False):
+        return None
+    return 1
+
+
 #: What a chained head needs on the machine that writes it: the forecast's
 #: memory admission (:func:`chained_admission` reads it from
 #: ``gpuwm.core.preflight``) and a forecast executor to bind the head.  The

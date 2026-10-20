@@ -6,10 +6,11 @@
 
 use std::{path::{Path, PathBuf}, time::Instant, io::{BufWriter, Write}};
 use netcrust::File;
+use rayon::prelude::*;
 use rustwx_render::{ContourLayer, LegendControls, LegendMode, LevelDensity, RenderDensity, advisory};
 use crate::{panel::{PanelRequest, layout_path, render_panel, safe_component}, scales};
 
-pub const ABI: &str = "gpuwm-rw-wrfbatch-resident-ensemble-v2\tCDF5\tmean\tspread\tmin\tmax\tprobability\tpaintball\tpostage\tfraction\ttyped-diagnostic\tRENDERED\tFAILED";
+pub const ABI: &str = "gpuwm-rw-wrfbatch-resident-ensemble-v2\tCDF5\tmean\tspread\tmin\tmax\tprobability\tpaintball\tpostage\tfraction\ttyped-diagnostic\ts2s-window\tglobal-ensemble-projection\tRENDERED\tFAILED";
 const CONTRACT: &str = "gpuwm-resident-ensemble-products.v1";
 
 fn attr(file: &File, name: &str) -> Result<String, String> {
@@ -34,6 +35,32 @@ fn shaped(file: &File, name: &str, expected: &[usize]) -> Result<Vec<f32>, Strin
     Ok(array.values().iter().map(|&v| v as f32).collect())
 }
 
+// S2S window means and anomalies have declared units and fixed comparison
+// scales. The generic 0..100 fallback would hide every height/MSLP mean.
+fn s2s_scale(field: &str, kind: &str) -> Option<rustwx_render::ColorScale> {
+    let anomaly = field.ends_with("_anomaly");
+    let base = field.strip_suffix("_anomaly").unwrap_or(field);
+    let (low, high, delta, spread) = match base {
+        "temperature2" => (240.0, 320.0, 10.0, 10.0),
+        "precipitation_rate" => (0.0, 30.0, 10.0, 10.0),
+        "z500" => (4500.0, 6200.0, 300.0, 150.0),
+        "mslp" => (960.0, 1040.0, 20.0, 15.0),
+        _ => return None,
+    };
+    if kind == "spread" { return Some(scales::spread_scale(spread)); }
+    if anomaly {
+        use rustwx_render::difference::{difference_scale, DifferenceTable};
+        return Some(rustwx_render::ColorScale::Discrete(difference_scale(DifferenceTable::builtin(), delta)));
+    }
+    if base == "temperature2" { return None; } // canonical operational temperature palette
+    let mut scale = scales::spread_scale(high - low);
+    if let rustwx_render::ColorScale::Discrete(ref mut ladder) = scale {
+        for level in &mut ladder.levels { *level += low; }
+        ladder.extend = rustwx_render::ExtendMode::Both;
+    }
+    Some(scale)
+}
+
 fn field_title(field: &str) -> &str {
     match field {
         "qpf_1h" => "1 h precipitation", "qpf_3h" => "3 h precipitation",
@@ -41,7 +68,13 @@ fn field_title(field: &str) -> &str {
         "wind10" => "10 m wind speed", "gust" => "wind gust",
         "temperature2" => "2 m temperature", "dewpoint2" => "2 m dewpoint",
         "refl" => "composite reflectivity", "uh" => "2-5 km updraft helicity",
-        "humidity2" => "2 m relative humidity", other => other,
+        "humidity2" => "2 m relative humidity",
+        "z500" => "500 hPa geopotential height", "mslp" => "mean sea level pressure",
+        "precipitation_rate" => "precipitation rate",
+        "temperature2_anomaly" => "2 m temperature anomaly",
+        "z500_anomaly" => "500 hPa geopotential height anomaly",
+        "mslp_anomaly" => "mean sea level pressure anomaly",
+        "precipitation_rate_anomaly" => "precipitation rate anomaly", other => other,
     }
 }
 
@@ -232,6 +265,7 @@ pub fn render(path: &Path, out: &Path, fields: &[String], domain: &str,
         .filter(|&n| n.is_finite() && n >= 1.0 && n.fract() == 0.0)
         .ok_or("ensemble_members must name the complete integer roster")? as usize;
     let valid = attr(&file, "valid_time")?;
+    let is_s2s = file.attribute("s2s_window").is_some();
     let lat = file.read_array_f64("XLAT").map_err(|e| format!("read XLAT: {e}"))?;
     if lat.shape().len() != 2 || lat.shape().contains(&0) {
         return Err("XLAT must be a nonempty (south_north,west_east) plane".into());
@@ -250,6 +284,18 @@ pub fn render(path: &Path, out: &Path, fields: &[String], domain: &str,
         selected.sort();
     }
     if selected.is_empty() { return Err("aggregate file has no ensemble fields".into()); }
+    // Each field writes distinct product paths and owns a native reader. The
+    // old serial loop left a card waiting behind minutes of single-core plots.
+    // Open a separate reader per field instead of sharing a NetCDF handle.
+    let mut seen = std::collections::HashSet::new();
+    selected.retain(|field| seen.insert(field.clone()));
+    if selected.len() > 1 {
+        let frames: Result<Vec<Vec<PathBuf>>, String> = selected.par_iter()
+            .map(|field| render(path, out, std::slice::from_ref(field), domain,
+                                source, width, height, products))
+            .collect();
+        return frames.map(|rows| rows.into_iter().flatten().collect());
+    }
     let mut written = Vec::new();
     // How many of a stamp's valid-time lines this file's frame has cut.
     let mut stamp_lines_cut = 0usize;
@@ -258,10 +304,13 @@ pub fn render(path: &Path, out: &Path, fields: &[String], domain: &str,
         let units = file.variable(&mean_name).and_then(|v| v.attribute("units").and_then(|a| a.as_string()).map(str::to_string))
             .ok_or_else(|| format!("{mean_name} has no declared units"))?;
         let style = field_style(&field, &units);
-        for kind in ["mean", "spread", "min", "max"] {
-            if !products.iter().any(|p| p == kind) { continue; }
+        for kind in ["mean", "spread", "min", "max", "pmm"] {
+            if !products.iter().any(|p| p == kind) || file.variable(&format!("{field}_{kind}")).is_none() { continue; }
             let mut values = shaped(&file, &format!("{field}_{kind}"), &[ny, nx])?;
-            let (scale, display_units) = if kind == "spread" {
+            let s2s = if is_s2s { s2s_scale(&field, kind) } else { None };
+            let (scale, display_units) = if let Some(scale) = s2s {
+                (scale, units.clone())
+            } else if kind == "spread" {
                 let upper = if units == "1" { 1.0 } else { match field.as_str() { "temperature2" | "dewpoint2" => 15.0,
                     "humidity2" => 40.0, "refl" => 30.0, "uh" => 150.0, _ => 50.0 }
                 };
@@ -336,7 +385,8 @@ pub fn render(path: &Path, out: &Path, fields: &[String], domain: &str,
             // The producer stores float32 thresholds. Its shortest round-trip
             // spelling is both exact and readable on a product title.
             let threshold_label = format!("{}", threshold as f32);
-            if products.iter().any(|p| p == "paintball") && file.variable(&format!("{field}_paintball")).is_some() {
+            for contour_product in ["paintball", "spaghetti"] {
+            if products.iter().any(|p| p == contour_product) && file.variable(&format!("{field}_paintball")).is_some() {
                 let paint_name = format!("{field}_paintball");
                 let threshold_dim = format!("{field}_threshold"); let word_dim = format!("{field}_member_word");
                 let words = (members + 63) / 64;
@@ -349,11 +399,12 @@ pub fn render(path: &Path, out: &Path, fields: &[String], domain: &str,
                     levels: vec![0.5], color: crate::annotate::parse_color(rustwx_ensemble::member_color(member as u32 + 1)),
                     width: 2, labels: false, show_extrema: false, pattern: Default::default(), major_every: None, major_width: None,
                 }).collect();
-                let slug = format!("ens_paintball_{}_{}_{}", safe_component(&field, "field"), comparison, safe_component(&threshold_label, "threshold"));
+                let slug = format!("ens_{contour_product}_{}_{}_{}", safe_component(&field, "field"), comparison, safe_component(&threshold_label, "threshold"));
                 let target = plane(out, domain, &valid, roster_subtitles(members, &valid, source), &latitude, &longitude, ny, nx, slug,
-                    format!("Paintball {} {relation} {threshold_label} {units}", field_title(&field)),
+                    format!("{contour_product} {} {relation} {threshold_label} {units}", field_title(&field)),
                     vec![f32::NAN; ny * nx], units.clone(), scales::spread_scale(1.0), contours, false, width, height)?;
                 println!("RENDERED\t{}", target.display()); written.push(target);
+            }
             }
             if !products.iter().any(|p| p == "prob") { continue; }
             let slug = format!("ens_prob_{}_{}_{}", safe_component(&field, "field"), comparison,
@@ -382,26 +433,28 @@ pub fn render(path: &Path, out: &Path, fields: &[String], domain: &str,
 }
 
 /// Additive dispatch: existing deterministic WRF invocations retain their ABI.
-pub fn try_cli(args: &[String]) -> Option<Result<(), String>> {
-    if args.first().map(String::as_str) == Some("--ensemble-diagnostic-reduce-abi") {
-        println!("{}", crate::ensemble_reduce::ABI);
-        return Some(Ok(()));
-    }
-    if args.first().map(String::as_str) == Some("--ensemble-diagnostic-reduce") {
-        return Some(crate::ensemble_reduce::cli(args));
-    }
-    if args.first().map(String::as_str) == Some("--ensemble-diagnostic-dump") {
-        return Some(dump_diagnostic(args));
-    }
-    if args.first().map(String::as_str) == Some("--ensemble-products-abi") {
-        println!("{ABI}"); return Some(Ok(()));
-    }
-    if args.first().map(String::as_str) != Some("--ensemble-products") { return None; }
-    Some((|| {
+/// Validated presentation settings shared by the CLI and bounded resident worker.
+pub struct RenderOptions {
+    input: PathBuf,
+    out: PathBuf,
+    fields: Vec<String>,
+    domain: String,
+    source: String,
+    width: u32,
+    height: u32,
+    products: Vec<String>,
+}
+
+impl RenderOptions {
+    /// Parse only; this never opens a weather frame or initializes CUDA.
+    pub fn parse(args: &[String]) -> Result<Self, String> {
+        if args.first().map(String::as_str) != Some("--ensemble-products") {
+            return Err("expected --ensemble-products".into());
+        }
         let input = args.get(1).ok_or("--ensemble-products requires a CDF5 path")?;
         let mut out = None; let mut fields = Vec::new(); let mut domain = "d01".to_string();
         let mut source = concat!("WOOF ", env!("GPUWM_ENGINE_VERSION")).to_string(); let mut width = 1200; let mut height = 900;
-        let mut products = vec!["mean", "spread", "min", "max", "prob", "paintball", "postage"].into_iter().map(str::to_string).collect::<Vec<_>>();
+        let mut products = vec!["mean", "spread", "min", "max", "prob", "paintball", "postage", "pmm", "spaghetti"].into_iter().map(str::to_string).collect::<Vec<_>>();
         let mut i = 2;
         while i < args.len() {
             let value = args.get(i + 1).ok_or_else(|| format!("{} requires a value", args[i]))?;
@@ -417,12 +470,58 @@ pub fn try_cli(args: &[String]) -> Option<Result<(), String>> {
             i += 2;
         }
         if width < 160 || height < 120 { return Err("ensemble map dimensions must be at least 160x120".into()); }
-        if products.is_empty() || products.iter().any(|p| !["mean", "spread", "min", "max", "prob", "paintball", "postage"].contains(&p.as_str())) {
+        if products.is_empty() || products.iter().any(|p| !["mean", "spread", "min", "max", "prob", "paintball", "postage", "pmm", "spaghetti"].contains(&p.as_str())) {
             return Err("ensemble products must name mean,spread,min,max,prob,paintball,postage".into());
         }
-        render(Path::new(input), &out.ok_or("--out-dir is required")?, &fields, &domain, &source, width, height, &products)?;
-        Ok(())
-    })())
+        Ok(Self { input: PathBuf::from(input), out: out.ok_or("--out-dir is required")?, fields, domain, source, width, height, products })
+    }
+
+    pub fn render_at(&self, input: &Path, out: &Path) -> Result<(), String> {
+        render(input, out, &self.fields, &self.domain, &self.source, self.width, self.height, &self.products).map(|_| ())
+    }
+}
+
+pub fn try_cli(args: &[String]) -> Option<Result<(), String>> {
+    if args.first().map(String::as_str) == Some("--ensemble-sheet") {
+        return Some(compose_family_sheet(args));
+    }
+    if args.first().map(String::as_str) == Some("--ensemble-diagnostic-reduce-abi") {
+        println!("{}", crate::ensemble_reduce::ABI);
+        return Some(Ok(()));
+    }
+    if args.first().map(String::as_str) == Some("--ensemble-diagnostic-reduce") {
+        return Some(crate::ensemble_reduce::cli(args));
+    }
+    if args.first().map(String::as_str) == Some("--ensemble-diagnostic-dump") {
+        return Some(dump_diagnostic(args));
+    }
+    if args.first().map(String::as_str) == Some("--ensemble-products-abi") {
+        println!("{ABI}"); return Some(Ok(()));
+    }
+    if args.first().map(String::as_str) != Some("--ensemble-products") { return None; }
+    Some(RenderOptions::parse(args).and_then(|options| options.render_at(&options.input, &options.out)))
+}
+
+fn compose_family_sheet(args: &[String]) -> Result<(), String> {
+    #[derive(serde::Deserialize)]
+    struct Request { rows: Vec<Vec<PathBuf>>, output: PathBuf, title: String, valid_time: String }
+    let input = args.get(1).ok_or("--ensemble-sheet needs a JSON request")?;
+    let request: Request = serde_json::from_slice(&std::fs::read(input).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    if request.rows.is_empty() || request.rows[0].is_empty()
+        || request.rows.iter().any(|row| row.len() != request.rows[0].len()) {
+        return Err("ensemble sheet needs rectangular nonempty panel rows".into());
+    }
+    let rows: Result<Vec<Vec<image::RgbaImage>>, String> = request.rows.par_iter().map(|row|
+        row.iter().map(|path| image::open(path).map(|image| image.to_rgba8()).map_err(|e| e.to_string())).collect()
+    ).collect();
+    let sheet = crate::compare::compose_sheet_rows(&rows?, &crate::compare::SheetHeader {
+        title: request.title, subtitle: format!("valid {} UTC; all panels on the same model grid", request.valid_time),
+    })?;
+    if let Some(parent) = request.output.parent() { std::fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
+    sheet.save(&request.output).map_err(|e| e.to_string())?;
+    println!("RENDERED\t{}", request.output.display());
+    Ok(())
 }
 
 #[cfg(test)]

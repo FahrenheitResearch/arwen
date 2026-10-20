@@ -2032,7 +2032,7 @@ def launch_coordinate_horizontal(field, xk, mut, c1, c2, msft, msfu,
     nz, ny, nx = xk.shape
     nlev, nys, nxs = field.shape
     stag = {"": 0, "x": 1, "y": 2, "z": 3}[stagger]
-    get_kernel("diff_opt1", "wrf_diff_opt1_horizontal")(
+    get_kernel("diff_opt1", "wrf_diff_opt1_horizontal", (nz, ny, nx))(
         ((nxs + _TPB - 1) // _TPB, nys, nlev), (_TPB, 1, 1),
         (field, xk, mut, c1, c2,
          theta_initial if theta_initial is not None else field,

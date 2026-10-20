@@ -186,7 +186,7 @@ MICROPHYSICS_ALGORITHM_IDENTITIES = {
         "real-clamp-product"),
     # Range-safe freezing, retained cleanup vapor and in-range number
     # preservation change subsequent tendencies even from finite inputs.
-    10: ("morrison-two-moment-v4-kf-number-seeding-finite-freezing-"
+    10: ("morrison-two-moment-v5-nonnegative-sedimentation-kf-number-seeding-finite-freezing-"
          "final-vapor-in-range-number-real-clamp-product"),
     # WDM6 (WRF v4.6.1 WDM6SCHEME, Registry/Registry.EM_COMMON:3031).  Named
     # at the mp=8/28 granularity -- the trajectory-defining pieces, not the

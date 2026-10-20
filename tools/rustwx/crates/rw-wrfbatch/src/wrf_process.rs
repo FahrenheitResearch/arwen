@@ -376,6 +376,10 @@ impl WrfProcessOptions {
     /// skipped at process time with a note, exactly like a planned field.
     pub fn planned_store_selectors(&self) -> Vec<FieldSelector> {
         let mut selectors = Vec::new();
+        selectors.extend(rustwx_products::vertical::ROWS.iter().filter(|r| {
+            let key = r.selector.key();
+            self.should_process(&key, Some(&key), WrfProductGroup::Core)
+        }).map(|r| r.selector));
         selectors.extend(winter_selectors().into_iter().filter(|(name, selector)|
             self.should_process(name, Some(&selector.key()), WrfProductGroup::Core))
             .map(|(_, selector)| selector));
@@ -683,7 +687,16 @@ pub fn required_fields_for_products(products: &str) -> Option<Vec<String>> {
     derived.extend(rustwx_products::derived::store_heavy_recipe_slugs());
     let mut names = Vec::new();
     for term in products.split(',').map(str::trim).filter(|term| !term.is_empty()) {
-        if matches!(term, "all" | "direct" | "derived" | "windowed" | "heavy") {
+        // The windowed group is a closed set of windows: it scopes to what
+        // every one of them reads, so the end-of-run windowed pass imports
+        // a handful of 2-D planes per frame, not the whole frame.
+        if term == "windowed" {
+            for product in HrrrWindowedProduct::supported_products() {
+                names.extend(window_input_names(*product));
+            }
+            continue;
+        }
+        if matches!(term, "all" | "direct" | "derived" | "heavy") {
             return None;
         }
         if let Some(name) = term.strip_prefix("var:") {
@@ -702,7 +715,7 @@ pub fn required_fields_for_products(products: &str) -> Option<Vec<String>> {
                 names.push("v_10m".to_string());
             }
         } else if let Some(product) = HrrrWindowedProduct::from_slug(term) {
-            names.extend(product.input_selectors().into_iter().map(store_name_for_selector));
+            names.extend(window_input_names(product));
         } else {
             return None;
         }
@@ -710,6 +723,23 @@ pub fn required_fields_for_products(products: &str) -> Option<Vec<String>> {
     names.sort();
     names.dedup();
     Some(names)
+}
+
+/// The store names one window reads: its recipe selectors and every plane
+/// the windowed store may read for it, fallbacks included
+/// ([`rusty_weather::render_all::windowed_store::window_store_reads`]).
+fn window_input_names(product: rustwx_products::windowed::HrrrWindowedProduct) -> Vec<String> {
+    let mut names: Vec<String> = product
+        .input_selectors()
+        .into_iter()
+        .map(store_name_for_selector)
+        .collect();
+    names.extend(
+        rusty_weather::render_all::windowed_store::window_store_reads(product)
+            .into_iter()
+            .map(str::to_string),
+    );
+    names
 }
 
 /// The interpolated volumes whose recipe levels are published as
@@ -2473,6 +2503,7 @@ fn read_wrf_products(
             #[allow(unused_mut)]
             let mut fields = gf;
             push_chem_products(&mut fields, file, timeidx, &grid, projection.clone(), options);
+            push_vertical_products(&mut fields, file, timeidx, &grid, projection.clone(), options);
         });
         scope.spawn(move |_| {
             #[allow(unused_mut)]
@@ -5011,17 +5042,38 @@ mod tests {
         assert!(selectors.iter().any(|selector| selector.key() == key));
     }
 
-    /// A group keyword or an unknown term keeps the import whole.
+    /// A group keyword other than `windowed`, or an unknown term, keeps the
+    /// import whole.
     #[test]
     fn a_keyword_or_unknown_term_does_not_scope() {
         assert!(required_fields_for_products("all").is_none());
-        assert!(required_fields_for_products("2m_temperature,windowed").is_none());
+        assert!(required_fields_for_products("2m_temperature,direct").is_none());
         assert!(required_fields_for_products("no_such_product").is_none());
         let both = required_fields_for_products("2m_temperature,composite_reflectivity").unwrap();
         assert!(both.iter().any(|name| name == "temperature_2m"));
         assert!(both.iter().any(|name| name == COMPOSITE_REFLECTIVITY_STORE));
         let stored = required_fields_for_products("var:wrf_my_plane").unwrap();
         assert_eq!(stored, vec!["wrf_my_plane".to_string()]);
+    }
+
+    /// The windowed group scopes to every plane its windows read, the
+    /// fallbacks included: a 10 m wind window reads WRF WSPD10MAX
+    /// (`wrf_wspd10max`) or top-of-hour `u_10m`/`v_10m`, a QPF window the run
+    /// total `apcp` on the wrfout lane.
+    #[test]
+    fn the_windowed_group_scopes_to_what_its_windows_read() {
+        let windowed = required_fields_for_products("windowed").unwrap();
+        for name in ["wrf_wspd10max", "u_10m", "v_10m", "apcp", "updraft_helicity_2to5km",
+                     "temperature_2m", "dewpoint_2m", "relative_humidity_2m"] {
+            assert!(windowed.iter().any(|wanted| wanted == name), "windowed must keep {name}");
+        }
+        let wind = required_fields_for_products("10m_wind_1h_max").unwrap();
+        for name in ["wind_speed_10m_max_1h", "wrf_wspd10max", "u_10m", "v_10m"] {
+            assert!(wind.iter().any(|wanted| wanted == name), "10m_wind_1h_max must keep {name}");
+        }
+        let mixed = required_fields_for_products("2m_temperature,windowed").unwrap();
+        assert!(mixed.iter().any(|name| name == "temperature_2m"));
+        assert!(mixed.iter().any(|name| name == "wrf_wspd10max"));
     }
 
     /// A scoped run never aliases the whole or the named run of the same
@@ -5340,4 +5392,36 @@ fn push_snow_level_ft(
         units: "ft".to_string(),
         values,
     });
+}
+
+/// Publish catalog rows through the same operators used by the GRIB exporter.
+fn push_vertical_products(fields: &mut WrfHourFields, file: &WrfFile, timeidx: usize,
+    grid: &LatLonGrid, projection: Option<GridProjection>, options: &WrfProcessOptions) {
+    use rayon::prelude::*;
+    use rustwx_products::vertical::{Operator, ROWS};
+    let selected: Vec<_> = ROWS.iter().filter(|r| {
+        let key=r.selector.key(); options.should_process(&key,Some(&key),WrfProductGroup::Core)
+    }).collect();
+    if selected.is_empty() { return; }
+    let mut levels=Vec::new(); let mut heights=Vec::new();
+    for row in &selected { match row.operator {
+        Operator::Pressure(_,p) => levels.push(p), Operator::WindSpeed(z) => heights.push(z),
+    }}
+    levels.sort(); levels.dedup(); heights.sort(); heights.dedup();
+    match rw_mlexport::diagnostics::compute_file(file,timeidx,&levels,&heights,!levels.is_empty()) {
+        Err(e) => fields.notes.push(format!("pressure/height rows unavailable: {e}")),
+        Ok(out) => for row in selected {
+            let values=match row.operator {
+                Operator::Pressure(field,p) => {
+                    let i=levels.iter().position(|&v|v==p).unwrap();
+                    out.pressure[field][i*file.nxy()..(i+1)*file.nxy()].to_vec()
+                },
+                Operator::WindSpeed(z) => {
+                    let (_,u,v)=out.wind.iter().find(|(h,_,_)|*h==z).unwrap();
+                    u.par_iter().zip(v).map(|(u,v)|u.hypot(*v)).collect()
+                },
+            };
+            push_canonical_values(fields,grid,projection.clone(),&row.selector.key(),row.selector,row.selector.native_units(),values);
+        },
+    }
 }

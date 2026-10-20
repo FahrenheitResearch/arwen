@@ -7,6 +7,60 @@ import pytest
 from gpuwm.core.physics_continuation import capture_carriers, capture_continuation
 
 
+def test_streamed_capture_never_copies_the_stale_template(monkeypatch):
+    from gpuwm.core import physics_continuation
+
+    def stale_copy(value):
+        pytest.fail("streamed capture copied a discarded template buffer")
+
+    monkeypatch.setattr(physics_continuation, "_capture", stale_copy)
+    stale = np.zeros((3, 2, 5), dtype=np.float32)
+    state = SimpleNamespace(existing_scratch=lambda name: stale if name == "cu_nca" else None)
+    driver = SimpleNamespace(gf_rthblten=stale, rthratenlw=stale,
+                             pbl_raw_rates={"dtheta": stale},
+                             cumulus_callable=SimpleNamespace(w0avg=stale))
+    keys = ("scratch/cu_nca", "held/gf_rthblten", "driver/rthratenlw", "cumulus/w0avg")
+    # Check storage words, including signed zero and a NaN payload.
+    words = np.array([0, 0x80000000, 0x7fc00031, 0x3f800000], dtype=np.uint32)
+    reads = []
+
+    class CanonicalStore(dict):
+        def __getitem__(self, key):
+            reads.append(key)
+            return super().__getitem__(key)
+
+    store = CanonicalStore({key: np.resize(words, (3, 12, 5)).view(np.float32) for key in keys})
+    captured = capture_continuation(state, driver, store=store)
+    assert sorted(reads) == sorted(keys)  # Shared PBL/GF forcing is copied once.
+    assert len(captured) == len(store)
+    for name, value in captured.items():
+        key = "scratch/" + name if "/" not in name else name
+        np.testing.assert_array_equal(value.view(np.uint32), store[key].view(np.uint32))
+        assert not np.shares_memory(value, store[key])
+
+
+def test_streamed_radiation_never_reads_the_stale_template_ledger(monkeypatch):
+    from gpuwm.core import physics_continuation
+
+    def stale_copy(value):
+        pytest.fail("streamed radiation copied a discarded template buffer")
+
+    def stale_ledger():
+        pytest.fail("streamed radiation read the discarded template ledger")
+
+    monkeypatch.setattr(physics_continuation, "_capture", stale_copy)
+    driver = SimpleNamespace(fields={"glw": np.zeros((2, 5), np.float32)},
+                             carriers=SimpleNamespace(state=stale_ledger))
+    store = {"fields/glw": np.full((12, 5), 247., np.float32)}
+    ledger = {"glw": {"source": "radiation_scheme", "last_update_model_time": 30.}}
+    captured = capture_carriers(driver, store=store, scalars={"carriers": ledger})
+    np.testing.assert_array_equal(captured["fields"]["glw"], store["fields/glw"])
+    assert not np.shares_memory(captured["fields"]["glw"], store["fields/glw"])
+    assert captured["contract"] == ledger
+    captured["contract"]["glw"]["last_update_model_time"] = 99.
+    assert ledger["glw"]["last_update_model_time"] == 30.
+
+
 def test_streamed_continuation_uses_store_not_last_slab():
     stale = np.zeros((3, 2, 5), dtype=np.float32)
     state = SimpleNamespace(existing_scratch=lambda name: stale if name == "cu_nca" else None)

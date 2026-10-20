@@ -1,0 +1,27 @@
+[package]
+name = "nextgen-hydrofabric"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+[lib]
+crate-type = ["rlib", "cdylib"]
+[[bin]]
+name = "rw_hydrofabric"
+path = "src/main.rs"
+[[bin]]
+name = "rw_hydrofabric_source_archive"
+path = "src/bin/source_archive.rs"
+required-features = ["source-archive"]
+[[bin]]
+name = "rw_hydrofabric_netcdf_subset"
+path = "src/bin/netcdf_subset.rs"
+required-features = ["source-netcdf"]
+[features]
+source-archive = []
+source-netcdf = []
+[dependencies]
+rayon = "1.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+[workspace]

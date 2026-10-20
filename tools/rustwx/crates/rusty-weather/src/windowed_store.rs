@@ -1361,6 +1361,58 @@ fn history_interval_max_row(source: SourceKind) -> Option<&'static HistoryInterv
     HISTORY_INTERVAL_MAX_ROWS.iter().find(|row| row.source == source)
 }
 
+/// Every store variable [`read_source_plane`] may read for `source`, in the
+/// order it tries them: the native plane, the wrfout import's
+/// history-interval maximum ([`HISTORY_INTERVAL_MAX_ROWS`]), then the
+/// instantaneous fallbacks.
+fn source_store_names(source: SourceKind) -> Vec<&'static str> {
+    let mut names: Vec<&'static str> = match source {
+        SourceKind::Apcp1h => vec![APCP_1H_VAR],
+        SourceKind::ApcpRunTotal => vec![APCP_RUN_TOTAL_VAR, APCP_WRFOUT_RUN_TOTAL_VAR],
+        SourceKind::Uh2to5km => vec!["uh_2to5km_max_1h", "uh_2to5km"],
+        SourceKind::WindSpeed10m => vec!["wind_speed_10m_max_1h"],
+        SourceKind::Temp2mC => vec!["temperature_2m"],
+        SourceKind::Rh2mPct => vec!["rh_2m", "relative_humidity_2m"],
+        SourceKind::Dewpoint2mC => vec!["dewpoint_2m"],
+        SourceKind::Vpd2mHpa => vec!["vpd_2m"],
+    };
+    if let Some(row) = history_interval_max_row(source) {
+        names.push(row.store_name);
+    }
+    if source == SourceKind::WindSpeed10m {
+        names.extend(["u_10m", "v_10m"]);
+    }
+    names
+}
+
+/// Every store variable `product`'s window may read, over every plan it can
+/// take (a QPF window reads `apcp_1h` or differences the run totals,
+/// whichever the store carries).  What a scoped wrfout import keeps for a
+/// window (`rw-wrfbatch`'s `required_fields_for_products`).
+///
+/// WHAT BREAKAGE THIS PREVENTS (gate law): the scoped import kept only the
+/// window's recipe selector, so `10m_wind_1h_max` and the other 10 m wind
+/// windows found neither `wrf_wspd10max` nor `u_10m`/`v_10m` in the store
+/// and drew no picture, while the whole import they fell back to without a
+/// scope spent about 5 minutes importing 25 frames at 3 km for the
+/// end-of-run windowed pass.
+pub fn window_store_reads(product: HrrrWindowedProduct) -> Vec<&'static str> {
+    let Some(end) = minimum_window_hour(product) else {
+        return Vec::new();
+    };
+    let mut names: Vec<&'static str> = Vec::new();
+    for source in [QpfSource::NativeHourly, QpfSource::DifferencedRunTotal] {
+        if let Ok(spec) = plan_product(product, end, source) {
+            for name in source_store_names(spec.source) {
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+        }
+    }
+    names
+}
+
 /// What one hour's source plane actually measures — recorded so the
 /// product's strategy note can label the fold accurately.  The
 /// distinction matters scientifically: an instantaneous snapshot makes

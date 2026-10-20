@@ -131,6 +131,24 @@ pub fn contiguous(values: &ArrayD<f64>) -> std::borrow::Cow<'_, [f64]> {
     }
 }
 
+/// Consume a canonical array in C order. Standard arrays hand their
+/// allocation to the stream instead of copying a complete field. A
+/// nonstandard view still needs the same C-order gather as `contiguous`.
+pub fn into_contiguous(values: ArrayD<f64>) -> Vec<f64> {
+    if values.is_standard_layout() {
+        let length = values.len();
+        let (mut storage, offset) = values.into_raw_vec_and_offset();
+        let offset = offset.unwrap_or(0);
+        if offset != 0 {
+            storage.copy_within(offset..offset + length, 0);
+        }
+        storage.truncate(length);
+        storage
+    } else {
+        contiguous(&values).into_owned()
+    }
+}
+
 pub fn count_nan(values: &ArrayD<f64>) -> usize {
     values.iter().filter(|value| value.is_nan()).count()
 }
@@ -139,6 +157,30 @@ pub fn count_nan(values: &ArrayD<f64>) -> usize {
 mod tests {
     use super::*;
     use ndarray::Array;
+
+    #[test]
+    fn owned_c_order_preserves_all_words_and_moves_the_allocation() {
+        let words = [0, 0x8000_0000_0000_0000, 0x7ff8_0000_0000_0042,
+                     0xfff0_0000_0000_0000, 1, 0x3ff0_0000_0000_0000];
+        let values = Array::from_shape_vec(IxDyn(&[2, 3]),
+            words.map(f64::from_bits).to_vec()).unwrap();
+        let pointer = values.as_ptr();
+        let result = into_contiguous(values);
+        assert_eq!(result.as_ptr(), pointer);
+        assert_eq!(result.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), words);
+    }
+
+    #[test]
+    fn owned_c_order_honors_offsets_empty_slices_and_transposition() {
+        let values = Array::from_shape_vec(IxDyn(&[3, 4]), (0..12).map(f64::from).collect()).unwrap();
+        let sliced = values.clone().slice_move(ndarray::s![1.., ..]).into_dyn();
+        assert_eq!(into_contiguous(sliced), (4..12).map(f64::from).collect::<Vec<_>>());
+        let empty = values.clone().slice_move(ndarray::s![2..2, ..]).into_dyn();
+        assert!(into_contiguous(empty).is_empty());
+        let transposed = values.reversed_axes();
+        let expected = contiguous(&transposed).into_owned();
+        assert_eq!(into_contiguous(transposed), expected);
+    }
 
     #[test]
     fn transposition_reorders_axes_by_name() {

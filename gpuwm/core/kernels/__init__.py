@@ -321,7 +321,7 @@ def _extra_header_text(name: str, kernel_dir: Path = _KDIR) -> str:
     # (see _DEFAULT_SOURCE_MODULES), the 2.9.1 default arithmetic; the exact
     # chain's strict sources and headers are a GPUWM_WRF_EXACT=1 process's.
     if not ENABLED and name in ("rrtmgp_gas", "rrtmgp_rte", "rrtmgp_cloud"):
-        headers = {'rrtmgp_gas': (), 'rrtmgp_rte': ('rrtmgp_planck_common_default.cuh',), 'rrtmgp_cloud': ()}[name]
+        headers = {'rrtmgp_gas': (), 'rrtmgp_rte': ('rrtmgp_planck_common_default.cuh', 'rrtmgp_planck_staged_default.cuh'), 'rrtmgp_cloud': ()}[name]
     if not ENABLED and name == "gf":
         headers = ('glibc_flt32.cuh',)
     if not ENABLED and name == "ysu":
@@ -992,14 +992,20 @@ def module_source_int_defines(
     if name in _HEADERS_NEED_INT_DEFINES:
         return (_preamble(kernel_dir) + prefix + "\n"
                 + _extra_header_text(name, kernel_dir) + _unit_text(name, kernel_dir))
-    return (_preamble(kernel_dir) + _extra_header_text(name, kernel_dir)
-            + prefix + "\n"
-            + _unit_text(name, kernel_dir))
+    source = (_preamble(kernel_dir) + _extra_header_text(name, kernel_dir)
+              + prefix + "\n" + _unit_text(name, kernel_dir))
+    from gpuwm.core.kernel_shape import specialize_source
+    return specialize_source(name, source, tuple(defines))
 
 
 @cuda_cache(maxsize=None)
-def get_kernel(name: str, func: str):
-    """Return one stable CuPy function wrapper per raw-kernel symbol."""
+def get_kernel(name: str, func: str, shape: tuple[int, int, int] = ()):
+    """Return one stable function per symbol and optional (nz, ny, nx)."""
+    if shape:
+        from gpuwm.core.kernel_shape import shape_defines
+        defines = shape_defines(name, func, shape)
+        if defines:
+            return get_kernel_int_defines(name, func, defines)
     if diffusion_kernel(name, func) and func in _DIFFUSION_FUNCTIONS.get(name, ()):
         return _load_diffusion_module(name).get_function(func)
     return load_module(name).get_function(func)
@@ -1007,8 +1013,12 @@ def get_kernel(name: str, func: str):
 
 @cuda_cache(maxsize=None)
 def get_kernel_int_defines(
-        name: str, func: str, defines: tuple[tuple[str, int], ...]):
+        name: str, func: str, defines: tuple[tuple[str, int], ...],
+        shape: tuple[int, int, int] = ()):
     """Return a cached kernel compiled with validated integer definitions."""
+    if shape:
+        from gpuwm.core.kernel_shape import shape_defines
+        defines = defines + shape_defines(name, func, shape)
     if diffusion_kernel(name, func) and func in _DIFFUSION_FUNCTIONS.get(name, ()):
         # Validate through the same public loader before selecting a tier.
         # The tier loader's validation remains the sole definition contract.

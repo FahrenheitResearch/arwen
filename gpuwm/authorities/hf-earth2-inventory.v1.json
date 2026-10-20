@@ -1,0 +1,1909 @@
+{
+  "schema": "gpuwm-hf-earth2-inventory-v1",
+  "earth2studio": {
+    "version": "0.19.0",
+    "wheel_sha256": "d0dc964b024ede64abf36586893c54ed97c2a7c3f3bcf643ff81a35462f66b99",
+    "source_command": "python -m pip download earth2studio==0.19.0 --no-deps"
+  },
+  "search": {
+    "author": "nvidia",
+    "terms": [
+      "earth2",
+      "fourcastnet",
+      "corrdiff",
+      "stormcast",
+      "healda",
+      "atlas",
+      "dlesym",
+      "cbottle",
+      "era5",
+      "hrrr",
+      "weather",
+      "climate",
+      "physicsnemo",
+      "modulus",
+      "earth-2",
+      "stormscope",
+      "sfno",
+      "dlwp",
+      "precip",
+      "windgust",
+      "solar",
+      "regen"
+    ]
+  },
+  "seeds": [
+    {
+      "repository": "FudanFuXi/FuXi-S2S",
+      "type": "dataset",
+      "evidence": [
+        "earth2studio/models/px/fuxi_s2s.py:160 upstream data reference"
+      ]
+    },
+    {
+      "repository": "allenai/ACE2-ERA5",
+      "type": "model",
+      "evidence": [
+        "MODELS.md:31",
+        "MODELS.json:230",
+        "MODELS.json key=ace2 weights",
+        "earth2studio==0.19.0 earth2studio/models/px/ace2.py:318"
+      ]
+    },
+    {
+      "repository": "allenai/SamudrACE-CM4-piControl",
+      "type": "model",
+      "evidence": [
+        "MODELS.md:32",
+        "MODELS.json:241",
+        "MODELS.json key=samudrace weights",
+        "earth2studio==0.19.0 earth2studio/models/px/samudrace.py:356"
+      ]
+    },
+    {
+      "repository": "Artamta/FuXi-S2S-ONNX",
+      "type": "model",
+      "evidence": [
+        "MODELS.json key=fuxi-s2s weights",
+        "earth2studio==0.19.0 earth2studio/models/px/fuxi_s2s.py:300"
+      ]
+    },
+    {
+      "repository": "ecmwf/aifs-ens-1.0",
+      "type": "model",
+      "evidence": [
+        "MODELS.json key=aifs-ens weights",
+        "earth2studio==0.19.0 earth2studio/models/px/aifsens.py:354"
+      ]
+    },
+    {
+      "repository": "ecmwf/aifs-ens-2.0",
+      "type": "model",
+      "evidence": [
+        "MODELS.md:28",
+        "MODELS.json:197",
+        "MODELS.json key=aifs-ens weights",
+        "earth2studio==0.19.0 earth2studio/models/px/aifs2ens.py:417"
+      ]
+    },
+    {
+      "repository": "ecmwf/aifs-single-1.0",
+      "type": "model",
+      "evidence": [
+        "ingest earth2-models.v1.json models.aifs.weights.repository"
+      ]
+    },
+    {
+      "repository": "ecmwf/aifs-single-1.1",
+      "type": "model",
+      "evidence": [
+        "MODELS.json key=aifs weights",
+        "earth2studio==0.19.0 earth2studio/models/px/aifs.py:352"
+      ]
+    },
+    {
+      "repository": "ecmwf/aifs-single-2.0",
+      "type": "model",
+      "evidence": [
+        "MODELS.md:27",
+        "MODELS.json:186",
+        "MODELS.json key=aifs weights",
+        "earth2studio==0.19.0 earth2studio/models/px/aifs2.py:408"
+      ]
+    },
+    {
+      "repository": "jychoi-hpc/ORBIT-2",
+      "type": "model",
+      "evidence": [
+        "MODELS.md:48",
+        "MODELS.json:417",
+        "MODELS.json key=orbit2-precip weights",
+        "earth2studio==0.19.0 earth2studio/models/dx/orbit2_precip.py:355"
+      ]
+    },
+    {
+      "repository": "kashif/weathernext2",
+      "type": "model",
+      "evidence": [
+        "MODELS.json key=weathernext2 weights"
+      ]
+    },
+    {
+      "repository": "microsoft/aurora",
+      "type": "model",
+      "evidence": [
+        "MODELS.md:22",
+        "MODELS.md:23",
+        "MODELS.json:131",
+        "MODELS.json:142",
+        "MODELS.json key=aurora weights",
+        "MODELS.json key=aurora15 weights",
+        "earth2studio==0.19.0 earth2studio/models/px/aurora.py:247",
+        "earth2studio==0.19.0 earth2studio/models/px/aurora1p5.py:273"
+      ]
+    },
+    {
+      "repository": "NickGeneva/earth_ai",
+      "type": "model",
+      "evidence": [
+        "MODELS.json key=pangu weights",
+        "MODELS.json key=fuxi weights",
+        "MODELS.json key=fengwu weights",
+        "earth2studio==0.19.0 earth2studio/models/px/fengwu.py:251",
+        "earth2studio==0.19.0 earth2studio/models/px/fuxi.py:260",
+        "earth2studio==0.19.0 earth2studio/models/px/pangu.py:207"
+      ]
+    },
+    {
+      "repository": "nvidia/atlas-era5",
+      "type": "model",
+      "evidence": [
+        "MODELS.md:14",
+        "MODELS.json:43",
+        "MODELS.json key=atlas weights",
+        "earth2studio==0.19.0 earth2studio/models/px/atlas.py:532",
+        "earth2studio==0.19.0 earth2studio/models/px/atlas_crps.py:439"
+      ]
+    },
+    {
+      "repository": "nvidia/cbottle",
+      "type": "model",
+      "evidence": [
+        "MODELS.md:34",
+        "MODELS.json:263",
+        "MODELS.json key=cbottle weights",
+        "earth2studio==0.19.0 earth2studio/models/dx/cbottle_infill.py:254",
+        "earth2studio==0.19.0 earth2studio/models/dx/cbottle_sr.py:376",
+        "earth2studio==0.19.0 earth2studio/models/dx/cbottle_tc.py:240",
+        "earth2studio==0.19.0 earth2studio/models/px/cbottle_video.py:431"
+      ]
+    },
+    {
+      "repository": "nvidia/corrdiff-cmip6-era5",
+      "type": "model",
+      "evidence": [
+        "MODELS.md:41",
+        "MODELS.json:340",
+        "MODELS.json key=corrdiff-cmip6 weights",
+        "earth2studio==0.19.0 earth2studio/models/dx/corrdiff_cmip6.py:398"
+      ]
+    },
+    {
+      "repository": "nvidia/corrdiff-cosmo-era5",
+      "type": "model",
+      "evidence": [
+        "MODELS.md:42",
+        "MODELS.json:351",
+        "MODELS.json key=corrdiff-cosmo weights",
+        "earth2studio==0.19.0 earth2studio/models/dx/corrdiff_cosmo_era5.py:1657"
+      ]
+    },
+    {
+      "repository": "nvidia/corrdiff-era5-hrrr",
+      "type": "model",
+      "evidence": [
+        "MODELS.md:40",
+        "MODELS.json:329",
+        "MODELS.json key=corrdiff-era5-hrrr weights",
+        "earth2studio==0.19.0 earth2studio/models/dx/corrdiff_era5_hrrr.py:568"
+      ]
+    },
+    {
+      "repository": "nvidia/dlesym-v0-isccp-era5",
+      "type": "model",
+      "evidence": [
+        "MODELS.md:17",
+        "MODELS.json:76",
+        "MODELS.json key=dlesym-v0 weights",
+        "earth2studio==0.19.0 earth2studio/models/dx/dlesym_v0_isccp_era5_precip.py:360",
+        "earth2studio==0.19.0 earth2studio/models/px/dlesym_v0_isccp_era5.py:296"
+      ]
+    },
+    {
+      "repository": "nvidia/dlesym-v1-era5",
+      "type": "model",
+      "evidence": [
+        "MODELS.md:16",
+        "MODELS.json:65",
+        "MODELS.json key=dlesym weights",
+        "earth2studio==0.19.0 earth2studio/models/px/dlesym.py:483"
+      ]
+    },
+    {
+      "repository": "nvidia/fourcastnet1",
+      "type": "model",
+      "evidence": [
+        "MODELS.md:11",
+        "MODELS.json:10",
+        "MODELS.json key=fcn weights",
+        "earth2studio==0.19.0 earth2studio/models/px/fcn.py:218"
+      ]
+    },
+    {
+      "repository": "nvidia/fourcastnet3",
+      "type": "model",
+      "evidence": [
+        "MODELS.md:13",
+        "MODELS.json:32",
+        "MODELS.json key=fcn3 weights",
+        "earth2studio==0.19.0 earth2studio/models/px/fcn3.py:259"
+      ]
+    },
+    {
+      "repository": "nvidia/healda",
+      "type": "model",
+      "evidence": [
+        "MODELS.md:51",
+        "MODELS.json:450",
+        "MODELS.json key=healda weights",
+        "earth2studio==0.19.0 earth2studio/models/da/healda.py:333"
+      ]
+    },
+    {
+      "repository": "nvidia/healda-v2",
+      "type": "model",
+      "evidence": [
+        "MODELS.json key=healda weights",
+        "upstream main earth2studio/models/da/healda_v2.py:220"
+      ]
+    },
+    {
+      "repository": "nvidia/stormcast-conus",
+      "type": "model",
+      "evidence": [
+        "MODELS.md:36",
+        "MODELS.json:285",
+        "MODELS.json key=stormcast-conus weights",
+        "earth2studio==0.19.0 earth2studio/models/px/stormcastconus.py:791"
+      ]
+    },
+    {
+      "repository": "nvidia/stormcast-v1-era5-hrrr",
+      "type": "model",
+      "evidence": [
+        "MODELS.md:35",
+        "MODELS.json:274",
+        "MODELS.json key=stormcast weights",
+        "earth2studio==0.19.0 earth2studio/models/da/sda_stormcast.py:344",
+        "earth2studio==0.19.0 earth2studio/models/px/stormcast.py:268"
+      ]
+    },
+    {
+      "repository": "nvidia/stormscope-goes-mrms",
+      "type": "model",
+      "evidence": [
+        "MODELS.md:37",
+        "MODELS.json:296",
+        "MODELS.json key=stormscope weights",
+        "earth2studio==0.19.0 earth2studio/models/px/stormscope.py:289"
+      ]
+    },
+    {
+      "repository": "nvidia/stormscope-meteosat",
+      "type": "model",
+      "evidence": [
+        "MODELS.md:38",
+        "MODELS.json:307",
+        "MODELS.json key=stormscope-meteosat weights",
+        "earth2studio==0.19.0 earth2studio/models/px/stormscope_meteosat.py:791"
+      ]
+    },
+    {
+      "repository": "nvidia/StormScope-NSRDB",
+      "type": "model",
+      "evidence": [
+        "MODELS.md:47",
+        "MODELS.json:406",
+        "MODELS.json key=stormscope-nsrdb weights",
+        "earth2studio==0.19.0 earth2studio/models/dx/stormscope_dx_nsrdb.py:286"
+      ]
+    },
+    {
+      "repository": "salv47/u-cast",
+      "type": "model",
+      "evidence": [
+        "MODELS.md:29",
+        "MODELS.json:208",
+        "MODELS.json key=ucast weights",
+        "earth2studio==0.19.0 earth2studio/models/px/ucast.py:751"
+      ]
+    },
+    {
+      "repository": "willychap/camulator",
+      "type": "model",
+      "evidence": [
+        "MODELS.md:33",
+        "MODELS.json:252",
+        "MODELS.json key=camulator weights",
+        "earth2studio==0.19.0 earth2studio/models/px/camulator.py:316"
+      ]
+    }
+  ],
+  "loaders": [
+    {
+      "key": "healda",
+      "classes": [
+        "HealDA"
+      ],
+      "repository": "nvidia/healda",
+      "requested_revision": "28e22277aab12a7c9e3e160c003539ef57bb24b1",
+      "prefix": "",
+      "selectors": [
+        "config.json",
+        "healda_ufs_era5.mdlus",
+        "static/condition_hpx6_padxy.npy",
+        "stats/*_normalizations.csv",
+        "stats/era5_13_levels_stats.csv"
+      ],
+      "source": "earth2studio/models/da/healda.py",
+      "source_sha256": "33d074b9f933b72ae4b33436dcfd75adf44d77df7e7f7f10606759c3e86042e8",
+      "default_package_line": 333,
+      "file_calls": [
+        {
+          "line": 379,
+          "expression": "package.resolve('config.json')"
+        },
+        {
+          "line": 383,
+          "expression": "package.resolve('healda_ufs_era5.mdlus')"
+        },
+        {
+          "line": 388,
+          "expression": "package.resolve('static/condition_hpx6_padxy.npy')"
+        },
+        {
+          "line": 394,
+          "expression": "package.resolve(f'stats/{sensor}_normalizations.csv')"
+        },
+        {
+          "line": 406,
+          "expression": "package.resolve('stats/era5_13_levels_stats.csv')"
+        }
+      ],
+      "scope": "union of package files used by the listed classes and selectable variants; config references expanded at run time; not a minimum-download assertion",
+      "optional_selectors": []
+    },
+    {
+      "key": "sda_stormcast",
+      "classes": [
+        "StormCastSDA"
+      ],
+      "repository": "nvidia/stormcast-v1-era5-hrrr",
+      "requested_revision": "6c89a0877a0d6b231033d3b0d8b9828a6f833ed8",
+      "prefix": "",
+      "selectors": [
+        "config.json",
+        "model.yaml",
+        "StormCastUNet.0.0.mdlus",
+        "EDMPrecond.0.0.mdlus",
+        "metadata.zarr.zip"
+      ],
+      "source": "earth2studio/models/da/sda_stormcast.py",
+      "source_sha256": "26f02d90afa9d2b1ec9a96e3d3baaa697bb744d43c9110d5d8769b6acc791711",
+      "default_package_line": 344,
+      "file_calls": [
+        {
+          "line": 391,
+          "expression": "package.resolve('config.json')"
+        },
+        {
+          "line": 402,
+          "expression": "package.resolve('model.yaml')"
+        },
+        {
+          "line": 406,
+          "expression": "package.resolve('StormCastUNet.0.0.mdlus')"
+        },
+        {
+          "line": 410,
+          "expression": "package.resolve('EDMPrecond.0.0.mdlus')"
+        },
+        {
+          "line": 415,
+          "expression": "package.resolve('metadata.zarr.zip')"
+        }
+      ],
+      "scope": "union of package files used by the listed classes and selectable variants; config references expanded at run time; not a minimum-download assertion",
+      "optional_selectors": []
+    },
+    {
+      "key": "cbottle_infill",
+      "classes": [
+        "CBottleInfill"
+      ],
+      "repository": "nvidia/cbottle",
+      "requested_revision": "eebd93c85b3cd3a5a8f79c546ed917b0b80438f4",
+      "prefix": "",
+      "selectors": [
+        "config.json",
+        "cBottle-3d/training-state-000512000.checkpoint",
+        "cBottle-3d/training-state-002048000.checkpoint",
+        "cBottle-3d/training-state-009856000.checkpoint",
+        "amip_midmonth_sst.nc"
+      ],
+      "source": "earth2studio/models/dx/cbottle_infill.py",
+      "source_sha256": "a90a50c47a6585a103d0843083eb80cf8f3f71548fdd4f51f804c0d1265190c0",
+      "default_package_line": 254,
+      "file_calls": [
+        {
+          "line": 293,
+          "expression": "package.resolve('cBottle-3d/training-state-000512000.checkpoint')"
+        },
+        {
+          "line": 294,
+          "expression": "package.resolve('cBottle-3d/training-state-002048000.checkpoint')"
+        },
+        {
+          "line": 295,
+          "expression": "package.resolve('cBottle-3d/training-state-009856000.checkpoint')"
+        },
+        {
+          "line": 304,
+          "expression": "package.resolve('config.json')"
+        },
+        {
+          "line": 309,
+          "expression": "package.resolve('amip_midmonth_sst.nc')"
+        }
+      ],
+      "scope": "union of package files used by the listed classes and selectable variants; config references expanded at run time; not a minimum-download assertion",
+      "optional_selectors": []
+    },
+    {
+      "key": "cbottle_sr",
+      "classes": [
+        "CBottleSR"
+      ],
+      "repository": "nvidia/cbottle",
+      "requested_revision": "eebd93c85b3cd3a5a8f79c546ed917b0b80438f4",
+      "prefix": "",
+      "selectors": [
+        "config.json",
+        "cBottle-SR.zip",
+        "cBottle-SR-Distill.zip"
+      ],
+      "source": "earth2studio/models/dx/cbottle_sr.py",
+      "source_sha256": "9b22270ee2c8f07642d22bcc37d9a72a7309069258461dec3532ede91c268b84",
+      "default_package_line": 376,
+      "file_calls": [
+        {
+          "line": 430,
+          "expression": "package.resolve('config.json')"
+        },
+        {
+          "line": 440,
+          "expression": "package.resolve(checkpoint_name)"
+        }
+      ],
+      "scope": "union of package files used by the listed classes and selectable variants; config references expanded at run time; not a minimum-download assertion",
+      "optional_selectors": []
+    },
+    {
+      "key": "cbottle_tc",
+      "classes": [
+        "DatasetModality",
+        "CBottleTCGuidance"
+      ],
+      "repository": "nvidia/cbottle",
+      "requested_revision": "eebd93c85b3cd3a5a8f79c546ed917b0b80438f4",
+      "prefix": "",
+      "selectors": [
+        "config.json",
+        "cBottle-3d/training-state-000512000.checkpoint",
+        "cBottle-3d/training-state-002048000.checkpoint",
+        "cBottle-3d/training-state-009856000.checkpoint",
+        "cBottle-3d-tc/training-state-002176000.checkpoint",
+        "amip_midmonth_sst.nc"
+      ],
+      "source": "earth2studio/models/dx/cbottle_tc.py",
+      "source_sha256": "8a4c6b43aa1e8d5ef74233908c956054b276b900de3a15c964c25c823226c6fa",
+      "default_package_line": 240,
+      "file_calls": [
+        {
+          "line": 289,
+          "expression": "package.resolve('cBottle-3d/training-state-000512000.checkpoint')"
+        },
+        {
+          "line": 290,
+          "expression": "package.resolve('cBottle-3d/training-state-002048000.checkpoint')"
+        },
+        {
+          "line": 291,
+          "expression": "package.resolve('cBottle-3d/training-state-009856000.checkpoint')"
+        },
+        {
+          "line": 301,
+          "expression": "package.resolve('config.json')"
+        },
+        {
+          "line": 307,
+          "expression": "package.resolve('cBottle-3d-tc/training-state-002176000.checkpoint')"
+        },
+        {
+          "line": 314,
+          "expression": "package.resolve('amip_midmonth_sst.nc')"
+        }
+      ],
+      "scope": "union of package files used by the listed classes and selectable variants; config references expanded at run time; not a minimum-download assertion",
+      "optional_selectors": []
+    },
+    {
+      "key": "corrdiff_cmip6",
+      "classes": [
+        "CorrDiffCMIP6"
+      ],
+      "repository": "nvidia/corrdiff-cmip6-era5",
+      "requested_revision": "f756fad5b85efec64df4868aead14dda698b8aea",
+      "prefix": "",
+      "selectors": [
+        "config.json",
+        "diffusion.mdlus",
+        "regression.mdlus",
+        "output_latlon_grid.nc",
+        "input_latlon_grid.nc",
+        "invariants.nc"
+      ],
+      "source": "earth2studio/models/dx/corrdiff_cmip6.py",
+      "source_sha256": "6c1cf72b07e59b797d07614e1c43e640b9b5ddd2dae7324666ee34a367adbd8a",
+      "default_package_line": 398,
+      "file_calls": [
+        {
+          "line": 438,
+          "expression": "package.resolve('config.json')"
+        },
+        {
+          "line": 445,
+          "expression": "package.resolve('diffusion.mdlus')"
+        },
+        {
+          "line": 451,
+          "expression": "package.resolve('regression.mdlus')"
+        },
+        {
+          "line": 502,
+          "expression": "package.resolve('output_latlon_grid.nc')"
+        },
+        {
+          "line": 511,
+          "expression": "package.resolve('input_latlon_grid.nc')"
+        },
+        {
+          "line": 518,
+          "expression": "package.resolve('invariants.nc')"
+        }
+      ],
+      "scope": "union of package files used by the listed classes and selectable variants; config references expanded at run time; not a minimum-download assertion",
+      "optional_selectors": []
+    },
+    {
+      "key": "corrdiff_cosmo_era5",
+      "classes": [
+        "CorrDiffCosmoEra5"
+      ],
+      "repository": "nvidia/corrdiff-cosmo-era5",
+      "requested_revision": "44064f304158f863f6ae02948b1b8e08d523458e",
+      "prefix": "",
+      "selectors": [
+        "config.json",
+        "rea*/metadata.json",
+        "rea*/stats.json",
+        "rea*/invariants_norm_stats.json",
+        "rea*/*.mdlus",
+        "rea*/grids.nc",
+        "rea*/invariants*.nc"
+      ],
+      "source": "earth2studio/models/dx/corrdiff_cosmo_era5.py",
+      "source_sha256": "3db36dc6cc1bb32ef6a8443531add982f9be83c901d75872fd836160d746d361",
+      "default_package_line": 1657,
+      "file_calls": [
+        {
+          "line": 1682,
+          "expression": "package.resolve(filename)"
+        },
+        {
+          "line": 1722,
+          "expression": "package.resolve('config.json')"
+        },
+        {
+          "line": 1779,
+          "expression": "package.resolve(prefix + ckpt)"
+        },
+        {
+          "line": 1841,
+          "expression": "package.resolve(prefix + 'grids.nc')"
+        },
+        {
+          "line": 1879,
+          "expression": "package.resolve(prefix + inv_meta['file'])"
+        },
+        {
+          "line": 1911,
+          "expression": "package.resolve(prefix + 'invariants.nc')"
+        }
+      ],
+      "scope": "union of package files used by the listed classes and selectable variants; config references expanded at run time; not a minimum-download assertion",
+      "optional_selectors": []
+    },
+    {
+      "key": "corrdiff_era5_hrrr",
+      "classes": [
+        "CorrDiffEra5Hrrr"
+      ],
+      "repository": "nvidia/corrdiff-era5-hrrr",
+      "requested_revision": "c95089642d19985714eebebdbd5b0b72c86ed1a3",
+      "prefix": "",
+      "selectors": [
+        "config.json",
+        "x_pred/metadata.json",
+        "x_pred/stats.json",
+        "x_pred/*.mdlus",
+        "x_pred/hrrr_lat.npy",
+        "x_pred/hrrr_lon.npy",
+        "x_pred/invariants.npy",
+        "x_pred/era5_lat.npy",
+        "x_pred/era5_lon.npy"
+      ],
+      "source": "earth2studio/models/dx/corrdiff_era5_hrrr.py",
+      "source_sha256": "923087b5aad2afc49bc2cee598c4ce4dd4d31661666ea4651d4b646fe850b7eb",
+      "default_package_line": 568,
+      "file_calls": [
+        {
+          "line": 589,
+          "expression": "package.resolve(filename)"
+        },
+        {
+          "line": 597,
+          "expression": "package.resolve(filename)"
+        },
+        {
+          "line": 644,
+          "expression": "package.resolve('config.json')"
+        },
+        {
+          "line": 657,
+          "expression": "package.resolve(prefix + metadata['checkpoint'])"
+        }
+      ],
+      "scope": "union of package files used by the listed classes and selectable variants; config references expanded at run time; not a minimum-download assertion",
+      "optional_selectors": []
+    },
+    {
+      "key": "dlesym_v0_isccp_era5_precip",
+      "classes": [
+        "DLESyMv0_ISCCP_ERA5Precip"
+      ],
+      "repository": "nvidia/dlesym-v0-isccp-era5",
+      "requested_revision": "924b2d62644ef61289dd960e018f60d6e067bfca",
+      "prefix": "",
+      "selectors": [
+        "config.yaml",
+        "*precip*.mdlus",
+        "hpx_lat.npy",
+        "hpx_lon.npy",
+        "*.npy",
+        "era5_ttr_doy_stats_hpx64.nc",
+        "isccp_olr_doy_stats_hpx64.nc"
+      ],
+      "source": "earth2studio/models/dx/dlesym_v0_isccp_era5_precip.py",
+      "source_sha256": "26a09b0740bf65de11652e8a077ad5b3633096ebbe0f73c22f7c7af151dd81a2",
+      "default_package_line": 360,
+      "file_calls": [
+        {
+          "line": 394,
+          "expression": "package.resolve('config.yaml')"
+        },
+        {
+          "line": 404,
+          "expression": "package.resolve(cfg.models.precip_model_checkpoints[0])"
+        },
+        {
+          "line": 422,
+          "expression": "package.resolve('hpx_lat.npy')"
+        },
+        {
+          "line": 423,
+          "expression": "package.resolve('hpx_lon.npy')"
+        },
+        {
+          "line": 425,
+          "expression": "package.resolve(f'{c}.npy')"
+        },
+        {
+          "line": 442,
+          "expression": "package.resolve(_TTR_CLIM_FILE)"
+        },
+        {
+          "line": 443,
+          "expression": "package.resolve(_OLR_CLIM_FILE)"
+        }
+      ],
+      "scope": "union of package files used by the listed classes and selectable variants; config references expanded at run time; not a minimum-download assertion",
+      "optional_selectors": []
+    },
+    {
+      "key": "orbit2_precip",
+      "classes": [
+        "OrbitGlobalPrecip"
+      ],
+      "repository": "jychoi-hpc/ORBIT-2",
+      "requested_revision": "718625a11bc908633efc0ed2b6e5aac05af26a66",
+      "prefix": "",
+      "selectors": [
+        "global-finetune/global_*_precipitation.yaml",
+        "global-finetune/global_*_precipitation.ckpt",
+        "static_variables/land_sea_mask_0.25deg.npy",
+        "static_variables/orography_0.25deg.npy",
+        "static_variables/lattitude_0.25deg.npy",
+        "static_variables/landcover_0.25deg.npy",
+        "mean_std/era5/0.25_deg/normalize_mean.npz",
+        "mean_std/era5/0.25_deg/normalize_std.npz"
+      ],
+      "source": "earth2studio/models/dx/orbit2_precip.py",
+      "source_sha256": "be3dc556c3c64c4a529008a783da19d20a84c998865eb5788d02dcc8f7907143",
+      "default_package_line": 355,
+      "file_calls": [
+        {
+          "line": 402,
+          "expression": "package.resolve(config_path)"
+        },
+        {
+          "line": 474,
+          "expression": "package.resolve(model_type + '-finetune' + '/' + model_type + '_' + model_size + '_' + model_variable + '.ckpt')"
+        },
+        {
+          "line": 495,
+          "expression": "package.resolve('static_variables/land_sea_mask_0.25deg.npy')"
+        },
+        {
+          "line": 497,
+          "expression": "package.resolve('static_variables/orography_0.25deg.npy')"
+        },
+        {
+          "line": 498,
+          "expression": "package.resolve('static_variables/lattitude_0.25deg.npy')"
+        },
+        {
+          "line": 499,
+          "expression": "package.resolve('static_variables/landcover_0.25deg.npy')"
+        },
+        {
+          "line": 502,
+          "expression": "package.resolve('mean_std/era5/0.25_deg/normalize_mean.npz')"
+        },
+        {
+          "line": 505,
+          "expression": "package.resolve('mean_std/era5/0.25_deg/normalize_std.npz')"
+        },
+        {
+          "line": 509,
+          "expression": "package.resolve('mean_std/era5/0.25_deg/normalize_mean.npz')"
+        },
+        {
+          "line": 512,
+          "expression": "package.resolve('mean_std/era5/0.25_deg/normalize_std.npz')"
+        }
+      ],
+      "scope": "union of package files used by the listed classes and selectable variants; config references expanded at run time; not a minimum-download assertion",
+      "optional_selectors": []
+    },
+    {
+      "key": "stormscope_dx_nsrdb",
+      "classes": [
+        "_MaskedModel",
+        "StormScopeDxNSRDB"
+      ],
+      "repository": "nvidia/StormScope-NSRDB",
+      "requested_revision": "main",
+      "prefix": "",
+      "selectors": [
+        "config.json",
+        "registry.json",
+        "*.mdlus",
+        "*.npy"
+      ],
+      "source": "earth2studio/models/dx/stormscope_dx_nsrdb.py",
+      "source_sha256": "0c10e66b0abb8afe221386131b151a06bb72a0df09063179de52d721003e9330",
+      "default_package_line": 286,
+      "file_calls": [
+        {
+          "line": 326,
+          "expression": "package.resolve('config.json')"
+        },
+        {
+          "line": 336,
+          "expression": "package.resolve(checkpoint['path'])"
+        },
+        {
+          "line": 338,
+          "expression": "package.resolve(package_spec['regression_checkpoint']['path'])"
+        },
+        {
+          "line": 428,
+          "expression": "package.resolve('registry.json')"
+        },
+        {
+          "line": 454,
+          "expression": "package.resolve(f'{prefix}_means.npy')"
+        },
+        {
+          "line": 455,
+          "expression": "package.resolve(f'{prefix}_stds.npy')"
+        },
+        {
+          "line": 481,
+          "expression": "package.resolve(filename)"
+        },
+        {
+          "line": 496,
+          "expression": "package.resolve('lat.npy')"
+        },
+        {
+          "line": 498,
+          "expression": "package.resolve('lon.npy')"
+        }
+      ],
+      "scope": "union of package files used by the listed classes and selectable variants; config references expanded at run time; not a minimum-download assertion",
+      "optional_selectors": [
+        "config.json"
+      ]
+    },
+    {
+      "key": "ace2",
+      "classes": [
+        "ACE2ERA5"
+      ],
+      "repository": "allenai/ACE2-ERA5",
+      "requested_revision": "main",
+      "prefix": "",
+      "selectors": [
+        "ace2_era5_ckpt.tar"
+      ],
+      "source": "earth2studio/models/px/ace2.py",
+      "source_sha256": "a963fbf49cfed07548641983db0fafb04fa4a067eccc88f35f8d113ca706be97",
+      "default_package_line": 318,
+      "file_calls": [
+        {
+          "line": 353,
+          "expression": "package.resolve('ace2_era5_ckpt.tar')"
+        }
+      ],
+      "scope": "union of package files used by the listed classes and selectable variants; config references expanded at run time; not a minimum-download assertion",
+      "optional_selectors": []
+    },
+    {
+      "key": "aifs",
+      "classes": [
+        "AIFS"
+      ],
+      "repository": "ecmwf/aifs-single-1.1",
+      "requested_revision": "main",
+      "prefix": "",
+      "selectors": [
+        "aifs-single-mse-1.1.ckpt"
+      ],
+      "source": "earth2studio/models/px/aifs.py",
+      "source_sha256": "689dc36fe3baca71ad79efe398ca65bfe45b7f39602e628407d2891379f58092",
+      "default_package_line": 352,
+      "file_calls": [
+        {
+          "line": 369,
+          "expression": "package.resolve('aifs-single-mse-1.1.ckpt')"
+        }
+      ],
+      "scope": "union of package files used by the listed classes and selectable variants; config references expanded at run time; not a minimum-download assertion",
+      "optional_selectors": []
+    },
+    {
+      "key": "aifs2",
+      "classes": [
+        "AIFS2"
+      ],
+      "repository": "ecmwf/aifs-single-2.0",
+      "requested_revision": "08286fc247419bc40666226c816ad4ac686d2a8b",
+      "prefix": "",
+      "selectors": [
+        "aifs-single-mse-2.0.ckpt"
+      ],
+      "source": "earth2studio/models/px/aifs2.py",
+      "source_sha256": "45e754834f75b943d9d98272fa9e686ef7523595c3bc5d9246dbc6755b54a7ba",
+      "default_package_line": 408,
+      "file_calls": [
+        {
+          "line": 444,
+          "expression": "package.resolve('aifs-single-mse-2.0.ckpt')"
+        }
+      ],
+      "scope": "union of package files used by the listed classes and selectable variants; config references expanded at run time; not a minimum-download assertion",
+      "optional_selectors": []
+    },
+    {
+      "key": "aifs2ens",
+      "classes": [
+        "AIFS2ENS"
+      ],
+      "repository": "ecmwf/aifs-ens-2.0",
+      "requested_revision": "29a1f8c4ab76cd0e5b64cfd415f4ff9e08edf7cf",
+      "prefix": "",
+      "selectors": [
+        "aifs-ens-crps-2.0.ckpt"
+      ],
+      "source": "earth2studio/models/px/aifs2ens.py",
+      "source_sha256": "eec701927116276d0c282b5e70a4f1744663db19998a687756a8a5b2c5b37acf",
+      "default_package_line": 417,
+      "file_calls": [
+        {
+          "line": 460,
+          "expression": "package.resolve('aifs-ens-crps-2.0.ckpt')"
+        }
+      ],
+      "scope": "union of package files used by the listed classes and selectable variants; config references expanded at run time; not a minimum-download assertion",
+      "optional_selectors": []
+    },
+    {
+      "key": "aifsens",
+      "classes": [
+        "AIFSENS"
+      ],
+      "repository": "ecmwf/aifs-ens-1.0",
+      "requested_revision": "main",
+      "prefix": "",
+      "selectors": [
+        "aifs-ens-crps-1.0.ckpt"
+      ],
+      "source": "earth2studio/models/px/aifsens.py",
+      "source_sha256": "b3566a9ef43400c273309476eafef30016687969d28f8075e25b851c1b87f00d",
+      "default_package_line": 354,
+      "file_calls": [
+        {
+          "line": 372,
+          "expression": "package.resolve('aifs-ens-crps-1.0.ckpt')"
+        }
+      ],
+      "scope": "union of package files used by the listed classes and selectable variants; config references expanded at run time; not a minimum-download assertion",
+      "optional_selectors": []
+    },
+    {
+      "key": "atlas",
+      "classes": [
+        "Atlas"
+      ],
+      "repository": "nvidia/atlas-era5",
+      "requested_revision": "893a38550aa313c97c41382a5003d209d60a840b",
+      "prefix": "",
+      "selectors": [
+        "config.json",
+        "si/config.json",
+        "crps/config.json",
+        "si/*.mdlus",
+        "crps/*.mdlus"
+      ],
+      "source": "earth2studio/models/px/atlas.py",
+      "source_sha256": "77243679cd6c5b874a6df3ac455d15764eeeea58a0350444fb6d7fd3bd3fbf61",
+      "default_package_line": 532,
+      "file_calls": [
+        {
+          "line": 558,
+          "expression": "package.resolve('config.json')"
+        },
+        {
+          "line": 565,
+          "expression": "package.resolve(candidate)"
+        },
+        {
+          "line": 583,
+          "expression": "package.resolve(ae_cfg['model_path'])"
+        },
+        {
+          "line": 584,
+          "expression": "package.resolve(ae_cfg['processor_path'])"
+        },
+        {
+          "line": 594,
+          "expression": "package.resolve(modelpkg['genmodel']['model_path'])"
+        },
+        {
+          "line": 598,
+          "expression": "package.resolve(modelpkg['genmodel']['processor_path'])"
+        }
+      ],
+      "scope": "union of package files used by the listed classes and selectable variants; config references expanded at run time; not a minimum-download assertion",
+      "optional_selectors": []
+    },
+    {
+      "key": "atlas_crps",
+      "classes": [
+        "AtlasCRPS"
+      ],
+      "repository": "nvidia/atlas-era5",
+      "requested_revision": "893a38550aa313c97c41382a5003d209d60a840b",
+      "prefix": "",
+      "selectors": [
+        "config.json",
+        "crps/config.json",
+        "crps/*.mdlus"
+      ],
+      "source": "earth2studio/models/px/atlas_crps.py",
+      "source_sha256": "c634217c7e94a102722773fd135cb8771f1d494d6ab29e827020163485339aef",
+      "default_package_line": 439,
+      "file_calls": [
+        {
+          "line": 478,
+          "expression": "package.resolve('config.json')"
+        },
+        {
+          "line": 482,
+          "expression": "package.resolve('crps/config.json')"
+        },
+        {
+          "line": 486,
+          "expression": "package.resolve(genmodel_config['model_path'])"
+        },
+        {
+          "line": 490,
+          "expression": "package.resolve(genmodel_config['processor_path'])"
+        },
+        {
+          "line": 496,
+          "expression": "package.resolve(autoencoder_config['model_path'])"
+        },
+        {
+          "line": 501,
+          "expression": "package.resolve(autoencoder_config['processor_path'])"
+        }
+      ],
+      "scope": "union of package files used by the listed classes and selectable variants; config references expanded at run time; not a minimum-download assertion",
+      "optional_selectors": []
+    },
+    {
+      "key": "aurora",
+      "classes": [
+        "Aurora"
+      ],
+      "repository": "microsoft/aurora",
+      "requested_revision": "refs%2Fpr%2F1",
+      "prefix": "",
+      "selectors": [
+        "aurora-0.25-pretrained.ckpt",
+        "static-npy/aurora-0.25-static-z.npy",
+        "static-npy/aurora-0.25-static-slt.npy",
+        "static-npy/aurora-0.25-static-lsm.npy"
+      ],
+      "source": "earth2studio/models/px/aurora.py",
+      "source_sha256": "a18419f7f055c2d814d2c87a7b0c237373f294b86a959354592db149f7100b91",
+      "default_package_line": 247,
+      "file_calls": [
+        {
+          "line": 267,
+          "expression": "package.resolve('static-npy/aurora-0.25-static-z.npy')"
+        },
+        {
+          "line": 270,
+          "expression": "package.resolve('static-npy/aurora-0.25-static-slt.npy')"
+        },
+        {
+          "line": 273,
+          "expression": "package.resolve('static-npy/aurora-0.25-static-lsm.npy')"
+        },
+        {
+          "line": 277,
+          "expression": "package.resolve('aurora-0.25-pretrained.ckpt')"
+        }
+      ],
+      "scope": "union of package files used by the listed classes and selectable variants; config references expanded at run time; not a minimum-download assertion",
+      "optional_selectors": []
+    },
+    {
+      "key": "aurora1p5",
+      "classes": [
+        "_Aurora",
+        "Aurora1p5",
+        "Aurora1p5Ensemble",
+        "Aurora1p5_6h",
+        "Aurora1p5Ensemble_6h"
+      ],
+      "repository": "microsoft/aurora",
+      "requested_revision": "c171214768997594e1a3fc6b8d9bbb489e9d21ab",
+      "prefix": "",
+      "selectors": [
+        "aurora-0.25-v1.5-static.pickle",
+        "aurora-0.25-v1.5.ckpt",
+        "aurora-0.25-v1.5-ensemble.ckpt"
+      ],
+      "source": "earth2studio/models/px/aurora1p5.py",
+      "source_sha256": "2f7a932105ac89400ee8676ad001abe03cd2cfc0b4e32dbdf9faffdf7e7ad089",
+      "default_package_line": 273,
+      "file_calls": [
+        {
+          "line": 160,
+          "expression": "package.resolve('aurora-0.25-v1.5-static.pickle')"
+        },
+        {
+          "line": 169,
+          "expression": "package.resolve(checkpoint_name)"
+        }
+      ],
+      "scope": "union of package files used by the listed classes and selectable variants; config references expanded at run time; not a minimum-download assertion",
+      "optional_selectors": []
+    },
+    {
+      "key": "camulator",
+      "classes": [
+        "CAMulator"
+      ],
+      "repository": "willychap/camulator",
+      "requested_revision": "4da83abd466aae4f7f39473c7f4bef83dd5a2ea0",
+      "prefix": "",
+      "selectors": [
+        "checkpoint.pt00069.pt",
+        "normalization/mean_6h_Coupled_1980_2014_32lev_1.0deg_ERA5scaled_F32_Qtot_Mixed_Modal.nc",
+        "normalization/std_6h_Coupled_1980_2014_32lev_1.0deg_ERA5scaled_F32_Qtot_Mixed_Modal.nc",
+        "normalization/statics_b_credit_runs_f32_02.nc",
+        "normalization/b.e21.CREDIT_climate.statics_1.0deg_32levs_latlon_F32_hyai_fixed.nc"
+      ],
+      "source": "earth2studio/models/px/camulator.py",
+      "source_sha256": "33e470fe3187785dfa98adabbe276de0b97c0ab7b4de7d143b3c5afe8ffdbca5",
+      "default_package_line": 316,
+      "file_calls": [
+        {
+          "line": 364,
+          "expression": "package.resolve(_MEAN_FILE)"
+        },
+        {
+          "line": 365,
+          "expression": "package.resolve(_STD_FILE)"
+        },
+        {
+          "line": 366,
+          "expression": "package.resolve(_STATICS_FILE)"
+        },
+        {
+          "line": 367,
+          "expression": "package.resolve(_PHYSICS_FILE)"
+        },
+        {
+          "line": 410,
+          "expression": "package.resolve(checkpoint)"
+        }
+      ],
+      "scope": "union of package files used by the listed classes and selectable variants; config references expanded at run time; not a minimum-download assertion",
+      "optional_selectors": []
+    },
+    {
+      "key": "cbottle_video",
+      "classes": [
+        "DatasetModality",
+        "TimeStepperFunction",
+        "CBottleVideo"
+      ],
+      "repository": "nvidia/cbottle",
+      "requested_revision": "eebd93c85b3cd3a5a8f79c546ed917b0b80438f4",
+      "prefix": "",
+      "selectors": [
+        "config.json",
+        "cBottle-video.zip",
+        "amip_midmonth_sst.nc"
+      ],
+      "source": "earth2studio/models/px/cbottle_video.py",
+      "source_sha256": "7c1a89a5cbc9ff67700034112cba1243a0e592cc66120e4547f080713aabf23e",
+      "default_package_line": 431,
+      "file_calls": [
+        {
+          "line": 475,
+          "expression": "package.resolve('config.json')"
+        },
+        {
+          "line": 482,
+          "expression": "package.resolve('cBottle-video.zip')"
+        },
+        {
+          "line": 492,
+          "expression": "package.resolve('amip_midmonth_sst.nc')"
+        }
+      ],
+      "scope": "union of package files used by the listed classes and selectable variants; config references expanded at run time; not a minimum-download assertion",
+      "optional_selectors": []
+    },
+    {
+      "key": "dlesym",
+      "classes": [
+        "DLESyM",
+        "DLESyMLatLon"
+      ],
+      "repository": "nvidia/dlesym-v1-era5",
+      "requested_revision": "b88155cfc2c988a2a9058d5e35a41220e2b01941",
+      "prefix": "",
+      "selectors": [
+        "config.yaml",
+        "*/config.yaml",
+        "*/atmos/*.mdlus",
+        "*/ocean/*.mdlus",
+        "hpx_lat.npy",
+        "hpx_lon.npy",
+        "*.npy"
+      ],
+      "source": "earth2studio/models/px/dlesym.py",
+      "source_sha256": "f07d86971bff332ac4a96adf6199c5435a7db358f0d5a44fff60b353e4355591",
+      "default_package_line": 483,
+      "file_calls": [
+        {
+          "line": 536,
+          "expression": "package.resolve('config.yaml')"
+        },
+        {
+          "line": 554,
+          "expression": "package.resolve(f'{version_path}/config.yaml')"
+        },
+        {
+          "line": 570,
+          "expression": "package.resolve(f'{version_path}/atmos/{atmos_ckpts[atmos_model_idx]}')"
+        },
+        {
+          "line": 573,
+          "expression": "package.resolve(f'{version_path}/ocean/{ocean_ckpts[ocean_model_idx]}')"
+        },
+        {
+          "line": 600,
+          "expression": "package.resolve('hpx_lat.npy')"
+        },
+        {
+          "line": 601,
+          "expression": "package.resolve('hpx_lon.npy')"
+        },
+        {
+          "line": 604,
+          "expression": "package.resolve(f'{const}.npy')"
+        },
+        {
+          "line": 611,
+          "expression": "package.resolve(f'{const}.npy')"
+        }
+      ],
+      "scope": "union of package files used by the listed classes and selectable variants; config references expanded at run time; not a minimum-download assertion",
+      "optional_selectors": []
+    },
+    {
+      "key": "dlesym_v0_isccp_era5",
+      "classes": [
+        "DLESyMv0_ISCCP_ERA5",
+        "DLESyMv0_ISCCP_ERA5LatLon"
+      ],
+      "repository": "nvidia/dlesym-v0-isccp-era5",
+      "requested_revision": "924b2d62644ef61289dd960e018f60d6e067bfca",
+      "prefix": "",
+      "selectors": [
+        "config.yaml",
+        "*.mdlus",
+        "hpx_lat.npy",
+        "hpx_lon.npy",
+        "*.npy",
+        "era5_ttr_doy_stats_hpx64.nc",
+        "isccp_olr_doy_stats_hpx64.nc"
+      ],
+      "source": "earth2studio/models/px/dlesym_v0_isccp_era5.py",
+      "source_sha256": "4f3b0fb7e7ac20985f5cca681830bb5c422df98eb12e8a727dcd572495cbe0d9",
+      "default_package_line": 296,
+      "file_calls": [
+        {
+          "line": 336,
+          "expression": "package.resolve('config.yaml')"
+        },
+        {
+          "line": 340,
+          "expression": "package.resolve(cfg.models.atmos_model_checkpoints[atmos_model_idx])"
+        },
+        {
+          "line": 343,
+          "expression": "package.resolve(cfg.models.ocean_model_checkpoints[ocean_model_idx])"
+        },
+        {
+          "line": 382,
+          "expression": "package.resolve('hpx_lat.npy')"
+        },
+        {
+          "line": 383,
+          "expression": "package.resolve('hpx_lon.npy')"
+        },
+        {
+          "line": 385,
+          "expression": "package.resolve(f'{c}.npy')"
+        },
+        {
+          "line": 389,
+          "expression": "package.resolve(f'{c}.npy')"
+        },
+        {
+          "line": 396,
+          "expression": "package.resolve(_TTR_CLIM_FILE)"
+        },
+        {
+          "line": 397,
+          "expression": "package.resolve(_OLR_CLIM_FILE)"
+        }
+      ],
+      "scope": "union of package files used by the listed classes and selectable variants; config references expanded at run time; not a minimum-download assertion",
+      "optional_selectors": []
+    },
+    {
+      "key": "fcn",
+      "classes": [
+        "_FCNCheckpointState",
+        "FCN"
+      ],
+      "repository": "nvidia/fourcastnet1",
+      "requested_revision": "c67a63995f6c8e0e557eb3d791f32f437e9b02d5",
+      "prefix": "",
+      "selectors": [
+        "config.json",
+        "fcn.mdlus",
+        "global_means.npy",
+        "global_stds.npy"
+      ],
+      "source": "earth2studio/models/px/fcn.py",
+      "source_sha256": "caf4b6d83754a6fb888a70651be48d35f1fcb3f5031de4b1ff2dc46c3aebb849",
+      "default_package_line": 218,
+      "file_calls": [
+        {
+          "line": 239,
+          "expression": "package.resolve('config.json')"
+        },
+        {
+          "line": 243,
+          "expression": "package.resolve('fcn.mdlus')"
+        },
+        {
+          "line": 246,
+          "expression": "package.resolve('global_means.npy')"
+        },
+        {
+          "line": 247,
+          "expression": "package.resolve('global_stds.npy')"
+        }
+      ],
+      "scope": "union of package files used by the listed classes and selectable variants; config references expanded at run time; not a minimum-download assertion",
+      "optional_selectors": []
+    },
+    {
+      "key": "fcn3",
+      "classes": [
+        "FCN3"
+      ],
+      "repository": "nvidia/fourcastnet3",
+      "requested_revision": "76ef0c60237e458b33196ba027134e27f3fc4538",
+      "prefix": "",
+      "selectors": [
+        "config.json",
+        "training_checkpoints/best_ckpt_mp0.tar",
+        "global_means.npy",
+        "global_stds.npy",
+        "mins.npy",
+        "maxs.npy",
+        "orography.nc",
+        "land_mask.nc"
+      ],
+      "source": "earth2studio/models/px/fcn3.py",
+      "source_sha256": "e4bcc28e03cbafb6e409b73589423782f4c83e6d58dba5b0037de89ab2546703",
+      "default_package_line": 259,
+      "file_calls": [
+        {
+          "line": 302,
+          "expression": "package.get('config.json')"
+        }
+      ],
+      "scope": "union of package files used by the listed classes and selectable variants; config references expanded at run time; not a minimum-download assertion",
+      "optional_selectors": [],
+      "dependency_evidence": {
+        "source": "makani-model_package-main.py",
+        "sha256": "5dbe9bf2635ec930554f72b0be18a5948e0ec01ab7b09a7ef66b2b941dc166e7",
+        "lines": [
+          55,
+          56,
+          57,
+          58,
+          59,
+          60,
+          83,
+          453,
+          471
+        ]
+      }
+    },
+    {
+      "key": "fengwu",
+      "classes": [
+        "FengWu"
+      ],
+      "repository": "NickGeneva/earth_ai",
+      "requested_revision": "main",
+      "prefix": "fengwu",
+      "selectors": [
+        "fengwu_v1.onnx",
+        "global_means.npy",
+        "global_stds.npy"
+      ],
+      "source": "earth2studio/models/px/fengwu.py",
+      "source_sha256": "940bd70f939a5982568215ff7156fbf03c39bc054aae39b6a3777ff1fa49ceff",
+      "default_package_line": 251,
+      "file_calls": [
+        {
+          "line": 268,
+          "expression": "package.resolve('fengwu_v1.onnx')"
+        },
+        {
+          "line": 269,
+          "expression": "package.open('global_means.npy')"
+        },
+        {
+          "line": 270,
+          "expression": "package.open('global_stds.npy')"
+        }
+      ],
+      "scope": "union of package files used by the listed classes and selectable variants; config references expanded at run time; not a minimum-download assertion",
+      "optional_selectors": []
+    },
+    {
+      "key": "fuxi",
+      "classes": [
+        "FuXi"
+      ],
+      "repository": "NickGeneva/earth_ai",
+      "requested_revision": "main",
+      "prefix": "fuxi",
+      "selectors": [
+        "short.onnx",
+        "short",
+        "medium.onnx",
+        "medium",
+        "long.onnx",
+        "long"
+      ],
+      "source": "earth2studio/models/px/fuxi.py",
+      "source_sha256": "a1c86cc3a06f218c329e3ea46e6c3f62cc0139f37f0b66bd83b1cae11419c6b7",
+      "default_package_line": 260,
+      "file_calls": [
+        {
+          "line": 279,
+          "expression": "package.resolve('short.onnx')"
+        },
+        {
+          "line": 280,
+          "expression": "package.open('short')"
+        },
+        {
+          "line": 282,
+          "expression": "package.resolve('medium.onnx')"
+        },
+        {
+          "line": 283,
+          "expression": "package.open('medium')"
+        },
+        {
+          "line": 285,
+          "expression": "package.resolve('long.onnx')"
+        },
+        {
+          "line": 286,
+          "expression": "package.open('long')"
+        }
+      ],
+      "scope": "union of package files used by the listed classes and selectable variants; config references expanded at run time; not a minimum-download assertion",
+      "optional_selectors": []
+    },
+    {
+      "key": "fuxi_s2s",
+      "classes": [
+        "FuXiS2S"
+      ],
+      "repository": "Artamta/FuXi-S2S-ONNX",
+      "requested_revision": "5d7a6b132aaaaa070d2856d002f95911140db0ff",
+      "prefix": "",
+      "selectors": [
+        "fuxi_s2s",
+        "fuxi_s2s.onnx"
+      ],
+      "source": "earth2studio/models/px/fuxi_s2s.py",
+      "source_sha256": "c0823268cb3fdc489df001bff84824c7acf20180401a687718958bac1802bc3e",
+      "default_package_line": 300,
+      "file_calls": [
+        {
+          "line": 110,
+          "expression": "package.resolve('fuxi_s2s')"
+        },
+        {
+          "line": 111,
+          "expression": "package.resolve('fuxi_s2s.onnx')"
+        }
+      ],
+      "scope": "union of package files used by the listed classes and selectable variants; config references expanded at run time; not a minimum-download assertion",
+      "optional_selectors": []
+    },
+    {
+      "key": "pangu",
+      "classes": [
+        "PanguBase",
+        "Pangu24",
+        "Pangu6",
+        "Pangu3"
+      ],
+      "repository": "NickGeneva/earth_ai",
+      "requested_revision": "main",
+      "prefix": "pangu",
+      "selectors": [
+        "pangu_weather_24.onnx",
+        "pangu_weather_6.onnx",
+        "pangu_weather_3.onnx"
+      ],
+      "source": "earth2studio/models/px/pangu.py",
+      "source_sha256": "d8127d827095fc5de14776295cb85928c34ec192124b2f8951b9716a9aa87947",
+      "default_package_line": 207,
+      "file_calls": [
+        {
+          "line": 401,
+          "expression": "package.resolve('pangu_weather_24.onnx')"
+        },
+        {
+          "line": 520,
+          "expression": "package.resolve('pangu_weather_24.onnx')"
+        },
+        {
+          "line": 521,
+          "expression": "package.resolve('pangu_weather_6.onnx')"
+        },
+        {
+          "line": 657,
+          "expression": "package.resolve('pangu_weather_24.onnx')"
+        },
+        {
+          "line": 658,
+          "expression": "package.resolve('pangu_weather_6.onnx')"
+        },
+        {
+          "line": 659,
+          "expression": "package.resolve('pangu_weather_3.onnx')"
+        }
+      ],
+      "scope": "union of package files used by the listed classes and selectable variants; config references expanded at run time; not a minimum-download assertion",
+      "optional_selectors": []
+    },
+    {
+      "key": "samudrace",
+      "classes": [
+        "SamudrACE"
+      ],
+      "repository": "allenai/SamudrACE-CM4-piControl",
+      "requested_revision": "48567c80676de7db51d270c8c0c5dd61f08c9f39",
+      "prefix": "",
+      "selectors": [
+        "samudrACE_CM4_piControl_ckpt.tar"
+      ],
+      "source": "earth2studio/models/px/samudrace.py",
+      "source_sha256": "edb513ad585355038cdd8f2487176095c44eaab723e29b51cb7de1c7a2ddbfab",
+      "default_package_line": 356,
+      "file_calls": [
+        {
+          "line": 408,
+          "expression": "package.resolve('samudrACE_CM4_piControl_ckpt.tar')"
+        }
+      ],
+      "scope": "union of package files used by the listed classes and selectable variants; config references expanded at run time; not a minimum-download assertion",
+      "optional_selectors": []
+    },
+    {
+      "key": "stormcast",
+      "classes": [
+        "StormCast"
+      ],
+      "repository": "nvidia/stormcast-v1-era5-hrrr",
+      "requested_revision": "6c89a0877a0d6b231033d3b0d8b9828a6f833ed8",
+      "prefix": "",
+      "selectors": [
+        "config.json",
+        "model.yaml",
+        "StormCastUNet.0.0.mdlus",
+        "EDMPrecond.0.0.mdlus",
+        "metadata.zarr.zip"
+      ],
+      "source": "earth2studio/models/px/stormcast.py",
+      "source_sha256": "b750914a1aa1ba26b1300d985d231923c8faa6b4c1929ae8aeeb1f02d1441e2e",
+      "default_package_line": 268,
+      "file_calls": [
+        {
+          "line": 304,
+          "expression": "package.resolve('config.json')"
+        },
+        {
+          "line": 315,
+          "expression": "package.resolve('model.yaml')"
+        },
+        {
+          "line": 319,
+          "expression": "package.resolve('StormCastUNet.0.0.mdlus')"
+        },
+        {
+          "line": 323,
+          "expression": "package.resolve('EDMPrecond.0.0.mdlus')"
+        },
+        {
+          "line": 328,
+          "expression": "package.resolve('metadata.zarr.zip')"
+        }
+      ],
+      "scope": "union of package files used by the listed classes and selectable variants; config references expanded at run time; not a minimum-download assertion",
+      "optional_selectors": []
+    },
+    {
+      "key": "stormcastconus",
+      "classes": [
+        "StormCastCONUS",
+        "_SplitModelWrapper"
+      ],
+      "repository": "nvidia/stormcast-conus",
+      "requested_revision": "bc8dd783f96fe0fa75fcff5bb67f66b549a5299f",
+      "prefix": "",
+      "selectors": [
+        "config.json",
+        "model.yaml",
+        "metadata.nc",
+        "StormCastCONUS-high.mdlus",
+        "StormCastCONUS-pz-low.mdlus",
+        "StormCastCONUS-tq-low.mdlus",
+        "StormCastCONUS-uv-low.mdlus"
+      ],
+      "source": "earth2studio/models/px/stormcastconus.py",
+      "source_sha256": "95da38e50e1dbf630f083699ed8f5781be9a324c9edaa324348df6e7011ef519",
+      "default_package_line": 791,
+      "file_calls": [
+        {
+          "line": 833,
+          "expression": "package.resolve('config.json')"
+        },
+        {
+          "line": 838,
+          "expression": "package.resolve('model.yaml')"
+        },
+        {
+          "line": 855,
+          "expression": "package.resolve('StormCastCONUS-high.mdlus')"
+        },
+        {
+          "line": 858,
+          "expression": "package.resolve('StormCastCONUS-pz-low.mdlus')"
+        },
+        {
+          "line": 861,
+          "expression": "package.resolve('StormCastCONUS-tq-low.mdlus')"
+        },
+        {
+          "line": 864,
+          "expression": "package.resolve('StormCastCONUS-uv-low.mdlus')"
+        },
+        {
+          "line": 873,
+          "expression": "package.resolve('metadata.nc')"
+        }
+      ],
+      "scope": "union of package files used by the listed classes and selectable variants; config references expanded at run time; not a minimum-download assertion",
+      "optional_selectors": []
+    },
+    {
+      "key": "stormscope",
+      "classes": [
+        "StormScopeBase",
+        "StormScopeGOES",
+        "StormScopeMRMS"
+      ],
+      "repository": "nvidia/stormscope-goes-mrms",
+      "requested_revision": "62f0fd2fa52c3cff67c931daac18cdc0d9f58d2a",
+      "prefix": "",
+      "selectors": [
+        "config.json",
+        "registry.json",
+        "*.mdlus",
+        "*.npy"
+      ],
+      "source": "earth2studio/models/px/stormscope.py",
+      "source_sha256": "723c2fb66af0285fdc99ca3472851ba9ada62eeceaf7d9f7b9c6b7c0a45c0952",
+      "default_package_line": 289,
+      "file_calls": [
+        {
+          "line": 299,
+          "expression": "package.resolve('registry.json')"
+        },
+        {
+          "line": 473,
+          "expression": "package.resolve(f'{prefix}_means.npy')"
+        },
+        {
+          "line": 474,
+          "expression": "package.resolve(f'{prefix}_stds.npy')"
+        },
+        {
+          "line": 506,
+          "expression": "package.resolve(filename)"
+        },
+        {
+          "line": 538,
+          "expression": "package.resolve('lat.npy')"
+        },
+        {
+          "line": 540,
+          "expression": "package.resolve('lon.npy')"
+        },
+        {
+          "line": 589,
+          "expression": "package.resolve(m['path'])"
+        },
+        {
+          "line": 1789,
+          "expression": "package.resolve('config.json')"
+        },
+        {
+          "line": 2408,
+          "expression": "package.resolve('config.json')"
+        },
+        {
+          "line": 2472,
+          "expression": "package.resolve('mrms_coverage_mask.npy')"
+        }
+      ],
+      "scope": "union of package files used by the listed classes and selectable variants; config references expanded at run time; not a minimum-download assertion",
+      "optional_selectors": []
+    },
+    {
+      "key": "stormscope_meteosat",
+      "classes": [
+        "StormScopeMeteosatEU"
+      ],
+      "repository": "nvidia/stormscope-meteosat",
+      "requested_revision": "17148d712f7ef2c0b48355032dcad85173dd230e",
+      "prefix": "",
+      "selectors": [
+        "config.yaml",
+        "metadata.nc",
+        "*.mdlus"
+      ],
+      "source": "earth2studio/models/px/stormscope_meteosat.py",
+      "source_sha256": "c856b83f506417f83542ecbe7d7283480fbaf7e8d0da69e1baf85b40e95fe4c3",
+      "default_package_line": 791,
+      "file_calls": [
+        {
+          "line": 829,
+          "expression": "package.resolve('config.yaml')"
+        },
+        {
+          "line": 850,
+          "expression": "package.resolve(spec['path'])"
+        },
+        {
+          "line": 862,
+          "expression": "package.resolve('metadata.nc')"
+        }
+      ],
+      "scope": "union of package files used by the listed classes and selectable variants; config references expanded at run time; not a minimum-download assertion",
+      "optional_selectors": []
+    },
+    {
+      "key": "ucast",
+      "classes": [
+        "_ConvInitKwargs",
+        "_BlockKwargs",
+        "Conv2d",
+        "GroupNorm",
+        "AttentionOp",
+        "UNetBlock",
+        "DhariwalUNet",
+        "UCast"
+      ],
+      "repository": "salv47/u-cast",
+      "requested_revision": "775f2974b52b5beb8945ac3c60212ca25e0a13f5",
+      "prefix": "",
+      "selectors": [
+        "ucast.ckpt",
+        "stats/era5_mean.nc",
+        "stats/era5_std.nc",
+        "stats/era5_residual_std.nc",
+        "stats/era5_min.nc"
+      ],
+      "source": "earth2studio/models/px/ucast.py",
+      "source_sha256": "7c25dcb584621c95e5a1a47fccc0a58b11fe7c3fcd58ca67031965563ed3c653",
+      "default_package_line": 751,
+      "file_calls": [
+        {
+          "line": 457,
+          "expression": "package.resolve(f'stats/{filename}')"
+        },
+        {
+          "line": 463,
+          "expression": "package.resolve('stats/era5_min.nc')"
+        },
+        {
+          "line": 823,
+          "expression": "package.resolve(UCAST_CHECKPOINT)"
+        }
+      ],
+      "scope": "union of package files used by the listed classes and selectable variants; config references expanded at run time; not a minimum-download assertion",
+      "optional_selectors": []
+    },
+    {
+      "key": "healda_v2-main",
+      "classes": [
+        "HealDAv2"
+      ],
+      "repository": "nvidia/healda-v2",
+      "requested_revision": "main",
+      "prefix": "",
+      "selectors": [
+        "healda_v2.checkpoint"
+      ],
+      "source": "healda_v2-main.py",
+      "source_sha256": "9ba7911df9a0bd95ab541ba922104182572631db0c51ba6540d67e2e7e4d51ee",
+      "default_package_line": 220,
+      "file_calls": [
+        {
+          "line": 251,
+          "expression": "package.resolve(checkpoint_name), default healda_v2.checkpoint at line 229"
+        }
+      ],
+      "scope": "main source only; absent from the downloaded 0.19.0 wheel",
+      "optional_selectors": []
+    }
+  ],
+  "ingest_bindings": {
+    "fcn3": "fcn3",
+    "pangu": "pangu",
+    "aurora": "aurora",
+    "aifs": "aifs"
+  },
+  "ingest_selectors": {
+    "pangu": [
+      "pangu/pangu_weather_24.onnx",
+      "pangu/pangu_weather_6.onnx"
+    ]
+  },
+  "licence_policy": {
+    "permissive_aliases": [
+      "apache-2.0",
+      "mit",
+      "bsd",
+      "cc-by-4.0",
+      "cc0",
+      "openmdw",
+      "open model data and weights",
+      "nvidia open model license",
+      "nvidia-open-model-license"
+    ],
+    "restricted_markers": [
+      "-nc",
+      "-nd",
+      "non-commercial",
+      "noncommercial",
+      "non commercial",
+      "no derivatives"
+    ],
+    "research_only_repositories": [
+      "NickGeneva/earth_ai",
+      "Artamta/FuXi-S2S-ONNX",
+      "FudanFuXi/FuXi-S2S"
+    ],
+    "note": "Conservative classification of card fields and named licence text, with NC/ND overriding all permissive aliases. Missing or unrecognised licence is research-only. Classification never enables a runtime default."
+  }
+}

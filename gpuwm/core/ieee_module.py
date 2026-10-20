@@ -46,13 +46,7 @@ class _Function:
                 for i, name in enumerate(names)}
 
 
-def compile_module(source, options, module_key, log_stream=None):
-    """Compile at the direct boundary, retaining subnormals in both modes."""
-    import cupy as cp
-    from gpuwm import nvrtc_ptx_cache as compiler
-    from gpuwm.certify.kernel_manifest import record_module
-    from gpuwm.kernel_compile_notice import observe_module_compile
-
+def _effective_options(options):
     options = tuple(options)
     if '--ftz=false' not in options:
         raise ValueError('land kernels require --ftz=false to preserve drainage, snow branches and humidity')
@@ -61,6 +55,34 @@ def compile_module(source, options, module_key, log_stream=None):
     from gpuwm import wrf_exact
     if wrf_exact.ENABLED:
         options = wrf_exact.effective_options(options)
+    return options
+
+
+def compile_image(source, options):
+    """Compile into the direct image cache without loading (a background prebuild).
+
+    Same options, filename and cache entry as :func:`compile_module`, so the
+    later foreground ``compile_module`` of the same source reads this image
+    from disk instead of compiling it again.
+    """
+    from gpuwm import nvrtc_ptx_cache as compiler
+    from gpuwm.certify.kernel_manifest import record_module, source_sha256
+    from types import SimpleNamespace
+    options = _effective_options(options)
+    image, log = compiler.compile_using_nvrtc(source, options, None, 'land.cu')
+    module = SimpleNamespace(**{"ptx" if isinstance(image, str) or image.startswith(b'//') else "cubin": image})
+    record_module("land_prebuild/" + source_sha256(source), source=source, options=options, module=module)
+    return image, log
+
+
+def compile_module(source, options, module_key, log_stream=None):
+    """Compile at the direct boundary, retaining subnormals in both modes."""
+    import cupy as cp
+    from gpuwm import nvrtc_ptx_cache as compiler
+    from gpuwm.certify.kernel_manifest import record_module
+    from gpuwm.kernel_compile_notice import observe_module_compile
+
+    options = _effective_options(options)
     with observe_module_compile(module_key):
         image, _ = compiler.compile_using_nvrtc(
             source, options, None, 'land.cu', log_stream=log_stream)

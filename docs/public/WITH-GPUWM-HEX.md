@@ -46,3 +46,34 @@ before any card is touched.
   is not qualified.
 - A suite (`gpuwm suite`) row that runs hex plans and validates; running it
   unattended needs the same `--bindings` document as any other row.
+
+## Global composed sources through rw-wps
+
+`gpuwm source-intermediate` composes a packaged source into the canonical
+rw-wps state, then exports one global frame to WPS intermediate v5 in Rust.
+It reads the same packaged profile and composition used by `gpuwm prep`.
+For an `earth2-<key>` source the model table supplies the profile; name
+`--profile` when the fetch receipt selects a different donor composition.
+No Earth-2 adapter is needed in hex.
+
+```bash
+gpuwm source-intermediate --source earth2-fcn3 \
+  --input fetched/earth2-fcn3.nc \
+  --supplement physical_analysis_surface_data=fetched/analysis/era5-combined.nc \
+  --valid-time 2024-09-24T12:00:00 --work-dir intermediate-work --out composed.met
+```
+
+The input must cover one complete longitude period without a duplicate seam
+and the global latitude grid, with earth-relative winds and pressure levels.
+A cropped forecast is refused. The composition closes the donor fields and
+soil layer depths. `wps-intermediate-fields.v1.json` defines the source-neutral
+canonical-to-WPS names and units. Land fraction is classified at 0.5 for the
+binary WPS interpolation mask; permitted missing masks become WPS's -1e30.
+The export receipt binds the frame stream, composition, field contract and
+WPS bytes by SHA-256, and reports `nfglevels` and `nfgsoillevels`.
+
+Pass the resulting file to the existing `gpuwm-hex init --met composed.met`
+with those two counts, `--use-spechumd yes`, a global grid and static, and the
+usual explicit vertical/physics switches. Also pass `--sfc-met composed.met`
+to consume the composed SST and sea ice through the existing surface door.
+The init door and forecast door remain the standard hex paths.

@@ -10,6 +10,7 @@ import argparse
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -91,3 +92,15 @@ def test_domain_without_staged_geography_creates_config_and_names_next_step(tmp_
     assert "next step" in printed
     assert "gpuwm check FAILED" not in printed
     assert "gpuwm check: PASS (rc 0)" not in printed
+@pytest.mark.parametrize("declared", ["staged", "${TEST_WOFS_GEOG}"])
+def test_check_uses_the_configured_geography_root(monkeypatch, tmp_path, declared):
+    args = _args(tmp_path)
+    staged = tmp_path / "staged"
+    monkeypatch.setenv("TEST_WOFS_GEOG", str(staged))
+    Path(args.config).write_text(
+        "[experiment]\nname = 'x'\n[case_data]\ngeog_root = '" + declared + "'\n")
+    seen = []
+    monkeypatch.setattr("gpuwm.go_cli.geography_refusal",
+                        lambda root, **kwargs: seen.append(root))
+    assert cli._check_geography(args) is None
+    assert seen == [staged.resolve()]

@@ -188,8 +188,34 @@ struct Stack {
     step: u32,
     unit: u8,
     valid: NaiveDateTime,
+    time_processing: Value,
     levels: Vec<(f64, Vec<u8>)>,
     seen: Vec<Value>,
+}
+/// Preserve the decoder's time-processing witness without interpreting a
+/// statistical total as an instantaneous rate. All encoded specifications are
+/// retained in order; raw codes and missing sentinels do not imply qualification
+/// of the provider's interval semantics.
+fn time_processing(m: &Grib2Message) -> Value {
+    let p = &m.product;
+    object(vec![
+        ("scope", text("decoder_all_statistical_specifications")),
+        ("number_of_time_ranges", optional(p.number_of_time_ranges.map(u16::from))),
+        ("number_of_missing_values", p.number_of_missing_values.map_or(Value::Null, num)),
+        ("time_ranges", Value::Array(p.statistical_time_ranges.iter().map(|r| object(vec![
+            ("statistical_process_type", num(r.statistical_process_type)),
+            ("time_increment_type", num(r.time_increment_type)),
+            ("time_range_unit", num(r.time_range_unit)),
+            ("time_range_length", num(r.time_range_length)),
+            ("time_increment_unit", num(r.time_increment_unit)),
+            ("time_increment", num(r.time_increment)),
+        ])).collect())),
+        ("statistical_process_type", optional(p.statistical_process_type.map(u16::from))),
+        ("time_range_unit", optional(p.statistical_time_range_unit.map(u16::from))),
+        ("time_range_length", p.time_range_length.map_or(Value::Null, num)),
+        ("time_range_seconds", p.statistical_time_range_seconds().map_or(Value::Null, |n| num(n as f64))),
+        ("end_of_interval", p.end_of_interval.map_or(Value::Null, |t| text(iso(t, false)))),
+    ])
 }
 fn valid(m: &Grib2Message) -> Result<NaiveDateTime> {
     if let Some(end) = m.product.end_of_interval {
@@ -321,6 +347,7 @@ fn collect(
                         step: p.forecast_time,
                         unit: p.time_range_unit,
                         valid: time,
+                        time_processing: time_processing(&m),
                         levels: Vec::new(),
                         seen: Vec::new(),
                     });
@@ -329,6 +356,9 @@ fn collect(
                 let stack = &mut stacks[ix];
                 if stack.valid != time {
                     return Err(format!("key {}: records disagree on valid time", s.key).into());
+                }
+                if stack.time_processing != time_processing(&m) {
+                    return Err(format!("key {}: records disagree on time processing", s.key).into());
                 }
                 if stack
                     .levels
@@ -438,6 +468,7 @@ fn run(input: &Path, specification: &Value, output: &Path) -> Result<()> {
             ("forecast_step", num(t.step)),
             ("forecast_unit", num(t.unit)),
             ("valid_time", text(iso(t.valid, false))),
+            ("time_processing", t.time_processing),
             ("grid", {
                 let mut fields = vec![
                     ("template", num(g.template)),
@@ -771,6 +802,144 @@ mod tests {
     }
     fn gas_only() -> Value {
         json::parse(r#"{"schema":"gpuwm-grib2-stack-v1","select":[{"key":"gas","discipline":0,"category":20,"parameter":2,"constituent_type":null,"aerosol_type":null,"level_type":105,"levels":null}]}"#).unwrap()
+    }
+    fn statistical(level: u32, process: u8, unit: u8, length: u32) -> Vec<u8> {
+        let source = message(0, level, 0, 5.0);
+        let start = 16 + 21 + 72;
+        let mut s4 = section(4, 58);
+        s4[9..34].copy_from_slice(&source[start + 9..start + 34]);
+        s4[7..9].copy_from_slice(&8u16.to_be_bytes());
+        s4[34..36].copy_from_slice(&2026u16.to_be_bytes());
+        s4[36..41].copy_from_slice(&[9, 30, 6, 0, 0]);
+        s4[41] = 1; // One statistical specification; no missing samples.
+        s4[46] = process;
+        s4[47] = 2; // Same-start forecast increments.
+        s4[48] = unit;
+        s4[49..53].copy_from_slice(&length.to_be_bytes());
+        let mut out = source[..start].to_vec();
+        out.extend(s4);
+        out.extend_from_slice(&source[start + 42..]);
+        let length = out.len() as u64;
+        out[8..16].copy_from_slice(&length.to_be_bytes());
+        out
+    }
+    #[test]
+    fn statistical_levels_refuse_different_missing_counts() {
+        let mut different = statistical(2, 1, 1, 3);
+        different[16 + 21 + 72 + 45] = 1;
+        statistical_refusal(vec![statistical(1, 1, 1, 3), different],
+                            "disagree on time processing");
+    }
+    #[test]
+    fn statistical_levels_refuse_different_increments() {
+        for offset in [47, 53, 57] {
+            let mut different = statistical(2, 1, 1, 3);
+            different[16 + 21 + 72 + offset] += 1;
+            statistical_refusal(vec![statistical(1, 1, 1, 3), different],
+                                "disagree on time processing");
+        }
+    }
+    fn statistical_refusal(messages: Vec<Vec<u8>>, why: &str) {
+        let s = Scratch::new();
+        let p = input(&s, messages);
+        let out = s.0.join("refused");
+        let error = ffi_run(&p, &gas_only(), &out).unwrap_err().to_string();
+        assert!(error.contains(why), "{error}");
+        assert!(!out.exists());
+    }
+    fn nested_statistical(level: u32) -> Vec<u8> {
+        let source = statistical(level, 1, 1, 3);
+        let start = 16 + 21 + 72;
+        let end = start + 58;
+        let mut out = source[..end].to_vec();
+        out[start..start + 4].copy_from_slice(&70u32.to_be_bytes());
+        out[start + 41] = 2;
+        // A second, different process/increment specification, stored after the first.
+        out.extend_from_slice(&[0, 1, 13, 0, 0, 0, 30, 0, 0, 0, 0, 5]);
+        out.extend_from_slice(&source[end..]);
+        let length = out.len() as u64;
+        out[8..16].copy_from_slice(&length.to_be_bytes());
+        out
+    }
+    #[test]
+    fn statistical_levels_compare_every_nested_descriptor_octet() {
+        for offset in 58..70 {
+            let mut different = nested_statistical(2);
+            different[16 + 21 + 72 + offset] ^= 1;
+            statistical_refusal(vec![nested_statistical(1), different],
+                                "disagree on time processing");
+        }
+        statistical_refusal(vec![statistical(1, 1, 1, 3), nested_statistical(2)],
+                            "disagree on time processing");
+        let s = Scratch::new();
+        let p = input(&s, vec![nested_statistical(2), nested_statistical(1)]);
+        let out = s.0.join("nested");
+        ffi_run(&p, &gas_only(), &out).unwrap();
+        let m = json::parse(&fs::read_to_string(out.join("stack.json")).unwrap()).unwrap();
+        let row = &m.get("outputs").unwrap().array().unwrap()[0];
+        let t = row.get("time_processing").unwrap();
+        assert_eq!(t.get("number_of_time_ranges").unwrap(), &num(2u8));
+        let ranges = t.get("time_ranges").unwrap().array().unwrap();
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(ranges[0].get("statistical_process_type").unwrap(), &num(1u8));
+        assert_eq!(ranges[1].get("statistical_process_type").unwrap(), &num(0u8));
+        assert_eq!(ranges[1].get("time_range_length").unwrap(), &num(30u8));
+        assert_eq!(ranges[1].get("time_increment").unwrap(), &num(5u8));
+        assert_eq!(fs::read(out.join(row.get("file").unwrap().string().unwrap())).unwrap(),
+                   [5f32, 6., 7., 8., 5., 6., 7., 8.].iter()
+                       .flat_map(|n| n.to_le_bytes()).collect::<Vec<_>>());
+    }
+    #[test]
+    fn incomplete_statistical_lists_refuse_before_publication() {
+        let mut zero = statistical(1, 1, 1, 3);
+        zero[16 + 21 + 72 + 41] = 0;
+        statistical_refusal(vec![zero], "zero time ranges");
+        let mut truncated = statistical(1, 1, 1, 3);
+        truncated[16 + 21 + 72 + 41] = 2;
+        statistical_refusal(vec![truncated], "specifications are truncated");
+    }
+    #[test]
+    fn time_processing_keeps_encoded_summary_and_refuses_mixed_levels() {
+        let s = Scratch::new();
+        let p = input(&s, vec![statistical(1, 1, 1, 3)]);
+        let out = s.0.join("accumulation");
+        ffi_run(&p, &gas_only(), &out).unwrap();
+        let m = json::parse(&fs::read_to_string(out.join("stack.json")).unwrap()).unwrap();
+        let row = &m.get("outputs").unwrap().array().unwrap()[0];
+        assert_eq!(row.get("valid_time").unwrap(), &text("2026-09-30T06:00:00Z"));
+        assert_eq!(row.get("time_processing").unwrap(), &object(vec![
+            ("scope", text("decoder_all_statistical_specifications")),
+            ("number_of_time_ranges", num(1u8)),
+            ("number_of_missing_values", num(0u8)),
+            ("time_ranges", Value::Array(vec![object(vec![
+                ("statistical_process_type", num(1u8)),
+                ("time_increment_type", num(2u8)),
+                ("time_range_unit", num(1u8)),
+                ("time_range_length", num(3u8)),
+                ("time_increment_unit", num(0u8)),
+                ("time_increment", num(0u8)),
+            ])])),
+            ("statistical_process_type", num(1u8)),
+            ("time_range_unit", num(1u8)),
+            ("time_range_length", num(3u8)),
+            ("time_range_seconds", num(10800.0)),
+            ("end_of_interval", text("2026-09-30T06:00:00Z")),
+        ]));
+        assert_eq!(fs::read(out.join(row.get("file").unwrap().string().unwrap())).unwrap(),
+                   [5f32, 6., 7., 8.].iter().flat_map(|n| n.to_le_bytes()).collect::<Vec<_>>());
+        statistical_refusal(vec![statistical(1, 1, 1, 3), statistical(2, 0, 1, 3)],
+                            "disagree on time processing");
+        // Equal valid time does not imply equal accumulation duration.
+        statistical_refusal(vec![statistical(1, 1, 1, 3), statistical(2, 1, 1, 6)],
+                            "disagree on time processing");
+        // Calendar-relative ranges remain raw codes, with no invented seconds.
+        let parsed = Grib2File::from_bytes(&statistical(1, 0, 3, 1)).unwrap();
+        assert_eq!(time_processing(&parsed.messages[0]).get("time_range_seconds").unwrap(), &Value::Null);
+        let parsed = Grib2File::from_bytes(&message(0, 1, 0, 5.0)).unwrap();
+        let t = time_processing(&parsed.messages[0]);
+        assert_eq!(t.get("statistical_process_type").unwrap(), &Value::Null);
+        assert_eq!(t.get("time_range_seconds").unwrap(), &Value::Null);
+        assert_eq!(t.get("end_of_interval").unwrap(), &Value::Null);
     }
     /// The same message on a 2 x 2 Lambert conformal grid (template 3.30,
     /// HRRR's projection): an 81-octet Section 3 replaces the 72-octet one.

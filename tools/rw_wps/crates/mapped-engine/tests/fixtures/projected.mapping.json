@@ -1,0 +1,124 @@
+{
+  "schema": "rw-wps.mapping.v1",
+  "name": "projected-fixture",
+  "format": "netcdf",
+  "grid": {
+    "family": "lambert_conformal",
+    "wind_basis": "grid_relative_with_rotation",
+    "parameters": {
+      "latin1": 38.5,
+      "latin2": 38.5,
+      "lov": 262.5,
+      "lat1": 21.138123,
+      "lon1": 237.280472,
+      "dx_m": 3000.0,
+      "dy_m": 3000.0,
+      "nx": 4,
+      "ny": 3,
+      "earth_radius_m": 6371229.0,
+      "shape_of_earth": 6
+    }
+  },
+  "coordinates": {
+    "horizontal": {
+      "kind": "variables",
+      "latitude": {
+        "name": [
+          "lat"
+        ]
+      },
+      "longitude": {
+        "name": [
+          "lon"
+        ]
+      }
+    },
+    "vertical": {
+      "kind": "model_level",
+      "units": "1",
+      "levels": [
+        1,
+        2
+      ],
+      "selector": {
+        "name": [
+          "level"
+        ]
+      }
+    },
+    "time": {
+      "kind": "dimension",
+      "units": "hours since 2024-05-21 18:00:00",
+      "selector": {
+        "name": [
+          "time"
+        ]
+      }
+    }
+  },
+  "fields": {
+    "eastward_wind": {
+      "selectors": [
+        {
+          "format": "netcdf",
+          "name": [
+            "u"
+          ]
+        }
+      ],
+      "units": {
+        "source": "m s-1",
+        "target": "m s-1"
+      },
+      "source_axes": [
+        "time",
+        "vertical",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "vertical",
+        "y",
+        "x"
+      ],
+      "location": "mass",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      }
+    },
+    "northward_wind": {
+      "selectors": [
+        {
+          "format": "netcdf",
+          "name": [
+            "v"
+          ]
+        }
+      ],
+      "units": {
+        "source": "m s-1",
+        "target": "m s-1"
+      },
+      "source_axes": [
+        "time",
+        "vertical",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "vertical",
+        "y",
+        "x"
+      ],
+      "location": "mass",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      }
+    }
+  },
+  "target": {
+    "soil_layer_count": 4
+  }
+}

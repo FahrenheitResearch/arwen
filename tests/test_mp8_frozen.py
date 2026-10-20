@@ -944,8 +944,18 @@ FROZEN_MODULE_DIGESTS = {
         # columns, whole-domain, forecast-chunked and one column a call,
         # bitwise against WRF with MORR_ROW37_OFF (W1, RTX PRO 6000).
         # Previously b602a938/3f94f09d.
-        '5b51864239e66d36a45b3a6c85d12d9b60a08b64796eac133499238f035862ad',
-        'e61662364ac48ad66fa13c674ae084c5b3c4189122d791b7026f00ca8dc0e484'),
+        # RE-PINNED by 04897aa077b (2.9.3, the WoFS ensemble lane):
+        # mo_sediment_impl bounds the per-level mass after its tendency
+        # (dmass = max(dmass, 0)) inside the production row-37 block
+        # (#ifndef MORR_ROW37_OFF), because a source tendency can cancel
+        # its category to a negative FP32 residue and the inherited fall
+        # speed then exported negative water (measured -1.54e-14 mm in a
+        # regional forecast; the negative SR floor it needed is retired).
+        # The MORR_ROW37_OFF oracle build is unchanged line for line, so
+        # the WRF bitwise reading above stands for it.
+        # Previously 5b518642/e6166236.
+        '741d71ee81038a2e68ded3f5d8f57b59a8e00f9eb42473e4918db7fff7ef749d',
+        '09b1d5a5d0edb66e5d66a8999db8feb39aad0349f27600a04af31600f82f16f8'),
 
     'mynn_pbl': (
         # RE-PINNED by the level-major MYNN layout (speed lane, 2.8.1):
@@ -1038,8 +1048,14 @@ FROZEN_MODULE_DIGESTS = {
         # Measured 8d317e5ec: 34 focused + 29 resident CUDA controls;
         # 295d6ec0a: public moving/restart, 137 exact arrays per domain.
         # Re-pinned with diagnostics for 88fdf60b9's parent smoothers.
-        'de9a5a8f6145f7f067f0b38a36e892eb3433b5aed8eaea665c1dc064391b9c31',
-        '060556616b23921f1733e17cbb26cd5dfa93b9e3bd821f67779c2d25b679b78c'),
+        # RE-PINNED by bf05966444a (2.9.3): relocation_nearest_donor, a
+        # new kernel appended after the existing entry points (one block
+        # per exposed cell, integer squared distances, first donor on
+        # ties) so a moving nest's relocation carry stays on CUDA; its
+        # reference is the NumPy argmin it replaced and no existing
+        # kernel line moved.  Previously de9a5a8f/06055661.
+        '6219f7071e8e54c8b491da4b394bdf5f23e70f18e53e8cb5861e2d4517953d9b',
+        '3171f8ea4367510c073206d9cdad2708881a6c05d225a62d33b90149d8903fb4'),
     'nest_microphysics': (
         # Re-pinned for the mp=9 (Milbrandt-Yau) mixed-edge ratification
         # (audit R-003): the generic microphysics_edge_field kernel gained
@@ -1220,15 +1236,31 @@ FROZEN_MODULE_DIGESTS = {
     'noahmp_thermal': (
         '2598ca76b7f9c0d6de35631d5113901d1e25f24a014c8ea4e0df490158d16c86',
         'f7eef131507a29def54e2387686f34a4807851354f446684deaf5322dc226753'),
+    # 300876fefd5: explicit libm-2.43 atan profile; default libm-2.39
+    # retained. Native 8-column witness is words-exact; see
+    # tools/noahowp_replay/ATAN-PROFILE.md and qualified_atan tests.
+    # RE-PINNED by de768fc2770 (2.9.3, the merge of lane/speed2's
+    # b3dd58fc9f3 with 300876fefd5 above): dev_vege_flux takes opt_stc
+    # and fsno (the WRF-lineage STC=3 ground-temperature blend, Noah-MP
+    # 848f54ad :4125-4136; STC=1, the Registry default, is the same reset
+    # as before), k_vegeflux_stc3 and k_vegeflux_masked are appended
+    # (fixed-width masked dispatch: an inactive column writes +0 and never
+    # enters the leaf), and the GLIBC243 atan branch joins the profile
+    # selector.  The default-route arithmetic is unchanged; the
+    # composed-unit frame row is re-read for it in
+    # kernel_frame_recordings.  Previously 295e9541/c3271c5a.
     'noahmp_vegeflux': (
-        '2178b13989853a7433869bb35e7974df004ddb9f441a96946672c03730472b3c',
-        '688723dc9eef069b5e82338a8023438636d61db2db1dfd583cd1ced03b923a19'),
+        'd55c402a21caf3f52e5aed05a0dd727df76b747906a3e0d082446e6a7bcab014',
+        '0d23b367d88497bb45a2e895e6d85abc826caf2f4467b8b47c7ba7be32d3a9b4'),
     'noahmp_vegprecip': (
         '9ce5667599d111be0efc7cb0871e5719d70259bb95b30fbe923e01964b75c26c',
         '599e85f0fe59a28ae5fd5437e47db7f41c31abd21783979f66b987b212f1f41a'),
+    # 485b468bdf4: parent runoff units and explicit drainage export,
+    # qualified by test_noahowp_coupling_cuda.py / NEXTGEN-NOAHOWP.md.
+    # This freezes that landed source, not a whole-forecast skill claim.
     'noahmp_water': (
-        '4154bace0d97235503d4ca9ed6cb4877c8543762f2f384dfc8883fe3b2ed429e',
-        '6cfeaef3fd00b8054d1761fd8bcfd6a920a6fb476f53986672ef300cbadd53ba'),
+        '7946fb6612767fac098ec92a0dbb1d0e4cc768657b1cb81b297344cd39aa54f3',
+        '46808ddb98445be32c5c8ab0a04527b919446081c33f7ef51c8b7a0ebed5b42a'),
     'nssl2': (
         # RE-PINNED by the WRF-parity qxmin(lh) repair (NSSLA-01).  The Bigg
         # rain-freezing gate used the graupel minimum mixing ratio 1.e-7 set
@@ -1573,8 +1605,13 @@ FROZEN_MODULE_DIGESTS = {
         # Re-pinned 2026-10-01 for vector coefficient/adding storage.
         # The serial recurrence and fold order are unchanged; direct output
         # words match on RTX 4090 and RTX 5090.
+        # Re-pinned 2026-10-19 (compiled string only; the .cu is unchanged):
+        # rad-history 29e917cbeb9 adds rrtmgp_planck_staged_default.cuh to the
+        # default rrtmgp_rte loader closure. Reading: Planck sources bitwise to
+        # the standalone kernel on 61,440,000 lay_source words; the A3 01Z
+        # history frame differs in 0 of 139 variables. Previously 5d3c8dde.
         'fc10756eba4cc437572b3f141cd5746c6149b78b312b79d3386217144e8200d9',
-        '5d3c8dde2f5ce56f4e4be4afac840bf45476c9d5dc9021135e32eae870f23791'),
+        '5c251aa2b5dfc420f4fd8f0dbacba3459aff0654c6f685246e5fbfcbf7c68b86'),
     'rrtmgp_validation': (
         'c3a2554827e7c39db269d0fa1d5ad594d1623d6974be859a1ae3a044d438951f',
         '36f7a4dccc8c66be225e16fdd6088f0fafa7a357ac1aba9b4a99f98af297c370'),

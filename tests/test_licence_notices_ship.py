@@ -238,18 +238,6 @@ def test_the_binary_form_notice_has_two_byte_identical_copies() -> None:
         f"with the binaries: {bridge_assets.REQUIRED_ASSET_SUBDIRS}")
 
 
-_COUNT_WORDS = ("zero one two three four five six seven eight nine ten eleven twelve "
-                "thirteen fourteen fifteen sixteen seventeen eighteen nineteen").split()
-_TENS_WORDS = {2: "twenty", 3: "thirty", 4: "forty", 5: "fifty"}
-
-
-def _count_word(count: int) -> str:
-    if count < 20:
-        return _COUNT_WORDS[count]
-    tens, units = divmod(count, 10)
-    return _TENS_WORDS[tens] + ("" if not units else "-" + _COUNT_WORDS[units])
-
-
 def test_the_notices_count_the_artifacts_the_bundle_carries() -> None:
     """The binary-form notice and NOTICE say how many compiled artifacts they
     cover. Both said 27 while the bundle carried 31 (rw_simradar was the
@@ -265,9 +253,33 @@ def test_the_notices_count_the_artifacts_the_bundle_carries() -> None:
         assert f"wheels: {count} Rust executables and libraries" in header, (
             f"{copy} does not count the {count} bundled artifacts")
     notice = " ".join(_read(ROOT / "NOTICE").split())
-    assert (f"{_count_word(count).capitalize()} Rust executables and libraries "
+    assert (f"{count} Rust executables and libraries "
             "(gpuwm.bridge_assets .BUNDLED_ARTIFACTS)") in notice, (
-        f"NOTICE does not count the {count} bundled artifacts")
+        f"NOTICE does not count the {count} bundled artifacts; run "
+        "python -m tools.update_bridge_notice_inventory then "
+        "python tools/update_zarr_license_notice.py")
+
+
+def test_inventory_refresh_preserves_notices_when_the_bundle_grows() -> None:
+    tool = _notice_tool("update_bridge_notice_inventory.py")
+    for relative in tool.COPIES:
+        old = _read(ROOT / relative)
+        root_notice = relative == "NOTICE"
+        updated = tool.render(old, 61, root_notice=root_notice)
+        assert tool.render(updated, 60, root_notice=root_notice) == tool.render(
+            old, 60, root_notice=root_notice)
+        assert tool.render(updated, 61, root_notice=root_notice) == updated
+    with pytest.raises(ValueError, match="exactly one"):
+        tool.render("no inventory header", 61, root_notice=True)
+
+
+def test_reservoir_attribution_reaches_binary_consumers() -> None:
+    _requires_source_tree()
+    binary = _read(LICENSES / "THIRD-PARTY-LICENSES-bridge-binaries.txt")
+    for name in ("LICENSE-t-route.txt", "NOTICE-t-route-reservoirs.txt",
+                 "NOTICE-t-route-NOAA-terms.md"):
+        assert _read(LICENSES / name) in binary, (
+            f"binary consumers do not receive the retained t-route text {name}")
 
 
 def test_the_binary_form_notice_covers_the_first_party_ports() -> None:
@@ -1101,7 +1113,8 @@ def test_the_terminal_notice_generator_replaces_only_its_own_section() -> None:
     replaced = tool.compose(notice, tool.MARKER + "a new lock\n")
     assert replaced == head + tool.MARKER + "a new lock\n\n" + tool.END + after
     for name in ("NOTICE-BowEcho.txt", "NOTICE-recast-radar-tools.txt",
-                 "LICENSE-recast-radar-tools-bzip2.txt"):
+                 "LICENSE-recast-radar-tools-bzip2.txt", "LICENSE-t-route.txt",
+                 "NOTICE-t-route-reservoirs.txt", "NOTICE-t-route-NOAA-terms.md"):
         assert _read(LICENSES / name) in replaced, (
             f"regenerating section 5 drops {name} from the binary notice")
     # With no END line it refuses; it does not truncate.

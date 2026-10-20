@@ -65,13 +65,17 @@ def test_grid_declaration_normalizes_and_fails_closed():
 
     with pytest.raises(ValueError, match="unsupported mapping.grid.family"):
         ms._validate_grid_declaration({"family": "icosahedral"}, "grib2")
-    with pytest.raises(ValueError, match="GRIB2 sources only"):
+    with pytest.raises(ValueError, match="requires GRIB2 or NetCDF"):
         ms._validate_grid_declaration(
             {"family": "lambert_conformal",
              "wind_basis": "earth_relative",
              "parameters": dict(HRRR_PARAMETERS)},
-            "netcdf",
+            "grib1",
         )
+    # Generated regional forecasts carry the same projected geometry in NetCDF.
+    assert ms._validate_grid_declaration(
+        {"family": "lambert_conformal", "wind_basis": "earth_relative",
+         "parameters": dict(HRRR_PARAMETERS)}, "netcdf")["family"] == "lambert_conformal"
     with pytest.raises(ValueError, match="wind_basis"):
         ms._validate_grid_declaration(
             {"family": "lambert_conformal",
@@ -678,7 +682,11 @@ def test_only_declared_source_rows_and_mappings_select_exact_grid_pairing():
             assert "same_grid_pairing" not in adapter.to_dict()
             if adapter.packaged_profile:
                 mapping = ms.load_mapping(packaged_authorities(adapter.packaged_profile)["mapping"])
-                assert "same_grid_pairing" not in mapping.get("grid", {})
+                declared = mapping.get("grid", {})
+                if "same_grid_pairing" in declared:
+                    assert declared["same_grid_pairing"] == "identity"
+                    assert declared["family"] == "lambert_conformal"
+                    assert ms._validate_grid_declaration(declared, mapping["format"]) == declared
 
 
 def test_unmarked_source_metadata_bytes_match_the_staged_baseline():
@@ -691,12 +699,15 @@ def test_unmarked_source_metadata_bytes_match_the_staged_baseline():
     assert hashlib.sha256(source).hexdigest() == manifest["source_adapters_sha256"]
     module_name = "_source_adapter_pairing_baseline"
     baseline = types.ModuleType(module_name)
+    # The retained registry loads its model tables beside the live package.
+    from gpuwm import source_adapters as registry
+    baseline.__file__ = registry.__file__
     sys.modules[module_name] = baseline
     try:
         exec(compile(source, "<retained-source-adapter-baseline>", "exec"), baseline.__dict__)
         before = {adapter.source_id: adapter for adapter in baseline.source_adapters()}
         for adapter in source_adapters():
-            if adapter.same_grid_pairing is None:
+            if adapter.same_grid_pairing is None and adapter.source_id in before:
                 actual = json.dumps(adapter.to_dict(), separators=(",", ":"))
                 previous = json.dumps(before[adapter.source_id].to_dict(), separators=(",", ":"))
                 assert actual.encode("utf-8") == previous.encode("utf-8"), adapter.source_id

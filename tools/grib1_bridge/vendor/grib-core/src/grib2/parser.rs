@@ -82,6 +82,18 @@ pub struct GridDefinition {
     pub resolution_flags: u8,
 }
 
+/// One encoded statistical time-range specification, in stored order.
+/// Raw WMO codes and missing-value sentinels are retained without interpretation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatisticalTimeRange {
+    pub statistical_process_type: u8,
+    pub time_increment_type: u8,
+    pub time_range_unit: u8,
+    pub time_range_length: u32,
+    pub time_increment_unit: u8,
+    pub time_increment: u32,
+}
+
 /// Product definition from Section 4.
 #[derive(Debug, Clone)]
 pub struct ProductDefinition {
@@ -128,6 +140,11 @@ pub struct ProductDefinition {
     pub statistical_time_range_unit: Option<u8>,
     /// Length of statistical time range (PDT 4.8, 4.11, 4.12).
     pub time_range_length: Option<u32>,
+    /// Encoded count and number missing in the statistical interval header.
+    pub number_of_time_ranges: Option<u8>,
+    pub number_of_missing_values: Option<u32>,
+    /// Complete ordered list; empty for an instantaneous product.
+    pub statistical_time_ranges: Vec<StatisticalTimeRange>,
     /// Optional coordinate values from the tail of Section 4 (octets 6-7
     /// declare the count NV; the values are IEEE-754 f32, one per
     /// coordinate, in the last NV*4 octets).  Hybrid-coordinate model
@@ -244,7 +261,11 @@ impl ProductDefinition {
         let unit = self
             .statistical_time_range_unit
             .unwrap_or(self.time_range_unit);
-        let value = u64::from(self.time_range_length?);
+        let raw = self.time_range_length?;
+        if raw == u32::MAX {
+            return None;
+        }
+        let value = u64::from(raw);
         fixed_time_value_to_seconds(unit, value)
     }
 
@@ -311,6 +332,9 @@ impl Default for ProductDefinition {
             end_of_interval: None,
             statistical_time_range_unit: None,
             time_range_length: None,
+            number_of_time_ranges: None,
+            number_of_missing_values: None,
+            statistical_time_ranges: Vec::new(),
             coordinate_values: Vec::new(),
             constituent_type: None,
             aerosol_type: None,
@@ -1351,17 +1375,28 @@ fn read_scaled_optional(
     Ok(Some(value))
 }
 
-/// Parse the statistical time interval fields common to PDT 4.8, 4.11, 4.12.
+/// Parse the statistical interval shared by the modeled statistical PDTs.
 /// `base` is the 0-based offset where the end-of-interval year starts.
 fn parse_pdt_statistical_fields(
     sec: &[u8],
     prod: &mut ProductDefinition,
     base: usize,
 ) -> Result<(), String> {
-    // End of overall time interval: year(2), month, day, hour, minute, second
-    if sec.len() < base + 7 {
-        return Ok(()); // Not enough data, skip gracefully
+    // Never consume trailing NV coordinate values as statistical descriptors.
+    let nv_bytes = usize::from(read_u16(sec, 5)?) * 4;
+    let descriptor_end = sec.len().checked_sub(nv_bytes)
+        .ok_or("Section 4 statistical coordinate tail exceeds section length")?;
+    if descriptor_end < base + 12 {
+        return Err("Section 4 statistical interval header is truncated".into());
     }
+    let n_specs = read_u8(sec, base + 7)?;
+    if n_specs == 0 {
+        return Err("Section 4 statistical interval has zero time ranges".into());
+    }
+    if descriptor_end < base + 12 + usize::from(n_specs) * 12 {
+        return Err("Section 4 statistical time-range specifications are truncated".into());
+    }
+    // End of overall time interval: year(2), month, day, hour, minute, second
     let year = read_u16(sec, base)? as i32;
     let month = read_u8(sec, base + 2)? as u32;
     let day = read_u8(sec, base + 3)? as u32;
@@ -1375,22 +1410,24 @@ fn parse_pdt_statistical_fields(
         }
     }
 
-    // base + 7: number of time range specifications (n)
-    // base + 8..+11: number of missing values (u32)
-    // Each time range spec is 12 bytes starting at base + 12
-    if sec.len() < base + 12 {
-        return Ok(());
+    prod.number_of_time_ranges = Some(n_specs);
+    prod.number_of_missing_values = Some(read_u32(sec, base + 8)?);
+    for i in 0..usize::from(n_specs) {
+        let start = base + 12 + i * 12;
+        prod.statistical_time_ranges.push(StatisticalTimeRange {
+            statistical_process_type: read_u8(sec, start)?,
+            time_increment_type: read_u8(sec, start + 1)?,
+            time_range_unit: read_u8(sec, start + 2)?,
+            time_range_length: read_u32(sec, start + 3)?,
+            time_increment_unit: read_u8(sec, start + 7)?,
+            time_increment: read_u32(sec, start + 8)?,
+        });
     }
-    let _n_specs = read_u8(sec, base + 7)?;
-
-    // Parse the first time range specification
-    let spec_base = base + 12;
-    if sec.len() >= spec_base + 12 {
-        prod.statistical_process_type = Some(read_u8(sec, spec_base)?);
-        prod.statistical_time_range_unit = Some(read_u8(sec, spec_base + 2)?);
-        // spec_base + 3..+6: length of time range (4 bytes)
-        prod.time_range_length = Some(read_u32(sec, spec_base + 3)?);
-    }
+    // Retain the first-specification convenience fields for existing callers.
+    let first = &prod.statistical_time_ranges[0];
+    prod.statistical_process_type = Some(first.statistical_process_type);
+    prod.statistical_time_range_unit = Some(first.time_range_unit);
+    prod.time_range_length = Some(first.time_range_length);
 
     Ok(())
 }
@@ -1723,6 +1760,58 @@ mod tests {
         sec[spec_base] = 1;
         sec[spec_base + 2] = 1;
         sec[spec_base + 3..spec_base + 7].copy_from_slice(&length_hours.to_be_bytes());
+    }
+
+    #[test]
+    fn all_statistical_layouts_keep_complete_ordered_specs_and_coordinate_tail() {
+        for (template, base) in [(8, 34), (9, 47), (10, 35), (11, 37), (12, 36), (42, 36)] {
+            let fixed = base + 12 + 24;
+            let mut sec = vec![0u8; fixed + 8];
+            seed_common_section4(&mut sec, template);
+            seed_statistical_window(&mut sec, base, 6);
+            sec[5..7].copy_from_slice(&2u16.to_be_bytes());
+            sec[base + 7] = 2;
+            sec[base + 8..base + 12].copy_from_slice(&u32::MAX.to_be_bytes());
+            sec[base + 24..base + 36].copy_from_slice(&[255; 12]);
+            sec[fixed..fixed + 4].copy_from_slice(&1000f32.to_be_bytes());
+            sec[fixed + 4..].copy_from_slice(&0.5f32.to_be_bytes());
+            let p = parse_section4(&sec).unwrap();
+            assert_eq!(p.number_of_time_ranges, Some(2), "PDT {template}");
+            assert_eq!(p.number_of_missing_values, Some(u32::MAX));
+            assert_eq!(p.statistical_time_ranges.len(), 2);
+            assert_eq!(p.statistical_time_ranges[0].time_range_length, 6);
+            assert_eq!(p.statistical_time_ranges[1], StatisticalTimeRange {
+                statistical_process_type: 255, time_increment_type: 255,
+                time_range_unit: 255, time_range_length: u32::MAX,
+                time_increment_unit: 255, time_increment: u32::MAX,
+            });
+            assert_eq!(p.coordinate_values, vec![1000., 0.5]);
+        }
+    }
+
+    #[test]
+    fn statistical_descriptors_cannot_borrow_coordinate_tail_or_omit_header() {
+        for base in [34, 35, 36, 37, 47] {
+            for size in 9..base + 24 {
+                let mut p = ProductDefinition::default();
+                let mut sec = vec![0u8; size];
+                if size > base + 7 { sec[base + 7] = 1; }
+                assert!(parse_pdt_statistical_fields(&sec, &mut p, base).is_err());
+            }
+            let mut sec = vec![0u8; base + 24];
+            seed_statistical_window(&mut sec, base, 6);
+            sec[5..7].copy_from_slice(&3u16.to_be_bytes());
+            assert!(parse_pdt_statistical_fields(&sec, &mut ProductDefinition::default(), base)
+                .unwrap_err().contains("specifications are truncated"));
+        }
+    }
+
+    #[test]
+    fn missing_statistical_length_has_no_duration() {
+        let p = ProductDefinition { time_range_length: Some(u32::MAX),
+            statistical_time_range_unit: Some(1), ..Default::default() };
+        assert_eq!(p.statistical_time_range_seconds(), None);
+        assert_eq!(p.statistical_time_range_hours(), None);
     }
 
     fn chemical_section(template: u16, nv: usize) -> Vec<u8> {

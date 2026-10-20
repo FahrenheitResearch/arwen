@@ -68,6 +68,17 @@ def test_option_tuples_are_not_one_global_string():
         "receipt meaningless")
 
 
+def test_image_only_load_is_not_a_source_compile():
+    assert ri.scan_source("gpuwm/image.py", "cp.RawModule(path=image)") == []
+    # Adding source, compiler options, unpacked keywords or a positional
+    # argument must put a constructor back in the audited census.
+    for call in ('cp.RawModule(path=image, code=source)',
+                 'cp.RawModule(path=image, options=options)',
+                 'cp.RawModule(path=image, **kwargs)',
+                 'cp.RawModule(source, path=image)'):
+        assert len(ri.scan_source("gpuwm/image.py", call)) == 1
+
+
 SYNTHETIC = '''\
 import cupy as cp
 from cupy.cuda.compiler import compile_using_nvrtc

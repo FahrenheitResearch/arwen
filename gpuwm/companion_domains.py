@@ -43,26 +43,22 @@ class DomainScopeError(ValueError):
 # Explicit example settings already shipped in this configuration. This is
 # an editable preset, not a new detection algorithm or a model-wide default.
 #
-# THE TWO MOVEMENT BOUNDS ARE NOT INDEPENDENT, and the floor is the one
-# that states the physics: keep 0.7 of the child, so at most 0.3 of it is
-# strip the move exposes and the child must spin up.  The per-axis
-# maximum is DERIVED from it -- an overlap floor f admits a per-axis
-# magnitude of 1 - sqrt(f) of the nest's own width in parent cells on the
-# binding diagonal move, which on this 40-parent-cell-wide nest is
-# 40 * (1 - sqrt(0.7)) = 6.53, so 6
-# (gpuwm.core.nest_relocation.max_parent_cells_for_overlap; the pair is
-# checked by tests/test_relocation_overlap_clamp.py).  Declaring 8 here
-# against a floor of 0.7 said a diagonal move of 8 was available when the
-# floor refuses it, which is what ended a cyclone quick forecast at its
-# first relocation cadence.  6 parent cells at 12 km is 72 km per 900 s
-# cadence, which no storm outruns.
+# The proposal ceiling uses the single-axis overlap limit: 30% of a
+# 40-parent-cell nest is 12 cells. The relocation runner then clamps the
+# actual vector to retain 70% overlap (six cells per axis on a diagonal).
+# A fixed diagonal ceiling of six also constrained zonal motion, halving
+# available reach. The MSLP eye is consulted and may move on every 15 min cadence.
 VORTEX_PRESET_SOURCE = "configs/cyclone_nest_slots_12km.toml: domain 2 follow"
 VORTEX_PRESET = {
-    "field": "pressure", "threshold": 25.0, "level_hpa": 850.0,
+    "field": "pressure", "threshold": 1100.0, "level_hpa": 0.0,
     "radius_km": 60.0, "search_margin_cells": 20, "min_shift_cells": 2,
-    "max_shift_cells": 6, "cooldown_seconds": 3600.0,
-    "cadence_seconds": 900.0, "max_move_parent_cells": 6,
+    "max_shift_cells": 12, "cooldown_seconds": 900.0,
+    "cadence_seconds": 900.0, "max_move_parent_cells": 12,
     "min_overlap_fraction": 0.7,
+    # MSLP minimum, with the 850 hPa circulation as fallback when no
+    # qualifying minimum is found (parked lane astra-trailer-ian).
+    "pressure_center": "minimum", "fallback_level_hpa": 850.0,
+    "fallback_deficit_m": 25.0,
 }
 
 
@@ -679,9 +675,9 @@ def capabilities():
         "physics_components": physics_components(),
         "follow_fields": list(TRACKED_FIELDS), "follow_keys": sorted(FOLLOW_KEYS | DOMAIN_FOLLOW_EXTRA_KEYS),
         "spawn_triggers": list(SPAWN_TRIGGERS), "spawn_keys": sorted(SPAWN_KEYS),
-        "presets": [{"id": "cyclone-850-example", "label": "Vortex lock at 850 hPa",
+        "presets": [{"id": "cyclone-mslp-example", "label": "Follow the MSLP minimum",
                      "source": VORTEX_PRESET_SOURCE, "settings": dict(VORTEX_PRESET),
-                     "threshold_units": "geopotential-height depth in metres",
+                     "threshold_units": "hPa (absolute MSLP ceiling)",
                      "description": "Existing cyclone example; review its explicit cadence and movement bounds for this grid."}],
         "target_mode": "scheduled discrete relocation in whole parent cells",
         "limits": ["A candidate carries every file its route reads, not the configuration alone: the TOML, its namelist.wps, and on the native regional route the two namelists and the target-domain document beside them, rendered from the edited configuration and listed in route_companions.",

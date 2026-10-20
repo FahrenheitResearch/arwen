@@ -2049,7 +2049,7 @@ class ComposedUnitFrameRecording:
 #: on a recorded platform is priced from its own row; a card on any other
 #: platform from the element-wise maximum over the rows that describe
 #: this tree (:func:`gpuwm.core.noahmp_frame_provenance.composed_frame_ceiling`).
-NOAHMP_COMPOSED_FRAME_RECORDINGS: tuple[ComposedUnitFrameRecording, ...] = (
+HISTORICAL_NOAHMP_COMPOSED_FRAME_RECORDINGS: tuple[ComposedUnitFrameRecording, ...] = (
     # test host A, RTX 5070 Ti (70 SMs x 1,536), Linux, sm_120 at NVRTC
     # 13.3.33 -- the same compile platform as SM120_NVRTC_13_3_33 above,
     # re-read 2026-09-10 for the fifteen Noah-MP runtime units with
@@ -2456,6 +2456,66 @@ NOAHMP_COMPOSED_FRAME_RECORDINGS: tuple[ComposedUnitFrameRecording, ...] = (
                 '737546bb9ec00f4b1069dee8fc7ba9b0a436dd1153f1988e81e79a8f49e5a423',
         }),
     ),
+    # 2026-10-18 lab RTX 5070 Ti resource-only re-read of the 110
+    # exports; withdrawn 2026-10-19 when de768fc2770 moved the
+    # noahmp_vegeflux_runtime identity (see the current table).
+    ComposedUnitFrameRecording(
+        box='lab box (RTX 5070 Ti)',
+        device='NVIDIA GeForce RTX 5070 Ti',
+        compute_capability='120',
+        nvrtc_build='13.4.92',
+        platform_family='linux',
+        measured='2026-10-18',
+        frames=MappingProxyType({
+            'noahmp_bareflux': 0,
+            'noahmp_driver_composed': 352,
+            'noahmp_energy_composed': 208,
+            'noahmp_fluxprep': 0,
+            'noahmp_glacier_composed': 456,
+            'noahmp_leaves': 208,
+            'noahmp_libm_slab_composed': 208,
+            'noahmp_radiation': 0,
+            'noahmp_sflx': 0,
+            'noahmp_snow': 200,
+            'noahmp_soilwater': 0,
+            'noahmp_thermal_composed': 368,
+            'noahmp_vegeflux_runtime': 0,
+            'noahmp_vegprecip': 0,
+            'noahmp_water': 224,
+        }),
+        unit_identity=MappingProxyType({
+            'noahmp_bareflux':
+                'd2e09c2ccc2bcc6524f542b41aabcdfadced27c6e091274caef9a6afee96b701',
+            'noahmp_driver_composed':
+                'dbfa9c8b4ec51833c24ac9c9105f6638f76851aa12185531456685d1b947a673',
+            'noahmp_energy_composed':
+                '56229ed3168b83845f6d9820d2585d4485ee7cf7f479217d9838573c3654b55f',
+            'noahmp_fluxprep':
+                'c1f15fefd60c05cb774135b7ad976a584432a0c5d19ef545720eb66d0c1a0f7a',
+            'noahmp_glacier_composed':
+                '0bcf3db1d33e20ce46234bbfcdce083f0652952bbe886bee63d61c67c61077a4',
+            'noahmp_leaves':
+                '98d7020604c6fbd067d5b22b92c5c910b1119f84b9dc1b11ab51b3ab484c7e97',
+            'noahmp_libm_slab_composed':
+                '5240c4820d045777237e86a1cae372e79a65aad0ca415a955774b7a6f7c5ec81',
+            'noahmp_radiation':
+                'fd3a2198282ef306f58aa256471287c7cacbd25cd0a7daa6ccf7fdb320b6ef46',
+            'noahmp_sflx':
+                'a40b1871465f6d795438483f8ade620a34dffdfe0f333833107404053cf072e4',
+            'noahmp_snow':
+                '8fbb7ebd7e02544af651d2809e60e3a4acd2012ac20649ffb46e3209a7c1eeb0',
+            'noahmp_soilwater':
+                'f1c58630e24214d2312cb2c099adc8e280393cada155a379db4b5a3857c4d174',
+            'noahmp_thermal_composed':
+                '90edf4cb7b87d54a0062c8373decab6b510f77388beaaa5ac3c35b71a91a6342',
+            'noahmp_vegeflux_runtime':
+                '32453dab3bc16b7a73c2f2742edfc38bcf1d07a8737c7126d1d3a73af327832d',
+            'noahmp_vegprecip':
+                '754bbe9b73b37bd9db74b40f5dc12bb58c27a66329a125b342b8d3c067d7dd7f',
+            'noahmp_water':
+                'aa5b7a6807edf3def8358bffe37db642c9014baef68d4372cad737980e85ff26',
+        }),
+    ),
 )
 
 
@@ -2515,6 +2575,78 @@ class ResolvedToolchainPin:
     noahmp_architectures: tuple[str, ...]
 
 
+# 2026-10-18 resource-only re-read of the 110 current exports on the RTX 5070 Ti host.
+# Old source identities above stay historical; never relabel a measurement.
+NOAHMP_COMPOSED_FRAME_RECORDINGS: tuple[ComposedUnitFrameRecording, ...] = (
+    # 2026-10-19 re-read on a lab RTX 5090 (sm_120, NVRTC 13.4.92, the
+    # same compile platform as the RTX 5070 Ti row below it in the historical
+    # table): the 2.9.3 speed2 landing (de768fc2770) gave noahmp_vegeflux.cu
+    # the masked and STC=3 entry points, which moved the
+    # noahmp_vegeflux_runtime identity and withdrew the 2026-10-18 row.
+    # `python tools/measure_noahmp_frames.py measure` in a fresh process
+    # with an empty CuPy cache, every export read, zero launches: all
+    # fifteen frames equal the withdrawn row byte for byte (the two new
+    # vegeflux exports carry 0 B of local frame), so Noah-MP still adds
+    # 0 B to the launch-time reservation on this platform.
+    ComposedUnitFrameRecording(
+        box='lab box (RTX 5090)',
+        device='NVIDIA GeForce RTX 5090',
+        compute_capability='120',
+        nvrtc_build='13.4.92',
+        platform_family='linux',
+        measured='2026-10-19',
+        frames=MappingProxyType({
+            'noahmp_bareflux': 0,
+            'noahmp_driver_composed': 352,
+            'noahmp_energy_composed': 208,
+            'noahmp_fluxprep': 0,
+            'noahmp_glacier_composed': 456,
+            'noahmp_leaves': 208,
+            'noahmp_libm_slab_composed': 208,
+            'noahmp_radiation': 0,
+            'noahmp_sflx': 0,
+            'noahmp_snow': 200,
+            'noahmp_soilwater': 0,
+            'noahmp_thermal_composed': 368,
+            'noahmp_vegeflux_runtime': 0,
+            'noahmp_vegprecip': 0,
+            'noahmp_water': 224,
+        }),
+        unit_identity=MappingProxyType({
+            'noahmp_bareflux':
+                'd2e09c2ccc2bcc6524f542b41aabcdfadced27c6e091274caef9a6afee96b701',
+            'noahmp_driver_composed':
+                'dbfa9c8b4ec51833c24ac9c9105f6638f76851aa12185531456685d1b947a673',
+            'noahmp_energy_composed':
+                '56229ed3168b83845f6d9820d2585d4485ee7cf7f479217d9838573c3654b55f',
+            'noahmp_fluxprep':
+                'c1f15fefd60c05cb774135b7ad976a584432a0c5d19ef545720eb66d0c1a0f7a',
+            'noahmp_glacier_composed':
+                '0bcf3db1d33e20ce46234bbfcdce083f0652952bbe886bee63d61c67c61077a4',
+            'noahmp_leaves':
+                '98d7020604c6fbd067d5b22b92c5c910b1119f84b9dc1b11ab51b3ab484c7e97',
+            'noahmp_libm_slab_composed':
+                '5240c4820d045777237e86a1cae372e79a65aad0ca415a955774b7a6f7c5ec81',
+            'noahmp_radiation':
+                'fd3a2198282ef306f58aa256471287c7cacbd25cd0a7daa6ccf7fdb320b6ef46',
+            'noahmp_sflx':
+                'a40b1871465f6d795438483f8ade620a34dffdfe0f333833107404053cf072e4',
+            'noahmp_snow':
+                '8fbb7ebd7e02544af651d2809e60e3a4acd2012ac20649ffb46e3209a7c1eeb0',
+            'noahmp_soilwater':
+                'f1c58630e24214d2312cb2c099adc8e280393cada155a379db4b5a3857c4d174',
+            'noahmp_thermal_composed':
+                '90edf4cb7b87d54a0062c8373decab6b510f77388beaaa5ac3c35b71a91a6342',
+            'noahmp_vegeflux_runtime':
+                'ede775ebaa5b65ee85e846c2046f4f0ef5744ebb8e977fbf62905170ae69ab85',
+            'noahmp_vegprecip':
+                '754bbe9b73b37bd9db74b40f5dc12bb58c27a66329a125b342b8d3c067d7dd7f',
+            'noahmp_water':
+                'aa5b7a6807edf3def8358bffe37db642c9014baef68d4372cad737980e85ff26',
+        }),
+    ),
+)
+
 #: The resolutions this release was checked against.  Re-resolve with
 #: ``python tools/measure_noahmp_frames.py resolve`` before a cut; a
 #: changed ``nvidia-cuda-nvrtc`` version is a new compile platform and
@@ -2548,7 +2680,7 @@ RESOLVED_TOOLCHAIN_PINS: tuple[ResolvedToolchainPin, ...] = (
         nvrtc_build='13.4.59',
         resolved='2026-09-10',
         current=False,
-        noahmp_architectures=('120',),
+        noahmp_architectures=(),
     ),
     # The window before it: cuda-toolkit 13.3.x (13.3.1 on the venv the
     # first Noah-MP reading came from) pinned nvidia-cuda-nvrtc 13.3.33.
@@ -2562,7 +2694,7 @@ RESOLVED_TOOLCHAIN_PINS: tuple[ResolvedToolchainPin, ...] = (
         nvrtc_build='13.3.33',
         resolved='2026-09-08',
         current=False,
-        noahmp_architectures=('120',),
+        noahmp_architectures=(),
     ),
     # 2026-09-10, same resolution method: cupy-cuda12x 14.2.0 ->
     # cuda-toolkit 12.9.2.0 -> nvidia-cuda-nvrtc-cu12 12.9.86.  Re-resolved
@@ -2590,7 +2722,7 @@ RESOLVED_TOOLCHAIN_PINS: tuple[ResolvedToolchainPin, ...] = (
         current=True,
         # '86' withdrawn with its row (golden/wrf-fixes, 2026-10-13); see
         # NOAHMP_COMPOSED_FRAME_RECORDINGS.
-        noahmp_architectures=('120',),
+        noahmp_architectures=(),
     ),
 )
 
@@ -2764,3 +2896,16 @@ KERNEL_LOCAL_FRAME_RECORDINGS += (
 KERNEL_LOCAL_FRAME_RECORDINGS = tuple(
     replace(row, complete=False) if "oml" not in row.frames else row
     for row in KERNEL_LOCAL_FRAME_RECORDINGS)
+
+# 2026-10-18 RTX 5070 Ti, NVRTC 13.4.92 production loaders, fast + strict.
+# Attributes only: no kernel launch, no step/physics parity claim.
+KERNEL_LOCAL_FRAME_RECORDINGS = tuple(replace(row, complete=False)
+    if not {'nextgen_cfe', 'nextgen_reservoirs', 'nextgen_inundation', 'nextgen_terrain'} <= row.frames.keys()
+    else row for row in KERNEL_LOCAL_FRAME_RECORDINGS)
+KERNEL_LOCAL_FRAME_RECORDINGS += (KernelFrameRecording(
+    box='lab box (RTX 5070 Ti)', device='NVIDIA GeForce RTX 5070 Ti',
+    compute_capability='120', nvrtc_build='13.4.92', platform_family='linux',
+    measured='2026-10-18', complete=False,
+    frames=MappingProxyType({'nextgen_cfe': 0, 'nextgen_reservoirs': 0,
+                            'nextgen_inundation': 0, 'nextgen_terrain': 56}),
+),)

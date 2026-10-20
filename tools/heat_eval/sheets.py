@@ -1,4 +1,4 @@
-"""The case's sheets, drawn by rw_compare (the Rust renderer) and nothing else.
+"""Case and family sheets, with all weather fields drawn by Rust renderers.
 
 Sheets come first: a person judges them before any number is read.  Each
 sheet is redrawn from whatever has landed, so it can be called after every
@@ -22,6 +22,10 @@ oracle column, here as in the decision.
     python -m tools.heat_eval.sheets --case ID [--root /work/nh] [--plan core]
         [--only NAME,...] [--gallery DIR]
 
+Family sheets use the existing rw_wrfbatch probability/postage product table:
+``python -m tools.heat_eval.sheets --receipt RECEIPT --renderer BINARY --out DIR``.
+Python composes the completed native PNGs, without reading weather arrays.
+
 ``--gallery`` copies the sheets and their plain captions to a folder
 (the evidence gallery, once copied back from the box).
 """
@@ -29,6 +33,9 @@ oracle column, here as in the decision.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
+import hashlib
+import time
 import json
 import os
 import shutil
@@ -38,6 +45,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Sequence
 
+from gpuwm.rustwx import run_ensemble_product_renderer
 from tools.heat_eval import plan as planmod
 from tools.heat_eval.score_case import find_frames, seam
 
@@ -226,14 +234,87 @@ def draw(root: Path, case: planmod.Case, plan: str, only: Sequence[str] | None,
     return results
 
 
+LABELS = {"observed": "MRMS observed composite", "ai": "StormScope",
+          "physics": "DA forecast"}
+
+
+def digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def draw_family_panels(receipt, *, renderer, out):
+    if receipt.get("schema") != "gpuwm-ensemble-grid-match.v1" or receipt.get("status") != "complete":
+        raise ValueError("panels require a complete native gridded match receipt")
+    out.mkdir(parents=True, exist_ok=False)
+    # The shared resolver otherwise prefers an installed rw_ensbatch. This
+    # CLI's explicit renderer path is the artifact whose bytes we pin.
+
+    def draw(product):
+        source = Path(product["path"])
+        if digest(source) != product["sha256"]:
+            raise ValueError(f"native product changed: {source}")
+        family = product["family"]
+        start = time.monotonic()
+        files, stdout = run_ensemble_product_renderer(renderer, source, out_dir=out / family,
+            fields=("refl",), domain="d01-3km", width=960, height=720,
+            source_label=LABELS[family], products=tuple(product["products"]))
+        (out / f"{family}.renderer.log").write_text(stdout)
+        return {"family": family, "files": [{"path": str(path), "sha256": digest(path)} for path in files],
+                "wall_seconds": time.monotonic() - start, "parallelism": "native Rust renderer, Rayon pool"}
+
+    previous = os.environ.get("GPUWM_ENSEMBLE_RENDERER")
+    os.environ["GPUWM_ENSEMBLE_RENDERER"] = str(renderer)
+    try:
+        with ThreadPoolExecutor(max_workers=len(receipt["products"])) as pool:
+            rows = list(pool.map(draw, receipt["products"]))
+    finally:
+        if previous is None:
+            os.environ.pop("GPUWM_ENSEMBLE_RENDERER", None)
+        else:
+            os.environ["GPUWM_ENSEMBLE_RENDERER"] = previous
+    # Composition only: all map pixels, labels, scales and geographic overlays
+    # were rendered by rw_wrfbatch. Pillow does not see weather values.
+    from PIL import Image, ImageDraw
+    sheet = Image.new("RGB", (3 * 960, 760), "#eef0f3")
+    pen = ImageDraw.Draw(sheet)
+    for index, family in enumerate(("observed", "ai", "physics")):
+        row = next((row for row in rows if row["family"] == family), None)
+        match = None if row is None else next((Path(item["path"]) for item in row["files"]
+            if ("ens_mean_refl" if family == "observed" else "ens_prob_refl_ge_35") in item["path"]), None)
+        pen.text((index * 960 + 20, 12), LABELS[family], fill="black")
+        if match is None:
+            pen.text((index * 960 + 40, 330), "No family product in this scored frame", fill="black")
+        else:
+            with Image.open(match) as picture:
+                sheet.paste(picture.convert("RGB"), (index * 960, 40))
+    comparison = out / "mrms-stormscope-da.png"
+    sheet.save(comparison)
+    result = {"schema": "gpuwm-ensemble-reflectivity-panels.v1", "valid_time": receipt["valid_time"],
+              "renderer": {"path": str(renderer), "sha256": digest(renderer)}, "families": rows,
+              "comparison": {"path": str(comparison), "sha256": digest(comparison)},
+              "scope": "MRMS dBZ, family probability >=35 dBZ, and native member postage; missing family labelled"}
+    (out / "panels.json").write_text(json.dumps(result, indent=2) + "\n")
+    return result
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m tools.heat_eval.sheets")
-    parser.add_argument("--case", required=True)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--case")
+    mode.add_argument("--receipt", type=Path, help="native ensemble family match receipt")
+    parser.add_argument("--renderer", type=Path, help="explicit rw_wrfbatch binary for family sheets")
+    parser.add_argument("--out", type=Path, help="new family sheet directory")
     parser.add_argument("--root", type=Path, default=planmod.DEFAULT_ROOT)
     parser.add_argument("--plan", default="core", choices=planmod.PLANS)
     parser.add_argument("--only", default="")
     parser.add_argument("--gallery", type=Path)
     args = parser.parse_args(argv)
+    if args.receipt:
+        if args.renderer is None or args.out is None:
+            parser.error("--receipt needs --renderer and --out")
+        draw_family_panels(json.loads(args.receipt.read_text()),
+                           renderer=args.renderer.resolve(), out=args.out.resolve())
+        return 0
     try:
         results = draw(args.root, planmod.case_by_id(args.case), args.plan,
                        [n for n in args.only.split(",") if n] or None, args.gallery)

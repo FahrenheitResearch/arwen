@@ -29,6 +29,7 @@ state inventory and the scratch registry price those, not this one.
 from __future__ import annotations
 
 import json
+import math
 import sys
 import types
 
@@ -223,9 +224,10 @@ def _state_owned(state, driver) -> set[int]:
 def driver_arrays(driver, state) -> dict[str, tuple[tuple[int, ...], int]]:
     """Every distinct on-card buffer the driver holds and the state does not.
 
-    Keyed by the first path that reaches it (``fields/tke_myj``,
+    Keyed by the largest view that reaches it (``fields/tke_myj``,
     ``pbl_tendencies/ru``, ``rthratenlw``), which is the spelling the
-    inventory uses; an alias reached again by another path is one buffer.
+    inventory uses; equal-sized aliases keep the first path. A prefix view
+    must not hide the full backing shape of a shared zero buffer.
     """
     skip = _state_owned(state, driver)
     found: dict[int, tuple[str, tuple[int, ...], int]] = {}
@@ -237,10 +239,11 @@ def driver_arrays(driver, state) -> dict[str, tuple[tuple[int, ...], int]]:
         seen.add(id(obj))
         if isinstance(obj, np.ndarray):
             owner = _owner(obj)
-            if isinstance(obj, _OnCard) and id(owner) not in skip \
-                    and id(owner) not in found:
-                found[id(owner)] = (path, tuple(obj.shape),
-                                    int(owner.nbytes))
+            if isinstance(obj, _OnCard) and id(owner) not in skip:
+                prior = found.get(id(owner))
+                if prior is None or obj.size > math.prod(prior[1]):
+                    found[id(owner)] = (path, tuple(obj.shape),
+                                        int(owner.nbytes))
             return
         for key, value in _children(obj):
             visit(value, f"{path}/{key}" if path else str(key))

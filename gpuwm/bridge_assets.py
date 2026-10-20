@@ -22,7 +22,7 @@ seven observation-stream doors, the radar feed listings and the terminal
 workspace onto a
 wheel install was to clone the repository and run ``cargo build`` -- a
 Rust toolchain, a 2.5 GB checkout and a few minutes of compiling, for
-fifty-seven files.
+the declared native files.
 ``gpuwm fetch-bridges`` is the same trade :mod:`gpuwm.table_assets`
 already makes for the externalized physics tables: the artifacts are
 published as versioned GitHub release assets, their exact size and
@@ -31,7 +31,7 @@ byte is verified against those pins *before* anything is installed.
 
 What is staged, and where
 -------------------------
-One bundle per platform, holding the fifty-seven artifacts of
+One bundle per platform, holding the declared native artifacts of
 :data:`BUNDLED_ARTIFACTS`, staged into :func:`gpuwm.bridges
 .default_bridge_dir` (``~/.gpuwm/bridges/<release>-<bundle digest>``)
 -- the staged rung of the resolution ladder every consumer already
@@ -313,6 +313,22 @@ class BundledArtifact:
 #: the four binaries were produced by the cut, probed by nothing, and
 #: thrown away at the end of the job.
 BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
+    # 2.9.3: the Linux wheel measured 110,716,883 bytes against PyPI's 100,000,000-byte per-file limit
+    # (rw_soundings and the NextGen tools are new), so the five observation front doors served by
+    # gpuwm.obs.frontdoor (rw_mrms, rw_stage4, rw_asos, rw_goes, rw_opera), the sounding window renderer
+    # and the NextGen gauge verifier are on demand: pinned in the bundle, staged on first use.
+    BundledArtifact(
+        "nextgen_hydrofabric", "library", "tools/nextgen_hydrofabric",
+        "GPUWM_HYDROFABRIC_LIBRARY",
+        "NextGen prepared numeric payload transport into caller-owned memory"),
+    BundledArtifact(
+        "arwen_nextgen_forcing", "library", "tools/nextgen_forcing",
+        "GPUWM_NEXTGEN_FORCING_BRIDGE",
+        "NextGen external forcing preparation and catchment area regridding"),
+    BundledArtifact(
+        "rw_nextgen_verify", "executable", "tools/nextgen_verify",
+        "GPUWM_NEXTGEN_VERIFY", "NextGen streamflow observation verification",
+        on_demand=True),
     BundledArtifact(
         "grib1_bridge", "executable", bridges.CRATE_RELATIVE,
         bridges.BRIDGE_ENV["grib1_bridge"],
@@ -389,15 +405,18 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
         "European polar volumes (gpuwm obs radar)"),
     BundledArtifact(
         "rw_mrms", "executable", bridges.RUSTWX_CRATE_RELATIVE,
-        "GPUWM_RW_MRMS", "MRMS composite reflectivity (gpuwm obs mrms)"),
+        "GPUWM_RW_MRMS", "MRMS composite reflectivity (gpuwm obs mrms)",
+        on_demand=True),
     BundledArtifact(
         "rw_stage4", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_STAGE4",
-        "Stage-IV precipitation (gpuwm obs stage4)"),
+        "Stage-IV precipitation (gpuwm obs stage4)",
+        on_demand=True),
     BundledArtifact(
         "rw_asos", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_ASOS",
-        "ASOS/METAR surface observations (gpuwm obs asos)"),
+        "ASOS/METAR surface observations (gpuwm obs asos)",
+        on_demand=True),
     BundledArtifact(
         "rw_airnow", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_AIRNOW",
@@ -405,11 +424,13 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
     BundledArtifact(
         "rw_goes", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_GOES",
-        "GOES ABI cloud-water-path packs (gpuwm obs goes)"),
+        "GOES ABI cloud-water-path packs (gpuwm obs goes)",
+        on_demand=True),
     BundledArtifact(
         "rw_opera", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_OPERA",
-        "European composite reflectivity (gpuwm obs opera)"),
+        "European composite reflectivity (gpuwm obs opera)",
+        on_demand=True),
     # The NetCDF decoder.  It joined this list the moment NetCDF decode
     # moved off `netCDF4.Dataset` and onto `netcrust`: from that commit
     # `rw-wps --source netcdf` and every mapped NetCDF route REFUSE
@@ -688,6 +709,16 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
         "GPUWM_RW_MLEXPORT",
         "machine-learning dataset export (gpuwm ml-export)"),
     BundledArtifact(
+        "rw_tc_fields", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_RW_TC_FIELDS", "completed-output cyclone field mapping (gpuwm tc-tracks)"),
+    # The sounding window renderer (the website sounding window drawn from
+    # plain run output).  Environment variable spelled to match
+    # gpuwm.soundings.ENV; the doctor line resolves through that module.
+    BundledArtifact(
+        "rw_soundings", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_SOUNDINGS", "website-style sounding windows (gpuwm soundings)",
+        on_demand=True),
+    BundledArtifact(
         "rw_scoreboard", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_SCOREBOARD", "incremental forecast verification (gpuwm scoreboard)"),
     BundledArtifact(
@@ -766,6 +797,8 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
 #: read, so a third library cannot be added to `BUNDLED_ARTIFACTS` and
 #: quietly inherit some other library's handshake.
 LIBRARY_ABI: dict[str, tuple[str, int]] = {
+    "nextgen_hydrofabric": ("arwen_hydrofabric_abi_version", 1),
+    "arwen_nextgen_forcing": ("arwen_forcing_abi_version", 1),
     "gpuwm_preprocess_cpu": ("gpuwm_preprocess_cpu_abi_version", 1),
     "region_global_dealias": ("bw_abi_version", 1),
     # Matches gpuwm.io.nc_writer_bridge.NCWRITE_ABI; a test binds them.
@@ -1234,6 +1267,8 @@ def verify_source_revision(payload: bytes, *, expected: str,
 #: from the Cargo manifests and the Rust sources and refuses any it does
 #: not find covered here.
 NATIVE_BUILD_INPUTS: dict[str, tuple[str, ...]] = {
+    "tools/nextgen_hydrofabric": ("tools/nextgen_hydrofabric",),
+    "tools/nextgen_verify": ("tools/nextgen_verify",),
     "tools/grib1_bridge": ("tools/grib1_bridge", "tools/preparation_resources.rs"),
     "tools/rustwx": ("tools/rustwx", "tools/grib1_bridge/vendor/grib-core",
                      "tools/preparation_resources.rs",
@@ -1290,6 +1325,17 @@ NATIVE_BUILD_INPUTS: dict[str, tuple[str, ...]] = {
         "gpuwm/data/thompson/oracle-aero/aero-init-profile-column.csv",
         "pyproject.toml"),
 }
+
+# The forcing and gauge tools reach the shared reader, and optional forcing
+# subset tools also reach the writer. Keep their workspace's full conservative
+# dependency closure, including optional features, rather than pricing reuse
+# only for a default build. The closure test treats a workspace as one unit.
+for _hydro_crate in ("tools/nextgen_forcing", "tools/nextgen_verify"):
+    NATIVE_BUILD_INPUTS[_hydro_crate] = (
+        _hydro_crate, *NATIVE_BUILD_INPUTS["tools/rustwx"])
+
+# Gauge discovery and matching also compile the worldwide fabric reader.
+NATIVE_BUILD_INPUTS["tools/nextgen_verify"] += ("tools/hydro_world",)
 
 
 #: Paths inside a crate root that its build never reads: packed into the

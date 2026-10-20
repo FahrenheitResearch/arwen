@@ -104,7 +104,7 @@ def register_cli(sub) -> None:
                              "when the history carries TKE (TKE_PBL or QKE), else the "
                              "surface-layer similarity gust (RULINGS 7, scored against ASOS)")
     parser.add_argument("--winds", choices=("grid", "earth"), default="grid",
-                        help="wind component frame, default grid-relative")
+                        help="wind component frame, default grid-relative; 100 m components are always earth-relative")
     parser.add_argument("--bits", type=int, default=20, help="quantization bits, default 20")
     parser.add_argument("--levels", help="comma-separated hPa levels, default 100 through 1000 by 25")
     parser.add_argument("--threads", type=int, help="Rust worker threads")
@@ -240,6 +240,8 @@ def main(args) -> int:
             print("field sets: " + ", ".join(options["fields"]))
             print("packing: " + ", ".join(options["packing"]))
             print("surface fields: " + ", ".join(row["id"] for row in options["surface_fields"]))
-            print("pressure fields: " + ", ".join(options["pressure_fields"]))
+            print("pressure fields: " + ", ".join(row["id"] for row in options["pressure_rows"]))
+            for row in options["pressure_rows"]:
+                print(f"  {row['id']}: {row['grib']} {row['units']} | {row['method']}")
         return 0
     return invoke(exe, request, as_json=args.json)

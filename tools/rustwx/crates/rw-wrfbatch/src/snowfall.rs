@@ -281,12 +281,41 @@ fn window_cached(
             && records.iter().any(|r| r.0 == state.until)
             && state.previous.len() == cells
     });
+    // The integration an earlier process saved through an earlier frame of
+    // this same, unchanged history (`crate::source_memo`): drawing frame N
+    // folds one interval instead of re-reading 3-D temperature and pressure
+    // from every frame since the baseline.
+    let window_key = format!(
+        "{}\u{0}{prefix}\u{0}{:?}\u{0}{start}\u{0}{kuchera}",
+        directory.display(),
+        axis.reference_unix
+    );
+    let stamps_through = |until: i64| -> Option<Vec<String>> {
+        let mut seen: Vec<&PathBuf> = Vec::new();
+        for (valid, source, _) in &records {
+            if *valid <= until && !seen.contains(&source) {
+                seen.push(source);
+            }
+        }
+        seen.into_iter().map(|source| crate::source_memo::file_stamp(source)).collect()
+    };
+    let recalled = if reusable.is_none() {
+        crate::source_memo::recall_snowfall(&window_key, cells).filter(|memo| {
+            memo.until <= now
+                && records.iter().any(|r| r.0 == memo.until)
+                && stamps_through(memo.until).is_some_and(|stamps| stamps == memo.sources)
+        })
+    } else {
+        None
+    };
     let (mut prev, mut acc, until) = if let Some(state) = reusable {
         (
             state.previous.clone(),
             state.accumulated.clone(),
             state.until,
         )
+    } else if let Some(memo) = recalled {
+        (memo.previous, memo.accumulated, memo.until)
     } else {
         let base = WrfFile::open(&records[0].1).map_err(|e| e.to_string())?;
         (frozen(&base, records[0].2)?, vec![0.0; cells], start)
@@ -314,6 +343,17 @@ fn window_cached(
             }
         }
         prev = current;
+    }
+    if let Some(sources) = stamps_through(now) {
+        crate::source_memo::remember_snowfall(
+            &window_key,
+            &crate::source_memo::SnowfallMemo {
+                until: now,
+                sources,
+                previous: prev.clone(),
+                accumulated: acc.clone(),
+            },
+        );
     }
     *cache = Some(WindowState {
         directory,

@@ -671,6 +671,11 @@ _PHYSICS_ALLOCATION_INVENTORY = {
     'gpuwm/core/noahmp_flux_slab.py': {
         'evaluate_bare_flux_slab': 2,
         'evaluate_vege_flux_slab': 2,
+        # b3dd58fc9f3 (2.9.3): the fixed-width masked dispatch keeps the
+        # vegetated-column selection on the device.  Its two sites are the
+        # sibling's two (the n == 0 empty and the (n, N_OUTPUT) slab); the
+        # live mask never sizes a host allocation or a launch.
+        'evaluate_vege_flux_masked_slab': 2,
         'pack_bare_flux_slab': 2,
         'pack_vege_flux_slab': 2,
     },
@@ -716,13 +721,17 @@ _PHYSICS_ALLOCATION_INVENTORY = {
     },
     'gpuwm/core/nssl2_qvexcess.py': {},
     'gpuwm/core/nssl2_radiation.py': {},
-    # The resident tick-zero analysis field is one caller-owned FP32 mass
-    # volume, 4 bytes per cell. Streamed history selects host NumPy zeros
-    # instead, so the restored full-domain metadata path opens no GPU store.
+    # analysis_refl_10cm: under GPUWM_WRF_EXACT=1 the resident tick-zero
+    # frame is WRF's all-zero array, one caller-owned FP32 mass volume.
+    # scratch (18dbe1d5449, the analysis-frame diagnostic): a host/store
+    # analysis frame stages bounded 64-row horizontal slabs on the GPU, one
+    # FP32 slab per scratch slot, dropped when the slab is done; once per
+    # domain start, never per step.
     # launch_refl10cm_wsm6: the WSM6 reflectivity column workspace (lane/292-mem-cuts 052440f32b4), three
     # per-call arrays (5 float32, 4 float64 and 1 uint8 rows per level) sized for the columns in flight, one
     # tile (wsm6_tile_columns: the card's resident capacity), returned to the pool when the call ends.
-    'gpuwm/core/refl.py': {'analysis_refl_10cm': 1, 'launch_refl10cm_wsm6': 3},
+    'gpuwm/core/refl.py': {'analysis_refl_10cm': 1, 'launch_refl10cm_wsm6': 3,
+                           'scratch': 1},
     # WRF v4.7.1 slope_rad / topo_shading (lane 281-namelist-gaps), only on a
     # domain that turns slope_rad on.  ``__init__`` allocates the carrier's
     # held planes once per domain -- diffuse_frac, topo_coszen, hrang and
@@ -1015,7 +1024,7 @@ _PHYSICS_ALLOCATION_INVENTORY = {
     # Physics constructor allocations are fixed domain/soil/history carriers,
     # priced by physics_inventory_census. Default WSM6 delegates its kernels
     # to the common loader and has no per-call allocation.
-    'gpuwm/core/physics.py': {'couple_sase_w_tendency': 1, 'scalar': 1, 'zeros': 3, 'materialize': 2, 'couple_column_tendencies': 5, '_physics_exner': 1, '_prepare_atmosphere': 1, '__init__': 21, 'zero_surface': 1, '_run_cumulus': 8, '_compose_tendencies': 1, '_run_sfclay': 4, '_run_myj_pbl': 1, '_run_ysu': 2, '_ysu_scalar_pblmix': 1, '_run_shinhong': 2, '_run_sase': 2, '_zero_accumulator': 1, '_attach_urban': 2, 'initialize_physics': 35},
+    'gpuwm/core/physics.py': {'couple_sase_w_tendency': 1, '_held_zero_tendency_views': 1, 'scalar': 1, 'zero': 2, 'zeros': 1, 'materialize': 2, 'couple_column_tendencies': 1, '_physics_exner': 1, '_prepare_atmosphere': 1, '__init__': 21, 'zero_surface': 1, '_run_cumulus': 8, '_compose_tendencies': 1, '_run_sfclay': 4, '_run_myj_pbl': 1, '_run_ysu': 2, '_ysu_scalar_pblmix': 1, '_run_shinhong': 2, '_run_sase': 2, '_zero_accumulator': 1, '_attach_urban': 2, 'initialize_physics': 35},
 
     # Physics constructor allocations are fixed domain/soil/history carriers,
     # priced by physics_inventory_census. Default WSM6 delegates its kernels
@@ -1418,7 +1427,11 @@ def test_real_device_helper_allocation_inventory():
 
 
 # Column adapters allocate their documented table and in-flight column slabs.
-_PHYSICS_ALLOCATION_INVENTORY.update({'gpuwm/core/fer_hires.py': {}})
+# reflectivity (18dbe1d5449): the analysis-frame radar diagnostic for
+# mp=5, once per domain start and never per step: a ones dz volume, one
+# (ny, nx) zero surface plane and one unused output volume, each sized to
+# the state it is handed (a 64-row slab on the host/store road).
+_PHYSICS_ALLOCATION_INVENTORY.update({'gpuwm/core/fer_hires.py': {'reflectivity': 3}})
 # golden/ports-rad (2.9.0 round 2): the radiation and switch ports' sites,
 # entered with their bounds when the round merged them (the lane left them out).
 _PHYSICS_ALLOCATION_INVENTORY.update({
@@ -1456,6 +1469,15 @@ _PHYSICS_ALLOCATION_INVENTORY['gpuwm/core/rrtmgp.py']['_microphysics_columns'] =
 # inside _lw_rte/_sw_rte (out=None), already counted there.
 _PHYSICS_ALLOCATION_INVENTORY['gpuwm/core/rrtmgp.py']['__call__'] += 1
 _PHYSICS_ALLOCATION_INVENTORY['gpuwm/core/rrtmgp.py']['_clear_sky_cloud'] = 1
+# The paired solvers (rad-history, 2026-10-18): on the prepared route the
+# clear-sky top/surface rows come out of the same kernel as the all-sky
+# fluxes, so _lw_rte and _sw_rte each allocate one (ncol, nlev) float32
+# clear up/down pair per call on that path -- the pair the separate clear
+# solve used to allocate through its own out=None outputs.  The finalized
+# optics and staged Planck cubes that path no longer builds are gone, so
+# no priced term grows.
+_PHYSICS_ALLOCATION_INVENTORY['gpuwm/core/rrtmgp.py']['_lw_rte'] += 2
+_PHYSICS_ALLOCATION_INVENTORY['gpuwm/core/rrtmgp.py']['_sw_rte'] += 2
 # WRF's ocean mixed layer (2.9.1): initialize_ocean fills an absent (ny, nx)
 # mixed-layer field once at domain start, a persistent driver field.
 _PHYSICS_ALLOCATION_INVENTORY['gpuwm/core/surface_ocean.py'] = {'initialize_ocean': 1}

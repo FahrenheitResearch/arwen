@@ -87,6 +87,7 @@ pub fn parameter_name(discipline: u8, category: u8, number: u8) -> &'static str 
         (0, 2, 2) => "U-Component of Wind",
         (0, 2, 3) => "V-Component of Wind",
         (0, 2, 8) => "Vertical Velocity (Pressure)",
+        (0, 2, 9) => "Vertical Velocity (Geometric)",
         (0, 2, 10) => "Absolute Vorticity",
         (0, 2, 12) => "Relative Vorticity",
         (0, 2, 22) => "Wind Speed (Gust)",

@@ -28,15 +28,29 @@ import pytest
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 WORKSPACES = (
-    # The ALBSOL measurement scorer's workspace, with its own retained
-    # lock since 5da356400 (2.8.6).
     "tools/albsol_score",
     "tools/arwen-launchpad",
     "tools/arwen-tui",
+    "tools/cfe_replay",
     "tools/grib1_bridge",
+    "tools/hydro_world",
+    "tools/hydro_world_calibration",
+    "tools/hydro_world_init",
+    "tools/hydro_world_params",
+    "tools/nextgen_cfe_prepare",
+    "tools/nextgen_forcing",
+    "tools/nextgen_hydrofabric",
+    "tools/nextgen_output",
+    "tools/nextgen_replay",
+    "tools/nextgen_reservoir_prepare",
+    "tools/nextgen_terrain",
+    "tools/nextgen_verify",
+    "tools/noahowp-init",
+    "tools/noahowp_replay",
     "tools/region_global_dealias",
     "tools/rustwx",
     "tools/rw_wps",
+    "tools/troute_mc_replay",
     "tools/zarr_bridge",
 )
 

@@ -252,3 +252,90 @@ Time scales with columns times model levels, and the 250 m frame peaked
 at 2.7 GB of memory. Stored size scales with the number of columns: about
 150 to 200 bytes per column per frame (smooth fields compress further),
 and `era5-37` two to two and a half times WB13.
+
+## Earth2Studio diagnostic and conditioning exports
+
+`gpuwm export` uses this same Rust exporter, pressure interpolation and regrid.
+The naming scheme, target grids and consumer inputs are table rows. List them
+with `gpuwm export --list`.
+
+```sh
+gpuwm export history/ --earth2 e2s-latlon-0.25 \
+  --for windgust-afno,precip-afno,climatenet,tc-tracker --channels tp06 --out earth2/
+gpuwm export history/ --earth2 e2s-healpix --for climatenet --out healpix/
+gpuwm export regional/ --earth2 e2s-hrrr-3km --for stormcast-conus --out conditioning/
+gpuwm export regional/ --earth2 e2s-native --channels t2m,tcwv,z500 --out native/
+```
+
+Without `--for` or `--channels`, the default is 11 surface channels and
+z/t/q/u/v/w/r at 50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850,
+925 and 1000 hPa. `--for` takes the union of the consumers' input channels;
+`--channels` adds channels to that union. Adding a consumer means adding a row
+under `consumers` in `gpuwm/authorities/earth2-models.v1.json`. Existing variable
+operators resolve its channels without consumer-specific dispatch. Pressure
+suffixes are in hPa, and other pressure levels can use the same templates.
+
+The Earth2Studio 0.19.0 lexicon defines z as geopotential (m2 s-2), w as
+pressure vertical velocity (Pa s-1), relative humidity as percent, and tp06 as
+six-hour accumulated water depth in metres. The exporter follows those units.
+An initial frame without a preceding six-hour window has NaN tp06. The 100 m
+winds are earth relative and interpolated linearly in height above ground
+between the bracketing mass-level winds. Columns without a bracket are missing.
+
+| profile | spatial dimensions | convention |
+|---|---|---|
+| `e2s-latlon-0.25` | `lat=721, lon=1440` | latitude 90 to -90, longitude 0 to 359.75 |
+| `e2s-healpix` | `face=12, height=64, width=64` | DLESyM nside 64, Earth2Grid HEALPIX_PAD_XY |
+| `e2s-native` | `y, x` | original fixed regional grid, 2-D lat/lon coordinates |
+| `e2s-hrrr-3km` | `hrrr_y=1059, hrrr_x=1799` | Earth2Studio HRRR spherical Lambert grid, 3 km |
+
+Fixed profiles use parallel Rust bilinear interpolation, with periodic
+longitude on global inputs and NaN outside regional coverage. Use a regional
+history that covers the conditioning footprint required by the consumer.
+The AFNO consumers request 720 latitude rows; select `lat=slice(90,-89.75)`
+when passing the 721-row global export into their model input.
+
+Each domain is a consolidated Zarr format 3 store with one variable per channel
+and dimensions `(time, lead_time, spatial dimensions)`. `time` is the forecast
+initialization and `lead_time` its offset. Format 3 carries the dimension names
+Earth2Studio's Zarr backend reads. Open the store using Earth2Studio itself:
+
+```python
+import numpy as np
+from earth2studio.data import InferenceOutputSource
+from earth2studio.io import ZarrBackend
+
+source = InferenceOutputSource('earth2/d01.zarr', engine='zarr')
+array = source(np.array(['2024-05-22T00'], dtype='datetime64[ns]'),
+               np.array(['t2m', 'tcwv', 'z500']))
+# array dimensions: time, variable, lat, lon; time here is VALID time
+backend = ZarrBackend('earth2/d01.zarr')
+```
+
+`InferenceOutputSource` is the 0.19.0 loader for per-channel inference-output
+files. `DataArrayFile` expects a pre-stacked DataArray and is a different file
+contract. `xarray.open_zarr` also reads these stores. The receipt records input
+hashes, channels, grid parameters and per-frame timings. Common input selection,
+thread, chunk, append, finalize, overwrite and ZIP options are shared with
+`ml-export`. Consumer rows include weight locations and checkpoint licence
+information; exporting fields does not download or run checkpoints.
+
+For a curvilinear conditioning source already on the requested model grid,
+Earth2Studio 0.19.0 needs its legacy coordinate dictionary reconciled. Its
+interpolation path asks for `_lat`/`_lon`, while its HRRR source supplies
+`lat`/`lon`, and then drops spatial keys the conditioning caller requires.
+Use the generic compatibility context around inference:
+
+```python
+from gpuwm.earth2_io import pregridded_conditioning
+
+# model.conditioning_data_source = InferenceOutputSource('conditioning/d01.zarr', engine='zarr')
+with pregridded_conditioning():
+    output, coordinates = model(input_tensor, input_coordinates)
+```
+
+This checks both geographic coordinates and selects the requested index
+window before delegating to Earth2Studio's tensor conversion. For StormCast's
+default CONUS window that is rows 17:1041 and columns 3:1795. Regridding has
+already happened in the Rust exporter. The context changes no installed files
+and restores the original Earth2Studio conversion when it exits.

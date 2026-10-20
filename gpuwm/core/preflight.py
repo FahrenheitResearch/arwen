@@ -2655,6 +2655,9 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     # the WRF 4.8 full-canopy SLUCM (kernel_frame_recordings, same date).
     "goddard": 43664,
     "urban_ucm480": 352,
+    # RTX 5070 Ti production loaders, 2026-10-18, both numerics modes.
+    "nextgen_cfe": 0, "nextgen_reservoirs": 0,
+    "nextgen_inundation": 0, "nextgen_terrain": 56,
 }
 
 #: The readings the ceiling above is made of, each naming its box, its
@@ -5110,6 +5113,17 @@ def physics_array_shapes(cfg: RunConfig, *, cam_ozone: bool = False,
         shapes[f"{stack}/rv"] = (nz, ny + 1, nx)
         for comp in ("rtheta", "rqv", "rqc"):
             shapes[f"{stack}/{comp}"] = m
+    # The logical zero arrays keep their restart names, but radiation's
+    # ru/rv/rqv/rqc share one contiguous backing; held KF's ru/rv share
+    # another. Price the largest shape of each backing exactly once.
+    for stack, components in (
+            ("radiation_tendencies", ("ru", "rv", "rqv", "rqc")),
+            ("cumulus_tendencies", ("ru", "rv") if cfg.cu_physics == 1 else ())):
+        if components:
+            largest = max(components, key=lambda comp: math.prod(shapes[f"{stack}/{comp}"]))
+            for comp in components:
+                if comp != largest:
+                    shapes.pop(f"{stack}/{comp}")
     for component in PBL_OPTIONAL_TENDENCIES.get(cfg.bl_pbl_physics, ()):
         shapes[f"pbl_tendencies/{component}"] = m
         if (radiation_enabled(cfg) or cfg.cu_physics) and not reuse_pbl:
@@ -8250,6 +8264,9 @@ class ExperimentMemoryEstimate:
     # once per domain. Separate from radiation's shared k-tables so a
     # legacy radiation workspace is never mistaken for a fixed floor.
     physics_tables_bytes: int = 0
+    # Table-selected hydro is priced outside the static RunConfig physics
+    # roster. Missing owner hooks are explicit gaps in this same envelope.
+    hydro_memory: dict | None = None
 
     @property
     def fixed_envelope_bytes(self) -> int:
@@ -8278,7 +8295,8 @@ class ExperimentMemoryEstimate:
         if self.uses_shared_dycore_state_workspace:
             per_domain -= self.dycore_state_request_bytes
             per_domain += self.dycore_state_workspace_bytes
-        return per_domain + self.k_tables_bytes + self.physics_tables_bytes
+        return (per_domain + self.k_tables_bytes + self.physics_tables_bytes
+                + int((self.hydro_memory or {}).get("resident_bytes", 0)))
 
     @property
     def dycore_state_request_bytes(self) -> int:
@@ -8310,7 +8328,7 @@ class ExperimentMemoryEstimate:
         """Domains step strictly sequentially (architecture section E
         chunk-policy adjudication); one domain's step transients live at
         a time, so the peak takes the max, not the sum."""
-        return max((d.transient_bytes + (self.legacy_call_peak_by_domain[index]
+        return int((self.hydro_memory or {}).get("transient_bytes", 0)) + max((d.transient_bytes + (self.legacy_call_peak_by_domain[index]
                     if self.legacy_call_peak_by_domain else 0)
                     for index, d in enumerate(self.domains)), default=0)
 
@@ -8363,7 +8381,7 @@ class ExperimentMemoryEstimate:
         itemized non-pool term is how a 10 GiB card came to carry
         4.12 GiB of another machine's accounting (the 3080 walk).
         """
-        return self.non_pool_device_bytes
+        return self.non_pool_device_bytes + int((self.hydro_memory or {}).get("non_pool_bytes", 0))
 
     @property
     def peak_envelope_bytes(self) -> int:
@@ -8384,7 +8402,12 @@ class ExperimentMemoryEstimate:
         measured over a battery that carries both lanes, and the
         intercept and residue rest on the affine campaign.
         """
-        return f"{ENVELOPE_A163_BASIS}; {ENVELOPE_AFFINE_BASIS}"
+        basis = f"{ENVELOPE_A163_BASIS}; {ENVELOPE_AFFINE_BASIS}"
+        if self.hydro_memory is not None:
+            gaps = self.hydro_memory["gaps"]
+            basis += ("; hydro allocation inventory PARTIAL: " + "; ".join(gaps)
+                      if gaps else "; hydro owner allocation contracts (whole-run qualification pending)")
+        return basis
 
     def peak_envelope_terms(self) -> str:
         """The envelope's arithmetic, exactly as it was evaluated.
@@ -10057,7 +10080,10 @@ def estimate_experiment(
     arena_shapes = (shared_scratch_arena_shapes(exp.domains)
                     if uses_arena else {})
     nz = exp.domains[0].run.nz
+    from gpuwm.hydro.memory import forecast_plan
+    hydro_plan = forecast_plan(exp)
     return ExperimentMemoryEstimate(
+        hydro_memory=None if hydro_plan is None else hydro_plan.inventory(),
         domains=domains,
         k_tables_bytes=k_distribution_bytes() if uses_rrtmgp else 0,
         workspace_bytes=(_workspace_total_bytes(
@@ -10772,10 +10798,14 @@ def run_alloc_preflight(
     from gpuwm.ingest.lateral_bc import attach_lateral_boundaries
 
     reserve = ReservePolicy.n0_alloc() if reserve is None else reserve
+    # The one-card residue bound (A13) the estimate path already prices:
+    # without it the measured leg compared a x1.13 estimate (95.75 GiB for
+    # full-grid HRRR on a 96 GB card) against the budget while the plain
+    # check and the go gate priced the bounded 86.98 GiB for the same run.
     estimate = estimate_experiment(
         exp, column_chunk=column_chunk, forcing_intervals=forcing_intervals,
         forcing_interval_seconds=forcing_interval_seconds, profile=profile,
-        boundary_species=boundary_species)
+        boundary_species=boundary_species, **single_card_residue_terms(exp))
     column_chunk = estimate.column_chunk
     n_int = lbc_intervals(exp.run_seconds, forcing_interval_seconds,
                           retained_intervals=forcing_intervals)
@@ -12115,6 +12145,19 @@ def check_main(args) -> int:
         raise ValueError("--forcing-interval-s must be finite and positive")
     ingest_interval = (explicit_interval if explicit_interval is not None
                        else configured_interval)
+    # THE FORCING SLOTS THE CARD HOLDS, priced the way `gpuwm go` prices
+    # them.  A config `gpuwm go` runs chained (one domain, one card) streams
+    # its lateral intervals through one device slot; a verified prepared
+    # bundle is a sealed restore and holds the whole schedule.  Pricing the
+    # whole schedule here refused a full-grid 18 h HRRR on a 96 GB card by
+    # 0.50 GiB (19 hourly intervals, 8.24 GiB of boundary tables) that the
+    # go gate admits.  The ingest phase keeps the whole schedule.
+    from gpuwm.ingest.boundary_stream import chained_resident_forcing_slots
+    resident_slots = (chained_resident_forcing_slots(exp)
+                      if prepared is None else None)
+    resident_intervals = (forcing_intervals if resident_slots is None
+                          else resident_slots if forcing_intervals is None
+                          else min(int(forcing_intervals), resident_slots))
     #: Whether the free-VRAM figure below was measured off the device or
     #: derived from a declared --budget-gib.  Printed, because the two
     #: must never wear the same label.
@@ -12276,7 +12319,7 @@ def check_main(args) -> int:
         return exit_code
     reserve = ReservePolicy.n0_alloc(
         exp, profile=profile, estimate_bytes=estimate_experiment(
-            exp, forcing_intervals=forcing_intervals, column_chunk=chunk,
+            exp, forcing_intervals=resident_intervals, column_chunk=chunk,
             forcing_interval_seconds=forcing_interval,
             vram_gib=card_total_gib, profile=profile,
             boundary_species=boundary_species, urban_columns=urban_columns,
@@ -12291,7 +12334,7 @@ def check_main(args) -> int:
     if args.alloc:
         try:
             report = run_alloc_preflight(
-                exp, column_chunk=chunk, forcing_intervals=forcing_intervals,
+                exp, column_chunk=chunk, forcing_intervals=resident_intervals,
                 forcing_interval_seconds=forcing_interval,
                 reserve=reserve, profile=profile,
                 boundary_species=boundary_species)
@@ -12307,10 +12350,11 @@ def check_main(args) -> int:
             # Aborted before measurement: still report the estimate side
             # (F1 fix) -- the measured legs stay None and can never pass.
             estimate = estimate_experiment(
-                exp, forcing_intervals=forcing_intervals, column_chunk=chunk,
+                exp, forcing_intervals=resident_intervals, column_chunk=chunk,
                 forcing_interval_seconds=forcing_interval,
                 vram_gib=card_total_gib, profile=profile,
-                boundary_species=boundary_species)
+                boundary_species=boundary_species,
+                **single_card_residue_terms(exp))
             measured_used = None
             free = getattr(abort, "free_bytes", None)
             physical_total_bytes = getattr(abort, "total_bytes", None)
@@ -12320,7 +12364,7 @@ def check_main(args) -> int:
                 measured_free_bytes=free, reserve=reserve)
     else:
         estimate = estimate_experiment(
-            exp, forcing_intervals=forcing_intervals, column_chunk=chunk,
+            exp, forcing_intervals=resident_intervals, column_chunk=chunk,
             forcing_interval_seconds=forcing_interval,
             vram_gib=card_total_gib, profile=profile,
             boundary_species=boundary_species, urban_columns=urban_columns,
@@ -12451,6 +12495,7 @@ def check_main(args) -> int:
         urban_columns=urban_columns,
         preparation_route=config_preparation_route(args.config),
         forcing_intervals=forcing_intervals,
+        resident_forcing_intervals=resident_slots,
         ingest_forcing_interval_seconds=ingest_interval,
         forcing_interval_seconds=forcing_interval,
         vram_gib=card_total_gib, profile=profile,
@@ -13510,6 +13555,10 @@ def check_main(args) -> int:
         road = "mixed resident/streamed" if phases.mixed_road else "streamed" if phases.streamed_forecast else "resident"
         mode = getattr(getattr(exp, "tiles", None), "mode", "off")
         print(f"Forecast execution: {road} ([tiles] mode={mode})")
+        if resident_slots is not None:
+            print(f"Lateral boundaries: {resident_intervals} forcing slot(s) on the card; "
+                  "the chained preparation streams the rest of the schedule "
+                  "(GPUWM_CHAINED_PREP=0 holds the whole schedule)")
         if phases.tree_road is not None:
             for line in phases.tree_road.row_lines():
                 print(f"  {line}")

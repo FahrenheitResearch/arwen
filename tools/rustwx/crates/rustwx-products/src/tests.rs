@@ -43,6 +43,9 @@ const PRODUCT_MODULE_SURFACE: &[(&str, ProductModuleSurfaceKind)] = &[
     ("source", CompatibilityPublic),
     ("spec", CompatibilityPublic),
     ("thermo_native", ProofResearchPublic),
+    // Shared pressure/height diagnostic rows (189e1776dc6): rw_wrfbatch reads
+    // vertical::ROWS and Operator to select and derive them.
+    ("vertical", OperationalPublic),
     ("viewer", StablePublic),
     ("windowed", OperationalPublic),
     ("windowed_decoder", InternalCandidatePublic),

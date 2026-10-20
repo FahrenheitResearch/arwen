@@ -109,6 +109,7 @@ While an object moves, fetch prints `rw_fetch-progress fHHH RECEIVED TOTAL`
 on stderr about once a second (TOTAL is - until the size is known).
 
 environment
+  GPUWM_FETCH_NO_IDLE_CONNECTIONS  close idle sockets under the engine box cap
   RUSTWX_DOWNLOAD_STREAMS N       chunk streams per object (default 16)
   RUSTWX_DOWNLOAD_STALL_SECONDS S a connection that delivers under 64 KiB
                                   in S seconds (default 30) is dropped and
@@ -798,7 +799,9 @@ fn command_object(options: &Options) -> Result<String, Failure> {
     reporter.object(0);
     let receipt = fetcher.stream_full_file(url, path)?;
     reporter.finish();
-    serde_json::to_string(&receipt).map_err(|e| Failure::Refused(e.to_string()))
+    let mut document = serde_json::to_value(&receipt).map_err(|e| Failure::Refused(e.to_string()))?;
+    document["streams_used"] = serde_json::json!(fetcher.streams_used());
+    serde_json::to_string(&document).map_err(|e| Failure::Refused(e.to_string()))
 }
 
 /// The `rw_fetch-progress` lines `fetch` prints while an object moves.

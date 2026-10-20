@@ -182,6 +182,13 @@ class HealthLedger:
                 raise FloatingPointError(                  # pragma: no cover
                     f"{site} reported health flags {flags:#x} but its "
                     "description did not raise; a health site must refuse")
+        # The synchronized read found every site healthy. Its diagnostic
+        # closures are no longer needed and may own full atmospheric input
+        # generations (YSU's producer-forensics mapping, for example).
+        # Keep the slot indices, but release those arrays between steps;
+        # record() installs the next description with the next status.
+        # Failed drains retain their descriptions for inspection.
+        self._describe.clear()
 
     def close(self) -> None:
         self.drain()

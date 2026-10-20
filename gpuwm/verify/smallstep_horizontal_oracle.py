@@ -316,8 +316,8 @@ def horizontal_port_outputs(data,cfg,*,full_theta_probe=False,no_fma_probe=False
             source=source.replace(original,"dpxy += 0.0f * dphp *")
         options=("-std=c++17","--fmad=false") if no_fma_probe else ("-std=c++17",)
         probe=cp.RawModule(code=source,options=options)
-        def probe_kernel(module,name):
-            return probe.get_function(name) if module=="acoustic" else get_kernel(module,name)
+        def probe_kernel(module,name,shape=()):
+            return probe.get_function(name) if module=="acoustic" else get_kernel(module,name,shape)
         with patch("gpuwm.core.acoustic.get_kernel",probe_kernel):
             launch()
     else:

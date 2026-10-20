@@ -104,6 +104,14 @@ def _startup_notices(command: str) -> tuple:
     except Exception as unstaged:  # noqa: BLE001 - the state, not a failure
         table_notice = "warning: " + " ".join(str(unstaged).split())
         notices.append(lambda line: line == table_notice)
+
+    # A FOURTH, from the go chain's first stage: `gpuwm check` states the
+    # planning-time model-top verdict (gpuwm.vertical_contract, 8f7e4c27247)
+    # on stderr, so `--json` stdout stays one document.  Only the PASS form
+    # is a healthy notice; a REFUSED top stops the door and still fails the
+    # test that calls this.
+    top_pass = "gpuwm check: model-top check PASS: source "
+    notices.append(lambda line: line.startswith(top_pass))
     return tuple(notices)
 
 
@@ -229,7 +237,7 @@ def _a_card_whose_free_vram_this_file_decides(monkeypatch):
     from gpuwm.core import preflight
     from types import SimpleNamespace
     from gpuwm import doctor
-    monkeypatch.setattr(doctor, "_cuda_headers_check", lambda: SimpleNamespace(status="verified"))
+    monkeypatch.setattr(doctor, "_cuda_headers_check", lambda **kwargs: SimpleNamespace(status="verified"))
 
     monkeypatch.setattr(
         preflight, "device_memory_probe_subprocess",

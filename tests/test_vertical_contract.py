@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -42,6 +44,63 @@ def test_source_top_coverage_fails_closed():
         validate_explicit_eta_grid(
             eta, nz=8, p_top=5_000.0, source_top_pressure_pa=10_000.0,
             context="GFS")
+
+
+@pytest.mark.parametrize("source,requested,top_hpa", [
+    ("hrrr-prs", 1500.0, 50),
+    ("rap", 1500.0, 50),
+    ("icon-eu", 1500.0, 50),
+    ("aifs", 1500.0, 50),
+    ("20crv3-cf", 5000.0, 100),
+    ("era5", 50.0, 1),
+    ("gfs", 0.5, 0.01),
+])
+def test_source_top_refuses_before_inputs_or_memory(
+        tmp_path, monkeypatch, source, requested, top_hpa):
+    """The real config loaders and check door reject before any paid work."""
+    import argparse
+    from gpuwm import cli
+    from gpuwm.case_data import load_experiment_case_bytes
+    from gpuwm.experiment import load_experiment
+    from gpuwm.ingest.source_coverage import VerticalLadderRefusal
+    from gpuwm.runplan import PLAN_SCHEMA, build_plan, resolve_plan
+    from gpuwm.vertical_contract import validate_config_source_top
+
+    recipe = (Path(__file__).resolve().parents[1] / "configs" / "recipes" /
+              "conus_hrrr_configuration.toml").read_text()
+    text = recipe.replace('source = "hrrr-prs"', f'source = "{source}"').replace(
+        "p_top = 5000.0", f"p_top = {requested}")
+    config = tmp_path / "experiment.toml"
+    config.write_text(text)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("source-top refusal must precede input and memory preflight")
+
+    monkeypatch.setattr(cli, "check_main", forbidden)
+    args = argparse.Namespace(config=config, ingest_preflight_handler=forbidden)
+    with pytest.raises(VerticalLadderRefusal) as caught:
+        cli.combined_check_main(args)
+    message = str(caught.value)
+    assert f"source '{source}'" in message
+    assert f"{top_hpa:g} hPa" in message
+    assert f"p_top = {requested:g} Pa" in message
+    assert "extrapolation" in message
+    with pytest.raises(VerticalLadderRefusal, match="model-top check REFUSED"):
+        load_experiment(config)
+    with pytest.raises(VerticalLadderRefusal, match="model-top check REFUSED"):
+        load_experiment_case_bytes(text.encode(), source=str(config), base_dir=tmp_path)
+    plan = build_plan({"schema": PLAN_SCHEMA, "name": "source-top-test",
+                       "route": "experiment", "config": {"path": str(config)}},
+                      source="test", base_dir=tmp_path, sha256="0" * 64)
+    with pytest.raises(VerticalLadderRefusal, match="model-top check REFUSED"):
+        resolve_plan(plan, require_inputs=False)
+    # Equality is legal, and an extendable source can fetch beyond its
+    # certified default ladder without the early check forbidding it.
+    assert "PASS" in validate_config_source_top(
+        {"fetch": {"source": source}, "shared": {"p_top": top_hpa * 100}},
+        context="fixed")
+    assert "PASS" in validate_config_source_top(
+        {"fetch": {"source": "gfs"}, "shared": {"p_top": 5000}}, context="extended")
 
 
 def test_coordinate_shape_contract_derives_every_extent():

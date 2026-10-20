@@ -547,6 +547,10 @@ class _CachePayload:
         """An explicit immutable view, leaving the public reader mutable."""
         return _ReadOnlyCacheReader(self)
 
+    def copying_reader(self):
+        """Writable independent arrays from the retained verified mappings."""
+        return _CopyingCacheReader(self)
+
     def require_binding(self, path, expected_identity, *, reader=None):
         """Validate the current sealed header before reusing verified maps.
 
@@ -598,6 +602,16 @@ class _ReadOnlyCacheReader:
             "content_sha256": self.content_sha256,
             "array_count": len(self.arrays), "payload_bytes": self.payload_bytes,
         }
+
+
+class _CopyingCacheReader(_ReadOnlyCacheReader):
+    """Preserve normal prepared-reader copy semantics without a second hash."""
+
+    def read_array(self, key):
+        mapped = self._payload.verified_array(key)
+        result = np.array(mapped, copy=True, order="K")
+        self._payload._check_unchanged(key)
+        return result
 
 
 def hoststore_gib() -> int:

@@ -128,6 +128,16 @@ def combined_check_main(args):
     if args.config is None:
         print('gpuwm check: CONFIG is required for preflight; bare inventory uses gpuwm check --json', file=sys.stderr)
         return 2
+    # A known source ceiling must refuse before ingest can decode files or
+    # memory preflight can probe a GPU, even when those later legs cannot run.
+    import tomllib
+    from gpuwm.config_authority import read_config_authority
+    from gpuwm.vertical_contract import validate_config_source_top
+
+    raw = tomllib.loads(read_config_authority(args.config).payload.decode("utf-8"))
+    top_verdict = validate_config_source_top(raw, context=str(args.config))
+    if top_verdict is not None:
+        print(f"gpuwm check: {top_verdict}", file=sys.stderr)
     ingest = args.ingest_preflight_handler(args)
     if ingest:
         return ingest
@@ -163,13 +173,17 @@ enprod_register_cli = _lazy_register("gpuwm.da.enprod")
 cycle_register_cli = _lazy_register("gpuwm.cycle.cli")
 doctor_register_cli = _lazy_register("gpuwm.doctor")
 domain_register_cli = _lazy_register("gpuwm.domain_wizard")
+tc_tracks_register_cli = _lazy_register("gpuwm.tc_tracks")
 cyclone_setup_register_cli = _lazy_register("gpuwm.cyclone_setup")
+earth2_register_cli = _lazy_register("gpuwm.earth2_door")
+earth2_diagnostics_register_cli = _lazy_register("gpuwm.earth2_diagnostics")
 downscale_register_cli = _lazy_register("gpuwm.downscale")
 fetch_register_cli = _lazy_register("gpuwm.fetch")
 fire_static_register_cli = _lazy_register("gpuwm.static.sfire")
 fire_ideal_register_cli = _lazy_register("gpuwm.fire_ideal")
 geog_register_cli = _lazy_register("gpuwm.geog_assets")
 go_register_cli = _lazy_register("gpuwm.go_cli")
+hydro_register_cli = _lazy_register("gpuwm.hydro.cli")
 speedrun_register_cli = _lazy_register("gpuwm.speedrun_cli")
 ingest_register_cli = _lazy_register("gpuwm.ingest.preflight")
 mesh_register_cli = _lazy_register("gpuwm.mpas_mesh")
@@ -449,7 +463,69 @@ def _run_description() -> str:
         "workaround.")
 
 
-def build_parser(*, render_only: bool = False, preset_only: bool = False) -> argparse.ArgumentParser:
+def _register_run_parser(sub):
+    """The run options shared by the complete and command-specific parsers."""
+    run = sub.add_parser("run", help="integrate a config-driven real case",
+                         description=_run_description())
+    run.add_argument("config", type=Path, metavar="CONFIG", nargs="?",
+                     help=_CONFIG_HELP)
+    run.add_argument("--wrfinput", type=Path, metavar="DIR",
+                     help="WRF real.exe directory containing wrfinput_d0*, "
+                          "wrfbdy_d01 and producing namelist.input (instead of CONFIG)")
+    run.add_argument("--restart-from", type=Path, default=None, metavar="WRFRST",
+                     help="continue a WRF run from its restart file (wrfrst_d01_<time>, any "
+                          "suffix): the state, physics and clock are the file's, and the "
+                          "namelist.input and wrfbdy_d01 beside it (or in --wrfinput DIR) "
+                          "supply the settings and the lateral forcing.  With --run-seconds, "
+                          "the window after the restart instant")
+    run.add_argument("--benchmark", action="store_true",
+                     help="WRF inputs: time the forecast as a benchmark. Draws no "
+                          "products and runs no post-run verification, then prints "
+                          "the read, init, first step, steps and write times WRF's "
+                          "rsl.out reports, and the process total "
+                          "(also OUTDIR/benchmark-timing.json)")
+    run.add_argument("--met-em", type=Path, metavar="DIR",
+                     help="WPS metgrid directory with met_em.d0*.nc and producing namelist.input; native ArWen initialization")
+    run.add_argument("--soil-source", type=Path, default=None, metavar="DIR",
+                     help="WRF inputs: original met_em and Vtable directory for automatic soil-water recovery; defaults to the input directory")
+    run.add_argument("--rrtmg-variant", choices=("rrtmg_legacy", "rte-rrtmgp"), default=None,
+                     help="WRF inputs: preserve legacy RRTMG by default; choose rte-rrtmgp to change radiation")
+    run.add_argument("--thompson-version", choices=("wrf_461", "wrf_44"), default=None,
+                     help="WRF inputs: override the classic Thompson generation selected from producer TITLE")
+    run.add_argument("--urban-ucm-generation", choices=("wrf_471","wrf_480"), default=None)
+    run.add_argument("--urban-treeoption", type=int, choices=(0,1), default=None)
+    run.add_argument("--urban-ttscheme", type=int, choices=(0,1), default=None)
+    run.add_argument("--urban-fvg", type=float, default=None)
+    run.add_argument("--urban-table-dir", default=None)
+    run.add_argument("--vertical-grid", default=None,
+                     help="met_em: native, wrf-auto, or explicit:PATH eta grid")
+    run.add_argument("--vertical-levels", type=int, default=None,
+                     help="met_em: requested level count for the selected vertical grid")
+    run.add_argument("--run-seconds", type=float, default=None,
+                     help="shorten a --wrfinput or --met-em run inside its forcing coverage")
+    run.add_argument("--outdir", type=Path, default=Path("out/run"),
+                     metavar="OUT", help="wrfout output directory")
+    run.add_argument(
+        "--preprocess-backend", choices=("cuda", "cpu", "auto"), default=None,
+        help="CONFIG: where the root domain's preparation runs, overriding "
+             "[case_data] preprocess_backend (default: that key, else auto, "
+             "which prepares on the CPU when the card reads busy or cannot "
+             "hold it); pin it so two runs you compare start from the same "
+             "preparation. Nests prepare on the card either way")
+    from gpuwm.da.analysis_door import add_analysis_arguments
+    add_analysis_arguments(run)
+    run.add_argument("--restart", type=Path, default=None, metavar="RST",
+                     help="resume from a gpuwmrst restart file written by "
+                          "an earlier run of the SAME config (only the "
+                          "forecast length / output and restart cadence "
+                          "and each domain's history window, "
+                          "history_begin_s / history_end_s, may differ); "
+                          "restart writing itself is the "
+                          "restart_interval_s config key")
+
+
+def build_parser(*, render_only: bool = False, preset_only: bool = False,
+                 run_only: bool = False, go_only: bool = False) -> argparse.ArgumentParser:
     """The whole gpuwm command surface, assembled.
 
     Split out of :func:`main` so the parser can be inspected without
@@ -467,6 +543,20 @@ def build_parser(*, render_only: bool = False, preset_only: bool = False) -> arg
     parser.add_argument("--help-all", nargs=0, action=AllCommandsHelp,
                         help="show every command")
     sub = parser.add_subparsers(prog=parser.prog, dest="command", metavar="COMMAND", required=True)
+    if go_only:
+        # Use the complete go registrar without importing unrelated products.
+        go_register_cli(sub)
+        from gpuwm.earth2_licensing import add_licence_argument
+        add_licence_argument(sub.choices["go"])
+        add_explain_flag(sub.choices["go"])
+        return parser
+    if run_only:
+        # A native forecast does not need to import every product's parser.
+        # Keep one run registrar so this path preserves the full flag surface.
+        _register_run_parser(sub)
+        _lazy_register("gpuwm.supervisor")(sub)
+        add_explain_flag(sub.choices["run"])
+        return parser
     _lazy_register("gpuwm.nwpsuite.cli")(sub)
     if preset_only:
         # Metadata inspection does not need the numerical or NetCDF commands.
@@ -484,12 +574,14 @@ def build_parser(*, render_only: bool = False, preset_only: bool = False) -> arg
         add_explain_flag(sub.choices["render"])
         return parser
     preflight_register_cli(sub)
+    _lazy_register("gpuwm.ensemble.family_products")(sub)
     ingest_register_cli(sub)
     # Combined check policy (T3 handoff): the cheap CPU input/static/table
     # preflight runs first; only a zero return advances to the memory
     # estimator, so --alloc is gated on valid inputs.
     sub.choices["check"].set_defaults(func=combined_check_main)
     fetch_register_cli(sub)
+    _lazy_register("gpuwm.hf_fetch")(sub)
     fire_static_register_cli(sub)
     fire_ideal_register_cli(sub)
     cds_credentials_register_cli = _lazy_register("gpuwm.cds_credentials")
@@ -506,6 +598,9 @@ def build_parser(*, render_only: bool = False, preset_only: bool = False) -> arg
     geog_register_cli(sub)
     domain_register_cli(sub)
     cyclone_setup_register_cli(sub)
+    earth2_register_cli(sub)
+    earth2_diagnostics_register_cli(sub)
+    tc_tracks_register_cli(sub)
     local_da_register_cli = _lazy_register("gpuwm.local_da")
     local_da_register_cli(sub)
     research_register_cli = _lazy_register("gpuwm.research_workspaces")
@@ -517,6 +612,8 @@ def build_parser(*, render_only: bool = False, preset_only: bool = False) -> arg
     # beside render, the other door that turns history files into a
     # product.
     ml_export_register_cli(sub)
+    _lazy_register("gpuwm.earth2_export")(sub)
+    _lazy_register("gpuwm.soundings")(sub)
     scoreboard_register_cli(sub)
     grib2_export_register_cli(sub)
     simulated_radar_register_cli(sub)
@@ -536,7 +633,11 @@ def build_parser(*, render_only: bool = False, preset_only: bool = False) -> arg
     # only way to reach.  Registered BEFORE `go` so the help listing
     # reads in pipeline order.
     stage_register_cli(sub)
+    _lazy_register("gpuwm.compose_source")(sub)
+    _lazy_register("gpuwm.source_intermediate")(sub)
+    _lazy_register("gpuwm.storm_diagnostics")(sub)
     go_register_cli(sub)
+    hydro_register_cli(sub)
     # Registered beside `go` because it IS `go`, on a fixed course, with a
     # clock and a sealed capsule around it.  The internal bench surface:
     # release-facing pages carry capability statements, this one carries
@@ -612,63 +713,7 @@ def build_parser(*, render_only: bool = False, preset_only: bool = False) -> arg
     ingest.add_argument("--output", type=Path,
                         default=Path("out/initial_state.npz"), metavar="NPZ",
                         help="initialized-state NPZ output")
-    run = sub.add_parser("run", help="integrate a config-driven real case",
-                         description=_run_description())
-    run.add_argument("config", type=Path, metavar="CONFIG", nargs="?",
-                     help=_CONFIG_HELP)
-    run.add_argument("--wrfinput", type=Path, metavar="DIR",
-                     help="WRF real.exe directory containing wrfinput_d0*, "
-                          "wrfbdy_d01 and producing namelist.input (instead of CONFIG)")
-    run.add_argument("--restart-from", type=Path, default=None, metavar="WRFRST",
-                     help="continue a WRF run from its restart file (wrfrst_d01_<time>, any "
-                          "suffix): the state, physics and clock are the file's, and the "
-                          "namelist.input and wrfbdy_d01 beside it (or in --wrfinput DIR) "
-                          "supply the settings and the lateral forcing.  With --run-seconds, "
-                          "the window after the restart instant")
-    run.add_argument("--benchmark", action="store_true",
-                     help="WRF inputs: time the forecast as a benchmark. Draws no "
-                          "products and runs no post-run verification, then prints "
-                          "the read, init, first step, steps and write times WRF's "
-                          "rsl.out reports, and the process total "
-                          "(also OUTDIR/benchmark-timing.json)")
-    run.add_argument("--met-em", type=Path, metavar="DIR",
-                     help="WPS metgrid directory with met_em.d0*.nc and producing namelist.input; native ArWen initialization")
-    run.add_argument("--soil-source", type=Path, default=None, metavar="DIR",
-                     help="WRF inputs: original met_em and Vtable directory for automatic soil-water recovery; defaults to the input directory")
-    run.add_argument("--rrtmg-variant", choices=("rrtmg_legacy", "rte-rrtmgp"), default=None,
-                     help="WRF inputs: preserve legacy RRTMG by default; choose rte-rrtmgp to change radiation")
-    run.add_argument("--thompson-version", choices=("wrf_461", "wrf_44"), default=None,
-                     help="WRF inputs: override the classic Thompson generation selected from producer TITLE")
-    run.add_argument("--urban-ucm-generation", choices=("wrf_471","wrf_480"), default=None)
-    run.add_argument("--urban-treeoption", type=int, choices=(0,1), default=None)
-    run.add_argument("--urban-ttscheme", type=int, choices=(0,1), default=None)
-    run.add_argument("--urban-fvg", type=float, default=None)
-    run.add_argument("--urban-table-dir", default=None)
-    run.add_argument("--vertical-grid", default=None,
-                     help="met_em: native, wrf-auto, or explicit:PATH eta grid")
-    run.add_argument("--vertical-levels", type=int, default=None,
-                     help="met_em: requested level count for the selected vertical grid")
-    run.add_argument("--run-seconds", type=float, default=None,
-                     help="shorten a --wrfinput or --met-em run inside its forcing coverage")
-    run.add_argument("--outdir", type=Path, default=Path("out/run"),
-                     metavar="OUT", help="wrfout output directory")
-    run.add_argument(
-        "--preprocess-backend", choices=("cuda", "cpu", "auto"), default=None,
-        help="CONFIG: where the root domain's preparation runs, overriding "
-             "[case_data] preprocess_backend (default: that key, else auto, "
-             "which prepares on the CPU when the card reads busy or cannot "
-             "hold it); pin it so two runs you compare start from the same "
-             "preparation. Nests prepare on the card either way")
-    from gpuwm.da.analysis_door import add_analysis_arguments
-    add_analysis_arguments(run)
-    run.add_argument("--restart", type=Path, default=None, metavar="RST",
-                     help="resume from a gpuwmrst restart file written by "
-                          "an earlier run of the SAME config (only the "
-                          "forecast length / output and restart cadence "
-                          "and each domain's history window, "
-                          "history_begin_s / history_end_s, may differ); "
-                          "restart writing itself is the "
-                          "restart_interval_s config key")
+    _register_run_parser(sub)
     resume = sub.add_parser(
         "resume",
         help="continue a run from its newest valid gpuwmrst checkpoint "
@@ -788,6 +833,10 @@ def build_parser(*, render_only: bool = False, preset_only: bool = False) -> arg
     # parser (check, run, resume).
     for subcommand_parser in sub.choices.values():
         add_explain_flag(subcommand_parser)
+    from gpuwm.earth2_licensing import add_licence_argument
+    for name in ("fetch", "prep", "domain", "go", "ensemble", "source-intermediate", "earth2", "earth2-diagnose"):
+        if name in sub.choices:
+            add_licence_argument(sub.choices[name])
     return parser
 
 
@@ -821,7 +870,14 @@ def main(argv: list[str] | None = None) -> int:
     # finding N10).  Nothing else in the product has to remember to
     # flush; a `print` streams because the door said so.
     line_buffer_stdout()
-    with explain_scope(False):
+    from gpuwm.earth2_licensing import check_argv, licence_scope, _values
+    tokens = list(sys.argv[1:] if argv is None else argv)
+    try:
+        check_argv(tokens)
+    except ValueError as error:
+        print(f"gpuwm: {error}", file=sys.stderr)
+        return 2
+    with explain_scope(False), licence_scope(_values(tokens, "--accept-licence")):
         return _dispatch_argv(argv)
 
 
@@ -843,7 +899,11 @@ def _dispatch_argv(argv: list[str] | None = None) -> int:
     parser = (build_parser(render_only=True)
               if tokens and tokens[0] == "render" else
               build_parser(preset_only=True)
-              if tokens and tokens[0] == "preset" else build_parser())
+              if tokens and tokens[0] == "preset" else
+              build_parser(run_only=True)
+              if tokens and tokens[0] == "run" else
+              build_parser(go_only=True)
+              if tokens and tokens[0] == "go" else build_parser())
     if not tokens:
         parser.print_help()
         return 0

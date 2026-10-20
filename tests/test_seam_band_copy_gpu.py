@@ -94,6 +94,7 @@ def test_rebound_carrier_pointers_are_read_fresh_each_launch():
     buf = cp.zeros(nbytes, dtype=cp.uint8)
     stream = cp.cuda.Stream(non_blocking=True)
     table.launch(a, int(buf.data.ptr), stream)
+    stream.synchronize()
     first = cp.asnumpy(buf).copy()
     a = {"q": a["q"] + 1000}  # the driver re-binds a carrier between steps
     table.launch(a, int(buf.data.ptr), stream)
@@ -101,3 +102,64 @@ def test_rebound_carrier_pointers_are_read_fresh_each_launch():
     assert cp.asnumpy(buf).tobytes() != first.tobytes()
     expect = cp.asnumpy(a["q"])[..., 3:5].astype(np.float32).tobytes()
     assert cp.asnumpy(buf).tobytes() == expect
+
+
+@pytest.mark.parametrize("live_is_source", [True, False])
+def test_narrow_copy_follows_rebound_buffers(live_is_source):
+    """Narrow indexing must still copy current bytes into current storage.
+
+    Exercise both slots without a host wait between launches, then change
+    the carrier and staging pointers separately, including special float words.
+    """
+    import cupy as cp
+    from tilestream.multigpu import _BandTable
+
+    # Include signed zero, subnormal and NaN payload words: this is a byte
+    # transport, so floating point equality would miss corruptions.
+    words = np.resize(np.array([0, 0x80000000, 1, 0x7fc12345, 0xff800000],
+                               dtype=np.uint32), (4, 6, 8))
+    live = {"q": cp.asarray(words).view(cp.float32)}
+    bands, nbytes = _bands(live, "x", 2)
+    b = bands[0]
+    table = _BandTable(0, ["q"], [b.src_off], [b.src_pitch], [b.buf_off],
+                       [b.width], [b.width], [b.rows], live_is_source)
+    staging = cp.empty(nbytes, dtype=cp.uint8)
+    # Retain replaced arrays until queued copies complete.
+    retained = [live["q"], staging]
+    stream = cp.cuda.Stream(non_blocking=True)
+    with stream:
+        for iteration in range(8):
+            current = words ^ np.uint32(iteration)
+            if iteration == 4:
+                live = {"q": cp.empty_like(live["q"])}
+                retained.append(live["q"])
+            if iteration == 6:
+                staging = cp.empty_like(staging)
+                retained.append(staging)
+            # Per-step writes use the same pointers during each stable pair.
+            # Writes and copies stay ordered on the same nonblocking stream.
+            values = cp.asarray(current)
+            retained.append(values)
+            if live_is_source:
+                live["q"].view(cp.uint32)[...] = values
+            else:
+                staging.view(cp.uint32)[...] = values[..., 3:5].ravel()
+            table.launch(live, int(staging.data.ptr), stream)
+    stream.synchronize()
+    actual = (cp.asnumpy(staging).tobytes() if live_is_source
+              else cp.asnumpy(live["q"])[..., 3:5].tobytes())
+    assert actual == (words ^ np.uint32(7))[..., 3:5].tobytes()
+
+
+@pytest.mark.parametrize("width,rows,narrow", [
+    (0x7fffffff, 1, True), (0x80000000, 1, False),
+    (65536, 32767, True), (65536, 32768, False),
+])
+def test_narrow_extent_selection_does_not_overflow(width, rows, narrow):
+    # Allocate descriptors only.  The extent bound counts bytes so even a
+    # misaligned byte-copy band cannot wrap the 32-bit index or its stride.
+    from tilestream import multigpu as mg
+
+    table = mg._BandTable(0, ["q"], [0], [width], [0], [width],
+                          [width], [rows], True)
+    assert table.copy_kernel is (mg._band_copy_u32 if narrow else mg._band_copy)

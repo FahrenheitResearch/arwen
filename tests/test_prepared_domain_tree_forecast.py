@@ -549,6 +549,14 @@ def _synthetic_prepared_tree(tmp_path, monkeypatch, *, delayed=False):
     receipt.write_text(json.dumps(preparation), encoding="utf-8")
 
     monkeypatch.setattr(runner, "PreparedCacheReader", _FakePreparedCacheReader)
+    # The fake reader carries no file-backed array specs, so the sealed
+    # mapping retention (119e0994efc), which verifies real mappings through
+    # the native hasher, is told there is nothing to retain -- exactly what
+    # an install without that bridge gets.  The tree preflight under test is
+    # the same route either way; with the hasher built, retaining the fake's
+    # arrays raised KeyError('file') out of the payload instead.
+    monkeypatch.setattr(runner.prepared_single, "_sealed_preflight_payload",
+                        lambda reader: None)
     monkeypatch.setattr(
         runner, "grids_from_projection_config", lambda _exp: (object(), object())
     )

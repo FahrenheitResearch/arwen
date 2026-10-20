@@ -11,8 +11,16 @@
       {
         "product": "refc",
         "message": "QC composite reflectivity",
-        "candidates": ["MergedReflectivityQCComposite_00.50"],
-        "parameters": [[209, 10, 0]],
+        "candidates": [
+          "MergedReflectivityQCComposite_00.50"
+        ],
+        "parameters": [
+          [
+            209,
+            10,
+            0
+          ]
+        ],
         "center": 161,
         "subcenter": 0,
         "level_type": 102,
@@ -21,16 +29,38 @@
         "message_template": 0,
         "forecast_time": 0,
         "valid_time_basis": "reference_time",
-        "missing_values": [-99.0, -999.0],
-        "unobserved_values": [-999.0],
-        "time": {"kind": "nearest", "tolerance_seconds": 120},
+        "missing_values": [
+          -99.0,
+          -999.0
+        ],
+        "unobserved_values": [
+          -999.0
+        ],
+        "time": {
+          "kind": "nearest",
+          "tolerance_seconds": 120
+        },
         "accumulation_seconds": null
       },
       {
         "product": "qpf1h",
         "message": "Multi-sensor QPE, 1 h",
-        "candidates": ["MultiSensor_QPE_01H_Pass2_00.00", "MultiSensor_QPE_01H_Pass1_00.00"],
-        "parameters": [[209, 6, 37], [209, 6, 30]],
+        "candidates": [
+          "MultiSensor_QPE_01H_Pass2_00.00",
+          "MultiSensor_QPE_01H_Pass1_00.00"
+        ],
+        "parameters": [
+          [
+            209,
+            6,
+            37
+          ],
+          [
+            209,
+            6,
+            30
+          ]
+        ],
         "center": 161,
         "subcenter": 0,
         "level_type": 102,
@@ -39,10 +69,52 @@
         "message_template": 0,
         "forecast_time": 0,
         "valid_time_basis": "reference_time",
-        "missing_values": [-1.0, -3.0],
-        "unobserved_values": [-1.0, -3.0],
-        "time": {"kind": "exact_hour_end"},
+        "missing_values": [
+          -1.0,
+          -3.0
+        ],
+        "unobserved_values": [
+          -1.0,
+          -3.0
+        ],
+        "time": {
+          "kind": "exact_hour_end"
+        },
         "accumulation_seconds": 3600
+      },
+      {
+        "product": "qpf6h",
+        "message": "Multi-sensor QPE, 6 h",
+        "candidates": [
+          "MultiSensor_QPE_06H_Pass2_00.00"
+        ],
+        "parameters": [
+          [
+            209,
+            6,
+            39
+          ]
+        ],
+        "center": 161,
+        "subcenter": 0,
+        "level_type": 102,
+        "level_value": 0.0,
+        "units": "mm",
+        "message_template": 0,
+        "forecast_time": 0,
+        "valid_time_basis": "reference_time",
+        "missing_values": [
+          -1.0,
+          -3.0
+        ],
+        "unobserved_values": [
+          -1.0,
+          -3.0
+        ],
+        "time": {
+          "kind": "exact_hour_end"
+        },
+        "accumulation_seconds": 21600
       }
     ]
   }

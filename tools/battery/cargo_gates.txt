@@ -252,6 +252,12 @@ cpu  tools/rustwx  rw-nexrad  125
 # (31 lib + 12 in tests/cli.rs).
 cpu  tools/rustwx  rw-netcdf  43
 
+# Soundings: native profile validation and real PNG rendering, plus the
+# CLI library's input/store unit conversions. First green run 2026-10-18:
+# rustwx-sounding = 2 lib + 16 integration; rw-soundings = 2 lib.
+cpu  tools/rustwx  rustwx-sounding  18
+cpu  tools/rustwx  rw-soundings  2
+
 # Surface and upper-air observations.
 cpu  tools/rustwx  rw-obs  115
 

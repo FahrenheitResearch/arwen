@@ -323,7 +323,8 @@ def _rust_window_inventory():
 def test_the_three_window_inventories_are_one_list():
     from gpuwm.ingest.atmospheric_window import CANONICAL_ATMOSPHERIC_FIELDS
     from gpuwm.ingest.analyzed_numbers import CANONICAL_NUMBER_FIELDS
-    from gpuwm.mapped_source import HYDROMETEOR_LEGACY_NAMES
+    from gpuwm.mapped_source import (HYDROMETEOR_LEGACY_NAMES,
+                                     VERTICAL_VELOCITY_LEGACY_NAMES)
 
     legacy_of = {
         "air_temperature": "T", "air_pressure": "PRES",
@@ -331,6 +332,7 @@ def test_the_three_window_inventories_are_one_list():
         "northward_wind": "V", "geopotential_height": "GHT",
         **HYDROMETEOR_LEGACY_NAMES,
         **CANONICAL_NUMBER_FIELDS,
+        **{name: value[0] for name, value in VERTICAL_VELOCITY_LEGACY_NAMES.items()},
     }
     assert frozenset(legacy_of) == CANONICAL_ATMOSPHERIC_FIELDS
     assert frozenset(legacy_of.values()) == ATMOSPHERIC_FIELDS

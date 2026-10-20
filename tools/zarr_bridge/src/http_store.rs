@@ -9,6 +9,12 @@
 //! reads with a timeout sized for the chunk, not for a page, and a retry for
 //! a transfer the network drops.  The reads follow zarrs_http 0.3.1
 //! (MIT OR Apache-2.0), which stays the dependency its notices name.
+//!
+//! A server error (5xx) or 429 is retried too, with backoff, and every retry
+//! is logged on stderr.  Without it one HTTP 500 from the ERA5 ARCO store
+//! aborted the hydro init door ("potential_evaporation: http size_key has
+//! status code 500"; a rerun succeeded; hydro-world calibration NOTE gap 3,
+//! 2026-10-18).
 
 use std::str::FromStr;
 use std::time::Duration;
@@ -24,8 +30,17 @@ use zarrs::storage::{
 /// One request may take this long: an 80 MB chunk at 150 kB/s.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
-/// Tries per request; a dropped transfer is tried again after a short wait.
-const TRIES: u32 = 3;
+/// Tries per request; a dropped transfer, a 5xx or a 429 is tried again after
+/// a backoff of 2, 4, 8 and 16 s (at most 30 s of waiting per request).
+const TRIES: u32 = 5;
+
+fn backoff(attempt: u32) -> Duration {
+    Duration::from_secs(1u64 << attempt.clamp(1, 4))
+}
+
+fn transient(status: StatusCode) -> bool {
+    status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS
+}
 
 #[derive(Debug)]
 pub struct HttpStore {
@@ -56,15 +71,23 @@ impl HttpStore {
         Url::parse(&url).map_err(other)
     }
 
-    /// Send a request and read its whole body, trying again when the transfer fails.
+    /// Send a request and read its whole body, trying again when the transfer
+    /// fails or the server answers 5xx/429.  `what` names the request in the log.
     fn fetch(
         &self,
+        what: &str,
         build: impl Fn() -> reqwest::blocking::RequestBuilder,
     ) -> Result<(StatusCode, Option<bytes::Bytes>, Option<u64>), StorageError> {
         let mut last = String::new();
         for attempt in 0..TRIES {
             if attempt > 0 {
-                std::thread::sleep(Duration::from_secs(2 * u64::from(attempt)));
+                let wait = backoff(attempt);
+                eprintln!(
+                    "rw_zarr: {what}: {last}; retry {attempt}/{} in {} s",
+                    TRIES - 1,
+                    wait.as_secs()
+                );
+                std::thread::sleep(wait);
             }
             let response = match build().send() {
                 Ok(r) => r,
@@ -79,7 +102,14 @@ impl HttpStore {
                 .get(CONTENT_LENGTH)
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| u64::from_str(s).ok());
+            if transient(status) && attempt + 1 < TRIES {
+                last = format!("status {status}");
+                continue;
+            }
             if status != StatusCode::OK && status != StatusCode::PARTIAL_CONTENT {
+                if transient(status) {
+                    eprintln!("rw_zarr: {what}: status {status} after {TRIES} tries; giving up");
+                }
                 return Ok((status, None, length));
             }
             match response.bytes() {
@@ -94,7 +124,7 @@ impl HttpStore {
 impl ReadableStorageTraits for HttpStore {
     fn get(&self, key: &StoreKey) -> Result<MaybeBytes, StorageError> {
         let url = self.url(key)?;
-        match self.fetch(|| self.client.get(url.clone()))? {
+        match self.fetch(&format!("GET {url}"), || self.client.get(url.clone()))? {
             (StatusCode::OK, body, _) => Ok(body),
             (StatusCode::NOT_FOUND, _, _) => Ok(None),
             (status, _, _) => Err(other(format!("http unexpected status code: {status}"))),
@@ -115,7 +145,9 @@ impl ReadableStorageTraits for HttpStore {
         for range in byte_ranges {
             let (start, end) = (range.start(size), range.end(size));
             let header = HeaderValue::from_str(&format!("bytes={}-{}", start, end - 1)).map_err(other)?;
-            match self.fetch(|| self.client.get(url.clone()).header(RANGE, header.clone()))? {
+            match self.fetch(&format!("GET {url} range {start}-{}", end - 1), || {
+                self.client.get(url.clone()).header(RANGE, header.clone())
+            })? {
                 (StatusCode::PARTIAL_CONTENT, Some(body), _) if body.len() as u64 == end - start => parts.push(Ok(body)),
                 (StatusCode::OK, Some(body), _) => {
                     let (s, e) = (usize::try_from(start).map_err(other)?, usize::try_from(end).map_err(other)?);
@@ -131,7 +163,7 @@ impl ReadableStorageTraits for HttpStore {
 
     fn size_key(&self, key: &StoreKey) -> Result<Option<u64>, StorageError> {
         let url = self.url(key)?;
-        match self.fetch(|| self.client.head(url.clone()))? {
+        match self.fetch(&format!("HEAD {url}"), || self.client.head(url.clone()))? {
             (StatusCode::OK, _, Some(length)) => Ok(Some(length)),
             (StatusCode::OK, _, None) => Err(other("content length response is invalid")),
             (StatusCode::NOT_FOUND, _, _) => Ok(None),
@@ -141,5 +173,44 @@ impl ReadableStorageTraits for HttpStore {
 
     fn supports_get_partial(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+
+    /// The defect: one HTTP 500 from the store aborted the init door.  A HEAD
+    /// that gets 500 once and then 200 must return the size, after one retry.
+    #[test]
+    fn size_key_retries_a_server_500() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let served = Arc::new(AtomicU32::new(0));
+        let count = served.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().take(2) {
+                let mut stream = stream.unwrap();
+                let mut request = Vec::new();
+                let mut byte = [0u8; 1];
+                while !request.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap() == 1 {
+                    request.push(byte[0]);
+                }
+                let reply: &[u8] = if count.fetch_add(1, Ordering::SeqCst) == 0 {
+                    b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                } else {
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 1234\r\nConnection: close\r\n\r\n"
+                };
+                stream.write_all(reply).unwrap();
+            }
+        });
+        let store = HttpStore::new(&format!("http://127.0.0.1:{port}/era5.zarr")).unwrap();
+        let key = StoreKey::new("potential_evaporation/.zarray").unwrap();
+        assert_eq!(store.size_key(&key).unwrap(), Some(1234));
+        assert_eq!(served.load(Ordering::SeqCst), 2);
     }
 }

@@ -37,7 +37,8 @@ def test_config_has_immediate_centered_12_to_3km_vortex_nest_and_full_physics(po
     assert child.parent_grid_ratio == child.parent_time_step_ratio == 4
     assert raw["projection"]["ref_lat"] == point[0]
     assert raw["projection"]["ref_lon"] == point[1]
-    assert {k: v for k, v in raw["domain"][1]["follow"].items() if k != "track"} == VORTEX_PRESET
+    assert {k: v for k, v in raw["domain"][1]["follow"].items() if k != "track"} == {**VORTEX_PRESET, "level_hpa": 0., "threshold": 1100.,
+            "pressure_center": "minimum", "fallback_level_hpa": 850., "fallback_deficit_m": 25.}
     assert child.follow.track.path == "storm-track.d02.csv"
     assert "spawn" not in raw["domain"][1] and "retire" not in raw["domain"][1]
     assert child.i_parent_start == 1 + (parent.run.nx - child.run.nx // 4) // 2

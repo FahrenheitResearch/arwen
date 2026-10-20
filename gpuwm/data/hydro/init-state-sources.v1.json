@@ -1,0 +1,167 @@
+{
+  "schema": "arwen.hydro-world.init-sources.v1",
+  "about": "Initial water state sources for gpuwm hydro. A new source is a row in this table, never a new code path. rw_hydro_init reads the row; gpuwm.hydro.initial_state fetches through the row's access block. A row is used only when status is admitted (licence read at the source, free access without an account, reader present).",
+  "target": {
+    "noah_soil_layer_bounds_m": [0.0, 0.1, 0.4, 1.0, 2.0],
+    "freezing_point_k": 273.16,
+    "latent_heat_fusion_j_kg": 333600.0,
+    "gravity_m_s2": 9.80616,
+    "supercooled_liquid_citation": "Noah-OWP-Modular (Apache-2.0) phase change, opt_frz=1 (Niu and Yang 2006): SMP = HFUS*(TFRZ-T)/(GRAV*T); SUPERCOOL = SMCMAX*(SMP/PSISAT)**(-1/BEXP)"
+  },
+  "rows": {
+    "era5-arco": {
+      "status": "admitted",
+      "description": "ECMWF ERA5 hourly single levels on 0.25 degrees through Google's public ARCO-ERA5 Zarr store. Same licence as ERA5-Land, no account needed.",
+      "access": {
+        "protocol": "zarr-http",
+        "reader": "rw_zarr",
+        "account_required": false,
+        "store": "https://storage.googleapis.com/gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3",
+        "expected_levels_hpa": [1, 2, 3, 5, 7, 10, 20, 30, 50, 70, 100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500, 550, 600, 650, 700, 750, 775, 800, 825, 850, 875, 900, 925, 950, 975, 1000],
+        "first_valid_time": "1940-01-01T00:00:00Z"
+      },
+      "licence": {
+        "spdx": "CC-BY-4.0",
+        "status": "verified",
+        "quote": "CDS catalogue record reanalysis-era5-single-levels: \"license\": \"CC-BY-4.0\". ARCO-ERA5 README: \"Yes, you can use our ERA5 data according to the terms of the Copernicus license\" and \"Commercial users, please be sure to provide acknowledgement to the Copernicus Climate Change Service\".",
+        "url": "https://cds.climate.copernicus.eu/api/catalogue/v1/collections/reanalysis-era5-single-levels",
+        "read_utc": "2026-10-18T09:05:00Z",
+        "attribution": "Contains modified Copernicus Climate Change Service information (ERA5, Hersbach et al. 2020), read through Google ARCO-ERA5 (Carver and Merose 2023). Neither the European Commission nor ECMWF is responsible for any use of this information."
+      },
+      "grid": {"kind": "regular_latlon", "latitude": "latitude", "longitude": "longitude"},
+      "state": {
+        "soil_water": {
+          "units": "m3 m-3", "scale": 1.0,
+          "layers": [
+            {"variable": "volumetric_soil_water_layer_1", "top_m": 0.0, "bottom_m": 0.07},
+            {"variable": "volumetric_soil_water_layer_2", "top_m": 0.07, "bottom_m": 0.28},
+            {"variable": "volumetric_soil_water_layer_3", "top_m": 0.28, "bottom_m": 1.0},
+            {"variable": "volumetric_soil_water_layer_4", "top_m": 1.0, "bottom_m": 2.89}
+          ]
+        },
+        "soil_temperature": {
+          "units": "K", "scale": 1.0,
+          "layers": [
+            {"variable": "soil_temperature_level_1", "top_m": 0.0, "bottom_m": 0.07},
+            {"variable": "soil_temperature_level_2", "top_m": 0.07, "bottom_m": 0.28},
+            {"variable": "soil_temperature_level_3", "top_m": 0.28, "bottom_m": 1.0},
+            {"variable": "soil_temperature_level_4", "top_m": 1.0, "bottom_m": 2.89}
+          ]
+        },
+        "snow_water_equivalent": {"variable": "snow_depth", "units": "m", "scale": 1.0},
+        "snow_density": {"variable": "snow_density", "units": "kg m-3", "scale": 1.0},
+        "snow_temperature": {"variable": "temperature_of_snow_layer", "units": "K", "scale": 1.0},
+        "land_fraction": {"variable": "land_sea_mask", "units": "1", "scale": 1.0},
+        "soil_class": {"variable": "soil_type", "units": "code", "scale": 1.0}
+      },
+      "soil_moisture_transfer": {
+        "method": "field_capacity_anchored",
+        "about": "Soil moisture is model-specific, so it moves between models as an index anchored at three points of each model's own soil: 0 at wilting point, 1 at field capacity, 2 at saturation (linear between), computed cell by cell with the source soil class, averaged over the catchment, then read back with the catchment's wltsmc, CFE field capacity (init_soil_reservoir threshold / depth) and smcmax. Anchoring field capacity to field capacity keeps a soil that sits at field capacity in the source at field capacity in CFE, so the spin-up does not drain a transfer artefact. method wetness_index (wilting and saturation only) stays selectable.",
+        "citation": "ECMWF IFS Documentation Cy43r1, Part IV, Table 8.9 (HTESSEL van Genuchten theta_sat, theta_cap and theta_pwp per soil texture); file era5-arco/reference/ifs-cy41r2-part4.pdf page 147",
+        "fallback_class": "2",
+        "classes": {
+          "1": {"name": "coarse", "theta_sat": 0.403, "theta_cap": 0.244, "theta_pwp": 0.059},
+          "2": {"name": "medium", "theta_sat": 0.439, "theta_cap": 0.347, "theta_pwp": 0.151},
+          "3": {"name": "medium-fine", "theta_sat": 0.430, "theta_cap": 0.383, "theta_pwp": 0.133},
+          "4": {"name": "fine", "theta_sat": 0.520, "theta_cap": 0.448, "theta_pwp": 0.279},
+          "5": {"name": "very-fine", "theta_sat": 0.614, "theta_cap": 0.541, "theta_pwp": 0.335},
+          "6": {"name": "organic", "theta_sat": 0.766, "theta_cap": 0.663, "theta_pwp": 0.267}
+        }
+      },
+      "forcing": {
+        "water_input": {
+          "about": "Liquid water reaching the soil surface: rain plus snowmelt (total precipitation minus snowfall plus ERA5's own snowmelt), because CFE has no snow module.",
+          "units": "m", "temporal": "interval_total", "interval_seconds": 3600, "time_offset_seconds": -3600, "clamp_min": 0.0,
+          "terms": [
+            {"variable": "total_precipitation", "sign": 1.0},
+            {"variable": "snowfall", "sign": -1.0},
+            {"variable": "snowmelt", "sign": 1.0}
+          ]
+        },
+        "pet": {
+          "about": "ERA5 potential evaporation, ECMWF sign convention (downward positive), so PET = -pev, clamped at zero.",
+          "units": "m", "temporal": "interval_total", "interval_seconds": 3600, "time_offset_seconds": -3600, "clamp_min": 0.0,
+          "terms": [{"variable": "potential_evaporation", "sign": -1.0}]
+        }
+      }
+    },
+    "era5-land-cds": {
+      "status": "pending-ruling",
+      "reason": "Licence passes (CC-BY-4.0) but every download needs a Copernicus CDS account (retrieve API returns 401 without a token). Account-gated sources wait for Drew's ruling (NOTE-hydro.md HYDRO-WORLD hydro-world-licences 2026-10-18T08:54Z). The ArWen user-credential door gpuwm/cds_credentials.py is the candidate access path.",
+      "description": "ECMWF ERA5-Land hourly on 0.1 degrees, the preferred land state source once admitted.",
+      "access": {"protocol": "cds", "reader": "netcdf", "account_required": true, "dataset": "reanalysis-era5-land", "first_valid_time": "1950-01-01T00:00:00Z"},
+      "licence": {"spdx": "CC-BY-4.0", "status": "verified", "quote": "CDS catalogue record reanalysis-era5-land: CC-BY-4.0 (hydro-world-licences receipt, licences/era5-land/licence.json)", "url": "https://cds.climate.copernicus.eu/api/catalogue/v1/collections/reanalysis-era5-land", "read_utc": "2026-10-18T08:35:51Z", "attribution": "Contains modified Copernicus Climate Change Service information (ERA5-Land, Munoz-Sabater et al. 2021)."},
+      "grid": {"kind": "regular_latlon", "latitude": "latitude", "longitude": "longitude"},
+      "state": {
+        "soil_water": {"units": "m3 m-3", "scale": 1.0, "layers": [
+          {"variable": "swvl1", "top_m": 0.0, "bottom_m": 0.07}, {"variable": "swvl2", "top_m": 0.07, "bottom_m": 0.28},
+          {"variable": "swvl3", "top_m": 0.28, "bottom_m": 1.0}, {"variable": "swvl4", "top_m": 1.0, "bottom_m": 2.89}]},
+        "soil_temperature": {"units": "K", "scale": 1.0, "layers": [
+          {"variable": "stl1", "top_m": 0.0, "bottom_m": 0.07}, {"variable": "stl2", "top_m": 0.07, "bottom_m": 0.28},
+          {"variable": "stl3", "top_m": 0.28, "bottom_m": 1.0}, {"variable": "stl4", "top_m": 1.0, "bottom_m": 2.89}]},
+        "snow_water_equivalent": {"variable": "sd", "units": "m", "scale": 1.0},
+        "snow_density": {"variable": "rsn", "units": "kg m-3", "scale": 1.0},
+        "snow_temperature": {"variable": "tsn", "units": "K", "scale": 1.0},
+        "land_fraction": {"variable": "lsm", "units": "1", "scale": 1.0},
+        "soil_class": {"variable": "slt", "units": "code", "scale": 1.0}
+      },
+      "soil_moisture_transfer": {"method": "field_capacity_anchored", "same_classes_as": "era5-arco"},
+      "forcing": {
+        "water_input": {"units": "m", "temporal": "daily_running_total", "interval_seconds": 3600, "time_offset_seconds": -3600, "clamp_min": 0.0,
+          "about": "ERA5-Land hourly accumulations run from 00 UTC through the day; rw_hydro_init de-accumulates them.",
+          "terms": [{"variable": "tp", "sign": 1.0}, {"variable": "sf", "sign": -1.0}, {"variable": "smlt", "sign": 1.0}]},
+        "pet": {"units": "m", "temporal": "daily_running_total", "interval_seconds": 3600, "time_offset_seconds": -3600, "clamp_min": 0.0,
+          "terms": [{"variable": "pev", "sign": -1.0}]}
+      }
+    },
+    "gldas-noah025-3h-2.1": {
+      "status": "pending-ruling",
+      "reason": "Licence passes (NASA data, CC0 under the ESDIS data use guidance) but downloads need an Earthdata Login (GES DISC returns 401). Waits for Drew's ruling on account-gated sources.",
+      "description": "NASA GLDAS-2.1 Noah 0.25 degree 3-hourly. Its soil layers already match the Noah layers.",
+      "access": {"protocol": "opendap", "reader": "netcdf", "account_required": true, "dataset": "GLDAS_NOAH025_3H_2.1", "first_valid_time": "2000-01-01T03:00:00Z"},
+      "licence": {"spdx": "CC0-1.0", "status": "verified", "quote": "NASA ESDIS data use guidance (hydro-world-licences receipt, licences/gldas/policy.html)", "url": "https://www.earthdata.nasa.gov/engage/open-data-services-software-policies/data-use-guidance", "read_utc": "2026-10-18T08:35:52Z", "attribution": "GLDAS-2.1 data courtesy NASA GES DISC (Rodell et al. 2004; Beaudoing and Rodell 2020)."},
+      "grid": {"kind": "regular_latlon", "latitude": "lat", "longitude": "lon"},
+      "state": {
+        "soil_water": {"units": "kg m-2 per layer", "scale": "per_layer_depth_kg_m2", "layers": [
+          {"variable": "SoilMoi0_10cm_inst", "top_m": 0.0, "bottom_m": 0.1}, {"variable": "SoilMoi10_40cm_inst", "top_m": 0.1, "bottom_m": 0.4},
+          {"variable": "SoilMoi40_100cm_inst", "top_m": 0.4, "bottom_m": 1.0}, {"variable": "SoilMoi100_200cm_inst", "top_m": 1.0, "bottom_m": 2.0}]},
+        "soil_temperature": {"units": "K", "scale": 1.0, "layers": [
+          {"variable": "SoilTMP0_10cm_inst", "top_m": 0.0, "bottom_m": 0.1}, {"variable": "SoilTMP10_40cm_inst", "top_m": 0.1, "bottom_m": 0.4},
+          {"variable": "SoilTMP40_100cm_inst", "top_m": 0.4, "bottom_m": 1.0}, {"variable": "SoilTMP100_200cm_inst", "top_m": 1.0, "bottom_m": 2.0}]},
+        "snow_water_equivalent": {"variable": "SWE_inst", "units": "kg m-2", "scale": 0.001},
+        "snow_depth": {"variable": "SnowDepth_inst", "units": "m", "scale": 1.0},
+        "land_fraction": {"from_valid_mask": "SoilMoi0_10cm_inst"}
+      },
+      "soil_moisture_transfer": {"method": "volumetric", "about": "GLDAS Noah uses the same Noah soil physics family; values move as volumetric water clamped to the catchment's 0..smcmax."},
+      "forcing": {
+        "water_input": {"units": "kg m-2 s-1", "temporal": "interval_mean_rate", "interval_seconds": 10800, "time_offset_seconds": -10800, "clamp_min": 0.0, "scale": 0.001,
+          "terms": [{"variable": "Rainf_f_tavg", "sign": 1.0}, {"variable": "Snowf_tavg", "sign": -1.0}, {"variable": "Qsm_acc", "sign": 1.0, "temporal": "interval_total", "scale": 0.001}]},
+        "pet": {"units": "W m-2", "temporal": "interval_mean_rate", "interval_seconds": 10800, "time_offset_seconds": -10800, "clamp_min": 0.0, "scale": 4.0e-10,
+          "about": "latent heat flux to water depth rate: 1/(2.5e6 J kg-1 * 1000 kg m-3) = 4.0e-10 m s-1 per W m-2",
+          "terms": [{"variable": "PotEvap_tavg", "sign": 1.0}]}
+      }
+    },
+    "nwm-retrospective-v3": {
+      "status": "reader-pending",
+      "reason": "Licence passes and access is public (AWS Open Data, no account), but the data sit on the NWM 1 km Lambert conformal grid in Zarr, and rw_zarr reads only regular latitude-longitude stores today. rw_hydro_init already computes weights on projected grids (grid.kind projected); the missing piece is a projected-grid Zarr extract in rw_zarr. CONUS only, 1979-02-01 to 2023-01-31.",
+      "description": "NOAA National Water Model v3.0 retrospective land state (LDASOUT), groundwater bucket (GWOUT) and channel flow (CHRTOUT). CHRTOUT feature_id equals NHDPlus COMID, which is id namespace 0 in the fabric contract, so channel initial flow maps one to one onto wb-<COMID>.",
+      "access": {"protocol": "zarr-http", "reader": "rw_zarr-projected (not built)", "account_required": false,
+        "stores": {"land": "https://noaa-nwm-retrospective-3-0-pds.s3.amazonaws.com/CONUS/zarr/ldasout.zarr",
+                   "groundwater": "https://noaa-nwm-retrospective-3-0-pds.s3.amazonaws.com/CONUS/zarr/gwout.zarr",
+                   "channel": "https://noaa-nwm-retrospective-3-0-pds.s3.amazonaws.com/CONUS/zarr/chrtout.zarr"}},
+      "licence": {"spdx": "public-domain-us-gov", "status": "verified", "quote": "AWS Open Data registry nwm-archive.yaml: \"License: Open Data. There are no restrictions on the use of this data.\"", "url": "https://raw.githubusercontent.com/awslabs/open-data-registry/main/datasets/nwm-archive.yaml", "read_utc": "2026-10-18T09:06:00Z", "attribution": "NOAA National Water Model v3.0 retrospective, NOAA Open Data Dissemination."},
+      "grid": {"kind": "projected", "x": "x", "y": "y", "crs_from_attribute": "crs"},
+      "state": {
+        "soil_water": {"units": "m3 m-3", "scale": 1.0, "layers": [
+          {"variable": "SOIL_M", "index": 0, "top_m": 0.0, "bottom_m": 0.1}, {"variable": "SOIL_M", "index": 1, "top_m": 0.1, "bottom_m": 0.4},
+          {"variable": "SOIL_M", "index": 2, "top_m": 0.4, "bottom_m": 1.0}, {"variable": "SOIL_M", "index": 3, "top_m": 1.0, "bottom_m": 2.0}]},
+        "soil_temperature": {"units": "K", "scale": 1.0, "layers": [
+          {"variable": "SOIL_T", "index": 0, "top_m": 0.0, "bottom_m": 0.1}, {"variable": "SOIL_T", "index": 1, "top_m": 0.1, "bottom_m": 0.4},
+          {"variable": "SOIL_T", "index": 2, "top_m": 0.4, "bottom_m": 1.0}, {"variable": "SOIL_T", "index": 3, "top_m": 1.0, "bottom_m": 2.0}]},
+        "snow_water_equivalent": {"variable": "SNEQV", "units": "kg m-2", "scale": 0.001},
+        "snow_depth": {"variable": "SNOWH", "units": "m", "scale": 1.0}
+      },
+      "soil_moisture_transfer": {"method": "volumetric"}
+    }
+  }
+}

@@ -57,7 +57,9 @@ def test_the_six_doors_are_bundled_on_demand_and_not_in_the_wheel():
     # Nothing a forecast reaches is on demand: the six stream doors and the
     # radar feed listings (2.9.2), which only list URLs for rw_odim.
     assert {a.name for a in bridge_assets.on_demand_artifacts()} == (
-        set(STREAM_DOORS) | {"rw_radar_feeds"})
+        set(STREAM_DOORS) | {"rw_radar_feeds"}
+        # 2.9.3 (PyPI per-file limit): five front doors, the sounding renderer, the gauge verifier.
+        | {"rw_mrms", "rw_stage4", "rw_asos", "rw_goes", "rw_opera", "rw_soundings", "rw_nextgen_verify"})
 
 
 def test_every_stream_with_a_door_names_a_bundled_artifact():
@@ -85,8 +87,8 @@ def test_the_listing_says_on_demand_on_a_pip_install(pip_install):
                  "madis-acars", "madis-raob", "madis-mesonet"):
         assert rows[name]["decoder_built"] is False, name
         assert rows[name]["door_route"] == "on-demand", name
-    # rw_asos is carried by the wheel, so it is never on demand.
-    assert rows["iem-metar"]["door_route"] == "build-from-source"
+    # rw_asos (METAR) is on demand too since 2.9.3 (PyPI per-file limit).
+    assert rows["iem-metar"]["door_route"] == "on-demand"
 
 
 def test_the_listing_says_installed_when_the_door_resolves(monkeypatch, tmp_path):
@@ -138,7 +140,8 @@ def test_a_wheel_carried_artifact_is_never_fetched_on_demand(pip_install, monkey
     import gpuwm.bridge_partial as bridge_partial
     monkeypatch.setattr(bridge_partial, "fetch_partial",
                         lambda *a, **k: pytest.fail("a wheel artifact was fetched"))
-    assert bridges.fetch_on_demand("rw_asos") is False
+    # rw_asos is on demand since 2.9.3; rw_nexrad is a wheel-carried door.
+    assert bridges.fetch_on_demand("rw_nexrad") is False
 
 
 def test_a_failed_first_use_says_what_happened_once(pip_install, monkeypatch):

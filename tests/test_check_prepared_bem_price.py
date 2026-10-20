@@ -109,7 +109,7 @@ def test_prepared_alloc_keeps_the_synthetic_all_urban_bound(tmp_path, monkeypatc
     from gpuwm.doctor import Check
 
     args = _args(tmp_path, monkeypatch, "--alloc")
-    monkeypatch.setattr("gpuwm.doctor._cuda_headers_check", lambda: Check(
+    monkeypatch.setattr("gpuwm.doctor._cuda_headers_check", lambda **_kw: Check(
         "CUDA kernel headers", "verified", "fixture kernels ready"))
     monkeypatch.setattr(pf, "live_device_local_memory_profile", lambda: None)
 

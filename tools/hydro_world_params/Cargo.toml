@@ -1,0 +1,25 @@
+[package]
+name = "hydro-world-params"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "HYDRO-WORLD global catchment parameters (CFE, Noah-OWP, LGAR) from SoilGrids, WorldCover and Copernicus DEM, as contract model_attributes rows"
+
+[lib]
+crate-type = ["rlib"]
+
+[[bin]]
+name = "rw_hydro_params"
+path = "src/main.rs"
+
+[dependencies]
+hydro-world = { path = "../hydro_world" }
+rayon = "1"
+flate2 = "1"
+weezl = "0.1"
+shapefile = "0.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+sha2 = "0.10"
+
+[workspace]

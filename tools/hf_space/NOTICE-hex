@@ -1,0 +1,727 @@
+gpuwm-hex (GPU-native variable-resolution atmospheric model core)
+Copyright 2026 ArWen contributors
+
+Licensed under the Apache License, Version 2.0 (LICENSE).
+
+Parts of this distribution derive from upstream works that keep their own
+terms. For those parts the upstream terms apply, and they travel with every
+copy. This file names each upstream and what derives from it.
+THIRD-PARTY-NOTICES.txt lists the derived files one by one, and licenses/
+holds every licence text in full. LICENSE, NOTICE, THIRD-PARTY-NOTICES.txt,
+LICENSE.arm-powf and licenses/ ship in the sdist and in the wheel
+(dist-info/licenses/).
+
+Two points to read before redistributing:
+
+  - The public distribution carries only permissive third-party terms
+    (BSD-3-Clause, MIT, Apache-2.0 and the WRF public-domain notice) and
+    code it treats as works of the US Government (NOAA GSL's UGWP and the
+    RRFS fork's NOAA GSL physics, sections 8 and 9), as the sections below
+    state one by one. Section 2 names the one routine that is kept on a
+    stated reliance rather than a licence (Numerical Recipes' log-gamma, as
+    MMM-physics carries it). One port is withheld because its upstream
+    terms do not allow an Apache-2.0 distribution that may be sold: the
+    Noah-MP v5.0 port (section 4: UCAR's terms forbid selling it or any
+    work that contains it).
+  - No default runs upstream code whose terms forbid sale. An MPAS suite
+    selection that would run Noah-MP v5.0 (from a private build, or from a
+    native library the user builds with the same opt-in) is refused unless
+    the run names the terms with --licence-opt-in ucar-noahmp, and a run
+    that does says so on its console and in its receipt. The gated
+    selections and their terms are listed in
+    src/hexcore/data/profiles/licence-gates.v1.json.
+
+Upstream sources are pinned by commit. MPAS-Model v8.4.2 is commit
+f34984b2c89353cf31c235b08d3b4acd96b37bb3 throughout this file.
+
+==========================================================================
+1. MPAS-Atmosphere (LANL / UCAR) -- BSD-3-Clause
+==========================================================================
+
+gpuwm-hex is a CUDA port of MPAS-Atmosphere (Model for Prediction Across
+Scales) version 8.4.2. The port covers the dynamical core, the
+init_atmosphere core (real-data and idealized initial conditions and the
+static fields), incremental analysis update, limited-area boundaries,
+restart, streams, diagnostics, and the MPAS physics driver layer
+(mpas_atmphys_*.F) behind the selectable MPAS physics suites. Each ported
+routine cites the MPAS file and lines it transcribes, and
+tools/check_mpas_citations.py checks those citations against the pinned
+source. The earlier v8.2.3 lane is still carried and selectable.
+
+The Fortran oracles under tools/mpas_operator_oracle/ and
+tools/mpas_step_oracle/, and the native-reference wrappers, patches and
+test oracles under tests/ and tools/, transcribe or patch MPAS source. Those
+are MPAS-derived portions too.
+
+MPAS-Atmosphere is developed by the Los Alamos National Laboratory and the
+University Corporation for Atmospheric Research / National Center for
+Atmospheric Research. It is distributed under the BSD-3-Clause terms
+reproduced at the end of this section. Those terms govern the MPAS-derived
+portions of this distribution and travel with every copy of it.
+
+That licence also requires that derivative works be clearly marked so as
+not to be confused with the version available from LANS and UCAR. This is
+that marking:
+
+  - The distribution, the command and the namespace are named gpuwm-hex.
+    The MPAS name is used only to state what this software derives from
+    and what it is measured against.
+  - Neither LANS, UCAR, NCAR nor their contributors endorse this
+    software.
+  - Results from gpuwm-hex are not results from MPAS-Atmosphere. Where
+    the two are known to differ, the differences are measured, and the
+    quantities are stated in README.md.
+
+The default physics is ArWen's (section 10), not MPAS's. With it, the
+cumulus scheme is a different generation from the reference: ArWen carries
+the 2018 Grell-Freitas formulation, MPAS-A carries the 2013 ensemble fork.
+They differ in closure membership, in the rain conversion coefficient and
+its temperature dependence, and in whether shallow convection precipitates.
+Three further differences of the ArWen physics are measured and declared as
+divergences, judged against observations: an upper-band
+potential-temperature drift, a convective rainfall deficit, and a
+downstream condensate surplus. The MPAS physics suites (sections 2 to 6)
+port MPAS's own schemes instead.
+
+Two of the MPAS-derived operators carry a further upstream lineage, which
+MPAS-Model distributes inside its own tree under the terms reproduced
+below. The orographic gravity-wave-drag operator in
+src/hexcore/cuda_gwdo_v841.py is a reimplementation of MPAS-Model's
+physics_wrf/module_bl_gwdo.F, which is WRF-derived, and of
+physics_mmm/bl_gwdo.F90, the Kim/YSU orographic gravity-wave-drag and
+flow-blocking scheme from NCAR/MMM. Those files are cited by path and line
+in the module that reimplements them.
+
+The longitude arithmetic in src/hexcore/mesh.py
+(_grid_rotate_convert_xl_longitude and reconcile_grid_rotate_longitudes)
+reproduces the convert_xl formula of MPAS-Tools grid_rotate.f90, pinned by
+source digest in that module, so that a rotated mesh's stored longitudes
+can be checked to the producer's own rounding. MPAS-Tools is distributed
+by LANS under the same BSD-3-Clause terms as MPAS-Atmosphere, reproduced
+below; no MPAS-Tools source file is copied into this distribution.
+
+MPAS-Atmosphere license text, retained in full (also in
+licenses/LICENSE-MPAS-BSD-3-Clause.txt):
+
+Copyright (c) 2013-2019,  Los Alamos National Security, LLC (LANS) (Ocean: LA-CC-13-047;
+Land Ice: LA-CC-13-117) and the University Corporation for Atmospheric Research (UCAR).
+
+All rights reserved.
+
+LANS is the operator of the Los Alamos National Laboratory under Contract No.
+DE-AC52-06NA25396 with the U.S. Department of Energy.  UCAR manages the National
+Center for Atmospheric Research under Cooperative Agreement ATM-0753581 with the
+National Science Foundation.  The U.S. Government has rights to use, reproduce,
+and distribute this software.  NO WARRANTY, EXPRESS OR IMPLIED IS OFFERED BY
+LANS, UCAR OR THE GOVERNMENT AND NONE OF THEM ASSUME ANY LIABILITY FOR THE USE
+OF THIS SOFTWARE.  If software is modified to produce derivative works, such
+modified software should be clearly marked, so as not to confuse it with the
+version available from LANS and UCAR.
+
+Additionally, redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1) Redistributions of source code must retain the above copyright notice, this
+list of conditions and the following disclaimer.
+
+2) Redistributions in binary form must reproduce the above copyright notice,
+this list of conditions and the following disclaimer in the documentation and/or
+other materials provided with the distribution.
+
+3) None of the names of LANS, UCAR or the names of its contributors, if any, may
+be used to endorse or promote products derived from this software without
+specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+==========================================================================
+2. NCAR MMM-physics -- BSD-3-Clause, Copyright (c) 2022 NCAR
+==========================================================================
+
+MPAS-Model v8.4.2 fetches NCAR's MMM-physics (tag 20250616-MPASv8.3,
+commit a4baf7f3243d1db0dbc5f63473f895bdbdc05c30) into physics_mmm/. The
+MPAS physics suites port these schemes from it: the YSU boundary layer
+(bl_ysu.F90), the MYNN boundary layer (bl_mynn.F90,
+bl_mynn_subroutines.F90, mynn_shared.F90), the YSU orographic
+gravity-wave drag (bl_gwdo.F90), the New Tiedtke cumulus scheme
+(cu_ntiedtke.F90), WSM6 microphysics (mp_wsm6.F90,
+mp_wsm6_effectRad.F90), the radar reflectivity diagnostic (mp_radar.F90),
+the MYNN surface layer (sf_mynn.F90) and the revised MM5 surface layer
+(sf_sfclayrev.F90). These ports are governed by the licence below (also in
+licenses/LICENSE-MMM-physics-BSD-3-Clause.txt).
+
+Numerical Recipes. mp_radar.F90 carries the line
+
+    !(C) Copr. 1986-92 Numerical Recipes Software 2.02
+
+at line 311, inside its GAMMLN log-gamma routine (mp_radar.F90:309-342).
+src/hexcore/mpasphys/wsm6_v842.py transcribes that routine (the standard
+Lanczos g=5, n=6 coefficients and their evaluation) for WSM6's radar
+reflectivity constants, because native MPAS computes them that way and
+the port matches native MPAS bit for bit. Those constants feed only the
+10 cm reflectivity diagnostic; no prognostic field depends on them.
+Numerical Recipes code is licensed to book purchasers and is not
+generally redistributable. This material reaches gpuwm-hex through
+MMM-physics' BSD-3-Clause release, which cannot dispose of Numerical
+Recipes' claim, so the line is preserved here, as MMM-physics and WRF
+preserve it. The routine arrived in WRF's public-domain release and has
+shipped there, in mp_radar, for about twenty years. gpuwm states the same
+position for its own transcriptions of the routine, in the Numerical
+Recipes notice of gpuwm's own licence folder. That is a stated reliance,
+not a licence; this project keeps it so that WSM6's reflectivity stays
+bitwise with native MPAS. The remedy, if the reliance is not
+acceptable, is a correctly rounded log-gamma in place of GAMMLN; it would
+change WSM6's 10 cm reflectivity and end its bitwise match with native
+MPAS for that field, and nothing else.
+
+BSD 3-Clause License
+
+Copyright (c) 2022, National Center for Atmospheric Research
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from
+   this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+==========================================================================
+3. WRF physics as MPAS distributes it -- WRF public-domain notice
+==========================================================================
+
+MPAS-Model v8.4.2 carries WRF-derived physics in physics_wrf/, under the WRF
+public-domain notice in physics_wrf/LICENSE. The MPAS physics suites port
+from it: Kain-Fritsch (module_cu_kfeta.F), Grell-Freitas
+(module_cu_gf.mpas.F), New Tiedtke's MPAS wrappers (module_cu_ntiedtke.F,
+cu_ntiedtke_pre.F, cu_ntiedtke_post.F), Thompson microphysics and its cloud
+fraction (module_mp_thompson.F, module_mp_thompson_cldfra3.F,
+module_mp_thompson_aerosols.F), Kessler (module_mp_kessler.F), WSM6's MPAS
+wrapper (module_mp_wsm6.F), CAM radiation (module_ra_cam.F,
+module_ra_cam_support.F), the Noah land surface model (module_sf_noahdrv.F,
+module_sf_noahlsm.F, module_sf_noahlsm_glacial_only.F), Noah sea ice
+(module_sf_noah_seaice.F, module_sf_noah_seaice_drv.F), the ocean mixed
+layer (module_sf_oml.F), the MM5 and revised MM5 surface layer drivers
+(module_sf_sfclay.F, module_sf_sfclayrev.F, sf_sfclayrev_pre.F,
+module_sf_sfcdiags.F), the MYNN wrappers (module_bl_mynn.F, bl_mynn_pre.F,
+bl_mynn_post.F, module_sf_mynn.F, sf_mynn_pre.F), the YSU wrappers
+(module_bl_ysu.F, module_bl_gwdo.F), and the radiation interpolation
+(module_ra_rrtmg_vinterp.F). RRTMG itself is AER's work (section 5).
+
+UCAR requests that the notice below be included on any partial or full
+copies of WRF. It is reproduced here and in
+licenses/LICENSE-WRF-public-domain.txt.
+
+------------------------
+WRF PUBLIC DOMAIN NOTICE
+------------------------
+
+WRF was developed at the National Center for Atmospheric Research
+(NCAR) which is operated by the University Corporation for
+Atmospheric Research (UCAR). NCAR and UCAR make no proprietary
+claims, either statutory or otherwise, to this version and
+release of WRF and consider WRF to be in the public domain for
+use by any person or entity for any purpose without any fee or
+charge. UCAR requests that any WRF user include this notice on
+any partial or full copies of WRF. WRF is provided on an "AS
+IS" basis and any warranties, either express or implied,
+including but not limited to implied warranties of
+non-infringement, originality, merchantability and fitness for a
+particular purpose, are disclaimed. In no event shall
+UCAR be liable for any damages, whatsoever, whether direct,
+indirect, consequential or special, that arise out of or in
+connection with the access, use or performance of WRF, including
+infringement actions.
+
+The init-source Vtables this distribution carries under src/hexcore/data/
+follow the WPS ungrib Variable Table format. Vtable.GFS is NCAR's WPS table
+(github.com/wrf-model/WPS, ungrib/Variable_Tables/Vtable.GFS), and a
+modified copy of it ships beside it; the tables named *.rw are this project's own.
+The WPS repository states no licence of its own. These tables are reference
+data mapping GRIB codes to field names, and they ship beside the WRF notice
+above, as ArWen ships its Vtables.
+
+==========================================================================
+4. Noah-MP v5.0 (UCAR) -- withheld; not in this distribution
+==========================================================================
+
+MPAS-Model v8.4.2 carries NCAR's community Noah-MP land surface model,
+version 5.0, in physics_noahmp/, under UCAR's Noah-MP terms
+(physics_noahmp/LICENSE.txt, sha256
+bd58c64131e08711ea7eb436f7a9520187626e6dcd0550fd6947f3060697d212; the
+RRFSx fork carries the same file). Those terms say:
+
+    You shall not sell, license or transfer for a fee the Software, or any
+    work that in any manner contains the Software.
+
+Apache-2.0 grants the right to sell, so the public distribution of
+gpuwm-hex does not carry the CUDA port of Noah-MP v5.0
+(src/hexcore/mpasphys/noahmp_v842.py, and urban_v842.py, which composes
+with it) or the tests and oracles that transcribe it (tests/noahmp_v842/,
+tests/urban_v842/). The list of withheld paths is tools/licence_holds.json
+(hold ucar-noahmp-v5). A private build that keeps the port also keeps
+UCAR's terms in full (licenses/LICENSE-Noah-MP-UCAR.txt) and the notices
+those terms require (licenses/NOTICE-Noah-MP-UCAR-private-builds.txt); in
+such a build UCAR's terms, not Apache-2.0, govern that portion.
+
+No default runs Noah-MP v5.0: the MPAS suites default to Noah (section 3).
+An MPAS suite run with config_lsm_scheme='sf_noahmp' is refused unless it
+names the terms with --licence-opt-in ucar-noahmp. With the opt-in, the
+native-cpu backend runs Noah-MP from a native library the user builds with
+the same opt-in (gpuwm-hex physics-resources build --licence-opt-in
+ucar-noahmp, which compiles Noah-MP v5.0 from upstream on the user's
+machine), and the hex-cuda backend is refused in a distribution that does
+not carry the port. By default that command builds the library with an
+Apache-2.0 interface stub in place of Noah-MP v5.0.
+
+The Noah-MP that gpuwm-hex runs by default is a different code: the ArWen
+suite's WRF-lineage Noah-MP v4.x, which gpuwm ports from WRF v4.6.1's
+Noah-MP (NCAR/noahmp commit 848f54ad3d28c4303151fe5ad83724e232694422, the
+submodule WRF v4.6.1 pins). That commit carries no licence file, and WRF
+distributes it under the WRF public-domain notice (section 3 and gpuwm's
+NOTICE). Noah-MP's v5.0 release notes describe v5.0 as a refactoring
+"without physics changes", but the v4.x code is not bitwise with MPAS's
+v5.0 and gpuwm-hex does not claim that it is.
+
+==========================================================================
+5. RRTMG (AER) -- BSD-3-Clause, Copyright (c) 2020 AER
+==========================================================================
+
+src/hexcore/mpasphys/rrtmg_lw_v842.py and rrtmg_sw_v842.py port the RRTMG
+longwave and shortwave radiation schemes as MPAS-Model v8.4.2 distributes
+them (physics_wrf/module_ra_rrtmg_lw.F, module_ra_rrtmg_sw.F and
+module_ra_rrtmg_sw_aerosols.F). That code is the work of Atmospheric and
+Environmental Research (AER), not UCAR's, and MPAS's copy keeps AER's older
+notice, which allows use, copying and redistribution "as long as it is not
+sold". That notice is reproduced as MPAS distributes it in
+licenses/NOTICE-AER-RRTMG-as-distributed-with-MPAS.txt.
+
+gpuwm-hex takes the RRTMG material under AER's own current BSD-3-Clause
+grant, published with RRTMG_LW and RRTMG_SW at github.com/AER-RC and
+reproduced in full in licenses/LICENSE-AER-RRTMG-BSD-3-Clause.txt
+("Copyright (c) 2020, Atmospheric and Environmental Research. All rights
+reserved."), as ArWen does. A copyright holder may licence its own work on
+any terms it chooses, and that grant is public, current and has no
+condition about sale. The MPAS and WRF adaptations inside those files are
+covered by sections 1 and 3.
+
+The RRTMG data tables (RRTMG_LW_DATA, RRTMG_SW_DATA) are not redistributed
+(section 11).
+
+==========================================================================
+6. Mersenne Twister (MT19937) -- BSD-3-Clause, Matsumoto and Nishimura
+==========================================================================
+
+src/hexcore/mpasphys/rrtmg_sw_v842.py ports the MersenneTwister module that
+MPAS's module_ra_rrtmg_lw.F carries for RRTMG's cloud sampling: a Fortran
+95 implementation by Robert Pincus of the MT19937 C program by Takuji
+Nishimura and Makoto Matsumoto. Its notice, reproduced in
+licenses/LICENSE-MT19937-BSD-3-Clause.txt, reads:
+
+    Copyright (C) 1997 - 2002, Makoto Matsumoto and Takuji Nishimura,
+    All rights reserved.
+
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions
+    are met:
+
+      1. Redistributions of source code must retain the above copyright
+         notice, this list of conditions and the following disclaimer.
+
+      2. Redistributions in binary form must reproduce the above copyright
+         notice, this list of conditions and the following disclaimer in the
+         documentation and/or other materials provided with the distribution.
+
+      3. The names of its contributors may not be used to endorse or promote
+         products derived from this software without specific prior written
+         permission.
+
+    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+    A PARTICULAR PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+    CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+    EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+    PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+    PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+    LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+    NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+    SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+==========================================================================
+7. Elementary-function maths -- MIT (Arm, CORE-MATH) and the Sun notice
+==========================================================================
+
+The physics ports are graded word for word against native MPAS built with
+GNU Fortran on the GNU C library, so they evaluate exp, log, pow, log10 and
+the trigonometric functions through transcriptions of the library's own
+routines rather than through CUDA's. No code under the GNU Lesser General
+Public License is transcribed: every routine below comes from a source that
+carries a permissive notice, in the library's own copy as well as upstream.
+
+  - src/hexcore/native_powf.py adapts Arm optimized-routines v21.02
+    (math/powf.c, powf_log2_data.c, exp2f_data.c), Copyright (c) 2017-2019
+    Arm Limited, under the MIT licence in LICENSE.arm-powf and
+    licenses/LICENSE-Arm-optimized-routines-MIT.txt.
+
+  - The CUDA physics sources compile together with shared device maths
+    headers. In this release the physics ports read those headers from the
+    installed gpuwm distribution at run time, and gpuwm's own NOTICE
+    carries their notices. When this distribution's physics-resources
+    builder assembles them from sources inside this distribution, those
+    sources sit in src/hexcore/data/mpasphys-maths/ (the glibc_flt32,
+    glibc_flt64, glibc_trig_flt32 and thompson_aerosol_libm headers, the
+    CORE-MATH log10f block, and CORE-MATH log10f, tanhf and erff), with
+    their own notices beside them (LICENSE.core-math and
+    LICENSE-third-party.txt in that directory). The same notices apply
+    and are reproduced in licenses/: Arm optimized-routines logf, expf,
+    exp2f, powf, sinf, cosf, and the binary64 exp, log and pow (MIT,
+    LICENSE-Arm-optimized-routines-MIT.txt); CORE-MATH correctly rounded
+    functions (MIT, LICENSE-CORE-MATH-MIT.txt); and the FDLIBM log10
+    reduction (Sun notice, LICENSE-FDLIBM-SunPro.txt).
+
+  - log10. The binary32 log10f the MPAS Thompson port evaluates is
+    CORE-MATH's correctly rounded log10f (src/binary32/log10/log10f.c,
+    revision bc385c2; Copyright (c) 2022-2023 Alexei Sibidanov; MIT). The
+    GNU C library 2.43 carries the same routine as
+    sysdeps/ieee754/flt-32/e_log10f.c, with the same MIT notice, and
+    gfortran's ALOG10 calls it. The transcription and the host's glibc
+    2.43 log10f were compared on all 2^32 binary32 inputs: every result
+    that is not a NaN is the same word, and NaN results differ only in the
+    sign bit. The binary64 log10 beside it follows FDLIBM's e_log10.c
+    reduction (Sun notice) over the Arm binary64 log (MIT).
+
+==========================================================================
+8. NOAA GSL Unified Gravity Wave Physics (UGWP) -- US Government code
+==========================================================================
+
+MPAS-Model v8.4.2 does not carry UGWP in its own tree. Its build fetches
+NOAA Global Systems Laboratory's UGWP repository (github.com/NOAA-GSL/UGWP,
+tag MPAS_20241223, commit c1c893edcf171af5639af60e3a3a528816f6cc2b) into
+physics_noaa/UGWP, so the MPAS licence does not cover it. That repository
+carries no licence file (read 2026-10-14). Most of its code is adapted from
+NOAA's CCPP physics (github.com/ufs-community/ccpp-physics, physics/GWD),
+which is released under the Apache License 2.0 ("Copyright 2017, NOAA,
+UCAR/NCAR CU/CIRES").
+
+gpuwm-hex treats UGWP as a work of the US Government (NOAA), by the
+project's ruling of 2026-10-14, and ships its CUDA ports in this
+distribution: src/hexcore/mpasphys/ugwp_oro_v842.py (the orographic drag,
+config_gwdo_scheme='bl_ugwp_gwdo') and src/hexcore/mpasphys/ugwp_ngw_v842.py
+(the non-stationary gravity waves, config_ngw_scheme), with their tests and
+oracles. They are ported from the commit above; credit for the scheme
+belongs to NOAA GSL and its authors. No opt-in is needed to select them. No
+default selects them either: the MPAS suites default to the YSU drag of
+section 2. ArWen's own GSL orographic drag, which the RRFS-shaped suites
+run, is a separate code path in gpuwm (WRF public-domain notice).
+
+==========================================================================
+9. RRFS (NOAA) -- the fork's dynamical core, and its NOAA GSL physics
+==========================================================================
+
+RRFS v2 runs NOAA GSL's fork of MPAS-Model (github.com/RRFSx/MPAS-Model,
+commit 1d6e370e7b43a332074809f170532a216c2212fb, "MPAS-v8.3.1-2.26"), pinned
+by NOAA EMC's rrfs-workflow (github.com/NOAA-EMC/rrfs-workflow, branch
+rrfs-mpas-jedi, commit 08eee4ceee301898d3cb837e03699a8da0d1cb32). The fork
+carries the same LICENSE file as MPAS-Model, byte for byte, so section 1
+covers what gpuwm-hex ports from it: the fork's dynamical core, a separate
+selectable core (the *_rrfs.py modules), and its physics driver layer
+(src/hexcore/mpasphys/rrfs/).
+
+The RRFS stage (the fork's suites: --physics-suite hrrrv5 and the rrfs_*
+suites) runs the fork's NOAA physics (physics_noaa) from the user's own
+build of the fork, by default and with no opt-in. At the fork's pins they
+are NCAR/TEMPO 9adf9ef (Apache-2.0), NCAR/MYNN-EDMF c942418, NCAR/MYNN-SFC
+b66187f, NOAA-GSL/RUCLSM 8c9f1a8, NOAA-GSL/GFL bf6a4b0, NOAA-GSL/SMOKE
+9652bbf and NOAA-GSL/UGWP c1c893e. Apart from TEMPO they carry no licence
+file at those pins (MYNN-EDMF added Apache-2.0 upstream on 2026-09-30, after
+its pin); gpuwm-hex treats them, like UGWP (section 8), as works of the US
+Government (NOAA GSL), by the project's ruling of 2026-10-14. Credit for
+each scheme belongs to NOAA GSL, NCAR and their authors. This release ports
+none of them except UGWP; a hex port of any of them ships under that
+ruling, with this attribution. The fork's Noah-MP is under UCAR's terms
+(section 4): it stays withheld, and an RRFS stage run that selects
+sf_noahmp is refused unless it names them with --licence-opt-in ucar-noahmp.
+
+The ArWen route's RRFS-shaped suite (rrfs_v2_dev) runs gpuwm's WRF-lineage
+MYNN, RUC and GSL drag (WRF public-domain notice) and is labelled
+RRFS-shaped, not RRFS-matched.
+
+verification/source-namelists/ keeps the RRFS v2 hrrrv5 model namelist as
+rrfs-workflow publishes it (parm/hrrrv5/namelist.atmosphere at the commit
+above), and its first 26 lines, as the configuration the RRFS-shaped presets
+are compared against. They are configuration settings, not program code.
+rrfs-workflow's LICENSE.md states no terms.
+
+==========================================================================
+10. ArWen (Python package "gpuwm") -- Apache-2.0, a dependency
+==========================================================================
+
+The default physics, and the shared device maths the MPAS suites compile
+with, come from ArWen, a separate distribution under the Apache License,
+Version 2.0, with its own NOTICE covering the WRF-, RRTMG-, RRTMGP-,
+Noah-MP-, CORE-MATH-, Arm- and FDLIBM-derived material it carries. Its
+default land surface is the WRF-lineage Noah-MP v4.x of section 4 (WRF
+public-domain notice). It is not vendored here; it is declared as a
+dependency and installed from its own distribution.
+
+ArWen's RTE+RRTMGP radiation, which the global rows' gpuwm-global arm runs
+(as does any ArWen-route run that selects it), reads a trace-gas and ozone
+table that gpuwm's data package ships under CC-BY-SA-4.0. gpuwm-hex does not
+carry it. It is data: the licence permits sale, and its share-alike reaches
+only adaptations of that table.
+
+==========================================================================
+11. Data that is not redistributed
+==========================================================================
+
+  - MPAS-Data physics tables (github.com/MPAS-Dev/MPAS-Data, tag v8.2,
+    commit c57dbc7be629802c6e848770a9e44b9bc602be41: the RRTMG, CAM, Noah,
+    ozone and CCN tables). That repository states no licence. The user's
+    installation obtains them from the pinned commit (fetched and checked
+    by sha256, or supplied by the user); this distribution never carries
+    them.
+  - The Thompson lookup tables are generated on the user's machine.
+  - Meshes, static geographical fields and initial conditions are staged by
+    the user from their providers. Their terms are between the user and
+    the provider.
+
+==========================================================================
+12. Compiled helpers in the wheel, and the libraries they link
+==========================================================================
+
+The wheel carries small compiled programs in hexcore/libexec. Each is
+listed here with what it links. The Rust standard library (The Rust Project
+Developers, MIT OR Apache-2.0) is linked into every one of them and is
+taken under Apache-2.0, the text in LICENSE.
+
+  - hex_contract_hostprep (rust/host-prep): this project's own code and the
+    Rust standard library only.
+
+  - gpuwm-hex-netcdf-copy (rust/netcdf-copy): this project's own code, the
+    Rust standard library, and netCDF-C 4.9.3 linked statically (section
+    13).
+
+  - rw_mpas_geometry, rw_mpas_stream and rw_mpas_static, the bundled engine
+    bridges, and rw_mpas_rrfs_connectivity, rw_mpas_rrfs_damping and
+    rw_mpas_rrfs_deformation, the RRFS fork dycore's programs (Rust standard
+    library only): built from the rustwx workspace in the gpuwm repository
+    (tools/rustwx; MIT, "Copyright (c) 2026 rustwx contributors", text in
+    hexcore/data/licenses/rustwx-LICENSE-MIT). The gpuwm commit they come
+    from and the exact bytes are pinned in hexcore/data/engine-bridges.json.
+    They are bundled because no released gpuwm carries the versions this
+    release needs. Each links only the C library at run time. rw_mpas_stream
+    also links, statically, netCDF-C 4.9.3 with netCDF-4 (section 13), HDF5
+    1.14.6 and zlib 1.3.1 (section 14), built from their release tarballs by
+    tools/build_netcdf4_static.sh. Resolved by cargo against that commit's
+    Cargo.lock for x86_64 Linux, the platform the bridges are built for,
+    they link these crates:
+      * ArWen's own rustwx crates (MIT, the text above): rustwx-core,
+        rw-host-memory, rw-libm, rw-mpas, rw-store and static-fields.
+        rw-mpas ports parts of MPAS-Atmosphere (section 1); static-fields
+        carries a port of four of NumPy's float32 kernels (BSD-3-Clause,
+        NumPy Developers), and rw-libm Arm optimized-routines and
+        CORE-MATH functions (MIT, section 7);
+      * netcrust 0.1.0 (Fahrenheit Research) and the two readers it
+        vendors, hdf5-reader 0.3.0 and netcdf-reader 0.3.0 (roteiro-gis),
+        each MIT OR Apache-2.0, taken under Apache-2.0;
+      * adler2 2.0.1, allocator-api2 0.2.21, bitflags 2.13.1,
+        block-buffer 0.10.4, cfg-if 1.0.4, cpufeatures 0.2.17,
+        crc32fast 1.5.0, crossbeam-deque 0.8.7, crossbeam-epoch 0.9.20,
+        crossbeam-utils 0.8.22, crypto-common 0.1.7, digest 0.10.7,
+        either 1.17.0, equivalent 1.0.2, flate2 1.1.9, fs4 1.1.0,
+        hashbrown 0.16.1, itoa 1.0.18, libc 0.2.189, linux-raw-sys 0.12.1,
+        lock_api 0.4.14, matrixmultiply 0.3.11, memmap2 0.9.11,
+        miniz_oxide 0.8.9, ndarray 0.17.2, num-complex 0.4.6,
+        num-integer 0.1.46, num-traits 0.2.19, parking_lot 0.12.5,
+        parking_lot_core 0.9.12, rawpointer 0.2.1, rayon 1.12.0,
+        rayon-core 1.13.0, rustix 1.1.4, scopeguard 1.2.0, serde 1.0.229,
+        serde_core 1.0.229, serde_json 1.0.151, sha2 0.10.9,
+        smallvec 1.15.2, thiserror 2.0.19, typenum 1.20.1, weezl 0.1.12,
+        zstd-safe 7.2.4 and zstd-sys 2.0.16+zstd.1.5.7 (each offers
+        Apache-2.0 among its grants and is taken under it); zstd-sys
+        compiles in the zstd C library 1.5.7, offered under BSD or GPLv2
+        and taken under its BSD licence (Facebook, Inc.);
+      * memchr 2.8.3 (Unlicense OR MIT, taken under the Unlicense);
+      * foldhash 0.2.0 (Zlib);
+      * generic-array 0.14.7, libm 0.2.16, lru 0.16.4, lz4_flex 0.11.6,
+        simd-adler32 0.3.10, twox-hash 2.1.3, zmij 1.0.23 and zstd 0.13.3
+        (MIT).
+    serde_derive, thiserror-impl, proc-macro2, quote, syn and
+    unicode-ident run only at compile time and are not linked.
+
+  - hex_obs_scorecard (rust/obs-scorecard, built against the ArWen engine's
+    Rust workspace by tools/build_obs_scorecard.py): this project's own
+    code, ArWen's own Rust crates (their manifests declare MIT, or MIT OR
+    Apache-2.0), and the third-party crates that workspace locks, among
+    them the bzip2 and zstd C libraries and the rustls TLS stack.
+    Their grants are MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC,
+    Zlib, 0BSD, Unicode-3.0, CDLA-Permissive-2.0 and the Unlicense, and
+    where a crate offers a choice the permissive grant is taken. It links
+    ArWen's rustwx-render crate but draws no text, and it carries neither
+    font that crate embeds (Source Sans 3 and Inter, both SIL Open Font
+    License 1.1): a scorer built against gpuwm commit 24b6f08c contains no
+    part of either font file (checked every 4 KiB through each file, runs
+    of zero bytes aside).
+
+    The licence texts of every third-party crate the scorer and the two
+    bridges link ship in licenses/THIRD-PARTY-LICENSES-helper-binaries.txt,
+    with an inventory naming each crate, its grant and the programs that
+    link it, and the notices for the third-party code ported into
+    rw-mpas, static-fields and rw-libm. tools/helper_licences.py writes
+    that file from gpuwm commit 24b6f08c48db3199051280f5a874ef33b41a5762,
+    the bridges' pinned commit: it resolves each program's linked crates
+    with cargo, for every target the workspace builds for, and copies
+    their rows and texts from that commit's own notice for ArWen's bridge
+    bundle (its THIRD-PARTY-LICENSES-bridge-binaries.txt). It stops by
+    name on a linked crate whose text that notice lacks.
+
+  - Programs the physics-resources builder adds, where this distribution
+    carries it:
+      * the table decoders (rust/physics-tables): this project's own code
+        and the Rust standard library only;
+      * rw_mpas_physics_pool, the Registry pool reader (rust/physics-pool):
+        a byte-for-byte copy of the pool reader in the same rustwx
+        workspace (MIT, text in hexcore/data/licenses/rustwx-LICENSE-MIT),
+        netCDF-C 4.9.3 with classic formats only, linked statically
+        (section 13), and these crates, linked:
+          block-buffer 0.10.4, cfg-if 1.0.5, cpufeatures 0.2.17,
+          crypto-common 0.1.7, digest 0.10.7, itoa 1.0.18, serde 1.0.229,
+          serde_core 1.0.229, serde_json 1.0.151, sha2 0.10.9 and
+          typenum 1.20.1 (each MIT OR Apache-2.0, taken under Apache-2.0);
+          memchr 2.8.3 (Unlicense OR MIT, taken under the Unlicense);
+          generic-array 0.14.7 (MIT, Copyright (c) 2015 Bartlomiej
+          Kaminski); zmij 1.0.23 (MIT, David Tolnay).
+        serde_derive, proc-macro2, quote, syn and unicode-ident run only at
+        compile time and are not linked.
+    The MIT licence of generic-array and zmij reads:
+
+      Permission is hereby granted, free of charge, to any person
+      obtaining a copy of this software and associated documentation files
+      (the "Software"), to deal in the Software without restriction,
+      including without limitation the rights to use, copy, modify, merge,
+      publish, distribute, sublicense, and/or sell copies of the Software,
+      and to permit persons to whom the Software is furnished to do so,
+      subject to the following conditions:
+
+      The above copyright notice and this permission notice shall be
+      included in all copies or substantial portions of the Software.
+
+      THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+      EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+      MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+      NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+      BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+      ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+      CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+      SOFTWARE.
+
+==========================================================================
+13. netCDF-C (Unidata) -- BSD-3-Clause, Copyright 2018 Unidata
+==========================================================================
+
+gpuwm-hex-netcdf-copy and rw_mpas_physics_pool (hexcore/libexec) link
+netCDF-C 4.9.3 (github.com/Unidata/netcdf-c) statically, built
+classic-format-only by tools/build_netcdf_classic_static.sh from the
+official release tarball
+(sha256 a474149844e6144566673facf097fea253dc843c37bc0a7d3de047dc8adda5dd).
+rw_mpas_stream links the same release built with netCDF-4 by
+tools/build_netcdf4_static.sh.
+The same notice ships inside the package as
+hexcore/data/licenses/netcdf-c-COPYRIGHT. It reads:
+
+    Copyright 2018 Unidata
+
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions
+    are met:
+
+    1. Redistributions of source code must retain the above copyright
+       notice, this list of conditions and the following disclaimer.
+
+    2. Redistributions in binary form must reproduce the above copyright
+       notice, this list of conditions and the following disclaimer in the
+       documentation and/or other materials provided with the distribution.
+
+    3. Neither the name of the copyright holder nor the names of its
+       contributors may be used to endorse or promote products derived from
+       this software without specific prior written permission.
+
+    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
+    PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+    HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+==========================================================================
+14. HDF5 (The HDF Group) and zlib (Jean-loup Gailly and Mark Adler)
+==========================================================================
+
+rw_mpas_stream (hexcore/libexec) links HDF5 1.14.6 and zlib 1.3.1
+statically, built from their release tarballs by
+tools/build_netcdf4_static.sh. Their licence texts ship inside the package:
+HDF5's in hexcore/data/licenses/hdf5-COPYING and
+hexcore/data/licenses/hdf5-COPYING_LBNL_HDF5, zlib's in
+hexcore/data/licenses/zlib-LICENSE.
+
+==========================================================================
+15. METIS 5.1.0 (Regents of the University of Minnesota) -- Apache-2.0
+==========================================================================
+
+hex_gpmetis (hexcore/libexec) is METIS 5.1.0's gpmetis program, built by
+tools/build_gpmetis.py from third_party/metis-5.1.0, which is the official
+release tarball (karypis.github.io/glaros/files/sw/metis/metis-5.1.0.tar.gz,
+sha256 76faebe03f6c963127dbb73c13eab58c9a3faeae48779f049066a21c087c5db2)
+with the changes third_party/metis-5.1.0/HEX-VENDORING.txt lists. The
+automatic multi-card door runs it to partition the mesh. METIS is
+Copyright 1995-2013, Regents of the University of Minnesota, licensed
+under the Apache License, Version 2.0; its licence ships inside the package
+as hexcore/data/licenses/metis-LICENSE and in the source tree as
+licenses/LICENSE-METIS-Apache-2.0.txt.
+
+GKlib/getopt.c, GKlib/gkregex.c and GKlib/gkregex.h, which the METIS
+tarball carries as copies of GNU C Library code under the LGPL-2.1, are not
+in this distribution and are not compiled. GKlib/gk_mksort.h, which in the
+tarball was adapted from the GNU C Library's stdlib/qsort.c under the
+LGPL-2.1-or-later, is replaced by a header written for gpuwm-hex under the
+Apache License 2.0 that sorts identically, so the partitions are unchanged.
+Every file in third_party/metis-5.1.0 is Apache-2.0. GKlib/random.c also
+keeps, in a block that is not compiled, the MT19937-64 code of Makoto
+Matsumoto and Takuji Nishimura (Copyright (C) 2004) with its BSD-style
+notice. hex_gpmetis is a separate program that the door runs as a
+subprocess; its complete source and build script ship in the sdist (any
+gpmetis on PATH, or the --gpmetis option, is used instead when hex_gpmetis
+is absent or named otherwise).

@@ -1,5 +1,6 @@
 """Regression checks for the upheld base4 landing findings."""
 import os
+import sys
 import inspect
 from types import SimpleNamespace
 
@@ -7,27 +8,60 @@ import numpy as np
 import pytest
 
 
-def test_analysis_reflectivity_uses_domain_shape_for_slab_template():
+def _host_staged_diagnostic(monkeypatch):
+    """Run analysis_refl_10cm's host staging with NumPy standing in for the card.
+
+    Since 18dbe1d5449 the analysis frame diagnoses its hydrometeors with the
+    scheme's GPU kernels (their own check: tests/test_earth2_export.py).
+    What these tests own is the staging: which arrays reach the kernels and
+    at what shape.  The stand-in kernel doubles ``qv`` and records the slab
+    shapes it was handed.
+    """
+    monkeypatch.setitem(sys.modules, "cupy", SimpleNamespace(
+        ascontiguousarray=np.ascontiguousarray, asarray=np.asarray,
+        empty=np.empty, float32=np.float32, asnumpy=np.asarray))
+    slabs = []
+
+    def diagnose(slab, cfg):
+        slabs.append(slab.qv.shape)
+        return slab.qv * np.float32(2.0)
+    monkeypatch.setattr("gpuwm.core.state_reflectivity.diagnose", diagnose)
+    return slabs
+
+
+def _store_endpoint(shape):
+    qv = np.arange(np.prod(shape), dtype=np.float32).reshape(shape)
+    return SimpleNamespace(store={"state/qv": qv},
+                           _geography={"setup/thb": np.full(shape[0], 300.0, np.float32)})
+
+
+def test_analysis_reflectivity_uses_domain_shape_for_slab_template(monkeypatch):
     from gpuwm.core.refl import analysis_refl_10cm
     from gpuwm.io.wrfout import WrfoutWriter
-    state = SimpleNamespace(qv=np.ones((3, 1, 8), np.float32))
-    kwargs = ({"shape": (3, 75, 8)} if "shape" in inspect.signature(analysis_refl_10cm).parameters else {})
-    refl = analysis_refl_10cm(state, **kwargs)
+    slabs = _host_staged_diagnostic(monkeypatch)
+    endpoint = _store_endpoint((3, 75, 8))
+    # A store-direct domain: the state is a one-row slab template.
+    state = SimpleNamespace(qv=np.ones((3, 1, 8), np.float32),
+                            _streamed_domain=endpoint)
+    refl = analysis_refl_10cm(state, SimpleNamespace(), shape=(3, 75, 8))
     writer = SimpleNamespace(nz=3, ny=75, nx=8)
     assert WrfoutWriter._dims_for(writer, "REFL_10CM", refl.shape) == (
         "Time", "bottom_top", "south_north", "west_east")
-    assert np.count_nonzero(refl.view(np.uint32)) == 0
+    assert slabs == [(3, 64, 8), (3, 11, 8)]
+    np.testing.assert_array_equal(refl, endpoint.store["state/qv"] * 2)
 
 
-def test_store_analysis_uses_host_arrays_without_reading_slab_carriers():
+def test_store_analysis_uses_host_arrays_without_reading_slab_carriers(monkeypatch):
     from gpuwm.core.refl import analysis_refl_10cm
+    _host_staged_diagnostic(monkeypatch)
     class PresenceOnly:
         def __getattr__(self, name):
             pytest.fail("store analysis read the stale slab carrier")
-    state = SimpleNamespace(qv=PresenceOnly(), _streamed_domain=object())
-    field = analysis_refl_10cm(state, shape=(3, 75, 8))
+    endpoint = _store_endpoint((3, 75, 8))
+    state = SimpleNamespace(qv=PresenceOnly(), _streamed_domain=endpoint)
+    field = analysis_refl_10cm(state, SimpleNamespace(), shape=(3, 75, 8))
     assert isinstance(field, np.ndarray) and field.shape == (3, 75, 8)
-    assert not np.any(field)
+    np.testing.assert_array_equal(field, endpoint.store["state/qv"] * 2)
 
 
 def test_tick_zero_disk_projection_includes_reflectivity():
@@ -48,10 +82,15 @@ def test_acoustic_initialization_marker_is_restart_infrastructure():
     assert state_manifest(state) == {}
 
 
-def test_slab_analysis_writes_full_domain_rust_artifact(tmp_path):
+def test_slab_analysis_writes_full_domain_rust_artifact(tmp_path, monkeypatch):
     import netCDF4
+    from gpuwm.core import refl
     from gpuwm.prepared_single_domain_forecast import _consume_due_native_refl_10cm
     from gpuwm.io.wrfout import WrfoutWriter
+    # The analysis diagnostic's staging is checked above; this test owns the
+    # full-domain write of whatever it returns.
+    monkeypatch.setattr(refl, "analysis_refl_10cm",
+                        lambda state, *, shape: np.full(shape, 15, np.float32))
     state = SimpleNamespace(qv=np.ones((3, 1, 8), np.float32),
                             physics=SimpleNamespace(mp_physics=8))
     def forbidden_consume(state):
@@ -67,7 +106,7 @@ def test_slab_analysis_writes_full_domain_rust_artifact(tmp_path):
     with netCDF4.Dataset(path) as dataset:
         field = np.asarray(dataset["REFL_10CM"][0])
         assert field.shape == (3, 75, 8)
-        assert np.count_nonzero(field.view(np.uint32)) == 0
+        assert np.all(field == 15)
 
 
 @pytest.mark.skipif(os.environ.get("GPUWM_WRF_EXACT") != "1", reason="strict process")

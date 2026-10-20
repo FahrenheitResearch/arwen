@@ -404,7 +404,7 @@ def test_every_shipped_configuration_declares_a_reachable_maximum():
         if floor is None:
             continue
         bound = max_parent_cells_for_overlap(
-            floor, parent_grid_ratio=ratio, child_nx=nx, child_ny=ny)
+            floor, parent_grid_ratio=ratio, child_nx=nx, child_ny=ny, diagonal=False)
         for key, value in maximums.items():
             assert int(value) <= bound, (
                 f"{label}: {key} = {value} but min_overlap_fraction = "
@@ -423,29 +423,15 @@ def test_the_quick_start_preset_agrees_with_the_nest_it_is_written_for():
 
     bound = max_parent_cells_for_overlap(
         VORTEX_PRESET["min_overlap_fraction"], parent_grid_ratio=RATIO,
-        child_nx=CHILD_DIMS[0], child_ny=CHILD_DIMS[1])
-    assert bound == 6
+        child_nx=CHILD_DIMS[0], child_ny=CHILD_DIMS[1], diagonal=False)
+    assert bound == 12
     assert VORTEX_PRESET["max_move_parent_cells"] == bound
     assert VORTEX_PRESET["max_shift_cells"] == bound
     assert VORTEX_PRESET["min_shift_cells"] <= bound
 
 
 def test_the_door_emits_a_reachable_maximum_on_every_rung_it_can_fit_to():
-    """The preset is correct for its own nest and WRONG for every rung.
-
-    ``gpuwm cyclone-setup`` on a card that cannot hold the requested
-    layout proposes a smaller one, and the floor that implies the
-    movement maximum is a fraction of the NEST's width, so the preset's 6
-    is unreachable on every rung of that ladder -- worst at the smallest,
-    where a 24-parent-cell nest admits 3.  Copying the preset onto a
-    fitted child put back exactly the contradiction that ended the
-    cyclone quick forecast, in the door the fix was measured through, so
-    the check walks the whole ladder rather than the unfitted
-    dimensions.
-
-    Both emitted tables are checked, because a desktop reads the
-    cyclone.json receipt and the run reads the toml beside it.
-    """
+    """Both authored tables derive axial reach from each rung's width."""
     from gpuwm import cyclone_setup as tc
 
     intent = dict(cycle="2026090900", point=(18., -65.), hours=6,
@@ -461,7 +447,7 @@ def test_the_door_emits_a_reachable_maximum_on_every_rung_it_can_fit_to():
         child = experiment.domains[1]
         bound = max_parent_cells_for_overlap(
             emitted["min_overlap_fraction"], parent_grid_ratio=tc.RATIO,
-            child_nx=child.run.nx, child_ny=child.run.ny)
+            child_nx=child.run.nx, child_ny=child.run.ny, diagonal=False)
         for key in ("max_move_parent_cells", "max_shift_cells"):
             assert emitted[key] <= bound, (
                 f"rung {scale}: {key} = {emitted[key]} on a "
@@ -471,7 +457,7 @@ def test_the_door_emits_a_reachable_maximum_on_every_rung_it_can_fit_to():
             # And reachable: the bound itself must clear the floor, so
             # the maximum written is a move that can actually be made.
             assert overlap_fraction_for_shift(
-                emitted[key], emitted[key], parent_grid_ratio=tc.RATIO,
+                emitted[key], 0, parent_grid_ratio=tc.RATIO,
                 child_nx=child.run.nx, child_ny=child.run.ny
             ) >= emitted["min_overlap_fraction"]
         assert emitted["min_shift_cells"] <= emitted["max_shift_cells"]
@@ -479,3 +465,48 @@ def test_the_door_emits_a_reachable_maximum_on_every_rung_it_can_fit_to():
         # dimensions rather than from the preset.
         assert tc.follow_table_for_nest(child.run.nx, child.run.ny) == {
             key: value for key, value in emitted.items() if key != "track"}
+
+
+def test_auto_sized_follow_keeps_zonal_reach_and_diagonal_overlap():
+    from gpuwm.cyclone_setup import follow_table_for_nest
+    table = follow_table_for_nest(160, 160)
+    assert table["max_move_parent_cells"] == table["max_shift_cells"] == 12
+    options = dict(min_overlap_fraction=table["min_overlap_fraction"],
+                   parent_grid_ratio=4, child_nx=160, child_ny=160)
+    assert clamp_shift_to_overlap(-12, 0, **options) == (-12, 0, False)
+    assert clamp_shift_to_overlap(-12, -12, **options) == (-6, -6, True)
+    assert follow_table_for_nest(320, 320)["max_move_parent_cells"] == 24
+
+
+def test_engine_executes_twelve_cell_westward_move_with_unchanged_overlap_floor():
+    from gpuwm.cyclone_setup import follow_table_for_nest
+    parent_plane, parent, child = _cpu_tree()
+    start = int(child.cfg.i_parent_start)
+    model = _model(parent, child)
+    table = follow_table_for_nest(160, 160)
+    runner = _runner(parent_plane, _floor_config(
+        (ScheduledRelocationMove(60.0, -12, 0),),
+        floor=table["min_overlap_fraction"], max_move=table["max_move_parent_cells"]))
+    _advance(model, parent, child, 60)
+    outcome = runner.on_period_begin(model, {1: parent.clock})
+    assert outcome["executed_shift_parent_cells"] == [-12, 0]
+    assert outcome["clamped_by"] == []
+    assert outcome["overlap_fraction"] == pytest.approx(0.7)
+    assert int(child.cfg.i_parent_start) == start - 12
+
+
+def test_mslp_motion_passes_old_six_cell_cap_but_keeps_overlap_bound():
+    from dataclasses import replace
+    from gpuwm.core.storm_tracking import FollowConfig
+    plane, parent, child = _cpu_tree()
+    follow = FollowConfig(field="pressure", level_hpa=0, threshold=1010.,
+                          search_margin_cells=20, min_shift_cells=1,
+                          max_shift_cells=6, cooldown_seconds=900.)
+    config = replace(_floor_config((), max_move=6), follow=follow)
+    runner = _runner(plane, config)
+    assert runner._clamped_shift(child, (-12, 0)) == (-12, 0, [])
+    di, dj, clamps = runner._clamped_shift(child, (-12, -12))
+    assert "min_overlap_fraction" in clamps
+    assert overlap_fraction_for_shift(di, dj,
+        parent_grid_ratio=child.cfg.parent_grid_ratio,
+        child_nx=child.cfg.run.nx, child_ny=child.cfg.run.ny) >= .7

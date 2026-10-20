@@ -32,8 +32,9 @@ announces itself, not an automatic fallback), build the terminal workspace
 in `tools/arwen-tui`, the Zarr reader in `tools/zarr_bridge`, the default
 mapped-source decode engine in `tools/rw_wps` and the default velocity
 dealiasing library in `tools/region_global_dealias` with the same locked
-offline command, and
-finish with `gpuwm doctor`, whose exit status the script propagates.
+offline command, build the hydro payload (`tools/nextgen_hydrofabric`),
+forcing (`tools/nextgen_forcing`) and gauge verification (`tools/nextgen_verify`)
+workspaces (fetching their locked dependencies first), and finish with `gpuwm doctor`, whose exit status the script propagates.
 
 A pip install on Windows x86-64 or Linux x86-64 needs no toolchain for
 either half: the platform wheels for those two carry all of the prebuilt
@@ -101,8 +102,8 @@ python -m pip install --upgrade pip
 python -m pip install -e gpuwm-data
 python -m pip install -e '.[gpu-cu12,render]'   # or gpu-cu13
 gpuwm fetch-tables
-for workspace in tools/grib1_bridge tools/rustwx tools/arwen-tui tools/zarr_bridge tools/rw_wps tools/region_global_dealias; do
-  (cd "$workspace" && cargo build --release --locked --offline)
+for workspace in tools/grib1_bridge tools/rustwx tools/arwen-tui tools/zarr_bridge tools/rw_wps tools/region_global_dealias tools/nextgen_hydrofabric tools/nextgen_forcing tools/nextgen_verify; do
+  (cd "$workspace" && cargo fetch --locked && cargo build --release --locked --offline)
 done
 gpuwm doctor
 ```
@@ -117,8 +118,8 @@ python -m pip install --upgrade pip
 python -m pip install -e gpuwm-data
 python -m pip install -e '.[gpu-cu12,render]'   # or gpu-cu13
 gpuwm fetch-tables
-foreach ($workspace in 'tools\grib1_bridge', 'tools\rustwx', 'tools\arwen-tui', 'tools\zarr_bridge', 'tools\rw_wps', 'tools\region_global_dealias') {
-  Push-Location $workspace; cargo build --release --locked --offline; Pop-Location
+foreach ($workspace in 'tools\grib1_bridge', 'tools\rustwx', 'tools\arwen-tui', 'tools\zarr_bridge', 'tools\rw_wps', 'tools\region_global_dealias', 'tools\nextgen_hydrofabric', 'tools\nextgen_forcing', 'tools\nextgen_verify') {
+  Push-Location $workspace; cargo fetch --locked; cargo build --release --locked --offline; Pop-Location
 }
 gpuwm doctor
 ```
@@ -138,7 +139,7 @@ no Rust costs seconds:
 ./install.sh          # Windows (PowerShell): .\install.ps1
 ```
 
-They build six cargo workspaces, one for every compiled artifact a
+They build nine cargo workspaces, one for every compiled artifact a
 bundle carries, and the gate below judges each one it finds built:
 
 | Workspace | What it builds |
@@ -149,20 +150,23 @@ bundle carries, and the gate below judges each one it finds built:
 | `tools/zarr_bridge` | `rw_zarr` |
 | `tools/rw_wps` | `gpuwm_mapped_engine`, the default mapped-source decode engine |
 | `tools/region_global_dealias` | the default velocity dealiasing library |
+| `tools/nextgen_hydrofabric` | hydro payload transport and source preparation |
+| `tools/nextgen_forcing` | external hydro forcing preparation |
+| `tools/nextgen_verify` | gauge verification |
 
 By hand, POSIX:
 
 ```bash
-for workspace in tools/grib1_bridge tools/rustwx tools/arwen-tui tools/zarr_bridge tools/rw_wps tools/region_global_dealias; do
-  (cd "$workspace" && cargo build --release --locked --offline)
+for workspace in tools/grib1_bridge tools/rustwx tools/arwen-tui tools/zarr_bridge tools/rw_wps tools/region_global_dealias tools/nextgen_hydrofabric tools/nextgen_forcing tools/nextgen_verify; do
+  (cd "$workspace" && cargo fetch --locked && cargo build --release --locked --offline)
 done
 ```
 
 Windows (PowerShell):
 
 ```powershell
-foreach ($workspace in 'tools\grib1_bridge', 'tools\rustwx', 'tools\arwen-tui', 'tools\zarr_bridge', 'tools\rw_wps', 'tools\region_global_dealias') {
-  Push-Location $workspace; cargo build --release --locked --offline; Pop-Location
+foreach ($workspace in 'tools\grib1_bridge', 'tools\rustwx', 'tools\arwen-tui', 'tools\zarr_bridge', 'tools\rw_wps', 'tools\region_global_dealias', 'tools\nextgen_hydrofabric', 'tools\nextgen_forcing', 'tools\nextgen_verify') {
+  Push-Location $workspace; cargo fetch --locked; cargo build --release --locked --offline; Pop-Location
 }
 ```
 

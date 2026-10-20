@@ -31,7 +31,8 @@ nz = 50
 # Nominal vertical scaffold height; the real path derives heights from
 # p_top/eta_levels.
 ztop = 20000.0
-p_top = 1500.0
+# The hrrr-prs pressure-level atmosphere stops at 50 hPa (5000 Pa).
+p_top = 5000.0
 eta_levels = [
     1.0, 0.998, 0.994, 0.987, 0.975,
     0.959, 0.939, 0.916, 0.892, 0.865,

@@ -74,17 +74,23 @@ def test_overlay_cannot_weaken_full_typed_configuration_guards(tmp_path, change)
     assert original.experiment.root.run.clock_dt == 0.0 and original.experiment.root.run.spp_pbl == 0
 
 
-def test_session_records_runtime_authority_before_any_member_initializer(tmp_path):
+@pytest.mark.parametrize("outcome", [None, RuntimeError("stochastic member failure"), SystemExit(143)])
+def test_session_records_runtime_authority_before_any_member_initializer(tmp_path, outcome):
     from contextlib import nullcontext
     from gpuwm.ensemble.production import PreparedEnsembleSession
     from gpuwm.ensemble.admission import EnsembleMemoryModel, MemoryComponent
     from gpuwm.ensemble.packing import CardBudget
     from gpuwm.ensemble.runtime_context import current_capture
+    from gpuwm.ensemble.lineage import build_lineage
     original = prepared(tmp_path)
     collector = SimpleNamespace(submit=lambda **kwargs: None,
         finish_run=lambda: {"frames": 0}, require_complete=lambda: {})
     provider = StochasticModelProvider.from_mapping({"spp": {"pbl": 1, "lsm": 1}})
-    session = PreparedEnsembleSession(2, output_directory=tmp_path, collector=collector,
+    request = {"members": 2, "provenance": [build_lineage({"member": member,
+        "source": "gefs", "source_member": f"p{member+1:02d}",
+        "cycle": "2024-01-01T00", "seed": 42+member, "rung": "source-member"})
+        for member in range(2)]}
+    session = PreparedEnsembleSession(request, output_directory=tmp_path, collector=collector,
         cards=(CardBudget(0, 1000),), device_scope=lambda device: nullcontext(),
         memory_model=EnsembleMemoryModel((MemoryComponent("fixture", "forecast", fixed_bytes=100),)),
         stochastic_provider=provider)
@@ -95,9 +101,29 @@ def test_session_records_runtime_authority_before_any_member_initializer(tmp_pat
         assert bound.experiment.root.run.spp_pbl == bound.experiment.root.run.spp_lsm == 1
         assert bound.domains is original.domains and bound.source_identity is original.source_identity
         assert current_capture().initialize_callback is not None
+        for row in session.request.provenance:
+            retained = tmp_path / "members" / f"member-{row['member']:04d}" / "member-provenance.json"
+            assert json.loads(retained.read_text()) == row
+            stochastic = row["perturbation_recipe"]["runtime_stochastic"]
+            assert stochastic["spp_selectors"][0]["selected_flags"] == {
+                "spp_conv": 0, "spp_pbl": 1, "spp_lsm": 1}
+        if outcome is not None:
+            raise outcome
         return {"status": "PASS"}
-    receipt = session.run_prepared(runner, original)
-    assert receipt["status"] == "PASS" and len(receipt["runtime_stochastic_authorities"]) == 2
+    if outcome is None:
+        receipt = session.run_prepared(runner, original)
+        assert receipt["status"] == "PASS"
+    else:
+        with pytest.raises(type(outcome)) as caught:
+            session.run_prepared(runner, original)
+        assert caught.value is outcome
+        receipt = json.loads((tmp_path / "ensemble-run.json").read_text())
+        assert receipt["status"] == ("interrupted" if isinstance(outcome, SystemExit) else "failed")
+    assert len(receipt["runtime_stochastic_authorities"]) == 2
+    assert receipt["request"]["provenance"] == list(session.request.provenance)
+    for row in session.request.provenance:
+        retained = tmp_path / "members" / f"member-{row['member']:04d}" / "member-provenance.json"
+        assert json.loads(retained.read_text()) == row
     retained_original, configured = session._stochastic_input_bindings[id(original)]
     assert retained_original is original and configured.domains is original.domains
 

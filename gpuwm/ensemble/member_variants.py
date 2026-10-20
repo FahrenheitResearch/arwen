@@ -33,13 +33,12 @@ def member_physics_keys():
         "starting_time_step_den", "max_time_step", "max_time_step_den",
         "min_time_step", "min_time_step_den", "adaptive_nest_lattice",
     })
-    # These mechanisms belong to the existing stochastic admission door.
-    # A physics table must not provide another route around its refusal.
+    # Stochastic settings retain their own configuration and RNG owners.
     return frozenset(item.name for item in fields(RunConfig)
         if item.name not in source and not item.name.startswith(("spp_", "inflow_perturbation")))
 
 
-def normalize_member_variants(value, count):
+def normalize_member_variants(value, count, *, ladder=False):
     """Validate a complete named roster without importing numerical code."""
     if not isinstance(value, (tuple, list)) or len(value) != count:
         raise ValueError("member_variants must contain one named record for every requested member")
@@ -47,8 +46,8 @@ def normalize_member_variants(value, count):
     names = set()
     descriptors = {}
     for number, row in enumerate(value):
-        if not isinstance(row, dict) or set(row) - {"name", "physics", "surface"}:
-            raise ValueError(f"member variant {number} takes name, physics and surface")
+        if not isinstance(row, dict) or set(row) - {"name", "physics", "surface", "wind"}:
+            raise ValueError(f"member variant {number} takes name, physics, surface and wind")
         name = row.get("name")
         if not isinstance(name, str) or not _NAME.fullmatch(name):
             raise ValueError(f"member variant {number} needs a single identifier of at most 64 characters")
@@ -93,12 +92,18 @@ def normalize_member_variants(value, count):
         surface = {**DEFAULTS, **surface}
         surface = validate_surface_recipe({"kind": "surface-state", **surface})
         surface.pop("kind")
+        wind = row.get("wind", 0.0)
+        if wind:
+            from gpuwm.ensemble.initial_perturbation import validate_initial_perturbation
+            wind = validate_initial_perturbation({"kind": "uniform-wind", "amplitude": wind})["amplitude"]
+        elif isinstance(wind, bool) or not isinstance(wind, Real) or wind != 0:
+            raise ValueError("member wind amplitude must be finite nonnegative m/s")
         descriptor = (_canonical(physics), surface_binding_key(surface))
-        if descriptor in descriptors:
+        if descriptor in descriptors and not ladder:
             raise ValueError(f"member variants {descriptors[descriptor]} and {name} select identical "
                              "FP32 physics and surface controls; repeating them would fabricate ensemble size")
         descriptors[descriptor] = name
-        result.append({"name": name, "physics": dict(physics), "surface": surface})
+        result.append({"name": name, "physics": dict(physics), "surface": surface, **({"wind": wind} if wind else {})})
     return tuple(result)
 
 
@@ -217,14 +222,18 @@ def surface_binding_key(surface):
                  for name in OPTIONS)
 
 
-def require_distinct_variants(raw, variants, *, experiments):
+def require_distinct_variants(raw, variants, *, experiments, trajectories=()):
     """Labels cannot turn identical ordinary initial states into extra members."""
     previous = {}
     if len(experiments) != len(variants):
         raise ValueError("member diversity must be checked against every loaded member experiment")
-    for variant, experiment in zip(variants, experiments):
+    for index, (variant, experiment) in enumerate(zip(variants, experiments)):
         key = (preparation_binding_key("shared-source", variant_configuration(raw, variant), experiment=experiment),
                surface_binding_key(variant["surface"]))
+        if trajectories:
+            key = (key, trajectories[index].identity)
+        if variant.get("wind"):
+            key = (key, index)  # the member seed owns the actual offset
         if key in previous:
             raise ValueError(f"member variants {previous[key]} and {variant['name']} select identical "
                              "land and surface states; repeating them would fabricate ensemble size")

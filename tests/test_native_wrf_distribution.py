@@ -1,3 +1,4 @@
+# Replaces: test_standalone_native_smoke_forecast_annotation_still_guards_staging (now test_standalone_forecast_supervisor_annotation_still_guards_staging).
 from __future__ import annotations
 
 import hashlib
@@ -593,6 +594,14 @@ variants = member_variants.normalize_member_variants([
 ], 2)
 assert variants[0]["physics"] == {"sf_surface_physics": 2, "num_soil_layers": 4}
 assert variants[1]["surface"]["sst_offset_k"] == 1.0
+import sys
+from gpuwm import kernel_aot, kernel_aot_build
+from gpuwm.certify import compile_platform
+assert Path(kernel_aot.__file__).resolve().is_relative_to(Path.cwd())
+assert Path(kernel_aot_build.__file__).resolve().is_relative_to(Path.cwd())
+assert callable(compile_platform.nvrtc_banner)
+assert "gpuwm.supervisor" not in sys.modules
+assert "cupy" not in sys.modules
 """
     completed = subprocess.run([sys.executable, "-P", "-c", script], cwd=staged,
                                env=environment, capture_output=True, text=True, check=False)
@@ -1398,18 +1407,21 @@ else: raise AssertionError('the staged static helper did not expose its CLI')
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_standalone_native_smoke_forecast_annotation_still_guards_staging(
+def test_standalone_forecast_supervisor_annotation_still_guards_staging(
         tmp_path, monkeypatch):
     import tools.build_rw_wps_release as release
-    key = ("gpuwm/ingest/wrfinput.py", "gpuwm.core.chem_sfire")
+    # The symbol-aware closure can now stage chem_sfire.import_native as a
+    # leaf, so removing that old annotation no longer crosses an executor
+    # boundary. Supervisor is still forbidden, regardless of its imports.
+    key = ("gpuwm/certify/capsule.py", "gpuwm.supervisor")
     _stage_or_skip(tmp_path / "ready")
     monkeypatch.setattr(release, "_OPTIONAL_STAGED_IMPORTS", {
         name: reason for name, reason in release._OPTIONAL_STAGED_IMPORTS.items()
         if name != key})
     with pytest.raises(RuntimeError, match="unresolved internal imports") as refused:
         _stage_or_skip(tmp_path / "missing-annotation")
-    assert "gpuwm.core.chem_sfire" in str(refused.value)
-    assert "gpuwm/ingest/wrfinput.py" in str(refused.value)
+    assert "gpuwm.supervisor" in str(refused.value)
+    assert "gpuwm/certify/capsule.py" in str(refused.value)
 
 
 def _finish_a_staged_preparation(tmp_path, preamble=""):
@@ -1521,7 +1533,9 @@ class _EditableGpuwmFinder:
         return None
 
 
-_sys.meta_path.append(_EditableGpuwmFinder)
+# Keep normal staged-path resolution first, then this fixture's checkout,
+# ahead of any real editable install already registered by the gate venv.
+_sys.meta_path.insert(_sys.meta_path.index(_PathFinder) + 1, _EditableGpuwmFinder)
 _spec = _util.find_spec("gpuwm.prepared_domain_tree_forecast")
 print("CHECKOUT RUNNER", _spec.origin)
 """

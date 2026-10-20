@@ -954,7 +954,9 @@ def prepare_era5_wrf(
         "decoder": {
             "name": paths["bridge"].name,
             "sha256": _sha256(paths["bridge"]),
-            "implementation": "gpuwm-all-rust-grib1-bridge",
+            "implementation": ("gpuwm-all-rust-netcdf-bridge"
+                if paths["grib"].suffix.lower() == ".nc"
+                else "gpuwm-all-rust-grib1-bridge"),
         },
         # What ran, without what was measured (A138): the proof below
         # keeps the whole receipt.

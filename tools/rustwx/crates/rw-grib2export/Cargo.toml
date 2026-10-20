@@ -35,3 +35,8 @@ serde.workspace = true
 serde_json.workspace = true
 wx-core = { path = "../../vendor/wx-core", version = "0.3.10", default-features = false }
 wrf-core = { git = "https://github.com/FahrenheitResearch/wrf-rust.git", rev = "93bd2ca670c13fec35bcfc27a58108e6fd71c627", package = "wrf-core", default-features = false, features = ["pure-rust-reader"] }
+
+[dev-dependencies]
+rustwx-core = { path = "../rustwx-core" }
+rustwx-io = { path = "../rustwx-io" }
+netcdf-writer = { path = "../netcdf-writer" }

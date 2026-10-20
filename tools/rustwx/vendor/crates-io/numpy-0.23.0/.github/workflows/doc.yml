@@ -1,0 +1,24 @@
+name: gh-pages
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Build the doc
+        run: |
+          cargo doc --all-features --no-deps
+          echo "<meta http-equiv=refresh content=0;url=numpy/index.html>" > target/doc/index.html
+
+      - name: Deploy
+        uses: peaceiris/actions-gh-pages@v3.7.0-8
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./target/doc/
+          destination_dir: .
+          full_commit_message: 'Upload documentation for current main'

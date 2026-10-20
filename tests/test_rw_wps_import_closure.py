@@ -1,4 +1,5 @@
 """New scheme dependencies must follow the preprocessing doors into staging."""
+import os
 import subprocess
 import sys
 
@@ -139,3 +140,72 @@ def test_class_method_defaults_are_required_module_initialization(tmp_path, monk
     (source / "gpuwm/core/model.py").write_text("raise RuntimeError('executor')\n")
     with pytest.raises(RuntimeError, match="excluded executor"):
         builder._complete_staged_import_closure(staged)
+
+
+def test_new_importer_expands_an_already_parsed_modules_symbol_closure(tmp_path, monkeypatch):
+    source, staged = _tree(tmp_path, monkeypatch,
+        "from gpuwm.core.future_scheme import VALUE\n"
+        "from gpuwm.core.later import VALUE as LATER\n")
+    (source / "gpuwm/core/future_scheme.py").write_text(
+        "VALUE = 47\ndef forecast():\n    import gpuwm.core.model\n")
+    # This importer arrives in a later fixed-point iteration. Its named
+    # import makes the previously unreachable function required.
+    (source / "gpuwm/core/later.py").write_text(
+        "from gpuwm.core.new_importer import VALUE\n")
+    (source / "gpuwm/core/new_importer.py").write_text(
+        "from gpuwm.core.future_scheme import forecast\nVALUE = forecast\n")
+    (source / "gpuwm/core/model.py").write_text("raise RuntimeError('executor')\n")
+    with pytest.raises(RuntimeError, match="excluded executor"):
+        builder._complete_staged_import_closure(staged)
+
+
+def test_scan_observes_same_size_edits_and_removed_importers(tmp_path, monkeypatch):
+    source, staged = _tree(tmp_path, monkeypatch,
+        "from gpuwm.core.future_scheme import VALUE\n")
+    core = staged / "gpuwm/core"
+    core.mkdir()
+    (core / "__init__.py").write_text("")
+    scheme = core / "future_scheme.py"
+    scheme.write_text("VALUE = 47\ndef forecast():\n    import gpuwm.core.model\n")
+    derived = {"gpuwm.core.future_scheme"}
+    config = staged / "gpuwm/config.py"
+    with builder._StagedImportScan() as scan:
+        assert builder._staged_internal_imports(
+            staged, source_root=source, derived_modules=derived, scan=scan) == []
+        original_stat = scheme.stat()
+        scheme.write_text(scheme.read_text().replace("gpuwm.core.model", "gpuwm.core.other"))
+        os.utime(scheme, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+        # Same size and timestamps still require the new content to be read.
+        assert builder._staged_internal_imports(
+            staged, source_root=source, derived_modules=derived, scan=scan) == []
+        importer = staged / "gpuwm/late.py"
+        importer.write_text("import gpuwm.core.future_scheme\n")
+        records = builder._staged_internal_imports(
+            staged, source_root=source, derived_modules=derived, scan=scan)
+        assert [record['module'] for record in records] == ['gpuwm.core.other']
+        importer.unlink()
+        assert builder._staged_internal_imports(
+            staged, source_root=source, derived_modules=derived, scan=scan) == []
+        config.write_text("from gpuwm.core.future_scheme import forecast\n")
+        records = builder._staged_internal_imports(
+            staged, source_root=source, derived_modules=derived, scan=scan)
+        assert [record['module'] for record in records] == ['gpuwm.core.other']
+
+
+def test_both_builders_still_refuse_untracked_source(tmp_path, monkeypatch):
+    from tools import build_native_wrf_distribution as native
+
+    subprocess.run(['git', 'init', '-q', str(tmp_path)], check=True)
+    tracked = tmp_path / 'tracked.py'
+    tracked.write_text('VALUE = 47\n')
+    subprocess.run(['git', '-C', str(tmp_path), 'add', 'tracked.py'], check=True)
+    untracked = tmp_path / 'untracked.py'
+    untracked.write_text('VALUE = 48\n')
+    monkeypatch.setattr(builder, '_tree_is_a_git_checkout', lambda: True)
+    for module in (builder, native):
+        monkeypatch.setattr(module, 'REPO', tmp_path)
+        module._require_tracked(tracked)
+        with pytest.raises(subprocess.CalledProcessError) as refused:
+            module._require_tracked(untracked)
+        assert refused.value.returncode == 1
+        assert refused.value.cmd[-2:] == ['--error-unmatch', 'untracked.py']

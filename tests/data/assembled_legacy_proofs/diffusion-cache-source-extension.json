@@ -4,8 +4,8 @@
   "numerics": "strict",
   "device": "b'NVIDIA RTX PRO 6000 Blackwell Workstation Edition'",
   "nvrtc_version": [
-    13,
-    4
+    12,
+    9
   ],
   "cupy_version": "14.2.0",
   "module_source_sha256": {
@@ -36,8 +36,8 @@
     "bytes": 10626
   },
   "after": {
-    "bytes": 13994,
-    "sha256": "17654554ddf4fda177370c366d46e045b93b8e3de9da3582be2ae1f29ebf0c3c"
+    "bytes": 14069,
+    "sha256": "5929748d63f633f1dcb26c281e52664a41b0e47203b45aecb762cd84bd6833c9"
   },
   "fields": {
     "horizontal-driver": {

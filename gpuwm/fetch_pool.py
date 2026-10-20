@@ -66,7 +66,7 @@ import time
 from typing import Callable
 from urllib.parse import urlsplit
 
-from gpuwm import fetch_endpoints
+from gpuwm import fetch_endpoints, fetch_connections
 
 
 @functools.lru_cache(maxsize=1)
@@ -163,20 +163,8 @@ def completion_hook(callback):
     finally:
         _COMPLETION_LOCAL.callback = prior
 
-#: Chunk streams one fetch keeps open at once, across all of its files.
-#:
-#: A file the Rust backbone moves is itself split into 16 MiB chunks
-#: fetched over several connections.  Those were one per CPU thread per
-#: file: 24 x 6 = 144 connections from a 24-thread machine running the
-#: default pool (576 from a 96-thread one, each holding a chunk in
-#: memory), sharing one link so thinly that a chunk took minutes and ran
-#: into the backbone's old 300 s whole-request timeout.  The budget is
-#: split evenly over the files in flight, at least one stream each.
-#:
-#: 48 is measured, not guessed.  From a link about 100 ms from S3 one
-#: stream carries about 1 MB/s, and six HRRR files in flight moved at
-#: 6 MB/s on 6 streams, 12 MB/s on 12 and 24, and the link's 24 to 34 MB/s
-#: from 36 streams up to 144; 48 fills that link with room to spare.
+#: Streams are table-driven, then clipped to the box connection cap.
+#: File workers are clipped too, including explicit --fetch-workers values.
 FETCH_STREAM_BUDGET = next(row["stream_budget"] for row in _width_table()["rows"]
                             if row["id"] == _width_table()["default"])
 
@@ -187,15 +175,18 @@ def chunk_streams_per_file(workers: int | None, *, files: int,
 
     ``workers`` is the pool size the route asked for, ``files`` how many
     it has to move and ``host`` the host they come from, whose own cap
-    may keep fewer in flight.  At least 1, so a pool wider than the
-    budget still moves every file.
+    may keep fewer in flight. File workers are clipped to the box cap;
+    every admitted file gets at least one stream.
     """
 
     pool = resolve_file_workers(workers)
     in_flight = min(pool, max(1, files))
     if host:
         in_flight = min(in_flight, host_worker_cap(host, pool))
-    return max(1, worker_profile()["stream_budget"] // max(1, in_flight))
+    budget = min(worker_profile()["stream_budget"], fetch_connections.max_connections())
+    if host and host.lower() == "nomads.ncep.noaa.gov":
+        return 1
+    return max(1, budget // max(1, in_flight))
 
 
 @dataclass(frozen=True)
@@ -263,13 +254,13 @@ def resolve_file_workers(requested: int | None) -> int:
     """
 
     if requested is None:
-        return worker_profile()["workers"]
+        return min(worker_profile()["workers"], fetch_connections.max_connections())
     workers = int(requested)
     if workers < 1:
         raise ValueError(
             f"--fetch-workers {requested} is not a schedulable pool; pass "
             "a positive count (1 is the serial transport)")
-    return workers
+    return min(workers, fetch_connections.max_connections())
 
 
 class TransferCancelled(RuntimeError):
@@ -300,6 +291,8 @@ class _Stop:
         self._lock = threading.Lock()
         self._processes: set = set()
         self._conditions: set[threading.Condition] = set()
+        self.streams_used: dict[str, int] = {}
+        self.connection_slots: dict[str, int] = {}
         #: Submission index of the job whose failure fired the stop, or
         #: None (not fired, or fired by an interrupt on the caller's
         #: thread).  The first to fire wins.
@@ -541,9 +534,19 @@ def sleep_unless_stopped(seconds: float, *,
     job.sleep(seconds, injected)
 
 
+def record_streams(streams: int, slots: int | None = None) -> None:
+    """Record the transport limits actually selected for this file."""
+    job = current_job()
+    if job is not None:
+        with job._stop._lock:
+            job._stop.streams_used[job.name] = max(streams, job._stop.streams_used.get(job.name, 1))
+            job._stop.connection_slots[job.name] = max(slots or streams, job._stop.connection_slots.get(job.name, 1))
+
+
 def _receipt(*, entries: list[dict], workers_requested: int,
              workers_effective: int, host_caps: dict[str, int],
-             wall_seconds: float, serial_seconds: float) -> dict:
+             wall_seconds: float, serial_seconds: float,
+             streams_used: dict, connection_slots: dict) -> dict:
     total_bytes = sum(
         entry["bytes"] for entry in entries
         if isinstance(entry.get("bytes"), int)
@@ -557,7 +560,10 @@ def _receipt(*, entries: list[dict], workers_requested: int,
         "workers_requested": workers_requested,
         "workers_effective": workers_effective,
         "worker_row": worker_profile()["id"],
-        "stream_budget": worker_profile()["stream_budget"],
+        "stream_budget": min(worker_profile()["stream_budget"], fetch_connections.max_connections()),
+        "max_connections": fetch_connections.max_connections(),
+        "streams_used": dict(streams_used),
+        "connection_slots_per_file": dict(connection_slots),
         "host_caps": dict(host_caps),
         "wall_seconds": round(wall_seconds, 6),
         "modeled_serial_seconds": round(serial_seconds, 6),
@@ -737,7 +743,8 @@ def run_transfers(jobs, *, workers: int,
             entries=entries, workers_requested=workers,
             workers_effective=workers_effective, host_caps=host_caps,
             wall_seconds=time.perf_counter() - started,
-            serial_seconds=serial_seconds)
+            serial_seconds=serial_seconds, streams_used=stop.streams_used,
+            connection_slots=stop.connection_slots)
 
     turns = {
         host: _HostTurns(host_worker_cap(host, workers),
@@ -846,7 +853,8 @@ def run_transfers(jobs, *, workers: int,
         entries=entries, workers_requested=workers,
         workers_effective=workers_effective, host_caps=host_caps,
         wall_seconds=time.perf_counter() - started,
-        serial_seconds=serial_seconds)
+        serial_seconds=serial_seconds, streams_used=stop.streams_used,
+        connection_slots=stop.connection_slots)
 
 
 __all__ = [

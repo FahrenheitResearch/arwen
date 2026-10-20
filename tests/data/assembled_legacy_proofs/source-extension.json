@@ -1,7 +1,7 @@
 {
   "schema": "measured-legacy-source-extension-v1",
   "baseline": "cd336e62d6e6b6312c9636e0fdfff84801909b6a",
-  "measured_tip": "63063559075cc6fce5ecd9b7ee51619f0fa7bdbb",
+  "measured_tip": "610bf51a3eca5d845f5ddc91c0447c24894ea404",
   "sources": {
     "gpuwm/core/acoustic.py": {
       "before": {
@@ -9,8 +9,8 @@
         "sha256": "2552a40bdf24715e611f5500786a4636a7fb77daac45a6e2bc4b04d6f6ca3384"
       },
       "after": {
-        "bytes": 34865,
-        "sha256": "16689b2b523cc188204acf28ee48fbd3ac03bc9f0415e8f685a2bea5136e8b8e"
+        "bytes": 35658,
+        "sha256": "c75ac26454b36015d898eb436633a6a281ce1ac30dc9ec82cd0c4f12b566b246"
       }
     },
     "gpuwm/core/constants.py": {
@@ -29,8 +29,8 @@
         "sha256": "d4cc20c6a23c94f169228d19937724bb678b51b4e597495af09a1672ce8c263b"
       },
       "after": {
-        "bytes": 252174,
-        "sha256": "0bc75159c1fcc7e683014832fd6c162ce9e6d2f92f15801ac8c11c6a6d75ea26"
+        "bytes": 252188,
+        "sha256": "2085aa8f1769d70c8db2bcfd1097026e3822f8133ad4a8a979ba3129e6ccbadb"
       }
     },
     "gpuwm/core/kernels/__init__.py": {
@@ -39,8 +39,8 @@
         "sha256": "e44a76e72880e6cbacee4a3cf299ab7e1a0b418e737355b3b64bfd60358b67cc"
       },
       "after": {
-        "bytes": 54712,
-        "sha256": "0f1cff2281f0f46a66446c8030bb12791995d0af27fa282a28c745a242c73b70"
+        "bytes": 55273,
+        "sha256": "6fa9bb4fa91503b62c9d9614a4cf86187430c8574375f9e20b0008f1b69c7511"
       }
     },
     "gpuwm/wrf_exact.py": {
@@ -59,8 +59,18 @@
         "sha256": "78c42865a01763a13d0349321699913de51ba2465508900bbfc4c64794e61134"
       },
       "after": {
-        "bytes": 13994,
-        "sha256": "17654554ddf4fda177370c366d46e045b93b8e3de9da3582be2ae1f29ebf0c3c"
+        "bytes": 14069,
+        "sha256": "5929748d63f633f1dcb26c281e52664a41b0e47203b45aecb762cd84bd6833c9"
+      }
+    },
+    "gpuwm/verify/smallstep_vertical_oracle.py": {
+      "before": {
+        "sha256": "825964e10ab08632e9e89d13e6ed77edca0708a02accadce857ba47f18de61cc",
+        "bytes": 30394
+      },
+      "after": {
+        "bytes": 30530,
+        "sha256": "36deb62e91a610d358cb0e283e2b4820273eaf44e1ae0d0775dc42eb0d671b83"
       }
     }
   },
@@ -93,5 +103,31 @@
       "tip_frozen_pass": false
     }
   },
-  "scope": "Fresh base versus tip output hashes on one card. Where the older frozen coordinate and driver captures differ at both trees, no equality with those outputs is claimed."
+  "scope": "Fresh base versus tip output hashes on one card. Where the older frozen coordinate and driver captures differ at both trees, no equality with those outputs is claimed.",
+  "numerics": "strict",
+  "numerics_note": "Replayed with GPUWM_NUMERICS=strict so the modules' declared --fmad=false is honoured (fast numerics, the default since 421046140ee, drops it); the frozen word proofs are strict-numerics claims.",
+  "device": "b'NVIDIA GeForce RTX 5090'",
+  "nvrtc_version": [
+    13,
+    4
+  ],
+  "cupy_version": "14.2.0",
+  "fast_numerics_measured": {
+    "decision": "2.9.3 (lead-arwen, 2026-10-19): fast stays the default; WRF exactness is claimed in strict mode only; module_options() is the declared tuple and numerics.effective_options() is what compiles and what the image caches and receipts record.",
+    "effective_options_fast": "the declared DIFFUSION_OPTIONS tuple without the no-contraction option; every other declared option is kept",
+    "horizontal_driver_arrays_differing_tip_vs_base": [
+      120,
+      364
+    ],
+    "vertical_driver_arrays_differing_tip_vs_base": [
+      241,
+      1764
+    ],
+    "coordinate_words_off_native_wrf": [
+      1123,
+      178128
+    ],
+    "strict_differing_words": 0,
+    "source": "replays on an RTX 5090 by lane/opus-tests 3f3246aaa41 (fast and strict, base 2.8.9 vs tip)"
+  }
 }

@@ -6,10 +6,22 @@
       "id": "geopotential",
       "kind": "level",
       "default": true,
-      "level_kinds": ["pressure", "model"],
-      "names": {"wb2": "geopotential", "era5": "z"},
+      "level_kinds": [
+        "pressure",
+        "model"
+      ],
+      "names": {
+        "wb2": "geopotential",
+        "era5": "z",
+        "earth2": "z{level}"
+      },
       "op": "geopotential",
-      "fields": ["PH", "PHB", "P", "PB"],
+      "fields": [
+        "PH",
+        "PHB",
+        "P",
+        "PB"
+      ],
       "below_ground": "ecmwf-geopotential",
       "units": "m**2 s**-2",
       "long_name": "Geopotential",
@@ -22,10 +34,21 @@
       "id": "temperature",
       "kind": "level",
       "default": true,
-      "level_kinds": ["pressure", "model"],
-      "names": {"wb2": "temperature", "era5": "t"},
+      "level_kinds": [
+        "pressure",
+        "model"
+      ],
+      "names": {
+        "wb2": "temperature",
+        "era5": "t",
+        "earth2": "t{level}"
+      },
       "op": "temperature",
-      "fields": ["T", "P", "PB"],
+      "fields": [
+        "T",
+        "P",
+        "PB"
+      ],
       "below_ground": "ecmwf-temperature",
       "units": "K",
       "long_name": "Temperature",
@@ -37,10 +60,22 @@
       "id": "u_component_of_wind",
       "kind": "level",
       "default": true,
-      "level_kinds": ["pressure", "model"],
-      "names": {"wb2": "u_component_of_wind", "era5": "u"},
+      "level_kinds": [
+        "pressure",
+        "model"
+      ],
+      "names": {
+        "wb2": "u_component_of_wind",
+        "era5": "u",
+        "earth2": "u{level}"
+      },
       "op": "earth-wind:u",
-      "fields": ["U", "V", "SINALPHA", "COSALPHA"],
+      "fields": [
+        "U",
+        "V",
+        "SINALPHA",
+        "COSALPHA"
+      ],
       "below_ground": "lowest-level",
       "units": "m s**-1",
       "long_name": "U component of wind",
@@ -53,10 +88,22 @@
       "id": "v_component_of_wind",
       "kind": "level",
       "default": true,
-      "level_kinds": ["pressure", "model"],
-      "names": {"wb2": "v_component_of_wind", "era5": "v"},
+      "level_kinds": [
+        "pressure",
+        "model"
+      ],
+      "names": {
+        "wb2": "v_component_of_wind",
+        "era5": "v",
+        "earth2": "v{level}"
+      },
       "op": "earth-wind:v",
-      "fields": ["U", "V", "SINALPHA", "COSALPHA"],
+      "fields": [
+        "U",
+        "V",
+        "SINALPHA",
+        "COSALPHA"
+      ],
       "below_ground": "lowest-level",
       "units": "m s**-1",
       "long_name": "V component of wind",
@@ -69,11 +116,27 @@
       "id": "specific_humidity",
       "kind": "level",
       "default": true,
-      "level_kinds": ["pressure", "model"],
-      "names": {"wb2": "specific_humidity", "era5": "q"},
+      "level_kinds": [
+        "pressure",
+        "model"
+      ],
+      "names": {
+        "wb2": "specific_humidity",
+        "era5": "q",
+        "earth2": "q{level}"
+      },
       "op": "specific-humidity",
-      "fields": ["QVAPOR"],
-      "optional_fields": ["QCLOUD", "QRAIN", "QICE", "QSNOW", "QGRAUP", "QHAIL"],
+      "fields": [
+        "QVAPOR"
+      ],
+      "optional_fields": [
+        "QCLOUD",
+        "QRAIN",
+        "QICE",
+        "QSNOW",
+        "QGRAUP",
+        "QHAIL"
+      ],
       "below_ground": "lowest-level",
       "units": "kg kg**-1",
       "long_name": "Specific humidity",
@@ -86,10 +149,23 @@
       "id": "vertical_velocity",
       "kind": "level",
       "default": false,
-      "level_kinds": ["pressure", "model"],
-      "names": {"wb2": "vertical_velocity", "era5": "w"},
+      "level_kinds": [
+        "pressure",
+        "model"
+      ],
+      "names": {
+        "wb2": "vertical_velocity",
+        "era5": "w",
+        "earth2": "w{level}"
+      },
       "op": "omega",
-      "fields": ["W", "T", "P", "PB", "QVAPOR"],
+      "fields": [
+        "W",
+        "T",
+        "P",
+        "PB",
+        "QVAPOR"
+      ],
       "below_ground": "lowest-level",
       "units": "Pa s**-1",
       "long_name": "Vertical velocity",
@@ -102,10 +178,22 @@
       "id": "relative_humidity",
       "kind": "level",
       "default": false,
-      "level_kinds": ["pressure", "model"],
-      "names": {"wb2": "relative_humidity", "era5": "r"},
+      "level_kinds": [
+        "pressure",
+        "model"
+      ],
+      "names": {
+        "wb2": "relative_humidity",
+        "era5": "r",
+        "earth2": "r{level}"
+      },
       "op": "rh-ifs",
-      "fields": ["T", "P", "PB", "QVAPOR"],
+      "fields": [
+        "T",
+        "P",
+        "PB",
+        "QVAPOR"
+      ],
       "below_ground": "lowest-level",
       "units": "%",
       "long_name": "Relative humidity",
@@ -118,10 +206,18 @@
       "id": "radar_reflectivity",
       "kind": "level",
       "default": false,
-      "level_kinds": ["model"],
-      "names": {"wb2": "radar_reflectivity", "era5": "refl"},
+      "level_kinds": [
+        "model"
+      ],
+      "names": {
+        "wb2": "radar_reflectivity",
+        "era5": "refl",
+        "earth2": "refl{level}"
+      },
       "op": "raw:REFL_10CM",
-      "fields": ["REFL_10CM"],
+      "fields": [
+        "REFL_10CM"
+      ],
       "units": "dBZ",
       "long_name": "Radar reflectivity (10 cm)",
       "standard_name": "equivalent_reflectivity_factor",
@@ -132,10 +228,19 @@
       "id": "pressure",
       "kind": "level",
       "default": true,
-      "level_kinds": ["model"],
-      "names": {"wb2": "pressure", "era5": "pres"},
+      "level_kinds": [
+        "model"
+      ],
+      "names": {
+        "wb2": "pressure",
+        "era5": "pres",
+        "earth2": "pres{level}"
+      },
       "op": "pressure",
-      "fields": ["P", "PB"],
+      "fields": [
+        "P",
+        "PB"
+      ],
       "units": "Pa",
       "long_name": "Pressure",
       "standard_name": "air_pressure",
@@ -147,9 +252,15 @@
       "id": "2m_temperature",
       "kind": "surface",
       "default": true,
-      "names": {"wb2": "2m_temperature", "era5": "t2m"},
+      "names": {
+        "wb2": "2m_temperature",
+        "era5": "t2m",
+        "earth2": "t2m"
+      },
       "op": "raw:T2",
-      "fields": ["T2"],
+      "fields": [
+        "T2"
+      ],
       "units": "K",
       "long_name": "2 metre temperature",
       "standard_name": "air_temperature",
@@ -160,9 +271,18 @@
       "id": "10m_u_component_of_wind",
       "kind": "surface",
       "default": true,
-      "names": {"wb2": "10m_u_component_of_wind", "era5": "u10"},
+      "names": {
+        "wb2": "10m_u_component_of_wind",
+        "era5": "u10",
+        "earth2": "u10m"
+      },
       "op": "earth-wind10:u",
-      "fields": ["U10", "V10", "SINALPHA", "COSALPHA"],
+      "fields": [
+        "U10",
+        "V10",
+        "SINALPHA",
+        "COSALPHA"
+      ],
       "units": "m s**-1",
       "long_name": "10 metre U wind component",
       "standard_name": "eastward_wind",
@@ -174,9 +294,18 @@
       "id": "10m_v_component_of_wind",
       "kind": "surface",
       "default": true,
-      "names": {"wb2": "10m_v_component_of_wind", "era5": "v10"},
+      "names": {
+        "wb2": "10m_v_component_of_wind",
+        "era5": "v10",
+        "earth2": "v10m"
+      },
       "op": "earth-wind10:v",
-      "fields": ["U10", "V10", "SINALPHA", "COSALPHA"],
+      "fields": [
+        "U10",
+        "V10",
+        "SINALPHA",
+        "COSALPHA"
+      ],
       "units": "m s**-1",
       "long_name": "10 metre V wind component",
       "standard_name": "northward_wind",
@@ -188,9 +317,20 @@
       "id": "mean_sea_level_pressure",
       "kind": "surface",
       "default": true,
-      "names": {"wb2": "mean_sea_level_pressure", "era5": "msl"},
+      "names": {
+        "wb2": "mean_sea_level_pressure",
+        "era5": "msl",
+        "earth2": "msl"
+      },
       "op": "slp",
-      "fields": ["P", "PB", "T", "QVAPOR", "PH", "PHB"],
+      "fields": [
+        "P",
+        "PB",
+        "T",
+        "QVAPOR",
+        "PH",
+        "PHB"
+      ],
       "units": "Pa",
       "long_name": "Mean sea level pressure",
       "standard_name": "air_pressure_at_mean_sea_level",
@@ -202,9 +342,15 @@
       "id": "surface_pressure",
       "kind": "surface",
       "default": true,
-      "names": {"wb2": "surface_pressure", "era5": "sp"},
+      "names": {
+        "wb2": "surface_pressure",
+        "era5": "sp",
+        "earth2": "sp"
+      },
       "op": "raw:PSFC",
-      "fields": ["PSFC"],
+      "fields": [
+        "PSFC"
+      ],
       "units": "Pa",
       "long_name": "Surface pressure",
       "standard_name": "surface_air_pressure",
@@ -215,10 +361,21 @@
       "id": "total_precipitation",
       "kind": "surface",
       "default": true,
-      "names": {"wb2": "total_precipitation", "era5": "tp"},
+      "names": {
+        "wb2": "total_precipitation",
+        "era5": "tp",
+        "earth2": "tp"
+      },
       "op": "accumulation:interval",
-      "fields": ["RAINNC"],
-      "optional_fields": ["RAINC", "RAINSH", "I_RAINNC", "I_RAINC"],
+      "fields": [
+        "RAINNC"
+      ],
+      "optional_fields": [
+        "RAINC",
+        "RAINSH",
+        "I_RAINNC",
+        "I_RAINC"
+      ],
       "units": "m",
       "long_name": "Total precipitation",
       "standard_name": "precipitation_amount",
@@ -230,10 +387,21 @@
       "id": "total_precipitation_6hr",
       "kind": "surface",
       "default": true,
-      "names": {"wb2": "total_precipitation_6hr", "era5": "tp_6h"},
+      "names": {
+        "wb2": "total_precipitation_6hr",
+        "era5": "tp_6h",
+        "earth2": "tp06"
+      },
       "op": "accumulation:6h",
-      "fields": ["RAINNC"],
-      "optional_fields": ["RAINC", "RAINSH", "I_RAINNC", "I_RAINC"],
+      "fields": [
+        "RAINNC"
+      ],
+      "optional_fields": [
+        "RAINC",
+        "RAINSH",
+        "I_RAINNC",
+        "I_RAINC"
+      ],
       "units": "m",
       "long_name": "Total precipitation over 6 hours",
       "standard_name": "precipitation_amount",
@@ -245,10 +413,27 @@
       "id": "total_column_water_vapour",
       "kind": "surface",
       "default": true,
-      "names": {"wb2": "total_column_water_vapour", "era5": "tcwv"},
+      "names": {
+        "wb2": "total_column_water_vapour",
+        "era5": "tcwv",
+        "earth2": "tcwv"
+      },
       "op": "column-vapour",
-      "fields": ["QVAPOR", "P", "PB", "PSFC"],
-      "optional_fields": ["QCLOUD", "QRAIN", "QICE", "QSNOW", "QGRAUP", "QHAIL", "P_TOP"],
+      "fields": [
+        "QVAPOR",
+        "P",
+        "PB",
+        "PSFC"
+      ],
+      "optional_fields": [
+        "QCLOUD",
+        "QRAIN",
+        "QICE",
+        "QSNOW",
+        "QGRAUP",
+        "QHAIL",
+        "P_TOP"
+      ],
       "units": "kg m**-2",
       "long_name": "Total column vertically-integrated water vapour",
       "standard_name": "atmosphere_mass_content_of_water_vapor",
@@ -260,9 +445,16 @@
       "id": "geopotential_at_surface",
       "kind": "static",
       "default": true,
-      "names": {"wb2": "geopotential_at_surface", "era5": "z_surface"},
+      "names": {
+        "wb2": "geopotential_at_surface",
+        "era5": "z_surface",
+        "earth2": "z"
+      },
       "op": "surface-geopotential",
-      "fields": ["PH", "PHB"],
+      "fields": [
+        "PH",
+        "PHB"
+      ],
       "units": "m**2 s**-2",
       "long_name": "Geopotential",
       "standard_name": "surface_geopotential",
@@ -274,15 +466,96 @@
       "id": "land_sea_mask",
       "kind": "static",
       "default": true,
-      "names": {"wb2": "land_sea_mask", "era5": "lsm"},
+      "names": {
+        "wb2": "land_sea_mask",
+        "era5": "lsm",
+        "earth2": "lsm"
+      },
       "op": "raw:LANDMASK",
-      "fields": ["LANDMASK"],
+      "fields": [
+        "LANDMASK"
+      ],
       "units": "(0 - 1)",
       "long_name": "Land-sea mask",
       "standard_name": "land_binary_mask",
       "short_name": "lsm",
       "param_id": 172,
       "comment": "1 land, 0 water (lakes are water, as in ERA5). A fraction after a latitude-longitude regrid."
+    },
+    {
+      "id": "2m_dewpoint_temperature",
+      "kind": "surface",
+      "default": false,
+      "names": {
+        "wb2": "2m_dewpoint_temperature",
+        "era5": "d2m",
+        "earth2": "d2m"
+      },
+      "op": "dewpoint",
+      "fields": [
+        "Q2",
+        "PSFC"
+      ],
+      "units": "K",
+      "long_name": "2m dewpoint temperature"
+    },
+    {
+      "id": "skin_temperature",
+      "kind": "surface",
+      "default": false,
+      "names": {
+        "wb2": "skin_temperature",
+        "era5": "skt",
+        "earth2": "skt"
+      },
+      "op": "raw:TSK",
+      "fields": [
+        "TSK"
+      ],
+      "units": "K",
+      "long_name": "skin temperature"
+    },
+    {
+      "id": "100m_u_component_of_wind",
+      "kind": "surface",
+      "default": false,
+      "names": {
+        "wb2": "100m_u_component_of_wind",
+        "era5": "u100m",
+        "earth2": "u100m"
+      },
+      "op": "earth-wind-height:u:100",
+      "fields": [
+        "U",
+        "V",
+        "PH",
+        "PHB",
+        "SINALPHA",
+        "COSALPHA"
+      ],
+      "units": "m s-1",
+      "long_name": "100m u component of wind"
+    },
+    {
+      "id": "100m_v_component_of_wind",
+      "kind": "surface",
+      "default": false,
+      "names": {
+        "wb2": "100m_v_component_of_wind",
+        "era5": "v100m",
+        "earth2": "v100m"
+      },
+      "op": "earth-wind-height:v:100",
+      "fields": [
+        "U",
+        "V",
+        "PH",
+        "PHB",
+        "SINALPHA",
+        "COSALPHA"
+      ],
+      "units": "m s-1",
+      "long_name": "100m v component of wind"
     }
   ]
 }

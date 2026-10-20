@@ -66,6 +66,71 @@ def test_at_most_one_checkpoint_is_in_flight():
     assert order == ["first", "second"]
 
 
+@pytest.mark.parametrize("failure_phase", ["capture", "history", "submit"])
+def test_single_checkpoint_releases_borrowed_store_before_publication_failure(
+        monkeypatch, tmp_path, failure_phase):
+    """History/submit failures must release a snapshot that never publishes.
+
+    Bind the production nested hook without initializing a forecast; use the
+    actual pending checkpoint and publisher, with faults at the I/O boundary.
+    A retained store guard otherwise blocks the next ranked frame download.
+    """
+    import ast
+    import contextlib
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from gpuwm import prepared_single_domain_forecast as single
+    from gpuwm.io import restart
+
+    guards = []
+    model = SimpleNamespace(
+        _last_checkpoint=None, schedule=SimpleNamespace(
+            clock=SimpleNamespace(tick_den=1)))
+    pending = restart.PendingTreeCheckpoint(
+        directory=tmp_path, model=model, root_id=1,
+        members=[(1, lambda: pytest.fail("failed history must not publish"))],
+        lenders=[SimpleNamespace(add_store_guard=guards.append)])
+    monkeypatch.setattr(restart, "write_tree_restart", lambda *a, **k: pending)
+
+    def fails():
+        raise OSError("injected " + failure_phase + " failure")
+
+    publisher = single._CheckpointPublisher()
+    if failure_phase == "submit":
+        monkeypatch.setattr(publisher, "submit", lambda job: fails())
+    writers = SimpleNamespace(
+        durability_barrier=(fails if failure_phase == "capture" else lambda: fails),
+        drain=fails)
+    source_path = Path(single.__file__)
+    source = ast.parse(source_path.read_text())
+    hook = next(
+        node for node in ast.walk(source)
+        if isinstance(node, ast.FunctionDef) and node.name == "restart_handler"
+        and any(isinstance(child, ast.Name) and child.id == "checkpoint_publisher"
+                for child in ast.walk(node)))
+    env = dict(
+        checkpoint_publisher=publisher, writers=writers,
+        exp=SimpleNamespace(start_time=datetime(2026, 10, 18),
+                            root=SimpleNamespace(grid_id=1), auto_epssm=()),
+        timedelta=timedelta, time=time, observer=None, outdir=tmp_path,
+        runtime=SimpleNamespace(
+            _writing_progress=lambda *a, **k: contextlib.nullcontext(),
+            _checkpoint_work_bytes=lambda tree: 1),
+        checkpoints=[], checkpoint_ticks={}, step_log=None, Path=Path)
+    exec(compile(ast.Module(body=[hook], type_ignores=[]), str(source_path), "exec"), env)
+    try:
+        with pytest.raises((OSError, RuntimeError), match="injected .* failure"):
+            env["restart_handler"](model, 900)
+            publisher.wait()
+        assert guards[0].__self__.is_set(), "borrowed store guard remains locked"
+        assert pending._members == [], "failed checkpoint retains borrowed views"
+        assert model._last_checkpoint is None
+    finally:
+        pending.abandon()
+        publisher.wait()
+
+
 # -- the snapshot -------------------------------------------------------------
 
 def test_a_deferred_checkpoint_is_the_synchronous_one_byte_for_byte(

@@ -183,7 +183,7 @@ def _advanced(state):
 
 
 def apply_surface_recipe(state, *, value, member_id, seed, domain_id=None,
-                         array_module=None, realization=None):
+                         array_module=None, realization=None, at_checkpoint_branch=False):
     """Apply one member realization to one initialized physical domain."""
     options = validate_surface_recipe(value)
     identity = {"member_id": member_id, "seed": _seed(seed), "options": options}
@@ -192,7 +192,7 @@ def apply_surface_recipe(state, *, value, member_id, seed, domain_id=None,
         if previous["identity"] != identity:
             raise ValueError("surface-state domain was already initialized for another member, seed or recipe")
         return previous["receipt"]
-    if _advanced(state):
+    if _advanced(state) and not at_checkpoint_branch:
         return {**surface_recipe_descriptor(options, seed=seed), "member_id": member_id,
                 "domain_id": domain_id, "applied": False,
                 "reason": "continued or reconstructed domains retain their advanced surface state"}
@@ -304,7 +304,8 @@ def apply_surface_recipe(state, *, value, member_id, seed, domain_id=None,
                "changed_surface": before != after, "launches": launches,
                "soil_moisture_floor": (None if floor_table is None else
                     "ordinary Noah SMCDRY category floor; 0.005 m3 m-3 fallback where no positive category value exists"),
-               "phase": "initialized physics before first forecast step"}
+               "phase": ("restored checkpoint before first branch step" if at_checkpoint_branch else
+                         "initialized physics before first forecast step")}
     state._ensemble_surface_state = {"identity": identity, "receipt": receipt}
     return receipt
 

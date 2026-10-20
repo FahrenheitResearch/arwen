@@ -559,6 +559,116 @@ def test_before_rebuild_receives_the_grid_id_before_the_release():
     assert dropped == [2]
 
 
+@pytest.mark.parametrize("collection", [False, True])
+def test_complete_move_timer_includes_rebuilt_child_validation(
+        monkeypatch, tmp_path, collection):
+    from gpuwm.core import relocation_runner as rr
+
+    parent_plane, parent, child = _cpu_tree()
+    model = _model(parent, child)
+    receipt_path = tmp_path / "moves.json"
+    model.nodes_by_grid_id = {1: parent, 2: child}
+    original_i = child.cfg.i_parent_start
+    runner = _runner(parent_plane, _manual_config(
+        (ScheduledRelocationMove(60.0, 1, 0),)), receipts_path=receipt_path)
+    mover = rr.RelocationRunnerCollection((runner,)) if collection else runner
+    clock = [100.0]
+    monkeypatch.setattr(rr.time, "perf_counter", lambda: clock[0])
+    checked = []
+
+    def validate(gid):
+        # The new child is live before the executor checks its state.
+        assert child.cfg.i_parent_start == original_i + 1
+        checked.append(gid)
+        clock[0] += 3.5
+
+    _advance(model, parent, child, 60)
+    mover.on_period_begin(model, {1: parent.clock}, after_rebuild=validate)
+    row = runner.receipts[-1]
+    assert checked == [2]
+    assert row["move_wall_seconds"] == 3.5
+    assert row["remap_wall_seconds"] == 0.0
+    persisted = json.loads(receipt_path.read_text())["receipts"][-1]
+    assert persisted["move_wall_seconds"] == 3.5
+
+    # An exhausted itinerary holds without rebuilding or checking a child.
+    _advance(model, parent, child, 120)
+    mover.on_period_begin(model, {1: parent.clock}, after_rebuild=validate)
+    assert checked == [2]
+
+
+def test_rebuilt_child_validation_failure_propagates():
+    parent_plane, parent, child = _cpu_tree()
+    model = _model(parent, child)
+    runner = _runner(parent_plane, _manual_config(
+        (ScheduledRelocationMove(60.0, 1, 0),)))
+    _advance(model, parent, child, 60)
+
+    def unhealthy(gid):
+        raise RuntimeError(f"unhealthy rebuilt child {gid}")
+
+    with pytest.raises(RuntimeError, match="unhealthy rebuilt child 2"):
+        runner.on_period_begin(model, {1: parent.clock}, after_rebuild=unhealthy)
+    assert not any(row["event"] == "relocated" for row in runner.receipts)
+
+
+@pytest.mark.parametrize("collection", [False, True])
+@pytest.mark.parametrize("staging", ["host", "device"])
+def test_mid_tree_move_rebinds_descendant_health(collection, staging):
+    from gpuwm.core.relocation_runner import RelocationRunnerCollection
+    from test_nest_relocation_staging import _grandchild
+
+    parent_plane, parent, child = _cpu_tree()
+    grand = _grandchild(child, ratio=3, nx=60, ny=60)
+    model = _model(parent, child)
+    model.nodes_by_grid_id = {1: parent, 2: child, 3: grand}
+    runner = _runner(parent_plane, _manual_config(
+        (ScheduledRelocationMove(60.0, 1, 0),)))
+    runner.staging = staging
+    validators = {2: child.state, 3: grand.state}
+    checked = []
+
+    def reground(*, node, plan, delta_parent_cells):
+        # The production regrounder releases these arrays before rebuilding.
+        assert node.cfg.grid_id not in validators
+        node.state = _ramp_state(60, 60)
+        return {"donor_alignment": {"pass": True}, "statics": "rebuilt"}
+
+    def validate(gid):
+        validators[gid] = {2: child, 3: grand}[gid].state
+        checked.append(gid)
+
+    runner.reground_descendant = reground
+    mover = RelocationRunnerCollection((runner,)) if collection else runner
+    _advance(model, parent, child, 60)
+    mover.on_period_begin(model, {1: parent.clock},
+                          before_rebuild=lambda gid: validators.pop(gid, None),
+                          after_rebuild=validate)
+    assert checked == [2, 3]
+    assert validators[3] is grand.state
+    assert runner.receipts[-1]["descendants"][0]["grid_id"] == 3
+
+
+def test_descendant_health_failure_stops_before_move_success():
+    from test_nest_relocation_staging import _grandchild
+
+    parent_plane, parent, child = _cpu_tree()
+    grand = _grandchild(child, ratio=3, nx=60, ny=60)
+    model = _model(parent, child)
+    runner = _runner(parent_plane, _manual_config(
+        (ScheduledRelocationMove(60.0, 1, 0),)))
+    runner.reground_descendant = lambda **kwargs: {}
+
+    def unhealthy(gid):
+        if gid == grand.cfg.grid_id:
+            raise RuntimeError("unhealthy rebuilt descendant")
+
+    _advance(model, parent, child, 60)
+    with pytest.raises(RuntimeError, match="unhealthy rebuilt descendant"):
+        runner.on_period_begin(model, {1: parent.clock}, after_rebuild=unhealthy)
+    assert not any(row["event"] == "relocated" for row in runner.receipts)
+
+
 def test_runner_construction_refusals():
     schedule = SimpleNamespace(period_ticks=60,
                                clock=SimpleNamespace(tick_den=1))
@@ -1195,6 +1305,92 @@ def test_containment_inside_the_deadband_is_silent():
     assert events == ["held"]
     assert child.cfg.i_parent_start == 85
     assert runner.containment_moves_executed == 0
+
+
+@pytest.mark.parametrize("collection", [False, True])
+@pytest.mark.parametrize("containment_only", [False, True])
+def test_containment_rebinds_health_before_recording_a_slide(
+        tmp_path, collection, containment_only):
+    from gpuwm.core.relocation_runner import RelocationRunnerCollection
+
+    parent_plane, parent, child, d03 = _tree3()
+    receipt_path = tmp_path / "containment.json"
+    runner, model, clocks = _containment_runner(
+        parent, child, d03, parent_plane, receipts_path=receipt_path)
+    runner.staging = "host"
+    if containment_only:
+        runner.cadence_periods *= 2
+    mover = RelocationRunnerCollection((runner,)) if collection else runner
+    old_state = child.state
+    validators = {2: old_state, 3: d03.state}
+    checked = []
+
+    def validate(gid):
+        assert gid == 2 and gid not in validators
+        assert child.state is not old_state
+        assert child.cfg.i_parent_start == 87
+        assert not runner.receipts  # validation precedes a success receipt
+        validators[gid] = child.state
+        checked.append(gid)
+
+    mover.on_period_begin(
+        model, clocks, before_rebuild=lambda gid: validators.pop(gid),
+        after_rebuild=validate)
+    assert checked == [2]
+    assert validators == {2: child.state, 3: d03.state}
+    events = [r["event"] for r in runner.receipts]
+    assert events == (["contained"] if containment_only else ["contained", "held"])
+    assert json.loads(receipt_path.read_text())["receipts"][0]["event"] == "contained"
+
+
+def test_containment_health_failure_stops_before_a_success_receipt(tmp_path):
+    parent_plane, parent, child, d03 = _tree3()
+    receipt_path = tmp_path / "containment.json"
+    runner, model, clocks = _containment_runner(
+        parent, child, d03, parent_plane, receipts_path=receipt_path)
+
+    def unhealthy(gid):
+        raise RuntimeError(f"unhealthy rebuilt ancestor {gid}")
+
+    with pytest.raises(RuntimeError, match="unhealthy rebuilt ancestor 2"):
+        runner.on_period_begin(model, clocks, after_rebuild=unhealthy)
+    assert not runner.receipts
+    assert not receipt_path.exists()
+
+
+def test_containment_rebinds_riding_sibling_but_preserves_earth_fixed_health():
+    from dataclasses import replace
+    from test_nest_relocation_staging import _grandchild
+
+    parent_plane, parent, child, tracked = _tree3()
+    sibling = _grandchild(child, ratio=3, nx=60, ny=60)
+    sibling.cfg = replace(sibling.cfg, grid_id=4)
+    child.children = [tracked, sibling]
+    runner, model, clocks = _containment_runner(
+        parent, child, tracked, parent_plane)
+    model.nodes_by_grid_id[4] = sibling
+    runner.staging = "host"
+    validators = {2: child.state, 3: tracked.state, 4: sibling.state}
+    tracked_state = tracked.state
+    checked = []
+
+    def reground(*, node, plan, delta_parent_cells):
+        assert node.cfg.grid_id == 4 and 4 not in validators
+        node.state = _ramp_state(60, 60)
+        return {"donor_alignment": {"pass": True}}
+
+    def validate(gid):
+        validators[gid] = model.node(gid).state
+        checked.append(gid)
+
+    runner.reground_descendant = reground
+    runner.on_period_begin(
+        model, clocks, before_rebuild=lambda gid: validators.pop(gid),
+        after_rebuild=validate)
+    assert checked == [2, 4]
+    assert validators[4] is sibling.state
+    assert validators[3] is tracked_state is tracked.state
+    assert runner.receipts[0]["event"] == "contained"
 
 
 def test_containment_without_route_wiring_refuses_on_the_ledger():

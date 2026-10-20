@@ -27,12 +27,12 @@ def drivability_for(source: object) -> dict[str, Any]:
 
     name = str(source or "")
     try:
-        canonical = get_source_adapter(name).source_id
+        adapter = get_source_adapter(name)
     except ValueError:
         # A future source stays a name: selection explains its lack of a
         # native adapter rather than discarding the question.
-        canonical = name
-    return intent_drivability().get(canonical, {})
+        return {}
+    return intent_drivability(adapters=(adapter,)).get(adapter.source_id, {})
 
 
 def candidate_route_chain(source: object) -> str:
@@ -64,7 +64,7 @@ def candidate_route_chain(source: object) -> str:
     return "prepared:go"
 
 
-def intent_drivability() -> dict[str, dict[str, Any]]:
+def intent_drivability(*, adapters=None) -> dict[str, dict[str, Any]]:
     """Derive chain availability from the prep dispatcher and source facts.
 
     A composed source without a download route is structurally drivable
@@ -133,15 +133,4 @@ def intent_drivability() -> dict[str, dict[str, Any]]:
                            "Supply a verified prepared bundle.")
         return {"routes": ["prepared"], "chain": runner.chain, "refusal": None}
 
-    return {adapter.source_id: _one(adapter) for adapter in source_adapters()}
-
-
-def drivability_for(source: object) -> dict[str, Any]:
-    """Resolve aliases before looking up a source's preparation contract."""
-    from gpuwm.source_adapters import get_source_adapter
-    name = str(source or "")
-    try:
-        name = get_source_adapter(name).source_id
-    except ValueError:
-        pass
-    return intent_drivability().get(name, {})
+    return {adapter.source_id: _one(adapter) for adapter in (source_adapters() if adapters is None else adapters)}

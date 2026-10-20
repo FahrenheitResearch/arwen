@@ -236,7 +236,7 @@ def test_check_and_go_price_actual_window_despite_six_hour_fetch_hint(
     monkeypatch.setattr(preflight, "device_memory_probe_subprocess", lambda: probe)
     monkeypatch.setattr(preflight, "profile_from_device_probe", lambda _: profile)
     monkeypatch.setattr(preflight, "declares_the_local_card", lambda *_: False)
-    monkeypatch.setattr(doctor, "_cuda_headers_check", lambda: pytest.fail("GPU probed"))
+    monkeypatch.setattr(doctor, "_cuda_headers_check", lambda **_kw: pytest.fail("GPU probed"))
     calls = []
     actual = preflight.estimate_phases
 
@@ -245,6 +245,9 @@ def test_check_and_go_price_actual_window_despite_six_hour_fetch_hint(
         return actual(exp, **kwargs)
 
     monkeypatch.setattr(preflight, "estimate_phases", record)
+    # Compare the same retained-table road first. Default go chains its
+    # preparation and holds one boundary slot, unlike this unprepared check.
+    monkeypatch.setenv("GPUWM_CHAINED_PREP", "0")
     parser = argparse.ArgumentParser()
     preflight.register_cli(parser.add_subparsers(dest="command", required=True))
     args = parser.parse_args(["check", str(config), "--free-gib", "11.25",
@@ -259,6 +262,23 @@ def test_check_and_go_price_actual_window_despite_six_hour_fetch_hint(
     assert report["ingest"]["forcing_times"] == 9
     assert report["peak_envelope_bytes"] == gate["phases"].peak_envelope_bytes
     assert report["envelope_budget_bytes"] == gate["budget_bytes"]
+
+    # Chaining keeps the supplied nine-time ingest schedule, but only one
+    # forecast boundary slot. Fetch cadence must change neither decision.
+    monkeypatch.setenv("GPUWM_CHAINED_PREP", "1")
+    chained = go_cli.memory_gate({"config": str(config), "cadence": 6}, vram_gib=12.)
+    assert len(calls) == 3
+    assert calls[-1]["forcing_interval_seconds"] == 3600
+    assert calls[-1]["ingest_forcing_interval_seconds"] == 3600
+    assert calls[-1]["forcing_intervals"] == 8
+    assert calls[-1]["resident_forcing_intervals"] == 1
+    assert chained["phases"].ingest.n_forcing_times == 9
+    retained_lbc = gate["phases"].forecast.domains[0].category_bytes("lbc")
+    streamed_lbc = chained["phases"].forecast.domains[0].category_bytes("lbc")
+    exp = wizard.experiment_from_text(text, source=str(config))
+    assert retained_lbc - streamed_lbc == 7 * 4 * preflight.lbc_interval_values(exp.root.run)
+    assert chained["phases"].peak_envelope_bytes < report["peak_envelope_bytes"]
+    assert chained["budget_bytes"] == gate["budget_bytes"]
     args.forcing_interval_s = 21600
     with pytest.raises(ValueError, match="disagrees with the supplied forcing cadence"):
         preflight.check_main(args)

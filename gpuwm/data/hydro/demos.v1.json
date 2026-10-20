@@ -1,0 +1,407 @@
+{
+  "schema": "gpuwm-nextgen-demos-v1",
+  "examples": [
+    {
+      "id": "lower-colorado-tx",
+      "title": "Lower Colorado River, Texas, HYFeatures; no assimilation",
+      "admission": {
+        "status": "held",
+        "reason": "the v201 GeoPackage data licence is unverified; the permanent demo awaits a verified public-domain hydrofabric recipe"
+      },
+      "source": {
+        "repository": "https://github.com/NOAA-OWP/t-route",
+        "revision": "12a8eae0cdfed437143c590659fa7077605a5e70",
+        "licence_path": "LICENSE",
+        "terms_path": "TERMS.md",
+        "software_licence": "Apache-2.0",
+        "data_licence": "dataset-specific verification pending referee"
+      },
+      "seconds": 3600,
+      "settings": {
+        "enabled": true,
+        "start_time": "2023-04-02T00:00:00Z",
+        "realization": "lower-colorado-hyfeatures",
+        "interval_seconds": 300
+      },
+      "paths": {
+        "case_directory": "test/LowerColorado_TX_v4",
+        "routing_config": "test/LowerColorado_TX_v4/test_AnA_V4_HYFeature_noDA.yaml",
+        "hydrofabric": "test/LowerColorado_TX_v4/domain/LowerColorado_NGEN_v201.gpkg",
+        "forcing_directory": "test/LowerColorado_TX_v4/channel_forcing"
+      },
+      "assets": [
+        {
+          "path": "LICENSE",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/LICENSE",
+          "bytes": 11358,
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+          "git_blob": "d645695673349e3947e8e5ae42332d0ac3164cd7"
+        },
+        {
+          "path": "TERMS.md",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/TERMS.md",
+          "bytes": 1317,
+          "sha256": "fe44727d2099f4ba47730be072bc795200b0186ce81b4316e7b3a4ffa2d662a0",
+          "git_blob": "b43d6b24f372582d9e89937e9bf29faf6ba4163a"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304010000.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304010000.CHRTOUT_DOMAIN1.csv",
+          "bytes": 58780,
+          "sha256": "82cc9d4f1e0e0272941fa25ff0da39be87feba1d052a304de3e4153329077f80",
+          "git_blob": "ff2beeb7ec872961b5b213852daa572198052e8d"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304010100.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304010100.CHRTOUT_DOMAIN1.csv",
+          "bytes": 58734,
+          "sha256": "e2d47ec807a3a5f3d8ed9de40227e9d5f41fb7c6f213eeb0d2df0f0f50c8d616",
+          "git_blob": "2d77d1a1e2ada94254be2955849c571dc8a5480c"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304010200.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304010200.CHRTOUT_DOMAIN1.csv",
+          "bytes": 58783,
+          "sha256": "0712402bf6c73d2e0a5c0c0ba49b965a6893e62f229d5185db6f312d2881eb8d",
+          "git_blob": "b064efdc09d1d340e7ecd4dfd31a180705ae113a"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304010300.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304010300.CHRTOUT_DOMAIN1.csv",
+          "bytes": 58752,
+          "sha256": "24b8d1470244276686afa712536d41ed9e2c4dc56dfec95d5590daf11e055c5e",
+          "git_blob": "734458dbf197d873f54dc6cea5a51eb399885a4b"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304010400.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304010400.CHRTOUT_DOMAIN1.csv",
+          "bytes": 58764,
+          "sha256": "df997680130d546baf10646cbf76cfca116b5a25ae9be8698f4546436274aded",
+          "git_blob": "28963566ffd1ecd5b0f6f06bb427c7206e539d02"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304010500.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304010500.CHRTOUT_DOMAIN1.csv",
+          "bytes": 58761,
+          "sha256": "034ac7187dce3a2c7e5b2caa0163435fcf281260bca63697bc5c80006fde68e6",
+          "git_blob": "e31af65e1e88a48479bdf9edbd60c745dfeb1e9a"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304010600.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304010600.CHRTOUT_DOMAIN1.csv",
+          "bytes": 58746,
+          "sha256": "73e8487ae1876e0eb1a04b69ddd01e61176e6fb328c964a273b79659bb64e9fe",
+          "git_blob": "277b813edc89787fdb077a5792b0de2eafbc6729"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304010700.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304010700.CHRTOUT_DOMAIN1.csv",
+          "bytes": 58744,
+          "sha256": "957d495ec6d2886022435ed8c7138d3810214c5eecb6ea76ff2d49dc3e5faa87",
+          "git_blob": "7e099bdbe7e4aec567b00fe5e0b250b5ea436211"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304010800.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304010800.CHRTOUT_DOMAIN1.csv",
+          "bytes": 58748,
+          "sha256": "fb9467c6629cd835e33203396ab575981d0b5395b7231689286ef3f4d3a47950",
+          "git_blob": "5138baeeaecf0ea3490cda3b9a88a041cf2cb007"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304010900.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304010900.CHRTOUT_DOMAIN1.csv",
+          "bytes": 58718,
+          "sha256": "bdaf71fcf344568719043a0a01c8a8f006b54c5c616a5ec614ddb199655512bc",
+          "git_blob": "88a60992eb6644197d61c3247493c4bed824bdb7"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304011000.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304011000.CHRTOUT_DOMAIN1.csv",
+          "bytes": 58725,
+          "sha256": "eb47e87c4148dd74650c03b6af6fe45879fbf990492ec98c9ac8f40782c9718f",
+          "git_blob": "ceb713462b2ab688c8de018829b55e8ad3ac8e95"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304011100.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304011100.CHRTOUT_DOMAIN1.csv",
+          "bytes": 58760,
+          "sha256": "5a8b8753914849738f0527712e88031b3992e934e606924fbb7ab6533abad889",
+          "git_blob": "e94c8e59fc7c19328af6d50f998e5f70a2e1d3eb"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304011200.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304011200.CHRTOUT_DOMAIN1.csv",
+          "bytes": 58748,
+          "sha256": "cc4dd730fb4db0ec810749f2d654198863d3825012767a190cde3bcc7a39cfe1",
+          "git_blob": "89eb517fae1e386149196fec9a21f42b52ca6f9f"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304011300.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304011300.CHRTOUT_DOMAIN1.csv",
+          "bytes": 58720,
+          "sha256": "5e3a8da8d6cd8da23615b07d318bd20f4fe0d59a15caa2ac618e842480132d3b",
+          "git_blob": "5bd8f953b4203dd6aafac22fa43dd89b974b0147"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304011400.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304011400.CHRTOUT_DOMAIN1.csv",
+          "bytes": 58723,
+          "sha256": "4f52c94fb64eb4127f1f0d897fe101468c210a8015f5b43c67e241b359b39bcf",
+          "git_blob": "28acf43f9beb2de39f7062dc103070bb6c71e152"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304011500.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304011500.CHRTOUT_DOMAIN1.csv",
+          "bytes": 58788,
+          "sha256": "c3c8ac25669d706e2a8c485364ce05d5ccfd534fd6b0c46084ea8d57527f0219",
+          "git_blob": "d8174c6a111cb2b0660c30113b02427ea44d2d8a"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304011600.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304011600.CHRTOUT_DOMAIN1.csv",
+          "bytes": 58755,
+          "sha256": "96ced61e7f3bb8ebc4427ac02eddf6735934a9dbb77894998f5cdd7ba5450bad",
+          "git_blob": "28955f8b188e2313579418a8b92eb2c341fde9ca"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304011700.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304011700.CHRTOUT_DOMAIN1.csv",
+          "bytes": 58759,
+          "sha256": "85b7185a1909f9db92e9d98cba75aad505ee4517cce5686af8d9f853ff703b1d",
+          "git_blob": "c82dc12e03a08178b4606d44986ddcf021dd43b1"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304011800.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304011800.CHRTOUT_DOMAIN1.csv",
+          "bytes": 58697,
+          "sha256": "b78d6877c6004430ed9b5d97edecee6c4ebd0a6e997e6ddadfa3c0273b7ab72e",
+          "git_blob": "41fa0d4d4d9270701cdc47a3b500120ec8ffc8ac"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304011900.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304011900.CHRTOUT_DOMAIN1.csv",
+          "bytes": 58790,
+          "sha256": "cc0c5fb77cfc6512535c741f45987c07c85cb69d7da5dcdf0156f2a0be46c20e",
+          "git_blob": "2638ae8ca1645e808bb58960234eb911f56f00c7"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304012000.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304012000.CHRTOUT_DOMAIN1.csv",
+          "bytes": 58729,
+          "sha256": "d446fa17f219c09d446393e69a8221727115011d0b924c7954e22a96f4470444",
+          "git_blob": "86fb22037038d00f38f2bb6343c71094677c195e"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304012100.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304012100.CHRTOUT_DOMAIN1.csv",
+          "bytes": 58770,
+          "sha256": "698e287054f6fc77b7ce7057a25312becc1ef74aa53f215186100dc9ff9c455a",
+          "git_blob": "0e4bfeaaf41cb55f55fc53a2222903da7fc02f62"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304012200.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304012200.CHRTOUT_DOMAIN1.csv",
+          "bytes": 58762,
+          "sha256": "2ebff7542d6adc3c68b0f4aec461ffdf88af47e022f6439bc38b05c230dbbed4",
+          "git_blob": "589a882af9687a09911d3c3a30675dcab5c7da3c"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304012300.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304012300.CHRTOUT_DOMAIN1.csv",
+          "bytes": 58729,
+          "sha256": "131ead454534c454833e51d67d6db64ec129e14511de40f28723db52cbe0891a",
+          "git_blob": "b8d10cec6fe5575eb13b28437c86fb7fca0a7a16"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304020000.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304020000.CHRTOUT_DOMAIN1.csv",
+          "bytes": 56635,
+          "sha256": "a708d560fd32f50b2199e58a13c487f20c80093574066c5df5baf16a8c3f39b9",
+          "git_blob": "154e386b4c7b7762a1312ee5c32e90c55ac93e35"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304020100.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304020100.CHRTOUT_DOMAIN1.csv",
+          "bytes": 56614,
+          "sha256": "0e3a20aab5f0978b17142fbc09c8f28ac059dcb0fffdc84a6756f0529dbbb081",
+          "git_blob": "7d542d4ade216538b3ff724dd754e65e13ba915f"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304020200.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304020200.CHRTOUT_DOMAIN1.csv",
+          "bytes": 56620,
+          "sha256": "ff6319ae7d072a9ff1f647332a636db328a512623cd62fc6d0b9b6840ecb4951",
+          "git_blob": "88ab06109e8a5c2cfc64fa65fc3884edbaa4da94"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304020300.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304020300.CHRTOUT_DOMAIN1.csv",
+          "bytes": 56596,
+          "sha256": "8bd3a2faad56de2df09817594b63d5940c98d39951fbe75bcd45e5e820d82248",
+          "git_blob": "a5dae03f0f64d3eb33d150110e48585c2a66b0a2"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304020400.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304020400.CHRTOUT_DOMAIN1.csv",
+          "bytes": 56620,
+          "sha256": "b577eac80342a088f0b552813571d1925d96fe413ebdb75617e3af3a01b8fe0f",
+          "git_blob": "de4da0f480e21053065ea001ba284781af777825"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304020500.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304020500.CHRTOUT_DOMAIN1.csv",
+          "bytes": 56635,
+          "sha256": "cd90cc30fb3004013c6ed879f96a2d8b3938e30ba186d8555b5318b867ae0783",
+          "git_blob": "ccd5186f16be55b256b647e2859bb747aa937acf"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304020600.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304020600.CHRTOUT_DOMAIN1.csv",
+          "bytes": 56594,
+          "sha256": "41cfb0a468b78fce896182f5886dd7ef4b3d03f811b330983edb5b485f02fb60",
+          "git_blob": "6f5a88bd80e118cb3529661170b5ba639015d8c6"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304020700.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304020700.CHRTOUT_DOMAIN1.csv",
+          "bytes": 56600,
+          "sha256": "65dd73df77da0b7170840788312d2916ed01e956c431572a504557766b10321d",
+          "git_blob": "6361f68557a58bafe59ec15318d1b2a51314266e"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304020800.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304020800.CHRTOUT_DOMAIN1.csv",
+          "bytes": 56622,
+          "sha256": "79de75bb5188e06d7752a719abbb16363f3e42b03147921e17c41a94ee7ad433",
+          "git_blob": "5fc5c0a2fedf22fe2fe63bccf2f0c2103982e4d7"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304020900.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304020900.CHRTOUT_DOMAIN1.csv",
+          "bytes": 56626,
+          "sha256": "8a86007110b28b8437c1511ca91d6c573b54cf6bc37857477ba9d648596cd2f4",
+          "git_blob": "4766710fcb0809b7a12f74ec0e3223204efef760"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304021000.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304021000.CHRTOUT_DOMAIN1.csv",
+          "bytes": 56625,
+          "sha256": "ce2b61db24f215a1d927bd2beba85f52d7e1d6f8f543ec33ec22596aa843e71f",
+          "git_blob": "681d63a34307e9bbefc48a8bad377f7d38b2c44c"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304021100.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304021100.CHRTOUT_DOMAIN1.csv",
+          "bytes": 56617,
+          "sha256": "64c24beec7a4bc5464af47e8d6c5e2854f9b5d564fcddaac943d46f35e9c5d80",
+          "git_blob": "7e17dec661511b4c838a70e51552195332a62267"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304021200.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304021200.CHRTOUT_DOMAIN1.csv",
+          "bytes": 56627,
+          "sha256": "4fc325b3a0499eff0935486d1b29e1ee2e830df5c34e7b6dbd89e456952af786",
+          "git_blob": "d200b1169888e9a4baaf880ff46caf71d5186907"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304021300.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304021300.CHRTOUT_DOMAIN1.csv",
+          "bytes": 56609,
+          "sha256": "d18fc66bb647569793eafc2c4ba838790679a3137c3df1f3367e598778a9bea9",
+          "git_blob": "c88d18f730f2978ac6fd3fedebe74154f5e05581"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304021400.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304021400.CHRTOUT_DOMAIN1.csv",
+          "bytes": 56610,
+          "sha256": "fbd97dab6b2dc264d13304685f101ff527401e6ec1c892affcca8e77eab22f7b",
+          "git_blob": "c6f690d716773b14795dc196fb11facf2ef160ae"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304021500.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304021500.CHRTOUT_DOMAIN1.csv",
+          "bytes": 56613,
+          "sha256": "78b5d7ecb7e22dc5070fb1e611d0f273ddaece7591ec8db443dae9663cf9c861",
+          "git_blob": "7748da4d1be1f1ed9c2911125d891ddad0cd2470"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304021600.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304021600.CHRTOUT_DOMAIN1.csv",
+          "bytes": 56612,
+          "sha256": "56e12a88cee54887c6b528b4e7ce5fba69cb05a8479d9d05c9e0a7ff19969136",
+          "git_blob": "aef285e82089745518112207b70a97fc9e4e4d3a"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304021700.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304021700.CHRTOUT_DOMAIN1.csv",
+          "bytes": 56603,
+          "sha256": "8b16d48bcde6339c48746e8c761d9a69c040c16658452935f29c29e454cb43eb",
+          "git_blob": "358ab805441802355d81d780787b99c6943f9fec"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304021800.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304021800.CHRTOUT_DOMAIN1.csv",
+          "bytes": 56592,
+          "sha256": "c21174f9d0bc2129906503761f1aebe5e20579c1718d9f7f4426ae4e8187038e",
+          "git_blob": "8217b3c4587bceb21afa6eae444bcb64b8f65f89"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304021900.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304021900.CHRTOUT_DOMAIN1.csv",
+          "bytes": 56604,
+          "sha256": "a369626ed06ef5023a3c41dba0e9072dc2cd4780956c1fe68a19a4cd12e37d5c",
+          "git_blob": "544ccdd048921c1fccf00f2e777cee9c4cdbb2f4"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304022000.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304022000.CHRTOUT_DOMAIN1.csv",
+          "bytes": 56628,
+          "sha256": "62e80f06cb13404b5d98ef645d3ed3b14a7215a27a7a7f74dcbd77339bee31f3",
+          "git_blob": "dfe49e314b93681f50907e06639f7f49ec7ed031"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304022100.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304022100.CHRTOUT_DOMAIN1.csv",
+          "bytes": 56610,
+          "sha256": "6a1c9f9590af0808e7fd72f6366c0c35a55c2b7f20eaa601c7ca3ec8a70d8622",
+          "git_blob": "e86bce953a57b26a33bfa8dc8624a25aff9c5bfc"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304022200.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304022200.CHRTOUT_DOMAIN1.csv",
+          "bytes": 56630,
+          "sha256": "69def2598461d5c6019407bbd611239446f494fb70fad76ace96d07de22f8e15",
+          "git_blob": "1da4090c558f66b0f722c37910ffe0abb6b09d17"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304022300.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304022300.CHRTOUT_DOMAIN1.csv",
+          "bytes": 56625,
+          "sha256": "678b0357427c3462ca810c39de90b00cce39aec92b2a93b5379b4930cb81ddba",
+          "git_blob": "ecac45ab98a86d171ca2212a8b70d781cbfdbe9c"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/channel_forcing/202304030000.CHRTOUT_DOMAIN1.csv",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/channel_forcing/202304030000.CHRTOUT_DOMAIN1.csv",
+          "bytes": 56372,
+          "sha256": "b3cc70475f5472f31d08a267caed6b8e9d0b12c00d58a4cb3dc2b576a8577624",
+          "git_blob": "a94e36e5c7c25ed5511004461e22a17a80dccde4"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/domain/LowerColorado_NGEN_v201.gpkg",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/domain/LowerColorado_NGEN_v201.gpkg",
+          "bytes": 29609984,
+          "sha256": "04f0f385220465ebf2d9d1e7247cf6b0594490bfff66090374372a490731cbcc",
+          "git_blob": "3c1e3a7e24d295686f52d11a1c5a125dae6fb721"
+        },
+        {
+          "path": "test/LowerColorado_TX_v4/test_AnA_V4_HYFeature_noDA.yaml",
+          "url": "https://raw.githubusercontent.com/NOAA-OWP/t-route/12a8eae0cdfed437143c590659fa7077605a5e70/test/LowerColorado_TX_v4/test_AnA_V4_HYFeature_noDA.yaml",
+          "bytes": 3805,
+          "sha256": "78cb3c0daf7e78954faa43bbf37e1c9079f1c302a16d647f8feabd16de3d23c4",
+          "git_blob": "f20c56fd010debca91ac4628f24fb824ebdbf119"
+        }
+      ]
+    }
+  ]
+}

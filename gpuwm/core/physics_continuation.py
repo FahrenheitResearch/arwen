@@ -110,8 +110,22 @@ def _host(value) -> np.ndarray:
     return np.ascontiguousarray(np.asarray(value))
 
 
+def _array_module(value):
+    if hasattr(value, "__cuda_array_interface__"):
+        import cupy as cp
+
+        return cp
+    return np
+
+
+def _capture(value):
+    """Own the bytes across arena release without a device-to-host round trip."""
+    xp = _array_module(value)
+    return xp.array(value, copy=True, order="C")
+
+
 def capture_continuation(state, driver, *, store=None) -> dict[str, np.ndarray]:
-    """Host copies of every registry slot present on the outgoing child.
+    """Copies of every registry slot on the outgoing child's device.
 
     Called while the outgoing child is whole (the runner's
     ``capture_outgoing`` seam -- host staging releases the device arrays
@@ -119,48 +133,49 @@ def capture_continuation(state, driver, *, store=None) -> dict[str, np.ndarray]:
     never allocated ``cu_*`` has no cumulus memory to move, and the
     restore side invents nothing.
     """
+    def capture(name, value):
+        # Shared PBL/GF rates occur in both manifests under the same key.
+        if name in captured:
+            return captured[name]
+        if store is None:
+            return _capture(value)
+        # The template supplies inventory only. Copy canonical bytes directly;
+        # copying its last slab first would allocate device buffers to discard.
+        key = "scratch/" + name if "/" not in name else name
+        if key not in store:
+            raise ValueError(f"streamed continuation is missing canonical carrier {key}")
+        return _host(store[key]).copy()
+
     captured: dict[str, np.ndarray] = {}
     existing = getattr(state, "existing_scratch", None)
     if callable(existing):
         for slot in continuation_slots():
             value = existing(slot)
             if value is not None:
-                captured[slot] = _host(value)
+                captured[slot] = capture(slot, value)
     from gpuwm.io.restart import (CUMULUS_CALLABLE_ARRAYS,
                                   DRIVER_HELD_FORCING_ATTRS)
 
     for name in sorted(DRIVER_HELD_FORCING_ATTRS):
         value = getattr(driver, name, None)
         if value is not None:
-            captured[f"held/{name}"] = _host(value)
+            captured[f"held/{name}"] = capture(f"held/{name}", value)
     from gpuwm.io.restart import pbl_raw_manifest, pbl_diagnostic_manifest
 
     for key, value in {**pbl_raw_manifest(driver),
                        **pbl_diagnostic_manifest(driver)}.items():
-        captured[key] = _host(value)
+        captured[key] = capture(key, value)
     # Radiation's physical heating rates already have canonical storage.
     # Carry them independently of surface fluxes: both feed future physics.
     for name in ("rthratenlw", "rthratensw"):
         value = getattr(driver, name, None)
         if value is not None:
-            captured[f"driver/{name}"] = _host(value)
+            captured[f"driver/{name}"] = capture(f"driver/{name}", value)
     adapter = getattr(driver, "cumulus_callable", None)
     for name in sorted(CUMULUS_CALLABLE_ARRAYS):
         value = getattr(adapter, name, None)
         if value is not None:
-            captured[f"cumulus/{name}"] = _host(value)
-    if store is not None:
-        # The state/template supplies the registry inventory, not live bytes.
-        # Canonical streaming names match restart names; only bare scratch
-        # capture names need their namespace. Missing carriers must refuse;
-        # falling back to the template would silently copy its last slab.
-        canonical = {}
-        for name in captured:
-            key = "scratch/" + name if "/" not in name else name
-            if key not in store:
-                raise ValueError(f"streamed continuation is missing canonical carrier {key}")
-            canonical[name] = _host(store[key]).copy()
-        return canonical
+            captured[f"cumulus/{name}"] = capture(f"cumulus/{name}", value)
     return captured
 
 
@@ -309,12 +324,14 @@ def shift_continuation(captured: dict[str, np.ndarray],
     strip = strip or {}
     shifted: dict[str, np.ndarray] = {}
     for name, value in captured.items():
+        xp = _array_module(value)
         cold = np.float32(PHYSICS_CONTINUATION_COLD_VALUES.get(name, 0.0))
-        staged = np.full_like(value, cold)
+        staged = xp.full_like(value, cold)
         seed = strip.get(name)
         if seed is not None and tuple(seed.shape) != tuple(value.shape):
             seed = None
         if seed is not None:
+            seed = xp.asarray(seed)
             staged[...] = seed
         window = plan.window(value.shape)
         if window is not None:
@@ -322,6 +339,7 @@ def shift_continuation(captured: dict[str, np.ndarray],
             staged[..., dst_j, dst_i] = value[..., src_j, src_i]
             if seed is not None and ring > 0:
                 stale = _old_ring_inside(value.shape[-2:], window, ring)
+                stale = xp.asarray(stale)
                 staged[..., stale] = seed[..., stale]
         shifted[name] = staged
     return shifted
@@ -365,6 +383,7 @@ def restore_continuation(state, driver,
     """
     moved: list[str] = []
     cold_only: list[str] = []
+    cold_flags = []
     for slot in continuation_slots():
         staged = shifted.get(slot)
         if staged is None:
@@ -377,8 +396,7 @@ def restore_continuation(state, driver,
         else:
             target[...] = staged
         moved.append(slot)
-        if not staged.any():
-            cold_only.append(slot)
+        cold_flags.append((slot, staged.any()))
     from gpuwm.io.restart import DRIVER_HELD_FORCING_ATTRS
 
     for name in sorted(DRIVER_HELD_FORCING_ATTRS):
@@ -396,8 +414,7 @@ def restore_continuation(state, driver,
         else:
             target[...] = staged
         moved.append(key)
-        if not staged.any():
-            cold_only.append(key)
+        cold_flags.append((key, staged.any()))
     from gpuwm.io.restart import pbl_raw_manifest, pbl_diagnostic_manifest
 
     raw_targets = {**pbl_raw_manifest(driver), **pbl_diagnostic_manifest(driver)}
@@ -418,8 +435,7 @@ def restore_continuation(state, driver,
         else:
             target[...] = staged
         moved.append(key)
-        if not staged.any():
-            cold_only.append(key)
+        cold_flags.append((key, staged.any()))
     w0avg_moved = False
     staged = shifted.get(W0AVG_KEY)
     adapter = getattr(driver, "cumulus_callable", None)
@@ -448,6 +464,13 @@ def restore_continuation(state, driver,
         # which the rebuilt clock has already passed.
         adapter._history_time = None
         w0avg_moved = True
+    if cold_flags:
+        # One small diagnostic transfer, rather than a synchronization for
+        # every carried physics array.
+        xp = next((_array_module(flag) for _, flag in cold_flags
+                   if hasattr(flag, "__cuda_array_interface__")), np)
+        flags = _host(xp.stack([flag for _, flag in cold_flags]))
+        cold_only = [name for (name, _), flag in zip(cold_flags, flags) if not flag]
     return {
         "registry": "gpuwm.io.restart.SERIALIZED_SCRATCH_SLOTS"
                     " + CUMULUS_CALLABLE_ARRAYS + DRIVER_HELD_FORCING_ATTRS",
@@ -525,7 +548,7 @@ def relocatable_carriers() -> tuple[str, ...]:
 
 
 def capture_carriers(driver, *, store=None, scalars=None) -> dict[str, object]:
-    """Host copies of the outgoing child's carriers, plus its ledger.
+    """Device copies of the outgoing child's carriers, plus its ledger.
 
     Called from the preparer's ``capture_outgoing`` seam while the
     outgoing child is still whole.  A carrier the configuration never
@@ -540,21 +563,20 @@ def capture_carriers(driver, *, store=None, scalars=None) -> dict[str, object]:
         for name in relocatable_carriers():
             value = driver_fields.get(name)
             if value is not None:
-                fields[name] = _host(value)
+                if store is None:
+                    fields[name] = _capture(value)
+                else:
+                    key = "fields/" + name
+                    if key not in store:
+                        raise ValueError(f"streamed radiation is missing canonical carrier {key}")
+                    fields[name] = _host(store[key]).copy()
         carriers = getattr(driver, "carriers", None)
-        if carriers is not None:
+        if carriers is not None and store is None:
             contract = carriers.state()
     if store is not None:
-        canonical = {}
-        for name in fields:
-            key = "fields/" + name
-            if key not in store:
-                raise ValueError(f"streamed radiation is missing canonical carrier {key}")
-            canonical[name] = _host(store[key]).copy()
         if scalars is None:
             raise ValueError("streamed radiation capture requires canonical scalar carriers")
         from copy import deepcopy
-        fields = canonical
         contract = deepcopy(scalars.get("carriers"))
     return {"fields": fields, "contract": contract}
 
@@ -580,7 +602,7 @@ def shift_carriers(captured: dict[str, np.ndarray], plan,
             "the strip must come from a real donor column")
     shifted: dict[str, np.ndarray] = {}
     for name, value in captured.items():
-        staged = np.zeros_like(value)
+        staged = _array_module(value).zeros_like(value)
         window = plan.window(value.shape)
         if window is None:
             continue

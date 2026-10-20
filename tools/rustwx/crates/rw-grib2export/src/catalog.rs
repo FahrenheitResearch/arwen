@@ -28,7 +28,8 @@ pub enum Source {
     Pwat,
     Mslp,
     MapsMslp,
-    /// Group B pressure-level field, index into `rw_post::plev::PLEV_FIELDS`.
+    /// Pressure field index: the six `rw_post::plev::PLEV_FIELDS`, then
+    /// specific humidity, omega and geometric vertical velocity.
     Plev(usize),
     /// Group C plane, by name in `rw_post::severe::FIELDS`.
     C(&'static str),
@@ -40,6 +41,8 @@ pub enum Source {
     /// History copies outside the held-out set (spec section 0).
     U10,
     V10,
+    /// Mass-level winds interpolated linearly to height AGL, always earth-relative.
+    WindHeight(u32, bool),
     /// Total precipitation since the simulation start (RAINNC + RAINC with
     /// the history's bucket counters), product template 4.8.
     Apcp,
@@ -91,6 +94,8 @@ pub const ROWS: &[Row] = &[
     // ---- history copies (out of the held-out scope, spec section 0)
     wind_row(row("u10", Source::U10, (0, 2, 2), (103, 10.0), None, "m s-1", "U10, the surface layer scheme's 10 m wind (history copy)"), true),
     wind_row(row("v10", Source::V10, (0, 2, 3), (103, 10.0), None, "m s-1", "V10, the surface layer scheme's 10 m wind (history copy)"), false),
+    row("u100", Source::WindHeight(100, true), (0, 2, 2), (103, 100.0), None, "m s-1", "UGRD: unstagger U/V to mass levels; linear in z = mean(PH+PHB)/g - HGT to 100 m AGL; rotate to east/north with SINALPHA/COSALPHA"),
+    row("v100", Source::WindHeight(100, false), (0, 2, 3), (103, 100.0), None, "m s-1", "VGRD: unstagger U/V to mass levels; linear in z = mean(PH+PHB)/g - HGT to 100 m AGL; rotate to east/north with SINALPHA/COSALPHA"),
     row("total_precipitation", Source::Apcp, (0, 1, 8), (1, 0.0), None, "kg m-2", "RAINNC + RAINC plus the bucket counters times BUCKET_MM, accumulated from the simulation start (product template 4.8)"),
     // ---- Group B (spec 5.2, 5.3)
     row("mslp", Source::Mslp, (0, 3, 1), (101, 0.0), None, "Pa", "SPEC 5.2 D6: NMC reduction of Wea. Forecasting 13 (1998) 833 and Mon. Wea. Rev. 123 (1995) 59 from ground pressure and height"),
@@ -143,13 +148,16 @@ pub const ROWS: &[Row] = &[
 ];
 
 /// The pressure-level rows (spec 5.1), level value filled per level (Pa).
-pub const PLEV_ROWS: [Row; 6] = [
+pub const PLEV_ROWS: [Row; 9] = [
     Row { id: "height", file: FileKind::Pressure, source: Source::Plev(0), discipline: 0, category: 3, number: 5, level: (100, 0.0), second: None, units: "gpm", wind: None, method: "SPEC 5.1: hypsometric from the bracketing interface with the layer-mean virtual temperature (NCAR/TN-396); below ground per [R12] and the membrane reduction (D8)" },
     Row { id: "temperature", file: FileKind::Pressure, source: Source::Plev(1), discipline: 0, category: 0, number: 0, level: (100, 0.0), second: None, units: "K", wind: None, method: "SPEC 5.1: linear in ln p between bracketing mass levels; below ground 6.5 K km-1 (ICAO, NCAR/TN-396)" },
     Row { id: "dewpoint", file: FileKind::Pressure, source: Source::Plev(2), discipline: 0, category: 0, number: 6, level: (100, 0.0), second: None, units: "K", wind: None, method: "SPEC 5.1: AERK Magnus dewpoint of the interpolated q (JAM 35 (1996) 601)" },
     Row { id: "rh", file: FileKind::Pressure, source: Source::Plev(3), discipline: 0, category: 1, number: 1, level: (100, 0.0), second: None, units: "%", wind: None, method: "SPEC 5.1: RH over water from the interpolated q and T (WMO-No. 8); lowest level held below ground (D7)" },
     Row { id: "u", file: FileKind::Pressure, source: Source::Plev(4), discipline: 0, category: 2, number: 2, level: (100, 0.0), second: None, units: "m s-1", wind: Some(true), method: "SPEC 5.1: linear in ln p; lowest level held below ground (D7)" },
     Row { id: "v", file: FileKind::Pressure, source: Source::Plev(5), discipline: 0, category: 2, number: 3, level: (100, 0.0), second: None, units: "m s-1", wind: Some(false), method: "SPEC 5.1: linear in ln p; lowest level held below ground (D7)" },
+    Row { id: "specific_humidity", file: FileKind::Pressure, source: Source::Plev(6), discipline: 0, category: 1, number: 0, level: (100, 0.0), second: None, units: "kg kg-1", wind: None, method: "SPFH: rw-mlexport specific_humidity, QVAPOR/(1+QVAPOR+sum condensates), linear in ln(P+PB); lowest mass level held below ground, missing above top mass level" },
+    Row { id: "omega", file: FileKind::Pressure, source: Source::Plev(7), discipline: 0, category: 2, number: 8, level: (100, 0.0), second: None, units: "Pa s-1", wind: None, method: "VVEL: rw-mlexport omega operator, -rho*g*w with rho=(P+PB)/(Rd*T*(1+0.61*max(QVAPOR,0))), W unstaggered to mass levels; linear in ln(P+PB); lowest mass level held below ground, missing above top mass level" },
+    Row { id: "vertical_velocity", file: FileKind::Pressure, source: Source::Plev(8), discipline: 0, category: 2, number: 9, level: (100, 0.0), second: None, units: "m s-1", wind: None, method: "DZDT: w=(W[k]+W[k+1])/2 on mass levels, linear in ln(P+PB); lowest mass level held below ground, missing above top mass level" },
 ];
 
 /// Group A rows, built from the identities rw-post carries beside its kernels.

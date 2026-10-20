@@ -196,6 +196,11 @@ pub fn plan_frames_within(
         ));
     }
     let required_names: BTreeSet<String> = mapping.required_field_names()?.into_iter().collect();
+    for name in &required_names {
+        if mapping.field(name)?.optional()? {
+            return Err(mapping_invalid(format!("required field {name} cannot be optional")));
+        }
+    }
     // A required field held off the stream would be written nowhere while
     // every check that it was derived still passed, so the reader would
     // meet a frame without it.
@@ -1500,7 +1505,7 @@ fn plan_frame<'a>(
 #[allow(clippy::too_many_arguments)]
 fn field_work(
     fields: &FieldMaterializer<'_>,
-    id: usize,
+    field: CanonicalField,
     plan: &FramePlan,
     soil_count: Option<i64>,
     window: Option<&crate::window::Window>,
@@ -1508,7 +1513,6 @@ fn field_work(
     time: &Value,
     valid_time: NaiveDateTime,
 ) -> Result<FieldWork> {
-    let field = &fields.available[&id];
     let finite_required = plan.required_names.contains(&field.name)
         && field.name != "soil_temperature" && field.name != "volumetric_soil_moisture";
     if finite_required && field.values.iter().any(|value| !value.is_finite())
@@ -1531,34 +1535,36 @@ fn field_work(
     // A field the decode produced over the granted window alone: its y/x
     // are the window's and every value it has was checked above, so it
     // is published as decoded.
-    let decoded = decode_window.filter(|w| w.holds_decoded(field));
+    let decoded = decode_window.filter(|w| w.holds_decoded(&field));
     if let Some(w) = decoded {
-        w.validate_decoded(field, fields.collection.vertical_values.len())?;
+        w.validate_decoded(&field, fields.collection.vertical_values.len())?;
     } else {
-        validate_frame_axes(&fields.collection, std::slice::from_ref(field))?;
-        if let Some(window) = window { window.validate_field(field)?; }
+        validate_frame_axes(&fields.collection, std::slice::from_ref(&field))?;
+        if let Some(window) = window { window.validate_field(&field)?; }
     }
+    let original_shape = field.values.shape().to_vec();
     let original_flat = array::contiguous(&field.values);
     // Hash once over the complete source. The same digest enters
     // the original canonical header and the field descriptor.
     let field_sha256 = crate::digest::array_sha256(field.values.shape(), &original_flat);
-    let descriptor = field_descriptor(field, time, &field_sha256);
+    let descriptor = field_descriptor(&field, time, &field_sha256);
     let soil_levels = field.axes.iter().position(|axis| axis == "soil")
         .map(|axis| field.values.shape()[axis]);
     let retained = window.filter(|w| w.fields.contains(&field.name));
     let shape = retained.map_or_else(|| field.values.shape().to_vec(),
         |w| w.shape(field.values.shape()[0]).to_vec());
     let mut pressure_levels = None;
-    let values: Vec<f64> = if decoded.is_some() {
-        original_flat.into_owned()
-    } else if let Some(w) = retained {
+    let values: Vec<f64> = if let Some(w) = retained.filter(|_| decoded.is_none()) {
         if field.name == "air_pressure" {
             pressure_levels = Some(crate::window::pressure_levels(
                 &original_flat, w.source_shape[0] * w.source_shape[1])?);
         }
         w.crop(&original_flat, shape[0])
     } else {
-        original_flat.into_owned()
+        match original_flat {
+            std::borrow::Cow::Owned(values) => values,
+            std::borrow::Cow::Borrowed(_) => array::into_contiguous(field.values),
+        }
     };
     let sha256 = if retained.is_some() && decoded.is_none() {
         crate::digest::array_sha256(&shape, &values)
@@ -1570,14 +1576,14 @@ fn field_work(
         // Nothing outside the window was decoded, so there is no
         // whole-field digest or missing count to state.
         Some(json!({
-            "shape": [field.values.shape()[0], w.source_shape[0], w.source_shape[1]],
+            "shape": [original_shape[0], w.source_shape[0], w.source_shape[1]],
             "sha256": Value::Null,
             "missing_count": Value::Null,
             "validation": crate::window::DECODED_VALIDATION,
         }))
     } else {
         retained.map(|_| json!({
-            "shape": field.values.shape(), "sha256": field_sha256,
+            "shape": original_shape, "sha256": field_sha256,
             "missing_count": field.missing_count,
             "validation": "complete-canonical-field-before-window-v1",
         }))
@@ -1630,13 +1636,19 @@ fn prepare_frame(plan: &FramePlan, planned: PlannedFrame<'_>,
         }
         ready.push(id);
     }
+    // All derivations have finished reading their inputs. Take each
+    // publication field in order so its worker can hand the allocation
+    // straight to the stream, rather than clone every complete array.
+    let ready: Vec<CanonicalField> = ready.into_iter()
+        .map(|id| fields.available.remove(&id).expect("materialized output exists"))
+        .collect();
     let works: Vec<Result<FieldWork>> = {
         let fields = &fields;
         let (time, window) = (&time, window.as_ref());
         crate::threads::install(|| {
             use rayon::prelude::*;
-            ready.par_iter()
-                .map(|id| field_work(fields, *id, plan, soil_count, window, decode_window, time,
+            ready.into_par_iter()
+                .map(|field| field_work(fields, field, plan, soil_count, window, decode_window, time,
                     valid_time))
                 .collect()
         })
@@ -2448,8 +2460,9 @@ mod tests {
         output["units"]["scale"] = json!(3.0);
         let fields = if self_seed { json!({"source": middle}) }
             else { json!({"source": source, "middle": middle, "output": output}) };
-        let document = json!({"coordinates": {"vertical": {"kind": "pressure", "units": "Pa"}},
-            "fields": fields, "derivations": [
+        let document = json!({"name": "field-stream-test",
+            "coordinates": {"vertical": {"kind": "pressure", "units": "Pa"}},
+            "target": {}, "fields": fields, "derivations": [
                 {"name": "double", "operation": "copy", "source": "source"},
                 {"name": "triple", "operation": "copy", "source": "middle"}]});
         let payload = serde_json::to_vec(&document).unwrap();
@@ -2491,6 +2504,22 @@ mod tests {
         fields.consume(ids[2]);
         assert!(fields.available.is_empty());
         assert!(fields.remaining.iter().all(|uses| *uses == 0));
+    }
+
+    #[test]
+    fn frame_preparation_moves_outputs_after_their_derivations() {
+        let (mapping, collection, plan) = chain_fixture(false);
+        let pointer = collection.direct.values().next().unwrap().values.as_ptr();
+        let planned = plan_frame(&mapping, &plan, 0, collection).unwrap();
+        let prepared = prepare_frame(&plan, planned, None, None);
+        assert!(prepared.failure.as_ref().unwrap().message.contains(
+            "source frame is incomplete for WRF initialization"));
+        assert_eq!(prepared.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(),
+                   ["source", "middle", "output"]);
+        assert_eq!(prepared.fields[0].values.as_ptr(), pointer);
+        assert_eq!(prepared.fields[0].values, [1., 2., 3., 4.]);
+        assert_eq!(prepared.fields[1].values, [2., 4., 6., 8.]);
+        assert_eq!(prepared.fields[2].values, [6., 12., 18., 24.]);
     }
 
     /// The chain fixture with `source` marked `dependency_only`, `required`
@@ -2738,7 +2767,8 @@ mod tests {
             for id in fields.output.clone() {
                 fields.materialize(id).unwrap();
                 if fields.available[&id].name == name {
-                    let result = field_work(&fields, id, &plan, None, None, None,
+                    let field = fields.available[&id].clone();
+                    let result = field_work(&fields, field, &plan, None, None, None,
                                             &json!({}), plan.keys[0].0);
                     assert_eq!(result.is_ok(), policy == "preserve_mask");
                 }

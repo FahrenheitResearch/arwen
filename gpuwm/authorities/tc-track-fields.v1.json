@@ -1,0 +1,580 @@
+{
+  "schema": "gpuwm.tc-track-fields.v1",
+  "verification": {
+    "association_max_distance_km": 500
+  },
+  "canonical": {
+    "msl": "Pa",
+    "u10m": "m s-1",
+    "v10m": "m s-1",
+    "u850": "m s-1",
+    "v850": "m s-1",
+    "z200": "m2 s-2",
+    "z300": "m2 s-2",
+    "z500": "m2 s-2",
+    "z850": "m2 s-2",
+    "t200": "K",
+    "t250": "K",
+    "t300": "K",
+    "t400": "K",
+    "t500": "K"
+  },
+  "vocabularies": {
+    "earth2studio": {
+      "format": "netcdf",
+      "lat": "lat",
+      "lon": "lon",
+      "fields": {
+        "msl": {
+          "name": "msl",
+          "units": "Pa",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "Pa"
+        },
+        "u10m": {
+          "name": "u10m",
+          "units": "m s-1",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "m s-1"
+        },
+        "v10m": {
+          "name": "v10m",
+          "units": "m s-1",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "m s-1"
+        },
+        "u850": {
+          "name": "u850",
+          "units": "m s-1",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "m s-1"
+        },
+        "v850": {
+          "name": "v850",
+          "units": "m s-1",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "m s-1"
+        },
+        "z200": {
+          "name": "z200",
+          "units": "m2 s-2",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "m2 s-2"
+        },
+        "z300": {
+          "name": "z300",
+          "units": "m2 s-2",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "m2 s-2"
+        },
+        "z500": {
+          "name": "z500",
+          "units": "m2 s-2",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "m2 s-2"
+        },
+        "z850": {
+          "name": "z850",
+          "units": "m2 s-2",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "m2 s-2"
+        },
+        "t200": {
+          "name": "t200",
+          "units": "K",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "K"
+        },
+        "t250": {
+          "name": "t250",
+          "units": "K",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "K"
+        },
+        "t300": {
+          "name": "t300",
+          "units": "K",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "K"
+        },
+        "t400": {
+          "name": "t400",
+          "units": "K",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "K"
+        },
+        "t500": {
+          "name": "t500",
+          "units": "K",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "K"
+        }
+      },
+      "wind_basis": "earth-relative"
+    },
+    "era5-zarr": {
+      "format": "zarr",
+      "lat": "latitude",
+      "lon": "longitude",
+      "fields": {
+        "msl": {
+          "name": "msl",
+          "units": "Pa",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "Pa"
+        },
+        "u10m": {
+          "name": "u10",
+          "units": "m s**-1",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "m s-1"
+        },
+        "v10m": {
+          "name": "v10",
+          "units": "m s**-1",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "m s-1"
+        },
+        "u850": {
+          "name": "u",
+          "units": "m s**-1",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "m s-1",
+          "select": {
+            "level": 850
+          }
+        },
+        "v850": {
+          "name": "v",
+          "units": "m s**-1",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "m s-1",
+          "select": {
+            "level": 850
+          }
+        },
+        "z200": {
+          "name": "z",
+          "units": "m**2 s**-2",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "m2 s-2",
+          "select": {
+            "level": 200
+          }
+        },
+        "z300": {
+          "name": "z",
+          "units": "m**2 s**-2",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "m2 s-2",
+          "select": {
+            "level": 300
+          }
+        },
+        "z500": {
+          "name": "z",
+          "units": "m**2 s**-2",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "m2 s-2",
+          "select": {
+            "level": 500
+          }
+        },
+        "z850": {
+          "name": "z",
+          "units": "m**2 s**-2",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "m2 s-2",
+          "select": {
+            "level": 850
+          }
+        },
+        "t200": {
+          "name": "t",
+          "units": "K",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "K",
+          "select": {
+            "level": 200
+          }
+        },
+        "t250": {
+          "name": "t",
+          "units": "K",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "K",
+          "select": {
+            "level": 250
+          }
+        },
+        "t300": {
+          "name": "t",
+          "units": "K",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "K",
+          "select": {
+            "level": 300
+          }
+        },
+        "t400": {
+          "name": "t",
+          "units": "K",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "K",
+          "select": {
+            "level": 400
+          }
+        },
+        "t500": {
+          "name": "t",
+          "units": "K",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "K",
+          "select": {
+            "level": 500
+          }
+        }
+      },
+      "wind_basis": "earth-relative"
+    },
+    "arwen-grib2": {
+      "format": "grib2",
+      "lat": "lat",
+      "lon": "lon",
+      "fields": {
+        "msl": {
+          "name": "PRMSL",
+          "units": "Pa",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "Pa",
+          "selector": {
+            "field": "PressureReducedToMeanSeaLevel",
+            "vertical": "MeanSeaLevel"
+          }
+        },
+        "u10m": {
+          "name": "UGRD",
+          "units": "m s-1",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "m s-1",
+          "selector": {
+            "field": "UWind",
+            "vertical": {
+              "HeightAboveGroundMeters": 10
+            }
+          }
+        },
+        "v10m": {
+          "name": "VGRD",
+          "units": "m s-1",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "m s-1",
+          "selector": {
+            "field": "VWind",
+            "vertical": {
+              "HeightAboveGroundMeters": 10
+            }
+          }
+        },
+        "u850": {
+          "name": "UGRD",
+          "units": "m s-1",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "m s-1",
+          "selector": {
+            "field": "UWind",
+            "vertical": {
+              "IsobaricHpa": 850
+            }
+          }
+        },
+        "v850": {
+          "name": "VGRD",
+          "units": "m s-1",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "m s-1",
+          "selector": {
+            "field": "VWind",
+            "vertical": {
+              "IsobaricHpa": 850
+            }
+          }
+        },
+        "z200": {
+          "name": "HGT",
+          "units": "gpm",
+          "scale": 9.80665,
+          "offset": 0.0,
+          "canonical_units": "m2 s-2",
+          "selector": {
+            "field": "GeopotentialHeight",
+            "vertical": {
+              "IsobaricHpa": 200
+            }
+          }
+        },
+        "z300": {
+          "name": "HGT",
+          "units": "gpm",
+          "scale": 9.80665,
+          "offset": 0.0,
+          "canonical_units": "m2 s-2",
+          "selector": {
+            "field": "GeopotentialHeight",
+            "vertical": {
+              "IsobaricHpa": 300
+            }
+          }
+        },
+        "z500": {
+          "name": "HGT",
+          "units": "gpm",
+          "scale": 9.80665,
+          "offset": 0.0,
+          "canonical_units": "m2 s-2",
+          "selector": {
+            "field": "GeopotentialHeight",
+            "vertical": {
+              "IsobaricHpa": 500
+            }
+          }
+        },
+        "z850": {
+          "name": "HGT",
+          "units": "gpm",
+          "scale": 9.80665,
+          "offset": 0.0,
+          "canonical_units": "m2 s-2",
+          "selector": {
+            "field": "GeopotentialHeight",
+            "vertical": {
+              "IsobaricHpa": 850
+            }
+          }
+        },
+        "t200": {
+          "name": "TMP",
+          "units": "K",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "K",
+          "selector": {
+            "field": "Temperature",
+            "vertical": {
+              "IsobaricHpa": 200
+            }
+          }
+        },
+        "t250": {
+          "name": "TMP",
+          "units": "K",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "K",
+          "selector": {
+            "field": "Temperature",
+            "vertical": {
+              "IsobaricHpa": 250
+            }
+          }
+        },
+        "t300": {
+          "name": "TMP",
+          "units": "K",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "K",
+          "selector": {
+            "field": "Temperature",
+            "vertical": {
+              "IsobaricHpa": 300
+            }
+          }
+        },
+        "t400": {
+          "name": "TMP",
+          "units": "K",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "K",
+          "selector": {
+            "field": "Temperature",
+            "vertical": {
+              "IsobaricHpa": 400
+            }
+          }
+        },
+        "t500": {
+          "name": "TMP",
+          "units": "K",
+          "scale": 1.0,
+          "offset": 0.0,
+          "canonical_units": "K",
+          "selector": {
+            "field": "Temperature",
+            "vertical": {
+              "IsobaricHpa": 500
+            }
+          }
+        }
+      },
+      "wind_basis": "earth-relative"
+    }
+  },
+  "backends": {
+    "wuduan": {
+      "fields": [
+        "u10m",
+        "v10m",
+        "msl",
+        "u850",
+        "v850"
+      ],
+      "path_search_distance": 300,
+      "path_search_window_size": 2,
+      "edge_radius_km": 300,
+      "constructor": {
+        "path_search_distance": 300,
+        "path_search_window_size": 2
+      },
+      "vorticity_threshold": 0.00014
+    },
+    "vitart": {
+      "fields": [
+        "u10m",
+        "v10m",
+        "msl",
+        "u850",
+        "v850",
+        "z500",
+        "z850",
+        "z200",
+        "t500",
+        "t400",
+        "t300",
+        "t250",
+        "t200"
+      ],
+      "path_search_distance": 300,
+      "path_search_window_size": 2,
+      "edge_radius_km": 300,
+      "constructor": {
+        "path_search_distance": 300,
+        "path_search_window_size": 2,
+        "vorticity_threshold": 3.5e-05,
+        "mslp_threshold": 99000.0,
+        "temp_dec_threshold": 0.5,
+        "lat_threshold": null,
+        "exclude_border": true
+      }
+    },
+    "tempestextremes": {
+      "fields": [
+        "msl",
+        "u10m",
+        "v10m",
+        "z300",
+        "z500"
+      ],
+      "detect": [
+        "--searchbymin",
+        "msl",
+        "--closedcontourcmd",
+        "msl,200.0,5.5,0;_DIFF(z300,z500),-58.8,6.5,1.0",
+        "--mergedist",
+        "6.0",
+        "--outputcmd",
+        "msl,min,0;_VECMAG(u10m,v10m),max,2.0"
+      ],
+      "stitch": [
+        "--range",
+        "6.0",
+        "--mintime",
+        "24h",
+        "--maxgap",
+        "12h"
+      ],
+      "edge_radius_km": 722.5
+    }
+  },
+  "best_track_formats": {
+    "atcf": {
+      "delimiter": ",",
+      "filter_column": 4,
+      "filter_value": "BEST",
+      "time": 2,
+      "minute": 3,
+      "lat": 6,
+      "lon": 7,
+      "wind_knots": 8,
+      "pressure_hpa": 9,
+      "coordinate_scale": 0.1
+    },
+    "hurdat2": {
+      "delimiter": ",",
+      "date": 0,
+      "hhmm": 1,
+      "status": 3,
+      "lat": 4,
+      "lon": 5,
+      "wind_knots": 6,
+      "pressure_hpa": 7,
+      "record_identifier": 2,
+      "coordinate_scale": 1.0
+    }
+  },
+  "identity_catalog": {
+    "source": "NOAA NHC ATCF, public domain US government observations",
+    "index_url": "https://ftp.nhc.noaa.gov/atcf/index/storm_list.txt",
+    "archive_url": "https://ftp.nhc.noaa.gov/atcf/archive/{year}/b{id}.dat.gz",
+    "active_url": "https://ftp.nhc.noaa.gov/atcf/btk/b{id}.dat",
+    "basins": [
+      "AL",
+      "EP",
+      "CP"
+    ],
+    "columns": {
+      "name": 0,
+      "basin": 1,
+      "year": 8,
+      "start": 11,
+      "end": 12,
+      "id": 20
+    },
+    "maximum_match_km": 300,
+    "maximum_interpolation_hours": 6
+  }
+}

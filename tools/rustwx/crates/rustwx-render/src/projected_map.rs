@@ -588,6 +588,28 @@ pub fn project_geographic_points_with_options(
         .collect())
 }
 
+/// Project `(lat, lon)` rings in the map's own projection, splitting each
+/// ring at that projection's cut. Each output retains its input ring index.
+/// Point-wise longitude normalization alone reconnects the two map edges
+/// across the interior and paints a full-width band for a seam-crossing cell.
+pub fn project_geographic_rings_with_options(
+    lat_deg: &[f32],
+    lon_deg: &[f32],
+    options: &ProjectedMapBuildOptions,
+    rings: &[Vec<(f64, f64)>],
+) -> Result<Vec<(usize, Vec<(f64, f64)>)>, Box<dyn Error>> {
+    validate_lat_lon_mesh(lat_deg, lon_deg)?;
+    let projector = resolved_projector(lat_deg, lon_deg, &options.domain)?;
+    let mut projected = Vec::with_capacity(rings.len());
+    for (index, ring) in rings.iter().enumerate() {
+        let lonlat: Vec<_> = ring.iter().map(|&(lat, lon)| (lon, lat)).collect();
+        for piece in project_ring_at_seam(projector, &lonlat) {
+            projected.push((index, piece));
+        }
+    }
+    Ok(projected)
+}
+
 /// The projection a panel built with these options is actually drawn in,
 /// with every parameter the builder derives from the data resolved.
 ///
@@ -1271,6 +1293,13 @@ fn project_densified_ring(
         }
         previous_lonlat = Some((lon, lat));
     }
+    project_ring_at_seam(projector, &dense)
+}
+
+fn project_ring_at_seam(
+    projector: ProjectionProjector,
+    ring: &[(f64, f64)],
+) -> Vec<Vec<(f64, f64)>> {
     let project_all = |points: &[(f64, f64)]| -> Vec<(f64, f64)> {
         points
             .iter()
@@ -1280,9 +1309,9 @@ fn project_densified_ring(
     };
     let pieces = projector
         .seam_longitude_deg()
-        .and_then(|seam| split_lonlat_ring_at_seam(&dense, seam));
+        .and_then(|seam| split_lonlat_ring_at_seam(ring, seam));
     match pieces {
-        None => vec![project_all(&dense)],
+        None => vec![project_all(ring)],
         Some(pieces) => pieces
             .iter()
             .map(|piece| project_all(piece))
@@ -1675,6 +1704,33 @@ mod tests {
             let all_west = piece.iter().all(|p| p.0 < 0.0);
             assert!(all_east || all_west, "a piece stays on one side: {piece:?}");
         }
+    }
+
+    #[test]
+    fn mesh_ring_projection_keeps_indices_and_splits_rotated_seam() {
+        let lat = [15.0, 33.0];
+        let lon = [-100.0, -78.0];
+        let options = ProjectedMapBuildOptions::full_domain(1.5).with_projection(
+            ProjectionSpec::Mercator {
+                latitude_of_true_scale_deg: 24.4,
+                central_meridian_deg: -89.3,
+            },
+        );
+        // Input rings use (lat, lon), unlike the private basemap helper.
+        let rings = vec![
+            vec![(30.5, 90.2), (30.5, 91.0), (30.9, 91.0), (30.9, 90.2)],
+            vec![(30.0, -90.4), (30.0, -89.7), (30.35, -89.7), (30.35, -90.4)],
+        ];
+        let pieces = project_geographic_rings_with_options(&lat, &lon, &options, &rings)
+            .expect("mesh ring projection");
+        assert_eq!(pieces.iter().map(|(i, _)| *i).collect::<Vec<_>>(), vec![0, 0, 1]);
+        let world = projected_plane_width(mercator_gulf_projector());
+        for (_, ring) in &pieces[..2] {
+            assert!(ring_x_span(ring) < world * 0.01, "seam cell spans the map");
+        }
+        assert_eq!(pieces[2].1,
+            project_geographic_points_with_options(&lat, &lon, &options, &rings[1])
+                .expect("unchanged off-seam cell"));
     }
 
     #[test]

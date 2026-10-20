@@ -3523,8 +3523,13 @@ def _rebalance_moist_pressure_serial(pressure_guess, qtot, dry_mass, base,
 
 def _rebalance_moist_pressure(pressure_guess, qtot, dry_mass, base, coord, *,
                               column_workers=1):
-    """Run the unchanged vertical recurrence over parallel row slabs."""
+    """Use native columns, retaining the exact parallel row-slab reference."""
     workers = _column_worker_count(column_workers)
+    from gpuwm.ingest import host_arrays
+    native = host_arrays.moist_pressure(
+        pressure_guess, qtot, dry_mass, base, coord, workers=workers)
+    if native is not None:
+        return native
     pressure = np.empty_like(pressure_guess)
     if workers == 1 or pressure_guess.shape[1] < 2:
         return _rebalance_moist_pressure_serial(
@@ -4259,7 +4264,7 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     # zero start (WRF_REAL_VERTICAL_VELOCITY_POLICY).
     vertical_velocity_source = next(
         (name for name in ("WW", "OMEGA") if name in snapshot.fields), None)
-    if vertical_velocity_source is not None and not boundary_only:
+    if vertical_velocity_source is not None:
         fields[vertical_velocity_source] = snapshot.fields[vertical_velocity_source]
     else:
         vertical_velocity_source = None

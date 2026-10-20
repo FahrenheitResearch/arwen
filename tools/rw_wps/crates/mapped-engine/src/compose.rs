@@ -46,7 +46,9 @@ pub const EXTERNAL_FIELD: &str = "terrain_height";
 /// `mapped_composition._SOIL_PAIR`.
 pub const SOIL_PAIR: [&str; 2] = ["soil_temperature", "volumetric_soil_moisture"];
 /// `mapped_composition._BOUND_GRID_ALIGNMENTS`.
-pub const BOUND_GRID_ALIGNMENTS: [&str; 1] = ["exact_coordinate_subset"];
+pub const BOUND_GRID_ALIGNMENTS: [&str; 2] = [
+    "exact_coordinate_subset", "exact_coordinate_strided_subset",
+];
 
 const COMPOSITION_KEYS: [&str; 6] = [
     "schema",
@@ -73,7 +75,7 @@ const TERRAIN_KEYS: [&str; 8] = [
     "time_alignment",
     "require_invariant_across_time",
 ];
-const BINDING_KEYS: [&str; 8] = [
+const BINDING_KEYS: [&str; 9] = [
     "source_id",
     "mapping_role",
     "mapping_sha256",
@@ -82,6 +84,7 @@ const BINDING_KEYS: [&str; 8] = [
     "fields",
     "grid_alignment",
     "time_alignment",
+    "vertical_merge",
 ];
 
 /// `composition.supplements.terrain_height`.
@@ -104,6 +107,7 @@ pub struct Binding {
     pub fields: Vec<String>,
     pub grid_alignment: String,
     pub time_alignment: String,
+    pub vertical_merge: Option<crate::vertical::VerticalMerge>,
 }
 
 /// The composition document, validated against the mapping's own bytes.
@@ -389,7 +393,8 @@ fn validate_field_sources(
     for (binding_name, raw) in value.entries() {
         string(Some(&Node::String(binding_name.clone())), "field_sources binding name")?;
         let label = format!("composition.field_sources.{binding_name}");
-        object(raw, &label, &BINDING_KEYS, &BINDING_KEYS)?;
+        object(raw, &label, &BINDING_KEYS, &BINDING_KEYS[..8])?;
+        let vertical_merge = raw.get("vertical_merge").map(crate::vertical::VerticalMerge::parse).transpose()?;
         let source_id = string(raw.get("source_id"), &format!("{label}.source_id"))?.to_owned();
         let mapping_sha256 = digest(
             raw.get("mapping_sha256"),
@@ -458,7 +463,7 @@ fn validate_field_sources(
                     python_repr(name)
                 )));
             }
-            if !declared_bound.contains(name) {
+            if !declared_bound.contains(name) && !vertical_merge.as_ref().is_some_and(|merge| merge.fields.contains_key(name)) {
                 return Err(mapping_invalid(format!(
                     "field {} has two providers: the primary mapping and \
                      contributing source binding {}",
@@ -487,6 +492,7 @@ fn validate_field_sources(
             fields: names,
             grid_alignment: grid_alignment.to_owned(),
             time_alignment: time_alignment.to_owned(),
+            vertical_merge,
         });
     }
     bindings.sort_by(|left, right| left.name.cmp(&right.name));
@@ -727,35 +733,78 @@ pub fn partition_contributing(
         .filter(|node| node.is_object())
         .ok_or_else(|| mapping_invalid("mapping.fields must be an object"))?;
     let quoted = python_repr(binding_name);
-    let mut kept: Vec<(String, Node)> = Vec::with_capacity(field_names.len());
-    for name in field_names {
-        let Some(field) = fields.get(name) else {
-            return Err(mapping_invalid(format!(
-                "contributing source binding {quoted} borrows {} but the \
-                 contributing mapping does not map it",
-                python_repr(name)
-            )));
-        };
-        if field
-            .field("selectors")
-            .map(|node| node.items().is_empty())
-            .unwrap_or(true)
-        {
-            return Err(mapping_invalid(format!(
-                "contributing source binding {quoted} borrows {}, which the \
-                 contributing mapping does not provide with direct selectors; \
-                 a derived or externally bound donor field is not decodable in \
-                 a partitioned donor decode",
-                python_repr(name)
-            )));
+    let mut needed: BTreeSet<String> = field_names.iter().cloned().collect();
+    let mut pending = field_names.to_vec();
+    while let Some(name) = pending.pop() {
+        let field = donor.field(&name)?;
+        if let Some(operation_name) = field.derivation() {
+            let operation = donor.derivation(operation_name).ok_or_else(|| mapping_invalid(format!(
+                "contributing source binding {quoted} has unknown derivation {operation_name}")))?;
+            let dependencies = crate::derive::derivation_dependencies(operation, donor.vertical()?, &name)?
+                .ok_or_else(|| mapping_invalid(format!("cannot resolve contributing derivation {name}")))?;
+            for dependency in dependencies {
+                if needed.insert(dependency.clone()) { pending.push(dependency); }
+            }
+        } else if field.selectors().is_empty() {
+            return Err(mapping_invalid(format!("contributing source binding {quoted} cannot decode {name}")));
         }
-        kept.push((name.clone(), field.clone()));
     }
+    let kept: Vec<(String, Node)> = fields.entries().iter().filter(|(name, _)| needed.contains(name)).cloned().collect();
     Ok(Mapping {
         doc: donor.doc.with_entry("fields", Node::Object(kept)),
         sha256: donor.sha256.clone(),
         path: donor.path.clone(),
     })
+}
+
+/// Materialize only the requested donor fields, using their own mapping's
+/// dependency closure. Donor q2 from dewpoint and q from RH follow the
+/// existing derivation catalog, with no special source handling.
+fn complete_donor_fields(mapping: &Mapping, mut collection: crate::assemble::DecodedCollection,
+                         names: &[String]) -> Result<crate::assemble::DecodedCollection> {
+    use crate::derive::{CanonicalField, evaluate_derivation};
+    use rayon::prelude::*;
+    let keys: Vec<_> = collection.source_cycles.keys().cloned().collect();
+    let values: Vec<Result<Vec<crate::assemble::DirectValue>>> = crate::threads::install(|| keys.par_iter().map(|key| {
+        let mut available: BTreeMap<String, CanonicalField> = BTreeMap::new();
+        for ((time, member, name), value) in &collection.direct {
+            if *time != key.0 || *member != key.1 { continue; }
+            let spec = mapping.field(name)?;
+            available.insert(name.clone(), CanonicalField {
+                name: name.clone(), units: spec.units_target()?.into(), axes: value.axes.clone(),
+                location: spec.location()?.into(), staggering: spec.staggering().into(), values: value.values.clone(),
+                missing_count: value.missing_count, source_references: value.references.clone() });
+        }
+        let mut pending: BTreeSet<_> = mapping.fields()?.into_iter()
+            .filter(|field| field.derivation().is_some() && !available.contains_key(&field.name))
+            .map(|field| field.name).collect();
+        while !pending.is_empty() {
+            let before = pending.len();
+            for name in pending.clone() {
+                let field = mapping.field(&name)?;
+                let operation = mapping.derivation(field.derivation().unwrap()).unwrap();
+                if let Some((values, axes, references)) = evaluate_derivation(operation, &available, &collection, &field, &name, mapping.vertical()?)? {
+                    let missing_count = crate::array::count_nan(&values);
+                    available.insert(name.clone(), CanonicalField {
+                        name: name.clone(), units: field.units_target()?.into(), axes, location: field.location()?.into(),
+                        staggering: field.staggering().into(), values, missing_count, source_references: references });
+                    pending.remove(&name);
+                }
+            }
+            if pending.len() == before { return Err(mapping_invalid(format!("unresolved contributing derivations {pending:?}"))); }
+        }
+        names.iter().map(|name| {
+            let field = available.remove(name).ok_or_else(|| mapping_invalid(format!("donor lacks requested {name}")))?;
+            Ok(crate::assemble::DirectValue { name: name.clone(), valid_time: key.0, member: key.1.clone(),
+                source_cycle: collection.source_cycles[key], axes: field.axes, values: field.values,
+                missing_count: field.missing_count, references: field.source_references })
+        }).collect()
+    }).collect());
+    collection.direct.clear();
+    for group in crate::threads::in_order(values)? {
+        for field in group { collection.direct.insert((field.valid_time, field.member.clone(), field.name.clone()), field); }
+    }
+    Ok(collection)
 }
 
 /// The UNION view a composed frameset materializes against: the primary
@@ -799,15 +848,30 @@ pub fn union_mapping(
             // it would hold the field the composition exists to supply
             // off the composed frame.
             let spec = if spec.is_object() {
-                spec.object_filtered(|key, _| key != "dependency_only")
+                spec.object_filtered(|key, _| key != "dependency_only" && key != "derivation")
             } else {
                 spec.clone()
             };
             fields = fields.with_entry(name, spec);
         }
     }
+    let mut doc = primary.doc.clone();
+    for binding in bindings {
+        if let Some(merge) = &binding.vertical_merge {
+            let donor = &donors[&binding.name];
+            merge.validate_coordinates(primary.vertical()?, donor.vertical()?)?;
+            let coordinates = doc.get("coordinates").unwrap().with_entry("vertical", donor.vertical()?.clone());
+            doc = doc.with_entry("coordinates", coordinates);
+            fields = fields.with_entry("air_pressure", donor.field("air_pressure")?.raw.clone());
+            for (output, rule) in &merge.fields {
+                if output != &rule.primary_field {
+                    fields = fields.object_filtered(|key, _| key != rule.primary_field);
+                }
+            }
+        }
+    }
     Ok(Mapping {
-        doc: primary.doc.with_entry("fields", fields),
+        doc: doc.with_entry("fields", fields),
         sha256: primary.sha256.clone(),
         path: primary.path.clone(),
     })
@@ -1186,8 +1250,9 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
             )));
         }
         let donor_files = &supplements[&binding.data_role];
+        let donor_partition = partition_contributing(&donor, &binding.fields, &binding.name)?;
         let donor_collection = match crate::engine::decode_collection_or_unmatched(
-            &partition_contributing(&donor, &binding.fields, &binding.name)?,
+            &donor_partition,
             donor_files,
             progress,
         )? {
@@ -1222,6 +1287,8 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
                 continue;
             }
         };
+        let mut donor_collection = complete_donor_fields(&donor_partition, donor_collection, &binding.fields)?;
+        crate::join::register_projected_subset(&mapping, &donor, &mut donor_collection)?;
         let (plan, receipt) = crate::join::plan_bound_fields(
             &crate::join::PrimaryHeader {
                 latitude: stream.latitude(),
@@ -1324,13 +1391,16 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
         }
         Ok(())
     };
+    let splice_receipts = std::sync::Mutex::new(Vec::<Value>::new());
     let compose_slice = |mut slice: crate::assemble::DecodedCollection,
                          source_key: &crate::assemble::TimeKey| {
         if let Some(plan) = &terrain_plan {
             crate::join::apply_terrain(plan, &mut slice, source_key)?;
         }
         for (plan, donor) in &borrowed {
-            crate::join::apply_bound_fields(plan, donor, &mut slice, source_key)?;
+            if let Some(receipt) = crate::join::apply_bound_fields(plan, donor, &mut slice, source_key)? {
+                splice_receipts.lock().unwrap().push(receipt);
+            }
         }
         // The manifest's explicit member binding lands LAST, after every
         // join: the composition operates on the identity the bytes carry
@@ -1383,6 +1453,15 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
             compose_slice(slice, &source_key)
         })?
     };
+    for record in &mut contributing_records {
+        let binding_name = record["binding"].as_str().unwrap_or("");
+        let mut receipts: Vec<Value> = splice_receipts.lock().unwrap().iter()
+            .filter(|receipt| receipt["binding"] == binding_name).cloned().collect();
+        receipts.sort_by_key(|receipt| receipt["valid_time"].as_str().unwrap_or("").to_owned());
+        if !receipts.is_empty() {
+            record["alignment"]["vertical_merge"] = json!(receipts);
+        }
+    }
     let frame_count = document
         .get("frames")
         .and_then(Value::as_array)
@@ -1665,6 +1744,7 @@ mod tests {
             fields: vec!["soil_temperature".to_owned()],
             grid_alignment: "exact_coordinate_subset".to_owned(),
             time_alignment: "valid_time_exact".to_owned(),
+            vertical_merge: None,
         };
         let donors = BTreeMap::from([("donor".to_owned(), donor)]);
         let union = union_mapping(&primary, &donors, &[binding]).unwrap();
@@ -1690,6 +1770,7 @@ mod tests {
             fields: fields.iter().map(|name| (*name).to_owned()).collect(),
             grid_alignment: "exact_coordinate_subset".to_owned(),
             time_alignment: "source_cycle_analysis_broadcast".to_owned(),
+            vertical_merge: None,
         };
         let fallbacks = vec![(
             "vegetation_fraction".to_owned(),

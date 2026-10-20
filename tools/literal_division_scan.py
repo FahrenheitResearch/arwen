@@ -67,6 +67,9 @@ FTZ_FALSE_SOURCES = frozenset({
     # IEEE.  test_literal_division_source_gate.py ties each exception to its
     # options.
     "g3.cu", "nsas.cu", "lightning.cu",
+    # hydro.reservoirs._module composes this header and uses ieee_module
+    # exclusively; test_nextgen_reservoir_divisions_use_non_ftz pins the route.
+    "nextgen_reservoirs.cuh",
 })
 
 _NUMBER = r"(?:\d+\.\d*|\.\d+|\d+)(?:[eE][-+]?\d+)?"

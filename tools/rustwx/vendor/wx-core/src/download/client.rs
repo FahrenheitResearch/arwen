@@ -762,7 +762,7 @@ fn build_agent(config: &DownloadConfig, pooled: bool) -> ureq::Agent {
     let crypto = Arc::new(rustls_rustcrypto::provider());
 
     let mut builder = ureq::Agent::config_builder();
-    if !pooled {
+    if !pooled || std::env::var_os("GPUWM_FETCH_NO_IDLE_CONNECTIONS").is_some() {
         builder = builder
             .max_idle_connections(0)
             .max_idle_connections_per_host(0);
@@ -797,7 +797,8 @@ impl DownloadClient {
         fresh: bool,
     ) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
         let agent = if fresh { &self.fresh } else { &self.agent };
-        let mut request = agent.get(url);
+        // Byte ranges and size/digest pins describe the identity representation.
+        let mut request = agent.get(url).header("Accept-Encoding", "identity");
         if let Some(range_header) = range_header {
             request = request.header("Range", range_header);
         }
@@ -1015,6 +1016,11 @@ impl DownloadClient {
     /// Chunk streams one ranged transfer keeps open at once.
     pub fn streams(&self) -> usize {
         self.streams
+    }
+
+    /// Range width after the origin's existing politeness cap.
+    pub fn streams_for(&self, url: &str) -> usize {
+        if is_nomads_url(url) { 1 } else { self.streams }
     }
 
     /// Return a reference to the underlying HTTP agent.
@@ -1469,11 +1475,7 @@ impl DownloadClient {
             }
         }
 
-        let streams = if is_nomads_url(url) {
-            1
-        } else {
-            self.streams.clamp(1, total)
-        };
+        let streams = self.streams_for(url).clamp(1, total);
         let completed = AtomicUsize::new(0);
         let next = AtomicUsize::new(0);
         let failed = AtomicBool::new(false);

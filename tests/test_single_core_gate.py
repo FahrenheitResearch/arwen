@@ -18,10 +18,29 @@ from gpuwm.timeline.ledger import Ledger, span
 LINUX = par._LINUX
 QUICK = dict(min_wall=1.0, max_cores=1.3, min_cores=0.6)
 SPIN = par.SERIAL
+NL = chr(10)
 
 
 def _spin(seconds):
     return [sys.executable, "-c", SPIN.format(s=seconds)]
+
+
+def _one_core_share(seconds=1.0):
+    """CPU one spinning thread actually gets, as a fraction of one core, read inside the child (os.times)."""
+    code = SPIN.format(s=seconds) + "import os" + NL + "t = os.times()" + NL + "print(t.user + t.system)" + NL
+    done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
+    return float(done.stdout.strip()) / seconds
+
+
+def _skip_if_host_cannot_give_one_core(what):
+    """Called only after a real-process reading missed. Breakage it prevents: R5 Stage 1 of 2.9.3 went red twice
+    (pass 10 at da35ab804cb, pass 12 at 9e128dffe8d) on a shared host at load ~24, where the test's one-thread spin got
+    0.36-0.45 of a core, so the gate correctly read it as "waiting", not "single-core". A fresh calibration spin
+    that also gets under 0.8 of a core shows the host was contended; the judge itself stays covered by test_rule
+    and the tick-series tests, which need no free core. A calibration that gets a whole core fails the test."""
+    got = _one_core_share()
+    if got < 0.8:
+        pytest.skip(f"{what}: host contended, a one-thread spin got {got:.2f} of a core (needs 0.8)")
 
 
 @pytest.fixture(autouse=True)
@@ -86,6 +105,8 @@ def test_serial_stage_is_red_and_parallel_stage_is_green():
     rc, one = par.watch(_spin(2.5), interval=0.25, **QUICK)
     assert rc == 0
     bad, _ = par.verdict(one, [])
+    if not bad:
+        _skip_if_host_cannot_give_one_core("serial spin read below one core")
     assert bad, one["windows"]
     assert 0.6 <= bad[0]["cores"] <= 1.3 and bad[0]["wall_s"] > 1.0
     assert "python" in bad[0]["what"]
@@ -97,6 +118,8 @@ def test_serial_stage_is_red_and_parallel_stage_is_green():
             "sys.exit(max(p.wait() for p in ps))\n"]
     rc, wide = par.watch(many, interval=0.25, **QUICK)
     assert rc == 0
+    if wide["cores"] <= 1.3:
+        _skip_if_host_cannot_give_one_core("parallel spins read at most 1.3 cores")
     assert wide["cores"] > 1.3, wide
     assert par.verdict(wide, [])[0] == []
 
@@ -107,6 +130,8 @@ def test_cli_watch_fails_a_serial_command_and_allowlist_names_it(tmp_path):
     gate = [sys.executable, par.__file__, "watch", "--interval", "0.25", "--min-wall", "1",
             "--out", str(out), "--", *_spin(2.5)]
     done = subprocess.run(gate, capture_output=True, text=True, timeout=60)
+    if done.returncode != 3:
+        _skip_if_host_cannot_give_one_core("CLI watch did not flag the serial spin")
     assert done.returncode == 3, done.stdout + done.stderr
     assert "SINGLE-CORE" in done.stdout and json.loads(out.read_text())["gate"] == "RED"
     allow = tmp_path / "allow.json"
@@ -115,6 +140,8 @@ def test_cli_watch_fails_a_serial_command_and_allowlist_names_it(tmp_path):
     done = subprocess.run(gate[:3] + ["--allow", str(allow)] + gate[3:], capture_output=True, text=True,
                           timeout=60)
     assert done.returncode == 0, done.stdout + done.stderr
+    if "allowed" not in done.stdout:
+        _skip_if_host_cannot_give_one_core("CLI watch did not read the allowed spin as single-core")
     assert "allowed" in done.stdout
 
 
@@ -129,6 +156,8 @@ def test_c1_stage_carries_cpu_and_a_serial_stage_is_flagged(tmp_path, monkeypatc
     events = [json.loads(x) for x in path.read_text().splitlines()]
     assert all(isinstance(e["attrs"].get("cpu_s"), float) for e in events)
     rows = dict(par.ledger_stages(path, **QUICK))
+    if rows["prep.serial_child"]["verdict"] != "single-core":
+        _skip_if_host_cannot_give_one_core("C1 serial child read below one core")
     assert rows["prep.serial_child"]["verdict"] == "single-core", rows
     assert rows["prep.idle"]["verdict"] == "short"
     done = subprocess.run([sys.executable, par.__file__, "check", "--min-wall", "1", "--ledger", str(path)],
@@ -150,6 +179,8 @@ def test_stage_meter_records_cores():
     rec = meter.since(mark, **QUICK)
     meter.close()
     if LINUX:
+        if rec["cores"] < 0.6:
+            _skip_if_host_cannot_give_one_core("stage meter read the spin below one core")
         assert 0.6 <= rec["cores"] <= 1.3 and rec["verdict"] == "single-core", rec
     assert set(rec) >= {"wall_s", "cpu_s", "cores", "card_busy", "verdict"}
 

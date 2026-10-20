@@ -79,6 +79,7 @@ from gpuwm.core.noahmp_water_gpu import (
     NSOIL,
     NSTATE,
     OUT_SCALAR,
+    OUT_DIAGNOSTIC,
     OUT_STRIDE,
     OUT_VECTOR,
     P_LAYER,
@@ -114,7 +115,7 @@ FIELD_NAMES = tuple(FLOAT_FIELDS) + tuple(INT_FIELDS)
 #: first, then the flux record.  ``isnow`` comes from the kernel's integer
 #: output rather than from the float row.
 OUTPUT_NAMES = (("isnow",) + tuple(STATE_SLOT) + tuple(OUT_VECTOR)
-                + tuple(OUT_SCALAR))
+                + tuple(OUT_SCALAR) + tuple(OUT_DIAGNOSTIC))
 
 #: ``WaterFluxes`` members the device row does not carry.  See the module
 #: docstring; the per-column path returns ``None`` for this one.
@@ -205,6 +206,7 @@ def _unpack_slab(fout, iout, cp) -> dict:
     specs.update({name: (NSTATE + offset, width)
                   for name, (offset, width) in OUT_VECTOR.items()})
     specs.update({name: (NSTATE + slot, 1) for name, slot in OUT_SCALAR.items()})
+    specs.update({name: (NSTATE + slot, 1) for name, slot in OUT_DIAGNOSTIC.items()})
     return {"isnow": cp.ascontiguousarray(iout),
             **split_slab_slots(fout, specs)}
 

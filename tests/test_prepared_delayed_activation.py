@@ -8,7 +8,8 @@ import pytest
 
 from gpuwm import prepared_domain_tree_forecast as runner
 from gpuwm.core.model import execute_experiment
-from test_delayed_nest_activation import (
+from test_delayed_nest_activation import (  # noqa: F401 (autouse fixture)
+    analysis_reflectivity_stand_in,
     DELAY_SECONDS, _Writers, _stashing_step, _tree)
 from test_model import _Coupler, _HistoryState
 from test_prepared_domain_tree_forecast import _sha, _synthetic_prepared_tree

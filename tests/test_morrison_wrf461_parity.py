@@ -4,10 +4,9 @@ The fixture comes from the public ``MP_MORR_TWO_MOMENT`` wrapper and
 includes its radar diagnostic: every expected value was written by WRF.
 ``kernels/morrison.cu`` is the literal transcription graded here.  Built
 with ``MORR_ROW37_OFF`` (WRF's arithmetic alone) it is bitwise on every
-returned word; the production build differs only where the owner-ruled
-row-37 corrections fire (PARITY-GAPS row 37: the deposition-nucleation
-vapour cap and the wide re-evaluation of a non-finite freezing rate), and
-those differences are pinned below as named exceptions.
+returned word. Row-37 corrections are measured in isolation below; production
+also corrects negative sedimentation mass, which WRF can export as negative
+surface snowfall. Production is graded for finite, nonnegative water too.
 """
 
 from __future__ import annotations
@@ -249,9 +248,9 @@ def test_morrison_wrf_acceptance_is_bitwise():
 
 @pytest.mark.gpu
 @requires_gpu
-def test_row37_corrections_are_the_only_production_differences():
-    """The production build differs from WRF only in the named exception."""
-    report = _measurement()
+def test_isolated_row37_corrections_retain_their_pinned_differences():
+    """With transport correction isolated, row 37 retains its pinned scope."""
+    report = measure_oracle(nonnegative_sedimentation=False)
     assert report["row37"] is True
     differing = {name for name, entry in report["fields"].items()
                  if entry["mismatch_count"]}
@@ -259,6 +258,21 @@ def test_row37_corrections_are_the_only_production_differences():
     for name in differing:
         assert sorted(report["fields"][name]["mismatch_cases"]) == (
             ROW37_FIXTURE_CASES), name
+
+
+@pytest.mark.gpu
+@requires_gpu
+def test_production_transport_does_not_export_negative_water():
+    report = _measurement()
+    for name in ("qv", "qc", "qr", "qi", "qs", "qg", "rainnc", "rainncv",
+                 "snownc", "snowncv", "graupelnc", "graupelncv", "sr"):
+        assert report["fields"][name]["minimum"] >= 0.0, name
+    # This fixture independently reproduces the WRF defect corrected by the
+    # forecast fix: case 6 exported -1.13e-9 mm snowfall in both ice modes.
+    snow = report["fields"]["snowncv"]
+    assert sorted(snow["mismatch_cases"]) == [[6, 0], [6, 1]]
+    assert snow["worst"]["want"] < 0.0
+    assert snow["worst"]["got"] == 0.0
 
 
 @pytest.mark.gpu

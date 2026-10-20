@@ -123,3 +123,6 @@ fn is_major_catalog_place(slug: &str) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+/// Shared pressure/height diagnostic rows for native history maps.
+pub mod vertical;

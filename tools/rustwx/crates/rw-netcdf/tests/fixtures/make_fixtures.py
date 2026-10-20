@@ -6,30 +6,36 @@ The classic-format fixtures are built at test runtime by the in-workspace
 nothing in the Rust stack WRITES HDF5 (deliberately -- see
 crates/netcdf-writer/src/lib.rs), and the code under test exists exactly
 because real NetCDF-4 producers store coordinate variables as HDF5
-dimension scales that the vendored reader's `variables()` omits.  So the
-fixtures are produced by the reference implementations themselves --
-netCDF4-python (the C library) and h5py -- and checked in as bytes.
+dimension scales, which the vendored reader must list as variables over
+the right dimensions.  So the fixtures are produced by the reference
+implementations themselves -- netCDF4-python (the C library) and h5py --
+and checked in as bytes.
 
-axes.nc4 -- a well-formed NetCDF-4 file, the `recover_dimension_scales`
-    subject:
+axes.nc4 -- a well-formed NetCDF-4 file, the variable-table subject:
     * dims time(4), lon(3), lat(3), bnds(2); lon and lat share a length
-      on purpose, so only the coordinate-variable NAME rule can tell
-      their scales apart;
-    * coordinate variables time/lon/lat (HDF5 dimension scales, absent
-      from the reader's variable table) with CF string attributes;
+      on purpose, so only a scale's own identity (its dataset address),
+      never a length match, can attach each to its own dimension;
+    * coordinate variables time/lon/lat (HDF5 dimension scales, listed
+      by the reader over their own dimension) with CF string attributes;
     * `bnds` has NO coordinate variable: the C library writes the
       "This is a netCDF dimension but not a netCDF variable." NAME
-      sentinel, and recovering it would invent a variable netCDF4-python
+      sentinel, and listing it would invent a variable netCDF4-python
       does not report;
     * a data variable t2(time, lat, lon) that carries a real
       DIMENSION_LIST, so strict metadata reconstruction succeeds;
     * an extra 1-D dimension scale `zvals` (length 6, added with h5py);
-      the reader registers a 1-D scale as a dimension named after
-      itself, so it resolves by the coordinate-variable NAME rule;
-    * a 2-D dimension scale `corners` (5 x 6, added with h5py).  A 2-D
-      dataset can never take the name rule, so each of its axes is
-      resolvable only by the unique-length rule: 5 -> the scale's own
-      registered dimension, 6 -> zvals.
+      a 1-D scale is a dimension named after itself and a variable over
+      it;
+    * a 2-D dimension scale `corners` (5 x 6, added with h5py).  h5py
+      writes no coordinate record, so the second axis is resolvable
+      only by the unique-length rule: 6 -> zvals.
+
+coord2d.nc4 -- netCDF-C's own multi-axis coordinate variable:
+    station(station, pair) with dims station(3), pair(2), other(2).
+    HDF5 refuses to attach scales to a scale, so the C library records
+    the axes' dimension ids in `_Netcdf4Coordinates` instead; `pair`
+    and `other` share a length on purpose, so only that record can
+    name the second axis.  Plus a data variable temp(station).
 
 sizes.nc4 -- a bare h5py file with no netCDF metadata at all: no
     DIMENSION_LIST anywhere.  Strict reconstruction must fail and the
@@ -101,6 +107,21 @@ def make_axes() -> None:
     print(f"wrote {path} ({path.stat().st_size} bytes)")
 
 
+def make_coord2d() -> None:
+    path = HERE / "coord2d.nc4"
+    path.unlink(missing_ok=True)
+    with netCDF4.Dataset(path, "w", format="NETCDF4") as ds:
+        ds.createDimension("station", 3)
+        ds.createDimension("pair", 2)
+        ds.createDimension("other", 2)
+        station = ds.createVariable("station", "f8", ("station", "pair"))
+        station.long_name = "station corner"
+        station[:] = np.arange(6.0).reshape(3, 2)
+        temp = ds.createVariable("temp", "f8", ("station",))
+        temp[:] = [1.0, 2.0, 3.0]
+    print(f"wrote {path} ({path.stat().st_size} bytes)")
+
+
 def make_sizes() -> None:
     path = HERE / "sizes.nc4"
     path.unlink(missing_ok=True)
@@ -134,6 +155,7 @@ def make_times() -> None:
 
 if __name__ == "__main__":
     make_axes()
+    make_coord2d()
     make_sizes()
     make_mixed()
     make_times()

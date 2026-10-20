@@ -1192,6 +1192,9 @@ def load_experiment_case_bytes(
         raise TypeError("experiment config payload must be bytes")
     base = Path(base_dir)
     raw = tomllib.load(io.BytesIO(payload))
+    from gpuwm.vertical_contract import validate_config_source_top
+
+    validate_config_source_top(raw, context=source)
     # The whole shape, read before the companion tables are split off:
     # the missing-table refusal reports which tables the file DID carry
     # and which route its [fetch] hints put it on, and neither survives

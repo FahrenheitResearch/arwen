@@ -88,6 +88,12 @@ pub static FIELD_MAP: &[FieldMapping] = &[
     f("QICE", Some("qi"), Rank::Mass3d, "kg kg-1", "Ice mixing ratio", FieldSource::History, ""),
     f("QSNOW", Some("qs"), Rank::Mass3d, "kg kg-1", "Snow mixing ratio", FieldSource::History, ""),
     f("QGRAUP", Some("qg"), Rank::Mass3d, "kg kg-1", "Graupel mixing ratio", FieldSource::History, ""),
+    f("QNCLOUD", Some("nc"), Rank::Mass3d, "kg-1", "Cloud droplet number mixing ratio", FieldSource::History, "published moments only; never synthesized"),
+    f("QNICE", Some("ni"), Rank::Mass3d, "kg-1", "Cloud ice number mixing ratio", FieldSource::History, ""),
+    f("QNRAIN", Some("nr"), Rank::Mass3d, "kg-1", "Rain number mixing ratio", FieldSource::History, ""),
+    f("QNSNOW", Some("ns"), Rank::Mass3d, "kg-1", "Snow number mixing ratio", FieldSource::History, ""),
+    f("QNGRAUPEL", Some("ng"), Rank::Mass3d, "kg-1", "Graupel number mixing ratio", FieldSource::History, ""),
+    f("QNHAIL", Some("nh"), Rank::Mass3d, "kg-1", "Hail number mixing ratio", FieldSource::History, ""),
     f("REFL_10CM", Some("refl10cm"), Rank::Mass3d, "dBZ", "Radar reflectivity (lambda = 10 cm)",
       FieldSource::History,
       "the model's own microphysics-time diagnostic; when the history carries it, reflectivity products read the model rather than the renderer's hydrometeor fallback"),
@@ -199,7 +205,7 @@ pub fn remap_class(wrf_name: &str) -> RemapClass {
 
 /// The named field sets. A global 0.25 degree window carries four million
 /// points per level, so the surface set keeps only what the surface,
-/// precipitation, MSLP and precipitable-water products read -- which is the
+/// precipitation, MSLP, precipitable-water and 100 m wind products read -- which is the
 /// accurate content of a coarse overview anyway.
 pub fn field_set_allows(field_set: &str, mapping: &FieldMapping) -> bool {
     match field_set {
@@ -209,7 +215,7 @@ pub fn field_set_allows(field_set: &str, mapping: &FieldMapping) -> bool {
         // surface-deliverable map even though the carrier is 3-D.
         "surface" => matches!(
             mapping.wrf_name,
-            "T" | "P" | "PB" | "QVAPOR" | "PH" | "PHB" | "REFL_10CM"
+            "T" | "P" | "PB" | "QVAPOR" | "PH" | "PHB" | "U" | "V" | "W" | "REFL_10CM"
         ) || matches!(mapping.rank, Rank::Surface | Rank::Soil),
         _ => true,
     }
@@ -228,6 +234,15 @@ mod tests {
             .iter()
             .find(|m| m.wrf_name == wrf_name)
             .unwrap_or_else(|| panic!("{wrf_name} is not mapped; the obs referee's model bundle refuses frames without it"))
+    }
+
+    #[test]
+    fn export_carriers_survive_conversion_field_sets() {
+        for name in ["P", "PB", "PH", "PHB", "QVAPOR", "W", "U", "V", "T", "HGT"] {
+            let row = FIELD_MAP.iter().find(|row| row.wrf_name == name).unwrap();
+            assert!(field_set_allows("full", row), "full lost {name}");
+            assert!(field_set_allows("surface", row), "surface lost {name}");
+        }
     }
 
     #[test]

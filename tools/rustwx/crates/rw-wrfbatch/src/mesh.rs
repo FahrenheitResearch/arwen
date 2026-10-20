@@ -71,6 +71,7 @@ use rustwx_render::{
     ExtendMode, MapRenderRequest, MeshCell, MeshCellsLayer, PngWriteOptions, ProductVisualMode,
     ProjectedDomain, ProjectedMapBuildOptions, RenderTheme, build_projected_map_with_options,
     map_frame_aspect_ratio_for_mode, project_geographic_points_with_options,
+    project_geographic_rings_with_options,
     resolved_projection_for_options, save_png_profile_with_options,
 };
 
@@ -311,12 +312,10 @@ pub struct MeshGeometry {
     /// Cell centres, degrees.
     pub lat_cell_deg: Vec<f32>,
     pub lon_cell_deg: Vec<f32>,
-    /// One boundary ring per DRAWN polygon, `(lat, lon)` in degrees,
-    /// longitudes unwrapped so a ring never spans the whole map.  A mesh
-    /// that wraps the globe carries a second ring for each cell the
-    /// antimeridian cuts, shifted by 360 degrees, so both halves draw.
+    /// One boundary ring per cell, `(lat, lon)` in degrees. The map's
+    /// projector splits rings at its actual cut before drawing them.
     pub rings_deg: Vec<Vec<(f64, f64)>>,
-    /// Which cell each ring belongs to; the identity plus the seam copies.
+    /// Which cell each ring belongs to.
     pub ring_cell: Vec<usize>,
     /// `bdyMaskCell` when the file carries one: non-zero marks a regional
     /// mesh's relaxation ring.
@@ -510,7 +509,6 @@ pub fn read_mesh_geometry(path: &Path) -> Result<MeshGeometry, String> {
 
     let mut rings_deg = Vec::with_capacity(n_cells);
     let mut ring_cell: Vec<usize> = Vec::with_capacity(n_cells);
-    let mut seam: Vec<(usize, Vec<(f64, f64)>)> = Vec::new();
     for cell in 0..n_cells {
         let count = (n_edges_on_cell.get(cell).copied().unwrap_or(0.0) as usize).min(max_edges);
         let centre_lon = f64::from(lon_cell_deg[cell]);
@@ -532,28 +530,6 @@ pub fn read_mesh_geometry(path: &Path) -> Result<MeshGeometry, String> {
             let lon = unwrap_longitude(to_deg(lon_vertex[index]), centre_lon);
             ring.push((lat, lon));
         }
-        // A cell the antimeridian cuts has vertices past +/-180 after the
-        // unwrap.  On a frame that wraps the globe the far half of that cell
-        // is a real part of the map, so it is drawn a second time shifted by
-        // a full turn; on a regional frame the copy falls outside the clip
-        // and costs one bounding-box test.
-        let past_east = ring.iter().any(|(_, lon)| *lon > 180.0);
-        let past_west = ring.iter().any(|(_, lon)| *lon < -180.0);
-        if past_east {
-            seam.push((
-                cell,
-                ring.iter().map(|(lat, lon)| (*lat, lon - 360.0)).collect(),
-            ));
-        } else if past_west {
-            seam.push((
-                cell,
-                ring.iter().map(|(lat, lon)| (*lat, lon + 360.0)).collect(),
-            ));
-        }
-        rings_deg.push(ring);
-        ring_cell.push(cell);
-    }
-    for (cell, ring) in seam {
         rings_deg.push(ring);
         ring_cell.push(cell);
     }
@@ -873,22 +849,22 @@ pub fn render_mesh_products(
     )
     .map_err(|err| format!("project the mesh: {err}"))?;
 
-    // Every ring vertex through the SAME projector the basemap was built
-    // with: a second, hand-rolled projection is how a mesh ends up drawn on
-    // a map of somewhere else.
-    let mut flat: Vec<(f64, f64)> = Vec::new();
-    let mut ring_starts: Vec<(usize, usize)> = Vec::with_capacity(config.grid.rings_deg.len());
-    for ring in &config.grid.rings_deg {
-        ring_starts.push((flat.len(), ring.len()));
-        flat.extend(ring.iter().copied());
-    }
-    let projected_points = project_geographic_points_with_options(
+    // Split at the SAME projection cut as the basemap. Normalizing each
+    // vertex independently reconnects opposite map edges across its interior.
+    let pieces = project_geographic_rings_with_options(
         &config.grid.lat_cell_deg,
         &config.grid.lon_cell_deg,
         &map_options,
-        &flat,
+        &config.grid.rings_deg,
     )
     .map_err(|err| format!("project the mesh cells: {err}"))?;
+    let mut flat: Vec<(f64, f64)> = Vec::new();
+    let mut ring_starts: Vec<(usize, usize, usize)> = Vec::with_capacity(pieces.len());
+    for (ring_index, ring) in pieces {
+        ring_starts.push((flat.len(), ring.len(), config.grid.ring_cell[ring_index]));
+        flat.extend(ring);
+    }
+    let projected_points = flat;
     let resolved = resolved_projection_for_options(
         &config.grid.lat_cell_deg,
         &config.grid.lon_cell_deg,
@@ -989,7 +965,7 @@ fn render_one(
     units: &str,
     valid_label: &str,
     projected_points: &[(f64, f64)],
-    ring_starts: &[(usize, usize)],
+    ring_starts: &[(usize, usize, usize)],
     projected: &rustwx_render::ProjectedMap,
     placeholder_domain: &ProjectedDomain,
     resolved: &rustwx_render::georeference::ResolvedProjection,
@@ -1000,9 +976,8 @@ fn render_one(
     let mut finite_min = f64::INFINITY;
     let mut finite_max = f64::NEG_INFINITY;
     let mut cells = Vec::with_capacity(ring_starts.len());
-    for (ring_index, (start, count)) in ring_starts.iter().enumerate() {
-        let index = config.grid.ring_cell[ring_index];
-        let ring: Vec<(f64, f64)> = projected_points[*start..*start + *count].to_vec();
+    for &(start, count, index) in ring_starts {
+        let ring: Vec<(f64, f64)> = projected_points[start..start + count].to_vec();
         // A regional mesh's outer relaxation ring is not a forecast: it is
         // the lateral boundary being blended in.  Drawing its values as if
         // they were the model's answer is the one thing a limited-area panel

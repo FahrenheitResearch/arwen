@@ -80,9 +80,10 @@ def test_rust_statistics_paintball_and_postage_are_real_finished_pngs(tmp_path):
         latitude=latitude, longitude=longitude, renderer=renderer, tile_rows=3)
     assert spool.submit({"temperature2": values}, member_ids=(0, 1, 2, 3), valid_time="2026-10-02_01:00:00")
     row = spool.finish("2026-10-02_01:00:00", available_bytes=1 << 26)
-    assert len(row["maps"]) == 7
+    assert len(row["maps"]) == 8
     products = [path.split("/")[2] for path in row["maps"]]
     assert any("postage" in product for product in products)
+    assert any("spaghetti" in product for product in products)
     for relative in row["maps"]:
         with Image.open(spool.root / relative) as picture:
             picture.verify()

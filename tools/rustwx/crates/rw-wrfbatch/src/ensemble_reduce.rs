@@ -558,6 +558,27 @@ fn write_buffer<T: StoredWord>(
     })
 }
 
+// Global intensity distribution matched to the mean's spatial ranks. Equal
+// mean ranks share their assigned intensities, avoiding row-major artifacts.
+fn probability_matched_mean(values: &[f32], means: &[f32]) -> Vec<f32> {
+    let mut pool: Vec<f32> = values.par_iter().copied().filter(|v| v.is_finite()).collect();
+    pool.par_sort_unstable_by(|a, b| b.total_cmp(a));
+    let mut order: Vec<usize> = (0..means.len()).into_par_iter().filter(|&i| means[i].is_finite()).collect();
+    order.par_sort_unstable_by(|&a, &b| means[b].total_cmp(&means[a]).then(a.cmp(&b)));
+    let mut out = vec![f32::NAN; means.len()];
+    let mut start = 0;
+    while start < order.len() && !pool.is_empty() {
+        let mut end = start + 1;
+        while end < order.len() && means[order[start]] == means[order[end]] { end += 1; }
+        let sum: f64 = (start..end)
+            .map(|rank| f64::from(pool[rank * pool.len() / order.len()])).sum();
+        let matched = (sum / (end - start) as f64) as f32;
+        for &cell in &order[start..end] { out[cell] = matched; }
+        start = end;
+    }
+    out
+}
+
 fn reduce(request: &Request, output: &Path) -> Result<Receipt, String> {
     // Validate every pack and requested plane before creating any output.
     let packs = load_packs(request)?;
@@ -578,6 +599,11 @@ fn reduce(request: &Request, output: &Path) -> Result<Receipt, String> {
             .map(|cell| statistics(&values, cell, cells, members))
             .collect();
         let shape = request.shape.to_vec();
+        if matches!(field.field.as_str(), "refl" | "rain_total") {
+            let means: Vec<_> = stats.iter().map(|stat| stat.mean).collect();
+            buffers.push(write_buffer(&output, &field.field, "pmm", shape.clone(),
+                                      probability_matched_mean(&values, &means))?);
+        }
         buffers.push(write_buffer(
             &output,
             &field.field,
@@ -741,6 +767,15 @@ pub fn cli(args: &[String]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pmm_preserves_missing_cells_and_averages_tied_ranks() {
+        let values = [100.0, 1.0, f32::NAN, 90.0, 2.0, f32::NAN];
+        let result = probability_matched_mean(&values, &[95.0, 1.5, f32::NAN]);
+        assert_eq!(&result[..2], &[100.0, 2.0]);
+        assert!(result[2].is_nan());
+        assert_eq!(probability_matched_mean(&[4.0, 0.0, 0.0, 4.0], &[2.0, 2.0]), vec![2.0, 2.0]);
+    }
 
     struct Fixture {
         root: PathBuf,

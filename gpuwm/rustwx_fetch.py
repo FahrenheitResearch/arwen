@@ -5,9 +5,9 @@ sixth binary of the vendored ``tools/rustwx`` workspace, instead of
 through the stdlib ``urllib`` transports in :mod:`tools`.  What that
 buys is machinery ArWen would otherwise have to reimplement:
 
-* **16 MiB parallel whole-file range GETs** -- one 700 MB serial TCP
-  stream becomes a bounded few concurrent ones (``wx-core``
-  ``get_bytes_parallel_whole``; :data:`STREAMS_ENV` sets how many), each
+* **Parallel whole-file range GETs** -- one 700 MB serial TCP
+  stream becomes a bounded few concurrent ones (``wx-core`` range
+  downloads; :data:`STREAMS_ENV` sets how many), each
   resumed from the byte it reached when its body breaks off or stalls;
 * **``.idx`` range coalescing** -- a 561-record selection collapses to a
   handful of GETs (``idx.rs:376`` ``byte_ranges`` plus coalescing);
@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import codecs
 import contextlib
+import functools
 import json
 import os
 from pathlib import Path
@@ -120,6 +121,11 @@ _PROGRESS_MARK = "rw_fetch-progress "
 #: The environment variable that bounds how many chunk streams one
 #: ``rw_fetch`` keeps open at once (16 when unset).
 STREAMS_ENV = "RUSTWX_DOWNLOAD_STREAMS"
+
+# The bundled ureq Config default retains ten idle sockets across origins
+# (vendor/crates-io/ureq/src/config.rs). Redirects can fill several host
+# pools, so reserving only one idle socket per active stream is unsafe.
+LEGACY_IDLE_CONNECTIONS = 10
 
 #: ``(received, total)`` for one ``rw_fetch`` invocation's current object;
 #: ``total`` is ``None`` until the backbone knows the size.
@@ -361,7 +367,52 @@ def _relay(segment: str, on_progress: ProgressCallback) -> None:
         pass
 
 
+@functools.lru_cache(maxsize=32)
+def _idle_capable(binary, identity):
+    try:
+        result = subprocess.run([binary, "--help"], capture_output=True,
+                                text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0 and "GPUWM_FETCH_NO_IDLE_CONNECTIONS" in result.stdout
+
+
 def _run(command: list[str], *, what: str,
+         out: Path | None = None, env: dict[str, str] | None = None,
+         on_progress: ProgressCallback | None = None) -> dict:
+    """Reserve box-wide socket slots until every bridge socket is closed."""
+    if what not in {"fetch", "object", "asset", "encoded-asset", "probe", "latest"}:
+        return _run_process(command, what=what, out=out, env=env,
+                            on_progress=on_progress)
+    from gpuwm import fetch_connections, fetch_pool
+    settings = dict(os.environ if env is None else env)
+    cap = fetch_connections.max_connections()
+    try:
+        stat = Path(command[0]).stat()
+        identity = (stat.st_size, stat.st_mtime_ns)
+    except OSError:
+        identity = None
+    idle = 0 if _idle_capable(str(command[0]), identity) else LEGACY_IDLE_CONNECTIONS
+    if cap <= idle:
+        raise ValueError(f"box fetch cap {cap} cannot bound this older Rust bridge's {idle} idle sockets plus an active socket; rebuild rw_fetch for idle-free transfers or use the Python transport")
+    requested = int(settings.get(STREAMS_ENV, 16))
+    streams = max(1, min(requested, cap - idle))
+    settings[STREAMS_ENV] = str(streams)
+    settings["GPUWM_FETCH_NO_IDLE_CONNECTIONS"] = "1"
+    with fetch_connections.lease(streams + idle):
+        record = _run_process(command, what=what, out=out, env=settings,
+                              on_progress=on_progress)
+    # The native object door reports its selected width after inspecting
+    # the object. Small objects and paced hosts can use fewer than the
+    # reserved slots. Older artifacts report only the configured limit.
+    used = record.get("streams_used", streams)
+    if isinstance(used, bool) or not isinstance(used, int) or not 1 <= used <= streams:
+        raise ValueError(f"rw_fetch {what} reported invalid stream width {used!r}; reserved {streams} active sockets")
+    fetch_pool.record_streams(used, streams + idle)
+    return record
+
+
+def _run_process(command: list[str], *, what: str,
          out: Path | None = None, env: dict[str, str] | None = None,
          on_progress: ProgressCallback | None = None) -> dict:
     """Run one ``rw_fetch`` subcommand and parse its JSON document.

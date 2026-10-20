@@ -405,3 +405,34 @@ def test_posix_handoff_preserves_literal_paths_in_actual_shell():
     assert result.returncode == 0, result.stderr
     assert result.stdout.splitlines() == [word for path in paths
                                           for word in ("sim", path, "--outdir", "forecast")]
+
+
+def test_parallel_preparations_keep_logs_open_and_separate(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    import sys
+    from gpuwm import stage_cli
+    monkeypatch.setattr(stage_cli, 'missing_forecast_runners', lambda: ['test-runtime'])
+    entered = threading.Barrier(2)
+    first_finished = threading.Event()
+    def prepare(index):
+        args = SimpleNamespace(output_root=tmp_path / f'm{index}' / 'prepared', explain=False)
+        def launch():
+            print(f'member-{index}-before')
+            entered.wait(timeout=5)
+            if index == 1:
+                assert first_finished.wait(5)
+            print(f'member-{index}-after', file=sys.stderr)
+            return 0
+        result = prep_output.run_preparation(args, launch)
+        if index == 0:
+            first_finished.set()
+        return result
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(prepare, index) for index in range(2)]
+        assert [future.result(timeout=10) for future in futures] == [0, 0]
+    for index in range(2):
+        log = next((tmp_path / f'm{index}').glob('*.log')).read_text()
+        assert f'member-{index}-before' in log
+        assert f'member-{index}-after' in log
+        assert f'member-{1-index}' not in log

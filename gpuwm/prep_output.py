@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import io
 import os
 from pathlib import Path
@@ -14,6 +13,7 @@ import time
 
 from gpuwm.explain import explain_enabled, split
 from gpuwm.command_output import AdapterOutputError, DiagnosticLog, text_chunks
+from gpuwm.thread_output import current_stream, redirect_output
 # From the render layout, which the standalone preparation wheel stages,
 # and at import rather than inside forecast_command: that call runs while
 # the preparation's output is still held.
@@ -161,7 +161,7 @@ def _run_preparation(args, launch):
     from gpuwm import source_cli, stage_cli
 
     root = Path(args.output_root)
-    terminal, errors = sys.stdout, sys.stderr
+    terminal, errors = current_stream(sys.stdout), current_stream(sys.stderr)
     try:
         root.parent.mkdir(parents=True, exist_ok=True)
         descriptor, name = tempfile.mkstemp(prefix=root.name[:48] + "-prep-", suffix=".log",
@@ -241,9 +241,10 @@ def _run_preparation(args, launch):
         worker = threading.Thread(target=heartbeat, name="prep-progress", daemon=True)
         worker.start()
         try:
-            with contextlib.redirect_stdout(Output(terminal, "stdout", log)), \
-                    contextlib.redirect_stderr(Output(errors, "stderr", log)), \
-                    source_cli.redirect_adapter_output(sys.stdout, sys.stderr):
+            output = Output(terminal, "stdout", log)
+            error_output = Output(errors, "stderr", log)
+            with redirect_output(output, error_output), \
+                    source_cli.redirect_adapter_output(output, error_output):
                 code = launch()
                 if log.failure is not None:
                     code = 74

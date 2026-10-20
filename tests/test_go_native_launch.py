@@ -378,7 +378,7 @@ def test_failed_native_stage_reports_action_and_keeps_details(
 def allow_launch_resources(monkeypatch):
     from types import SimpleNamespace
     from gpuwm import doctor
-    monkeypatch.setattr(doctor, "_cuda_headers_check", lambda: SimpleNamespace(status="verified"))
+    monkeypatch.setattr(doctor, "_cuda_headers_check", lambda **kwargs: SimpleNamespace(status="verified"))
     monkeypatch.setattr(go_cli, "memory_gate", lambda *a, **k: {
         "verdict": "fits", "refuse": False, "warn": False})
     monkeypatch.setattr(go_cli, "geography_refusal", lambda *a, **_: None)
@@ -469,7 +469,7 @@ def test_kernel_failure_stops_every_launch_before_fetch(tmp_path, monkeypatch, c
     config = emit(tmp_path, source=source)
     allow_launch_resources(monkeypatch)
     monkeypatch.setattr(go_cli, "resolve_bridge", lambda: tmp_path / "bridge")
-    monkeypatch.setattr(doctor, "_cuda_headers_check", lambda: SimpleNamespace(
+    monkeypatch.setattr(doctor, "_cuda_headers_check", lambda **kwargs: SimpleNamespace(
         status="missing", brief="CUDA headers are missing", detail="NVRTC could not find cuda_fp16.h",
         action="install the matching CUDA runtime headers", remedy="header installation detail"))
     monkeypatch.setattr(runplan, "execute_plan", lambda *a, **k: pytest.fail("must not execute"))

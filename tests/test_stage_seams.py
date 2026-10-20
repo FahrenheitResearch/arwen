@@ -408,6 +408,22 @@ def test_the_packaged_mapped_route_is_not_caught_by_that_refusal(tmp_path):
     assert bundle["layout"] == "single"
 
 
+def _named_by_bytes(profiles: dict) -> dict:
+    """``source -> the source its prepared bytes identify``.
+
+    Model-table rows (one family row, one row per model) share their
+    family's packaged profile, so their preparations are byte-identical
+    and the bytes name the first registry row holding that profile -- the
+    family.  The model itself is the acquisition receipt's fact, not the
+    mapping's.  Every distinct profile still names exactly its own row.
+    """
+
+    first: dict = {}
+    for source, profile in profiles.items():
+        first.setdefault(profile, source)
+    return {source: first[profile] for source, profile in profiles.items()}
+
+
 def test_two_packaged_profiles_are_told_apart_by_their_own_authorities(
     tmp_path,
 ):
@@ -425,11 +441,12 @@ def test_two_packaged_profiles_are_told_apart_by_their_own_authorities(
     from gpuwm.prepared_single_domain_forecast import (
         _MAPPED_PACKAGED_PROFILE, _SOURCE_SCHEMA)
 
+    named = _named_by_bytes(_MAPPED_PACKAGED_PROFILE)
     for source, profile in _MAPPED_PACKAGED_PROFILE.items():
         root = _single_domain_bundle(tmp_path / source, source="20crv3")
         _mapped_evidence(root, schema=_SOURCE_SCHEMA[source], profile=profile)
-        assert stage_cli.packaged_source_of(root) == source
-        assert stage_cli.resolve_bundle(root)["source"] == source
+        assert stage_cli.packaged_source_of(root) == named[source]
+        assert stage_cli.resolve_bundle(root)["source"] == named[source]
 
 
 def _mapped_posted_head(root: Path, *, source: str = "rap",
@@ -466,17 +483,18 @@ def test_a_packaged_as_posted_head_keeps_the_sealed_sources_identity(tmp_path):
         _MAPPED_PACKAGED_PROFILE, _SOURCE_SCHEMA)
 
     config, wps = _authority(tmp_path / "authority")
+    named = _named_by_bytes(_MAPPED_PACKAGED_PROFILE)
     for source, profile in _MAPPED_PACKAGED_PROFILE.items():
         root = tmp_path / source
         head = _mapped_posted_head(root, source=source)
         assert not (root / "proof.json").exists()
         assert not (root / "source-evidence" / "input-manifest.json").exists()
         bundle = stage_cli.resolve_head_bundle(root, head["head_sha256"])
-        assert bundle["source"] == source
+        assert bundle["source"] == named[source]
         command = stage_cli.sim_command(
             bundle, experiment_config=config, wps_namelist=wps,
             outdir=tmp_path / "run")
-        assert command[command.index("--source") + 1] == source
+        assert command[command.index("--source") + 1] == named[source]
         # Once its manifest exists, the same authorities still name it.
         _single_domain_bundle(root, source=source)
         _mapped_evidence(root, schema=_SOURCE_SCHEMA[source], profile=profile)
@@ -539,6 +557,7 @@ def test_an_earlier_release_s_preparation_keeps_its_packaged_source(tmp_path):
         _MAPPED_PACKAGED_PROFILE, _SOURCE_SCHEMA)
     from gpuwm.source_authorities import BOUNDARY_MULTIPLES_KEY
 
+    named = _named_by_bytes(_MAPPED_PACKAGED_PROFILE)
     for source, profile in _MAPPED_PACKAGED_PROFILE.items():
         root = _single_domain_bundle(tmp_path / source, source="20crv3")
         _mapped_evidence(root, schema=_SOURCE_SCHEMA[source], profile=profile)
@@ -548,8 +567,8 @@ def test_an_earlier_release_s_preparation_keeps_its_packaged_source(tmp_path):
         if target.pop(BOUNDARY_MULTIPLES_KEY, None) is None:
             target[BOUNDARY_MULTIPLES_KEY] = True
         mapping.write_text(json.dumps(document, indent=2), encoding="utf-8")
-        assert stage_cli.packaged_source_of(root) == source
-        assert stage_cli.resolve_bundle(root)["source"] == source
+        assert stage_cli.packaged_source_of(root) == named[source]
+        assert stage_cli.resolve_bundle(root)["source"] == named[source]
         target["target_vertical_levels"] = int(
             target.get("target_vertical_levels") or 0) + 1
         mapping.write_text(json.dumps(document, indent=2), encoding="utf-8")

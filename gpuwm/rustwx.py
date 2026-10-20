@@ -1841,6 +1841,52 @@ def import_note_skip(note: str, inputs) -> tuple[str, str] | None:
     return PRESSURE_LEVEL_FAMILY, frame_attributed(note, inputs)
 
 
+def start_resident_renderer(renderer: Path, *, fixed_options,
+                            cpus, host_mib: int = 512,
+                            env=None, startup_seconds: float = 10):
+    """Start the held native worker outside the forecast step loop.
+
+    Presentation is fixed for its lifetime; requests carry paths and ids only.
+    The caller owns GPU admission, required-product validation and publication.
+    This explicit executable path is not resolved to an ensemble sibling.
+    """
+    from gpuwm.rustwx_worker import ResidentRenderer
+
+    child_env = renderer_env()
+    if env is not None:
+        child_env.update(env)
+    return ResidentRenderer(str(renderer), fixed_options, env=child_env,
+                            cpus=cpus, host_mib=host_mib,
+                            startup_seconds=startup_seconds)
+
+
+def run_cf_renderer(renderer: Path, source: Path, *, variable: str,
+                    out_dir: Path, valid: str | None = None,
+                    bounds: str | None = None, table: Path | None = None,
+                    contours: str | None = None, contour_file: Path | None = None,
+                    observation: Path | None = None,
+                    observation_variable: str | None = None,
+                    overlays: Path | None = None, size: tuple[int, int] | None = None,
+                    receipt: Path | None = None, theme: str | None = None) -> int:
+    """Native CF planes, overlays and observation sheets. All data work is Rust."""
+    command = [str(renderer), "--cf", str(source), "--variable", variable,
+               "--out-dir", str(out_dir)]
+    for flag, value in (("--valid", valid), ("--bounds", bounds),
+                        ("--cf-table", table), ("--contours", contours),
+                        ("--contour-file", contour_file),
+                        ("--observation", observation),
+                        ("--observation-variable", observation_variable),
+                        ("--overlays", overlays), ("--receipt", receipt)):
+        if value is not None:
+            command.extend((flag, str(value)))
+    if size is not None:
+        command.extend(("--width", str(size[0]), "--height", str(size[1])))
+    env = renderer_env()
+    if theme is not None:
+        env["RUSTWX_THEME"] = theme
+    return subprocess.run(command, env=env, check=False).returncode
+
+
 def run_renderer(renderer: Path, wrfout: Path, *, store_root: Path,
                  out_dir: Path, products: str, frames: str,
                  width: int | None = None, height: int | None = None,
@@ -1969,6 +2015,18 @@ def product_source_label() -> str:
     return f"WOOF {version}"
 
 
+def run_cyclone_product_renderer(renderer: Path, manifest: Path):
+    """Native moving-grid tracks, stamps, animation and weighted wind swaths."""
+    result = subprocess.run([str(renderer), "--cyclone-products", str(manifest)],
+                            capture_output=True, text=True, env=renderer_env())
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip() or 'Rust cyclone products failed')
+    written = [line.split('\t', 1)[1] for line in result.stdout.splitlines() if line.startswith('RENDERED\t')]
+    if not written or any(not Path(path).is_file() for path in written):
+        raise RuntimeError('Rust cyclone products returned no durable pictures')
+    return {'maps': written, 'manifest': str(manifest), 'renderer': str(renderer)}
+
+
 def run_ensemble_product_renderer(renderer: Path, product_frame: Path, *,
                                   out_dir: Path, fields=(), domain="d01",
                                   width=1200, height=900, source_label=None,
@@ -1984,7 +2042,12 @@ def run_ensemble_product_renderer(renderer: Path, product_frame: Path, *,
     probe = subprocess.run([str(renderer), "--ensemble-products-abi"],
                            capture_output=True, text=True, timeout=_PROBE_TIMEOUT_S,
                            env=renderer_env())
-    if probe.returncode or probe.stdout.strip() != RESIDENT_ENSEMBLE_ABI:
+    advertised = probe.stdout.strip().split("\t")
+    required = RESIDENT_ENSEMBLE_ABI.split("\t")
+    # S2S renderers add window/projection capabilities to this same contract.
+    # Keep the version and every base capability mandatory, allowing extras.
+    if (probe.returncode or advertised[0] != required[0]
+            or not set(required[1:]).issubset(advertised[1:])):
         raise RuntimeError("the Rust renderer lacks the resident ensemble product contract; build rw_ensbatch from this source tree")
     command = [str(renderer), "--ensemble-products", str(product_frame),
                "--out-dir", str(out_dir), "--domain", str(domain),
@@ -2018,6 +2081,25 @@ def run_ensemble_product_renderer(renderer: Path, product_frame: Path, *,
     if not written or any(not path.is_file() for path in written):
         raise RuntimeError("resident probability render completed without all reported map files")
     return written, result.stdout
+
+
+def compose_ensemble_sheet(renderer: Path, rows, output: Path, *, title, valid_time):
+    """Compose already rendered panels with the Rust renderer's sheet layout."""
+    import json
+    import tempfile
+    output = Path(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = {"rows": [[str(Path(p).resolve()) for p in row] for row in rows],
+                  "output": str(output.resolve()), "title": str(title),
+                  "valid_time": str(valid_time)}
+    with tempfile.TemporaryDirectory(prefix="ensemble-sheet-", dir=output.parent) as scratch:
+        request = Path(scratch) / "request.json"
+        request.write_text(json.dumps(descriptor))
+        result = subprocess.run([str(renderer), "--ensemble-sheet", str(request)],
+                                capture_output=True, text=True, env=renderer_env())
+    if result.returncode or not output.is_file():
+        raise RuntimeError(result.stderr.strip() or "Rust ensemble sheet produced no image")
+    return output
 
 
 def read_ensemble_diagnostic_rows(renderer: Path, path: Path, field: str, *, row: int, rows: int):

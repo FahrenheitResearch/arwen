@@ -293,6 +293,229 @@ extern "C" __global__ void rrtmgp_lw_noscat(
 }
 #undef PK_AT
 
+// All-sky AND clear-sky LW in one pass (folding path, default unit).
+//
+// The driver used to run rrtmgp_lw_noscat twice per chunk: once on gas tau
+// alone for the clear-sky top/surface rows (SWUPTC ... LWDNBC) and once on
+// gas + McICA cloud for everything else.  Both solves read the same tau and
+// Planck sources and evaluate the same layer terms wherever the cloud adds
+// nothing, so this kernel does both in each thread:
+//
+//   * the per-layer terms (trans, the linear-in-tau source pair) are
+//     evaluated on gas tau; where the cloud contribution leaves the total
+//     tau's BITS unchanged (McICA-clear layers: tc * 0 = 0 and
+//     tau + 0 = tau), the all-sky terms ARE those words, so they are reused
+//     instead of recomputed -- same inputs through the same pinned
+//     operations give the same words;
+//   * two recurrences run side by side and fold into separate targets.  The
+//     all-sky fold is rrtmgp_lw_noscat's, level for level; the clear-sky
+//     fold keeps only the top and surface levels (the only clear words any
+//     consumer reads).  Every fold row is its own ascending-g chain from its
+//     own running value, so interleaving rows in the shared buffer changes
+//     no word.
+//
+// Every FP operation is rrtmgp_lw_noscat's, operand for operand (the pins
+// there are the reason the layer terms can be shared).  fz_on must be 1.
+extern "C" __global__ void rrtmgp_lw_noscat_pair(
+    const float* tau, const float* lay_source, const float* lev_source,
+    const float* sfc_source, const float* sfc_emis,
+    const float* incident_flux, float* part_up, float* part_dn,
+    float* clr_up, float* clr_dn,
+    int ncol, int nlay, int ngpt, int gpt0, int gpt_tile, int top_at_1,
+    const float* fz_cld_tau, const float* fz_cld_ssa,
+    const float* fz_cld_asy, const int* fz_gpt_bands,
+    const unsigned char* fz_mask, int fz_nband,
+    int fz_have_mask, int fz_on,
+    const float* pk_play, const float* pk_tlay, const float* pk_tlev,
+    const float* pk_tsfc, const float* pk_vmr,
+    const int* pk_iatm, const int* pk_jt, const int* pk_jp,
+    const float* pk_ftemp, const float* pk_fpress,
+    const float* pk_temp_ref, const float* pk_vmr_ref,
+    const int* pk_flavor, const int* pk_gpoint_flavor,
+    const int* pk_gpoint_bands, const float* pk_planck_fraction,
+    const float* pk_totplnk, int pk_ngas, int pk_ntemp, int pk_npres,
+    int pk_neta, int pk_nband, int pk_nplanck, int pk_on) {
+  const int tid = blockDim.x * blockIdx.x + threadIdx.x;
+  if (nlay > RRTMGP_MAX_LAYERS) return;
+  const int col = tid / gpt_tile;
+  const int gl = tid - col * gpt_tile;
+  if (col >= ncol) return;
+  const int gpt = gpt0 + gl;
+  if (gpt >= ngpt) return;
+  const int nlev = nlay + 1;
+  const int top = top_at_1 ? 0 : nlay;
+  const int sfc = top_at_1 ? nlay : 0;
+  const float d = 1.0f / 0.6096748751f;
+  const float pi = 3.14159265358979323846f;
+  const RRTMGP_REAL tau_thresh =
+      RRTMGP_REAL_SQRT(RRTMGP_REAL_SQRT(RRTMGP_REAL_EPSILON));
+  float trans[RRTMGP_MAX_LAYERS];
+  float src_up[RRTMGP_MAX_LAYERS];
+  // Clear-sky layer terms are stored only where they differ from the
+  // all-sky ones (cloudy[lay]); everywhere else the two are the same words.
+  float trans_c[RRTMGP_MAX_LAYERS];
+  float src_up_c[RRTMGP_MAX_LAYERS];
+  unsigned char cloudy[RRTMGP_MAX_LAYERS];
+  extern __shared__ float s_fold[];
+  int fold_count = 0;
+  float* fold_group = s_fold + (threadIdx.x / gpt_tile)
+      * (RTE_FOLD_ROWS * (gpt_tile + 1) + RTE_FOLD_ROWS * 2);
+
+  // pk_on: 0 staged sources read back, 1 in-solver through
+  // rrtmgp_planck_common_default.cuh (the workspace route), 2 in-solver
+  // through rrtmgp_planck_staged_default.cuh -- the default process's
+  // standalone-kernel words, so the staged cubes need not exist.
+  const int pk_band = pk_on ? pk_gpoint_bands[gpt] : 0;
+  const float pk_dpl = pk_on
+      ? __fdiv_rn(__fsub_rn(pk_temp_ref[pk_ntemp - 1], pk_temp_ref[0]),
+                  (float)(pk_nplanck - 1))
+      : 1.0f;
+  const float pk_t0 = pk_on ? pk_temp_ref[0] : 0.0f;
+#define PK_AT(L) (pk_on == 2 \
+    ? rrtmgp_pks_fraction_at(col, (L), gpt, nlay, pk_ngas, \
+        ngpt, pk_ntemp, pk_npres, pk_neta, pk_vmr, pk_iatm, pk_jt, pk_jp, \
+        pk_ftemp, pk_fpress, pk_vmr_ref, pk_flavor, pk_gpoint_flavor, \
+        pk_planck_fraction) \
+    : rrtmgp_pk_fraction_at(col, (L), gpt, nlay, pk_ngas, \
+        ngpt, pk_ntemp, pk_npres, pk_neta, pk_vmr, pk_iatm, pk_jt, pk_jp, \
+        pk_ftemp, pk_fpress, pk_vmr_ref, pk_flavor, pk_gpoint_flavor, \
+        pk_planck_fraction))
+#define PK_B(T) (pk_on == 2 \
+    ? rrtmgp_pks_interp((T), pk_band, pk_totplnk, pk_nplanck, pk_nband, \
+        pk_t0, pk_dpl) \
+    : rrtmgp_pk_interp((T), pk_band, pk_totplnk, pk_nplanck, pk_nband, \
+        pk_t0, pk_dpl))
+  const int pk_first = top_at_1 ? 0 : nlay - 1;
+  float pk_prev = (pk_on && pk_first > 0) ? PK_AT(pk_first - 1) : 0.0f;
+  float pk_cur = pk_on ? PK_AT(pk_first) : 0.0f;
+  float pk_next = (pk_on && pk_first + 1 < nlay)
+      ? PK_AT(pk_first + 1) : 0.0f;
+
+  float dnv = __fdiv_rn(incident_flux[col * ngpt + gpt], pi);
+  float dnv_c = dnv;
+  rte_fold_emit(part_dn, col, nlev, top, dnv, pi, gl, gpt_tile,
+                gpt0, fold_group, fold_count);
+  rte_fold_emit(clr_dn, col, nlev, top, dnv_c, pi, gl, gpt_tile,
+                gpt0, fold_group, fold_count);
+  for (int j = 0; j < nlay; ++j) {
+    const int lay = top_at_1 ? j : nlay - 1 - j;
+    const int cell_lay = col * nlay + lay;
+    const int cellg = cell_lay * ngpt + gpt;
+    const float tau_g = tau[cellg];
+    float tau_v = tau_g;
+    if (fz_on) {
+      const int fz_band = (col * nlay + lay) * fz_nband + fz_gpt_bands[gpt];
+      float fz_tc = fz_cld_tau[fz_band];
+      if (fz_have_mask) fz_tc = __fmul_rn(fz_tc, (float)fz_mask[cellg]);
+      const float fz_oms = __fsub_rn(1.0f, fz_cld_ssa[fz_band]);
+      tau_v = __fadd_rn(tau_v, __fmul_rn(fz_tc, fz_oms));
+    }
+    float lays, lo, hi;
+    if (pk_on) {
+      lays = __fmul_rn(pk_cur, PK_B(pk_tlay[cell_lay]));
+      const float lo_pf = lay == 0
+          ? pk_cur : sqrtf(__fmul_rn(pk_prev, pk_cur));
+      const float hi_pf = lay + 1 == nlay
+          ? pk_cur : sqrtf(__fmul_rn(pk_cur, pk_next));
+      lo = __fmul_rn(lo_pf, PK_B(pk_tlev[col * nlev + lay]));
+      hi = __fmul_rn(hi_pf, PK_B(pk_tlev[col * nlev + lay + 1]));
+    } else {
+      lays = lay_source[cellg];
+      lo = lev_source[(col * nlev + lay) * ngpt + gpt];
+      hi = lev_source[(col * nlev + lay + 1) * ngpt + gpt];
+    }
+    // Clear-sky layer terms on gas tau (rrtmgp_lw_noscat's expressions).
+    float tr_c, inc_c, dec_c;
+    {
+      const float path = __fmul_rn(tau_g, d);
+      const float tr = expf(-path);
+      const float fact = path > tau_thresh
+          ? __fsub_rn(__fdiv_rn(__fsub_rn(1.0f, tr), path), tr)
+          : __fmul_rn(path, __fmaf_rn(
+                path, __fmaf_rn(path, 0.125f, -1.0f / 3.0f), 0.5f));
+      const float omtr = __fsub_rn(1.0f, tr);
+      const float fact2 = __fadd_rn(fact, fact);
+      tr_c = tr;
+      inc_c = __fmaf_rn(hi, omtr, __fmul_rn(fact2, __fsub_rn(lays, hi)));
+      dec_c = __fmaf_rn(lo, omtr, __fmul_rn(fact2, __fsub_rn(lays, lo)));
+    }
+    float tr_a = tr_c, inc_a = inc_c, dec_a = dec_c;
+    const bool cl = __float_as_uint(tau_v) != __float_as_uint(tau_g);
+    cloudy[lay] = cl;
+    if (cl) {
+      const float path = __fmul_rn(tau_v, d);
+      const float tr = expf(-path);
+      const float fact = path > tau_thresh
+          ? __fsub_rn(__fdiv_rn(__fsub_rn(1.0f, tr), path), tr)
+          : __fmul_rn(path, __fmaf_rn(
+                path, __fmaf_rn(path, 0.125f, -1.0f / 3.0f), 0.5f));
+      const float omtr = __fsub_rn(1.0f, tr);
+      const float fact2 = __fadd_rn(fact, fact);
+      tr_a = tr;
+      inc_a = __fmaf_rn(hi, omtr, __fmul_rn(fact2, __fsub_rn(lays, hi)));
+      dec_a = __fmaf_rn(lo, omtr, __fmul_rn(fact2, __fsub_rn(lays, lo)));
+    }
+    trans[lay] = tr_a;
+    src_up[lay] = top_at_1 ? dec_a : inc_a;
+    if (cl) {
+      trans_c[lay] = tr_c;
+      src_up_c[lay] = top_at_1 ? dec_c : inc_c;
+    }
+    if (pk_on) {
+      if (top_at_1) {
+        pk_prev = pk_cur; pk_cur = pk_next;
+        pk_next = lay + 2 < nlay ? PK_AT(lay + 2) : 0.0f;
+      } else {
+        pk_next = pk_cur; pk_cur = pk_prev;
+        pk_prev = lay - 2 >= 0 ? PK_AT(lay - 2) : 0.0f;
+      }
+    }
+    dnv = __fmaf_rn(tr_a, dnv, top_at_1 ? inc_a : dec_a);
+    dnv_c = __fmaf_rn(tr_c, dnv_c, top_at_1 ? inc_c : dec_c);
+    const int dlev = top_at_1 ? lay + 1 : lay;
+    rte_fold_emit(part_dn, col, nlev, dlev, dnv, pi, gl, gpt_tile,
+                  gpt0, fold_group, fold_count);
+    if (dlev == sfc)
+      rte_fold_emit(clr_dn, col, nlev, dlev, dnv_c, pi, gl, gpt_tile,
+                    gpt0, fold_group, fold_count, true);
+  }
+
+  const int sg = col * ngpt + gpt;
+  float pk_sfc;
+  if (pk_on) {
+    const int pk_sfc_lay =
+        pk_play[col * nlay] < pk_play[col * nlay + nlay - 1] ? nlay - 1 : 0;
+    pk_sfc = __fmul_rn(PK_AT(pk_sfc_lay), PK_B(pk_tsfc[col]));
+  } else {
+    pk_sfc = sfc_source[sg];
+  }
+  const float emis_src = __fmul_rn(sfc_emis[sg], pk_sfc);
+  const float om_emis = __fsub_rn(1.0f, sfc_emis[sg]);
+  float upv = __fmaf_rn(om_emis, dnv, emis_src);
+  float upv_c = __fmaf_rn(om_emis, dnv_c, emis_src);
+  rte_fold_emit(part_up, col, nlev, sfc, upv, pi, gl, gpt_tile,
+                gpt0, fold_group, fold_count);
+  rte_fold_emit(clr_up, col, nlev, sfc, upv_c, pi, gl, gpt_tile,
+                gpt0, fold_group, fold_count);
+  for (int j = 0; j < nlay; ++j) {
+    const int lay = top_at_1 ? nlay - 1 - j : j;
+    const float tr_a = trans[lay], su_a = src_up[lay];
+    upv = __fmaf_rn(tr_a, upv, su_a);
+    if (cloudy[lay])
+      upv_c = __fmaf_rn(trans_c[lay], upv_c, src_up_c[lay]);
+    else
+      upv_c = __fmaf_rn(tr_a, upv_c, su_a);
+    const int ulev = top_at_1 ? lay : lay + 1;
+    rte_fold_emit(part_up, col, nlev, ulev, upv, pi, gl, gpt_tile,
+                  gpt0, fold_group, fold_count);
+    if (ulev == top)
+      rte_fold_emit(clr_up, col, nlev, ulev, upv_c, pi, gl, gpt_tile,
+                    gpt0, fold_group, fold_count, true);
+  }
+}
+#undef PK_B
+#undef PK_AT
+
 // Fold one g-point tile into the running LW flux, ascending g-point order.
 extern "C" __global__ void rrtmgp_lw_flux_reduce(
     const float* part_up, const float* part_dn,
@@ -535,6 +758,221 @@ extern "C" __global__ void rrtmgp_sw_2stream(
         part_dn[(base + lev) * ncol + col] = dnv + direct[lev];
         part_dir[(base + lev) * ncol + col] = direct[lev];
       }
+    }
+  }
+}
+
+// All-sky AND clear-sky SW in one pass (folding path, default unit,
+// bottom-to-top layout only).
+//
+// The clear-sky solve was rrtmgp_sw_2stream on gas optics with zero band
+// cloud (the fused combine with tc = wc = gc = 0) -- a second full solve per
+// chunk read only at the top and the surface.  Here each thread derives the
+// clear and the all-sky layer optics side by side.  Where the McICA cloud
+// adds nothing (tc * 0 = 0, so the combine returns the same three words)
+// the layer coefficients are reused, not recomputed; the direct beam, the
+// sources it scales and both adding recurrences are carried separately.  The
+// all-sky fold is rrtmgp_sw_2stream's level for level; the clear fold keeps
+// the top and surface up/down words only.  Every expression below is
+// rrtmgp_sw_2stream's, written the same way.
+__device__ __forceinline__ void rrtmgp_sw_pair_combine(
+    float tau_g, float ssa_g, float fz_tc, float fz_wc, float fz_gc,
+    float& ts, float& ws, float& gs) {
+  const float fz_floor = 3.0f * 1.17549435e-38f;
+  const float fz_total_tau = __fadd_rn(tau_g, fz_tc);
+  const float fz_gas_scatter = __fmul_rn(tau_g, ssa_g);
+  const float fz_cloud_scatter = __fmul_rn(fz_tc, fz_wc);
+  const float fz_scatter = __fadd_rn(fz_gas_scatter, fz_cloud_scatter);
+  const float fz_total_ssa = __fdiv_rn(
+      fz_scatter, fmaxf(fz_floor, fz_total_tau));
+  const float fz_gas_g = __fmul_rn(fz_gas_scatter, 0.0f);
+  const float fz_cloud_g = __fmul_rn(fz_cloud_scatter, fz_gc);
+  const float fz_gscatter = __fadd_rn(fz_gas_g, fz_cloud_g);
+  const float fz_total_g = __fdiv_rn(
+      fz_gscatter, fmaxf(fz_floor, fz_scatter));
+  const float fz_f = fz_total_g * fz_total_g;
+  const float fz_wf = fz_total_ssa * fz_f;
+  ts = (1.0f - fz_wf) * fz_total_tau;
+  ws = (fz_total_ssa - fz_wf) / fmaxf(fz_floor, 1.0f - fz_wf);
+  gs = (fz_total_g - fz_f) / fmaxf(fz_floor, 1.0f - fz_f);
+}
+
+__device__ __forceinline__ void rrtmgp_sw_pair_layer(
+    float ts, float ws, float gs, float mu0_lay,
+    float& rdif_value, float& tdif_value, float& rdir, float& tdir,
+    float& tnoscat) {
+  const float eps = 1.1920928955078125e-7f;
+  const float min_k = 1.0e4f * eps;
+  const float min_mu = 3.4526698300124393e-4f;
+  const float gamma1 = (8.0f - ws * (5.0f + 3.0f * gs)) * 0.25f;
+  const float gamma2 = 3.0f * ws * (1.0f - gs) * 0.25f;
+  const float kval = sqrtf(fmaxf((gamma1 - gamma2)
+                                 * (gamma1 + gamma2), min_k));
+  const float ex = expf(-ts * kval);
+  const float ex2 = ex * ex;
+  float rt = 1.0f / (kval * (1.0f + ex2) + gamma1 * (1.0f - ex2));
+  rdif_value = rt * gamma2 * (1.0f - ex2);
+  tdif_value = rt * 2.0f * kval * ex;
+  const float mu = fmaxf(min_mu, mu0_lay);
+  const float kmu = kval * mu;
+  float dterm = 1.0f - kmu * kmu;
+  if (fabsf(dterm) < eps) dterm = eps;
+  rt = ws * rt / dterm;
+  const float gamma3 = (2.0f - 3.0f * mu * gs) * 0.25f;
+  const float gamma4 = 1.0f - gamma3;
+  const float alpha1 = gamma1 * gamma4 + gamma2 * gamma3;
+  const float alpha2 = gamma1 * gamma3 + gamma2 * gamma4;
+  const float kg3 = kval * gamma3, kg4 = kval * gamma4;
+  tnoscat = expf(-ts / mu);
+  rdir = rt * (
+      (1.0f - kmu) * (alpha2 + kg3)
+    - (1.0f + kmu) * (alpha2 - kg3) * ex2
+    - 2.0f * (kg3 - alpha2 * kmu) * ex * tnoscat);
+  tdir = -rt * (
+      (1.0f + kmu) * (alpha1 + kg4) * tnoscat
+    - (1.0f - kmu) * (alpha1 - kg4) * ex2 * tnoscat
+    - 2.0f * (kg4 + alpha1 * kmu) * ex);
+  rdir = fmaxf(0.0f, fminf(rdir, 1.0f - tnoscat));
+  tdir = fmaxf(0.0f, fminf(tdir, 1.0f - tnoscat - rdir));
+}
+
+extern "C" __global__ void rrtmgp_sw_2stream_pair(
+    const float* tau, const float* ssa,
+    const float* mu0, const float* sfc_alb_dir, const float* sfc_alb_dif,
+    const float* inc_flux, float* part_up, float* part_dn, float* part_dir,
+    float* clr_up, float* clr_dn,
+    int ncol, int nlay, int ngpt, int gpt0, int gpt_tile,
+    const float* fz_cld_tau, const float* fz_cld_ssa,
+    const float* fz_cld_asy, const int* fz_gpt_bands,
+    const unsigned char* fz_mask, int fz_nband,
+    int fz_have_mask, float zero) {
+  const int tid = blockDim.x * blockIdx.x + threadIdx.x;
+  if (nlay > RRTMGP_MAX_LAYERS) return;
+  const int col = tid / gpt_tile;
+  const int gl = tid - col * gpt_tile;
+  if (col >= ncol) return;
+  const int gpt = gpt0 + gl;
+  if (gpt >= ngpt) return;
+  const int nlev = nlay + 1;
+  const int top = nlay;
+  const int top_lay = nlay - 1;
+  const int sfc = 0;
+  const int sfc_lay = 0;
+  float4 optics[RRTMGP_MAX_LAYERS];
+  float direct[RRTMGP_MAX_LAYERS + 1];
+  float2 adding[RRTMGP_MAX_LAYERS + 1];
+  float4 optics_c[RRTMGP_MAX_LAYERS];
+  float2 adding_c[RRTMGP_MAX_LAYERS + 1];
+
+  const int spec = col * ngpt + gpt;
+  extern __shared__ float s_fold[];
+  int fold_count = 0;
+  float* fold_group = s_fold + (threadIdx.x / gpt_tile)
+      * (RTE_FOLD_ROWS * (gpt_tile + 1) + RTE_FOLD_ROWS * 2);
+  direct[top] = inc_flux[spec] * mu0[col * nlay + top_lay];
+  float direct_c = direct[top];
+  for (int j = 0; j < nlay; ++j) {
+    const int lay = nlay - j - 1;
+    const int ilev_in = lay + 1;
+    const int ilev_out = lay;
+    const int idx = (col * nlay + lay) * ngpt + gpt;
+    const int fz_band = (col * nlay + lay) * fz_nband + fz_gpt_bands[gpt];
+    float fz_tc = fz_cld_tau[fz_band];
+    if (fz_have_mask) fz_tc = fz_tc * (float)fz_mask[idx];
+    float ts, ws, gs, ts_c, ws_c, gs_c;
+    rrtmgp_sw_pair_combine(tau[idx], ssa[idx], fz_tc, fz_cld_ssa[fz_band],
+                           fz_cld_asy[fz_band], ts, ws, gs);
+    rrtmgp_sw_pair_combine(tau[idx], ssa[idx], zero, zero, zero,
+                           ts_c, ws_c, gs_c);
+    const float mu0_lay = mu0[col * nlay + lay];
+    float rdif_c, tdif_c, rdir_c, tdir_c, tnoscat_c;
+    rrtmgp_sw_pair_layer(ts_c, ws_c, gs_c, mu0_lay,
+                         rdif_c, tdif_c, rdir_c, tdir_c, tnoscat_c);
+    float rdif_a = rdif_c, tdif_a = tdif_c, rdir_a = rdir_c,
+          tdir_a = tdir_c, tnoscat_a = tnoscat_c;
+    if (__float_as_uint(ts) != __float_as_uint(ts_c)
+        || __float_as_uint(ws) != __float_as_uint(ws_c)
+        || __float_as_uint(gs) != __float_as_uint(gs_c)) {
+      rrtmgp_sw_pair_layer(ts, ws, gs, mu0_lay,
+                           rdif_a, tdif_a, rdir_a, tdir_a, tnoscat_a);
+    }
+    float src_up_value = rdir_a * direct[ilev_in];
+    float src_dn_value = tdir_a * direct[ilev_in];
+    direct[ilev_out] = tnoscat_a * direct[ilev_in];
+    float src_up_c = rdir_c * direct_c;
+    float src_dn_c = tdir_c * direct_c;
+    direct_c = tnoscat_c * direct_c;
+    if (mu0_lay <= 0.0f) {
+      src_up_value = src_dn_value = 0.0f;
+      src_up_c = src_dn_c = 0.0f;
+    }
+    optics[lay] = make_float4(rdif_a, tdif_a, src_dn_value, src_up_value);
+    optics_c[lay] = make_float4(rdif_c, tdif_c, src_dn_c, src_up_c);
+  }
+  const bool lit_sfc = mu0[col * nlay + sfc_lay] > 0.0f;
+  const float source_sfc = lit_sfc ? direct[sfc] * sfc_alb_dir[spec] : 0.0f;
+  const float source_sfc_c = lit_sfc ? direct_c * sfc_alb_dir[spec] : 0.0f;
+
+  adding[0].x = sfc_alb_dif[spec];
+  adding[0].y = source_sfc;
+  adding_c[0].x = sfc_alb_dif[spec];
+  adding_c[0].y = source_sfc_c;
+  for (int lev = 0; lev < nlay; ++lev) {
+    {
+      const float4 coeff = optics[lev];
+      const float dn_ = 1.0f / (1.0f - coeff.x * adding[lev].x);
+      adding[lev + 1].x = coeff.x + coeff.y * coeff.y * adding[lev].x * dn_;
+      adding[lev + 1].y = coeff.w + coeff.y * dn_
+          * (adding[lev].y + adding[lev].x * coeff.z);
+    }
+    {
+      const float4 coeff = optics_c[lev];
+      const float dn_ = 1.0f / (1.0f - coeff.x * adding_c[lev].x);
+      adding_c[lev + 1].x =
+          coeff.x + coeff.y * coeff.y * adding_c[lev].x * dn_;
+      adding_c[lev + 1].y = coeff.w + coeff.y * dn_
+          * (adding_c[lev].y + adding_c[lev].x * coeff.z);
+    }
+  }
+  float dnv = 0.0f;
+  float upv = dnv * adding[nlay].x + adding[nlay].y;
+  float dnv_c = 0.0f;
+  float upv_c = dnv_c * adding_c[nlay].x + adding_c[nlay].y;
+  rte_fold_emit(part_up, col, nlev, nlay, upv, 1.0f,
+                gl, gpt_tile, gpt0, fold_group, fold_count);
+  rte_fold_emit(part_dn, col, nlev, nlay, dnv + direct[nlay], 1.0f,
+                gl, gpt_tile, gpt0, fold_group, fold_count);
+  rte_fold_emit(part_dir, col, nlev, nlay, direct[nlay], 1.0f,
+                gl, gpt_tile, gpt0, fold_group, fold_count);
+  rte_fold_emit(clr_up, col, nlev, nlay, upv_c, 1.0f,
+                gl, gpt_tile, gpt0, fold_group, fold_count);
+  rte_fold_emit(clr_dn, col, nlev, nlay, dnv_c + direct[nlay], 1.0f,
+                gl, gpt_tile, gpt0, fold_group, fold_count);
+  for (int lev = nlay - 1; lev >= 0; --lev) {
+    {
+      const float4 coeff = optics[lev];
+      const float dn_ = 1.0f / (1.0f - coeff.x * adding[lev].x);
+      dnv = (coeff.y * dnv + coeff.x * adding[lev].y + coeff.z) * dn_;
+      upv = dnv * adding[lev].x + adding[lev].y;
+    }
+    {
+      const float4 coeff = optics_c[lev];
+      const float dn_ = 1.0f / (1.0f - coeff.x * adding_c[lev].x);
+      dnv_c = (coeff.y * dnv_c + coeff.x * adding_c[lev].y + coeff.z)
+          * dn_;
+      upv_c = dnv_c * adding_c[lev].x + adding_c[lev].y;
+    }
+    rte_fold_emit(part_up, col, nlev, lev, upv, 1.0f,
+                  gl, gpt_tile, gpt0, fold_group, fold_count);
+    rte_fold_emit(part_dn, col, nlev, lev, dnv + direct[lev], 1.0f,
+                  gl, gpt_tile, gpt0, fold_group, fold_count);
+    rte_fold_emit(part_dir, col, nlev, lev, direct[lev], 1.0f,
+                  gl, gpt_tile, gpt0, fold_group, fold_count);
+    if (lev == sfc) {
+      rte_fold_emit(clr_up, col, nlev, lev, upv_c, 1.0f,
+                    gl, gpt_tile, gpt0, fold_group, fold_count);
+      rte_fold_emit(clr_dn, col, nlev, lev, dnv_c + direct_c, 1.0f,
+                    gl, gpt_tile, gpt0, fold_group, fold_count, true);
     }
   }
 }

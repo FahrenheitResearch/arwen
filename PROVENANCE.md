@@ -192,11 +192,11 @@ bytes are outside the numerical oracle.
   `-ftz=true` to whatever the caller passed, at
   `cupy.cuda.compiler` line 585 (`options += ('-ftz=true',)`), after the
   caller's options, and NVRTC honours the last occurrence.
-  The inventory records 10 distinct caller-supplied option tuples across the
-  102 compile sites in the shipped package, each listed here with a site
+  The inventory records 11 distinct caller-supplied option tuples across the
+  112 compile sites in the shipped package, each listed here with a site
   that supplies it:
   - no caller options -- `gpuwm/core/attribute_tracking.py:99`
-    (xp.ElementwiseKernel), and 63 other site(s)
+    (xp.ElementwiseKernel), and 71 other site(s)
   - `-std=c++17` -- `gpuwm/core/kernels/__init__.py:809` (cp.RawModule), and
     12 other site(s)
   - `--std=c++17` -- `gpuwm/ensemble/batch_perturbation.py:51`
@@ -205,6 +205,8 @@ bytes are outside the numerical oracle.
     (compiler.compile_using_nvrtc), and 5 other site(s)
   - `-fmad=false` -- `gpuwm/core/dycore.py:300` (cp.ElementwiseKernel), and
     2 other site(s)
+  - `--std=c++11` -- `gpuwm/hydro/module_history.py:72` (cp.RawModule), and
+    1 other site(s)
   - `-std=c++17` `--fmad=false` -- `gpuwm/core/kernels/__init__.py:679`
     (cp.RawModule), and 1 other site(s)
   - `-std=c++17` `--fmad=false` `--ftz=false` --

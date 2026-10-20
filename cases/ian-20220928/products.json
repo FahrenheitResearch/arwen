@@ -1,0 +1,20 @@
+{
+  "schema": "gpuwm-cyclone-product-request.v1",
+  "analysis_time": "2022-09-28T07:05:00Z",
+  "observation_cutoff": "2022-09-28T07:05:00Z",
+  "landfall_reference": "2022-09-28T19:05:00Z",
+  "model_analysis_seconds": 25500,
+  "grid_id": 2,
+  "wind_threshold_m_s": 32.92,
+  "onshore_threshold_m_s": 10,
+  "common_grid": {
+    "south": 22,
+    "north": 31,
+    "west": -87,
+    "east": -77,
+    "ny": 301,
+    "nx": 335
+  },
+  "best_track": "bal092022.dat.gz",
+  "experiment_label": "NO-DA hindcast"
+}

@@ -1,8 +1,11 @@
 //! Map HDF5 datasets to NetCDF-4 variables.
 //!
-//! Each HDF5 dataset that is NOT a dimension scale becomes an NcVariable.
-//! The variable's dimensions are determined from the `DIMENSION_LIST` attribute,
-//! which contains object references to the corresponding dimension-scale datasets.
+//! Coordinate dimension scales are variables too; only NetCDF's explicitly
+//! dimension-only scale datasets are hidden.
+//! A plain variable's dimensions are determined from the `DIMENSION_LIST`
+//! attribute, which contains object references to the corresponding
+//! dimension-scale datasets.  A scale is its own first dimension; see
+//! [`resolve_scale_dimensions`] for a scale over more than one axis.
 
 use std::collections::HashMap;
 
@@ -20,8 +23,8 @@ fn leaf_name(name: &str) -> &str {
 
 /// Extract variables from an HDF5 group.
 ///
-/// Datasets with `CLASS=DIMENSION_SCALE` are dimensions, not variables.
-/// All other datasets become NcVariables.
+/// Coordinate scales become variables over their own dimension. A scale whose
+/// NAME has NetCDF's dimension-only marker has no coordinate values.
 ///
 /// `dim_addr_map` maps dimension-scale dataset addresses to their `NcDimension`,
 /// used to resolve `DIMENSION_LIST` object references.
@@ -43,11 +46,17 @@ pub fn extract_variables_from_datasets(
     metadata_mode: crate::NcMetadataMode,
 ) -> Result<Vec<NcVariable>> {
     let mut variables = Vec::new();
+    let scale_dimids = scale_dimension_ids(datasets, dim_addr_map);
 
     for ds in datasets {
-        if let Some(variable) =
-            extract_variable(ds, group, dimensions, dim_addr_map, metadata_mode)?
-        {
+        if let Some(variable) = extract_variable(
+            ds,
+            group,
+            dimensions,
+            dim_addr_map,
+            &scale_dimids,
+            metadata_mode,
+        )? {
             variables.push(variable);
         }
     }
@@ -55,11 +64,29 @@ pub fn extract_variables_from_datasets(
     Ok(variables)
 }
 
+/// The group's dimensions keyed by netCDF-C's `_Netcdf4Dimid`, for
+/// resolving a multi-dimensional coordinate variable's `_Netcdf4Coordinates`.
+/// A scale without the id (an h5py-made one) is simply absent.
+fn scale_dimension_ids(
+    datasets: &[hdf5_reader::Dataset],
+    dim_addr_map: &HashMap<u64, NcDimension>,
+) -> HashMap<i64, NcDimension> {
+    datasets
+        .iter()
+        .filter_map(|ds| {
+            let dim = dim_addr_map.get(&ds.address())?;
+            let id = ds.attribute("_Netcdf4Dimid").ok()?.read_scalar::<i32>().ok()?;
+            Some((i64::from(id), dim.clone()))
+        })
+        .collect()
+}
+
 pub fn extract_variable(
     ds: &hdf5_reader::Dataset,
     group: &Group,
     dimensions: &[NcDimension],
     dim_addr_map: &HashMap<u64, NcDimension>,
+    scale_dimids: &HashMap<i64, NcDimension>,
     metadata_mode: crate::NcMetadataMode,
 ) -> Result<Option<NcVariable>> {
     let strict = metadata_mode == crate::NcMetadataMode::Strict;
@@ -79,7 +106,13 @@ pub fn extract_variable(
     };
 
     if is_dim_scale {
-        return Ok(None);
+        if let Ok(name) = ds.attribute("NAME") {
+            match name.read_string() {
+                Ok(value) if value.starts_with("This is a netCDF dimension but not a netCDF variable") => return Ok(None),
+                Err(err) if strict => return Err(Error::InvalidData(format!("dimension scale '{}' has unreadable NAME attribute: {err}", ds.name()))),
+                _ => {}
+            }
+        }
     }
 
     let nc_type = match hdf5_to_nc_type(ds.dtype()) {
@@ -93,7 +126,11 @@ pub fn extract_variable(
         Err(_) => return Ok(None),
     };
 
-    let var_dims = resolve_variable_dimensions(ds, group, dimensions, dim_addr_map, metadata_mode)?;
+    let var_dims = if is_dim_scale {
+        resolve_scale_dimensions(ds, dimensions, dim_addr_map, scale_dimids, metadata_mode)?
+    } else {
+        resolve_variable_dimensions(ds, group, dimensions, dim_addr_map, metadata_mode)?
+    };
     let is_unlimited = var_dims.iter().any(|d| d.is_unlimited);
     let shape = ds.shape();
     let (data_size, record_size) =
@@ -110,6 +147,108 @@ pub fn extract_variable(
         is_record_var: is_unlimited,
         record_size,
     }))
+}
+
+/// Resolve the dimensions of a coordinate variable (a dimension scale).
+///
+/// A scale IS its own first dimension, so a 1-D coordinate needs no
+/// `DIMENSION_LIST` at all.  A coordinate over more than one axis
+/// (netCDF-C's `time(time, strlen)` shape) cannot carry one either: HDF5
+/// refuses to attach a scale to a scale.  netCDF-C writes the dimension
+/// ids of every axis into `_Netcdf4Coordinates` instead, and that record
+/// is read first.  A scale from another producer (h5py) carries nothing,
+/// so each remaining axis is given the one visible dimension of its
+/// length; an axis with no dimension of that length, or with two, is a
+/// strict-mode error (the name cannot be told) and a size-inferred guess
+/// in lossy mode, exactly like a plain variable without a DIMENSION_LIST.
+///
+/// Giving a multi-axis scale only its own dimension would describe a
+/// 5 x 6 dataset as a 5-vector, and every read of it would then fail.
+fn resolve_scale_dimensions(
+    ds: &hdf5_reader::Dataset,
+    dimensions: &[NcDimension],
+    dim_addr_map: &HashMap<u64, NcDimension>,
+    scale_dimids: &HashMap<i64, NcDimension>,
+    metadata_mode: crate::NcMetadataMode,
+) -> Result<Vec<NcDimension>> {
+    let strict = metadata_mode == crate::NcMetadataMode::Strict;
+    let own = dim_addr_map
+        .get(&ds.address())
+        .cloned()
+        .ok_or_else(|| {
+            Error::InvalidData(format!("coordinate '{}' has no dimension", ds.name()))
+        })?;
+    let shape = ds.shape();
+    if shape.len() <= 1 {
+        return Ok(vec![own]);
+    }
+
+    // netCDF-C's own record of the coordinate's dimension ids.
+    if let Ok(attr) = ds.attribute("_Netcdf4Coordinates") {
+        match attr.read_1d::<i32>() {
+            Ok(ids) if ids.len() == shape.len() => {
+                let resolved: Vec<NcDimension> = ids
+                    .iter()
+                    .filter_map(|id| scale_dimids.get(&i64::from(*id)).cloned())
+                    .collect();
+                if resolved.len() == shape.len() {
+                    return Ok(apply_unlimited_extents(ds, resolved));
+                }
+            }
+            Ok(_) => {}
+            Err(err) if strict => {
+                return Err(Error::InvalidData(format!(
+                    "coordinate '{}' has unreadable _Netcdf4Coordinates attribute: {err}",
+                    ds.name()
+                )))
+            }
+            Err(_) => {}
+        }
+    }
+
+    if !strict {
+        let mut guessed = resolve_variable_dimensions_by_size(ds, dimensions);
+        guessed[0] = own;
+        return Ok(guessed);
+    }
+
+    let mut var_dims = Vec::with_capacity(shape.len());
+    var_dims.push(own);
+    for (axis, &length) in shape.iter().enumerate().skip(1) {
+        let mut matches = dimensions.iter().filter(|dim| dim.size == length);
+        match (matches.next(), matches.next()) {
+            (Some(only), None) => var_dims.push(only.clone()),
+            (None, _) => {
+                return Err(Error::InvalidData(format!(
+                    "coordinate '{}' axis {axis} has length {length}, which no dimension has",
+                    ds.name()
+                )))
+            }
+            (Some(_), Some(_)) => {
+                return Err(Error::InvalidData(format!(
+                    "coordinate '{}' axis {axis} has length {length}, shared by more than \
+                     one dimension, and the scale names neither",
+                    ds.name()
+                )))
+            }
+        }
+    }
+    Ok(apply_unlimited_extents(ds, var_dims))
+}
+
+/// Mark every axis whose dataspace extent is H5S_UNLIMITED.
+fn apply_unlimited_extents(
+    ds: &hdf5_reader::Dataset,
+    mut var_dims: Vec<NcDimension>,
+) -> Vec<NcDimension> {
+    if let Some(max_dims) = ds.max_dims() {
+        for (i, md) in max_dims.iter().enumerate() {
+            if *md == u64::MAX && i < var_dims.len() {
+                var_dims[i].is_unlimited = true;
+            }
+        }
+    }
+    var_dims
 }
 
 /// Resolve variable dimensions via the `DIMENSION_LIST` attribute.
@@ -179,6 +318,11 @@ pub(crate) fn resolve_dimension_scale_addresses(
     ds: &hdf5_reader::Dataset,
     group: &Group,
 ) -> Result<Vec<u64>> {
+    // A scalar dataset has no dimensions, and netCDF-C writes no DIMENSION_LIST
+    // for it (e.g. the CDS ERA5-Land files' scalar `number` and `expver`).
+    if ds.ndim() == 0 {
+        return Ok(Vec::new());
+    }
     let attr = ds.attribute("DIMENSION_LIST").map_err(|_| {
         Error::InvalidData(format!(
             "dataset '{}' is missing required DIMENSION_LIST metadata",

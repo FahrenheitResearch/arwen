@@ -463,17 +463,32 @@ def paced_urlopen(request: Request | str, *, timeout: float | None = None,
     """
 
     url = request if isinstance(request, str) else request.full_url
-    pace(url, sleeper=sleeper, max_wait_s=max_wait_s)
     started = _now_ms()
     kind = "get"
     if isinstance(request, Request) and request.get_method() == "HEAD":
         kind = "head"
     elif isinstance(request, Request) and request.has_header("Range"):
         kind = "get_range"
+    from gpuwm.fetch_connections import lease, LeasedResponse
+    from gpuwm.fetch_pool import record_streams
+    record_streams(1)
+    reservation = lease()
+    reservation.__enter__()
     try:
+        # Wait for a box slot BEFORE taking a host's pacing turn. A wait
+        # afterward could bunch several spaced requests at slot release.
+        pace(url, sleeper=sleeper, max_wait_s=max_wait_s)
+        started = _now_ms()
         response = (opener(request) if timeout is None
                     else opener(request, timeout=timeout))
-    except Exception as error:
+    except BaseException as error:
+        # HTTPError owns a response socket too. Close it before another
+        # worker can reuse this slot, including failed range requests.
+        try:
+            if isinstance(error, HTTPError):
+                error.close()
+        finally:
+            reservation.__exit__(None, None, None)
         if _is_rate_limit(error):
             mark_rate_limited(url, type(error).__name__,
                               retry_after_s=retry_after_seconds(error))
@@ -482,7 +497,7 @@ def paced_urlopen(request: Request | str, *, timeout: float | None = None,
         raise
     log_event(url, kind, str(getattr(response, "status", "ok")),
               _now_ms() - started)
-    return response
+    return LeasedResponse(response, reservation)
 
 
 def governed_workers(url: str, requested: int) -> int:

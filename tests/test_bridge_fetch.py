@@ -709,11 +709,15 @@ def test_artifact_filenames_agree_with_the_resolvers_on_this_host():
     from gpuwm.isobaric_bridge import library_names as isobaric_names
     from gpuwm.obs.superob_bridge import library_name as superob_name
     from gpuwm.core.tempo_rust import library_name as tempo_name
+    from gpuwm.hydrofabric import library_names as hydrofabric_names
+    from gpuwm.hydro.forcing_inputs import library_names as forcing_names
 
     # One expected filename per library, from the resolver that actually
     # searches for it: libraries with one shared expectation would
     # pass while a bundle staged a file nothing looks for.
-    libraries = {"gpuwm_preprocess_cpu": cpu_bridge_candidates()[-1].name,
+    libraries = {"nextgen_hydrofabric": hydrofabric_names()[0],
+                 "arwen_nextgen_forcing": forcing_names()[0],
+                 "gpuwm_preprocess_cpu": cpu_bridge_candidates()[-1].name,
                  "region_global_dealias": region_library_name(),
                  "netcdf_writer": ncwrite_names()[0],
                  "static_fields": static_names()[0],
@@ -1110,7 +1114,9 @@ def test_the_bundle_tool_names_the_artifact_it_cannot_find(tmp_path, monkeypatch
          "--out", str(tmp_path / "out")],
         capture_output=True, text=True)
     assert result.returncode != 0
-    assert "grib1_bridge" in (result.stderr + result.stdout)
+    first = bridge_assets.BUNDLED_ARTIFACTS[0]
+    assert bridge_assets.artifact_filename(first, "linux-x86_64") in (
+        result.stderr + result.stdout)
 
     # Fixture discovery must find every crate the registry now bundles,
     # and a missing file must still make that set incomplete. Keep the
@@ -1286,8 +1292,11 @@ def test_a_real_bundle_stages_and_the_binaries_execute(real_bundle, tmp_path,
     bundle = pins.bundle_for(real_bundle["platform"])
     for pin in bundle.binaries:
         assert bridge_assets.matches_pin(dest / pin.filename, pin)
+    # The first EXECUTABLE: the hydro libraries now lead BUNDLED_ARTIFACTS, and a
+    # shared library run as a program dies with SIGSEGV instead of a usage line.
     probe_name = bridge_assets.artifact_filename(
-        bridge_assets.BUNDLED_ARTIFACTS[0], real_bundle["platform"])
+        next(a for a in bridge_assets.BUNDLED_ARTIFACTS if a.kind == "executable"),
+        real_bundle["platform"])
     ok, evidence = doctor._exec_probe(dest / probe_name)
     assert ok, evidence
 

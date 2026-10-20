@@ -271,8 +271,11 @@ def test_reachable_runtime_factories_and_symbols_are_covered():
 def test_export_inventory_includes_inherited_globals():
     units = [ks.runtime_unit(name) for name in EXPECTED_PARTS]
     # 109 since the WRF 4.7 night snow-aging entry
-    # (noahmp_radiation_batch_night_age) joined noahmp_radiation's exports.
-    assert sum(len(unit.exports) for unit in units) == 109
+    # (noahmp_radiation_batch_night_age) joined noahmp_radiation's exports;
+    # 111 since 2.9.3: noahmp_vegeflux gained k_vegeflux_stc3 (300876fefd5,
+    # the WRF-lineage STC=3 leg) and k_vegeflux_masked (b3dd58fc9f3, the
+    # fixed-width masked dispatch), both kept by the speed2 merge de768fc2770.
+    assert sum(len(unit.exports) for unit in units) == 111
     leaves = set(ks.runtime_unit("noahmp_leaves").exports)
     for name in ks.COMPOSED_UNITS:
         assert leaves <= set(ks.runtime_unit(name).exports)
@@ -769,8 +772,10 @@ def test_measure_live_reads_every_export_and_never_launches(fake_cupy):
     assert reading["frames"] == synthetic_frames()
     assert reading["unit_identity"] == prov.unit_identities()
     assert len(reading["functions"]) == 15
-    assert sum(len(rows) for rows in reading["functions"].values()) == 109
-    assert len([e for e in events if e[0] == "attributes"]) == 109
+    # 111 exports since 2.9.3 (k_vegeflux_stc3 and k_vegeflux_masked; see
+    # test_export_inventory_includes_inherited_globals).
+    assert sum(len(rows) for rows in reading["functions"].values()) == 111
+    assert len([e for e in events if e[0] == "attributes"]) == 111
     assert [e[0] for e in events].count("RawModule") == 15
     for name in EXPECTED_PARTS:
         unit = ks.runtime_unit(name)
@@ -1055,7 +1060,7 @@ def _cpu_only_check_parser(monkeypatch, exp, tmp_path):
     monkeypatch.setattr(pf, "config_forcing_schedule", lambda *a, **k: (3600.0, 2))
     monkeypatch.setattr(pf, "config_forcing_source", lambda *a, **k: None)
     monkeypatch.setattr(pf, "_load_experiment_any", lambda *a, **k: exp)
-    monkeypatch.setattr(doctor, "_cuda_headers_check", lambda: doctor.Check(
+    monkeypatch.setattr(doctor, "_cuda_headers_check", lambda **_kw: doctor.Check(
         "CUDA kernel headers", "info", "not judged -- device not touched",
         brief="device not touched", blocking=False))
     parser = argparse.ArgumentParser()
@@ -1167,9 +1172,10 @@ def test_the_live_card_is_read_once_per_process(monkeypatch):
 def test_existing_estimator_inventories_match_the_baseline(lsm, mp, monkeypatch):
     """40 domain inventories and 30 non-Noah-MP full estimates, hashed
     against digests the BASELINE tree produced (fixture ``baseline_commit``),
-    not this one.  The one field the baseline's profile did not have --
-    ``compile_platform``, ``None`` on every default profile -- is dropped
-    before hashing, so the numbers are what is compared. Re-record each
+    not this one. New metadata absent from that baseline is asserted empty
+    before projection: ``compile_platform`` and the uncoupled ``hydro_memory``
+    roster. All allocation numbers and frame inventories remain compared.
+    Coupled allocations are checked in test_hydro_memory_contract. Re-record each
     scheme with ``python proof/node-reds-276/regen_estimator_baseline.py
     . <mp> --write`` after explaining the allocation change."""
     monkeypatch.setattr(pf.sys, "platform", "linux")
@@ -1187,6 +1193,7 @@ def test_existing_estimator_inventories_match_the_baseline(lsm, mp, monkeypatch)
         estimate = pf.estimate_experiment(exp)
         as_dict = asdict(estimate)
         assert as_dict["local_memory_profile"].pop("compile_platform") is None
+        assert as_dict.pop("hydro_memory") is None
         row.update(frames=pf.kernel_local_frame_bytes(exp), estimate=as_dict,
                    alloc=estimate.alloc_estimate_bytes, peak=estimate.peak_envelope_bytes)
         assert snapshot(row) == fixture["full_estimate_sha256"][key], row

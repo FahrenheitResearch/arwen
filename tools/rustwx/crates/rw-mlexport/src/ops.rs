@@ -21,6 +21,7 @@
 //! | `column-vapour` | total column water vapour (kg m-2) | q integrated over the column |
 //! | `surface-geopotential` | the surface's geopotential (m2 s-2) | PH + PHB at the bottom face |
 
+use rayon::prelude::*;
 use wrf_core::WrfFile;
 
 use crate::error::{fail, refuse, Result};
@@ -32,7 +33,11 @@ pub const G_COLUMN: f64 = 9.80665;
 pub const CONDENSATES: [&str; 6] = ["QCLOUD", "QRAIN", "QICE", "QSNOW", "QGRAUP", "QHAIL"];
 
 fn nonnegative(value: f64) -> f64 {
-    if value.is_finite() { value.max(0.0) } else { f64::NAN }
+    if value.is_finite() {
+        value.max(0.0)
+    } else {
+        f64::NAN
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +63,8 @@ pub enum Op {
     Pressure,
     Raw(String),
     EarthWind10(Component),
+    EarthWindHeight(Component, u32),
+    Dewpoint,
     Slp,
     Accumulation(Period),
     ColumnVapour,
@@ -85,12 +92,20 @@ impl Op {
                 "rh-ifs" => Op::RhIfs,
                 "pressure" => Op::Pressure,
                 "slp" => Op::Slp,
+                "dewpoint" => Op::Dewpoint,
                 "column-vapour" => Op::ColumnVapour,
                 "surface-geopotential" => Op::SurfaceGeopotential,
                 _ => return Err(unknown()),
             },
             Some(("earth-wind", c)) => Op::EarthWind(component(c)?),
             Some(("earth-wind10", c)) => Op::EarthWind10(component(c)?),
+            Some(("earth-wind-height", args)) => {
+                let (c, z) = args.split_once(':').ok_or_else(unknown)?;
+                Op::EarthWindHeight(
+                    component(c)?,
+                    z.parse().ok().filter(|z| *z > 0).ok_or_else(unknown)?,
+                )
+            }
             Some(("raw", name)) if !name.is_empty() => Op::Raw(name.to_string()),
             Some(("accumulation", "interval")) => Op::Accumulation(Period::Interval),
             Some(("accumulation", hours)) => {
@@ -112,14 +127,24 @@ pub fn read(file: &WrfFile, t: usize, name: &str) -> Result<Vec<f64>> {
         .map_err(|e| fail(format!("reading {name}: {e}")))
 }
 
-fn shared(result: wrf_core::WrfResult<wrf_core::file::SharedField>, what: &str) -> Result<std::sync::Arc<[f64]>> {
+fn shared(
+    result: wrf_core::WrfResult<wrf_core::file::SharedField>,
+    what: &str,
+) -> Result<std::sync::Arc<[f64]>> {
     result.map_err(|e| fail(format!("computing {what}: {e}")))
 }
 
 /// Earth-relative wind from grid-relative components: u_e = u cos a - v sin
 /// a, v_e = u sin a + v cos a (wrf-python's `uvmet`).  `cells` is one plane.
-pub fn rotate(u: &[f64], v: &[f64], sin: &[f64], cos: &[f64], cells: usize, which: Component) -> Vec<f64> {
-    u.iter()
+pub fn rotate(
+    u: &[f64],
+    v: &[f64],
+    sin: &[f64],
+    cos: &[f64],
+    cells: usize,
+    which: Component,
+) -> Vec<f64> {
+    u.par_iter()
         .zip(v)
         .enumerate()
         .map(|(i, (&u, &v))| {
@@ -135,13 +160,14 @@ pub fn rotate(u: &[f64], v: &[f64], sin: &[f64], cos: &[f64], cells: usize, whic
 /// The moist-air denominator 1 + QVAPOR + condensate, per mass point.
 pub fn moist_denominator(file: &WrfFile, t: usize) -> Result<Vec<f64>> {
     let qv = shared(file.qvapor(t), "QVAPOR")?;
-    let mut denominator: Vec<f64> = qv.iter().map(|&q| 1.0 + nonnegative(q)).collect();
+    let mut denominator: Vec<f64> = qv.par_iter().map(|&q| 1.0 + nonnegative(q)).collect();
     for name in CONDENSATES {
         if file.has_var(name) {
             let q = read(file, t, name)?;
-            for (d, q) in denominator.iter_mut().zip(&q) {
-                *d += nonnegative(*q);
-            }
+            denominator
+                .par_iter_mut()
+                .zip(&q)
+                .for_each(|(d, q)| *d += nonnegative(*q));
         }
     }
     Ok(denominator)
@@ -151,7 +177,11 @@ pub fn moist_denominator(file: &WrfFile, t: usize) -> Result<Vec<f64>> {
 pub fn specific_humidity(file: &WrfFile, t: usize) -> Result<Vec<f64>> {
     let qv = shared(file.qvapor(t), "QVAPOR")?;
     let denominator = moist_denominator(file, t)?;
-    Ok(qv.iter().zip(&denominator).map(|(&q, d)| nonnegative(q) / d).collect())
+    Ok(qv
+        .par_iter()
+        .zip(&denominator)
+        .map(|(&q, d)| nonnegative(q) / d)
+        .collect())
 }
 
 /// IFS saturation vapour pressure (Pa): over water at or above 273.16 K,
@@ -200,7 +230,11 @@ pub fn level_field(file: &WrfFile, t: usize, op: &Op, scale: f64) -> Result<Vec<
             let p = shared(file.full_pressure(t), "pressure")?;
             let tk = shared(file.temperature(t), "temperature")?;
             let qv = shared(file.qvapor(t), "QVAPOR")?;
-            p.iter().zip(tk.iter()).zip(qv.iter()).map(|((&p, &t), &q)| rh_ifs(p, t, q)).collect()
+            p.par_iter()
+                .zip(tk.par_iter())
+                .zip(qv.par_iter())
+                .map(|((&p, &t), &q)| rh_ifs(p, t, q))
+                .collect()
         }
         Op::Pressure => shared(file.full_pressure(t), "pressure")?.to_vec(),
         Op::Raw(name) => {
@@ -212,7 +246,7 @@ pub fn level_field(file: &WrfFile, t: usize, op: &Op, scale: f64) -> Result<Vec<
                     file.nxyz()
                 )));
             }
-            values.into_iter().map(|v| v * scale).collect()
+            values.into_par_iter().map(|v| v * scale).collect()
         }
         other => {
             return Err(refuse(format!(
@@ -232,7 +266,7 @@ pub fn column_vapour(file: &WrfFile, t: usize, p_top: Option<f64>) -> Result<Vec
     let p = shared(file.full_pressure(t), "pressure")?;
     let psfc = read(file, t, "PSFC")?;
     let mut out = vec![0.0f64; cells];
-    for c in 0..cells {
+    out.par_iter_mut().enumerate().for_each(|(c, value)| {
         let mut lower = psfc[c];
         let mut sum = 0.0;
         for k in 0..nz {
@@ -252,15 +286,19 @@ pub fn column_vapour(file: &WrfFile, t: usize, p_top: Option<f64>) -> Result<Vec
             sum += q[k * cells + c] * nonnegative(lower - upper);
             lower = upper;
         }
-        out[c] = sum / G_COLUMN;
-    }
+        *value = sum / G_COLUMN;
+    });
     Ok(out)
 }
 
 /// The accumulated precipitation (mm) a history file carries: RAINNC,
 /// RAINC and RAINSH when present, plus their bucket counts times
 /// BUCKET_MM.
-pub fn accumulated_precipitation(file: &WrfFile, t: usize, bucket_mm: Option<f64>) -> Result<Vec<f64>> {
+pub fn accumulated_precipitation(
+    file: &WrfFile,
+    t: usize,
+    bucket_mm: Option<f64>,
+) -> Result<Vec<f64>> {
     let cells = file.nxy();
     let mut total = vec![0.0f64; cells];
     let mut any = false;
@@ -270,9 +308,7 @@ pub fn accumulated_precipitation(file: &WrfFile, t: usize, bucket_mm: Option<f64
         }
         any = true;
         let values = read(file, t, field)?;
-        for (a, v) in total.iter_mut().zip(&values) {
-            *a += v;
-        }
+        total.par_iter_mut().zip(&values).for_each(|(a, v)| *a += v);
         if !bucket.is_empty() && file.has_var(bucket) {
             let size = bucket_mm.ok_or_else(|| {
                 refuse(format!(
@@ -280,9 +316,10 @@ pub fn accumulated_precipitation(file: &WrfFile, t: usize, bucket_mm: Option<f64
                 ))
             })?;
             let counts = read(file, t, bucket)?;
-            for (a, n) in total.iter_mut().zip(&counts) {
-                *a += n * size;
-            }
+            total
+                .par_iter_mut()
+                .zip(&counts)
+                .for_each(|(a, n)| *a += n * size);
         }
     }
     if !any {
@@ -295,7 +332,13 @@ pub fn accumulated_precipitation(file: &WrfFile, t: usize, bucket_mm: Option<f64
 
 /// A 2-D field, `[ny, nx]`, for a surface or static row.  Accumulations
 /// are handled by the caller, which holds the earlier frames.
-pub fn surface_field(file: &WrfFile, t: usize, op: &Op, scale: f64, p_top: Option<f64>) -> Result<Vec<f64>> {
+pub fn surface_field(
+    file: &WrfFile,
+    t: usize,
+    op: &Op,
+    scale: f64,
+    p_top: Option<f64>,
+) -> Result<Vec<f64>> {
     let cells = file.nxy();
     Ok(match op {
         Op::Raw(name) => {
@@ -306,7 +349,7 @@ pub fn surface_field(file: &WrfFile, t: usize, op: &Op, scale: f64, p_top: Optio
                     values.len()
                 )));
             }
-            values.into_iter().map(|v| v * scale).collect()
+            values.into_par_iter().map(|v| v * scale).collect()
         }
         Op::EarthWind10(which) => {
             let u = shared(file.u10(t), "U10")?;
@@ -314,6 +357,23 @@ pub fn surface_field(file: &WrfFile, t: usize, op: &Op, scale: f64, p_top: Optio
             let sin = shared(file.sinalpha(t), "SINALPHA")?;
             let cos = shared(file.cosalpha(t), "COSALPHA")?;
             rotate(&u, &v, &sin, &cos, cells, *which)
+        }
+        Op::EarthWindHeight(which, height) => {
+            let wind = level_field(file, t, &Op::EarthWind(*which), 1.)?;
+            let phi = shared(file.geopotential_stag(t), "geopotential interfaces")?;
+            height_wind(&wind, &phi, cells, file.nz, *height as f64)?
+        }
+        Op::Dewpoint => {
+            let q = read(file, t, "Q2")?;
+            let p = read(file, t, "PSFC")?;
+            q.par_iter()
+                .zip(p)
+                .map(|(&q, p)| {
+                    let e = p * q / (0.622 + q);
+                    let log = (e / 611.2).ln();
+                    273.15 + 243.5 * log / (17.67 - log)
+                })
+                .collect()
         }
         Op::Slp => wrf_core::diag::pressure::compute_slp(file, t, &Default::default())
             .map_err(|e| fail(format!("computing sea-level pressure: {e}")))?
@@ -333,14 +393,52 @@ pub fn surface_field(file: &WrfFile, t: usize, op: &Op, scale: f64, p_top: Optio
     })
 }
 
+/// Linear in mass-level height above the bottom geopotential interface.
+/// Outside the mass-level height range the value is NaN, never extrapolated.
+pub fn height_wind(
+    wind: &[f64],
+    phi: &[f64],
+    cells: usize,
+    nz: usize,
+    height: f64,
+) -> Result<Vec<f64>> {
+    if nz < 2 || wind.len() != nz * cells || phi.len() != (nz + 1) * cells {
+        return Err(refuse(
+            "height wind needs at least two mass levels and their geopotential interfaces",
+        ));
+    }
+    Ok((0..cells)
+        .into_par_iter()
+        .map(|c| {
+            let z = |k: usize| {
+                (0.5 * (phi[k * cells + c] + phi[(k + 1) * cells + c]) - phi[c]) / G_COLUMN
+            };
+            for k in 0..nz - 1 {
+                let (lo, hi) = (z(k), z(k + 1));
+                if height >= lo && height <= hi && hi > lo {
+                    let f = (height - lo) / (hi - lo);
+                    return wind[k * cells + c] * (1. - f) + wind[(k + 1) * cells + c] * f;
+                }
+            }
+            f64::NAN
+        })
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn operators_parse_and_unknown_ones_refuse() {
-        assert_eq!(Op::parse("earth-wind:v").unwrap(), Op::EarthWind(Component::V));
-        assert_eq!(Op::parse("accumulation:6h").unwrap(), Op::Accumulation(Period::Hours(6)));
+        assert_eq!(
+            Op::parse("earth-wind:v").unwrap(),
+            Op::EarthWind(Component::V)
+        );
+        assert_eq!(
+            Op::parse("accumulation:6h").unwrap(),
+            Op::Accumulation(Period::Hours(6))
+        );
         assert_eq!(Op::parse("raw:T2").unwrap(), Op::Raw("T2".into()));
         assert!(Op::parse("vorticity").unwrap_err().is_refusal());
         assert!(Op::parse("earth-wind:w").is_err());
@@ -355,7 +453,10 @@ mod tests {
         assert!(((u * u + v * v).sqrt() - 5.0).abs() < 1e-12);
         assert!((u - (3.0 * cos - 4.0 * sin)).abs() < 1e-12);
         // No rotation is the identity.
-        assert_eq!(rotate(&[3.0], &[4.0], &[0.0], &[1.0], 1, Component::U)[0], 3.0);
+        assert_eq!(
+            rotate(&[3.0], &[4.0], &[0.0], &[1.0], 1, Component::U)[0],
+            3.0
+        );
     }
 
     #[test]
@@ -374,5 +475,18 @@ mod tests {
         assert!((es_ifs(t) - (0.25 * w + 0.75 * i)).abs() < 1e-9);
         // RH is not capped.
         assert!(rh_ifs(100_000.0, 280.0, 0.02) > 100.0);
+    }
+}
+
+#[cfg(test)]
+mod height_test {
+    use super::*;
+    #[test]
+    fn known_100m_column_uses_agl_and_earth_relative_wind() {
+        let g = G_COLUMN;
+        let phi = [500. * g, 600. * g, 700. * g];
+        let earth = rotate(&[2., 6.], &[4., 12.], &[1.], &[0.], 1, Component::U);
+        let out = height_wind(&earth, &phi, 1, 2, 100.).unwrap();
+        assert!((out[0] + 8.).abs() < 1e-10);
     }
 }

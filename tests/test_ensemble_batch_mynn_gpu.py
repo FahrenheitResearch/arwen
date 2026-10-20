@@ -35,8 +35,8 @@ def test_surface_one_launch_matches_all_outputs_and_carried_inputs(members, vari
     from gpuwm.core import mynn_sfclay
     native_kernel = mynn_sfclay.mynn_surface_kernel
     observed = []
-    def observe_kernel(identity):
-        kernel = native_kernel(identity)
+    def observe_kernel(identity, shape=()):
+        kernel = native_kernel(identity, shape)
         def launch(*args):
             observed.append(identity)
             return kernel(*args)
@@ -112,8 +112,8 @@ def test_tke_predictor_one_launch_matches_each_member_and_overwrites_workspace(m
     from gpuwm.core import mynn_pbl_gpu
     native_get = mynn_pbl_gpu.mynn_pbl_kernel
     observed = []
-    def observe_kernel(entry, identity="wrf_461"):
-        kernel = native_get(entry, identity)
+    def observe_kernel(entry, identity="wrf_461", shape=()):
+        kernel = native_get(entry, identity, shape)
         def launch(*args):
             observed.append(entry)
             return kernel(*args)
@@ -184,8 +184,8 @@ def test_full_pbl_wrapper_matches_each_ordinary_member_cold_and_carried_state(
     from gpuwm.core import mynn_pbl_gpu
     native_get = mynn_pbl_gpu.mynn_pbl_kernel
     observed_predictors = []
-    def observe_kernel(entry, identity="wrf_461"):
-        kernel = native_get(entry, identity)
+    def observe_kernel(entry, identity="wrf_461", shape=()):
+        kernel = native_get(entry, identity, shape)
         if entry != "mynn_predict_default_columns":
             return kernel
         def launch(*args):

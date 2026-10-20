@@ -199,7 +199,7 @@ def device_tables(dtph: float):
 
 def launch_fer_hires(th, qv, qc, qr, qi, qt, f_ice, f_rain, f_rimef,
                      p, pii, rho, dz8w, rainnc, rainncv, sr, tab,
-                     dt: float, gid: int, refl=None) -> None:
+                     dt: float, gid: int, refl=None, *, analysis_only=False) -> None:
     """One FER_HIRES call over contiguous float32 ``(nz, ny, nx)`` fields.
 
     th/qv/qc/qr/qi/f_ice/f_rain/f_rimef are updated and qt written in
@@ -242,7 +242,7 @@ def launch_fer_hires(th, qv, qc, qr, qi, qt, f_ice, f_rain, f_rimef,
         (th, qv, qc, qr, qi, qt, f_ice, f_rain, f_rimef, p, pii, rho, dz8w,
          rainnc, rainncv, sr, th if refl is None else refl, tab, DTYPE(dt),
          np.int32(gid), np.int32(0 if refl is None else 1), np.int32(nz),
-         np.int32(ny), np.int32(nx)))
+         np.int32(ny), np.int32(nx), np.int32(analysis_only)))
 
 
 #: The adapter's state fields beyond qv/qc/qr: the moist and scalar species
@@ -304,3 +304,26 @@ def apply(state, cfg, dt: float, *, refl_10cm_due: bool = False):
 
 __all__ = ["apply", "device_tables", "launch_fer_hires", "load_table",
            "parse_table", "STATE_FIELDS", "TABLE_NAME", "TABLE_SHA256"]
+
+
+def reflectivity(state, cfg):
+    """Native current-state radar moments, without sources or sedimentation."""
+    import cupy as cp
+    from gpuwm.core import constants as c
+    from gpuwm.core.state import DTYPE
+    shape = tuple(state.p.shape)
+    thb = state.thb if state.thb.ndim == 3 else state.thb[:, None, None]
+    th = cp.ascontiguousarray(thb + state.thp)
+    pii = cp.power(state.p / DTYPE(c.P0), DTYPE(c.RCP))
+    rho = 1 / state.alt
+    # Thickness cancels in the native PSD setup when there is no fallout.
+    dz = cp.ones(shape, dtype=DTYPE)
+    surface = cp.zeros(shape[1:], dtype=DTYPE)
+    unused = cp.empty(shape, dtype=DTYPE)
+    refl = state.scratch(shape, "refl_10cm")
+    launch_fer_hires(th, state.qv, state.qc, state.qr, state.qi,
+                     unused, unused, unused, state.f_rimef, state.p, pii,
+                     rho, dz, surface, surface, surface,
+                     device_tables(float(cfg.dt)), float(cfg.dt),
+                     int(getattr(cfg, "grid_id", 1)), refl=refl, analysis_only=True)
+    return refl

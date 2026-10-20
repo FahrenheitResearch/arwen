@@ -56,7 +56,7 @@ ROOT_DX_M = 12000.0
 RATIO = 4
 
 
-def _default_profile(forcing_source: str) -> str | None:
+def _default_profile(forcing_source: str, nest_km: float = 3.) -> str | None:
     """The suite this setup binds with none named, at its finest grid.
 
     The row `gpuwm domain` binds
@@ -69,7 +69,7 @@ def _default_profile(forcing_source: str) -> str | None:
     from gpuwm import domain_wizard as dw
 
     return dw.resolved_physics_profile(
-        forcing_source, None, finest_dx_m=ROOT_DX_M / RATIO, domains=2)
+        forcing_source, None, finest_dx_m=nest_km * 1000., domains=2)
 
 
 #: The preset nest measured in the unit a nest is actually sized in: whole
@@ -82,7 +82,7 @@ PRESET_NEST_PARENT_CELLS = CHILD_DIMS[0] // RATIO
 FIT_SCALE_STEPS = 20
 
 
-def _config_name(adapter, name: str | None) -> str:
+def _config_name(adapter, name: str | None, nest_km: float = 3.) -> str:
     """The configuration name, resolved ONCE for both authoring seams.
 
     ``configuration_text`` resolved it and the fit ladder was handed the
@@ -92,7 +92,7 @@ def _config_name(adapter, name: str | None) -> str:
     that dropped the builder would have written ``name = None`` into a
     configuration.  One resolver, both call sites.
     """
-    return name or f"{adapter.display_title} cyclone 12 km to 3 km"
+    return name or f"{adapter.display_title} cyclone {nest_km*RATIO:g} km to {nest_km:g} km"
 
 
 def _cycle(raw: str, *, latest: bool = False,
@@ -155,48 +155,13 @@ def latest_map(cycle: str = "latest", *, source: str = DEFAULT_SOURCE,
 
 
 def follow_table_for_nest(child_nx: int, child_ny: int) -> dict:
-    """The quick-start follow preset, re-derived for THIS nest.
+    """Derive proposal reach from this nest's size and overlap floor.
 
-    ``VORTEX_PRESET``'s movement maximums are the ones its own overlap
-    floor admits on the nest it was written for, 40 parent cells wide.
-    THE FLOOR STATES THE PHYSICS -- keep this much of the child, so at
-    most the rest is strip the move exposes and the child has to spin up
-    -- and the maximums are the derived half, at whatever size the nest
-    ends up.  Overlap is separable, so the binding case is the DIAGONAL
-    move, where both factors shrink at once: with the nest ``N`` parent
-    cells wide, a floor ``f`` admits a per-axis magnitude ``m`` only
-    while ``(1 - m/N)**2 >= f``, that is ``m <= N * (1 - sqrt(f))``.
-    :func:`gpuwm.core.nest_relocation.max_parent_cells_for_overlap` is
-    that bound, and it is the same one ``check_admissible`` enforces at
-    run time, so the door cannot emit a maximum the run then refuses.
-
-    BOTH ROADS COME THROUGH HERE, which is the point of there being one
-    of these.  The reduction ladder proposes a nest SMALLER than the
-    preset's and the same floor admits fewer parent cells on it, so
-    copying the preset's numbers down writes back exactly the
-    contradiction the preset was corrected to remove: a maximum the move
-    can pass and the floor then refuses, which ends a forecast at its
-    first relocation cadence instead of moving it as far as it was
-    allowed.  A nest grown to ``--nest-budget-gib`` is WIDER, and the
-    same floor admits more there; holding it at the preset's number
-    would have a 240x240 nest move no further per cadence than a
-    160x160 one on a card that paid for the difference.  The bound
-    holds before it steps up, because the preset's own 6 is the floor
-    of a 40-cell nest: 42 cells still admit 6, 44 admit 7, 50 admit 8;
-    the first step up buys ground without buying reach.
-
-    The search margin is the preset's own PROPORTION of the nest -- half
-    its width in parent cells -- and never under the preset's 20, so the
-    tracker's box grows with a grown nest and the reduction ladder emits
-    the margin its configuration declares.
-
-    Both emitted tables (the configuration's ``[domain.follow]`` and the
-    cyclone.json receipt) come through here, so the file the run reads
-    and the document the desktop reads carry one number.  So does
-    :func:`_nest_clearance_cells`, which is why the ladder is priced with
-    the bounds each rung would actually carry.
-
-    The floor is never lowered to keep a maximum.
+    The single-axis limit is N * (1 - floor). The runner clamps each
+    actual vector to the floor, so a diagonal proposal can move less
+    without imposing that smaller limit on west/east motion. Both the
+    emitted configuration and receipt use this table. Search margin
+    grows with the nest; the floor and cooldown remain selectable.
     """
     from gpuwm.companion_domains import VORTEX_PRESET
     from gpuwm.core.nest_relocation import max_parent_cells_for_overlap
@@ -204,7 +169,7 @@ def follow_table_for_nest(child_nx: int, child_ny: int) -> dict:
     table = dict(VORTEX_PRESET)
     bound = max_parent_cells_for_overlap(
         table["min_overlap_fraction"], parent_grid_ratio=RATIO,
-        child_nx=int(child_nx), child_ny=int(child_ny))
+        child_nx=int(child_nx), child_ny=int(child_ny), diagonal=False)
     if bound is None:
         return table
     if bound < 1:
@@ -255,7 +220,9 @@ def configuration_text(*, cycle: str, point: tuple[float, float], hours: int = 6
                        dimensions=None,
                        isftcflx: int | None = None,
                        history_interval_s: float | None = None,
-                       nest_history_interval_s: float | None = None) -> tuple[str, object]:
+                       nest_history_interval_s: float | None = None,
+                       nest_km: float = 3., track_selection: dict | None = None,
+                       model: str | None = None) -> tuple[str, object]:
     from gpuwm import domain_wizard as dw
     from gpuwm.companion_domains import VORTEX_PRESET_SOURCE
     from gpuwm.cyclone_sources import (declared_case_data, fetch_hints,
@@ -263,6 +230,11 @@ def configuration_text(*, cycle: str, point: tuple[float, float], hours: int = 6
                                        validate_center)
     from gpuwm.starter_template import render_tables
 
+    if nest_km not in (3., 2.5):
+        raise ValueError("--nest-km must be 3 or 2.5; 2.5 km uses a 10 km parent at integer ratio 4")
+    root_dx_m = float(nest_km) * 1000. * RATIO
+    from gpuwm.cyclone_sources import acquisition_hints
+    model = acquisition_hints(forcing_source, model).get("model")
     adapter = source_adapter(forcing_source)
     forcing_source = adapter.source_id
     moment = _cycle(cycle, forcing_source=forcing_source)
@@ -288,6 +260,12 @@ def configuration_text(*, cycle: str, point: tuple[float, float], hours: int = 6
             or any(type(n) is not int or n <= 0 for pair in dims for n in pair)):
         raise ValueError("Cyclone dimensions must be two positive integer axis pairs")
     projection = dw._projection_entries(lat, lon, "auto")
+    if track_selection is not None:
+        from gpuwm.cyclone_tracks import layout
+        from types import SimpleNamespace
+        projection, _ = layout(point=point, fixes=track_selection["fixes"],
+            dimensions=dims, dx_m=root_dx_m,
+            clearance=_nest_clearance_cells(SimpleNamespace(spec_bdy_width=dw._SPEC_BDY_WIDTH, blend_width=dw._BLEND_WIDTH), dims[1]))
     # The fetch block the SOURCE declares: its cadence, its rounding to
     # its own forcing interval, its lead horizon, its member vocabulary
     # and whether its transport takes an area window.  The wizard's own
@@ -297,12 +275,12 @@ def configuration_text(*, cycle: str, point: tuple[float, float], hours: int = 6
     # than from one model's 384-hour ceiling written down here.
     hints = fetch_hints(source=forcing_source, moment=moment, hours=hours,
                         projection=projection, dims=tuple(dims[0]),
-                        dx_m=ROOT_DX_M, member=member, start_hour=start_hour)
-    profile = _default_profile(forcing_source)
+                        dx_m=root_dx_m, member=member, start_hour=start_hour, model=model)
+    profile = _default_profile(forcing_source, nest_km)
     text = dw.render_config(
-        name=_config_name(adapter, name),
+        name=_config_name(adapter, name, nest_km),
         start_time=start_time, hours=hours, projection=projection,
-        dims=dims, ratios=(RATIO,), root_dx_m=ROOT_DX_M,
+        dims=dims, ratios=(RATIO,), root_dx_m=root_dx_m,
         profile=profile, cumulus_requested=False, tiles=tiles,
         fetch_hints=hints,
         case_data=declared_case_data(forcing_source, hints, source),
@@ -317,6 +295,15 @@ def configuration_text(*, cycle: str, point: tuple[float, float], hours: int = 6
     # a memory budget is wider and its floor admits more.
     child["follow"] = {**follow_table_for_nest(*dims[1]),
                        "track": {"path": "storm-track.d02.csv"}}
+    if track_selection is not None:
+        from gpuwm.cyclone_tracks import toml_lineage
+        grid = dw._root_grid(projection, *dims[0], root_dx_m)
+        x, y = grid.latlon_to_ij(lat, lon)
+        from gpuwm.core.storm_tracking import _round_cells
+        for key, axis, side in (("i_parent_start", float(x), dims[1][0]),
+                                ("j_parent_start", float(y), dims[1][1])):
+            child[key] = _round_cells(axis - (side / RATIO - 1.) / 2.)
+        raw["lineage"] = {"cyclone_tracks": toml_lineage(track_selection["lineage"])}
     # This is one immediate following nest. Spawn/retire decisions are not part
     # of this quick-start; the chosen center is its initial registration.
     # The run door's own verdict on the nest this file declares, written
@@ -335,15 +322,15 @@ def configuration_text(*, cycle: str, point: tuple[float, float], hours: int = 6
             heading + moving["note"], 76))
     began = (f"f{start_hour:03d} forecast (valid {start_time:%Y-%m-%d %H} UTC)"
              if start_hour else "f000 analysis")
-    text = (f"# {adapter.display_title} cyclone quick-start: 12 km parent and "
-            "3 km following nest.\n"
+    text = (f"# {adapter.display_title} cyclone quick-start: {root_dx_m/1000.:g} km parent and "
+            f"{nest_km:g} km following nest.\n"
             "# Center and cycle were selected explicitly on that source's "
             f"{began}.\n"
             f"# Existing vortex-lock preset: {VORTEX_PRESET_SOURCE}"
             + ("" if tuple(dims[1]) == CHILD_DIMS else
                f" (movement bounds re-derived for a {dims[1][0]}x{dims[1][1]} nest)")
             + "\n"
-            "# Following uses the 850 hPa circulation; the selection map uses MSLP.\n"
+            "# Following uses the MSLP minimum, with 850 hPa circulation as fallback.\n"
             + limit
             + render_tables(raw))
     text = dw.with_surface_flux_option(text, isftcflx)
@@ -431,7 +418,7 @@ def _nest_moves_at_all(child_dims) -> bool:
 
     bound = max_parent_cells_for_overlap(
         VORTEX_PRESET["min_overlap_fraction"], parent_grid_ratio=RATIO,
-        child_nx=int(child_dims[0]), child_ny=int(child_dims[1]))
+        child_nx=int(child_dims[0]), child_ny=int(child_dims[1]), diagonal=False)
     return bound is None or bound >= 1
 
 
@@ -687,8 +674,8 @@ def _resident_alternative(intent, sizing, dims_of, scales_of):
                         + timedelta(hours=intent["start_hour"])),
             projection=tomllib.loads(_text)["projection"],
             source=forcing_source,
-            name=intent["name"], root_dx_m=ROOT_DX_M,
-            profile=_default_profile(forcing_source),
+            name=intent["name"], root_dx_m=float(intent.get("nest_km", 3.))*1000.*RATIO,
+            profile=_default_profile(forcing_source, intent.get("nest_km", 3.)),
             tiles="off",
             forcing_interval_seconds=_forcing_interval(
                 forcing_source, cycle=intent["cycle"],
@@ -954,9 +941,9 @@ def _unbudgeted_alternative(intent, *, sizing, operands):
                         + timedelta(hours=plain["start_hour"])),
             projection=tomllib.loads(text)["projection"],
             source=forcing_source,
-            name=_config_name(source_adapter(forcing_source), plain["name"]),
-            root_dx_m=ROOT_DX_M,
-            profile=_default_profile(forcing_source),
+            name=_config_name(source_adapter(forcing_source), plain["name"], plain.get("nest_km", 3.)),
+            root_dx_m=float(intent.get("nest_km", 3.))*1000.*RATIO,
+            profile=_default_profile(forcing_source, intent.get("nest_km", 3.)),
             tiles=plain["tiles"],
             forcing_interval_seconds=operands["forcing_interval_seconds"],
             candidate_builder=lambda proposed: configuration_text(
@@ -1186,9 +1173,9 @@ def _size_nest_to_budget(intent, *, sizing, target_machine, operands, price,
             start_time=(_cycle(intent["cycle"], forcing_source=forcing_source)
                         + timedelta(hours=intent["start_hour"])),
             projection=projection, source=forcing_source,
-            name=_config_name(source_adapter(forcing_source), intent["name"]),
-            root_dx_m=ROOT_DX_M,
-            profile=_default_profile(forcing_source),
+            name=_config_name(source_adapter(forcing_source), intent["name"], intent.get("nest_km", 3.)),
+            root_dx_m=float(intent.get("nest_km", 3.))*1000.*RATIO,
+            profile=_default_profile(forcing_source, intent.get("nest_km", 3.)),
             tiles=intent["tiles"],
             forcing_interval_seconds=operands["forcing_interval_seconds"],
             candidate_builder=lambda proposed: configuration_text(
@@ -1222,7 +1209,9 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
                  start_hour: int = 0, nest_budget_gib: float | None = None,
                  cancelled=None, isftcflx: int | None = None,
                  history_interval_s: float | None = None,
-                 nest_history_interval_s: float | None = None) -> dict:
+                 nest_history_interval_s: float | None = None,
+                 nest_km: float = 3., track_selection: dict | None = None,
+                 model: str | None = None) -> dict:
     from gpuwm import domain_wizard as dw
     from gpuwm.companion_domains import VORTEX_PRESET_SOURCE
     from gpuwm.configuration_recovery import MemoryAdmissionError
@@ -1230,7 +1219,10 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
                                        source_adapter)
     from gpuwm.starter_template import changes
 
+    root_dx_m = float(nest_km) * 1000. * RATIO
     dw.check_fit_cancelled(cancelled)
+    from gpuwm.cyclone_sources import acquisition_hints
+    model = acquisition_hints(forcing_source, model).get("model")
     adapter = source_adapter(forcing_source)
     forcing_source = adapter.source_id
     interval_s = _forcing_interval(forcing_source, cycle=cycle,
@@ -1244,7 +1236,8 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
                   source=source, forcing_source=forcing_source, member=member,
                   start_hour=start_hour, isftcflx=isftcflx,
                   history_interval_s=history_interval_s,
-                  nest_history_interval_s=nest_history_interval_s)
+                  nest_history_interval_s=nest_history_interval_s,
+                  nest_km=nest_km, track_selection=track_selection, model=model)
     if nest_budget_gib is not None and (
             not isinstance(nest_budget_gib, (int, float))
             or isinstance(nest_budget_gib, bool)
@@ -1365,7 +1358,31 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
                 streaming_fixed_floor_bytes=None,
                 unbudgeted_alternative=alternative) from error
         intent["dimensions"] = chosen
-    original_text, experiment = configuration_text(**intent)
+    baseline_text, baseline_exp = configuration_text(**intent)
+    baseline_dims = _requested_dimensions(intent)
+    track_grown = False
+    track_growth_reason = None
+    if track_selection is not None:
+        from gpuwm.cyclone_tracks import layout
+        base_dims = _requested_dimensions(intent)
+        _, needed = layout(point=point, fixes=track_selection["fixes"],
+            dimensions=base_dims, dx_m=root_dx_m,
+            clearance=_nest_clearance_cells(baseline_exp, base_dims[1]))
+        if tuple(base_dims[0]) != tuple(needed):
+            intent["dimensions"] = [needed, tuple(base_dims[1])]
+            track_grown = True
+    try:
+        original_text, experiment = (configuration_text(**intent) if track_grown
+                                     else (baseline_text, baseline_exp))
+    except ValueError as error:
+        if not track_grown:
+            raise
+        # Source/projection extent may stop parent growth before memory does.
+        # Preserve the admitted preset and report the unavailable corridor.
+        track_growth_reason = str(error)
+        intent["dimensions"] = base_dims
+        original_text, experiment = baseline_text, baseline_exp
+        track_grown = False
     text = original_text
     requested_dims = _requested_dimensions(intent)
 
@@ -1391,10 +1408,13 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
     # The bounds the REQUEST carries, asked of the requested layout
     # itself (see below) as well as of every rung the fit tries.
     request_bound = dw.point_request_bound(
-        tomllib.loads(original_text)["projection"], *ROOT_DIMS, ROOT_DX_M)
+        tomllib.loads(original_text)["projection"], *requested_dims[0], root_dx_m)
     phases, refusal = _admitted_as_requested(experiment, price, budget,
                                              cancelled)
 
+    if refusal is None and track_grown and phases.peak_envelope_bytes > budget - dw.fit_headroom_bytes(budget):
+        refusal = dw.DomainFitError("The grown track corridor exceeds memory admission with fit headroom",
+                                    resource="vram", phases=phases)
     if refusal is None and request_bound is not None:
         # The card is not the only thing that decides how big a domain
         # grown from a single point may be, and on this door it was the
@@ -1504,9 +1524,9 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
                 start_time=(_cycle(cycle, forcing_source=forcing_source)
                             + timedelta(hours=start_hour)),
                 projection=tomllib.loads(original_text)["projection"],
-                source=forcing_source, name=_config_name(adapter, name),
-                root_dx_m=ROOT_DX_M,
-                profile=_default_profile(forcing_source),
+                source=forcing_source, name=_config_name(adapter, name, nest_km),
+                root_dx_m=root_dx_m,
+                profile=_default_profile(forcing_source, nest_km),
                 tiles=tiles, forcing_interval_seconds=interval_s,
                 candidate_builder=build, dimensions_builder=dims_of,
                 candidate_scales=scales_of(experiment),
@@ -1594,11 +1614,13 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
 
     dw.check_fit_cancelled(cancelled)
     stopped_by = dict(fit_stop) if fit_stop else None
+    review_required = reduced or track_grown
+    comparison_text = baseline_text if track_grown else original_text
     changed_fields = [{"field": field, "before": before, "after": after}
-                      for field, before, after in changes(tomllib.loads(original_text),
+                      for field, before, after in changes(tomllib.loads(comparison_text),
                                                         tomllib.loads(text))]
-    return {
-        "schema": SCHEMA, "kind": "proposal" if reduced else "configuration",
+    result = {
+        "schema": SCHEMA, "kind": "proposal" if review_required else "configuration",
         "cycle": _cycle(cycle, forcing_source=forcing_source).strftime("%Y%m%d%H"),
         "source": forcing_source, "member": selected_member(forcing_source, member),
         "forcing_interval_seconds": interval_s,
@@ -1646,7 +1668,7 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
             # whatever chose the layout, so a preset admitted inside it
             # claimed bytes unspent that the envelope had spent.
             "headroom_bytes": (dw.fit_headroom_bytes(budget)
-                               if reduced or nest_searched else 0),
+                               if review_required or nest_searched else 0),
             "peak_envelope_bytes": phases.peak_envelope_bytes,
             "sized_to_budget": nest_budget_gib is not None,
         },
@@ -1654,18 +1676,18 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
         # document and the launch cannot disagree about whether the nest
         # this setup authors can be integrated on the selected chain.
         "follow_statics": moving_nest_note(forcing_source),
-        "profile": _default_profile(forcing_source),
+        "profile": _default_profile(forcing_source, nest_km),
         "streaming": _streaming_entry(phases, tiles, budget),
         "memory": {"peak_envelope_bytes": phases.peak_envelope_bytes, "budget_bytes": budget,
                    "binding_phase": phases.binding_phase, "free_bytes": sizing.free_bytes,
-                   "fit_headroom_bytes": dw.fit_headroom_bytes(budget) if reduced else 0,
+                   "fit_headroom_bytes": dw.fit_headroom_bytes(budget) if review_required else 0,
                    "sizing_basis": "measured-available" if sizing.measured else "declared-capacity"},
-        "fitting": {"changed": reduced, "review_required": reduced,
+        "fitting": {"changed": review_required, "review_required": review_required,
                     "fit_id": hashlib.sha256(text.encode()).hexdigest(),
-                    "original_dimensions": requested_dims,
+                    "original_dimensions": baseline_dims if track_grown else requested_dims,
                     "proposed_dimensions": [[d.run.nx, d.run.ny] for d in experiment.domains],
                     "changes": changed_fields,
-                    "reason": str(refusal) if reduced else None,
+                    "reason": str(refusal) if reduced else ("Parent growth reserves the tracked corridor" if track_grown else None),
                     "policy": "largest admitted 5%-scale rung; preserve tracker search and movement clearance",
                     "keeps_coverage": keeps_coverage,
                     "stopped_by": stopped_by,
@@ -1679,6 +1701,18 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
                                "Original dimensions fit; configuration unchanged.")},
         "config_text": text, "created": False, "forecast_started": False,
     }
+    if track_selection is not None:
+        from gpuwm.cyclone_tracks import placement_report
+        result["lineage"] = {"cyclone_tracks": track_selection["lineage"]}
+        result["track_placement"] = placement_report(text, track_selection)
+        result["track_placement"]["growth_limit"] = track_growth_reason
+        if track_grown:
+            result["fitting"]["notice"] = ("Parent dimensions changed to reserve the tracked corridor. "
+                "Review all field changes; use --accept-fit FIT_ID to save this exact proposal.")
+        if result["track_placement"]["leaves_follower_clearance"]:
+            result["fitting"]["notice"] += (" Track corridor does not fit; parent is centered on the start fix. "
+                "See track_placement.leaves_parent and leaves_follower_clearance for UTC fixes.")
+    return result
 
 
 def _cancelled(error) -> bool:
@@ -1730,7 +1764,33 @@ def main(args) -> int:
                 from gpuwm.cyclone_sources import companion_input_files
                 from gpuwm.hrrr_prepared_bundle import render_wps_namelist
                 from gpuwm.starter_template import _publish_new_files
-                _cycle(args.cycle, forcing_source=forcing_source)
+                from gpuwm.cyclone_sources import source_adapter, acquisition_hints
+                model = acquisition_hints(forcing_source, getattr(args, "model", None)).get("model")
+                forcing_source = source_adapter(forcing_source).source_id
+                moment = _cycle(args.cycle, forcing_source=forcing_source)
+                tracks_path = getattr(args, "tracks", None)
+                storm = getattr(args, "storm", None)
+                track_selection = None
+                if getattr(args, "search_area", None) is not None and tracks_path is None:
+                    raise ValueError("track-file-required: --search-area requires --tracks")
+                if storm is not None and tracks_path is None:
+                    raise ValueError("track-file-required: --storm requires --tracks")
+                if tracks_path is not None:
+                    if not storm:
+                        raise ValueError("track-storm-required: --tracks requires --storm auto or TRACK_ID")
+                    if args.point is not None or getattr(args, "advisory_position", None) or getattr(args, "seed_fields", None):
+                        raise ValueError("track-position-conflict: --tracks is mutually exclusive with --point, --advisory-position and --seed-fields")
+                    from gpuwm.cyclone_tracks import select_track
+                    from gpuwm.cyclone_sources import source_options
+                    track_selection = select_track(tracks_path, storm=storm, member=member,
+                        source=forcing_source, start=moment + timedelta(hours=start_hour), hours=args.hours,
+                        search_area=getattr(args, "search_area", None))
+                    # A trajectory identity need not be an atmospheric member token.
+                    # Use it only when this same source declares it in its menu.
+                    mid = track_selection["lineage"]["member_id"]
+                    row = next(r for r in source_options() if r["source"] == forcing_source)
+                    provenance_source = track_selection["lineage"]["member"].get("source")
+                    member = mid if provenance_source == forcing_source and mid in row["members"] else None
                 seed_path = getattr(args, "seed_fields", None)
                 fields = (load_seed_fields(seed_path, source=forcing_source,
                                            cycle=args.cycle, member=member)
@@ -1743,7 +1803,9 @@ def main(args) -> int:
                 # stops here, and it names both flags that supply one.
                 seed = seed_cyclone(
                     source=forcing_source, fields=fields,
-                    point=dw._parse_point(args.point) if args.point is not None else None,
+                    point=((track_selection["lineage"]["center_fix"]["lat"], track_selection["lineage"]["center_fix"]["lon"])
+                           if track_selection is not None else
+                           dw._parse_point(args.point) if args.point is not None else None),
                     advisory=(dw._parse_point(advisory) if advisory is not None
                               else None),
                     search_radius_km=getattr(args, "seed_radius_km", 500.))
@@ -1759,8 +1821,14 @@ def main(args) -> int:
                     nest_budget_gib=getattr(args, "nest_budget_gib", None),
                     isftcflx=getattr(args, "isftcflx", None),
                     history_interval_s=getattr(args, "history_interval", None),
-                    nest_history_interval_s=getattr(args, "nest_history_interval", None))
+                    nest_history_interval_s=getattr(args, "nest_history_interval", None),
+                    nest_km=getattr(args, "nest_km", 3.), track_selection=track_selection, model=model)
                 result["seed"] = seed.to_dict()
+                if result.get("track_placement", {}).get("leaves_follower_clearance"):
+                    print("warning: " + result["fitting"]["notice"])
+                if track_selection is not None:
+                    result["seed"]["method"] = "track"
+                    result["seed"]["diagnostics"] = track_selection["lineage"]["interpolation"]
                 # THE PLAN, on the human channel, in one line: where the run
                 # begins, how big the following nest ended up and what the
                 # priced tree costs against the budget that admitted it.
@@ -1868,13 +1936,20 @@ def register_cli(subparsers):
                         help=f"forcing source to initialize from (default {DEFAULT_SOURCE}); "
                              "--list-sources prints the planable set")
     parser.add_argument("--member", metavar="MEMBER",
-                        help="ensemble member, in the selected source's own route grammar")
+                        help="track member id with --tracks; otherwise member in the source route grammar")
+    parser.add_argument("--model", metavar="MODEL", help="optional model selection for a registry acquisition owner")
     parser.add_argument("--list-sources", action="store_true",
                         help="emit the planable sources with their members, cycle hours, "
                              "forcing interval and coverage envelope")
     parser.add_argument("--latest-map", action="store_true")
     parser.add_argument("--cycle", default="latest")
     parser.add_argument("--point")
+    parser.add_argument("--tracks", type=Path, metavar="FILE", help="track JSON or CSV guidance for selection and placement only")
+    parser.add_argument("--storm", metavar="auto|ID|NAME", help="strongest eligible system at the cycle, or a track id, ATCF id or storm name")
+    from gpuwm.cyclone_search import parse_area
+    parser.add_argument("--search-area", type=parse_area, metavar="S,W,N,E",
+                        help="limit track selection by position at the cycle within these bounds")
+    parser.add_argument("--nest-km", type=float, choices=(3., 2.5), default=3., help="nest spacing; 2.5 km authors a 10 km parent at ratio 4")
     parser.add_argument("--seed-fields", type=Path, metavar="NPZ",
                         help="canonical source-analysis arrays carrying that source's own "
                              "cycle and member identity, to locate the center from")

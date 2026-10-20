@@ -1,0 +1,40 @@
+[package]
+name = "sharprs"
+version = "0.1.0"
+edition = "2021"
+description = "Sounding/Hodograph Analysis and Research Program — Rust port of SHARPpy's sharptab"
+license = "MIT AND BSD-3-Clause"
+repository = "https://github.com/FahrenheitResearch/rusty-weather"
+
+[lib]
+name = "sharprs"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "sharprs-render"
+path = "src/main.rs"
+
+[features]
+default = []
+render-png = []
+python = ["pyo3", "numpy"]
+wasm = ["wasm-bindgen"]
+
+[dependencies]
+thiserror = "2"
+image = { version = "0.25", default-features = false, features = ["png"] }
+rusttype = "0.9"
+
+# Optional: Python bindings via PyO3
+pyo3 = { version = "0.23", features = ["extension-module"], optional = true }
+numpy = { version = "0.23", optional = true }
+
+# Optional: WASM/JS bindings
+wasm-bindgen = { version = "0.2", optional = true }
+
+[dev-dependencies]
+approx = "0.5"
+
+[profile.release]
+lto = true
+opt-level = 3

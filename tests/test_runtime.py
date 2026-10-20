@@ -300,9 +300,11 @@ def test_both_real_routes_release_the_decode_once_preparation_has_it():
 
     from gpuwm.core.model import build_experiment
 
+    # run_experiment is the step-log wrapper (e85ee75988e); the body that
+    # prepares and releases the decode is _run_experiment.
     routes = (
-        ("gpuwm.runtime.run_experiment",
-         inspect.getsource(runtime.run_experiment),
+        ("gpuwm.runtime._run_experiment",
+         inspect.getsource(runtime._run_experiment),
          "prepared = prepare_experiment_case("),
         ("gpuwm.core.model.build_experiment",
          inspect.getsource(build_experiment),

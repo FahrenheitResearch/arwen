@@ -36,6 +36,8 @@ pub mod refusal;
 pub mod space;
 pub mod threads;
 pub mod window;
+pub mod vertical;
+pub mod wps;
 
 /// The output schema name, which changes exactly when the frameset
 /// contract changes.  It rides inside :data:`ABI_CONTRACT` below.

@@ -127,7 +127,8 @@ def _copy_constant(module, name: str, value: np.ndarray) -> None:
 
 
 @lru_cache(maxsize=None)
-def _module_on(_device: int, use_device_libm: bool = False):
+def _module_on(_device: int, use_device_libm: bool = False,
+               atan_profile: str = "glibc_2_39"):
     """The VEGE_FLUX translation unit on ONE card, constants uploaded.
 
     ``_device`` is a cache key and nothing else: it is the CURRENT device,
@@ -145,24 +146,26 @@ def _module_on(_device: int, use_device_libm: bool = False):
     scheme later -- caught, but by luck of a downstream check, not by
     anything here.
     """
-    options = runtime_unit("noahmp_vegeflux").options
+    options = runtime_unit("noahmp_vegeflux", atan_profile=atan_profile).options
     if use_device_libm:
         # Negative control only. CUDA's device libm is not the WRF function.
         options += ("-DUSE_DEVICE_LIBM",)
     module = compile_runtime_unit(
         "noahmp_vegeflux",
         module_key="gpuwm.core.noahmp_vegeflux_gpu:vegeflux"
-        + ("(device-libm)" if use_device_libm else ""),
-        options=options)
+        + ("(device-libm)" if use_device_libm else "")
+        + (":" + atan_profile if atan_profile != "glibc_2_39" else ""),
+        options=options, atan_profile=atan_profile)
     for name, value in _constant_tables().items():
         _copy_constant(module, name, value)
     return module
 
 
-def _module(use_device_libm: bool = False):
+def _module(use_device_libm: bool = False, *,
+            atan_profile: str = "glibc_2_39"):
     import cupy as cp
 
-    return _module_on(cp.cuda.runtime.getDevice(), use_device_libm)
+    return _module_on(cp.cuda.runtime.getDevice(), use_device_libm, atan_profile)
 
 
 def _bind_call(args, kwargs) -> dict:
@@ -193,7 +196,8 @@ def _bind_call(args, kwargs) -> dict:
 
 def evaluate_vege_flux_calls(
         calls: Sequence[tuple[tuple, dict]], *,
-        use_device_libm: bool = False) -> list[VegeFluxState]:
+        use_device_libm: bool = False,
+        atan_profile: str = "glibc_2_39") -> list[VegeFluxState]:
     """Evaluate captured physical VEGE_FLUX calls in one device batch."""
     if not calls:
         return []
@@ -220,7 +224,7 @@ def evaluate_vege_flux_calls(
             df[row, slot] = call["df"][layer]
 
     device_out = cp.empty((count, N_OUTPUT), dtype=cp.float32)
-    kernel = _module(use_device_libm).get_function("k_vegeflux")
+    kernel = _module(use_device_libm, atan_profile=atan_profile).get_function("k_vegeflux")
     blocks = (count + THREADS - 1) // THREADS
     kernel(
         (blocks,), (THREADS,),

@@ -309,7 +309,7 @@ def _managed_download_request(fetch_table: dict):
     if "transport" in request and fetch.pinned_host(request["transport"]) is None:
         del request["transport"]
     try:
-        source = source_adapters.get_source_adapter(str(request["source"])).source_id
+        source = source_adapters.canonical_source_token(str(request["source"]))
         cycle = checked_config_fetch_cycle(request | {"source": source})
         radius = request.get("radius_km")
         area = fetch._resolve_area(SimpleNamespace(
@@ -868,6 +868,7 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
         # not advisory about what is fetched.
         "cadence": (int(fetch_table["cadence"])
                     if fetch_table.get("cadence") is not None else None),
+        "fetch_max_connections": fetch_table.get("fetch_max_connections"),
         "era5_provider": fetch_table.get("era5_provider"),
         "era5_product": fetch_table.get("era5_product"),
         "member": fetch_table.get("member"),
@@ -1161,7 +1162,7 @@ def fetch_command(plan: dict) -> list[str]:
     if plan.get("forecast_start_hour"):
         command.extend(
             ("--forecast-start-hour", str(plan["forecast_start_hour"])))
-    for key in ("era5_provider", "era5_product", "member"):
+    for key in ("era5_provider", "era5_product", "member", "fetch_max_connections"):
         if plan.get(key) is not None:
             command.extend(("--" + key.replace("_", "-"), str(plan[key])))
     if plan.get("retrieve"):
@@ -3999,11 +4000,8 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None,
     # an 18 h one-card HRRR (18 hourly RAP intervals, 102.90 GiB) whose
     # door holds one slot.  Chaining off (GPUWM_CHAINED_PREP=0) keeps the
     # whole schedule, as its sealed restore holds it.
-    from gpuwm.ingest.boundary_stream import chained_enabled
-    resident_slots = (1 if chained_enabled() and len(exp.domains) == 1
-                      and not getattr(getattr(exp, "devices", None),
-                                      "enabled", False)
-                      else None)
+    from gpuwm.ingest.boundary_stream import chained_resident_forcing_slots
+    resident_slots = chained_resident_forcing_slots(exp)
     phases = estimate_phases(
         exp, source=source, vram_gib=vram_gib, profile=profile,
         machine=machine, forcing_intervals=forcing_intervals,
@@ -4411,7 +4409,7 @@ def _require_forecast_device() -> None:
     from gpuwm.explain import layered
     from gpuwm.local_gpu import NO_LOCAL_GPU_ENV, no_local_gpu
 
-    checked = _cuda_headers_check()
+    checked = _cuda_headers_check(reuse_bound=True)
     if checked.status == "info" and no_local_gpu():
         # The probe did not run: this environment forbids the process the
         # card, and "info" is the not-judged verdict the headers check
@@ -4847,7 +4845,22 @@ def _registered_launch(args, *, config: Path, payload: dict,
             if event == "plan_accepted":
                 # Registered sources bypass _go_prepared_main. Acceptance has
                 # checked the empty output and bound its ledger; warm before fetch.
-                SpeedHooks.warm_kernels_spawn(args, prewarm_plan)
+                #
+                # Not on an existing prepared root (cold-compile, V50
+                # 2026-10-18): no fetch or preparation runs before its
+                # forecast, so the spawned pre-warm only made the forecast
+                # wait for it (A3 HRRR shape, cold cache: 34 s, then the
+                # forecast's own 17 s input restore after it).  The forecast
+                # process compiles the same static plan on every core itself
+                # (kernel_prewarm.start_plan, first thing in
+                # run_prepared_forecast), beside that restore.
+                if (getattr(plan, "run_options", None) or {}).get("prepared_root"):
+                    _kernel_prewarm_status(
+                        prewarm_plan, "not started",
+                        why="existing prepared root: the forecast compiles its kernel plan "
+                            "on every core beside its own input restore")
+                else:
+                    SpeedHooks.warm_kernels_spawn(args, prewarm_plan)
             if event == "stage_started":
                 if fields["stage"] == "forecast":
                     _join_kernel_prewarm(prewarm_plan)
@@ -5419,7 +5432,9 @@ class SpeedHooks:
         waits for it right before the forecast stage, so the forecast finds
         its modules cached instead of compiling them beside its restore
         (and the spawn's card context is gone before the forecast opens
-        its own).  The breakage this prevents: a fresh box's first forecast
+        its own). Prepared inputs instead use the same all-core plan in
+        the forecast process, overlapping restore without a redundant child.
+        The breakage this prevents: a fresh box's first forecast
         still carried ~58 s of (parallel) compile in step 1 after the static
         plan landed, with the ~30 s fetch-and-prepare window before it
         unused (RTX 5090, 2026-10-17).  Default on; off under
@@ -5441,6 +5456,15 @@ class SpeedHooks:
                           "no local GPU" if no_local_gpu() else None)
             if reason is not None:
                 _kernel_prewarm_status(plan, "not started", reason)
+                return None
+            # With prepared inputs there is no fetch/prepare window to hide
+            # a separate context's imports and static loads. Both prepared
+            # runners call start_plan before restore, retaining the full
+            # all-core static + recorded warm-up in the forecast process.
+            if getattr(args, "prepared_root", None) is not None:
+                _kernel_prewarm_status(
+                    plan, "forecast-owned",
+                    "prepared inputs; static and recorded kernels warm during restore")
                 return None
             import subprocess
 
@@ -5470,9 +5494,11 @@ class SpeedHooks:
 
 
 from gpuwm.stage_timing import ledger_main as _ledger_main
+from gpuwm.hydro.runtime import go_scope as _hydro_go_scope
 
 
 @_ledger_main
+@_hydro_go_scope
 def go_main(args, *, observer=None) -> int:
     """Launch through the source's existing native preparation chain.
 
@@ -5481,11 +5507,44 @@ def go_main(args, *, observer=None) -> int:
     go's own gate skipped.  It used to stop at go's gate, and the runner
     then refused that envelope again after the fetch and the preparation.
     """
+    from gpuwm.earth2_licensing import check_namespace
+    check_namespace(args)
+    if getattr(args, "branch_from", None) is not None:
+        from gpuwm.ensemble.mass_launcher import run as run_branches
+        return run_branches(args)
     # A future stage-only owner can answer before GPU admission. None is
     # the frozen no-op result; all existing callers take the same route.
     stage_result = SpeedHooks.stage_only(args, None)
     if stage_result is not None:
         return stage_result
+    # An acquisition owner can materialize its source-only domain using the
+    # same wizard as CONFIG launches. The registry chooses it, not source ids.
+    from importlib import import_module
+    from gpuwm.source_adapters import get_source_adapter
+    selected_source = getattr(args, "source", None)
+    if selected_source is None and getattr(args, "config", None) is not None:
+        import tomllib
+        if Path(args.config).is_file():
+            selected_source = tomllib.loads(Path(args.config).read_text()).get("fetch", {}).get("source")
+    # The acquisition owner materializes ONE generated trajectory. A WoFS
+    # ensemble request (a mixed family spec, a member count above one, or
+    # the recipe) is planned by the ladder, which asks each family's
+    # selection owner for its members. Breakage it prevents: `--source
+    # earth2-fcn3:18,gefs:18` was looked up as one source id and refused.
+    if selected_source is not None and getattr(args, "source", None) is not None:
+        from gpuwm.ensemble.wofs_recipe import parse_source_spec
+        families = parse_source_spec(selected_source)
+        ensemble_request = (len(families) > 1 or (getattr(args, "members", None) or 1) > 1
+                            or getattr(args, "recipe", None) == "wofs")
+        selected_source = None if ensemble_request else families[0]["source"]
+    owner = get_source_adapter(selected_source).acquisition_owner if selected_source else None
+    materialize = getattr(import_module(owner), "prepare_launch", None) if owner else None
+    if materialize is not None:
+        materialize(args)
+    elif getattr(args, "member", None) is not None or getattr(args, "history_interval", None) is not None:
+        raise GoRefusal("This source has no generated-member launch contract")
+    from gpuwm.ensemble.wofs_recipe import prepare_launch
+    prepare_launch(args)
     from gpuwm.core.resident_admission import memory_gate_override
     from gpuwm.verification_visuals import verification_scope
     enabled = getattr(args, "verify_visuals", None)
@@ -5537,7 +5596,9 @@ def go_main(args, *, observer=None) -> int:
     # --cycle by re-timing the config the members are planned from, and
     # the flags that name one trajectory's input by name.
     plain = member_inputs.needs_member_sources(request)
-    if request is not None and (request.recipe is not None or plain):
+    runtime_ladder = (request is not None and request.recipe == "wofs" and
+                      "case_data" in __import__("tomllib").loads(Path(args.config).read_text()))
+    if request is not None and not runtime_ladder and (request.recipe is not None or plain):
         # Time-lagged, multi-model and operational-ensemble members: each
         # member's own source trajectory is prepared by its ordinary chain,
         # then the roster runs through the same ensemble session every
@@ -6798,9 +6859,41 @@ def register_cli(subparsers) -> None:
     parser = subparsers.add_parser(
         "go", aliases=["ensemble"],
         help="prepare, run and render a forecast, fetching inputs when needed")
-    parser.add_argument("config", type=Path, metavar="CONFIG",
+    parser.add_argument("config", type=Path, nargs="?", metavar="CONFIG",
                         help="an experiment TOML from gpuwm domain; its source and "
                              "domain tree choose the preparation route")
+    parser.add_argument("--hydro", nargs="?", const="", default=None,
+                        metavar="off|SETTINGS.toml", help="hydro defaults on with prepared settings; "
+                        "use off to disable it or a TOML file to select settings")
+    from gpuwm.source_adapters import ensemble_source_ids
+    from gpuwm.ensemble.wofs_recipe import source_spec_argument
+    parser.add_argument("--source", type=source_spec_argument, default=None, metavar="SOURCE[:N],...",
+                        help="create a 3 km WoFS-shape ensemble domain; mixed family counts sum to --members; "
+                             "eligible registry ids: " + ", ".join(ensemble_source_ids()))
+    parser.add_argument("--history-interval", type=int, default=None, metavar="SECONDS",
+                        help="history frame interval when creating a generated-source domain")
+    parser.add_argument("--member", default=None, metavar="ID",
+                        help="select one generated source trajectory; fetch accepts member lists")
+    parser.add_argument("--init", default=None, help="initial UTC analysis/cycle, YYYY-MM-DDTHH")
+    parser.add_argument("--center", default=None, help="regional domain center LAT,LON")
+    # The WoFS ladder's flags.  Their defaults are the ladder's own constants:
+    # prepare_launch reads an absent flag as that default, so a namespace
+    # another door built behaves as a bare `gpuwm go` would.
+    from gpuwm.ensemble import wofs_recipe as _wofs
+    parser.add_argument("--hours", type=int, default=_wofs.DEFAULT_HOURS,
+                        help=f"forecast duration when creating a domain (default {_wofs.DEFAULT_HOURS} h)")
+    parser.add_argument("--extent-km", type=float, default=_wofs.DEFAULT_EXTENT_KM,
+                        help=f"domain width when creating a domain (default {_wofs.DEFAULT_EXTENT_KM:g} km)")
+    parser.add_argument("--card", default=None, help="target card for domain sizing, e.g. 16gb")
+    parser.add_argument("--wind-amplitude", type=float, default=_wofs.DEFAULT_WIND_AMPLITUDE,
+                        help="fill uniform U/V amplitude in m/s; 0 disables it")
+    parser.add_argument("--era5-provider", choices=("arco", "cds"), default=None)
+    parser.add_argument("--physics-arms", choices=_wofs.PHYSICS_MODES, default=_wofs.DEFAULT_PHYSICS)
+    parser.add_argument("--no-surface-fill", action="store_true", help="disable fill soil/SST perturbations")
+    parser.add_argument("--max-lag-hours", type=int, default=_wofs.DEFAULT_MAX_LAG_HOURS,
+                        help="oldest lagged cycle (0 disables lags)")
+    parser.add_argument("--ensemble-seed", type=int, default=_wofs.DEFAULT_SEED,
+                        help="the member seed root; the same root draws the same members")
     # Frozen parser slots for the benchmark harness. Each is accepted and
     # ignored until its owner implements the corresponding SpeedHooks method,
     # so none is shown in --help: a user flag that does nothing is not a
@@ -6820,6 +6913,18 @@ def register_cli(subparsers) -> None:
     from gpuwm.ensemble.door import add_arguments, add_recipe_arguments
     add_arguments(parser)
     add_recipe_arguments(parser)
+    parser.add_argument("--branch-from", type=Path, default=None, metavar="PARENTS",
+                        help="branch members from saved checkpoints in a parent-list JSON")
+    parser.add_argument("--cards", default="all", metavar="all|0,1",
+                        help="cards for checkpoint branches: all visible cards or visible ordinals")
+    parser.add_argument("--branch-hours", type=float, default=1.,
+                        help="forecast hours after each parent checkpoint (default 1)")
+    parser.add_argument("--resume-ensemble", type=Path, default=None, metavar="RUN",
+                        help="retry unfinished checkpoint branches in RUN; preserve completed members and failed attempts")
+    parser.add_argument("--cyclone-products", type=Path, default=None, metavar="JSON",
+                        help="common Earth grid, every-step wind swath, cyclone track and verification product request")
+    parser.add_argument("--branch-surface", action="store_true",
+                        help="also apply the WoFS seeded soil-moisture and SST draws after restore")
     parser.add_argument("--outdir", type=Path, default=None, metavar="DIR",
                         help="output root for one timestamped run folder per launch, "
                              "with forecast files, pictures and diagnostics "

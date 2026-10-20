@@ -7,9 +7,11 @@
 //! `rw_mlexport --request FILE`; every array operation happens here.
 
 pub mod accumulation;
+pub mod diagnostics;
 pub mod blosc;
 pub mod error;
 pub mod export;
+pub mod earth2;
 pub mod finalize;
 pub mod frame;
 pub mod grid;
@@ -29,4 +31,4 @@ pub mod zipout;
 /// request schema, the modes and the progress grammar, which is what
 /// changes when the contract does.
 pub const ABI: &str =
-    "rw_mlexport --request REQUEST.json schema=ml-export.request/v1 modes=run,append,finalize progress=jsonl";
+    "rw_mlexport --request REQUEST.json schema=ml-export.request/v1 modes=run,append,finalize progress=jsonl earth2=per-channel-v1";

@@ -24,6 +24,8 @@ unsafe extern "C" {
     fn nc_open(path: *const c_char, mode: c_int, id: *mut c_int) -> c_int;
     fn nc_close(id: c_int) -> c_int;
     fn nc_enddef(id: c_int) -> c_int;
+    fn nc__enddef(id: c_int, header_free: usize, variable_alignment: usize,
+                 variable_free: usize, record_alignment: usize) -> c_int;
     fn nc_def_dim(id: c_int, name: *const c_char, len: usize, dim: *mut c_int) -> c_int;
     fn nc_def_var(id: c_int, name: *const c_char, kind: c_int, nd: c_int, dims: *const c_int, var: *mut c_int) -> c_int;
     fn nc_put_vara(id: c_int, var: c_int, start: *const usize, count: *const usize, data: *const c_void) -> c_int;
@@ -32,6 +34,7 @@ unsafe extern "C" {
     fn nc_put_att_text(id: c_int, var: c_int, name: *const c_char, len: usize, data: *const c_char) -> c_int;
     fn nc_get_att(id: c_int, var: c_int, name: *const c_char, data: *mut c_void) -> c_int;
     fn nc_inq(id: c_int, nd: *mut c_int, nv: *mut c_int, na: *mut c_int, ud: *mut c_int) -> c_int;
+    fn nc_inq_format(id: c_int, format: *mut c_int) -> c_int;
     fn nc_inq_unlimdims(id: c_int, n: *mut c_int, dims: *mut c_int) -> c_int;
     fn nc_inq_dim(id: c_int, dim: c_int, name: *mut c_char, len: *mut usize) -> c_int;
     fn nc_inq_var(id: c_int, var: c_int, name: *mut c_char, kind: *mut c_int, nd: *mut c_int, dims: *mut c_int, na: *mut c_int) -> c_int;
@@ -81,6 +84,9 @@ struct Request {
     path: PathBuf,
     #[serde(default = "default_format")] format: String,
     #[serde(default)] dimensions: BTreeMap<String,usize>,
+    #[serde(default)] dimension_order: Vec<String>,
+    #[serde(default)] global_attribute_order: Vec<String>,
+    #[serde(default)] header_alignment: usize,
     #[serde(default)] variables: Vec<Variable>,
     #[serde(default)] global_attrs: BTreeMap<String,Value>,
     #[serde(default)] output_directory: PathBuf,
@@ -107,6 +113,7 @@ struct Variable {
     #[serde(default)] input_dimensions: Vec<String>,
     #[serde(default)] filename: PathBuf,
     #[serde(default)] attrs: BTreeMap<String,Value>,
+    #[serde(default)] attribute_order: Vec<String>,
     #[serde(default)] text: Vec<String>,
     #[serde(default)] connectivity_offset: i32,
     #[serde(default)] input_dtype: Option<String>,
@@ -131,8 +138,17 @@ fn encode_attr(value: &Value) -> Result<(i32, Vec<u8>)> {
     Ok((k,out))
 }
 // MPAS v8.4.2 src/framework/mpas_io_streams.F:4315-4363: native primitive/layout semantics.
-fn put_attrs(nc: &Nc, var: i32, attrs: &BTreeMap<String,Value>, variable_kind: Option<i32>) -> Result<()> {
-    for (name,value) in attrs {
+fn ordered_keys<'a,T>(values: &'a BTreeMap<String,T>, order: &'a [String]) -> Result<Vec<&'a String>> {
+    if order.is_empty() {return Ok(values.keys().collect());}
+    let keys:std::collections::BTreeSet<_>=order.iter().collect();
+    if keys.len()!=order.len() || keys!=values.keys().collect() {
+        return Err("explicit metadata order must list each key exactly once".into());
+    }
+    Ok(order.iter().collect())
+}
+fn put_attrs(nc: &Nc, var: i32, attrs: &BTreeMap<String,Value>, order: &[String], variable_kind: Option<i32>) -> Result<()> {
+    for name in ordered_keys(attrs,order)? {
+        let value=&attrs[name];
         if name == "_NCProperties" { continue; }
         let cname = c(name)?;
         if let Some(s) = value.as_str() {
@@ -170,6 +186,21 @@ fn get_attrs(nc: &Nc, var: i32, n: i32) -> Result<BTreeMap<String,Value>> {
         attrs.insert(text_name(&name),value);
     }
     Ok(attrs)
+}
+
+// Compare typed attribute words and order without float/JSON conversions.
+fn attribute_layout(nc: &Nc, var: i32, n: i32) -> Result<(Vec<String>,BTreeMap<String,Value>)> {
+    let mut order=Vec::new();let mut words=BTreeMap::new();
+    for i in 0..n {
+        let mut name=[0;257];check(unsafe {nc_inq_attname(nc.0,var,i,name.as_mut_ptr())})?;
+        let mut k=0;let mut len=0;check(unsafe {nc_inq_att(nc.0,var,name.as_ptr(),&mut k,&mut len)})?;
+        let size=len.checked_mul(dtype(k)?.1).ok_or("attribute size overflow")?;
+        let mut data=aligned(size);check(unsafe {nc_get_att(nc.0,var,name.as_ptr(),data.as_mut_ptr().cast())})?;
+        let name=text_name(&name);order.push(name.clone());
+        words.insert(name,json!({"dtype":dtype(k)?.0,"length":len,
+            "hex":bytes(&data,size).iter().map(|v|format!("{v:02x}")).collect::<String>()}));
+    }
+    Ok((order,words))
 }
 
 // MPAS v8.4.2 src/framework/mpas_io_streams.F:1659-1857,2430-3927: native primitive/layout semantics.
@@ -232,11 +263,12 @@ fn write(req: &Request) -> Result<Value> {
     let nc=if req.append {Nc::open(&req.path,1)?} else {Nc::create(&req.path,&req.format)?};
     let mut dim_ids=BTreeMap::new();
     if !req.append {
-        for (name,len) in &req.dimensions {
+        for name in ordered_keys(&req.dimensions,&req.dimension_order)? {
+            let len=&req.dimensions[name];
             let mut id=0; check(unsafe {nc_def_dim(nc.0,c(name)?.as_ptr(),if name=="Time" {0} else {*len},&mut id)})?;
             dim_ids.insert(name.clone(),id);
         }
-        put_attrs(&nc,-1,&req.global_attrs,None)?;
+        put_attrs(&nc,-1,&req.global_attrs,&req.global_attribute_order,None)?;
     }
     let mut ids=Vec::new();
     for v in &req.variables {
@@ -253,11 +285,18 @@ fn write(req: &Request) -> Result<Value> {
         } else {
             let dims:Vec<_>=v.dimensions.iter().map(|d| dim_ids[d]).collect();
             check(unsafe {nc_def_var(nc.0,c(&v.name)?.as_ptr(),kind(&v.dtype)?,dims.len() as i32,dims.as_ptr(),&mut id)})?;
-            put_attrs(&nc,id,&v.attrs,Some(kind(&v.dtype)?))?;
+            put_attrs(&nc,id,&v.attrs,&v.attribute_order,Some(kind(&v.dtype)?))?;
         }
         ids.push(id);
     }
-    if !req.append {check(unsafe {nc_enddef(nc.0)})?;}
+    if !req.append {
+        if req.header_alignment > 0 {
+            // SMIOL smiol.c:15,341-344 sets nc_header_align_size=131072.
+            // Only the first data section is aligned. Subsequent fixed and
+            // record variables retain their native four-byte packing.
+            check(unsafe {nc__enddef(nc.0,0,req.header_alignment,0,4)})?;
+        } else {check(unsafe {nc_enddef(nc.0)})?;}
+    }
     let mut bytes_written=0;
     for ((v,id),data) in req.variables.iter().zip(ids).zip(prepared) {
         if req.append && !v.dimensions.iter().any(|d|d=="Time") {continue;}
@@ -268,7 +307,7 @@ fn write(req: &Request) -> Result<Value> {
         bytes_written+=product(&count)?*dtype(kind(&v.dtype)?)?.1;
     }
     nc.close()?;
-    Ok(json!({"schema":"mpas-native-stream/v1","variables":req.variables.len(),"bytes_written":bytes_written}))
+    Ok(json!({"schema":"mpas-native-stream/v1","variables":req.variables.len(),"bytes_written":bytes_written,"ordered_metadata":true}))
 }
 // MPAS v8.4.2 src/framework/mpas_io_streams.F:2430-3251: native primitive/layout semantics.
 fn var_info(nc: &Nc,id:i32) -> Result<(i32,Vec<String>,Vec<usize>,i32)> {
@@ -283,31 +322,39 @@ fn var_info(nc: &Nc,id:i32) -> Result<(i32,Vec<String>,Vec<usize>,i32)> {
 // Header-only inspection keeps forecast verification independent of data dumps.
 fn inspect(req: &Request) -> Result<Value> {
     let nc=Nc::open(&req.path,0)?;
+    let mut format=0;check(unsafe {nc_inq_format(nc.0,&mut format)})?;
     let mut nd=0;let mut nv=0;let mut na=0;
     check(unsafe {nc_inq(nc.0,&mut nd,&mut nv,&mut na,std::ptr::null_mut())})?;
     let mut un=0;check(unsafe {nc_inq_unlimdims(nc.0,&mut un,std::ptr::null_mut())})?;
     let mut unlimited=vec![0;un as usize];
     check(unsafe {nc_inq_unlimdims(nc.0,&mut un,unlimited.as_mut_ptr())})?;
-    let mut dimensions=BTreeMap::new();let mut unlimited_names=Vec::new();
+    let mut dimensions=BTreeMap::new();let mut unlimited_names=Vec::new();let mut dimension_order=Vec::new();
     for d in 0..nd {
         let mut name=[0;257];let mut len=0;
         check(unsafe {nc_inq_dim(nc.0,d,name.as_mut_ptr(),&mut len)})?;
         let name=text_name(&name);
         if unlimited.contains(&d) {unlimited_names.push(name.clone());}
+        dimension_order.push(name.clone());
         dimensions.insert(name,len);
     }
-    let mut variables=BTreeMap::new();
+    let mut variables=BTreeMap::new();let mut variable_order=Vec::new();
     for id in 0..nv {
         let mut name=[0;257];
         check(unsafe {nc_inq_var(nc.0,id,name.as_mut_ptr(),std::ptr::null_mut(),std::ptr::null_mut(),std::ptr::null_mut(),std::ptr::null_mut())})?;
         let (k,dims,shape,attrs)=var_info(&nc,id)?;
+        variable_order.push(text_name(&name));
+        let (attribute_order,attribute_words)=attribute_layout(&nc,id,attrs)?;
         variables.insert(text_name(&name),json!({"dtype":dtype(k)?.0,
-            "dimensions":dims,"shape":shape,"attrs":get_attrs(&nc,id,attrs)?}));
+            "dimensions":dims,"shape":shape,"attrs":get_attrs(&nc,id,attrs)?,
+            "attribute_order":attribute_order,"attribute_words":attribute_words}));
     }
     let attrs=get_attrs(&nc,-1,na)?;
+    let (global_attribute_order,global_attribute_words)=attribute_layout(&nc,-1,na)?;
     nc.close()?;
-    Ok(json!({"schema":"mpas-native-stream/v1","dimensions":dimensions,
-        "unlimited":unlimited_names,"global_attrs":attrs,"variables":variables}))
+    Ok(json!({"schema":"mpas-native-stream/v1","format":format,"dimensions":dimensions,
+        "unlimited":unlimited_names,"global_attrs":attrs,"variables":variables,
+        "dimension_order":dimension_order,"variable_order":variable_order,
+        "global_attribute_order":global_attribute_order,"global_attribute_words":global_attribute_words}))
 }
 // MPAS v8.4.2 src/framework/mpas_io_streams.F:2430-3251: native primitive/layout semantics.
 // One variable of a read: its raw words (permuted by its layout, if any) in
@@ -324,6 +371,7 @@ fn read_one(nc: &Nc, req: &Request, id: i32, name: String) -> Result<Variable> {
         bytes(&buf,size).chunks_exact(width).map(|s|String::from_utf8_lossy(s).trim_end_matches([' ','\0']).to_owned()).collect::<Vec<_>>()
     } else {Vec::new()};
     let attrs=get_attrs(nc,id,na)?;
+    let (attribute_order,_)=attribute_layout(nc,id,na)?;
     if let Some(layout)=req.layouts.get(&name) {
         if dims!=layout.expected_dimensions {return Err(format!("{name}: native read dimension order mismatch").into());}
         let mut input_dimensions=dims.clone();let mut input_shape=shape.clone();
@@ -335,7 +383,7 @@ fn read_one(nc: &Nc, req: &Request, id: i32, name: String) -> Result<Variable> {
         }
         let sizes:BTreeMap<_,_>=input_dimensions.iter().cloned().zip(input_shape.iter().copied()).collect();
         let v=Variable{name:name.clone(),dtype:layout.dtype.clone(),dimensions:layout.dimensions.clone(),
-            shape:input_shape,input_dimensions,filename:filename.clone(),attrs:attrs.clone(),text:Vec::new(),
+            shape:input_shape,input_dimensions,filename:filename.clone(),attrs:attrs.clone(),attribute_order,text:Vec::new(),
             connectivity_offset:layout.connectivity_offset,input_dtype:Some(dtype(k)?.0.into())};
         let data=prepare(&v,&sizes)?;
         let shape:Vec<_>=layout.dimensions.iter().map(|d|sizes[d]).collect();
@@ -343,7 +391,7 @@ fn read_one(nc: &Nc, req: &Request, id: i32, name: String) -> Result<Variable> {
         fs::write(&filename,bytes(&data,count))?;
         Ok(Variable{shape,input_dimensions:layout.dimensions.clone(),input_dtype:None,filename,..v})
     } else {
-        Ok(Variable {name,dtype:dtype(k)?.0.into(),dimensions:dims.clone(),input_dimensions:dims,shape,filename,attrs,text:texts,connectivity_offset:0,input_dtype:None})
+        Ok(Variable {name,dtype:dtype(k)?.0.into(),dimensions:dims.clone(),input_dimensions:dims,shape,filename,attrs,attribute_order,text:texts,connectivity_offset:0,input_dtype:None})
     }
 }
 // One worker's answer: each of its variables in order, stopping at the first
@@ -422,16 +470,17 @@ fn read(req: &Request, request_path: &Path) -> Result<Value> {
     check(unsafe {nc_inq(nc.0,&mut nd,&mut nv,&mut na,std::ptr::null_mut())})?;
     let mut un=0;check(unsafe {nc_inq_unlimdims(nc.0,&mut un,std::ptr::null_mut())})?;
     let mut unlimited=vec![0;un as usize];check(unsafe {nc_inq_unlimdims(nc.0,&mut un,unlimited.as_mut_ptr())})?;
-    let mut dimensions=BTreeMap::new();let mut unlimited_names=Vec::new();
-    for d in 0..nd {let mut name=[0;257];let mut len=0;check(unsafe {nc_inq_dim(nc.0,d,name.as_mut_ptr(),&mut len)})?;let name=text_name(&name);if unlimited.contains(&d) {unlimited_names.push(name.clone());} dimensions.insert(name,len);}
+    let mut dimensions=BTreeMap::new();let mut unlimited_names=Vec::new();let mut dimension_order=Vec::new();
+    for d in 0..nd {let mut name=[0;257];let mut len=0;check(unsafe {nc_inq_dim(nc.0,d,name.as_mut_ptr(),&mut len)})?;let name=text_name(&name);if unlimited.contains(&d) {unlimited_names.push(name.clone());} dimension_order.push(name.clone());dimensions.insert(name,len);}
     let selected:std::collections::BTreeSet<_>=req.select.iter().cloned().collect();
-    let mut found=std::collections::BTreeSet::new();let mut wanted=Vec::new();
+    let mut found=std::collections::BTreeSet::new();let mut wanted=Vec::new();let mut variable_order=Vec::new();
     fs::create_dir_all(&req.output_directory)?;
     for id in 0..nv {
         let mut name=[0;257];check(unsafe {nc_inq_var(nc.0,id,name.as_mut_ptr(),std::ptr::null_mut(),std::ptr::null_mut(),std::ptr::null_mut(),std::ptr::null_mut())})?;
         let name=text_name(&name);
         if !selected.is_empty() && !selected.contains(&name) {continue;}
         found.insert(name.clone());
+        variable_order.push(name.clone());
         // The bytes this variable reads, to share the work out by size.
         let (k,_,shape,_)=var_info(&nc,id)?;
         let words=shape.iter().fold(1usize,|a,b| a.saturating_mul(*b));
@@ -441,8 +490,11 @@ fn read(req: &Request, request_path: &Path) -> Result<Value> {
     if !selected.is_subset(&found) {return Err(format!("missing requested fields: {:?}",selected.difference(&found).collect::<Vec<_>>()).into());}
     if req.layouts.keys().any(|n| !found.contains(n)) {return Err("missing requested authority layout field".into());}
     let attrs=get_attrs(&nc,-1,na)?;
+    let (global_attribute_order,global_attribute_words)=attribute_layout(&nc,-1,na)?;
     nc.close()?;
-    Ok(json!({"schema":"mpas-native-stream/v1","dimensions":dimensions,"unlimited":unlimited_names,"global_attrs":attrs,"variables":variables}))
+    Ok(json!({"schema":"mpas-native-stream/v1","dimensions":dimensions,"unlimited":unlimited_names,"global_attrs":attrs,"variables":variables,
+        "dimension_order":dimension_order,"variable_order":variable_order,
+        "global_attribute_order":global_attribute_order,"global_attribute_words":global_attribute_words}))
 }
 fn main() {
     let _stamp = std::hint::black_box(GPUWM_BRIDGE_SOURCE_REV_STAMP);
@@ -456,4 +508,63 @@ fn main() {
         println!("{}",serde_json::to_string(&response)?);Ok(())
     })();
     if let Err(error)=outcome {eprintln!("rw_mpas_stream: {error}");std::process::exit(1);}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_round_trip_uses_rust_reader_and_preserves_words_and_header() -> Result<()> {
+        let base=std::env::var_os("RW_MPAS_STREAM_TEST_DIRECTORY")
+            .map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+        let nonce=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
+        let root=base.join(format!("mpas-stream-roundtrip-{}-{nonce}",std::process::id()));
+        fs::create_dir_all(&root)?;
+        let words=[0x80000000u32,0x00000001,0x7fc12345,0x3f800000,0xff800000,0x7f7fffff];
+        let raw:Vec<u8>=words.iter().flat_map(|v|v.to_ne_bytes()).collect();
+        let handoff=root.join("theta.raw");fs::write(&handoff,&raw)?;
+        let path=root.join("frame.nc");
+        let request:Request=serde_json::from_value(json!({
+            "operation":"write","path":path,"format":"pnetcdf","header_alignment":131072,
+            "dimensions":{"nCells":3,"nVertLevels":2,"Time":1,"StrLen":64},
+            "dimension_order":["nVertLevels","nCells","Time","StrLen"],
+            "global_attrs":{"source":"MPAS","sphere_radius":{"dtype":"f4","values":6371220.0}},
+            "global_attribute_order":["source","sphere_radius"],
+            "variables":[{"name":"theta","dtype":"f4",
+                "dimensions":["Time","nCells","nVertLevels"],
+                "input_dimensions":["nVertLevels","nCells"],"shape":[2,3],"filename":handoff,
+                "attrs":{"units":"K","long_name":"potential temperature"},
+                "attribute_order":["units","long_name"]},
+                {"name":"xtime","dtype":"S1","dimensions":["Time","StrLen"],
+                 "text":["2023-03-31_12:00:00"]}]}))?;
+        write(&request)?;
+        let inspect_request:Request=serde_json::from_value(json!({"operation":"inspect","path":path}))?;
+        let header=inspect(&inspect_request)?;
+        assert_eq!(header["dimension_order"],json!(["nVertLevels","nCells","Time","StrLen"]));
+        assert_eq!(header["variable_order"],json!(["theta","xtime"]));
+        assert!(fs::metadata(&path)?.len()>=131072);
+        assert_eq!(header["variables"]["theta"]["attribute_order"],json!(["units","long_name"]));
+        assert_eq!(header["global_attribute_words"]["sphere_radius"]["dtype"],"f4");
+        let read_request:Request=serde_json::from_value(json!({
+            "operation":"read","path":path,"output_directory":root.join("decoded"),"record":0,
+            "layouts":{"theta":{"dtype":"f4","dimensions":["nVertLevels","nCells"],
+                "expected_dimensions":["Time","nCells","nVertLevels"]}}}))?;
+        let decoded=read(&read_request,Path::new("unused-serial-test-request"))?;
+        assert_eq!(fs::read(decoded["variables"][0]["filename"].as_str().unwrap())?,raw);
+        assert_eq!(decoded["variables"][1]["text"],json!(["2023-03-31_12:00:00"]));
+        assert_eq!(decoded["variables"][0]["attribute_order"],json!(["units","long_name"]));
+        // Keep test processes self-contained. Runtime proofs supply their own
+        // scratch root and retain hashes separately before disposing outputs.
+        fs::remove_dir_all(&root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_order_rejects_missing_duplicate_or_unknown_metadata() {
+        let map=BTreeMap::from([("one".to_owned(),1),("two".to_owned(),2)]);
+        for order in [vec!["one"],vec!["one","one"],vec!["one","other"]] {
+            assert!(ordered_keys(&map,&order.into_iter().map(str::to_owned).collect::<Vec<_>>()).is_err());
+        }
+    }
 }

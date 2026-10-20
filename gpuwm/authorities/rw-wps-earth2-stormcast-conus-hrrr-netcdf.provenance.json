@@ -1,0 +1,145 @@
+{
+  "schema": "gpuwm-cross-source-hybrid-provenance-v1",
+  "source": "Earth2Studio atmosphere composed with a same-cycle physical analysis",
+  "profile": "earth2-stormcast-conus-hrrr-netcdf-v1",
+  "contributing_sources": {
+    "primary_atmosphere": {
+      "product": "Earth2Studio NetCDF4Backend forecast output",
+      "models_with_this_vocabulary": [
+        "stormcast-conus"
+      ],
+      "level_families": {
+        "u": "eastward_wind",
+        "v": "northward_wind",
+        "t": "air_temperature",
+        "q": "specific_humidity",
+        "Z": "geopotential_height",
+        "p": "air_pressure"
+      },
+      "level_selection": {
+        "p": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          13,
+          15,
+          20
+        ]
+      },
+      "surface_fields": {
+        "u10m": "eastward_wind_10m",
+        "v10m": "northward_wind_10m",
+        "t2m": "air_temperature_2m",
+        "msl": "air_pressure_at_mean_sea_level"
+      },
+      "units": "exact producer vocabulary declared by the mapping; conflicting file attributes refuse",
+      "level_values": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        13,
+        15,
+        20,
+        25,
+        30
+      ],
+      "vertical_coordinate": {
+        "kind": "model_level",
+        "units": "1",
+        "positive": "up",
+        "model_top_pressure_pa": 1500.0
+      },
+      "level_suffix": "hl",
+      "diagnostic_channels": {
+        "refc": {
+          "units": "dBZ",
+          "role": "diagnostic_only",
+          "never": "condensate_state"
+        }
+      }
+    },
+    "physical_analysis_surface": {
+      "product": "hrrr",
+      "provider": "noaa-hrrr-native",
+      "mapping": "rw-wps-earth2-hrrr-native-donor.mapping.json",
+      "supplies": [
+        "terrain_height",
+        "land_fraction",
+        "skin_temperature",
+        "specific_humidity_2m",
+        "soil_temperature",
+        "volumetric_soil_moisture",
+        "sea_ice_fraction",
+        "snow_water_equivalent",
+        "snow_depth",
+        "surface_pressure"
+      ],
+      "clock": "source_cycle_analysis_broadcast: initialization analysis frozen at every forecast lead",
+      "grid_alignment": "exact_coordinate_subset",
+      "surface_temperature_policy": "same-cycle HRRR skin temperature; no inferred SST is supplied"
+    }
+  },
+  "why_hybrid": "the native HRRR analysis supplies missing pressure, the upper atmosphere, physical land and soil state; static geography is hrrr-conus-v4",
+  "surface_pressure_policy": "same-cycle HRRR native analysis, frozen at each lead",
+  "frozen_surface_caveat": "The initialization analysis is carried unchanged while the AI atmosphere advances. The composition receipt names each carried valid time.",
+  "input_identity": "File paths and SHA-256 values are sealed by gpuwm-mapped-source-inputs-v1",
+  "donor": {
+    "id": "hrrr-native",
+    "mapping": "rw-wps-earth2-hrrr-native-donor.mapping.json",
+    "sha256": "d97b028807c5ac090a95674c10e508dd0598b30b82336f971c57b781d2f12634",
+    "clock": "source_cycle_analysis_broadcast"
+  },
+  "vertical_merge": {
+    "method": "cosine_pressure_distance_log_anomaly",
+    "pressure_band_hpa": [
+      0,
+      100
+    ],
+    "primary_pressure_scale": 1,
+    "donor_pressure_scale": 1,
+    "pressure_field": "air_pressure",
+    "max_relative_humidity": 1.05,
+    "fields": {
+      "eastward_wind": {
+        "primary_field": "eastward_wind",
+        "representation": "canonical"
+      },
+      "northward_wind": {
+        "primary_field": "northward_wind",
+        "representation": "canonical"
+      },
+      "air_temperature": {
+        "primary_field": "air_temperature",
+        "representation": "canonical"
+      },
+      "specific_humidity": {
+        "primary_field": "specific_humidity",
+        "representation": "canonical"
+      },
+      "geopotential_height": {
+        "primary_field": "geopotential_height",
+        "representation": "canonical"
+      },
+      "air_pressure": {
+        "primary_field": "air_pressure",
+        "representation": "canonical"
+      }
+    }
+  }
+}

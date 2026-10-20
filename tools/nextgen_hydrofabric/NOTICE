@@ -1,0 +1,75 @@
+NextGen hydrofabric reader for ArWen. Apache-2.0.
+Fresh Rust implementation; no WRF-Hydro source, code or fixtures used.
+
+Audited software reference, not a linked or installed dependency:
+NOAA-OWP/hfutils, 03b043168db0137e2d588a74c3e2c68ec94ecdcb.
+Actual LICENSE: "Apache License", "Version 2.0, January 2004";
+Copyright 2025-2026 Lynker Spatial. Complete LICENSE, NOTICE and
+THIRD_PARTY_NOTICES retained as notices/hfutils-* for this audit.
+No hfutils R implementation or dependency code is translated or shipped here.
+Its third-party notice separately lists GPL igraph/terra/lwgeom/units and
+LGPL DBI/RSQLite; its own Apache grant does not relicense those packages.
+This software audit does not license hydrofabric datasets. In particular,
+the separately audited v2.2 bucket's CC-BY-NC-SA notice is not an Apache grant.
+
+ID/property interoperability reference: NOAA-OWP/ngen
+https://github.com/NOAA-OWP/ngen
+Pinned be11a180565a78ff069d855b0b5dbfc23845e7d8, Apache-2.0.
+Actual LICENSE read before implementation; retained in notices/ngen-LICENSE.
+ngen TERMS: scientific product, not official NOAA/Commerce communication;
+provided as-is; no endorsement implied. No upstream NOTICE at this pin.
+
+SQLite is a separately linked system library, public domain:
+https://www.sqlite.org/copyright.html
+No native ngen program or Fortran runtime is linked or shipped.
+Hydrofabric DATA licensing is separate from software licensing. No database
+is bundled; dataset provenance/licence must accompany each prepared network.
+
+PROJ is a separately linked system library; its MIT and public-domain notices
+remain with the system distribution (https://proj.org/about.html).
+This crate implements coordinate transport through its published C API.
+
+Routing capture transport and level-pool initialization interoperate with
+NOAA-OWP/t-route, pinned 12a8eae0cdfed437143c590659fa7077605a5e70.
+Apache License, Version 2.0, January 2004; actual LICENSE read before porting,
+retained in notices/t-route-LICENSE. No upstream NOTICE at this pin.
+routing_capture.rs transports typed native inputs to resident CUDA payloads;
+reservoir initialization comes from the reservoir owner's sealed Rust output.
+The native capture importer is an explicit referee replay tool; it does not
+claim independent reconstruction of the captured graph from a GeoPackage.
+collapse.rs translates HYFeaturesNetwork.py waterbody preprocessing and
+nhd_network.py replacement/reversal into Rust, with explicit insertion order
+and rejection of ambiguous outlet/membership data. Case-specific numeric ID
+repairs from upstream are not embedded in this generic implementation.
+
+Optional source-archive acquisition binary uses the published libarchive C API.
+System libarchive 3.8.5 (Ubuntu 3.8.5-1ubuntu2.3) notices were read before use:
+"Redistribution and use in source and binary forms, with or without
+modification, are permitted" (BSD-2-Clause for the library, with file-specific
+permissive notices retained in notices/libarchive-system-COPYRIGHT).
+No libarchive source is translated. The production bridge and normal CLI do
+not link libarchive; only --features source-archive enables the separate tool.
+
+dbf.rs implements the fixed-width interchange format independently from its
+public format descriptions; no vendor program code is copied:
+https://www.dbase.com/Knowledgebase/INT/db7_file_fmt.htm (format background)
+https://www.loc.gov/preservation/digital/formats/fdd/fdd000325.shtml
+Only dBASE III no-memo tables are accepted; gauge character IDs stay strings.
+
+source_geometry.rs independently implements the published SHP/SHX file layout:
+ESRI Shapefile Technical Description, July 1998,
+https://www.esri.com/content/dam/esrisites/sitecore-archive/Files/Pdfs/library/whitepapers/pdfs/shapefile.pdf
+The specification was consulted, not copied or redistributed. No ESRI or GDAL
+program source is translated. Original EPA/USGS NHDPlus data attribution and
+provider metadata/member inventory are retained separately from software terms.
+
+Optional source-netcdf acquisition binary calls the published NetCDF-C API.
+System NetCDF-C 4.9.3 (Ubuntu 1:4.9.3-1build2) copyright was read before use:
+BSD-3-Clause, "Redistribution and use in source and binary forms, with or without
+modification, are permitted". File-specific permissive NetCDF grants and the
+complete system copyright are retained in notices/netcdf-system-COPYRIGHT.
+No NetCDF implementation is copied. Only rw_hydrofabric_netcdf_subset links
+NetCDF-C/HDF5; the production raw bridge remains independent of both libraries.
+Dataset terms must be reviewed independently; NOAA hosting alone does not settle
+explicitly attributed third-party inputs. This tool performs stored-value
+transport only, with no physical defaults, unit conversion or crosswalk policy.

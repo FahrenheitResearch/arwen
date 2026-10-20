@@ -362,10 +362,12 @@ class AdaptiveClockDriver:
 
     def __init__(self, model, *, cfl_source, tick_den: int,
                  restart_dt: dict[int, Fraction] | None = None,
-                 carrier_source=None, map_factor_source=None):
+                 carrier_source=None, map_factor_source=None,
+                 deadline_source=None):
         self.model = model
         self.cfl_source = cfl_source
         self.carrier_source = carrier_source
+        self.deadline_source = deadline_source
         self.tick_den = int(tick_den)
         self.controllers: dict[int, AdaptiveTimestepController] = {}
         self.order: list[int] = []
@@ -1280,6 +1282,13 @@ class AdaptiveClockDriver:
                     continue
                 if best is None or due < best:
                     best = due
+        # Moving/track deadlines live on the route runner rather than a
+        # domain's output spec. Stepping across one silently loses that
+        # consultation because the runner uses exact tick divisibility.
+        if self.deadline_source is not None:
+            due = self.deadline_source(clocks)
+            if due is not None and (best is None or due < best):
+                best = due
         if best is None or now is None:
             return Fraction(0)
         return Fraction(best - now, self.tick_den)

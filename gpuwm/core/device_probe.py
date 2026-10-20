@@ -218,12 +218,30 @@ try:
     try:
         import re as _re
         from cupy_backends.cuda.libs import nvrtc as _nvrtc
-        _program = _nvrtc.createProgram("", "compile_platform_probe.cu", [], [])
-        try:
-            _nvrtc.compileProgram(_program, [])
-            _ptx = _nvrtc.getPTX(_program)
-        finally:
-            _nvrtc.destroyProgram(_program)
+        _ptx = None
+        # Load the two stdlib-only helpers by file. Importing the model package
+        # here would make a bare runtime probe depend on that package's import.
+        if len(sys.argv) > 2:
+            try:
+                import runpy as _runpy
+                from pathlib import Path as _Path
+                _root = _Path(sys.argv[2])
+                _metadata = _runpy.run_path(str(_root / "compiler_metadata.py"))
+                _platform_helpers = _runpy.run_path(str(_root / "certify" / "compile_platform.py"))
+                _nvrtc.getVersion()
+                _ptx = _metadata["nvrtc_banner"](_nvrtc, _platform_helpers["nvrtc_library"]())
+            except Exception:
+                # A standalone preparation kit can lack forecast provenance
+                # helpers. It still measures the platform through the original
+                # probe; never turn an unavailable cache into a missing card.
+                _ptx = None
+        if _ptx is None:
+            _program = _nvrtc.createProgram("", "compile_platform_probe.cu", [], [])
+            try:
+                _nvrtc.compileProgram(_program, [])
+                _ptx = _nvrtc.getPTX(_program)
+            finally:
+                _nvrtc.destroyProgram(_program)
         if isinstance(_ptx, bytes):
             _ptx = _ptx.decode("ascii", "replace")
         _build = _re.search(
@@ -372,10 +390,12 @@ def _device_memory_probe(*, run=None, device=0, report_failure=False
     if no_local_gpu():
         return None, (f"{NO_LOCAL_GPU_ENV} is set, so the local card was "
                       "not read")
+    from pathlib import Path
+    helper_root = str(Path(__file__).resolve().parents[1])
     runner = subprocess.run if run is None else run
     try:
         completed = runner(
-            [sys.executable, "-c", _DEVICE_MEMORY_PROBE_SOURCE, str(device)],
+            [sys.executable, "-c", _DEVICE_MEMORY_PROBE_SOURCE, str(device), helper_root],
             capture_output=True, text=True,
             timeout=DEVICE_MEMORY_PROBE_TIMEOUT_SECONDS)
     except (OSError, subprocess.SubprocessError) as error:

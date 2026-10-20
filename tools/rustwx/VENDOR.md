@@ -1451,3 +1451,252 @@ from the source table (CRTM `ami_gk2.SpcCoeff.bin` wavenumbers) because the
 L1B file states the central wavelength rounded to 0.1 um, which put the
 brightness temperature off by +3.13 / -0.85 / -0.53 / +1.57 K (WV063 / WV069 /
 WV073 / IR105) on the same full disk.
+
+
+## Global panel projection correction (products-render, 2026-10-18)
+
+`crates/rw-wrfbatch/src/panel.rs` restores the presentation builder for a
+global geographic grid (longitude span >=300 degrees, latitude span >=150).
+The old full-domain builder combined a degree extent with a Robinson inverse
+in metres and painted a nearly uniform equatorial value over the world.
+The presentation builder supplies the matching frame, inverse and resolved
+projection; regional/native projected panels keep the existing full-domain
+builder. This restores the same generic panel fix carried in the S2S renderer
+recipe's patch 0002 (source revision f1dce903df6bd5022c9fbd69696854b917cb88a8,
+patch SHA-256 2d5831d1e64d155f31fa9744e30e5198626592f173335523cabe97197de54d1a).
+
+The real 181x360 four-member GEFS week-1 CDF5 fixture, SHA-256
+50d6b4c99da10cdc39d59eb369978aa73e1ea79fc1380759d054fcff3eb9d779,
+rendered through `gpuwm.rustwx` at 1200x900 with the original source subtitle
+matches the archived temperature mean PNG byte-for-byte:
+cc8af66c26b3f0d0d248b72720a85076dda617ffd98cb8237057a73d53d85a5e.
+The corrected CPU override replay takes 123.872 ms for the direct process,
+142.572 ms through the wrapper including ABI probes; these are distinct
+runs, not additive stages. Separate Nsight capture has zero GPU launches.
+No forecast/model words change, no speedup or forecast-tail claim. The old
+incorrect image is not an acceptable performance baseline. No guard was
+introduced for this defect; the restored matching projection is default.
+
+## Native mesh polygon projection seam (correctness, 2026-10-18)
+
+Native H60 mesh pressure maps painted latitude bands because the mesh route
+projected polygon vertices independently: longitude normalization reconnected
+opposite map edges. Its 360-degree seam copies repeated the same malformed
+ring. The native mesh route now reuses the basemap polygon seam splitter at
+the selected projection cut and retains the source cell index for each piece.
+The redundant copies are removed; off-seam rings project exactly as before.
+The splitter itself and model/history words are unchanged. A regression uses
+a nonzero Mercator central meridian and checks split-piece widths, cell
+association and exact off-seam projection. Actual native H60 global/regional
+render receipts accompany the lane delivery; no weather-quality or speed claim.
+
+`crates/rustwx-render/src/lib.rs`: before `16a4009c195957aae1fcf9fd24e5c0f3bf88bc7067276520ddae4e997f1e61ec`, after `125bf01be526271e2b3a0b7426ee599f40d283467ac904548589212ed67f267f`.
+`crates/rustwx-render/src/projected_map.rs`: before `0c294f9bcec74369e54d21aa1182a5eeb2e095af0f0c37672f61c5cc09dbc2eb`, after `325214f50cda96dc8e07cdc720b96f28d07c7a9c3d7a5868e89aa6b8cd78062d`.
+`crates/rw-wrfbatch/src/mesh.rs`: before `da5ec915c4a53cf6a6b8fd066449d214558dba1d5a5a74a93f4473caf6ae63c9`, after `89d2e6b0a245340d1e2e4ae92b4b30a7eb1d73a25c1c0807e818db21d9b6c03f`.
+
+## Structured CUDA raster and edge feather (speed2 products-render, 2026-10-18)
+
+`crates/rustwx-render/src/rasterize_structured.cu` seeds its binary64
+bilinear interpolation and palette lookup from the MIT source workspace's
+`rustwx-production-cuda/kernels/render/rasterize_grid.cu`, clean at source
+revision `99027d7cabe133830cbe6d2283f8054437ca7bb6`, seed SHA-256
+`06da8df92a2136b9a6d36013386655ee8e86348f77365b370464a63921a1d9cc`.
+Changes preserve the current CPU renderer's constant-cell words, nonfinite
+masks, nearest categories, rectilinear projected axes and edge alpha. Edge
+feathering is fused into the same launch. A direct device byte view replaces
+host pixel repacking; every pixel is written, so an output memset is unnecessary.
+
+The driver-only wrapper in `src/rasterize_cuda.rs` shares one lowest-priority
+nonblocking stream per process, serializes fills, and prices each request
+against a 256 MiB budget. It uploads a field and palette, launches one kernel,
+and downloads RGBA on that stream. No runtime NVRTC compilation is used.
+Unsupported grids, absent CUDA and driver errors retain the existing CPU path.
+`RUSTWX_RASTER_DEVICE=cpu` selects that path for paired replay. The Robinson inverse fill also runs on this stream with the same payload
+budget; other inverse projections, linework and PNG encoding keep their
+existing implementation. The GPU does not replace a CPU linework/PNG stage.
+
+`src/rasterize_structured.ptx` is source-distributed PTX 8.0, built by NVRTC
+12.0.76 for compute_60 with `--std=c++17 --fmad=false --ftz=false
+--prec-div=true --prec-sqrt=true`. `rebuild_rasterize_ptx.py --nvrtc-library
+/path/to/libnvrtc.so.12 --out /scratch/rasterize_structured.ptx` reproduces it
+without a GPU. NVRTC 12.0 is required to preserve the driver's PTX floor.
+The shipped renderer itself does not load NVRTC. Resource and runtime checks
+so far use a 5090 with driver 610.43.02; a CUDA-12-driver run remains unmeasured.
+
+`RUSTWX_TEST_CUDA=1` enables the explicit device pixel replay under the GPU
+mutex. Its 14 cases compare 30,720,120 bytes with zero difference (linear,
+nearest, masked, nonfinite, uniform floor, projected axes and narrow viewports).
+Four further Robinson cases (linear/nearest, periodic seam and crossing
+clip) compare 4,520,048 bytes with zero difference. The real 181x360 GEFS
+S2S temperature mean matches its archived PNG SHA exactly on GPU and CPU.
+The retained 124x100x49 12 km WRF frame rendered all 76 available products with
+identical CPU/GPU PNG hashes. This is a retained-frame check, not canonical A3
+or H60, and does not establish forecast throughput or a one-minute products tail.
+
+`RUSTWX_TRACE_RENDER_TIMING=1` prints the renderer's existing save/phase timers
+and CUDA counters as JSON lines for separate diagnostic runs. Ordinary renders
+do not serialize those records. This candidate is held from integration pending
+canonical product receipts and a measured complete-path improvement.
+
+The Robinson inverse helpers also seed from the same MIT workspace's
+`kernels/render/rasterize_inverse_projected_grid.cu`, revision
+`99027d7cabe133830cbe6d2283f8054437ca7bb6`, SHA-256
+de76662e5703f132a63adbed8b054c67a051e2159fb37e66c96fd94bf45b647d.
+The port adds current constant-cell preservation and nearest sampling, writes
+transparent pixels directly, and enables only the measured Robinson path.
+The exact 181x360 real frame uses one 0.116671 ms kernel launch on the 5090,
+31 registers/thread, zero local/shared bytes, 256 threads, 100% theoretical
+occupancy. CUDA startup makes the cold one-image process slower overall;
+this GPU candidate remains held, independent of the committed projection fix.
+
+Per-file SHA-256 delta (before this lane → candidate, first 16 hex):
+
+| File | Before | After |
+|---|---|---|
+| `Cargo.lock` | a4c675293d3e2952 | 2002bb4fb73a9627 |
+| `crates/rustwx-render/Cargo.toml` | d1a7574f528ae6d5 | 8b67aaa12454af55 |
+| `crates/rustwx-render/src/lib.rs` | 16a4009c195957aa | de1612b8405f50df |
+| `crates/rustwx-render/src/rasterize.rs` | 80ca0dca2855a3ae | 70d80f71aa16b8f2 |
+| `crates/rustwx-render/src/rasterize_cuda.rs` | new | 702293f403097e16 |
+| `crates/rustwx-render/src/rasterize_structured.cu` | new | 46ef22ca2501e1aa |
+| `crates/rustwx-render/src/rasterize_structured.ptx` | new | a23aaa645bb9dbcb |
+| `rebuild_rasterize_ptx.py` | new | 1118604a797b9518 |
+
+## S2S stream replay companion (held, 2026-10-18)
+
+The uncommitted stream-replay renderer includes the S2S owner's original
+`tree/docs/s2s/engine-patches/0001-rw-wrfbatch-s2s-window-scales.patch`
+from `hex/s2s-door` at `f1dce903df6bd5022c9fbd69696854b917cb88a8`.
+That patch supplies fixed declared-unit scales and field titles for S2S windows;
+its SHA256 is `6c5ecb84642ca887a0e0b8addad6ade5f84d3a83caed7e0bcc25e3e0d2450316`.
+The ABI additionally advertises `global-ensemble-projection`, implemented by
+committed correction `dc5fdfe996f2fb65ce75ba3a739cfe7148443d54`.
+No additional projection recipe or field conversion is introduced here.
+
+The new executable SHA256 is
+`44542133336884ad40f3984d448e02cebc4251f5ac018153ef73cce841e137ef`.
+This is separate from the earlier renderer candidate in the receipt.
+`crates/rw-wrfbatch/src/ensemble_products.rs` now has SHA256
+`445f0367a8afd40dcce04947e8935dc7e0cc41a4ecf12dba18a30f4b4c2db447`.
+All GPU changes and this companion remain held from integration.
+The S2S streaming producer lives on its own hex branch; the separate device
+profile reports 0.107332 ms/raster over120 PNGs on a synthetic history replay,
+not a canonical forecast timing.
+
+## Persistent frame worker (held, 2026-10-18)
+
+The held worker now also accepts resident-ensemble CDF5 windows in a separate
+fixed `--ensemble-products` mode. `ensemble_products::RenderOptions` shares the
+ordinary CLI parser and render path; each `ensemble_products` JSON request varies
+only `input`, `out_dir` and `id`. Batch and ensemble requests cannot cross modes.
+The additive worker ABI token is `ensemble-products`; the ordinary renderer ABI
+is unchanged. No diagnostic reducer or WRF-history importer is used for S2S.
+On the real 181x360/four-native-GEFS-member week-1 aggregate (SHA50d6b4c9), two
+20-map requests in one process matched all archived PNG bytes, as did a fresh
+CLI render. CPU native times1139.386139/1111.445649ms, VmHWM54,841,344B under
+512MiB; this is a correctness/process-retention diagnostic, not GPU performance.
+Wrong-mode/override rejection, invalid fixed options, fatal missing input and
+32MiB budget stop(rc75) passed; the existing WRF request still matches its
+archived PNG. New held binary6cffa8f8 is local only; staged5375ae17 is unchanged.
+CUDA was hidden and CPU raster explicit. GPU context retention, total VRAM,
+canonical device row, idle-window interference and forecast tail stay unproved.
+
+`crates/rw-wrfbatch/src/worker.rs` and the small `main.rs` dispatch/parser
+adaptation are original lane code. They add a serial JSONL front door around
+the existing batch importer/renderer; they add no weather arithmetic or kernel.
+Presentation options are fixed at startup. Each request supplies only its
+identifier, input/import paths, store and output directory. The existing `--abi`
+is unchanged; `--worker-abi` exposes the separate worker protocol marker.
+The worker caps its render pools at four threads, accepts at most one request
+at a time, and checks Linux RSS/HWM against an explicit host budget. This is
+a sampled stop, not an OS memory limit. A controller must admit and monitor
+total GPU context plus payload; the raster payload limit alone is insufficient.
+
+Executable SHA256
+`c60b5deced7531d7c6c630079233ac121464fa43129e473a2359de5ffcfb5f63`
+includes the prior held GPU and S2S changes; it does not replace their binaries
+or receipts. Three CPU-only real-frame requests across two geometries and a
+saved-import reuse match fresh-process PNG hashes exactly. The warm reuse
+request takes 19.851571 ms inside the worker, not canonical GPU time. A3
+worker timing, total GPU budget and forecast interference remain unmeasured;
+this adaptation stays uncommitted and held from integration with the candidate.
+
+## S2S window scales and titles (correctness-only, 2026-10-18)
+
+The renderer now carries the original S2S producer's declared-unit scales and
+field titles from `tree/docs/s2s/engine-patches/0001-rw-wrfbatch-s2s-window-scales.patch`
+at hex source `f1dce903df6bd5022c9fbd69696854b917cb88a8` (patch SHA256
+`6c5ecb84642ca887a0e0b8addad6ade5f84d3a83caed7e0bcc25e3e0d2450316`).
+The former generic 0..100 fallback clipped height/pressure means and gave the
+window anomaly/spread fields the wrong comparison scales. Only files declaring
+`s2s_window` select those scales; other resident-ensemble fields keep their
+existing behavior. Titles now name the four window fields and their anomalies.
+The resident-v2 ABI advertises the added S2S capability and the already committed
+global ensemble projection correction; no renderer/GPU speed change is included.
+
+Changed file `crates/rw-wrfbatch/src/ensemble_products.rs`: SHA256 before
+`00ec63e28572c1eda6620b3e1e7f3eea6fd966c628cd002c55a640558d0b9cc8`, after
+`445f0367a8afd40dcce04947e8935dc7e0cc41a4ecf12dba18a30f4b4c2db447`.
+The S2S owner ran the exact new source in retained renderer `44542133336884ad40f3984d448e02cebc4251f5ac018153ef73cce841e137ef`
+on the real four-member GEFS week-1 aggregate `50d6b4c99da10cdc39d59eb369978aa73e1ea79fc1380759d054fcff3eb9d779`:
+20/20 original 1200x900 mean/spread/probability PNGs are byte-identical, zero
+changed pixels. Direct CPU process 1.172952826s; public wrapper 1.192268912s
+in a distinct run. CUDA hidden, CPU raster and four Rayon threads. These are
+correctness observations, not a speed pair or canonical forecast-tail result.
+No model words, CUDA kernels, resources or launch count are changed by this patch.
+
+The public wrapper's additive-capability acceptance fix is separately owned by
+S2S-throughput, forward commit `01d8d2774d61c534e1f96b98b8d97804785a0b4b`,
+already integrated by lead-arwen as `adddb4a61f6780d60302172461d12c04825750ef`.
+It retires the whole-marker equality refusal for these additive capabilities;
+the renderer patch must be integrated with that fix. No installed artifact is
+replaced here. The GPU raster, persistent worker and streamed producer remain
+separate held candidates requiring their own exact-shape device/performance rows.
+
+## wx-core: identity representation for ranged input assets (2026-10-17)
+
+`vendor/wx-core/src/download/client.rs::perform_get` explicitly requests
+`Accept-Encoding: identity`. The actual pinned t-route LICENSE raw-GitHub
+transfer otherwise returned the compressed representation total (3,967 bytes)
+to the one-byte range probe while the source pin describes 11,358 bytes.
+The common range reader and digest pin must address the same representation.
+This retains the shared transfer pool, retries, cache and pacing. The exact
+NextGen demo acquisition is the reproducer; no source-specific transport is added.
+
+## Public sounding window (2026-10-17)
+
+`rw-soundings`, `rustwx-sounding`, `vendor/sharprs` and `vendor/sharppyrs`
+add the existing website sounding window to the public run-folder command.
+See `crates/rw-soundings/PROVENANCE.md` for ownership, licences and adaptations.
+The public adapter performs data processing in Rust and uses the original
+egui/wgpu window. Additional locked dependencies are in `vendor/crates-io`
+with Cargo package checksums and licence notices. GUI example/snapshot tools
+from the source service are excluded from this runtime port.
+
+## Full-domain inverse raster and cyclone diagnostics (2026-10-17)
+
+`rustwx-products/src/direct/projection.rs` now constructs a regular-grid
+full-domain inverse from the frame's actual resolved projector. Previously
+the frame inferred a regional Lambert projector while its inverse could use
+a different presentation family: real Ian fields had 99,473 finite wind
+probabilities and maximum 1, but every weather pixel was blank. The regression
+checks inverse family/reference parameters against the frame and checks the
+native projected coordinates. Requested-bounds presentation is unchanged.
+`rw-wrfbatch/src/cyclone_products.rs` is a new arbitrary diagnostics door:
+parallel track/intensity extraction, common-Earth reflectivity, weighted wind
+and coastal reductions, ATCF verification, radar gridding and native panels.
+Observed missing radar coverage uses the shared grey coverage fill.
+
+## Hydro workspaces share this registry (2.9.3, 2026-10-19)
+
+`tools/nextgen_forcing`, `tools/nextgen_hydrofabric` and `tools/nextgen_verify` replace crates.io with this
+directory (their `.cargo/config.toml`), as the release build runs `cargo build --release --locked --offline`.
+Added, versioned directories, exactly the versions their `Cargo.lock` files pin (`cargo vendor --locked
+--versioned-dirs`), all permissive (MIT, Apache-2.0, BSD-2-Clause, ISC, Zlib, Unlicense, Unicode-3.0 options):
+bitflags 2.13.2, cc 1.8.0, cfg-if 1.0.5, crc32fast 1.5.2, crossbeam-deque 0.8.8, crossbeam-epoch 0.9.21,
+crossbeam-utils 0.8.23, csv 1.4.0, csv-core 0.1.13, either 1.19.0, equivalent 1.0.3, find-msvc-tools 0.1.14,
+flate2 1.1.10, futures-channel 0.3.34, futures-core 0.3.34, futures-task 0.3.34, futures-util 0.3.34, hyper 1.12.0,
+libc 0.2.191, log 0.4.34, miniz_oxide 0.9.1, mio 1.2.4, num-integer 0.1.47, pkg-config 0.3.34,
+portable-atomic 1.15.0, rustls 0.23.46, rustls-webpki 0.103.15, serde_json 1.0.154, smallvec 1.16.3, syn 3.0.9,
+thiserror 2.0.21, thiserror-impl 2.0.21, twox-hash 2.1.5, unicode-ident 1.0.27, want 0.3.2, zerocopy 0.8.63,
+zerocopy-derive 0.8.63, zeroize 1.9.1. The rustwx workspace's own lock is unchanged.

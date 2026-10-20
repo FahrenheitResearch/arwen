@@ -1,0 +1,66 @@
+{
+  "schema": "arwen.nextgen-forcing-sources.v1",
+  "provenance": {
+    "ngen": "be11a180565a78ff069d855b0b5dbfc23845e7d8/include/forcing/AorcForcing.hpp",
+    "license": "Apache-2.0",
+    "license_scope": "Software definitions and implementation only",
+    "data_license": "Dataset-specific terms and attribution must be recorded separately for weather, geometry and derived weights; this table grants no data rights",
+    "humidity": "Q2D and SPFH_2maboveground are specific humidity kg/kg despite the historical BMI relative_saturation name",
+    "weather_inputs": "GFS/HRRR/ERA5 use the init-source Rust decoded canonical surface grid; this table does not decode raw GRIB or derive missing humidity/radiation"
+  },
+  "profiles": {
+    "ngen-catchment-csv": {
+      "format": "catchment_csv",
+      "fields": {
+        "T2D": {"variable": "TMP_2maboveground"},
+        "Q2D": {"variable": "SPFH_2maboveground"},
+        "U2D": {"variable": "UGRD_10maboveground"},
+        "V2D": {"variable": "VGRD_10maboveground"},
+        "PSFC": {"variable": "PRES_surface"},
+        "LWDOWN": {"variable": "DLWRF_surface"},
+        "SWDOWN": {"variable": "DSWRF_surface"},
+        "RAINRATE": {"variable": "precip_rate"}
+      }
+    },
+    "aorc-grid": {
+      "format": "grid_netcdf",
+      "time_offset_seconds": -3600,
+      "fields": {
+        "T2D": {"variable": "TMP_2maboveground"},
+        "Q2D": {"variable": "SPFH_2maboveground"},
+        "U2D": {"variable": "UGRD_10maboveground"},
+        "V2D": {"variable": "VGRD_10maboveground"},
+        "PSFC": {"variable": "PRES_surface"},
+        "LWDOWN": {"variable": "DLWRF_surface"},
+        "SWDOWN": {"variable": "DSWRF_surface"},
+        "RAINRATE": {"variable": "APCP_surface", "temporal": "interval_total"}
+      }
+    },
+    "decoded-canonical-grid": {
+      "format": "grid_netcdf",
+      "fields": {
+        "T2D": {"variable": "T2D"}, "Q2D": {"variable": "Q2D"},
+        "U2D": {"variable": "U2D"}, "V2D": {"variable": "V2D"},
+        "PSFC": {"variable": "PSFC"}, "LWDOWN": {"variable": "LWDOWN"},
+        "SWDOWN": {"variable": "SWDOWN"}, "RAINRATE": {"variable": "RAINRATE"}
+      }
+    },
+    "era5-land-hourly": {
+      "about": "ECMWF ERA5-Land hourly single levels as the CDS netCDF4 file (reanalysis-era5-land). Accumulations run from 00 UTC through the day and are de-accumulated in Rust; humidity comes from 2 m dewpoint and surface pressure per source cell; sea cells are missing and must not carry area weight.",
+      "format": "grid_netcdf",
+      "time_variable": "valid_time",
+      "time_offset_seconds": -3600,
+      "humidity": "dewpoint_kelvin",
+      "fields": {
+        "T2D": {"variable": "t2m"},
+        "Q2D": {"variable": "d2m"},
+        "U2D": {"variable": "u10"},
+        "V2D": {"variable": "v10"},
+        "PSFC": {"variable": "sp"},
+        "LWDOWN": {"variable": "strd", "temporal": "daily_running_total", "clamp_min": 0.0},
+        "SWDOWN": {"variable": "ssrd", "temporal": "daily_running_total", "clamp_min": 0.0},
+        "RAINRATE": {"variable": "tp", "scale": 1000.0, "temporal": "daily_running_total", "clamp_min": 0.0}
+      }
+    }
+  }
+}

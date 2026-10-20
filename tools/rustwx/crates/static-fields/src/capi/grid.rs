@@ -198,6 +198,54 @@ pub unsafe extern "C" fn gpuwm_static_grid_array(
     })
 }
 
+/// Fill selected arrays in increasing kind order from one coordinate pass.
+/// Bit 0 selects latitude through bit 6 selecting COSALPHA.
+///
+/// # Safety
+/// `out` must point to `out_len` writable f64 slots. The expected length
+/// is the stagger size times the number of selected kinds.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gpuwm_static_grid_arrays(
+    handle: u64,
+    stagger_code: u32,
+    kinds: u32,
+    out: *mut f64,
+    out_len: usize,
+) -> i32 {
+    guard(ERR, || {
+        clear_error();
+        if kinds == 0 || kinds & !0x7f != 0 {
+            return set_error(format!("invalid derived array mask {kinds}"));
+        }
+        let Ok(stagger) = Stagger::from_code(stagger_code) else {
+            return set_error(format!("unknown stagger code {stagger_code}"));
+        };
+        if out.is_null() {
+            return set_error("output buffer is null");
+        }
+        let filled = with_grid(handle, |grid| {
+            let (ny, nx, _, _) = grid.stagger_layout(stagger);
+            let expected = ny.checked_mul(nx)
+                .and_then(|n| n.checked_mul(kinds.count_ones() as usize));
+            if expected != Some(out_len) {
+                return Err(format!("output buffer holds {out_len} f64 slots, \
+                    derived array mask {kinds} at stagger {stagger_code} needs {expected:?}"));
+            }
+            let arrays = grid.derived_arrays(stagger, kinds);
+            let target = unsafe { std::slice::from_raw_parts_mut(out, out_len) };
+            for (array, chunk) in arrays.iter().zip(target.chunks_mut(ny * nx)) {
+                chunk.copy_from_slice(&array.data);
+            }
+            Ok(())
+        });
+        match filled {
+            None => set_error(format!("unknown grid handle {handle}")),
+            Some(Err(message)) => set_error(message),
+            Some(Ok(())) => OK,
+        }
+    })
+}
+
 /// Point transforms for many points in place; `direction` 0 =
 /// ij_to_latlon (a = x -> lat, b = y -> lon), 1 = latlon_to_ij
 /// (a = lat -> x, b = lon -> y).

@@ -18,10 +18,10 @@ wraps that one function:
   name, name expressions) is recorded into a plan file for this run's
   configuration (``tag``) and compiler identity.  The plan is the run's kernel
   set, in the very keys the compiler is called with.
-* **Compile ahead.**  At the next start the plan is submitted to a thread pool
-  as wide as the cores this process may use, longest compile first (NVRTC
-  releases the GIL: 8 threads compiled 8 modules 5.4x faster than one on a
-  loaded host).  This runs while the host reads and prepares its inputs.
+* **Compile ahead.** Supported cubin requests use CPU compiler processes,
+  as wide as the usable cores, including the first run's static captures.
+  Each worker has an independent NVRTC instance. GPU loader work stays on a
+  thread pool; no CUDA context enters a compiler process.
 * **Single flight.**  A request that arrives while its compile is running
   waits for it; one still queued is taken back and compiled by the caller, as
   before; one already finished is returned at once.  Two threads never
@@ -30,12 +30,8 @@ wraps that one function:
 WHY THE OUTPUT IS UNCHANGED.  The wrapper returns exactly what NVRTC returned
 for the identical inputs, and every route still writes its own cache entry,
 under its own key, from those bytes -- nothing else about a route changes.
-Two inputs are not part of the match when they cannot change the image: the
-program name and whether CuPy wrote the source to a temporary file (measured
-on NVRTC 13: one image for every name and path).  When they CAN change it --
-the source uses ``assert`` or ``__FILE__``, or the options ask for line or
-debug info -- they are part of the match.  (Such images embed CuPy's random
-temporary path, so two serial compiles of them already differ.)  The
+Program names and memory-cache mode remain part of every match: NVRTC can
+embed them in internal symbols even without assertions or debugging. The
 architecture is recorded as "the device's" and resolved on the card the run
 uses, so a plan made on one card architecture compiles for another.
 
@@ -66,6 +62,7 @@ from __future__ import annotations
 import atexit
 import concurrent.futures
 import contextlib
+import copy
 import hashlib
 import importlib
 import json
@@ -109,6 +106,9 @@ def compiler_identity() -> dict[str, Any]:
     import cupy
 
     compiler = _compiler()
+    if getattr(compiler, "__name__", None) == "cupy.cuda.compiler":
+        from gpuwm.kernel_aot import compiler_identity as full_identity
+        return full_identity()
     return {"cupy": str(cupy.__version__), "nvrtc": list(compiler._get_nvrtc_version()),
             "cache_key": str(compiler._get_cupy_cache_key()),
             "use_ptx": bool(getattr(compiler, "_use_ptx", False)),
@@ -126,6 +126,8 @@ def default_tag_text(argv: Iterable[str] | None = None) -> str:
     words = [str(word) for word in (sys.argv[1:] if argv is None else argv)]
     kept = [word for word in words if "/" not in word and "\\" not in word
             and not any(ch.isdigit() for ch in word)]
+    from gpuwm import numerics
+    kept.append(f"GPUWM_NUMERICS={numerics.mode()}")
     for name in ("GPUWM_HEX_NUMERICS", "GPUWM_WRF_EXACT", "CUPY_CUDA_COMPILE_WITH_DEBUG"):
         if os.environ.get(name):
             kept.append(f"{name}={os.environ[name]}")
@@ -392,6 +394,19 @@ def install(plan_dir: str | Path | None = None, tag_text: str | None = None) -> 
         identity = compiler_identity()
     except Exception:
         return False
+    record_raw = None
+    if getattr(compiler, "__name__", None) == "cupy.cuda.compiler":
+        import cupy
+        from gpuwm import kernel_aot
+
+        from gpuwm.kernel_warm_pack import install_metadata
+        _state["compiler_metadata"] = install_metadata(compiler, directory, identity)
+        kernel_aot.install(cupy)
+        # The pack's final-NVRTC bridge/recorder must sit inside this funnel:
+        # static capture exits below before it can load or compile anything.
+        original = compiler._compile_using_nvrtc_no_warning
+        if os.environ.get("GPUWM_AOT_RECORD"):
+            record_raw = kernel_aot.record_raw
     identity_digest = hashlib.sha256(json.dumps([SCHEMA, identity], sort_keys=True).encode()).hexdigest()[:20]
     tag = hashlib.sha256(text.encode("utf-8")).hexdigest()[:20]
     _state.update(identity=identity, root=Path(directory).expanduser() / identity_digest,
@@ -405,6 +420,9 @@ def install(plan_dir: str | Path | None = None, tag_text: str | None = None) -> 
                             cache_in_memory, jitify, method)
 
         capturing = _capturing()
+        if getattr(compiler, "__name__", None) == "cupy.cuda.compiler":
+            from gpuwm.kernel_aot import effective_options
+            options = effective_options(options)
         if log_stream is not None or jitify or not isinstance(source, str):
             if capturing:
                 raise _Captured()
@@ -420,6 +438,13 @@ def install(plan_dir: str | Path | None = None, tag_text: str | None = None) -> 
         if capturing:
             # A static-plan capture (:func:`ahead`): hand back the request, compile nothing.
             raise _Captured(arguments, key)
+        if record_raw is not None:
+            record_raw(arguments)
+        images = _warm_images()
+        cached_image = None if images is None else images.get(arguments)
+        if cached_image is not None:
+            _count("warm_image_hits")
+            return cached_image
         try:
             entry = _entry_of(filename, cache_in_memory)
             target = _device_arch() if arguments["arch"] == "device" else arguments["arch"]
@@ -449,6 +474,8 @@ def install(plan_dir: str | Path | None = None, tag_text: str | None = None) -> 
             except Exception:
                 _count("failed_then_inline")
                 return call()
+            if images is not None:
+                images.put(arguments, result)
             _count("served")
             return _copy(result)
         started = time.perf_counter()
@@ -461,6 +488,8 @@ def install(plan_dir: str | Path | None = None, tag_text: str | None = None) -> 
             raise
         seconds = time.perf_counter() - started
         owner.set_result(result)
+        if images is not None:
+            images.put(arguments, result)
         with _lock:
             _count("inline_compiles")
             _count("inline_seconds", seconds)
@@ -502,19 +531,23 @@ def _read(path: Path) -> list[dict[str, Any]]:
 
 
 def load_plan() -> tuple[list[dict[str, Any]], str]:
-    """This tag's plan, else the union of every plan for this compiler."""
-
+    """Direct lookup for this shape. Static jobs cover a first use, without a pool scan."""
     path = _state["plan"]
     rows = _read(path) if path is not None and path.is_file() else []
-    if rows:
-        return rows, "tag"
-    merged: dict[str, dict[str, Any]] = {}
-    root = _state.get("root")
-    if root is not None and root.is_dir():
-        for other in sorted(root.glob("*.json")):
-            for row in _read(other):
-                merged.setdefault(row["sha256"], row)
-    return list(merged.values()), ("union" if merged else "none")
+    return rows, ("tag" if rows else "none")
+
+
+def _warm_images():
+    if not _state.get("installed") or getattr(_compiler(), "__name__", None) != "cupy.cuda.compiler":
+        return None
+    # Device and compiler identities are fixed before any compile is submitted.
+    with _lock:
+        images = _state.get("warm_images")
+        if images is None:
+            from gpuwm.kernel_warm_pack import WarmImages
+            images = WarmImages(_state["root"], _state["identity"], _state["tag_text"], _device_arch())
+            _state["warm_images"] = images
+        return images
 
 
 def _workers() -> int:
@@ -526,6 +559,132 @@ def _workers() -> int:
     if limit.isdigit() and int(limit) > 0:
         cores = min(cores, int(limit))
     return max(1, cores)
+
+
+class _ProcessCompileFuture(concurrent.futures.Future):
+    """The shared hex compiler proxy: cancellation must reach the real job."""
+
+    def __init__(self, pending, record, *, request_sha256=None, arch=None):
+        super().__init__()
+        self.pending = pending
+        self.record = record
+        self.request_sha256 = request_sha256
+        self.arch = arch
+
+    def cancel(self):
+        return self.pending.cancel() and super().cancel()
+
+    def completed(self, pending):
+        if pending.cancelled():
+            super().cancel()
+            return
+        try:
+            result, timing = pending.result()
+        except BaseException as error:
+            with _lock:
+                self.record["pool_failed"] += 1
+                self.record["last_done"] = time.monotonic()
+            self.set_exception(error)
+            return
+        with _lock:
+            record = self.record
+            record["pool_compiled"] += 1
+            record["pool_seconds"] = round(record["pool_seconds"] + timing["seconds"], 3)
+            record["pool_cpu_seconds"] = round(record["pool_cpu_seconds"] + timing["cpu_seconds"], 6)
+            record["last_done"] = time.monotonic()
+            worker = next((r for r in record["pool_processes"] if r["pid"] == timing["pid"]), None)
+            if worker is None:
+                worker = {"pid": timing["pid"], "entries": 0, "cpu_seconds": 0.0}
+                record["pool_processes"].append(worker)
+            if "compile_intervals" in record and "compile_begin_mono_ns" in timing:
+                record["compile_intervals"].append({
+                    "request_sha256": self.request_sha256, "arch": self.arch,
+                    "pid": timing["pid"],
+                    "begin_mono_ns": timing["compile_begin_mono_ns"],
+                    "end_mono_ns": timing["compile_end_mono_ns"],
+                    "cpu_seconds": timing["cpu_seconds"]})
+            worker["entries"] += 1
+            worker["cpu_seconds"] = round(worker["cpu_seconds"] + timing["cpu_seconds"], 6)
+        self.set_result(result)
+
+
+def _process_compiler_identity(arch):
+    """Use the CPU-only cubin worker where CuPy supports the explicit target."""
+    try:
+        compiler = _compiler()
+        if getattr(compiler, "__name__", None) != "cupy.cuda.compiler" or compiler._use_ptx:
+            return None
+        from cupy_backends.cuda.libs import nvrtc
+        if int(str(arch).removeprefix("sm_")) not in nvrtc.getSupportedArchs():
+            return None
+        from gpuwm.kernel_aot import compiler_identity as identity
+        return identity()
+    except (ImportError, AttributeError, ValueError):
+        return None
+
+
+def _submit_compile(arguments, arch, record, *, key=None):
+    """Submit identical final options to the isolated compiler processes."""
+    from gpuwm.kernel_aot import effective_options
+    from gpuwm.kernel_compile_worker import compile_request
+
+    arguments = dict(arguments, options=list(effective_options(arguments["options"])))
+    with _lock:
+        if key is not None and key in _flight:
+            return _flight[key]
+        pending = _state["compiler_pool"].submit(
+            compile_request, arguments, arch, _state["worker_identity"],
+            **({"trace": True} if "compile_intervals" in record else {}))
+        future = _ProcessCompileFuture(
+            pending, record,
+            request_sha256=(_key(arguments) if "compile_intervals" in record else None),
+            arch=str(arch))
+        if key is not None:
+            _flight[key] = future
+    # A completed job invokes callbacks immediately. Publish its proxy first,
+    # then register outside the lock used by completed() and the NVRTC funnel.
+    pending.add_done_callback(future.completed)
+    return future
+
+
+def _aot_coverage():
+    """Scheduling hint only; the loader still checks the full pack contract."""
+    if getattr(_compiler(), "__name__", None) != "cupy.cuda.compiler":
+        return set()
+    from gpuwm.kernel_aot import Pack
+    pack = Pack()
+    if pack.reason:
+        return set()
+    held = set()
+    for row in pack.rows:
+        if row.get("compiler_route") == "raw-nvrtc":
+            metadata = row.get("compile_request") or {}
+            if metadata.get("cache_in_memory") or metadata.get("method") is not None:
+                continue
+            held.add(("raw", row["source_sha256"], tuple(row["options"]),
+                      tuple(metadata.get("name_expressions") or ()), row["arch"],
+                      metadata.get("filename")))
+            continue
+        options = list(row["options"])
+        if row.get("compiler_route") != "direct-nvrtc":
+            options.append("-ftz=true")
+        names = (row.get("compile_request") or {}).get("name_expressions")
+        held.add((row["source_sha256"], tuple(options), tuple(names or ()), row["arch"]))
+    return held
+
+
+def _aot_cached(arguments, arch, held):
+    from gpuwm.kernel_aot import effective_options, portable_options, source_hash
+    if arguments.get("method") is not None:
+        return False
+    target = arch if arguments["arch"] == "device" else arguments["arch"]
+    signature = (source_hash(arguments["source"]),
+                 tuple(portable_options(effective_options(arguments["options"]))),
+                 tuple(arguments.get("name_expressions") or ()),
+                 "sm_" + str(target).removeprefix("sm_"))
+    return (signature in held or
+            (not arguments.get("cache_in_memory")
+             and ("raw", *signature, arguments.get("filename", "kern.cu")) in held))
 
 
 def start(device_id: int | None = None) -> dict[str, Any] | None:
@@ -547,12 +706,34 @@ def start(device_id: int | None = None) -> dict[str, Any] | None:
     arch = _device_arch()
     rows, source = load_plan()
     rows = [_retarget_cupy_program(row, arch) for row in rows]
+    # A covered request will use the pack loader, which still validates its
+    # complete contract. Avoid restoring a second image and its dependencies
+    # merely to discard them here. If the loader rejects, the ordinary funnel
+    # still tries the warm image and then compiles the exact request.
+    held = _aot_coverage()
+    _state["aot_coverage"] = held
+    aot_cached = [row for row in rows if held and _aot_cached(row["arguments"], arch, held)]
+    covered = {row["sha256"] for row in aot_cached}
+    rows = [row for row in rows if row["sha256"] not in covered]
+    images = _warm_images()
+    image_cached = set()
+    if images is not None:
+        for row in rows:
+            result = images.get(row["arguments"])
+            if result is not None:
+                future = concurrent.futures.Future()
+                future.set_result(result)
+                _flight[row["sha256"]] = future
+                image_cached.add(row["sha256"])
+    rows = [row for row in rows if row["sha256"] not in image_cached]
     workers = _workers()
     root = _cache_root()
     pending = [row for row in rows if not _cached(row, arch, root)]
+    disk_cached = len(rows) - len(pending)
     record: dict[str, Any] = {"plan": str(_state["plan"]), "plan_source": source, "tag_text": _state["tag_text"],
-                              "entries": len(rows), "device_arch": arch, "workers": workers,
-                              "pool_skipped_cached": len(rows) - len(pending),
+                              "entries": len(rows) + len(aot_cached), "device_arch": arch, "workers": workers,
+                              "pool_skipped_images": len(image_cached),
+                              "pool_skipped_cached": disk_cached, "pool_skipped_aot": len(aot_cached),
                               "pool_compiled": 0, "pool_failed": 0, "pool_seconds": 0.0,
                               "started": time.monotonic(), "last_done": None}
     rows = pending
@@ -582,11 +763,38 @@ def start(device_id: int | None = None) -> dict[str, Any] | None:
 
     pool = concurrent.futures.ThreadPoolExecutor(workers, thread_name_prefix=POOL_PREFIX)
     _state["pool"] = pool
-    with _lock:
-        for row in rows:
-            if row["sha256"] not in _flight:
-                _flight[row["sha256"]] = pool.submit(compile_row, row["arguments"])
+    identity = _process_compiler_identity(arch)
+    if identity is not None:
+        import multiprocessing
+
+        _state["compiler_pool"] = concurrent.futures.ProcessPoolExecutor(
+            workers, mp_context=multiprocessing.get_context("spawn"))
+        _state["worker_identity"] = identity
+        record.update(compiler_executor="process", pool_cpu_seconds=0.0, pool_processes=[])
+        if os.environ.get("GPUWM_KERNEL_PLAN_TRACE") == "1":
+            record["compile_intervals"] = []
+            record["compile_intervals_scope"] = (
+                "Successful process compiler calls only; same-host monotonic_ns; "
+                "excludes imports/identity checks, queue wait, failures, inline and "
+                "thread compiles. Not low-level NVRTC or GPU execution intervals.")
+    else:
+        record["compiler_executor"] = "thread"
+    for row in rows:
+        arguments = row["arguments"]
+        if identity is not None and arguments.get("method") is None:
+            target = arch if arguments["arch"] == "device" else arguments["arch"]
+            # Keep GPU warm threads free while CPU compilers run. The funnel
+            # cancels or joins the actual process job through this shared proxy.
+            _submit_compile(arguments, target, record, key=row["sha256"])
+        else:
+            with _lock:
+                if row["sha256"] not in _flight:
+                    _flight[row["sha256"]] = pool.submit(compile_row, arguments)
     return record
+
+
+def _submit_and_wait(arguments, arch, record):
+    return _submit_compile(arguments, arch, record).result()
 
 
 #: The thread that is capturing a static-plan request (:func:`ahead`).
@@ -670,6 +878,24 @@ def ahead(call, *args: Any, **kwargs: Any) -> str:
                 record["static_cached"] = record.get("static_cached", 0) + 1
         return "cached"
     arguments, key = captured.arguments, captured.key
+    # As in recorded-plan replay, coverage avoids an unused image restore.
+    arch = _device_arch()
+    held = _state.get("aot_coverage")
+    if held and _aot_cached(arguments, arch, held):
+        with _lock:
+            if record is not None:
+                record["static_skipped_aot"] = record.get("static_skipped_aot", 0) + 1
+        return "cached"  # the foreground loader still verifies the complete image contract
+    images = _warm_images()
+    result = None if images is None else images.get(arguments)
+    if result is not None:
+        future = concurrent.futures.Future()
+        future.set_result(result)
+        with _lock:
+            _flight[key] = future
+            if record is not None:
+                record["static_skipped_images"] = record.get("static_skipped_images", 0) + 1
+        return "cached"
     with _lock:
         if key in _flight:
             if record is not None:
@@ -678,13 +904,15 @@ def ahead(call, *args: Any, **kwargs: Any) -> str:
         owner = concurrent.futures.Future()
         owner.set_running_or_notify_cancel()
         _flight[key] = owner
-    arch = _device_arch()
     started = time.perf_counter()
     try:
-        result = _state["original"](arguments["source"], tuple(arguments["options"]),
-                                    arch if arguments["arch"] == "device" else arguments["arch"],
-                                    arguments["filename"], arguments["name_expressions"], None,
-                                    arguments["cache_in_memory"], None, arguments["method"])
+        target = arch if arguments["arch"] == "device" else arguments["arch"]
+        if _state.get("compiler_pool") is not None and arguments.get("method") is None:
+            result = _submit_and_wait(arguments, target, record)
+        else:
+            result = _state["original"](arguments["source"], tuple(arguments["options"]),
+                                        target, arguments["filename"], arguments["name_expressions"], None,
+                                        arguments["cache_in_memory"], None, arguments["method"])
     except BaseException as error:
         with _lock:
             if _flight.get(key) is owner:
@@ -694,6 +922,8 @@ def ahead(call, *args: Any, **kwargs: Any) -> str:
         owner.set_exception(error)
         return "failed"
     owner.set_result(result)
+    if images is not None:
+        images.put(arguments, result)
     with _lock:
         if record is not None:
             record["static_compiled"] = record.get("static_compiled", 0) + 1
@@ -722,23 +952,48 @@ def submit(job, *args: Any) -> concurrent.futures.Future | None:
     return pool.submit(run)
 
 
-def close() -> None:
-    """No more jobs: the pool finishes what it holds and its threads exit."""
-
-    pool = _state.pop("pool", None)
-    if pool is not None:
-        pool.shutdown(wait=False)
+def close(*, wait: bool = False) -> None:
+    """One shutdown owner drains workers; later callers join that owner."""
+    with _lock:
+        closer = _state.get("closer")
+        if closer is None:
+            pool = _state.pop("pool", None)
+            cpu_pool = _state.get("compiler_pool")
+            if pool is None and cpu_pool is None:
+                return
+            if pool is not None:
+                pool.shutdown(wait=False)
+            def finish():
+                try:
+                    # Captures already queued can still submit compiler work.
+                    if pool is not None:
+                        pool.shutdown(wait=True)
+                    if cpu_pool is not None:
+                        cpu_pool.shutdown(wait=True)
+                finally:
+                    with _lock:
+                        if _state.get("compiler_pool") is cpu_pool:
+                            _state.pop("compiler_pool", None)
+                        _state.pop("closer", None)
+            closer = threading.Thread(target=finish, name="kernel-plan-close", daemon=True)
+            _state["closer"] = closer
+            closer.start()
+    if wait:
+        closer.join()
 
 
 def save() -> None:
     """Merge this run's requests into its tag's plan (atomic rewrite)."""
 
     try:
+        images = _state.get("warm_images")
+        if images is not None:
+            images.save()
         path = _state["plan"]
         if path is None:
             return
         with _lock:
-            fresh = {key: dict(value) for key, value in _requested.items()}
+            fresh = copy.deepcopy(_requested)
         if not fresh:
             return
         document_runs = 0
@@ -796,8 +1051,13 @@ def rebind(tag_text: str) -> bool:
     text = str(tag_text)
     if text == _state["tag_text"]:
         return True
+    # Captures still queued under this tag can submit compiler work. Drain
+    # them before saving and replacing the state their callbacks use.
+    close(wait=True)
     save()
-    close()
+    images = _state.pop("warm_images", None)
+    if images is not None:
+        images.close()
     with _lock:
         _requested.clear()
         _state["counts"] = {}
@@ -812,12 +1072,16 @@ def receipt() -> dict[str, Any]:
             key: value for key, value in _state["replay"].items() if key not in ("started", "last_done")}
         if replay is not None and _state["replay"]["last_done"] is not None:
             replay["pool_wall_seconds"] = round(_state["replay"]["last_done"] - _state["replay"]["started"], 3)
+        if replay is not None and "compile_intervals" in replay:
+            replay["compile_intervals"] = [dict(row) for row in replay["compile_intervals"]]
         counts = dict(_state["counts"])
         requested = len(_requested)
     if "inline_seconds" in counts:
         counts["inline_seconds"] = round(counts["inline_seconds"], 3)
     return {"schema": SCHEMA, "enabled": enabled(), "installed": _state["installed"],
-            "requested_this_run": requested, "replay": replay, "calls": counts}
+            "requested_this_run": requested, "replay": replay, "calls": counts,
+            "compiler_metadata": (_state["compiler_metadata"].receipt() if _state.get("compiler_metadata") is not None else None),
+            "warm_images": (_state["warm_images"].receipt() if _state.get("warm_images") is not None else None)}
 
 
 __all__ = ["CUPY_ROUTE", "SCHEMA", "ahead", "cache_entry", "close", "compiler_identity", "default_tag_text", "enabled",

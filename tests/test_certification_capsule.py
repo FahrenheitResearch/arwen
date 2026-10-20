@@ -313,7 +313,7 @@ def test_all_four_sites_name_a_declared_emission_site():
         if name == "gpuwm.runtime":
             owners = {node.name: node for node in tree.body
                       if isinstance(node, ast.FunctionDef)}
-            calls = [node for node in ast.walk(owners["run_experiment"])
+            calls = [node for node in ast.walk(owners["_run_experiment"])
                      if isinstance(node, ast.Call)
                      and isinstance(node.func, ast.Name)
                      and node.func.id == "_run_built_experiment"]
@@ -491,7 +491,7 @@ def test_the_digest_is_computed_after_the_final_sync_and_the_writer_drain():
     # own, after that function's final sync.  The runner handed over counts
     # as delegated, and the wrapper is held to computing no digest.
     delegated = set()
-    for node in ast.walk(functions["run_experiment"]):
+    for node in ast.walk(functions["_run_experiment"]):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             delegated.add(node.func.id)
             if (node.func.id == "run_with_radar" and node.args
@@ -506,6 +506,7 @@ def test_the_digest_is_computed_after_the_final_sync_and_the_writer_drain():
     assert not digest_lines(wrapper)
 
     assert not digest_lines(functions["run_experiment"])
+    assert not digest_lines(functions["_run_experiment"])
     for name in ("integrate_prepared_case", "_run_built_experiment"):
         body = functions[name]
         sync = [node.lineno for node in ast.walk(body)

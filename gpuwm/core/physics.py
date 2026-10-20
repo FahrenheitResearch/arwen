@@ -59,6 +59,8 @@ from gpuwm.io.history_layout import _OUTPUT_FIELDS, _SASE_FLUX_DIAG_OUTPUT
 # without paying for this module's body.  Re-exported here so every
 # existing `from gpuwm.core.physics import ...` keeps resolving.
 from gpuwm.core.physics_inventory import (
+    UnroutedPhysicsSelectorError, resolve_physics_slot,
+    LAND_SURFACE_SFCDIAGS_SCHEMES, sase_switch_value,
     PHYSICS_SLOT_DISPATCH,
     MYJ_PBL_STATE_3D, MYJ_SFCLAY_FIELDS_2D,
     PBL_RQI_MICROPHYSICS,
@@ -413,73 +415,6 @@ def _sr_roundoff_envelope(
     return np.float32(1.0), 0, 0
 
 
-
-
-class UnroutedPhysicsSelectorError(NotImplementedError):
-    """A configured surface/LSM/PBL selector VALUE has no routed scheme.
-
-    The driver used to branch on the truthiness of ``sf_surface_physics``
-    and ``bl_pbl_physics``, so *any* nonzero value ran Noah and YSU.
-    Unlocking a new selector without adding a routing row would therefore
-    have produced plausible numbers from the wrong scheme with no error.
-    This is that error.
-    """
-
-    def __init__(self, selector: str, value, routed):
-        self.selector = selector
-        self.value = value
-        self.routed = tuple(sorted(routed))
-        super().__init__(
-            f"{selector}={value!r} has no scheme routed to it in the gpuwm "
-            "physics driver; refusing to substitute another scheme. Routed "
-            f"values: {list(self.routed)}. Adding the selector to "
-            "gpuwm/config.py and gpuwm/physics_compat.py is NOT sufficient: "
-            f"add a {selector} row to PHYSICS_SLOT_DISPATCH "
-            "(gpuwm/core/physics.py) naming the PhysicsDriver method that "
-            "runs that exact scheme.")
-
-
-#: Land-surface schemes after which WRF's surface driver calls the ordinary
-#: ``SFCDIAGS`` (module_surface_driver.F:2983-2998).  RUC instead calls
-#: ``SFCDIAGS_RUCLSM`` in :func:`ruc_lsm_step`; Noah-MP unconditionally
-#: selects its water/ice flux diagnostic or its own vegetation/bare-ground
-#: 2-m fields in :func:`noahmp_lsm_step`.  This is a per-scheme decision, not
-#: a property of "an LSM ran", and all three post-LSM paths overwrite the
-#: surface layer's earlier T2/Q2/TH2 exactly where WRF does.
-LAND_SURFACE_SFCDIAGS_SCHEMES = frozenset({2})
-
-
-def sase_switch_value(cfg, name: str) -> bool:
-    """Read one SASE switch, falling back to RunConfig's SHIPPED default.
-
-    Every switch here is a per-run key whose default is declared once, in
-    :class:`~gpuwm.config.RunConfig`.  A configuration object that does
-    not carry the key must land on that declared default and nothing
-    else: a literal fallback written at the call site is a second
-    declaration of the same default, and a second declaration drifts.
-    It already had.  ``sase_additive_dissipation`` ships ON, and the
-    driver read it with a literal ``False`` fallback, so any object
-    without the field would have dropped the dissipation channel without
-    saying so -- the opposite of what a default-on remedy means.  The
-    fallback is now read off the dataclass, so the call site cannot
-    disagree with ``gpuwm/config.py`` about what ships.
-
-    RunConfig itself always carries all three keys, so for a RunConfig
-    this is ``getattr`` and nothing more.
-    """
-    return bool(getattr(cfg, name, getattr(RunConfig, name)))
-
-
-def resolve_physics_slot(selector: str, value) -> str | None:
-    """Resolve one selector VALUE to its runner method, or fail loudly."""
-    table = PHYSICS_SLOT_DISPATCH[selector]
-    try:
-        key = int(value)
-    except (TypeError, ValueError):
-        raise UnroutedPhysicsSelectorError(selector, value, table) from None
-    if key not in table:
-        raise UnroutedPhysicsSelectorError(selector, key, table)
-    return table[key]
 
 
 def resolve_physics_dispatch(cfg) -> dict[str, str | None]:
@@ -1445,6 +1380,28 @@ def _validate_native_kf_result(
                 f"{label} contains a non-finite value")
 
 
+def _held_zero_tendency_views(state, components):
+    """One backing for structurally zero held components, never active rates.
+
+    Radiation has no momentum or moisture producer; held KF has no momentum
+    producer. Their consumers only read these arrays (expiry may clear zero
+    to zero). Keep the logical arrays for restart/streaming compatibility,
+    with contiguous prefixes of one zero backing. Active/composed tendencies
+    must never borrow this storage.
+    """
+    nz, ny, nx = state.p.shape
+    shapes = {name: ((nz, ny, nx + 1) if name == "ru" else
+                     (nz, ny + 1, nx) if name == "rv" else (nz, ny, nx))
+              for name in components}
+    if not shapes:
+        return {}
+    shape = max(shapes.values(), key=math.prod)
+    backing = cp.zeros(shape, dtype=DTYPE)
+    flat = backing.reshape(-1)
+    return {name: flat[:math.prod(extents)].reshape(extents)
+            for name, extents in shapes.items()}
+
+
 @dataclass
 class PhysicsTendencies:
     """Held ARW slow tendencies plus coupled moist-scalar tendencies.
@@ -1470,6 +1427,7 @@ class PhysicsTendencies:
     def zeros(
             cls, state: DomainState, *,
             optional_components: tuple[str, ...] = (),
+            shared_zero_components: tuple[str, ...] = (),
             ) -> "PhysicsTendencies":
         nz, ny, nx = state.p.shape
 
@@ -1479,9 +1437,14 @@ class PhysicsTendencies:
         unknown = set(optional_components) - {"rqr", "rqi", "rqs", "rw"}
         if unknown:
             raise ValueError(f"unknown optional tendency components {unknown}")
-        result = cls(cp.zeros((nz, ny, nx + 1), dtype=DTYPE),
-                     cp.zeros((nz, ny + 1, nx), dtype=DTYPE),
-                     scalar(), scalar(), scalar())
+        if set(shared_zero_components) - {"ru", "rv", "rqv", "rqc"}:
+            raise ValueError("only structurally zero held components may share")
+        shared = _held_zero_tendency_views(state, shared_zero_components)
+        def zero(name, shape):
+            return shared[name] if name in shared else cp.zeros(shape, dtype=DTYPE)
+        result = cls(zero("ru", (nz, ny, nx + 1)),
+                     zero("rv", (nz, ny + 1, nx)), scalar(),
+                     zero("rqv", (nz, ny, nx)), zero("rqc", (nz, ny, nx)))
         for name in optional_components:
             setattr(result, name, cp.zeros((nz + 1, ny, nx), dtype=DTYPE)
                     if name == "rw" else scalar())
@@ -1673,7 +1636,8 @@ def couple_column_tendencies(
         rqv: cp.ndarray | None = None, rqc: cp.ndarray | None = None,
         rqr: cp.ndarray | None = None, rqi: cp.ndarray | None = None,
         rqs: cp.ndarray | None = None, ru: cp.ndarray | None = None,
-        rv: cp.ndarray | None = None) -> PhysicsTendencies:
+        rv: cp.ndarray | None = None,
+        shared_zero_components: tuple[str, ...] = ()) -> PhysicsTendencies:
     """Dry-mass-couple mass-grid radiation/cumulus physical rates.
 
     Theta joins the dry slow-tendency stack and therefore receives WRF's
@@ -1692,6 +1656,14 @@ def couple_column_tendencies(
     shape = (nz, ny, nx)
     mut = state.total_mu()
     rates = (rtheta, rqv, rqc, rqr, rqi, rqs)
+    inputs = dict(zip(("rtheta", "rqv", "rqc", "rqr", "rqi", "rqs"), rates),
+                  ru=ru, rv=rv)
+    if any(name not in {"ru", "rv", "rqv", "rqc"} or inputs[name] is not None
+           for name in shared_zero_components):
+        raise ValueError("cannot share an active or optional tendency component")
+    shared = _held_zero_tendency_views(state, shared_zero_components)
+    def zero(name, extents):
+        return shared[name] if name in shared else cp.zeros(extents, dtype=DTYPE)
     if tendency_coupling.ready(
             state, *(a for a in rates + (ru, rv) if a is not None), mut=mut):
         # The coupling, ring mask and theta map-factor division below as one
@@ -1700,24 +1672,27 @@ def couple_column_tendencies(
         (theta, qv, qc, qr, qi, qs), mass_u, mass_v = (
             tendency_coupling.couple_mass(
                 state, mut,
-                [(rate, index < 3 or rate is not None)
+                [(rate, (index < 3 or rate is not None)
+                        and ("rtheta", "rqv", "rqc", "rqr", "rqi", "rqs")[index] not in shared)
                  for index, rate in enumerate(rates)],
                 theta_slot=0, mask_ring=bool(cfg.specified or cfg.nested),
                 momentum=None if ru is None else (ru, rv)))
+        qv = shared.get("rqv", qv)
+        qc = shared.get("rqc", qc)
         if ru is None:
-            face_u = cp.zeros((nz, ny, nx + 1), dtype=DTYPE)
-            face_v = cp.zeros((nz, ny + 1, nx), dtype=DTYPE)
+            face_u = zero("ru", (nz, ny, nx + 1))
+            face_v = zero("rv", (nz, ny + 1, nx))
         else:
             face_u, face_v = _couple_momentum_to_faces(state, cfg, mass_u,
                                                        mass_v)
         return PhysicsTendencies(face_u, face_v, theta, qv, qc, qr, qi, qs)
-    zero = cp.zeros(shape, dtype=DTYPE)
+    zero_mass = cp.zeros(shape, dtype=DTYPE)
     chm = (state.c1h[:, None, None] * state.total_mu()[None]
            + state.c2h[:, None, None])
 
-    theta = zero.copy() if rtheta is None else chm * rtheta
-    qv = zero.copy() if rqv is None else chm * rqv
-    qc = zero.copy() if rqc is None else chm * rqc
+    theta = zero_mass.copy() if rtheta is None else chm * rtheta
+    qv = (shared["rqv"] if "rqv" in shared else zero_mass.copy()) if rqv is None else chm * rqv
+    qc = (shared["rqc"] if "rqc" in shared else zero_mass.copy()) if rqc is None else chm * rqc
     qr = None if rqr is None else chm * rqr
     qi = None if rqi is None else chm * rqi
     qs = None if rqs is None else chm * rqs
@@ -1730,8 +1705,8 @@ def couple_column_tendencies(
             if array is not None:
                 _specified_mass_mask(array)
     if ru is None:
-        face_u = cp.zeros((nz, ny, nx + 1), dtype=DTYPE)
-        face_v = cp.zeros((nz, ny + 1, nx), dtype=DTYPE)
+        face_u = zero("ru", (nz, ny, nx + 1))
+        face_v = zero("rv", (nz, ny + 1, nx))
     else:
         face_u, face_v = _couple_momentum_to_faces(state, cfg, chm * ru,
                                                    chm * rv)
@@ -2009,6 +1984,7 @@ class PhysicsDriver:
                  ruc_params=None, glw_provenance="declared",
                  carriers=None):
         self.state = state
+        self.refl_config = cfg
         self.surface_energy_diag = bool(cfg.surface_energy_diag)
         self._spp_flags = {
             key: int(getattr(cfg, f"spp_{key}"))
@@ -2020,6 +1996,10 @@ class PhysicsDriver:
         self.spp_patterns = {}
         self.cam_ozone = None
         self.fire = None
+        self.hydro = None
+        # Preparation binds these run-local helpers; they are rebuilt on resume.
+        self.hydro_cost = None
+        self.hydro_parent_geometry = None
         self.fire_tendencies = (PhysicsTendencies.zeros(state)
                                 if int(getattr(cfg, "ifire", 0)) == 2 else None)
         # WRF's slope_rad carrier; initialize_physics attaches it where
@@ -2167,9 +2147,11 @@ class PhysicsDriver:
         self.pbl_tendencies = PhysicsTendencies.zeros(
             state, optional_components=pbl_initial_components +
             (("rw",) if cfg.bl_pbl_physics == SASE_PBL_SCHEME else ()))
-        self.radiation_tendencies = PhysicsTendencies.zeros(state)
+        self.radiation_tendencies = PhysicsTendencies.zeros(
+            state, shared_zero_components=("ru", "rv", "rqv", "rqc"))
         self.cumulus_tendencies = PhysicsTendencies.zeros(
-            state, optional_components=cumulus_components)
+            state, optional_components=cumulus_components,
+            shared_zero_components=(("ru", "rv") if cfg.cu_physics == 1 else ()))
         self.rthratenlw = cp.zeros(state.p.shape, dtype=DTYPE)
         self.rthratensw = cp.zeros(state.p.shape, dtype=DTYPE)
         # Output-only total. Strict history reads the canonical retained
@@ -2786,7 +2768,8 @@ class PhysicsDriver:
             self._wrf_rthraten[...] = total
             self._wrf_rthraten_coupled = False
         self.radiation_tendencies = couple_column_tendencies(
-            state, cfg, rtheta=total)
+            state, cfg, rtheta=total,
+            shared_zero_components=("ru", "rv", "rqv", "rqc"))
         if "uw_cldfra" in self.fields:
             # WRF's grid%cldfra is written by the radiation driver on due
             # steps and read by the UW PBL on every step (bl_pbl_physics=9
@@ -3028,7 +3011,9 @@ class PhysicsDriver:
             self.cumulus_tendencies = couple_column_tendencies(
                 state, cfg, rtheta=rtheta, rqv=rqv, rqc=rqc, rqr=rqr,
                 rqi=rqi, rqs=rqs,
-                ru=result.rucuten, rv=result.rvcuten)
+                ru=result.rucuten, rv=result.rvcuten,
+                shared_zero_components=(("ru", "rv") if cfg.cu_physics == 1
+                    and result.rucuten is None and result.rvcuten is None else ()))
             self.cumulus_tendencies.materialize(
                 _cumulus_optional_tendency_components(cfg))
             if result.rainc is not None:
@@ -3104,7 +3089,8 @@ class PhysicsDriver:
             rqi=(self.cu_rates["rqicuten"]
                  if "rqi" in cumulus_components else None),
             rqs=(self.cu_rates["rqscuten"]
-                 if "rqs" in cumulus_components else None))
+                 if "rqs" in cumulus_components else None),
+            shared_zero_components=(("ru", "rv") if cfg.cu_physics == 1 else ()))
         self.cumulus_tendencies.materialize(cumulus_components)
 
     def _advance_cumulus_clock(self, state: DomainState,
@@ -3262,7 +3248,8 @@ class PhysicsDriver:
             rqi=(self.cu_rates["rqicuten"]
                  if "rqi" in cumulus_components else None),
             rqs=(self.cu_rates["rqscuten"]
-                 if "rqs" in cumulus_components else None))
+                 if "rqs" in cumulus_components else None),
+            shared_zero_components=(("ru", "rv") if cfg.cu_physics == 1 else ()))
         self.cumulus_tendencies.materialize(cumulus_components)
 
     def accumulate_radiation_boundary_fluxes(self, cfg):
@@ -3379,7 +3366,8 @@ class PhysicsDriver:
                     state, cfg, self.pbl_raw_rates["dw"])
         if self.radiation_active:
             self.radiation_tendencies = couple_column_tendencies(
-                state, cfg, rtheta=self.rthratenlw + self.rthratensw)
+                state, cfg, rtheta=self.rthratenlw + self.rthratensw,
+                shared_zero_components=("ru", "rv", "rqv", "rqc"))
         if self.noah_mosaic is not None:
             raise ValueError(
                 "the relocation does not carry the mosaic tile arrays; WRF "
@@ -5850,7 +5838,22 @@ class PhysicsDriver:
                 lake_precipitation = (
                     self.fields["rainbl"] + self._pending_rainbl
                     if self.lake is not None else None)
+                hydro = getattr(self, "hydro", None)
+                meter = getattr(self, "hydro_cost", None) if hydro is not None else None
+                if hydro is not None:
+                    # Cost meter: CUDA event records only, no device sync.
+                    if meter is not None:
+                        meter.before_lsm_start()
+                    hydro.before_lsm()
+                    if meter is not None:
+                        meter.before_lsm_end()
                 getattr(self, land_method)(atmosphere, cfg, itimestep)
+                if hydro is not None:
+                    if meter is not None:
+                        meter.advance_start()
+                    hydro.advance(self.bldt_seconds)
+                    if meter is not None:
+                        meter.advance_end()
                 self.accumulate_surface_energy(cfg)
                 if int(cfg.sf_surface_physics) in \
                         LAND_SURFACE_SFCDIAGS_SCHEMES:
@@ -5973,7 +5976,8 @@ class PhysicsDriver:
         self.couple_cumulus_history(state, cfg)
         if getattr(self, "_wrf_rthraten", None) is not None:
             self.radiation_tendencies = couple_column_tendencies(
-                state, cfg, rtheta=self._wrf_rthraten)
+                state, cfg, rtheta=self._wrf_rthraten,
+                shared_zero_components=("ru", "rv", "rqv", "rqc"))
             mass = (state.c1h[:, None, None] * state.total_mu()[None]
                     + state.c2h[:, None, None])
             self._wrf_rthraten *= mass
@@ -6363,7 +6367,7 @@ def initialize_physics(
         lake_depth=None, lake_depth_flag=None, lake_iswater=None,
         lake_mask_flag=None, lsm_cold_start=True, fire_static_data=None,
         fire_grid_spec=None, lightning_inputs=None,
-        ocean_initial=None) -> PhysicsDriver:
+        ocean_initial=None, hydro_parent_geometry=None) -> PhysicsDriver:
     """Allocate and attach persistent physics state and scheme callables.
 
     An mp-only configuration also receives a driver: microphysics itself is
@@ -6620,7 +6624,10 @@ def initialize_physics(
     f: dict[str, cp.ndarray] = {
         "landmask": land.astype(DTYPE), "xland": resolved_xland,
         "tsk": _as_2d(tsk, shape, "tsk"),
-        "sst": _as_2d(tsk if sst is None else sst, shape, "sst"),
+        # These are independent physical reservoirs even when the caller
+        # supplies the same resident input. Host inputs already allocated
+        # separately; CUDA inputs must preserve that ownership too.
+        "sst": _as_2d(tsk if sst is None else sst, shape, "sst").copy(),
         "pblh": _as_2d(pblh, shape, "pblh"),
         "mavail": _as_2d(mavail, shape, "mavail"),
         "lakemask": (_as_2d(lakemask, shape, "lakemask")
@@ -6634,7 +6641,7 @@ def initialize_physics(
         "tmn": _as_2d(tmn, shape, "tmn"),
         "canwat": _as_2d(canwat, shape, "canwat"),
         "xice": _as_2d(xice, shape, "xice"),
-        "xicem": _as_2d(xice, shape, "xicem"),
+        "xicem": _as_2d(xice, shape, "xicem").copy(),
         # ``swdown=None`` allocates the same zeros the 0.0 default
         # allocated, so every existing trajectory is byte-identical; what
         # changes is that the CONTRACT can now tell "nobody said anything"
@@ -6716,7 +6723,7 @@ def initialize_physics(
         # no-SST fallback.
         f["tsk_save"] = cp.ascontiguousarray(f["tsk"].copy())
         f["tsk_sea"] = _as_2d(
-            tsk if sst is None else sst, shape, "sst")
+            tsk if sst is None else sst, shape, "sst").copy()
         for name in ("znt", "ust", "mol", "zol", "flhc", "flqc", "cpm",
                      "cqs2", "chs2", "chs", "qsfc", "qgh", "hfx", "qfx",
                      "lh"):
@@ -7375,6 +7382,9 @@ def initialize_physics(
     if cfg.sf_ocean_physics:
         from gpuwm.core.surface_ocean import initialize_ocean
         initialize_ocean(driver.fields, cfg, ocean_initial, start=lsm_cold_start)
+    driver.hydro_parent_geometry = hydro_parent_geometry
+    from gpuwm.hydro.runtime import attach_parent
+    attach_parent(driver, state, cfg)
     return driver
 
 

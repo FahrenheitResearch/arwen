@@ -1,0 +1,339 @@
+{
+  "schema": "arwen.hydrofabric.public-source-catalog.v1",
+  "scope": "Original EPA NHDPlusV2 topology and bounded source catchment/flowpath geometry; no completed public demo or NOAA hydraulic parameter source",
+  "metadata": {
+    "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Documentation/Metadata/NHDPlusV2_metadata.htm",
+    "sha256": "c4a6c790321f87f69666b0ed28669acc5eb73c0771a9a0ee5dc9a93a4ccdbb22",
+    "bytes": 335058,
+    "Access_Constraints": "None.",
+    "Use_Constraints": "None.",
+    "source_attribution": "U.S. Environmental Protection Agency and U.S. Geological Survey, NHDPlus Version 2.1"
+  },
+  "objects": [
+    {
+      "name": "NHDPlusV21_TX_12_NHDPlusAttributes_09.7z",
+      "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusTX/NHDPlusV21_TX_12_NHDPlusAttributes_09.7z",
+      "bytes": 6934554,
+      "sha256": "c20379dc73ae33376317f885b5c2e91aa3ea3a301508fa366fa41691a890741a",
+      "http_status": 200,
+      "download_seconds": 1.125123
+    },
+    {
+      "name": "NHDPlusV21_CA_18_NHDPlusAttributes_08.7z",
+      "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusCA/NHDPlusV21_CA_18_NHDPlusAttributes_08.7z",
+      "bytes": 14292286,
+      "sha256": "bd30342032091493ecc7ce8065c95112fa02639060156852a5463077f551b3d0",
+      "http_status": 200,
+      "download_seconds": 1.305592
+    },
+    {
+      "name": "NHDPlusV21_NationalData_GageInfo_05.7z",
+      "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NationalData/NHDPlusV21_NationalData_GageInfo_05.7z",
+      "bytes": 725181,
+      "sha256": "2890b35f56badd50f4d38c81779f726ee6e9c8241c3d16bf42271734a78924b5",
+      "http_status": 200,
+      "download_seconds": 0.694212
+    },
+    {
+      "name": "NHDPlusV21_NationalData_GageLoc_05.7z",
+      "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NationalData/NHDPlusV21_NationalData_GageLoc_05.7z",
+      "bytes": 1137984,
+      "sha256": "46d1c61d1cad025bb90f5d4a9f717020adb52e17e0b189d2d6ef67dd5060d840",
+      "http_status": 200,
+      "download_seconds": 0.857317
+    },
+    {
+      "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusCA/NHDPlusV21_CA_18_NHDPlusCatchment_01.7z",
+      "bytes": 185540715,
+      "sha256": "c4efbdf9ab5a10de9dead348768e42d943a8082d452c59c0f29ab6bad4426930",
+      "name": "NHDPlusV21_CA_18_NHDPlusCatchment_01.7z",
+      "http_status": 200,
+      "download_seconds": 13.767570183612406
+    },
+    {
+      "name": "NHDPlusV21_CA_18_NHDSnapshot_05.7z",
+      "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusCA/NHDPlusV21_CA_18_NHDSnapshot_05.7z",
+      "bytes": 63156196,
+      "sha256": "6e51ee61700d5ee40e1584d42a9266d4b1af635692787e131e68a2919796708f",
+      "http_status": 200,
+      "download_seconds": 3.8041079053655267
+    }
+  ],
+  "table_mapping": {
+    "edges": {
+      "member_suffix": "/PlusFlow.dbf",
+      "from_column": "FROMCOMID",
+      "to_column": "TOCOMID"
+    },
+    "attributes": {
+      "member_suffix": "/PlusFlowlineVAA.dbf",
+      "id_column": "ComID"
+    },
+    "gauges": {
+      "member": "NHDPlusNationalData/GageLoc.dbf",
+      "gauge_column": "SOURCE_FEA",
+      "reach_column": "FLComID"
+    },
+    "catchments": {
+      "member_prefix": "NHDPlusCA/NHDPlus18/NHDPlusCatchment/",
+      "geometry": "Catchment.shp",
+      "index": "Catchment.shx",
+      "attributes": "Catchment.dbf",
+      "crs": "Catchment.prj",
+      "id_column": "FEATUREID",
+      "join": "physical source record number, including deleted DBF positions"
+    },
+    "flowpaths": {
+      "member_prefix": "NHDPlusCA/NHDPlus18/NHDSnapshot/Hydrography/",
+      "geometry": "NHDFlowline.shp",
+      "index": "NHDFlowline.shx",
+      "attributes": "NHDFlowline.dbf",
+      "crs": "NHDFlowline.prj",
+      "id_column": "COMID",
+      "shape_type": 13,
+      "join": "physical source record number, including deleted DBF positions",
+      "coordinates": "source XYZ and optional M verbatim; no Z datum or M semantics inferred"
+    },
+    "waterbodies": {
+      "member_prefix": "NHDPlusCA/NHDPlus18/NHDSnapshot/Hydrography/",
+      "attributes": "NHDWaterbody.dbf",
+      "id_column": "COMID",
+      "flowpath_reference_column": "WBAREACOMI",
+      "attribute_columns": [
+        "FTYPE",
+        "FCODE",
+        "GNIS_ID",
+        "GNIS_NAME",
+        "AREASQKM"
+      ],
+      "semantics_url": "https://www.epa.gov/system/files/documents/2023-04/NHDPlusV2_User_Guide.pdf",
+      "semantics_pages": "160\u2013161 (printed)",
+      "scope": "Original polygonal-water-feature association, not every reference is a lake; preserve unjoined IDs and source feature types; no outlet, hydraulic or storage inference; -9998 is missing/undetermined and stays an unresolved reference",
+      "no_reference_values": [
+        "0"
+      ],
+      "unresolved_reference_values": [
+        "-9998"
+      ]
+    },
+    "flowpath_value_added": {
+      "member_suffix": "/PlusFlowlineVAA.dbf",
+      "id_column": "ComID",
+      "downstream_sequence_column": "DnHydroseq",
+      "sequence_column": "Hydroseq",
+      "divergence_column": "Divergence",
+      "scope": "Source path topology and accumulated attributes; Divergence is not a measured reservoir outlet fraction."
+    },
+    "divergence_fractions": {
+      "member_suffix": "/DivFracMP.dbf",
+      "id_column": "ComID",
+      "node_column": "NodeNumber",
+      "fraction_column": "DivFrac",
+      "unknown_fraction_values": [
+        "-9998"
+      ],
+      "scope": "Rows describe divergences only; -9998 is unknown, not a measured split or a zero flow."
+    },
+    "waterbody_morphology": {
+      "member_suffix": "/PlusWaterbodyLakeMorphology.dbf",
+      "id_column": "ComID",
+      "mean_depth_column": "MeanDUsed",
+      "depth_origin_column": "MeanDCode",
+      "scope": "Source time-of-travel morphology, including estimated depths; not initialized storage, a stage-storage curve or an operating rule."
+    },
+    "flowpath_lake_morphology": {
+      "member_suffix": "/PlusFlowlineLakeMorphology.dbf",
+      "id_column": "ComID",
+      "waterbody_fraction_column": "LakeFract",
+      "scope": "Allocation of a waterbody to associated flowlines for source time-of-travel calculations; not a reservoir outlet discharge fraction."
+    }
+  },
+  "subsets": [
+    {
+      "name": "russian-river",
+      "outlet_gauge": "11467000",
+      "outlet_nhd_id": 8272725,
+      "gauge_reaches": {
+        "11462500": 8269119,
+        "11464000": 8272379,
+        "11467000": 8272725
+      },
+      "topology_only": true,
+      "geometry": {
+        "source_record_count": 1433,
+        "missing_node_ids": [
+          8267989,
+          8268253,
+          8270561,
+          8270833,
+          8272017,
+          8272029,
+          8272215,
+          8272667,
+          8272671,
+          8272689,
+          8272727,
+          8272731
+        ],
+        "complete_catchment_coverage": false,
+        "hydraulic_parameters": false,
+        "missing_node_source_types": {
+          "StreamRiver": [
+            8267989,
+            8268253,
+            8270561,
+            8270833,
+            8272017,
+            8272029,
+            8272215
+          ],
+          "ArtificialPath": [
+            8272667,
+            8272671,
+            8272689,
+            8272727,
+            8272731
+          ]
+        },
+        "missing_node_scope": "Source FTYPE labels only; geometry absent from Catchment layer remains absent. No missing-catchment cause or zero-area interpretation inferred."
+      },
+      "flowpath_geometry": {
+        "source_record_count": 1445,
+        "part_count": 1445,
+        "point_count": 32270,
+        "missing_node_ids": [],
+        "complete_selected_network_geometry": true,
+        "hydraulic_parameters": false
+      }
+    }
+  ],
+  "recipes": {
+    "nhdplus-ca18-topology": {
+      "source_row": "conus-nhdplus-v21",
+      "region": "NHDPlusCA/18",
+      "scope": "Original regional attributes and national gauge crosswalk; explicit region selection, not full CONUS or automatic drawn-domain coverage.",
+      "archives": [
+        {
+          "object": "NHDPlusV21_CA_18_NHDPlusAttributes_08.7z",
+          "members": [
+            "NHDPlusCA/NHDPlus18/NHDPlusAttributes/elevslope.dbf",
+            "NHDPlusCA/NHDPlus18/NHDPlusAttributes/PlusFlow.dbf",
+            "NHDPlusCA/NHDPlus18/NHDPlusAttributes/PlusFlowlineVAA.dbf",
+            "NHDPlusCA/NHDPlusV21_CA_18_NHDPlusAttributes_08.txt"
+          ],
+          "output": "attributes-ca18",
+          "max_extracted_bytes": 200000000
+        },
+        {
+          "object": "NHDPlusV21_NationalData_GageLoc_05.7z",
+          "members": [
+            "NHDPlusNationalData/GageLoc.dbf",
+            "NHDPlusNationalData/NHDPlusV21_NationalData_GageLoc_05.txt"
+          ],
+          "output": "gageloc",
+          "max_extracted_bytes": 25000000
+        }
+      ]
+    },
+    "nhdplus-ca18-geometry": {
+      "source_row": "conus-nhdplus-v21",
+      "region": "NHDPlusCA/18",
+      "scope": "Original regional catchment and flowline source geometry only; no source repairs, assigned vertical datum, hydraulic coefficients, permitted derived fabric or full catchment coverage implied.",
+      "archives": [
+        {
+          "object": "NHDPlusV21_CA_18_NHDPlusCatchment_01.7z",
+          "members": [
+            "NHDPlusCA/NHDPlus18/NHDPlusCatchment/Catchment.shp",
+            "NHDPlusCA/NHDPlus18/NHDPlusCatchment/Catchment.shx",
+            "NHDPlusCA/NHDPlus18/NHDPlusCatchment/Catchment.dbf",
+            "NHDPlusCA/NHDPlus18/NHDPlusCatchment/Catchment.prj"
+          ],
+          "output": "catchments-ca18",
+          "max_extracted_bytes": 1000000000
+        },
+        {
+          "object": "NHDPlusV21_CA_18_NHDSnapshot_05.7z",
+          "members": [
+            "NHDPlusCA/NHDPlus18/NHDSnapshot/Hydrography/NHDFlowline.shp",
+            "NHDPlusCA/NHDPlus18/NHDSnapshot/Hydrography/NHDFlowline.shx",
+            "NHDPlusCA/NHDPlus18/NHDSnapshot/Hydrography/NHDFlowline.dbf",
+            "NHDPlusCA/NHDPlus18/NHDSnapshot/Hydrography/NHDFlowline.prj"
+          ],
+          "output": "flowlines-ca18",
+          "max_extracted_bytes": 1000000000
+        }
+      ]
+    },
+    "nhdplus-ca18-waterbodies": {
+      "source_row": "conus-nhdplus-v21",
+      "region": "NHDPlusCA/18",
+      "scope": "Original NHD waterbody attributes for exact source flowpath association only; no lake geometry, hydraulic parameters, stores or default-on provider admission.",
+      "archives": [
+        {
+          "object": "NHDPlusV21_CA_18_NHDSnapshot_05.7z",
+          "members": [
+            "NHDPlusCA/NHDPlus18/NHDSnapshot/Hydrography/NHDWaterbody.dbf"
+          ],
+          "output": "waterbodies-ca18",
+          "max_extracted_bytes": 25000000
+        }
+      ]
+    },
+    "nhdplus-ca18-waterfeatures": {
+      "source_row": "conus-nhdplus-v21",
+      "region": "NHDPlusCA/18",
+      "scope": "Original NHDWaterbody and NHDArea attributes for exact polygonal water-feature association only; no lake-only classification, geometry, hydraulic parameters, stores or runtime provider admission.",
+      "archives": [
+        {
+          "object": "NHDPlusV21_CA_18_NHDSnapshot_05.7z",
+          "members": [
+            "NHDPlusCA/NHDPlus18/NHDSnapshot/Hydrography/NHDWaterbody.dbf",
+            "NHDPlusCA/NHDPlus18/NHDSnapshot/Hydrography/NHDArea.dbf"
+          ],
+          "output": "waterfeatures-ca18",
+          "max_extracted_bytes": 25000000
+        }
+      ]
+    },
+    "nhdplus-ca18-watergeometry": {
+      "source_row": "conus-nhdplus-v21",
+      "region": "NHDPlusCA/18",
+      "scope": "Original referenced polygon geometry only; no lake classification, outlet, hydraulic or storage inference.",
+      "archives": [
+        {
+          "object": "NHDPlusV21_CA_18_NHDSnapshot_05.7z",
+          "members": [
+            "NHDPlusCA/NHDPlus18/NHDSnapshot/Hydrography/NHDWaterbody.shp",
+            "NHDPlusCA/NHDPlus18/NHDSnapshot/Hydrography/NHDWaterbody.shx",
+            "NHDPlusCA/NHDPlus18/NHDSnapshot/Hydrography/NHDWaterbody.dbf",
+            "NHDPlusCA/NHDPlus18/NHDSnapshot/Hydrography/NHDWaterbody.prj",
+            "NHDPlusCA/NHDPlus18/NHDSnapshot/Hydrography/NHDArea.shp",
+            "NHDPlusCA/NHDPlus18/NHDSnapshot/Hydrography/NHDArea.shx",
+            "NHDPlusCA/NHDPlus18/NHDSnapshot/Hydrography/NHDArea.dbf",
+            "NHDPlusCA/NHDPlus18/NHDSnapshot/Hydrography/NHDArea.prj"
+          ],
+          "output": "watergeometry-ca18",
+          "max_extracted_bytes": 200000000
+        }
+      ]
+    },
+    "nhdplus-ca18-water-evidence": {
+      "source_row": "conus-nhdplus-v21",
+      "region": "NHDPlusCA/18",
+      "scope": "Original source topology, divergence and time-of-travel morphology evidence only; preserve unknown fractions and table coverage gaps. No reservoir outlet, initial stores, hydraulic operating rule or runtime provider admission inferred.",
+      "archives": [
+        {
+          "object": "NHDPlusV21_CA_18_NHDPlusAttributes_08.7z",
+          "members": [
+            "NHDPlusCA/NHDPlus18/NHDPlusAttributes/PlusFlowlineVAA.dbf",
+            "NHDPlusCA/NHDPlus18/NHDPlusAttributes/DivFracMP.dbf",
+            "NHDPlusCA/NHDPlus18/NHDPlusAttributes/PlusWaterbodyLakeMorphology.dbf",
+            "NHDPlusCA/NHDPlus18/NHDPlusAttributes/PlusFlowlineLakeMorphology.dbf"
+          ],
+          "output": "water-evidence-ca18",
+          "max_extracted_bytes": 200000000
+        }
+      ]
+    }
+  }
+}

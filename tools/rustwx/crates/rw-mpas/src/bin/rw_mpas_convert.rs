@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use rw_mpas::composite::{CompositePlan, CompositeSource, COMPOSITE_CONTEXT_FACTOR};
 use rw_mpas::convert::{
     convert_frame, convert_frame_composite, convert_frame_remapped, CompositeGather,
-    CompositeLayer, ConvertOptions,
+    CompositeLayer, ConvertOptions, TerrainAuthority,
 };
 use rw_mpas::remap::{read_mesh_topology, ProductRemap};
 use rw_mpas::history::{
@@ -22,7 +22,8 @@ use rw_store::netcdf_classic::NcFormat;
 const USAGE: &str = "\
 usage: rw_mpas_convert --history FILE... --mesh FILE --out-dir DIR
                        [--init FILE] [--mesh-sha256 HEX] [--init-sha256 HEX]
-                       [--window focus|global|global-mesh|mesh|composite|region:...|region-latlon:...|lambert:...]
+                       [--window focus|global|global-mesh|mesh|composite|region:...|region-latlon:...|latlon:...|lambert:...]
+                       [--terrain-authority FIXED_CF_FRAME]
                        [--compose SOURCES.json] [--compose-base-only]
                        [--field-set full|surface]
                        [--simulation-start YYYY-MM-DD_HH:MM:SS]
@@ -48,6 +49,11 @@ windows:
           grid at any latitude. Lat-lon frames carry CF 1-D coordinates
           (lat, lon, Time, bottom_top, bottom_top_stag, soil_layers_stag),
           so this is the window an ArWen domain reads as its parent.
+  latlon:SOUTH,NORTH,WEST,EAST,SPACING_DEG
+          explicit fixed grid shared across independently meshed segments.
+          Spacing must partition both extents. --terrain-authority FRAME
+          binds HGT from an earlier CF frame on the identical grid; other
+          atmospheric columns and absolute heights remain unchanged.
   lambert:CLAT,CLON,DX_M,NX,NY,TRUELAT1,TRUELAT2,STAND_LON
           an explicit WRF-style Lambert grid, for landing on another
           model's own grid point for point.
@@ -129,7 +135,7 @@ const MESH_WINDOW: &str = "mesh";
 /// so a converter staged before 2.9.0 in `~/.gpuwm/bridges` passed `gpuwm
 /// doctor` and `fetch-bridges` as current, and the gpuwm-hex product stage
 /// then died on `rw_mpas_convert: unknown flag --remap` with no maps drawn.
-const ABI: &str = "gpuwm-rw-mpas-convert-v1\tCONVERTED\tWINDOW\tWEIGHTS\tFINISHED\tREMAP\tBUDGET\t--remap nearest|product\t--jobs N";
+const ABI: &str = "gpuwm-rw-mpas-convert-v1\tCONVERTED\tWINDOW\tWEIGHTS\tFINISHED\tREMAP\tBUDGET\t--remap nearest|product\t--jobs N\t--terrain-authority FILE\t--window latlon:S,N,W,E,SPACING";
 
 /// `GPUWM_BRIDGE_SOURCE_REV=<40-hex commit>`: the source revision this
 /// binary was built from, embedded so the gpuwm release cut can prove a
@@ -159,6 +165,7 @@ struct Args {
     model_label: Option<String>,
     remap: String,
     jobs: usize,
+    terrain_authority: Option<PathBuf>,
 }
 
 /// One run named in a `--compose` source list.
@@ -204,6 +211,7 @@ fn parse() -> Result<Args, String> {
         remap: "nearest".to_string(),
         // 0 = not given: sized from the frames, cores and memory in run().
         jobs: 0,
+        terrain_authority: None,
     };
     let mut raw = std::env::args().skip(1).peekable();
     while let Some(flag) = raw.next() {
@@ -226,6 +234,7 @@ fn parse() -> Result<Args, String> {
             "--mesh" => args.mesh = Some(PathBuf::from(value()?)),
             "--mesh-sha256" => args.mesh_sha256 = Some(value()?),
             "--init" => args.init = Some(PathBuf::from(value()?)),
+            "--terrain-authority" => args.terrain_authority = Some(PathBuf::from(value()?)),
             "--init-sha256" => args.init_sha256 = Some(value()?),
             "--out-dir" => args.out_dir = Some(PathBuf::from(value()?)),
             "--window" => args.window = value()?,
@@ -629,6 +638,9 @@ fn run_compose(args: Args, spec_path: &Path) -> Result<(), String> {
 fn run() -> Result<(), String> {
     let args = parse()?;
     if let Some(spec) = args.compose.clone() {
+        if args.terrain_authority.is_some() {
+            return Err("--terrain-authority binds a single-source segment export; compose segments after exporting each source".into());
+        }
         return run_compose(args, &spec);
     }
     let mesh_path = args.mesh.ok_or("--mesh is required")?;
@@ -819,6 +831,9 @@ fn run() -> Result<(), String> {
         ),
         None => None,
     };
+    let terrain_authority = args.terrain_authority.as_deref()
+        .map(|path|TerrainAuthority::read(path,&weights).map(std::sync::Arc::new))
+        .transpose().map_err(|e|e.to_string())?;
     let convert_one = |history: &PathBuf| -> Result<(Vec<String>, String), String> {
         let mut lines: Vec<String> = Vec::new();
         let frame = read_history_on_mesh(history, init_fields.as_ref(), None, None, Some(&mesh))
@@ -884,6 +899,7 @@ fn run() -> Result<(), String> {
             clobber: args.clobber,
             model_label: args.model_label.clone(),
             grid_label: grid_label.clone(),
+            terrain_authority: terrain_authority.clone(),
             ..ConvertOptions::default()
         };
         let emitted = match &product {

@@ -5,14 +5,17 @@ import pytest
 from gpuwm import rustwx
 
 
-def test_resident_ensemble_sends_aggregate_file_only(tmp_path, monkeypatch):
+@pytest.mark.parametrize("extra_capabilities", ["", "\ts2s-window\tglobal-ensemble-projection"])
+def test_resident_ensemble_sends_aggregate_file_only(tmp_path, monkeypatch, extra_capabilities):
+    monkeypatch.setattr(rustwx, 'find_ensemble_product_renderer', lambda renderer: renderer)
     calls=[]
     image=tmp_path/'case'/'d01'/'ens_prob_wind10_ge_10'/'2024-05-25'/'frame.png'
     image.parent.mkdir(parents=True);image.write_bytes(b'native-event-fixture')
     def run(command, **kwargs):
         calls.append(command)
         if command[-1]=='--ensemble-products-abi':
-            return SimpleNamespace(returncode=0,stdout=rustwx.RESIDENT_ENSEMBLE_ABI+'\n',stderr='')
+            abi = rustwx.RESIDENT_ENSEMBLE_ABI.replace("\tRENDERED", extra_capabilities + "\tRENDERED")
+            return SimpleNamespace(returncode=0,stdout=abi+'\n',stderr='')
         raise AssertionError('only the ABI probe uses subprocess.run')
     class Child:
         returncode=0
@@ -22,7 +25,7 @@ def test_resident_ensemble_sends_aggregate_file_only(tmp_path, monkeypatch):
     monkeypatch.setattr(rustwx.subprocess,'run',run)
     monkeypatch.setattr(rustwx.subprocess,'Popen',Child)
     written,_=rustwx.run_ensemble_product_renderer(Path('rw_wrfbatch'),tmp_path/'aggregate.nc',
-             out_dir=tmp_path/'case',fields=('wind10','temperature2'))
+             out_dir=tmp_path/'case',fields=('wind10','temperature2'), source_label='ABI fixture')
     assert written==[image]
     assert calls[1][1:3]==['--ensemble-products',str(tmp_path/'aggregate.nc')]
     assert '--member' not in calls[1]
@@ -33,6 +36,21 @@ def test_old_native_renderer_cannot_claim_resident_products(monkeypatch,tmp_path
     monkeypatch.setattr(rustwx.subprocess,'run',lambda *a,**k: SimpleNamespace(returncode=2,stdout='',stderr='unknown option'))
     with pytest.raises(RuntimeError,match='lacks the resident ensemble product contract'):
         rustwx.run_ensemble_product_renderer(Path('rw_wrfbatch'),tmp_path/'aggregate.nc',out_dir=tmp_path)
+
+
+@pytest.mark.parametrize("abi", [
+    "",
+    rustwx.RESIDENT_ENSEMBLE_ABI.replace("ensemble-v2", "ensemble-v3"),
+    rustwx.RESIDENT_ENSEMBLE_ABI.replace("\tCDF5", "") + "\ts2s-window",
+    rustwx.RESIDENT_ENSEMBLE_ABI.replace("\ttyped-diagnostic", "") + "\tglobal-ensemble-projection",
+])
+def test_resident_extension_still_requires_version_and_base_capabilities(monkeypatch, tmp_path, abi):
+    monkeypatch.setattr(rustwx, 'find_ensemble_product_renderer', lambda renderer: renderer)
+    monkeypatch.setattr(rustwx.subprocess, 'run', lambda *a, **k:
+                        SimpleNamespace(returncode=0, stdout=abi+'\n', stderr=''))
+    with pytest.raises(RuntimeError, match='lacks the resident ensemble product contract'):
+        rustwx.run_ensemble_product_renderer(Path('rw_wrfbatch'), tmp_path/'aggregate.nc',
+                                            out_dir=tmp_path, source_label='ABI fixture')
 
 
 def test_interrupt_reaps_the_owned_native_child(monkeypatch,tmp_path):

@@ -440,8 +440,30 @@ class ProjectedGrid:
             return None
         handle = self._rust_handle(bridge)
         ny, nx = self._stagger_shape(stagger)
+        if len(kinds) > 1:
+            return bridge.grid_arrays(handle, stagger, kinds, ny, nx)
         return tuple(bridge.grid_array(handle, stagger, kind, ny, nx)
                      for kind in kinds)
+
+    def native_static_geometry(self):
+        """Generate the static geometry using one mass-coordinate pass.
+
+        Respect subclasses overriding public fields. An unavailable native
+        seam retains the existing public-method fallback and its reporting.
+        """
+        methods = ("mapfac_m", "mapfac_u", "mapfac_v", "coriolis_m", "rotation_m")
+        if all(getattr(type(self), name) is getattr(ProjectedGrid, name)
+               and name not in self.__dict__ for name in methods):
+            mass = self._rust_arrays(0, (2, 3, 4, 5, 6))
+            if mass is not None:
+                return {"MAPFAC_M": mass[0], "MAPFAC_U": self.mapfac_u(),
+                        "MAPFAC_V": self.mapfac_v(), "F": mass[1], "E": mass[2],
+                        "SINALPHA": mass[3], "COSALPHA": mass[4]}
+        result = {"MAPFAC_M": self.mapfac_m(), "MAPFAC_U": self.mapfac_u(),
+                  "MAPFAC_V": self.mapfac_v()}
+        result["F"], result["E"] = self.coriolis_m()
+        result["SINALPHA"], result["COSALPHA"] = self.rotation_m()
+        return result
 
     # -- staggered coordinate arrays ----------------------------------------
 

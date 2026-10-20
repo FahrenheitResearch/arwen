@@ -1,6 +1,10 @@
 # RELEASE-EXCLUDE: internal campaign material that must NOT enter the
 # public release snapshot.
 #
+# Withdrawn WRF-Hydro product door. Original NextGen products use the normal
+# renderer and remain in exports; this legacy exclusion does not apply to them.
+gpuwm/hydro_products.py
+#
 # These paths are development-campaign records -- lead/controller
 # handoffs, phase plans, machine-specific runbooks -- several of which
 # bake a per-user home directory into a shipped file, contradicting the
@@ -53,6 +57,8 @@ tools/sfire_coupled_ideal/geographic_units/receipts/**
 # nothing to a release reader.
 CLAUDE.md
 AGENTS.md
+NEXTGEN-BRIEF.md
+tools/native_nextgen_reference/**
 
 # Campaign handoffs and internal project history (developer paths inside).
 docs/gpuwm-controller-handoff.md
@@ -80,6 +86,10 @@ docs/ports/wrf-rrtm-dudhia-status.md
 handoffs/**
 evidence/**
 work/**
+
+# Ian trailer's machine-specific measured receipts and input inventories.
+# The reproducible case and public launcher remain distributed.
+cases/ian-20220928/evidence/**
 
 # Detailed research-catalog campaign audit. Its raw measurements are retained
 # under work/** and are not part of the public snapshot. Keep the original
@@ -345,6 +355,8 @@ tree/**
 # The engine reaches it only behind GPUWM_BENCH_* variables. The three test
 # files below import it and are on no battery list.
 tools/bench/**
+# Internal speed2 shape receipts, site manifests and profiling adapters.
+tools/speed2_bench/**
 tests/test_obs_parallel_native.py
 tests/test_regional_packing_bench.py
 tests/test_timeline_qualification.py
@@ -458,3 +470,103 @@ tools/jedi_clone/**
 tools/da_deck/**
 tools/da_lane7/**
 tools/radar_tten_proof/lane6/**
+# Private owner-packet integration instrumentation.
+tools/nextgen_noah_publication.py
+
+# Private native Noah replay preparation and fault diagnostics.
+tools/noahowp_replay/**
+
+# Internal hydro-world proof receipts include private reference-fabric identifiers.
+# One literal rule per tree: tools/release_exclusions.py matches a literal path or a
+# trailing /** only, so a wildcard rule excluded nothing (2.9.3 R3: 2,267 hits).
+receipts/hydro-world-calibration/**
+receipts/hydro-world-calibration-2/**
+receipts/hydro-world-dem-hydrography/**
+receipts/hydro-world-fabric/**
+receipts/hydro-world-fix-calibration-2026-10-18/**
+receipts/hydro-world-gauges/**
+receipts/hydro-world-init/**
+receipts/hydro-world-licences/**
+receipts/hydro-world-params/**
+receipts/hydro-world-proof-rhine/**
+receipts/hydro-world-shipped-rhine/**
+receipts/door-decisions.json
+# Native CFE referee is a development check, not a user runtime dependency.
+tools/hydro_world_init/referee/**
+
+# Hydro-world lane tooling bound to the lab boxes (box run scripts, calibration
+# and proof stages, lane configs with machine paths) and the receipts they wrote.
+# The builder crate (tools/hydro_world), the door and the product code ship.
+receipts/case-b-coupled-run-blocker.json
+receipts/cpu-tests.json
+receipts/node4-cost-meter.json
+tools/hydro_world/proof/**
+tools/hydro_world_calibration/**
+tools/hydro_world_calibration_2/**
+tools/hydro_world_params/configs/**
+tools/hydro_world_params/proof/**
+tools/hydro_world_proof/**
+tools/hydro_world_shipped_rhine/**
+tools/hydro_world_door/node4_run.py
+# STEP/SHAPE owner replay bound to a rented box's scratch tree.
+tools/jax_shape/owner_replay.py
+
+# Internal STEP/SHAPE measurements: local node/card launch wrappers and the
+# whole-run engineering report retain their original machine bindings.
+# The portable native-step library, build tools and Python drivers ship.
+tools/jax_shape/local-env.sh
+tools/jax_shape/run-local.sh
+tools/jax_shape/run-profile.sh
+tools/native_step/WHOLE_FORECAST_RESULTS.md
+tools/native_step/profile_acoustic.sh
+tools/native_step/profile_radiation_transport.sh
+tools/native_step/profile_trajectory.sh
+tools/native_step/profile_vegetation.sh
+tools/native_step/profile_whole_trajectory.sh
+tools/native_step/run_acoustic.sh
+tools/native_step/run_boundary_trajectory.sh
+tools/native_step/run_clocked_stability.sh
+tools/native_step/run_complete_period.sh
+tools/native_step/run_complete_period_audit.sh
+tools/native_step/run_deferred.sh
+tools/native_step/run_deferred_radiation_audit.sh
+tools/native_step/run_domain_step.sh
+tools/native_step/run_forecast_trajectory.sh
+tools/native_step/run_health_consumers.sh
+tools/native_step/run_host_argument.sh
+tools/native_step/run_host_audit.sh
+tools/native_step/run_host_contracts.sh
+tools/native_step/run_native_ozone.sh
+tools/native_step/run_phase_trajectory.sh
+tools/native_step/run_private_events.sh
+tools/native_step/run_radiation_audit.sh
+tools/native_step/run_radiation_live.sh
+tools/native_step/run_radiation_replay.sh
+tools/native_step/run_radiation_trajectory.sh
+tools/native_step/run_radiation_trajectory_crash.sh
+tools/native_step/run_radiation_transport.sh
+tools/native_step/run_slice_job.py
+tools/native_step/run_solar_transport.sh
+tools/native_step/run_stability_consumer.sh
+tools/native_step/run_time_advance.sh
+tools/native_step/run_trajectory.sh
+tools/native_step/run_trajectory_wall.sh
+tools/native_step/run_validator.sh
+tools/native_step/run_vegetation.sh
+tools/native_step/run_whole_period.sh
+tools/native_step/run_whole_period_audit.sh
+tools/native_step/run_whole_trajectory.sh
+tools/native_step/run_whole_trajectory_wall.sh
+
+# NextGen forcing referee lane notes: native provider/PET replay runbooks bound
+# to the lab boxes (scratch roots, the node pool lease and the private card-slot
+# runner).  tools/nextgen_forcing/README.md already names NATIVE-CHAIN-SPEED.md as
+# an internal note outside the public tree; the port, its tests and README ship.
+tools/nextgen_forcing/NATIVE-CHAIN-SPEED.md
+tools/nextgen_forcing/NATIVE-REPLAY.md
+tools/nextgen_forcing/PET-REFEREE.md
+tools/nextgen_mass_launcher.patch
+# Local Hugging Face card/sample draft tools: absolute lab paths in their sample lists (2.9.3 R3).
+tools/hf_drafts/**
+# Hugging Face drafts (cards, sample Space): the owner publishes them by hand; their sample lists name a lab machine.
+drafts/**

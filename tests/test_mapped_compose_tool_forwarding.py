@@ -60,6 +60,7 @@ import pytest
 from gpuwm import bridges, mapped_direct, mapped_engine_bridge, source_cli
 from gpuwm.ingest.source_coverage import PREPARATION_REFUSAL_EXIT_CODE
 from gpuwm.source_adapters import source_adapters
+from gpuwm import earth2_licensing
 
 
 #: Every registered source whose runner is the mapped composition route.
@@ -200,9 +201,19 @@ def _prep_argv(source, *, inputs, output_root, work, supplements=None,
     ``supplements`` defaults to ``inputs`` because the in-band-terrain
     profiles bind the same files twice; a source whose terrain arrives
     as a separate invariant object passes its own list.
+
+    A model row whose weights are not permissive refuses any door until
+    its exact licence is named (gpuwm.earth2_licensing.require_licence,
+    exit 78).  That gate is tested in test_earth2_licensing; here such a
+    row carries its own opt-in, read from the table, so the forwarding
+    claim is still measured on every registered row.
     """
 
     argv = ["--source", source]
+    found = earth2_licensing.model_row(source) if source.startswith("earth2-") else None
+    if found and found[1].get("licence_class", "unresolved") != "permissive":
+        licence = (found[1].get("weights") or {}).get("licence", "unresolved weight licence")
+        argv += ["--accept-licence", licence]
     for path in inputs:
         argv += ["--input", str(path)]
     for path in (inputs if supplements is None else supplements):

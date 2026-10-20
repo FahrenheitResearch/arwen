@@ -412,6 +412,25 @@ void fer_hires_init_scalars(real* __restrict__ tab, real dtph)
 // The diagnostic changes no prognostic word; 10*ALOG10 uses CUDA's
 // log10f, so this one diagnostic is not part of the 0 ULP claim.
 // ---------------------------------------------------------------------------
+// Shared native radar moments for forecast and initial-state diagnostics.
+__device__ __forceinline__ float fh_snow_z(float rqs, float rime, float mass) {
+    float ns = rqs / (rime * mass);
+    if (rqs > 0.0025f && rime > 5.f) {
+        if (rqs <= 0.005f) {
+            const float b = fh_min(1.f, 400.f * rqs - 1.f);
+            ns = 1.E3f * b + ns * (1.f - b);
+        } else {
+            const float b = 180.f * (rqs - 0.005f);
+            ns = 1.E3f * (1.f - fh_min(b, 0.8f));
+        }
+    }
+    return 1.634e13f * rqs * rqs / ns;
+}
+__device__ __forceinline__ float fh_rain_z(float rqr, float n0, int index, float crain) {
+    const float nr = n0 * 1.E-6f * (float)index;
+    return crain * rqr * rqr / nr;
+}
+
 extern "C" __global__
 void fer_hires_column(real* __restrict__ th, real* __restrict__ qv,
                       real* __restrict__ qc, real* __restrict__ qr,
@@ -426,7 +445,7 @@ void fer_hires_column(real* __restrict__ th, real* __restrict__ qv,
                       real* __restrict__ sr,
                       real* __restrict__ refl,
                       const real* __restrict__ tab,
-                      real dt, int gid, int refl_due, int nz, int ny, int nx)
+                      real dt, int gid, int refl_due, int nz, int ny, int nx, int analysis_only)
 {
     int col = blockIdx.x * blockDim.x + threadIdx.x;
     if (col >= ny * nx) return;
@@ -475,7 +494,7 @@ void fer_hires_column(real* __restrict__ th, real* __restrict__ qv,
     const float CIACR = PI_E * dt;                                    // :334
     const float CRACW = dt * 0.25f * PI_E * 1.0f;                     // :339
     const float BRAUT = __fdiv_rn(dt * 1.1E10f * BETA6, FH_NCW);                // :343
-    const float DTPH = dt;               // EGCP01DRV(GID,DT,...) :407
+    const float DTPH = analysis_only ? 0.f : dt;               // EGCP01DRV(GID,DT,...) :407
 
     // EGCP01COLUMN :1245-1253, column-scope state.
     float ARAIN = 0.f, VRAIN1 = 0.f, VSNOW1 = 0.f, ASNOW = 0.f;
@@ -511,7 +530,7 @@ void fer_hires_column(real* __restrict__ th, real* __restrict__ qv,
 
         // ---- EGCP01DRV :801-912, the column setup for this L.
         float CWM = QTk;
-        if (L == 1) {                                    // :827-830
+        if (L == 1 && !analysis_only) {                  // :827-830
             if (CWM <= FH_EPSQ) CWM = FH_EPSQ;
             Fice = 1.f;
             Frain = 0.f;
@@ -783,6 +802,38 @@ void fer_hires_column(real* __restrict__ th, real* __restrict__ qv,
             if (STRAT || TIMLT > FH_EPSQ) DRZL = false;
             else DRZL = true;
 
+            if (analysis_only) {
+                float zs = 0.f, zr = 0.f;
+                const float rqs = RHO * QLICE;
+                if (rqs > 0.f) zs = fh_snow_z(rqs, RimeF1, MASSI[INDEXS]);
+                const float rqr = RHO * QR;
+                if (rqr > FH_EPSQ) {
+                    // Native rain_pass PSD reconstruction, without fallout.
+                    if (rqr <= RQR_DRmin) {
+                        INDEXR = FH_MDRMIN;
+                        N0r = rqr / MASSR[INDEXR];
+                    } else if (DRZL) {
+                        DUM = fh_max(1.f, 0.5E-3f / rqr);
+                        N0r = fh_min(1.E9f, FH_N0R0 * DUM * sqrtf(DUM));
+                        DUM1 = rqr / (FH_PI * FH_RHOL * N0r);
+                        DUM = 1.E6f * sqrtf(sqrtf(DUM1));
+                        INDEXR = fh_int(fh_max(FH_XMRMIN, fh_min(DUM, FH_XMRMAX)));
+                        N0r = rqr / MASSR[INDEXR];
+                    } else if (rqr >= RQR_DRmax) {
+                        INDEXR = FH_MDRMAX;
+                        N0r = rqr / MASSR[INDEXR];
+                    } else {
+                        N0r = FH_N0R0;
+                        DUM = CN0r0 * sqrtf(sqrtf(rqr));
+                        INDEXR = fh_int(fh_max(FH_XMRMIN, fh_min(DUM, FH_XMRMAX)));
+                    }
+                    zr = fh_rain_z(rqr, N0r, INDEXR, Crain);
+                }
+                refl[idx] = zs + zr > 0.01f ? 10.f * log10f(zs + zr) : -20.f;
+                RimeF_above = RimeF_col;
+                continue;
+            }
+
             // :1729-1751 autoconversion and riming.
             if (QW > FH_EPSQ && TC >= FH_T_ICE) {
                 DUM2 = RHO * QW;
@@ -1052,17 +1103,7 @@ void fer_hires_column(real* __restrict__ th, real* __restrict__ qv,
                     // :2232-2251, the precipitating-ice reflectivity.
                     const float RQSnew = FLIMASS * RHO * QInew;
                     if (refl_due && RQSnew > 0.f) {
-                        float Nsnow = RQSnew / (RimeF * MASSI[INDEXS]);
-                        if (RQSnew > 0.0025f && RimeF > 5.f) {
-                            if (RQSnew <= 0.005f) {
-                                const float B = fh_min(1.f, 400.f * RQSnew - 1.f);
-                                Nsnow = 1.E3f * B + Nsnow * (1.f - B);
-                            } else {
-                                const float B = 180.f * (RQSnew - 0.005f);
-                                Nsnow = 1.E3f * (1.f - fh_min(B, 0.8f));
-                            }
-                        }
-                        Zsnow = 1.634e13f * RQSnew * RQSnew / Nsnow;   // Cdry
+                        Zsnow = fh_snow_z(RQSnew, RimeF, MASSI[INDEXS]);
                     }
                 }
             }
@@ -1129,8 +1170,7 @@ void fer_hires_column(real* __restrict__ th, real* __restrict__ qv,
                 // :2339-2345, the rain reflectivity.
                 const float RQRo = RHO * QRnew;
                 if (refl_due && RQRo > FH_EPSQ) {
-                    const float Nrain = N0r * 1.E-6f * (float)INDEXR2;
-                    Zrain = Crain * RQRo * RQRo / Nrain;
+                    Zrain = fh_rain_z(RQRo, N0r, INDEXR2, Crain);
                 }
             }
             const float WCnew = QWnew + QRnew + QInew;
@@ -1154,6 +1194,8 @@ void fer_hires_column(real* __restrict__ th, real* __restrict__ qv,
         }
         RimeF_above = RimeF_col;
         if (refl_due) refl[idx] = DBZ_col;
+
+        if (analysis_only) continue;
 
         // ---- EGCP01DRV :936-960, storage update.
         float Fice_o, FrimeF_o, Frain_o;
@@ -1190,6 +1232,8 @@ void fer_hires_column(real* __restrict__ th, real* __restrict__ qv,
         f_rain[idx] = Frain_o;
         f_rimef[idx] = FrimeF_o;
     }
+
+    if (analysis_only) return;
 
     // ---- EGCP01DRV :967-974 and FER_HIRES :449-454, the surface.
     const float APREC = (ARAIN + ASNOW) * FH_RRHOL;

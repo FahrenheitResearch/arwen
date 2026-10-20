@@ -442,6 +442,79 @@ def test_worker_gate_uses_the_battery_python_without_shell_expansion(monkeypatch
     assert result.verdict == "PASSED"
 
 
+def test_a_failed_entry_names_its_failing_tests_and_keeps_the_full_output(
+        monkeypatch, tmp_path):
+    """A failed gate that cannot name its failing tests is a defect.
+
+    THE BREAKAGE: the 2.9.3 R8 Windows gate reported rw-wrfbatch as
+    "2 targets failed: --test chem_products, --test snowfall" and nothing
+    else.  Cargo prints each test binary's output in turn and the runner
+    kept only the last 40 lines, so the failing tests' names and panics,
+    printed under earlier binaries, were gone; the same targets then
+    passed alone on the same tree and nobody could say what had failed.
+    So every entry's whole output is written to its own log, and the
+    failing tests are named from the whole output, with their panic
+    site, however many binaries printed after them.
+    """
+
+    from types import SimpleNamespace
+    runner = _runner()
+    entry = runner.Entry("cpu", "tools/rustwx", "rw-wrfbatch", 1, (), ())
+    output = (
+        "     Running tests/chem_products.rs (target/debug/deps/chem_products-1)\n"
+        "running 2 tests\n"
+        "test chem_presence_is_checked_per_source ... ok\n"
+        "test synthetic_chem_wrfout_renders_all_six_products ... FAILED\n"
+        "\nfailures:\n\n---- synthetic_chem_wrfout_renders_all_six_products stdout ----\n"
+        "thread 'synthetic_chem_wrfout_renders_all_six_products' (4242) panicked at "
+        "crates/rw-wrfbatch/tests/chem_products.rs:136:5:\n"
+        "RENDERED aq_pm25 missing\n"
+        "note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n"
+        "\ntest result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.23s\n"
+        + "\n".join(f"     Running tests/other_{i}.rs\nrunning 1 test\ntest other_{i} ... ok\n"
+                     "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s\n"
+                     for i in range(20))
+        + "error: 1 target failed:\n    `-p rw-wrfbatch --test chem_products`\n")
+    assert len(output.splitlines()) > 40
+    monkeypatch.setattr(runner.subprocess, "run", lambda argv, **kwargs: SimpleNamespace(
+        returncode=101, stdout=output))
+    log_dir = tmp_path / "gate-logs"
+    outcome = runner.run_entry(entry, target_dir=tmp_path / "target", cargo="cargo",
+                               log_dir=log_dir)
+    assert outcome.verdict == "FAILED"
+    assert (outcome.passed, outcome.failed, outcome.binaries) == (21, 1, 21)
+    assert outcome.log_path == log_dir / "rw-wrfbatch.log"
+    kept = outcome.log_path.read_text(encoding="utf-8")
+    assert kept.startswith("$ cargo test --locked --offline -p rw-wrfbatch\n")
+    assert output in kept
+    named = runner.failing_tests(outcome.output)
+    assert named == [
+        "synthetic_chem_wrfout_renders_all_six_products FAILED  "
+        "(crates/rw-wrfbatch/tests/chem_products.rs:136:5: RENDERED aq_pm25 missing)"]
+    # The failing test is not in the 40-line tail the report also prints;
+    # only cargo's closing "1 target failed" line is, and it names targets.
+    tail = output.strip().splitlines()[-40:]
+    assert not any("synthetic_chem_wrfout_renders_all_six_products" in line for line in tail)
+    assert tail[-1] == "    `-p rw-wrfbatch --test chem_products`"
+
+
+def test_the_runner_names_unit_test_failures_by_their_module_path() -> None:
+    """A unit test's panic thread is its full path; the name line is too."""
+
+    runner = _runner()
+    output = (
+        "test tests::coordinate_variables_are_recovered ... FAILED\n"
+        "thread 'tests::coordinate_variables_are_recovered' (1618375) panicked at "
+        "crates/rw-netcdf/src/main.rs:2502:9:\nassertion `left == right` failed\n"
+        "  left: [\"time\"]\n right: [\"t2\"]\n"
+        "note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n")
+    assert runner.failing_tests(output) == [
+        "tests::coordinate_variables_are_recovered FAILED  "
+        "(crates/rw-netcdf/src/main.rs:2502:9: assertion `left == right` failed "
+        "left: [\"time\"] right: [\"t2\"])"]
+    assert runner.failing_tests("test result: ok. 3 passed; 0 failed; 0 ignored\n") == []
+
+
 # ---------------------------------------------------------------------------
 # No exported cargo-gate target links the system netCDF C library
 # ---------------------------------------------------------------------------

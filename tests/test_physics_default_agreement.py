@@ -25,9 +25,11 @@ way on its 3 km and 750 m rungs, for every source it plans unaided.
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from functools import lru_cache
 import json
 from pathlib import Path
+import re
 
 import pytest
 
@@ -150,13 +152,48 @@ def _held_to_the_run(plan, config: Path, source: str):
     return asserted
 
 
+def _named_licence_opt_in(source: str) -> tuple[str, ...]:
+    """The licence(s) a licence-gated row's own refusal names, else none.
+
+    Rows whose weights are not permissive refuse every default path and
+    name the exact ``--accept-licence`` value that opts in.  A sweep over
+    every planable row opts in with exactly that value, as a user would;
+    the refusal itself is held by the licensing tests.
+    """
+
+    import shlex
+
+    from gpuwm.earth2_licensing import check_argv
+
+    try:
+        check_argv(["domain", "--source", source])
+    except ValueError as refusal:
+        match = re.search(r"--accept-licence (.+)$", str(refusal))
+        assert match, refusal
+        return tuple(shlex.split(match.group(1)))
+    return ()
+
+
+@pytest.fixture
+def licence_opt_in():
+    """Opt a test into a row's named licence for the test's duration."""
+
+    from gpuwm.earth2_licensing import licence_scope
+
+    with ExitStack() as stack:
+        yield lambda source: stack.enter_context(
+            licence_scope(_named_licence_opt_in(source)))
+
+
 def _suite(profile):
     switches = single_domain_runtime_switches(profile)
     return tuple(int(switches[key]) for key in SUITE_KEYS)
 
 
 @pytest.mark.parametrize("source", _page_sources())
-def test_every_door_names_one_default_and_the_run_takes_every_suite_a_door_chooses(tmp_path, source):
+def test_every_door_names_one_default_and_the_run_takes_every_suite_a_door_chooses(
+        tmp_path, source, licence_opt_in):
+    licence_opt_in(source)
     from gpuwm import physics_catalog as pc
     from gpuwm.experiment import load_experiment
     from gpuwm.gui.api import PhysicsMixin, draft_default_suite, draft_domains, draft_finest_dx_m

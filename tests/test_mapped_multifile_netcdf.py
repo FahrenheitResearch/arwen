@@ -318,6 +318,29 @@ def test_one_source_spread_over_eight_files_decodes_as_one_collection(
         value * 100.0 for value in LEVELS_DECLARED]
 
 
+def test_optional_number_column_is_carried_when_published_and_absent_otherwise(tmp_path):
+    files = _corpus(tmp_path / "corpus")
+    document = _mapping()
+    document["fields"]["snow_number"] = {
+        **_mass("snow_count", "kg-1"), "optional": True}
+    mapping = _write(tmp_path / "mapping.json", document)
+    absent = decode_mapped_source(mapping, files)
+    assert all("snow_number" not in frame.fields for frame in absent)
+    number_file = tmp_path / "snow.nc"
+    _mass_file(number_file, [("snow_count", "kg-1", 4096.0)], LEVELS_WIDE)
+    present = decode_mapped_source(mapping, [*files, number_file])
+    for frame in present:
+        assert frame.fields["snow_number"].units == "kg-1"
+        assert frame.fields["snow_number"].values.min() >= 4096.0
+
+
+def test_required_column_cannot_be_optional(tmp_path):
+    document = _mapping()
+    document["fields"]["air_temperature"]["optional"] = True
+    with pytest.raises(ValueError, match="cannot be optional"):
+        load_mapping(_write(tmp_path / "mapping.json", document))
+
+
 def test_the_same_variable_name_in_two_files_is_told_apart_by_attribute(
     tmp_path,
 ):

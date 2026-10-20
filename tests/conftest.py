@@ -282,14 +282,14 @@ def _sibling_targets(node: ast.AST, path: str) -> set[str]:
     without ``__init__.py`` contributes siblings.  The key is the file path,
     which no dotted first-party name can be mistaken for.
     """
-    folder = pathlib.Path(path).resolve().parent
-    if (folder / "__init__.py").is_file():
-        return set()
     if isinstance(node, ast.Import):
         tops = {alias.name.split(".")[0] for alias in node.names}
     elif isinstance(node, ast.ImportFrom) and not node.level:
         tops = {(node.module or "").split(".")[0]}
     else:
+        return set()
+    folder = pathlib.Path(path).resolve().parent
+    if (folder / "__init__.py").is_file():
         return set()
     found: set[str] = set()
     for top in tops:
@@ -322,23 +322,31 @@ def _import_time_edges(path: str) -> tuple[frozenset[str], bool]:
         tree = ast.parse(pathlib.Path(path).read_text(encoding="utf-8"))
     except (OSError, SyntaxError, UnicodeDecodeError):
         return frozenset(), False
-    functions = [node for node in ast.walk(tree)
-                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
-    inside_function = {id(inner) for fn in functions for inner in ast.walk(fn)}
-    guarded = {id(inner) for node in ast.walk(tree)
-               if isinstance(node, ast.Try)
-               for statement in node.body for inner in ast.walk(statement)}
     imports: set[str] = set()
     cupy = False
-    for node in ast.walk(tree):
-        if id(node) in inside_function or id(node) in guarded:
+    # Visit only the same unguarded import-time scope as before. Walking
+    # every function subtree to build exclusion sets made a small CPU-only
+    # collection traverse millions of irrelevant nodes. In particular, a
+    # try's handlers/else/finally still count; only its body is guarded.
+    pending = [tree]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
+        if isinstance(node, ast.Try):
+            pending.extend(node.handlers)
+            pending.extend(node.orelse)
+            pending.extend(node.finalbody)
+            continue
+        pending.extend(ast.iter_child_nodes(node))
         if isinstance(node, ast.Import):
             if any(a.name.split(".")[0] == "cupy" for a in node.names):
                 cupy = True
         elif isinstance(node, ast.ImportFrom):
             if (node.module or "").split(".")[0] == "cupy":
                 cupy = True
+        else:
+            continue
         imports |= _first_party_targets(node)
         imports |= _sibling_targets(node, path)
     return frozenset(imports), cupy

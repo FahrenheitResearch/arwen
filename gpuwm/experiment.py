@@ -1851,6 +1851,9 @@ def build_experiment_from_config_tables(raw: dict, *, source: str,
     """
     import copy
 
+    from gpuwm.vertical_contract import validate_config_source_top
+
+    validate_config_source_top(raw, context=source)
     raw = copy.deepcopy(raw)
     fetch_table = raw.pop("fetch", None)
     if fetch_table is not None:
@@ -3247,6 +3250,11 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
     known_tables = ("experiment", "shared", "projection", "domain",
                     "relocation", "perturbation", "tiles", "devices", "output", "simulated_radar",
                     "spectral_numerics", "physics_params", "radar_heating")
+    # Setup lineage is provenance, with no atmosphere or follower controls.
+    if isinstance(raw, dict) and "lineage" in raw:
+        from gpuwm.cyclone_tracks import validate_lineage
+        raw = dict(raw)
+        validate_lineage(raw.pop("lineage"))
     # [ingest] is INGEST POLICY, and it is validated-and-dropped HERE
     # rather than added to the companion list above.  The companion
     # tables declare INPUTS: dropping one loses a setting, so the caller
@@ -5423,7 +5431,9 @@ def _public_config_value(value):
                     for item in fields(value)
                     if item.name not in inert_chem
                     and not (isinstance(value, FollowConfig)
-                            and value.field != "attribute" and item.name in ATTRIBUTE_KEYS)}
+                            and ((value.field != "attribute" and item.name in ATTRIBUTE_KEYS)
+                                 or (value.field != "pressure" and item.name in {
+                                     "pressure_center", "fallback_level_hpa", "fallback_deficit_m"})))}
         run_document = (document if isinstance(value, RunConfig) else
                         document.get("run") if isinstance(value, DomainConfig) else None)
         if isinstance(run_document, dict):

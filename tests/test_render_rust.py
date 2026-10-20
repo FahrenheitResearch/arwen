@@ -1228,7 +1228,10 @@ def test_list_products_reports_the_full_catalog(wrfout, tmp_path, capsys):
     # and snow_kuchera_window to that complete catalog: 367 + 3 = 370.
     # The radiation cloud-fraction column maximum (cldfra_max, golden/ports-rad,
     # 2.9.0) is the twelfth column product: 370 + 1 = 371.
-    assert "total=371" in out
+    # The Earth-2 export (189e1776dc6) adds three direct products,
+    # 100m_wind_speed, 500mb_omega and 850mb_specific_humidity (rw_wrfbatch
+    # --list-products: selectable_slugs 345 -> 348): 371 + 3 = 374.
+    assert "total=374" in out
     for slug in ("snowfall_window", "snow_10to1_window", "snow_kuchera_window"):
         rows = [line for line in out.splitlines()
                 if len(line.split()) >= 3 and line.split()[2] == slug]

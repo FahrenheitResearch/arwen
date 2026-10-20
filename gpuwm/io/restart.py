@@ -546,6 +546,9 @@ STATE_INFRA_ATTRS = frozenset({
     # Uniform-wind provenance is also a duplicate-application guard. Its
     # numerical result is in u/v; continued clocks prevent reapplication.
     "_ensemble_initial_wind",
+    # Time-zero checkpoint-fill callback idempotence; contains no model state.
+    # A resumed member restores its own serialized fields after initialization.
+    "_ensemble_checkpoint_fill",
     "elapsed_seconds", "_nest_restart_classification",
     # The domain's ACTIVATION EPOCH in seconds, published beside
     # ``elapsed_seconds`` by gpuwm.core.state.refresh_model_time and from
@@ -997,7 +1000,7 @@ DRIVER_SERIALIZED_ATTRS = frozenset({
     "gf_rthblten", "gf_rqvblten", "pbl_raw_rates",
     "microphysics_updates", "call_counts", "ysu_nan_guard_fires",
     "fields",
-    "fire", "fire_tendencies",
+    "fire", "fire_tendencies", "hydro",
     # THE SURFACE-RADIATION CARRIER CONTRACT
     # (gpuwm/core/radiation_carriers.py).  Serialized, not rebuilt, and
     # the distinction is the whole point: the carrier FIELDS ride the
@@ -1089,6 +1092,10 @@ DRIVER_CHECKPOINT_ONLY_ATTRS = frozenset({"olr", "cldfra", "radiation_flux_diagn
 DRIVER_HELD_FORCING_ATTRS = frozenset({"gf_rthblten", "gf_rqvblten"})
 
 DRIVER_REBUILT_ATTRS = frozenset({
+    # Run-local CUDA events and elapsed-time counters, recreated when hydro
+    # attaches to the resumed parent. Scientific hydro state is checkpointed
+    # separately; carrying timing events across processes is invalid.
+    "hydro_cost",
     # User aerosol diagnostics are views of arrays serialized in fields.
     "aerosol2d",
     "_wrf_rthraten_coupled",
@@ -1158,6 +1165,9 @@ DRIVER_REBUILT_ATTRS = frozenset({
     # not survive the measurement.)
     "state", "sfclay_result", "mynn_sfclay_result",
     "mynn_sfclay_sea_result", "noah_params",
+    # Reflectivity borrows the resumed RunConfig, already fingerprinted by
+    # the checkpoint, and PhysicsDriver.__init__ rebinds this alias.
+    "refl_config",
     # Selector-value -> runner-method receipt, re-resolved from the resumed
     # RunConfig by PhysicsDriver.__init__ (the config fingerprint already
     # binds the selector values themselves).
@@ -1197,6 +1207,9 @@ DRIVER_REBUILT_ATTRS = frozenset({
     # vector is a module constant.  The per-call column census is a receipt
     # the next call overwrites.
     "noahmp_params", "noahmp_geometry", "noahmp_soil_thickness_m",
+    # Prepared fixed-parent geometry is rebound from the executed inputs.
+    # Hydro's numerical arrays and continuation live in the hydro manifest.
+    "hydro_parent_geometry",
     "last_noahmp_census",
     # RUC: the parsed tables and the nine-level geometry are rebuilt by
     # initialize_physics from the same packaged assets, and the bundle is
@@ -3822,6 +3835,7 @@ def _driver_manifest(driver) -> dict[str, object]:
     manifest.update(pbl_raw_manifest(driver))
     manifest.update(pbl_diagnostic_manifest(driver))
     manifest.update(_fire_manifest(driver))
+    manifest.update(_hydro_manifest(driver))
     for tend_name in _live_driver_tendency_attrs(driver):
         tend = getattr(driver, tend_name)
         _require_dataclass_components(
@@ -3901,6 +3915,25 @@ def _driver_manifest(driver) -> dict[str, object]:
 def _live_driver_tendency_attrs(driver):
     return (*DRIVER_TENDENCY_ATTRS, *(name for name in OPTIONAL_DRIVER_TENDENCY_ATTRS
              if getattr(driver, name, None) is not None))
+
+
+def _hydro_manifest(driver):
+    hydro = getattr(driver, "hydro", None)
+    return {} if hydro is None else {f"hydro/{key}": value for key, value in hydro.arrays.items()}
+
+
+def _validate_hydro_payload(stored, header, driver):
+    hydro = getattr(driver, "hydro", None)
+    incoming = {key[6:]: value for key, value in stored.items() if key.startswith("hydro/")}
+    metadata = (header.get("driver") or {}).get("hydro")
+    if hydro is None:
+        if incoming or metadata is not None:
+            raise RestartMismatchError("restart carries NextGen state but the parent has no hydro driver")
+        return
+    try:
+        hydro.validate_checkpoint(metadata, incoming)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RestartMismatchError(f"NextGen restart cannot continue: {exc}") from exc
 
 
 def _fire_manifest(driver):
@@ -4121,6 +4154,9 @@ def _restart_payload(path, state, cfg, *, run_trackers=None,
             "surface_radiation_policy": driver.carriers.policy,
         }
         driver_header.update(_fire_header(driver))
+        hydro = getattr(driver, "hydro", None)
+        if hydro is not None:
+            driver_header["hydro"] = hydro.checkpoint_metadata()
     physics_setup = physics_setup_identity(state, cfg)
     physics_setup_sha256 = _json_sha256(physics_setup)
 
@@ -4233,6 +4269,10 @@ def _decode_header(data, path) -> dict:
 
 def _load_restart(path, *, with_arrays: bool):
     """Load header (and optionally arrays), wrapping corruption loudly."""
+    from gpuwm.io.restart_prefetch import cached_restart
+    cached = cached_restart(path, with_arrays=with_arrays)
+    if cached is not None:
+        return cached
     try:
         with np.load(path, allow_pickle=False) as data:
             header = _decode_header(data, path)
@@ -5076,7 +5116,7 @@ RESTART_MEMBER_NAMESPACES = (
     "diag/", "held/", "pbl/", "radiation/",
     # The dedicated stochastic validator checks the exact spectrum inventory,
     # member, recipe and process metadata before this namespace closure.
-    "stochastic/", "fire/",
+    "stochastic/", "fire/", "hydro/",
 )
 
 
@@ -7692,6 +7732,7 @@ def _validate_restart(path, state, cfg, *,
 
     driver = getattr(state, "physics", None)
     _validate_member_namespaces(stored, state, driver, path, format_version)
+    _validate_hydro_payload(stored, header, driver)
     driver_keys = [key for key in stored
                    if key.startswith(("driver/", "fields/", "cumulus/", "held/", "pbl/"))]
     if driver is None:
@@ -7890,6 +7931,12 @@ def _restore_driver(stored, header, state, driver, elapsed, asarray,
                     format_version: int) -> None:
     from gpuwm.core.microphysics import MicrophysicsDiagnostics
     from gpuwm.core.physics import PhysicsTendencies
+
+    hydro = getattr(driver, "hydro", None)
+    if hydro is not None:
+        for key, target in hydro.arrays.items():
+            target[...] = asarray(stored[f"hydro/{key}"])
+        hydro.restore_metadata(header["driver"]["hydro"])
 
     # Surface/Noah fields: in place only (never rebind â€” sfclay_result and
     # the Noah launch read these exact device arrays).

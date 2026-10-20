@@ -238,7 +238,7 @@ def test_length_parameter_reaches_case1_and_preserves_controls(monkeypatch, name
     inputs.update({key: cp.asarray(fields[key][:, 0]) for key in scalars})
     results = []
     for unit in _compile_pair(cp, name, module):
-        def function(_, symbol, selected=unit):
+        def function(_, symbol, shape=(), *, selected=unit):
             kernel = selected.get_function(symbol)
             if module == "mynn_pbl":
                 return kernel
@@ -276,9 +276,9 @@ def test_czil_reaches_both_surface_variants_and_preserves_water(monkeypatch, var
     results = []
     for unit in _compile_pair(cp, "mynn.czil", "mynn_surface", definitions):
         monkeypatch.setattr(mynn_sfclay, "get_kernel",
-                            lambda _, symbol, selected=unit: selected.get_function(symbol))
+                            lambda _, symbol, shape=(), *, selected=unit: selected.get_function(symbol))
         monkeypatch.setattr(mynn_sfclay, "get_kernel_int_defines",
-                            lambda _, symbol, __, selected=unit: selected.get_function(symbol))
+                            lambda _, symbol, __, shape=(), *, selected=unit: selected.get_function(symbol))
         result = mynn_sfclay.mynn_surface_layer(_device_inputs(fields),
                                                variant=variant)
         results.append(_host_result(cp, result, mynn_sfclay.MYNN_SURFACE_OUTPUTS))
@@ -307,9 +307,9 @@ def test_entrainment_reaches_active_and_sibling_plumes_and_preserves_inactive(
     original = mynn_pbl_gpu.get_kernel
     results = []
     for unit in _compile_pair(cp, "mynn.edmf_entrainment", module):
-        monkeypatch.setattr(mynn_pbl_gpu, "get_kernel", lambda target, symbol, selected=unit:
+        monkeypatch.setattr(mynn_pbl_gpu, "get_kernel", lambda target, symbol, shape=(), *, selected=unit:
                             selected.get_function(symbol) if target == module
-                            else original(target, symbol))
+                            else original(target, symbol, shape))
         cases = {}
         for case in ("land_cumulus", "stable_off"):
             values = _dmp_mf_inputs(_dmp_mf_case(rows, case))

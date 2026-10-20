@@ -58,6 +58,38 @@ def stagger_pressure(source, axis, *, workers=None):
     return target
 
 
+def moist_pressure(pressure_guess, qtot, dry_mass, base, coord, *, workers=None):
+    """Fuse the reference moist-pressure recurrence over independent columns."""
+    if (not isinstance(pressure_guess, np.ndarray) or pressure_guess.ndim != 3
+            or pressure_guess.dtype != np.float64 or pressure_guess.size == 0):
+        return None
+    levels = pressure_guess.shape[0]
+    arrays = (qtot, dry_mass, base.mub, base.pb,
+              coord.c1f, coord.c2f, coord.rdn, coord.rdnw)
+    shapes = (pressure_guess.shape, pressure_guess.shape[1:],
+              pressure_guess.shape[1:], pressure_guess.shape,
+              (levels + 1,), (levels + 1,), (levels,), (levels,))
+    if any(not isinstance(value, np.ndarray) or value.dtype != np.float64
+           or value.shape != shape or not value.flags.c_contiguous
+           or not value.flags.aligned for value, shape in zip(arrays, shapes)):
+        return None
+    pm, library = _library()
+    entry = getattr(library, "gpuwm_host_moist_pressure_f64", None)
+    if entry is None:
+        return None
+    target = np.empty(pressure_guess.shape, dtype=np.float64)
+    pointer, size = ctypes.c_void_p, ctypes.c_size_t
+    entry.argtypes = [pointer] * 9 + [size] * 3
+    entry.restype = ctypes.c_int32
+    result = entry(*(value.ctypes.data for value in arrays), target.ctypes.data,
+                   levels, target.size // levels, pm._workers(workers))
+    if result == 3:
+        raise ValueError("moist hydrostatic pressure recurrence failed")
+    if result:
+        raise RuntimeError(f"native moist pressure recurrence failed with code {result}")
+    return target
+
+
 def sum_fields(sources, *, workers=None):
     """Widen and sum independent fields in the original left-to-right order."""
     sources = tuple(sources)

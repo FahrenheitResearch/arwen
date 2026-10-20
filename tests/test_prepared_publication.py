@@ -577,7 +577,8 @@ def test_the_on_demand_set_is_read_from_the_tagged_declaration(publication):
     from gpuwm import bridge_assets
     repo = Path(__file__).resolve().parents[1]
     assert publication.on_demand_artifacts(repo) == {"rw_igra2", "rw_amv", "rw_ndbc", "rw_gnssro", "rw_wis2", "rw_prepbufr", "rw_madis",
-                                                    "rw_radar_feeds"} == {
+                                                    "rw_radar_feeds", "rw_mrms", "rw_stage4", "rw_asos", "rw_goes",
+                                                    "rw_opera", "rw_soundings", "rw_nextgen_verify"} == {
         a.name for a in bridge_assets.on_demand_artifacts()}
     assert {"rw_simradar", "rw_mlexport", "rw_globe_pack"} <= {a.name for a in bridge_assets.wheel_artifacts()}
 

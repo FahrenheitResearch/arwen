@@ -788,3 +788,89 @@ def test_native_static_contract_admits_the_urban_legend_and_nothing_else():
     wrong_class["LU_INDEX"] = np.full((3, 4), 56.0)
     with pytest.raises(ValueError, match="LU_INDEX is outside the exact 1..21"):
         validate_native_static_fields(wrong_class, grid, 3, 4)
+
+
+@pytest.mark.parametrize("compressed", [False, True])
+def test_parallel_static_npz_words_and_validation(tmp_path, monkeypatch, compressed):
+    import gpuwm.native_wrf_contract as contract
+    monkeypatch.setattr(contract, "_NATIVE_STATIC_PARALLEL_BYTES", 0)
+    grid = _grid()
+    fields = {k: v.astype(np.float32) for k, v in _complete_native_static(grid).items()}
+    fields.update(EROD=np.full((3, 3, 4), 0.25),
+                  CLAYFRAC=np.full((3, 4), 0.125),
+                  SANDFRAC=np.full((3, 4), 0.375))
+    expected = validate_native_static_fields(fields, grid, 3, 4)
+    save = np.savez_compressed if compressed else np.savez
+    path = tmp_path / "parallel.npz"
+    save(path, **fields)
+    actual = load_native_static_cache(path, grid, 3, 4)
+    assert list(actual) == list(expected)
+    for name in expected:
+        assert actual[name].dtype == expected[name].dtype
+        assert actual[name].shape == expected[name].shape
+        assert actual[name].tobytes() == expected[name].tobytes()
+    for name, value, message in [
+        ("SOILTEMP", np.ones((7, 3, 4)), "SOILTEMP has shape"),
+        ("TMN", np.full((3, 4), np.nan), "TMN contains non-finite"),
+        ("LANDMASK", np.full((3, 4), 0.5), "LANDMASK must be exactly binary"),
+        ("MAPFAC_M", np.zeros((3, 4)), "MAPFAC_M"),
+    ]:
+        invalid = dict(fields, **{name: value})
+        save(path, **invalid)
+        with pytest.raises(ValueError, match=message):
+            load_native_static_cache(path, grid, 3, 4)
+    del fields["EROD"]
+    save(path, **fields)
+    with pytest.raises(ValueError, match="chemistry fields are incomplete"):
+        load_native_static_cache(path, grid, 3, 4)
+    del fields["HGT_M"]
+    save(path, **fields)
+    with pytest.raises(KeyError, match="missing"):
+        load_native_static_cache(path, grid, 3, 4)
+
+
+def test_static_mapping_and_small_npz_remain_serial(tmp_path, monkeypatch):
+    import threading
+    import gpuwm.native_wrf_contract as contract
+    caller = threading.get_ident()
+    reads = []
+    class Mapping(dict):
+        def __getitem__(self, key):
+            reads.append((key, threading.get_ident()))
+            return super().__getitem__(key)
+    fields = Mapping(B=np.arange(7), A=np.arange(4))
+    contract._decode_native_static_fields(fields, fields)
+    assert reads == [("A", caller), ("B", caller)]
+    path = tmp_path / "small.npz"
+    np.savez(path, **fields)
+    original = np.lib.npyio.NpzFile.__getitem__
+    reads.clear()
+    def read(self, key):
+        reads.append((key, threading.get_ident()))
+        return original(self, key)
+    monkeypatch.setattr(np.lib.npyio.NpzFile, "__getitem__", read)
+    with np.load(path, allow_pickle=False) as archive:
+        contract._decode_native_static_fields(archive, ["B", "A"])
+    assert reads == [("A", caller), ("B", caller)]
+
+
+def test_parallel_static_crc_failure_joins_readers(tmp_path, monkeypatch):
+    import struct
+    import threading
+    import zipfile
+    import gpuwm.native_wrf_contract as contract
+    monkeypatch.setattr(contract, "_NATIVE_STATIC_PARALLEL_BYTES", 0)
+    path = tmp_path / "corrupt.npz"
+    np.savez(path, A=np.arange(1024), B=np.arange(1024))
+    data = bytearray(path.read_bytes())
+    with zipfile.ZipFile(path) as archive:
+        info = archive.getinfo("A.npy")
+        offset = info.header_offset
+        name_len, extra_len = struct.unpack_from("<HH", data, offset + 26)
+        end = offset + 30 + name_len + extra_len + info.compress_size
+    data[end - 1] ^= 1
+    path.write_bytes(data)
+    with np.load(path, allow_pickle=False) as archive:
+        with pytest.raises(zipfile.BadZipFile, match="CRC"):
+            contract._decode_native_static_fields(archive, ["A", "B"])
+    assert not any(t.name.startswith("native-static") for t in threading.enumerate())

@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
+use rayon::prelude::*;
 use rw_isobaric::InterfaceStencil;
 use serde_json::{json, Value};
 use wrf_core::WrfFile;
@@ -110,7 +111,7 @@ fn options_digest(request: &Request) -> String {
 /// The export folder's own artifacts; anything else in it is somebody
 /// else's and is never deleted.
 fn is_ours(name: &str) -> bool {
-    matches!(name, "README.txt" | "ml-export-receipt.json" | ".zgroup" | ".zattrs" | ".zmetadata")
+    matches!(name, "README.txt" | "ml-export-receipt.json" | "zarr.json" | ".zgroup" | ".zattrs" | ".zmetadata")
         || name == STATE_DIR
         || name.ends_with(".zarr")
 }
@@ -581,7 +582,7 @@ fn level_chunking(levels: usize, plane_bytes: usize) -> usize {
 fn time_index(layout: Layout, t: usize) -> Vec<usize> {
     match layout {
         Layout::Analysis => vec![t],
-        Layout::Forecast => vec![0, t],
+        Layout::Forecast | Layout::Earth2 => vec![0, t],
     }
 }
 
@@ -592,12 +593,13 @@ struct Tiling {
     nx: usize,
     ty: usize,
     tx: usize,
+    face_size: Option<usize>,
 }
 
 impl Tiling {
     fn of(domain: &DomainState) -> Tiling {
         let (ty, tx) = domain.chunk_yx();
-        Tiling { ny: domain.out_ny, nx: domain.out_nx, ty, tx }
+        Tiling { ny: domain.out_ny, nx: domain.out_nx, ty, tx, face_size: None }
     }
 
     fn whole(&self) -> bool {
@@ -667,7 +669,7 @@ fn write_surface_chunk(store: &Path, name: &str, plane: &[f32], layout: Layout, 
         let mut values = Vec::with_capacity(tiling.ty * tiling.tx);
         tile_of(plane, tiling.ny, tiling.nx, tiling.ty, tiling.tx, iy, ix, f32::NAN, &mut values);
         let mut index = time_index(layout, t);
-        index.extend([iy, ix]);
+        if tiling.face_size.is_some() { index.extend([iy, 0, ix]); } else { index.extend([iy, ix]); }
         written += zarr::write_chunk(store, name, &index, &zarr::f32_bytes(&values), Dtype::F32)?;
     }
     Ok(written)
@@ -782,6 +784,7 @@ fn init_domain(request: &Request, file: &WrfFile, meta: &FileMeta, t: usize, val
             request.grid.deg,
             request.grid.method,
             &request.spacings_deg,
+            request.grid.target.as_ref(),
         )?),
     };
     let (out_ny, out_nx) = match (&regrid, &native.regular) {
@@ -986,6 +989,7 @@ fn export_frame(
                 request.grid.deg,
                 request.grid.method,
                 &request.spacings_deg,
+            request.grid.target.as_ref(),
             )?)
         }
         None => None,
@@ -998,7 +1002,8 @@ fn export_frame(
     let layout = request.layout;
     let regular = domain.native.regular.clone();
     let levels_per_chunk = domain.levels_per_chunk;
-    let tiling = Tiling::of(domain);
+    let mut tiling = Tiling::of(domain);
+    tiling.face_size = crate::earth2::nside(request);
     let model_levels = domain.model_levels.clone();
     let levels_kept = domain.levels_kept.clone();
     let lid = if domain.lid_stated { Lid::PTop(domain.lid_pa) } else { Lid::TopMassLevel };
@@ -1093,11 +1098,14 @@ fn export_frame(
         None
     };
 
-    let mut written = 0u64;
-    let mut partners: Vec<(String, bool)> = Vec::new();
-    for var in &variables {
+    // Channel work is independent after the frame's common fields and
+    // accumulation are available. Keep single-level consumers parallel,
+    // including reads, diagnostics, regridding, compression and writes.
+    let outputs = variables.par_iter().map(|var| -> Result<(u64, Vec<(String, bool)>)> {
+        let mut written = 0u64;
+        let mut partners = Vec::new();
         if var.omitted.is_some() {
-            continue;
+            return Ok((written, partners));
         }
         let row = row_of(request, &var.id);
         let op = Op::parse(&row.op)?;
@@ -1112,9 +1120,11 @@ fn export_frame(
         }
         match row.kind {
             VariableKind::Level => {
+                let single_plan = row.pressure_hpa.and_then(|p| columns.as_ref().map(|cols| Plan::new(&[p],cols)));
+                let plan = single_plan.as_ref().or(plan.as_ref());
                 let field = ops::level_field(file, t, &op, scale)?;
                 let stencil = base.as_ref().and_then(|b| b.stencil.as_ref().map(|s| (b, s)));
-                let stack: Vec<f32> = match (&plan, &columns, &op, stencil) {
+                let stack: Vec<f32> = match (plan, &columns, &op, stencil) {
                     (Some(plan), Some(cols), Op::Geopotential, Some((b, stencil))) => plan
                         .apply_geopotential_between_interfaces(
                             &b.phi_stag,
@@ -1127,6 +1137,13 @@ fn export_frame(
                     _ => vertical::select_model_levels(&field, cells, &model_levels),
                 };
                 drop(field);
+                if let Some(pressure) = row.pressure_hpa {
+                    if !levels_kept.contains(&pressure) { return Err(refuse(format!("requested channel {} is above the model lid",var.name))); }
+                    let k = 0;
+                    let plane = transform.plane(&stack[k * cells..(k + 1) * cells]);
+                    written += write_surface_chunk(&store, &var.name, &plane, layout, t_pos, tiling)?;
+                    return Ok((written, partners));
+                }
                 let stack = transform.stack(&stack, cells);
                 written += write_level_chunks(
                     &store,
@@ -1173,16 +1190,12 @@ fn export_frame(
                         match earlier {
                             None => vec![f64::NAN; cells],
                             Some(earlier) => {
-                                let mut worst = 0.0f64;
-                                let diff: Vec<f64> = now
-                                    .iter()
-                                    .zip(&earlier)
-                                    .map(|(a, b)| {
-                                        let d = a - b;
-                                        worst = worst.min(d);
+                                let worst = now.par_iter().zip(&earlier)
+                                    .map(|(a,b)| a-b).reduce(|| 0.0, f64::min);
+                                let diff: Vec<f64> = now.par_iter().zip(&earlier)
+                                    .map(|(a,b)| { let d=a-b;
                                         if d.is_finite() { d.max(0.0) / 1000.0 * scale } else { f64::NAN }
-                                    })
-                                    .collect();
+                                    }).collect();
                                 if worst < -ACCUMULATION_TOLERANCE_MM {
                                     return Err(refuse(format!(
                                         "accumulated precipitation in domain {} falls by {:.3} mm between {} and {}; a bucket reset or restart the file does not describe would publish negative rain",
@@ -1198,7 +1211,7 @@ fn export_frame(
                     }
                     _ => ops::surface_field(file, t, &op, scale, p_top_stated)?,
                 };
-                let plane32: Vec<f32> = plane.iter().map(|&v| v as f32).collect();
+                let plane32: Vec<f32> = plane.par_iter().map(|&v| v as f32).collect();
                 written += write_surface_chunk(&store, &var.name, &transform.plane(&plane32), layout, t_pos, tiling)?;
             }
             VariableKind::Static => {
@@ -1206,14 +1219,18 @@ fn export_frame(
                 // Keep every frame until finalize knows whether the grid
                 // moved; stationary exports collapse to the first plane.
                 let plane = ops::surface_field(file, t, &op, scale, None)?;
-                let plane32: Vec<f32> = plane.iter().map(|&v| v as f32).collect();
+                let plane32: Vec<f32> = plane.par_iter().map(|&v| v as f32).collect();
                 written += write_surface_chunk(&store, &var.name, &transform.plane(&plane32), layout, t_pos, tiling)?;
             }
         }
-    }
+        Ok((written, partners))
+    }).collect::<Result<Vec<_>>>()?;
+    let mut written = outputs.iter().map(|(bytes, _)| bytes).sum::<u64>();
+    let partners: Vec<(String, bool)> = outputs.into_iter().flat_map(|(_, partners)| partners).collect();
 
     // The below-ground mask.
     if let (Some(plan), Some(base)) = (&plan, &base) {
+      if layout != Layout::Earth2 {
         let mask = match &regrid {
             Some(r) => {
                 let psfc32: Vec<f32> = base.psfc.iter().map(|&v| v as f32).collect();
@@ -1244,6 +1261,8 @@ fn export_frame(
             tiling,
             levels_per_chunk,
         )?;
+    }
+
     }
 
     // Keep only the accumulations the longest period still needs.
@@ -1312,7 +1331,7 @@ mod tests {
         // A 5 x 7 plane in 2 x 3 tiles: 3 x 3 tiles, the last row and column padded.
         let (ny, nx, ty, tx) = (5usize, 7usize, 2usize, 3usize);
         let plane: Vec<i32> = (0..(ny * nx) as i32).collect();
-        let tiling = Tiling { ny, nx, ty, tx };
+        let tiling = Tiling { ny, nx, ty, tx, face_size: None };
         let mut rebuilt = vec![-1i32; ny * nx];
         let mut tiles = 0;
         for (iy, ix) in tiling.tiles() {

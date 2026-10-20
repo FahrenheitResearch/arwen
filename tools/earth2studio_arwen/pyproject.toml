@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "earth2studio-arwen"
+version = "0.1.0.dev0"
+description = "ArWen (CUDA WRF-ARW) and hex (CUDA MPAS-A) for NVIDIA Earth2Studio: a data source over WOOF history and a physics prognostic step"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.11"
+dependencies = [
+    "earth2studio>=0.19.0",
+    "numpy",
+    "xarray",
+    "netCDF4",
+    "zarr",
+    "torch",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Atmospheric Science",
+]
+
+[project.urls]
+Documentation = "https://github.com/NVIDIA/earth2studio"
+
+[tool.setuptools.packages.find]
+where = ["src"]

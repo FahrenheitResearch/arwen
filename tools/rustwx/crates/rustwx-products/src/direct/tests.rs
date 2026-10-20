@@ -1793,3 +1793,25 @@ fn aifs_inference_direct_policy_uses_interpolated_raster_sampling() {
 
     assert_eq!(request.raster_sample_mode, RasterSampleMode::Linear);
 }
+
+#[test]
+fn full_domain_regular_grid_inverse_matches_its_native_frame() {
+    let lat = vec![22.,22.,22.,26.5,26.5,26.5,31.,31.,31.];
+    let lon = vec![-87.,-82.,-77.,-87.,-82.,-77.,-87.,-82.,-77.];
+    let bounds = (-87.,-77.,22.,31.);
+    let map = build_full_domain_projected_map_with_projection(&lat,&lon,None,bounds,1.4).unwrap();
+    let resolved = full_domain_panel_resolved_projection(&lat,&lon,None,bounds,1.4).unwrap();
+    let inverse = map.inverse_raster_projection.unwrap();
+    assert_eq!(inverse.projection,resolved.spec());
+    match resolved {
+        rustwx_render::ResolvedProjection::LambertConformal { reference_latitude_deg, .. } =>
+            assert_eq!(inverse.reference_latitude_deg,Some(reference_latitude_deg)),
+        rustwx_render::ResolvedProjection::Geographic { central_meridian_deg } =>
+            assert_eq!(inverse.reference_longitude_deg,Some(central_meridian_deg)),
+        _ => {}
+    }
+    for i in 0..lat.len() {
+        let (x,y) = resolved.project(lat[i] as f64,lon[i] as f64);
+        assert!((x-map.projected_x[i]).abs()<1e-6 && (y-map.projected_y[i]).abs()<1e-6);
+    }
+}

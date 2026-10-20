@@ -120,6 +120,16 @@ pub fn exact_subset_indices(
     label: &str,
     cyclic_degrees: bool,
 ) -> Result<Vec<usize>> {
+    exact_subset_indices_with_stride(larger, smaller, label, cyclic_degrees, false)
+}
+
+fn exact_subset_indices_with_stride(
+    larger: &[f64],
+    smaller: &[f64],
+    label: &str,
+    cyclic_degrees: bool,
+    allow_strided: bool,
+) -> Result<Vec<usize>> {
     // `np.mod(x, 360.0)`: floor-modulo, whose result takes the divisor's
     // sign.  Rust's `%` is truncating and would leave -0.25 where numpy
     // leaves 359.75, so a donor spelling longitudes in [-180, 180) would
@@ -172,13 +182,46 @@ pub fn exact_subset_indices(
             contiguous = wrapped.iter().all(|step| *step == 1)
                 || wrapped.iter().all(|step| *step == size - 1);
         }
+        if !contiguous && allow_strided {
+            contiguous = regular_index_stride(
+                &indices, larger.len(),
+                cyclic_degrees && closed_longitude_circle(larger),
+            ).is_some();
+        }
         if !contiguous {
+            let kind = if allow_strided { "regular strided" } else { "contiguous" };
             return Err(frame_invalid(format!(
-                "primary {label} is not a contiguous terrain-grid subset"
+                "primary {label} is not a {kind} terrain-grid subset"
             )));
         }
     }
     Ok(indices)
+}
+
+/// Exact regular selection, with no repeated cells or second circle.
+fn regular_index_stride(indices: &[usize], size: usize, cyclic: bool) -> Option<i64> {
+    if indices.len() < 2 {
+        return Some(0);
+    }
+    let differences: Vec<i64> = indices.windows(2)
+        .map(|pair| pair[1] as i64 - pair[0] as i64).collect();
+    let mut step = differences[0];
+    if step != 0 && differences.iter().all(|value| *value == step) {
+        return Some(step);
+    }
+    if cyclic {
+        let size = size as i64;
+        let wrapped: Vec<i64> = differences.iter()
+            .map(|value| value.rem_euclid(size)).collect();
+        step = wrapped[0];
+        if step > size / 2 { step -= size; }
+        if step != 0 && wrapped.iter().all(|value| *value == step.rem_euclid(size))
+            && step.abs() * ((indices.len() - 1) as i64) < size
+        {
+            return Some(step);
+        }
+    }
+    None
 }
 
 /// `mapped_composition._closed_longitude_circle`: whether a donor
@@ -616,7 +659,9 @@ fn binding_subset_indices(
     primary: &PrimaryHeader,
     donor: &DecodedCollection,
     binding_name: &str,
+    grid_alignment: &str,
 ) -> Result<(Vec<usize>, Vec<usize>)> {
+    let allow_strided = grid_alignment == "exact_coordinate_strided_subset";
     let wrap = |error: crate::refusal::Refusal| -> crate::refusal::Refusal {
         frame_invalid(format!(
             "contributing source binding {} is cross-grid ({}); borrowing a \
@@ -627,10 +672,11 @@ fn binding_subset_indices(
             error.message
         ))
     };
-    let latitude = exact_subset_indices(&donor.latitude, primary.latitude, "latitude", false)
+    let latitude = exact_subset_indices_with_stride(
+        &donor.latitude, primary.latitude, "latitude", false, allow_strided)
         .map_err(wrap)?;
-    let longitude =
-        exact_subset_indices(&donor.longitude, primary.longitude, "longitude", true).map_err(wrap)?;
+    let longitude = exact_subset_indices_with_stride(
+        &donor.longitude, primary.longitude, "longitude", true, allow_strided).map_err(wrap)?;
     Ok((latitude, longitude))
 }
 
@@ -644,6 +690,8 @@ pub struct BindingPlan {
     latitude_indices: Vec<usize>,
     longitude_indices: Vec<usize>,
     chosen: BTreeMap<(String, NaiveDateTime), crate::assemble::DirectKey>,
+    vertical_merge: Option<crate::vertical::VerticalMerge>,
+    binding_name: String,
 }
 
 /// Insert this valid time's borrowed fields into the slice being composed.
@@ -652,7 +700,7 @@ pub fn apply_bound_fields(
     donor: &DecodedCollection,
     slice: &mut DecodedCollection,
     key: &TimeKey,
-) -> Result<()> {
+) -> Result<Option<Value>> {
     // Each borrowed field is its own subset of its own donor array, so
     // they are cut on every core and inserted in the plan's order; the
     // refusal is the first one in that order.  Named breakage: the
@@ -696,10 +744,16 @@ pub fn apply_bound_fields(
             })
         }).collect()
     });
-    for ((name, _donor_key), value) in chosen.iter().zip(crate::threads::in_order(cut)?) {
-        slice.direct.insert((key.0, key.1.clone(), (*name).clone()), value);
+    let cut = crate::threads::in_order(cut)?;
+    let receipt = if let Some(merge) = &plan.vertical_merge {
+        Some(merge.apply(slice, &cut, &donor.vertical_values, key, &plan.binding_name)?)
+    } else { None };
+    for ((name, _donor_key), value) in chosen.iter().zip(cut) {
+        if !plan.vertical_merge.as_ref().is_some_and(|merge| merge.fields.contains_key(*name)) {
+            slice.direct.insert((key.0, key.1.clone(), (*name).clone()), value);
+        }
     }
-    Ok(())
+    Ok(receipt)
 }
 
 /// `mapped_composition._compose_bound_fields`, resolved against the header.
@@ -752,7 +806,8 @@ pub fn plan_bound_fields(
         .direct_names
         .iter()
         .map(String::as_str)
-        .filter(|name| binding.fields.iter().any(|field| field == name))
+        .filter(|name| binding.fields.iter().any(|field| field == name)
+            && !binding.vertical_merge.as_ref().is_some_and(|merge| merge.fields.contains_key(*name)))
         .collect();
     if let Some(name) = provided_twice.into_iter().next() {
         return Err(frame_invalid(format!(
@@ -766,6 +821,7 @@ pub fn plan_bound_fields(
         .values()
         .any(|value| value.axes.iter().any(|axis| axis == "vertical"))
         && donor.vertical_values != primary.vertical_values
+        && binding.vertical_merge.is_none()
     {
         // The primary's declared ladder, read from the header.
         return Err(frame_invalid(format!(
@@ -775,7 +831,8 @@ pub fn plan_bound_fields(
              does not declare"
         )));
     }
-    let (latitude_indices, longitude_indices) = binding_subset_indices(primary, donor, binding_name)?;
+    let (latitude_indices, longitude_indices) = binding_subset_indices(
+        primary, donor, binding_name, &binding.grid_alignment)?;
     let keys = primary.keys();
     let primary_cycles: Vec<NaiveDateTime> = primary
         .source_cycles
@@ -935,14 +992,16 @@ pub fn plan_bound_fields(
         .collect();
     let mut fields = binding.fields.clone();
     fields.sort();
-    let receipt = json!({
+    let mut receipt = json!({
         "schema": BINDING_RECEIPT_SCHEMA,
         "status": "PASS",
         "binding": binding_name,
         "source_id": binding.source_id,
         "fields": fields,
         "grid_alignment": binding.grid_alignment,
-        "coordinate_match": "exact_equivalent_contiguous_subset",
+        "coordinate_match": if binding.grid_alignment == "exact_coordinate_strided_subset" {
+            "exact_equivalent_regular_strided_subset"
+        } else { "exact_equivalent_contiguous_subset" },
         "longitude_equivalence": "modulo_360_exact",
         "primary_shape": [primary.latitude.len(), primary.longitude.len()],
         "donor_shape": [donor.latitude.len(), donor.longitude.len()],
@@ -978,6 +1037,14 @@ pub fn plan_bound_fields(
             .collect::<Vec<String>>(),
         "field_subset_sha256": subset_hashes,
     });
+    if binding.grid_alignment == "exact_coordinate_strided_subset" {
+        receipt["latitude_indices"] = json!(latitude_indices);
+        receipt["longitude_indices"] = json!(longitude_indices);
+        receipt["latitude_index_stride"] = json!(regular_index_stride(
+            &latitude_indices, donor.latitude.len(), false));
+        receipt["longitude_index_stride"] = json!(regular_index_stride(
+            &longitude_indices, donor.longitude.len(), closed_longitude_circle(&donor.longitude)));
+    }
     Ok((
         // The composed frame keeps the PRIMARY's vertical identity, its
         // hybrid coefficient ladder included: the slice
@@ -988,6 +1055,8 @@ pub fn plan_bound_fields(
             latitude_indices,
             longitude_indices,
             chosen,
+            vertical_merge: binding.vertical_merge.clone(),
+            binding_name: binding.name.clone(),
         },
         receipt,
     ))
@@ -1004,6 +1073,43 @@ fn mixed_cycles(label: &str, cycles: &[NaiveDateTime]) -> crate::refusal::Refusa
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn declared_stride_matches_the_whole_prep_coordinate_regression() {
+        let latitude: Vec<f64> = (0..47).map(|i| 32.75 - i as f64 * 0.25).collect();
+        let longitude: Vec<f64> = (0..49).map(|i| -93.0 + i as f64 * 0.25).collect();
+        let primary_lat: Vec<f64> = (0..7).map(|i| 31.5 - i as f64 * 1.5).collect();
+        let primary_lon: Vec<f64> = (0..7).map(|i| 268.5 + i as f64 * 1.5).collect();
+        assert!(exact_subset_indices(&latitude, &primary_lat, "latitude", false).is_err());
+        assert_eq!(exact_subset_indices_with_stride(
+            &latitude, &primary_lat, "latitude", false, true).unwrap(),
+            vec![5, 11, 17, 23, 29, 35, 41]);
+        assert_eq!(exact_subset_indices_with_stride(
+            &longitude, &primary_lon, "longitude", true, true).unwrap(),
+            vec![6, 12, 18, 24, 30, 36, 42]);
+    }
+
+    #[test]
+    fn declared_stride_wraps_once_and_never_interpolates() {
+        let donor: Vec<f64> = (0..12).map(|i| i as f64 * 30.0).collect();
+        for (primary, expected, stride) in [
+            (vec![300.0, 0.0, 60.0], vec![10, 0, 2], 2),
+            (vec![60.0, 0.0, 300.0], vec![2, 0, 10], -2),
+            (vec![240.0, 180.0, 120.0], vec![8, 6, 4], -2),
+        ] {
+            let indices = exact_subset_indices_with_stride(
+                &donor, &primary, "longitude", true, true).unwrap();
+            assert_eq!(indices, expected);
+            assert_eq!(regular_index_stride(&indices, donor.len(), true), Some(stride));
+        }
+        for primary in [vec![0.0, 60.0, 150.0], vec![0.0, 120.0, 240.0, 0.0],
+            vec![0.0, 150.0, 300.0, 90.0], vec![0.0, 60.00000000001]] {
+            assert!(exact_subset_indices_with_stride(
+                &donor, &primary, "longitude", true, true).is_err());
+        }
+        assert!(exact_subset_indices_with_stride(
+            &[0.0, 360.0], &[0.0], "longitude", true, true).is_err());
+    }
 
     #[test]
     fn an_exact_subset_solves_to_its_index_window() {
@@ -1287,6 +1393,7 @@ mod tests {
             fields: vec!["land_fraction".into()],
             grid_alignment: "exact_coordinate_subset".into(),
             time_alignment: alignment.into(),
+            vertical_merge: None,
         }
     }
 
@@ -1339,5 +1446,79 @@ mod tests {
             time_key_list_repr(&[(value, None)]),
             "[(datetime.datetime(2026, 8, 17, 6, 0), None)]"
         );
+    }
+}
+
+/// Express a Lambert donor's axes in the primary window's origin before
+/// the existing exact subset join. Projected axes are distances, so comparing
+/// two local zero origins without this registration would borrow wrong cells.
+pub fn register_projected_subset(
+    primary: &crate::model::Mapping, donor: &crate::model::Mapping,
+    collection: &mut DecodedCollection,
+) -> Result<()> {
+    let p = primary.grid_declaration()?;
+    let d = donor.grid_declaration()?;
+    if !p.is_lambert() && !d.is_lambert() { return Ok(()); }
+    let (Some(p), Some(d)) = (p.parameters, d.parameters) else {
+        return Err(frame_invalid("projected composition needs both sources on a declared Lambert grid"));
+    };
+    if p.latin1 != d.latin1 || p.latin2 != d.latin2
+        || crate::lambert::wrap180(p.lov - d.lov) != 0.0
+        || p.dx_m != d.dx_m || p.dy_m != d.dy_m || p.earth_radius_m != d.earth_radius_m {
+        return Err(frame_invalid("projected composition needs matching Lambert projection and spacing"));
+    }
+    let grid = crate::lambert::LambertGrid::from_declaration(&d);
+    let (x, y) = grid.latlon_to_ij(p.lat1, p.lon1);
+    let x = x - 1.0;
+    let y = (y - 1.0) * d.dx_m / d.dy_m;
+    if (x - x.round()).abs() > 0.1 || (y - y.round()).abs() > 0.1
+        || x.round() < 0.0 || y.round() < 0.0
+        || x.round() + p.nx as f64 > d.nx as f64
+        || y.round() + p.ny as f64 > d.ny as f64 {
+        return Err(frame_invalid("primary Lambert window is not a cell-aligned subset of donor grid"));
+    }
+    collection.latitude = (0..d.ny).map(|index| (index as f64-y.round()) * d.dy_m / crate::model::PROJECTED_AXIS_UNIT_M).collect();
+    collection.longitude = (0..d.nx).map(|index| (index as f64-x.round()) * d.dx_m / crate::model::PROJECTED_AXIS_UNIT_M).collect();
+    Ok(())
+}
+
+#[cfg(test)]
+mod projected_registration_tests {
+    use super::*;
+    use crate::{model::Mapping, node::Node};
+
+    fn mapping() -> Mapping {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/projected.mapping.json");
+        Mapping::load(path.to_str().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn a_projected_donor_joins_the_interior_cells_and_refuses_half_cell_offsets() {
+        let donor = mapping();
+        let parameters = donor.grid_declaration().unwrap().parameters.unwrap();
+        let grid = crate::lambert::LambertGrid::from_declaration(&parameters);
+        let mut primary = mapping();
+        let mut doc = primary.doc.to_value();
+        let (lat, lon) = grid.ij_to_latlon(2.0, 2.0);
+        doc["grid"]["parameters"]["lat1"] = json!(lat);
+        doc["grid"]["parameters"]["lon1"] = json!(lon);
+        doc["grid"]["parameters"]["nx"] = json!(2);
+        doc["grid"]["parameters"]["ny"] = json!(2);
+        primary.doc = Node::parse(&serde_json::to_vec(&doc).unwrap()).unwrap();
+        let mut collection = DecodedCollection {
+            latitude: vec![0.0, 0.03, 0.06], longitude: vec![0.0, 0.03, 0.06, 0.09],
+            vertical_values: vec![], direct: BTreeMap::new(), source_cycles: BTreeMap::new(),
+            grid_fingerprint: "fixture".into(), hybrid_a: vec![], hybrid_b: vec![],
+        };
+        register_projected_subset(&primary, &donor, &mut collection).unwrap();
+        assert_eq!(exact_subset_indices(&collection.latitude, &[0.0, 0.03], "y", false).unwrap(), vec![1, 2]);
+        assert_eq!(exact_subset_indices(&collection.longitude, &[0.0, 0.03], "x", false).unwrap(), vec![1, 2]);
+        let (lat, lon) = grid.ij_to_latlon(2.5, 2.0);
+        doc["grid"]["parameters"]["lat1"] = json!(lat);
+        doc["grid"]["parameters"]["lon1"] = json!(lon);
+        primary.doc = Node::parse(&serde_json::to_vec(&doc).unwrap()).unwrap();
+        assert!(register_projected_subset(&primary, &donor, &mut collection).unwrap_err()
+            .to_string().contains("cell-aligned subset"));
     }
 }

@@ -9,6 +9,7 @@
 //! (ascending) and `longitude` dimensions, the WeatherBench 2 shape, in
 //! 0..360 when it circles the globe.
 
+use rayon::prelude::*;
 use serde_json::{json, Map, Value};
 
 use crate::frame::FileMeta;
@@ -188,11 +189,17 @@ fn regular_axes(meta: &FileMeta, xlat: &[f64], xlong: &[f64]) -> Option<Regular>
     let lat_src: Vec<f64> = (0..ny).map(|j| xlat[j * nx]).collect();
     let lon_src: Vec<f64> = (0..nx).map(|i| xlong[i]).collect();
     let dlat = (lat_src[ny - 1] - lat_src[0]).abs() / (ny - 1) as f64;
-    let dlon = wrap180(lon_src[1] - lon_src[0]).abs();
+    // Float32 XLONG can round a local step by several ulps. Multiplying
+    // the first pair's error by nx misclassified a full globe as regional,
+    // leaving a gap between its last and first columns. Average the full
+    // unwrapped axis before deciding whether longitude is periodic.
+    let dlon = lon_src.par_windows(2)
+        .map(|w| wrap180(w[1] - w[0]).abs()).sum::<f64>() / (nx - 1) as f64;
     let ascending = lat_src[ny - 1] > lat_src[0];
     let rows: Vec<usize> = if ascending { (0..ny).collect() } else { (0..ny).rev().collect() };
     let lat: Vec<f64> = rows.iter().map(|&j| lat_src[j]).collect();
     let periodic = ((nx as f64) * dlon - 360.0).abs() < 1e-3;
+    let dlon = if periodic { 360.0 / nx as f64 } else { dlon };
     // Longitude: 0..360 unless that breaks a box that crosses the prime
     // meridian, which keeps -180..180.
     let to360: Vec<f64> = lon_src.iter().map(|l| l.rem_euclid(360.0)).collect();

@@ -1163,35 +1163,88 @@ def domain_start_ticks_of(node) -> int:
     return int(getattr(spec, "start_ticks", 0) or 0)
 
 
-def analysis_refl_10cm(state, *, shape=None, array_module=None):
-    """REFL_10CM for a domain's analysis frame, before any of its steps.
+def analysis_refl_10cm(state, cfg=None, *, shape=None, array_module=None):
+    """Diagnose analysis reflectivity from its hydrometeors, before stepping.
 
-    WRF's ``refl_10cm`` is a history-only state array (Registry
-    ``state real refl_10cm ikj dyn_em 1 - hdu``, no input flag) that only
-    the microphysics driver fills, so the analysis frame writes its initial
-    value: 0 everywhere.  Measured on the stock 4.6.1 combo recording
-    (iowa-convective A088, WSM6 with do_radar_ref = 1): frame 0 hashes to an
-    all-zero (50, 40, 40) float32 array.  WOOF used to omit the field at
-    that frame, which failed every combo that writes it (CHECK2.md item 3).
+    History uses the same scheme diagnostic as later output. Host/store
+    states are staged as bounded horizontal slabs on the GPU. The output
+    retains the history owner's host/device placement and prognostic fields
+    are never advanced.
 
-    Only a domain that starts with the run: a nest activating later gets
-    the parent's field interpolated down in WRF (Registry ``d``), which is
-    not this.  Shaped like the mass grid, in the state's own array module.
+    A streamed domain's fields are read from its store
+    (:func:`gpuwm.core.streaming.domain_field`), never from the state the
+    model still holds: under a store-direct domain that state is a
+    slab-height template, so reading it diagnosed one slab's rows and
+    broadcast them over the domain (tests/test_verify_base4_review.py).
+
+    Under ``GPUWM_WRF_EXACT=1`` the frame is WRF's own initial array, all
+    zero: ``refl_10cm`` is history-only (Registry ``hdu``) and only the
+    microphysics driver fills it; measured on the stock 4.6.1 combo
+    recording (iowa-convective A088, WSM6, do_radar_ref = 1), frame 0 is an
+    all-zero array.
     """
     import numpy as np
+    from gpuwm.wrf_exact import ENABLED
 
-    shape = state.qv.shape if shape is None else shape
-    if array_module is None and getattr(state, "_streamed_domain", None) is not None:
-        # Store history is host-owned. A full-domain device allocation here
-        # would defeat the bounded store road before its first model step.
-        array_module = np
-    if array_module is not None:
-        return array_module.zeros(shape, dtype=array_module.float32)
-    if isinstance(state.qv, np.ndarray):
-        return np.zeros(shape, dtype=np.float32)
+    streamed = getattr(state, "_streamed_domain", None) is not None
+    if shape is None:
+        shape = state.qv.shape
+    shape = tuple(shape)
+    host = streamed or array_module is np or isinstance(state.qv, np.ndarray)
+    if ENABLED:
+        if host:
+            return np.zeros(shape, dtype=np.float32)
+        import cupy as cp
+        return cp.zeros(shape, dtype=cp.float32)
     import cupy as cp
+    from types import SimpleNamespace
+    from gpuwm.core.state_reflectivity import diagnose
 
-    return cp.zeros(shape, dtype=cp.float32)
+    cfg = cfg if cfg is not None else state.physics.refl_config
+    if not host:
+        # The scheme diagnostics write the resident state's shared
+        # ``refl_10cm`` scratch, which the forecast microphysics later fills
+        # on the columns it computes.  The boundary ring is not one of them,
+        # so leaving the analysis values there froze the edge reflectivity at
+        # t0 for the whole run.  The frame is a copy; the scratch goes back to
+        # WRF's initial zeros for every cell microphysics never writes.
+        diagnosed = diagnose(state, cfg)
+        frame = diagnosed.copy()
+        diagnosed.fill(0.0)
+        return frame
+    if streamed:
+        from gpuwm.core.streaming import domain_field
+
+        def field(name):
+            return domain_field(state, name, setup=(name == "thb"))
+    else:
+        def field(name):
+            return getattr(state, name, None)
+    result = np.empty(shape, dtype=np.float32)
+    # GPU diagnostic kernels own the data path. Python only stages slabs.
+    ny = shape[1]
+    for y0 in range(0, ny, 64):
+        y1 = min(y0 + 64, ny)
+        slab = SimpleNamespace()
+        for name in ("p", "thb", "thp", "alt", "qv", "qc", "qr", "qi", "qs", "qg", "qh",
+                     "nr", "ni", "ns", "ng", "nh", "nc", "qir", "qib", "qirv", "qhw", "qhl",
+                     "volg", "f_rimef"):
+            value = field(name)
+            if value is not None:
+                if value.ndim == 3:
+                    value = value[:, y0:y1, :]
+                setattr(slab, name, cp.ascontiguousarray(cp.asarray(value)))
+            else:
+                setattr(slab, name, None)
+        buffers = {}
+        def scratch(size, name):
+            if name not in buffers:
+                buffers[name] = cp.empty(size, dtype=cp.float32)
+            return buffers[name]
+        slab.scratch = scratch
+        slab.refl10cm_from_melting = refl_melting_for(state)
+        result[:, y0:y1, :] = cp.asnumpy(diagnose(slab, cfg))
+    return result
 
 
 def consume_refl_10cm(state):

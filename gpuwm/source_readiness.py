@@ -555,6 +555,24 @@ def readiness(source: str, cycle: datetime | str, hours: int, *,
 
     from gpuwm import fetch
 
+    # Generated sources own acquisition, including the inputs they need.
+    # They have no posted forecast-file route to ask about.
+    from importlib import import_module
+    from gpuwm.source_adapters import get_source_adapter
+
+    try:
+        adapter = get_source_adapter(source)
+    except ValueError:
+        adapter = None
+    if adapter is not None and adapter.acquisition_owner:
+        owner = import_module(adapter.acquisition_owner)
+        return owner.readiness(
+            source, cycle, hours, cadence=cadence, start_hour=start_hour,
+            member=member, transport=transport, provider=provider,
+            as_posted=as_posted, late_after_minutes=late_after_minutes,
+            nest_start_leads=nest_start_leads, no_probe=no_probe,
+            probe=probe, now=now)
+
     checked = _naive(now) if now is not None else _utc_now()
     transport = fetch_endpoints.policy_transport(source, transport)
     basis = "named"

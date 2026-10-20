@@ -362,12 +362,19 @@ def test_advance_uv_adds_external_mode_damping_last():
 
 
 @requires_gpu
-def test_analysis_frame_reflectivity_is_wrfs_zero_array():
+def test_analysis_frame_reflectivity_is_wrfs_zero_array(monkeypatch):
     """WRF writes refl_10cm's initial array, all zeros, at the analysis
-    frame (stock 4.6.1 A088 frame 0 hashes to an all-zero array)."""
+    frame (stock 4.6.1 A088 frame 0 hashes to an all-zero array).
+
+    That is WRF exact mode's answer; default mode diagnoses the frame from
+    the initial hydrometeors (18dbe1d5449).  analysis_refl_10cm reads the
+    switch when it is called, so exact mode is set here, in any process."""
     import cupy as cp
     from types import SimpleNamespace
+    import gpuwm.wrf_exact
     from gpuwm.core.refl import analysis_refl_10cm
+
+    monkeypatch.setattr(gpuwm.wrf_exact, "ENABLED", True)
 
     state = SimpleNamespace(qv=cp.ones((3, 4, 5), cp.float32))
     refl = analysis_refl_10cm(state)

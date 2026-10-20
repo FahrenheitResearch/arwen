@@ -81,7 +81,7 @@ with h5py.File(sys.argv[1], 'w', libver='earliest') as f:
         dimension.make_scale('axis_' + str(count))
         for order, prefix in [('le', '<'), ('be', '>')]:
             dtype = np.dtype(prefix + kind)
-            for route in ['listed', 'raw']:
+            for route in ['listed', 'scale', 'raw']:
                 name = route + '_' + str(count) + '_' + order
                 dataset = f.create_dataset(name, (count,), dtype=dtype,
                     chunks=(4 if count == 17 else 1024,),
@@ -90,12 +90,18 @@ with h5py.File(sys.argv[1], 'w', libver='earliest') as f:
                     dtype=dtype)
                 dataset[:4] = np.array(markers, dtype=dtype)
                 dataset[count - 1] = tail
-                if route == 'raw':
-                    # Coordinate datasets are dimension scales, so the NetCDF
-                    # variable index omits them and the facade uses raw HDF5.
+                if route == 'listed':
+                    dataset.dims[0].attach_scale(dimension)
+                elif route == 'scale':
+                    # A coordinate variable: a dimension scale with data,
+                    # listed by the NetCDF variable index over itself.
                     dataset.make_scale(name)
                 else:
-                    dataset.dims[0].attach_scale(dimension)
+                    # A scale carrying netCDF-C's dimension-only marker is
+                    # hidden from the variable index, so the facade reads
+                    # it as raw HDF5 by name.
+                    dataset.make_scale(
+                        'This is a netCDF dimension but not a netCDF variable.')
 "#;
 
 trait StoredWord: NcReadable + Copy {
@@ -197,9 +203,9 @@ fn check_matrix_type<T: StoredWord>(kind: &str, markers: [T; 4], tail: T) {
             }],
         };
         for order in ["le", "be"] {
-            for route in ["listed", "raw"] {
+            for route in ["listed", "scale", "raw"] {
                 let name = format!("{route}_{count}_{order}");
-                assert_eq!(file.variable(&name).is_some(), route == "listed", "{name}");
+                assert_eq!(file.variable(&name).is_some(), route != "raw", "{name}");
                 let dataset = hdf5.dataset(&name).unwrap();
                 assert_eq!(
                     dataset
@@ -212,7 +218,7 @@ fn check_matrix_type<T: StoredWord>(kind: &str, markers: [T; 4], tail: T) {
                     "{name}"
                 );
 
-                let typed = if route == "listed" {
+                let typed = if route != "raw" {
                     file.read_array::<T>(&name).unwrap()
                 } else {
                     dataset.read_array::<T>().unwrap()
@@ -231,7 +237,7 @@ fn check_matrix_type<T: StoredWord>(kind: &str, markers: [T; 4], tail: T) {
                 assert_eq!(promoted.shape(), &[count], "{name}");
                 assert_promoted(&name, promoted.values(), 0..count, count, &markers, tail);
 
-                let typed_slice = if route == "listed" {
+                let typed_slice = if route != "raw" {
                     file.read_array_slice::<T>(&name, &selection).unwrap()
                 } else {
                     dataset.read_slice::<T>(&hdf5_selection).unwrap()
@@ -316,7 +322,9 @@ with h5py.File(sys.argv[1], 'w', libver='earliest') as f:
 "#,
     );
     let file = netcrust::open(&fixture.0).unwrap();
-    assert!(file.variable("valid_time").is_none());
+    let valid_time = file.variable("valid_time").expect("a coordinate variable is listed");
+    assert_eq!(valid_time.dimensions().len(), 1);
+    assert_eq!(valid_time.dimensions()[0].name(), "valid_time");
     let output = file.read_array_f64("valid_time").unwrap();
     assert_eq!(output.shape(), &[3]);
     assert_eq!(

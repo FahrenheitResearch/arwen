@@ -74,14 +74,17 @@ def keyed_source(source: str, options) -> str:
 
 
 def compile_program(source: str, options, *, name: str = "unit.cu",
-                    target: str = "ptx") -> bytes:
+                    target: str = "ptx", nvrtc=None) -> bytes:
     """Compile ``source`` with NVRTC under ``options`` and return the PTX
     (``target="ptx"``) or cubin (``target="cubin"``) bytes.  The source is
     :func:`keyed_source`'s, so the ComputeCache cannot answer it with an
-    entry compiled under other options."""
+    entry compiled under other options.  ``nvrtc`` is the backend module
+    (``cupy.cuda.nvrtc`` when omitted): a caller that resolved its own, or
+    a test standing one in, compiles through the same keyed route."""
     if target not in ("ptx", "cubin"):
         raise ValueError(f"target must be 'ptx' or 'cubin', not {target!r}")
-    from cupy.cuda import nvrtc
+    if nvrtc is None:
+        from cupy.cuda import nvrtc
 
     options = [str(option) for option in tuple(options or ())]
     program = nvrtc.createProgram(keyed_source(source, options), name, [], [])

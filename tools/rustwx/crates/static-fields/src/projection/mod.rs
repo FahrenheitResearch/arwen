@@ -376,6 +376,27 @@ impl ProjectedGrid {
         (sin, cos)
     }
 
+    /// Requested derived fields in kind order, sharing one coordinate pass.
+    /// Each scalar expression is the same as the separate array methods.
+    pub fn derived_arrays(&self, stagger: Stagger, kinds: u32) -> Vec<Grid2> {
+        let (lat, lon) = self.latlon(stagger);
+        (0..=6).filter(|kind| kinds & (1 << kind) != 0).map(|kind| {
+            let mut out = Grid2::filled(lat.ny, lat.nx, 0.0);
+            out.data.par_iter_mut().enumerate().for_each(|(i, value)| {
+                *value = match kind {
+                    0 => lat.data[i],
+                    1 => lon.data[i],
+                    2 => self.map_factor(lat.data[i]),
+                    3 => 2.0 * OMEGA_E * (lat.data[i] * RAD_PER_DEG).sin(),
+                    4 => 2.0 * OMEGA_E * (lat.data[i] * RAD_PER_DEG).cos(),
+                    5 => self.rotation(lon.data[i]).0,
+                    _ => self.rotation(lon.data[i]).1,
+                };
+            });
+            out
+        }).collect()
+    }
+
     /// WPS parent_start/ratio nest arithmetic (`ProjectedGrid.nest`):
     /// nest mass coordinate x sits at parent mass coordinate
     /// `(i_parent_start - 0.5) + (x - 0.5)/ratio`; the child is a full

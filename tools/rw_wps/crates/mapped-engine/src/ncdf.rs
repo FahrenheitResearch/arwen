@@ -16,10 +16,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use ndarray::{ArrayD, IxDyn};
 use netcrust::{File as NcFile, Variable};
+use rayon::prelude::*;
 
 use crate::array;
 use crate::assemble::{DecodedCollection, DirectKey, DirectValue, TimeKey};
-use crate::model::Mapping;
+use crate::model::{Mapping, GridDeclaration};
 use crate::node::Node;
 use crate::refusal::{decode_failed, frame_invalid, mapping_invalid, missing_input, Result};
 
@@ -112,6 +113,12 @@ struct NcVariable {
     name: String,
     dimensions: Vec<String>,
     source: NcSource,
+    /// String attributes the mapping's `producer_attributes` table
+    /// declares for this variable and the file does not carry (see
+    /// [`apply_producer_attributes`]).  Consulted only after the file's
+    /// own attributes, so a file attribute always wins and a conflicting
+    /// one was already refused.
+    declared: BTreeMap<String, String>,
 }
 
 impl NcVariable {
@@ -125,6 +132,11 @@ impl NcVariable {
     }
 
     fn attribute_string(&self, key: &str) -> Option<String> {
+        self.file_attribute_string(key)
+            .or_else(|| self.declared.get(key).cloned())
+    }
+
+    fn file_attribute_string(&self, key: &str) -> Option<String> {
         match &self.source {
             NcSource::Indexed(variable) => variable
                 .attribute(key)
@@ -395,6 +407,28 @@ impl CfPolicy {
     /// that was never in that space.
     fn apply(&self, values: &mut [f64]) -> Vec<bool> {
         let mut mask = vec![false; values.len()];
+        // Coordinates are tiny; fields can contain millions of stored values.
+        // Use the engine's bounded pool without changing the per-cell order
+        // of masking, multiplication and addition (never a fused mul_add).
+        const CHUNK: usize = 32 * 1024;
+        if values.len() >= 2 * CHUNK {
+            let chunk = values
+                .len()
+                .div_ceil(crate::threads::width().saturating_mul(4))
+                .max(CHUNK);
+            crate::threads::install(|| {
+                values
+                    .par_chunks_mut(chunk)
+                    .zip(mask.par_chunks_mut(chunk))
+                    .for_each(|(values, mask)| self.apply_chunk(values, mask));
+            });
+        } else {
+            self.apply_chunk(values, &mut mask);
+        }
+        mask
+    }
+
+    fn apply_chunk(&self, values: &mut [f64], mask: &mut [bool]) {
         for (position, value) in values.iter_mut().enumerate() {
             let is_missing = self.fill_value.is_some_and(|fill| *value == fill)
                 || self.missing_value.is_some_and(|marker| *value == marker);
@@ -410,7 +444,6 @@ impl CfPolicy {
                 *value += offset;
             }
         }
-        mask
     }
 }
 
@@ -501,9 +534,9 @@ fn require_geographic(variable: &NcVariable, values: &[f64], axis: &str) -> Resu
             return Err(frame_invalid(format!(
                 "{axis} selector resolved NetCDF variable {} whose CF \
                  standard_name is {}; that is a projection axis, not \
-                 geographic {axis}. Projected source grids are unsupported: \
-                 regrid the source to a regular latitude/longitude grid, or \
-                 supply 1-D geographic coordinate variables with units {}.",
+                 geographic {axis}. A projected source needs a declared \
+                 Lambert grid in the mapping; otherwise supply geographic \
+                 coordinate variables with units {}.",
                 crate::refusal::python_repr(variable.name()),
                 crate::refusal::python_repr(standard),
                 crate::refusal::python_repr(canonical)
@@ -648,13 +681,135 @@ fn require_supported_grid_mapping(variables: &[NcVariable], label: &str) -> Resu
             .collect();
         return Err(frame_invalid(format!(
             "{label} declares CF grid mapping(s) {}. RW-WPS mapped \
-             NetCDF input supports only regular latitude/longitude grids \
-             (grid_mapping_name={} or no grid mapping at all). \
-             Regrid the source to a regular latitude/longitude grid before \
-             mapping it.",
+             geographic NetCDF path requires regular latitude/longitude grids \
+             (grid_mapping_name={} or no grid mapping at all). A \
+             lambert_conformal_conic source needs a declared Lambert grid \
+             in the mapping; other projections need regridding before this \
+             geographic path can decode them.",
             detail.join("; "),
             crate::refusal::python_repr(SUPPORTED_GRID_MAPPING_NAMES[0])
         )));
+    }
+    Ok(())
+}
+
+/// Resolve geographic axes or a declared rectilinear Lambert grid. Auxiliary
+/// lat/lon arrays are validation evidence, never treated as separable axes.
+fn horizontal_coordinates(
+    mapping: &Mapping, variables: &[NcVariable], lat: &NcVariable,
+    lon: &NcVariable, source: &str,
+) -> Result<(Vec<f64>, Vec<f64>, String, String)> {
+    let declaration = mapping.grid_declaration()?;
+    if !declaration.is_lambert() {
+        require_supported_grid_mapping(variables, source)?;
+        let latitude = coordinate_values(lat, None, "latitude")?;
+        let longitude = coordinate_values(lon, None, "longitude")?;
+        require_geographic(lat, &latitude, "latitude")?;
+        require_geographic(lon, &longitude, "longitude")?;
+        return Ok((latitude, longitude, coordinate_dimension(lat, "latitude")?, coordinate_dimension(lon, "longitude")?));
+    }
+    validate_cf_lambert(variables, &declaration)?;
+    let parameters = declaration.parameters.as_ref().unwrap();
+    if parameters.nx <= 0 || parameters.ny <= 0 {
+        return Err(mapping_invalid("Lambert NetCDF dimensions must be positive"));
+    }
+    if lat.dimensions().len() == 1 && lon.dimensions().len() == 1 {
+        let crs = variables.iter().find(|variable|
+            attribute_string(variable, "grid_mapping_name").as_deref() == Some("lambert_conformal_conic"))
+            .ok_or_else(|| frame_invalid("projected NetCDF axes require a CF lambert_conformal_conic grid_mapping"))?;
+        let y = coordinate_values(lat, Some("m"), "projection y")?;
+        let x = coordinate_values(lon, Some("m"), "projection x")?;
+        if y.len() != parameters.ny as usize || x.len() != parameters.nx as usize
+            || attribute_string(lat, "standard_name").as_deref() != Some("projection_y_coordinate")
+            || attribute_string(lon, "standard_name").as_deref() != Some("projection_x_coordinate")
+            || lat.dimensions()[0] == lon.dimensions()[0] {
+            return Err(frame_invalid("CF Lambert axes must declare projection_y_coordinate/projection_x_coordinate and mapping dimensions"));
+        }
+        let origin = attribute_number(crs, "latitude_of_projection_origin")
+            .ok_or_else(|| frame_invalid("CF Lambert grid_mapping needs latitude_of_projection_origin"))?;
+        let grid = crate::lambert::LambertGrid::new(origin, crate::lambert::wrap180(parameters.lov),
+            parameters.latin1, parameters.latin2, crate::lambert::wrap180(parameters.lov),
+            parameters.dx_m * crate::lambert::EARTH_RADIUS_M / parameters.earth_radius_m, 1.0, 1.0);
+        let (i, j) = grid.latlon_to_ij(parameters.lat1, crate::lambert::wrap180(parameters.lon1));
+        let first_x = (i-1.0)*parameters.dx_m + attribute_number(crs, "false_easting").unwrap_or(0.0);
+        let first_y = (j-1.0)*parameters.dx_m + attribute_number(crs, "false_northing").unwrap_or(0.0);
+        if x.iter().enumerate().any(|(k,value)| (*value-first_x-k as f64*parameters.dx_m).abs() > parameters.dx_m*0.1)
+            || y.iter().enumerate().any(|(k,value)| (*value-first_y-k as f64*parameters.dy_m).abs() > parameters.dy_m*0.1) {
+            return Err(frame_invalid("CF Lambert projected axes disagree with the declared source window"));
+        }
+        let (y, x) = parameters.projected_axes();
+        return Ok((y, x, lat.dimensions()[0].clone(), lon.dimensions()[0].clone()));
+    }
+    let (lat_shape, latitude, lat_mask) = read_values_masked(lat)?;
+    let (lon_shape, longitude, lon_mask) = read_values_masked(lon)?;
+    let expected = vec![parameters.ny as usize, parameters.nx as usize];
+    if lat_shape != expected || lon_shape != expected || lat.dimensions() != lon.dimensions()
+        || lat.dimensions().len() != 2 || lat.dimensions()[0] == lat.dimensions()[1] {
+        return Err(frame_invalid("Lambert NetCDF latitude/longitude must share declared (y,x) dimensions and shape"));
+    }
+    if lat_mask.iter().chain(&lon_mask).any(|missing| *missing)
+        || latitude.iter().chain(&longitude).any(|value| !value.is_finite()) {
+        return Err(frame_invalid("Lambert NetCDF latitude/longitude contains missing or nonfinite coordinates"));
+    }
+    require_geographic(lat, &latitude, "latitude")?;
+    require_geographic(lon, &longitude, "longitude")?;
+    validate_lambert_points(parameters, &latitude, &longitude)?;
+    let (y, x) = parameters.projected_axes();
+    Ok((y, x, lat.dimensions()[0].clone(), lat.dimensions()[1].clone()))
+}
+
+fn validate_lambert_points(parameters: &crate::model::LambertParameters, latitude: &[f64], longitude: &[f64]) -> Result<()> {
+    let grid = crate::lambert::LambertGrid::from_declaration(parameters);
+    let nx = parameters.nx as usize;
+    // A tenth of one cell admits float32 geographic coordinates while
+    // rejecting wrong windows, swapped axes, reversed scans and curvilinear grids.
+    let tolerance_deg = parameters.dx_m.min(parameters.dy_m) * 0.1 / 111_000.0;
+    let bad = crate::threads::install(|| latitude.par_iter().zip(longitude).enumerate().find_first(|(i, (lat, lon))| {
+        let (expected_lat, expected_lon) = grid.ij_to_latlon((i % nx + 1) as f64,
+            (i / nx) as f64 * parameters.dy_m / parameters.dx_m + 1.0);
+        (**lat - expected_lat).abs() > tolerance_deg
+            || crate::lambert::wrap180(**lon - expected_lon).abs() > tolerance_deg
+    }));
+    if let Some((index, _)) = bad {
+        return Err(frame_invalid(format!("NetCDF geographic coordinate at y={}, x={} differs from declared Lambert grid by more than a tenth cell", index / nx, index % nx)));
+    }
+    Ok(())
+}
+
+/// CF metadata, when present, must agree with the mapping's source-window
+/// contract. Files with only 2-D lat/lon use that same contract directly.
+fn validate_cf_lambert(variables: &[NcVariable], declaration: &GridDeclaration) -> Result<()> {
+    let names = cf_grid_mapping_names(variables);
+    if names.keys().any(|name| name != "lambert_conformal_conic") {
+        return Err(frame_invalid("declared Lambert NetCDF grid conflicts with file grid_mapping"));
+    }
+    let p = declaration.parameters.as_ref().unwrap();
+    for crs in variables.iter().filter(|variable|
+        attribute_string(variable, "grid_mapping_name").as_deref() == Some("lambert_conformal_conic")) {
+        let parallels = match &crs.source {
+            NcSource::Indexed(variable) => variable.attribute("standard_parallel").and_then(|a| a.value().as_f64_vec()),
+            _ => None,
+        }.ok_or_else(|| frame_invalid("CF Lambert grid_mapping needs standard_parallel"))?;
+        if parallels.is_empty() || parallels.len() > 2 || (parallels[0] - p.latin1).abs() > 1e-6
+            || (parallels[parallels.len()-1] - p.latin2).abs() > 1e-6 {
+            return Err(frame_invalid("CF Lambert standard_parallel differs from mapping grid"));
+        }
+        let lov = attribute_number(crs, "longitude_of_central_meridian")
+            .ok_or_else(|| frame_invalid("CF Lambert grid_mapping needs longitude_of_central_meridian"))?;
+        if crate::lambert::wrap180(lov - p.lov).abs() > 1e-6 {
+            return Err(frame_invalid("CF Lambert central meridian differs from mapping grid"));
+        }
+        // The mapped projection uses a sphere. An ellipsoidal CF CRS must
+        // not silently inherit its radius from a spherical mapping.
+        let radius = attribute_number(crs, "earth_radius").or_else(|| {
+            let major = attribute_number(crs, "semi_major_axis")?;
+            let inverse = attribute_number(crs, "inverse_flattening");
+            let minor = attribute_number(crs, "semi_minor_axis");
+            if inverse == Some(0.0) || minor == Some(major) { Some(major) } else { None }
+        }).ok_or_else(|| frame_invalid("CF Lambert grid_mapping must declare a spherical earth_radius"))?;
+        if (radius - p.earth_radius_m).abs() > 1.0 {
+            return Err(frame_invalid("CF Lambert earth radius differs from mapping grid"));
+        }
     }
     Ok(())
 }
@@ -866,20 +1021,28 @@ fn decode_times(reference: &CfReference, values: &[f64]) -> Result<Vec<NaiveDate
                     "time coordinate is not finite: {value}"
                 )));
             }
-            let nanos = match reference.unit {
-                CfUnit::Seconds => value * 1e9,
-                CfUnit::Minutes => value * 60.0 * 1e9,
-                CfUnit::Hours => value * 3600.0 * 1e9,
-                CfUnit::Days => value * 86_400.0 * 1e9,
+            // Whole seconds and the nanosecond remainder separately: an
+            // offset from an epoch two thousand years back (Earth2Studio's
+            // "hours since 0001-01-01") is about 6e19 ns, past i64, while
+            // its seconds fit with room to spare.
+            let seconds = match reference.unit {
+                CfUnit::Seconds => *value,
+                CfUnit::Minutes => value * 60.0,
+                CfUnit::Hours => value * 3600.0,
+                CfUnit::Days => value * 86_400.0,
             };
-            if nanos.abs() >= i64::MAX as f64 {
+            if seconds.abs() >= 1e15 {
                 return Err(decode_failed(format!(
                     "time coordinate out of representable range: {value}"
                 )));
             }
+            let whole = seconds.floor();
+            let nanos = ((seconds - whole) * 1e9).round() as i64;
             reference
                 .epoch
-                .checked_add_signed(Duration::nanoseconds(nanos.round() as i64))
+                .checked_add_signed(
+                    Duration::seconds(whole as i64) + Duration::nanoseconds(nanos),
+                )
                 .map(|instant| instant.naive_utc())
                 .ok_or_else(|| decode_failed(format!("time coordinate out of range: {value}")))
         })
@@ -1103,6 +1266,7 @@ fn inventory(file: &NcFile, indexed: Vec<Variable>) -> Vec<NcVariable> {
                 .map(|dimension| dimension.name().to_owned())
                 .collect(),
             source: NcSource::Indexed(variable),
+            declared: BTreeMap::new(),
         })
         .collect();
     recover_dimension_scales(file, &mut variables);
@@ -1189,7 +1353,72 @@ fn recover_dimension_scales(file: &NcFile, variables: &mut Vec<NcVariable>) {
                 file: file.clone(),
                 attributes,
             },
+            declared: BTreeMap::new(),
         });
+    }
+}
+
+/// `mapped_source._apply_producer_attributes`.
+///
+/// Some producers define their variables' units in a published
+/// vocabulary instead of writing CF attributes into every file:
+/// Earth2Studio's NetCDF writer emits `t850(time, lead_time, lat, lon)`
+/// with no `units` on the field and none on `lat`/`lon`, because its
+/// lexicon fixes them (`t850` is kelvin, `z500` is geopotential in
+/// m2 s-2, `lat` is degrees north).  The mapping's `producer_attributes`
+/// table carries that vocabulary as data, keyed by exact variable name.
+/// An attribute the file lacks is supplied from it; one the file carries
+/// must agree with it, because a file that says otherwise is not the
+/// vocabulary the mapping was written for.
+fn apply_producer_attributes(
+    variables: &mut [NcVariable],
+    mapping: &Mapping,
+    source: &str,
+) -> Result<()> {
+    let Some(table) = mapping.doc.get("producer_attributes") else {
+        return Ok(());
+    };
+    for (name, attributes) in table.entries() {
+        let Some(variable) = variables.iter_mut().find(|variable| variable.name == *name) else {
+            continue;
+        };
+        for (key, value) in attributes.entries() {
+            let declared = value.as_str().ok_or_else(|| {
+                mapping_invalid(format!(
+                    "producer_attributes.{name}.{key} must be a string"
+                ))
+            })?;
+            match variable.file_attribute_string(key) {
+                Some(observed) if observed != declared => {
+                    return Err(frame_invalid(format!(
+                        "NetCDF {source} variable {} carries {key}={}, and the \
+                         producer vocabulary this mapping declares says {}",
+                        crate::refusal::python_repr(name),
+                        crate::refusal::python_repr(&observed),
+                        crate::refusal::python_repr(declared)
+                    )));
+                }
+                Some(_) => {}
+                None => {
+                    variable.declared.insert(key.clone(), declared.to_owned());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The seconds in one unit of a lead-time axis.
+fn lead_unit_seconds(units: &str) -> Result<i64> {
+    match units.trim().to_ascii_lowercase().as_str() {
+        "days" | "day" | "d" => Ok(86_400),
+        "hours" | "hour" | "h" => Ok(3_600),
+        "minutes" | "minute" | "min" => Ok(60),
+        "seconds" | "second" | "s" => Ok(1),
+        other => Err(mapping_invalid(format!(
+            "coordinates.time.lead.units '{other}' is not days, hours, minutes \
+             or seconds"
+        ))),
     }
 }
 
@@ -1215,14 +1444,30 @@ pub fn decode_netcdf(mapping: &Mapping, files: &[String]) -> Result<DecodedColle
     let mut grid_fingerprint: Option<String> = None;
     let mut owed: BTreeSet<String> = BTreeSet::new();
     for field in mapping.fields()? {
-        if field.derivation().is_none() {
+        if field.derivation().is_none() && !field.optional()? {
             owed.insert(field.name.clone());
         }
     }
     let mut supplied: BTreeSet<String> = BTreeSet::new();
+    // A producer that writes one variable per pressure level (`t50` ..
+    // `t1000`) and no level coordinate stacks them on `vertical`; the
+    // mapping's declared ladder is then the vertical coordinate.
+    let mut stacks_vertical = false;
+    for field in mapping.fields()? {
+        if field.selector_stack_axis() == Some("vertical") {
+            stacks_vertical = true;
+        }
+    }
+    if stacks_vertical && declared_levels.is_empty() {
+        return Err(mapping_invalid(
+            "a field stacks per-level variables on vertical, and \
+             coordinates.vertical declares no levels",
+        ));
+    }
 
     for source in files {
-        let variables = open_dataset(source)?;
+        let mut variables = open_dataset(source)?;
+        apply_producer_attributes(&mut variables, mapping, source)?;
 
         let latitude_variable = resolve_variable(
             &variables,
@@ -1238,11 +1483,8 @@ pub fn decode_netcdf(mapping: &Mapping, files: &[String]) -> Result<DecodedColle
                 .ok_or_else(|| mapping_invalid("coordinates.horizontal.longitude is required"))?,
             "longitude",
         )?;
-        let latitude = coordinate_values(latitude_variable, None, "latitude")?;
-        let longitude = coordinate_values(longitude_variable, None, "longitude")?;
-        require_supported_grid_mapping(&variables, source)?;
-        require_geographic(latitude_variable, &latitude, "latitude")?;
-        require_geographic(longitude_variable, &longitude, "longitude")?;
+        let (latitude, longitude, latitude_dimension, longitude_dimension) =
+            horizontal_coordinates(mapping, &variables, latitude_variable, longitude_variable, source)?;
 
         // The vertical coordinate resolves LAZILY: a file carrying only
         // surface or soil quantities has none, and refusing it there would
@@ -1270,8 +1512,6 @@ pub fn decode_netcdf(mapping: &Mapping, files: &[String]) -> Result<DecodedColle
             Ok((variable, _values)) => Some(coordinate_dimension(variable, "vertical")?),
             Err(_) => None,
         };
-        let latitude_dimension = coordinate_dimension(latitude_variable, "latitude")?;
-        let longitude_dimension = coordinate_dimension(longitude_variable, "longitude")?;
         let mut vertical_selection: Option<(String, Vec<usize>)> = None;
         if let (Some(dimension), Some(offered)) = (&vertical_dimension, vertical_values.clone()) {
             let distinct: BTreeSet<&String> =
@@ -1288,6 +1528,9 @@ pub fn decode_netcdf(mapping: &Mapping, files: &[String]) -> Result<DecodedColle
                     vertical_values = Some(declared_levels.clone());
                 }
             }
+        }
+        if stacks_vertical && vertical_values.is_none() {
+            vertical_values = Some(declared_levels.clone());
         }
 
         let time_selector = time_contract
@@ -1332,6 +1575,67 @@ pub fn decode_netcdf(mapping: &Mapping, files: &[String]) -> Result<DecodedColle
                 "NetCDF file {source} contains duplicate valid times"
             )));
         }
+        // A forecast file written as (reference time, lead time): the time
+        // coordinate is the initialization and the `lead` axis the offset,
+        // so each valid time is reference + lead and its source cycle is
+        // the reference.  One reference per file: two initializations in
+        // one file would put two forecasts' states at the same valid time.
+        let mut lead_dimension: Option<String> = None;
+        let valid_times: Vec<(NaiveDateTime, NaiveDateTime)> = match time_contract.get("lead") {
+            None => times.iter().map(|time| (*time, *time)).collect(),
+            Some(lead) => {
+                let lead_selector = lead.get("selector").ok_or_else(|| {
+                    mapping_invalid("coordinates.time.lead.selector is required")
+                })?;
+                let lead_units = lead.get("units").and_then(Node::as_str).ok_or_else(|| {
+                    mapping_invalid("coordinates.time.lead.units is required")
+                })?;
+                let seconds = lead_unit_seconds(lead_units)?;
+                let lead_variable = resolve_variable(&variables, lead_selector, "lead time")?;
+                let observed = attribute_string(lead_variable, "units");
+                if observed.as_deref() != Some(lead_units) {
+                    return Err(mapping_invalid(format!(
+                        "NetCDF lead time units {} differ from mapping {}",
+                        optional_repr(observed.as_deref()),
+                        crate::refusal::python_repr(lead_units)
+                    )));
+                }
+                lead_dimension = Some(coordinate_dimension(lead_variable, "lead time")?);
+                if times.len() != 1 {
+                    return Err(frame_invalid(format!(
+                        "NetCDF file {source} holds {} reference times beside a \
+                         lead axis; pass one initialization per file so every \
+                         valid time belongs to one forecast",
+                        times.len()
+                    )));
+                }
+                let reference = times[0];
+                let (_shape, leads) = read_values(lead_variable)?;
+                let mut valid = Vec::with_capacity(leads.len());
+                for lead_value in leads {
+                    let offset = lead_value * seconds as f64;
+                    if !offset.is_finite() || offset.fract() != 0.0 || offset.abs() >= 1e15 {
+                        return Err(frame_invalid(format!(
+                            "NetCDF file {source} lead time {lead_value} {lead_units} is \
+                             not a whole number of seconds"
+                        )));
+                    }
+                    let instant = reference
+                        .checked_add_signed(Duration::seconds(offset as i64))
+                        .ok_or_else(|| {
+                            decode_failed(format!("lead time out of range: {lead_value}"))
+                        })?;
+                    valid.push((instant, reference));
+                }
+                let distinct: BTreeSet<&NaiveDateTime> = valid.iter().map(|(time, _)| time).collect();
+                if distinct.len() != valid.len() {
+                    return Err(frame_invalid(format!(
+                        "NetCDF file {source} contains duplicate lead times"
+                    )));
+                }
+                valid
+            }
+        };
 
         let mut member_dimension: Option<String> = None;
         let mut member_value: Option<String> = None;
@@ -1505,117 +1809,192 @@ pub fn decode_netcdf(mapping: &Mapping, files: &[String]) -> Result<DecodedColle
 
             let mut arrays: Vec<ArrayD<f64>> = Vec::with_capacity(resolved.len());
             let mut reference_dimensions: Option<Vec<String>> = None;
-            for (variable, selector) in &resolved {
-                let observed_units = attribute_string(variable, "units");
-                if observed_units.as_deref() != Some(declared_source_units) {
-                    return Err(mapping_invalid(format!(
-                        "{name} source units {} differ from mapping {}",
-                        optional_repr(observed_units.as_deref()),
-                        crate::refusal::python_repr(declared_source_units)
-                    )));
+            // Selector outputs were already retained together in the serial
+            // path. Price that retained storage plus concurrent read/mask/
+            // slice scratch, then use the existing bounded worker pool.
+            let sizes: Option<Vec<u64>> = resolved.iter().map(|(variable, _)| {
+                match &variable.source {
+                    NcSource::Indexed(value) => Some(value.shape().iter()
+                        .fold(1u64, |n, size| n.saturating_mul(*size as u64))),
+                    NcSource::DimensionScale { .. } => None,
                 }
-                let layer = layer_slice_position(&variables, variable, selector, &name)?;
-                let mut dimensions: Vec<String> = variable.dimensions().to_vec();
-                let (shape, mut values) = read_values(variable)?;
-                let mut shape = shape;
-                // The layer slice goes FIRST and drops its axis, so the
-                // vertical take below indexes the dimension order that
-                // survives it — the order `_read_nc_values` documents.
-                if let Some((axis, index)) = layer {
-                    let (taken_shape, taken) = take_layer(&shape, &values, axis, index);
-                    shape = taken_shape;
-                    values = taken;
-                    dimensions.remove(axis);
-                }
-                if let Some((dimension, indices)) = &vertical_selection {
-                    if let Some(axis) = dimensions.iter().position(|item| item == dimension) {
-                        let (taken_shape, taken) = take_axis(&shape, &values, axis, indices);
-                        shape = taken_shape;
-                        values = taken;
-                    }
-                }
-                let missing: Vec<bool> = values.iter().map(|value| !value.is_finite()).collect();
-                let policy = field.missing_kind()?;
-                if policy == "reject" && missing.iter().any(|flag| *flag) {
-                    return Err(frame_invalid(format!(
-                        "{name} contains missing/non-finite source values"
-                    )));
-                }
-                if policy == "value" {
-                    let replacement = field.missing_value()?;
-                    for (value, flagged) in values.iter_mut().zip(missing.iter()) {
-                        if *flagged {
-                            *value = replacement;
+            }).collect();
+            let selector_width = if let Some(sizes) = sizes {
+                let output = sizes.iter().fold(0u64, |n, size| n.saturating_add(size.saturating_mul(8)));
+                let scratch = sizes.iter().copied().max().unwrap_or(1).max(1).saturating_mul(48);
+                let budget = crate::threads::usable_budget(0)?;
+                budget.map(|bytes| (bytes.saturating_sub(output) / scratch).max(1) as usize)
+                    .unwrap_or(crate::threads::width()).min(crate::threads::width()).max(1)
+            } else { 1 };
+            for batch in resolved.chunks(selector_width) {
+                let loaded: Vec<Result<(Vec<String>, ArrayD<f64>)>> = crate::threads::install(|| {
+                    use rayon::prelude::*;
+                    batch.par_iter().map(|(variable, selector)| {
+                        let observed_units = attribute_string(variable, "units");
+                        if observed_units.as_deref() != Some(declared_source_units) {
+                            return Err(mapping_invalid(format!(
+                                "{name} source units {} differ from mapping {}",
+                                optional_repr(observed_units.as_deref()),
+                                crate::refusal::python_repr(declared_source_units)
+                            )));
                         }
-                    }
-                } else {
-                    for (value, flagged) in values.iter_mut().zip(missing.iter()) {
-                        if *flagged {
-                            *value = f64::NAN;
+                        let layer = layer_slice_position(&variables, variable, selector, &name)?;
+                        let mut dimensions: Vec<String> = variable.dimensions().to_vec();
+                        let (shape, mut values) = read_values(variable)?;
+                        let mut shape = shape;
+                        // The layer slice goes FIRST and drops its axis, so the
+                        // vertical take below indexes the dimension order that
+                        // survives it — the order `_read_nc_values` documents.
+                        if let Some((axis, index)) = layer {
+                            let (taken_shape, taken) = take_layer(&shape, &values, axis, index);
+                            shape = taken_shape;
+                            values = taken;
+                            dimensions.remove(axis);
                         }
+                        if let Some((dimension, indices)) = &vertical_selection {
+                            if let Some(axis) = dimensions.iter().position(|item| item == dimension) {
+                                let (taken_shape, taken) = take_axis(&shape, &values, axis, indices);
+                                shape = taken_shape;
+                                values = taken;
+                            }
+                        }
+                        let missing: Vec<bool> = values.iter().map(|value| !value.is_finite()).collect();
+                        let policy = field.missing_kind()?;
+                        if ["reject", "composition_fill"].contains(&policy) && missing.iter().any(|flag| *flag) {
+                            return Err(frame_invalid(format!(
+                                "{name} contains missing/non-finite source values"
+                            )));
+                        }
+                        if policy == "value" {
+                            let replacement = field.missing_value()?;
+                            for (value, flagged) in values.iter_mut().zip(missing.iter()) {
+                                if *flagged {
+                                    *value = replacement;
+                                }
+                            }
+                        } else {
+                            for (value, flagged) in values.iter_mut().zip(missing.iter()) {
+                                if *flagged {
+                                    *value = f64::NAN;
+                                }
+                            }
+                        }
+                        if variable_axes.len() != shape.len() {
+                            return Err(frame_invalid(format!(
+                                "{name} source_axes rank differs from NetCDF variable {}",
+                                variable.name()
+                            )));
+                        }
+                        for (role, expected) in [
+                            ("vertical", vertical_dimension.clone()),
+                            ("y", Some(latitude_dimension.clone())),
+                            ("x", Some(longitude_dimension.clone())),
+                            ("time", Some(time_dimension.clone())),
+                            ("lead", lead_dimension.clone()),
+                            ("member", member_dimension.clone()),
+                        ] {
+                            let Some(axis) = variable_axes.iter().position(|item| item == role) else {
+                                continue;
+                            };
+                            let Some(expected) = expected else {
+                                return Err(frame_invalid(format!(
+                                    "{name} has a {role} axis without a {role} coordinate"
+                                )));
+                            };
+                            if dimensions[axis] != expected {
+                                return Err(frame_invalid(format!(
+                                    "{name} {role} axis does not use the declared coordinate \
+                                     dimension '{expected}'"
+                                )));
+                            }
+                        }
+                        let has_time = variable_axes.iter().any(|axis| axis == "time");
+                        let has_lead = variable_axes.iter().any(|axis| axis == "lead");
+                        if lead_dimension.is_some() && has_time != has_lead {
+                            return Err(frame_invalid(format!(
+                                "{name} must carry both the time and the lead axis, or \
+                                 neither, in a file whose valid times are reference plus lead"
+                            )));
+                        }
+                        if lead_dimension.is_none() && has_lead {
+                            return Err(mapping_invalid(format!(
+                                "{name} declares a lead axis and coordinates.time declares no lead"
+                            )));
+                        }
+                        if !has_time && lead_dimension.is_none() && times.len() != 1 {
+                            return Err(frame_invalid(format!(
+                                "static field {name} is ambiguous across a multi-time \
+                                 NetCDF file"
+                            )));
+                        }
+                        let values = ArrayD::from_shape_vec(IxDyn(&shape), values)
+                            .map_err(|error| decode_failed(format!("{name}: {error}")))?;
+                        Ok((dimensions, values))
+                    }).collect()
+                });
+                // Indexed collection and this drain preserve selector order,
+                // including the first refusal and cross-selector shape check.
+                for value in loaded {
+                    let (dimensions, values) = value?;
+                    match &reference_dimensions {
+                        None => reference_dimensions = Some(dimensions.clone()),
+                        Some(known) if *known != dimensions => {
+                            return Err(frame_invalid(format!(
+                                "{name} stacked NetCDF variables have different shapes \
+                                 or dimensions"
+                            )))
+                        }
+                        _ => {}
                     }
+                    arrays.push(values);
                 }
-                if variable_axes.len() != shape.len() {
-                    return Err(frame_invalid(format!(
-                        "{name} source_axes rank differs from NetCDF variable {}",
-                        variable.name()
-                    )));
-                }
-                for (role, expected) in [
-                    ("vertical", vertical_dimension.clone()),
-                    ("y", Some(latitude_dimension.clone())),
-                    ("x", Some(longitude_dimension.clone())),
-                    ("time", Some(time_dimension.clone())),
-                    ("member", member_dimension.clone()),
-                ] {
-                    let Some(axis) = variable_axes.iter().position(|item| item == role) else {
-                        continue;
-                    };
-                    let Some(expected) = expected else {
-                        return Err(frame_invalid(format!(
-                            "{name} has a {role} axis without a {role} coordinate"
-                        )));
-                    };
-                    if dimensions[axis] != expected {
-                        return Err(frame_invalid(format!(
-                            "{name} {role} axis does not use the declared coordinate \
-                             dimension '{expected}'"
-                        )));
-                    }
-                }
-                if !variable_axes.iter().any(|axis| axis == "time") && times.len() != 1 {
-                    return Err(frame_invalid(format!(
-                        "static field {name} is ambiguous across a multi-time \
-                         NetCDF file"
-                    )));
-                }
-                match &reference_dimensions {
-                    None => reference_dimensions = Some(dimensions.clone()),
-                    Some(known) if *known != dimensions => {
-                        return Err(frame_invalid(format!(
-                            "{name} stacked NetCDF variables have different shapes \
-                             or dimensions"
-                        )))
-                    }
-                    _ => {}
-                }
-                arrays.push(
-                    ArrayD::from_shape_vec(IxDyn(&shape), values)
-                        .map_err(|error| decode_failed(format!("{name}: {error}")))?,
-                );
             }
 
             let data = if let Some(axis_name) = stack_axis {
-                let Some(expected) = soil_layer_count else {
-                    return Err(mapping_invalid(format!(
-                        "{name} stacks soil without target.soil_layer_count"
-                    )));
-                };
-                if arrays.len() as i64 != expected {
-                    return Err(frame_invalid(format!(
-                        "{name} has {} stacked soil selectors; target declares {expected}",
-                        arrays.len()
-                    )));
+                if axis_name == "vertical" {
+                    // Each member variable IS one level; its selector says
+                    // which, and the stack must be the declared ladder in
+                    // the declared order.
+                    let offered = resolved
+                        .iter()
+                        .map(|(_variable, selector)| {
+                            selector.field("level_value").and_then(Node::as_f64)
+                        })
+                        .collect::<Option<Vec<f64>>>()
+                        .ok_or_else(|| {
+                            mapping_invalid(format!(
+                                "{name} stacks on vertical, and every selector \
+                                 needs a numeric level_value"
+                            ))
+                        })?;
+                    if offered != declared_levels {
+                        if field.missing_kind()? != "composition_fill"
+                            || offered.iter().any(|level| !declared_levels.contains(level))
+                            || offered.iter().enumerate().any(|(i, level)| offered[..i].contains(level))
+                        {
+                            return Err(mapping_invalid(format!(
+                                "{name} sparse selector stack requires composition_fill and unique declared levels"
+                            )));
+                        }
+                        let shape = arrays[0].raw_dim();
+                        arrays = declared_levels.iter().map(|level| {
+                            offered.iter().position(|offered| offered == level)
+                                .map(|index| arrays[index].clone())
+                                .unwrap_or_else(|| ArrayD::from_elem(shape.clone(), f64::NAN))
+                        }).collect();
+                    }
+                } else {
+                    let Some(expected) = soil_layer_count else {
+                        return Err(mapping_invalid(format!(
+                            "{name} stacks soil without target.soil_layer_count"
+                        )));
+                    };
+                    if arrays.len() as i64 != expected {
+                        return Err(frame_invalid(format!(
+                            "{name} has {} stacked soil selectors; target declares {expected}",
+                            arrays.len()
+                        )));
+                    }
                 }
                 let axis = source_axes
                     .iter()
@@ -1634,19 +2013,30 @@ pub fn decode_netcdf(mapping: &Mapping, files: &[String]) -> Result<DecodedColle
                 .iter()
                 .map(|(variable, _selector)| format!("{source}:{}", variable.name()))
                 .collect();
-            for (time_index, valid_time) in times.iter().enumerate() {
-                let mut selected = data.clone();
+            for (time_index, (valid_time, source_cycle)) in valid_times.iter().enumerate() {
+                // Select borrowed planes first. Copying before dropping time,
+                // lead and member axes duplicates the entire source series.
+                let mut selected = data.view();
                 let mut selected_axes = source_axes.clone();
-                if let Some(axis) = selected_axes.iter().position(|item| item == "time") {
-                    selected = take_index(&selected, axis, time_index);
+                if lead_dimension.is_some() {
+                    if let Some(axis) = selected_axes.iter().position(|item| item == "lead") {
+                        selected = selected.index_axis_move(ndarray::Axis(axis), time_index);
+                        selected_axes.remove(axis);
+                    }
+                    if let Some(axis) = selected_axes.iter().position(|item| item == "time") {
+                        selected = selected.index_axis_move(ndarray::Axis(axis), 0);
+                        selected_axes.remove(axis);
+                    }
+                } else if let Some(axis) = selected_axes.iter().position(|item| item == "time") {
+                    selected = selected.index_axis_move(ndarray::Axis(axis), time_index);
                     selected_axes.remove(axis);
                 }
                 if let Some(axis) = selected_axes.iter().position(|item| item == "member") {
-                    selected = take_index(&selected, axis, 0);
+                    selected = selected.index_axis_move(ndarray::Axis(axis), 0);
                     selected_axes.remove(axis);
                 }
                 let converted = array::unit_transform(
-                    selected,
+                    selected.as_standard_layout().into_owned(),
                     field.unit_scale(),
                     field.unit_offset(),
                     &name,
@@ -1667,14 +2057,14 @@ pub fn decode_netcdf(mapping: &Mapping, files: &[String]) -> Result<DecodedColle
                         name: name.clone(),
                         valid_time: *valid_time,
                         member: member_value.clone(),
-                        source_cycle: *valid_time,
+                        source_cycle: *source_cycle,
                         axes: target_axes,
                         values: converted,
                         missing_count,
                         references: references.clone(),
                     },
                 );
-                cycles.insert((*valid_time, member_value.clone()), *valid_time);
+                cycles.insert((*valid_time, member_value.clone()), *source_cycle);
             }
             supplied.insert(name.clone());
         }
@@ -1717,6 +2107,14 @@ pub fn decode_netcdf(mapping: &Mapping, files: &[String]) -> Result<DecodedColle
     } else {
         (Vec::new(), Vec::new())
     };
+    let declaration = mapping.grid_declaration()?;
+    let grid_fingerprint = if declaration.is_lambert() {
+        crate::digest::bytes_sha256(format!("{grid_fingerprint}:{}",
+            mapping.doc.get("grid").unwrap().to_value()).as_bytes())
+    } else { grid_fingerprint };
+    let direct = if declaration.rotates_winds() {
+        crate::assemble::rotate_grid_relative_winds(direct, declaration.parameters.as_ref().unwrap())?
+    } else { direct };
     Ok(DecodedCollection {
         latitude,
         longitude,
@@ -1781,17 +2179,59 @@ fn take_layer(shape: &[usize], values: &[f64], axis: usize, index: usize) -> (Ve
     (taken_shape, taken)
 }
 
-/// `np.take(values, index, axis)` — the scalar form, which drops the axis.
-fn take_index(values: &ArrayD<f64>, axis: usize, index: usize) -> ArrayD<f64> {
-    values
-        .index_axis(ndarray::Axis(axis), index)
-        .as_standard_layout()
-        .to_owned()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn projected_fixture_mapping(cf_axes: bool) -> Mapping {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/projected.mapping.json");
+        let mut mapping = Mapping::load(path.to_str().unwrap()).unwrap();
+        if cf_axes {
+            let mut doc = mapping.doc.to_value();
+            doc["coordinates"]["horizontal"]["latitude"]["name"] = serde_json::json!(["y"]);
+            doc["coordinates"]["horizontal"]["longitude"]["name"] = serde_json::json!(["x"]);
+            mapping.doc = Node::parse(&serde_json::to_vec(&doc).unwrap()).unwrap();
+        }
+        mapping
+    }
+
+    #[test]
+    fn projected_cf_axes_and_geographic_auxiliaries_decode_to_the_same_window_and_winds() {
+        let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let geographic = decode_netcdf(&projected_fixture_mapping(false),
+            &[fixtures.join("projected-geographic.nc").display().to_string()]).unwrap();
+        let cf = decode_netcdf(&projected_fixture_mapping(true),
+            &[fixtures.join("projected-cf.nc").display().to_string()]).unwrap();
+        assert_eq!(geographic.latitude, vec![0.0,0.03,0.06]);
+        assert_eq!(geographic.longitude, vec![0.0,0.03,0.06,0.09]);
+        assert_eq!(geographic.grid_fingerprint, cf.grid_fingerprint);
+        for (key, value) in &geographic.direct {
+            assert_eq!(value.values, cf.direct[key].values);
+        }
+        let (_, u) = geographic.direct.iter().find(|(key,_)| key.2 == "eastward_wind").unwrap();
+        let (_, v) = geographic.direct.iter().find(|(key,_)| key.2 == "northward_wind").unwrap();
+        // Independent geographic convergence at the HRRR SW corner.
+        let alpha = (38.5_f64.to_radians()).sin() * (122.719528_f64 - 97.5).to_radians();
+        assert!((u.values.as_slice().unwrap()[0] - 10.0*alpha.cos()).abs() < 1e-10);
+        assert!((v.values.as_slice().unwrap()[0] - 10.0*alpha.sin()).abs() < 1e-10);
+    }
+
+    #[test]
+    fn projected_coordinates_refuse_the_wrong_window_or_conflicting_cf_projection() {
+        let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let mut mapping = projected_fixture_mapping(false);
+        let mut doc = mapping.doc.to_value();
+        doc["grid"]["parameters"]["lat1"] = serde_json::json!(22.0);
+        mapping.doc = Node::parse(&serde_json::to_vec(&doc).unwrap()).unwrap();
+        let error = decode_netcdf(&mapping, &[fixtures.join("projected-geographic.nc").display().to_string()]).unwrap_err();
+        assert!(error.message.contains("differs from declared Lambert grid"));
+        let mut mapping = projected_fixture_mapping(true);
+        let mut doc = mapping.doc.to_value();
+        doc["grid"]["parameters"]["lov"] = serde_json::json!(260.0);
+        mapping.doc = Node::parse(&serde_json::to_vec(&doc).unwrap()).unwrap();
+        let error = decode_netcdf(&mapping, &[fixtures.join("projected-cf.nc").display().to_string()]).unwrap_err();
+        assert!(error.message.contains("central meridian differs"));
+    }
 
     /// A parsed CF reference, for units that must be well-formed ones.
     fn reference(units: &str) -> CfReference {
@@ -2003,6 +2443,35 @@ mod tests {
         assert!(values[0].is_nan());
         assert_eq!(values[1], 12.0);
         assert_eq!(mask, vec![true, false]);
+    }
+
+    #[test]
+    fn cf_parallel_mask_keeps_stored_markers_nonfinite_and_unfused_words() {
+        let policy = CfPolicy {
+            scale_factor: Some(1.0 - 2.0_f64.powi(-27)),
+            add_offset: Some(-1.0),
+            fill_value: Some(-9999.0),
+            missing_value: Some(-8888.0),
+        };
+        // The finite rounding witness becomes exactly zero with separate
+        // multiply/add; an FMA would return -2^-54. Include a partial chunk.
+        let stored = [
+            -9999.0, -8888.0, f64::INFINITY, f64::NEG_INFINITY,
+            f64::from_bits(0x7ff8_0000_0000_0123), 1.0 + 2.0_f64.powi(-27),
+            -0.0, f64::from_bits(1),
+        ];
+        let expected = [
+            f64::NAN, f64::NAN, f64::NAN, f64::NAN,
+            f64::NAN, 0.0, -1.0, -1.0,
+        ];
+        let mut values: Vec<f64> = stored.into_iter().cycle().take(131_077).collect();
+        let mask = policy.apply(&mut values);
+        for (index, value) in values.iter().enumerate() {
+            assert_eq!(
+                value.to_bits(), expected[index % stored.len()].to_bits(), "{index}"
+            );
+            assert_eq!(mask[index], index % stored.len() < 2, "{index}");
+        }
     }
 
     #[test]

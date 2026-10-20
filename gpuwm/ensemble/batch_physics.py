@@ -9,6 +9,7 @@ physics primitives, not yet a full PhysicsDriver replacement.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from math import prod
 from operator import index
@@ -561,6 +562,37 @@ class PackedThompsonState:
     def existing_scratch(self, slot):
         return self._scratch.get(slot)
 
+    @contextmanager
+    def analysis_diagnostic_view(self):
+        """Shape this packed state for one whole-state diagnostic call.
+
+        The analysis frame diagnoses reflectivity once, before the first
+        step, through the shared scheme diagnostic
+        (gpuwm.core.state_reflectivity.diagnose).  That diagnostic forms
+        its temperature in the ``refl_t`` slot and reads ``thb`` against
+        the member fields.  ``refl_t`` is dead when the diagnostic returns,
+        so it is admitted for that call only instead of entering the packed
+        arena layout for every step; a shared single-member ``thb`` slab is
+        tiled over the packed members for the same call (same words per
+        member, so the result is the per-member ordinary diagnosis).
+        """
+        import cupy as cp
+        shape = tuple(self.thp.shape)
+        added = "refl_t" not in self._scratch
+        if added:
+            self._scratch["refl_t"] = cp.empty(shape, dtype=np.float32)
+        thb = self.thb
+        if thb.ndim == 3 and tuple(thb.shape) != shape:
+            if thb.shape[1] == 0 or shape[1] % thb.shape[1] or thb.shape[::2] != shape[::2]:
+                raise ValueError(f"shared thb {thb.shape} does not tile the packed members {shape}")
+            self.thb = cp.tile(thb, (1, shape[1] // thb.shape[1], 1))
+        try:
+            yield self
+        finally:
+            self.thb = thb
+            if added:
+                del self._scratch["refl_t"]
+
 
 THOMPSON_VOLUME_SLOTS = (
     "mp_th", "mp_pii", "mp_thompson_temperature", "mp_dz8w",
@@ -944,7 +976,17 @@ class PreparedPhysicsCoupling:
                                          "rqc": rates["dqc"], "rqi": rates.get("dqi")},
                            du=rates["du"], dv=rates["dv"])
 
-    def couple_column_tendencies(self, state, cfg, **rates):
+    def couple_column_tendencies(self, state, cfg, *, shared_zero_components=(), **rates):
+        # shared_zero_components is the single-domain coupler's storage hint
+        # (c563a6f8860: radiation and held KF share one zero backing for the
+        # components they never produce). It is not a rate. This coupler
+        # already owns one persistent output per component per instance and
+        # zeros absent backings in the launch, so the hint needs no storage
+        # here; only the stock contract is kept: never share an active or
+        # optional component.
+        if any(name not in {"ru", "rv", "rqv", "rqc"} or rates.get(name) is not None
+               for name in shared_zero_components):
+            raise ValueError("cannot share an active or optional tendency component")
         du, dv = rates.pop("ru", None), rates.pop("rv", None)
         return self.couple(cfg=cfg, rates=rates, du=du, dv=dv)
 

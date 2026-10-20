@@ -46,11 +46,14 @@ form, mode-bit independent) or `.\install.ps1`
 (PowerShell) from the checkout root: a venv on free-threaded Python 3.14t
 (found on PATH or installed with uv; multi-card forecasts run about twice
 as fast on it, and `--python` / `-Python` picks another interpreter), the checkout's `gpuwm-data`
-companion, `[gpu-cu12,render]` extras, the offline Rust builds of all six
-vendored workspaces (the `tools/grib1_bridge` GRIB bridges, the
+companion, `[gpu-cu12,render]` extras, the offline Rust builds of all nine
+native workspaces (the `tools/grib1_bridge` GRIB bridges, the
 `tools/rustwx` render engine, the `tools/arwen-tui` terminal, the
-`tools/zarr_bridge` Zarr reader, the `tools/rw_wps` mapped decode engine
-and the `tools/region_global_dealias` dealiasing library; `--no-render` /
+`tools/zarr_bridge` Zarr reader, the `tools/rw_wps` mapped decode engine,
+the `tools/region_global_dealias` dealiasing library, the
+`tools/nextgen_hydrofabric` hydro payload, `tools/nextgen_forcing` forcing
+and `tools/nextgen_verify` gauge verification workspaces, fetching their
+locked dependencies first; `--no-render` /
 `-NoRender` skips the renderer, the long pole of install), and a closing
 `gpuwm doctor`; it offers rustup if `cargo` is missing and is safe to
 re-run. The equivalent manual steps install the checkout's own
@@ -66,8 +69,8 @@ python -m pip install -e gpuwm-data
 python -m pip install -e '.[gpu-cu12,render]'   # or gpu-cu13
 gpuwm fetch-tables     # optional: the first Thompson run stages missing tables
 gpuwm fetch-geog       # WPS_GEOG static tree: ~1.3 GB down, ~16 GB unpacked
-for workspace in tools/grib1_bridge tools/rustwx tools/arwen-tui tools/zarr_bridge tools/rw_wps tools/region_global_dealias; do
-  (cd "$workspace" && cargo build --release --locked --offline)
+for workspace in tools/grib1_bridge tools/rustwx tools/arwen-tui tools/zarr_bridge tools/rw_wps tools/region_global_dealias tools/nextgen_hydrofabric tools/nextgen_forcing tools/nextgen_verify; do
+  (cd "$workspace" && cargo fetch --locked && cargo build --release --locked --offline)
 done
 gpuwm doctor
 ```
@@ -81,8 +84,8 @@ python -m pip install -e gpuwm-data
 python -m pip install -e '.[gpu-cu12,render]'   # or gpu-cu13
 gpuwm fetch-tables     # optional: the first Thompson run stages missing tables
 gpuwm fetch-geog       # WPS_GEOG static tree: ~1.3 GB down, ~16 GB unpacked
-foreach ($workspace in 'tools\grib1_bridge', 'tools\rustwx', 'tools\arwen-tui', 'tools\zarr_bridge', 'tools\rw_wps', 'tools\region_global_dealias') {
-  Push-Location $workspace; cargo build --release --locked --offline; Pop-Location
+foreach ($workspace in 'tools\grib1_bridge', 'tools\rustwx', 'tools\arwen-tui', 'tools\zarr_bridge', 'tools\rw_wps', 'tools\region_global_dealias', 'tools\nextgen_hydrofabric', 'tools\nextgen_forcing', 'tools\nextgen_verify') {
+  Push-Location $workspace; cargo fetch --locked; cargo build --release --locked --offline; Pop-Location
 }
 gpuwm doctor
 ```

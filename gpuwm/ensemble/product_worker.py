@@ -118,13 +118,13 @@ def _parent_guard(parent_pid):
 
 def _cpu_policy():
     os.environ.update(CUDA_VISIBLE_DEVICES="", GPUWM_NO_LOCAL_GPU="1")
+    from gpuwm.ingest.cpu_backend import available_cpu_count
+    workers = str(available_cpu_count())
     for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
                  "NUMEXPR_NUM_THREADS", "RAYON_NUM_THREADS"):
-        os.environ[name] = "2"
+        os.environ[name] = workers
     if hasattr(os, "setpriority"):
         os.setpriority(os.PRIO_PROCESS, 0, max(10, os.getpriority(os.PRIO_PROCESS, 0)))
-    if hasattr(os, "sched_setaffinity"):
-        os.sched_setaffinity(0, sorted(os.sched_getaffinity(0))[-2:])
 
 
 def _atomic_json(path, value):
@@ -248,7 +248,7 @@ def execute_request(request):
     spool.manifest_path = root / domain / "ensemble-manifest.json"
     spool._manifest = lambda: None
     row = spool._finish(valid, available_bytes=available,
-        render_products=tuple(request.get("render_products", ("mean", "spread", "min", "max", "prob", "paintball", "postage"))),
+        render_products=tuple(request.get("render_products", ("mean", "spread", "min", "max", "prob", "paintball", "postage", "pmm", "spaghetti"))),
         retire_diagnostics=False)
     artifacts = []
     for value in (*row.get("products", ()), *row.get("maps", ())):

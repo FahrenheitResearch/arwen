@@ -500,7 +500,7 @@ class NativeDiagnosticSpool:
             self._manifest()
 
     def finish(self, valid_time, *, available_bytes, array_module=None,
-               render_products=("mean", "spread", "min", "max", "prob", "paintball", "postage")):
+               render_products=("mean", "spread", "min", "max", "prob", "paintball", "postage", "pmm", "spaghetti")):
         """Reduce one complete-roster frame and publish its finished Rust maps."""
         valid = str(valid_time)
         with self._lock:
@@ -518,7 +518,7 @@ class NativeDiagnosticSpool:
                 self._processing.remove(valid)
 
     def _finish(self, valid_time, *, available_bytes, array_module=None,
-                render_products=("mean", "spread", "min", "max", "prob", "paintball", "postage"),
+                render_products=("mean", "spread", "min", "max", "prob", "paintball", "postage", "pmm", "spaghetti"),
                 retire_diagnostics=True):
         from dataclasses import replace
         from gpuwm import rustwx
@@ -544,7 +544,8 @@ class NativeDiagnosticSpool:
             self._manifest()
             return {k: v for k, v in frame.items() if k != "packs"}
         started = time.perf_counter()
-        plan = product_memory_plan(requests, {r.field: self.shape for r in requests}, members=self.members)
+        plan = product_memory_plan(requests, {r.field: self.shape for r in requests},
+                                   members=self.members, include_pmm=True)
         if self.gpu_replay:
             outputs = self._gpu_reference_replay(frame, requests, plan,
                 available_bytes=available_bytes, array_module=xp)
@@ -612,7 +613,7 @@ class NativeDiagnosticSpool:
         return {k: v for k, v in frame.items() if k != "packs"}
 
     def finish_in_subprocess(self, valid_time, *, available_bytes, consumer,
-                render_products=("mean", "spread", "min", "max", "prob", "paintball", "postage")):
+                render_products=("mean", "spread", "min", "max", "prob", "paintball", "postage", "pmm", "spaghetti")):
         """Keep product writing, hashes and render orchestration off forecast GIL."""
         from copy import deepcopy
         from gpuwm.ensemble.product_worker import REQUEST_SCHEMA, RESULT_SCHEMA, _owned_path, _identity, _signature
@@ -723,6 +724,11 @@ class NativeDiagnosticSpool:
                     raise ValueError("native diagnostic replay does not match the submitted member pack")
                 for local, member in enumerate(pack["member_ids"]):
                     member_cache[self.member_positions[member]] = words[local]
+            if request.field in ("refl", "rain_total"):
+                from gpuwm.ensemble.batch_products import probability_matched_mean
+                stack = xp.asarray(member_cache)
+                outputs[f"{request.field}:pmm"][:] = xp.asnumpy(probability_matched_mean(
+                    stack, xp.mean(stack, axis=0), xp))
             step = rows - 1 if request.spaghetti else rows
             for start in range(0, ny, step):
                 count = min(rows, ny - start)
@@ -828,7 +834,7 @@ class HeadlineDiagnosticCollector:
 
     def __init__(self, root, *, members, renderer, start_time, requests=None,
                  thresholds=None, keep_member_files=False, available_bytes=None,
-                 tile_rows=32, render_products=("mean", "spread", "min", "max", "prob", "paintball", "postage"),
+                 tile_rows=32, render_products=("mean", "spread", "min", "max", "prob", "paintball", "postage", "pmm", "spaghetti"),
                  events=None, array_module=None, member_order=None, member_metadata=(),
                  retain_member_diagnostics=False, defer_replay=False, gpu_replay=False, resume=False):
         if array_module is None:
@@ -956,7 +962,13 @@ class HeadlineDiagnosticCollector:
             if tick < latest:
                 raise ValueError("member precipitation counter snapshots must advance in ordinary clock order")
             if np.any(cumulative < history[latest]):
-                raise ValueError("member cumulative precipitation reset; QPF would be invalid")
+                delta = cumulative - history[latest]
+                point = np.unravel_index(int(np.argmin(delta)), delta.shape)
+                raise ValueError("member cumulative precipitation reset; QPF would be invalid: "
+                    f"member/grid={key[:3]}, ticks={latest}->{tick}, "
+                    f"cells={int(np.count_nonzero(delta < 0))}, min_change_mm={float(delta[point])}, "
+                    f"at={point}, previous_mm={float(history[latest][point])}, "
+                    f"current_mm={float(cumulative[point])}")
         if "initial" not in history:
             history["initial"] = cumulative.copy()
             self.rain_initial_ticks[key] = tick
@@ -1213,6 +1225,13 @@ class HeadlineDiagnosticCollector:
                 if _driver_refreshes_psfc(state):
                     fields["PSFC"] = physics.fields["psfc"]
         fields = {str(name).upper(): value for name, value in fields.items()}
+        if streamed is None:
+            existing_scratch = getattr(state, "existing_scratch", None)
+            up_heli_max = existing_scratch("up_heli_max") if callable(existing_scratch) else None
+            if up_heli_max is not None:
+                fields["UP_HELI_MAX"] = up_heli_max
+        if "UP_HELI_MAX" in fields:
+            fields["UH"] = fields["UP_HELI_MAX"]
         if refl_field is not None:
             fields["REFL_10CM"] = refl_field
         latitude, longitude = np.asarray(metadata["XLAT"], np.float32), np.asarray(metadata["XLONG"], np.float32)

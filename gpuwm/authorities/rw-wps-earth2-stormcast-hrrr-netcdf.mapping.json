@@ -1,0 +1,1747 @@
+{
+  "schema": "rw-wps.mapping.v1",
+  "name": "earth2-stormcast-hrrr-netcdf",
+  "format": "netcdf",
+  "producer_attributes": {
+    "lat": {
+      "units": "degrees_north"
+    },
+    "lon": {
+      "units": "degrees_east"
+    },
+    "u1hl": {
+      "units": "m s-1"
+    },
+    "u2hl": {
+      "units": "m s-1"
+    },
+    "u3hl": {
+      "units": "m s-1"
+    },
+    "u4hl": {
+      "units": "m s-1"
+    },
+    "u5hl": {
+      "units": "m s-1"
+    },
+    "u6hl": {
+      "units": "m s-1"
+    },
+    "u7hl": {
+      "units": "m s-1"
+    },
+    "u8hl": {
+      "units": "m s-1"
+    },
+    "u9hl": {
+      "units": "m s-1"
+    },
+    "u10hl": {
+      "units": "m s-1"
+    },
+    "u11hl": {
+      "units": "m s-1"
+    },
+    "u13hl": {
+      "units": "m s-1"
+    },
+    "u15hl": {
+      "units": "m s-1"
+    },
+    "u20hl": {
+      "units": "m s-1"
+    },
+    "u25hl": {
+      "units": "m s-1"
+    },
+    "u30hl": {
+      "units": "m s-1"
+    },
+    "v1hl": {
+      "units": "m s-1"
+    },
+    "v2hl": {
+      "units": "m s-1"
+    },
+    "v3hl": {
+      "units": "m s-1"
+    },
+    "v4hl": {
+      "units": "m s-1"
+    },
+    "v5hl": {
+      "units": "m s-1"
+    },
+    "v6hl": {
+      "units": "m s-1"
+    },
+    "v7hl": {
+      "units": "m s-1"
+    },
+    "v8hl": {
+      "units": "m s-1"
+    },
+    "v9hl": {
+      "units": "m s-1"
+    },
+    "v10hl": {
+      "units": "m s-1"
+    },
+    "v11hl": {
+      "units": "m s-1"
+    },
+    "v13hl": {
+      "units": "m s-1"
+    },
+    "v15hl": {
+      "units": "m s-1"
+    },
+    "v20hl": {
+      "units": "m s-1"
+    },
+    "v25hl": {
+      "units": "m s-1"
+    },
+    "v30hl": {
+      "units": "m s-1"
+    },
+    "t1hl": {
+      "units": "K"
+    },
+    "t2hl": {
+      "units": "K"
+    },
+    "t3hl": {
+      "units": "K"
+    },
+    "t4hl": {
+      "units": "K"
+    },
+    "t5hl": {
+      "units": "K"
+    },
+    "t6hl": {
+      "units": "K"
+    },
+    "t7hl": {
+      "units": "K"
+    },
+    "t8hl": {
+      "units": "K"
+    },
+    "t9hl": {
+      "units": "K"
+    },
+    "t10hl": {
+      "units": "K"
+    },
+    "t11hl": {
+      "units": "K"
+    },
+    "t13hl": {
+      "units": "K"
+    },
+    "t15hl": {
+      "units": "K"
+    },
+    "t20hl": {
+      "units": "K"
+    },
+    "t25hl": {
+      "units": "K"
+    },
+    "t30hl": {
+      "units": "K"
+    },
+    "q1hl": {
+      "units": "kg kg-1"
+    },
+    "q2hl": {
+      "units": "kg kg-1"
+    },
+    "q3hl": {
+      "units": "kg kg-1"
+    },
+    "q4hl": {
+      "units": "kg kg-1"
+    },
+    "q5hl": {
+      "units": "kg kg-1"
+    },
+    "q6hl": {
+      "units": "kg kg-1"
+    },
+    "q7hl": {
+      "units": "kg kg-1"
+    },
+    "q8hl": {
+      "units": "kg kg-1"
+    },
+    "q9hl": {
+      "units": "kg kg-1"
+    },
+    "q10hl": {
+      "units": "kg kg-1"
+    },
+    "q11hl": {
+      "units": "kg kg-1"
+    },
+    "q13hl": {
+      "units": "kg kg-1"
+    },
+    "q15hl": {
+      "units": "kg kg-1"
+    },
+    "q20hl": {
+      "units": "kg kg-1"
+    },
+    "q25hl": {
+      "units": "kg kg-1"
+    },
+    "q30hl": {
+      "units": "kg kg-1"
+    },
+    "Z1hl": {
+      "units": "m"
+    },
+    "Z2hl": {
+      "units": "m"
+    },
+    "Z3hl": {
+      "units": "m"
+    },
+    "Z4hl": {
+      "units": "m"
+    },
+    "Z5hl": {
+      "units": "m"
+    },
+    "Z6hl": {
+      "units": "m"
+    },
+    "Z7hl": {
+      "units": "m"
+    },
+    "Z8hl": {
+      "units": "m"
+    },
+    "Z9hl": {
+      "units": "m"
+    },
+    "Z10hl": {
+      "units": "m"
+    },
+    "Z11hl": {
+      "units": "m"
+    },
+    "Z13hl": {
+      "units": "m"
+    },
+    "Z15hl": {
+      "units": "m"
+    },
+    "Z20hl": {
+      "units": "m"
+    },
+    "Z25hl": {
+      "units": "m"
+    },
+    "Z30hl": {
+      "units": "m"
+    },
+    "p1hl": {
+      "units": "Pa"
+    },
+    "p2hl": {
+      "units": "Pa"
+    },
+    "p3hl": {
+      "units": "Pa"
+    },
+    "p4hl": {
+      "units": "Pa"
+    },
+    "p5hl": {
+      "units": "Pa"
+    },
+    "p6hl": {
+      "units": "Pa"
+    },
+    "p7hl": {
+      "units": "Pa"
+    },
+    "p8hl": {
+      "units": "Pa"
+    },
+    "p9hl": {
+      "units": "Pa"
+    },
+    "p10hl": {
+      "units": "Pa"
+    },
+    "p11hl": {
+      "units": "Pa"
+    },
+    "p13hl": {
+      "units": "Pa"
+    },
+    "p15hl": {
+      "units": "Pa"
+    },
+    "p20hl": {
+      "units": "Pa"
+    },
+    "u10m": {
+      "units": "m s-1"
+    },
+    "v10m": {
+      "units": "m s-1"
+    },
+    "t2m": {
+      "units": "K"
+    },
+    "msl": {
+      "units": "Pa"
+    },
+    "refc": {
+      "units": "dBZ"
+    }
+  },
+  "coordinates": {
+    "horizontal": {
+      "kind": "variables",
+      "latitude": {
+        "format": "netcdf",
+        "name": [
+          "lat"
+        ]
+      },
+      "longitude": {
+        "format": "netcdf",
+        "name": [
+          "lon"
+        ]
+      }
+    },
+    "vertical": {
+      "kind": "model_level",
+      "units": "1",
+      "positive": "up",
+      "levels": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        13,
+        15,
+        20,
+        25,
+        30
+      ],
+      "selector": {
+        "format": "netcdf",
+        "name": [
+          "level"
+        ]
+      },
+      "model_top_pressure_pa": 1500.0
+    },
+    "time": {
+      "kind": "dimension",
+      "units": "hours since 0001-01-01 00:00:00.0",
+      "calendar": "proleptic_gregorian",
+      "selector": {
+        "name": [
+          "time"
+        ]
+      },
+      "lead": {
+        "selector": {
+          "name": [
+            "lead_time"
+          ]
+        },
+        "units": "hours"
+      }
+    }
+  },
+  "fields": {
+    "eastward_wind": {
+      "selectors": [
+        {
+          "format": "netcdf",
+          "name": [
+            "u1hl"
+          ],
+          "level_value": 1
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "u2hl"
+          ],
+          "level_value": 2
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "u3hl"
+          ],
+          "level_value": 3
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "u4hl"
+          ],
+          "level_value": 4
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "u5hl"
+          ],
+          "level_value": 5
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "u6hl"
+          ],
+          "level_value": 6
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "u7hl"
+          ],
+          "level_value": 7
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "u8hl"
+          ],
+          "level_value": 8
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "u9hl"
+          ],
+          "level_value": 9
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "u10hl"
+          ],
+          "level_value": 10
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "u11hl"
+          ],
+          "level_value": 11
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "u13hl"
+          ],
+          "level_value": 13
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "u15hl"
+          ],
+          "level_value": 15
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "u20hl"
+          ],
+          "level_value": 20
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "u25hl"
+          ],
+          "level_value": 25
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "u30hl"
+          ],
+          "level_value": 30
+        }
+      ],
+      "selector_stack_axis": "vertical",
+      "units": {
+        "source": "m s-1",
+        "target": "m s-1"
+      },
+      "source_axes": [
+        "time",
+        "lead",
+        "vertical",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "vertical",
+        "y",
+        "x"
+      ],
+      "location": "mass",
+      "staggering": "none",
+      "missing": {
+        "kind": "composition_fill"
+      }
+    },
+    "northward_wind": {
+      "selectors": [
+        {
+          "format": "netcdf",
+          "name": [
+            "v1hl"
+          ],
+          "level_value": 1
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "v2hl"
+          ],
+          "level_value": 2
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "v3hl"
+          ],
+          "level_value": 3
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "v4hl"
+          ],
+          "level_value": 4
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "v5hl"
+          ],
+          "level_value": 5
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "v6hl"
+          ],
+          "level_value": 6
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "v7hl"
+          ],
+          "level_value": 7
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "v8hl"
+          ],
+          "level_value": 8
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "v9hl"
+          ],
+          "level_value": 9
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "v10hl"
+          ],
+          "level_value": 10
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "v11hl"
+          ],
+          "level_value": 11
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "v13hl"
+          ],
+          "level_value": 13
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "v15hl"
+          ],
+          "level_value": 15
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "v20hl"
+          ],
+          "level_value": 20
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "v25hl"
+          ],
+          "level_value": 25
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "v30hl"
+          ],
+          "level_value": 30
+        }
+      ],
+      "selector_stack_axis": "vertical",
+      "units": {
+        "source": "m s-1",
+        "target": "m s-1"
+      },
+      "source_axes": [
+        "time",
+        "lead",
+        "vertical",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "vertical",
+        "y",
+        "x"
+      ],
+      "location": "mass",
+      "staggering": "none",
+      "missing": {
+        "kind": "composition_fill"
+      }
+    },
+    "air_temperature": {
+      "selectors": [
+        {
+          "format": "netcdf",
+          "name": [
+            "t1hl"
+          ],
+          "level_value": 1
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "t2hl"
+          ],
+          "level_value": 2
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "t3hl"
+          ],
+          "level_value": 3
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "t4hl"
+          ],
+          "level_value": 4
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "t5hl"
+          ],
+          "level_value": 5
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "t6hl"
+          ],
+          "level_value": 6
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "t7hl"
+          ],
+          "level_value": 7
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "t8hl"
+          ],
+          "level_value": 8
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "t9hl"
+          ],
+          "level_value": 9
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "t10hl"
+          ],
+          "level_value": 10
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "t11hl"
+          ],
+          "level_value": 11
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "t13hl"
+          ],
+          "level_value": 13
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "t15hl"
+          ],
+          "level_value": 15
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "t20hl"
+          ],
+          "level_value": 20
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "t25hl"
+          ],
+          "level_value": 25
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "t30hl"
+          ],
+          "level_value": 30
+        }
+      ],
+      "selector_stack_axis": "vertical",
+      "units": {
+        "source": "K",
+        "target": "K"
+      },
+      "source_axes": [
+        "time",
+        "lead",
+        "vertical",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "vertical",
+        "y",
+        "x"
+      ],
+      "location": "mass",
+      "staggering": "none",
+      "missing": {
+        "kind": "composition_fill"
+      }
+    },
+    "specific_humidity": {
+      "selectors": [
+        {
+          "format": "netcdf",
+          "name": [
+            "q1hl"
+          ],
+          "level_value": 1
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "q2hl"
+          ],
+          "level_value": 2
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "q3hl"
+          ],
+          "level_value": 3
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "q4hl"
+          ],
+          "level_value": 4
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "q5hl"
+          ],
+          "level_value": 5
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "q6hl"
+          ],
+          "level_value": 6
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "q7hl"
+          ],
+          "level_value": 7
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "q8hl"
+          ],
+          "level_value": 8
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "q9hl"
+          ],
+          "level_value": 9
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "q10hl"
+          ],
+          "level_value": 10
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "q11hl"
+          ],
+          "level_value": 11
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "q13hl"
+          ],
+          "level_value": 13
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "q15hl"
+          ],
+          "level_value": 15
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "q20hl"
+          ],
+          "level_value": 20
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "q25hl"
+          ],
+          "level_value": 25
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "q30hl"
+          ],
+          "level_value": 30
+        }
+      ],
+      "selector_stack_axis": "vertical",
+      "units": {
+        "source": "kg kg-1",
+        "target": "kg kg-1"
+      },
+      "source_axes": [
+        "time",
+        "lead",
+        "vertical",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "vertical",
+        "y",
+        "x"
+      ],
+      "location": "mass",
+      "staggering": "none",
+      "missing": {
+        "kind": "composition_fill"
+      }
+    },
+    "geopotential_height": {
+      "selectors": [
+        {
+          "format": "netcdf",
+          "name": [
+            "Z1hl"
+          ],
+          "level_value": 1
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "Z2hl"
+          ],
+          "level_value": 2
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "Z3hl"
+          ],
+          "level_value": 3
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "Z4hl"
+          ],
+          "level_value": 4
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "Z5hl"
+          ],
+          "level_value": 5
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "Z6hl"
+          ],
+          "level_value": 6
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "Z7hl"
+          ],
+          "level_value": 7
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "Z8hl"
+          ],
+          "level_value": 8
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "Z9hl"
+          ],
+          "level_value": 9
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "Z10hl"
+          ],
+          "level_value": 10
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "Z11hl"
+          ],
+          "level_value": 11
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "Z13hl"
+          ],
+          "level_value": 13
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "Z15hl"
+          ],
+          "level_value": 15
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "Z20hl"
+          ],
+          "level_value": 20
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "Z25hl"
+          ],
+          "level_value": 25
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "Z30hl"
+          ],
+          "level_value": 30
+        }
+      ],
+      "selector_stack_axis": "vertical",
+      "units": {
+        "source": "m",
+        "target": "m"
+      },
+      "source_axes": [
+        "time",
+        "lead",
+        "vertical",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "vertical",
+        "y",
+        "x"
+      ],
+      "location": "mass",
+      "staggering": "none",
+      "missing": {
+        "kind": "composition_fill"
+      }
+    },
+    "air_pressure": {
+      "selectors": [
+        {
+          "format": "netcdf",
+          "name": [
+            "p1hl"
+          ],
+          "level_value": 1
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "p2hl"
+          ],
+          "level_value": 2
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "p3hl"
+          ],
+          "level_value": 3
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "p4hl"
+          ],
+          "level_value": 4
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "p5hl"
+          ],
+          "level_value": 5
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "p6hl"
+          ],
+          "level_value": 6
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "p7hl"
+          ],
+          "level_value": 7
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "p8hl"
+          ],
+          "level_value": 8
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "p9hl"
+          ],
+          "level_value": 9
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "p10hl"
+          ],
+          "level_value": 10
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "p11hl"
+          ],
+          "level_value": 11
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "p13hl"
+          ],
+          "level_value": 13
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "p15hl"
+          ],
+          "level_value": 15
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "p20hl"
+          ],
+          "level_value": 20
+        }
+      ],
+      "selector_stack_axis": "vertical",
+      "units": {
+        "source": "Pa",
+        "target": "Pa"
+      },
+      "source_axes": [
+        "time",
+        "lead",
+        "vertical",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "vertical",
+        "y",
+        "x"
+      ],
+      "location": "mass",
+      "staggering": "none",
+      "missing": {
+        "kind": "composition_fill"
+      }
+    },
+    "eastward_wind_10m": {
+      "selectors": [
+        {
+          "format": "netcdf",
+          "name": [
+            "u10m"
+          ]
+        }
+      ],
+      "units": {
+        "source": "m s-1",
+        "target": "m s-1"
+      },
+      "source_axes": [
+        "time",
+        "lead",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      }
+    },
+    "northward_wind_10m": {
+      "selectors": [
+        {
+          "format": "netcdf",
+          "name": [
+            "v10m"
+          ]
+        }
+      ],
+      "units": {
+        "source": "m s-1",
+        "target": "m s-1"
+      },
+      "source_axes": [
+        "time",
+        "lead",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      }
+    },
+    "air_temperature_2m": {
+      "selectors": [
+        {
+          "format": "netcdf",
+          "name": [
+            "t2m"
+          ]
+        }
+      ],
+      "units": {
+        "source": "K",
+        "target": "K"
+      },
+      "source_axes": [
+        "time",
+        "lead",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      }
+    },
+    "air_pressure_at_mean_sea_level": {
+      "selectors": [
+        {
+          "format": "netcdf",
+          "name": [
+            "msl"
+          ]
+        }
+      ],
+      "units": {
+        "source": "Pa",
+        "target": "Pa"
+      },
+      "source_axes": [
+        "time",
+        "lead",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      }
+    },
+    "surface_pressure": {
+      "provider": "composition_bound",
+      "units": {
+        "source": "Pa",
+        "target": "Pa"
+      },
+      "source_axes": [
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      }
+    },
+    "terrain_height": {
+      "provider": "composition_bound",
+      "units": {
+        "source": "m",
+        "target": "m"
+      },
+      "source_axes": [
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      }
+    },
+    "land_fraction": {
+      "provider": "composition_bound",
+      "units": {
+        "source": "1",
+        "target": "1"
+      },
+      "source_axes": [
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      }
+    },
+    "skin_temperature": {
+      "provider": "composition_bound",
+      "units": {
+        "source": "K",
+        "target": "K"
+      },
+      "source_axes": [
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      }
+    },
+    "specific_humidity_2m": {
+      "provider": "composition_bound",
+      "units": {
+        "source": "kg kg-1",
+        "target": "kg kg-1"
+      },
+      "source_axes": [
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      }
+    },
+    "soil_temperature": {
+      "provider": "composition_bound",
+      "units": {
+        "source": "K",
+        "target": "K"
+      },
+      "source_axes": [
+        "soil",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "soil",
+        "y",
+        "x"
+      ],
+      "location": "soil",
+      "staggering": "none",
+      "missing": {
+        "kind": "preserve_mask"
+      }
+    },
+    "volumetric_soil_moisture": {
+      "provider": "composition_bound",
+      "units": {
+        "source": "m3 m-3",
+        "target": "m3 m-3"
+      },
+      "source_axes": [
+        "soil",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "soil",
+        "y",
+        "x"
+      ],
+      "location": "soil",
+      "staggering": "none",
+      "missing": {
+        "kind": "preserve_mask"
+      }
+    },
+    "sea_ice_fraction": {
+      "provider": "composition_bound",
+      "units": {
+        "source": "1",
+        "target": "1"
+      },
+      "source_axes": [
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      }
+    },
+    "snow_water_equivalent": {
+      "provider": "composition_bound",
+      "units": {
+        "source": "kg m-2",
+        "target": "kg m-2"
+      },
+      "source_axes": [
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      }
+    },
+    "snow_depth": {
+      "provider": "composition_bound",
+      "units": {
+        "source": "m",
+        "target": "m"
+      },
+      "source_axes": [
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      }
+    },
+    "refc": {
+      "selectors": [
+        {
+          "format": "netcdf",
+          "name": [
+            "refc"
+          ]
+        }
+      ],
+      "units": {
+        "source": "dBZ",
+        "target": "dBZ"
+      },
+      "source_axes": [
+        "time",
+        "lead",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "preserve_mask"
+      },
+      "dependency_only": true
+    }
+  },
+  "derivations": [],
+  "target": {
+    "name": "Earth2Studio forecast atmosphere with same-cycle physical analysis",
+    "physics_suite": "source-independent",
+    "max_dom": 4,
+    "require_lateral_boundaries": true,
+    "target_vertical_levels": 49,
+    "soil_layer_count": 9,
+    "boundary_interval_seconds": 3600,
+    "accept_boundary_interval_multiples": true,
+    "required_fields": [
+      {
+        "name": "air_temperature",
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "location": "mass",
+        "target_units": "K"
+      },
+      {
+        "name": "specific_humidity",
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "location": "mass",
+        "target_units": "kg kg-1"
+      },
+      {
+        "name": "eastward_wind",
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "location": "mass",
+        "target_units": "m s-1"
+      },
+      {
+        "name": "northward_wind",
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "location": "mass",
+        "target_units": "m s-1"
+      },
+      {
+        "name": "geopotential_height",
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "location": "mass",
+        "target_units": "m"
+      },
+      {
+        "name": "air_pressure",
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "location": "mass",
+        "target_units": "Pa"
+      },
+      {
+        "name": "surface_pressure",
+        "axes": [
+          "y",
+          "x"
+        ],
+        "location": "surface",
+        "target_units": "Pa"
+      },
+      {
+        "name": "terrain_height",
+        "axes": [
+          "y",
+          "x"
+        ],
+        "location": "surface",
+        "target_units": "m"
+      },
+      {
+        "name": "skin_temperature",
+        "axes": [
+          "y",
+          "x"
+        ],
+        "location": "surface",
+        "target_units": "K"
+      },
+      {
+        "name": "air_temperature_2m",
+        "axes": [
+          "y",
+          "x"
+        ],
+        "location": "surface",
+        "target_units": "K"
+      },
+      {
+        "name": "specific_humidity_2m",
+        "axes": [
+          "y",
+          "x"
+        ],
+        "location": "surface",
+        "target_units": "kg kg-1"
+      },
+      {
+        "name": "eastward_wind_10m",
+        "axes": [
+          "y",
+          "x"
+        ],
+        "location": "surface",
+        "target_units": "m s-1"
+      },
+      {
+        "name": "northward_wind_10m",
+        "axes": [
+          "y",
+          "x"
+        ],
+        "location": "surface",
+        "target_units": "m s-1"
+      },
+      {
+        "name": "land_fraction",
+        "axes": [
+          "y",
+          "x"
+        ],
+        "location": "surface",
+        "target_units": "1"
+      },
+      {
+        "name": "soil_temperature",
+        "axes": [
+          "soil",
+          "y",
+          "x"
+        ],
+        "location": "soil",
+        "target_units": "K"
+      },
+      {
+        "name": "volumetric_soil_moisture",
+        "axes": [
+          "soil",
+          "y",
+          "x"
+        ],
+        "location": "soil",
+        "target_units": "m3 m-3"
+      }
+    ],
+    "pressure_requirement": "air_pressure",
+    "policy_controlled_fields": [
+      "cloud_water_mixing_ratio",
+      "rain_water_mixing_ratio",
+      "cloud_ice_mixing_ratio",
+      "snow_mixing_ratio",
+      "graupel_or_hail_mixing_ratio",
+      "vertical_velocity",
+      "snow_water_equivalent",
+      "snow_depth",
+      "sea_ice_fraction"
+    ],
+    "initialization_policies": {
+      "cloud_water_mixing_ratio": "explicit_zero_with_adapter_validation",
+      "rain_water_mixing_ratio": "explicit_zero_with_adapter_validation",
+      "cloud_ice_mixing_ratio": "explicit_zero_with_adapter_validation",
+      "snow_mixing_ratio": "explicit_zero_with_adapter_validation",
+      "graupel_or_hail_mixing_ratio": "explicit_zero_with_adapter_validation",
+      "vertical_velocity": "explicit_zero_with_adapter_validation",
+      "snow_water_equivalent": "borrowed_from_companion_analysis",
+      "snow_depth": "borrowed_from_companion_analysis",
+      "sea_ice_fraction": "borrowed_from_companion_analysis"
+    }
+  },
+  "grid": {
+    "family": "lambert_conformal",
+    "same_grid_pairing": "identity",
+    "wind_basis": "grid_relative_with_rotation",
+    "parameters": {
+      "latin1": 38.5,
+      "latin2": 38.5,
+      "lov": 262.5,
+      "lat1": 31.139358359689744,
+      "lon1": 252.46869011943866,
+      "dx_m": 3000.0,
+      "dy_m": 3000.0,
+      "nx": 640,
+      "ny": 512,
+      "earth_radius_m": 6371229.0,
+      "shape_of_earth": 6
+    }
+  }
+}

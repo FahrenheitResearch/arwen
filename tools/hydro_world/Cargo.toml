@@ -1,0 +1,35 @@
+[package]
+name = "hydro-world"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "HYDRO-WORLD fabric contract and the table-driven global fabric builder"
+build = "build.rs"
+
+[lib]
+crate-type = ["rlib"]
+
+[[bin]]
+name = "rw_hydro_world"
+path = "src/main.rs"
+
+[features]
+# The DEM per-cell passes (fill, D8 + flats, accumulation) on the GPU. The
+# driver and NVRTC are loaded at run time, so the binary needs no CUDA
+# toolkit to build or start; without a usable GPU `--device auto` (the
+# default) runs the same passes on all CPU cores and says so.
+default = ["cuda"]
+cuda = ["dep:cudarc"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+# float_roundtrip: JSON interchange must reproduce every f64 bit exactly.
+serde_json = { version = "1", features = ["float_roundtrip"] }
+sha2 = "0.10"
+rayon = "1.12"
+flate2 = "1.1"
+crc32fast = "1.2"
+# Same pin and feature set as the in-tree simradar_cuda / rw-post users.
+cudarc = { version = "=0.19.8", optional = true, default-features = false, features = ["std", "driver", "nvrtc", "dynamic-loading", "cuda-13000"] }
+
+[workspace]

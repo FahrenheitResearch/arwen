@@ -8,6 +8,20 @@ import pytest
 from gpuwm.ensemble.product_consumer import DiagnosticProductConsumer
 
 
+def test_replay_children_inherit_the_callers_full_cpu_allocation():
+    import os
+    if not hasattr(os, "sched_getaffinity"):
+        pytest.skip("CPU affinity is unavailable")
+    expected = sorted(os.sched_getaffinity(0))
+    consumer = DiagnosticProductConsumer(np)
+    actual = []
+    consumer.submit(("d01", "hour0"), device=0,
+                    replay=lambda: actual.extend(sorted(os.sched_getaffinity(0))))
+    consumer.close()
+    assert actual == expected
+    assert consumer.receipt()["native_thread_cpu_affinity"] == expected
+
+
 def test_busy_replay_does_not_block_next_hour_and_retains_out_of_order_clocks():
     consumer = DiagnosticProductConsumer(np)
     entered, release = Event(), Event()

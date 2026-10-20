@@ -70,6 +70,19 @@ def test_cumulus_and_lightning_exceptions_compile_without_ftz():
     assert "lightning.cu" in FTZ_FALSE_SOURCES
 
 
+def test_nextgen_reservoir_divisions_use_non_ftz():
+    import ast
+    from gpuwm.core import ieee_module
+    source = (REPO_ROOT / "gpuwm/hydro/reservoirs.py").read_text()
+    loader = next(node for node in ast.parse(source).body
+                  if isinstance(node, ast.FunctionDef) and node.name == "_module")
+    block = ast.get_source_segment(source, loader)
+    assert 'compile_module(kernel_source(strict), tuple(options), "nextgen_reservoirs")' in block
+    assert 'options = ["--std=c++17", "--ftz=false"]' in block
+    assert "nextgen_reservoirs.cuh" in FTZ_FALSE_SOURCES
+    assert "--ftz=false" in ieee_module._effective_options(("--ftz=false",))
+
+
 def test_kernel_sources_divide_by_float_constants_only_through_fdiv_rn():
     """A146: every -ftz=true kernel source spells a constant divisor as
     ``__fdiv_rn(x, C)``; a plain ``x / C`` is rounded one ULP off on

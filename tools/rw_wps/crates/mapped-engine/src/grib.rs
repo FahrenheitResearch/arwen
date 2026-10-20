@@ -411,19 +411,49 @@ pub fn regular_latlon_frame(
         .collect();
     let (longitude, order) = regular_longitude_axis(grid.lon1, grid.dx, nx);
     let mut values = vec![0.0f64; nx * ny];
-    for row in 0..ny {
-        for (column, source_column) in order.iter().enumerate() {
-            values[row * nx + column] = raw[row * nx + source_column];
+    // A regional row is normally one contiguous run; a global ring is
+    // two runs at the longitude cut. Copy those slices directly, folding
+    // latitude reversal into the same pass instead of allocating and
+    // copying a second full field. Preserve the stable column ordering
+    // for unusual grids (including duplicate seam columns).
+    if nx > 0 {
+        let start = order[0];
+        let cyclic = order
+            .iter()
+            .enumerate()
+            .all(|(column, stored)| *stored == (start + column) % nx);
+        let copy_row = |(row, destination): (usize, &mut [f64])| {
+            let stored_row = if scan == 0x00 { ny - 1 - row } else { row };
+            let source = &raw[stored_row * nx..(stored_row + 1) * nx];
+            if cyclic {
+                let tail = nx - start;
+                destination[..tail].copy_from_slice(&source[start..]);
+                destination[tail..].copy_from_slice(&source[..start]);
+            } else {
+                for (value, column) in destination.iter_mut().zip(&order) {
+                    *value = source[*column];
+                }
+            }
+        };
+        // Message decode already spans the pool. Keep its row copies on
+        // that worker: nested dispatch made isolated complex-packed
+        // records slower by waking idle workers between serial unpackers.
+        // A caller outside the pool can instead split a large frame by row.
+        if ny < 64 || rayon::current_thread_index().is_some() {
+            values.chunks_mut(nx).enumerate().for_each(copy_row);
+        } else {
+            crate::threads::install(|| {
+                use rayon::prelude::*;
+                values
+                    .par_chunks_mut(nx)
+                    .with_min_len(32)
+                    .enumerate()
+                    .for_each(copy_row);
+            });
         }
     }
     if scan == 0x00 {
         latitude.reverse();
-        let mut flipped = vec![0.0f64; nx * ny];
-        for row in 0..ny {
-            let source = ny - 1 - row;
-            flipped[row * nx..(row + 1) * nx].copy_from_slice(&values[source * nx..(source + 1) * nx]);
-        }
-        values = flipped;
     }
     Ok((latitude, longitude, values))
 }
@@ -1244,6 +1274,74 @@ mod tests {
                     .map(|(row, column)| values[row * 8 + column])
                     .collect();
                 assert_eq!(window, expected, "scan 0x{scan:02x} rows {rows:?} columns {columns:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn parallel_frame_export_preserves_every_bit_and_stable_column_order() {
+        use grib_core::grib2::{DataRepresentation, GridDefinition};
+        // Cover one/two contiguous runs, duplicate seam columns, a
+        // noncyclic descending order, and enough rows to split the pool.
+        for (nx, lon1, dx) in [
+            (8, 90.0, 45.0),
+            (9, 0.0, 45.0),
+            (8, 175.0, 0.5),
+            (8, 90.0, -45.0),
+        ] {
+            for scan in [0x40, 0x00] {
+                let ny = 67;
+                let message = Grib2Message {
+                    discipline: 0,
+                    identification: Default::default(),
+                    reference_time: chrono::NaiveDate::from_ymd_opt(2026, 10, 18)
+                        .unwrap()
+                        .and_hms_opt(0, 0, 0)
+                        .unwrap(),
+                    grid: GridDefinition {
+                        template: 0,
+                        nx: nx as u32,
+                        ny: ny as u32,
+                        lat1: if scan == 0x40 { -33.0 } else { 33.0 },
+                        lon1,
+                        dx,
+                        dy: 1.0,
+                        scan_mode: scan,
+                        ..Default::default()
+                    },
+                    product: Default::default(),
+                    data_rep: DataRepresentation::default(),
+                    bitmap: None,
+                    raw_data: Vec::new(),
+                };
+                let raw: Vec<_> = (0..nx * ny)
+                    .map(|i| match i % 7 {
+                        0 => f64::from_bits(0x7ff8_0000_0000_0001 + i as u64),
+                        1 => -0.0,
+                        _ => i as f64,
+                    })
+                    .collect();
+                let (latitude, longitude, actual) = regular_latlon_frame(&message, &raw).unwrap();
+                let (_, _, worker_actual) = crate::threads::install(|| {
+                    regular_latlon_frame(&message, &raw).unwrap()
+                });
+                let (expected_longitude, order) = regular_longitude_axis(lon1, dx, nx);
+                assert_eq!(longitude, expected_longitude);
+                assert_eq!(
+                    latitude,
+                    (0..ny).map(|i| i as f64 - 33.0).collect::<Vec<_>>()
+                );
+                for row in 0..ny {
+                    let stored_row = if scan == 0x00 { ny - 1 - row } else { row };
+                    for (column, source_column) in order.iter().enumerate() {
+                        assert_eq!(
+                            actual[row * nx + column].to_bits(),
+                            raw[stored_row * nx + source_column].to_bits()
+                        );
+                        assert_eq!(worker_actual[row * nx + column].to_bits(),
+                                   actual[row * nx + column].to_bits());
+                    }
+                }
             }
         }
     }

@@ -633,6 +633,7 @@ class PreparedDomainBundle:
     static_fields: Mapping[str, np.ndarray]
     authority_sha256: Mapping[str, str]
     terrain_autosmooth: Mapping[str, object] | None = None
+    cache_payload: object | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -2186,6 +2187,7 @@ def preflight_prepared_tree(
         elif common_source_identity != normalized_source:
             raise ValueError("prepared domain source identities differ")
 
+        cache_payload = None
         if head_root:
             from gpuwm.ingest.prepared_cache import PreparedHeadReader
 
@@ -2203,7 +2205,13 @@ def preflight_prepared_tree(
             reader = PreparedCacheReader(cache, expected_identity=identity)
             _validate_delayed_prepared_time(
                 exp, domain, reader, domain_receipt)
-            verified = reader.verify_all()
+            # Retain only a wholly sealed tree. Head-bound child activation
+            # keeps the existing streaming and seal-verification route.
+            if head is None:
+                cache_payload = prepared_single._sealed_preflight_payload(reader)
+            verified_reader = (reader if cache_payload is None
+                               else cache_payload.read_only_reader())
+            verified = verified_reader.verify_all()
             if verified.get("content_sha256") != header.get("content_sha256"):
                 raise ValueError(f"{label} cache content identity differs")
         _validate_vertical(reader, exp, int(domain.grid_id))
@@ -2277,6 +2285,7 @@ def preflight_prepared_tree(
                 static_fields=MappingProxyType(static),
                 authority_sha256=hashes,
                 terrain_autosmooth=smoothing,
+                cache_payload=cache_payload,
             )
         )
 
@@ -2387,6 +2396,18 @@ def preflight_prepared_tree(
         head_child_content_sha256=head_children,
         preflight_arguments=preflight_arguments,
     ))
+
+
+def _resident_domain_reader(bundle, boundary_source=None):
+    """Restore writable copies from this sealed domain's verified mappings."""
+    if boundary_source is not None:
+        return bundle.cache_reader
+    payload = getattr(bundle, "cache_payload", None)
+    if payload is None:
+        return None
+    payload.require_binding(bundle.cache, bundle.cache_identity,
+                            reader=bundle.cache_reader)
+    return payload.copying_reader()
 
 
 def _prepared_input_bytes(inputs: PreparedTreeInputs) -> int:
@@ -3054,6 +3075,10 @@ def _warm_start_resume(initialization, start_time):
                   for grid, clock in clocks.items()}})
 
 
+from gpuwm.hydro.runtime import forecast_scope as _hydro_forecast_scope
+
+
+@_hydro_forecast_scope
 def run_prepared_tree(
     inputs: PreparedTreeInputs,
     *,
@@ -3069,6 +3094,7 @@ def run_prepared_tree(
     ensemble_bootstrap=None,
     health_retry_products=None,
     schedule_dispatch=None,
+    restored_callback=None,
 ) -> dict[str, object]:
     """Restore the prepared domains and execute the existing tree engine.
 
@@ -3098,6 +3124,7 @@ def run_prepared_tree(
             progress_options=progress_options, initialization=initialization,
             first_products=first_products, ensemble_bootstrap=ensemble_bootstrap,
             health_retry_products=health_retry_products,
+            **({} if restored_callback is None else {"restored_callback": restored_callback}),
             **({} if schedule_dispatch is None else {"schedule_dispatch": schedule_dispatch}))
 
     if io_mode not in {"history", "none"}:
@@ -3636,7 +3663,8 @@ def run_prepared_tree(
         restored = restore_prepared_cache(
             bundle.cache, expected_identity=dict(bundle.cache_identity),
             cfg=domain.run, static=bundle.static_fields,
-            allow_nested_without_lbc=True)
+            allow_nested_without_lbc=True,
+            reader=_resident_domain_reader(bundle))
         _rebind_rebuilt_state(restored.initial_result.state, rebuilt)
         restored.initial_result.state._scratch_arena = arena
         drivers[domain.grid_id] = initialize_cache_physics(
@@ -3661,8 +3689,9 @@ def run_prepared_tree(
                 cfg=domain.run,
                 static=bundle.static_fields,
                 allow_nested_without_lbc=domain.parent_id != 0,
-                **({"reader": bundle.cache_reader,
-                    "boundary_source": boundary_source} if streamed else {}),
+                reader=_resident_domain_reader(
+                    bundle, boundary_source if streamed else None),
+                **({"boundary_source": boundary_source} if streamed else {}),
             )
             if streamed:
                 from gpuwm.ingest.boundary_stream import keep_interval_check
@@ -4079,6 +4108,9 @@ def run_prepared_tree(
     if callable(after_restore):
         after_restore(model=model, nodes=nodes, start_time=exp.start_time,
                       run_seconds=float(exp.run_seconds), restart=restart)
+    if restored_callback is not None:
+        restored_callback(model=model, nodes=nodes, start_time=exp.start_time,
+                          run_seconds=float(exp.run_seconds), restart=restart)
     # Same ruling as the case-data route: a restore point that IS the
     # stop tick is a finished run, and the schedule executor refuses a
     # start period at the end of the schedule, so this route decides it
@@ -4170,24 +4202,57 @@ def run_prepared_tree(
             runtime._submit_tree_history_frame(writers, node, ticks)
         memory_watch.sample()
 
+    checkpoint_publisher = prepared_single._CheckpointPublisher()
+
     def restart_handler(tree, ticks):
+        checkpoint_publisher.wait()
         valid = exp.start_time + timedelta(seconds=ticks / tree.schedule.clock.tick_den)
         restart_started = time.perf_counter()
-        # Written between two model steps, at the stop tick too: its own
+        # Snapshotted between two model steps, at the stop tick too: its own
         # record, sized from the state it writes, or the supervisor times it
         # as a step (see runtime._writing_progress).
         with runtime._writing_progress(
                 observer, "checkpoint",
                 work_bytes=runtime._checkpoint_work_bytes(tree)):
-            tree._last_checkpoint = write_tree_restart(
+            pending = write_tree_restart(
                 outdir, tree, valid,
-                sealed_forcing_extension=sealed_forcing_extension)
-        # WRF prints `Timing for Writing restart for domain N`, and this
-        # one IS the blocking synchronous write WRF's number describes.
-        step_log.restart_written(
-            domain=exp.root.grid_id, valid_time=valid,
-            path=tree._last_checkpoint,
-            wall_seconds=time.perf_counter() - restart_started)
+                sealed_forcing_extension=sealed_forcing_extension,
+                defer_publish=True)
+        # Capture this valid time's history targets on the model thread.
+        # Later frames must not lengthen this checkpoint's history fence.
+        try:
+            history_durable = (None if writers is None
+                               else writers.durability_barrier())
+        except BaseException:
+            pending.abandon()
+            raise
+
+        def publish():
+            try:
+                if writers is not None:
+                    if history_durable is None:
+                        writers.drain()
+                    else:
+                        history_durable()
+                path = pending.publish()
+                step_log.restart_written(
+                    domain=exp.root.grid_id, valid_time=valid, path=path,
+                    wall_seconds=time.perf_counter() - restart_started)
+            except BaseException:
+                pending.abandon()
+                raise
+
+        if pending.deferrable and (writers is None or history_durable is not None):
+            try:
+                checkpoint_publisher.submit(publish)
+            except BaseException:
+                pending.abandon()
+                raise
+        else:
+            publish()
+
+    restart_handler.orders_history_itself = True
+    restart_handler.wait_durable = checkpoint_publisher.wait
 
     def progress_callback(**event):
         observe_current_counters(model, start_time=exp.start_time)
@@ -4337,15 +4402,20 @@ def run_prepared_tree(
         sealed_forcing_extension=sealed_forcing_extension)
 
     def execute_leg(active_experiment):
-        return execute_experiment(
-            model, history_handler=None if writers is None else history_handler,
-            restart_handler=restart_handler, progress_callback=progress_callback,
-            validate_state=True, health_debug=health_debug,
-            skip_feedback_path=(int(exp.feedback) == 0),
-            relocation_runner=relocation_runner, steppers=steppers,
-            step_observer=step_observer, experiment=active_experiment,
-            delayed_child_initializer=initialize_delayed_child,
-            **({} if schedule_dispatch is None else {"schedule_dispatch": schedule_dispatch}))
+        try:
+            return execute_experiment(
+                model, history_handler=None if writers is None else history_handler,
+                restart_handler=restart_handler, progress_callback=progress_callback,
+                validate_state=True, health_debug=health_debug,
+                skip_feedback_path=(int(exp.feedback) == 0),
+                relocation_runner=relocation_runner, steppers=steppers,
+                step_observer=step_observer, experiment=active_experiment,
+                delayed_child_initializer=initialize_delayed_child,
+                **({} if schedule_dispatch is None else {"schedule_dispatch": schedule_dispatch}))
+        finally:
+            # Recovery reads _last_checkpoint as soon as a leg fails.
+            # Finish publication while its history writers are still alive.
+            checkpoint_publisher.wait()
 
     # An initialization that forces a step (the WRF-input door's
     # mp_tend_radar = 1) attaches once the steppers are known, so a
@@ -4393,6 +4463,7 @@ def run_prepared_tree(
 
             def seam_checkpoint(tree, ticks):
                 restart_handler(tree, ticks)
+                checkpoint_publisher.wait()
                 checkpoints.append(tree._last_checkpoint)
 
             stopped = prepared_single._stop_at_seam(
@@ -4511,7 +4582,9 @@ def run_prepared_tree(
     from gpuwm.core.mynn_pbl_scratch import mynn_column_chunk_receipt
 
     mynn_column_chunk = mynn_column_chunk_receipt()
+    from gpuwm.hydro.runtime import current_settings as _hydro_settings, activation_receipt
     report = {
+        "hydro_activation": activation_receipt(_hydro_settings()),
         **({} if inputs.physics_profile_assertion is None else
            {"physics_profile_assertion": dict(inputs.physics_profile_assertion)}),
         **({} if inputs.acoustic_substeps is None else
@@ -4757,6 +4830,16 @@ def run_prepared_tree(
     initialization_blocks = getattr(initialization, "run_report_blocks", None)
     if callable(initialization_blocks):
         report.update(initialization_blocks(model))
+    # Default-on hydro lives on the fixed parent (grid 1): cost and products.
+    from gpuwm.hydro.cost import receipt as _hydro_cost_receipt
+    from gpuwm.hydro.forecast_products import publish as _hydro_products
+    _parent_physics = drivers.get(1)
+    _parent_run = exp.domains[0].run
+    report["hydro_cost"] = _hydro_cost_receipt(
+        _parent_physics, forecast_seconds=timing.get("forecast_execution", 0.0),
+        atmosphere_steps=int(round(float(exp.run_seconds) / float(_parent_run.dt))))
+    report["hydro_products"] = _hydro_products(
+        _parent_physics, _hydro_settings(), outdir=outdir, dx_m=float(_parent_run.dx))
     _atomic_json(evidence / "run-receipt.json", report)
     emit_run_capsule(
         outdir, emission_site="prepared_domain_tree_forecast",
@@ -4811,6 +4894,8 @@ def run_prepared_tree(
         },
         heartbeat=True,
     )
+    from gpuwm.hydro.cost import refuse_if_over_budget as _refuse_hydro_cost
+    _refuse_hydro_cost(report["hydro_cost"])
     return report
 
 

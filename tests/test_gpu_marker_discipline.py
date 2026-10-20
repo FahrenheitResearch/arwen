@@ -178,6 +178,24 @@ def _module_cannot_import_without_the_array_library(stdout: str,
                      stdout, re.MULTILINE) is not None
 
 
+def _collected_test_name(node_id: str) -> str:
+    """Use the function-name scope shared by _cupy_scope and the auto-marker.
+
+    Class methods collect as File::Class::test_method[parameters]. Taking
+    the first component discarded their device coverage.
+    """
+    return node_id.rsplit("::", 1)[-1].split("[", 1)[0]
+
+
+@pytest.mark.parametrize("node_id, expected", [
+    ("tests/test_demo.py::test_plain", "test_plain"),
+    ("tests/test_demo.py::Device::test_step", "test_step"),
+    ("tests/test_demo.py::Device::test_step[member-2]", "test_step"),
+])
+def test_collection_names_preserve_class_method_device_coverage(node_id, expected):
+    assert _collected_test_name(node_id) == expected
+
+
 def _collect(path: pathlib.Path, selection: str | None) -> set[str]:
     """Test ids pytest would select from one file, without running anything.
 
@@ -231,7 +249,7 @@ def _collect(path: pathlib.Path, selection: str | None) -> set[str]:
     for line in proc.stdout.splitlines():
         line = line.strip()
         if "::" in line and not line.startswith(("<", "=")):
-            ids.add(line.split("::", 1)[1].split("[")[0])
+            ids.add(_collected_test_name(line))
     return ids
 
 
@@ -290,7 +308,7 @@ def _tree_collect(selection: str | None) -> dict[str, frozenset[str]] | None:
         name = pathlib.PurePath(location).name
         if not name.startswith("test_") or not name.endswith(".py"):
             continue
-        by_file.setdefault(name, set()).add(rest.split("::")[0].split("[")[0])
+        by_file.setdefault(name, set()).add(_collected_test_name(rest))
     if not by_file:
         return None
     return {name: frozenset(ids) for name, ids in by_file.items()}
@@ -843,6 +861,54 @@ def test_a_guarded_import_is_not_a_card_dependence(tmp_path):
     whole, _functions = _cupy_install_scope(str(module))
     assert whole is None, (
         f"a module importing a GUARDED consumer was dropped: {whole!r}")
+
+
+@pytest.mark.parametrize("source, expected, cupy", [
+    ("import cupy\n", set(), True),
+    ("from cupy.cuda import runtime\n", set(), True),
+    ("def helper():\n    import cupy\n", set(), False),
+    ("async def helper():\n    import cupy\n", set(), False),
+    ("class Scope:\n    import cupy\n", set(), True),
+    ("class Scope:\n    def helper(self):\n        import cupy\n",
+     set(), False),
+    ("try:\n    import cupy\nexcept ImportError:\n    pass\n",
+     set(), False),
+    ("try:\n    pass\nexcept ImportError:\n    import cupy\n",
+     set(), True),
+    ("try:\n    pass\nexcept ImportError:\n    pass\nelse:\n    import cupy\n",
+     set(), True),
+    ("try:\n    pass\nfinally:\n    import cupy\n", set(), True),
+    ("if enabled:\n    from gpuwm.core import physics\n",
+     {"gpuwm.core", "gpuwm.core.physics"}, False),
+    ("try:\n    import gpuwm.core.physics\nfinally:\n    import gpuwm.core.state\n",
+     {"gpuwm.core.state"}, False),
+])
+def test_import_scope_keeps_guarded_and_function_bodies_separate(
+        tmp_path, source, expected, cupy):
+    """Pruning the expensive scan must preserve every import-time boundary."""
+    module = tmp_path / "test_scope.py"
+    module.write_text(source, encoding="utf-8")
+    assert _import_time_edges(str(module)) == (frozenset(expected), cupy)
+
+
+def test_import_scope_follows_siblings_only_outside_packages(tmp_path):
+    """The fast scan must keep the sibling route that broke CuPy-less CI."""
+    sibling = tmp_path / "test_device_helper.py"
+    sibling.write_text("import cupy\n", encoding="utf-8")
+    module = tmp_path / "test_consumer.py"
+    module.write_text("from test_device_helper import build\n", encoding="utf-8")
+    assert _import_time_edges(str(module)) == (frozenset({str(sibling)}), False)
+    whole, functions = _cupy_install_scope(str(module))
+    assert whole == "imports test_device_helper"
+    assert not functions
+
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / sibling.name).write_bytes(sibling.read_bytes())
+    packaged = package / module.name
+    packaged.write_bytes(module.read_bytes())
+    assert _import_time_edges(str(packaged)) == (frozenset(), False)
 
 
 def test_nothing_is_dropped_on_an_install_that_has_cupy(monkeypatch,

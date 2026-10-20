@@ -176,7 +176,7 @@ def test_the_run_route_streams_instead_of_refusing():
 
     from gpuwm import runplan, runtime
 
-    src = inspect.getsource(runtime.run_experiment)
+    src = inspect.getsource(runtime._run_experiment)
     assert 'refuse_unrouted_streaming(exp, "gpuwm run"' not in src, (
         "gpuwm run still refuses [tiles] at its front door while wiring "
         "the builders behind it")

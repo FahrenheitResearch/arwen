@@ -259,6 +259,38 @@ def evaluate_vege_flux_slab(fields: Mapping[str, object], n: int, *,
     return _unpack(cp, device_out, _vege.OUTPUT_NAMES)
 
 
+def evaluate_vege_flux_masked_slab(fields: Mapping[str, object], n: int,
+                                   active, *, use_device_libm: bool = False) -> dict:
+    """Evaluate only active columns in a fixed-width device slab.
+
+    The leaf arithmetic is unchanged. Inactive outputs are positive zero,
+    matching the former scatter allocation, and their physics is not evaluated.
+    The live mask never determines a host allocation or launch dimension.
+    """
+    cp = _cupy()
+    n = _check_size(n)
+    active = cp.ascontiguousarray(active, dtype=cp.bool_)
+    if active.shape != (n,):
+        raise ValueError(f"VEGE_FLUX mask shape {active.shape} != {(n,)}")
+    if n == 0:
+        return {name: cp.empty(0, dtype=cp.float32)
+                for name in _vege.OUTPUT_NAMES}
+    packed = pack_vege_flux_slab(fields, n)
+    device_out = cp.empty((n, _vege.N_OUTPUT), dtype=cp.float32)
+    kernel = _vege._module(use_device_libm).get_function("k_vegeflux_masked")
+    kernel(
+        ((n + _vege.THREADS - 1) // _vege.THREADS,), (_vege.THREADS,),
+        (cp.ascontiguousarray(packed.inputs),
+         cp.ascontiguousarray(packed.params),
+         cp.ascontiguousarray(packed.isnow),
+         cp.ascontiguousarray(packed.dzsnso),
+         cp.ascontiguousarray(packed.stc),
+         cp.ascontiguousarray(packed.df),
+         device_out, np.int32(n), active),
+    )
+    return _unpack(cp, device_out, _vege.OUTPUT_NAMES)
+
+
 # --------------------------------------------------------------------------
 # BARE_FLUX
 # --------------------------------------------------------------------------

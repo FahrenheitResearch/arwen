@@ -858,6 +858,8 @@ fn render_style_name(style: RenderStyle) -> &'static str {
         RenderStyle::WeatherUh => "weather_uh",
         RenderStyle::WeatherTemperature => "weather_temperature",
         RenderStyle::WeatherDewpoint => "weather_dewpoint",
+        RenderStyle::WeatherSpecificHumidity => "weather_specific_humidity",
+        RenderStyle::WeatherOmega => "weather_omega",
         RenderStyle::WeatherRh => "weather_rh",
         RenderStyle::WeatherProbability => "weather_probability",
         RenderStyle::WeatherWinds => "weather_winds",

@@ -1,4 +1,5 @@
 """Fast numerics is the default; strict is the opt-in (owner ruling 2026-10-16).  CPU only."""
+# Replaces: test_strict_and_wrf_exact_compile_as_written (now test_strict_preserves_options_and_wrf_exact_normalizes_before_lookup).
 import importlib
 import subprocess
 import sys
@@ -24,12 +25,16 @@ def test_default_is_fast_and_drops_only_the_no_contraction_request(monkeypatch):
     numerics._mode = None
 
 
-def test_strict_and_wrf_exact_compile_as_written(monkeypatch):
+def test_strict_preserves_options_and_wrf_exact_normalizes_before_lookup(monkeypatch):
     tuple_ = ("-std=c++17", "--fmad=false", "--ftz=false")
     numerics = _fresh(monkeypatch, GPUWM_NUMERICS="strict")
     assert numerics.effective_options(tuple_) == tuple_
     numerics = _fresh(monkeypatch, GPUWM_WRF_EXACT="1")
-    assert numerics.mode() == "strict" and numerics.effective_options(tuple_) == tuple_
+    from gpuwm import wrf_exact
+    assert numerics.mode() == "strict"
+    assert numerics.effective_options(tuple_) == wrf_exact.effective_options(tuple_)
+    assert numerics.effective_options(numerics.effective_options(tuple_)) == \
+        numerics.effective_options(tuple_)
     numerics._mode = None
 
 

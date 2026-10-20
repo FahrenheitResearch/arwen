@@ -114,6 +114,11 @@ BRIDGE_OPTIONAL_ABI_MARKERS = {
 }
 
 BRIDGE_ABI_MARKERS = {
+    "rw_tc_fields": b"gpuwm.tc-fields.v1 inspect extract tempest table-units masked-quarter-degree",
+    "nextgen_hydrofabric": b"arwen_hydrofabric_read_into",
+    "arwen_nextgen_forcing": b"arwen_forcing_read_packet",
+    "rw_nextgen_verify": b"nextgen-gauge-table-v1",
+    "rw_soundings": b"gpuwm-soundings.v1 plain-run png json html",
     "rw_globe_pack": b"gpuwm-rw-globe-pack-v1",
     "rw_ensbatch": (
         b"gpuwm-ensemble-diagnostic-reduce.v1\tf32-words\tf64-two-pass\t"
@@ -346,7 +351,7 @@ BRIDGE_ABI_MARKERS = {
                       b"interpolate_to_reports columns=WFSBCOL1"),
     "rw_mlexport": (
         b"rw_mlexport --request REQUEST.json schema=ml-export.request/v1 "
-        b"modes=run,append,finalize progress=jsonl"),
+        b"modes=run,append,finalize progress=jsonl earth2=per-channel-v1"),
     # The clean-room GRIB2 exporter (2.8.7) behind `export-grib2`, `go
     # --grib2`, run_options.grib2 and `render --grib2-out`.  The marker
     # names the request schema, the WOOF catalog, the post device choice
@@ -402,6 +407,12 @@ def _parent_hops(*parts: str) -> str:
 #: here so all three artifacts share one shell-correctness rule.
 RUSTWX_CRATE_RELATIVE = "tools/rustwx"
 
+# These workspaces use locked registry dependencies without a vendor config.
+# Source remedies must populate the cache before promising an offline build.
+_CARGO_REGISTRY_WORKSPACES = frozenset({
+    "tools/nextgen_forcing", "tools/nextgen_verify",
+})
+
 
 def cargo_build_one_liner(crate_relative: str = CRATE_RELATIVE) -> str:
     """``cd <crate>``, the offline build, and the ``cd`` back -- one line.
@@ -423,8 +434,10 @@ def cargo_build_one_liner(crate_relative: str = CRATE_RELATIVE) -> str:
     """
 
     separator = ";" if WINDOWS_SHELL else " &&"
+    fetch = (f"cargo fetch --locked{separator} "
+             if crate_relative in _CARGO_REGISTRY_WORKSPACES else "")
     return (f"cd {_shell_path(crate_relative)}{separator} "
-            f"cargo build --release --locked --offline{separator} "
+            f"{fetch}cargo build --release --locked --offline{separator} "
             f"cd {_parent_hops(crate_relative)}")
 
 
@@ -659,6 +672,8 @@ def build_from_clone_hint(
         "  # this line repeats; a second clone into it just errors.",
         f"  git clone {REPOSITORY_URL} {CLONE_DIR}",
         f"  cd {_shell_path(CLONE_DIR, crate_relative)}",
+        *(["  cargo fetch --locked"]
+          if crate_relative in _CARGO_REGISTRY_WORKSPACES else []),
         "  cargo build --release --locked --offline",
         "  # back out to where you started, so the next block's relative",
         "  # paths still mean what they say.",
@@ -1847,11 +1862,12 @@ def executable_name(name: str) -> str:
     return f"{name}.exe" if os.name == "nt" else name
 
 
-def artifact_candidates(env_var: str, filename: str) -> tuple[Path, ...]:
+def artifact_candidates(env_var: str, filename: str, *,
+                        crate_relative: str | None = None) -> tuple[Path, ...]:
     """Deterministic candidate paths for one built artifact, best first.
 
-    THE resolution order for everything ``tools/grib1_bridge`` builds
-    (bridge executables and the CPU preprocessing library alike):
+    The resolution order for the selected crate (``tools/grib1_bridge``
+    by default, for bridge executables and the CPU preprocessing library):
     environment override, checkout release, checkout debug, ``libexec``
     beside the package, the wheel-bundled :func:`packaged_bridge_dir`,
     user-level default directory.  The environment override comes first;
@@ -1864,9 +1880,10 @@ def artifact_candidates(env_var: str, filename: str) -> tuple[Path, ...]:
     if override:
         candidates.append(Path(override))
     root = _package_parent()
+    crate = crate_dir() if crate_relative is None else root / crate_relative
     candidates.extend((
-        crate_dir() / "target" / "release" / filename,
-        crate_dir() / "target" / "debug" / filename,
+        crate / "target" / "release" / filename,
+        crate / "target" / "debug" / filename,
         root / "libexec" / "bridges" / filename,
         packaged_bridge_dir() / filename,
         default_bridge_dir() / filename,
@@ -1875,7 +1892,9 @@ def artifact_candidates(env_var: str, filename: str) -> tuple[Path, ...]:
     return tuple(candidates)
 
 
-def find_artifact(env_var: str, filename: str) -> Path | None:
+def find_artifact(env_var: str, filename: str, *,
+                  crate_relative: str | None = None,
+                  executable: bool = True) -> Path | None:
     """First existing candidate, or None.
 
     An environment override that names a missing file is a hard error:
@@ -1884,9 +1903,14 @@ def find_artifact(env_var: str, filename: str) -> Path | None:
     """
 
     override = os.environ.get(env_var)
-    for candidate in artifact_candidates(env_var, filename):
+    candidates = (artifact_candidates(env_var, filename) if crate_relative is None
+                  else artifact_candidates(env_var, filename,
+                                           crate_relative=crate_relative))
+    for candidate in candidates:
         if candidate.is_file():
-            return accept_resolved(candidate.resolve())
+            resolved = candidate.resolve()
+            return (accept_resolved(resolved) if executable else
+                    accept_resolved(resolved, executable=False))
         if override and candidate == Path(override):
             raise FileNotFoundError(
                 f"{env_var} names a missing file: {candidate}")

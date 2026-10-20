@@ -1364,6 +1364,12 @@ class StateHealthValidator:
         report = self.validate(phase=phase)
         if not report.ok:
             raise HealthCheckError(report)
+        # The compact result has synchronized the scan. These descriptors
+        # are rebuilt from the current state on every validate(), so keeping
+        # their array references now only pins replaced physics generations
+        # across the next step. Keep failed scans intact for diagnostics.
+        self.fields = ()
+        self.excluded_integer_fields = ()
         return report
 
     def phase_observer(self, phase: str) -> ValidationReport:

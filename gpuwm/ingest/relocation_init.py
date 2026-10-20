@@ -237,18 +237,34 @@ class DonorFillPlan:
 
     def apply(self, values: np.ndarray) -> np.ndarray:
         """Fill one field's strip cells from their donors (trailing y, x)."""
-        values = np.asarray(values)
+        from gpuwm.core.physics_continuation import _array_module
+
+        xp = _array_module(values)
+        values = xp.asarray(values)
         ny, nx = self.donor_flat.shape
         if values.shape[-2:] != (ny, nx):
             raise ValueError(
                 f"donor fill built for (ny, nx) = {(ny, nx)}, got a field "
                 f"with trailing shape {values.shape[-2:]}")
         flat = values.reshape(values.shape[:-2] + (ny * nx,))
-        return flat[..., self.donor_flat.ravel()].reshape(values.shape)
+        donors = xp.asarray(self.donor_flat.ravel())
+        return flat[..., donors].reshape(values.shape)
 
 
-def _nearest_donor(target_yx: np.ndarray, donor_yx: np.ndarray) -> np.ndarray:
+def _nearest_donor(target_yx: np.ndarray, donor_yx: np.ndarray, *,
+                   device: bool = False) -> np.ndarray:
     """Exact nearest donor per target (first index breaks ties)."""
+    if device and len(target_yx):
+        import cupy as cp
+        from gpuwm.core.kernels import get_kernel
+
+        kernel = get_kernel("nest", "relocation_nearest_donor")
+        picked = cp.empty(len(target_yx), dtype=cp.int64)
+        kernel((len(target_yx),), (128,), (
+            cp.asarray(target_yx, dtype=cp.int64),
+            cp.asarray(donor_yx, dtype=cp.int64), picked,
+            np.int32(len(donor_yx))))
+        return picked.get()
     out = np.empty(target_yx.shape[0], dtype=np.int64)
     chunk = max(1, int(4e6) // max(1, donor_yx.shape[0]))
     for start in range(0, target_yx.shape[0], chunk):
@@ -261,7 +277,7 @@ def _nearest_donor(target_yx: np.ndarray, donor_yx: np.ndarray) -> np.ndarray:
 
 
 def donor_fill_plan(*, overlap_mask: np.ndarray,
-                    landmask: np.ndarray) -> DonorFillPlan:
+                    landmask: np.ndarray, device: bool = False) -> DonorFillPlan:
     """Build the strip's donor assignment from the overlap and landmask."""
     overlap_mask = np.asarray(overlap_mask, dtype=bool)
     land = np.asarray(landmask) >= 0.5
@@ -296,12 +312,12 @@ def donor_fill_plan(*, overlap_mask: np.ndarray,
         if donors.size == 0:
             unresolved |= targets
             continue
-        picked = donors[_nearest_donor(coords[targets], coords[donors])]
+        picked = donors[_nearest_donor(coords[targets], coords[donors], device=device)]
         donor_flat.ravel()[np.flatnonzero(targets)] = picked
         counts[label] = int(np.count_nonzero(targets))
     if unresolved.any():
         donors = np.flatnonzero(flat_overlap)
-        picked = donors[_nearest_donor(coords[unresolved], coords[donors])]
+        picked = donors[_nearest_donor(coords[unresolved], coords[donors], device=device)]
         donor_flat.ravel()[np.flatnonzero(unresolved)] = picked
         counts["class_fallback_filled"] = int(np.count_nonzero(unresolved))
     return DonorFillPlan(donor_flat=donor_flat, counts=counts)

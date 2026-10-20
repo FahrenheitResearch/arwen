@@ -22,7 +22,9 @@ use std::path::{Path, PathBuf};
 
 use rustwx_core::{Field2D, GridProjection, GridShape, LatLonGrid, ProductKey};
 use rustwx_products::direct::{build_full_domain_projected_map_with_projection,
-    full_domain_panel_resolved_projection, direct_map_frame_aspect_ratio};
+    full_domain_panel_resolved_projection, direct_map_frame_aspect_ratio,
+    build_projected_map_with_projection, panel_resolved_projection,
+    build_requested_projected_map_with_projection, requested_panel_resolved_projection};
 use rustwx_products::plot_design::StaticPlotDesign;
 use rustwx_render::{
     ColorScale, ContourLayer, LegendControls, MapRenderRequest, PngCompressionMode,
@@ -71,6 +73,11 @@ pub fn render_panel(request: PanelRequest<'_>) -> Result<PathBuf, String> {
     render_panel_with(request, None, None).map(|(path, _)| path)
 }
 
+/// Render cell values without interpolation across categorical boundaries.
+pub fn render_panel_cells(request: PanelRequest<'_>) -> Result<PathBuf, String> {
+    render_panel_impl(request, None, None, true, None).map(|(path, _)| path)
+}
+
 /// [`render_panel`], with the cells `unobserved` marks (row-major on the
 /// request's grid) filled flat light grey UNDER the data raster, so an
 /// observed panel shows where nothing was observed instead of leaving it
@@ -98,6 +105,21 @@ fn render_panel_with(
     request: PanelRequest<'_>,
     unobserved: Option<&[bool]>,
     rgba: Option<Vec<rustwx_render::Color>>,
+) -> Result<(PathBuf, Option<rustwx_render::PanelGeoReference>), String> {
+    render_panel_impl(request, unobserved, rgba, false, None)
+}
+
+/// Render on an explicit geographic frame, shared by diagnostic and observation panels.
+pub fn render_panel_bounds(request: PanelRequest<'_>, bounds: Option<(f64,f64,f64,f64)>) -> Result<(PathBuf, Option<rustwx_render::PanelGeoReference>),String> {
+    render_panel_impl(request, None, None, false, bounds)
+}
+
+fn render_panel_impl(
+    request: PanelRequest<'_>,
+    unobserved: Option<&[bool]>,
+    rgba: Option<Vec<rustwx_render::Color>>,
+    cells: bool,
+    bounds: Option<(f64,f64,f64,f64)>,
 ) -> Result<(PathBuf, Option<rustwx_render::PanelGeoReference>), String> {
     let points = request.ny * request.nx;
     if request.lat_deg.len() != points || request.lon_deg.len() != points {
@@ -129,19 +151,33 @@ fn render_panel_with(
         }
     }
 
-    let domain = rusty_weather::batch_render::native_grid_domain_from_coordinates(
+    let mut domain = rusty_weather::batch_render::native_grid_domain_from_coordinates(
         request.lat_deg,
         request.lon_deg,
     )?;
+    if let Some(bounds) = bounds { domain.bounds = bounds; }
     let target_ratio = direct_map_frame_aspect_ratio(
         ProductVisualMode::FilledMeteorology,
         request.width,
         request.height,
         request.projection,
     );
-    let resolved = full_domain_panel_resolved_projection(request.lat_deg,request.lon_deg,
+    // A global regular grid needs the presentation builder's Robinson
+    // frame and its matching inverse raster transform. The full-domain
+    // builder used degrees with an inverse in metres, sampling only a
+    // tiny equatorial neighbourhood across the map.
+    let global_geographic = matches!(request.projection, None | Some(GridProjection::Geographic))
+        && (domain.bounds.1 - domain.bounds.0).abs() >= 300.0
+        && (domain.bounds.3 - domain.bounds.2).abs() >= 150.0;
+    let resolve_projection = if bounds.is_some() { requested_panel_resolved_projection }
+        else if global_geographic { panel_resolved_projection }
+        else { full_domain_panel_resolved_projection };
+    let build_projection = if bounds.is_some() { build_requested_projected_map_with_projection }
+        else if global_geographic { build_projected_map_with_projection }
+        else { build_full_domain_projected_map_with_projection };
+    let resolved = resolve_projection(request.lat_deg,request.lon_deg,
         request.projection,domain.bounds,target_ratio).map_err(|err|err.to_string())?;
-    let projected = build_full_domain_projected_map_with_projection(
+    let projected = build_projection(
         request.lat_deg,
         request.lon_deg,
         request.projection,
@@ -167,12 +203,20 @@ fn render_panel_with(
     .map_err(|err| format!("{}: build field: {err}", request.product_slug))?;
 
     let mut map_request = MapRenderRequest::from_core_field(field, request.scale);
+    if cells {
+        map_request.raster_sample_mode = rustwx_render::RasterSampleMode::Nearest;
+        map_request.supersample_factor = 1;
+    }
     if let Some(pixels)=rgba {
         map_request.rgba_grid=Some(rustwx_render::RgbaGridField::new(map_request.field.grid.clone(),pixels)
             .map_err(|err|format!("{}: context raster: {err}",request.product_slug))?);
     }
     StaticPlotDesign::new(domain.bounds, ProductVisualMode::FilledMeteorology)
         .apply_to_request(&mut map_request);
+    // A requested diagnostic frame belongs to the extent, not the finite
+    // weather footprint. Native-grid framing and recentering otherwise move
+    // model and observation panels differently.
+    if bounds.is_some() { map_request.domain_frame = None; }
     map_request.width = request.width;
     map_request.height = request.height;
     map_request.chrome_scale = rustwx_products::shared_context::static_chrome_scale();

@@ -91,6 +91,7 @@ def test_smallstep_fixture_builder_and_kernel_receipt_hashes():
      'gpuwm/verify/smallstep_vertical_oracle.py': 'dbf2d377f72588e7f0ef27a69ab6aa03a9c9f03751fbe411964278bd0e29a0f4',
      'tests/test_smallstep_vertical_wrf471_parity.py': '545bdccfe08b831090f0e8140850f6adb79f61b3bbf184c4dc881bceffd5930c',
      'tools/smallstep_wrf471_oracle/vertical_workspace.py': '96e7a8d967e11d9c6b14e59b4a21f9e14ca115fed348245ac2b35e99f5cd69b0',
+     'gpuwm/verify/smallstep_horizontal_oracle.py': '3083e5cf1f134049317442c056599541515a0827135c6d5c4b9fe324d25ebeab',
      'tests/test_smallstep_oracle_contract.py': '6dbadf1c006a61b186567c1ab8652af1953425833fcfc250af9ae3c27a7e2d40'}
     assert {name: pins[name] for name in original_source_pins} == original_source_pins
 
@@ -98,7 +99,11 @@ def test_smallstep_fixture_builder_and_kernel_receipt_hashes():
     # changing the kernel expressions. The vertical test adds CPU contracts
     # for the actual witness/compiler boundary and selected default route.
     # Neither metadata overlay admits another source byte.
+    # 5d86ac9f37b passes an optional (nz, ny, nx) shape to get_kernel; the
+    # horizontal probe getter only gained that parameter (same probe source,
+    # options and launch), so its no-FMA/pressure-term gates run again.
     source_byte_overlay = {'gpuwm/verify/smallstep_bookkeeping_oracle.py': '7b7301d90a85b1432de7ce00432060d1656f5cf5a9c6dffc773510ca12c13f6e',
+     'gpuwm/verify/smallstep_horizontal_oracle.py': '8fd7fd0d0b7ca55a82d8f0bc4454c7576c1520f7005da2a2a744705622624851',
      'tests/test_smallstep_vertical_wrf471_parity.py': 'd58cc590338977134514a09ce32f50db37f86b2c596c0fdb31fb2e5bd581e522'}
 
     # These three executable kernel/witness sources are accepted ONLY by the
@@ -107,9 +112,13 @@ def test_smallstep_fixture_builder_and_kernel_receipt_hashes():
     # compiler options and certified card identity independently checked.
     proof = validate_published_acoustic(root)
     numeric_sources = ('gpuwm/core/kernels/acoustic.cu', 'gpuwm/verify/smallstep_vertical_oracle.py', 'tools/smallstep_wrf471_oracle/vertical_workspace.py')
+    oracle = 'gpuwm/verify/smallstep_vertical_oracle.py'
     for name in numeric_sources:
         source_byte_overlay[name] = proof["source_inputs"][name]["sha256"]
-        assert hashlib.sha256((root / name).read_bytes()).hexdigest() == source_byte_overlay[name], name
+        current = hashlib.sha256((root / name).read_bytes()).hexdigest()
+        if name == oracle and current != source_byte_overlay[name]:
+            source_byte_overlay[name] = _moved_oracle(root, proof["source_inputs"][name], current)
+        assert current == source_byte_overlay[name], name
 
     # A current self-hash would be circular. Reconstruct this exact historical
     # final function under the unchanged file prefix, then check its ORIGINAL
@@ -131,6 +140,44 @@ def test_smallstep_fixture_builder_and_kernel_receipt_hashes():
             from assembled_legacy_proofs import acoustic_prior_selector_source
             current = acoustic_prior_selector_source(current)
         assert hashlib.sha256(current).hexdigest() == expected, name
+
+
+#: edc822ca509 (SHAPE) moved gpuwm/verify/smallstep_vertical_oracle.py after the sealed
+#: f66 replay (acoustic-published.json, RTX PRO 6000 Server Edition, NVRTC 13.2) that pins
+#: its bytes.  The move is admitted only by two measurements of the moved bytes, both word
+#: exact against the frozen tests/data/wrf471_smallstep/vertical-reference.npz:
+#:   * source-extension.json (sealed): strict base (2.8.9 cd336e62d) versus tip replay on
+#:     an RTX 5090, acoustic 132 arrays / 305,632 words, 0 differing;
+#:   * acoustic-oracle-replay-edc822ca509.json: tools/assembled_legacy_replay.py --family
+#:     acoustic at integrate/2.9.3 120ff11c03f under GPUWM_NUMERICS=strict on V51's RTX PRO
+#:     6000 Workstation Edition (NVRTC 12.9), 132 arrays / 305,632 words, 0 differing.
+#: The sealed f66 proof itself stays immutable.
+ORACLE_REPLAY_SHA = "2984c4fcebaee6d91075737d4a4af8cfbd04cb2e7e191742f48eef8452415d67"
+
+
+def _moved_oracle(root, recorded, current):
+    import assembled_legacy_proofs as proofs
+
+    name = "gpuwm/verify/smallstep_vertical_oracle.py"
+    folder = root / "tests/data/assembled_legacy_proofs"
+    actual = {"bytes": (root / name).stat().st_size, "sha256": current}
+    extension = folder / "source-extension.json"
+    assert proofs._sha(extension) == proofs.SOURCE_EXTENSION_SHA
+    measured = json.loads(extension.read_text())
+    assert measured["numerics"] == "strict"
+    acoustic = measured["measurements"]["acoustic"]
+    assert (acoustic["arrays"], acoustic["words"], acoustic["changed_arrays"], acoustic["different_words"]) == (132, 305632, 0, 0)
+    assert measured["sources"][name] == {"before": recorded, "after": actual}
+    replay_path = folder / "acoustic-oracle-replay-edc822ca509.json"
+    assert proofs._sha(replay_path) == ORACLE_REPLAY_SHA
+    replay = json.loads(replay_path.read_text())
+    assert replay["schema"] == "assembled-published-acoustic-word-proof-v1"
+    assert (replay["array_comparisons"], replay["words"], replay["changed_published_words"]) == (132, 305632, 0)
+    assert replay["published_exact"] is True
+    assert replay["source_inputs"][name] == actual
+    assert replay["capture_identity"]["engine_commit"].startswith("120ff11c03f")
+    assert all(row["different_words"] == 0 for row in replay["fields"].values())
+    return current
 
 
 def test_published_acoustic_proof_refuses_changed_words_options_and_sources(monkeypatch):

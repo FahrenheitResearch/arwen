@@ -259,7 +259,7 @@ def test_scoped_completion_hook_restores_outer_hook():
     assert calls == ["inner", "outer"]
 
 
-@pytest.mark.parametrize("row,width,budget", [("constrained",3,12), ("balanced",6,48), ("wide",12,48)])
+@pytest.mark.parametrize("row,width,budget", [("constrained",3,12), ("balanced",10,30), ("wide",12,30)])
 def test_packaged_width_rows(row, width, budget, monkeypatch):
     monkeypatch.setenv("GPUWM_FETCH_ROW", row)
     assert fetch_pool.resolve_file_workers(None) == width
@@ -342,6 +342,51 @@ def test_real_rust_object_stream_and_truncation(tmp_path, range_origin):
     assert result.returncode == 1
     assert "truncated.grib2" in result.stderr and "truncated GRIB2" in result.stderr
     assert not path.exists() and not path.with_name(path.name + ".part").exists()
+
+
+def test_real_rust_object_uses_one_long_range_per_stream(tmp_path):
+    binary = os.environ.get("GPUWM_RW_FETCH")
+    if not binary:
+        pytest.skip("requires the newly built backbone")
+    payload = grib(50 * 1024 * 1024)
+    requested = []
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args): pass
+        def do_GET(self):
+            span = self.headers.get("Range")
+            requested.append(span)
+            first, last = span.removeprefix("bytes=").split("-", 1)
+            start, end = int(first), int(last) if last else len(payload) - 1
+            end = min(end, len(payload) - 1)
+            self.send_response(206)
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Range", f"bytes {start}-{end}/{len(payload)}")
+            self.send_header("Content-Length", str(end - start + 1))
+            self.end_headers()
+            self.wfile.write(payload[start:end+1])
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    worker = threading.Thread(target=server.serve_forever)
+    worker.start()
+    path = tmp_path / "long-parts.grib2"
+    try:
+        result = subprocess.run([binary, "object", "--url",
+            f"http://127.0.0.1:{server.server_port}/file", "--output", str(path)],
+            env={**os.environ, "RUSTWX_DOWNLOAD_STREAMS": "3",
+                 "GPUWM_FETCH_NO_IDLE_CONNECTIONS": "1"},
+            text=True, capture_output=True, timeout=30)
+        assert result.returncode == 0, result.stderr
+        receipt = json.loads(result.stdout)
+        assert receipt["streams_used"] == 3
+        assert receipt["sha256"] == hashlib.sha256(payload).hexdigest()
+        assert path.read_bytes() == payload
+        part = (len(payload) + 2) // 3
+        assert sorted(requested) == sorted(["bytes=0-0"] + [
+            f"bytes={start}-{min(start + part, len(payload)) - 1}"
+            for start in range(0, len(payload), part)])
+    finally:
+        server.shutdown()
+        worker.join()
+        server.server_close()
 
 
 def test_pool_rust_transport_relays_bytes_before_admission(tmp_path, range_origin):

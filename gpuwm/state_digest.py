@@ -221,7 +221,10 @@ def _canonical_host(name: str, value) -> np.ndarray:
     from gpuwm.io import restart as restart_io
 
     host = np.ascontiguousarray(restart_io._host(value))
-    if host.dtype.byteorder not in ("=", "|"):
+    # isnative, not byteorder in ("=", "|"): an explicitly little-endian dtype ("<f4", as a NetCDF read or
+    # np.frombuffer gives) is this machine order on x86 and was refused at the end of every hex global
+    # forecast ("atmosphere/saved/vertical_velocity has dtype <f4", WOOF 1.1.0 dry bake, 2026-10-19).
+    if not host.dtype.isnative:
         raise ValueError(
             f"canonical digest member {name!r} has dtype {host.dtype!r}, "
             "whose byte order is not this machine's.  The resident road "

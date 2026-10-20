@@ -983,7 +983,7 @@ pub fn apply_landmask_water_missing(
 ) -> Result<BTreeMap<DirectKey, DirectValue>> {
     let mut masked_names: Vec<String> = Vec::new();
     for field in mapping.fields()? {
-        if field.missing_kind()? == "landmask_water" {
+        if ["landmask_water", "landmask_zero_water"].contains(&field.missing_kind()?) {
             masked_names.push(field.name.clone());
         }
     }
@@ -1031,12 +1031,15 @@ pub fn apply_landmask_water_missing(
         for name in present {
             let key = (valid_time, member.clone(), name.clone());
             let value = &direct[&key];
+            let zero_water = mapping.field(name)?.missing_kind()? == "landmask_zero_water";
             let mut masked = value.values.as_standard_layout().to_owned();
             let cells = water.len();
             let total = masked.len();
             for (position, cell) in masked.iter_mut().enumerate() {
                 if water[position % cells] {
-                    *cell = f64::NAN;
+                    *cell = if zero_water { 0.0 } else { f64::NAN };
+                } else if zero_water && !cell.is_finite() {
+                    return Err(frame_invalid(format!("{name} has missing land values under landmask_zero_water")));
                 }
             }
             debug_assert_eq!(total % cells, 0, "a masked field is whole horizontal planes");
@@ -1046,6 +1049,11 @@ pub fn apply_landmask_water_missing(
                 DirectValue {
                     values: masked,
                     missing_count,
+                    references: if zero_water {
+                        let mut references = value.references.clone();
+                        references.push("missing_policy:landmask_zero_water:land_fraction_threshold_0.5".into());
+                        references
+                    } else { value.references.clone() },
                     ..value.clone()
                 },
             ));

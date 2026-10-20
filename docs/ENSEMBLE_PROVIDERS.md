@@ -8,15 +8,13 @@ configuration. Batched forecast integration and the observation campaign still
 require their complete qualification. No observation-calibrated default for
 recentered inputs is declared.
 
-Public forecast requests refuse random perturbation descriptors and active
-SPPT, SKEBS or SPP controls before source acquisition or GPU work. Their spread
-amplitudes have not been calibrated against observations, so the resulting
-ensemble spread and probabilities would be meaningless. Explicit all-off
-controls remain ordinary forecasts. Operational-member, time-lagged and
-multi-model source recipes retain their original source trajectories.
-Automatic reference-noise fallbacks carry the same refusal. Component and
-calibration-research code does not establish a usable forecast default.
-The refusal covers only the random providers this line adds. An absent
+Public forecast requests admit implemented uniform-wind, surface-state,
+SPPT, SKEBS and supported SPP controls with an uncalibrated-spread notice.
+Calibration alone is not an admission gate. Malformed descriptors and selectors
+without a runtime consumer are rejected with the missing operation named.
+Operational-member, time-lagged and multi-model source recipes retain their
+original source trajectories. The WoFS recipe records each source or
+perturbation mechanism in its canonical member provenance label. An absent
 perturbation, `perturbation = "none"` and the 2.8.4 references
 `gpuwm.da.perturb` and `experimental-stub` keep their 2.8.4 behaviour,
 paths and provenance warnings, including
@@ -38,11 +36,13 @@ or spread is never a trajectory member.
 | `multi-model` | Explicit distinct source/cycle trajectories on one target domain. |
 | `control` | Repeated unchanged base source, useful as an identity control. |
 
-Automatic N=1 selects the unchanged base. Automatic N>1 selects an input model's
-declared operational ensemble. Other recipes require explicit selection until
-observation-based evaluation establishes their defaults. Insufficient genuine
-trajectories are reported before download. Members are never duplicated to
-reach a requested count, except in the explicitly named control recipe.
+The public `gpuwm ensemble` / `gpuwm go` WoFS recipe fills a requested count
+from source members, covering lagged cycles, then labeled perturbations.
+See [the public ensemble guide](public/ENSEMBLE.md) for the one-command door,
+selectable controls and provenance contract. Explicit legacy recipes keep their
+original trajectory semantics; the WoFS ladder does not require calibration
+to expose research perturbations. Duplicate unperturbed trajectories are still
+rejected because they fabricate ensemble size.
 
 Each `SourceTrajectory` includes its source, cycle and verified member ID.
 `fetch_argv` builds arguments for the existing fetch door, including
@@ -69,10 +69,10 @@ multi-model, and a `gpuwm run-plan` plan whose config or
 folder holds one prepared bundle per member under `members/`, the forecast
 under `run/`, and `ensemble-recipe.json`, which records every member's
 source, cycle, start lead, seed and bundle. These doors take a one-domain
-config with a `[fetch]` table; a `[case_data]` config and the `--wrfinput`
-and `--met-em` doors name one trajectory's files and are refused. A recipe
-member is a real source trajectory, so the calibration refusal above does
-not apply to it.
+config with a `[fetch]` table. Those explicit source recipes cannot acquire
+independent members from a `[case_data]` config or `--wrfinput`/`--met-em`
+files naming one trajectory. The WoFS recipe also supports config-driven
+ERA5 preparation and creates labeled checkpoint fill from its source state.
 
 What makes two trajectories the same forecast is the model, the cycle and
 the member. A source row names its model as `upstream_model_id`, so `hrrr`,
@@ -208,7 +208,7 @@ both tables and fails when ensemble code names a source or runner id.
 
 | Fact | Where it is declared |
 | --- | --- |
-| A multi-member run from this source needs a fitted policy | `requires_ensemble_calibration` on the source row (`gpuwm/source_adapters.py`) |
+| Legacy automatic source-policy selection requests fitted evidence (the WoFS ladder is separate) | `requires_ensemble_calibration` on the source row (`gpuwm/source_adapters.py`) |
 | The implementation takes `--as-posted` | `as_posted` on the runner row (`gpuwm.source_cli.preparation_runners`) |
 | It takes the native physical store options | `physical_stores`, `physical_base_prepared`, `provider_supplies_decode` on the runner row |
 | It decodes from mapping and composition inputs | `composition_inputs` on the runner row |
@@ -288,7 +288,10 @@ Other route and forecast qualification is tracked independently.
 
 ## Stochastic mechanisms
 
-Public forecast and native-input doors recognise SPPT, SKEBS and SPP selectors and refuse active ones (exit 2) with the calibration reason until their spread amplitudes are calibrated against observations. This section describes the internal implementation; it does not make an uncalibrated run available.
+Public forecast and native-input doors recognise implemented SPPT, SKEBS and
+SPP selectors and label their spread uncalibrated. A selector without a runtime
+consumer is refused with that missing operation named. These mechanisms stay
+selectable; this label makes no observation-calibration claim.
 
 `gpuwm.ensemble.stochastic` implements the vertically uniform WRF v4.6.1
 spectral processes and explicit tendency hooks. It preserves the WRF reference

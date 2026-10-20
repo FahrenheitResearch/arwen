@@ -364,13 +364,17 @@ def native_static_export_fields(
     """
 
     result = dict(fields)
-    generated = {
-        "MAPFAC_M": grid.mapfac_m(),
-        "MAPFAC_U": grid.mapfac_u(),
-        "MAPFAC_V": grid.mapfac_v(),
-    }
-    generated["F"], generated["E"] = grid.coriolis_m()
-    generated["SINALPHA"], generated["COSALPHA"] = grid.rotation_m()
+    from gpuwm.static.projection import ProjectedGrid
+    if isinstance(grid, ProjectedGrid):
+        generated = grid.native_static_geometry()
+    else:
+        generated = {
+            "MAPFAC_M": grid.mapfac_m(),
+            "MAPFAC_U": grid.mapfac_u(),
+            "MAPFAC_V": grid.mapfac_v(),
+        }
+        generated["F"], generated["E"] = grid.coriolis_m()
+        generated["SINALPHA"], generated["COSALPHA"] = grid.rotation_m()
     for name, value in generated.items():
         if name in result:
             stored = np.asarray(result[name], dtype=np.float64)
@@ -434,6 +438,59 @@ def _landuse_category_count(landusef) -> int:
     return _NATIVE_STATIC_CATEGORY_COUNT["LANDUSEF"]
 
 
+# Small archives and caller-provided mappings keep their serial read order.
+_NATIVE_STATIC_PARALLEL_BYTES = 32 * 1024 * 1024
+
+
+def _decode_native_static_fields(fields, names):
+    """Decode large NPZ members concurrently without changing validation."""
+    names = sorted(names)
+    workers = 1
+    if type(fields) is np.lib.npyio.NpzFile and len(names) > 1:
+        members = fields.zip.NameToInfo
+        size = sum(members[name if name in members else name + ".npy"].file_size
+                   for name in names)
+        if size >= _NATIVE_STATIC_PARALLEL_BYTES:
+            available = (len(os.sched_getaffinity(0))
+                         if hasattr(os, "sched_getaffinity") else os.cpu_count())
+            workers = min(8, available or 1, len(names))
+    # Each worker reads through its OWN handle on the archive file.  One
+    # NpzFile shared across threads raced on Python 3.12.3: the forecast of
+    # a full-grid HRRR (1797x1057, 1.93 GB native-static.npz) failed at
+    # preflight with "BadZipFile: Overlapped entries: 'CONLS.npy' (possible
+    # zip bomb)" from zipfile's overlap check reading the shared cursor
+    # (V54, 2026-10-19).  An archive with no file path stays serial.
+    path = getattr(getattr(fields, "zip", None), "filename", None)
+    if workers > 1 and not (isinstance(path, (str, os.PathLike))
+                            and os.path.isfile(path)):
+        workers = 1
+    if workers == 1:
+        return {name: np.asarray(fields[name], dtype=np.float64)
+                for name in names}
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    local = threading.local()
+    opened = []
+    opened_lock = threading.Lock()
+
+    def decode(name):
+        handle = getattr(local, "npz", None)
+        if handle is None:
+            handle = local.npz = np.load(path, allow_pickle=False)
+            with opened_lock:
+                opened.append(handle)
+        return np.asarray(handle[name], dtype=np.float64)
+    # map preserves the serial field/error order, and shutdown joins all
+    # readers before their handles close, including on failure.
+    try:
+        with ThreadPoolExecutor(max_workers=workers,
+                                thread_name_prefix="native-static") as pool:
+            return dict(zip(names, pool.map(decode, names)))
+    finally:
+        for handle in opened:
+            handle.close()
+
+
 def validate_native_static_fields(
         fields: Mapping[str, object], grid, ny: int, nx: int, *,
         land_terrain: bool = True,
@@ -465,10 +522,7 @@ def validate_native_static_fields(
                 | chem_fields
                 | ({"FRC_URB2D"} & set(fields))
                 | (set(OROGRAPHIC_ROWS) & set(fields)))
-    result = {
-        name: np.asarray(fields[name], dtype=np.float64)
-        for name in sorted(retained)
-    }
+    result = _decode_native_static_fields(fields, retained)
     landuse_categories = _landuse_category_count(result["LANDUSEF"])
     expected_shapes = {
         **{name: (ny, nx) for name in _NATIVE_STATIC_MASS_2D},

@@ -742,7 +742,8 @@ def resolve_source(raw: str, *, cadence_h: int | None = None) -> str:
             "HOURS, the spacing of those files (a gpuwm-hex export written "
             "every 3 h is --cadence 3).  The sources that declare their own "
             f"cadence ({', '.join(planable_sources())}) need no --cadence")
-    return adapter.source_id
+    from gpuwm.source_adapters import canonical_source_token
+    return canonical_source_token(raw)
 
 
 def source_has_fetch_front_door(source: str) -> bool:
@@ -757,7 +758,7 @@ def source_has_fetch_front_door(source: str) -> bool:
 
     from gpuwm.fetch import fetch_front_door_sources
 
-    return source in fetch_front_door_sources()
+    return get_source_adapter(source).source_id in fetch_front_door_sources()
 
 
 def source_credential_notes(source: str) -> list[str]:
@@ -6559,6 +6560,8 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None,
     figure rather than the printed sizing line.
     """
 
+    from gpuwm.earth2_licensing import check_namespace
+    check_namespace(args)
     # FIRST, before any geometry: the source name becomes a registry row,
     # or the run stops with the registry's own words.  Everything below
     # reads the row -- coverage, cadence, forecast horizon -- so a name
@@ -6656,7 +6659,8 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None,
     from gpuwm.fetch import era5_combined_name, validate_fetch_hints
     acquisition = {"source": args.source, "cycle": args.cycle,
                    "hours": args.hours, "forecast_start_hour": start_hour}
-    for key in ("member", "cadence", "era5_product", "era5_provider"):
+    for key in ("member", "cadence", "era5_product", "era5_provider",
+                *(hint[0] for hint in get_source_adapter(args.source).acquisition_hints)):
         value = getattr(args, key, None)
         if value is not None:
             acquisition[key] = value
@@ -7112,7 +7116,8 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None,
         "out": _relative_or_absolute(data_dir, Path.cwd()),
     }
     from gpuwm import fetch_routes
-    for key in ("era5_product", "era5_provider", "retrieve", "member"):
+    for key in ("era5_product", "era5_provider", "retrieve", "member",
+                *(hint[0] for hint in get_source_adapter(args.source).acquisition_hints)):
         if key in acquisition:
             fetch_hints[key] = acquisition[key]
     if args.source in fetch_routes.route_ids():
@@ -7446,8 +7451,11 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None,
                             if start_hour else "")
                          + (f"--member {fetch_hints['member']} "
                              if "member" in fetch_hints else "")
+                         + "".join(f"--{key.replace('_', '-')} {shlex.quote(str(fetch_hints[key]))} "
+                                   for key, *_ in get_source_adapter(args.source).acquisition_hints
+                                   if key in fetch_hints)
                          + top_flag
-                          + f"--out {_printed_path(printed_out)}")
+                         + f"--out {_printed_path(printed_out)}")
     else:
         # NOT a `gpuwm fetch` line.  This source has a runnable profile
         # and no download route, and printing a command that refuses is
@@ -7673,6 +7681,18 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None,
                       flush=True)
                 return rc
 
+    # Preserve the caller's explicit terms in executable follow-up commands.
+    # Otherwise a successful restricted-source plan prints a fetch/go that
+    # immediately refuses the same source for missing acceptance.
+    licence_flags = "".join(
+        f" --accept-licence {shlex.quote(licence)}"
+        for licence in (getattr(args, "accept_licence", ()) or ()))
+    if licence_flags:
+        if fetch_command.startswith("gpuwm fetch "):
+            first, *remaining = fetch_command.splitlines()
+            fetch_command = "\n".join((first + licence_flags, *remaining))
+        if run_command.startswith("gpuwm go "):
+            run_command += licence_flags
     _print_next_steps(fetch_command, check_command, run_command,
                       source=args.source, deferred=bool(deferred),
                       explain=explain,
@@ -7752,6 +7772,15 @@ def register_cli(subparsers) -> None:
         "domain",
         help="wizard: emit an experiment TOML for a point or polygon + GPU budget, "
              "sized by the in-process VRAM estimator")
+    # Acquisition extensions belong to registry rows, including a route's
+    # model key and generated-member roster. The emitted fetch table and
+    # the source's ordinary CLI consume these same declarations.
+    for adapter in source_adapters():
+        for name, kind, default, description in adapter.acquisition_hints:
+            flag = "--" + name.replace("_", "-")
+            if flag not in parser._option_string_actions:
+                parser.add_argument(flag, type={"string": str, "integer": int,
+                    "number": float}[kind], default=None, help=description)
     target = parser.add_mutually_exclusive_group(required=True)
     target.add_argument("--region", metavar="ID|GEOJSON",
                         help="recipe region row id or local polygon GeoJSON")

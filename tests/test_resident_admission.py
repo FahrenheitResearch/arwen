@@ -24,6 +24,7 @@ the CUDA runtime's ``memGetInfo`` for a loader -- never the admission code.
 from __future__ import annotations
 
 from dataclasses import replace
+import hashlib
 import sys
 import types
 from types import SimpleNamespace
@@ -279,6 +280,16 @@ def _door_runtime(monkeypatch):
     _stub_cupy(monkeypatch)
 
 
+def _admission_experiment(tmp_path):
+    # These fixtures exercise atmosphere admission, before any constructor.
+    # The forecast scope reads its experiment too: provide an actual file
+    # with the supported hydro opt-out rather than a nonexistent pathname.
+    config = tmp_path / "experiment.toml"
+    content = b"[hydro]\nenabled = false\n"
+    config.write_bytes(content)
+    return config, {"experiment_config": hashlib.sha256(content).hexdigest()}
+
+
 def _stub_prepared_single_door(monkeypatch, tmp_path, exp, *, intervals,
                                source="gfs", rows=None):
     """Drive the prepared single-domain door as far as its restore.
@@ -300,9 +311,10 @@ def _stub_prepared_single_door(monkeypatch, tmp_path, exp, *, intervals,
     reader = SimpleNamespace(header={"metadata": {"lbc": {
         "intervals": [{}] * intervals if rows is None else rows}}},
         metadata={})
+    config, sha = _admission_experiment(tmp_path)
     inputs = SimpleNamespace(
-        experiment=exp, experiment_config=tmp_path / "experiment.toml",
-        file_sha256={"experiment_config": "0" * 64}, physics_receipt=None,
+        experiment=exp, experiment_config=config,
+        file_sha256=sha, physics_receipt=None,
         source=source, cache_reader=reader, stream_head=None,
         prepared_cache_path=tmp_path / "prepared", cache_identity={},
         static={}, boundary_interval_seconds=3600,
@@ -715,9 +727,10 @@ def _tree_door(monkeypatch, tmp_path, exp, *, source="gfs", rows=None):
                         _reached)
     reader = SimpleNamespace(header={"metadata": {"lbc": {
         "intervals": [{}] * 6 if rows is None else rows}}})
+    config, sha = _admission_experiment(tmp_path)
     inputs = SimpleNamespace(
-        experiment=exp, experiment_config=tmp_path / "experiment.toml",
-        authority_sha256={"experiment_config": "0" * 64},
+        experiment=exp, experiment_config=config,
+        authority_sha256=sha,
         execution_plan={}, boundary_interval_seconds=3600, source=source,
         domains=tuple(SimpleNamespace(parent_id=dc.parent_id,
                                       grid_id=dc.grid_id,

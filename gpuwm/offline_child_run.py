@@ -2263,7 +2263,7 @@ def _history_refl_10cm(state, cfg, ticks):
     if refl_10cm_is_stashed(state):
         return consume_refl_10cm(state)
     if ticks == 0 and state.qv is not None and cfg.mp_physics in REFL_10CM_MICROPHYSICS:
-        return analysis_refl_10cm(state, shape=(cfg.nz, cfg.ny, cfg.nx))
+        return analysis_refl_10cm(state, cfg, shape=(cfg.nz, cfg.ny, cfg.nx))
     return None
 
 

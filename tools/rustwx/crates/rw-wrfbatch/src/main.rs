@@ -34,6 +34,7 @@ mod wrf_volumes;
 mod wrf_chart_planes;
 mod wrf_column_planes;
 mod snowfall;
+mod source_memo;
 #[path = "mesh.rs"]
 mod mesh;
 #[path = "section.rs"]
@@ -44,6 +45,7 @@ mod sheet;
 mod store_render;
 use rw_wrfbatch::sfire;
 mod viewer_profile;
+mod worker;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -144,7 +146,7 @@ gpuwm-rw-wrfbatch-vocabulary-v2\tgeneric\tvar:\tvariables\txsec:\tmesh:\tmeshdif
 gpuwm-rw-wrfbatch-layout-v1\t--layout\tauto\tfixed\t--size-class\t--scale\t--pair-sheet\t\
 gpuwm-rw-wrfbatch-difference-v2\t--diff-against\t--diff-inputs-json\t--diff-label-a\t--diff-label-b\t--diff-labels\t--diff-sheet\tDIFFERENCE\tdiffering_cells\tRUSTWX_DIFFERENCE_TABLE";
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Args {
     store_root: PathBuf,
     out_dir: PathBuf,
@@ -237,7 +239,7 @@ fn usage() -> &'static str {
 [--footer-note TEXT] [--diff-against WRFOUT]... [--diff-inputs-json FILE] \
 [--diff-labels A,B] [--diff-label-a TEXT] [--diff-label-b TEXT] [--diff-sheet] \
 [--list-products] [--save-import FILE] [--from-import FILE] [--inputs-json FILE] wrfout...\n       \
-rw_wrfbatch --help | --abi"
+rw_wrfbatch --cf FILE.nc --variable NAME --out-dir DIR [--valid UTC] [--bounds W,E,S,N] [--overlays FILE.json] [--observation FILE]\n       rw_wrfbatch --help | --abi | --worker-abi\n       rw_wrfbatch --worker --worker-host-mib N [fixed render options]"
 }
 
 /// What went wrong, and therefore what the user should be shown.
@@ -676,6 +678,10 @@ fn frame_attributed(
 }
 
 fn parse_args() -> Result<Invocation, CliError> {
+    parse_args_from(std::env::args().skip(1))
+}
+
+fn parse_args_from(raw: impl IntoIterator<Item = String>) -> Result<Invocation, CliError> {
     let mut store_root = None;
     let mut out_dir = None;
     let mut products = "all".to_string();
@@ -710,7 +716,7 @@ fn parse_args() -> Result<Invocation, CliError> {
     let mut diff_labels: Option<rustwx_render::difference::DifferenceLabels> = None;
     let mut diff_sheet = false;
     let mut inputs = Vec::new();
-    let mut raw = std::env::args().skip(1);
+    let mut raw = raw.into_iter();
 
     while let Some(arg) = raw.next() {
         match arg.as_str() {
@@ -1910,8 +1916,9 @@ fn import_run(
         // A request of named products imports only what those products
         // read, in ONE import per file for all of them; a listing of the
         // same names imports the same plan, so the render that follows
-        // reuses it.  A keyword in the request (`all`, `windowed`) keeps
-        // the named import whole.
+        // reuses it.  A keyword in the request (`all`, `direct`, `derived`)
+        // keeps the named import whole; `windowed` scopes to what its
+        // windows read.
         required_fields: if named {
             wrf_process::required_fields_for_products(store_products)
         } else {
@@ -3452,7 +3459,20 @@ fn dispatch() -> Result<(), CliError> {
 }
 
 fn render_main() -> ExitCode {
+    if let Some(result) = rw_wrfbatch::nextgen_products::cli(&std::env::args().skip(1).collect::<Vec<_>>()) {
+        return match result { Ok(()) => ExitCode::SUCCESS, Err(message) => { eprintln!("FAILED\t{message}"); ExitCode::FAILURE } };
+    }
     let _ = std::hint::black_box(GPUWM_BRIDGE_SOURCE_REV_STAMP);
+    if std::env::args().nth(1).as_deref() == Some("--worker-abi") {
+        println!("{}", worker::ABI_MARKER);
+        return ExitCode::SUCCESS;
+    }
+    if std::env::args().nth(1).as_deref() == Some("--worker") {
+        return worker::main();
+    }
+    if let Some(result) = rw_wrfbatch::cyclone_products::try_cli(&std::env::args().skip(1).collect::<Vec<_>>()) {
+        return match result { Ok(()) => ExitCode::SUCCESS, Err(message) => { eprintln!("FAILED\t{message}"); ExitCode::FAILURE } };
+    }
     if let Some(result) = rw_wrfbatch::ensemble_products::try_cli(&std::env::args().skip(1).collect::<Vec<_>>()) {
         return match result { Ok(()) => ExitCode::SUCCESS, Err(message) => { eprintln!("FAILED\t{message}"); ExitCode::FAILURE } };
     }
@@ -3503,6 +3523,9 @@ mod cli_contracts;
 #[path = "bin/nowcast_frames.rs"] mod nowcast_frames;
 
 fn main() -> ExitCode {
+    if std::env::args().any(|arg| arg == "--cf") {
+        return rw_wrfbatch::cf_render::main();
+    }
     // Launchers preserve argv[0] and every following argument.
     let invoked = std::env::args_os().next().unwrap_or_default();
     let name = std::path::Path::new(&invoked).file_stem().and_then(|name| name.to_str());

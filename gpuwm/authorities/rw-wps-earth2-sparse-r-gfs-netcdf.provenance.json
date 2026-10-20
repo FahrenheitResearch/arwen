@@ -1,0 +1,124 @@
+{
+  "schema": "gpuwm-cross-source-hybrid-provenance-v1",
+  "source": "Earth2Studio atmosphere composed with a same-cycle physical analysis",
+  "profile": "earth2-sparse-r-gfs-netcdf-v1",
+  "contributing_sources": {
+    "primary_atmosphere": {
+      "product": "Earth2Studio NetCDF4Backend forecast output",
+      "models_with_this_vocabulary": [],
+      "level_families": {
+        "z": "geopotential_height",
+        "t": "air_temperature",
+        "u": "eastward_wind",
+        "v": "northward_wind",
+        "r": "relative_humidity"
+      },
+      "levels_hpa": [
+        50,
+        250,
+        500,
+        850,
+        1000
+      ],
+      "level_selection": {
+        "z": [
+          50,
+          250,
+          500,
+          850,
+          1000
+        ],
+        "t": [
+          250,
+          500,
+          850
+        ],
+        "u": [
+          250,
+          500,
+          850,
+          1000
+        ],
+        "v": [
+          250,
+          500,
+          850,
+          1000
+        ],
+        "r": [
+          500,
+          850
+        ]
+      },
+      "surface_fields": {
+        "t2m": "air_temperature_2m",
+        "u10m": "eastward_wind_10m",
+        "v10m": "northward_wind_10m",
+        "msl": "air_pressure_at_mean_sea_level"
+      },
+      "units": "exact producer vocabulary declared by the mapping; conflicting file attributes refuse"
+    },
+    "physical_analysis_surface": {
+      "product": "gfs",
+      "provider": "gfs-gdas-analysis",
+      "mapping": "rw-wps-earth2-gdas-donor.mapping.json",
+      "supplies": [
+        "surface_pressure",
+        "terrain_height",
+        "land_fraction",
+        "skin_temperature",
+        "specific_humidity_2m",
+        "soil_temperature",
+        "volumetric_soil_moisture",
+        "sea_surface_temperature",
+        "sea_ice_fraction",
+        "snow_water_equivalent"
+      ],
+      "clock": "source_cycle_analysis_broadcast: donor analysis at the AI initialization, frozen at every lead",
+      "grid_alignment": "exact_coordinate_strided_subset",
+      "surface_temperature_policy": "GFS surface TMP is the ocean skin/SST donor; the copy is consumed only over water."
+    }
+  },
+  "why_hybrid": "these models publish no land surface, orography, land mask, SST, sea ice, snow or 2 m humidity; the analysis they were initialized from supplies it, as the AI-GFS row borrows the same state from GDAS",
+  "surface_pressure_policy": "same-cycle physical analysis surface pressure, explicitly borrowed through the companion composition binding",
+  "frozen_surface_caveat": "The initialization analysis is carried unchanged while the AI atmosphere advances. The composition receipt names each carried valid time.",
+  "input_identity": "File paths and SHA-256 values are sealed by gpuwm-mapped-source-inputs-v1",
+  "donor": {
+    "id": "gfs",
+    "mapping": "rw-wps-earth2-gdas-donor.mapping.json",
+    "sha256": "e24542b3a9747c37614451d29eb4047b5f17f6068e3e63c299a2cc5367d8d8a1",
+    "clock": "source_cycle_analysis_broadcast"
+  },
+  "vertical_merge": {
+    "method": "cosine_pressure_distance_log_anomaly",
+    "pressure_band_hpa": [
+      0,
+      100
+    ],
+    "primary_pressure_scale": 100,
+    "donor_pressure_scale": 1,
+    "max_relative_humidity": 1.05,
+    "fields": {
+      "air_temperature": {
+        "primary_field": "air_temperature",
+        "representation": "canonical"
+      },
+      "eastward_wind": {
+        "primary_field": "eastward_wind",
+        "representation": "canonical"
+      },
+      "northward_wind": {
+        "primary_field": "northward_wind",
+        "representation": "canonical"
+      },
+      "geopotential_height": {
+        "primary_field": "geopotential_height",
+        "representation": "canonical"
+      },
+      "specific_humidity": {
+        "primary_field": "relative_humidity",
+        "representation": "relative_humidity_percent"
+      }
+    }
+  }
+}

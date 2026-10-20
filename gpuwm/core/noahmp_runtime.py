@@ -465,6 +465,8 @@ def _glacier_lsm_step(fields, atmosphere, glacier_mask, *, params, coszen,
     fields["fvegxy"][at] = zero
     fields["runsfxy"][at] = runsf_mm
     fields["runsbxy"][at] = runsb_mm
+    if "soldrain" in fields:
+        fields["soldrain"][at] = zero  # glacier has no soil bottom drainage
     fields["ecanxy"][at] = zero
     put2("edirxy", "edir")
     fields["etranxy"][at] = zero
@@ -1093,6 +1095,10 @@ class NoahmpRuntimeParameters:
         """Strict-JSON identity: the table bytes plus the dataset choice."""
         receipt = self.bundle.receipt
         tables = receipt.get("tables", receipt)
+        # The canonical loader publishes an asset sequence, not a tables map.
+        # Reading the whole receipt as a map silently discarded every table.
+        if "assets" in receipt:
+            tables = {entry["filename"]: entry for entry in receipt["assets"]}
         payload = {}
         if isinstance(tables, Mapping):
             for name, entry in sorted(tables.items()):
@@ -1101,6 +1107,8 @@ class NoahmpRuntimeParameters:
                         "bytes": int(entry.get("bytes", 0)),
                         "sha256": str(entry.get("sha256", "")),
                     }
+        if not payload:
+            raise ValueError("Noah-MP restart identity requires parameter table seals")
         return {
             "algorithm": "noahmp-lsm-wrf-v4.6.1-v1",
             "wrf_source": "phys/module_sf_noahmpdrv.F:noahmplsm + "
@@ -1149,6 +1157,22 @@ class NoahmpSolarGeometry:
                 "Noah-MP latitude/longitude shapes must match")
         if not np.isfinite(self.latitude_deg).all():
             raise ValueError("Noah-MP latitude must be finite")
+
+    def device_static_fields(self, shape, dzs):
+        """Prepare immutable slab geometry once on the current parent card.
+
+        Call during setup to prewarm; repeated LSM calls reuse the same device
+        latitude and soil depths. Scalar configuration latitude broadcasts to
+        the actual parent grid before the gather kernel sees it.
+        """
+        import cupy as cp
+        key = (cp.cuda.Device().id, tuple(shape), id(dzs))
+        cache = self.__dict__.setdefault("_device_static_cache", {})
+        if key not in cache:
+            latitude = np.broadcast_to(self.latitude_deg, shape)
+            radians = np.ascontiguousarray(np.deg2rad(latitude), dtype=np.float32)
+            cache[key] = (cp.asarray(radians), cp.asarray(zsoil_from_dzs(dzs)), dzs)
+        return cache[key][:2]
 
     def valid_time(self, elapsed_seconds: float) -> datetime:
         return self.start_time + timedelta(seconds=float(elapsed_seconds))
@@ -2090,8 +2114,7 @@ def _lsm_step_slab(
             f"{cosz.shape} for a {(ny, nx)} slab")
     julian32 = f32(geometry.julian(elapsed_seconds))
     yearlen = year_length(geometry.year(elapsed_seconds))
-    latitude = cp.asarray(np.deg2rad(geometry.latitude_deg).astype(np.float32))
-    zsoil_row = cp.asarray(zsoil_from_dzs(dzs))
+    latitude, zsoil_row = geometry.device_static_fields((ny, nx), dzs)
     identity = params.land_use
     foln32 = np.float32(f32(FOLN))
     undefined32 = np.float32(f32(UNDEFINED_VALUE))
@@ -2276,6 +2299,8 @@ def _write_back_slab(fields, j, i, r, *, nsoil, dt) -> None:
 
     scatter_slab_fields(j, i, [(fields[carrier], r[name])
                                for carrier, name in _WRITE_BACK_DIRECT])
+    if "soldrain" in fields:
+        scatter_slab_fields(j, i, [(fields["soldrain"], r["soldrain"])])
 
     # ---- the column itself -------------------------------------------------
     scatter_slab_fields(j, i, [

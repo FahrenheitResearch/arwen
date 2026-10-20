@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Duration, NaiveDateTime, Timelike, Utc};
 use grib_core::grib2::{Grib2File, Grib2Message, flip_rows, grid_latlon, unpack_message};
 use serde::Deserialize;
+use rayon::prelude::*;
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct ObservationSpec {
@@ -86,7 +87,7 @@ pub fn specifications() -> Result<Vec<ObservationSpec>, String> {
                 || product.candidates.len() != product.parameters.len()
                 || !(0..=3600).contains(&product.time.tolerance())
                 || matches!(product.time, TimePolicy::ExactHourEnd)
-                    && product.accumulation_seconds != Some(3600)
+                    && !product.accumulation_seconds.is_some_and(|seconds| seconds > 0 && seconds % 3600 == 0)
             {
                 return Err(format!(
                     "invalid observation row {} / {}",
@@ -273,34 +274,33 @@ fn decode(
         flip_rows(&mut lat, nx, ny);
         flip_rows(&mut lon, nx, ny);
     }
-    for value in &mut lon {
+    lon.par_iter_mut().for_each(|value| {
         *value = (*value + 180.0).rem_euclid(360.0) - 180.0;
-    }
+    });
     // Keep coordinates and values together when a geographic row wraps.
-    for row in 0..ny {
-        let range = row * nx..(row + 1) * nx;
-        if let Some(index) = lon[range.clone()]
+    lat.par_chunks_mut(nx).zip(lon.par_chunks_mut(nx)).zip(values.par_chunks_mut(nx)).for_each(|((lat,lon),values)| {
+        if let Some(index) = lon
             .windows(2)
             .position(|pair| pair[1] - pair[0] < -180.0)
         {
-            lat[range.clone()].rotate_left(index + 1);
-            lon[range.clone()].rotate_left(index + 1);
-            values[range].rotate_left(index + 1);
+            lat.rotate_left(index + 1);
+            lon.rotate_left(index + 1);
+            values.rotate_left(index + 1);
         }
-    }
+    });
     let unobserved: Vec<bool> = values
-        .iter()
+        .par_iter()
         .map(|value| unobserved_value(*value, product))
         .collect();
     let values: Vec<_> = values
-        .into_iter()
+        .into_par_iter()
         .map(|value| mask_value(value, product))
         .collect();
-    let missing_cells = values.iter().filter(|value| !value.is_finite()).count();
+    let missing_cells = values.par_iter().filter(|value| !value.is_finite()).count();
     Ok(ObservationField {
         values,
-        lat: lat.into_iter().map(|value| value as f32).collect(),
-        lon: lon.into_iter().map(|value| value as f32).collect(),
+        lat: lat.into_par_iter().map(|value| value as f32).collect(),
+        lon: lon.into_par_iter().map(|value| value as f32).collect(),
         nx,
         ny,
         valid: Identity::of(message, product).expect("selected identity").valid,

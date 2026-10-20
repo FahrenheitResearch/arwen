@@ -1,0 +1,3982 @@
+{
+  "schema": "gpuwm-nextgen-realizations-v1",
+  "realizations": [
+    {
+      "id": "ngen-baseline-noah-pet-cfe",
+      "description": "Pinned upstream CONUS baseline composition; not an operational NWM v4 calibration or accepted case (c).",
+      "admission": {
+        "status": "permitted",
+        "scope": "configuration metadata only; module factories require their own source audit",
+        "licence": "Apache-2.0"
+      },
+      "sources": [
+        {
+          "repository": "https://github.com/NOAA-OWP/ngen",
+          "revision": "be11a180565a78ff069d855b0b5dbfc23845e7d8",
+          "path": "data/baseline/realizations/conus_bmi_multi_realization_config_w_sloth_noah_pet_cfe_trt.json",
+          "sha256": "5abd765eeb24ad2b052f71a4a3e27c9b0458e532c9623643a8a4f23785a7bec5",
+          "software_licence": "Apache-2.0"
+        },
+        {
+          "repository": "https://github.com/NOAA-OWP/ngen",
+          "revision": "be11a180565a78ff069d855b0b5dbfc23845e7d8",
+          "path": "data/baseline/routing_config_CONUS.yaml",
+          "sha256": "621051098ca3198e25d3ff8fff24b0decd3ade5c88b20522c6464def2cc02967",
+          "software_licence": "Apache-2.0"
+        }
+      ],
+      "validation": {
+        "configuration": "pinned upstream",
+        "module_replay": "pending referee",
+        "case_c": "pending referee",
+        "case_c_selection": {
+          "id": "russian-river-january-2023",
+          "scope": "Selected independent NextGen case(c); original federal topology and flowlines1445/1445, source catchment polygons1433/1445. A lossless RouteLink3.1.6 subset matches1445/1445 but remains private/unadmitted pending underlying data terms and module mapping. Twelve polygons, physical model/reservoir inputs, initialization/forcing and native event remain incomplete; not executable or accepted.",
+          "event_start_utc": "2023-01-05T00:00:00Z",
+          "event_end_utc": "2023-01-17T00:00:00Z",
+          "outlet_gauge": "11467000",
+          "gauges": [
+            {
+              "station_id": "11462500",
+              "name": "Russian River near Hopland, CA",
+              "archive_feature_id": 8269119,
+              "archive_namespace": "NHDPlusV2 NOAA NWM v3 CONUS feature_id",
+              "nextgen_flowpath_id": null
+            },
+            {
+              "station_id": "11464000",
+              "name": "Russian River near Healdsburg, CA",
+              "archive_feature_id": 8272379,
+              "archive_namespace": "NHDPlusV2 NOAA NWM v3 CONUS feature_id",
+              "nextgen_flowpath_id": null
+            },
+            {
+              "station_id": "11467000",
+              "name": "Russian River at Hacienda Bridge near Guerneville, CA",
+              "archive_feature_id": 8272725,
+              "archive_namespace": "NHDPlusV2 NOAA NWM v3 CONUS feature_id",
+              "nextgen_flowpath_id": null
+            }
+          ],
+          "comparison": {
+            "source": "nwm-v3-conus",
+            "cadence_seconds": 3600,
+            "units": "m3 s-1",
+            "match": "explicit verified reach crosswalk and exact UTC timestamp; no interpolation, gauge-ID-as-reach assumption or inferred HYFeatures equality",
+            "archive_joined_samples_per_gauge": 289,
+            "usgs_samples_per_gauge": 1153,
+            "model_outputs_available": false
+          },
+          "native_realization": {
+            "parameters": null,
+            "routing_options": null,
+            "warmup": null,
+            "hydrofabric_manifest": null,
+            "reach_crosswalk": null,
+            "status": "Private RouteLink3.1.6 source candidate available separately, not admitted or converted to native runtime inputs. Twelve source polygons, selected parent area weights, physical model/reservoir parameters, native options and initial/warmup state remain absent. No inference from archive or other cases."
+          },
+          "known_physics": "Regulated by Lakes Mendocino and Sonoma; native/GPU level-pool treatment and initial states must be explicit. No observation-skill claim before reservoir/initial-state assessment.",
+          "data_admission": "Original federal NHDPlusV2.1 topology/source catchment metadata states access/use constraints None. HYFeaturesv2.2 remains private noncommercial research-only; complete permitted parameterized fabric recipe still required.",
+          "bounded_acquisition": "Reuse existing three-gauge records and bounded owner topology/geometry. Owner downloaded one269369766B standalone RouteLink object once, retained only1445-row subset and receipts, and deleted full object. No fullCONUS archive/fabric acquisition or duplicate capture.",
+          "source_provenance": {
+            "referee_selection_sha256": "c9d2ad3b1e4944a3f9ae56d0a58f9cf591504e3c83ce686a26ef9e2afe674002",
+            "retrospective_request_sha256": "9719d4b320bd31f4a84a0fc4875cc2950a245e8c16f30cb2ade43e9ce4f4256e",
+            "retrospective_mapping_sha256": "27a8c1d91827ddea67d969877b5da91ce2d00f0e9527579e47bfbfd61a237631"
+          },
+          "public_topology": {
+            "source": {
+              "source": "Original EPA/USGS NHDPlus V2.1; no HYFeatures/Lynker-derived content",
+              "metadata_url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Documentation/Metadata/NHDPlusV2_metadata.htm",
+              "metadata_sha256": "c4a6c790321f87f69666b0ed28669acc5eb73c0771a9a0ee5dc9a93a4ccdbb22",
+              "access_constraints": "None.",
+              "use_constraints": "None.",
+              "gauge_crosswalk_table_sha256": "9d5528c849714ae1ccde1f7956db6380348f57fe266a08ea72396716cad307bc",
+              "data_status": "Original federal source topology only. NOAA v3 parameters and catchment geometry are not included."
+            },
+            "namespace": "NHDPlusV2.1 ComID; not HYFeatures flowpath IDs",
+            "network_sha256": "ac3c274d1dfb3408bc62a448e8a82ed0a4806b548a86464b113dc75b84bcacba",
+            "nodes": 1445,
+            "edges": 1475,
+            "acyclic": true,
+            "outlet_comid": 8272725,
+            "gauges_in_subset": true,
+            "native_parse_comparison": {
+              "different_canonical_bytes": 0,
+              "compared_canonical_bytes": 43952
+            },
+            "request_sha256": "d9842874b154edfabe5845bb95c6546d69a32a95259ade7f3eb8122c4593ad0b",
+            "preparation_receipt_sha256": "c8b9e47a35adc2b155115ceb6f1f2cff2788e70040bbb5fc782645a23fbf7065",
+            "replay_receipt_sha256": "e010ed349e648ef3708022dece7af4229e86232d593964ab950808bdee621042",
+            "missing": [
+              "admitted routing coefficients and reservoir parameters; private RouteLink3.1.6 candidate does not close source terms or runtime mapping",
+              "complete catchment geometry (bounded1433/1445 source polygons supplied separately)",
+              "calibrated native event/warmup/state",
+              "HYFeatures crosswalk if that namespace is used"
+            ]
+          },
+          "native_input_contract": {
+            "schema": "nextgen.native.event-input-contract/v1",
+            "source_repository": "native-nextgen-reference",
+            "source_path": "case-c-input-contract-20261018T0135Z.json",
+            "source_sha256": "4e35286ece8c2e2566d85b7a4b0ee586ddeb4d1d7fcf73cabe3d8078b1f47ad7",
+            "owner_revision": "339397acc936a9156783221578a36afa9488e96e",
+            "created_utc": "2026-10-18T01:35:26.716831+00:00",
+            "status": "official topology and all1445sourceflowlines ready; catchment polygons1433/1445; native event not runnable",
+            "previous_version": {
+              "source_path": "case-c-input-contract-20261018T0122Z.json",
+              "bytes": 8025,
+              "sha256": "b3e620b84edff0b2ae8add31cc8cbfd4a61165adccf9e82a147732a9b4066ea1"
+            },
+            "required_before_native_event": {
+              "catchment_polygons_and_model_parameters": {
+                "status": "partial geometry available; complete model parameters absent",
+                "polygons_available": 1433,
+                "selected_reaches": 1445,
+                "missing_polygon_ids": [
+                  8267989,
+                  8268253,
+                  8270561,
+                  8270833,
+                  8272017,
+                  8272029,
+                  8272215,
+                  8272667,
+                  8272671,
+                  8272689,
+                  8272727,
+                  8272731
+                ],
+                "complete_model_parameters": null,
+                "identity": "Original NHD COMID/FEATUREID; no NextGen HYFeatures crosswalk"
+              },
+              "routing_geometry_and_roughness": {
+                "status": "all source line XYZM available; hydraulic sections/roughness/divergence policy still absent",
+                "source_flowpaths": {
+                  "bytes": 2961,
+                  "sha256": "19d773d00c678d14739204ac307a7a2b03795715776c4c4a307f2fe5dc04e930",
+                  "source_path": "diffusive-handoff-20261018T0135Z/flowpath-proof.json"
+                },
+                "hydraulic_cross_sections": null,
+                "roughness": null,
+                "divergence_flow_partition": null,
+                "z_datum_or_m_chainage_proven": false
+              },
+              "forcing_and_unit_mapping": null,
+              "warmup_dates_and_initialized_states": null,
+              "lake_mendocino_and_sonoma_controls_and_initial_states": null,
+              "native_realization_and_selected_modules": null
+            },
+            "availability": "No native or GPU event output; existing observations/archive records are separate.",
+            "native_geometry_owner_proof": {
+              "source_path": "boundary-handoff-20261018T0122Z/geometry-proof.json",
+              "source_sha256": "3337fa31b7e54a6b376126e5efb632a672f854b097ab09de7ccaf751fbf17509",
+              "different_canonical_bytes": 0,
+              "compared_canonical_bytes": 4071432,
+              "rayon_workers": 24,
+              "owner_rust_ms": 31.838459,
+              "owner_process_ms": 41.91232565790415,
+              "scope": "all selected polygon XY bits and closed-ring edge sequences; rotation/orientation/grouping normalized, no containment/area/weights/physics claim"
+            },
+            "snapshot_scope": "Immutable referee snapshot consolidates topology, partial polygons and complete source lines. Hydraulic/model/forcing/initialization/control inputs and native event remain missing."
+          },
+          "public_geometry": {
+            "schema": "arwen.source-polygon-subset.v1",
+            "source": "Original EPA/USGS NHDPlusV2.1 CA18 source catchment polygons",
+            "owner_revision": "24bc723f39429e82c9046af82b893102d8ee1853",
+            "manifest_path": "public-source/russian-river-geometry/manifest.json",
+            "manifest_sha256": "fc229c25248cea08c81a8f5e38b26b78064776c4641a0a8aa2f096f022b31c0f",
+            "network_sha256": "ac3c274d1dfb3408bc62a448e8a82ed0a4806b548a86464b113dc75b84bcacba",
+            "namespace": "NHDPlusV2.1 FEATUREID; not HYFeatures flowpath IDs",
+            "requested_reach_ids": 1445,
+            "matched_catchments": 1433,
+            "rings": 1651,
+            "points": 253857,
+            "missing_feature_ids": [
+              8267989,
+              8268253,
+              8270561,
+              8270833,
+              8272017,
+              8272029,
+              8272215,
+              8272667,
+              8272671,
+              8272689,
+              8272727,
+              8272731
+            ],
+            "gauges_matched": true,
+            "coordinates": "verbatim IEEE754 source XY; no transform, simplification or area/grid assumption",
+            "crs": "NAD83 geographic source XY (degrees); no area or grid weights implied",
+            "archive": {
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusCA/NHDPlusV21_CA_18_NHDPlusCatchment_01.7z",
+              "bytes": 185540715,
+              "sha256": "c4efbdf9ab5a10de9dead348768e42d943a8082d452c59c0f29ab6bad4426930"
+            },
+            "provider_metadata_sha256": "c4a6c790321f87f69666b0ed28669acc5eb73c0771a9a0ee5dc9a93a4ccdbb22",
+            "data_license": "Original EPA/USGS NHDPlusV2.1; provider metadata Access_Constraints: None.; Use_Constraints: None. EPA/USGS attribution retained.",
+            "payloads": {
+              "Catchment.dbf": {
+                "bytes": 83276,
+                "sha256": "9845dd0fc96bdf0c804962e0a8b37a2bf153702c9aaa0dca0743eff9abdcd435"
+              },
+              "Catchment.prj": {
+                "bytes": 167,
+                "sha256": "84cf5b9a3c1a444f83ac30ff76f8c5035990223027ba69b2f4d628388adcbd65"
+              },
+              "Catchment.shp": {
+                "bytes": 4142932,
+                "sha256": "5289b1bedf926ec208d3b1bcd8563299277e81aad590d648e7c2edca975dd43b"
+              },
+              "Catchment.shx": {
+                "bytes": 11564,
+                "sha256": "1965a92405dde5451257be6b351ffbcec86a96a7da76973a71bd58a27890bc1d"
+              }
+            },
+            "native_parse_comparison": {
+              "native_tool": "GDAL 3.12.2 Chicoutimi",
+              "different_canonical_bytes": 0,
+              "compared_canonical_bytes": 4071432,
+              "id_symmetric_difference": 0,
+              "canonical_sha256": "282e9b713c98d9480de0068a116b7efa3156f8a953eb2ea43c7828b8b4f80c68",
+              "native_capture_sha256": "ff9e74636a49987a9a6bcd0cd3473bf5c1259e5006be940597c85e59307e789a",
+              "strict": true,
+              "scope": "all selected polygon XY bits and closed-ring edge sequences; rotation/orientation/grouping normalized, no containment/area/weights/physics claim"
+            },
+            "availability": "Bounded source polygon subset only; not resident prepare_resource ABI, complete parent geometry, hydraulic/model parameters or executable calibrated native event.",
+            "missing": [
+              "12 source catchment/flowpath IDs explicitly absent; no fabricated fill",
+              "actual parent geometry and catchment-to-grid area weights",
+              "NOAA hydraulic/model/reservoir parameters and divergence policy",
+              "event forcing, warmup, controls, initial state and selected native realization"
+            ]
+          },
+          "public_flowpaths": {
+            "schema": "arwen.source-polyline-subset.v1",
+            "source": "Original EPA/USGS NHDPlusV2.1 CA18 source flowlines",
+            "owner_revision": "6d47593fbf3b99dc824840519327682aa6d35903",
+            "manifest_path": "public-source/russian-river-flowpaths/manifest.json",
+            "manifest_sha256": "7f72d8a3846718952346a79110140652c2ec71fe5b98f91a69afba9acd195b1e",
+            "network_sha256": "ac3c274d1dfb3408bc62a448e8a82ed0a4806b548a86464b113dc75b84bcacba",
+            "namespace": "NHDPlusV2.1 COMID; not HYFeatures flowpath IDs",
+            "requested_reach_ids": 1445,
+            "matched_flowlines": 1445,
+            "parts": 1445,
+            "points": 32270,
+            "missing_feature_ids": [],
+            "coordinates": "verbatim IEEE754 source ordinates, part order and direction; no transform, simplification or area/grid assumption; Z/M presence follows each source record",
+            "crs": "NAD83 geographic source XY (degrees); Z/M preserved without elevation-datum or chainage interpretation",
+            "data_license": "Original EPA/USGS NHDPlusV2.1; provider metadata Access_Constraints: None.; Use_Constraints: None. EPA/USGS attribution retained.",
+            "source_archive_sha256": "6e51ee61700d5ee40e1584d42a9266d4b1af635692787e131e68a2919796708f",
+            "provider_metadata_sha256": "c4a6c790321f87f69666b0ed28669acc5eb73c0771a9a0ee5dc9a93a4ccdbb22",
+            "payloads": {
+              "NHDFlowline.dbf": {
+                "bytes": 324162,
+                "sha256": "20fe8739a8e9657c18724cf5e385344e13fa6fcbdc6ec150fe6a63a62ab07e97"
+              },
+              "NHDFlowline.prj": {
+                "bytes": 167,
+                "sha256": "84cf5b9a3c1a444f83ac30ff76f8c5035990223027ba69b2f4d628388adcbd65"
+              },
+              "NHDFlowline.shp": {
+                "bytes": 1159900,
+                "sha256": "c35e33221a875369935e3b178bee5c141e651b95afa6328a3e8148a8c184654b"
+              },
+              "NHDFlowline.shx": {
+                "bytes": 11660,
+                "sha256": "72e666f164e429641214cd1648b453b400d28dc3837a8c5726555e4fa3f0a874"
+              }
+            },
+            "native_parse_comparison": {
+              "different_canonical_bytes": 0,
+              "compared_canonical_bytes": 1073100,
+              "id_symmetric_difference": 0,
+              "native_capture_sha256": "0e0a9a4a6abe686379edb2fd03b976c3ab0119560ca7ed1fba2c4ce4c0b7b43d",
+              "strict": true,
+              "scope": "all selected line XYZ/M bits, dimensional modifiers and directed point sequences; collection grouping/order normalized only; no Z elevation/datum, M chainage, hydraulic parameter or parent-grid claim"
+            },
+            "availability": "Source lines only; hydraulic cross sections/roughness, reservoir controls, area weights and model parameters are not provided. Twelve missing catchment polygons remain unfilled."
+          },
+          "cfe_physical_input_contract": {
+            "schema": "arwen.cfe.prepare/v1",
+            "source_repository": "gpuwm",
+            "owner_revision": "476ba92aa8ace2f258239b4280ca78a0d7e5af11",
+            "source_path": "tools/nextgen_cfe_prepare/README.md",
+            "source_sha256": "204ef23e7f2402c27a449c21739f59951faef1d48320566bd87e15af694096d7",
+            "section": "Physical parameter handoff",
+            "case_c_parameter_packet": null,
+            "requirements": [
+              "One sealed native-unit INI per ordered catchment, with parameter provenance, permitted terms and initial-state UTC time",
+              "Actual soil/aquifer/storage/partition/routing parameters; source geometry alone supplies none",
+              "Explicit initialization policy; the common shipped-example cold start is not event calibration"
+            ],
+            "unit_policy": "Values must already use pinned CFE native units; INI unit labels are not conversions. Soil/GW initial storage inputs are fractions.",
+            "optional_coupling": "SFT/root-zone flags alone do not connect resident ice/moisture inputs in the current rainfall/PET factory; a selected physical realization and producer binding are required."
+          },
+          "routing_parameter_candidate": {
+            "status": "private source candidate; data-terms hold; not a prepared or admitted runtime resource",
+            "source_url": "https://www.nco.ncep.noaa.gov/pmb/codes/nwprod/nwm.v3.1.6/parm/domain/RouteLink_CONUS.nc",
+            "source_version": "NWM v3.1.6 NCO object; stored history 2025-08-05",
+            "source_sha256": "4957655896f4f27854f893d02fa084f9f79c1cf8e80ce77565a7356dadb6fc0e",
+            "source_object_bytes": 269369766,
+            "source_history": "Created Tue Aug  5 16:57:23 2025",
+            "owner_revision": "083685d168178385d1a208971c3bd6e9a42010be",
+            "subset_schema": "arwen.source-netcdf-subset.v1",
+            "subset_manifest_sha256": "5ec558bc9a690b6b2acf2eb49f7bd1529f98303422da5ed33015222e5d898dcf",
+            "subset_manifest_bytes": 71220,
+            "selection_network_sha256": "ac3c274d1dfb3408bc62a448e8a82ed0a4806b548a86464b113dc75b84bcacba",
+            "id_namespace": "original NHDPlusV2.1 ComID requested against RouteLink link; no HYFeatures crosswalk",
+            "requested_reaches": 1445,
+            "matched_reaches": 1445,
+            "missing_reaches": 0,
+            "fields": {
+              "BtmWdth": {
+                "dtype": "<f4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": "m",
+                "long_name": "Bottom width of channel (m)"
+              },
+              "ChSlp": {
+                "dtype": "<f4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": null,
+                "long_name": "Channel side slope"
+              },
+              "Kchan": {
+                "dtype": "<i2",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": "mm h-1",
+                "long_name": "channel conductivity"
+              },
+              "Length": {
+                "dtype": "<f4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": null,
+                "long_name": "Stream length (m)"
+              },
+              "MusK": {
+                "dtype": "<f4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": null,
+                "long_name": "Muskingum routing time (s)"
+              },
+              "MusX": {
+                "dtype": "<f4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": null,
+                "long_name": "Muskingum weighting coefficient"
+              },
+              "NHDWaterbodyComID": {
+                "dtype": "<i4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": null,
+                "long_name": "ComID of NHDWaterbody feature associated using spatial join (intersection) between NHDFlowline_network and Waterbodies"
+              },
+              "Qi": {
+                "dtype": "<f4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": null,
+                "long_name": "Initial flow in link (CMS)"
+              },
+              "So": {
+                "dtype": "<f4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": null,
+                "long_name": "Slope (meters/meters from NHDFlowline_network.SLOPE)"
+              },
+              "TopWdth": {
+                "dtype": "<f4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": "m",
+                "long_name": "Top Width (m)"
+              },
+              "TopWdthCC": {
+                "dtype": "<f4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": "m",
+                "long_name": "Compound Channel Top Width (m)"
+              },
+              "alt": {
+                "dtype": "<f4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": "m",
+                "long_name": "Elevation in meters from the North American Vertical Datum 1988 (NADV88) at start node (MaxElevSmo)"
+              },
+              "ascendingIndex": {
+                "dtype": "<i4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": null,
+                "long_name": "Index to use for sorting IDs (ascending)"
+              },
+              "from": {
+                "dtype": "<i4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": null,
+                "long_name": "From Link ID (PlusFlow table FROMCOMID for every TOCOMID)"
+              },
+              "gages": {
+                "dtype": "|S1",
+                "shape": [
+                  1445,
+                  15
+                ],
+                "row_axis": 0,
+                "units": null,
+                "long_name": "NHD Gage Event ID from SOURCE_FEA field in Gages feature class"
+              },
+              "lat": {
+                "dtype": "<f4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": "degrees_north",
+                "long_name": "latitude of the segment midpoint"
+              },
+              "link": {
+                "dtype": "<i4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": null,
+                "long_name": "Link ID (NHDFlowline_network COMID)"
+              },
+              "lon": {
+                "dtype": "<f4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": "degrees_east",
+                "long_name": "longitude of the segment midpoint"
+              },
+              "n": {
+                "dtype": "<f4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": null,
+                "long_name": "Manning's roughness"
+              },
+              "nCC": {
+                "dtype": "<f4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": null,
+                "long_name": "Compound Channel Manning's n"
+              },
+              "order": {
+                "dtype": "<i4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": null,
+                "long_name": "Stream order (Strahler)"
+              },
+              "to": {
+                "dtype": "<i4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": null,
+                "long_name": "To Link ID (PlusFlow table TOCOMID for every FROMCOMID)"
+              }
+            },
+            "payload_bytes": 140165,
+            "native_subset_witness": {
+              "witness": "NetCDF-C independent ID scan and per-row hyperslab",
+              "different_bytes": 0,
+              "compared_bytes": 140165
+            },
+            "data_terms": {
+              "status": "unresolved; no public/default/demo admission",
+              "reason": "Stored processing_notes cites Lynker Reference Fabric 3.0; NOAA general disclaimer does not establish underlying third-party grant."
+            },
+            "runtime_mapping": {
+              "status": "not prepared",
+              "mc_required_columns": [
+                "length_m",
+                "BtmWdth",
+                "TopWdth",
+                "TopWdthCC",
+                "n",
+                "nCC",
+                "ChSlp",
+                "So"
+              ],
+              "caveats": [
+                "Length is retained under its native name; no length_m rename or unit conversion performed.",
+                "Kchan is native int16 with mm h-1 units; never silently substitute CFE soil conductivity.",
+                "Qi is a static source initial-flow coefficient, not event warmup/state.",
+                "alt is source NAVD88 start-node elevation, not surveyed hydraulic cross sections.",
+                "gages are native left-padded 15-character strings, not an authoritative HYFeatures or output crosswalk.",
+                "No GWBUCK-to-CFE mapping, missing-parameter defaults or NWM v3.0 coefficient identity."
+              ]
+            }
+          }
+        }
+      },
+      "reference": {
+        "realization": {
+          "global": {
+            "formulations": [
+              {
+                "name": "bmi_multi",
+                "params": {
+                  "model_type_name": "bmi_multi_noahowp_cfe",
+                  "forcing_file": "",
+                  "init_config": "",
+                  "allow_exceed_end_time": true,
+                  "main_output_variable": "Q_OUT",
+                  "modules": [
+                    {
+                      "name": "bmi_c++",
+                      "params": {
+                        "model_type_name": "bmi_c++_sloth",
+                        "library_file": "./extern/sloth/cmake_build/libslothmodel",
+                        "init_config": "/dev/null",
+                        "allow_exceed_end_time": true,
+                        "main_output_variable": "z",
+                        "uses_forcing_file": false,
+                        "model_params": {
+                          "sloth_ice_fraction_schaake(1,double,m,node)": 0.0,
+                          "sloth_ice_fraction_xinanjiang(1,double,1,node)": 0.0,
+                          "sloth_smp(1,double,1,node)": 0.0
+                        }
+                      }
+                    },
+                    {
+                      "name": "bmi_fortran",
+                      "params": {
+                        "model_type_name": "bmi_fortran_noahowp",
+                        "library_file": "./extern/noah-owp-modular/cmake_build/libsurfacebmi",
+                        "forcing_file": "",
+                        "init_config": "./conus_config/NoahOWP_{{id}}.namelist",
+                        "allow_exceed_end_time": true,
+                        "main_output_variable": "QINSUR",
+                        "variables_names_map": {
+                          "PRCPNONC": "atmosphere_water__liquid_equivalent_precipitation_rate",
+                          "Q2": "atmosphere_air_water~vapor__relative_saturation",
+                          "SFCTMP": "land_surface_air__temperature",
+                          "UU": "land_surface_wind__x_component_of_velocity",
+                          "VV": "land_surface_wind__y_component_of_velocity",
+                          "LWDN": "land_surface_radiation~incoming~longwave__energy_flux",
+                          "SOLDN": "land_surface_radiation~incoming~shortwave__energy_flux",
+                          "SFCPRS": "land_surface_air__pressure"
+                        },
+                        "uses_forcing_file": false
+                      }
+                    },
+                    {
+                      "name": "bmi_c",
+                      "params": {
+                        "model_type_name": "bmi_c_pet",
+                        "library_file": "./extern/evapotranspiration/evapotranspiration/cmake_build/libpetbmi",
+                        "forcing_file": "",
+                        "init_config": "./conus_config/PET_{{id}}.ini",
+                        "allow_exceed_end_time": true,
+                        "main_output_variable": "water_potential_evaporation_flux",
+                        "registration_function": "register_bmi_pet",
+                        "variables_names_map": {
+                          "water_potential_evaporation_flux": "potential_evapotranspiration"
+                        },
+                        "uses_forcing_file": false
+                      }
+                    },
+                    {
+                      "name": "bmi_c",
+                      "params": {
+                        "model_type_name": "bmi_c_cfe",
+                        "library_file": "./extern/cfe/cmake_build/libcfebmi",
+                        "forcing_file": "",
+                        "init_config": "./conus_config/CFE_{{id}}.ini",
+                        "allow_exceed_end_time": true,
+                        "main_output_variable": "Q_OUT",
+                        "registration_function": "register_bmi_cfe",
+                        "variables_names_map": {
+                          "water_potential_evaporation_flux": "potential_evapotranspiration",
+                          "atmosphere_water__liquid_equivalent_precipitation_rate": "QINSUR",
+                          "ice_fraction_schaake": "sloth_ice_fraction_schaake",
+                          "ice_fraction_xinanjiang": "sloth_ice_fraction_xinanjiang",
+                          "soil_moisture_profile": "sloth_smp"
+                        },
+                        "uses_forcing_file": false
+                      }
+                    }
+                  ],
+                  "uses_forcing_file": false
+                }
+              }
+            ],
+            "forcing": {
+              "path": "./forcing/NextGen_forcing_2016010100.nc",
+              "provider": "NetCDF"
+            }
+          },
+          "time": {
+            "start_time": "2016-01-01 00:00:00",
+            "end_time": "2016-01-10 23:00:00",
+            "output_interval": 3600
+          },
+          "output_root": "./output_dir/",
+          "routing": {
+            "t_route_config_file_with_path": "./data/baseline/routing_config_CONUS.yaml"
+          }
+        },
+        "routing": {
+          "log_parameters": {
+            "showtiming": true,
+            "log_level": "DEBUG"
+          },
+          "network_topology_parameters": {
+            "supernetwork_parameters": {
+              "network_type": "HYFeaturesNetwork",
+              "geo_file_path": "./hydrofabric/conus.gpkg",
+              "columns": {
+                "key": "id",
+                "downstream": "toid",
+                "dx": "length_m",
+                "n": "n",
+                "ncc": "nCC",
+                "s0": "So",
+                "bw": "BtmWdth",
+                "waterbody": "rl_NHDWaterbodyComID",
+                "gages": "rl_gages",
+                "tw": "TopWdth",
+                "twcc": "TopWdthCC",
+                "musk": "MusK",
+                "musx": "MusX",
+                "cs": "ChSlp",
+                "alt": "alt",
+                "mainstem": "mainstem"
+              }
+            },
+            "waterbody_parameters": {
+              "break_network_at_waterbodies": false
+            }
+          },
+          "compute_parameters": {
+            "parallel_compute_method": "by-subnetwork-jit-clustered",
+            "compute_kernel": "V02-structured",
+            "assume_short_ts": true,
+            "subnetwork_target_size": 10000,
+            "cpu_pool": 36,
+            "restart_parameters": {
+              "start_datetime": "2016-01-01_00:00:00"
+            },
+            "forcing_parameters": {
+              "qts_subdivisions": 12,
+              "dt": 300,
+              "qlat_input_folder": "./output_dir/",
+              "qlat_file_pattern_filter": "nex-*",
+              "binary_nexus_file_folder": null,
+              "nts": 2880,
+              "max_loop_size": 240
+            },
+            "data_assimilation_parameters": {
+              "usgs_timeslices_folder": "./usgs_TimeSlice/",
+              "usace_timeslices_folder": null,
+              "timeslice_lookback_hours": null,
+              "qc_threshold": null,
+              "streamflow_da": {
+                "streamflow_nudging": false
+              },
+              "reservoir_da": {
+                "reservoir_persistence_da": {
+                  "reservoir_persistence_usgs": false,
+                  "reservoir_persistence_usace": false
+                },
+                "reservoir_rfc_da": {
+                  "reservoir_rfc_forecasts": false
+                }
+              }
+            }
+          },
+          "output_parameters": {
+            "stream_output": {
+              "stream_output_directory": "./stream_output_dir/",
+              "stream_output_time": 1,
+              "stream_output_type": ".nc",
+              "stream_output_internal_frequency": 60
+            }
+          }
+        }
+      },
+      "settings": {
+        "driver_factory": "gpuwm.hydro.assembly:prepare",
+        "interval_seconds": 3600,
+        "stages": [],
+        "routing_interval_seconds": 300
+      },
+      "supported_options": {
+        "scope": "Recorded owner interfaces only; required owner commits are not bundled in this lane. Numerical stage assembly and replay remain pending.",
+        "numerics": {
+          "values": [
+            "fast",
+            "strict"
+          ],
+          "default": "fast"
+        },
+        "components": {
+          "external_forcing": {
+            "factory": "gpuwm.hydro.forcing_inputs:prepare_series",
+            "launch_method": "advance",
+            "modes": [
+              "standalone"
+            ],
+            "options": {
+              "required": [
+                "manifest"
+              ],
+              "optional_defaults": {
+                "library": null,
+                "native_precision": false,
+                "start_seconds": 0.0
+              },
+              "optional": [
+                "source",
+                "time_origin"
+              ]
+            },
+            "implementation": {
+              "repository": "ArWen",
+              "revision": "d874cd27658f36d4b307b670ef20a75d4df3263f",
+              "path": "gpuwm/hydro/forcing_inputs.py",
+              "sha256": "b8f7d5eca1849720bdb8914dd8365cf2306f1fa71bda06bdcfefe71d2e0cddf6"
+            },
+            "input": "Rust-prepared hash-bound forcing manifest; no raw GRIB/NetCDF/CSV processing by Python",
+            "source_selection": {
+              "inventory": "gpuwm.source_adapters:get_source_adapter",
+              "resolver": "gpuwm.hydro.forcing:source_profile",
+              "profile_field": "hydro_forcing_profile",
+              "profile_table": "gpuwm/data/hydro/forcing-sources.v1.json",
+              "inventory_implementation": {
+                "repository": "ArWen",
+                "revision": "d874cd27658f36d4b307b670ef20a75d4df3263f",
+                "path": "gpuwm/source_adapters.py",
+                "sha256": "b9319ca22d19458dbef92ca5c9513151aa2f0152813cd763a56c57b4f610ba6e"
+              },
+              "profile_table_implementation": {
+                "repository": "ArWen",
+                "revision": "d874cd27658f36d4b307b670ef20a75d4df3263f",
+                "path": "gpuwm/data/hydro/forcing-sources.v1.json",
+                "sha256": "485b0b9691b67966dcd9e892e54b182e878976f47c645c7309442481bf6ea4ff"
+              },
+              "binding": "options.source uses the shared init-source registry and validates packet source_id/profile_row/current profile-table SHA before GPU setup. prepare_external request.source normalizes the same registry metadata; no per-source adapter."
+            },
+            "limitations": [
+              "GFS/HRRR/ERA5 require decoded canonical NetCDF; raw GRIB and meteorological completion are not connected.",
+              "A declared source profile is not evidence of an end-to-end download or numerical forecast."
+            ],
+            "conditional_options": {
+              "time_origin": "when provided, must equal the prepared forcing packet epoch"
+            }
+          },
+          "parent_forcing": {
+            "factory": "gpuwm.hydro.forcing:prepare_parent",
+            "launch_method": "advance",
+            "modes": [
+              "coupled"
+            ],
+            "options": {
+              "required": [
+                "hydrofabric_manifest",
+                "parent_fields",
+                "time_origin"
+              ],
+              "optional_defaults": {}
+            },
+            "implementation": {
+              "repository": "ArWen",
+              "revision": "c84e91325a97c66303b6b9c57b5e219c6ea9a20c",
+              "path": "gpuwm/hydro/forcing.py",
+              "sha256": "7335321e80d8823dd62be2a8b2240a2fe77057c08df6d38d99c9971b27a99bf3"
+            },
+            "conditional_options": {
+              "rain_accumulators": "two dotted cumulative-mm parent attributes; requires rain_baseline=at_prepare",
+              "rain_baseline": "at_prepare"
+            },
+            "input": "Optional canonical parent forcing bridge. Coupled Noah-MP uses existing atmosphere forcing/current LSM API; no external forcing or PET prerequisite."
+          },
+          "pet": {
+            "factory": "gpuwm.hydro.pet:prepare",
+            "launch_method": "advance",
+            "modes": [
+              "standalone",
+              "coupled"
+            ],
+            "options": {
+              "required": [
+                "forcing_component"
+              ],
+              "optional_defaults": {
+                "method": 5
+              },
+              "exactly_one_of": [
+                [
+                  "parameters",
+                  "catchment_parameters"
+                ]
+              ]
+            },
+            "implementation": {
+              "repository": "ArWen",
+              "revision": "b46aa0064bc696dbf717198f516ef30d487237a0",
+              "path": "gpuwm/hydro/pet.py",
+              "sha256": "12b607f177945a6cd2b7dfd99be7c269edd04c9fafb776a560b2bd7e27d1bf0e"
+            },
+            "parameter_names": [
+              "wind_speed_measurement_height_m",
+              "humidity_measurement_height_m",
+              "vegetation_height_m",
+              "zero_plane_displacement_height_m",
+              "momentum_transfer_roughness_length_m",
+              "heat_transfer_roughness_length_m",
+              "surface_longwave_emissivity",
+              "surface_shortwave_albedo",
+              "canopy_resistance_sec_per_m",
+              "water_temperature_C",
+              "ground_heat_flux_W_per_sq_m",
+              "surface_skin_temperature_C"
+            ],
+            "method_values": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ],
+            "native_source": {
+              "repository": "NOAA-OWP/evapotranspiration",
+              "revision": "6c410f2a8bc843043ad25e13239928031b8c5e64",
+              "licence": "Apache-2.0"
+            },
+            "input": "Prior forcing component fields and all twelve named configuration scalars; no guessed native defaults",
+            "conditional_options": {
+              "parameters": "All twelve named scalar parameters, with optional broadcast method default5.",
+              "catchment_parameters": "Ordered rows with catchment_id, integer method1..5 and all twelve parameters; exact forcing roster. Mutually exclusive with parameters or method."
+            }
+          },
+          "reach_routing": {
+            "factory": "gpuwm.hydro.troute_mc:prepare",
+            "launch_method": "launch",
+            "modes": [
+              "standalone",
+              "coupled"
+            ],
+            "options": {
+              "required": [
+                "lateral_component"
+              ],
+              "optional_defaults": {
+                "lateral_array": "routing_lateral",
+                "initial_state_array": "routing_state"
+              }
+            },
+            "implementation": {
+              "repository": "ArWen",
+              "revision": "16bcd1fc8d44ffbeec4970e6008b1ba6a02683d6",
+              "path": "gpuwm/hydro/troute_mc.py",
+              "sha256": "d08d12dff4671eb1040aa7aa3cf366a57d72af9db4339ebfbf544beeaafaeb6a"
+            },
+            "exactly_one_of": [
+              [
+                "fabric_manifest",
+                "network_component"
+              ]
+            ],
+            "conditional_options": {
+              "time_origin": "required in options or settings",
+              "initial_state_component": "prior component with routing_state (or initial_state_array override); overrides the hashed prepared routing.initial_state_array; CUDA zero cold start only when neither is declared",
+              "reservoir_component": "required for fabric containing lakes, with validated Rust collapsed topology and per-level reservoir selections",
+              "assume_short_ts": "Explicit option overrides routing.assume_short_ts in the prepared manifest; false only when both omit it. Preserve the captured flag rather than infer from case name/counts.",
+              "output_reach_ids": "Prepared routing.output_reach_ids names optional Rust int64 native output labels, including explicit lake-to-outlet mapping. Internal routing node order/CSR stays unchanged; payload hash joins restart identity."
+            },
+            "native_source": {
+              "repository": "NOAA-OWP/t-route",
+              "revision": "12a8eae0cdfed437143c590659fa7077605a5e70",
+              "licence": "Apache-2.0"
+            },
+            "input": "Rust native-ordered routing graph; prior component reach-aligned float32 lateral m3/s",
+            "limitations": [
+              "Actual LowerColorado raw6971flowpaths are not the6723native MC-call roster; collapsed graph/ordering and reservoir selections pending.",
+              "No complete coupled/runoff-to-routing composition or event acceptance."
+            ]
+          },
+          "parent_lsm_exchange": {
+            "factory": "gpuwm.hydro.noahowp.factory:prepare_exchange",
+            "launch_method": "advance",
+            "modes": [
+              "coupled"
+            ],
+            "options": {
+              "required": [
+                "hydrofabric_manifest",
+                "weights_sha256",
+                "fabric_sha256"
+              ],
+              "optional_defaults": {}
+            },
+            "input": "Parent runoff and bottom drainage mm per LSM step, ET rates, persistent sfcheadrt mm state and layers-first soil state; actual Rust overlap rows.",
+            "implementation": {
+              "repository": "ArWen",
+              "revision": "90c01524470a8d67ce38cfe8d00434a7a4ad90e4",
+              "path": "gpuwm/hydro/noahowp/factory.py",
+              "sha256": "74215bf61a5f1edca58f1fef55daad73212a425656f6bbb86912ba98064eba47"
+            },
+            "limitations": [
+              "Requires parent physics.noahmp_params and the fixed parent hydrofabric.",
+              "Exchange interface does not establish admission/default/parity for parent Noah-MP physics options; those require independent owner evidence."
+            ],
+            "units": {
+              "sfcheadrt": "persistent mm state; terrain owns reinfiltration feedback",
+              "infxsrt": "mm per parent LSM step",
+              "soldrain": "mm per parent LSM step",
+              "smois/sh2o": "layers-first aliases",
+              "ET": "parent rate fields"
+            },
+            "boundary_correction": "Owner485b publication/factory corrects ordinary and glacier rate-versus-step-depth handling. This source audit is not a new coupled numerical replay or Noah option-parity claim."
+          },
+          "noah_owp": {
+            "factory": "gpuwm.hydro.noahowp.factory:prepare_slab",
+            "launch_method": "advance",
+            "modes": [
+              "standalone",
+              "coupled"
+            ],
+            "options": {
+              "required": [
+                "fabric_sha256",
+                "time_origin"
+              ],
+              "exactly_one_of": [
+                [
+                  "initial_manifest",
+                  "slabs",
+                  "fields"
+                ]
+              ],
+              "optional_defaults": {},
+              "optional": [
+                "forcing_component",
+                "catchment_ids",
+                "parameter_sha256"
+              ]
+            },
+            "input": "Complete Rust-prepared initial_manifest, supplied slabs f32/i32/f64 or schema component:array references. No native Fortran initialization/runtime on user path.",
+            "implementation": {
+              "repository": "ArWen",
+              "revision": "90c01524470a8d67ce38cfe8d00434a7a4ad90e4",
+              "path": "gpuwm/hydro/noahowp/factory.py",
+              "sha256": "74215bf61a5f1edca58f1fef55daad73212a425656f6bbb86912ba98064eba47"
+            },
+            "schema": {
+              "repository": "ArWen",
+              "revision": "d421fbf5c3f9f9b557d2f13b55ffee13c4143ed1",
+              "path": "gpuwm/hydro/noahowp/schema.json",
+              "sha256": "fdaf1109de36908667a5f877faee8aa9762e405406d214766d8694158d1ae92e"
+            },
+            "native_source": {
+              "repository": "NOAA-OWP/noah-owp-modular",
+              "revision": "0242a96c2a90b2c1501ff56a1e457a932a49c8ac",
+              "licence": "Apache-2.0"
+            },
+            "limitations": [
+              "Factory and Rust initializer are available from numerical owner; configuration lane does not infer native namelist/catchment mapping or provide a case(c) calibration.",
+              "A 1800s single-column initialization cannot stand in for 3600s three-catchment case(a). Complete correct roster/forcing/module binding required.",
+              "No complete case(a)/(c) routed or calibrated event acceptance from this declaration."
+            ],
+            "conditional_options": {
+              "parameter_sha256": "Required for supplied slabs/fields; derived and verified from initial_manifest otherwise. Explicit hash must match manifest.",
+              "catchment_ids": "Optional expected ordered IDs, validated against initial_manifest columns.",
+              "forcing_component": "Prior canonical forcing component; standalone Noah consumes its f32 fields.",
+              "interval_seconds": "Resident domain.dt must equal standalone interval_seconds or coupled physics.bldt_seconds."
+            },
+            "initializer": {
+              "orchestrator": "gpuwm.hydro.noahowp.initial:prepare_initial",
+              "loader": "gpuwm.hydro.noahowp.initial:load_initial_cuda",
+              "implementation": {
+                "repository": "ArWen",
+                "revision": "c92924ac357b8da9818f0ad8af16c3834cde0496",
+                "path": "gpuwm/hydro/noahowp/initial.py",
+                "sha256": "316207e0d4f8207b325f79eb85539fb0d4d7cdf723756491365f5625c94cae71"
+              },
+              "schema": "arwen.noahowp.initial.v1",
+              "recipe": "Explicit native namelist + pinned Apache parameter tables + per-column overrides; Rust initialization and verified transfers.",
+              "licence": "Apache-2.0"
+            }
+          },
+          "reservoirs": {
+            "factory": "gpuwm.hydro.reservoirs:prepare",
+            "phase": "prepare",
+            "modes": [
+              "standalone",
+              "coupled"
+            ],
+            "options": {
+              "required": [],
+              "exactly_one_of": [
+                [
+                  "network_component",
+                  "fabric_manifest"
+                ]
+              ],
+              "optional_defaults": {}
+            },
+            "implementation": {
+              "repository": "ArWen",
+              "revision": "e0cd6f9076208d932b898ad81ce08b1a83ba79c3",
+              "path": "gpuwm/hydro/reservoirs.py",
+              "sha256": "ebc710011aaa4d284210d35bb483a352138c42f623107b38b5fd987d450b40ce"
+            },
+            "native_source": {
+              "repository": "NOAA-OWP/t-route",
+              "revision": "12a8eae0cdfed437143c590659fa7077605a5e70",
+              "licence": "Apache-2.0"
+            },
+            "input": "Rust-prepared reservoir declaration/array bindings, complete parameters/controls/state/observation CSR, source identity and payload hashes",
+            "scheduling": "Prepare and checkpoint only; the level-ordered router owns subset launches. Do not schedule a second standalone reservoir advance.",
+            "limitations": [
+              "Requires validated native collapsed network and ordered reservoir membership before real-case assembly.",
+              "No full case(b)/(c) numerical replay, short run or step-speed acceptance from this declaration."
+            ]
+          },
+          "cfe": {
+            "factory": "gpuwm.hydro.cfe:prepare",
+            "launch_method": "advance",
+            "modes": [
+              "standalone",
+              "coupled"
+            ],
+            "options": {
+              "required": [
+                "manifest",
+                "pet_component",
+                "identity",
+                "initial_step",
+                "time_step_fraction"
+              ],
+              "exactly_one_of": [
+                [
+                  "precipitation_component",
+                  "forcing_component"
+                ]
+              ],
+              "optional_defaults": {
+                "precipitation_field": "RAINRATE",
+                "precipitation_units": "mm/s",
+                "precipitation_conversion": null
+              },
+              "optional": [
+                "library",
+                "payload_root"
+              ]
+            },
+            "implementation": {
+              "repository": "ArWen",
+              "revision": "281192414264367617a7913c4b5e9d5635633ce3",
+              "path": "gpuwm/hydro/cfe.py",
+              "sha256": "9d445f7012af527d27e0112ac1a5a0060a8d8f20f615733701d941539ce505dd"
+            },
+            "native_source": {
+              "repository": "NOAA-OWP/cfe",
+              "revision": "f9182dfb3d81c407c66c5b782114173893c30cf2",
+              "licence": "Apache-2.0"
+            },
+            "input": "Rust initialized packet plus ordered resident precipitation f32/f64 and PET potential_et_m_s f64; no native executable on user path.",
+            "conditional_options": {
+              "identity": "Explicit ordered catchment_ids and time_origin, validated against initialization and source identity.",
+              "precipitation_units": "mm/s, m/s or native mm/h. Actual Noah water.qinsur uses m/s; native BMI conversion requires3600s and measured UDUNITS3600000.0000000005.",
+              "precipitation_conversion": "Optional ngen-udunits-2.2.28 only for resident mm/s, selecting measured3600.0000000000005. Default mm/s uses configured physical period. Later optional branch not covered by earlier93180 leaf proof."
+            },
+            "limitations": [
+              "Leaf native initialization/wet-boundary proof is not a continuous live48h realization or case(c) calibration.",
+              "Catchment output history and routed discharge require driver/output composition; no area or reach ID inferred."
+            ]
+          }
+        },
+        "stage_contract": {
+          "phases": [
+            "before",
+            "after",
+            "prepare"
+          ],
+          "default_phase": "after",
+          "resource_phase": "prepare",
+          "resource_semantics": "Arrays/identity/checkpoint hooks retained and visible to later factories; no standalone advance or reach-output selection.",
+          "implementation": {
+            "repository": "ArWen",
+            "revision": "da4e8ea5d3347dd62b9791d5dd2e35d9a567c17c",
+            "path": "gpuwm/hydro/assembly.py",
+            "sha256": "4ca309ebc7730ececa7d2b85d3ec7fbd189530052fa570be27f992c77dd47412"
+          }
+        }
+      },
+      "data_provenance": {
+        "status": "not established by software licence",
+        "scope": "Configuration metadata only; no hydrologic dataset or calibration supplied.",
+        "case_c_hydrofabric_v2_2": {
+          "status": "development-only",
+          "source": "s3://lynker-spatial/hydrofabric/v2.2/license.txt",
+          "notice_sha256": "d123526dc77233276d2562402019abbd1dc6dfd64ef1ce5a3a73e6f054f60994",
+          "reason": "Actual source-bucket CC BY-NC-SA4.0 notice supersedes README-only ODbL. Coordinator2026-10-18T00:01:08 permits non-commercial referee/development use only; never shipped, bundled, a default download, or public-doc run instructions.",
+          "product_data": "Hydrofabric owner must provide independently licensed/public-domain source and recipe; no mirror relabelling."
+        },
+        "case_c_routelink_v3_1_6": {
+          "status": "private source audit only; underlying data terms unresolved",
+          "manifest_sha256": "5ec558bc9a690b6b2acf2eb49f7bd1529f98303422da5ed33015222e5d898dcf",
+          "source_sha256": "4957655896f4f27854f893d02fa084f9f79c1cf8e80ce77565a7356dadb6fc0e",
+          "owner_revision": "083685d168178385d1a208971c3bd6e9a42010be",
+          "public_default_demo_admitted": false
+        }
+      }
+    },
+    {
+      "id": "ngen-baseline-noah-pet-smp-sft-cfe",
+      "description": "Pinned upstream CONUS baseline composition; not an operational NWM v4 calibration or accepted case (c).",
+      "admission": {
+        "status": "permitted",
+        "scope": "configuration metadata only; module factories require their own source audit",
+        "licence": "Apache-2.0"
+      },
+      "sources": [
+        {
+          "repository": "https://github.com/NOAA-OWP/ngen",
+          "revision": "be11a180565a78ff069d855b0b5dbfc23845e7d8",
+          "path": "data/baseline/realizations/conus_bmi_multi_realization_config_w_sloth_noah_pet_smp_sft_cfe_trt.json",
+          "sha256": "9b52860e656bde61fa483c5d4ef683054d194260b413335baf3a3049d092e487",
+          "software_licence": "Apache-2.0"
+        },
+        {
+          "repository": "https://github.com/NOAA-OWP/ngen",
+          "revision": "be11a180565a78ff069d855b0b5dbfc23845e7d8",
+          "path": "data/baseline/routing_config_CONUS.yaml",
+          "sha256": "621051098ca3198e25d3ff8fff24b0decd3ade5c88b20522c6464def2cc02967",
+          "software_licence": "Apache-2.0"
+        }
+      ],
+      "validation": {
+        "configuration": "pinned upstream",
+        "module_replay": "pending referee",
+        "case_c": "pending referee",
+        "case_c_selection": {
+          "id": "russian-river-january-2023",
+          "scope": "Selected independent NextGen case(c); original federal topology and flowlines1445/1445, source catchment polygons1433/1445. A lossless RouteLink3.1.6 subset matches1445/1445 but remains private/unadmitted pending underlying data terms and module mapping. Twelve polygons, physical model/reservoir inputs, initialization/forcing and native event remain incomplete; not executable or accepted.",
+          "event_start_utc": "2023-01-05T00:00:00Z",
+          "event_end_utc": "2023-01-17T00:00:00Z",
+          "outlet_gauge": "11467000",
+          "gauges": [
+            {
+              "station_id": "11462500",
+              "name": "Russian River near Hopland, CA",
+              "archive_feature_id": 8269119,
+              "archive_namespace": "NHDPlusV2 NOAA NWM v3 CONUS feature_id",
+              "nextgen_flowpath_id": null
+            },
+            {
+              "station_id": "11464000",
+              "name": "Russian River near Healdsburg, CA",
+              "archive_feature_id": 8272379,
+              "archive_namespace": "NHDPlusV2 NOAA NWM v3 CONUS feature_id",
+              "nextgen_flowpath_id": null
+            },
+            {
+              "station_id": "11467000",
+              "name": "Russian River at Hacienda Bridge near Guerneville, CA",
+              "archive_feature_id": 8272725,
+              "archive_namespace": "NHDPlusV2 NOAA NWM v3 CONUS feature_id",
+              "nextgen_flowpath_id": null
+            }
+          ],
+          "comparison": {
+            "source": "nwm-v3-conus",
+            "cadence_seconds": 3600,
+            "units": "m3 s-1",
+            "match": "explicit verified reach crosswalk and exact UTC timestamp; no interpolation, gauge-ID-as-reach assumption or inferred HYFeatures equality",
+            "archive_joined_samples_per_gauge": 289,
+            "usgs_samples_per_gauge": 1153,
+            "model_outputs_available": false
+          },
+          "native_realization": {
+            "parameters": null,
+            "routing_options": null,
+            "warmup": null,
+            "hydrofabric_manifest": null,
+            "reach_crosswalk": null,
+            "status": "Private RouteLink3.1.6 source candidate available separately, not admitted or converted to native runtime inputs. Twelve source polygons, selected parent area weights, physical model/reservoir parameters, native options and initial/warmup state remain absent. No inference from archive or other cases."
+          },
+          "known_physics": "Regulated by Lakes Mendocino and Sonoma; native/GPU level-pool treatment and initial states must be explicit. No observation-skill claim before reservoir/initial-state assessment.",
+          "data_admission": "Original federal NHDPlusV2.1 topology/source catchment metadata states access/use constraints None. HYFeaturesv2.2 remains private noncommercial research-only; complete permitted parameterized fabric recipe still required.",
+          "bounded_acquisition": "Reuse existing three-gauge records and bounded owner topology/geometry. Owner downloaded one269369766B standalone RouteLink object once, retained only1445-row subset and receipts, and deleted full object. No fullCONUS archive/fabric acquisition or duplicate capture.",
+          "source_provenance": {
+            "referee_selection_sha256": "c9d2ad3b1e4944a3f9ae56d0a58f9cf591504e3c83ce686a26ef9e2afe674002",
+            "retrospective_request_sha256": "9719d4b320bd31f4a84a0fc4875cc2950a245e8c16f30cb2ade43e9ce4f4256e",
+            "retrospective_mapping_sha256": "27a8c1d91827ddea67d969877b5da91ce2d00f0e9527579e47bfbfd61a237631"
+          },
+          "public_topology": {
+            "source": {
+              "source": "Original EPA/USGS NHDPlus V2.1; no HYFeatures/Lynker-derived content",
+              "metadata_url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Documentation/Metadata/NHDPlusV2_metadata.htm",
+              "metadata_sha256": "c4a6c790321f87f69666b0ed28669acc5eb73c0771a9a0ee5dc9a93a4ccdbb22",
+              "access_constraints": "None.",
+              "use_constraints": "None.",
+              "gauge_crosswalk_table_sha256": "9d5528c849714ae1ccde1f7956db6380348f57fe266a08ea72396716cad307bc",
+              "data_status": "Original federal source topology only. NOAA v3 parameters and catchment geometry are not included."
+            },
+            "namespace": "NHDPlusV2.1 ComID; not HYFeatures flowpath IDs",
+            "network_sha256": "ac3c274d1dfb3408bc62a448e8a82ed0a4806b548a86464b113dc75b84bcacba",
+            "nodes": 1445,
+            "edges": 1475,
+            "acyclic": true,
+            "outlet_comid": 8272725,
+            "gauges_in_subset": true,
+            "native_parse_comparison": {
+              "different_canonical_bytes": 0,
+              "compared_canonical_bytes": 43952
+            },
+            "request_sha256": "d9842874b154edfabe5845bb95c6546d69a32a95259ade7f3eb8122c4593ad0b",
+            "preparation_receipt_sha256": "c8b9e47a35adc2b155115ceb6f1f2cff2788e70040bbb5fc782645a23fbf7065",
+            "replay_receipt_sha256": "e010ed349e648ef3708022dece7af4229e86232d593964ab950808bdee621042",
+            "missing": [
+              "admitted routing coefficients and reservoir parameters; private RouteLink3.1.6 candidate does not close source terms or runtime mapping",
+              "complete catchment geometry (bounded1433/1445 source polygons supplied separately)",
+              "calibrated native event/warmup/state",
+              "HYFeatures crosswalk if that namespace is used"
+            ]
+          },
+          "native_input_contract": {
+            "schema": "nextgen.native.event-input-contract/v1",
+            "source_repository": "native-nextgen-reference",
+            "source_path": "case-c-input-contract-20261018T0135Z.json",
+            "source_sha256": "4e35286ece8c2e2566d85b7a4b0ee586ddeb4d1d7fcf73cabe3d8078b1f47ad7",
+            "owner_revision": "339397acc936a9156783221578a36afa9488e96e",
+            "created_utc": "2026-10-18T01:35:26.716831+00:00",
+            "status": "official topology and all1445sourceflowlines ready; catchment polygons1433/1445; native event not runnable",
+            "previous_version": {
+              "source_path": "case-c-input-contract-20261018T0122Z.json",
+              "bytes": 8025,
+              "sha256": "b3e620b84edff0b2ae8add31cc8cbfd4a61165adccf9e82a147732a9b4066ea1"
+            },
+            "required_before_native_event": {
+              "catchment_polygons_and_model_parameters": {
+                "status": "partial geometry available; complete model parameters absent",
+                "polygons_available": 1433,
+                "selected_reaches": 1445,
+                "missing_polygon_ids": [
+                  8267989,
+                  8268253,
+                  8270561,
+                  8270833,
+                  8272017,
+                  8272029,
+                  8272215,
+                  8272667,
+                  8272671,
+                  8272689,
+                  8272727,
+                  8272731
+                ],
+                "complete_model_parameters": null,
+                "identity": "Original NHD COMID/FEATUREID; no NextGen HYFeatures crosswalk"
+              },
+              "routing_geometry_and_roughness": {
+                "status": "all source line XYZM available; hydraulic sections/roughness/divergence policy still absent",
+                "source_flowpaths": {
+                  "bytes": 2961,
+                  "sha256": "19d773d00c678d14739204ac307a7a2b03795715776c4c4a307f2fe5dc04e930",
+                  "source_path": "diffusive-handoff-20261018T0135Z/flowpath-proof.json"
+                },
+                "hydraulic_cross_sections": null,
+                "roughness": null,
+                "divergence_flow_partition": null,
+                "z_datum_or_m_chainage_proven": false
+              },
+              "forcing_and_unit_mapping": null,
+              "warmup_dates_and_initialized_states": null,
+              "lake_mendocino_and_sonoma_controls_and_initial_states": null,
+              "native_realization_and_selected_modules": null
+            },
+            "availability": "No native or GPU event output; existing observations/archive records are separate.",
+            "native_geometry_owner_proof": {
+              "source_path": "boundary-handoff-20261018T0122Z/geometry-proof.json",
+              "source_sha256": "3337fa31b7e54a6b376126e5efb632a672f854b097ab09de7ccaf751fbf17509",
+              "different_canonical_bytes": 0,
+              "compared_canonical_bytes": 4071432,
+              "rayon_workers": 24,
+              "owner_rust_ms": 31.838459,
+              "owner_process_ms": 41.91232565790415,
+              "scope": "all selected polygon XY bits and closed-ring edge sequences; rotation/orientation/grouping normalized, no containment/area/weights/physics claim"
+            },
+            "snapshot_scope": "Immutable referee snapshot consolidates topology, partial polygons and complete source lines. Hydraulic/model/forcing/initialization/control inputs and native event remain missing."
+          },
+          "public_geometry": {
+            "schema": "arwen.source-polygon-subset.v1",
+            "source": "Original EPA/USGS NHDPlusV2.1 CA18 source catchment polygons",
+            "owner_revision": "24bc723f39429e82c9046af82b893102d8ee1853",
+            "manifest_path": "public-source/russian-river-geometry/manifest.json",
+            "manifest_sha256": "fc229c25248cea08c81a8f5e38b26b78064776c4641a0a8aa2f096f022b31c0f",
+            "network_sha256": "ac3c274d1dfb3408bc62a448e8a82ed0a4806b548a86464b113dc75b84bcacba",
+            "namespace": "NHDPlusV2.1 FEATUREID; not HYFeatures flowpath IDs",
+            "requested_reach_ids": 1445,
+            "matched_catchments": 1433,
+            "rings": 1651,
+            "points": 253857,
+            "missing_feature_ids": [
+              8267989,
+              8268253,
+              8270561,
+              8270833,
+              8272017,
+              8272029,
+              8272215,
+              8272667,
+              8272671,
+              8272689,
+              8272727,
+              8272731
+            ],
+            "gauges_matched": true,
+            "coordinates": "verbatim IEEE754 source XY; no transform, simplification or area/grid assumption",
+            "crs": "NAD83 geographic source XY (degrees); no area or grid weights implied",
+            "archive": {
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusCA/NHDPlusV21_CA_18_NHDPlusCatchment_01.7z",
+              "bytes": 185540715,
+              "sha256": "c4efbdf9ab5a10de9dead348768e42d943a8082d452c59c0f29ab6bad4426930"
+            },
+            "provider_metadata_sha256": "c4a6c790321f87f69666b0ed28669acc5eb73c0771a9a0ee5dc9a93a4ccdbb22",
+            "data_license": "Original EPA/USGS NHDPlusV2.1; provider metadata Access_Constraints: None.; Use_Constraints: None. EPA/USGS attribution retained.",
+            "payloads": {
+              "Catchment.dbf": {
+                "bytes": 83276,
+                "sha256": "9845dd0fc96bdf0c804962e0a8b37a2bf153702c9aaa0dca0743eff9abdcd435"
+              },
+              "Catchment.prj": {
+                "bytes": 167,
+                "sha256": "84cf5b9a3c1a444f83ac30ff76f8c5035990223027ba69b2f4d628388adcbd65"
+              },
+              "Catchment.shp": {
+                "bytes": 4142932,
+                "sha256": "5289b1bedf926ec208d3b1bcd8563299277e81aad590d648e7c2edca975dd43b"
+              },
+              "Catchment.shx": {
+                "bytes": 11564,
+                "sha256": "1965a92405dde5451257be6b351ffbcec86a96a7da76973a71bd58a27890bc1d"
+              }
+            },
+            "native_parse_comparison": {
+              "native_tool": "GDAL 3.12.2 Chicoutimi",
+              "different_canonical_bytes": 0,
+              "compared_canonical_bytes": 4071432,
+              "id_symmetric_difference": 0,
+              "canonical_sha256": "282e9b713c98d9480de0068a116b7efa3156f8a953eb2ea43c7828b8b4f80c68",
+              "native_capture_sha256": "ff9e74636a49987a9a6bcd0cd3473bf5c1259e5006be940597c85e59307e789a",
+              "strict": true,
+              "scope": "all selected polygon XY bits and closed-ring edge sequences; rotation/orientation/grouping normalized, no containment/area/weights/physics claim"
+            },
+            "availability": "Bounded source polygon subset only; not resident prepare_resource ABI, complete parent geometry, hydraulic/model parameters or executable calibrated native event.",
+            "missing": [
+              "12 source catchment/flowpath IDs explicitly absent; no fabricated fill",
+              "actual parent geometry and catchment-to-grid area weights",
+              "NOAA hydraulic/model/reservoir parameters and divergence policy",
+              "event forcing, warmup, controls, initial state and selected native realization"
+            ]
+          },
+          "public_flowpaths": {
+            "schema": "arwen.source-polyline-subset.v1",
+            "source": "Original EPA/USGS NHDPlusV2.1 CA18 source flowlines",
+            "owner_revision": "6d47593fbf3b99dc824840519327682aa6d35903",
+            "manifest_path": "public-source/russian-river-flowpaths/manifest.json",
+            "manifest_sha256": "7f72d8a3846718952346a79110140652c2ec71fe5b98f91a69afba9acd195b1e",
+            "network_sha256": "ac3c274d1dfb3408bc62a448e8a82ed0a4806b548a86464b113dc75b84bcacba",
+            "namespace": "NHDPlusV2.1 COMID; not HYFeatures flowpath IDs",
+            "requested_reach_ids": 1445,
+            "matched_flowlines": 1445,
+            "parts": 1445,
+            "points": 32270,
+            "missing_feature_ids": [],
+            "coordinates": "verbatim IEEE754 source ordinates, part order and direction; no transform, simplification or area/grid assumption; Z/M presence follows each source record",
+            "crs": "NAD83 geographic source XY (degrees); Z/M preserved without elevation-datum or chainage interpretation",
+            "data_license": "Original EPA/USGS NHDPlusV2.1; provider metadata Access_Constraints: None.; Use_Constraints: None. EPA/USGS attribution retained.",
+            "source_archive_sha256": "6e51ee61700d5ee40e1584d42a9266d4b1af635692787e131e68a2919796708f",
+            "provider_metadata_sha256": "c4a6c790321f87f69666b0ed28669acc5eb73c0771a9a0ee5dc9a93a4ccdbb22",
+            "payloads": {
+              "NHDFlowline.dbf": {
+                "bytes": 324162,
+                "sha256": "20fe8739a8e9657c18724cf5e385344e13fa6fcbdc6ec150fe6a63a62ab07e97"
+              },
+              "NHDFlowline.prj": {
+                "bytes": 167,
+                "sha256": "84cf5b9a3c1a444f83ac30ff76f8c5035990223027ba69b2f4d628388adcbd65"
+              },
+              "NHDFlowline.shp": {
+                "bytes": 1159900,
+                "sha256": "c35e33221a875369935e3b178bee5c141e651b95afa6328a3e8148a8c184654b"
+              },
+              "NHDFlowline.shx": {
+                "bytes": 11660,
+                "sha256": "72e666f164e429641214cd1648b453b400d28dc3837a8c5726555e4fa3f0a874"
+              }
+            },
+            "native_parse_comparison": {
+              "different_canonical_bytes": 0,
+              "compared_canonical_bytes": 1073100,
+              "id_symmetric_difference": 0,
+              "native_capture_sha256": "0e0a9a4a6abe686379edb2fd03b976c3ab0119560ca7ed1fba2c4ce4c0b7b43d",
+              "strict": true,
+              "scope": "all selected line XYZ/M bits, dimensional modifiers and directed point sequences; collection grouping/order normalized only; no Z elevation/datum, M chainage, hydraulic parameter or parent-grid claim"
+            },
+            "availability": "Source lines only; hydraulic cross sections/roughness, reservoir controls, area weights and model parameters are not provided. Twelve missing catchment polygons remain unfilled."
+          },
+          "cfe_physical_input_contract": {
+            "schema": "arwen.cfe.prepare/v1",
+            "source_repository": "gpuwm",
+            "owner_revision": "476ba92aa8ace2f258239b4280ca78a0d7e5af11",
+            "source_path": "tools/nextgen_cfe_prepare/README.md",
+            "source_sha256": "204ef23e7f2402c27a449c21739f59951faef1d48320566bd87e15af694096d7",
+            "section": "Physical parameter handoff",
+            "case_c_parameter_packet": null,
+            "requirements": [
+              "One sealed native-unit INI per ordered catchment, with parameter provenance, permitted terms and initial-state UTC time",
+              "Actual soil/aquifer/storage/partition/routing parameters; source geometry alone supplies none",
+              "Explicit initialization policy; the common shipped-example cold start is not event calibration"
+            ],
+            "unit_policy": "Values must already use pinned CFE native units; INI unit labels are not conversions. Soil/GW initial storage inputs are fractions.",
+            "optional_coupling": "SFT/root-zone flags alone do not connect resident ice/moisture inputs in the current rainfall/PET factory; a selected physical realization and producer binding are required."
+          },
+          "routing_parameter_candidate": {
+            "status": "private source candidate; data-terms hold; not a prepared or admitted runtime resource",
+            "source_url": "https://www.nco.ncep.noaa.gov/pmb/codes/nwprod/nwm.v3.1.6/parm/domain/RouteLink_CONUS.nc",
+            "source_version": "NWM v3.1.6 NCO object; stored history 2025-08-05",
+            "source_sha256": "4957655896f4f27854f893d02fa084f9f79c1cf8e80ce77565a7356dadb6fc0e",
+            "source_object_bytes": 269369766,
+            "source_history": "Created Tue Aug  5 16:57:23 2025",
+            "owner_revision": "083685d168178385d1a208971c3bd6e9a42010be",
+            "subset_schema": "arwen.source-netcdf-subset.v1",
+            "subset_manifest_sha256": "5ec558bc9a690b6b2acf2eb49f7bd1529f98303422da5ed33015222e5d898dcf",
+            "subset_manifest_bytes": 71220,
+            "selection_network_sha256": "ac3c274d1dfb3408bc62a448e8a82ed0a4806b548a86464b113dc75b84bcacba",
+            "id_namespace": "original NHDPlusV2.1 ComID requested against RouteLink link; no HYFeatures crosswalk",
+            "requested_reaches": 1445,
+            "matched_reaches": 1445,
+            "missing_reaches": 0,
+            "fields": {
+              "BtmWdth": {
+                "dtype": "<f4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": "m",
+                "long_name": "Bottom width of channel (m)"
+              },
+              "ChSlp": {
+                "dtype": "<f4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": null,
+                "long_name": "Channel side slope"
+              },
+              "Kchan": {
+                "dtype": "<i2",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": "mm h-1",
+                "long_name": "channel conductivity"
+              },
+              "Length": {
+                "dtype": "<f4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": null,
+                "long_name": "Stream length (m)"
+              },
+              "MusK": {
+                "dtype": "<f4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": null,
+                "long_name": "Muskingum routing time (s)"
+              },
+              "MusX": {
+                "dtype": "<f4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": null,
+                "long_name": "Muskingum weighting coefficient"
+              },
+              "NHDWaterbodyComID": {
+                "dtype": "<i4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": null,
+                "long_name": "ComID of NHDWaterbody feature associated using spatial join (intersection) between NHDFlowline_network and Waterbodies"
+              },
+              "Qi": {
+                "dtype": "<f4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": null,
+                "long_name": "Initial flow in link (CMS)"
+              },
+              "So": {
+                "dtype": "<f4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": null,
+                "long_name": "Slope (meters/meters from NHDFlowline_network.SLOPE)"
+              },
+              "TopWdth": {
+                "dtype": "<f4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": "m",
+                "long_name": "Top Width (m)"
+              },
+              "TopWdthCC": {
+                "dtype": "<f4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": "m",
+                "long_name": "Compound Channel Top Width (m)"
+              },
+              "alt": {
+                "dtype": "<f4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": "m",
+                "long_name": "Elevation in meters from the North American Vertical Datum 1988 (NADV88) at start node (MaxElevSmo)"
+              },
+              "ascendingIndex": {
+                "dtype": "<i4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": null,
+                "long_name": "Index to use for sorting IDs (ascending)"
+              },
+              "from": {
+                "dtype": "<i4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": null,
+                "long_name": "From Link ID (PlusFlow table FROMCOMID for every TOCOMID)"
+              },
+              "gages": {
+                "dtype": "|S1",
+                "shape": [
+                  1445,
+                  15
+                ],
+                "row_axis": 0,
+                "units": null,
+                "long_name": "NHD Gage Event ID from SOURCE_FEA field in Gages feature class"
+              },
+              "lat": {
+                "dtype": "<f4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": "degrees_north",
+                "long_name": "latitude of the segment midpoint"
+              },
+              "link": {
+                "dtype": "<i4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": null,
+                "long_name": "Link ID (NHDFlowline_network COMID)"
+              },
+              "lon": {
+                "dtype": "<f4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": "degrees_east",
+                "long_name": "longitude of the segment midpoint"
+              },
+              "n": {
+                "dtype": "<f4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": null,
+                "long_name": "Manning's roughness"
+              },
+              "nCC": {
+                "dtype": "<f4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": null,
+                "long_name": "Compound Channel Manning's n"
+              },
+              "order": {
+                "dtype": "<i4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": null,
+                "long_name": "Stream order (Strahler)"
+              },
+              "to": {
+                "dtype": "<i4",
+                "shape": [
+                  1445
+                ],
+                "row_axis": 0,
+                "units": null,
+                "long_name": "To Link ID (PlusFlow table TOCOMID for every FROMCOMID)"
+              }
+            },
+            "payload_bytes": 140165,
+            "native_subset_witness": {
+              "witness": "NetCDF-C independent ID scan and per-row hyperslab",
+              "different_bytes": 0,
+              "compared_bytes": 140165
+            },
+            "data_terms": {
+              "status": "unresolved; no public/default/demo admission",
+              "reason": "Stored processing_notes cites Lynker Reference Fabric 3.0; NOAA general disclaimer does not establish underlying third-party grant."
+            },
+            "runtime_mapping": {
+              "status": "not prepared",
+              "mc_required_columns": [
+                "length_m",
+                "BtmWdth",
+                "TopWdth",
+                "TopWdthCC",
+                "n",
+                "nCC",
+                "ChSlp",
+                "So"
+              ],
+              "caveats": [
+                "Length is retained under its native name; no length_m rename or unit conversion performed.",
+                "Kchan is native int16 with mm h-1 units; never silently substitute CFE soil conductivity.",
+                "Qi is a static source initial-flow coefficient, not event warmup/state.",
+                "alt is source NAVD88 start-node elevation, not surveyed hydraulic cross sections.",
+                "gages are native left-padded 15-character strings, not an authoritative HYFeatures or output crosswalk.",
+                "No GWBUCK-to-CFE mapping, missing-parameter defaults or NWM v3.0 coefficient identity."
+              ]
+            }
+          }
+        }
+      },
+      "reference": {
+        "realization": {
+          "global": {
+            "formulations": [
+              {
+                "name": "bmi_multi",
+                "params": {
+                  "model_type_name": "bmi_multi_noahowp_cfe",
+                  "forcing_file": "",
+                  "init_config": "",
+                  "allow_exceed_end_time": true,
+                  "main_output_variable": "Q_OUT",
+                  "modules": [
+                    {
+                      "name": "bmi_c++",
+                      "params": {
+                        "model_type_name": "bmi_c++_sloth",
+                        "library_file": "./extern/sloth/cmake_build/libslothmodel",
+                        "init_config": "/dev/null",
+                        "allow_exceed_end_time": true,
+                        "main_output_variable": "z",
+                        "uses_forcing_file": false,
+                        "model_params": {
+                          "soil_moisture_wetting_fronts(1,double,1,node)": 0.0,
+                          "soil_thickness_layered(1,double,1,node)": 0.0,
+                          "soil_depth_wetting_fronts(1,double,1,node)": 0.0,
+                          "num_wetting_fronts(1,int,1,node)": 1.0,
+                          "Qb_topmodel(1,double,1,node)": 0.0,
+                          "Qv_topmodel(1,double,1,node)": 0.0,
+                          "global_deficit(1,double,1,node)": 0.0,
+                          "sloth_SOIL_STORAGE(1,double,m,node)": 0.8,
+                          "sloth_SOIL_STORAGE_CHANGE(1,double,m,node)": -0.000472,
+                          "sloth_ice_fraction_schaake(1,double,m,node)": 0.0,
+                          "sloth_ice_fraction_xinanjiang(1,double,1,node)": 0.0,
+                          "sloth_smp(1,double,1,node)": 0.1
+                        }
+                      }
+                    },
+                    {
+                      "name": "bmi_fortran",
+                      "params": {
+                        "model_type_name": "bmi_fortran_noahowp",
+                        "library_file": "./extern/noah-owp-modular/cmake_build/libsurfacebmi",
+                        "forcing_file": "",
+                        "init_config": "./conus_config/NoahOWP_{{id}}.namelist",
+                        "allow_exceed_end_time": true,
+                        "main_output_variable": "QINSUR",
+                        "variables_names_map": {
+                          "PRCPNONC": "atmosphere_water__liquid_equivalent_precipitation_rate",
+                          "Q2": "atmosphere_air_water~vapor__relative_saturation",
+                          "SFCTMP": "land_surface_air__temperature",
+                          "UU": "land_surface_wind__x_component_of_velocity",
+                          "VV": "land_surface_wind__y_component_of_velocity",
+                          "LWDN": "land_surface_radiation~incoming~longwave__energy_flux",
+                          "SOLDN": "land_surface_radiation~incoming~shortwave__energy_flux",
+                          "SFCPRS": "land_surface_air__pressure"
+                        },
+                        "uses_forcing_file": false
+                      }
+                    },
+                    {
+                      "name": "bmi_c",
+                      "params": {
+                        "model_type_name": "bmi_c_pet",
+                        "library_file": "./extern/evapotranspiration/evapotranspiration/cmake_build/libpetbmi",
+                        "forcing_file": "",
+                        "init_config": "./conus_config/PET_{{id}}.ini",
+                        "allow_exceed_end_time": true,
+                        "main_output_variable": "water_potential_evaporation_flux",
+                        "registration_function": "register_bmi_pet",
+                        "variables_names_map": {
+                          "water_potential_evaporation_flux": "potential_evapotranspiration"
+                        },
+                        "uses_forcing_file": false
+                      }
+                    },
+                    {
+                      "name": "bmi_c++",
+                      "params": {
+                        "model_type_name": "bmi_smp",
+                        "library_file": "./extern/SoilMoistureProfiles/SoilMoistureProfiles/cmake_build/libsmpbmi",
+                        "init_config": "./conus_smp_configs/SoilMoistureProfile_{{id}}.ini",
+                        "allow_exceed_end_time": true,
+                        "main_output_variable": "soil_water_table",
+                        "variables_names_map": {
+                          "soil_storage": "sloth_SOIL_STORAGE",
+                          "soil_storage_change": "sloth_SOIL_STORAGE_CHANGE"
+                        },
+                        "uses_forcing_file": false
+                      }
+                    },
+                    {
+                      "name": "bmi_c++",
+                      "params": {
+                        "model_type_name": "bmi_sft",
+                        "library_file": "./extern/SoilFreezeThaw/SoilFreezeThaw/cmake_build/libsftbmi",
+                        "init_config": "./conus_sft_configs/SoilFreezeThaw_{{id}}.ini",
+                        "allow_exceed_end_time": true,
+                        "main_output_variable": "num_cells",
+                        "variables_names_map": {
+                          "ground_temperature": "TGS"
+                        },
+                        "uses_forcing_file": false
+                      }
+                    },
+                    {
+                      "name": "bmi_c",
+                      "params": {
+                        "model_type_name": "bmi_c_cfe",
+                        "library_file": "./extern/cfe/cmake_build/libcfebmi",
+                        "forcing_file": "",
+                        "init_config": "./conus_config/CFE_{{id}}.ini",
+                        "allow_exceed_end_time": true,
+                        "main_output_variable": "Q_OUT",
+                        "registration_function": "register_bmi_cfe",
+                        "variables_names_map": {
+                          "water_potential_evaporation_flux": "potential_evapotranspiration",
+                          "atmosphere_water__liquid_equivalent_precipitation_rate": "QINSUR",
+                          "ice_fraction_schaake": "sloth_ice_fraction_schaake",
+                          "ice_fraction_xinanjiang": "sloth_ice_fraction_xinanjiang",
+                          "soil_moisture_profile": "sloth_smp"
+                        },
+                        "uses_forcing_file": false
+                      }
+                    }
+                  ],
+                  "uses_forcing_file": false
+                }
+              }
+            ],
+            "forcing": {
+              "path": "./forcing/NextGen_forcing_2016010100.nc",
+              "provider": "NetCDF"
+            }
+          },
+          "time": {
+            "start_time": "2016-01-01 00:00:00",
+            "end_time": "2016-01-10 23:00:00",
+            "output_interval": 3600
+          },
+          "output_root": "./output_dir/",
+          "routing": {
+            "t_route_config_file_with_path": "./data/baseline/routing_config_CONUS.yaml"
+          }
+        },
+        "routing": {
+          "log_parameters": {
+            "showtiming": true,
+            "log_level": "DEBUG"
+          },
+          "network_topology_parameters": {
+            "supernetwork_parameters": {
+              "network_type": "HYFeaturesNetwork",
+              "geo_file_path": "./hydrofabric/conus.gpkg",
+              "columns": {
+                "key": "id",
+                "downstream": "toid",
+                "dx": "length_m",
+                "n": "n",
+                "ncc": "nCC",
+                "s0": "So",
+                "bw": "BtmWdth",
+                "waterbody": "rl_NHDWaterbodyComID",
+                "gages": "rl_gages",
+                "tw": "TopWdth",
+                "twcc": "TopWdthCC",
+                "musk": "MusK",
+                "musx": "MusX",
+                "cs": "ChSlp",
+                "alt": "alt",
+                "mainstem": "mainstem"
+              }
+            },
+            "waterbody_parameters": {
+              "break_network_at_waterbodies": false
+            }
+          },
+          "compute_parameters": {
+            "parallel_compute_method": "by-subnetwork-jit-clustered",
+            "compute_kernel": "V02-structured",
+            "assume_short_ts": true,
+            "subnetwork_target_size": 10000,
+            "cpu_pool": 36,
+            "restart_parameters": {
+              "start_datetime": "2016-01-01_00:00:00"
+            },
+            "forcing_parameters": {
+              "qts_subdivisions": 12,
+              "dt": 300,
+              "qlat_input_folder": "./output_dir/",
+              "qlat_file_pattern_filter": "nex-*",
+              "binary_nexus_file_folder": null,
+              "nts": 2880,
+              "max_loop_size": 240
+            },
+            "data_assimilation_parameters": {
+              "usgs_timeslices_folder": "./usgs_TimeSlice/",
+              "usace_timeslices_folder": null,
+              "timeslice_lookback_hours": null,
+              "qc_threshold": null,
+              "streamflow_da": {
+                "streamflow_nudging": false
+              },
+              "reservoir_da": {
+                "reservoir_persistence_da": {
+                  "reservoir_persistence_usgs": false,
+                  "reservoir_persistence_usace": false
+                },
+                "reservoir_rfc_da": {
+                  "reservoir_rfc_forecasts": false
+                }
+              }
+            }
+          },
+          "output_parameters": {
+            "stream_output": {
+              "stream_output_directory": "./stream_output_dir/",
+              "stream_output_time": 1,
+              "stream_output_type": ".nc",
+              "stream_output_internal_frequency": 60
+            }
+          }
+        }
+      },
+      "settings": {
+        "driver_factory": "gpuwm.hydro.assembly:prepare",
+        "interval_seconds": 3600,
+        "stages": [],
+        "routing_interval_seconds": 300
+      },
+      "supported_options": {
+        "scope": "Recorded owner interfaces only; required owner commits are not bundled in this lane. Numerical stage assembly and replay remain pending.",
+        "numerics": {
+          "values": [
+            "fast",
+            "strict"
+          ],
+          "default": "fast"
+        },
+        "components": {
+          "external_forcing": {
+            "factory": "gpuwm.hydro.forcing_inputs:prepare_series",
+            "launch_method": "advance",
+            "modes": [
+              "standalone"
+            ],
+            "options": {
+              "required": [
+                "manifest"
+              ],
+              "optional_defaults": {
+                "library": null,
+                "native_precision": false,
+                "start_seconds": 0.0
+              },
+              "optional": [
+                "source",
+                "time_origin"
+              ]
+            },
+            "implementation": {
+              "repository": "ArWen",
+              "revision": "d874cd27658f36d4b307b670ef20a75d4df3263f",
+              "path": "gpuwm/hydro/forcing_inputs.py",
+              "sha256": "b8f7d5eca1849720bdb8914dd8365cf2306f1fa71bda06bdcfefe71d2e0cddf6"
+            },
+            "input": "Rust-prepared hash-bound forcing manifest; no raw GRIB/NetCDF/CSV processing by Python",
+            "source_selection": {
+              "inventory": "gpuwm.source_adapters:get_source_adapter",
+              "resolver": "gpuwm.hydro.forcing:source_profile",
+              "profile_field": "hydro_forcing_profile",
+              "profile_table": "gpuwm/data/hydro/forcing-sources.v1.json",
+              "inventory_implementation": {
+                "repository": "ArWen",
+                "revision": "d874cd27658f36d4b307b670ef20a75d4df3263f",
+                "path": "gpuwm/source_adapters.py",
+                "sha256": "b9319ca22d19458dbef92ca5c9513151aa2f0152813cd763a56c57b4f610ba6e"
+              },
+              "profile_table_implementation": {
+                "repository": "ArWen",
+                "revision": "d874cd27658f36d4b307b670ef20a75d4df3263f",
+                "path": "gpuwm/data/hydro/forcing-sources.v1.json",
+                "sha256": "485b0b9691b67966dcd9e892e54b182e878976f47c645c7309442481bf6ea4ff"
+              },
+              "binding": "options.source uses the shared init-source registry and validates packet source_id/profile_row/current profile-table SHA before GPU setup. prepare_external request.source normalizes the same registry metadata; no per-source adapter."
+            },
+            "limitations": [
+              "GFS/HRRR/ERA5 require decoded canonical NetCDF; raw GRIB and meteorological completion are not connected.",
+              "A declared source profile is not evidence of an end-to-end download or numerical forecast."
+            ],
+            "conditional_options": {
+              "time_origin": "when provided, must equal the prepared forcing packet epoch"
+            }
+          },
+          "parent_forcing": {
+            "factory": "gpuwm.hydro.forcing:prepare_parent",
+            "launch_method": "advance",
+            "modes": [
+              "coupled"
+            ],
+            "options": {
+              "required": [
+                "hydrofabric_manifest",
+                "parent_fields",
+                "time_origin"
+              ],
+              "optional_defaults": {}
+            },
+            "implementation": {
+              "repository": "ArWen",
+              "revision": "c84e91325a97c66303b6b9c57b5e219c6ea9a20c",
+              "path": "gpuwm/hydro/forcing.py",
+              "sha256": "7335321e80d8823dd62be2a8b2240a2fe77057c08df6d38d99c9971b27a99bf3"
+            },
+            "conditional_options": {
+              "rain_accumulators": "two dotted cumulative-mm parent attributes; requires rain_baseline=at_prepare",
+              "rain_baseline": "at_prepare"
+            },
+            "input": "Optional canonical parent forcing bridge. Coupled Noah-MP uses existing atmosphere forcing/current LSM API; no external forcing or PET prerequisite."
+          },
+          "pet": {
+            "factory": "gpuwm.hydro.pet:prepare",
+            "launch_method": "advance",
+            "modes": [
+              "standalone",
+              "coupled"
+            ],
+            "options": {
+              "required": [
+                "forcing_component"
+              ],
+              "optional_defaults": {
+                "method": 5
+              },
+              "exactly_one_of": [
+                [
+                  "parameters",
+                  "catchment_parameters"
+                ]
+              ]
+            },
+            "implementation": {
+              "repository": "ArWen",
+              "revision": "b46aa0064bc696dbf717198f516ef30d487237a0",
+              "path": "gpuwm/hydro/pet.py",
+              "sha256": "12b607f177945a6cd2b7dfd99be7c269edd04c9fafb776a560b2bd7e27d1bf0e"
+            },
+            "parameter_names": [
+              "wind_speed_measurement_height_m",
+              "humidity_measurement_height_m",
+              "vegetation_height_m",
+              "zero_plane_displacement_height_m",
+              "momentum_transfer_roughness_length_m",
+              "heat_transfer_roughness_length_m",
+              "surface_longwave_emissivity",
+              "surface_shortwave_albedo",
+              "canopy_resistance_sec_per_m",
+              "water_temperature_C",
+              "ground_heat_flux_W_per_sq_m",
+              "surface_skin_temperature_C"
+            ],
+            "method_values": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ],
+            "native_source": {
+              "repository": "NOAA-OWP/evapotranspiration",
+              "revision": "6c410f2a8bc843043ad25e13239928031b8c5e64",
+              "licence": "Apache-2.0"
+            },
+            "input": "Prior forcing component fields and all twelve named configuration scalars; no guessed native defaults",
+            "conditional_options": {
+              "parameters": "All twelve named scalar parameters, with optional broadcast method default5.",
+              "catchment_parameters": "Ordered rows with catchment_id, integer method1..5 and all twelve parameters; exact forcing roster. Mutually exclusive with parameters or method."
+            }
+          },
+          "reach_routing": {
+            "factory": "gpuwm.hydro.troute_mc:prepare",
+            "launch_method": "launch",
+            "modes": [
+              "standalone",
+              "coupled"
+            ],
+            "options": {
+              "required": [
+                "lateral_component"
+              ],
+              "optional_defaults": {
+                "lateral_array": "routing_lateral",
+                "initial_state_array": "routing_state"
+              }
+            },
+            "implementation": {
+              "repository": "ArWen",
+              "revision": "16bcd1fc8d44ffbeec4970e6008b1ba6a02683d6",
+              "path": "gpuwm/hydro/troute_mc.py",
+              "sha256": "d08d12dff4671eb1040aa7aa3cf366a57d72af9db4339ebfbf544beeaafaeb6a"
+            },
+            "exactly_one_of": [
+              [
+                "fabric_manifest",
+                "network_component"
+              ]
+            ],
+            "conditional_options": {
+              "time_origin": "required in options or settings",
+              "initial_state_component": "prior component with routing_state (or initial_state_array override); overrides the hashed prepared routing.initial_state_array; CUDA zero cold start only when neither is declared",
+              "reservoir_component": "required for fabric containing lakes, with validated Rust collapsed topology and per-level reservoir selections",
+              "assume_short_ts": "Explicit option overrides routing.assume_short_ts in the prepared manifest; false only when both omit it. Preserve the captured flag rather than infer from case name/counts.",
+              "output_reach_ids": "Prepared routing.output_reach_ids names optional Rust int64 native output labels, including explicit lake-to-outlet mapping. Internal routing node order/CSR stays unchanged; payload hash joins restart identity."
+            },
+            "native_source": {
+              "repository": "NOAA-OWP/t-route",
+              "revision": "12a8eae0cdfed437143c590659fa7077605a5e70",
+              "licence": "Apache-2.0"
+            },
+            "input": "Rust native-ordered routing graph; prior component reach-aligned float32 lateral m3/s",
+            "limitations": [
+              "Actual LowerColorado raw6971flowpaths are not the6723native MC-call roster; collapsed graph/ordering and reservoir selections pending.",
+              "No complete coupled/runoff-to-routing composition or event acceptance."
+            ]
+          },
+          "parent_lsm_exchange": {
+            "factory": "gpuwm.hydro.noahowp.factory:prepare_exchange",
+            "launch_method": "advance",
+            "modes": [
+              "coupled"
+            ],
+            "options": {
+              "required": [
+                "hydrofabric_manifest",
+                "weights_sha256",
+                "fabric_sha256"
+              ],
+              "optional_defaults": {}
+            },
+            "input": "Parent runoff and bottom drainage mm per LSM step, ET rates, persistent sfcheadrt mm state and layers-first soil state; actual Rust overlap rows.",
+            "implementation": {
+              "repository": "ArWen",
+              "revision": "90c01524470a8d67ce38cfe8d00434a7a4ad90e4",
+              "path": "gpuwm/hydro/noahowp/factory.py",
+              "sha256": "74215bf61a5f1edca58f1fef55daad73212a425656f6bbb86912ba98064eba47"
+            },
+            "limitations": [
+              "Requires parent physics.noahmp_params and the fixed parent hydrofabric.",
+              "Exchange interface does not establish admission/default/parity for parent Noah-MP physics options; those require independent owner evidence."
+            ],
+            "units": {
+              "sfcheadrt": "persistent mm state; terrain owns reinfiltration feedback",
+              "infxsrt": "mm per parent LSM step",
+              "soldrain": "mm per parent LSM step",
+              "smois/sh2o": "layers-first aliases",
+              "ET": "parent rate fields"
+            },
+            "boundary_correction": "Owner485b publication/factory corrects ordinary and glacier rate-versus-step-depth handling. This source audit is not a new coupled numerical replay or Noah option-parity claim."
+          },
+          "noah_owp": {
+            "factory": "gpuwm.hydro.noahowp.factory:prepare_slab",
+            "launch_method": "advance",
+            "modes": [
+              "standalone",
+              "coupled"
+            ],
+            "options": {
+              "required": [
+                "fabric_sha256",
+                "time_origin"
+              ],
+              "exactly_one_of": [
+                [
+                  "initial_manifest",
+                  "slabs",
+                  "fields"
+                ]
+              ],
+              "optional_defaults": {},
+              "optional": [
+                "forcing_component",
+                "catchment_ids",
+                "parameter_sha256"
+              ]
+            },
+            "input": "Complete Rust-prepared initial_manifest, supplied slabs f32/i32/f64 or schema component:array references. No native Fortran initialization/runtime on user path.",
+            "implementation": {
+              "repository": "ArWen",
+              "revision": "90c01524470a8d67ce38cfe8d00434a7a4ad90e4",
+              "path": "gpuwm/hydro/noahowp/factory.py",
+              "sha256": "74215bf61a5f1edca58f1fef55daad73212a425656f6bbb86912ba98064eba47"
+            },
+            "schema": {
+              "repository": "ArWen",
+              "revision": "d421fbf5c3f9f9b557d2f13b55ffee13c4143ed1",
+              "path": "gpuwm/hydro/noahowp/schema.json",
+              "sha256": "fdaf1109de36908667a5f877faee8aa9762e405406d214766d8694158d1ae92e"
+            },
+            "native_source": {
+              "repository": "NOAA-OWP/noah-owp-modular",
+              "revision": "0242a96c2a90b2c1501ff56a1e457a932a49c8ac",
+              "licence": "Apache-2.0"
+            },
+            "limitations": [
+              "Factory and Rust initializer are available from numerical owner; configuration lane does not infer native namelist/catchment mapping or provide a case(c) calibration.",
+              "A 1800s single-column initialization cannot stand in for 3600s three-catchment case(a). Complete correct roster/forcing/module binding required.",
+              "No complete case(a)/(c) routed or calibrated event acceptance from this declaration."
+            ],
+            "conditional_options": {
+              "parameter_sha256": "Required for supplied slabs/fields; derived and verified from initial_manifest otherwise. Explicit hash must match manifest.",
+              "catchment_ids": "Optional expected ordered IDs, validated against initial_manifest columns.",
+              "forcing_component": "Prior canonical forcing component; standalone Noah consumes its f32 fields.",
+              "interval_seconds": "Resident domain.dt must equal standalone interval_seconds or coupled physics.bldt_seconds."
+            },
+            "initializer": {
+              "orchestrator": "gpuwm.hydro.noahowp.initial:prepare_initial",
+              "loader": "gpuwm.hydro.noahowp.initial:load_initial_cuda",
+              "implementation": {
+                "repository": "ArWen",
+                "revision": "c92924ac357b8da9818f0ad8af16c3834cde0496",
+                "path": "gpuwm/hydro/noahowp/initial.py",
+                "sha256": "316207e0d4f8207b325f79eb85539fb0d4d7cdf723756491365f5625c94cae71"
+              },
+              "schema": "arwen.noahowp.initial.v1",
+              "recipe": "Explicit native namelist + pinned Apache parameter tables + per-column overrides; Rust initialization and verified transfers.",
+              "licence": "Apache-2.0"
+            }
+          },
+          "reservoirs": {
+            "factory": "gpuwm.hydro.reservoirs:prepare",
+            "phase": "prepare",
+            "modes": [
+              "standalone",
+              "coupled"
+            ],
+            "options": {
+              "required": [],
+              "exactly_one_of": [
+                [
+                  "network_component",
+                  "fabric_manifest"
+                ]
+              ],
+              "optional_defaults": {}
+            },
+            "implementation": {
+              "repository": "ArWen",
+              "revision": "e0cd6f9076208d932b898ad81ce08b1a83ba79c3",
+              "path": "gpuwm/hydro/reservoirs.py",
+              "sha256": "ebc710011aaa4d284210d35bb483a352138c42f623107b38b5fd987d450b40ce"
+            },
+            "native_source": {
+              "repository": "NOAA-OWP/t-route",
+              "revision": "12a8eae0cdfed437143c590659fa7077605a5e70",
+              "licence": "Apache-2.0"
+            },
+            "input": "Rust-prepared reservoir declaration/array bindings, complete parameters/controls/state/observation CSR, source identity and payload hashes",
+            "scheduling": "Prepare and checkpoint only; the level-ordered router owns subset launches. Do not schedule a second standalone reservoir advance.",
+            "limitations": [
+              "Requires validated native collapsed network and ordered reservoir membership before real-case assembly.",
+              "No full case(b)/(c) numerical replay, short run or step-speed acceptance from this declaration."
+            ]
+          },
+          "cfe": {
+            "factory": "gpuwm.hydro.cfe:prepare",
+            "launch_method": "advance",
+            "modes": [
+              "standalone",
+              "coupled"
+            ],
+            "options": {
+              "required": [
+                "manifest",
+                "pet_component",
+                "identity",
+                "initial_step",
+                "time_step_fraction"
+              ],
+              "exactly_one_of": [
+                [
+                  "precipitation_component",
+                  "forcing_component"
+                ]
+              ],
+              "optional_defaults": {
+                "precipitation_field": "RAINRATE",
+                "precipitation_units": "mm/s",
+                "precipitation_conversion": null
+              },
+              "optional": [
+                "library",
+                "payload_root"
+              ]
+            },
+            "implementation": {
+              "repository": "ArWen",
+              "revision": "281192414264367617a7913c4b5e9d5635633ce3",
+              "path": "gpuwm/hydro/cfe.py",
+              "sha256": "9d445f7012af527d27e0112ac1a5a0060a8d8f20f615733701d941539ce505dd"
+            },
+            "native_source": {
+              "repository": "NOAA-OWP/cfe",
+              "revision": "f9182dfb3d81c407c66c5b782114173893c30cf2",
+              "licence": "Apache-2.0"
+            },
+            "input": "Rust initialized packet plus ordered resident precipitation f32/f64 and PET potential_et_m_s f64; no native executable on user path.",
+            "conditional_options": {
+              "identity": "Explicit ordered catchment_ids and time_origin, validated against initialization and source identity.",
+              "precipitation_units": "mm/s, m/s or native mm/h. Actual Noah water.qinsur uses m/s; native BMI conversion requires3600s and measured UDUNITS3600000.0000000005.",
+              "precipitation_conversion": "Optional ngen-udunits-2.2.28 only for resident mm/s, selecting measured3600.0000000000005. Default mm/s uses configured physical period. Later optional branch not covered by earlier93180 leaf proof."
+            },
+            "limitations": [
+              "Leaf native initialization/wet-boundary proof is not a continuous live48h realization or case(c) calibration.",
+              "Catchment output history and routed discharge require driver/output composition; no area or reach ID inferred."
+            ]
+          }
+        },
+        "stage_contract": {
+          "phases": [
+            "before",
+            "after",
+            "prepare"
+          ],
+          "default_phase": "after",
+          "resource_phase": "prepare",
+          "resource_semantics": "Arrays/identity/checkpoint hooks retained and visible to later factories; no standalone advance or reach-output selection.",
+          "implementation": {
+            "repository": "ArWen",
+            "revision": "da4e8ea5d3347dd62b9791d5dd2e35d9a567c17c",
+            "path": "gpuwm/hydro/assembly.py",
+            "sha256": "4ca309ebc7730ececa7d2b85d3ec7fbd189530052fa570be27f992c77dd47412"
+          }
+        }
+      },
+      "data_provenance": {
+        "status": "not established by software licence",
+        "scope": "Configuration metadata only; no hydrologic dataset or calibration supplied.",
+        "case_c_hydrofabric_v2_2": {
+          "status": "development-only",
+          "source": "s3://lynker-spatial/hydrofabric/v2.2/license.txt",
+          "notice_sha256": "d123526dc77233276d2562402019abbd1dc6dfd64ef1ce5a3a73e6f054f60994",
+          "reason": "Actual source-bucket CC BY-NC-SA4.0 notice supersedes README-only ODbL. Coordinator2026-10-18T00:01:08 permits non-commercial referee/development use only; never shipped, bundled, a default download, or public-doc run instructions.",
+          "product_data": "Hydrofabric owner must provide independently licensed/public-domain source and recipe; no mirror relabelling."
+        },
+        "case_c_routelink_v3_1_6": {
+          "status": "private source audit only; underlying data terms unresolved",
+          "manifest_sha256": "5ec558bc9a690b6b2acf2eb49f7bd1529f98303422da5ed33015222e5d898dcf",
+          "source_sha256": "4957655896f4f27854f893d02fa084f9f79c1cf8e80ce77565a7356dadb6fc0e",
+          "owner_revision": "083685d168178385d1a208971c3bd6e9a42010be",
+          "public_default_demo_admitted": false
+        }
+      }
+    },
+    {
+      "id": "lower-colorado-hyfeatures",
+      "description": "Pinned t-route HYFeatures no-assimilation example, prescribed lateral channel forcing; runoff modules are not exercised.",
+      "admission": {
+        "status": "permitted",
+        "scope": "configuration metadata only; module factories require their own source audit",
+        "licence": "Apache-2.0"
+      },
+      "sources": [
+        {
+          "repository": "https://github.com/NOAA-OWP/t-route",
+          "revision": "12a8eae0cdfed437143c590659fa7077605a5e70",
+          "path": "test/LowerColorado_TX_v4/test_AnA_V4_HYFeature_noDA.yaml",
+          "sha256": "78cb3c0daf7e78954faa43bbf37e1c9079f1c302a16d647f8feabd16de3d23c4",
+          "software_licence": "Apache-2.0"
+        }
+      ],
+      "validation": {
+        "configuration": "pinned upstream",
+        "module_replay": "Owner corrected native-mode network03: 0/242712 float32 Q/V/depth words across6742 IDs x12 updates; owner-run, not rerun by configuration lane.",
+        "data_licence": "dataset-specific verification pending referee",
+        "composition": "Shared prepared network/reservoir resources plus routing; requires explicit private research manifest and owner commits. Production routing06 captures native mode/output ID mapping.",
+        "expected_steps": 12,
+        "native_reference_scope": "Defined-state native patch f1de712, not untouched upstream; full provenance in owner network receipts."
+      },
+      "reference": {
+        "routing": {
+          "log_parameters": {
+            "showtiming": true,
+            "log_level": "DEBUG"
+          },
+          "network_topology_parameters": {
+            "supernetwork_parameters": {
+              "geo_file_path": "domain/LowerColorado_NGEN_v201.gpkg",
+              "columns": {
+                "key": "id",
+                "downstream": "toid",
+                "dx": "length_m",
+                "n": "n",
+                "ncc": "nCC",
+                "s0": "So",
+                "bw": "BtmWdth",
+                "waterbody": "rl_NHDWaterbodyComID",
+                "gages": "rl_gages",
+                "tw": "TopWdth",
+                "twcc": "TopWdthCC",
+                "musk": "MusK",
+                "musx": "MusX",
+                "cs": "ChSlp",
+                "alt": "alt",
+                "mainstem": "mainstem"
+              }
+            },
+            "waterbody_parameters": {
+              "break_network_at_waterbodies": true
+            }
+          },
+          "compute_parameters": {
+            "parallel_compute_method": "by-subnetwork-jit-clustered",
+            "compute_kernel": "V02-structured",
+            "assume_short_ts": true,
+            "subnetwork_target_size": 10000,
+            "cpu_pool": 36,
+            "restart_parameters": {
+              "start_datetime": "2023-04-02_00:00",
+              "lite_channel_restart_file": null,
+              "lite_waterbody_restart_file": null
+            },
+            "hybrid_parameters": {
+              "run_hybrid_routing": false,
+              "diffusive_domain": null,
+              "use_natl_xsections": false,
+              "topobathy_domain": null,
+              "run_refactored_network": false,
+              "refactored_domain": null,
+              "refactored_topobathy_domain": null,
+              "coastal_boundary_domain": null
+            },
+            "forcing_parameters": {
+              "qts_subdivisions": 12,
+              "dt": 300,
+              "qlat_input_folder": "channel_forcing",
+              "qlat_file_pattern_filter": "*.CHRTOUT_DOMAIN1.csv",
+              "coastal_boundary_input_file": null,
+              "nts": 288,
+              "max_loop_size": 24
+            },
+            "data_assimilation_parameters": {
+              "streamflow_da": {
+                "streamflow_nudging": false,
+                "diffusive_streamflow_nudging": false
+              },
+              "reservoir_da": {
+                "reservoir_persistence_da": {
+                  "reservoir_persistence_usgs": false,
+                  "reservoir_persistence_usace": false
+                },
+                "reservoir_rfc_da": {
+                  "reservoir_rfc_forecasts": false
+                }
+              }
+            }
+          }
+        }
+      },
+      "settings": {
+        "driver_factory": "gpuwm.hydro.assembly:prepare",
+        "interval_seconds": 300,
+        "stages": [
+          {
+            "name": "network",
+            "factory": "gpuwm.hydrofabric:prepare_resource",
+            "phase": "prepare",
+            "options": {
+              "manifest": "${fabric_manifest}"
+            }
+          },
+          {
+            "name": "reservoirs",
+            "factory": "gpuwm.hydro.reservoirs:prepare",
+            "phase": "prepare",
+            "options": {
+              "network_component": "network"
+            }
+          },
+          {
+            "name": "routing",
+            "factory": "gpuwm.hydro.troute_mc:prepare",
+            "phase": "after",
+            "launch_method": "launch",
+            "parallelism": "6723 MC reaches level-ordered across 272 levels; 19 reservoirs through 17 level selections",
+            "options": {
+              "network_component": "network",
+              "lateral_component": "network",
+              "initial_state_component": "network",
+              "reservoir_component": "reservoirs"
+            }
+          }
+        ],
+        "time_origin": "2023-04-02T00:00:00Z"
+      },
+      "supported_options": {
+        "scope": "Actual owner interfaces; case(b) routing/resource composition in settings.stages. Corrected owner full native replay0/242712 and shared-pool routing timing recorded; full hydro/event acceptance pending. Required owner commits not bundled.",
+        "numerics": {
+          "values": [
+            "fast",
+            "strict"
+          ],
+          "default": "fast"
+        },
+        "components": {
+          "external_forcing": {
+            "factory": "gpuwm.hydro.forcing_inputs:prepare_series",
+            "launch_method": "advance",
+            "modes": [
+              "standalone"
+            ],
+            "options": {
+              "required": [
+                "manifest"
+              ],
+              "optional_defaults": {
+                "library": null,
+                "native_precision": false,
+                "start_seconds": 0.0
+              },
+              "optional": [
+                "source",
+                "time_origin"
+              ]
+            },
+            "implementation": {
+              "repository": "ArWen",
+              "revision": "d874cd27658f36d4b307b670ef20a75d4df3263f",
+              "path": "gpuwm/hydro/forcing_inputs.py",
+              "sha256": "b8f7d5eca1849720bdb8914dd8365cf2306f1fa71bda06bdcfefe71d2e0cddf6"
+            },
+            "input": "Rust-prepared hash-bound forcing manifest; no raw GRIB/NetCDF/CSV processing by Python",
+            "source_selection": {
+              "inventory": "gpuwm.source_adapters:get_source_adapter",
+              "resolver": "gpuwm.hydro.forcing:source_profile",
+              "profile_field": "hydro_forcing_profile",
+              "profile_table": "gpuwm/data/hydro/forcing-sources.v1.json",
+              "inventory_implementation": {
+                "repository": "ArWen",
+                "revision": "d874cd27658f36d4b307b670ef20a75d4df3263f",
+                "path": "gpuwm/source_adapters.py",
+                "sha256": "b9319ca22d19458dbef92ca5c9513151aa2f0152813cd763a56c57b4f610ba6e"
+              },
+              "profile_table_implementation": {
+                "repository": "ArWen",
+                "revision": "d874cd27658f36d4b307b670ef20a75d4df3263f",
+                "path": "gpuwm/data/hydro/forcing-sources.v1.json",
+                "sha256": "485b0b9691b67966dcd9e892e54b182e878976f47c645c7309442481bf6ea4ff"
+              },
+              "binding": "options.source uses the shared init-source registry and validates packet source_id/profile_row/current profile-table SHA before GPU setup. prepare_external request.source normalizes the same registry metadata; no per-source adapter."
+            },
+            "limitations": [
+              "GFS/HRRR/ERA5 require decoded canonical NetCDF; raw GRIB and meteorological completion are not connected.",
+              "A declared source profile is not evidence of an end-to-end download or numerical forecast."
+            ],
+            "conditional_options": {
+              "time_origin": "when provided, must equal the prepared forcing packet epoch"
+            }
+          },
+          "parent_forcing": {
+            "factory": "gpuwm.hydro.forcing:prepare_parent",
+            "launch_method": "advance",
+            "modes": [
+              "coupled"
+            ],
+            "options": {
+              "required": [
+                "hydrofabric_manifest",
+                "parent_fields",
+                "time_origin"
+              ],
+              "optional_defaults": {}
+            },
+            "implementation": {
+              "repository": "ArWen",
+              "revision": "c84e91325a97c66303b6b9c57b5e219c6ea9a20c",
+              "path": "gpuwm/hydro/forcing.py",
+              "sha256": "7335321e80d8823dd62be2a8b2240a2fe77057c08df6d38d99c9971b27a99bf3"
+            },
+            "conditional_options": {
+              "rain_accumulators": "two dotted cumulative-mm parent attributes; requires rain_baseline=at_prepare",
+              "rain_baseline": "at_prepare"
+            },
+            "input": "Optional canonical parent forcing bridge. Coupled Noah-MP uses existing atmosphere forcing/current LSM API; no external forcing or PET prerequisite."
+          },
+          "reach_routing": {
+            "factory": "gpuwm.hydro.troute_mc:prepare",
+            "launch_method": "launch",
+            "modes": [
+              "standalone",
+              "coupled"
+            ],
+            "options": {
+              "required": [
+                "lateral_component"
+              ],
+              "optional_defaults": {
+                "lateral_array": "routing_lateral",
+                "initial_state_array": "routing_state",
+                "publish_channels": false
+              }
+            },
+            "implementation": {
+              "repository": "ArWen",
+              "revision": "fa9ff699f92073e7de854a07024f886f17785d9f",
+              "path": "gpuwm/hydro/troute_mc.py",
+              "sha256": "88cfb7e0d415cb6a66fe4042f1d0729ea68e93e58286b2121f79e2d9a14401d5"
+            },
+            "exactly_one_of": [
+              [
+                "fabric_manifest",
+                "network_component"
+              ]
+            ],
+            "conditional_options": {
+              "time_origin": "required in options or settings",
+              "initial_state_component": "prior component with routing_state (or initial_state_array override); overrides the hashed prepared routing.initial_state_array; CUDA zero cold start only when neither is declared",
+              "reservoir_component": "required for fabric containing lakes, with validated Rust collapsed topology and per-level reservoir selections",
+              "assume_short_ts": "Explicit option overrides routing.assume_short_ts in the prepared manifest; false only when both omit it. Preserve the captured flag rather than infer from case name/counts.",
+              "output_reach_ids": "Prepared routing.output_reach_ids names optional Rust int64 native output labels, including explicit lake-to-outlet mapping. Internal routing node order/CSR stays unchanged; payload hash joins restart identity."
+            },
+            "native_source": {
+              "repository": "NOAA-OWP/t-route",
+              "revision": "12a8eae0cdfed437143c590659fa7077605a5e70",
+              "licence": "Apache-2.0"
+            },
+            "input": "Rust native-ordered routing graph; prior component reach-aligned float32 lateral m3/s",
+            "limitations": [
+              "Requires Rust-collapsed native roster, ordered incoming edges and reservoir selections; supplied by the prepared resource.",
+              "Corrected owner12-step native replay0/242712; full runoff/terrain/event acceptance remains pending."
+            ]
+          },
+          "parent_lsm_exchange": {
+            "factory": "gpuwm.hydro.noahowp.factory:prepare_exchange",
+            "launch_method": "advance",
+            "modes": [
+              "coupled"
+            ],
+            "options": {
+              "required": [
+                "hydrofabric_manifest",
+                "weights_sha256",
+                "fabric_sha256"
+              ],
+              "optional_defaults": {}
+            },
+            "input": "Parent runoff and bottom drainage mm per LSM step, ET rates, persistent sfcheadrt mm state and layers-first soil state; actual Rust overlap rows.",
+            "implementation": {
+              "repository": "ArWen",
+              "revision": "90c01524470a8d67ce38cfe8d00434a7a4ad90e4",
+              "path": "gpuwm/hydro/noahowp/factory.py",
+              "sha256": "74215bf61a5f1edca58f1fef55daad73212a425656f6bbb86912ba98064eba47"
+            },
+            "limitations": [
+              "Requires parent physics.noahmp_params and the fixed parent hydrofabric.",
+              "Exchange interface does not establish admission/default/parity for parent Noah-MP physics options; those require independent owner evidence."
+            ],
+            "units": {
+              "sfcheadrt": "persistent mm state; terrain owns reinfiltration feedback",
+              "infxsrt": "mm per parent LSM step",
+              "soldrain": "mm per parent LSM step",
+              "smois/sh2o": "layers-first aliases",
+              "ET": "parent rate fields"
+            },
+            "boundary_correction": "Owner485b publication/factory corrects ordinary and glacier rate-versus-step-depth handling. This source audit is not a new coupled numerical replay or Noah option-parity claim."
+          },
+          "reservoirs": {
+            "factory": "gpuwm.hydro.reservoirs:prepare",
+            "phase": "prepare",
+            "modes": [
+              "standalone",
+              "coupled"
+            ],
+            "options": {
+              "required": [],
+              "exactly_one_of": [
+                [
+                  "network_component",
+                  "fabric_manifest"
+                ]
+              ],
+              "optional_defaults": {}
+            },
+            "implementation": {
+              "repository": "ArWen",
+              "revision": "e0cd6f9076208d932b898ad81ce08b1a83ba79c3",
+              "path": "gpuwm/hydro/reservoirs.py",
+              "sha256": "ebc710011aaa4d284210d35bb483a352138c42f623107b38b5fd987d450b40ce"
+            },
+            "native_source": {
+              "repository": "NOAA-OWP/t-route",
+              "revision": "12a8eae0cdfed437143c590659fa7077605a5e70",
+              "licence": "Apache-2.0"
+            },
+            "input": "Rust-prepared reservoir declaration/array bindings, complete parameters/controls/state/observation CSR, source identity and payload hashes",
+            "scheduling": "Prepare and checkpoint only; the level-ordered router owns subset launches. Do not schedule a second standalone reservoir advance.",
+            "limitations": [
+              "Rust validated collapsed topology and complete reservoir payload required; resources are advanced only through router hooks.",
+              "Corrected owner12-step native replay0/242712; full runoff/terrain/event acceptance remains pending."
+            ]
+          },
+          "network_resource": {
+            "factory": "gpuwm.hydrofabric:prepare_resource",
+            "phase": "prepare",
+            "options": {
+              "required": [
+                "manifest"
+              ]
+            },
+            "implementation": {
+              "repository": "ArWen",
+              "revision": "0ebe141d12754a0c2013cdbe19b5c21853a197fa",
+              "path": "gpuwm/hydrofabric.py",
+              "sha256": "5b69b36365c5b709ebd5475218cedfbd86cf943f1dbe0ed719de908605b70171"
+            },
+            "input": "Rust-sealed native collapsed graph, float32 parameters/state/lateral, reservoir payload and ordered selections; one startup upload shared by factories."
+          },
+          "cfe": {
+            "factory": "gpuwm.hydro.cfe:prepare",
+            "launch_method": "advance",
+            "modes": [
+              "standalone",
+              "coupled"
+            ],
+            "options": {
+              "required": [
+                "manifest",
+                "pet_component",
+                "identity",
+                "initial_step",
+                "time_step_fraction"
+              ],
+              "exactly_one_of": [
+                [
+                  "precipitation_component",
+                  "forcing_component"
+                ]
+              ],
+              "optional_defaults": {
+                "precipitation_field": "RAINRATE",
+                "precipitation_units": "mm/s",
+                "precipitation_conversion": null
+              },
+              "optional": [
+                "library",
+                "payload_root"
+              ]
+            },
+            "implementation": {
+              "repository": "ArWen",
+              "revision": "281192414264367617a7913c4b5e9d5635633ce3",
+              "path": "gpuwm/hydro/cfe.py",
+              "sha256": "9d445f7012af527d27e0112ac1a5a0060a8d8f20f615733701d941539ce505dd"
+            },
+            "native_source": {
+              "repository": "NOAA-OWP/cfe",
+              "revision": "f9182dfb3d81c407c66c5b782114173893c30cf2",
+              "licence": "Apache-2.0"
+            },
+            "input": "Rust initialized packet plus ordered resident precipitation f32/f64 and PET potential_et_m_s f64; no native executable on user path.",
+            "conditional_options": {
+              "identity": "Explicit ordered catchment_ids and time_origin, validated against initialization and source identity.",
+              "precipitation_units": "mm/s, m/s or native mm/h. Actual Noah water.qinsur uses m/s; native BMI conversion requires3600s and measured UDUNITS3600000.0000000005.",
+              "precipitation_conversion": "Optional ngen-udunits-2.2.28 only for resident mm/s, selecting measured3600.0000000000005. Default mm/s uses configured physical period. Later optional branch not covered by earlier93180 leaf proof."
+            },
+            "limitations": [
+              "Leaf native initialization/wet-boundary proof is not a continuous live48h realization or case(c) calibration.",
+              "Catchment output history and routed discharge require driver/output composition; no area or reach ID inferred."
+            ]
+          }
+        },
+        "stage_contract": {
+          "phases": [
+            "before",
+            "after",
+            "prepare"
+          ],
+          "default_phase": "after",
+          "resource_phase": "prepare",
+          "resource_semantics": "Arrays/identity/checkpoint hooks retained and visible to later factories; no standalone advance or reach-output selection.",
+          "implementation": {
+            "repository": "ArWen",
+            "revision": "da4e8ea5d3347dd62b9791d5dd2e35d9a567c17c",
+            "path": "gpuwm/hydro/assembly.py",
+            "sha256": "4ca309ebc7730ececa7d2b85d3ec7fbd189530052fa570be27f992c77dd47412"
+          }
+        }
+      },
+      "data_provenance": {
+        "status": "not established by software licence",
+        "scope": "Configuration metadata only; no hydrologic dataset or calibration supplied.",
+        "case_c_hydrofabric_v2_2": {
+          "status": "development-only",
+          "source": "s3://lynker-spatial/hydrofabric/v2.2/license.txt",
+          "notice_sha256": "d123526dc77233276d2562402019abbd1dc6dfd64ef1ce5a3a73e6f054f60994",
+          "reason": "Actual source-bucket CC BY-NC-SA4.0 notice supersedes README-only ODbL. Coordinator2026-10-18T00:01:08 permits non-commercial referee/development use only; never shipped, bundled, a default download, or public-doc run instructions.",
+          "product_data": "Hydrofabric owner must provide independently licensed/public-domain source and recipe; no mirror relabelling."
+        },
+        "referenced_test_inputs": "LowerColorado dataset-specific terms still require source verification; root t-route Apache covers software/configuration only.",
+        "prepared_network": {
+          "scope": "Private research only; caller supplies manifest, no download or restricted data shipped.",
+          "roster": {
+            "nodes": 6742,
+            "mc_reaches": 6723,
+            "reservoirs": 19,
+            "levels": 272,
+            "ordered_upstream_edges": 6741
+          },
+          "lateral": "Native prescribed first-hour lateral inflow held across twelve 300s routing steps; no runoff-module or event-forcing claim.",
+          "initial_state": "Explicit network.routing_state binding; no zero cold-start substitution.",
+          "native_mode": "routing.assume_short_ts is captured explicitly by Rust manifest; current native case true. Row has no override.",
+          "native_output_labels": "Explicit Rust reservoir lake-to-outlet output-ID mapping; internal node IDs/CSR unchanged.",
+          "obsolete_capture": "Early manifest03 omitted native mode and produced diagnostic mismatch. Use corrected prepared native-routing06 provenance; no field payload distributed."
+        }
+      },
+      "settings_parameters": [
+        "fabric_manifest"
+      ]
+    },
+    {
+      "id": "ngen-shipped-pet-cfe-48h",
+      "description": "Actual referee case (a), SLoTH/PET/CFE with Noah omitted; configuration reference only, not an operational NWM v4 realization.",
+      "admission": {
+        "status": "permitted",
+        "scope": "Apache-2.0 framework configuration metadata only; source audits and prepared GPU factories remain module-owner responsibilities",
+        "licence": "Apache-2.0"
+      },
+      "sources": [
+        {
+          "repository": "native-nextgen-reference",
+          "revision": "ngen-shipped-sloth-pet-cfe-48h",
+          "upstream_repository": "https://github.com/NOAA-OWP/ngen",
+          "upstream_revision": "be11a180565a78ff069d855b0b5dbfc23845e7d8",
+          "path": "cases/ngen-shipped/realization.json",
+          "sha256": "5167b2c0bd2abb2c1da1c62a3737fbd1d174b08835454eccb306e8cc22fc625d",
+          "reference_key": "realization",
+          "software_licence": "Apache-2.0 (configuration metadata)"
+        }
+      ],
+      "validation": {
+        "configuration": "captured native case (a)",
+        "module_replay": "Module-owner evidence separate; full prepared composition/short run/speed pending.",
+        "case_c": "not this case",
+        "historical_fixture_index_sha256": "f38581bf7552b43f44e8cce57d055e8b54a9b50460b7240654a5a735aff1ba22",
+        "fixture_index_sha256": "487fb68c217be43bca1570e3d4a7a96bcde3ae87d42f0b30289b7cbf7e2d4d66",
+        "native_initialization": {
+          "status": "referee corrected defined-state recipe",
+          "cfe_revision": "f9182dfb3d81c407c66c5b782114173893c30cf2",
+          "patch": "cfe-define-initial-state.patch",
+          "patch_sha256": "b4c9a97da091ea4e983a1b67ed102f81a18dc233faa85d85c2a47b63375cfe15",
+          "scope": "calloc object/profile initialization; native reference only, not untouched upstream"
+        }
+      },
+      "adaptations": [
+        "Native shipped multi-realization JSON: omit Noah until its native observer is ready, remove catchment overrides, redirect library/config/forcing/output paths, shorten to48 hourly steps. Original shipped catchments/nexuses/forcing/CFE/PET configs unchanged."
+      ],
+      "reference_parameters": [
+        "referee_root",
+        "ngen_source"
+      ],
+      "reference": {
+        "realization": {
+          "global": {
+            "formulations": [
+              {
+                "name": "bmi_multi",
+                "params": {
+                  "model_type_name": "bmi_multi_sloth_pet_cfe",
+                  "forcing_file": "",
+                  "init_config": "",
+                  "allow_exceed_end_time": true,
+                  "main_output_variable": "Q_OUT",
+                  "modules": [
+                    {
+                      "name": "bmi_c++",
+                      "params": {
+                        "model_type_name": "bmi_c++_sloth",
+                        "library_file": "${referee_root}/build/sloth/libslothmodel.so",
+                        "init_config": "/dev/null",
+                        "allow_exceed_end_time": true,
+                        "main_output_variable": "z",
+                        "uses_forcing_file": false,
+                        "model_params": {
+                          "sloth_ice_fraction_schaake(1,double,m,node)": 0.0,
+                          "sloth_ice_fraction_xinanjiang(1,double,1,node)": 0.0,
+                          "sloth_smp(1,double,1,node)": 0.0
+                        }
+                      }
+                    },
+                    {
+                      "name": "bmi_c",
+                      "params": {
+                        "model_type_name": "bmi_c_pet",
+                        "library_file": "${referee_root}/build/libpetbmi.so",
+                        "forcing_file": "",
+                        "init_config": "${ngen_source}/data/bmi/c/pet/{{id}}_bmi_config.ini",
+                        "allow_exceed_end_time": true,
+                        "main_output_variable": "water_potential_evaporation_flux",
+                        "registration_function": "register_bmi_pet",
+                        "variables_names_map": {
+                          "water_potential_evaporation_flux": "potential_evapotranspiration"
+                        },
+                        "uses_forcing_file": false
+                      }
+                    },
+                    {
+                      "name": "bmi_c",
+                      "params": {
+                        "model_type_name": "bmi_c_cfe",
+                        "library_file": "${referee_root}/build/observer/libcfe_capture.so",
+                        "forcing_file": "",
+                        "init_config": "${ngen_source}/data/bmi/c/cfe/{{id}}_bmi_config.ini",
+                        "allow_exceed_end_time": true,
+                        "main_output_variable": "Q_OUT",
+                        "registration_function": "register_bmi_cfe",
+                        "variables_names_map": {
+                          "water_potential_evaporation_flux": "potential_evapotranspiration",
+                          "atmosphere_air_water~vapor__relative_saturation": "SPFH_2maboveground",
+                          "land_surface_air__temperature": "TMP_2maboveground",
+                          "land_surface_wind__x_component_of_velocity": "UGRD_10maboveground",
+                          "land_surface_wind__y_component_of_velocity": "VGRD_10maboveground",
+                          "land_surface_radiation~incoming~longwave__energy_flux": "DLWRF_surface",
+                          "land_surface_radiation~incoming~shortwave__energy_flux": "DSWRF_surface",
+                          "land_surface_air__pressure": "PRES_surface",
+                          "ice_fraction_schaake": "sloth_ice_fraction_schaake",
+                          "ice_fraction_xinanjiang": "sloth_ice_fraction_xinanjiang",
+                          "soil_moisture_profile": "sloth_smp"
+                        },
+                        "uses_forcing_file": false
+                      }
+                    }
+                  ],
+                  "uses_forcing_file": false
+                }
+              }
+            ],
+            "forcing": {
+              "file_pattern": ".*{{id}}.*..csv",
+              "path": "${ngen_source}/data/forcing/",
+              "provider": "CsvPerFeature"
+            }
+          },
+          "time": {
+            "start_time": "2015-12-01 00:00:00",
+            "end_time": "2015-12-02 23:00:00",
+            "output_interval": 3600
+          },
+          "output_root": "${referee_root}/cases/ngen-shipped/output/"
+        }
+      },
+      "settings": {
+        "interval_seconds": 3600,
+        "driver_factory": "gpuwm.hydro.assembly:prepare",
+        "stages": []
+      },
+      "supported_options": {
+        "scope": "Recorded owner interfaces only; required owner commits are not bundled in this lane. Numerical stage assembly and replay remain pending.",
+        "numerics": {
+          "values": [
+            "fast",
+            "strict"
+          ],
+          "default": "fast"
+        },
+        "components": {
+          "external_forcing": {
+            "factory": "gpuwm.hydro.forcing_inputs:prepare_series",
+            "launch_method": "advance",
+            "modes": [
+              "standalone"
+            ],
+            "options": {
+              "required": [
+                "manifest"
+              ],
+              "optional_defaults": {
+                "library": null,
+                "native_precision": false,
+                "start_seconds": 0.0
+              },
+              "optional": [
+                "source",
+                "time_origin"
+              ]
+            },
+            "implementation": {
+              "repository": "ArWen",
+              "revision": "d874cd27658f36d4b307b670ef20a75d4df3263f",
+              "path": "gpuwm/hydro/forcing_inputs.py",
+              "sha256": "b8f7d5eca1849720bdb8914dd8365cf2306f1fa71bda06bdcfefe71d2e0cddf6"
+            },
+            "input": "Rust-prepared hash-bound forcing manifest; no raw GRIB/NetCDF/CSV processing by Python",
+            "source_selection": {
+              "inventory": "gpuwm.source_adapters:get_source_adapter",
+              "resolver": "gpuwm.hydro.forcing:source_profile",
+              "profile_field": "hydro_forcing_profile",
+              "profile_table": "gpuwm/data/hydro/forcing-sources.v1.json",
+              "inventory_implementation": {
+                "repository": "ArWen",
+                "revision": "d874cd27658f36d4b307b670ef20a75d4df3263f",
+                "path": "gpuwm/source_adapters.py",
+                "sha256": "b9319ca22d19458dbef92ca5c9513151aa2f0152813cd763a56c57b4f610ba6e"
+              },
+              "profile_table_implementation": {
+                "repository": "ArWen",
+                "revision": "d874cd27658f36d4b307b670ef20a75d4df3263f",
+                "path": "gpuwm/data/hydro/forcing-sources.v1.json",
+                "sha256": "485b0b9691b67966dcd9e892e54b182e878976f47c645c7309442481bf6ea4ff"
+              },
+              "binding": "options.source uses the shared init-source registry and validates packet source_id/profile_row/current profile-table SHA before GPU setup. prepare_external request.source normalizes the same registry metadata; no per-source adapter."
+            },
+            "limitations": [
+              "GFS/HRRR/ERA5 require decoded canonical NetCDF; raw GRIB and meteorological completion are not connected.",
+              "A declared source profile is not evidence of an end-to-end download or numerical forecast."
+            ],
+            "conditional_options": {
+              "time_origin": "when provided, must equal the prepared forcing packet epoch"
+            }
+          },
+          "parent_forcing": {
+            "factory": "gpuwm.hydro.forcing:prepare_parent",
+            "launch_method": "advance",
+            "modes": [
+              "coupled"
+            ],
+            "options": {
+              "required": [
+                "hydrofabric_manifest",
+                "parent_fields",
+                "time_origin"
+              ],
+              "optional_defaults": {}
+            },
+            "implementation": {
+              "repository": "ArWen",
+              "revision": "c84e91325a97c66303b6b9c57b5e219c6ea9a20c",
+              "path": "gpuwm/hydro/forcing.py",
+              "sha256": "7335321e80d8823dd62be2a8b2240a2fe77057c08df6d38d99c9971b27a99bf3"
+            },
+            "conditional_options": {
+              "rain_accumulators": "two dotted cumulative-mm parent attributes; requires rain_baseline=at_prepare",
+              "rain_baseline": "at_prepare"
+            },
+            "input": "Optional canonical parent forcing bridge. Coupled Noah-MP uses existing atmosphere forcing/current LSM API; no external forcing or PET prerequisite."
+          },
+          "pet": {
+            "factory": "gpuwm.hydro.pet:prepare",
+            "launch_method": "advance",
+            "modes": [
+              "standalone",
+              "coupled"
+            ],
+            "options": {
+              "required": [
+                "forcing_component"
+              ],
+              "optional_defaults": {
+                "method": 5
+              },
+              "exactly_one_of": [
+                [
+                  "parameters",
+                  "catchment_parameters"
+                ]
+              ]
+            },
+            "implementation": {
+              "repository": "ArWen",
+              "revision": "b46aa0064bc696dbf717198f516ef30d487237a0",
+              "path": "gpuwm/hydro/pet.py",
+              "sha256": "12b607f177945a6cd2b7dfd99be7c269edd04c9fafb776a560b2bd7e27d1bf0e"
+            },
+            "parameter_names": [
+              "wind_speed_measurement_height_m",
+              "humidity_measurement_height_m",
+              "vegetation_height_m",
+              "zero_plane_displacement_height_m",
+              "momentum_transfer_roughness_length_m",
+              "heat_transfer_roughness_length_m",
+              "surface_longwave_emissivity",
+              "surface_shortwave_albedo",
+              "canopy_resistance_sec_per_m",
+              "water_temperature_C",
+              "ground_heat_flux_W_per_sq_m",
+              "surface_skin_temperature_C"
+            ],
+            "method_values": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ],
+            "native_source": {
+              "repository": "NOAA-OWP/evapotranspiration",
+              "revision": "6c410f2a8bc843043ad25e13239928031b8c5e64",
+              "licence": "Apache-2.0"
+            },
+            "input": "Prior forcing component fields and all twelve named configuration scalars; no guessed native defaults",
+            "conditional_options": {
+              "parameters": "All twelve named scalar parameters, with optional broadcast method default5.",
+              "catchment_parameters": "Ordered rows with catchment_id, integer method1..5 and all twelve parameters; exact forcing roster. Mutually exclusive with parameters or method."
+            }
+          },
+          "parent_lsm_exchange": {
+            "factory": "gpuwm.hydro.noahowp.factory:prepare_exchange",
+            "launch_method": "advance",
+            "modes": [
+              "coupled"
+            ],
+            "options": {
+              "required": [
+                "hydrofabric_manifest",
+                "weights_sha256",
+                "fabric_sha256"
+              ],
+              "optional_defaults": {}
+            },
+            "input": "Parent runoff and bottom drainage mm per LSM step, ET rates, persistent sfcheadrt mm state and layers-first soil state; actual Rust overlap rows.",
+            "implementation": {
+              "repository": "ArWen",
+              "revision": "90c01524470a8d67ce38cfe8d00434a7a4ad90e4",
+              "path": "gpuwm/hydro/noahowp/factory.py",
+              "sha256": "74215bf61a5f1edca58f1fef55daad73212a425656f6bbb86912ba98064eba47"
+            },
+            "limitations": [
+              "Requires parent physics.noahmp_params and the fixed parent hydrofabric.",
+              "Exchange interface does not establish admission/default/parity for parent Noah-MP physics options; those require independent owner evidence."
+            ],
+            "units": {
+              "sfcheadrt": "persistent mm state; terrain owns reinfiltration feedback",
+              "infxsrt": "mm per parent LSM step",
+              "soldrain": "mm per parent LSM step",
+              "smois/sh2o": "layers-first aliases",
+              "ET": "parent rate fields"
+            },
+            "boundary_correction": "Owner485b publication/factory corrects ordinary and glacier rate-versus-step-depth handling. This source audit is not a new coupled numerical replay or Noah option-parity claim."
+          },
+          "cfe": {
+            "factory": "gpuwm.hydro.cfe:prepare",
+            "launch_method": "advance",
+            "modes": [
+              "standalone",
+              "coupled"
+            ],
+            "options": {
+              "required": [
+                "manifest",
+                "pet_component",
+                "identity",
+                "initial_step",
+                "time_step_fraction"
+              ],
+              "exactly_one_of": [
+                [
+                  "precipitation_component",
+                  "forcing_component"
+                ]
+              ],
+              "optional_defaults": {
+                "precipitation_field": "RAINRATE",
+                "precipitation_units": "mm/s",
+                "precipitation_conversion": null
+              },
+              "optional": [
+                "library",
+                "payload_root"
+              ]
+            },
+            "implementation": {
+              "repository": "ArWen",
+              "revision": "281192414264367617a7913c4b5e9d5635633ce3",
+              "path": "gpuwm/hydro/cfe.py",
+              "sha256": "9d445f7012af527d27e0112ac1a5a0060a8d8f20f615733701d941539ce505dd"
+            },
+            "native_source": {
+              "repository": "NOAA-OWP/cfe",
+              "revision": "f9182dfb3d81c407c66c5b782114173893c30cf2",
+              "licence": "Apache-2.0"
+            },
+            "input": "Rust initialized packet plus ordered resident precipitation f32/f64 and PET potential_et_m_s f64; no native executable on user path.",
+            "conditional_options": {
+              "identity": "Explicit ordered catchment_ids and time_origin, validated against initialization and source identity.",
+              "precipitation_units": "mm/s, m/s or native mm/h. Actual Noah water.qinsur uses m/s; native BMI conversion requires3600s and measured UDUNITS3600000.0000000005.",
+              "precipitation_conversion": "Optional ngen-udunits-2.2.28 only for resident mm/s, selecting measured3600.0000000000005. Default mm/s uses configured physical period. Later optional branch not covered by earlier93180 leaf proof."
+            },
+            "limitations": [
+              "Leaf native initialization/wet-boundary proof is not a continuous live48h realization or case(c) calibration.",
+              "Catchment output history and routed discharge require driver/output composition; no area or reach ID inferred."
+            ]
+          }
+        },
+        "stage_contract": {
+          "phases": [
+            "before",
+            "after",
+            "prepare"
+          ],
+          "default_phase": "after",
+          "resource_phase": "prepare",
+          "resource_semantics": "Arrays/identity/checkpoint hooks retained and visible to later factories; no standalone advance or reach-output selection.",
+          "implementation": {
+            "repository": "ArWen",
+            "revision": "da4e8ea5d3347dd62b9791d5dd2e35d9a567c17c",
+            "path": "gpuwm/hydro/assembly.py",
+            "sha256": "4ca309ebc7730ececa7d2b85d3ec7fbd189530052fa570be27f992c77dd47412"
+          }
+        }
+      },
+      "data_provenance": {
+        "status": "not established by software licence",
+        "scope": "Configuration metadata only; no hydrologic dataset or calibration supplied.",
+        "case_c_hydrofabric_v2_2": {
+          "status": "development-only",
+          "source": "s3://lynker-spatial/hydrofabric/v2.2/license.txt",
+          "notice_sha256": "d123526dc77233276d2562402019abbd1dc6dfd64ef1ce5a3a73e6f054f60994",
+          "reason": "Actual source-bucket CC BY-NC-SA4.0 notice supersedes README-only ODbL. Coordinator2026-10-18T00:01:08 permits non-commercial referee/development use only; never shipped, bundled, a default download, or public-doc run instructions.",
+          "product_data": "Hydrofabric owner must provide independently licensed/public-domain source and recipe; no mirror relabelling."
+        }
+      }
+    },
+    {
+      "id": "ngen-shipped-noah-pet-cfe-48h",
+      "description": "Initialized three-catchment48h standalone forcing/PET/Noah-OWP/CFE composition, exact driver-owned strict run. No routing or operational NWM v4 calibration.",
+      "admission": {
+        "status": "permitted",
+        "scope": "Apache-2.0 framework configuration metadata only; source audits and prepared GPU factories remain module-owner responsibilities",
+        "licence": "Apache-2.0"
+      },
+      "sources": [
+        {
+          "repository": "native-nextgen-reference",
+          "revision": "ngen-shipped-noah-coupled-run-02",
+          "upstream_repository": "https://github.com/NOAA-OWP/ngen",
+          "upstream_revision": "be11a180565a78ff069d855b0b5dbfc23845e7d8",
+          "path": "cases/ngen-shipped-noah-coupled-run-02/clean.json",
+          "sha256": "86ae9637d7cb0cae3fda113315cf2a135bf198c171479cfe834508c53a839dd5",
+          "reference_key": "realization",
+          "software_licence": "Apache-2.0 (configuration metadata)"
+        }
+      ],
+      "validation": {
+        "configuration": "Actual driver settings matched by explicit portable bindings; exact adapted native reference metadata retained.",
+        "owner_run": {
+          "revision": "11c6bb0fc66b89107c2507d39eab5ba5073c02ca",
+          "products_revision": "d6ee527d4a5992e2c5dbc8620a8f91bf6c4f4ee6",
+          "composition_receipt_sha256": "062414a9e34a0cfa1d9661914954af7864e454573b0a8f885a37249fddd6377a",
+          "settings_sha256": "8435892aa91c6819cc06a4811bf37335b24e815e58992369bfa2fd0240b9052a",
+          "numerics": "strict",
+          "steps": 48,
+          "catchment_ids": [
+            "cat-67",
+            "cat-27",
+            "cat-52"
+          ],
+          "native_comparison": {
+            "bitwise_match": true,
+            "compared_words": 864,
+            "different_words": 0,
+            "parallelism": "Rust Rayon 12 workers; fields and stored-word chunks; offline only",
+            "wall_ms": 2.3352939999999998,
+            "reference_binding": "PET uses native PET rate getter, not CFE per-step ET getter"
+          },
+          "scope": "864 selected CFE/PET/Noah output words exact; initialized once, no intermediate state overwrite; no routing, USGS skill, full-state restart or fast composition claim.",
+          "fixture_index_sha256": "5c5b23e6050e304fbfd98cb0096924e31ac030e99230ded3b83105cfa5547461"
+        },
+        "case_c": "not this case",
+        "fast_composition": "Speed owner measured48 steps on actual initialized three catchments; native fast parity not inferred from timing. Fast remains default.",
+        "speed_owner": {
+          "branch": "lane/nextgen-speed",
+          "revision": "082aaaa5b613ce29ea91394b4bf331226c5a24e0",
+          "measured_revision": "d62bbc364cd31434755d6c25a8e51b3409362c7e",
+          "summary_sha256": "0084c51eed0fa268d6cefde0f5051e9e46d7d4c6a2c7745ff836b66eaf4ce2a3",
+          "settings_sha256": "8435892aa91c6819cc06a4811bf37335b24e815e58992369bfa2fd0240b9052a",
+          "device": "RTX4090 shared canonical pool; not isolated",
+          "steps": 48,
+          "fast_ms_per_step": 0.17187991666666666,
+          "strict_ms_per_step": 0.2405244375,
+          "cuda_graphs": false,
+          "scope": "Real initialized48h threecatchment chain only; no reaches, reservoirs, terrain orUSGS calibration",
+          "source_files_verified": 161,
+          "loaded_python_modules_verified": 43,
+          "current_preparation_revision": "d560f19ac6d3f221fea1df327ee96a8f4f89f9c9",
+          "current_source_audit_sha256": "45bc0e1fd5570ff395d7c393351ef677e8ac3d309a29b9441265a68fafbc3b87",
+          "native_parity": "Strict owner proof retained at executed source; timing does not establish fast native parity."
+        }
+      },
+      "adaptations": [
+        "Native recipe uses defined initialized state and physical CFE storage fractions, original three ordered catchments and48hour forcing window. Native Noah QINSUR mapped as CFE precipitation; owner CUDA uses measured UDUNITS m/s-to-mm/h coefficient3600000.0000000005.",
+        "Native SLoTH zero ice/profile slots are initialized and SFT/rootzone disabled; no live SLoTH stage required.",
+        "Native module ordering and GPU launch ordering differ because independent PET precedes Noah on GPU; CFE waits for both. No native executable or Fortran library is loaded by configuration or supplied on user path."
+      ],
+      "reference_parameters": [
+        "reference_root",
+        "resolved_reference_root",
+        "noah_library"
+      ],
+      "reference": {
+        "realization": {
+          "global": {
+            "formulations": [
+              {
+                "name": "bmi_multi",
+                "params": {
+                  "model_type_name": "bmi_multi_noahowp_cfe",
+                  "forcing_file": "",
+                  "init_config": "",
+                  "allow_exceed_end_time": true,
+                  "main_output_variable": "Q_OUT",
+                  "modules": [
+                    {
+                      "name": "bmi_c++",
+                      "params": {
+                        "model_type_name": "bmi_c++_sloth",
+                        "library_file": "${reference_root}/build/sloth/libslothmodel.so",
+                        "init_config": "/dev/null",
+                        "allow_exceed_end_time": true,
+                        "main_output_variable": "z",
+                        "uses_forcing_file": false,
+                        "model_params": {
+                          "sloth_ice_fraction_schaake(1,double,m,node)": 0.0,
+                          "sloth_ice_fraction_xinanjiang(1,double,1,node)": 0.0,
+                          "sloth_smp(1,double,1,node)": 0.0
+                        }
+                      }
+                    },
+                    {
+                      "name": "bmi_fortran",
+                      "params": {
+                        "model_type_name": "bmi_fortran_noahowp",
+                        "library_file": "${noah_library}",
+                        "forcing_file": "",
+                        "init_config": "${reference_root}/cases/ngen-shipped-noah/namelists/noah-owp-modular-init-{{id}}.namelist.input",
+                        "allow_exceed_end_time": true,
+                        "main_output_variable": "QINSUR",
+                        "variables_names_map": {
+                          "PRCPNONC": "atmosphere_water__liquid_equivalent_precipitation_rate",
+                          "Q2": "atmosphere_air_water~vapor__relative_saturation",
+                          "SFCTMP": "land_surface_air__temperature",
+                          "UU": "land_surface_wind__x_component_of_velocity",
+                          "VV": "land_surface_wind__y_component_of_velocity",
+                          "LWDN": "land_surface_radiation~incoming~longwave__energy_flux",
+                          "SOLDN": "land_surface_radiation~incoming~shortwave__energy_flux",
+                          "SFCPRS": "land_surface_air__pressure"
+                        },
+                        "uses_forcing_file": false
+                      }
+                    },
+                    {
+                      "name": "bmi_c",
+                      "params": {
+                        "model_type_name": "bmi_c_pet",
+                        "library_file": "${reference_root}/build/libpetbmi.so",
+                        "forcing_file": "",
+                        "init_config": "${reference_root}/source/ngen-be11a180565a78ff069d855b0b5dbfc23845e7d8/data/bmi/c/pet/{{id}}_bmi_config.ini",
+                        "allow_exceed_end_time": true,
+                        "main_output_variable": "water_potential_evaporation_flux",
+                        "registration_function": "register_bmi_pet",
+                        "variables_names_map": {
+                          "water_potential_evaporation_flux": "potential_evapotranspiration"
+                        },
+                        "uses_forcing_file": false
+                      }
+                    },
+                    {
+                      "name": "bmi_c",
+                      "params": {
+                        "model_type_name": "bmi_c_cfe",
+                        "library_file": "${resolved_reference_root}/build/cfe/libcfebmi.so.1.0.0",
+                        "forcing_file": "",
+                        "init_config": "${reference_root}/cases/ngen-shipped-noah-coupled/cfe/{{id}}_bmi_config.ini",
+                        "allow_exceed_end_time": true,
+                        "main_output_variable": "Q_OUT",
+                        "registration_function": "register_bmi_cfe",
+                        "variables_names_map": {
+                          "water_potential_evaporation_flux": "potential_evapotranspiration",
+                          "atmosphere_air_water~vapor__relative_saturation": "SPFH_2maboveground",
+                          "land_surface_air__temperature": "TMP_2maboveground",
+                          "land_surface_wind__x_component_of_velocity": "UGRD_10maboveground",
+                          "land_surface_wind__y_component_of_velocity": "VGRD_10maboveground",
+                          "land_surface_radiation~incoming~longwave__energy_flux": "DLWRF_surface",
+                          "land_surface_radiation~incoming~shortwave__energy_flux": "DSWRF_surface",
+                          "land_surface_air__pressure": "PRES_surface",
+                          "ice_fraction_schaake": "sloth_ice_fraction_schaake",
+                          "ice_fraction_xinanjiang": "sloth_ice_fraction_xinanjiang",
+                          "soil_moisture_profile": "sloth_smp",
+                          "atmosphere_water__liquid_equivalent_precipitation_rate": "QINSUR"
+                        },
+                        "uses_forcing_file": false
+                      }
+                    }
+                  ],
+                  "uses_forcing_file": false
+                }
+              }
+            ],
+            "forcing": {
+              "file_pattern": ".*{{id}}.*..csv",
+              "path": "${reference_root}/source/ngen-be11a180565a78ff069d855b0b5dbfc23845e7d8/data/forcing/",
+              "provider": "CsvPerFeature"
+            }
+          },
+          "time": {
+            "start_time": "2015-12-01 00:00:00",
+            "end_time": "2015-12-02 23:00:00",
+            "output_interval": 3600
+          },
+          "output_root": "${resolved_reference_root}/cases/ngen-shipped-noah-coupled-run-02/clean/"
+        }
+      },
+      "settings_parameters": [
+        "forcing_manifest",
+        "forcing_library",
+        "noah_initial_manifest",
+        "cfe_initial_manifest",
+        "cfe_payload_root"
+      ],
+      "settings": {
+        "interval_seconds": 3600,
+        "time_origin": "2015-12-01T00:00:00Z",
+        "output_factory": "gpuwm.hydro.module_history:prepare_writer",
+        "stages": [
+          {
+            "name": "forcing64",
+            "factory": "gpuwm.hydro.forcing_inputs:prepare_series",
+            "options": {
+              "manifest": "${forcing_manifest}",
+              "library": "${forcing_library}",
+              "native_precision": true,
+              "source": "ngen-csv",
+              "time_origin": "2015-12-01T00:00:00Z"
+            },
+            "parallelism": "GPU; one catchment per thread; 128 threads/block"
+          },
+          {
+            "name": "forcing32",
+            "factory": "gpuwm.hydro.forcing_inputs:prepare_series",
+            "options": {
+              "manifest": "${forcing_manifest}",
+              "library": "${forcing_library}",
+              "native_precision": false,
+              "source": "ngen-csv",
+              "time_origin": "2015-12-01T00:00:00Z"
+            },
+            "parallelism": "GPU; one catchment per thread; 128 threads/block"
+          },
+          {
+            "name": "pet",
+            "factory": "gpuwm.hydro.pet:prepare",
+            "options": {
+              "forcing_component": "forcing64",
+              "catchment_parameters": [
+                {
+                  "catchment_id": "cat-67",
+                  "method": 1,
+                  "parameters": {
+                    "wind_speed_measurement_height_m": 10,
+                    "humidity_measurement_height_m": 2,
+                    "vegetation_height_m": 0.12,
+                    "zero_plane_displacement_height_m": 0.0003,
+                    "momentum_transfer_roughness_length_m": 0,
+                    "heat_transfer_roughness_length_m": 0,
+                    "surface_longwave_emissivity": 1,
+                    "surface_shortwave_albedo": 0.22,
+                    "canopy_resistance_sec_per_m": 50,
+                    "water_temperature_C": 15.5,
+                    "ground_heat_flux_W_per_sq_m": -10,
+                    "surface_skin_temperature_C": 12
+                  }
+                },
+                {
+                  "catchment_id": "cat-27",
+                  "method": 5,
+                  "parameters": {
+                    "wind_speed_measurement_height_m": 10,
+                    "humidity_measurement_height_m": 2,
+                    "vegetation_height_m": 0.12,
+                    "zero_plane_displacement_height_m": 0.0003,
+                    "momentum_transfer_roughness_length_m": 0,
+                    "heat_transfer_roughness_length_m": 0,
+                    "surface_longwave_emissivity": 1,
+                    "surface_shortwave_albedo": 0.22,
+                    "canopy_resistance_sec_per_m": 50,
+                    "water_temperature_C": 15.5,
+                    "ground_heat_flux_W_per_sq_m": -10,
+                    "surface_skin_temperature_C": 12
+                  }
+                },
+                {
+                  "catchment_id": "cat-52",
+                  "method": 3,
+                  "parameters": {
+                    "wind_speed_measurement_height_m": 10,
+                    "humidity_measurement_height_m": 2,
+                    "vegetation_height_m": 0.12,
+                    "zero_plane_displacement_height_m": 0.0003,
+                    "momentum_transfer_roughness_length_m": 0,
+                    "heat_transfer_roughness_length_m": 0,
+                    "surface_longwave_emissivity": 1,
+                    "surface_shortwave_albedo": 0.22,
+                    "canopy_resistance_sec_per_m": 50,
+                    "water_temperature_C": 15.5,
+                    "ground_heat_flux_W_per_sq_m": -10,
+                    "surface_skin_temperature_C": 12
+                  }
+                }
+              ]
+            },
+            "parallelism": "GPU; one catchment per thread; 128 threads/block"
+          },
+          {
+            "name": "noah",
+            "factory": "gpuwm.hydro.noahowp.factory:prepare_slab",
+            "options": {
+              "initial_manifest": "${noah_initial_manifest}",
+              "fabric_sha256": "ce60c985e37304276f3805021a1e02536bf4fe18c0576607820ef5288c744d4b",
+              "catchment_ids": [
+                "cat-67",
+                "cat-27",
+                "cat-52"
+              ],
+              "time_origin": "2015-12-01T00:00:00Z",
+              "forcing_component": "forcing32"
+            },
+            "parallelism": "GPU; one catchment per thread; 64 threads/block"
+          },
+          {
+            "name": "cfe",
+            "factory": "gpuwm.hydro.cfe:prepare",
+            "options": {
+              "manifest": "${cfe_initial_manifest}",
+              "precipitation_component": "noah",
+              "precipitation_field": "water.qinsur",
+              "precipitation_units": "m/s",
+              "pet_component": "pet",
+              "initial_step": 0,
+              "time_step_fraction": 1.0,
+              "identity": {
+                "catchment_ids": [
+                  "cat-67",
+                  "cat-27",
+                  "cat-52"
+                ],
+                "time_origin": "2015-12-01T00:00:00Z"
+              },
+              "payload_root": "${cfe_payload_root}"
+            },
+            "parallelism": "GPU; one catchment per thread; 128 threads/block"
+          },
+          {
+            "name": "history",
+            "factory": "gpuwm.hydro.module_history:prepare",
+            "parallelism": "GPU; byte-exact field capture one128-threadblock plus cursor",
+            "options": {
+              "capacity_steps": 48,
+              "catchment_ids": [
+                "cat-67",
+                "cat-27",
+                "cat-52"
+              ],
+              "origin": "2015-12-01T00:00:00Z",
+              "fields": [
+                {
+                  "name": "qinsur",
+                  "component": "noah",
+                  "field": "water.qinsur",
+                  "units": "m/s"
+                },
+                {
+                  "name": "pet",
+                  "component": "pet",
+                  "field": "potential_et_m_s",
+                  "units": "m/s"
+                },
+                {
+                  "name": "qout",
+                  "component": "cfe",
+                  "field": "flux_Qout_m",
+                  "units": "m/step"
+                },
+                {
+                  "name": "rain",
+                  "component": "cfe",
+                  "field": "timestep_rainfall_input_m",
+                  "units": "m/step"
+                },
+                {
+                  "name": "soil_storage",
+                  "component": "cfe",
+                  "field": "soil_reservoir.storage_m",
+                  "units": "m"
+                },
+                {
+                  "name": "gw_storage",
+                  "component": "cfe",
+                  "field": "gw_reservoir.storage_m",
+                  "units": "m"
+                },
+                {
+                  "name": "noah_status",
+                  "component": "noah",
+                  "field": "status",
+                  "units": "1"
+                },
+                {
+                  "name": "cfe_status",
+                  "component": "cfe",
+                  "field": "status",
+                  "units": "1"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "supported_options": {
+        "scope": "Exact owner composition metadata; numerical modules remain owner dependencies. New data sources use existing init-source table.",
+        "numerics": {
+          "values": [
+            "fast",
+            "strict"
+          ],
+          "default": "fast"
+        },
+        "components": {
+          "external_forcing": {
+            "factory": "gpuwm.hydro.forcing_inputs:prepare_series",
+            "launch_method": "advance",
+            "modes": [
+              "standalone"
+            ],
+            "options": {
+              "required": [
+                "manifest"
+              ],
+              "optional_defaults": {
+                "library": null,
+                "native_precision": false,
+                "start_seconds": 0.0
+              },
+              "optional": [
+                "source",
+                "time_origin"
+              ]
+            },
+            "implementation": {
+              "repository": "ArWen",
+              "revision": "d874cd27658f36d4b307b670ef20a75d4df3263f",
+              "path": "gpuwm/hydro/forcing_inputs.py",
+              "sha256": "b8f7d5eca1849720bdb8914dd8365cf2306f1fa71bda06bdcfefe71d2e0cddf6"
+            },
+            "input": "Rust-prepared hash-bound forcing manifest; no raw GRIB/NetCDF/CSV processing by Python",
+            "source_selection": {
+              "inventory": "gpuwm.source_adapters:get_source_adapter",
+              "resolver": "gpuwm.hydro.forcing:source_profile",
+              "profile_field": "hydro_forcing_profile",
+              "profile_table": "gpuwm/data/hydro/forcing-sources.v1.json",
+              "inventory_implementation": {
+                "repository": "ArWen",
+                "revision": "d874cd27658f36d4b307b670ef20a75d4df3263f",
+                "path": "gpuwm/source_adapters.py",
+                "sha256": "b9319ca22d19458dbef92ca5c9513151aa2f0152813cd763a56c57b4f610ba6e"
+              },
+              "profile_table_implementation": {
+                "repository": "ArWen",
+                "revision": "d874cd27658f36d4b307b670ef20a75d4df3263f",
+                "path": "gpuwm/data/hydro/forcing-sources.v1.json",
+                "sha256": "485b0b9691b67966dcd9e892e54b182e878976f47c645c7309442481bf6ea4ff"
+              },
+              "binding": "options.source uses the shared init-source registry and validates packet source_id/profile_row/current profile-table SHA before GPU setup. prepare_external request.source normalizes the same registry metadata; no per-source adapter."
+            },
+            "limitations": [
+              "GFS/HRRR/ERA5 require decoded canonical NetCDF; raw GRIB and meteorological completion are not connected.",
+              "A declared source profile is not evidence of an end-to-end download or numerical forecast."
+            ],
+            "conditional_options": {
+              "time_origin": "when provided, must equal the prepared forcing packet epoch"
+            }
+          },
+          "pet": {
+            "factory": "gpuwm.hydro.pet:prepare",
+            "launch_method": "advance",
+            "modes": [
+              "standalone",
+              "coupled"
+            ],
+            "options": {
+              "required": [
+                "forcing_component"
+              ],
+              "optional_defaults": {
+                "method": 5
+              },
+              "exactly_one_of": [
+                [
+                  "parameters",
+                  "catchment_parameters"
+                ]
+              ]
+            },
+            "implementation": {
+              "repository": "ArWen",
+              "revision": "b46aa0064bc696dbf717198f516ef30d487237a0",
+              "path": "gpuwm/hydro/pet.py",
+              "sha256": "12b607f177945a6cd2b7dfd99be7c269edd04c9fafb776a560b2bd7e27d1bf0e"
+            },
+            "parameter_names": [
+              "wind_speed_measurement_height_m",
+              "humidity_measurement_height_m",
+              "vegetation_height_m",
+              "zero_plane_displacement_height_m",
+              "momentum_transfer_roughness_length_m",
+              "heat_transfer_roughness_length_m",
+              "surface_longwave_emissivity",
+              "surface_shortwave_albedo",
+              "canopy_resistance_sec_per_m",
+              "water_temperature_C",
+              "ground_heat_flux_W_per_sq_m",
+              "surface_skin_temperature_C"
+            ],
+            "method_values": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ],
+            "native_source": {
+              "repository": "NOAA-OWP/evapotranspiration",
+              "revision": "6c410f2a8bc843043ad25e13239928031b8c5e64",
+              "licence": "Apache-2.0"
+            },
+            "input": "Prior forcing component fields and all twelve named configuration scalars; no guessed native defaults",
+            "conditional_options": {
+              "parameters": "All twelve named scalar parameters, with optional broadcast method default5.",
+              "catchment_parameters": "Ordered rows with catchment_id, integer method1..5 and all twelve parameters; exact forcing roster. Mutually exclusive with parameters or method."
+            }
+          },
+          "noah_owp": {
+            "factory": "gpuwm.hydro.noahowp.factory:prepare_slab",
+            "launch_method": "advance",
+            "modes": [
+              "standalone",
+              "coupled"
+            ],
+            "options": {
+              "required": [
+                "fabric_sha256",
+                "time_origin"
+              ],
+              "exactly_one_of": [
+                [
+                  "initial_manifest",
+                  "slabs",
+                  "fields"
+                ]
+              ],
+              "optional_defaults": {},
+              "optional": [
+                "forcing_component",
+                "catchment_ids",
+                "parameter_sha256"
+              ]
+            },
+            "input": "Complete Rust-prepared initial_manifest, supplied slabs f32/i32/f64 or schema component:array references. No native Fortran initialization/runtime on user path.",
+            "implementation": {
+              "repository": "ArWen",
+              "revision": "90c01524470a8d67ce38cfe8d00434a7a4ad90e4",
+              "path": "gpuwm/hydro/noahowp/factory.py",
+              "sha256": "74215bf61a5f1edca58f1fef55daad73212a425656f6bbb86912ba98064eba47"
+            },
+            "schema": {
+              "repository": "ArWen",
+              "revision": "d421fbf5c3f9f9b557d2f13b55ffee13c4143ed1",
+              "path": "gpuwm/hydro/noahowp/schema.json",
+              "sha256": "fdaf1109de36908667a5f877faee8aa9762e405406d214766d8694158d1ae92e"
+            },
+            "native_source": {
+              "repository": "NOAA-OWP/noah-owp-modular",
+              "revision": "0242a96c2a90b2c1501ff56a1e457a932a49c8ac",
+              "licence": "Apache-2.0"
+            },
+            "limitations": [
+              "Requires the exact labelled three-catchment3600s initialized packet; no operational NWM4 calibration or case(c) inference."
+            ],
+            "conditional_options": {
+              "parameter_sha256": "Required for supplied slabs/fields; derived and verified from initial_manifest otherwise. Explicit hash must match manifest.",
+              "catchment_ids": "Optional expected ordered IDs, validated against initial_manifest columns.",
+              "forcing_component": "Prior canonical forcing component; standalone Noah consumes its f32 fields.",
+              "interval_seconds": "Resident domain.dt must equal standalone interval_seconds or coupled physics.bldt_seconds."
+            },
+            "initializer": {
+              "orchestrator": "gpuwm.hydro.noahowp.initial:prepare_initial",
+              "loader": "gpuwm.hydro.noahowp.initial:load_initial_cuda",
+              "implementation": {
+                "repository": "ArWen",
+                "revision": "c92924ac357b8da9818f0ad8af16c3834cde0496",
+                "path": "gpuwm/hydro/noahowp/initial.py",
+                "sha256": "316207e0d4f8207b325f79eb85539fb0d4d7cdf723756491365f5625c94cae71"
+              },
+              "schema": "arwen.noahowp.initial.v1",
+              "recipe": "Explicit native namelist + pinned Apache parameter tables + per-column overrides; Rust initialization and verified transfers.",
+              "licence": "Apache-2.0"
+            }
+          },
+          "cfe": {
+            "factory": "gpuwm.hydro.cfe:prepare",
+            "launch_method": "advance",
+            "modes": [
+              "standalone",
+              "coupled"
+            ],
+            "options": {
+              "required": [
+                "manifest",
+                "pet_component",
+                "identity",
+                "initial_step",
+                "time_step_fraction"
+              ],
+              "exactly_one_of": [
+                [
+                  "precipitation_component",
+                  "forcing_component"
+                ]
+              ],
+              "optional_defaults": {
+                "precipitation_field": "RAINRATE",
+                "precipitation_units": "mm/s",
+                "precipitation_conversion": null
+              },
+              "optional": [
+                "library",
+                "payload_root"
+              ]
+            },
+            "implementation": {
+              "repository": "ArWen",
+              "revision": "281192414264367617a7913c4b5e9d5635633ce3",
+              "path": "gpuwm/hydro/cfe.py",
+              "sha256": "9d445f7012af527d27e0112ac1a5a0060a8d8f20f615733701d941539ce505dd"
+            },
+            "native_source": {
+              "repository": "NOAA-OWP/cfe",
+              "revision": "f9182dfb3d81c407c66c5b782114173893c30cf2",
+              "licence": "Apache-2.0"
+            },
+            "input": "Rust initialized packet plus ordered resident precipitation f32/f64 and PET potential_et_m_s f64; no native executable on user path.",
+            "conditional_options": {
+              "identity": "Explicit ordered catchment_ids and time_origin, validated against initialization and source identity.",
+              "precipitation_units": "mm/s, m/s or native mm/h. Actual Noah water.qinsur uses m/s; native BMI conversion requires3600s and measured UDUNITS3600000.0000000005.",
+              "precipitation_conversion": "Optional ngen-udunits-2.2.28 only for resident mm/s, selecting measured3600.0000000000005. Default mm/s uses configured physical period. Later optional branch not covered by earlier93180 leaf proof."
+            },
+            "limitations": [
+              "This row has owner strict continuous48h evidence, not routed discharge, full-state restart, case(c) calibration or whole case(b) speed."
+            ]
+          },
+          "module_history": {
+            "factory": "gpuwm.hydro.module_history:prepare",
+            "launch_method": "advance",
+            "modes": [
+              "standalone",
+              "coupled"
+            ],
+            "implementation": {
+              "repository": "ArWen",
+              "revision": "11c6bb0fc66b89107c2507d39eab5ba5073c02ca",
+              "path": "gpuwm/hydro/module_history.py",
+              "sha256": "8078054dec31bf96cd115ed9db046ac7ca51559166c1643694c07f23843a8b05"
+            },
+            "options": {
+              "required": [
+                "capacity_steps",
+                "catchment_ids",
+                "time_origin",
+                "fields"
+              ]
+            },
+            "input": "Ordered component fields with explicit native dtype and units; resident CUDA capture plus cursor.",
+            "output_factory": "gpuwm.hydro.module_history:prepare_writer",
+            "limitations": [
+              "Boundary Rust NetCDF diagnostic archive only; no complete-state restart/resume.",
+              "capacity_steps must match completed steps for writer; source field vectors are contiguous and match catchment roster."
+            ]
+          }
+        },
+        "stage_contract": {
+          "phases": [
+            "before",
+            "after",
+            "prepare"
+          ],
+          "default_phase": "after",
+          "resource_phase": "prepare",
+          "resource_semantics": "Arrays/identity/checkpoint hooks retained and visible to later factories; no standalone advance or reach-output selection.",
+          "implementation": {
+            "repository": "ArWen",
+            "revision": "da4e8ea5d3347dd62b9791d5dd2e35d9a567c17c",
+            "path": "gpuwm/hydro/assembly.py",
+            "sha256": "4ca309ebc7730ececa7d2b85d3ec7fbd189530052fa570be27f992c77dd47412"
+          }
+        }
+      },
+      "data_provenance": {
+        "status": "not established by software licence",
+        "scope": "No field dataset or calibration bundled. The row requires explicitly supplied prepared packets; source metadata is not a dataset redistribution grant.",
+        "case_c_hydrofabric_v2_2": {
+          "status": "development-only",
+          "source": "s3://lynker-spatial/hydrofabric/v2.2/license.txt",
+          "notice_sha256": "d123526dc77233276d2562402019abbd1dc6dfd64ef1ce5a3a73e6f054f60994",
+          "reason": "Actual source-bucket CC BY-NC-SA4.0 notice supersedes README-only ODbL. Coordinator2026-10-18T00:01:08 permits non-commercial referee/development use only; never shipped, bundled, a default download, or public-doc run instructions.",
+          "product_data": "Hydrofabric owner must provide independently licensed/public-domain source and recipe; no mirror relabelling."
+        }
+      }
+    },
+    {
+      "id": "parent-noahmp-routed",
+      "description": "Resident parent Noah-MP runoff mapped to a same-network initialized DEM fabric, reservoirs and Muskingum-Cunge routing. No second soil model.",
+      "admission": {
+        "status": "permitted",
+        "scope": "Configuration metadata only; provider preparation validates exact grid, same-network parameters, ordered raw warm state, reservoir stores and epoch. Whole coupled forecast qualification pending.",
+        "licence": "Apache-2.0"
+      },
+      "sources": [],
+      "settings_parameters": [
+        "fabric_manifest"
+      ],
+      "settings": {
+        "driver_factory": "gpuwm.hydro.assembly:prepare",
+        "fabric_manifest": "${fabric_manifest}",
+        "stages": []
+      },
+      "validation": {
+        "whole_forecast": "pending the Rhine 2023-01-01 24 h run through products",
+        "runoff_partition": "Parent Noah-MP OPT_RUN=3: RUNSRF+RUNSUB; SOLDRAIN already included in RUNSUB."
+      }
+    }
+  ]
+}

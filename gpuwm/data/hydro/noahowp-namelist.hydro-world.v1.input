@@ -1,0 +1,74 @@
+! Noah-OWP-Modular namelist template for HYDRO-WORLD standalone runs.
+! Derived from the NOAA-OWP/ngen example data/bmi/fortran/noah-owp-modular-init-cat-27.namelist.input
+! (ngen be11a180, Apache-2.0; noah-owp-modular Apache-2.0, notices in gpuwm/hydro/noahowp/).
+! Changes: hourly dt; USGS 27-class vegetation (hydro-world-params default veg_class_table);
+! parameter tables are the packaged pinned ones (rw_hydro_init engine-packets passes them).
+! Per-catchment lat, lon, terrain_slope, azimuth, isltyp, vegtyp, soilcolor, sh2o, sice and
+! soil_temperature_k come from arwen-noahowp-init overrides (fabric model_attributes and the
+! hydro-world-init state packet). The run window is set by the realization, not by these dates.
+&timing
+  dt               = 3600.0
+  startdate        = "202301010000"
+  enddate          = "202302010000"
+  forcing_filename = "unused-resident-forcing"
+  output_filename  = "unused-resident-output"
+/
+
+&parameters
+  parameter_dir      = "../../hydro/noahowp/parameters/"
+  general_table      = "GENPARM.TBL"
+  soil_table         = "SOILPARM.TBL"
+  noahowp_table      = "MPTABLE.TBL"
+  soil_class_name    = "STAS"
+  veg_class_name     = "USGS"
+/
+
+&location
+  lat                = 0.0
+  lon                = 0.0
+  terrain_slope      = 0.0
+  azimuth            = 0.0
+/
+
+&forcing
+  ZREF               = 10.0
+  rain_snow_thresh   = 1.0
+/
+
+&model_options
+  precip_phase_option               = 2
+  snow_albedo_option                = 2
+  dynamic_veg_option                = 1
+  runoff_option                     = 8
+  drainage_option                   = 8
+  frozen_soil_option                = 1
+  dynamic_vic_option                = 1
+  radiative_transfer_option         = 3
+  sfc_drag_coeff_option             = 1
+  canopy_stom_resist_option         = 1
+  crop_model_option                 = 0
+  snowsoil_temp_time_option         = 3
+  soil_temp_boundary_option         = 2
+  supercooled_water_option          = 1
+  stomatal_resistance_option        = 1
+  evap_srfc_resistance_option       = 1
+  subsurface_option                 = 1
+/
+
+&structure
+ isltyp           = 1
+ nsoil            = 4
+ nsnow            = 3
+ nveg             = 27
+ vegtyp           = 1
+ croptype         = 0
+ sfctyp           = 1
+ soilcolor        = 4
+/
+
+&initial_values
+ dzsnso    =  0.0,  0.0,  0.0,  0.1,  0.3,  0.6,  1.0
+ sice      =  0.0,  0.0,  0.0,  0.0
+ sh2o      =  0.3,  0.3,  0.3,  0.3
+ zwt       =  -2.0
+/

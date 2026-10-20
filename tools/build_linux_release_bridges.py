@@ -30,7 +30,8 @@ RUST_VERSION = "1.94.0"
 # order already builds dealias first.
 WORKSPACES = ("tools/grib1_bridge", "tools/region_global_dealias",
               "tools/rustwx", "tools/rw_wps", "tools/arwen-tui",
-              "tools/zarr_bridge")
+              "tools/zarr_bridge", "tools/nextgen_hydrofabric",
+              "tools/nextgen_forcing", "tools/nextgen_verify")
 CONTEXT_NAME = ".arwen-manylinux-build-context.json"
 CONTEXT_SCHEMA = "arwen.manylinux.build-context.v1"
 

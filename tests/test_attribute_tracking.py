@@ -294,3 +294,15 @@ def test_attribute_track_admission_has_position_only_semantics():
     raw["relocation"]["track"]["output_level"] = [850.]
     with pytest.raises(ValueError, match="refuses output_level"):
         _build(raw, domains=_domains(sfclay=0))
+
+
+def test_pressure_tracking_controls_remain_in_public_identity():
+    from gpuwm.experiment import _public_config_value
+    cfg = st.FollowConfig(field="pressure", threshold=1000., search_margin_cells=10,
+        min_shift_cells=1, max_shift_cells=6, cooldown_seconds=20.,
+        level_hpa=0., pressure_center="minimum", fallback_level_hpa=850., fallback_deficit_m=30.)
+    document = _public_config_value(cfg)
+    assert not set(document) & ATTRIBUTE_KEYS
+    assert document["pressure_center"] == "minimum"
+    assert document["fallback_level_hpa"] == 850.
+    assert document["fallback_deficit_m"] == 30.

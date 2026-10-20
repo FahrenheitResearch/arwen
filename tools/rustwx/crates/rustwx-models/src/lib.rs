@@ -80,6 +80,8 @@ pub enum RenderStyle {
     WeatherTemperature,
     WeatherDewpoint,
     WeatherRh,
+    WeatherSpecificHumidity,
+    WeatherOmega,
     WeatherProbability,
     WeatherWinds,
     WeatherHeight,
@@ -3912,7 +3914,28 @@ const FIELD_AOD550: GribFieldSpec = field_spec(
     &["AOTK:entire atmosphere"],
 );
 
+const FIELD_850_Q: GribFieldSpec = field_spec(
+    "q_850mb", "850 hPa Specific Humidity", ProductFamily::Pressure,
+    GribLevelKind::IsobaricHpa, Some(850),
+    Some(FieldSelector::isobaric(CanonicalField::SpecificHumidity, 850)), &["SPFH:850 mb"],
+);
+const FIELD_500_OMEGA: GribFieldSpec = field_spec(
+    "omega_500mb", "500 hPa Pressure Vertical Velocity", ProductFamily::Pressure,
+    GribLevelKind::IsobaricHpa, Some(500),
+    Some(FieldSelector::isobaric(CanonicalField::Omega, 500)), &["VVEL:500 mb"],
+);
+const FIELD_100_WIND: GribFieldSpec = field_spec(
+    "wind_100m", "100 m AGL Wind Speed", ProductFamily::Native,
+    GribLevelKind::HeightAboveGround, Some(100),
+    Some(FieldSelector::height_agl(CanonicalField::WindSpeed, 100)), &["WIND:100 m above ground"],
+);
 const PLOT_RECIPES: &[PlotRecipe] = &[
+    PlotRecipe { slug: "850mb_specific_humidity", title: "850 hPa Specific Humidity", filled: FIELD_850_Q,
+        contours: None, barbs_u: None, barbs_v: None, style: RenderStyle::WeatherSpecificHumidity },
+    PlotRecipe { slug: "500mb_omega", title: "500 hPa Omega (negative is ascent)", filled: FIELD_500_OMEGA,
+        contours: None, barbs_u: None, barbs_v: None, style: RenderStyle::WeatherOmega },
+    PlotRecipe { slug: "100m_wind_speed", title: "100 m AGL Wind Speed", filled: FIELD_100_WIND,
+        contours: None, barbs_u: None, barbs_v: None, style: RenderStyle::WeatherWinds },
     PlotRecipe {
         slug: "smoke_near_surface", title: "Near-Surface Smoke", filled: FIELD_SMOKE_MASS_DENSITY_8M,
         contours: None, barbs_u: None, barbs_v: None, style: RenderStyle::AirQualityPm25,

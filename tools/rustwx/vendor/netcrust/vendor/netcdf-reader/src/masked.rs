@@ -5,7 +5,27 @@
 
 use ndarray::ArrayD;
 
-use crate::types::NcVariable;
+use crate::types::{NcType, NcVariable};
+
+// NetCDF's prefill sentinel exists even without an explicit _FillValue
+// attribute. Mask in the stored type domain, before unpacking.
+// https://docs.unidata.ucar.edu/netcdf-c/current/attribute_conventions.html
+fn default_fill(dtype: &NcType) -> Option<f64> {
+    match dtype {
+        // NetCDF's byte convention preserves all byte values when no fill is
+        // explicitly declared. Characters and user-defined types are not numbers.
+        NcType::Short => Some(-32767.0),
+        NcType::Int => Some(-2147483647.0),
+        NcType::Float => Some(9.969209968386869e36_f32 as f64),
+        NcType::Double => Some(9.969209968386869e36),
+        NcType::UByte => Some(255.0),
+        NcType::UShort => Some(65535.0),
+        NcType::UInt => Some(4294967295.0),
+        NcType::Int64 => Some(-9223372036854775806_i64 as f64),
+        NcType::UInt64 => Some(18446744073709551614_u64 as f64),
+        _ => None,
+    }
+}
 
 /// Parameters for masking invalid data.
 #[derive(Debug, Clone)]
@@ -19,9 +39,10 @@ pub struct MaskParams {
 impl MaskParams {
     /// Extract masking parameters from a variable's attributes.
     ///
-    /// Returns `None` if no masking attributes are present.
+    /// Returns `None` if no attributes or numeric default fill apply.
     pub fn from_variable(var: &NcVariable) -> Option<Self> {
-        let fill = var.attribute("_FillValue").and_then(|a| a.value.as_f64());
+        let fill = var.attribute("_FillValue").and_then(|a| a.value.as_f64())
+            .or_else(|| default_fill(&var.dtype));
         let missing = var
             .attribute("missing_value")
             .and_then(|a| a.value.as_f64());
@@ -105,9 +126,28 @@ mod tests {
     }
 
     #[test]
-    fn test_no_mask_attrs() {
-        let var = make_var(vec![]);
-        assert!(MaskParams::from_variable(&var).is_none());
+    fn default_numeric_fill_without_attribute() {
+        for (dtype, fill) in [
+            (NcType::Short, -32767.0), (NcType::Int, -2147483647.0),
+            (NcType::Float, 9.969209968386869e36_f32 as f64),
+            (NcType::Double, 9.969209968386869e36), (NcType::UByte, 255.0),
+            (NcType::UShort, 65535.0), (NcType::UInt, 4294967295.0),
+            (NcType::Int64, -9223372036854775806_i64 as f64),
+            (NcType::UInt64, 18446744073709551614_u64 as f64),
+        ] {
+            let mut var = make_var(vec![]);
+            var.dtype = dtype;
+            let mut data = arr1(&[1.0, fill, 2.0]).into_dyn();
+            MaskParams::from_variable(&var).unwrap().apply(&mut data);
+            assert_eq!(data[[0]], 1.0);
+            assert!(data[[1]].is_nan());
+            assert_eq!(data[[2]], 2.0);
+        }
+        for dtype in [NcType::Byte, NcType::Char] {
+            let mut var = make_var(vec![]);
+            var.dtype = dtype;
+            assert!(MaskParams::from_variable(&var).is_none());
+        }
     }
 
     #[test]
@@ -117,11 +157,12 @@ mod tests {
             value: NcAttrValue::Floats(vec![-9999.0]),
         }]);
         let params = MaskParams::from_variable(&var).unwrap();
-        let mut data = arr1(&[1.0, -9999.0, 3.0]).into_dyn();
+        let mut data = arr1(&[1.0, -9999.0, 9.969209968386869e36_f32 as f64]).into_dyn();
         params.apply(&mut data);
         assert_eq!(data[[0]], 1.0);
         assert!(data[[1]].is_nan());
-        assert_eq!(data[[2]], 3.0);
+        // Explicit _FillValue overrides the implicit default.
+        assert_eq!(data[[2]], 9.969209968386869e36_f32 as f64);
     }
 
     #[test]

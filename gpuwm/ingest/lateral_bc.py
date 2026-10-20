@@ -1188,7 +1188,7 @@ def _launch_state_relaxation(state, field_name, tendency, boundary, *,
     mass_perturbation = state.mup if source_mup is None else source_mup
     kind = {"u": 0, "v": 1, "theta": 2, "phi": 3, "mu": 4,
             "qv": 5, "w": 6}.get(field_name, 7)
-    kernel = get_kernel("lbc_state", "state_specified_relaxation")
+    kernel = get_kernel("lbc_state", "state_specified_relaxation", (nz, ny, nx))
     kernel(((count + _THREADS - 1) // _THREADS,), (_THREADS,), (
         tendency, held, state.mub2d, mass_perturbation, u, v, w,
         thp, state.thb, php, scalar,

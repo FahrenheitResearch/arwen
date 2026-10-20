@@ -84,7 +84,7 @@ def test_family_membership_is_the_kernel_audit():
     # milbrandt2.cu:2340: the same positive-sum quotient once per call.
     assert _sr_roundoff_envelope(9, 60.0)[1] > 0
     # Morrison (the WRF v4.6.1 transcription) sums signed fallout
-    # components, so no envelope bounds its SR; morrison.bound_snow_ratio
+    # components in the raw oracle. Forecast sedimentation is nonnegative; morrison.bound_snow_ratio
     # holds the forecast SR to [0, 1] before this check, and Morrison
     # keeps the tight range.  NSSL sits outside the range check.
     for outsider in (0, 1, 8, 10, 18, 28, 50):

@@ -1699,14 +1699,12 @@ def _derive_measured(grid_id: int, run, dt: Fraction, slope: float,
         if upper is None:
             upper = Fraction(wrf_default_clamps(run.dx, run.dy)[1])
         configured_per_km = max(configured_per_km, float(upper) / km)
-    counts = [configured_sound]
-    if configured_sound < 6:
-        counts.append(6)
-    readings = {count: (read(count) if read is not None else
-                        read_map(dx, crest.crest_height_m, slope,
-                                 crest.wind_m_s, count, table))
-                for count in counts}
-    own = readings[configured_sound]
+    def reading_for(count):
+        return (read(count) if read is not None else
+                read_map(dx, crest.crest_height_m, slope,
+                         crest.wind_m_s, count, table))
+
+    own = reading_for(configured_sound)
     if _holds(own, configured_per_km) and not own.beyond:
         ceiling, cap, source = (_adaptive_ceiling(own, _held_step(own), run,
                                                   table, dx, upper)
@@ -1715,6 +1713,12 @@ def _derive_measured(grid_id: int, run, dt: Fraction, slope: float,
                                held_per_km=own.per_km, reading=own,
                                ceiling=ceiling, cap_per_km=cap,
                                cap_source=source, **base)
+    # The configured clock already returned if it holds. Reading an unused
+    # alternative here would sort every terrain face a second time at startup.
+    # Keep every candidate when choosing a replacement clock.
+    readings = {configured_sound: own}
+    if configured_sound < 6:
+        readings[6] = reading_for(6)
     choices = []
     for count, reading in readings.items():
         if reading.per_km is None:
@@ -1732,7 +1736,7 @@ def _derive_measured(grid_id: int, run, dt: Fraction, slope: float,
         held = reading.per_km
     else:
         # Past every stable measurement: the most stable pair measured.
-        count = max(counts)
+        count = max(readings)
         reading = readings[count]
         held = limit = reading.most_stable_per_km
         division = (1 if held is None else

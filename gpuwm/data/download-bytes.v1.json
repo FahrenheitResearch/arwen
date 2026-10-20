@@ -226,9 +226,9 @@
     "grid_points": 151987,
     "layers_per_valid_time": 879,
     "soil_layers": 18,
-    "windowed_layers": 800,
+    "windowed_layers": 850,
     "bytes_per_value": 8,
-    "measured": "Declared frame-stream shape: seventeen atmospheric fields on fifty levels, eleven surfaces, eighteen soil planes; decoded values are float64.  The atmospheric window crops sixteen of the seventeen: pressure_vertical_velocity (79d9f5284) is not a canonical atmospheric field and stays whole."
+    "measured": "Declared frame-stream shape: seventeen atmospheric fields on fifty levels, eleven surfaces, eighteen soil planes; decoded values are float64.  The atmospheric window crops all seventeen atmospheric fields, including canonical pressure_vertical_velocity."
    },
    "hrrr-native": {
     "mapping": "rw-wps-hrrr-native-grib2.mapping.json",
@@ -236,9 +236,9 @@
     "grid_points": 1905141,
     "layers_per_valid_time": 880,
     "soil_layers": 18,
-    "windowed_layers": 800,
+    "windowed_layers": 850,
     "bytes_per_value": 8,
-    "measured": "Declared frame-stream shape: seventeen atmospheric fields on fifty levels, twelve surfaces (vegetation_fraction since 6a69b356f), eighteen soil planes; decoded values are float64.  The atmospheric window crops sixteen of the seventeen: pressure_vertical_velocity (79d9f5284) is not a canonical atmospheric field and stays whole."
+    "measured": "Declared frame-stream shape: seventeen atmospheric fields on fifty levels, twelve surfaces (vegetation_fraction since 6a69b356f), eighteen soil planes; decoded values are float64.  The atmospheric window crops all seventeen atmospheric fields, including canonical pressure_vertical_velocity."
    },
    "rap": {
     "mapping": "rw-wps-rap-awip32-grib2.mapping.json",

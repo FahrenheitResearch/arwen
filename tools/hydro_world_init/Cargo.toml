@@ -1,0 +1,24 @@
+[package]
+name = "hydro-world-init"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Initial water state for gpuwm hydro: table-driven reanalysis rows mapped onto HYDRO-WORLD catchments, plus a CFE spin-up"
+
+[[bin]]
+name = "rw_hydro_init"
+path = "src/main.rs"
+
+[dependencies]
+hydro-world = { path = "../hydro_world" }
+netcrust = { path = "../rustwx/vendor/netcrust" }
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+# float_roundtrip: packets and receipts reproduce every f64 bit.
+serde_json = { version = "1", features = ["float_roundtrip"] }
+sha2 = "0.10"
+
+[profile.release]
+codegen-units = 1
+
+[workspace]

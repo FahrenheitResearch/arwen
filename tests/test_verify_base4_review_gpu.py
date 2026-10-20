@@ -20,6 +20,26 @@ def _physical_cfg():
         "sf_sfclay_physics", "sf_surface_physics", "cu_physics")})
 
 
+def _analysis_words(state, cfg):
+    """The analysis frame's REFL_10CM words, diagnosed from ``state`` now.
+
+    Since 18dbe1d5449 tick zero diagnoses the initial hydrometeors (the
+    scheme's floor, e.g. -35 dBZ, where there are none); under
+    GPUWM_WRF_EXACT=1 it is WRF's all-zero initial array.  Prognostics are
+    never advanced, so diagnosing again after the write is the same frame.
+    """
+    import cupy as cp
+    from gpuwm.core.refl import analysis_refl_10cm
+    field = analysis_refl_10cm(state, cfg, shape=(cfg.nz, cfg.ny, cfg.nx))
+    words = np.asarray(cp.asnumpy(field) if isinstance(field, cp.ndarray) else field,
+                       dtype=np.float32).view(np.uint32)
+    if os.environ.get("GPUWM_WRF_EXACT") == "1":
+        assert np.count_nonzero(words) == 0
+    else:
+        assert np.all(np.isfinite(words.view(np.float32)))
+    return words
+
+
 def test_strict_iau_real_step_keeps_dynamics_increments():
     if os.environ.get("GPUWM_WRF_EXACT") != "1":
         pytest.skip("strict process")
@@ -68,7 +88,9 @@ def test_ordinary_cold_start_writes_real_reflectivity_artifact(tmp_path):
     with netCDF4.Dataset(path) as dataset:
         field = dataset["REFL_10CM"][0]
         assert field.shape == (cfg.nz, cfg.ny, cfg.nx)
-        assert np.count_nonzero(np.asarray(field).view(np.uint32)) == 0
+        np.testing.assert_array_equal(
+            np.asarray(field, dtype=np.float32).view(np.uint32),
+            _analysis_words(state, cfg))
     assert state.physics.refl_10cm is None
 
 
@@ -118,14 +140,17 @@ def test_native_ensemble_tick_zero_writes_real_reflectivity_artifacts(tmp_path):
             assert len(self.analysis) == 4
             return {"complete": True}
     collector = ArtifactCollector()
+    # The ordinary domain's own analysis diagnostic, taken before the batch
+    # adopts the node: every member's tick-zero frame carries these words.
+    expected = _analysis_words(node.state, cfg)
     report = run_initialized_native_ensemble(inputs, node, members=4,
         collector=collector, available_bytes=8*1024**3, output_metadata=metadata)
     assert report is not None and report["status"] == "PASS"
     for path in collector.analysis:
         with netCDF4.Dataset(path) as dataset:
-            field = np.asarray(dataset["REFL_10CM"][0])
+            field = np.asarray(dataset["REFL_10CM"][0], dtype=np.float32)
             assert field.shape == (cfg.nz, cfg.ny, cfg.nx)
-            assert np.count_nonzero(field.view(np.uint32)) == 0
+            np.testing.assert_array_equal(field.view(np.uint32), expected)
 
 
 def test_offline_child_tick_zero_writes_real_reflectivity_artifact(tmp_path):
@@ -158,9 +183,9 @@ def test_offline_child_tick_zero_writes_real_reflectivity_artifact(tmp_path):
         _global_wrf_attrs(grid, stamp, domain=cfg, coord=coord), placement,
         refl_field=reflected)
     with netCDF4.Dataset(path) as dataset:
-        field = np.asarray(dataset["REFL_10CM"][0])
+        field = np.asarray(dataset["REFL_10CM"][0], dtype=np.float32)
         assert field.shape == (cfg.nz, cfg.ny, cfg.nx)
-        assert np.count_nonzero(field.view(np.uint32)) == 0
+        np.testing.assert_array_equal(field.view(np.uint32), _analysis_words(state, cfg))
 
 
 @pytest.mark.parametrize("boundary", ["specified", "nested"])
@@ -269,3 +294,29 @@ def test_real_engine_full_field_hash_receipt():
     if destination:
         from pathlib import Path
         Path(destination).write_text(json.dumps(receipt, indent=2))
+
+
+def test_analysis_frame_leaves_no_values_in_the_shared_refl_scratch(monkeypatch):
+    """The analysis diagnostic writes the shared ``refl_10cm`` scratch; the
+    boundary ring is never rewritten by forecast microphysics, so the
+    analysis values must not stay there (they froze the edge at t0)."""
+    import cupy as cp
+    from gpuwm.core import refl, state_reflectivity
+
+    slots = {}
+
+    def scratch(shape, name):
+        if name not in slots:
+            slots[name] = cp.zeros(shape, dtype=cp.float32)
+        return slots[name]
+
+    def diagnose(state, cfg):
+        out = state.scratch(tuple(state.qv.shape), "refl_10cm")
+        out.fill(-35.0)
+        return out
+
+    monkeypatch.setattr(state_reflectivity, "diagnose", diagnose)
+    state = SimpleNamespace(qv=cp.ones((3, 6, 5), cp.float32), scratch=scratch)
+    frame = refl.analysis_refl_10cm(state, SimpleNamespace(mp_physics=8))
+    assert bool(cp.all(frame == -35.0))
+    assert not bool(cp.any(slots["refl_10cm"]))

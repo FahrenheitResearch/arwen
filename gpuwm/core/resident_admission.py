@@ -217,13 +217,17 @@ def resident_forecast_terms(estimate) -> dict:
     state = sum(int(d.category_bytes("state")) for d in domains)
     physics = sum(int(d.category_bytes("physics")) for d in domains)
     tables = sum(int(d.category_bytes("lbc")) for d in domains)
+    hydro = int((getattr(estimate, "hydro_memory", None) or {}).get("required_bytes", 0))
     total = int(estimate.peak_envelope_bytes)
-    return {
+    terms = {
         "model state": state, "physics": physics,
         "lateral boundary tables": tables,
         "workspaces, step transients, CUDA context and allocator headroom":
-            max(0, total - state - physics - tables),
+            max(0, total - state - physics - tables - hydro),
     }
+    if getattr(estimate, "hydro_memory", None) is not None:
+        terms["hydro owner allocations (PARTIAL if inventory has gaps)"] = hydro
+    return terms
 
 
 def state_bytes(cfg, *, shared_symbols=()) -> int:

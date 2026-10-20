@@ -60,7 +60,9 @@ P_SCALAR = {"kdt": 20, "frzx": 21, "slope": 22, "ch2op": 23, "ssi": 24,
 
 INT_STRIDE = 9
 IN_STRIDE = NSTATE + 39
-OUT_STRIDE = NSTATE + 36
+OUT_STRIDE = NSTATE + 37
+# Extra device diagnostics are not members of the CPU WaterFluxes oracle.
+OUT_DIAGNOSTIC = {"soldrain": 36}  # bottom drainage, mm per LSM step
 
 #: Scalar forcing slots, offset from ``NSTATE``.
 IN_SCALAR = {"dt": 0, "fcev": 1, "fctr": 2, "elai": 3, "esai": 4, "fveg": 5,

@@ -1,0 +1,954 @@
+{
+  "schema": "ian-gefs-roster.v1",
+  "analysis_time": "2022-09-28T07:05:00Z",
+  "observation_cutoff": "2022-09-28T07:05:00Z",
+  "spinup_start": "2022-09-28T00:00:00Z",
+  "forecast_end": "2022-09-29T01:05:00Z",
+  "boundary_bracket_end": "2022-09-29T03:00:00Z",
+  "landfall_reference": "2022-09-28T19:05:00Z",
+  "parents": [
+    {
+      "parent_id": "20220928T00-c00",
+      "config": "20220928T00-c00.toml",
+      "config_sha256": "47671cacff6532b1f6d2faf600e650c35001b9776f4f48dbc1e5903ce6e4b72d",
+      "weight": 0.027777777777777776,
+      "provenance": {
+        "source": "gefs",
+        "cycle": "2022-09-28T00",
+        "source_member": "c00",
+        "lag_hours": 0,
+        "physics_arm": "base"
+      },
+      "initial_lead_h": 0,
+      "forcing_leads_h": [
+        0,
+        3,
+        6,
+        9,
+        12,
+        15,
+        18,
+        21,
+        24,
+        27
+      ]
+    },
+    {
+      "parent_id": "20220928T00-p01",
+      "config": "20220928T00-p01.toml",
+      "config_sha256": "4b58152fe0df146fd3acfe94c7ef11fa3b1b39d9eb69b22f3fe232f739bef671",
+      "weight": 0.027777777777777776,
+      "provenance": {
+        "source": "gefs",
+        "cycle": "2022-09-28T00",
+        "source_member": "p01",
+        "lag_hours": 0,
+        "physics_arm": "base"
+      },
+      "initial_lead_h": 0,
+      "forcing_leads_h": [
+        0,
+        3,
+        6,
+        9,
+        12,
+        15,
+        18,
+        21,
+        24,
+        27
+      ]
+    },
+    {
+      "parent_id": "20220928T00-p02",
+      "config": "20220928T00-p02.toml",
+      "config_sha256": "7ac1f517f9722079c0cdabd17493689608819ad5a785a575957ae0c87083a45e",
+      "weight": 0.027777777777777776,
+      "provenance": {
+        "source": "gefs",
+        "cycle": "2022-09-28T00",
+        "source_member": "p02",
+        "lag_hours": 0,
+        "physics_arm": "base"
+      },
+      "initial_lead_h": 0,
+      "forcing_leads_h": [
+        0,
+        3,
+        6,
+        9,
+        12,
+        15,
+        18,
+        21,
+        24,
+        27
+      ]
+    },
+    {
+      "parent_id": "20220928T00-p03",
+      "config": "20220928T00-p03.toml",
+      "config_sha256": "181cf984f6bb330dd9ef9257e5ee5099b48aa1ecccc1bf52edc4e0d136a4c377",
+      "weight": 0.027777777777777776,
+      "provenance": {
+        "source": "gefs",
+        "cycle": "2022-09-28T00",
+        "source_member": "p03",
+        "lag_hours": 0,
+        "physics_arm": "base"
+      },
+      "initial_lead_h": 0,
+      "forcing_leads_h": [
+        0,
+        3,
+        6,
+        9,
+        12,
+        15,
+        18,
+        21,
+        24,
+        27
+      ]
+    },
+    {
+      "parent_id": "20220928T00-p04",
+      "config": "20220928T00-p04.toml",
+      "config_sha256": "5f7ed2febee4e1480fbc181d8dd60df9f9b742abde9a78c949d5ffba6cbff32b",
+      "weight": 0.027777777777777776,
+      "provenance": {
+        "source": "gefs",
+        "cycle": "2022-09-28T00",
+        "source_member": "p04",
+        "lag_hours": 0,
+        "physics_arm": "base"
+      },
+      "initial_lead_h": 0,
+      "forcing_leads_h": [
+        0,
+        3,
+        6,
+        9,
+        12,
+        15,
+        18,
+        21,
+        24,
+        27
+      ]
+    },
+    {
+      "parent_id": "20220928T00-p05",
+      "config": "20220928T00-p05.toml",
+      "config_sha256": "75c372c068a7e3e1ca05c7387f46018d65c4b5b3be50dc707265bda20ec8f2c3",
+      "weight": 0.027777777777777776,
+      "provenance": {
+        "source": "gefs",
+        "cycle": "2022-09-28T00",
+        "source_member": "p05",
+        "lag_hours": 0,
+        "physics_arm": "base"
+      },
+      "initial_lead_h": 0,
+      "forcing_leads_h": [
+        0,
+        3,
+        6,
+        9,
+        12,
+        15,
+        18,
+        21,
+        24,
+        27
+      ]
+    },
+    {
+      "parent_id": "20220928T00-p06",
+      "config": "20220928T00-p06.toml",
+      "config_sha256": "d245b30cbb9fa97fd779fb47259983a1b6a34ab2b9bf526f83e99c3ecfb07a73",
+      "weight": 0.027777777777777776,
+      "provenance": {
+        "source": "gefs",
+        "cycle": "2022-09-28T00",
+        "source_member": "p06",
+        "lag_hours": 0,
+        "physics_arm": "base"
+      },
+      "initial_lead_h": 0,
+      "forcing_leads_h": [
+        0,
+        3,
+        6,
+        9,
+        12,
+        15,
+        18,
+        21,
+        24,
+        27
+      ]
+    },
+    {
+      "parent_id": "20220928T00-p07",
+      "config": "20220928T00-p07.toml",
+      "config_sha256": "39e686608a99ad776022879e9019530bb324f79016b67bab6cdc64c5601af9cd",
+      "weight": 0.027777777777777776,
+      "provenance": {
+        "source": "gefs",
+        "cycle": "2022-09-28T00",
+        "source_member": "p07",
+        "lag_hours": 0,
+        "physics_arm": "base"
+      },
+      "initial_lead_h": 0,
+      "forcing_leads_h": [
+        0,
+        3,
+        6,
+        9,
+        12,
+        15,
+        18,
+        21,
+        24,
+        27
+      ]
+    },
+    {
+      "parent_id": "20220928T00-p08",
+      "config": "20220928T00-p08.toml",
+      "config_sha256": "8a0c439cbe2654e4477c7a1f0517032de677777eb645880360f8a1e6f172246a",
+      "weight": 0.027777777777777776,
+      "provenance": {
+        "source": "gefs",
+        "cycle": "2022-09-28T00",
+        "source_member": "p08",
+        "lag_hours": 0,
+        "physics_arm": "base"
+      },
+      "initial_lead_h": 0,
+      "forcing_leads_h": [
+        0,
+        3,
+        6,
+        9,
+        12,
+        15,
+        18,
+        21,
+        24,
+        27
+      ]
+    },
+    {
+      "parent_id": "20220928T00-p09",
+      "config": "20220928T00-p09.toml",
+      "config_sha256": "380c02d3051fa7d0f2e4e96a0dc2ab02a4948affc557f9d4a9801c22f45771a7",
+      "weight": 0.027777777777777776,
+      "provenance": {
+        "source": "gefs",
+        "cycle": "2022-09-28T00",
+        "source_member": "p09",
+        "lag_hours": 0,
+        "physics_arm": "base"
+      },
+      "initial_lead_h": 0,
+      "forcing_leads_h": [
+        0,
+        3,
+        6,
+        9,
+        12,
+        15,
+        18,
+        21,
+        24,
+        27
+      ]
+    },
+    {
+      "parent_id": "20220928T00-p10",
+      "config": "20220928T00-p10.toml",
+      "config_sha256": "fd90c5dfb3c2c1dd7cff15a17bc198a9ad4b593437dd7f16636c49dd05256fad",
+      "weight": 0.027777777777777776,
+      "provenance": {
+        "source": "gefs",
+        "cycle": "2022-09-28T00",
+        "source_member": "p10",
+        "lag_hours": 0,
+        "physics_arm": "base"
+      },
+      "initial_lead_h": 0,
+      "forcing_leads_h": [
+        0,
+        3,
+        6,
+        9,
+        12,
+        15,
+        18,
+        21,
+        24,
+        27
+      ]
+    },
+    {
+      "parent_id": "20220928T00-p11",
+      "config": "20220928T00-p11.toml",
+      "config_sha256": "bc7b9af28baa715f022ebc97669f0b3ba8138dc3c6167412d4a072f4077b810a",
+      "weight": 0.027777777777777776,
+      "provenance": {
+        "source": "gefs",
+        "cycle": "2022-09-28T00",
+        "source_member": "p11",
+        "lag_hours": 0,
+        "physics_arm": "base"
+      },
+      "initial_lead_h": 0,
+      "forcing_leads_h": [
+        0,
+        3,
+        6,
+        9,
+        12,
+        15,
+        18,
+        21,
+        24,
+        27
+      ]
+    },
+    {
+      "parent_id": "20220928T00-p12",
+      "config": "20220928T00-p12.toml",
+      "config_sha256": "ec7e580769d97dfd6152598c3c033b9e1257753fbd8962ec50208437d77378ab",
+      "weight": 0.027777777777777776,
+      "provenance": {
+        "source": "gefs",
+        "cycle": "2022-09-28T00",
+        "source_member": "p12",
+        "lag_hours": 0,
+        "physics_arm": "base"
+      },
+      "initial_lead_h": 0,
+      "forcing_leads_h": [
+        0,
+        3,
+        6,
+        9,
+        12,
+        15,
+        18,
+        21,
+        24,
+        27
+      ]
+    },
+    {
+      "parent_id": "20220928T00-p13",
+      "config": "20220928T00-p13.toml",
+      "config_sha256": "5f8c12c3c63bb7c08dfbec94cc4e1dabfd56f2d6c7c237b9288cf265057c7594",
+      "weight": 0.027777777777777776,
+      "provenance": {
+        "source": "gefs",
+        "cycle": "2022-09-28T00",
+        "source_member": "p13",
+        "lag_hours": 0,
+        "physics_arm": "base"
+      },
+      "initial_lead_h": 0,
+      "forcing_leads_h": [
+        0,
+        3,
+        6,
+        9,
+        12,
+        15,
+        18,
+        21,
+        24,
+        27
+      ]
+    },
+    {
+      "parent_id": "20220928T00-p14",
+      "config": "20220928T00-p14.toml",
+      "config_sha256": "d266383b7d8ce0661abf639dd09a2a6430ca441ab4a5719df70a29011a42acc4",
+      "weight": 0.027777777777777776,
+      "provenance": {
+        "source": "gefs",
+        "cycle": "2022-09-28T00",
+        "source_member": "p14",
+        "lag_hours": 0,
+        "physics_arm": "base"
+      },
+      "initial_lead_h": 0,
+      "forcing_leads_h": [
+        0,
+        3,
+        6,
+        9,
+        12,
+        15,
+        18,
+        21,
+        24,
+        27
+      ]
+    },
+    {
+      "parent_id": "20220928T00-p15",
+      "config": "20220928T00-p15.toml",
+      "config_sha256": "7384474493eae27e37a91745d18fa06e9ac3780a7a52c0cdb8f7a2ebcede0374",
+      "weight": 0.027777777777777776,
+      "provenance": {
+        "source": "gefs",
+        "cycle": "2022-09-28T00",
+        "source_member": "p15",
+        "lag_hours": 0,
+        "physics_arm": "base"
+      },
+      "initial_lead_h": 0,
+      "forcing_leads_h": [
+        0,
+        3,
+        6,
+        9,
+        12,
+        15,
+        18,
+        21,
+        24,
+        27
+      ]
+    },
+    {
+      "parent_id": "20220928T00-p16",
+      "config": "20220928T00-p16.toml",
+      "config_sha256": "c54d2a899f0a160e9b3c040898b8ef4e7a7fbb91cbab7b9b0e475474f236e9cf",
+      "weight": 0.027777777777777776,
+      "provenance": {
+        "source": "gefs",
+        "cycle": "2022-09-28T00",
+        "source_member": "p16",
+        "lag_hours": 0,
+        "physics_arm": "base"
+      },
+      "initial_lead_h": 0,
+      "forcing_leads_h": [
+        0,
+        3,
+        6,
+        9,
+        12,
+        15,
+        18,
+        21,
+        24,
+        27
+      ]
+    },
+    {
+      "parent_id": "20220928T00-p17",
+      "config": "20220928T00-p17.toml",
+      "config_sha256": "215fbb13740ecce0be9bb893320059129563602e6e2f734d355c8b0449f54046",
+      "weight": 0.027777777777777776,
+      "provenance": {
+        "source": "gefs",
+        "cycle": "2022-09-28T00",
+        "source_member": "p17",
+        "lag_hours": 0,
+        "physics_arm": "base"
+      },
+      "initial_lead_h": 0,
+      "forcing_leads_h": [
+        0,
+        3,
+        6,
+        9,
+        12,
+        15,
+        18,
+        21,
+        24,
+        27
+      ]
+    },
+    {
+      "parent_id": "20220928T00-p18",
+      "config": "20220928T00-p18.toml",
+      "config_sha256": "ceada1c682642b1231f6278e7375e261114d4547a3e2e2a2da22a3145d90ea36",
+      "weight": 0.027777777777777776,
+      "provenance": {
+        "source": "gefs",
+        "cycle": "2022-09-28T00",
+        "source_member": "p18",
+        "lag_hours": 0,
+        "physics_arm": "base"
+      },
+      "initial_lead_h": 0,
+      "forcing_leads_h": [
+        0,
+        3,
+        6,
+        9,
+        12,
+        15,
+        18,
+        21,
+        24,
+        27
+      ]
+    },
+    {
+      "parent_id": "20220928T00-p19",
+      "config": "20220928T00-p19.toml",
+      "config_sha256": "3ad0a3d39d993c53a28f9f1570ed062dbe050c8112375533cae78b0022c84596",
+      "weight": 0.027777777777777776,
+      "provenance": {
+        "source": "gefs",
+        "cycle": "2022-09-28T00",
+        "source_member": "p19",
+        "lag_hours": 0,
+        "physics_arm": "base"
+      },
+      "initial_lead_h": 0,
+      "forcing_leads_h": [
+        0,
+        3,
+        6,
+        9,
+        12,
+        15,
+        18,
+        21,
+        24,
+        27
+      ]
+    },
+    {
+      "parent_id": "20220928T00-p20",
+      "config": "20220928T00-p20.toml",
+      "config_sha256": "0e3c58f02ecc8a73e9c56830cecdc6fbecc17d128b9a08f592b807f380ff8fd7",
+      "weight": 0.027777777777777776,
+      "provenance": {
+        "source": "gefs",
+        "cycle": "2022-09-28T00",
+        "source_member": "p20",
+        "lag_hours": 0,
+        "physics_arm": "base"
+      },
+      "initial_lead_h": 0,
+      "forcing_leads_h": [
+        0,
+        3,
+        6,
+        9,
+        12,
+        15,
+        18,
+        21,
+        24,
+        27
+      ]
+    },
+    {
+      "parent_id": "20220928T00-p21",
+      "config": "20220928T00-p21.toml",
+      "config_sha256": "e8d3c4ec79eff7741a0548cd2de6030458cbd93e4edc15134e44300e6f2d63d6",
+      "weight": 0.027777777777777776,
+      "provenance": {
+        "source": "gefs",
+        "cycle": "2022-09-28T00",
+        "source_member": "p21",
+        "lag_hours": 0,
+        "physics_arm": "base"
+      },
+      "initial_lead_h": 0,
+      "forcing_leads_h": [
+        0,
+        3,
+        6,
+        9,
+        12,
+        15,
+        18,
+        21,
+        24,
+        27
+      ]
+    },
+    {
+      "parent_id": "20220928T00-p22",
+      "config": "20220928T00-p22.toml",
+      "config_sha256": "bcdd3e8017e35a9b5b28396b6dd9a6e2df5c9d7c330e9faec3dea1948c167d81",
+      "weight": 0.027777777777777776,
+      "provenance": {
+        "source": "gefs",
+        "cycle": "2022-09-28T00",
+        "source_member": "p22",
+        "lag_hours": 0,
+        "physics_arm": "base"
+      },
+      "initial_lead_h": 0,
+      "forcing_leads_h": [
+        0,
+        3,
+        6,
+        9,
+        12,
+        15,
+        18,
+        21,
+        24,
+        27
+      ]
+    },
+    {
+      "parent_id": "20220928T00-p23",
+      "config": "20220928T00-p23.toml",
+      "config_sha256": "62c5d4730c6889d551fdf48c487fb08c6db9f17b1f44b743327302fda1be85f5",
+      "weight": 0.027777777777777776,
+      "provenance": {
+        "source": "gefs",
+        "cycle": "2022-09-28T00",
+        "source_member": "p23",
+        "lag_hours": 0,
+        "physics_arm": "base"
+      },
+      "initial_lead_h": 0,
+      "forcing_leads_h": [
+        0,
+        3,
+        6,
+        9,
+        12,
+        15,
+        18,
+        21,
+        24,
+        27
+      ]
+    },
+    {
+      "parent_id": "20220928T00-p24",
+      "config": "20220928T00-p24.toml",
+      "config_sha256": "a67c5952416e775e1e00e523f538b9fbe4efe78fa137a9239dbac3cd6caffdad",
+      "weight": 0.027777777777777776,
+      "provenance": {
+        "source": "gefs",
+        "cycle": "2022-09-28T00",
+        "source_member": "p24",
+        "lag_hours": 0,
+        "physics_arm": "base"
+      },
+      "initial_lead_h": 0,
+      "forcing_leads_h": [
+        0,
+        3,
+        6,
+        9,
+        12,
+        15,
+        18,
+        21,
+        24,
+        27
+      ]
+    },
+    {
+      "parent_id": "20220928T00-p25",
+      "config": "20220928T00-p25.toml",
+      "config_sha256": "139ff7e12d58690fb969149dc33edb8d413c465f65ebe63109dddcff16735f67",
+      "weight": 0.027777777777777776,
+      "provenance": {
+        "source": "gefs",
+        "cycle": "2022-09-28T00",
+        "source_member": "p25",
+        "lag_hours": 0,
+        "physics_arm": "base"
+      },
+      "initial_lead_h": 0,
+      "forcing_leads_h": [
+        0,
+        3,
+        6,
+        9,
+        12,
+        15,
+        18,
+        21,
+        24,
+        27
+      ]
+    },
+    {
+      "parent_id": "20220928T00-p26",
+      "config": "20220928T00-p26.toml",
+      "config_sha256": "fbf9276251c6e77ae6006cc6448912b66f747f17070832d7ec90e959e8aecc74",
+      "weight": 0.027777777777777776,
+      "provenance": {
+        "source": "gefs",
+        "cycle": "2022-09-28T00",
+        "source_member": "p26",
+        "lag_hours": 0,
+        "physics_arm": "base"
+      },
+      "initial_lead_h": 0,
+      "forcing_leads_h": [
+        0,
+        3,
+        6,
+        9,
+        12,
+        15,
+        18,
+        21,
+        24,
+        27
+      ]
+    },
+    {
+      "parent_id": "20220928T00-p27",
+      "config": "20220928T00-p27.toml",
+      "config_sha256": "25b25ec2f02d62995829baac87c776da49f94f7a18510af0612299fbb4c05f38",
+      "weight": 0.027777777777777776,
+      "provenance": {
+        "source": "gefs",
+        "cycle": "2022-09-28T00",
+        "source_member": "p27",
+        "lag_hours": 0,
+        "physics_arm": "base"
+      },
+      "initial_lead_h": 0,
+      "forcing_leads_h": [
+        0,
+        3,
+        6,
+        9,
+        12,
+        15,
+        18,
+        21,
+        24,
+        27
+      ]
+    },
+    {
+      "parent_id": "20220928T00-p28",
+      "config": "20220928T00-p28.toml",
+      "config_sha256": "64eabefd74783138029823f42b586db51999f5ed2a6ee1239be830bdc910da79",
+      "weight": 0.027777777777777776,
+      "provenance": {
+        "source": "gefs",
+        "cycle": "2022-09-28T00",
+        "source_member": "p28",
+        "lag_hours": 0,
+        "physics_arm": "base"
+      },
+      "initial_lead_h": 0,
+      "forcing_leads_h": [
+        0,
+        3,
+        6,
+        9,
+        12,
+        15,
+        18,
+        21,
+        24,
+        27
+      ]
+    },
+    {
+      "parent_id": "20220928T00-p29",
+      "config": "20220928T00-p29.toml",
+      "config_sha256": "d194e0563a4d07150052a1a6560fc6e12a090af39b27b04b94bb00d26b251ea7",
+      "weight": 0.027777777777777776,
+      "provenance": {
+        "source": "gefs",
+        "cycle": "2022-09-28T00",
+        "source_member": "p29",
+        "lag_hours": 0,
+        "physics_arm": "base"
+      },
+      "initial_lead_h": 0,
+      "forcing_leads_h": [
+        0,
+        3,
+        6,
+        9,
+        12,
+        15,
+        18,
+        21,
+        24,
+        27
+      ]
+    },
+    {
+      "parent_id": "20220928T00-p30",
+      "config": "20220928T00-p30.toml",
+      "config_sha256": "628a51c964ac9da77e8f49a2ee58d9b281cf569985bcc0b951053cf0605dff85",
+      "weight": 0.027777777777777776,
+      "provenance": {
+        "source": "gefs",
+        "cycle": "2022-09-28T00",
+        "source_member": "p30",
+        "lag_hours": 0,
+        "physics_arm": "base"
+      },
+      "initial_lead_h": 0,
+      "forcing_leads_h": [
+        0,
+        3,
+        6,
+        9,
+        12,
+        15,
+        18,
+        21,
+        24,
+        27
+      ]
+    },
+    {
+      "parent_id": "20220927T18-p01",
+      "config": "20220927T18-p01.toml",
+      "config_sha256": "52efe21b6beafe274ac3d015ddd651700d24eafe911581af93ef82a073137aa8",
+      "weight": 0.027777777777777776,
+      "provenance": {
+        "source": "gefs",
+        "cycle": "2022-09-27T18",
+        "source_member": "p01",
+        "lag_hours": 6,
+        "physics_arm": "base"
+      },
+      "initial_lead_h": 6,
+      "forcing_leads_h": [
+        6,
+        9,
+        12,
+        15,
+        18,
+        21,
+        24,
+        27,
+        30,
+        33
+      ]
+    },
+    {
+      "parent_id": "20220927T18-p02",
+      "config": "20220927T18-p02.toml",
+      "config_sha256": "d86a5752efff8faa57e0cfa3e3fe6dc5e839fc12509908bac62d580bb4661925",
+      "weight": 0.027777777777777776,
+      "provenance": {
+        "source": "gefs",
+        "cycle": "2022-09-27T18",
+        "source_member": "p02",
+        "lag_hours": 6,
+        "physics_arm": "base"
+      },
+      "initial_lead_h": 6,
+      "forcing_leads_h": [
+        6,
+        9,
+        12,
+        15,
+        18,
+        21,
+        24,
+        27,
+        30,
+        33
+      ]
+    },
+    {
+      "parent_id": "20220927T18-p03",
+      "config": "20220927T18-p03.toml",
+      "config_sha256": "0712d40c42667a9a10d41b77d6adc73f59d1c23dfd086c841dac77c4c3f656d4",
+      "weight": 0.027777777777777776,
+      "provenance": {
+        "source": "gefs",
+        "cycle": "2022-09-27T18",
+        "source_member": "p03",
+        "lag_hours": 6,
+        "physics_arm": "base"
+      },
+      "initial_lead_h": 6,
+      "forcing_leads_h": [
+        6,
+        9,
+        12,
+        15,
+        18,
+        21,
+        24,
+        27,
+        30,
+        33
+      ]
+    },
+    {
+      "parent_id": "20220927T18-p04",
+      "config": "20220927T18-p04.toml",
+      "config_sha256": "4a162da70c58636a5884718edad0888447f601249183eff580eb37654715ada8",
+      "weight": 0.027777777777777776,
+      "provenance": {
+        "source": "gefs",
+        "cycle": "2022-09-27T18",
+        "source_member": "p04",
+        "lag_hours": 6,
+        "physics_arm": "base"
+      },
+      "initial_lead_h": 6,
+      "forcing_leads_h": [
+        6,
+        9,
+        12,
+        15,
+        18,
+        21,
+        24,
+        27,
+        30,
+        33
+      ]
+    },
+    {
+      "parent_id": "20220927T18-p05",
+      "config": "20220927T18-p05.toml",
+      "config_sha256": "39d0ed3238125719749b68d2520a5943efce3e3d8fe4bef28fa0920a87d3ae10",
+      "weight": 0.027777777777777776,
+      "provenance": {
+        "source": "gefs",
+        "cycle": "2022-09-27T18",
+        "source_member": "p05",
+        "lag_hours": 6,
+        "physics_arm": "base"
+      },
+      "initial_lead_h": 6,
+      "forcing_leads_h": [
+        6,
+        9,
+        12,
+        15,
+        18,
+        21,
+        24,
+        27,
+        30,
+        33
+      ]
+    }
+  ],
+  "author_seconds": 1.9375375024974346,
+  "parallelism": "8 host workers after cyclone-setup",
+  "seed_position": {
+    "latitude": 25.9,
+    "longitude": -82.9,
+    "kind": "explicit seed; not measured centre"
+  }
+}

@@ -51,6 +51,7 @@
       "wind_chill_2m"
     ],
     "direct": [
+      "100m_wind_speed",
       "10m_wind_gusts",
       "10m_wind_speed_and_direction",
       "1km_reflectivity",
@@ -72,6 +73,7 @@
       "300mb_temperature_height_winds",
       "500mb_absolute_vorticity_height_winds",
       "500mb_height_winds",
+      "500mb_omega",
       "500mb_rh_height_winds",
       "500mb_temperature_height_winds",
       "700mb_absolute_vorticity_height_winds",
@@ -83,6 +85,7 @@
       "850mb_dewpoint_height_winds",
       "850mb_height_winds",
       "850mb_rh_height_winds",
+      "850mb_specific_humidity",
       "850mb_temperature_height_winds",
       "aigefs_spr_2m_temperature_stddev",
       "aigefs_spr_500mb_height_stddev",
@@ -572,16 +575,16 @@
     }
   },
   "summary": {
-    "blocked_entries": 7,
+    "blocked_entries": 10,
     "derived_entries": 48,
-    "direct_entries": 248,
+    "direct_entries": 251,
     "experimental_entries": 11,
     "heavy_entries": 1,
     "partial_entries": 288,
     "proof_entries": 1,
     "proxy_entries": 2,
     "supported_entries": 51,
-    "total_entries": 346,
+    "total_entries": 349,
     "windowed_entries": 49
   }
 }

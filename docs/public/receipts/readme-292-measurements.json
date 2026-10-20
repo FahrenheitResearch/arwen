@@ -1,0 +1,61 @@
+{
+  "schema": "readme-measured-command-wall-v1",
+  "kind": "transcribed existing acceptance measurements; no new forecast run",
+  "date": "2026-10-17",
+  "package": "gpuwm 2.9.2 candidate",
+  "candidate_revision": "beaafd81fd00a65e871c8ef398c171b8008b63f5",
+  "platform": "Linux, CPython 3.13.15",
+  "gpu": "one NVIDIA GeForce RTX 5090, 32 GiB",
+  "source_ledger": "CRITIC-292 steps-final.jsonl",
+  "source_ledger_sha256": "aa2bc0623a21fb29672ba17b711026313ed307ad6ef044f65b8c432f76736564",
+  "rows": [
+    {
+      "label": "02-gfs-go",
+      "configuration": "GFS 2026-10-17T00, 12 km, 1500 km extent, 3 h",
+      "command_with_portable_paths": [
+        "gpuwm",
+        "go",
+        "forecast.toml"
+      ],
+      "wall_seconds": 88.151,
+      "exit_code": 0,
+      "scope": "Input acquisition, preparation, forecast and maps; geography already installed. The prior missing-geography refusal happened before fetch.",
+      "source_log": "02-gfs-go.log",
+      "source_log_sha256": "568988ee9b0f27794e72957a4e469c220c9019335c5c19887ede44616d887a9b"
+    },
+    {
+      "label": "04-ncar-wrfinput",
+      "configuration": "NCAR CONUS12, supplied WRF input, 12 h, 600 steps",
+      "command_with_portable_paths": [
+        "gpuwm",
+        "run",
+        "--wrfinput",
+        "INPUT",
+        "--outdir",
+        "RUN"
+      ],
+      "wall_seconds": 137.915,
+      "exit_code": 0,
+      "scope": "Existing benchmark input files; forecast and products. Declared use_theta_m=1 to use_theta_m=0 substitution.",
+      "source_log": "04-ncar-wrfinput.log",
+      "source_log_sha256": "07085095084ba1eebf5bc85e1b62c445d5edb92a40d94c9e7985042ed0874460"
+    },
+    {
+      "label": "05-warm-start",
+      "configuration": "NCAR CONUS12, supplied WRF restart, final 1 h",
+      "command_with_portable_paths": [
+        "gpuwm",
+        "run",
+        "--restart-from",
+        "INPUT/wrfrst_d01_2019-11-26_23:00:00.gnu",
+        "--outdir",
+        "RUN"
+      ],
+      "wall_seconds": 25.428,
+      "exit_code": 0,
+      "scope": "Existing restart input; forecast and products. Earlier NCAR commands had run in this environment; not a cold-kernel claim. GRIB2 export was timed separately and is excluded.",
+      "source_log": "05-warm-start.log",
+      "source_log_sha256": "67e253bbcd479566e0027d7e166e0db2c662fba4c5b5b55c825a3e14a49a4eb7"
+    }
+  ]
+}

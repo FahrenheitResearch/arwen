@@ -98,8 +98,9 @@ def test_native_front_door_relays_every_commit_and_progress_before_completion(tm
     assert outer[-1]["event"] == native[-1]["event"] == "completed"
     assert outer[-1]["summary"] == native[-1]["summary"]
     assert outer[-1]["outputs_committed"] == count
+    # Hydro rides every receipt; this fixture's runtime has no hydro, so the slot is empty.
     assert outer[-1]["summary"] == {"wrfout_count": count, "completed_seconds": 180., "nan_free": True,
-                                    "restarted": False}
+                                    "restarted": False, "hydro": None}
     assert [row["model_elapsed_seconds"] for row in samples] == [60., 120., 180.]
     assert [row["outer_step"] for row in samples] == [1, 2, 3]
     beat = json.loads((plan.run_dir / "run-progress.json").read_text())

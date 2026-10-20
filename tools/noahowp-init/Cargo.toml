@@ -1,0 +1,16 @@
+[package]
+name = "arwen-noahowp-init"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Rust Noah-OWP parameter and initial-state preparation"
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rayon = "=1.12.0"
+serde_json = "=1.0.151"
+sha2 = "=0.10.9"

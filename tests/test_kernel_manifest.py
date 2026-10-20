@@ -119,6 +119,10 @@ EXPECTED_SITE_COUNT = 30
 #: anywhere else fails the census below until it is either made a site or
 #: explained here.
 RAWMODULE_CONSTRUCTORS_OUTSIDE_THE_MANIFEST = {
+    "gpuwm/kernel_aot.py": (
+        "the AOT loader opens a verified precompiled image using path alone; "
+        "it never compiles source or supplies numerical options, and its "
+        "path-only boundary is checked separately below"),
     "gpuwm/core/tempo_runtime.py": (
         "the TEMPO column unit's own compile site; TEMPO_SOURCE_FINGERPRINT binds "
         "every included header's bytes into the compile key, and the unit is "
@@ -425,6 +429,15 @@ def test_every_rawmodule_constructor_in_the_tree_is_named():
         assert path in constructors, f"{path} no longer constructs one; drop it"
     for path, reason in RAWMODULE_CONSTRUCTORS_OUTSIDE_THE_MANIFEST.items():
         assert len(reason.split()) >= 12, path
+
+
+def test_aot_loader_only_loads_precompiled_images():
+    tree = ast.parse(_site_text("gpuwm/kernel_aot.py"))
+    constructors = [node for node in ast.walk(tree) if _is_rawmodule(node)]
+    assert constructors
+    for call in constructors:
+        assert not call.args
+        assert [keyword.arg for keyword in call.keywords] == ["path"]
 
 
 def test_every_direct_nvrtc_site_is_accounted_for():

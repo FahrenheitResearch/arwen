@@ -193,10 +193,10 @@ impl Plan {
     pub fn apply(&self, field: &[f64], rule: Rule, cols: &Columns<'_>) -> Vec<f32> {
         let cells = cols.cells;
         let mut out = vec![f32::NAN; self.levels_pa.len() * cells];
-        out.par_chunks_mut(cells).enumerate().for_each(|(l, plane)| {
-            for (c, slot) in plane.iter_mut().enumerate() {
-                *slot = self.mass_level_value(field, rule, cols, l, c) as f32;
-            }
+        // Earth2 channels select one pressure level. Split over cells as
+        // well as levels so that a single-channel plane uses the pool.
+        out.par_iter_mut().enumerate().for_each(|(i, slot)| {
+            *slot = self.mass_level_value(field, rule, cols, i / cells, i % cells) as f32;
         });
         out
     }

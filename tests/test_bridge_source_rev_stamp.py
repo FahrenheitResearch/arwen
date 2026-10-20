@@ -300,6 +300,9 @@ def test_pin_accepts_a_bundle_stamped_with_the_released_revision(tmp_path):
 #: entry whose file stops referencing the stamp -- fails below, so a new
 #: bridge cannot ship un-provable.
 _STAMP_SOURCES = {
+    "nextgen_hydrofabric": ("src/lib.rs", 'env!("GPUWM_HYDROFABRIC_REV")'),
+    "arwen_nextgen_forcing": "src/lib.rs",
+    "rw_nextgen_verify": ("src/main.rs", 'env!("GPUWM_BRIDGE_SOURCE_REV")'),
     "rw_zarr": "src/main.rs",
     "arwen-tui": "src/main.rs",
     "grib1_bridge": "src/main.rs",
@@ -309,6 +312,7 @@ _STAMP_SOURCES = {
     "grib2_dump": "src/bin/grib2_dump.rs",
     "gpuwm_preprocess_cpu": "src/lib.rs",
     "rw_fetch": "crates/rw-fetch/src/main.rs",
+    "rw_soundings": "crates/rw-soundings/src/main.rs",
     "rw_globe_pack": "crates/rw-globe-pack/src/main.rs",
     "rw_wrfbatch": "crates/rw-wrfbatch/src/main.rs",
     "rw_compare": "crates/rw-wrfbatch/src/bin/compare.rs",
@@ -351,6 +355,9 @@ _STAMP_SOURCES = {
     # build.rs stamps it); rw_scoreboard is its own crate with its own build.rs.
     "rw_scorecard": "crates/rw-wrfbatch/src/bin/scorecard.rs",
     "rw_scoreboard": "crates/rw-scoreboard/src/main.rs",
+    # 2.9.3: the cyclone field reader behind gpuwm tc-tracks, a bin of
+    # rw-wrfbatch stamped by that crate's build.rs.
+    "rw_tc_fields": "crates/rw-wrfbatch/src/bin/tc_fields.rs",
     # The GDT-101 remapper, added to BUNDLED_ARTIFACTS by the icon-global
     # lane.  It lives in the bridge crate, so `tools/grib1_bridge/build.rs`
     # stamps it with its five siblings, and its `main` black_boxes the
@@ -394,10 +401,14 @@ _STAMP_SOURCES = {
 
 #: The build script that injects the revision for each artifact.
 _STAMP_BUILDS = {
+    "tools/nextgen_hydrofabric": (("build.rs", "GPUWM_HYDROFABRIC_REV"),),
+    "tools/nextgen_forcing": ("build.rs",),
+    "tools/nextgen_verify": ("build.rs",),
     "tools/zarr_bridge": ("build.rs",),
     "tools/arwen-tui": ("build.rs",),
     bridges.CRATE_RELATIVE: ("build.rs",),
     bridges.RUSTWX_CRATE_RELATIVE: ("crates/rw-fetch/build.rs",
+                                    "crates/rw-soundings/build.rs",
                                     "crates/rw-wrfbatch/build.rs",
                                     "crates/rw-mpas/build.rs",
                                     "crates/rw-mlexport/build.rs",
@@ -445,10 +456,12 @@ def test_every_bundled_artifact_entry_point_references_the_stamp():
             # Its entry point is upstream's and is not edited here, so it
             # is asked for its contract marker instead -- above.
             continue
-        source = (REPO_ROOT / artifact.crate
-                  / _STAMP_SOURCES[artifact.name])
+        entry = _STAMP_SOURCES[artifact.name]
+        relative, reference = (entry if isinstance(entry, tuple) else
+                               (entry, "SOURCE_REV_STAMP"))
+        source = REPO_ROOT / artifact.crate / relative
         text = source.read_text(encoding="utf-8")
-        assert "SOURCE_REV_STAMP" in text, (
+        assert reference in text, (
             f"{source} does not reference the source-revision stamp, so "
             f"{artifact.name} would build without one and the cut would "
             "refuse it")
@@ -457,9 +470,11 @@ def test_every_bundled_artifact_entry_point_references_the_stamp():
 def test_every_bridge_workspace_build_script_injects_the_revision():
     _require_bridge_sources()
     for workspace, scripts in _STAMP_BUILDS.items():
-        for relative in scripts:
+        for entry in scripts:
+            relative, variable = (entry if isinstance(entry, tuple) else
+                                  (entry, "GPUWM_BRIDGE_SOURCE_REV"))
             script = REPO_ROOT / workspace / relative
             assert script.is_file(), f"{script} is missing"
             text = script.read_text(encoding="utf-8")
-            assert "rustc-env=GPUWM_BRIDGE_SOURCE_REV" in text, (
-                f"{script} no longer injects GPUWM_BRIDGE_SOURCE_REV")
+            assert f"rustc-env={variable}" in text, (
+                f"{script} no longer injects {variable}")

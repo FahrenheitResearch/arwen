@@ -1,0 +1,340 @@
+{
+ "schema": "arwen.hydro.calibration-parameters.v1",
+ "method": {
+  "name": "ES-MDA",
+  "source": "Ensemble smoother with multiple data assimilation, Emerick and Reynolds (2013), Computers & Geosciences 55:3-15: Na iterations, each assimilating the observations with error covariance inflated by alpha = Na, perturbed observations per member; the iterative ensemble Kalman inversion of Iglesias, Law and Stuart (2013), Inverse Problems 29:045001. Parameters are log multipliers on the regionalised fields (the NWM calibration convention of scaling spatial parameter fields, Cosgrove et al. 2024, JAWRA 60(2):247-272).",
+  "observation_transform": "natural log of block-mean discharge; Gaussian error of standard deviation obs_error_log (0.10 = about 10 percent)"
+ },
+ "parameters": [
+  {
+   "name": "k_nash",
+   "column": "k_nash",
+   "scope": "zone",
+   "prior_log_sigma": 1.0,
+   "bounds": [
+    0.0,
+    1.0
+   ],
+   "cfe_fields": [
+    "K_nash_subsurface"
+   ],
+   "meaning": "subsurface Nash cascade coefficient (1/h): sets how fast lateral flow reaches the channel"
+  },
+  {
+   "name": "k_lf",
+   "column": "k_lf",
+   "scope": "zone",
+   "prior_log_sigma": 1.0,
+   "bounds": [
+    0.0,
+    1.0
+   ],
+   "cfe_fields": [
+    "soil_reservoir.coeff_secondary"
+   ],
+   "meaning": "lateral flow coefficient (m/h at full drainable storage)"
+  },
+  {
+   "name": "refkdt",
+   "column": "refkdt",
+   "scope": "zone",
+   "prior_log_sigma": 0.7,
+   "bounds": [
+    0.1,
+    10.0
+   ],
+   "cfe_fields": [
+    "NWM_soil_params.refkdt",
+    "infiltration_excess_params_struct.Schaake_adjusted_magic_constant_by_soil_type"
+   ],
+   "meaning": "Schaake et al. (1996) infiltration parameter; the CFE constant refkdt * satdk / 2e-6 scales with it"
+  },
+  {
+   "name": "percolation",
+   "column": "soil_slop",
+   "scope": "zone",
+   "prior_log_sigma": 0.7,
+   "bounds": [
+    0.0,
+    1.0
+   ],
+   "cfe_fields": [
+    "NWM_soil_params.slop",
+    "soil_reservoir.coeff_primary"
+   ],
+   "meaning": "drainage coefficient slop; percolation to groundwater satdk * slop * 3600 scales with it"
+  },
+  {
+   "name": "cgw",
+   "column": "cgw_m_h",
+   "scope": "zone",
+   "prior_log_sigma": 1.0,
+   "bounds": [
+    1e-09,
+    10.0
+   ],
+   "cfe_fields": [
+    "gw_reservoir.coeff_primary"
+   ],
+   "meaning": "groundwater bucket coefficient (m/h)"
+  },
+  {
+   "name": "gw_expon",
+   "column": "gw_expon",
+   "scope": "global",
+   "prior_log_sigma": 0.3,
+   "bounds": [
+    1.0,
+    10.0
+   ],
+   "cfe_fields": [
+    "gw_reservoir.exponent_primary"
+   ],
+   "meaning": "groundwater bucket exponent"
+  },
+  {
+   "name": "gw_zmax",
+   "column": "max_gw_storage_m",
+   "scope": "global",
+   "prior_log_sigma": 0.7,
+   "bounds": [
+    0.001,
+    10.0
+   ],
+   "cfe_fields": [
+    "gw_reservoir.storage_max_m",
+    "gw_reservoir.storage_m"
+   ],
+   "meaning": "groundwater bucket depth (m); the initial storage keeps its fraction of it"
+  },
+  {
+   "name": "manning_n",
+   "column": "flowpath_attributes.n",
+   "scope": "global",
+   "prior_log_sigma": 0.4,
+   "bounds": [
+    0.005,
+    0.5
+   ],
+   "routing_columns": [
+    4,
+    5
+   ],
+   "meaning": "Manning n of channel and compound channel (t-route MC columns n, ncc)"
+  },
+  {
+   "name": "noah_bexp",
+   "column": "noah:parameters.bexp",
+   "scope": "global",
+   "prior_log_sigma": 0.25,
+   "bounds": [
+    2.0,
+    15.0
+   ],
+   "noah_fields": [
+    "parameters.bexp"
+   ],
+   "group": "soil hydraulic scaling",
+   "source": "Cosgrove et al. (2024), JAWRA 60(2):247-272 (NWM v3 calibration parameter list)",
+   "meaning": "Clapp-Hornberger b of every Noah-OWP soil layer (soil water retention and conductivity curve)"
+  },
+  {
+   "name": "noah_dksat",
+   "column": "noah:parameters.dksat",
+   "scope": "global",
+   "prior_log_sigma": 0.7,
+   "bounds": [
+    1e-08,
+    0.001
+   ],
+   "noah_fields": [
+    "parameters.dksat",
+    "parameters.dwsat",
+    "parameters.kdt"
+   ],
+   "group": "soil hydraulic scaling",
+   "source": "Cosgrove et al. (2024), JAWRA 60(2):247-272 (NWM v3 calibration parameter list)",
+   "meaning": "saturated hydraulic conductivity of every layer (m/s); saturated diffusivity and kdt = refkdt dksat(1)/refdk keep their ratio"
+  },
+  {
+   "name": "noah_lai",
+   "column": "noah:parameters.laim",
+   "scope": "global",
+   "prior_log_sigma": 0.3,
+   "bounds": [
+    0.0,
+    12.0
+   ],
+   "noah_fields": [
+    "parameters.laim",
+    "parameters.saim"
+   ],
+   "group": "vegetation and canopy",
+   "source": "NOAA-OWP ngen-cal Noah-OWP-Modular + CFE calibration examples",
+   "meaning": "monthly leaf and stem area index (dynamic_veg_option 1 reads them): canopy interception capacity and transpiration"
+  },
+  {
+   "name": "noah_ch2op",
+   "column": "noah:parameters.ch2op",
+   "scope": "global",
+   "prior_log_sigma": 0.7,
+   "bounds": [
+    0.01,
+    2.0
+   ],
+   "noah_fields": [
+    "parameters.ch2op"
+   ],
+   "group": "vegetation and canopy",
+   "source": "NOAA-OWP ngen-cal Noah-OWP-Modular + CFE calibration examples",
+   "meaning": "canopy water storage capacity per unit leaf and stem area (mm): how much rain the canopy holds back and evaporates"
+  },
+  {
+   "name": "noah_cwp",
+   "column": "noah:parameters.cwp",
+   "scope": "global",
+   "prior_log_sigma": 0.4,
+   "bounds": [
+    0.01,
+    20.0
+   ],
+   "noah_fields": [
+    "parameters.cwp"
+   ],
+   "group": "vegetation and canopy",
+   "source": "Cosgrove et al. (2024), JAWRA 60(2):247-272 (NWM v3 calibration parameter list)",
+   "meaning": "canopy wind parameter CWPVT (within-canopy wind and turbulent exchange)"
+  },
+  {
+   "name": "noah_vcmx25",
+   "column": "noah:parameters.vcmx25",
+   "scope": "global",
+   "prior_log_sigma": 0.3,
+   "bounds": [
+    0.0,
+    200.0
+   ],
+   "noah_fields": [
+    "parameters.vcmx25"
+   ],
+   "group": "vegetation and canopy",
+   "source": "Cosgrove et al. (2024), JAWRA 60(2):247-272 (NWM v3 calibration parameter list)",
+   "meaning": "maximum carboxylation rate at 25 C (stomatal conductance and transpiration)"
+  },
+  {
+   "name": "noah_mp",
+   "column": "noah:parameters.mp",
+   "scope": "global",
+   "prior_log_sigma": 0.3,
+   "bounds": [
+    1.0,
+    30.0
+   ],
+   "noah_fields": [
+    "parameters.mp"
+   ],
+   "group": "vegetation and canopy",
+   "source": "Cosgrove et al. (2024), JAWRA 60(2):247-272 (NWM v3 calibration parameter list)",
+   "meaning": "slope of the Ball-Berry conductance-photosynthesis relation"
+  },
+  {
+   "name": "noah_hvt",
+   "column": "noah:parameters.hvt",
+   "scope": "global",
+   "prior_log_sigma": 0.3,
+   "bounds": [
+    0.0,
+    50.0
+   ],
+   "noah_fields": [
+    "parameters.hvt",
+    "parameters.hvb"
+   ],
+   "group": "vegetation and canopy",
+   "source": "Cosgrove et al. (2024), JAWRA 60(2):247-272 (NWM v3 calibration parameter list)",
+   "meaning": "canopy top height (m); canopy bottom keeps its ratio"
+  },
+  {
+   "name": "noah_mfsno",
+   "column": "noah:parameters.mfsno",
+   "scope": "global",
+   "prior_log_sigma": 0.4,
+   "bounds": [
+    0.1,
+    10.0
+   ],
+   "noah_fields": [
+    "parameters.mfsno"
+   ],
+   "group": "snow",
+   "source": "Cosgrove et al. (2024), JAWRA 60(2):247-272 (NWM v3 calibration parameter list)",
+   "meaning": "snowmelt m parameter of the snow-cover fraction curve (how fast cover shrinks as snow melts)"
+  },
+  {
+   "name": "noah_scamax",
+   "column": "noah:parameters.scamax",
+   "scope": "global",
+   "prior_log_sigma": 0.1,
+   "bounds": [
+    0.5,
+    1.0
+   ],
+   "noah_fields": [
+    "parameters.scamax"
+   ],
+   "group": "snow",
+   "source": "Cosgrove et al. (2024), JAWRA 60(2):247-272 (NWM v3 calibration parameter list)",
+   "meaning": "maximum fractional snow-covered area"
+  },
+  {
+   "name": "noah_rsurf_snow",
+   "column": "noah:parameters.rsurf_snow",
+   "scope": "global",
+   "prior_log_sigma": 0.5,
+   "bounds": [
+    1.0,
+    500.0
+   ],
+   "noah_fields": [
+    "parameters.rsurf_snow"
+   ],
+   "group": "snow",
+   "source": "Cosgrove et al. (2024), JAWRA 60(2):247-272 (NWM v3 calibration parameter list)",
+   "meaning": "surface resistance of snow to sublimation (s/m)"
+  },
+  {
+   "name": "noah_bvic",
+   "column": "noah:parameters.bvic",
+   "scope": "global",
+   "prior_log_sigma": 0.5,
+   "bounds": [
+    0.001,
+    5.0
+   ],
+   "noah_fields": [
+    "parameters.bvic"
+   ],
+   "group": "infiltration",
+   "source": "Liang et al. (1994) VIC b; Noah-MP dynamic VIC runoff (runoff_option 8, the hydro-world namelist)",
+   "meaning": "VIC infiltration-capacity shape b of the dynamic VIC scheme (runoff_option 8); refkdt is the Schaake control and is inactive under this option"
+  },
+  {
+   "name": "noah_gdvic",
+   "column": "noah:parameters.g",
+   "scope": "global",
+   "prior_log_sigma": 0.5,
+   "bounds": [
+    1e-05,
+    2.0
+   ],
+   "noah_fields": [
+    "parameters.g"
+   ],
+   "group": "infiltration",
+   "source": "Noah-MP dynamic VIC (runoff_option 8) GDVIC, mean capillary drive (m)",
+   "meaning": "mean capillary drive of the dynamic VIC / Philip infiltration (dynamic_vic_option 1)"
+  }
+ ],
+ "layout": "full column: Noah-OWP land-model rows (noah_fields, the f32 parameter rows of the Noah-OWP slab, gpuwm/hydro/noahowp/schema.json) are members of the same stacked realization as the CFE and routing rows; forcing and PET stay shared. The CFE/routing-only table calibration-parameters.v1.json is the door default; this table is selected with request.parameters.",
+ "noah_note": "Noah-OWP passes its surface water input (water.qinsur: throughfall plus snowmelt) to CFE, which partitions infiltration; Noah-OWP soil and infiltration rows reach the gauges only through the land energy and snow budget. Their sensitivity is measured in each calibration (prior-ensemble correlation, receipt) rather than assumed."
+}

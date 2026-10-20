@@ -445,7 +445,7 @@ def _w_phi_bytes(kernel, seed, nz):
 
     state, cfg = random_acoustic_state(seed=seed, nz=nz, ny=4, nx=8)
     real_pick = acmod._w_phi_kernel
-    acmod._w_phi_kernel = lambda name, levels: kernel
+    acmod._w_phi_kernel = lambda name, levels, ny=0, nx=0: kernel
     try:
         acmod.acoustic_substep(state, cfg, dtau=0.5, first=False)
     finally:

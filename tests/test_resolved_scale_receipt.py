@@ -26,6 +26,7 @@ from tools.report_resolved_scale_disclaimer import (
     INTERNAL_RECEIPT,
     INTERNAL_SPEC,
     PUBLIC_RECEIPT,
+    SCALE_PAGE,
     README_ITEM_SUBSTRINGS,
     README_PINNED_FIGURE_SUBSTRINGS,
     VERIFICATION_ITEM_SUBSTRINGS,
@@ -85,7 +86,8 @@ def test_published_items_still_carry_the_authorized_prose():
     receipt = _public()
     assert receipt["figure_variant_authorized"] == "pinned"
 
-    readme = find_item(REPO_ROOT / "README.md", "- **Resolved scale.**")
+    assert "[scale note](docs/public/RESOLVED-SCALE.md)" in (REPO_ROOT / "README.md").read_text()
+    readme = find_item(REPO_ROOT / SCALE_PAGE, "- **Resolved scale.**")
     assert readme["item_count"] == 1
     for token in README_ITEM_SUBSTRINGS + README_PINNED_FIGURE_SUBSTRINGS:
         assert token in readme["normalized"], token

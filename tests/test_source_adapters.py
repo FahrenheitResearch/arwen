@@ -47,6 +47,10 @@ from gpuwm.source_frame import (
 
 
 EXPECTED_SOURCE_IDS = (
+    "aorc",
+    "era5-land",
+    "ngen-csv",
+    "nwm-retrospective-forcing",
     "hrrr",
     "hrrr-prs",
     "gem-gdps",
@@ -63,6 +67,7 @@ EXPECTED_SOURCE_IDS = (
     "ecmwf-open-data",
     "ecmwf-ens",
     "aifs",
+    "earth2",
     "rap-native",
     "hrrr-native",
     "rap",
@@ -88,6 +93,7 @@ EXPECTED_SOURCE_IDS = (
     "mapped",
 )
 ROOT = Path(__file__).parents[1]
+EARTH2_MODELS = json.loads((ROOT / "gpuwm/authorities/earth2-models.v1.json").read_text())["models"]
 
 
 def test_source_cli_import_is_cpu_only():
@@ -121,11 +127,16 @@ def test_forecast_start_hour_is_absent_globally_and_defaults_only_in_hrrr():
     assert parsed.history_interval_seconds is None
 
 
-def test_registry_covers_bound_inventory_and_external_source_routes():
+def test_registry_covers_bound_inventory_and_external_source_routes_including_earth2():
     adapters = source_adapters()
-    assert tuple(adapter.source_id for adapter in adapters) == EXPECTED_SOURCE_IDS
-    assert len({adapter.source_id for adapter in adapters}) == len(EXPECTED_SOURCE_IDS)
-    assert [adapter.source_id for adapter in adapters if adapter.runnable] == [
+    from gpuwm.source_adapters import _model_table_rows
+    model_adapters = _model_table_rows(adapters)
+    base_adapters = tuple(adapter for adapter in adapters if adapter.model_key is None)
+    assert tuple(adapter.source_id for adapter in base_adapters) == EXPECTED_SOURCE_IDS
+    assert tuple(adapter.source_id for adapter in model_adapters) == tuple(
+        "earth2-" + key for key in EARTH2_MODELS)
+    assert len({adapter.source_id for adapter in adapters}) == len(adapters)
+    assert [adapter.source_id for adapter in base_adapters if adapter.runnable] == [
         "hrrr",
         "hrrr-prs",
         "gem-gdps",
@@ -140,6 +151,7 @@ def test_registry_covers_bound_inventory_and_external_source_routes():
         "ecmwf-open-data",
         "ecmwf-ens",
         "aifs",
+        "earth2",
         "rap-native",
         "hrrr-native",
         "rap",
@@ -151,6 +163,8 @@ def test_registry_covers_bound_inventory_and_external_source_routes():
         "hex-global",
         "mapped",
     ]
+    assert [adapter.source_id for adapter in model_adapters if adapter.runnable] == [
+        "earth2-" + key for key, row in EARTH2_MODELS.items() if row.get("profile")]
     # The arbitrary-acceptance seam, asserted as a property rather than as
     # a list: a source whose mapping ships is decoded through the generic
     # mapped runner, so it costs table rows and JSON, never a runner.
@@ -210,7 +224,7 @@ def test_manifest_binds_inventory_and_does_not_confuse_decode_with_readiness():
     assert manifest["runtime_forbidden"] == ["WPS", "real.exe"]
     assert manifest["rusty_weather_inventory"]["model_id_count"] == 23
     assert len(manifest["rusty_weather_inventory"]["head"]) == 40
-    assert manifest["source_count"] == len(EXPECTED_SOURCE_IDS)
+    assert manifest["source_count"] == len(source_adapters())
     assert manifest["runnable_source_count"] == sum(row.runnable for row in source_adapters())
     assert set(manifest["packaged_source_authorities"]) == set(
         packaged_profile_ids())
@@ -458,7 +472,7 @@ def test_interval_time_semantics_are_explicit():
 def test_cli_lists_machine_readable_inventory(capsys):
     assert main(["--list-sources"]) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["source_count"] == len(EXPECTED_SOURCE_IDS)
+    assert payload["source_count"] == len(source_adapters())
     assert (
         payload["canonical_source_frame"]["schema"] == "gpuwm-canonical-source-frame-v1"
     )
@@ -542,7 +556,7 @@ def test_cli_refuses_unimplemented_source_before_touching_files(capsys):
     assert "stock-wrf evidence is a separate certification gate" in explained
 
 
-def test_a_refusal_with_nothing_to_add_does_not_echo_its_own_status(capsys):
+def test_a_refusal_with_nothing_to_add_does_not_echo_its_own_status(capsys, monkeypatch):
     """`status=adapter_mapping_required: adapter_mapping_required`.
 
     The reason fell back to the status value, which is already printed
@@ -557,6 +571,11 @@ def test_a_refusal_with_nothing_to_add_does_not_echo_its_own_status(capsys):
     MAPPING_REQUIRED rows.
     """
 
+    # The once-per-process provenance banner precedes the refusal in
+    # whichever test of this worker first runs a front door; this test is
+    # about the refusal line, so the banner is off here.
+    from gpuwm.provenance_gate import BANNER_ENV
+    monkeypatch.setenv(BANNER_ENV, "0")
     for source in ("nam", "rrfs-public"):
         assert main(["--source", source]) == EXIT_CONFIG
         error = capsys.readouterr().err

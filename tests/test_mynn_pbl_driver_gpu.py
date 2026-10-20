@@ -65,10 +65,10 @@ def test_ordinary_mixing_length_uses_the_rounded_column_contract(
         module = _mynn_module("-fmad=false")
         get_kernel = mynn_pbl_gpu.get_kernel
 
-        def length_kernel(name, function):
+        def length_kernel(name, function, shape=()):
             if name == "mynn_pbl" and function == "mynn_mixlength_default_columns":
                 return module.get_function(function)
-            return get_kernel(name, function)
+            return get_kernel(name, function, shape)
 
         monkeypatch.setattr(mynn_pbl_gpu, "get_kernel", length_kernel)
 

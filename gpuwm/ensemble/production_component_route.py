@@ -102,7 +102,8 @@ def run_production_component_wave(session, runner, *, member_inputs, output_dire
             if _previous is not None:
                 _previous(**kwargs)
         capture = captures[member] = MemberOutputCapture(session.collector.submit, member,
-            member_history_required(inputs, session.request.keep_member_files), initialize_callback=initialize)
+            member_history_required(inputs, session.request.keep_member_files), initialize_callback=initialize,
+            provenance=(session.request.provenance[member] if getattr(session.request, "provenance", ()) else None))
         selected = dict(options, first_products=None)
         selected[progress_key] = progress_adapter.callback_for_member(member)
         members.append(RouteMember(member, inputs, directories[member], capture,

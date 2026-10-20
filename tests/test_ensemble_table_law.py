@@ -622,7 +622,7 @@ def test_every_preparation_chain_declares_its_review():
 
 def test_a_chain_review_makes_the_call_the_chain_branches_made(monkeypatch, tmp_path):
     """Each row asks what the door's per-chain branches asked, with the same arguments."""
-    from gpuwm import go_cli, hrrr_route_inputs
+    from gpuwm import go_cli, hrrr_route_inputs, era5_preparation
     from gpuwm.regional_preparation import preparation_chain_reviews
 
     asked = []
@@ -630,7 +630,9 @@ def test_a_chain_review_makes_the_call_the_chain_branches_made(monkeypatch, tmp_
                         lambda config, **options: asked.append(("plan", config, options)))
     monkeypatch.setattr(hrrr_route_inputs, "run_route_inputs",
                         lambda config, exp, *, raw: asked.append(("route inputs", config, exp, raw)))
-    config, exp, raw = tmp_path / "member" / "experiment.toml", object(), {"fetch": {}}
+    monkeypatch.setattr(era5_preparation, "review",
+                        lambda config, exp, **kwargs: asked.append(("case inputs", config, exp, kwargs)))
+    config, exp, raw = tmp_path / "member" / "experiment.toml", object(), {"fetch": {"source": "era5"}}
     scratch = tmp_path / "review"
     posting = {"transport": "aws", "as_posted": True, "late_after_minutes": 30.0}
     answered = {}
@@ -643,7 +645,9 @@ def test_a_chain_review_makes_the_call_the_chain_branches_made(monkeypatch, tmp_
         "prepared:go": [("plan", config, dict(outdir=scratch / "plan", run_stamp=False,
                                               data_dir=scratch / "data", **posting))],
         "prepared:hrrr": [("route inputs", config, exp, raw)],
-        "prepared:staged": []}
+        "prepared:staged": [],
+        "prepared:case-data": [("case inputs", config, exp,
+                                  dict(raw=raw, scratch=scratch, posting=posting))]}
 
 
 def _shipped_member(tmp_path, stem, edit=None):

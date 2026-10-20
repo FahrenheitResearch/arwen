@@ -566,9 +566,16 @@ def test_check_on_a_config_that_does_not_stream_is_byte_identical(
     # and 14,875,000 B of chunk-local clear-sky transients. The 74,165,000 B
     # subtotal adds 83,806,450 B after the unchanged 1.13 pool margin.
     # This mp=10 fixture has no WSM6 workspace contribution.
-    assert payload["peak_envelope_bytes"] == 15646499635
-    assert payload["observed_peak_envelope_bytes"] == 15646499635
-    assert payload["alloc_estimate_bytes"] == 12360815411
+    # Shared tendency backings (c563a6f8860, 2.9.3): radiation's logical
+    # zero ru/rv/rqv/rqc share one contiguous backing and held KF's ru/rv
+    # another, so each backing is priced once at its largest shape.  The
+    # radiation rv, rqv and rqc planes and the KF rv plane leave the
+    # subtotal: 59,397,800 + 2 x 59,290,000 + 59,397,800 = 237,375,600 B,
+    # or 268,234,428 B of estimate and of envelope with the unchanged
+    # 1.13 pool margin (15,646,499,635 before).
+    assert payload["peak_envelope_bytes"] == 15378265207
+    assert payload["observed_peak_envelope_bytes"] == 15378265207
+    assert payload["alloc_estimate_bytes"] == 12092580983
     # The reserve's 0.03 retention term follows the estimate: A163 moved
     # it by 0.03 x -212,355,128 = -6,370,653 B.
     # The density addition raises its retention reserve by 2,009,931 B, and
@@ -576,7 +583,9 @@ def test_check_on_a_config_that_does_not_stream_is_byte_identical(
     # 416 B.
     # The SCM scalars leaving the default estimate move the 0.03 retention term by 1 B.
     # The RRTMGP addition raises its 0.03 retention reserve by 2,514,194 B.
-    assert payload["reserve_bytes"] == 3656508687
+    # The shared tendency backings lower it by 0.03 x 268,234,428 =
+    # 8,047,033 B.
+    assert payload["reserve_bytes"] == 3648461654
     assert payload["budget_bytes"] == _FITS_STREAMED_GIB * GIB
     assert payload["gates"]["alloc_estimate_le_wddm_budget"] is False
     assert rc == 1
@@ -630,10 +639,10 @@ def test_check_on_a_config_that_does_not_stream_is_byte_identical(
     # change nothing this configuration is charged. The density allocation
     # and its unchanged pool and retention margins remain present in both,
     # as does the priced CLDFRA buffer, and the strict-rim health table.
-    assert old_payload["peak_envelope_bytes"] == 15646499635
-    assert old_payload["observed_peak_envelope_bytes"] == 15646499635
-    assert old_payload["alloc_estimate_bytes"] == 12360815411
-    assert old_payload["reserve_bytes"] == 3656508687
+    assert old_payload["peak_envelope_bytes"] == 15378265207
+    assert old_payload["observed_peak_envelope_bytes"] == 15378265207
+    assert old_payload["alloc_estimate_bytes"] == 12092580983
+    assert old_payload["reserve_bytes"] == 3648461654
     assert old_rc == rc == 1
     assert old_estimate == estimate
     for key in ("peak_envelope_bytes", "observed_peak_envelope_bytes",

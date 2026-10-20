@@ -28,7 +28,7 @@ if ! command -v nvidia-smi >/dev/null 2>&1; then
   echo "refused: nvidia-smi not found; the runner needs an NVIDIA driver for CUDA 13.0" >&2
   exit 3
 fi
-DRIVER_CUDA="$(nvidia-smi | sed -n 's/.*CUDA Version: *\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -n 1)"
+DRIVER_CUDA="$(nvidia-smi | sed -n 's/.*CUDA \(UMD \)\{0,1\}Version: *\([0-9][0-9]*\.[0-9][0-9]*\).*/\2/p' | head -n 1)"
 if [ -z "$DRIVER_CUDA" ] || [ "${DRIVER_CUDA%%.*}" -lt 13 ]; then
   echo "refused: the driver supports CUDA ${DRIVER_CUDA:-unknown}, the cu130 torch wheels need 13.0 or newer" >&2
   exit 3

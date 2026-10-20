@@ -17,5 +17,10 @@ font8x8 = "0.3"
 rusttype = "0.9"
 shapefile = "0.7"
 
+[target.'cfg(any(windows, target_os = "linux"))'.dependencies]
+cudarc = { version = "=0.19.8", default-features = false, features = [
+    "std", "driver", "nvrtc", "dynamic-loading", "cuda-13000",
+] }
+
 [features]
 default = []

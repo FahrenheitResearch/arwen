@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: Apache-2.0
+"""ArWen (CUDA WRF-ARW) and hex (CUDA MPAS-A) for NVIDIA Earth2Studio.
+
+- ``WoofHistory``: a gpuwm / gpuwm-hex run's history as an Earth2Studio
+  ``DataSource`` (read through gpuwm's Earth-2 exporter).
+- ``ArWen``: ArWen as an Earth2Studio ``PrognosticModel`` (one gpuwm run per
+  step, boundaries from any Earth2Studio data source).
+
+Earth2Studio has no plugin registry: its extension points are the
+``DataSource`` and ``PrognosticModel`` protocols, and any object that
+satisfies them goes straight into ``earth2studio.run.deterministic``,
+``diagnostic`` and ``ensemble``. Both classes here satisfy them
+(``isinstance(x, DataSource)`` / ``isinstance(m, PrognosticModel)``).
+"""
+from .data import WoofHistory
+
+__all__ = ["WoofHistory", "ArWen"]
+__version__ = "0.1.0.dev0"
+
+
+def __getattr__(name):
+    if name == "ArWen":
+        from .px import ArWen
+        return ArWen
+    raise AttributeError(name)

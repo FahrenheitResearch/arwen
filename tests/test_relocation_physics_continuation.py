@@ -514,6 +514,39 @@ def test_preparer_moves_physics_continuation_and_reports_it(monkeypatch):
     assert preparer.last_receipt["accumulators_reinitialized"] is False
 
 
+def test_preparer_copies_trigger_and_shared_pbl_forcing_once(monkeypatch):
+    from gpuwm.core import physics_continuation
+
+    preparer, node, new_dc, initialized, outgoing, incoming = _preparer_fixture(monkeypatch)
+    driver = outgoing.physics
+    trigger = driver.cumulus_callable.w0avg
+    forcing = _distinct(trigger.shape, 19)
+    driver.gf_rthblten = forcing
+    driver.pbl_raw_rates = {"dtheta": forcing}
+    incoming.physics.gf_rthblten = np.zeros_like(forcing)
+    incoming.physics.pbl_raw_rates = {"dtheta": incoming.physics.gf_rthblten}
+    copies = []
+    capture = physics_continuation._capture
+
+    def counted(value):
+        copies.append(id(value))
+        return capture(value)
+
+    monkeypatch.setattr(physics_continuation, "_capture", counted)
+    preparer.capture_outgoing(node)
+    assert copies.count(id(trigger)) == 1
+    assert copies.count(id(forcing)) == 1
+    captured = preparer._captured["continuation"]
+    np.testing.assert_array_equal(captured["cumulus/w0avg"].view(np.uint32),
+                                  trigger.view(np.uint32))
+    np.testing.assert_array_equal(captured["held/gf_rthblten"].view(np.uint32),
+                                  forcing.view(np.uint32))
+    assert not np.shares_memory(captured["cumulus/w0avg"], trigger)
+    assert not np.shares_memory(captured["held/gf_rthblten"], forcing)
+    preparer(initialized, new_dc, SimpleNamespace())
+    assert preparer.last_receipt["physics_continuation"]["w0avg_moved"] is True
+
+
 def test_preparer_still_accurate_when_the_rebuilt_child_has_no_driver(
         monkeypatch):
     preparer, node, new_dc, initialized, _out, new_state = (

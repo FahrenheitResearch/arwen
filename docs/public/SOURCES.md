@@ -40,6 +40,7 @@ List the whole registry with `gpuwm prep --list-sources`, or one row with
 | `era5-l137` | `era5-model-level`, `era5-ml` | 1 h | analysis only | global |
 | `20crv3` | `20cr`, `twentycrv3`, `20crv3-member` | 3 h | analysis only | global |
 | `20crv3-cf` | `20crv3-netcdf`, `20cr-netcdf`, `20cr-cf` | 3 h | analysis only | global |
+| `earth2` | `earth2studio` | 6 h | as far as the model was run (f8784) | 0.25-degree global, or the crop the file carries |
 
 `rap-native` preserves RAP's 50 hybrid levels and their explicit pressure
 fields. The producer interpolates those levels horizontally onto AWIPS grid
@@ -233,6 +234,85 @@ Data: Deutscher Wetterdienst, https://opendata.dwd.de, CC BY 4.0. Anything
 you publish from it carries the attribution "Source: Deutscher
 Wetterdienst".
 
+## NVIDIA Earth-2 models
+
+`--source earth2` starts a forecast from an NVIDIA Earth-2 model run through
+Earth2Studio: FourCastNet 3, SFNO, Pangu, Aurora, FengWu, GraphCast or AIFS.
+It reads the NetCDF file Earth2Studio's own `NetCDF4Backend` writes, as
+written: one variable per field and level (`t850`, `z500`, `q700`, `u10m`,
+`msl`), dimensions `(time, lead_time, lat, lon)`, no units in the file
+(Earth2Studio's lexicon fixes them, and the packaged mapping carries that
+lexicon). A domain may start at any lead of the file: valid times are the
+initialization plus `lead_time`.
+
+These models publish no soil, land mask, orography, skin temperature, SST,
+sea ice, snow, surface pressure or 2 m humidity. The land surface comes from
+the ERA5 analysis at the model's initialization (the same rule the `aigfs`
+row applies with GDAS), and surface pressure is derived at every lead from
+the model's own mean-sea-level pressure at the analysis terrain.
+
+One command runs the model and fetches that analysis:
+
+```
+GPUWM_EARTH2_PYTHON=/path/to/earth2studio-env/bin/python \
+gpuwm fetch --source earth2 --model fcn3 --cycle 2015-09-27T00 --hours 96 \
+      --area 0,-105,55,-15 --out data/fcn3
+gpuwm domain --source earth2 --polygon box.geojson --root-dx 2.5 --hours 48 \
+      --cycle 2015-09-27T00 --forecast-start-hour 48 --out storm.toml
+gpuwm prep --source earth2 --input data/fcn3/earth2-fcn3-20150927T00.nc \
+      --geog-root ~/.local/share/gpuwm/WPS_GEOG \
+      --supplement physical_analysis_surface_data=data/fcn3/analysis/era5-combined.nc \
+      --author-input-manifest data/fcn3/inputs.json \
+      --experiment-config storm.toml --wps-namelist storm.namelist.wps \
+      --output-root prepared
+gpuwm sim prepared --experiment-config storm.toml \
+      --wps-namelist storm.namelist.wps --outdir forecast --render-products all
+```
+
+A file you produced with Earth2Studio yourself goes straight to `gpuwm prep`
+with the ERA5 analysis at its initialization
+(`gpuwm fetch --source era5 --era5-provider arco --retrieve --cycle INIT
+--hours 0 --area AREA`, over an area that contains the file's crop).
+`GPUWM_EARTH2_PYTHON` names an environment with `earth2studio` and the
+model's extra installed; nothing is installed and no account is created.
+Which models qualify, where their weights live and what the others need is
+the table `gpuwm/authorities/earth2-models.v1.json`; adding a model whose
+output carries the same vocabulary is a row there.
+
+`gpuwm earth2` combines acquisition, track-based storm placement, preparation,
+simulation and native map rendering. Its `--dry-run --spec-out spec.json`
+writes the canonical job contract; `gpuwm earth2 --spec spec.json --out DIR`
+runs that saved job. Runtime help lists the installed table rows.
+
+Completed fetch directories can be supplied with `--earth2-input DIR`, including
+with `--spec spec.json`. This runtime input does not change canonical JobSpec
+bytes. Model, cycle, initial data, member, horizon and artifact hashes must match;
+longer forecasts and spatial supersets are accepted. A bounded explicit input
+defines automatic search reach, and the authored parent and moving corridor
+must fit inside it before preparation starts. An incompatible explicit input
+refuses instead of launching replacement inference. Omitting it retains normal
+model acquisition when no matching cache exists.
+
+Completed fetch-v2 receipts can also be shared through
+`GPUWM_EARTH2_FETCH_RECEIPTS=/path/to/earth2-run.json` (a path-separated list
+also works). Reuse checks the complete model row, cycle, initial data
+source, member, area, complete lead ladder and forecast file hashes. A longer
+forecast may supply the requested leads; automatic cache discovery does not
+replace a global storm search with a cropped forecast. The door reads shared arrays in place and
+writes its own preparation handoff. A copied acquisition directory may resolve
+retired producer paths relative to the original request output directory;
+forecast hashes remain mandatory and the original paths stay in relocation
+lineage. Original producer timings stay in the
+parent receipt; the current job records verification time and zero model time.
+The producer table digest is retained as lineage; an unrelated row added to
+the installed table does not invalidate an identical model row. Original
+single-member fetch-v1 receipts also require a checked installed default public
+weight revision, native seed policy, runtime version and native NetCDF clock
+and global extent. Nondefault loader settings without evidence are refused.
+The local index defaults to `fetch-receipts` inside the model weight cache;
+`GPUWM_EARTH2_FETCH_CACHE` overrides that index directory. Retired arrays make
+an ordinary cache miss; changed retained bytes cause a named refusal.
+
 ## Adding a source
 
 Nothing in `gpuwm/domain_wizard.py` names a model. A new row reaches this
@@ -261,3 +341,106 @@ it installs a synthetic registry row and drives the real CLI, checking
 that the emitted `namelist.wps` carries the cadence the row declared and
 that a regional variant refuses outside the window the row declared, with
 no code added anywhere.
+
+Hugging Face packages can be fetched independently of a forecast:
+
+```console
+gpuwm hf-fetch fcn3
+gpuwm hf-fetch hf://owner/model@revision
+gpuwm hf-fetch hf://datasets/owner/dataset@revision/path
+```
+
+The Earth-2 table's `weights` object supplies `host: "huggingface"`,
+`repository`, `revision`, and `files` records containing `path`, `size`, and
+`sha256`. A null `sha256` denotes a small Git-stored file; its size and Git
+blob ID from the pinned API response are verified. LFS files are checked
+against both the table digest and the API digest. Dataset
+rows additionally set `repo_type: "dataset"`. With no file list the command
+fetches the repository, or the URL's file/directory prefix. Branches and tags
+resolve to a commit before transfers start. The cache is
+`GPUWM_HF_CACHE` (default `~/.cache/gpuwm/hf`), with a JSON receipt beside
+each commit directory. Dataset packages live under its `datasets/` prefix.
+Repeated fetches verify sizes and checksums before reusing files.
+
+Only `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN` from the environment supplies
+credentials. Public packages work anonymously; denied packages raise an error
+with the repository name and HTTP status. The command reads no token files.
+`--connections` or `GPUWM_HF_CONNECTIONS` sets the HTTP pool size (default and
+maximum 30). Large files need at least two connections and download in
+parallel resumable ranges. Fetches share a host admission lock, including across different cache roots.
+`GPUWM_HF_GOVERNOR` can relocate the lock file for an isolated environment. Interrupted `.part` files resume on the next invocation.
+
+For Earth-2 rows whose `weights.host` is `huggingface`, the forecast door
+fetches the pinned package and passes its local directory to the runtime.
+The runtime uses `Package(local_directory, cache=False)` and `load_model`,
+so it does not ask Earth2Studio to fetch a second package.
+
+The ensemble door accepts registry keys and aliases, including RAP's hourly
+cycles. Mixed families use `--source earth2-fcn3:18,gefs:18`, or `[ensemble]`
+`sources = [{source = "earth2-fcn3", members = 18}, {source = "gefs", members = 18}]`.
+Counts must sum to `--members` when it is supplied. A single uncounted source
+takes `--members`, with 36 as its default. Each family fills its own source,
+lagged-cycle and perturbation rungs. Member indices and seeds span all families.
+The first family supplies the geometry; every other family must cover it.
+
+Explicit storm names and ATCF ids also work with unlabelled model tracks.
+The generic cyclone selector looks up the NHC catalogue entry active at the
+cycle, then requires exactly one model track within 300 km of its cycle fix.
+The catalogue covers the Atlantic and eastern/central North Pacific. Ambiguous
+or absent matches refuse with the requested id and cycle. The receipt seals the
+catalogue and best-track references; model fixes drive the forecast and moving
+nest. `--storm auto` uses only model strength at the cycle and never consults
+this identity catalogue.
+
+Local schedulers may set `GPUWM_EARTH2_STAGE_PREFIX` to a JSON object of stage names
+and argv prefixes. Each prefix wraps the public stage command; unspecified
+stages run normally. For example, a pool can admit `setup`, `prep` and `sim`
+while tracking and Rust rendering run on the CPU. Receipts separate admission
+wait from stage wall time and retain both the scheduler and underlying argv.
+This execution setting does not change the canonical JobSpec.
+
+<!-- model-sources:begin -->
+## Model source IDs
+
+Generated by `python tools/source_registry_doc.py` from the source registry.
+
+Rows share acquisition and preparation routes. Runtime availability and weight
+licence checks still apply; a listed ID does not imply a measured forecast.
+
+| Source | Model | Packaged profile |
+|---|---|---|
+| `earth2-fcn3` | FCN3 | `earth2-pl13-q-netcdf-v1` |
+| `earth2-sfno` | SFNO | `earth2-pl13-q-netcdf-v1` |
+| `earth2-pangu` | Pangu6 | `earth2-pl13-q-netcdf-v1` |
+| `earth2-aurora` | Aurora | `earth2-pl13-q-netcdf-v1` |
+| `earth2-fengwu` | FengWu | `earth2-pl13-q-netcdf-v1` |
+| `earth2-aifs` | AIFS | `earth2-pl13-q-netcdf-v1` |
+| `earth2-fuxi` | FuXi | `earth2-pl13-rh-netcdf-v1` |
+| `earth2-fcn` | FCN | Not declared |
+| `earth2-stormcast` | StormCast | `earth2-stormcast-hrrr-netcdf-v1` |
+| `earth2-corrdiff` | CorrDiff (km-scale diffusion downscaling) | Not declared |
+| `earth2-dlwp` | DLWP | Not declared |
+| `earth2-atlas` | Atlas CRPS, selected member | `earth2-pl13-q-netcdf-v1` |
+| `earth2-atlas-si` | Atlas stochastic interpolant | `earth2-pl13-q-netcdf-v1` |
+| `earth2-aifs2` | AIFS2 | `earth2-pl13-q-netcdf-v1` |
+| `earth2-aifs-ens` | AIFSENS | `earth2-pl13-q-netcdf-v1` |
+| `earth2-aifs2-ens` | AIFS2ENS | `earth2-pl13-q-netcdf-v1` |
+| `earth2-aurora15` | Aurora1p5 | `earth2-pl13-q-netcdf-v1` |
+| `earth2-aurora15-6h` | Aurora1p5_6h | `earth2-pl13-q-netcdf-v1` |
+| `earth2-aurora15-ensemble` | Aurora1p5Ensemble | `earth2-pl13-q-netcdf-v1` |
+| `earth2-aurora15-ensemble-6h` | Aurora1p5Ensemble_6h | `earth2-pl13-q-netcdf-v1` |
+| `earth2-gencast-mini` | GenCastMini | `earth2-pl13-q-netcdf-v1` |
+| `earth2-weathernext2` | WeatherNext2Cyclones | `earth2-pl13-q-netcdf-v1` |
+| `earth2-weathernext2-mini` | WeatherNext2CyclonesMini | `earth2-pl13-q-netcdf-v1` |
+| `earth2-dlesym` | DLESyMLatLon | Not declared |
+| `earth2-ace2` | ACE2ERA5 | Not declared |
+| `earth2-ucast` | UCast | `earth2-pl13-q-netcdf-v1` |
+| `earth2-graphcast-operational` | GraphCastOperational | `earth2-pl13-q-netcdf-v1` |
+| `earth2-graphcast-small` | GraphCastSmall | `earth2-pl13-q-netcdf-v1` |
+| `earth2-interpmodafno` | InterpModAFNO | Not declared |
+| `earth2-fuxi-s2s` | FuXiS2S | Not declared |
+| `earth2-stormcast-conus` | StormCastCONUS | `earth2-stormcast-conus-hrrr-netcdf-v1` |
+| `earth2-atlas-crps` | Atlas CRPS | `earth2-pl13-q-netcdf-v1` |
+| `earth2-derived-ws10m` | Derived 10 m wind speed | Not declared |
+| `earth2-windgust` | Wind Gust AFNO | Not declared |
+<!-- model-sources:end -->

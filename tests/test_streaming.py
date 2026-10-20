@@ -2394,7 +2394,7 @@ def test_the_run_route_reads_tiles_instead_of_refusing_it():
 
     from gpuwm import runtime
 
-    src = inspect.getsource(runtime.run_experiment)
+    src = inspect.getsource(runtime._run_experiment)
     scheduled = inspect.getsource(runtime._run_built_experiment)
     assert "builders=_streaming.builders_for_tree(model, exp.tiles)" in scheduled
     assert "_run_built_experiment(" in src
@@ -3018,7 +3018,7 @@ def test_the_case_data_route_supplies_the_stepper_it_used_to_refuse_for():
         "feedback=None, stepper=None", "")
     # And the decision that chose it is the one the loop runs on: decided
     # once, handed over, never re-derived inside make_stepper.
-    src = inspect.getsource(runtime.run_experiment)
+    src = inspect.getsource(runtime._run_experiment)
     assert "decision=single_decision" in src
 
 

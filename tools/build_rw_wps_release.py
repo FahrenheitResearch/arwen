@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import argparse
 import ast
+from concurrent.futures import ProcessPoolExecutor
 import json
+import multiprocessing
 import os
 from pathlib import Path
 import platform
@@ -25,7 +27,10 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from tools.build_native_wrf_distribution import build_distribution  # noqa: E402
+from tools.build_native_wrf_distribution import (  # noqa: E402
+    _tracked_source_paths,
+    build_distribution,
+)
 from gpuwm.native_wrf_distribution import (  # noqa: E402
     BRIDGE_WORKSPACES,
     BUNDLED_BRIDGES,
@@ -306,8 +311,15 @@ _TOP_LEVEL_EXCLUDES = {
     # points. Their shared source facts remain in source_drivability; the
     # standalone source_cli never invokes an analysis or a tracking setup.
     "background_contract.py", "regional_preparation.py",
+    # Ensemble orchestration binds member fetches before calling the native
+    # preparer. The standalone preparation wheel receives already fetched
+    # inputs and does not ship its run-plan or domain-wizard callers.
+    "era5_preparation.py",
     "local_da.py", "local_da_fetch.py", "local_da_observations.py",
     "local_da_runtime.py", "cyclone_seed.py", "cyclone_sources.py",
+    # The Earth-2 job door runs tracking, forecasts and rendering. Fetch
+    # and the model inventory remain in earth2_run for input acquisition.
+    "earth2_door.py", "earth2_job.py", "earth2_diagnostics.py",
     # The rapid-cycling controller and the nowcast scorer belong to the same
     # analysis-cycle surface as the doors above, and both are reached only
     # from them (`gpuwm/local_da.py` and `gpuwm/local_da_runtime.py`, already
@@ -796,6 +808,34 @@ _WRFRST_LIVE_OVERLAY = ("apply_warm_start_physics and apply_warm_start_clock "
                         "state; preparation only reads and checks the file")
 
 _OPTIONAL_STAGED_IMPORTS = {
+    ("gpuwm/earth2_fetch_cache.py", "gpuwm.domain_wizard"):
+        "check_domain_coverage sizes a forecast domain in earth2_job; "
+        "standalone preparation only receives completed input artifacts",
+    ("gpuwm/cyclone_tracks.py", "gpuwm.cyclone_sources"):
+        "select_track is a forecast setup operation; preparation only reads "
+        "validate_lineage and never selects a tracked forecast",
+    ("gpuwm/cyclone_tracks.py", "gpuwm.domain_wizard"):
+        "layout and placement_report author forecast domains; preparation "
+        "only validates the recorded track lineage",
+    ("gpuwm/cyclone_tracks.py", "gpuwm.cyclone_setup"):
+        "layout and placement_report author forecast domains; preparation "
+        "only validates the recorded track lineage",
+    ("gpuwm/earth2_run.py", "gpuwm.domain_wizard"):
+        "prepare_launch authors a forecast configuration for the gpuwm go "
+        "door, which is excluded from the standalone preparation wheel; "
+        "fetch and verification never call this forecast-only function",
+    ("gpuwm/certify/pins.py", "gpuwm.supervisor"):
+        "the installed-code fingerprint is resolved only when a forecast "
+        "capsule asks resolve_pins; the preparation wheel imports the "
+        "certification package for CPU compiler identity, without resolving "
+        "a forecast's installed-code pins or importing its supervisor",
+    ("gpuwm/certify/capsule.py", "gpuwm.supervisor"):
+        "forecast capsule code_identity reads the enclosing checkout through "
+        "the supervisor. The CPU kernel pack needs certify.compile_platform's "
+        "compiler fingerprint, whose package initializer imports capsule, but "
+        "standalone preparation emits no forecast certification capsule and "
+        "never calls code_identity; importing the compiler helpers does not "
+        "import the supervisor",
     ("gpuwm/core/aer_opt2.py", "gpuwm.core.kernels"):
         "forecast-only aer_opt = 2 device optics (optics_device); standalone "
         "configuration only validates the user-aerosol options and values",
@@ -1272,7 +1312,7 @@ def _names_verify(module: str) -> bool:
     return module == "gpuwm.verify" or module.startswith("gpuwm.verify.")
 
 
-def _staged_verification_imports(destination: Path) -> list[dict[str, object]]:
+def _staged_verification_imports(destination: Path, *, scan=None) -> list[dict[str, object]]:
     """Return developer-only ``gpuwm.verify`` imports in staged runtime code.
 
     RW-WPS intentionally excludes the verification package.  Scanning every
@@ -1280,10 +1320,13 @@ def _staged_verification_imports(destination: Path) -> list[dict[str, object]]:
     relying on a hand-maintained list of public entry points.  Direct imports
     and literal dynamic imports are both rejected.
     """
+    if scan is None:
+        with _StagedImportScan() as scan:
+            return _staged_verification_imports(destination, scan=scan)
+    scan.refresh(destination)
     violations: list[dict[str, object]] = []
     for source in sorted(destination.rglob("*.py")):
-        tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
-        for node in ast.walk(tree):
+        for node in scan.facts[source][1]:
             candidates: list[tuple[str, str]] = []
             if isinstance(node, ast.Import):
                 candidates.extend((alias.name, "import") for alias in node.names)
@@ -1328,7 +1371,7 @@ def _is_source_module(source_root: Path, module: str) -> bool:
             or (path / "__init__.py").is_file())
 
 
-def _complete_staged_import_closure(destination: Path, derived_modules=None) -> list[str]:
+def _complete_staged_import_closure(destination: Path, derived_modules=None, *, scan=None) -> list[str]:
     """Stage required package imports to a fixed point without importing code.
 
     The existing manifest defines the preprocessing doors and their optional
@@ -1336,11 +1379,14 @@ def _complete_staged_import_closure(destination: Path, derived_modules=None) -> 
     imports inside functions and package aliases. An excluded executor, missing
     source or verification dependency still refuses the build.
     """
+    if scan is None:
+        with _StagedImportScan() as scan:
+            return _complete_staged_import_closure(destination, derived_modules, scan=scan)
     derived_modules = set() if derived_modules is None else derived_modules
     added: list[str] = []
-    requested_imports = _staged_internal_imports(destination, source_root=REPO)
+    requested_imports = _staged_internal_imports(destination, source_root=REPO, scan=scan)
     while missing := _staged_internal_imports(
-            destination, source_root=REPO, derived_modules=derived_modules):
+            destination, source_root=REPO, derived_modules=derived_modules, scan=scan):
         pending: dict[str, Path] = {}
         for record in missing:
             module = str(record["module"])
@@ -1370,38 +1416,165 @@ def _complete_staged_import_closure(destination: Path, derived_modules=None) -> 
     return added
 
 
-def _unreached_function_nodes(module, tree, sources, trees):
+def _analyze_staged_source(item):
+    """Parse one content version and retain compact import facts, in a worker."""
+    source, text, owner, is_package, keep_tree = item
+    tree = ast.parse(text, filename=str(source))
+    nodes = []
+    type_checking_nodes = set()
+    incoming = {}
+    package = owner if is_package else owner.rpartition(".")[0]
+
+    def retain(module, names=None):
+        if module not in incoming:
+            incoming[module] = names
+        elif incoming[module] is not None:
+            if names is None:
+                incoming[module] = None
+            else:
+                incoming[module].update(names)
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            nodes.append(node)
+        if isinstance(node, ast.If):
+            marker = node.test
+            if ((isinstance(marker, ast.Name) and marker.id == "TYPE_CHECKING")
+                    or (isinstance(marker, ast.Attribute) and marker.attr == "TYPE_CHECKING")):
+                for statement in node.body:
+                    type_checking_nodes.update(ast.walk(statement))
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                retain(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            resolved = node.module or ""
+            if node.level:
+                parts = package.split(".")
+                resolved = ".".join(parts[:len(parts) - node.level + 1]
+                                    + ([resolved] if resolved else []))
+            retain(resolved, None if any(alias.name == "*" for alias in node.names)
+                   else {alias.name for alias in node.names})
+            for alias in node.names:
+                retain(f"{resolved}.{alias.name}")
+        elif isinstance(node, ast.Call) and node.args:
+            argument = node.args[0]
+            # The symbol closure deliberately treats ANY literal module lookup
+            # conservatively, not only import_module and __import__ calls.
+            if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+                retain(argument.value)
+                function = node.func
+                if ((isinstance(function, ast.Name) and function.id == "__import__")
+                        or (isinstance(function, ast.Attribute)
+                            and function.attr == "import_module")):
+                    nodes.append(node)
+    # Only derived modules need function bodies for symbol reachability. Sending
+    # every original AST back would serialize the stage on Python unpickling.
+    return (tree if keep_tree else None, nodes,
+            type_checking_nodes.intersection(nodes), incoming)
+
+
+class _StagedImportScan:
+    """One stage's content cache and parallel parser, never shared across stages.
+
+    Only added or changed files are parsed. Importers can change a derived
+    module's reachable symbols at any iteration, so every pass rechecks the
+    compact facts against the current module set and importer index.
+    """
+
+    def __init__(self):
+        self.contents = {}
+        self.facts = {}
+        self.sources = []
+        self.incoming = {}
+        self.source_modules = {}
+        self.unreached = {}
+        self.pool = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        if self.pool is not None:
+            self.pool.shutdown()
+
+    def refresh(self, destination, derived_modules=()):
+        sources = []
+        changed = []
+        for source in sorted(destination.rglob("*.py")):
+            parts = list(source.relative_to(destination).with_suffix("").parts)
+            is_package = parts[-1] == "__init__"
+            if is_package:
+                parts.pop()
+            owner = ".".join(parts)
+            sources.append((source, owner, is_package))
+            text = source.read_text(encoding="utf-8")
+            keep_tree = owner in (derived_modules or ())
+            if (self.contents.get(source) != text
+                    or (keep_tree and self.facts[source][0] is None)):
+                self.contents[source] = text
+                changed.append((source, text, owner, is_package, keep_tree))
+        if changed:
+            if self.pool is None and len(changed) > 1:
+                cores = (len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity")
+                         else os.cpu_count() or 1)
+                workers = min(cores, len(changed))
+                if os.name == "nt":
+                    # ProcessPoolExecutor's Windows wait API admits at most 61 workers.
+                    workers = min(workers, 61)
+                # spawn on every platform: forkserver binds an AF_UNIX socket
+                # under the temporary directory, and a long TMPDIR (CI runner
+                # work trees, HPC scratch paths) exceeds the 107-byte socket
+                # path limit ("AF_UNIX path too long").
+                self.pool = ProcessPoolExecutor(
+                    max_workers=workers,
+                    mp_context=multiprocessing.get_context("spawn"))
+            results = (self.pool.map(_analyze_staged_source, changed)
+                       if self.pool is not None else map(_analyze_staged_source, changed))
+            for item, facts in zip(changed, results):
+                self.facts[item[0]] = facts
+        self.sources = [(source, owner, package) for source, owner, package in sources if owner]
+        self.incoming = {}
+        for source, owner, is_package in self.sources:
+            relative = owner.replace(".", "/") + ("/__init__.py" if is_package else ".py")
+            for module, names in self.facts[source][3].items():
+                if (relative, module) in _OPTIONAL_STAGED_IMPORTS:
+                    continue
+                if module not in self.incoming:
+                    self.incoming[module] = None if names is None else set(names)
+                elif self.incoming[module] is not None:
+                    if names is None:
+                        self.incoming[module] = None
+                    else:
+                        self.incoming[module].update(names)
+
+    def unreached_function_nodes(self, module, tree):
+        """Cache reachability by AST identity and the current imported symbols."""
+        imported = self.incoming.get(module)
+        key = (id(tree), module, None if imported is None else frozenset(imported))
+        hit = self.unreached.get(key)
+        if hit is None or hit[0] is not tree:
+            hit = (tree, _unreached_function_nodes(module, tree, self.incoming))
+            self.unreached[key] = hit
+        return hit[1]
+
+    def is_source_module(self, source_root, module):
+        key = (source_root, module)
+        if key not in self.source_modules:
+            self.source_modules[key] = _is_source_module(source_root, module)
+        return self.source_modules[key]
+
+
+def _unreached_function_nodes(module, tree, incoming):
     """Functions outside an added module's imported symbol closure.
 
     A module import, star import or dynamic module lookup is conservative and
     retains every function. Named imports retain module initialization and
     all directly referenced local functions. Source bytes remain unchanged.
     """
-    names = set()
-    for source, owner, is_package in sources:
-        relative = owner.replace(".", "/") + ("/__init__.py" if is_package else ".py")
-        if (relative, module) in _OPTIONAL_STAGED_IMPORTS:
-            continue
-        package = owner if is_package else owner.rpartition(".")[0]
-        for node in ast.walk(trees[source]):
-            if isinstance(node, ast.Import):
-                if any(alias.name == module for alias in node.names):
-                    return set()
-            elif isinstance(node, ast.ImportFrom):
-                resolved = node.module or ""
-                if node.level:
-                    parts = package.split(".")
-                    resolved = ".".join(parts[:len(parts) - node.level + 1]
-                                        + ([resolved] if resolved else []))
-                if resolved == module:
-                    if any(alias.name == "*" for alias in node.names):
-                        return set()
-                    names.update(alias.name for alias in node.names)
-                elif any(f"{resolved}.{alias.name}" == module for alias in node.names):
-                    return set()
-            elif isinstance(node, ast.Call) and node.args:
-                if isinstance(node.args[0], ast.Constant) and node.args[0].value == module:
-                    return set()
+    imported = incoming.get(module)
+    if imported is None:
+        return set()
+    names = set(imported)
     if not names:
         return set()
     definitions = {node.name: node for node in tree.body
@@ -1448,7 +1621,7 @@ def _unreached_function_nodes(module, tree, sources, trees):
 
 def _staged_internal_imports(
     destination: Path, *, source_root: Path, optional: bool = False,
-    derived_modules=None,
+    derived_modules=None, scan=None,
 ) -> list[dict[str, object]]:
     """Return imports whose internal module is absent from wheel staging.
 
@@ -1462,44 +1635,23 @@ def _staged_internal_imports(
     tree (``source_root``) can say whether a name is a submodule or an
     attribute of its package, which is why the scan is given one.
     """
-    modules: set[str] = set()
-    sources: list[tuple[Path, str, bool]] = []
-    for source in sorted(destination.rglob("*.py")):
-        relative = source.relative_to(destination)
-        parts = list(relative.with_suffix("").parts)
-        is_package = parts[-1] == "__init__"
-        if is_package:
-            parts.pop()
-        module = ".".join(parts)
-        if module:
-            modules.add(module)
-            sources.append((source, module, is_package))
-
-    trees = {source: ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
-             for source, _, _ in sources}
+    if scan is None:
+        with _StagedImportScan() as scan:
+            return _staged_internal_imports(
+                destination, source_root=source_root, optional=optional,
+                derived_modules=derived_modules, scan=scan)
+    scan.refresh(destination, derived_modules)
+    sources = scan.sources
+    modules = {module for _, module, _ in sources}
     violations: list[dict[str, object]] = []
     for source, current_module, is_package in sources:
-        tree = trees[source]
-        unreached = (_unreached_function_nodes(current_module, tree, sources, trees)
+        tree, nodes, type_checking_nodes, _ = scan.facts[source]
+        unreached = (scan.unreached_function_nodes(current_module, tree)
                      if current_module in (derived_modules or ()) else set())
-        type_checking_nodes = set()
-        for conditional in ast.walk(tree):
-            if not isinstance(conditional, ast.If):
-                continue
-            marker = conditional.test
-            is_type_checking = (
-                isinstance(marker, ast.Name) and marker.id == "TYPE_CHECKING"
-            ) or (
-                isinstance(marker, ast.Attribute)
-                and marker.attr == "TYPE_CHECKING"
-            )
-            if is_type_checking:
-                for statement in conditional.body:
-                    type_checking_nodes.update(ast.walk(statement))
         current_package = (
             current_module if is_package else current_module.rpartition(".")[0]
         )
-        for node in ast.walk(tree):
+        for node in nodes:
             if node in type_checking_nodes:
                 continue
             candidates: list[tuple[str, str]] = []
@@ -1526,7 +1678,7 @@ def _staged_internal_imports(
                         candidates.extend(
                             (f"{resolved}.{alias.name}", "from")
                             for alias in node.names
-                            if alias.name != "*" and _is_source_module(
+                            if alias.name != "*" and scan.is_source_module(
                                 source_root, f"{resolved}.{alias.name}"))
             elif isinstance(node, ast.Call) and node.args:
                 argument = node.args[0]
@@ -1703,12 +1855,9 @@ def _require_tracked(source: Path) -> None:
             "tracked files only; run it from a clone (CI's "
             "actions/checkout leaves one), not from an extracted "
             "archive")
-    subprocess.run(
-        ["git", "-C", str(REPO), "ls-files", "--error-unmatch", relative],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    if relative not in _tracked_source_paths(REPO):
+        raise subprocess.CalledProcessError(
+            1, ["git", "-C", str(REPO), "ls-files", "--error-unmatch", relative])
 
 
 def _copy_source(source: Path, destination: Path) -> None:
@@ -1818,42 +1967,43 @@ def _stage_rw_wps_python_project(destination: Path) -> dict[str, object]:
         newline="\n",
     )
 
-    derived_modules = set()
-    import_closure_files = _complete_staged_import_closure(destination, derived_modules)
-    files = sorted(
-        path.relative_to(destination).as_posix()
-        for path in destination.rglob("*") if path.is_file()
-    )
-    forbidden = sorted(_FORBIDDEN_STAGED_FILES & set(files))
-    if forbidden:
-        raise RuntimeError(
-            f"RW-WPS wheel staging contains forecast executors: {forbidden}"
+    with _StagedImportScan() as scan:
+        derived_modules = set()
+        import_closure_files = _complete_staged_import_closure(destination, derived_modules, scan=scan)
+        files = sorted(
+            path.relative_to(destination).as_posix()
+            for path in destination.rglob("*") if path.is_file()
         )
-    verification_imports = _staged_verification_imports(destination)
-    if verification_imports:
-        raise RuntimeError(
-            "RW-WPS wheel staging imports omitted developer verification "
-            f"modules: {verification_imports}"
-        )
-    internal_imports = _staged_internal_imports(
-        destination, source_root=REPO, derived_modules=derived_modules)
-    if internal_imports:
-        raise RuntimeError(
-            "RW-WPS wheel staging has unresolved internal imports: "
-            f"{internal_imports}"
-        )
-    optional_internal_imports = _staged_internal_imports(
-        destination, source_root=REPO, optional=True, derived_modules=derived_modules)
-    return {
-        "distribution": PYTHON_DISTRIBUTION,
-        "file_count": len(files),
-        "files": files,
-        "import_closure_files": import_closure_files,
-        "forecast_executor_files": forbidden,
-        "verification_imports": verification_imports,
-        "unresolved_internal_imports": internal_imports,
-        "optional_internal_imports": optional_internal_imports,
-    }
+        forbidden = sorted(_FORBIDDEN_STAGED_FILES & set(files))
+        if forbidden:
+            raise RuntimeError(
+                f"RW-WPS wheel staging contains forecast executors: {forbidden}"
+            )
+        verification_imports = _staged_verification_imports(destination, scan=scan)
+        if verification_imports:
+            raise RuntimeError(
+                "RW-WPS wheel staging imports omitted developer verification "
+                f"modules: {verification_imports}"
+            )
+        internal_imports = _staged_internal_imports(
+            destination, source_root=REPO, derived_modules=derived_modules, scan=scan)
+        if internal_imports:
+            raise RuntimeError(
+                "RW-WPS wheel staging has unresolved internal imports: "
+                f"{internal_imports}"
+            )
+        optional_internal_imports = _staged_internal_imports(
+            destination, source_root=REPO, optional=True, derived_modules=derived_modules, scan=scan)
+        return {
+            "distribution": PYTHON_DISTRIBUTION,
+            "file_count": len(files),
+            "files": files,
+            "import_closure_files": import_closure_files,
+            "forecast_executor_files": forbidden,
+            "verification_imports": verification_imports,
+            "unresolved_internal_imports": internal_imports,
+            "optional_internal_imports": optional_internal_imports,
+        }
 
 
 def _run(

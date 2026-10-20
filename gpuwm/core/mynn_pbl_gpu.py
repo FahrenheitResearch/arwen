@@ -1095,13 +1095,13 @@ def _mynn_version_check(bl_mynn_version: str) -> None:
             f"this solver carries ({', '.join(MYNN_VERSIONS)}).")
 
 
-def mynn_pbl_kernel(func: str, bl_mynn_version: str = "wrf_461"):
+def mynn_pbl_kernel(func: str, bl_mynn_version: str = "wrf_461", shape=()):
     """The ``mynn_pbl.cu`` kernel ``func`` compiled for one MYNN generation."""
 
     _mynn_version_check(bl_mynn_version)
     if bl_mynn_version == "wrf_461":
-        return get_kernel("mynn_pbl", func)
-    return get_kernel_int_defines("mynn_pbl", func, (("MYNN_GSD41", 1),))
+        return get_kernel("mynn_pbl", func, shape)
+    return get_kernel_int_defines("mynn_pbl", func, (("MYNN_GSD41", 1),), shape)
 
 
 _TENDENCIES_SOLVED = (
@@ -1177,7 +1177,7 @@ def _tendency_launch(
     blocks = (ncol + _TPB - 1) // _TPB
     gsd41_args = () if bl_mynn_version == "wrf_461" else (
         columns["qc"], columns["qi"], np.int32(bl_mynn_cloud_tendency_form == "gsd_41"))
-    kernel = mynn_pbl_kernel("mynn_tendencies_columns", bl_mynn_version)
+    kernel = mynn_pbl_kernel("mynn_tendencies_columns", bl_mynn_version, (nz, 1, ncol))
     kernel(
         (blocks,), (_TPB,),
         (
@@ -1619,7 +1619,7 @@ def mynn_dmp_mf_cuda(
         raise ValueError(
             "MYNN gsd_41 mass flux does not run with bl_mynn_mixscalars=1")
     if bl_mynn_mixscalars == 0:
-        kernel = mynn_pbl_kernel("mynn_dmp_mf_columns", bl_mynn_version)
+        kernel = mynn_pbl_kernel("mynn_dmp_mf_columns", bl_mynn_version, (nz, 1, ncol))
         gsd41_args = () if bl_mynn_version == "wrf_461" else (
             _pair_array(values["sgm"], (ncol, nz), "sgm"),)
         kernel(
@@ -1653,7 +1653,7 @@ def mynn_dmp_mf_cuda(
     psig_w = cp.empty((ncol,), dtype=DTYPE)
     plume_active = cp.empty((ncol,), dtype=np.int32)
     limiter_adjustment = cp.empty((ncol,), dtype=DTYPE)
-    kernel = get_kernel("mynn_dmp_sibling", "mynn_dmp_mf_columns")
+    kernel = get_kernel("mynn_dmp_sibling", "mynn_dmp_mf_columns", (nz, 1, ncol))
     kernel(
         (blocks,), (_TPB,),
         (

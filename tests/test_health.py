@@ -508,3 +508,62 @@ def test_a_fast_sbm_domain_takes_the_fsbm_ceiling():
                      (8, MAX_HEALTH_FIELDS), (0, MAX_HEALTH_FIELDS)):
         cfg = SimpleNamespace(mp_physics=mp)
         assert health_field_ceiling_for_config(cfg) == want
+
+
+def test_successful_required_health_releases_replaced_array_generations(monkeypatch):
+    """A completed check must not keep old cadence carriers alive next step."""
+    import weakref
+    from gpuwm.core.health import HealthField, ValidationReport, rule_for_field
+
+    state = SimpleNamespace(values=np.ones(8, dtype=np.float32),
+                            auxiliary=np.ones(8, dtype=np.float32),
+                            integers=np.ones(8, dtype=np.int32))
+    validator = StateHealthValidator.__new__(StateHealthValidator)
+    validator.state = state
+    reports = []
+
+    def scan(*, phase):
+        validator.fields = (HealthField('u', state.values, rule_for_field('u'),
+                                        auxiliary=state.auxiliary),)
+        validator.excluded_integer_fields = (
+            HealthField('surface.ivgtyp', state.integers, rule_for_field('u')),)
+        report = ValidationReport(not np.isnan(state.values).any(), 0, phase=phase)
+        reports.append(report)
+        return report
+
+    monkeypatch.setattr(validator, 'validate', scan)
+    old = tuple(weakref.ref(a) for a in (state.values, state.auxiliary, state.integers))
+    assert validator.require_healthy(phase='old') is reports[-1]
+    for name in ('values', 'auxiliary', 'integers'):
+        setattr(state, name, getattr(state, name).copy())
+    assert all(ref() is None for ref in old)
+    # Recollection still sees newly allocated carriers and preserves a failed
+    # scan's descriptors for inspection instead of weakening the gate.
+    state.values[3] = np.nan
+    with pytest.raises(HealthCheckError):
+        validator.require_healthy(phase='replacement')
+    assert validator.fields[0].values is state.values
+    assert validator.excluded_integer_fields[0].values is state.integers
+    assert reports[-1].phase == 'replacement'
+
+
+@pytest.mark.gpu
+def test_gpu_required_health_recollects_replaced_arrays_and_catches_corruption():
+    import weakref
+    import cupy as cp
+
+    state = _GPUState(cp, 'u', 1.0)
+    validator = StateHealthValidator(state)
+    old = weakref.ref(state.u)
+    assert validator.require_healthy(phase='original').ok
+    assert validator.fields == ()
+    state.u = state.u.copy()
+    assert old() is None
+    state.u.reshape(-1)[4] = cp.float32(cp.nan)
+    with pytest.raises(HealthCheckError) as failure:
+        validator.require_healthy(phase='replacement')
+    report = failure.value.report
+    assert report.first_bad_field == 'u'
+    assert report.first_bad_flat_index == 4
+    assert report.phase == 'replacement'
+    assert validator.fields[0].values is state.u

@@ -82,9 +82,12 @@ def test_first_run_guides_describe_keyless_era5():
     assert not failures, "\n".join(failures)
 
 
-def test_readme_documents_keyless_selection_and_ensemble_restriction():
+def test_readme_linked_setup_documents_keyless_selection_and_ensemble_restriction():
     facts = _provider_credentials()
-    text = " ".join(README.read_text(encoding="utf-8").split()).lower()
+    readme = README.read_text(encoding="utf-8")
+    assert "[setup guide](docs/public/SETUP.md)" in readme
+    setup = ROOT / "docs/public/SETUP.md"
+    text = " ".join(setup.read_text(encoding="utf-8").split()).lower()
     sentences = re.split(r"(?<=[.!?])\s+", text)
     for provider, keyed in facts.items():
         mentioned = [sentence for sentence in sentences
@@ -109,7 +112,7 @@ def test_readme_documents_keyless_selection_and_ensemble_restriction():
     assert ensemble_providers
     ensemble_claims = [sentence for sentence in sentences
                        if "ensemble" in sentence and re.search(REQUIREMENT, sentence)]
-    assert ensemble_claims, "README must state the ensemble provider restriction"
+    assert ensemble_claims, "Linked setup must state the ensemble provider restriction"
     documented = {provider for provider in facts
                   if any(re.search(rf"\b{re.escape(provider)}\b", sentence)
                          for sentence in ensemble_claims)}

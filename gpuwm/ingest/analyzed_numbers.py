@@ -21,6 +21,9 @@ CANONICAL_NUMBER_FIELDS = {
     "cloud_droplet_number": "QNC",
     "cloud_ice_number": "QNI",
     "rain_number": "QNR",
+    "snow_number": "QNS",
+    "graupel_number": "QNG",
+    "hail_number": "QNH",
     "water_friendly_aerosol_number": "QNWFA",
     "ice_friendly_aerosol_number": "QNIFA",
 }

@@ -40,3 +40,16 @@ def test_live_memory_fit_remains_stricter_and_no_member_is_dropped():
     assert [member for batch in plan.batches for member in batch.member_indices] == list(range(9))
     assert all(batch.required_bytes <= batch.available_bytes for batch in plan.batches)
     assert plan.receipt()["max_ordinary_members_per_device"] == cap
+
+
+def test_wofs_uses_live_memory_capacity_and_retains_explicit_cap():
+    request = EnsembleRequest(36, recipe="wofs", member_variants=[{"name": f"member-{i}"} for i in range(36)])
+    cap, policy = ordinary_member_policy(request, concurrent=True)
+    assert cap is None and policy["source"] == "live_memory_admission"
+    model = EnsembleMemoryModel((MemoryComponent("model", "state", fixed_bytes=6),))
+    plan = pack_members(36, (CardBudget(0, 84),), model, batched=False,
+                        concurrent_ordinary=True, max_ordinary_members_per_device=cap)
+    assert plan.capacities == (14,)
+    assert [batch.members for batch in plan.batches] == [14, 14, 8]
+    assert ordinary_member_policy(EnsembleRequest(36, recipe="wofs",
+        member_variants=[{"name": f"member-{i}"} for i in range(36)], max_ordinary_members_per_device=3), concurrent=True)[0] == 3

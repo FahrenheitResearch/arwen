@@ -213,6 +213,7 @@ class RealCaseRunSummary:
     #: after the forecast had finished, so a single-domain config-driven run
     #: wrote every frame and then failed before rendering.
     moisture_floor_receipts: Mapping[str, object] | None = None
+    hydro_receipt: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -245,6 +246,7 @@ class ExperimentRunSummary:
     #: AFTER this one, so what the run route recorded and did not hand
     #: back was replaced rather than kept.
     moisture_floor_receipts: Mapping[str, object] | None = None
+    hydro_receipt: Mapping[str, object] | None = None
     ensemble_manifest: Path | None = None
     ensemble_manifest_sha256: str | None = None
 
@@ -998,6 +1000,7 @@ def _initialize_real_case_physics(
         **usemonalb_landuse_inputs(cfg, static, start_time))
     driver = initialize_physics(
         state, cfg, landuse=landuse, tsk=soil.tsk,
+        hydro_parent_geometry=grid,
         soil_temperature=soil.soil_temperature,
         soil_moisture=soil.soil_moisture,
         liquid_moisture=soil.liquid_moisture,
@@ -1745,6 +1748,7 @@ def prepare_child_case(initialized, child_dc, *, exp: ExperimentConfig,
     from gpuwm.ingest.lake_physics import lake_physics_inputs
     driver = initialize_physics(
         state, cfg, cam_ozone=cam, landuse=landuse, tsk=soil.tsk,
+        hydro_parent_geometry=initialized.grid,
         soil_temperature=soil.soil_temperature,
         soil_moisture=soil.soil_moisture,
         liquid_moisture=soil.liquid_moisture,
@@ -1829,7 +1833,7 @@ def rebuild_child_driver_from_land_state(*, exp: ExperimentConfig,
     (:func:`prepare_child_case`) performs.
 
     ``land`` maps :data:`~gpuwm.ingest.relocation_init
-    .LAND_SURFACE_CONTINUATION_FIELDS` names to host arrays; a name the
+    .LAND_SURFACE_CONTINUATION_FIELDS` names to arrays; a name the
     caller does not supply falls back to the cold-start default, exactly
     as it did when this lived inside the relocation preparer.
     Accumulators are NOT here: they are re-initialised at the new
@@ -1897,7 +1901,8 @@ def rebuild_child_driver_from_land_state(*, exp: ExperimentConfig,
         static["LU_INDEX"], urban_legend=int(getattr(cfg, "sf_urban_physics", 0)) > 0,
         soil_type=static["SCT_DOM"],
         landmask=static["LANDMASK"],
-        snow=land.get("snow", 0.0), xice=land.get("xice", 0.0),
+        snow=_relocation_host(land.get("snow", 0.0)),
+        xice=_relocation_host(land.get("xice", 0.0)),
         valid_time=now,
         cen_lat=(float(getattr(grid, "cen_lat", np.mean(lat)))
                  if center_lat is None else float(center_lat)),
@@ -1905,7 +1910,8 @@ def rebuild_child_driver_from_land_state(*, exp: ExperimentConfig,
         iswater=int(attrs["ISWATER"]),
         islake=int(attrs["ISLAKE"]),
         isice=int(attrs["ISICE"]),
-        soil_temperature=land.get("tslb"),
+        soil_temperature=(None if land.get("tslb") is None else
+                          _relocation_host(land["tslb"])),
         fractional_seaice=ruc_fractional_seaice(cfg),
         **usemonalb_landuse_inputs(cfg, static, now))
     from gpuwm.core.cam_ozone import cam_ozone_setup
@@ -1913,7 +1919,7 @@ def rebuild_child_driver_from_land_state(*, exp: ExperimentConfig,
     cam = cam_ozone_setup(exp=exp, dc=child_dc, grid=grid)
     from gpuwm.ingest.lake_physics import lake_physics_inputs
     driver = initialize_physics(
-        state, cfg, landuse=landuse,
+        state, cfg, landuse=landuse, hydro_parent_geometry=grid,
         tsk=land.get("tsk", 300.0),
         soil_temperature=land.get("tslb", 285.0),
         soil_moisture=land.get("smois", 0.30),
@@ -2013,7 +2019,7 @@ class RealRelocationChildPreparer:
     def capture_outgoing(self, node) -> None:
         from copy import deepcopy
         from tilestream.physics_inventory import carrier_scalars
-        from gpuwm.core.physics_continuation import (capture_carriers,
+        from gpuwm.core.physics_continuation import (_capture, capture_carriers,
                                                      capture_continuation)
         from gpuwm.ingest.relocation_init import (
             LAND_SURFACE_CONTINUATION_FIELDS)
@@ -2033,33 +2039,12 @@ class RealRelocationChildPreparer:
                         if key not in store:
                             raise ValueError(f"streamed land state is missing canonical carrier {key}")
                         value = store[key]
-                    fields[name] = _relocation_host(value)
-        # THE CUMULUS TRIGGER MEMORY, which a move was throwing away.
-        # Kain-Fritsch triggers off `w0avg`, a running mean of vertical
-        # velocity kept on the cumulus callable rather than on the state
-        # (gpuwm/core/kf.py; the restart path carries it as
-        # `cumulus/w0avg`).  `ensure_trigger_history` re-allocates it to
-        # ZEROS whenever the state object changes -- "a driver moved to a
-        # new state still gets a fresh mean" -- and a relocation replaces
-        # the state object, so every move wiped the memory and KF stopped
-        # triggering until it rebuilt over one or two cudt intervals.
-        #
-        # MEASURED: d02 at 4.5 km with cu_physics = 1 and cudt = 10 min
-        # lost 12% of its rain and gained 10% cloud after a move, with
-        # rain NUMBER conserved, recovering in about 17 minutes -- and
-        # the rendered echo showed new convective blobs appearing exactly
-        # every 600 s, then dying back after each relocation.  The
-        # descendant d03 runs cu_physics = 0 and moved 0.5%.
-        trigger = None
-        cumulus = getattr(driver, "cumulus_callable", None)
-        w0avg = getattr(cumulus, "w0avg", None)
-        if w0avg is not None:
-            trigger = _relocation_host(
-                w0avg if store is None else store["cumulus/w0avg"])
+                    fields[name] = _capture(value)
         case = self.model._prepared_by_grid_id.get(int(node.cfg.grid_id))
         self._captured = {
             "grid_id": int(node.cfg.grid_id),
-            "cumulus_w0avg": trigger,
+            "device": hasattr(getattr(source_state, "p", None),
+                              "__cuda_array_interface__"),
             "i_parent_start": int(node.cfg.i_parent_start),
             "j_parent_start": int(node.cfg.j_parent_start),
             "fields": fields,
@@ -2222,7 +2207,8 @@ class RealRelocationChildPreparer:
                 ny, nx = value.shape[-2:]
                 if ny not in (cfg.ny, cfg.ny+1) or nx not in (cfg.nx, cfg.nx+1):
                     raise RelocationRefusal(f"continuation {name} has unsupported window shape {value.shape}")
-                result[name] = np.ascontiguousarray(
+                from gpuwm.core.physics_continuation import _array_module
+                result[name] = _array_module(value).ascontiguousarray(
                     value[..., sy.start:sy.stop+(ny-cfg.ny), sx.start:sx.stop+(nx-cfg.nx)])
             return result
 
@@ -2245,7 +2231,7 @@ class RealRelocationChildPreparer:
                 "strip_accumulations": strip_receipt,
                 "radiation_carriers": carriers,
                 "driver_rebuild_seconds": driver_seconds,
-                "preparation": "global host donors followed by bounded device windows",
+                "preparation": "global donors followed by bounded device windows",
             }
 
         prepare.staged = staged
@@ -4201,6 +4187,11 @@ def _global_wrf_attrs(
                 feedback["stock_wrf_certification"]))
     attrs.update(initial_condition_global_attrs(
         initial_condition, source=source))
+    from gpuwm.ensemble.runtime_context import current_capture
+    capture = current_capture()
+    if capture is not None and capture.provenance:
+        from gpuwm.ensemble.wofs_recipe import provenance_label
+        attrs["GPUWM_ENSEMBLE_PROVENANCE"] = provenance_label(capture.provenance)
     return attrs
 
 
@@ -4223,7 +4214,7 @@ def write_case_output(prepared, output_dir: Path, valid_time: datetime, *,
     if analysis_refl:
         from gpuwm.core.refl import analysis_refl_10cm
         captured_refl = analysis_refl_10cm(
-            state, shape=(prepared.cfg.nz, prepared.cfg.ny, prepared.cfg.nx),
+            state, prepared.cfg, shape=(prepared.cfg.nz, prepared.cfg.ny, prepared.cfg.nx),
             array_module=np if streamed is not None else None)
     if capture is not None:
         if (expect_refl_10cm
@@ -4536,7 +4527,8 @@ def integrate_prepared_case(
         write_final_output: bool = False,
         preserved_forcing_prefix: bool = False,
         health_debug: bool = False,
-        feedback=None, stepper=None) -> RealCaseRunSummary:
+        feedback=None, stepper=None,
+        step_observer=None) -> RealCaseRunSummary:
     """Integrate a prepared real case and write its configured outputs.
 
     Extraction of the frozen reference integration loop: intentionally free
@@ -4568,6 +4560,16 @@ def integrate_prepared_case(
     ``write_final_output`` publishes the actual terminal state when a
     member leg ends between history times. The final microphysics call
     produces its output diagnostics through the ordinary history path.
+
+    ``step_observer`` is the same per-step seam
+    :func:`gpuwm.core.model.execute_experiment` offers (the step log's
+    ``domain_step``): called once per committed outer step with
+    ``grid_id``, ``step_count``, ``model_seconds``, ``step_wall_seconds``
+    and ``dt``, after any due wrfout or checkpoint is durable.  Until it
+    was threaded here, a single-domain fixed-step runtime-route run (ERA5
+    ``gpuwm go`` or ``gpuwm run``, one domain) opened progress.jsonl and
+    wrote run_start and run_end with no step records between them, so a
+    consumer billing committed step time off that log read nothing.
 
     ``stepper`` is what one dynamics substep is taken with.  ``None`` binds
     ``gpuwm.core.dycore.step`` ITSELF -- not a wrapper around it -- so a run
@@ -4843,6 +4845,7 @@ def integrate_prepared_case(
             step_wall_seconds=0.0)
     dynamics_substeps = int(round(cfg.dt / integration_cfg.dt))
     final_output_step = outer_steps if write_final_output else None
+    hydro_forecast_started = time.perf_counter()
     for outer_step in range(start_outer_step, outer_steps):
         outer_started = time.perf_counter()
         forcing_time = start_time + timedelta(seconds=outer_step * cfg.dt)
@@ -5038,8 +5041,27 @@ def integrate_prepared_case(
                 last_durable_wrfout=(outputs[-1] if outputs else None),
                 last_checkpoint=last_checkpoint, phase="post-d01-sync",
                 step_wall_seconds=time.perf_counter() - outer_started)
+        if step_observer is not None:
+            # The committed step, numbered and stamped exactly as the
+            # domain-tree executor numbers it (gpuwm/core/model.py): the
+            # step just taken is outer_step + 1 at its post-step model
+            # time, on this run's fixed dt.  Telemetry never fails a run,
+            # so a sink that raises is dropped for that one line.
+            try:
+                step_observer(
+                    grid_id=int(domain_id), step_count=outer_step + 1,
+                    model_seconds=(outer_step + 1) * float(cfg.dt),
+                    step_wall_seconds=time.perf_counter() - outer_started,
+                    dt=float(cfg.dt))
+            except Exception:  # noqa: BLE001 - telemetry never fails a run
+                pass
     _finalizing_progress(progress_callback, "synchronize-device")
     cp.cuda.runtime.deviceSynchronize()
+    from gpuwm.hydro.forecast_products import finalize_forecast as finalize_hydro
+    hydro_receipt = finalize_hydro(
+        state.physics, outdir=output_dir, dx_m=float(cfg.dx),
+        forecast_seconds=time.perf_counter() - hydro_forecast_started,
+        atmosphere_steps=(outer_steps - start_outer_step) * dynamics_substeps)
 
     # After the final device synchronization and after every history frame is
     # durable, so the digest observes the trajectory and cannot join it.
@@ -5107,6 +5129,7 @@ def integrate_prepared_case(
         completed_seconds=float(stepper.scalars["elapsed_seconds"] if streamed else state.elapsed_seconds),
         rainc_max_mm=rainc_max, rainc_max_ji=rainc_ji,
         rainc_max_lat=rainc_lat, rainc_max_lon=rainc_lon,
+        hydro_receipt=hydro_receipt,
     )
 
 
@@ -5480,6 +5503,51 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
                    ) -> RealCaseRunSummary | ExperimentRunSummary:
     """Prepare and integrate a single domain or a complete domain tree.
 
+    Opens the step log the prepared runners keep beside their outputs
+    (``<outdir>/progress.jsonl``: one ``step`` record per domain per
+    committed step, ``run_start``/``run_end`` around them) and hands its
+    observer to the executor.  This route never did, so a consumer that
+    bills committed step time off that log (WOOF's worker) read nothing
+    from a finished ERA5 forecast and reported it failed: three Zhengzhou
+    ERA5 27-9-3-1 runs of 2026-10-18, every frame drawn.  Inside an
+    ensemble session the session wires its own log, so nothing is opened
+    here.
+    """
+    from gpuwm.ensemble.runtime_context import current_session
+    if current_session() is not None:
+        return _run_experiment(exp, data, outdir, restart=restart,
+                               progress_callback=progress_callback,
+                               health_debug=health_debug)
+    from gpuwm.progress_log import ProgressOptions
+    outdir = Path(outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    step_log = ProgressOptions(progress_format="jsonl").open(
+        outdir=outdir, start_time=exp.start_time,
+        run_seconds=float(exp.run_seconds),
+        # One scalar for the whole run (Registry scope 1), read off the
+        # root exactly as the tree runner reads it.
+        adaptive_dt=bool(exp.root.run.use_adaptive_time_step))
+    try:
+        summary = _run_experiment(
+            exp, data, outdir, restart=restart,
+            progress_callback=progress_callback, health_debug=health_debug,
+            step_observer=step_log.step_observer)
+    except BaseException as error:
+        step_log.close(status="FAIL",
+                       error=f"{type(error).__name__}: {error}")
+        raise
+    step_log.close(status="SUCCESS")
+    return summary
+
+
+def _run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
+                    restart=None, progress_callback=None,
+                    health_debug: bool = False, step_observer=None
+                    ) -> RealCaseRunSummary | ExperimentRunSummary:
+    """The body of :func:`run_experiment`; ``step_observer`` reaches every
+    :func:`execute_experiment` call of the run (the whole-run executor and
+    each leg of a spawn walk).
+
     Prints the resolved-config report (G2) before any device work, then
     runs the extracted prepare/integrate pipeline with every input and
     policy drawn from the config pair.
@@ -5492,6 +5560,8 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
         return ensemble.run_experiment(run_experiment, exp, data,
             output_directory=outdir, restart=restart,
             progress_callback=progress_callback, health_debug=health_debug)
+    from gpuwm import kernel_prewarm
+    kernel_prewarm.start_plan(exp)
     from gpuwm.io.wrfout import quarantine_orphan_wrfouts
     from gpuwm.core.devices import refuse_unrouted_devices
     refuse_unrouted_devices(exp, "gpuwm run")
@@ -5747,7 +5817,8 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
                 exp, data, outdir, adaptive_model, restart=restart,
                 progress_callback=progress_callback, health_debug=health_debug,
                 prepared_steppers={int(dc.grid_id): single_stepper},
-                prepared_decisions={int(dc.grid_id): single_decision})
+                prepared_decisions={int(dc.grid_id): single_decision},
+                step_observer=step_observer)
         from gpuwm.io.history_selection import resolve
 
         from gpuwm.simulated_radar import run_with_radar
@@ -5763,7 +5834,7 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
             auto_epssm=exp.auto_epssm,
             restart_path=restart, progress_callback=progress_callback,
             health_debug=health_debug, feedback=experimental_feedback,
-            stepper=single_stepper)
+            stepper=single_stepper, step_observer=step_observer)
         _finalizing_progress(progress_callback, "provenance-receipts")
         _write_feedback_provenance_receipt(
             outdir, exp, resumed=restart is not None)
@@ -5827,7 +5898,7 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
         exp, data, outdir, model, restart=restart,
         progress_callback=progress_callback, health_debug=health_debug,
         planning_machine=planning_machine, tree_decision=cold_tree,
-        tree_decisions=cold_decisions)
+        tree_decisions=cold_decisions, step_observer=step_observer)
 
 
 def _refine_single_streaming_plan(prepared, options, decision, machine,
@@ -5895,8 +5966,13 @@ def _run_built_experiment(exp, data, outdir, model, *, restart=None,
                           progress_callback=None, health_debug=False,
                           prepared_steppers=None, prepared_decisions=None,
                           planning_machine=None, tree_decision=None,
-                          tree_decisions=None):
-    """The shared scheduled runtime, independent of initialization storage."""
+                          tree_decisions=None, step_observer=None):
+    """The shared scheduled runtime, independent of initialization storage.
+
+    ``step_observer`` reaches every :func:`execute_experiment` call (the
+    whole-run executor and each leg of a spawn walk): the step log
+    :func:`run_experiment` opened.
+    """
     from gpuwm.core.model import execute_experiment
     from gpuwm.io.restart import (read_tree_lifecycle_header,
                                   restore_tree_restart, write_tree_restart)
@@ -5974,6 +6050,8 @@ def _run_built_experiment(exp, data, outdir, model, *, restart=None,
     # A restore whose point IS the stop tick is a finished run, not an
     # error and not an integration: the executor refuses a start period
     # at the end of the schedule, so this decides here, once.
+    hydro_start_seconds = model.root.clock.elapsed_seconds
+    hydro_forecast_started = time.perf_counter()
     already_complete = _restart_is_complete(restart_info)
 
     for node in model.walk_parent_first():
@@ -6112,7 +6190,8 @@ def _run_built_experiment(exp, data, outdir, model, *, restart=None,
                 progress_callback=committed_progress,
                 health_debug=health_debug,
                 relocation_runner=relocation_runner,
-                steppers=steppers, experiment=exp)
+                steppers=steppers, experiment=exp,
+                step_observer=step_observer)
         else:
             # The leg walk: dormant nests are born mid-run and integrate
             # from their birth boundary onward.
@@ -6129,13 +6208,28 @@ def _run_built_experiment(exp, data, outdir, model, *, restart=None,
                 restart_handler=restart_handler,
                 progress_callback=committed_progress,
                 health_debug=health_debug,
-                steppers=steppers)
+                steppers=steppers, step_observer=step_observer)
         _finalizing_progress(progress_callback, "drain-history-writers")
         writers.drain(before_domain=_drain_progress(progress_callback))
         paths = writers.paths
     _finalizing_progress(progress_callback, "synchronize-device")
     import cupy as cp
     cp.cuda.runtime.deviceSynchronize()
+    from gpuwm.hydro.forecast_products import finalize_forecast as finalize_hydro
+    hydro_wall = time.perf_counter() - hydro_forecast_started
+    hydro_receipts = {}
+    for grid_id, node in sorted(model.nodes_by_grid_id.items()):
+        hydro_receipts[f"d{grid_id:02d}"] = finalize_hydro(
+            node.state.physics,
+            outdir=(outdir if len(model.nodes_by_grid_id) == 1 else
+                    outdir / f"d{grid_id:02d}"),
+            # node.cfg is the DomainConfig: its spacing and step live on .run
+            # (every other reader here says dc.run.dx).  `.dx` raised
+            # AttributeError at the end of every runtime-route forecast
+            # (ERA5 Zhengzhou 27-9-3-1, 2026-10-19, after all 2400 steps).
+            dx_m=float(node.cfg.run.dx), forecast_seconds=hydro_wall,
+            atmosphere_steps=round((node.clock.elapsed_seconds - hydro_start_seconds)
+                                   / float(node.cfg.run.dt)))
     # After the writer drain above and after the final device synchronization,
     # so the digest observes the trajectory and cannot participate in it.
     # A completed summary reports an observed final state, including a resume
@@ -6204,7 +6298,8 @@ def _run_built_experiment(exp, data, outdir, model, *, restart=None,
         feedback_provenance_receipt_sha256=feedback_sha,
         trajectory_digest=trajectory_digest,
         frame_records=tuple(frame_records),
-        moisture_floor_receipts=floor_receipts or None)
+        moisture_floor_receipts=floor_receipts or None,
+        hydro_receipt=hydro_receipts)
 
 
 def _submit_tree_history_frame(writers, node, ticks: int) -> None:

@@ -1,0 +1,4759 @@
+{
+  "source_revision": "0242a96c2a90b2c1501ff56a1e457a932a49c8ac",
+  "nsoil": 4,
+  "nsnow": 3,
+  "fields": [
+    {
+      "name": "domain.start_datetime",
+      "symbol": "f0011",
+      "type": "real*8",
+      "bounds": [],
+      "dtype": "f64",
+      "offset": 0,
+      "count": 1
+    },
+    {
+      "name": "domain.end_datetime",
+      "symbol": "f0012",
+      "type": "real*8",
+      "bounds": [],
+      "dtype": "f64",
+      "offset": 1,
+      "count": 1
+    },
+    {
+      "name": "domain.curr_datetime",
+      "symbol": "f0013",
+      "type": "real*8",
+      "bounds": [],
+      "dtype": "f64",
+      "offset": 2,
+      "count": 1
+    },
+    {
+      "name": "domain.time_dbl",
+      "symbol": "f0016",
+      "type": "double precision",
+      "bounds": [],
+      "dtype": "f64",
+      "offset": 3,
+      "count": 1
+    },
+    {
+      "name": "levels.nsoil",
+      "symbol": "f0000",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 0,
+      "count": 1
+    },
+    {
+      "name": "levels.nsnow",
+      "symbol": "f0001",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 1,
+      "count": 1
+    },
+    {
+      "name": "levels.nveg",
+      "symbol": "f0002",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 2,
+      "count": 1
+    },
+    {
+      "name": "domain.iloc",
+      "symbol": "f0003",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 3,
+      "count": 1
+    },
+    {
+      "name": "domain.jloc",
+      "symbol": "f0004",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 4,
+      "count": 1
+    },
+    {
+      "name": "domain.dt",
+      "symbol": "f0005",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 0,
+      "count": 1
+    },
+    {
+      "name": "domain.start_year",
+      "symbol": "f0006",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 5,
+      "count": 1
+    },
+    {
+      "name": "domain.start_month",
+      "symbol": "f0007",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 6,
+      "count": 1
+    },
+    {
+      "name": "domain.start_day",
+      "symbol": "f0008",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 7,
+      "count": 1
+    },
+    {
+      "name": "domain.start_hour",
+      "symbol": "f0009",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 8,
+      "count": 1
+    },
+    {
+      "name": "domain.start_minute",
+      "symbol": "f0010",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 9,
+      "count": 1
+    },
+    {
+      "name": "domain.itime",
+      "symbol": "f0014",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 10,
+      "count": 1
+    },
+    {
+      "name": "domain.ntime",
+      "symbol": "f0015",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 11,
+      "count": 1
+    },
+    {
+      "name": "domain.lat",
+      "symbol": "f0017",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 1,
+      "count": 1
+    },
+    {
+      "name": "domain.lon",
+      "symbol": "f0018",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 2,
+      "count": 1
+    },
+    {
+      "name": "domain.zref",
+      "symbol": "f0019",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 3,
+      "count": 1
+    },
+    {
+      "name": "domain.terrain_slope",
+      "symbol": "f0020",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 4,
+      "count": 1
+    },
+    {
+      "name": "domain.azimuth",
+      "symbol": "f0021",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 5,
+      "count": 1
+    },
+    {
+      "name": "domain.vegtyp",
+      "symbol": "f0022",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 12,
+      "count": 1
+    },
+    {
+      "name": "domain.croptype",
+      "symbol": "f0023",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 13,
+      "count": 1
+    },
+    {
+      "name": "domain.isltyp",
+      "symbol": "f0024",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 14,
+      "count": 1
+    },
+    {
+      "name": "domain.ist",
+      "symbol": "f0025",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 15,
+      "count": 1
+    },
+    {
+      "name": "domain.zsoil",
+      "symbol": "f0026",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          4
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 6,
+      "count": 4
+    },
+    {
+      "name": "domain.dzsnso",
+      "symbol": "f0027",
+      "type": "real",
+      "bounds": [
+        [
+          -2,
+          4
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 10,
+      "count": 7
+    },
+    {
+      "name": "domain.zsnso",
+      "symbol": "f0028",
+      "type": "real",
+      "bounds": [
+        [
+          -2,
+          4
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 17,
+      "count": 7
+    },
+    {
+      "name": "options.opt_snf",
+      "symbol": "f0029",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 16,
+      "count": 1
+    },
+    {
+      "name": "options.opt_run",
+      "symbol": "f0030",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 17,
+      "count": 1
+    },
+    {
+      "name": "options.opt_drn",
+      "symbol": "f0031",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 18,
+      "count": 1
+    },
+    {
+      "name": "options.opt_inf",
+      "symbol": "f0032",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 19,
+      "count": 1
+    },
+    {
+      "name": "options.opt_infdv",
+      "symbol": "f0033",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 20,
+      "count": 1
+    },
+    {
+      "name": "options.dveg",
+      "symbol": "f0034",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 21,
+      "count": 1
+    },
+    {
+      "name": "options.opt_alb",
+      "symbol": "f0035",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 22,
+      "count": 1
+    },
+    {
+      "name": "options.opt_rad",
+      "symbol": "f0036",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 23,
+      "count": 1
+    },
+    {
+      "name": "options.opt_sfc",
+      "symbol": "f0037",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 24,
+      "count": 1
+    },
+    {
+      "name": "options.opt_crs",
+      "symbol": "f0038",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 25,
+      "count": 1
+    },
+    {
+      "name": "options.opt_crop",
+      "symbol": "f0039",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 26,
+      "count": 1
+    },
+    {
+      "name": "options.opt_stc",
+      "symbol": "f0040",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 27,
+      "count": 1
+    },
+    {
+      "name": "options.opt_tbot",
+      "symbol": "f0041",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 28,
+      "count": 1
+    },
+    {
+      "name": "options.opt_frz",
+      "symbol": "f0042",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 29,
+      "count": 1
+    },
+    {
+      "name": "options.opt_btr",
+      "symbol": "f0043",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 30,
+      "count": 1
+    },
+    {
+      "name": "options.opt_rsf",
+      "symbol": "f0044",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 31,
+      "count": 1
+    },
+    {
+      "name": "options.opt_sub",
+      "symbol": "f0045",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 32,
+      "count": 1
+    },
+    {
+      "name": "parameters.bexp",
+      "symbol": "f0046",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          4
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 24,
+      "count": 4
+    },
+    {
+      "name": "parameters.smcmax",
+      "symbol": "f0047",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          4
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 28,
+      "count": 4
+    },
+    {
+      "name": "parameters.smcwlt",
+      "symbol": "f0048",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          4
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 32,
+      "count": 4
+    },
+    {
+      "name": "parameters.smcref",
+      "symbol": "f0049",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          4
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 36,
+      "count": 4
+    },
+    {
+      "name": "parameters.dksat",
+      "symbol": "f0050",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          4
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 40,
+      "count": 4
+    },
+    {
+      "name": "parameters.dwsat",
+      "symbol": "f0051",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          4
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 44,
+      "count": 4
+    },
+    {
+      "name": "parameters.psisat",
+      "symbol": "f0052",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          4
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 48,
+      "count": 4
+    },
+    {
+      "name": "parameters.bvic",
+      "symbol": "f0053",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 52,
+      "count": 1
+    },
+    {
+      "name": "parameters.axaj",
+      "symbol": "f0054",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 53,
+      "count": 1
+    },
+    {
+      "name": "parameters.bxaj",
+      "symbol": "f0055",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 54,
+      "count": 1
+    },
+    {
+      "name": "parameters.xxaj",
+      "symbol": "f0056",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 55,
+      "count": 1
+    },
+    {
+      "name": "parameters.bbvic",
+      "symbol": "f0057",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 56,
+      "count": 1
+    },
+    {
+      "name": "parameters.g",
+      "symbol": "f0058",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 57,
+      "count": 1
+    },
+    {
+      "name": "parameters.quartz",
+      "symbol": "f0059",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 58,
+      "count": 1
+    },
+    {
+      "name": "parameters.kdt",
+      "symbol": "f0060",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 59,
+      "count": 1
+    },
+    {
+      "name": "parameters.refkdt",
+      "symbol": "f0061",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 60,
+      "count": 1
+    },
+    {
+      "name": "parameters.refdk",
+      "symbol": "f0062",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 61,
+      "count": 1
+    },
+    {
+      "name": "parameters.csoil",
+      "symbol": "f0063",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 62,
+      "count": 1
+    },
+    {
+      "name": "parameters.z0",
+      "symbol": "f0064",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 63,
+      "count": 1
+    },
+    {
+      "name": "parameters.czil",
+      "symbol": "f0065",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 64,
+      "count": 1
+    },
+    {
+      "name": "parameters.zbot",
+      "symbol": "f0066",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 65,
+      "count": 1
+    },
+    {
+      "name": "parameters.frzx",
+      "symbol": "f0067",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 66,
+      "count": 1
+    },
+    {
+      "name": "parameters.slope",
+      "symbol": "f0068",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 67,
+      "count": 1
+    },
+    {
+      "name": "parameters.timean",
+      "symbol": "f0069",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 68,
+      "count": 1
+    },
+    {
+      "name": "parameters.fsatmx",
+      "symbol": "f0070",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 69,
+      "count": 1
+    },
+    {
+      "name": "parameters.zwt_init",
+      "symbol": "f0071",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 70,
+      "count": 1
+    },
+    {
+      "name": "parameters.urban_flag",
+      "symbol": "f0072",
+      "type": "logical",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 33,
+      "count": 1
+    },
+    {
+      "name": "parameters.laim",
+      "symbol": "f0073",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          12
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 71,
+      "count": 12
+    },
+    {
+      "name": "parameters.saim",
+      "symbol": "f0074",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          12
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 83,
+      "count": 12
+    },
+    {
+      "name": "parameters.lai",
+      "symbol": "f0075",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 95,
+      "count": 1
+    },
+    {
+      "name": "parameters.sai",
+      "symbol": "f0076",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 96,
+      "count": 1
+    },
+    {
+      "name": "parameters.ch2op",
+      "symbol": "f0077",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 97,
+      "count": 1
+    },
+    {
+      "name": "parameters.nroot",
+      "symbol": "f0078",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 34,
+      "count": 1
+    },
+    {
+      "name": "parameters.hvt",
+      "symbol": "f0079",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 98,
+      "count": 1
+    },
+    {
+      "name": "parameters.hvb",
+      "symbol": "f0080",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 99,
+      "count": 1
+    },
+    {
+      "name": "parameters.tmin",
+      "symbol": "f0081",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 100,
+      "count": 1
+    },
+    {
+      "name": "parameters.shdfac",
+      "symbol": "f0082",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 101,
+      "count": 1
+    },
+    {
+      "name": "parameters.shdmax",
+      "symbol": "f0083",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 102,
+      "count": 1
+    },
+    {
+      "name": "parameters.z0mvt",
+      "symbol": "f0084",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 103,
+      "count": 1
+    },
+    {
+      "name": "parameters.rc",
+      "symbol": "f0085",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 104,
+      "count": 1
+    },
+    {
+      "name": "parameters.xl",
+      "symbol": "f0086",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 105,
+      "count": 1
+    },
+    {
+      "name": "parameters.bp",
+      "symbol": "f0087",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 106,
+      "count": 1
+    },
+    {
+      "name": "parameters.folnmx",
+      "symbol": "f0088",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 107,
+      "count": 1
+    },
+    {
+      "name": "parameters.qe25",
+      "symbol": "f0089",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 108,
+      "count": 1
+    },
+    {
+      "name": "parameters.vcmx25",
+      "symbol": "f0090",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 109,
+      "count": 1
+    },
+    {
+      "name": "parameters.mp",
+      "symbol": "f0091",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 110,
+      "count": 1
+    },
+    {
+      "name": "parameters.rgl",
+      "symbol": "f0092",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 111,
+      "count": 1
+    },
+    {
+      "name": "parameters.rsmin",
+      "symbol": "f0093",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 112,
+      "count": 1
+    },
+    {
+      "name": "parameters.hs",
+      "symbol": "f0094",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 113,
+      "count": 1
+    },
+    {
+      "name": "parameters.akc",
+      "symbol": "f0095",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 114,
+      "count": 1
+    },
+    {
+      "name": "parameters.ako",
+      "symbol": "f0096",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 115,
+      "count": 1
+    },
+    {
+      "name": "parameters.avcmx",
+      "symbol": "f0097",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 116,
+      "count": 1
+    },
+    {
+      "name": "parameters.rsmax",
+      "symbol": "f0098",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 117,
+      "count": 1
+    },
+    {
+      "name": "parameters.cwp",
+      "symbol": "f0099",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 118,
+      "count": 1
+    },
+    {
+      "name": "parameters.c3psn",
+      "symbol": "f0100",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 119,
+      "count": 1
+    },
+    {
+      "name": "parameters.dleaf",
+      "symbol": "f0101",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 120,
+      "count": 1
+    },
+    {
+      "name": "parameters.kc25",
+      "symbol": "f0102",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 121,
+      "count": 1
+    },
+    {
+      "name": "parameters.ko25",
+      "symbol": "f0103",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 122,
+      "count": 1
+    },
+    {
+      "name": "parameters.elai",
+      "symbol": "f0104",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 123,
+      "count": 1
+    },
+    {
+      "name": "parameters.esai",
+      "symbol": "f0105",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 124,
+      "count": 1
+    },
+    {
+      "name": "parameters.vai",
+      "symbol": "f0106",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 125,
+      "count": 1
+    },
+    {
+      "name": "parameters.veg",
+      "symbol": "f0107",
+      "type": "logical",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 35,
+      "count": 1
+    },
+    {
+      "name": "parameters.fveg",
+      "symbol": "f0108",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 126,
+      "count": 1
+    },
+    {
+      "name": "parameters.rhol",
+      "symbol": "f0109",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          2
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 127,
+      "count": 2
+    },
+    {
+      "name": "parameters.rhos",
+      "symbol": "f0110",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          2
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 129,
+      "count": 2
+    },
+    {
+      "name": "parameters.taul",
+      "symbol": "f0111",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          2
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 131,
+      "count": 2
+    },
+    {
+      "name": "parameters.taus",
+      "symbol": "f0112",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          2
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 133,
+      "count": 2
+    },
+    {
+      "name": "parameters.isurban",
+      "symbol": "f0113",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 36,
+      "count": 1
+    },
+    {
+      "name": "parameters.iswater",
+      "symbol": "f0114",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 37,
+      "count": 1
+    },
+    {
+      "name": "parameters.isbarren",
+      "symbol": "f0115",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 38,
+      "count": 1
+    },
+    {
+      "name": "parameters.isice",
+      "symbol": "f0116",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 39,
+      "count": 1
+    },
+    {
+      "name": "parameters.iscrop",
+      "symbol": "f0117",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 40,
+      "count": 1
+    },
+    {
+      "name": "parameters.eblforest",
+      "symbol": "f0118",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 41,
+      "count": 1
+    },
+    {
+      "name": "parameters.natural",
+      "symbol": "f0119",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 42,
+      "count": 1
+    },
+    {
+      "name": "parameters.low_density_residential",
+      "symbol": "f0120",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 43,
+      "count": 1
+    },
+    {
+      "name": "parameters.high_density_residential",
+      "symbol": "f0121",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 44,
+      "count": 1
+    },
+    {
+      "name": "parameters.high_intensity_industrial",
+      "symbol": "f0122",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 45,
+      "count": 1
+    },
+    {
+      "name": "parameters.sb",
+      "symbol": "f0123",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 135,
+      "count": 1
+    },
+    {
+      "name": "parameters.vkc",
+      "symbol": "f0124",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 136,
+      "count": 1
+    },
+    {
+      "name": "parameters.tfrz",
+      "symbol": "f0125",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 137,
+      "count": 1
+    },
+    {
+      "name": "parameters.hsub",
+      "symbol": "f0126",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 138,
+      "count": 1
+    },
+    {
+      "name": "parameters.hvap",
+      "symbol": "f0127",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 139,
+      "count": 1
+    },
+    {
+      "name": "parameters.hfus",
+      "symbol": "f0128",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 140,
+      "count": 1
+    },
+    {
+      "name": "parameters.cwat",
+      "symbol": "f0129",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 141,
+      "count": 1
+    },
+    {
+      "name": "parameters.cice",
+      "symbol": "f0130",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 142,
+      "count": 1
+    },
+    {
+      "name": "parameters.cpair",
+      "symbol": "f0131",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 143,
+      "count": 1
+    },
+    {
+      "name": "parameters.tkwat",
+      "symbol": "f0132",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 144,
+      "count": 1
+    },
+    {
+      "name": "parameters.tkice",
+      "symbol": "f0133",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 145,
+      "count": 1
+    },
+    {
+      "name": "parameters.tkair",
+      "symbol": "f0134",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 146,
+      "count": 1
+    },
+    {
+      "name": "parameters.rair",
+      "symbol": "f0135",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 147,
+      "count": 1
+    },
+    {
+      "name": "parameters.rw",
+      "symbol": "f0136",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 148,
+      "count": 1
+    },
+    {
+      "name": "parameters.denh2o",
+      "symbol": "f0137",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 149,
+      "count": 1
+    },
+    {
+      "name": "parameters.denice",
+      "symbol": "f0138",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 150,
+      "count": 1
+    },
+    {
+      "name": "parameters.thkw",
+      "symbol": "f0139",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 151,
+      "count": 1
+    },
+    {
+      "name": "parameters.thko",
+      "symbol": "f0140",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 152,
+      "count": 1
+    },
+    {
+      "name": "parameters.thkqtz",
+      "symbol": "f0141",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 153,
+      "count": 1
+    },
+    {
+      "name": "parameters.ssi",
+      "symbol": "f0142",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 154,
+      "count": 1
+    },
+    {
+      "name": "parameters.mfsno",
+      "symbol": "f0143",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 155,
+      "count": 1
+    },
+    {
+      "name": "parameters.z0sno",
+      "symbol": "f0144",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 156,
+      "count": 1
+    },
+    {
+      "name": "parameters.swemx",
+      "symbol": "f0145",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 157,
+      "count": 1
+    },
+    {
+      "name": "parameters.tau0",
+      "symbol": "f0146",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 158,
+      "count": 1
+    },
+    {
+      "name": "parameters.grain_growth",
+      "symbol": "f0147",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 159,
+      "count": 1
+    },
+    {
+      "name": "parameters.extra_growth",
+      "symbol": "f0148",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 160,
+      "count": 1
+    },
+    {
+      "name": "parameters.dirt_soot",
+      "symbol": "f0149",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 161,
+      "count": 1
+    },
+    {
+      "name": "parameters.bats_cosz",
+      "symbol": "f0150",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 162,
+      "count": 1
+    },
+    {
+      "name": "parameters.bats_vis_new",
+      "symbol": "f0151",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 163,
+      "count": 1
+    },
+    {
+      "name": "parameters.bats_nir_new",
+      "symbol": "f0152",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 164,
+      "count": 1
+    },
+    {
+      "name": "parameters.bats_vis_age",
+      "symbol": "f0153",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 165,
+      "count": 1
+    },
+    {
+      "name": "parameters.bats_nir_age",
+      "symbol": "f0154",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 166,
+      "count": 1
+    },
+    {
+      "name": "parameters.bats_vis_dir",
+      "symbol": "f0155",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 167,
+      "count": 1
+    },
+    {
+      "name": "parameters.bats_nir_dir",
+      "symbol": "f0156",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 168,
+      "count": 1
+    },
+    {
+      "name": "parameters.rsurf_snow",
+      "symbol": "f0157",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 169,
+      "count": 1
+    },
+    {
+      "name": "parameters.rsurf_exp",
+      "symbol": "f0158",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 170,
+      "count": 1
+    },
+    {
+      "name": "parameters.albsat",
+      "symbol": "f0159",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          2
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 171,
+      "count": 2
+    },
+    {
+      "name": "parameters.albdry",
+      "symbol": "f0160",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          2
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 173,
+      "count": 2
+    },
+    {
+      "name": "parameters.albice",
+      "symbol": "f0161",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          2
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 175,
+      "count": 2
+    },
+    {
+      "name": "parameters.alblak",
+      "symbol": "f0162",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          2
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 177,
+      "count": 2
+    },
+    {
+      "name": "parameters.omegas",
+      "symbol": "f0163",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          2
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 179,
+      "count": 2
+    },
+    {
+      "name": "parameters.betads",
+      "symbol": "f0164",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 181,
+      "count": 1
+    },
+    {
+      "name": "parameters.betais",
+      "symbol": "f0165",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 182,
+      "count": 1
+    },
+    {
+      "name": "parameters.eg",
+      "symbol": "f0166",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          2
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 183,
+      "count": 2
+    },
+    {
+      "name": "parameters.wslmax",
+      "symbol": "f0167",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 185,
+      "count": 1
+    },
+    {
+      "name": "parameters.max_liq_mass_fraction",
+      "symbol": "f0168",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 186,
+      "count": 1
+    },
+    {
+      "name": "parameters.snow_ret_fac",
+      "symbol": "f0169",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 187,
+      "count": 1
+    },
+    {
+      "name": "parameters.nband",
+      "symbol": "f0170",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 46,
+      "count": 1
+    },
+    {
+      "name": "parameters.mpe",
+      "symbol": "f0171",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 188,
+      "count": 1
+    },
+    {
+      "name": "parameters.topt",
+      "symbol": "f0172",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 189,
+      "count": 1
+    },
+    {
+      "name": "parameters.o2",
+      "symbol": "f0173",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 190,
+      "count": 1
+    },
+    {
+      "name": "parameters.co2",
+      "symbol": "f0174",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 191,
+      "count": 1
+    },
+    {
+      "name": "parameters.psiwlt",
+      "symbol": "f0175",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 192,
+      "count": 1
+    },
+    {
+      "name": "parameters.tbot",
+      "symbol": "f0176",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 193,
+      "count": 1
+    },
+    {
+      "name": "parameters.grav",
+      "symbol": "f0177",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 194,
+      "count": 1
+    },
+    {
+      "name": "parameters.rain_snow_thresh",
+      "symbol": "f0178",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 195,
+      "count": 1
+    },
+    {
+      "name": "parameters.scamax",
+      "symbol": "f0179",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 196,
+      "count": 1
+    },
+    {
+      "name": "forcing.sfcprs",
+      "symbol": "f0180",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 197,
+      "count": 1
+    },
+    {
+      "name": "forcing.sfctmp",
+      "symbol": "f0181",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 198,
+      "count": 1
+    },
+    {
+      "name": "forcing.q2",
+      "symbol": "f0182",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 199,
+      "count": 1
+    },
+    {
+      "name": "forcing.prcp",
+      "symbol": "f0183",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 200,
+      "count": 1
+    },
+    {
+      "name": "forcing.prcpconv",
+      "symbol": "f0184",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 201,
+      "count": 1
+    },
+    {
+      "name": "forcing.prcpnonc",
+      "symbol": "f0185",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 202,
+      "count": 1
+    },
+    {
+      "name": "forcing.prcpshcv",
+      "symbol": "f0186",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 203,
+      "count": 1
+    },
+    {
+      "name": "forcing.prcpsnow",
+      "symbol": "f0187",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 204,
+      "count": 1
+    },
+    {
+      "name": "forcing.prcpgrpl",
+      "symbol": "f0188",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 205,
+      "count": 1
+    },
+    {
+      "name": "forcing.prcphail",
+      "symbol": "f0189",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 206,
+      "count": 1
+    },
+    {
+      "name": "forcing.soldn",
+      "symbol": "f0190",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 207,
+      "count": 1
+    },
+    {
+      "name": "forcing.lwdn",
+      "symbol": "f0191",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 208,
+      "count": 1
+    },
+    {
+      "name": "forcing.foln",
+      "symbol": "f0192",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 209,
+      "count": 1
+    },
+    {
+      "name": "forcing.o2pp",
+      "symbol": "f0193",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 210,
+      "count": 1
+    },
+    {
+      "name": "forcing.co2pp",
+      "symbol": "f0194",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 211,
+      "count": 1
+    },
+    {
+      "name": "forcing.uu",
+      "symbol": "f0195",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 212,
+      "count": 1
+    },
+    {
+      "name": "forcing.vv",
+      "symbol": "f0196",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 213,
+      "count": 1
+    },
+    {
+      "name": "forcing.tbot",
+      "symbol": "f0197",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 214,
+      "count": 1
+    },
+    {
+      "name": "forcing.ur",
+      "symbol": "f0198",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 215,
+      "count": 1
+    },
+    {
+      "name": "forcing.thair",
+      "symbol": "f0199",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 216,
+      "count": 1
+    },
+    {
+      "name": "forcing.qair",
+      "symbol": "f0200",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 217,
+      "count": 1
+    },
+    {
+      "name": "forcing.eair",
+      "symbol": "f0201",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 218,
+      "count": 1
+    },
+    {
+      "name": "forcing.rhoair",
+      "symbol": "f0202",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 219,
+      "count": 1
+    },
+    {
+      "name": "forcing.fpice",
+      "symbol": "f0203",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 220,
+      "count": 1
+    },
+    {
+      "name": "forcing.swdown",
+      "symbol": "f0204",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 221,
+      "count": 1
+    },
+    {
+      "name": "forcing.julian",
+      "symbol": "f0205",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 222,
+      "count": 1
+    },
+    {
+      "name": "forcing.yearlen",
+      "symbol": "f0206",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 47,
+      "count": 1
+    },
+    {
+      "name": "forcing.solad",
+      "symbol": "f0207",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          2
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 223,
+      "count": 2
+    },
+    {
+      "name": "forcing.solai",
+      "symbol": "f0208",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          2
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 225,
+      "count": 2
+    },
+    {
+      "name": "energy.tv",
+      "symbol": "f0209",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 227,
+      "count": 1
+    },
+    {
+      "name": "energy.tg",
+      "symbol": "f0210",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 228,
+      "count": 1
+    },
+    {
+      "name": "energy.fcev",
+      "symbol": "f0211",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 229,
+      "count": 1
+    },
+    {
+      "name": "energy.fctr",
+      "symbol": "f0212",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 230,
+      "count": 1
+    },
+    {
+      "name": "energy.igs",
+      "symbol": "f0213",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 231,
+      "count": 1
+    },
+    {
+      "name": "energy.frozen_canopy",
+      "symbol": "f0214",
+      "type": "logical",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 48,
+      "count": 1
+    },
+    {
+      "name": "energy.frozen_ground",
+      "symbol": "f0215",
+      "type": "logical",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 49,
+      "count": 1
+    },
+    {
+      "name": "energy.imelt",
+      "symbol": "f0216",
+      "type": "integer",
+      "bounds": [
+        [
+          -2,
+          4
+        ]
+      ],
+      "dtype": "i32",
+      "offset": 50,
+      "count": 7
+    },
+    {
+      "name": "energy.stc",
+      "symbol": "f0217",
+      "type": "real",
+      "bounds": [
+        [
+          -2,
+          4
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 232,
+      "count": 7
+    },
+    {
+      "name": "energy.df",
+      "symbol": "f0218",
+      "type": "real",
+      "bounds": [
+        [
+          -2,
+          4
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 239,
+      "count": 7
+    },
+    {
+      "name": "energy.hcpct",
+      "symbol": "f0219",
+      "type": "real",
+      "bounds": [
+        [
+          -2,
+          4
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 246,
+      "count": 7
+    },
+    {
+      "name": "energy.fact",
+      "symbol": "f0220",
+      "type": "real",
+      "bounds": [
+        [
+          -2,
+          4
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 253,
+      "count": 7
+    },
+    {
+      "name": "energy.snowt_avg",
+      "symbol": "f0221",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 260,
+      "count": 1
+    },
+    {
+      "name": "energy.pahv",
+      "symbol": "f0222",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 261,
+      "count": 1
+    },
+    {
+      "name": "energy.pahg",
+      "symbol": "f0223",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 262,
+      "count": 1
+    },
+    {
+      "name": "energy.pahb",
+      "symbol": "f0224",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 263,
+      "count": 1
+    },
+    {
+      "name": "energy.pah",
+      "symbol": "f0225",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 264,
+      "count": 1
+    },
+    {
+      "name": "energy.tauss",
+      "symbol": "f0226",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 265,
+      "count": 1
+    },
+    {
+      "name": "energy.fage",
+      "symbol": "f0227",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 266,
+      "count": 1
+    },
+    {
+      "name": "energy.alb",
+      "symbol": "f0228",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 267,
+      "count": 1
+    },
+    {
+      "name": "energy.albold",
+      "symbol": "f0229",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 268,
+      "count": 1
+    },
+    {
+      "name": "energy.albd",
+      "symbol": "f0230",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          2
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 269,
+      "count": 2
+    },
+    {
+      "name": "energy.albi",
+      "symbol": "f0231",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          2
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 271,
+      "count": 2
+    },
+    {
+      "name": "energy.albgrd",
+      "symbol": "f0232",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          2
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 273,
+      "count": 2
+    },
+    {
+      "name": "energy.albgri",
+      "symbol": "f0233",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          2
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 275,
+      "count": 2
+    },
+    {
+      "name": "energy.albsnd",
+      "symbol": "f0234",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          2
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 277,
+      "count": 2
+    },
+    {
+      "name": "energy.albsni",
+      "symbol": "f0235",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          2
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 279,
+      "count": 2
+    },
+    {
+      "name": "energy.fabd",
+      "symbol": "f0236",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          2
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 281,
+      "count": 2
+    },
+    {
+      "name": "energy.fabi",
+      "symbol": "f0237",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          2
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 283,
+      "count": 2
+    },
+    {
+      "name": "energy.ftdd",
+      "symbol": "f0238",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          2
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 285,
+      "count": 2
+    },
+    {
+      "name": "energy.ftdi",
+      "symbol": "f0239",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          2
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 287,
+      "count": 2
+    },
+    {
+      "name": "energy.ftid",
+      "symbol": "f0240",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          2
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 289,
+      "count": 2
+    },
+    {
+      "name": "energy.ftii",
+      "symbol": "f0241",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          2
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 291,
+      "count": 2
+    },
+    {
+      "name": "energy.frevd",
+      "symbol": "f0242",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          2
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 293,
+      "count": 2
+    },
+    {
+      "name": "energy.frevi",
+      "symbol": "f0243",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          2
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 295,
+      "count": 2
+    },
+    {
+      "name": "energy.fregd",
+      "symbol": "f0244",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          2
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 297,
+      "count": 2
+    },
+    {
+      "name": "energy.fregi",
+      "symbol": "f0245",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          2
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 299,
+      "count": 2
+    },
+    {
+      "name": "energy.rho",
+      "symbol": "f0246",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          2
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 301,
+      "count": 2
+    },
+    {
+      "name": "energy.tau",
+      "symbol": "f0247",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          2
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 303,
+      "count": 2
+    },
+    {
+      "name": "energy.cosz",
+      "symbol": "f0248",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 305,
+      "count": 1
+    },
+    {
+      "name": "energy.cosz_horiz",
+      "symbol": "f0249",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 306,
+      "count": 1
+    },
+    {
+      "name": "energy.bgap",
+      "symbol": "f0250",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 307,
+      "count": 1
+    },
+    {
+      "name": "energy.wgap",
+      "symbol": "f0251",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 308,
+      "count": 1
+    },
+    {
+      "name": "energy.fsun",
+      "symbol": "f0252",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 309,
+      "count": 1
+    },
+    {
+      "name": "energy.fsha",
+      "symbol": "f0253",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 310,
+      "count": 1
+    },
+    {
+      "name": "energy.laisun",
+      "symbol": "f0254",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 311,
+      "count": 1
+    },
+    {
+      "name": "energy.laisha",
+      "symbol": "f0255",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 312,
+      "count": 1
+    },
+    {
+      "name": "energy.parsun",
+      "symbol": "f0256",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 313,
+      "count": 1
+    },
+    {
+      "name": "energy.parsha",
+      "symbol": "f0257",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 314,
+      "count": 1
+    },
+    {
+      "name": "energy.sav",
+      "symbol": "f0258",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 315,
+      "count": 1
+    },
+    {
+      "name": "energy.sag",
+      "symbol": "f0259",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 316,
+      "count": 1
+    },
+    {
+      "name": "energy.fsa",
+      "symbol": "f0260",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 317,
+      "count": 1
+    },
+    {
+      "name": "energy.fsr",
+      "symbol": "f0261",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 318,
+      "count": 1
+    },
+    {
+      "name": "energy.fsrv",
+      "symbol": "f0262",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 319,
+      "count": 1
+    },
+    {
+      "name": "energy.fsrg",
+      "symbol": "f0263",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 320,
+      "count": 1
+    },
+    {
+      "name": "energy.tah",
+      "symbol": "f0264",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 321,
+      "count": 1
+    },
+    {
+      "name": "energy.eah",
+      "symbol": "f0265",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 322,
+      "count": 1
+    },
+    {
+      "name": "energy.zpd",
+      "symbol": "f0266",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 323,
+      "count": 1
+    },
+    {
+      "name": "energy.z0mg",
+      "symbol": "f0267",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 324,
+      "count": 1
+    },
+    {
+      "name": "energy.z0m",
+      "symbol": "f0268",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 325,
+      "count": 1
+    },
+    {
+      "name": "energy.zlvl",
+      "symbol": "f0269",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 326,
+      "count": 1
+    },
+    {
+      "name": "energy.cmv",
+      "symbol": "f0270",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 327,
+      "count": 1
+    },
+    {
+      "name": "energy.cmb",
+      "symbol": "f0271",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 328,
+      "count": 1
+    },
+    {
+      "name": "energy.cm",
+      "symbol": "f0272",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 329,
+      "count": 1
+    },
+    {
+      "name": "energy.ch",
+      "symbol": "f0273",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 330,
+      "count": 1
+    },
+    {
+      "name": "energy.tgb",
+      "symbol": "f0274",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 331,
+      "count": 1
+    },
+    {
+      "name": "energy.qsfc",
+      "symbol": "f0275",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 332,
+      "count": 1
+    },
+    {
+      "name": "energy.emv",
+      "symbol": "f0276",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 333,
+      "count": 1
+    },
+    {
+      "name": "energy.emg",
+      "symbol": "f0277",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 334,
+      "count": 1
+    },
+    {
+      "name": "energy.gammav",
+      "symbol": "f0278",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 335,
+      "count": 1
+    },
+    {
+      "name": "energy.gammag",
+      "symbol": "f0279",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 336,
+      "count": 1
+    },
+    {
+      "name": "energy.evc",
+      "symbol": "f0280",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 337,
+      "count": 1
+    },
+    {
+      "name": "energy.irc",
+      "symbol": "f0281",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 338,
+      "count": 1
+    },
+    {
+      "name": "energy.irg",
+      "symbol": "f0282",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 339,
+      "count": 1
+    },
+    {
+      "name": "energy.shc",
+      "symbol": "f0283",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 340,
+      "count": 1
+    },
+    {
+      "name": "energy.shg",
+      "symbol": "f0284",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 341,
+      "count": 1
+    },
+    {
+      "name": "energy.shb",
+      "symbol": "f0285",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 342,
+      "count": 1
+    },
+    {
+      "name": "energy.evg",
+      "symbol": "f0286",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 343,
+      "count": 1
+    },
+    {
+      "name": "energy.evb",
+      "symbol": "f0287",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 344,
+      "count": 1
+    },
+    {
+      "name": "energy.tr",
+      "symbol": "f0288",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 345,
+      "count": 1
+    },
+    {
+      "name": "energy.gh",
+      "symbol": "f0289",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 346,
+      "count": 1
+    },
+    {
+      "name": "energy.ghb",
+      "symbol": "f0290",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 347,
+      "count": 1
+    },
+    {
+      "name": "energy.ghv",
+      "symbol": "f0291",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 348,
+      "count": 1
+    },
+    {
+      "name": "energy.t2mv",
+      "symbol": "f0292",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 349,
+      "count": 1
+    },
+    {
+      "name": "energy.chleaf",
+      "symbol": "f0293",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 350,
+      "count": 1
+    },
+    {
+      "name": "energy.chuc",
+      "symbol": "f0294",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 351,
+      "count": 1
+    },
+    {
+      "name": "energy.chv2",
+      "symbol": "f0295",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 352,
+      "count": 1
+    },
+    {
+      "name": "energy.chb2",
+      "symbol": "f0296",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 353,
+      "count": 1
+    },
+    {
+      "name": "energy.q2v",
+      "symbol": "f0297",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 354,
+      "count": 1
+    },
+    {
+      "name": "energy.latheav",
+      "symbol": "f0298",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 355,
+      "count": 1
+    },
+    {
+      "name": "energy.latheag",
+      "symbol": "f0299",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 356,
+      "count": 1
+    },
+    {
+      "name": "energy.lathea",
+      "symbol": "f0300",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 357,
+      "count": 1
+    },
+    {
+      "name": "energy.rsurf",
+      "symbol": "f0301",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 358,
+      "count": 1
+    },
+    {
+      "name": "energy.rhsur",
+      "symbol": "f0302",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 359,
+      "count": 1
+    },
+    {
+      "name": "energy.tauxv",
+      "symbol": "f0303",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 360,
+      "count": 1
+    },
+    {
+      "name": "energy.tauyv",
+      "symbol": "f0304",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 361,
+      "count": 1
+    },
+    {
+      "name": "energy.tauxb",
+      "symbol": "f0305",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 362,
+      "count": 1
+    },
+    {
+      "name": "energy.tauyb",
+      "symbol": "f0306",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 363,
+      "count": 1
+    },
+    {
+      "name": "energy.taux",
+      "symbol": "f0307",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 364,
+      "count": 1
+    },
+    {
+      "name": "energy.tauy",
+      "symbol": "f0308",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 365,
+      "count": 1
+    },
+    {
+      "name": "energy.cah2",
+      "symbol": "f0309",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 366,
+      "count": 1
+    },
+    {
+      "name": "energy.ehb2",
+      "symbol": "f0310",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 367,
+      "count": 1
+    },
+    {
+      "name": "energy.t2mb",
+      "symbol": "f0311",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 368,
+      "count": 1
+    },
+    {
+      "name": "energy.q2b",
+      "symbol": "f0312",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 369,
+      "count": 1
+    },
+    {
+      "name": "energy.tgv",
+      "symbol": "f0313",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 370,
+      "count": 1
+    },
+    {
+      "name": "energy.chv",
+      "symbol": "f0314",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 371,
+      "count": 1
+    },
+    {
+      "name": "energy.rssun",
+      "symbol": "f0315",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 372,
+      "count": 1
+    },
+    {
+      "name": "energy.rssha",
+      "symbol": "f0316",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 373,
+      "count": 1
+    },
+    {
+      "name": "energy.rb",
+      "symbol": "f0317",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 374,
+      "count": 1
+    },
+    {
+      "name": "energy.fira",
+      "symbol": "f0318",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 375,
+      "count": 1
+    },
+    {
+      "name": "energy.fsh",
+      "symbol": "f0319",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 376,
+      "count": 1
+    },
+    {
+      "name": "energy.fgev",
+      "symbol": "f0320",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 377,
+      "count": 1
+    },
+    {
+      "name": "energy.trad",
+      "symbol": "f0321",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 378,
+      "count": 1
+    },
+    {
+      "name": "energy.irb",
+      "symbol": "f0322",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 379,
+      "count": 1
+    },
+    {
+      "name": "energy.ssoil",
+      "symbol": "f0323",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 380,
+      "count": 1
+    },
+    {
+      "name": "energy.t2m",
+      "symbol": "f0324",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 381,
+      "count": 1
+    },
+    {
+      "name": "energy.ts",
+      "symbol": "f0325",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 382,
+      "count": 1
+    },
+    {
+      "name": "energy.chb",
+      "symbol": "f0326",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 383,
+      "count": 1
+    },
+    {
+      "name": "energy.q1",
+      "symbol": "f0327",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 384,
+      "count": 1
+    },
+    {
+      "name": "energy.q2e",
+      "symbol": "f0328",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 385,
+      "count": 1
+    },
+    {
+      "name": "energy.z0wrf",
+      "symbol": "f0329",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 386,
+      "count": 1
+    },
+    {
+      "name": "energy.emissi",
+      "symbol": "f0330",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 387,
+      "count": 1
+    },
+    {
+      "name": "energy.psn",
+      "symbol": "f0331",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 388,
+      "count": 1
+    },
+    {
+      "name": "energy.psnsun",
+      "symbol": "f0332",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 389,
+      "count": 1
+    },
+    {
+      "name": "energy.psnsha",
+      "symbol": "f0333",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 390,
+      "count": 1
+    },
+    {
+      "name": "energy.apar",
+      "symbol": "f0334",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 391,
+      "count": 1
+    },
+    {
+      "name": "energy.qmelt",
+      "symbol": "f0335",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 392,
+      "count": 1
+    },
+    {
+      "name": "energy.lh",
+      "symbol": "f0336",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 393,
+      "count": 1
+    },
+    {
+      "name": "energy.tgs",
+      "symbol": "f0337",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 394,
+      "count": 1
+    },
+    {
+      "name": "energy.ice",
+      "symbol": "f0338",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 57,
+      "count": 1
+    },
+    {
+      "name": "water.qinsur",
+      "symbol": "f0339",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 395,
+      "count": 1
+    },
+    {
+      "name": "water.qseva",
+      "symbol": "f0340",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 396,
+      "count": 1
+    },
+    {
+      "name": "water.evapotrans",
+      "symbol": "f0341",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 397,
+      "count": 1
+    },
+    {
+      "name": "water.runsrf",
+      "symbol": "f0342",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 398,
+      "count": 1
+    },
+    {
+      "name": "water.runsub",
+      "symbol": "f0343",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 399,
+      "count": 1
+    },
+    {
+      "name": "water.qdrain",
+      "symbol": "f0344",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 400,
+      "count": 1
+    },
+    {
+      "name": "water.zwt",
+      "symbol": "f0345",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 401,
+      "count": 1
+    },
+    {
+      "name": "water.smcwtd",
+      "symbol": "f0346",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 402,
+      "count": 1
+    },
+    {
+      "name": "water.deeprech",
+      "symbol": "f0347",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 403,
+      "count": 1
+    },
+    {
+      "name": "water.fcrmax",
+      "symbol": "f0348",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 404,
+      "count": 1
+    },
+    {
+      "name": "water.snoflow",
+      "symbol": "f0349",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 405,
+      "count": 1
+    },
+    {
+      "name": "water.pddum",
+      "symbol": "f0350",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 406,
+      "count": 1
+    },
+    {
+      "name": "water.facc",
+      "symbol": "f0351",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 407,
+      "count": 1
+    },
+    {
+      "name": "water.sicemax",
+      "symbol": "f0352",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 408,
+      "count": 1
+    },
+    {
+      "name": "water.fb_snow",
+      "symbol": "f0353",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 409,
+      "count": 1
+    },
+    {
+      "name": "water.rain",
+      "symbol": "f0354",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 410,
+      "count": 1
+    },
+    {
+      "name": "water.snow",
+      "symbol": "f0355",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 411,
+      "count": 1
+    },
+    {
+      "name": "water.bdfall",
+      "symbol": "f0356",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 412,
+      "count": 1
+    },
+    {
+      "name": "water.fp",
+      "symbol": "f0357",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 413,
+      "count": 1
+    },
+    {
+      "name": "water.canliq",
+      "symbol": "f0358",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 414,
+      "count": 1
+    },
+    {
+      "name": "water.canice",
+      "symbol": "f0359",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 415,
+      "count": 1
+    },
+    {
+      "name": "water.fwet",
+      "symbol": "f0360",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 416,
+      "count": 1
+    },
+    {
+      "name": "water.cmc",
+      "symbol": "f0361",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 417,
+      "count": 1
+    },
+    {
+      "name": "water.qintr",
+      "symbol": "f0362",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 418,
+      "count": 1
+    },
+    {
+      "name": "water.qdripr",
+      "symbol": "f0363",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 419,
+      "count": 1
+    },
+    {
+      "name": "water.qthror",
+      "symbol": "f0364",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 420,
+      "count": 1
+    },
+    {
+      "name": "water.qints",
+      "symbol": "f0365",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 421,
+      "count": 1
+    },
+    {
+      "name": "water.qdrips",
+      "symbol": "f0366",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 422,
+      "count": 1
+    },
+    {
+      "name": "water.qthros",
+      "symbol": "f0367",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 423,
+      "count": 1
+    },
+    {
+      "name": "water.qrain",
+      "symbol": "f0368",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 424,
+      "count": 1
+    },
+    {
+      "name": "water.qsnow",
+      "symbol": "f0369",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 425,
+      "count": 1
+    },
+    {
+      "name": "water.snowhin",
+      "symbol": "f0370",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 426,
+      "count": 1
+    },
+    {
+      "name": "water.ecan",
+      "symbol": "f0371",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 427,
+      "count": 1
+    },
+    {
+      "name": "water.etran",
+      "symbol": "f0372",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 428,
+      "count": 1
+    },
+    {
+      "name": "water.qsnfro",
+      "symbol": "f0373",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 429,
+      "count": 1
+    },
+    {
+      "name": "water.qsnsub",
+      "symbol": "f0374",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 430,
+      "count": 1
+    },
+    {
+      "name": "water.snowh",
+      "symbol": "f0375",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 431,
+      "count": 1
+    },
+    {
+      "name": "water.sneqv",
+      "symbol": "f0376",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 432,
+      "count": 1
+    },
+    {
+      "name": "water.sneqvo",
+      "symbol": "f0377",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 433,
+      "count": 1
+    },
+    {
+      "name": "water.bdsno",
+      "symbol": "f0378",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 434,
+      "count": 1
+    },
+    {
+      "name": "water.qsnbot",
+      "symbol": "f0379",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 435,
+      "count": 1
+    },
+    {
+      "name": "water.ponding",
+      "symbol": "f0380",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 436,
+      "count": 1
+    },
+    {
+      "name": "water.ponding1",
+      "symbol": "f0381",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 437,
+      "count": 1
+    },
+    {
+      "name": "water.ponding2",
+      "symbol": "f0382",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 438,
+      "count": 1
+    },
+    {
+      "name": "water.qvap",
+      "symbol": "f0383",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 439,
+      "count": 1
+    },
+    {
+      "name": "water.qdew",
+      "symbol": "f0384",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 440,
+      "count": 1
+    },
+    {
+      "name": "water.qsdew",
+      "symbol": "f0385",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 441,
+      "count": 1
+    },
+    {
+      "name": "water.wslake",
+      "symbol": "f0386",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 442,
+      "count": 1
+    },
+    {
+      "name": "water.runsrf_dt",
+      "symbol": "f0387",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 443,
+      "count": 1
+    },
+    {
+      "name": "water.asat",
+      "symbol": "f0388",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 444,
+      "count": 1
+    },
+    {
+      "name": "water.acsnom",
+      "symbol": "f0389",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 445,
+      "count": 1
+    },
+    {
+      "name": "water.isnow",
+      "symbol": "f0390",
+      "type": "integer",
+      "bounds": [],
+      "dtype": "i32",
+      "offset": 58,
+      "count": 1
+    },
+    {
+      "name": "water.smc",
+      "symbol": "f0391",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          4
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 446,
+      "count": 4
+    },
+    {
+      "name": "water.smc_init",
+      "symbol": "f0392",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          4
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 450,
+      "count": 4
+    },
+    {
+      "name": "water.sice",
+      "symbol": "f0393",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          4
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 454,
+      "count": 4
+    },
+    {
+      "name": "water.sh2o",
+      "symbol": "f0394",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          4
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 458,
+      "count": 4
+    },
+    {
+      "name": "water.etrani",
+      "symbol": "f0395",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          4
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 462,
+      "count": 4
+    },
+    {
+      "name": "water.btrani",
+      "symbol": "f0396",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          4
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 466,
+      "count": 4
+    },
+    {
+      "name": "water.wcnd",
+      "symbol": "f0397",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          4
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 470,
+      "count": 4
+    },
+    {
+      "name": "water.fcr",
+      "symbol": "f0398",
+      "type": "real",
+      "bounds": [
+        [
+          1,
+          4
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 474,
+      "count": 4
+    },
+    {
+      "name": "water.ficeold",
+      "symbol": "f0399",
+      "type": "real",
+      "bounds": [
+        [
+          -2,
+          0
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 478,
+      "count": 3
+    },
+    {
+      "name": "water.snice",
+      "symbol": "f0400",
+      "type": "real",
+      "bounds": [
+        [
+          -2,
+          0
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 481,
+      "count": 3
+    },
+    {
+      "name": "water.snliq",
+      "symbol": "f0401",
+      "type": "real",
+      "bounds": [
+        [
+          -2,
+          0
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 484,
+      "count": 3
+    },
+    {
+      "name": "water.snicev",
+      "symbol": "f0402",
+      "type": "real",
+      "bounds": [
+        [
+          -2,
+          0
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 487,
+      "count": 3
+    },
+    {
+      "name": "water.snliqv",
+      "symbol": "f0403",
+      "type": "real",
+      "bounds": [
+        [
+          -2,
+          0
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 490,
+      "count": 3
+    },
+    {
+      "name": "water.fice",
+      "symbol": "f0404",
+      "type": "real",
+      "bounds": [
+        [
+          -2,
+          0
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 493,
+      "count": 3
+    },
+    {
+      "name": "water.epore",
+      "symbol": "f0405",
+      "type": "real",
+      "bounds": [
+        [
+          -2,
+          0
+        ]
+      ],
+      "dtype": "f32",
+      "offset": 496,
+      "count": 3
+    },
+    {
+      "name": "water.fsno",
+      "symbol": "f0406",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 499,
+      "count": 1
+    },
+    {
+      "name": "water.btran",
+      "symbol": "f0407",
+      "type": "real",
+      "bounds": [],
+      "dtype": "f32",
+      "offset": 500,
+      "count": 1
+    }
+  ],
+  "routines": [
+    {
+      "module": "UtilitiesModule",
+      "name": "utilitiesmain",
+      "symbol": "r0000",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "UtilitiesModule",
+      "name": "nfeb",
+      "symbol": "r0001",
+      "kind": "function",
+      "ret": "integer"
+    },
+    {
+      "module": "UtilitiesModule",
+      "name": "year_start_day",
+      "symbol": "r0002",
+      "kind": "function",
+      "ret": "integer"
+    },
+    {
+      "module": "UtilitiesModule",
+      "name": "days_from_civil",
+      "symbol": "r0003",
+      "kind": "function",
+      "ret": "integer"
+    },
+    {
+      "module": "UtilitiesModule",
+      "name": "civil_from_days",
+      "symbol": "r0004",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "UtilitiesModule",
+      "name": "advance_datetime",
+      "symbol": "r0005",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "UtilitiesModule",
+      "name": "day_of_year",
+      "symbol": "r0006",
+      "kind": "function",
+      "ret": "integer"
+    },
+    {
+      "module": "UtilitiesModule",
+      "name": "calc_declin_components",
+      "symbol": "r0007",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "AtmProcessing",
+      "name": "atm",
+      "symbol": "r0008",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "ForcingModule",
+      "name": "forcingmain",
+      "symbol": "r0009",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "InterceptionModule",
+      "name": "interceptionmain",
+      "symbol": "r0010",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "InterceptionModule",
+      "name": "phenology",
+      "symbol": "r0011",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "InterceptionModule",
+      "name": "canopywaterintercept",
+      "symbol": "r0012",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "CanopyWaterModule",
+      "name": "canopyhydrology",
+      "symbol": "r0013",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "EnergyModule",
+      "name": "energymain",
+      "symbol": "r0014",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "ThermalPropertiesModule",
+      "name": "thermoprop",
+      "symbol": "r0015",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "ThermalPropertiesModule",
+      "name": "csnow",
+      "symbol": "r0016",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "ThermalPropertiesModule",
+      "name": "tdfcnd",
+      "symbol": "r0017",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "PrecipHeatModule",
+      "name": "precip_heat",
+      "symbol": "r0018",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "ShortwaveRadiationModule",
+      "name": "shortwaveradiationmain",
+      "symbol": "r0019",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "ShortwaveRadiationModule",
+      "name": "netsolarradiation",
+      "symbol": "r0020",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "AlbedoModule",
+      "name": "albedo",
+      "symbol": "r0021",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "AlbedoModule",
+      "name": "snow_age",
+      "symbol": "r0022",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "AlbedoModule",
+      "name": "snowalb_bats",
+      "symbol": "r0023",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "AlbedoModule",
+      "name": "snowalb_class",
+      "symbol": "r0024",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "AlbedoModule",
+      "name": "groundalb",
+      "symbol": "r0025",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "AlbedoModule",
+      "name": "twostream",
+      "symbol": "r0026",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "EtFluxModule",
+      "name": "vegefluxmain",
+      "symbol": "r0027",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "EtFluxModule",
+      "name": "barefluxmain",
+      "symbol": "r0028",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "EtFluxModule",
+      "name": "ragrb",
+      "symbol": "r0029",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "EtFluxModule",
+      "name": "stomata",
+      "symbol": "r0030",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "EtFluxModule",
+      "name": "canres",
+      "symbol": "r0031",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "EtFluxModule",
+      "name": "calhum",
+      "symbol": "r0032",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "EtFluxModule",
+      "name": "sfcdif1",
+      "symbol": "r0033",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "EtFluxModule",
+      "name": "sfcdif2",
+      "symbol": "r0034",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "EtFluxModule",
+      "name": "esat",
+      "symbol": "r0035",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "EtFluxModule",
+      "name": "tdc",
+      "symbol": "r0036",
+      "kind": "function",
+      "ret": null
+    },
+    {
+      "module": "EtFluxModule",
+      "name": "f1",
+      "symbol": "r0037",
+      "kind": "function",
+      "ret": null
+    },
+    {
+      "module": "EtFluxModule",
+      "name": "f2",
+      "symbol": "r0038",
+      "kind": "function",
+      "ret": null
+    },
+    {
+      "module": "EtFluxModule",
+      "name": "pslmu",
+      "symbol": "r0039",
+      "kind": "function",
+      "ret": null
+    },
+    {
+      "module": "EtFluxModule",
+      "name": "pslms",
+      "symbol": "r0040",
+      "kind": "function",
+      "ret": null
+    },
+    {
+      "module": "EtFluxModule",
+      "name": "pslhu",
+      "symbol": "r0041",
+      "kind": "function",
+      "ret": null
+    },
+    {
+      "module": "EtFluxModule",
+      "name": "pslhs",
+      "symbol": "r0042",
+      "kind": "function",
+      "ret": null
+    },
+    {
+      "module": "EtFluxModule",
+      "name": "pspmu",
+      "symbol": "r0043",
+      "kind": "function",
+      "ret": null
+    },
+    {
+      "module": "EtFluxModule",
+      "name": "pspms",
+      "symbol": "r0044",
+      "kind": "function",
+      "ret": null
+    },
+    {
+      "module": "EtFluxModule",
+      "name": "psphu",
+      "symbol": "r0045",
+      "kind": "function",
+      "ret": null
+    },
+    {
+      "module": "EtFluxModule",
+      "name": "psphs",
+      "symbol": "r0046",
+      "kind": "function",
+      "ret": null
+    },
+    {
+      "module": "SnowSoilTempModule",
+      "name": "tsnosoi",
+      "symbol": "r0047",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SnowSoilTempModule",
+      "name": "hrt",
+      "symbol": "r0048",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SnowSoilTempModule",
+      "name": "hstep",
+      "symbol": "r0049",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SnowSoilTempModule",
+      "name": "rosr12",
+      "symbol": "r0050",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SnowSoilTempModule",
+      "name": "phasechange",
+      "symbol": "r0051",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SnowSoilTempModule",
+      "name": "frh2o",
+      "symbol": "r0052",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SnowWaterModule",
+      "name": "snowwater",
+      "symbol": "r0053",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SnowWaterRenew",
+      "name": "snowfall",
+      "symbol": "r0054",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SnowWaterRenew",
+      "name": "snowrenew",
+      "symbol": "r0055",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SnowLayerChange",
+      "name": "combine",
+      "symbol": "r0056",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SnowLayerChange",
+      "name": "divide",
+      "symbol": "r0057",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SnowLayerChange",
+      "name": "combo",
+      "symbol": "r0058",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SnowLayerChange",
+      "name": "compact",
+      "symbol": "r0059",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SoilWaterModule",
+      "name": "soilwater",
+      "symbol": "r0060",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SoilWaterMovement",
+      "name": "srt",
+      "symbol": "r0061",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SoilWaterMovement",
+      "name": "sstep",
+      "symbol": "r0062",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SoilWaterMovement",
+      "name": "rosr12",
+      "symbol": "r0063",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SoilWaterRetentionCoeff",
+      "name": "wdfcnd1",
+      "symbol": "r0064",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SoilWaterRetentionCoeff",
+      "name": "wdfcnd2",
+      "symbol": "r0065",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SurfaceRunoffModule",
+      "name": "surfacerunoff",
+      "symbol": "r0066",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SurfaceRunoffModule",
+      "name": "surface_runoff_topmodel_groundwater",
+      "symbol": "r0067",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SurfaceRunoffModule",
+      "name": "surface_runoff_topmodel_equiwatertable",
+      "symbol": "r0068",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SurfaceRunoffModule",
+      "name": "surface_runoff_freedrainage",
+      "symbol": "r0069",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SurfaceRunoffModule",
+      "name": "surface_runoff_bats",
+      "symbol": "r0070",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SurfaceRunoffModule",
+      "name": "surface_runoff_mmfan07",
+      "symbol": "r0071",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SurfaceRunoffModule",
+      "name": "surface_runoff_vic",
+      "symbol": "r0072",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SurfaceRunoffModule",
+      "name": "surface_runoff_xinanjiang",
+      "symbol": "r0073",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SurfaceRunoffModule",
+      "name": "surface_runoff_dynamic_vic",
+      "symbol": "r0074",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SurfaceRunoffInfiltration",
+      "name": "infil",
+      "symbol": "r0075",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SurfaceRunoffInfiltration",
+      "name": "compute_vic_surfrunoff",
+      "symbol": "r0076",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SurfaceRunoffInfiltration",
+      "name": "compute_xaj_surfrunoff",
+      "symbol": "r0077",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SurfaceRunoffInfiltration",
+      "name": "dynamic_vic",
+      "symbol": "r0078",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SurfaceRunoffInfiltration",
+      "name": "rr1",
+      "symbol": "r0079",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SurfaceRunoffInfiltration",
+      "name": "rr2",
+      "symbol": "r0080",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SurfaceRunoffInfiltration",
+      "name": "smith_parlange_infil",
+      "symbol": "r0081",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SurfaceRunoffInfiltration",
+      "name": "green_ampt_infil",
+      "symbol": "r0082",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SurfaceRunoffInfiltration",
+      "name": "philip_infil",
+      "symbol": "r0083",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SubsurfaceRunoffModule",
+      "name": "subsurfacerunoff",
+      "symbol": "r0084",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SubsurfaceRunoffModule",
+      "name": "subsurface_runoff_groundwater",
+      "symbol": "r0085",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SubsurfaceRunoffModule",
+      "name": "subsurface_runoff_equiwatertable",
+      "symbol": "r0086",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SubsurfaceRunoffModule",
+      "name": "subsurface_runoff_freedrainage",
+      "symbol": "r0087",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SubsurfaceRunoffModule",
+      "name": "subsurface_runoff_mmfdrainage",
+      "symbol": "r0088",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "SubsurfaceRunoffModule",
+      "name": "zwteq",
+      "symbol": "r0089",
+      "kind": "subroutine",
+      "ret": null
+    },
+    {
+      "module": "WaterModule",
+      "name": "watermain",
+      "symbol": "r0090",
+      "kind": "subroutine",
+      "ret": null
+    }
+  ],
+  "source_sha256": {
+    "UtilitiesModule.f90": "04a47a2d99fe2e59b151b5911ccd4b2ecfe449f64c78b8d78d2601cffde56802",
+    "AtmProcessing.f90": "0dfabeecd79d7cefdc5935b9a1c75e829a35b34f8fae1277ba8d743327fb5dd0",
+    "ForcingModule.f90": "2ec2eb8defe2d8d5e2a636453138aa79a859d23b64f9140a567a5fb55050cc3c",
+    "InterceptionModule.f90": "af062fea73ebb2a46f6057bf04a97c0bd96fec8cabdb26988b852b54f632b22f",
+    "CanopyWaterModule.f90": "b65c4576684ae73455839aa18ac58b91ec2bb7fc465b150b83d048322fd5ae50",
+    "EnergyModule.f90": "a9f8f45a37f36a7d4b2637a2d94ae03d94bf0ba9a5b2baff0c21d92e959700f1",
+    "ThermalPropertiesModule.f90": "de6828e3a76082be09f8320bed96b7e1ff55743b97c71d81122c6c14e8b78dc5",
+    "PrecipHeatModule.f90": "16e6a481e26ea03ed6aa63698563734c584af07e81d6310078f78295425f6c74",
+    "ShortwaveRadiationModule.f90": "4b322d0c16b73719c8eb00316aa07c25977d04309639968fea11882440a38b5c",
+    "AlbedoModule.f90": "e0ce6b3bcb4904ec3f365f9e4feda4c5144cc6bec8763f8f77ba30760907e974",
+    "EtFluxModule.f90": "9d1e1876f2804aae4237ac81a8342fb0d29365485a68e515c7ed49c21f9b2635",
+    "SnowSoilTempModule.f90": "7b08441f5fb2b5318a1dbb64958db437632fdc3747735ffe98a65d6121e31bf8",
+    "SnowWaterModule.f90": "d2edd3995997cea561a0a64d58705df46278a657ffcf9c55a75238c332d7fcca",
+    "SnowWaterRenew.f90": "3c3fd919422fa2a24ed6075577ef5966cd3a08fcd18c2cda7f9e9e08da390d14",
+    "SnowLayerChange.f90": "4ef79310a3f62b16e7d738560c18f1c6376b947d2a24045fff0c6372bdfea83c",
+    "SoilWaterModule.f90": "05ec1cbedc60fddb6a707ac9a09627807b62c04a940959b21d0bc2beebacf172",
+    "SoilWaterMovement.f90": "3fd8ecde15f3f7fea33190f17e6a6a2ec6424f0045965417ce19d7c8ab6bd0ee",
+    "SoilWaterRetentionCoeff.f90": "dabf1265a2372ed985ea6c37acfd173c2db969866f5e65c33e52cd022d47d95e",
+    "SurfaceRunoffModule.f90": "8683c22d3e677d6563e88da3b43f2c84035603421c51676ca71818c10b13ce60",
+    "SurfaceRunoffInfiltration.f90": "05a85993a55bdb705d4168a270fe58b8bb1172e6b929dd370aaef0104ffa88db",
+    "SubsurfaceRunoffModule.f90": "d2ed53f84b6adddd77c626bc5f2d07f301d272fbcccddb2a0c3f4c98407635ba",
+    "WaterModule.f90": "e350cc39087f7a12f2ee17aa115917ca58fc944cbf40398b809cfb0a5bdcaa8d"
+  },
+  "diagnostic_handling": [
+    {
+      "routine": "energymain",
+      "statement": "write(*,*) 'emitted longwave <0; skin t may be wrong due to inconsistent'",
+      "handling": "resident diagnostic bit"
+    },
+    {
+      "routine": "energymain",
+      "statement": "write(*,*) 'input of shdfac with lai'",
+      "handling": "resident diagnostic bit"
+    },
+    {
+      "routine": "energymain",
+      "statement": "write(*,*) domain%iloc, domain%jloc, 'shdfac=',parameters%fveg,'parameters%vai=',parameters%vai,'tv=',energy%tv,'tg=',energy%tg",
+      "handling": "resident diagnostic bit"
+    },
+    {
+      "routine": "energymain",
+      "statement": "write(*,*) 'lwdn=',forcing%lwdn,'energy%fira=',energy%fira,'water%snowh=',water%snowh",
+      "handling": "resident diagnostic bit"
+    },
+    {
+      "routine": "energymain",
+      "statement": "write(*,*) 'exiting ...'",
+      "handling": "resident diagnostic bit"
+    },
+    {
+      "routine": "vegefluxmain",
+      "statement": "write(message,*) \"critical problem: hcan <= zpd\"",
+      "handling": "resident diagnostic bit"
+    },
+    {
+      "routine": "vegefluxmain",
+      "statement": "write(message,*) 'i,j point=',domain%iloc, domain%jloc",
+      "handling": "resident diagnostic bit"
+    },
+    {
+      "routine": "vegefluxmain",
+      "statement": "write(message,*) 'hcan  =', hcan",
+      "handling": "resident diagnostic bit"
+    },
+    {
+      "routine": "vegefluxmain",
+      "statement": "write(message,*) 'zpd   =', energy%zpd",
+      "handling": "resident diagnostic bit"
+    },
+    {
+      "routine": "vegefluxmain",
+      "statement": "write (message, *) 'snowh =', water%snowh",
+      "handling": "resident diagnostic bit"
+    },
+    {
+      "routine": "vegefluxmain",
+      "statement": "write(*,*) \"critical problem: hcan <= zpd\"",
+      "handling": "resident diagnostic bit"
+    },
+    {
+      "routine": "vegefluxmain",
+      "statement": "write(*,*) 'i,j point=', domain%iloc, domain%jloc",
+      "handling": "resident diagnostic bit"
+    },
+    {
+      "routine": "vegefluxmain",
+      "statement": "write(*,*) 'hcan  = ', hcan",
+      "handling": "resident diagnostic bit"
+    },
+    {
+      "routine": "vegefluxmain",
+      "statement": "write(*,*) 'zpd   = ', energy%zpd",
+      "handling": "resident diagnostic bit"
+    },
+    {
+      "routine": "vegefluxmain",
+      "statement": "write(*,*) 'snowh = ', water%snowh",
+      "handling": "resident diagnostic bit"
+    },
+    {
+      "routine": "vegefluxmain",
+      "statement": "write(*,*) \"critical problem in vegeflux\"",
+      "handling": "resident diagnostic bit"
+    },
+    {
+      "routine": "sfcdif1",
+      "statement": "write(*,*) 'warning: critical problem: zlvl <= zpd; model stops'",
+      "handling": "resident diagnostic bit"
+    },
+    {
+      "routine": "tsnosoi",
+      "statement": "write(message,*) 'tsnosoi is losing(-)/gaining(+) false energy', err_est,' w/m2'",
+      "handling": "resident diagnostic bit"
+    },
+    {
+      "routine": "tsnosoi",
+      "statement": "write(message,'(i6,1x,i6,1x,i3,f18.13,5f20.12)')  domain%iloc, domain%jloc, domain%ist, err_est, ssoil, snowh, tg, stc(isnow+1), eflxb",
+      "handling": "resident diagnostic bit"
+    },
+    {
+      "routine": "frh2o",
+      "statement": "write(message, '(\"flerchinger used in new version. iterations=\", i6)') nlog",
+      "handling": "resident diagnostic bit"
+    }
+  ],
+  "slab_fields": {
+    "f32": 501,
+    "i32": 59,
+    "f64": 4
+  }
+}

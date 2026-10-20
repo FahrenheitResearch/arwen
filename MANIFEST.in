@@ -137,3 +137,6 @@ include docs/run-output-folders.md docs/run-plan.md
 include docs/scoreboard-nightly.md docs/water-temperature-overlay.md
 recursive-include docs/manual *.md
 recursive-include docs/integration-kit *.md *.json *.py
+
+# Machine-readable evidence linked by the README measurement page.
+include docs/public/receipts/readme-292-measurements.json

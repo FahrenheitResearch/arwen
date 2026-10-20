@@ -267,7 +267,7 @@ def _unmet_readiness(monkeypatch):
 
     from gpuwm import doctor
 
-    monkeypatch.setattr(doctor, "_cuda_headers_check", lambda: doctor.Check(
+    monkeypatch.setattr(doctor, "_cuda_headers_check", lambda **_kw: doctor.Check(
         "CUDA kernel headers", "missing",
         "the compile probe could not be run: no CUDA headers",
         "gpuwm doctor --explain", action="gpuwm doctor --explain",

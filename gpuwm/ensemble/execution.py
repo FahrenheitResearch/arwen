@@ -1,4 +1,4 @@
-"""Execute packing waves with at most one live forecast on each card.
+"""Execute independent per-card queues of memory-admitted member batches.
 
 Run control lives here too. A stop (Ctrl-C, or a SystemExit raised by a stop
 signal) reaches the thread that waits for the wave, never the member threads,
@@ -187,7 +187,7 @@ def execute_concurrent_members(batch, execute_member, *, member_scope, control=N
 
 
 def execute_member_packing(plan, execute_batch, *, control=None):
-    """Independent cards run in parallel; waves on one card run serially.
+    """Independent cards refill their own queues as each batch completes.
 
     ``execute_batch`` owns a device context and the admitted state. A member
     error propagates after the other owned jobs in that wave finish, names
@@ -201,44 +201,54 @@ def execute_member_packing(plan, execute_batch, *, control=None):
     """
     if control is None:
         control = current_run_control() or MemberRunControl()
-    results = []
+    results, errors = {}, []
     jobs = []
+    queues = {card.device_id: iter(tuple(batch for batch in plan.batches
+              if batch.device_id == card.device_id)) for card in plan.cards}
     pool = ThreadPoolExecutor(max_workers=len(plan.cards), thread_name_prefix="ensemble-card")
+    pending = {}
+
+    def submit_next(device):
+        control.check()
+        batch = next(queues[device], None)
+        if batch is not None:
+            future = pool.submit(copy_context().run, execute_batch, batch)
+            pending[future] = batch
+            jobs.append((batch, future))
+
     try:
-        for wave in range(plan.waves):
-            control.check()
-            jobs = [(batch, pool.submit(copy_context().run, execute_batch, batch))
-                    for batch in plan.batches_in_wave(wave)]
-            pending = {future for _, future in jobs}
-            while pending:
-                done, pending = wait(pending, timeout=WAIT_POLL_SECONDS,
-                                     return_when=FIRST_COMPLETED)
-                for future in done:
-                    stop = future.exception()
-                    if (isinstance(stop, (KeyboardInterrupt, SystemExit))
-                            and not isinstance(stop, MemberStopRequested)):
-                        raise stop
-            wave_results, errors = [], []
-            for batch, future in jobs:
+        for card in plan.cards:
+            submit_next(card.device_id)
+        while pending:
+            done, _ = wait(pending, timeout=WAIT_POLL_SECONDS, return_when=FIRST_COMPLETED)
+            finished_cards = []
+            # Inspect all completions before refilling: a failure must not
+            # dispatch another member from any card's queue.
+            for future in done:
+                batch = pending.pop(future)
                 error = future.exception()
-                if error is None:
-                    wave_results.append((batch, future.result()))
-                else:
+                if isinstance(error, (KeyboardInterrupt, SystemExit)) and not isinstance(error, MemberStopRequested):
+                    raise error
+                if error is not None:
                     errors.append(name_failing_members(error, batch.member_indices,
                         device_id=batch.device_id, wave=batch.wave,
                         execution_mode=batch.execution_mode))
-            if errors:
-                first = errors[0]
-                first.ensemble_wave_errors = tuple(errors)
-                for other in errors[1:]:
-                    try:
-                        first.add_note("also failed in this wave: "
-                                       f"{type(other).__name__}: {other}")
-                    except (AttributeError, TypeError):
-                        pass
-                raise first
-            results.extend(wave_results)
-            jobs = []
+                else:
+                    results[(batch.wave, batch.device_id)] = (batch, future.result())
+                    finished_cards.append(batch.device_id)
+            if not errors:
+                for device in finished_cards:
+                    submit_next(device)
+        if errors:
+            # Member order, not completion order: the cards finish in any
+            # order, and the raised error names the lowest failing member
+            # of the wave with the receipt rows following it.
+            errors.sort(key=lambda error: tuple(getattr(error, "ensemble_member_ids", ())))
+            first = errors[0]
+            first.ensemble_wave_errors = tuple(errors)
+            for other in errors[1:]:
+                first.add_note(f"also failed in this wave: {type(other).__name__}: {other}")
+            raise first
     except (KeyboardInterrupt, SystemExit) as stop:
         if isinstance(stop, MemberStopRequested):
             raise
@@ -255,7 +265,7 @@ def execute_member_packing(plan, execute_batch, *, control=None):
         raise
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
-    return tuple(results)
+    return tuple(results[(batch.wave, batch.device_id)] for batch in plan.batches)
 
 
 __all__ = ["WAIT_POLL_SECONDS", "MemberStopRequested", "MemberRunControl",

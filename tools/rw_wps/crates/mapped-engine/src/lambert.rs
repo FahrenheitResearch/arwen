@@ -141,6 +141,16 @@ impl LambertGrid {
         )
     }
 
+    /// Inverse of ij_to_latlon, in one-based grid coordinates.
+    pub fn latlon_to_ij(&self, latitude: f64, longitude: f64) -> (f64, f64) {
+        let rs = self.rebydx * (self.truelat1 * RAD_PER_DEG).cos() / self.cone
+            * (((90.0 * self.hemi - latitude) * RAD_PER_DEG / 2.0).tan()
+                / ((90.0 * self.hemi - self.truelat1) * RAD_PER_DEG / 2.0).tan()).powf(self.cone);
+        let arg = self.cone * wrap180(longitude - self.stand_lon) * RAD_PER_DEG;
+        (self.hemi * self.polei + rs * arg.sin(),
+         self.hemi * (self.polej - rs * arg.cos()))
+    }
+
     /// `ijll_lc` (module_llxy.F:1174) at one projection coordinate.
     pub fn ij_to_latlon(&self, x: f64, y: f64) -> (f64, f64) {
         let chi1 = (90.0 - self.hemi * self.truelat1) * RAD_PER_DEG;
@@ -188,7 +198,8 @@ pub fn declared_grid_rotation(parameters: &crate::model::LambertParameters) -> (
             let mut cosa = Vec::with_capacity(nx);
             for column in 0..nx {
                 let (_latitude, longitude) =
-                    grid.ij_to_latlon((column + 1) as f64, (row + 1) as f64);
+                    grid.ij_to_latlon((column + 1) as f64,
+                        row as f64 * parameters.dy_m / parameters.dx_m + 1.0);
                 let mut difference = grid.stand_lon - longitude;
                 if difference > 180.0 {
                     difference -= 360.0;

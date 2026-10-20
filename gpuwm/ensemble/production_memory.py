@@ -40,7 +40,10 @@ def ordinary_output_memory_components(experiment, collector, *, other_experiment
         replay = replay_memory_plan_for_shape(collector.requests, shape,
             members=collector.members, tile_rows=collector.tile_rows)
         replays.append(replay.required_bytes(collector.members))
-    return (
+    points = getattr(collector, "nextgen_points", None)
+    return (() if points is None else (MemoryComponent("nextgen_reach_products", "products",
+        fixed_bytes=points.options["device_budget_bytes"],
+        evidence="private per-card CUDA pool hard limit; output-deadline integer counts, IDs and final merge"),)) + (
         MemoryComponent("ensemble_diagnostic_qpf_buffers", "products",
             plan=BatchMemoryPlan(tuple(retained), reserved_bytes=0),
             evidence="collector.memory_plan for every distinct domain shape, including initial/earlier and 1/3/6 h QPF surfaces"),

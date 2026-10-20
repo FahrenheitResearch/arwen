@@ -56,7 +56,7 @@ def _a_card_whose_free_vram_this_file_decides(monkeypatch):
     from gpuwm.core import preflight
     from types import SimpleNamespace
     from gpuwm import doctor
-    monkeypatch.setattr(doctor, "_cuda_headers_check", lambda: SimpleNamespace(status="verified"))
+    monkeypatch.setattr(doctor, "_cuda_headers_check", lambda **kwargs: SimpleNamespace(status="verified"))
 
     monkeypatch.setattr(
         preflight, "device_memory_probe_subprocess",

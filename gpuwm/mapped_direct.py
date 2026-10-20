@@ -188,6 +188,39 @@ def _forcing_valid_times(snapshots) -> tuple:
     return tuple(snapshot.valid_time for snapshot in snapshots)
 
 
+def _within_run_window(snapshots, start, run_seconds):
+    """Keep the run's forcing window through its final bracketing time.
+
+    One source file can hold a whole forecast: Earth2Studio writes every
+    lead of a run into one NetCDF (lead 0 to 96 h, or four months of a
+    seasonal run), and a domain starts at any lead of it.  The leads
+    before the start and beyond its final boundary are not forcing for this run;
+    leaving them in refused the file with "mapped forcing must begin at
+    START, got [lead 0]".  The window's own times still have to be there,
+    uniformly spaced, which the checks after this one keep refusing.
+    """
+
+    from datetime import timedelta
+
+    end = start + timedelta(seconds=float(run_seconds))
+    times = _forcing_valid_times(snapshots)
+    keep = [index for index, time in enumerate(times) if start <= time <= end]
+    # A run shorter than the source's step (1 h from a 6-hourly Earth-2 run) still needs the first
+    # forcing time at or after its end: without it only the start survived and prep refused
+    # "mapped forecast preparation requires at least two forcing times" (2.9.3 Earth-2 door leg).
+    if keep and times[keep[-1]] < end:
+        later = [index for index, time in enumerate(times) if time > end]
+        if later:
+            keep.append(min(later, key=lambda index: times[index]))
+    keep = tuple(keep)
+    if len(keep) == len(times) or not keep:
+        return snapshots
+    select = getattr(snapshots, "select", None)
+    if select is not None:
+        return select(keep)
+    return tuple(snapshots[index] for index in keep)
+
+
 def _source_top_pressure_pa(snapshots, count: int | None = None, *,
                             mapping_contract=None) -> float:
     """The highest source level the whole forcing series reaches, in Pa.
@@ -771,6 +804,8 @@ class _PostedMappedSource:
         self.decode_memory_budget_bytes: int | None = None
         self._where: dict[int, tuple] = {}
         self._physical_evidence: dict[int, dict] = {}
+        import threading
+        self._decode_lock = threading.RLock()
         self._next = 0
         self._scratch = self.output_root.parent / (
             f".posted-{uuid.uuid4().hex[:8]}")
@@ -857,20 +892,21 @@ class _PostedMappedSource:
     def through(self, position: int) -> None:
         """Decode every lead through ``leads[position]``, waiting as they post."""
 
-        while self._next <= position:
-            lead = self.leads[self._next]
-            if lead not in self.markers:
-                self._read_marker(lead, self.posted.wait(lead))
-            end = self._next
-            while end + 1 < len(self.leads):
-                later = self.leads[end + 1]
-                record = self.posted.marker(later)
-                if record is None:
-                    break
-                self._read_marker(later, record)
-                end += 1
-            self._decode_batch(self._next, end)
-            self._next = end + 1
+        with self._decode_lock:
+            while self._next <= position:
+                lead = self.leads[self._next]
+                if lead not in self.markers:
+                    self._read_marker(lead, self.posted.wait(lead))
+                end = self._next
+                while end + 1 < len(self.leads):
+                    later = self.leads[end + 1]
+                    record = self.posted.marker(later)
+                    if record is None:
+                        break
+                    self._read_marker(later, record)
+                    end += 1
+                self._decode_batch(self._next, end)
+                self._next = end + 1
 
     def _needs_first_lead(self, leads) -> bool:
         """Whether a batch without the window's first lead decodes it again.
@@ -1917,6 +1953,7 @@ def prepare_mapped_wrf(
     for_grids = getattr(snapshots, "for_grids", None)
     if for_grids is not None:
         snapshots = for_grids(grids)
+    snapshots = _within_run_window(snapshots, exp.start_time, exp.run_seconds)
     # The backend resolves later; an explicit --preprocess-workers is the
     # count every host step takes, and without one the automatic count.
     snapshots = overlay_snapshot_sequence(snapshots, water_overlay,

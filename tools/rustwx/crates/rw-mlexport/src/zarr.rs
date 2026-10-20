@@ -6,6 +6,7 @@
 //! and a great deal of ML code still pins zarr 2.  `_ARRAY_DIMENSIONS` on
 //! every array is xarray's format-2 convention for dimension names.
 
+use rayon::prelude::*;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -103,34 +104,73 @@ fn write_json(path: &Path, value: &Value) -> Result<()> {
 
 /// The chunk key for a chunk-grid index.
 pub fn chunk_key(index: &[usize]) -> String {
-    index.iter().map(usize::to_string).collect::<Vec<_>>().join(".")
+    index
+        .iter()
+        .map(usize::to_string)
+        .collect::<Vec<_>>()
+        .join(".")
 }
 
 /// Compress and write one chunk; returns the bytes written.
-pub fn write_chunk(store: &Path, array: &str, index: &[usize], raw: &[u8], dtype: Dtype) -> Result<u64> {
+pub fn write_chunk(
+    store: &Path,
+    array: &str,
+    index: &[usize],
+    raw: &[u8],
+    dtype: Dtype,
+) -> Result<u64> {
     let dir = store.join(array);
     fs::create_dir_all(&dir)?;
     let frame = blosc::compress(raw, dtype.size(), CLEVEL)?;
     let path = dir.join(chunk_key(index));
-    fs::write(&path, &frame).map_err(|e| fail(format!("could not write {}: {e}", path.display())))?;
+    fs::write(&path, &frame)
+        .map_err(|e| fail(format!("could not write {}: {e}", path.display())))?;
     Ok(frame.len() as u64)
 }
 
 /// Little-endian bytes of a typed slice.
 pub fn f32_bytes(values: &[f32]) -> Vec<u8> {
-    values.iter().flat_map(|v| v.to_le_bytes()).collect()
+    let mut bytes = vec![0; values.len() * 4];
+    bytes
+        .par_chunks_mut(4)
+        .zip(values.par_iter())
+        .for_each(|(out, value)| {
+            out.copy_from_slice(&value.to_le_bytes());
+        });
+    bytes
 }
 
 pub fn f64_bytes(values: &[f64]) -> Vec<u8> {
-    values.iter().flat_map(|v| v.to_le_bytes()).collect()
+    let mut bytes = vec![0; values.len() * 8];
+    bytes
+        .par_chunks_mut(8)
+        .zip(values.par_iter())
+        .for_each(|(out, value)| {
+            out.copy_from_slice(&value.to_le_bytes());
+        });
+    bytes
 }
 
 pub fn i64_bytes(values: &[i64]) -> Vec<u8> {
-    values.iter().flat_map(|v| v.to_le_bytes()).collect()
+    let mut bytes = vec![0; values.len() * 8];
+    bytes
+        .par_chunks_mut(8)
+        .zip(values.par_iter())
+        .for_each(|(out, value)| {
+            out.copy_from_slice(&value.to_le_bytes());
+        });
+    bytes
 }
 
 pub fn i32_bytes(values: &[i32]) -> Vec<u8> {
-    values.iter().flat_map(|v| v.to_le_bytes()).collect()
+    let mut bytes = vec![0; values.len() * 4];
+    bytes
+        .par_chunks_mut(4)
+        .zip(values.par_iter())
+        .for_each(|(out, value)| {
+            out.copy_from_slice(&value.to_le_bytes());
+        });
+    bytes
 }
 
 /// Compress and write the one chunk of a 0-d array (key `0`).
@@ -201,7 +241,8 @@ pub fn consolidated_tree(root: &Path, prefix: &str) -> Result<Value> {
     found.sort();
     for (key, path) in found {
         let text = fs::read_to_string(&path)?;
-        let value: Value = serde_json::from_str(&text).map_err(|e| fail(format!("{}: {e}", path.display())))?;
+        let value: Value =
+            serde_json::from_str(&text).map_err(|e| fail(format!("{}: {e}", path.display())))?;
         metadata.insert(key, value);
     }
     Ok(json!({"metadata": Value::Object(metadata), "zarr_consolidated_format": 1}))
@@ -225,7 +266,8 @@ pub fn consolidate(store: &Path) -> Result<()> {
     let mut metadata = Map::new();
     let mut read = |relative: String, path: PathBuf| -> Result<()> {
         let text = fs::read_to_string(&path)?;
-        let value: Value = serde_json::from_str(&text).map_err(|e| fail(format!("{}: {e}", path.display())))?;
+        let value: Value =
+            serde_json::from_str(&text).map_err(|e| fail(format!("{}: {e}", path.display())))?;
         metadata.insert(relative, value);
         Ok(())
     };
@@ -272,8 +314,70 @@ mod tests {
             attrs: Map::new(),
         };
         assert_eq!(meta.zarray()["fill_value"], Value::Null);
-        let float = ArrayMeta { dtype: Dtype::F32, ..meta };
+        let float = ArrayMeta {
+            dtype: Dtype::F32,
+            ..meta
+        };
         assert_eq!(float.zarray()["fill_value"], Value::String("NaN".into()));
         assert_eq!(float.zattrs()["_ARRAY_DIMENSIONS"], json!(["y", "x"]));
     }
+}
+
+/// Reuse the written Blosc chunks with format-3 metadata. Earth2Studio 0.19's
+/// ZarrBackend reads dimension_names, whereas its xarray source reads CF attrs.
+/// The v2 key codec keeps every chunk byte and filename unchanged.
+pub fn promote_v3(store: &Path) -> Result<()> {
+    let attrs: Value = serde_json::from_slice(&fs::read(store.join(".zattrs"))?)
+        .map_err(|e| fail(e.to_string()))?;
+    let mut metadata = Map::new();
+    for entry in fs::read_dir(store)? {
+        let path = entry?.path();
+        if !path.join(".zarray").is_file() {
+            continue;
+        }
+        let old: Value = serde_json::from_slice(&fs::read(path.join(".zarray"))?)
+            .map_err(|e| fail(e.to_string()))?;
+        let mut attributes: Value = serde_json::from_slice(&fs::read(path.join(".zattrs"))?)
+            .map_err(|e| fail(e.to_string()))?;
+        let dims = attributes
+            .as_object_mut()
+            .unwrap()
+            .remove("_ARRAY_DIMENSIONS")
+            .unwrap();
+        let (dtype, size) = match old["dtype"].as_str().unwrap_or("") {
+            "<f4" => ("float32", 4),
+            "<f8" => ("float64", 8),
+            "<i8" => ("int64", 8),
+            "<i4" => ("int32", 4),
+            "|u1" => ("uint8", 1),
+            d => return Err(fail(format!("no format-3 data type for {d}"))),
+        };
+        let fill = if old["fill_value"].is_null() {
+            json!(0)
+        } else {
+            old["fill_value"].clone()
+        };
+        let meta = json!({"zarr_format":3,"node_type":"array","shape":old["shape"],
+            "data_type":dtype,"chunk_grid":{"name":"regular","configuration":{"chunk_shape":old["chunks"]}},
+            "chunk_key_encoding":{"name":"v2","configuration":{"separator":"."}},
+            "fill_value":fill,"codecs":[{"name":"bytes","configuration":{"endian":"little"}},
+                {"name":"blosc","configuration":{"typesize":size,"cname":"zstd","clevel":CLEVEL,"shuffle":"shuffle","blocksize":0}}],
+            "dimension_names":dims,"attributes":attributes});
+        write_json(&path.join("zarr.json"), &meta)?;
+        metadata.insert(
+            path.file_name().unwrap().to_string_lossy().into_owned(),
+            meta,
+        );
+        fs::remove_file(path.join(".zarray"))?;
+        fs::remove_file(path.join(".zattrs"))?;
+    }
+    write_json(
+        &store.join("zarr.json"),
+        &json!({"zarr_format":3,"node_type":"group","attributes":attrs,
+        "consolidated_metadata":{"kind":"inline","must_understand":false,"metadata":metadata}}),
+    )?;
+    for name in [".zgroup", ".zattrs", ".zmetadata"] {
+        fs::remove_file(store.join(name))?;
+    }
+    Ok(())
 }

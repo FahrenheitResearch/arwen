@@ -81,6 +81,9 @@ def native_prepared_eligibility(inputs, node=None, *, members=2, restart=None, k
     cfg = exp.root.run if node is None else node.cfg.run
     suite = plan_suite(cfg, members=members)
     reasons = list(suite.native_fallback_reasons)
+    from gpuwm.ensemble.optional_routing import enabled_for
+    if enabled_for(inputs):
+        reasons.append("NextGen keeps each member's original resident hydro driver")
     if members == 1:
         reasons.append("N=1 keeps the ordinary runner and output writer")
     if len(exp.domains) != 1 or _domain_count(inputs) != 1 or exp.root.parent_id != 0:

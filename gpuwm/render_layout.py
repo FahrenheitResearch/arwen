@@ -396,7 +396,7 @@ def history_frames(root) -> list["HistoryFrame"]:
 
     Two things this does that a bare ``rglob`` does not.
 
-    It SKIPS the writer's in-flight temporaries (``wrfout*.tmp*``,
+    It SKIPS readiness JSON sidecars and the writer's in-flight temporaries (``wrfout*.tmp*``,
     ``gpuwm.io.wrfout``'s own spelling) and anything that is not a
     regular file, so a half-written frame is never handed to a reader
     as though it were finished.
@@ -418,7 +418,7 @@ def history_frames(root) -> list["HistoryFrame"]:
         return []
     found: list[HistoryFrame] = []
     for path in walk_root.rglob("wrfout_d*"):
-        if ".tmp" in path.name or not path.is_file():
+        if ".tmp" in path.name or path.suffix.lower() == ".json" or not path.is_file():
             continue
         relative = path.relative_to(walk_root)
         grid = _HISTORY_NAME.match(path.name)

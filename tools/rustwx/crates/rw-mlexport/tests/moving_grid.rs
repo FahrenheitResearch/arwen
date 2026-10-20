@@ -103,7 +103,7 @@ fn request(inputs: Vec<PathBuf>, out: &Path, layout: Layout) -> Request {
         overwrite: false, zip: false,
         variables: rows.into_iter().filter(|r| ["2m_temperature", "geopotential_at_surface", "land_sea_mask"].contains(&r.id.as_str())).collect(),
         levels: LevelSpec { set: "model".into(), kind: LevelKind::Model, hpa: vec![], model_levels: vec![] },
-        grid: GridRequest { kind: GridKind::Native, deg: None, method: RegridMethod::Bilinear },
+        grid: GridRequest { target: None, kind: GridKind::Native, deg: None, method: RegridMethod::Bilinear },
         names: "wb2".into(), layout, domains: None, every_hours: None, start: None, end: None,
         skip_unavailable: false, threads: None, spacings_deg: vec![0.1], chunk_yx: None,
         provenance: Provenance { engine: "engine".into(), exporter_version: "0-test".into(), created_utc: "2026-10-01T00:00:00Z".into(), ..Default::default() },

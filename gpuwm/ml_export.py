@@ -55,7 +55,7 @@ REQUEST_SCHEMA = "ml-export.request/v1"
 #: what changes when the contract does.  Spelled to match
 #: ``rw_mlexport::ABI``; a test binds the three.
 ABI_MARKER = ("rw_mlexport --request REQUEST.json schema=ml-export.request/v1 "
-              "modes=run,append,finalize progress=jsonl")
+              "modes=run,append,finalize progress=jsonl earth2=per-channel-v1")
 
 #: Environment variable naming a prebuilt binary.
 BINARY_ENV = "GPUWM_RW_MLEXPORT"
@@ -568,23 +568,28 @@ def register_cli(sub) -> None:
             "WeatherBench 2 names and units, earth-relative winds and ERA5's below-ground "
             "fill, ready for xarray.open_zarr.  " + tables_note),
     )
+    add_arguments(parser)
+
+
+def add_arguments(parser, *, earth2=False) -> None:
     parser.add_argument("inputs", nargs="*", metavar="INPUT",
                         help="history files, folders holding them, .gz history files, or ZIPs")
     parser.add_argument("--out", type=Path, metavar="DIR",
                         help="the export folder (one dNN.zarr per domain, README.txt, receipt)")
-    parser.add_argument("--levels", default=None, metavar="SET",
-                        help="wb13 (default), era5-37, model, model:LIST, or hPa list")
-    parser.add_argument("--variables", default=None, metavar="LIST",
-                        help="default, all, +NAME,... or NAME,... (table ids or names)")
-    parser.add_argument("--grid", default="native", metavar="GRID",
-                        help="native (default), latlon, or latlon:DEG")
+    if not earth2:
+        parser.add_argument("--levels", default=None, metavar="SET",
+                            help="wb13 (default), era5-37, model, model:LIST, or hPa list")
+        parser.add_argument("--variables", default=None, metavar="LIST",
+                            help="default, all, +NAME,... or NAME,... (table ids or names)")
+        parser.add_argument("--grid", default="native", metavar="GRID",
+                            help="native (default), latlon, or latlon:DEG")
+        parser.add_argument("--names", default=None, metavar="SCHEME",
+                            help="wb2 (default, WeatherBench 2 long names) or era5 (short names)")
+        parser.add_argument("--layout", default="analysis", choices=("analysis", "forecast"),
+                            help="analysis: time is valid time; forecast: WeatherBench 2's "
+                                 "time + prediction_timedelta")
     parser.add_argument("--regrid", default="bilinear", choices=("bilinear", "area-mean"),
                         help="latlon method (default bilinear)")
-    parser.add_argument("--names", default=None, metavar="SCHEME",
-                        help="wb2 (default, WeatherBench 2 long names) or era5 (short names)")
-    parser.add_argument("--layout", default="analysis", choices=("analysis", "forecast"),
-                        help="analysis: time is valid time; forecast: WeatherBench 2's "
-                             "time + prediction_timedelta")
     parser.add_argument("--domains", default=None, metavar="LIST", help="e.g. d01,d02")
     parser.add_argument("--every", type=_positive_hours, default=None, metavar="HOURS",
                         help="keep frames on multiples of HOURS from the run's start")
@@ -640,6 +645,24 @@ def main(args) -> int:
         return EXIT_OK
     args.levels = args.levels or tables.levels["default"]
     args.names = args.names or tables.names["default"]
+    scheme = next((r for r in tables.names["schemes"] if r["id"] == args.names), {})
+    if "grid_profiles" in scheme:
+        from gpuwm import earth2_export
+        try:
+            args.earth2 = scheme["grid_profiles"][args.grid]
+            level_set = parse_levels(args.levels, tables)
+            if level_set["kind"] != "pressure":
+                raise MlExportRefusal("Earth2Studio channel names require pressure levels")
+            selected = select_variables(args.variables, tables, level_set["kind"])
+            args.channels = ",".join(
+                row["names"][args.names].format(level=level)
+                for row in selected
+                for level in (level_set["hpa"] if "{level}" in row["names"][args.names] else [None]))
+            args.consumers = None
+            return earth2_export.main(args)
+        except (KeyError, MlExportRefusal) as error:
+            print(f"ml-export refused: {error}; use export --earth2 PROFILE to select a fixed Earth2 grid", file=sys.stderr)
+            return EXIT_REFUSED
     if args.out is None:
         print("ml-export refused: --out is required (the export folder)", file=sys.stderr)
         return EXIT_REFUSED

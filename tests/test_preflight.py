@@ -426,7 +426,14 @@ def test_physics_manifest_groups_cover_restart_driver_attrs(d01_cfg):
     ozone = pf.physics_array_shapes(d01_cfg, cam_ozone=True)
     assert ozone["radiation/o33d_grid"] == (d01_cfg.nz, d01_cfg.ny, d01_cfg.nx)
     groups.add("o3rad")  # direct owner retains the historical radiation/o33d_grid key
-    assert set(restart.DRIVER_SERIALIZED_ATTRS) - scalar_attrs <= groups
+    # Hydro's network-sized backing roster cannot be inferred from RunConfig.
+    # It is priced by the table-selected provider in the forecast envelope,
+    # including checkpoint work. The functional nonzero allocation and actual
+    # restart-array cross-checks live in test_hydro_memory_contract.
+    dynamic_attrs = {"hydro"}
+    assert dynamic_attrs <= set(restart.DRIVER_SERIALIZED_ATTRS)
+    assert "hydro_memory" in {f.name for f in dataclasses.fields(pf.ExperimentMemoryEstimate)}
+    assert set(restart.DRIVER_SERIALIZED_ATTRS) - scalar_attrs - dynamic_attrs <= groups
     assert "last_ysu" not in {name.split("/")[0]
                                for name in pf.physics_array_shapes(d01_cfg)}
     assert "last_ysu" in restart.DRIVER_REBUILT_ATTRS
@@ -3656,15 +3663,17 @@ def test_estimate_domain_itemization_pins(exp1):
     # three (3125, 50) flux outputs 1,875,000 B, the (3125, 256) LW incident
     # plane 3,200,000 B and the (3125, 49, 16) zero band cloud 9,800,000 B,
     # 18,075,000 B of transient.
+    # Held-zero backing sharing removes 2*u + 2*mass = 39,278,400 B
+    # (radiation's three extra backings plus KF's smaller momentum face).
     assert by_cat == {'state': 573358148,
- 'physics': 313706760,
+ 'physics': 274428360,
  'scratch': 597187064,
  'lbc': 67091504,
  'nest': 0,
  'transient': 469137500}
     assert d01.resident_bytes == sum(
         v for c, v in by_cat.items() if c != "transient")
-    assert d01.resident_bytes == 1551343476
+    assert d01.resident_bytes == 1512065076
     assert est.resident_bytes == d01.resident_bytes + est.k_tables_bytes
     assert d01.transient_bytes == 469137500
 
@@ -3837,7 +3846,7 @@ def test_d01_calibration_bounds_measured_fixture(exp1):
     # 2.8.7) adds 9,800,000 B, 1,523,330,992 B or 96.5 %.
     # This comparison does not turn that old run into a new measurement.
     # The six 0-d SCM forcing scalars (24 B) are strict-only too (scm_forcing_fields).
-    assert est.domains[0].resident_bytes == 1551343476
+    assert est.domains[0].resident_bytes == 1512065076
     # Compare the recorded pre-intake residency to its historical measurement.
     # New history carriers are separately priced above; this is no new pool measurement.
     ratio = 1523343280 / measured
@@ -4546,7 +4555,10 @@ def test_check_cli_legacy_config_wraps(capsys):
     # 9,800,000 B (RULINGS 1). The strict health rim table (a677ad4e1) adds
     # 12,288 B.
     # The six 0-d SCM forcing scalars (24 B) are strict-only too (scm_forcing_fields).
-    assert payload["domains"]["d01"]["resident_bytes"] == 1551343476
+    # 22aa4243869: check prices the forcing slots a chained `gpuwm go` holds (one
+    # streamed lateral slot for a one-domain, one-card config), not the whole
+    # schedule: 8,899,840 B of boundary tables leave the d01 resident pin.
+    assert payload["domains"]["d01"]["resident_bytes"] == 1503165236
 
 
 def test_check_cli_fails_closed_when_nothing_is_evaluable(capsys,

@@ -80,8 +80,9 @@ pub enum Crs {
     /// parameterized by the grid spec -- lcc/merc/stere on the sphere.
     ModelSphere(crate::projection::GridSpec),
     /// Interrupted Goode Homolosine on WGS84 (the soil source's native
-    /// plane; the delivered GeoTIFF carries no CRS tag, hence the
-    /// override recorded on every bound raster).
+    /// plane; the delivered GeoTIFF cannot name it -- no CRS keys until
+    /// 2026-10-14, user-defined keys (GTModelType 32767) since 2026-10-15
+    /// -- hence the override recorded on every bound raster).
     InterruptedGoodeHomolosine,
     /// Ellipsoidal Albers equal-area as parameterized by the source
     /// raster's own tags (the CONUS land-cover collection).

@@ -132,8 +132,11 @@ obs-regrid = { path = "../obs-regrid" }
 static-fields = { path = "../static-fields" }
 wrf-core = { git = "https://github.com/FahrenheitResearch/wrf-rust.git", rev = "93bd2ca670c13fec35bcfc27a58108e6fd71c627", package = "wrf-core", default-features = false, features = ["pure-rust-reader"] }
 
-[dev-dependencies]
+rayon.workspace = true
+obs-score = { path = "../obs-score" }
 netcdf-writer = { path = "../netcdf-writer" }
+
+[dev-dependencies]
 
 
 [[bin]]

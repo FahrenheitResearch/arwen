@@ -19,9 +19,11 @@ def ordinary_member_policy(request, *, concurrent):
     explicit = request.max_ordinary_members_per_device
     selected = explicit
     source = "explicit_request" if explicit is not None else "existing_memory_admission"
-    if explicit is None and concurrent and request.members > 1:
+    if explicit is None and concurrent and request.members > 1 and request.recipe != "wofs":
         selected = DEFAULT_ORDINARY_MEMBER_CAP
         source = "measured_default"
+    elif explicit is None and concurrent and request.recipe == "wofs":
+        source = "live_memory_admission"
     return selected, {"schema": POLICY, "source": source,
         "max_ordinary_members_per_device": selected,
         "physical_memory_ceiling": "unchanged_per_card_admission",

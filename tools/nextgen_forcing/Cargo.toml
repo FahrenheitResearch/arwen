@@ -1,0 +1,37 @@
+[package]
+name = "arwen-nextgen-forcing"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[[bin]]
+name = "forcing-zarr-coordinates"
+path = "src/bin/zarr_coordinates.rs"
+required-features = ["zarr-coordinates"]
+
+[[bin]]
+name = "forcing-zarr-subset"
+path = "src/bin/zarr_subset.rs"
+required-features = ["zarr-subset"]
+
+[features]
+zarr-coordinates = ["dep:zstd"]
+zarr-subset = ["dep:zstd", "dep:netcdf-writer"]
+
+[dependencies]
+csv = "1"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+zstd = { version = "=0.13.3", optional = true, default-features = false }
+netcdf-writer = { path = "../rustwx/crates/netcdf-writer", optional = true }
+netcdf-reader = { path = "../rustwx/vendor/netcrust/vendor/netcdf-reader" }
+
+[profile.release]
+strip = "symbols"

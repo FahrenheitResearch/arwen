@@ -22,7 +22,9 @@ ON_DEMAND = {"rw_simradar", "rw_mlexport", "rw_globe_pack"}
 #: 2.9.1: the six observation-stream doors are on demand (PyPI per-file limit);
 #: 2.9.2 adds rw_madis and the radar feed listings (rw_radar_feeds), also on demand.
 STREAM_DOORS = {"rw_igra2", "rw_amv", "rw_ndbc", "rw_gnssro", "rw_wis2", "rw_prepbufr", "rw_madis",
-                "rw_radar_feeds"}
+                "rw_radar_feeds",
+                # 2.9.3 (PyPI per-file limit): the five front doors, the sounding renderer, the gauge verifier.
+                "rw_mrms", "rw_stage4", "rw_asos", "rw_goes", "rw_opera", "rw_soundings", "rw_nextgen_verify"}
 PLATFORMS = ("linux-x86_64", "win-x86_64")
 REVISION = "a" * 40
 FETCH = "gpuwm fetch-bridges"

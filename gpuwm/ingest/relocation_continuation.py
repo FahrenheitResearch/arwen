@@ -1,4 +1,4 @@
-"""Global host-side continuation decisions shared by resident and slab rebuilds."""
+"""Global continuation decisions shared by resident and slab rebuilds."""
 from dataclasses import dataclass
 
 import numpy as np
@@ -62,15 +62,22 @@ def stage_relocation_continuation(captured, new_dc, static, *, plan=None):
             "transplanting would combine the carried "
             "state with different land-surface statics: "
             f"{verdict['mismatched_fields'] or verdict}")
+    # Resident forecasts already own a CUDA context. Keep nearest-donor
+    # search there; the old pairwise CPU search stalled every ocean move.
+    from gpuwm.core.physics_continuation import _array_module
+    device = captured.get("device", False) or any(
+        hasattr(value, "__cuda_array_interface__")
+        for value in captured.get("continuation", {}).values())
     fill = donor_fill_plan(overlap_mask=overlap_mask_for_plan(plan, (cfg.ny, cfg.nx)),
-                           landmask=np.asarray(static["LANDMASK"]))
+                           landmask=np.asarray(static["LANDMASK"]), device=device)
     moved = {}
     for name, old in captured["fields"].items():
         window = plan.window(old.shape)
         if window is None:
             continue
         (dst_j, src_j), (dst_i, src_i) = window
-        staged = np.zeros_like(old)
+        xp = _array_module(old)
+        staged = xp.zeros_like(old)
         staged[..., dst_j, dst_i] = old[..., src_j, src_i]
         moved[name] = fill.apply(staged)
     return RelocationContinuation(captured, plan, verdict, fill, moved)

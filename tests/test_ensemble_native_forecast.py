@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 from types import SimpleNamespace
+import contextlib
 import sys
 
 import numpy as np
@@ -109,8 +110,23 @@ def test_executor_uses_original_history_window_and_advances_each_clock_once(monk
         field = physics.driver.refl_10cm
         physics.driver.refl_10cm = None
         return field
-    from gpuwm.core.refl import analysis_refl_10cm
     physics.state.qv = np.zeros((3, 20, 6), np.float32)
+    # Since 18dbe1d5449 tick zero diagnoses the initial hydrometeors on the
+    # GPU (checked in tests/test_earth2_export.py); this test owns routing.
+    views = []
+
+    @contextlib.contextmanager
+    def analysis_diagnostic_view():
+        # 8068aac6772: the packed batch admits refl_t and tiles thb for
+        # exactly the analysis call.
+        views.append("open")
+        yield
+        views.append("closed")
+    physics.state.analysis_diagnostic_view = analysis_diagnostic_view
+
+    def analysis_refl_10cm(state):
+        assert state is physics.state and views == ["open"]
+        return np.full(state.qv.shape, -7, np.float32)
     monkeypatch.setitem(sys.modules, "gpuwm.core.refl", SimpleNamespace(
         consume_refl_10cm=consume, analysis_refl_10cm=analysis_refl_10cm,
         refl_10cm_stash_is_due=lambda ticks, **kwargs: ticks != 0))
@@ -182,7 +198,8 @@ def test_executor_uses_original_history_window_and_advances_each_clock_once(monk
         if tick:
             assert field.shape == (3, 5, 6) and np.all(field == tick)
         else:
-            assert field.shape == (3, 5, 6) and not np.any(field)
+            assert field.shape == (3, 5, 6) and np.all(field == -7)
+    assert views == (["open", "closed"] if any(tick == 0 for tick, _m, _f in captures) else [])
 
 
 @pytest.mark.parametrize("stage", ["pack", "health"])

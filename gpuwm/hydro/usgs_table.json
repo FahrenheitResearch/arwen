@@ -1,0 +1,415 @@
+{
+  "schema": "nextgen-gauge-table-v1",
+  "sources": [
+    {
+      "id": "usgs-continuous",
+      "url": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/continuous/items?f=json&monitoring_location_id=USGS-{station}&parameter_code=00060&time={start}%2F{end}&limit=50000",
+      "layout": {
+        "records": "/features/*/properties",
+        "station": "/monitoring_location_id",
+        "station_prefix": "USGS-",
+        "time": "/time",
+        "flow": "/value",
+        "unit": "/unit_of_measure",
+        "unit_factors": {
+          "ft^3/s": 0.028316846592,
+          "m^3/s": 1.0
+        },
+        "filters": {
+          "/parameter_code": [
+            "00060"
+          ],
+          "/approval_status": [
+            "Approved",
+            "Provisional"
+          ]
+        },
+        "optional_filters": {
+          "/qualifier": [
+            "e",
+            "Estimated",
+            "ESTIMATED"
+          ]
+        },
+        "time_series": "/time_series_id"
+      },
+      "links": "/links/*",
+      "relation": "/rel",
+      "href": "/href",
+      "licence": {
+        "status": "allowed",
+        "licence": "US public domain",
+        "attribution": "Credit: U.S. Geological Survey (NWIS)",
+        "quote": "USGS-authored or produced data and information are considered to be in the U.S. Public Domain.",
+        "evidence": "docs/public/HYDRO-WORLD-LICENCES.md (lane hydro-world-licences 5c1bbd89eb4); licence bytes kept with the hydro-world-licences receipt: usgs-nwis/policy.html sha256 f24e8478..."
+      },
+      "metadata": {
+        "url": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/monitoring-locations/items/USGS-{station}?f=json",
+        "latitude": "/geometry/coordinates/1",
+        "longitude": "/geometry/coordinates/0",
+        "name": "/properties/monitoring_location_name",
+        "drainage_area": "/properties/drainage_area",
+        "drainage_area_to_km2": 2.589988110336,
+        "drainage_area_unit_note": "(drainage_area, square miles x 2.589988110336)"
+      },
+      "discover": {
+        "url": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/monitoring-locations/items?f=json&bbox={bbox}&site_type_code=ST&limit=10000",
+        "records": "/features/*",
+        "id": "/properties/monitoring_location_number",
+        "latitude": "/geometry/coordinates/1",
+        "longitude": "/geometry/coordinates/0",
+        "name": "/properties/monitoring_location_name"
+      }
+    },
+    {
+      "id": "pegelonline-archive",
+      "agency": "PEGEL",
+      "url": "https://pegelonline.wsv.de/gast/historische-zeitreihen/prepare-download",
+      "request": {
+        "method": "POST_FORM",
+        "form": {
+          "uuid": "{meta:/uuid}",
+          "parameter": "{meta:/timeseries/[shortname=Q]/longname}",
+          "start": "{start}",
+          "end": "{end}",
+          "format": "json"
+        },
+        "follow_same_origin_redirect": true,
+        "max_in_flight": 2
+      },
+      "container": {
+        "kind": "zip",
+        "records_member_suffix": ".json",
+        "info_member": "zeitreiheninformation.txt"
+      },
+      "metadata": {
+        "url": "https://www.pegelonline.wsv.de/webservices/rest-api/v2/stations/{station}.json?includeTimeseries=true",
+        "latitude": "/latitude",
+        "longitude": "/longitude",
+        "name": "/longname"
+      },
+      "layout": {
+        "records": "/records/*",
+        "station_from_request": true,
+        "time": "/timestamp",
+        "flow": "/value",
+        "unit": "^/info/timeseries_unit",
+        "unit_factors": {
+          "m\u00b3/s": 1.0
+        },
+        "quality": "^/info/quality",
+        "fixed_quality": "WSV discharge series Q"
+      },
+      "licence": {
+        "status": "allowed",
+        "licence": "Datenlizenz Deutschland Zero 2.0 (dl-de/zero-2-0)",
+        "attribution": "Pegeldaten: Wasserstra\u00dfen- und Schifffahrtsverwaltung des Bundes (WSV), via PEGELONLINE, dl-de/zero-2-0",
+        "quote": "Die bereitgestellten Daten und Metadaten d\u00fcrfen f\u00fcr die kommerzielle und nicht kommerzielle Nutzung insbesondere vervielf\u00e4ltigt, ausgedruckt, pr\u00e4sentiert, ver\u00e4ndert, bearbeitet sowie an Dritte \u00fcbermittelt werden",
+        "evidence": "docs/public/HYDRO-WORLD-LICENCES.md (lane hydro-world-licences 5c1bbd89eb4); licence bytes kept with the hydro-world-licences receipt: pegelonline/lizenz.html sha256 5a7f2204 (the same terms page the archive download form links)"
+      },
+      "discover": {
+        "url": "https://www.pegelonline.wsv.de/webservices/rest-api/v2/stations.json?includeTimeseries=true",
+        "records": "/*",
+        "id": "/number",
+        "latitude": "/latitude",
+        "longitude": "/longitude",
+        "name": "/longname",
+        "require": "/timeseries/*/shortname",
+        "require_value": "Q"
+      },
+      "notes": "Long-term raw discharge from 2000-01-01, the station page's download form (zip with the json series, zeitreiheninformation.txt and the terms). The REST row keeps about 31 days."
+    },
+    {
+      "id": "pegelonline-rest",
+      "agency": "PEGEL",
+      "url": "https://www.pegelonline.wsv.de/webservices/rest-api/v2/stations/{station}/Q/measurements.json?start={start}&end={end}",
+      "metadata": {
+        "url": "https://www.pegelonline.wsv.de/webservices/rest-api/v2/stations/{station}.json?includeTimeseries=true",
+        "latitude": "/latitude",
+        "longitude": "/longitude",
+        "name": "/longname"
+      },
+      "layout": {
+        "records": "/*",
+        "station_from_request": true,
+        "time": "/timestamp",
+        "flow": "/value",
+        "fixed_unit": "m\u00b3/s",
+        "unit_factors": {
+          "m\u00b3/s": 1.0
+        },
+        "fixed_quality": "WSV discharge series Q (REST)"
+      },
+      "licence": {
+        "status": "allowed",
+        "licence": "Datenlizenz Deutschland Zero 2.0 (dl-de/zero-2-0)",
+        "attribution": "Pegeldaten: Wasserstra\u00dfen- und Schifffahrtsverwaltung des Bundes (WSV), via PEGELONLINE, dl-de/zero-2-0",
+        "quote": "Die bereitgestellten Daten und Metadaten d\u00fcrfen f\u00fcr die kommerzielle und nicht kommerzielle Nutzung insbesondere vervielf\u00e4ltigt, ausgedruckt, pr\u00e4sentiert, ver\u00e4ndert, bearbeitet sowie an Dritte \u00fcbermittelt werden",
+        "evidence": "docs/public/HYDRO-WORLD-LICENCES.md (lane hydro-world-licences 5c1bbd89eb4); licence bytes kept with the hydro-world-licences receipt: pegelonline/lizenz.html sha256 5a7f2204 (the same terms page the archive download form links)"
+      },
+      "discover": {
+        "url": "https://www.pegelonline.wsv.de/webservices/rest-api/v2/stations.json?includeTimeseries=true",
+        "records": "/*",
+        "id": "/number",
+        "latitude": "/latitude",
+        "longitude": "/longitude",
+        "name": "/longname",
+        "require": "/timeseries/*/shortname",
+        "require_value": "Q"
+      },
+      "notes": "Q series unit is m\u00b3/s in the station metadata (timeseries Q); the REST service keeps about 31 days."
+    },
+    {
+      "id": "eccc-hydat-daily",
+      "agency": "WSC",
+      "url": "https://api.weather.gc.ca/collections/hydrometric-daily-mean/items?f=json&STATION_NUMBER={station}&datetime={start}%2F{end}&limit=10000",
+      "links": "/links/*",
+      "relation": "/rel",
+      "href": "/href",
+      "metadata": {
+        "url": "https://api.weather.gc.ca/collections/hydrometric-stations/items?f=json&STATION_NUMBER={station}",
+        "latitude": "/features/0/geometry/coordinates/1",
+        "longitude": "/features/0/geometry/coordinates/0",
+        "name": "/features/0/properties/STATION_NAME",
+        "drainage_area": "/features/0/properties/DRAINAGE_AREA_GROSS",
+        "drainage_area_unit_note": "(DRAINAGE_AREA_GROSS, km2)"
+      },
+      "layout": {
+        "records": "/features/*/properties",
+        "station": "/STATION_NUMBER",
+        "time": "/DATE",
+        "time_from_date": true,
+        "flow": "/DISCHARGE",
+        "fixed_unit": "m3/s",
+        "unit_factors": {
+          "m3/s": 1.0
+        },
+        "quality": "/DISCHARGE_SYMBOL_EN",
+        "fixed_quality": "HYDAT daily mean (station local standard day)"
+      },
+      "licence": {
+        "status": "allowed",
+        "licence": "Open Government Licence - Canada (HYDAT archive); ECCC Data Services End-use Licence 2.1.1 (api.weather.gc.ca)",
+        "attribution": "Contains information licensed under the Open Government Licence - Canada. Data Source: Environment and Climate Change Canada (Water Survey of Canada, HYDAT).",
+        "quote": "The Information Provider grants you a worldwide, royalty-free, perpetual, non-exclusive licence to use the Information, including for commercial purposes, subject to the terms below.",
+        "evidence": "docs/public/HYDRO-WORLD-LICENCES.md (lane hydro-world-licences 5c1bbd89eb4); licence bytes kept with the hydro-world-licences receipt: hydat/ogl.html sha256 d7648d6d, hydat/eccc-open-data-licence.html sha256 b77b61cd"
+      },
+      "discover": {
+        "url": "https://api.weather.gc.ca/collections/hydrometric-stations/items?f=json&bbox={bbox}&limit=10000",
+        "records": "/features/*",
+        "id": "/properties/STATION_NUMBER",
+        "latitude": "/geometry/coordinates/1",
+        "longitude": "/geometry/coordinates/0",
+        "name": "/properties/STATION_NAME"
+      },
+      "notes": "HYDAT daily means through ECCC's OGC API (no 1.1 GB database download). Values carry a local date only, so each station row declares utc_offset (the station's standard time)."
+    },
+    {
+      "id": "eccc-realtime",
+      "agency": "WSC",
+      "url": "https://api.weather.gc.ca/collections/hydrometric-realtime/items?f=json&STATION_NUMBER={station}&datetime={start}%2F{end}&limit=10000",
+      "links": "/links/*",
+      "relation": "/rel",
+      "href": "/href",
+      "metadata": {
+        "url": "https://api.weather.gc.ca/collections/hydrometric-stations/items?f=json&STATION_NUMBER={station}",
+        "latitude": "/features/0/geometry/coordinates/1",
+        "longitude": "/features/0/geometry/coordinates/0",
+        "name": "/features/0/properties/STATION_NAME",
+        "drainage_area": "/features/0/properties/DRAINAGE_AREA_GROSS",
+        "drainage_area_unit_note": "(DRAINAGE_AREA_GROSS, km2)"
+      },
+      "layout": {
+        "records": "/features/*/properties",
+        "station": "/STATION_NUMBER",
+        "time": "/DATETIME",
+        "flow": "/DISCHARGE",
+        "fixed_unit": "m3/s",
+        "unit_factors": {
+          "m3/s": 1.0
+        },
+        "fixed_quality": "ECCC real-time provisional"
+      },
+      "licence": {
+        "status": "allowed",
+        "licence": "ECCC Data Services End-use Licence (header 2.1.1, August 2026; footer 2.1)",
+        "attribution": "Data Source: Environment and Climate Change Canada. Contains information licenced under the Data Server End-use Licence of Environment and Climate Change Canada.",
+        "quote": "The Information Provider grants you a worldwide, royalty-free, perpetual, non-exclusive licence to use the Information, including for commercial purposes, subject to the terms below.",
+        "evidence": "https://eccc-msc.github.io/open-data/licence/readme_en/ ; saved hydat/eccc-open-data-licence.html SHA256 b77b61cda7d2b995f39c6b00467cda27d399a7abd83eea100081e37d8b1abbc9; docs/public/HYDRO-WORLD-LICENCES.md ECCC real-time section."
+      },
+      "discover": {
+        "url": "https://api.weather.gc.ca/collections/hydrometric-stations/items?f=json&bbox={bbox}&limit=10000",
+        "records": "/features/*",
+        "id": "/properties/STATION_NUMBER",
+        "latitude": "/geometry/coordinates/1",
+        "longitude": "/geometry/coordinates/0",
+        "name": "/properties/STATION_NAME"
+      },
+      "notes": "Provisional real-time values (about the last 30 days), UTC timestamps."
+    },
+    {
+      "id": "bom-wdo",
+      "agency": "BOM",
+      "url": "https://www.bom.gov.au/waterdata/services?service=kisters&type=queryServices&datasource=0&format=json&request=getTimeseriesValues&ts_id={meta:/1/0}&from={start}&to={end}&returnfields=Timestamp,Value,Quality%20Code&metadata=true&md_returnfields=ts_unitsymbol,station_no,custom_attributes",
+      "request": {
+        "method": "GET",
+        "user_agent": "Mozilla/5.0 (compatible; gpuwm-gauge-verification/0.1)"
+      },
+      "metadata": {
+        "url": "https://www.bom.gov.au/waterdata/services?service=kisters&type=queryServices&datasource=0&format=json&request=getTimeseriesList&station_no={station}&ts_name=DMQaQc.Merged.HourlyMean.HR&parametertype_name=Water%20Course%20Discharge&returnfields=ts_id,station_no,station_name,station_latitude,station_longitude,ts_unitsymbol",
+        "latitude": "/1/3",
+        "longitude": "/1/4",
+        "name": "/1/2",
+        "user_agent": "Mozilla/5.0 (compatible; gpuwm-gauge-verification/0.1)"
+      },
+      "layout": {
+        "records": "/0/data/*",
+        "station_from_request": true,
+        "time": "/0",
+        "flow": "/1",
+        "unit": "^/0/ts_unitsymbol",
+        "unit_factors": {
+          "cumec": 1.0,
+          "Ml/d": 0.011574074074074073
+        },
+        "quality": "/2",
+        "fixed_quality": "BOM DMQaQc.Merged.HourlyMean.HR quality code"
+      },
+      "owner_gate": {
+        "owner": "^/0/DATA_OWNER",
+        "allowed": {
+          "w00002": "Icon Water Limited (no attribution required)",
+          "w00075": "\u00a9 ACT (City and Environment Directorate)",
+          "w00160": "\u00a9 Commonwealth of Australia (Murray\u2013Darling Basin Authority)",
+          "w00257": "\u00a9 Central Coast Council",
+          "w00126": "\u00a9 Hunter Water Corporation",
+          "w00233": "\u00a9 Sydney Water Corporation (Sydney Water)",
+          "w00077": "\u00a9 State of NSW (Department of Planning and Environment \u2013 Water)",
+          "w00231": "\u00a9 WaterNSW",
+          "w00067": "\u00a9 Northern Territory Government (Department of Lands,\u00a0 Planning and Environment)",
+          "w00189": "\u00a9 Power and Water Corporation (Power and Water)",
+          "w00021": "\u00a9 Brisbane City Council",
+          "w00028": "\u00a9 Cairns Regional Council",
+          "w00066": "\u00a9 State of Queensland (Department of Local Government, Water and Volunteers)",
+          "w00103": "\u00a9 Gladstone Area Water Board",
+          "w00285": "\u00a9 Livingstone Shire Council",
+          "w00191": "\u00a9 Queensland Bulk Water Supply Authority (trading as Seqwater)",
+          "w00198": "\u00a9 Rockhampton Regional Council",
+          "w00227": "\u00a9 SunWater Limited A.C.N. 131034985",
+          "w00238": "\u00a9 Toowoomba Regional Council",
+          "w00241": "\u00a9 Townsville City Council",
+          "w00003": "\u00a9 Hills and Fleurieu Landscape Board",
+          "w00037": "\u00a9 City of Salisbury",
+          "w00071": "\u00a9 Crown in right of the State of South Australia",
+          "w00078": "\u00a9 Crown in right of the State of South Australia",
+          "w00099": "\u00a9 Crown in right of the State of South Australia",
+          "w00208": "\u00a9 Murraylands and Riverland Landscape Board",
+          "w00209": "\u00a9 South Australian Water Corporation (SA Water)",
+          "w00215": "\u00a9 South Eastern Water Conservation and Drainage Board",
+          "w00283": "\u00a9 Crown in right of the State of South Australia",
+          "w00072": "\u00a9 State of Tasmania (Department of Natural Resources and Environment Tasmania)",
+          "w00129": "\u00a9 Hydro Tasmania (Hydro-electric Corporation)",
+          "w00124": "\u00a9 TasWater",
+          "w00013": "\u00a9 Barwon Region Water Corporation (Barwon Water)",
+          "w00045": "\u00a9 Coliban Region Water Corporation (Coliban Water)",
+          "w00032": "\u00a9 Central Highlands Region Water Corporation",
+          "w00074": "\u00a9 State of Victoria (Department of Energy, Environment and Climate Action)",
+          "w00102": "\u00a9 Gippsland and Southern Rural Water Corporation (Southern Rural Water)",
+          "w00114": "\u00a9 Goulburn-Murray Rural Water Corporation (Goulburn-Murray Water)",
+          "w00115": "\u00a9 Grampians Wimmera Mallee Water Corporation (GWMWater)",
+          "w00151": "\u00a9 Melbourne Water Corporation (Melbourne Water)",
+          "w00172": "\u00a9 North East Region Water Corporation (North East Water)",
+          "w00247": "\u00a9 Water Corporation",
+          "w00076": "\u00a9 Government of Western Australia"
+        },
+        "excluded": {
+          "w00205": "Snowy Hydro Limited: OTHER: contact owner (not Creative Commons)"
+        },
+        "source_of_list": "docs/public/HYDRO-WORLD-BOM-WDO-OWNERS.tsv (lane hydro-world-licences 5c1bbd89eb4), from the WDO copyright page"
+      },
+      "licence": {
+        "status": "allowed",
+        "licence": "CC BY 4.0 per data owner (Water Data Online); owners outside the CC list are refused",
+        "attribution": "Water Data Online, Bureau of Meteorology; data owner attribution per station",
+        "quote": "The data owners listed below have made their data available under the Creative Commons licence.",
+        "evidence": "docs/public/HYDRO-WORLD-LICENCES.md (lane hydro-world-licences 5c1bbd89eb4); licence bytes kept with the hydro-world-licences receipt: bom/wdo-copyright.html sha256 49ca3c2e"
+      },
+      "notes": "The data owner comes from the values response (DATA_OWNER); a station whose owner is not on the CC BY list is refused by name."
+    },
+    {
+      "id": "uk-nrfa",
+      "agency": "NRFA",
+      "licence": {
+        "status": "excluded",
+        "licence": "UKCEH NRFA API licence",
+        "quote": "Your licence does not permit You to sub-license the API or the Data for any purpose. ... 3.1 You may not make the Data available for download from any internet site without prior agreement. ... 3.5 You are not permitted to cache or store any Data accessed via the API except for a limited volume ... (no longer than 30 calendar days)",
+        "evidence": "docs/public/HYDRO-WORLD-LICENCES.md (lane hydro-world-licences 5c1bbd89eb4); licence bytes kept with the hydro-world-licences receipt: nrfa/api-licence.txt.html sha256 77c844bf"
+      }
+    },
+    {
+      "id": "grdc",
+      "agency": "GRDC",
+      "licence": {
+        "status": "excluded",
+        "licence": "GRDC data policy",
+        "quote": "No commercial use of the data ... No redistribution of the data by the user",
+        "evidence": "docs/public/HYDRO-WORLD-LICENCES.md (lane hydro-world-licences 5c1bbd89eb4); licence bytes kept with the hydro-world-licences receipt: grdc/datapolicy.html sha256 a7c55edf"
+      }
+    }
+  ],
+  "stations": [
+    {
+      "station_id": "11462500",
+      "feature_id": null
+    },
+    {
+      "station_id": "11464000",
+      "feature_id": null
+    },
+    {
+      "station_id": "11467000",
+      "feature_id": null
+    }
+  ],
+  "layouts": {
+    "station-long": {
+      "records": "/*",
+      "station": "/station_id",
+      "time": "/time",
+      "flow": "/flow_m3s",
+      "fixed_unit": "m3/s",
+      "unit_factors": {
+        "m3/s": 1.0
+      }
+    },
+    "feature-long": {
+      "records": "/*",
+      "feature": "/feature_id",
+      "time": "/time",
+      "flow": "/discharge",
+      "unit": "/units",
+      "unit_factors": {
+        "m3/s": 1.0,
+        "m^3/s": 1.0,
+        "ft3/s": 0.028316846592
+      }
+    },
+    "arwen-analysis-csv": {
+      "records": "/*",
+      "feature": "/feature_id",
+      "time": "/time_utc",
+      "flow": "/streamflow_m3_s",
+      "fixed_unit": "m3/s",
+      "unit_factors": {
+        "m3/s": 1.0
+      }
+    }
+  },
+  "matching": {
+    "radius_m": 5000.0,
+    "area_tolerance": 0.15,
+    "no_area_policy": "nearest_plausible",
+    "no_area_radius_m": 1000.0,
+    "max_specific_discharge_m3s_km2": 0.2
+  }
+}

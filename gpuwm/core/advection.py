@@ -84,7 +84,7 @@ def _launch(func: str, q, ru, rv, rw, tend, rdnw, fnm, fnp,
         has_msf = msf is not None
     if msf is None:
         msf = cp.ones(msf_shape, dtype=DTYPE)
-    kern = get_kernel("advection", func)
+    kern = get_kernel("advection", func, (nz, ny, nx))
     grid = ((n_i + _TPB - 1) // _TPB, n_j, n_k)
     kern(grid, (_TPB, 1, 1),
          (q, ru, rv, rw, tend, cp.asarray(rdnw, dtype=DTYPE),

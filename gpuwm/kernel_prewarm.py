@@ -133,8 +133,8 @@ class Prewarm:
                                  else round(self.finished - self.started, 3))}
 
 
-#: Run fields that do not change which kernels compile: grid extent and labels.
-_PLAN_TAG_SKIP = frozenset({"nx", "ny", "case", "grid_id"})
+#: Labels do not change kernels. Grid extents remain in the shape key.
+_PLAN_TAG_SKIP = frozenset({"case", "grid_id"})
 
 
 def plan_tag(experiment) -> str:
@@ -152,7 +152,7 @@ def plan_tag(experiment) -> str:
         parts.append(";".join(
             f"{field.name}={value!r}" for field in dataclasses.fields(run)
             if field.name not in _PLAN_TAG_SKIP
-            and type(value := getattr(run, field.name, None)) in (int, bool, str)))
+            and type(value := getattr(run, field.name, None)) in (int, float, bool, str)))
     parts.append(kernel_plan.default_tag_text(()))
     return "|".join(parts)
 
@@ -225,7 +225,9 @@ def static_jobs(experiment) -> list[tuple[str, object, tuple]]:
     # size suggests. Starting it tenth left an 8 s serial pool tail on the
     # cold go route, so start that long compile beside the largest units.
     for name in sorted(static_modules(experiment), key=lambda n: (n != "sfclay", -_source_bytes(n), n)):
-        if name == "kf":
+        if name in _COMPOSED_LOADERS:
+            jobs.append((name, _warm_composed, (name,)))
+        elif name == "kf":
             jobs.append((name, _warm_kf, ()))
         elif name in kernels._DIFFUSION_MODULES:
             jobs.append((name, kernels._load_diffusion_module.__wrapped__, (name,)))
@@ -249,6 +251,31 @@ def static_jobs(experiment) -> list[tuple[str, object, tuple]]:
                          kernels.load_module_int_defines.__wrapped__, ("rrtmgp_rte", defines)))
     jobs.extend(_inline_jobs(modules))
     return jobs
+
+
+# Preflight names assembled translation units, not source files. Use the
+# forecast factories, including their options and symbol/constant setup.
+_COMPOSED_LOADERS = {
+    "noahmp_driver_composed": ("noahmp_driver_gpu", "driver_module"),
+    "noahmp_energy_composed": ("noahmp_energy_gpu", "energy_module"),
+    "noahmp_glacier_composed": ("noahmp_glacier_gpu", "glacier_module"),
+    "noahmp_thermal_composed": ("noahmp_thermal_gpu", "thermal_module"),
+    "noahmp_libm_slab_composed": ("noahmp_slab_libm", "_module"),
+    "noahmp_vegeflux_runtime": ("noahmp_vegeflux_gpu", "_module"),
+    "rrtmg_lw_legacy_chain": ("rrtmg_lw", "_gpu_module"),
+    "rrtmg_sw_legacy": ("rrtmg_legacy", "_cuda_sw"),
+}
+
+
+def _warm_composed(name):
+    import importlib
+
+    module_name, factory_name = _COMPOSED_LOADERS[name]
+    module = importlib.import_module("gpuwm.core." + module_name)
+    factory = getattr(module, factory_name)
+    if name == "rrtmg_sw_legacy":
+        return factory(module._sw_tables())
+    return factory()
 
 
 def _warm_kf():

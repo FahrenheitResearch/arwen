@@ -131,8 +131,11 @@ SOILGRIDS_SOURCE_URL = "https://www.isric.org/explore/soilgrids"
 SOILGRIDS_LICENSE = ("CC-BY-4.0",
                      "https://creativecommons.org/licenses/by/4.0/")
 #: Interrupted Goode Homolosine, SoilGrids' native grid ("EPSG" 152160 is
-#: ISRIC's own registry entry; the delivered GeoTIFF carries no CRS tag,
-#: hence the override recorded on every bound raster).
+#: ISRIC's own registry entry, outside the GeoTIFF registry, so the
+#: delivered tile cannot name it: until 2026-10-14 it carried no CRS keys
+#: at all, and since 2026-10-15 it carries user-defined keys (GTModelType
+#: 32767, an ESRI PE string naming Goode_Homolosine). Either way this
+#: override, recorded on every bound raster, is the CRS of record).
 SOILGRIDS_CRS = "+proj=igh +lat_0=0 +lon_0=0 +datum=WGS84 +units=m +no_defs"
 SOILGRIDS_COMPONENTS = ("clay", "sand", "silt")
 SOILGRIDS_DEPTHS = ("0-5cm", "5-15cm", "15-30cm", "30-60cm", "60-100cm")

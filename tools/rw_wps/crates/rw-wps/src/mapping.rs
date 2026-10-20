@@ -2449,10 +2449,13 @@ pub const PUBLISHED_LEVELS_ZERO_FIELDS: [&str; 5] = [
 /// Number fields retain their source mask until the metgrid horizontal
 /// interpolation chain tries its finite neighboring donors before filling zero.
 /// Kept equal to `gpuwm.ingest.analyzed_numbers.CANONICAL_NUMBER_FIELDS`.
-pub const MASKED_NUMBER_FIELDS: [&str; 5] = [
+pub const MASKED_NUMBER_FIELDS: [&str; 8] = [
     "cloud_droplet_number",
     "cloud_ice_number",
     "rain_number",
+    "snow_number",
+    "graupel_number",
+    "hail_number",
     "water_friendly_aerosol_number",
     "ice_friendly_aerosol_number",
 ];

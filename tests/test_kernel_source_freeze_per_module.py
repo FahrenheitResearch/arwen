@@ -191,6 +191,12 @@ BASELINE_PINNED: dict[str, str] = {
     # tests/test_correct_mode_water_budget.py strips the arm and compares
     # the sha and the compiled image).  wsm3 and wsm5 moved the same way in
     # tests/data/kernel_source_pins.json (2.9.0: 0daed0b8, 8fbdf5f5).
+    # fer_hires moved in that manifest at 18dbe1d5449 (analysis-frame radar
+    # reflectivity): an analysis_only launch argument adds a no-source,
+    # no-fallout arm that writes REFL from the initial hydrometeors, and
+    # the forecast arm's Zsnow/Zrain expressions moved verbatim into the
+    # shared fh_snow_z/fh_rain_z inline helpers (same operands, same order);
+    # with analysis_only = 0 every forecast branch is the old source.
     "wsm7": "cfa0a7736efc1d755d185bebe1f8f351c469466e844139bc73d7144a44c2d344",
     # Already-staged vertical order kernel (f82847049); lane/ec-pd-upwind-286
     # confined its downstream cell at Courant <= 1 to the strict WRF
@@ -1225,7 +1231,7 @@ BASELINE_PINNED: dict[str, str] = {
     "physics_exner": "14d8847f39847e9637efc83b63dbf323eddfe4d3f21675210b6398ffe85c3636",
     "rrtmgp_cloud_default": "512157c75edf4637d99a1cad490e8db71e51cd2c3643ff129adebefa81557560",
     "rrtmgp_gas_default": "d13b914a28ad8b7ef88904977c7e33b9a7d7e800592473c0fb8debebca031edf",
-    "rrtmgp_rte_default": "b9474494d0784a97f66742c3d8ab6788c6be09741a2b74a602b970149f0c579f",
+    "rrtmgp_rte_default": "731bd84717398320a1710b2c151a466b9e5bf1a30b633d858fd31d7162dbd173",
     "thompson_classic": "e9225efd38ba652b743eb3ff02e3c45794941862a46603db996e4de93d9da985",
     "thompson_fork": "c7313ce62d863bdeb9478b7a503c8faffae6d17c8a20cbb1b6d458c216e4c947",
     "ysu_default": "f56e3ec7646a111d07c5447383ae136b2959b5f4545441a598b51be16ccdc768",
@@ -1471,6 +1477,9 @@ COMPOSED_HEADERS = {
     'mynn_surface_libm.cuh': '05bff414d423ef312057ee6a3a2e6f71b9576e9fae53ec201e220b5273fac40f',
     # r290 exact-chain intake: source identity, numerical gates separate.
     'rrtmgp_planck_common_default.cuh': '4e1a8214ea8e2a3dbd88cc2cda260a21ff678d98acf4f22c971ba0b51b4eba36',
+    # rad-history (29e917cbeb9): the paired LW solve derives Planck sources through this header (pk_on 2),
+    # matched bitwise to the standalone kernel on 61,440,000 lay_source words.
+    'rrtmgp_planck_staged_default.cuh': 'a311afa625da94395c2b7e05c99f0d6244db595136245fdee18451cfbb54ce16',
     # r290 exact-chain intake: source identity, numerical gates separate.
     'ysu_topo_default.cuh': '031efb139b827dd94fa9407455c3392e85cb29f4af6b954ef18d931e735890b0',
 }

@@ -279,8 +279,11 @@ DEFAULT_TOLERANT_IDENTITY_FIELDS = frozenset({
     "run.ntiedtke_tiedtke_closure",
     # Correct-mode keys (gpuwm/correct_mode.py, WB5/WB4): False is the
     # matched arithmetic every prepared tree written before them describes.
+    # thompson_cloud_surface_booking (WB1) is output-only
+    # (correct_mode.OUTPUT_ONLY_KEYS) and so is ruled on once, in
+    # INERT_DIAGNOSTIC_IDENTITY_FIELDS through CONFIG_DIAGNOSTIC_FIELDS.
     "run.wsm6_conservative_surface", "run.ntiedtke_dry_mass_coupling",
-    "run.wdm6_conservative_surface", "run.thompson_cloud_surface_booking",
+    "run.wdm6_conservative_surface",
     "run.wsm3_conservative_surface", "run.wsm5_conservative_surface",
     "run.wsm7_conservative_surface",
     # The New SAS knobs (cu_physics = 96 port), on the p3_backend argument
@@ -946,6 +949,33 @@ PREPARATION_INERT_RUN_FIELDS = SFIRE_PREPARATION_INERT_RUN_FIELDS | frozenset({
     # every value.  They stay in the experiment fingerprint and the
     # restart identity when moved.
     "run.swint_opt", "run.aer_opt",
+    # The aer_opt = 2 user-aerosol controls (gpuwm/config.py
+    # AER_OPT2_RUN_KEYS), on the same argument: only the legacy RRTMG
+    # shortwave's aerosol optics read them, on each radiation call, and
+    # nothing under gpuwm/ingest names any of them, so the prepared initial
+    # state and boundary tables are the same under every value.  They stay
+    # in the experiment fingerprint and the restart identity.
+    "run.aer_type", "run.aer_aod550_opt", "run.aer_angexp_opt",
+    "run.aer_ssa_opt", "run.aer_asy_opt", "run.aer_aod550_val",
+    "run.aer_angexp_val", "run.aer_ssa_val", "run.aer_asy_val",
+    "run.aer_auxinput15", "run.aer_auxinput15_interval",
+    # WRF's lightning diagnostic package (lightning_option and its controls,
+    # cd75865eb6e): off by default, read only by the forecast's diagnostic
+    # driver on its own cadence, and nothing under gpuwm/ingest names any of
+    # them, so the prepared initial state and boundary tables are the same
+    # under every value.  They stay in the experiment fingerprint.
+    "run.lightning_option", "run.lightning_dt", "run.lightning_start_seconds",
+    "run.flashrate_factor", "run.iccg_method", "run.iccg_prescribed_num",
+    "run.iccg_prescribed_den", "run.cellcount_method", "run.cldtop_adjustment",
+    "run.do_radar_ref",
+    # WRF's one-dimensional ocean mixed layer (sf_ocean_physics and its
+    # namelist values, 27c2bab6456): off by default and read only by the
+    # forecast's surface step from the live state; nothing under
+    # gpuwm/ingest names it, so preparation writes the same state under
+    # every value.  It stays in the experiment fingerprint and the restart
+    # identity.
+    "run.sf_ocean_physics", "run.oml_hml0", "run.oml_gamma",
+    "run.oml_relaxation_time",
     # Sun-angle albedo reads live solar geometry on radiation steps; it
     # changes no prepared state or boundary table.
     "run.alb_sol", "run.rrtmg_cloud_optics_form",

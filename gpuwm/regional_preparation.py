@@ -276,11 +276,37 @@ def validate_authored_background(background, exp):
         raise ValueError('The prepared geometry, physics, output or clock differs from the reviewed regional experiment; prepare this region with its reviewed configuration.')
 
 
+def member_preparation_chain(source):
+    """A recipe can also seal a config-driven source through its row's owner."""
+    from gpuwm import runplan
+    from gpuwm.source_adapters import get_source_adapter
+    owner = get_source_adapter(source).ensemble_preparation_owner
+    return "prepared:case-data" if owner else runplan.prepared_chain_for_source(source, source_root=None)
+
+
+def _case_preparation_owner(raw):
+    from importlib import import_module
+    from gpuwm.source_adapters import get_source_adapter
+    return import_module(get_source_adapter(raw["fetch"]["source"]).ensemble_preparation_owner)
+
+
+def _review_case(config_path, exp, *, raw, scratch, posting):
+    return _case_preparation_owner(raw).review(config_path, exp, raw=raw,
+                                               scratch=scratch, posting=posting)
+
+
+def _prepare_case(plan, *, config_path, exp, observer, run_dir, prepare_only):
+    import tomllib
+    raw = tomllib.loads(Path(config_path).read_text())
+    return _case_preparation_owner(raw).prepare(plan, config_path=config_path, exp=exp,
+        observer=observer, run_dir=run_dir, prepare_only=prepare_only)
+
+
 def preparation_chains():
     """Executable preparation-only mechanisms, indexed by shared chain IDs."""
     from gpuwm import runplan
     return {'prepared:go': _prepare_native, 'prepared:hrrr': _prepare_hourly,
-            'prepared:staged': runplan._staged_chain}
+            'prepared:staged': runplan._staged_chain, 'prepared:case-data': _prepare_case}
 
 
 def preparation_chain_reviews():
@@ -301,7 +327,7 @@ def preparation_chain_reviews():
     branch on a chain or source name.
     """
     return {'prepared:go': _review_native, 'prepared:hrrr': _review_hourly,
-            'prepared:staged': None}
+            'prepared:staged': None, 'prepared:case-data': _review_case}
 
 
 def _review_native(config_path, exp, *, raw, scratch, posting):

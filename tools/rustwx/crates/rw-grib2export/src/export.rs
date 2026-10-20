@@ -331,6 +331,10 @@ fn rotate_pair(u: &mut [f32], v: &mut [f32], sina: &[f32], cosa: &[f32]) {
 /// Compute every catalog plane of one frame.
 fn compute(path: &Path, req: &Request, devices: &mut Devices, meta: &FrameMeta) -> Result<Planes> {
     let t_read = Instant::now();
+    let heights: std::collections::BTreeSet<u32> = catalog::ROWS.iter().filter_map(|r| {
+        if let Source::WindHeight(height, _) = r.source { Some(height) } else { None }
+    }).collect();
+    let extra = crate::vertical::compute(path, &req.levels_hpa(), &heights.into_iter().collect::<Vec<_>>(), req.writes_pressure())?;
     let mut frame = history::Frame::read(path, 0).map_err(|e| refuse(format!("{}: {e}", path.display())))?;
     let owned = group_e::history::OwnedCarriers::read(path).map_err(|e| refuse(format!("{}: {e}", path.display())))?;
     let mut timings = BTreeMap::new();
@@ -371,6 +375,12 @@ fn compute(path: &Path, req: &Request, devices: &mut Devices, meta: &FrameMeta) 
     devices_used.insert("a", a.device.clone());
     let st = &a.state;
     let mut surface: BTreeMap<&'static str, Vec<f32>> = BTreeMap::new();
+    for r in catalog::ROWS {
+        if let Source::WindHeight(height, u) = r.source {
+            let (_, up, vp) = extra.wind.iter().find(|(h, _, _)| *h == height).unwrap();
+            surface.insert(r.id, if u { up.clone() } else { vp.clone() });
+        }
+    }
     for spec in SurfaceField::PRODUCTS.iter() {
         surface.insert(spec.id, a.plane(spec.field).to_vec());
     }
@@ -435,6 +445,11 @@ fn compute(path: &Path, req: &Request, devices: &mut Devices, meta: &FrameMeta) 
     let mut plev_planes: Vec<Vec<Vec<f32>>> = (0..levels_pa.len())
         .map(|l| (0..6).map(|f| b.plev_plane(l, f).to_vec()).collect())
         .collect();
+    if req.writes_pressure() {
+        for (l, planes) in plev_planes.iter_mut().enumerate() {
+            for field in &extra.pressure { planes.push(field[l*n..(l+1)*n].to_vec()); }
+        }
+    }
     if earth {
         let (s, c) = sin_cos.as_ref().unwrap();
         for level in plev_planes.iter_mut() {
@@ -631,7 +646,7 @@ fn message(
     };
     // Bit 5 of the resolution and component flags (code table 3.3): vector
     // components resolved relative to the grid (0x08) or to east/north.
-    let flags = if req.winds == "grid" { 0x38 } else { 0x30 };
+    let flags = if req.winds == "grid" && !matches!(row.source, Source::WindHeight(..)) { 0x38 } else { 0x30 };
     let mut m = MessageBuilder::new(row.discipline, values)
         .center(centre_for(row), 0)
         .generating_process_identifier(GENERATING_PROCESS_ID)
@@ -670,7 +685,11 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 fn row_json(r: &Row, level: Option<f64>) -> Value {
-    let mut level_text = catalog::level_text(r);
+    let mut level_text = if matches!(r.source, Source::Plev(_)) {
+        "100/pressure_Pa".to_owned()
+    } else {
+        catalog::level_text(r)
+    };
     if let Some(p) = level {
         level_text = format!("{}/{}", r.level.0, p);
     }
@@ -1032,7 +1051,7 @@ pub fn list() -> Value {
                 Source::C(_) => "C",
                 Source::D(_) => "D",
                 Source::E(_) => "E",
-                Source::U10 | Source::V10 | Source::Apcp => "history",
+                Source::U10 | Source::V10 | Source::Apcp | Source::WindHeight(..) => "history",
                 Source::Extreme(_) => "extrema",
             });
             v
@@ -1096,6 +1115,35 @@ mod tests {
             assert!(ids.insert(r.id), "duplicate {}", r.id);
         }
         assert_eq!(catalog::default_levels_hpa().len(), 37);
+    }
+
+    #[test]
+    fn added_rows_roundtrip_wmo_identity_template_units_and_wind_flags() {
+        let (grid, n) = small_grid();
+        let reference = utc(1_759_449_600).unwrap();
+        let req = request("complex"); // Default grid winds must not mislabel earth-relative 100 m winds.
+        for (id, code, units, level) in [
+            ("specific_humidity", (0,1,0), "kg kg-1", (100,75000.)),
+            ("omega", (0,2,8), "Pa s-1", (100,75000.)),
+            ("vertical_velocity", (0,2,9), "m s-1", (100,75000.)),
+            ("u100", (0,2,2), "m s-1", (103,100.)),
+            ("v100", (0,2,3), "m s-1", (103,100.)),
+        ] {
+            let row = catalog::PLEV_ROWS.iter().chain(catalog::ROWS).find(|r| r.id==id).unwrap();
+            assert_eq!(row.units, units);
+            assert!(!row.method.is_empty());
+            let bytes = encode(vec![message(row, (level.0==100).then_some(75000.), &vec![0.25;n], &grid, reference, (1,0), reference, &req, None)]).unwrap();
+            let file = wx_core::grib2::Grib2File::from_bytes(&bytes).unwrap();
+            let msg = &file.messages[0];
+            assert_eq!((msg.discipline,msg.product.parameter_category,msg.product.parameter_number), code);
+            assert_eq!((msg.product.level_type,msg.product.level_value), level);
+            assert_eq!(&section4(&bytes)[7..9], &[0,0]); // product template 4.0
+            if level.0==103 {
+                let mut at=16;
+                while bytes[at+4]!=3 { at+=u32::from_be_bytes(bytes[at..at+4].try_into().unwrap()) as usize; }
+                assert_eq!(bytes[at+46]&0x08, 0, "{id} must be earth-relative");
+            }
+        }
     }
 
     fn request(packing: &str) -> Request {

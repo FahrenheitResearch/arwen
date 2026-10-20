@@ -1,5 +1,34 @@
 # Changelog
 
+## 2.9.3 (2026-10-19)
+
+New:
+- A whole-step driver for nested domains and ensembles: the Canary nested 24 h case runs in 111 s on an RTX 5090 (144 s instead of 171 s on an RTX 4090) and the Swiss case in 85 s instead of 112 s (RTX 4090); the HRRR-shape 24 h run with products finishes 7 percent sooner (RTX 5090).
+- `gpuwm ensemble` fills a WoFS-shape ensemble to 36 members from any analysis: the source's own members, then time-lagged cycles, then perturbation fill, with every member's provenance written beside its output.
+- An ensemble sounding window: the mean, any member, or all members with the P10-P90 band, from plain ensemble output.
+- Coupled NextGen hydro is available with `--hydro SETTINGS.toml` and a prepared hydrofabric; a forecast without one records the gap in its receipt.
+- A new README.
+- Input files already downloaded and verified on the machine are used instead of being fetched again.
+- `gpuwm fetch --source earth2 --model fcn3` runs an NVIDIA Earth-2 model through Earth2Studio from pinned weights, and a forecast starts from its output with `--source earth2`; FourCastNet 3, SFNO, Pangu, Aurora, FengWu, GraphCast and AIFS output is read the same way.
+- Forecast output exports to Earth2Studio tensors, its diagnostic models and GRIB2 fields (`docs/public/EXPORT-EARTH2.md`).
+- `gpuwm tc-tracks` writes tropical cyclone tracks from completed forecast and ensemble output.
+- `gpuwm earth2` runs an Earth-2 model and an ArWen storm nest from its output in one command (`--model`, `--storm`, `--nest`, `--ensemble`, `--diagnose`), with restricted-licence models refused until `--accept-licence` names the licence.
+
+Fixed:
+- Moving nests choose same-class land and radiation donors on CUDA by default and keep resident land, held physics rates and radiation carry on the GPU. Donor ties retain the CPU reference's first-index rule. Host staging still bounds state-rebuild memory; streamed carry reads canonical storage without copying stale slabs. CUDA surface inputs keep skin temperature, SST and ice reservoirs independent.
+- The cyclone preset follows the MSLP minimum. Its movement allowance follows tracked speed and the move interval, includes any existing centre offset, and respects parent interpolation margins and overlap. It replaces the fixed six-cell cap; each move prints its wall time and eye-to-centre distance.
+- Adaptive timesteps land on moving-nest and track deadlines, so a 15-minute consultation is not silently skipped.
+- Moving-nest wall receipts include the required post-move health validation; the remap duration remains separately reported. Moves and containment slides release and rebind health validators for every rebuilt domain, including finer descendants.
+- Ensemble member preparations are admitted against host memory, not only CPU count.
+- Host memory under a container limit counts the page cache the kernel can reclaim, so a warm cache no longer refuses a CPU preparation.
+- On Windows, a receipt being polled by a reader no longer blocks the writer's replace.
+- The geography root given to `gpuwm domain` survives into `gpuwm check` and `gpuwm go` on Windows.
+- SoilGrids tiles written with user-defined GeoKeys, as ISRIC's service has written them since 2026-10-15, read again under their declared projection, so `[static.highres] fields = "auto"` preparations no longer fail.
+- `gpuwm go` with ERA5 and other runtime-route sources, and `gpuwm run`, write the step log `progress.jsonl` with a record for every step.
+- Hex global forecasts finish their final state digest instead of stopping on a little-endian field read from NetCDF.
+- The CONUS HRRR recipe's model top lies inside the source's vertical levels, and a model top above the source's levels is refused when the run is planned instead of after preparation.
+- `gpuwm check` prices the memory `gpuwm go` holds for its chained forcing.
+
 ## 2.9.2 (2026-10-17)
 
 New:
@@ -45,7 +74,7 @@ Fixed:
 - A checkpointed ensemble stopped part way (killed or SIGTERM) resumes with `--restart-roster`; on one card, stopped runs resumed to member histories and products byte-identical to an uninterrupted run.
 - GRIB2 products run on the GPU on drivers older than CUDA 13.4 (A100, H100, L40S, L4, T4 and RTX 30/40 cards on such drivers fell back to the CPU silently). When `--post-device auto` cannot open the GPU kernels, `gpuwm export-grib2` and `gpuwm go --grib2` print one warning, and `gpuwm doctor` has a "GPU post kernels" line.
 - WSM6 no longer stops a forecast with "microphysics SR is outside its validated range" when the frozen-precipitation fraction ends a few float32 rounding steps above 1.
-- Strict WRF mode (`GPUWM_WRF_EXACT=1`) runs a default `gpuwm go` configuration on every start route, the keyless ERA5 default included: a prepared start holds theta as WRF's `T = theta - 300` (2.9.0, and 2.9.1 on the route that prepares in the forecast's own process, read theta up to 164 K low there and stopped non-finite at the first step).
+- Strict WRF mode (`GPUWM_WRF_EXACT=1`) runs a default `gpuwm go` configuration on every start route, the keyless ERA5 default included: a prepared start holds theta as WRF's `T = theta - 300` (2.9.0, on the route that prepares in the forecast's own process, read theta up to 164 K low there and stopped non-finite at the first step).
 - Under the default RTE+RRTMGP radiation with Morrison microphysics, the domain's outermost ring of columns sizes its cloud from its own water and ice instead of the scheme's start-up sizes, so its surface shortwave follows its neighbours.
 - `OLR` under RTE+RRTMGP is the upward longwave at the top of the radiation column, including the layers the scheme adds above the model top, as WRF's RRTMG reports it.
 - `rw_mpas_convert` draws maps from RRFS-MPAS output: cell centres come from `--mesh` when the history lacks them, and missing fields from the diag file of the same time.

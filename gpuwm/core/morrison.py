@@ -21,7 +21,10 @@ place.  :func:`apply` prepares WRF's microphysics inputs from
 The owner-ruled divergence (PARITY-GAPS row 37: the deposition-nucleation
 vapour cap and the wide re-evaluation of a non-finite freezing rate) is
 compiled in by ``MORR_ROW37``; ``MORR_ROW37_OFF`` builds WRF's arithmetic
-alone for the oracle gate.
+alone for the oracle gate. The forecast build also prevents negative
+sedimentation mass after a source tendency cancels its category in FP32;
+otherwise inherited fall speed exports negative precipitation. The raw WRF
+oracle build retains the signed residue.
 """
 
 from __future__ import annotations
@@ -61,27 +64,16 @@ LAUNCHERS = ("launch_morrison", "launch_refl10cm_wrf", "launch_exner")
 
 
 def bound_snow_ratio(sr) -> None:
-    """Hold Morrison's SR to its definition, the frozen fraction [0, 1].
+    """Cap independent FP32 frozen/total fallout sums at one.
 
-    WRF's driver forms ``SR = SNOWRT / (PRECRT + 1E-12)`` (:908) from the
-    signed surface fallout sums.  A fallout component turns negative when a
-    category's ``X3D + X3DTEN*DT`` rounds below zero, so WRF's own SR leaves
-    [0, 1]: through WRF v4.6.1's MP_MORR_TWO_MOMENT, 401 of the 24,576
-    stress columns (tools/morrison_wrf461_oracle/stress_columns.py) return
-    SR < 0 and 208 return SR > 1, and a 20-step Grell-Freitas restart
-    domain reached SR = -4.69e-11 (tests/test_restart.py).  The kernel
-    keeps WRF's word (the column oracle grades it); the forecast path
-    bounds the ratio here, the one consumer-facing copy.  The breakage
-    this prevents: the physics driver refuses SR outside [0, 1]
-    (physics.py, the microphysics SR validation; Morrison's expression
-    has no roundoff envelope because its components are signed), so a
-    healthy Morrison forecast stopped at the first such column, and a
-    negative or over-unity frozen fraction would otherwise reach the land
-    surface's rain/snow split.  NaN is left for the driver's non-finite
-    refusal.  Declared divergence from WRF: SR only, only where WRF's SR
-    is outside [0, 1]; every prognostic and accumulated word stays WRF's.
+    The frozen and total sums use different addition orders, so their
+    quotient can round above one. The land surface needs a fraction.
+    The former lower floor is retired: the forecast sedimentation kernel
+    now prevents negative mass, rather than hiding negative fallout here.
+    Nonfinite or negative values remain visible to the physics validator.
+    The raw WRF oracle build retains its original signed arithmetic.
     """
-    cp.clip(sr, DTYPE(0.0), DTYPE(1.0), out=sr)
+    cp.minimum(sr, DTYPE(1.0), out=sr)
 
 
 # theta = thb + thp and dz8w = z_w(k+1) - z_w(k), as the separate CuPy

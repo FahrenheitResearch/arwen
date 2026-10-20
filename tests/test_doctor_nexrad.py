@@ -174,29 +174,12 @@ def test_the_bundled_front_door_uses_the_resolution_ladders_own_env_var():
 
 
 def test_the_bundle_prose_counts_the_artifacts_it_actually_carries():
-    """The docstring is the contract a release engineer reads; keep it true.
+    """The artifact table is the roster; prose must not freeze its size.
 
-    The count and ``gpuwm.bridge_assets`` prose move together when a
-    consumer joins or leaves the bundle. The native tools added in 2.8.6
-    brought it to thirty-seven artifacts with the UPP-derived GRIB2
-    exporter held out; 2.8.7's clean-room exporter and the radar superob
-    bring it to thirty-nine, the nowcast frames converter to forty, and the
-    air-quality program's AirNow reader and ensemble reducer to forty-two,
-    2.8.9's global globe packer to forty-three, and the scoreboard lane's
-    observation scorecard and forecast verification scorer to forty-five,
-    and 2.9.0's regular-grid intermediate producer (met_intermediate, for
-    public initial-condition preparation), MPAS point renderer
-    (rw_hex_points) and TEMPO initialization library (rw_tempo) to
-    forty-eight, 2.9.1's projected MET intermediate library
-    (rw_projected_intermediate, hex point runs from HRRR) to forty-nine, and
-    2.9.1's six on-demand observation-stream doors (rw_igra2, rw_amv,
-    rw_ndbc, rw_gnssro, rw_wis2, rw_prepbufr) to fifty-five, and 2.9.2's
-    MADIS door (rw_madis) to fifty-six, and its radar feed listings
-    (rw_radar_feeds, on demand) to fifty-seven.
+    Per-artifact doctor coverage and the release probes enforce completeness.
+    A prose count became stale at every intake, including the hydro artifacts.
     """
-
-    assert len(bridge_assets.BUNDLED_ARTIFACTS) == 57
-    assert "fifty-seven artifacts" in bridge_assets.__doc__
+    assert "declared native artifacts" in bridge_assets.__doc__
     for stale in ("eight artifacts", "nine artifacts", "nine files",
                   "ten artifacts", "ten files", "eleven artifacts",
                   "eleven files", "fourteen artifacts", "fourteen files",
@@ -228,7 +211,8 @@ def test_the_bundle_prose_counts_the_artifacts_it_actually_carries():
                   "forty-seven artifacts", "forty-seven files",
                   "forty-eight artifacts", "forty-eight files",
                   "fifty-five artifacts", "fifty-five files",
-                  "fifty-six artifacts", "fifty-six files"):
+                  "fifty-six artifacts", "fifty-six files",
+                  "fifty-seven artifacts", "fifty-seven files"):
         # Match the complete count, so "eight" does not reject "twenty-eight".
         assert re.search(r"(?<![a-z-])" + re.escape(stale) + r"(?![a-z-])",
                          bridge_assets.__doc__) is None

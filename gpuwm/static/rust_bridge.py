@@ -307,6 +307,11 @@ def _bind_entry_points(library: ctypes.CDLL, *, u8p, u64p, f64p, size) -> None:
     library.gpuwm_static_grid_array.argtypes = [
         ctypes.c_uint64, ctypes.c_uint32, ctypes.c_uint32, f64p, size]
     library.gpuwm_static_grid_array.restype = ctypes.c_int32
+    # Additive ABI: older libraries retain their original native calls.
+    if hasattr(library, "gpuwm_static_grid_arrays"):
+        library.gpuwm_static_grid_arrays.argtypes = [
+            ctypes.c_uint64, ctypes.c_uint32, ctypes.c_uint32, f64p, size]
+        library.gpuwm_static_grid_arrays.restype = ctypes.c_int32
     library.gpuwm_static_grid_transform.argtypes = [
         ctypes.c_uint64, ctypes.c_uint32, f64p, f64p, size]
     library.gpuwm_static_grid_transform.restype = ctypes.c_int32
@@ -432,6 +437,32 @@ def grid_array(handle: int, stagger: int, kind: int,
     return out
 
 
+
+def grid_arrays(handle: int, stagger: int, kinds: tuple[int, ...],
+                ny: int, nx: int) -> tuple[np.ndarray, ...]:
+    """Read distinct derived fields with one native coordinate pass."""
+    library = load()
+    function = getattr(library, "gpuwm_static_grid_arrays", None)
+    if (function is None or len(set(kinds)) != len(kinds)
+            or any(kind < 0 or kind > 6 for kind in kinds)):
+        if function is None and "derived array batch" not in _REPORTED_FALLBACKS:
+            _REPORTED_FALLBACKS.add("derived array batch")
+            print("static geometry: library lacks derived-array batching; "
+                  "using the existing native array calls", file=sys.stderr)
+        return tuple(grid_array(handle, stagger, kind, ny, nx) for kind in kinds)
+    if not kinds:
+        return ()
+    ordered = sorted(kinds)
+    out = np.empty((len(ordered), int(ny), int(nx)), dtype=np.float64)
+    _check(library, function(
+        ctypes.c_uint64(handle), ctypes.c_uint32(stagger),
+        ctypes.c_uint32(sum(1 << kind for kind in ordered)),
+        out.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), out.size),
+        f"grid_arrays[{stagger},{kinds}]")
+    arrays = dict(zip(ordered, out))
+    return tuple(arrays[kind] for kind in kinds)
+
+
 def wrf_cell_geometry(dx, dy, msftx=None, msfty=None, *, shape=None):
     """Source-REAL WRF cell area and distance, computed in Rust once."""
     library = load()
@@ -478,6 +509,29 @@ def wrf_noah_snow_albedo(max_alb, ivgtyp):
            indices.ctypes.data_as(index_pointer), output.ctypes.data_as(pointer), output.size),
            "wrf_noah_snow_albedo")
     return output
+
+
+def grid_hydrofabric_json(handle: int) -> str:
+    """Setup-only projected mass-grid metadata from the executed native handle."""
+    library = load()
+    try:
+        entry = library.gpuwm_static_grid_hydrofabric_json
+    except AttributeError:
+        raise StaticBridgeError(
+            "Rust static-fields lacks the hydrofabric projected-grid export; "
+            "rebuild with " + _checkout_build_command()) from None
+    entry.argtypes = [ctypes.c_uint64, ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t]
+    entry.restype = ctypes.c_int64
+    length = int(entry(ctypes.c_uint64(handle), None, 0))
+    if length < 0:
+        raise StaticBridgeError(f"grid_hydrofabric_json: {last_error(library)}")
+    buffer = (ctypes.c_uint8 * length)()
+    written = int(entry(ctypes.c_uint64(handle), buffer, length))
+    if written != length:
+        raise StaticBridgeError(
+            f"grid_hydrofabric_json rendered {written} bytes on a {length}-byte probe: "
+            + last_error(library))
+    return bytes(buffer).decode("utf-8")
 
 
 def grid_identity_probes_json(handle: int) -> str:

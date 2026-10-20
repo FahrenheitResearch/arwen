@@ -930,6 +930,30 @@ def _keys(table, dx: float, slope, crest, wind, sound_steps: int):
     return key * 8 + past
 
 
+def _grouped_face_leaders(keys, slope, wind, crest):
+    """The original lexicographic leader and count for every sorted key."""
+    if keys.size < 4096 or not all(
+            np.isfinite(values).all() for values in (slope, wind, crest)):
+        order = np.lexsort((crest, wind, slope, keys))
+        sorted_keys = keys[order]
+        last = np.r_[sorted_keys[1:] != sorted_keys[:-1], True]
+        return order[last], np.diff(np.r_[-1, np.flatnonzero(last)])
+    # Only the last face of each lexicographic group is needed. Sort the
+    # integer groups once, then select maxima in the original priority order.
+    order = np.argsort(keys, kind="stable")
+    sorted_keys = keys[order]
+    starts = np.r_[0, 1 + np.flatnonzero(sorted_keys[1:] != sorted_keys[:-1])]
+    counts = np.diff(np.r_[starts, keys.size])
+    selected = np.ones(keys.size, dtype=bool)
+    for values in (slope, wind, crest):
+        values = values[order]
+        maxima = np.maximum.reduceat(np.where(selected, values, -np.inf), starts)
+        selected &= values == np.repeat(maxima, counts)
+    # lexsort is stable: equal slope/wind/crest picks the final input face.
+    leaders = np.maximum.reduceat(np.where(selected, order, -1), starts)
+    return leaders, counts
+
+
 def read_faces(fields: FaceFields, *, table, dx: float, sound_steps: int,
                domain_wind: float, margin: float = WIND_MARGIN,
                arms: tuple[str, ...] = (), radius_m: float = 0.0
@@ -948,11 +972,7 @@ def read_faces(fields: FaceFields, *, table, dx: float, sound_steps: int,
     keys = _keys(table, float(dx), slope, crest, read, int(sound_steps))
     # Each group's leader: its steepest face, then strongest wind read,
     # then tallest crest (all read the same cells).
-    order = np.lexsort((crest, read, slope, keys))
-    sorted_keys = keys[order]
-    last = np.r_[sorted_keys[1:] != sorted_keys[:-1], True]
-    leaders = order[last]
-    counts = np.diff(np.r_[-1, np.flatnonzero(last)])
+    leaders, counts = _grouped_face_leaders(keys, slope, read, crest)
     groups = []
     for leader, n in zip(leaders, counts):
         k = int(leader)

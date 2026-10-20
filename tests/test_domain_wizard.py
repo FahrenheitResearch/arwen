@@ -2749,6 +2749,28 @@ def test_hrrr_emission_preserves_an_explicit_profile_beyond_the_default(
         assert getattr(default.root.run, key) == value, key
 
 
+def _named_licence_opt_in(source: str) -> tuple[str, ...]:
+    """The licence(s) a licence-gated row's own refusal names, else none.
+
+    Rows whose weights are not permissive refuse every default path and
+    name the exact ``--accept-licence`` value that opts in.  A sweep over
+    every planable row opts in with exactly that value, as a user would;
+    the refusal itself is held by the licensing tests.
+    """
+
+    import shlex
+
+    from gpuwm.earth2_licensing import check_argv
+
+    try:
+        check_argv(["domain", "--source", source])
+    except ValueError as refusal:
+        match = re.search(r"--accept-licence (.+)$", str(refusal))
+        assert match, refusal
+        return tuple(shlex.split(match.group(1)))
+    return ()
+
+
 def _advised_lighter_profiles(message: str) -> list[str]:
     """The suite names a no-fit refusal advises, in printed order."""
 
@@ -2799,10 +2821,13 @@ def test_no_fit_advice_names_only_profiles_the_same_source_accepts(
     # 2026 window refused by the source's unchanged temporal guard.
     cycle = "1957-12-18T12" if source == "20crv3-cf" else "2026-08-12T00"
 
+    opt_in = [token for licence in _named_licence_opt_in(source)
+              for token in ("--accept-licence", licence)]
+
     def _argv(vram: str) -> list[str]:
         return ["domain", f"--point={point}", "--ladder", "12",
                 "--source", source, "--cycle", cycle,
-                "--hours", "6", "--vram-gib", vram]
+                "--hours", "6", "--vram-gib", vram, *opt_in]
 
     # Force the fit loop's own refusal -- the one that ranks lighter
     # profiles.  The card size that reaches it depends on the source's

@@ -167,7 +167,11 @@ def _digest_array(digest, name: str, value) -> None:
     digest.update(name.encode())
     digest.update(str(host.shape).encode())
     digest.update(str(host.dtype).encode())
-    digest.update(host.tobytes())
+    if host.dtype.hasobject:
+        digest.update(host.tobytes())
+    else:
+        contiguous = np.ascontiguousarray(host)
+        digest.update(memoryview(contiguous.reshape(-1).view(np.uint8)))
 
 
 def _update_setup_core(digest, state, *, error_type: type[Exception]) -> bool:

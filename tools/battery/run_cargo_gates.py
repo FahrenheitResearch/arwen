@@ -13,6 +13,15 @@ reported -- and ends in a single verdict line, the same shape as the
 ``[tiles]`` gates, because a leg that reports only an exit status throws
 away the numbers that make a regression legible.
 
+EVERY ENTRY'S FULL CARGO OUTPUT IS KEPT, in ``--log-dir`` (default
+``<CARGO_TARGET_DIR>/gate-logs``), one file per entry, and a failed entry's
+report names its failing tests and their panics before the tail of its
+output.  Origin: the 2.9.3 R8 Windows gate reported "2 targets failed:
+--test chem_products, --test snowfall" for rw-wrfbatch and nothing else,
+because only the last 40 lines of the crate's output survived and the
+failures sat in earlier binaries' output; the same targets passed alone
+on the same tree, so the gate had proven a failure it could not name.
+
 THREE REFUSALS, ALL LOUD
     * no ``CARGO_TARGET_DIR``, one named inside the repository, or an alias
       of a worktree's release-artifact target directory. A symlink outside
@@ -71,9 +80,47 @@ _RESULT = re.compile(
     r"(?P<ignored>\d+) ignored",
     re.MULTILINE)
 
+#: One failing test of a binary, ``test tests::name ... FAILED``.
+_FAILED_TEST = re.compile(r"^test (?P<name>\S.*) \.\.\. FAILED$", re.MULTILINE)
+
+#: A test thread's panic, ``thread 'name' panicked at file:line:col:``,
+#: followed by its message on the next line(s).
+_PANIC = re.compile(
+    r"^thread '(?P<thread>[^']*)' .*panicked at (?P<site>[^\n]*):\n"
+    r"(?P<message>(?:[^\n]*\n)*?)(?=note: |thread '|$)", re.MULTILINE)
+
 #: Exit status when the leg could not be run at all, as distinct from a
 #: leg that ran and failed (1).  A missing toolchain disproves nothing.
 CANNOT_RUN = 3
+
+
+def failing_tests(output: str) -> list[str]:
+    """The failing tests of one cargo run, each with its panic.
+
+    Cargo prints every binary's result in turn, so with several test
+    targets a failure early in the output is out of the tail; this reads
+    the whole output and names each ``test ... FAILED`` line, with the
+    panic site and message that test's thread printed, so a failed entry
+    is reported by test name, file and line rather than by target.
+    """
+
+    panics: dict[str, str] = {}
+    for match in _PANIC.finditer(output):
+        message = " ".join(line.strip() for line in match["message"].splitlines()
+                           if line.strip())
+        panics.setdefault(match["thread"], f"{match['site']}: {message}".rstrip(": "))
+    lines: list[str] = []
+    for match in _FAILED_TEST.finditer(output):
+        name = match["name"]
+        panic = panics.get(name) or panics.get(name.rsplit("::", 1)[-1])
+        lines.append(f"{name} FAILED" + (f"  ({panic})" if panic else ""))
+    return lines
+
+
+def log_file_name(entry: "Entry") -> str:
+    """One file per entry, named after its label, safe on every filesystem."""
+
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", entry.label).strip("_") + ".log"
 
 
 @dataclass(frozen=True)
@@ -114,6 +161,9 @@ class Outcome:
     returncode: int
     seconds: float
     output: str
+    #: Where the full cargo output was written, or None when the caller
+    #: did not ask for a log directory.
+    log_path: Path | None = None
 
     @property
     def verdict(self) -> str:
@@ -222,7 +272,8 @@ def resolve_target_dir(explicit: str | None) -> Path:
     return target
 
 
-def run_entry(entry: Entry, *, target_dir: Path, cargo: str) -> Outcome:
+def run_entry(entry: Entry, *, target_dir: Path, cargo: str,
+              log_dir: Path | None = None) -> Outcome:
     workspace = REPOSITORY_ROOT / entry.workspace
     if not (workspace / "Cargo.toml").is_file():
         raise RuntimeError(
@@ -252,6 +303,15 @@ def run_entry(entry: Entry, *, target_dir: Path, cargo: str) -> Outcome:
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     seconds = time.monotonic() - started
 
+    log_path = None
+    if log_dir is not None:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / log_file_name(entry)
+        log_path.write_text(
+            f"$ {' '.join(argv)}\n(cwd {workspace}; cargo exit "
+            f"{completed.returncode}; {seconds:.1f}s)\n\n{completed.stdout}",
+            encoding="utf-8", errors="replace")
+
     passed = failed = ignored = binaries = 0
     for match in _RESULT.finditer(completed.stdout):
         binaries += 1
@@ -261,7 +321,7 @@ def run_entry(entry: Entry, *, target_dir: Path, cargo: str) -> Outcome:
     return Outcome(entry=entry, passed=passed, failed=failed,
                    ignored=ignored, binaries=binaries,
                    returncode=completed.returncode, seconds=seconds,
-                   output=completed.stdout)
+                   output=completed.stdout, log_path=log_path)
 
 
 def _print_matrix(outcomes: list[Outcome]) -> None:
@@ -290,6 +350,9 @@ def main(argv: list[str] | None = None) -> int:
                              "in-tree fallback")
     parser.add_argument("--cargo", default="cargo",
                         help="cargo executable (default: cargo on PATH)")
+    parser.add_argument("--log-dir", default=None,
+                        help="directory for each entry's full cargo output "
+                             "(default: <CARGO_TARGET_DIR>/gate-logs)")
     parser.add_argument("--list", action="store_true",
                         help="print the entries and exit without running")
     args = parser.parse_args(argv)
@@ -325,8 +388,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"CARGO GATE COULD NOT RUN: {exc}", file=sys.stderr)
         return CANNOT_RUN
 
+    log_dir = Path(args.log_dir).resolve() if args.log_dir else target_dir / "gate-logs"
+
     print(f"tree            {REPOSITORY_ROOT}")
     print(f"CARGO_TARGET_DIR {target_dir}")
+    print(f"full output     {log_dir}")
     print(f"shard           {args.shard}, {len(selected)} entries, "
           f"cargo test --locked --offline")
     print()
@@ -335,7 +401,7 @@ def main(argv: list[str] | None = None) -> int:
     for entry in selected:
         try:
             outcome = run_entry(entry, target_dir=target_dir,
-                                cargo=args.cargo)
+                                cargo=args.cargo, log_dir=log_dir)
         except RuntimeError as exc:
             print(f"CARGO GATE COULD NOT RUN: {exc}", file=sys.stderr)
             return CANNOT_RUN
@@ -353,9 +419,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"--- {outcome.entry.label} ({outcome.verdict}, "
               f"cargo exit {outcome.returncode}) "
               f"{' '.join(outcome.entry.invocation())}")
+        failures = failing_tests(outcome.output)
+        if failures:
+            print(f"    failing tests ({len(failures)}):")
+            for line in failures:
+                print(f"      {line}")
         tail = outcome.output.strip().splitlines()[-40:]
+        print(f"    last {len(tail)} lines of output:")
         for line in tail:
             print(f"    {line}")
+        if outcome.log_path is not None:
+            print(f"    full output: {outcome.log_path}")
 
     total = sum(o.passed for o in outcomes)
     if bad:

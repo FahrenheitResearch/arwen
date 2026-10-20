@@ -1,5 +1,13 @@
 # Native ensemble observation matching
 
+Composite reflectivity now uses `rw_ensemble_match match-grid REQUEST.json
+PRODUCT_DIRECTORY`. It reads WRF vertical maxima, nowcast-frames `refc`
+samples and actual MRMS composite GRIB2 in Rust, with complete separate
+physics/AI rosters and a 5 km nearest-valid-centre remap. The gridded family
+request, score definitions, campaign CLI and renderer chain are documented
+in docs/stormscope-beside-da.md. The existing
+station and accumulated-precipitation contracts below retain their formats.
+
 The `rw_precip` and `rw_ensemble_match` binaries live in the existing `rw-obs`
 crate. They prepare precipitation observations and match individual forecast
 members to the input seam of `ensemble_calibration_score.rs`. They do not run

@@ -36,6 +36,8 @@ use serde::Serialize;
 mod water_layer;
 mod soil_recovery;
 mod invariant_binding;
+mod compose_source;
+mod storm_diagnostics;
 
 /// The contract marker. Printed by `--abi`, and -- because it is a
 /// literal in the binary -- readable straight out of the bytes by the
@@ -47,6 +49,7 @@ const ABI: &str = concat!(
     "\tdump_window_v1",
     "\tdump_sample_window_v1",
     "\tbind_published_invariants_v1",
+    "\tcompose_source_v1 storm_diagnostics_v1",
 );
 
 const INVENTORY_SCHEMA: &str = "gpuwm-rw-netcdf-inventory-v1";
@@ -65,6 +68,8 @@ usage: rw_netcdf inventory FILE
        rw_netcdf dump [--raw|--no-mask] [--unit-scale=N] [--unit-offset=N] [--water-layer-thickness=VARIABLE] [--window=I0:NI,J0:NJ] [--sample-window=X0:NI,Y0:NJ --sample-method=nearest|bilinear] FILE OUTPUT_DIR VARIABLE [VARIABLE...]
        rw_netcdf recover-wrf-soil WRFINPUT MET_EM AUTHORITY_JSON OUTPUT_DIR
        rw_netcdf bind-invariants HEIGHT_FILE HEIGHT_VAR LAND_FILE LAND_VAR OUTPUT_FILE TIME_FILE [TIME_FILE...]
+       rw_netcdf storm-diagnostics OUTPUT_DIR HEIGHTS_CSV GRAVITY JOBS FILE...
+       rw_netcdf compose-source MANIFEST OUTPUT_DIR JOBS
        rw_netcdf --abi | --help
 
   inventory  print a JSON description of FILE; a classic file that ends
@@ -116,9 +121,12 @@ struct VariableRecord {
     attributes: BTreeMap<String, serde_json::Value>,
     /// True when this variable was recovered from the raw HDF5 index
     /// because the NetCDF-4 variable table omitted it -- see
-    /// [`recover_dimension_scales`].  Its attributes are limited to the
-    /// CF string attributes that can be read by name, so a consumer that
-    /// needs numeric attributes on it must say so rather than assume.
+    /// [`recover_dimension_scales`].  The reader lists coordinate
+    /// variables itself, so a record carries this only when a scale
+    /// with data was hidden from the table all the same.  Its
+    /// attributes are limited to the CF string attributes that can be
+    /// read by name, so a consumer that needs numeric attributes on it
+    /// must say so rather than assume.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     recovered_dimension_scale: bool,
 }
@@ -409,6 +417,19 @@ fn main() {
         std::process::exit(2);
     }
     match args[0].as_str() {
+        "storm-diagnostics" => {
+            if args.len() < 6 { fail("storm-diagnostics takes OUTPUT_DIR HEIGHTS_CSV GRAVITY JOBS FILE..."); }
+            let heights = args[2].split(',').map(str::parse::<f64>).collect::<Result<Vec<_>,_>>().unwrap_or_else(|_|fail("invalid heights"));
+            let gravity = args[3].parse().unwrap_or_else(|_|fail("invalid gravity"));
+            let jobs = args[4].parse().unwrap_or_else(|_|fail("invalid jobs"));
+            let files = args[5..].iter().map(PathBuf::from).collect::<Vec<_>>();
+            if let Err(error) = storm_diagnostics::run(Path::new(&args[1]), &heights, gravity, jobs, &files) { fail(&error); }
+        }
+        "compose-source" => {
+            if args.len() != 4 { fail("compose-source takes MANIFEST OUTPUT_DIR JOBS"); }
+            let jobs = args[3].parse().unwrap_or_else(|_| { fail("JOBS must be an unsigned integer"); });
+            if let Err(error) = compose_source::compose(Path::new(&args[1]), Path::new(&args[2]), jobs) { fail(&error); }
+        }
         "bind-invariants" => {
             if args.len() < 7 { fail("bind-invariants takes HEIGHT_FILE HEIGHT_VAR LAND_FILE LAND_VAR OUTPUT_FILE TIME_FILE [TIME_FILE...]"); }
             let time_files: Vec<PathBuf> = args[6..].iter().map(PathBuf::from).collect();
@@ -631,22 +652,26 @@ fn open(path: &Path) -> Result<(netcrust::File, MetadataProvenance), String> {
     ))
 }
 
-/// Add back the NetCDF-4 coordinate variables the variable table omits.
+/// Add back any NetCDF-4 dimension scale with data that the variable
+/// table omits.
 ///
 /// In NetCDF-4 a coordinate variable is stored as an HDF5 *dimension
-/// scale*, and the vendored reader's `variables()` does not report those
-/// -- so `latitude`, `longitude`, `pressure_level` and `valid_time` are
-/// simply absent from an ERA5 file, as are `time` and the `xh/yh/zh`
-/// axes of a CM1 history file.  Those are exactly the variables a
-/// coordinate contract resolves against, so without this the reader
-/// lists every field and none of the axes.
+/// scale*.  The vendored reader's `variables()` lists those itself, with
+/// their own dimensions, stored type and every attribute, and hides only
+/// the scales netCDF-C marks as dimension-only (no coordinate values):
+/// so `latitude`, `longitude`, `pressure_level` and `valid_time` of an
+/// ERA5 file, and `time` and the `xh/yh/zh` axes of a CM1 history file,
+/// come from the table like any field.  This pass is the fallback for
+/// a scale with data the table still hides (a stored type the reader
+/// cannot name, for one): those are exactly the variables a coordinate
+/// contract resolves against, so a reader that silently dropped one
+/// would list every field and not that axis.  A name already in the
+/// table is never recovered a second time.
 ///
 /// Recovery uses only public netcrust API -- `hdf5_root_datasets` for
 /// the names and shapes, `hdf5_dataset_attribute_string` for the CF
 /// string attributes, and `read_array_f64`, which already falls back to
-/// a raw-HDF5 read by name for values.  Nothing in the vendored tree is
-/// modified; this belongs upstream and is reported there, but a reader
-/// that silently drops the axes cannot be shipped in the meantime.
+/// a raw-HDF5 read by name for values.
 ///
 /// A 1-D dataset whose length matches a declared dimension is given that
 /// dimension. Ambiguity is not guessed at: a dataset whose own name is a
@@ -762,10 +787,9 @@ impl MetadataProvenance {
     }
 }
 
-fn inventory(path: &Path) -> Result<(), String> {
-    let (file, metadata) = open(path)?;
-    let extent_checked = check_classic_extent(&file)?;
-    let dimensions: Vec<DimensionRecord> = file
+/// The file's dimension table as the inventory reports it.
+fn dimension_table(file: &netcrust::File, path: &Path) -> Result<Vec<DimensionRecord>, String> {
+    Ok(file
         .dimensions()
         .map_err(|error| format!("cannot read dimensions of {}: {error}", path.display()))?
         .into_iter()
@@ -774,12 +798,17 @@ fn inventory(path: &Path) -> Result<(), String> {
             len: dimension.len(),
             unlimited: dimension.is_unlimited(),
         })
-        .collect();
-    let global_attributes = attributes_map(
-        &file
-            .attributes()
-            .map_err(|error| format!("cannot read global attributes: {error}"))?,
-    );
+        .collect())
+}
+
+/// The file's variable table as the inventory reports it: every variable
+/// the reader lists, with its dimension names, shape, stored type and
+/// attributes, then any dimension scale with data the reader hid.
+fn variable_table(
+    file: &netcrust::File,
+    path: &Path,
+    dimensions: &[DimensionRecord],
+) -> Result<Vec<VariableRecord>, String> {
     let mut variables: Vec<VariableRecord> = file
         .variables()
         .map_err(|error| format!("cannot read variables of {}: {error}", path.display()))?
@@ -797,7 +826,20 @@ fn inventory(path: &Path) -> Result<(), String> {
             recovered_dimension_scale: false,
         })
         .collect();
-    recover_dimension_scales(&file, &dimensions, &mut variables);
+    recover_dimension_scales(file, dimensions, &mut variables);
+    Ok(variables)
+}
+
+fn inventory(path: &Path) -> Result<(), String> {
+    let (file, metadata) = open(path)?;
+    let extent_checked = check_classic_extent(&file)?;
+    let dimensions = dimension_table(&file, path)?;
+    let global_attributes = attributes_map(
+        &file
+            .attributes()
+            .map_err(|error| format!("cannot read global attributes: {error}"))?,
+    );
+    let variables = variable_table(&file, path, &dimensions)?;
 
     let record = Inventory {
         schema: INVENTORY_SCHEMA,
@@ -1030,12 +1072,12 @@ fn dump_one(path: &Path, file: &netcrust::File, out_dir: &Path, index: usize, na
             options: &DumpOptions<'_>) -> Result<DumpRecord, String> {
     let DumpOptions { apply_mask, apply_scale, unit_transform, transformed, water_layer,
                       window, sample_window } = *options;
-    // A NetCDF-4 coordinate variable is an HDF5 dimension scale and
-    // is absent from `variable()` -- see `recover_dimension_scales`.
-    // `read_array_f64` already falls back to a raw-HDF5 read by
-    // name, so the values are reachable either way; only the
-    // attribute surface differs, which is why the CF lookups below
-    // go through a closure that knows which path it is on.
+    // An HDF5 dataset the variable table does not list (a dimension
+    // scale the reader hides -- see `recover_dimension_scales`) is
+    // still reachable: `read_array_f64` falls back to a raw-HDF5 read
+    // by name, so the values come either way; only the attribute
+    // surface differs, which is why the CF lookups below go through a
+    // closure that knows which path it is on.
     let variable = file.variable(name);
     if let Some(variable) = variable.as_ref() {
         if matches!(variable.dtype(), netcrust::DataType::Char | netcrust::DataType::String) {
@@ -1554,20 +1596,26 @@ fn decode_times(reference: &CfReference, values: &[f64]) -> Result<Vec<String>, 
             if !value.is_finite() {
                 return Err(format!("time coordinate is not finite: {value}"));
             }
-            // Nanosecond arithmetic keeps sub-second offsets exact for
-            // the fractional day/hour spellings that appear in the wild.
-            let nanos = match reference.unit {
-                CfUnit::Seconds => value * 1e9,
-                CfUnit::Minutes => value * 60.0 * 1e9,
-                CfUnit::Hours => value * 3600.0 * 1e9,
-                CfUnit::Days => value * 86_400.0 * 1e9,
+            // Split whole seconds from the fractional part. Converting the
+            // entire reference offset to i64 nanoseconds incorrectly excludes
+            // valid distant epochs such as hours since 0001-01-01.
+            let seconds = match reference.unit {
+                CfUnit::Seconds => value,
+                CfUnit::Minutes => value * 60.0,
+                CfUnit::Hours => value * 3600.0,
+                CfUnit::Days => value * 86_400.0,
             };
-            if nanos.abs() >= i64::MAX as f64 {
+            if !seconds.is_finite() || seconds.abs() >= i64::MAX as f64 {
                 return Err(format!("time coordinate out of representable range: {value}"));
             }
+            let whole = Duration::try_seconds(seconds.trunc() as i64)
+                .ok_or_else(|| format!("time coordinate out of representable range: {value}"))?;
+            let fraction = Duration::nanoseconds((seconds.fract() * 1e9).round() as i64);
+            let delta = whole.checked_add(&fraction)
+                .ok_or_else(|| format!("time coordinate out of representable range: {value}"))?;
             let instant = reference
                 .epoch
-                .checked_add_signed(Duration::nanoseconds(nanos.round() as i64))
+                .checked_add_signed(delta)
                 .ok_or_else(|| format!("time coordinate out of range: {value}"))?;
             Ok(instant.format("%Y-%m-%dT%H:%M:%S%.fZ").to_string())
         })
@@ -1601,6 +1649,19 @@ mod tests {
         let times = decode_times(&reference, &[0.0, 1.5]).expect("decoded");
         assert_eq!(times[0], "1970-01-01T00:00:00Z");
         assert_eq!(times[1], "1970-01-01T01:30:00Z");
+    }
+
+    #[test]
+    fn distant_reference_and_fractional_offsets_decode() {
+        let ancient = reference("hours since 0001-01-01 00:00:00.0");
+        assert_eq!(decode_times(&ancient, &[17_739_672.0]).unwrap(),
+                   vec!["2024-09-25T00:00:00Z"]);
+        let modern = reference("seconds since 2024-09-25 00:00:00");
+        assert_eq!(decode_times(&modern, &[-0.125, 0.125]).unwrap(),
+                   vec!["2024-09-24T23:59:59.875Z", "2024-09-25T00:00:00.125Z"]);
+        for value in [f64::INFINITY, f64::NAN, f64::MAX] {
+            assert!(decode_times(&modern, &[value]).is_err());
+        }
     }
 
     #[test]
@@ -2323,16 +2384,16 @@ mod tests {
         assert_eq!(one.apply("FIELD", &edge, &[2, 3]).unwrap().0[0].to_bits(), (-0.0_f64).to_bits());
     }
 
-    /// A recovered dimension scale has no entry in the variable table,
-    /// so its dump takes the raw-HDF5 path end to end: existence via
-    /// `has_hdf5_dataset`, units via the by-name attribute read, and an
-    /// empty dimension list rather than an invented one.
+    /// A NetCDF-4 coordinate variable is an HDF5 dimension scale; the
+    /// reader lists it, so its dump is an ordinary one: values, units
+    /// and the decoded times, over its OWN dimension rather than an
+    /// empty or invented list.
     #[test]
-    fn a_recovered_coordinate_dumps_through_the_raw_hdf5_path() {
-        let dir = scratch("dump-recovered");
+    fn a_coordinate_variable_dumps_over_its_own_dimension() {
+        let dir = scratch("dump-coordinate");
         let out = dir.join("out");
         dump(&fixture("axes.nc4"), &out, &["time".into()], true, true)
-            .expect("dump recovered scale");
+            .expect("dump coordinate variable");
 
         assert_eq!(read_f64_plane(&out.join("0000.f64")), &[0.0, 1.0, 2.0, 3.0]);
         let metadata = read_metadata(&out);
@@ -2347,7 +2408,53 @@ mod tests {
                 "2024-03-01T03:00:00Z",
             ])
         );
-        assert_eq!(time["dimensions"], serde_json::json!([]));
+        assert_eq!(time["dimensions"], serde_json::json!(["time"]));
+        assert_eq!(time["shape"], serde_json::json!([4]));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A multi-axis coordinate variable (a 2-D dimension scale) dumps
+    /// every element over every axis.  Describing it over its first
+    /// dimension alone, as a reader that treats a scale as 1-D does,
+    /// made this very read fail with "slice has 1 dimensions but
+    /// dataset has 2".
+    #[test]
+    fn a_two_dimensional_coordinate_dumps_every_element() {
+        let dir = scratch("dump-coordinate-2d");
+        let out = dir.join("out");
+        dump(&fixture("axes.nc4"), &out, &["corners".into()], true, true)
+            .expect("dump 2-D coordinate variable");
+        let values = read_f64_plane(&out.join("0000.f64"));
+        assert_eq!(values, (0..30).map(f64::from).collect::<Vec<_>>());
+        let metadata = read_metadata(&out);
+        let corners = record(&metadata, "corners");
+        assert_eq!(corners["shape"], serde_json::json!([5, 6]));
+        assert_eq!(corners["dimensions"], serde_json::json!(["corners", "zvals"]));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// An HDF5 dataset outside the variable table has no entry to
+    /// describe it, so its dump takes the raw-HDF5 path end to end:
+    /// existence via `has_hdf5_dataset`, values by name, and an empty
+    /// dimension list rather than an invented one.  `bnds` is such a
+    /// dataset: the scale netCDF-C writes for a dimension with no
+    /// coordinate variable, hidden from the table by its NAME marker
+    /// and never written to, so it reads as the library's zero fill.
+    #[test]
+    fn a_hidden_hdf5_dataset_dumps_through_the_raw_hdf5_path() {
+        let dir = scratch("dump-raw-hdf5");
+        let out = dir.join("out");
+        let (file, _) = open(&fixture("axes.nc4")).expect("open");
+        assert!(file.variable("bnds").is_none(), "bnds is a dimension-only scale");
+        assert!(file.has_hdf5_dataset("bnds"));
+        dump(&fixture("axes.nc4"), &out, &["bnds".into()], true, true)
+            .expect("dump hidden dataset");
+        assert_eq!(read_f64_plane(&out.join("0000.f64")), &[0.0, 0.0]);
+        let metadata = read_metadata(&out);
+        let bnds = record(&metadata, "bnds");
+        assert_eq!(bnds["shape"], serde_json::json!([2]));
+        assert_eq!(bnds["dimensions"], serde_json::json!([]));
+        assert_eq!(bnds["units"], serde_json::Value::Null);
 
         let missing = dump(&fixture("axes.nc4"), &out, &["absent".into()], true, true)
             .expect_err("unknown names are refused on HDF5 files too");
@@ -2453,124 +2560,166 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // Dimension-scale recovery against the checked-in NetCDF-4 fixture.
+    // The variable table against the checked-in NetCDF-4 fixtures:
+    // coordinate variables (HDF5 dimension scales) come from the reader
+    // like any field, and the recovery pass adds only what it hides.
 
-    fn recovered_axes() -> Vec<VariableRecord> {
-        let (file, provenance) = open(&fixture("axes.nc4")).expect("open");
+    /// The table exactly as `inventory` builds it, through the same
+    /// code path, for a fixture that must open strict.
+    fn strict_table(name: &str) -> (Vec<DimensionRecord>, Vec<VariableRecord>) {
+        let path = fixture(name);
+        let (file, provenance) = open(&path).expect("open");
         assert_eq!(provenance.mode, "strict", "{:?}", provenance.strict_error);
-        let dimensions: Vec<DimensionRecord> = file
-            .dimensions()
-            .expect("dimensions")
-            .into_iter()
-            .map(|dimension| DimensionRecord {
-                name: dimension.name().to_string(),
-                len: dimension.len(),
-                unlimited: dimension.is_unlimited(),
-            })
-            .collect();
-        let mut variables: Vec<VariableRecord> = file
-            .variables()
-            .expect("variables")
-            .into_iter()
-            .map(|variable| VariableRecord {
-                name: variable.name().to_string(),
-                dimensions: Vec::new(),
-                shape: variable.shape(),
-                dtype: String::new(),
-                attributes: BTreeMap::new(),
-                recovered_dimension_scale: false,
-            })
-            .collect();
-        assert_eq!(
-            variables.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(),
-            vec!["t2"],
-            "the reader's variable table must omit the dimension scales, \
-             or this fixture no longer tests the recovery at all"
-        );
-        recover_dimension_scales(&file, &dimensions, &mut variables);
-        variables
+        let dimensions = dimension_table(&file, &path).expect("dimensions");
+        let variables = variable_table(&file, &path, &dimensions).expect("variables");
+        (dimensions, variables)
+    }
+
+    fn axes_table() -> Vec<VariableRecord> {
+        strict_table("axes.nc4").1
     }
 
     #[test]
-    fn coordinate_variables_are_recovered_with_their_own_dimensions() {
-        let variables = recovered_axes();
-        let mut names: Vec<&str> = variables
-            .iter()
-            .filter(|v| v.recovered_dimension_scale)
-            .map(|v| v.name.as_str())
-            .collect();
+    fn coordinate_variables_are_listed_with_their_own_dimensions() {
+        let variables = axes_table();
+        let mut names: Vec<&str> = variables.iter().map(|v| v.name.as_str()).collect();
         names.sort_unstable();
-        assert_eq!(names, vec!["corners", "lat", "lon", "time", "zvals"]);
+        assert_eq!(names, vec!["corners", "lat", "lon", "t2", "time", "zvals"]);
+        assert!(
+            variables.iter().all(|v| !v.recovered_dimension_scale),
+            "the reader lists every coordinate variable, so nothing is \
+             left for the raw-HDF5 recovery"
+        );
 
-        // The name rule: lon and lat share length 3, so only the
-        // coordinate-variable convention can attach each scale to its
-        // OWN dimension rather than the first one of matching length.
+        // lon and lat share length 3, so only the scale's own identity
+        // (the reader resolves a scale by its dataset address, never by
+        // length) can attach each to its OWN dimension rather than the
+        // first one of matching length.
         for name in ["time", "lon", "lat", "zvals"] {
             let record = variables
                 .iter()
                 .find(|v| v.name == name)
-                .unwrap_or_else(|| panic!("{name} not recovered"));
+                .unwrap_or_else(|| panic!("{name} not listed"));
             assert_eq!(
                 record.dimensions,
                 vec![name.to_string()],
                 "{name} must resolve to its own dimension"
             );
-            assert_eq!(record.dtype, "Promoted");
+            assert_eq!(record.dtype, "F64", "{name} carries its stored type");
         }
 
         let time = variables.iter().find(|v| v.name == "time").expect("time");
         assert_eq!(time.shape, vec![4]);
         assert_eq!(
-            time.attributes.get("units"),
-            Some(&serde_json::json!("hours since 2024-03-01"))
+            time.attributes,
+            BTreeMap::from([
+                ("units".to_string(), serde_json::json!("hours since 2024-03-01")),
+                ("standard_name".to_string(), serde_json::json!("time")),
+                ("calendar".to_string(), serde_json::json!("standard")),
+                ("axis".to_string(), serde_json::json!("T")),
+            ]),
+            "every attribute the fixture wrote, none it did not, and \
+             no HDF5 bookkeeping (CLASS, NAME, REFERENCE_LIST)"
         );
-        assert_eq!(
-            time.attributes.get("standard_name"),
-            Some(&serde_json::json!("time"))
-        );
-        assert_eq!(
-            time.attributes.get("calendar"),
-            Some(&serde_json::json!("standard"))
-        );
-        assert_eq!(time.attributes.get("axis"), Some(&serde_json::json!("T")));
-        assert_eq!(
-            time.attributes.get("long_name"),
-            None,
-            "the fixture writes no long_name; inventing one would mean \
-             the probe list stopped being read by name"
-        );
+        let zvals = variables.iter().find(|v| v.name == "zvals").expect("zvals");
+        assert_eq!(zvals.attributes.get("units"), Some(&serde_json::json!("m")));
     }
 
-    /// The unique-length rule: a 2-D dataset can never take the name
-    /// rule, so each axis of `corners` (5 x 6) resolves only because
-    /// exactly one dimension has that length.
+    /// The unique-length rule for a scale from a producer that writes no
+    /// coordinate record: `corners` (5 x 6, made with h5py) is its own
+    /// first dimension, and its second axis resolves only because exactly
+    /// one dimension has length 6.
     #[test]
     fn a_two_dimensional_scale_resolves_axes_by_unique_length() {
-        let variables = recovered_axes();
+        let variables = axes_table();
         let corners = variables
             .iter()
             .find(|v| v.name == "corners")
-            .expect("corners recovered");
+            .expect("corners listed");
         assert_eq!(corners.shape, vec![5, 6]);
         assert_eq!(corners.dimensions, vec!["corners", "zvals"]);
+        assert_eq!(corners.dtype, "F64");
         assert_eq!(
             corners.attributes.get("long_name"),
             Some(&serde_json::json!("cell corner offsets"))
         );
     }
 
+    /// netCDF-C's own multi-axis coordinate variable: `station(station,
+    /// pair)` where `pair` and `other` both have length 2, so no length
+    /// rule can name the second axis; only the library's
+    /// `_Netcdf4Coordinates` record can, and the reader reads it.
     #[test]
-    fn phony_dimensions_and_known_variables_are_not_recovered() {
-        let variables = recovered_axes();
+    fn a_netcdf_c_multi_axis_coordinate_resolves_by_its_dimension_ids() {
+        let (dimensions, variables) = strict_table("coord2d.nc4");
+        let twos: Vec<&str> = dimensions
+            .iter()
+            .filter(|d| d.len == 2)
+            .map(|d| d.name.as_str())
+            .collect();
+        assert_eq!(twos, vec!["pair", "other"], "the fixture's ambiguity must stand");
+        let station = variables
+            .iter()
+            .find(|v| v.name == "station")
+            .expect("station listed");
+        assert_eq!(station.shape, vec![3, 2]);
+        assert_eq!(station.dimensions, vec!["station", "pair"]);
+        assert_eq!(
+            station.attributes.get("long_name"),
+            Some(&serde_json::json!("station corner"))
+        );
+        let temp = variables.iter().find(|v| v.name == "temp").expect("temp listed");
+        assert_eq!(temp.dimensions, vec!["station"]);
+        assert!(variables.iter().all(|v| !v.recovered_dimension_scale));
+    }
+
+    #[test]
+    fn phony_dimensions_are_not_listed_and_known_variables_are_not_doubled() {
+        let (dimensions, variables) = strict_table("axes.nc4");
+        assert!(dimensions.iter().any(|d| d.name == "bnds" && d.len == 2));
         assert!(
             !variables.iter().any(|v| v.name == "bnds"),
-            "bnds has no coordinate variable; recovering it would invent \
+            "bnds has no coordinate variable; listing it would invent \
              a variable netCDF4-python does not report"
         );
+        for name in ["t2", "time", "corners"] {
+            assert_eq!(
+                variables.iter().filter(|v| v.name == name).count(),
+                1,
+                "{name} is in the variable table once and must not be doubled"
+            );
+        }
+    }
+
+    /// The recovery pass adds only what the reader hides, and nothing
+    /// twice: run over the complete table it is a no-op, and run over a
+    /// table missing `time` it brings `time` back over its own dimension,
+    /// with the Promoted type and the by-name CF string attributes the
+    /// raw path can reach, flagged as recovered.
+    #[test]
+    fn recovery_adds_only_hidden_scales_and_never_doubles_a_listed_one() {
+        let path = fixture("axes.nc4");
+        let (file, _) = open(&path).expect("open");
+        let dimensions = dimension_table(&file, &path).expect("dimensions");
+        let mut complete = variable_table(&file, &path, &dimensions).expect("variables");
+        let before = complete.len();
+        recover_dimension_scales(&file, &dimensions, &mut complete);
+        assert_eq!(complete.len(), before, "a listed scale is never recovered again");
+
+        let mut hidden: Vec<VariableRecord> =
+            complete.into_iter().filter(|v| v.name != "time").collect();
+        recover_dimension_scales(&file, &dimensions, &mut hidden);
+        let time = hidden.iter().find(|v| v.name == "time").expect("time recovered");
+        assert!(time.recovered_dimension_scale);
+        assert_eq!(time.dimensions, vec!["time"]);
+        assert_eq!(time.shape, vec![4]);
+        assert_eq!(time.dtype, "Promoted");
         assert_eq!(
-            variables.iter().filter(|v| v.name == "t2").count(),
-            1,
-            "t2 is already in the variable table and must not be doubled"
+            time.attributes.get("units"),
+            Some(&serde_json::json!("hours since 2024-03-01"))
         );
+        assert_eq!(time.attributes.get("calendar"), Some(&serde_json::json!("standard")));
+        assert_eq!(time.attributes.get("axis"), Some(&serde_json::json!("T")));
+        assert!(!hidden.iter().any(|v| v.name == "bnds"), "a phony dimension stays hidden");
     }
 }

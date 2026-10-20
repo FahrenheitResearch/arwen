@@ -526,7 +526,8 @@ pub(crate) fn direct_fill_unit_conversion(
         (UnitConvert::KgM2ToMgM2, Some("mg/m^2"))
     } else if matches!(
         selector.field,
-        CanonicalField::CloudWaterMixingRatio
+        CanonicalField::SpecificHumidity
+            | CanonicalField::CloudWaterMixingRatio
             | CanonicalField::RainWaterMixingRatio
             | CanonicalField::CloudIceMixingRatio
             | CanonicalField::SnowMixingRatio

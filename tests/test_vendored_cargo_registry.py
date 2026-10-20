@@ -46,8 +46,11 @@ _ROOT = Path(__file__).resolve().parents[1]
 #: but the reason it COULD not have been caught here is real and is
 #: fixed below: the workspace was unlisted, and the check was
 #: version-blind.
+# The three hydro workspaces build the bundled NextGen artifacts in the same offline release build
+# (2.9.3: the cut's manylinux container refused nextgen_forcing, "no matching package named `csv`").
 _WORKSPACES = ("tools/grib1_bridge", "tools/rustwx", "tools/rw_wps",
-               "tools/arwen-launchpad", "tools/arwen-tui", "tools/zarr_bridge")
+               "tools/arwen-launchpad", "tools/arwen-tui", "tools/zarr_bridge",
+               "tools/nextgen_forcing", "tools/nextgen_hydrofabric", "tools/nextgen_verify")
 
 _PACKAGE_NAME = re.compile(r'^name = "(?P<name>[^"]+)"', re.M)
 _PACKAGE_VERSION = re.compile(r'^version = "(?P<version>[^"]+)"', re.M)

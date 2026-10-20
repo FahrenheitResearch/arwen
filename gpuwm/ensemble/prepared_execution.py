@@ -235,7 +235,7 @@ def _fallback_reasons(inputs, node, request, *, roster, input_provider, stochast
 
 
 def _bootstrap_member_sources(runner, *, node, ids, first_id, member_inputs_for, out, options,
-                              array_module=None, initialize_callback_factory=None, member_seeds=None):
+                              array_module=None, initialize_callback_factory=None, member_seeds=None, provenance=()):
     """Bootstrap every non-root member through the ordinary runner and snapshot it.
 
     Each member's own runner initializes on this card exactly as it would
@@ -275,8 +275,9 @@ def _bootstrap_member_sources(runner, *, node, ids, first_id, member_inputs_for,
         initialize = (None if initialize_callback_factory is None else initialize_callback_factory(
             member_id=member_id, seed=(None if member_seeds is None else member_seeds[member_id]),
             prepared_member=None))
-        output = (None if initialize is None else MemberOutputCapture(
-            lambda **unused: None, member_id, initialize_callback=initialize))
+        output = (None if initialize is None and not provenance else MemberOutputCapture(
+            lambda **unused: None, member_id, initialize_callback=initialize,
+            provenance=(provenance[member_id] if provenance else None)))
         with member_output_scope(output):
             report = runner(member_inputs, output_directory=path, ensemble_bootstrap=capture, **options)
         report = asdict(report) if is_dataclass(report) else report
@@ -701,7 +702,8 @@ def make_automatic_prepared_executor(runner, *, request, collector, output_direc
                 member_id=member_id, seed=seed, prepared_member=prepared_member))
             capture = MemberOutputCapture(collector.submit, member_id,
                                           member_history_required(inputs, request.keep_member_files),
-                                          initialize_callback=initialize)
+                                          initialize_callback=initialize,
+                                          provenance=(request.provenance[member_id] if request.provenance else None))
             overlay = None
             if batch.execution_mode == "ordinary_streamed_member":
                 external, margin = ordinary_admissions[batch.device_id]
@@ -748,7 +750,7 @@ def make_automatic_prepared_executor(runner, *, request, collector, output_direc
                     first_id=first_id, member_inputs_for=lambda member: selected_inputs(shared_inputs, member)[0],
                     out=out, options=options, array_module=array_module,
                     initialize_callback_factory=initialize_callback_factory,
-                    member_seeds=dict(zip(ids, seeds)))
+                    member_seeds=dict(zip(ids, seeds)), provenance=request.provenance)
                 reasons = sources.compatibility_reasons(node)
                 if reasons:
                     admission = {"contract": CONTRACT, "native_admitted": False,
@@ -807,7 +809,8 @@ def make_automatic_prepared_executor(runner, *, request, collector, output_direc
             member_id=first_id, seed=first_seed, prepared_member=first_source))
         capture = MemberOutputCapture(collector.submit, first_id,
                                       member_history_required(first_inputs, request.keep_member_files),
-                                      initialize_callback=initialize)
+                                      initialize_callback=initialize,
+                                      provenance=(request.provenance[first_id] if request.provenance else None))
         initial_device = None if request.member_device_ids is None else request.member_device_ids[0]
         scope = nullcontext() if initial_device is None or device_scope is None else device_scope(initial_device)
         first_out.mkdir(parents=True, exist_ok=False)

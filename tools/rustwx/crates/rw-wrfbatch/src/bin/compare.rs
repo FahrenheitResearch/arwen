@@ -501,6 +501,7 @@ rw_compare --fetch-reference --store-root DIR --reference NAME --cycle YYYYMMDDH
 rw_compare --store-root DIR --out-dir DIR [--reference NAME[,NAME...]] \
 --panel \"LABEL=WRFOUT|mean:LIST|pmm:LIST|max:LIST|frames:ROOT@VALID|ttenref:WINDOW\" ... \
 [--panel-grid WRFOUT] [--row --panel ...]... [--order TOKEN,...] [--sheet-name STEM]\n       \
+rw_compare --mode latlon-pair ... (see rw_compare --mode latlon-pair --help)\n       \
 rw_compare --mode increment|spread|stamp|omb ... (see rw_compare --mode stamp --help)\n       \
 rw_compare --list-products | --help | --abi"
 }
@@ -792,7 +793,15 @@ pub(crate) fn main() -> ExitCode {
         .and_then(|index| raw.get(index + 1))
         .filter(|mode| mode.as_str() != "compare")
     {
-        let _ = mode;
+        if mode == "latlon-pair" {
+            return match rw_wrfbatch::latlon_pair::cli(&raw) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(message) => {
+                    eprintln!("{message}\n{}", rw_wrfbatch::latlon_pair::USAGE);
+                    ExitCode::FAILURE
+                }
+            };
+        }
         return match rw_wrfbatch::da_sheet::cli(&raw) {
             Ok(()) => ExitCode::SUCCESS,
             Err(message) => {

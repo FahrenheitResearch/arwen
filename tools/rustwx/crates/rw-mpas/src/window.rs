@@ -263,6 +263,31 @@ impl Window {
             spec if spec.starts_with(LAMBERT_SPEC_PREFIX) => {
                 Window::lambert_from_spec(&spec[LAMBERT_SPEC_PREFIX.len()..])
             }
+            spec if spec.starts_with("latlon:") => {
+                let numbers: Vec<f64> = spec[7..].split(',').map(str::parse)
+                    .collect::<Result<_,_>>().map_err(|_| MpasError::Refusal(
+                        "latlon takes SOUTH,NORTH,WEST,EAST,SPACING_DEG".into()))?;
+                if numbers.len() != 5 || numbers.iter().any(|v| !v.is_finite())
+                    || numbers[0] < -90.0 || numbers[1] > 90.0
+                    || numbers[1] <= numbers[0] || numbers[3] <= numbers[2]
+                    || numbers[3] - numbers[2] >= 360.0 || numbers[4] <= 0.0 {
+                    return Err(MpasError::Refusal("invalid explicit latlon bounds/spacing".into()));
+                }
+                // Check the count BEFORE allocating axes. A fine grid over a
+                // hemisphere otherwise exhausts memory in shape() itself.
+                for span in [numbers[1]-numbers[0], numbers[3]-numbers[2]] {
+                    if (span/numbers[4]).round()+1.0 > MESH_FOCUS_MAX_POINTS_PER_SIDE as f64 {
+                        return Err(MpasError::Refusal(format!(
+                            "explicit latlon exceeds {MESH_FOCUS_MAX_POINTS_PER_SIDE} points per side; choose a smaller extent or coarser spacing")));
+                    }
+                }
+                let window = Window::LatLon(LatLonWindow {
+                    south:numbers[0], north:numbers[1], west:numbers[2], east:numbers[3],
+                    spacing_degrees:numbers[4], description:format!("explicit fixed {spec}"),
+                });
+                window.shape()?; // spacing must partition the bounds exactly
+                Ok(window)
+            }
             GLOBAL_MESH_WINDOW => Err(MpasError::Refusal(
                 "render window 'global-mesh' is a whole-sphere grid at the spacing of the mesh \
                  being converted, so it cannot be served before that mesh's per-cell spacing \
@@ -278,7 +303,7 @@ impl Window {
                  to be drawn on a 20 km grid"
             ))),
             other => Err(MpasError::Refusal(format!(
-                "unknown render window '{other}' (known: focus, global, mesh, global-mesh, region:CLAT,CLON,WIDTH_KM,HEIGHT_KM[,TRUELAT1,TRUELAT2], lambert:CLAT,CLON,DX_M,NX,NY,TRUELAT1,TRUELAT2,STAND_LON)"
+                "unknown render window '{other}' (known: focus, global, mesh, global-mesh, region:CLAT,CLON,WIDTH_KM,HEIGHT_KM[,TRUELAT1,TRUELAT2], latlon:SOUTH,NORTH,WEST,EAST,SPACING_DEG, lambert:CLAT,CLON,DX_M,NX,NY,TRUELAT1,TRUELAT2,STAND_LON)"
             ))),
         }
     }
@@ -1818,6 +1843,19 @@ mod tests {
              `axis()`, and every recorded `weights_sha256` over the global grid \
              stops reproducing while every filename stays the same."
         );
+    }
+
+    #[test]
+    fn explicit_latlon_does_not_depend_on_the_segment_mesh() {
+        let a = Window::named("latlon:38,42,-86,-82,0.01").unwrap();
+        assert_eq!(a.shape().unwrap(),(401,401));
+        let (lat,lon) = a.coordinates().unwrap();
+        assert_eq!((lat[0],lon[0]),(38.0,-86.0));
+        assert_eq!((*lat.last().unwrap(),*lon.last().unwrap()),(42.0,-82.0));
+        for spec in ["latlon:38,42,-86,-82,0.03", "latlon:38,42,-86,-82,0.0001",
+            "latlon:38,42,-86,-82,NaN", "latlon:91,92,-86,-82,0.01"] {
+            assert!(Window::named(spec).is_err(),"{spec}");
+        }
     }
 
     /// The geometry gate, validated in the direction that matters: it must

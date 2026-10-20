@@ -128,8 +128,12 @@ def test_every_runnable_row_still_declares_its_cadence(row):
 
     if not row.runnable:
         return
-    if row.source_id == "mapped":
-        # The generic route reads cadence from the caller's own mapping.
+    if row.time_axis == "supplied_times" and row.model_table is None:
+        # A caller-supplied route (the generic mapped source, a gpuwm-hex
+        # export) reads cadence from the frames the caller supplies, and the
+        # wizard asks the caller for it (domain_wizard.py's cadence_h fallback
+        # when adapter.forcing_interval_seconds is None). A parameterized
+        # model table declares its own native cadence before files exist.
         assert row.forcing_interval_seconds is None
         return
     assert row.forcing_interval_seconds is not None

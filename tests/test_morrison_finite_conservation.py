@@ -204,3 +204,36 @@ def test_settled_trace_rain_returns_to_vapor_and_closes_column(mode, monkeypatch
     assert abs(residual) <= floor + 64 * np.finfo(np.float32).eps * condensate
     for name in MASS + NUMBER + EFFECTIVE + ("theta",):
         assert np.isfinite(got[name]).all(), name
+
+
+@pytest.mark.gpu
+@requires_gpu
+def test_cancelled_mass_cannot_export_negative_surface_precipitation():
+    """A top fall speed must not carry a negative bottom source residue."""
+    import cupy as cp
+    from gpuwm.core import kernels
+    from gpuwm.core.morrison_constants import NWORK
+
+    shape = (2, 1, 1)
+    pressure = cp.full(shape, 90000, cp.float32)
+    dz, rho = cp.full(shape, 100, cp.float32), cp.ones(shape, cp.float32)
+    categories = [cp.zeros(shape, cp.float32) for _ in range(10)]
+    categories[1][1] = 1e-4  # rain aloft supplies the inherited fall speed
+    categories[6][1] = 1e5
+    outputs = []
+    for raw in (True, False):
+        work = cp.zeros((NWORK, 2, 1), cp.float32)
+        # MO_QR3DTEN: a physically exhausted bottom rain category whose
+        # process tendency left a tiny negative remainder in FP32.
+        work[5, 0, 0] = -1e-15
+        surface = [cp.zeros((1, 1), cp.float32) for _ in range(7)]
+        source = kernels.module_source("morrison")
+        module = cp.RawModule(code=("#define MORR_ROW37_OFF 1\n" if raw else "") + source,
+                              options=kernels.module_options("morrison"))
+        module.get_function("mo_sediment_64")((1,), (160,),
+            (pressure, dz, rho, *categories, work, cp.ones((1,), cp.int32), *surface,
+             np.float32(1), np.int32(1), np.int32(2), np.int32(1), np.int32(0), np.int32(1)))
+        outputs.append([float(value[0, 0]) for value in surface])
+    assert outputs[0][0] < 0, "the fixture must reproduce negative raw-WRF fallout"
+    assert outputs[1][0] == 0
+    assert all(value >= 0 for value in outputs[1])

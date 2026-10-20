@@ -440,7 +440,7 @@ pub fn derivation_dependencies(operation: &Node, vertical: &Node, name: &str) ->
     let kind = operation.get("operation").and_then(Node::as_str)
         .ok_or_else(|| mapping_invalid(format!("derivation for {name} has no operation")))?;
     let labels: &[&str] = match kind {
-        "copy" | "soil_surface_node_from_shallowest" | "height_from_interfaces" | "mass_fraction_rebase" => &["source"],
+        "copy" | "soil_surface_node_from_shallowest" | "height_from_interfaces" | "mass_from_interfaces" | "mass_fraction_rebase" => &["source"],
         "wind_speed" => &["u", "v"],
         "geopotential_height" => &["geopotential"],
         "pressure_from_vertical_coordinate" => &[],
@@ -747,6 +747,24 @@ pub fn evaluate_derivation(
                 return Err(frame_invalid(format!("{name} excluded mass fractions leave no positive reference mass")));
             }
             (&source.values / &denominator, source.axes.clone(), references)
+        }
+        "mass_from_interfaces" => {
+            let Some(source) = dependency(operation, "source", available) else { return Ok(None); };
+            let nz = collection.vertical_values.len();
+            let ny = collection.latitude.len();
+            let nx = collection.longitude.len();
+            if source.axes != ["half_level", "y", "x"]
+                || source.units != field.raw.get("units").and_then(|u| u.get("source")).and_then(Node::as_str).unwrap_or("")
+                || source.values.shape() != [nz + 1, ny, nx]
+                || source.values.iter().any(|v| !v.is_finite()) {
+                return Err(frame_invalid(format!("{name} requires N+1 finite interface values with matching units on half_level,y,x")));
+            }
+            let input = array::contiguous(&source.values);
+            let plane = ny * nx;
+            let values = (0..nz * plane).map(|i| 0.5 * (input[i] + input[i + plane])).collect();
+            (ArrayD::from_shape_vec(vec![nz, ny, nx], values)
+                .map_err(|e| frame_invalid(e.to_string()))?,
+             vec!["vertical".into(), "y".into(), "x".into()], source.source_references.clone())
         }
         "height_from_interfaces" => {
             let Some(source) = dependency(operation, "source", available) else { return Ok(None); };
@@ -1830,6 +1848,26 @@ mod tests {
                 "units": {"source": "Pa", "target": "Pa"},
                 "location": "mass", "missing": {"kind": "reject"}}"#,
         )
+    }
+
+    #[test]
+    fn interface_velocity_averages_signed_nonmonotonic_values() {
+        let collection = hybrid_collection();
+        let mut source = constant_field("w", &["half_level","y","x"], &[4,2,2],0.0);
+        source.units = "m s-1".into();
+        source.values = ArrayD::from_shape_vec(IxDyn(&[4,2,2]),
+            [0.0,10.0,-6.0,0.0].iter().flat_map(|v|[ *v;4 ]).collect()).unwrap();
+        let mut available = std::collections::BTreeMap::new();
+        available.insert("w".into(),source);
+        let operation = parse_node(r#"{"operation":"mass_from_interfaces","source":"w"}"#);
+        let node = parse_node(r#"{"source_axes":["vertical","y","x"],"target_axes":["vertical","y","x"],"units":{"source":"m s-1","target":"m s-1"}}"#);
+        let field = FieldSpec{name:"vertical_velocity".into(),raw:&node};
+        let vertical = parse_node(r#"{"kind":"model_level","units":"1"}"#);
+        let (values,axes,_) = evaluate_derivation(&operation,&available,&collection,&field,"vertical_velocity",&vertical).unwrap().unwrap();
+        assert_eq!(axes,["vertical","y","x"]);
+        assert_eq!(array::contiguous(&values),[5.0,2.0,-3.0].iter().flat_map(|v|[*v;4]).collect::<Vec<_>>());
+        available.get_mut("w").unwrap().values[[1,0,0]]=f64::NAN;
+        assert!(evaluate_derivation(&operation,&available,&collection,&field,"vertical_velocity",&vertical).is_err());
     }
 
     #[test]

@@ -654,6 +654,14 @@
     "status": "unresolved"
    },
    {
+    "call_sha256": "abe73313b637b13bf6900edb00d2903816d04059b02f1e9a16b048c7e8965d15",
+    "constructor": "compile_using_nvrtc",
+    "factory": "_module",
+    "factory_sha256": "e6ae8b0cf7b48d61bedc0ea9307c8f484194af086799d804b615e39d99787cc7",
+    "file": "gpuwm/core/terrain_drag.py",
+    "status": "unresolved"
+   },
+   {
     "call_sha256": "c4cf3f2922b7c0b70ce6d1a157529edc57598e179c3f9e248f1eefb15e4926ac",
     "constructor": "ReductionKernel",
     "factory": "_nonfinite",
@@ -2211,7 +2219,7 @@
    },
    {
     "file": "gpuwm/ensemble/batch_products.py",
-    "sha256": "8cda7ef30f89b47235ddc12adec272f816f2486e78b1a2f2e81f303515c28d0c"
+    "sha256": "0e7a2123d4dd2ff1e3bbe7224ca0de4f0522c9fd099dda3198dfbf383917ad4a"
    },
    {
     "file": "gpuwm/ensemble/batch_ruc.py",
@@ -13067,10 +13075,8 @@
     }
    },
    "native_differences": {
-    "sha256": "e9365ece5241b1d968e31cd86566a49a709e267b49b9f44cc88ce5eafa2aea1a",
-    "sites": {
-     "100": 0
-    }
+    "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+    "sites": {}
    },
    "native_errors": {},
    "options": {

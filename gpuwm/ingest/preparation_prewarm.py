@@ -96,7 +96,13 @@ def root_initialize(run=None, *, specific=True, bounded=False):
         result = initialize_real(
             met, cfg, coord, np.zeros((cfg.ny, cfg.nx)), source_orography=np.zeros((cfg.ny, cfg.nx)),
             p_top=5000.0, preprocess_backend=backend, state_backend="preprocess",
-            landmask=np.ones((cfg.ny, cfg.nx)), column_workers=1)
+            landmask=np.ones((cfg.ny, cfg.nx)), column_workers=1,
+            # The synthetic grid's mass-point lat/lon: a WIF aerosol run
+            # (mp_physics=28, aer_init_opt=1, wif_input_opt=1, the CONUS
+            # HRRR recipe) refused every preparation pre-warm job without
+            # it ("could not derive the model mass-point latitudes"), so
+            # those kernels compiled inside the preparation instead.
+            grid=grid)
         result.state.set_map_coriolis(
             grid.mapfac_m(), grid.mapfac_u(), grid.mapfac_v(),
             *grid.coriolis_m(), sina=grid.rotation_m()[0], cosa=grid.rotation_m()[1])

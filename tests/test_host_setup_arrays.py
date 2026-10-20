@@ -7,6 +7,48 @@ from gpuwm.core import portable_math as pm
 from gpuwm.ingest import host_arrays
 
 
+def test_native_moist_pressure_retains_reference_recurrence_words(monkeypatch):
+    from gpuwm.core.grid import make_vertical_coord
+    from gpuwm.ingest.real import _make_real_base, _rebalance_moist_pressure_serial
+    rng = np.random.default_rng(8501)
+    nz, ny, nx = 49, 11, 13
+    coord = make_vertical_coord(nz, hybrid_opt=2, etac=0.2)
+    base = _make_real_base(coord, rng.uniform(0, 2400, (ny, nx)), 10000., 290.)
+    dry_mass = base.mub + rng.uniform(-500., 500., (ny, nx))
+    qtot = rng.uniform(1.e-6, .03, (nz, ny, nx))
+    expected = _rebalance_moist_pressure_serial(base.pb, qtot, dry_mass, base, coord)
+    before = [value.tobytes() for value in (qtot, dry_mass, base.mub, base.pb)]
+    for workers in (1, 8):
+        actual = host_arrays.moist_pressure(base.pb, qtot, dry_mass, base, coord, workers=workers)
+        assert actual is not None
+        assert actual.tobytes() == expected.tobytes()
+        assert not np.shares_memory(actual, base.pb)
+    from gpuwm.ingest import real
+    native = host_arrays.moist_pressure
+    calls = []
+    def record(*args, **kwargs):
+        calls.append(kwargs.get("workers"))
+        return native(*args, **kwargs)
+    monkeypatch.setattr(host_arrays, "moist_pressure", record)
+    # The routing is under test, not this host's size: a 4-CPU or 16 GB runner
+    # would cap the eight requested workers through effective_workers.
+    from gpuwm.ingest import preparation_workers
+    monkeypatch.setattr(preparation_workers, "effective_workers",
+                        lambda requested=None: 1 if requested is None else max(1, int(requested)))
+    actual = real._rebalance_moist_pressure(base.pb, qtot, dry_mass, base, coord,
+                                           column_workers=8)
+    assert actual.tobytes() == expected.tobytes()
+    assert calls == [8]
+    assert before == [value.tobytes() for value in (qtot, dry_mass, base.mub, base.pb)]
+    # Unsupported layouts retain the reference route. Invalid pressures
+    # must still raise the reference's error rather than enter the model.
+    assert host_arrays.moist_pressure(base.pb, qtot[:, ::-1], dry_mass, base, coord) is None
+    assert host_arrays.moist_pressure(base.pb.astype(np.float32), qtot, dry_mass, base, coord) is None
+    qtot[0, 0, 0] = np.nan
+    with pytest.raises(ValueError, match="moist hydrostatic pressure recurrence failed"):
+        host_arrays.moist_pressure(base.pb, qtot, dry_mass, base, coord, workers=8)
+
+
 @pytest.fixture(autouse=True)
 def native_arrays():
     if not hasattr(pm._load(), "gpuwm_host_geopotential"):

@@ -70,6 +70,14 @@ def test_single_output_uses_current_store_without_reading_stale_device_fields(mo
     monkeypatch.setattr(runtime, "_metadata_frame", lambda *args: {"HGT": np.array([[7.0]])})
     monkeypatch.setattr(runtime, "_global_wrf_attrs", lambda *args, **kwargs: {})
     monkeypatch.setattr(runtime, "soil_layer_count", lambda cfg: 4)
+    # Since 18dbe1d5449 the analysis frame diagnoses the initial
+    # hydrometeors from the store (tests/test_verify_base4_review.py); this
+    # test owns which frame carries what, so a stand-in answers.
+    from gpuwm.core import refl
+    def analysis(state, cfg, *, shape, array_module=None):
+        assert array_module is np
+        return np.full(shape, 7.0, dtype=np.float32)
+    monkeypatch.setattr(refl, "analysis_refl_10cm", analysis)
     prepared = SimpleNamespace(
         initial_result=SimpleNamespace(state=ForbiddenState(), coord=object()),
         cfg=SimpleNamespace(nx=1, ny=1, nz=1, dx=1.0, dy=1.0, mp_physics=10),
@@ -88,5 +96,5 @@ def test_single_output_uses_current_store_without_reading_stale_device_fields(mo
     assert [float(frame["T"].item()) for _, frame in observed] == [3.0, 13.0]
     assert [float(frame["RAINNC"].item()) for _, frame in observed] == [2.0, 3.0]
     assert [float(frame["REFL_10CM"].item()) for _, frame in observed] == (
-        [15.0, 15.0] if expect_refl else [0.0, 15.0])
+        [15.0, 15.0] if expect_refl else [7.0, 15.0])
     assert observed[0][0] != observed[1][0]

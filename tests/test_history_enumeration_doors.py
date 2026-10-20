@@ -5,6 +5,19 @@ import pytest
 from gpuwm import go_cli, speedrun_cli
 
 
+def test_shared_history_walker_excludes_readiness_json(tmp_path):
+    from gpuwm.render_layout import history_frames
+    names = ["wrfout/wrfout_d02_2024-09-24_12_00_00",
+             "ready/wrfout_d02_2024-09-24_12_00_00.json",
+             "wrfout/wrfout_d02_2024-09-24_18_00_00.tmp.123"]
+    for name in names:
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"frame-or-sidecar")
+    frames = history_frames(tmp_path)
+    assert [(frame.path, frame.grid) for frame in frames] == [(tmp_path / names[0], "d02")]
+
+
 @pytest.mark.parametrize("door", ["go", "speedrun"])
 def test_run_readers_include_episode_frames_and_exclude_sidecars(tmp_path, door):
     run = tmp_path / "run"

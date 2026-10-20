@@ -1076,7 +1076,8 @@ def _no_transport(monkeypatch):
     monkeypatch.setattr(socket, "socket", contact)
     monkeypatch.setattr(fetch, "require_published_cycle", contact)
     monkeypatch.setattr(fetch, "resolve_latest_cycle", contact)
-    from gpuwm import era5_acquisition, era5_arco
+    from gpuwm import era5_acquisition, era5_arco, earth2_run
+    monkeypatch.setattr(earth2_run, "run_model", contact)
     monkeypatch.setattr(era5_acquisition, "_client", contact)
     monkeypatch.setattr(era5_arco, "retrieve_era5_arco", contact)
 
@@ -1088,7 +1089,7 @@ def _archive_test_cycle(source):
     return "2026-08-17T00"
 
 
-def _emit_domain(tmp_path, source):
+def _emit_domain(tmp_path, source, accepted=()):
     """`gpuwm domain` for SOURCE, at a point inside its own coverage."""
 
     from gpuwm.source_adapters import source_coverage_window
@@ -1099,7 +1100,8 @@ def _emit_domain(tmp_path, source):
     rc = cli.main([
         "domain", f"--point={centre[0]:.4f},{centre[1]:.4f}",
         "--card", "16gb", "--root-dx", "3", "--hours", "6",
-        "--source", source, "--cycle", _archive_test_cycle(source), "--out", str(out)])
+        "--source", source, "--cycle", _archive_test_cycle(source), "--out", str(out),
+        *[token for name in accepted for token in ("--accept-licence", name)]])
     assert rc == 0, f"{source} did not plan"
     return out
 
@@ -1110,9 +1112,26 @@ def _planable_sources():
     return wizard_planable_source_ids()
 
 
+@pytest.fixture
+def accepted_planning_licence(source):
+    """This transport-cut test exercises geometry, with explicit row consent.
+
+    Default licence refusals are covered by test_earth2_licensing; nothing
+    here downloads weights or treats restricted weights as a default.
+    """
+    from gpuwm.source_adapters import get_source_adapter
+    from gpuwm.earth2_licensing import licence_scope
+    row = get_source_adapter(source).model_row or {}
+    accepted = []
+    if row and row.get("licence_class") != "permissive":
+        accepted = [(row.get("weights") or {}).get("licence", "unresolved weight licence")]
+    with licence_scope(accepted):
+        yield accepted
+
+
 @pytest.mark.parametrize("source", _planable_sources())
 def test_r_a_wizard_emission_is_never_refused_by_its_own_fetch(
-        tmp_path, monkeypatch, capsys, source):
+        tmp_path, monkeypatch, capsys, source, accepted_planning_licence):
     """What `gpuwm domain` writes, `gpuwm fetch` must accept.
 
     The emitted ``[fetch]`` table becomes an argv at stage 1 of every
@@ -1133,7 +1152,7 @@ def test_r_a_wizard_emission_is_never_refused_by_its_own_fetch(
 
     import tomllib
 
-    out = _emit_domain(tmp_path / source, source)
+    out = _emit_domain(tmp_path / source, source, accepted_planning_licence)
     capsys.readouterr()
     table = tomllib.loads(out.read_text(encoding="utf-8")).get("fetch")
     assert table, f"{source} emitted no [fetch] table"
@@ -1146,7 +1165,10 @@ def test_r_a_wizard_emission_is_never_refused_by_its_own_fetch(
 
     argv = runplan._fetch_arguments_from_hints(  # noqa: SLF001
         dict(table), out=tmp_path / "out")
-    namespace = cli.build_parser().parse_args(["fetch", *argv])
+    namespace = cli.build_parser().parse_args([
+        "fetch", *argv,
+        *[token for name in accepted_planning_licence
+          for token in ("--accept-licence", name)]])
     _no_transport(monkeypatch)
     try:
         fetch.fetch_main(namespace)

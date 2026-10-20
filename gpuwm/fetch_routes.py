@@ -41,13 +41,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
+from concurrent.futures import ThreadPoolExecutor
 import functools
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shlex
 import time
+from time import perf_counter
 from types import MappingProxyType
 from typing import Mapping, Sequence
 
@@ -1078,7 +1081,9 @@ def sniff_format(path: Path) -> str | None:
 def all_fetchable_sources() -> tuple[str, ...]:
     """Every ``--source`` the fetch front door accepts, sorted."""
     from gpuwm.cf_archive_fetch import sources
-    return tuple(sorted(set(LEGACY_ROUTE_SOURCES) | set(_ROUTES) | set(sources())))
+    return tuple(sorted(set(LEGACY_ROUTE_SOURCES) | set(_ROUTES) | set(sources())
+                        | {row.source_id for row in source_adapters.source_adapters()
+                           if row.acquisition_owner is not None}))
 
 
 def table_route_sources() -> frozenset[str]:
@@ -1986,7 +1991,6 @@ PREP_ARGUMENTS_NAME = "prep-arguments.json"
 PREP_ARGUMENTS_SCHEMA = "gpuwm-fetch-prep-arguments-v1"
 
 _USER_AGENT = "gpuwm-fetch/2.5 (+https://github.com/arwenweather)"
-_CHUNK = 1 << 20
 _RECOVERY_REQUEST_NAME = "fetch-recovery-request.json"
 _RECOVERY_SCHEMA = "gpuwm-fetch-recovery-v1"
 _RECOVERY_DIRECTORY = ".fetch-verified"
@@ -2057,7 +2061,8 @@ def _admission_reporter(label: str, *, total: int, progress):
     """
 
     def landed(index: int, entry: dict) -> None:
-        note = ("already present" if entry.get("reused")
+        note = ("adopted" if entry.get("adopted") else
+                "already present" if entry.get("reused")
                 else f"{entry.get('bytes', 0) / (1024 * 1024):.1f} MiB")
         progress(progress_mod.format_transfer_done_line(
             label=label, index=index, total=total,
@@ -2068,7 +2073,7 @@ def _admission_reporter(label: str, *, total: int, progress):
 
 def _download_object(url: str, dest: Path, *, magic: str, opener=None,
                      timeout: float = 300.0, progress=None,
-                     declared_size=None) -> dict:
+                     declared_size=None, streams=1) -> dict:
     """Move one object, verify it, and return its manifest entry.
 
     ``progress`` is called with the size of each chunk as it lands.  The
@@ -2077,54 +2082,21 @@ def _download_object(url: str, dest: Path, *, magic: str, opener=None,
     route's opening line and its manifest (UX finding N10).
     """
 
-    from urllib.request import Request  # local: keeps import cost off load
+    from gpuwm.fetch_ranges import download
 
     dest = _io_path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_name(dest.name + ".part")
-    digest = hashlib.sha256()
-    written = 0
-    request = Request(url, headers={"User-Agent": _USER_AGENT})
-    from gpuwm.nomads_governor import paced_urlopen
-    response = paced_urlopen(
-        request, timeout=timeout,
-        **({"opener": opener} if opener is not None else {}))
-    declared = response.headers.get("Content-Length")
-    if declared_size is not None and declared is not None:
-        # The size the host itself states, the moment it states it.  A
-        # HEAD ahead of every transfer would double the request count on
-        # exactly the services whose per-request latency the pool exists
-        # to hide, so the in-flight line learns the total from the
-        # transfer that is already open.
-        try:
-            declared_size(dest, int(declared))
-        except (TypeError, ValueError):          # pragma: no cover
-            pass
     try:
-        with response, part.open("wb") as handle:
-            while True:
-                # Another file already failed this request: the rest of
-                # this one would be bytes nobody uses.
-                fetch_pool.raise_if_stopped()
-                chunk = response.read(_CHUNK)
-                if not chunk:
-                    break
-                handle.write(chunk)
-                digest.update(chunk)
-                written += len(chunk)
-                if progress is not None:
-                    progress(len(chunk))
-    except fetch_pool.TransferCancelled:
+        written, digest = download(url, part, user_agent=_USER_AGENT,
+            streams=streams, timeout=timeout, opener=opener,
+            progress=progress, declared_size=declared_size)
+    except BaseException:
         part.unlink(missing_ok=True)
         raise
-    if declared is not None and int(declared) != written:
-        part.unlink(missing_ok=True)
-        raise ValueError(
-            f"{dest.name}: the host declared {int(declared)} bytes and "
-            f"delivered {written}")
     _verify_payload(part, magic=magic, label=dest.name)
     part.replace(dest)
-    return {"name": dest.name, "bytes": written, "sha256": digest.hexdigest(),
+    return {"name": dest.name, "bytes": written, "sha256": digest,
             "url": url}
 
 
@@ -2343,8 +2315,9 @@ def request_cached(plan: FetchPlan, out: Path) -> bool:
     except ValueError:
         return False
     prior = _prior_entries(out)
-    return all(_reusable_entry(out, plan, obj, prior) is not None
-               for obj in plan.objects)
+    with ThreadPoolExecutor(max_workers=max(1, min(len(plan.objects), os.cpu_count() or 1))) as pool:
+        return all(pool.map(lambda obj: _reusable_entry(out, plan, obj, prior) is not None,
+                            plan.objects))
 
 
 #: What an unpinned request records where it used to record one host.
@@ -2517,6 +2490,7 @@ def run_plan(plan: FetchPlan, *, out: Path, force: bool = False,
     # only per-file signal, arriving at completion.  Default-on: no flag
     # turns this on, and a bare run stops going quiet.
     monitor = progress_mod.TransferMonitor(f"fetch {plan.source_id}")
+    workers = fetch_pool.resolve_file_workers(file_workers)
     fetch = downloader
     if fetch is None:
         # ``declared_size`` is bound to the DEFAULT transport only, for
@@ -2525,17 +2499,44 @@ def run_plan(plan: FetchPlan, *, out: Path, force: bool = False,
         # test's fake is called exactly as before.
         fetch = functools.partial(_download_object,
                                   progress=counter.advance,
-                                  declared_size=monitor.declare_for_path)
+                                  declared_size=monitor.declare_for_path,
+                                  streams=fetch_pool.chunk_streams_per_file(
+                                      workers, files=len(plan.objects)))
 
-    workers = fetch_pool.resolve_file_workers(file_workers)
     ladder = plan.ladder or (plan.host,)
 
-    # Which objects this run still has to move -- the only ones worth
-    # asking a host about.
+    # Verify files across the available cores. Unrecorded files can be
+    # adopted against the host; their HEAD/index responses are capped at
+    # 16 open connections independently of the hashing width.
+    from gpuwm.fetch_adoption import adopt
+
+    def local_entry(obj):
+        known = _reusable_entry(out, plan, obj, prior)
+        if known is not None:
+            return {**known, "adopted": False, "reused": True,
+                    "downloaded": False}
+        dest = out / obj.relpath
+        # A failed recorded checksum is damage, not a new unmanaged file.
+        if (not dest.is_file() or _recovery_entry(out, plan, obj)
+                or prior.get(obj.relpath)):
+            return None
+        entry = adopt(dest, obj, ladder=ladder, magic=_magic_for(plan, obj.role),
+                      verify_payload=_verify_payload, opener=opener, progress=progress)
+        if entry is not None:
+            entry.update(relpath=obj.relpath, role=obj.role, lead=obj.lead,
+                         adopted=True, reused=False, downloaded=False)
+            _write_json(_recovery_path(out, obj), {
+                "request": _request_identity(plan), "key": obj.key, "file": entry})
+        return entry
+
     reuse: dict[str, dict] = {}
     pending: list[PlannedObject] = []
-    for obj in plan.objects:
-        known = _reusable_entry(out, plan, obj, prior)
+    verification_workers = max(1, min(len(plan.objects), os.cpu_count() or 1))
+    verification_started = perf_counter()
+    with ThreadPoolExecutor(max_workers=verification_workers) as pool:
+        local = list(pool.map(local_entry, plan.objects))
+    verification_seconds = perf_counter() - verification_started
+    for obj, known in zip(plan.objects, local):
         if known is not None:
             reuse[obj.relpath] = known
         else:
@@ -2563,7 +2564,8 @@ def run_plan(plan: FetchPlan, *, out: Path, force: bool = False,
         return (tuple(rung for rung in rungs if rung.name == name)
                 + tuple(rung for rung in rungs if rung.name != name))
 
-    reused = len(reuse)
+    adopted = sum(bool(entry.get("adopted")) for entry in reuse.values())
+    reused = len(reuse) - adopted
     jobs = []
     for obj in plan.objects:
         dest = out / obj.relpath
@@ -2574,7 +2576,7 @@ def run_plan(plan: FetchPlan, *, out: Path, force: bool = False,
             def _reuse(entry=known, relpath=obj.relpath, role=obj.role,
                        lead=obj.lead) -> dict:
                 return {**entry, "relpath": relpath, "role": role,
-                        "lead": lead, "reused": True}
+                        "lead": lead}
 
             jobs.append(fetch_pool.TransferJob(
                 name=obj.relpath, url=None, action=_reuse,
@@ -2589,6 +2591,10 @@ def run_plan(plan: FetchPlan, *, out: Path, force: bool = False,
                  group=groups[len(jobs)]) -> dict:
             if lead_gate is not None:
                 rungs = _headed(rungs, lead_gate(group))
+            if dest.exists():
+                from gpuwm.fetch_guard import quarantine
+                aside = quarantine(dest)
+                progress(f"fetch {plan.source_id}: moved rejected file aside to {aside.name}")
             while True:
                 try:
                     entry = _download_along_ladder(
@@ -2606,7 +2612,7 @@ def run_plan(plan: FetchPlan, *, out: Path, force: bool = False,
                     continue
                 break
             entry = {**entry, "relpath": relpath, "role": role, "lead": lead,
-                     "reused": False}
+                     "reused": False, "adopted": False, "downloaded": True}
             _write_json(_recovery_path(out, obj), {
                 "request": _request_identity(plan), "key": obj.key, "file": entry})
             return entry
@@ -2644,6 +2650,7 @@ def run_plan(plan: FetchPlan, *, out: Path, force: bool = False,
         f"f{plan.leads[0]:03d}..f{plan.leads[-1]:03d}"
         + (f", member {plan.member}" if plan.member else "")
         + (f"; {behind} behind it" if behind else "")
+        + (f"; {adopted} adopted" if adopted else "")
         + (f"; {reused} already present" if reused else ""))
 
     # WHAT IT IS DOING, per object, as the verified prefix grows.  The
@@ -2691,6 +2698,9 @@ def run_plan(plan: FetchPlan, *, out: Path, force: bool = False,
 
     composed = (composed_so_far if on_lead is not None
                 else _run_compose(plan, out, progress=progress))
+    receipt.update(verification_workers=verification_workers,
+                   verification_seconds=round(verification_seconds, 6),
+                   adoption_connection_cap=16)
     payload = _plan_manifest(plan, entries, composed, receipt,
                              probe_receipt=probe_receipt,
                              complete=True if on_lead is not None else None)
@@ -2703,6 +2713,12 @@ def _plan_manifest(plan: FetchPlan, entries, composed, receipt, *,
                    probe_receipt=None, complete: bool | None = None) -> dict:
     """The route manifest for ``entries``; ``complete`` only on an as-posted fetch."""
 
+    acquisition = {}
+    for kind, flag in (("adopted", "adopted"), ("reused", "reused"),
+                       ("downloaded", "downloaded")):
+        selected = [entry for entry in entries if entry.get(flag)]
+        acquisition[f"{kind}_files"] = len(selected)
+        acquisition[f"{kind}_bytes"] = sum(entry.get("bytes", 0) for entry in selected)
     payload = {
         "schema": ROUTE_MANIFEST_SCHEMA,
         "route_table_sha256": packaged_route_table_sha256(),
@@ -2716,7 +2732,7 @@ def _plan_manifest(plan: FetchPlan, entries, composed, receipt, *,
         "endpoints": _endpoint_receipt(plan, entries, probe=probe_receipt),
         "files": entries,
         "composed": composed,
-        "concurrency": receipt,
+        "concurrency": {**(receipt or {}), **acquisition},
         "donors": [
             {"source": donor.source, "role": donor.role,
              "cycle": f"{donor.cycle:%Y-%m-%dT%H}Z",
@@ -2812,7 +2828,8 @@ def _write_route_manifest(out: Path, payload: Mapping[str, object]) -> None:
     # Keep reuse observations in the returned payload and recovery receipts.
     if "files" in material:
         material["files"] = [
-            {key: value for key, value in entry.items() if key != "reused"}
+            {key: value for key, value in entry.items()
+             if key not in {"reused", "adopted", "downloaded", "adoption"}}
             for entry in material["files"]
         ]
     if receipt is not None:
@@ -3040,7 +3057,15 @@ def prepares_through_packaged_composition(source: str) -> bool:
 
 def publishes_prep_handoff(source: str) -> bool:
     """Whether the implemented acquisition path publishes bound prep arguments."""
+    adapter = source_adapters.get_source_adapter(source)
+    if adapter.acquisition_owner and adapter.acquisition_prep_handoff:
+        return True
     source = canonical_source(source)
+    adapter = source_adapters.get_source_adapter(source)
+    if adapter.acquisition_owner:
+        from importlib import import_module
+        return bool(getattr(import_module(adapter.acquisition_owner),
+                            "PUBLISHES_PREP_HANDOFF", False))
     from gpuwm.cf_archive_fetch import sources
     if source in sources():
         return True

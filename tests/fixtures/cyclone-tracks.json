@@ -1,0 +1,92 @@
+{
+  "schema": "gpuwm.tc-tracks.v1",
+  "tracker": {
+    "backend": "handwritten-fixture",
+    "config": {
+      "purpose": "setup-only"
+    },
+    "config_sha256": "e63ba5308c57d9bcbf08f92891b925675dc487bb9e1a02d294c77398c64cc960",
+    "code_revision": "fixture-v1"
+  },
+  "members": [
+    {
+      "member_id": "member-01",
+      "family": "fixture",
+      "source": "gfs",
+      "init": "2026-09-09T00:00:00Z",
+      "weight": 1.0,
+      "ancestry": [],
+      "inputs": []
+    }
+  ],
+  "tracks": [
+    {
+      "track_id": "system-a",
+      "member_id": "member-01",
+      "weight": 1.0,
+      "fixes": [
+        {
+          "valid": "2026-09-09T00:00:00Z",
+          "lead_hours": 0,
+          "lat": 20.0,
+          "lon": -86.0,
+          "mslp_pa": 99000,
+          "max_wind10_ms": 30,
+          "flags": []
+        },
+        {
+          "valid": "2026-09-10T00:00:00Z",
+          "lead_hours": 24,
+          "lat": 23.0,
+          "lon": -86.5,
+          "mslp_pa": 97000,
+          "max_wind10_ms": 40,
+          "flags": []
+        },
+        {
+          "valid": "2026-09-11T00:00:00Z",
+          "lead_hours": 48,
+          "lat": 27.0,
+          "lon": -86.0,
+          "mslp_pa": 95000,
+          "max_wind10_ms": 50,
+          "flags": []
+        },
+        {
+          "valid": "2026-09-12T00:00:00Z",
+          "lead_hours": 72,
+          "lat": 31.0,
+          "lon": -85.0,
+          "mslp_pa": 96000,
+          "max_wind10_ms": 45,
+          "flags": []
+        }
+      ]
+    },
+    {
+      "track_id": "system-b",
+      "member_id": "member-01",
+      "weight": 1.0,
+      "fixes": [
+        {
+          "valid": "2026-09-09T00:00:00Z",
+          "lead_hours": 0,
+          "lat": 19.0,
+          "lon": -70.0,
+          "mslp_pa": 98500,
+          "max_wind10_ms": 33,
+          "flags": []
+        },
+        {
+          "valid": "2026-09-12T00:00:00Z",
+          "lead_hours": 72,
+          "lat": 25.0,
+          "lon": -72.0,
+          "mslp_pa": 95050,
+          "max_wind10_ms": 49,
+          "flags": []
+        }
+      ]
+    }
+  ]
+}

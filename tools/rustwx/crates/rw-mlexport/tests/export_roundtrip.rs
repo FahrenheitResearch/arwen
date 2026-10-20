@@ -289,7 +289,7 @@ fn request(inputs: Vec<PathBuf>, out: &Path, variables: Vec<VariableRow>, hpa: V
         zip: false,
         variables,
         levels: LevelSpec { set: "custom".into(), kind: LevelKind::Pressure, hpa, model_levels: vec![] },
-        grid: GridRequest { kind: GridKind::Native, deg: None, method: RegridMethod::Bilinear },
+        grid: GridRequest { target: None, kind: GridKind::Native, deg: None, method: RegridMethod::Bilinear },
         names: "wb2".into(),
         layout: Layout::Analysis,
         domains: None,
@@ -709,7 +709,7 @@ fn a_latlon_regrid_reproduces_uniform_fields_and_lands_on_the_lattice() {
     let files = inputs(&dir);
     let out = dir.join("ll");
     let mut r = request(files, &out, rows(&["2m_temperature", "total_precipitation", "land_sea_mask", "temperature"]), vec![500]);
-    r.grid = GridRequest { kind: GridKind::Latlon, deg: Some(0.25), method: RegridMethod::AreaMean };
+    r.grid = GridRequest { target: None, kind: GridKind::Latlon, deg: Some(0.25), method: RegridMethod::AreaMean };
     r.domains = Some(vec!["d01".into()]);
     run(r);
     let store = out.join("d01.zarr");
@@ -774,7 +774,7 @@ fn an_area_mean_regrid_holds_each_cells_true_area_mean() {
     for method in [RegridMethod::AreaMean, RegridMethod::Bilinear] {
         let out = dir.join(format!("{method:?}"));
         let mut r = request(vec![path.clone()], &out, rows(&["2m_temperature"]), vec![500]);
-        r.grid = GridRequest { kind: GridKind::Latlon, deg: Some(deg), method };
+        r.grid = GridRequest { target: None, kind: GridKind::Latlon, deg: Some(deg), method };
         run(r);
         let store = out.join("d01.zarr");
         let read_f64 = |name: &str| -> Vec<f64> {
@@ -887,7 +887,7 @@ fn a_moving_nest_keeps_coordinates_per_time_and_refuses_a_fixed_box() {
     let lon1 = read_f32(&store, "longitude", "1.0.0");
     assert!(lon1[0] > lon0[0], "the second time's grid sits east of the first");
     let mut r = request(vec![first, second], &dir.join("ll"), rows(&["temperature"]), vec![500]);
-    r.grid = GridRequest { kind: GridKind::Latlon, deg: Some(0.1), method: RegridMethod::Bilinear };
+    r.grid = GridRequest { target: None, kind: GridKind::Latlon, deg: Some(0.1), method: RegridMethod::Bilinear };
     let mut sink = |_: Value| {};
     let err = execute(r, &mut sink).unwrap_err();
     assert!(err.is_refusal() && err.message().contains("moving nest"), "{err}");
@@ -1081,4 +1081,43 @@ fn tiled_chunks_hold_the_whole_plane_values_and_append_matches_run() {
         }
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+
+#[test]
+fn earth2_layout_opens_in_the_019_loader() {
+    let python=match std::env::var("GPUWM_EARTH2_TEST_PYTHON") {Ok(p)=>p,Err(_)=>{eprintln!("set GPUWM_EARTH2_TEST_PYTHON to exercise Earth2Studio's loader");return;}};
+    let dir=scratch("earth2-loader");
+    let input=dir.join("wrfout_d01_2026-09-29_00:00:00");
+    let d=Domain{id:1,nx:25,ny:25,nz:30,dx:12000.};
+    write_wrfout(&input,&d,&[0,6],true);
+    let mut vars=rows(&["2m_temperature","total_column_water_vapour","geopotential"]);
+    for row in &mut vars {
+        let name=if row.id=="geopotential" {row.pressure_hpa=Some(500);"z500"} else if row.id=="2m_temperature" {"t2m"}else{"tcwv"};
+        row.names.insert("earth2".into(),name.into());
+    }
+    let out=dir.join("out");
+    let mut r=request(vec![input],&out,vars,vec![500]);
+    r.names="earth2".into();r.layout=Layout::Earth2;
+    r.grid.kind=GridKind::Latlon;
+    r.grid.target=Some(serde_json::json!({"kind":"latlon","shape":[3,4],"dims":["lat","lon"],"lat0":38.,"lon0":262.,"dlat":-0.25,"dlon":0.25}));
+    run(r);
+    let check=std::process::Command::new(python).arg("-B").arg("-c").arg(r#"
+import sys,numpy as np
+from earth2studio.data import InferenceOutputSource
+from earth2studio.io import ZarrBackend
+backend=ZarrBackend(sys.argv[1])
+assert backend["t2m"].shape==(1,2,3,4)
+source=InferenceOutputSource(sys.argv[1],engine='zarr')
+a=source(np.array(['2026-09-29T06:00:00'],dtype='datetime64[ns]'),np.array(['t2m','tcwv','z500'])).load()
+assert a.dims==('time','variable','lat','lon'),a.dims
+assert a.shape==(1,3,3,4),a.shape
+assert np.isfinite(a).all()
+assert np.allclose(a.sel(variable='t2m'),290.)
+assert float(a.sel(variable='tcwv').min())>0
+assert float(a.sel(variable='z500').min())>10000
+print(a.coords)
+"#).arg(out.join("d01.zarr")).output().unwrap();
+    assert!(check.status.success(),"{}\n{}",String::from_utf8_lossy(&check.stdout),String::from_utf8_lossy(&check.stderr));
+    println!("{}",String::from_utf8_lossy(&check.stdout));
 }

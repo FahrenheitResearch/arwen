@@ -1,0 +1,4 @@
+earth2studio-arwen
+Copyright 2026 the gpuwm authors
+
+This package calls NVIDIA Earth2Studio (Apache-2.0) and gpuwm (Apache-2.0) through their public interfaces and copies no code from either.

@@ -1,0 +1,102 @@
+{
+  "schema": "woof-space.v1",
+  "samples": [
+    {
+      "id": "hex-60km-global-sample",
+      "label": "hex 60 km global",
+      "maps": [
+        {
+          "variable": "2 m temperature",
+          "lead": "+000 h",
+          "valid": "2026-10-17T00:00:00Z",
+          "image": "assets/hex-60km-global-sample/global/2m_temperature/2026-10-17/hex60km_global_2m_temperature_10m_winds_f000.png"
+        },
+        {
+          "variable": "10 m wind",
+          "lead": "+000 h",
+          "valid": "2026-10-17T00:00:00Z",
+          "image": "assets/hex-60km-global-sample/global/10m_wind_speed_and_direction/2026-10-17/hex60km_global_10m_wind_speed_and_direction_f000.png"
+        },
+        {
+          "variable": "2 m temperature",
+          "lead": "+001 h",
+          "valid": "2026-10-17T01:00:00Z",
+          "image": "assets/hex-60km-global-sample/global/2m_temperature/2026-10-17/hex60km_global_2m_temperature_10m_winds_f001.png"
+        },
+        {
+          "variable": "10 m wind",
+          "lead": "+001 h",
+          "valid": "2026-10-17T01:00:00Z",
+          "image": "assets/hex-60km-global-sample/global/10m_wind_speed_and_direction/2026-10-17/hex60km_global_10m_wind_speed_and_direction_f001.png"
+        }
+      ],
+      "note": "MPAS mesh with 163,842 cells at nominal 60 km. Initial conditions: GFS, 17 October 2026 at 00 UTC. The global display grid is 664 × 333. Temperature maps include 10 m wind barbs."
+    },
+    {
+      "id": "arwen-hrrr-sample",
+      "label": "ArWen CONUS 3 km",
+      "maps": [
+        {
+          "variable": "2 m temperature",
+          "lead": "+000 h",
+          "valid": "2026-10-17T00:00:00Z",
+          "image": "assets/arwen-hrrr-sample/latlon-card-view/2m_temperature/2026-10-17/rustwx_wrf_20261017_0z_f000_native_grid_2m_temperature.png"
+        },
+        {
+          "variable": "10 m wind",
+          "lead": "+000 h",
+          "valid": "2026-10-17T00:00:00Z",
+          "image": "assets/arwen-hrrr-sample/latlon-card-view/10m_wind_speed_and_direction/2026-10-17/rustwx_wrf_20261017_0z_f000_native_grid_10m_wind_speed_and_direction.png"
+        },
+        {
+          "variable": "2 m temperature",
+          "lead": "+001 h",
+          "valid": "2026-10-17T01:00:00Z",
+          "image": "assets/arwen-hrrr-sample/latlon-card-view/2m_temperature/2026-10-17/rustwx_wrf_20261017_0z_f001_native_grid_2m_temperature.png"
+        },
+        {
+          "variable": "10 m wind",
+          "lead": "+001 h",
+          "valid": "2026-10-17T01:00:00Z",
+          "image": "assets/arwen-hrrr-sample/latlon-card-view/10m_wind_speed_and_direction/2026-10-17/rustwx_wrf_20261017_0z_f001_native_grid_10m_wind_speed_and_direction.png"
+        }
+      ],
+      "note": "WRF-ARW grid with 796 × 636 cells at 3 km. Initial conditions: GFS, 17 October 2026 at 00 UTC. This covers part of CONUS. The display grid is 0.03 degree (about 3.336 km). Points outside the source domain are masked."
+    }
+  ],
+  "soundings": [
+    {
+      "point": "35.30 N, 97.50 W",
+      "lead": "+000 h",
+      "sample_label": "ArWen CONUS 3 km",
+      "valid": "2026-10-17T00:00:00Z",
+      "image": "assets/arwen-hrrr-sample/d01/soundings/2026-10-17/35_30_N__97_50_W_20261017T000000Z_det.png",
+      "json": "assets/arwen-hrrr-sample/d01/soundings/2026-10-17/35_30_N__97_50_W_20261017T000000Z_det.json"
+    },
+    {
+      "point": "35.30 N, 97.50 W",
+      "lead": "+001 h",
+      "sample_label": "ArWen CONUS 3 km",
+      "valid": "2026-10-17T01:00:00Z",
+      "image": "assets/arwen-hrrr-sample/d01/soundings/2026-10-17/35_30_N__97_50_W_20261017T010000Z_det.png",
+      "json": "assets/arwen-hrrr-sample/d01/soundings/2026-10-17/35_30_N__97_50_W_20261017T010000Z_det.json"
+    },
+    {
+      "point": "40.00 N, 100.00 W",
+      "lead": "+000 h",
+      "sample_label": "ArWen CONUS 3 km",
+      "valid": "2026-10-17T00:00:00Z",
+      "image": "assets/arwen-hrrr-sample/d01/soundings/2026-10-17/40_00_N__100_00_W_20261017T000000Z_det.png",
+      "json": "assets/arwen-hrrr-sample/d01/soundings/2026-10-17/40_00_N__100_00_W_20261017T000000Z_det.json"
+    },
+    {
+      "point": "40.00 N, 100.00 W",
+      "lead": "+001 h",
+      "sample_label": "ArWen CONUS 3 km",
+      "valid": "2026-10-17T01:00:00Z",
+      "image": "assets/arwen-hrrr-sample/d01/soundings/2026-10-17/40_00_N__100_00_W_20261017T010000Z_det.png",
+      "json": "assets/arwen-hrrr-sample/d01/soundings/2026-10-17/40_00_N__100_00_W_20261017T010000Z_det.json"
+    }
+  ],
+  "run_markdown": "## Launch a forecast\n\nCreate a configuration:\n\n```sh\ngpuwm domain --point=35.3,-97.5 --card 24gb --ladder 12 \\\n  --source gfs --cycle latest --hours 6 \\\n  --physics-profile morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1 \\\n  --out configs/myarea.toml\n```\n\nRun it in your CUDA-capable engine environment:\n\n```sh\ngpuwm go configs/myarea.toml\n```\n\nCreate a sounding from your run:\n\n```sh\ngpuwm soundings ./run --point point-a=35,-97 --mode det --out ./render\n```\n\nThis viewer displays saved maps and soundings.\n"
+}

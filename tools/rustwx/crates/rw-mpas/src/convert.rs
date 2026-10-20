@@ -87,6 +87,54 @@ pub struct ConvertOptions {
     pub grid_label: Option<String>,
     pub format: NcFormat,
     pub clobber: bool,
+    /// A fixed geographic terrain plane for independently meshed segments.
+    pub terrain_authority: Option<std::sync::Arc<TerrainAuthority>>,
+}
+
+#[derive(Debug)]
+pub struct TerrainAuthority {
+    pub path: PathBuf,
+    pub sha256: String,
+    values: Vec<f32>,
+}
+
+impl TerrainAuthority {
+    /// The authority is itself an exported CF lat/lon frame on this exact
+    /// target grid. Atmospheric columns retain their absolute heights;
+    /// this binds source orography, not a balanced model restart.
+    pub fn read(path: &Path, weights: &NearestCellWeights) -> MpasResult<Self> {
+        let file = netcrust::File::open(path)?;
+        let (ny,nx) = weights.shape();
+        let read = |name: &str, units: &str| -> MpasResult<(Vec<f64>,Vec<usize>)> {
+            let var = file.variable(name).ok_or_else(||MpasError::Refusal(format!("terrain authority lacks {name}")))?;
+            if var.attribute("units").and_then(|a|a.as_string()) != Some(units)
+                || var.attribute("scale_factor").is_some() || var.attribute("add_offset").is_some() {
+                return Err(MpasError::Refusal(format!("terrain authority {name}: expected unpacked {units}")));
+            }
+            let array = var.array_f64()?;
+            let shape = array.shape().to_vec();
+            let values = array.into_values();
+            if values.iter().any(|v| !v.is_finite()
+                || var.attribute("_FillValue").and_then(|a|a.as_f64()) == Some(*v)
+                || var.attribute("missing_value").and_then(|a|a.as_f64()) == Some(*v)) {
+                return Err(MpasError::Refusal(format!("terrain authority {name}: missing values")));
+            }
+            Ok((values,shape))
+        };
+        let (lat,ls) = read("lat","degrees_north")?;
+        let (lon,os) = read("lon","degrees_east")?;
+        let (values,shape) = read("HGT","m")?;
+        if ls != [ny] || os != [nx] || (shape != [ny,nx] && shape != [1,ny,nx])
+            || weights.target_latitude.iter().enumerate().any(|(i,v)| *v != lat[i/nx])
+            || weights.target_longitude.iter().enumerate().any(|(i,v)| *v != lon[i%nx]) {
+            return Err(MpasError::Refusal("terrain authority must be on the identical CF lat/lon target grid".into()));
+        }
+        let values: Vec<f32> = values.into_iter().map(|v|v as f32).collect();
+        if values.iter().any(|v|!v.is_finite()) {
+            return Err(MpasError::Refusal("terrain authority overflows float32".into()));
+        }
+        Ok(Self{path:std::fs::canonicalize(path)?, sha256:crate::sha256_file(path)?, values})
+    }
 }
 
 /// The global attribute the renderer reads the model's name from
@@ -177,6 +225,7 @@ impl Default for ConvertOptions {
             grid_label: None,
             format: NcFormat::Offset64,
             clobber: false,
+            terrain_authority: None,
         }
     }
 }
@@ -529,6 +578,14 @@ fn convert_frame_inner(
     }
     if let Some(label) = options.grid_label.as_deref() {
         gattrs.push(NcAttr::text(GRID_LABEL_ATTRIBUTE, label));
+    }
+    if let Some(terrain) = &options.terrain_authority {
+        if terrain.values.len() != ny*nx {
+            return Err(MpasError::Refusal("terrain authority shape changed".into()));
+        }
+        gattrs.push(NcAttr::text("GPUWM_TERRAIN_AUTHORITY",terrain.path.display().to_string()));
+        gattrs.push(NcAttr::text("GPUWM_TERRAIN_AUTHORITY_SHA256",&terrain.sha256));
+        gattrs.push(NcAttr::text("GPUWM_TERRAIN_POLICY","HGT bound to a common geographic authority; atmospheric columns/absolute heights unchanged; not a balanced restart"));
     }
     // A composite can declare a single physics identity only when every source
     // agrees. Missing metadata remains missing; no scheme is invented here.
@@ -974,6 +1031,9 @@ fn convert_frame_inner(
             match mapping.wrf_name {
                 "T" => values.iter_mut().for_each(|v| *v -= WRF_THETA_REFERENCE_K),
                 "PHB" => values.iter_mut().for_each(|v| *v *= WRF_GRAVITY),
+                "HGT" => if let Some(terrain) = &options.terrain_authority {
+                    values.copy_from_slice(&terrain.values);
+                },
                 _ => {}
             }
             if radar_winds {

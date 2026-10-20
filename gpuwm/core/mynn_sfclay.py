@@ -109,13 +109,13 @@ MYNN_SFCLAY_DEFINES = {
 }
 
 
-def mynn_surface_kernel(variant: str = MYNN_SFCLAY_DEFAULT):
+def mynn_surface_kernel(variant: str = MYNN_SFCLAY_DEFAULT, shape=()):
     """The deterministic MYNN surface kernel for one variant."""
     defines = MYNN_SFCLAY_DEFINES[mynn_sfclay_variant_form(variant)]
     if not defines:
-        return get_kernel("mynn_surface", "mynn_surface_column")
+        return get_kernel("mynn_surface", "mynn_surface_column", shape)
     return get_kernel_int_defines(
-        "mynn_surface", "mynn_surface_column", defines)
+        "mynn_surface", "mynn_surface_column", defines, shape)
 
 
 def seed_mynn_surface_first_step(
@@ -251,7 +251,7 @@ def launch_mynn_surface_layer(
             "mynn_surface", defines=MYNN_SFCLAY_DEFINES[variant],
         ).get_function("mynn_surface_column")
     else:
-        kernel = mynn_surface_kernel(variant)
+        kernel = mynn_surface_kernel(variant, (1, 1, n))
     kernel(
         (blocks,),
         (_TPB,),

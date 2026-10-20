@@ -184,3 +184,141 @@ volume/image/loop artifacts, warnings and exact retired history paths and byte
 sizes. These products are per-member simulated radar. They do not replace the
 ensemble headline reflectivity probabilities. Radar's original native host
 memory admission remains active; no polar volume is allocated on the GPU.
+
+Each enabled NextGen member owns one mutable `state.physics.hydro` on its
+assigned card. Member settings are scoped around preparation and execution;
+`[hydro]` selects the runtime while `[ensemble.hydro]` selects product policy.
+The mass-launcher attachment snapshots selected parent settings into independent
+member copies before spawning workers. Explicit products or any enabled routing
+require routing for the entire selected roster before card acquisition. The
+attachment must be applied by the mass-launcher owner before claiming that door.
+
+Preparation uses the common `gpuwm.hydro.runtime` interface:
+`read_settings(path)`, `settings_scope(settings)`, and
+`prepare(settings, state=member_state, physics=member_physics,
+device_id=member_card, mode=member_mode)`, where `member_mode` is `"coupled"`
+or `"standalone"`. Bind the original
+`MemberOutputCapture` scope before preparation so the driver retains that
+member's identity. The ordinary forecast attaches the driver to the parent's
+physics; the ensemble collector borrows that instance. A standalone caller
+uses the same preparation API. Every member gets fresh mutable components,
+arrays and clocks, including when a persistent card worker runs members in
+sequence. Prepare-only resources are registered without an independent step.
+The parent grid remains `parent_grid_id=1`.
+
+The driver prepares `Stage(name, component, launch, parallelism="GPU")` once;
+`launch(dt_seconds, *, stream=None)` only enqueues work. Ensemble adds no stage
+or routing-step callback. The driver runs `before_lsm(stream=...)`, the actual
+parent LSM, then `advance(stream=...)` at the parent cadence. Only the existing
+root history deadline borrows cached outputs, on the producer stream before
+reuse. Moving-child output does not recapture parent routing.
+
+At that completed root deadline, a driver's optional
+`check_health(stream=producer_stream)` runs before reach reduction, channel-depth
+archiving or atmosphere publication. The driver owns diagnostic registration,
+fatal masks and the complete error report. A fatal status aborts publication;
+the collector never clears status or drops the failed member from the roster.
+Older providers without this optional diagnostic interface keep their existing
+output path. This check is not called by the routing-step loop.
+
+The output field inventory is explicit; the two feature axes are independent:
+
+| Boundary | Field | Type and shape | Meaning |
+| --- | --- | --- | --- |
+| Driver reach output | `reach_id` | contiguous same-card int64 `[R]` | Ordered discharge feature IDs. |
+| Driver reach output | `discharge_m3_s` | contiguous same-card native float32/64 `[R]` | Discharge in m3 s-1, including routed reservoir releases. |
+| Optional driver channel output | `reach_id` | contiguous same-card int64 `[C]` | Ordered above-bed channel IDs; join explicitly. |
+| Optional driver channel output | `channel_depth_m` | contiguous same-card native float32/64 `[C]` | Metres above the local channel bed; excludes reservoir elevations. |
+| Reach reduction | `feature_id` | int64 `[R]` | Manifest key `reach_id`; exact low/high uint32 words are also published. |
+| Reach reduction | `discharge_threshold` | float32 `[T]` | Discharge threshold in m3 s-1. |
+| Reach reduction | `exceedance_count` | uint32 `[T,R]` | Number of requested members meeting discharge `>=` threshold. |
+| Reach reduction | `finite_count` | uint32 `[R]` | Number of finite member discharges. |
+| Reach reduction | `probability` | float32 `[T,R]` | Fraction of the fixed roster, NaN unless all requested members are finite. |
+
+Every captured sample also carries the original member ID and interval-end UTC.
+The capture context forwards named reach vectors through `submit_hydro`; the
+separate channel archive borrows `channel_output()` at the same deadline.
+Neither consumer converts discharge to depth or narrows native module storage.
+Routing providers bind publication vectors at setup using actual model feature
+IDs in exactly the order of the values; ghost or arbitrarily truncated state
+vectors are not a reach output. The consumer checks matching shape, native
+width, card and ordered IDs across members; the provider owns the feature
+mapping. Separate CUDA float32/float64 comparisons produce integer counts, so
+no discharge conversion is needed for the collective reduction.
+
+At initialization, `ResidentInventory.inspect` inventories every carrier in
+`driver.arrays`, retaining native dtype, shape, strides and backing allocation
+size. Aliases count once; live mutable backing storage cannot cross members.
+When the driver publishes a scoped `member_id`, the inventory rejects a
+different capture member before accessing carriers or registering storage.
+Unscoped standalone drivers retain the existing allocation checks.
+This is an initialized-storage check, not a pre-factory memory estimate or OOM
+guarantee. Numerical owners must register all cross-step carriers before sealing
+the driver. Identity pins source, numerics, network, parameters, order and time;
+optional continuation hooks are the complete `checkpoint_metadata`,
+`validate_checkpoint`, `restore_metadata` trio. Driver continuation and ensemble
+count/depth checkpoint state are distinct; both must be restored to resume.
+
+NextGen reach probabilities use `arwen.nextgen.reach-ensemble/v2`. The threshold
+axis is float32 in m3 s-1, rounded once on CUDA with round-to-nearest-even;
+the same resident values are used for comparisons and written to
+`discharge_threshold`. Thresholds must stay finite and distinct after rounding.
+Native float32 or float64 discharge is compared without narrowing against the
+exact float32 threshold value. Thus native float64 discharge just below that
+value remains below, even if it would round to the threshold in float32.
+Counts use `>=`, uint32 member counts, and the full requested roster. Any
+nonfinite member masks that reach's probability rather than reducing the
+denominator. The manifest declares `threshold_m3_s.dtype="<f4"`, with exact
+int64 reach IDs and their low/high uint32 transport words. Checkpoints and mass
+shards carry the same v2 schema; v1 counts used float64 thresholds and cannot
+be restored or mixed into a v2 result.
+
+NextGen channel depths are retained at each existing parent history deadline,
+including aggregate-only runs. The ordinary collector and mass member wrapper
+consume the cached `driver.channel_output()` mapping before the routing state
+is reused. No routing-step callback is added. Rust writes one immutable NetCDF
+sample containing native float32/float64 `channel_depth_m` in metres above the
+local channel bed, exact int64 `reach_id`, and `reach_id_words` as low/high
+uint32 words for readers whose numeric transport cannot preserve all int64
+bits. Full-network `depth_m` can include reservoir elevations and is never
+substituted. The channel axis can differ from the discharge axis.
+
+An MC-only `channel_output()` mapping needs only `reach_id` and
+`channel_depth_m`, plus optional `stream`. Additional discharge or velocity
+fields are ignored by the depth consumer. Providers prepare contiguous CUDA
+publication vectors using their validated ordered channel IDs; the accessor
+returns the cached mapping. The archive drains the producer stream, transports
+native bytes to the host and writes through Rust at this output boundary.
+This archive operation is synchronous; the routing launch sequence remains
+enqueue-only and has no per-step host capture.
+
+`nextgen/channel-depth-ensemble.json` lists the requested member IDs, every
+discharge output time, and one `members` entry per requested member at that
+time. Each source identifies its relative file path, SHA256, native dtype,
+shape and variable names; `root` (relative to the manifest's directory)
+resolves the relative paths. Consumers must
+join each sample's exact reach IDs to their drainage map explicitly. A
+NetCDF source for the renderer uses `path` and `variable="channel_depth_m"`;
+the source's declared `dtype` describes the stored native values. The archive
+is metadata for building a product request, not itself a renderer request.
+
+Products buffers accept raw `<f8` or NetCDF `variable`/`record`; no producer
+GPU cast is required. Streamflow CSV and f64le exports retain float64 input
+exactly and promote float32 input exactly. Reference word comparison happens
+before display narrowing. Maps and display-flow derivatives remain float32;
+above-bed depth is read at native width and narrowed for terrain rendering.
+Native module replay still compares original native-width source arrays;
+product transport comparison alone does not establish physics parity.
+
+An unavailable above-bed channel output has `source=null` and appears in
+`missing_member_ids`; `missing_member_action="mask_all_cells"` applies to that
+deadline. Consumers must mask it or refuse an incomplete request, never drop
+that member and divide by a smaller roster. Nonfinite and negative per-reach
+depths remain unchanged for Rust's complete-roster cell mask; dry members
+remain in the denominator. HAND probability uses strict depth `>` threshold,
+separately from discharge exceedance `>=`. No channel depths means no depth
+manifest, rather than an invented stage inferred from discharge. Checkpoint
+collector snapshots bind the depth-file hashes and restore one permitted
+re-emission of a sealed deadline. Mass workers seal their depth metadata with
+their integer discharge shards; the parent verifies the files and publishes
+the full roster without averaging member probabilities.

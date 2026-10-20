@@ -7,6 +7,7 @@ at 1.1 cores, 2026-10-16), and any change to what NVRTC is asked to compile.
 from __future__ import annotations
 
 import json
+import concurrent.futures
 import threading
 import time
 
@@ -174,15 +175,18 @@ def test_a_failed_pool_compile_is_compiled_again_by_the_run(monkeypatch, plan_di
         here._compile_using_nvrtc_no_warning("bad", ())
 
 
-def test_an_unknown_configuration_compiles_the_union_of_known_plans(monkeypatch, plan_dir):
+def test_unknown_shape_does_not_scan_other_plans(monkeypatch, plan_dir):
     _record_run(monkeypatch, plan_dir, _StubCompiler(), [(("A", ()), {})], tag="one")
     _record_run(monkeypatch, plan_dir, _StubCompiler(), [(("B", ()), {})], tag="two")
     here = _StubCompiler()
     _fresh(monkeypatch, here)
     kernel_plan.install(plan_dir=plan_dir, tag_text="three")
+    from pathlib import Path
+    monkeypatch.setattr(Path, "glob", lambda *a: pytest.fail("plan directory scan"))
     record = kernel_plan.start()
     kernel_plan.close()
-    assert record["plan_source"] == "union" and record["entries"] == 2
+    assert record["plan_source"] == "none" and record["entries"] == 0
+    assert not here.calls
 
 
 def test_off_switch_leaves_the_compiler_untouched(monkeypatch, plan_dir):
@@ -386,3 +390,203 @@ def test_a_static_capture_that_fails_leaves_the_compile_to_the_run(monkeypatch, 
     with pytest.raises(RuntimeError, match="nvrtc refused"):
         load("bad")
     assert records == []
+
+
+@pytest.mark.parametrize("running", [False, True])
+def test_process_future_cancels_only_an_actual_queued_compile(running):
+    pending = concurrent.futures.Future()
+    if running:
+        pending.set_running_or_notify_cancel()
+    record = dict(pool_failed=0, pool_compiled=0, pool_seconds=0.0,
+                  pool_cpu_seconds=0.0, pool_processes=[])
+    result = kernel_plan._ProcessCompileFuture(pending, record)
+    pending.add_done_callback(result.completed)
+    assert result.cancel() is (not running)
+    if running:
+        pending.set_result(((b"image", {"k": "mangled"}),
+                            dict(pid=123, seconds=0.4, cpu_seconds=0.3)))
+        assert result.result() == (b"image", {"k": "mangled"})
+        assert record["pool_compiled"] == 1
+        assert record["pool_cpu_seconds"] == 0.3
+    else:
+        assert result.cancelled() and record["pool_compiled"] == 0
+
+
+def test_process_compile_error_reaches_the_requester():
+    pending = concurrent.futures.Future()
+    record = dict(pool_failed=0)
+    result = kernel_plan._ProcessCompileFuture(pending, record)
+    pending.add_done_callback(result.completed)
+    pending.set_exception(RuntimeError("nvrtc refused"))
+    with pytest.raises(RuntimeError, match="nvrtc refused"):
+        result.result()
+    assert record["pool_failed"] == 1
+
+
+@pytest.mark.parametrize("trace", [False, True])
+def test_recorded_process_jobs_leave_warm_threads_free(monkeypatch, plan_dir, trace):
+    if trace:
+        monkeypatch.setenv("GPUWM_KERNEL_PLAN_TRACE", "1")
+    else:
+        monkeypatch.delenv("GPUWM_KERNEL_PLAN_TRACE", raising=False)
+    _record_run(monkeypatch, plan_dir, _StubCompiler(),
+                [(("A", ()), {}), (("B", ()), {})])
+    here = _StubCompiler()
+    _fresh(monkeypatch, here)
+    monkeypatch.setenv(kernel_plan.WORKERS_ENVIRONMENT, "2")
+    monkeypatch.setattr(kernel_plan, "_process_compiler_identity", lambda arch: {"worker": 1})
+    jobs = []
+
+    class ProcessPool:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def submit(self, call, arguments, arch, identity, **kwargs):
+            assert kwargs == ({"trace": True} if trace else {})
+            pending = concurrent.futures.Future()
+            pending.set_running_or_notify_cancel()
+            jobs.append((pending, arguments))
+            return pending
+
+        def shutdown(self, wait=True):
+            pass
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", ProcessPool)
+    kernel_plan.install(plan_dir=plan_dir, tag_text="forecast --mesh")
+    record = kernel_plan.start()
+    try:
+        # Both compilers are held running. A GPU warm callback must still
+        # get a thread, and the flight table must own the process proxies.
+        assert kernel_plan.submit(lambda: "warm").result(timeout=1) == "warm"
+        assert len(jobs) == 2
+        assert all(isinstance(f, kernel_plan._ProcessCompileFuture)
+                   for f in kernel_plan._flight.values())
+        assert all(not f.cancel() for f in kernel_plan._flight.values())
+    finally:
+        for pending, arguments in jobs:
+            pending.set_result(((arguments["source"].encode(), {"k": "mangled"}),
+                                dict(pid=123, seconds=0.2, cpu_seconds=0.1,
+                                     **({"compile_begin_mono_ns": 100,
+                                         "compile_end_mono_ns": 200} if trace else {}))))
+        kernel_plan.close(wait=True)
+    assert here._compile_using_nvrtc_no_warning("A", ()) == (b"A", {"k": "mangled"})
+    assert here.calls == []
+    assert record["pool_compiled"] == 2 and record["pool_failed"] == 0
+
+    if trace:
+        assert len(record["compile_intervals"]) == 2
+        assert all(row["request_sha256"] for row in record["compile_intervals"])
+    else:
+        assert "compile_intervals" not in record
+
+
+def test_pack_covered_replay_is_left_to_the_verified_loader(monkeypatch, plan_dir):
+    _record_run(monkeypatch, plan_dir, _StubCompiler(), [(("A", ()), {})])
+    here = _StubCompiler()
+    _fresh(monkeypatch, here)
+    monkeypatch.setattr(kernel_plan, "_aot_coverage", lambda: {"held"})
+    monkeypatch.setattr(kernel_plan, "_aot_cached", lambda *args: True)
+    kernel_plan.install(plan_dir=plan_dir, tag_text="forecast --mesh")
+    record = kernel_plan.start()
+    kernel_plan.close()
+    assert record["pool_skipped_aot"] == 1
+    assert record["pool_compiled"] == 0
+    assert here.calls == []
+    # A scheduling hint never supplies bytes: the real caller still compiles
+    # normally if its high-level pack loader fails the complete contract.
+    here._compile_using_nvrtc_no_warning("A", ())
+    assert len(here.calls) == 1
+
+
+def test_plan_tag_separates_effective_engine_numerics(monkeypatch):
+    from gpuwm import numerics
+    monkeypatch.setattr(numerics, "_mode", "fast")
+    fast = kernel_plan.default_tag_text(())
+    monkeypatch.setattr(numerics, "_mode", "strict")
+    strict = kernel_plan.default_tag_text(())
+    assert fast != strict
+
+
+def test_rebind_drains_closed_pool_before_replacing_compiler_state(monkeypatch, plan_dir):
+    here = _StubCompiler()
+    _fresh(monkeypatch, here)
+    kernel_plan.install(plan_dir=plan_dir, tag_text="one")
+    kernel_plan.start()
+    entered, release = threading.Event(), threading.Event()
+
+    def capture():
+        entered.set()
+        assert release.wait(5)
+        return kernel_plan.ahead(_loader(here, "old:", []), "noah")
+
+    pending = kernel_plan.submit(capture)
+    assert entered.wait(5)
+    kernel_plan.close()
+    rebound = threading.Event()
+    thread = threading.Thread(target=lambda: (kernel_plan.rebind("two"), rebound.set()))
+    thread.start()
+    assert not rebound.wait(0.05)
+    assert kernel_plan._state["tag_text"] == "one"
+    release.set()
+    thread.join(5)
+    assert rebound.is_set() and pending.result() == "compiled"
+    assert kernel_plan._state["tag_text"] == "two"
+
+
+def test_async_close_and_wait_have_one_process_shutdown_owner(monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    class ProcessPool:
+        calls = 0
+        def shutdown(self, wait):
+            self.calls += 1
+            entered.set()
+            assert release.wait(5)
+    pool = ProcessPool()
+    monkeypatch.setattr(kernel_plan, "_state", {"compiler_pool": pool})
+    kernel_plan.close()
+    assert entered.wait(5)
+    joined = threading.Thread(target=lambda: kernel_plan.close(wait=True))
+    joined.start()
+    release.set()
+    joined.join(5)
+    assert not joined.is_alive()
+    assert pool.calls == 1
+    kernel_plan.close(wait=True)
+    assert pool.calls == 1
+
+
+@pytest.mark.parametrize("covered", [True, False])
+def test_aot_hint_precedes_warm_restore_and_keeps_ordinary_funnel(monkeypatch, plan_dir, covered):
+    requests = [(("A", ()), {}), (("B", ()), {})]
+    _record_run(monkeypatch, plan_dir, _StubCompiler(), requests)
+    here = _StubCompiler()
+    _fresh(monkeypatch, here)
+    kernel_plan.install(plan_dir=plan_dir, tag_text="forecast --mesh")
+    restored = []
+
+    class Images:
+        def get(self, arguments):
+            restored.append(arguments["source"])
+            # B has a retained image; A uses the ordinary compiler stub.
+            return (b"retained-B", None) if arguments["source"] == "B" else None
+        def put(self, arguments, result):
+            pass
+        def close(self):
+            pass
+        def receipt(self):
+            return {}
+
+    monkeypatch.setattr(kernel_plan, "_warm_images", lambda: Images())
+    monkeypatch.setattr(kernel_plan, "_aot_coverage", lambda: {"A"} if covered else set())
+    monkeypatch.setattr(kernel_plan, "_aot_cached", lambda arguments, arch, held: arguments["source"] in held)
+    record = kernel_plan.start()
+    kernel_plan.close(wait=True)
+    assert restored == (["B"] if covered else ["A", "B"])
+    assert record["pool_skipped_aot"] == int(covered)
+    assert record["pool_skipped_images"] == 1
+    assert record["pool_compiled"] == int(not covered)
+    assert record["entries"] == 1  # Preserve receipt meaning: non-image rows.
+    # A synthetic coverage hint leaves the ordinary compiler funnel callable.
+    result = here._compile_using_nvrtc_no_warning("A", ())
+    assert result == _StubCompiler()._compile_using_nvrtc_no_warning("A", ())
+    assert len(here.calls) == 1

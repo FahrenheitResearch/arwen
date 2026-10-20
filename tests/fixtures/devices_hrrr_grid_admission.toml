@@ -30,7 +30,9 @@ nz = 64
 # Nominal vertical scaffold height; the real path derives heights from
 # p_top/eta_levels.
 ztop = 20000.0
-p_top = 1500.0
+# The hrrr-prs pressure-level atmosphere stops at 50 hPa (5000 Pa); 8f7e4c27247
+# refuses a model top above the source at planning time (as the CONUS recipe).
+p_top = 5000.0
 eta_levels = [
     1.0, 0.9984375, 0.99575, 0.99159375, 0.9855,
     0.976125, 0.964, 0.949625, 0.93325, 0.91525,

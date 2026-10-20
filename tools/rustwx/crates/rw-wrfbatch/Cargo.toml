@@ -16,6 +16,12 @@ license.workspace = true
 publish.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+# Retained for older build scripts. Original NextGen products are available in
+# every renderer build; this compatibility feature does not change capability.
+private-hydro = []
+
 [lib]
 name = "rw_wrfbatch"
 path = "src/lib.rs"
@@ -67,6 +73,8 @@ name = "rw_nowcast_frames"
 path = "src/launcher.rs"
 
 [dependencies]
+rw-mlexport = { path = "../rw-mlexport" }
+netcdf-writer = { path = "../netcdf-writer" }
 rw-scoreboard = { path = "../rw-scoreboard" }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 grib-core = { path = "../../../grib1_bridge/vendor/grib-core", default-features = false }
@@ -126,3 +134,7 @@ rw-store = { path = "../rw-store" }
 [[bin]]
 name = "rw_refsnow"
 path = "src/bin/refsnow.rs"
+
+[[bin]]
+name = "rw_tc_fields"
+path = "src/bin/tc_fields.rs"

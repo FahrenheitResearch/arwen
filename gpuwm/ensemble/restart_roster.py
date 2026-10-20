@@ -8,6 +8,7 @@ import os
 import shutil
 import time
 from contextlib import nullcontext
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 CONTRACT = "gpuwm-ensemble-restart.v1"
@@ -82,6 +83,7 @@ def bind_checkpoint_member(root, checkpoint):
     header = read_restart_header(checkpoint)
     paths = tree_restart_members(checkpoint) if header.get("domain_ids") else {1: checkpoint}
     record = {"schema": CONTRACT, "member_id": owner["memberId"], "identity_sha256": owner["memberIdentity"],
+        **({"provenance": owner["provenance"]} if owner.get("provenance") else {}),
         "files": [{"path": relative_file(root, path), "sha256": digest_file(path), "bytes": path.stat().st_size}
             for path in paths.values()]}
     atomic_json(checkpoint.with_suffix(".member.json"), record)
@@ -127,7 +129,11 @@ def identity_record(request, member_order, member_inputs, seeds):
         payload = {"member_id": member, "seed": seeds[member],
             "experiment": restart_identity_payload(inputs.experiment),
             "source": getattr(inputs, "source", None),
-            "prepared_head_sha256": getattr(inputs, "prepared_head_sha256", None)}
+            "prepared_head_sha256": getattr(inputs, "prepared_head_sha256", None),
+            # V1 checkpoint hashes predate per-row provenance. Their request
+            # already retains the original labels, so keep those hashes stable.
+            **({"provenance": request.provenance[member]} if request.provenance
+               and request.provenance[member].get("schema") == "gpuwm-member-provenance.v2" else {})}
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode()
         rows.append({**payload, "identity_sha256": hashlib.sha256(encoded).hexdigest()})
     return {"schema": CONTRACT, "request": selected, "member_order": list(member_order), "members": rows}
@@ -137,6 +143,16 @@ def _matches(path, item):
     return path.is_file() and path.stat().st_size == item["bytes"] and digest_file(path) == item["sha256"]
 
 
+def _parallel_file_map(function, items):
+    from gpuwm.ingest.cpu_backend import available_cpu_count
+    items = list(items)
+    if not items:
+        return []
+    with ThreadPoolExecutor(max_workers=min(len(items), available_cpu_count()),
+                            thread_name_prefix="ensemble-seal") as workers:
+        return list(workers.map(function, items))
+
+
 def verify_roster(path, identities, *, root):
     record = json.loads(Path(path).read_text(encoding="utf-8"))
     if record.get("schema") != CONTRACT or record.get("identities") != identities:
@@ -144,16 +160,18 @@ def verify_roster(path, identities, *, root):
     rows = record.get("members", [])
     if [row.get("member_id") for row in rows] != identities["member_order"]:
         raise ValueError("ensemble restart roster must name every original member exactly once in order")
-    for item in record.get("files", []):
+    files = record.get("files", [])
+    matches = _parallel_file_map(lambda item: _matches(
+        resolve_file(root, item.get("snapshot", item["path"])), item), files)
+    for item, matches_file in zip(files, matches):
         if "snapshot" in item:
             # The sealed copy is the authority; the live file may have moved on.
-            copy = resolve_file(root, item["snapshot"])
-            if not _matches(copy, item):
+            if not matches_file:
                 raise ValueError(
                     f"ensemble resume file is missing or hash-mismatched: {item['path']} (its sealed copy "
                     f"{item['snapshot']} is missing or changed). Copy the whole run directory, including "
                     ".ensemble-resume, or run the ensemble again into a new --outdir")
-        elif not _matches(resolve_file(root, item["path"]), item):
+        elif not matches_file:
             # A roster sealed before sealed copies existed (gpuwm 2.9.0 and
             # earlier) names only live files that later frames rewrite.
             raise ValueError(
@@ -161,6 +179,8 @@ def verify_roster(path, identities, *, root):
                 "sealed copy of its files (sealed by gpuwm 2.9.0 or earlier), and the run changed that file "
                 "after the seal; run the ensemble again into a new --outdir")
     for row, identity in zip(rows, identities["members"]):
+        if row.get("provenance") != identity.get("provenance"):
+            raise ValueError("ensemble checkpoint lineage differs from its original member identity")
         if row.get("identity_sha256") != identity["identity_sha256"]:
             raise ValueError("ensemble checkpoint was assigned to another member")
         if row.get("status") not in ("completed", "checkpoint", "pending"):
@@ -200,6 +220,13 @@ def _place(source, destination, *, link):
     return destination
 
 
+def _source_revision(path):
+    """A copy may be reused only while its live source has not changed."""
+    status = path.stat()
+    return [status.st_dev, status.st_ino, status.st_size,
+            status.st_mtime_ns, status.st_ctime_ns]
+
+
 #: The collector's private trees. The sealed snapshot names every file the
 #: collector owns in them, so anything else there was written after the seal.
 COLLECTOR_PRIVATE = (".ensemble-diagnostics", "member-diagnostics")
@@ -219,10 +246,13 @@ def restore_roster(record, *, root):
     """
     root = Path(root).resolve()
     named, restored, removed = set(), [], []
-    for item in record.get("files", ()):
+    files = record.get("files", ())
+    replace_live = _parallel_file_map(lambda item: "snapshot" in item and not _matches(
+        resolve_file(root, item["path"]), item), files)
+    for item, needs_restore in zip(files, replace_live):
         live = resolve_file(root, item["path"])
         named.add(live)
-        if "snapshot" in item and not _matches(live, item):
+        if needs_restore:
             _place(resolve_file(root, item["snapshot"]), live, link=not live.name.endswith(".json"))
             restored.append(item["path"])
     if record.get("snapshot_generation"):
@@ -266,6 +296,7 @@ def get_checkpoint_member(path):
         files = [collector, *(resolve_file(root, name) for name in document.get("files", ()))]
     return {"memberIndex": identities["member_order"].index(identity["member_id"]),
         "memberId": identity["member_id"], "memberIdentity": identity["identity_sha256"],
+        **({"provenance": identity["provenance"]} if identity.get("provenance") else {}),
         "config": descriptor.get("experiment_config"), "wps": descriptor.get("wps_namelist"),
         "prepared": descriptor.get("prepared_root"), "root": str(root),
         "roster": str(root / ROSTER), "collectorFiles": [str(item) for item in files],
@@ -358,7 +389,7 @@ def _seal_once(root, output, *, collector_files, collector):
     rows, hashed = [], {}
     for identity in identities["members"]:
         member = identity["member_id"]
-        row = {"member_id": member, "identity_sha256": identity["identity_sha256"], "status": "pending",
+        row = {"member_id": member, **({"provenance": identity["provenance"]} if identity.get("provenance") else {}), "identity_sha256": identity["identity_sha256"], "status": "pending",
                "model_elapsed_seconds": 0.0}
         if member in completed:
             if member not in results:
@@ -410,14 +441,41 @@ def _seal_once(root, output, *, collector_files, collector):
         # FileNotFoundError and the pass repeats.
         created = time.time_ns()
         generation = root / GENERATIONS / f"{created:020d}"
+        previous_path = Path(output or root / ROSTER)
+        previous = (json.loads(previous_path.read_text(encoding="utf-8"))
+                    if previous_path.is_file() else {})
+        previous_files = {item["path"]: item for item in previous.get("files", ())}
         try:
-            entries = []
-            for path in sorted(files):
+            def snapshot_file(path):
                 name = relative_file(root, path)
-                copy = _place(path, generation / name, link=not path.name.endswith(".json"))
-                entries.append({"path": name, "bytes": copy.stat().st_size,
-                    "sha256": hashed[path] if path in hashed else digest_file(copy),
-                    "snapshot": relative_file(root, copy)})
+                revision = _source_revision(path)
+                old = previous_files.get(name, {})
+                retained = (resolve_file(root, old["snapshot"])
+                            if old.get("source_revision") == revision and "snapshot" in old else None)
+                if retained is not None and retained.is_file():
+                    # Link only between sealed copies. Linking the live output
+                    # changes its ctime while another member's writer hashes
+                    # it (four-member concurrent WoFS run, 2026-10-17).
+                    copy = _place(retained, generation / name, link=True)
+                    digest = digest_file(copy)
+                    if digest != old["sha256"]:
+                        raise ValueError(f"ensemble sealed copy changed: {name}")
+                else:
+                    copy = _place(path, generation / name, link=False)
+                    digest = hashed[path] if path in hashed else digest_file(copy)
+                if _source_revision(path) != revision:
+                    raise FileNotFoundError(f"ensemble snapshot source changed during copy: {name}")
+                return {"path": name, "bytes": copy.stat().st_size,
+                    "sha256": digest, "source_revision": revision,
+                    "snapshot": relative_file(root, copy)}
+
+            # A retained-history roster can name tens of GB. Hash independent
+            # files across the allowed host CPUs instead of stalling the GPU
+            # on one core at every checkpoint. hashlib releases the GIL for
+            # these blocks. Keep every hash, sorted publication, the collector
+            # hold and the whole-pass retirement retry unchanged. Joining the
+            # pool before cleanup also prevents failed workers recreating it.
+            entries = _parallel_file_map(snapshot_file, sorted(files))
             missing = [path for path in hashed if not path.is_file()]
             if missing:
                 raise FileNotFoundError(str(missing[0]))

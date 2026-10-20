@@ -1011,6 +1011,8 @@ class GoChainEvents:
             "files": throughput["files"],
             "stage_seconds": throughput["seconds"],
             "downloaded_files": throughput["downloaded_files"],
+            "adopted_files": throughput.get("adopted_files", 0),
+            "reused_files": throughput.get("reused_files", 0),
             "downloaded_bytes": throughput["downloaded_bytes"],
             "downloaded_seconds": throughput["downloaded_seconds"],
             "bytes_per_second": throughput["bytes_per_second"],

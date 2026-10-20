@@ -23,9 +23,33 @@ class EnsembleRequest:
     trajectories: tuple = ()
     #: Named existing-land and fixed surface-state arms on selected sources.
     member_variants: tuple = ()
+    family_weights: dict | str | None = None
+    provenance: tuple = ()
+    member_fetches: tuple = ()
     max_ordinary_members_per_device: int | None = None
+    hydro: dict | None = None
+    sounding_points: tuple = ()
 
     def __post_init__(self):
+        if self.hydro is not None:
+            from gpuwm.ensemble.optional_routing import product_options
+            object.__setattr__(self, "hydro", product_options(self.hydro))
+        if self.member_fetches and (self.recipe != "wofs" or len(self.member_fetches) != self.members):
+            raise ValueError("member_fetches needs one acquisition per WoFS member")
+        if self.provenance and len(self.provenance) != self.members:
+            raise ValueError("provenance needs one label per ensemble member")
+        if self.provenance:
+            from gpuwm.ensemble.lineage import validate_record
+            for member, row in enumerate(self.provenance):
+                validate_record(row, member)
+        if not isinstance(self.sounding_points, (list, tuple)):
+            raise ValueError("sounding_points must be a list of LAT,LON or NAME=LAT,LON points")
+        from gpuwm.soundings import point
+        for value in self.sounding_points:
+            if not isinstance(value, str):
+                raise ValueError("sounding_points entries must be LAT,LON or NAME=LAT,LON strings")
+            point(value)
+        object.__setattr__(self, "sounding_points", tuple(self.sounding_points))
         if self.perturbation == "none":
             # The 2.8.4 spelling of no perturbation, same as an absent key.
             object.__setattr__(self, "perturbation", None)
@@ -45,6 +69,8 @@ class EnsembleRequest:
         object.__setattr__(self, "members", members)
         if not isinstance(self.keep_member_files, bool):
             raise ValueError("keep_member_files must be true or false")
+        if self.sounding_points:
+            object.__setattr__(self, "keep_member_files", True)
         if not isinstance(self.retain_member_diagnostics, bool):
             raise ValueError("retain_member_diagnostics must be true or false")
         if (isinstance(self.base_seed, bool) or not isinstance(self.base_seed, int)
@@ -57,7 +83,11 @@ class EnsembleRequest:
             request.field: list(request.thresholds) for request in requests
             if request.field in thresholds})
         sources = tuple(self.sources)
-        if sources and len(sources) != members:
+        family_specs = bool(sources) and all(isinstance(row, dict) and "members" in row for row in sources)
+        if family_specs:
+            from gpuwm.ensemble.wofs_recipe import parse_source_spec
+            sources = parse_source_spec(sources, members)
+        if sources and not family_specs and len(sources) != members:
             raise ValueError("ensemble sources must supply one descriptor per member")
         object.__setattr__(self, "sources", sources)
         trajectories = tuple(self.trajectories)
@@ -66,31 +96,31 @@ class EnsembleRequest:
         variants = tuple(self.member_variants)
         if variants and self.recipe is None:
             object.__setattr__(self, "recipe", "member-roster")
-        if variants or self.recipe == "member-roster":
-            if self.recipe != "member-roster":
+        if variants or self.recipe in ("member-roster", "wofs") and not family_specs:
+            if self.recipe not in ("member-roster", "wofs"):
                 raise ValueError('ensemble member_variants belong to recipe = "member-roster"')
             if self.perturbation is not None:
                 raise ValueError("member-roster records each member's fixed surface controls; "
                                  "remove the shared ensemble perturbation to prevent two competing surface states")
             from gpuwm.ensemble.member_variants import normalize_member_variants
-            variants = normalize_member_variants(variants, members)
+            variants = normalize_member_variants(variants, members, ladder=self.recipe == "wofs")
         object.__setattr__(self, "member_variants", variants)
         if self.recipe is not None:
             from gpuwm.ensemble.recipe_door import RECIPES
             if self.recipe not in RECIPES:
                 raise ValueError(f"ensemble recipe must be one of {list(RECIPES)}, got {self.recipe!r}")
-            if sources or (self.perturbation is not None and not is_surface_recipe(self.perturbation)):
+            if (sources and not family_specs) or (self.perturbation is not None and not is_surface_recipe(self.perturbation)):
                 raise ValueError("an ensemble recipe selects every member's source; "
                                  "remove [ensemble] sources and perturbation")
             if self.recipe == "surface-state":
                 from gpuwm.ensemble.surface_controls import shared_surface_options
                 shared_surface_options(self.perturbation, members)
         if trajectories:
-            if self.recipe not in ("multi-model", "member-roster"):
+            if self.recipe not in ("multi-model", "member-roster", "wofs"):
                 raise ValueError('ensemble trajectories belong to recipe = "multi-model" or "member-roster"')
             for item in trajectories:
                 if (not isinstance(item, dict) or not {"source", "cycle"} <= item.keys()
-                        or set(item) - {"source", "cycle", "member"}):
+                        or set(item) - {"source", "cycle", "member", "model", "parent_receipt"}):
                     raise ValueError("each ensemble trajectory needs a source and a cycle "
                                      "(and a member where its source has members)")
             if len(trajectories) < members:
@@ -102,9 +132,22 @@ class EnsembleRequest:
         elif self.recipe == "multi-model":
             raise ValueError("a multi-model ensemble needs its trajectory list: "
                              "--trajectories FILE or [ensemble] trajectories")
+        from gpuwm.ensemble.lineage import parent_receipt, model_identity
         object.__setattr__(self, "trajectories", tuple(
-            {**item, "cycle": item["cycle"] if isinstance(item["cycle"], str)
+            {**item, "source": model_identity(item["source"], item["model"])[1] if item.get("model") is not None else item["source"], **({"parent_receipt": parent_receipt(item["parent_receipt"])} if "parent_receipt" in item else {}), "cycle": item["cycle"] if isinstance(item["cycle"], str)
              else item["cycle"].isoformat()} for item in trajectories))
+        from gpuwm.ensemble.lineage import family_weights, trajectory_records, weight_records
+        if self.provenance:
+            records, weights = weight_records(self.provenance, self.family_weights)
+        elif trajectories:
+            records, weights = trajectory_records(self.trajectories[:members], base_seed=self.base_seed,
+                variants=variants, stochastic=self.stochastic, weights=self.family_weights)
+        else:
+            records, weights = (), family_weights(self.family_weights)
+        from gpuwm.ensemble.lineage import record_stochastic
+        records = record_stochastic(records, self.stochastic)
+        object.__setattr__(self, "provenance", records)
+        object.__setattr__(self, "family_weights", weights)
         if self.perturbation is not None and not isinstance(self.perturbation, dict):
             # Breakage it prevents: a provider name is bound only by the
             # tools.ensemble_forecast overlay command.  This request binds
@@ -130,7 +173,7 @@ class EnsembleRequest:
         if isinstance(value, cls):
             from gpuwm.ensemble.calibration_admission import refuse_uncalibrated_random
             refuse_uncalibrated_random(perturbation=value.perturbation, stochastic=value.stochastic)
-            if value.member_variants:
+            if value.member_variants or value.hydro is not None:
                 # Roster records contain mutable mappings. Revalidate and
                 # detach them at the run door, as the initial reader does.
                 return cls(**value.receipt())
@@ -149,6 +192,11 @@ class EnsembleRequest:
         if unknown:
             raise ValueError(f"unknown ensemble options: {sorted(unknown)}; "
                              f"the [ensemble] table takes {TABLE_KEYS}")
+        if value.get("sources") and all(isinstance(row, dict) and "members" in row for row in value["sources"]):
+            from gpuwm.ensemble.wofs_recipe import parse_source_spec
+            specs = parse_source_spec(value["sources"], value.get("members"))
+            value = {**value, "sources": specs, "members": sum(row["members"] for row in specs),
+                     "recipe": value.get("recipe", "wofs")}
         if value.get("trajectories") and value.get("recipe") is None:
             # A trajectory list is the multi-model recipe.
             value = {**value, "recipe": "multi-model"}
@@ -167,7 +215,8 @@ class EnsembleRequest:
         return cls(**value)
 
     def receipt(self):
-        return {"members": self.members, "keep_member_files": self.keep_member_files,
+        return {**({"sounding_points": list(self.sounding_points)} if self.sounding_points else {}),
+                "members": self.members, "keep_member_files": self.keep_member_files,
                 "retain_member_diagnostics": self.retain_member_diagnostics,
                 "stochastic": self.stochastic,
                 "thresholds": self.thresholds, "sources": list(self.sources),
@@ -176,10 +225,14 @@ class EnsembleRequest:
                                       else list(self.member_device_ids)),
                 **({} if self.max_ordinary_members_per_device is None else
                    {"max_ordinary_members_per_device": self.max_ordinary_members_per_device}),
+                **({} if self.hydro is None else {"hydro": dict(self.hydro)}),
                 # Stated only when a recipe is selected, so a request without
                 # one keeps the receipt every earlier manifest recorded.
                 **({} if self.recipe is None else {"recipe": self.recipe,
                     "trajectories": [dict(item) for item in self.trajectories]}),
                 **({} if not self.member_variants else {"member_variants": [
                     {"name": item["name"], "physics": dict(item["physics"]),
-                     "surface": dict(item["surface"])} for item in self.member_variants]})}
+                     "surface": dict(item["surface"]), **({"wind": item["wind"]} if item.get("wind") else {})} for item in self.member_variants]}),
+                **({"family_weights": dict(self.family_weights)} if self.family_weights else {}),
+                **({"provenance": list(self.provenance)} if self.provenance else {}),
+                **({"member_fetches": list(self.member_fetches)} if self.member_fetches else {})}

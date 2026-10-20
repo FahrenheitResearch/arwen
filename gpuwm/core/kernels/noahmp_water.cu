@@ -1589,7 +1589,8 @@ __constant__ unsigned int C_W_F32[3] = {
 #define O_QSDEW       (NSTATE + 33)
 #define O_QINSUR      (NSTATE + 34)
 #define O_SNOFLOW     (NSTATE + 35)
-#define W_OUT_STRIDE  (NSTATE + 36)
+#define O_SOILDRAIN   (NSTATE + 36)
+#define W_OUT_STRIDE  (NSTATE + 37)
 
 // ==========================================================================
 // WATER -- module_sf_noahmplsm.F:5954-6261
@@ -1614,6 +1615,9 @@ __device__ void d_water(const float *par, int urban, int nroot, int ist,
     float runsrf  = K_ZERO;                                          // :6110
     float qinsur  = K_ZERO;                                          // :6111
     float qtldrn  = K_ZERO;                                          // :6112
+    // Genuine bottom drainage, separate from exfiltration and snow runoff.
+    // Diagnostic only; existing WATER calculations and outputs are unchanged.
+    float soldrain = K_ZERO;
 
     // canopy-intercepted snowfall/rainfall, drips, and throughfall    :6116
     float cw[13];
@@ -1704,6 +1708,7 @@ __device__ void d_water(const float *par, int urban, int nroot, int ist,
         d_soilwater(par, urban, dt_soil, zsoil, dz, qinsur_avg, qseva_avg,
                     etrani_avg, c->sice, c->sh2o, smc, &runsub,
                     &runsrf, &qdrain, wcnd, &fcrmax);                // :6214
+        soldrain = FMUL(qdrain, dt_soil);  // qdrain mm/s -> mm per LSM step
 
         // OPT_RUN==1 GROUNDWATER at 6225-6231 is dead.
         runsub = FADD(runsub, qdrain);                               // :6235
@@ -1735,6 +1740,7 @@ __device__ void d_water(const float *par, int urban, int nroot, int ist,
     o[O_QMELTC] = qmeltc; o[O_QEVAC] = qevac; o[O_QDEWC] = qdewc;
     o[O_QSEVA] = qseva; o[O_QSDEW] = qsdew; o[O_QINSUR] = qinsur;
     o[O_SNOFLOW] = snoflow;
+    o[O_SOILDRAIN] = soldrain;
 }
 
 // ==========================================================================

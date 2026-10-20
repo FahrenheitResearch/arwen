@@ -952,7 +952,7 @@ def test_the_runtime_refl_gates_are_reached_through_the_named_constant():
                      "_submit_tree_history_frame": 1}
 
 
-def test_the_prepared_runner_consumes_the_mp28_refl_handoff():
+def test_the_prepared_runner_consumes_the_mp28_refl_handoff(monkeypatch):
     """Behavioural, on the FOURTH site -- the one the old gap test missed.
 
     ``_consume_due_native_refl_10cm`` is a pure function of (ticks, state,
@@ -965,6 +965,10 @@ def test_the_prepared_runner_consumes_the_mp28_refl_handoff():
     from gpuwm.prepared_single_domain_forecast import (
         _consume_due_native_refl_10cm)
 
+    from gpuwm.core import refl
+    # This test owns handoff routing; the GPU diagnostic has its own check.
+    monkeypatch.setattr(refl, "analysis_refl_10cm",
+                        lambda state, *, shape: np.full(shape, 15, dtype=np.float32))
     sentinel = object()
     calls = []
 
@@ -977,14 +981,12 @@ def test_the_prepared_runner_consumes_the_mp28_refl_handoff():
             qv=np.zeros(1),
             physics=SimpleNamespace(mp_physics=mp_physics))
         assert _consume_due_native_refl_10cm(state, 1, consumer) is sentinel
-        # Tick 0 takes no stash.  Since 01402fcb1 it writes WRF's initial
-        # array instead (refl.analysis_refl_10cm, all zero), so the
-        # analysis frame carries the field a stock WRF frame 0 carries.
+        # Tick 0 takes no stash. It diagnoses the initial hydrometeors.
         analysis = _consume_due_native_refl_10cm(state, 0, consumer,
                                                  shape=(1, 1, 1))
         assert analysis is not sentinel
         assert np.asarray(analysis).shape == (1, 1, 1)
-        assert not np.asarray(analysis).any()
+        assert (np.asarray(analysis) == 15).all()
     assert len(calls) == len(REFL_ADMISSION)
 
     # A scheme with no native field must still take nothing.
@@ -1024,8 +1026,9 @@ def test_the_runtime_tree_history_frame_consumes_the_mp28_refl_handoff():
         consume_refl_10cm = staticmethod(lambda state: field)
         refl_10cm_stash_is_due = staticmethod(refl.refl_10cm_stash_is_due)
         domain_start_ticks_of = staticmethod(refl.domain_start_ticks_of)
-        # The analysis-frame writer (01402fcb1) is the real one too.
-        analysis_refl_10cm = staticmethod(refl.analysis_refl_10cm)
+        # The GPU diagnostic is checked separately; pin the routing here.
+        analysis_refl_10cm = staticmethod(
+            lambda state, *args, shape, **kw: np.full(shape, 15, dtype=np.float32))
 
     class _UhDiag:
         @staticmethod
@@ -1044,16 +1047,14 @@ def test_the_runtime_tree_history_frame_consumes_the_mp28_refl_handoff():
         monkey.setitem(sys.modules, "gpuwm.core.refl", _Refl)
         monkey.setitem(sys.modules, "gpuwm.core.uh_diag", _UhDiag)
         runtime._submit_tree_history_frame(_Writers, node, ticks=6)
-        # tick 0 is not a period boundary: nothing was stashed, so nothing
-        # is consumed; the domain's analysis frame writes WRF's initial
-        # all-zero array instead (01402fcb1).
+        # Tick 0 diagnoses the initial hydrometeors without consuming a stash.
         runtime._submit_tree_history_frame(_Writers, node, ticks=0)
     finally:
         monkey.undo()
 
     assert [ticks for ticks, _ in submitted] == [6, 0], submitted
     assert submitted[0][1] is field
-    assert submitted[1][1] is not field and not np.asarray(submitted[1][1]).any()
+    assert submitted[1][1] is not field and (np.asarray(submitted[1][1]) == 15).all()
 
 
 def test_the_missing_28_refl_admission_was_a_crash_not_a_missing_field():

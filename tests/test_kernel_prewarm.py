@@ -159,3 +159,25 @@ def test_the_diffusion_compile_keeps_its_image_in_the_persistent_cache():
              for node in ast.walk(function) if isinstance(node, ast.ImportFrom)
              for alias in node.names}
     assert bound["compiler"] == "gpuwm.nvrtc_ptx_cache"
+
+
+def test_composed_inventory_uses_runtime_factory_not_nonexistent_file(monkeypatch):
+    selected = tuple(kernel_prewarm._COMPOSED_LOADERS)
+    monkeypatch.setattr(kernel_prewarm, 'static_modules', lambda experiment: selected)
+    monkeypatch.setattr(kernel_prewarm, '_inline_jobs', lambda modules: [])
+    jobs = kernel_prewarm.static_jobs(_experiment())
+    assert {name for name, factory, args in jobs} == set(selected)
+    assert all(factory is kernel_prewarm._warm_composed and args == (name,)
+               for name, factory, args in jobs)
+    # Execute every dispatcher against a substituted factory at the real
+    # module/function address; SW must receive its actual table object.
+    import importlib
+    calls = []
+    tables = object()
+    for name, (module, function) in kernel_prewarm._COMPOSED_LOADERS.items():
+        target = importlib.import_module('gpuwm.core.' + module)
+        monkeypatch.setattr(target, function, lambda *args, n=name: calls.append((n,args)))
+        if name == 'rrtmg_sw_legacy':
+            monkeypatch.setattr(target, '_sw_tables', lambda: tables)
+        kernel_prewarm._warm_composed(name)
+    assert calls == [(n, (tables,) if n == 'rrtmg_sw_legacy' else ()) for n in selected]

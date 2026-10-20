@@ -93,6 +93,27 @@ def test_interfaces_average_their_bounding_levels_and_pin_the_ends():
         interface_vertical_velocity(np.zeros((1, 2, 3), dtype=np.float32))
 
 
+def test_boundary_initialization_retains_the_published_updraft():
+    """Later source frames used to discard W under boundary_only=True."""
+    from dataclasses import replace
+    from test_metem_differential import _synthetic
+    from gpuwm.ingest.real import initialize_real
+    from gpuwm.ingest.cpu_backend import CpuPreprocessBackend
+    try:
+        CpuPreprocessBackend()
+    except (FileNotFoundError, OSError) as error:
+        pytest.skip(f"native CPU bridge is not available: {error}")
+    snapshot, cfg, coord, terrain, orography = _synthetic(2500.0, 2500.0)
+    fields = dict(snapshot.fields)
+    fields["WW"] = np.full_like(fields["TT"], 12.0)
+    snapshot = replace(snapshot, fields=fields)
+    result = initialize_real(snapshot, cfg, coord, terrain,
+        source_orography=orography, p_top=5000.0,
+        preprocess_backend="cpu", state_backend="preprocess", boundary_only=True)
+    assert np.max(result.state.w) > 11.0
+    assert result.vertical_velocity_initialization["source_field"] == "WW"
+
+
 def test_the_receipt_says_which_field_and_how_strong():
     w_mass = np.zeros((3, 2, 2), dtype=np.float32)
     w_mass[1, 0, 0] = 12.0

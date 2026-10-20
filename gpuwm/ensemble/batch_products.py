@@ -64,7 +64,7 @@ def default_product_requests(available_fields, *, thresholds=None, postage_stamp
     if unknown:
         raise ValueError(f"threshold overrides name unknown diagnostics: {sorted(unknown)}")
     requests = tuple(FieldProducts(field, units, tuple(overrides.get(field, values)),
-                                   paintball=True, postage_stamp=postage_stamp)
+                                   paintball=True, spaghetti=True, postage_stamp=postage_stamp)
                      for field, (units, values) in DEFAULT_THRESHOLDS.items()
                      if field in available)
     unavailable = tuple(field for field in DEFAULT_THRESHOLDS if field not in available)
@@ -243,7 +243,7 @@ class FieldProducts:
                 "postage_stamp": self.postage_stamp}
 
 
-def product_memory_plan(requests, field_shapes, *, members, reserved_bytes=0):
+def product_memory_plan(requests, field_shapes, *, members, reserved_bytes=0, include_pmm=False):
     """Price every output and threshold allocation, including membership maps.
 
     Inputs belong to the caller's forecast/diagnostic plan. This output plan
@@ -266,6 +266,8 @@ def product_memory_plan(requests, field_shapes, *, members, reserved_bytes=0):
             raise ValueError(f"{request.field} needs a gridded field")
         for name in ("mean", "spread", "min", "max"):
             rows.append(BatchArraySpec(f"{request.field}:{name}", shape, "shared"))
+        if include_pmm and request.field in ("refl", "rain_total"):
+            rows.append(BatchArraySpec(f"{request.field}:pmm", shape, "shared"))
         rows.append(BatchArraySpec(f"{request.field}:finite_count", shape, "shared", "uint32"))
         thresholds = len(request.thresholds)
         if thresholds:
@@ -386,6 +388,73 @@ def _refuse_overlap(inputs, outputs):
                 raise ValueError(f"product outputs {name} and {other} overlap")
 
 
+def probability_matched_mean(values, mean, xp, member_weights=None):
+    """GPU rank matching, optionally drawing from a weighted member CDF.
+
+    Each finite grid cell carries its member's probability mass. Equal mean
+    ranks share their draws. Uniform weights retain the existing PMM exactly.
+    """
+    flat = mean.reshape(-1)
+    indices = xp.flatnonzero(xp.isfinite(flat))
+    source = values.reshape(-1)
+    finite = xp.isfinite(source)
+    source_order = xp.argsort(-source[finite], kind="stable")
+    pool = source[finite][source_order]
+    out = xp.full(flat.shape, xp.nan, dtype=xp.float32)
+    if indices.size and pool.size:
+        order = xp.argsort(-flat[indices], kind="stable")
+        ranks = flat[indices[order]]
+        quantiles = xp.arange(indices.size, dtype=xp.float64) / indices.size
+        if member_weights is None:
+            picks = (xp.arange(indices.size, dtype=xp.float64) * (pool.size / indices.size)).astype(xp.int64)
+        else:
+            weights = xp.asarray(member_weights, dtype=xp.float64)
+            mass = xp.broadcast_to(weights.reshape((-1,) + (1,) * (values.ndim - 1)), values.shape)
+            mass = mass.reshape(-1)[finite][source_order]
+            cumulative = xp.cumsum(mass)
+            picks = xp.minimum(xp.searchsorted(cumulative, quantiles * cumulative[-1], side="right"), pool.size - 1)
+        draws = pool[picks]
+        group = xp.cumsum(xp.concatenate((xp.asarray([True]), ranks[1:] != ranks[:-1]))) - 1
+        draws = (xp.bincount(group, weights=draws) / xp.bincount(group))[group]
+        out[indices[order]] = draws
+    return out.reshape(mean.shape)
+
+
+def apply_member_weights(products, member_weights):
+    """Weight the existing aggregate buffers on their resident GPU.
+
+    Missing members still mask a cell. Weights never change that denominator.
+    The sample spread uses the reliability-weight correction 1-sum(w**2).
+    """
+    xp = products._xp
+    weights = np.asarray(member_weights, dtype=np.float64)
+    if (weights.shape != (products.members,) or not np.isfinite(weights).all()
+            or (weights < 0).any() or not (weights > 0).any() or not np.isfinite(weights.sum())):
+        raise ValueError("member weights must be finite nonnegative masses with a positive finite total for the complete roster")
+    weights = weights / weights.sum()
+    device_weights = xp.asarray(weights)
+    for request in products.requests:
+        values = products.fields[request.field]
+        w = device_weights.reshape((-1,) + (1,) * (values.ndim - 1))
+        complete = xp.all(xp.isfinite(values), axis=0)
+        mean = xp.sum(w * values, axis=0)
+        prefix = request.field + ":"
+        products.outputs[prefix + "mean"][:] = xp.where(complete, mean, xp.nan)
+        correction = float(1 - np.sum(weights ** 2))
+        variance = xp.sum(w * (values - mean) ** 2, axis=0)
+        spread = xp.sqrt(variance / correction) if correction > 0 else xp.zeros_like(mean)
+        products.outputs[prefix + "spread"][:] = xp.where(complete, spread, xp.nan)
+        compare = {"ge": xp.greater_equal, "gt": xp.greater, "le": xp.less_equal, "lt": xp.less}[request.comparison]
+        for position, threshold in enumerate(request.thresholds):
+            products.outputs[prefix + "probability"][position] = xp.where(
+                complete, xp.sum(w * compare(values, threshold), axis=0), xp.nan)
+        if prefix + "pmm" in products.outputs:
+            products.outputs[prefix + "pmm"][:] = probability_matched_mean(
+                values, products.outputs[prefix + "mean"], xp,
+                None if np.all(weights == weights[0]) else weights)
+    return products
+
+
 class PreparedProductFrame:
     """Bound product launchers; calls allocate no forecast-sized device arrays."""
 
@@ -440,6 +509,9 @@ class PreparedProductFrame:
         for request in self.requests:
             if request.postage_stamp:
                 self._xp.copyto(self.outputs[f"{request.field}:members"], self.fields[request.field])
+            if request.field in ("refl", "rain_total"):
+                self.outputs[f"{request.field}:pmm"][:] = probability_matched_mean(
+                    self.fields[request.field], self.outputs[f"{request.field}:mean"], self._xp)
         self.calls += 1
         return self.outputs
 
@@ -487,7 +559,7 @@ def prepare_product_frame(fields, requests, *, available_bytes, reserved_bytes=0
         members, shapes[name] = count, array.shape[1:]
     if members > np.iinfo(np.int32).max:
         raise ValueError("member count exceeds the CUDA int32 product ABI")
-    plan = product_memory_plan(requests, shapes, members=members, reserved_bytes=reserved_bytes)
+    plan = product_memory_plan(requests, shapes, members=members, reserved_bytes=reserved_bytes, include_pmm=True)
     storage = BatchStorage(plan, members, array_module=array_module, available_bytes=available_bytes)
     for request in requests:
         if request.thresholds:
@@ -661,7 +733,8 @@ def write_product_frame(path, products, *, valid_time, latitude, longitude,
             writer.createVariable(name, "float32", ("south_north", "west_east"))[:] = values
         for request in products.requests:
             field = request.field
-            for kind in ("mean", "spread", "min", "max", "finite_count"):
+            for kind in ("mean", "spread", "min", "max", "finite_count",
+                         *(("pmm",) if f"{field}:pmm" in products.outputs else ())):
                 name = f"{field}_{kind}"
                 array = products.outputs[f"{field}:{kind}"]
                 variable = writer.createVariable(name, array.dtype, ("south_north", "west_east"))

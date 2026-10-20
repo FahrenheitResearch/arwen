@@ -14,14 +14,79 @@ manifest stage) now write it beside that preparation's output root.
 from __future__ import annotations
 
 import hashlib
+import json
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
+
+import pytest
 
 from gpuwm import fetch
 
 
 CYCLE = "2026-08-18_18:00:00"
+
+
+def test_manifest_reader_during_second_fetch_keeps_complete_inventory(
+        tmp_path, monkeypatch):
+    """Two member fetches share one download; a reader meets writer two's
+    first admission, then verifies its binding after that writer finishes.
+    """
+    from gpuwm import fetch_guard, fetch_pool, gfs_direct
+
+    monkeypatch.setenv(fetch_guard.LOCK_ROOT_ENV, str(tmp_path / "locks"))
+    # Writer one completes the download before writer two checks it again.
+    out = _fetched_gfs_dir(tmp_path, monkeypatch)
+    bridge, wps, config = [tmp_path / name for name in
+                           ("bridge", "namelist.wps", "experiment.toml")]
+    for path in (bridge, wps, config):
+        path.write_text("# bound input\n", encoding="utf-8")
+    admitted, release, reading = (threading.Event() for _ in range(3))
+    original = fetch_pool.run_transfers
+
+    def paused_transfers(jobs, *, on_admitted, **kwargs):
+        def admit(index, entry):
+            result = on_admitted(index, entry)
+            if index == 0:
+                admitted.set()
+                assert release.wait(10), "reader did not release writer two"
+            return result
+        return original(jobs, on_admitted=admit, **kwargs)
+
+    monkeypatch.setattr(fetch_pool, "run_transfers", paused_transfers)
+
+    def author():
+        reading.set()
+        return fetch.author_gfs_front_door_manifest(
+            out=out, bridge=bridge, wps_namelist=wps,
+            experiment_config=config, manifest_out=tmp_path / "inputs.json",
+            progress=lambda line: None)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        writer = pool.submit(
+            fetch.fetch_gfs, cycle=datetime(2026, 8, 18, 18), hours=(0, 3, 6),
+            area=fetch.parse_area("30,-100,40,-90"), out=out,
+            progress=lambda line: None,
+            derived_bar=lambda cycle, **kwargs: fetch.GFS_SUBSET_RECORD_COUNT)
+        try:
+            assert admitted.wait(10)
+            reader = pool.submit(author)
+            assert reading.wait(10)
+            with pytest.raises(TimeoutError):
+                reader.result(timeout=0.1)
+            # Preparations already in flight can still read the complete
+            # series while the cached writer checks the rest of its files.
+            assert json.loads((out / fetch.FETCH_MANIFEST_NAME).read_text())[
+                "forecast_hours"] == [0, 3, 6]
+            assert len((out / "gfs-series.tsv").read_text().splitlines()) == 3
+        finally:
+            release.set()
+        writer.result(timeout=10)
+        manifest, digest = reader.result(timeout=10)
+    gfs_direct._verify_input_manifest(manifest, digest, _front_door_roles(
+        series=out / "gfs-series.tsv", bridge=bridge, wps_namelist=wps,
+        experiment_config=config))
 
 
 def _grib2_stream(count):

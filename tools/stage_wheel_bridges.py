@@ -35,6 +35,9 @@ MANIFEST_SCHEMA = "gpuwm-wheel-bridge-bundle-v1"
 
 #: Where each workspace puts its release build, by crate-relative path.
 _WORKSPACE_TARGET = {
+    "tools/nextgen_hydrofabric": "target/release",
+    "tools/nextgen_verify": "target/release",
+    "tools/nextgen_forcing": "target/release",
     bridges.CRATE_RELATIVE: "target/release",
     bridges.RUSTWX_CRATE_RELATIVE: "target/release",
     "tools/region_global_dealias": "target/release",

@@ -228,9 +228,9 @@ _PACKAGED_PROFILES = MappingProxyType({
     "hex-history-netcdf-v1": _profile(
         "rw-wps-hex-history-netcdf",
         source_format="netcdf",
-        mapping="8ba9f4cdcaffa6b7119b12e56d1978d34ea6d9ac1849af801e4a2333ef295945",
+        mapping="e992c19fd9957ca050e8038e65033b1b886857a3ce80e47448515e67e081279a",
         composition="bbd2c5b52f13ee8f1ebfac8a138fd109ae883877d5d6fee3a5684172bec8d875",
-        provenance="d26ec1258b0e874c557b82020bdd0145a83f54a112f36f30d327b073b84d348c",
+        provenance="cd38d89e487695716cea9298be4ecb1f2ec0a93b96955ce1b0ac34a1ba195890",
         data_role="hex_in_band_surface",
         provenance_role="hex_in_band_surface_provenance",
     ),
@@ -426,6 +426,181 @@ _PACKAGED_PROFILES = MappingProxyType({
         composition="39953c876827616ee0142a26729a2d9813d062ca9350500e0d232a901cd00b41",
         provenance="7199ecd0f94c06d8c1d98829ebf66f24a78905ccc6cf52643aeba6e2f2979fad",
         composition_state="pending_cross_source",
+    ),
+    # NVIDIA Earth-2 model output (FourCastNet 3, SFNO, Pangu, Aurora,
+    # FengWu, GraphCast, AIFS through earth2studio) as Earth2Studio's
+    # NetCDF4Backend writes it: one variable per field and level, (time,
+    # lead_time, lat, lon), no units in the file (the mapping's
+    # producer_attributes carries Earth2Studio's lexicon).  The land
+    # surface these models do not publish is borrowed from the ERA5
+    # analysis at the forecast's initialization (ARCO, keyless) through the
+    # cross-source composition, as the AIGFS hybrid borrows it from GDAS.
+    # Authored from gpuwm/authorities/earth2-models.v1.json by
+    # tools/author_earth2_profile.py; proven on real FCN3 bytes 2026-10-19.
+    "earth2-stormcast-hrrr-netcdf-v1": _profile(
+        "rw-wps-earth2-stormcast-hrrr-netcdf",
+        source_format="netcdf",
+        mapping="e39aff8445c099fbdc27d87e391bf5d45a6abeb072629a76e2765cd4e34c3c7a",
+        composition="41c3cefb12cda90c50f19777a5e35238ae93eca19e5f32f1686d0214061b0dd3",
+        provenance="c49ac5b2da4e02631d44d61bb210f63e992f8c243388937f57f2695e314598f1",
+        data_role="physical_analysis_surface_data",
+        provenance_role="physical_analysis_surface_provenance",
+        contributing_mappings={
+            "physical_analysis_surface_mapping": {
+                "file": "rw-wps-earth2-hrrr-native-donor.mapping.json",
+                "sha256": "d97b028807c5ac090a95674c10e508dd0598b30b82336f971c57b781d2f12634",
+            },
+        },
+    ),
+    "earth2-stormcast-conus-hrrr-netcdf-v1": _profile(
+        "rw-wps-earth2-stormcast-conus-hrrr-netcdf",
+        source_format="netcdf",
+        mapping="a32f9ac79ea23ef4bb3119f0f66252ad29ab9dd7e540199bfc5a2b4fd0ccfd28",
+        composition="41c3cefb12cda90c50f19777a5e35238ae93eca19e5f32f1686d0214061b0dd3",
+        provenance="20e1eeb5e9ec1bac254fb77e3ba670b8e961ba6d58ba6845c9e4bfe6af3d1847",
+        data_role="physical_analysis_surface_data",
+        provenance_role="physical_analysis_surface_provenance",
+        contributing_mappings={
+            "physical_analysis_surface_mapping": {
+                "file": "rw-wps-earth2-hrrr-native-donor.mapping.json",
+                "sha256": "d97b028807c5ac090a95674c10e508dd0598b30b82336f971c57b781d2f12634",
+            },
+        },
+    ),
+    "earth2-pl13-q-netcdf-v1": _profile(
+        "rw-wps-earth2-pl13-q-netcdf",
+        source_format="netcdf",
+        mapping="a37c5803570a79994caf7d65fe3bbf376e9f5db0b3eb298e539f304daffec220",
+        composition="fa545653e0af37b83e36d58c56a76dd9ec6c52de92f209fe0b67d85717410d48",
+        provenance="27bc0b84ff1d2d8327adc7811e1d3de8682c647511a25eea0b6887f1c5f70688",
+        data_role="physical_analysis_surface_data",
+        provenance_role="physical_analysis_surface_provenance",
+        contributing_mappings={
+            "physical_analysis_surface_mapping": {
+                "file": "rw-wps-era5-arco-netcdf-donor.mapping.json",
+                "sha256": "fc6d7a02be6610e29b8f4da8c723c3ce32a55407a4fd70543ab81bf2c7034682",
+            },
+        },
+    ),
+    "earth2-sparse-r-netcdf-v1": _profile(
+        "rw-wps-earth2-sparse-r-netcdf",
+        source_format="netcdf",
+        mapping="904c67a59b52f956e50fb9aac670685d07008529234009a2f5dba294d5522c69",
+        composition="87a68283ab045fab21b50159ff4f13c70195e89e0be3b673d4cab80c3cd96d74",
+        provenance="9909bbcba6fa404bcce920fe97a8f0fa20d27e540036e4992d269bd79fd875a1",
+        data_role="physical_analysis_surface_data",
+        provenance_role="physical_analysis_surface_provenance",
+        contributing_mappings={
+            "physical_analysis_surface_mapping": {
+                "file": "rw-wps-era5-arco-netcdf-donor.mapping.json",
+                "sha256": "fc6d7a02be6610e29b8f4da8c723c3ce32a55407a4fd70543ab81bf2c7034682",
+            },
+        },
+    ),
+    "earth2-pl13-q-gfs-netcdf-v1": _profile(
+        "rw-wps-earth2-pl13-q-gfs-netcdf",
+        source_format="netcdf",
+        mapping="8ca7b375ab6d97134256da21ff68a53c16a111d7b0ee851e74c7abc46ab103da",
+        composition="f4ea99933f305da09ad185acc525ef09635660f16382561b7ee9e74a297f9458",
+        provenance="03a36a7b7915b6cc065e395e7b0fb457d57356b580fd49fa6bb75dcfdc313739",
+        data_role="physical_analysis_surface_data",
+        provenance_role="physical_analysis_surface_provenance",
+        contributing_mappings={
+            "physical_analysis_surface_mapping": {
+                "file": "rw-wps-earth2-gdas-donor.mapping.json",
+                "sha256": "e24542b3a9747c37614451d29eb4047b5f17f6068e3e63c299a2cc5367d8d8a1",
+            },
+        },
+    ),
+    "earth2-pl13-q-ifs-netcdf-v1": _profile(
+        "rw-wps-earth2-pl13-q-ifs-netcdf",
+        source_format="netcdf",
+        mapping="096759cd7c8e239265d7a6c9c9557a42427f95ee751d2c5dd531fbba265ff637",
+        composition="e4252fce7b5b1fc608613df65f6d1b863957a181374b76617ebae101ca9c879c",
+        provenance="61e21ea3047436c486e5dd4a052d84f8920c784832bf77c9c8aa6183369e72d1",
+        data_role="physical_analysis_surface_data",
+        provenance_role="physical_analysis_surface_provenance",
+        contributing_mappings={
+            "physical_analysis_surface_mapping": {
+                "file": "rw-wps-earth2-ifs-donor.mapping.json",
+                "sha256": "ac39bd4c9a59a5bc2e7fded1863d70c8bcb4e163367c6b187f62ca8bbc5cbb04",
+            },
+        },
+    ),
+    "earth2-sparse-r-gfs-netcdf-v1": _profile(
+        "rw-wps-earth2-sparse-r-gfs-netcdf",
+        source_format="netcdf",
+        mapping="d7fd55289ea6434a6e4b4bd3a2029b56cf361995f13964df3575e6c30c6a569b",
+        composition="955c1ea47a5a754b50abcd5cd482be91604aa96d12f2c94908a81bacb5ccdaa1",
+        provenance="cac03883199912629c8f09363ea80e8bb7d749488972548bf54acbd3b838a879",
+        data_role="physical_analysis_surface_data",
+        provenance_role="physical_analysis_surface_provenance",
+        contributing_mappings={
+            "physical_analysis_surface_mapping": {
+                "file": "rw-wps-earth2-gdas-donor.mapping.json",
+                "sha256": "e24542b3a9747c37614451d29eb4047b5f17f6068e3e63c299a2cc5367d8d8a1",
+            },
+        },
+    ),
+    "earth2-sparse-r-ifs-netcdf-v1": _profile(
+        "rw-wps-earth2-sparse-r-ifs-netcdf",
+        source_format="netcdf",
+        mapping="8af3a759d0132e75a099bc76bd860bc25c56aaef022d8bd1bf0668fcf3e3ca4a",
+        composition="29bfda0fc5b0ce35161d2ab31c31132a3e4fa91ee21b5b29b9238c573df22d55",
+        provenance="571a37ebfa7b6a9650e2cb8046e6bf7d2efca5bab97a53d607d977bda17513c0",
+        data_role="physical_analysis_surface_data",
+        provenance_role="physical_analysis_surface_provenance",
+        contributing_mappings={
+            "physical_analysis_surface_mapping": {
+                "file": "rw-wps-earth2-ifs-donor.mapping.json",
+                "sha256": "ac39bd4c9a59a5bc2e7fded1863d70c8bcb4e163367c6b187f62ca8bbc5cbb04",
+            },
+        },
+    ),
+    "earth2-pl13-rh-netcdf-v1": _profile(
+        "rw-wps-earth2-pl13-rh-netcdf",
+        source_format="netcdf",
+        mapping="f8a23070eb0bffeeb723c3fddeb1e1ba9f2300f05fe2a72cfb605c3f99f164d9",
+        composition="fa545653e0af37b83e36d58c56a76dd9ec6c52de92f209fe0b67d85717410d48",
+        provenance="13035f0b8777009b80805ff89f118611cf8e5b37f5369aa59c1a2d9656f5028b",
+        data_role="physical_analysis_surface_data",
+        provenance_role="physical_analysis_surface_provenance",
+        contributing_mappings={
+            "physical_analysis_surface_mapping": {
+                "file": "rw-wps-era5-arco-netcdf-donor.mapping.json",
+                "sha256": "fc6d7a02be6610e29b8f4da8c723c3ce32a55407a4fd70543ab81bf2c7034682",
+            },
+        },
+    ),
+    "earth2-pl13-rh-gfs-netcdf-v1": _profile(
+        "rw-wps-earth2-pl13-rh-gfs-netcdf",
+        source_format="netcdf",
+        mapping="c59a227cd8cdb3cf4c2387b50c08aa5374a082e897a0723d411d9ada75e61873",
+        composition="f4ea99933f305da09ad185acc525ef09635660f16382561b7ee9e74a297f9458",
+        provenance="7f3d2379d261ea60548d27bc32238a88b2197a85a017b1d487ea44e9e8304ed2",
+        data_role="physical_analysis_surface_data",
+        provenance_role="physical_analysis_surface_provenance",
+        contributing_mappings={
+            "physical_analysis_surface_mapping": {
+                "file": "rw-wps-earth2-gdas-donor.mapping.json",
+                "sha256": "e24542b3a9747c37614451d29eb4047b5f17f6068e3e63c299a2cc5367d8d8a1",
+            },
+        },
+    ),
+    "earth2-pl13-rh-ifs-netcdf-v1": _profile(
+        "rw-wps-earth2-pl13-rh-ifs-netcdf",
+        source_format="netcdf",
+        mapping="69343e99ec2647574ce8f0c22d5a44987b6f023a13eb91cd15ac6de8e674196b",
+        composition="e4252fce7b5b1fc608613df65f6d1b863957a181374b76617ebae101ca9c879c",
+        provenance="79ab47d8a248ebd9d54abe6cc8873a1f937f3fe4f9907214bed1a60ea9541b9b",
+        data_role="physical_analysis_surface_data",
+        provenance_role="physical_analysis_surface_provenance",
+        contributing_mappings={
+            "physical_analysis_surface_mapping": {
+                "file": "rw-wps-earth2-ifs-donor.mapping.json",
+                "sha256": "ac39bd4c9a59a5bc2e7fded1863d70c8bcb4e163367c6b187f62ca8bbc5cbb04",
+            },
+        },
     ),
     # The AIGFS HYBRID: the same operational NOMADS atmosphere (every
     # selector still pins subcenter=0 against the S3/EAGLE imposter) made

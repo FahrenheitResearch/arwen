@@ -545,3 +545,35 @@ def test_a_lead_batch_decode_equals_the_whole_decode(source, tmp_path):
         whole.close()
         for batch in batches:
             batch.close()
+
+
+def test_parallel_forcing_readers_decode_each_posted_batch_once():
+    """Parallel root/forcing staging must not publish batch-N twice."""
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    import time
+    from types import SimpleNamespace
+    from gpuwm.mapped_direct import _PostedMappedSource
+    source = object.__new__(_PostedMappedSource)
+    source._decode_lock = threading.RLock()
+    source._next = 0
+    source.leads = (0,)
+    source.markers = {0: {}}
+    source.posted = SimpleNamespace()
+    calls = []
+    entered, release = threading.Event(), threading.Event()
+    def decode(start, end):
+        calls.append((start, end))
+        entered.set()
+        assert release.wait(5)
+    source._decode_batch = decode
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(source.through, 0)
+        assert entered.wait(5)
+        second = pool.submit(source.through, 0)
+        time.sleep(0.05)
+        release.set()
+        first.result(timeout=5)
+        second.result(timeout=5)
+    assert calls == [(0, 0)]
+    assert source.decoded_count == 1

@@ -112,6 +112,9 @@ def _prepared_component_route_plan(member_inputs, *, card, collector, array_modu
     from gpuwm.ensemble.admission import ordinary_memory_model_from_estimate
     from gpuwm.ensemble.prepared_component_reservation import plan_prepared_component_reservation
     from gpuwm.ensemble.production_memory import ordinary_ensemble_memory_model
+    from gpuwm.ensemble.optional_routing import enabled_for
+    if any(enabled_for(value) for value in member_inputs.values()):
+        return None, "NextGen requires the original resident hydro driver for each member"
     if stochastic_provider is not None and any(stochastic_provider.enabled_for_experiment(value.experiment)
                                                for value in member_inputs.values()):
         return None, "active stochastic rates require their original per-member driver callbacks; packed production has no stochastic leaf handoff"
@@ -220,6 +223,7 @@ class PreparedEnsembleSession:
         if len(self.member_order) != self.request.members:
             raise ValueError("requested member count differs from the verified source roster")
         if (self.request.member_variants
+                and self.request.recipe != "wofs"
                 and input_provider is None and member_roster is None and source_execution is None):
             raise ValueError("member_variants selects each member's own land and surface state, "
                              "and this session has no bound member inputs: every member would "
@@ -288,6 +292,12 @@ class PreparedEnsembleSession:
         started = time.perf_counter()
         out = Path(output_directory or self.output_directory)
         out.mkdir(parents=True, exist_ok=True)
+        if self.request.recipe == "wofs":
+            from gpuwm.ensemble.checkpoint_fill import CheckpointFill
+            self._checkpoint_fill = CheckpointFill(out / "parents")
+        if self.request.sounding_points:
+            from gpuwm.soundings import binary
+            binary()
         if (out / "ensemble-run.json").exists() and self.restart_roster is None:
             raise FileExistsError("ensemble output already exists; use a new run directory")
         exp = inputs.experiment
@@ -323,6 +333,11 @@ class PreparedEnsembleSession:
             exp = inputs.experiment
             member_inputs_by_id = {member: self._configured_member_inputs(prepared)
                                   for member, prepared in member_inputs_by_id.items()}
+        from gpuwm.ensemble.lineage import bind_runtime_stochastic
+        self.request = bind_runtime_stochastic(self.request, {
+            member: self._stochastic_authorities[id(prepared)]
+            for member, prepared in member_inputs_by_id.items()
+            if id(prepared) in self._stochastic_authorities})
         self._remember_member_land_layouts(member_inputs_by_id)
         from gpuwm.ensemble.calibration_admission import random_warnings
         warnings = random_warnings(perturbation=self.request.perturbation,
@@ -364,13 +379,6 @@ class PreparedEnsembleSession:
                 "members": [{"member_id": member, **{name: str(getattr(prepared, name, "") or "")
                     for name in ("prepared_root", "experiment_config", "wps_namelist")}}
                     for member, prepared in member_inputs_by_id.items()]})
-        variants = []
-        seen_variants = set()
-        for prepared in member_inputs_by_id.values():
-            key = (id(prepared.experiment), getattr(prepared, "boundary_interval_seconds", None))
-            if key not in seen_variants:
-                seen_variants.add(key)
-                variants.append(prepared)
         if self.collector is None:
             from gpuwm import rustwx
             from gpuwm.ensemble.batch_product_output import HeadlineDiagnosticCollector
@@ -391,6 +399,10 @@ class PreparedEnsembleSession:
                     for member, prepared in member_inputs_by_id.items())
             else:
                 metadata = ()
+            if self.request.provenance:
+                previous = {row.get("member_id", row.get("member")): row for row in metadata}
+                metadata = tuple({**previous.get(member, {}), **self.request.provenance[member],
+                                  "member_id": member} for member in self.member_order)
             self.collector = HeadlineDiagnosticCollector(out, members=self.request.members,
                 renderer=renderer, start_time=exp.start_time,
                 thresholds=self.request.thresholds,
@@ -399,12 +411,40 @@ class PreparedEnsembleSession:
                 member_metadata=metadata,
                 retain_member_diagnostics=self.request.retain_member_diagnostics,
                 **({"resume": True} if resumed is not None else {}))
+        from gpuwm.ensemble.optional_routing import member_settings, member_settings_scope, activation_receipt
+        # Snapshot metadata before admission threads: ContextVars need not be
+        # inherited by the worker on every supported Python runtime.
+        hydro_settings = {member: member_settings(prepared)
+                          for member, prepared in member_inputs_by_id.items()}
+        # One atmosphere Experiment can serve distinct prepared hydro tables.
+        # Keep those variants for admission, while sharing identical metadata.
+        variant_members, seen_variants = [], {}
+        for member, prepared in member_inputs_by_id.items():
+            key = (id(prepared.experiment), getattr(prepared, "boundary_interval_seconds", None))
+            settings = hydro_settings[member]
+            seen = seen_variants.setdefault(key, [])
+            if settings not in seen:
+                seen.append(settings)
+                variant_members.append((member, prepared))
+        variants = tuple(prepared for _, prepared in variant_members)
+        nextgen = [settings is not None and settings.get("enabled") is True
+                   for settings in hydro_settings.values()]
+        if any(nextgen) or self.request.hydro is not None:
+            if not all(nextgen):
+                raise ValueError("NextGen ensemble products require hydro enabled for every member")
+            from gpuwm.ensemble.nextgen_capture import NextGenCollector
+            if not isinstance(self.collector, NextGenCollector):
+                self.collector = NextGenCollector(self.collector, self.member_order,
+                    options=self.request.hydro, array_module=self.array_module)
         if resumed is not None:
             restore = getattr(self.collector, "restore_resume", None)
             if not callable(restore):
                 raise ValueError("ensemble continuation needs its durable diagnostic collector, including completed members")
             restore()
         member_archive = getattr(self.collector, "member_archive", None)
+        if self.request.recipe == "wofs":
+            from gpuwm.ensemble.wofs_recipe import prewarm_member_kernels
+            prewarm_member_kernels(prepared.experiment for prepared in member_inputs_by_id.values())
         if member_archive is not None:
             for member, prepared in member_inputs_by_id.items():
                 member_archive.expect_member_forecast(member, prepared.experiment)
@@ -456,10 +496,12 @@ class PreparedEnsembleSession:
                                                                         if prepared.experiment is not exp))
                         from gpuwm.core.mynn_pbl_scratch import mynn_pricing_memory
                         with mynn_pricing_memory(total_bytes=card.total_bytes, free_bytes=card.available_bytes):
-                            estimates = tuple((estimate_experiment(prepared.experiment,
-                                forcing_interval_seconds=prepared.boundary_interval_seconds,
-                                profile=profile, vram_gib=card.total_bytes / (1024 ** 3)), prepared.experiment)
-                                for prepared in variants)
+                            estimates = []
+                            for member, prepared in variant_members:
+                                with member_settings_scope(prepared, inherited_settings=hydro_settings[member]):
+                                    estimates.append((estimate_experiment(prepared.experiment,
+                                        forcing_interval_seconds=prepared.boundary_interval_seconds,
+                                        profile=profile, vram_gib=card.total_bytes / (1024 ** 3)), prepared.experiment))
                         estimate, forecast_exp = estimates[0]
                         priced, external, margin = ordinary_ensemble_memory_model(estimate, forecast_exp, self.collector,
                             inventory_id=f"ordinary-ensemble-device-{card.device_id}",
@@ -515,8 +557,9 @@ class PreparedEnsembleSession:
                     checkpoint=(resolve_file(out, row["checkpoint"]) if row["status"] == "checkpoint" else None))
         has_radar = any(radar_enabled(prepared) for prepared in member_inputs_by_id.values())
         native = (self.native_executor is not None and self.source_execution is None
-                  and not has_radar and not checkpoint_members)
-        original_reasons = {}
+                  and not has_radar and not checkpoint_members and not any(nextgen))
+        original_reasons = ({member: ["NextGen retains its original per-member resident driver"]
+                             for member in member_inputs_by_id} if any(nextgen) else {})
         # These selections already require the original model. Diagnose them
         # before starting a first-member native probe so all ordinary members
         # can enter the admitted concurrent wave together.
@@ -541,7 +584,10 @@ class PreparedEnsembleSession:
         for member, concurrency in concurrency_plans.items():
             if not concurrency.eligible and member in original_reasons:
                 original_reasons[member].extend(concurrency.reasons)
-        concurrent_ordinary = bool(not checkpoint_members and original_reasons and ordinary_cuda_available
+        checkpoint_concurrent = (not checkpoint_members or
+            callable(getattr(self.collector, "checkpoint_hold", None)))
+        concurrent_ordinary = bool(checkpoint_concurrent and
+            (original_reasons or checkpoint_members or self.request.recipe == "wofs") and ordinary_cuda_available
             and not has_radar and original_source and all(
                 int(getattr(getattr(prepared.experiment, "devices", None), "count", 1)) <= 1
                 for prepared in member_inputs_by_id.values())
@@ -599,7 +645,10 @@ class PreparedEnsembleSession:
                     "member_ids": list(ids), "eligible": decision is not None,
                     "ordinary_reason": reason, "complete_native_rk_graph": False,
                     **({} if decision is None else {"memory": decision.reservation.receipt()})})
-        manifest = {"schema": "gpuwm-ensemble-run.v1", "status": "running",
+        from gpuwm.ensemble.lineage import lineage_summary
+        manifest = {"lineage": lineage_summary(self.request.provenance), "schema": "gpuwm-ensemble-run.v1", "status": "running",
+                    "hydro_activation": [dict(member_id=member, **activation_receipt(hydro_settings[member]))
+                                         for member in self.member_order],
                     "request": self.request.receipt(), "packing": packing.receipt(),
                     "ordinary_member_cap_policy": cap_policy,
                     **({} if not self.request.member_variants else {"member_variants": [
@@ -642,6 +691,16 @@ class PreparedEnsembleSession:
             manifest["warnings"] = warnings
         if self._initial_receipts or self.request.perturbation is not None and is_initial_perturbation(self.request.perturbation):
             manifest["initial_perturbations"] = []
+        provenance_directories = set()
+        for row in self.request.provenance:
+            member_directory = out / "members" / f"member-{row['member']:04d}"
+            # Claim once before execution. Only a verified restart may reuse an
+            # existing directory; ordinary runners below use this same claim.
+            member_directory.mkdir(parents=True, exist_ok=self.restart_roster is not None)
+            provenance_directories.add(member_directory)
+            _atomic_json(member_directory / "member-provenance.json", row)
+            if row.get("parent_family"):
+                print(f"ensemble lineage: m{row['member']:04d} {row['parent_family']} {row['model_key']} family_weight={row['family_weight']:g}")
         _atomic_json(out / "ensemble-run.json", manifest)
         if original_reasons:
             import sys
@@ -654,35 +713,36 @@ class PreparedEnsembleSession:
         manifest_lock = threading.Lock()
         bootstrap_owners, bootstrap_receipts = [], []
 
-        def ordinary_inputs(member_inputs, batch):
-            """Admission changes only the original execution-only tile door."""
-            from gpuwm.ensemble.prepared_execution import ordinary_member_execution_inputs
-            external_margin = ordinary_admissions.get(batch.device_id)
-            if external_margin is None:
-                if batch.execution_mode != "ordinary_streamed_member":
-                    return member_inputs, None
-                supplied = model[batch.device_id] if isinstance(model, Mapping) else model
-                external = tuple(component for component in supplied.components
-                                 if component.category in ("products", "health", "stochastic"))
-                if external:
-                    external_margin = (external, supplied.allocator_margin)
-            if external_margin is None:
-                from gpuwm.ensemble.production_memory import ordinary_output_memory_components
-                from gpuwm.ensemble.admission import AllocatorMargin
-                from gpuwm.core.preflight import FORECAST_POOL_HEADROOM
-                external_margin = (ordinary_output_memory_components(member_inputs.experiment, self.collector),
-                    AllocatorMargin.from_fraction(str(FORECAST_POOL_HEADROOM - 1),
-                        evidence="original pool headroom for additional ensemble output reservations"))
-            if (batch.execution_mode == "ordinary_streamed_member" and self.stochastic_provider is not None
-                    and self.stochastic_provider.enabled_for_experiment(member_inputs.experiment)):
-                from gpuwm.ensemble.production_memory import ordinary_stochastic_streamed_inputs
-                return ordinary_stochastic_streamed_inputs(member_inputs, batch=batch,
-                    external_components=external_margin[0], allocator_margin=external_margin[1],
-                    stochastic_provider=self.stochastic_provider,
-                    fft_workspace_bytes=fft_workspaces.get(batch.device_id, 0),
-                    device_profile=profiles.get(batch.device_id))
-            return ordinary_member_execution_inputs(member_inputs, batch=batch,
-                external_components=external_margin[0], allocator_margin=external_margin[1])
+        def ordinary_inputs(member_inputs, batch, *, member):
+            """Price the tile door in the same hydro scope as its forecast."""
+            with member_settings_scope(member_inputs, inherited_settings=hydro_settings[member]):
+                from gpuwm.ensemble.prepared_execution import ordinary_member_execution_inputs
+                external_margin = ordinary_admissions.get(batch.device_id)
+                if external_margin is None:
+                    if batch.execution_mode != "ordinary_streamed_member":
+                        return member_inputs, None
+                    supplied = model[batch.device_id] if isinstance(model, Mapping) else model
+                    external = tuple(component for component in supplied.components
+                                     if component.category in ("products", "health", "stochastic"))
+                    if external:
+                        external_margin = (external, supplied.allocator_margin)
+                if external_margin is None:
+                    from gpuwm.ensemble.production_memory import ordinary_output_memory_components
+                    from gpuwm.ensemble.admission import AllocatorMargin
+                    from gpuwm.core.preflight import FORECAST_POOL_HEADROOM
+                    external_margin = (ordinary_output_memory_components(member_inputs.experiment, self.collector),
+                        AllocatorMargin.from_fraction(str(FORECAST_POOL_HEADROOM - 1),
+                            evidence="original pool headroom for additional ensemble output reservations"))
+                if (batch.execution_mode == "ordinary_streamed_member" and self.stochastic_provider is not None
+                        and self.stochastic_provider.enabled_for_experiment(member_inputs.experiment)):
+                    from gpuwm.ensemble.production_memory import ordinary_stochastic_streamed_inputs
+                    return ordinary_stochastic_streamed_inputs(member_inputs, batch=batch,
+                        external_components=external_margin[0], allocator_margin=external_margin[1],
+                        stochastic_provider=self.stochastic_provider,
+                        fft_workspace_bytes=fft_workspaces.get(batch.device_id, 0),
+                        device_profile=profiles.get(batch.device_id))
+                return ordinary_member_execution_inputs(member_inputs, batch=batch,
+                    external_components=external_margin[0], allocator_margin=external_margin[1])
 
         # The automatic factory's first original initializer also needs the
         # cold zero-fit overlay. This wrapper is reused for its ordinary tails.
@@ -705,7 +765,7 @@ class PreparedEnsembleSession:
                 batch = MemberBatch(0, device, (0,), mode,
                     need if mode == "ordinary_member" else None, card.available_bytes,
                     "cold admission for an unused original per-card bootstrap")
-            member_inputs, overlay = ordinary_inputs(member_inputs, batch)
+            member_inputs, overlay = ordinary_inputs(member_inputs, batch, member=member)
             options[progress_key] = (None if capture is None else progress_adapter.callback_for_member(member))
             result = runner(member_inputs, output_directory=output_directory, **options)
             if overlay is not None and overlay.get("changed"):
@@ -743,7 +803,7 @@ class PreparedEnsembleSession:
             return InitializedCardBootstrap(holder["inputs"], holder["node"], holder["evidence"])
 
         automatic = None
-        if (not checkpoint_members and not has_radar and self.source_execution is None and self.native_executor is None and hasattr(inputs, "execution_plan")
+        if (not any(nextgen) and not checkpoint_members and not has_radar and self.source_execution is None and self.native_executor is None and hasattr(inputs, "execution_plan")
                 and self.cards is None and self.memory_model is None
                 and not component_plans
                 and not (original_reasons and ordinary_cuda_available)):
@@ -866,6 +926,11 @@ class PreparedEnsembleSession:
                 record = dict(record, surface_perturbation=self._surface_receipts[member])
             if batch.execution_mode != "member_batched" and member in self._initial_receipts:
                 record = dict(record, initial_perturbation=self._initial_receipts[member])
+            branch = getattr(self, "_checkpoint_fill", None)
+            if branch is not None and member in branch.receipts:
+                record = dict(record, checkpoint_branches=list(branch.receipts[member].values()))
+                if branch.reconstructions.get(member):
+                    record = dict(record, checkpoint_reconstructions=list(branch.reconstructions[member]))
             if batch.execution_mode != "member_batched" and overlay is not None and overlay.get("changed"):
                 record = dict(record, ensemble_execution_overlay=overlay)
             if batch.execution_mode != "member_batched" and capture.counter_calendars:
@@ -921,8 +986,14 @@ class PreparedEnsembleSession:
                     if resume.get("status") == "completed":
                         return resume["result"]
                     member_inputs = member_inputs_by_id[member]
-                    member_inputs, overlay = ordinary_inputs(member_inputs, batch)
+                    member_inputs, overlay = ordinary_inputs(member_inputs, batch, member=member)
                     initialize = self._initialization_callback(member)
+                    if any(nextgen):
+                        previous_initialize = initialize
+                        def initialize(**kwargs):
+                            self.collector.bind_member(member_id=member, **kwargs)
+                            if previous_initialize is not None:
+                                previous_initialize(**kwargs)
                     retained_models = []
                     if concurrent_ordinary:
                         previous = initialize
@@ -935,7 +1006,8 @@ class PreparedEnsembleSession:
                                 previous(**kwargs)
                     capture = MemberOutputCapture(self.collector.submit, member,
                         member_history_required(member_inputs, self.request.keep_member_files),
-                        initialize_callback=initialize)
+                        initialize_callback=initialize,
+                        provenance=(self.request.provenance[member] if self.request.provenance else None))
                     options = dict(runner_options)
                     options["first_products"] = None
                     member_progress = progress_adapter.callback_for_member(member)
@@ -951,20 +1023,22 @@ class PreparedEnsembleSession:
                     if first_result is not None and member == first_result.first_member_id:
                         result = first_result.report
                     else:
-                        member_out.mkdir(parents=True, exist_ok=self.restart_roster is not None)
+                        if member_out not in provenance_directories:
+                            member_out.mkdir(parents=True, exist_ok=self.restart_roster is not None)
                         # Every original member retains its own model until
                         # its queue completes, including concurrent waves.
                         from gpuwm.ensemble.timeline import member_timeline
                         with finished_member_release(cp), member_output_scope(capture), member_timeline(
                                 member_out, member=member, card=batch.device_id):
                             if self.source_execution is None:
-                                result = runner(member_inputs, output_directory=member_out, **options)
+                                with member_settings_scope(member_inputs, inherited_settings=hydro_settings[member]):
+                                    result = runner(member_inputs, output_directory=member_out, **options)
                             else:
                                 def forecast(actual_inputs):
                                     nonlocal overlay
                                     actual_inputs = self._configured_member_inputs(actual_inputs)
                                     authority = self._stochastic_authorities.get(id(actual_inputs))
-                                    actual_inputs, overlay = ordinary_inputs(actual_inputs, batch)
+                                    actual_inputs, overlay = ordinary_inputs(actual_inputs, batch, member=member)
                                     with manifest_lock:
                                         if authority is not None:
                                             rows = {row["member_id"]: row for row in
@@ -974,7 +1048,8 @@ class PreparedEnsembleSession:
                                                 rows[index] for index in self.member_order if index in rows]
                                         manifest["posted_source_execution"] = self.source_execution.receipt()
                                         _atomic_json(out / "ensemble-run.json", manifest)
-                                    return runner(actual_inputs, output_directory=member_out, **options)
+                                    with member_settings_scope(actual_inputs, inherited_settings=hydro_settings[member]):
+                                        return runner(actual_inputs, output_directory=member_out, **options)
                                 result = self.source_execution.run_member(member, forecast=forecast,
                                     observer=options.get(progress_key))
                     if self.request.keep_member_files:
@@ -988,6 +1063,14 @@ class PreparedEnsembleSession:
                                 grid_id=int(match.group(1)), episode=episode)
                 return finalize_member_result(batch, result, member_inputs=member_inputs,
                     capture=capture, member_out=member_out, overlay=overlay)
+
+        def publish_member_provenance():
+            # Refresh the directories claimed above after execution stops,
+            # including pending members when a forecast fails or is interrupted.
+            # Never recreate or silently accept another directory here.
+            for row in self.request.provenance:
+                directory = out / "members" / f"member-{row['member']:04d}"
+                _atomic_json(directory / "member-provenance.json", row)
 
         def surface_inventory():
             from gpuwm.ensemble.surface_recipe import surface_realization_inventory
@@ -1024,6 +1107,7 @@ class PreparedEnsembleSession:
                 results = execute_member_packing(packing, execute, control=run_control)
                 completed_records = [{"packing": batch.receipt(), "result": result}
                                      for batch, result in results]
+            publish_member_provenance()
             products = self.collector.finish_run()
             self.collector.require_complete()
             if self.source_execution is not None:
@@ -1044,9 +1128,16 @@ class PreparedEnsembleSession:
             manifest["surface_perturbations"] = [self._surface_receipts[member]
                 for member in self.member_order if member in self._surface_receipts]
             manifest["surface_realization_inventory"] = surface_inventory()
+            if any(nextgen):
+                manifest["nextgen"] = self.collector.nextgen_points.receipt()
+                manifest["nextgen"]["resident_inventory"] = self.collector.resident_inventory.receipt()
             if self._initial_receipts:
                 manifest["initial_perturbations"] = [self._initial_receipts[member]
                     for member in self.member_order if member in self._initial_receipts]
+            if self.request.sounding_points:
+                from gpuwm.soundings import render_run
+                manifest["products"]["soundings"] = str(render_run(
+                    out, points=self.request.sounding_points, out=out / "render"))
             _atomic_json(out / "ensemble-run.json", manifest)
             self.last_manifest = manifest
             self.last_output_directory = out
@@ -1068,6 +1159,7 @@ class PreparedEnsembleSession:
                 seal(out, collector=self.collector if callable(save) else None)
             return manifest
         except BaseException as error:
+            publish_member_provenance()
             cancel = getattr(self.collector, "cancel_products", None)
             if cancel is not None:
                 cancel()
@@ -1142,8 +1234,13 @@ class PreparedEnsembleSession:
         from gpuwm.ensemble.initial_perturbation import is_initial_perturbation, initial_perturbation_callback
         from gpuwm.ensemble.member_variants import member_surface_options
         surface_options = member_surface_options(self.request, member_id)
+        wind = (self.request.member_variants[member_id].get("wind", 0.)
+                if self.request.member_variants else 0.)
+        initial_options = ({"kind": "uniform-wind", "amplitude": wind} if wind else self.request.perturbation)
+        checkpoint_fill = (self.request.recipe == "wofs" and self.request.provenance
+                           and self.request.provenance[member_id]["rung"] == "perturbation")
         if (self.stochastic_provider is None and not is_surface_recipe(surface_options)
-                and not is_initial_perturbation(self.request.perturbation)):
+                and not is_initial_perturbation(initial_options) and not checkpoint_fill):
             return None
         prepared = (prepared_member if prepared_member is not None else None
                     if self.member_roster is None else self.member_roster.select((member_id,))[0])
@@ -1173,15 +1270,18 @@ class PreparedEnsembleSession:
             previous=(None if self.stochastic_provider is None else initialize),
             record=record,
             array_module=self.array_module)
-        if is_initial_perturbation(self.request.perturbation):
+        if is_initial_perturbation(initial_options):
             def record_initial(receipt):
                 self._initial_receipts[member_id] = receipt
                 if self.last_manifest is not None:
                     self.last_manifest["initial_perturbations"] = [self._initial_receipts[member]
                         for member in self.member_order if member in self._initial_receipts]
-            callback = initial_perturbation_callback(self.request.perturbation,
+            callback = initial_perturbation_callback(initial_options,
                 member_id=member_id, seed=seed, previous=callback,
                 record=record_initial, array_module=self.array_module)
+        if checkpoint_fill:
+            callback = self._checkpoint_fill.callback(self.request.provenance[member_id],
+                member_id=member_id, previous=callback)
         return callback
 
     def _member_seed(self, member_id, *, seed=None, prepared_member=None):
@@ -1205,6 +1305,7 @@ class PreparedEnsembleSession:
                     seed=seed, prepared_member=prepared_member),
                 "name": variant["name"], "physics": dict(variant["physics"]),
                 "surface": dict(variant["surface"]),
+                **({"wind": variant["wind"]} if variant.get("wind") else {}),
                 **({} if member_id not in self._member_land_layouts else {
                     "resolved_land": [dict(row) for row in self._member_land_layouts[member_id]]}),
                 **({} if member_id not in getattr(self, "_member_physics_selections", {}) else {
@@ -1265,6 +1366,9 @@ class PreparedEnsembleSession:
 
     def run_experiment(self, runner, experiment, case_data, output_directory, **runner_options):
         """Reuse native source preparation around the original runtime door."""
+        if self.request.recipe == "wofs" and self.input_provider is None:
+            from gpuwm.ensemble.wofs_recipe import runtime_member_provider
+            self.input_provider = runtime_member_provider(self.request)
         self._require_member_inputs(experiment)
         from gpuwm.ensemble.runtime_preparation import RuntimeMemberInputs, RuntimePreparationSource
         from gpuwm.runtime import ExperimentRunSummary

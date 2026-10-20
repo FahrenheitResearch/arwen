@@ -617,3 +617,41 @@ extern "C" __global__ void nest_smooth_i(
     float c = scr[I3(k, j, i + 1, nyp, nxp)];
     cfld[I3(k, j, i, nyp, nxp)] = smooth_filter(mode, xnu, a, b, c);
 }
+
+// One block per exposed cell. Integer squared distances and the first donor
+// on ties reproduce NumPy argmin without materialising a pairwise matrix.
+extern "C" __global__ void relocation_nearest_donor(
+    const long long* targets, const long long* donors,
+    long long* picked, int donor_count) {
+    __shared__ unsigned long long distances[128];
+    __shared__ long long indices[128];
+    const int lane = threadIdx.x;
+    const long long y = targets[2 * blockIdx.x];
+    const long long x = targets[2 * blockIdx.x + 1];
+    unsigned long long best = ~0ULL;
+    long long index = 0x7fffffffffffffffLL;
+    for (long long d = lane; d < donor_count; d += blockDim.x) {
+        const long long dy = y - donors[2 * d];
+        const long long dx = x - donors[2 * d + 1];
+        const unsigned long long distance = dy * dy + dx * dx;
+        if (distance < best || (distance == best && d < index)) {
+            best = distance;
+            index = d;
+        }
+    }
+    distances[lane] = best;
+    indices[lane] = index;
+    __syncthreads();
+    for (int stride = 64; stride; stride >>= 1) {
+        if (lane < stride) {
+            const int other = lane + stride;
+            if (distances[other] < distances[lane] ||
+                (distances[other] == distances[lane] && indices[other] < indices[lane])) {
+                distances[lane] = distances[other];
+                indices[lane] = indices[other];
+            }
+        }
+        __syncthreads();
+    }
+    if (!lane) picked[blockIdx.x] = indices[0];
+}

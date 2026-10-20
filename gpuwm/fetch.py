@@ -203,7 +203,7 @@ FETCH_TRANSPORTS = tuple(sorted(
        for host in fetch_routes.route_for(source_id).hosts}))
 
 #: Which downloader moves the bytes.  ``rust`` is the vendored
-#: ``rw_fetch`` backbone (16 MiB parallel range GETs, ``.idx``
+#: ``rw_fetch`` backbone (parallel range GETs, ``.idx``
 #: coalescing, the cross-process NOMADS rate governor, a disk cache);
 #: ``python`` is the stdlib ``urllib`` transport in :mod:`tools`, which
 #: stays as the always-available fallback.  ``auto`` uses the backbone
@@ -748,7 +748,8 @@ def fetch_front_door_sources() -> tuple[str, ...]:
     with the row, which is the whole point of the route table being data.
     """
 
-    return fetch_routes.all_fetchable_sources()
+    owners = {row.source_id for row in source_adapters.source_adapters() if row.acquisition_owner}
+    return tuple(sorted(set(fetch_routes.all_fetchable_sources()) | owners))
 
 
 def native_cf_fetch_contract(source: str) -> str | None:
@@ -772,6 +773,10 @@ def fetch_accepts_area(source: str) -> bool:
     """
 
     from gpuwm.cf_archive_fetch import sources
+    adapter = source_adapters.get_source_adapter(source)
+    if adapter.acquisition_owner:
+        from importlib import import_module
+        return bool(getattr(import_module(adapter.acquisition_owner), "FETCH_ACCEPTS_AREA", False))
     return fetch_routes.canonical_source(source) in (
         fetch_routes.LEGACY_ROUTE_SOURCES + sources())
 
@@ -2822,7 +2827,8 @@ def fetch_throughput(out: Path) -> dict | None:
 
     payload = _load_fetch_manifest(Path(out))
     if payload is None:
-        return None
+        from gpuwm.fetch_adoption import route_throughput
+        return route_throughput(Path(out))
     files = payload.get("files")
     if not isinstance(files, list):
         return None
@@ -2862,6 +2868,8 @@ def fetch_throughput(out: Path) -> dict | None:
         "seconds": round(seconds, 6) if timed else None,
         "files_timed": timed,
         "downloaded_files": downloaded,
+        "adopted_files": 0,
+        "reused_files": len(files) - downloaded,
         "downloaded_bytes": downloaded_bytes,
         "downloaded_seconds": (round(downloaded_seconds, 6)
                                if downloaded else None),
@@ -3734,6 +3742,11 @@ def _fetch_gfs_locked(*, cycle: datetime, hours: tuple[int, ...], area: Area,
     pool_summary: dict = {}
 
     def publish_manifest() -> Path:
+        # Another preparation may already be reading this completed series.
+        # A cached recheck must not replace it with its first verified hour.
+        # Fresh/interrupted downloads still publish each resumable prefix.
+        if receipt is not None and len(files) < len(hours):
+            return out / FETCH_MANIFEST_NAME
         # Relative names: gfs_grib2_bridge resolves them against the
         # TSV's own directory, so the fetched directory stays relocatable.
         series = out / f"{prefix}-series.tsv"
@@ -4108,9 +4121,10 @@ def _fetch_gfs_fullfile_locked(*, cycle: datetime, hours: tuple[int, ...],
     # manifest, and handed to the bridge by the front door.  A folder
     # that already holds this whole request resolves it against the
     # published ladder its receipt recorded, and reads no index.
-    available = _recorded_published_levels(_complete_request_receipt(
+    receipt = _complete_request_receipt(
         out, force=force, source=source, cycle=cycle, area=area,
-        hours=hours, mode="full-file"))
+        hours=hours, mode="full-file")
+    available = _recorded_published_levels(receipt)
     if available is None:
         index_text = gfs_live_index(cycle, progress=progress,
                                     source=source)
@@ -4142,6 +4156,10 @@ def _fetch_gfs_fullfile_locked(*, cycle: datetime, hours: tuple[int, ...],
     pool_summary: dict = {}
 
     def publish_manifest() -> Path:
+        # Keep a completed shared series stable while a second member checks
+        # cached files. Only a fresh/interrupted fetch needs prefix receipts.
+        if receipt is not None and len(files) < len(hours):
+            return out / FETCH_MANIFEST_NAME
         # Relative names: gfs_grib2_bridge resolves them against the
         # TSV's own directory, so the fetched directory stays relocatable.
         series = out / f"{prefix}-series.tsv"
@@ -4611,6 +4629,24 @@ def author_gfs_front_door_manifest(
     document, and returns ``(path, sha256-of-the-document)`` -- the pair
     ``--source-manifest``/``--source-manifest-sha256`` wants verbatim.
     """
+
+    # Fetches atomically publish a resumable prefix after each lead, under
+    # this same lock. A second member can be rechecking the shared download
+    # when the first reaches this stage. Wait for its complete publication,
+    # and keep the inventory, series and hashes in one locked transaction.
+    with _fetch_out(out, progress=progress):
+        return _author_gfs_front_door_manifest_locked(
+            out=out, bridge=bridge, wps_namelist=wps_namelist,
+            experiment_config=experiment_config, static_input=static_input,
+            static_receipt=static_receipt, manifest_out=manifest_out,
+            source=source, forecast_start_hour=forecast_start_hour,
+            progress=progress)
+
+
+def _author_gfs_front_door_manifest_locked(
+        *, out, bridge, wps_namelist, experiment_config, static_input,
+        static_receipt, manifest_out, source, forecast_start_hour, progress):
+    """Author the front-door manifest with the download lock held."""
 
     if source not in GFS_CONTAINER_SOURCES:
         raise ValueError(
@@ -6803,12 +6839,21 @@ def _route_stream_downloader(plan, args):
     # The new object door is additive to the existing fetch ABI.
     if not _stream_capable(binary, _stat_identity(binary)):
         return None
-    streams = fetch_pool.chunk_streams_per_file(args.fetch_workers, files=len(plan.objects),
-        host=fetch_pool.host_key(plan.objects[0].url) if plan.objects else None)
-
+    from gpuwm.fetch_connections import max_connections
+    if (max_connections() <= rustwx_fetch.LEGACY_IDLE_CONNECTIONS and
+            not rustwx_fetch._idle_capable(str(binary), _stat_identity(binary))):
+        # An older bridge can retain idle sockets across redirected hosts.
+        # The generic Python transport can honor even a one-connection box.
+        return None
     def download(url, dest, *, magic, opener=None):
+        # The ahead probe can promote a mirror above the plan's first
+        # endpoint. Size this transfer for its actual host, not that
+        # earlier endpoint's (possibly one-stream) politeness limit.
+        streams = fetch_pool.chunk_streams_per_file(args.fetch_workers,
+            files=len(plan.objects), host=fetch_pool.host_key(url))
         if opener is not None or magic != "GRIB":
-            return fetch_routes._download_object(url, dest, magic=magic, opener=opener)
+            return fetch_routes._download_object(url, dest, magic=magic,
+                                                opener=opener, streams=streams)
         env = dict(os.environ)
         env["RUSTWX_DOWNLOAD_STREAMS"] = str(streams)
         dest = Path(dest)
@@ -7145,9 +7190,17 @@ def _retrieve_inapplicable_refusal(source: str) -> str:
 def fetch_main(args) -> int:
     """``gpuwm fetch``; exit 75 when an as-posted source fell behind its budget."""
 
+    from gpuwm.earth2_licensing import check_namespace
+    check_namespace(args)
     from gpuwm.fetch_as_posted import SourceBehind
     from gpuwm.timeline.ledger import emit
 
+    from gpuwm import fetch_connections
+    old_cap = os.environ.get(fetch_connections.MAX_CONNECTIONS_ENV)
+    configured_cap = getattr(args, "fetch_max_connections", None)
+    if configured_cap is not None:
+        os.environ[fetch_connections.MAX_CONNECTIONS_ENV] = str(fetch_connections.max_connections(configured_cap))
+    fetch_connections.max_connections()
     emit("fetch.request", "begin", attrs={"source": args.source,
          "worker_row": fetch_pool.worker_profile()["id"]})
     try:
@@ -7157,6 +7210,11 @@ def fetch_main(args) -> int:
         return error.exit_code
     finally:
         emit("fetch.request", "end", attrs={"source": args.source})
+        if configured_cap is not None:
+            if old_cap is None:
+                os.environ.pop(fetch_connections.MAX_CONNECTIONS_ENV, None)
+            else:
+                os.environ[fetch_connections.MAX_CONNECTIONS_ENV] = old_cap
 
 
 def _fetch_main(args) -> int:
@@ -7196,6 +7254,13 @@ def _fetch_main(args) -> int:
         # A table route refuses the flags it does not take, then validates
         # its window with the same validator.
         return _route_fetch_main(args, source)
+    acquisition_owner = source_adapters.get_source_adapter(source).acquisition_owner
+    if acquisition_owner is not None:
+        from importlib import import_module
+        return import_module(acquisition_owner).fetch(args)
+    if getattr(args, "model", None) is not None:
+        raise ValueError("--model applies to a source whose row runs a model "
+                         "(--source earth2)")
     if args.validate is not None and source != "era5":
         raise ValueError("--validate applies to --source era5 only")
     if args.fetch_workers is not None:
@@ -7973,6 +8038,8 @@ def _resolve_manifest_bridge(source: str) -> Path:
 #: types, and :func:`validate_fetch_hints` checks every value against its
 #: row.  The key set is read off the rows.
 FETCH_HINT_ROWS = key_rows(
+    KeyRow("fetch_max_connections", "integer", None,
+           "box-wide connection cap for engine fetches; default 30, or GPUWM_FETCH_MAX_CONNECTIONS"),
     KeyRow("source", "string", None,
            "the source to acquire, a registry id or alias", required=True),
     KeyRow("cycle", "string", None,
@@ -8022,6 +8089,9 @@ FETCH_HINT_ROWS = key_rows(
            "start must read from the cycle itself; absent, a field the "
            "source table declares starts from its recorded fallback when "
            "a cycle publishes no record for it"),
+    *(KeyRow(*hint) for hint in dict.fromkeys(
+        hint for adapter in source_adapters.source_adapters()
+        for hint in adapter.acquisition_hints)),
 )
 FETCH_HINT_KEYS = frozenset(FETCH_HINT_ROWS)
 
@@ -8152,6 +8222,9 @@ def validate_fetch_hints(table: dict, *, source: str) -> None:
     # the rows are what a front end is told these keys take.
     for key, value in table.items():
         FETCH_HINT_ROWS[key].check(value, where=prefix)
+    if table.get("fetch_max_connections") is not None:
+        from gpuwm.fetch_connections import max_connections
+        max_connections(table["fetch_max_connections"])
     if table.get("runtime_surface") is not None and isinstance(table.get("source"), str):
         from gpuwm.runtime_surface_fetch import declared_runtime_surface_fields
         from gpuwm.source_adapters import get_source_adapter
@@ -8178,13 +8251,32 @@ def validate_fetch_hints(table: dict, *, source: str) -> None:
     if isinstance(table.get("source"), str):
         from gpuwm.source_drivability import local_input_requested
         local_source = local_input_requested(table)
+        # An unregistered name is refused below with the hint table's own
+        # "not one of" list; resolving it here raised the registry's
+        # lookup error first, so the [fetch] table's refusal never fired.
+        try:
+            owner = source_adapters.get_source_adapter(table["source"]).acquisition_owner
+        except ValueError:
+            owner = None
+        # An owner can author an acquisition request and still prepare an
+        # existing local directory. Only explicit local tables prohibit crops.
+        if owner and not table.get("source_root"):
+            local_source = False
     if "source" not in table:
         raise ValueError(f"{prefix} must carry source = {'|'.join(known)}")
-    name = (fetch_routes.canonical_source(str(table["source"]))
-            if local_source else table["source"])
+    name = fetch_routes.canonical_source(str(table["source"]))
     if name not in known or (name not in fetch_front_door_sources() and not local_source):
         raise ValueError(f"source = {name!r} in {prefix} is not one of {known}")
     try:
+        model = table.get("model")
+        adapter = source_adapters.get_source_adapter(name)
+        if model is not None:
+            from importlib import import_module
+            resolve = (getattr(import_module(adapter.acquisition_owner), "acquisition_hints", None)
+                       if adapter.acquisition_owner else None)
+            if resolve is None:
+                raise ValueError("model requires a registry acquisition owner with model selection")
+            resolve(str(table["source"]), model)
         cadence = table.get("cadence")
         for key in ("cycle", "area", "point", "out", "source_root"):
             if key in table and not table[key].strip():
@@ -8209,7 +8301,19 @@ def validate_fetch_hints(table: dict, *, source: str) -> None:
         elif name in fetch_routes.route_ids():
             fetch_routes.resolve_member(fetch_routes.route_for(name), table.get("member"))
         elif "member" in table:
-            raise ValueError(f"{name} has no acquisition member axis. Omit member or select an ensemble product.")
+            adapter = source_adapters.get_source_adapter(name)
+            if adapter.acquisition_owner:
+                from importlib import import_module
+                validator = getattr(import_module(adapter.acquisition_owner), "validate_member", None)
+            else:
+                validator = None
+            if validator is None:
+                raise ValueError(f"{name} has no acquisition member axis. Omit member or select an ensemble product.")
+            selection = adapter.selection_owner
+            if selection and table.get("earth2_members"):
+                getattr(import_module(selection), "validate_member")(table["member"], cycle=cycle)
+            else:
+                validator(name, table["member"])
 
         area, point, radius = (table.get(key) for key in ("area", "point", "radius_km"))
         crop_keys = sorted(key for key in ("area", "point", "radius_km") if key in table)
@@ -8311,7 +8415,14 @@ def source_argument(value: str) -> str:
     except ValueError:
         source_id = name
     if source_id in fetch_routes.all_fetchable_sources():
-        return source_id
+        return source_adapters.canonical_source_token(value)
+    try:
+        if source_adapters.get_source_adapter(source_id).acquisition_owner:
+            # Its bytes are produced by running something (a model), not
+            # downloaded; the row's owner module is the door.
+            return source_id
+    except ValueError:
+        pass
     try:
         fetch_routes.route_for(source_id)
     except ValueError as error:
@@ -8327,6 +8438,15 @@ def register_cli(subparsers) -> None:
              "source with public bytes; native GDAS uses its mapped preparation "
              "profile; retrieve ERA5 from the public ARCO store without a key, "
              "or from Copernicus CDS with configured credentials")
+    parser.add_argument("--model", default=None, metavar="MODEL",
+        help="--source earth2: which NVIDIA Earth-2 model to run through "
+             "earth2studio (fcn3, sfno, pangu, aurora, fengwu, graphcast, aifs: "
+             "a row of gpuwm/authorities/earth2-models.v1.json); the forecast "
+             "and the ERA5 analysis at --cycle are written to --out")
+    parser.add_argument("--earth2-members", help="complete comma-separated Earth-2 noise-id roster")
+    parser.add_argument("--earth2-batch-root", help="shared generated-member batch folder")
+    parser.add_argument("--earth2-batch-size", type=int, help="members per admitted GPU sub-batch")
+    parser.add_argument("--earth2-weights-package", help="local pinned Earth2Studio weight package")
     parser.add_argument("--retrieve", action="store_true",
         help="ERA5: download and validate with the selected provider (default CDS); otherwise write a CDS retrieval template")
     parser.add_argument("--era5-provider", choices=("cds", "arco"), default=None,
@@ -8525,7 +8645,7 @@ def register_cli(subparsers) -> None:
         "--engine", default=None, choices=FETCH_ENGINES,
         help="hrrr, and gfs/gdas --mode full-file: which downloader "
              "moves the bytes.  'rust' is "
-             "the vendored rw_fetch backbone (16 MiB parallel range "
+             "the vendored rw_fetch backbone (parallel range "
              "GETs, .idx coalescing, the cross-process NOMADS rate "
              "governor, a disk cache); 'python' is the stdlib transport "
              "and always works; 'auto' (default) uses the backbone when "
@@ -8557,6 +8677,12 @@ def register_cli(subparsers) -> None:
              "wx-core disk cache root, keyed "
              "by URL and byte range, so a re-run or an overlapping "
              "window re-reads bytes instead of re-downloading them")
+    parser.add_argument(
+        "--fetch-max-connections", type=int, default=None, metavar="N",
+        help="total engine fetch connections on this box (default 30, or "
+             "GPUWM_FETCH_MAX_CONNECTIONS). Shared across engine processes; "
+             "use the same cap for every process. File and range widths are "
+             "clipped to it; receipts record the cap and stream limits.")
     parser.add_argument(
         "--fetch-workers", type=int, default=None, metavar="N",
         help="how many FILES are in flight at once (default "

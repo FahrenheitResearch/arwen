@@ -1,0 +1,21 @@
+Noah-OWP-Modular CUDA port
+Derived from NOAA-OWP/noah-owp-modular revision
+0242a96c2a90b2c1501ff56a1e457a932a49c8ac, Apache License 2.0.
+Upstream source: https://github.com/NOAA-OWP/noah-owp-modular
+The upstream LICENSE and TERMS.md (as UPSTREAM-TERMS.md) are retained alongside
+this notice.
+
+Modifications: resident CUDA state, catchment batching, and coupling to ArWen.
+The native Fortran program is a development referee only; no Fortran runtime
+or executable is part of this port.
+
+The parameters/ directory retains the three standard upstream parameter tables
+unchanged at the same Apache-2.0 revision.
+
+The generic log10.cu math helper derives from CORE-MATH revision bc385c2,
+Copyright (c) 2022-2023 Alexei Sibidanov, under the MIT licence retained in
+that file. Its source provenance and SHA256 are recorded in the file header.
+
+Strict solar-angle and surface-stability evaluation reuse the existing generic
+core/kernels/glibc_trig_flt32.cuh: Arm optimized-routines MIT sinf/cosf and
+CORE-MATH MIT asinf/atanf. The header retains their complete grants and revisions.

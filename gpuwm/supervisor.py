@@ -219,9 +219,9 @@ def _fsync_directory(path: Path) -> None:
 def fsync_file(path: str | Path) -> Path:
     """Flush an already closed file through the OS durability boundary."""
     path = Path(path)
-    # Windows' CRT ``_commit`` (used by os.fsync) rejects a read-only file
-    # descriptor with EBADF.  Reopen read/write without changing contents.
-    with path.open("r+b") as stream:
+    # Windows CRT _commit needs write access; POSIX accepts a read-only
+    # descriptor, so archived parent checkpoints need no write permission.
+    with path.open("r+b" if os.name == "nt" else "rb") as stream:
         os.fsync(stream.fileno())
     return path
 
@@ -1603,7 +1603,8 @@ def validate_manifest_checkpoint(path: str | Path) -> Path:
         if not isinstance(manifest, dict):
             raise CheckpointValidationError(
                 f"checkpoint {path} has no array_manifest object")
-        with np.load(path, allow_pickle=False) as archive:
+        from gpuwm.io.restart_prefetch import restart_archive
+        with restart_archive(path) as archive:
             members = set(archive.files)
             payload_members = {name for name in members
                                if name != "__gpuwm_restart_header__"}

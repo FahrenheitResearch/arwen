@@ -10,11 +10,15 @@ from pathlib import Path
 # sys.path[0].
 try:
     from tools.ensemble_calibration_score import sha256
+    from tools.ensemble_campaign_score import QUANTITY_TITLES
 except ImportError:
     from ensemble_calibration_score import sha256
+    from ensemble_campaign_score import QUANTITY_TITLES
 
 
 def plot_scores(summary, out):
+    if summary.get("schema") == "gpuwm-ensemble-grid-campaign-scores.v1":
+        return plot_grid_scores(summary, out)
     if summary.get("schema") != "gpuwm-ensemble-campaign-scores.v1" or summary.get("status") != "complete":
         raise ValueError("analysis charts require a complete native campaign score summary")
     import matplotlib
@@ -26,9 +30,8 @@ def plot_scores(summary, out):
                          "savefig.facecolor": "white", "figure.facecolor": "white"})
     rows = summary["products"]
     files = []
-    quantities = ["temperature_2m", "wind_speed_10m", "precipitation_accumulation"]
-    titles = {"temperature_2m": "2 m temperature", "wind_speed_10m": "10 m sustained wind",
-              "precipitation_accumulation": "Forecast-start precipitation"}
+    quantities = [key for key in QUANTITY_TITLES if any(row["quantity"] == key for row in rows)]
+    titles = QUANTITY_TITLES
     for case in sorted({row["case_id"] for row in rows}):
         selected = [row for row in rows if row["case_id"] == case]
         recipes = list(dict.fromkeys(row["recipe"] for row in selected))
@@ -46,7 +49,7 @@ def plot_scores(summary, out):
                 files.append({"path": str(path), "sha256": sha256(path), "caption": caption})
             plt.close(figure)
 
-        figure, axes = plt.subplots(1, 3, figsize=(17, max(5, 0.42 * len(recipes) + 2)))
+        figure, axes = plt.subplots(1, len(quantities), figsize=(17, max(5, 0.42 * len(recipes) + 2)))
         for axis, quantity in zip(axes, quantities):
             units = next(row["units"] for row in selected if row["quantity"] == quantity)
             y = list(range(len(recipes)))
@@ -62,7 +65,7 @@ def plot_scores(summary, out):
         axes[0].legend(loc="lower right", fontsize=9)
         finish(figure, "errors", "Empirical CRPS and ensemble-mean RMSE on identical observed rows. Lower is better; quantities use different units.")
 
-        figure, axes = plt.subplots(1, 3, figsize=(15, 5))
+        figure, axes = plt.subplots(1, len(quantities), figsize=(15, 5))
         for axis, quantity in zip(axes, quantities):
             limit = 0.
             units = lookup[(quantity, recipes[0])]["units"]
@@ -81,7 +84,7 @@ def plot_scores(summary, out):
         axes[0].legend(fontsize=7, loc="best")
         finish(figure, "spread-skill", "Raw sample spread versus ensemble-mean RMSE. The dashed line marks equality; N=1 has undefined sample spread and is omitted. Finite-ensemble-corrected ratios remain in the score receipts.")
 
-        figure, axes = plt.subplots(1, 3, figsize=(15, 5))
+        figure, axes = plt.subplots(1, len(quantities), figsize=(15, 5))
         for axis, quantity in zip(axes, quantities):
             for recipe in recipes:
                 row = lookup[(quantity, recipe)]
@@ -124,6 +127,37 @@ def plot_scores(summary, out):
             finish(figure, f"{quantity}-reliability", "Reliability at actual production thresholds. Points are exact forecast-probability bins; empty bins are absent. Bin weights and Brier scores are retained in the native score receipts.")
     return {"schema": "gpuwm-ensemble-analysis-charts.v1", "files": files,
             "scope": "analysis charts from matched-pair scores; no weather fields or inferred qualification"}
+
+
+def plot_grid_scores(summary, out):
+    """Analysis charts only. Map panels belong to gpuwm.rustwx."""
+    if summary.get("status") != "complete" or not summary.get("frames"):
+        raise ValueError("grid analysis charts require a complete native campaign")
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    out.mkdir(parents=True, exist_ok=False)
+    files = []
+    for index, frame in enumerate(summary["frames"]):
+        figure, axes = plt.subplots(1, 2, figsize=(10, 4))
+        records = dict(frame["families"])
+        if frame["blend"] is not None:
+            records["experimental fixed blend"] = frame["blend"]
+        for family, record in records.items():
+            rows = record["threshold_scores"]
+            for axis, metric in zip(axes, ("fss", "brier_score")):
+                axis.plot([row["threshold"] for row in rows], [row[metric] for row in rows], marker="o", label=family)
+                axis.set(xlabel="Threshold (dBZ)", ylabel=metric, ylim=(0, 1))
+                axis.legend()
+        figure.suptitle(f"{QUANTITY_TITLES[frame['quantity']]} | {frame['valid_time']}")
+        figure.tight_layout()
+        path = out / f"frame-{index:03d}-skill.png"
+        figure.savefig(path, dpi=150)
+        plt.close(figure)
+        files.append({"path": str(path), "sha256": sha256(path),
+                      "caption": "Separate family neighbourhood FSS and Brier score. Blend, when present, is experimental."})
+    return {"schema": "gpuwm-ensemble-analysis-charts.v1", "files": files,
+            "scope": "analysis charts from native family grid scores; no weather fields"}
 
 
 def main():

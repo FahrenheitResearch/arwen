@@ -1,6 +1,7 @@
 //! Minimal GRIB1-to-raw/JSON bridge for gpuwm ERA5 ingest.
 
 use grib_core::grib1::{Grib1File, Grib1Message, GridType};
+use rayon::prelude::*;
 use std::env;
 use std::error::Error;
 use std::fs::{self, File};
@@ -204,6 +205,69 @@ fn inventory<W: Write>(input: &Path, metadata: &mut W) -> Result<(), Box<dyn Err
     Ok(())
 }
 
+/// Decode independent messages on the bounded worker pool.
+/// Indexed collection and ordered draining keep the serial output and first
+/// error unchanged. Workers never touch either output stream.
+fn decode_batch(
+    pool: &rayon::ThreadPool,
+    messages: &[Grib1Message],
+    first_index: usize,
+) -> Vec<Result<Vec<f64>, String>> {
+    pool.install(|| {
+        messages
+            .par_iter()
+            .enumerate()
+            .map(|(local, message)| {
+                let index = first_index + local;
+                let decode = || -> Result<Vec<f64>, Box<dyn Error>> {
+                    if message.indicator.edition != 1 {
+                        return Err(format!("message {index} is not GRIB edition 1").into());
+                    }
+                    let gds = message
+                        .gds
+                        .as_ref()
+                        .ok_or_else(|| format!("message {index} has no GDS"))?;
+                    let (nx, ny, scan) = grid_shape_and_scan(&gds.grid_type)?;
+                    if scan & 0x20 != 0 {
+                        return Err(format!("message {index} uses j-consecutive scanning").into());
+                    }
+                    let values = message.values()?;
+                    if values.len() != nx * ny {
+                        return Err(
+                            format!("message {index} value count disagrees with its grid").into(),
+                        );
+                    }
+                    Ok(values)
+                };
+                decode().map_err(|error| error.to_string())
+            })
+            .collect()
+    })
+}
+
+fn batch_width(workers: usize, largest_points: usize) -> usize {
+    // A worker's 32 MiB memory price is the shared prep-pool convention.
+    // Charge the unpacked f64 values at the largest grid;
+    // return at least one message, as the serial bridge already held one.
+    let bytes = largest_points.saturating_mul(8).max(1);
+    (workers.saturating_mul(32 * 1024 * 1024) / bytes)
+        .max(1)
+        .min(workers)
+}
+
+/// Encode through one small reusable buffer instead of allocating another
+/// full field or dispatching one buffered-write call for every value.
+fn write_values(writer: &mut impl Write, values: &[f64]) -> std::io::Result<()> {
+    let mut bytes = [0u8; 8192];
+    for chunk in values.chunks(bytes.len() / 8) {
+        for (value, output) in chunk.iter().zip(bytes.chunks_exact_mut(8)) {
+            output.copy_from_slice(&value.to_le_bytes());
+        }
+        writer.write_all(&bytes[..chunk.len() * 8])?;
+    }
+    Ok(())
+}
+
 fn run(input: &Path, output: &Path) -> Result<(), Box<dyn Error>> {
     let file = open_complete(input)?;
     fs::create_dir_all(output)?;
@@ -260,31 +324,33 @@ fn run(input: &Path, output: &Path) -> Result<(), Box<dyn Error>> {
     writeln!(metadata, ",")?;
     writeln!(metadata, "\"messages\":[")?;
 
+    let capacity = gpuwm_preprocess_cpu::parallel::resources::available_workers();
+    let workers = env::var("GPUWM_GRIB1_BRIDGE_THREADS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(capacity)
+        .min(capacity)
+        .min(file.messages.len());
+    let width = batch_width(workers, primary.num_data_points());
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(workers)
+        .thread_name(|index| format!("grib1-{index}"))
+        .build()?;
     let mut offset_values = 0usize;
-    for (index, message) in file.messages.iter().enumerate() {
-        if message.indicator.edition != 1 {
-            return Err(format!("message {index} is not GRIB edition 1").into());
+    for (batch, messages) in file.messages.chunks(width).enumerate() {
+        let first = batch * width;
+        for (local, values) in decode_batch(&pool, messages, first).into_iter().enumerate() {
+            let index = first + local;
+            let values = values?;
+            write_values(&mut raw, &values)?;
+            if index != 0 {
+                writeln!(metadata, ",")?;
+            }
+            let count = values.len();
+            write_message_metadata(&mut metadata, &file.messages[index], offset_values, count)?;
+            offset_values += count;
         }
-        let gds = message
-            .gds
-            .as_ref()
-            .ok_or_else(|| format!("message {index} has no GDS"))?;
-        let (message_nx, message_ny, message_scan) = grid_shape_and_scan(&gds.grid_type)?;
-        if message_scan & 0x20 != 0 {
-            return Err(format!("message {index} uses j-consecutive scanning").into());
-        }
-        let values = message.values()?;
-        if values.len() != message_nx * message_ny {
-            return Err(format!("message {index} value count disagrees with its grid").into());
-        }
-        for value in &values {
-            raw.write_all(&value.to_le_bytes())?;
-        }
-        if index != 0 {
-            writeln!(metadata, ",")?;
-        }
-        write_message_metadata(&mut metadata, message, offset_values, values.len())?;
-        offset_values += values.len();
     }
     writeln!(metadata)?;
     writeln!(metadata, "]")?;
@@ -303,17 +369,28 @@ fn main() {
         println!("{{\"schema\":\"{}\",\"members\":[0,1,2,3,4,5,6,7,8,9],\"local_definitions\":[1,17,36],\"complete_input_census\":true,\"table_qualified_census\":true,\"lake_surface_parameters\":{{\"center\":98,\"table\":228,\"parameters\":[8,13,14],\"surface_only\":true}},\"byte_preserving\":true}}", era5_member::SCHEMA);
         return;
     }
-    if arguments.len() >= 2 && (arguments[1] == "--era5-member" || arguments[1] == "--check-era5-member") {
+    if arguments.len() >= 2
+        && (arguments[1] == "--era5-member" || arguments[1] == "--check-era5-member")
+    {
         let result = (|| -> Result<(), Box<dyn Error>> {
             let selecting = arguments[1] == "--era5-member";
             if arguments.len() != if selecting { 5 } else { 4 } {
                 return Err("usage: grib1_bridge --era5-member N INPUT OUTPUT | --check-era5-member N INPUT".into());
             }
-            let member: u8 = arguments[2].to_str().ok_or("Member must be 0..9")?.parse()?;
-            if selecting { era5_member::select(Path::new(&arguments[3]), Path::new(&arguments[4]), member) }
-            else { era5_member::check(Path::new(&arguments[3]), member) }
+            let member: u8 = arguments[2]
+                .to_str()
+                .ok_or("Member must be 0..9")?
+                .parse()?;
+            if selecting {
+                era5_member::select(Path::new(&arguments[3]), Path::new(&arguments[4]), member)
+            } else {
+                era5_member::check(Path::new(&arguments[3]), member)
+            }
         })();
-        if let Err(error) = result { eprintln!("grib1_bridge: {error}"); std::process::exit(1); }
+        if let Err(error) = result {
+            eprintln!("grib1_bridge: {error}");
+            std::process::exit(1);
+        }
         return;
     }
     if arguments.len() != 3 {
@@ -335,7 +412,83 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_grib1_envelopes;
+    use super::{batch_width, decode_batch, validate_grib1_envelopes, write_values};
+
+    #[test]
+    fn parallel_batches_keep_words_and_errors_in_source_order() {
+        let file = grib_core::grib1::Grib1File::from_bytes(include_bytes!(
+            "../tests/fixtures/era5-eda-ten-t2m.grib"
+        ))
+        .unwrap();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
+        for (message, result) in file
+            .messages
+            .iter()
+            .zip(decode_batch(&pool, &file.messages, 0))
+        {
+            let serial: Vec<_> = message
+                .values()
+                .unwrap()
+                .into_iter()
+                .flat_map(f64::to_le_bytes)
+                .collect();
+            let mut bytes = Vec::new();
+            write_values(&mut bytes, &result.unwrap()).unwrap();
+            assert_eq!(bytes, serial);
+        }
+        let mut messages = file.messages;
+        messages[1].gds = None;
+        messages[3].indicator.edition = 2;
+        let results = decode_batch(&pool, &messages, 17);
+        assert!(results[0].is_ok());
+        assert_eq!(results[1].as_ref().unwrap_err(), "message 18 has no GDS");
+        assert_eq!(
+            results[3].as_ref().unwrap_err(),
+            "message 20 is not GRIB edition 1"
+        );
+        let first_error = results
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap_err();
+        assert_eq!(first_error, "message 18 has no GDS");
+    }
+
+    #[test]
+    fn decoded_batches_charge_live_arrays_and_keep_one_large_message() {
+        assert_eq!(batch_width(4, 1440 * 721), 4);
+        assert_eq!(batch_width(4, 8 * 1024 * 1024), 2);
+        assert_eq!(batch_width(4, usize::MAX), 1);
+        assert_eq!(batch_width(4, 0), 4);
+    }
+
+    #[test]
+    fn wire_buffer_keeps_nan_payloads_signed_zero_and_a_short_final_chunk() {
+        let words = [
+            0,
+            1,
+            0x8000000000000000,
+            0x7ff8000000000042,
+            0xfff0000000000000,
+        ];
+        let values: Vec<_> = words
+            .into_iter()
+            .cycle()
+            .take(2053)
+            .map(f64::from_bits)
+            .collect();
+        let expected: Vec<_> = values
+            .iter()
+            .flat_map(|value| value.to_bits().to_le_bytes())
+            .collect();
+        let mut actual = Vec::new();
+        write_values(&mut actual, &values).unwrap();
+        assert_eq!(actual, expected);
+        write_values(&mut actual, &[]).unwrap();
+        assert_eq!(actual, expected);
+    }
 
     #[test]
     fn the_envelope_walk_returns_the_count_the_decoder_must_match() {

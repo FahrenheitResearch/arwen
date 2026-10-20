@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from email.parser import Parser
+from functools import lru_cache
 import gzip
 import hashlib
 import json
@@ -254,11 +255,18 @@ def _copy_file(source: Path, destination: Path, *, executable: bool = False) -> 
     destination.chmod(0o755 if executable else 0o644)
 
 
+@lru_cache(maxsize=None)
+def _tracked_source_paths(root: Path) -> frozenset[str]:
+    """Snapshot the staging checkout's tracked paths once per process."""
+    output = subprocess.check_output(["git", "-C", str(root), "ls-files", "-z"])
+    return frozenset(os.fsdecode(path) for path in output.split(b"\0") if path)
+
+
 def _require_tracked(source: Path) -> None:
     relative = source.resolve().relative_to(REPO).as_posix()
-    subprocess.run(
-        ["git", "-C", str(REPO), "ls-files", "--error-unmatch", relative],
-        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if relative not in _tracked_source_paths(REPO):
+        raise subprocess.CalledProcessError(
+            1, ["git", "-C", str(REPO), "ls-files", "--error-unmatch", relative])
 
 
 def _require_lf_shell(source: Path) -> None:

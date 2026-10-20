@@ -44,6 +44,10 @@ fn emit(value: serde_json::Value) {
 
 fn run() -> Result<(), Refusal> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
+    if arguments.first().map(String::as_str) == Some("wps") {
+        emit(mapped_engine::wps::run(&arguments[1..])?);
+        return Ok(());
+    }
     let invocation = Invocation::parse(&arguments).inspect_err(|_| {
         // The usage line doubles as compiled-in contract text, and the
         // schema names ride with it so the ABI marker literal is anchored
@@ -66,7 +70,9 @@ fn run() -> Result<(), Refusal> {
     };
     match invocation.subcommand.as_str() {
         "capabilities" => {
-            emit(mapped_engine::engine::run_capabilities());
+            let mut capabilities = mapped_engine::engine::run_capabilities();
+            capabilities["wps_intermediate_v5"] = serde_json::json!(true);
+            emit(capabilities);
             Ok(())
         }
         "decode" => {

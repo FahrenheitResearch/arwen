@@ -72,7 +72,7 @@ def test_failure_is_concise_and_uses_existing_remedy(tmp_path, monkeypatch, caps
     from test_check_host_memory import _fetch_only_config
     config = _fetch_only_config(tmp_path)
     monkeypatch.setattr(pf, "_warn_unstaged_physics_tables", lambda *_: None)
-    monkeypatch.setattr(doctor, "_cuda_headers_check", lambda: doctor.Check(
+    monkeypatch.setattr(doctor, "_cuda_headers_check", lambda **_kw: doctor.Check(
         "CUDA kernel headers", "missing", "long compiler detail", "long remedy",
         action="pip install 'cupy-cuda13x[ctk]'", brief="toolkit headers missing"))
     args = _args(tmp_path)
@@ -91,7 +91,7 @@ def test_failure_is_concise_and_uses_existing_remedy(tmp_path, monkeypatch, caps
 def test_declared_estimate_does_not_probe_gpu(tmp_path, monkeypatch, capsys):
     from test_check_host_memory import _fetch_only_config
     path = _fetch_only_config(tmp_path)
-    monkeypatch.setattr(doctor, "_cuda_headers_check", lambda: pytest.fail("GPU probed"))
+    monkeypatch.setattr(doctor, "_cuda_headers_check", lambda **_kw: pytest.fail("GPU probed"))
     args = _args(tmp_path, "--budget-gib", "100", "--json")
     args.config = path
     assert pf.check_main(args) == 0
@@ -153,7 +153,7 @@ def test_a_launch_that_may_not_touch_the_card_says_which_switch_forbids_it(
     assert "unset GPUWM_NO_LOCAL_GPU" in first
     # A measured verdict keeps its own remedy whether or not the switch
     # is set: only the not-judged verdict is the switch's.
-    monkeypatch.setattr(doctor, "_cuda_headers_check", lambda: doctor.Check(
+    monkeypatch.setattr(doctor, "_cuda_headers_check", lambda **_kw: doctor.Check(
         "CUDA kernel headers", "missing", "no header", brief="no header",
         action="install the matching CUDA runtime headers"))
     for switch in ("1", "0"):
@@ -199,7 +199,7 @@ def test_declared_free_prices_the_same_streaming_plan(tmp_path, monkeypatch, cap
             .replace("nz = 49", "nz = 76").replace("cu_physics = 1", "cu_physics = 0")
             .replace("dx = 12000.0", "dx = 3000.0"))
     path.write_text(body + '\n[tiles]\nmode = "auto"\n', encoding="utf-8")
-    monkeypatch.setattr(doctor, "_cuda_headers_check", lambda: pytest.fail("GPU probed"))
+    monkeypatch.setattr(doctor, "_cuda_headers_check", lambda **_kw: pytest.fail("GPU probed"))
     monkeypatch.setattr(pf, "declares_the_local_card", lambda *_: False)
     exp = pf._load_experiment_any(path)
     free_bytes = int(free_gib * pf.GIB)

@@ -259,7 +259,8 @@ def run_initialized_native_ensemble(inputs, node, *, members, member_ids=None, m
         if (reflected is None and clock.ticks == 0
                 and getattr(cfg, "mp_physics", 0) in REFL_10CM_MICROPHYSICS):
             from gpuwm.core.refl import analysis_refl_10cm
-            reflected = analysis_refl_10cm(physics.state)
+            with physics.state.analysis_diagnostic_view():
+                reflected = analysis_refl_10cm(physics.state)
         fields = physics.driver.output_fields()
         views = tuple(member_output_view(owners, member, output_fields=fields) for member in range(members))
         validation("history", views)

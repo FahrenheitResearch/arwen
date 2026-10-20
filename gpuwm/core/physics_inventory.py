@@ -757,6 +757,7 @@ __all__ = [
     "MYNN_PBL_DIAGNOSTICS_2D", "MYNN_PBL_DIAGNOSTICS_INT_2D",
     "MYNN_PBL_STATE_3D", "MYNN_SURFACE_OUTPUTS",
     "PBL_RQI_MICROPHYSICS", "PHYSICS_SLOT_DISPATCH", "REFL_10CM_MICROPHYSICS",
+    "UnroutedPhysicsSelectorError", "resolve_physics_slot",
     "SFCLAY_OUTPUTS",
     "SHWS_SLOTS", "SHINHONG_BLOCK", "SHINHONG_TILE_BLOCKS_PER_SM",
     "shinhong_workspace_floats",
@@ -834,6 +835,73 @@ PHYSICS_SLOT_DISPATCH: dict[str, dict[int, str | None]] = {
         901: "_run_satmedmf",
     },
 }
+
+
+class UnroutedPhysicsSelectorError(NotImplementedError):
+    """A configured surface/LSM/PBL selector VALUE has no routed scheme.
+
+    The driver used to branch on the truthiness of ``sf_surface_physics``
+    and ``bl_pbl_physics``, so *any* nonzero value ran Noah and YSU.
+    Unlocking a new selector without adding a routing row would therefore
+    have produced plausible numbers from the wrong scheme with no error.
+    This is that error.
+    """
+
+    def __init__(self, selector: str, value, routed):
+        self.selector = selector
+        self.value = value
+        self.routed = tuple(sorted(routed))
+        super().__init__(
+            f"{selector}={value!r} has no scheme routed to it in the gpuwm "
+            "physics driver; refusing to substitute another scheme. Routed "
+            f"values: {list(self.routed)}. Adding the selector to "
+            "gpuwm/config.py and gpuwm/physics_compat.py is NOT sufficient: "
+            f"add a {selector} row to PHYSICS_SLOT_DISPATCH "
+            "(gpuwm/core/physics_inventory.py) naming the PhysicsDriver method that "
+            "runs that exact scheme.")
+
+
+#: Land-surface schemes after which WRF's surface driver calls the ordinary
+#: ``SFCDIAGS`` (module_surface_driver.F:2983-2998).  RUC instead calls
+#: ``SFCDIAGS_RUCLSM`` in :func:`ruc_lsm_step`; Noah-MP unconditionally
+#: selects its water/ice flux diagnostic or its own vegetation/bare-ground
+#: 2-m fields in :func:`noahmp_lsm_step`.  This is a per-scheme decision, not
+#: a property of "an LSM ran", and all three post-LSM paths overwrite the
+#: surface layer's earlier T2/Q2/TH2 exactly where WRF does.
+LAND_SURFACE_SFCDIAGS_SCHEMES = frozenset({2})
+
+
+def sase_switch_value(cfg, name: str) -> bool:
+    """Read one SASE switch, falling back to RunConfig's SHIPPED default.
+
+    Every switch here is a per-run key whose default is declared once, in
+    :class:`~gpuwm.config.RunConfig`.  A configuration object that does
+    not carry the key must land on that declared default and nothing
+    else: a literal fallback written at the call site is a second
+    declaration of the same default, and a second declaration drifts.
+    It already had.  ``sase_additive_dissipation`` ships ON, and the
+    driver read it with a literal ``False`` fallback, so any object
+    without the field would have dropped the dissipation channel without
+    saying so -- the opposite of what a default-on remedy means.  The
+    fallback is now read off the dataclass, so the call site cannot
+    disagree with ``gpuwm/config.py`` about what ships.
+
+    RunConfig itself always carries all three keys, so for a RunConfig
+    this is ``getattr`` and nothing more.
+    """
+    return bool(getattr(cfg, name, getattr(RunConfig, name)))
+
+
+def resolve_physics_slot(selector: str, value) -> str | None:
+    """Resolve one selector VALUE to its runner method, or fail loudly."""
+    table = PHYSICS_SLOT_DISPATCH[selector]
+    try:
+        key = int(value)
+    except (TypeError, ValueError):
+        raise UnroutedPhysicsSelectorError(selector, value, table) from None
+    if key not in table:
+        raise UnroutedPhysicsSelectorError(selector, key, table)
+    return table[key]
 
 
 # WRF G3 restart carriers and convtrans_prep accumulators. Shape tokens

@@ -1962,29 +1962,26 @@ def execute_experiment(
                     # accepted move also needs the existing full-state donor.
                     parent_stream.sync_to_state()
                     parent_streams[parent_gid] = parent_stream
-        outcome = relocation_runner.on_period_begin(
-            model, clocks, period=period,
-            # The executor's validator holds live references into the
-            # outgoing child; dropping it here is what lets the
-            # host-staged release actually free the device bytes.
-            before_rebuild=lambda gid: validators.pop(gid, None))
-        for parent_stream in parent_streams.values():
-            # reset_tracker_window already zeroes every live copy, including
-            # generated follower carriers. Preserve the legacy fixed-plane
-            # synchronization for providers that write those planes directly.
-            parent_stream.sync_from_state(TRACKER_PLANE_CARRIERS)
-        rows = [] if outcome is None else (
-            outcome.get("outcomes", []) if outcome.get("event") == "batch"
-            else [outcome])
-        for row in rows:
-            if row.get("event") != "relocated":
-                continue
-            gid = int(row["grid_id"])
+
+        def validate_rebuilt_child(gid):
             if validate_state:
                 from gpuwm.core.health import health_validator_for_domain
                 validators[gid] = health_validator_for_domain(model, model.node(gid))
                 validators[gid].require_healthy(
                     phase=f"post-relocation.d{gid:02d}")
+
+        relocation_runner.on_period_begin(
+            model, clocks, period=period,
+            # The executor's validator holds live references into the
+            # outgoing child; dropping it here is what lets the
+            # host-staged release actually free the device bytes.
+            before_rebuild=lambda gid: validators.pop(gid, None),
+            after_rebuild=validate_rebuilt_child)
+        for parent_stream in parent_streams.values():
+            # reset_tracker_window already zeroes every live copy, including
+            # generated follower carriers. Preserve the legacy fixed-plane
+            # synchronization for providers that write those planes directly.
+            parent_stream.sync_from_state(TRACKER_PLANE_CARRIERS)
 
     def on_domain_start(grid_id, clock) -> None:
         """Run the ordinary WRF-order child init at its delayed boundary."""
@@ -2159,6 +2156,13 @@ def execute_experiment(
                 # first site's own refusal.  Before anything downstream.
                 step_ledger.drain()
             refresh_model_time(node.state, clock, after_step=True)
+            # Scientific accumulators see every committed domain step. This
+            # is not the best-effort telemetry seam below: losing a wind
+            # maximum must fail the product instead of silently undersampling.
+            from gpuwm.ensemble.runtime_context import current_capture
+            capture = current_capture()
+            if capture is not None:
+                capture.committed_step(node=node, model=model)
             if spectral_seam is not None:
                 # THE Level-2 slow-large-step hook seam.  The RK slow-mode
                 # state above is committed and the acoustic substeps are
@@ -2478,6 +2482,10 @@ def execute_experiment(
         # The controller reads the same reduction the probe does rather
         # than carrying a second copy of the kernel.
         enable_wrf_cfl_recording()
+        try:
+            moving_deadline = relocation_runner.next_deadline_ticks
+        except AttributeError:
+            moving_deadline = None
         adaptive_driver = AdaptiveClockDriver(
             model, cfl_source=take_wrf_cfl,
             tick_den=model.schedule.clock.tick_den,
@@ -2486,7 +2494,8 @@ def execute_experiment(
                 else _streamed(gid).carrier_provenance()),
             map_factor_source=lambda gid: (
                 None if _streamed(gid) is None
-                else _streamed(gid).maximum_map_factor()))
+                else _streamed(gid).maximum_map_factor()),
+            deadline_source=moving_deadline)
 
     try:
         if schedule_dispatch is not None:

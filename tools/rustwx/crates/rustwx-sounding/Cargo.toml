@@ -1,0 +1,16 @@
+[package]
+name = "rustwx-sounding"
+version = "0.1.0"
+edition.workspace = true
+license = "Apache-2.0"
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ecape-rs = { path = "../../vendor/ecape-rs" }
+image = { version = "0.25", default-features = false, features = ["png"] }
+rustwx-render = { path = "../rustwx-render" }
+serde.workspace = true
+thiserror.workspace = true
+sharprs = { path = "../../vendor/sharprs" }
+wx-math = { path = "../../vendor/wx-math" }

@@ -35,6 +35,12 @@ MEMBERS = "gefs_member_mesoscale_demo"       # gefs 2026-08-20T00, twelve hours
 RECIPE_FLAGS = ["--recipe", "time-lagged", "--members", "2"]
 
 
+def _prepared_in_roster_order(stages):
+    # Workers finish independently; receipts retain run and member order.
+    return sorted(stages.prepared,
+                  key=lambda row: (row["config"].parents[3].name, row["member"]))
+
+
 def experiment(domains=1, hours=1):
     return SimpleNamespace(start_time=START, run_seconds=3600.0 * hours, domains=(object(),) * domains,
                            vertical=SimpleNamespace(p_top=5000.0))
@@ -607,15 +613,15 @@ def test_a_whole_recipe_run_records_every_member_and_completes(tmp_path, door, s
     assert [member["cycle"][:13] for member in receipt["members"]] == ["2026-08-20T00", "2026-08-19T23"]
     assert receipt["products"] == {"frames": 1}
     # Each member was prepared, prepare-only, from its own config in the run folder.
-    assert [row["member"] for row in stages.prepared] == [0, 1]
+    assert [row["member"] for row in _prepared_in_roster_order(stages)] == [0, 1]
     assert all(row["prepare_only"] for row in stages.prepared)
     # Compared by their parts: on Windows a deep output folder is handed to
     # the chain in its extended spelling.
-    assert [row["config"].parts[-5:] for row in stages.prepared] == [
+    assert [row["config"].parts[-5:] for row in _prepared_in_roster_order(stages)] == [
         (run.name, "members", f"member-{index:03d}", "source", "experiment.toml") for index in (0, 1)]
-    assert [row["fetch"]["cycle"] for row in stages.prepared] == ["2026-08-20T00", "2026-08-19T23"]
+    assert [row["fetch"]["cycle"] for row in _prepared_in_roster_order(stages)] == ["2026-08-20T00", "2026-08-19T23"]
     # One download cache per member's request, under the case folder.
-    caches = [Path(row["run_options"]["data_dir"]) for row in stages.prepared]
+    caches = [Path(row["run_options"]["data_dir"]) for row in _prepared_in_roster_order(stages)]
     assert len(set(caches)) == 2
     assert all(cache.parts[-3:-1] == ("out", "downloads") for cache in caches)
     # The gates were asked once, of both members, before the first preparation.
@@ -645,7 +651,7 @@ def test_nested_recipe_prepares_every_members_complete_tree_and_uses_tree_runner
     assert result.code == 0, result.text
     _run, receipt = _receipt(out)
     assert receipt["status"] == "complete"
-    assert [row["fetch"]["cycle"] for row in stages.prepared] == [
+    assert [row["fetch"]["cycle"] for row in _prepared_in_roster_order(stages)] == [
         "2026-08-20T00", "2026-08-19T23"]
     for row in stages.prepared:
         member = tomllib.loads(row["config"].read_text(encoding="utf-8"))
@@ -688,7 +694,7 @@ def test_surface_recipe_shares_one_unchanged_preparation_for_all_seeded_members(
     result = door("ensemble", config, "--outdir", tmp_path / "out", "--products", "none")
     assert result.code == 0, result.text
     _run, receipt = _receipt(tmp_path / "out")
-    assert [row["member"] for row in stages.prepared] == [0]
+    assert [row["member"] for row in _prepared_in_roster_order(stages)] == [0]
     assert len(receipt["members"]) == 4
     assert len({row["seed"] for row in receipt["members"]}) == 4
     assert len({row["prepared_root"] for row in receipt["members"]}) == 1
@@ -746,7 +752,7 @@ def test_surface_recipe_post_preparation_binds_inputs_before_real_session_constr
     assert result.code == 0, result.text
     _run, receipt = _receipt(tmp_path / "out")
     assert observed == [0, 1]
-    assert [row["member"] for row in stages.prepared] == [0]
+    assert [row["member"] for row in _prepared_in_roster_order(stages)] == [0]
     assert len({row["prepared_root"] for row in receipt["members"]}) == 1
     assert len({row["seed"] for row in receipt["members"]}) == 2
     assert receipt["members"][1]["preparation_reused_from_member"] == 0
@@ -808,7 +814,7 @@ def test_named_roster_prepares_two_banks_and_shares_one_source_acquisition(
     result = door("ensemble", config, "--outdir", tmp_path / "out", "--products", "none")
     assert result.code == 0, result.text
     _run, receipt = _receipt(tmp_path / "out")
-    assert [row["member"] for row in stages.prepared] == [0, 6]
+    assert [row["member"] for row in _prepared_in_roster_order(stages)] == [0, 6]
     assert len({row["run_options"]["data_dir"] for row in stages.prepared}) == 1
     assert len({row["prepared_root"] for row in receipt["members"][:6]}) == 1
     assert len({row["prepared_root"] for row in receipt["members"][6:]}) == 1
@@ -855,7 +861,7 @@ def test_single_tail_sources_do_not_retain_roster_frame_banks(tmp_path, door, st
     result = door("ensemble", _case(tmp_path), *RECIPE_FLAGS, "--outdir", tmp_path / "out")
     assert result.code == 0, result.text
     assert len(stages.prepared) == 2
-    bindings = [row["composition_binding"] for row in stages.prepared]
+    bindings = [row["composition_binding"] for row in _prepared_in_roster_order(stages)]
     assert all(binding[1] is None for binding in bindings)
     assert bindings[0][0] != bindings[1][0]
 
@@ -915,7 +921,7 @@ def test_named_roster_post_preparation_binds_every_input_before_real_session_con
     monkeypatch.setattr(production.PreparedEnsembleSession, "completed_products", lambda self: {"frames": 1})
     result = door(command, config, "--outdir", tmp_path / "out")
     assert result.code == 0, result.text
-    assert [row["member"] for row in stages.prepared] == [0, 6]
+    assert [row["member"] for row in _prepared_in_roster_order(stages)] == [0, 6]
     assert len({row["run_options"]["data_dir"] for row in stages.prepared}) == 1
     assert [member for member, _ in member_rows] == list(range(8))
     assert all(inputs is member_rows[0][1] for _, inputs in member_rows[:6])
@@ -1004,7 +1010,7 @@ def test_cycle_flag_retimes_the_roster_the_door_plans(tmp_path, door, stages):
     # The real run prepares the re-timed members, not the config's own.
     result = door("ensemble", config, *RECIPE_FLAGS, "--cycle", "2026-08-21T06", "--outdir", out)
     assert result.code == 0, result.text
-    assert [row["fetch"]["cycle"] for row in stages.prepared] == ["2026-08-21T06", "2026-08-21T05"]
+    assert [row["fetch"]["cycle"] for row in _prepared_in_roster_order(stages)] == ["2026-08-21T06", "2026-08-21T05"]
     refused = door("ensemble", config, *RECIPE_FLAGS, "--cycle", "not-a-cycle", "--dry-run")
     assert refused.code == 2 and "not-a-cycle" in refused.err
 
@@ -1022,7 +1028,7 @@ def test_posting_and_host_flags_reach_every_members_fetch(tmp_path, door, stages
     stages.prepared.clear()
     result = door("go", config, *RECIPE_FLAGS, "--outdir", tmp_path / "out2", "--late-after-minutes", "7")
     assert result.code == 0, result.text
-    assert [row["run_options"].get("late_after_minutes") for row in stages.prepared] == [7.0, 7.0]
+    assert [row["run_options"].get("late_after_minutes") for row in _prepared_in_roster_order(stages)] == [7.0, 7.0]
     assert all("transport" not in row["run_options"] and "as_posted" not in row["run_options"]
                for row in stages.prepared)
 
@@ -1220,7 +1226,7 @@ def test_forecast_failure_reuses_prepared_members_on_relaunch(tmp_path, door, st
     stages.forecast_result = 0
     second = door("go", config, *RECIPE_FLAGS, "--outdir", out, "--products", "none")
     assert second.code == 0, second.text
-    assert [row["member"] for row in stages.prepared] == [0, 1]
+    assert [row["member"] for row in _prepared_in_roster_order(stages)] == [0, 1]
     runs = sorted(out.glob("run-*"))
     assert len(runs) == 2
     relaunched = json.loads((runs[-1] / recipe_door.RECEIPT_NAME).read_text())
@@ -1241,7 +1247,7 @@ def test_relaunch_does_not_reuse_changed_preparation_context(tmp_path, door, sta
     stages.forecast_result = 0
     second = door("go", config, *RECIPE_FLAGS, "--outdir", out)
     assert second.code == 0, second.text
-    assert [row["member"] for row in stages.prepared] == [0, 1, 0, 1]
+    assert [row["member"] for row in _prepared_in_roster_order(stages)] == [0, 1, 0, 1]
 
 
 def test_relaunch_into_explicit_failed_run_uses_new_forecast_directory(tmp_path, door, stages):
@@ -1255,7 +1261,7 @@ def test_relaunch_into_explicit_failed_run_uses_new_forecast_directory(tmp_path,
     stages.forecast_result = 0
     second = door("go", config, *RECIPE_FLAGS, "--outdir", run)
     assert second.code == 0, second.text
-    assert [row["member"] for row in stages.prepared] == [0, 1]
+    assert [row["member"] for row in _prepared_in_roster_order(stages)] == [0, 1]
     assert stages.sim[-1]["outdir"] == run / "forecast-attempts" / "run-001"
     assert (run / "run" / "ensemble-run.json").read_text() == '{"status":"failed"}'
 
@@ -1808,14 +1814,14 @@ def test_prepare_only_prepares_every_member_and_the_forecast_launch_reuses_them(
     assert single == [], "roster prepare-only bypassed the member route"
     run, receipt = _receipt(out)
     assert receipt["status"] == "prepared"
-    assert [row["member"] for row in stages.prepared] == [0, 1]
+    assert [row["member"] for row in _prepared_in_roster_order(stages)] == [0, 1]
     assert stages.forecast == []
     assert receipt["preparation_status"] == "ready"
     assert len(receipt["members"]) == 2
     # The forecast launch into the same run folder prepares nothing again.
     result = door("go", config, *RECIPE_FLAGS, "--outdir", run, "--products", "none")
     assert result.code == 0, result.text
-    assert [row["member"] for row in stages.prepared] == [0, 1]
+    assert [row["member"] for row in _prepared_in_roster_order(stages)] == [0, 1]
     assert len(stages.forecast) == 1
     assert "reuses its ready preparation" in result.text
     _, receipt = _receipt(out)
@@ -1841,3 +1847,26 @@ def test_prepare_only_admission_needs_geography_and_disk_but_no_forecast_device(
     with pytest.raises(recipe_door.RecipeRefusal, match="geography is missing"):
         recipe_door.admit([], config=tmp_path / "case.toml", geog_root=tmp_path,
                           case_root=tmp_path, request=None, options={"prepare_only": True})
+
+
+def test_member_preparations_overlap_with_independent_source_authorities(tmp_path, door, stages, monkeypatch):
+    from threading import Barrier
+    barrier = Barrier(2)
+    original = recipe_door.prepare_member
+    def prepare(*args, **kwargs):
+        barrier.wait(timeout=5)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(recipe_door, "prepare_member", prepare)
+    monkeypatch.setattr(os, "sched_getaffinity", lambda _: {0, 1}, raising=False)
+    # Two cores and ample host memory: a 16 GB CI runner admits one member
+    # preparation at a time by memory, which is the admission working, not
+    # the overlap this test is about.
+    from gpuwm.ingest import preparation_workers
+    monkeypatch.setattr(preparation_workers, "host_available_bytes", lambda *a, **k: 1 << 40)
+    out = tmp_path / "out"
+    result = door("ensemble", _case(tmp_path), *RECIPE_FLAGS, "--outdir", out, "--prepare-only")
+    assert result.code == 0, result.text
+    _, receipt = _receipt(out)
+    assert receipt["preparation_execution"]["workers"] == 2
+    assert len({row["prepared_root"] for row in receipt["members"]}) == 2
+    assert [row["member_id"] for row in receipt["members"]] == [0, 1]

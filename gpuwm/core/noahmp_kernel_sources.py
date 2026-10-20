@@ -160,7 +160,8 @@ class RuntimeUnit:
         payload = {
             "name": self.name,
             "pricing_key": self.key,
-            "parts": [{"file": name + ".cu", "sha256": digest}
+            "parts": [{"file": name if name.endswith(".cuh") else name + ".cu",
+                       "sha256": digest}
                       for name, digest in self.parts],
             "preamble_sha256": self.preamble_sha256,
             "source_sha256": _sha(self.source),
@@ -208,7 +209,15 @@ def _assemble(texts, prefix):
     return prefix + "".join(text for _, text in texts)
 
 
-def runtime_unit(name: str, *, kernel_dir: Path = KERNEL_DIR) -> RuntimeUnit:
+def validate_vege_atan_profile(profile: str) -> str:
+    """Validate capture arithmetic metadata without importing CUDA."""
+    if profile not in ("glibc_2_39", "glibc_2_43"):
+        raise ValueError("unknown Noah-MP atan profile")
+    return profile
+
+
+def runtime_unit(name: str, *, kernel_dir: Path = KERNEL_DIR,
+                 atan_profile: str = "glibc_2_39") -> RuntimeUnit:
     """Snapshot the production composition and options, including VEGE_FLUX.
 
     All custom runtime factories and the compile-only measurement harness use
@@ -216,7 +225,15 @@ def runtime_unit(name: str, *, kernel_dir: Path = KERNEL_DIR) -> RuntimeUnit:
     kernels.load_module; the CPU factory-interception tests enforce that too.
     ``kernel_dir`` composes the unit from another tree's kernel files (the
     A146 census gates the tree it scans, A193).
+
+    ``atan_profile`` selects VEGE_FLUX's native libm generation explicitly;
+    it never follows the execution host. The default retains existing 2.39
+    oracle arithmetic. The opt-in 2.43 profile uses the retained CORE-MATH
+    header and records it as a source component. No other libm is switched.
     """
+    validate_vege_atan_profile(atan_profile)
+    if atan_profile != "glibc_2_39" and name != "noahmp_vegeflux":
+        raise ValueError("the selected atan profile is implemented only for VEGE_FLUX")
     parts = NOAHMP_TRANSLATION_UNITS[name]
     # Read each component ONCE so its recorded digest and compiled text cannot
     # describe different reads of a concurrently edited file.
@@ -224,11 +241,22 @@ def runtime_unit(name: str, *, kernel_dir: Path = KERNEL_DIR) -> RuntimeUnit:
     if name == "noahmp_vegeflux":
         prefix = ""
         options = ("-std=c++14", "--ftz=false")
+        if atan_profile == "glibc_2_43":
+            # The constructed parent referee uses glibc 2.43. Preserve the
+            # glibc 2.39 default used by the existing WRF oracle fixtures.
+            header = (Path(kernel_dir) / "glibc_trig_flt32.cuh").read_text(
+                encoding="ascii")
+            prefix = ("#define glibc_atanf noahmp_glibc243_atanf\n" + header
+                      + "\n#undef glibc_atanf\n"
+                      + "#define GPUWM_NOAHMP_ATAN_GLIBC243 1\n")
+            texts = (("glibc_trig_flt32.cuh", header),) + texts
+            options = ("-std=c++17", "--ftz=false")
     else:
         from gpuwm.core.kernels import _preamble
         prefix = _preamble(kernel_dir)
         options = DEFAULT_OPTIONS
-    source = _assemble(texts, prefix)
+    source = _assemble(texts[1:] if atan_profile == "glibc_2_43" else texts,
+                       prefix)
     return RuntimeUnit(
         name=name, source=source,
         parts=tuple((part, _sha(text)) for part, text in texts),
@@ -238,7 +266,8 @@ def runtime_unit(name: str, *, kernel_dir: Path = KERNEL_DIR) -> RuntimeUnit:
 
 def compile_runtime_unit(name: str, *, module_key: str,
                          options: tuple[str, ...] | None = None,
-                         source: str | None = None, log_stream=None):
+                         source: str | None = None, log_stream=None,
+                         atan_profile: str = "glibc_2_39"):
     """Compile and load one Noah-MP runtime unit; no launch, no constant upload.
 
     The one direct-NVRTC route for Noah-MP. Every runtime factory
@@ -253,7 +282,7 @@ def compile_runtime_unit(name: str, *, module_key: str,
     suites compile (a perturbed copy, ``-fmad=false``); they are recorded
     under the caller's own ``module_key`` and are not the production unit.
     """
-    unit = runtime_unit(name)
+    unit = runtime_unit(name, atan_profile=atan_profile)
     code = unit.source if source is None else source
     opts = unit.options if options is None else tuple(options)
     return _compile_loaded_module(code, opts, module_key, log_stream)

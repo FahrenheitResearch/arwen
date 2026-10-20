@@ -8,9 +8,23 @@ import math
 def source_ids() -> tuple[str, ...]:
     """Sources with both an initialization route and an acquisition door."""
     from gpuwm.fetch_routes import all_fetchable_sources
-    from gpuwm.source_adapters import wizard_planable_source_ids
+    from gpuwm.source_adapters import source_adapters, wizard_planable_source_ids
 
-    return tuple(sorted(set(all_fetchable_sources()) & set(wizard_planable_source_ids())))
+    acquisition = {row.source_id for row in source_adapters() if row.acquisition_owner}
+    return tuple(sorted((set(all_fetchable_sources()) | acquisition) & set(wizard_planable_source_ids())))
+
+
+def acquisition_hints(source: str, model: str | None = None) -> dict:
+    """Ask the registry owner for optional source-specific planning fields."""
+    from importlib import import_module
+    adapter = source_adapter(source)
+    owner = import_module(adapter.acquisition_owner) if adapter.acquisition_owner else None
+    resolve = getattr(owner, "acquisition_hints", None)
+    if resolve is not None:
+        return resolve(source, model)
+    if model is not None:
+        raise ValueError(f"{adapter.display_title} declares no model selection on its acquisition door")
+    return {}
 
 
 def source_adapter(source: str):
@@ -169,7 +183,8 @@ def window_cadence_hours(source: str, *, moment: datetime, start_hour: int,
 
 def fetch_hints(*, source: str, moment: datetime, hours: int,
                 projection: dict, dims: tuple[int, int], dx_m: float,
-                member: str | None = None, start_hour: int = 0) -> dict:
+                member: str | None = None, start_hour: int = 0,
+                model: str | None = None) -> dict:
     """A source's actual fetch contract, validated before configuration output.
 
     ``start_hour`` is the forecast LEAD the run begins at, so the window
@@ -185,6 +200,7 @@ def fetch_hints(*, source: str, moment: datetime, hours: int,
     from gpuwm.fetch_routes import route_for, route_ids, resolve_leads
 
     adapter = source_adapter(source)
+    owned_hints = acquisition_hints(source, model)
     source = adapter.source_id
     if type(hours) is not int or hours < 1:
         raise ValueError("Cyclone duration must be a positive integer number of hours")
@@ -214,7 +230,8 @@ def fetch_hints(*, source: str, moment: datetime, hours: int,
         raise ValueError(refusal + "; covering sources: " + global_alternatives())
     hints = {"source": source, "cycle": moment.strftime("%Y-%m-%dT%H"),
              "hours": rounded, "out": f"data/{source}-cyclone-{moment:%Y%m%d%H}"}
-    if cadence is not None:
+    hints.update(owned_hints)
+    if cadence is not None and not adapter.acquisition_owner:
         hints["cadence"] = cadence
     if start_hour:
         # Written only when there IS a lead, so an analysis-initialized

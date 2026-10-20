@@ -210,3 +210,8 @@ tests/data/ncar_v44_conus12km/namelist.wps -whitespace
 tools/noah_mosaic_wrf461_oracle/receipts/wrf461-chs-probe-trace.txt -whitespace
 tools/noah_mosaic_wrf461_oracle/receipts/unit-fix-control.diff -whitespace
 tools/rrtmgp_rte_upstream_oracle/upstream-boundary-fixes.patch -whitespace
+
+# Vendored upstream crates: their READMEs underline headings with '=' runs and carry
+# .orig files; neither is this tree's conflict leftover or whitespace (the cut's
+# git diff --check reads these attributes from the exported tree).
+tools/rustwx/vendor/** conflict-marker-size=1000 -whitespace

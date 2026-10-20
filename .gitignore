@@ -106,6 +106,9 @@ tools/rw_wps/vendor/**/__pycache__/
 !tools/rustwx/crates/rw-store/tests/goldens/*.nc
 docs/branch-dispositions-private.md
 
+# Local coordinator brief; the source copy lives in lane scratch.
+/NEXTGEN-BRIEF.md
+
 # Cargo checksum manifests require every upstream source and documentation file.
 !tools/arwen-ui-vendor/**
 tools/arwen-ui-vendor/**/__pycache__/

@@ -58,6 +58,45 @@ def test_repeat_reuses_exact_image_and_original_arguments(runtime):
     assert events[1]["compile_seconds"] == 0.0
 
 
+def test_wrf_exact_cannot_reuse_fast_direct_image(runtime, monkeypatch):
+    from gpuwm import numerics, wrf_exact
+
+    compiler, _ = runtime
+    monkeypatch.setattr(numerics, "_mode", "fast")
+    monkeypatch.setenv("GPUWM_WRF_EXACT", "0")
+    fast = compile_unit()
+    monkeypatch.setattr(numerics, "_mode", "strict")
+    monkeypatch.setenv("GPUWM_WRF_EXACT", "1")
+    strict = compile_unit()
+    assert strict != fast
+    assert compile_unit() == strict
+    assert [row["status"] for row in cache.cache_events()] == ["miss", "miss", "hit"]
+    assert len(compiler.calls) == 2
+    assert compiler.calls[0][1] == ("-std=c++17", "--ftz=false")
+    assert compiler.calls[-1][1] == wrf_exact.effective_options(
+        ("-std=c++17", "--ftz=false"))
+
+
+@pytest.mark.parametrize("mode,exact", [("fast", "0"), ("strict", "1")])
+def test_plan_probe_uses_final_direct_cache_options(runtime, monkeypatch, mode, exact):
+    from pathlib import Path
+    from gpuwm import kernel_plan, numerics
+
+    compiler, _ = runtime
+    monkeypatch.setattr(numerics, "_mode", mode)
+    monkeypatch.setenv("GPUWM_WRF_EXACT", exact)
+    options = ("-std=c++17", "--ftz=false", "--fmad=false")
+    cache.compile_using_nvrtc("unit", options, "120", "unit.cu")
+    arguments = dict(source="unit", options=list(options), arch="device", filename="unit.cu")
+    route = "gpuwm.nvrtc_ptx_cache:plan_probe"
+    path = Path(cache.plan_probe(arguments, "120"))
+    assert path.name == cache.cache_events()[-1]["key"] + ".image"
+    assert path.is_file()
+    assert kernel_plan._cached(dict(arguments=arguments, route=route), "120", compiler.directory)
+    # Already normalized requests remain stable on another replay.
+    assert cache.plan_probe(dict(arguments, options=list(compiler.calls[-1][1])), "120") == str(path)
+
+
 @pytest.mark.parametrize("options", [(), ("-Iexternal",)])
 @pytest.mark.parametrize("arch", [None, "120"])
 def test_local_gpu_ban_refuses_before_runtime_probe_or_cache(

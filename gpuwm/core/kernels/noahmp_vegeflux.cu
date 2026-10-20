@@ -238,6 +238,8 @@ __device__ float glibc_atanf(float x)
 {
 #ifdef USE_DEVICE_LIBM
     return atanf(x);   // negative control
+#elif defined(GPUWM_NOAHMP_ATAN_GLIBC243)
+    return noahmp_glibc243_atanf(x);
 #else
     int32_t hx = (int32_t)__float_as_uint(x);
     int32_t ix = hx & 0x7fffffff;
@@ -583,7 +585,8 @@ __device__ __forceinline__ float tdc(float t)
 
 __device__ void dev_vege_flux(const float *in, const float *p, int isnow,
                               const float *dzsnso, const float *stc,
-                              const float *df, float *out)
+                              const float *df, float *out,
+                              int opt_stc=1, float fsno=0.0f)
 {
     const float dt = in[VI_DT], sav = in[VI_SAV], sag = in[VI_SAG];
     const float lwdn = in[VI_LWDN], ur = in[VI_UR], uu = in[VI_UU], vv = in[VI_VV];
@@ -748,9 +751,11 @@ __device__ void dev_vege_flux(const float *in, const float *p, int isnow,
         tg = FA(tg, dtg);
     }
 
-    // OPT_STC == 1 (Registry default).  The OPT_STC == 3 leg is dead.
+    // WRF-lineage Noah-MP 848f54ad :4125-4136, STC=1 reset / STC=3 blend.
+    // Original notice: licenses/LICENSE-WRF-public-domain.txt. No Noah-MP 5.
     if (snowh > 0.05f && tg > PH_TFRZ) {
-        tg = PH_TFRZ;
+        tg = opt_stc == 3
+            ? FA(FM(FS(1.0f, fsno), tg), FM(fsno, PH_TFRZ)) : PH_TFRZ;
         irg = FS(FS(FM(cir, p4f(tg)), FM(FM(emg, FS(1.0f, emv)), lwdn)),
                  FM(FM(FM(emg, emv), PH_SB), p4f(tv)));
         shg = FM(csh, FS(tg, tah));
@@ -855,6 +860,36 @@ void k_vegeflux(const float *in, const float *pin, const int *isnow,
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
+    dev_vege_flux(in + VI_NFLOAT * i, pin + 14 * i, isnow[i],
+                  dzsnso + VF_NLAYER * i, stc + VF_NLAYER * i,
+                  df + VF_NLAYER * i, out + VO_NOUT * i);
+}
+
+// Existing row layout plus actual FSNO[n], omitted by the old STC=1 packing.
+extern "C" __global__
+void k_vegeflux_stc3(const float *in, const float *pin, const int *isnow,
+                     const float *dzsnso, const float *stc, const float *df,
+                     const float *fsno, float *out, int n)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    dev_vege_flux(in + VI_NFLOAT * i, pin + 14 * i, isnow[i],
+                  dzsnso + VF_NLAYER * i, stc + VF_NLAYER * i,
+                  df + VF_NLAYER * i, out + VO_NOUT * i, 3, fsno[i]);
+}
+
+// Fixed-width dispatch. Inactive columns never enter the physics leaf.
+extern "C" __global__
+void k_vegeflux_masked(const float *in, const float *pin, const int *isnow,
+                       const float *dzsnso, const float *stc, const float *df,
+                       float *out, int n, const unsigned char *active)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    if (!active[i]) {
+        for (int j = 0; j < VO_NOUT; ++j) out[VO_NOUT * i + j] = 0.0f;
+        return;
+    }
     dev_vege_flux(in + VI_NFLOAT * i, pin + 14 * i, isnow[i],
                   dzsnso + VF_NLAYER * i, stc + VF_NLAYER * i,
                   df + VF_NLAYER * i, out + VO_NOUT * i);

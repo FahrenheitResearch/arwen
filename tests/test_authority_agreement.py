@@ -492,6 +492,40 @@ def _compare(label: str, report: dict, disagreements: list[str],
                     f"{shared}, validate_run_config says OK")
 
 
+_CORE_WALK = None
+
+
+def _core_walk_slice(bounds):
+    return _CORE_WALK(*bounds)
+
+
+def _walk_across_cores(walk, total: int) -> tuple[int, list[str]]:
+    """Run ``walk(start, stop)`` over ``[0, total)`` on every core, in order."""
+    global _CORE_WALK
+    import multiprocessing
+    import os
+
+    workers = min(os.cpu_count() or 1, 32)
+    if total < 2 * workers or "fork" not in multiprocessing.get_all_start_methods():
+        return walk(0, total)
+    slices = max(1, workers * 4)
+    size = -(-total // slices)
+    bounds = [(start, min(start + size, total))
+              for start in range(0, total, size)]
+    _CORE_WALK = walk
+    try:
+        with multiprocessing.get_context("fork").Pool(workers) as pool:
+            parts = pool.map(_core_walk_slice, bounds, chunksize=1)
+    finally:
+        _CORE_WALK = None
+    found: list[str] = []
+    walked = 0
+    for count, part in parts:
+        walked += count
+        found.extend(part)
+    return walked, found
+
+
 def _component_option_ids(registry: dict) -> dict[str, list[str]]:
     return {
         component_id: sorted(component["options"])
@@ -531,21 +565,33 @@ def test_exhaustive_component_cross_product_agrees_on_every_combination(
     monkeypatch.setattr(registry_module, "registry_sha256", fixture_hash)
     monkeypatch.setitem(globals(), "registry_sha256", fixture_hash)
 
-    disagreements: list[str] = []
-    combinations = 0
-    for values in itertools.product(*(options[c] for c in component_ids)):
-        components = dict(zip(component_ids, values))
-        combinations += 1
-        plan = _single_domain_plan(
-            registry, _PERMISSIVE_RUNNER, "any-source", template_id,
-            components=components)
-        report = validate_physics_plan(plan, registry=registry)
-        _compare(repr(components), report, disagreements, registry=registry,
-                 monkeypatch=monkeypatch)
-
+    option_lists = [options[c] for c in component_ids]
     expected = 1
-    for component_id in component_ids:
-        expected *= len(options[component_id])
+    for option_list in option_lists:
+        expected *= len(option_list)
+
+    def walk(start: int, stop: int) -> tuple[int, list[str]]:
+        found: list[str] = []
+        walked = 0
+        for values in itertools.islice(
+                itertools.product(*option_lists), start, stop):
+            components = dict(zip(component_ids, values))
+            walked += 1
+            plan = _single_domain_plan(
+                registry, _PERMISSIVE_RUNNER, "any-source", template_id,
+                components=components)
+            report = validate_physics_plan(plan, registry=registry)
+            _compare(repr(components), report, found, registry=registry,
+                     monkeypatch=monkeypatch)
+        return walked, found
+
+    # The product is tens of thousands of plans, each a few milliseconds
+    # of pure Python: on one core it outran the suite's timeout (a 1,200 s
+    # serial run did not finish), leaving one xdist worker busy while the
+    # rest idled.  Forked workers share the fixture and the monkeypatches
+    # above; the slices are walked in product order and joined in order,
+    # so the record is the one serial walk would write.
+    combinations, disagreements = _walk_across_cores(walk, expected)
     assert combinations == expected, (
         f"the cross-product enumerated {combinations} of {expected} "
         "combinations")

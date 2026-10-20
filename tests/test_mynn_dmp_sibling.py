@@ -10,8 +10,11 @@ cover the actual default and scalar-mixing paths.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 from pathlib import Path
+
+import pytest
 
 _KDIR = Path(__file__).resolve().parents[1] / "gpuwm" / "core" / "kernels"
 _MARKER = "// MF-EXPORT"
@@ -140,26 +143,39 @@ def test_the_marker_is_actually_exercised():
         assert needle in text, f"no tagged line exports {needle}"
 
 
-def test_default_dmp_still_launches_the_original_module(monkeypatch):
+@pytest.mark.parametrize("shape", [(), (3, 2, 4)])
+def test_default_dmp_still_launches_the_original_module(shape):
     """The DMP dispatch uses the sibling only for scalar-mixing exports."""
-    from gpuwm.core import mynn_pbl_gpu
+    # Execute the production dispatch and its validator without importing the
+    # device-array driver. This guard tests loader routing, not CUDA execution.
+    path = _KDIR.parent / "mynn_pbl_gpu.py"
+    core = path.read_text(encoding="utf-8")
+    tree = ast.parse(core)
+    dispatch = ast.Module(body=[node for node in tree.body if (
+        isinstance(node, ast.FunctionDef)
+        and node.name in {"mynn_pbl_kernel", "_mynn_version_check"}
+    ) or (
+        isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "MYNN_VERSIONS"
+                for target in node.targets)
+    )], type_ignores=[])
 
     calls, original = [], object()
 
-    def capture(module, function):
-        calls.append((module, function))
+    def capture(module, function, shape=()):
+        calls.append((module, function, shape))
         return original
 
     def refuse_defines(*args, **kwargs):
         raise AssertionError("generic MYNN must use the original module without defines")
 
-    monkeypatch.setattr(mynn_pbl_gpu, "get_kernel", capture)
-    monkeypatch.setattr(mynn_pbl_gpu, "get_kernel_int_defines", refuse_defines)
+    namespace = {"get_kernel": capture, "get_kernel_int_defines": refuse_defines}
+    exec(compile(dispatch, str(path), "exec"), namespace)
     for args in (("mynn_dmp_mf_columns",), ("mynn_dmp_mf_columns", "wrf_461")):
-        assert mynn_pbl_gpu.mynn_pbl_kernel(*args) is original
-    assert calls == [("mynn_pbl", "mynn_dmp_mf_columns")] * 2
+        assert namespace["mynn_pbl_kernel"](*args, shape=shape) is original
+    assert calls == [("mynn_pbl", "mynn_dmp_mf_columns", shape)] * 2
 
-    core = (Path(__file__).resolve().parents[1] / "gpuwm" / "core"
-            / "mynn_pbl_gpu.py").read_text(encoding="utf-8")
-    assert 'mynn_pbl_kernel("mynn_dmp_mf_columns", bl_mynn_version)' in core
-    assert 'get_kernel("mynn_dmp_sibling", "mynn_dmp_mf_columns")' in core
+    assert ('mynn_pbl_kernel("mynn_dmp_mf_columns", bl_mynn_version, '
+            '(nz, 1, ncol))') in core
+    assert ('get_kernel("mynn_dmp_sibling", "mynn_dmp_mf_columns", '
+            '(nz, 1, ncol))') in core

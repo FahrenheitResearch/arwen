@@ -96,6 +96,7 @@ _PROVIDERS: dict[str, tuple[str, ...]] = {
     "cupy": ("cupy-cuda12x", "cupy-cuda13x"),
     "cupy_backends": ("cupy-cuda12x", "cupy-cuda13x"),
     "cupyx": ("cupy-cuda12x", "cupy-cuda13x"),
+    "cuda": ("cuda-pathfinder",),
     "huggingface_hub": ("huggingface_hub",),
     "jsonschema": ("jsonschema",),
     "threadpoolctl": ("threadpoolctl",),
@@ -138,6 +139,16 @@ _PROVIDERS: dict[str, tuple[str, ...]] = {
     # tests/test_no_undefined_names.py locates the linter through the
     # wheel's own module (ruff.__main__.find_ruff_bin).
     "ruff": ("ruff",),
+    # The Earth-2 doors (2.9.3): the runner scripts execute in the separate
+    # earth2studio interpreter GPUWM_EARTH2_PYTHON names -- see
+    # _OPTIONAL_BY_DESIGN.
+    "earth2studio": ("earth2studio",),
+    "torch": ("torch",),
+    "torch_harmonics": ("torch-harmonics",),
+    "xarray": ("xarray",),
+    # tools/hf_inventory.py, a maintainer inventory instrument -- see
+    # _OPTIONAL_BY_DESIGN.
+    "requests": ("requests",),
 }
 
 #: Modules this project deliberately never declares, because a *declared*
@@ -145,6 +156,14 @@ _PROVIDERS: dict[str, tuple[str, ...]] = {
 #: would pin a version we do not care about and would hide the real
 #: relationship.  If the guarantor ever leaves the table, this fires.
 _GUARANTORS: dict[str, tuple[str, str]] = {
+    "cuda": (
+        "cupy-cuda13x",
+        "The CuPy 14 wheels (cupy-cuda13x and cupy-cuda12x alike, both pinned "
+        ">=14.0 by the gpu extras) require cuda-pathfinder, which ships the "
+        "`cuda.pathfinder` namespace.  gpuwm/forecast_readiness.py imports it "
+        "inside binding(), only after it has established CuPy 14, and reads "
+        "it through CuPy's guarantee, never on its own account.",
+    ),
     "PIL": (
         "matplotlib",
         "matplotlib requires pillow>=8, so a base install always has it. "
@@ -201,7 +220,35 @@ _GENERATED_SOURCE_CONSUMERS: dict[str, tuple[str, str, str]] = {
 #: Modules that are genuinely optional at run time: the importing code has a
 #: try/except and a documented answer for the absent case, so declaring them
 #: would be declaring something the product does not need.
+#: Why the Earth-2 runner scripts' imports are not declared (2.9.3).
+_EARTH2_INTERPRETER = (
+    "the Earth-2 doors (2.9.3): gpuwm/earth2_runner.py, "
+    "earth2_diagnose_runner.py, earth2_diagnostic_runner.py and earth2_io.py "
+    "are the scripts gpuwm earth2 and gpuwm earth2-diagnose launch as a "
+    "subprocess in the interpreter GPUWM_EARTH2_PYTHON names, the one with "
+    "earth2studio and its torch stack installed. The gpuwm interpreter never "
+    "imports them, and without that interpreter the doors refuse by naming "
+    "the variable. Declaring the stack here would pull a multi-GiB torch "
+    "install into every gpuwm install for a door that runs beside it, not "
+    "inside it."
+)
+
 _OPTIONAL_BY_DESIGN: dict[str, str] = {
+    "earth2studio": _EARTH2_INTERPRETER,
+    "torch": _EARTH2_INTERPRETER,
+    "xarray": _EARTH2_INTERPRETER,
+    "torch_harmonics": (
+        "gpuwm/earth2_runner.py imports torch_harmonics inside a try/except "
+        "(and the runner itself runs in GPUWM_EARTH2_PYTHON): the banded DISCO "
+        "contraction is a memory optimisation and a no-op when "
+        "torch-harmonics is absent."
+    ),
+    "requests": (
+        "tools/hf_inventory.py is the read-only Hugging Face Earth-2 "
+        "inventory a maintainer runs from a checkout to rebuild the model "
+        "table. No gpuwm door imports it (gpuwm hf-fetch downloads with "
+        "urllib), so a user's install never reaches it."
+    ),
     "cmpphys": (
         "the WRF exact chain's localization instruments (2.9.1): tools/coupled_exact_trace.py, tools/coupled_gf_receipt.py and tools/coupled_trace_receipt.py put tools/wrf_exact_localize on sys.path and import its trace hooks and comparer by bare name. That directory does not ship (packages.find names `tools`, not `tools*`), so from a wheel the import fails by name; the scripts are maintainer instruments that replay a recorded WRF run from a checkout, and no wheel-user path reaches them."
     ),
@@ -263,6 +310,13 @@ _OPTIONAL_BY_DESIGN: dict[str, str] = {
 #: capability is genuinely optional"; it is deliberately more work than
 #: promoting the dependency.
 _EXTRA_GATED: dict[str, tuple[tuple[str, ...], str]] = {
+    "cuda": (
+        ("gpu-cu13",),
+        "Reachable only through CuPy 14's own requirement on cuda-pathfinder "
+        "(the same guarantee under [gpu-cu12], whose cupy-cuda12x>=14.0 "
+        "carries it), inside the forecast-readiness binding that runs only "
+        "beside a card; a base install never imports it.",
+    ),
     "cupy": (
         ("gpu-cu12", "gpu-cu13"),
         "CuPy ships one wheel per CUDA major and a pip extra cannot detect "

@@ -2588,6 +2588,12 @@ def test_the_compose_registry_covers_every_registered_composition_source():
         "icon-d2": "compose inputs are produced by the normalization "
                    "stage, not published",
     }
+    # Inference products are generated with a same-cycle donor, rather than
+    # published objects in this battery's agency staging corpus. Whole-job
+    # receipts cover their composition; no agency golden is claimed here.
+    exempt.update({adapter.source_id: "no staged generated forecast and donor corpus"
+                   for adapter in source_adapters() if adapter.acquisition_owner})
+    exempt["hex-global"] = "no staged exported global forecast history corpus"
     registered = {
         adapter.source_id for adapter in source_adapters()
         if adapter.runner == "mapped_composition_v1" and adapter.runnable

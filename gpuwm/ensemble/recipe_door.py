@@ -38,11 +38,94 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 
+
+#: Host bytes one member preparation is charged before any preparation of
+#: this launch has finished and been measured.  Defect it guards (V50
+#: 2026-10-18, AW36): the door started all 32 distinct HRRR preparations at
+#: once on a 192-core box whose container cgroup allows 256 GiB, and the
+#: kernel killed two producers (exit -9, cgroup oom_kill 2), which stopped
+#: the whole ensemble.  After the first preparation ends, the measured peak
+#: of the largest finished preparation process replaces this figure.
+MEMBER_PREPARATION_HOST_BYTES = 16 * 1024**3
+#: Share of the measured host headroom member preparations may hold at once.
+MEMBER_PREPARATION_HOST_SHARE = 0.7
+
+
+class _PreparationAdmission:
+    """Admit member preparations against host headroom, not only CPU count.
+
+    Each running preparation is charged ``estimate`` bytes: the configured
+    figure until a preparation has finished, then the largest peak resident
+    size of any finished preparation process (``RUSAGE_CHILDREN``) with a
+    quarter of margin.  A preparation starts when the charges of the running
+    ones plus its own fit ``MEMBER_PREPARATION_HOST_SHARE`` of the headroom
+    measured when admission opened; one preparation always runs, so a small
+    host is slower, never refused.  Unreadable host memory leaves the CPU
+    bound alone, as before.
+    """
+
+    def __init__(self, cpu_workers):
+        import threading
+        from gpuwm.ingest.preparation_workers import host_available_bytes
+        try:
+            headroom = host_available_bytes()
+        except Exception:  # noqa: BLE001 - unreadable RAM is unknown, never a refusal
+            headroom = None
+        self.cpu_workers = max(1, int(cpu_workers))
+        self.budget = (None if headroom is None
+                       else int(headroom * MEMBER_PREPARATION_HOST_SHARE))
+        self.running = 0
+        self.peak_running = 0
+        self.measured_peak = None
+        self.condition = threading.Condition()
+
+    def estimate(self):
+        if self.measured_peak:
+            return max(1, int(self.measured_peak * 1.25))
+        return MEMBER_PREPARATION_HOST_BYTES
+
+    def limit(self):
+        if self.budget is None:
+            return self.cpu_workers
+        return max(1, min(self.cpu_workers, self.budget // self.estimate()))
+
+    def _measure(self):
+        try:
+            import resource
+            import sys
+            peak = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+            peak = int(peak) * (1 if sys.platform == "darwin" else 1024)
+        except Exception:  # noqa: BLE001 - no reading keeps the current estimate
+            return
+        if peak > 0:
+            self.measured_peak = peak
+
+    def __enter__(self):
+        with self.condition:
+            while self.running >= self.limit():
+                self.condition.wait()
+            self.running += 1
+            self.peak_running = max(self.peak_running, self.running)
+        return self
+
+    def __exit__(self, *exc):
+        with self.condition:
+            self.running -= 1
+            self._measure()
+            self.condition.notify_all()
+        return False
+
+    def receipt(self):
+        return {"host_budget_bytes": self.budget, "estimate_bytes": self.estimate(),
+                "measured_child_peak_bytes": self.measured_peak,
+                "limit_now": self.limit(), "peak_concurrent": self.peak_running,
+                "basis": "min of CPU workers and host headroom share / per-preparation peak"}
+
 #: The recipes a front door can select.  ``input-ensemble`` is the
 #: automatic choice for a source with operational members and
 #: ``recentered`` has no observation-calibrated amplitude, so neither is
 #: a door option here.
-RECIPES = ("time-lagged", "multi-model", "surface-state", "member-roster")
+RECIPES = ("wofs", "time-lagged", "multi-model", "surface-state", "member-roster")
 
 RECEIPT_NAME = "ensemble-recipe.json"
 RECEIPT_SCHEMA = "gpuwm-ensemble-recipe-door.v1"
@@ -164,6 +247,7 @@ def flag_overrides(args) -> dict:
     """The ``--recipe`` and ``--trajectories`` flags as request overrides."""
     listed = getattr(args, "trajectories", None)
     return {"recipe": getattr(args, "recipe", None),
+            "family_weights": getattr(args, "family_weights", None),
             "trajectories": None if listed is None else load_trajectories(listed)}
 
 
@@ -277,19 +361,24 @@ def member_fetch(raw, experiment, recipe, member) -> dict:
     """
     from gpuwm.source_adapters import get_source_adapter
 
+    authored = (raw.get("ensemble") or {}).get("member_fetches")
+    if authored:
+        return dict(authored[member.index])
     trajectory = member.trajectory
     first, last = recipe.acquisition_window(trajectory)
     stamp = trajectory.cycle.strftime("%Y-%m-%dT%H")
     if trajectory.source == recipe.base.source:
         fetch = dict(raw["fetch"])
         fetch["cycle"] = stamp
+        fetch["hours"] = last - first
         fetch.pop("forecast_start_hour", None)
         if first:
             fetch["forecast_start_hour"] = first
     else:
         cadence = get_source_adapter(trajectory.source).forcing_interval_seconds
         fetch = {"source": trajectory.source, "cycle": stamp, "hours": last - first,
-                 **({} if cadence is None else {"cadence": max(1, int(cadence) // 3600)}),
+                 **({} if cadence is None or get_source_adapter(trajectory.source).acquisition_owner
+                    else {"cadence": max(1, int(cadence) // 3600)}),
                  **({"forecast_start_hour": first} if first else {})}
         area = _crop_box(raw, experiment, trajectory.source)
         if area is not None:
@@ -328,6 +417,30 @@ def member_configuration(raw, config, wps, recipe, member, directory):
         changed = variant_configuration(changed, recipe.member_variants[member.index])
     changed.pop("ensemble", None)
     changed["fetch"] = member_fetch(raw, original, recipe, member)
+    from gpuwm.ensemble.wofs_recipe import per_member_route, selection_owner
+    from gpuwm.source_adapters import get_source_adapter
+    adapter = get_source_adapter(trajectory.source)
+    owner = selection_owner(adapter)
+    if (not (raw.get("ensemble") or {}).get("member_fetches")
+            and owner is not None and hasattr(owner, "batch_fetch_hints")
+            and trajectory.member is not None):
+        # Explicit source recipes share the same batch contract as the WoFS
+        # ladder. Bind the complete family/cycle roster before the first fetch.
+        peers = [peer for peer in recipe.members if (
+            peer.trajectory.source == trajectory.source
+            and peer.trajectory.cycle == trajectory.cycle)]
+        family_key = hashlib.sha256(trajectory.source.encode()).hexdigest()[:12]
+        root = (Path(config).resolve().parent / str(raw["fetch"].get("out", "data")) /
+                family_key / trajectory.cycle.strftime("%Y%m%dT%H%M%S")).resolve()
+        fetches = [owner.member_fetch_hints(member_fetch(raw, original, recipe, peer),
+            peer.trajectory.member, window_seconds=(recipe.end - trajectory.cycle).total_seconds(),
+            root=root) for peer in peers]
+        bound = owner.batch_fetch_hints(fetches)
+        if len(bound) != len(peers):
+            raise RecipeRefusal("selection owner changed the planned member count")
+        changed["fetch"] = bound[peers.index(member)]
+    if per_member_route(trajectory.source) and not adapter.ensemble_preparation_owner:
+        changed.pop("case_data", None)
     static = changed.get("static")
     if isinstance(static, dict) and isinstance(static.get("highres"), dict):
         # Only a declared [static.highres] has a cache_root to pin: a
@@ -345,6 +458,10 @@ def member_configuration(raw, config, wps, recipe, member, directory):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     target = directory / "experiment.toml"
+    if adapter.ensemble_preparation_owner:
+        from importlib import import_module
+        import_module(adapter.ensemble_preparation_owner).configure_member(
+            changed, target=target, original=Path(config))
     target.write_text(emit_experiment_toml(changed), encoding="utf-8")
     experiment = load_experiment(target)
     namelist = directory / "experiment.namelist.wps"
@@ -420,7 +537,7 @@ def review_members(raw, config, wps, recipe, *, scratch, options=None):
                 raw, config, wps, recipe, member, scratch / f"member-{member.index:03d}")
             document = tomllib.loads(target.read_text(encoding="utf-8"))
             table = document["fetch"]
-            chain = runplan.prepared_chain_for_source(source, source_root=None)
+            chain = regional_preparation.member_preparation_chain(source)
             if chain not in chains:
                 raise RecipeRefusal(f"its source's route ({chain}) has no prepare-only chain")
             pinned_transport(table, posting.get("transport"))
@@ -453,7 +570,8 @@ def review_members(raw, config, wps, recipe, *, scratch, options=None):
         from gpuwm.ensemble.member_variants import require_distinct_variants
         try:
             require_distinct_variants(raw, recipe.member_variants,
-                                     experiments=[plan.experiment for plan in plans])
+                                     experiments=[plan.experiment for plan in plans],
+                                     trajectories=tuple(member.trajectory for member in recipe.members))
         except ValueError as error:
             raise RecipeRefusal(str(error)) from error
     return tuple(plans)
@@ -474,7 +592,7 @@ def prepare_member(config, experiment, *, source, directory, downloads, geog_roo
     from gpuwm.go_cli import fetch_request, managed_download_dir, pin_request, pinned_transport
 
     posting = _posting(options or {})
-    chain = runplan.prepared_chain_for_source(source, source_root=None)
+    chain = regional_preparation.member_preparation_chain(source)
     owner = regional_preparation.preparation_chains()[chain]
     hints = tomllib.loads(Path(config).read_text(encoding="utf-8"))["fetch"]
     # Keyed on the request the chain's fetch stage makes: the model top
@@ -974,6 +1092,7 @@ def run_recipe_ensemble(args, request, *, observer=None, options=None) -> int:
 
     publish()
     prepared = {}
+    lineage_fetches = {}
     prepared_banks = {}
     source_bindings = {}
     for plan in plans:
@@ -987,33 +1106,33 @@ def run_recipe_ensemble(args, request, *, observer=None, options=None) -> int:
     # fixed-clock canary cannot certify ordinary adaptive-clock requests.
     canaries = options.get("_head_canaries")
     try:
-        for plan in plans:
-            member = plan.member
-            where.update(stage="prepare", member_id=member.index, started=time.monotonic())
-            directory = root / "members" / f"member-{member.index:03d}"
-            _say(f"preparing member {member.index} ({member.trajectory.source} "
-                 f"{member.trajectory.cycle:%Y-%m-%dT%H}Z)")
-            _notify(observer, "stage_begin", label="prepare", command=[
-                "gpuwm", command, str(config), "#", member_label(member)])
-            member_config, member_wps, member_experiment = member_configuration(
-                raw, config, wps, recipe, member, directory / "source")
-            from gpuwm.ensemble.member_variants import preparation_binding_parts
-            member_document = tomllib.loads(Path(member_config).read_text(encoding="utf-8"))
-            binding = preparation_binding_parts(member.trajectory.identity, member_document,
-                                                 experiment=member_experiment)
-            identity = binding.key
-            source_banks = prepared_banks.setdefault(binding.source_key, {})
-            original_member = source_banks.get(binding.physics_tail)
-            reused_run = None
-            if original_member is None:
-                if identity in reusable:
-                    prepared[member.index], reused_run = reusable[identity]
+        from concurrent.futures import ThreadPoolExecutor
+        from contextvars import copy_context
+        try:
+            cpu_workers = len(os.sched_getaffinity(0))
+        except AttributeError:
+            cpu_workers = os.cpu_count() or 1
+        workers = max(1, min(len(plans), cpu_workers))
+        preparation_started = time.monotonic()
+        admission = _PreparationAdmission(workers)
+        receipt["preparation_execution"] = {"backend": "independent_member_workers",
+            "workers": workers, "available_cpu_workers": cpu_workers,
+            "host_admission": admission.receipt(),
+            "shared_binding_policy": "one preparation per exact source and physics binding"}
+        jobs, by_binding = [], {}
+
+        def prepare_job(member, member_config, member_wps, member_experiment, binding, directory):
+            started = time.monotonic()
+            try:
+                reused_run = None
+                if binding.key in reusable:
+                    result, reused_run = reusable[binding.key]
                     _say(f"member {member.index} reuses its ready preparation from {reused_run}")
                     if canaries is not None:
-                        canaries.submit({"source": member.trajectory.source,
-                                         **prepared[member.index]})
+                        canaries.submit({"source": member.trajectory.source, **result})
                 else:
-                    prepared[member.index] = prepare_member(
+                  with admission:
+                    result = prepare_member(
                         member_config, member_experiment, source=member.trajectory.source,
                         directory=directory, downloads=case_root, geog_root=geog_root,
                         composition_bank=(composition_banks[binding.source_key].name
@@ -1021,42 +1140,91 @@ def run_recipe_ensemble(args, request, *, observer=None, options=None) -> int:
                         composition_source_key=binding.source_key,
                         recipe_sha256=recipe.sha256, options={**options,
                         "_head_canaries": canaries, "_canary_namelist": member_wps})
-                source_banks[binding.physics_tail] = member.index
-                if (binding.source_key in composition_banks and
-                        len(source_banks) == len(source_bindings[binding.source_key])):
-                    composition_banks[binding.source_key].cleanup()
-            else:
-                # Seeded surface members share their unchanged source
-                # trajectory. Each initialized tree applies its own GPU
-                # perturbation; copying prepared arrays would add disk use
-                # without creating a different initial source.
-                prepared[member.index] = dict(prepared[original_member])
-                _say(f"member {member.index} reuses member {original_member}'s "
-                     "prepared source; its seeded surface state is applied at initialization")
-            receipt["members"].append({
-                "member_id": member.index, "seed": member.seed,
-                "source": member.trajectory.source, "cycle": member.trajectory.cycle.isoformat(),
-                "source_member": member.trajectory.member,
-                "trajectory_sha256": member.trajectory.identity,
-                "preparation_binding_sha256": identity,
-                "source_binding_sha256": binding.source_key,
-                "physics_tail_sha256": binding.physics_tail,
-                "start_lead_hours": plan.start_lead,
-                **({} if not recipe.member_variants else
-                   {"variant": recipe.member_variants[member.index]}),
-                **({} if original_member is None else
-                   {"preparation_reused_from_member": original_member}),
-                **({} if reused_run is None else {"preparation_reused_from_run": reused_run}),
-                **prepared[member.index]})
-            publish()
-            _notify(observer, "stage_end", label="prepare", exit_code=0, ok=True,
-                    elapsed_seconds=time.monotonic() - where["started"], progress=None)
+                return result, reused_run, time.monotonic() - started
+            except BaseException as error:
+                from gpuwm.ensemble.execution import name_failing_members
+                name_failing_members(error, (member.index,))
+                raise
+
+        pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ensemble-prepare")
+        try:
+            for plan in plans:
+                member = plan.member
+                directory = root / "members" / f"member-{member.index:03d}"
+                member_config, member_wps, member_experiment = member_configuration(
+                    raw, config, wps, recipe, member, directory / "source")
+                from gpuwm.ensemble.member_variants import preparation_binding_parts
+                member_document = tomllib.loads(Path(member_config).read_text(encoding="utf-8"))
+                lineage_fetches[member.index] = member_document["fetch"]
+                binding = preparation_binding_parts(member.trajectory.identity, member_document,
+                                                     experiment=member_experiment)
+                original_member = prepared_banks.setdefault(binding.source_key, {}).get(binding.physics_tail)
+                if binding.key not in by_binding:
+                    _say(f"preparing member {member.index} ({member.trajectory.source} "
+                         f"{member.trajectory.cycle:%Y-%m-%dT%H}Z)")
+                    _notify(observer, "stage_begin", label="prepare", command=[
+                        "gpuwm", command, str(config), "#", member_label(member)])
+                    future = pool.submit(copy_context().run, prepare_job, member,
+                        member_config, member_wps, member_experiment, binding, directory)
+                    by_binding[binding.key] = future
+                    prepared_banks[binding.source_key][binding.physics_tail] = member.index
+                jobs.append((plan, binding, original_member, by_binding[binding.key]))
+            # Publish in roster order. Workers own separate directories and
+            # event streams; only this thread replaces the run receipt.
+            for plan, binding, original_member, future in jobs:
+                member = plan.member
+                where.update(stage="prepare", member_id=member.index)
+                result, reused_run, elapsed = future.result()
+                prepared[member.index] = dict(result)
+                if original_member is not None:
+                    _say(f"member {member.index} reuses member {original_member}'s prepared source; "
+                         "its seeded surface state is applied at initialization")
+                receipt["members"].append({
+                    "member_id": member.index, "seed": member.seed,
+                    "source": member.trajectory.source, "cycle": member.trajectory.cycle.isoformat(),
+                    "source_member": member.trajectory.member,
+                    "trajectory_sha256": member.trajectory.identity,
+                    "preparation_binding_sha256": binding.key,
+                    "source_binding_sha256": binding.source_key,
+                    "physics_tail_sha256": binding.physics_tail,
+                    "start_lead_hours": plan.start_lead,
+                    "preparation_elapsed_seconds": elapsed,
+                    **({} if not recipe.member_variants else
+                       {"variant": recipe.member_variants[member.index]}),
+                    **({} if original_member is None else
+                       {"preparation_reused_from_member": original_member}),
+                    **({} if reused_run is None else {"preparation_reused_from_run": reused_run}),
+                    **prepared[member.index]})
+                publish()
+                if original_member is None:
+                    _notify(observer, "stage_end", label="prepare", exit_code=0, ok=True,
+                            elapsed_seconds=elapsed, progress=None)
+        finally:
+            for _, _, _, future in jobs:
+                future.cancel()
+            # No worker can still read a shared bank when it is removed.
+            pool.shutdown(wait=True, cancel_futures=True)
+        receipt["preparation_execution"]["elapsed_seconds"] = time.monotonic() - preparation_started
+        receipt["preparation_execution"]["host_admission"] = admission.receipt()
 
         for bank in composition_banks.values():
             bank.cleanup()
         if canaries is not None:
             canaries.close()
             receipt["canary_sources"] = list(canaries.bindings)
+        from gpuwm.ensemble.lineage import enrich_request, trajectory_records
+        from dataclasses import replace
+        if not request.provenance:
+            records, weights = trajectory_records([
+                {"source": member.trajectory.source, "cycle": member.trajectory.cycle.isoformat(),
+                 **({"member": member.trajectory.member} if member.trajectory.member is not None else {})}
+                for member in recipe.members], base_seed=request.base_seed,
+                variants=request.member_variants, stochastic=request.stochastic, weights=request.family_weights)
+            request = replace(request, provenance=records, family_weights=weights)
+        request = enrich_request(request, [lineage_fetches[member.index] for member in recipe.members])
+        receipt["request"] = request.receipt()
+        for member in receipt["members"]:
+            member["provenance"] = request.provenance[member["member_id"]]
         base = recipe.members[0].index
         receipt["preparation_status"] = "ready"
         if options["prepare_only"]:

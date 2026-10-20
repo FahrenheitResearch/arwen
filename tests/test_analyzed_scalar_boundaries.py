@@ -102,6 +102,29 @@ def _read_boundary(path, initial, cfg):
                           forcing_interval_seconds=60, cfg=cfg)
 
 
+@_requires_netcdf_decoder
+def test_boundary_tables_share_one_bounded_rust_decode(tmp_path, monkeypatch):
+    cfg = _cfg()
+    initial = _read(_input(tmp_path / 'input', cfg), cfg)
+    boundary = _boundary(tmp_path / 'boundary', initial, cfg)
+    commands = []
+    original = wi.netcdf_bridge._run
+
+    def record(arguments, **kwargs):
+        if 'dump' in arguments and str(boundary) in arguments:
+            commands.append(arguments)
+        return original(arguments, **kwargs)
+
+    monkeypatch.setattr(wi.netcdf_bridge, '_run', record)
+    result = _read_boundary(boundary, initial, cfg)
+    # Times has its character policy; all numeric sides and tendencies fit
+    # in one existing byte-budgeted batch, reused by the second interval.
+    assert len(commands) == 2
+    assert commands[0][-1] == 'Times'
+    assert 'QNWFA_BXS' in commands[1] and 'QNIFA_BTYE' in commands[1]
+    assert len(result.intervals) == 2
+
+
 def test_aerosol_reader_and_surface_restore_preserve_supplied_words(tmp_path):
     cfg=_cfg(); path=_input(tmp_path/'wrfinput',cfg); initial=_read(path,cfg)
     from gpuwm.core.state import DomainState

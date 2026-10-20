@@ -332,16 +332,42 @@ def canonical_sha256(value: object) -> str:
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
 
+#: The registry object this module loaded, serialised once in document order
+#: with its canonical hash.  The registry is JSON-origin data
+#: (:func:`_load_registry`), so re-parsing that text gives the same
+#: independent dicts, lists and scalars, in the same order, as a ``deepcopy``
+#: -- at a fraction of the cost.  Measured on one cell of
+#: tests/test_physics_combination_matrix.py (1,429 tuples): the 2,104
+#: deepcopies of the document were the bulk of the cell, which is what left
+#: one xdist worker on one core after the other seven had finished.  The
+#: fast path applies only while ``_REGISTRY`` is still this loaded object:
+#: a test or tool that installs an edited document in its place, and may go
+#: on editing it, gets the original deepcopy and per-call hash.
+_BUILTIN_REGISTRY = _REGISTRY
+_BUILTIN_REGISTRY_TEXT = json.dumps(_REGISTRY, ensure_ascii=False, allow_nan=False)
+_BUILTIN_REGISTRY_SHA256: str | None = None
+
+
 def physics_registry() -> dict[str, object]:
     """Return an independent copy of the immutable built-in registry."""
 
+    if _REGISTRY is _BUILTIN_REGISTRY:
+        return json.loads(_BUILTIN_REGISTRY_TEXT, parse_constant=_reject_json_constant)
     return deepcopy(_REGISTRY)
 
 
 def registry_sha256(registry: Mapping[str, object] | None = None) -> str:
     """Return the semantic hash of the selected registry document."""
 
-    return canonical_sha256(physics_registry() if registry is None else registry)
+    global _BUILTIN_REGISTRY_SHA256
+    if registry is not None:
+        return canonical_sha256(registry)
+    if _REGISTRY is not _BUILTIN_REGISTRY:
+        return canonical_sha256(_REGISTRY)
+    if _BUILTIN_REGISTRY_SHA256 is None:
+        # The built-in document never changes in-process; hash it once.
+        _BUILTIN_REGISTRY_SHA256 = canonical_sha256(_BUILTIN_REGISTRY)
+    return _BUILTIN_REGISTRY_SHA256
 
 
 # ------------------------------------------------ physics identity (A153)

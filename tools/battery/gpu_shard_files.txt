@@ -1321,6 +1321,7 @@ tests/test_lin_frame_arithmetic.py
 tests/test_lin_wrf461_parity.py
 tests/test_mynn_tke_advection.py
 tests/test_noahmp_snow_age_gpu.py
+tests/test_noahmp_glacier_gpu.py
 tests/test_nsas_column_oracle.py
 tests/test_solar_generation_gpu.py
 tests/test_urban480_gpu_oracle.py

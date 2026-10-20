@@ -4,10 +4,14 @@ The defect these hold closed: the public ``--members N`` door prepared one
 trajectory, handed it to every member, and published spread maps (zero
 everywhere) and probability maps (0 or 1) from N copies of one forecast.
 
-A plain member count now takes the automatic choice of the recipe planner
-(the operational ensemble the source's adapter row declares) through the
-recipe door.  Where no such ensemble is declared, and at every door that
-holds one input, the request is refused by name with the remedy.
+A plain member count at ``gpuwm go`` and ``gpuwm ensemble`` takes the WoFS
+ladder (:mod:`gpuwm.ensemble.wofs_recipe`): the source's own members where
+it has them, then its earlier cycles, then perturbation fill, with every
+member's provenance in the receipt.  ``gpuwm run`` keeps the automatic
+choice of the recipe planner (the operational ensemble the source's adapter
+row declares).  At every door that holds one input, and on a config the
+ladder cannot plan from (no ``[fetch]`` source and cycle), the request is
+refused by name with the remedy.
 """
 from contextlib import nullcontext
 from datetime import datetime
@@ -27,7 +31,7 @@ from gpuwm.ensemble.door import request_for_inputs, request_for_payload
 from gpuwm.ensemble.packing import CardBudget
 from gpuwm.ensemble.production import PreparedEnsembleSession
 from gpuwm.ensemble.request import EnsembleRequest
-from gpuwm.ensemble_admission import copies_breakage, member_source_remedy
+from gpuwm.ensemble_admission import TABLE_KEYS, copies_breakage, member_source_remedy
 
 REPO = Path(__file__).resolve().parents[1]
 START = datetime(2026, 10, 1, 18)
@@ -35,6 +39,23 @@ START = datetime(2026, 10, 1, 18)
 #: ensemble in the adapter table, one whose source declares none.
 WITH_ENSEMBLE = REPO / "configs" / "gfs_12km_quickstart.toml"
 WITHOUT_ENSEMBLE = REPO / "configs" / "hrrr_native_quick_demo.toml"
+
+
+@pytest.fixture(autouse=True)
+def private_shipped_config_copies(tmp_path, monkeypatch):
+    """The real CLI may author sibling recipe files beside its input config."""
+    import shutil
+    import sys
+    folder = tmp_path / "shipped-configs"
+    folder.mkdir()
+    for name in ("WITH_ENSEMBLE", "WITHOUT_ENSEMBLE"):
+        source = globals()[name]
+        target = folder / source.name
+        shutil.copyfile(source, target)
+        namelist = source.with_suffix(".namelist.wps")
+        if namelist.is_file():
+            shutil.copyfile(namelist, target.with_suffix(".namelist.wps"))
+        monkeypatch.setattr(sys.modules[__name__], name, target)
 
 
 class Collector:
@@ -617,7 +638,8 @@ SHIPPED_OVERLAY = REPO / "configs" / "ensemble" / "may1999_tiny_2member.toml"
 def _names_the_overlay_command(message):
     assert "tools.ensemble_forecast" in message
     assert "Next: python -m tools.ensemble_forecast run --ensemble-config FILE" in message
-    assert "members, keep_member_files, thresholds" in message
+    # The declared key list itself, so the sentence follows the table as keys are added.
+    assert TABLE_KEYS.startswith("members, keep_member_files, ") and TABLE_KEYS in message
 
 
 def test_the_shipped_overlay_is_named_as_the_overlay_with_its_command(tmp_path):
@@ -673,7 +695,7 @@ def test_none_and_a_mistyped_key_keep_their_own_answers():
     assert request_for_payload(b'[ensemble]\nmembers=1\nperturbation="none"\n').perturbation is None
     with pytest.raises(ValueError, match="unknown ensemble options") as refused:
         request_for_payload(b"[ensemble]\nmembers=2\nmember=3\n")
-    assert "the [ensemble] table takes members, keep_member_files, thresholds" in str(refused.value)
+    assert f"the [ensemble] table takes {TABLE_KEYS}" in str(refused.value)
 
 
 # ---- implementation admission at the loaders ----------------------------------------------
@@ -768,54 +790,61 @@ def _gpuwm(*argv, cwd):
                           capture_output=True, text=True, encoding="utf-8", timeout=300)
 
 
-@pytest.mark.parametrize("command", ["ensemble", "go"])
-def test_real_entry_point_refuses_a_plain_member_count_with_no_ensemble_to_draw_from(command, tmp_path):
-    """The real command line, on a shipped config: exit 2, the remedy, nothing fetched."""
-    result = _gpuwm(command, str(WITHOUT_ENSEMBLE), "--members", "2", "--dry-run",
-                    "--outdir", str(tmp_path / "out"), cwd=tmp_path)
-    assert result.returncode == 2, result.stdout + result.stderr
-    assert "GUARD_EVENTS=[]" in result.stdout, result.stdout + result.stderr
-    refused_as_copies(result.stderr, 2)
-    assert "declares none" in result.stderr
-    assert not (tmp_path / "out").exists()
+def _config_source(config):
+    import tomllib
+    return tomllib.loads(config.read_text(encoding="utf-8"))["fetch"]["source"]
 
 
 @pytest.mark.parametrize("command", ["ensemble", "go"])
-def test_real_entry_point_plans_the_operational_ensemble_for_a_plain_member_count(command, tmp_path):
-    """The same line on a source whose adapter row declares an ensemble: a member plan."""
-    result = _gpuwm(command, str(WITH_ENSEMBLE), "--members", "2", "--dry-run",
+@pytest.mark.parametrize("which", ["WITH_ENSEMBLE", "WITHOUT_ENSEMBLE"])
+def test_real_entry_point_plans_the_ladder_for_a_plain_member_count(command, which, tmp_path):
+    """The real command line, on a shipped config: the ladder's member plan, nothing fetched.
+
+    The ladder plans from the config's own source whether or not its row
+    declares an operational ensemble: the source's own trajectory, then its
+    earlier cycles.  A source with no ensemble used to be refused here
+    ("declares none"); that refusal named no breakage and is retired.
+    """
+    config = globals()[which]
+    source = _config_source(config)
+    result = _gpuwm(command, str(config), "--members", "2", "--dry-run",
                     "--outdir", str(tmp_path / "out"), cwd=tmp_path)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "GUARD_EVENTS=[]" in result.stdout, result.stdout + result.stderr
-    assert "ensemble: input-ensemble recipe, 2 members" in result.stdout
+    assert f"wofs ladder: 2 members from {source} " in result.stdout
+    assert "1 source, 1 time-lagged, 0 perturbation fill" in result.stdout
+    assert "ensemble: wofs recipe, 2 members" in result.stdout
     plan = [line for line in result.stdout.splitlines() if line.startswith("ensemble: member ")]
     assert len(plan) == 2 and len(set(plan)) == 2, result.stdout
+    assert all(f": {source} " in line for line in plan), result.stdout
     assert "dry run: nothing was fetched, prepared or run" in result.stdout
+    assert "copies of one forecast" not in result.stderr and "declares none" not in result.stderr
     assert not (tmp_path / "out").exists()
 
 
-def _operational_ensemble():
-    from gpuwm.source_adapters import get_source_adapter
-    import tomllib
-    source = tomllib.loads(WITH_ENSEMBLE.read_text(encoding="utf-8"))["fetch"]["source"]
-    declared = get_source_adapter(source).ensemble_source
-    assert declared and declared != source
-    return source, declared
-
-
 def test_real_entry_point_answers_readiness_for_the_members_that_will_run(tmp_path):
-    """--readiness on a plain member count: the members' windows, not the config's own source."""
-    _own, declared = _operational_ensemble()
+    """--readiness on a plain member count: the members' windows, not the config's own window.
+
+    The ladder's summary goes to stderr here: the readiness document owns stdout.
+    """
+    source = _config_source(WITH_ENSEMBLE)
     result = _gpuwm("go", str(WITH_ENSEMBLE), "--members", "2", "--readiness", "--no-probe",
                     "--outdir", str(tmp_path / "out"), cwd=tmp_path)
     assert result.returncode == 0, result.stdout + result.stderr
     document = json.loads(result.stdout.split("GUARD_EVENTS=")[0])
     assert "GUARD_EVENTS=[]" in result.stdout, result.stdout + result.stderr
-    assert document["source"] == declared
+    assert document["source"] == source
     recipe = document["recipe"]
-    assert recipe["kind"] == "input-ensemble" and recipe["members"] == 2
-    assert [window["source"] for window in recipe["member_windows"]] == [declared, declared]
-    assert len({window["source_member"] for window in recipe["member_windows"]}) == 2
+    assert recipe["kind"] == "wofs" and recipe["members"] == 2
+    windows = [(window["source"], window["cycle"]) for window in recipe["member_windows"]]
+    assert len(set(windows)) == 2 and {name for name, _ in windows} == {source}
+    # The time-lagged member's window is answered from its own cycle: its
+    # start lead is the lag, not the config's lead 0.
+    base = datetime.fromisoformat(recipe["base_cycle"])
+    for window in recipe["member_windows"]:
+        lag_hours = (base - datetime.fromisoformat(window["cycle"])).total_seconds() / 3600
+        assert window["readiness"]["window"]["start_lead"] == lag_hours
+    assert f"wofs ladder: 2 members from {source} " in result.stderr
     assert "readiness ready for 2 recipe members" in result.stderr
     assert not (tmp_path / "out").exists()
 
@@ -823,15 +852,17 @@ def test_real_entry_point_answers_readiness_for_the_members_that_will_run(tmp_pa
 @pytest.mark.parametrize("command", ["ensemble", "go"])
 def test_real_entry_point_plans_the_members_at_the_cycle_the_flag_names(command, tmp_path):
     """--cycle re-times the config and the members are planned for that cycle."""
-    _own, declared = _operational_ensemble()
+    source = _config_source(WITH_ENSEMBLE)
     result = _gpuwm(command, str(WITH_ENSEMBLE), "--members", "2", "--cycle", "2026-08-19T12",
                     "--dry-run", "--outdir", str(tmp_path / "out"), cwd=tmp_path)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "GUARD_EVENTS=[]" in result.stdout, result.stdout + result.stderr
     assert "re-timed to start 2026-08-19 12:00:00 UTC" in result.stdout
+    assert f"wofs ladder: 2 members from {source} 2026-08-19T12Z" in result.stdout
     plan = [line for line in result.stdout.splitlines() if line.startswith("ensemble: member ")]
     assert len(plan) == 2 and len(set(plan)) == 2, result.stdout
-    assert all(f"{declared} 2026-08-19T12Z member " in line for line in plan), result.stdout
+    assert plan[0].endswith(f": {source} 2026-08-19T12Z"), result.stdout
+    assert all(f": {source} 2026-08-19T" in line for line in plan), result.stdout
     assert "dry run: nothing was fetched, prepared or run" in result.stdout
 
 
@@ -856,8 +887,30 @@ def test_a_card_gate_is_reported_in_its_own_words_under_the_member_plan(
     out = tmp_path / "out"
     assert cli.main([command, str(WITH_ENSEMBLE), "--members", "2", "--outdir", str(out)]) == 2
     captured = capsys.readouterr()
-    assert "ensemble: input-ensemble recipe, 2 members" in captured.out
+    # go and ensemble plan the WoFS ladder; run keeps the planner's automatic choice.
+    kind = "input-ensemble" if command == "run" else "wofs"
+    assert f"ensemble: {kind} recipe, 2 members" in captured.out
     assert "GPU readiness is missing: no card" in captured.err
     assert "copies of one forecast" not in captured.err
     assert "that plan was refused" not in captured.err
     assert not out.exists()
+
+
+def test_wofs_preparation_keeps_generated_configs_in_private_test_directory():
+    """Exercise the real sibling writer without polluting shipped configs."""
+    from gpuwm.ensemble.wofs_recipe import prepare_launch
+    import tomllib
+
+    shipped = REPO / "configs" / WITH_ENSEMBLE.name
+    original = shipped.read_bytes()
+    args = SimpleNamespace(config=WITH_ENSEMBLE, recipe="wofs", members=2,
+        command="ensemble", wind_amplitude=.5, physics_arms="fill",
+        no_surface_fill=False, max_lag_hours=24, ensemble_seed=0,
+        era5_provider="arco", cycle=None)
+    prepare_launch(args)
+    assert args.config != WITH_ENSEMBLE
+    assert args.config.parent == WITH_ENSEMBLE.parent
+    assert not args.config.is_relative_to(REPO)
+    assert tomllib.loads(args.config.read_text())["ensemble"]["members"] == 2
+    assert args.config.with_suffix(".ladder.json").is_file()
+    assert shipped.read_bytes() == original

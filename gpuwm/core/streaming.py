@@ -1143,6 +1143,8 @@ def _resident_admission(options, machine, estimate=None, *,
                  "budget_bytes": max(0, budget - int(withheld_bytes)),
                  "scope": "configured experiment",
                  "basis": estimate.envelope_basis}
+    if getattr(estimate, "hydro_memory", None) is not None:
+        admission["hydro_memory"] = estimate.hydro_memory
     # Absent, not zero, where nothing was withheld: a tree with no moving
     # nest keeps the receipt it had before this term existed.
     if withheld_bytes:

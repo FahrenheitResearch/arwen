@@ -171,10 +171,12 @@ def test_native_request_refuses_present_nonconsumed_vertical_field(source, engin
     """A valid canonical 3-D diagnostic still lies outside this consumer ABI.
 
     Vertical velocity is the example: canonical, three-dimensional, and
-    the one field the regular join drops by name
-    (gpuwm.mapped_source.REGULAR_JOIN_DROPPED_FIELDS), so the window's
-    inventory never carries it.  The five hydrometeor masses used to be
-    the example and are now part of that inventory.
+    the one field the regular join dropped by name until 79d9f528445
+    carried the source vertical velocity (REGULAR_JOIN_DROPPED_FIELDS is
+    empty since).  The five hydrometeor masses were the example before it.
+    Appending it to a window that may already name it is refused either
+    way: by the native window validator when the name repeats, or by the
+    published-inventory check when it does not.
     """
     import gpuwm.ingest.atmospheric_window as module
     mapping = json.loads(source[0].read_text())
@@ -195,7 +197,7 @@ def test_native_request_refuses_present_nonconsumed_vertical_field(source, engin
         response["fields"].append("vertical_velocity")
         return response
     monkeypatch.setattr(module, "window_request_response", invalid)
-    with pytest.raises(ValueError, match="atmospheric.*inventory"):
+    with pytest.raises(ValueError, match="atmospheric.*inventory|window repeats field vertical_velocity"):
         decode(source, engine, tmp_path / "bad-w-window", (target(),))
 
 

@@ -77,7 +77,7 @@ def test_check_with_nothing_to_verify_against_names_the_missing_budget(
     # check. Its earlier failure and ordering are covered in
     # test_check_gpu_readiness.py; failing it here never reaches this message.
     from gpuwm import doctor
-    monkeypatch.setattr(doctor, "_cuda_headers_check", lambda: doctor.Check(
+    monkeypatch.setattr(doctor, "_cuda_headers_check", lambda **_kw: doctor.Check(
         "CUDA kernel headers", "verified", "fixture kernels ready"))
     monkeypatch.setitem(sys.modules, "cupy", None)  # no measurable card
     rc = cli_main(["check", str(config)])

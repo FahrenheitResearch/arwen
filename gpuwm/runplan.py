@@ -3647,7 +3647,7 @@ def _recipe_plan_refusal(plan: RunPlan, raw: Mapping[str, Any],
     """
 
     recipe = _plan_recipe(plan, raw)
-    if recipe is None:
+    if recipe is None or recipe == "wofs" and plan.route == "experiment":
         return None
     door = f"gpuwm ensemble CONFIG --recipe {recipe}"
     if plan.route != "prepared":
@@ -4105,6 +4105,7 @@ def _execute_experiment_route(plan: RunPlan, *, exp, data, config_path,
         "completed_seconds": float(summary.completed_seconds),
         "nan_free": bool(summary.nan_free),
         "restarted": restart is not None,
+        "hydro": getattr(summary, "hydro_receipt", None),
     }
 
 
@@ -9150,17 +9151,34 @@ def _source_coverage_facts(window: Any) -> dict[str, Any] | None:
     }
 
 
-def _source_fetch_facts(fetch_routes: Any, source_id: str) -> dict[str, Any]:
+def _source_fetch_facts(fetch_routes: Any, source_id: str,
+                        adapter: Any = None) -> dict[str, Any]:
     """Which transport, if any, can bring this source's bytes.
 
-    Three set memberships decide the answer, never a name: the route
-    table, the legacy-transport tuple, and the table's own named
-    refusals.  ``route_for`` is asked ONLY on the two arms that have no
+    The adapter acquisition owner, then three set memberships decide
+    the answer, never a name: the route table, legacy transports and
+    named refusals. ``route_for`` is asked ONLY on the two arms that have no
     transport, because it raises "has its own transport" for a legacy
     row -- true, and not a refusal.  Reporting that sentence as one
     would send a reader hunting for a fetch route that already works.
+
+    ``adapter`` is the registry row itself when the caller holds it (the
+    inventory does): a row appended to the registry has no entry in the
+    alias map built at import, so resolving it again by id refused the
+    very row the arbitrary acceptance test grafts on.
     """
 
+    from importlib import import_module
+    from gpuwm.source_adapters import get_source_adapter
+
+    if adapter is None:
+        adapter = get_source_adapter(source_id)
+    if adapter.acquisition_owner:
+        owner = import_module(adapter.acquisition_owner)
+        return {"kind": "acquisition_owner", "route_id": None,
+                "refusal": None, "posting": None,
+                "acquisition_owner": adapter.acquisition_owner,
+                **owner.acquisition_facts(source_id)}
     if source_id in set(fetch_routes.route_ids()):
         return {"kind": "table_route", "route_id": source_id, "refusal": None,
                 "posting": _source_posting_facts(source_id)}
@@ -9337,7 +9355,8 @@ def source_inventory() -> dict[str, Any]:
                     "cadence_mapping": adapter.cadence_mapping,
                 },
                 "coverage": _source_coverage_facts(adapter.coverage_window),
-                "fetch": _source_fetch_facts(fetch_routes, adapter.source_id),
+                "fetch": _source_fetch_facts(fetch_routes, adapter.source_id,
+                                             adapter),
                 "run_plan": {
                     "intent_routes": sorted(verdict["routes"]),
                     "intent_supported": bool(verdict["routes"]),

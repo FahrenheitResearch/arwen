@@ -2571,6 +2571,11 @@ def read_wrfbdy(path: str | Path, *, run_seconds: float,
                 "further interval).  Shorten the run to at most "
                 f"{coverage_end:.0f} s, or re-run real.exe over a longer "
                 "window so wrfbdy_d01 carries more records.")
+        # Boundary variables share the same bounded Rust decode path as
+        # initial-state fields. Keep first-use order and each variable's
+        # mask/scale policy while avoiding a process per side and tendency.
+        decode = netcdf_bridge.BatchedDecode(dataset, [
+            name for record in required_records for name in record[3:]])
         intervals = []
         for index, start in enumerate(starts):
             if index + 1 < len(starts):
@@ -2580,8 +2585,10 @@ def read_wrfbdy(path: str | Path, *, run_seconds: float,
             raw_tables = {gpu_name: {} for gpu_name in field_names}
             for (gpu_name, wrf_name, side_name, value_name,
                  tendency_name) in required_records:
+                decode.ready(value_name)
                 value = _wrfbdy_side_table(
                     dataset.variables[value_name], index, side_name)
+                decode.ready(tendency_name)
                 tendency = _wrfbdy_side_table(
                     dataset.variables[tendency_name], index, side_name)
                 raw_tables[gpu_name][side_name] = (value, tendency)

@@ -27,7 +27,16 @@ QUANTITIES = {
     "temperature_2m": ("temperature2", "K"),
     "wind_speed_10m": ("wind10", "m s-1"),
     "precipitation_accumulation": ("rain_total", "mm"),
+    "composite_reflectivity": ("refl", "dBZ"),
 }
+
+
+# Archived surface campaigns retain their original three-field contract.
+# Gridded family campaigns use the same quantity table through match-grid.
+ARCHIVED_QUANTITIES = {key: value for key, value in QUANTITIES.items() if key != "composite_reflectivity"}
+QUANTITY_TITLES = {"temperature_2m": "2 m temperature", "wind_speed_10m": "10 m sustained wind",
+                   "precipitation_accumulation": "Forecast-start precipitation",
+                   "composite_reflectivity": "Composite reflectivity"}
 
 
 def instant(value):
@@ -73,7 +82,7 @@ def product_contract(manifest, archive, members, valid_times):
             raise ValueError("production manifest has duplicate field contracts")
         fields[name] = row
     result = {}
-    for quantity, (field, units) in QUANTITIES.items():
+    for quantity, (field, units) in ARCHIVED_QUANTITIES.items():
         row = fields.get(field)
         if row is None or row["units"] != units or row["comparison"] != "ge":
             raise ValueError(f"{field} requires the native scorer's declared units and >= event")
@@ -97,7 +106,7 @@ def product_contract(manifest, archive, members, valid_times):
                 or frame["members_received"] != sorted(order)
                 or frame["members_expected"] != len(order)
                 or not frame["products"]
-                or any(field not in frame["available_fields"] for field, _ in QUANTITIES.values())):
+                or any(field not in frame["available_fields"] for field, _ in ARCHIVED_QUANTITIES.values())):
             raise ValueError("a scored production frame is incomplete or lacks a scored field")
     return result
 
@@ -131,6 +140,8 @@ def join_matches(paths, destination, member_labels):
 
 
 def run_campaign(request, *, matcher, scorer, out):
+    if request.get("schema") == "gpuwm-ensemble-grid-campaign.v1":
+        return run_grid_campaign(request, matcher=matcher, out=out)
     out.mkdir(parents=True, exist_ok=False)
     save(out / "campaign-request.json", request)
     leads = request.get("lead_hours", list(range(3, 13)))
@@ -172,7 +183,7 @@ def run_campaign(request, *, matcher, scorer, out):
                 if instant(archive["precipitation_accumulation_start"]) != start:
                     raise ValueError("archive start differs from the frozen case window")
                 thresholds = product_contract(manifest, archive, members, valid_times)
-                for quantity, (_, units) in QUANTITIES.items():
+                for quantity, (_, units) in ARCHIVED_QUANTITIES.items():
                     if quantity in common_thresholds and thresholds[quantity] != common_thresholds[quantity]:
                         raise ValueError("recipe thresholds differ; Brier comparisons require the same production events")
                     common_thresholds[quantity] = thresholds[quantity]
@@ -247,15 +258,71 @@ def run_campaign(request, *, matcher, scorer, out):
         save(out / "campaign-scores.json", summary)
 
 
+def run_grid_campaign(request, *, matcher, out):
+    """Family campaign tables over the shared heat-evaluation scoring seam."""
+    # A direct tools/script.py invocation puts tools/, not the root, on sys.path.
+    import sys
+    root = str(Path(__file__).resolve().parents[1])
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from tools.heat_eval.score_case import score_family_frame
+    out.mkdir(parents=True, exist_ok=False)
+    save(out / "campaign-request.json", request)
+    frames = request["frames"]
+    clocks = [instant(frame["valid_time"]) for frame in frames]
+    if not clocks or clocks != sorted(set(clocks)):
+        raise ValueError("grid campaign needs distinct ordered valid times")
+    summary = {"schema": "gpuwm-ensemble-grid-campaign-scores.v1", "status": "failed",
+               "matcher_sha256": sha256(matcher), "frames": []}
+    roster = None
+    mask_geometry = None
+    try:
+        for index, frame in enumerate(frames):
+            if frame["quantity"] not in QUANTITIES or frame["quantity"] != "composite_reflectivity":
+                raise ValueError("unsupported gridded campaign quantity")
+            current = frame["required_families"]
+            if roster is not None and current != roster:
+                raise ValueError("grid campaign changed the required family roster")
+            roster = current
+            job = out / f"frame-{index:03d}.request.json"
+            receipt = score_family_frame(frame, matcher=matcher, request_path=job,
+                                         product_dir=out / f"frame-{index:03d}")
+            if mask_geometry is not None and receipt["grid"]["geometry_sha256"] != mask_geometry:
+                raise ValueError("grid campaign changed target geometry")
+            mask_geometry = receipt["grid"]["geometry_sha256"]
+            path = out / f"frame-{index:03d}.receipt.json"
+            save(path, receipt)
+            summary["frames"].append({"receipt": {"path": str(path), "sha256": sha256(path)}, **receipt})
+        table = out / "score-table.tsv"
+        with table.open("w", encoding="utf-8") as stream:
+            keys = ("threshold", "samples", "observed_events", "forecast_events", "hits", "misses", "false_alarms",
+                    "correct_negatives", "fss", "csi", "pod", "far", "frequency_bias", "brier_score")
+            stream.write("valid_time\tfamily\tquantity\tunits\t" + "\t".join(keys) + "\n")
+            for frame in summary["frames"]:
+                families = dict(frame["families"])
+                if frame["blend"] is not None:
+                    families["experimental_blend"] = frame["blend"]
+                for family, record in families.items():
+                    for score_row in record["threshold_scores"]:
+                        stream.write("\t".join([frame["valid_time"], family, frame["quantity"],
+                            QUANTITIES[frame["quantity"]][1], *[str(score_row[key]) for key in keys]]) + "\n")
+        summary.update(status="complete", score_table={"path": str(table), "sha256": sha256(table)})
+        return summary
+    finally:
+        save(out / "campaign-scores.json", summary)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--request", required=True, type=Path)
     parser.add_argument("--matcher", required=True, type=Path)
-    parser.add_argument("--scorer", required=True, type=Path)
+    parser.add_argument("--scorer", type=Path, help="required for archived station campaigns")
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
     request = json.loads(args.request.read_text(encoding="utf-8"))
-    run_campaign(request, matcher=args.matcher.resolve(), scorer=args.scorer.resolve(), out=args.out)
+    if request.get("schema") != "gpuwm-ensemble-grid-campaign.v1" and args.scorer is None:
+        parser.error("archived station campaigns require --scorer")
+    run_campaign(request, matcher=args.matcher.resolve(), scorer=args.scorer.resolve() if args.scorer else None, out=args.out)
 
 
 if __name__ == "__main__":

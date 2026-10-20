@@ -180,7 +180,8 @@ def test_streamed_relocation_keeps_real_held_pbl_carriers(cumulus):
     harness.run_steps(source, cfg, 2)
     # The real GPU producer owns both the names and the values in this store.
     store = {key: cp.asnumpy(value) for key, value in streaming_inventory(source).items()}
-    expected = capture_continuation(source, driver)
+    expected = {key: cp.asnumpy(value) for key, value in
+                capture_continuation(source, driver).items()}
     held = [name for name in DRIVER_HELD_FORCING_ATTRS
             if getattr(driver, name, None) is not None]
     assert held and any(np.any(store[f"held/{name}"]) for name in held)

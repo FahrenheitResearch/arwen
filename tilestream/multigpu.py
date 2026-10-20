@@ -914,6 +914,59 @@ extern "C" __global__ void seam_band_copy(const long long* __restrict__ table) {
 _band_copy_kernel = None
 
 
+# Band extents are fixed when channels are built.  Common seams fit in
+# 31 bits even when counted in bytes; use 32-bit division for their row
+# indices, retaining 64-bit pointers/pitches and the original wide kernel
+# for larger bands.  The 31-bit bound leaves room for the final grid-stride
+# increment (at most 1024 * 256) without unsigned wraparound.
+# Quotient/remainder are computed once per thread, then advanced by the
+# fixed stride; w + stride_words is also bounded below 2**32.
+_BAND_COPY_U32_SOURCE = r"""
+extern "C" __global__ void seam_band_copy_u32(const long long* __restrict__ table) {
+    const long long* t = table + 7 * (long long)blockIdx.y;
+    const char* src = (const char*)t[0];
+    const long long src_pitch = t[1];
+    char* dst = (char*)t[2];
+    const long long dst_pitch = t[3];
+    const long long width = t[4];
+    const long long rows = t[5];
+    const long long word = t[6];
+    const unsigned int per_row = word == 4 ? (width >> 2) : width;
+    const unsigned int total = per_row * rows;
+    const unsigned int stride = (long long)gridDim.x * blockDim.x;
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= total) return;
+    unsigned int r = i / per_row;
+    unsigned int w = i - r * per_row;
+    const unsigned int stride_rows = stride / per_row;
+    const unsigned int stride_words = stride - stride_rows * per_row;
+    for (; i < total; i += stride) {
+        if (word == 4) {
+            *(unsigned int*)(dst + r * dst_pitch + 4 * w) =
+                *(const unsigned int*)(src + r * src_pitch + 4 * w);
+        } else {
+            dst[r * dst_pitch + w] = src[r * src_pitch + w];
+        }
+        r += stride_rows;
+        w += stride_words;
+        if (w >= per_row) {
+            w -= per_row;
+            ++r;
+        }
+    }
+}
+"""
+_band_copy_u32_kernel = None
+
+
+def _band_copy_u32():
+    global _band_copy_u32_kernel
+    if _band_copy_u32_kernel is None:
+        import cupy as cp
+        _band_copy_u32_kernel = cp.RawKernel(_BAND_COPY_U32_SOURCE, "seam_band_copy_u32")
+    return _band_copy_u32_kernel
+
+
 def _band_copy():
     global _band_copy_kernel
     if _band_copy_kernel is None:
@@ -957,6 +1010,8 @@ class _BandTable:
         words = np.where(self.width % 4 == 0, self.width // 4, self.width) * self.rows
         most = int(words.max()) if n else 1
         self.grid_x = int(max(1, min(1024, -(-most // 2048))))
+        self.copy_kernel = (_band_copy_u32 if all(int(w) * int(r) <= 0x7fffffff
+                            for w, r in zip(self.width, self.rows)) else _band_copy)
 
     def launch(self, live_arrays, buf_ptr, stream):
         import cupy as cp
@@ -988,7 +1043,7 @@ class _BandTable:
                        rt.memcpyHostToDevice, stream.ptr)
         self.events[slot].record(stream)
         self.uploaded[slot] = True
-        _band_copy()((self.grid_x, n), (256,), (device,), stream=stream)
+        self.copy_kernel()((self.grid_x, n), (256,), (device,), stream=stream)
 
 
 class _SeamChannel:

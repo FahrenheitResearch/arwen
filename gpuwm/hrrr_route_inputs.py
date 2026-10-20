@@ -1407,6 +1407,33 @@ def route_fallback_settings(rendered_sections) -> dict[str, object]:
 #: which refused the shipped tornado LES configs for an
 #: ``inflow_perturbation`` the forecast does run.
 ROUTE_FORECAST_TOML_FIELDS: Mapping[str, str] = MappingProxyType({
+    # The aer_opt = 2 user-aerosol option and value controls (815912d563b):
+    # read by the legacy RRTMG shortwave's aerosol optics on each radiation
+    # call, from the TOML the forecast is bound to; the namelist pair spells
+    # aer_type and the auxinput15 pair, not these.
+    "aer_aod550_opt": "gpuwm/core/aer_opt2.py, the aer_opt = 2 optics",
+    "aer_angexp_opt": "gpuwm/core/aer_opt2.py, the aer_opt = 2 optics",
+    "aer_ssa_opt": "gpuwm/core/aer_opt2.py, the aer_opt = 2 optics",
+    "aer_asy_opt": "gpuwm/core/aer_opt2.py, the aer_opt = 2 optics",
+    "aer_aod550_val": "gpuwm/core/aer_opt2.py, the aer_opt = 2 optics",
+    "aer_angexp_val": "gpuwm/core/aer_opt2.py, the aer_opt = 2 optics",
+    "aer_ssa_val": "gpuwm/core/aer_opt2.py, the aer_opt = 2 optics",
+    "aer_asy_val": "gpuwm/core/aer_opt2.py, the aer_opt = 2 optics",
+    # WRF's lightning diagnostic package controls (cd75865eb6e): read by
+    # the forecast's lightning driver on its own cadence, from the bound
+    # TOML; the namelist pair spells lightning_option itself.
+    "lightning_dt": "gpuwm/core/lightning.py, the lightning driver",
+    "lightning_start_seconds": "gpuwm/core/lightning.py, the lightning driver",
+    "flashrate_factor": "gpuwm/core/lightning.py, the lightning driver",
+    "iccg_method": "gpuwm/core/lightning.py, the lightning driver",
+    "iccg_prescribed_num": "gpuwm/core/lightning.py, the lightning driver",
+    "iccg_prescribed_den": "gpuwm/core/lightning.py, the lightning driver",
+    "cellcount_method": "gpuwm/core/lightning.py, the lightning driver",
+    "cldtop_adjustment": "gpuwm/core/lightning.py, the lightning driver",
+    "do_radar_ref": "gpuwm/core/refl.py, the reflectivity diagnostic",
+    # The Thompson fork table directory: read by the Thompson column at
+    # load, never by preparation.
+    "thompson_table_dir": "gpuwm/core/thompson_column.py, the Thompson table loader",
     "inflow_perturbation": (
         "gpuwm/core/inflow_perturbation.py build_inflow_perturbation, "
         "constructed per child by the NestCoupler (gpuwm/core/nest.py)"),

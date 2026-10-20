@@ -1196,3 +1196,56 @@ def test_never_worse_takes_the_shipped_decision_past_the_map():
     assert got.never_worse.applied
     assert got.never_worse.reason == tl.NEVER_WORSE_BEYOND
     assert (got.ceiling, got.time_step_sound) == (Fraction(253, 25), 6)
+
+
+# Startup grouping must preserve the selected face, including exact ties.
+def _lexsort_face_leaders(keys, slope, wind, crest):
+    order = np.lexsort((crest, wind, slope, keys))
+    last = np.r_[keys[order][1:] != keys[order][:-1], True]
+    return order[last], np.diff(np.r_[-1, np.flatnonzero(last)])
+
+
+@pytest.mark.parametrize("size", [1, 4095, 4096, 20000])
+def test_grouped_face_leaders_preserve_all_priorities_and_ties(size):
+    rng = np.random.default_rng(20261018)
+    keys = rng.integers(-15, 25, size) * 100000000
+    values = [rng.integers(-3, 6, size).astype(float) for _ in range(3)]
+    expected = _lexsort_face_leaders(keys, *values)
+    actual = tl._grouped_face_leaders(keys, *values)
+    for got, want in zip(actual, expected):
+        np.testing.assert_array_equal(got, want)
+    assert actual[1].sum() == size
+    # Every face is tied: stable lexsort selects the last one.
+    actual = tl._grouped_face_leaders(np.zeros(size, dtype=np.int64),
+                                     *[np.zeros(size) for _ in range(3)])
+    np.testing.assert_array_equal(actual[0], [size - 1])
+    np.testing.assert_array_equal(actual[1], [size])
+
+
+@pytest.mark.parametrize("special", [np.nan, np.inf, -np.inf, -0.0])
+def test_grouped_face_leaders_preserve_nonfinite_and_signed_zero(special):
+    size = 5000
+    keys = np.arange(size) % 7
+    values = [np.zeros(size) for _ in range(3)]
+    for i, value in enumerate(values):
+        value[i::11] = special
+    expected = _lexsort_face_leaders(keys, *values)
+    actual = tl._grouped_face_leaders(keys, *values)
+    for got, want in zip(actual, expected):
+        np.testing.assert_array_equal(got, want)
+
+
+@pytest.mark.parametrize("arm", ["ncar", "generated"])
+def test_grouped_face_reading_preserves_complete_receipt(monkeypatch, arm):
+    from dataclasses import asdict
+    rng = np.random.default_rng(20261018)
+    terrain = rng.uniform(0, 4500, (70, 80))
+    wind = rng.uniform(0, 65, terrain.shape)
+    fields = _fields(terrain, wind, radius=4)
+    kwargs = dict(table=tl.candidate_map((arm,)), dx=3000.0, sound_steps=4,
+                  domain_wind=65.0, arms=(arm,), radius_m=12000.0)
+    actual = tl.read_faces(fields, **kwargs)
+    monkeypatch.setattr(tl, "_grouped_face_leaders", _lexsort_face_leaders)
+    expected = tl.read_faces(fields, **kwargs)
+    assert actual.faces > 4096
+    assert asdict(actual) == asdict(expected)

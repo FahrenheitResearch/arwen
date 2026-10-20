@@ -270,9 +270,13 @@ def test_bare_namelist_import_runs_the_public_cli(tmp_path):
 def test_unflushed_loader_records_the_image_it_loaded():
     from gpuwm.core.kernels import load_module_unflushed, UNFLUSHED_OPTIONS
     from gpuwm.certify.kernel_manifest import kernel_manifest
+    from gpuwm.numerics import effective_options
     load_module_unflushed("wsm5", (("WSM5_KMAX", 64),))
     row = kernel_manifest()["gpuwm.core.kernels:wsm5[WSM5_KMAX=64]"]
-    assert tuple(row["options"]) == UNFLUSHED_OPTIONS
+    # The record is what NVRTC took: compile_using_nvrtc passes the loader's
+    # tuple through the process numerics (GPUWM_WRF_EXACT=1 adds its strict
+    # controls) and the manifest records the same effective tuple.
+    assert tuple(row["options"]) == effective_options(UNFLUSHED_OPTIONS)
     assert row["compiled_image"]["status"] == "resolved"
     assert len(row["compiled_image"]["sha256"]) == 64
 

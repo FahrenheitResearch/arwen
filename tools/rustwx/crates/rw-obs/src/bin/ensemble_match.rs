@@ -16,6 +16,15 @@ use std::path::{Path, PathBuf};
 use wrf_core::{getvar, ComputeOpts, WrfFile};
 #[path = "ensemble_match/diagnostics.rs"]
 mod diagnostics;
+#[path = "ensemble_match/reflectivity.rs"]
+mod reflectivity;
+
+const QUANTITIES: &[(&str, &str, &str)] = &[
+    ("temperature_2m", "K", "t2"),
+    ("wind_speed_10m", "m s-1", "wspd10"),
+    ("precipitation_accumulation", "mm", ""),
+    ("composite_reflectivity", "dBZ", "REFL_10CM column maximum / refc"),
+];
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 const PLAN_SCHEMA: &str = "gpuwm.ensemble-match-plan.v1";
@@ -571,15 +580,11 @@ fn matching_with_archive(
     let mut source_receipts = Vec::new();
     let mut observation_receipts = vec![serde_json::to_value(&plan.surface)?];
     let is_precip = request.quantity == "precipitation_accumulation";
-    let (units, diagnostic) =
-        match request.quantity.as_str() {
-            "temperature_2m" => ("K", "t2"),
-            "wind_speed_10m" => ("m s-1", "wspd10"),
-            "precipitation_accumulation" => ("mm", ""),
-            _ => return Err(err(
-                "matcher supports temperature_2m, wind_speed_10m and precipitation_accumulation",
-            )),
-        };
+    let (_, units, diagnostic) = *QUANTITIES.iter().find(|row| row.0 == request.quantity)
+        .ok_or_else(|| err("unregistered matcher quantity"))?;
+    if request.quantity == "composite_reflectivity" {
+        return Err(err("composite_reflectivity uses match-grid with a radar frame and family roster"));
+    }
     let mut sample_ids = Vec::new();
     let mut observed = Vec::new();
     let mut observation_mask = Vec::new();
@@ -753,7 +758,7 @@ fn run() -> Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     if args.len() != 3 {
         return Err(err(
-            "usage: rw_ensemble_match prepare|match|match-diagnostics REQUEST.json OUTPUT.json|OUTPUT.tsv",
+            "usage: rw_ensemble_match prepare|match|match-diagnostics|match-grid REQUEST.json OUTPUT.json|OUTPUT.tsv",
         ));
     }
     let body = std::fs::read(&args[1])?;
@@ -768,6 +773,7 @@ fn run() -> Result<()> {
             json!({"schema":PLAN_SCHEMA,"plan":reference(out)?,"stations_kept":plan.stations.iter().filter(|s|s.keep).count(),
                 "stations_dropped":plan.stations.iter().filter(|s|!s.keep).count(),"precipitation_target_cells":plan.precipitation_target_mask.iter().filter(|x|**x).count(),"parameters":plan.parameters})
         }
+        "match-grid" => reflectivity::matching(&serde_json::from_slice(&body)?, out)?,
         "match" => matching(&serde_json::from_slice(&body)?, out)?,
         "match-diagnostics" => {
             let (request, archive) = diagnostics::resolve(&serde_json::from_slice(&body)?)?;

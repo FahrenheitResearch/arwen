@@ -114,11 +114,13 @@ def _cache_identity(cupy, compiler, source, options, arch, filename):
 def plan_probe(arguments, arch):
     """The entry a recorded kernel-plan request is stored under for ``arch`` (gpuwm.kernel_plan replay).
 
-    ``arguments`` are the ones this module handed CuPy's compiler, so the
-    identity is the one :func:`compile_using_nvrtc` forms on a card of ``arch``.
+    Normalize recorded options at the same boundary as the direct caller,
+    including older plans captured before final WRF controls reached the key.
     """
     cupy, compiler = _compiler_runtime()
-    identity = _cache_identity(cupy, compiler, arguments["source"], tuple(arguments["options"]),
+    from gpuwm.numerics import effective_options
+    options = effective_options(arguments["options"])
+    identity = _cache_identity(cupy, compiler, arguments["source"], options,
                                str(arch), arguments["filename"])
     return str(_cache_directory(compiler) / "gpuwm-direct-nvrtc" / (_entry_key(identity) + ".image"))
 
@@ -267,8 +269,8 @@ def compile_using_nvrtc(source, options=(), arch=None, filename="kern.cu",
         raise RuntimeError(
             f"{NO_LOCAL_GPU_ENV} forbids local NVRTC compilation")
     cupy, compiler = _compiler_runtime()
-    # fast numerics drops the no-contraction request before the key is formed (gpuwm/numerics.py), so a
-    # fast and a strict image never share an entry
+    # Include every final arithmetic control before lookup, including WRF
+    # exact controls otherwise injected only at the NVRTC program boundary.
     from gpuwm.numerics import effective_options
     options = effective_options(options)
     began = time.perf_counter()

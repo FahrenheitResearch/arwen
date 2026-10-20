@@ -16,8 +16,10 @@
 //! through the production render path ([`panel`]), and a way to put a
 //! place known in degrees onto that panel ([`annotate`]).
 
+pub mod cyclone_products;
 pub mod annotate;
 pub mod compare;
+pub mod latlon_pair;
 pub mod coverage;
 pub mod nowcast_frames;
 pub mod da_sheet;
@@ -27,10 +29,12 @@ pub mod verification_io;
 pub mod verification_render;
 pub mod station_overlay;
 pub mod panel;
+pub mod nextgen_products;
 pub mod ensemble_products;
 pub mod ensemble_reduce;
 pub mod sfire;
 pub mod snowfall;
+mod source_memo;
 pub mod domain_naming;
 
 #[path = "grib_import.rs"]
@@ -53,3 +57,7 @@ pub mod process_request;
 pub mod viewer_profile;
 mod wrf_chart_planes;
 mod wrf_column_planes;
+
+pub mod cf_grid;
+pub mod cf_render;
+pub mod comparison_observations;

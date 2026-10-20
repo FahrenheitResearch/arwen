@@ -80,7 +80,7 @@ def update_diagnostics(state: DomainState, hypsometric_opt: int = 1,
              np.int32(j0), np.int32(i0), np.int32(nyw), np.int32(nxw),
              state.p, state.al, state.alt, state.p_perturbation))
         return
-    kernel = get_kernel("diagnostics", "calc_p_alpha")
+    kernel = get_kernel("diagnostics", "calc_p_alpha", (nz, ny, nx))
     args = (state.thp, state.php, state.mup,
             state.thb, state.phb, state.dphb_resid, state.alb)
     if DIAGNOSTICS_ENABLED:

@@ -315,6 +315,38 @@ pub unsafe extern "C" fn gpuwm_obsscore_threshold(
     })
 }
 
+/// Probability extension of the registered masked FSS. Deterministic 0/1
+/// inputs reduce to masked_fss exactly: zero boundary, event sum divided by
+/// valid count, sums over the same common scored mask, empty echo gives one.
+pub fn masked_probability_fss(model: &[f64], observed: &[f64], valid: &[u8],
+    ny: usize, nx: usize, radius: usize) -> Result<f64, String> {
+    let n = size(ny, nx)?;
+    if model.len()!=n || observed.len()!=n || valid.len()!=n || !valid.contains(&1) {
+        return Err("probability FSS requires a common nonempty 2-D mask".into());
+    }
+    let mut fields = Vec::new();
+    for values in [model, observed] {
+        let mut masked = Vec::with_capacity(n);
+        for (&v,&m) in values.iter().zip(valid) {
+            if m!=0 && (!v.is_finite() || !(0.0..=1.0).contains(&v)) {
+                return Err("FSS probability outside [0,1]".into());
+            }
+            masked.push(if m==0 {0.0} else {v});
+        }
+        fields.push(boxcar(&masked,ny,nx,radius,0)?);
+    }
+    let counts=boxcar(&valid.iter().map(|v|f64::from(*v!=0)).collect::<Vec<_>>(),ny,nx,radius,0)?;
+    let mut numerator=Vec::new(); let mut reference=Vec::new();
+    for i in 0..n {
+        if valid[i]!=0 && counts[i]>0.0 {
+            let (f,o)=(fields[0][i]/counts[i],fields[1][i]/counts[i]);
+            numerator.push((f-o).powi(2)); reference.push(f*f+o*o);
+        }
+    }
+    let denominator=sum(&reference,8192);
+    Ok(if denominator==0.0 {1.0} else {(1.0-sum(&numerator,8192)/denominator).clamp(0.0,1.0)})
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gpuwm_obsscore_masked_fss(
     model: *const f64,
@@ -723,6 +755,16 @@ pub unsafe extern "C" fn gpuwm_obsscore_screen_reports(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn probability_extension_matches_registered_deterministic_masked_fss() {
+        let model=[1.,0.,1.,0.,f64::NAN,1.,0.,0.,1.];
+        let obs=[0.,0.,1.,1.,f64::NAN,1.,0.,1.,0.];
+        let valid=[1,1,1,1,0,1,1,1,1];
+        let expected=masked_probability_fss(&model,&obs,&valid,3,3,1).unwrap();
+        let mut result=[0.;6];let mut cells=0;
+        let code=unsafe {gpuwm_obsscore_masked_fss(model.as_ptr(),obs.as_ptr(),valid.as_ptr(),valid.as_ptr(),3,3,0.5,1,0,0,8192,result.as_mut_ptr(),&mut cells)};
+        assert_eq!(code,0);assert_eq!(cells,8);assert!((result[0]-expected).abs()<1e-14);
+    }
     #[test]
     fn cancellation_keeps_pairwise_order() {
         let mut values = vec![1.0; 128];

@@ -3425,6 +3425,28 @@ def _respell_invocation(lists: dict) -> None:
         explain.set_invocation(typed)
 
 
+def _cf_main(args: argparse.Namespace) -> int:
+    """CF diagnostics use the Rust reader and the same production panel path."""
+    from gpuwm import rustwx
+
+    if args.wrfout or not args.cf_variable:
+        print("render: --cf needs --variable NAME and takes its input from --cf FILE.nc", file=sys.stderr)
+        return 2
+    try:
+        size = parse_size(args.size)
+        return rustwx.run_cf_renderer(
+            require_renderer(), args.cf_file, variable=args.cf_variable,
+            out_dir=args.out, valid=args.cf_valid, bounds=args.cf_bounds,
+            table=args.cf_table, contours=args.cf_contours,
+            contour_file=args.cf_contour_file, observation=args.cf_observation,
+            observation_variable=args.cf_observation_variable,
+            overlays=args.overlays, size=size, receipt=args.cf_receipt,
+            theme=args.theme)
+    except (OSError, ValueError, RuntimeError) as error:
+        print(f"render: {error}", file=sys.stderr)
+        return 2
+
+
 def render_main(args: argparse.Namespace) -> int:
     # Which tree is drawing these plots.  Idempotent -- `gpuwm.cli.main`
     # has normally already announced -- and here as well because this
@@ -3432,6 +3454,8 @@ def render_main(args: argparse.Namespace) -> int:
     from gpuwm.provenance_gate import announce
 
     announce("gpuwm render")
+    if getattr(args, "cf_file", None):
+        return _cf_main(args)
     refusal = _fold_render_inputs(args)
     if refusal is not None:
         print(f"render: {refusal}", file=sys.stderr)
@@ -3782,6 +3806,26 @@ def register_cli(subparsers) -> None:
     parser.add_argument(
         "wrfout", type=Path, nargs="*", metavar="WRFOUT",
         help="wrfout NetCDF files, a wrfout directory, or the output folder printed by gpuwm go")
+    parser.add_argument("--cf", dest="cf_file", type=Path, metavar="FILE.nc",
+                        help="render a native CF diagnostic grid with file source provenance")
+    parser.add_argument("--variable", dest="cf_variable", metavar="NAME",
+                        help="CF field selected by variable name; product and units come from the CF table")
+    parser.add_argument("--valid", dest="cf_valid", metavar="UTC",
+                        help="CF valid time in ISO UTC (default: first record)")
+    parser.add_argument("--bounds", dest="cf_bounds", metavar="W,E,S,N",
+                        help="CF geographic extent in degrees, e.g. --bounds=-125,-66,24,50")
+    parser.add_argument("--cf-table", type=Path, metavar="FILE.json",
+                        help="CF variable product table (default: packaged production rows)")
+    parser.add_argument("--contours", dest="cf_contours", metavar="NAME[,NAME]",
+                        help="CF probability contours at each table row's contour_level")
+    parser.add_argument("--contour-file", dest="cf_contour_file", type=Path, metavar="FILE.nc",
+                        help="CF contour companion on the fill grid (default: --cf file)")
+    parser.add_argument("--observation", dest="cf_observation", type=Path, metavar="FILE",
+                        help="CF observation grid or MRMS GRIB2/gz beside the diagnostic on one ladder and extent")
+    parser.add_argument("--observation-variable", dest="cf_observation_variable", metavar="NAME",
+                        help="variable in a CF observation file (default: --variable)")
+    parser.add_argument("--receipt", dest="cf_receipt", type=Path, metavar="FILE.json",
+                        help="CF input, output and per-stage timing receipt")
     parser.add_argument("--grib2-out", type=Path, metavar="DIR",
                         help="also export every input frame as native surface and pressure-level GRIB2")
     parser.add_argument(

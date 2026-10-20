@@ -1,0 +1,169 @@
+{
+  "schema": "gpuwm-hydro-fabric-providers-v1",
+  "description": "Rows the default-on hydro door (gpuwm/hydro/door.py) tries in priority order for a forecast's parent grid. A new fabric source is a row here, never a new code path. A row is used only when it covers the domain, its data licence is verified, its realization is admitted, and its own tool answers the availability probe. Coverage is a WGS84 bounding box [west, south, east, north] (west > east crosses the dateline) or \"global\"; the builder decides reach-level coverage. Extra rows can be appended from $GPUWM_HYDRO_FABRIC_PROVIDERS.",
+  "coupled_parent_lsm": {
+    "values": [
+      2,
+      3,
+      4
+    ],
+    "owner": "astra-c-hydro-coupling",
+    "reason": "Resident parent runoff and PET hooks support Noah (2), RUC (3), and Noah-MP (4); an admitted same-network realization and initialized fabric remain required."
+  },
+  "budget": {
+    "max_fraction_of_atmosphere_step": 0.05,
+    "ruling": "Drew 2026-10-18T08:40Z: per-step cost stays under 5 percent of the step or it is a defect"
+  },
+  "providers": [
+    {
+      "id": "conus-nhdplus-v21",
+      "owner": "astra-c-hydro-data",
+      "priority": 10,
+      "kind": "builder",
+      "coverage": [
+        [
+          -125.0,
+          24.0,
+          -66.5,
+          49.5
+        ]
+      ],
+      "min_covered_fraction": 1.0,
+      "realization": null,
+      "realization_gap": "the coupled runoff -> transfer -> routing realization row (CFE/Noah-OWP producers, runoff transfer f8d7c435, routing) is not in configurations.v1.json yet; physical admission held on same-network parameters, initial state and native phase (owners c-hydro-runoff, c-hydro-coupling)",
+      "manifest_binding": "fabric_manifest",
+      "data_licence": {
+        "status": "pending",
+        "name": "NHDPlus V2.1 and USGS 3DEP (federal/public domain); SoilGrids 2.0, ESA WorldCover 2021 and HydroLAKES (CC BY 4.0)",
+        "attribution": "NHDPlus V2.1: US EPA and USGS; 3DEP: USGS; SoilGrids 2.0: ISRIC/Poggio et al. 2021; ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data (2021) processed by ESA WorldCover consortium; HydroLAKES: Messager et al. 2016",
+        "reason": "All six selected original source input terms are verified in tools/hydro_world/data/sources.v1.json. The assembled CONUS recipe still lacks exact acquired-source bindings, same-network parameter provenance and the HydroLAKES-to-NHDPlus crosswalk. Source-term admission is not physical fabric or coupled-realization admission; this is not a licence verdict for separate NOAA RouteLink/reference fabrics (owner astra-c-hydro-data)."
+      },
+      "builder": {
+        "executable": {
+          "env": "GPUWM_RW_HYDRO_WORLD",
+          "filename": "rw_hydro_world",
+          "crate": "tools/hydro_world"
+        },
+        "subcommand": "build",
+        "pending": "CONUS native recipe/build specification, exact source acquisition, same-network parameters and lake crosswalk through the shared HYDRO-WORLD contract, owner astra-c-hydro-data",
+        "source_table": {
+          "path": "tools/hydro_world/data/sources.v1.json",
+          "row": "conus-nhdplus-v21"
+        },
+        "argv": [
+          "{exe}",
+          "build",
+          "--sources",
+          "{table}",
+          "--data-root",
+          "{data_root}",
+          "--row",
+          "{row}",
+          "--bbox",
+          "{west},{south},{east},{north}",
+          "--out",
+          "{out}/fabric.gpkg"
+        ],
+        "geopackage": "fabric.gpkg",
+        "timeout_seconds": 1800,
+        "paths": [
+          {
+            "env": "GPUWM_HYDRO_CONUS_SOURCES",
+            "argument": "data_root",
+            "default": null,
+            "label": "NHDPlus V2.1 source tiles"
+          }
+        ]
+      }
+    },
+    {
+      "id": "hydro-world-global",
+      "owner": "hydro-world-fabric",
+      "priority": 20,
+      "kind": "builder",
+      "coverage": "global",
+      "min_covered_fraction": 0.0,
+      "realization": "parent-noahmp-routed",
+      "manifest_binding": "fabric_manifest",
+      "data_licence": {
+        "status": "verified",
+        "name": "Copernicus DEM GLO-90/30 derived network, HydroLAKES, GDW, SoilGrids 2.0, ESA WorldCover 2021 (CC BY 4.0 or open with attribution per hydro-world-licences 5c1bbd89eb4)",
+        "attribution": "Contains modified Copernicus DEM data; HydroLAKES (Messager et al. 2016); SoilGrids 2.0 (ISRIC); ESA WorldCover 2021",
+        "reason": "The merged auto source row derives its network from Copernicus GLO-30/GLO-90 and uses HydroLAKES/GDW under source-specific notices in HYDRO-WORLD-LICENCES.md. HydroSHEDS v1 is excluded from this default row. This source verdict does not admit a coupled realization or resolve the separate LowerColorado recipe-provenance follow-up."
+      },
+      "builder": {
+        "executable": {
+          "env": "GPUWM_RW_HYDRO_WORLD",
+          "filename": "rw_hydro_world",
+          "crate": "tools/hydro_world"
+        },
+        "subcommand": "build",
+        "pending": "Covering source tiles and an admitted coupled realization are required; auto selects Copernicus GLO-30 below 80 million cells and GLO-90 above that threshold.",
+        "source_table": {
+          "path": "tools/hydro_world/data/sources.v1.json",
+          "row": "auto"
+        },
+        "argv": [
+          "{exe}",
+          "build",
+          "--sources",
+          "{table}",
+          "--data-root",
+          "{data_root}",
+          "--row",
+          "{row}",
+          "--bbox",
+          "{west},{south},{east},{north}",
+          "--out",
+          "{out}/fabric.gpkg",
+          "--parent-grid",
+          "{out}/parent-grid.json"
+        ],
+        "geopackage": "fabric.gpkg",
+        "timeout_seconds": 1800,
+        "paths": [
+          {
+            "env": "GPUWM_HYDRO_WORLD_TILES",
+            "argument": "data_root",
+            "default": null,
+            "label": "hydro-world source tiles (DEM, soil, land cover, lakes)"
+          }
+        ]
+      },
+      "parent_lsm": [
+        4
+      ],
+      "preparation": {
+        "parameter_recipe": {
+          "env": "GPUWM_HYDRO_PARAMETER_RECIPE",
+          "relative": "parameter-recipe.json"
+        },
+        "parameters": {
+          "env": "GPUWM_RW_HYDRO_PARAMS",
+          "filename": "rw_hydro_params",
+          "crate": "tools/hydro_world_params"
+        },
+        "hydrofabric": {
+          "env": "GPUWM_RW_HYDROFABRIC",
+          "filename": "rw_hydrofabric",
+          "crate": "tools/nextgen_hydrofabric"
+        },
+        "reservoirs": {
+          "env": "GPUWM_NEXTGEN_RESERVOIR_PREPARE",
+          "filename": "nextgen-reservoir-prepare",
+          "crate": "tools/nextgen_reservoir_prepare"
+        },
+        "initial_source": "era5-arco",
+        "spinup_days": 90,
+        "vertical_datum": "Copernicus DEM EGM2008 orthometric heights; HydroLAKES reported surface elevation",
+        "timeout_seconds": 3600,
+        "routing_interval_seconds": 300,
+        "routed_initialization": "continuous-runoff-replay",
+        "gauges": {
+          "filename": "rw_nextgen_verify",
+          "env": "GPUWM_RW_NEXTGEN_VERIFY"
+        }
+      }
+    }
+  ]
+}

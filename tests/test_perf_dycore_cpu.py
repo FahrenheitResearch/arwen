@@ -170,9 +170,11 @@ def test_prepared_acoustic_substep_reuses_launch_containers(monkeypatch):
 
     launches = []
     kernels = {}
+    kernel_requests = []
 
-    def fake_get_kernel(module, function):
+    def fake_get_kernel(module, function, shape=()):
         assert module == "acoustic"
+        kernel_requests.append((function, shape))
 
         def launch(grid, block, args):
             launches.append((function, grid, block, args))
@@ -198,6 +200,10 @@ def test_prepared_acoustic_substep_reuses_launch_containers(monkeypatch):
     expected = [
         "advance_uv", "advance_mu_th_msf", "advance_w_phi_msf",
         "advance_nested_phi_w",
+    ]
+    assert kernel_requests == [
+        (name, () if name == "advance_uv" else (3, 2, 4))
+        for name in expected
     ]
     assert [name for name, *_rest in launches] == expected * 3
     by_name = {
@@ -245,9 +251,11 @@ def test_prebound_acoustic_args_match_plain_path(
             return self._scratch.setdefault(slot, object())
 
     calls = []
+    kernel_requests = []
 
-    def fake_get_kernel(module, function):
+    def fake_get_kernel(module, function, shape=()):
         assert module == "acoustic"
+        kernel_requests.append((function, shape))
 
         def launch(grid, block, args):
             calls.append((function, grid, block, args))
@@ -269,12 +277,23 @@ def test_prebound_acoustic_args_match_plain_path(
     acoustic.acoustic_substep(
         state, cfg, 0.75, first=first, coefficients=coefficients)
     plain_calls = list(calls)
+    mu_name = "advance_mu_th_msf" if has_msf else "advance_mu_th"
+    w_name = "advance_w_phi_msf" if has_msf else "advance_w_phi"
+    assert kernel_requests == [
+        ("advance_uv", ()),
+        (mu_name, (3, 2, 4) if has_msf else ()),
+        (w_name, (3, 2, 4)),
+    ]
     calls.clear()
+    kernel_requests.clear()
 
     launch_substep = acoustic.prepare_acoustic_substep_launch(
         state, cfg, 0.75, coefficients)
     launch_substep(first=first)
     prebound_calls = list(calls)
+    assert kernel_requests == [
+        ("advance_uv", ()), (mu_name, (3, 2, 4)), (w_name, (3, 2, 4)),
+    ]
 
     assert [call[0] for call in prebound_calls] == [
         "advance_uv",

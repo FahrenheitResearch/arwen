@@ -1,0 +1,73 @@
+{
+  "schema": "gpuwm-cross-source-hybrid-provenance-v1",
+  "source": "Earth2Studio atmosphere composed with a same-cycle physical analysis",
+  "profile": "earth2-pl13-rh-netcdf-v1",
+  "contributing_sources": {
+    "primary_atmosphere": {
+      "product": "Earth2Studio NetCDF4Backend forecast output",
+      "models_with_this_vocabulary": [
+        "fuxi"
+      ],
+      "level_families": {
+        "z": "geopotential_height",
+        "t": "air_temperature",
+        "u": "eastward_wind",
+        "v": "northward_wind",
+        "r": "relative_humidity"
+      },
+      "levels_hpa": [
+        50,
+        100,
+        150,
+        200,
+        250,
+        300,
+        400,
+        500,
+        600,
+        700,
+        850,
+        925,
+        1000
+      ],
+      "level_selection": null,
+      "surface_fields": {
+        "t2m": "air_temperature_2m",
+        "u10m": "eastward_wind_10m",
+        "v10m": "northward_wind_10m",
+        "msl": "air_pressure_at_mean_sea_level"
+      },
+      "units": "exact producer vocabulary declared by the mapping; conflicting file attributes refuse"
+    },
+    "physical_analysis_surface": {
+      "product": "era5",
+      "provider": "arco",
+      "mapping": "rw-wps-era5-arco-netcdf-donor.mapping.json",
+      "supplies": [
+        "surface_pressure",
+        "terrain_height",
+        "land_fraction",
+        "skin_temperature",
+        "specific_humidity_2m",
+        "soil_temperature",
+        "volumetric_soil_moisture",
+        "sea_surface_temperature",
+        "sea_ice_fraction",
+        "snow_water_equivalent"
+      ],
+      "clock": "source_cycle_analysis_broadcast: donor analysis at the AI initialization, frozen at every lead",
+      "grid_alignment": "exact_coordinate_strided_subset",
+      "surface_temperature_policy": "published donor SST"
+    }
+  },
+  "why_hybrid": "these models publish no land surface, orography, land mask, SST, sea ice, snow or 2 m humidity; the analysis they were initialized from supplies it, as the AI-GFS row borrows the same state from GDAS",
+  "surface_pressure_policy": "same-cycle physical analysis surface pressure, explicitly borrowed through the companion composition binding",
+  "frozen_surface_caveat": "The initialization analysis is carried unchanged while the AI atmosphere advances. The composition receipt names each carried valid time.",
+  "input_identity": "File paths and SHA-256 values are sealed by gpuwm-mapped-source-inputs-v1",
+  "donor": {
+    "id": "era5-arco",
+    "mapping": "rw-wps-era5-arco-netcdf-donor.mapping.json",
+    "sha256": "fc6d7a02be6610e29b8f4da8c723c3ce32a55407a4fd70543ab81bf2c7034682",
+    "clock": "source_cycle_analysis_broadcast"
+  }
+}

@@ -695,7 +695,7 @@ def produced_history_shapes(cfg, *, include_reflectivity: bool = True
 
     Shape carriers exercise the live writer's state, physics and geography
     mappings. Allocation shapes come from the same schema used by preflight.
-    The tick-zero analysis frame writes zero reflectivity. A domain that
+    The tick-zero analysis frame diagnoses reflectivity from its hydrometeors. A domain that
     activates later has no output-due stash at activation; only callers
     pricing that later activation set ``include_reflectivity=False``.
     """

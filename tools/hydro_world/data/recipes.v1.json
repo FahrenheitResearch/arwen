@@ -1,0 +1,32 @@
+{
+  "schema": "arwen.hydro-world.recipes.v1",
+  "owner": "hydro-world-fabric (hydro-world-params may replace these rows; the builder reads only this table)",
+  "channel": {
+    "provenance": "NOAA NWM / NextGen hydrofabric v2.0.1 conventions as observed in the t-route test fabric LowerColorado_NGEN_v201.gpkg (6971 reaches): Manning n by stream order (0.06 for orders 1-2, 0.055 for 3-4, 0.05 for 5 and up), compound n = 2 n, bottom width = 0.6 top width, compound top width = 3 top width, bed slope floor 1e-5, MusK 3600 s, MusX 0.2, Qi 0, no channel loss. Top width = 2.44 DA^0.34 (m, DA in km2), the bankfull regression of Blackburn-Lynch, Agouridis and Barton (2017, JAWRA 53(4)) that the same fabric follows (least-squares fit over the 6971 reaches: 2.425 DA^0.338). Side slope = 0.7836 DA^-0.1456, a least-squares fit over the same 6971 reaches (no published formula located).",
+    "top_width_a": 2.44,
+    "top_width_b": 0.34,
+    "bottom_width_fraction": 0.6,
+    "compound_top_width_factor": 3.0,
+    "side_slope_a": 0.7836,
+    "side_slope_b": -0.1456,
+    "manning_by_min_order": [[1, 0.06], [3, 0.055], [5, 0.05]],
+    "compound_manning_factor": 2.0,
+    "min_slope": 1e-05,
+    "musk_s": 3600.0,
+    "musx": 0.2,
+    "qi_m3s": 0.0,
+    "kchan_mm_h": 0.0
+  },
+  "level_pool": {
+    "provenance": "Constants as in every complete lakes row of the NOAA t-route test fabric LowerColorado_NGEN_v201.gpkg (19 of 20 rows): WeirC 0.4, WeirL 10 m, OrificeC 0.1, OrificeA 1 m2, Dam_Length 10, ifd 0.9; and its elevation layout, LkMxE - WeirE = 0.15 D and LkMxE - OrificeE = D for a pool depth D. Here the weir crest is the DEM water surface at the lake outlet (normal pool), and D = 2 x the HydroLAKES mean depth (mean/maximum depth of about 0.5 for typical lake basins, Hakanson 1981, A Manual of Lake Morphometry). Reviewed with the reservoirs owner before use outside the proof domains.",
+    "weir_c": 0.4,
+    "weir_l_m": 10.0,
+    "orifice_c": 0.1,
+    "orifice_a_m2": 1.0,
+    "dam_length": 10.0,
+    "ifd": 0.9,
+    "pool_depth_per_mean_depth": 2.0,
+    "max_above_weir_fraction": 0.15,
+    "default_mean_depth_m": 5.0
+  }
+}

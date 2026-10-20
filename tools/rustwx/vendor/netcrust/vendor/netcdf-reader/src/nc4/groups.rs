@@ -169,7 +169,7 @@ fn build_group_recursive(
     let visible_dimensions = visible_dimensions(&local_dimensions, inherited_dimensions);
     let visible_dim_addr_map = visible_dim_addr_map(local_dim_addr_map, inherited_dim_addr_map);
 
-    // Extract variables (non-dimension-scale datasets).
+    // Extract variables, including coordinate dimension scales.
     let variables = variables::extract_variables_from_datasets(
         &datasets,
         hdf5_group,

@@ -24,9 +24,9 @@ the host, every output field, bitwise.
 The hand-offs that are easy to get wrong, written down
 ------------------------------------------------------
 * **VEGE_FLUX runs on the vegetated subset only**, exactly as the scalar
-  column only pauses there when ``tile_veg``.  The subset is compacted with
-  one gather, evaluated, and scattered back; the lanes VEGE_FLUX never wrote
-  are read nowhere downstream except through ``where(tile_veg, ...)``, and the
+  column only pauses there when ``tile_veg``. A device mask guards each
+  full-width column before the unchanged physics leaf. Inactive outputs are
+  positive zero, matching the former scatter. The
   five INOUT scalars (``tv tg->tgv cm->cmv ch->chv eah``, plus ``tah`` and
   ``qsfc``) fall back to their entry values on the bare lanes -- which is what
   the scalar path holds there.
@@ -65,12 +65,11 @@ from __future__ import annotations
 import numpy as np
 
 from gpuwm.core import noahmp_vegeflux_gpu as _vege
-from gpuwm.core.noahmp_slab_libm import take_slab_rows
 from gpuwm.core.noahmp_energy import PINNED_OPTIONS
 from gpuwm.core.noahmp_energy_slab import (energy_seg1, energy_seg2,
                                            energy_seg3, energy_seg4)
 from gpuwm.core.noahmp_flux_slab import (evaluate_bare_flux_slab,
-                                         evaluate_vege_flux_slab)
+                                         evaluate_vege_flux_masked_slab)
 from gpuwm.core.noahmp_radiation_gpu import PARAMETER_SLOTS as _RAD_PARAMETERS
 from gpuwm.core.noahmp_sflx import NSNOW_DEFAULT, NSOIL_DEFAULT
 from gpuwm.core.noahmp_sflx_post_slab import sflx_post_seg1, sflx_post_seg2
@@ -85,9 +84,7 @@ from gpuwm.core.noahmp_water_slab import evaluate_water_slab
 NSNOW = NSNOW_DEFAULT
 NSOIL = NSOIL_DEFAULT
 _NFULL = NSNOW + NSOIL
-
 _ZERO = np.float32(0.0)
-
 
 # ---------------------------------------------------------------------------
 # the parameter rows: one SflxParameters handle, flattened by name
@@ -220,6 +217,70 @@ _VEGE_TO_ENERGY = {
 }
 _VEGE_ENTRY_FALLBACK = {"tgv": "tg", "cmv": "cm", "chv": "ch",
                         "eah": "eah", "tv": "tv"}
+
+_VEGE_SPREAD_NAMES = {**_VEGE_TO_ENERGY, "tah": "TAH", "canhs": "CANHS",
+                      "qsfc": "QSFC"}
+_VEGE_SPREAD_FALLBACK = {**_VEGE_ENTRY_FALLBACK, "tah": "tah", "qsfc": "qsfc"}
+_VEGE_SPREAD_KERNELS = {}
+
+
+def _vege_spread_kernels():
+    """Two word-copy kernels, cached in the device context that owns them."""
+    import cupy as cp
+    from gpuwm.core.noahmp_kernel_sources import compile_generated_slab_kernel
+
+    device = cp.cuda.runtime.getDevice()
+    if device not in _VEGE_SPREAD_KERNELS:
+        defaults = tuple(_VEGE_SPREAD_FALLBACK)
+        init_args = ", ".join(f"const unsigned int* d{k}"
+                              for k in range(len(defaults)))
+        init_lines, scatter_lines = [], []
+        for k, name in enumerate(_VEGE_SPREAD_NAMES):
+            value = f"d{defaults.index(name)}[c]" if name in defaults else "0u"
+            init_lines.append(f"out[{k}LL*n+c] = {value};")
+            scatter_lines.append(f"out[{k}LL*n+index[c]] = v{k}[c];")
+        init_source = ('extern "C" __global__ void noahmp_vege_defaults('
+                       f'unsigned int* out, int n, {init_args}) {{ '
+                       'int c=blockDim.x*blockIdx.x+threadIdx.x; if(c>=n)return; '
+                       + "\n".join(init_lines) + '}')
+        scatter_args = ", ".join(f"const unsigned int* v{k}"
+                                 for k in range(len(_VEGE_SPREAD_NAMES)))
+        scatter_source = ('extern "C" __global__ void noahmp_vege_spread('
+                          'unsigned int* out, const long long* index, '
+                          f'int n, int count, {scatter_args}) {{ '
+                          'int c=blockDim.x*blockIdx.x+threadIdx.x; '
+                          'if(c>=count)return; '
+                          + "\n".join(scatter_lines) + '}')
+        _VEGE_SPREAD_KERNELS[device] = (
+            compile_generated_slab_kernel(init_source, "noahmp_vege_defaults"),
+            compile_generated_slab_kernel(scatter_source, "noahmp_vege_spread"))
+    return _VEGE_SPREAD_KERNELS[device]
+
+
+def _spread_vege_flux(vf, index, entry, n):
+    """Expand the unique vegetated subset in two launches, without arithmetic.
+
+    ``index`` comes from nonzero(tile_veg), so destinations are unique and
+    in range. Initialize the bare-lane defaults first, then overwrite only
+    vegetated lanes on the same stream. Owned contiguous rows remain safe to
+    pass directly to raw kernels, just as the previous per-field copies were.
+    """
+    import cupy as cp
+
+    out = cp.empty((len(_VEGE_SPREAD_NAMES), n), dtype=cp.float32)
+    if n:
+        initialize, scatter = _vege_spread_kernels()
+        defaults = tuple(cp.ascontiguousarray(entry(source), dtype=cp.float32)
+                         for source in _VEGE_SPREAD_FALLBACK.values())
+        initialize(((n + 127) // 128,), (128,), (out, np.int32(n), *defaults))
+        count = int(index.size)
+        if count:
+            index = cp.ascontiguousarray(index, dtype=cp.int64)
+            values = tuple(cp.ascontiguousarray(vf[source], dtype=cp.float32)
+                           for source in _VEGE_SPREAD_NAMES.values())
+            scatter(((count + 127) // 128,), (128,),
+                    (out, index, np.int32(n), np.int32(count), *values))
+    return {name: out[k] for k, name in enumerate(_VEGE_SPREAD_NAMES)}
 
 #: The names VEGE_FLUX reads straight off the ENERGY bundle -- the same value
 #: under the same name on both sides of the seam.
@@ -361,9 +422,7 @@ def evaluate_sflx_slab(fields: dict, n: int, *, noahmp_snow_age="wrf_470") -> di
     tile_veg = e["tile_veg"]
 
     # VEGE_FLUX answers the vegetated subset, exactly as the scalar column
-    # only pauses there under tile_veg.  One gather in, one scatter out.
-    veg_index = cp.nonzero(tile_veg)[0]
-    nveg = int(veg_index.size)
+    # only pauses there under tile_veg. The device mask keeps shape fixed.
 
     vf_sources = {name: c(name) for name in _VEGE_CALL_THROUGH}
     vf_sources["qsfc"] = c("qsfc")
@@ -383,26 +442,20 @@ def evaluate_sflx_slab(fields: dict, n: int, *, noahmp_snow_age="wrf_470") -> di
                       "dzsnso": c("dzsnso"),
                       "stc": c("stc"),
                       "df": thermo["df"]})
-    vf_fields = take_slab_rows(veg_index, vf_sources, n)
-    vf = evaluate_vege_flux_slab(vf_fields, nveg)
-
-    def spread(sub):
-        full = cp.zeros(n, dtype=cp.float32)
-        full[veg_index] = sub
-        return full
+    vf = evaluate_vege_flux_masked_slab(vf_sources, n, tile_veg)
 
     v = {}
     for name, upper in _VEGE_TO_ENERGY.items():
-        scattered = spread(vf[upper])
+        scattered = vf[upper]
         fallback = _VEGE_ENTRY_FALLBACK.get(name)
         if fallback is not None:
             scattered = cp.where(tile_veg, scattered, c(fallback))
         v[name] = scattered
-    tah = cp.where(tile_veg, spread(vf["TAH"]), c("tah"))
-    canhs = cp.where(tile_veg, spread(vf["CANHS"]), _ZERO)
+    tah = cp.where(tile_veg, vf["TAH"], c("tah"))
+    canhs = cp.where(tile_veg, vf["CANHS"], _ZERO)
     # :2262 -- the scalar path assigns qsfc = vf.QSFC before BARE_FLUX reads
     # it, so on a vegetated column BARE_FLUX's qsfc argument is VEGE_FLUX's.
-    qsfc_after_vege = cp.where(tile_veg, spread(vf["QSFC"]), c("qsfc"))
+    qsfc_after_vege = cp.where(tile_veg, vf["QSFC"], c("qsfc"))
 
     bf = evaluate_bare_flux_slab({
         "dt": c("dt"), "sag": rad["sag"], "lwdn": c("lwdn"), "ur": g["ur"],
@@ -512,6 +565,7 @@ def evaluate_sflx_slab(fields: dict, n: int, *, noahmp_snow_age="wrf_470") -> di
         "edir": p1["edir"], "etran": wat["etran"], "fcev": seg3["fcev"],
         "fgev": seg3["fgev"], "fctr": seg3["fctr"], "ssoil": seg3["ssoil"],
         "runsrf": wat["runsrf"], "runsub": wat["runsub"],
+        "soldrain": wat["soldrain"],
         "albedo": p2["albedo"], "fsno": g["fsno"], "canliq": wat["canliq"],
         "canice": wat["canice"], "fpice": pre["fpice"], "qmelt": pc["qmelt"],
         "ponding": pc["ponding"], "ponding1": wat["ponding1"],

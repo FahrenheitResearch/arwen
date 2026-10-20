@@ -2,6 +2,7 @@
 //! zarrs owns codecs/array decoding; the project's NetCDF writer owns serialization and
 //! mapped-engine owns the existing WRF humidity derivations.
 mod http_store;
+mod reach_archive;
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime};
 use netcdf_writer::{AttrValue, NcFormat, NcType, NcWriter, Schema, VarData};
@@ -189,6 +190,9 @@ fn units_match(array: &SourceArray, expected: &str, name: &str) -> Result<()> {
         "m2 s-2" => &["m2s-2", "m2/s2"],
         "kg kg-1" => &["kgkg-1", "kg/kg", "1"],
         "m3 m-3" => &["m3m-3", "m3/m3"],
+        "kg m-3" => &["kgm-3", "kg/m3"],
+        // ECMWF writes "~" for integer class codes (ERA5 soil_type).
+        "code" => &["~", "code"],
         "1" => &["1", "dimensionless", "(0-1)", "0-1", "proportion"],
         "m" => &[
             "m",
@@ -787,6 +791,9 @@ fn dump_record(args: &[String]) -> Result<()> {
 }
 fn run() -> Result<()> {
     let args: Vec<_> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("reach-archive") {
+        return reach_archive::run(&args[2..]);
+    }
     if args.get(1).map(String::as_str)==Some("dump-record") { return dump_record(&args); }
     if args.len() != 4 || args[1] != "extract" {
         return fail("usage: rw_zarr extract REQUEST.json OUTPUT.nc");

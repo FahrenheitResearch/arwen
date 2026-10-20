@@ -35,6 +35,7 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use wx_core::download::{
     byte_ranges, find_entries, parse_idx, CacheDedup, DownloadClient, DownloadConfig,
@@ -96,6 +97,7 @@ impl From<wx_core::RustmetError> for TransferFault {
 pub struct Fetcher {
     client: DownloadClient,
     progress: Arc<TransferProgress>,
+    streams_used: AtomicUsize,
 }
 
 /// What one successful `.idx` read produced.
@@ -116,8 +118,14 @@ impl Fetcher {
 
     fn stream_ranges_kind(&self, url: &str, ranges: &[(u64, u64)], path: &Path,
         pin: Option<(u64, &str)>) -> Result<crate::stream::Receipt, TransferFault> {
-        // Preserve the established request size, especially for paced origins.
-        const CHUNK: u64 = 16 * 1024 * 1024;
+        // A fresh TCP/TLS connection for every 16 MiB chunk repeatedly
+        // pays connection setup and slow start when idle pooling is off.
+        // Use long disjoint parts, at most one per stream for a whole
+        // object, while retaining wx-core retries and range validation.
+        let width = self.client.streams_for(url).max(1);
+        let total = ranges.iter().filter(|(_, end)| *end != u64::MAX)
+            .fold(0u64, |total, &(start, end)| total.saturating_add(end - start + 1));
+        let chunk_bytes = total.div_ceil(width as u64).max(16 * 1024 * 1024);
         let mut chunks = Vec::new();
         for &(start, end) in ranges {
             if end == u64::MAX {
@@ -126,16 +134,17 @@ impl Fetcher {
             }
             let mut offset = start;
             while offset <= end {
-                let last = offset.saturating_add(CHUNK - 1).min(end);
+                let last = offset.saturating_add(chunk_bytes - 1).min(end);
                 chunks.push((offset, last));
                 offset = last + 1;
             }
         }
+        self.streams_used.fetch_max(width.min(chunks.len()).max(1), Ordering::Relaxed);
         let transfer = |publisher: &mut crate::stream::Publisher| {
             std::thread::scope(|scope| {
                 let (send, receive) = std::sync::mpsc::sync_channel(1);
                 scope.spawn(move || {
-                    for batch in chunks.chunks(self.client.streams().max(1)) {
+                    for batch in chunks.chunks(width) {
                         let result = self.client.get_ranges(url, batch).map_err(TransferFault::from);
                         let failed = result.is_err();
                         if send.send((result, crate::stream::unix_now())).is_err() || failed { break; }
@@ -247,7 +256,7 @@ impl Fetcher {
     fn around(mut client: DownloadClient) -> Self {
         let progress = TransferProgress::new();
         client.set_progress(progress.clone());
-        Self { client, progress }
+        Self { client, progress, streams_used: AtomicUsize::new(1) }
     }
 
     /// A fetcher on a client with a short stall window and one retry,
@@ -265,6 +274,11 @@ impl Fetcher {
         })
         .expect("download client");
         Self::around(client)
+    }
+
+    /// Maximum selected range width, after object size and host policy.
+    pub fn streams_used(&self) -> usize {
+        self.streams_used.load(Ordering::Relaxed)
     }
 
     /// The body bytes the client has received for the current object.

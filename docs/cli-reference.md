@@ -218,7 +218,11 @@ own alias data (`--list-sources` prints the same rows as JSON), and a
 test refuses any drift between the two.
 
 | `--source` id | also spelled |
-|---|---|
+| --- | --- |
+| `aorc` | -- |
+| `era5-land` | -- |
+| `ngen-csv` | `aorc-csv` |
+| `nwm-retrospective-forcing` | `nwm-forcing` |
 | `hrrr` | -- |
 | `hrrr-prs` | `hrrr-pressure`, `hrrr-wrfprs` |
 | `gem-gdps` | `gem`, `gdps`, `gem-global` |
@@ -252,6 +256,7 @@ test refuses any drift between the two.
 | `refs` | `rrfs-ensemble` |
 | `rrfs-firewx` | `firewx` |
 | `wrf` | `wrf-gdex`, `wrf-arw` |
+| `earth2` | `earth2studio` |
 | `era5` | -- |
 | `era5-l137` | `era5-model-level`, `era5-ml` |
 | `20crv3` | `20cr`, `twentycrv3`, `20crv3-member` |

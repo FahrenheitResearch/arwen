@@ -82,7 +82,8 @@ if kind == 'git':
     checkout = cwd / args[-1]
     for name in ('gpuwm', 'gpuwm-data', 'tools/grib1_bridge', 'tools/rustwx',
                  'tools/arwen-tui', 'tools/zarr_bridge', 'tools/rw_wps',
-                 'tools/region_global_dealias'):
+                 'tools/region_global_dealias', 'tools/nextgen_hydrofabric',
+                 'tools/nextgen_forcing', 'tools/nextgen_verify'):
         (checkout / name).mkdir(parents=True, exist_ok=True)
         if name.startswith('tools/'):
             # The real manifests: the installers read their rust-version.
@@ -194,7 +195,14 @@ elif kind == 'rustup':
     installed.mkdir(parents=True, exist_ok=True)
     (installed / args[2]).touch()
 elif kind == 'cargo':
-    assert args == ['build', '--release', '--locked', '--offline'], args
+    hydro = cwd.name in ('nextgen_hydrofabric', 'nextgen_forcing', 'nextgen_verify')
+    if args == ['fetch', '--locked']:
+        assert hydro, cwd
+        (cwd / '.dependencies-fetched').touch()
+    else:
+        assert args == ['build', '--release', '--locked', '--offline'], args
+        if hydro:
+            assert (cwd / '.dependencies-fetched').is_file(), 'fresh hydro cache was not prepared'
     if cwd.name == 'arwen-tui':
         if os.environ.get('GPUWM_INSTALL_TEST_FAIL') == 'tui':
             sys.exit(19)
@@ -429,9 +437,11 @@ def test_clean_clone_installs_matching_companion_then_engine_and_builds_tui(tmp_
         ['-m', 'pip', 'install', '-e', 'gpuwm-data'],
         ['-m', 'pip', 'install', '-e', '.[gpu-cu13,render]'],
     ]
-    built = [Path(row['cwd']).name for row in rows if row['kind'] == 'cargo']
+    built = [Path(row['cwd']).name for row in rows
+             if row['kind'] == 'cargo' and row['args'][0] == 'build']
     assert built == ['grib1_bridge', *([] if no_render else ['rustwx']), 'arwen-tui', 'zarr_bridge',
-                     'rw_wps', 'region_global_dealias']
+                     'rw_wps', 'region_global_dealias', 'nextgen_hydrofabric',
+                     'nextgen_forcing', 'nextgen_verify']
     # A workspace the bundle roster builds from and the installer skips leaves
     # doctor reporting its default route MISSING on every source install.
     assert _required_workspaces(no_render) <= set(built)
@@ -1017,7 +1027,7 @@ def test_an_old_rustc_under_rustup_gets_the_declared_minimum_for_this_build(tmp_
     assert [row['args'] for row in rows if row['kind'] == 'rustup'] == [
         ['toolchain', 'install', wanted, '--profile', 'minimal']]
     cargo = [row for row in rows if row['kind'] == 'cargo']
-    assert len(cargo) == 6
+    assert sum(row['args'][0] == 'build' for row in cargo) == len(_required_workspaces())
     assert all(row['rustup_toolchain'] == wanted for row in cargo)
     # Installed before the .venv, so pip's sdist builds use it too.
     order = [row['kind'] for row in rows]

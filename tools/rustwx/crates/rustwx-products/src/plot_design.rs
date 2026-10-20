@@ -290,6 +290,16 @@ pub fn operational_fill_scale_for_recipe_in(
         RenderStyle::WeatherReflectivity | RenderStyle::WeatherRadarReflectivity => {
             reflectivity_dbz_scale()
         }
+        RenderStyle::WeatherSpecificHumidity => DiscreteColorScale {
+            levels: range_step(0.0, 20.1, 1.0),
+            colors: weather_palette(WeatherPalette::Rh),
+            extend: ExtendMode::Max, mask_below: None,
+        },
+        RenderStyle::WeatherOmega => DiscreteColorScale {
+            levels: range_step(-2.0, 2.01, 0.1),
+            colors: weather_palette(WeatherPalette::Advection),
+            extend: ExtendMode::Both, mask_below: None,
+        },
         RenderStyle::WeatherRh => relative_humidity_scale_for_selector(filled_selector),
         RenderStyle::WeatherProbability => DiscreteColorScale {
             levels: range_step(0.0, 101.0, 1.0),

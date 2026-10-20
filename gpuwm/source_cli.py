@@ -178,6 +178,8 @@ def _parser(*, prog: str = "gpuwm-wrf-init", add_help: bool = True,
         ),
     )
     parser.add_argument("--source", metavar="MODEL", help="native source adapter id")
+    from gpuwm.earth2_licensing import add_licence_argument
+    add_licence_argument(parser)
     parser.add_argument(
         "--initial-inputs", type=Path, metavar="JSON",
         help="separate packaged analysis inventory for the initial state; "
@@ -1432,12 +1434,19 @@ def _apply_packaged_profile(
                                           packaged_provenance_files)
 
     try:
-        profile = packaged_profile(str(adapter.packaged_profile))
-        authorities = packaged_authorities(str(adapter.packaged_profile))
+        profile_id = adapter.packaged_profile
+        owner = getattr(adapter, "acquisition_owner", None)
+        if owner:
+            from importlib import import_module
+            selector = getattr(import_module(owner), "preparation_profile", None)
+            if selector:
+                profile_id = selector(args, adapter)
+        profile = packaged_profile(str(profile_id))
+        authorities = packaged_authorities(str(profile_id))
         contributing = packaged_contributing_mappings(
-            str(adapter.packaged_profile))
-        provenance_files = packaged_provenance_files(str(adapter.packaged_profile))
-    except (KeyError, FileNotFoundError, RuntimeError) as error:
+            str(profile_id))
+        provenance_files = packaged_provenance_files(str(profile_id))
+    except (KeyError, ValueError, FileNotFoundError, RuntimeError) as error:
         return [f"packaged source profile: {error}"]
 
     overridden = [
@@ -2445,6 +2454,26 @@ def _apply_configuration_preprocess_default(args: argparse.Namespace) -> None:
               f"{reason}.", file=sys.stderr)
 
 
+def _apply_configuration_statics_default(args: argparse.Namespace) -> None:
+    """Seal the statics that the configured following nests require."""
+    if getattr(args, "statics_corridor", None) is not None:
+        return
+    path = getattr(args, "experiment_config", None)
+    if path is None:
+        return
+    from gpuwm.experiment import load_experiment
+    try:
+        experiment = load_experiment(path)
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError):
+        # Preserve the preparation route's own configuration diagnostics.
+        return
+    if (experiment.relocation.follow is not None
+            or any(domain.follow is not None for domain in experiment.domains)):
+        args.statics_corridor = "all"
+        print("prep: sealing statics corridors required by the configured "
+              "following nests (--statics-corridor).", file=sys.stderr)
+
+
 def _experiment_coverage_refusal(args: argparse.Namespace,
                                  adapter) -> str | None:
     """Why ``--source`` cannot force the ``--experiment-config`` root.
@@ -2480,8 +2509,21 @@ def main(argv: list[str] | None = None) -> int:
     # (UX finding N10).  `gpuwm prep` comes through `gpuwm.cli.main`,
     # which has already set it; calling it twice costs nothing.
     line_buffer_stdout()
+    from gpuwm.earth2_licensing import check_argv, licence_scope, _values
+    tokens = list(sys.argv[1:] if argv is None else argv)
+    import tomllib
+    try:
+        check_argv(["prep", *tokens])
+    except tomllib.TOMLDecodeError as error:
+        configs = ", ".join(_values(tokens, "--experiment-config"))
+        print(f"--experiment-config {configs} is not valid TOML: {error}", file=sys.stderr)
+        return EXIT_USAGE
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
+        return EXIT_CONFIG
     parser = _parser()
-    return dispatch(parser.parse_args(argv), parser=parser)
+    with licence_scope(_values(tokens, "--accept-licence")):
+        return dispatch(parser.parse_args(tokens), parser=parser)
 
 
 @dataclass(frozen=True)
@@ -2866,6 +2908,11 @@ def dispatch(args: argparse.Namespace, *,
     the usage line of the command they typed.
     """
 
+    from gpuwm.earth2_licensing import check_namespace
+    try:
+        check_namespace(args)
+    except ValueError as error:
+        parser.error(str(error))
     # Which tree is executing, before any source bytes are read; and a
     # refusal when this install's version claims contradict each other.
     from gpuwm.provenance_gate import announce_for_main
@@ -3411,6 +3458,7 @@ def dispatch(args: argparse.Namespace, *,
 
     try:
         _apply_configuration_preprocess_default(args)
+        _apply_configuration_statics_default(args)
     except (OSError, ValueError, RuntimeError) as error:
         print(f"Cannot resolve preprocessing from --experiment-config: {error}",
               file=sys.stderr)

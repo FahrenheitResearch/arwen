@@ -1082,6 +1082,259 @@
       "missing": {
         "kind": "reject"
       }
+    },
+    "interface_vertical_velocity": {
+      "selectors": [
+        {
+          "format": "netcdf",
+          "name": [
+            "W"
+          ]
+        }
+      ],
+      "units": {
+        "source": "m s-1",
+        "target": "m s-1",
+        "scale": 1.0,
+        "offset": 0.0
+      },
+      "source_axes": [
+        "time",
+        "half_level",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "half_level",
+        "y",
+        "x"
+      ],
+      "location": "mass",
+      "staggering": "z",
+      "missing": {
+        "kind": "reject"
+      },
+      "dependency_only": true
+    },
+    "vertical_velocity": {
+      "derivation": "w-from-interfaces",
+      "units": {
+        "source": "m s-1",
+        "target": "m s-1"
+      },
+      "source_axes": [
+        "vertical",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "vertical",
+        "y",
+        "x"
+      ],
+      "location": "mass",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      }
+    },
+    "cloud_droplet_number": {
+      "selectors": [
+        {
+          "format": "netcdf",
+          "name": [
+            "QNCLOUD"
+          ]
+        }
+      ],
+      "units": {
+        "source": "kg-1",
+        "target": "kg-1",
+        "scale": 1.0,
+        "offset": 0.0
+      },
+      "source_axes": [
+        "time",
+        "vertical",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "vertical",
+        "y",
+        "x"
+      ],
+      "location": "mass",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      },
+      "optional": true
+    },
+    "cloud_ice_number": {
+      "selectors": [
+        {
+          "format": "netcdf",
+          "name": [
+            "QNICE"
+          ]
+        }
+      ],
+      "units": {
+        "source": "kg-1",
+        "target": "kg-1",
+        "scale": 1.0,
+        "offset": 0.0
+      },
+      "source_axes": [
+        "time",
+        "vertical",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "vertical",
+        "y",
+        "x"
+      ],
+      "location": "mass",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      },
+      "optional": true
+    },
+    "rain_number": {
+      "selectors": [
+        {
+          "format": "netcdf",
+          "name": [
+            "QNRAIN"
+          ]
+        }
+      ],
+      "units": {
+        "source": "kg-1",
+        "target": "kg-1",
+        "scale": 1.0,
+        "offset": 0.0
+      },
+      "source_axes": [
+        "time",
+        "vertical",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "vertical",
+        "y",
+        "x"
+      ],
+      "location": "mass",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      },
+      "optional": true
+    },
+    "snow_number": {
+      "selectors": [
+        {
+          "format": "netcdf",
+          "name": [
+            "QNSNOW"
+          ]
+        }
+      ],
+      "units": {
+        "source": "kg-1",
+        "target": "kg-1",
+        "scale": 1.0,
+        "offset": 0.0
+      },
+      "source_axes": [
+        "time",
+        "vertical",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "vertical",
+        "y",
+        "x"
+      ],
+      "location": "mass",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      },
+      "optional": true
+    },
+    "graupel_number": {
+      "selectors": [
+        {
+          "format": "netcdf",
+          "name": [
+            "QNGRAUPEL"
+          ]
+        }
+      ],
+      "units": {
+        "source": "kg-1",
+        "target": "kg-1",
+        "scale": 1.0,
+        "offset": 0.0
+      },
+      "source_axes": [
+        "time",
+        "vertical",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "vertical",
+        "y",
+        "x"
+      ],
+      "location": "mass",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      },
+      "optional": true
+    },
+    "hail_number": {
+      "selectors": [
+        {
+          "format": "netcdf",
+          "name": [
+            "QNHAIL"
+          ]
+        }
+      ],
+      "units": {
+        "source": "kg-1",
+        "target": "kg-1",
+        "scale": 1.0,
+        "offset": 0.0
+      },
+      "source_axes": [
+        "time",
+        "vertical",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "vertical",
+        "y",
+        "x"
+      ],
+      "location": "mass",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      },
+      "optional": true
     }
   },
   "derivations": [
@@ -1112,6 +1365,11 @@
       "name": "water-skin-is-sst",
       "operation": "copy",
       "source": "skin_temperature"
+    },
+    {
+      "name": "w-from-interfaces",
+      "operation": "mass_from_interfaces",
+      "source": "interface_vertical_velocity"
     }
   ],
   "target": {
@@ -1121,7 +1379,7 @@
     "require_lateral_boundaries": true,
     "target_vertical_levels": 49,
     "soil_layer_count": 4,
-    "boundary_interval_seconds": 3600,
+    "boundary_interval_seconds": 300,
     "accept_boundary_interval_multiples": true,
     "required_fields": [
       {
@@ -1284,6 +1542,16 @@
         ],
         "location": "surface",
         "target_units": "K"
+      },
+      {
+        "name": "vertical_velocity",
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "location": "mass",
+        "target_units": "m s-1"
       }
     ],
     "pressure_requirement": "air_pressure",
@@ -1298,8 +1566,6 @@
       "snow_depth",
       "sea_ice_fraction"
     ],
-    "initialization_policies": {
-      "vertical_velocity": "explicit_zero_with_adapter_validation"
-    }
+    "initialization_policies": {}
   }
 }

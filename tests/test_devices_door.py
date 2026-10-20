@@ -1123,7 +1123,7 @@ def test_split_check_without_a_card_budget_fails_closed(rank_api, monkeypatch, c
     from gpuwm.core import devices, preflight
     from gpuwm.core.devices_memory import GIB
 
-    monkeypatch.setattr(doctor, "_cuda_headers_check", lambda: SimpleNamespace(
+    monkeypatch.setattr(doctor, "_cuda_headers_check", lambda **_kw: SimpleNamespace(
         status="verified", detail="CUDA compilation is available", action=None))
     reading = ({"visible_count": 2, "cards": {0: {"free_bytes": 95 * GIB}}}
                if partial_probe else None)

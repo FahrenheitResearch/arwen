@@ -935,7 +935,7 @@ sys.stdout.write(json.dumps(out))
 """
 
 
-def _nvrtc_header_probe() -> dict:
+def _nvrtc_header_probe(*, reuse_bound=False) -> dict:
     """Run :data:`_NVRTC_HEADER_PROBE` cold, out of process; ``{}`` if not."""
 
     if find_spec("cupy") is None:
@@ -944,7 +944,9 @@ def _nvrtc_header_probe() -> dict:
         environment = dict(os.environ, CUPY_CACHE_DIR=cache)
         try:
             probe = subprocess.run(
-                [sys.executable, "-c", _NVRTC_HEADER_PROBE],
+                [sys.executable, "-c", (
+                    "from gpuwm.forecast_readiness import main; main()"
+                    if reuse_bound else _NVRTC_HEADER_PROBE)],
                 capture_output=True, text=True, errors="replace",
                 env=environment, timeout=_PROBE_TIMEOUT_S * 6)
         except subprocess.TimeoutExpired:
@@ -959,6 +961,14 @@ def _nvrtc_header_probe() -> dict:
         result = json.loads(probe.stdout or "{}")
         if not isinstance(result, dict) or not result or probe.returncode != 0:
             raise ValueError("the probe produced no successful structured result")
+        if reuse_bound:
+            # Cache rejection and unsupported-layout warnings originate in
+            # the child. Keep them visible even when the cold fallback passes.
+            if probe.stderr:
+                sys.stderr.write(probe.stderr)
+            if result.get("readiness_cache") == "bound-cold":
+                print("note: forecast readiness used a cold probe for the "
+                      "current compiler/header binding", file=sys.stderr)
         return result
     except ValueError:
         tail = [line for line in (probe.stderr or "").strip().splitlines()
@@ -1189,7 +1199,7 @@ def _cupy_import_failure_remedy(evidence: str,
     ]), headers_action
 
 
-def _cuda_headers_check() -> Check:
+def _cuda_headers_check(*, reuse_bound=False) -> Check:
     """Can CuPy compile and run here, and which measured stage failed?
 
     A check rather than a footnote because the gap is silent by
@@ -1210,7 +1220,8 @@ def _cuda_headers_check() -> Check:
             "not judged -- compiling a kernel is device contact and "
             "GPUWM_NO_LOCAL_GPU is set",
             brief="device not touched", blocking=False)
-    result = _nvrtc_header_probe()
+    result = (_nvrtc_header_probe(reuse_bound=True) if reuse_bound
+              else _nvrtc_header_probe())
     if "cupy" in result:
         return Check(
             name, "info",
@@ -1245,10 +1256,15 @@ def _cuda_headers_check() -> Check:
         return _full_device_check(
             name, self_contained if self_contained != "ok" else headers)
     if self_contained == "ok" and headers == "ok":
+        cache = result.get("readiness_cache")
+        detail = (
+            "a self-contained kernel and a cupy reduction ran again; "
+            "prior cold compilation bound to unchanged compiler/header bytes"
+            if cache == "bound-warm" else
+            "a self-contained kernel and a cupy reduction compiled and ran "
+            "from a COLD cache")
         return Check(
-            name, "verified",
-            f"a self-contained kernel and a cupy reduction compiled and ran "
-            f"from a COLD cache (CUDA_PATH {cuda_path})",
+            name, "verified", f"{detail} (CUDA_PATH {cuda_path})",
             brief="kernels compile and run", blocking=False)
     stage = result.get("self_contained_stage")
     if stage in {"allocation", "launch", "synchronize", "readback", "validation"}:
@@ -2798,6 +2814,9 @@ _OBS_FRONT_DOOR_ACTION = ("build the obs front doors from a clone "
 #: the bundle carries it, rather than waiting for this map to catch up.
 #: ``tests/test_doctor_route_accuracy.py`` fails when they disagree.
 _CHECKED_ARTIFACTS = {
+    "nextgen_hydrofabric": "the `NextGen nextgen_hydrofabric` line",
+    "arwen_nextgen_forcing": "the `NextGen arwen_nextgen_forcing` line",
+    "rw_nextgen_verify": "the `NextGen rw_nextgen_verify` line",
     "grib1_bridge": "the `bridge ...` lines",
     "gfs_grib2_bridge": "the `bridge ...` lines",
     "hrrr_grib2_bridge": "the `bridge ...` lines",
@@ -2809,6 +2828,8 @@ _CHECKED_ARTIFACTS = {
     "rw_fetch": "the `fetch backbone` line",
     "rw_wrfbatch": "the `renderer` line",
     "rw_simradar": "the `simulated radar` line",
+    "rw_soundings": "the `sounding window renderer` line",
+    "rw_tc_fields": "the `cyclone field reader` line",
     "rw_mpas_mesh": "the `mesh generator` line",
     "rw_mpas_static": "the `mesh static builder` line",
     "rw_nexrad": "the `radar front door` line",
@@ -4008,6 +4029,114 @@ def _forecast_scoreboard_check() -> Check:
         missing_severity=SEVERITY_DEGRADED)
 
 
+def _tc_fields_check() -> Check:
+    """``rw_tc_fields``, the cyclone field reader behind ``gpuwm tc-tracks``.
+
+    Resolved through the same ladder :func:`gpuwm.tc_tracks.binary` walks
+    (``GPUWM_RW_TC_FIELDS``, the staged bundle, the rustwx build) and judged
+    stale out of its bytes, as ``gpuwm fetch-bridges`` judges it.  Degraded
+    rather than unreachable when absent: forecasts and renders are
+    untouched; only cyclone tracking on finished output cannot run.
+    """
+
+    name = "rw_tc_fields"
+    env_var = "GPUWM_RW_TC_FIELDS"
+    filename = bridges.executable_name(name)
+    label = f"cyclone field reader ({name})"
+    door = "gpuwm tc-tracks"
+    remedy = bridges.artifact_remedy(
+        env_var=env_var, filename=filename,
+        subject="the cyclone field reader",
+        crate_relative=bridges.RUSTWX_CRATE_RELATIVE,
+        one_liner=bridges.rustwx_build_hint(), artifact=name)
+    try:
+        found = bridges.find_artifact(
+            env_var, filename, crate_relative=bridges.RUSTWX_CRATE_RELATIVE)
+    except FileNotFoundError as error:
+        return Check(
+            label, "missing", f"{error} -- {door} cannot run",
+            f"# {env_var} names a missing executable: point it at a real "
+            "build, or unset it --\n" + remedy,
+            action=f"unset {env_var}, or point it at a build",
+            brief=f"{env_var} names a missing file",
+            group=_GROUP_ENGINES, blocking=False,
+            severity=SEVERITY_DEGRADED)
+    if found is None:
+        return Check(
+            label, "missing", f"not built and not staged -- {door} cannot run",
+            remedy, action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
+            brief=f"not staged; {door} cannot run",
+            group=_GROUP_ENGINES, blocking=False,
+            severity=SEVERITY_DEGRADED)
+    ok, evidence = bridges.bridge_abi_matches(name, found)
+    if not ok:
+        return Check(
+            label, "missing", f"{found} -- {evidence}; {door} would hand it a "
+            "request it does not speak",
+            "# this one is STALE, so re-point does not help; rebuild it:\n"
+            + remedy,
+            action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
+            brief="stale build; rebuild it", group=_GROUP_ENGINES,
+            blocking=False, severity=SEVERITY_BROKEN)
+    return Check(label, "verified", f"{found} -- {evidence}",
+                 group=_GROUP_ENGINES)
+
+
+def _on_demand_row(label: str, artifact: str, door: str, *,
+                   crate_relative: str = bridges.RUSTWX_CRATE_RELATIVE) -> Check | None:
+    """The on-demand row for an absent artifact the platform wheel leaves to the bundle, or None.
+
+    The row the obs front doors get (``on demand; staged by its first fetch``), for the other
+    artifacts that are on demand.  Breakage it prevents (2.9.3 pass 23 R12, Windows wheel smoke):
+    rw_soundings and rw_nextgen_verify went on demand in 3b66d4c13ce, but their rows still said
+    "not staged; its doors cannot run", which a fresh install contradicts: the first use stages them.
+    """
+    if not bridges.on_demand_fetch_offered(artifact, crate_relative):
+        return None
+    return Check(
+        label, "missing",
+        "not staged yet -- it is fetched on demand: the platform wheel does not carry it, and "
+        f"the first `{door}` that needs it stages it from this release's bundle",
+        f"gpuwm fetch-bridges --partial --artifact {artifact}",
+        action=f"gpuwm fetch-bridges --partial --artifact {artifact}",
+        brief="on demand; staged by its first fetch",
+        group=_GROUP_ENGINES, blocking=False, severity=SEVERITY_OPT_IN)
+
+
+def _sounding_renderer_check() -> Check:
+    """``rw_soundings``, the website-style sounding window renderer.
+
+    One door, ``gpuwm soundings``, judged by :func:`gpuwm.soundings.probe`
+    (the ``--abi`` line), the refusal that door applies.  Degraded rather
+    than unreachable when absent: forecasts and renders are untouched; only
+    the sounding product cannot be drawn.
+    """
+
+    from gpuwm import soundings
+
+    filename = bridges.executable_name("rw_soundings")
+    try:
+        absent = soundings.find_binary() is None
+    except FileNotFoundError:
+        absent = False          # a named override that is missing: the door check reports it
+    if absent:
+        row = _on_demand_row("sounding window renderer (rw_soundings)", "rw_soundings",
+                             "gpuwm soundings")
+        if row is not None:
+            return row
+    return _rustwx_door_check(
+        label="sounding window renderer (rw_soundings)",
+        env_var=soundings.ENV,
+        find=soundings.find_binary,
+        remedy=bridges.artifact_remedy(
+            env_var=soundings.ENV, filename=filename,
+            subject="the sounding window renderer",
+            crate_relative=bridges.RUSTWX_CRATE_RELATIVE,
+            one_liner=bridges.rustwx_build_hint(), artifact="rw_soundings"),
+        doors=(("gpuwm soundings", soundings.probe),),
+        missing_severity=SEVERITY_DEGRADED)
+
+
 def _simulated_radar_check() -> Check:
     """Check the optional native radar capability without touching a GPU.
 
@@ -4766,6 +4895,73 @@ def _projected_intermediate_check() -> Check:
                      severity=SEVERITY_DEGRADED)
     return Check(name, "verified", f"{path} -- ABI {version}",
                  brief="staged", group=_GROUP_ENGINES)
+
+
+def _nextgen_checks() -> list[Check]:
+    """Probe the three shipped hydro artifacts through their consumer ladders.
+
+    This is a CPU ABI/entrypoint check, not a fabric-coverage or skill verdict.
+    Inspection must not fetch, rebuild or refresh an estate to make it pass.
+    """
+    from gpuwm import bridge_assets, hydrofabric
+    from gpuwm.hydro import forcing_inputs, verify_usgs
+
+    probes = {
+        "nextgen_hydrofabric": (hydrofabric._library,
+                               ("arwen_hydrofabric_read_into",)),
+        "arwen_nextgen_forcing": (forcing_inputs._library,
+                                 ("arwen_forcing_prepare", "arwen_forcing_read_packet")),
+        "rw_nextgen_verify": (verify_usgs._binary, ()),
+    }
+    checks = []
+    with bridges.inspection_only():
+        for artifact in bridge_assets.BUNDLED_ARTIFACTS:
+            if artifact.name not in probes:
+                continue
+            loader, entries = probes[artifact.name]
+            filename = bridge_assets.artifact_filename(
+                artifact, bridge_assets.host_platform() or "linux-x86_64")
+            remedy = bridges.artifact_remedy(
+                env_var=artifact.env_var, filename=filename,
+                subject=f"NextGen {artifact.name}",
+                crate_relative=artifact.crate, artifact=artifact.name)
+            try:
+                loaded = loader()
+                if artifact.kind == "library":
+                    path = loaded._name
+                    symbol, expected = bridge_assets.library_abi_for(artifact.name)
+                    version = int(getattr(loaded, symbol)())
+                    if version != expected:
+                        raise RuntimeError(f"ABI {version}; this release speaks {expected}")
+                    for entry in entries:
+                        getattr(loaded, entry)
+                    detail = f"{path} -- ABI {version}, required entrypoints present"
+                else:
+                    path = Path(loaded)
+                    result = subprocess.run([str(path), "--version"], capture_output=True,
+                                            text=True, timeout=10, check=True)
+                    marker = "nextgen-gauge-table-v1"
+                    if marker not in result.stdout:
+                        raise RuntimeError(f"{path}: --version lacks {marker}")
+                    detail = f"{path} -- {result.stdout.strip()}"
+            except (OSError, AttributeError, RuntimeError, ValueError,
+                    subprocess.SubprocessError) as error:
+                row = (_on_demand_row(f"NextGen {artifact.name}", artifact.name,
+                                      "gpuwm hydro verify-usgs", crate_relative=artifact.crate)
+                       if artifact.on_demand and not os.environ.get(artifact.env_var) else None)
+                if row is not None:
+                    checks.append(row)
+                    continue
+                checks.append(Check(
+                    f"NextGen {artifact.name}", "missing",
+                    f"{error} -- this hydro consumer cannot run", remedy,
+                    action=_build_action(artifact.crate), group=_GROUP_ENGINES,
+                    severity=SEVERITY_DEGRADED, blocking=False))
+            else:
+                checks.append(Check(f"NextGen {artifact.name}", "verified", detail,
+                                    brief="CPU ABI/entrypoints checked",
+                                    group=_GROUP_ENGINES))
+    return checks
 
 
 def _radar_superob_check() -> Check:
@@ -6773,6 +6969,8 @@ def _collect_checks(sources: tuple[str, ...] | None = None,
     checks.append(_observation_scorecard_check())
     checks.append(_forecast_scoreboard_check())
     checks.append(_simulated_radar_check())
+    checks.append(_sounding_renderer_check())
+    checks.append(_tc_fields_check())
     checks.append(_netcdf_decoder_check())
     checks.append(_mapped_engine_check())
     checks.append(_ncwrite_check())
@@ -6785,6 +6983,7 @@ def _collect_checks(sources: tuple[str, ...] | None = None,
     if tempo_check is not None:
         checks.append(tempo_check)
     checks.append(_projected_intermediate_check())
+    checks.extend(_nextgen_checks())
     checks.append(_globe_pack_check())
     checks.append(_radar_superob_check())
     checks.append(_region_dealias_check())

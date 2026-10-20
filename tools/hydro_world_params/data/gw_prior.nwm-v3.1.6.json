@@ -1,0 +1,17 @@
+{
+ "gw_coeff_m3_s": {
+  "value": 0.004999999888241291,
+  "unit": "m3 s-1",
+  "source": "NOAA NWM v3.1.6 GWBUCKPARM_CONUS_FullRouting.nc (https://www.nco.ncep.noaa.gov/pmb/codes/nwprod/nwm.v3.1.6/parm/domain/GWBUCKPARM_CONUS_FullRouting.nc, sha256 27b815ad99ffb3adf3cc38c7c677a33ba29630c60d8336788ba2b9cb9053f3e3), 2724837 CONUS buckets: Coeff is 0.005..0.005 (one value) for every bucket. CFE Cgw [m h-1] = Coeff * 3600 / catchment area [m2] (the NWM bucket outflow Q = Coeff (exp(Expon z/Zmax) - 1) is a volume rate per catchment; CFE takes the same law as a depth rate)"
+ },
+ "gw_expon": {
+  "value": 3.1791605949401855,
+  "unit": "-",
+  "source": "NOAA NWM v3.1.6 GWBUCKPARM_CONUS_FullRouting.nc (https://www.nco.ncep.noaa.gov/pmb/codes/nwprod/nwm.v3.1.6/parm/domain/GWBUCKPARM_CONUS_FullRouting.nc, sha256 27b815ad99ffb3adf3cc38c7c677a33ba29630c60d8336788ba2b9cb9053f3e3), 2724837 CONUS buckets: CONUS median of the calibrated Expon (p05 1.044, p95 7.825); a national prior where no calibration exists"
+ },
+ "max_gw_storage_m": {
+  "value": 0.09175372314453124,
+  "unit": "m",
+  "source": "NOAA NWM v3.1.6 GWBUCKPARM_CONUS_FullRouting.nc (https://www.nco.ncep.noaa.gov/pmb/codes/nwprod/nwm.v3.1.6/parm/domain/GWBUCKPARM_CONUS_FullRouting.nc, sha256 27b815ad99ffb3adf3cc38c7c677a33ba29630c60d8336788ba2b9cb9053f3e3), 2724837 CONUS buckets: CONUS median of the calibrated Zmax 91.7537 mm (p05 11.46, p95 247.32 mm), converted to m as the NextGen packets carry it"
+ }
+}

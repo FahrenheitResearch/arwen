@@ -9,13 +9,14 @@ from gpuwm.ensemble.batch_products import (FieldProducts, ThresholdCondition,
 
 def test_product_ledger_prices_each_output_and_paintball_word():
     requests = (FieldProducts("refl", "dBZ", (20, 40), paintball=True, spaghetti=True),)
-    plan = product_memory_plan(requests, {"refl": (3, 5)}, members=65, reserved_bytes=1024)
+    plan = product_memory_plan(requests, {"refl": (3, 5)}, members=65, reserved_bytes=1024, include_pmm=True)
     rows = {r["name"]: r for r in plan.inventory(65)}
     assert rows["refl:mean"]["shape"] == (3, 5)
+    assert rows["refl:pmm"]["shape"] == (3, 5)
     assert rows["refl:probability"]["shape"] == (2, 3, 5)
     assert rows["refl:paintball"]["shape"] == (2, 2, 3, 5)
     assert rows["refl:spaghetti"]["shape"] == (2, 65, 2, 4)
-    assert sum(r["payload_bytes"] for r in rows.values()) == 300 + 8 + 120 + 480 + 1040
+    assert sum(r["payload_bytes"] for r in rows.values()) == 300 + 60 + 8 + 120 + 480 + 1040
     assert plan.required_bytes(65) == 1024 + sum(r["allocated_bytes"] for r in rows.values())
     with pytest.raises(MemoryError, match="exhaust device memory"):
         plan.admit(65, available_bytes=plan.required_bytes(65) - 1)

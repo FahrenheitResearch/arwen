@@ -20,6 +20,8 @@ mod projected_map;
 mod projection;
 pub mod radar_tables;
 mod rasterize;
+#[cfg(any(windows, target_os = "linux"))]
+mod rasterize_cuda;
 mod render;
 mod request;
 mod text;
@@ -37,8 +39,8 @@ pub use layout_plan::{
 };
 pub use rasterize::{cuda_rasterize_stats, print_cuda_rasterize_stats_if_enabled};
 
-/// Always a no-op in this port (the upstream cuda feature was stripped);
-/// kept so downstream callers compile unchanged.
+/// Compatibility hook for upstream phase reporting. For the timers collected
+/// by this renderer, use RUSTWX_TRACE_RENDER_TIMING in a separate diagnostic run.
 pub fn print_cuda_rasterize_phase_timing_if_enabled() {}
 pub use features::{
     BasemapDetail, BasemapStyle, StyledLonLatLayer, StyledLonLatPolygonLayer,
@@ -58,7 +60,7 @@ pub use projected_map::{
     GeographicBounds, ProjectedBasemap, ProjectedBasemapBuildOptions, ProjectedDomainBuildOptions,
     ProjectedFrameSource, ProjectedMap, ProjectedMapBuildOptions, build_projected_domain,
     build_projected_map, build_projected_map_with_options,
-    project_geographic_points_with_options,
+    project_geographic_points_with_options, project_geographic_rings_with_options,
 };
 pub use georeference::{
     PANEL_GEOREFERENCE_SCHEMA, PanelGeoReference, PlotRect, ResolvedProjection,
@@ -740,14 +742,23 @@ impl RustRenderer {
         png_timing.png_write_ms = file_write_ms;
         let (georeference, georeference_absent_reason) =
             panel_georeference_for_save(request, &png_timing.image_timing);
-        Ok(RenderSaveTiming {
+        let timing = RenderSaveTiming {
             state_timing,
             png_timing,
             file_write_ms,
             total_ms: total_start.elapsed().as_millis(),
             georeference,
             georeference_absent_reason,
-        })
+        };
+        // Separate diagnostic runs can expose timers already collected by the
+        // renderer without adding timers or serialization to ordinary renders.
+        static TRACE_TIMING: OnceLock<bool> = OnceLock::new();
+        if *TRACE_TIMING.get_or_init(|| std::env::var_os("RUSTWX_TRACE_RENDER_TIMING").is_some()) {
+            eprintln!("RUSTWX_RENDER_TIMING {}", serde_json::json!({
+                "path": path, "timing": &timing, "cuda": cuda_rasterize_stats(),
+            }));
+        }
+        Ok(timing)
     }
 }
 

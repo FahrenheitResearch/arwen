@@ -192,6 +192,10 @@ pub struct TiffReader {
     pub nodata: Option<f64>,
     pub transform: [f64; 6],
     pub crs: Option<Crs>,
+    /// Why the file's own GeoKeys were not read into `crs` (a CRS
+    /// outside the closed inventory): raised at read time when no
+    /// `crs_override` is declared, instead of at open.
+    pub crs_refusal: Option<String>,
     cache: std::collections::VecDeque<(usize, Vec<u8>)>,
     cache_bytes: usize,
     cache_budget: usize,
@@ -521,7 +525,19 @@ impl TiffReader {
             }
         });
 
-        let crs = parse_geokeys(path, &tags, &bytes)?;
+        // A file whose GeoKeys name a CRS the closed inventory does not
+        // carry is still opened: an explicit `crs_override` (the caller's
+        // declared CRS, e.g. the SoilGrids Interrupted Goode Homolosine
+        // proj string) stands in for it at read time, and a read without
+        // one is refused there with this same text. Origin: on 2026-10-15
+        // ISRIC's WCS began writing GTModelType 32767 (user-defined) into
+        // its IGH tiles, and every SoilGrids read died at open() before
+        // the override was consulted (WOOF SF/NYC/Toronto, 10-15..10-19).
+        let (crs, crs_refusal) = match parse_geokeys(path, &tags, &bytes) {
+            Ok(crs) => (crs, None),
+            Err(StaticError::Invalid(text)) => (None, Some(text)),
+            Err(err) => return Err(err),
+        };
 
         Ok(TiffReader {
             bytes,
@@ -539,6 +555,7 @@ impl TiffReader {
             nodata,
             transform,
             crs,
+            crs_refusal,
             cache: std::collections::VecDeque::new(),
             cache_bytes: 0,
             cache_budget: 0,
@@ -961,10 +978,15 @@ impl TiffReader {
             (Some(own), _) => own.clone(),
             (None, Some(given)) => given,
             (None, None) => {
-                return Err(invalid(format!(
-                    "raster {:?} has no CRS and declares no crs_override",
-                    self.path
-                )));
+                return Err(invalid(match &self.crs_refusal {
+                    Some(text) => format!(
+                        "{text} (and no crs_override is declared)"
+                    ),
+                    None => format!(
+                        "raster {:?} has no CRS and declares no crs_override",
+                        self.path
+                    ),
+                }));
             }
         };
         let t = &self.transform;
@@ -1180,9 +1202,14 @@ pub fn read_band1_raw(
         (Some(own), _) => own.clone(),
         (None, Some(given)) => given,
         (None, None) => {
-            return Err(invalid(format!(
-                "raster {path:?} has no CRS and declares no crs_override"
-            )));
+            return Err(invalid(match &reader.crs_refusal {
+                Some(text) => format!(
+                    "{text} (and no crs_override is declared)"
+                ),
+                None => format!(
+                    "raster {path:?} has no CRS and declares no crs_override"
+                ),
+            }));
         }
     };
     Ok((

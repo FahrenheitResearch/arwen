@@ -39,6 +39,22 @@ from gpuwm.verify.cases.nest_ideal_r1_moist import load_scaffold
 
 from test_model import _Coupler, _HistoryPhysics, _HistoryState
 
+#: What the stand-in analysis diagnostic writes.  Since 18dbe1d5449 a
+#: domain's tick-zero frame diagnoses REFL_10CM from its hydrometeors on
+#: the GPU (its own check: tests/test_earth2_export.py); these tests own
+#: the handoff routing, so a recognisable value stands in for it.
+ANALYSIS_DBZ = 15.0
+
+
+def _analysis_stand_in(state, cfg=None, *, shape=None, array_module=None):
+    shape = state.qv.shape if shape is None else shape
+    return np.full(shape, ANALYSIS_DBZ, dtype=np.float32)
+
+
+@pytest.fixture(autouse=True)
+def analysis_reflectivity_stand_in(monkeypatch):
+    monkeypatch.setattr("gpuwm.core.refl.analysis_refl_10cm", _analysis_stand_in)
+
 #: The child activates two root steps (120 s) after the experiment, on a
 #: forcing seam and on a parent step boundary, so no structural refusal
 #: can answer instead and the activation epoch is a history boundary.
@@ -215,9 +231,9 @@ def test_the_root_keeps_its_own_frames_while_the_child_waits(monkeypatch):
                    if gid == 1]
     assert [ticks for ticks, _refl in root_frames] == [0, 60, 120, 180,
                                                        240, 300]
-    # The root's analysis frame writes WRF's initial array: zeros, not a
-    # consumed stash (stock 4.6.1 writes REFL_10CM = 0 at frame 0).
-    assert not np.any(np.asarray(root_frames[0][1]))
+    # The root's analysis frame writes the analysis diagnostic, not a
+    # consumed stash (18dbe1d5449; WRF's zeros under GPUWM_WRF_EXACT=1).
+    assert np.all(np.asarray(root_frames[0][1]) == ANALYSIS_DBZ)
     assert all(refl is not None for _ticks, refl in root_frames[1:])
 
 
@@ -594,7 +610,7 @@ def test_a_streamed_nest_is_priced_with_its_reattached_tiles(monkeypatch):
 
 
 def test_all_domains_at_tick_zero_write_initial_reflectivity(monkeypatch):
-    """Both domains write initial zeros, then consume their own stashes."""
+    """Both domains write the analysis diagnostic, then consume their stashes."""
     _exp, model = _tree(delay_s=0)
 
     writers = _run(model, monkeypatch)
@@ -604,7 +620,7 @@ def test_all_domains_at_tick_zero_write_initial_reflectivity(monkeypatch):
                   if gid == grid_id]
         assert [ticks for ticks, _refl in frames] == [0, 60, 120, 180,
                                                       240, 300]
-        assert frames[0][1] is not None and not np.any(frames[0][1])
+        assert frames[0][1] is not None and np.all(frames[0][1] == ANALYSIS_DBZ)
         assert all(refl is not None for _ticks, refl in frames[1:])
 
 
@@ -621,7 +637,8 @@ def test_prepared_forecast_due_helper_follows_the_domains_own_start():
     def consumer(_state):
         return sentinel
 
-    assert not np.any(runner._consume_due_native_refl_10cm(state, 0, consumer))
+    assert np.all(runner._consume_due_native_refl_10cm(state, 0, consumer)
+                  == ANALYSIS_DBZ)
     assert runner._consume_due_native_refl_10cm(
         state, 1, consumer) is sentinel
     assert runner._consume_due_native_refl_10cm(

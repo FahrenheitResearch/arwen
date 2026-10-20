@@ -32,6 +32,9 @@ def _frame(path: Path, epoch: int = EPOCH_SECONDS) -> dict[str, np.ndarray]:
     qv = 0.012 * np.exp(-k / 6.0) * np.ones(shape3)
     zgrid = 260.0 * np.arange(NZ + 1, dtype=np.float64)[:, None, None] + 40.0 * np.ones((NZ + 1, NY, NX))
     tsk = 290.0 + rng.uniform(0.0, 5.0, (NY, NX))
+    # Interface vertical velocity, signed, as the hex full-field export writes W
+    # (vertical_velocity_policy in the packaged provenance).
+    w_interfaces = 0.5 * np.sin(np.arange(NZ + 1, dtype=np.float64))[:, None, None] * np.ones((NZ + 1, NY, NX))
     q2 = np.full((NY, NX), 0.011)
     with netCDF4.Dataset(path, "w", format="NETCDF3_64BIT_DATA") as ds:
         for name, size in (("Time", None), ("west_east", NX), ("south_north", NY), ("bottom_top", NZ),
@@ -68,6 +71,7 @@ def _frame(path: Path, epoch: int = EPOCH_SECONDS) -> dict[str, np.ndarray]:
         var("RADAR_U_EARTH", m3, np.full(shape3, 10.0), "m s-1")
         var("RADAR_V_EARTH", m3, np.full(shape3, -3.0), "m s-1")
         var("PHB", ("bottom_top_stag", "south_north", "west_east"), 9.80665 * zgrid, "m2 s-2")
+        var("W", ("bottom_top_stag", "south_north", "west_east"), w_interfaces, "m s-1")
         var("PSFC", s2, np.full((NY, NX), 99000.0), "Pa")
         var("HGT", s2, np.full((NY, NX), 40.0), "m")
         var("TSK", s2, tsk, "K")
@@ -82,7 +86,7 @@ def _frame(path: Path, epoch: int = EPOCH_SECONDS) -> dict[str, np.ndarray]:
         soil = ("soil_layers_stag", "south_north", "west_east")
         var("TSLB", soil, np.full((NSOIL, NY, NX), 285.0), "K")
         var("SMOIS", soil, np.full((NSOIL, NY, NX), 0.3), "m3 m-3")
-    return dict(pressure=pressure, theta=theta, qv=qv, zgrid=zgrid, tsk=tsk, q2=q2)
+    return dict(pressure=pressure, theta=theta, qv=qv, zgrid=zgrid, tsk=tsk, q2=q2, w_interfaces=w_interfaces)
 
 
 def test_the_adapter_row_names_the_packaged_hex_profile():
@@ -118,7 +122,11 @@ def test_a_hex_export_frame_decodes_to_the_canonical_state(tmp_path, monkeypatch
     np.testing.assert_allclose(fields["geopotential_height"].values,
                                0.5 * (truth["zgrid"][:-1] + truth["zgrid"][1:]), rtol=1e-6)
     np.testing.assert_allclose(fields["sea_surface_temperature"].values, truth["tsk"], rtol=1e-7)
+    # W is averaged from adjacent signed interfaces onto mass levels (mass_from_interfaces).
+    np.testing.assert_allclose(fields["vertical_velocity"].values,
+                               0.5 * (truth["w_interfaces"][:-1] + truth["w_interfaces"][1:]), rtol=1e-6, atol=1e-7)
     assert fields["soil_temperature"].values.shape == (NSOIL, NY, NX)
     assert decoded.valid_time.isoformat() == "2023-03-31T18:00:00"
-    for hidden in ("potential_temperature", "water_vapor_mixing_ratio", "interface_height"):
+    for hidden in ("potential_temperature", "water_vapor_mixing_ratio", "interface_height",
+                   "interface_vertical_velocity"):
         assert hidden not in fields

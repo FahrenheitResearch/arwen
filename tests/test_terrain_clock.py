@@ -2263,3 +2263,24 @@ def test_a_pinned_run_reads_a_tree_prepared_under_the_measured_clock():
         effective_prepared_domain_config(measured),
         effective_prepared_domain_config(moved))
     assert differing == ["run.dt"]
+
+
+@pytest.mark.parametrize("dx, slope, crest, wind, dt, expected_counts, expected_sound", [
+    (3000.0, 0.05, 900.0, 90.0, 15, [4], 4),
+    (1000.0, 0.6, 6456.0, 60.0, 5, [4, 6], 6),
+])
+def test_only_reads_alternative_sound_count_when_clock_needs_it(
+        dx, slope, crest, wind, dt, expected_counts, expected_sound):
+    table = tc.measured_map()
+    calls = []
+
+    def read(count):
+        calls.append(count)
+        return tc.read_map(dx, crest, slope, wind, count, table)
+
+    result = tc._derive_measured(
+        1, _Run(dx=dx, dy=dx), Fraction(dt), slope,
+        _wind(wind, crest=crest), table=table, read=read)
+    assert calls == expected_counts
+    assert result.time_step_sound == expected_sound
+    assert result.dt == Fraction(dt)

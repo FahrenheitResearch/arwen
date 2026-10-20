@@ -90,10 +90,20 @@ def _emit(tmp_path: Path, source: str, *extra: str,
     cycle = _plan_cycle(source) if cycle is None else cycle
     lat, lon = point if point is not None else _plan_point(source)
     out = tmp_path / f"{source.replace('-', '_')}.toml"
+    # These are geometry/acquisition tests. Explicitly accept the selected
+    # row's terms for planning only; default licence refusals are tested in
+    # test_earth2_licensing.py and no weight bytes are fetched here.
+    try:
+        row = get_source_adapter(source).model_row or {}
+    except ValueError:
+        row = {}
+    licence_args = []
+    if row and row.get("licence_class") != "permissive":
+        licence_args = ["--accept-licence", (row.get("weights") or {}).get("licence", "unresolved weight licence")]
     rc = cli_main([
         "domain", f"--point={lat:.4f},{lon:.4f}", "--card", extra_card,
         "--root-dx", "3", "--hours", hours, "--source", source,
-        "--cycle", cycle, "--out", str(out), *extra])
+        "--cycle", cycle, "--out", str(out), *licence_args, *extra])
     return rc, out
 
 
@@ -149,7 +159,9 @@ def _sources_with_public_bytes() -> frozenset[str]:
     table = json.loads(
         (Path(registry.__file__).with_name("authorities") / ROUTE_TABLE_NAME)
         .read_text(encoding="utf-8"))
-    return frozenset(table["routes"]) | frozenset(LEGACY_ROUTE_SOURCES)
+    return (frozenset(table["routes"]) | frozenset(LEGACY_ROUTE_SOURCES)
+            | frozenset(row.source_id for row in registry.source_adapters()
+                        if row.acquisition_owner))
 
 
 def _routed_sources() -> frozenset[str]:
@@ -357,6 +369,8 @@ def _stop_at_remote_acquisition(monkeypatch):
     monkeypatch.setattr(acquisition, "require_published_cycle", remote_boundary)
     monkeypatch.setattr(era5_acquisition, "_client", remote_boundary)
     monkeypatch.setattr(era5_arco, "retrieve_era5_arco", remote_boundary)
+    from gpuwm import earth2_run
+    monkeypatch.setattr(earth2_run, "run_model", remote_boundary)
     # The annual CF archives (20crv3-cf, fetchable since 5ecd0d4a9) reach
     # their publisher through cf_archive_fetch's own transport, not the
     # cycle-publication probe; without this the cell fetched from PSL.
@@ -407,6 +421,12 @@ def test_printed_chain_parses_with_matching_acquisition(
     config = tomllib.loads(out.read_text(encoding="utf-8"))
     fetch = commands["fetch"]
     assert fetch.source == config["fetch"]["source"]
+    row = get_source_adapter(source).model_row or {}
+    if row and row.get("licence_class") != "permissive":
+        licence = (row.get("weights") or {}).get("licence", "unresolved weight licence")
+        assert fetch.accept_licence == [licence]
+        if "go" in commands:
+            assert commands["go"].accept_licence == [licence]
     # [fetch].out is relative to the config, the printed --out to the cwd (D-11).
     assert fetch.out.resolve() == (out.parent / config["fetch"]["out"]).resolve()
     assert commands["check"].config.resolve() == out.resolve()
@@ -763,6 +783,12 @@ def test_declared_cadence_matches_the_packaged_mapping(source):
         target, int(adapter.forcing_interval_seconds)) is None, (
         f"{source}: the packaged mapping refuses the registry row's own "
         "boundary cadence")
+    # A parameterized model declares its own output spacing; several model
+    # rows share a decoder whose minimum spacing is finer than theirs.
+    if adapter.model_table:
+        if adapter.model_row:
+            assert float(adapter.model_row["step_hours"]) * 3600 == adapter.forcing_interval_seconds
+        return
     route = fetch_routes.table_route(source)
     assert (route is not None and route.default_cadence * 3600
             == adapter.forcing_interval_seconds), (

@@ -214,7 +214,8 @@ if ($cargo) {
 # tools\<name>\Cargo.toml, the same field cargo enforces, so this check and
 # cargo cannot disagree.  install.sh reads the same field the same way.
 $rustWorkspaces = @('grib1_bridge', 'rustwx', 'arwen-tui', 'zarr_bridge',
-                    'rw_wps', 'region_global_dealias')
+                    'rw_wps', 'region_global_dealias',
+                    'nextgen_hydrofabric', 'nextgen_forcing', 'nextgen_verify')
 function ConvertTo-RustVersion([string]$Text) {
     # '1.94', '1.94.0' or rustc's '1.95.0-nightly' as a comparable [version].
     if ($Text -match '^(\d+)\.(\d+)(?:\.(\d+))?') {
@@ -740,6 +741,21 @@ try {
     }
 } finally {
     Pop-Location
+}
+foreach ($workspace in 'nextgen_hydrofabric', 'nextgen_forcing', 'nextgen_verify') {
+    Say "building NextGen tools\$workspace (offline, locked)"
+    Push-Location "tools\$workspace"
+    try {
+        # Hydro's registry dependencies are not all vendored with rustwx.
+        Invoke-Step "cargo fetch ($workspace)" {
+            cargo fetch --locked
+        }
+        Invoke-Step "cargo build ($workspace)" {
+            cargo build --release --locked --offline
+        }
+    } finally {
+        Pop-Location
+    }
 }
 if ($rustPinned) {
     Say "built with Rust $rustMinText; a later hand-run cargo build in tools\ needs"

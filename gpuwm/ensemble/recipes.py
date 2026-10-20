@@ -15,14 +15,14 @@ from pathlib import Path
 from gpuwm.ensemble.seeds import member_seed
 
 CONTRACT = "gpuwm-ensemble-source-recipe.v1"
-RECIPE_KINDS = ("input-ensemble", "recentered", "time-lagged", "multi-model", "surface-state", "member-roster", "control")
+RECIPE_KINDS = ("wofs", "input-ensemble", "recentered", "time-lagged", "multi-model", "surface-state", "member-roster", "control")
 
 
-def _utc(value: datetime) -> datetime:
+def _utc(value: datetime, *, whole_hour: bool = True) -> datetime:
     if not isinstance(value, datetime) or value.tzinfo is None:
         raise ValueError("source times need an explicit UTC offset to align boundary valid times")
     value = value.astimezone(timezone.utc)
-    if value.minute or value.second or value.microsecond:
+    if whole_hour and (value.minute or value.second or value.microsecond):
         raise ValueError("source recipes need whole-hour valid times")
     return value
 
@@ -34,16 +34,22 @@ class SourceTrajectory:
     member: str | None = None
 
     def __post_init__(self):
-        from gpuwm.source_adapters import get_source_adapter
+        from gpuwm.source_adapters import get_source_adapter, canonical_source_token
         from gpuwm.forcing_member import member_contract
         adapter = get_source_adapter(self.source)
         if not adapter.runnable:
             raise ValueError(f"{adapter.source_id} has no complete initialization route: {adapter.composition_requirement}")
-        object.__setattr__(self, "source", adapter.source_id)
+        object.__setattr__(self, "source", canonical_source_token(self.source))
         object.__setattr__(self, "cycle", _utc(self.cycle))
         contract = member_contract(adapter.source_id, self.member)
         if contract is not None:
             object.__setattr__(self, "member", contract[2])
+        elif self.member is not None and adapter.selection_owner:
+            # The row names the module that owns this source's member
+            # selection, the seam the preparation chain verifies through.
+            from importlib import import_module
+            selected = import_module(adapter.selection_owner).validate_member(self.member, cycle=self.cycle)
+            object.__setattr__(self, "member", str(selected))
         elif self.member is not None:
             raise ValueError(f"{adapter.source_id} has no verified member grammar")
 
@@ -63,7 +69,7 @@ class SourceTrajectory:
         """
         from gpuwm.source_adapters import get_source_adapter
         adapter = get_source_adapter(self.source)
-        return adapter.upstream_model_id or adapter.source_id
+        return adapter.model_key or adapter.upstream_model_id or adapter.source_id
 
     @property
     def model_run(self) -> tuple[str, str, str | None]:
@@ -81,11 +87,13 @@ class SourceTrajectory:
         from gpuwm.source_cycles import cycle_grid_for
         from gpuwm.source_adapters import get_source_adapter
         import math
-        start, end = _utc(start), _utc(end)
+        start, end = _utc(start), _utc(end, whole_hour=not native_bracketing)
         if end <= start or start < self.cycle:
             raise ValueError("a source trajectory must cover the complete initial and boundary interval")
         first = int((start - self.cycle).total_seconds()) // 3600
-        last = int((end - self.cycle).total_seconds()) // 3600
+        # Acquisition must enclose a fractional forecast end, never floor it
+        # to the initial knot. Only native interpolation admits that end.
+        last = math.ceil((end - self.cycle).total_seconds() / 3600)
         adapter = get_source_adapter(self.source)
         if adapter.time_axis == "supplied_times":
             # This describes reuse of caller-supplied fields. Their native
@@ -105,11 +113,19 @@ class SourceTrajectory:
                 raise ValueError(
                     f"{self.source} needs a declared whole-hour analysis cadence "
                     "to identify its initial and boundary valid times")
-            elapsed = int((end - start).total_seconds())
+            elapsed = math.ceil((end - start).total_seconds())
+            if elapsed % cadence and not native_bracketing:
+                raise ValueError(f"{self.source} analysis window does not end on its declared "
+                                 f"{int(cadence)} s cadence; native temporal interpolation is required")
             if elapsed % cadence:
-                raise ValueError(
-                    f"{self.source} analysis window does not end on its declared "
-                    f"{int(cadence)} s cadence; native temporal interpolation is required")
+                # A window shorter than the analysis spacing (a 1-3 h run on
+                # 6-hourly ERA5) is bracketed by the next analysis, exactly
+                # as the single-run door fetches it: the boundary tendency
+                # interpolates between the two knots.  This refused before
+                # with "native temporal interpolation is required", which the
+                # ordinary ERA5 run already does.
+                elapsed += int(cadence) - elapsed % int(cadence)
+                last = first + elapsed // 3600
             if grid is not None:
                 knots = (start + timedelta(seconds=offset)
                          for offset in range(0, elapsed + 1, int(cadence)))
@@ -245,14 +261,14 @@ class SourceRecipe:
         """Keep donor interpolation coverage separate from the base window."""
         if trajectory.identity not in {item.identity for item in self.acquisitions()}:
             raise ValueError("source is outside the frozen recipe acquisition population")
-        bracket = self.kind == "recentered" and trajectory != self.base
+        bracket = self.kind == "wofs" or self.kind == "recentered" and trajectory != self.base
         return trajectory.window(self.start, self.end, native_bracketing=bracket)
 
     def fetch_argv(self, trajectory: SourceTrajectory, root: Path, *,
                    p_top_pa: float | None = None) -> tuple[str, ...]:
         self.acquisition_window(trajectory)
         return trajectory.fetch_argv(self.start, self.end, root, p_top_pa=p_top_pa,
-            native_bracketing=self.kind == "recentered" and trajectory != self.base)
+            native_bracketing=self.kind == "wofs" or self.kind == "recentered" and trajectory != self.base)
 
     def select_members(self, indices) -> SourceRecipe:
         """Replay or repartition existing members without renumbering seeds."""
@@ -308,8 +324,8 @@ def build_recipe(*, source: str, cycle: datetime, start: datetime, end: datetime
         raise ValueError("member count must be a positive integer")
     member_seed(base_seed, 0)
     base = SourceTrajectory(source, cycle, member)
-    start, end = _utc(start), _utc(end)
-    base.window(start, end)
+    start, end = _utc(start), _utc(end, whole_hour=kind != "wofs")
+    base.window(start, end, native_bracketing=kind == "wofs")
     adapter = get_source_adapter(base.source)
     if kind == "auto":
         if count == 1:
@@ -333,11 +349,11 @@ def build_recipe(*, source: str, cycle: datetime, start: datetime, end: datetime
     if perturbation is not None:
         from gpuwm.ensemble.surface_controls import validate_surface_recipe
         surface = validate_surface_recipe(perturbation)
-    if kind == "member-roster":
+    if kind in ("member-roster", "wofs"):
         from gpuwm.ensemble.member_variants import normalize_member_variants
         if perturbation is not None:
             raise ValueError("member-roster uses each member's own surface controls; omit shared perturbation")
-        variants = normalize_member_variants(member_variants, count)
+        variants = normalize_member_variants(member_variants, count, ladder=kind == "wofs")
         if trajectories and len(trajectories) != count:
             raise ValueError("member-roster needs one trajectory for each named arm; "
                              "extra or missing trajectories would bind the wrong source to an arm")
@@ -402,10 +418,10 @@ def build_recipe(*, source: str, cycle: datetime, start: datetime, end: datetime
                   "effective ensemble size. Keep one source id for each model run")
         if len({item.model for item in selected}) < 2:
             raise ValueError("the selected multi-model roster needs at least two distinct source models")
-    if kind not in ("control", "surface-state", "member-roster") and len({item.identity for item in selected}) != count:
+    if kind not in ("control", "surface-state", "member-roster", "wofs") and len({item.identity for item in selected}) != count:
         raise ValueError("the member roster repeats a source trajectory and would inflate effective ensemble size")
     for item in (*selected, *population):
-        item.window(start, end, native_bracketing=kind == "recentered" and item != base)
+        item.window(start, end, native_bracketing=kind == "wofs" or kind == "recentered" and item != base)
     return SourceRecipe(kind, base, start, end,
                         tuple(RecipeMember(index, member_seed(base_seed, index), item)
                               for index, item in enumerate(selected)), population,

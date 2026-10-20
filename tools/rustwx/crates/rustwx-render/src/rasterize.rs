@@ -9,12 +9,18 @@ fn projected_pixel_to_f64(point: (f32, f32)) -> (f64, f64) {
     (point.0 as f64, point.1 as f64)
 }
 
-// API-compat stubs mirroring the upstream no-cuda build; always empty.
-pub fn cuda_rasterize_stats() -> [(&'static str, usize); 0] {
-    []
+pub fn cuda_rasterize_stats() -> [(&'static str, usize); 2] {
+    #[cfg(any(windows, target_os = "linux"))]
+    { crate::rasterize_cuda::stats() }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    { [("structured raster CUDA OK", 0), ("structured raster CUDA failed", 0)] }
 }
 
-pub fn print_cuda_rasterize_stats_if_enabled() {}
+pub fn print_cuda_rasterize_stats_if_enabled() {
+    if std::env::var_os("RUSTWX_CUDA_RASTERIZE_DEBUG").is_some() {
+        for (name, count) in cuda_rasterize_stats() { eprintln!("{name}: {count}"); }
+    }
+}
 
 /// Rasterize a 2D grid into an RGBA image using bilinear sampling.
 ///
@@ -29,6 +35,15 @@ pub fn rasterize_grid(
     img_w: u32,
     img_h: u32,
 ) -> RgbaImage {
+    #[cfg(any(windows, target_os = "linux"))]
+    if let Some(img) = crate::rasterize_cuda::render(data, ny, nx, cmap, sample_mode, img_w, img_h, None) {
+        return img;
+    }
+    rasterize_grid_cpu(data, ny, nx, cmap, sample_mode, img_w, img_h)
+}
+
+fn rasterize_grid_cpu(data: &[f64], ny: usize, nx: usize, cmap: &LeveledColormap,
+    sample_mode: RasterSampleMode, img_w: u32, img_h: u32) -> RgbaImage {
     let mut img = RgbaImage::new(img_w, img_h);
 
     if ny == 0 || nx == 0 {
@@ -94,7 +109,7 @@ pub fn rasterize_projected_grid(
     img_w: u32,
     img_h: u32,
 ) -> RgbaImage {
-    if let Some(mut img) = rasterize_rectilinear_projected_grid(
+    if let Some(img) = rasterize_rectilinear_projected_grid(
         data,
         ny,
         nx,
@@ -104,7 +119,6 @@ pub fn rasterize_projected_grid(
         img_w,
         img_h,
     ) {
-        feather_projected_raster_edges(&mut img);
         return img;
     }
 
@@ -247,6 +261,18 @@ fn rasterize_rectilinear_projected_grid(
         return None;
     }
     let axes = rectilinear_pixel_axes(ny, nx, pixel_points)?;
+    #[cfg(any(windows, target_os = "linux"))]
+    if let Some(img) = crate::rasterize_cuda::render(data, ny, nx, cmap, sample_mode, img_w, img_h,
+        Some([axes.x0, axes.y0, axes.dx, axes.dy])) {
+        return Some(img);
+    }
+    let mut img = rasterize_rectilinear_cpu(data, ny, nx, axes, cmap, sample_mode, img_w, img_h);
+    feather_projected_raster_edges(&mut img);
+    Some(img)
+}
+
+fn rasterize_rectilinear_cpu(data: &[f64], ny: usize, nx: usize, axes: RectilinearPixelAxes,
+    cmap: &LeveledColormap, sample_mode: RasterSampleMode, img_w: u32, img_h: u32) -> RgbaImage {
     let x_samples = axis_samples(axes.x0, axes.dx, nx, img_w);
     let y_samples = axis_samples(axes.y0, axes.dy, ny, img_h);
     let mut img = RgbaImage::new(img_w, img_h);
@@ -298,10 +324,43 @@ fn rasterize_rectilinear_projected_grid(
         }
     }
 
-    Some(img)
+    img
 }
 
 pub(crate) fn rasterize_inverse_projected_grid(
+    data: &[f64],
+    ny: usize,
+    nx: usize,
+    lat_deg: &[f64],
+    lon_deg: &[f64],
+    projector: ProjectionProjector,
+    clip_bounds: Option<GeographicClipBounds>,
+    extent: &MapExtent,
+    cmap: &LeveledColormap,
+    sample_mode: RasterSampleMode,
+    img_w: u32,
+    img_h: u32,
+) -> RgbaImage {
+    if data.len() == ny.saturating_mul(nx) && lat_deg.len() == data.len() && lon_deg.len() == data.len() {
+        if let Some(axes) = RegularLatLonAxes::from_grid(lat_deg,lon_deg,ny,nx) {
+            #[cfg(any(windows, target_os = "linux"))]
+            if let Some(params) = projector.inverse_kernel_params().filter(|p| p.kind == 1) {
+                let clip = clip_bounds.unwrap_or(GeographicClipBounds::new(-180.0,180.0,-90.0,90.0));
+                let q = [axes.lat0, axes.lat_step, axes.lon0, axes.lon_step,
+                    f64::from(axes.periodic_lon), axes.period_points, params.p0,
+                    extent.x_min, extent.x_max, extent.y_min, extent.y_max,
+                    f64::from(clip_bounds.is_some()), clip.west_deg, clip.east_deg, clip.south_deg, clip.north_deg];
+                if let Some(img) = crate::rasterize_cuda::render_inverse(data,ny,nx,cmap,sample_mode,img_w,img_h,&q) {
+                    return img;
+                }
+            }
+
+        }
+    }
+    rasterize_inverse_projected_grid_cpu(data,ny,nx,lat_deg,lon_deg,projector,clip_bounds,extent,cmap,sample_mode,img_w,img_h)
+}
+
+fn rasterize_inverse_projected_grid_cpu(
     data: &[f64],
     ny: usize,
     nx: usize,
@@ -1113,5 +1172,100 @@ mod uniform_sampling_tests {
                                    RasterSampleMode::Linear, 257, 193);
         assert!(below.pixels().all(|pixel| pixel[3] == 0),
                 "the uniform-cell fix must not widen the display floor");
+    }
+}
+
+#[cfg(all(test, any(windows, target_os = "linux")))]
+mod cuda_replay {
+    use super::*;
+    // Explicit device replay: run this under the card mutex with this variable.
+    // CPU-only test runs do not acquire a CUDA context.
+    #[test]
+    fn structured_cuda_matches_current_cpu_pixels() {
+        if std::env::var_os("RUSTWX_TEST_CUDA").is_none() { return; }
+        let (ny, nx, w, h) = (53, 64, 1200, 800);
+        let mut data: Vec<f64> = (0..ny*nx).map(|i| ((i*7919 % 1009) as f64 - 200.0)/10.0).collect();
+        data[31] = f64::NAN;
+        data[32] = f64::INFINITY;
+        data[33] = f64::NEG_INFINITY;
+        data[34] = -0.0;
+        let cmap = LeveledColormap {
+            levels: vec![-10.0, 0.0, 0.1, 10.0, 20.0, 40.0, 80.0],
+            colors: vec![Rgba::new(1,2,3), Rgba::new(10,20,30), Rgba::new(40,50,60),
+                Rgba::new(70,80,90), Rgba::new(100,110,120), Rgba::new(130,140,150)],
+            legend_levels: vec![], legend_colors: vec![], under_color: Some(Rgba::new(4,5,6)),
+            over_color: Some(Rgba::new(250,251,252)), mask_below: Some(0.1), categories: false,
+        };
+        let axes = RectilinearPixelAxes { x0: -9.25, y0: 780.75, dx: 18.875, dy: -14.75 };
+        let mut total = 0;
+        for uniform in [false, true] {
+            if uniform { data.fill(0.1); }
+            for mode in [RasterSampleMode::Linear, RasterSampleMode::Nearest] {
+                for projected in [false, true] {
+                    let mut expected = if projected {
+                        rasterize_rectilinear_cpu(&data, ny, nx, axes, &cmap, mode, w, h)
+                    } else { rasterize_grid_cpu(&data, ny, nx, &cmap, mode, w, h) };
+                    if projected { feather_projected_raster_edges(&mut expected); }
+                    let before = crate::rasterize_cuda::stats()[0].1;
+                    let actual = crate::rasterize_cuda::render(&data, ny, nx, &cmap, mode, w, h,
+                        projected.then_some([axes.x0, axes.y0, axes.dx, axes.dy])).expect("GPU fill must execute");
+                    assert_eq!(crate::rasterize_cuda::stats()[0].1, before + 1);
+                    let different = actual.as_raw().iter().zip(expected.as_raw()).filter(|(a,b)|a!=b).count();
+                    assert_eq!(different, 0, "uniform={uniform}, projected={projected}, mode={mode:?}");
+                    total += actual.as_raw().len();
+                    if !uniform && projected && matches!(mode, RasterSampleMode::Linear) {
+                        if let Some(folder) = std::env::var_os("RUSTWX_REPLAY_OUT") {
+                            let path = std::path::Path::new(&folder);
+                            std::fs::create_dir_all(path).unwrap();
+                            expected.save(path.join("cpu.png")).unwrap();
+                            actual.save(path.join("gpu.png")).unwrap();
+                        }
+                    }
+                }
+            }
+        }
+        // A one-pixel-wide image skips the CPU feather pass entirely.
+        let axes = RectilinearPixelAxes { x0: 0.0, y0: 0.0, dx: 1.0, dy: 1.0 };
+        for (w, h) in [(1, 1), (1, 7), (7, 1)] {
+            for mode in [RasterSampleMode::Linear, RasterSampleMode::Nearest] {
+                let expected = rasterize_rectilinear_cpu(&data, ny, nx, axes, &cmap, mode, w, h);
+                let actual = crate::rasterize_cuda::render(&data, ny, nx, &cmap, mode, w, h,
+                    Some([axes.x0, axes.y0, axes.dx, axes.dy])).expect("GPU narrow viewport");
+                assert_eq!(actual.as_raw(), expected.as_raw());
+                total += actual.as_raw().len();
+            }
+        }
+        println!("CUDA_PIXEL_REPLAY bytes={total} differing=0 calls={}", crate::rasterize_cuda::stats()[0].1);
+    }
+}
+
+#[cfg(all(test, any(windows, target_os = "linux")))]
+mod inverse_cuda_replay {
+    use super::*;
+    #[test]
+    fn robinson_cuda_matches_cpu_at_seam_and_clip() {
+        if std::env::var_os("RUSTWX_TEST_CUDA").is_none() { return; }
+        let (ny,nx)=(19,36);
+        let lat:Vec<f64>=(0..ny).flat_map(|j|std::iter::repeat_n(-90.0+j as f64*10.0,nx)).collect();
+        let lon:Vec<f64>=(0..ny).flat_map(|_|(0..nx).map(|i|i as f64*10.0)).collect();
+        let mut data:Vec<f64>=(0..ny*nx).map(|i| (i as f64*0.37).sin()*30.0).collect();
+        data[42]=f64::NAN; data[43]=f64::INFINITY;
+        let cmap=LeveledColormap { levels:vec![-30.0,-10.0,0.0,10.0,30.0],
+            colors:vec![Rgba::new(10,20,30),Rgba::new(40,50,60),Rgba::new(70,80,90),Rgba::new(100,110,120)],
+            legend_levels:vec![],legend_colors:vec![],under_color:None,over_color:None,mask_below:None,categories:false };
+        let projector=ProjectionProjector::Robinson(crate::projection::RobinsonProjection::new(30.0));
+        let extent=MapExtent { x_min:-18000000.0,x_max:18000000.0,y_min:-9000000.0,y_max:9000000.0 };
+        let mut bytes=0;
+        for mode in [RasterSampleMode::Linear,RasterSampleMode::Nearest] {
+            for clip in [None,Some(GeographicClipBounds::new(150.0,-150.0,-60.0,60.0))] {
+                let before=crate::rasterize_cuda::stats()[0].1;
+                let expected=rasterize_inverse_projected_grid_cpu(&data,ny,nx,&lat,&lon,projector,clip,&extent,&cmap,mode,701,403);
+                let actual=rasterize_inverse_projected_grid(&data,ny,nx,&lat,&lon,projector,clip,&extent,&cmap,mode,701,403);
+                assert!(crate::rasterize_cuda::stats()[0].1>before,"CUDA did not execute");
+                assert_eq!(actual.as_raw(),expected.as_raw(),"mode={mode:?} clip={clip:?}");
+                bytes+=actual.as_raw().len();
+            }
+        }
+        println!("CUDA_INVERSE_REPLAY bytes={bytes} differing=0 calls=4");
     }
 }

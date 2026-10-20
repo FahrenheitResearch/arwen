@@ -1,0 +1,37 @@
+{
+  "schema": "arwen.hydro-world.cfe-params-row.v1",
+  "provenance": {
+    "what": "One CFE parameter set applied to every catchment of a fabric that has no model_attributes yet. Placeholder until hydro-world-params writes per-catchment model_attributes; receipts name this file whenever it is used.",
+    "values_from": "NOAA-OWP/ngen be11a180565a78ff069d855b0b5dbfc23845e7d8 data/gauge_01073000/CFE/cat-11223_bmi_config_cfe_pass.txt (Apache-2.0), a NWM-derived parameter set for one real catchment",
+    "gw_storage_cold_start": "the same file's gw_storage=0.35[m/m]"
+  },
+  "gw_storage_cold_start": 0.35,
+  "model_attributes": {
+    "fid": 0,
+    "divide_id": "cat-placeholder",
+    "elevation_mean_m": null,
+    "slope_mean_deg": null,
+    "aspect_mean_deg": null,
+    "centroid_lat_deg": null,
+    "centroid_lon_deg": null,
+    "soil_class": null,
+    "veg_class": null,
+    "soil_color": null,
+    "impervious_fraction": null,
+    "soil_depth_m": 2.0,
+    "soil_b": 6.0,
+    "soil_satdk_m_s": 4.698e-06,
+    "soil_satpsi_m": 0.141000003,
+    "soil_slop": 0.028126024,
+    "soil_smcmax": 0.444680541,
+    "soil_wltsmc": 0.046999998,
+    "refkdt": 1.0992179,
+    "alpha_fc": 0.33,
+    "max_gw_storage_m": 0.012863189697,
+    "cgw_m_h": 1.8e-05,
+    "gw_expon": 7.0,
+    "k_lf": 0.01,
+    "k_nash": 0.03,
+    "giuh_ordinates": "0.63,0.37"
+  }
+}

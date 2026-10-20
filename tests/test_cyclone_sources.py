@@ -143,7 +143,9 @@ def test_source_menu_uses_routes_and_member_grammar():
     # fetchable row that then refuses for want of an initialization route
     # would be a dead door.
     assert set(options) == set(cs.source_ids())
-    assert set(options) <= set(routes.all_fetchable_sources())
+    from gpuwm.source_adapters import source_adapters
+    owners = {r.source_id for r in source_adapters() if r.acquisition_owner}
+    assert set(options) <= set(routes.all_fetchable_sources()) | owners
     for source in set(routes.all_fetchable_sources()) - set(options):
         with pytest.raises(ValueError, match="--list-sources"):
             cs.source_adapter(source)

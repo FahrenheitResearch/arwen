@@ -25,6 +25,10 @@ decision's input) and the full battery records beside it.
     python -m tools.heat_eval.score_case --case ID [--root /work/nh] [--plan core]
         [--arms A,B,C,E] [--no-stations] [--no-radar]
 
+Complete family frames also use this module:
+``python -m tools.heat_eval.score_case --grid-request REQUEST --matcher BINARY --out DIR``.
+Their native ensemble registration is separate from the heating decision.
+
 Python here is orchestration: it lists files, starts the Rust decoders and
 scorers, and files their numbers.  No weather array is decoded here.
 """
@@ -504,9 +508,36 @@ def score_case(root: Path, case: planmod.Case, plan: str, arm_ids: Sequence[str]
     return document
 
 
+def score_family_frame(request: Mapping, *, matcher: Path, request_path: Path,
+                       product_dir: Path) -> dict:
+    """Score complete AI/physics families through the native gridded matcher.
+
+    This uses the ensemble registration (20/35/45 dBZ, 33 km neighbourhood,
+    causal MRMS), rather than changing the heating decision's registration.
+    Python handles metadata only; Rust reads, remaps and scores every field.
+    """
+    if request.get("quantity") != "composite_reflectivity":
+        raise ValueError("unsupported gridded campaign quantity")
+    request_path.write_text(json.dumps(dict(request), indent=2, allow_nan=False) + "\n",
+                            encoding="utf-8")
+    result = subprocess.run([str(matcher), "match-grid", str(request_path), str(product_dir)],
+                            check=True, text=True, capture_output=True)
+    receipt = json.loads(result.stdout)
+    if (receipt.get("schema") != "gpuwm-ensemble-grid-match.v1"
+            or receipt.get("status") != "complete"
+            or receipt.get("quantity") != request["quantity"]
+            or receipt.get("valid_time") != request["valid_time"]):
+        raise ValueError("native gridded matcher did not complete the requested frame")
+    return receipt
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m tools.heat_eval.score_case")
-    parser.add_argument("--case", required=True)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--case")
+    mode.add_argument("--grid-request", type=Path, help="native ensemble family frame request")
+    parser.add_argument("--matcher", type=Path)
+    parser.add_argument("--out", type=Path, help="new family score output directory")
     parser.add_argument("--root", type=Path, default=planmod.DEFAULT_ROOT)
     parser.add_argument("--plan", default="core", choices=planmod.PLANS)
     parser.add_argument("--arms", default="")
@@ -515,6 +546,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--commit", default=os.environ.get("NH_ENGINE_COMMIT", ""),
                         help="the evaluating engine commit (40 hex); default $NH_ENGINE_COMMIT")
     args = parser.parse_args(argv)
+    if args.grid_request:
+        if args.matcher is None or args.out is None:
+            parser.error("--grid-request needs --matcher and --out")
+        args.out.mkdir(parents=True, exist_ok=False)
+        document = score_family_frame(json.loads(args.grid_request.read_text()),
+            matcher=args.matcher, request_path=args.out / "request.json",
+            product_dir=args.out / "products")
+        (args.out / "receipt.json").write_text(json.dumps(document, indent=2) + "\n")
+        print(json.dumps(document))
+        return 0
     case = planmod.case_by_id(args.case)
     document = score_case(args.root, case, args.plan,
                           [a for a in args.arms.split(",") if a] or None,

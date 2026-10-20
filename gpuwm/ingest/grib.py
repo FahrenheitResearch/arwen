@@ -1152,6 +1152,8 @@ def cached_era5_snapshots(
     process-lifetime cache keys by resolved absolute path, which is
     sufficient for setup-time reuse within a single run.
     """
+    if forcing_container((grib_path,)) == "netcdf":
+        return cached_era5_forcing((grib_path,), vtable_path, container="netcdf").snapshots
     grib_key = os.fspath(Path(grib_path).resolve())
     vtable_key = os.fspath(Path(vtable_path).resolve())
     bridge_key = (None if bridge is None

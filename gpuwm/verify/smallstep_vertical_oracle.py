@@ -196,22 +196,22 @@ def selected_vertical_launch(state, cfg, dtau, coefficients, *, no_fma=False, wo
     original_get = acoustic.get_kernel
     original_w = acoustic._w_phi_kernel
 
-    def recorder(module, name):
-        actual = original_get(module, name)
+    def recorder(module, name, shape=()):
+        actual = original_get(module, name, shape) if shape else original_get(module, name)
 
         def save(grid, block, args):
             captured.append((name, actual, grid, block, args))
         return save
 
-    def record_w(name, nz):
+    def record_w(name, nz, ny=0, nx=0):
         # _w_phi_kernel itself resolves get_kernel through this module.
         # Restore that lookup while obtaining the native callable, so a
         # selected launch cannot accidentally retain another recorder.
         with patch.object(acoustic, "get_kernel", original_get):
-            actual = original_w(name, nz)
+            actual = original_w(name, nz, ny, nx) if ny and nx else original_w(name, nz)
         if (no_fma or workspace is not None or wrf_phi_order or preserve_subnormals
                 or wrf_top_order or wrf_update_order or correct_pi or wrf_eos_order or replay_pi_defect):
-            source = acoustic.wphi_kernel_source(nz)
+            source = acoustic.wphi_kernel_source(nz, ny, nx, name=name)
             if replay_pi_defect:
                 if source.count("1.5707963267948966f") == 2:
                     source = source.replace("1.5707963267948966f", "1.5707963f")

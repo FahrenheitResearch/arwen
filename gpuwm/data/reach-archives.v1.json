@@ -1,0 +1,24 @@
+{
+  "schema": "arwen.reach-archives.v1",
+  "sources": {
+    "nwm-v3-conus": {
+      "id": "nwm-v3-conus",
+      "store": "https://noaa-nwm-retrospective-3-0-pds.s3.amazonaws.com/CONUS/zarr/chrtout.zarr",
+      "feature": "feature_id",
+      "time": "time",
+      "field": "streamflow",
+      "units": "m3 s-1",
+      "cadence_seconds": 3600,
+      "provenance": {
+        "documentation": "https://registry.opendata.aws/nwm-archive/",
+        "data_licence": "Open Data; no restrictions on use (NOAA AWS registry)",
+        "model": "NWM v3.0 retrospective",
+        "forcing": "AORC v1.1",
+        "streamflow_assimilation": "none",
+        "initial_state": "continuously cycled retrospective state",
+        "parameters": "NWM v3.0 retrospective calibration",
+        "network": "NHDPlusv2 CONUS reach identifiers"
+      }
+    }
+  }
+}

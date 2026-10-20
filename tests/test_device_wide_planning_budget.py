@@ -102,7 +102,7 @@ def test_public_check_caps_the_current_cuda_card_after_device_reordering(
         runtime=SimpleNamespace(memGetInfo=lambda: (9 * GIB, 12 * GIB)))
     monkeypatch.setitem(sys.modules, "cupy", SimpleNamespace(cuda=cuda))
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1,0")
-    monkeypatch.setattr(doctor, "_cuda_headers_check", lambda: doctor.Check(
+    monkeypatch.setattr(doctor, "_cuda_headers_check", lambda **_kw: doctor.Check(
         "CUDA kernel headers", "verified", "controlled test"))
     monkeypatch.setattr(pf, "live_device_local_memory_profile",
                         lambda: pf.card_local_memory_profile(12.))

@@ -1,0 +1,31 @@
+[package]
+name = "rw-soundings"
+version = "0.1.0"
+edition.workspace = true
+license = "Apache-2.0"
+publish.workspace = true
+description = "Public sounding viewer: rw-store columns -> rustwx-sounding column contract -> sharppyrs (SHARPpy SPC window) PNG + JSON"
+
+[[bin]]
+name = "rw_soundings"
+path = "src/main.rs"
+
+[dependencies]
+rw-store = { path = "../rw-store" }
+rustwx-sounding = { path = "../rustwx-sounding" }
+sharppyrs = { path = "../../vendor/sharppyrs" }
+sharprs = { path = "../../vendor/sharprs" }
+egui = "0.34.3"
+egui-wgpu = "0.34.3"
+egui_kittest = { version = "0.34", features = ["wgpu"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net"] }
+tower-http = { version = "0.6", features = ["fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+lru = "0.16"
+rayon = "1"
+
+chrono = "0.4"
+wrf-core = { git = "https://github.com/FahrenheitResearch/wrf-rust.git", rev = "93bd2ca670c13fec35bcfc27a58108e6fd71c627", default-features = false, features = ["pure-rust-reader"] }

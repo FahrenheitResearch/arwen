@@ -406,6 +406,23 @@ pub fn build_full_domain_projected_map_with_projection(
         rustwx_render::build_projected_map_with_options(lat_deg, lon_deg, &options)?;
     projected.inverse_raster_projection =
         inverse_raster_projection_for_latlon_mesh(projection, basemap_bounds, lat_deg, lon_deg);
+    if let Some(inverse) = &mut projected.inverse_raster_projection {
+        // A full-domain frame uses the native/inferred projector above.
+        // The regular-grid inverse must use that exact projector too; the
+        // presentation projector can be a different family, leaving every
+        // otherwise valid weather pixel outside the frame (cyclone proof).
+        let resolved = rustwx_render::resolved_projection_for_options(lat_deg, lon_deg, &options.domain)?;
+        inverse.projection = resolved.spec();
+        inverse.reference_latitude_deg = match resolved {
+            rustwx_render::ResolvedProjection::LambertConformal { reference_latitude_deg, .. } => Some(reference_latitude_deg),
+            _ => None,
+        };
+        inverse.reference_longitude_deg = match resolved {
+            rustwx_render::ResolvedProjection::Geographic { central_meridian_deg } => Some(central_meridian_deg),
+            _ => None,
+        };
+        inverse.clip_bounds = inverse_raster_clip_bounds(basemap_bounds, &inverse.projection);
+    }
     drop_layers_the_frame_is_too_large_for(&mut projected, bounds);
     Ok(projected)
 }

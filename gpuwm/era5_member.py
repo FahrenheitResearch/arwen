@@ -1,11 +1,73 @@
 """ERA5 selection metadata and transport to the native GRIB1 member checker."""
 from __future__ import annotations
+from collections.abc import Mapping
 import json
 import os
 from pathlib import Path
 import subprocess
 
 SCHEMA = "arwen.era5-member-selection.v1"
+#: The ``[fetch]`` hint that selects the ERA5 archive provider; ``gpuwm go
+#: --era5-provider`` is the same choice as a flag.
+PROVIDER_KEY = "era5_provider"
+#: The ten EDA members the CDS serves, spelled as the member grammar does.
+EDA_MEMBERS = tuple(str(index) for index in range(10))
+EDA_PROVIDER = "cds"
+EDA_CADENCE_HOURS = 3
+
+
+# The ERA5 adapter row names this module as its selection owner, so the
+# generic ensemble line (gpuwm/ensemble, held to the table law) asks these
+# functions instead of comparing a source id.
+
+def provider_of(table) -> str | None:
+    """The provider a ``[fetch]`` table selects, if it names one."""
+    return table.get(PROVIDER_KEY) if isinstance(table, Mapping) else None
+
+
+def provider_flag(args) -> str | None:
+    """``--era5-provider`` on a parsed namespace, if it was given."""
+    return getattr(args, PROVIDER_KEY, None)
+
+
+def wizard_arguments(args) -> list:
+    """The ``gpuwm domain`` arguments that carry the namespace's provider choice."""
+    provider = provider_flag(args)
+    return [] if not provider else ["--era5-provider", str(provider)]
+
+
+def ensemble_members(*, provider=None) -> tuple:
+    """The members an ensemble planner may draw from ERA5 at one analysis time.
+
+    The EDA is served by the CDS only: with a CDS key in place and a
+    provider other than ARCO every member is a trajectory of its own;
+    otherwise ERA5 has one (the HRES reanalysis) and the planner says so.
+    """
+    from gpuwm.fetch import cds_credentials_present
+    if provider == "arco" or not cds_credentials_present():
+        return ()
+    return EDA_MEMBERS
+
+
+def validate_member(member, *, cycle) -> str:
+    """One EDA member of a source trajectory, validated as its fetch validates it."""
+    return str(validate_selection(product_type="ensemble_members", provider=EDA_PROVIDER,
+                                  member=member, cadence=EDA_CADENCE_HOURS, cycle=cycle))
+
+
+def member_fetch_hints(fetch, member, *, window_seconds, root) -> dict:
+    """The ``[fetch]`` table that acquires one EDA member's window under ``root``."""
+    import math
+    hours = math.ceil(float(window_seconds) / (EDA_CADENCE_HOURS * 3600)) * EDA_CADENCE_HOURS
+    return dict(fetch, era5_provider=EDA_PROVIDER, era5_product="ensemble_members",
+                member=member, cadence=EDA_CADENCE_HOURS, hours=hours,
+                out=str(Path(root) / ("eda-" + str(member))))
+
+
+def member_forcing() -> tuple:
+    """What one member's acquisition publishes: the forcing file name and its interval (s)."""
+    from gpuwm.fetch import era5_combined_name
+    return era5_combined_name(EDA_PROVIDER), EDA_CADENCE_HOURS * 3600
 
 
 def validate_selection(*, product_type="reanalysis", member=None, cadence=6, provider="cds", cycle=None):

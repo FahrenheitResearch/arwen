@@ -493,6 +493,12 @@ pub struct FieldSpec<'a> {
 }
 
 impl<'a> FieldSpec<'a> {
+    pub fn optional(&self) -> Result<bool> {
+        match self.raw.get("optional") {
+            None => Ok(false),
+            Some(value) => value.as_bool().ok_or_else(|| mapping_invalid(format!("fields.{}.optional must be true or false",self.name))),
+        }
+    }
     pub fn selectors(&self) -> &'a [Node] {
         self.raw.field("selectors").map(Node::items).unwrap_or(&[])
     }

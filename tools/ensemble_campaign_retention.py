@@ -18,9 +18,9 @@ import re
 # run by path resolves (`python tools/<this file>`), where tools/ is
 # sys.path[0].
 try:
-    from tools.ensemble_campaign_score import QUANTITIES, instant, product_contract
+    from tools.ensemble_campaign_score import ARCHIVED_QUANTITIES, instant, product_contract
 except ImportError:
-    from ensemble_campaign_score import QUANTITIES, instant, product_contract
+    from ensemble_campaign_score import ARCHIVED_QUANTITIES, instant, product_contract
 
 CHECKPOINT = re.compile(r"gpuwmrst_d[0-9]+_[0-9_-]+(?:__[0-9a-f]+)?\.npz")
 HISTORY = re.compile(r"wrfout_d[0-9]+_[0-9_T:-]+(?:__[0-9a-f]+)?(?:\.nc)?")
@@ -131,7 +131,7 @@ def plan_retention(run_receipt, score_summary, *, owned_root, case_id, recipe,
             diagnostic_payloads.append(reference)
 
     rows = [row for row in summary["products"] if row["case_id"] == case_id and row["recipe"] == recipe]
-    if len(rows) != len(QUANTITIES) or {row["quantity"] for row in rows} != set(QUANTITIES):
+    if len(rows) != len(ARCHIVED_QUANTITIES) or {row["quantity"] for row in rows} != set(ARCHIVED_QUANTITIES):
         raise ValueError("retention needs every requested scored product")
     for row in rows:
         scored = read(row["receipt"])

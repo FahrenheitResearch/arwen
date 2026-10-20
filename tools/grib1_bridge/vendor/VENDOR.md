@@ -93,14 +93,21 @@ auditable local deltas required by the native GFS bridge:
   <https://github.com/wmo-im/GRIB2/blob/master/GRIB2_Template_4_42_ProductDefinitionTemplate_en.csv>,
   <https://github.com/wmo-im/GRIB2/blob/master/GRIB2_Template_4_44_ProductDefinitionTemplate_en.csv>,
   <https://github.com/wmo-im/GRIB2/blob/master/GRIB2_Template_4_48_ProductDefinitionTemplate_en.csv>.
+  The 2026-10-18 local statistical-descriptor fix retains the count,
+  missing-value count and every ordered 12-octet specification for all modeled
+  statistical templates (4.8/9/10/11/12/42). The first-specification convenience
+  fields remain. A missing length has no fixed duration. Truncated headers,
+  zero ranges and incomplete declared lists refuse; NV coordinate values
+  cannot stand in for descriptor bytes. This is an original local change,
+  with no new upstream import or change to the MIT declaration above.
   Patched-file SHA-256:
-  `51e6f481a82605537da897fa1fbb04c3ee7a2d3bc2d2eb0734aeed8364146ee9`.
+  `6ce9273f4c1d5530ab3ed9681b7ba87f643a062cd4ab25982364898befedf6b1`.
 - `src/grib2/mod.rs` re-exports that identification value object and
-  `DECODE_TEMPLATES`, and `MissingValueMode` / `missing_value_mode`
+  `DECODE_TEMPLATES`, `StatisticalTimeRange`, and `MissingValueMode` / `missing_value_mode`
   beside the unpackers, and (A135, 2026-09-30) `StoredRect` and
   `unpack_message_stored_rect`.
   Patched-file SHA-256:
-  `02e9e69b08e1c18d4ae8692c6bcac02c99377d26ceeaee4f68a1395ed500590b`.
+  `1f751bdf0f8b82f39658b8f2536f554dfc2d7796d53a36d9de4383e122bc86de`.
 - `src/grib2/search.rs` initializes the new identity in its pre-existing
   synthetic test messages. `src/grib2/unpack.rs` additionally enforces
   Section-5/7 simple- and complex-packing cardinality, checked bit reads, a
@@ -189,8 +196,11 @@ auditable local deltas required by the native GFS bridge:
   path; the specific 0.5.7 kelvin arm is placed ahead of the long-wave
   W/m2 wildcard.  Verified against real bytes: across the eight staged
   RRFS/REFS sample files all 53 triplets now resolve to names.
+  The WMO geometric vertical velocity row 0.2.9 is also named so DZDT
+  inventories do not fall through to Unknown. Verified against the
+  pressure-row export proof on all 25 hourly frames.
   Patched-file SHA-256:
-  `04a3e2a66c4900c6065a803cdcfc619da1b34f7d946c38ed927d08d237cb1a87`.
+  `354748f0ecd5259a9be0bee6d862579a22a7d2b7a47120ceadebd982319d53a4`.
 - `src/grib1/tables.rs` adds the version-aware `parameter_entry` lookup,
   which consults the parameter table a message CITES (PDS table version +
   originating center): WMO table 2 versions 1-3 resolve indicators 1-127

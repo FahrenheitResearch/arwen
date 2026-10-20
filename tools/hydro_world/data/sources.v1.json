@@ -1,0 +1,752 @@
+{
+  "schema": "arwen.hydro-world.sources.v1",
+  "auto": [
+    {
+      "row": "global-copernicus-glo30",
+      "max_cells": 80000000,
+      "reason": "GLO-30 (1 arc-second) where the box is small: at most 80 M working cells (for example 3 x 2 degrees). The GPU passes allocate at most 28 bytes per cell (flat-resolution stage, counted from the allocations in src/gpu.rs), about 2.2 GB at the limit; the whole build peaked at 896 MB host memory for the 25.9 M-cell GLO-30 CONUS check box on an RTX 5070 Ti (35 bytes per cell), about 2.8 GB at the limit."
+    },
+    {
+      "row": "global-copernicus-glo90",
+      "reason": "GLO-90 (3 arc-seconds) for every larger box; the Rhine box 4-12E 46-52N is 69.1 M cells and builds in 2.4 s on an RTX 5070 Ti (24 threads, 1.85 GB peak host memory)."
+    }
+  ],
+  "rows": [
+    {
+      "id": "conus-nhdplus-v21",
+      "owner": "astra-c-hydro-data",
+      "id_namespace": 0,
+      "hf_source": "NHDPlusV2",
+      "crs": "EPSG:5070",
+      "vertical_datum": "NAVD88",
+      "inputs": {
+        "river_network": {
+          "dataset": "EPA/USGS NHDPlus V2.1 PlusFlow + PlusFlowlineVAA",
+          "version": "2.1",
+          "url": null,
+          "format": "dbf in 7z",
+          "columns": {
+            "FROMCOMID": "upstream reach id",
+            "TOCOMID": "downstream reach id",
+            "ComID": "reach id"
+          },
+          "licence": {
+            "status": "verified",
+            "name": "EPA/USGS NHDPlus V2.1; access and use constraints None",
+            "quote": "Access_Constraints: None. Use_Constraints: None.",
+            "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Documentation/Metadata/NHDPlusV2_metadata.htm",
+            "read_utc": "2026-10-18",
+            "read_by": "astra-c-hydro-data; saved source SHA-256 c4a6c790321f87f69666b0ed28669acc5eb73c0771a9a0ee5dc9a93a4ccdbb22"
+          }
+        },
+        "catchments": {
+          "dataset": "EPA/USGS NHDPlus V2.1 NHDPlusCatchment",
+          "version": "2.1",
+          "url": null,
+          "format": "shapefile in 7z",
+          "columns": {
+            "FEATUREID": "catchment id = reach ComID"
+          },
+          "licence": {
+            "status": "verified",
+            "name": "EPA/USGS NHDPlus V2.1; access and use constraints None",
+            "quote": "Access_Constraints: None. Use_Constraints: None.",
+            "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Documentation/Metadata/NHDPlusV2_metadata.htm",
+            "read_utc": "2026-10-18",
+            "read_by": "astra-c-hydro-data; saved source SHA-256 c4a6c790321f87f69666b0ed28669acc5eb73c0771a9a0ee5dc9a93a4ccdbb22"
+          }
+        },
+        "dem": {
+          "dataset": "USGS 3DEP seamless 1-arc-second DEM (CONUS, NAVD88 orthometric metres)",
+          "version": "Seamless DEM specifications 2017; acquired tile editions must be pinned",
+          "url": null,
+          "format": "seamless elevation raster; exact native tile objects and format to be pinned at acquisition",
+          "licence": {
+            "status": "verified",
+            "name": "USGS 3DEP public domain",
+            "quote": "All 3DEP products are public domain.",
+            "url": "https://pubs.usgs.gov/tm/11b9/tm11B9.pdf",
+            "read_utc": "2026-10-18",
+            "read_by": "astra-c-hydro-data; source SHA-256 2faf2fbaddb9f2217dd18a2c907f22a33609294a963725a3a0067ccefb34000e"
+          }
+        },
+        "soil": {
+          "dataset": "ISRIC SoilGrids 2.0 (250 m soil properties)",
+          "version": "2.0; acquired property/depth/statistic objects must be pinned",
+          "url": null,
+          "format": "VRT with referenced raster tiles, per official WebDAV guide",
+          "licence": {
+            "status": "verified",
+            "name": "Creative Commons Attribution 4.0 International (CC BY 4.0)",
+            "quote": "CC-BY 4.0 License",
+            "url": "https://isric.org/explore/soilgrids",
+            "read_utc": "2026-10-18",
+            "read_by": "astra-c-hydro-data; source SHA-256 b96ec5d5f9127c849895f114cb018f767dc8c223eb09811a61ee85e97a39b12f"
+          }
+        },
+        "land_cover": {
+          "dataset": "ESA WorldCover 10 m 2021",
+          "version": "v200 (2021)",
+          "url": null,
+          "format": "3 by 3 degree Cloud Optimized GeoTIFF map tiles, EPSG:4326, 11 classes",
+          "licence": {
+            "status": "verified",
+            "name": "Creative Commons Attribution 4.0 International (CC BY 4.0)",
+            "quote": "Creative Commons Attribution 4.0 International License",
+            "url": "https://esa-worldcover.org/en/data-access",
+            "read_utc": "2026-10-18",
+            "read_by": "astra-c-hydro-data; source SHA-256 71dccb4c949d489a903865f97ff3bddab75dbefad7f1c277acd1ba94967ed0e8"
+          }
+        },
+        "lakes": {
+          "dataset": "HydroLAKES pour points (source attributes; NHDPlus crosswalk not yet admitted)",
+          "version": "1.0",
+          "url": "https://data.hydrosheds.org/file/hydrolakes/HydroLAKES_points_v10_shp.zip",
+          "format": "shapefile archive, pour points including attributes",
+          "licence": {
+            "status": "verified",
+            "name": "Creative Commons Attribution 4.0 International (CC BY 4.0)",
+            "quote": "The HydroLAKES database is licensed under a Creative Commons Attribution (CC-BY) 4.0 International License",
+            "url": "https://www.hydrosheds.org/products/hydrolakes",
+            "read_utc": "2026-10-18",
+            "read_by": "astra-c-hydro-data; source SHA-256 0dcef6c4613a86b418f228b15aec4a9aa5e5cc424f5bfc3459f8b51d31b36b25"
+          }
+        }
+      },
+      "attribute_mapping": {},
+      "gauges": [
+        {
+          "agency": "USGS",
+          "service": "USGS NWIS (gauge door: gpuwm/hydro/usgs_table.json)",
+          "url": null,
+          "licence": {
+            "status": "unverified",
+            "name": null,
+            "quote": null,
+            "url": null,
+            "read_utc": null,
+            "read_by": null
+          }
+        }
+      ]
+    },
+    {
+      "id": "global-copernicus-glo90",
+      "owner": "hydro-world-fabric",
+      "id_namespace": 2,
+      "hf_source": "Copernicus-GLO90-D8",
+      "crs": "laea-domain-centroid",
+      "vertical_datum": "EGM2008",
+      "inputs": {
+        "dem": {
+          "dataset": "Copernicus DEM GLO-90",
+          "version": "2021_1 (COG bucket copernicus-dem-90m)",
+          "url": "https://copernicus-dem-90m.s3.amazonaws.com/Copernicus_DSM_COG_30_{NS}{lat2}_00_{EW}{lon3}_00_DEM/Copernicus_DSM_COG_30_{NS}{lat2}_00_{EW}{lon3}_00_DEM.tif",
+          "format": "1-degree Cloud Optimized GeoTIFF tiles, float32, deflate, floating-point predictor; no tile over open sea",
+          "local": "copernicus-dem-glo90/tiles/Copernicus_DSM_COG_30_{NS}{lat2}_00_{EW}{lon3}_00_DEM.tif",
+          "columns": {},
+          "licence": {
+            "status": "verified",
+            "name": "Copernicus WorldDEM-90 licence (GLO-90-F)",
+            "quote": "\"The Licensor grants to the User the following non-exclusive rights of use regarding the Copernicus WorldDEM-30: (a) reproduction; (b) distribution; (c) communication to the General Public; (d) adaptation, modification and combination with other data and information.\" ... \"The rights granted under this Licence are worldwide and without limitation in time.\" (the GLO-90-F licence in the same document grants the same rights). Attribution: produced using Copernicus WorldDEM-90 (c) DLR e.V. 2010-2014 and (c) Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved. The organisations in charge of the Copernicus programme by law or by delegation do not incur any liability for any use of the Copernicus WorldDEM-90.",
+            "url": "https://dataspace.copernicus.eu/sites/default/files/media/files/2025-06/copernicus_contributing_mission_data_access_v2_cop_dem_licenses.pdf",
+            "read_utc": "2026-10-18",
+            "read_by": "hydro-world-licences (tip 5c1bbd89eb4, docs/public/HYDRO-WORLD-LICENCES.md)"
+          }
+        },
+        "river_network": {
+          "dataset": "derived from inputs.dem by rw_hydro_world (Priority-Flood fill, D8, accumulation, stream threshold): stream cells with upstream area >= build.stream_threshold_km2, cut at confluences and lake outlets",
+          "version": "",
+          "url": null,
+          "format": "derived",
+          "columns": {},
+          "licence": {
+            "status": "verified",
+            "name": "Copernicus WorldDEM-90 licence (GLO-90-F)",
+            "quote": "\"The Licensor grants to the User the following non-exclusive rights of use regarding the Copernicus WorldDEM-30: (a) reproduction; (b) distribution; (c) communication to the General Public; (d) adaptation, modification and combination with other data and information.\" ... \"The rights granted under this Licence are worldwide and without limitation in time.\" (the GLO-90-F licence in the same document grants the same rights). Attribution: produced using Copernicus WorldDEM-90 (c) DLR e.V. 2010-2014 and (c) Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved. The organisations in charge of the Copernicus programme by law or by delegation do not incur any liability for any use of the Copernicus WorldDEM-90.",
+            "url": "https://dataspace.copernicus.eu/sites/default/files/media/files/2025-06/copernicus_contributing_mission_data_access_v2_cop_dem_licenses.pdf",
+            "read_utc": "2026-10-18",
+            "read_by": "hydro-world-licences (tip 5c1bbd89eb4, docs/public/HYDRO-WORLD-LICENCES.md)"
+          }
+        },
+        "catchments": {
+          "dataset": "derived from inputs.dem by rw_hydro_world (Priority-Flood fill, D8, accumulation, stream threshold): all cells draining to each reach, polygonised along cell edges",
+          "version": "",
+          "url": null,
+          "format": "derived",
+          "columns": {},
+          "licence": {
+            "status": "verified",
+            "name": "Copernicus WorldDEM-90 licence (GLO-90-F)",
+            "quote": "\"The Licensor grants to the User the following non-exclusive rights of use regarding the Copernicus WorldDEM-30: (a) reproduction; (b) distribution; (c) communication to the General Public; (d) adaptation, modification and combination with other data and information.\" ... \"The rights granted under this Licence are worldwide and without limitation in time.\" (the GLO-90-F licence in the same document grants the same rights). Attribution: produced using Copernicus WorldDEM-90 (c) DLR e.V. 2010-2014 and (c) Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved. The organisations in charge of the Copernicus programme by law or by delegation do not incur any liability for any use of the Copernicus WorldDEM-90.",
+            "url": "https://dataspace.copernicus.eu/sites/default/files/media/files/2025-06/copernicus_contributing_mission_data_access_v2_cop_dem_licenses.pdf",
+            "read_utc": "2026-10-18",
+            "read_by": "hydro-world-licences (tip 5c1bbd89eb4, docs/public/HYDRO-WORLD-LICENCES.md)"
+          }
+        },
+        "lakes": {
+          "dataset": "HydroLAKES points",
+          "version": "1.0",
+          "url": "https://data.hydrosheds.org/file/hydrolakes/HydroLAKES_points_v10_shp.zip",
+          "format": "shapefile (attribute table only is read)",
+          "local": "hydrolakes/extracted/HydroLAKES_points_v10_shp/HydroLAKES_points_v10.shp",
+          "columns": {
+            "Hylak_id": "id -> lakes.hl_link",
+            "Lake_area": "area_km2 -> LkArea",
+            "Depth_avg": "mean_depth_m -> pool depth",
+            "Wshd_area": "catchment_km2 (snap check)",
+            "Pour_long": "outlet_lon",
+            "Pour_lat": "outlet_lat"
+          },
+          "licence": {
+            "status": "verified",
+            "name": "CC BY 4.0",
+            "quote": "\"The HydroLAKES database (version 1.a) is licensed under a Creative Commons Attribution 4.0 International License.\" Attribution: Contains HydroLAKES v1.0 data (Messager, M.L., Lehner, B., Grill, G., Nedeva, I., Schmitt, O. (2016), Nature Communications 13603, doi:10.1038/ncomms13603), CC BY 4.0, www.hydrosheds.org. The authors ask that the raw files are not redistributed in whole in their original format; the builder never ships them.",
+            "url": "https://www.hydrosheds.org/products/hydrolakes",
+            "read_utc": "2026-10-18",
+            "read_by": "hydro-world-licences (tip 5c1bbd89eb4, docs/public/HYDRO-WORLD-LICENCES.md)"
+          }
+        },
+        "soil": {
+          "dataset": "SoilGrids 250m",
+          "version": "2.0",
+          "url": "https://files.isric.org/soilgrids/latest/data/",
+          "format": "Cloud Optimized GeoTIFF (consumed by hydro-world-params, not by this builder)",
+          "columns": {},
+          "licence": {
+            "status": "verified",
+            "name": "CC BY 4.0",
+            "quote": "\"The SoilGrids maps are publicly available on the SoilGrids website under the CC-BY 4.0 License.\" Attribution: Contains SoilGrids 2.0 data, ISRIC World Soil Information, CC BY 4.0 (Poggio et al. 2021, SOIL 7, 217-240).",
+            "url": "https://www.isric.org/explore/soilgrids",
+            "read_utc": "2026-10-18",
+            "read_by": "hydro-world-licences (tip 5c1bbd89eb4, docs/public/HYDRO-WORLD-LICENCES.md)"
+          }
+        },
+        "land_cover": {
+          "dataset": "ESA WorldCover 10 m",
+          "version": "v200 (2021)",
+          "url": "https://esa-worldcover.s3.eu-central-1.amazonaws.com/",
+          "format": "Cloud Optimized GeoTIFF tiles (consumed by hydro-world-params, not by this builder)",
+          "columns": {},
+          "licence": {
+            "status": "verified",
+            "name": "CC BY 4.0",
+            "quote": "\"The ESA WorldCover product is provided free of charge, without restriction of use. For the full license information see the Creative Commons Attribution 4.0 International License.\" Attribution: (c) ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data (2021) processed by ESA WorldCover consortium.",
+            "url": "https://esa-worldcover.org/en/data-access",
+            "read_utc": "2026-10-18",
+            "read_by": "hydro-world-licences (tip 5c1bbd89eb4, docs/public/HYDRO-WORLD-LICENCES.md)"
+          }
+        },
+        "dams": {
+          "dataset": "GDW (Global Dam Watch) barriers",
+          "version": "1.0",
+          "url": "https://ndownloader.figshare.com/files/47913754",
+          "format": "shapefile GDW_v1_0_shp.zip (attribute table of GDW_barriers_v1_0 is read; dam points from LONG_DAM/LAT_DAM)",
+          "local": "gdw/extracted/GDW_v1_0_shp/GDW_barriers_v1_0.shp",
+          "columns": {
+            "GDW_ID": "id",
+            "DAM_NAME": "name",
+            "HYLAK_ID": "lake_id -> the fabric lake with that HydroLAKES Hylak_id",
+            "DAM_HGT_M": "height_m",
+            "DAM_LEN_M": "length_m",
+            "CAP_MCM": "capacity_mcm",
+            "YEAR_DAM": "year",
+            "MAIN_USE": "main_use",
+            "LAKE_CTRL": "lake_control",
+            "CATCH_SKM": "catchment_km2 (snap check)",
+            "LONG_DAM": "lon",
+            "LAT_DAM": "lat"
+          },
+          "licence": {
+            "status": "verified",
+            "name": "CC BY 4.0",
+            "quote": "\"The Global Dam Watch (GDW) database is licensed under a Creative Commons Attribution 4.0 International License.\" (GDW TechDoc 4.1; figshare licence field \"CC BY 4.0\"). GRanD v1.3 is merged into GDW and is used only through GDW. Attribution: Contains Global Dam Watch database v1.0 (Lehner et al. 2024, Scientific Data, doi:10.1038/s41597-024-03752-9; data doi:10.6084/m9.figshare.25988293), CC BY 4.0. The authors ask that raw files are not mirrored; the builder never ships them.",
+            "url": "https://doi.org/10.6084/m9.figshare.25988293",
+            "read_utc": "2026-10-18",
+            "read_by": "hydro-world-licences (docs/public/HYDRO-WORLD-LICENCES.md, GDW v1.0 row)"
+          }
+        }
+      },
+      "attribute_mapping": {
+        "soil_class": "hydro-world-params",
+        "veg_class": "hydro-world-params",
+        "soil_depth_m": "hydro-world-params",
+        "soil_b": "hydro-world-params",
+        "soil_satdk_m_s": "hydro-world-params",
+        "soil_satpsi_m": "hydro-world-params",
+        "soil_slop": "hydro-world-params",
+        "soil_smcmax": "hydro-world-params",
+        "soil_wltsmc": "hydro-world-params",
+        "refkdt": "hydro-world-params",
+        "alpha_fc": "hydro-world-params",
+        "max_gw_storage_m": "hydro-world-params",
+        "cgw_m_h": "hydro-world-params",
+        "gw_expon": "hydro-world-params",
+        "k_lf": "hydro-world-params",
+        "k_nash": "hydro-world-params",
+        "giuh_ordinates": "hydro-world-params",
+        "impervious_fraction": "hydro-world-params",
+        "soil_color": "hydro-world-params",
+        "elevation_mean_m": "zonal mean of dem over the divide",
+        "slope_mean_deg": "zonal mean of dem slope over the divide",
+        "aspect_mean_deg": "zonal circular mean of dem aspect over the divide",
+        "centroid_lat_deg": "divide polygon centroid, WGS84",
+        "centroid_lon_deg": "divide polygon centroid, WGS84"
+      },
+      "gauges": [
+        {
+          "agency": "PEGEL",
+          "service": "German PEGELONLINE (WSV) REST API v2",
+          "url": "https://www.pegelonline.wsv.de/webservices/rest-api/v2/",
+          "licence": {
+            "status": "verified",
+            "name": "Datenlizenz Deutschland Zero 2.0",
+            "quote": "\"Dies geschieht auf der Grundlage der Lizenz DL-DE->Zero-2.0 ... Die bereitgestellten Daten und Metadaten duerfen fuer die kommerzielle und nicht kommerzielle Nutzung insbesondere vervielfaeltigt, ausgedruckt, praesentiert, veraendert, bearbeitet sowie an Dritte uebermittelt werden\". Courtesy line: Pegeldaten: Wasserstrassen- und Schifffahrtsverwaltung des Bundes (WSV), via PEGELONLINE, dl-de/zero-2-0.",
+            "url": "https://www.pegelonline.wsv.de/gast/lizenz",
+            "read_utc": "2026-10-18",
+            "read_by": "hydro-world-licences (tip 5c1bbd89eb4, docs/public/HYDRO-WORLD-LICENCES.md)"
+          }
+        },
+        {
+          "agency": "USGS",
+          "service": "USGS NWIS",
+          "url": "https://waterservices.usgs.gov/",
+          "licence": {
+            "status": "verified",
+            "name": "US public domain",
+            "quote": "\"USGS-authored or produced data and information are considered to be in the U.S. Public Domain.\" Credit: U.S. Geological Survey (NWIS).",
+            "url": "https://www.usgs.gov/information-policies-and-instructions/copyrights-and-credits",
+            "read_utc": "2026-10-18",
+            "read_by": "hydro-world-licences (tip 5c1bbd89eb4, docs/public/HYDRO-WORLD-LICENCES.md)"
+          }
+        }
+      ],
+      "build": {
+        "method": "dem-d8",
+        "grid_arcsec": 3.0,
+        "fill_tile": 512,
+        "sea_value": 0.0,
+        "stream_threshold_km2": 10.0,
+        "min_reach_length_km": 1.0,
+        "lake_snap_radius": 6.0,
+        "lake_min_area_km2": 1.0,
+        "lake_snap_area_ratio": 2.0,
+        "recipes": "recipes.v1.json",
+        "soil_class_table": "STAS",
+        "veg_class_table": "MODIFIED_IGBP_MODIS_NOAH"
+      }
+    },
+    {
+      "id": "global-copernicus-glo30",
+      "owner": "hydro-world-dem-hydrography",
+      "id_namespace": 3,
+      "hf_source": "Copernicus-GLO30-D8",
+      "crs": "laea-domain-centroid",
+      "vertical_datum": "EGM2008",
+      "inputs": {
+        "dem": {
+          "dataset": "Copernicus DEM GLO-30",
+          "version": "2021_1 (COG bucket copernicus-dem-30m)",
+          "url": "https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_{NS}{lat2}_00_{EW}{lon3}_00_DEM/Copernicus_DSM_COG_10_{NS}{lat2}_00_{EW}{lon3}_00_DEM.tif",
+          "format": "1-degree Cloud Optimized GeoTIFF tiles, float32, deflate, floating-point predictor; no tile over open sea",
+          "local": "copernicus-dem-glo30/tiles/Copernicus_DSM_COG_10_{NS}{lat2}_00_{EW}{lon3}_00_DEM.tif",
+          "columns": {},
+          "licence": {
+            "status": "verified",
+            "name": "Copernicus WorldDEM-30 licence (GLO-30 public)",
+            "quote": "\"The Licensor grants to the User the following non-exclusive rights of use regarding the Copernicus WorldDEM-30: (a) reproduction; (b) distribution; (c) communication to the General Public; (d) adaptation, modification and combination with other data and information.\" ... \"The rights granted under this Licence are worldwide and without limitation in time.\" Attribution: produced using Copernicus WorldDEM-30 (c) DLR e.V. 2010-2014 and (c) Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved. The organisations in charge of the Copernicus programme by law or by delegation do not incur any liability for any use of the Copernicus WorldDEM-30.",
+            "url": "https://dataspace.copernicus.eu/sites/default/files/media/files/2025-06/copernicus_contributing_mission_data_access_v2_cop_dem_licenses.pdf",
+            "read_utc": "2026-10-18",
+            "read_by": "hydro-world-licences (tip 5c1bbd89eb4, docs/public/HYDRO-WORLD-LICENCES.md)"
+          }
+        },
+        "river_network": {
+          "dataset": "derived from inputs.dem (GLO-30) by rw_hydro_world (Priority-Flood fill, D8, accumulation, stream threshold): stream cells with upstream area >= build.stream_threshold_km2, cut at confluences and lake outlets",
+          "version": "",
+          "url": null,
+          "format": "derived",
+          "columns": {},
+          "licence": {
+            "status": "verified",
+            "name": "Copernicus WorldDEM-30 licence (GLO-30 public)",
+            "quote": "\"The Licensor grants to the User the following non-exclusive rights of use regarding the Copernicus WorldDEM-30: (a) reproduction; (b) distribution; (c) communication to the General Public; (d) adaptation, modification and combination with other data and information.\" ... \"The rights granted under this Licence are worldwide and without limitation in time.\" Attribution: produced using Copernicus WorldDEM-30 (c) DLR e.V. 2010-2014 and (c) Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved. The organisations in charge of the Copernicus programme by law or by delegation do not incur any liability for any use of the Copernicus WorldDEM-30.",
+            "url": "https://dataspace.copernicus.eu/sites/default/files/media/files/2025-06/copernicus_contributing_mission_data_access_v2_cop_dem_licenses.pdf",
+            "read_utc": "2026-10-18",
+            "read_by": "hydro-world-licences (tip 5c1bbd89eb4, docs/public/HYDRO-WORLD-LICENCES.md)"
+          }
+        },
+        "catchments": {
+          "dataset": "derived from inputs.dem (GLO-30) by rw_hydro_world (Priority-Flood fill, D8, accumulation, stream threshold): all cells draining to each reach, polygonised along cell edges",
+          "version": "",
+          "url": null,
+          "format": "derived",
+          "columns": {},
+          "licence": {
+            "status": "verified",
+            "name": "Copernicus WorldDEM-30 licence (GLO-30 public)",
+            "quote": "\"The Licensor grants to the User the following non-exclusive rights of use regarding the Copernicus WorldDEM-30: (a) reproduction; (b) distribution; (c) communication to the General Public; (d) adaptation, modification and combination with other data and information.\" ... \"The rights granted under this Licence are worldwide and without limitation in time.\" Attribution: produced using Copernicus WorldDEM-30 (c) DLR e.V. 2010-2014 and (c) Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved. The organisations in charge of the Copernicus programme by law or by delegation do not incur any liability for any use of the Copernicus WorldDEM-30.",
+            "url": "https://dataspace.copernicus.eu/sites/default/files/media/files/2025-06/copernicus_contributing_mission_data_access_v2_cop_dem_licenses.pdf",
+            "read_utc": "2026-10-18",
+            "read_by": "hydro-world-licences (tip 5c1bbd89eb4, docs/public/HYDRO-WORLD-LICENCES.md)"
+          }
+        },
+        "lakes": {
+          "dataset": "HydroLAKES points",
+          "version": "1.0",
+          "url": "https://data.hydrosheds.org/file/hydrolakes/HydroLAKES_points_v10_shp.zip",
+          "format": "shapefile (attribute table only is read)",
+          "local": "hydrolakes/extracted/HydroLAKES_points_v10_shp/HydroLAKES_points_v10.shp",
+          "columns": {
+            "Hylak_id": "id -> lakes.hl_link",
+            "Lake_area": "area_km2 -> LkArea",
+            "Depth_avg": "mean_depth_m -> pool depth",
+            "Wshd_area": "catchment_km2 (snap check)",
+            "Pour_long": "outlet_lon",
+            "Pour_lat": "outlet_lat"
+          },
+          "licence": {
+            "status": "verified",
+            "name": "CC BY 4.0",
+            "quote": "\"The HydroLAKES database (version 1.a) is licensed under a Creative Commons Attribution 4.0 International License.\" Attribution: Contains HydroLAKES v1.0 data (Messager, M.L., Lehner, B., Grill, G., Nedeva, I., Schmitt, O. (2016), Nature Communications 13603, doi:10.1038/ncomms13603), CC BY 4.0, www.hydrosheds.org. The authors ask that the raw files are not redistributed in whole in their original format; the builder never ships them.",
+            "url": "https://www.hydrosheds.org/products/hydrolakes",
+            "read_utc": "2026-10-18",
+            "read_by": "hydro-world-licences (tip 5c1bbd89eb4, docs/public/HYDRO-WORLD-LICENCES.md)"
+          }
+        },
+        "soil": {
+          "dataset": "SoilGrids 250m",
+          "version": "2.0",
+          "url": "https://files.isric.org/soilgrids/latest/data/",
+          "format": "Cloud Optimized GeoTIFF (consumed by hydro-world-params, not by this builder)",
+          "columns": {},
+          "licence": {
+            "status": "verified",
+            "name": "CC BY 4.0",
+            "quote": "\"The SoilGrids maps are publicly available on the SoilGrids website under the CC-BY 4.0 License.\" Attribution: Contains SoilGrids 2.0 data, ISRIC World Soil Information, CC BY 4.0 (Poggio et al. 2021, SOIL 7, 217-240).",
+            "url": "https://www.isric.org/explore/soilgrids",
+            "read_utc": "2026-10-18",
+            "read_by": "hydro-world-licences (tip 5c1bbd89eb4, docs/public/HYDRO-WORLD-LICENCES.md)"
+          }
+        },
+        "land_cover": {
+          "dataset": "ESA WorldCover 10 m",
+          "version": "v200 (2021)",
+          "url": "https://esa-worldcover.s3.eu-central-1.amazonaws.com/",
+          "format": "Cloud Optimized GeoTIFF tiles (consumed by hydro-world-params, not by this builder)",
+          "columns": {},
+          "licence": {
+            "status": "verified",
+            "name": "CC BY 4.0",
+            "quote": "\"The ESA WorldCover product is provided free of charge, without restriction of use. For the full license information see the Creative Commons Attribution 4.0 International License.\" Attribution: (c) ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data (2021) processed by ESA WorldCover consortium.",
+            "url": "https://esa-worldcover.org/en/data-access",
+            "read_utc": "2026-10-18",
+            "read_by": "hydro-world-licences (tip 5c1bbd89eb4, docs/public/HYDRO-WORLD-LICENCES.md)"
+          }
+        },
+        "dams": {
+          "dataset": "GDW (Global Dam Watch) barriers",
+          "version": "1.0",
+          "url": "https://ndownloader.figshare.com/files/47913754",
+          "format": "shapefile GDW_v1_0_shp.zip (attribute table of GDW_barriers_v1_0 is read; dam points from LONG_DAM/LAT_DAM)",
+          "local": "gdw/extracted/GDW_v1_0_shp/GDW_barriers_v1_0.shp",
+          "columns": {
+            "GDW_ID": "id",
+            "DAM_NAME": "name",
+            "HYLAK_ID": "lake_id -> the fabric lake with that HydroLAKES Hylak_id",
+            "DAM_HGT_M": "height_m",
+            "DAM_LEN_M": "length_m",
+            "CAP_MCM": "capacity_mcm",
+            "YEAR_DAM": "year",
+            "MAIN_USE": "main_use",
+            "LAKE_CTRL": "lake_control",
+            "CATCH_SKM": "catchment_km2 (snap check)",
+            "LONG_DAM": "lon",
+            "LAT_DAM": "lat"
+          },
+          "licence": {
+            "status": "verified",
+            "name": "CC BY 4.0",
+            "quote": "\"The Global Dam Watch (GDW) database is licensed under a Creative Commons Attribution 4.0 International License.\" (GDW TechDoc 4.1; figshare licence field \"CC BY 4.0\"). GRanD v1.3 is merged into GDW and is used only through GDW. Attribution: Contains Global Dam Watch database v1.0 (Lehner et al. 2024, Scientific Data, doi:10.1038/s41597-024-03752-9; data doi:10.6084/m9.figshare.25988293), CC BY 4.0. The authors ask that raw files are not mirrored; the builder never ships them.",
+            "url": "https://doi.org/10.6084/m9.figshare.25988293",
+            "read_utc": "2026-10-18",
+            "read_by": "hydro-world-licences (docs/public/HYDRO-WORLD-LICENCES.md, GDW v1.0 row)"
+          }
+        }
+      },
+      "attribute_mapping": {
+        "soil_class": "hydro-world-params",
+        "veg_class": "hydro-world-params",
+        "soil_depth_m": "hydro-world-params",
+        "soil_b": "hydro-world-params",
+        "soil_satdk_m_s": "hydro-world-params",
+        "soil_satpsi_m": "hydro-world-params",
+        "soil_slop": "hydro-world-params",
+        "soil_smcmax": "hydro-world-params",
+        "soil_wltsmc": "hydro-world-params",
+        "refkdt": "hydro-world-params",
+        "alpha_fc": "hydro-world-params",
+        "max_gw_storage_m": "hydro-world-params",
+        "cgw_m_h": "hydro-world-params",
+        "gw_expon": "hydro-world-params",
+        "k_lf": "hydro-world-params",
+        "k_nash": "hydro-world-params",
+        "giuh_ordinates": "hydro-world-params",
+        "impervious_fraction": "hydro-world-params",
+        "soil_color": "hydro-world-params",
+        "elevation_mean_m": "zonal mean of dem over the divide",
+        "slope_mean_deg": "zonal mean of dem slope over the divide",
+        "aspect_mean_deg": "zonal circular mean of dem aspect over the divide",
+        "centroid_lat_deg": "divide polygon centroid, WGS84",
+        "centroid_lon_deg": "divide polygon centroid, WGS84"
+      },
+      "gauges": [
+        {
+          "agency": "PEGEL",
+          "service": "German PEGELONLINE (WSV) REST API v2",
+          "url": "https://www.pegelonline.wsv.de/webservices/rest-api/v2/",
+          "licence": {
+            "status": "verified",
+            "name": "Datenlizenz Deutschland Zero 2.0",
+            "quote": "\"Dies geschieht auf der Grundlage der Lizenz DL-DE->Zero-2.0 ... Die bereitgestellten Daten und Metadaten duerfen fuer die kommerzielle und nicht kommerzielle Nutzung insbesondere vervielfaeltigt, ausgedruckt, praesentiert, veraendert, bearbeitet sowie an Dritte uebermittelt werden\". Courtesy line: Pegeldaten: Wasserstrassen- und Schifffahrtsverwaltung des Bundes (WSV), via PEGELONLINE, dl-de/zero-2-0.",
+            "url": "https://www.pegelonline.wsv.de/gast/lizenz",
+            "read_utc": "2026-10-18",
+            "read_by": "hydro-world-licences (tip 5c1bbd89eb4, docs/public/HYDRO-WORLD-LICENCES.md)"
+          }
+        },
+        {
+          "agency": "USGS",
+          "service": "USGS NWIS",
+          "url": "https://waterservices.usgs.gov/",
+          "licence": {
+            "status": "verified",
+            "name": "US public domain",
+            "quote": "\"USGS-authored or produced data and information are considered to be in the U.S. Public Domain.\" Credit: U.S. Geological Survey (NWIS).",
+            "url": "https://www.usgs.gov/information-policies-and-instructions/copyrights-and-credits",
+            "read_utc": "2026-10-18",
+            "read_by": "hydro-world-licences (tip 5c1bbd89eb4, docs/public/HYDRO-WORLD-LICENCES.md)"
+          }
+        }
+      ],
+      "build": {
+        "method": "dem-d8",
+        "grid_arcsec": 1.0,
+        "fill_tile": 1024,
+        "sea_value": 0.0,
+        "stream_threshold_km2": 10.0,
+        "min_reach_length_km": 1.0,
+        "lake_snap_radius": 18.0,
+        "lake_min_area_km2": 1.0,
+        "lake_snap_area_ratio": 2.0,
+        "recipes": "recipes.v1.json",
+        "soil_class_table": "STAS",
+        "veg_class_table": "MODIFIED_IGBP_MODIS_NOAH"
+      }
+    },
+    {
+      "id": "global-hydrosheds-v1",
+      "owner": "hydro-world-fabric",
+      "id_namespace": 1,
+      "hf_source": "HydroSHEDS-v1",
+      "crs": "laea-domain-centroid",
+      "vertical_datum": "EGM2008",
+      "inputs": {
+        "river_network": {
+          "dataset": "HydroRIVERS",
+          "version": "1.0",
+          "url": "https://data.hydrosheds.org/file/HydroRIVERS/HydroRIVERS_v10_{region}_shp.zip",
+          "format": "shapefile per continent",
+          "local": "hydrosheds-v1/hydrorivers/extracted/HydroRIVERS_v10_{region}_shp/HydroRIVERS_v10_{region}.shp",
+          "regions": [
+            "af",
+            "ar",
+            "as",
+            "au",
+            "eu",
+            "gr",
+            "na",
+            "sa",
+            "si"
+          ],
+          "columns": {
+            "HYRIV_ID": "id",
+            "NEXT_DOWN": "down (0 = outlet)",
+            "UPLAND_SKM": "upstream_km2",
+            "HYBAS_L12": "basin (level-12 HydroBASINS id)"
+          },
+          "licence": {
+            "status": "research-only",
+            "name": "WWF HydroSHEDS v1 License Agreement",
+            "quote": "\"All core data of HydroSHEDS version 1 ... are free for non-commercial and commercial use.\" HydroRIVERS and HydroBASINS are \"distributed under the same license agreement as the HydroSHEDS core products\". 2.1.2: \"In no event shall Licensee license or distribute the Licensed Materials as a stand-alone product.\" 1.2: End Users receive the materials \"for such party's use and not for redistribution.\" 7.1: the licence terminates \"in the sole discretion of WWF\". 10.7: records of \"the identity and address of each End User\". Verdict: RESEARCH / CROSS-CHECK ONLY (coordinator 2026-10-18T11:50Z): limited redistribution, end-user EULA and records, revocable licence. Never bundled, never fetched by default, never shipped. Named licence opt-in permits a private research cross-check only; preserve Exhibit B notice.",
+            "url": "https://www.hydrosheds.org/products (HydroSHEDS v1 Technical Documentation v1.4, Appendix A)",
+            "read_utc": "2026-10-18",
+            "read_by": "hydro-world-licences (tip 5c1bbd89eb4, docs/public/HYDRO-WORLD-LICENCES.md)"
+          }
+        },
+        "catchments": {
+          "dataset": "HydroBASINS level 12",
+          "version": "1c",
+          "url": "https://data.hydrosheds.org/file/HydroBASINS/standard/hybas_{region}_lev12_v1c.zip",
+          "format": "shapefile per continent",
+          "local": "hydrosheds-v1/hydrobasins/extracted/hybas_{region}_lev12_v1c.shp",
+          "regions": [
+            "af",
+            "ar",
+            "as",
+            "au",
+            "eu",
+            "gr",
+            "na",
+            "sa",
+            "si"
+          ],
+          "columns": {
+            "HYBAS_ID": "id",
+            "NEXT_DOWN": "down (0 = outlet)"
+          },
+          "licence": {
+            "status": "research-only",
+            "name": "WWF HydroSHEDS v1 License Agreement",
+            "quote": "\"All core data of HydroSHEDS version 1 ... are free for non-commercial and commercial use.\" HydroRIVERS and HydroBASINS are \"distributed under the same license agreement as the HydroSHEDS core products\". 2.1.2: \"In no event shall Licensee license or distribute the Licensed Materials as a stand-alone product.\" 1.2: End Users receive the materials \"for such party's use and not for redistribution.\" 7.1: the licence terminates \"in the sole discretion of WWF\". 10.7: records of \"the identity and address of each End User\". Verdict: RESEARCH / CROSS-CHECK ONLY (coordinator 2026-10-18T11:50Z): limited redistribution, end-user EULA and records, revocable licence. Never bundled, never fetched by default, never shipped. Named licence opt-in permits a private research cross-check only; preserve Exhibit B notice.",
+            "url": "https://www.hydrosheds.org/products (HydroSHEDS v1 Technical Documentation v1.4, Appendix A)",
+            "read_utc": "2026-10-18",
+            "read_by": "hydro-world-licences (tip 5c1bbd89eb4, docs/public/HYDRO-WORLD-LICENCES.md)"
+          }
+        },
+        "dem": {
+          "dataset": "Copernicus DEM GLO-90",
+          "version": "2021_1 (COG bucket copernicus-dem-90m)",
+          "url": "https://copernicus-dem-90m.s3.amazonaws.com/Copernicus_DSM_COG_30_{NS}{lat2}_00_{EW}{lon3}_00_DEM/Copernicus_DSM_COG_30_{NS}{lat2}_00_{EW}{lon3}_00_DEM.tif",
+          "format": "1-degree Cloud Optimized GeoTIFF tiles, float32, deflate, floating-point predictor; no tile over open sea",
+          "local": "copernicus-dem-glo90/tiles/Copernicus_DSM_COG_30_{NS}{lat2}_00_{EW}{lon3}_00_DEM.tif",
+          "columns": {},
+          "licence": {
+            "status": "verified",
+            "name": "Copernicus WorldDEM-90 licence (GLO-90-F)",
+            "quote": "\"The Licensor grants to the User the following non-exclusive rights of use regarding the Copernicus WorldDEM-30: (a) reproduction; (b) distribution; (c) communication to the General Public; (d) adaptation, modification and combination with other data and information.\" ... \"The rights granted under this Licence are worldwide and without limitation in time.\" (the GLO-90-F licence in the same document grants the same rights). Attribution: produced using Copernicus WorldDEM-90 (c) DLR e.V. 2010-2014 and (c) Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved. The organisations in charge of the Copernicus programme by law or by delegation do not incur any liability for any use of the Copernicus WorldDEM-90.",
+            "url": "https://dataspace.copernicus.eu/sites/default/files/media/files/2025-06/copernicus_contributing_mission_data_access_v2_cop_dem_licenses.pdf",
+            "read_utc": "2026-10-18",
+            "read_by": "hydro-world-licences (tip 5c1bbd89eb4, docs/public/HYDRO-WORLD-LICENCES.md)"
+          }
+        },
+        "lakes": {
+          "dataset": "HydroLAKES points",
+          "version": "1.0",
+          "url": "https://data.hydrosheds.org/file/hydrolakes/HydroLAKES_points_v10_shp.zip",
+          "format": "shapefile (attribute table only is read)",
+          "local": "hydrolakes/extracted/HydroLAKES_points_v10_shp/HydroLAKES_points_v10.shp",
+          "columns": {
+            "Hylak_id": "id -> lakes.hl_link",
+            "Lake_area": "area_km2 -> LkArea",
+            "Depth_avg": "mean_depth_m -> pool depth",
+            "Wshd_area": "catchment_km2 (snap check)",
+            "Pour_long": "outlet_lon",
+            "Pour_lat": "outlet_lat"
+          },
+          "licence": {
+            "status": "verified",
+            "name": "CC BY 4.0",
+            "quote": "\"The HydroLAKES database (version 1.a) is licensed under a Creative Commons Attribution 4.0 International License.\" Attribution: Contains HydroLAKES v1.0 data (Messager, M.L., Lehner, B., Grill, G., Nedeva, I., Schmitt, O. (2016), Nature Communications 13603, doi:10.1038/ncomms13603), CC BY 4.0, www.hydrosheds.org. The authors ask that the raw files are not redistributed in whole in their original format; the builder never ships them.",
+            "url": "https://www.hydrosheds.org/products/hydrolakes",
+            "read_utc": "2026-10-18",
+            "read_by": "hydro-world-licences (tip 5c1bbd89eb4, docs/public/HYDRO-WORLD-LICENCES.md)"
+          }
+        },
+        "soil": {
+          "dataset": "SoilGrids 250m",
+          "version": "2.0",
+          "url": "https://files.isric.org/soilgrids/latest/data/",
+          "format": "Cloud Optimized GeoTIFF (consumed by hydro-world-params, not by this builder)",
+          "columns": {},
+          "licence": {
+            "status": "verified",
+            "name": "CC BY 4.0",
+            "quote": "\"The SoilGrids maps are publicly available on the SoilGrids website under the CC-BY 4.0 License.\" Attribution: Contains SoilGrids 2.0 data, ISRIC World Soil Information, CC BY 4.0 (Poggio et al. 2021, SOIL 7, 217-240).",
+            "url": "https://www.isric.org/explore/soilgrids",
+            "read_utc": "2026-10-18",
+            "read_by": "hydro-world-licences (tip 5c1bbd89eb4, docs/public/HYDRO-WORLD-LICENCES.md)"
+          }
+        },
+        "land_cover": {
+          "dataset": "ESA WorldCover 10 m",
+          "version": "v200 (2021)",
+          "url": "https://esa-worldcover.s3.eu-central-1.amazonaws.com/",
+          "format": "Cloud Optimized GeoTIFF tiles (consumed by hydro-world-params, not by this builder)",
+          "columns": {},
+          "licence": {
+            "status": "verified",
+            "name": "CC BY 4.0",
+            "quote": "\"The ESA WorldCover product is provided free of charge, without restriction of use. For the full license information see the Creative Commons Attribution 4.0 International License.\" Attribution: (c) ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data (2021) processed by ESA WorldCover consortium.",
+            "url": "https://esa-worldcover.org/en/data-access",
+            "read_utc": "2026-10-18",
+            "read_by": "hydro-world-licences (tip 5c1bbd89eb4, docs/public/HYDRO-WORLD-LICENCES.md)"
+          }
+        }
+      },
+      "attribute_mapping": {
+        "soil_class": "hydro-world-params",
+        "veg_class": "hydro-world-params",
+        "soil_depth_m": "hydro-world-params",
+        "soil_b": "hydro-world-params",
+        "soil_satdk_m_s": "hydro-world-params",
+        "soil_satpsi_m": "hydro-world-params",
+        "soil_slop": "hydro-world-params",
+        "soil_smcmax": "hydro-world-params",
+        "soil_wltsmc": "hydro-world-params",
+        "refkdt": "hydro-world-params",
+        "alpha_fc": "hydro-world-params",
+        "max_gw_storage_m": "hydro-world-params",
+        "cgw_m_h": "hydro-world-params",
+        "gw_expon": "hydro-world-params",
+        "k_lf": "hydro-world-params",
+        "k_nash": "hydro-world-params",
+        "giuh_ordinates": "hydro-world-params",
+        "impervious_fraction": "hydro-world-params",
+        "soil_color": "hydro-world-params",
+        "elevation_mean_m": "zonal mean of dem over the divide",
+        "slope_mean_deg": "zonal mean of dem slope over the divide",
+        "aspect_mean_deg": "zonal circular mean of dem aspect over the divide",
+        "centroid_lat_deg": "divide polygon centroid, WGS84",
+        "centroid_lon_deg": "divide polygon centroid, WGS84"
+      },
+      "gauges": [
+        {
+          "agency": "PEGEL",
+          "service": "German PEGELONLINE (WSV) REST API v2",
+          "url": "https://www.pegelonline.wsv.de/webservices/rest-api/v2/",
+          "licence": {
+            "status": "verified",
+            "name": "Datenlizenz Deutschland Zero 2.0",
+            "quote": "\"Dies geschieht auf der Grundlage der Lizenz DL-DE->Zero-2.0 ... Die bereitgestellten Daten und Metadaten duerfen fuer die kommerzielle und nicht kommerzielle Nutzung insbesondere vervielfaeltigt, ausgedruckt, praesentiert, veraendert, bearbeitet sowie an Dritte uebermittelt werden\". Courtesy line: Pegeldaten: Wasserstrassen- und Schifffahrtsverwaltung des Bundes (WSV), via PEGELONLINE, dl-de/zero-2-0.",
+            "url": "https://www.pegelonline.wsv.de/gast/lizenz",
+            "read_utc": "2026-10-18",
+            "read_by": "hydro-world-licences (tip 5c1bbd89eb4, docs/public/HYDRO-WORLD-LICENCES.md)"
+          }
+        },
+        {
+          "agency": "USGS",
+          "service": "USGS NWIS",
+          "url": "https://waterservices.usgs.gov/",
+          "licence": {
+            "status": "verified",
+            "name": "US public domain",
+            "quote": "\"USGS-authored or produced data and information are considered to be in the U.S. Public Domain.\" Credit: U.S. Geological Survey (NWIS).",
+            "url": "https://www.usgs.gov/information-policies-and-instructions/copyrights-and-credits",
+            "read_utc": "2026-10-18",
+            "read_by": "hydro-world-licences (tip 5c1bbd89eb4, docs/public/HYDRO-WORLD-LICENCES.md)"
+          }
+        }
+      ],
+      "build": {
+        "method": "vector-basins",
+        "grid_arcsec": 3.0,
+        "basin_min_inside_fraction": 0.5,
+        "lake_snap_radius": 2.0,
+        "lake_min_area_km2": 1.0,
+        "lake_snap_area_ratio": 2.0,
+        "recipes": "recipes.v1.json",
+        "soil_class_table": "STAS",
+        "veg_class_table": "MODIFIED_IGBP_MODIS_NOAH"
+      }
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "schema": "arwen.terrain-sources/v1",
+  "sources": [{
+    "id": "usgs-3dep",
+    "format": "geotiff",
+    "url": "https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/exportImage",
+    "parameters": {
+      "bbox": "{west},{south},{east},{north}",
+      "bboxSR": "{epsg}",
+      "imageSR": "{epsg}",
+      "size": "{nx},{ny}",
+      "format": "tiff",
+      "pixelType": "F32",
+      "interpolation": "RSP_BilinearInterpolation",
+      "renderingRule": "{\"rasterFunction\":\"None\"}",
+      "adjustAspectRatio": "false",
+      "f": "image"
+    },
+    "licence": "US public domain: USGS states all 3DEP products are public domain",
+    "licence_url": "https://data.usgs.gov/datacatalog/data/USGS:77ae0551-c61e-4979-aedd-d797abdcde0e",
+    "attribution": "USGS National Map 3D Elevation Program (3DEP)",
+    "units": "m",
+    "vertical_reference": "3DEP source vertical datum; service mosaic; retain source metadata for scientific use"
+  }]
+}

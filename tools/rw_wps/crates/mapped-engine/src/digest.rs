@@ -43,8 +43,15 @@ pub fn array_sha256(shape: &[usize], values: &[f64]) -> String {
     digest.update(b"\0");
     digest.update(python_shape_repr(shape).as_bytes());
     digest.update(b"\0");
-    for value in values {
-        digest.update(value.to_le_bytes());
+    // Feed whole blocks rather than dispatching a digest update for every
+    // eight-byte value. Keep the wire conversion explicit: native byte order
+    // and floating-point arithmetic must not change an array's identity.
+    let mut bytes = [0u8; 8192];
+    for values in values.chunks(bytes.len() / 8) {
+        for (slot, value) in bytes.chunks_exact_mut(8).zip(values) {
+            slot.copy_from_slice(&value.to_le_bytes());
+        }
+        digest.update(&bytes[..values.len() * 8]);
     }
     hex(&digest.finalize())
 }
@@ -108,5 +115,45 @@ mod tests {
         expected.update(1.0f64.to_le_bytes());
         expected.update(2.0f64.to_le_bytes());
         assert_eq!(digest, hex(&expected.finalize()));
+    }
+
+    #[test]
+    fn array_digest_keeps_ieee_words_across_buffer_boundaries() {
+        // Independent hashlib SHA-256 answers over the dtype, JSON shape
+        // and struct.pack('<Q', bits) payload. Include signed zero, signed
+        // NaN payloads, infinities and a subnormal without doing arithmetic.
+        let bits = [
+            0u64,
+            0x8000_0000_0000_0000,
+            0x7ff8_0000_0000_0042,
+            0xfff8_0000_0000_0073,
+            0x7ff0_0000_0000_0000,
+            0xfff0_0000_0000_0000,
+            1,
+            0x3ff0_0000_0000_0000,
+        ];
+        for (length, expected) in [
+            (
+                0,
+                "125d3178b96d475ca3c9dc168bea518931a581736dcefefcd73e6927dd046625",
+            ),
+            (
+                1023,
+                "d7de2a59ef2d99339497cc22599f031d0420c36e438e10be5c4ae4bfcde066e2",
+            ),
+            (
+                1024,
+                "a37ebdf0712bb51ffd9221ce6a7c609caf128bdf2795e82f7d95d9ebb8dc95de",
+            ),
+            (
+                1025,
+                "8ab335640b469e6e85ea29075abd618989b3ebb21bb23eed8148c324a7b17152",
+            ),
+        ] {
+            let values: Vec<_> = (0..length)
+                .map(|i| f64::from_bits(bits[i % bits.len()]))
+                .collect();
+            assert_eq!(array_sha256(&[length], &values), expected);
+        }
     }
 }

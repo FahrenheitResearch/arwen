@@ -9,6 +9,11 @@ The door authors a 12 km parent with a 3 km following nest centred on a
 cyclone. It never starts a forecast: `forecast_started` is `false` on every
 document it emits.
 
+The authored hurricane follower uses the minimum smoothed mean sea-level
+pressure (`level_hpa = 0`, `pressure_center = "minimum"`). If that diagnostic
+cannot supply a centre, it falls back to the 850 hPa height-deficit circulation
+centre and records the reason. Each forecast follows its own simulated storm.
+
 Two choices are the caller's: WHEN in the selected cycle the run begins
 (`--start-hour`, default the analysis) and HOW BIG the following nest is
 (`--nest-budget-gib`, default the preset nest). Both are described below.
@@ -89,7 +94,7 @@ With `--out`, the file is written and `created` becomes `true`, beside a
 `.cyclone.json` receipt, and -- for a source whose preparation recipe names one
 -- a `.Vtable`. Nothing is ever overwritten.
 
-### `proposal` -- a reduction to review
+### `proposal` -- a layout change to review
 
 The requested layout was not admitted and a smaller one is proposed.
 `fitting.changed` and `fitting.review_required` are `true`, `fitting.changes`
@@ -173,34 +178,39 @@ The nest is bounded by geometry as well as by memory: the parent has to keep
 the nest's tracker search window clear of its own boundary and blend zone, so
 the ladder ends where a larger nest would reach them.
 
-THE MOVEMENT BOUNDS ARE DERIVED FROM THE SIZE. The overlap floor
-(`min_overlap_fraction`) is the number that states the physics -- how much of
-the child a move must keep -- and the per-axis maximum follows from it: an
-overlap floor `f` admits a magnitude of `1 - sqrt(f)` of the nest's own width
-in parent cells on the binding diagonal move. The preset's own maximum is that
-number at its own size: 6 parent cells on a 40-parent-cell nest at a 0.7
-floor. A nest grown past it carries the larger maximum its own width admits:
+Movement proposals scale with nest size. For a nest N parent cells wide,
+`max_move_parent_cells` and `max_shift_cells` are `floor(N * (1 - f))`,
+where `f` is `min_overlap_fraction` (0.7 by default). This permits the full
+single-axis reach. The engine then clamps each actual vector to retain the
+required overlap: a 40-parent-cell nest can move 12 cells west or east,
+while a diagonal is limited to six cells per axis. The previous six-cell
+proposal cap needlessly limited west/east motion too.
 
-| nest, in parent cells | `max_move_parent_cells` |
+| nest, in parent cells | proposal ceiling |
 |---|---|
-| 40 (the preset) | 6 |
-| 42 | 6 |
-| 44, 46, 48 | 7 |
-| 50, 52, 54 | 8 |
-| 56, 58, 60 | 9 |
+| 24 | 7 |
+| 36 | 10 |
+| 40 (the preset), 42 | 12 |
+| 44, 46 | 13 |
+| 48 | 14 |
+| 50, 52 | 15 |
+| 54, 56 | 16 |
+| 58 | 17 |
+| 60 | 18 |
 
-Read that before spending memory on a nest: the first step up buys ground
-without buying reach, and the maximum moves at 44 parent cells. The tracker
-search box grows with the nest, half its width on each side, and never below
-the preset's own 20 cells.
+The tracker search box grows with the nest, half its width on each side,
+and never below 20 cells. Layout admission reserves that search window,
+boundary/blend zones and the nest's own movement ceiling. Greater movement
+reach can therefore need more parent clearance. Hurricane following uses the
+MSLP minimum, with a 900-second cadence and cooldown. Its movement budget is
+the ceiling of tracked speed times movement interval divided by parent grid
+spacing, with room to catch up to an initially displaced eye. The runner bounds
+each vector by the overlap floor, static-data reach and parent halo. Fixed
+`max_shift_cells` and `max_move_parent_cells` values no longer clip MSLP
+following; they still apply to other trackers and manual itineraries.
 
-It is one derivation in both directions, and the reduction ladder shares it: a
-layout smaller than the preset is narrower, so its own floor admits fewer
-parent cells, and a rung carrying the preset's 6 would declare a move the
-floor then refuses. A 36-parent-cell nest admits 5 and a 24-parent-cell nest
-admits 3. At the preset's own size the shipped table is emitted verbatim, so a
-default run authors exactly the file it authored before a nest could be
-resized.
+Every executed follow move prints the eye-to-centre distance before and after
+the move and its wall time. The same values are saved in relocation receipts.
 
 The `nest` block on a `configuration` or a `proposal` carries the whole
 decision:
@@ -339,3 +349,115 @@ extremum reaches the parent-domain boundary and an enclosed centre is no
 longer resolved -- for every tracked field, at whichever end of that field is
 the centre. Missing signal alone is a gap in the record, not a termination,
 and a termination ends the diagnostic stream without ending the forecast.
+
+## Select a system from tracks
+
+```sh
+gpuwm cyclone-setup --source SOURCE --cycle YYYYMMDDHH \
+  --tracks tracks.json --storm auto --member MEMBER_ID \
+  --start-hour 0 --hours 72 --card 96gb --out cyclone.toml
+```
+
+`--tracks` accepts `gpuwm.tc-tracks.v1` JSON or its CSV twin, whose exact
+columns are `member_id,track_id,weight,valid,lead_hours,lat,lon,mslp_pa,max_wind10_ms,flags`.
+CSV flags are JSON arrays. A same-stem JSON twin must contain the same tracks
+and fixes; its tracker and member metadata are retained and its path and
+SHA-256 recorded. Standalone CSV works, but cannot supply tracker backend,
+config hash or member source metadata absent from its columns. The document
+records that gap instead of inventing provenance.
+
+With tracks, `--member` selects a trajectory member, defaulting only when the
+file has exactly one. The forcing member is that id only if the trajectory's
+source matches the selected registry source and that source lists the id in
+its member menu. Otherwise the atmospheric source's default member is used
+and recorded in top-level `member` and `[fetch]`. Track provenance and
+atmospheric provenance remain separate. An unknown member, unknown track id,
+missing start fix or path outside source coverage is a named refusal before
+hardware sizing. `--tracks` is mutually exclusive with `--point`,
+`--advisory-position` and `--seed-fields`.
+
+`--storm auto` ranks eligible systems by `mslp_pa` at the selected cycle plus
+`--start-hour`. Future intensification does not change this score. A system
+must have a position and pressure at the start, and its window fixes must lie
+inside the source's coverage. Bracketed run boundaries are interpolated and
+included. Equal pressures use lexical track id order. The runner-up and all
+competitors within 100 Pa of the selected cycle pressure are recorded,
+including exact ties. Window-minimum pressure remains descriptive metadata.
+
+`--storm TRACK_ID` selects that id within the member, even when pressure is
+unavailable. Track JSON can also carry `atcf_id`, `storm_id`, `name`,
+`storm_name` or an `aliases` array. These labels accept case-insensitive
+explicit selection. Ambiguous labels refuse; unlabelled detections require
+their track id. Missing cycle pressure cannot win automatic selection.
+
+The initial seed is the position at the run start. A bracketed time uses
+short-arc great-circle interpolation. Null fixes interrupt interpolation and
+there is no extrapolation. The exact seed is `point` and
+`lineage.cyclone_tracks.center_fix`; initial nest registration rounds to the
+nearest whole parent cell, as the engine requires.
+`track_placement.initial_nest_center` records the resulting grid centre.
+
+The parent is placed around all window fixes with room for half the follower,
+its search window, one movement allowance and the parent's boundary/blend
+zone. If the preset parent is too small, a larger parent is priced by the same
+memory estimator and carries `kind: "proposal"`. Review `fitting.changes`
+and repeat with `--accept-fit FIT_ID` to save it. Growth is never silently
+accepted. If source extent, projection bounds or memory prevent the whole
+corridor fitting, the parent is centred on the start fix and
+`track_placement.leaves_parent` and `leaves_follower_clearance` name the UTC
+fixes that leave the parent or its safe corridor. Per-fix projected indices
+and both containment checks are included for review.
+
+The moving nest remains 3 km by default. `--nest-km 2.5` authors a 10 km parent
+and a 2.5 km child at integer refinement ratio 4. A 12:2.5 ratio is noninteger
+and cannot be used by the engine's exact nesting chain.
+
+The additive `lineage.cyclone_tracks` block appears in the configuration's
+`[lineage]` table, the setup document and `.cyclone.json` receipt:
+
+| field | meaning |
+|---|---|
+| `tracks_file`, `tracks_sha256` | absolute input path and SHA-256 of consumed bytes |
+| `tracker` | input backend, config, config SHA-256 and code revision |
+| `member`, `member_id`, `track_id` | input member metadata and selected trajectory identities |
+| `center_fix`, `interpolation` | start fix, exact or great-circle method and bracketing times |
+| `selection_rule` | explicit identity or cycle pressure with the declared tie break |
+| `window_start`, `window_end` | inclusive UTC run window |
+| `runner_up`, `near_ties`, `near_tie_pa` | strongest other eligible track and all near ties; empty object/list when absent |
+| `rejected` | other member tracks excluded with named reasons |
+| `metadata_status`, `metadata_input` | availability and optional JSON twin input receipt |
+
+JSON retains null diagnostic values; TOML omits absent values because TOML
+has no null. The schema remains `arwen.cyclone-setup.v2`.
+
+Tracks choose the system and place grids. They supply no atmospheric initial
+state or lateral boundaries, and never steer the moving nest. The follower
+table is unchanged: the simulated smoothed MSLP minimum, with the existing
+850 hPa fallback. This follower has no distance-from-external-prior guard,
+so no external path or itinerary is passed to it.
+
+### Registry acquisition owners
+
+The source menu includes planable registry rows with an `acquisition_owner`,
+as well as sources acquired through the fetch-route table. An owner can expose
+table-derived model aliases and a pure `acquisition_hints(source, model)` hook.
+Unclaimed aliases resolve through the source registry; existing source ids and
+explicit aliases retain priority. These hooks select metadata without loading
+a model runtime or downloading weights.
+
+Use `--source SOURCE_ALIAS`, or `--source SOURCE --model MODEL` for an owner
+that declares model selection. Setup preserves the selected canonical model
+through memory proposals and acceptance. The authored `[fetch]` contains the
+canonical `source`, `model` when selected, `cycle`, the complete requested
+lead window in `hours`, and an `area` covering the parent plus the source's
+fetch margin. Cadence comes from the owner row instead of an unsupported
+fetch-route override. A model conflicting with its source alias is refused.
+
+To use existing local output, launch with
+`gpuwm go CONFIG --data-dir DIR --supplement ROLE=FILE`. The prepared/staged
+chain reviews the local input and binds the surface donor through the declared
+supplement role. It skips acquisition when local input was requested, so it
+does not rerun the upstream model. `--dry-run` reviews and prints this chain
+without preparing data or starting a forecast. The selected registry row must
+declare moving-nest corridor statics for a following nest to run. Track lineage
+remains provenance and initial placement only.

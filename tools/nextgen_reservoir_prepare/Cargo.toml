@@ -1,0 +1,11 @@
+[package]
+name = "nextgen-reservoir-prepare"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Rust startup packing of sealed native t-route reservoir columns"
+[workspace]
+[dependencies]
+rayon = "=1.12.0"
+serde_json = "=1.0.151"
+sha2 = "=0.10.9"

@@ -1754,6 +1754,20 @@ fn source_file_fingerprint(path: &Path) -> Result<([u8; 32], SourceFileRevision)
         .and_then(|value| value.to_str())
         .ok_or_else(|| format!("source path '{}' has no UTF-8 filename", path.display()))?;
 
+    // The same unchanged file hashed by an earlier render (the frame's own
+    // live render, every later frame's snowfall dependencies, the windowed
+    // pass) is not read again: see `crate::source_memo` for the breakage
+    // and for what "unchanged" is proven by.
+    let stamp = crate::source_memo::file_stamp(&before.canonical_path);
+    if stamp.is_some() {
+        if let Some(digest) = crate::source_memo::recall_fingerprint(&before.canonical_path, name) {
+            let after = inspect_source_file_revision(path)?;
+            if before == after {
+                return Ok((digest, after));
+            }
+        }
+    }
+
     let mut hasher = Sha256::new();
     hasher.update(b"rw-source-file-v2\0");
     hasher.update((name.len() as u64).to_le_bytes());
@@ -1784,6 +1798,9 @@ fn source_file_fingerprint(path: &Path) -> Result<([u8; 32], SourceFileRevision)
             "source file '{}' changed while its identity was hashed; import an immutable snapshot",
             path.display()
         ));
+    }
+    if let Some(stamp) = &stamp {
+        crate::source_memo::remember_fingerprint(&before.canonical_path, name, stamp, &digest);
     }
     Ok((digest, after))
 }

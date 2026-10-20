@@ -50,16 +50,35 @@ def mode() -> str:
     return _mode
 
 
+def select(requested: str) -> str:
+    """Select at launch, or verify a mode already fixed by kernel compilation."""
+    if requested not in MODES:
+        raise ValueError(f"numerics must be fast or strict, not {requested!r}")
+    if _mode is None:
+        if os.environ.get("GPUWM_WRF_EXACT", "0") == "1" and requested != "strict":
+            raise ValueError("GPUWM_WRF_EXACT=1 requires strict numerics")
+        os.environ[ENV] = requested
+    actual = mode()
+    if actual != requested:
+        raise ValueError(f"process numerics is already {actual}; requested {requested} needs a fresh process")
+    return actual
+
+
 def is_strict() -> bool:
     return mode() == "strict"
 
 
 def effective_options(options) -> tuple[str, ...]:
-    """The options a compile actually takes in this mode (strict: unchanged)."""
+    """Final arithmetic options, including opt-in WRF controls, before cache lookup."""
     options = tuple(options)
-    if mode() == "strict":
-        return options
-    return tuple(option for option in options if option not in _NO_CONTRACTION)
+    if mode() != "strict":
+        options = tuple(option for option in options if option not in _NO_CONTRACTION)
+    if os.environ.get("GPUWM_WRF_EXACT", "0") == "1":
+        # The program hook applies these even to direct NVRTC. Its image
+        # caches and warm-plan/pack identities must see the same controls.
+        from gpuwm.wrf_exact import effective_options as wrf_options
+        options = wrf_options(options)
+    return options
 
 
 def receipt() -> dict:

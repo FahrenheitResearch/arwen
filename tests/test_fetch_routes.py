@@ -37,13 +37,32 @@ def test_every_runnable_source_either_routes_or_refuses_by_name():
     bytes -- engine-proven, not shipped.
     """
 
-    handled = set(fetch_routes.route_ids()) | set(fetch_routes.refusal_ids())
+    handled = set(fetch_routes.all_fetchable_sources()) | set(fetch_routes.refusal_ids())
     # gfs/hrrr/era5 keep their own hand-written routes in gpuwm.fetch.
     handled |= set(fetch_routes.LEGACY_ROUTE_SOURCES)
+    # A row whose bytes come from running a model names its door as an
+    # acquisition owner (earth2 runs an Earth-2 model through earth2studio).
+    handled |= {row.source_id for row in source_adapters.source_adapters()
+                if row.acquisition_owner}
     from gpuwm.cf_archive_fetch import sources
     handled |= set(sources())
+    # Model-backed rows delegate acquisition to their declared owner rather
+    # than a published-object route. Check the actual front-door contract.
+    from importlib import import_module
+    for row in source_adapters.source_adapters():
+        if row.acquisition_owner:
+            assert callable(getattr(import_module(row.acquisition_owner), "fetch", None))
+            handled.add(row.source_id)
     runnable = {row.source_id for row in source_adapters.source_adapters()
                 if row.runnable}
+    # A runnable preparation can require caller-supplied files. Its fetch
+    # boundary must explain that by source name rather than silently fall off.
+    for source in runnable - handled:
+        with pytest.raises(ValueError) as refusal:
+            fetch_routes.route_for(source)
+        assert source in str(refusal.value)
+        assert "gpuwm sources" in str(refusal.value)
+        handled.add(source)
     assert runnable - handled == set()
 
 

@@ -233,11 +233,13 @@ _BOUND_TIME_ALIGNMENTS = frozenset({
 #: contains the primary grid as an exact coordinate subset (identical grids
 #: are the degenerate full subset).  Anything else is cross-grid and
 #: refuses by naming the regrid capability.
-_BOUND_GRID_ALIGNMENTS = frozenset({"exact_coordinate_subset"})
+_BOUND_GRID_ALIGNMENTS = frozenset({
+    "exact_coordinate_subset", "exact_coordinate_strided_subset",
+})
 
 _BINDING_KEYS = {
     "source_id", "mapping_role", "mapping_sha256", "data_role",
-    "provenance_role", "fields", "grid_alignment", "time_alignment",
+    "provenance_role", "fields", "grid_alignment", "time_alignment", "vertical_merge",
 }
 
 
@@ -421,6 +423,37 @@ def _validate_terrain_supplement(
         )
 
 
+def _validate_vertical_merge(value, label):
+    spec = _object(value, f"{label}.vertical_merge", allowed={
+        "method", "pressure_band_hpa", "primary_pressure_scale", "donor_pressure_scale",
+        "fields", "max_relative_humidity", "pressure_field"}, required={
+        "method", "pressure_band_hpa", "primary_pressure_scale", "donor_pressure_scale",
+        "fields", "max_relative_humidity"})
+    if spec.get("pressure_field") not in (None, "air_pressure"):
+        raise ValueError(f"{label}: pressure_field must name air_pressure")
+    if spec["method"] != "cosine_pressure_distance_log_anomaly":
+        raise ValueError(f"{label}: unsupported vertical transition method")
+    band = spec["pressure_band_hpa"]
+    if (not isinstance(band, list) or len(band) != 2 or
+            not all(isinstance(x, (int, float)) and np.isfinite(x) for x in band) or
+            not 0 <= band[0] < band[1]):
+        raise ValueError(f"{label}: pressure_band_hpa must be increasing nonnegative distances")
+    for key in ("primary_pressure_scale", "donor_pressure_scale"):
+        if spec[key] not in (1, 100):
+            raise ValueError(f"{label}: pressure scales must convert Pa or hPa to Pa")
+    if not 1 <= spec["max_relative_humidity"] <= 1.05:
+        raise ValueError(f"{label}: max_relative_humidity must be in [1, 1.05]")
+    if not isinstance(spec["fields"], dict) or not spec["fields"]:
+        raise ValueError(f"{label}: vertical merge needs field rules")
+    for name, rule in spec["fields"].items():
+        _object(rule, f"{label}.{name}", allowed={"primary_field", "representation"},
+                required={"primary_field", "representation"})
+        _string(rule["primary_field"], f"{label}.{name}.primary_field")
+        if (rule["representation"] not in ("canonical", "relative_humidity_percent") or
+                (rule["representation"] == "relative_humidity_percent" and name != "specific_humidity")):
+            raise ValueError(f"{label}.{name}: unsupported representation")
+
+
 def _validate_field_sources(
     value: object,
     mapping: Mapping[str, object],
@@ -437,7 +470,7 @@ def _validate_field_sources(
         _string(binding_name, "field_sources binding name")
         label = f"composition.field_sources.{binding_name}"
         binding = _object(
-            raw_binding, label, allowed=_BINDING_KEYS, required=_BINDING_KEYS,
+            raw_binding, label, allowed=_BINDING_KEYS, required=_BINDING_KEYS - {"vertical_merge"},
         )
         _string(binding["source_id"], f"{label}.source_id")
         _digest(binding["mapping_sha256"], f"{label}.mapping_sha256")
@@ -461,17 +494,41 @@ def _validate_field_sources(
                 f"{label}.time_alignment must be one of "
                 f"{sorted(_BOUND_TIME_ALIGNMENTS)}"
             )
+        merge = binding.get("vertical_merge")
+        if merge is not None:
+            _validate_vertical_merge(merge, label)
+            vertical = mapping["coordinates"]["vertical"]
+            column_pressure = merge.get("pressure_field") == "air_pressure"
+            if column_pressure:
+                if vertical["kind"] != "model_level" or vertical["units"] != "1":
+                    raise ValueError(f"{label}: column pressure merge requires model_level indices")
+                expected = 1
+                if merge["donor_pressure_scale"] != 1:
+                    raise ValueError(f"{label}: column pressure must be in Pa")
+            else:
+                if vertical["kind"] != "pressure":
+                    raise ValueError(f"{label}: vertical merge requires a pressure coordinate")
+                expected = {"Pa": 1, "hPa": 100}.get(vertical["units"])
+            if merge["primary_pressure_scale"] != expected:
+                raise ValueError(f"{label}: primary pressure scale disagrees with coordinate units")
         fields = binding["fields"]
         if not isinstance(fields, list) or not fields:
             raise ValueError(f"{label}.fields must be a non-empty list")
         names = [_string(name, f"{label}.fields[]") for name in fields]
+        if merge:
+            if not set(merge["fields"]).issubset(names):
+                raise ValueError(f"{label}: every vertical merge output must be a bound field")
+            for name, rule in merge["fields"].items():
+                declared = mapping["fields"].get(rule["primary_field"])
+                if declared is not None and declared["target_axes"] != ["vertical", "y", "x"]:
+                    raise ValueError(f"{label}.{name}: primary column must have vertical,y,x axes")
         if len(set(names)) != len(names):
             raise ValueError(f"{label}.fields repeats a field")
         for name in names:
             declared = mapping["fields"].get(name)
             if declared is None:
                 raise ValueError(f"{label} binds unknown field {name!r}")
-            if name not in declared_bound:
+            if name not in declared_bound and name not in (merge or {}).get("fields", {}):
                 raise ValueError(
                     f"field {name!r} has two providers: the primary mapping "
                     f"and contributing source binding {binding_name!r}"
@@ -714,6 +771,7 @@ def _exact_subset_indices(
     label: str,
     *,
     cyclic_degrees: bool = False,
+    allow_strided: bool = False,
 ) -> np.ndarray:
     larger = np.asarray(larger, dtype=np.float64)
     smaller = np.asarray(smaller, dtype=np.float64)
@@ -746,11 +804,36 @@ def _exact_subset_indices(
             wrapped = np.mod(differences, larger.size)
             contiguous = bool(np.all(wrapped == 1)
                               or np.all(wrapped == larger.size - 1))
+        if not contiguous and allow_strided:
+            contiguous = _regular_index_stride(
+                result, larger.size,
+                cyclic_degrees and _closed_longitude_circle(larger),
+            ) is not None
         if not contiguous:
+            kind = "regular strided" if allow_strided else "contiguous"
             raise ValueError(
-                f"primary {label} is not a contiguous terrain-grid subset"
+                f"primary {label} is not a {kind} terrain-grid subset"
             )
     return result
+
+
+def _regular_index_stride(indices: np.ndarray, size: int, cyclic: bool) -> int | None:
+    """Exact regular selection, with no repeated cells or second circle."""
+    if indices.size < 2:
+        return 0
+    differences = np.diff(indices)
+    step = int(differences[0])
+    if step != 0 and np.all(differences == step):
+        return step
+    if cyclic:
+        wrapped = np.mod(differences, size)
+        step = int(wrapped[0])
+        if step > size // 2:
+            step -= size
+        if (step != 0 and np.all(wrapped == step % size)
+                and abs(step) * (indices.size - 1) < size):
+            return step
+    return None
 
 
 def _closed_longitude_circle(longitude: np.ndarray) -> bool:
@@ -1007,14 +1090,18 @@ def _binding_subset_indices(
     primary: _DecodedCollection,
     donor: _DecodedCollection,
     binding_name: str,
+    grid_alignment: str = "exact_coordinate_subset",
 ) -> tuple[np.ndarray, np.ndarray]:
+    allow_strided = grid_alignment == "exact_coordinate_strided_subset"
     try:
         latitude = _exact_subset_indices(
             donor.latitude, primary.latitude, "latitude",
+            allow_strided=allow_strided,
         )
         longitude = _exact_subset_indices(
             donor.longitude, primary.longitude, "longitude",
             cyclic_degrees=True,
+            allow_strided=allow_strided,
         )
     except ValueError as error:
         raise ValueError(
@@ -1093,7 +1180,7 @@ def _compose_bound_fields(
             "capability this composition does not declare"
         )
     latitude_indices, longitude_indices = _binding_subset_indices(
-        primary, donor, binding_name,
+        primary, donor, binding_name, str(binding["grid_alignment"]),
     )
     primary_keys = tuple(sorted(
         primary.source_cycles, key=lambda item: (item[0], str(item[1]))
@@ -1194,7 +1281,11 @@ def _compose_bound_fields(
         "source_id": str(binding["source_id"]),
         "fields": sorted(fields),
         "grid_alignment": str(binding["grid_alignment"]),
-        "coordinate_match": "exact_equivalent_contiguous_subset",
+        "coordinate_match": (
+            "exact_equivalent_regular_strided_subset"
+            if binding["grid_alignment"] == "exact_coordinate_strided_subset"
+            else "exact_equivalent_contiguous_subset"
+        ),
         "longitude_equivalence": "modulo_360_exact",
         "primary_shape": [int(primary.latitude.size), int(primary.longitude.size)],
         "donor_shape": [int(donor.latitude.size), int(donor.longitude.size)],
@@ -1216,6 +1307,16 @@ def _compose_bound_fields(
         ),
         "field_subset_sha256": subset_hashes,
     }
+    if binding["grid_alignment"] == "exact_coordinate_strided_subset":
+        receipt.update({
+            "latitude_indices": latitude_indices.tolist(),
+            "longitude_indices": longitude_indices.tolist(),
+            "latitude_index_stride": _regular_index_stride(
+                latitude_indices, donor.latitude.size, False),
+            "longitude_index_stride": _regular_index_stride(
+                longitude_indices, donor.longitude.size,
+                _closed_longitude_circle(donor.longitude)),
+        })
     return _DecodedCollection(
         latitude=primary.latitude,
         longitude=primary.longitude,
@@ -1463,6 +1564,12 @@ class _RegularSnapshots(_ABCSequence):
     def for_grids(self, grids):
         """Keep full donor fields and pack only exact atmospheric support."""
         return _RegularSnapshots(self._bundle, self._order, target_grids=grids)
+
+    def select(self, positions):
+        """The snapshots at ``positions`` of this sequence, in that order."""
+        return _RegularSnapshots(
+            self._bundle, tuple(self._order[int(position)] for position in positions),
+            target_grids=self._target_grids)
 
     def snapshot_metadata(self, position: int):
         """Describe the fixed snapshot ABI without copying its field arrays."""
@@ -2323,6 +2430,8 @@ def decode_composed_source(
                 ("missing.kind", declared["missing"]["kind"],
                  donor_field["missing"]["kind"]),
             ):
+                if aspect == "missing.kind" and name in binding.get("vertical_merge", {}).get("fields", {}):
+                    continue
                 if ours != theirs:
                     raise ValueError(
                         f"field {name!r} {aspect} disagrees between the "
@@ -2407,6 +2516,8 @@ def decode_composed_source(
     ):
         _require_authority_snapshot(snapshot)
     before = {str(path): snapshots[path].sha256 for path in authorities}
+    if any(binding.get("vertical_merge") for binding in bindings.values()) and engine_binary is None:
+        raise ValueError("vertical_merge requires the native mapped engine for column splicing")
     if memory_budget_bytes is not None and engine_binary is None:
         from gpuwm.ingest.memory_refusal import InitializationMemoryRefused
 

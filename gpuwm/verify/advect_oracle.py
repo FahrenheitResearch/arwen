@@ -618,10 +618,10 @@ def arithmetic_control(variant="production"):
     modules = {name: cp.RawModule(code=control_source(name, variant), options=options)
                for name in ("advection", "pd_advection", "pd_vertical_sl", "openbc")}
     originals = advect.get_kernel, moist.get_kernel, dycore.get_kernel
-    def get_control(name, func):
+    def get_control(name, func, shape=()):
         if name in modules:
             return modules[name].get_function(func)
-        return originals[0](name, func)
+        return originals[0](name, func, shape)
     advect.get_kernel = moist.get_kernel = dycore.get_kernel = get_control
     try:
         yield

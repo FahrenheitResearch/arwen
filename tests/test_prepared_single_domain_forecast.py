@@ -377,11 +377,20 @@ def test_prepared_runner_capability_query_is_side_effect_free_without_run_args(
     payload = json.loads(capsys.readouterr().out)
     assert payload == runner.runner_capabilities()
     assert payload["schema"] == "gpuwm-runner-capabilities-v1"
-    assert payload["supported_sources"] == [
+    # Model-table rows (a family row plus one per model in its declared
+    # table) join through the table, not a literal: the arbitrary
+    # acceptance test.  Everything else is pinned by name.
+    from gpuwm.prepared_source_schemas import composed_packaged_profiles
+    from gpuwm.source_adapters import source_adapters
+    model_table_rows = {adapter.source_id for adapter in source_adapters()
+                        if adapter.model_table
+                        and adapter.source_id in composed_packaged_profiles()}
+    assert model_table_rows
+    assert payload["supported_sources"] == sorted({
         "20crv3", "20crv3-cf", "aifs", "aigefs", "aigfs",
         "ecmwf-ens", "ecmwf-open-data", "era5", "era5-l137", "gdas", "gefs",
         "gem-gdps", "gfs", "hex-global", "hrrr", "hrrr-native", "hrrr-prs", "icon-d2", "icon-eu",
-        "icon-global", "mapped", "rap", "rap-native", "rrfs"]
+        "icon-global", "mapped", "rap", "rap-native", "rrfs"} | model_table_rows)
     assert payload["physics_profile_ids"] == list(runner.PHYSICS_PROFILES)
     assert payload["report_schema"] == runner.REPORT_SCHEMA
     assert payload["window"]["limit_policy"] \
@@ -4247,7 +4256,9 @@ def test_source_neutral_surface_contract_rejects_land_identity_drift():
                             num_soil_layers=4))
 
 
-def test_output_due_thompson_consumes_native_refl_10cm_stash():
+def test_output_due_thompson_consumes_native_refl_10cm_stash(monkeypatch):
+    from gpuwm.core import refl
+
     state = SimpleNamespace(
         qv=np.ones((2, 3, 4), np.float32), physics=SimpleNamespace(mp_physics=8))
     native = object()
@@ -4258,10 +4269,20 @@ def test_output_due_thompson_consumes_native_refl_10cm_stash():
 
     assert result is native
     assert consumed == [state]
-    # The analysis frame consumes no stash and writes WRF's initial array.
-    analysis = runner._consume_due_native_refl_10cm(
+    # The analysis frame consumes no stash: it is the analysis diagnostic
+    # (18dbe1d5449; WRF's zeros in exact mode). This test owns the routing,
+    # so a stand-in answers for the diagnostic.
+    analysed = []
+
+    def analysis(actual, *, shape=None):
+        analysed.append(actual)
+        return np.full(actual.qv.shape, 7.0, np.float32)
+
+    monkeypatch.setattr(refl, "analysis_refl_10cm", analysis)
+    frame = runner._consume_due_native_refl_10cm(
         state, 0, lambda actual: pytest.fail("initial frame consumed a stash"))
-    assert analysis.shape == (2, 3, 4) and not np.any(analysis)
+    assert analysed == [state]
+    assert frame.shape == (2, 3, 4) and np.all(frame == 7.0)
 
 
 def _retime_single_domain(exp, *, cadence_seconds, run_seconds=None):

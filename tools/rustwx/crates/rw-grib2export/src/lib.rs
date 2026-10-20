@@ -27,6 +27,7 @@
 //! The catalog is `woof-post/v1`, profile `woof-post-2.8.7` (spec D29).
 
 pub mod catalog;
+pub mod vertical;
 pub mod export;
 pub mod extrema;
 pub mod grid;

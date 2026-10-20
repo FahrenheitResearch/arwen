@@ -1,0 +1,31 @@
+[package]
+name = "nextgen-verify"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[[bin]]
+name = "rw_nextgen_verify"
+path = "src/main.rs"
+
+# Gauge-matching proof fixture builder (Copernicus GLO-90 D8 reaches); not a product fabric.
+[[bin]]
+name = "rw_gauge_proof_fabric"
+path = "src/bin/rw_gauge_proof_fabric.rs"
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+csv = "1.4"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+hydro-world = { path = "../hydro_world" }
+netcdf-reader = { path = "../rustwx/vendor/netcrust/vendor/netcdf-reader" }
+rayon = "1.11"
+reqwest = { version = "=0.12.28", default-features = false, features = ["blocking", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+sha2 = "0.10"
+tiff = { version = "0.11", default-features = false, features = ["deflate", "lzw"] }
+
+[profile.release]
+lto = "thin"

@@ -3428,6 +3428,14 @@ class RRTMGPRadiation:
     trace_gas_overrides: Mapping[str, float] | None = None
     longwave: bool = True
     shortwave: bool = True
+    # The workspace-less chunk loop (the prepared single-domain route) runs
+    # the paired solvers: one LW and one SW kernel per g-point tile give the
+    # all-sky fluxes and the clear-sky top/surface rows together, with the
+    # cloud finalize and (LW) the Planck sources derived in registers at the
+    # staged kernels' rounding.  True selects the staged sequence instead
+    # (finalize, Planck and two solves per spectrum): the reference the
+    # paired kernels are held to word for word, kept selectable for that.
+    staged_solvers: bool = False
     update_count: int = field(default=0, init=False)
     trace_vmr: dict[str, float] = field(default_factory=dict, init=False)
 
@@ -4113,24 +4121,52 @@ class RRTMGPRadiation:
                 mask_lw = mcica_cloud_masks(
                     lw_profile.play, lw_cldfra, self.lw_tables.ngpt,
                     MCICA_PERMUTESEED_LW, validate=full_validation)
-                optics_lw = _finalize_cloud_optics(
-                    self.lw_tables, gas_lw, cld_lw, cloud_mask=mask_lw)
-                del mask_lw
-                # (workspace-less path: finalize kept, nothing to carry)
-                sources = _planck_sources(
-                    self.lw_tables, lw_profile.play, lw_profile.plev,
-                    lw_profile.tlay, lw_profile.tlev, tsfc[sl],
-                    vmr_lw, metadata=chunk_metadata,
-                    validate=full_validation)
                 emiss = _expand_band_to_gpoint(
                     emiss_bands[sl], self.lw_tables, "surface emissivity")
-                clear = lw_rte(
-                    gas_lw.tau, sources.lay_source, sources.lev_source,
-                    sources.sfc_source, emiss, top_at_1=False)
-                flux = lw_rte(
-                    optics_lw.tau, sources.lay_source, sources.lev_source,
-                    sources.sfc_source, emiss, top_at_1=False)
-                del optics_lw
+                if self.staged_solvers:
+                    # The staged reference: finalize and Planck kernels
+                    # write their cubes and the solver reads them back.
+                    optics_lw = _finalize_cloud_optics(
+                        self.lw_tables, gas_lw, cld_lw, cloud_mask=mask_lw)
+                    sources = _planck_sources(
+                        self.lw_tables, lw_profile.play, lw_profile.plev,
+                        lw_profile.tlay, lw_profile.tlev, tsfc[sl],
+                        vmr_lw, metadata=chunk_metadata,
+                        validate=full_validation)
+                    clear = lw_rte(
+                        gas_lw.tau, sources.lay_source, sources.lev_source,
+                        sources.sfc_source, emiss, top_at_1=False)
+                    flux = lw_rte(
+                        optics_lw.tau, sources.lay_source, sources.lev_source,
+                        sources.sfc_source, emiss, top_at_1=False)
+                    del optics_lw, sources
+                else:
+                    # One paired solve (rrtmgp_lw_noscat_pair): gas tau,
+                    # band cloud optics and the McICA mask combine in
+                    # registers at the finalize kernel's pinned rounding;
+                    # the Planck sources are derived in the solver at the
+                    # DEFAULT process's standalone-kernel rounding
+                    # (planck_staged, rrtmgp_planck_staged_default.cuh);
+                    # the clear-sky solve shares the reads and the clear
+                    # layers' terms and folds only the top and surface.
+                    # The finalized tau cube, the lay/lev/sfc source cubes
+                    # and the second solve do not exist.  Same words as the
+                    # staged branch above.
+                    planck_in = PlanckInputs(
+                        tables=self.lw_tables, play=lw_profile.play,
+                        plev=lw_profile.plev,
+                        tlay=lw_profile.tlay, tlev=lw_profile.tlev,
+                        tsfc=tsfc[sl], vmr=vmr_lw, metadata=chunk_metadata)
+                    flux, clear = _lw_rte(
+                        gas_lw.tau, None, None, None, emiss, top_at_1=False,
+                        out=None, incident_out=None,
+                        fused_cloud=FusedCloudOptics(
+                            tables=self.lw_tables, cloud=cld_lw,
+                            mask=mask_lw),
+                        planck=planck_in, planck_staged=True,
+                        with_clear=True)
+                    del planck_in
+                del mask_lw
             else:
                 # SCRATCH_SLOT_LIFETIME_AUDIT analogue: every optics slot is
                 # a kernel output or full fill before its first read in this
@@ -4304,22 +4340,34 @@ class RRTMGPRadiation:
                 mask_sw = mcica_cloud_masks(
                     sw_profile.play, sw_cldfra, self.sw_tables.ngpt,
                     MCICA_PERMUTESEED_SW, validate=full_validation)
-                optics_sw = _finalize_cloud_optics(
-                    self.sw_tables, gas_sw, cld_sw, cloud_mask=mask_sw)
-                del mask_sw
-                # (workspace-less path: finalize kept)
                 albedo, inc, mu_chunk = _prepare_sw_inputs(
                     albedo_surface[sl], solar, mu[sl], sw_profile.play.shape[1],
                     xp=cp)
-                clear = _sw_rte(
-                    gas_sw.tau, gas_sw.ssa, None, mu_chunk, albedo, albedo,
-                    inc, top_at_1=False, out=None,
-                    fused_cloud=_clear_sky_cloud(
-                        self.sw_tables, *gas_sw.tau.shape[:2]))
-                flux = sw_rte(
-                    optics_sw.tau, optics_sw.ssa, optics_sw.g, mu_chunk,
-                    albedo, albedo, inc, top_at_1=False)
-                del optics_sw
+                if self.staged_solvers:
+                    clear = _sw_rte(
+                        gas_sw.tau, gas_sw.ssa, None, mu_chunk, albedo,
+                        albedo, inc, top_at_1=False, out=None,
+                        fused_cloud=_clear_sky_cloud(
+                            self.sw_tables, *gas_sw.tau.shape[:2]))
+                    optics_sw = _finalize_cloud_optics(
+                        self.sw_tables, gas_sw, cld_sw, cloud_mask=mask_sw)
+                    flux = sw_rte(
+                        optics_sw.tau, optics_sw.ssa, optics_sw.g, mu_chunk,
+                        albedo, albedo, inc, top_at_1=False)
+                    del optics_sw
+                else:
+                    # As in the LW branch: one paired solve
+                    # (rrtmgp_sw_2stream_pair) with the cloud finalize in
+                    # registers and the clear-sky solve sharing the layer
+                    # coefficients of every McICA-clear layer.
+                    flux, clear = _sw_rte(
+                        gas_sw.tau, gas_sw.ssa, None, mu_chunk,
+                        albedo, albedo, inc, top_at_1=False, out=None,
+                        fused_cloud=FusedCloudOptics(
+                            tables=self.sw_tables, cloud=cld_sw,
+                            mask=mask_sw),
+                        with_clear=True)
+                del mask_sw
             else:
                 work = workspace.phase("sw_optics", chunk_ncol)
                 vmr_sw = self._gas_vmr(
@@ -5091,7 +5139,8 @@ def _rte_gpt_tile(kernel, ncol: int, ngpt: int, *,
 def _lw_rte(tau, lay_source, lev_source, sfc_source, sfc_emis,
             incident_flux=None, *, top_at_1: bool, out,
             incident_out, fused_cloud=None,
-            planck=None, _fold_columns=2) -> FluxResult:
+            planck=None, _fold_columns=2,
+            with_clear: bool = False, planck_staged: bool = False):
     import cupy as cp
     from gpuwm.core.kernels import get_kernel
 
@@ -5180,6 +5229,49 @@ def _lw_rte(tau, lay_source, lev_source, sfc_source, sfc_emis,
         stage_blocks = (ncol * tile + threads - 1) // threads
         shared = 0
     fold_blocks = (ncol * nlev + _RTE_BLOCK - 1) // _RTE_BLOCK
+    if with_clear:
+        # All-sky and clear-sky in one pass (rrtmgp_lw_noscat_pair): the
+        # clear solve on gas tau alone shares this solve's tau and Planck
+        # reads, and its layer terms wherever the McICA cloud adds nothing,
+        # and folds only the top and surface levels it is read at.  Default
+        # unit, folding path, fused cloud only; anything else takes the two
+        # separate solves, which give the same words.
+        if fused_cloud is None:
+            raise ValueError("with_clear needs fused cloud optics")
+        if not warp_fold or WRF_EXACT:
+            if planck is not None and planck_staged:
+                # The staged words, from the standalone kernel itself.
+                src = _planck_sources(
+                    planck.tables, planck.play, planck.plev, planck.tlay,
+                    planck.tlev, planck.tsfc, planck.vmr,
+                    metadata=planck.metadata, validate=False)
+                lay_source, lev_source, sfc_source = (
+                    src.lay_source, src.lev_source, src.sfc_source)
+                planck = None
+            clear = _lw_rte(
+                tau, lay_source, lev_source, sfc_source, sfc_emis,
+                incident_flux, top_at_1=top_at_1, out=None,
+                incident_out=None, planck=planck,
+                _fold_columns=_fold_columns)
+            flux = _lw_rte(
+                tau, lay_source, lev_source, sfc_source, sfc_emis,
+                incident_flux, top_at_1=top_at_1, out=out,
+                incident_out=incident_out, fused_cloud=fused_cloud,
+                planck=planck, _fold_columns=_fold_columns)
+            return flux, clear
+        pair = _rte_kernel("rrtmgp_lw_noscat_pair", nlay)
+        if planck is not None and planck_staged:
+            pk = pk[:-1] + (np.int32(2),)
+        clr_up = cp.empty(flux_shape, dtype=DTYPE)
+        clr_dn = cp.empty_like(clr_up)
+        for gpt0 in range(0, ngpt, tile):
+            pair((stage_blocks,), (threads,), (
+                tau, lay_source, lev_source, sfc_source, sfc_emis, incident,
+                up, down, clr_up, clr_dn, np.int32(ncol), np.int32(nlay),
+                np.int32(ngpt), np.int32(gpt0), np.int32(tile),
+                np.int32(top_at_1)) + fz + pk,
+                shared_mem=shared)
+        return FluxResult(up, down), FluxResult(clr_up, clr_dn)
     # Tiles are walked in ascending g-point order and each fold appends to the
     # running flux, so the FP32 addition sequence is the one the single-thread
     # column loop produced -- see rrtmgp_rte.cu.
@@ -5208,7 +5300,7 @@ def sw_rte(tau, ssa, g, mu0, sfc_alb_dir, sfc_alb_dif, inc_flux_dir,
 
 def _sw_rte(tau, ssa, g, mu0, sfc_alb_dir, sfc_alb_dif, inc_flux_dir,
             *, top_at_1: bool, out, fused_cloud=None,
-            _fold_columns=1) -> FluxResult:
+            _fold_columns=1, with_clear: bool = False):
     import cupy as cp
     from gpuwm.core.kernels import get_kernel
 
@@ -5287,6 +5379,39 @@ def _sw_rte(tau, ssa, g, mu0, sfc_alb_dir, sfc_alb_dif, inc_flux_dir,
         stage_blocks = (ncol * tile + threads - 1) // threads
         shared = 0
     fold_blocks = (ncol * nlev + _RTE_BLOCK - 1) // _RTE_BLOCK
+    if with_clear:
+        # All-sky and clear-sky in one pass (rrtmgp_sw_2stream_pair): the
+        # clear solve (zero band cloud) shares the gas optics reads and the
+        # layer coefficients wherever the McICA cloud adds nothing, and
+        # folds only the top and surface words it is read at.  Default
+        # unit, folding path, bottom-to-top, fused cloud only; anything
+        # else takes the two separate solves, which give the same words.
+        if fused_cloud is None:
+            raise ValueError("with_clear needs fused cloud optics")
+        if not warp_fold or WRF_EXACT or top_at_1:
+            clear = _sw_rte(
+                tau, ssa, None, mu0, sfc_alb_dir, sfc_alb_dif, inc_flux_dir,
+                top_at_1=top_at_1, out=None,
+                fused_cloud=_clear_sky_cloud(fused_cloud.tables, ncol, nlay),
+                _fold_columns=_fold_columns)
+            flux = _sw_rte(
+                tau, ssa, None, mu0, sfc_alb_dir, sfc_alb_dif, inc_flux_dir,
+                top_at_1=top_at_1, out=out, fused_cloud=fused_cloud,
+                _fold_columns=_fold_columns)
+            return flux, clear
+        pair = _rte_kernel("rrtmgp_sw_2stream_pair", nlay)
+        clr_up = cp.empty(flux_shape, dtype=DTYPE)
+        clr_dn = cp.empty_like(clr_up)
+        # fz minus its trailing fz_on flag, then the runtime zero the clear
+        # combine takes for tc, wc and gc (the zero band arrays' words).
+        for gpt0 in range(0, ngpt, tile):
+            pair((stage_blocks,), (threads,), (
+                tau, ssa, mu0, alb_dir, alb_dif, inc,
+                up, down, direct, clr_up, clr_dn,
+                np.int32(ncol), np.int32(nlay), np.int32(ngpt),
+                np.int32(gpt0), np.int32(tile)) + fz[:-1] + (DTYPE(0.0),),
+                shared_mem=shared)
+        return FluxResult(up, down, direct), FluxResult(clr_up, clr_dn)
     for gpt0 in range(0, ngpt, tile):
         stage((stage_blocks,), (threads,), (
             tau, ssa, g, mu0, alb_dir, alb_dif, inc,

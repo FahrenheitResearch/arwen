@@ -197,7 +197,7 @@ def _assert_spawn_streaming_ownership(tree):
     """
     functions = {node.name: node for node in tree.body
                  if isinstance(node, ast.FunctionDef)}
-    route = functions["run_experiment"]
+    route = functions["_run_experiment"]
     scheduled = functions["_run_built_experiment"]
     walk = functions["walk_spawn_legs"]
 

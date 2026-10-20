@@ -1,0 +1,10 @@
+{
+  "schema": "gpuwm-cyclone-search-v1",
+  "default_auto_region": "north-atlantic",
+  "regions": {
+    "north-atlantic": {
+      "area": [0, -100, 55, -20],
+      "description": "North Atlantic, Caribbean and Gulf search rectangle. Bounds limit cycle-position selection; this is not an ocean-basin polygon."
+    }
+  }
+}

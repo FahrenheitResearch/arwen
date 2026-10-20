@@ -23,6 +23,9 @@ from gpuwm.core.state import DTYPE, DomainState
 from gpuwm.microphysics_schemes import mass_loading_species as _mass_loading_species
 
 _THREADS = 256
+# A column solve does not share work between threads.  Smaller fast mapped
+# blocks expose enough column blocks to fill the device on nested domains.
+_W_PHI_MSF_THREADS = 64
 
 
 def prepare_upper_wind_limiter(state, cfg, dtau):
@@ -322,7 +325,7 @@ def acoustic_substep_explicit(state: DomainState, cfg: RunConfig,
     # bitwise regression.
     blocks = (ny * nx + _THREADS - 1) // _THREADS
     if state.has_msf:
-        kernel = get_kernel("acoustic", "advance_mu_th_msf")
+        kernel = get_kernel("acoustic", "advance_mu_th_msf", (nz, ny, nx))
         kernel((blocks,), (_THREADS,),
                (state.u_pp, state.v_pp, state.u, state.v,
                  state.mup, state.mu_pp, mu_old, state.rmu_t,
@@ -421,30 +424,33 @@ def wphi_module_defines(nz: int) -> tuple[tuple[str, int], ...]:
     return (("WPHI_MAX_LEV", tier),)
 
 
-def wphi_kernel_source(nz: int) -> str:
+def wphi_kernel_source(nz: int, ny: int = 0, nx: int = 0, *,
+                       name: str = "advance_w_phi_msf") -> str:
     """The exact string NVRTC receives for the w''-phi'' solve at ``nz``.
 
     CPU-only mirror of what :func:`_w_phi_kernel` compiles, so the
     below-ceiling identity is testable on a host with no device.
     """
     defines = wphi_module_defines(nz)
+    if ny and nx:
+        from gpuwm.core.kernel_shape import shape_defines
+        defines += shape_defines("acoustic", name, (nz, ny, nx))
     if not defines:
         return module_source("acoustic")
     return module_source_int_defines("acoustic", defines)
 
 
-def _w_phi_kernel(name: str, nz: int):
+def _w_phi_kernel(name: str, nz: int, ny: int = 0, nx: int = 0):
     """The w''-phi'' solve compiled at this configuration's tier.
 
-    At the shipped tier this is :func:`get_kernel` -- the same call, on the
-    same module, that every other acoustic kernel makes -- so a
-    below-ceiling run compiles exactly one acoustic translation unit and it
-    is the pre-ladder one.
+    Registered mapped kernels bind supplied horizontal dimensions as well
+    as the level count. Omitting dimensions keeps the generic source;
+    larger vertical tiers retain their existing storage-size definitions.
     """
     defines = wphi_module_defines(nz)
     if not defines:
-        return get_kernel("acoustic", name)
-    return get_kernel_int_defines("acoustic", name, defines)
+        return get_kernel("acoustic", name, (nz, ny, nx) if ny and nx else ())
+    return get_kernel_int_defines("acoustic", name, defines, (nz, ny, nx) if ny and nx else ())
 
 
 def prepare_acoustic_coefficients(state: DomainState, cfg: RunConfig,
@@ -539,7 +545,7 @@ def prepare_acoustic_substep_launch(state: DomainState, cfg: RunConfig,
     else:
         mu_name = "advance_mu_th"
         mu_map_args = ()
-    mu_kernel = get_kernel("acoustic", mu_name)
+    mu_kernel = get_kernel("acoustic", mu_name, (nz, ny, nx))
     mu_args = (
         state.u_pp, state.v_pp, state.u, state.v,
         state.mup, state.mu_pp, mu_old, state.rmu_t,
@@ -568,7 +574,10 @@ def prepare_acoustic_substep_launch(state: DomainState, cfg: RunConfig,
 
     dampmag = damp_magnitude(cfg, dtau)
     w_name = "advance_w_phi_msf" if state.has_msf else "advance_w_phi"
-    w_kernel = _w_phi_kernel(w_name, nz)
+    w_kernel = _w_phi_kernel(w_name, nz, ny, nx)
+    w_threads = _W_PHI_MSF_THREADS if state.has_msf and not WRF_EXACT else _THREADS
+    w_grid = ((ny * nx + w_threads - 1) // w_threads,)
+    w_block = (w_threads,)
     w_map_args = (state.msft,) if state.has_msf else ()
     w_args = (
         state.w_pp, state.ph_pp, state.rw_t, state.rph_t, state.ww_pp,
@@ -598,7 +607,7 @@ def prepare_acoustic_substep_launch(state: DomainState, cfg: RunConfig,
             np.int32(cfg.spec_zone), base3d, nz_arg, ny_arg, nx_arg,
         ) + ((wrf_acoustic_muts(state),) if WRF_EXACT else ())
     elif _frame_takes_table_w(cfg):
-        frame_kernel = get_kernel("acoustic", "advance_nested_phi_w")
+        frame_kernel = get_kernel("acoustic", "advance_nested_phi_w", (nz, ny, nx))
         frame_args = (
             state.ph_pp, state.w_pp, state.p_pp, state.al_pp, state.rph_t,
             state.rw_t, state.th_pp, state.mup, state.mu_pp, state.mub2d,
@@ -640,7 +649,7 @@ def prepare_acoustic_substep_launch(state: DomainState, cfg: RunConfig,
         mu_kernel(column_grid, block, mu_args)
         if exact_frame_kernel is not None:
             exact_frame_kernel(column_grid, block, exact_frame_args)
-        w_kernel(column_grid, block, w_args)
+        w_kernel(w_grid, w_block, w_args)
         if upper_wind_limiter is not None:
             upper_wind_limiter()
         if frame_kernel is not None:
@@ -680,13 +689,14 @@ def acoustic_substep(state: DomainState, cfg: RunConfig,
         coefficients = prepare_acoustic_coefficients(state, cfg, dtau, cq=cq)
     c2a, a, alpha, gam = coefficients[:4]
     cqu, cqv, cqw, use_cq = cq
-    blocks = (ny * nx + _THREADS - 1) // _THREADS
+    w_threads = _W_PHI_MSF_THREADS if state.has_msf and not WRF_EXACT else _THREADS
+    blocks = (ny * nx + w_threads - 1) // w_threads
 
     dampmag = damp_magnitude(cfg, dtau)
     # Map factors (Task 3): the _msf variant carries WRF advance_w's msfty
     # factors; the msf==1 kernel stays byte-identical to Phase 2.
     name = "advance_w_phi_msf" if state.has_msf else "advance_w_phi"
-    kernel = _w_phi_kernel(name, nz)
+    kernel = _w_phi_kernel(name, nz, ny, nx)
     args = [state.w_pp, state.ph_pp, state.rw_t, state.rph_t, state.ww_pp,
             state.mu_pp, mu_old, state.th_pp, th_old,
              state.thp, state.thb, state.php, state.phb, state.alt, c2a,
@@ -706,7 +716,7 @@ def acoustic_substep(state: DomainState, cfg: RunConfig,
               np.int32(_mass_w_boundary_zone(cfg)), _base3d(state),
               np.int32(cfg.top_lid),
               np.int32(nz), np.int32(ny), np.int32(nx)]
-    kernel((blocks,), (_THREADS,), tuple(args))
+    kernel((blocks,), (w_threads,), tuple(args))
 
     upper_wind_limiter = prepare_upper_wind_limiter(state, cfg, dtau)
     if upper_wind_limiter is not None:
@@ -733,7 +743,7 @@ def acoustic_substep(state: DomainState, cfg: RunConfig,
         # also repeats dyn's fused pressure diagnosis on the changed frame.
         n = ny * nx
         blocks = (n + _THREADS - 1) // _THREADS
-        get_kernel("acoustic", "advance_nested_phi_w")(
+        get_kernel("acoustic", "advance_nested_phi_w", (nz, ny, nx))(
             (blocks,), (_THREADS,),
             (state.ph_pp, state.w_pp, state.p_pp, state.al_pp, state.rph_t,
              state.rw_t, state.th_pp, state.mup, state.mu_pp, state.mub2d,

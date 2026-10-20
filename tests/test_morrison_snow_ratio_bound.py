@@ -1,12 +1,7 @@
-"""Morrison's forecast SR is the frozen fraction, [0, 1]; the kernel's is WRF's.
+"""Independent frozen/total FP32 sums can put Morrison SR above one.
 
-WRF v4.6.1 forms ``SR = SNOWRT / (PRECRT + 1E-12)`` from signed fallout
-sums, so its own SR leaves [0, 1] (401 of 24,576 stress columns below
-zero, 208 above one, through WRF's MP_MORR_TWO_MOMENT), and the physics
-driver refuses SR outside [0, 1].  Before ``bound_snow_ratio`` the
-transcription stopped a 20-step Grell-Freitas restart run at SR =
--4.69e-11 (tests/test_restart.py::test_short_grell_freitas_restart_is_bit_identical,
-which is the end-to-end regression for this).
+Negative sedimentation is fixed at its source; the former lower floor is
+retired, so a negative value remains visible to the physics validator.
 """
 
 from __future__ import annotations
@@ -49,7 +44,7 @@ def test_bound_snow_ratio_moves_only_out_of_range_words():
     sr = cp.asarray(values)
     bound_snow_ratio(sr)
     got = cp.asnumpy(sr)
-    want = np.asarray([0.0, 0.0, 0.0, 1e-30, 0.25, 1.0, 1.0, 1.0, np.nan],
+    want = np.asarray([-4.68609561e-11, -1.0, 0.0, 1e-30, 0.25, 1.0, 1.0, 1.0, np.nan],
                       dtype=f32)
     inside = (values >= 0) & (values <= 1)
     # In-range words are WRF's, bit for bit.

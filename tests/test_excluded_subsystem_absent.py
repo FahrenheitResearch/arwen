@@ -249,6 +249,8 @@ _TIER1_RE = re.compile("|".join(re.escape(t) for t in _TIER1), re.I)
 #: file here is a decision, not a fix.  Spelled in halves, like the list.
 _RADAR_WRITER_FILES = frozenset("".join(parts) for parts in (
     ("NOTICE",),
+    # This package notice reproduces the root notice's required attributions.
+    ("tools/hf_space/NOTICE-arwen",),
     ("docs/simulated-radar.md",),
     ("licenses/LICENSE-", "re", "cast-radar-tools-Apache-2.0.txt"),
     ("licenses/LICENSE-", "re", "cast-radar-tools-MIT.txt"),
@@ -259,6 +261,8 @@ _RADAR_WRITER_FILES = frozenset("".join(parts) for parts in (
     # verbatim (tools/update_zarr_license_notice.py), so since 2.8.5 they
     # carry the same radar-writer attribution and nothing else of it.
     ("licenses/THIRD-PARTY-LICENSES-zarr-binary.txt",),
+    # The Hugging Face sample Space ships NOTICE verbatim as NOTICE-arwen (2.9.3).
+    ("tools/hf_space/NOTICE-arwen",),
     ("tests/test_licence_notices_ship.py",),
     ("tools/rustwx/Cargo.lock",),
     ("tools/rustwx/Cargo.toml",),

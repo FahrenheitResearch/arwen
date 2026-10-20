@@ -27,6 +27,74 @@ INTERFACE_COORDINATE_ARRAYS = (
 )
 
 
+def planned_source_top_pressure_pa(source: str) -> float | None:
+    """Read the planned atmosphere's top from its registry or level inventory.
+
+    Extendable fetches can reach beyond their certified default inventory.
+    Model-level products without a declared pressure bound, and caller-owned
+    mappings, still need the decoded-data check during preparation.
+    """
+    import json
+
+    from gpuwm.source_adapters import get_source_adapter
+    from gpuwm.source_authorities import packaged_authorities
+
+    adapter = get_source_adapter(source)
+    if adapter.extendable_source_top_pa is not None:
+        return float(adapter.extendable_source_top_pa)
+    if adapter.certified_source_top_pa is not None:
+        return float(adapter.certified_source_top_pa)
+    if adapter.packaged_profile is None:
+        return None
+    mapping = json.loads(packaged_authorities(adapter.packaged_profile)["mapping"].read_text())
+    vertical = mapping.get("coordinates", {}).get("vertical", {})
+    if vertical.get("kind") != "pressure" or not vertical.get("levels"):
+        return None
+    units = str(vertical.get("units", "Pa")).strip().lower()
+    if units in ("pa", "pascal", "pascals"):
+        scale = 1.0
+    elif units in ("hpa", "mb", "mbar", "millibar", "millibars"):
+        scale = 100.0
+    else:
+        raise ValueError(f"source {source!r}: unknown pressure inventory units {units!r}")
+    return min(float(level) for level in vertical["levels"]) * scale
+
+
+def validate_config_source_top(raw: Mapping, *, context: str) -> str | None:
+    """Refuse unsupported model tops before acquisition, decode or GPU sizing.
+
+    This uses the same parsed configuration at the planning and check doors.
+    Without a named source or declared pressure top there is no early verdict;
+    the decoded-data check remains authoritative for the supplied atmosphere.
+    """
+    fetch = raw.get("fetch") or {}
+    shared = raw.get("shared") or {}
+    if not isinstance(fetch, dict) or not isinstance(shared, dict):
+        return None  # the owning schema reports malformed tables
+    source = fetch.get("source")
+    p_top = shared.get("p_top", 0.0)
+    if not source or isinstance(p_top, bool) or not isinstance(p_top, (int, float)):
+        return None
+    if not math.isfinite(p_top) or p_top <= 0.0:
+        return None  # the vertical schema reports an invalid requested top
+    source_top = planned_source_top_pressure_pa(source)
+    if source_top is None:
+        return None
+    detail = (f"source {source!r} top is {source_top / 100:g} hPa "
+              f"({source_top:g} Pa); requested p_top = {p_top:g} Pa "
+              f"({p_top / 100:g} hPa)")
+    if p_top < source_top:
+        from gpuwm.ingest.source_coverage import VerticalLadderRefusal
+
+        raise VerticalLadderRefusal(
+            f"{context}: model-top check REFUSED: {detail}. The model levels "
+            "above the source atmosphere would require extrapolation past "
+            "the available analysis, so this run cannot be initialized",
+            remedy=f"raise [shared].p_top to {source_top:g} Pa or above, "
+                   f"or choose a source reaching {p_top:g} Pa")
+    return f"model-top check PASS: {detail}"
+
+
 def validate_explicit_eta_grid(
     eta_levels,
     *,

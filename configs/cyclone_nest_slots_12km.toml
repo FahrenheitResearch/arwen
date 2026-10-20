@@ -21,7 +21,7 @@
 # nest's footprint, and two triggers crossing at one boundary cannot
 # claim one storm (gpuwm.core.nest_spawn.SpawnController.evaluate_all).
 #
-# WHY THE SURFACES ARE 850 hPa AND NOT SEA LEVEL.  MSLP is a REDUCTION --
+# SPAWN/RETIRE USE 850 hPa; FOLLOW USES THE MSLP MINIMUM. MSLP is a REDUCTION --
 # below ground it is an extrapolation through a fictitious column, so an
 # island in the footprint injects a terrain signal into the field that
 # decides where the nest goes -- and its threshold is an ABSOLUTE hPa
@@ -34,7 +34,9 @@
 # is the sea-level form; it is the one whose threshold is in hPa, and the
 # two threshold bands are disjoint so a config that means one and would
 # be read as the other refuses at load rather than tracking the wrong
-# thing.
+# thing. The spawn/retire thresholds below use that relative height depth.
+# Once a nest exists, its follower centres the hurricane's MSLP minimum,
+# with a motion-derived budget bounded by overlap and the parent halo.
 #
 # THE NUMBERS, and what each one is measured in:
 #
@@ -60,20 +62,13 @@
 #   rearm  cooldown_s           6 h of slot downtime before it may take
 #                               another storm, and two firings apiece.
 #
-# THE MOVEMENT BOUNDS.  `min_overlap_fraction` is the one that states the
-# physics: a move keeps 0.7 of the child, so at most 0.3 of it is strip
-# the child has to spin up.  `max_move_parent_cells` and the follower's
-# own `max_shift_cells` are DERIVED from it and are not free to disagree
-# with it: an overlap floor f admits a per-axis magnitude of 1 - sqrt(f)
-# of the nest's own width in parent cells on the binding DIAGONAL move,
-# and each slot below is 40 parent cells wide, so
-# 40 * (1 - sqrt(0.7)) = 6.53 -> 6.  A maximum declared above that number
-# is unreachable: the move passes the per-axis bound and the floor then
-# refuses it, which is exactly what ended a cyclone quick forecast at its
-# first relocation cadence.  The derivation is
-# gpuwm.core.nest_relocation.max_parent_cells_for_overlap and the pair is
-# checked for every shipped configuration by
-# tests/test_relocation_overlap_clamp.py.
+# THE MOVEMENT BOUNDS. Keep at least 70% of the nest after each move.
+# The single-axis proposal ceiling is 30% of the nest's width in parent
+# cells: 12 on the 40-parent-cell slots below. The engine clamps each
+# actual direction to the overlap floor, so a diagonal can move only six
+# cells per axis while a zonal move can use all twelve. The two explicit
+# caps describe the geometry; MSLP following uses measured motion and the
+# runner's overlap/halo bounds instead of a fixed per-move ceiling.
 #
 # THE CADENCES.  With no tree-level `[relocation]` table the spawn-leg
 # length is the ROOT's history interval -- 3600 s here -- so every
@@ -222,7 +217,7 @@ diff_6th_factor = 0.1
 spawn = { trigger = "pressure", threshold = 25.0, level_hpa = 850.0, radius_km = 60.0, earliest_s = 10800.0, latest_s = 151200.0 }
 retire = { trigger = "pressure", threshold = 10.0, level_hpa = 850.0, sustained_s = 7200.0, min_lifetime_s = 21600.0 }
 rearm = { max_firings = 2, cooldown_s = 21600.0 }
-follow = { field = "pressure", threshold = 25.0, level_hpa = 850.0, radius_km = 60.0, search_margin_cells = 20, min_shift_cells = 2, max_shift_cells = 6, cooldown_seconds = 3600.0, cadence_seconds = 900.0, max_move_parent_cells = 6, min_overlap_fraction = 0.7 }
+follow = { field = "pressure", threshold = 1100.0, level_hpa = 0.0, radius_km = 60.0, search_margin_cells = 20, min_shift_cells = 2, max_shift_cells = 12, cooldown_seconds = 900.0, cadence_seconds = 900.0, max_move_parent_cells = 12, min_overlap_fraction = 0.7, pressure_center = "minimum", fallback_level_hpa = 850.0, fallback_deficit_m = 25.0 }
 
 # SLOT B -- the middle third.
 [[domain]]
@@ -244,7 +239,7 @@ diff_6th_factor = 0.1
 spawn = { trigger = "pressure", threshold = 25.0, level_hpa = 850.0, radius_km = 60.0, earliest_s = 10800.0, latest_s = 151200.0 }
 retire = { trigger = "pressure", threshold = 10.0, level_hpa = 850.0, sustained_s = 7200.0, min_lifetime_s = 21600.0 }
 rearm = { max_firings = 2, cooldown_s = 21600.0 }
-follow = { field = "pressure", threshold = 25.0, level_hpa = 850.0, radius_km = 60.0, search_margin_cells = 20, min_shift_cells = 2, max_shift_cells = 6, cooldown_seconds = 3600.0, cadence_seconds = 900.0, max_move_parent_cells = 6, min_overlap_fraction = 0.7 }
+follow = { field = "pressure", threshold = 1100.0, level_hpa = 0.0, radius_km = 60.0, search_margin_cells = 20, min_shift_cells = 2, max_shift_cells = 12, cooldown_seconds = 900.0, cadence_seconds = 900.0, max_move_parent_cells = 12, min_overlap_fraction = 0.7, pressure_center = "minimum", fallback_level_hpa = 850.0, fallback_deficit_m = 25.0 }
 
 # SLOT C -- the eastern third, where a storm entering the basin is first
 # resolvable.  Its window opens with the others; the exclusion rule, not
@@ -268,7 +263,7 @@ diff_6th_factor = 0.1
 spawn = { trigger = "pressure", threshold = 25.0, level_hpa = 850.0, radius_km = 60.0, earliest_s = 10800.0, latest_s = 151200.0 }
 retire = { trigger = "pressure", threshold = 10.0, level_hpa = 850.0, sustained_s = 7200.0, min_lifetime_s = 21600.0 }
 rearm = { max_firings = 2, cooldown_s = 21600.0 }
-follow = { field = "pressure", threshold = 25.0, level_hpa = 850.0, radius_km = 60.0, search_margin_cells = 20, min_shift_cells = 2, max_shift_cells = 6, cooldown_seconds = 3600.0, cadence_seconds = 900.0, max_move_parent_cells = 6, min_overlap_fraction = 0.7 }
+follow = { field = "pressure", threshold = 1100.0, level_hpa = 0.0, radius_km = 60.0, search_margin_cells = 20, min_shift_cells = 2, max_shift_cells = 12, cooldown_seconds = 900.0, cadence_seconds = 900.0, max_move_parent_cells = 12, min_overlap_fraction = 0.7, pressure_center = "minimum", fallback_level_hpa = 850.0, fallback_deficit_m = 25.0 }
 
 # Advisory data-acquisition hints (validated, not executed); keys mirror
 # `gpuwm fetch` flags.

@@ -1,6 +1,6 @@
 {
   "revision": "bf8a9a71d93e24748a872f04bea23d5bfe818ecd",
-  "source_adapters_sha256": "2ae2fff22ef212c08984bd0f28844c832b8aa9b4ec17b4d5a8b1194fdad56db4",
+  "source_adapters_sha256": "d5a7096f3c9db505341d234f1bea183fb9677bcbed7beaded84ec20913884634",
   "frame_header_sha256": "834081c12b05041e1cadf2011ba4b10d56613b77a5eaef600e927a9d5a05e8eb",
   "source_files": [
     "gpuwm/source_adapters.py",
@@ -14,6 +14,10 @@
     {
       "commit": "36b04f1388ccb3471c1040bbd0bf3f5ca0d61d6f",
       "why": "Records where the rap-native and hrrr-native archives start: the rap-native adapter gained an archive window after the baseline revision. Only that commit's gpuwm/source_adapters.py hunks were applied to the retained copy; every other unmarked adapter still compares against the revision above."
+    },
+    {
+      "commit": "c13785dfb341ad561416b6f3d951058f80c3268e",
+      "why": "Refresh acquired, generated and exported source metadata at the reviewed release candidate. Remove only the source row exact-grid opt-ins; retain the original frame-header oracle."
     }
   ]
 }

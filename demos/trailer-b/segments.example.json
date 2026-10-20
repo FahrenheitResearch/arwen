@@ -1,0 +1,98 @@
+{
+  "schema": "gpuwm-segment-source-v1",
+  "latitude": "lat",
+  "longitude": "lon",
+  "time": "Time",
+  "terrain": "HGT",
+  "terrain_authority": "exports/segment-a/wrfout_d01_1974-04-03_12_00_00",
+  "start": "1974-04-03T12:00:00Z",
+  "end": "1974-04-03T12:10:00Z",
+  "cadence_seconds": 300,
+  "required_columns": {
+    "T": {
+      "units": "K",
+      "vertical_coordinate": "bottom_top"
+    },
+    "P": {
+      "units": "Pa",
+      "vertical_coordinate": "bottom_top"
+    },
+    "PB": {
+      "units": "Pa",
+      "vertical_coordinate": "bottom_top"
+    },
+    "PH": {
+      "units": "m2 s-2",
+      "vertical_coordinate": "bottom_top_stag"
+    },
+    "PHB": {
+      "units": "m2 s-2",
+      "vertical_coordinate": "bottom_top_stag"
+    },
+    "W": {
+      "units": "m s-1",
+      "vertical_coordinate": "bottom_top_stag"
+    },
+    "RADAR_U_EARTH": {
+      "units": "m s-1",
+      "vertical_coordinate": "bottom_top"
+    },
+    "RADAR_V_EARTH": {
+      "units": "m s-1",
+      "vertical_coordinate": "bottom_top"
+    },
+    "QVAPOR": {
+      "units": "kg kg-1",
+      "vertical_coordinate": "bottom_top"
+    },
+    "QCLOUD": {
+      "units": "kg kg-1",
+      "vertical_coordinate": "bottom_top"
+    },
+    "QRAIN": {
+      "units": "kg kg-1",
+      "vertical_coordinate": "bottom_top"
+    },
+    "QICE": {
+      "units": "kg kg-1",
+      "vertical_coordinate": "bottom_top"
+    },
+    "QSNOW": {
+      "units": "kg kg-1",
+      "vertical_coordinate": "bottom_top"
+    },
+    "QGRAUP": {
+      "units": "kg kg-1",
+      "vertical_coordinate": "bottom_top"
+    }
+  },
+  "required_surfaces": {
+    "HGT": "m",
+    "PSFC": "Pa",
+    "T2": "K",
+    "Q2": "kg kg-1",
+    "TSK": "K",
+    "LANDMASK": "1"
+  },
+  "supplement_role": "hex_in_band_surface",
+  "segments": [
+    {
+      "id": "segment-a",
+      "mesh": "segment-a/grid.nc",
+      "init": "segment-a/init.nc",
+      "frames": [
+        "exports/segment-a/wrfout_d01_1974-04-03_12_00_00",
+        "exports/segment-a/wrfout_d01_1974-04-03_12_05_00"
+      ]
+    },
+    {
+      "id": "segment-b",
+      "mesh": "segment-b/grid.nc",
+      "init": "segment-b/init.nc",
+      "frames": [
+        "exports/segment-b/wrfout_d01_1974-04-03_12_05_00",
+        "exports/segment-b/wrfout_d01_1974-04-03_12_10_00"
+      ]
+    }
+  ]
+}

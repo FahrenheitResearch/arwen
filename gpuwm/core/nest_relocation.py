@@ -638,7 +638,7 @@ def overlap_fraction_for_shift(shift_i: int, shift_j: int, *,
 
 def max_parent_cells_for_overlap(min_overlap_fraction, *,
                                  parent_grid_ratio: int, child_nx: int,
-                                 child_ny: int) -> int | None:
+                                 child_ny: int, diagonal: bool = True) -> int | None:
     """The per-axis parent-cell move an overlap floor implies.
 
     The two bounds in :func:`check_admissible` are not independent, and a
@@ -656,13 +656,22 @@ def max_parent_cells_for_overlap(min_overlap_fraction, *,
     parent cells.  ``None`` in means unbounded and comes back as
     ``None``.  The result is never negative and a floor of 1.0 gives 0:
     a floor that keeps the whole child admits only the null move.
+
+    ``diagonal=False`` returns the single-axis proposal ceiling
+    ``N * (1 - f)``. Use it when the runner subsequently clamps the actual
+    direction with :func:`clamp_shift_to_overlap`; this preserves greater
+    axial reach without reducing the required overlap on diagonal moves.
     """
     if min_overlap_fraction is None:
         return None
     floor = float(min_overlap_fraction)
     ratio = int(parent_grid_ratio)
     narrow = min(int(child_nx), int(child_ny)) / ratio
-    return max(0, int(math.floor(narrow * (1.0 - math.sqrt(floor)) + _CELL_TOL)))
+    # A proposal ceiling need not assume a diagonal displacement: the
+    # runner clamps the actual vector to the overlap floor. Applying the
+    # diagonal bound to a zonal move needlessly halves its available reach.
+    retained = math.sqrt(floor) if diagonal else floor
+    return max(0, int(math.floor(narrow * (1.0 - retained) + _CELL_TOL)))
 
 
 def clamp_shift_to_overlap(shift_i: int, shift_j: int, *,

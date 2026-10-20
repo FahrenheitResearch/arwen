@@ -1941,7 +1941,8 @@ def test_a_new_registry_row_appears_with_no_code_change(capsys, monkeypatch):
     from gpuwm import source_adapters as registry
 
     grafted = dataclasses.replace(
-        registry.source_adapters()[0], source_id="probe-arbitrary-model",
+        next(row for row in registry.source_adapters() if row.runnable),
+        source_id="probe-arbitrary-model",
         aliases=("probe-arbitrary-alias",), display_name=None)
     monkeypatch.setattr(
         registry, "_ADAPTERS", (*registry.source_adapters(), grafted))
@@ -1971,18 +1972,33 @@ def test_a_new_registry_row_appears_with_no_code_change(capsys, monkeypatch):
 
 def test_every_sources_row_declares_its_fetch_kind_from_the_route_tables(
         capsys):
-    """The census is the three tables', computed here, never a literal."""
+    """The census is the registry's owners and the three tables', never a literal.
+
+    A row whose registry entry names an acquisition owner (a model-table
+    family that runs the model to make its bytes) is fetched by that
+    owner, ahead of the three transport tables.
+    """
 
     from gpuwm import fetch_routes
+    from gpuwm.source_adapters import source_adapters
 
     document, _raw = _sources_document(capsys)
+    owners = {adapter.source_id: adapter.acquisition_owner
+              for adapter in source_adapters() if adapter.acquisition_owner}
     table = set(fetch_routes.route_ids())
     legacy = set(fetch_routes.LEGACY_ROUTE_SOURCES)
     refused = set(fetch_routes.refusal_ids())
 
-    census = {"table_route": 0, "legacy_transport": 0, "refused": 0, "none": 0}
+    census = {"acquisition_owner": 0, "table_route": 0, "legacy_transport": 0,
+              "refused": 0, "none": 0}
     for row in document["sources"]:
         source_id = row["source_id"]
+        if source_id in owners:
+            assert row["fetch"]["kind"] == "acquisition_owner", source_id
+            assert row["fetch"]["acquisition_owner"] == owners[source_id]
+            assert row["fetch"]["route_id"] is None
+            census["acquisition_owner"] += 1
+            continue
         if source_id in table:
             expected = "table_route"
         elif source_id in legacy:
@@ -2007,7 +2023,7 @@ def test_every_sources_row_declares_its_fetch_kind_from_the_route_tables(
             assert row["fetch"]["refusal"]
             assert "[[explain]]" not in row["fetch"]["refusal"]
     assert sum(census.values()) == document["source_count"]
-    assert census["table_route"] == len(table & set(
+    assert census["table_route"] == len((table - set(owners)) & set(
         row["source_id"] for row in document["sources"]))
 
 
@@ -2091,7 +2107,8 @@ def test_a_new_registry_row_reaches_the_reply_with_its_name_and_credential(
                   "download is rejected by the provider"),
         obtain_url="https://example.invalid/keys")
     grafted = dataclasses.replace(
-        registry.source_adapters()[0], source_id="probe-arbitrary-model",
+        next(row for row in registry.source_adapters() if row.runnable),
+        source_id="probe-arbitrary-model",
         display_name="Probe Arbitrary Model 9000", aliases=(),
         credentials=(credential,))
     monkeypatch.setattr(
