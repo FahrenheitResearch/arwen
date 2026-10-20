@@ -3,7 +3,7 @@
 ## 2.9.3 (2026-10-19)
 
 New:
-- A whole-step driver for nested domains and ensembles: the Canary nested 24 h case runs in 111 s on an RTX 5090 (144 s instead of 171 s on an RTX 4090) and the Swiss case in 85 s instead of 112 s (RTX 4090); the HRRR-shape 24 h run with products finishes 7 percent sooner (RTX 5090).
+- A whole-step driver for nested domains and ensembles: nested 24 h case A runs in 111 s on an RTX 5090 (144 s instead of 171 s on an RTX 4090) and nested 24 h case B in 85 s instead of 112 s (RTX 4090); the HRRR-shape 24 h run with products finishes 7 percent sooner (RTX 5090).
 - `gpuwm ensemble` fills a WoFS-shape ensemble to 36 members from any analysis: the source's own members, then time-lagged cycles, then perturbation fill, with every member's provenance written beside its output.
 - An ensemble sounding window: the mean, any member, or all members with the P10-P90 band, from plain ensemble output.
 - Coupled NextGen hydro is available with `--hydro SETTINGS.toml` and a prepared hydrofabric; a forecast without one records the gap in its receipt.

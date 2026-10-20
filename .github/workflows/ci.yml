@@ -1,4 +1,10 @@
 # Hosted jobs exercise both supported operating systems without a GPU.
+# Publication is gated on the fast jobs only (syntax, imports and static
+# qualification, both operating systems; CI_GATE_JOBS in
+# tools/promote_prepared_release.py). cpu, native and oracles run on every push
+# and nightly and do not gate: the same batteries run locally before every
+# push, and their hosted repeat made each release wait about two hours
+# (Drew, 2026-10-20). A red there is a defect for the next release.
 # The manual GPU job requires a trusted default-branch dispatch and a staged
 # WRF reference bundle. An unrun GPU job is not evidence of device correctness.
 name: ci
@@ -14,6 +20,8 @@ on:
     branches: ['**']
     tags-ignore: ['**']
   pull_request:
+  schedule:
+    - cron: '0 9 * * *'
   workflow_dispatch:
     inputs:
       run_gpu:
@@ -25,7 +33,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.repository }}-${{ github.ref }}
+  group: ci-${{ github.repository }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 defaults:

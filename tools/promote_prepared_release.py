@@ -831,6 +831,19 @@ CI_WORKFLOW = "ci.yml"
 #: These events check out head_sha itself. A pull-request run checks out a
 #: synthetic merge commit, so its success cannot qualify the release commit.
 CI_CHECKOUT_EVENTS = frozenset({"push", "workflow_dispatch"})
+#: The ci.yml jobs that gate publication, by job name prefix and the number of
+#: matrix legs each must show (Drew, 2026-10-20: "if we have to wait more than
+#: 10 minutes then ... every update is days long"). These finish in about four
+#: minutes on hosted runners (run 39451218267: syntax 1 min, imports 1-3 min,
+#: static qualification 2-4 min) and keep Windows in the gate: the imports leg
+#: and the exact static qualification run on windows-2025. The cpu batteries
+#: (72 and 112 min), native (32 and 57 min) and oracles (28 and 53 min) keep
+#: running on every push and nightly but do not gate: the same batteries run
+#: locally before every push (Stage 1 on a Linux host, the local ci emulation
+#: with the Windows cpu job on the desktop, the win_amd64 wheel smoke), so
+#: GitHub's repeat of them gated nothing new and made each release wait hours.
+#: A red there is a defect for the next release.
+CI_GATE_JOBS = {"syntax": 1, "imports (": 2, "Static qualification (": 2}
 
 
 def _release_ci_runs(runs: list[dict], commit: str) -> list[dict]:
@@ -879,11 +892,38 @@ def judge_ci_runs(runs: list[dict], commit: str) -> tuple[str, str]:
     # check. The API returns the current attempt of each run id.
     latest = max(runs, key=_ci_attempt_order)
     identity = f"{CI_WORKFLOW} run {latest['id']} on {commit}"
+    if latest.get("status") == "completed" and latest.get("conclusion") == "success":
+        return "passed", f"{identity} succeeded"
+    jobs = latest.get("jobs")
+    if isinstance(jobs, list):
+        return _judge_gate_jobs(jobs, identity, latest.get("status") == "completed")
     if latest.get("status") != "completed":
         return "pending", f"{identity} has not finished"
-    if latest.get("conclusion") != "success":
-        return "refused", f"{identity} did not pass: {latest['id']}={latest.get('conclusion')}"
-    return "passed", f"{identity} succeeded"
+    return "refused", f"{identity} did not pass: {latest['id']}={latest.get('conclusion')}"
+
+
+def _judge_gate_jobs(jobs: list[dict], identity: str, completed: bool) -> tuple[str, str]:
+    """Judge one run attempt on its CI_GATE_JOBS alone; the other jobs report but do not gate.
+
+    A finished run that lacks a gate leg can never supply it, so it is refused, not waited on.
+    """
+    failed, waiting, missing = [], [], []
+    for prefix, legs in CI_GATE_JOBS.items():
+        rows = [job for job in jobs if isinstance(job, dict) and str(job.get("name", "")).startswith(prefix)]
+        if len(rows) < legs:
+            missing.append(f"{prefix.strip(' (')} ({len(rows)} of {legs} legs)")
+        for job in rows:
+            if job.get("status") != "completed":
+                waiting.append(str(job.get("name")))
+            elif job.get("conclusion") != "success":
+                failed.append(f"{job.get('name')}={job.get('conclusion')}")
+    if failed:
+        return "refused", f"{identity}: gate jobs did not pass: {', '.join(failed)}"
+    if missing and completed:
+        return "refused", f"{identity} finished without gate jobs: {', '.join(missing)}"
+    if waiting or missing:
+        return "pending", f"{identity}: gate jobs not finished: {', '.join(waiting + missing)}"
+    return "passed", f"{identity}: every gate job passed ({', '.join(CI_GATE_JOBS)}); other jobs do not gate"
 
 
 def _ci_workflow_runs(client: GitHub, commit: str) -> list[dict]:
@@ -895,12 +935,26 @@ def _ci_workflow_runs(client: GitHub, commit: str) -> list[dict]:
         require(isinstance(rows, list) and all(isinstance(row, dict) for row in rows),
                 "GitHub workflow runs response has no valid run list")
         result.extend(rows)
-        if len(rows) < 100:
-            return result
         total = payload.get("total_count")
-        if type(total) is int and total <= len(result):
-            return result
+        if len(rows) < 100 or (type(total) is int and total <= len(result)):
+            return _with_gate_jobs(client, result, commit)
     raise PublicationError("CI run inventory exceeds the bounded pagination limit; cannot prove its latest release check")
+
+
+def _with_gate_jobs(client: GitHub, runs: list[dict], commit: str) -> list[dict]:
+    """Attach the latest release run's current-attempt jobs, so it can be judged on CI_GATE_JOBS before it ends."""
+    selected = _release_ci_runs(runs, commit)
+    if not selected:
+        return runs
+    latest = max(selected, key=_ci_attempt_order)
+    if latest.get("status") == "completed" and latest.get("conclusion") == "success":
+        return runs
+    payload = client.json(f"/actions/runs/{latest['id']}/attempts/{latest['run_attempt']}/jobs?per_page=100")
+    jobs = payload.get("jobs") if isinstance(payload, dict) else None
+    require(isinstance(jobs, list) and all(isinstance(job, dict) for job in jobs),
+            "GitHub jobs response for the latest CI run has no valid job list")
+    latest["jobs"] = jobs
+    return runs
 
 
 def ci_passed(args, *, sleep: Callable[[float], None] = time.sleep,

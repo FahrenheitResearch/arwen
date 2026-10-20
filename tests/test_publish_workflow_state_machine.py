@@ -466,8 +466,17 @@ def test_ci_inventory_follows_pagination_before_judging_a_commit(publication):
     assert publication.judge_ci_runs(runs, COMMIT)[0] == "passed"
 
 
-def _ci_gate(publication, monkeypatch, tmp_path, pages):
+def _jobs(gate="completed", gate_conclusion="success", cpu="in_progress", cpu_conclusion=None):
+    names = ["syntax", "imports (ubuntu-24.04)", "imports (windows-2025)",
+             "Static qualification (Linux UNQUALIFIED)", "Static qualification (Windows exact comparisons)"]
+    rows = [{"name": name, "status": gate, "conclusion": gate_conclusion} for name in names]
+    return rows + [{"name": f"{job} ({os})", "status": cpu, "conclusion": cpu_conclusion}
+                   for job in ("cpu", "native", "oracles") for os in ("ubuntu-24.04", "windows-2025")]
+
+
+def _ci_gate(publication, monkeypatch, tmp_path, pages, jobs=None):
     seen = []
+    jobs = _jobs(gate="in_progress", gate_conclusion=None) if jobs is None else jobs
 
     class FakeGitHub:
         def __init__(self, repository):
@@ -475,6 +484,9 @@ def _ci_gate(publication, monkeypatch, tmp_path, pages):
 
         def json(self, suffix, *, data=None):
             assert data is None, "the ci gate never writes"
+            if "/jobs?" in suffix:
+                assert suffix.startswith("/actions/runs/1/attempts/1/jobs"), suffix
+                return {"jobs": jobs}
             seen.append(suffix)
             return {"workflow_runs": pages[min(len(seen), len(pages)) - 1]}
 
@@ -498,7 +510,8 @@ def test_the_ci_gate_waits_for_running_ci_then_records_the_pass(publication, mon
 
 
 def test_the_ci_gate_refuses_a_failed_run_and_gives_up_on_one_that_never_ends(publication, monkeypatch, tmp_path):
-    run, _seen, args = _ci_gate(publication, monkeypatch, tmp_path, [[_run(COMMIT, conclusion="failure")]])
+    run, _seen, args = _ci_gate(publication, monkeypatch, tmp_path, [[_run(COMMIT, conclusion="failure")]],
+                                jobs=_jobs(gate_conclusion="failure", cpu="completed", cpu_conclusion="success"))
     with pytest.raises(publication.PublicationError, match="did not pass"):
         run()
     assert not args.out.exists()
@@ -506,3 +519,26 @@ def test_the_ci_gate_refuses_a_failed_run_and_gives_up_on_one_that_never_ends(pu
     with pytest.raises(publication.PublicationError, match="gave up"):
         run()
     assert len(seen) == 6 and not args.out.exists()
+
+
+def test_ci_is_judged_on_its_fast_gate_jobs_and_the_long_batteries_do_not_gate(publication, monkeypatch, tmp_path):
+    """Drew 2026-10-20: the release must not wait ~2 h for the hosted cpu batteries that already ran locally."""
+    judge = publication.judge_ci_runs
+    running = dict(_run(COMMIT, "in_progress", None), jobs=_jobs())
+    assert judge([running], COMMIT)[0] == "passed"
+    cpu_red = dict(_run(COMMIT, conclusion="failure"), jobs=_jobs(cpu="completed", cpu_conclusion="failure"))
+    assert judge([cpu_red], COMMIT)[0] == "passed"
+    gate_red = dict(_run(COMMIT, conclusion="failure"), jobs=_jobs(gate_conclusion="failure"))
+    assert judge([gate_red], COMMIT)[0] == "refused"
+    waiting = dict(_run(COMMIT, "in_progress", None), jobs=_jobs(gate="in_progress", gate_conclusion=None))
+    assert judge([waiting], COMMIT)[0] == "pending"
+    one_leg = dict(_run(COMMIT, "in_progress", None),
+                   jobs=[job for job in _jobs() if job["name"] != "imports (windows-2025)"])
+    verdict, why = judge([one_leg], COMMIT)
+    assert verdict == "pending" and "imports" in why
+    skipped = dict(_run(COMMIT, conclusion="failure"), jobs=_jobs(gate_conclusion="skipped"))
+    assert judge([skipped], COMMIT)[0] == "refused"
+    run, seen, args = _ci_gate(publication, monkeypatch, tmp_path, [[_run(COMMIT, "in_progress", None)]],
+                               jobs=_jobs())
+    run()
+    assert len(seen) == 1 and json.loads(args.out.read_text(encoding="utf-8"))["status"] == "PASS"

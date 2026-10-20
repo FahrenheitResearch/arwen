@@ -182,13 +182,13 @@ These timings exclude installation and geography download. They describe
 those configurations and cache states, not a throughput guarantee for other grids.
 
 Whole-step driver runs of the 2.9.3 candidate, recorded on 2026-10-18 and
-2026-10-19 (the Swiss case on one RTX 4090, no products; the Canary case on
+2026-10-19 (case B on one RTX 4090, no products; case A on
 both cards; the HRRR-shape case on one RTX 5090 with products on):
 
 | Configuration | Forecast length | Wall time |
 | --- | --- | --- |
-| Canary nested, 1600 parent and 4800 child steps | 24 h | 111.0 s process, 101.5 s integration on an RTX 5090 (products on cost 0 s); 144.1 s on the RTX 4090, 171.2 s there before the driver |
-| Swiss nested, 4800 steps | 24 h | 84.8 s (111.8 s before the driver) |
+| Nested 24 h case A, 1600 parent and 4800 child steps | 24 h | 111.0 s process, 101.5 s integration on an RTX 5090 (products on cost 0 s); 144.1 s on the RTX 4090, 171.2 s there before the driver |
+| Nested 24 h case B, 4800 steps | 24 h | 84.8 s (111.8 s before the driver) |
 | HRRR-shape, 796 x 636 x 49 at 3 km, dt 15 s, 5760 steps, products on | 24 h | 1944.8 s whole command (2092.5 s before), 1495.1 s integration |
 
 ## Documentation
