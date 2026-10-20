@@ -126,11 +126,16 @@ def test_every_licence_text_is_named_by_the_notice_and_vice_versa() -> None:
     _requires_source_tree()
     notice = _read(NOTICE)
 
-    empty = [p.name for p in sorted(LICENSES.iterdir()) if p.stat().st_size == 0]
+    # Files, not entries: licenses/soundings/ is a directory (the public sounding
+    # renderer's dependency notices).  Reading entries, 2.9.3's public CI run
+    # 39368051825 reported "licence texts with no text: ['soundings']" on
+    # windows-2025, where a directory's st_size is 0 (4096 on ext4, so the Linux
+    # job passed and the desktop's filesystem hid it too).
+    texts = [p.relative_to(ROOT).as_posix() for p in sorted(LICENSES.rglob("*")) if p.is_file()]
+    empty = [name for name in texts if (ROOT / name).stat().st_size == 0]
     assert empty == [], f"licence texts with no text: {empty}"
 
-    unnamed = [p.name for p in sorted(LICENSES.iterdir())
-               if f"licenses/{p.name}" not in notice]
+    unnamed = [name for name in texts if name not in notice]
     assert unnamed == [], (
         "the NOTICE names no path for these licence texts, so a reader has no "
         f"way to find them: {unnamed}")
@@ -138,8 +143,9 @@ def test_every_licence_text_is_named_by_the_notice_and_vice_versa() -> None:
     # A path in this repository, not the tail of a URL: the SoilGrids credit
     # cites https://creativecommons.org/licenses/by/4.0/, which is no file.
     cited = {m.rstrip(".,;") for m in
-             re.findall(r"(?<![/\w.])licenses/[A-Za-z0-9._-]+", notice)}
+             re.findall(r"(?<![/\w.])licenses/[A-Za-z0-9._/-]+", notice)}
     cited.discard("licenses/licenses")       # the PEP 639 wheel path, not a file
+    cited = {name.rstrip("/") for name in cited}   # "licenses/soundings/: ..." names the directory
     dangling = sorted(name for name in cited if not (ROOT / name).exists())
     assert dangling == [], f"the NOTICE points at licence texts that are not here: {dangling}"
 
@@ -188,6 +194,12 @@ def test_both_distributions_ship_the_licence_directory() -> None:
         with pyproject.open("rb") as stream:
             config = tomllib.load(stream)
         declared = config["project"].get("license-files", [])
+        # `licenses/*` does not recurse: the 2.9.3 candidate wheel shipped none of
+        # licenses/soundings/'s three texts while NOTICE named them.
+        subdirs = sorted(p.relative_to(pyproject.parent).as_posix() for p in licences.rglob("*") if p.is_dir())
+        unshipped = [f"{d}/*" for d in subdirs if f"{d}/*" not in declared]
+        assert unshipped == [], (
+            f"{pyproject} does not ship these licence subdirectories; add each to license-files: {unshipped}")
         assert "licenses/*" in declared, (
             f"{pyproject} does not ship licenses/, so a pip install of it "
             f"performs no reproduction condition at all: {declared}")

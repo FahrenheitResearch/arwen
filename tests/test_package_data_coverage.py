@@ -1024,9 +1024,12 @@ def test_license_metadata_is_an_spdx_expression_not_the_pasted_text() -> None:
     # carrying only LICENSE + NOTICE performed none of them.  The glob is
     # asserted as a glob rather than expanded, because the set of texts
     # grows and the pin is on the DECLARATION, not on the inventory --
-    # tests/test_licence_notices_ship.py holds the inventory.
+    # tests/test_licence_notices_ship.py holds the inventory.  A glob per
+    # licence directory: licenses/* does not recurse, and the 2.9.3 candidate
+    # wheel shipped none of licenses/soundings/ (the public sounding renderer's
+    # three notices) while NOTICE named them.
     shipped = project.get("license-files", [])
-    assert shipped == ["LICENSE", "NOTICE", "licenses/*"], shipped
+    assert shipped == ["LICENSE", "NOTICE", "licenses/*", "licenses/soundings/*"], shipped
     for name in shipped:
         if name.endswith("/*"):
             directory = REPO_ROOT / name[:-2]

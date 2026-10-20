@@ -24,7 +24,10 @@ license = "Apache-2.0"
 # PEP 639 puts these under gpuwm-<version>.dist-info/licenses/ in the
 # wheel and carries them into the sdist, which is the only route by
 # which a `pip install gpuwm` user receives them.
-license-files = ["LICENSE", "NOTICE", "licenses/*"]
+# `licenses/*` does not recurse: licenses/soundings/ (the public sounding
+# renderer's dependency notices, written by tools/update_soundings_license_notice.py)
+# shipped none of its three texts in the 2.9.3 candidate wheel while NOTICE named them.
+license-files = ["LICENSE", "NOTICE", "licenses/*", "licenses/soundings/*"]
 requires-python = ">=3.11"
 # numpy>=2 is essential: the legacy-RRTMG FP32 max_ulp-0 discipline
 # relies on NEP-50 weak promotion (float32 op python-scalar stays
