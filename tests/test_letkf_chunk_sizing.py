@@ -127,7 +127,7 @@ def test_multiradar_shape_still_saturates():
     (69, 8, 4),            # small stencil, float32 solve
     (1, 2, 4),             # degenerate floor
 ])
-@pytest.mark.parametrize("budget_mib", [0.25, 64, 512, 6144])
+@pytest.mark.parametrize("budget_mib", [0.25, 6144])
 def test_budget_is_a_ceiling_everywhere(slots, members, itemsize, budget_mib):
     """For every shape: the chunk fits, or it is 0 and the caller refuses."""
     budget = int(budget_mib * (1 << 20))

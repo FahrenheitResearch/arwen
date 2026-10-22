@@ -1145,53 +1145,9 @@ def test_real74_d01_30min_gate_admits_complete_no_pbl_operator():
 # ---------------------------------------------------------------------------
 
 
-class _ReferenceVerticalPlan:
-    """WRF-real vertical interpolation through the NumPy reference."""
-
-    def __init__(self, source, surface, target):
-        self.source = np.asarray(source, dtype=np.float32)
-        self.surface = np.asarray(surface, dtype=np.float32)
-        self.target = np.asarray(target, dtype=np.float32)
-
-    def apply(self, field, surface_value, **options):
-        from gpuwm.verify.npref import np_wrf_real_vert_interp
-
-        options.pop("values_are_finite", None)
-        return np.asarray(np_wrf_real_vert_interp(
-            field, surface_value, self.source, self.surface, self.target,
-            **options), dtype=np.float32)
-
-
-class _ReferencePreprocessBackend:
-    """Independent CPU implementation of the preprocessing ABI.
-
-    Deliberately not the packaged Rust CPU bridge: these tests are about the
-    scheme-selection logic in :func:`initialize_real`, and must not skip on a
-    machine where the bridge is unbuilt.
-    """
-
-    name = "cpu-reference-test"
-    array_module = np
-
-    @staticmethod
-    def float32(value):
-        return np.asarray(value, dtype=np.float32)
-
-    @staticmethod
-    def regular_plan(*args, **kwargs):
-        raise AssertionError("horizontal preprocessing is unused here")
-
-    masked_nearest = regular_plan
-    rotate_earth_to_grid = regular_plan
-    era5_rh_to_water = regular_plan
-
-    @staticmethod
-    def prepare_wrf_vertical(source, surface, target):
-        return _ReferenceVerticalPlan(source, surface, target)
-
-    @staticmethod
-    def receipt():
-        return {"backend": "cpu-reference-test"}
+# Both fixtures use the same independent NumPy preprocessing ABI.
+from test_real_init_dry_slot import (
+    _ReferencePreprocessBackend, _ReferenceVerticalPlan)
 
 
 def _analyzed_hrrr_real_init(

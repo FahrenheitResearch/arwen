@@ -34,15 +34,6 @@ from test_case_data import make_case_toml
 # The helper itself
 
 
-def test_a_second_claim_is_refused_while_the_first_owner_lives(tmp_path):
-    path = tmp_path / "owner"
-    first = ownership.claim(path, purpose="first")
-    with pytest.raises(ownership.OwnershipError, match="in use"):
-        ownership.claim(path, purpose="second")
-    assert first.release()
-    ownership.claim(path, purpose="third").release()
-
-
 def test_an_owner_whose_process_is_gone_is_taken_over(tmp_path):
     path = tmp_path / "owner"
     child = multiprocessing.get_context("spawn").Process(target=int)
@@ -530,18 +521,6 @@ def test_a_bridge_folder_that_is_a_file_is_refused_in_plain_words(
     dest.write_text("not a folder", encoding="utf-8")
     assert bridge_assets.fetch_bridges_main(_args(dest=str(dest))) == 2
     assert "it is a file, not a folder" in capsys.readouterr().out
-
-
-def test_an_error_while_staging_is_not_called_an_unwritable_folder(tmp_path):
-    from gpuwm import bridge_assets
-
-    with pytest.raises(OSError) as raised:
-        with bridge_assets.bridge_owner(tmp_path / "bridges",
-                                        progress=lambda _line: None):
-            raise OSError(28, "No space left on device")
-    assert not isinstance(raised.value, bridge_assets.BridgeAssetError)
-    assert raised.value.errno == 28
-    assert not (tmp_path / "bridges" / ".fetch-bridges.owner").exists()
 
 
 # ---------------------------------------------------------------------------

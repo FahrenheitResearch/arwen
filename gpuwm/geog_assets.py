@@ -1,7 +1,7 @@
 """``gpuwm fetch-geog``: download and stage the WPS_GEOG static tree.
 
-The WRF static builder opens nine fixed WPS_GEOG dataset directories
-(:data:`gpuwm.domain_wizard.GEOG_DATASETS`); until this command existed,
+The WRF static builder opens nine WPS_GEOG dataset directories by
+default (:data:`gpuwm.domain_wizard.GEOG_DATASETS`); until this command existed,
 staging them was entirely manual.  ``fetch-geog`` downloads the dataset
 tarballs, verifies every byte, extracts them into the standard layout,
 and validates each dataset the same way ``gpuwm doctor`` does (the
@@ -25,6 +25,15 @@ reader -- the default fetch set, ``--datasets wrf``, and each of
 ``gpuwm doctor``'s two completeness verdicts -- is that column read at
 a different scope, so adding a dataset for a future door is a row and a
 consumer name rather than a new code path.
+
+The default set carries only permissively licensed sources.  Soil categories come from the SoilGrids250m
+tiles (CC BY 4.0) in the ``soilgrids`` archive, and deep-soil temperature
+from ``soiltemp_era5_1deg``, which is not downloaded at all: it is BUILT
+into the root from ERA5 by ``rw_zarr soiltemp-climatology``
+(:data:`GEOG_PRODUCERS`).  WPS's own defaults for those two fields, the
+FAO-UNESCO soil tiles and ISLSCP-I's ``soiltemp_1deg``, are pins with a
+``licence_hold``: fetched and selected by name only, with their terms
+printed whenever they are.
 
 The dust door ``chem-dust`` adds three upstream-only archives. They are
 not in the mirror or mandatory bundle and are fetched only when selected.
@@ -130,8 +139,8 @@ def default_geog_consumers() -> tuple[str, ...]:
                  if any(a.fetch_by_default and c in a.required_by for a in GEOG_ARCHIVES))
 
 #: The line that sets up the geography a WRF-grid forecast needs: the
-#: datasets the WRF static builder opens, and not the Noah-MP soil archive
-#: only ``gpuwm mesh`` reads.  Every place that tells a person to set the
+#: datasets the WRF static builder opens, and not the land-use pins only
+#: ``gpuwm mesh`` reads.  Every place that tells a person to set the
 #: tree up quotes this one line (the run door's missing-input refusal, the
 #: web page's start buttons).
 WRF_FETCH_COMMAND = f"gpuwm fetch-geog --datasets {GEOG_CONSUMER_WRF}"
@@ -190,6 +199,18 @@ class GeogArchive:
 
     ``available_sources`` lists the hosts that carry these exact bytes.
     The first serves requests whose preferred host does not carry the file.
+
+    ``producer`` names a row of :data:`GEOG_PRODUCERS` for a dataset that
+    is BUILT into the root from a public source rather than downloaded as
+    a tarball (no filename, no tarball pin; ``archive_bytes`` is what the
+    build reads over the network, so the size quoted before a fetch is
+    right).  ``licence_hold`` is non-empty for a dataset whose licence
+    does not clear the public-package bar (permissive terms only on any
+    default path; WPS_GEOG soil sources that are not permissive are held
+    out of the default geog set): it is
+    then never in the default fetch and never required by a door, only
+    fetched or selected by name, and the text -- the source's own terms --
+    is printed whenever it is staged or selected.
     """
 
     dataset: str
@@ -208,7 +229,109 @@ class GeogArchive:
     download_source: str | None = None
     pin_date: str = "2026-07-29"
     pin_host: str = "www2.mmm.ucar.edu"
+    producer: str | None = None
+    licence_hold: str = ""
 
+
+#: The terms of the WPS_GEOG sources held out of the default set, quoted
+#: from the datasets' own documentation: the licence table carries the
+#: source and licence lines; a source that is not permissive is said so and
+#: held out of the default geog set.
+FAO_DSMW_HOLD = (
+    "STATSGO (USDA NRCS, public domain) inside CONUS + the FAO-UNESCO "
+    "Digital Soil Map of the World elsewhere, whose notes (Version 3.6, "
+    "Jan 2003, https://swat.tamu.edu/media/116411/notes.txt) say "
+    "\"(C) FAO/UNESCO, 1995 All rights reserved worldwide\" and \"The user "
+    "shall not reproduce for the benefit of third parties the data\" "
+    "without permission from FAO's Publications Division: NOT PERMISSIVE, "
+    "held out of the default geography; the default soil categories are "
+    "SoilGrids250m (soilgrids/texture_top, texture_bot, CC BY 4.0)")
+ISLSCP_SOILTEMP_HOLD = (
+    "1-degree annual-mean 2 m air temperature from ISLSCP-I (ECMWF "
+    "1987-88 analyses, adjusted to 1000 mb) per the Noah-MP TBOT READ_ME; "
+    "the ISLSCP-I Vol. 4 record at CEDA "
+    "(https://catalogue.ceda.ac.uk/uuid/b9c3effaab9fe9a2206b58af500f157d) "
+    "states Permitted Use \"Unstated\" and NCAR states none: licence "
+    "UNCLEAR, so not cleared and held out of the default geography; the "
+    "default deep-soil temperature is soiltemp_era5_1deg (ERA5, Licence "
+    "to Use Copernicus Products)")
+
+
+@dataclass(frozen=True)
+class GeogProducer:
+    """A WPS_GEOG dataset built from a public source by a native command.
+
+    ``command`` is the ``rw_zarr`` subcommand, ``request`` the JSON it
+    reads (sources, reduction constants); ``licence`` and ``attribution``
+    travel into the dataset's ``PROVENANCE.json`` and the fetch manifest.
+    """
+
+    command: str
+    request: dict
+    source: str
+    licence: str
+    attribution: str
+
+
+#: Deep-soil temperature, SOILTEMP: ERA5's 1990-2019 hourly climatology
+#: (WeatherBench 2's conservative 512x256 copy on Google Cloud, keyless),
+#: averaged over every hour and day (day 366 weighted 7/30, the leap days
+#: in 1990-2019) and reduced to sea level with the 0.0065 K/m lapse rate
+#: WRF's TMN = SOILTEMP - 0.0065 * HGT undoes -- the reduction the
+#: ISLSCP-I field it replaces carries.  Same 1-degree layout as
+#: soiltemp_1deg, so every reader of that dataset reads this one.
+GEOG_PRODUCERS: dict[str, GeogProducer] = {
+    "era5-annual-t2m-sea-level": GeogProducer(
+        command="soiltemp-climatology",
+        request={
+            "schema": "arwen.geog-soiltemp-climatology.request.v1",
+            "climatology_store": (
+                "https://storage.googleapis.com/weatherbench2/datasets/"
+                "era5-hourly-climatology/"
+                "1990-2019_6h_512x256_equiangular_conservative.zarr"),
+            "temperature": "2m_temperature",
+            "temperature_units": "K",
+            "static_store": (
+                "https://storage.googleapis.com/weatherbench2/datasets/era5/"
+                "1959-2022-6h-512x256_equiangular_conservative.zarr"),
+            "geopotential": "geopotential_at_surface",
+            "land_sea_mask": "land_sea_mask",
+            "lapse_rate_k_per_m": 0.0065,
+            "gravity_m_s2": 9.80665,
+            "leap_day_weight": 7.0 / 30.0,
+            "land_fraction_min": 0.001,
+            "description": ("Annual mean 2 m air temperature reduced to sea "
+                            "level, ERA5 1990-2019 climatology (Copernicus "
+                            "Climate Change Service)"),
+        },
+        source=("ERA5 hourly climatology 1990-2019 (WeatherBench 2, Google "
+                "Cloud public bucket gs://weatherbench2)"),
+        licence=("Licence to Use Copernicus Products (https://cds.climate."
+                 "copernicus.eu/api/v2/terms/static/licence-to-use-"
+                 "copernicus-products.pdf): "
+                 "free, worldwide, commercial use allowed, attribution "
+                 "required"),
+        attribution=("Contains modified Copernicus Climate Change Service "
+                     "information 2026 (ERA5, Hersbach et al. 2020, "
+                     "doi:10.1002/qj.3803), 1990-2019 climatology as "
+                     "processed by WeatherBench 2 (Rasp et al. 2024, "
+                     "doi:10.1029/2023MS004019). Neither the European "
+                     "Commission nor ECMWF is responsible for any use of "
+                     "this information.")),
+}
+
+
+#: The directories the WRF static builder's ``default`` selection opens,
+#: relative to the geog root (gpuwm/static/build.py ``_DEFAULT_GEOG_DIRS``;
+#: a test binds the two, and their owning pins to the ``wrf`` column).
+#: Soil categories and deep-soil temperature are the permissive ones
+#: (2026-10-21): SoilGrids250m tiles inside ``soilgrids`` and the ERA5
+#: climatology fetch-geog builds.
+WRF_DEFAULT_GEOG_DIRS = (
+    "topo_gmted2010_30s", "modis_landuse_20class_30s_with_lakes",
+    "soilgrids/texture_top", "soilgrids/texture_bot", "greenfrac_fpar_modis",
+    "lai_modis_10m", "albedo_modis", "maxsnowalb_modis", "soiltemp_era5_1deg",
+)
 
 #: Both doors need this pin; only the WRF static builder does; only the
 #: mesh one does.  Spelled out here so each row's scoping reads as a
@@ -241,14 +364,6 @@ GEOG_ARCHIVES: tuple[GeogArchive, ...] = (
         "fe052cc1000638c32ac7191c779ad070efae458ff0751bc4aa2a716e38bec578",
         933120358, required_by=_WRF_AND_MESH),
     GeogArchive(
-        "soiltype_top_30s", "soiltype_top_30s.tar.bz2", 1639561,
-        "6d45d93cc0d14ac4019f1a2857e56fb1fbc860f135e12d89fc0a569278242315",
-        933120270, required_by=_WRF_AND_MESH),
-    GeogArchive(
-        "soiltype_bot_30s", "soiltype_bot_30s.tar.bz2", 1919818,
-        "818febf2d141a46152f0990877e3ca15fd23a61961d978f71f5fdd0ea80bb335",
-        933120273, required_by=_WRF_ONLY),
-    GeogArchive(
         "greenfrac_fpar_modis", "greenfrac_fpar_modis.tar.bz2", 990624380,
         "a31d44c7b0c3dfcbaf933b3c30b4c6e52762a3451cf4e1951d7b49f3751b4d03",
         11197440257, required_by=_WRF_AND_MESH),
@@ -264,20 +379,27 @@ GEOG_ARCHIVES: tuple[GeogArchive, ...] = (
         "maxsnowalb_modis", "maxsnowalb_modis.tar.bz2", 4446019,
         "eca29b1707e184c942eb8f1bfdbafbb4e6650cb97c15784c293fda39e24c1371",
         52359972, required_by=_WRF_AND_MESH),
+    # The default deep-soil temperature, built at fetch time from ERA5
+    # (GEOG_PRODUCERS) in soiltemp_1deg's exact layout.  459 MB is the
+    # network read (the 2 m temperature cube's 13 chunks on GCS, measured
+    # 2026-10-21; built in 8.4 s on a rented box); the dataset itself is
+    # two 69 kB tiles, its index and PROVENANCE.json.
     GeogArchive(
-        "soiltemp_1deg", "soiltemp_1deg.tar.bz2", 31057,
-        "c407c0b1d9d864ff49708fa3b6ba2f17078535ccfc05a944024ad052e5f914d4",
-        138645, required_by=_WRF_AND_MESH),
+        "soiltemp_era5_1deg", "", 459_000_000, "", 143_000,
+        in_mandatory_bundle=False, required_by=_WRF_AND_MESH,
+        available_sources=GEOG_SOURCES, pin_date="2026-10-21",
+        pin_host="storage.googleapis.com",
+        producer="era5-annual-t2m-sea-level"),
     # The Noah-MP soil products.  One upstream archive carries seven
     # dataset directories, each with its own WPS index, so the pin
     # declares the children rather than assuming an index at the top.
     # rw_mpas_static reads soilcomp for --soilcomp and texture_layer1..4
     # for --soilcl1..4; texture_top and texture_bot are the surface and
-    # bottom composites that ship alongside them.  The WRF static builder
-    # opens none of these, which is why GEOG_DATASETS stays at nine and
-    # why this row is scoped to the mesh door alone: a WRF-only install
-    # is not short of anything without it.  For the mesh door it is
-    # REQUIRED, not optional -- the one static writer emits the five
+    # bottom composites that ship alongside them.  Since 2026-10-21 the
+    # WRF static builder's default soil categories are texture_top and
+    # texture_bot (permissive, replacing the FAO-based soiltype_*_30s
+    # tiles), so both doors require this row.  For the mesh door it was
+    # always REQUIRED -- the one static writer emits the five
     # soil-composition variables and cannot invent them.
     # Pinned from a TLS download from UCAR on 2026-08-23, the same way
     # and from the same host as the nine above.  Unlike them it carries
@@ -292,7 +414,7 @@ GEOG_ARCHIVES: tuple[GeogArchive, ...] = (
         ("soilcomp", "texture_top", "texture_bot",
          "texture_layer1", "texture_layer2",
          "texture_layer3", "texture_layer4"),
-        in_mandatory_bundle=False, required_by=_MESH_ONLY),
+        in_mandatory_bundle=False, required_by=_WRF_AND_MESH),
     # The mesh door's native static (2.9.0 default) reads land use exactly
     # as MPAS-A v8.4.2 init_atmosphere does: MODIFIED_IGBP_MODIS_NOAH from
     # the 20-class archive WITHOUT lakes (a lake is water, category 17;
@@ -322,6 +444,11 @@ GEOG_ARCHIVES: tuple[GeogArchive, ...] = (
         required_by=(), optional_for=_WRF_ONLY, available_sources=("ncar",)),
     # GSL terrain drag reads all twenty children together. Verified from
     # the official TLS archive on 2026-10-12; optional to the baseline.
+    # In the default fetch because the packaged CONUS HRRR recipe
+    # (gpuwm/data/recipes/hrrr_v4_gsd41.toml, gwd_opt = 3) reads it.
+    # Defect (2.9.3 door 6): it was fetch_by_default=False, so `gpuwm setup
+    # --with-geog` staged a tree `gpuwm go` then refused for that recipe
+    # ("missing geography indexes ... orogwd3_10m/conls/index").  14 MB.
     GeogArchive(
         "orogwd3_10m", "orogwd3_10m.tar.bz2", 14957055,
         "0ffb24427670e4114a8a64dc7106c260152e35ad0f3176e1da4149ed9eb10c84",
@@ -330,7 +457,7 @@ GEOG_ARCHIVES: tuple[GeogArchive, ...] = (
               for stat in ("con", "var", "oa1", "oa2", "oa3", "oa4",
                            "ol1", "ol2", "ol3", "ol4")),
         in_mandatory_bundle=False, required_by=(), optional_for=_WRF_ONLY,
-        available_sources=("ncar",), fetch_by_default=False,
+        available_sources=("ncar",), fetch_by_default=True,
         download_source="ncar", pin_date="2026-10-12"),
     # TLS pins measured 2026-09-30 on www2.mmm.ucar.edu. These products
     # are absent from the Hugging Face mirror and the mandatory bundle.
@@ -349,6 +476,31 @@ GEOG_ARCHIVES: tuple[GeogArchive, ...] = (
         20250288, in_mandatory_bundle=False,
         required_by=(GEOG_CONSUMER_CHEM_DUST,), fetch_by_default=False,
         download_source="ncar", available_sources=("ncar",), pin_date="2026-09-30"),
+    # Held out of the default geography (licence, not physics): the FAO-
+    # based soil categories and the ISLSCP-I deep-soil temperature WPS
+    # ships as its defaults.  Selectable by name only -- geog_data_res
+    # '30s' (WPS's own selector for these soil tiles) or 'islscp_soiltemp'
+    # for the WRF builder, --soilcat-data STATSGO / --soiltemp-data ISLSCP
+    # for the mesh door -- and fetched from NCAR, never from the mirror.
+    # Pins and bundle membership as measured 2026-07-29.
+    GeogArchive(
+        "soiltype_top_30s", "soiltype_top_30s.tar.bz2", 1639561,
+        "6d45d93cc0d14ac4019f1a2857e56fb1fbc860f135e12d89fc0a569278242315",
+        933120270, required_by=(), optional_for=_WRF_AND_MESH,
+        available_sources=("ncar",), fetch_by_default=False,
+        download_source="ncar", licence_hold=FAO_DSMW_HOLD),
+    GeogArchive(
+        "soiltype_bot_30s", "soiltype_bot_30s.tar.bz2", 1919818,
+        "818febf2d141a46152f0990877e3ca15fd23a61961d978f71f5fdd0ea80bb335",
+        933120273, required_by=(), optional_for=_WRF_ONLY,
+        available_sources=("ncar",), fetch_by_default=False,
+        download_source="ncar", licence_hold=FAO_DSMW_HOLD),
+    GeogArchive(
+        "soiltemp_1deg", "soiltemp_1deg.tar.bz2", 31057,
+        "c407c0b1d9d864ff49708fa3b6ba2f17078535ccfc05a944024ad052e5f914d4",
+        138645, required_by=(), optional_for=_WRF_AND_MESH,
+        available_sources=("ncar",), fetch_by_default=False,
+        download_source="ncar", licence_hold=ISLSCP_SOILTEMP_HOLD),
     # Alternative 30 arc-second, 16-category soil textures selected by
     # geog_data_res=bnu_soil_30s. Pinned from official TLS downloads.
     GeogArchive(
@@ -418,6 +570,29 @@ GEOG_ARCHIVES: tuple[GeogArchive, ...] = (
         69404, in_mandatory_bundle=False,
         required_by=(), optional_for=_MESH_ONLY, available_sources=("ncar",),
         fetch_by_default=False, download_source="ncar", pin_date="2026-10-14"),
+    # The other two orographic drag statistics, GEOGRID.TBL.ARW's
+    # ``default`` rows (gpuwm/static/orographic.py): orogwd_10m carries
+    # VAR/CON/OA1-4/OL1-4 for gwd_opt 1 and 3, varsso_10m the small-scale
+    # VAR_SSO.  A run that selects orographic drag reads them (the CONUS
+    # HRRR recipe's gwd_opt = 3 and WOOF Global's default suite read
+    # orogwd_10m beside orogwd3_10m), so the default fetch stages them or
+    # a fresh machine's default run refuses for want of the statistics.
+    # NCAR-only (the mirror does not carry them); pinned from TLS
+    # downloads from UCAR on 2026-10-06 (lane/pi-geog-orogwd).
+    GeogArchive(
+        "orogwd_10m", "orogwd_10m.tar.bz2", 3332672,
+        "0e8c292c901e5148cb80849dc154d19cc885393658c5725741da597859777e5c",
+        46658851,
+        ("con", "oa1", "oa2", "oa3", "oa4", "ol1", "ol2", "ol3", "ol4", "var"),
+        in_mandatory_bundle=False, required_by=(), optional_for=_WRF_ONLY,
+        available_sources=("ncar",), fetch_by_default=True,
+        download_source="ncar", pin_date="2026-10-06"),
+    GeogArchive(
+        "varsso_10m", "varsso_10m.tar.bz2", 783440,
+        "a2420ea9698a30afdb46a82a0c13961ca17603fb11a4e657c973cf2dff95c727",
+        6221332, in_mandatory_bundle=False, required_by=(),
+        optional_for=_WRF_ONLY, available_sources=("ncar",),
+        fetch_by_default=True, download_source="ncar", pin_date="2026-10-06"),
 )
 
 #: NCAR's "highest resolution mandatory fields" bundle: the fallback
@@ -461,6 +636,41 @@ def datasets_required_by(consumer: str) -> tuple[str, ...]:
                          f"expected one of {', '.join(GEOG_CONSUMERS)}")
     return tuple(archive.dataset for archive in GEOG_ARCHIVES
                  if consumer in archive.required_by)
+
+
+def packaged_recipe_datasets() -> tuple[str, ...]:
+    """Pins the packaged recipes' terrain-drag options read, in table order.
+
+    The recipes under ``gpuwm/data/recipes`` select ``gwd_opt`` and
+    ``topo_wind`` in ``[shared]`` or per ``[[domain]]``; each selection
+    reads orographic datasets that no consumer column requires.  ``gpuwm
+    doctor`` checks these so it agrees with ``gpuwm go``'s geography
+    refusal on a default tree (defect: doctor said "all 9 WRF datasets
+    indexed" while go refused the packaged CONUS HRRR recipe for
+    orogwd3_10m).  Empty where the recipes or the static package are not
+    installed (the preprocessing-only wheel).
+    """
+
+    import tomllib
+    recipes = sorted((Path(__file__).parent / "data" / "recipes").glob("*.toml"))
+    try:
+        from gpuwm.static.orographic import (orographic_paths,
+                                             required_static_fields)
+    except ImportError:
+        return ()
+    required: set[str] = set()
+    for recipe in recipes:
+        raw = tomllib.loads(recipe.read_text(encoding="utf-8-sig"))
+        shared = raw.get("shared", {})
+        for table in [shared, *raw.get("domain", [])]:
+            names = required_static_fields(
+                int(table.get("topo_wind", shared.get("topo_wind", 0)) or 0),
+                int(table.get("gwd_opt", shared.get("gwd_opt", 0)) or 0))
+            if names:
+                required.update(path.as_posix() for path in
+                                orographic_paths(names, Path(".")).values())
+    owners = archive_names_for_paths(required)
+    return tuple(a.dataset for a in GEOG_ARCHIVES if a.dataset in owners)
 
 
 def size_phrase(datasets: tuple[str, ...] | None = None) -> str:
@@ -561,6 +771,26 @@ def archive_url(filename: str, source: str) -> str:
     if source == "ncar":
         return f"{NCAR_BASE_URL}/{filename}"
     raise ValueError(f"unknown source {source!r}")
+
+
+#: The ``--geog-root`` help every door that prepares static fields shows.
+GEOG_ROOT_HELP = ("override the geography tree (default: the config's "
+                  "[case_data].geog_root or [static].geog_root, "
+                  "otherwise the staged WPS_GEOG tree)")
+
+
+def add_geog_root_argument(parser, *, help: str = GEOG_ROOT_HELP):
+    """Add the shared ``--geog-root DIR`` option to a door's parser.
+
+    One definition for the doors that prepare static fields, so their
+    spelling, type and default cannot drift.  Breakage (2.9.4 landing,
+    V58 2026-10-20): ``gpuwm earth2`` had no ``--geog-root`` while
+    ``gpuwm go`` had one, so an Earth-2 nest could only read the default
+    tree.
+    """
+
+    return parser.add_argument("--geog-root", type=Path, default=None,
+                               metavar="DIR", help=help)
 
 
 def default_geog_root() -> Path:
@@ -1334,6 +1564,94 @@ def publish_archive_entry(root: Path, filename: str, entry: dict) -> Path:
         return _write_manifest(root, manifest)
 
 
+PRODUCED_PROVENANCE_NAME = "PROVENANCE.json"
+PRODUCED_PROVENANCE_SCHEMA = "arwen.geog-produced-dataset.v1"
+
+
+def produce_dataset(root: Path, dataset: str, *, progress=print):
+    """Build a :data:`GEOG_PRODUCERS` dataset into ``root``.
+
+    The native reader (``rw_zarr <command>``) reads the public source,
+    reduces it and writes the WPS tiles and index; this function only
+    writes its request, relays its progress, records its receipt with the
+    source's licence and attribution in ``<dataset>/PROVENANCE.json`` (the
+    WPS readers open tiles by name, so the extra file is inert), and
+    moves the finished directory into place in one rename.  Returns the
+    ``(manifest key, entry, None, label, 1)`` tuple the fetch engine
+    publishes, so the dataset is receipted and re-validated exactly like
+    a downloaded one.
+    """
+
+    import subprocess
+
+    from gpuwm.zarr_bridge import resolve_zarr_bin
+
+    archive = archive_for(dataset)
+    producer = GEOG_PRODUCERS[archive.producer]
+    work = root / ARCHIVE_SUBDIR / f"{dataset}.produce"
+    if work.exists():
+        shutil.rmtree(work)
+    work.mkdir(parents=True)
+    request_path = work / "request.json"
+    request_path.write_text(json.dumps(producer.request, indent=2,
+                                       sort_keys=True) + "\n",
+                            encoding="utf-8")
+    built = work / dataset
+    executable = resolve_zarr_bin()
+    progress(f"fetch-geog {dataset}: building from {producer.source}; "
+             f"{producer.licence}")
+    started = time.monotonic()
+    process = subprocess.Popen(
+        [os.fspath(executable), producer.command, os.fspath(request_path),
+         os.fspath(built)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    tail: list[str] = []
+    assert process.stderr is not None and process.stdout is not None
+    for line in process.stderr:
+        line = line.rstrip()
+        tail = (tail + [line])[-20:]
+        progress(f"fetch-geog {dataset}: {line}")
+    stdout = process.stdout.read()
+    if process.wait():
+        raise GeogFetchError(f"building {dataset} failed: "
+                             + " | ".join(tail))
+    receipt = json.loads(stdout)
+    if receipt.get("schema") != "arwen.geog-soiltemp-climatology.v1":
+        raise GeogFetchError(f"building {dataset}: the native reader "
+                             "returned an unknown receipt schema")
+    produced_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    tiles = {path.name: sha256_file(path) for path in sorted(built.iterdir())}
+    provenance = {
+        "schema": PRODUCED_PROVENANCE_SCHEMA, "dataset": dataset,
+        "producer": archive.producer, "source": producer.source,
+        "licence": producer.licence, "attribution": producer.attribution,
+        "request": producer.request, "receipt": receipt,
+        "sha256": tiles, "produced_at": produced_at,
+        "wall_s": round(time.monotonic() - started, 1),
+    }
+    (built / PRODUCED_PROVENANCE_NAME).write_text(
+        json.dumps(provenance, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8")
+    target = root / dataset
+    if target.exists():
+        _quarantine(target, progress, dataset)
+    os.replace(built, target)
+    shutil.rmtree(work, ignore_errors=True)
+    files, total = dataset_corpus(root, dataset)
+    out = receipt.get("output", {})
+    progress(f"fetch-geog {dataset}: built in {provenance['wall_s']} s, "
+             f"{out.get('land_cells')} land cells, "
+             f"{out.get('min_k', 0):.2f}..{out.get('max_k', 0):.2f} K")
+    entry = {
+        "producer": archive.producer, "source": producer.source,
+        "licence": producer.licence, "attribution": producer.attribution,
+        "request": producer.request, "sha256": tiles,
+        "datasets": {dataset: {"files": files, "bytes": total}},
+        "fetched_at": produced_at,
+    }
+    return f"produced:{dataset}", entry, None, dataset, 1
+
+
 # ---------------------------------------------------------------------------
 # The command
 # ---------------------------------------------------------------------------
@@ -1360,6 +1678,12 @@ def _print_listing(datasets: tuple[str, ...], source: str,
             total_archive += archive.archive_bytes
             total_extracted += archive.extracted_bytes
         state = "staged" if ok else "needed"
+        if archive.producer:
+            producer = GEOG_PRODUCERS[archive.producer]
+            print(f"  {state}  {name}: built from {producer.source}, "
+                  f"~{archive.archive_bytes / (1024 * 1024):.0f} MiB read; "
+                  f"{producer.licence}")
+            continue
         # The host the fetch itself will use (stage_one's choice), so the
         # plan names the URL the download will actually open.
         actual_source = archive.download_source or (
@@ -1371,6 +1695,9 @@ def _print_listing(datasets: tuple[str, ...], source: str,
               f"{archive.archive_bytes / (1024 * 1024):.1f} MiB "
               f"(~{archive.extracted_bytes / (1024 * 1024):.0f} MiB "
               f"unpacked){source_note}")
+        if archive.licence_hold:
+            print(f"           held out of the default geography: "
+                  f"{archive.licence_hold}")
         if explain:
             needed_by = ", ".join(archive.required_by) or "no door by default"
             optional = (f"; optional for {', '.join(archive.optional_for)}"
@@ -1445,8 +1772,14 @@ def _fetch_geog_locked(*, root: Path, datasets: tuple[str, ...], source: str,
                  f"already staged and valid at {root}")
         return 0
 
+    for name in needed:
+        if archive_for(name).licence_hold:
+            progress(f"fetch-geog {name}: held out of the default "
+                     f"geography -- {archive_for(name).licence_hold}")
+    produced = tuple(name for name in needed if archive_for(name).producer)
     if bundle:
-        outside = sorted(set(needed) - MANDATORY_BUNDLE_DATASETS)
+        outside = sorted(set(needed) - MANDATORY_BUNDLE_DATASETS
+                         - set(produced))
         if outside:
             raise ValueError(
                 f"--bundle cannot serve {', '.join(outside)}: the "
@@ -1462,7 +1795,9 @@ def _fetch_geog_locked(*, root: Path, datasets: tuple[str, ...], source: str,
     # need staging (the ones above were skipped as already valid);
     # under --bundle the download is the one bundle archive however few
     # datasets are extracted from it.
-    download = (MANDATORY_BUNDLE_BYTES if bundle else
+    download = ((MANDATORY_BUNDLE_BYTES
+                 + sum(archive_for(name).archive_bytes for name in produced))
+                if bundle else
                 sum(archive_for(name).archive_bytes for name in needed))
     unpacked = sum(archive_for(name).extracted_bytes for name in needed)
     progress(f"fetch-geog: {len(needed)} of {len(datasets)} requested "
@@ -1521,6 +1856,8 @@ def _fetch_geog_locked(*, root: Path, datasets: tuple[str, ...], source: str,
         # The main thread owns the re-entrant root lock. Workers never reacquire it.
         publish_archive_entry(root, filename, entry)
         staged += count
+        if dest is None:
+            return
         if keep_archives:
             progress(f"fetch-geog {label}: kept archive {dest}")
         else:
@@ -1529,11 +1866,18 @@ def _fetch_geog_locked(*, root: Path, datasets: tuple[str, ...], source: str,
                      f"{dest.name} (--keep-archives retains it)")
 
     if bundle:
-        publish_finished(run_archive(MANDATORY_BUNDLE_FILENAME, MANDATORY_BUNDLE_BYTES,
-                    MANDATORY_BUNDLE_SHA256, tuple(needed), "bundle"))
+        for name in produced:
+            publish_finished(produce_dataset(root, name, progress=progress))
+        downloaded = tuple(name for name in needed if name not in produced)
+        if downloaded:
+            publish_finished(run_archive(
+                MANDATORY_BUNDLE_FILENAME, MANDATORY_BUNDLE_BYTES,
+                MANDATORY_BUNDLE_SHA256, downloaded, "bundle"))
     else:
         def stage_one(name):
             archive = archive_for(name)
+            if archive.producer:
+                return produce_dataset(root, name, progress=progress)
             actual_source = (source if source in archive.available_sources
                              else archive.available_sources[0])
             if actual_source != source:
@@ -1775,7 +2119,7 @@ def register_cli(subparsers) -> None:
              f"the WRF static builder opens, '{GEOG_CONSUMER_MESH}' is what "
              "gpuwm mesh needs for the static half of its pair.  Use "
              f"'--datasets {GEOG_CONSUMER_WRF}' to skip the "
-             f"~{mesh_gib / (1024 ** 3):.0f} GiB Noah-MP soil archive that "
+             f"~{mesh_gib / (1024 ** 3):.1f} GiB of land-use pins that "
              "only gpuwm mesh reads")
     parser.add_argument(
         "--source", default=None, choices=GEOG_SOURCES,
@@ -1826,7 +2170,8 @@ __all__ = [
     "MANDATORY_BUNDLE_SHA256", "NCAR_BASE_URL", "archive_for",
     "archive_url", "datasets_required_by", "default_geog_root", "default_geog_consumers",
     "download_archive", "extract_datasets", "fetch_geog", "fetch_geog_main",
-    "geog_datasets", "parse_datasets", "register_cli", "resolve_source",
+    "geog_datasets", "packaged_recipe_datasets", "parse_datasets",
+    "register_cli", "resolve_source",
     "sha256_file", "size_phrase", "validate_dataset_dir",
     "WRF_FETCH_COMMAND",
 ]

@@ -7,10 +7,11 @@ can run, their Earth2Studio class and the channels they read are the
 ``consumers`` rows of ``gpuwm/authorities/earth2-models.v1.json``; adding a
 diagnostic is a row there, not code here.
 
-The models run in the interpreter ``GPUWM_EARTH2_PYTHON`` names (the one with
-``earth2studio`` and the row's extra installed), or in this one when it can
-import ``earth2studio``.  Nothing here installs packages, creates accounts or
-logs in; a row whose weights need an account is refused by name.
+The models run in the Earth2Studio interpreter :mod:`gpuwm.earth2_env`
+resolves: ``GPUWM_EARTH2_PYTHON`` when set, else the managed environment
+(``gpuwm setup --with-earth2``, or built on first use with the rows' extras),
+else this one when it can import ``earth2studio``.  Nothing here creates
+accounts or logs in; a row whose weights need an account is refused by name.
 
 Outputs, in ``--out``: one CF NetCDF per field diagnostic (``<row>.nc``,
 dims time/lat/lon, the row's output variables), one CSV of tracks per
@@ -20,7 +21,6 @@ inputs, timings and value ranges).
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 import subprocess
 import sys
@@ -71,25 +71,24 @@ def resolve(names: str, accept_licence=()) -> list[str]:
     return out
 
 
-def earth2_python() -> str:
-    named = os.environ.get(PYTHON_ENV)
-    for candidate in [named] if named else [sys.executable]:
-        try:
-            probe = subprocess.run([candidate, "-c", "import earth2studio"],
-                                   capture_output=True, text=True)
-        except OSError:
-            continue
-        if probe.returncode == 0:
-            return candidate
-    raise RuntimeError(
-        f"no interpreter with earth2studio: set {PYTHON_ENV} to a Python that has "
-        "`pip install earth2studio==0.19.0` plus the extras the rows name")
+def earth2_python(names=()) -> str:
+    """The interpreter with earth2studio and the rows' extras, built on first use when missing.
+
+    Breakage (2.9.3 door 6, 2026-10-20): this probed only GPUWM_EARTH2_PYTHON or this interpreter,
+    and nothing installed earth2studio, so a fresh install stopped with "no interpreter with
+    earth2studio".
+    """
+    from gpuwm import earth2_env
+    rows = consumer_rows()
+    extras = [rows[name].get("earth2studio_extra") for name in names if name in rows]
+    return earth2_env.earth2_python("gpuwm earth2-diagnose", extras=[e for e in extras if e],
+                                    provision=True)
 
 
 def main(args) -> int:
     try:
         names = resolve(args.consumers, getattr(args, "accept_licence", ()) or ())
-        python = earth2_python()
+        python = earth2_python(names)
     except (ValueError, RuntimeError) as exc:
         print(f"gpuwm earth2-diagnose: {exc}", file=sys.stderr)
         return 2
@@ -111,7 +110,9 @@ def register_cli(sub) -> None:
         description=(
             "Run Earth2Studio diagnostic models on the Earth2Studio-shaped store `gpuwm export "
             "--earth2` wrote. The models and the channels they read are the consumers rows of "
-            "earth2-models.v1.json. Needs an interpreter with earth2studio (GPUWM_EARTH2_PYTHON)."),
+            "earth2-models.v1.json. Runs in an Earth2Studio interpreter: GPUWM_EARTH2_PYTHON when set, "
+            "else the managed environment `gpuwm setup --with-earth2` builds (or the first run "
+            "builds it with the rows' extras; GPUWM_EARTH2_FETCH=0 refuses instead)."),
     )
     parser.add_argument("store", help="the export (zarr or netcdf) written by gpuwm export --earth2")
     parser.add_argument("--for", dest="consumers", required=True, metavar="ROWS",

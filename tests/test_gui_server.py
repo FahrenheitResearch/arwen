@@ -349,11 +349,13 @@ def test_results_list_the_renderer_folders_and_serve_the_files_as_they_are(gui):
     make_run(server.root, "done", pid=dead_pid(), end={"event": "completed"}, frames=4)
     response, index = request(server, "GET", "/api/runs/done/pictures")
     assert index["count"] == 4 and index["domains"] == ["d01-12km"]
+    assert {(g["domain"], g["episode"]) for g in index["groups"]} == {("d01-12km", "")}
     assert index["products"][0] == "composite_reflectivity"
     assert index["favourites"] == ["composite_reflectivity", "2m_temperature"]
     response, listing = request(server, "GET", "/api/runs/done/pictures/list?product=2m_temperature&domain=d01-12km")
     assert [p["name"] for p in listing["pictures"]] == ["frame_f000.png", "frame_f002.png"]
     assert [p["hour"] for p in listing["pictures"]] == [0, 2]
+    assert {p["episode"] for p in listing["pictures"]} == {""}
     response, raw = request(server, "GET", "/api/runs/done/files/" + listing["pictures"][0]["path"])
     assert response.status == 200 and response.getheader("Content-Type") == "image/png" and raw == PNG
     response, _ = request(server, "GET", "/api/runs/done/files/..%2F..%2Fsecret.txt")

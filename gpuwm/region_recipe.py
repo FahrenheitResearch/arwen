@@ -59,9 +59,24 @@ def select_aerosol(policy, source):
     raise ValueError("aerosol_source_unavailable: no declared candidate supplies both QNWFA and QNIFA for initial and boundary frames; zero aerosol would change droplet activation")
 
 
+def recipe_row_defaults(recipe, recipe_table=None):
+    """The packaged row's declared default region and spacing, or None.
+
+    A local TOML or a row without both declarations has no defaults.
+    """
+    if Path(recipe).is_file():
+        return None
+    row = _row(_read_table(Path(recipe_table or RECIPE_TABLE)), "recipes", recipe)
+    region, spacing = row.get("default_region"), row.get("default_spacing_km")
+    if region is None or spacing is None:
+        return None
+    return {"region": str(region), "spacing_km": float(spacing)}
+
+
 def emit_recipe(*, recipe, region, spacing_km, source, cycle, hours,
                 recipe_table=None, region_table=None, buffer_km=0.0,
-                projection="auto", history_interval_s=None, name=None, cadence=None):
+                projection="auto", history_interval_s=None, name=None, cadence=None,
+                smoke=False):
     from gpuwm import domain_wizard as wizard
     spacing_km = float(spacing_km)
     if not math.isfinite(spacing_km) or not wizard.MIN_ROOT_DX_KM <= spacing_km <= wizard.MAX_ROOT_DX_KM:
@@ -135,6 +150,9 @@ def emit_recipe(*, recipe, region, spacing_km, source, cycle, hours,
     if int(document["shared"].get("mp_physics", 0)) == 28:
         selected, rejected = select_aerosol(policy, source)
         document["shared"].update(selected["settings"])
+    if smoke:
+        from gpuwm.smoke_execution import apply_smoke_settings
+        apply_smoke_settings(document)
     # A full recipe's boundary cadence is part of its requested forcing.
     # The ordinary fetch planner refuses a cadence unsupported by the source.
     from gpuwm.fetch import fetch_accepts_area, fetch_accepts_cadence
@@ -167,16 +185,31 @@ def emit_recipe(*, recipe, region, spacing_km, source, cycle, hours,
         "aerosol_candidate": selected, "aerosol_rejected": rejected,
         "aerosol_actual_use": "recorded by the preparation and forecast aerosol_initialization receipt",
         "native_static_set_aside": native_static,
+        "hrrr_smoke": ("on (--smoke)" if smoke else
+                       document["shared"].get("smoke_off_reason") or None),
         "config_sha256": hashlib.sha256(text.encode()).hexdigest()}
     return text, receipt
 
 
 def domain_recipe_main(args):
     from gpuwm import domain_wizard as wizard
+    if getattr(args, "point", None) is not None:
+        raise ValueError("--recipe requires --region or --polygon; a point alone cannot define a country extent")
     region = getattr(args, "region", None) or getattr(args, "polygon", None)
+    spacing_km = args.spacing_km if args.spacing_km is not None else args.root_dx
+    row_defaults = None
+    if not region and spacing_km is None:
+        # A bare --recipe means the recipe on its own declared layout: the
+        # packaged row names that region and spacing as data, and the output
+        # and receipt say they were used.  A requested region without a
+        # spacing still refuses below.
+        row_defaults = recipe_row_defaults(args.recipe, args.recipe_table)
+        if row_defaults is None:
+            raise ValueError("--recipe requires --region or --polygon and --spacing-km; this recipe declares no default region and spacing")
+        region, spacing_km = row_defaults["region"], row_defaults["spacing_km"]
     if not region:
         raise ValueError("--recipe requires --region or --polygon; a point alone cannot define a country extent")
-    if args.spacing_km is None and args.root_dx is None:
+    if spacing_km is None:
         raise ValueError("--recipe requires --spacing-km; the original recipe grid spacing must not silently become the requested grid")
     # Refuse competing settings rather than silently discarding a wizard request.
     for key in ("physics_profile", "physics_choices", "nz", "chain", "ladder", "forecast_start_hour", "member"):
@@ -186,11 +219,16 @@ def domain_recipe_main(args):
     if len(buffers) != 1:
         raise ValueError("a root recipe needs exactly one polygon buffer")
     text, receipt = emit_recipe(recipe=args.recipe, region=str(region),
-        spacing_km=args.spacing_km or args.root_dx,
+        spacing_km=spacing_km,
         source=args.source if getattr(args, "source_explicit", False) else None, cycle=args.cycle,
         hours=args.hours, recipe_table=args.recipe_table, region_table=args.region_table,
         buffer_km=buffers[0], projection=args.projection,
-        history_interval_s=args.history_interval, name=args.name, cadence=args.cadence)
+        history_interval_s=args.history_interval, name=args.name, cadence=args.cadence,
+        smoke=bool(getattr(args, "smoke", False)))
+    if row_defaults is not None:
+        receipt["defaults_from_recipe_row"] = row_defaults
+        print(f"--recipe {args.recipe}: no --region/--spacing-km given; using the recipe row's "
+              f"declared region {row_defaults['region']} at {row_defaults['spacing_km']:g} km")
     wizard._write_atomic(args.out, text)
     receipt_path = args.out.with_suffix(".recipe.json")
     wizard._write_atomic(receipt_path, json.dumps(receipt, indent=2) + "\n")

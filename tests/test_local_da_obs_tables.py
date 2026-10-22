@@ -17,6 +17,7 @@ import numpy as np
 import pytest
 
 from gpuwm.da.obs_point import point_batches, read_tables
+from test_local_da_observations import grid
 
 # The neutral table and its operators are the engine's own since 2.9.0
 # (gpuwm.obs.neutral_table, gpuwm.obs.column_operators); until then this file
@@ -34,12 +35,6 @@ def row(**kw):
                 nominal_time=None, published_time=None, received_time=None, revision='')
     args.update(kw)
     return ObsRow(**args)
-
-
-def grid():
-    return SimpleNamespace(nz=2, ny=3, nx=3, terrain_m=np.zeros((3, 3)),
-        z_w=np.broadcast_to(np.array([0., 1000., 3000.])[:, None, None], (3, 3, 3)),
-        mass_index=lambda lat, lon: (np.asarray(lon), np.asarray(lat)))
 
 
 def columns():

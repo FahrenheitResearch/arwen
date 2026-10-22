@@ -90,27 +90,6 @@ def test_legacy_reference_allows_one_ulp_and_reports_it(
     assert "within one ULP: {'HGT_M': 1}" in capsys.readouterr().err
 
 
-def test_legacy_corridor_ignores_changed_builder(
-        corridor_build, tmp_path, monkeypatch):
-    import gpuwm.static.build as build
-
-    changed = {name: field.copy()
-               for name, field in corridor_build.fields.items()}
-    changed["HGT_M"] += 0.5
-    calls = []
-
-    def newer_builder(*args, **kwargs):
-        calls.append(args)
-        return changed
-
-    monkeypatch.setattr(build, "build_static", newer_builder)
-    directory = tmp_path / "corridor"
-    receipt = _legacy(corridor_build, directory)
-    _load(directory, receipt,
-          sealed_child_statics=_sealed_child(corridor_build))
-    assert calls == []
-
-
 def test_legacy_root_frame_uses_composed_prepared_origin(
         corridor_build, tmp_path):
     child = _child_dc()

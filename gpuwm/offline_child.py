@@ -86,10 +86,6 @@ _GEOMETRY_ATTRS = (
 _STATIC_GEOMETRY_FIELDS = ("HGT", "XLAT", "XLONG", "MAPFAC_M", "ZNU", "ZNW")
 
 _MASS_FIELDS = ("qv", "qc", "qr", "qi", "qs", "qg")
-_NSSL_FIELDS = (
-    "qv", "qc", "qr", "qi", "qs", "qg", "qh", "qndrop", "qnr",
-    "qni", "qns", "qng", "qnh", "qnn", "qvolg", "qvolh",
-)
 _WRF_TO_STATE = MappingProxyType({
     "QVAPOR": "qv", "QCLOUD": "qc", "QRAIN": "qr",
     "QICE": "qi", "QSNOW": "qs", "QGRAUP": "qg",
@@ -305,19 +301,6 @@ def _output_entries(path: Path) -> list[str]:
     return sorted(child.name for child in path.iterdir()
                   if child.name != OUTPUT_OWNER_NAME
                   and not child.name.startswith(OUTPUT_OWNER_NAME + "."))
-
-
-def release_output_owner(path) -> bool:
-    """Give up this process's claim on output folder ``path``, if held.
-
-    Only the owner file goes; the run's output stays.  True when a claim
-    this process held was released.
-    """
-
-    from gpuwm import ownership
-
-    held = ownership.held_claim(output_owner_path(path))
-    return held.release() if held is not None else False
 
 
 def reserve_output_root(path, *, flag: str = "--out") -> Path:
@@ -1709,14 +1692,6 @@ def read_parent_microphysics(
         raise OfflineChildContractError(
             f"{path} lacks {label} {missing}")
     return MappingProxyType(fields)
-
-
-def _same_shape(fields: Mapping[str, np.ndarray]) -> tuple[int, ...]:
-    shapes = {tuple(np.asarray(value).shape) for value in fields.values()}
-    if len(shapes) != 1:
-        raise OfflineChildContractError(
-            f"microphysics fields have inconsistent shapes {sorted(shapes)}")
-    return next(iter(shapes))
 
 
 #: Cells per device round on the host-chunked conversion route.  The edge

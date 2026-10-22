@@ -10,11 +10,13 @@ re-executed child must never re-exec; and both prepared runners, the
 single-domain one and the domain-tree one, must take the seam.
 """
 import os
+from pathlib import Path
 import sys
 
 import pytest
 
 from gpuwm import free_threading as ft
+from gpuwm.free_threading import multi_card_lock_reason as _real_lock_reason
 
 
 @pytest.fixture
@@ -114,11 +116,76 @@ def test_host_threads_report_names_the_interpreter():
     assert report["python_gil_env"] == os.environ.get("PYTHON_GIL")
 
 
+@pytest.fixture
+def real_lock_gate(monkeypatch):
+    """Undo the suite-wide pin (tests/conftest.py) so the gate answers for real."""
+    monkeypatch.setattr(ft, "multi_card_lock_reason", _real_lock_reason)
+    monkeypatch.delenv("PYTHON_GIL", raising=False)
+
+
+def _interpreter(monkeypatch, *, free_threaded, locked):
+    monkeypatch.setattr(ft, "free_threaded_build", lambda: free_threaded)
+    monkeypatch.setattr(ft, "gil_enabled", lambda: locked)
+
+
+@pytest.mark.parametrize("free_threaded, locked", [(False, True), (True, True)])
+def test_multi_card_split_is_refused_while_the_lock_is_on(real_lock_gate, monkeypatch,
+                                                          free_threaded, locked):
+    # An 8-card box got the wheel by hand into a venv on its GIL Python and
+    # --devices 8 was about to run with nothing said: 2 cards measured 0.78x of 1.
+    from gpuwm.core.devices import DevicesRefused
+    _interpreter(monkeypatch, free_threaded=free_threaded, locked=locked)
+    with pytest.raises(DevicesRefused) as caught:
+        ft.refuse_multi_card_under_gil(8, "gpuwm go")
+    assert ft.MULTI_CARD_GIL_REFUSAL in str(caught.value)
+    assert "serialised by the GIL" in str(caught.value) and "8-card" in str(caught.value)
+
+
+@pytest.mark.parametrize("free_threaded, locked", [(False, True), (True, True), (True, False)])
+def test_one_card_is_never_refused(real_lock_gate, monkeypatch, free_threaded, locked):
+    _interpreter(monkeypatch, free_threaded=free_threaded, locked=locked)
+    ft.refuse_multi_card_under_gil(1, "gpuwm go")
+
+
+def test_free_threaded_lock_off_runs_multi_card(real_lock_gate, monkeypatch):
+    _interpreter(monkeypatch, free_threaded=True, locked=False)
+    assert ft.multi_card_lock_reason() is None
+    ft.refuse_multi_card_under_gil(8, "gpuwm go")
+
+
+def _go_plan(tmp_path, devices):
+    from gpuwm import go_cli
+    root = Path(__file__).resolve().parents[1]
+    return go_cli.plan_from_config(root / "configs" / "gfs_12km_quickstart.toml",
+                                   outdir=tmp_path / "run", run_stamp=False,
+                                   devices=devices)
+
+
+def test_go_door_refuses_devices_two_on_a_gil_build(real_lock_gate, monkeypatch, tmp_path):
+    from gpuwm.core.devices import DevicesRefused
+    _interpreter(monkeypatch, free_threaded=False, locked=True)
+    with pytest.raises(DevicesRefused, match="serialised by the GIL"):
+        _go_plan(tmp_path, 2)
+
+
+def test_go_door_passes_devices_one_on_a_gil_build(real_lock_gate, monkeypatch, tmp_path):
+    _interpreter(monkeypatch, free_threaded=False, locked=True)
+    plan = _go_plan(tmp_path, 1)
+    assert plan["devices_count_override"] == 1
+
+
+def test_go_door_passes_devices_two_free_threaded(real_lock_gate, monkeypatch, tmp_path):
+    _interpreter(monkeypatch, free_threaded=True, locked=False)
+    plan = _go_plan(tmp_path, 2)
+    assert plan["devices_count_override"] == 2
+
+
 @pytest.mark.parametrize("windows, rebuild", [
     (False, "rm -rf .venv && bash install.sh"),
     (True, "Remove-Item -Recurse -Force .venv; .\\install.ps1"),
 ])
-def test_doctor_names_a_locked_interpreter_without_blocking(monkeypatch, windows, rebuild):
+def test_doctor_names_a_locked_interpreter_without_blocking(real_lock_gate, monkeypatch,
+                                                            windows, rebuild):
     # The installers make .venv on 3.14t by default since 2.8.8, so the remedy
     # is to let them make it again -- not to export GPUWM_PYTHON by hand.  It
     # is printed as comments only: doctor's closing line says every remedy line
@@ -127,25 +194,36 @@ def test_doctor_names_a_locked_interpreter_without_blocking(monkeypatch, windows
     # commands (tests/test_doctor.py holds every remedy to that claim).  The
     # spelling follows the shell the report is forced to, not the host.
     from gpuwm import bridges, doctor
-    monkeypatch.setattr(ft, "free_threaded_build", lambda: False)
+    _interpreter(monkeypatch, free_threaded=False, locked=True)
     monkeypatch.setattr(bridges, "WINDOWS_SHELL", windows)
     check = doctor._host_threads_check()
     assert check.status == "info" and check.blocking is False
-    assert "take turns" in check.detail and "2x" in check.detail
+    assert sys.executable in check.detail and "GIL build" in check.detail
+    assert "--devices N>1" in check.detail and "refuse" in check.detail
+    assert "0.78x" in check.detail
     lines = [line.strip() for line in check.remedy.splitlines() if line.strip()]
     assert all(line.startswith("#") for line in lines), lines
     assert any(line.lstrip("# ") == rebuild for line in lines), lines
+    assert any(line.lstrip("# ") == ft.MULTI_CARD_GIL_REFUSAL for line in lines), lines
     assert "GPUWM_PYTHON" not in check.remedy
 
 
-@pytest.mark.parametrize("locked", [False, True])
-def test_doctor_verifies_a_free_threaded_interpreter(monkeypatch, locked):
+def test_doctor_names_a_free_threaded_build_with_the_lock_forced_on(real_lock_gate, monkeypatch):
     from gpuwm import doctor
-    monkeypatch.setattr(ft, "free_threaded_build", lambda: True)
-    monkeypatch.setattr(ft, "gil_enabled", lambda: locked)
+    _interpreter(monkeypatch, free_threaded=True, locked=True)
+    monkeypatch.setenv("PYTHON_GIL", "1")
     check = doctor._host_threads_check()
-    assert check.status == "verified" and check.brief == "free-threaded"
-    assert ("lock is on in this process" in check.detail) is locked
+    assert check.status == "info" and check.blocking is False
+    assert "PYTHON_GIL=1" in check.detail and "--devices N>1" in check.detail
+    assert ft.MULTI_CARD_GIL_REFUSAL in check.remedy
+
+
+def test_doctor_verifies_a_free_threaded_interpreter(real_lock_gate, monkeypatch):
+    from gpuwm import doctor
+    _interpreter(monkeypatch, free_threaded=True, locked=False)
+    check = doctor._host_threads_check()
+    assert check.status == "verified" and "GIL off" in check.brief
+    assert "free-threaded build" in check.detail
 
 
 class _Reexecuted(Exception):
@@ -180,3 +258,43 @@ def test_a_runner_hosted_in_process_never_reexecutes(monkeypatch, capsys, module
     monkeypatch.setattr(ft, "keep_gil_disabled", lambda: pytest.fail("re-executed a hosted runner"))
     assert runner.main(["--show-capabilities"]) == 0
     capsys.readouterr()
+
+
+_POINT = {"gfs": "--point=39,-98", "hrrr": "--point=39,-98"}
+
+
+def _front_door_go(tmp_path, source, devices):
+    # gfs takes the prepared stage composer, hrrr the registered run-plan
+    # launch: both branches of `gpuwm go --dry-run` reach the refusal.
+    from gpuwm.cli import main
+    from _staged_geog import staged_geog_tree
+    config = tmp_path / f"{source}.toml"
+    assert main(["domain", _POINT[source], "--card", "16gb", "--ladder", "12",
+                 "--source", source, "--cycle", "2026-08-18T06",
+                 "--hours", "3", "--out", str(config)]) == 0
+    geog = staged_geog_tree(tmp_path / "geog" / "WPS_GEOG")
+    return main(["go", str(config), "--dry-run", "--devices", str(devices),
+                 "--geog-root", str(geog), "--outdir", str(tmp_path / "out"),
+                 "--no-memory-gate"])
+
+
+@pytest.mark.parametrize("source", ["gfs", "hrrr"])
+def test_go_dry_run_refuses_devices_two_on_a_gil_build(real_lock_gate, monkeypatch,
+                                                       tmp_path, capsys, source):
+    _interpreter(monkeypatch, free_threaded=False, locked=True)
+    rc = _front_door_go(tmp_path, source, 2)
+    captured = capsys.readouterr()
+    assert rc == 2, captured.out + captured.err
+    assert ft.MULTI_CARD_GIL_REFUSAL in captured.err, captured.err
+
+
+# The gfs branch's one-card pass is test_go_door_passes_devices_one_on_a_gil_build
+# (its dry run also prices the local card, which a CI card may not fit).
+@pytest.mark.parametrize("source", ["hrrr"])
+def test_go_dry_run_passes_devices_one_on_a_gil_build(real_lock_gate, monkeypatch,
+                                                      tmp_path, capsys, source):
+    _interpreter(monkeypatch, free_threaded=False, locked=True)
+    rc = _front_door_go(tmp_path, source, 1)
+    captured = capsys.readouterr()
+    assert rc == 0, captured.out + captured.err
+    assert "serialised by the GIL" not in captured.err

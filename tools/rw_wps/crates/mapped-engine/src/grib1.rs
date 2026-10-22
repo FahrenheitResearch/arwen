@@ -361,6 +361,7 @@ fn grib1_record(
         latitude: grid.latitude.clone(),
         longitude: grid.longitude.clone(),
         grid_fingerprint: grid.fingerprint.clone(),
+        plane_ladder_hpa: None,
     }))
 }
 
@@ -531,7 +532,7 @@ mod tests {
     }
 
     fn object(specs: &[MessageSpec]) -> Vec<u8> {
-        specs.iter().flat_map(|spec| encode(spec)).collect()
+        specs.iter().flat_map(encode).collect()
     }
 
     /// The ERA5 reference object's shape: two meteorological messages with

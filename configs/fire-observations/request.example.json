@@ -1,0 +1,12 @@
+{
+  "schema": "gpuwm-fire-ignition-v1",
+  "incident_id": "00000000-0000-0000-0000-000000000001",
+  "model_start_utc_epoch_ms": 1704067200000,
+  "initialization_utc_epoch_ms": 1704067200000,
+  "assumed_burn_age_seconds": 900,
+  "incident": {"route": "wfigs-incidents"},
+  "perimeters": {"route": "wfigs-perimeters"},
+  "static_bundle": "fire-static.npz",
+  "output": "fire-static-ignited.npz",
+  "output_directory": "fire-observations"
+}

@@ -30,6 +30,7 @@
   },
   "acquisition": {
     "kind": "cads",
+    "licence_url": "https://spdx.org/licenses/CC-BY-4.0",
     "api_url": "https://ads.atmosphere.copernicus.eu/api",
     "site": "https://ads.atmosphere.copernicus.eu",
     "dataset": "cams-global-atmospheric-composition-forecasts",

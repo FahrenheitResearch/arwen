@@ -1064,21 +1064,47 @@ def test_no_probe_still_belongs_to_readiness_on_the_recipe_route(tmp_path, door,
     assert result.code == 2 and "--no-probe belongs to --readiness" in result.err
 
 
-def test_recipe_consumes_checkpoint_retention_for_its_original_member_writers(tmp_path, door, stages, monkeypatch):
+@pytest.mark.parametrize("inherited, flags, expected", [
+    (None, [], "1"), ("7", [], "7"),
+    ("7", ["--keep-checkpoints", "2"], "2"),
+    (None, ["--keep-checkpoints", "0"], "0"),
+])
+def test_recipe_consumes_checkpoint_retention_for_its_original_member_writers(
+        tmp_path, door, stages, monkeypatch, inherited, flags, expected):
     import os
     from gpuwm.ensemble import recipe_door
     from gpuwm.resume import KEEP_CHECKPOINTS_ENV
     original, seen = recipe_door.run_recipe_ensemble, []
-    monkeypatch.setenv(KEEP_CHECKPOINTS_ENV, "7")
+    if inherited is None:
+        monkeypatch.delenv(KEEP_CHECKPOINTS_ENV, raising=False)
+    else:
+        monkeypatch.setenv(KEEP_CHECKPOINTS_ENV, inherited)
     def record(*args, **kwargs):
         seen.append(os.environ[KEEP_CHECKPOINTS_ENV])
         return original(*args, **kwargs)
     monkeypatch.setattr(recipe_door, "run_recipe_ensemble", record)
     result = door("go", _case(tmp_path), *RECIPE_FLAGS, "--outdir", tmp_path / "out",
-                  "--products", "none", "--keep-checkpoints", "2")
+                  "--products", "none", *flags)
     assert result.code == 0, result.text
-    assert seen == ["2"]
-    assert os.environ[KEEP_CHECKPOINTS_ENV] == "7"
+    assert seen == [expected]
+    assert os.environ.get(KEEP_CHECKPOINTS_ENV) == inherited
+
+
+def test_resumed_recipe_inherits_the_same_default_checkpoint_retention(
+        tmp_path, door, stages, monkeypatch):
+    from gpuwm.ensemble import restart_roster
+    from gpuwm.resume import KEEP_CHECKPOINTS_ENV
+    monkeypatch.delenv(KEEP_CHECKPOINTS_ENV, raising=False)
+    seen = []
+    def resume(*args, **kwargs):
+        seen.append(os.environ.get(KEEP_CHECKPOINTS_ENV))
+        return 0
+    monkeypatch.setattr(restart_roster, "resume_prepared_roster", resume)
+    result = door("go", _case(tmp_path), *RECIPE_FLAGS,
+                  "--restart-roster", tmp_path / "ensemble-restart.json")
+    assert result.code == 0, result.text
+    assert seen == ["1"]
+    assert KEEP_CHECKPOINTS_ENV not in os.environ
 
 
 # ---- gpuwm run: unsupervised, and its supervision flags ---------------------------
@@ -1870,3 +1896,29 @@ def test_member_preparations_overlap_with_independent_source_authorities(tmp_pat
     assert receipt["preparation_execution"]["workers"] == 2
     assert len({row["prepared_root"] for row in receipt["members"]}) == 2
     assert [row["member_id"] for row in receipt["members"]] == [0, 1]
+
+
+def test_disk_admission_prices_the_hydro_preparation_before_building_it(tmp_path, monkeypatch):
+    """The default-on hydro preparation is priced into the members' disk admission and
+    built only after it passes. Breakage it prevents: the 4-member WoFS ensemble on a 16 GB card
+    spent 369 s on hydro sources and 276 s on initial water, then this admission refused
+    the run and said nothing was spent."""
+    from gpuwm import disk_budget
+    from gpuwm.hydro import runtime
+
+    gib = 2 ** 30
+    monkeypatch.setattr(disk_budget, "projected_run_bytes", lambda *args, **kwargs: {
+        "download_bytes": 10 * gib, "preparation_bytes": gib, "history_bytes": 2 * gib,
+        "compose_scratch_bytes": 0, "compose_scratch_min_bytes": 0, "compose_scratch": {},
+        "download": {"basis": "measured"}})
+    config = _case(tmp_path)
+    request = EnsembleRequest(2, recipe="time-lagged")
+    _recipe, plans = _reviewed(config, request, tmp_path / "scratch")
+    monkeypatch.setattr(disk_budget, "free_bytes", lambda path: 24 * gib)
+    monkeypatch.setattr(runtime, "hydro_disk_estimate", lambda config, args=None: (0, None))
+    assert recipe_door.disk_refusal(plans, case_root=tmp_path / "out", request=request) is None
+    monkeypatch.setattr(runtime, "hydro_disk_estimate", lambda config, args=None: (
+        5 * gib, "hydro preparation about 5.0 GiB over 65 square degrees"))
+    refusal = recipe_door.disk_refusal(plans, case_root=tmp_path / "out", request=request)
+    assert refusal is not None and "hydro preparation about 5.0 GiB" in refusal
+    assert "Refused before the first download and before the hydro preparation" in refusal

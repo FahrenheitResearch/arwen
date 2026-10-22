@@ -424,10 +424,6 @@ def _grid_crs(grid):
     return CRS.from_proj4(proj4)
 
 
-#: Backward-compatible name (predates the worldwide projections).
-_lambert_crs = _grid_crs
-
-
 def _raster_geometry(grid):
     """Return north-first raster geometry for WRF mass points."""
 

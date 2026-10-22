@@ -73,6 +73,7 @@ class ProductWorkerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=WORKSPACE) as temporary:
             root = Path(temporary).resolve()
             request = self.fixture(root)
+            request["member_metadata"] = [{"member_id": 11, "seed": (1 << 64)-1, "weight": .75}, {"member_id": 7, "weight": .25}]
             authority = root / "d01" / "ensemble-manifest.json"
             authority.parent.mkdir()
             authority.write_bytes(b"newer parent authority must survive")
@@ -84,6 +85,7 @@ class ProductWorkerTest(unittest.TestCase):
                 self.assertFalse(options["retire_diagnostics"])
                 self.assertFalse(spool.gpu_replay)
                 self.assertEqual(spool.member_order, (11, 7))
+                self.assertEqual(spool.member_weights, (.75, .25))
                 np.testing.assert_array_equal(spool.latitude.view(np.uint32), words)
                 self.assertEqual(spool.member_metadata[0]["seed"], (1 << 64) - 1)
                 self.assertEqual(spool.requests[0].thresholds, (10.0,))

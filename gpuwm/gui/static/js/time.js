@@ -28,13 +28,6 @@ export function longTime(text) {
   return `${DAYS[d.getUTCDay()]} ${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}, ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())} UTC`;
 }
 
-// "1 h", "36 h", "30 min"
-export function spanWords(seconds) {
-  if (seconds === null || seconds === undefined) return "";
-  const h = seconds / 3600;
-  return h >= 1 ? `${+h.toFixed(1)} h` : `${Math.round(seconds / 60)} min`;
-}
-
 export function hourWords(modelSeconds, runSeconds, template) {
   const now = Math.floor((modelSeconds || 0) / 3600);
   const total = Math.round((runSeconds || 0) / 3600);

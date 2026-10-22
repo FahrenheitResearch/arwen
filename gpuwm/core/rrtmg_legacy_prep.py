@@ -202,7 +202,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from gpuwm.core.rrtmg_lw import F, trunc_int
+from gpuwm.core.rrtmg_lw import F
 from gpuwm.core.rrtmg_mcica import (
     NBNDLW, NBNDSW, LW_PERMUTESEED, SW_PERMUTESEED,
     generate_lw_subcolumns, generate_sw_subcolumns)
@@ -224,7 +224,6 @@ DELTAP = F("4.0")
 
 _AMDW = F("1.607793")     # molecular weight dry air / water vapor
 _AMDO = F("0.603461")     # molecular weight dry air / ozone
-_O2 = F("0.209488")       # oxygen VMR
 _CFC22 = F("0.169e-9")
 _CCL4 = F("0.093e-9")
 _CFC11 = F("0.251e-9")
@@ -357,7 +356,10 @@ def compute_lw_nlayers(kme, p_top, deltap=DELTAP):
         n += 1
     elif xi - n <= -0.5:
         n -= 1
-    return int(kme) + n - 1
+    # Keep one clear buffer layer above a high model top. Below 2 hPa
+    # the rounded 4-hPa extension is zero; using it would remove the
+    # buffer and violate the scalar, batched and CUDA prep contracts.
+    return int(kme) + max(1, n) - 1
 
 
 def lw_trace_gases(yr, overrides=None):
@@ -393,46 +395,10 @@ def _moist_prep(kte, icloud, warm_rain, f_qc, f_qr, f_qi, f_qs, f_qg,
     the F_QC/F_QI arms just wrote; under icloud = 0 it hands the optics
     the condensate at zero cloud fraction, as WRF does.
     """
-    qv1d = np.zeros(kte, np.float32)
-    qc1d = np.zeros(kte, np.float32)
-    qr1d = np.zeros(kte, np.float32)
-    qi1d = np.zeros(kte, np.float32)
-    qs1d = np.zeros(kte, np.float32)
-    qg1d = np.zeros(kte, np.float32)
-    cldfra1d = np.zeros(kte, np.float32)
-
-    qv1d = np.maximum(_ZERO, _f32(qv3d)).astype(np.float32)
-
-    if icloud != 0:
-        cldfra1d = _f32(cldfra3d).copy()
-        if f_qc:
-            qc1d = np.maximum(_ZERO, _f32(qc3d)).astype(np.float32)
-        if f_qr:
-            qr1d = np.maximum(_ZERO, _f32(qr3d)).astype(np.float32)
-        # F_QNDROP absent/false path: qndrop1d not used.
-        if (not f_qi) and (not warm_rain):
-            # MP option 3: move liquid to ice below freezing.
-            cold = _f32(t1d) < F("273.15")
-            qi1d = np.where(cold, qc1d, qi1d).astype(np.float32)
-            qs1d = np.where(cold, qr1d, qs1d).astype(np.float32)
-            qc1d = np.where(cold, _ZERO, qc1d).astype(np.float32)
-            qr1d = np.where(cold, _ZERO, qr1d).astype(np.float32)
-        if f_qi:
-            qi1d = np.maximum(_ZERO, _f32(qi3d)).astype(np.float32)
-        if f_qs:
-            qs1d = np.maximum(_ZERO, _f32(qs3d)).astype(np.float32)
-        if f_qg:
-            qg1d = np.maximum(_ZERO, _f32(qg3d)).astype(np.float32)
-        # The old Eta Ferrier branch (F_QC .and. .not. F_QI .and. F_QS
-        # with F_ICE_PHY) belongs to mp_physics=95, refused at admission.
-
-    if ferrier:
-        qi1d = np.maximum(_ZERO, _f32(qi3d)).astype(np.float32)
-        qs1d = np.zeros(kte, np.float32)
-        qc1d = np.maximum(_ZERO, _f32(qc3d)).astype(np.float32)
-
-    qv1d = np.maximum(qv1d, F("1.e-12")).astype(np.float32)
-    return qv1d, qc1d, qr1d, qi1d, qs1d, qg1d, cldfra1d
+    return _moist_prep_b(
+        np, icloud, warm_rain, f_qc, f_qr, f_qi, f_qs, f_qg,
+        *map(_f32, (t1d, qv3d, qc3d, qr3d, qi3d, qs3d, qg3d, cldfra3d)),
+        ferrier=ferrier)
 
 
 def cloud_form_is_fork(form):
@@ -456,116 +422,31 @@ def _effective_radii(kte, icloud, has_reqc, has_reqi, has_reqs,
     qs1d/qi1d are replaced (not mutated) when the P3 case fires; note the
     P3 case reads the RAW qi3d (no max(0,.) clamp), as WRF does.
     """
-    inflg = 2
-    iceflg = 3
-    recloud1d = np.zeros(kte, np.float32)
-    reice1d = np.zeros(kte, np.float32)
-    resnow1d = np.zeros(kte, np.float32)
-    if icloud == 0:
-        # WRF leaves recloud1d/reice1d/resnow1d uninitialized here; none
-        # of them is read downstream when icloud==0 (inflg stays 2,
-        # iceflg stays 3).  Zeros are inert placeholders.
-        return inflg, iceflg, recloud1d, reice1d, resnow1d, qs1d, qi1d
-
-    t3d = _f32(t3d)
-    cldfra3d = _f32(cldfra3d)
-    xland = F(xland)
-
-    if has_reqc != 0:
-        inflg = 3
-        rec = np.maximum(F("2.5"), (_f32(re_cloud) * F("1.e6")).astype(
-            np.float32)).astype(np.float32)
-        cloudy = cldfra3d > _ZERO
-        if float(F(xland - F("1.5"))) > 0.0:      # ocean
-            rec = np.where((rec <= F("2.5")) & cloudy,
-                           F("9.6" if sw_cloud_fallback else "10.5"),
-                           rec).astype(np.float32)
-        elif float(F(xland - F("1.5"))) < 0.0:    # land
-            rec = np.where((rec <= F("2.5")) & cloudy,
-                           F("5.4" if sw_cloud_fallback else "7.5"),
-                           rec).astype(np.float32)
-        recloud1d = rec
-    else:
-        recloud1d = np.full(kte, F("5.0"), np.float32)
-
-    if has_reqi != 0:
-        inflg = 4
-        iceflg = 4
-        rei = np.maximum(F("5.0"), (_f32(re_ice) * F("1.e6")).astype(
-            np.float32)).astype(np.float32)
-        redo = (rei <= F("5.0")) & (cldfra3d > _ZERO)
-        if redo.any():
-            idx = trunc_int((t3d - F("179.0")).astype(np.float32))
-            idx = np.minimum(np.maximum(idx, 1), 75)
-            corr = (t3d - trunc_int(t3d).astype(np.float32)).astype(
-                np.float32)
-            interp = ((_RETAB[idx - 1] * (_ONE - corr).astype(np.float32)
-                       ).astype(np.float32)
-                      + (_RETAB[idx] * corr).astype(np.float32)).astype(
-                          np.float32)
-            interp = np.maximum(interp, F("5.0")).astype(np.float32)
-            rei = np.where(redo, interp, rei).astype(np.float32)
-        reice1d = rei
-    else:
-        reice1d = np.full(kte, F("10.0"), np.float32)   # EM_CORE==1
-
-    if has_reqs != 0:
-        inflg = 5
-        iceflg = 5
-        resnow1d = np.maximum(F("10.0"), (_f32(re_snow) * F("1.e6")).astype(
-            np.float32)).astype(np.float32)
-    else:
-        resnow1d = np.full(kte, F("10.0"), np.float32)
-
-    # Special case for P3 microphysics: ice moves to the snow category.
-    if has_reqs == 0 and has_reqi != 0 and has_reqc != 0:
-        inflg = 5
-        iceflg = 5
-        resnow1d = np.maximum(F("10.0"), (_f32(re_ice) * F("1.e6")).astype(
-            np.float32)).astype(np.float32)
-        qs1d = _f32(qi3d_raw).copy()      # RAW field, no max(0,.) -- WRF oddity
-        qi1d = np.zeros(kte, np.float32)
-        reice1d = np.full(kte, F("10.0"), np.float32)
-
-    return inflg, iceflg, recloud1d, reice1d, resnow1d, qs1d, qi1d
+    result = _effective_radii_b(
+        np, icloud, has_reqc, has_reqi, has_reqs,
+        _f32(t3d)[None], _f32(cldfra3d)[None], np.array([xland], np.float32),
+        *(_f32(v)[None] for v in
+          (re_cloud, re_ice, re_snow, qi3d_raw, qs1d, qi1d)),
+        sw_cloud_fallback=sw_cloud_fallback)
+    inflg, iceflg, rec, rei, res, qs, qi = result
+    if icloud == 0 or not (has_reqs == 0 and has_reqi != 0 and has_reqc != 0):
+        return inflg, iceflg, rec[0], rei[0], res[0], qs1d, qi1d
+    return inflg, iceflg, rec[0], rei[0], res[0], qs[0], qi[0]
 
 
 def _relcalc(t, landfrac, landm, icefrac, snowh):
     """relcalc (Kiehl): liquid effective radius (um) from temperature and
     surface state.  t is (pver,) float32; scalars float32."""
-    tmelt = F("273.16")
-    rliqocean = F("14.0")
-    rliqice = F("14.0")
-    rliqland = F("8.0")
-    t = _f32(t)
-    w = ((tmelt - t).astype(np.float32) * F("0.05")).astype(np.float32)
-    w = np.minimum(_ONE, np.maximum(_ZERO, w)).astype(np.float32)
-    rel = (rliqland + (F(rliqocean - rliqland) * w).astype(
-        np.float32)).astype(np.float32)
-    w = np.minimum(_ONE, np.maximum(_ZERO, F(F(snowh) * F("10.0")))).astype(
-        np.float32)
-    rel = (rel + ((rliqocean - rel).astype(np.float32) * w).astype(
-        np.float32)).astype(np.float32)
-    w = np.minimum(_ONE, np.maximum(_ZERO, F(_ONE - F(landm)))).astype(
-        np.float32)
-    rel = (rel + ((rliqocean - rel).astype(np.float32) * w).astype(
-        np.float32)).astype(np.float32)
-    w = np.minimum(_ONE, np.maximum(_ZERO, F(icefrac))).astype(np.float32)
-    rel = (rel + ((rliqice - rel).astype(np.float32) * w).astype(
-        np.float32)).astype(np.float32)
-    return rel
+    return _relcalc_b(np, _f32(t)[None], landfrac,
+                      np.array([landm], np.float32),
+                      np.array([icefrac], np.float32),
+                      np.array([snowh], np.float32))[0]
 
 
 def _reicalc(t):
     """reicalc (Kristjansson & Mitchell): ice effective radius (um) from
     the retab table, index clamped 1..94."""
-    t = _f32(t)
-    idx = trunc_int((t - F("179.0")).astype(np.float32))
-    idx = np.minimum(np.maximum(idx, 1), 94)
-    corr = (t - trunc_int(t).astype(np.float32)).astype(np.float32)
-    return ((_RETAB[idx - 1] * (_ONE - corr).astype(np.float32)).astype(
-        np.float32)
-        + (_RETAB[idx] * corr).astype(np.float32)).astype(np.float32)
+    return _reicalc_b(np, _f32(t))
 
 
 def _cloud_properties(kte, iceflg, inflg, qc1d, qi1d, qs1d, cldfra1d,
@@ -578,67 +459,14 @@ def _cloud_properties(kte, iceflg, inflg, qc1d, qi1d, qs1d, cldfra1d,
     Returns (clwpth, ciwpth, cswpth, rel, rei, res, resnow1d) over the
     model layers; resnow1d comes back with the 130-um clamp applied.
     """
-    gravmks = F(g)
-    landfrac = F(F("2.0") - F(xland))
-    landm = landfrac
-    snowh = F(F("0.001") * F(snow))
-    icefrac = F(xice)
-
-    cldden = np.maximum(F("0.01"), cldfra1d).astype(np.float32)
-
-    def _path(q):
-        a = (q * pdel).astype(np.float32)
-        b = (a * F("100.0")).astype(np.float32)
-        c = (b / gravmks).astype(np.float32)
-        return (c * F("1000.0")).astype(np.float32)
-
-    gicewp = _path((qi1d + qs1d).astype(np.float32))
-    gliqwp = _path(qc1d)
-    cicewp = (gicewp / cldden).astype(np.float32)
-    cliqwp = (gliqwp / cldden).astype(np.float32)
-
-    if iceflg >= 4:
-        gicewp = _path(qi1d)
-        cicewp = (gicewp / cldden).astype(np.float32)
-
-    csnowp = np.zeros(kte, np.float32)
-    resnow1d = resnow1d.copy()
-    if iceflg == 5:
-        # (WRF also accumulates 1% of the snow path onto a stale gicewp
-        # scalar here; the value is never read -- dead code, not modelled.)
-        smf = np.full(kte, F("1.0" if cloud_form_is_fork(cloud_form) else "0.99"), np.float32)
-        big = resnow1d > F("130.0")
-        q = (F("130.0") / resnow1d).astype(np.float32)
-        smf = np.where(big, np.minimum(smf, (q * q).astype(np.float32)),
-                       smf).astype(np.float32)
-        resnow1d = np.where(big, F("130.0"), resnow1d).astype(np.float32)
-        gsnowp = _path((qs1d * smf).astype(np.float32))
-        csnowp = (gsnowp / cldden).astype(np.float32)
-
-    # progn = 0 path
-    reliq = _relcalc(tlay_model, landfrac, landm, icefrac, snowh)
-    reice = _reicalc(tlay_model)
-
-    if inflg >= 3:
-        reliq = recloud1d.copy()
-    if iceflg >= 4:          # EM_CORE==1
-        reice = reice1d.copy()
-    if iceflg == 3:
-        reice = (reice * F("1.0315")).astype(np.float32)
-        reice = np.minimum(F("140.0"), reice).astype(np.float32)
-    # is_CAMMGMP_used = .false.
-
-    clwpth = cliqwp.copy()
-    ciwpth = cicewp.copy()
-    rel = reliq.copy()
-    rei = reice.copy()
-    if inflg == 5:
-        cswpth = csnowp.copy()
-        res = resnow1d.copy()
-    else:
-        cswpth = np.zeros(kte, np.float32)
-        res = np.full(kte, F("10.0"), np.float32)
-    return clwpth, ciwpth, cswpth, rel, rei, res, resnow1d
+    result = _cloud_properties_b(
+        np, iceflg, inflg,
+        *(_f32(v)[None] for v in (qc1d, qi1d, qs1d, cldfra1d, pdel, tlay_model)),
+        g, np.array([xland], np.float32), np.array([xice], np.float32),
+        np.array([snow], np.float32),
+        *(_f32(v)[None] for v in (recloud1d, reice1d, resnow1d)),
+        cloud_form=cloud_form)
+    return tuple(v[0] for v in result)
 
 
 def _o3data(prlevh):
@@ -738,7 +566,7 @@ def lwrad_prep(*, p3d, p8w, t3d, t8w, dz8w,
     tauaer; McICA arrays are (ngptlw, nlayers), tauaer (nlayers, nbndlw).
     Extras (not rrtmg_lw args): o31d, hgt, cldfrac, juldat, pdel.
     """
-    fork_cloud = cloud_form_is_fork(rrtmg_cloud_optics_form)
+    cloud_form_is_fork(rrtmg_cloud_optics_form)
     _require_radii("lwrad_prep", has_reqc, has_reqi, has_reqs,
                    re_cloud, re_ice, re_snow)
     _mp_guard(mp_physics)
@@ -950,42 +778,13 @@ def lwrad_outputs(*, uflx, dflx, hr, uflxc, dflxc, hrc, pi3d,
     layer-flux outputs), plus the *CLN quartet when clean-sky fluxes are
     supplied and calc_clean_atm_diag > 0.
     """
-    uflx = _f32(uflx)
-    dflx = _f32(dflx)
-    uflxc = _f32(uflxc)
-    dflxc = _f32(dflxc)
-    hr = _f32(hr)
-    hrc = _f32(hrc)
-    pi3d = _f32(pi3d)
-    kte = pi3d.shape[0]
-    ntop = uflx.shape[0] - 1               # nlayers+1-th Fortran level
-
-    out = {
-        "glw": dflx[0],
-        "olr": uflx[ntop],
-        "lwcf": F(uflxc[ntop] - uflx[ntop]),
-        "lwupt": uflx[ntop], "lwuptc": uflxc[ntop],
-        "lwdnt": dflx[ntop], "lwdntc": dflxc[ntop],
-        "lwupb": uflx[0], "lwupbc": uflxc[0],
-        "lwdnb": dflx[0], "lwdnbc": dflxc[0],
-        "lwupflx": uflx[:kte + 2].copy(),
-        "lwupflxc": uflxc[:kte + 2].copy(),
-        "lwdnflx": dflx[:kte + 2].copy(),
-        "lwdnflxc": dflxc[:kte + 2].copy(),
-    }
+    inputs = {name: _f32(value)[None] for name, value in {
+        "uflx": uflx, "dflx": dflx, "hr": hr, "uflxc": uflxc,
+        "dflxc": dflxc, "hrc": hrc, "pi3d": pi3d}.items()}
     if calc_clean_atm_diag > 0 and uflxcln is not None:
-        uflxcln = _f32(uflxcln)
-        dflxcln = _f32(dflxcln)
-        out["lwuptcln"] = uflxcln[ntop]
-        out["lwdntcln"] = dflxcln[ntop]
-        out["lwupbcln"] = uflxcln[0]
-        out["lwdnbcln"] = dflxcln[0]
-
-    tten = (hr[:kte] / F("86400.0")).astype(np.float32)
-    out["rthratenlw"] = (tten / pi3d).astype(np.float32)
-    tten = (hrc[:kte] / F("86400.0")).astype(np.float32)
-    out["rthratenlwc"] = (tten / pi3d).astype(np.float32)
-    return out
+        inputs.update(uflxcln=_f32(uflxcln)[None], dflxcln=_f32(dflxcln)[None])
+    return {name: value[0] for name, value in lwrad_outputs_batch(
+        **inputs, calc_clean_atm_diag=calc_clean_atm_diag).items()}
 
 
 # ---------------------------------------------------------------------------
@@ -1737,7 +1536,7 @@ def lwrad_prep_batch(*, p3d, p8w, t3d, t8w, dz8w,
     the bit-gated device twin so the McICA slabs come back as device
     arrays and the NumPy generator never runs on the forecast path.
     """
-    fork_cloud = cloud_form_is_fork(rrtmg_cloud_optics_form)
+    cloud_form_is_fork(rrtmg_cloud_optics_form)
     _require_radii("lwrad_prep_batch", has_reqc, has_reqi, has_reqs,
                    re_cloud, re_ice, re_snow)
     _mp_guard(mp_physics)

@@ -42,8 +42,12 @@ def test_dry_run_prints_the_lattice_and_writes_nothing(tmp_path, capsys):
 
 
 def test_dry_run_refuses_a_cycle_that_is_not_whole_parent_steps(tmp_path):
+    # The parent dt is explicit: since 98e5f5ac4e9 (lane/improve-52-cycle-
+    # parent-dt) the DEFAULT resolves to a step that divides the cycle (60 s
+    # for 900 s), and only a declared --parent-dt-seconds that does not
+    # divide it is refused.
     args = _args(tmp_path, ["--cycle-seconds", "900", "--cycles", "3",
-                            "--dry-run"])
+                            "--parent-dt-seconds", "120", "--dry-run"])
     with pytest.raises(CycleRefusal) as excinfo:
         cycle_main(args)
     assert excinfo.value.observed["remainder_ticks"] == 60000

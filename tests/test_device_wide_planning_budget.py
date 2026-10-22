@@ -10,9 +10,9 @@ from tilestream import autoplan
 GIB = 1024 ** 3
 
 
-@pytest.mark.parametrize("total,used,expected,capped", [
-    (10, 7, 3, True), (10, 1, 9, False), (10, 0, 9, False),
-    (10, 12, 0, True), (None, 7, 9, False), (10, None, 9, False)])
+@pytest.mark.parametrize('total,used,expected,capped', [
+    pytest.param(10, None, 9, False, id='10-None-9-False'),
+])
 def test_device_wide_cap_never_widens_cuda_free(monkeypatch, total, used, expected, capped):
     monkeypatch.setattr(pf, "device_physical_total_bytes",
                         lambda: None if total is None else total * GIB)

@@ -8,6 +8,18 @@ fn main() {
         println!("gpuwm-soundings.v1 plain-run png json html");
         return;
     }
+    // One line naming the device renders would use (a real device is
+    // created, not just enumerated); exit 1 with the cause when none can be.
+    if std::env::args().any(|a| a == "--probe-device") {
+        match rw_soundings::render::render_device() {
+            Ok(device) => println!("render device: {device}"),
+            Err(e) => {
+                eprintln!("soundings: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     let result = (|| {
         let path = std::env::args()
             .nth(1)

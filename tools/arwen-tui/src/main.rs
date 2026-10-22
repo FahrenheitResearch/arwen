@@ -8,7 +8,7 @@ mod editor;
 mod file_drop;
 mod file_drop_input;
 mod guide;
-mod job;
+pub mod job;
 mod node_ui;
 mod plotsettings;
 mod remote;
@@ -60,7 +60,7 @@ enum Tab {
 }
 enum Dialog {
     Workflows(workflows::Browser),
-    Scenario(scenario::Form, String),
+    Scenario(Box<scenario::Form>, String),
     Details {
         text: String,
         offset: usize,
@@ -183,6 +183,9 @@ struct StartupFailure {
     log: Option<PathBuf>,
 }
 
+#[cfg(test)]
+type ClipboardHook = fn(&str) -> Result<(), String>;
+
 struct App {
     editor: Option<Editor>,
     python: PathBuf,
@@ -238,7 +241,7 @@ struct App {
     plots_from_nodes: bool,
     hits: Vec<HitRegion>,
     #[cfg(test)]
-    clipboard_hook: Option<fn(&str) -> Result<(), String>>,
+    clipboard_hook: Option<ClipboardHook>,
 }
 
 struct CompanionRemoteRequest {
@@ -258,7 +261,6 @@ const COMPANION_QUEUE_TIMEOUT: Duration = Duration::from_secs(30);
 /// visual workspace's window, declared by hand like the clipboard and job code
 /// so the desktop console adds no dependency feature.
 #[cfg(windows)]
-#[cfg_attr(test, allow(dead_code))]
 mod win32 {
     use std::ffi::c_void;
     #[link(name="kernel32")]
@@ -269,19 +271,29 @@ mod win32 {
     }
     #[link(name="user32")]
     unsafe extern "system" {
+        #[cfg(not(test))]
         pub fn IsIconic(window:*mut c_void)->i32;
         pub fn IsWindowVisible(window:*mut c_void)->i32;
         pub fn ShowWindow(window:*mut c_void,command:i32)->i32;
+        #[cfg(not(test))]
         pub fn SetForegroundWindow(window:*mut c_void)->i32;
         pub fn GetSystemMenu(window:*mut c_void,revert:i32)->*mut c_void;
         pub fn DeleteMenu(menu:*mut c_void,position:u32,flags:u32)->i32;
+        #[cfg(not(test))]
         pub fn EnumWindows(callback:Option<unsafe extern "system" fn(*mut c_void,isize)->i32>,parameter:isize)->i32;
+        #[cfg(not(test))]
         pub fn GetWindowThreadProcessId(window:*mut c_void,process:*mut u32)->u32;
         pub fn GetClassNameW(window:*mut c_void,class:*mut u16,count:i32)->i32;
+        #[cfg(not(test))]
         pub fn GetWindow(window:*mut c_void,command:u32)->*mut c_void;
     }
+    #[cfg(not(test))]
     pub const GW_OWNER:u32=4;
-    pub const SW_HIDE:i32=0; pub const SW_SHOWNA:i32=8; pub const SW_RESTORE:i32=9;
+    pub const SW_HIDE:i32=0;
+    #[cfg(not(test))]
+    pub const SW_SHOWNA:i32=8;
+    #[cfg(not(test))]
+    pub const SW_RESTORE:i32=9;
     pub const SC_CLOSE:u32=0xF060; pub const MF_BYCOMMAND:u32=0;
     pub const CTRL_C_EVENT:u32=0; pub const CTRL_BREAK_EVENT:u32=1;
     /// Shows a hidden window, restores a minimized one, then asks for the
@@ -289,6 +301,7 @@ mod win32 {
     /// ShowWindow call ignores its argument when the launcher supplied a startup
     /// show state, and SW_SHOW leaves a hidden console hidden in that case, so
     /// the reveal restores first and falls back to SW_SHOWNA.
+    #[cfg(not(test))]
     pub unsafe fn reveal(window:*mut c_void)->bool{
         unsafe{
             if IsWindowVisible(window)==0||IsIconic(window)!=0{ShowWindow(window,SW_RESTORE);}
@@ -385,7 +398,7 @@ mod desktop_console {
 /// on a Quit, or end the controller.
 // The hidden console is a Windows desktop launcher's; the decision below is
 // held to its tests on every platform.
-#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+#[cfg(any(windows, test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DesktopFrame { End, Hide, Draw, Wait }
 
@@ -396,7 +409,7 @@ enum DesktopFrame { End, Hide, Draw, Wait }
 /// and whose job had ended stayed for hours, kept heartbeating, and the next
 /// ArWen start reattached to it and to the runtime it had resolved instead of
 /// starting fresh.
-#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+#[cfg(any(windows, test))]
 fn desktop_frame(serving: bool, quit_asked: bool, visible: bool) -> DesktopFrame {
     if !serving { DesktopFrame::End }
     else if quit_asked { DesktopFrame::Hide }
@@ -476,6 +489,15 @@ fn log_display_rows(text: &str, width: usize) -> Vec<String> {
         rows.push(row);
     }
     rows
+}
+
+fn field_lines(label: &str, value: &str, empty: &str, width: u16) -> Vec<Line<'static>> {
+    let value = if value.is_empty() { empty } else { value };
+    let text = format!("{label}: {}", safe(value));
+    log_display_rows(&text, width.saturating_sub(2) as usize)
+        .into_iter()
+        .map(Line::raw)
+        .collect()
 }
 
 fn draw_log(frame: &mut Frame, area: Rect, text: &str, offset: usize, title: &str) {
@@ -846,13 +868,12 @@ impl App {
         path.canonicalize().map_err(|e|e.to_string())
     }
     fn open_log_text(&self, text:&str)->String{
-        let result=self.save_log_text(text).and_then(|path|{
-            #[cfg(not(test))]
-            {
-                let program=if cfg!(target_os="windows"){"notepad.exe"}else if cfg!(target_os="macos"){"open"}else{"xdg-open"};
-                std::process::Command::new(program).arg(&path).spawn()
-                    .map_err(|e|format!("Saved {}. Could not open the text editor: {e}",display_path(&path)))?;
-            }
+        let result=self.save_log_text(text);
+        #[cfg(not(test))]
+        let result=result.and_then(|path|{
+            let program=if cfg!(target_os="windows"){"notepad.exe"}else if cfg!(target_os="macos"){"open"}else{"xdg-open"};
+            std::process::Command::new(program).arg(&path).spawn()
+                .map_err(|e|format!("Saved {}. Could not open the text editor: {e}",display_path(&path)))?;
             Ok(path)
         });
         match result{Ok(path)=>format!("Opened plain-text log: {}",display_path(&path)),Err(error)=>error}
@@ -1128,8 +1149,8 @@ impl App {
         self.nodes.select(id)?;
         self.tui_map_waiting=None;self.tui_map_launch=None;
         if self.nodes.store.selected().is_none(){return Ok("Target: Local computer.".into());}
-        self.nodes.begin(remote::Operation::Probe,&self.python,&self.output,&self.cwd).map_err(|error|{
-            self.nodes.view.connection_error=Some(error.clone());error
+        self.nodes.begin(remote::Operation::Probe,&self.python,&self.output,&self.cwd).inspect_err(|error|{
+            self.nodes.view.connection_error=Some(error.clone());
         })?;
         Ok("Connecting to the selected node…".into())
     }
@@ -1621,7 +1642,7 @@ impl App {
             if run_view::Manager::handles(&request.action){
                 let live=self.owned_job_status();
                 let result=self.companion.session.as_ref().ok_or_else(||"The companion session closed.".to_owned())
-                    .and_then(|session|self.run_views.begin(request.clone(),session,&self.nodes.store,&self.python,&self.output,&self.cwd,live.as_ref()));
+                    .and_then(|session|self.run_views.begin(request.clone(), session, &self.nodes.store, (&self.python, &self.output, &self.cwd), live.as_ref()));
                 if let Some(session)=&self.companion.session{match result{
                     Ok(Some(reply))=>{let _=session.respond_with(&request.id,&request.name,reply.result,reply.details);}
                     Ok(None)=>{}
@@ -1709,7 +1730,7 @@ impl App {
                 }
                 companion::Action::StopJob(id) => {
                     match &mut self.job {
-                        Some(current) if current.dir == PathBuf::from(id) => {
+                        Some(current) if current.dir == Path::new(id) => {
                             job = Some(current.dir.clone());
                             current.stop().map(|_| current.stop_message().to_owned()).map_err(|e| e.to_string())
                         }
@@ -2120,7 +2141,7 @@ impl App {
                 let id = node.id.clone();
                 match self
                     .nodes
-                    .save_node(node)
+                    .save_node(*node)
                     .and_then(|_| self.nodes.select(Some(id)))
                 {
                     Ok(()) => {
@@ -2766,18 +2787,10 @@ impl App {
                     self.view(Tab::Logs);
                     return;
                 }
-                KeyCode::Char('?') => {
-                    self.dialog = Some(Dialog::Help(HelpScroll::default()));
-                    return;
-                }
                 _ => {}
             }
         }
         match key.code {
-            KeyCode::F(1) => {
-                self.dialog = Some(Dialog::Help(HelpScroll::default()));
-                return;
-            }
             KeyCode::F(2) => {
                 self.browse(self.cwd.clone());
                 return;
@@ -2879,16 +2892,11 @@ impl App {
                 KeyCode::Enter => self.home_choice(),
                 KeyCode::Char('n') => self.begin_workflows(),
                 KeyCode::Char('t') => self.begin_guide(Kind::Fit),
-                KeyCode::Char('k') => self.begin_cases(),
                 KeyCode::Char('o') => self.dialog = Some(Dialog::Choice(false, 0)),
                 KeyCode::Char('c') => self.dialog = Some(Dialog::Choice(true, 0)),
                 KeyCode::Char('s') => self.start_command("sources", &[], None),
                 KeyCode::Char('p') => {
                     self.start_command("run-plan", &["--physics-profiles".into()], None)
-                }
-                KeyCode::Char('v') if self.editor.is_some() => {
-                    self.tab = Tab::Overview;
-                    self.selected = 1;
                 }
                 KeyCode::Char('q') => {
                     self.request_quit();
@@ -2911,15 +2919,6 @@ impl App {
             KeyCode::Char('o') => {
                 self.dialog = Some(Dialog::Path("Configuration path", String::new()))
             }
-            KeyCode::Char('e') => {
-                if self.editor.is_some() {
-                    self.tab = Tab::Settings
-                } else {
-                    self.status = "Open a configuration first (O).".into()
-                }
-            }
-            KeyCode::Char('l') => self.view(Tab::Logs),
-            KeyCode::Char('v') => self.tab = Tab::Overview,
             KeyCode::Char('x') if self.nodes.store.selected().is_some() => {
                 self.dialog = Some(Dialog::Nodes);
                 if let Some(job) = self.nodes.store.selected().and_then(|n| n.last_job.clone()) {
@@ -2929,7 +2928,6 @@ impl App {
                 }
             }
             KeyCode::Char('x') if self.busy() => self.dialog = Some(Dialog::Stop),
-            KeyCode::Char('?') => self.dialog = Some(Dialog::Help(HelpScroll::default())),
             KeyCode::Tab => {
                 self.tab = if self.tab == Tab::Overview {
                     Tab::Logs
@@ -3105,7 +3103,7 @@ impl App {
         };
         let original = editor.text();
         match scenario::Form::new(original.clone()) {
-            Ok(form) => self.dialog = Some(Dialog::Scenario(form, original)),
+            Ok(form) => self.dialog = Some(Dialog::Scenario(Box::new(form), original)),
             Err(error) => {
                 self.status = format!(
                     "Cannot open initial-state controls: {error}. F opens complete settings."
@@ -3115,7 +3113,7 @@ impl App {
     }
     fn scenario_intent(
         &mut self,
-        form: scenario::Form,
+        form: Box<scenario::Form>,
         original: String,
         intent: scenario::Intent,
     ) {
@@ -4235,23 +4233,17 @@ fn draw_dialog(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
     app.hits.clear();
+    let backdrop = Rect::new(
+        area.x,
+        area.y + 3,
+        area.width,
+        area.height.saturating_sub(3),
+    );
     if let Some(Dialog::Scenario(form, _)) = &mut app.dialog {
-        let backdrop = Rect::new(
-            area.x,
-            area.y + 3,
-            area.width,
-            area.height.saturating_sub(3),
-        );
         form.draw(frame, backdrop);
         return;
     }
     if let Some(Dialog::Workflows(browser)) = &app.dialog {
-        let backdrop = Rect::new(
-            area.x,
-            area.y + 3,
-            area.width,
-            area.height.saturating_sub(3),
-        );
         browser.draw(
             frame,
             backdrop,
@@ -4265,22 +4257,10 @@ fn draw_dialog(frame: &mut Frame, app: &mut App, area: Rect) {
             .plot_selection()
             .map(|v| v.summary())
             .unwrap_or_else(|e| e);
-        let backdrop = Rect::new(
-            area.x,
-            area.y + 3,
-            area.width,
-            area.height.saturating_sub(3),
-        );
         app.node_panel.draw(frame, backdrop, &app.nodes, &plots);
         return;
     }
     // A modal has its own controls. Background tabs/hotkeys are not actionable.
-    let backdrop = Rect::new(
-        area.x,
-        area.y + 3,
-        area.width,
-        area.height.saturating_sub(3),
-    );
     frame.render_widget(Clear, backdrop);
     theme::backdrop(frame, backdrop);
     let rect = if matches!(app.dialog, Some(Dialog::Calendar(..))) && area.height < 24 {
@@ -4592,16 +4572,7 @@ fn draw_dialog(frame: &mut Frame, app: &mut App, area: Rect) {
                 .iter()
                 .enumerate()
                 .map(|(index, field)| {
-                    let value = if field.value.is_empty() {
-                        "(omitted)"
-                    } else {
-                        &field.value
-                    };
-                    let text = format!("{}: {}", field.label, safe(value));
-                    let lines = log_display_rows(&text, parts[1].width.saturating_sub(2) as usize)
-                        .into_iter()
-                        .map(Line::raw)
-                        .collect();
+                    let lines = field_lines(field.label, &field.value, "(omitted)", parts[1].width);
                     (lines, Hit::DomainField(index))
                 })
                 .collect();
@@ -4629,17 +4600,7 @@ fn draw_dialog(frame: &mut Frame, app: &mut App, area: Rect) {
                 .iter()
                 .enumerate()
                 .map(|(index, q)| {
-                    let value = if q.value.is_empty() {
-                        "Default / not entered"
-                    } else {
-                        &q.value
-                    };
-                    let text = format!("{}: {}", q.label, safe(value));
-                    let lines =
-                        log_display_rows(&text, list_parts[1].width.saturating_sub(2) as usize)
-                            .into_iter()
-                            .map(Line::raw)
-                            .collect();
+                    let lines = field_lines(q.label, &q.value, "Default / not entered", list_parts[1].width);
                     (lines, Hit::Summary(index + 1))
                 })
                 .collect();
@@ -5735,7 +5696,7 @@ fn snapshot_screen(app: &mut App, screen: &str) -> Result<(), String> {
                 .ok_or("Scenario snapshot needs --config")?
                 .text();
             app.dialog = Some(Dialog::Scenario(
-                scenario::Form::new(original.clone())?,
+                Box::new(scenario::Form::new(original.clone())?),
                 original,
             ));
         }
@@ -6158,6 +6119,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
     use crate::theme::SKY;
+
+    pub(crate) fn buffer_text(buffer: &ratatui::buffer::Buffer, area: Rect, separator: &str) -> String {
+        (area.y..area.bottom())
+            .map(|y| (area.x..area.right()).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join(separator)
+    }
 
     #[test]
     fn snapshot_dimensions_are_refused_by_option_and_range() {
@@ -6591,7 +6559,7 @@ mod tests {
         assert!(app.nodes.pending.is_some());
         assert!(app.status.contains("request continues") && !app.status.contains("no job started"));
         let mut request = app.nodes.pending.take().unwrap();
-        let limit = std::time::Instant::now() + Duration::from_secs(45);
+        let limit = std::time::Instant::now() + JOB_HANG_GUARD;
         while request.job.poll().unwrap().is_none() {
             assert!(std::time::Instant::now() < limit);
             std::thread::sleep(Duration::from_millis(20));
@@ -6622,7 +6590,7 @@ mod tests {
             node.workspace = "/srv/weather".into();
             node.config = "/srv/weather/Storm case.toml".into();
             node.last_job = Some("recorded-job".into());
-            app.node_intent(node_ui::Intent::Save(node));
+            app.node_intent(node_ui::Intent::Save(Box::new(node)));
             assert!(app.nodes.store.selected().is_some());
             let screen = render_at(&mut app, width, height);
             capture_screen("nodes-profiles", width, height, &mut app);
@@ -6728,7 +6696,7 @@ mod tests {
             assert!(text.contains("SSH host must be"), "{text}");
             assert_eq!(app.nodes.store.selected().unwrap().host, "weather-node");
             app.node_intent(node_ui::Intent::Select(None));
-            assert_eq!(app.plot_spec().unwrap().split(',').count(), 22);
+            assert_eq!(app.plot_spec().unwrap().split(',').count(), 26);
             assert_eq!(fs::read_to_string(&local).unwrap(), original);
             fs::remove_file(&app.nodes.path).unwrap();
             fs::remove_file(&local).unwrap();
@@ -6748,7 +6716,7 @@ mod tests {
             let screen = render_at(&mut app, width, height);
             capture_screen("plots-presets", width, height, &mut app);
             assert!(
-                screen.contains("General (22 plots)") && screen.contains("Customize"),
+                screen.contains("General (26 plots)") && screen.contains("Customize"),
                 "{screen}"
             );
             for index in 0..plotsettings::presets().len() {
@@ -6851,7 +6819,7 @@ mod tests {
         let mut app = loaded_app("name='argv only'\n");
         app.prepared = app.cwd.join("prepared input with spaces");
         let default = app.plot_spec().unwrap();
-        assert_eq!(default.split(',').count(), 22);
+        assert_eq!(default.split(',').count(), 26);
         assert_eq!(App::new().unwrap().plot_spec().unwrap(), default);
         let config = app.editor.as_ref().unwrap().path.clone();
         for wanted in [
@@ -7463,13 +7431,23 @@ mod tests {
         assert_eq!(fs::read_to_string(path).unwrap(), original);
     }
 
+    /// How long a test lets a real Python child run before calling it hung.
+    ///
+    /// A hang guard, not a speed bound: these tests assert what the TUI does
+    /// when the job ends, never how fast Python is. The 2.9.4 R8 gate runs
+    /// this binary's 285 tests in parallel beside the other cargo rows on one
+    /// desktop, and `gpuwm domain` on a tree without a staged static-fields
+    /// bridge (the pure-Python projection fallback) ran past the old 45 s
+    /// bound there while finishing in 13 s on a quiet machine.
+    const JOB_HANG_GUARD: Duration = Duration::from_secs(600);
+
     fn wait_for_ui_job(app: &mut App) {
-        let deadline = std::time::Instant::now() + Duration::from_secs(45);
+        let deadline = std::time::Instant::now() + JOB_HANG_GUARD;
         while app.busy() && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(30));
             app.poll();
         }
-        assert!(!app.busy(), "{}", app.log_text());
+        assert!(!app.busy(), "the job was still running after the hang guard: {}", app.log_text());
     }
 
     #[test]
@@ -7681,13 +7659,7 @@ mod tests {
             fs::create_dir_all(&dir).unwrap();
             let name = format!("{name}-{width}x{height}");
             let (buffer, cursor) = snapshot_buffer(app, width, height).unwrap();
-            let mut text = String::new();
-            for y in 0..height {
-                for x in 0..width {
-                    text.push_str(buffer[(x, y)].symbol());
-                }
-                text.push('\n');
-            }
+            let text = buffer_text(&buffer, Rect::new(0, 0, width, height), "\n") + "\n";
             fs::write(dir.join(format!("{name}.txt")), text).unwrap();
             fs::write(
                 dir.join(format!("{name}.html")),
@@ -7838,13 +7810,7 @@ mod tests {
     fn render_at(app: &mut App, width: u16, height: u16) -> String {
         let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
         term.draw(|f| draw(f, app)).unwrap();
-        let mut text = String::new();
-        for y in 0..height {
-            for x in 0..width {
-                text.push_str(term.backend().buffer()[(x, y)].symbol());
-            }
-            text.push('\n');
-        }
+        let text = buffer_text(term.backend().buffer(), Rect::new(0, 0, width, height), "\n") + "\n";
         text
     }
     fn click_hit(app: &mut App, matches: impl Fn(Hit) -> bool) {
@@ -8190,11 +8156,7 @@ mod tests {
         render_at(&mut app, 80, 24);
         click_hit(&mut app, |hit| matches!(hit, Hit::Key(KeyCode::Enter, _)));
         assert!(app.job.is_some(), "{}", app.status);
-        let deadline = std::time::Instant::now() + Duration::from_secs(45);
-        while app.busy() && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(50));
-            app.poll();
-        }
+        wait_for_ui_job(&mut app);
         {
             // Exit 0, or the geography gap on a machine with no staged WPS_GEOG: the
             // configuration is written either way and the TUI opens it.
@@ -8225,11 +8187,7 @@ mod tests {
         let request = fit.request(&directory).unwrap();
         let fitted = request.created.clone().unwrap();
         app.start_command(&request.command, &request.args, request.created);
-        let deadline = std::time::Instant::now() + Duration::from_secs(45);
-        while app.busy() && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(50));
-            app.poll();
-        }
+        wait_for_ui_job(&mut app);
         {
             // Exit 0, or the geography gap on a machine with no staged WPS_GEOG: the
             // configuration is written either way and the TUI opens it.
@@ -8327,7 +8285,7 @@ mod tests {
                     .next()
                     .unwrap();
                 assert!(
-                    last.replace('\n', "").replace(' ', "").contains(ending),
+                    last.replace(['\n', ' '], "").contains(ending),
                     "{} end was clipped: {last}",
                     row["id"]
                 );
@@ -8586,7 +8544,7 @@ mod tests {
         assert!(app.busy());assert!(app.job.as_mut().unwrap().poll().unwrap().is_none());
         // Cleanup terminates only this test's deliberately owned sleeping helper.
         app.job.as_mut().unwrap().stop().unwrap();
-        let deadline=std::time::Instant::now()+Duration::from_secs(10);
+        let deadline=std::time::Instant::now()+JOB_HANG_GUARD;
         while app.job.as_mut().unwrap().poll().unwrap().is_none(){
             assert!(std::time::Instant::now()<deadline);std::thread::sleep(Duration::from_millis(20));
         }
@@ -9300,7 +9258,7 @@ mod tests {
         app.job = Some(Job::start_with_module_path(&python, "benign-lifetime-fixture", &[], &root.join("job"), &root, Some(&root)).unwrap());
         assert!(app.serving_desktop(), "a running owned job keeps the controller alive");
         assert_eq!(desktop_frame(app.serving_desktop(), false, false), DesktopFrame::Wait);
-        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        let deadline = std::time::Instant::now() + JOB_HANG_GUARD;
         while app.job.as_mut().unwrap().poll().unwrap().is_none() {
             assert!(std::time::Instant::now() < deadline, "the fixture job never ended");
             std::thread::sleep(Duration::from_millis(20));
@@ -9374,7 +9332,7 @@ mod tests {
         app.key(press(KeyCode::Char('y')));
         assert!(!app.exit, "Quit must wait for the worker outcome");
         assert!(app.exit_after_job);
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + JOB_HANG_GUARD;
         while !app.exit {
             app.poll();
             assert!(std::time::Instant::now() < deadline, "owned worker did not stop: {}", app.status);
@@ -9589,7 +9547,7 @@ mod tests {
             app.key(press(KeyCode::Char('x')));assert!(matches!(app.dialog,Some(Dialog::Stop)));app.key(press(KeyCode::Esc));
             assert_eq!(app.editor.as_ref().unwrap().text(),draft);
         }
-        let deadline=std::time::Instant::now()+Duration::from_secs(10);
+        let deadline=std::time::Instant::now()+JOB_HANG_GUARD;
         while app.job.as_mut().unwrap().poll().unwrap().is_none(){
             assert!(std::time::Instant::now()<deadline);std::thread::sleep(Duration::from_millis(10));
         }
@@ -9632,14 +9590,7 @@ mod tests {
                 term.draw(|frame| draw_log(frame, frame.area(), &loaded, offset, "Log"))
                     .unwrap();
                 let buffer = term.backend().buffer();
-                (0..24)
-                    .map(|y| {
-                        (0..width)
-                            .map(|x| buffer[(x, y)].symbol())
-                            .collect::<String>()
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
+                buffer_text(buffer, Rect::new(0, 0, width, 24), "\n")
             };
             app.key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
             assert!(render(&mut term, app.log_offset).contains("step 80 LATEST OUTPUT"));

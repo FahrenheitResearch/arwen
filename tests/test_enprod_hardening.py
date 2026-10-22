@@ -271,6 +271,14 @@ def test_pmm_is_ebert_exactly_when_nothing_is_missing():
     reference[order] = picked
     assert_array_equal(enprod.probability_matched_mean(stack),
                        reference.reshape(stack.shape[1:]))
+    # A declared equal roster must keep the current product arithmetic.
+    from gpuwm.ensemble.batch_products import probability_matched_mean
+    words = stack.astype(np.float32)
+    mean = words.mean(axis=0)
+    baseline = probability_matched_mean(words, mean, np)
+    equal = probability_matched_mean(words, mean, np, [1/6]*6)
+    assert_array_equal(equal.view(np.uint32), baseline.view(np.uint32))
+    assert_array_equal(equal, enprod.probability_matched_mean(words).astype(np.float32))
 
 
 def test_pmm_pools_only_finite_values():

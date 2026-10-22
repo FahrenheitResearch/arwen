@@ -41,7 +41,15 @@ pub(crate) fn direct_recipe_render_controls(
     if filled_selector.field == CanonicalField::SmokeMassDensity {
         // Smoke aliases retain the sparse-signal legend and transparent scale.
         (None, None)
-    } else if matches!(recipe.style, RenderStyle::AirQualityPm25 | RenderStyle::AirQualityOzone | RenderStyle::WeatherSnowfall) {
+    } else if filled_selector.field == CanonicalField::FogFlag {
+        (Some(LegendMode::Categories), None)
+    } else if matches!(recipe.style, RenderStyle::WeatherVisibility) {
+        (Some(LegendMode::Thresholds), Some(200.0))
+    } else if matches!(recipe.style, RenderStyle::AirQualityPm25 | RenderStyle::AirQualityOzone | RenderStyle::WeatherSnowfall | RenderStyle::WeatherSnowDepthChange) || filled_selector.field == CanonicalField::SnowfallLiquidEquivalent {
+        (Some(LegendMode::Thresholds), None)
+    } else if matches!(recipe.style, RenderStyle::WeatherHaines) {
+        (Some(LegendMode::Categories), None)
+    } else if matches!(recipe.style, RenderStyle::WeatherLightningThreat | RenderStyle::WeatherFlashRate) {
         (Some(LegendMode::Thresholds), None)
     } else if matches!(recipe.style, RenderStyle::WeatherDewpoint) {
         let tick = matches!(
@@ -558,7 +566,7 @@ pub(crate) fn direct_fill_unit_conversion(
     } else if selector.field == CanonicalField::PrecipitableWater {
         (UnitConvert::MmToInches, Some("in"))
     } else if selector.field == CanonicalField::Visibility {
-        (UnitConvert::MetersToMiles, Some("mi"))
+        (UnitConvert::None, Some("m"))
     } else if selector.field == CanonicalField::AbsoluteVorticity {
         (UnitConvert::PerSecondToE5PerSecond, Some("10^-5 s^-1"))
     } else if matches!(
@@ -572,7 +580,7 @@ pub(crate) fn direct_fill_unit_conversion(
         } else {
             (UnitConvert::None, Some("mm"))
         }
-    } else if matches!(selector.field, CanonicalField::ModelSnowfall | CanonicalField::Snowfall10to1 | CanonicalField::SnowfallKuchera) {
+    } else if matches!(selector.field, CanonicalField::ModelSnowfall | CanonicalField::Snowfall10to1 | CanonicalField::SnowfallKuchera | CanonicalField::SnowfallLiquidEquivalent | CanonicalField::SnowDepth | CanonicalField::SnowDepthChange) {
         (UnitConvert::MmToInches, Some("in"))
     } else {
         (UnitConvert::None, None)
@@ -636,7 +644,16 @@ pub(super) fn scale_for_filled_selector_in(
     if selector_is_spread_product(filled_selector) {
         return ensemble_spread_scale(values);
     }
-    scale_for_recipe_in(recipe, filled_selector, hemisphere)
+    let scale = scale_for_recipe_in(recipe, filled_selector, hemisphere);
+    // Isobaric temperature: the fixed mid-latitude ladder moves onto a
+    // field it would otherwise saturate (a tropical 300 hPa map drew one
+    // colour); unchanged where the field already fits.
+    match (&recipe.style, filled_selector.field, filled_selector.vertical, scale) {
+        (RenderStyle::WeatherTemperature, CanonicalField::Temperature, VerticalSelector::IsobaricHpa(_),
+         ColorScale::Discrete(discrete)) => ColorScale::Discrete(
+            crate::plot_design::fit_isobaric_temperature_scale(discrete, values)),
+        (_, _, _, scale) => scale,
+    }
 }
 
 fn ensemble_spread_scale(values: &[f32]) -> ColorScale {
@@ -842,6 +859,7 @@ fn build_streamline_layers(
     streamline_layer_cache: &SharedStreamlineLayerCache,
     barb_stride_cache: &SharedBarbStrideCache,
 ) -> Vec<WindStreamlineLayer> {
+    if recipe.style == RenderStyle::WeatherIvt { return Vec::new(); }
     let (Some(u_spec), Some(v_spec)) = (&recipe.barbs_u, &recipe.barbs_v) else {
         return Vec::new();
     };
@@ -851,7 +869,7 @@ fn build_streamline_layers(
     let (Some(u), Some(v)) = (extracted.get(&u_selector), extracted.get(&v_selector)) else {
         return Vec::new();
     };
-    if !static_streamlines_enabled_for_grid(&u.grid) {
+    if u_selector.field == CanonicalField::IvtEastward || !static_streamlines_enabled_for_grid(&u.grid) {
         return Vec::new();
     }
     let key = BarbStrideCacheKey {
@@ -909,6 +927,7 @@ fn build_barb_layers(
     let (Some(u), Some(v)) = (extracted.get(&u_selector), extracted.get(&v_selector)) else {
         return Vec::new();
     };
+    let is_transport = u_selector.field == CanonicalField::IvtEastward || recipe.style == RenderStyle::WeatherIvt;
     let key = BarbStrideCacheKey {
         u_selector,
         v_selector,
@@ -931,8 +950,9 @@ fn build_barb_layers(
     let (stride_x, stride_y) =
         cached_barb_strides(u_selector, v_selector, &u.grid, bounds, barb_stride_cache);
     let layers = vec![WindBarbLayer {
-        u: u.values.iter().map(|value| value * 1.943_844_5).collect(),
-        v: v.values.iter().map(|value| value * 1.943_844_5).collect(),
+        direction_arrows: is_transport,
+        u: u.values.iter().map(|value| value * if is_transport {1.0} else {1.943_844_5}).collect(),
+        v: v.values.iter().map(|value| value * if is_transport {1.0} else {1.943_844_5}).collect(),
         stride_x,
         stride_y,
         spacing_px: static_barb_spacing_px(),

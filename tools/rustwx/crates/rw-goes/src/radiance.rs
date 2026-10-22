@@ -43,6 +43,7 @@ use rw_sat::cloud::{CloudProduct, DqfRule, gate_by_dqf};
 use rw_sat::goes::parse_goes_abi_filename;
 use rw_sat::netcdf::{open_goes_netcdf_lossy, read_scaled_f32};
 
+use crate::push_plane;
 use crate::pack::{
     ArrayEntry, ContainerMeta, DqfRow, PayloadBuilder, ProjectionEntry, SourceEntry, boxed_error,
     decode_container, hex_sha256, write_container,
@@ -339,7 +340,6 @@ pub struct RadianceOptions {
 // ---------------------------------------------------------------------------
 
 struct Granule {
-    path: PathBuf,
     filename: String,
     bytes: usize,
     sha256: String,
@@ -353,7 +353,6 @@ fn identify(path: &Path) -> Result<Granule, Box<dyn Error>> {
     let raw = std::fs::read(path)
         .map_err(|err| boxed_error(format!("cannot read the granule {}: {err}", path.display())))?;
     Ok(Granule {
-        path: path.to_path_buf(),
         filename,
         bytes: raw.len(),
         sha256: hex_sha256(&raw),
@@ -416,27 +415,6 @@ fn same_scene(reference: &GoesAbiScene, other: &GoesAbiScene, what: &str) -> Res
             "{what} declares a different geostationary projection than the radiance"
         )));
     }
-    Ok(())
-}
-
-fn push_plane(
-    builder: &mut PayloadBuilder,
-    planes: &mut BTreeMap<String, String>,
-    order: &mut Vec<String>,
-    name: &str,
-    values: &[f32],
-    shape: &[usize],
-) -> Result<(), Box<dyn Error>> {
-    let expected: usize = shape.iter().product();
-    if values.len() != expected {
-        return Err(boxed_error(format!(
-            "plane {name} holds {} values but the declared shape {shape:?} needs {expected}",
-            values.len()
-        )));
-    }
-    let key = builder.push_f32(values, shape.to_vec());
-    planes.insert(name.to_string(), key);
-    order.push(name.to_string());
     Ok(())
 }
 

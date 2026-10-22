@@ -135,6 +135,12 @@ fn convert_attribute_value(
             _ if strict => Err(unsupported()),
             _ => Ok(None),
         },
+        Datatype::String { size: hdf5_reader::messages::datatype::StringSize::Fixed(_), .. } => {
+            // NetCDF NC_CHAR attributes retain all declared bytes, including NUL.
+            String::from_utf8(attr.raw_data.clone())
+                .map(|text| Some(NcAttrValue::Chars(text)))
+                .map_err(|e| Error::InvalidData(format!("non-UTF8 char attribute: {e}")))
+        }
         Datatype::String { .. } => {
             if attr.num_elements() == 1 {
                 read_attr(attr.read_string().map(NcAttrValue::Chars))

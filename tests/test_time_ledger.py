@@ -317,3 +317,31 @@ def test_hosted_poll_batches_but_completion_keeps_the_last_step(tmp_path, monkey
             if json.loads(line)["event"] == "step"][-1]
     measured = datetime.fromisoformat(pairs[-1]["t_utc"].replace("Z", "+00:00")).timestamp()
     assert abs(measured - last["emitted_unix_ms"] / 1000) < 1e-6
+
+
+def test_posting_wait_reaches_event_stream_before_close(tmp_path, monkeypatch):
+    # Waiting until close hid a live forecast's source wait from its reader.
+    import threading
+    from gpuwm import chain_events
+    from gpuwm.ingest.boundary_stream import WAIT_LOG_NAME
+
+    (tmp_path / WAIT_LOG_NAME).write_text(json.dumps({
+        "event": "source_wait_started", "lead": 6}) + "\n")
+    chain = chain_events.GoChainEvents()
+    carried = threading.Event()
+    relay_waits = chain.relay_waits
+
+    def relay():
+        if relay_waits():
+            carried.set()
+
+    monkeypatch.setattr(chain, "relay_waits", relay)
+    monkeypatch.setattr(chain_events, "LIVE_RELAY_SECONDS", 0.01)
+    path = tmp_path / "events.jsonl"
+    chain.open(path, plan={"run": tmp_path})
+    try:
+        assert carried.wait(10), "source wait was not relayed while the stream was open"
+        assert sum(json.loads(line)["event"] == "source_wait_started"
+                   for line in path.read_text().splitlines()) == 1
+    finally:
+        chain.close()

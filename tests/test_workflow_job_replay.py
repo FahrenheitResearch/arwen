@@ -71,3 +71,25 @@ def test_unknown_expressions_and_multiline_exports_refuse(tmp_path):
     path.write_text("VALUE<<EOF\n")
     with pytest.raises(replay.Unreproducible, match="GITHUB_ENV"):
         replay.read_env_file(path)
+
+
+@pytest.mark.skipif(os.name != 'posix', reason='Linux job driver')
+def test_packet_job_replays_download_and_needs_without_a_source_install(tree, tmp_path):
+    (tree / 'tools').mkdir()
+    (tree / 'tools/promote_prepared_release.py').write_text('# same controller\n')
+    proof = tmp_path / 'proof'
+    (proof / 'dists').mkdir(parents=True)
+    (proof / 'dists/fixture.whl').write_bytes(b'packet wheel')
+    save(tree, [
+        {'uses': 'actions/download-artifact@fixture', 'with': {'name': 'release-proof', 'path': '${{ runner.temp }}/release-proof'}},
+        {'run': 'test "$VERSION" = 2.9.3; test -f "$RUNNER_TEMP/release-proof/dists/fixture.whl"',
+         'env': {'VERSION': '${{ needs.release_authority.outputs.version }}'}},
+    ], needs=['prepare'], **{'if': "github.event_name != 'pull_request'"})
+    with pytest.raises(replay.Unreproducible, match='requires --release-proof'):
+        invoke(tree, tmp_path / 'missing')
+    work = tmp_path / 'packet'
+    assert replay.main(['--tree', str(tree), '--work', str(work), '--python', sys.executable,
+                        '--release-proof', str(proof), '--release-version', '2.9.3']) == 0
+    import json
+    timings = json.loads((work / 'TIMINGS.json').read_text())
+    assert len(timings['steps']) == 4 and timings['total_seconds'] > 0

@@ -185,10 +185,14 @@ CARRIER_SHAPES = {
     "v (y-staggered)": ((NZ, NY + 1, NX), np.float32),
     "w (z-staggered)": ((NZ + 1, NY, NX), np.float32),
     "L7 (snow-soil layers)": ((7, NY, NX), np.float64),
+    "species vertical": ((2, NZ, NY, NX), np.float32),
+    "species vertical faces": ((3, NZ + 1, NY, NX), np.float32),
+    "species row faces": ((2, NZ, NY + 1, NX), np.float32),
+    "held source means": ((2, 1, NY, NX), np.float32),
+    "species integer cache": ((2, NZ, NY, NX), np.int32),
 }
 
-#: Rank-4 shapes.  The store manifest refuses these (``manifest_from_arrays``
-#: models 2-D and 3-D fields only), but ``_row_window`` is applied to the
+#: Rank-4 shapes. ``_row_window`` is also applied to the
 #: static/surface/met mappings as well as to carriers, and its rule is "the
 #: last two axes are horizontal" at any rank.  A 4-D field windowed on the
 #: wrong axis is exactly the silent shifted-copy failure the helper's

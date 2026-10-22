@@ -38,3 +38,10 @@ pub use events::{NEVER_CANCEL, SatError, SatEvent, print_event};
 pub use follow::{FollowConfig, FollowSummary, follow};
 pub use store::{StoredFrame, WrittenFrame, read_frame, write_band_frame};
 pub use window::{EvictionReport, WindowConfig, enforce_window};
+
+pub(crate) fn boxed_error(message: impl Into<String>) -> Box<dyn std::error::Error> {
+    Box::new(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        message.into(),
+    ))
+}

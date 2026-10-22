@@ -1268,12 +1268,7 @@ def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
     # them rather than by the caller: the flag says "use the decoder's own
     # gate codes", and which vocabulary those codes belong to is a property
     # of the file.
-    if not clear_air_from_censor:
-        clear_air_source = CLEAR_AIR_SOURCE
-    elif volume.pack_schema == SWEEPS_SCHEMA_ODIM:
-        clear_air_source = CLEAR_AIR_SOURCE_ODIM
-    else:
-        clear_air_source = CLEAR_AIR_SOURCE_CENSOR
+    clear_air_source = _clear_air_source(volume, clear_air_from_censor)
 
     grid_timing = perf_timing.phases("obs.superob")
     grid_timing.mark("sweep_loop", sweeps=len(volume.sweeps))
@@ -1728,16 +1723,7 @@ def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
     # So the contradiction is now a refusal.  It names what the pack called
     # its moments, because that is the whole diagnosis and looking for it
     # otherwise means reading a binary pack by hand.
-    if counts.sweeps_used and not counts.gates_considered:
-        detail = (f"; the pack's moments are named "
-                  f"{sorted(skipped_products)!r} and this stage reads "
-                  f"{[REFLECTIVITY, VELOCITY]!r}"
-                  if skipped_products else "")
-        raise ValueError(
-            f"{volume.pack_path.name}: {counts.sweeps_used} sweeps were read "
-            f"and not one gate was considered{detail}. An observation file "
-            "built from this would be empty, well-formed and silent about "
-            "it, so it is refused here instead")
+    _require_considered_gates(volume, counts, skipped_products)
     if np.any(folded):
         vr_rejected[folded] += vr_count[folded]
         for array in (vr_sum, vr_sumsq, beam_east, beam_north, beam_up):
@@ -1820,16 +1806,7 @@ def _superob_volume_rust(lib, volume: RadarVolume, grid: TargetGrid, *,
     counts = SuperobCounts(**answer["counts"])
     if censor_counts is not None:
         counts.censor = CensorCounts(**answer["censor"])
-    if counts.sweeps_used and not counts.gates_considered:
-        skipped = answer.get("skipped_products") or []
-        detail = (f"; the pack's moments are named {sorted(skipped)!r} and "
-                  f"this stage reads {[REFLECTIVITY, VELOCITY]!r}"
-                  if skipped else "")
-        raise ValueError(
-            f"{volume.pack_path.name}: {counts.sweeps_used} sweeps were read "
-            f"and not one gate was considered{detail}. An observation file "
-            "built from this would be empty, well-formed and silent about "
-            "it, so it is refused here instead")
+    _require_considered_gates(volume, counts, answer.get("skipped_products") or [])
     dealias_totals.gates_refused_at_grid += int(answer["gates_refused_at_grid"])
 
     fold_suspicion: list[dict] = []
@@ -1861,14 +1838,7 @@ def _superob_volume_rust(lib, volume: RadarVolume, grid: TargetGrid, *,
     return RadarContribution(
         site_id=site.id, lat_deg=site.lat_deg, lon_deg=site.lon_deg,
         alt_m=site.alt_m, valid_time=volume.valid_time,
-        z_linear_sum=acc["z_linear_sum"], z_count=acc["z_count"],
-        z0_count=acc["z0_count"], z_max_dbz=acc["z_max_dbz"],
-        z_sumsq_dbz=acc["z_sumsq_dbz"], z_sum_dbz=acc["z_sum_dbz"],
-        vr_sum=acc["vr_sum"], vr_sumsq=acc["vr_sumsq"],
-        vr_count=acc["vr_count"], vr_min=acc["vr_min"], vr_max=acc["vr_max"],
-        beam_east=acc["beam_east"], beam_north=acc["beam_north"],
-        beam_up=acc["beam_up"], nyquist_min=acc["nyquist_min"],
-        vr_rejected=acc["vr_rejected"],
+        **acc,
         counts=counts, provenance=volume.provenance(),
         clear_air_source=_clear_air_source(volume, clear_air_from_censor),
         fold_suspicion=fold_suspicion, j0=int(j0), i0=int(i0),
@@ -1882,6 +1852,19 @@ def _superob_volume_rust(lib, volume: RadarVolume, grid: TargetGrid, *,
             "totals": dealias_totals.to_payload(),
             "sweeps": dealias_records,
         }))
+
+
+def _require_considered_gates(volume, counts, skipped_products):
+    if counts.sweeps_used and not counts.gates_considered:
+        detail = (f"; the pack's moments are named "
+                  f"{sorted(skipped_products)!r} and this stage reads "
+                  f"{[REFLECTIVITY, VELOCITY]!r}"
+                  if skipped_products else "")
+        raise ValueError(
+            f"{volume.pack_path.name}: {counts.sweeps_used} sweeps were read "
+            f"and not one gate was considered{detail}. An observation file "
+            "built from this would be empty, well-formed and silent about "
+            "it, so it is refused here instead")
 
 
 def _clear_air_source(volume, clear_air_from_censor: bool) -> str:
@@ -2091,16 +2074,8 @@ def merge_contributions(contributions, grid: TargetGrid, *,
     } for contribution in contributions]
 
     return GriddedObservations(
-        z_obs=out["z_obs"], z_mask=out["z_mask"], z_err=out["z_err"],
-        z_max=out["z_max"], z_mean=out["z_mean"], z_count=out["z_count"],
-        z0_mask=out["z0_mask"], z0_count=out["z0_count"],
-        z0_err=out["z0_err"],
+        **out,
         clear_air_source=clear_air_source,
-        vr_obs=out["vr_obs"], vr_mask=out["vr_mask"], vr_err=out["vr_err"],
-        vr_count=out["vr_count"], vr_rejected=out["vr_rejected"],
-        vr_beam_east=out["vr_beam_east"], vr_beam_north=out["vr_beam_north"],
-        vr_beam_up=out["vr_beam_up"],
-        vr_beam_coherence=out["vr_beam_coherence"],
         z_reduce=z_reduce,
         radars=radars,
         counts=[c.counts.to_payload() for c in contributions],

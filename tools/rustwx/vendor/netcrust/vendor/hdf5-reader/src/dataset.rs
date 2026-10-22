@@ -11,7 +11,7 @@ use smallvec::SmallVec;
 
 use crate::attribute_api::{
     collect_attribute_messages_storage, decode_string, decode_varlen_byte_string,
-    read_one_vlen_string_storage, resolve_vlen_bytes_storage, Attribute,
+    resolve_vlen_bytes_storage, Attribute,
 };
 use crate::cache::{ChunkCache, ChunkKey};
 use crate::chunk_index;
@@ -625,6 +625,66 @@ impl Dataset {
         }
     }
 
+    fn read_vlen_strings_cached<F>(
+        &self,
+        raw: &[u8],
+        count: usize,
+        decode: F,
+    ) -> Result<Vec<String>>
+    where
+        F: Fn(&[u8]) -> Result<String> + Send + Sync,
+    {
+        let ref_size = 4 + self.offset_size() as usize + 4;
+        let expected_bytes =
+            checked_mul_usize(count, ref_size, "dataset string reference byte size")?;
+        // Parse each heap once, then decode descriptors in parallel. Re-parsing
+        // the entire collection per reach was quadratic for large label arrays.
+        let mut heaps = std::collections::HashMap::new();
+        let mut descriptors = Vec::with_capacity(count);
+        for bytes in raw[..expected_bytes].chunks_exact(ref_size) {
+            let mut cursor = Cursor::new(bytes);
+            let _len = cursor.read_u32_le()?;
+            let address = cursor.read_offset(self.offset_size())?;
+            let index = cursor.read_u32_le()?;
+            let index = u16::try_from(index)
+                .map_err(|_| Error::InvalidData("global heap object index exceeds u16".into()))?;
+            if index != 0
+                && !Cursor::is_undefined_offset(address, self.offset_size())
+                && !heaps.contains_key(&address)
+            {
+                let heap = crate::global_heap::GlobalHeapCollection::parse_at_storage(
+                    self.context.storage.as_ref(),
+                    address,
+                    self.offset_size(),
+                    self.length_size(),
+                )?;
+                heaps.insert(
+                    address,
+                    heap.objects
+                        .into_iter()
+                        .map(|o| (o.index, o.data))
+                        .collect::<std::collections::HashMap<_, _>>(),
+                );
+            }
+            descriptors.push((address, index));
+        }
+        let decode = |&(address, index): &(u64, u16)| match heaps
+            .get(&address)
+            .and_then(|h| h.get(&index))
+        {
+            Some(bytes) => decode(bytes),
+            None => Ok(String::new()),
+        };
+        #[cfg(feature = "rayon")]
+        {
+            descriptors.par_iter().map(decode).collect()
+        }
+        #[cfg(not(feature = "rayon"))]
+        {
+            descriptors.iter().map(decode).collect()
+        }
+    }
+
     /// Read all string elements from a string-typed dataset.
     pub fn read_strings(&self) -> Result<Vec<String>> {
         match &self.datatype {
@@ -674,20 +734,7 @@ impl Dataset {
                     )));
                 }
 
-                let mut strings = Vec::with_capacity(count);
-                for i in 0..count {
-                    let offset = i * ref_size;
-                    strings.push(read_one_vlen_string_storage(
-                        &raw,
-                        offset,
-                        self.context.storage.as_ref(),
-                        self.offset_size(),
-                        self.length_size(),
-                        *padding,
-                        *encoding,
-                    )?);
-                }
-                Ok(strings)
+                self.read_vlen_strings_cached(&raw, count, |bytes| decode_string(bytes, *padding, *encoding))
             }
             Datatype::VarLen { base } => {
                 if !matches!(base.as_ref(), Datatype::FixedPoint { size: 1, .. }) {
@@ -711,20 +758,7 @@ impl Dataset {
                     )));
                 }
 
-                let mut strings = Vec::with_capacity(count);
-                for i in 0..count {
-                    let offset = i * ref_size;
-                    let ref_bytes = &raw[offset..offset + ref_size];
-                    let value = resolve_vlen_bytes_storage(
-                        ref_bytes,
-                        self.context.storage.as_ref(),
-                        self.offset_size(),
-                        self.length_size(),
-                    )
-                    .unwrap_or_default();
-                    strings.push(decode_varlen_byte_string(&value)?);
-                }
-                Ok(strings)
+                self.read_vlen_strings_cached(&raw, count, decode_varlen_byte_string)
             }
             _ => Err(Error::TypeMismatch {
                 expected: "String dataset".into(),
@@ -869,7 +903,9 @@ impl Dataset {
         self.decode_raw_data::<T>(data)
     }
 
-    fn read_raw_bytes(&self) -> Result<Vec<u8>> {
+    /// Read stored element bytes after decompression, without string trimming.
+    /// Used for exact NetCDF NC_CHAR transport, including non-UTF8 bytes.
+    pub fn read_raw_bytes(&self) -> Result<Vec<u8>> {
         let elem_size = dtype_element_size(&self.datatype);
         let total_elements = checked_usize(self.checked_num_elements()?, "dataset element count")?;
         let total_bytes = checked_mul_usize(total_elements, elem_size, "dataset size in bytes")?;

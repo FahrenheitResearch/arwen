@@ -977,19 +977,6 @@ def _refuse(record: dict, reason: str, remedy: str = "") -> int:
     return 1
 
 
-def _hours_between(start: str, end: str) -> list[dt.datetime]:
-    t0 = parse_valid_time(start)
-    t1 = parse_valid_time(end)
-    if t0 is None or t1 is None or t1 < t0:
-        raise SystemExit("--start and --end must be ISO-8601 instants with --end not before --start")
-    first = t0.replace(minute=0, second=0, microsecond=0)
-    hours = []
-    while first <= t1:
-        hours.append(first)
-        first += dt.timedelta(hours=1)
-    return hours
-
-
 #: The MADIS streams and the ``rw_madis --kind`` each one reads.
 MADIS_KINDS = {"madis-acars": "acars", "madis-raob": "raob", "madis-mesonet": "mesonet"}
 

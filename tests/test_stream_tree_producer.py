@@ -587,3 +587,43 @@ def test_each_tree_route_says_why_it_is_sealed_or_chains():
     # head (A136 L3 item (v)); the chained default is unchanged.
     assert ("chain_tree = len(exp.domains) > 1 and (\n"
             "            chained_enabled() or posted_series is not None)") in gfs
+
+
+def test_stream_provenance_timeout_keeps_commit_but_not_cleanliness(monkeypatch):
+    from gpuwm import provenance, runtime_manifest
+    import subprocess
+
+    root = Path(__file__).resolve().parents[1]
+    monkeypatch.setattr(provenance, "git_executable", lambda: "git")
+    monkeypatch.setattr(runtime_manifest, "git_checkout_root", lambda path: root)
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired("git", kwargs["timeout"])
+    monkeypatch.setattr(provenance.subprocess, "run", timeout)
+    identity = provenance.git_identity(root)
+    assert len(identity["commit_full"]) == 40 and identity["dirty"] is None
+    record = provenance.Provenance(str(root / "gpuwm"), str(root), "source-tree",
+                                   git=identity)
+    assert "worktree unverified" in record.banner()
+
+
+def test_tree_heartbeat_runs_one_periodic_publication(tmp_path):
+    writer = SimpleNamespace(_state="producing", times_built=1, _segments_written=0,
+                             slowest_build_seconds=0, _waiting_for=None, _arrived=None)
+    heartbeat = boundary_stream._Heartbeat(tmp_path, writer)
+    writer.times_built = 2
+    ticks = iter((False, True))
+    heartbeat._done = SimpleNamespace(wait=lambda period: next(ticks))
+    heartbeat.run()
+    assert json.loads((tmp_path / boundary_stream.PRODUCER_NAME).read_text())["times_built"] == 2
+
+
+def test_availability_worker_records_backend_error(tmp_path):
+    from gpuwm import stream
+
+    def refuse(*args, **kwargs):
+        raise RuntimeError("source refused")
+    watcher = stream._AvailabilityWatcher(tmp_path, backend=SimpleNamespace(wait_for_hour=refuse),
+        cycle=datetime(2026, 9, 29), target=0,
+        plan=SimpleNamespace(wait_timeout_seconds=1, poll_seconds=0.01))
+    watcher._worker(0)
+    assert str(watcher.errors[0]) == "source refused"

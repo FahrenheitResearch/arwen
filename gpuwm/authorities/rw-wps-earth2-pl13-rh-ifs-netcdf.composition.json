@@ -22,7 +22,7 @@
         "sea_ice_fraction",
         "snow_water_equivalent"
       ],
-      "grid_alignment": "exact_coordinate_strided_subset",
+      "grid_alignment": "bilinear_mask_aware_nearest",
       "time_alignment": "source_cycle_analysis_broadcast"
     }
   },

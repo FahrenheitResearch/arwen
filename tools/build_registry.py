@@ -20,6 +20,8 @@ from __future__ import annotations
 import argparse
 import ast
 import copy
+from concurrent.futures import ProcessPoolExecutor
+import os
 import json
 import pathlib
 import re
@@ -92,7 +94,7 @@ IMPLEMENTED: dict[str, dict] = {
         "warnings": ["wrf_480 is the corrected default: WRF 4.8 pinned MMM "
                      "550b5b4 removes the 0.2 offset and caps top-down entrainment "
                      "efficiency at 0.4. wrf_461 under default arithmetic "
-                     "reproduces 2.8.9's YSU kernel (kernels/ysu.cu) under its "
+                     "reproduces 2.8.9's YSU kernel (kernels/ysu_default.cu) under its "
                      "restart identity; under GPUWM_WRF_EXACT=1 it is unmodified "
                      "WRF 4.6.1 bl_ysu_run word for word, under its own restart "
                      "identity. Changing generation changes tendencies and is "
@@ -120,7 +122,11 @@ IMPLEMENTED: dict[str, dict] = {
         "component_id": "pbl", "read_when": {"bl_pbl_physics": 5}},
     "scalar_pblmix": {
         "type": "integer", "enum": [0, 1], "default": 0,
-        "component_id": "pbl", "read_when": {"bl_pbl_physics": 5}},
+        "component_id": "pbl", "consuming_read": "gpuwm/core/physics.py",
+        "description": "WRF post-PBL diff4d of the mp=28 nc/ni/nwfa/nifa "
+                       "scalars on the selected scheme's lower-interface "
+                       "EXCH_H (consumer row scalar_diffusion_exchange). No "
+                       "PBL and SASE are declared no-ops."},
     "bl_mynn_version": {
         "type": "string", "enum": ["wrf_461", "gsd_41"], "default": "wrf_461",
         "component_id": "pbl", "read_when": {"bl_pbl_physics": 5},
@@ -425,16 +431,21 @@ IMPLEMENTED: dict[str, dict] = {
                      "when the input does not provide a lake mask."]},
     # WRF &physics sf_ocean_physics = 1: the 1-D ocean mixed layer
     # (phys/module_sf_oml.F, called by module_sf_ocean_driver.F after the
-    # land surface and before the lake).  2 (3-D PWP) is not ported.
+    # land surface and before the lake).  2 is the 3-D PWP ocean, run on
+    # the GPU by gpuwm/ocean/mixed_layer (pwp.cu).
     "sf_ocean_physics": {
-        "type": "integer", "enum": [0, 1], "default": 0,
+        "type": "integer", "enum": [0, 1, 2], "default": 0,
         "component_id": "land_surface", "consuming_read": "gpuwm/core/physics.py",
-        "warnings": ["Option 1 runs WRF's ocean mixed layer (OML1D) on "
-                     "water cells (XLAND > 1.5) every surface step: the "
-                     "mixed layer deepens under the wind stress and its "
-                     "temperature becomes TSK. Default 0 retains the "
-                     "prescribed sea-surface temperature. Option 2 (3-D "
-                     "PWP) is not ported and is refused by name."]},
+        "warnings": ["Option 1 runs WRF Pollard OML1D; option 2 runs CUDA "
+                     "3DPWP circulation and vertical mixing with prognostic "
+                     "temperature, salinity and currents. Both couple SST to "
+                     "TSK every surface step. An absent ocean analysis is a "
+                     "loudly labelled configured uniform MLD fallback. Full "
+                     "TC and observation qualification is pending."]},
+    "seaice_prognostic": {'type': 'boolean', 'default': True, 'per_domain': False, 'component_id': 'land_surface', 'consuming_read': 'gpuwm/ocean/seaice/__init__.py', 'warnings': ['Prognostic thermodynamic ice and snow on non-lake ocean cells, activated when initial ocean ice is present. False selects prescribed sea ice.']},
+    "seaice_initial_thickness": {'type': 'number', 'default': 1.0, 'minimum': 0.0, 'per_domain': False, 'component_id': 'land_surface', 'consuming_read': 'gpuwm/ocean/seaice/__init__.py', 'warnings': ['Uniform initial ice thickness prior in metres unless an input thickness field is supplied; not an observation.']},
+    "seaice_new_ice_thickness": {'type': 'number', 'default': 0.5, 'minimum': 0.0, 'per_domain': False, 'component_id': 'land_surface', 'consuming_read': 'gpuwm/ocean/seaice/__init__.py', 'warnings': ['New-ice thickness in metres used for thermodynamic concentration growth.']},
+    "seaice_ocean_heat_flux": {'type': 'number', 'default': 2.0, 'per_domain': False, 'component_id': 'land_surface', 'consuming_read': 'gpuwm/ocean/seaice/__init__.py', 'warnings': ['Prescribed basal ocean-to-ice heat flux in W m-2; no ocean circulation or seasonal skill is implied.']},
     "oml_hml0": {
         "type": "number", "default": 50.0,
         "component_id": "land_surface", "consuming_read": "gpuwm/core/surface_ocean.py",
@@ -1331,7 +1342,7 @@ SKIP = {"gpuwm/physics_registry.py"}
 CONFIG = "gpuwm/config.py"
 
 _files: list[str] | None = None
-_sources: dict[str, tuple[str, frozenset[str]] | None] = {}
+_sources: dict[str, tuple[str, frozenset[str], frozenset[str]] | None] = {}
 
 
 def _searchable_files() -> list[str]:
@@ -1380,7 +1391,7 @@ def _identifiers(tree: ast.AST) -> frozenset[str]:
     return frozenset(names)
 
 
-def _source(rel: str) -> tuple[str, frozenset[str]] | None:
+def _source(rel: str) -> tuple[str, frozenset[str], frozenset[str]] | None:
     """Prose-stripped code and identifier set, or None if it proves nothing."""
     if rel not in _sources:
         path = MODEL / rel
@@ -1399,8 +1410,26 @@ def _source(rel: str) -> tuple[str, frozenset[str]] | None:
                 # never propose one.
                 _sources[rel] = None
             else:
-                _sources[rel] = (code, _identifiers(tree))
+                _sources[rel] = (code, _identifiers(tree),
+                                 frozenset(re.findall(r"\b\w+\b", code)))
     return _sources[rel]
+
+
+def preload_sources(jobs: int) -> None:
+    """Parse independent citation sources on the available CPUs.
+
+    Workers return facts only; the parent preserves the sorted path order
+    and the existing citation ranking. One worker is the serial reference.
+    """
+    files = [rel for rel in _searchable_files() if rel not in _sources]
+    if not files:
+        return
+    if jobs == 1:
+        for rel in files:
+            _source(rel)
+        return
+    with ProcessPoolExecutor(max_workers=min(jobs, len(files))) as pool:
+        _sources.update(zip(files, pool.map(_source, files, chunksize=8)))
 
 
 def reads_knob(rel: str, name: str) -> bool:
@@ -1415,7 +1444,7 @@ def reads_knob(rel: str, name: str) -> bool:
     source = _source(rel)
     if source is None:
         return False
-    return re.search(rf"\b{re.escape(name)}\b", source[0]) is not None
+    return name in source[2]
 
 
 def _rank(rel: str, name: str) -> int:
@@ -2818,9 +2847,11 @@ def _thompson_aerosol_mp28(registry: dict) -> None:
             "refused by name (config.MYNN_QN_FLAG_SPECIES). This is "
             "component code verification, not validation against "
             "observations.",
-            "PBL number mixing is selectable for mp_physics=28 with MYNN: "
-            "scalar_pblmix=1 applies WRF post-PBL diffusion through exch_h "
-            "to nc/ni/nwfa/nifa; bl_mynn_mixscalars=1 instead selects "
+            "PBL number mixing is selectable for mp_physics=28: "
+            "scalar_pblmix=1 applies WRF post-PBL diffusion through the "
+            "selected scheme's exch_h (YSU, MYJ, MYNN, UW, Shin-Hong) "
+            "to nc/ni/nwfa/nifa and mixes nothing with no PBL scheme or "
+            "under SASE; bl_mynn_mixscalars=1 instead selects "
             "MYNN scalar plume transport. Both default to 0 and, when they "
             "mix, require bldt=0. WRF disables the former when the latter "
             "is active, so selecting both is refused.",
@@ -4445,6 +4476,52 @@ def _rte_rrtmgp_cloud_optics_constraints(registry: dict) -> None:
 
 
 # ------------------------------------------------------------ consumer rows
+#: Which PBL option publishes the lower-interface heat diffusivity that WRF's
+#: post-PBL ``diff4d`` (scalar_pblmix=1, module_pbl_driver.F:2251-2259) reads,
+#: and where.  The config validator, the physics coupling and VRAM admission
+#: read this row instead of a hand-kept scheme pair.  ``mixes_in_scheme``
+#: names the one producer whose wrapper already runs the solve itself (MYNN,
+#: gpuwm/core/mynn_pbl_runtime.py), so the post-PBL owner never runs it twice.
+#: Ported from the scalar-pblmix-any-pbl lane (SOL-POOL-2026-10-07), whose MYJ
+#: EXCH_H column check matched stock diff4d at 0 ULP.
+_SCALAR_DIFFUSION_EXCHANGE: dict[str, dict[str, object]] = {
+    "off": {"writes_exch_h": False, "levels": None, "field": None,
+            "mixes_in_scheme": False,
+            "reason": "WRF skips the PBL driver with no PBL, so scalar_pblmix "
+                      "mixes nothing."},
+    "ysu": {"writes_exch_h": True, "levels": "nz", "field": "exch_h",
+            "mixes_in_scheme": False,
+            "reason": "YSU publishes heat diffusivity at lower interfaces."},
+    "mynn": {"writes_exch_h": True, "levels": "nz", "field": "exch_h",
+             "mixes_in_scheme": True,
+             "reason": "MYNN publishes heat diffusivity at lower interfaces; "
+                       "its wrapper runs the diff4d solve after the column."},
+    "myj": {"writes_exch_h": True, "levels": "nz", "field": "exch_h",
+            "mixes_in_scheme": False,
+            "reason": "MYJ publishes heat diffusivity at lower interfaces."},
+    "shinhong": {"writes_exch_h": True, "levels": "nz", "field": "exch_h",
+                 "mixes_in_scheme": False,
+                 "reason": "Shin-Hong publishes heat diffusivity at lower "
+                           "interfaces."},
+    "uw": {"writes_exch_h": True, "levels": "nz", "field": "exch_h",
+           "mixes_in_scheme": False,
+           "reason": "UW publishes interface KVH (nz+1); exch_h carries its "
+                     "first nz interfaces, the levels diff4d reads."},
+    "ccpp-tke-edmf": {
+        "writes_exch_h": False, "levels": None, "field": None,
+        "mixes_in_scheme": False,
+        "reason": "CCPP TKE-EDMF has no WRF PBL-driver arm, and its own "
+                  "column solve already mixes every transported scalar "
+                  "(nc/ni/nwfa/nifa included, physics._run_satmedmf), so "
+                  "scalar_pblmix adds no second diff4d."},
+    "sase": {"writes_exch_h": False, "levels": None, "field": None,
+             "mixes_in_scheme": False,
+             "reason": "SASE has no WRF counterpart and publishes a layer "
+                       "diffusivity for its own split solve, not lower-"
+                       "interface EXCH_H; reading it as EXCH_H would shift "
+                       "the vertical fluxes, so scalar_pblmix mixes nothing."},
+}
+
 #: Stock adapter classes the checkpoint writer recognises, by component and
 #: option id.  These used to live as two literal dicts INSIDE
 #: gpuwm/io/restart.py::physics_setup_identity, where a scheme with no row
@@ -5140,6 +5217,12 @@ def _consumer_rows(registry: dict) -> None:
             if component_id in ("cumulus", "pbl"):
                 rows["vertical_level_bounds"] = bounds_row(
                     component_id, option_id)
+            if component_id == "pbl":
+                # WRF module_pbl_driver.F:2251-2259 (v4.6.1) runs diff4d
+                # on the selected scheme's EXCH_H after ANY PBL scheme when
+                # scalar_pblmix=1; with no PBL the driver is not called.
+                rows["scalar_diffusion_exchange"] = (
+                    _SCALAR_DIFFUSION_EXCHANGE[option_id])
             if component_id == "cumulus":
                 rows["stock_callable_class"] = (
                     _STOCK_CALLABLE_CLASSES["cumulus"][option_id])
@@ -5639,7 +5722,7 @@ def _urban_component(registry: dict) -> None:
                 "rural drag into a_u_bep, so WRF drags every column that is "
                 "not wholly urban twice, ocean included (1.25 m/s of 10 m "
                 "wind over the sea within two hours at 750 m). kernels/"
-                "ysu.cu removes the whole of YSU's own drag; graded against "
+                "ysu_480.cu removes the whole of YSU's own drag; graded against "
                 "WRF built with that one-line fix "
                 "(tests/test_ysu_bep_rural_drag.py). MYJ is unaffected.",
             ]
@@ -5792,6 +5875,8 @@ def build(registry: dict) -> dict:
     from gpuwm.lightning_contract import LIGHTNING_DEFAULTS, LIGHTNING_OPTIONS, FIELD_METADATA
     registry["diagnostic_packages"] = {"lightning_option": {str(k): dict(v) for k,v in LIGHTNING_OPTIONS.items()}}
     registry["diagnostic_state"] = {"lightning": FIELD_METADATA}
+    from gpuwm.core.hail import registry_rows as hail_registry_rows
+    hail_registry_rows(registry)
     for key, value in LIGHTNING_DEFAULTS.items():
         row = {"type": "integer" if isinstance(value, int) else "number",
                "default": value, "per_domain": True,
@@ -7855,16 +7940,33 @@ def build(registry: dict) -> dict:
     for row in warning_rows:
         registry["components"][row["component"]]["options"][row["option"]][
             "warnings"] = row["warnings"]
-    # Preserve the base warning about the top-down out-of-bounds guard.
-    guard_warning = 'DELIBERATE DIVERGENCE, WRF is undefined: with ust**3 underflowed to zero, wstar3 zero and sfcflg true, bl_ysu.F90:963 computes prfac2 = 15.9*(wstar3+wstar3_2)/ust3/(1.+4.*karman*(...)/ust3) = 0/0 and fills the column with NaN -- pinned in the oracle fixture. gpuwm returns finite numbers. Separately, at kpbl == kte with cloud at kpbl-1, bl_ysu.F90:846 reads thlix(i,k+2) one element past an array declared kts:kte; kernels/ysu.cu:437 guards that access with kpbl < nz and skips the top-down block instead.'
+    # The selected default YSU generation owns the runtime guard. Historical snapshots
+    # carried both its full account and a shorter duplicate citing the
+    # removed strict copy. Keep the complete account once and resolve the
+    # surviving source anchor each time the registry is regenerated.
     warnings = registry["components"]["pbl"]["options"]["ysu"]["warnings"]
-    if not any("kernels/ysu.cu:437" in w for w in warnings):
-        warnings.append(guard_warning)
-    # Verification warning snapshots retain their claim; resolve the live
-    # declaration rather than publishing its historical source offset.
+    guards = [w for w in warnings if "bl_ysu.F90:846" in w]
+    if not guards:
+        raise ValueError("YSU warning snapshot is missing the top-down bounds account")
+    guard = max(guards, key=len)
+    from gpuwm.ysu_generations import YSU_DEFAULT_GENERATION, ysu_kernel_selection
+    ysu_module, _ = ysu_kernel_selection(YSU_DEFAULT_GENERATION)
+    ysu_path = f"kernels/{ysu_module}.cu"
+    lines = (MODEL / "gpuwm/core" / ysu_path).read_text().splitlines()
+    matches = [i for i, line in enumerate(lines, 1)
+               if "if (ysu_topdown_pblmix && kpbl < nz" in line]
+    if len(matches) != 1:
+        raise ValueError(f"YSU top-down guard resolves to {matches}")
+    guard = re.sub(r"kernels/ysu(?:_480|_default)?\.cu:\d+",
+                   f"{ysu_path}:{matches[0]}", guard)
+    guard = guard.replace("kernels/ysu_topo.cuh", "kernels/ysu_topo_default.cuh")
+    warnings[:] = [w for w in warnings if w not in guards] + [guard]
+    # The Shin-Hong snapshot retains its claim; resolve the live guard
+    # rather than publishing its historical source offset. The former YSU
+    # zero-coupling citation has retired with that warning and must not
+    # rewrite the bounds guard's independent source location.
     for option_id, filename, anchor in (
-            ("shinhong", "shinhong.cu", "if (pblflg && kpbl < kte)"),
-            ("ysu", "ysu.cu", "No zero-coupling short circuit")):
+            ("shinhong", "shinhong.cu", "if (pblflg && kpbl < kte)"),):
         lines = (MODEL / "gpuwm/core/kernels" / filename).read_text().splitlines()
         matches = [i for i, line in enumerate(lines, 1) if anchor in line]
         if len(matches) != 1:
@@ -7873,7 +7975,7 @@ def build(registry: dict) -> dict:
         option["warnings"] = [re.sub(
             r"kernels/" + re.escape(filename) + r":\d+",
             f"kernels/{filename}:{matches[0]}", warning)
-            for warning in option["warnings"] if "kernels/ysu.cu:437" not in warning] + [warning for warning in option["warnings"] if "kernels/ysu.cu:437" in warning]
+            for warning in option["warnings"]]
     return registry
 
 
@@ -9694,15 +9796,20 @@ def main(argv: list[str] | None = None) -> int:
              "directory")
     parser.add_argument("--check", action="store_true",
                         help="compare both generated documents without writing them")
+    parser.add_argument("--jobs", type=int,
+                        default=getattr(os, "process_cpu_count", os.cpu_count)() or 1,
+                        help="citation parsing workers; defaults to all available CPUs")
     args = parser.parse_args(argv)
+    if args.jobs < 1:
+        parser.error("--jobs must be positive")
 
-    import os
     from gpuwm.physics_registry import REGISTRY_REBUILD_ENV
     # The consumer modules this build pulls facts from assert agreement
     # with the registry ON DISK at import, and the disk copy is the one
     # being replaced; the flag tells them so for this process only.
     os.environ[REGISTRY_REBUILD_ENV] = "1"
 
+    preload_sources(args.jobs)
     registry = build(json.loads(args.registry.read_text(encoding="utf-8")))
     if args.check:
         export_path = args.export_out or (

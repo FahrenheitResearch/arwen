@@ -166,13 +166,3 @@ export function drawPlaced(ctx, map, placed, alpha = 1) {
   }
   ctx.globalAlpha = 1;
 }
-
-export function outlinePath(map, edge) {
-  const path = new Path2D();
-  edge.forEach(([wx, wy], k) => {
-    const [x, y] = map.worldToScreen(wx, wy);
-    if (k) path.lineTo(x, y); else path.moveTo(x, y);
-  });
-  path.closePath();
-  return path;
-}

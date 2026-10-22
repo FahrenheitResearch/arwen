@@ -116,7 +116,10 @@ struct ReferenceSpec {
     model: ModelId,
     /// The model's file product that carries every row of [`product_specs`].
     file_product: &'static str,
-    source: SourceId,
+    /// The public sources, tried in order: the first that serves the file
+    /// wins.  A source with short retention (NOMADS keeps about two days)
+    /// sits behind the unbounded archive, so a past cycle still resolves.
+    sources: &'static [SourceId],
     /// What the panel's provenance stamp says.
     source_label: &'static str,
     /// `(cycle hour, forecast hour) -> file names`, as the centre publishes
@@ -140,7 +143,7 @@ fn reference_specs() -> Vec<ReferenceSpec> {
             label: "HRRR",
             model: ModelId::Hrrr,
             file_product: "sfc",
-            source: SourceId::Aws,
+            sources: &[SourceId::Aws],
             source_label: "NOAA HRRR, noaa-hrrr-bdp-pds",
             file_names: |cycle_hour, lead| {
                 ["wrfsfc", "wrfprs"]
@@ -162,8 +165,11 @@ fn reference_specs() -> Vec<ReferenceSpec> {
             label: "RRFS",
             model: ModelId::Rrfs,
             file_product: "2dfld-conus",
-            source: SourceId::Nomads,
-            source_label: "NOAA RRFS, NOMADS",
+            // The operational AWS bucket (the one the init fetch reads) is
+            // the unbounded archive; NOMADS publishes first but keeps about
+            // two days, so it is the second rung.
+            sources: &[SourceId::Aws, SourceId::Nomads],
+            source_label: "NOAA RRFS v1.0",
             file_names: |hour, lead| {
                 vec![format!("rrfs.t{hour:02}z.2dfld.3km.f{lead:03}.conus.grib2")]
             },
@@ -215,6 +221,8 @@ enum RunPlane {
     /// The run total under this selector, differenced over the hour that
     /// ends at the frame.
     HourlyAccumulation(FieldSelector),
+    /// Speed from two stored component planes.
+    SelectorSpeed(FieldSelector, FieldSelector),
 }
 
 /// Which of the reference's own messages make its plane.
@@ -225,6 +233,66 @@ enum ReferencePlane {
     Speed(FieldSelector, FieldSelector),
     /// The reference's own one-hour accumulation message ending at the lead.
     HourlyAccumulation(FieldSelector),
+    /// One raw message chosen by its GRIB2 keys.
+    Raw(RawKey),
+    /// Speed from two raw messages.
+    RawSpeed(RawKey, RawKey),
+}
+
+/// A raw GRIB2 message key with the conversion into the run's units.
+#[derive(Clone, Copy, Debug)]
+struct RawKey {
+    discipline: u8,
+    category: u8,
+    number: u8,
+    level_type: u8,
+    level_value: f64,
+    second_type: u8,
+    second_value: f64,
+    /// None: instantaneous; Some(1): accumulation from the start; Some(2): max over the last hour.
+    stat: Option<u8>,
+    units: &'static str,
+    factor: f32,
+    offset: f32,
+}
+
+fn raw_message<'a>(grib: &'a Grib2File, key: &RawKey, lead: u16) -> Option<&'a grib_core::grib2::Grib2Message> {
+    let close = |a: f64, b: f64| (a - b).abs() <= 1e-3 * a.abs().max(1.0);
+    grib.messages.iter().find(|m| {
+        let p = &m.product;
+        if m.discipline != key.discipline || p.parameter_category != key.category || p.parameter_number != key.number {
+            return false;
+        }
+        if p.level_type != key.level_type || !close(p.level_value, key.level_value) {
+            return false;
+        }
+        if key.second_type != 255 && (p.second_level_type != key.second_type || !close(p.second_level_value, key.second_value)) {
+            return false;
+        }
+        match key.stat {
+            None => p.statistical_process_type.is_none(),
+            Some(1) => p.statistical_process_type == Some(1)
+                && message_hours(p.time_range_unit, p.forecast_time) == Some(0)
+                && p.end_of_interval == Some(m.reference_time + chrono::Duration::hours(i64::from(lead))),
+            Some(stat) => p.statistical_process_type == Some(stat)
+                && p.end_of_interval == Some(m.reference_time + chrono::Duration::hours(i64::from(lead)))
+                && (lead == 0 || message_hours(p.time_range_unit, p.forecast_time) == Some(u32::from(lead) - 1)),
+        }
+    })
+}
+
+fn raw_field(grib: &Grib2File, key: &RawKey, lead: u16) -> Result<Option<ReferenceField>, String> {
+    let Some(message) = raw_message(grib, key, lead) else { return Ok(None) };
+    let field = rustwx_io::extract_message_field(message, key.units)
+        .map_err(|error| format!("decode raw {}.{}: {error}", key.category, key.number))?;
+    Ok(Some(ReferenceField {
+        units: key.units.to_string(),
+        ny: field.grid.shape.ny,
+        nx: field.grid.shape.nx,
+        lat: field.grid.lat_deg,
+        lon: field.grid.lon_deg,
+        values: field.values.iter().map(|v| if v.is_finite() { v * key.factor + key.offset } else { *v }).collect(),
+    }))
 }
 
 struct ProductSpec {
@@ -251,6 +319,11 @@ struct ProductSpec {
     /// A fixed physical range on the existing neutral generic ramp, for
     /// a field with no production palette. Both field panels share it.
     neutral_range: Option<(f32, f32)>,
+    /// The sheet's own colour levels, replacing the production style's
+    /// levels (its units, conversion and palette stay) where the production
+    /// scale spans a range one valid time never reaches, so the values a
+    /// comparison is about would sit in one sliver of the colour bar.
+    sheet_scale: Option<fn() -> rustwx_render::DiscreteColorScale>,
     station_quantity: Option<&'static str>,
     observation_quantity: Option<&'static str>,
 }
@@ -270,6 +343,25 @@ struct Ladder {
     /// panels.  A ladder wide enough for a continent is one colour across
     /// a regional window; the contours are what a small domain is read by.
     contour_interval: f64,
+}
+
+/// 1 h precipitation on a comparison sheet, in inches.
+///
+/// The shared production QPF scale runs 0.01 to 15 in, so on its linear
+/// colour bar (whole-inch ticks) every hourly amount from 0.1 to 1 in sat
+/// in the bottom ~6 % and the panels could not be read against each other.
+/// One hour's precipitation tops out near 3 in; above that the bar extends.
+/// The production scale (rustwx-products qpf.rs) is left as it is.
+fn comparison_qpf_1h_scale() -> rustwx_render::DiscreteColorScale {
+    rustwx_render::weather::palette_scale(
+        rustwx_render::WeatherPalette::Precip,
+        vec![
+            0.01, 0.05, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00, 1.25, 1.50,
+            1.75, 2.00, 2.50, 3.00,
+        ],
+        rustwx_render::ExtendMode::Max,
+        Some(0.01),
+    )
 }
 
 fn product_specs() -> Vec<ProductSpec> {
@@ -296,6 +388,7 @@ fn product_specs() -> Vec<ProductSpec> {
             style_variable: None,
             ladder: None,
             neutral_range: None,
+            sheet_scale: None,
         },
         ProductSpec {
             name: "t2m",
@@ -311,6 +404,7 @@ fn product_specs() -> Vec<ProductSpec> {
             style_variable: None,
             ladder: None,
             neutral_range: None,
+            sheet_scale: None,
         },
         ProductSpec {
             name: "td2m",
@@ -326,6 +420,7 @@ fn product_specs() -> Vec<ProductSpec> {
             style_variable: None,
             ladder: None,
             neutral_range: None,
+            sheet_scale: None,
         },
         ProductSpec {
             name: "wspd10",
@@ -344,7 +439,26 @@ fn product_specs() -> Vec<ProductSpec> {
             style_variable: None,
             ladder: None,
             neutral_range: None,
+            sheet_scale: None,
         },
+        ProductSpec { name: "snow10", slug: "snow_10to1_window", title: "10:1 snowfall, saved intervals",
+            station_quantity: None, observation_quantity: Some("snowfall_accumulation"),
+            run: RunPlane::Selector(FieldSelector::surface(CanonicalField::Snowfall10to1)),
+            reference: ReferencePlane::Selector(FieldSelector::surface(CanonicalField::Snowfall10to1)),
+            reference_message: "ASNOW, surface", inventory_patterns: &["ASNOW:surface"],
+            continuous: true, style_variable: None, ladder: None, neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "snowkuchera", slug: "snow_kuchera_window", title: "Kuchera snowfall, saved intervals",
+            station_quantity: None, observation_quantity: Some("snowfall_accumulation"),
+            run: RunPlane::Selector(FieldSelector::surface(CanonicalField::SnowfallKuchera)),
+            reference: ReferencePlane::Selector(FieldSelector::surface(CanonicalField::SnowfallKuchera)),
+            reference_message: "ASNOW, surface", inventory_patterns: &["ASNOW:surface"],
+            continuous: true, style_variable: None, ladder: None, neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "snow_depth", slug: "snow_depth_total", title: "Standing snow depth",
+            station_quantity: None, observation_quantity: Some("snow_depth"),
+            run: RunPlane::Selector(FieldSelector::surface(CanonicalField::SnowDepth)),
+            reference: ReferencePlane::Selector(FieldSelector::surface(CanonicalField::SnowDepth)),
+            reference_message: "SNOD, surface", inventory_patterns: &["SNOD:surface"],
+            continuous: true, style_variable: None, ladder: None, neutral_range: None, sheet_scale: None },
         ProductSpec {
             name: "qpf1h",
             station_quantity: None,
@@ -359,6 +473,7 @@ fn product_specs() -> Vec<ProductSpec> {
             style_variable: Some("apcp_1h"),
             ladder: None,
             neutral_range: None,
+            sheet_scale: Some(comparison_qpf_1h_scale),
         },
         ProductSpec {
             name: "hgt500",
@@ -384,6 +499,7 @@ fn product_specs() -> Vec<ProductSpec> {
                 contour_interval: 3.0,
             }),
             neutral_range: None,
+            sheet_scale: None,
         },
         ProductSpec {
             name: "swdown",
@@ -399,6 +515,7 @@ fn product_specs() -> Vec<ProductSpec> {
             style_variable: None,
             ladder: None,
             neutral_range: Some((0.0, 1200.0)),
+            sheet_scale: None,
         },
         // Smoke, product against product: the run's SMOKE_SFC / SMOKE_COLUMN
         // planes are stored under the same selectors HRRR-Smoke publishes
@@ -420,6 +537,7 @@ fn product_specs() -> Vec<ProductSpec> {
             style_variable: Some("smoke_near_surface"),
             ladder: None,
             neutral_range: None,
+            sheet_scale: None,
         },
         ProductSpec {
             name: "smoke_column",
@@ -435,7 +553,333 @@ fn product_specs() -> Vec<ProductSpec> {
             style_variable: Some("smoke_column"),
             ladder: None,
             neutral_range: None,
+            sheet_scale: None,
         },
+        ProductSpec { name: "200mb_height", slug: "200mb_height", title: "200 hPa height",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Selector(FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 200)), reference: ReferencePlane::Selector(FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 200)),
+            reference_message: "HGT, 200 mb", inventory_patterns: &["HGT:200 mb"],
+            continuous: true, style_variable: None, ladder: Some(Ladder { first: 1080.0, step: 6.0, bins: 30, units: "dam", stored_to_drawn: 0.1, palette: rustwx_render::WeatherPalette::IsothermHeight, contour_interval: 6.0 }), neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "250mb_height", slug: "250mb_height", title: "250 hPa height",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Selector(FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 250)), reference: ReferencePlane::Selector(FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 250)),
+            reference_message: "HGT, 250 mb", inventory_patterns: &["HGT:250 mb"],
+            continuous: true, style_variable: None, ladder: Some(Ladder { first: 960.0, step: 6.0, bins: 26, units: "dam", stored_to_drawn: 0.1, palette: rustwx_render::WeatherPalette::IsothermHeight, contour_interval: 6.0 }), neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "300mb_height", slug: "300mb_height", title: "300 hPa height",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Selector(FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 300)), reference: ReferencePlane::Selector(FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 300)),
+            reference_message: "HGT, 300 mb", inventory_patterns: &["HGT:300 mb"],
+            continuous: true, style_variable: None, ladder: Some(Ladder { first: 840.0, step: 6.0, bins: 28, units: "dam", stored_to_drawn: 0.1, palette: rustwx_render::WeatherPalette::IsothermHeight, contour_interval: 6.0 }), neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "700mb_height", slug: "700mb_height", title: "700 hPa height",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Selector(FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 700)), reference: ReferencePlane::Selector(FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 700)),
+            reference_message: "HGT, 700 mb", inventory_patterns: &["HGT:700 mb"],
+            continuous: true, style_variable: None, ladder: Some(Ladder { first: 270.0, step: 3.0, bins: 22, units: "dam", stored_to_drawn: 0.1, palette: rustwx_render::WeatherPalette::IsothermHeight, contour_interval: 3.0 }), neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "850mb_height", slug: "850mb_height", title: "850 hPa height",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Selector(FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 850)), reference: ReferencePlane::Selector(FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 850)),
+            reference_message: "HGT, 850 mb", inventory_patterns: &["HGT:850 mb"],
+            continuous: true, style_variable: None, ladder: Some(Ladder { first: 120.0, step: 3.0, bins: 17, units: "dam", stored_to_drawn: 0.1, palette: rustwx_render::WeatherPalette::IsothermHeight, contour_interval: 3.0 }), neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "925mb_height", slug: "925mb_height", title: "925 hPa height",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Selector(FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 925)), reference: ReferencePlane::Selector(FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 925)),
+            reference_message: "HGT, 925 mb", inventory_patterns: &["HGT:925 mb"],
+            continuous: true, style_variable: None, ladder: Some(Ladder { first: 45.0, step: 3.0, bins: 22, units: "dam", stored_to_drawn: 0.1, palette: rustwx_render::WeatherPalette::IsothermHeight, contour_interval: 3.0 }), neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "200mb_temperature", slug: "200mb_temperature", title: "200 hPa temperature",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Selector(FieldSelector::isobaric(CanonicalField::Temperature, 200)), reference: ReferencePlane::Selector(FieldSelector::isobaric(CanonicalField::Temperature, 200)),
+            reference_message: "TMP, 200 mb", inventory_patterns: &["TMP:200 mb"],
+            continuous: true, style_variable: None, ladder: Some(Ladder { first: 200.0, step: 1.0, bins: 40, units: "K", stored_to_drawn: 1.0, palette: rustwx_render::WeatherPalette::Temperature, contour_interval: 0.0 }), neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "250mb_temperature", slug: "250mb_temperature", title: "250 hPa temperature",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Selector(FieldSelector::isobaric(CanonicalField::Temperature, 250)), reference: ReferencePlane::Selector(FieldSelector::isobaric(CanonicalField::Temperature, 250)),
+            reference_message: "TMP, 250 mb", inventory_patterns: &["TMP:250 mb"],
+            continuous: true, style_variable: None, ladder: Some(Ladder { first: 205.0, step: 1.0, bins: 40, units: "K", stored_to_drawn: 1.0, palette: rustwx_render::WeatherPalette::Temperature, contour_interval: 0.0 }), neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "300mb_temperature", slug: "300mb_temperature", title: "300 hPa temperature",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Selector(FieldSelector::isobaric(CanonicalField::Temperature, 300)), reference: ReferencePlane::Selector(FieldSelector::isobaric(CanonicalField::Temperature, 300)),
+            reference_message: "TMP, 300 mb", inventory_patterns: &["TMP:300 mb"],
+            continuous: true, style_variable: None, ladder: Some(Ladder { first: 213.0, step: 1.0, bins: 40, units: "K", stored_to_drawn: 1.0, palette: rustwx_render::WeatherPalette::Temperature, contour_interval: 0.0 }), neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "500mb_temperature", slug: "500mb_temperature", title: "500 hPa temperature",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Selector(FieldSelector::isobaric(CanonicalField::Temperature, 500)), reference: ReferencePlane::Selector(FieldSelector::isobaric(CanonicalField::Temperature, 500)),
+            reference_message: "TMP, 500 mb", inventory_patterns: &["TMP:500 mb"],
+            continuous: true, style_variable: None, ladder: Some(Ladder { first: 233.0, step: 1.0, bins: 40, units: "K", stored_to_drawn: 1.0, palette: rustwx_render::WeatherPalette::Temperature, contour_interval: 0.0 }), neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "700mb_temperature", slug: "700mb_temperature", title: "700 hPa temperature",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Selector(FieldSelector::isobaric(CanonicalField::Temperature, 700)), reference: ReferencePlane::Selector(FieldSelector::isobaric(CanonicalField::Temperature, 700)),
+            reference_message: "TMP, 700 mb", inventory_patterns: &["TMP:700 mb"],
+            continuous: true, style_variable: None, ladder: Some(Ladder { first: 250.0, step: 1.0, bins: 50, units: "K", stored_to_drawn: 1.0, palette: rustwx_render::WeatherPalette::Temperature, contour_interval: 0.0 }), neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "850mb_temperature", slug: "850mb_temperature", title: "850 hPa temperature",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Selector(FieldSelector::isobaric(CanonicalField::Temperature, 850)), reference: ReferencePlane::Selector(FieldSelector::isobaric(CanonicalField::Temperature, 850)),
+            reference_message: "TMP, 850 mb", inventory_patterns: &["TMP:850 mb"],
+            continuous: true, style_variable: None, ladder: Some(Ladder { first: 255.0, step: 1.0, bins: 50, units: "K", stored_to_drawn: 1.0, palette: rustwx_render::WeatherPalette::Temperature, contour_interval: 0.0 }), neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "200mb_rh", slug: "200mb_rh", title: "200 hPa relative humidity",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Selector(FieldSelector::isobaric(CanonicalField::RelativeHumidity, 200)), reference: ReferencePlane::Selector(FieldSelector::isobaric(CanonicalField::RelativeHumidity, 200)),
+            reference_message: "RH, 200 mb", inventory_patterns: &["RH:200 mb"],
+            continuous: true, style_variable: None, ladder: Some(Ladder { first: 0.0, step: 5.0, bins: 20, units: "%", stored_to_drawn: 1.0, palette: rustwx_render::WeatherPalette::Rh, contour_interval: 0.0 }), neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "200mb_absolute_vorticity", slug: "200mb_absolute_vorticity", title: "200 hPa absolute vorticity",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Selector(FieldSelector::isobaric(CanonicalField::AbsoluteVorticity, 200)), reference: ReferencePlane::Raw(RawKey { discipline: 0, category: 2, number: 10, level_type: 100, level_value: 20000.0, second_type: 255, second_value: 0.0, stat: None, units: "s-1", factor: 1.0_f32, offset: 0.0_f32 }),
+            reference_message: "ABSV, 200 mb", inventory_patterns: &["ABSV:200 mb"],
+            continuous: true, style_variable: None, ladder: Some(Ladder { first: -10.0, step: 2.0, bins: 30, units: "1e-5 s-1", stored_to_drawn: 100000.0, palette: rustwx_render::WeatherPalette::RelVort, contour_interval: 0.0 }), neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "300mb_rh", slug: "300mb_rh", title: "300 hPa relative humidity",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Selector(FieldSelector::isobaric(CanonicalField::RelativeHumidity, 300)), reference: ReferencePlane::Selector(FieldSelector::isobaric(CanonicalField::RelativeHumidity, 300)),
+            reference_message: "RH, 300 mb", inventory_patterns: &["RH:300 mb"],
+            continuous: true, style_variable: None, ladder: Some(Ladder { first: 0.0, step: 5.0, bins: 20, units: "%", stored_to_drawn: 1.0, palette: rustwx_render::WeatherPalette::Rh, contour_interval: 0.0 }), neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "300mb_absolute_vorticity", slug: "300mb_absolute_vorticity", title: "300 hPa absolute vorticity",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Selector(FieldSelector::isobaric(CanonicalField::AbsoluteVorticity, 300)), reference: ReferencePlane::Raw(RawKey { discipline: 0, category: 2, number: 10, level_type: 100, level_value: 30000.0, second_type: 255, second_value: 0.0, stat: None, units: "s-1", factor: 1.0_f32, offset: 0.0_f32 }),
+            reference_message: "ABSV, 300 mb", inventory_patterns: &["ABSV:300 mb"],
+            continuous: true, style_variable: None, ladder: Some(Ladder { first: -10.0, step: 2.0, bins: 30, units: "1e-5 s-1", stored_to_drawn: 100000.0, palette: rustwx_render::WeatherPalette::RelVort, contour_interval: 0.0 }), neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "500mb_rh", slug: "500mb_rh", title: "500 hPa relative humidity",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Selector(FieldSelector::isobaric(CanonicalField::RelativeHumidity, 500)), reference: ReferencePlane::Selector(FieldSelector::isobaric(CanonicalField::RelativeHumidity, 500)),
+            reference_message: "RH, 500 mb", inventory_patterns: &["RH:500 mb"],
+            continuous: true, style_variable: None, ladder: Some(Ladder { first: 0.0, step: 5.0, bins: 20, units: "%", stored_to_drawn: 1.0, palette: rustwx_render::WeatherPalette::Rh, contour_interval: 0.0 }), neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "500mb_absolute_vorticity", slug: "500mb_absolute_vorticity", title: "500 hPa absolute vorticity",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Selector(FieldSelector::isobaric(CanonicalField::AbsoluteVorticity, 500)), reference: ReferencePlane::Raw(RawKey { discipline: 0, category: 2, number: 10, level_type: 100, level_value: 50000.0, second_type: 255, second_value: 0.0, stat: None, units: "s-1", factor: 1.0_f32, offset: 0.0_f32 }),
+            reference_message: "ABSV, 500 mb", inventory_patterns: &["ABSV:500 mb"],
+            continuous: true, style_variable: None, ladder: Some(Ladder { first: -10.0, step: 2.0, bins: 30, units: "1e-5 s-1", stored_to_drawn: 100000.0, palette: rustwx_render::WeatherPalette::RelVort, contour_interval: 0.0 }), neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "700mb_rh", slug: "700mb_rh", title: "700 hPa relative humidity",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Selector(FieldSelector::isobaric(CanonicalField::RelativeHumidity, 700)), reference: ReferencePlane::Selector(FieldSelector::isobaric(CanonicalField::RelativeHumidity, 700)),
+            reference_message: "RH, 700 mb", inventory_patterns: &["RH:700 mb"],
+            continuous: true, style_variable: None, ladder: Some(Ladder { first: 0.0, step: 5.0, bins: 20, units: "%", stored_to_drawn: 1.0, palette: rustwx_render::WeatherPalette::Rh, contour_interval: 0.0 }), neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "700mb_absolute_vorticity", slug: "700mb_absolute_vorticity", title: "700 hPa absolute vorticity",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Selector(FieldSelector::isobaric(CanonicalField::AbsoluteVorticity, 700)), reference: ReferencePlane::Raw(RawKey { discipline: 0, category: 2, number: 10, level_type: 100, level_value: 70000.0, second_type: 255, second_value: 0.0, stat: None, units: "s-1", factor: 1.0_f32, offset: 0.0_f32 }),
+            reference_message: "ABSV, 700 mb", inventory_patterns: &["ABSV:700 mb"],
+            continuous: true, style_variable: None, ladder: Some(Ladder { first: -10.0, step: 2.0, bins: 30, units: "1e-5 s-1", stored_to_drawn: 100000.0, palette: rustwx_render::WeatherPalette::RelVort, contour_interval: 0.0 }), neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "850mb_rh", slug: "850mb_rh", title: "850 hPa relative humidity",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Selector(FieldSelector::isobaric(CanonicalField::RelativeHumidity, 850)), reference: ReferencePlane::Selector(FieldSelector::isobaric(CanonicalField::RelativeHumidity, 850)),
+            reference_message: "RH, 850 mb", inventory_patterns: &["RH:850 mb"],
+            continuous: true, style_variable: None, ladder: Some(Ladder { first: 0.0, step: 5.0, bins: 20, units: "%", stored_to_drawn: 1.0, palette: rustwx_render::WeatherPalette::Rh, contour_interval: 0.0 }), neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "850mb_absolute_vorticity", slug: "850mb_absolute_vorticity", title: "850 hPa absolute vorticity",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Selector(FieldSelector::isobaric(CanonicalField::AbsoluteVorticity, 850)), reference: ReferencePlane::Raw(RawKey { discipline: 0, category: 2, number: 10, level_type: 100, level_value: 85000.0, second_type: 255, second_value: 0.0, stat: None, units: "s-1", factor: 1.0_f32, offset: 0.0_f32 }),
+            reference_message: "ABSV, 850 mb", inventory_patterns: &["ABSV:850 mb"],
+            continuous: true, style_variable: None, ladder: Some(Ladder { first: -10.0, step: 2.0, bins: 30, units: "1e-5 s-1", stored_to_drawn: 100000.0, palette: rustwx_render::WeatherPalette::RelVort, contour_interval: 0.0 }), neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "700mb_dewpoint", slug: "700mb_dewpoint", title: "700 hPa dewpoint",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Selector(FieldSelector::isobaric(CanonicalField::Dewpoint, 700)), reference: ReferencePlane::Selector(FieldSelector::isobaric(CanonicalField::Dewpoint, 700)),
+            reference_message: "DPT, 700 mb", inventory_patterns: &["DPT:700 mb"],
+            continuous: true, style_variable: None, ladder: Some(Ladder { first: 230.0, step: 2.0, bins: 32, units: "K", stored_to_drawn: 1.0, palette: rustwx_render::WeatherPalette::Dewpoint, contour_interval: 0.0 }), neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "850mb_dewpoint", slug: "850mb_dewpoint", title: "850 hPa dewpoint",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Selector(FieldSelector::isobaric(CanonicalField::Dewpoint, 850)), reference: ReferencePlane::Selector(FieldSelector::isobaric(CanonicalField::Dewpoint, 850)),
+            reference_message: "DPT, 850 mb", inventory_patterns: &["DPT:850 mb"],
+            continuous: true, style_variable: None, ladder: Some(Ladder { first: 240.0, step: 2.0, bins: 32, units: "K", stored_to_drawn: 1.0, palette: rustwx_render::WeatherPalette::Dewpoint, contour_interval: 0.0 }), neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "250mb_wind_speed", slug: "250mb_wind_speed", title: "250 hPa wind speed",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::SelectorSpeed(FieldSelector::isobaric(CanonicalField::UWind, 250), FieldSelector::isobaric(CanonicalField::VWind, 250)), reference: ReferencePlane::Speed(FieldSelector::isobaric(CanonicalField::UWind, 250), FieldSelector::isobaric(CanonicalField::VWind, 250)),
+            reference_message: "UGRD, VGRD 250 mb", inventory_patterns: &["UGRD:250 mb", "VGRD:250 mb"],
+            continuous: true, style_variable: None, ladder: Some(Ladder { first: 0.0, step: 5.0, bins: 32, units: "kt", stored_to_drawn: 1.943844, palette: rustwx_render::WeatherPalette::Winds, contour_interval: 0.0 }), neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "300mb_wind_speed", slug: "300mb_wind_speed", title: "300 hPa wind speed",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::SelectorSpeed(FieldSelector::isobaric(CanonicalField::UWind, 300), FieldSelector::isobaric(CanonicalField::VWind, 300)), reference: ReferencePlane::Speed(FieldSelector::isobaric(CanonicalField::UWind, 300), FieldSelector::isobaric(CanonicalField::VWind, 300)),
+            reference_message: "UGRD, VGRD 300 mb", inventory_patterns: &["UGRD:300 mb", "VGRD:300 mb"],
+            continuous: true, style_variable: None, ladder: Some(Ladder { first: 0.0, step: 5.0, bins: 32, units: "kt", stored_to_drawn: 1.943844, palette: rustwx_render::WeatherPalette::Winds, contour_interval: 0.0 }), neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "500mb_wind_speed", slug: "500mb_wind_speed", title: "500 hPa wind speed",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::SelectorSpeed(FieldSelector::isobaric(CanonicalField::UWind, 500), FieldSelector::isobaric(CanonicalField::VWind, 500)), reference: ReferencePlane::Speed(FieldSelector::isobaric(CanonicalField::UWind, 500), FieldSelector::isobaric(CanonicalField::VWind, 500)),
+            reference_message: "UGRD, VGRD 500 mb", inventory_patterns: &["UGRD:500 mb", "VGRD:500 mb"],
+            continuous: true, style_variable: None, ladder: Some(Ladder { first: 0.0, step: 5.0, bins: 22, units: "kt", stored_to_drawn: 1.943844, palette: rustwx_render::WeatherPalette::Winds, contour_interval: 0.0 }), neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "700mb_wind_speed", slug: "700mb_wind_speed", title: "700 hPa wind speed",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::SelectorSpeed(FieldSelector::isobaric(CanonicalField::UWind, 700), FieldSelector::isobaric(CanonicalField::VWind, 700)), reference: ReferencePlane::Speed(FieldSelector::isobaric(CanonicalField::UWind, 700), FieldSelector::isobaric(CanonicalField::VWind, 700)),
+            reference_message: "UGRD, VGRD 700 mb", inventory_patterns: &["UGRD:700 mb", "VGRD:700 mb"],
+            continuous: true, style_variable: None, ladder: Some(Ladder { first: 0.0, step: 5.0, bins: 22, units: "kt", stored_to_drawn: 1.943844, palette: rustwx_render::WeatherPalette::Winds, contour_interval: 0.0 }), neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "850mb_wind_speed", slug: "850mb_wind_speed", title: "850 hPa wind speed",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::SelectorSpeed(FieldSelector::isobaric(CanonicalField::UWind, 850), FieldSelector::isobaric(CanonicalField::VWind, 850)), reference: ReferencePlane::Speed(FieldSelector::isobaric(CanonicalField::UWind, 850), FieldSelector::isobaric(CanonicalField::VWind, 850)),
+            reference_message: "UGRD, VGRD 850 mb", inventory_patterns: &["UGRD:850 mb", "VGRD:850 mb"],
+            continuous: true, style_variable: None, ladder: Some(Ladder { first: 0.0, step: 5.0, bins: 22, units: "kt", stored_to_drawn: 1.943844, palette: rustwx_render::WeatherPalette::Winds, contour_interval: 0.0 }), neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "500mb_omega", slug: "500mb_omega", title: "500 hPa omega",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Selector(FieldSelector::isobaric(CanonicalField::Omega, 500)), reference: ReferencePlane::Selector(FieldSelector::isobaric(CanonicalField::Omega, 500)),
+            reference_message: "VVEL, 500 mb", inventory_patterns: &["VVEL:500 mb"],
+            continuous: true, style_variable: None, ladder: Some(Ladder { first: -3.0, step: 0.25, bins: 24, units: "Pa/s", stored_to_drawn: 1.0, palette: rustwx_render::WeatherPalette::Advection, contour_interval: 0.0 }), neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "850mb_specific_humidity", slug: "850mb_specific_humidity", title: "850 hPa specific humidity",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Selector(FieldSelector::isobaric(CanonicalField::SpecificHumidity, 850)), reference: ReferencePlane::Selector(FieldSelector::isobaric(CanonicalField::SpecificHumidity, 850)),
+            reference_message: "SPFH, 850 mb", inventory_patterns: &["SPFH:850 mb"],
+            continuous: true, style_variable: None, ladder: Some(Ladder { first: 0.0, step: 1.0, bins: 20, units: "g/kg", stored_to_drawn: 1000.0, palette: rustwx_render::WeatherPalette::Dewpoint, contour_interval: 0.0 }), neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "mslp", slug: "mslp", title: "Mean sea level pressure",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Named { raw: "mslp", variable: "mslp" }, reference: ReferencePlane::Raw(RawKey { discipline: 0, category: 3, number: 198, level_type: 101, level_value: 0.0, second_type: 255, second_value: 0.0, stat: None, units: "Pa", factor: 1.0_f32, offset: 0.0_f32 }),
+            reference_message: "MSLMA, mean sea level", inventory_patterns: &["MSLMA:mean sea level"],
+            continuous: true, style_variable: None, ladder: Some(Ladder { first: 960.0, step: 2.0, bins: 46, units: "hPa", stored_to_drawn: 0.01, palette: rustwx_render::WeatherPalette::IsothermHeight, contour_interval: 4.0 }), neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "2m_relative_humidity", slug: "2m_relative_humidity", title: "2 m relative humidity",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Named { raw: "relative_humidity_2m", variable: "relative_humidity_2m" }, reference: ReferencePlane::Raw(RawKey { discipline: 0, category: 1, number: 1, level_type: 103, level_value: 2.0, second_type: 255, second_value: 0.0, stat: None, units: "%", factor: 1.0_f32, offset: 0.0_f32 }),
+            reference_message: "RH, 2 m", inventory_patterns: &["RH:2 m above ground"],
+            continuous: true, style_variable: None, ladder: None, neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "10m_wind_gusts", slug: "10m_wind_gusts", title: "10 m wind gust",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Named { raw: "wind_gust_10m_agl", variable: "wind_gust_10m_agl" }, reference: ReferencePlane::Raw(RawKey { discipline: 0, category: 2, number: 22, level_type: 1, level_value: 0.0, second_type: 255, second_value: 0.0, stat: None, units: "m/s", factor: 1.0_f32, offset: 0.0_f32 }),
+            reference_message: "GUST, surface", inventory_patterns: &["GUST:surface"],
+            continuous: true, style_variable: None, ladder: None, neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "1km_reflectivity", slug: "1km_reflectivity", title: "1 km AGL reflectivity",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Named { raw: "reflectivity_1km", variable: "reflectivity_1km" }, reference: ReferencePlane::Raw(RawKey { discipline: 0, category: 16, number: 195, level_type: 103, level_value: 1000.0, second_type: 255, second_value: 0.0, stat: None, units: "dBZ", factor: 1.0_f32, offset: 0.0_f32 }),
+            reference_message: "REFD, 1000 m", inventory_patterns: &["REFD:1000 m above ground"],
+            continuous: true, style_variable: None, ladder: None, neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "precipitable_water", slug: "precipitable_water", title: "Precipitable water",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Named { raw: "pwat", variable: "pwat" }, reference: ReferencePlane::Raw(RawKey { discipline: 0, category: 1, number: 3, level_type: 200, level_value: 0.0, second_type: 255, second_value: 0.0, stat: None, units: "mm", factor: 1.0_f32, offset: 0.0_f32 }),
+            reference_message: "PWAT, entire atmosphere", inventory_patterns: &["PWAT:entire atmosphere (considered as a single layer)"],
+            continuous: true, style_variable: None, ladder: None, neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "visibility", slug: "visibility", title: "Surface visibility",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Named { raw: "visibility_surface", variable: "visibility_surface" }, reference: ReferencePlane::Raw(RawKey { discipline: 0, category: 19, number: 0, level_type: 1, level_value: 0.0, second_type: 255, second_value: 0.0, stat: None, units: "m", factor: 1.0_f32, offset: 0.0_f32 }),
+            reference_message: "VIS, surface", inventory_patterns: &["VIS:surface"],
+            continuous: true, style_variable: None, ladder: None, neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "isotherm_height_0c", slug: "isotherm_height_0c", title: "0 C isotherm height",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Named { raw: "isotherm_height_0c", variable: "isotherm_height_0c" }, reference: ReferencePlane::Raw(RawKey { discipline: 0, category: 3, number: 5, level_type: 4, level_value: 0.0, second_type: 255, second_value: 0.0, stat: None, units: "m", factor: 1.0_f32, offset: 0.0_f32 }),
+            reference_message: "HGT, 0C isotherm", inventory_patterns: &["HGT:0C isotherm"],
+            continuous: true, style_variable: None, ladder: Some(Ladder { first: 0.0, step: 250.0, bins: 22, units: "m", stored_to_drawn: 1.0, palette: rustwx_render::WeatherPalette::IsothermHeight, contour_interval: 0.0 }), neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "isotherm_height_minus10c", slug: "isotherm_height_minus10c", title: "-10 C isotherm height",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Named { raw: "isotherm_height_minus10c", variable: "isotherm_height_minus10c" }, reference: ReferencePlane::Raw(RawKey { discipline: 0, category: 3, number: 5, level_type: 20, level_value: 263.0, second_type: 255, second_value: 0.0, stat: None, units: "m", factor: 1.0_f32, offset: 0.0_f32 }),
+            reference_message: "HGT, 263 K level", inventory_patterns: &["HGT:263 K level"],
+            continuous: true, style_variable: None, ladder: Some(Ladder { first: 0.0, step: 350.0, bins: 22, units: "m", stored_to_drawn: 1.0, palette: rustwx_render::WeatherPalette::IsothermHeight, contour_interval: 0.0 }), neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "isotherm_height_minus20c", slug: "isotherm_height_minus20c", title: "-20 C isotherm height",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Named { raw: "isotherm_height_minus20c", variable: "isotherm_height_minus20c" }, reference: ReferencePlane::Raw(RawKey { discipline: 0, category: 3, number: 5, level_type: 20, level_value: 253.0, second_type: 255, second_value: 0.0, stat: None, units: "m", factor: 1.0_f32, offset: 0.0_f32 }),
+            reference_message: "HGT, 253 K level", inventory_patterns: &["HGT:253 K level"],
+            continuous: true, style_variable: None, ladder: Some(Ladder { first: 0.0, step: 450.0, bins: 22, units: "m", stored_to_drawn: 1.0, palette: rustwx_render::WeatherPalette::IsothermHeight, contour_interval: 0.0 }), neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "low_cloud_cover", slug: "low_cloud_cover", title: "Low cloud cover",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Named { raw: "low_cloud_cover_entire_atmosphere", variable: "low_cloud_cover_entire_atmosphere" }, reference: ReferencePlane::Raw(RawKey { discipline: 0, category: 6, number: 3, level_type: 214, level_value: 0.0, second_type: 255, second_value: 0.0, stat: None, units: "%", factor: 1.0_f32, offset: 0.0_f32 }),
+            reference_message: "LCDC, low cloud layer", inventory_patterns: &["LCDC:low cloud layer"],
+            continuous: true, style_variable: None, ladder: None, neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "middle_cloud_cover", slug: "middle_cloud_cover", title: "Middle cloud cover",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Named { raw: "middle_cloud_cover_entire_atmosphere", variable: "middle_cloud_cover_entire_atmosphere" }, reference: ReferencePlane::Raw(RawKey { discipline: 0, category: 6, number: 4, level_type: 224, level_value: 0.0, second_type: 255, second_value: 0.0, stat: None, units: "%", factor: 1.0_f32, offset: 0.0_f32 }),
+            reference_message: "MCDC, middle cloud layer", inventory_patterns: &["MCDC:middle cloud layer"],
+            continuous: true, style_variable: None, ladder: None, neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "high_cloud_cover", slug: "high_cloud_cover", title: "High cloud cover",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Named { raw: "high_cloud_cover_entire_atmosphere", variable: "high_cloud_cover_entire_atmosphere" }, reference: ReferencePlane::Raw(RawKey { discipline: 0, category: 6, number: 5, level_type: 234, level_value: 0.0, second_type: 255, second_value: 0.0, stat: None, units: "%", factor: 1.0_f32, offset: 0.0_f32 }),
+            reference_message: "HCDC, high cloud layer", inventory_patterns: &["HCDC:high cloud layer"],
+            continuous: true, style_variable: None, ladder: None, neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "cloud_fraction_column_max", slug: "cloud_fraction_column_max", title: "Total cloud cover",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Named { raw: "cloud_fraction_column_maximum", variable: "cloud_fraction_column_maximum" }, reference: ReferencePlane::Raw(RawKey { discipline: 0, category: 6, number: 1, level_type: 10, level_value: 0.0, second_type: 255, second_value: 0.0, stat: None, units: "%", factor: 1.0_f32, offset: 0.0_f32 }),
+            reference_message: "TCDC, entire atmosphere", inventory_patterns: &["TCDC:entire atmosphere"],
+            continuous: true, style_variable: None, ladder: None, neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "simulated_ir_satellite", slug: "simulated_ir_satellite", title: "Simulated IR brightness temperature",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Named { raw: "simulated_ir_brightness_temperature", variable: "simulated_ir_brightness_temperature" }, reference: ReferencePlane::Raw(RawKey { discipline: 3, category: 192, number: 2, level_type: 8, level_value: 0.0, second_type: 255, second_value: 0.0, stat: None, units: "K", factor: 1.0_f32, offset: 0.0_f32 }),
+            reference_message: "SBT124 10.7 um, TOA", inventory_patterns: &["SBT124:top of atmosphere"],
+            continuous: true, style_variable: None, ladder: None, neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "categorical_rain", slug: "categorical_rain", title: "Categorical rain",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Named { raw: "categorical_rain_surface", variable: "categorical_rain_surface" }, reference: ReferencePlane::Raw(RawKey { discipline: 0, category: 1, number: 33, level_type: 1, level_value: 0.0, second_type: 255, second_value: 0.0, stat: None, units: "0/1", factor: 1.0_f32, offset: 0.0_f32 }),
+            reference_message: "CRAIN, surface", inventory_patterns: &["CRAIN:surface"],
+            continuous: false, style_variable: None, ladder: None, neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "categorical_snow", slug: "categorical_snow", title: "Categorical snow",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Named { raw: "categorical_snow_surface", variable: "categorical_snow_surface" }, reference: ReferencePlane::Raw(RawKey { discipline: 0, category: 1, number: 36, level_type: 1, level_value: 0.0, second_type: 255, second_value: 0.0, stat: None, units: "0/1", factor: 1.0_f32, offset: 0.0_f32 }),
+            reference_message: "CSNOW, surface", inventory_patterns: &["CSNOW:surface"],
+            continuous: false, style_variable: None, ladder: None, neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "categorical_freezing_rain", slug: "categorical_freezing_rain", title: "Categorical freezing rain",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Named { raw: "categorical_freezing_rain_surface", variable: "categorical_freezing_rain_surface" }, reference: ReferencePlane::Raw(RawKey { discipline: 0, category: 1, number: 34, level_type: 1, level_value: 0.0, second_type: 255, second_value: 0.0, stat: None, units: "0/1", factor: 1.0_f32, offset: 0.0_f32 }),
+            reference_message: "CFRZR, surface", inventory_patterns: &["CFRZR:surface"],
+            continuous: false, style_variable: None, ladder: None, neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "categorical_ice_pellets", slug: "categorical_ice_pellets", title: "Categorical ice pellets",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Named { raw: "categorical_ice_pellets_surface", variable: "categorical_ice_pellets_surface" }, reference: ReferencePlane::Raw(RawKey { discipline: 0, category: 1, number: 35, level_type: 1, level_value: 0.0, second_type: 255, second_value: 0.0, stat: None, units: "0/1", factor: 1.0_f32, offset: 0.0_f32 }),
+            reference_message: "CICEP, surface", inventory_patterns: &["CICEP:surface"],
+            continuous: false, style_variable: None, ladder: None, neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "total_qpf", slug: "total_qpf", title: "Total precipitation since start",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Named { raw: "apcp", variable: "apcp" }, reference: ReferencePlane::Raw(RawKey { discipline: 0, category: 1, number: 8, level_type: 1, level_value: 0.0, second_type: 255, second_value: 0.0, stat: Some(1), units: "kg/m^2", factor: 1.0_f32, offset: 0.0_f32 }),
+            reference_message: "APCP, run total", inventory_patterns: &["APCP:surface"],
+            continuous: true, style_variable: None, ladder: None, neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "hail_max_surface", slug: "hail_max_surface", title: "Max hail size at the surface, last hour",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Named { raw: "hail_max_surface", variable: "hail_max_surface" }, reference: ReferencePlane::Raw(RawKey { discipline: 0, category: 1, number: 31, level_type: 1, level_value: 0.0, second_type: 255, second_value: 0.0, stat: Some(2), units: "mm", factor: 1000.0_f32, offset: 0.0_f32 }),
+            reference_message: "HAIL, surface, 1 h max", inventory_patterns: &["HAIL:surface"],
+            continuous: true, style_variable: None, ladder: None, neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "hail_max_column", slug: "hail_max_column", title: "Max hail size in the column, last hour",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Named { raw: "hail_max_column", variable: "hail_max_column" }, reference: ReferencePlane::Raw(RawKey { discipline: 0, category: 1, number: 31, level_type: 10, level_value: 0.0, second_type: 255, second_value: 0.0, stat: Some(2), units: "mm", factor: 1000.0_f32, offset: 0.0_f32 }),
+            reference_message: "HAIL, column, 1 h max", inventory_patterns: &["HAIL:entire atmosphere"],
+            continuous: true, style_variable: None, ladder: None, neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "snow_depth_sd", slug: "snow_depth_sd", title: "Snow depth",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Named { raw: "snow_depth_total", variable: "snow_depth_total" }, reference: ReferencePlane::Raw(RawKey { discipline: 0, category: 1, number: 11, level_type: 1, level_value: 0.0, second_type: 255, second_value: 0.0, stat: None, units: "mm", factor: 1000.0_f32, offset: 0.0_f32 }),
+            reference_message: "SNOD, surface", inventory_patterns: &["SNOD:surface"],
+            continuous: true, style_variable: None, ladder: None, neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "sbcape", slug: "sbcape", title: "Surface-based CAPE",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Named { raw: "sbcape", variable: "sbcape" }, reference: ReferencePlane::Raw(RawKey { discipline: 0, category: 7, number: 6, level_type: 1, level_value: 0.0, second_type: 255, second_value: 0.0, stat: None, units: "J/kg", factor: 1.0_f32, offset: 0.0_f32 }),
+            reference_message: "CAPE, surface", inventory_patterns: &["CAPE:surface"],
+            continuous: true, style_variable: None, ladder: None, neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "sbcin", slug: "sbcin", title: "Surface-based CIN",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Named { raw: "sbcin", variable: "sbcin" }, reference: ReferencePlane::Raw(RawKey { discipline: 0, category: 7, number: 7, level_type: 1, level_value: 0.0, second_type: 255, second_value: 0.0, stat: None, units: "J/kg", factor: 1.0_f32, offset: 0.0_f32 }),
+            reference_message: "CIN, surface", inventory_patterns: &["CIN:surface"],
+            continuous: true, style_variable: None, ladder: None, neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "mlcape", slug: "mlcape", title: "Mixed-layer CAPE",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Named { raw: "mlcape", variable: "mlcape" }, reference: ReferencePlane::Raw(RawKey { discipline: 0, category: 7, number: 6, level_type: 108, level_value: 9000.0, second_type: 108, second_value: 0.0, stat: None, units: "J/kg", factor: 1.0_f32, offset: 0.0_f32 }),
+            reference_message: "CAPE, 90-0 mb AGL", inventory_patterns: &["CAPE:90-0 mb above ground"],
+            continuous: true, style_variable: None, ladder: None, neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "mlcin", slug: "mlcin", title: "Mixed-layer CIN",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Named { raw: "mlcin", variable: "mlcin" }, reference: ReferencePlane::Raw(RawKey { discipline: 0, category: 7, number: 7, level_type: 108, level_value: 9000.0, second_type: 108, second_value: 0.0, stat: None, units: "J/kg", factor: 1.0_f32, offset: 0.0_f32 }),
+            reference_message: "CIN, 90-0 mb AGL", inventory_patterns: &["CIN:90-0 mb above ground"],
+            continuous: true, style_variable: None, ladder: None, neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "mucape", slug: "mucape", title: "Most-unstable CAPE",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Named { raw: "mucape", variable: "mucape" }, reference: ReferencePlane::Raw(RawKey { discipline: 0, category: 7, number: 6, level_type: 108, level_value: 25500.0, second_type: 108, second_value: 0.0, stat: None, units: "J/kg", factor: 1.0_f32, offset: 0.0_f32 }),
+            reference_message: "CAPE, 255-0 mb AGL", inventory_patterns: &["CAPE:255-0 mb above ground"],
+            continuous: true, style_variable: None, ladder: None, neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "mucin", slug: "mucin", title: "Most-unstable CIN",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Named { raw: "mucin", variable: "mucin" }, reference: ReferencePlane::Raw(RawKey { discipline: 0, category: 7, number: 7, level_type: 108, level_value: 25500.0, second_type: 108, second_value: 0.0, stat: None, units: "J/kg", factor: 1.0_f32, offset: 0.0_f32 }),
+            reference_message: "CIN, 255-0 mb AGL", inventory_patterns: &["CIN:255-0 mb above ground"],
+            continuous: true, style_variable: None, ladder: None, neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "srh_0_1km", slug: "srh_0_1km", title: "0-1 km storm-relative helicity",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Named { raw: "srh_0_1km", variable: "srh_0_1km" }, reference: ReferencePlane::Raw(RawKey { discipline: 0, category: 7, number: 8, level_type: 103, level_value: 1000.0, second_type: 103, second_value: 0.0, stat: None, units: "m2/s2", factor: 1.0_f32, offset: 0.0_f32 }),
+            reference_message: "HLCY, 1000-0 m", inventory_patterns: &["HLCY:1000-0 m above ground"],
+            continuous: true, style_variable: None, ladder: None, neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "srh_0_3km", slug: "srh_0_3km", title: "0-3 km storm-relative helicity",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Named { raw: "srh_0_3km", variable: "srh_0_3km" }, reference: ReferencePlane::Raw(RawKey { discipline: 0, category: 7, number: 8, level_type: 103, level_value: 3000.0, second_type: 103, second_value: 0.0, stat: None, units: "m2/s2", factor: 1.0_f32, offset: 0.0_f32 }),
+            reference_message: "HLCY, 3000-0 m", inventory_patterns: &["HLCY:3000-0 m above ground"],
+            continuous: true, style_variable: None, ladder: None, neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "terrain_height", slug: "terrain_height", title: "Terrain height",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Named { raw: "orography", variable: "orography" }, reference: ReferencePlane::Raw(RawKey { discipline: 0, category: 3, number: 5, level_type: 1, level_value: 0.0, second_type: 255, second_value: 0.0, stat: None, units: "m", factor: 1.0_f32, offset: 0.0_f32 }),
+            reference_message: "HGT, surface", inventory_patterns: &["HGT:surface"],
+            continuous: true, style_variable: None, ladder: None, neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "lightning_threat_3", slug: "lightning_threat_3", title: "Lightning threat 3",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Named { raw: "lightning_threat_3", variable: "lightning_threat_3" }, reference: ReferencePlane::Raw(RawKey { discipline: 0, category: 17, number: 192, level_type: 10, level_value: 0.0, second_type: 255, second_value: 0.0, stat: None, units: "flashes km^-2 (5 min)^-1", factor: 1.0_f32, offset: 0.0_f32 }),
+            reference_message: "LTNG, entire atmosphere", inventory_patterns: &["LTNG:entire atmosphere"],
+            continuous: true, style_variable: None, ladder: None, neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "bulk_shear_0_1km", slug: "bulk_shear_0_1km", title: "0-1 km bulk shear",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Named { raw: "bulk_shear_0_1km", variable: "bulk_shear_0_1km" }, reference: ReferencePlane::RawSpeed(RawKey { discipline: 0, category: 2, number: 15, level_type: 103, level_value: 0.0, second_type: 103, second_value: 1000.0, stat: None, units: "m/s", factor: 1.0_f32, offset: 0.0_f32 }, RawKey { discipline: 0, category: 2, number: 16, level_type: 103, level_value: 0.0, second_type: 103, second_value: 1000.0, stat: None, units: "m/s", factor: 1.0_f32, offset: 0.0_f32 }),
+            reference_message: "VUCSH, VVCSH 0-1000 m", inventory_patterns: &["VUCSH:0-1000 m above ground", "VVCSH:0-1000 m above ground"],
+            continuous: true, style_variable: None, ladder: None, neutral_range: None, sheet_scale: None },
+        ProductSpec { name: "bulk_shear_0_6km", slug: "bulk_shear_0_6km", title: "0-6 km bulk shear",
+            station_quantity: None, observation_quantity: None,
+            run: RunPlane::Named { raw: "bulk_shear_0_6km", variable: "bulk_shear_0_6km" }, reference: ReferencePlane::RawSpeed(RawKey { discipline: 0, category: 2, number: 15, level_type: 103, level_value: 0.0, second_type: 103, second_value: 6000.0, stat: None, units: "m/s", factor: 1.0_f32, offset: 0.0_f32 }, RawKey { discipline: 0, category: 2, number: 16, level_type: 103, level_value: 0.0, second_type: 103, second_value: 6000.0, stat: None, units: "m/s", factor: 1.0_f32, offset: 0.0_f32 }),
+            reference_message: "VUCSH, VVCSH 0-6000 m", inventory_patterns: &["VUCSH:0-6000 m above ground", "VVCSH:0-6000 m above ground"],
+            continuous: true, style_variable: None, ladder: None, neutral_range: None, sheet_scale: None },
     ]
 }
 
@@ -1166,15 +1610,26 @@ fn load_reference(
     let cycle = CycleSpec::new(date.to_string(), cycle_hour).map_err(|error| error.to_string())?;
     let request = ModelRunRequest::new(spec.model, cycle, lead, spec.file_product)
         .map_err(|error| error.to_string())?;
-    let fetched = rustwx_io::fetch_bytes(&FetchRequest {
-        request,
-        source_override: Some(spec.source),
-        variable_patterns: patterns,
-    })
-    .map_err(|error| {
+    let mut failures = Vec::new();
+    let mut fetched = None;
+    for source in spec.sources {
+        match rustwx_io::fetch_bytes(&FetchRequest {
+            request: request.clone(),
+            source_override: Some(*source),
+            variable_patterns: patterns.clone(),
+        }) {
+            Ok(result) => {
+                fetched = Some(result);
+                break;
+            }
+            Err(error) => failures.push(error.to_string()),
+        }
+    }
+    let fetched = fetched.ok_or_else(|| {
         format!(
-            "fetch {file_name} for cycle {date} {cycle_hour:02}Z: {error}. If this machine has no \
-             route to the public bucket, download the file and pass --reference-dir"
+            "fetch {file_name} for cycle {date} {cycle_hour:02}Z: {}. If this machine has no \
+             route to the public bucket, download the file and pass --reference-dir",
+            failures.join(" | ")
         )
     })?;
     if let Some(parent) = cached.parent() {
@@ -1201,10 +1656,7 @@ fn load_product_reference(
 ) -> Result<ReferenceFile, String> {
     let isobaric = matches!(
         product.run,
-        RunPlane::Selector(FieldSelector {
-            vertical: rustwx_core::VerticalSelector::IsobaricHpa(_),
-            ..
-        })
+        RunPlane::Selector(FieldSelector { vertical: rustwx_core::VerticalSelector::IsobaricHpa(_), .. }) | RunPlane::SelectorSpeed(FieldSelector { vertical: rustwx_core::VerticalSelector::IsobaricHpa(_), .. }, _)
     );
     let reference = if isobaric {
         ReferenceSpec {
@@ -1350,6 +1802,19 @@ fn reference_field(
         values: field.values,
     };
     match plane {
+        ReferencePlane::Raw(key) => {
+            return Ok(match raw_field(grib, &key, lead)? {
+                Some(field) => Ok(field),
+                None => Err(format!("the reference file has no raw message {key:?} at f{lead:03}")),
+            });
+        }
+        ReferencePlane::RawSpeed(u, v) => {
+            let (Some(uf), Some(vf)) = (raw_field(grib, &u, lead)?, raw_field(grib, &v, lead)?) else {
+                return Ok(Err(format!("the reference file lacks raw {u:?} or {v:?}")));
+            };
+            let speed = wind_speed(&uf.values, &vf.values);
+            return Ok(Ok(ReferenceField { values: speed, ..uf }));
+        }
         ReferencePlane::Selector(selector) => {
             Ok(match reference_selected(grib, selector, Some(lead))? {
                 Some(field) => Ok(wrap(field)),
@@ -1479,6 +1944,16 @@ impl SheetStyle {
             convert: SheetConvert::Production(style.convert),
             contour_levels: Vec::new(),
         }
+    }
+
+    /// The product's own sheet levels, when it has them, over the
+    /// production style; the colour bar then picks its ticks from them.
+    fn for_sheet(mut self, spec: &ProductSpec) -> Self {
+        if let Some(scale) = spec.sheet_scale {
+            self.scale = rustwx_render::ColorScale::Discrete(scale());
+            self.cbar_tick_step = None;
+        }
+        self
     }
 
     fn ladder(ladder: Ladder) -> Self {
@@ -1816,6 +2291,64 @@ struct PanelSet<'a> {
     reference_coverage: Option<&'a [bool]>,
 }
 
+// Snow depth differences need an inch-scale ladder, rather than the tenth-inch
+// ladder used for liquid precipitation. The quantity is declared in the table.
+fn product_difference_step(spec: &ProductSpec, units: &str) -> Option<f64> {
+    match (spec.observation_quantity, units) {
+        (Some("snowfall_accumulation" | "snow_depth"), "in" | "inch" | "inches") => Some(2.0),
+        _ => difference_step(units).or_else(|| extra_difference_step(spec.name, units)),
+    }
+}
+
+/// The step of an 11-bin difference bar whose half range is about 2.5 times
+/// the panel's RMS difference, rounded up to a 1, 2, 2.5 or 5 times a power
+/// of ten.  None when nothing differs.
+fn rms_difference_step(values: &[f32]) -> Option<f64> {
+    let (mut n, mut sum) = (0f64, 0f64);
+    for v in values {
+        if v.is_finite() {
+            n += 1.0;
+            sum += f64::from(*v) * f64::from(*v);
+        }
+    }
+    if n == 0.0 || sum <= 0.0 {
+        return None;
+    }
+    let raw = 2.5 * (sum / n).sqrt() / 5.5;
+    let decade = 10f64.powf(raw.log10().floor());
+    [1.0, 2.0, 2.5, 5.0, 10.0].iter().map(|m| m * decade).find(|step| *step >= raw)
+}
+
+/// Difference steps for the extended product rows whose units the shared
+/// table does not carry (11 bins, so the bar spans +-5.5 steps).
+fn extra_difference_step(name: &str, units: &str) -> Option<f64> {
+    let u = units.trim();
+    Some(match u {
+        "J/kg" | "J kg-1" => if name.contains("cin") { 25.0 } else { 200.0 },
+        "m2/s2" | "m^2/s^2" | "m2 s-2" => 25.0,
+        "m/s" | "m s-1" => 2.0,
+        "kt" | "kts" => 4.0,
+        "%" => 10.0,
+        "mm" => if name.contains("snow") { 20.0 } else if name.contains("hail") { 5.0 } else { 2.0 },
+        "kg/m^2" => 2.0,
+        "in" | "inch" | "inches" => 0.25,
+        "m" => if name.contains("visib") { 2000.0 } else if name.contains("terrain") { 20.0 } else { 100.0 },
+        "mi" => 1.0,
+        "km" => 2.0,
+        "0/1" | "1" => 0.2,
+        "1e-5 s-1" => 2.0,
+        "hPa" | "mb" => 1.0,
+        "Pa/s" => 0.2,
+        "g/kg" => 0.5,
+        "dam" => 1.0,
+        "K" | "degC" | "C" => 1.0,
+        "degF" | "F" => 2.0,
+        "dBZ" => 5.0,
+        _ if u.starts_with("flashes") => 0.5,
+        _ => return None,
+    })
+}
+
 fn comparison_difference_scale(theme: &rustwx_render::RenderTheme, step: f64) -> rustwx_render::ColorScale {
     let mut scale = difference_scale(step);
     if let rustwx_render::ColorScale::Discrete(discrete) = &mut scale {
@@ -2038,7 +2571,7 @@ fn write_sheet(
 ) -> Result<(PathBuf, Option<rw_wrfbatch::compare::DifferenceStats>), String> {
     let (_, _, _, ny, nx) = geometry;
     let units = style.display_units.clone();
-    let step = difference_step(&units);
+    let mut step = product_difference_step(spec, &units);
     let draw_difference = match args.difference {
         DifferenceMode::Off => false,
         DifferenceMode::On => true,
@@ -2048,6 +2581,14 @@ fn write_sheet(
     // two models' different spellings of "nothing" are not a difference.
     let floor = style.scale.resolved_discrete().mask_below;
     let diff_values = difference_above_floor(&run_values, &reference_values, floor);
+    // RW_COMPARE_STEP=rms: the difference bar is fitted to this panel's own
+    // RMS difference (half range about 2.5 RMS on a 1-2-2.5-5 ladder), so a
+    // sub-unit difference is not hidden in the centre bin of a fixed bar.
+    if std::env::var("RW_COMPARE_STEP").map(|v| v == "rms").unwrap_or(false) {
+        if let Some(fitted) = rms_difference_step(&diff_values) {
+            step = Some(fitted);
+        }
+    }
     // Reported only for the panel it describes.
     let stats = if draw_difference {
         difference_stats(&diff_values)
@@ -2204,6 +2745,7 @@ fn write_sheet(
         "reference_message": spec.reference_message,
         "run_plane": match spec.run {
             RunPlane::Selector(_) | RunPlane::Named { .. } => "the run's stored product plane",
+            RunPlane::SelectorSpeed(..) => "speed from the run's two stored component planes",
             RunPlane::HourlyAccumulation(_) =>
                 "the run total differenced over the hour ending at the frame",
         },
@@ -2416,7 +2958,7 @@ fn resolve_references(
         })
     });
     let style = match (style, spec.ladder) {
-        (Some(style), _) => SheetStyle::production(style),
+        (Some(style), _) => SheetStyle::production(style).for_sheet(spec),
         (None, Some(ladder)) => SheetStyle::ladder(ladder),
         _ => {
             return Ok(Err(format!(
@@ -2508,6 +3050,16 @@ fn resolve_references(
                 .iter()
                 .find(|row| row.product == spec.name)
                 .expect("supported above");
+            if matches!(spec.name, "snow10" | "snowkuchera") {
+                let start = match std::env::var("GPUWM_SNOW_SINCE").ok().filter(|s| !s.trim().is_empty()) {
+                    Some(s) => chrono::NaiveDateTime::parse_from_str(&s.replace(':', "_"), "%Y-%m-%d_%H_%M_%S")
+                        .map_err(|e| format!("invalid snowfall baseline: {e}"))?.and_utc(),
+                    None => times.run_init,
+                };
+                if Some((times.valid - start).num_seconds()) != product.accumulation_seconds.map(i64::from) {
+                    return Err(format!("snowfall comparison window {start}..{} differs from analysis period {:?} s; set GPUWM_SNOW_SINCE to the exact matching saved baseline", times.valid, product.accumulation_seconds));
+                }
+            }
             let field = comparison_observations::load(
                 reference,
                 spec.name,
@@ -2522,10 +3074,10 @@ fn resolve_references(
                 .accumulation_seconds
                 .map(|seconds| format!(" | {} h ending", seconds / 3600))
                 .unwrap_or_default();
-            let subtitle = format!(
-                "Observed {actual}{period} | {} | {}",
-                product.message, field.file_name
-            );
+            // The source file name stays in the receipt ("file", "origin");
+            // in the subtitle an MRMS GRIB name overflowed a 1200 px panel.
+            let reference_kind = if product.raster.is_some() { "Analysis" } else { "Observed" };
+            let subtitle = format!("{reference_kind} {actual}{period} | {}", product.message);
             println!(
                 "SOURCE\t{}\tobserved\t{}\t{}\t{}",
                 reference.name,
@@ -2656,7 +3208,7 @@ fn render_reference_sheet(
     let mut panels = Vec::new();
     let mut panel_names = vec!["run".to_string()];
     let mut receipts = Vec::new();
-    let step = difference_step(&style.display_units);
+    let step = product_difference_step(spec, &style.display_units);
     let station_error = args.station_mode == "error";
     let marks = |values: &[f32]| -> Result<Option<MapOverlays>, String> {
         match (args.stations.as_deref(), spec.station_quantity) {
@@ -3077,6 +3629,22 @@ fn run(mut args: Args) -> Result<(), String> {
         drop(grid);
         let projection = source.projection().cloned();
         let (domain_token, domain_label) = domain_tokens(&frame.file);
+        if std::env::var_os("RW_COMPARE_DUMP_STORE").is_some() {
+            for var in source.surface_variables() {
+                println!("STOREVAR\t{}\t{}\t{}", var.name, var.units, var.selector);
+            }
+            for slug in source.derived_slugs() {
+                println!("STORESLUG\t{slug}");
+            }
+        }
+        if std::env::var_os("RW_COMPARE_INVENTORY").is_some() {
+            if let Some(file) = &reference_file {
+                for (i, m) in file.grib.messages.iter().enumerate() {
+                    let p = &m.product;
+                    println!("INV\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:?}\t{}\t{}", i + 1, m.discipline, p.parameter_category, p.parameter_number, p.level_type, p.level_value, p.second_level_type, p.second_level_value, p.statistical_process_type, p.time_range_unit, p.forecast_time);
+                }
+            }
+        }
 
         for spec in &specs {
             let outcome = (|| -> Result<Result<PathBuf, String>, String> {
@@ -3113,10 +3681,7 @@ fn run(mut args: Args) -> Result<(), String> {
                 if extracted.is_err()
                     && matches!(
                         spec.run,
-                        RunPlane::Selector(FieldSelector {
-                            vertical: rustwx_core::VerticalSelector::IsobaricHpa(_),
-                            ..
-                        })
+                        RunPlane::Selector(FieldSelector { vertical: rustwx_core::VerticalSelector::IsobaricHpa(_), .. }) | RunPlane::SelectorSpeed(FieldSelector { vertical: rustwx_core::VerticalSelector::IsobaricHpa(_), .. }, _)
                     )
                     && args.reference_file.is_none()
                 {
@@ -3224,7 +3789,7 @@ fn run(mut args: Args) -> Result<(), String> {
                     })
                 });
                 let style = match (style, spec.ladder) {
-                    (Some(style), _) => SheetStyle::production(style),
+                    (Some(style), _) => SheetStyle::production(style).for_sheet(spec),
                     (None, Some(ladder)) => SheetStyle::ladder(ladder),
                     (None, None) => {
                         return Ok(Err(format!(
@@ -3240,6 +3805,29 @@ fn run(mut args: Args) -> Result<(), String> {
                         .map(|value| style.convert.apply(*value))
                         .collect()
                 };
+                {
+                    let a = convert(&run_field.values);
+                    let b = convert(&reference_on_run);
+                    let (mut n, mut sa, mut sb, mut saa, mut sbb, mut sab, mut sd, mut sdd) = (0f64, 0f64, 0f64, 0f64, 0f64, 0f64, 0f64, 0f64);
+                    let floor = style.scale.resolved_discrete().mask_below;
+                    for (x, y) in a.iter().zip(b.iter()) {
+                        if !x.is_finite() || !y.is_finite() { continue; }
+                        let (mut x, mut y) = (*x as f64, *y as f64);
+                        if let Some(f) = floor {
+                            if x < f && y < f { continue; }
+                            x = x.max(f); y = y.max(f);
+                        }
+                        n += 1.0; sa += x; sb += y; saa += x * x; sbb += y * y; sab += x * y;
+                        sd += x - y; sdd += (x - y) * (x - y);
+                    }
+                    if n > 0.0 {
+                        let cov = sab / n - (sa / n) * (sb / n);
+                        let va = saa / n - (sa / n).powi(2);
+                        let vb = sbb / n - (sb / n).powi(2);
+                        let corr = if va > 0.0 && vb > 0.0 { cov / (va * vb).sqrt() } else { f64::NAN };
+                        println!("FULLSTATS\t{}\t{}\t{}\t{}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}", spec.name, times.run_lead_label().to_ascii_lowercase(), style.display_units, n as u64, sd / n, (sdd / n).sqrt(), corr, sa / n, sb / n);
+                    }
+                }
                 let (path, stats) = write_sheet(
                     &args,
                     reference,
@@ -3306,16 +3894,17 @@ fn run(mut args: Args) -> Result<(), String> {
 fn import_options(specs: &[ProductSpec]) -> WrfProcessOptions {
     let chart_selectors: Vec<FieldSelector> = specs
         .iter()
-        .filter_map(|spec| match spec.run {
+        .flat_map(|spec| match spec.run {
             RunPlane::Selector(selector)
                 if matches!(
                     selector.vertical,
                     rustwx_core::VerticalSelector::IsobaricHpa(_)
                 ) =>
             {
-                Some(selector)
+                vec![selector]
             }
-            _ => None,
+            RunPlane::SelectorSpeed(u, v) => vec![u, v],
+            _ => Vec::new(),
         })
         .collect();
     let raw_names: Vec<&str> = specs.iter().filter_map(|spec| match spec.run {
@@ -3329,7 +3918,7 @@ fn import_options(specs: &[ProductSpec]) -> WrfProcessOptions {
             .filter(|raw| !raw_names.contains(raw))
             .map(|raw| raw.to_string()).collect()
     };
-    let options = WrfProcessOptions {
+    let mut options = WrfProcessOptions {
         core_fields: true,
         diagnostics: false,
         heavy_ecape: false,
@@ -3340,10 +3929,33 @@ fn import_options(specs: &[ProductSpec]) -> WrfProcessOptions {
         viewer_2d: true,
         chart_selectors,
         named_products_only: false,
-        snow_since: None,
+        snow_since: std::env::var("GPUWM_SNOW_SINCE").ok().filter(|s| !s.trim().is_empty()),
         required_fields: None,
     };
-    options
+    if std::env::var_os("RW_COMPARE_FULL").is_some() {
+        options.diagnostics = true;
+        options.raw_extras = true;
+        options.skip = Vec::new();
+    }
+    // Snow planes are computed diagnostics, rather than raw WRF variables.
+    // Admit only the requested snow planes alongside the existing import plan;
+    // enabling every diagnostic would make a comparison compute unrelated fields.
+    let snow_names: Vec<String> = specs.iter().filter_map(|spec| {
+        rw_wrfbatch::snowfall::PRODUCTS.iter()
+            .find(|(slug, _)| *slug == spec.slug)
+            .map(|(slug, _)| (*slug).to_string())
+    }).collect();
+    if !snow_names.is_empty() {
+        let mut required = options.planned_store_fields();
+        required.extend(snow_names);
+        options.diagnostics = true;
+        options.required_fields = Some(required);
+    }
+    if std::env::var_os("RW_COMPARE_FULL").is_some() {
+        options.diagnostics = true;
+        options.required_fields = None;
+    }
+    options.normalized()
 }
 
 /// The run's plane for one product at one stored frame: the stored plane,
@@ -3368,6 +3980,13 @@ fn read_run_field(
             Ok(field) => field,
             Err(reason) => return Ok(Err(reason)),
         },
+        RunPlane::SelectorSpeed(u, v) => {
+            let (uf, vf) = match (run_plane(source, &u), run_plane(source, &v)) {
+                (Ok(a), Ok(b)) => (a, b),
+                (Err(r), _) | (_, Err(r)) => return Ok(Err(r)),
+            };
+            RunField { values: wind_speed(&uf.values, &vf.values), variable: format!("{}_speed", uf.variable), ..uf }
+        }
         RunPlane::HourlyAccumulation(selector) => {
             let now = match run_plane(source, &selector) {
                 Ok(field) => field,
@@ -3416,6 +4035,46 @@ fn read_run_field(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_rrfs_reference_reads_the_unbounded_bucket_before_nomads() {
+        // NOMADS keeps about two days: a reference pinned to it 404'd on every
+        // older RRFS cycle while the init fetch read noaa-rrfs-ops-pds.
+        let rrfs = reference_specs().into_iter().find(|row| row.name == "rrfs").unwrap();
+        assert_eq!(rrfs.sources, &[SourceId::Aws, SourceId::Nomads]);
+        let cycle = CycleSpec::new("20261015".to_string(), 12).unwrap();
+        let request = ModelRunRequest::new(rrfs.model, cycle, 12, rrfs.file_product).unwrap();
+        let first = rustwx_models::resolve_urls(&request)
+            .unwrap()
+            .into_iter()
+            .find(|url| url.source == rrfs.sources[0])
+            .unwrap();
+        assert!(first.grib_url.starts_with("https://noaa-rrfs-ops-pds.s3.amazonaws.com/"),
+            "{}", first.grib_url);
+    }
+
+    #[test]
+    fn snow_comparison_difference_uses_depth_units() {
+        for spec in product_specs().iter().filter(|s| ["snow10", "snowkuchera", "snow_depth"].contains(&s.name)) {
+            assert!(spec.continuous);
+            assert_eq!(product_difference_step(spec, "in"), Some(2.0));
+        }
+        let liquid = product_specs().into_iter().find(|s| s.name == "qpf1h").unwrap();
+        assert_eq!(product_difference_step(&liquid, "in"), Some(0.1));
+    }
+
+    #[test]
+    fn snow_comparison_imports_requested_computed_planes() {
+        let specs: Vec<_> = product_specs().into_iter()
+            .filter(|spec| ["snow10", "snowkuchera", "snow_depth"].contains(&spec.name))
+            .collect();
+        assert_eq!(specs.len(), 3);
+        let planned = import_options(&specs).planned_store_fields();
+        for spec in specs {
+            assert!(planned.iter().any(|name| name == spec.slug), "{}", spec.slug);
+        }
+        assert!(!planned.iter().any(|name| name == "snow_depth_change"));
+    }
 
     #[test]
     fn observation_identity_deduplicates_ordered_and_packaged_references() {
@@ -3883,7 +4542,7 @@ mod tests {
                 spec.reference_message
             );
             let wanted = match spec.reference {
-                ReferencePlane::Speed(..) => 2,
+                ReferencePlane::Speed(..) | ReferencePlane::RawSpeed(..) => 2,
                 _ => 1,
             };
             assert_eq!(spec.inventory_patterns.len(), wanted, "{}", spec.name);

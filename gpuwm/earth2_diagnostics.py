@@ -18,6 +18,8 @@ def run_diagnostic(name, source, out, device="cuda"):
     if row.get("weights", {}).get("account_needed"):
         raise ValueError(f"diagnostic {key}: weights require an account")
     source, out = Path(source).resolve(), Path(out).resolve()
+    if not source.exists():
+        raise ValueError(f"diagnostic {key}: no export at {source}")
     if source.is_dir() and source.suffix != ".zarr":
         candidates = sorted(source.rglob("*.zarr")) + sorted(source.rglob("*.nc"))
         if len(candidates) != 1:

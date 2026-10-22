@@ -13,7 +13,11 @@ use rustwx_calc::{
     EcapeVolumeInputs, GridShape as CalcGridShape, SurfaceInputs, VolumeShape, WindGridInputs,
     compute_sbcape_cin, compute_srh_03km_hemispheric,
 };
-use rustwx_products::gridded::{PressureFields, SurfaceFields, mixing_ratio_from_dewpoint_k};
+use rustwx_products::gridded::mixing_ratio_from_dewpoint_k;
+
+#[path = "common/compute_fixture.rs"]
+mod fixture;
+use fixture::{Synthetic, flatten_with, decoded_pair, assert_bits_eq};
 
 use rw_ingest::ingest_compute::{self, ProductsComputeInputs};
 
@@ -23,25 +27,6 @@ const NXY: usize = NX * NY;
 /// Descending pressure (ground up) — the order the decode lane aligns to.
 const LEVELS: [u16; 5] = [1000, 925, 850, 700, 500];
 const NZ: usize = LEVELS.len();
-
-/// A warm, moist, sheared synthetic hour: enough instability that sbcape is
-/// finite and nonzero somewhere, so the comparison is not all-NaN-trivial.
-/// Values mirror what the decode lane would hand over (f64 planes).
-struct Synthetic {
-    lat: Vec<f64>,
-    lon: Vec<f64>,
-    psfc_pa: Vec<f64>,
-    t2_k: Vec<f64>,
-    q2_kgkg: Vec<f64>,
-    u10_ms: Vec<f64>,
-    v10_ms: Vec<f64>,
-    orog_m: Vec<f64>,
-    temperature_k: Vec<(u16, Vec<f64>)>,
-    dewpoint_k: Vec<(u16, Vec<f64>)>,
-    u_ms: Vec<(u16, Vec<f64>)>,
-    v_ms: Vec<(u16, Vec<f64>)>,
-    height_m: Vec<(u16, Vec<f64>)>,
-}
 
 fn synthetic() -> Synthetic {
     let mut lat = Vec::with_capacity(NXY);
@@ -95,86 +80,6 @@ fn synthetic() -> Synthetic {
         // strictly increasing by far more than the +1 m monotonic clamp, so
         // the AGL assembly is a pure (gh - orog) on this data.
         height_m: by_level(400.0, 1400.0, 2.0),
-    }
-}
-
-/// Flatten `(level, plane)` pairs into `[k][ij]` in LEVELS order with a
-/// per-value conversion — the layout the decode lane hands over.
-fn flatten_with(planes: &[(u16, Vec<f64>)], convert: impl Fn(f64) -> f64) -> Vec<f64> {
-    let mut out = Vec::with_capacity(NZ * NXY);
-    for &level in &LEVELS {
-        let (_, plane) = planes
-            .iter()
-            .find(|(have, _)| *have == level)
-            .expect("synthetic volumes carry every level");
-        out.extend(plane.iter().map(|&value| convert(value)));
-    }
-    out
-}
-
-/// The decoded pair exactly as `decode_store_thermo_pair` shapes it:
-/// f64 fields, descending-pressure flattened volumes, mixing ratio from
-/// the moisture planes, no optional volumes.
-fn decoded_pair(synthetic: &Synthetic) -> (SurfaceFields, PressureFields) {
-    let qvapor_kgkg_3d: Vec<f64> = LEVELS
-        .iter()
-        .flat_map(|&level| {
-            let (_, plane) = synthetic
-                .dewpoint_k
-                .iter()
-                .find(|(have, _)| *have == level)
-                .unwrap();
-            plane
-                .iter()
-                .map(move |&td_k| mixing_ratio_from_dewpoint_k(f64::from(level), td_k))
-        })
-        .collect();
-    (
-        SurfaceFields {
-            lat: synthetic.lat.clone(),
-            lon: synthetic.lon.clone(),
-            nx: NX,
-            ny: NY,
-            projection: None,
-            psfc_pa: synthetic.psfc_pa.clone(),
-            orog_m: synthetic.orog_m.clone(),
-            orog_is_proxy: false,
-            t2_k: synthetic.t2_k.clone(),
-            q2_kgkg: synthetic.q2_kgkg.clone(),
-            u10_ms: synthetic.u10_ms.clone(),
-            v10_ms: synthetic.v10_ms.clone(),
-            native_sbcape_jkg: None,
-            native_mlcape_jkg: None,
-            native_mucape_jkg: None,
-            native_pblh_m: None,
-        },
-        PressureFields {
-            pressure_levels_hpa: LEVELS.iter().map(|&level| f64::from(level)).collect(),
-            pressure_3d_pa: None,
-            temperature_c_3d: flatten_with(&synthetic.temperature_k, |v| v - 273.15),
-            qvapor_kgkg_3d,
-            u_ms_3d: flatten_with(&synthetic.u_ms, |v| v),
-            v_ms_3d: flatten_with(&synthetic.v_ms, |v| v),
-            gh_m_3d: flatten_with(&synthetic.height_m, |v| v),
-            omega_pa_s_3d: None,
-            absolute_vorticity_s_3d: None,
-            cloud_liquid_kgkg_3d: None,
-            cloud_ice_kgkg_3d: None,
-            rain_kgkg_3d: None,
-            snow_kgkg_3d: None,
-            graupel_kgkg_3d: None,
-        },
-    )
-}
-
-fn assert_bits_eq(actual: &[f32], expected: &[f32], context: &str) {
-    assert_eq!(actual.len(), expected.len(), "{context}: length mismatch");
-    for (i, (a, e)) in actual.iter().zip(expected.iter()).enumerate() {
-        assert_eq!(
-            a.to_bits(),
-            e.to_bits(),
-            "{context}: value mismatch at index {i} (actual {a}, expected {e})"
-        );
     }
 }
 

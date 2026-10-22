@@ -72,6 +72,23 @@ from gpuwm.core.noahmp_libm import expf as _expf
 from gpuwm.core.noahmp_libm import logf as _logf
 from gpuwm.core.noahmp_libm import powf as _powf
 
+# WRF uses the same mixlen parameter words in MYJ and Shin-Hong.
+# module_bl_myjpbl.F:98-124 matches module_bl_shinhong.F:1802-1822.
+# Reexport every existing MYJ name; only one copy folds the expressions.
+from gpuwm.verify.shinhong_ref import (  # noqa: F401
+    _EPS1 as EPS1, _EPSL as EPSL, _EPSRU as EPSRU,
+    _EPSRS as EPSRS, _EL0MAX as EL0MAX, _EL0MIN as EL0MIN,
+    _ELFC as ELFC, _ALPH as ALPH, _BETA as BETA,
+    _BTG as BTG, _A1 as A1, _A2X as A2X,
+    _B1 as B1, _B2 as B2, _C1 as C1,
+    _ADNH as ADNH, _ADNM as ADNM, _BDNH as BDNH,
+    _BDNM as BDNM, _AEQH as AEQH, _AEQM as AEQM,
+    _REQU as REQU, _EPSGH as EPSGH, _EPSGM as EPSGM,
+    _UBRYL as UBRYL, _UBRY as UBRY, _UBRY3 as UBRY3,
+    _AUBH as AUBH, _AUBM as AUBM, _BUBH as BUBH,
+    _BUBM as BUBM, _CUBR as CUBR, _RCUBR as RCUBR,
+)
+
 F = np.float32
 
 # ---------------------------------------------------------------------------
@@ -82,7 +99,6 @@ R_V = F(461.6)
 CP = F(F(7.0) * R_D / F(2.0))
 XLV = F(2.5e6)
 XLS = F(2.85e6)
-EP_1 = F(R_V / R_D - F(1.0))
 P608 = F(R_V / R_D - F(1.0))          # rvovrd - 1.
 PQ0 = F(379.90516)
 A2C = F(17.2693882)                    # module_model_constants a2
@@ -93,49 +109,28 @@ P1000MB = F(1.0e5)
 
 # ---------------------------------------------------------------------------
 # module_bl_myjpbl.F:25-124 parameters (stepwise float32, the Fortran's
-# compile-time single-precision folding).
+# compile-time single-precision folding). Shared values are imported above.
 VKARMAN = F(0.4)
 CAPA = F(R_D / CP)
 RLIVWV = F(XLS / XLV)
 ELOCP = F(F(2.72e6) / CP)
-EPS1 = F(1.0e-12)
 EPS2 = F(0.0)
-EPSL = F(0.32)
-EPSRU = F(1.0e-7)
-EPSRS = F(1.0e-7)
 EPSTRB = F(1.0e-24)
 FH_PBL = F(1.01)
-ALPH = F(0.30)
-BETA = F(F(1.0) / F(273.0))
-EL0MAX = F(1000.0)
-EL0MIN = F(1.0)
-ELFC = F(F(0.23) * F(0.5))
-PRT = F(1.0)
-A1 = F(0.659888514560862645)
-A2X = F(0.6574209922667784586)
-B1 = F(11.87799326209552761)
-B2 = F(7.226971804046074028)
-C1 = F(0.000830955950095854396)
 ELZ0 = F(0.0)
 ESQ = F(5.0)
 SEAFC = F(0.98)
 PQ0SEA = F(PQ0 * SEAFC)
-BTG = F(BETA * G)
 RB1 = F(F(1.0) / B1)
 
 # module_bl_myjpbl.F:62-92 (stepwise, left-to-right with parentheses, as
 # gfortran folds them: ``...*BTG*BTG`` is ``(...*BTG)*BTG``, never
 # ``...*(BTG*BTG)``; tests/test_myjpbl_wrf461_parity.py checks every
 # derived word against the one WRF's object carries).
-ADNH = F(F(F(F(F(F(F(F(9.0) * A1) * A2X) * A2X)
-           * F(F(F(12.0) * A1) + F(F(3.0) * B2))) * BTG) * BTG))
-ADNM = F(F(F(F(F(F(18.0) * A1) * A1) * A2X) * F(B2 - F(F(3.0) * A2X))) * BTG)
 ANMH = F(F(F(F(F(F(F(-9.0) * A1) * A2X) * A2X) * BTG) * BTG))
 ANMM = F(F(F(F(F(-3.0) * A1) * A2X)
            * F(F(F(F(F(3.0) * A2X) + F(F(F(3.0) * B2) * C1))
                  + F(F(F(18.0) * A1) * C1)) - B2)) * BTG)
-BDNH = F(F(F(F(3.0) * A2X) * F(F(F(7.0) * A1) + B2)) * BTG)
-BDNM = F(F(F(6.0) * A1) * A1)
 BEQH = F(F(F(F(A2X * B1) * BTG)
            + F(F(F(F(3.0) * A2X) * F(F(F(7.0) * A1) + B2)) * BTG)))
 BEQM = F(F(F(F(-A1) * B1) * F(F(1.0) - F(F(3.0) * C1)))
@@ -149,35 +144,6 @@ BSMH = F(F(F(F(F(-3.0) * A1) * A2X)
                  + F(F(F(12.0) * A1) * C1)) - B2)) * BTG)
 CESH = A2X
 CESM = F(A1 * F(F(1.0) - F(F(3.0) * C1)))
-
-# module_bl_myjpbl.F:98-101 free equilibrium term.
-AEQH = F(F(F(F(F(F(F(F(F(9.0) * A1) * A2X) * A2X) * B1) * BTG) * BTG))
-         + F(F(F(F(F(F(F(F(9.0) * A1) * A2X) * A2X)
-               * F(F(F(F(12.0) * A1)) + F(F(3.0) * B2))) * BTG) * BTG)))
-AEQM = F(F(F(F(F(F(F(3.0) * A1) * A2X) * B1)
-            * F(F(F(F(F(3.0) * A2X) + F(F(F(3.0) * B2) * C1))
-                  + F(F(F(18.0) * A1) * C1)) - B2)) * BTG)
-         + F(F(F(F(F(F(18.0) * A1) * A1) * A2X)
-               * F(B2 - F(F(3.0) * A2X))) * BTG))
-
-# module_bl_myjpbl.F:107-124 forbidden area / near isotropy.
-REQU = F(-AEQH / AEQM)
-EPSGH = F(1.0e-9)
-EPSGM = F(REQU * EPSGH)
-UBRYL = F(F(F(F(F(F(F(F(F(18.0) * REQU) * A1) * A1) * A2X) * B2) * C1) * BTG)
-          + F(F(F(F(F(F(F(F(F(9.0) * A1) * A2X) * A2X) * B2) * BTG) * BTG))))
-UBRYL = F(UBRYL / F(F(REQU * ADNM) + ADNH))
-UBRY = F(F(F(1.0) + EPSRS) * UBRYL)
-UBRY3 = F(F(3.0) * UBRY)
-AUBH = F(F(F(F(F(F(F(F(F(27.0) * A1) * A2X) * A2X) * B2) * BTG) * BTG))
-         - F(ADNH * UBRY3))
-AUBM = F(F(F(F(F(F(F(F(F(54.0) * A1) * A1) * A2X) * B2) * C1) * BTG))
-         - F(ADNM * UBRY3))
-BUBH = F(F(F(F(F(F(9.0) * A1) * A2X) + F(F(F(3.0) * A2X) * B2)) * BTG)
-         - F(BDNH * UBRY3))
-BUBM = F(F(F(F(F(18.0) * A1) * A1) * C1) - F(BDNM * UBRY3))
-CUBR = F(F(1.0) - UBRY3)
-RCUBR = F(F(1.0) / CUBR)
 
 # ---------------------------------------------------------------------------
 # module_sf_myjsfc.F:23-55 parameters.
@@ -195,7 +161,6 @@ EXCML = F(0.0001)
 EXCMS = F(0.0001)
 GLKBR = F(10.0)
 GLKBS = F(30.0)
-PI = F(3.1415926)
 QVISC = F(2.1e-5)
 RIC = F(0.505)
 SMALL = F(0.35)
@@ -219,7 +184,6 @@ FZQ2 = F(F(RTVISC * QVISC) * ZQRZT)
 FZT1 = F(F(RVISC * TVISC) * SQPR)
 FZT2 = F(F(F(CZIV * GRRS) * TVISC) * SQPR)
 FZU1 = F(CZIV * VISC)
-PIHF = F(F(0.5) * PI)
 RQVISC = F(F(1.0) / QVISC)
 USTFC = F(F(0.018) / G)
 WWST2 = F(WWST * WWST)

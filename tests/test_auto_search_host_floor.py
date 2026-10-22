@@ -86,10 +86,15 @@ def test_host_impossible_streaming_can_keep_that_domain_resident(tmp_path):
     # sharing (c563a6f8860) moves it to 21.85 GiB: the card is 22.25 GiB,
     # whose 21.75 GiB admission budget the tree exceeds while fitting the
     # card (read at 22.0, 22.25, 22.3 and 22.4 GiB at 3d4bfffd093; from
-    # 22.4 GiB the envelope fits the budget outright).
+    # 22.4 GiB the envelope fits the budget outright).  97e9a3ca061
+    # (cap-hail): automatic HAILCAST on the 3-km child loads its 7,392-B
+    # frame, the widest in the process, and its diagnostic slots, moving the
+    # tree to 22.41 GiB: the card is 22.75 GiB, whose 22.25 GiB admission
+    # budget the tree exceeds while fitting the card (from 23.0 GiB it fits
+    # the budget outright).
     assert st._inbound_stream_tiling(st._config_tree_nodes(exp.domains)[1],
                                      exp.tiles) is None
-    result, rows = _walk(exp, free_gib=22.25)
+    result, rows = _walk(exp, free_gib=22.75)
     assert not rows[1].stream and not rows[2].stream
     assert "inside the" in rows[2].reason and "redundancy limit" in rows[2].reason
     # The road this test is about -- the host-blocked root resident beside

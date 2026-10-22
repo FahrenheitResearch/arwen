@@ -85,13 +85,10 @@ def test_constant_k_mixes_chem_like_wrf(overrides):
 
 
 @pytest.mark.parametrize("overrides, match", [
-    (dict(aer_ra_feedback=1), "aerosol-radiation feedback is not wired"),
     (dict(aer_op_opt=2), "only WRF-Chem's volume approximation"),
-], ids=["ra-feedback-unwired", "aer-op-opt"])
+], ids=["aer-op-opt"])
 def test_unwired_aerosol_switches_are_refused(overrides, match):
-    """aer_ra_feedback was admitted with optics rows and consumed by
-    nothing, so radiation ran aerosol-free under a namelist that said the
-    aerosol fed it; aer_op_opt 2-5 would silently take the volume rule.
+    """aer_op_opt 2-5 would silently take the volume rule.
     (The GOCART rows' wetdep.ls is in the build since the smoke set merged,
     so the packaged table reaches these refusals as it is.)"""
     base = dict(chem_sets="gocart_primary", bl_pbl_physics=1,
@@ -167,6 +164,24 @@ def test_the_chem_block_is_appended_after_every_older_field():
     from gpuwm.config import CHEM_RUN_FIELDS, FIRE_RUN_FIELDS
 
     names = [f.name for f in dataclasses.fields(RunConfig)]
+    # Appended last after the campaign, keyword-only: sea ice's real.exe
+    # threshold (4c82704f8f) and the HRRR v4 output controls
+    # (lane/hrrr-v4-output: e55b68accb, bd4a1c2090, f80ac46aeb).
+    later = ["seaice_threshold", "prec_acc_dt", "prec_acc_dt1",
+             "gsd_diagnostics", "reset_interval1", "history_interval2_s",
+             "history_interval_change_s", "smoke_off_reason"]
+    assert names[-len(later):] == later
+    names = names[:-len(later)]
+    # The 2.9.4 capabilities campaign's keyword-only keys follow the fire
+    # block: lane/cap-waves-couple, cap-hail, cap-seaice, cap-eclipse and
+    # cap-lake, in merge order.
+    campaign = ["ocean_config", "hailcast_opt", "haildt",
+                "seaice_prognostic", "seaice_initial_thickness",
+                "seaice_new_ice_thickness", "seaice_ocean_heat_flux",
+                "ra_sw_eclipse", "lake_state_source", "lake_state_path",
+                "lake_state_accept_licence"]
+    assert names[-len(campaign):] == campaign
+    names = names[:-len(campaign)]
     # The keyword-only fire block follows the chem block.
     names = names[:-len(FIRE_RUN_FIELDS)]
     assert names[-len(CHEM_RUN_FIELDS):] == list(CHEM_RUN_FIELDS)

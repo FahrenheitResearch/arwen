@@ -5,7 +5,7 @@ The example scripts use `woof earth2`; set `WOOF_BIN=gpuwm` for the engine spell
 These runs used Earth2Studio 0.19.0. For a separate environment, set
 `GPUWM_EARTH2_PYTHON` to that environment's Python executable.
 
-FCN3 inference needs a 32 GB card or larger (it allocates 20.4 GiB at once; 16 GB cards refuse).
+FCN3 inference needs 17 GiB of free GPU memory, a 24 GB card or larger (measured peak 16,552 MiB; smaller cards refuse before any download).
 
 Wind Gust AFNO is refused because its published weights use the NVIDIA Community Model License.
 
@@ -87,7 +87,7 @@ the map displays wind speed in knots.
 
 <!-- earth2-models:begin -->
 Generated from `gpuwm/authorities/earth2-models.v1.json`.
-Authority SHA-256: `e816854abebca1e8fbdf7484a5b739cc7efb3518d0d540db86d16e8f412fd1cf`.
+Authority SHA-256: `a5864212ce5ff501e7fe9817eb9c2299c7b5c4f78a64ef2b93e34ed4bb1daf6a`.
 
 These are authority declarations, not a list of measured forecasts.
 Gated rows declared here: none.
@@ -101,7 +101,7 @@ Account-required rows declared here: none.
 | aifs2 | AIFS2 | 6 | CC BY 4.0 | See declared licence | No account declared | earth2-pl13-q-netcdf-v1 | Capacity floor not declared |
 | aifs2-ens | AIFS2ENS | 6 | CC BY 4.0 | See declared licence | No account declared | earth2-pl13-q-netcdf-v1 | Capacity floor not declared |
 | atlas | Atlas CRPS, selected member | 6 | NVIDIA Open Model License | See declared licence | No account declared | earth2-pl13-q-netcdf-v1 | Capacity floor not declared |
-| atlas-crps | Atlas CRPS | 6 | NVIDIA Open Model Licence | See declared licence | Not declared | earth2-pl13-q-netcdf-v1 | Capacity floor not declared |
+| atlas-crps | Atlas CRPS | 6 | NVIDIA Open Model License | See declared licence | No account declared | earth2-pl13-q-netcdf-v1 | Capacity floor not declared |
 | atlas-si | Atlas stochastic interpolant | 6 | NVIDIA Open Model License | See declared licence | No account declared | earth2-pl13-q-netcdf-v1 | Capacity floor not declared |
 | aurora | Aurora | 6 | MIT | See declared licence | No account declared | earth2-pl13-q-netcdf-v1 | Capacity floor not declared |
 | aurora15 | Aurora1p5 | 1 | MIT | See declared licence | No account declared | earth2-pl13-q-netcdf-v1 | Capacity floor not declared |
@@ -113,7 +113,7 @@ Account-required rows declared here: none.
 | dlesym | DLESyMLatLon | 6 | Apache-2.0 | See declared licence | No account declared | Not declared | Capacity floor not declared |
 | dlwp | DLWP | 6 | unresolved: NGC checkpoint terms | See declared licence | No account declared | Not declared | Capacity floor not declared |
 | fcn | FCN | 6 | unresolved: checkpoint has no explicit weight licence | See declared licence | No account declared | Not declared | Capacity floor not declared |
-| fcn3 | FCN3 | 6 | Apache-2.0 | See declared licence | No account declared | earth2-pl13-q-netcdf-v1 | 30.0 GiB free; FCN3 inference needs a 32 GB card or larger. Measured single allocation 20.37 GiB refused on a 15.47 GiB RTX 5070 Ti (node4-artifacts/forecast-cuda-recovery/source/earth2-runner.log:97, forecast-cuda-recovery.json). Producer measured about 29 GiB peak on RTX 5090; 30 GiB free is the measured-capacity admission floor including margin, not a nominal 32 GiB requirement. |
+| fcn3 | FCN3 | 6 | Apache-2.0 | See declared licence | No account declared | earth2-pl13-q-netcdf-v1 | 17.0 GiB free; FCN3 inference needs 17 GiB of free GPU memory (a 24 GB card or larger) on the pinned stack (earth2studio 0.19.0, torch-harmonics 0.8.1 a632ca7, torch 2.14.1 cu13). Measured on an RTX PRO 6000 96 GB, 2026-10-21, gpuwm fetch --source earth2-fcn3 --cycle 2024-10-08T00 --hours 24, one member, batch_size 1, under a 30,000 MiB card lease: card memory peak 16,552 MiB (process-tree nvidia-smi sampler), torch max_memory_allocated 13.969 GiB, max_memory_reserved 15.512 GiB (earth2-run.json). 17 GiB is that measured peak rounded up. The earlier 59 GiB floor (60,212 MiB card peak, 49.3 GiB allocated) measured the runner's DISCO band patch not applying to torch-harmonics 0.8.1, so its whole expanded convolution input and the einsum's permuted copy were resident at once; gpuwm/earth2_runner.py now contracts that layout one channel slice and latitude band at a time. |
 | fengwu | FengWu | 6 | unresolved: FengWu weight terms | See declared licence | No account declared | earth2-pl13-q-netcdf-v1 | Capacity floor not declared |
 | fuxi | FuXi | 6 | unresolved: FuXi weight terms | See declared licence | No account declared | earth2-pl13-rh-netcdf-v1 | Capacity floor not declared |
 | fuxi-s2s | FuXiS2S | 24 | CC BY-NC-ND 4.0 | Research-only | No account declared | Not declared | Capacity floor not declared |

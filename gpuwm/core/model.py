@@ -365,7 +365,7 @@ RESTART_TOLERATED_EXPERIMENT_FIELDS = (
 RESTART_TOLERATED_DOMAIN_FIELDS = (
     "history_interval_s", "history_begin_s", "history_end_s")
 RESTART_TOLERATED_RUN_FIELDS = (
-    "run_seconds", "output_interval_s", "restart_interval_s",
+    "run_seconds", "output_interval_s", "history_interval2_s", "history_interval_change_s", "restart_interval_s",
     "surface_energy_diag",
     # Correct mode WB1 (gpuwm/correct_mode.py OUTPUT_ONLY_KEYS): books the
     # settled-cloud total CLOUDNC and changes no prognostic word
@@ -1132,7 +1132,6 @@ def build_experiment(exp, case_data) -> ExperimentState:
     from gpuwm.ingest.grib import clear_forcing_caches
     from gpuwm.ingest.lateral_bc import bind_lateral_boundary_clock
     from gpuwm.ingest.nest_init import initialize_child
-    from gpuwm.ingest.preflight import build_input_catalog
     from gpuwm.core.nest import NestCoupler as ConcreteNestCoupler
 
     from gpuwm.progress import prep_stage
@@ -1181,7 +1180,13 @@ def build_experiment(exp, case_data) -> ExperimentState:
     # split tree breaks.
     refuse_tree_off_the_experiment_coordinate(
         exp, active.domains, route="experiment-tree")
-    tick_clock = resolve_clock(active, lbc_interval_s=lbc_interval_s)
+    # The startup tree's tick is the DECLARED tree's (dormant nests
+    # included), so a nest spawned later joins without re-meaning a tick.
+    tick_clock = resolve_clock(
+        active, lbc_interval_s=lbc_interval_s,
+        tick_den_floor=(resolve_clock(exp, lbc_interval_s=lbc_interval_s).tick_den
+                        if active is not exp and len(active.domains) != len(exp.domains)
+                        else None))
     schedule = build_schedule(active, tick_clock)
     clocks = tick_clock.clocks()
     estimate = estimate_experiment(

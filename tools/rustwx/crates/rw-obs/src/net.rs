@@ -7,6 +7,7 @@
 //! in one binary is two sets of timeout behavior to reason about.
 
 use std::error::Error;
+use chrono::{DateTime, Utc};
 
 use crate::err;
 
@@ -76,6 +77,38 @@ pub fn query_encode(value: &str) -> String {
         }
     }
     out
+}
+
+type PublishedBytes = (Vec<u8>, Option<DateTime<Utc>>);
+
+/// Retrieve an archive object with the server's publication time.
+pub fn get_with_last_modified(
+    client: &ureq::Agent,
+    url: &str,
+) -> Result<PublishedBytes, Box<dyn Error>> {
+    let mut response = client
+        .get(url)
+        .call()
+        .map_err(|e| err(format!("GET {url} failed: {e}")))?;
+    let status = response.status().as_u16();
+    if !(200..300).contains(&status) {
+        return Err(err(format!("GET {url} answered HTTP {status}")));
+    }
+    let last_modified = response
+        .headers()
+        .get("last-modified")
+        .and_then(|v| v.to_str().ok())
+        .and_then(rw_nexrad::s3::parse_http_date);
+    let bytes = response
+        .body_mut()
+        .with_config()
+        .limit(MAX_RESPONSE_BYTES)
+        .read_to_vec()
+        .map_err(|e| err(format!("reading {url} failed: {e}")))?;
+    if bytes.is_empty() {
+        return Err(err(format!("{url} answered with an empty body")));
+    }
+    Ok((bytes, last_modified))
 }
 
 #[cfg(test)]

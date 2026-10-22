@@ -17,6 +17,7 @@
 //! place known in degrees onto that panel ([`annotate`]).
 
 pub mod cyclone_products;
+pub mod solar_products;
 pub mod annotate;
 pub mod compare;
 pub mod latlon_pair;
@@ -30,10 +31,13 @@ pub mod verification_render;
 pub mod station_overlay;
 pub mod panel;
 pub mod nextgen_products;
+pub mod ocean_products;
 pub mod ensemble_products;
 pub mod ensemble_reduce;
 pub mod sfire;
+pub mod fire_observations;
 pub mod snowfall;
+mod visibility;
 mod source_memo;
 pub mod domain_naming;
 
@@ -57,7 +61,13 @@ pub mod process_request;
 pub mod viewer_profile;
 mod wrf_chart_planes;
 mod wrf_column_planes;
+mod ivt;
 
 pub mod cf_grid;
+pub mod gridded_verification;
 pub mod cf_render;
 pub mod comparison_observations;
+
+pub mod hubwind_products;
+pub mod lightning_verification;
+mod wrf_vertical_velocity;

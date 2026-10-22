@@ -109,3 +109,22 @@ def test_niwfa_is_bitwise_gsl():
                                       want64.view(np.uint64), err_msg=name)
         np.testing.assert_array_equal(cp.asnumpy(got32).view(np.uint32),
                                       want32.view(np.uint32), err_msg=name)
+
+
+def test_host_niwfa_is_bitwise_gsl():
+    """Grade the executable CPU preparation path against the pinned routine."""
+    from gpuwm.ingest.cpu_backend import CpuPreprocessBackend
+    backend = CpuPreprocessBackend()
+    case = load_case(FIXTURE / "niwfa")
+    aerfld = case["aerfld"]
+    fields = {f"bin{b}": np.ascontiguousarray(aerfld[:, :, b - 1]) for b, *_ in GSL_BINS}
+    shape = aerfld.shape[:2]
+    nifa, nwfa = (np.zeros(shape, np.float32) for _ in range(2))
+    nifa64, nwfa64 = (np.zeros(shape, np.float64) for _ in range(2))
+    backend.aerosol_numbers(fields, _terms(), nifa, nwfa, scale=mpc.SCALE,
+                            nifa_f64=nifa64, nwfa_f64=nwfa64)
+    for name, got32, got64 in (("nifa", nifa, nifa64), ("nwfa", nwfa, nwfa64)):
+        bits = case[f"{name}_f64_bits"].astype(np.uint32)
+        want64 = (bits[0].astype(np.uint64) | (bits[1].astype(np.uint64) << np.uint64(32)))
+        np.testing.assert_array_equal(got64.view(np.uint64), want64)
+        np.testing.assert_array_equal(got32.view(np.uint32), case[name].view(np.uint32))

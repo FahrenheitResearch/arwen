@@ -563,3 +563,21 @@ fn windowed_product_scale_matches_the_kernel_families() {
         }
     }
 }
+
+#[test]
+fn full_longitude_envelope_keeps_windowed_grid_uncropped() {
+    use rustwx_core::{GridShape, LatLonGrid};
+    let bounds = (-180.05, 180.05, -22.0, 82.0);
+    let grid = LatLonGrid::new(
+        GridShape::new(3, 2).unwrap(),
+        vec![20.0, 20.0, 20.0, 50.0, 50.0, 50.0],
+        vec![-179.99, -92.0, 179.99, -179.99, -92.0, 179.99],
+    ).unwrap();
+    assert!(point_in_geographic_bounds(-92.0, 37.0, bounds));
+    assert!(!point_in_geographic_bounds(-92.0, 85.0, bounds));
+    assert!(crop_for_domain_grid(&grid, bounds, 0).unwrap().is_none());
+    // A genuinely narrow date-line request must remain narrow.
+    let narrow = (179.0, -179.0, -22.0, 82.0);
+    assert!(point_in_geographic_bounds(179.99, 37.0, narrow));
+    assert!(!point_in_geographic_bounds(-92.0, 37.0, narrow));
+}

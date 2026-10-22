@@ -132,7 +132,6 @@ _RRTMG_LEGACY_ASSETS = (
     "data/wrf_radiation/rrtmg_lw_statics.npz",
     "core/kernels/rrtmg_lw.cu",
     "core/kernels/rrtmg_lw_chain.cu",
-    "core/kernels/rrtmg_lw_chain_coalesced.cu",
     "core/kernels/rrtmg_lw_zbatched.cu",
     "core/kernels/rrtmg_lw_taugb02_10_11_12.cu",
     "core/kernels/rrtmg_lw_taugb03_05.cu",
@@ -2440,11 +2439,13 @@ def validate_single_domain_physics_profile(
                     "checks. Profile evidence and throughput advisories "
                     "do not change which physics can execute.")
 
-    selectors = {
-        key: _selection_value(selected_settings, key)
-        for component in registry["components"].values()
-        for key in component.get("selector_keys", ())
-    }
+    # The selectors as the engine reads them (the one spelling): a run
+    # that chose its radiation through ra_physics = 4 reported its two
+    # streams as -1/-1 here, beside a resolved profile saying 4/4 legacy
+    # RRTMG (rolling tests, HRRR recipe preparation report).
+    selector_names = [key for component in registry["components"].values()
+                      for key in component.get("selector_keys", ())]
+    selectors = selection_values_one_spelling(selected_settings, selector_names)
     used, provenance = _acknowledgement_receipt(
         acknowledged, set(required_acknowledgements),
         acknowledgement_provenance)
@@ -2882,10 +2883,10 @@ def multi_domain_physics_selection(
             "components": components,
             "registry_blocker": blocker,
             "governance": governance,
-            "selectors": {
-                key: _selection_value(settings, key)
-                for key in selector_keys
-            },
+            # Read as the engine reads them (the one spelling), so a
+            # ra_physics = 4 run reports its streams as 4/4, not -1/-1.
+            "selectors": selection_values_one_spelling(
+                settings, sorted(selector_keys)),
         }
     if profile is not None:
         # The root carries the named profile exactly as the single-domain

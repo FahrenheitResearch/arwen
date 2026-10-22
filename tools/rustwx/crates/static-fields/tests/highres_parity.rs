@@ -90,89 +90,18 @@ fn grid_spec(value: &serde_json::Value) -> GridSpec {
 }
 
 fn crs_for_transform_case(name: &str) -> Crs {
-    let lambert = |truelat1: f64, truelat2: f64, stand_lon: f64| {
-        Crs::ModelSphere(GridSpec {
-            kind: static_fields::projection::ProjectionKind::Lambert,
-            ref_lat: 0.0,
-            ref_lon: 0.0,
-            truelat1,
-            truelat2,
-            stand_lon,
-            dx: 1000.0,
-            dy: 1000.0,
-            e_we: 10,
-            e_sn: 10,
-            known_x: 5.0,
-            known_y: 5.0,
-            moad_cen_lat: 0.0,
-            moad_cen_lon: 0.0,
-            lat_deg: Vec::new(),
-            lon0_deg: 0.0,
-            dlon_deg: 0.0,
-        })
-    };
-    match name {
-        "lcc" => lambert(38.0, 41.0, -84.0),
-        "lcc_tangent" => lambert(45.0, 45.0, 10.0),
-        "merc" => Crs::ModelSphere(GridSpec {
-            kind: static_fields::projection::ProjectionKind::Mercator,
-            ref_lat: 0.0,
-            ref_lon: -80.0,
-            truelat1: 20.0,
-            truelat2: 20.0,
-            stand_lon: 0.0,
-            dx: 1000.0,
-            dy: 1000.0,
-            e_we: 10,
-            e_sn: 10,
-            known_x: 5.0,
-            known_y: 5.0,
-            moad_cen_lat: 0.0,
-            moad_cen_lon: 0.0,
-            lat_deg: Vec::new(),
-            lon0_deg: 0.0,
-            dlon_deg: 0.0,
-        }),
-        "polar_n" => Crs::ModelSphere(GridSpec {
-            kind: static_fields::projection::ProjectionKind::Polar,
-            ref_lat: 0.0,
-            ref_lon: 0.0,
-            truelat1: 60.0,
-            truelat2: 60.0,
-            stand_lon: -100.0,
-            dx: 1000.0,
-            dy: 1000.0,
-            e_we: 10,
-            e_sn: 10,
-            known_x: 5.0,
-            known_y: 5.0,
-            moad_cen_lat: 0.0,
-            moad_cen_lon: 0.0,
-            lat_deg: Vec::new(),
-            lon0_deg: 0.0,
-            dlon_deg: 0.0,
-        }),
-        "polar_s" => Crs::ModelSphere(GridSpec {
-            kind: static_fields::projection::ProjectionKind::Polar,
-            ref_lat: 0.0,
-            ref_lon: 0.0,
-            truelat1: -60.0,
-            truelat2: -60.0,
-            stand_lon: 170.0,
-            dx: 1000.0,
-            dy: 1000.0,
-            e_we: 10,
-            e_sn: 10,
-            known_x: 5.0,
-            known_y: 5.0,
-            moad_cen_lat: 0.0,
-            moad_cen_lon: 0.0,
-            lat_deg: Vec::new(),
-            lon0_deg: 0.0,
-            dlon_deg: 0.0,
-        }),
-        "igh" => Crs::InterruptedGoodeHomolosine,
-        "aea" => Crs::AlbersConusNad83 {
+    use static_fields::projection::ProjectionKind;
+
+    // The projected families share the same grid fixture; only these
+    // projection parameters differ between the recorded transform cases.
+    let (kind, truelat1, truelat2, stand_lon, ref_lon) = match name {
+        "lcc" => (ProjectionKind::Lambert, 38.0, 41.0, -84.0, 0.0),
+        "lcc_tangent" => (ProjectionKind::Lambert, 45.0, 45.0, 10.0, 0.0),
+        "merc" => (ProjectionKind::Mercator, 20.0, 20.0, 0.0, -80.0),
+        "polar_n" => (ProjectionKind::Polar, 60.0, 60.0, -100.0, 0.0),
+        "polar_s" => (ProjectionKind::Polar, -60.0, -60.0, 170.0, 0.0),
+        "igh" => return Crs::InterruptedGoodeHomolosine,
+        "aea" => return Crs::AlbersConusNad83 {
             lat_1: 29.5,
             lat_2: 45.5,
             lat_0: 23.0,
@@ -181,7 +110,26 @@ fn crs_for_transform_case(name: &str) -> Crs {
             false_northing: 0.0,
         },
         other => panic!("unknown transform case {other}"),
-    }
+    };
+    Crs::ModelSphere(GridSpec {
+        kind,
+        ref_lat: 0.0,
+        ref_lon,
+        truelat1,
+        truelat2,
+        stand_lon,
+        dx: 1000.0,
+        dy: 1000.0,
+        e_we: 10,
+        e_sn: 10,
+        known_x: 5.0,
+        known_y: 5.0,
+        moad_cen_lat: 0.0,
+        moad_cen_lon: 0.0,
+        lat_deg: Vec::new(),
+        lon0_deg: 0.0,
+        dlon_deg: 0.0,
+    })
 }
 
 #[test]

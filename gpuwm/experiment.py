@@ -55,7 +55,6 @@ from gpuwm.config import (DEFAULT_COLUMN_CHUNK, RADAR_HEATING_OFF, RadarHeatingC
                           EXPLICIT_HORIZONTAL_DIFFUSION_LIMIT,
                           EPSSM_AUTO,
                           GRELL_FAMILY_CU_PHYSICS, GRELL_FAMILY_DEFAULTS,
-                          GRELL_FREITAS_CU_PHYSICS,
                           SAS_FAMILY_DEFAULTS, SAS_PGCON_SCHEMES,
                           MIX_ISOTROPIC_AUTO, SASE_FAIL_CLOSED_DEFAULTS,
                           SASE_PBL_SCHEME, RunConfig,
@@ -283,6 +282,7 @@ _SHARED_FORBIDDEN = {
 from gpuwm.sfire_config import FIRE_DOMAIN_FIELDS
 
 _DOMAIN_RUN_OVERRIDES = (
+    "hailcast_opt", "haildt",
     "lightning_option", "lightning_dt", "lightning_start_seconds",
     "flashrate_factor", "iccg_method", "iccg_prescribed_num",
     "iccg_prescribed_den", "cellcount_method", "cldtop_adjustment", "do_radar_ref",
@@ -404,10 +404,13 @@ _DOMAIN_RUN_OVERRIDES = (
     "mosaic_urban_canopy",
     # WRF Registry scopes CLM lake selection per domain.
     "sf_lake_physics", "use_lakedepth", "lakedepth_default", "lake_min_elev",
+    "lake_state_source", "lake_state_path", "lake_state_accept_licence",
     # WRF declares topo_wind and gwd_opt max_domains too
     # (gpuwm.core.terrain_drag); the GSL suite tapers itself with each
     # domain's grid length, so a column is the natural shape.
     "topo_wind", "gwd_opt",
+    "history_interval2_s", "history_interval_change_s",
+    "prec_acc_dt", "prec_acc_dt1", "gsd_diagnostics", "reset_interval1",
 ) + FIRE_DOMAIN_FIELDS
 
 #: Per-domain vertical keys are REJECTED outright (F1 amendment: the
@@ -1746,8 +1749,7 @@ def is_experiment_toml(path: str | Path) -> bool:
     ``[[domain]]`` present) rather than a legacy RunConfig TOML."""
     from gpuwm.config_authority import read_config_authority
 
-    raw = tomllib.load(io.BytesIO(read_config_authority(path).payload))
-    return "experiment" in raw or "domain" in raw
+    return is_experiment_toml_bytes(read_config_authority(path).payload)
 
 
 def is_experiment_toml_bytes(payload: bytes) -> bool:
@@ -1792,36 +1794,15 @@ def load_experiment(path: str | Path) -> ExperimentConfig:
 
 
 def review_root_footprint(experiment: "ExperimentConfig", source: str) -> None:
-    """Refuse a configuration whose ROOT footprint encloses the
-    projection pole.
+    """Keep a Lambert root clear of its singular cone tip.
 
-    The companion doors have always measured this and refused it -- the
-    wizard on a drawn or fitted root, the GeoJSON exporter on a
-    perimeter that spans a full turn of longitude -- and until 2.7.3
-    that was the only place it ran.  A hand-authored [projection] plus
-    [[domain]] carrying the same footprint passed plan review, so the
-    file was called good and then refused by the door that prepared it.
-    It is a geometric impossibility rather than a missing piece of
-    evidence: lat-lon source interpolation and static-tile windowing are
-    not pole-capable, on any projection, so no smaller card and no other
-    selector makes this configuration runnable.
-
-    Called from the two doors that read a config FILE
-    (:func:`load_experiment` and
-    :func:`gpuwm.case_data.load_experiment_case_bytes`), which is what a
-    plan is.  Not from :func:`build_experiment` itself, because the
-    wizard's fitting search builds a real experiment per ladder rung in
-    order to price it and shrinks off the poleward rungs with its own
-    bound (:func:`gpuwm.domain_wizard.point_request_bound`); refusing to
-    build them would kill the search instead of steering it.
-
-    Children are not asked: a child lies inside its parent, so a root
-    that clears the pole clears it for the whole tree.  Idealized
-    configurations (no [projection]) carry no footprint to measure.
+    Polar stereographic is regular through its hemisphere's pole. Its
+    source and static windows include periodic donor halos, so a cap is
+    valid through file-backed loading as well as wizard fitting.
     """
 
     projection = experiment.projection
-    if projection is None:
+    if projection is None or projection.map_proj == "polar":
         return
     root = experiment.root.run
     if not footprint_contains_pole(
@@ -1836,9 +1817,9 @@ def review_root_footprint(experiment: "ExperimentConfig", source: str) -> None:
         f"experiment config {source}: the root domain ({root.nx} x "
         f"{root.ny} mass points at {root.dx / 1000:g} km on "
         f"{projection.map_proj!r}) contains or touches the {pole} pole; "
-        "lat-lon source interpolation and static-tile windowing are not "
-        "pole-capable, so no projection holds this footprint. Move "
-        "[projection] ref_lat away from the pole, or shrink the root "
+        "Lambert longitude is singular there. Set [projection] map_proj "
+        "to 'polar' for a pole-enclosing domain, or move ref_lat "
+        "away from the pole or shrink the root "
         "(nx/ny/dx), until the footprint clears it.")
 
 
@@ -2495,39 +2476,18 @@ def _refuse_moving_slope_radiation(domains, relocation, source) -> None:
 
 def _refuse_rebuilt_nest_shortwave_interpolation(domains, relocation,
                                                  source) -> None:
-    """swint_opt = 1 on a nest rebuilt mid-run: refused until the rebuild
-    carries the fit.
+    """RETIRED: swint_opt = 1 on a nest rebuilt mid-run is served.
 
-    A move or a spawn rebuilds the nest's physics driver cold
-    (gpuwm.runtime.rebuild_child_driver_from_land_state) and carries only
-    the land-surface radiation carriers (gpuwm.core.physics_continuation);
-    the shortwave interpolation's fit coefficients and reference call
-    (gpuwm.core.swint STATE_FIELDS, Registry misc state in WRF) are not
-    among them.  The rebuilt nest keeps its model time, so its next
-    radiation call is a whole cadence away, and on every step until then
-    interp_sw_radiation evaluates a zero reference: SWDOWN, GSW and the
-    direct and diffuse parts are zero over the whole nest in daylight.
+    The defect this refused -- a spawned or moved nest's driver rebuilt cold
+    with no shortwave-interpolation fit, so its surface shortwave read zero
+    in daylight until its next radiation call a whole radt away -- is fixed
+    at its cause: gpuwm.runtime.rebuild_child_driver_from_land_state marks
+    the rebuilt driver to call radiation on its first step
+    (``force_radiation_next_step``), exactly as a nest born at t = 0 does,
+    so the fit restarts from a real call.  Kept as a named no-op so the
+    load sequence that called it reads the same.
     """
-    rebuilt = {}
-    if relocation is not None and getattr(relocation, "enabled", False)             and (getattr(relocation, "moves", ())
-                 or getattr(relocation, "follow", None) is not None):
-        rebuilt[int(relocation.grid_id)] = "moves"
-    for dc in domains:
-        if getattr(dc, "follow", None) is not None:
-            rebuilt[int(dc.grid_id)] = "moves"
-        elif getattr(dc, "spawn", None) is not None:
-            rebuilt.setdefault(int(dc.grid_id), "is spawned mid-run")
-    for dc in domains:
-        how = rebuilt.get(int(dc.grid_id))
-        if how is not None and int(getattr(dc.run, "swint_opt", 0) or 0) == 1:
-            raise ValueError(
-                f"[[domain]] grid_id = {int(dc.grid_id)} of {source} {how} "
-                "and sets swint_opt = 1: a move or a spawn rebuilds the "
-                "nest's physics cold and does not carry the shortwave "
-                "interpolation's fit (gpuwm.core.swint), so until the "
-                "nest's next radiation call its surface shortwave would be "
-                "zero in daylight.  Keep this nest still and present from "
-                "the start, or set swint_opt = 0.")
+    del domains, relocation, source
 
 
 def _refuse_rebuilt_nest_noah_mosaic(domains, relocation, source) -> None:
@@ -3743,6 +3703,9 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
     auto_epssm_ids: list[int] = []
     by_id: dict[int, DomainConfig] = {}
     dt_by_id: dict[int, Fraction] = {}
+    # Each built domain's adaptive-clock step bounds (exact), so a child whose
+    # bounds come from [shared] takes its parent's over its time-step ratio.
+    adaptive_bounds_by_id: dict[int, dict[str, Fraction]] = {}
     dx_by_id: dict[int, Fraction] = {}
     fp32_by_id: dict[int, np.float32] = {}
     # A tree that mixes SASE with another PBL scheme.  The SASE selectors
@@ -4261,6 +4224,24 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         for key in _DOMAIN_RUN_OVERRIDES:
             if key in dom:
                 kw[key] = dom[key]
+        # WRF's adaptive nest steps at its parent's step over
+        # parent_time_step_ratio.  The starting/min/max bounds are per-domain
+        # keys, and a [shared] value reached every child verbatim: under the
+        # HRRR recipe (all three pinned at 20 s) a 1 km nest stepped at the
+        # parent's 20 s and went non-finite within eight steps (box D,
+        # 2026-10-21).  A child that does not set a bound itself takes its
+        # parent's over the ratio, as an exact fraction.
+        if parent_id != 0 and kw.get("use_adaptive_time_step"):
+            parent_bounds = adaptive_bounds_by_id.get(int(parent_id), {})
+            for bound_key in ("starting_time_step", "max_time_step", "min_time_step"):
+                if bound_key in dom or f"{bound_key}_den" in dom:
+                    continue
+                inherited = parent_bounds.get(bound_key)
+                if inherited is None:
+                    continue
+                value = inherited / int(dom["parent_time_step_ratio"])
+                kw[bound_key] = int(value.numerator)
+                kw[f"{bound_key}_den"] = int(value.denominator)
         # The axis writes its resolved vector LAST and onto every domain:
         # it is the author of these keys (the [shared]/[[domain]] refusal
         # above guarantees nobody else wrote them), and one experiment is
@@ -4342,7 +4323,17 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         # The full legacy invariant battery applies to every per-domain
         # RunConfig (p5t1 review F1): same checks, same messages as
         # load_config.
+        from gpuwm.surface_ocean import apply_ocean_defaults
+        apply_ocean_defaults(kw)
         run = validate_run_config(RunConfig(**kw))
+        bounds = {}
+        for bound_key in ("starting_time_step", "max_time_step", "min_time_step"):
+            num = getattr(run, bound_key, None)
+            if num is None or (isinstance(num, (int, float)) and num <= 0):
+                continue
+            den = int(getattr(run, f"{bound_key}_den", 0) or 0) or 1
+            bounds[bound_key] = Fraction(num) / den
+        adaptive_bounds_by_id[int(grid_id)] = bounds
 
         # --- cadence divisibility (integer domain steps) ----------------
         # TOML decimal minutes use the same decimal clock as run_seconds;
@@ -5514,6 +5505,28 @@ def _public_config_value(value):
             # while unread, so default public documents keep their bytes.
             from gpuwm.config import drop_inactive_radiation_port_keys
             drop_inactive_radiation_port_keys(run_document)
+            # The 2.9.4 capabilities campaign, by the checkpoint echo's rule
+            # (gpuwm.checkpoint_identity.drop_capability_campaign_keys), plus
+            # lane/cap-eclipse's default-on shadow (absent reads 1) and
+            # lane/cap-slab-ocean's PWP controls at their defaults while the
+            # ocean is off.
+            from gpuwm.checkpoint_identity import drop_capability_campaign_keys
+            drop_capability_campaign_keys(run_document)
+            from gpuwm.checkpoint_identity import drop_default_output_controls
+            drop_default_output_controls(run_document)
+            if run_document.get("ra_sw_eclipse", 1) == 1:
+                run_document.pop("ra_sw_eclipse", None)
+            if int(run_document.get("sf_ocean_physics", 0) or 0) == 0:
+                for name, default in (("ocean_levels", 30),
+                                      ("ocean_analysis", ""),
+                                      ("ocean_analysis_source", "rtofs"),
+                                      ("ocean_mld_climatology", "woa18"),
+                                      ("omdt", 1.0)):
+                    if run_document.get(name, default) == default:
+                        run_document.pop(name, None)
+                for name in ("ocean_z", "ocean_t", "ocean_s"):
+                    if not run_document.get(name, ()):
+                        run_document.pop(name, None)
         return document
     if isinstance(value, tuple) and hasattr(value, "_fields"):
         return type(value)(*(_public_config_value(item) for item in value))

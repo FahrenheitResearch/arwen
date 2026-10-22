@@ -647,6 +647,11 @@ def _write_geometry_case(selection: dict, *, case_id: str, staged: Path,
         hints["cadence"] = cadence
     if lead:
         hints["forecast_start_hour"] = lead
+    provider = (selection["source_option"].get("metadata") or {}).get("era5_provider")
+    if source == "era5" and provider:
+        # A catalog option may name its ERA5 provider (the keyless ARCO reader
+        # or the CDS); the fetch validates the value like any [fetch] table.
+        hints["era5_provider"] = provider
     if wizard.source_fetch_takes_a_crop_box(source):
         hints["area"] = area
     case_data = None

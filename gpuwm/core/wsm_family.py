@@ -323,6 +323,72 @@ def launch_refl10cm(mp_physics: int, *, qv, species: dict, t, pressure,
     _function(r, r.refl_kernel, nz)((blocks,), (_COLUMN_TPB,), args)
 
 
+def check_volume(fields, shape):
+    """Common WSM3/6/6R and WDM6 column-array contract."""
+    for name, value in fields.items():
+        if value.shape != shape:
+            raise ValueError(f"{name} must have shape {shape}, got {value.shape}")
+        if value.dtype != np.float32:
+            raise TypeError(f"{name} must be float32, got {value.dtype}")
+        if not value.flags.c_contiguous:
+            raise ValueError(f"{name} must be C-contiguous")
+
+
+def check_surface(fields, shape):
+    """These adapters retain their combined surface shape/dtype error."""
+    for name, value in fields.items():
+        if value.shape != shape or value.dtype != np.float32:
+            raise ValueError(f"{name} must be float32 {shape}, got "
+                             f"{value.dtype} {value.shape}")
+        if not value.flags.c_contiguous:
+            raise ValueError(f"{name} must be C-contiguous")
+
+
+def prepare_fields(state, theta, rho, pii, dz, z8w, *, rounded_exner=False):
+    """WRF driver arithmetic; only WSM6 uses the rounded physics Exner."""
+    import cupy as cp
+    from gpuwm.core import constants as c
+    from gpuwm.core.state import DTYPE
+    thb = state.thb if state.thb.ndim == 3 else state.thb[:, None, None]
+    phb = state.phb if state.phb.ndim == 3 else state.phb[:, None, None]
+    theta[...] = thb + state.thp
+    rho[...] = 1.0 / state.alt
+    if rounded_exner:
+        from gpuwm.core.microphysics import prepare_microphysics_exner
+        prepare_microphysics_exner(state.p, pii)
+    else:
+        pii[...] = cp.power(state.p / DTYPE(c.P0), DTYPE(c.RCP))
+    z8w[...] = (phb + state.php) / DTYPE(c.G)
+    dz[...] = z8w[1:] - z8w[:-1]
+
+
+def precipitation_surface(state, precip=("rain", "snow", "graupel")):
+    """Named accumulators shared by the fixed-species column adapters."""
+    shape = state.p.shape[1:]
+    surface = {"rainnc": state.scratch(shape, "mp_rainnc"),
+               "rainncv": state.scratch(shape, "mp_rainncv")}
+    if "snow" in precip:
+        surface.update(snownc=state.scratch(shape, "mp_snownc"),
+                       snowncv=state.scratch(shape, "mp_snowncv"))
+    if "graupel" in precip:
+        surface.update(graupelnc=state.scratch(shape, "mp_graupelnc"),
+                       graupelncv=state.scratch(shape, "mp_graupelncv"))
+    surface["sr"] = state.scratch(shape, "mp_sr")
+    return surface
+
+
+def finish_fields(state, cfg, theta, pii, dt, surface, *, refl_10cm_due=False):
+    """Post-call reflectivity, retained heating, and surface diagnostics."""
+    from gpuwm.core.microphysics import MicrophysicsDiagnostics, moist_physics_finish
+    if refl_10cm_due:
+        from gpuwm.core.refl import compute_and_stash_refl_10cm
+        refl_t = state.scratch(state.p.shape, "refl_t")
+        refl_t[...] = theta * pii
+        compute_and_stash_refl_10cm(state, cfg, refl_t, state.p)
+    moist_physics_finish(state, cfg, theta, dt)
+    return MicrophysicsDiagnostics(**surface)
+
+
 def apply(state, cfg, dt: float, *, refl_10cm_due: bool = False):
     """Prepare WRF's driver fields, run the row's scheme, finish MP heating.
 
@@ -331,12 +397,7 @@ def apply(state, cfg, dt: float, *, refl_10cm_due: bool = False):
     geopotential), then the scheme call, then REFL_10CM from th*pii when
     output is due, then moist_physics_finish.
     """
-    import cupy as cp
-    from gpuwm.core import constants as c
-    from gpuwm.core.microphysics import (MicrophysicsDiagnostics,
-                                         moist_physics_finish,
-                                         save_pre_mp_theta)
-    from gpuwm.core.state import DTYPE
+    from gpuwm.core.microphysics import save_pre_mp_theta
 
     r = row(cfg.mp_physics)
     nz, ny, nx = state.p.shape
@@ -345,19 +406,13 @@ def apply(state, cfg, dt: float, *, refl_10cm_due: bool = False):
     if missing:
         raise ValueError(f"mp_physics={r.mp_physics} state lacks {r.label} "
                          "fields: " + ", ".join(missing))
-    thb = state.thb if state.thb.ndim == 3 else state.thb[:, None, None]
-    phb = state.phb if state.phb.ndim == 3 else state.phb[:, None, None]
     tag = r.name
     theta = state.scratch((nz, ny, nx), f"{tag}_theta")
     rho = state.scratch((nz, ny, nx), f"{tag}_rho")
     pii = state.scratch((nz, ny, nx), f"{tag}_pii")
     dz = state.scratch((nz, ny, nx), f"{tag}_dz")
     z8w = state.scratch((nz + 1, ny, nx), f"{tag}_z8w")
-    theta[...] = thb + state.thp
-    rho[...] = 1.0 / state.alt
-    pii[...] = cp.power(state.p / DTYPE(c.P0), DTYPE(c.RCP))
-    z8w[...] = (phb + state.php) / DTYPE(c.G)
-    dz[...] = z8w[1:] - z8w[:-1]
+    prepare_fields(state, theta, rho, pii, dz, z8w)
     surface = {}
     for cls in r.precip:
         surface[f"{cls}nc"] = state.scratch((ny, nx), f"mp_{cls}nc")
@@ -378,14 +433,7 @@ def apply(state, cfg, dt: float, *, refl_10cm_due: bool = False):
         launch_refl10cm(r.mp_physics, qv=state.qv, species=species,
                        t=refl_t, pressure=state.p, refl=refl)
         stash_refl_10cm(state, refl)
-    moist_physics_finish(state, cfg, theta, dt)
-    diag = {"rainnc": surface["rainnc"], "rainncv": surface["rainncv"],
-            "sr": surface["sr"]}
-    for cls in ("snow", "graupel", "hail"):
-        if cls in r.precip:
-            diag[f"{cls}nc"] = surface[f"{cls}nc"]
-            diag[f"{cls}ncv"] = surface[f"{cls}ncv"]
-    return MicrophysicsDiagnostics(**diag)
+    return finish_fields(state, cfg, theta, pii, dt, surface)
 
 
 __all__ = ["COMPILE_OPTIONS", "FamilyRow", "apply", "family_selectors",

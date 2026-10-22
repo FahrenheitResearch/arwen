@@ -23,8 +23,16 @@ BASE_SOURCES = {
 
 @pytest.mark.parametrize("filename", sorted(BASE_SOURCES))
 def test_selected_default_source_is_the_independent_base_blob(filename):
-    path = Path(kernels.__file__).parent / filename
-    assert hashlib.sha256(path.read_bytes()).hexdigest() == BASE_SOURCES[filename]
+    root = Path(kernels.__file__).parent
+    if filename == "nssl2_default.cu":
+        source = (root / "nssl2.cu").read_text()
+        for old, new in (("gfk_pow(", "powf("), ("gfk_exp(", "expf("), ("gfk_log(", "logf(")):
+            source = source.replace(old, new)
+        data = source.encode()
+    else:
+        data = (root / filename).read_bytes()
+    assert hashlib.sha256(data).hexdigest() == BASE_SOURCES[filename]
+
 
 def test_kessler_is_one_unit_in_both_modes(monkeypatch):
     import gpuwm.wrf_exact as exact
@@ -36,7 +44,7 @@ def test_kessler_is_one_unit_in_both_modes(monkeypatch):
         assert kernels._unit_text("kessler") == (root / "kessler.cu").read_text()
 
 @pytest.mark.parametrize("name", ("ysu",))
-def test_default_loader_selects_the_base_and_strict_selects_the_incoming_unit(name, monkeypatch):
+def test_ysu_module_keeps_the_default_source_in_both_modes(name, monkeypatch):
     import gpuwm.wrf_exact as exact
     root = Path(kernels.__file__).parent
     monkeypatch.setattr(exact, "ENABLED", False)
@@ -45,15 +53,15 @@ def test_default_loader_selects_the_base_and_strict_selects_the_incoming_unit(na
     assert kernels._extra_header_text(name) == "".join((root / h).read_text() for h in expected)
     assert kernels.module_options(name) == (("-std=c++17", "--fmad=false") if name == "ysu" else ("-std=c++17",))
     monkeypatch.setattr(exact, "ENABLED", True)
-    assert kernels._unit_text(name) == (root / (name + ".cu")).read_text()
+    assert kernels._unit_text(name) == (root / (name + "_default.cu")).read_text()
     assert "--fmad=false" in kernels.module_options(name)
     strict = kernels.module_source(name)
     if name == "ysu":
-        assert "real ysu_pos(" in strict and "real ysu_tanhf(" in strict
+        assert "real ysu_max(" in strict and "real ysu_get_pblh(" in strict
 
 
 def test_strict_ysu_header_has_one_divisor_helper():
-    header = (Path(kernels.__file__).parent / "ysu_topo.cuh").read_text()
+    header = (Path(kernels.__file__).parent / "ysu_480_topo.cuh").read_text()
     assert header.count("real ysu_pos(") == 1
 
 @pytest.mark.parametrize("name", ('nssl2_nucond', 'nssl2', 'nssl2_fused_gs', 'nssl2_driver_support', 'nssl2_diagnostics'))
@@ -61,8 +69,10 @@ def test_nssl_default_keeps_base_source_and_strict_receives_its_own_headers(name
     import gpuwm.wrf_exact as exact
     root = Path(kernels.__file__).parent
     monkeypatch.setattr(exact, "ENABLED", False)
-    assert kernels._unit_text(name) == (root / (name + "_default.cu")).read_text()
-    assert kernels._extra_header_text(name) == ""
+    filename = name + ("_default.cu" if name in kernels._DEFAULT_SOURCE_MODULES else ".cu")
+    assert kernels._unit_text(name) == (root / filename).read_text()
+    expected = "#define gfk_pow powf\n#define gfk_exp expf\n#define gfk_log logf\n" if name == "nssl2" else ""
+    assert kernels._extra_header_text(name) == expected
     monkeypatch.setattr(exact, "ENABLED", True)
     assert kernels._unit_text(name) == (root / (name + ".cu")).read_text()
     assert kernels._extra_header_text(name) == "".join((root / h).read_text() for h in ("glibc_flt32.cuh", "nssl2_wrf_math.cuh"))

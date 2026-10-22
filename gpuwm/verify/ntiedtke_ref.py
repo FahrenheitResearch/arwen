@@ -436,6 +436,20 @@ def _f1(nz):
     return np.zeros(nz + 2, dtype=np.float32)
 
 
+def _up(a, nz):
+    """0-based float32 levels -> 1-based working copy, with zero padding."""
+    o = _f1(nz)
+    o[1:nz + 1] = _np32(a)
+    return o
+
+
+def _upe(a, nz):
+    """0-based float32 interfaces -> 1-based working copy."""
+    o = _f1(nz)
+    o[1:nz + 2] = _np32(a)[:nz + 1]
+    return o
+
+
 def _i1(nz):
     return np.zeros(nz + 2, dtype=np.int32)
 
@@ -455,22 +469,7 @@ def nt_cuadjtqn1(pt, pq, k, psp, c):
     condensate is denormal-small.
     """
     zqp = _F(_F(1.0) / _F(psp))
-    zl = _F(_F(1.0) / _F(pt[k] - _C4LES))
-    zi = _F(_F(1.0) / _F(pt[k] - _C4IES))
-    a = nt_foealfa(pt[k])
-    el = _exp32(_F(_F(_C3LES * _F(pt[k] - _TMELT)) * zl))
-    ei = _exp32(_F(_F(_C3IES * _F(pt[k] - _TMELT)) * zi))
-    zqsat = _F(c.c2es * _F(_F(a * el) + _F(_F(_F(1.0) - a) * ei)))
-    zqsat = _F(zqsat * zqp)
-    zqsat = _F(min(_F(0.5), zqsat))
-    zcor = _F(_F(1.0) - _F(c.vtmpc1 * zqsat))
-    zf = _F(_F(_F(a * c.r5alvcp) * _F(zl * zl))
-            + _F(_F(_F(_F(1.0) - a) * c.r5alscp) * _F(zi * zi)))
-    zcond = _F(_F(_F(pq[k] * _F(zcor * zcor)) - _F(zqsat * zcor))
-               / _F(_F(zcor * zcor) + _F(zqsat * zf)))
-    if zcond > _F(0.0):
-        pt[k] = _F(pt[k] + _F(nt_foeldcpm(pt[k], c) * zcond))
-        pq[k] = _F(pq[k] - zcond)
+    for iteration in range(2):
         zl = _F(_F(1.0) / _F(pt[k] - _C4LES))
         zi = _F(_F(1.0) / _F(pt[k] - _C4IES))
         a = nt_foealfa(pt[k])
@@ -484,7 +483,11 @@ def nt_cuadjtqn1(pt, pq, k, psp, c):
                 + _F(_F(_F(_F(1.0) - a) * c.r5alscp) * _F(zi * zi)))
         zcond1 = _F(_F(_F(pq[k] * _F(zcor * zcor)) - _F(zqsat * zcor))
                     / _F(_F(zcor * zcor) + _F(zqsat * zf)))
-        if abs(zcond) < _F(1.0e-20):
+        if iteration == 0:
+            zcond = zcond1
+            if not zcond > _F(0.0):
+                return
+        elif abs(zcond) < _F(1.0e-20):
             zcond1 = _F(0.0)
         pt[k] = _F(pt[k] + _F(nt_foeldcpm(pt[k], c) * zcond1))
         pq[k] = _F(pq[k] - zcond1)
@@ -538,19 +541,11 @@ def np_ntiedtke_cutypen(*, pqen, ptenh, pqenh, pqsenh, pgeoh, paph,
     nz = pten.shape[0]
     klev, klevm1 = nz, nz - 1
 
-    def up(a):
-        """0-based float32 in -> 1-based working copy."""
-        o = _f1(nz)
-        o[1:nz + 1] = _np32(a)
-        return o
+    P_pqen, P_ptenh, P_pqenh = _up(pqen, nz), _up(ptenh, nz), _up(pqenh, nz)
+    P_pgeo, P_pqsen, P_pap, P_pten = _up(pgeo, nz), _up(pqsen, nz), _up(pap, nz), _up(pten, nz)
+    P_paph, P_pgeoh = _upe(paph, nz), _upe(pgeoh, nz)
 
-    P_pqen, P_ptenh, P_pqenh = up(pqen), up(ptenh), up(pqenh)
-    P_pgeo, P_pqsen, P_pap, P_pten = up(pgeo), up(pqsen), up(pap), up(pten)
-    P_paph, P_pgeoh = _f1(nz), _f1(nz)
-    P_paph[1:nz + 2] = _np32(paph)[:nz + 1]      # paph is (nz+1)
-    P_pgeoh[1:nz + 2] = _np32(pgeoh)[:nz + 1]
-
-    o_cutu, o_cuqu, o_culu = up(cutu), up(cuqu), up(culu)
+    o_cutu, o_cuqu, o_culu = _up(cutu, nz), _up(cuqu, nz), _up(culu, nz)
     o_culab = _i1(nz)
     o_culab[1:nz + 1] = np.asarray(culab, dtype=np.int32)
 
@@ -1216,27 +1211,20 @@ def np_ntiedtke_cuascn(*, ptenh, pqenh, pten, pqen, pqsen, pgeo, pgeoh,
     nz = pten.shape[0]
     klev, klevm1 = nz, nz - 1
 
-    def up(a):
-        o = _f1(nz)
-        o[1:nz + 1] = _np32(a)
-        return o
-
     def upi(a):
         o = _i1(nz)
         o[1:nz + 1] = np.asarray(a, dtype=np.int32)
         return o
 
-    P_ptenh, P_pqenh = up(ptenh), up(pqenh)
-    P_pten, P_pqen, P_pqsen = up(pten), up(pqen), up(pqsen)
-    P_pgeo, P_pap, P_pverv = up(pgeo), up(pap), up(pverv)
-    P_pgeoh, P_paph = _f1(nz), _f1(nz)
-    P_pgeoh[1:nz + 2] = _np32(pgeoh)[:nz + 1]
-    P_paph[1:nz + 2] = _np32(paph)[:nz + 1]
+    P_ptenh, P_pqenh = _up(ptenh, nz), _up(pqenh, nz)
+    P_pten, P_pqen, P_pqsen = _up(pten, nz), _up(pqen, nz), _up(pqsen, nz)
+    P_pgeo, P_pap, P_pverv = _up(pgeo, nz), _up(pap, nz), _up(pverv, nz)
+    P_pgeoh, P_paph = _upe(pgeoh, nz), _upe(paph, nz)
 
-    P_ptu, P_pqu, P_plu = up(ptu), up(pqu), up(plu)
-    P_pmfu, P_pmfus, P_pmfuq = up(pmfu), up(pmfus), up(pmfuq)
-    P_pmful, P_plude, P_pdmfup = up(pmful), up(plude), up(pdmfup)
-    P_plglac = up(plglac)
+    P_ptu, P_pqu, P_plu = _up(ptu, nz), _up(pqu, nz), _up(plu, nz)
+    P_pmfu, P_pmfus, P_pmfuq = _up(pmfu, nz), _up(pmfus, nz), _up(pmfuq, nz)
+    P_pmful, P_plude, P_pdmfup = _up(pmful, nz), _up(plude, nz), _up(pdmfup, nz)
+    P_plglac = _up(plglac, nz)
     P_klab = upi(klab)
 
     zlrain, zbuo, kup = _f1(nz), _f1(nz), _f1(nz)
@@ -1633,25 +1621,20 @@ def nt_cuadjtqn2(pt, pq, k, psp, c):
     denormal the two differ.
     """
     zqp = _F(_F(1.0) / psp)
-    zqsat = _F(nt_foeewm(pt[k], c) * zqp)
-    zqsat = _F(min(_F(0.5), zqsat))
-    zcor = _F(_F(1.0) / _F(_F(1.0) - _F(c.vtmpc1 * zqsat)))
-    zqsat = _F(zqsat * zcor)
-    zcond = _F(_F(pq[k] - zqsat) / _F(_F(1.0) + _F(
-        _F(zqsat * zcor) * nt_foedem(pt[k], c))))
-    zcond = _F(min(zcond, _F(0.0)))
-    pt[k] = _F(pt[k] + _F(nt_foeldcpm(pt[k], c) * zcond))
-    pq[k] = _F(pq[k] - zcond)
-    zqsat = _F(nt_foeewm(pt[k], c) * zqp)
-    zqsat = _F(min(_F(0.5), zqsat))
-    zcor = _F(_F(1.0) / _F(_F(1.0) - _F(c.vtmpc1 * zqsat)))
-    zqsat = _F(zqsat * zcor)
-    zcond1 = _F(_F(pq[k] - zqsat) / _F(_F(1.0) + _F(
-        _F(zqsat * zcor) * nt_foedem(pt[k], c))))
-    if abs(float(zcond)) < 1.0e-20:
-        zcond1 = _F(min(zcond1, _F(0.0)))
-    pt[k] = _F(pt[k] + _F(nt_foeldcpm(pt[k], c) * zcond1))
-    pq[k] = _F(pq[k] - zcond1)
+    for iteration in range(2):
+        zqsat = _F(nt_foeewm(pt[k], c) * zqp)
+        zqsat = _F(min(_F(0.5), zqsat))
+        zcor = _F(_F(1.0) / _F(_F(1.0) - _F(c.vtmpc1 * zqsat)))
+        zqsat = _F(zqsat * zcor)
+        zcond1 = _F(_F(pq[k] - zqsat) / _F(_F(1.0) + _F(
+            _F(zqsat * zcor) * nt_foedem(pt[k], c))))
+        if iteration == 0:
+            zcond1 = _F(min(zcond1, _F(0.0)))
+            zcond = zcond1
+        elif abs(float(zcond)) < 1.0e-20:
+            zcond1 = _F(min(zcond1, _F(0.0)))
+        pt[k] = _F(pt[k] + _F(nt_foeldcpm(pt[k], c) * zcond1))
+        pq[k] = _F(pq[k] - zcond1)
 
 
 _CMFDEPS = _F(0.30)
@@ -1674,17 +1657,10 @@ def np_ntiedtke_cudlfsn(*, kcbot, kctop, lndj, ldcum, ptenh, pqenh,
     nz = pten.shape[0]
     klev = nz
 
-    def up(a):
-        o = _f1(nz)
-        o[1:nz + 1] = _np32(a)
-        return o
-
-    P_ptenh, P_pqenh = up(ptenh), up(pqenh)
-    P_pten, P_pqsen, P_pgeo = up(pten), up(pqsen), up(pgeo)
-    P_ptu, P_pqu = up(ptu), up(pqu)
-    P_pgeoh, P_paph = _f1(nz), _f1(nz)
-    P_pgeoh[1:nz + 2] = _np32(pgeoh)[:nz + 1]
-    P_paph[1:nz + 2] = _np32(paph)[:nz + 1]
+    P_ptenh, P_pqenh = _up(ptenh, nz), _up(pqenh, nz)
+    P_pten, P_pqsen, P_pgeo = _up(pten, nz), _up(pqsen, nz), _up(pgeo, nz)
+    P_ptu, P_pqu = _up(ptu, nz), _up(pqu, nz)
+    P_pgeoh, P_paph = _upe(pgeoh, nz), _upe(paph, nz)
 
     # THE SIX CLASS-2 SLOTS.  nt-aliasing-audit.txt lists each as "writes
     # only at" a single line, so every level the routine does not reach
@@ -1692,9 +1668,9 @@ def np_ntiedtke_cudlfsn(*, kcbot, kctop, lndj, ldcum, ptenh, pqenh,
     # own entry and are NOT zeroed here -- zeroing them was wrong on levels
     # 1-4 of every column, which is what the audit had already said and the
     # fixture had not yet been made to honour.
-    P_ptd, P_pqd = up(ptd), up(pqd)
-    P_pmfd, P_pmfds = up(pmfd), up(pmfds)
-    P_pmfdq, P_pdmfdp = up(pmfdq), up(pdmfdp)
+    P_ptd, P_pqd = _up(ptd, nz), _up(pqd, nz)
+    P_pmfd, P_pmfds = _up(pmfd, nz), _up(pmfds, nz)
+    P_pmfdq, P_pdmfdp = _up(pmfdq, nz), _up(pdmfdp, nz)
     ztenwb, zqenwb = _f1(nz), _f1(nz)
 
     rfl = _F(prfl)
@@ -1798,16 +1774,11 @@ def np_ntiedtke_cuddrafn(*, lddraf, ptenh, pqenh, pgeo, pgeoh, paph,
     nz = ptenh.shape[0]
     klev = nz
 
-    def up(a):
-        o = _f1(nz)
-        o[1:nz + 1] = _np32(a)
-        return o
-
-    P_ptenh, P_pqenh = up(ptenh), up(pqenh)
-    P_pgeo, P_pmfu = up(pgeo), up(pmfu)
-    P_ptd, P_pqd = up(ptd), up(pqd)
-    P_pmfd, P_pmfds, P_pmfdq = up(pmfd), up(pmfds), up(pmfdq)
-    P_pdmfdp = up(pdmfdp)
+    P_ptenh, P_pqenh = _up(ptenh, nz), _up(pqenh, nz)
+    P_pgeo, P_pmfu = _up(pgeo, nz), _up(pmfu, nz)
+    P_ptd, P_pqd = _up(ptd, nz), _up(pqd, nz)
+    P_pmfd, P_pmfds, P_pmfdq = _up(pmfd, nz), _up(pmfds, nz), _up(pmfdq, nz)
+    P_pdmfdp = _up(pdmfdp, nz)
     # paph needs klev+1 -- :2618, :2648 and :2649 read the surface
     # interface.  pgeoh does NOT: every subscript is jk or jk-1 with
     # jk <= klev.  So pgeoh is taken at klev entries and its klev+1 slot
@@ -1992,20 +1963,15 @@ def np_ntiedtke_cuflxn(*, ldcum, lddraf, ktype, kcbot, kctop, kdtop, lndj,
     nz = pten.shape[0]
     klev = nz
 
-    def up(a):
-        o = _f1(nz)
-        o[1:nz + 1] = _np32(a)
-        return o
-
-    P_pten, P_pqen, P_pqsen = up(pten), up(pqen), up(pqsen)
-    P_ptenh, P_pqenh = up(ptenh), up(pqenh)
-    P_pap, P_pgeoh = up(pap), up(pgeoh)
-    P_pmfu, P_pmfd = up(pmfu), up(pmfd)
-    P_pmfus, P_pmfds = up(pmfus), up(pmfds)
-    P_pmfuq, P_pmfdq = up(pmfuq), up(pmfdq)
-    P_pmful, P_plude = up(pmful), up(plude)
-    P_plglac = up(plglac)
-    P_pdmfup, P_pdmfdp = up(pdmfup), up(pdmfdp)
+    P_pten, P_pqen, P_pqsen = _up(pten, nz), _up(pqen, nz), _up(pqsen, nz)
+    P_ptenh, P_pqenh = _up(ptenh, nz), _up(pqenh, nz)
+    P_pap, P_pgeoh = _up(pap, nz), _up(pgeoh, nz)
+    P_pmfu, P_pmfd = _up(pmfu, nz), _up(pmfd, nz)
+    P_pmfus, P_pmfds = _up(pmfus, nz), _up(pmfds, nz)
+    P_pmfuq, P_pmfdq = _up(pmfuq, nz), _up(pmfdq, nz)
+    P_pmful, P_plude = _up(pmful, nz), _up(plude, nz)
+    P_plglac = _up(plglac, nz)
+    P_pdmfup, P_pdmfdp = _up(pdmfup, nz), _up(pdmfdp, nz)
     P_paph = _f1(nz)
     if _np32(paph).shape[0] < nz + 1:
         raise ValueError("cuflxn reads paph[klev+1]; pass klev+1 entries")
@@ -2017,7 +1983,7 @@ def np_ntiedtke_cuflxn(*, ldcum, lddraf, ktype, kcbot, kctop, kdtop, lndj,
     # it was invisible to all three of the audit's original reports.  The
     # incoming value is cuddrafn's and is kept wherever the taper loop does
     # not reach.  The audit's fourth report exists because of this one.
-    P_rate = up(pmfdde_rate)
+    P_rate = _up(pmfdde_rate, nz)
 
     ld = bool(ldcum)
     ldd = bool(lddraf)
@@ -2257,17 +2223,12 @@ def np_ntiedtke_cudtdqn(*, ktopm2, ldcum, paph, pten, plglac, plude,
     nz = pten.shape[0]
     klev = nz
 
-    def up(a):
-        o = _f1(nz)
-        o[1:nz + 1] = _np32(a)
-        return o
-
-    P_pten, P_plglac, P_plude = up(pten), up(plglac), up(plude)
-    P_pmfus, P_pmfds = up(pmfus), up(pmfds)
-    P_pmfuq, P_pmfdq = up(pmfuq), up(pmfdq)
-    P_pmful, P_pdmfup = up(pmful), up(pdmfup)
-    P_pdmfdp, P_pdpmel = up(pdmfdp), up(pdpmel)
-    P_ptent, P_ptenq, P_pcte = up(ptent), up(ptenq), up(pcte)
+    P_pten, P_plglac, P_plude = _up(pten, nz), _up(plglac, nz), _up(plude, nz)
+    P_pmfus, P_pmfds = _up(pmfus, nz), _up(pmfds, nz)
+    P_pmfuq, P_pmfdq = _up(pmfuq, nz), _up(pmfdq, nz)
+    P_pmful, P_pdmfup = _up(pmful, nz), _up(pdmfup, nz)
+    P_pdmfdp, P_pdpmel = _up(pdmfdp, nz), _up(pdpmel, nz)
+    P_ptent, P_ptenq, P_pcte = _up(ptent, nz), _up(ptenq, nz), _up(pcte, nz)
     P_paph = _f1(nz)
     if _np32(paph).shape[0] < nz + 1:
         raise ValueError("cudtdqn reads paph[klev+1]; pass klev+1 entries")
@@ -2369,16 +2330,11 @@ def np_ntiedtke_cududvn(*, ktopm2, ktype, kcbot, ldcum, paph, puen, pven,
     nz = puen.shape[0]
     klev = nz
 
-    def up(a):
-        o = _f1(nz)
-        o[1:nz + 1] = _np32(a)
-        return o
-
-    P_puen, P_pven = up(puen), up(pven)
-    P_pmfu, P_pmfd = up(pmfu), up(pmfd)
-    P_puu, P_pud = up(puu), up(pud)
-    P_pvu, P_pvd = up(pvu), up(pvd)
-    P_ptenu, P_ptenv = up(ptenu), up(ptenv)
+    P_puen, P_pven = _up(puen, nz), _up(pven, nz)
+    P_pmfu, P_pmfd = _up(pmfu, nz), _up(pmfd, nz)
+    P_puu, P_pud = _up(puu, nz), _up(pud, nz)
+    P_pvu, P_pvd = _up(pvu, nz), _up(pvd, nz)
+    P_ptenu, P_ptenv = _up(ptenu, nz), _up(ptenv, nz)
     P_paph = _f1(nz)
     if _np32(paph).shape[0] < nz + 1:
         raise ValueError("cududvn reads paph[klev+1]; pass klev+1 entries")
@@ -2389,51 +2345,44 @@ def np_ntiedtke_cududvn(*, ktopm2, ktype, kcbot, ldcum, paph, puen, pven,
                 "ptenv": P_ptenv[1:nz + 1].copy()}
 
     zdp = _f1(nz)
-    zmfuu, zmfuv = _f1(nz), _f1(nz)
-    zmfdu, zmfdv = _f1(nz), _f1(nz)
-    zdudt, zdvdt = _f1(nz), _f1(nz)
-
     # ---- setup (:3179-3187).  zuen/zven are copies of puen/pven. -------
     for jk in range(1, klev + 1):
         zdp[jk] = _F(c.g / _F(P_paph[jk + 1] - P_paph[jk]))
 
-    # ---- 1.0 the fluxes (:3191-3201) -----------------------------------
-    for jk in range(ktopm2, klev + 1):
-        ik = jk - 1
-        zmfuu[jk] = _F(P_pmfu[jk] * _F(P_puu[jk] - P_puen[ik]))
-        zmfuv[jk] = _F(P_pmfu[jk] * _F(P_pvu[jk] - P_pven[ik]))
-        zmfdu[jk] = _F(P_pmfd[jk] * _F(P_pud[jk] - P_puen[ik]))
-        zmfdv[jk] = _F(P_pmfd[jk] * _F(P_pvd[jk] - P_pven[ik]))
+    # The two wind components have independent fluxes and tendencies.
+    for env, updraft, downdraft, tendency in (
+            (P_puen, P_puu, P_pud, P_ptenu),
+            (P_pven, P_pvu, P_pvd, P_ptenv)):
+        zmfu, zmfd, zdtdt = _f1(nz), _f1(nz), _f1(nz)
+        # ---- 1.0 the fluxes (:3191-3201) -------------------------------
+        for jk in range(ktopm2, klev + 1):
+            ik = jk - 1
+            zmfu[jk] = _F(P_pmfu[jk] * _F(updraft[jk] - env[ik]))
+            zmfd[jk] = _F(P_pmfd[jk] * _F(downdraft[jk] - env[ik]))
 
-    # ---- linear fluxes below cloud (:3203-3215) ------------------------
-    for jk in range(ktopm2, klev + 1):
-        if jk > kcbot:
-            ikb = kcbot
-            zzp = _F(_F(P_paph[klev + 1] - P_paph[jk])
-                     / _F(P_paph[klev + 1] - P_paph[ikb]))
-            if ktype == 3:
-                zzp = _F(zzp * zzp)
-            zmfuu[jk] = _F(zmfuu[ikb] * zzp)
-            zmfuv[jk] = _F(zmfuv[ikb] * zzp)
-            zmfdu[jk] = _F(zmfdu[ikb] * zzp)
-            zmfdv[jk] = _F(zmfdv[ikb] * zzp)
+        # ---- linear fluxes below cloud (:3203-3215) --------------------
+        for jk in range(ktopm2, klev + 1):
+            if jk > kcbot:
+                ikb = kcbot
+                zzp = _F(_F(P_paph[klev + 1] - P_paph[jk])
+                         / _F(P_paph[klev + 1] - P_paph[ikb]))
+                if ktype == 3:
+                    zzp = _F(zzp * zzp)
+                zmfu[jk] = _F(zmfu[ikb] * zzp)
+                zmfd[jk] = _F(zmfd[ikb] * zzp)
 
-    # ---- 2.0 the tendencies (:3219-3238) -------------------------------
-    for jk in range(ktopm2, klev + 1):
-        if jk < klev:
-            ik = jk + 1
-            zdudt[jk] = _F(zdp[jk] * _F(_F(_F(zmfuu[ik] - zmfuu[jk])
-                                            + zmfdu[ik]) - zmfdu[jk]))
-            zdvdt[jk] = _F(zdp[jk] * _F(_F(_F(zmfuv[ik] - zmfuv[jk])
-                                            + zmfdv[ik]) - zmfdv[jk]))
-        else:
-            zdudt[jk] = _F(-_F(zdp[jk] * _F(zmfuu[jk] + zmfdu[jk])))
-            zdvdt[jk] = _F(-_F(zdp[jk] * _F(zmfuv[jk] + zmfdv[jk])))
+        # ---- 2.0 the tendencies (:3219-3238) ---------------------------
+        for jk in range(ktopm2, klev + 1):
+            if jk < klev:
+                ik = jk + 1
+                zdtdt[jk] = _F(zdp[jk] * _F(_F(_F(zmfu[ik] - zmfu[jk])
+                                                + zmfd[ik]) - zmfd[jk]))
+            else:
+                zdtdt[jk] = _F(-_F(zdp[jk] * _F(zmfu[jk] + zmfd[jk])))
 
-    # ---- 3.0 (:3242-3249).  ADD, do not assign. ------------------------
-    for jk in range(ktopm2, klev + 1):
-        P_ptenu[jk] = _F(P_ptenu[jk] + zdudt[jk])
-        P_ptenv[jk] = _F(P_ptenv[jk] + zdvdt[jk])
+        # ---- 3.0 (:3242-3249).  ADD, do not assign. --------------------
+        for jk in range(ktopm2, klev + 1):
+            tendency[jk] = _F(tendency[jk] + zdtdt[jk])
 
     return {"ptenu": P_ptenu[1:nz + 1].copy(),
             "ptenv": P_ptenv[1:nz + 1].copy()}
@@ -2459,9 +2408,6 @@ def np_ntiedtke_cududvn(*, ktopm2, ktype, kcbot, ldcum, paph, puen, pven,
 # No new capture was needed: this block's inputs are cuascn's outputs and
 # its outputs are cudlfsn's and cuddrafn's captured entry state, so it is
 # graded against rows that already exist.
-
-_ZDNOPRC = _F(2.0e4)
-
 
 def np_ntiedtke_cloud_depth(*, ldcum, ktype, kcbot, kctop, kctop0,
                             paph, pdmfup, nz=None):
@@ -2534,22 +2480,12 @@ def np_ntiedtke_adjust(*, ldcum, loddraf, idtop, kctop, kcbot, ztmst,
     nz = pqen.shape[0]
     klev = nz
 
-    def up(a):
-        o = _f1(nz)
-        o[1:nz + 1] = _np32(a)
-        return o
-
-    def upe(a):
-        o = _f1(nz)
-        o[1:nz + 2] = _np32(a)[:nz + 1]
-        return o
-
-    P_pqen, P_pmfu = up(pqen), up(pmfu)
-    P_pmfd, P_pmfds, P_pmfdq = up(pmfd), up(pmfds), up(pmfdq)
-    P_pmfuq, P_pmful, P_plude = up(pmfuq), up(pmful), up(plude)
-    P_pdmfup, P_pdmfdp = up(pdmfup), up(pdmfdp)
-    P_ddr, P_udr = up(pmfdde_rate), up(pmfude_rate)
-    P_paph, P_pmflxr, P_pmflxs = upe(paph), upe(pmflxr), upe(pmflxs)
+    P_pqen, P_pmfu = _up(pqen, nz), _up(pmfu, nz)
+    P_pmfd, P_pmfds, P_pmfdq = _up(pmfd, nz), _up(pmfds, nz), _up(pmfdq, nz)
+    P_pmfuq, P_pmful, P_plude = _up(pmfuq, nz), _up(pmful, nz), _up(plude, nz)
+    P_pdmfup, P_pdmfdp = _up(pdmfup, nz), _up(pdmfdp, nz)
+    P_ddr, P_udr = _up(pmfdde_rate, nz), _up(pmfude_rate, nz)
+    P_paph, P_pmflxr, P_pmflxs = _upe(paph, nz), _upe(pmflxr, nz), _upe(pmflxs, nz)
 
     ld, ldd = bool(ldcum), bool(loddraf)
     idt, ktop, kb = int(idtop), int(kctop), int(kcbot)
@@ -2662,14 +2598,8 @@ def np_ntiedtke_momentum_rescale(*, ldcum, kctop, paph, pmfu, pmfd,
     nz = pmfu.shape[0]
     klev = nz
 
-    def up(a):
-        o = _f1(nz)
-        o[1:nz + 1] = _np32(a)
-        return o
-
-    P_pmfu, P_pmfd = up(pmfu), up(pmfd)
-    P_paph = _f1(nz)
-    P_paph[1:nz + 2] = _np32(paph)[:nz + 1]
+    P_pmfu, P_pmfd = _up(pmfu, nz), _up(pmfd, nz)
+    P_paph = _upe(paph, nz)
 
     # zcons, NOT zcons2.  See the header.
     zcons = _F(_F(1.0) / _F(c.g * _F(ztmst)))
@@ -2735,19 +2665,13 @@ def np_ntiedtke_updraft_scale(*, ldcum, ktype, kcbot, kctop, idtop,
     nz = pmfu.shape[0]
     klev = nz
 
-    def up(a):
-        o = _f1(nz)
-        o[1:nz + 1] = _np32(a)
-        return o
-
-    P_pmfu, P_pmfus = up(pmfu), up(pmfus)
-    P_pmfuq, P_pmful = up(pmfuq), up(pmful)
-    P_pdmfup, P_plude = up(pdmfup), up(plude)
-    P_udr = up(pmfude_rate)
-    P_pmfd, P_pmfds, P_pmfdq = up(pmfd), up(pmfds), up(pmfdq)
-    P_pdmfdp, P_ddr = up(pdmfdp), up(pmfdde_rate)
-    P_paph = _f1(nz)
-    P_paph[1:nz + 2] = _np32(paph)[:nz + 1]
+    P_pmfu, P_pmfus = _up(pmfu, nz), _up(pmfus, nz)
+    P_pmfuq, P_pmful = _up(pmfuq, nz), _up(pmful, nz)
+    P_pdmfup, P_plude = _up(pdmfup, nz), _up(plude, nz)
+    P_udr = _up(pmfude_rate, nz)
+    P_pmfd, P_pmfds, P_pmfdq = _up(pmfd, nz), _up(pmfds, nz), _up(pmfdq, nz)
+    P_pdmfdp, P_ddr = _up(pdmfdp, nz), _up(pmfdde_rate, nz)
+    P_paph = _upe(paph, nz)
 
     ld = bool(ldcum)
     kt = int(ktype)
@@ -2854,16 +2778,11 @@ def np_ntiedtke_momentum_profile(*, ldcum, ktype, kcbot, kctop, kdpl,
     nz = puen.shape[0]
     klev = nz
 
-    def up(a):
-        o = _f1(nz)
-        o[1:nz + 1] = _np32(a)
-        return o
-
-    P_puen, P_pven = up(puen), up(pven)
-    P_pmfu, P_pmfd = up(pmfu), up(pmfd)
-    P_uu, P_vu = up(puu), up(pvu)
-    P_ud, P_vd = up(pud), up(pvd)
-    P_udr, P_ddr = up(pmfude_rate), up(pmfdde_rate)
+    P_puen, P_pven = _up(puen, nz), _up(pven, nz)
+    P_pmfu, P_pmfd = _up(pmfu, nz), _up(pmfd, nz)
+    P_uu, P_vu = _up(puu, nz), _up(pvu, nz)
+    P_ud, P_vd = _up(pud, nz), _up(pvd, nz)
+    P_udr, P_ddr = _up(pmfude_rate, nz), _up(pmfdde_rate, nz)
 
     ld = bool(ldcum)
     kt, kb, ktop = int(ktype), int(kcbot), int(kctop)
@@ -2873,49 +2792,38 @@ def np_ntiedtke_momentum_profile(*, ldcum, ktype, kcbot, kctop, kdpl,
         return {"puu": P_uu[1:nz + 1].copy(), "pvu": P_vu[1:nz + 1].copy(),
                 "pud": P_ud[1:nz + 1].copy(), "pvd": P_vd[1:nz + 1].copy()}
 
-    # ---- the updraft profile (:930-971), DOWNWARD in index -------------
-    for jk in range(klev - 1, 1, -1):
-        ik = jk + 1
-        if jk == kb and kt < 3:
-            ikb = kdp
-            P_uu[jk] = P_puen[ikb - 1]
-            P_vu[jk] = P_pven[ikb - 1]
-        elif jk == kb and kt == 3:
-            P_uu[jk] = P_puen[jk - 1]
-            P_vu[jk] = P_pven[jk - 1]
-        if jk < kb and jk >= ktop:
-            # momtrans == 2: the pressure-gradient arm.
-            pgf_u = _F(-_F(_F(_PGCOEF * _F(0.5)) * _F(
-                _F(P_pmfu[ik] * _F(P_puen[ik] - P_puen[jk]))
-                + _F(P_pmfu[jk] * _F(P_puen[jk] - P_puen[jk - 1])))))
-            pgf_v = _F(-_F(_F(_PGCOEF * _F(0.5)) * _F(
-                _F(P_pmfu[ik] * _F(P_pven[ik] - P_pven[jk]))
-                + _F(P_pmfu[jk] * _F(P_pven[jk] - P_pven[jk - 1])))))
-            zerate = _F(_F(P_pmfu[jk] - P_pmfu[ik]) + P_udr[jk])
-            zderate = P_udr[jk]
-            zmfa = _F(_F(1.0) / _F(max(_CMFCMIN, P_pmfu[jk])))
-            P_uu[jk] = _F(_F(_F(_F(_F(P_uu[ik] * P_pmfu[ik])
-                                   + _F(zerate * P_puen[jk]))
-                                - _F(zderate * P_uu[ik])) + pgf_u) * zmfa)
-            P_vu[jk] = _F(_F(_F(_F(_F(P_vu[ik] * P_pmfu[ik])
-                                   + _F(zerate * P_pven[jk]))
-                                - _F(zderate * P_vu[ik])) + pgf_v) * zmfa)
+    # Each wind component follows the same independent profile equations.
+    for env, updraft, downdraft in ((P_puen, P_uu, P_ud), (P_pven, P_vu, P_vd)):
+        # ---- the updraft profile (:930-971), DOWNWARD in index ---------
+        for jk in range(klev - 1, 1, -1):
+            ik = jk + 1
+            if jk == kb and kt < 3:
+                updraft[jk] = env[kdp - 1]
+            elif jk == kb and kt == 3:
+                updraft[jk] = env[jk - 1]
+            if jk < kb and jk >= ktop:
+                # momtrans == 2: the pressure-gradient arm.
+                pgf = _F(-_F(_F(_PGCOEF * _F(0.5)) * _F(
+                    _F(P_pmfu[ik] * _F(env[ik] - env[jk]))
+                    + _F(P_pmfu[jk] * _F(env[jk] - env[jk - 1])))))
+                zerate = _F(_F(P_pmfu[jk] - P_pmfu[ik]) + P_udr[jk])
+                zderate = P_udr[jk]
+                zmfa = _F(_F(1.0) / _F(max(_CMFCMIN, P_pmfu[jk])))
+                updraft[jk] = _F(_F(_F(_F(_F(updraft[ik] * P_pmfu[ik])
+                                       + _F(zerate * env[jk]))
+                                    - _F(zderate * updraft[ik])) + pgf) * zmfa)
 
-    # ---- the downdraft profile (:972-991), UPWARD in index -------------
-    for jk in range(3, klev + 1):
-        ik = jk - 1
-        if jk == idt:
-            P_ud[jk] = _F(_F(0.5) * _F(P_uu[jk] + P_puen[ik]))
-            P_vd[jk] = _F(_F(0.5) * _F(P_vu[jk] + P_pven[ik]))
-        elif jk > idt:
-            zerate = _F(_F(_F(-P_pmfd[jk]) + P_pmfd[ik]) + P_ddr[jk])
-            zmfa = _F(_F(1.0) / _F(min(_F(-_CMFCMIN), P_pmfd[jk])))
-            P_ud[jk] = _F(_F(_F(_F(P_ud[ik] * P_pmfd[ik])
-                                - _F(zerate * P_puen[ik]))
-                             + _F(P_ddr[jk] * P_ud[ik])) * zmfa)
-            P_vd[jk] = _F(_F(_F(_F(P_vd[ik] * P_pmfd[ik])
-                                - _F(zerate * P_pven[ik]))
-                             + _F(P_ddr[jk] * P_vd[ik])) * zmfa)
+        # ---- the downdraft profile (:972-991), UPWARD in index ---------
+        for jk in range(3, klev + 1):
+            ik = jk - 1
+            if jk == idt:
+                downdraft[jk] = _F(_F(0.5) * _F(updraft[jk] + env[ik]))
+            elif jk > idt:
+                zerate = _F(_F(_F(-P_pmfd[jk]) + P_pmfd[ik]) + P_ddr[jk])
+                zmfa = _F(_F(1.0) / _F(min(_F(-_CMFCMIN), P_pmfd[jk])))
+                downdraft[jk] = _F(_F(_F(_F(downdraft[ik] * P_pmfd[ik])
+                                    - _F(zerate * env[ik]))
+                                 + _F(P_ddr[jk] * downdraft[ik])) * zmfa)
 
     return {"puu": P_uu[1:nz + 1].copy(), "pvu": P_vu[1:nz + 1].copy(),
             "pud": P_ud[1:nz + 1].copy(), "pvd": P_vd[1:nz + 1].copy()}
@@ -2951,17 +2859,11 @@ def np_ntiedtke_ke_dissipation(*, ldcum, kctop, paph, puen, pven,
     nz = ptte.shape[0]
     klev = nz
 
-    def up(a):
-        o = _f1(nz)
-        o[1:nz + 1] = _np32(a)
-        return o
-
-    P_puen, P_pven = up(puen), up(pven)
-    P_tu, P_tv = up(ztenu), up(ztenv)
-    P_vom, P_vol = up(pvom), up(pvol)
-    P_ptte = up(ptte)
-    P_paph = _f1(nz)
-    P_paph[1:nz + 2] = _np32(paph)[:nz + 1]
+    P_puen, P_pven = _up(puen, nz), _up(pven, nz)
+    P_tu, P_tv = _up(ztenu, nz), _up(ztenv, nz)
+    P_vom, P_vol = _up(pvom, nz), _up(pvol, nz)
+    P_ptte = _up(ptte, nz)
+    P_paph = _upe(paph, nz)
 
     ld = bool(ldcum)
     ktop = int(kctop)

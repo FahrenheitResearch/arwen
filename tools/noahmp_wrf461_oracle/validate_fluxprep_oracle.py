@@ -35,15 +35,17 @@ from __future__ import annotations
 
 import csv
 import math
-import struct
 import sys
 from collections import defaultdict
 from pathlib import Path
 
+if __name__ == "__main__" and not __package__:
+    import validate_leaf_oracle as _leaf
+else:
+    from tools.noahmp_wrf461_oracle import validate_leaf_oracle as _leaf
 
-def _f32(bits: str) -> float:
-    return struct.unpack("<f", struct.pack("<I", int(bits, 16)))[0]
 
+_f32 = _leaf._f32
 
 # WRF module parameters, module_sf_noahmplsm.F:204-220.
 GRAV = 9.80616
@@ -120,64 +122,13 @@ class FluxprepOracleError(RuntimeError):
 
 
 def load_leaves(path: Path):
-    rows = list(csv.DictReader(path.open(newline="")))
-    if not rows:
-        raise FluxprepOracleError(f"{path} is empty")
-    table: dict[tuple[str, str, str], dict] = defaultdict(dict)
-    for row in rows:
-        key = (row["leaf"], row["case"], row["role"])
-        table[key][int(row["slot"])] = row
-    return table
-
+    return _leaf._load_leaves(path, FluxprepOracleError)
 
 def check_structure(table) -> None:
-    seen_leaves = {key[0] for key in table}
-    if seen_leaves != set(LEAVES):
-        raise FluxprepOracleError(
-            f"leaf set mismatch: extra={sorted(seen_leaves - set(LEAVES))}, "
-            f"missing={sorted(set(LEAVES) - seen_leaves)}")
-    for leaf, spec in LEAVES.items():
-        cases = {key[1] for key in table if key[0] == leaf}
-        if cases != set(spec["cases"]):
-            raise FluxprepOracleError(
-                f"{leaf}: case mismatch "
-                f"extra={sorted(cases - set(spec['cases']))} "
-                f"missing={sorted(set(spec['cases']) - cases)}")
-        for case in spec["cases"]:
-            for role, count in (("int", spec["n_int"]), ("in", spec["n_in"]),
-                                ("out", spec["n_out"])):
-                got = len(table.get((leaf, case, role), {}))
-                if got != count:
-                    raise FluxprepOracleError(
-                        f"{leaf}/{case}: role {role} has {got} slots, "
-                        f"expected {count}")
-
+    return _leaf._check_structure(table, LEAVES, FluxprepOracleError)
 
 def check_bits(table) -> int:
-    checked = 0
-    for (leaf, case, role), slots in table.items():
-        for slot, row in slots.items():
-            from_bits = _f32(row["bits"])
-            printed = float(row["value"])
-            if struct.pack("<f", printed) != struct.pack("<f", from_bits):
-                raise FluxprepOracleError(
-                    f"{leaf}/{case}/{role}[{slot}]: bits {row['bits']} "
-                    f"({from_bits!r}) does not round-trip the printed value "
-                    f"{row['value']}")
-            if role == "out" and row["live"] == "1":
-                if not math.isfinite(from_bits):
-                    raise FluxprepOracleError(
-                        f"{leaf}/{case}/out[{slot}] {row['name']} is "
-                        f"non-finite: {from_bits}")
-            if role == "out" and row["live"] == "0":
-                if row["bits"] != "00000000":
-                    raise FluxprepOracleError(
-                        f"{leaf}/{case}/out[{slot}] {row['name']} is flagged "
-                        f"live=0 but carries {row['bits']}, not the 0.0 "
-                        f"pre-fill")
-            checked += 1
-    return checked
-
+    return _leaf._check_bits(table, FluxprepOracleError)
 
 def check_discrimination(disc_path: Path) -> dict[str, int]:
     rows = list(csv.DictReader(disc_path.open(newline="")))

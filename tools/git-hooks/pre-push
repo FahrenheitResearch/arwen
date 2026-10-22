@@ -1,0 +1,44 @@
+#!/bin/sh
+# forward-only-hooks: pre-push
+#
+# rebase, amend or force-push.  Git feeds one line per ref on stdin:
+#   <local ref> <local sha> <remote ref> <remote sha>
+# A `+` refspec or --force is not visible here, so the hook checks the
+# effect: every remote ref being updated must be an ancestor of what
+# replaces it.  New refs and deletions pass.
+#
+# A repository that must never push at all (the private gpuwm repo)
+# sets `git config forwardonly.refuseAllPush true`; then every push is
+# refused.  A hook that was here before install runs afterwards as
+# pre-push.local, with the same stdin.
+
+remote_name=$1
+input=$(cat)
+
+if [ "$(git config --bool forwardonly.refuseAllPush 2>/dev/null)" = true ]; then
+    echo "push is banned from this repository (it never pushes to any remote); nothing was sent to $remote_name" >&2
+    exit 1
+fi
+
+bad=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [ -n "$local_ref" ] || continue
+    case "$local_sha" in *[!0]*) ;; *) continue ;; esac    # deletion
+    case "$remote_sha" in *[!0]*) ;; *) continue ;; esac   # new ref
+    if ! git cat-file -e "$remote_sha" 2>/dev/null; then
+        echo "force push is banned here (forward commits only); $remote_ref: the remote has $remote_sha, which this clone does not have. Fetch, merge forward, push again." >&2
+        bad=1
+    elif ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+        echo "force push is banned here (forward commits only); $remote_ref: remote $remote_sha is not an ancestor of $local_sha. Merge the remote forward and push again." >&2
+        bad=1
+    fi
+done <<INPUT
+$input
+INPUT
+[ "$bad" = 0 ] || exit 1
+
+if [ -x "$0.local" ]; then
+    printf '%s\n' "$input" | "$0.local" "$@"
+    exit $?
+fi
+exit 0

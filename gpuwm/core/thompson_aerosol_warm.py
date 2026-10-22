@@ -51,6 +51,7 @@ from gpuwm.core.state import DTYPE
 from gpuwm.core.thompson_aerosol_launch import (
     WARM_MODULE,
     launch_grid,
+    add_optional_fields,
     validate_fields,
     validate_fp64_fortran_table,
 )
@@ -213,24 +214,9 @@ def launch_aerosol_warm_source_network(
     }
     if qcten is not None:
         fields["qcten"] = qcten
-    if (qrten is None) != (nrten is None):
-        raise ValueError("qrten and nrten are given together or not at all")
-    if qrten is not None:
-        fields["qrten"] = qrten
-        fields["nrten"] = nrten
-    if (qvten is None) != (tten is None):
-        raise ValueError("qvten and tten are given together or not at all")
-    if qvten is not None:
-        fields["qvten"] = qvten
-        fields["tten"] = tten
-    frozen = {"qsten": qsten, "qgten": qgten, "ngten": ngten}
-    frozen_given = [name for name, value in frozen.items()
-                    if value is not None]
-    if frozen_given and len(frozen_given) != 3:
-        raise ValueError("qsten, qgten and ngten are given together or not "
-                         f"at all (got {frozen_given})")
-    if frozen_given:
-        fields.update(frozen)
+    add_optional_fields(fields, qrten=qrten, nrten=nrten)
+    add_optional_fields(fields, qvten=qvten, tten=tten)
+    add_optional_fields(fields, qsten=qsten, qgten=qgten, ngten=ngten)
     _, size = validate_fields(fields)
     if qcten is not None and _arrays_overlap(qc, qcten):
         raise ValueError("qcten must not alias qc; the entry cloud is "

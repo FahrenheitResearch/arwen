@@ -17,7 +17,7 @@ use std::{
     time::Instant,
 };
 
-pub const HELP: &str = "rw_wrfbatch --cf FILE.nc --variable NAME --out-dir DIR [--valid YYYY-MM-DDTHH:MM:SSZ] [--bounds W,E,S,N] [--cf-table FILE.json] [--contours NAME[,NAME]] [--contour-file FILE.nc] [--observation FILE.nc|FILE.grib2.gz --observation-variable NAME] [--overlays FILE.json] [--width N --height N] [--receipt FILE.json]";
+pub const HELP: &str = "rw_wrfbatch CF physical-scale-v1 --cf FILE.nc --variable NAME --out-dir DIR [--valid YYYY-MM-DDTHH:MM:SSZ] [--bounds W,E,S,N] [--cf-table FILE.json] [--contours NAME[,NAME]] [--contour-file FILE.nc] [--observation FILE.nc|FILE.grib2.gz --observation-variable NAME] [--overlays FILE.json] [--width N --height N] [--receipt FILE.json]";
 
 #[derive(Default)]
 struct Args {

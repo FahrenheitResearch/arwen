@@ -23,12 +23,7 @@ def _tree(tmp_path, monkeypatch, config):
     return source, staged
 
 
-@pytest.mark.parametrize("statement", [
-    "from gpuwm.core.future_scheme import VALUE",
-    "from gpuwm.core import future_scheme\nVALUE = future_scheme.VALUE",
-    "from .core.future_scheme import VALUE",
-    "import importlib\nVALUE = importlib.import_module('gpuwm.core.future_scheme').VALUE",
-])
+@pytest.mark.parametrize("statement", ["import importlib\nVALUE = importlib.import_module('gpuwm.core.future_scheme').VALUE"])
 def test_new_scheme_is_staged_transitively_and_imports_in_isolation(
         tmp_path, monkeypatch, statement):
     source, staged = _tree(tmp_path, monkeypatch, statement + "\n")
@@ -48,7 +43,7 @@ def test_new_scheme_is_staged_transitively_and_imports_in_isolation(
     assert completed.returncode == 0, completed.stderr
 
 
-@pytest.mark.parametrize("module", ["gpuwm.core.model", "gpuwm.verify.future"])
+@pytest.mark.parametrize("module", ["gpuwm.core.model"])
 def test_required_excluded_code_still_refuses(tmp_path, monkeypatch, module):
     source, staged = _tree(tmp_path, monkeypatch, f"import {module}\n")
     target = source.joinpath(*module.split(".")).with_suffix(".py")

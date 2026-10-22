@@ -143,7 +143,7 @@ def _to_host_fortran(backend, value, *, staging=None) -> np.ndarray:
 
 
 @dataclass(frozen=True)
-class DeviceClassicTableSet:
+class DeviceTableSet:
     """One verified, immutable mapping of canonical tables on a device."""
 
     root: Path
@@ -168,6 +168,11 @@ class DeviceClassicTableSet:
         """Return a detached JSON-compatible restart identity."""
         return json.loads(self.identity_json)
 
+
+@dataclass(frozen=True)
+class DeviceClassicTableSet(DeviceTableSet):
+    """Canonical classic tables, including the fused cold-source ABI."""
+
     @property
     def cold_source_tables(self) -> DeviceClassicColdSourceTables:
         """Return the exact ordered groups for the fused cold-source ABI."""
@@ -186,6 +191,25 @@ class DeviceClassicTableSet:
                 self.arrays["tpi_qcfz"], self.arrays["tni_qcfz"]),
             identity_sha256=self.identity_sha256,
         )
+
+
+def _validate_device_table(prefix, name, value, shape, payload_bytes):
+    """Check the uploaded layout, dtype and payload against the host contract."""
+    if value.shape != shape:
+        raise RuntimeError(
+            f"{prefix} device table {name} has shape {value.shape}; "
+            f"expected {shape}")
+    if np.dtype(value.dtype) != np.dtype(np.float64):
+        raise RuntimeError(
+            f"{prefix} device table {name} has dtype {value.dtype}; "
+            "expected float64")
+    if not value.flags.f_contiguous:
+        raise RuntimeError(
+            f"{prefix} device table {name} is not Fortran-contiguous")
+    if value.nbytes != payload_bytes:
+        raise RuntimeError(
+            f"{prefix} device table {name} has {value.nbytes} bytes; "
+            f"expected {payload_bytes}")
 
 
 def _upload_table_set(
@@ -251,22 +275,8 @@ def _upload_table_set(
     upload_seconds = perf_counter() - upload_start
 
     for name, record in expected.items():
-        value = device_arrays[name]
-        if value.shape != record.shape:
-            raise RuntimeError(
-                f"Thompson device table {name} has shape {value.shape}; "
-                f"expected {record.shape}")
-        if np.dtype(value.dtype) != np.dtype(np.float64):
-            raise RuntimeError(
-                f"Thompson device table {name} has dtype {value.dtype}; "
-                "expected float64")
-        if not value.flags.f_contiguous:
-            raise RuntimeError(
-                f"Thompson device table {name} is not Fortran-contiguous")
-        if value.nbytes != record.payload_bytes:
-            raise RuntimeError(
-                f"Thompson device table {name} has {value.nbytes} bytes; "
-                f"expected {record.payload_bytes}")
+        _validate_device_table("Thompson", name, device_arrays[name],
+                               record.shape, record.payload_bytes)
 
     verification_seconds = 0.0
     if verify_roundtrip:

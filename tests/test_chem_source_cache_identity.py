@@ -212,8 +212,8 @@ def test_two_same_process_decodes_have_unique_staging_and_atomic_publication(cas
 def test_unsupported_format_keeps_named_refusal_without_decoder_dependency(monkeypatch, tmp_path):
     monkeypatch.setattr('gpuwm.ingest.cpu_backend.resolve_cpu_bridge',
                         lambda *args: pytest.fail('unsupported format must not resolve a decoder'))
-    row = SimpleNamespace(name='unsupported', format='netcdf', variables={})
-    with pytest.raises(remap.BoundaryRemapError, match='unsupported.*netcdf.*decodes GRIB2'):
+    row = SimpleNamespace(name='unsupported', format='hdf-eos', variables={})
+    with pytest.raises(remap.BoundaryRemapError, match='unsupported.*hdf-eos.*decodes GRIB2'):
         source._frames(row, {}, (), tmp_path)
 
 

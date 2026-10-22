@@ -15,22 +15,8 @@ const TERRAIN_M: f32 = 320.0;
 const WIDTH: u32 = 400;
 const HEIGHT: u32 = 300;
 
-struct Scratch(PathBuf);
-
-impl Scratch {
-    fn new(tag: &str) -> Self {
-        let root = std::env::temp_dir().join(format!("rw-da-sheets-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        Self(root)
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+mod support;
+use support::Scratch;
 
 /// The values one fixture file carries, as functions of `(level, y, x)`.
 struct Member {
@@ -165,7 +151,7 @@ fn s(path: &Path) -> &str {
 
 #[test]
 fn increment_sheet_draws_prior_posterior_and_their_difference() {
-    let scratch = Scratch::new("increment");
+    let scratch = Scratch::new("rw-da-sheets", "increment");
     let dir = &scratch.0;
     for member in 0..2 {
         let prior = 0.008 + 0.001 * member as f32;
@@ -199,7 +185,7 @@ fn increment_sheet_draws_prior_posterior_and_their_difference() {
 
 #[test]
 fn increment_input_is_drawn_without_state_offsets_and_refusals_are_named() {
-    let scratch = Scratch::new("increment-only");
+    let scratch = Scratch::new("rw-da-sheets", "increment-only");
     let dir = &scratch.0;
     let mut member = Member::constant(0.0005, 0.0);
     member.theta = Box::new(|_, y, _| if y < NY / 2 { 1.5 } else { -0.5 });
@@ -259,7 +245,7 @@ fn increment_input_is_drawn_without_state_offsets_and_refusals_are_named() {
 
 #[test]
 fn spread_sheet_reports_the_member_standard_deviation() {
-    let scratch = Scratch::new("spread");
+    let scratch = Scratch::new("rw-da-sheets", "spread");
     let dir = &scratch.0;
     for (member, refl) in [10.0f32, 20.0, 30.0].iter().enumerate() {
         write_member(&dir.join(format!("m_{member}.nc")), &Member::constant(0.008, *refl));
@@ -283,7 +269,7 @@ fn spread_sheet_reports_the_member_standard_deviation() {
 
 #[test]
 fn stamp_sheet_lays_out_stamps_paintball_maximum_and_pmm() {
-    let scratch = Scratch::new("stamp");
+    let scratch = Scratch::new("rw-da-sheets", "stamp");
     let dir = &scratch.0;
     for member in 0..4 {
         let mut stamp = Member::constant(0.008, 0.0);
@@ -308,7 +294,7 @@ fn stamp_sheet_lays_out_stamps_paintball_maximum_and_pmm() {
 
 #[test]
 fn omb_sheet_marks_rejected_observations_and_splits_types() {
-    let scratch = Scratch::new("omb");
+    let scratch = Scratch::new("rw-da-sheets", "omb");
     let dir = &scratch.0;
     let grid = dir.join("grid.nc");
     write_member(&grid, &Member::constant(0.008, 40.0));

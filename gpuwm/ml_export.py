@@ -38,10 +38,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from gpuwm.bridges import (RUSTWX_CRATE_RELATIVE, accept_resolved,
-                           artifact_remedy, default_bridge_dir,
-                           legacy_bridge_candidates,
-                           executable_name, packaged_bridge_dir,
+                           artifact_remedy, executable_name,
                            rustwx_build_hint)
+from gpuwm.rustwx import _candidates, crate_dir
 
 #: The table folder, relative to the package.
 TABLE_DIR = Path(__file__).resolve().parent / "data" / "ml_export"
@@ -77,16 +76,6 @@ class MlExportRefusal(RuntimeError):
 # The binary
 # ---------------------------------------------------------------------------
 
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parent.parent
-
-
-def crate_dir() -> Path:
-    """The renderer workspace of a checkout (may not exist)."""
-
-    return _repo_root() / RUSTWX_CRATE_RELATIVE
-
-
 @dataclass(frozen=True)
 class Binary:
     """``rw_mlexport``: its resolution ladder and its remedy.
@@ -101,20 +90,7 @@ class Binary:
     subject: str = "the ML dataset exporter"
 
     def candidates(self) -> tuple[Path, ...]:
-        filename = executable_name(self.name)
-        found: list[Path] = []
-        override = os.environ.get(self.env_var)
-        if override:
-            found.append(Path(override))
-        found.extend((
-            crate_dir() / "target" / "release" / filename,
-            crate_dir() / "target" / "debug" / filename,
-            _repo_root() / "libexec" / "bridges" / filename,
-            packaged_bridge_dir() / filename,
-            default_bridge_dir() / filename,
-            *legacy_bridge_candidates(filename),
-        ))
-        return tuple(found)
+        return _candidates(self.env_var, self.name)
 
     def find(self) -> Path | None:
         """The first existing candidate; a named override that is missing

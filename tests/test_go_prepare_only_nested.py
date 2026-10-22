@@ -37,6 +37,13 @@ from gpuwm.runplan import generate_intent_config
 from test_runplan_hrrr_tree import _plan
 
 
+#: A fetched-source receipt in the real fetch's shape.  Since abf04433ed8
+#: (parallel cache reuse) the chain snapshots it (launch_supplements.
+#: hrrr_source_manifest) right after the fetch, so a placeholder byte is a
+#: malformed manifest that stops the chain before the preparation stage.
+_FETCHED_SUMS = "0" * 64 + "  hrrr.t12z.wrfprsf00.grib2\n"
+
+
 def _nested_config(tmp_path: Path) -> Path:
     """A two-domain native HRRR config exactly as `gpuwm domain` writes it."""
 
@@ -87,7 +94,7 @@ def _captured_stages(monkeypatch) -> list[tuple[str, list[str]]]:
     def fetch(arguments, run_dir, **_kwargs):
         out = Path(arguments[arguments.index("--out") + 1])
         out.mkdir(parents=True, exist_ok=True)
-        (out / "SHA256SUMS").write_text("x", encoding="utf-8")
+        (out / "SHA256SUMS").write_text(_FETCHED_SUMS, encoding="utf-8")
         staged.append(("fetch", [str(a) for a in arguments]))
         return {}
 

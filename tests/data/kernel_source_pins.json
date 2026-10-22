@@ -1,6 +1,9 @@
 {
   "schema": "gpuwm-kernel-source-pins-v1",
   "modules": {
+    "output_diagnostics": "9616ab049cfb217507ea46c436f437f30a9b6ededb8214f75bbb3d2b94907c4f",
+    "gsd_diagnostics": "f907daad933eb54752acedfa71e22caeacbe976ffd400a34c03092cf07662063",
+    "gsd_helicity": "a706c8eaf0959b7c0242d7e900f761c419c21fcf1b923dd0d3b77050bfad223e",
     "g3": "a3625a4975eb8f2300b2b0e299636a325d327e5be17a960ec3ee56938778c571",
     "nsas": "13d4580fcbe5c70b9921882f9f73f96a5383d8123d4f57252d943e8587965fc6",
     "lin": "54224a77822a0bd0c5ded4a2857a03f24ecb535658aeef0be7564e79775e63ca",
@@ -12,18 +15,35 @@
     "nextgen_cfe": "0c8ab0a815548f9aa15f9028d1f6d53e9a54dfc6126a0d156d1d565e9807dcf5",
     "nextgen_reservoirs": "18ee3d675bcc67d626b8191f2950644fb82530cb68fe2dad1cdd3e37c3613f0b",
     "nextgen_inundation": "c30539e05eb6aacda729654bf4999dfc0b3e876e06d1e4baeb8a6bb0d50e1662",
-    "nextgen_terrain": "f462ce4cbf0d989dd0c40216ef6bfe756e68e84da0e1838fada7e9d3c5643cb4"
+    "nextgen_terrain": "f462ce4cbf0d989dd0c40216ef6bfe756e68e84da0e1838fada7e9d3c5643cb4",
+    "hail": "1486e21fb662f60b4dd46ffdb48bf09ed653e416c6b8ecaabbb6577544bdad6e",
+    "chem_radiation": "171ca03a6063038e78547fabb6f780e98ee304066c6cf6c9ce797802c0f7c7d1",
+    "ice_accretion": "110bde364337e1b2d9898a599bdf7c72a18cf7928f54169d431a2f2189753654",
+    "chem_ledger": "b5d47493bc53b8ce243799b3513bbd6c8b42a22133a055587af36519e9a6528e"
   },
   "headers": {
+    "gsd_hail_bins.cuh": "55646c988bc37b59911385010843d1f48b1644e659390876f3f0581c923c9bed",
+    "gsd_helicity_helpers.cuh": "eb6d91d8bdd75752779ce17eb113b953767ada4d0a26e87799abcb9ce84325ce",
     "nsas_constants.cuh": "e50bd02c62e11ec3c4bf5619bab6e30805832401df930c1235a136db2fb4c907",
     "lin_support.cuh": "0d169a555cfb91673a7439e24ca4c43c853d22e2cda2563d4e8b1819b26ed18a",
     "lin_wrf.cuh": "3954ddbef0420d1f88f0eba3ae81e5db9df3918a58f60779d1b5055e9ee8c2d0",
-    "refl.cu": "1e2c45699a721b4b042769f9f868d85d8a6eb4960fc547ce9affb59b69f43f66"
+    "refl.cu": "1e2c45699a721b4b042769f9f868d85d8a6eb4960fc547ce9affb59b69f43f66",
+    "hailcast_support.cuh": "a6b82a22fc3d4a8071e1fcd83c3d39ed2d7e17c97f59878cc8dfd68e8787a817",
+    "hailcast_wrf.cuh": "4cf483057a46b81514c2df4c0c0bc6d15a93a7a163b3a6cc308a825a226e9e73"
   },
   "composed_headers": {
     "nextgen_reservoirs.cuh": "add8702c3e80c0514326e0cc2efbd0d149d2e1ca1228ce81d88a204c865a7526"
   },
   "loader_headers": {
+    "gsd_diagnostics": [
+      "glibc_flt32.cuh",
+      "glibc_flt32_extra.cuh",
+      "glibc_flt64.cuh",
+      "gsd_hail_bins.cuh"
+    ],
+    "gsd_helicity": [
+      "gsd_helicity_helpers.cuh"
+    ],
     "nsas": [
       "glibc_flt32.cuh",
       "nsas_constants.cuh"
@@ -48,6 +68,10 @@
     ],
     "oml": [
       "glibc_flt32.cuh"
+    ],
+    "hail": [
+      "hailcast_support.cuh",
+      "hailcast_wrf.cuh"
     ]
   }
 }

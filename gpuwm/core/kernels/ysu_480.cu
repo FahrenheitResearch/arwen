@@ -103,20 +103,47 @@ __device__ __forceinline__ real ysu_clip(real x, real lo, real hi) {
     return ysu_min(ysu_max(x, lo), hi);
 }
 
+// The Thomas recurrence in register-carried form.  Every operation and both
+// of its operands are the ones the plain form uses:
+//     gamma[k] = upper[k] / (diag[k] - lower[k]*gamma[k-1])   (as * inv)
+//     rhs[k]   = (rhs[k] - lower[k]*rhs[k-1]) * inv
+//     rhs[k]  -= gamma[k]*rhs[k+1]                             (back pass)
+// Only where the operands come from changes: gamma[k-1], rhs[k-1] and
+// rhs[k+1] are the words this thread has just stored, held in registers
+// instead of reloaded from the workspace, and the next level's
+// coefficients are loaded before this level's stores, so those loads
+// overlap the divide instead of waiting behind it.  The workspace ends
+// with the same words.  Needs nz >= 2 (YSU's vertical bounds ask for 4).
 __device__ void ysu_thomas(YsuColC lower, YsuColC diag,
                            YsuColC upper, YsuCol rhs, YsuCol gamma, int nz) {
     real inv = 1.0f / diag[0];
-    gamma[0] = upper[0] * inv;
-    rhs[0] *= inv;
+    real g = upper[0] * inv;
+    gamma[0] = g;
+    real r = rhs[0] * inv;
+    rhs[0] = r;
+    real lk = lower[1], dk = diag[1], uk = upper[1], rk = rhs[1];
     for (int k = 1; k < nz - 1; ++k) {
-        inv = 1.0f / (diag[k] - lower[k] * gamma[k - 1]);
-        gamma[k] = upper[k] * inv;
-        rhs[k] = (rhs[k] - lower[k] * rhs[k - 1]) * inv;
+        real ln = lower[k + 1], dn = diag[k + 1], un = upper[k + 1];
+        real rn = rhs[k + 1];
+        inv = 1.0f / (dk - lk * g);
+        g = uk * inv;
+        gamma[k] = g;
+        r = (rk - lk * r) * inv;
+        rhs[k] = r;
+        lk = ln; dk = dn; uk = un; rk = rn;
     }
-    inv = 1.0f / (diag[nz - 1] - lower[nz - 1] * gamma[nz - 2]);
-    rhs[nz - 1] = (rhs[nz - 1] - lower[nz - 1] * rhs[nz - 2]) * inv;
-    for (int k = nz - 2; k >= 0; --k)
-        rhs[k] -= gamma[k] * rhs[k + 1];
+    // lk, dk, rk now hold lower/diag/rhs[nz-1]; g, r hold gamma/rhs[nz-2].
+    inv = 1.0f / (dk - lk * g);
+    real gb = g, rb = r;
+    r = (rk - lk * r) * inv;
+    rhs[nz - 1] = r;
+    for (int k = nz - 2; k >= 0; --k) {
+        int kp = k > 0 ? k - 1 : 0;
+        real gp = gamma[kp], rp = rhs[kp];
+        r = rb - gb * r;
+        rhs[k] = r;
+        gb = gp; rb = rp;
+    }
 }
 
 __device__ void ysu_diagnose(const real *u, const real *v, YsuColC thv,
@@ -194,24 +221,29 @@ __device__ void ysu_tridi2n_v(YsuColC lower, YsuColC diag_v,
         rhs[k] -= gamma_u[k] * rhs[k + 1];
 }
 
-template <bool BEP, bool TOPO = false>
+template <bool BEP, bool TOPO>
 __device__ __forceinline__
-void ysu_column_body(const real *u, const real *v, const real *theta,
-                const real *qv, const real *qc, const real *qi,
-                const real *p, const real *p_interface, const real *exner,
-                const real *dz, const real *rthraten,
-                const real *psfc, const real *znt,
-                const real *ust, const real *hfx, const real *qfx,
-                const real *wspd, const real *br, const real *psim,
-                const real *psih, const real *xland, const real *u10,
-                const real *v10, real *du, real *dv, real *dtheta,
-                real *dqv, real *dqc, real *dqi, real *hpbl_out,
-                int *kpbl_out, real *exch_h, real *exch_m,
-                real *wstar_out, real *delta_out,
-                real dt, real *topdown_radsum_out,
-                real *wstar3_2_out, int *cloudflg_out,
+void ysu_column_slots(const real *__restrict__ u, const real *__restrict__ v, const real *__restrict__ theta,
+                const real *__restrict__ qv, const real *__restrict__ qc, const real *__restrict__ qi,
+                const real *__restrict__ p, const real *__restrict__ p_interface, const real *__restrict__ exner,
+                const real *__restrict__ dz, const real *__restrict__ rthraten,
+                const real *__restrict__ psfc, const real *__restrict__ znt,
+                const real *__restrict__ ust, const real *__restrict__ hfx, const real *__restrict__ qfx,
+                const real *__restrict__ wspd, const real *__restrict__ br, const real *__restrict__ psim,
+                const real *__restrict__ psih, const real *__restrict__ xland, const real *u10,
+                const real *v10, real *__restrict__ du, real *__restrict__ dv, real *__restrict__ dtheta,
+                real *__restrict__ dqv, real *__restrict__ dqc, real *__restrict__ dqi, real *__restrict__ hpbl_out,
+                int *__restrict__ kpbl_out, real *__restrict__ exch_h, real *__restrict__ exch_m,
+                real *__restrict__ wstar_out, real *__restrict__ delta_out,
+                real dt, real *__restrict__ topdown_radsum_out,
+                real *__restrict__ wstar3_2_out, int *__restrict__ cloudflg_out,
                 int ysu_topdown_pblmix, int nz, int ny, int nx,
-                real *ws, int wskp, int col0, const YsuBep bep, const YsuTopo topo = YsuTopo{}) {
+                real *__restrict__ ws, int wskp, int col0, const YsuBep bep, const YsuTopo topo,
+                real *__restrict__ ws_thv, real *__restrict__ ws_thli, real *__restrict__ ws_zq, real *__restrict__ ws_za,
+                real *__restrict__ ws_dza, real *__restrict__ ws_delp, real *__restrict__ ws_xkzm, real *__restrict__ ws_xkzh,
+                real *__restrict__ ws_xkzq, real *__restrict__ ws_xkzml, real *__restrict__ ws_xkzhl, real *__restrict__ ws_zfacent,
+                real *__restrict__ ws_entfac, real *__restrict__ ws_lower, real *__restrict__ ws_diag, real *__restrict__ ws_upper,
+                real *__restrict__ ws_rhs, real *__restrict__ ws_gamma) {
     // `col0` is the first column of this TILE.  The workspace is sized to
     // one tile, so its indexing uses the TILE-LOCAL blockIdx.x while every
     // field index keeps using the global column -- the arrays are
@@ -226,25 +258,27 @@ void ysu_column_body(const real *u, const real *v, const real *theta,
     int st = ny * nx;
     if (col >= st || nz > YSU_KMAX) return;
 
-    real *wsb = YSUWS_LANE_BASE(ws, wskp);
-    YsuCol thv     = YSUWS_AT(wsb,  0, wskp);
-    YsuCol thli    = YSUWS_AT(wsb,  1, wskp);
-    YsuCol zq      = YSUWS_AT(wsb,  2, wskp);
-    YsuCol za      = YSUWS_AT(wsb,  3, wskp);
-    YsuCol dza     = YSUWS_AT(wsb,  4, wskp);
-    YsuCol delp    = YSUWS_AT(wsb,  5, wskp);
-    YsuCol xkzm    = YSUWS_AT(wsb,  6, wskp);
-    YsuCol xkzh    = YSUWS_AT(wsb,  7, wskp);
-    YsuCol xkzq    = YSUWS_AT(wsb,  8, wskp);
-    YsuCol xkzml   = YSUWS_AT(wsb,  9, wskp);
-    YsuCol xkzhl   = YSUWS_AT(wsb, 10, wskp);
-    YsuCol zfacent = YSUWS_AT(wsb, 11, wskp);
-    YsuCol entfac  = YSUWS_AT(wsb, 12, wskp);
-    YsuCol lower   = YSUWS_AT(wsb, 13, wskp);
-    YsuCol diag    = YSUWS_AT(wsb, 14, wskp);
-    YsuCol upper   = YSUWS_AT(wsb, 15, wskp);
-    YsuCol rhs     = YSUWS_AT(wsb, 16, wskp);
-    YsuCol gamma   = YSUWS_AT(wsb, 17, wskp);
+    // Each column array is its own __restrict__ slot pointer (the slots are
+    // disjoint wskp-level regions of this lane's workspace), so the
+    // compiler may keep one array's loads ahead of another's stores.
+    YsuCol thv     = YsuCol{ws_thv};
+    YsuCol thli    = YsuCol{ws_thli};
+    YsuCol zq      = YsuCol{ws_zq};
+    YsuCol za      = YsuCol{ws_za};
+    YsuCol dza     = YsuCol{ws_dza};
+    YsuCol delp    = YsuCol{ws_delp};
+    YsuCol xkzm    = YsuCol{ws_xkzm};
+    YsuCol xkzh    = YsuCol{ws_xkzh};
+    YsuCol xkzq    = YsuCol{ws_xkzq};
+    YsuCol xkzml   = YsuCol{ws_xkzml};
+    YsuCol xkzhl   = YsuCol{ws_xkzhl};
+    YsuCol zfacent = YsuCol{ws_zfacent};
+    YsuCol entfac  = YsuCol{ws_entfac};
+    YsuCol lower   = YsuCol{ws_lower};
+    YsuCol diag    = YsuCol{ws_diag};
+    YsuCol upper   = YsuCol{ws_upper};
+    YsuCol rhs     = YsuCol{ws_rhs};
+    YsuCol gamma   = YsuCol{ws_gamma};
 
     real us = ust[col], hf = hfx[col], qf = qfx[col];
     // No zero-coupling short circuit.  Until lane/verify-ysu this kernel
@@ -280,18 +314,29 @@ void ysu_column_body(const real *u, const real *v, const real *theta,
     const real karman = 0.4f, ep1 = RV / RD - 1.0f;
     real dt2 = 2.0f * dt, rdt = 1.0f / dt2;
 
+    // One pass instead of three: zq[k], za[k-1] and the interface pressure
+    // ride in registers to the next level.  Each word is the same operation
+    // on the same operands as the three separate loops formed:
+    //   zq[k+1] = zq[k] + dz,  za[k] = 0.5*(zq[k] + zq[k+1]),
+    //   dza[0] = za[0],  dza[k] = za[k] - za[k-1].
     zq[0] = 0.0f;
+    real zq_k = 0.0f, za_prev = 0.0f, pi_k = p_interface[col];
     for (int k = 0; k < nz; ++k) {
         int q = k * st + col;
         thv[k] = ysu_thx(theta, exner, q) * (1.0f + ep1 * qv[q]);
         thli[k] = (theta[q] * exner[q] - __fdiv_rn(XLV * qc[q], CP)
                    - __fdiv_rn(2.834e6f * qi[q], CP)) / exner[q];
-        zq[k + 1] = zq[k] + dz[q];
-        delp[k] = p_interface[k * st + col] - p_interface[(k + 1) * st + col];
+        real zq_k1 = zq_k + dz[q];
+        zq[k + 1] = zq_k1;
+        real pi_k1 = p_interface[(k + 1) * st + col];
+        delp[k] = pi_k - pi_k1;
+        real za_k = 0.5f * (zq_k + zq_k1);
+        za[k] = za_k;
+        dza[k] = k == 0 ? za_k : za_k - za_prev;
+        zq_k = zq_k1;
+        za_prev = za_k;
+        pi_k = pi_k1;
     }
-    for (int k = 0; k < nz; ++k) za[k] = 0.5f * (zq[k] + zq[k + 1]);
-    dza[0] = za[0];
-    for (int k = 1; k < nz; ++k) dza[k] = za[k] - za[k - 1];
 
     real theta0 = ysu_thx(theta, exner, col), qv0 = qv[col];
     real temp0 = theta[col] * exner[col];
@@ -526,18 +571,22 @@ void ysu_column_body(const real *u, const real *v, const real *theta,
         real delb = govrth * d3 * hpbl;
         delta = ysu_min(d1 * hpbl + d2 * wm2 / delb, 100.0f);
     }
+    // Each word is stored once with the value the overwritten stores left.
     for (int k = 0; k < nz; ++k) {
-        entfac[k] = 1.0e30f;
+        real ef = 1.0e30f;
         if (pblflg && delta > 0.0f && k + 1 >= kpbl) {
             real e = (zq[k + 1] - hpbl) / delta;
-            entfac[k] = e * e;        // :930 **2. is x*x in WRF's -O2 build
+            ef = e * e;               // :930 **2. is x*x in WRF's -O2 build
         }
-        xkzm[k] = xkzh[k] = xkzq[k] = 0.0f;
-        if (k < nz - 1) {
-            xkzm[k] = xkzminm;
-            xkzh[k] = xkzq[k] = xkzminh;
-        }
-        xkzml[k] = xkzhl[k] = zfacent[k] = 0.0f;
+        entfac[k] = ef;
+        bool below_top = k < nz - 1;
+        real xh0 = below_top ? xkzminh : 0.0f;
+        xkzm[k] = below_top ? xkzminm : 0.0f;
+        xkzh[k] = xh0;
+        xkzq[k] = xh0;
+        xkzml[k] = 0.0f;
+        xkzhl[k] = 0.0f;
+        zfacent[k] = 0.0f;
     }
 
     for (int k = 0; k < nz; ++k) {
@@ -641,10 +690,12 @@ void ysu_column_body(const real *u, const real *v, const real *theta,
                 kh = dk / ((1.0f + 5.0f * ri) * (1.0f + 5.0f * ri));
                 km = kh * ysu_min(1.0f + 2.1f * ri, prmax);
             }
-            xkzm[k] = ysu_min(km + xkzminm, xkzmax);
-            xkzh[k] = ysu_min(kh + xkzminh, xkzmax);
-            xkzml[k] = xkzm[k];
-            xkzhl[k] = xkzh[k];
+            real xm = ysu_min(km + xkzminm, xkzmax);
+            real xh = ysu_min(kh + xkzminh, xkzmax);
+            xkzm[k] = xm;
+            xkzh[k] = xh;
+            xkzml[k] = xm;               // the words just stored, not reloaded
+            xkzhl[k] = xh;
         }
     }
     for (int k = kpbl - 1; k < nz - 1; ++k) xkzq[k] = xkzh[k];
@@ -684,7 +735,13 @@ void ysu_column_body(const real *u, const real *v, const real *theta,
 #endif
 
     // Heat matrix, including the countergradient and entrainment fluxes.
-    for (int k = 0; k < nz; ++k) lower[k] = diag[k] = upper[k] = rhs[k] = 0.0f;
+    // The assembly below writes diag[0..nz-1], rhs[0..nz-1], upper[0..nz-2]
+    // and lower[1..nz-1] before any of them is read, and ysu_thomas never
+    // reads lower[0] or upper[nz-1]; zeroing the four whole columns first
+    // only cost workspace traffic.  The two unread ends are still zeroed so
+    // the workspace holds the same words as before.
+    lower[0] = 0.0f;
+    upper[nz - 1] = 0.0f;
     diag[0] = 1.0f;
     if constexpr (BEP) {
         // bl_ysu.F90:1045 with bepswitch = 1: (1.0-bepswitch)*hfx/cont/del*dt2
@@ -694,8 +751,12 @@ void ysu_column_body(const real *u, const real *v, const real *theta,
     } else {
         rhs[0] = theta0 - 300.0f + __fdiv_rn(hf, (CP / G)) / delp[0] * dt2;
     }
+    // diag[k] and rhs[k] ride in registers from the level that set them
+    // to the level that finishes them (the same words, not reloaded).
+    real diag_k = diag[0], rhs_k = rhs[0];
     for (int k = 0; k < nz - 1; ++k) {
         real dtodsd, dtodsu;
+        real rhs_k1, up, lo;
         if constexpr (BEP) {
             // bl_ysu.F90:1050-1051 (and :1138, :1326): sfk2d(i,k)*dt2/del.
             real sfk = bep.sf[k * st + col];
@@ -706,31 +767,39 @@ void ysu_column_body(const real *u, const real *v, const real *theta,
         }
         real dsig = p[k * st + col] - p[(k + 1) * st + col];
         real rdz = 1.0f / dza[k + 1];
-        real tem1 = dsig * xkzh[k] * rdz;
+        real xk_k = xkzh[k];
+        real tem1 = dsig * xk_k * rdz;
         if (pblflg && k + 1 < kpbl) {
-            real flux = tem1 * (-hgamt / hpbl - hfxpbl * zfacent[k] / xkzh[k]);
-            rhs[k] += dtodsd * flux;
-            rhs[k + 1] = ysu_thx(theta, exner, (k + 1) * st + col) - 300.0f - dtodsu * flux;
+            real flux = tem1 * (-hgamt / hpbl - hfxpbl * zfacent[k] / xk_k);
+            rhs_k += dtodsd * flux;
+            rhs_k1 = ysu_thx(theta, exner, (k + 1) * st + col) - 300.0f - dtodsu * flux;
         } else if (pblflg && k + 1 >= kpbl && entfac[k] < 4.6f) {
             real knew = -we * dza[kpbl - 1] * gfk_exp(-entfac[k]);
-            xkzh[k] = ysu_clip(sqrtf(ysu_max(knew * xkzhl[k], 0.0f)),
-                               xkzminh, xkzmax);
-            rhs[k + 1] = ysu_thx(theta, exner, (k + 1) * st + col) - 300.0f;
-        } else rhs[k + 1] = ysu_thx(theta, exner, (k + 1) * st + col) - 300.0f;
-        real dsdz2 = dsig * xkzh[k] * rdz * rdz;
+            xk_k = ysu_clip(sqrtf(ysu_max(knew * xkzhl[k], 0.0f)),
+                            xkzminh, xkzmax);
+            xkzh[k] = xk_k;
+            rhs_k1 = ysu_thx(theta, exner, (k + 1) * st + col) - 300.0f;
+        } else rhs_k1 = ysu_thx(theta, exner, (k + 1) * st + col) - 300.0f;
+        real dsdz2 = dsig * xk_k * rdz * rdz;
         if constexpr (BEP) {
             // bl_ysu.F90:1070-1071: au = -dtodsd*dsdz2/vlk2d(i,k),
             // al = -dtodsu*dsdz2/vlk2d(i,k) -- both divide by level k.
             real vlk = bep.vl[k * st + col];
-            upper[k] = -dtodsd * dsdz2 / vlk;
-            lower[k + 1] = -dtodsu * dsdz2 / vlk;
+            up = -dtodsd * dsdz2 / vlk;
+            lo = -dtodsu * dsdz2 / vlk;
         } else {
-            upper[k] = -dtodsd * dsdz2;
-            lower[k + 1] = -dtodsu * dsdz2;
+            up = -dtodsd * dsdz2;
+            lo = -dtodsu * dsdz2;
         }
-        diag[k] -= upper[k];
-        diag[k + 1] = 1.0f - lower[k + 1];
+        upper[k] = up;
+        lower[k + 1] = lo;
+        diag[k] = diag_k - up;          // diag[k] -= upper[k]
+        rhs[k] = rhs_k;
+        diag_k = 1.0f - lo;             // diag[k+1] = 1 - lower[k+1]
+        rhs_k = rhs_k1;
     }
+    diag[nz - 1] = diag_k;
+    rhs[nz - 1] = rhs_k;
     if constexpr (BEP) {
         // bl_ysu.F90:1078-1083.  __fmul_rn: WRF rounds the product before
         // the add/subtract, NVRTC would otherwise fuse it.
@@ -754,7 +823,8 @@ void ysu_column_body(const real *u, const real *v, const real *theta,
     }
 
     // Vapor matrix (Kq); cloud and ice reuse its matrix.
-    for (int k = 0; k < nz; ++k) lower[k] = diag[k] = upper[k] = rhs[k] = 0.0f;
+    lower[0] = 0.0f;
+    upper[nz - 1] = 0.0f;
     diag[0] = 1.0f;
     if constexpr (BEP) {
         // bl_ysu.F90:1135 with bepswitch = 1: a signed zero is added, which
@@ -763,8 +833,13 @@ void ysu_column_body(const real *u, const real *v, const real *theta,
     } else {
         rhs[0] = qv0 + qf * G / delp[0] * dt2;
     }
+    // diag[k] and rhs[k] ride in registers from the level that set them
+    // to the level that finishes them (the same words, not reloaded).
+    diag_k = diag[0];
+    rhs_k = rhs[0];
     for (int k = 0; k < nz - 1; ++k) {
         real dtodsd, dtodsu;
+        real rhs_k1, up, lo;
         if constexpr (BEP) {
             // bl_ysu.F90:1050-1051 (and :1138, :1326): sfk2d(i,k)*dt2/del.
             real sfk = bep.sf[k * st + col];
@@ -775,31 +850,39 @@ void ysu_column_body(const real *u, const real *v, const real *theta,
         }
         real dsig = p[k * st + col] - p[(k + 1) * st + col];
         real rdz = 1.0f / dza[k + 1];
-        real tem1 = dsig * xkzq[k] * rdz;
+        real xk_k = xkzq[k];
+        real tem1 = dsig * xk_k * rdz;
         if (pblflg && k + 1 < kpbl) {
-            real flux = tem1 * (-qfxpbl * zfacent[k] / xkzq[k]);
-            rhs[k] += dtodsd * flux;
-            rhs[k + 1] = qv[(k + 1) * st + col] - dtodsu * flux;
+            real flux = tem1 * (-qfxpbl * zfacent[k] / xk_k);
+            rhs_k += dtodsd * flux;
+            rhs_k1 = qv[(k + 1) * st + col] - dtodsu * flux;
         } else if (pblflg && k + 1 >= kpbl && entfac[k] < 4.6f) {
             real knew = -we * dza[kpbl - 1] * gfk_exp(-entfac[k]);
-            xkzq[k] = ysu_clip(sqrtf(ysu_max(knew * xkzhl[k], 0.0f)),
-                               xkzminh, xkzmax);
-            rhs[k + 1] = qv[(k + 1) * st + col];
-        } else rhs[k + 1] = qv[(k + 1) * st + col];
-        real dsdz2 = dsig * xkzq[k] * rdz * rdz;
+            xk_k = ysu_clip(sqrtf(ysu_max(knew * xkzhl[k], 0.0f)),
+                            xkzminh, xkzmax);
+            xkzq[k] = xk_k;
+            rhs_k1 = qv[(k + 1) * st + col];
+        } else rhs_k1 = qv[(k + 1) * st + col];
+        real dsdz2 = dsig * xk_k * rdz * rdz;
         if constexpr (BEP) {
             // bl_ysu.F90:1070-1071: au = -dtodsd*dsdz2/vlk2d(i,k),
             // al = -dtodsu*dsdz2/vlk2d(i,k) -- both divide by level k.
             real vlk = bep.vl[k * st + col];
-            upper[k] = -dtodsd * dsdz2 / vlk;
-            lower[k + 1] = -dtodsu * dsdz2 / vlk;
+            up = -dtodsd * dsdz2 / vlk;
+            lo = -dtodsu * dsdz2 / vlk;
         } else {
-            upper[k] = -dtodsd * dsdz2;
-            lower[k + 1] = -dtodsu * dsdz2;
+            up = -dtodsd * dsdz2;
+            lo = -dtodsu * dsdz2;
         }
-        diag[k] -= upper[k];
-        diag[k + 1] = 1.0f - lower[k + 1];
+        upper[k] = up;
+        lower[k + 1] = lo;
+        diag[k] = diag_k - up;          // diag[k] -= upper[k]
+        rhs[k] = rhs_k;
+        diag_k = 1.0f - lo;             // diag[k+1] = 1 - lower[k+1]
+        rhs_k = rhs_k1;
     }
+    diag[nz - 1] = diag_k;
+    rhs[nz - 1] = rhs_k;
     if constexpr (BEP) {
         // bl_ysu.F90:1164-1168: vapor alone solves with adv = ad - a_q*dt2;
         // cloud water and ice reuse the unforced ad (:1177, :1190).  xkzhl
@@ -822,7 +905,8 @@ void ysu_column_body(const real *u, const real *v, const real *theta,
     for (int k = 0; k < nz; ++k) dqi[k * st + col] = (rhs[k] - qi[k * st + col]) * rdt;
 
     // Momentum matrix and implicit surface stress.
-    for (int k = 0; k < nz; ++k) lower[k] = diag[k] = upper[k] = rhs[k] = 0.0f;
+    lower[0] = 0.0f;
+    upper[nz - 1] = 0.0f;
     real fric = us * us / wspd1 * rho * G / delp[0] * dt2      // :1306-1307
               * ((wspd1 / ysu_pos(wspd[col], 1.0e-9f))      // (wspd1/wspd)**2
                  * (wspd1 / ysu_pos(wspd[col], 1.0e-9f)));  // is formed first
@@ -923,8 +1007,13 @@ void ysu_column_body(const real *u, const real *v, const real *theta,
         // `__fsub_rn(diag[0], __fmul_rn(bep.frc[col], __fadd_rn(drag_v, drag_c)))`.
     }
     rhs[0] = u0;
+    // diag[k] and rhs[k] ride in registers from the level that set them
+    // to the level that finishes them (the same words, not reloaded).
+    diag_k = diag[0];
+    rhs_k = rhs[0];
     for (int k = 0; k < nz - 1; ++k) {
         real dtodsd, dtodsu;
+        real rhs_k1, up, lo;
         if constexpr (BEP) {
             // bl_ysu.F90:1050-1051 (and :1138, :1326): sfk2d(i,k)*dt2/del.
             real sfk = bep.sf[k * st + col];
@@ -935,30 +1024,38 @@ void ysu_column_body(const real *u, const real *v, const real *theta,
         }
         real dsig = p[k * st + col] - p[(k + 1) * st + col];
         real rdz = 1.0f / dza[k + 1];
-        real tem1 = dsig * xkzm[k] * rdz;
+        real xk_k = xkzm[k];
+        real tem1 = dsig * xk_k * rdz;
         if (pblflg && k + 1 < kpbl) {
-            real flux = tem1 * (-hgamu / hpbl - ufxpbl * zfacent[k] / xkzm[k]);
-            rhs[k] += dtodsd * flux;
-            rhs[k + 1] = u[(k + 1) * st + col] - dtodsu * flux;
+            real flux = tem1 * (-hgamu / hpbl - ufxpbl * zfacent[k] / xk_k);
+            rhs_k += dtodsd * flux;
+            rhs_k1 = u[(k + 1) * st + col] - dtodsu * flux;
         } else if (pblflg && k + 1 >= kpbl && entfac[k] < 4.6f) {
-            xkzm[k] = ysu_clip(sqrtf(ysu_max(xkzh[k] * xkzml[k], 0.0f)),
-                               xkzminm, xkzmax);
-            rhs[k + 1] = u[(k + 1) * st + col];
-        } else rhs[k + 1] = u[(k + 1) * st + col];
-        real dsdz2 = dsig * xkzm[k] * rdz * rdz;
+            xk_k = ysu_clip(sqrtf(ysu_max(xkzh[k] * xkzml[k], 0.0f)),
+                            xkzminm, xkzmax);
+            xkzm[k] = xk_k;
+            rhs_k1 = u[(k + 1) * st + col];
+        } else rhs_k1 = u[(k + 1) * st + col];
+        real dsdz2 = dsig * xk_k * rdz * rdz;
         if constexpr (BEP) {
             // bl_ysu.F90:1070-1071: au = -dtodsd*dsdz2/vlk2d(i,k),
             // al = -dtodsu*dsdz2/vlk2d(i,k) -- both divide by level k.
             real vlk = bep.vl[k * st + col];
-            upper[k] = -dtodsd * dsdz2 / vlk;
-            lower[k + 1] = -dtodsu * dsdz2 / vlk;
+            up = -dtodsd * dsdz2 / vlk;
+            lo = -dtodsu * dsdz2 / vlk;
         } else {
-            upper[k] = -dtodsd * dsdz2;
-            lower[k + 1] = -dtodsu * dsdz2;
+            up = -dtodsd * dsdz2;
+            lo = -dtodsu * dsdz2;
         }
-        diag[k] -= upper[k];
-        diag[k + 1] = 1.0f - lower[k + 1];
+        upper[k] = up;
+        lower[k + 1] = lo;
+        diag[k] = diag_k - up;          // diag[k] -= upper[k]
+        rhs[k] = rhs_k;
+        diag_k = 1.0f - lo;             // diag[k+1] = 1 - lower[k+1]
+        rhs_k = rhs_k1;
     }
+    diag[nz - 1] = diag_k;
+    rhs[nz - 1] = rhs_k;
     if constexpr (BEP) {
         // bl_ysu.F90:1359-1368: ad1 = ad; ad -= a_u*dt2; ad1 -= a_v*dt2;
         // f1 += b_u*dt2 (f2 += b_v*dt2 is added after the v RHS rebuild
@@ -1018,7 +1115,36 @@ void ysu_column_body(const real *u, const real *v, const real *theta,
     cloudflg_out[col] = cloudflg ? 1 : 0;
 }
 
-extern "C" __global__
+// The slot pointers are formed here, exactly where the workspace layout
+// put them before (lane-interleaved, YSUWS_LANES floats apart per level).
+template <bool BEP, bool TOPO = false>
+__device__ __forceinline__
+void ysu_column_body(const real *__restrict__ u, const real *__restrict__ v, const real *__restrict__ theta,
+                const real *__restrict__ qv, const real *__restrict__ qc, const real *__restrict__ qi,
+                const real *__restrict__ p, const real *__restrict__ p_interface, const real *__restrict__ exner,
+                const real *__restrict__ dz, const real *__restrict__ rthraten,
+                const real *__restrict__ psfc, const real *__restrict__ znt,
+                const real *__restrict__ ust, const real *__restrict__ hfx, const real *__restrict__ qfx,
+                const real *__restrict__ wspd, const real *__restrict__ br, const real *__restrict__ psim,
+                const real *__restrict__ psih, const real *__restrict__ xland, const real *u10,
+                const real *v10, real *__restrict__ du, real *__restrict__ dv, real *__restrict__ dtheta,
+                real *__restrict__ dqv, real *__restrict__ dqc, real *__restrict__ dqi, real *__restrict__ hpbl_out,
+                int *__restrict__ kpbl_out, real *__restrict__ exch_h, real *__restrict__ exch_m,
+                real *__restrict__ wstar_out, real *__restrict__ delta_out,
+                real dt, real *__restrict__ topdown_radsum_out,
+                real *__restrict__ wstar3_2_out, int *__restrict__ cloudflg_out,
+                int ysu_topdown_pblmix, int nz, int ny, int nx,
+                real *__restrict__ ws, int wskp, int col0, const YsuBep bep, const YsuTopo topo = YsuTopo{}) {
+    real *wsb = YSUWS_LANE_BASE(ws, wskp);
+    ysu_column_slots<BEP, TOPO>(u, v, theta, qv, qc, qi, p, p_interface, exner, dz, rthraten, psfc, znt, ust, hfx, qfx, wspd, br, psim, psih, xland, u10, v10, du, dv, dtheta, dqv, dqc, dqi, hpbl_out, kpbl_out, exch_h, exch_m, wstar_out, delta_out, dt, topdown_radsum_out, wstar3_2_out, cloudflg_out, ysu_topdown_pblmix, nz, ny, nx, ws, wskp, col0, bep, topo,
+        YSUWS_AT(wsb, 0, wskp).p, YSUWS_AT(wsb, 1, wskp).p, YSUWS_AT(wsb, 2, wskp).p, YSUWS_AT(wsb, 3, wskp).p,
+        YSUWS_AT(wsb, 4, wskp).p, YSUWS_AT(wsb, 5, wskp).p, YSUWS_AT(wsb, 6, wskp).p, YSUWS_AT(wsb, 7, wskp).p,
+        YSUWS_AT(wsb, 8, wskp).p, YSUWS_AT(wsb, 9, wskp).p, YSUWS_AT(wsb, 10, wskp).p, YSUWS_AT(wsb, 11, wskp).p,
+        YSUWS_AT(wsb, 12, wskp).p, YSUWS_AT(wsb, 13, wskp).p, YSUWS_AT(wsb, 14, wskp).p, YSUWS_AT(wsb, 15, wskp).p,
+        YSUWS_AT(wsb, 16, wskp).p, YSUWS_AT(wsb, 17, wskp).p);
+}
+
+extern "C" __global__ __launch_bounds__(32, 16)
 void ysu_column(const real *u, const real *v, const real *theta,
                 const real *qv, const real *qc, const real *qi,
                 const real *p, const real *p_interface, const real *exner,

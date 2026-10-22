@@ -168,6 +168,15 @@ def _area_contains(request: dict, keys: dict, bounds) -> bool:
     return box["west"] <= west + shift and east + shift <= box["east"]
 
 
+def _levelled_request_keys(acquisition) -> set[str]:
+    """Every request key that marks a levelled fetch of this source."""
+    keys = {"model_level", "pressure_level"}
+    for spec in (acquisition.get("requests") or {}).values():
+        if spec.get("levels_key"):
+            keys.add(spec["levels_key"])
+    return keys
+
+
 def covering_files(source_row, variables: Iterable[str], valid_time, *,
                    cache_root: Path | None = None, bounds=None) -> dict[str, Path]:
     """The cached files that together cover ``variables`` at ``valid_time``.
@@ -178,6 +187,9 @@ def covering_files(source_row, variables: Iterable[str], valid_time, *,
     Raises :class:`ChemSourceUnavailable` naming what is missing.
     """
     root = Path(cache_root) if cache_root is not None else data_store_cache_root()
+    if source_row.format == "netcdf":
+        from gpuwm.composition_source import covering_files as covering_composition
+        return covering_composition(source_row, variables, valid_time, root)
     acq = source_row.acquisition
     keys = acq["keys"]
     need = _request_names(source_row, variables)
@@ -191,6 +203,9 @@ def covering_files(source_row, variables: Iterable[str], valid_time, *,
             continue
         if record.get("dataset") != acq["dataset"]:
             continue
+        required = acq.get("research_only_licence")
+        if required and record.get("accepted_licence") != required:
+            continue
         cycle, lead_times = _receipt_times(request, keys)
         if cycle is None or not set(times) <= set(lead_times):
             continue
@@ -202,8 +217,16 @@ def covering_files(source_row, variables: Iterable[str], valid_time, *,
             levels_key = spec.get("levels_key")
             if levels_key and levels_key not in request:
                 continue
-            if not levels_key and any(k in request for k in ("model_level",
-                                                             "pressure_level")):
+            # A single-level group never takes a file fetched for a levelled
+            # group: the levelled file names the same variable (HRRR wrfnat's
+            # PRES on hybrid levels beside PRES at the surface) but holds
+            # none of its single-level records.  Breakage this prevents: the
+            # surface pressure was stacked from the hybrid-level file
+            # whenever its content-addressed name sorted first, "key PSFC:
+            # selector matches zero records" (a rented box, 2026-10-21 06Z and
+            # 2024-04-27 18Z).
+            if not levels_key and any(k in request for k in
+                                      _levelled_request_keys(acq)):
                 continue
             if wanted <= names:
                 path = receipt.with_suffix(".grib2")
@@ -239,6 +262,9 @@ def _frames(source_row, files: dict[str, Path], variables: tuple[str, ...],
     from gpuwm.grib2_stack import stack_cache_digest, stack_cache_identity
     from gpuwm.ingest.cpu_backend import (
         cpu_bridge_scope, resolve_cpu_bridge, _selected_cpu_worker_cap)
+    if source_row.format == "netcdf":
+        from gpuwm.composition_source import registered_frames
+        return registered_frames(source_row, cache_root)
     if source_row.format != "grib2":
         raise BoundaryRemapError(
             f"source {source_row.name!r} is {source_row.format}; the boundary "
@@ -301,7 +327,8 @@ def _frames(source_row, files: dict[str, Path], variables: tuple[str, ...],
 
 
 def fill_boundary_sources(state, cfg, *, valid_time, latlon, pressure,
-                          cache_root: Path | None = None, backend=None) -> list[dict]:
+                          cache_root: Path | None = None, backend=None,
+                          frame=None) -> list[dict]:
     """Write every data-store source's rows into ``state`` for this frame.
 
     Returns one receipt per source (empty when the run has no chem or no such
@@ -329,7 +356,8 @@ def fill_boundary_sources(state, cfg, *, valid_time, latlon, pressure,
     enabled = _enabled(cfg)
     receipts = []
     for source_row in sources:
-        rows = boundary_rows(chem.table, source_row.name, available=enabled)
+        rows = boundary_rows(chem.table, source_row.name, available=enabled,
+                             frame=frame)
         if not rows:
             continue
         from gpuwm.chem_boundary_remap import _needed_variables
@@ -341,7 +369,7 @@ def fill_boundary_sources(state, cfg, *, valid_time, latlon, pressure,
         frames = _frames(source_row, files, variables, root)
         fields, receipt = boundary_fields_for_grid(
             chem.table, source_row, frames, target, _utc(valid_time),
-            backend=backend, available=enabled)
+            backend=backend, available=enabled, frame=frame)
         for name, values in fields.items():
             destination = getattr(state, chem.table.row(name).state_attr)
             # NumPy 2 arrays carry .device too, so ask the type's module.
@@ -351,6 +379,11 @@ def fill_boundary_sources(state, cfg, *, valid_time, latlon, pressure,
             destination[...] = xp.asarray(values, dtype=np.float32)
         receipt["files"] = {group: str(p) for group, p in files.items()}
         receipts.append(receipt)
+    from gpuwm.core.chem_mp_coupling import initialize_from_sources
+    number_receipt = initialize_from_sources(state, cfg, receipts)
+    if number_receipt is not None:
+        for receipt in receipts:
+            receipt["thompson_initialization"] = number_receipt
     # The frame's sealed lateral forcing carries these rows beside water
     # vapour (gpuwm.ingest.lateral_bc._coupled_device_fields, uncoupled as
     # WRF-Chem's chem_b/chem_bt are), so their inflow is the source's.

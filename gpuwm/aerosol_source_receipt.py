@@ -87,7 +87,7 @@ AEROSOL_SOURCE_SCHEMA = "gpuwm-run-aerosol-source-v1"
 #: QNWFA/QNIFA pair carried by the met_em series itself, which is an
 #: aerosol input by exactly the same standard even though the bytes came
 #: from the analysis rather than from a separate dataset file.
-AEROSOL_SOURCES_FROM_INPUT = ("wif-climatology", "metgrid-analyzed")
+AEROSOL_SOURCES_FROM_INPUT = ("wif-climatology", "metgrid-analyzed", "composition-chemistry")
 
 #: The schemes that HAVE water-friendly/ice-friendly aerosol number
 #: fields.  Aerosol-aware Thompson and nothing else: ``thompsonaero`` is

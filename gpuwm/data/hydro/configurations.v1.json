@@ -3976,6 +3976,64 @@
       "validation": {
         "whole_forecast": "pending the Rhine 2023-01-01 24 h run through products",
         "runoff_partition": "Parent Noah-MP OPT_RUN=3: RUNSRF+RUNSUB; SOLDRAIN already included in RUNSUB."
+      },
+      "parent_exchange": {
+        "factory": "gpuwm.hydro.noahowp.factory:prepare_exchange",
+        "source_partition": "RUNSRF+RUNSUB; exclude SOLDRAIN"
+      }
+    },
+    {
+      "id": "parent-noah-routed",
+      "description": "Resident parent Noah (sf_surface_physics=2) runoff mapped to a same-network initialized DEM fabric, reservoirs and Muskingum-Cunge routing. No second soil model.",
+      "admission": {
+        "status": "permitted",
+        "scope": "Configuration metadata only; provider preparation validates exact grid, same-network parameters, ordered raw warm state, reservoir stores and epoch. Whole coupled forecast qualification pending.",
+        "licence": "Apache-2.0"
+      },
+      "sources": [],
+      "settings_parameters": [
+        "fabric_manifest"
+      ],
+      "settings": {
+        "driver_factory": "gpuwm.hydro.assembly:prepare",
+        "fabric_manifest": "${fabric_manifest}",
+        "stages": []
+      },
+      "validation": {
+        "whole_forecast": "pending the first whole default-on CONUS forecast through products",
+        "runoff_partition": "Parent Noah: per-call differences of the accumulated SFCRUNOFF (surface) and UDRUNOFF (underground, bottom drainage included); ET is QFX."
+      },
+      "parent_exchange": {
+        "factory": "gpuwm.hydro.noahowp.factory:prepare_accumulated_exchange",
+        "source_partition": "SFCRUNOFF+UDRUNOFF differenced per LSM call",
+        "cadence": "routing"
+      }
+    },
+    {
+      "id": "parent-ruc-routed",
+      "description": "Resident parent RUC (sf_surface_physics=3) runoff mapped to a same-network initialized DEM fabric, reservoirs and Muskingum-Cunge routing. No second soil model.",
+      "admission": {
+        "status": "permitted",
+        "scope": "Configuration metadata only; provider preparation validates exact grid, same-network parameters, ordered raw warm state, reservoir stores and epoch. Whole coupled forecast qualification pending.",
+        "licence": "Apache-2.0"
+      },
+      "sources": [],
+      "settings_parameters": [
+        "fabric_manifest"
+      ],
+      "settings": {
+        "driver_factory": "gpuwm.hydro.assembly:prepare",
+        "fabric_manifest": "${fabric_manifest}",
+        "stages": []
+      },
+      "validation": {
+        "whole_forecast": "pending the first whole default-on CONUS forecast through products",
+        "runoff_partition": "Parent RUC: per-call differences of the accumulated SFCRUNOFF (surface) and UDRUNOFF (underground, bottom drainage included); ET is QFX."
+      },
+      "parent_exchange": {
+        "factory": "gpuwm.hydro.noahowp.factory:prepare_accumulated_exchange",
+        "source_partition": "SFCRUNOFF+UDRUNOFF differenced per LSM call",
+        "cadence": "routing"
       }
     }
   ]

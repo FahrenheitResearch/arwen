@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
@@ -1532,6 +1533,30 @@ _WSM6_STOCK_PHYSICS = {
 }
 
 
+def _hierarchy_context(domain, physics, static_hash):
+    cfg = {name: getattr(domain.run, name)
+           for name in ("nx", "ny", "nz", "dx", "dy", "dt", *physics)}
+    geometry = {"center_lat": 36.0, "center_lon": -97.0,
+                "ref_lat": 39.7, "ref_lon": -83.9, "truelat1": 30.0,
+                "truelat2": 60.0, "stand_lon": -83.9}
+    return _HierarchyCache(domain.grid_id), cfg, geometry, 5000.0, static_hash
+
+
+def _hierarchy_experiment(domains):
+    return SimpleNamespace(
+        domains=tuple(domains), projection=SimpleNamespace(map_proj="lambert"),
+        start_time=datetime(1999, 5, 3, 12),
+        vertical=SimpleNamespace(
+            eta_levels=(1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.2, 0.0),
+            p_top=5000.0, hybrid_opt=2))
+
+
+class _HierarchyCache:
+    def __init__(self, grid_id):
+        self.header_path = Path(f"header-d{grid_id:02d}.json")
+        self.header = {"content_sha256": f"content-d{grid_id:02d}"}
+
+
 @pytest.mark.parametrize("max_dom", range(1, 22))
 def test_hierarchy_export_publishes_every_input_and_root_boundary_atomically(
         tmp_path, monkeypatch, max_dom):
@@ -1558,15 +1583,7 @@ def test_hierarchy_export_publishes_every_input_and_root_boundary_atomically(
             60, 60, 12000.0 / (3 ** ratio_depth),
             60.0 / (3 ** ratio_depth), specified=False, nested=True)
         domains.append(domain)
-    exp = SimpleNamespace(
-        domains=tuple(domains),
-        projection=SimpleNamespace(map_proj="lambert"),
-        start_time=datetime(1999, 5, 3, 12),
-        vertical=SimpleNamespace(
-            eta_levels=(1.0, 0.9, 0.8, 0.7, 0.6,
-                        0.5, 0.4, 0.2, 0.0),
-            p_top=5000.0, hybrid_opt=2),
-    )
+    exp = _hierarchy_experiment(tuple(domains))
     artifacts = tuple(_artifact(grid_id) for grid_id in range(1, max_dom + 1))
 
     def fake_root_export(_prepared, _static, _geometry, output, **_kwargs):
@@ -1585,33 +1602,9 @@ def test_hierarchy_export_publishes_every_input_and_root_boundary_atomically(
             "forcing_hours": [0, 6],
         }
 
-    class Cache:
-        def __init__(self, grid_id):
-            self.header_path = Path(f"header-d{grid_id:02d}.json")
-            self.header = {"content_sha256": f"content-d{grid_id:02d}"}
-
     def fake_context(artifact, domain, _exp, _expected_grid, _valid_time):
-        cfg = {
-            "nx": domain.run.nx, "ny": domain.run.ny,
-            "nz": domain.run.nz, "dx": domain.run.dx,
-            "dy": domain.run.dy, "dt": domain.run.dt,
-            **{key: getattr(domain.run, key) for key in _WSM6_STOCK_PHYSICS},
-        }
-        geometry = {
-            "center_lat": 36.0, "center_lon": -97.0,
-            "ref_lat": 39.7, "ref_lon": -83.9,
-            "truelat1": 30.0, "truelat2": 60.0,
-            "stand_lon": -83.9,
-        }
-        return Cache(domain.grid_id), cfg, geometry, 5000.0, \
-            f"static-d{domain.grid_id:02d}"
-
-    class LoadedStatic:
-        def __enter__(self):
-            return {}
-
-        def __exit__(self, *_args):
-            return False
+        return _hierarchy_context(
+            domain, _WSM6_STOCK_PHYSICS, f"static-d{domain.grid_id:02d}")
 
     written_updates = {}
 
@@ -1628,7 +1621,7 @@ def test_hierarchy_export_publishes_every_input_and_root_boundary_atomically(
         wrf_direct, "grids_from_projection_config",
         lambda _exp: tuple(object() for _ in range(max_dom)))
     monkeypatch.setattr(wrf_direct, "_prepared_domain_context", fake_context)
-    monkeypatch.setattr(wrf_direct.np, "load", lambda *_a, **_k: LoadedStatic())
+    monkeypatch.setattr(wrf_direct.np, "load", lambda *_a, **_k: nullcontext({}))
     monkeypatch.setattr(wrf_direct, "_wrfinput_fields", lambda *_a, **_k: {})
     monkeypatch.setattr(wrf_direct, "_write_wrfinput", fake_write)
     monkeypatch.setattr(
@@ -1758,12 +1751,7 @@ def test_the_root_export_stages_where_a_door_measures_it(tmp_path, monkeypatch):
     d01.run = run(100, 80, 12000.0, 60.0, specified=True, nested=False)
     d02 = _domain(2, 1, specified=False, nested=True)
     d02.run = run(60, 60, 4000.0, 20.0, specified=False, nested=True)
-    exp = SimpleNamespace(
-        domains=(d01, d02), projection=SimpleNamespace(map_proj="lambert"),
-        start_time=datetime(1999, 5, 3, 12),
-        vertical=SimpleNamespace(
-            eta_levels=(1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.2, 0.0),
-            p_top=5000.0, hybrid_opt=2))
+    exp = _hierarchy_experiment((d01, d02))
     monkeypatch.setattr(wrf_direct, "export_prepared_wrf", root_export)
     monkeypatch.setattr(wrf_direct, "grids_from_projection_config",
                         lambda _exp: (object(), object()))
@@ -1809,12 +1797,7 @@ def test_the_tree_export_states_each_domains_recorded_physics(
     d02 = _domain(2, 1, specified=False, nested=True)
     d02.run = run(60, 60, 4000.0, 20.0, specified=False, nested=True,
                   cu_physics=0)
-    exp = SimpleNamespace(
-        domains=(d01, d02), projection=SimpleNamespace(map_proj="lambert"),
-        start_time=datetime(1999, 5, 3, 12),
-        vertical=SimpleNamespace(
-            eta_levels=(1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.2, 0.0),
-            p_top=5000.0, hybrid_opt=2))
+    exp = _hierarchy_experiment((d01, d02))
 
     root_kwargs = {}
 
@@ -1833,26 +1816,8 @@ def test_the_tree_export_states_each_domains_recorded_physics(
                 "next_boundary_times": ["1999-05-03_18:00:00"],
                 "forcing_hours": [0, 6]}
 
-    class Cache:
-        def __init__(self, grid_id):
-            self.header_path = Path(f"header-d{grid_id:02d}.json")
-            self.header = {"content_sha256": f"content-d{grid_id:02d}"}
-
     def fake_context(artifact, domain, _exp, _expected_grid, _valid_time):
-        cfg = {"nx": domain.run.nx, "ny": domain.run.ny, "nz": domain.run.nz,
-               "dx": domain.run.dx, "dy": domain.run.dy, "dt": domain.run.dt,
-               **{key: getattr(domain.run, key) for key in thompson}}
-        geometry = {"center_lat": 36.0, "center_lon": -97.0,
-                    "ref_lat": 39.7, "ref_lon": -83.9, "truelat1": 30.0,
-                    "truelat2": 60.0, "stand_lon": -83.9}
-        return Cache(domain.grid_id), cfg, geometry, 5000.0, "static"
-
-    class LoadedStatic:
-        def __enter__(self):
-            return {}
-
-        def __exit__(self, *_args):
-            return False
+        return _hierarchy_context(domain, thompson, "static")
 
     written = {}
     validated = {}
@@ -1870,7 +1835,7 @@ def test_the_tree_export_states_each_domains_recorded_physics(
     monkeypatch.setattr(wrf_direct, "grids_from_projection_config",
                         lambda _exp: (object(), object()))
     monkeypatch.setattr(wrf_direct, "_prepared_domain_context", fake_context)
-    monkeypatch.setattr(wrf_direct.np, "load", lambda *_a, **_k: LoadedStatic())
+    monkeypatch.setattr(wrf_direct.np, "load", lambda *_a, **_k: nullcontext({}))
     monkeypatch.setattr(wrf_direct, "_wrfinput_fields", lambda *_a, **_k: {})
     monkeypatch.setattr(wrf_direct, "_write_wrfinput", fake_write)
     monkeypatch.setattr(wrf_direct, "_validate_file", fake_validate)

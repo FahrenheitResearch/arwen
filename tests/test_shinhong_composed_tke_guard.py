@@ -206,7 +206,12 @@ def test_driver_disposition_repairs_passengers_and_keeps_tendencies_fatal(
     # feeds Grell-Freitas anything.
     driver._couple_pbl_slot = types.MethodType(
         ph.PhysicsDriver._couple_pbl_slot, driver)
-    cfg = types.SimpleNamespace(dx=12000.0, dy=12000.0, bl_pbl_physics=11)
+    # golden/exact: every PBL arm runs WRF's post-PBL scalar_pblmix after
+    # its coupling; the real coupler, at scalar_pblmix = 0, does nothing.
+    driver._couple_scalar_pblmix = types.MethodType(
+        ph.PhysicsDriver._couple_scalar_pblmix, driver)
+    cfg = types.SimpleNamespace(dx=12000.0, dy=12000.0, bl_pbl_physics=11,
+                                scalar_pblmix=0)
     atmosphere = {name: np.full(shape, 0.25, F)
                   for name in ("u", "v", "theta", "qv", "qc", "qi",
                                "pressure", "exner", "dz")}

@@ -260,7 +260,7 @@ def test_ysu_tanhf_is_the_reference_platforms_tanhf():
     from gpuwm.core.kernels import _extra_header_text, _preamble, module_options
 
     if not _strict():
-        pytest.skip("ysu_tanhf is the strict unit's (ysu_topo.cuh); a default "
+        pytest.skip("ysu_tanhf is the strict unit's (ysu_480_topo.cuh); a default "
                     "process composes ysu from ysu_topo_default.cuh")
     blob = (YSU_WIDE_DIR / "tanhf-ref.bin").read_bytes()
     nbad, nspread = np.frombuffer(blob, "<i4", 2)
@@ -271,11 +271,11 @@ def test_ysu_tanhf_is_the_reference_platforms_tanhf():
     correctly_rounded = np.tanh(x[:nbad].astype(np.float64)).astype(np.float32)
     assert np.count_nonzero(correctly_rounded.view(np.uint32)
                             != want[:nbad].view(np.uint32)) == nbad
-    src = (_preamble() + _extra_header_text("ysu")
+    src = (_preamble() + _extra_header_text("ysu_480")
            + 'extern "C" __global__ void p(const float*x,float*o,int n)'
              '{int i=blockIdx.x*blockDim.x+threadIdx.x;'
              'if(i<n)o[i]=ysu_tanhf(x[i]);}')
-    fn = cp.RawModule(code=src, options=module_options("ysu")).get_function("p")
+    fn = cp.RawModule(code=src, options=module_options("ysu_480")).get_function("p")
     d = cp.asarray(x)
     o = cp.empty_like(d)
     fn(((n + 255) // 256,), (256,), (d, o, np.int32(n)))

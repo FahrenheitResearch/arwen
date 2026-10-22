@@ -243,6 +243,32 @@ def _as_host(arr) -> np.ndarray:
     return cp.asnumpy(arr) if isinstance(arr, cp.ndarray) else np.asarray(arr)
 
 
+def _hold_domain_carrier(dst: np.ndarray, src, name: str, index: int) -> None:
+    """Keep a domain-owned carrier whole: every slab must build the same words.
+
+    A carrier ``tilestream.global_inventory.global_keys`` names (fixed shape,
+    passed whole to every tile, e.g. the 3D PWP ocean status word
+    ``fields/_pwp_status``, shape (1,)) has no rows to scatter.  Scattering
+    it raised "IndexError: tuple index out of range" at the start of every
+    store-direct forecast with sf_ocean_physics = 2, which 48 h runs select
+    by default (full CONUS HRRR, --devices 2, 2026-10-21).  Slab 0's
+    words are kept; a later slab that built different words is refused,
+    because the domain would otherwise start from one slab's arbitrary view.
+    """
+    host = np.asarray(_as_host(src))
+    if host.shape != dst.shape:
+        raise PreparedStoreError(
+            f"slab {index} built domain carrier {name!r} at shape "
+            f"{host.shape}, not its fixed shape {dst.shape}")
+    if index == 0:
+        dst[...] = host
+    elif not np.array_equal(dst.view(np.uint8), np.ascontiguousarray(host).view(np.uint8)):
+        raise PreparedStoreError(
+            f"slab {index} built domain carrier {name!r} with words that "
+            "differ from slab 0's; a domain-owned carrier must be "
+            "slab-invariant")
+
+
 def _scatter_rows(dst: np.ndarray, src, j0: int) -> None:
     """Write ``src``'s rows into ``dst`` at ``j0``, inferring the staggering.
 
@@ -947,6 +973,8 @@ def store_from_prepared_cache(path, *, expected_identity, cfg, static,
             for spec in manifest:
                 store[spec.name] = hoststore.alloc_pinned_array(
                     spec.shape(nz, ny, nx), spec.dtype)
+            domain_carriers = {spec.name for spec in manifest
+                               if spec.fixed_shape is not None}
             for name, shape in geo_shapes.items():
                 geo_store[name] = hoststore.alloc_pinned_array(
                     shape, np.dtype(ginv[name].dtype))
@@ -958,6 +986,10 @@ def store_from_prepared_cache(path, *, expected_identity, cfg, static,
                     f"slab {index} produced carrier {name!r} that slab 0 did "
                     "not; the manifest is not slab-invariant")
             host = _as_host(arr)
+            if name in domain_carriers:
+                _hold_domain_carrier(store[name], host, name, index)
+                seen.add(name)
+                continue
             disagreed = _seam_disagreement(store[name], host, j0, rows)
             if disagreed:
                 seams[name] = seams.get(name, 0) + disagreed

@@ -5,6 +5,12 @@ use std::slice;
 
 /// The caller supplies disjoint contiguous fields and an output buffer.
 /// kind: 0 = volume term sum, 1 = lowest-level sum, 2 = column integral.
+/// # Safety
+/// `fields` addresses `nfields` pointers to `nz * ncol` initialized f32 values.
+/// `starts` and `opstarts` have `nterms + 1` elements; their terminal offsets
+/// give the lengths of `species` and `codes`/`operands`. `alt` and, for kind 2,
+/// `dz8w` have `nz * ncol` elements. Output has that length for kind 0,
+/// otherwise `ncol`; it is writable and disjoint from all readable inputs.
 #[no_mangle]
 pub unsafe extern "C" fn gpuwm_chem_diagnostic_f32(
     fields: *const *const f32, nfields: usize,

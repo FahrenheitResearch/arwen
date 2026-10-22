@@ -117,7 +117,9 @@ impl Job {
             use std::os::windows::process::CommandExt;
             launch.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
         }
-        let mut child = launch.spawn()?;
+        let child = launch.spawn()?;
+        #[cfg(windows)]
+        let mut child = child;
         #[cfg(windows)]
         if let Err(error) = owner.assign(&child) {
             let _ = child.kill();

@@ -26,7 +26,7 @@ from gpuwm import proc_identity
 from gpuwm.gui import runs
 from gpuwm.gui.machines import FOLLOW
 from gpuwm.gui.server import build_server, serve_in_thread
-from test_gui_create_draft import PORT, PORT_TRIES, Page, PageRunner
+from test_gui_create_draft import PORT, PORT_TRIES, Page, PageRunner, browser as browser
 
 playwright_api = pytest.importorskip("playwright.sync_api")
 expect = playwright_api.expect
@@ -64,22 +64,6 @@ def served(tmp_path_factory):
     finally:
         server.shutdown()
         server.server_close()
-
-
-@pytest.fixture(scope="module")
-def browser():
-    with playwright_api.sync_playwright() as p:
-        launched = None
-        for channel in ("chrome", "msedge", None):
-            try:
-                launched = p.chromium.launch(channel=channel, headless=True) if channel else p.chromium.launch(headless=True)
-                break
-            except Exception:  # noqa: BLE001 - try the next browser this computer has
-                continue
-        if launched is None:
-            pytest.skip("No Chromium-family browser is installed")
-        yield launched
-        launched.close()
 
 
 @pytest.fixture()

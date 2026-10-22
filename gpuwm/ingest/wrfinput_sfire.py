@@ -16,6 +16,9 @@ SFIRE_INPUT_DIMENSIONS = {
     "FMC_GC": ("fuel_moisture_classes", *MASS_DIMS),
     "FMEP": ("fuel_moisture_extended_parameters", *MASS_DIMS),
 }
+from gpuwm.fire_inputs import canopy_fields
+SFIRE_INPUT_DIMENSIONS.update({name: FINE_DIMS for name in canopy_fields()})
+
 # WRF's generated dimension spelling is truncated by its native IO layer.
 # Accept only this observed alias and only for the registry FMEP field.
 FMEP_DIMENSION_ALIAS = "fuel_moisture_extended_paramete"

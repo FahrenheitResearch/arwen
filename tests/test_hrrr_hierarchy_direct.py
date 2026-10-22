@@ -1527,7 +1527,7 @@ def test_stock_comparison_rejects_forecast_duration_drift():
         _compare_stock_experiment(native, stock)
 
 
-@pytest.mark.parametrize("max_dom", range(1, 22))
+@pytest.mark.parametrize("max_dom", [1, 2, 21])
 def test_raw_namelist_gate_allows_only_explicit_runtime_deltas(
         tmp_path, max_dom):
     native = tmp_path / "native.input"

@@ -424,11 +424,20 @@ class Variable:
         return values
 
     def read_sample_window(self, *, i0: float, ni: int, j0: float, nj: int,
-                           method: str) -> np.ndarray:
-        """Same-spacing nearest/bilinear sampling in Rust after CF decoding."""
+                           method: str, mask: str | None = None) -> np.ndarray:
+        """Same-spacing nearest/bilinear sampling in Rust after CF decoding.
+
+        ``bilinear-masked`` names a class field of the same file in
+        ``mask`` (a land mask): each output point averages only the source
+        points of its own class, as WPS interpolates land-only fields.
+        """
         sample = {"i0": float(i0), "ni": int(ni), "j0": float(j0),
                   "nj": int(nj), "method": method}
-        if (method not in {"nearest", "bilinear"}
+        if (method == "bilinear-masked") != bool(mask):
+            raise ValueError(f"{self.name}: bilinear-masked sampling and a mask go together")
+        if mask:
+            sample["mask"] = str(mask)
+        if (method not in {"nearest", "bilinear", "bilinear-masked"}
                 or not np.isfinite([sample["i0"], sample["j0"]]).all()
                 or min(sample["i0"], sample["j0"]) < 0
                 or min(sample["ni"], sample["nj"]) <= 0):
@@ -623,6 +632,8 @@ class Dataset:
                     raise ValueError("exact and sampled windows cannot be combined")
                 command += ["--sample-window={i0:.17g}:{ni},{j0:.17g}:{nj}".format(**sample_window),
                             f"--sample-method={sample_window['method']}"]
+                if sample_window.get("mask"):
+                    command.append(f"--sample-mask={sample_window['mask']}")
             names = [name] if isinstance(name, str) else list(name)
             command += [os.fspath(self.path), os.fspath(out), *names]
             _run(command,
@@ -677,7 +688,9 @@ class Dataset:
         if window is not None and record.get("window") != list(window):
             raise NetcdfDecodeError(
                 f"{NETCDF_NAME} did not acknowledge the requested window; rebuild the reader")
-        if sample_window is not None and record.get("sample_window") != sample_window:
+        if sample_window is not None and (
+                record.get("sample_window") != {k: v for k, v in sample_window.items() if k != "mask"}
+                or record.get("sample_mask") != sample_window.get("mask")):
             raise NetcdfDecodeError(
                 f"{NETCDF_NAME} did not acknowledge the requested sampled window; rebuild the reader")
         dtype = record.get("dtype", "<f8")

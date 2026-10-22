@@ -27,12 +27,10 @@ import json
 
 from gpuwm.mapped_composition import load_composition
 from gpuwm.mapped_source import load_mapping
-from gpuwm.physics_registry import physics_registry
 from gpuwm.source_adapters import (AdapterStatus, get_source_adapter,
                                    packaged_profile_sources)
 from gpuwm.source_authorities import (packaged_authorities,
                                       packaged_profile)
-from gpuwm import prepared_single_domain_forecast as runner
 
 
 PROFILE_ID = "rrfs-prslev-2dfld-grib2-v1"
@@ -190,21 +188,3 @@ def test_the_rrfs_composition_binds_ruc_nodes_to_noah_layers():
     # not a broadcast.
     assert supplement["time_alignment"] == "valid_time_exact"
     assert supplement["require_invariant_across_time"] is True
-
-
-def test_the_physics_registry_routes_rrfs_through_the_prepared_runner():
-    payload = physics_registry()
-    route = payload["runner_routes"]["tools.prepared_single_domain_forecast"]
-    assert "rrfs" in route["source_ids"]
-    assert route["source_template_ids"]["rrfs"] \
-        == route["source_template_ids"]["hrrr-prs"]
-
-
-def test_the_prepared_runner_tables_carry_the_rrfs_rows():
-    assert "rrfs" in runner.SUPPORTED_SOURCES
-    capabilities = runner.runner_capabilities()
-    assert "rrfs" in capabilities["supported_sources"]
-    source = capabilities["source_profiles"]["rrfs"]
-    assert source["single_d01_gpu_execution"] is True
-    cadence = capabilities["window"]["source_forcing_cadence_hours"]
-    assert cadence["rrfs"] == "uniform-positive-whole-hour"

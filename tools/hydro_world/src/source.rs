@@ -27,6 +27,13 @@ pub struct AutoRule {
     /// many cells (absent: always).
     #[serde(default)]
     pub max_cells: Option<usize>,
+    /// When the row's grid over the box has more than `max_cells` cells,
+    /// keep the row and build on its grid coarsened by the smallest integer
+    /// factor that fits (each cell the block mean of the row's own grid),
+    /// instead of passing to the next rule. A last rule with this set means
+    /// every box on Earth builds.
+    #[serde(default)]
+    pub coarsen: bool,
     /// Why this limit (memory and time per box, measured).
     pub reason: String,
 }

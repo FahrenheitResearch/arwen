@@ -26,17 +26,21 @@ that routine cannot drift from the first.
 
 from __future__ import annotations
 
-from collections import defaultdict
 import csv
 import hashlib
-import importlib.util
 from pathlib import Path
 import struct
 
 import numpy as np
 import pytest
 
-from gpuwm.core.fp32_ulp import fp32_ulp_distance
+from noahmp_kernel_sources import (
+    load_oracle_tool as _load_tool,
+    oracle_f32_from_bits as _f32_from_bits,
+    oracle_ulp_delta as _ulp_delta,
+    load_oracle_cases as _load_cases,
+)
+
 from gpuwm.core.noahmp_thermal import THERMAL_EVALUATORS
 
 
@@ -57,44 +61,7 @@ PINNED_THERMAL_ASSETS = {
 THERMAL_NVALUES = 2162
 
 
-def _load_tool(name: str, path: Path):
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 VALIDATOR = _load_tool("noahmp_thermal_validator", THERMAL_VALIDATOR)
-
-
-def _f32_from_bits(bits: str) -> np.float32:
-    return np.frombuffer(struct.pack("<I", int(bits, 16)),
-                         dtype=np.float32)[0]
-
-
-def _ulp_delta(got: np.float32, want: np.float32) -> int:
-    return int(fp32_ulp_distance(got, want).reshape(-1)[0])
-
-
-def _load_cases(path: Path, leaves: set[str] | None = None):
-    with path.open(newline="", encoding="ascii") as stream:
-        rows = list(csv.DictReader(stream))
-    packed = defaultdict(lambda: {"int": {}, "in": {}, "out": {}})
-    for row in rows:
-        if leaves is not None and row["leaf"] not in leaves:
-            continue
-        packed[(row["leaf"], row["case"])][row["role"]][int(row["slot"])] = row
-    cases = {}
-    for key, roles in packed.items():
-        ints = np.array([int(float(roles["int"][s]["value"]))
-                         for s in sorted(roles["int"])], dtype=np.int64)
-        x = np.array([_f32_from_bits(roles["in"][s]["bits"])
-                      for s in sorted(roles["in"])], dtype=np.float32)
-        outs = [(s, roles["out"][s]["name"], int(roles["out"][s]["index"]),
-                 roles["out"][s]["live"] == "1", roles["out"][s]["bits"])
-                for s in sorted(roles["out"])]
-        cases[key] = (ints, x, outs)
-    return cases
 
 
 THERMAL_CASES = _load_cases(THERMAL_CSV)

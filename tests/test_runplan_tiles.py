@@ -85,6 +85,13 @@ dj_parent_cells = 0
 """
 
 
+#: A fetched-source receipt in the real fetch's shape.  Since abf04433ed8
+#: (parallel cache reuse) the chain snapshots it (launch_supplements.
+#: hrrr_source_manifest) right after the fetch, so a placeholder byte is a
+#: malformed manifest that stops the chain before the preparation stage.
+_FETCHED_SUMS = "0" * 64 + "  hrrr.t12z.wrfprsf00.grib2\n"
+
+
 def _config(tmp_path, *, tiles="", nested=False, follow=False,
             source="hrrr", name="exp"):
     """One HRRR-shaped experiment TOML, plus the route's four inputs.
@@ -183,7 +190,7 @@ def _drive(tmp_path, monkeypatch, *, tiles="", nested=False):
     def fake_fetch(arguments, run_dir, *, events=None, posting_relay=False):
         out = Path(arguments[arguments.index("--out") + 1])
         out.mkdir(parents=True, exist_ok=True)
-        (out / "SHA256SUMS").write_text("x", encoding="utf-8")
+        (out / "SHA256SUMS").write_text(_FETCHED_SUMS, encoding="utf-8")
         staged.append(("fetch", [str(a) for a in arguments]))
         return {}
 

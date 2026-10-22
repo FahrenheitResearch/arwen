@@ -25,10 +25,18 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
     let mut options = std::collections::BTreeMap::new();
     let mut inputs = Vec::new();
-    while let Some(flag) = args.next() {
-        let value = args
-            .next()
-            .ok_or_else(|| err(format!("{flag} requires a value")))?;
+    while let Some(raw_flag) = args.next() {
+        // `--flag=value` is the same option as `--flag value`; the attached
+        // spelling is how a caller passes a value opening with a minus.
+        let (flag, value) = match raw_flag.split_once('=') {
+            Some((name, value)) if name.starts_with("--") => (name.to_string(), value.to_string()),
+            _ => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| err(format!("{raw_flag} requires a value")))?;
+                (raw_flag, value)
+            }
+        };
         if flag == "--input" {
             inputs.push(PathBuf::from(value));
             continue;

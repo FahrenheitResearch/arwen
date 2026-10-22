@@ -88,29 +88,49 @@ def test_full_fixture_pins():
         assert hashlib.sha256((FULL_ROOT/name).read_bytes()).hexdigest()==digest
 
 
+#: The full-solver cases by name, the directories load(FULL_ROOT) reads: one
+#: test per case so the 132 kernel runs can be spread across workers and
+#: shards instead of one 150 s loop on one lane.  Listed at collection from
+#: the directory alone (no oracle bytes are read until a case runs).
+FULL_CASE_NAMES=tuple(sorted(child.name for child in FULL_ROOT.iterdir()
+                             if (child/'MANIFEST.txt').is_file()))
+
+
+@pytest.fixture(scope='module')
+def full_cases():
+    cases=load(FULL_ROOT)
+    assert tuple(cases)==FULL_CASE_NAMES
+    return cases
+
+
+def test_full_kernel_case_list_is_the_oracle():
+    assert len(FULL_CASE_NAMES)==132
+
+
 @pytest.mark.gpu
 @requires_gpu
-def test_full_kernel_all_cases():
+@pytest.mark.parametrize('name',FULL_CASE_NAMES)
+def test_full_kernel_all_cases(name,full_cases):
     cp=pytest.importorskip('cupy')
     from gpuwm.core.chem_plumerise import launch
-    for name,case in load(FULL_ROOT).items():
-        met={k:cp.asarray(case[k][:,None,None]) for k in
-             ('t_phy','p_phy','rho','u_phy','v_phy','z','z_at_w')}
-        met['qv']=cp.asarray(case['qv_in'][:,None,None])
-        shape=(1,1)
-        result=launch(met,cp.asarray(case['ebu_in'][:,None,None]),frp_inst=cp.full(shape,case['frp_inst'],dtype=cp.float32),
-            kpbl=cp.full(shape,case['kpbl'],dtype=cp.int32),uspdavg2d=cp.full(shape,case['uspdavg2d'],dtype=cp.float32),
-            hpbl2d=cp.full(shape,case['hpbl2d'],dtype=cp.float32),audit=True)
-        if not result['columns'].size:
-            assert name.endswith(('f01','f02')); continue
-        actual=dict(ebu=cp.asnumpy(result['ebu'][0]).T,
-            k_min=cp.asnumpy(result['bounds'][0,0]),k_max=cp.asnumpy(result['bounds'][0,1]),
-            flam_frac=cp.asnumpy(result['diagnostics'][0,0]),
-            ztopmax=cp.asnumpy(result['diagnostics'][0,1:9]).reshape(4,2).T,
-            steps=cp.asnumpy(result['steps'][0]).reshape(4,2).T)
-        for f,key in enumerate(('w','t','qv','qc','qh','qi','radius')): actual[key]=cp.asnumpy(result['profiles'][0,f])
-        for key,value in actual.items():
-            assert ulp_table(value,case[key])==dict(max_ulp=0,n_nonzero=0,n=np.asarray(value).size),(name,key)
+    case=full_cases[name]
+    met={k:cp.asarray(case[k][:,None,None]) for k in
+         ('t_phy','p_phy','rho','u_phy','v_phy','z','z_at_w')}
+    met['qv']=cp.asarray(case['qv_in'][:,None,None])
+    shape=(1,1)
+    result=launch(met,cp.asarray(case['ebu_in'][:,None,None]),frp_inst=cp.full(shape,case['frp_inst'],dtype=cp.float32),
+        kpbl=cp.full(shape,case['kpbl'],dtype=cp.int32),uspdavg2d=cp.full(shape,case['uspdavg2d'],dtype=cp.float32),
+        hpbl2d=cp.full(shape,case['hpbl2d'],dtype=cp.float32),audit=True)
+    if not result['columns'].size:
+        assert name.endswith(('f01','f02')); return
+    actual=dict(ebu=cp.asnumpy(result['ebu'][0]).T,
+        k_min=cp.asnumpy(result['bounds'][0,0]),k_max=cp.asnumpy(result['bounds'][0,1]),
+        flam_frac=cp.asnumpy(result['diagnostics'][0,0]),
+        ztopmax=cp.asnumpy(result['diagnostics'][0,1:9]).reshape(4,2).T,
+        steps=cp.asnumpy(result['steps'][0]).reshape(4,2).T)
+    for f,key in enumerate(('w','t','qv','qc','qh','qi','radius')): actual[key]=cp.asnumpy(result['profiles'][0,f])
+    for key,value in actual.items():
+        assert ulp_table(value,case[key])==dict(max_ulp=0,n_nonzero=0,n=np.asarray(value).size),(name,key)
 
 
 @pytest.mark.gpu

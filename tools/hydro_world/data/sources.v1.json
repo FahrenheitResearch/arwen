@@ -8,7 +8,9 @@
     },
     {
       "row": "global-copernicus-glo90",
-      "reason": "GLO-90 (3 arc-seconds) for every larger box; the Rhine box 4-12E 46-52N is 69.1 M cells and builds in 2.4 s on an RTX 5070 Ti (24 threads, 1.85 GB peak host memory)."
+      "max_cells": 250000000,
+      "coarsen": true,
+      "reason": "GLO-90 (3 arc-seconds) for every larger box up to 250 M working cells; the Rhine box 4-12E 46-52N is 69.1 M cells and builds in 2.4 s on an RTX 5070 Ti (24 threads, 1.85 GB peak host memory). Above 250 M cells (continental and global boxes) the working grid is the GLO-90 grid coarsened by the smallest integer factor that fits, each cell the block mean of the GLO-90 cells it holds, so any box on Earth builds: at 3 arc-seconds the 86 x 46 degree 12 km continental domain is 5.7 G cells (about 160 GB GPU, 200 GB host at the 28 and 35 bytes per cell above); coarsened by 5 to 15 arc-seconds it is 228 M cells and built in 2 min 20 s on a shared 24-thread node (8.6 GB peak host memory, 740,474 flowpaths, 0 contract errors)."
     }
   ],
   "rows": [

@@ -11,9 +11,12 @@ import pytest
 from gpuwm import fetch_connections, fetch_pool, fetch_ranges, fetch_routes
 
 
-@pytest.mark.parametrize("cap", [1, 2, 7, 30, 61])
-@pytest.mark.parametrize("workers", [None, 1, 4, 24, 150])
-@pytest.mark.parametrize("files", [1, 4, 25, 100])
+@pytest.mark.parametrize("cap,workers,files", [
+    (1, None, 1), (1, 150, 100), (2, 1, 4), (2, 4, 25),
+    (7, None, 100), (7, 4, 4), (7, 24, 1),
+    (30, None, 25), (30, 24, 100), (30, 150, 4),
+    (61, 1, 100), (61, 150, 1),
+])
 def test_file_times_range_width_never_exceeds_box_cap(monkeypatch, cap, workers, files):
     monkeypatch.setenv("GPUWM_FETCH_MAX_CONNECTIONS", str(cap))
     for row in fetch_pool._width_table()["rows"]:
@@ -95,6 +98,11 @@ def test_ranges_write_exact_disjoint_parts_and_pin_generation(tmp_path, monkeypa
 
 @pytest.mark.parametrize("failure", ["ignored", "wrong-span", "changed", "truncated"])
 def test_range_failure_never_publishes_a_partial_file(tmp_path, monkeypatch, failure):
+    if failure == "truncated":
+        from concurrent.futures import ThreadPoolExecutor
+        # Queue the other ranges behind a failed first range to exercise cancellation.
+        monkeypatch.setattr(fetch_ranges, "ThreadPoolExecutor",
+                            lambda **kwargs: ThreadPoolExecutor(max_workers=1))
     monkeypatch.setattr(fetch_ranges, "MIN_PART", 20)
     payload = bytes(range(100))
     def open_object(request, **kwargs):
@@ -148,9 +156,10 @@ def test_bridge_reserves_active_and_possible_idle_sockets(tmp_path, monkeypatch,
     monkeypatch.setattr(rustwx_fetch, "_idle_capable", lambda *args: idle_capable)
     reserved = []
     @contextlib.contextmanager
-    def reserve(count):
+    def reserve(count, *, minimum=1):
+        assert minimum == idle + 1
         reserved.append(count)
-        yield
+        yield count
         reserved.pop()
     monkeypatch.setattr(fetch_connections, "lease", reserve)
     def process(command, *, env, **kwargs):
@@ -249,3 +258,21 @@ def test_small_cap_uses_python_when_bridge_may_retain_idle_sockets(tmp_path, mon
     monkeypatch.setattr(fetch, "_stream_capable", lambda *a: True)
     plan = fetch_routes.resolve_request("hrrr-prs", cycle=datetime(2026, 10, 18, 12), hours=3, host="aws")
     assert fetch._route_stream_downloader(plan, SimpleNamespace(fetch_workers=None)) is None
+
+
+def test_lease_grants_what_is_free_and_names_holders_while_waiting(tmp_path, monkeypatch, capfd):
+    """V56 2026-10-20: another process's slots left setup waiting silently forever."""
+    monkeypatch.setenv(fetch_connections.DIRECTORY_ENV, str(tmp_path))
+    monkeypatch.setenv(fetch_connections.MAX_CONNECTIONS_ENV, "4")
+    monkeypatch.setattr(fetch_connections, "WAIT_NOTICE_AFTER_S", 0.1)
+    monkeypatch.setenv(fetch_connections.SLOT_WAIT_ENV, "0.5")
+    with fetch_connections.lease(3) as held:
+        assert held == 3
+        assert fetch_connections.free_slots() == 1
+        with fetch_connections.lease(4) as partial:
+            assert partial == 1
+        with fetch_connections.lease(1):
+            with pytest.raises(RuntimeError, match="no fetch connection slot came free"):
+                with fetch_connections.lease(2):
+                    pass
+    assert "waiting" in capfd.readouterr().err

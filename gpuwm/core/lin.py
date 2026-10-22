@@ -43,8 +43,8 @@ def launch_lin(theta, qv, qc, qr, qi, qs, qg, rho, pii, pressure, z, dz, ht,
 
 import cupy as cp
 from gpuwm.config import RunConfig
-from gpuwm.core import constants as c
 from gpuwm.core.state import DTYPE, DomainState
+from gpuwm.core.wsm_family import (finish_fields, precipitation_surface)
 
 def apply(state: DomainState, cfg: RunConfig, dt: float, *,
           refl_10cm_due: bool = False):
@@ -55,48 +55,21 @@ def apply(state: DomainState, cfg: RunConfig, dt: float, *,
     if missing:
         raise ValueError("mp_physics=2 state lacks Lin fields: "
                          + ", ".join(missing))
-    thb = state.thb if state.thb.ndim == 3 else state.thb[:, None, None]
-    phb = state.phb if state.phb.ndim == 3 else state.phb[:, None, None]
-    theta = state.scratch((nz, ny, nx), "lin_theta")
-    rho = state.scratch((nz, ny, nx), "lin_rho")
-    pii = state.scratch((nz, ny, nx), "lin_pii")
-    dz = state.scratch((nz, ny, nx), "lin_dz")
-    z8w = state.scratch((nz + 1, ny, nx), "lin_z8w")
-    theta[...] = thb + state.thp
-    rho[...] = 1.0 / state.alt
-    pii[...] = cp.power(state.p / DTYPE(c.P0), DTYPE(c.RCP))
-    z8w[...] = (phb + state.php) / DTYPE(c.G)
-    dz[...] = z8w[1:] - z8w[:-1]
+    from gpuwm.core.wsm6 import _wsm6_prepare
+    theta, rho, pii, dz = _wsm6_prepare(state, "lin")
 
+    z8w = state.existing_scratch("lin_z8w")
     z = state.scratch((nz, ny, nx), "lin_z")
     z[...] = DTYPE(0.5) * (z8w[1:] + z8w[:-1])
-    surface = (ny, nx)
-    rainnc = state.scratch(surface, "mp_rainnc")
-    rainncv = state.scratch(surface, "mp_rainncv")
-    snownc = state.scratch(surface, "mp_snownc")
-    snowncv = state.scratch(surface, "mp_snowncv")
-    graupelnc = state.scratch(surface, "mp_graupelnc")
-    graupelncv = state.scratch(surface, "mp_graupelncv")
-    sr = state.scratch(surface, "mp_sr")
+    surface = precipitation_surface(state)
 
-    from gpuwm.core.microphysics import (MicrophysicsDiagnostics,
-                                         moist_physics_finish,
-                                         save_pre_mp_theta)
+    from gpuwm.core.microphysics import save_pre_mp_theta
     save_pre_mp_theta(state)
     launch_lin(
         theta, state.qv, state.qc, state.qr, state.qi, state.qs, state.qg,
-        rho, pii, state.p, z, dz, state.ht, rainnc, rainncv, snownc, snowncv,
-        graupelnc, graupelncv, sr, dt)
-    if refl_10cm_due:
-        from gpuwm.core.refl import compute_and_stash_refl_10cm
-        refl_t = state.scratch((nz, ny, nx), "refl_t")
-        refl_t[...] = theta * pii
-        compute_and_stash_refl_10cm(state, cfg, refl_t, state.p)
-    moist_physics_finish(state, cfg, theta, dt)
-    return MicrophysicsDiagnostics(
-        rainnc=rainnc, rainncv=rainncv, sr=sr,
-        snownc=snownc, snowncv=snowncv,
-        graupelnc=graupelnc, graupelncv=graupelncv)
+        rho, pii, state.p, z, dz, state.ht, dt=dt, **surface)
+    return finish_fields(state, cfg, theta, pii, dt, surface,
+                         refl_10cm_due=refl_10cm_due)
 
 
 

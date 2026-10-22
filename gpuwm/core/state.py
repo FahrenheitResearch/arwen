@@ -1043,12 +1043,13 @@ class DomainState:
         self._phb_host: np.ndarray | None = None
         self._dz_min: float | None = None
 
-        if cfg.nwp_diagnostics == 1:
+        if cfg.nwp_diagnostics == 1 or cfg.gsd_diagnostics == 1:
             # WRF UP_HELI_MAX (Registry.EM_COMMON:2083, IO "rh02"): allocate
             # the serialized running-max accumulator eagerly so restart
             # manifests and wrfout frame schemas are deterministic from the
             # first step (gpuwm/core/uh_diag.py owns the update/reset).
             self.scratch((ny, nx), "up_heli_max")
+        if cfg.nwp_diagnostics == 1:
             # The two consumer-owned tracking windows, allocated on the
             # same gate and for the same reason: deterministic manifests
             # from the first step.  They never reach a wrfout frame;
@@ -1060,6 +1061,12 @@ class DomainState:
             # window the run actually folded.
             self.scratch((ny, nx), "uh_follow_window")
             self.scratch((ny, nx), "uh_spawn_window")
+
+        from gpuwm.core.output_diagnostics import initialize as initialize_output
+        initialize_output(self, cfg)
+
+        from gpuwm.core.hail import initialize as initialize_hail
+        initialize_hail(self, cfg)
 
         # Chem species (gpuwm/core/chem_state.py): the ``chem_<row>`` /
         # ``chem0_<row>`` arena views and ``self.chem``, allocated ONLY when

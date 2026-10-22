@@ -18,6 +18,7 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGETS = ("x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc")
@@ -26,6 +27,34 @@ MARKER = SEPARATOR + "\n5.  ARWEN TUI -- LOCKED DEPENDENCIES AND LICENCE TEXTS\n
 END = SEPARATOR + "\nEND ARWEN TUI LOCKED DEPENDENCIES AND LICENCE TEXTS\n"
 COPIES = ("licenses/THIRD-PARTY-LICENSES-bridge-binaries.txt",
           "tools/rustwx/assets/basemap/THIRD-PARTY-LICENSES.txt")
+
+
+def inventory(root: Path) -> dict:
+    """Keep the two interface locks' inventory against the shared registry."""
+    vendor = root / "tools/rustwx/vendor/crates-io"
+    locks, packages = {}, {}
+    for workspace in ("arwen-launchpad", "arwen-tui"):
+        raw = (root / "tools" / workspace / "Cargo.lock").read_bytes()
+        locks[workspace] = hashlib.sha256(raw).hexdigest()
+        for item in tomllib.loads(raw.decode())["package"]:
+            if "source" not in item:
+                continue
+            directory = vendor / (item["name"] + "-" + item["version"])
+            if not directory.is_dir():
+                directory = vendor / item["name"]
+            package = tomllib.loads((directory / "Cargo.toml").read_text(encoding="utf-8"))["package"]
+            checksum = json.loads((directory / ".cargo-checksum.json").read_text())["package"]
+            if ((package["name"], package["version"]) != (item["name"], item["version"])
+                    or checksum != item["checksum"]):
+                raise ValueError(f"{directory.name}: package identity or checksum differs from the lock")
+            key = item["name"], item["version"]
+            record = {"name": item["name"], "version": item["version"],
+                      "package_sha256": checksum, "license": package.get("license"),
+                      "license_file": package.get("license-file")}
+            if packages.setdefault(key, record) != record:
+                raise ValueError(f"{directory.name}: interface locks disagree")
+    return {"command": "python tools/update_tui_license_notice.py (shared registry maintenance: tools/rustwx/VENDOR.md)",
+            "locks": locks, "packages": [packages[key] for key in sorted(packages)]}
 
 
 def resolved_packages(root: Path) -> tuple[list[dict], dict[str, int]]:
@@ -48,7 +77,7 @@ def resolved_packages(root: Path) -> tuple[list[dict], dict[str, int]]:
 
 def render_section(root: Path, packages: list[dict], counts: dict[str, int]) -> str:
     texts, inventory = {}, []
-    vendor = (root / "tools/arwen-ui-vendor/crates-io").resolve()
+    vendor = (root / "tools/rustwx/vendor/crates-io").resolve()
     for package in packages:
         directory = Path(package["manifest_path"]).resolve().parent
         directory.relative_to(vendor)
@@ -114,13 +143,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="verify without writing either copy")
     args = parser.parse_args()
+    manifest = (json.dumps(inventory(ROOT), indent=2) + "\n").encode()
     packages, counts = resolved_packages(ROOT)
     first = (ROOT / COPIES[0]).read_bytes().decode("utf-8")
     expected = compose(first, render_section(ROOT, packages, counts)).encode("utf-8")
     if args.check:
+        if (ROOT / "tools/arwen-ui-vendor/manifest.json").read_bytes() != manifest:
+            raise SystemExit("TUI vendor inventory is stale; run tools/update_tui_license_notice.py")
         if any((ROOT / path).read_bytes() != expected for path in COPIES):
             raise SystemExit("TUI licence notices are stale; run tools/update_tui_license_notice.py")
     else:
+        (ROOT / "tools/arwen-ui-vendor/manifest.json").write_bytes(manifest)
         for path in COPIES:
             (ROOT / path).write_bytes(expected)
     print(f"PASS: {len(packages)} locked TUI dependency packages, two identical binary notices")

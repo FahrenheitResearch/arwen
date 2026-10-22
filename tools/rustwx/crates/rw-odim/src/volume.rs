@@ -456,28 +456,6 @@ impl PolarVolume {
         names.dedup();
         names
     }
-
-    /// Sweeps carrying at least one radial-velocity moment.
-    pub fn velocity_sweeps(&self) -> Vec<&Sweep> {
-        self.sweeps
-            .iter()
-            .filter(|s| {
-                s.moments
-                    .iter()
-                    .any(|m| m.kind == QuantityKind::RadialVelocity)
-            })
-            .collect()
-    }
-
-    /// Whether every sweep that carries a velocity moment also has a usable
-    /// Nyquist interval.
-    ///
-    /// This is the one-line answer to "can this volume be dealiased", and it
-    /// is false when even one velocity sweep is missing its ceiling.
-    pub fn velocity_is_dealiasable(&self) -> bool {
-        let sweeps = self.velocity_sweeps();
-        !sweeps.is_empty() && sweeps.iter().all(|s| s.nyquist.is_usable())
-    }
 }
 
 /// Parse ODIM's `YYYYMMDD` + `HHMMSS` pair into an instant.

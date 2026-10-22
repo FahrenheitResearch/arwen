@@ -76,11 +76,8 @@ extern "C" __global__ void catchment_pet(
       !isfinite(vwind[i]) || !isfinite(longwave[i]) || !isfinite(shortwave[i])) {
     potential_et_m_s[i] = nan(""); status[i] |= 1; return;
   }
-  model->pet_options.yes_aorc = 1;
-  model->pet_options.use_energy_balance_method = method == 1;
   model->pet_options.use_aerodynamic_method = method == 2;
   model->pet_options.use_combination_method = method == 3;
-  model->pet_options.use_priestley_taylor_method = method == 4;
   model->pet_options.use_penman_monteith_method = method == 5;
   model->pet_params.wind_speed_measurement_height_m = p[0];
   model->pet_params.humidity_measurement_height_m = p[1];
@@ -112,15 +109,7 @@ extern "C" __global__ void catchment_pet(
   model->pet_params.wind_speed_measurement_height_m = 2.0;
   model->surf_rad_forcing.incoming_shortwave_radiation_W_per_sq_m = shortwave[i];
   model->surf_rad_forcing.incoming_longwave_radiation_W_per_sq_m = longwave[i];
-  model->surf_rad_forcing.air_temperature_C = model->pet_forcing.air_temperature_C;
-  const double saturation = calc_air_saturation_vapor_pressure_Pa(model->pet_forcing.air_temperature_C);
-  const double actual = q * pres / 0.622;
-  double rh = 100.0 * actual / saturation;
-  if (rh > 100.0) rh = 99.0;
-  model->surf_rad_forcing.relative_humidity_percent = rh;
-  // At this pin calculate_solar_radiation only changes solar_results; run_pet
-  // uses the supplied shortwave even when shortwave_radiation_provided is 0.
-  // This component exposes PET, not the unused solar diagnostic BMI internals.
+  // Use the supplied shortwave for every PET method.
   if (method != 2)
     model->pet_forcing.net_radiation_W_per_sq_m = calculate_net_radiation_W_per_sq_m(model);
   double result;

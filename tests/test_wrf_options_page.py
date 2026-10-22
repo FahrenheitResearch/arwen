@@ -51,5 +51,5 @@ def test_every_wrf_selector_value_has_a_row():
 def test_the_ocean_mixed_layer_imports():
     tool = _tool()
     assert tool.probe("sf_ocean_physics", 1)["imports"] is True
-    refused = tool.probe("sf_ocean_physics", 2)
-    assert refused["imports"] is False and "sf_ocean_physics" in refused["reason"]
+    # WRF's 3-D PWP ocean is ported (lane/cap-slab-ocean, aa6bdeed308).
+    assert tool.probe("sf_ocean_physics", 2)["imports"] is True

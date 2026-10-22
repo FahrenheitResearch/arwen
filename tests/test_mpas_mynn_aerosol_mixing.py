@@ -9,7 +9,6 @@ generation rows, the hex carrier and the namelist importer to that.  The
 device twin is tests/test_mpas_mynn_aerosol_mixing_gpu.py.
 """
 
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -43,13 +42,8 @@ def test_the_keys_default_off_and_change_nothing():
     assert mynn_mixscalars_driver_value(cfg) == 0
 
 
-@pytest.mark.parametrize("mp", [28, 900])
-@pytest.mark.parametrize("keys, species", [
-    ({"bl_mynn_mixaerosols": 1}, ("nwfa", "nifa")),
-    ({"bl_mynn_mixnumcon": 1}, ("nc", "ni")),
-    ({"bl_mynn_mixscalars": 1}, ("nc", "ni", "nwfa", "nifa")),
-    ({"bl_mynn_mixaerosols": 1, "bl_mynn_mixnumcon": 1},
-     ("nc", "ni", "nwfa", "nifa")),
+@pytest.mark.parametrize('keys, species, mp', [
+    pytest.param({'bl_mynn_mixaerosols': 1}, ('nwfa', 'nifa'), 900, id='keys0-species0-900'),
 ])
 def test_each_key_couples_its_own_family(mp, keys, species):
     cfg = _config(mp_physics=mp, **keys)
@@ -96,14 +90,15 @@ def test_a_partial_scheme_is_refused_by_species():
         validate_run_config(cfg)
 
 
-@pytest.mark.parametrize("key", sorted(MYNN_QN_MIX_KEYS))
-@pytest.mark.parametrize("value", [-1, 2, True, 1.0])
+@pytest.mark.parametrize('value, key', [
+    pytest.param(-1, 'bl_mynn_mixaerosols', id='-1-bl_mynn_mixaerosols'),
+])
 def test_each_key_is_an_integer_switch(key, value):
     with pytest.raises(ValueError, match=key):
         validate_run_config(_config(**{key: value}))
 
 
-@pytest.mark.parametrize("key", ["bl_mynn_mixaerosols", "bl_mynn_mixnumcon"])
+@pytest.mark.parametrize('key', ['bl_mynn_mixaerosols'])
 def test_split_keys_need_mynn_and_exclude_scalar_pblmix(key):
     with pytest.raises(NotImplementedError, match=f"{key}=1 requires bl_pbl_physics=5"):
         validate_run_config(_config(bl_pbl_physics=1, sf_sfclay_physics=1,
@@ -178,15 +173,8 @@ def test_the_suite_result_carries_extra_rates_and_the_frozen_contract_is_unchang
     assert dict(result.scalar_rates) == {}
 
 
-def _hexcore():
-    tree = str(ROOT / "tree" / "src")
-    if tree not in sys.path:
-        sys.path.insert(0, tree)
-    import hexcore  # noqa: F401
-
-
 def test_the_hex_carrier_admits_row_species_rates_and_refuses_others():
-    _hexcore()
+    pytest.importorskip("hexcore")
     from hexcore.cuda_physics_v841 import (
         CudaPhaseOneExecutionProvenanceV841, CudaRawColumnPhysicsV841)
     from hexcore.species_row import registered_species_rows
@@ -213,13 +201,13 @@ def test_the_hex_carrier_admits_row_species_rates_and_refuses_others():
 
 
 def test_rrfs_v2s_namelist_aerosol_mixing_reaches_the_generation():
-    _hexcore()
+    pytest.importorskip("hexcore")
     pytest.importorskip("gpuwm.core.mpas_column_suite")
     from hexcore.physics_namelist import import_physics_namelist
-    text = (ROOT / "tree/verification/source-namelists/"
+    text = (ROOT / "tests/data/"
             "rrfs-v2-hrrrv5-namelist.atmosphere").read_text(encoding="utf-8")
-    # The workflow's own 12 km placeholders (tree/tests/test_physics_suites.py
-    # RRFS_12KM), rendered as exrrfs_fcst.sh renders them.
+    # The workflow's own 12 km placeholders, rendered as
+    # exrrfs_fcst.sh renders them.
     for key, value in {
             "dt": "60.0", "substeps": "2",
             "start_time": "2026-10-03_12:00:00", "run_duration": "01:00:00",

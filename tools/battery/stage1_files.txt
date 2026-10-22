@@ -722,12 +722,11 @@ tests/test_tiles_door_legs.py
 # public quickstart telling CUDA-12 readers to install the exact wheel names
 # the code had just stopped printing.
 tests/test_doctor_cuda_headers.py
-# The wrf-rust pin rider's core guard and its two consumers.  The pin moved
+# The wrf-rust pin rider's core guard and its observation consumer. The pin moved
 # from four copies of `== "0.2.35"` to one window in gpuwm/science_core.py;
 # these are what refuse a return to a hard equality pin, and what prove a
 # score file reports the version that ACTUALLY read the run.
 tests/test_obs_model_source.py
-tests/test_flagship_tools.py
 tests/test_obs_cross_reader.py
 # Isobaric height read between layer interfaces through the Rust rw-isobaric
 # seam the storm tracker, the GNSS-RO operator, the verification diagnostics
@@ -1893,7 +1892,6 @@ tests/test_native_posted_tree_identity.py
 tests/test_native_posted_tree_recovery.py
 # A136 native posted proof: a finishing download must not overtake older
 # leads waiting on the same host and delay their posting markers.
-tests/test_fetch_pool_host_order.py
 
 # A174: the Noah WRF 4.6.1 parity file's CPU rows (fixture receipts, branch
 # coverage, the baseline table, the mirror) and A167's compiler-row guard,
@@ -2373,7 +2371,6 @@ tests/test_chem_table.py
 tests/test_chem_config.py
 tests/test_chem_front_door.py
 tests/test_chem_restart_roundtrip.py
-tests/test_chem_product_inventory.py
 tests/test_chem_outputs.py
 tests/test_chem_sum_pm_wrf471_parity.py
 tests/test_chem_bdy_wrf471_parity.py
@@ -2459,7 +2456,6 @@ tests/test_rrtmg_aerosol_optics.py
 # Named source radiation generation, recipe planning and scalar/batch cloud
 # wrapper forms. Prevents the operational aerosol selection from being
 # rejected by an unintended modern default or silently using old cloud radii.
-tests/test_shortwave_source_doors.py
 tests/test_rrtmg_source_cloud_form.py
 
 # Coupled source cloud generation and prescribed smoke metadata. Prevents
@@ -2747,7 +2743,6 @@ tests/test_wrfinput_start_base_wrf461.py
 tests/test_ysu_bep_rural_drag.py
 tests/test_ysu_wrf461_parity.py
 tests/test_mp28_launch_abi.py
-tests/test_mixing_package_admission.py
 tests/test_microphysics_release_scope.py
 
 tests/test_km1_wrf461_oracle.py
@@ -2814,24 +2809,15 @@ tests/test_fetch_stream_tail.py
 # would have passed every leg. The device rows run on gpu_shard_files.txt.
 tests/test_fast_sbm_admission.py
 tests/test_fast_sbm_bulk_start.py
-tests/test_fast_sbm_cold_contract.py
-tests/test_fast_sbm_collision.py
-tests/test_fast_sbm_condensation.py
-tests/test_fast_sbm_derived.py
-tests/test_fast_sbm_nucleation.py
 tests/test_fast_sbm_oracle_fixtures.py
 tests/test_fast_sbm_packed_tables.py
 tests/test_fast_sbm_port_oracle.py
-tests/test_fast_sbm_sedimentation.py
-tests/test_fast_sbm_state.py
 tests/test_fast_sbm_state_integration.py
 tests/test_fast_sbm_tables.py
 tests/test_fast_sbm_transport_integration.py
-tests/test_fast_sbm_warm_column.py
 tests/test_fast_sbm_water_budget.py
 tests/test_health_census_companions.py
 tests/test_fetch_command_abi.py
-tests/test_picture_catalog_receipts.py
 
 # Publication rehearsal completeness, isolation, project capacity and vendor hygiene.
 tests/test_workflow_rehearsals.py
@@ -2934,7 +2920,6 @@ tests/test_lin_contract.py
 tests/test_lin_frame_arithmetic.py
 tests/test_lin_identity_extension.py
 tests/test_lin_oracle_rebuild.py
-tests/test_metem_module_entry.py
 tests/test_noahmp_snow_age_generation.py
 tests/test_nsas_admission.py
 tests/test_nsas_column_oracle.py
@@ -2944,7 +2929,6 @@ tests/test_registry_history_extension.py
 tests/test_rw_wps_import_closure.py
 tests/test_solar_generation.py
 tests/test_urban480_generation.py
-tests/test_urban480_history.py
 tests/test_urban480_import.py
 tests/test_urban480_input_static.py
 tests/test_urban48_ground_water.py
@@ -2961,9 +2945,7 @@ tests/test_wrfinput_mp_names.py
 tests/test_wsm3_admission.py
 tests/test_wsm3_wrf461_column_exact.py
 tests/test_wsm5.py
-tests/test_wsm5_intake_consumers.py
 tests/test_wsm6r.py
-tests/test_wsm6r_intake_consumers.py
 tests/test_wsm7_admission.py
 tests/test_wsm7_registry_metadata.py
 tests/test_wsm7_staging.py
@@ -2993,7 +2975,6 @@ tests/test_doctor_projected_intermediate.py
 tests/test_hrrr_geog_tokens.py
 tests/test_lake_ice.py
 tests/test_lower_boundary_restart_echo.py
-tests/test_ocean1_oml_parameter_homes.py
 tests/test_oml_contract.py
 tests/test_satmedmf_admission.py
 tests/test_satmedmf_ccpp_oracle.py
@@ -3024,5 +3005,25 @@ tests/test_obs_streams_in_engine.py
 tests/test_analysis_bundle.py
 tests/test_analysis_boundary.py
 tests/test_analysis_door.py
+tests/test_member_leg_cost.py
 tests/test_single_core_gate.py
 tests/test_numerics_default.py
+
+# slimrel-merge294: retain CPU staging, git-free provenance, publication smoke
+# and wrong-basin selection coverage introduced on the 2.9.4 release line.
+tests/test_earth2_loader_preparation.py
+tests/test_build_provenance.py
+tests/test_publish_packet_smoke.py
+tests/test_cyclone_region_selection.py
+
+# pf294 final fold (2026-10-22): the CPU tests of the defects the WOOF 1.1 readiness
+# runs and the release pass found (ocean climatology outage, CPU-only bake host,
+# cyclone nest wandering, glibc wheel tag, short hydro runs, coastal HRRR static,
+# 3-hourly nest render).
+tests/test_ocean_climatology_staging.py
+tests/test_receipt_job_no_card.py
+tests/test_storm_follow_parking.py
+tests/test_wheel_glibc_tag.py
+tests/test_hydro_short_run_history.py
+tests/test_static_sources.py
+tests/test_renderer_warnings.py

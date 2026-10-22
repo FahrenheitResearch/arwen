@@ -373,41 +373,6 @@ pub fn compare(path_a: &Path, path_b: &Path) -> Result<(), Difference> {
     Ok(())
 }
 
-/// Parse the meta JSON region and set `writer.build` to null so two files
-/// that differ only in their build stamp compare equal.
-pub fn meta_without_build(
-    bytes: &[u8],
-    header: &RwsHeader,
-    path: &Path,
-) -> Result<serde_json::Value, Difference> {
-    let start = 64usize;
-    let end = start + header.meta_len as usize;
-    let meta: serde_json::Value =
-        serde_json::from_slice(bytes.get(start..end).ok_or_else(|| {
-            Difference::Io(format!("{}: meta region out of range", path.display()))
-        })?)
-        .map_err(|err| Difference::Io(format!("{}: meta JSON: {err}", path.display())))?;
-    Ok(mask_writer_build(meta))
-}
-
-/// Read one 64-byte index record at position `index`.
-pub fn record_at(
-    bytes: &[u8],
-    header: &RwsHeader,
-    index: usize,
-    path: &Path,
-) -> Result<ChunkRecord, Difference> {
-    let start = header.index_offset as usize + index * 64;
-    let slice = bytes.get(start..start + 64).ok_or_else(|| {
-        Difference::Io(format!(
-            "{}: index record {index} out of range",
-            path.display()
-        ))
-    })?;
-    ChunkRecord::unpack(slice)
-        .map_err(|err| Difference::Io(format!("{}: index record {index}: {err}", path.display())))
-}
-
 /// Read the `writer.build` stamp out of a store artifact: `run.json` (any
 /// `.json` file with `writer.build`) or an `.rws` hour file's meta JSON.
 pub fn read_writer_build(path: &Path) -> Result<String, String> {

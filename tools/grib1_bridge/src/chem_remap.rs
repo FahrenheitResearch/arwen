@@ -14,7 +14,7 @@ pub unsafe extern "C" fn gpuwm_hybrid_full_pressure_f32(
     surface_pressure: *const f32,
     ncol: usize,
     out: *mut f32,
-    _workers: usize,
+    workers: usize,
 ) -> i32 {
     catch_unwind(AssertUnwindSafe(|| {
         if a_half.is_null()
@@ -50,15 +50,16 @@ pub unsafe extern "C" fn gpuwm_hybrid_full_pressure_f32(
         {
             return ERR_NONFINITE;
         }
-        let dest = std::slice::from_raw_parts_mut(out, nlevel * ncol);
-        for (l, k) in lev.iter().enumerate() {
-            let k = *k as usize;
-            for (c, p) in ps.iter().enumerate() {
-                let upper = a[k - 1] + b[k - 1] * f64::from(*p);
-                let lower = a[k] + b[k] * f64::from(*p);
-                dest[l * ncol + c] = (0.5 * (upper + lower)) as f32;
+        let dest = out as usize;
+        crate::parallel::run_ranges(nlevel * ncol, workers, |start, stop| {
+            for i in start..stop {
+                let k = lev[i / ncol] as usize;
+                let p = ps[i % ncol];
+                let upper = a[k - 1] + b[k - 1] * f64::from(p);
+                let lower = a[k] + b[k] * f64::from(p);
+                *((dest as *mut f32).add(i)) = (0.5 * (upper + lower)) as f32;
             }
-        }
+        });
         OK
     }))
     .unwrap_or(ERR_PANIC)
@@ -75,7 +76,7 @@ pub unsafe extern "C" fn gpuwm_weighted_combination_f32(
     scale: f64,
     humidity: *const f32,
     out: *mut f32,
-    _workers: usize,
+    workers: usize,
 ) -> i32 {
     catch_unwind(AssertUnwindSafe(|| {
         if fields.is_null() || weights.is_null() || out.is_null() {
@@ -101,23 +102,25 @@ pub unsafe extern "C" fn gpuwm_weighted_combination_f32(
         if !scale.is_finite() || w.iter().any(|v| !v.is_finite()) {
             return ERR_NONFINITE;
         }
-        if q.map_or(false, |q| {
+        if q.is_some_and(|q| {
             q.iter().any(|v| !v.is_finite() || *v < 0.0 || *v >= 1.0)
         }) {
             return ERR_NONFINITE;
         }
-        let dest = std::slice::from_raw_parts_mut(out, n);
-        for i in 0..n {
-            let mut sum = 0.0f64;
-            for j in 0..nfield {
-                sum += w[j] * f64::from(f[j * n + i]);
+        let dest = out as usize;
+        crate::parallel::run_ranges(n, workers, |start, stop| {
+            for i in start..stop {
+                let mut sum = 0.0f64;
+                for j in 0..nfield {
+                    sum += w[j] * f64::from(f[j * n + i]);
+                }
+                let value = scale * sum;
+                *((dest as *mut f32).add(i)) = (match q {
+                    Some(q) => value / (1.0 - f64::from(q[i])),
+                    None => value,
+                }) as f32;
             }
-            let value = scale * sum;
-            dest[i] = (match q {
-                Some(q) => value / (1.0 - f64::from(q[i])),
-                None => value,
-            }) as f32;
-        }
+        });
         OK
     }))
     .unwrap_or(ERR_PANIC)

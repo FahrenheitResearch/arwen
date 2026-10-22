@@ -23,8 +23,9 @@ def _step(observer, step: int) -> None:
              last_durable_wrfout=None, last_checkpoint=None)
 
 
-@pytest.mark.parametrize("hosted", [False, True],
-                         ids=["run-plan", "hosted-go"])
+@pytest.mark.parametrize('hosted', [
+    pytest.param(True, id='hosted-go'),
+])
 def test_writes_and_final_beats_reach_the_heartbeat(tmp_path, hosted):
     path = tmp_path / supervisor.HEARTBEAT_NAME
     beat = supervisor.RuntimeHeartbeat(

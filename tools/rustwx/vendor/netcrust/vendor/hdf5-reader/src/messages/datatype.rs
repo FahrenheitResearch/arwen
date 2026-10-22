@@ -337,14 +337,22 @@ fn parse_compound(cursor: &mut Cursor<'_>, flags: u32, size: u32, version: u8) -
     let mut fields = Vec::with_capacity(n_members);
 
     for _ in 0..n_members {
+        let name_start = cursor.position();
         let name = cursor.read_null_terminated_string()?;
 
         if version < 3 {
-            // V1/V2: name is padded to 8-byte boundary (relative to start of name)
-            // The null terminator is included in the count. We already read
-            // through the null terminator via read_null_terminated_string.
-            // Pad the position to 8-byte alignment.
-            cursor.align(8)?;
+            // V1/V2: the name, null terminator included, is padded to a
+            // multiple of eight bytes counted from the START OF THE NAME
+            // (HDF5 format spec, compound datatype properties). Aligning the
+            // cursor's absolute position instead is only the same thing when
+            // the message happens to begin on an 8-byte boundary of the
+            // buffer; in a version-2 object header it often does not, and
+            // every member after the first is then read from the wrong
+            // offset (GAMIC `ray_header` tables failed as
+            // `UnsupportedDatatypeClass(13)`).
+            let consumed = (cursor.position() - name_start) as usize;
+            let pad = (8 - consumed % 8) % 8;
+            cursor.skip(pad)?;
         }
 
         let byte_offset = if version == 1 {
@@ -731,6 +739,39 @@ mod tests {
                 assert_eq!(fields[0].name, "dataset");
                 assert_eq!(fields[0].byte_offset, 0);
                 assert_eq!(fields[1].name, "dimension");
+                assert_eq!(fields[1].byte_offset, 8);
+            }
+            other => panic!("expected Compound, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_compound_v1_name_padding_is_relative_to_the_name() {
+        // A version-1 compound whose message starts three bytes into the
+        // buffer, as a message inside a version-2 object header can.
+        let mut data = vec![0xAA, 0xBB, 0xCC];
+        data.extend_from_slice(&class_word(6, 1, 2).to_le_bytes());
+        data.extend_from_slice(&16u32.to_le_bytes());
+        for (name, offset) in [(&b"a\0"[..], 0u32), (&b"bb\0"[..], 8u32)] {
+            data.extend_from_slice(name);
+            data.extend(std::iter::repeat_n(0u8, 8 - name.len()));
+            data.extend_from_slice(&offset.to_le_bytes());
+            data.extend_from_slice(&[0u8; 28]);
+            data.extend_from_slice(&class_word(1, 1, 0x20).to_le_bytes());
+            data.extend_from_slice(&8u32.to_le_bytes());
+            data.extend_from_slice(&0u16.to_le_bytes());
+            data.extend_from_slice(&64u16.to_le_bytes());
+            data.extend_from_slice(&[52u8, 11, 0, 52]);
+            data.extend_from_slice(&1023u32.to_le_bytes());
+        }
+        let mut cursor = Cursor::new(&data);
+        cursor.skip(3).unwrap();
+        let msg = parse(&mut cursor, data.len() - 3).unwrap();
+        match &msg.datatype {
+            Datatype::Compound { fields, .. } => {
+                assert_eq!(fields.len(), 2);
+                assert_eq!(fields[0].name, "a");
+                assert_eq!(fields[1].name, "bb");
                 assert_eq!(fields[1].byte_offset, 8);
             }
             other => panic!("expected Compound, got {:?}", other),

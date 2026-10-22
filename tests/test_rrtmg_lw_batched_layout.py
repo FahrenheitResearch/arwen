@@ -143,8 +143,10 @@ def test_gpoint_band_helpers_preserve_standalone_statements():
 
 
 def test_prol_gpoint_arithmetic_and_accum_order_unchanged():
+    from gpuwm.core import rrtmg_lw as lw
     kernels = ROOT / "gpuwm/core/kernels"
-    chain = (kernels / "rrtmg_lw_chain_coalesced.cu").read_text()
+    chain = lw._lw_coalesced_source(
+        (kernels / "rrtmg_lw_chain.cu").read_text())
     staged = (kernels / "rrtmg_lw_zbatched.cu").read_text()
     def branch(source, name):
         source = source[source.index(name + "("):]

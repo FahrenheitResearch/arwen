@@ -8,7 +8,6 @@ import pytest
 from gpuwm.core.track_boundary import boundary_reason
 from gpuwm.core.storm_tracking import FollowConfig, NestFootprint, StormTracker
 from gpuwm.core.storm_track_writer import TrackConfig, TrackWriter
-from gpuwm.cyclone_sources import source_ids
 
 
 def low(ci, cj=20, n=41):
@@ -43,11 +42,10 @@ def test_nan_uniform_and_interior_tied_minima_do_not_claim_exit():
     assert boundary_reason(plane,box(),(0,20),extremum="minimum") is None
 
 
-@pytest.mark.parametrize("source", source_ids())
 @pytest.mark.parametrize("dx", [1000.,12000.,25000.])
-def test_tracking_uses_model_state_not_forcing_name(monkeypatch, source, dx):
+def test_tracking_uses_model_state_not_forcing_name(monkeypatch, dx):
     # The forcing name never reaches the tracker. The same forecast low must
-    # move and terminate identically at every initialization source.
+    # move and terminate identically at each physical grid spacing.
     import gpuwm.core.storm_tracking as st
     cfg = FollowConfig(field="pressure",threshold=1010.,level_hpa=0,search_margin_cells=50,
                        radius_km=15*dx/1000., cooldown_seconds=0., min_shift_cells=1, max_shift_cells=6)

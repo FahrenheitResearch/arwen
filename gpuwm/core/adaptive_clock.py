@@ -1253,10 +1253,25 @@ class AdaptiveClockDriver:
                     best = clock.spec.start_ticks
                 continue
             alarms = [
-                (clock.spec.history_ticks, clock.spec.start_ticks
-                 + clock.spec.history_begin_ticks, True),
                 (clock.spec.restart_ticks, 0, False),
                 (clock.spec.lbc_interval_ticks, 0, False)]
+            # Only a cadence-changing spec (history_interval2_ticks set) uses
+            # the offset resolver. Every DomainTicks has the method, so asking
+            # for the method sent single-cadence specs with history off
+            # (history_ticks=0) into an integer division by zero (2fa7960471).
+            if getattr(clock.spec, "history_interval2_ticks", None) is None:
+                # Single-cadence specs retain their original alarm contract.
+                # Only cadence-changing specs need the offset resolver.
+                alarms.append((clock.spec.history_ticks,
+                               clock.spec.start_ticks + clock.spec.history_begin_ticks,
+                               True))
+            else:
+                history_due = clock.spec.start_ticks + clock.spec.next_history_offset(
+                    clock.ticks - clock.spec.start_ticks)
+                if (clock.spec.history_end_ticks is None
+                        or history_due - clock.spec.start_ticks <= clock.spec.history_end_ticks):
+                    if best is None or history_due < best:
+                        best = history_due
             # Positive physics cadences are deadlines too. A shortened
             # history step must neither re-phase them nor round their
             # requested period to a multiple of the nominal dt.

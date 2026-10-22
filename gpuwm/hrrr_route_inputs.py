@@ -158,6 +158,86 @@ def _repeated(value, count: int) -> str:
     return _column([value] * count)
 
 
+def _chem_namelist_rows(runs, *, stock: bool):
+    """``(&dynamics rows, &chem group)`` for a chem run, or two empty lists.
+
+    The route prepares from these namelists, and the preparation is what
+    takes the chem start and edge state (gpuwm/ingest/real.py
+    fill_boundary_sources), so a chem TOML whose namelist carried no
+    ``&chem`` prepared with no chemistry at all.  The group is written in
+    the importer's own vocabulary (gpuwm/namelist_chem.py): ``chem_opt``
+    from the set's WRF package, the input/boundary switches when a
+    boundary source row is enabled, every carried ``&chem`` key, and the
+    operational fork's keys for a fork package (``chem_opt = 18``).  The
+    round trip then demands the re-import reproduce chem_sets and
+    chem_sources.  Native half only: the stock WRF arm is a non-chem build
+    (gpuwm.hrrr_hierarchy_direct._require_raw_stock_delta records it).
+    Empty for a chem-off tree, so every chem-off emission keeps its bytes.
+    """
+    root = runs[0]
+    if stock or not getattr(root, "chem_sets", ""):
+        return [], []
+    from gpuwm.chem_table import catalog, chem_names
+    from gpuwm.namelist_chem import (CARRIED_DYNAMICS_KEYS, CARRIED_KEYS,
+                                     FORK_CHEM_OPT_SETS)
+
+    count = len(runs)
+    for run in runs[1:]:
+        if run.chem_sets != root.chem_sets or run.chem_sources != root.chem_sources:
+            raise HrrrRouteInputError(
+                "chem_sets/chem_sources differ between domains; WRF's &chem "
+                "carries one package for the whole tree")
+    sets = chem_names(root.chem_sets, "chem_sets")
+    table = catalog()
+    chem_opt = None
+    if len(sets) == 1:
+        row = table.sets.get(sets[0])
+        if row is not None and row.wrf_chem_opt is not None:
+            chem_opt = row.wrf_chem_opt
+        else:
+            chem_opt = {name: value for value, name
+                        in FORK_CHEM_OPT_SETS.items()}.get(sets[0])
+    if chem_opt is None:
+        raise HrrrRouteInputError(
+            f"chem_sets = {root.chem_sets!r} has no WRF &chem package the "
+            "route's namelist can spell, so the preparation would run "
+            "without that chemistry")
+    fork = chem_opt in FORK_CHEM_OPT_SETS
+    sources = chem_names(root.chem_sources, "chem_sources")
+
+    def value(raw):
+        if isinstance(raw, bool):
+            return _logical(raw)
+        if isinstance(raw, float):
+            return _f(raw)
+        return raw
+
+    def row(key, raw):
+        return f" {key:<36s}= {_repeated(value(raw), count)}"
+
+    dynamics = [row(key, getattr(root, key)) for key in CARRIED_DYNAMICS_KEYS]
+    group = ["&chem", row("chem_opt", chem_opt)]
+    if any(table.sources[name].kind == "boundary" for name in sources
+           if name in table.sources):
+        group += [row("chem_in_opt", 1), row("have_bcs_chem", True)]
+    group += [row(key, getattr(root, key)) for key in CARRIED_KEYS]
+    if fork:
+        group += [
+            row("simple_dir_fdb", int(getattr(root, "simple_dir_fdb", 0))),
+            *([row("plumerise_flag", 2)]
+              if root.plume_fire_properties == "frp" else []),
+            *([row("bb_dcycle", True)]
+              if root.fire_emission_mode == "trailing_24h_dcycle" else []),
+        ]
+        group.append(row("enh_vermix", bool(root.enh_vermix)))
+        if float(root.flam_part) != -1.0:
+            group.append(row("flam_part", float(root.flam_part)))
+        if int(root.aer_drydep_opt) != 0:
+            group.append(row("aer_drydep_opt", int(root.aer_drydep_opt)))
+    group += ["/", ""]
+    return dynamics, group
+
+
 #: Every switch the route's physics gate reads -- resolved per domain
 #: at emission, per shipped profile at the wizard's pairing gate.
 ROUTE_GATED_SWITCHES = ("mp_physics",)
@@ -704,7 +784,7 @@ def render_namelist_input(exp, *, stock: bool = False,
     def recipe_fills_otherwise(key, value) -> bool:
         return key in recipe and value != recipe[key]
 
-    for key in ("fractional_seaice",):
+    for key in ("fractional_seaice", "seaice_threshold"):
         values = {getattr(run, key) for run in runs}
         if len(values) > 1:
             raise HrrrRouteInputError(
@@ -833,6 +913,13 @@ def render_namelist_input(exp, *, stock: bool = False,
         f" run_minutes                         = {minutes},",
         f" run_seconds                         = {seconds},",
     ]
+    for run in runs:
+        if any(getattr(run, key) % 60 for key in (
+                "history_interval2_s", "history_interval_change_s")):
+            raise HrrrRouteInputError(
+                "the fork's history_interval2/history_interval_change namelist "
+                "controls require whole minutes; fractional minutes would "
+                "silently shift the history alarms")
     lines.append(dt_columns(start, "start").rstrip("\n"))
     lines.append(dt_columns(end, "end").rstrip("\n"))
     lines.extend([
@@ -842,7 +929,13 @@ def render_namelist_input(exp, *, stock: bool = False,
         f"{_repeated('.true.', count)}",
         f" history_interval_s                  = "
         f"{_column(int(d.history_interval_s) for d in domains)}",
+        *([f" history_interval2                   = {_column(int(r.history_interval2_s / 60) for r in runs)}",
+           f" history_interval_change             = {_column(int(r.history_interval_change_s / 60) for r in runs)}"]
+          if any(r.history_interval2_s for r in runs) else []),
         f" frames_per_outfile                  = {_repeated(1, count)}",
+        *([f" gsd_diagnostics                     = {root.run.gsd_diagnostics},",
+           f" reset_interval1                     = {_column(r.reset_interval1 for r in runs)}"]
+          if root.run.gsd_diagnostics else []),
         *([" cycling                             = .true.,"]
           if cycling else []),
         " restart                             = .false.,",
@@ -917,6 +1010,8 @@ def render_namelist_input(exp, *, stock: bool = False,
         "/",
         "",
         "&physics",
+        f" prec_acc_dt                         = {_column(_f(r.prec_acc_dt) for r in runs)}",
+        f" prec_acc_dt1                        = {_column(_f(r.prec_acc_dt1) for r in runs)}",
         f" mp_physics                          = "
         f"{_column(r.mp_physics for r in runs)}",
         *([f" use_aero_icbc                       = {_logical(root.run.aer_init_opt == 1)},"]
@@ -976,6 +1071,14 @@ def render_namelist_input(exp, *, stock: bool = False,
         *([f" fractional_seaice                   = "
            f"{int(root.run.fractional_seaice)},"]
           if int(root.run.fractional_seaice) != 0 else []),
+        # WRF &physics seaice_threshold (Registry single REAL, default
+        # 100): real.exe's open-water-to-ice skin threshold.  Written when
+        # the config moves it, omitted at 100 so default emissions keep
+        # their bytes.
+        *([f" seaice_threshold                    = "
+           f"{_f(float(root.run.seaice_threshold))},"]
+          if float(getattr(root.run, "seaice_threshold", 100.0)) != 100.0
+          else []),
         f" num_land_cat                        = {int(num_land_cat)},",
         f" sf_urban_physics                    = {_repeated(0, count)}",
         " sst_update                          = 0,",
@@ -1154,6 +1257,13 @@ def render_namelist_input(exp, *, stock: bool = False,
           if any(r.v_mom_adv_order != 3 or r.v_sca_adv_order != 3
                  for r in runs) else []),
         *_drag_and_implicit_advection_rows(runs),
+        # WRF w_crit_cfl (Registry.EM_COMMON:2872, one value for the tree),
+        # written when the config moves it off the 1.0 the importer fills
+        # for a silent namelist, so default emissions keep their bytes.
+        *([f" w_crit_cfl                          = "
+           f"{_f(float(root.run.w_crit_cfl))},"]
+          if float(root.run.w_crit_cfl) != 1.0 else []),
+        *_chem_namelist_rows(runs, stock=stock)[0],
         "/",
         "",
         "&bdy_control",
@@ -1169,6 +1279,7 @@ def render_namelist_input(exp, *, stock: bool = False,
         f"{_column(_logical(r.nested) for r in runs)}",
         "/",
         "",
+        *_chem_namelist_rows(runs, stock=stock)[1],
         "&grib2",
         "/",
         "",
@@ -1488,6 +1599,14 @@ ROUTE_FORECAST_TOML_FIELDS: Mapping[str, str] = MappingProxyType({
     "moist_cq": (
         "gpuwm/core/acoustic.py prepare_moist_cq, the acoustic and "
         "big-step moisture coefficients"),
+    # The zero-layer sea ice model (2.9.4): WRF has no such model and no
+    # namelist key for it, so the pair cannot spell it, and the mirrored
+    # WRF arm never runs it.  The forecast builds it from the bound TOML at
+    # physics initialization.  Before this entry the HRRR v4 recipe's
+    # seaice_prognostic = false (operational HRRR keeps RUC's own ice
+    # column) was refused at emission for a value the forecast does read.
+    "seaice_prognostic": (
+        "gpuwm/ocean/seaice/__init__.py, the sea ice model's initialization"),
     # THE CHEM OPERATOR'S SWITCHES (gpuwm/config.py CHEM_RUN_FIELDS).  This
     # route's emitted pair carries no &chem group (render_namelist_input
     # writes none), so the route's pair cannot spell these -- although a
@@ -1533,6 +1652,22 @@ ROUTE_FORECAST_TOML_FIELDS: Mapping[str, str] = MappingProxyType({
         "gpuwm/core/chem_vertmx.py, the chem vertical mixing"),
     "wetscav_onoff": (
         "gpuwm/core/chem_wetdep.py, large-scale washout"),
+    "simple_dir_fdb": (
+        "gpuwm/core/radiation_composition.py transported_smoke_attr, the "
+        "transported smoke's AOD in the aer_opt=3 shortwave"),
+    "enh_vermix": (
+        "gpuwm/core/chem_vertmx.py, the fork's mixing over burning columns"),
+    "flam_part": (
+        "gpuwm/core/chem_plumerise.py, the fork's flaming fraction"),
+    "aer_drydep_opt": (
+        "gpuwm/core/chem_vertmx.py, the fork's smoke deposition velocity"),
+    # The per-run smoke-off sentence (gpuwm/smoke_execution.py): launch
+    # metadata with no WRF spelling, read by the run's receipts.  A run
+    # whose card could not hold the smoke envelope was refused at emission
+    # for it, and its tree authority did not reload without it (a 4090 host and
+    # a rented box, 2026-10-21).
+    "smoke_off_reason": (
+        "gpuwm/smoke_receipts.py, the run receipt's smoke-off sentence"),
 })
 
 

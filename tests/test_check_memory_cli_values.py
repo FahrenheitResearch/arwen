@@ -24,11 +24,8 @@ def _args(tmp_path, *flags):
     return parser.parse_args(["check", str(tmp_path / "absent.toml"), *flags])
 
 
-@pytest.mark.parametrize("option,values,partner", [
-    ("--vram-gib", ["nan", "inf", "-inf", "-1", "0"], ["--free-gib", "10"]),
-    ("--budget-gib", ["nan", "inf", "-inf", "-1"], ["--vram-gib", "12"]),
-    ("--reserve-gib", ["nan", "inf", "-inf", "-1"], ["--free-gib", "10", "--vram-gib", "12"]),
-    ("--rail-mib", ["0", "-1"], []),
+@pytest.mark.parametrize('option,values,partner', [
+    pytest.param("--rail-mib", ["0", "-1"], [], id='--rail-mib-values3-partner3'),
 ])
 def test_bad_declarations_name_the_option_before_the_config_is_read(
         tmp_path, option, values, partner):

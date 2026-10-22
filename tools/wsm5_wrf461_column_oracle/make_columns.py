@@ -44,38 +44,17 @@ from pathlib import Path
 
 import numpy as np
 
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from tools.wsm6_wrf461_column_oracle.common import (
+    _interfaces, _qsat, _bump, profile, driver_fields)
+
 F32 = np.float32
 NZ = 45
 RD, CP, P0 = 287.0, 1004.5, 1.0e5
 LEVEL_FIELDS = ("th", "qv", "qc", "qr", "qi", "qs", "den", "pii", "p", "dz")
 SURFACE_FIELDS = ("rain", "snow")
-
-
-def _interfaces(dz0: float = 40.0, growth: float = 1.08,
-                dzmax: float = 700.0, nz: int = NZ) -> np.ndarray:
-    dz = np.empty(nz)
-    d = dz0
-    for k in range(nz):
-        dz[k] = d
-        d = min(d * growth, dzmax)
-    return dz
-
-
-def _qsat(t: np.ndarray, p: np.ndarray) -> np.ndarray:
-    """Bolton saturation mixing ratio over liquid (float64; input shaping only)."""
-    tc = t - 273.15
-    es = 611.2 * np.exp(17.67 * tc / (tc + 243.5))
-    es = np.minimum(es, 0.5 * p)
-    return 0.622 * es / (p - es)
-
-
-def _bump(z: np.ndarray, z1: float, z2: float, peak: float) -> np.ndarray:
-    """A smooth hump of ``peak`` between heights z1 and z2 (zero outside)."""
-    if peak == 0.0 or z2 <= z1:
-        return np.zeros_like(z)
-    x = (z - z1) / (z2 - z1)
-    shape = np.where((x > 0) & (x < 1), np.sin(np.pi * np.clip(x, 0, 1)) ** 1.5, 0.0)
-    return peak * shape
 
 
 class Column:
@@ -84,30 +63,11 @@ class Column:
                  warm_nose=None, rh=None, dz=None, seed=0):
         self.name, self.family = name, family
         self.dz = _interfaces() if dz is None else np.asarray(dz, float)
-        zi = np.concatenate(([0.0], np.cumsum(self.dz)))
-        self.z = 0.5 * (zi[:-1] + zi[1:])
+        zi, self.z, self.t, self.p, self.qv = profile(
+            self.dz, ps=ps, ts=ts, lapse=lapse, ztrop=ztrop,
+            inv_depth=inv_depth, inv_dt=inv_dt, warm_nose=warm_nose,
+            rh=rh, seed=seed)
         z = self.z
-        t = ts - lapse * np.minimum(z, ztrop) + 1.5e-3 * np.maximum(z - ztrop - 2000.0, 0.0)
-        if inv_depth > 0.0:
-            ramp = np.clip(1.0 - z / inv_depth, 0.0, 1.0)
-            t = np.where(z < inv_depth, ts - inv_dt * ramp,
-                         ts - lapse * (np.minimum(z, ztrop) - inv_depth)
-                         + 1.5e-3 * np.maximum(z - ztrop - 2000.0, 0.0))
-        if warm_nose is not None:
-            zb, zt, amp = warm_nose
-            t = t + _bump(z, zb, zt, amp)
-        rng = np.random.default_rng(seed)
-        t = t + rng.normal(0.0, 0.15, z.size)
-        p = np.empty_like(z)
-        lnp = np.log(ps)
-        zprev = 0.0
-        for k in range(z.size):
-            lnp -= 9.81 * (z[k] - zprev) / (RD * t[k])
-            p[k] = np.exp(lnp)
-            zprev = z[k]
-        self.t, self.p = t, p
-        rh = (0.7 * np.exp(-z / 6000.0) + 0.05) if rh is None else rh(z)
-        self.qv = np.maximum(rh * _qsat(t, p), 1.0e-7)
         zero = np.zeros_like(z)
         self.qc, self.qr, self.qi, self.qs = (zero.copy() for _ in range(4))
         self.rain = 0.0
@@ -132,12 +92,7 @@ class Column:
             out[field][k] = F32(value)
         # WRF driver quantities, formed in float32.  They are inputs: both
         # sides read these bits.
-        pii = np.power(out["p"] / F32(P0), F32(RD / CP), dtype=F32)
-        th = (out["t"] / pii).astype(F32)
-        tv = out["t"] * (F32(1.0) + F32(0.608) * np.maximum(out["qv"], F32(0.0)))
-        den = (out["p"] / (F32(RD) * tv)).astype(F32)
-        out.update(th=th, pii=pii.astype(F32), den=den)
-        return out
+        return driver_fields(out)
 
 
 def _main_columns() -> list[Column]:

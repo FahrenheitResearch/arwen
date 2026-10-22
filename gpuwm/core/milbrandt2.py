@@ -65,21 +65,6 @@ VERTICAL_LEVEL_BOUNDS = (3, _KMAX)
 MASS_SPECIES = ("qc", "qr", "qi", "qs", "qg", "qh")
 NUMBER_SPECIES = ("nc", "nr", "ni", "ns", "ng", "nh")
 
-#: Values the WRF wrapper and scheme body hard-code.  ``config.py`` refuses
-#: any request that would move one of these, naming the source line.
-FIXED_IDENTITY = {
-    "ccntype": 2,               # :3615 continental
-    "precip_diag": True,        # :3618
-    "sedi": True,               # :3619
-    "warmphase": True,          # :3620
-    "autoconv": True,           # :3621
-    "icephase": True,           # :3622
-    "snow": True,               # :3623
-    "snow_spherical": False,    # :1174
-    "prim_ice_nucl": 1,         # :1175 Meyers + contact
-}
-
-
 def _constants_device() -> cp.ndarray:
     """The read-only FP32 constant vector, uploaded once per process.
 

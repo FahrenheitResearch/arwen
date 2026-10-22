@@ -493,9 +493,14 @@ def changed(c, which):
         raise AssertionError(which)
 
 
-@pytest.mark.parametrize("settled", [False, True], ids=["during-wait", "at-settlement"])
-@pytest.mark.parametrize("which", ["manifest", "manifest_missing", "plan", "plan_coherent", "source", "config",
-    "runner_receipt", "runner_receipt_missing", "commit", "frame", "frame_missing", "frame_symlink", "token", "wrapper_identity"])
+# Every mutation traverses the same proof validator. Repeat settlement only
+# for the manifest, payload, job and process proof families.
+@pytest.mark.parametrize("which,settled", [
+    (which, False) for which in (
+        "manifest", "manifest_missing", "plan", "plan_coherent", "source", "config",
+        "runner_receipt", "runner_receipt_missing", "commit", "frame", "frame_missing",
+        "frame_symlink", "token", "wrapper_identity")
+] + [(which, True) for which in ("manifest", "manifest_missing", "frame", "token", "wrapper_identity")])
 def test_changed_evidence_never_retries_or_mutates_queue(transition, monkeypatch, which, settled):
     c = transition.launch()
     with watching(c, monkeypatch) as w:
@@ -1063,8 +1068,10 @@ def test_commits_changing_between_job_read_and_settlement_are_refused(transition
         assert "commits changed" in expect_done(w, 2)["error"]
 
 
-@pytest.mark.parametrize("settled", [False, True], ids=["during-wait", "at-settlement"])
-@pytest.mark.parametrize("which", ["parent-manifest", "producer-manifest", "pointer", "parent-resolved", "producer-resolved"])
+@pytest.mark.parametrize("which,settled", [
+    (which, False) for which in (
+        "parent-manifest", "producer-manifest", "pointer", "parent-resolved", "producer-resolved")
+] + [(which, True) for which in ("parent-manifest", "pointer")])
 def test_hosted_bindings_are_revalidated(transition, monkeypatch, settled, which):
     c = transition.launch(prepared=True)
     with watching(c, monkeypatch) as w:

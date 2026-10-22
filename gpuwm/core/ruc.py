@@ -36,11 +36,10 @@ remain required for selector admission.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from types import MappingProxyType
 from functools import lru_cache
 import hashlib
 from pathlib import Path
-import re
+from gpuwm.core.noah import _tokens as _list_tokens
 from types import MappingProxyType
 from typing import Mapping
 
@@ -475,12 +474,6 @@ RUC_SEA_ICE_COLUMN_INPUTS = (
     "qvg",
     "qsg",
 )
-
-
-def _list_tokens(line: str) -> list[str]:
-    """Fortran list-directed tokens, retaining quoted descriptions."""
-
-    return [match.group(0) for match in re.finditer(r"'[^']*'|[^,\s]+", line)]
 
 
 def _parse_ruc_vegetation_row(line: str) -> RucVegetationRow:
@@ -3481,7 +3474,7 @@ def _cold_start_columns(t_flat, w_flat, soil_flat, vegetation_flat, ice_flat,
         # The curve on the frozen elements only, as the reference takes
         # it: a warm element's base is negative, which powf answers through
         # its per-element special path (26 s over the full HRRR lattice,
-        # measured on box S) to produce a value the branch then discards.
+        # measured on a rented box) to produce a value the branch then discards.
         columns = np.nonzero(cold)[1]
         t_cold = t_flat[cold]
         w_cold = w_flat[cold]

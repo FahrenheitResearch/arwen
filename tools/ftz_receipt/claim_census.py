@@ -172,6 +172,29 @@ def public_files(root: Path) -> list[str]:
                    if path.strip() and not is_excluded(path, globs)})
 
 
+def _long_path(path: Path) -> Path:
+    """``path`` in a form Windows opens past MAX_PATH (260 characters).
+
+    The census was regenerated on the desktop with the tree under a deep
+    scratch directory, where tests/data/wrf471_diffusion/producer-snapshots/
+    <sha256>-rounding_attribution.py.txt is longer than MAX_PATH.  Reading
+    it raised OSError, the scan skipped it as if it were binary, and its
+    three claim lines dropped out of the census (2.9.4 fold records
+    a2814d3403, a7e2b8dca8, 14f69ad418), so the Linux check reported them
+    unregistered.  Only a file git tracks reaches here, so a read failure
+    other than absence or non-UTF-8 content now raises instead of
+    silently shrinking the census.
+    """
+    if sys.platform != "win32":
+        return path
+    text = str(path.resolve())
+    if text.startswith("\\\\?\\"):
+        return path
+    if text.startswith("\\\\"):
+        return Path("\\\\?\\UNC\\" + text[2:])
+    return Path("\\\\?\\" + text)
+
+
 def anchor_sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -187,8 +210,13 @@ def collect_sites(root: Path, files: list[str],
         if path.suffix and path.suffix not in TEXT_SUFFIXES:
             continue
         try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+            text = _long_path(path).read_text(encoding="utf-8")
+        except FileNotFoundError:
+            # Tracked but absent from this working tree (a deletion not
+            # yet committed).  _long_path makes this a real absence on
+            # Windows too, not a path longer than MAX_PATH.
+            continue
+        except UnicodeDecodeError:
             continue
         for number, line in enumerate(text.splitlines(), 1):
             if not CLAIM_PATTERN.search(line):

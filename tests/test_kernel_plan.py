@@ -10,6 +10,8 @@ import json
 import concurrent.futures
 import threading
 import time
+import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -84,6 +86,117 @@ def _wait(predicate):
             return
         time.sleep(0.01)
     raise AssertionError("pool did not finish")
+
+
+def test_unrecorded_dynamic_requests_share_the_process_compiler(monkeypatch, plan_dir):
+    compiler = _StubCompiler()
+    _fresh(monkeypatch, compiler)
+    assert kernel_plan.install(plan_dir=plan_dir, tag_text="new-shape")
+    kernel_plan._state.update(compiler_pool=object(), replay={})
+    submitted = []
+    def compile_request(arguments, arch, record):
+        submitted.append((arguments, arch))
+        return b"compiled-in-worker", None
+    monkeypatch.setattr(kernel_plan, "_submit_and_wait", compile_request)
+    result = compiler._compile_using_nvrtc_no_warning("new generated reduction", arch="89")
+    assert result == (b"compiled-in-worker", None)
+    assert not compiler.calls
+    assert submitted[0][0]["source"] == "new generated reduction"
+    assert submitted[0][1] == "89"
+    assert kernel_plan._state["counts"]["dynamic_pool_compiles"] == 1
+
+
+def test_concurrent_cold_install_does_not_wrap_its_own_funnel(monkeypatch, plan_dir):
+    """Two members used to nest funnels and wait forever inside cuda_cache.
+
+    Pause the second installer after its initial check, until the first has
+    published its funnel. The CuPy bridge then rereads that funnel as its
+    original compiler. A serialized install never reaches the second identity
+    call. Check the invariant before launching work so a regression fails
+    without leaving a deadlocked thread in the test runner.
+    """
+    from gpuwm import kernel_aot, kernel_warm_pack
+    from gpuwm.core.device_cache import cuda_cache
+
+    here = _StubCompiler()
+    here.__name__ = "cupy.cuda.compiler"
+    original = here._compile_using_nvrtc_no_warning
+    _fresh(monkeypatch, here)
+    monkeypatch.setitem(sys.modules, "cupy", SimpleNamespace(cuda=SimpleNamespace(
+        Device=lambda: SimpleNamespace(id=0),
+        get_current_stream=lambda: SimpleNamespace(ptr=1))))
+    monkeypatch.setattr(kernel_aot, "install", lambda cp: None)
+    monkeypatch.setattr(kernel_plan, "_warm_images", lambda: None)
+    first_entered, second_entered, first_done = (threading.Event() for _ in range(3))
+    errors, installed = [], []
+
+    def identity():
+        if threading.current_thread().name == "member-1":
+            second_entered.set()
+            assert first_done.wait(3)
+        return {"stub": 1}
+
+    def metadata(*args):
+        if threading.current_thread().name == "member-0":
+            first_entered.set()
+            # With the fix member 1 waits on the installation lock instead.
+            second_entered.wait(0.2)
+
+    monkeypatch.setattr(kernel_plan, "compiler_identity", identity)
+    monkeypatch.setattr(kernel_warm_pack, "install_metadata", metadata)
+
+    def install(index):
+        try:
+            installed.append(kernel_plan.install(plan_dir=plan_dir, tag_text="cold members"))
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            if index == 0:
+                first_done.set()
+
+    threads = [threading.Thread(target=install, args=(i,), name=f"member-{i}", daemon=True)
+               for i in range(2)]
+    threads[0].start()
+    assert first_entered.wait(3)
+    threads[1].start()
+    for thread in threads:
+        thread.join(3)
+        assert not thread.is_alive(), "concurrent installation deadlocked"
+    assert not errors and installed == [True, True]
+    assert kernel_plan._state["original"] == original, "funnel would wait on its own future"
+    assert here._compile_using_nvrtc_no_warning.__wrapped__ == original
+    assert not kernel_plan._flight and not plan_dir.exists()
+
+    @cuda_cache()
+    def load():
+        return here._compile_using_nvrtc_no_warning("cold", ("--std=c++17",), None,
+                                                   "cold.cu", ["k"])
+
+    # Static capture and foreground first use share the cold plan and the
+    # actual device-cache factory lock, returning the exact compiler bytes.
+    barrier = threading.Barrier(2)
+    results = []
+
+    def member(warm):
+        try:
+            barrier.wait(3)
+            if warm:
+                kernel_plan.ahead(load)
+            results.append(load())
+        except BaseException as error:
+            errors.append(error)
+
+    threads = [threading.Thread(target=member, args=(warm,), daemon=True) for warm in (True, False)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(3)
+        assert not thread.is_alive(), "cold physics factory deadlocked"
+    assert not errors
+    expected = _StubCompiler()._compile_using_nvrtc_no_warning(
+        "cold", ("--std=c++17",), None, "cold.cu", ["k"])
+    assert results == [expected, expected]
+    assert len(here.calls) == 1
 
 
 def test_next_run_compiles_the_plan_ahead_and_serves_identical_results(monkeypatch, plan_dir):
@@ -590,3 +703,34 @@ def test_aot_hint_precedes_warm_restore_and_keeps_ordinary_funnel(monkeypatch, p
     result = here._compile_using_nvrtc_no_warning("A", ())
     assert result == _StubCompiler()._compile_using_nvrtc_no_warning("A", ())
     assert len(here.calls) == 1
+
+
+def test_parallel_member_initialization_installs_one_compile_funnel(monkeypatch, plan_dir):
+    compiler = _StubCompiler()
+    _fresh(monkeypatch, compiler)
+    entered = threading.Event()
+    second_attempted = threading.Event()
+    identities = []
+
+    def identity():
+        identities.append(1)
+        entered.set()
+        assert second_attempted.wait(2)
+        # Let the competing caller reach install while this installation is open.
+        time.sleep(0.05)
+        return {"stub": 1}
+
+    monkeypatch.setattr(kernel_plan, "compiler_identity", identity)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(kernel_plan.install, plan_dir, "ensemble")
+        assert entered.wait(2)
+        def second():
+            second_attempted.set()
+            return kernel_plan.install(plan_dir, "ensemble")
+        other = pool.submit(second)
+        assert first.result(timeout=3)
+        assert other.result(timeout=3)
+    assert len(identities) == 1
+    result = compiler._compile_using_nvrtc_no_warning("headline")
+    assert result[0].startswith(b"image:headline:")
+    assert len(compiler.calls) == 1

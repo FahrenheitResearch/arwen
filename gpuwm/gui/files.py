@@ -16,6 +16,7 @@ origin.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 import math
 import os
@@ -32,6 +33,10 @@ _PATH = re.compile(r"(?:\b[A-Za-z]:[\\/]|\\\\|/(?:home|Users|tmp|mnt|var|opt|roo
 
 #: The one way the page writes a moment: "2026-09-24 18:00 UTC" (the time the map viewer and Review show).
 UTC_FORMAT = "%Y-%m-%d %H:%M UTC"
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def utc_text(moment) -> str:

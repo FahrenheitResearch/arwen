@@ -225,3 +225,31 @@ def test_sparse_source_roster_binds_each_initial_and_boundary_owner(tmp_path):
     assert observed == [19, 3, 44]
     assert result["member_order"] == [19, 3, 44]
     assert result["members_completed"] == [3, 19, 44]
+
+
+def test_cyclone_hook_consumes_completed_member_histories_before_pass(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from gpuwm.ensemble import cyclone_products
+    collector = Collector()
+    collector.history_ledger = object()
+    owner = session(tmp_path, collector=collector)
+    owner.request = replace(owner.request, cyclone_products={})
+    seen = []
+    def products(root, trajectories, request, **kwargs):
+        assert collector.finished
+        assert kwargs['history_ledger'] is collector.history_ledger
+        assert kwargs['member_order'] == (0, 1, 2)
+        seen.append(root)
+        return {'status': 'complete', 'tracks': 'cyclone/tracks/tracks.json'}
+    # The ledger validator belongs to the writer, outside this hook check.
+    collector.history_ledger = SimpleNamespace(validate_retirements=lambda: [])
+    monkeypatch.setattr(cyclone_products, 'render_roster', products)
+    result = owner.run_prepared(lambda *a, **kw: {'status': 'PASS'}, inputs())
+    assert result['status'] == 'PASS'
+    assert result['products']['cyclone']['status'] == 'complete'
+    assert set(result['timing_seconds']) == {'forecast', 'products', 'total'}
+    assert result['timing_seconds']['total'] >= result['timing_seconds']['products'] >= 0
+    saved = json.loads((tmp_path / 'ensemble-run.json').read_text())
+    assert saved['products']['cyclone'] == result['products']['cyclone']
+    assert saved['timing_seconds'] == result['timing_seconds']
+    assert seen == [tmp_path]

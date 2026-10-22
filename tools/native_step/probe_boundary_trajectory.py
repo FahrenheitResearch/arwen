@@ -18,7 +18,7 @@ from gpuwm.core.physics_inventory import RADIATION_BOUNDARY_FLUXES
 from gpuwm.core.state import refresh_model_time
 from gpuwm.prepared_domain_tree_forecast import main as run
 from gpuwm.native_step import Plan
-from host_annotations import annotate
+from host_annotations import annotate,contexts
 from whole_health_annotations import annotate_health
 from validator_annotations import annotate_descriptors
 from whole_inventory import inventory,endpoint
@@ -27,7 +27,7 @@ from whole_metadata import Metadata
 from time_slots import Frame,frame_for,capture_slots,bind_slots
 from radiation_capture import RadiationFrame,RecordedRadiation
 from radiation_deferred import DeferredNativeChecks
-from radiation_step import conditional_step,RADIATION_FLAG
+from radiation_step import conditional_step,RADIATION_FLAG,CadenceScope
 from native_bundle import Bundle
 from boundary_slots import ExternalBoundarySlots
 from gpuwm.ingest import lateral_bc
@@ -43,36 +43,8 @@ CAPTURE_PERIOD=66;VALIDATOR_PERIOD=67;LAST_NATIVE=404;LAST_PERIOD=406
 ENDPOINTS=(67,399,400,404,406)
 plans={};original_schedule=clock.execute_schedule
 def sync():cp.cuda.get_current_stream().synchronize()
-def due(state,cfg):
- epoch=float(getattr(state,'domain_start_offset',0.) or 0.)
- n=int(np.floor((state.elapsed_seconds-epoch)/cfg.dt+0.5))+1
- return _radiation_step_due(n,_physics_interval_steps(state.physics.radt_minutes,cfg.dt),state.physics.radt_minutes)
-def warm_day(node):
- adapter=legacy_radiation_adapter(node.state.physics.radiation_callable);new=copy.copy(adapter)
- if new.__dict__.get('_ozmixt_buf') is not None:new._ozmixt_buf=new._ozmixt_buf.copy()
- state=copy.copy(node.state);state.elapsed_seconds+=18*3600;fields=dict(state.physics.fields)
- for key,value in fields.items():
-  if key in RADIATION_BOUNDARY_FLUXES:fields[key]=value.copy()
- rrtmg_legacy.RRTMGLegacyRadiation.__call__(new,atmosphere=_prepare_atmosphere(node.state),fields=fields,state=state,cfg=node.cfg.run);sync()
+from whole_metadata import due, warm_day, RadiationMetadata
 
-class RadiationMetadata(Metadata):
- def __init__(self,model,closure,recordings):super().__init__(model,closure);self.recordings=recordings;self.radiation_records={}
- def step(self,gid,clock):
-  node=self.model.node(gid);p=node.state.physics
-  state=copy.copy(node.state);refresh_model_time(state,clock,kernel_launch=True);is_due=due(state,node.cfg.run);now=float(state.elapsed_seconds)
-  saved=self.step_deltas[gid];counts,micro,records,drains=saved;counts=dict(counts)
-  if not is_due:
-   assert counts.pop('radiation')==1
-   records-=self.radiation_records[gid];assert records>=0
-   if node.parent is None:assert counts.pop('cam_ozone')==1
-  self.step_deltas[gid]=(counts,micro,records,drains)
-  try:super().step(gid,clock)
-  finally:self.step_deltas[gid]=saved
-  if is_due:
-   recorded=self.recordings[gid];adapter=recorded.adapter;adapter.update_count+=1;adapter._o33d_host=None;recorded.publish_metadata()
-   for name in ('glw','swdown','gsw','coszen'):
-    if name in p.fields:p.carriers.declare(name,source=physics.CARRIER_SOURCE_RADIATION_SCHEME,model_time=now)
-   if node.parent is None:p.carriers.declare('o3rad',source='cam_ozone',model_time=now)
 
 def schedule(*args,**kwargs):
  callbacks={k:v for k,v in kwargs.items() if k.startswith('on_') and v is not None};closure={}
@@ -95,19 +67,11 @@ def schedule(*args,**kwargs):
    # io-mode none has no history consumer; original scheduler retains alarms.
    assert all(getattr(p,name,None) is None for name in ('radiation_due_override','surface_pbl_due_override','cumulus_due_override'))
    assert _surface_pbl_step_due(2,p.stepbl,cfg.bldt,None)
- @contextmanager
- def contexts(plan):
-  with ExitStack() as stack:
-   stack.enter_context(plan.record(objects))
-   stack.enter_context(annotate(plan,receipt.setdefault('annotations',[]),layout_guard=True))
-   stack.enter_context(annotate_health(plan,receipt.setdefault('health_annotations',[]),step_label=lambda gid,n:live['step_numbers'].get(gid,n)))
-   stack.enter_context(annotate_descriptors(plan,receipt['health_annotations']))
-   yield
  def make_plan(name):
   assert name not in plans;plan=Plan();plan.trace_failures();plans[name]=plan;return plan
  def record_plain(name,callback,*callargs):
   plan=make_plan(name)
-  with contexts(plan):callback(*callargs)
+  with contexts(plan,objects,receipt,live):callback(*callargs)
   sync();receipt.setdefault('phase_plans',{})[name]=plan.describe()
  def frames_and_flags():
   domain_frames=[];domain_flags=[];stage_rows=[]
@@ -162,19 +126,12 @@ def schedule(*args,**kwargs):
   if boundary is not None:boundary_slots[gid]=boundary
   frame_type=type('BoundaryDomainFrame'+str(gid),(C.Structure,),{'_fields_':DomainFrame._fields_+(boundary.fields if boundary is not None else [])});frame_types[gid]=frame_type
   recorded=RecordedRadiation(plan,ROOT/'receipts/libradiation-composed-host.so',rrtmg_legacy,DeferredNativeChecks(plan,ROOT/'receipts/libradiation-composed-host.so',deferred_device_checks),parent_snapshot_buffer=cp.empty_like(node.state.physics.o3rad) if gid==2 else None);recordings[gid]=recorded
-  class CadenceScope:
-   @contextmanager
-   def when(self,**flags):
-    assert flags=={'require':RADIATION_FLAG}
-    before_records=metadata.ledger.records
-    with plan.when(**flags):yield
-    metadata.radiation_records[gid]=metadata.ledger.records-before_records
   cls=rrtmg_legacy.RRTMGLegacyRadiation;original=cls.__call__
   def capture_radiation(adapter,**inputs):
    with recorded.install():return cls.__call__(adapter,**inputs)
   cls.__call__=capture_radiation
   try:
-   with contexts(plan),capture_slots(plan,slots),conditional_step(CadenceScope(),physics),boundary.capture() if boundary is not None else nullcontext():callbacks['on_step'](gid,dom)
+   with contexts(plan,objects,receipt,live),capture_slots(plan,slots),conditional_step(CadenceScope(plan,metadata,gid),physics),boundary.capture() if boundary is not None else nullcontext():callbacks['on_step'](gid,dom)
   finally:cls.__call__=original
   sync();metadata.capture_after(gid,before);frame=frame_type();recorded.bind(frame,prefix='rad_');recorded.frame_template=bytes(frame)
   if boundary is not None:
@@ -197,7 +154,7 @@ def schedule(*args,**kwargs):
   if a.arm=='native' and period==VALIDATOR_PERIOD:
    assert clocks[1].step_count%4==0
    plan=make_plan('validators')
-   with contexts(plan),plan.when(require=1):callbacks['on_period_end'](period,clocks)
+   with contexts(plan,objects,receipt,live),plan.when(require=1):callbacks['on_period_end'](period,clocks)
    sync();receipt.setdefault('phase_plans',{})['validators']=plan.describe()
   elif live['replaying']:metadata.end()
   else:callbacks['on_period_end'](period,clocks)

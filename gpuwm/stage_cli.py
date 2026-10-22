@@ -58,7 +58,6 @@ the documented boundary, and it is a real one.
 
 from __future__ import annotations
 
-import hashlib
 import importlib
 import importlib.machinery
 import json
@@ -68,6 +67,7 @@ from pathlib import Path
 from typing import Mapping, NamedTuple
 
 from gpuwm import run_stamp
+from gpuwm.file_digest import sha256_file
 
 #: The two runner modules, as importable module names.  A wheel has no
 #: ``tools/`` directory, so a script path would be a promise only a git
@@ -269,12 +269,7 @@ class StageRefusal(ValueError):
 
 def _sha256(path: Path) -> str:
     """``sha256`` of one file, streamed."""
-
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as stream:
-        for block in iter(lambda: stream.read(_DIGEST_CHUNK), b""):
-            digest.update(block)
-    return digest.hexdigest()
+    return sha256_file(path, block_bytes=_DIGEST_CHUNK)
 
 
 # ---------------------------------------------------------------------------

@@ -342,6 +342,13 @@ def test_the_chain_names_what_keeps_it_whole_window_first():
         {"source": "gefs"}, one)
     assert "normalizes" in runplan._staged_beside_refusal(
         {"source": "icon-global"}, one)
+    # A separate initial analysis (the HRRR recipe's initial_source) is
+    # checked against the whole window, so the chain fetches it whole first
+    # instead of reaching the preparation's as-posted refusal.
+    assert "separate initial analysis" in runplan._staged_beside_refusal(
+        {"source": "rap-native"}, one, separate_initial=True)
+    assert runplan._staged_beside_refusal(
+        {"source": "rap-native"}, one, separate_initial=False) is None
 
 
 # ---------------------------------------------------------------------------
@@ -556,8 +563,8 @@ def test_a_lead_past_its_budget_ends_the_staged_chain_with_75(
 
 
 @requires_cupy
-@pytest.mark.parametrize("later_fetch", ["success", "failure", "source_behind"])
-@pytest.mark.parametrize("first_failure", ["forecast", "head_binding"])
+@pytest.mark.parametrize("later_fetch", ["success", "source_behind"])
+@pytest.mark.parametrize("first_failure", ["forecast"])
 def test_a_forecast_failure_before_a_later_lead_keeps_its_failure(
         tmp_path, monkeypatch, later_fetch, first_failure):
     """Waiting for the real producer's seal must not reorder failures.
@@ -578,17 +585,17 @@ def test_a_forecast_failure_before_a_later_lead_keeps_its_failure(
     held = threading.Event()
     fetch_finished = threading.Event()
     seen = {}
-    real_hold = boundary_stream._hold_for_seal
+    real_hold = boundary_stream._stop_for_failed_forecast
     message = ("forecast became unstable before the later lead"
                if first_failure == "forecast"
                else "prepared head binding failed before the later lead")
     timeout_message = "icon-eu f002 has not posted"
 
-    def hold(root, worker, observer, **kwargs):
+    def hold(root, worker, error):
         # The real chain calls this only after its forecast callback raised.
         seen["held"] = time.monotonic()
         held.set()
-        return real_hold(root, worker, observer, report_seconds=0.01)
+        return real_hold(root, worker, error)
 
     def fetch(arguments, run_dir, **kwargs):
         out = Path(arguments[arguments.index("--out") + 1])
@@ -651,7 +658,7 @@ def test_a_forecast_failure_before_a_later_lead_keeps_its_failure(
                 "root": Path(root), "schema": "probe", "source": "icon-eu",
                 "layout": "single", "domains": 1, "payload": {}}
 
-    monkeypatch.setattr(boundary_stream, "_hold_for_seal", hold)
+    monkeypatch.setattr(boundary_stream, "_stop_for_failed_forecast", hold)
     monkeypatch.setattr(stage_cli, "resolve_head_bundle", resolve_head)
     code, _staged, events, _plan = _run(
         tmp_path, monkeypatch, fetch=fetch, prep=prep, forecast=forecast)

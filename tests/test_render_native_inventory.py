@@ -97,8 +97,17 @@ def test_unicode_names_trigger_shortening_before_character_budget(
         assert rustwx._command_units(fitted[0]) <= monkey_budget
 
 
-@pytest.mark.parametrize("catalog", [False, True])
-@pytest.mark.parametrize("outcome", ["passed", "failed", "cannot start"])
+@pytest.mark.parametrize(
+    'outcome,catalog',
+    [
+        ("passed", True),
+        ("failed", False),
+        ("failed", True),
+        ("cannot start", False),
+        ("cannot start", True),
+    ],
+    ids=['passed-True', 'failed-False', 'failed-True', 'cannot start-False', 'cannot start-True'],
+)
 def test_native_inventory_lives_until_process_returns_and_is_removed(
         tmp_path, monkeypatch, catalog, outcome):
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))

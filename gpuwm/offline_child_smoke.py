@@ -24,7 +24,7 @@ import numpy as np
 
 from gpuwm.aerosol_source_receipt import aerosol_source_report_entry
 from gpuwm.config import soil_layer_count, validate_run_config
-from gpuwm.offline_child_run import (_strict_json,
+from gpuwm.offline_child_run import (_memory_snapshot, _strict_json,
                                      child_health_log_fields)
 from gpuwm.offline_child import (
     OfflineChildPlacement,
@@ -43,19 +43,6 @@ def _log(event: str, **values) -> None:
     # writes most are the ones whose readings went.
     print(_strict_json({"event": event, **values}, sort_keys=True),
           flush=True)
-
-
-def _memory_snapshot(cp) -> dict[str, int]:
-    """Process-local CuPy allocation evidence plus whole-device headroom."""
-
-    pool = cp.get_default_memory_pool()
-    free_bytes, total_bytes = cp.cuda.runtime.memGetInfo()
-    return {
-        "pool_used_bytes": int(pool.used_bytes()),
-        "pool_reserved_bytes": int(pool.total_bytes()),
-        "device_free_bytes": int(free_bytes),
-        "device_total_bytes": int(total_bytes),
-    }
 
 
 def _device_allocation_inventory(root, cp) -> dict[str, object]:

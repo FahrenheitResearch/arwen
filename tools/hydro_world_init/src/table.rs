@@ -50,6 +50,14 @@ pub struct Grid {
     pub latitude: Option<String>,
     #[serde(default)]
     pub longitude: Option<String>,
+    /// Projected grid: x/y coordinate variables (cell centres, metres) and
+    /// the PROJ definition of their CRS.
+    #[serde(default)]
+    pub x: Option<String>,
+    #[serde(default)]
+    pub y: Option<String>,
+    #[serde(default)]
+    pub crs: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Clone)]

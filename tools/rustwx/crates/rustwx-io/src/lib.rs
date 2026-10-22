@@ -15,13 +15,14 @@ use grib_core::grib2::{
     Grib2File, Grib2Message, GridDefinition, flip_rows, grid_latlon, unpack_message,
 };
 use hdf5_reader::{Datatype, Hdf5File};
-use rayon::prelude::*;
 use rustwx_core::{
     CanonicalField, FieldProduct, FieldSelector, GridProjection, GridShape, LatLonGrid, ModelId,
     ModelRunRequest, ModelTimestep, ProbabilitySelection, ResolvedUrl, SelectedField2D,
     SelectedHybridLevelVolume, SourceId, VerticalSelector,
 };
-use rustwx_models::{latest_available_run, model_summary, resolve_urls};
+use rustwx_models::resolve_urls;
+#[cfg(test)]
+use rustwx_models::model_summary;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::fs::{self, File, OpenOptions};
@@ -60,14 +61,6 @@ pub enum IoError {
     Wrf(String),
     #[error("ODIM HDF5 error: {0}")]
     Odim(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct ProbeResult {
-    pub source: SourceId,
-    pub available: bool,
-    pub grib_url: String,
-    pub idx_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
@@ -139,102 +132,6 @@ pub fn client() -> Result<DownloadClient, IoError> {
     // duplicate GRIB bytes to platform locations such as ~/.cache/metrust, which
     // bypasses callers' storage controls on research nodes.
     DownloadClient::new().map_err(|err| IoError::Download(err.to_string()))
-}
-
-pub fn latest_run(
-    model: ModelId,
-    date_yyyymmdd: &str,
-) -> Result<rustwx_models::LatestRun, IoError> {
-    latest_available_run(model, None, date_yyyymmdd).map_err(Into::into)
-}
-
-pub fn probe_sources(fetch: &FetchRequest) -> Result<Vec<ProbeResult>, IoError> {
-    let client = client()?;
-    let urls = filtered_urls(fetch)?;
-    Ok(urls
-        .into_iter()
-        .map(|resolved| {
-            let available = probe_availability(&client, &resolved);
-            ProbeResult {
-                source: resolved.source,
-                available,
-                grib_url: resolved.grib_url,
-                idx_url: resolved.idx_url,
-            }
-        })
-        .collect())
-}
-
-pub fn available_forecast_hours(
-    model: ModelId,
-    date_yyyymmdd: &str,
-    hour_utc: u8,
-    product: &str,
-    source_override: Option<SourceId>,
-) -> Result<Vec<u16>, IoError> {
-    let candidates = candidate_hours(model, hour_utc);
-    available_forecast_hours_for_candidates(
-        model,
-        date_yyyymmdd,
-        hour_utc,
-        product,
-        source_override,
-        &candidates,
-    )
-}
-
-pub fn available_forecast_hours_for_candidates(
-    model: ModelId,
-    date_yyyymmdd: &str,
-    hour_utc: u8,
-    product: &str,
-    source_override: Option<SourceId>,
-    candidates: &[u16],
-) -> Result<Vec<u16>, IoError> {
-    let client = client()?;
-    let summary = model_summary(model);
-
-    let parallelize = candidates.len() <= 48
-        || should_parallelize_hour_availability_probes(source_override, summary);
-    let available = if parallelize {
-        candidates
-            .par_iter()
-            .filter_map(|&forecast_hour| {
-                let cycle = rustwx_core::CycleSpec::new(date_yyyymmdd, hour_utc).ok()?;
-                let fetch = FetchRequest {
-                    request: ModelRunRequest::new(model, cycle, forecast_hour, product).ok()?,
-                    source_override,
-                    variable_patterns: Vec::new(),
-                };
-                if fetch_request_is_available(&client, &fetch).ok()? {
-                    Some(forecast_hour)
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>()
-    } else {
-        candidates
-            .iter()
-            .filter_map(|&forecast_hour| {
-                let cycle = rustwx_core::CycleSpec::new(date_yyyymmdd, hour_utc).ok()?;
-                let fetch = FetchRequest {
-                    request: ModelRunRequest::new(model, cycle, forecast_hour, product).ok()?,
-                    source_override,
-                    variable_patterns: Vec::new(),
-                };
-                if fetch_request_is_available(&client, &fetch).ok()? {
-                    Some(forecast_hour)
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>()
-    };
-
-    let mut available = available;
-    available.sort_unstable();
-    Ok(available)
 }
 
 pub fn mrms_latest_product_url(product: &str) -> Result<String, IoError> {
@@ -334,17 +231,6 @@ pub fn fetch_eumetnet_opera_dbzh_coverage(
         .get_bytes(&url)
         .map_err(|err| IoError::Download(err.to_string()))?;
     parse_eumetnet_opera_dbzh_coverage_json(&bytes)
-}
-
-pub fn fetch_eumetnet_opera_latest_dbzh_for_range(
-    datetime_range: &str,
-) -> Result<SelectedField2D, IoError> {
-    let coverage = fetch_eumetnet_opera_dbzh_coverage(datetime_range)?;
-    let link = coverage.latest_odim_link().ok_or_else(|| {
-        IoError::Download("EUMETNET OPERA coverage has no ODIM HDF5 links".into())
-    })?;
-    let bytes = fetch_eumetnet_opera_odim_h5(&link.href)?;
-    extract_eumetnet_opera_dbzh_from_odim_h5(&bytes)
 }
 
 pub fn fetch_eumetnet_opera_odim_h5(url: &str) -> Result<Vec<u8>, IoError> {
@@ -1552,15 +1438,6 @@ pub fn hrrr_wrfnat_hybrid_levels() -> Vec<u16> {
     (1..=HRRR_WRFNAT_HYBRID_LEVEL_COUNT).collect()
 }
 
-pub fn extract_hybrid_level_volume_from_bytes(
-    bytes: &[u8],
-    field: CanonicalField,
-    levels_hybrid: &[u16],
-) -> Result<SelectedHybridLevelVolume, IoError> {
-    let grib = Grib2File::from_bytes(bytes).map_err(|err| IoError::Grib(err.to_string()))?;
-    extract_hybrid_level_volume_from_grib2(&grib, field, levels_hybrid)
-}
-
 pub fn extract_hybrid_level_volume_from_grib2(
     grib: &Grib2File,
     field: CanonicalField,
@@ -1573,13 +1450,6 @@ pub fn extract_hybrid_level_volume_from_grib2(
         .collect::<Vec<_>>();
     let slices = extract_fields_from_grib2(grib, &selectors)?;
     build_hybrid_level_volume(field, levels_hybrid, slices)
-}
-
-pub fn extract_hrrr_wrfnat_smoke_fields_from_bytes(
-    bytes: &[u8],
-) -> Result<HrrrWrfnatSmokeExtraction, IoError> {
-    let grib = Grib2File::from_bytes(bytes).map_err(|err| IoError::Grib(err.to_string()))?;
-    extract_hrrr_wrfnat_smoke_fields_from_grib2(&grib)
 }
 
 pub fn extract_hrrr_wrfnat_smoke_fields_from_grib2(
@@ -1672,24 +1542,7 @@ fn filtered_urls(fetch: &FetchRequest) -> Result<Vec<ResolvedUrl>, IoError> {
     })
 }
 
-fn fetch_request_is_available(
-    client: &DownloadClient,
-    fetch: &FetchRequest,
-) -> Result<bool, IoError> {
-    let urls = filtered_urls(fetch)?;
-    Ok(any_source_available(&urls, |resolved| {
-        probe_availability(client, resolved)
-    }))
-}
-
-fn probe_availability(client: &DownloadClient, resolved: &ResolvedUrl) -> bool {
-    if matches!(resolved.source, SourceId::Nomads) {
-        client.get_range(&resolved.grib_url, 0, 0).is_ok()
-    } else {
-        client.head_ok(resolved.availability_probe_url())
-    }
-}
-
+#[cfg(test)]
 fn any_source_available<F>(resolved: &[ResolvedUrl], mut probe: F) -> bool
 where
     F: FnMut(&ResolvedUrl) -> bool,
@@ -1697,6 +1550,7 @@ where
     resolved.iter().any(&mut probe)
 }
 
+#[cfg(test)]
 fn should_parallelize_hour_availability_probes(
     source_override: Option<SourceId>,
     summary: &rustwx_models::ModelSummary,
@@ -1815,6 +1669,7 @@ fn coalesce_contiguous_ranges(mut ranges: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
     merged
 }
 
+#[cfg(test)]
 fn candidate_hours(model: ModelId, cycle_hour: u8) -> Vec<u16> {
     // Delegate to the canonical schedule in rustwx-models so availability
     // probes match the cycle-aware horizons that the catalog and fetch
@@ -2402,6 +2257,15 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
                 parameters: PARAMETER_HGT,
                 level: LevelMatch::Surface,
                 units: "gpm",
+            }),
+            FieldSelector {
+                field: CanonicalField::Temperature,
+                vertical: VerticalSelector::Surface,
+                ..
+            } => Ok(Self {
+                parameters: PARAMETER_TMP,
+                level: LevelMatch::Surface,
+                units: "K",
             }),
             FieldSelector {
                 field: CanonicalField::Temperature,
@@ -3027,6 +2891,21 @@ fn build_field_values(
 
 /// Build one `SelectedField2D`: [`build_field_values`] plus a per-field
 /// clone of the shared coordinate grid (the historical output shape).
+/// Decode one already-chosen GRIB2 message onto its own grid, with the
+/// caller naming its units (comparison sheets keyed by raw message).
+pub fn extract_message_field(
+    message: &Grib2Message,
+    units: &str,
+) -> Result<SelectedField2D, IoError> {
+    let mut memo = GridMemo::new();
+    build_selected_field(
+        message,
+        FieldSelector::surface(CanonicalField::Temperature),
+        units,
+        &mut memo,
+    )
+}
+
 fn build_selected_field(
     message: &Grib2Message,
     selector: FieldSelector,

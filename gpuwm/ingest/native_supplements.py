@@ -55,6 +55,33 @@ def gate_soil_surface_fields(gate):
     return fields
 
 
+#: The optional surface fields a native bridge may publish from the
+#: atmosphere file, with the unit its gate must declare for each
+#: (tools/grib1_bridge hrrr_grib2_bridge.rs OPTIONAL_SURFACE_SPECS).
+OPTIONAL_SURFACE_FIELDS = {"PBLH": "m", "LCDC": "%", "MCDC": "%", "HCDC": "%"}
+
+
+def gate_optional_surface_fields(gate):
+    """The optional surface payloads the native atmosphere decoder declared.
+
+    Today only the PBL height the cycle carried (HPBL); a gate that names
+    anything else or another unit is refused, so a payload is never read
+    under a meaning the decoder did not write it with.
+    """
+    fields = tuple(gate.get("optional_surface_fields", "").split(","))
+    if fields == ("",):
+        return ()
+    units = ",".join(f"{name}={OPTIONAL_SURFACE_FIELDS.get(name)}" for name in fields)
+    if (any(name not in OPTIONAL_SURFACE_FIELDS for name in fields)
+            or len(set(fields)) != len(fields)
+            or gate.get("optional_surface_units") != units):
+        raise ValueError(
+            "native optional surface fields must be PBLH in m, LCDC/MCDC/HCDC in %; got "
+            f"{gate.get('optional_surface_fields')!r} with units "
+            f"{gate.get('optional_surface_units')!r}")
+    return fields
+
+
 #: The optional hybrid-level fields a native bridge may publish, with the
 #: unit its gate must declare for each (tools/grib1_bridge
 #: hrrr_grib2_bridge.rs OPTIONAL_HYBRID_SPECS).

@@ -129,48 +129,32 @@ pub fn write_chunk(
 }
 
 /// Little-endian bytes of a typed slice.
-pub fn f32_bytes(values: &[f32]) -> Vec<u8> {
-    let mut bytes = vec![0; values.len() * 4];
+fn little_endian_bytes<T: Copy + Sync, const N: usize>(
+    values: &[T],
+    encode: impl Fn(T) -> [u8; N] + Sync,
+) -> Vec<u8> {
+    let mut bytes = vec![0; values.len() * N];
     bytes
-        .par_chunks_mut(4)
+        .par_chunks_mut(N)
         .zip(values.par_iter())
-        .for_each(|(out, value)| {
-            out.copy_from_slice(&value.to_le_bytes());
-        });
+        .for_each(|(out, value)| out.copy_from_slice(&encode(*value)));
     bytes
+}
+
+pub fn f32_bytes(values: &[f32]) -> Vec<u8> {
+    little_endian_bytes(values, f32::to_le_bytes)
 }
 
 pub fn f64_bytes(values: &[f64]) -> Vec<u8> {
-    let mut bytes = vec![0; values.len() * 8];
-    bytes
-        .par_chunks_mut(8)
-        .zip(values.par_iter())
-        .for_each(|(out, value)| {
-            out.copy_from_slice(&value.to_le_bytes());
-        });
-    bytes
+    little_endian_bytes(values, f64::to_le_bytes)
 }
 
 pub fn i64_bytes(values: &[i64]) -> Vec<u8> {
-    let mut bytes = vec![0; values.len() * 8];
-    bytes
-        .par_chunks_mut(8)
-        .zip(values.par_iter())
-        .for_each(|(out, value)| {
-            out.copy_from_slice(&value.to_le_bytes());
-        });
-    bytes
+    little_endian_bytes(values, i64::to_le_bytes)
 }
 
 pub fn i32_bytes(values: &[i32]) -> Vec<u8> {
-    let mut bytes = vec![0; values.len() * 4];
-    bytes
-        .par_chunks_mut(4)
-        .zip(values.par_iter())
-        .for_each(|(out, value)| {
-            out.copy_from_slice(&value.to_le_bytes());
-        });
-    bytes
+    little_endian_bytes(values, i32::to_le_bytes)
 }
 
 /// Compress and write the one chunk of a 0-d array (key `0`).

@@ -38,7 +38,8 @@ pub struct Product {
     pub missing_values: Vec<f64>,
 }
 
-pub fn product(name: &str) -> Result<Product> {
+/// Every row of the precipitation product table, in table order.
+pub fn products() -> Result<Vec<Product>> {
     #[derive(Deserialize)]
     struct Table {
         schema: String,
@@ -48,8 +49,11 @@ pub fn product(name: &str) -> Result<Product> {
     if table.schema != "gpuwm-obs.precipitation-products.v1" {
         return Err(err("unknown precipitation product table schema"));
     }
-    let selected = table
-        .products
+    Ok(table.products)
+}
+
+pub fn product(name: &str) -> Result<Product> {
+    let selected = products()?
         .into_iter()
         .find(|row| row.name == name)
         .ok_or_else(|| err(format!("no precipitation metadata for product {name:?}")))?;
@@ -66,10 +70,22 @@ pub fn instant(raw: &str) -> Result<DateTime<Utc>> {
 }
 
 pub fn bbox(raw: &str) -> Result<[f64; 4]> {
-    let values = raw
+    let mut values = raw
         .split(',')
-        .map(|item| item.parse::<f64>())
+        .map(|item| item.trim().parse::<f64>())
         .collect::<std::result::Result<Vec<_>, _>>()?;
+    // A 0..360 box (an unambiguous one: a longitude past 180, none below 0,
+    // none past 360) names the same ground as its -180..180 spelling.
+    if values.len() == 4
+        && (values[0] > 180.0 || values[2] > 180.0)
+        && values[0] >= 0.0
+        && values[2] >= 0.0
+        && values[0] <= 360.0
+        && values[2] <= 360.0
+    {
+        values[0] = crate::seam::wrap_longitude(values[0]);
+        values[2] = crate::seam::wrap_longitude(values[2]);
+    }
     if values.len() != 4
         || values.iter().any(|x| !x.is_finite())
         || values[0] < -180.0
@@ -617,6 +633,14 @@ mod tests {
         assert_eq!(bbox("-100,30,-90,40").unwrap(), [-100.0, 30.0, -90.0, 40.0]);
         for raw in ["170,-10,-170,10", "0,0,NaN,10", "10,20,0,30", "0,0,10,95"] {
             assert!(bbox(raw).is_err());
+        }
+    }
+
+    #[test]
+    fn a_zero_to_360_bbox_is_the_same_ground() {
+        assert_eq!(bbox("235,25,293,50").unwrap(), [-125.0, 25.0, -67.0, 50.0]);
+        for raw in ["170,25,190,50", "235,25,370,50", "-10,25,200,50"] {
+            assert!(bbox(raw).is_err(), "{raw}");
         }
     }
 

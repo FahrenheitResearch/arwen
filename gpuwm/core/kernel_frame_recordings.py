@@ -746,7 +746,7 @@ SM120_NVRTC_13_4_92 = KernelFrameRecording(
         # saved-wind limiter upper_wind_limiter (4b2bd1665) and the
         # prescribed-smoke time blend rrtmg_smoke_manifest (ef8325e32).
         # Read 2026-10-05 with `tools/vram_reserve_probe.py frames` on an
-        # RTX 5090 (box B, 170 SMs), CuPy 14.2.0, nvidia-cuda-nvrtc 13.4.92,
+        # RTX 5090 (a rented box, 170 SMs), CuPy 14.2.0, nvidia-cuda-nvrtc 13.4.92,
         # through the production loader: 0 B each.  The same reading
         # reproduced every other row of this recording to the byte.
         'pd_vertical_sl': 0,
@@ -765,7 +765,7 @@ SM120_NVRTC_13_4_92 = KernelFrameRecording(
         # Classic Thompson's transcription of WRF v4.6.1 mp_thompson
         # (lane/parity-mp-libm), read 2026-10-05 through the production
         # loader (-std=c++17 --fmad=false) on an RTX PRO 6000 Blackwell
-        # (box J, sm_120), CuPy 14.2.0, NVRTC 13.4: every entry point 0 B
+        # (a rented box, sm_120), CuPy 14.2.0, NVRTC 13.4: every entry point 0 B
         # (tc_entry, tc_sources, tc_column, tc_refl10cm,
         # tc_effective_radius, tc_finish; 32/158/96/198/28/16 registers).
         'thompson_classic': 0,
@@ -788,7 +788,7 @@ SM120_NVRTC_13_4_92 = KernelFrameRecording(
         # init 4,720 B and step 14,224 B on this card and compiler, with the
         # column arrays in the local frame.  Re-read 2026-10-05 after they
         # moved to the device arena (kernels/lake_support.cuh): init 0 B,
-        # step 1,240 B (box F, RTX 5090, CuPy 14.2.0, NVRTC 13.4, through
+        # step 1,240 B (a rented box, RTX 5090, CuPy 14.2.0, NVRTC 13.4, through
         # the production loader); every oracle word unchanged.
         'lake': 1240,
         # horizontal.cu: fused RH adds 0 B; unit maximum stays 16 B, NVRTC 13.4.92.
@@ -1054,7 +1054,7 @@ PHYSICS_PARAMS_MEASURED_SOURCE_SHA256 = (
 # completed forecast as the two SM120_NVRTC_13_4_92 rows above.
 # pd_vertical_sl was re-read 2026-10-06 after its production faces at
 # Courant <= 1 kept the upwind flux (lane/ec-tracer-mass): RTX 5090
-# (box L), CuPy 14.2.0, nvidia-cuda-nvrtc 13.4.92, through the production
+# (a rented box), CuPy 14.2.0, nvidia-cuda-nvrtc 13.4.92, through the production
 # loader with `tools/vram_reserve_probe.py frames`: 0 B, as before.
 # upper_wind_limiter was re-read 2026-10-07 after glibc_flt32.cuh's gfk_exp
 # took a fused argument reduction (lane/verify-noah-lsm, d22f6ff48; the
@@ -1286,6 +1286,17 @@ SM89_NVRTC_13_4_92 = KernelFrameRecording(
         # docs/public/receipts/ccpp-tke-edmf-sm89-frame.json retains
         # compiler provenance and the bitwise column parity receipt.
         'satmedmf': 112,
+        # Read 2026-10-22 on this card at this build in the battery's strict
+        # numerics (tests/test_preflight.py::test_the_recorded_local_frames_
+        # match_the_driver at 2.9.4 tip 2147c15faf): six units that had no
+        # sm_89 reading compile wider here than any other card, so the
+        # ceiling under-charged a 4090 by up to 0.6 GiB (lake).
+        'fast_sbm': 28560,
+        'g3': 2272,
+        'lake': 4496,
+        'rrtmg_aer3': 24,
+        'thompson_classic': 64,
+        'urban_ucm480': 848,
         # Read whole 2026-10-01 on this card at this build, fresh CuPy cache,
         # at the GPU forcing-preparation lane's merge with integrate/2.8
         # 57066783c (843d2043e): every row below equals that reading, and the
@@ -1294,7 +1305,12 @@ SM89_NVRTC_13_4_92 = KernelFrameRecording(
         # the test-only portable_libm64_grade 48 B, so the recording is
         # complete again.
         'ieva': 1040,
-        'topo_radiation': 40,
+        # Re-read 2026-10-22 on this card at this build (2.9.4 tip 2147c15faf,
+        # tools/vram_reserve_probe.py frames, fast and strict both): topo_radiation
+        # 40 -> 0 B, morrison 5120 -> 4096 B, noah 224 -> 320 B, urban_ucm
+        # 72 -> 56 B after their sources moved on 2026-10-12/17; every other
+        # row read the same.
+        'topo_radiation': 0,
         'thompson_cold_start': 48,
         'portable_libm64_grade': 48,
         # The four 2.8.2 standalone units, read 2026-10-02 on this card at
@@ -1343,7 +1359,7 @@ SM89_NVRTC_13_4_92 = KernelFrameRecording(
         'microphysics_validation': 0,
         'milbrandt2': 2048,
         'milbrandt2_zet': 0,
-        'morrison': 5120,
+        'morrison': 4096,
         'myjpbl': 9232,
         'myjsfc': 0,
         'myjurb': 10256,
@@ -1353,7 +1369,7 @@ SM89_NVRTC_13_4_92 = KernelFrameRecording(
         'mynn_surface': 0,
         'nest': 0,
         'nest_microphysics': 0,
-        'noah': 224,
+        'noah': 320,
         'noahmp_bareflux': 0,
         'noahmp_fluxprep': 0,
         'noahmp_leaves': 208,
@@ -1412,7 +1428,7 @@ SM89_NVRTC_13_4_92 = KernelFrameRecording(
         'uh_diag': 0,
         'urban_bep': 0,
         'urban_bep_couple': 0,
-        'urban_ucm': 72,
+        'urban_ucm': 56,
         # The UW moist-turbulence PBL (integrate/2.8's own sm_89 reading of
         # it, merged into this recording): uwpbl_columns compiles to
         # 3,184 B here against 864 B on sm_120 at the same build.
@@ -2908,4 +2924,82 @@ KERNEL_LOCAL_FRAME_RECORDINGS += (KernelFrameRecording(
     measured='2026-10-18', complete=False,
     frames=MappingProxyType({'nextgen_cfe': 0, 'nextgen_reservoirs': 0,
                             'nextgen_inundation': 0, 'nextgen_terrain': 56}),
+),)
+
+# HAILCAST's complete five-embryo column, measured through the production
+# loader on V58; the three preparation/PSD/duration entries have zero frame.
+KERNEL_LOCAL_FRAME_RECORDINGS = tuple(
+    replace(row, complete=False) if "hail" not in row.frames else row
+    for row in KERNEL_LOCAL_FRAME_RECORDINGS)
+KERNEL_LOCAL_FRAME_RECORDINGS += (KernelFrameRecording(
+    box="V58", device="NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    compute_capability="120", nvrtc_build="12.8.93", platform_family="linux",
+    measured="2026-10-20", complete=False,
+    frames=MappingProxyType({"hail": 7392}),
+),)
+
+# Chemistry aerosol/cloud finalizer, production loader on V58, strict
+# numerics, sm_120 NVRTC 12.9.86. gpu-tests.json records attributes.
+# Only this new unit is measured here; prior source-wide claims are partial.
+KERNEL_LOCAL_FRAME_RECORDINGS = tuple(
+    replace(row, complete=False) if "chem_radiation" not in row.frames else row
+    for row in KERNEL_LOCAL_FRAME_RECORDINGS)
+KERNEL_LOCAL_FRAME_RECORDINGS += (KernelFrameRecording(
+    box="V58", device="NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    compute_capability="120", nvrtc_build="12.9.86", platform_family="linux",
+    measured="2026-10-20", complete=False,
+    frames=MappingProxyType({"chem_radiation": 0}),
+),)
+
+# The saved-frame freezing-rain / FRAM ice unit (lane/cap-fzra aa11dd9dc41),
+# compiled at gpuwm/ensemble/ice_accretion.py with --std=c++17 (the loader's
+# options for it are the same): saved_frame_ice reads 0 B local frame.
+# Attributes only: compile, no kernel launch.
+KERNEL_LOCAL_FRAME_RECORDINGS = tuple(
+    replace(row, complete=False) if "ice_accretion" not in row.frames else row
+    for row in KERNEL_LOCAL_FRAME_RECORDINGS)
+KERNEL_LOCAL_FRAME_RECORDINGS += (KernelFrameRecording(
+    box="lab box (RTX 5090)", device="NVIDIA GeForce RTX 5090",
+    compute_capability="120", nvrtc_build="13.4.92", platform_family="linux",
+    measured="2026-10-20", complete=False,
+    frames=MappingProxyType({"ice_accretion": 0}),
+),)
+
+# Output diagnostics, every exported entry through the production loader.
+# The included stock helicity entries also read zero. Attributes only;
+# no full-grid allocation or throughput claim. Older recordings are partial.
+KERNEL_LOCAL_FRAME_RECORDINGS = tuple(
+    replace(row, complete=False)
+    if not {"output_diagnostics", "gsd_diagnostics", "gsd_helicity"} <= row.frames.keys()
+    else row for row in KERNEL_LOCAL_FRAME_RECORDINGS)
+KERNEL_LOCAL_FRAME_RECORDINGS += (KernelFrameRecording(
+    box="desktop", device="NVIDIA GeForce RTX 3080",
+    compute_capability="86", nvrtc_build="13.0.48", platform_family="windows",
+    measured="2026-10-21", complete=False,
+    frames=MappingProxyType({"output_diagnostics": 0, "gsd_diagnostics": 0,
+                            "gsd_helicity": 0}),
+),)
+
+# The source topo_radiation.cu read before its 2026-10-12 rewrite, kept as a
+# conservative cross-platform ceiling (as the older WSM5 row above): the
+# 2026-10-22 re-read of SM89_NVRTC_13_4_92 reads the current source at 0 B,
+# and no other platform has read it, so an unmeasured compiler stays priced
+# at the widest frame any card has shown.  recording_for still selects
+# SM89_NVRTC_13_4_92 for this card (first match).
+KERNEL_LOCAL_FRAME_RECORDINGS += (KernelFrameRecording(
+    box='test host A', device='NVIDIA GeForce RTX 4090',
+    compute_capability='89', nvrtc_build='13.4.92', platform_family='linux',
+    measured='2026-10-01', complete=False,
+    frames=MappingProxyType({'topo_radiation': 40}),
+),)
+
+# The same card and build in the default fast numerics (tools/vram_reserve_probe.py
+# frames, 2026-10-22): fast_sbm is 16 B wider than its strict 28,560 B, so the
+# ceiling carries the fast reading.  Partial, after SM89_NVRTC_13_4_92, so
+# recording_for still selects the battery's recording for this card.
+KERNEL_LOCAL_FRAME_RECORDINGS += (KernelFrameRecording(
+    box='test host A', device='NVIDIA GeForce RTX 4090',
+    compute_capability='89', nvrtc_build='13.4.92', platform_family='linux',
+    measured='2026-10-22', complete=False,
+    frames=MappingProxyType({'fast_sbm': 28576}),
 ),)

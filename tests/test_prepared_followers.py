@@ -263,9 +263,10 @@ def test_prepared_follower_activation_keeps_route_and_corridor_contracts(
     prepared, receipt, config = fixture._synthetic_prepared_tree(
         tmp_path, monkeypatch, delayed=activation == 'delayed')
     if activation == 'spawn':
-        # This route still has no trigger evaluator; refuse before loading
-        # corridors or accepting a permanently absent configured child.
-        with pytest.raises(ValueError, match='does not implement spawn-triggered nests'):
+        # The route spawns dormant followers now (docs/storm-nests.md) and
+        # crops each newborn from its sealed corridor, so a bundle sealed
+        # without one is refused by name before anything restores.
+        with pytest.raises(ValueError, match='statics corridor'):
             fixture._preflight(prepared, receipt, config)
         return
 

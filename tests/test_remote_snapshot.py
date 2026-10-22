@@ -78,7 +78,8 @@ def test_rebased_config_keeps_all_scientific_values_and_wps_path_meaning(tmp_pat
     assert binding["input_sha256"]
 
 
-def test_relocation_preserves_declared_case_data_paths(tmp_path):
+def _declared_config(tmp_path):
+    """Declared inputs leave a resume review only its checkpoint to bind."""
     from gpuwm.toml_document import emit_experiment_toml
     source = config(tmp_path)
     raw = tomllib.loads(source.read_text(encoding="utf-8"))
@@ -88,6 +89,11 @@ def test_relocation_preserves_declared_case_data_paths(tmp_path):
     for name in ("forcing.nc", "Vtable", "inputs.wps"):
         (tmp_path / name).write_text("fixture")
     source.write_text(emit_experiment_toml(raw), encoding="utf-8")
+    return source
+
+
+def test_relocation_preserves_declared_case_data_paths(tmp_path):
+    source = _declared_config(tmp_path)
     original, _, snapshots, _ = rw._inputs(source)
     actual = tomllib.loads(snapshots[source.name].decode())
     expected = dict(original)
@@ -100,7 +106,7 @@ def test_relocation_preserves_declared_case_data_paths(tmp_path):
     assert "declared-inputs/namelist.wps" in snapshots
 
 
-def test_an_existing_case_folder_collects_this_run_without_modifying_what_it_holds(tmp_path):
+def test_an_existing_case_folder_collects_this_run_without_modifying_what_it_holds(tmp_path, monkeypatch):
     """An existing output directory is a case folder; the run claims a folder inside it."""
     from gpuwm import run_stamp
     source = config(tmp_path)
@@ -108,9 +114,16 @@ def test_an_existing_case_folder_collects_this_run_without_modifying_what_it_hol
     output.mkdir()
     marker = output / "keep"
     marker.write_text("existing run", encoding="utf-8")
+    # Exercise a same-second collision without depending on the machine clock.
+    launch = datetime(2026, 9, 5)
+    monkeypatch.setattr(run_stamp, "utcnow", lambda: launch)
+    first = output / run_stamp.format_stamp(launch=launch)
+    first.mkdir()
     review = rw._launch({**request(tmp_path, source), "dry_run": True}, tmp_path)["review"]
     assert Path(review["run_root"]).parent == output and run_stamp.is_run_folder(review["run_root"])
     assert marker.read_text() == "existing run"
+    assert Path(review["run_root"]).name == first.name + "-02"
+    assert first.is_dir() and list(first.iterdir()) == []
     assert not (tmp_path / ".arwen-jobs").exists()
     assert not Path(review["run_root"]).exists(), "a dry run claims nothing"
 
@@ -193,15 +206,7 @@ def test_restart_binding_covers_every_member_not_only_root(tmp_path):
 
 
 def test_resume_review_resolves_exact_checkpoint_and_preserves_old_output(tmp_path, monkeypatch):
-    from gpuwm.toml_document import emit_experiment_toml
-    source = config(tmp_path)
-    raw = tomllib.loads(source.read_text(encoding="utf-8"))
-    raw["case_data"] = {"geog_root": "geography", "forcing": ["forcing.nc"], "vtable": "Vtable",
-                        "wps_namelist": "inputs.wps", "sfcp_to_sfcp": True, "output_title": "fixture"}
-    (tmp_path / "geography").mkdir()
-    for name in ("forcing.nc", "Vtable", "inputs.wps"):
-        (tmp_path / name).write_text("fixture")
-    source.write_text(emit_experiment_toml(raw), encoding="utf-8")
+    source = _declared_config(tmp_path)
     output = tmp_path / "old output"
     output.mkdir()
     checkpoint = _restart(output / "gpuwmrst_d01_2026-09-05_01_00_00.npz")
@@ -234,16 +239,7 @@ def test_a_resume_review_discloses_the_written_road_and_the_resolved_mode(tmp_pa
     it.  Both are disclosures: the review binds the same checkpoint with
     or without them and never refuses on them.
     """
-    from gpuwm.toml_document import emit_experiment_toml
-    source = config(tmp_path)
-    # Declared inputs, so the review has nothing to bind but the checkpoint.
-    raw = tomllib.loads(source.read_text(encoding="utf-8"))
-    raw["case_data"] = {"geog_root": "geography", "forcing": ["forcing.nc"], "vtable": "Vtable",
-                        "wps_namelist": "inputs.wps", "sfcp_to_sfcp": True, "output_title": "fixture"}
-    (tmp_path / "geography").mkdir()
-    for name in ("forcing.nc", "Vtable", "inputs.wps"):
-        (tmp_path / name).write_text("fixture")
-    source.write_text(emit_experiment_toml(raw), encoding="utf-8")
+    source = _declared_config(tmp_path)
     output = tmp_path / "old output"
     output.mkdir()
     stamped = _restart(output / "gpuwmrst_d01_2026-09-05_01_00_00.npz",

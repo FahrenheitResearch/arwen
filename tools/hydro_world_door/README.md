@@ -24,18 +24,33 @@ Provider rows live in `gpuwm/data/hydro/fabric-providers.v1.json` (extra rows fr
 1. its coverage (WGS84 boxes, dateline-aware, or `global`) holds at least
    `min_covered_fraction` of a 33x33 lattice over the parent grid;
 2. its data licence status is `verified`;
-3. it names a coupled realization that `configurations.v1.json` admits;
+3. it names a coupled realization that `configurations.v1.json` admits for the
+   parent LSM (`realization_by_parent_lsm`: Noah `parent-noah-routed`, RUC
+   `parent-ruc-routed`, Noah-MP `parent-noahmp-routed`; Noah and RUC runoff is
+   their accumulated SFCRUNOFF/UDRUNOFF differenced on the card at each LSM call);
 4. the parent LSM is one coupled NextGen consumes (Noah, RUC or Noah-MP,
    `sf_surface_physics=2`, `3` or `4`);
 5. its own tool answers the probe: the builder executable exists, has the
    `build` subcommand, `rw_hydro_world admit TABLE ROW` admits its source row, and
-   its tile root exists (or, for a `prepared` row, its manifest exists).
+   its tile root exists or the path names an `acquire` hook (or, for a `prepared`
+   row, its manifest exists). The provider tools are on-demand bundle artifacts, so
+   a wheel install stages them on first use.
+
+A path with an `acquire` hook (the global row's `gpuwm.hydro.acquire`) is filled at
+preparation: the DEM tiles `rw_hydro_world tiles` lists, the lake and dam archives,
+the WorldCover tiles and SoilGrids subsets the parameter recipe needs, into
+`$GPUWM_HYDRO_WORLD_TILES` (default `~/.gpuwm/hydro-world`), and the shipped
+recipe `gpuwm/data/hydro/parameter-recipe.world.v1.json` is bound to them. On a
+default run a failed preparation turns hydro off for that run only, with
+`reason: fabric_preparation_failed` and the failure named in the receipt and on
+stderr; bare `--hydro` refuses instead.
 
 The first such row wins. The door then runs the builder
 (`rw_hydro_world build --sources TABLE --row ROW --bbox W,S,E,N
 --data-root DIR --out FABRIC`), runs `rw_hydrofabric prepare`
 on the result, caches it under `$GPUWM_HYDRO_FABRIC_CACHE` (default
-`<experiment dir>/.gpuwm-hydro/<row>/<grid key>/`), and writes
+`<case-data root>/hydro-fabric/<row>/<request key>/`, the root `gpuwm setup`
+and `fetch-geog` use; never beside the configuration), and writes
 `hydro-door.toml` binding the prepared manifest into the realization. A rerun on
 the same grid and source root reuses the build. Each builder `paths` entry can
 name an `argument` (for example `data_root`): the door resolves its environment
@@ -70,13 +85,24 @@ the driver's state is part of the atmosphere checkpoint.
 
 ## Today
 
-Every real domain is off with named gaps, because no provider row can pass yet:
+The global row covers every domain on Earth; on a CONUS domain the CONUS row is
+still rejected (licence pending, no realization) and the global row serves it:
 
-| Domain | Decision | First gap (owner) |
+| Domain | Decision | Realization |
 |---|---|---|
-| CONUS, Noah / RUC / Noah-MP | off, `no_covering_fabric` | complete source recipe, initialized same-network parameters/stores and admitted coupled realization (c-hydro-data, c-hydro-runoff, c-hydro-coupling) |
-| Rhine, Noah / RUC / Noah-MP | off, `no_covering_fabric` | covering Copernicus source tiles and admitted physical coupled realization (hydro-world-fabric, c-hydro-coupling) |
-| Fiji across the dateline, Noah / RUC / Noah-MP | off, `no_covering_fabric` | same as Rhine |
+| CONUS, Noah | on, `fabric_covered` by `hydro-world-global` | `parent-noah-routed` |
+| CONUS, RUC | on, `fabric_covered` by `hydro-world-global` | `parent-ruc-routed` |
+| CONUS, Noah-MP | on, `fabric_covered` by `hydro-world-global` | `parent-noahmp-routed` |
+
+Measured on the 2.9.3 improve-1 run (1800 km Oklahoma domain, 600 x 480 at 3 km,
+GFS, Noah): fresh-cache acquisition 91 s for 6.49 GB, then (preparation with the
+cards hidden, 48 cores) builder 79 s,
+parameters 43 s, projected fabric 153 s, initial water 121 s, reservoirs and
+routing about 15 s; 126,593 catchments. The forecast then reused that cache;
+at forecast start the continuous-runoff replay routed 2,160 hours (25,920 routing
+steps) in 222 s on the card before the first atmosphere step, and the coupled
+hydro cost 0.27 percent of the atmosphere step (0.63 ms per step). `receipts/door-decisions.json` holds the
+decisions.
 
 The global default row uses the Copernicus-derived network. Per the coordinator's
 2026-10-18 11:50Z ruling, HydroSHEDS v1 is research / cross-check only: never

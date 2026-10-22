@@ -1782,14 +1782,17 @@ mod tests {
         dir
     }
 
-    fn write_windowed_store(root: &std::path::Path, run: &str, hours: &[u16]) {
-        let shape = GridShape::new(4, 3).unwrap();
-        let grid = LatLonGrid::new(
-            shape,
+    fn batch_grid() -> LatLonGrid {
+        LatLonGrid::new(
+            GridShape::new(4, 3).unwrap(),
             (0..12).map(|cell| 35.0 + (cell / 4) as f32).collect(),
             (0..12).map(|cell| -100.0 + (cell % 4) as f32).collect(),
         )
-        .unwrap();
+        .unwrap()
+    }
+
+    fn write_windowed_store(root: &std::path::Path, run: &str, hours: &[u16]) {
+        let grid = batch_grid();
         for &hour in hours {
             let temperature = SelectedField2D::new(
                 FieldSelector::height_agl(CanonicalField::Temperature, 2),
@@ -1969,14 +1972,7 @@ mod tests {
     /// FieldSelector nor a derived marker.  The last one used to abort
     /// `StoreFieldSource::open` for the WHOLE hour.
     fn write_mixed_store(root: &std::path::Path, run: &str) -> (String, Vec<String>) {
-        let shape = GridShape::new(4, 3).unwrap();
-        let lat = vec![
-            35.0, 35.0, 35.0, 35.0, 36.0, 36.0, 36.0, 36.0, 37.0, 37.0, 37.0, 37.0,
-        ];
-        let lon = vec![
-            -100.0, -99.0, -98.0, -97.0, -100.0, -99.0, -98.0, -97.0, -100.0, -99.0, -98.0, -97.0,
-        ];
-        let grid = LatLonGrid::new(shape, lat, lon).unwrap();
+        let grid = batch_grid();
         let temperature_selector = FieldSelector::height_agl(CanonicalField::Temperature, 2);
         let temperature_values: Vec<f32> = (0..12).map(|value| 270.0 + value as f32).collect();
         let temperature =
@@ -2122,13 +2118,7 @@ mod tests {
 
     /// One hour whose two bulk-shear planes hold `values` in `units`.
     fn write_shear_store(root: &std::path::Path, run: &str, units: &str, values: &[f32]) {
-        let shape = GridShape::new(4, 3).unwrap();
-        let grid = LatLonGrid::new(
-            shape,
-            (0..12).map(|cell| 35.0 + (cell / 4) as f32).collect(),
-            (0..12).map(|cell| -100.0 + (cell % 4) as f32).collect(),
-        )
-        .unwrap();
+        let grid = batch_grid();
         let temperature = SelectedField2D::new(
             FieldSelector::height_agl(CanonicalField::Temperature, 2),
             "K",

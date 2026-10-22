@@ -303,18 +303,6 @@ _ROUTE_MARKERS = (
     ("run-progress.json", "gpuwm run (supervised front door)"),
 )
 
-#: Filenames collected as text, by category.  A file that matches nothing
-#: here is inventoried by name and size and not read.
-_TEXT_RULES = (
-    ("receipt", ("*.json",)),
-    ("config", ("*.toml", "namelist.input", "namelist.wps", "*.namelist",
-                "*.yaml", "*.yml")),
-    ("log", ("*.log", "*.err", "*.out", "*.txt", "stderr*", "stdout*",
-             "gate*", "failure*", "*.tsv")),
-    ("command", ("*.sh", "*.ps1", "*.cmd", "*.bat", "argv*",
-                 "*command*", "*next-step*")),
-)
-
 #: Receipt keys that carry a failure, in the order a route writes them.
 _FAILURE_KEYS = (("error_type", "error", "traceback"),
                  ("exception_type", "exception_message", "traceback"),

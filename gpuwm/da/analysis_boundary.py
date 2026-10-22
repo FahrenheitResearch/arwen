@@ -18,9 +18,21 @@ the start file, the tendencies re-derived in float64, every later record and eve
 the original's.  The same rule the stock exporter applies to a replaced start
 (:func:`gpuwm.wrf_direct._wrfbdy_fields`).
 
-Not here (named gap G8b of the WRF analysis door): a start inside a boundary interval (a
-cycling restart at a time that is not a boundary record).  The restart route reads the boundary
-at its own instant and the door does not rewrite it there.
+A cold start inside the first boundary interval (an analysis valid between boundary records,
+WRF analysis door gap G8b) is rebased the same way, onto the instant the start is valid: the
+first record is restamped to the start, its values are the start's own coupling, and its
+tendency is re-derived so the end of the interval is still the boundary's own,
+``BT' = (B + BT*T - B') / (T - (t - t0))``.  The record then covers ``[t, t0 + T)``, a lead
+interval shorter than the cadence, which the WRF-input door reads as such
+(:func:`gpuwm.ingest.wrfinput.wrfbdy_coverage`); every later record and every other byte is the
+original's.  WRF's own evaluation of the record at ``t`` (``B + dtbc*BT`` from a record left at
+``t0``) gives the same coupled value, but ArWen's default boundary path re-normalises each
+interval's END POINTS by the column mass at that instant and interpolates between them, so a
+record left at ``t0`` with back-extrapolated values would put the rim at ``t`` somewhere other
+than the start's own coupling; the restamped record has both ends at real states.  A start in a
+later interval is cropped to the record that holds it first (records before it never force the
+run).  The cycling-restart route reads the boundary at its own instant and the door does not
+rewrite it there.
 """
 from __future__ import annotations
 
@@ -132,11 +144,17 @@ def rebase_first_record(wrfbdy: str | Path, start: str | Path, out: str | Path) 
     first = netcdf_bridge.open_dataset(start)
     bdy_times = _times(bdy)
     start_times = _times(first)
-    if start_times[0] != bdy_times[0]:
-        raise BoundaryUpdateRefused(
-            f"the start is valid {start_times[0]:%Y-%m-%d_%H:%M:%S} and the boundary's first record "
-            f"{bdy_times[0]:%Y-%m-%d_%H:%M:%S}; a cold start from an analysis needs a boundary whose "
-            "first record is the analysis time (named gap G8b: a start inside an interval)")
+    offset = float((start_times[0] - bdy_times[0]).total_seconds())
+    if offset:
+        # A start inside the first interval (G8b): the record is restamped to the start, see the
+        # module docstring.  Any other start time is not this boundary's to rebase.
+        span = first_interval_seconds(bdy)
+        if not 0.0 < offset < span:
+            raise BoundaryUpdateRefused(
+                f"the start is valid {start_times[0]:%Y-%m-%d_%H:%M:%S} and the boundary's first record "
+                f"{bdy_times[0]:%Y-%m-%d_%H:%M:%S} covers {span:g} s from there; a cold start from an "
+                "analysis needs the boundary cropped to the record whose interval holds the analysis "
+                "time (a start before the first record, or after its interval, has no record to rebase)")
     for name in ("USE_THETA_M", "GRID_ID", "DX", "DY"):
         if float(first.getncattr(name)) != float(bdy.getncattr(name)):
             raise BoundaryUpdateRefused(f"the start says {name} {first.getncattr(name)} and the boundary "
@@ -146,6 +164,7 @@ def rebase_first_record(wrfbdy: str | Path, start: str | Path, out: str | Path) 
     duration = first_interval_seconds(bdy)
     if not duration > 0:
         raise BoundaryUpdateRefused(f"the first boundary interval is {duration} s long")
+    lead = duration - offset
     needed = set(keys) | {"MU", "MUB", "C1H", "C2H", "C1F", "C2F", "MAPFAC_M", "MAPFAC_U", "MAPFAC_V",
                           "QVAPOR"}
     missing = sorted(name for name in needed if name not in first.variables)
@@ -182,15 +201,31 @@ def rebase_first_record(wrfbdy: str | Path, start: str | Path, out: str | Path) 
                     f"{value.shape}; the start is not on the boundary's grid")
             end = value + duration * tendency
             updates[f"{base}_B{suffix}"] = strip
-            updates[f"{base}_BT{suffix}"] = ((end - strip.astype(np.float64)) / duration).astype(np.float32)
-            largest = max(largest, float(np.max(np.abs(strip.astype(np.float64) - value))))
+            updates[f"{base}_BT{suffix}"] = ((end - strip.astype(np.float64)) / lead).astype(np.float32)
+            at_start = value + offset * tendency if offset else value
+            largest = max(largest, float(np.max(np.abs(strip.astype(np.float64) - at_start))))
         departure[base] = largest
+    receipt = {"schema": "gpuwm.wrfbdy-rebase/1", "boundary": str(out), "start": str(start),
+               "rule": "first record = coupling of the start (wrf_initial_boundary_head); BT' = (B + BT*dt - B')/dt, "
+                       "so the end of the first interval is the boundary's own (WRFDA da_update_bc)",
+               "first_interval_seconds": duration, "fields": sorted(keys), "kept": kept,
+               "max_abs_first_record_change": departure, "moist_theta": moist_theta}
+    if offset:
+        stamp = np.frombuffer(f"{start_times[0]:%Y-%m-%d_%H:%M:%S}".encode("ascii"), dtype="S1")
+        for name in ("Times", "md___thisbdytimee_x_t_d_o_m_a_i_n_m_e_t_a_data_"):
+            if name in bdy.variables:
+                updates[name] = stamp
+        receipt.update(
+            rule=("a start inside the first interval: the first record restamped to the start, its values the "
+                  "coupling of the start (wrf_initial_boundary_head), BT' = (B + BT*T - B')/(T - (t - t0)), so the "
+                  "end of the interval is the boundary's own; every later record the original's"),
+            start_inside_interval={"record_time": f"{bdy_times[0]:%Y-%m-%d_%H:%M:%S}",
+                                   "start_time": f"{start_times[0]:%Y-%m-%d_%H:%M:%S}",
+                                   "offset_seconds": offset, "lead_interval_seconds": lead},
+            max_abs_first_record_change_note=("against the original record carried to the start by its own "
+                                              "tendency (B + BT*(t - t0))"))
     _patched_copy(wrfbdy, out, updates)
-    return {"schema": "gpuwm.wrfbdy-rebase/1", "boundary": str(out), "start": str(start),
-            "rule": "first record = coupling of the start (wrf_initial_boundary_head); BT' = (B + BT*dt - B')/dt, "
-                    "so the end of the first interval is the boundary's own (WRFDA da_update_bc)",
-            "first_interval_seconds": duration, "fields": sorted(keys), "kept": kept,
-            "max_abs_first_record_change": departure, "moist_theta": moist_theta}
+    return receipt
 
 
 def same_start(run_wrfinput: str | Path, start: str | Path) -> bool:

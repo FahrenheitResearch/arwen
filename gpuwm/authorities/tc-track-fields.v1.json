@@ -499,6 +499,11 @@
         "temp_dec_threshold": 0.5,
         "lat_threshold": null,
         "exclude_border": true
+      },
+      "center_refinement": {
+        "field": "msl",
+        "method": "separable three-point parabola about the msl-minimum lattice node the tracker returns",
+        "reason": "Vitart returns lattice nodes, so every fix sat on the 0.25 degree export grid and tracks drew as staircases (improve-55)"
       }
     },
     "tempestextremes": {
@@ -522,11 +527,11 @@
       "stitch": [
         "--range",
         "6.0",
-        "--mintime",
-        "24h",
         "--maxgap",
         "12h"
       ],
+      "minimum_duration_seconds": 86400,
+      "short_record_policy": "require-full-record-and-mark-provisional",
       "edge_radius_km": 722.5
     }
   },
@@ -555,6 +560,28 @@
       "record_identifier": 2,
       "coordinate_scale": 1.0
     }
+  },
+  "history_export": {
+    "vocabulary": "era5-zarr",
+    "levels_hpa": [
+      850,
+      500,
+      400,
+      300,
+      250,
+      200
+    ],
+    "grid": "latlon:0.25",
+    "names": "era5",
+    "variables": [
+      "geopotential",
+      "temperature",
+      "u_component_of_wind",
+      "v_component_of_wind",
+      "10m_u_component_of_wind",
+      "10m_v_component_of_wind",
+      "mean_sea_level_pressure"
+    ]
   },
   "identity_catalog": {
     "source": "NOAA NHC ATCF, public domain US government observations",

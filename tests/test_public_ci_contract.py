@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -167,6 +168,16 @@ def test_the_cpu_job_uses_the_complete_release_list_and_platform_worker_counts(c
     assert set(run_stage1.publication_files(ROOT)) <= set(files)
     assert set(run_stage1.CONTRACT_FILES) <= set(files)
     assert len(files) == len(set(files)) and all((ROOT / name).is_file() for name in files)
+
+
+def test_stage1_keeps_the_full_publication_contracts_after_tag_smoke_is_narrowed(ci):
+    # These six vanished from R5 when its union still read publish.yml/test.
+    full = set(re.findall(r'tests/\S+\.py', _runs(ci['jobs']['publication_contracts'])))
+    assert full == set(run_stage1.publication_files(ROOT))
+    assert {'tests/test_carried_channel.py', 'tests/test_carried_release_packet.py',
+            'tests/test_gpu_pin_set.py', 'tests/test_native_build_inputs.py',
+            'tests/test_precut_gate_completion.py', 'tests/test_release_bump_version.py'} <= full
+
 
 
 def _stage1_root(tmp_path, text):

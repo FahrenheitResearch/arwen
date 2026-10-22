@@ -179,17 +179,7 @@ options
 
 fn main() -> ExitCode {
     let _ = std::hint::black_box(GPUWM_BRIDGE_SOURCE_REV_STAMP);
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    match run(&args) {
-        Ok(output) => {
-            print!("{output}");
-            ExitCode::SUCCESS
-        }
-        Err(error) => {
-            eprintln!("rw_madis: {error}");
-            ExitCode::FAILURE
-        }
-    }
+    rw_obs::cli::main("rw_madis", run)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

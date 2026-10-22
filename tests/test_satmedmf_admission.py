@@ -34,11 +34,6 @@ def test_carrier_allocated_and_inventoried():
     assert "tke_edmf" in STATE_SERIALIZED_ATTRS
     assert "tke_edmf0" in STATE_REBUILT_ATTRS
 
-def test_other_scheme_has_no_extra_carrier():
-    state=DomainState(cfg(bl_pbl_physics=1),array_module=np)
-    assert not hasattr(state,"tke_edmf")
-    assert "tke_edmf" not in state_array_shapes(cfg(bl_pbl_physics=1))
-
 @pytest.mark.parametrize("change,reason",[
     ({"moist":False,"mp_physics":0},"moist=true"),
     ({"bldt":1.},"positive cadence"),

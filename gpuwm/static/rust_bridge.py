@@ -75,6 +75,32 @@ class StaticBridgeError(RuntimeError):
 _REPORTED_FALLBACKS: set[str] = set()
 
 
+def global_source_donors(values, *, period, first, out_nx,
+                         south=0, north=0, vector=False):
+    """Select a global ring and its pole donors in parallel Rust code."""
+    source = np.ascontiguousarray(values, dtype=np.float64)
+    ny, nx = source.shape[-2:]
+    result = np.empty((*source.shape[:-2], ny + south + north, out_nx),
+                      dtype=np.float64)
+    library = load()
+    try:
+        select = library.gpuwm_static_global_donors_f64
+    except AttributeError:
+        raise StaticBridgeError(
+            "Rust static-fields lacks periodic pole donors; rebuild with "
+            + _checkout_build_command()) from None
+    pointer = ctypes.POINTER(ctypes.c_double)
+    select.argtypes = [pointer, pointer] + [ctypes.c_size_t] * 4 + [
+        ctypes.c_int64, ctypes.c_size_t, ctypes.c_size_t,
+        ctypes.c_size_t, ctypes.c_int32]
+    select.restype = ctypes.c_int32
+    code = select(source.ctypes.data_as(pointer), result.ctypes.data_as(pointer),
+                  source.size // (ny * nx), ny, nx, period,
+                  first, out_nx, south, north, int(vector))
+    _check(library, code, "Rust global pole donor selection")
+    return result
+
+
 def floor_ruc_layer_moisture(values):
     """Copy and floor f32 RUC values through the Rust initialization seam."""
     result = np.array(values, dtype=np.float32, order="C", copy=True)

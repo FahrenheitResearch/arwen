@@ -70,3 +70,21 @@ def endpoint(objects):
   if any('.'+prefix+'[0]' in name for prefix in ('_rk_copy_launch','_rk_zero_launch','_glue_add_launch')) and name.endswith('[0]'):
    host[name]={'pointer_target':pointer(value)}
  return {'arrays':rows,'host':host}
+
+def callback_inventory(value):
+ seen=set();arrays={}
+ def visit(value,label):
+  if id(value) in seen:return
+  seen.add(id(value))
+  if isinstance(value,cp.ndarray):
+   key=(value.data.ptr,value.shape,value.strides,value.dtype.str)
+   arrays.setdefault(key,{'label':label,'array':value});return
+  if isinstance(value,Mapping):
+   for name,item in value.items():visit(item,label+'.'+str(name))
+  elif isinstance(value,(list,tuple)):
+   for i,item in enumerate(value):visit(item,label+f'[{i}]')
+  elif isinstance(value,types.FunctionType) and value.__closure__:
+   for name,cell in zip(value.__code__.co_freevars,value.__closure__):visit(cell.cell_contents,label+'.closure.'+name)
+  elif type(value).__module__.startswith('gpuwm.') and hasattr(value,'__dict__'):
+   for name,item in vars(value).items():visit(item,label+'.'+name)
+ visit(value,'callbacks');return arrays

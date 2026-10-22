@@ -35,7 +35,6 @@ device and refused here by name rather than returning a corrupted column.
 
 from __future__ import annotations
 
-from functools import lru_cache
 from gpuwm.core.device_cache import cuda_cache
 
 import cupy as cp
@@ -74,12 +73,6 @@ UWPBL_MASS_INPUTS = ("u", "v", "th", "rho", "qv", "qc", "qi", "qnc", "qni",
 UWPBL_FULL_INPUTS = ("p8w", "z_at_w")
 #: Surface float32 inputs, (ny, nx).
 UWPBL_SURFACE_INPUTS = ("hfx", "qfx", "ust", "ht")
-
-#: WRF's cold start: camuwpblinit sets TKE_PBL = epsq2 = 0.2
-#: (module_bl_camuwpbl_driver.F:1061-1073, module_model_constants.F:92);
-#: the diffusivities and the residual stress start at zero and the first
-#: step re-zeroes them anyway (driver.F:436-441, :465-468).
-UWPBL_TKE_COLD_START = 0.2
 
 
 @cuda_cache(maxsize=None, ready=True)

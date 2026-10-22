@@ -16,32 +16,17 @@ selection, the recipe or the card that produced it.
 
 from __future__ import annotations
 
-import contextlib
 import inspect
-import io
 import json
 from pathlib import Path
 
 import pytest
 
-from gpuwm.cli import main as cli_main
 from gpuwm.experiment import load_experiment
 from gpuwm.hrrr_route_inputs import route_input_paths, verify_round_trip
 
-#: The same small two-domain emission the route-companion suite uses.
-_EMISSION = ("--cycle", "2026-07-29T18", "--hours", "1", "--root-dx", "3",
-             "--chain", "3", "--card", "32gb", "--point", "38.0,-98.0")
-
-
-def _emit(tmp_path, source="hrrr", name="base"):
-    """The emission door, run for real, with no network and no device."""
-
-    out = tmp_path / f"{name}.toml"
-    with contextlib.redirect_stdout(io.StringIO()):
-        rc = cli_main(["domain", "--name", name, "--source", source,
-                       *_EMISSION, "--out", str(out)])
-    assert rc == 0
-    return out
+# Share the identical real emission; each caller still writes its own files.
+from test_companion_domains_route_companions import _emit
 
 
 def _fetch_source(config: Path):

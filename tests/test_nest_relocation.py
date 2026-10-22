@@ -24,6 +24,8 @@ from gpuwm.core.nest_relocation import (Placement, RelocationRefusal,
                                         transplant_overlap)
 from gpuwm.experiment import DISCRETE_RELOCATION_MODE, RelocationConfig
 
+from test_nest_relocation_staging import _scaffold
+
 
 RATIO = 3
 NX = NY = 24
@@ -448,12 +450,6 @@ def test_only_the_discrete_mode_is_implemented():
 # ---------------------------------------------------------------------------
 # The new config field must not move any existing fingerprint
 # ---------------------------------------------------------------------------
-
-def _scaffold():
-    from gpuwm.verify.cases.nest_ideal_r3 import load_scaffold
-
-    return load_scaffold()
-
 
 def test_relocation_bounds_are_outside_the_restart_identity():
     """Adding a field to ExperimentConfig would otherwise re-key every

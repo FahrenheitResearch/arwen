@@ -231,3 +231,101 @@ fn a_store_without_an_era5t_stream_refuses_on_the_finalized_boundary() {
         assert!(stderr.contains(expected), "{expected} missing from {stderr}");
     }
 }
+
+#[test]
+fn executable_accepts_vapour_flux_units_without_relabeling_wind() {
+    for (actual,expected,pass) in [("kg m**-1 s**-1","kg m-1 s-1",true),
+        ("kg m**-2","kg m-2",true),("m s**-1","kg m-1 s-1",false)] {
+        let fixture=Fixture::new();
+        let store=fixture.0.join("store");
+        array(&store,"reference",&[2,2,4],&[-300.;16],json!({
+            "units":actual,"_ARRAY_DIMENSIONS":["time","latitude","longitude"]}));
+        write_json(&fixture.0.join("request.json"),json!({
+            "store":store,"times":["2020-01-01T00:00:00Z"],"area":[-1.,0.,1.,90.],
+            "expected_levels_hpa":[500.,1000.],"fields":[{
+                "source":"reference","output":"flux","units":expected,"pressure":false}]
+        }));
+        let result=fixture.extract();
+        assert_eq!(result.status.success(),pass,"{}",String::from_utf8_lossy(&result.stderr));
+        if pass {
+            let file=netcrust::File::open(fixture.0.join("forcing.nc")).unwrap();
+            let plane=file.read_array_f64("flux").unwrap();
+            assert!(plane.values().iter().all(|v|*v == -300.));
+        }
+    }
+}
+
+/// The deep-soil temperature producer on a hand-built climatology: the annual
+/// mean weights day 366 by the request's leap-day weight, adds lapse * height,
+/// keeps a land cell's land temperature, writes ocean as the missing word 0,
+/// and lays the result out as the fixed two-tile, 3-cell-border WPS dataset.
+#[test]
+fn soiltemp_climatology_writes_the_fixed_wps_layout_from_land_air_temperature() {
+    let fixture = Fixture::new();
+    let clim = fixture.0.join("clim");
+    let stat = fixture.0.join("static");
+    for store in [&clim, &stat] {
+        fs::create_dir(store).unwrap();
+        write_json(&store.join(".zgroup"), json!({"zarr_format": 2}));
+        array(store, "latitude", &[2], &[-45.0, 45.0], json!({"_ARRAY_DIMENSIONS": ["latitude"]}));
+        array(store, "longitude", &[4], &[0.0, 90.0, 180.0, 270.0], json!({"_ARRAY_DIMENSIONS": ["longitude"]}));
+    }
+    array(&clim, "dayofyear", &[2], &[1.0, 366.0], json!({"_ARRAY_DIMENSIONS": ["dayofyear"]}));
+    array(&clim, "hour", &[2], &[0.0, 12.0], json!({"_ARRAY_DIMENSIONS": ["hour"]}));
+    // [hour, dayofyear, longitude, latitude]: 280 K on day 1, 290 K on day 366.
+    let mut cube = Vec::new();
+    for _hour in 0..2 {
+        for day in [280.0, 290.0] {
+            cube.extend(std::iter::repeat_n(day, 8));
+        }
+    }
+    array(&clim, "2m_temperature", &[2, 2, 4, 2], &cube, json!({
+        "units": "K", "_ARRAY_DIMENSIONS": ["hour", "dayofyear", "longitude", "latitude"]}));
+    // [longitude, latitude]: 1000 m high at (lon 0, lat 45); no land at lon 180.
+    let mut height = vec![0.0; 8];
+    height[1] = 9.80665 * 1000.0;
+    array(&stat, "geopotential_at_surface", &[4, 2], &height, json!({
+        "_ARRAY_DIMENSIONS": ["longitude", "latitude"]}));
+    let mut land = vec![1.0; 8];
+    land[4] = 0.0;
+    land[5] = 0.0;
+    array(&stat, "land_sea_mask", &[4, 2], &land, json!({
+        "_ARRAY_DIMENSIONS": ["longitude", "latitude"]}));
+    write_json(&fixture.0.join("soiltemp.json"), json!({
+        "schema": "arwen.geog-soiltemp-climatology.request.v1",
+        "climatology_store": clim, "temperature": "2m_temperature", "temperature_units": "K",
+        "static_store": stat, "geopotential": "geopotential_at_surface",
+        "land_sea_mask": "land_sea_mask", "lapse_rate_k_per_m": 0.0065,
+        "gravity_m_s2": 9.80665, "leap_day_weight": 0.25, "land_fraction_min": 0.001,
+        "description": "test"}));
+    let out = fixture.0.join("soiltemp_test");
+    let result = Command::new(env!("CARGO_BIN_EXE_rw_zarr")).arg("soiltemp-climatology")
+        .arg(fixture.0.join("soiltemp.json")).arg(&out).output().unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let receipt: Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(receipt["schema"], "arwen.geog-soiltemp-climatology.v1");
+    assert_eq!(receipt["output"]["missing_cells"], 2 * 45 * 180);
+    let index = fs::read_to_string(out.join("index")).unwrap();
+    for line in ["type=continuous", "missing_value=0.0", "known_lat=-89.5", "known_lon=-179.5",
+                 "wordsize=2", "tile_x=180", "tile_bdr=3", "scale_factor=0.01"] {
+        assert!(index.lines().any(|l| l == line), "{line} missing from {index}");
+    }
+    let west = fs::read(out.join("00001-00180.00001-00180")).unwrap();
+    let east = fs::read(out.join("00181-00360.00001-00180")).unwrap();
+    assert_eq!((west.len(), east.len()), (186 * 186 * 2, 186 * 186 * 2));
+    let word = |tile: &[u8], row: usize, col: usize| {
+        let at = (row * 186 + col) * 2;
+        u16::from_be_bytes([tile[at], tile[at + 1]])
+    };
+    // (282 K annual mean + 6.5 K) at lat 10.5, lon 0.5; 282 K at lat -10.5, lon 90.5.
+    assert_eq!(word(&east, 100 + 3, 3), 28850);
+    assert_eq!(word(&east, 79 + 3, 90 + 3), 28200);
+    // Ocean at lon -179.5 is the missing word; the west border wraps from lon -2.5.
+    assert_eq!(word(&west, 100 + 3, 3), 0);
+    assert_eq!(word(&east, 100 + 3, 0), 28850);
+    // Rows beyond the south pole repeat the pole row.
+    assert_eq!(word(&east, 0, 3), word(&east, 3, 3));
+    let refused = Command::new(env!("CARGO_BIN_EXE_rw_zarr")).arg("soiltemp-climatology")
+        .arg(fixture.0.join("soiltemp.json")).arg(&out).output().unwrap();
+    assert!(!refused.status.success());
+}

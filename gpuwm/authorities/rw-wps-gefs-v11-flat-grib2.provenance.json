@@ -1,0 +1,17 @@
+{
+  "schema": "gpuwm-gefs-member-in-band-terrain-provenance-v1",
+  "source": "NCEP GEFS v11 flat pgrb2a+pgrb2b, AWS noaa-gefs-pds, verified 20180101/00",
+  "field": "terrain_height",
+  "selector": {
+    "format": "grib2",
+    "discipline": 0,
+    "category": 3,
+    "parameter": 5,
+    "level_type": 1,
+    "level_value": 0,
+    "pdt": 1
+  },
+  "time_policy": "decoded at every valid time and required invariant",
+  "member_policy": "one member per preparation: the member axis is carried in every message's PDT (perturbationNumber / typeOfEnsembleForecast) and the frame assembler refuses inputs that mix members; which members exist and how their bytes verify is the packaged rw-wps.members.v1 grammar consumed by gpuwm-member-prep",
+  "input_identity": "dynamic file paths and SHA-256 values are owned by gpuwm-mapped-composition-inputs-v1"
+}

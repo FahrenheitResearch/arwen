@@ -17,11 +17,6 @@ def selectors():
     return frozenset(map(int, _rows()))
 
 
-def transported_mass_fields(mp_physics):
-    """The vapor carrier and the table's ordered hydrometeor masses."""
-    return ("qv", *map(str, _rows()[str(int(mp_physics))]["kernel_species"]))
-
-
 def precipitation_classes(mp_physics):
     return tuple(map(str, _rows()[str(int(mp_physics))]["precip"]))
 

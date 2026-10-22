@@ -6,6 +6,8 @@ import subprocess
 
 
 def register_cli(sub):
+    from gpuwm.storm_detect import register_cli as register_detector
+    register_detector(sub)
     parser = sub.add_parser('storm-diagnostics', help='named-height w, Earth-relative vertical vorticity, reflectivity and time series')
     parser.add_argument('--input-list', type=Path, required=True)
     parser.add_argument('--out', type=Path, required=True)

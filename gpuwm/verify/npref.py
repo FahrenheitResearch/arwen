@@ -65,11 +65,7 @@ def np_calc_p_alpha(thp, php, mup, base, coord, qv=None, hypsometric_opt=1):
     ``VerticalCoord`` used to build the run.  Returns ``(p, al, alt)``,
     each ``(nz, ny, nx)`` float64.
     """
-    def prof(a):
-        a = np.asarray(a, dtype=np.float64)
-        return a[:, None, None] if a.ndim == 1 else a
-
-    thb, phb, alb = prof(base.thb), prof(base.phb), prof(base.alb)
+    thb, phb, alb = _prof3(base.thb), _prof3(base.phb), _prof3(base.alb)
     rdnw = np.asarray(coord.rdnw, dtype=np.float64)[:, None, None]
     c1h = np.asarray(coord.c1h, dtype=np.float64)[:, None, None]
     c2h = np.asarray(coord.c2h, dtype=np.float64)[:, None, None]
@@ -4993,8 +4989,6 @@ def np_sfclay(u, v, t, qv, p, dz8w, psfc, tsk, znt, pblh, mavail,
 # module_model_constants (CP = 1004.5, STBOLT, XLF, XLV) come from
 # gpuwm.core.constants so they are never hardcoded twice.
 
-import math
-
 _NRD = 287.04             # noahlsm module parameter RD
 _NSIGMA = 5.67e-8         # noahlsm SIGMA
 _NCPH2O = 4.218e3         # noahlsm CPH2O
@@ -9649,114 +9643,15 @@ def np_wrf_smag3d_km(u, v, w, phi, bn2, *, dx, dy, dt, c_s,
     ``mix_isotropic`` branches with the exact floors and
     ``mix_upper_bound/dt`` caps.  Returns ``(xkmh, xkhh, xkmv, xkhv)``.
     """
-    u = np.asarray(u, dtype=np.float64)
-    v = np.asarray(v, dtype=np.float64)
     w = np.asarray(w, dtype=np.float64)
-    phi = np.asarray(phi, dtype=np.float64)
     bn2 = np.asarray(bn2, dtype=np.float64)
-    fnm = np.asarray(fnm, dtype=np.float64)
-    fnp = np.asarray(fnp, dtype=np.float64)
-    dn = np.asarray(dn, dtype=np.float64)
-    dnw = np.asarray(dnw, dtype=np.float64)
     nz, ny, nx = bn2.shape
-    rdx, rdy = 1.0 / dx, 1.0 / dy
-    G = 9.81
-    ph, rdzw, rdz = _wrf_column_geometry(phi)
-
-    def uhat(k, j, i):
-        return u[k, j % ny, i % nx]
-
-    def vhat(k, j, i):
-        return v[k, j % ny, i % nx]
-
-    def what(kw, j, i):
-        return w[min(max(kw, 0), nz), j % ny, i % nx]
-
-    def zx(kw, j, iface):
-        return rdx * (ph(kw, j, iface) - ph(kw, j, iface - 1)) / G
-
-    def zy(kw, jface, i):
-        return rdy * (ph(kw, jface, i) - ph(kw, jface - 1, i)) / G
-
-    def full_weights(kw, pair):
-        if kw <= 0:
-            return cf1 * pair(0) + cf2 * pair(1) + cf3 * pair(2)
-        if kw >= nz:
-            cft2 = -0.5 * dnw[nz - 1] / dn[nz - 1]
-            return (1.0 - cft2) * pair(nz - 1) + cft2 * pair(nz - 2)
-        return fnm[kw] * pair(kw) + fnp[kw] * pair(kw - 1)
-
-    def u_w_xcenter(kw, j, i):
-        return 0.5 * full_weights(
-            kw, lambda k: uhat(k, j, i) + uhat(k, j, i + 1))
-
-    def v_w_ycenter(kw, j, i):
-        return 0.5 * full_weights(
-            kw, lambda k: vhat(k, j, i) + vhat(k, j + 1, i))
-
-    def u_w_corner(kw, j, i):
-        return 0.5 * full_weights(
-            kw, lambda k: uhat(k, j - 1, i) + uhat(k, j, i))
-
-    def v_w_corner(kw, j, i):
-        return 0.5 * full_weights(
-            kw, lambda k: vhat(k, j, i - 1) + vhat(k, j, i))
-
-    def defor11(k, j, i):
-        tmpzx = 0.25 * (zx(k, j, i) + zx(k, j, i + 1)
-                        + zx(k + 1, j, i) + zx(k + 1, j, i + 1))
-        slope = ((u_w_xcenter(k + 1, j, i) - u_w_xcenter(k, j, i))
-                 * tmpzx * rdzw(k, j, i))
-        return 2.0 * (rdx * (uhat(k, j, i + 1) - uhat(k, j, i)) - slope)
-
-    def defor22(k, j, i):
-        tmpzy = 0.25 * (zy(k, j, i) + zy(k, j + 1, i)
-                        + zy(k + 1, j, i) + zy(k + 1, j + 1, i))
-        slope = ((v_w_ycenter(k + 1, j, i) - v_w_ycenter(k, j, i))
-                 * tmpzy * rdzw(k, j, i))
-        return 2.0 * (rdy * (vhat(k, j + 1, i) - vhat(k, j, i)) - slope)
-
-    def defor12(k, j, i):
-        rr = (rdzw(k, j, i) + rdzw(k, j, i - 1)
-              + rdzw(k, j - 1, i - 1) + rdzw(k, j - 1, i))
-        tmpzy = 0.25 * (zy(k, j, i - 1) + zy(k, j, i)
-                        + zy(k + 1, j, i - 1) + zy(k + 1, j, i))
-        uslope = ((u_w_corner(k + 1, j, i) - u_w_corner(k, j, i))
-                  * 0.25 * tmpzy * rr)
-        tmpzx = 0.25 * (zx(k, j - 1, i) + zx(k, j, i)
-                        + zx(k + 1, j - 1, i) + zx(k + 1, j, i))
-        vslope = ((v_w_corner(k + 1, j, i) - v_w_corner(k, j, i))
-                  * 0.25 * tmpzx * rr)
-        return (rdy * (uhat(k, j, i) - uhat(k, j - 1, i)) - uslope
-                + rdx * (vhat(k, j, i) - vhat(k, j, i - 1)) - vslope)
-
-    def w_xavg(k, j, i):
-        return 0.25 * (what(k, j, i) + what(k + 1, j, i)
-                       + what(k, j, i - 1) + what(k + 1, j, i - 1))
-
-    def w_yavg(k, j, i):
-        return 0.25 * (what(k, j, i) + what(k + 1, j, i)
-                       + what(k, j - 1, i) + what(k + 1, j - 1, i))
-
-    def defor13(kw, j, i):
-        if kw <= 0 or kw >= nz:
-            return 0.0
-        rz = 0.5 * (rdz(kw, j, i) + rdz(kw, j, i - 1))
-        slope = ((w_xavg(kw, j, i) - w_xavg(kw - 1, j, i))
-                 * zx(kw, j, i) * rz)
-        dwdx = rdx * (what(kw, j, i) - what(kw, j, i - 1)) - slope
-        dudz = (uhat(kw, j, i) - uhat(kw - 1, j, i)) * rz
-        return dwdx + dudz
-
-    def defor23(kw, j, i):
-        if kw <= 0 or kw >= nz:
-            return 0.0
-        rz = 0.5 * (rdz(kw, j, i) + rdz(kw, j - 1, i))
-        slope = ((w_yavg(kw, j, i) - w_yavg(kw - 1, j, i))
-                 * zy(kw, j, i) * rz)
-        dwdy = rdy * (what(kw, j, i) - what(kw, j - 1, i)) - slope
-        dvdz = (vhat(kw, j, i) - vhat(kw - 1, j, i)) * rz
-        return dwdy + dvdz
+    d = _wrf_deformation_closures(u, v, w, phi, dx=dx, dy=dy,
+                                  fnm=fnm, fnp=fnp, dn=dn, dnw=dnw,
+                                  cf1=cf1, cf2=cf2, cf3=cf3, shape=bn2.shape)
+    rdzw = d["rdzw"]
+    defor11, defor22, defor12 = d["defor11"], d["defor22"], d["defor12"]
+    defor13, defor23 = d["defor13"], d["defor23"]
 
     xkmh = np.zeros((nz, ny, nx))
     xkhh = np.zeros_like(xkmh)
@@ -9898,7 +9793,7 @@ def np_wrf_surface_mom_cd0(u0, v0, rho0, cd0, dnw0):
 
 
 def _wrf_deformation_closures(u, v, w, phi, *, dx, dy,
-                              fnm, fnp, dn, dnw, cf1, cf2, cf3):
+                              fnm, fnp, dn, dnw, cf1, cf2, cf3, shape=None):
     """Shared float64 closures for the metric-aware WRF deformations on a
     periodic msf=1 grid (cal_deform_and_div transliteration).  Returns a
     dict of pointwise functions; used by the km_opt=2/3 mirrors."""
@@ -9912,6 +9807,8 @@ def _wrf_deformation_closures(u, v, w, phi, *, dx, dy,
     dnw = np.asarray(dnw, dtype=np.float64)
     nz = phi.shape[0] - 1
     ny, nx = phi.shape[1:]
+    if shape is not None:
+        nz, ny, nx = shape
     rdx, rdy = 1.0 / dx, 1.0 / dy
     G = 9.81
     ph, rdzw, rdz = _wrf_column_geometry(phi)

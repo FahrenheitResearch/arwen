@@ -100,7 +100,7 @@ def test_publish_workflow_has_two_publication_ingresses() -> None:
     assert 'release.get("immutable") is True' in controller
     assert "exactly one authenticated release must carry the selected tag" in controller
     for name, job in document["jobs"].items():
-        if name != "test":
+        if name != "controller":
             assert job["if"] == "github.event_name != 'pull_request'"
     publish = document["jobs"]["publish"]
     assert publish["permissions"] == {"id-token": "write"}

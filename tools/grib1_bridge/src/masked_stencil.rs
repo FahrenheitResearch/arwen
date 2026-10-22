@@ -369,7 +369,7 @@ fn build_target(b: &Build, t: usize, out: &mut TargetOut, k: usize, stats: &mut 
         stats.sum_max = sum;
     }
     // np.allclose(sums, 1.0, rtol=0.0, atol=2.0e-15) and finite weights.
-    if !((sum - 1.0).abs() <= 2.0e-15) {
+    if !matches!((sum - 1.0).abs().partial_cmp(&2.0e-15), Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)) {
         stats.convex = false;
     }
     for corner in 0..4 {
@@ -558,7 +558,7 @@ pub unsafe extern "C" fn gpuwm_masked_bilinear_stencil_f64(
                 stats.merge(&run());
             } else {
                 let partials: Vec<Stats> = std::thread::scope(|scope| {
-                    let handles: Vec<_> = (0..count).map(|_| scope.spawn(&run)).collect();
+                    let handles: Vec<_> = (0..count).map(|_| scope.spawn(run)).collect();
                     handles.into_iter().map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p))).collect()
                 });
                 for part in &partials {
@@ -788,12 +788,12 @@ mod tests {
         y: &[f64],
         apply: &[u8],
         valid: &[u8],
-        ny: usize,
-        nx: usize,
-        radius: i64,
-        closed: u32,
+        shape: (usize, usize),
+        search: (i64, u32),
         workers: usize,
     ) -> (i32, Vec<i32>, Vec<i32>, Vec<f32>, Vec<u64>, Vec<f64>, Vec<u64>) {
+        let (ny, nx) = shape;
+        let (radius, closed) = search;
         let n = x.len();
         let mut iy = vec![0i32; 4 * n];
         let mut ix = vec![0i32; 4 * n];
@@ -825,7 +825,7 @@ mod tests {
         valid[3 * nx + 9] = 1;
         valid[9 * nx + 3] = 1;
         // Equidistant from (6, 6): the lower row is scanned first.
-        let (code, iy, ix, w, counts, _, _) = build(&[6.0], &[6.0], &[1], &valid, ny, nx, 8, 0, 1);
+        let (code, iy, ix, w, counts, _, _) = build(&[6.0], &[6.0], &[1], &valid, (ny, nx), (8, 0), 1);
         assert_eq!(code, OK);
         assert_eq!((iy[0], ix[0]), (3, 9));
         assert_eq!(w[0], 1.0);
@@ -837,13 +837,13 @@ mod tests {
         let (ny, nx) = (40usize, 40usize);
         let mut valid = vec![0u8; ny * nx];
         valid[20 * nx + 38] = 1;
-        let (code, _, _, _, counts, reals, un) = build(&[5.2], &[20.0], &[1], &valid, ny, nx, 2, 0, 1);
+        let (code, _, _, _, counts, reals, un) = build(&[5.2], &[20.0], &[1], &valid, (ny, nx), (2, 0), 1);
         assert_eq!(code, ERR_UNRESOLVED);
         assert_eq!(counts[COUNT_UNRESOLVED], 1);
         assert_eq!(un[0], 0);
         assert!((reals[REAL_WORST_DISTANCE] - 32.8).abs() < 1e-9);
         let all = EDGE_WEST | EDGE_EAST | EDGE_SOUTH | EDGE_NORTH;
-        let (code, iy, ix, _, _, _, _) = build(&[5.2], &[20.0], &[1], &valid, ny, nx, 2, all, 1);
+        let (code, iy, ix, _, _, _, _) = build(&[5.2], &[20.0], &[1], &valid, (ny, nx), (2, all), 1);
         assert_eq!(code, OK);
         assert_eq!((iy[0], ix[0]), (20, 38));
     }
@@ -861,9 +861,9 @@ mod tests {
         let x: Vec<f64> = (0..n).map(|_| next() * (nx as f64 - 1.0001)).collect();
         let y: Vec<f64> = (0..n).map(|_| next() * (ny as f64 - 1.0001)).collect();
         let apply: Vec<u8> = (0..n).map(|_| u8::from(next() < 0.6)).collect();
-        let one = build(&x, &y, &apply, &valid, ny, nx, 8, 0, 1);
+        let one = build(&x, &y, &apply, &valid, (ny, nx), (8, 0), 1);
         for workers in [2usize, 3, 7, 64] {
-            let many = build(&x, &y, &apply, &valid, ny, nx, 8, 0, workers);
+            let many = build(&x, &y, &apply, &valid, (ny, nx), (8, 0), workers);
             assert_eq!(one.0, many.0);
             assert_eq!(one.1, many.1);
             assert_eq!(one.2, many.2);
@@ -917,7 +917,7 @@ mod tests {
         }
         let n = xs.len();
         let apply = vec![1u8; n];
-        let (code, iy, ix, w, counts, _, _) = build(&xs, &ys, &apply, &valid, ny, nx, 2, 0, 1);
+        let (code, iy, ix, w, counts, _, _) = build(&xs, &ys, &apply, &valid, (ny, nx), (2, 0), 1);
         assert_eq!(code, OK);
         assert_eq!(counts[COUNT_DIRECT], n as u64);
         for t in 0..n {
@@ -933,9 +933,9 @@ mod tests {
             }
             assert_eq!(own, 1.0);
         }
-        let (code, ..) = build(&[3.5], &[1.0], &[1], &valid, ny, nx, 2, 0, 1);
+        let (code, ..) = build(&[3.5], &[1.0], &[1], &valid, (ny, nx), (2, 0), 1);
         assert_eq!(code, ERR_OFF_WINDOW);
-        let (code, ..) = build(&[1.0], &[2.000001], &[1], &valid, ny, nx, 2, 0, 1);
+        let (code, ..) = build(&[1.0], &[2.000001], &[1], &valid, (ny, nx), (2, 0), 1);
         assert_eq!(code, ERR_OFF_WINDOW);
     }
 

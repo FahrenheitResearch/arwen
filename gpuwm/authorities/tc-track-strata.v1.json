@@ -1,0 +1,48 @@
+{
+  "schema": "gpuwm.tc-track-strata.v1",
+  "association_radius_km": 500.0,
+  "max_strata": 6,
+  "sector": {
+    "coordinate": "lon",
+    "edges": [
+      -120,
+      -100,
+      -90,
+      -80,
+      -60,
+      0,
+      60,
+      120
+    ]
+  },
+  "landfall_hours_edges": [
+    24,
+    48,
+    72
+  ],
+  "peak_mslp_pa_edges": [
+    95000,
+    98000,
+    100000
+  ],
+  "crossing_policy": "first ocean-to-land crossing in the inclusive requested window",
+  "merge_rule": "keep no-storm separate; merge smallest pair sharing outcome, then lexicographic keys; if needed merge storm outcomes; cap also at K",
+  "allocation_rule": "one per nonempty stratum, then capacity-bounded largest remainder proportional to population count, lexical ties",
+  "sampling_rule": "SHA256(seed,stratum,member_id) ascending; uniform without replacement under a uniformly random seed",
+  "nest": {
+    "hours": 48,
+    "card": "96gb",
+    "tiles": "off",
+    "nest_km": 3
+  },
+  "products": {
+    "backend": "tempestextremes",
+    "workers": 4,
+    "member_maps": [
+      "composite_reflectivity",
+      "10m_wind_speed_and_direction",
+      "mslp_10m_winds"
+    ],
+    "tracking_domain": "d01"
+  }
+}

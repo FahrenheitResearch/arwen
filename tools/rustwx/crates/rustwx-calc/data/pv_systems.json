@@ -1,0 +1,4 @@
+[
+ {"id":"fixed","tracking":false,"tilt_deg":30.0,"azimuth_deg":180.0,"max_rotation_deg":60.0,"backtrack":false,"ground_coverage_ratio":0.35,"albedo":0.2,"dc_mw":1.0,"dc_ac_ratio":1.2,"inverter_efficiency":0.96,"gamma_per_c":-0.0047,"losses_fraction":0.14,"thermal_u0":25.0,"thermal_u1":6.84,"module_height_m":5.0,"ramp_fraction_per_minute":0.02},
+ {"id":"tracking","tracking":true,"tilt_deg":0.0,"azimuth_deg":0.0,"max_rotation_deg":60.0,"backtrack":true,"ground_coverage_ratio":0.35,"albedo":0.2,"dc_mw":1.0,"dc_ac_ratio":1.2,"inverter_efficiency":0.96,"gamma_per_c":-0.0047,"losses_fraction":0.14,"thermal_u0":25.0,"thermal_u1":6.84,"module_height_m":5.0,"ramp_fraction_per_minute":0.02}
+]

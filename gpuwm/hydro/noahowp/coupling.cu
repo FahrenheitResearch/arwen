@@ -86,3 +86,22 @@ extern "C" __global__ void catchment_exchange_monitored(
       runsrf, runsub, soldrain, ecan, etran, edir,
       surface, subsurface, recharge, evapotranspiration, status, sticky_status);
 }
+
+// Noah (sf_surface_physics=2) and RUC (3) publish accumulated runoff,
+// SFCRUNOFF and UDRUNOFF in mm since the start of the run, instead of Noah-MP's
+// per-step RUNSRF/RUNSUB. The depth of one LSM call is the difference from the
+// previous call. A smaller accumulator means it restarted from zero, so its
+// whole value is the depth of this call.
+extern "C" __global__ void parent_accumulator_step(
+    const int cells, const float *surface_total, const float *subsurface_total,
+    float *surface_previous, float *subsurface_previous,
+    float *surface_step, float *subsurface_step) {
+  const int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= cells) return;
+  const float s = surface_total[i], u = subsurface_total[i];
+  const float ds = s - surface_previous[i], du = u - subsurface_previous[i];
+  surface_step[i] = ds < 0.f ? s : ds;
+  subsurface_step[i] = du < 0.f ? u : du;
+  surface_previous[i] = s;
+  subsurface_previous[i] = u;
+}

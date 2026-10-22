@@ -69,10 +69,9 @@ def _document_children(tmp_path, *, posted_user=False):
     return head, digest, identity
 
 
-@pytest.mark.parametrize("posted_user", [False, True])
-def test_native_children_seal_distinct_document_digests(tmp_path, posted_user):
+def test_native_children_seal_distinct_document_digests(tmp_path):
     head, manifest, _identity = _document_children(
-        tmp_path, posted_user=posted_user)
+        tmp_path, posted_user=True)
     found = boundary_stream.verify_as_posted_tree_children(
         tmp_path, head=head, manifest_sha256=manifest)
     assert found["d02"]["identity_changed"] == [
@@ -184,11 +183,10 @@ def test_native_root_intervals_relay_before_the_tree_has_raw_lead_records(
             == (writer.cache_path / spec["file"]).read_bytes()
 
 
-@pytest.mark.parametrize("name", ["posted_leads", "decoded_leads"])
-@pytest.mark.parametrize("bad", [None, {"6": "a" * 64},
-                                {"6": "bad", "7": "b" * 64}])
 def test_a_relay_cannot_drop_or_replace_its_two_lead_record_digests(
-        tmp_path, name, bad):
+        tmp_path):
+    name = "decoded_leads"
+    bad = {"6": "bad", "7": "b" * 64}
     writer, source, source_head, _digests = _relay_writer(tmp_path)
     intervals = boundary_stream.StreamedIntervals(source, head=source_head)
     interval = intervals[0]

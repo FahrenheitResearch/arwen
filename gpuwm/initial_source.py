@@ -16,6 +16,131 @@ import tempfile
 REQUEST_SCHEMA = "gpuwm-initial-source-v1"
 RECEIPT_SCHEMA = "gpuwm-initial-source-receipt-v1"
 
+PAIRING_KEYS = frozenset({"initial_source", "boundary_cycle_offset_hours",
+                          "boundary_lead_offset_hours"})
+
+
+def boundary_fetch_request(table):
+    """Resolve a forecast's nominal cycle to its boundary acquisition clock.
+
+    Offsets are metadata, applied once before constructing fetch arguments or
+    cache identities. Duration remains a duration after the first boundary lead.
+    """
+    from datetime import timedelta
+    from gpuwm.fetch import parse_cycle
+    request = dict(table)
+    cycle_offset = request.pop("boundary_cycle_offset_hours", 0)
+    lead_offset = request.pop("boundary_lead_offset_hours", 0)
+    initial = request.pop("initial_source", None)
+    for name, value in (("boundary_cycle_offset_hours", cycle_offset),
+                        ("boundary_lead_offset_hours", lead_offset)):
+        if type(value) is not int:
+            raise ValueError(f"[fetch].{name} must be an integer number of hours")
+    if initial is not None:
+        from gpuwm.source_adapters import get_source_adapter
+        if not isinstance(initial, str) or get_source_adapter(initial).packaged_profile is None:
+            raise ValueError("[fetch].initial_source needs a packaged mapped source")
+    if cycle_offset or lead_offset:
+        lead = request.get("forecast_start_hour", 0)
+        if type(lead) is not int or lead + lead_offset < 0:
+            raise ValueError("boundary lead offset produces a negative or invalid forecast lead")
+        if cycle_offset + lead_offset != 0:
+            raise ValueError("boundary cycle and lead offsets must sum to zero to preserve the forecast start")
+        lag = -cycle_offset
+        if request.get("cycle") and request["cycle"] != "latest":
+            moment = parse_cycle(str(request["cycle"]), request["source"])
+            lag = _covering_lag(request, moment, lead, lag)
+            request["cycle"] = (moment - timedelta(hours=lag)).strftime("%Y-%m-%dT%H")
+        request["forecast_start_hour"] = lead + lag
+    return request
+
+
+def _covering_lag(request, moment, lead, most):
+    """The smallest boundary-cycle lag, 0..most hours, whose cycle reaches the window.
+
+    The recipe's offset is the longest lag it allows, not a fixed one: the
+    nominal cycle's own boundaries are used when they reach the end of the
+    run, and an earlier (extended) cycle only where needed. Breakage this
+    prevents: a fixed -3 h lag sent a 48 h run at 03, 09, 15 or 21Z to the
+    previous 00, 06, 12 or 18Z cycle, which forecasts only through f021,
+    while the nominal cycle itself reaches f051. With no lag that reaches,
+    the recipe's own lag stands and the fetch's ladder refusal names it.
+    """
+    from datetime import timedelta
+    hours = request.get("hours")
+    if most <= 0 or isinstance(hours, bool) or not isinstance(hours, int):
+        return most
+    from gpuwm.fetch_routes import ladder_for, route_for
+    from gpuwm.source_adapters import source_for_cycle
+    for lag in range(most + 1):
+        cycle = moment - timedelta(hours=lag)
+        try:
+            route = route_for(source_for_cycle(request["source"], cycle))
+            if lead + lag + hours <= ladder_for(route, cycle)[-1]:
+                return lag
+        except (KeyError, ValueError):
+            continue
+    return most
+
+
+def initial_fetch_request(table):
+    """The separately named analysis, at the forecast's start valid time."""
+    from datetime import timedelta
+    from gpuwm.fetch import parse_cycle
+    if not table.get("initial_source"):
+        return None
+    boundary_fetch_request(table)  # shared metadata validation
+    moment = parse_cycle(str(table["cycle"]), table["source"]) + timedelta(
+        hours=table.get("forecast_start_hour", 0))
+    return {"source": table["initial_source"],
+            "cycle": moment.strftime("%Y-%m-%dT%H"), "hours": 0,
+            "as_posted": False}
+
+
+def initial_inputs_from_fetch(source, folder, destination):
+    """Translate the source table's acquisition handoff to the existing IC door."""
+    import argparse
+    from gpuwm.prep_handoff import preparation_arguments_from_directory
+    from gpuwm.mapped_source import read_input_list
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    parser.add_argument("--source", required=True)
+    parser.add_argument("--input", action="append", default=[])
+    parser.add_argument("--input-list")
+    parser.add_argument("--supplement", action="append", default=[])
+    args, _ = parser.parse_known_args(preparation_arguments_from_directory(folder))
+    if args.source != source:
+        raise ValueError("initial acquisition handoff names a different source")
+    inputs = list(args.input)
+    if args.input_list:
+        inputs.extend(str(path) for path in read_input_list(args.input_list))
+    supplements = {}
+    for binding in args.supplement:
+        role, path = binding.split("=", 1)
+        supplements.setdefault(role, []).append(str(Path(path).resolve()))
+    doc = _request_document({"schema": REQUEST_SCHEMA, "source": source,
+        "input_files": [str(Path(path).resolve()) for path in inputs],
+        "supplements": supplements})
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    read_initial_inputs(destination)
+    return destination
+
+
+def initial_aerosol_donor(snapshot, boundary_met, cfg):
+    """Prefer the analysis's complete pair; otherwise obey the boundary switch.
+
+    With neither donor the existing initializer implements aer_init_opt and
+    wif_input_opt, including its missing-climatology diagnostic.
+    """
+    from gpuwm.ingest.analyzed_numbers import AEROSOL_NUMBER_FIELDS
+    if all(name in snapshot.fields for name in AEROSOL_NUMBER_FIELDS):
+        return None
+    if (cfg.use_rap_aero_icbc and boundary_met is not None
+            and all(name in boundary_met.fields for name in AEROSOL_NUMBER_FIELDS)):
+        return boundary_met
+    return None
+
 
 def _sha(data):
     return hashlib.sha256(data).hexdigest()
@@ -137,7 +262,10 @@ def decode_initial_analysis(request, *, output_parent, grids, valid_time,
             request["primary"], request["supplements"], provenance,
             input_manifest=manifest, input_manifest_sha256=_sha(manifest_bytes),
             contributing_mappings=contributing, scratch_destination=folder,
-            atmospheric_grids=grids, workers=workers, **decoder_args)
+            # This role is exactly one analysis at the requested valid time,
+            # checked below, rather than a complete lateral-boundary window.
+            atmospheric_grids=grids, workers=workers, lead_batch=True,
+            **decoder_args)
         try:
             snapshots = bundle.regular_snapshots()
             if hasattr(snapshots, "for_grids"):
@@ -200,7 +328,8 @@ def validate_initial_evidence(prepared_root, receipt, *, valid_time):
             or receipt["valid_time"] != valid_time
             or not isinstance(receipt["source"], str)
             or not isinstance(receipt["aerosol_source"], str)
-            or receipt["aerosol_source"] not in {"initial-analysis", "boundary-analysis"}):
+            or receipt["aerosol_source"] not in {
+                "initial-analysis", "boundary-analysis", "initialization-policy"}):
         raise ValueError("initial analysis receipt is incomplete or has another valid time")
     if "boundary_head_preprocessing" in receipt:
         phase = receipt["boundary_head_preprocessing"]

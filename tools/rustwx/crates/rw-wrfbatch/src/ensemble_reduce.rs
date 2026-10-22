@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 
 const REQUEST_SCHEMA: &str = "gpuwm-ensemble-diagnostic-reduce.request.v1";
 pub const ABI: &str =
-    "gpuwm-ensemble-diagnostic-reduce.v1\tf32-words\tf64-two-pass\tmember-order\tsha256";
+    "gpuwm-ensemble-diagnostic-reduce.v1\tf32-words\tf64-two-pass\tmember-order\tsha256\tmember-weights-v1";
 const RESPONSE_SCHEMA: &str = "gpuwm-ensemble-diagnostic-reduce.v1";
 const PACK_CONTRACT: &str = "gpuwm-ensemble-diagnostic-spool.v1";
 const MISSING: f32 = f32::from_bits(0x7fc00000);
@@ -48,6 +48,8 @@ fn cuda_demote(value: f64) -> f32 {
 struct Request {
     schema: String,
     member_order: Vec<u64>,
+    #[serde(default)]
+    member_weights: Option<Vec<f64>>,
     shape: [usize; 2],
     valid_time: String,
     packs: Vec<PackRequest>,
@@ -116,6 +118,8 @@ struct Receipt {
     members: usize,
     shape: [usize; 2],
     buffers: Vec<BufferReceipt>,
+    member_weights: Vec<f64>,
+    normalized_member_weights: Vec<f64>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -157,6 +161,11 @@ fn validate_request(request: &Request) -> Result<(), String> {
         return Err(
             "member_order must be a nonempty unique roster within the kernel member range".into(),
         );
+    }
+    if let Some(weights) = &request.member_weights {
+        if weights.len() != request.member_order.len() || weights.iter().any(|w| !w.is_finite() || *w <= 0.0) {
+            return Err("member_weights needs one finite positive mass per member".into());
+        }
     }
     checked_elements(&[
         request.member_order.len(),
@@ -419,6 +428,53 @@ fn probability(
     cuda_demote(f64::from(count) / members as f64)
 }
 
+// Equal declared masses use the original arithmetic, including float rounding.
+fn scaled_weights(request: &Request) -> Option<Vec<f64>> {
+    request.member_weights.as_ref().and_then(|weights| {
+        if weights.iter().all(|w| *w == weights[0]) { return None; }
+        let scale = weights.iter().copied().fold(0.0, f64::max);
+        Some(weights.iter().map(|w| w / scale).collect())
+    })
+}
+
+fn weighted_statistics(values: &[f32], cell: usize, cells: usize, members: usize,
+                       weights: Option<&[f64]>) -> Statistics {
+    let Some(weights) = weights else { return statistics(values, cell, cells, members); };
+    let mut stat = statistics(values, cell, cells, members);
+    if stat.finite_count != members as u32 { return stat; }
+    let mut total = 0.0;
+    let mut mass = 0.0;
+    let mut pairs = 0.0;
+    for (member, &w) in weights.iter().enumerate() {
+        total += w * cuda_promote(values[member * cells + cell]);
+        pairs += mass * w;
+        mass += w;
+    }
+    let mean = total / mass;
+    let mut deviations = 0.0;
+    for (member, &w) in weights.iter().enumerate() {
+        let delta = cuda_promote(values[member * cells + cell]) - mean;
+        deviations += w * (delta * delta);
+    }
+    stat.mean = cuda_demote(mean);
+    stat.spread = if members == 1 { 0.0 } else { cuda_demote((deviations / (2.0 * pairs / mass)).sqrt()) };
+    stat
+}
+
+fn weighted_probability(values: &[f32], cell: usize, cells: usize, members: usize,
+                        threshold: f32, relation: Comparison, complete: bool,
+                        weights: Option<&[f64]>) -> f32 {
+    let Some(weights) = weights else { return probability(values, cell, cells, members, threshold, relation, complete); };
+    if !complete { return MISSING; }
+    let mut mass = 0.0;
+    let mut event = 0.0;
+    for (member, &w) in weights.iter().enumerate() {
+        mass += w;
+        if relation.selected(values[member * cells + cell], threshold) { event += w; }
+    }
+    cuda_demote(event / mass)
+}
+
 fn paintball(
     values: &[f32],
     cell: usize,
@@ -579,6 +635,34 @@ fn probability_matched_mean(values: &[f32], means: &[f32]) -> Vec<f32> {
     out
 }
 
+fn weighted_pmm(values: &[f32], means: &[f32], weights: Option<&[f64]>) -> Vec<f32> {
+    let Some(weights) = weights else { return probability_matched_mean(values, means); };
+    let cells = means.len();
+    let mut pool: Vec<_> = values.iter().copied().enumerate().filter(|(_, v)| v.is_finite())
+        .map(|(i, v)| (v, weights[i / cells], i)).collect();
+    pool.par_sort_unstable_by(|a,b| b.0.total_cmp(&a.0).then(a.2.cmp(&b.2)));
+    let mut cumulative = Vec::with_capacity(pool.len());
+    let mut mass = 0.0;
+    for (_, w, _) in &pool { mass += w; cumulative.push(mass); }
+    let mut order: Vec<_> = (0..cells).filter(|&i| means[i].is_finite()).collect();
+    order.par_sort_unstable_by(|&a,&b| means[b].total_cmp(&means[a]).then(a.cmp(&b)));
+    let mut out = vec![MISSING; cells];
+    let mut start = 0;
+    while start < order.len() && !pool.is_empty() {
+        let mut end = start + 1;
+        while end < order.len() && means[order[start]] == means[order[end]] { end += 1; }
+        let sum: f64 = (start..end).map(|rank| {
+            let target = rank as f64 * (mass / order.len() as f64);
+            let pick = cumulative.partition_point(|v| *v <= target).min(pool.len()-1);
+            f64::from(pool[pick].0)
+        }).sum();
+        let value = (sum / (end-start) as f64) as f32;
+        for &cell in &order[start..end] { out[cell] = value; }
+        start = end;
+    }
+    out
+}
+
 fn reduce(request: &Request, output: &Path) -> Result<Receipt, String> {
     // Validate every pack and requested plane before creating any output.
     let packs = load_packs(request)?;
@@ -591,47 +675,31 @@ fn reduce(request: &Request, output: &Path) -> Result<Receipt, String> {
     let output = output.canonicalize().map_err(|error| error.to_string())?;
     let members = request.member_order.len();
     let cells = checked_elements(&request.shape)?;
+    let weights = scaled_weights(request);
     let mut buffers = Vec::new();
     for field in &request.fields {
         let values = member_values(&packs, &field.field, members, cells)?;
         let stats: Vec<_> = (0..cells)
             .into_par_iter()
-            .map(|cell| statistics(&values, cell, cells, members))
+            .map(|cell| weighted_statistics(&values, cell, cells, members, weights.as_deref()))
             .collect();
         let shape = request.shape.to_vec();
         if matches!(field.field.as_str(), "refl" | "rain_total") {
             let means: Vec<_> = stats.iter().map(|stat| stat.mean).collect();
             buffers.push(write_buffer(&output, &field.field, "pmm", shape.clone(),
-                                      probability_matched_mean(&values, &means))?);
+                                      weighted_pmm(&values, &means, weights.as_deref()))?);
         }
-        buffers.push(write_buffer(
-            &output,
-            &field.field,
-            "mean",
-            shape.clone(),
-            stats.iter().map(|stat| stat.mean),
-        )?);
-        buffers.push(write_buffer(
-            &output,
-            &field.field,
-            "spread",
-            shape.clone(),
-            stats.iter().map(|stat| stat.spread),
-        )?);
-        buffers.push(write_buffer(
-            &output,
-            &field.field,
-            "min",
-            shape.clone(),
-            stats.iter().map(|stat| stat.minimum),
-        )?);
-        buffers.push(write_buffer(
-            &output,
-            &field.field,
-            "max",
-            shape.clone(),
-            stats.iter().map(|stat| stat.maximum),
-        )?);
+        for (index, kind) in ["mean", "spread", "min", "max"].into_iter().enumerate() {
+            buffers.push(write_buffer(
+                &output,
+                &field.field,
+                kind,
+                shape.clone(),
+                stats.iter().map(|stat| {
+                    [stat.mean, stat.spread, stat.minimum, stat.maximum][index]
+                }),
+            )?);
+        }
         buffers.push(write_buffer(
             &output,
             &field.field,
@@ -657,7 +725,7 @@ fn reduce(request: &Request, output: &Path) -> Result<Receipt, String> {
                 .into_par_iter()
                 .map(|index| {
                     let cell = index % cells;
-                    probability(
+                    weighted_probability(
                         &values,
                         cell,
                         cells,
@@ -665,6 +733,7 @@ fn reduce(request: &Request, output: &Path) -> Result<Receipt, String> {
                         thresholds[index / cells],
                         field.comparison,
                         stats[cell].finite_count == members as u32,
+                        weights.as_deref(),
                     )
                 })
                 .collect();
@@ -738,7 +807,13 @@ fn reduce(request: &Request, output: &Path) -> Result<Receipt, String> {
             )?);
         }
     }
+    let raw = request.member_weights.clone().unwrap_or_else(|| vec![1.0; members]);
+    let scale = raw.iter().copied().fold(0.0, f64::max);
+    let sum: f64 = raw.iter().map(|w| w/scale).sum();
+    let normalized = raw.iter().map(|w| (w/scale)/sum).collect();
     Ok(Receipt {
+        member_weights: raw,
+        normalized_member_weights: normalized,
         schema: RESPONSE_SCHEMA,
         members,
         shape: request.shape,
@@ -887,9 +962,28 @@ mod tests {
     }
 
     #[test]
+    fn unequal_roster_masses_weight_all_reductions() {
+        let weights = [1.0, 3.0];
+        let stat = weighted_statistics(&[0.0, 8.0], 0, 1, 2, Some(&weights));
+        assert_eq!(stat.mean, 6.0);
+        assert_eq!(stat.spread, (32.0f32).sqrt());
+        assert_eq!(weighted_probability(&[0.0,8.0], 0,1,2,4.0,Comparison::Ge,true,Some(&weights)), 0.75);
+        assert_eq!(weighted_pmm(&[8.0,0.0,4.0,2.0], &[5.0,1.0], Some(&weights)), vec![8.0,2.0]);
+    }
+
+    #[test]
     fn statistics_use_serial_double_accumulation_and_sample_spread() {
         let values = [16777216.0, 1.0, -16777216.0];
         let stat = statistics(&values, 0, 1, 3);
+        let mut declared = request();
+        declared.member_order = vec![0,1,2];
+        declared.member_weights = Some(vec![0.25; 3]);
+        let weighted = weighted_statistics(&values, 0, 1, 3, scaled_weights(&declared).as_deref());
+        assert_eq!(weighted.mean.to_bits(), stat.mean.to_bits());
+        assert_eq!(weighted.spread.to_bits(), stat.spread.to_bits());
+        assert_eq!(weighted_probability(&values, 0, 1, 3, 0.0, Comparison::Ge, true,
+            scaled_weights(&declared).as_deref()).to_bits(),
+            probability(&values, 0, 1, 3, 0.0, Comparison::Ge, true).to_bits());
         assert_eq!(stat.mean.to_bits(), ((1.0f64 / 3.0) as f32).to_bits());
         let average = 1.0f64 / 3.0;
         let mut deviations = 0.0f64;

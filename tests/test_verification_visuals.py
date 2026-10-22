@@ -105,15 +105,6 @@ def test_source_outage_persists_retryable_hour(tmp_path, hour_request, monkeypat
     assert "verify-visuals" in stored["retry_command"]
 
 
-def test_future_hour_does_not_call_native_or_source(tmp_path, hour_request, monkeypatch):
-    monkeypatch.setattr(rustwx, "verification_inventory", lambda *a, **k: pytest.fail("future native call"))
-    monkeypatch.setattr(rustwx, "prepare_verification", lambda request, **kwargs: request)
-    state = visuals.score_available(tmp_path / "run", requests=[hour_request], reference=None,
-                                   now="2026-01-01T00:00:00Z")
-    hour = next(iter(state["hours"].values()))
-    assert hour["reason"] == "valid time has not occurred"
-
-
 def test_off_performs_no_filesystem_work(tmp_path, monkeypatch):
     monkeypatch.setattr(visuals, "score_available", lambda *a, **k: pytest.fail("OFF invoked verification"))
     monkeypatch.setattr(threading.Thread, "start", lambda *a: pytest.fail("OFF started a worker"))
@@ -712,6 +703,11 @@ def test_finish_run_returns_within_bound_with_unreachable_observation_endpoint(
         return Process()
 
     monkeypatch.setattr(visuals.subprocess, "Popen", spawn)
+    # The scoring engine names its git commit (provenance runs git through
+    # subprocess.Popen); the stand-in Popen above is the detached worker's
+    # launch only, so the identity is fixed here rather than spawned.
+    monkeypatch.setattr(visuals, "_verifier_engine_identity", lambda: visuals._identity_summary(
+        {"identity_source": "git", "git_commit": "c" * 40, "git_status_short": []}, origin="scorer"))
     begin = time.monotonic()
     state = visuals.finish_run(root, sections={"run_shape": {"start_time": "2026-01-01T00:00:00Z"},
         "output": {"frames": [{"path": str(field), "sha256": "a" * 64}]}})
@@ -842,3 +838,78 @@ def test_resumed_run_verifies_the_hours_written_before_its_restart(tmp_path):
     # A run that was not restarted, or has no known start, is unchanged.
     assert visuals.histories_before_restart([wrfout / name for name in names], "2026-10-15T12:00:00") == []
     assert visuals.histories_before_restart(reported, None) == []
+
+
+def _run_report(root, identity):
+    root.mkdir(parents=True, exist_ok=True)
+    (root / visuals.RUN_REPORT_NAME).write_text(json.dumps(
+        {"gpuwm_version": "9.9.9", "runtime_source_identity": identity}))
+
+
+def test_receipts_name_the_forecast_and_scoring_engine_commits(tmp_path, hour_request, native, monkeypatch):
+    root = tmp_path / "run"
+    _run_report(root, {"identity_source": "git", "git_commit": "a" * 40, "git_tree": "b" * 40,
+                       "git_status_short": [" M gpuwm/core/model.py", "?? runs/scratch.txt"]})
+    monkeypatch.setattr(visuals, "_verifier_engine_identity", lambda: visuals._identity_summary(
+        {"identity_source": "git", "git_commit": "c" * 40, "git_tree": "d" * 40,
+         "git_status_short": []}, origin="scorer"))
+    state = visuals.score_available(root, requests=[hour_request], reference=None, now="2026-01-01T04:00:00Z")
+    forecast = state["engine_identity"]["forecast"]
+    assert forecast["git_commit"] == "a" * 40 and forecast["git_tree"] == "b" * 40
+    assert forecast["dirty"] is True and forecast["dirty_paths"] == [" M gpuwm/core/model.py"]
+    assert forecast["gpuwm_version"] == "9.9.9"
+    assert state["engine_identity"]["verifier"]["git_commit"] == "c" * 40
+    assert state["engine_identity"]["verifier"]["dirty"] is False
+    (entry,) = state["hours"].values()
+    assert entry["engine_identity"] == state["engine_identity"]
+    saved = json.loads((root / visuals.MANIFEST_NAME).read_text())
+    assert saved["hours"][next(iter(saved["hours"]))]["engine_identity"]["forecast"]["git_commit"] == "a" * 40
+    folder = tmp_path / "report"
+    visuals.append_results(state, folder)
+    text = (folder / "STATIONS.md").read_text()
+    assert f"Forecast engine: git {'a' * 40} (dirty)" in text
+    assert f"Scoring engine: git {'c' * 40} (clean)" in text
+
+
+def test_untracked_run_output_does_not_make_an_engine_dirty():
+    summary = visuals._identity_summary(
+        {"identity_source": "git", "git_commit": "a" * 40, "git_status_short": ["?? runs/x.nc"]}, origin="o")
+    assert summary["dirty"] is False and summary["dirty_paths"] == []
+    unasked = visuals._identity_summary({"identity_source": "git", "git_commit": "a" * 40}, origin="o")
+    assert unasked["dirty"] is None
+    assert "worktree state not asked" in visuals._engine_line(unasked)
+
+
+def test_a_forecast_without_a_commit_says_why_instead_of_passing_off_hashes(tmp_path):
+    root = tmp_path / "run"
+    _run_report(root, {"identity_source": "runtime-module-sha256-only", "git_commit": None,
+                       "git_tree": None, "git_status_short": None,
+                       "source_sha256": {"gpuwm/core/model.py": "e" * 64}})
+    forecast = visuals._forecast_engine_identity(root)
+    assert forecast["git_commit"] is None and forecast["dirty"] is None
+    assert "runtime-module-sha256-only names no git commit" in forecast["reason"]
+    assert visuals._engine_line(forecast).startswith("no git commit (")
+    missing = visuals._forecast_engine_identity(tmp_path / "elsewhere")
+    assert missing["git_commit"] is None and "no forecast report" in missing["reason"]
+
+
+def test_the_scoring_engine_identity_is_resolved_by_the_package_resolver():
+    visuals._verifier_engine_identity.cache_clear()
+    identity = visuals._verifier_engine_identity()
+    assert identity["origin"] == str(Path(visuals.__file__).resolve().parents[1])
+    commit = identity["git_commit"]
+    assert (isinstance(commit, str) and len(commit) == 40) or identity.get("reason")
+    assert visuals._verifier_engine_identity() is identity
+
+
+def test_a_run_plan_report_names_its_commit_through_the_provenance_block(tmp_path):
+    root = tmp_path / "run"
+    root.mkdir()
+    (root / visuals.RUN_REPORT_NAME).write_text(json.dumps({"provenance": {
+        "schema": "gpuwm-provenance-receipt-v1",
+        "git": {"commit": "f" * 12, "commit_full": "f" * 40, "branch": "lane/x",
+                "dirty": False, "dirty_files": 0}}}))
+    forecast = visuals._forecast_engine_identity(root)
+    assert forecast["git_commit"] == "f" * 40 and forecast["dirty"] is False
+    assert forecast["identity_source"] == "provenance-receipt-git" and "reason" not in forecast
+    assert visuals._engine_line(forecast) == f"git {'f' * 40} (clean)"

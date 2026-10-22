@@ -46,6 +46,16 @@ def selected_member(source: str, member: str | None = None) -> str | None:
     adapter = source_adapter(source)
     if adapter.source_id in route_ids():
         return resolve_member(route_for(adapter.source_id), member)[0] or None
+    # Omitted owner members stay omitted; the acquisition owner supplies its
+    # default at execution. Listing a menu must not authorize model weights.
+    if adapter.acquisition_owner and member is not None:
+        from importlib import import_module
+        validate = getattr(import_module(adapter.acquisition_owner), "validate_member", None)
+        if validate is not None:
+            selected = validate(adapter.source_id, member)
+            if len(selected) != 1:
+                raise ValueError("one cyclone setup needs exactly one source member")
+            return str(selected[0])
     if member is not None:
         # What is true and what is not: the row carries no member axis on
         # the acquisition route THIS door authors, which is not the same
@@ -202,6 +212,8 @@ def fetch_hints(*, source: str, moment: datetime, hours: int,
     adapter = source_adapter(source)
     owned_hints = acquisition_hints(source, model)
     source = adapter.source_id
+    from gpuwm.earth2_licensing import _check_source
+    _check_source(source, owned_hints.get("model"))
     if type(hours) is not int or hours < 1:
         raise ValueError("Cyclone duration must be a positive integer number of hours")
     selection = selected_member(source, member)
@@ -268,33 +280,60 @@ def follow_statics(source: str) -> dict:
     return source_follow_statics(source_adapter(source).source_id)
 
 
-def moving_nest_sources() -> tuple[str, ...]:
-    """Planable sources whose chain can carry this door's following nest."""
-    return tuple(source for source in source_ids()
-                 if follow_statics(source)["integrates_moving_nest"])
+def moving_nest_sources(point: tuple[float, float] | None = None) -> tuple[str, ...]:
+    """Planable sources whose chain can carry this door's following nest.
+
+    Filtered by COVERAGE when the centre is known, because a way out that
+    names a source whose grid does not reach the storm is not a way out:
+    the reader who takes it meets the out-of-grid refusal instead of a
+    run.  With no centre the answer is the whole integrating set, which
+    is what a menu with no storm on it can truthfully say.
+    """
+    from gpuwm.source_coverage import points_outside
+
+    rows = [source for source in source_ids()
+            if follow_statics(source)["integrates_moving_nest"]]
+    if point is None:
+        return tuple(rows)
+    return tuple(source for source in rows
+                 if not points_outside(source_adapter(source).coverage_window,
+                                       point[0], point[1]))
 
 
-def moving_nest_note(source: str) -> dict:
+def moving_nest_note(source: str, *, follower_grid_ids,
+                     point: tuple[float, float] | None = None) -> dict:
     """What the run door will do with this configuration's moving nest.
 
     Stated on every emitted document, in both directions, because the
     reader who picks a source needs the answer before the run door gives
     it: a supported chain says which delivery feeds the nest, and an
-    unsupported one says what is missing, what the run door will do
-    about it, and which sources do carry a moving nest today.  It is not
-    a refusal: the configuration is authored, priced and reviewable on
-    every planable source, and this says exactly which part of it the
-    chain cannot execute.
+    unsupported one QUOTES the refusal the launch will raise, with the
+    way out that refusal names.  It is not a refusal: the configuration
+    is authored, priced and reviewable on every planable source, and this
+    says exactly which part of it the chain cannot execute.
 
     THREE ANSWERS, not two.  A row that reaches no launch chain at all is
     not a statics answer: the run door refuses the source before the nest
     is ever considered, so this says so in the run door's own words and
     offers only the way on that works.  Dropping the follow source would
     leave such a configuration exactly as unlaunchable as it was.
+
+    QUOTED, NOT PARAPHRASED.  ``follower_grid_ids`` are the grids whose
+    ``[[domain]].follow`` the caller's configuration declares, and they
+    reach :func:`gpuwm.runplan.follow_unsupported_refusal` so the
+    sentence written into the file is the sentence the launch raises,
+    naming the table the file actually carries.  The paraphrase that
+    stood here named ``[relocation]`` and told the reader to add a
+    bounds-only one, which cleared nothing: the run door's predicate is
+    True while any ``[[domain]].follow`` remains, so the refusal came
+    back word for word.
     """
+    from gpuwm.runplan import follow_unsupported_refusal
+
     decision = dict(follow_statics(source))
     adapter = source_adapter(source)
-    covering = ", ".join(moving_nest_sources())
+    covering_rows = moving_nest_sources(point)
+    covering = ", ".join(covering_rows)
     if decision["integrates_moving_nest"]:
         decision["note"] = (
             f"{adapter.display_title} runs on the {decision['chain']} chain, "
@@ -302,6 +341,14 @@ def moving_nest_note(source: str) -> dict:
             "so the following nest in this configuration is integrated as "
             "authored.")
         return decision
+    # The way on this door can offer that the run door cannot: change the
+    # source rather than the file.  Named only where it is true, because a
+    # source whose grid does not reach the centre is not a way on at all.
+    elsewhere = (" Or author the same centre and cycle with --source from "
+                 f"{covering}, which carry a moving nest and cover this "
+                 "centre." if covering_rows else
+                 " No planable source both carries a moving nest and covers "
+                 "this centre, so the ways out above are the ways out.")
     if decision["launch_refusal"] is not None:
         decision["note"] = (
             f"{adapter.display_title} reaches no launch route this release "
@@ -311,20 +358,21 @@ def moving_nest_note(source: str) -> dict:
             decision["launch_refusal"] + "\", because "
             f"{decision['reason']}. This setup is authored, priced and "
             "reviewable as it stands, and no change to the nest makes it "
-            f"launch. Ways on: author the same centre and cycle with "
-            f"--source from {covering}, which both launch and carry a "
-            "moving nest.")
+            "launch." + elsewhere)
         return decision
+    decision["refusal"] = follow_unsupported_refusal(
+        decision["chain"], follower_grid_ids, source=decision["source"])
+    # The words are the run door's; only the run door's own line break
+    # before "remedy:" is reflowed, because the note is stated on one line
+    # of stderr and wrapped into a comment block, and a message that broke
+    # in the middle would be counted and read as two.
+    quoted = " ".join(decision["refusal"].split())
     decision["note"] = (
         f"{adapter.display_title} runs on the {decision['chain']} chain, "
-        "which cannot supply the statics a moving nest travels over: "
-        f"{decision['reason']}. This setup is authored, priced and "
-        "reviewable as it stands, and `gpuwm go` refuses its following "
-        "nest at its own plan review, before any fetch. Ways on: author "
-        f"the same centre and cycle with --source from {covering}, which "
-        "do carry a moving nest; or run this configuration with a "
-        "bounds-only [relocation], which keeps the nest where it was "
-        "placed and needs no corridor.")
+        "which cannot supply the statics a moving nest travels over. This "
+        "setup is authored, priced and reviewable as it stands, and "
+        "`gpuwm go` refuses its following nest at its own plan review, "
+        "before any fetch, with: \"" + quoted + "\"" + elsewhere)
     return decision
 
 

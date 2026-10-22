@@ -22,6 +22,22 @@ pub mod netcdf;
 pub mod parquet;
 pub mod series;
 
+/// Flush directory entries on Unix. Windows file sync and hard-link publication
+/// provide the corresponding supported boundary; opening a directory as File fails.
+pub(crate) fn sync_directory(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    fs::File::open(path)?.sync_all()?;
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rw_nextgen_output_abi_version() -> u32 {
+    std::hint::black_box(concat!("GPUWM_BRIDGE_SOURCE_REV=", env!("GPUWM_BRIDGE_SOURCE_REV")));
+    1
+}
+
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -184,7 +200,7 @@ pub fn write_nexus(plan: &NexusPlan, bytes: &[u8]) -> Result<serde_json::Value> 
             Ok(len)
         })
         .collect::<Result<Vec<_>>>()?;
-    fs::File::open(&plan.output_directory)?.sync_all()?;
+    crate::sync_directory(&plan.output_directory)?;
     Ok(
         serde_json::json!({"operation":"nexus-csv", "files":files.len(),
         "input_bytes":bytes.len(), "output_bytes":files.iter().sum::<usize>(),

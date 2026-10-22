@@ -46,16 +46,6 @@ def test_declared_parent_inventory_and_both_memory_prices():
         assert streaming.options_for_domain(dc, exp.tiles).follower_context.slots == ()
 
 
-def test_parent_resolution_survives_domain_override_and_nested_parent():
-    exp = two_followers()
-    second = replace(exp.domains[1], tiles=streaming.StreamingOptions(mode='on'))
-    third = replace(exp.domains[2], parent_id=2)
-    exp = replace(exp, domains=(exp.root, second, third))
-    assert streaming.options_for_domain(exp.root, exp.tiles).follower_context.slots == ('uh_follow_window.d02',)
-    assert streaming.options_for_domain(exp.domains[1], exp.tiles).follower_context.slots == ('uh_follow_window.d03',)
-    assert streaming.options_for_domain(exp.domains[2], exp.tiles).follower_context.slots == ()
-
-
 def test_no_follow_declaration_keeps_original_footprint():
     exp = _lifecycle_experiment(follow=False)
     assert exp.tiles.follower_context is None

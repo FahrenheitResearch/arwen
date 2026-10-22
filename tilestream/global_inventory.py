@@ -19,6 +19,15 @@ def global_keys(keys):
     from gpuwm.core.physics_inventory import SCM_SURFACE_FORCING_FIELDS
     scm = {'fields/' + name for name in SCM_SURFACE_FORCING_FIELDS}
     found.update(key for key in keys if key in scm)
+    # The 3D PWP ocean's solver status (gpuwm.ocean.mixed_layer, shape (1,)
+    # int32) is one device word every tile's column kernel ORs its failure
+    # bits into, read at history/checkpoint boundaries (mixed_layer.check):
+    # it belongs to the domain, not to a tile window.  Named breakage: with
+    # sf_ocean_physics = 2 every store-direct and streamed forecast (full
+    # CONUS HRRR on [devices] or --tiles) refused its start with "carrier
+    # 'fields/_pwp_status' has shape (1,): no horizontal extent, so it is not
+    # a field this store can hold" (V59 run 2a, V60 r1b/r1d, 2026-10-21).
+    found.update(key for key in keys if key == 'fields/_pwp_status')
     ledger = {key for key in keys if key.startswith('state/chemdiag_ledger_')}
     if ledger - set(GLOBAL_KEYS):
         raise ValueError('unknown chemistry ledger carrier would bypass tile transport')

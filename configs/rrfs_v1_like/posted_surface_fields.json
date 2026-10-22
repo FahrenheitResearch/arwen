@@ -1,0 +1,45 @@
+{
+  "schema": "posted-grib2-fields-v1",
+  "label": "RRFS v1 posted CONUS instantaneous surface fields",
+  "sources": [
+    "https://github.com/NOAA-EMC/UPP/tree/8393f42adced3e49369d81a02d8d75c8f46fb8e3/parm/rrfs",
+    "https://noaa-rrfs-ops-pds.s3.amazonaws.com/rrfs.20261003/12/rrfs.t12z.2dfld.3km.f001.conus.grib2.idx"
+  ],
+  "fields": {
+    "composite_reflectivity": {
+      "units": "dBZ", "minimum": -40, "maximum": 100, "factor": 1, "offset": 0,
+      "selector": {"discipline": 0, "category": 16, "parameter": 5, "level_type": 200, "level_value": 0, "center": 7, "subcenter": 0, "master_table_version": 2, "local_table_version": 1, "product_template": 0}
+    },
+    "temperature_2m": {
+      "units": "K", "minimum": 150, "maximum": 350, "factor": 1, "offset": 0,
+      "selector": {"discipline": 0, "category": 0, "parameter": 0, "level_type": 103, "level_value": 2, "center": 7, "subcenter": 0, "master_table_version": 2, "local_table_version": 1, "product_template": 0}
+    },
+    "dewpoint_2m": {
+      "units": "K", "minimum": 150, "maximum": 350, "factor": 1, "offset": 0,
+      "selector": {"discipline": 0, "category": 0, "parameter": 6, "level_type": 103, "level_value": 2, "center": 7, "subcenter": 0, "master_table_version": 2, "local_table_version": 1, "product_template": 0}
+    },
+    "wind_component_x_10m": {
+      "units": "m s-1", "minimum": -150, "maximum": 150, "factor": 1, "offset": 0,
+      "selector": {"discipline": 0, "category": 2, "parameter": 2, "level_type": 103, "level_value": 10, "center": 7, "subcenter": 0, "master_table_version": 2, "local_table_version": 1, "product_template": 0}
+    },
+    "wind_component_y_10m": {
+      "units": "m s-1", "minimum": -150, "maximum": 150, "factor": 1, "offset": 0,
+      "selector": {"discipline": 0, "category": 2, "parameter": 3, "level_type": 103, "level_value": 10, "center": 7, "subcenter": 0, "master_table_version": 2, "local_table_version": 1, "product_template": 0}
+    },
+    "mslp": {
+      "units": "Pa", "minimum": 80000, "maximum": 115000, "factor": 1, "offset": 0,
+      "selector": {"discipline": 0, "category": 3, "parameter": 192, "level_type": 101, "level_value": 0, "center": 7, "subcenter": 0, "master_table_version": 2, "local_table_version": 1, "product_template": 0}
+    },
+    "terrain_height": {
+      "units": "m", "minimum": -1000, "maximum": 12000, "factor": 1, "offset": 0,
+      "selector": {"discipline": 0, "category": 3, "parameter": 5, "level_type": 1, "level_value": 0, "center": 7, "subcenter": 0, "master_table_version": 2, "local_table_version": 1, "product_template": 0}
+    },
+    "land_mask": {
+      "units": "1", "minimum": 0, "maximum": 1, "factor": 1, "offset": 0,
+      "selector": {"discipline": 2, "category": 0, "parameter": 0, "level_type": 1, "level_value": 0, "center": 7, "subcenter": 0, "master_table_version": 2, "local_table_version": 1, "product_template": 0}
+    }
+  },
+  "derived": {
+    "wind_speed_10m": {"operation": "hypot", "inputs": ["wind_component_x_10m", "wind_component_y_10m"], "units": "m s-1", "minimum": 0, "maximum": 150}
+  }
+}

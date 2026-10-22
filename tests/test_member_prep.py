@@ -16,64 +16,16 @@ import pytest
 from gpuwm.member_grammar import MemberGrammar, MemberIdentityRefusal
 from gpuwm.member_prep import (MemberFileEvidence, RECEIPT_NAME,
                                prepare_member, verify_member_rows)
+from test_member_grammar import _document
 
 
 def _grammar() -> MemberGrammar:
-    return MemberGrammar({
-        "schema": "rw-wps.members.v1",
-        "name": "synthetic-members",
-        "format": "grib2",
-        "layout": "file_per_member",
-        "declared_member_count": 4,
-        "classes": {
-            "control": {
-                "ordinals": [0],
-                "member_id": "c00",
-                "token": "xc00",
-                "verification": {
-                    "product_definition_templates": [1, 11],
-                    "type_of_ensemble_forecast": 1,
-                    "perturbation_number": "ordinal",
-                    "ensemble_size": 3,
-                    "type_of_generating_process": 4,
-                    "forecast_generating_process_id": 7,
-                },
-            },
-            "perturbed": {
-                "ordinals": {"first": 1, "last": 3},
-                "member_id": "p{ordinal:02d}",
-                "token": "xp{ordinal:02d}",
-                "verification": {
-                    "product_definition_templates": [1, 11],
-                    "type_of_ensemble_forecast": 3,
-                    "perturbation_number": "ordinal",
-                    "ensemble_size": 3,
-                    "type_of_generating_process": 4,
-                    "forecast_generating_process_id": 7,
-                },
-            },
-        },
-        "statistics": {
-            "xavg": {
-                "statistic": "ensemble mean",
-                "token": "xavg",
-                "product_definition_templates": [2, 12],
-                "derived_forecast": 0,
-            },
-            "xspr": {
-                "statistic": "ensemble spread",
-                "token": "xspr",
-                "product_definition_templates": [2, 12],
-                "derived_forecast": 2,
-            },
-        },
-        "products": {
-            "main": {
-                "relative_path":
-                    "cycle.{yyyymmdd}/{hh}/{token}.t{hh}z.f{fff}",
-            },
-        },
-    }, source="synthetic")
+    document = _grammar_document()
+    document["statistics"]["xspr"] = {
+        "statistic": "ensemble spread", "token": "xspr",
+        "product_definition_templates": [2, 12], "derived_forecast": 2,
+    }
+    return MemberGrammar(document, source="synthetic")
 
 
 def _row(index=0, *, pdt=1, member="1", ensemble_type="3", size="3",
@@ -260,13 +212,17 @@ def _stage_inputs(tmp_path, monkeypatch, rows_by_member):
     return inputs, cycle
 
 
+@pytest.fixture
+def grammar_document(tmp_path):
+    path = tmp_path / "synthetic.members.json"
+    path.write_text(json.dumps(_grammar_document()), encoding="utf-8")
+    return path
+
+
 def test_preparation_stages_a_member_addressed_tree_with_a_receipt(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, grammar_document):
     inputs, cycle = _stage_inputs(
         tmp_path, monkeypatch, {"p02": [_row(0, member="2")]})
-    grammar_document = tmp_path / "synthetic.members.json"
-    grammar_document.write_text(
-        json.dumps(_grammar_document()), encoding="utf-8")
     member_dir = prepare_member(
         grammar_path=grammar_document, member_id="p02", cycle=cycle,
         steps=[0], inputs_root=inputs, output_root=tmp_path / "prepared")
@@ -286,12 +242,9 @@ def test_preparation_stages_a_member_addressed_tree_with_a_receipt(
 
 
 def test_preparation_refuses_a_missing_declared_input_by_relative_path(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, grammar_document):
     inputs, cycle = _stage_inputs(
         tmp_path, monkeypatch, {"p02": [_row(0, member="2")]})
-    grammar_document = tmp_path / "synthetic.members.json"
-    grammar_document.write_text(
-        json.dumps(_grammar_document()), encoding="utf-8")
     with pytest.raises(MemberIdentityRefusal) as caught:
         prepare_member(
             grammar_path=grammar_document, member_id="p02", cycle=cycle,
@@ -301,13 +254,11 @@ def test_preparation_refuses_a_missing_declared_input_by_relative_path(
     assert not (tmp_path / "prepared" / "synthetic-members").exists()
 
 
-def test_a_refused_member_leaves_no_partial_tree(tmp_path, monkeypatch):
+def test_a_refused_member_leaves_no_partial_tree(
+        tmp_path, monkeypatch, grammar_document):
     inputs, cycle = _stage_inputs(
         tmp_path, monkeypatch,
         {"p02": [_row(0, member="3")]})     # bytes are a different member
-    grammar_document = tmp_path / "synthetic.members.json"
-    grammar_document.write_text(
-        json.dumps(_grammar_document()), encoding="utf-8")
     with pytest.raises(MemberIdentityRefusal):
         prepare_member(
             grammar_path=grammar_document, member_id="p02", cycle=cycle,
@@ -319,12 +270,9 @@ def test_a_refused_member_leaves_no_partial_tree(tmp_path, monkeypatch):
 
 
 def test_an_already_prepared_member_refuses_rather_than_overwriting(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, grammar_document):
     inputs, cycle = _stage_inputs(
         tmp_path, monkeypatch, {"p02": [_row(0, member="2")]})
-    grammar_document = tmp_path / "synthetic.members.json"
-    grammar_document.write_text(
-        json.dumps(_grammar_document()), encoding="utf-8")
     kwargs = dict(
         grammar_path=grammar_document, member_id="p02", cycle=cycle,
         steps=[0], inputs_root=inputs, output_root=tmp_path / "prepared")
@@ -334,12 +282,9 @@ def test_an_already_prepared_member_refuses_rather_than_overwriting(
 
 
 def test_preparing_a_statistic_as_a_member_refuses_before_any_decode(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, grammar_document):
     inputs, cycle = _stage_inputs(
         tmp_path, monkeypatch, {"p02": [_row(0, member="2")]})
-    grammar_document = tmp_path / "synthetic.members.json"
-    grammar_document.write_text(
-        json.dumps(_grammar_document()), encoding="utf-8")
     with pytest.raises(MemberIdentityRefusal, match="ensemble mean"):
         prepare_member(
             grammar_path=grammar_document, member_id="xavg", cycle=cycle,
@@ -348,51 +293,11 @@ def test_preparing_a_statistic_as_a_member_refuses_before_any_decode(
 
 
 def _grammar_document():
-    return {
-        "schema": "rw-wps.members.v1",
-        "name": "synthetic-members",
-        "format": "grib2",
-        "layout": "file_per_member",
-        "declared_member_count": 4,
-        "classes": {
-            "control": {
-                "ordinals": [0], "member_id": "c00", "token": "xc00",
-                "verification": {
-                    "product_definition_templates": [1, 11],
-                    "type_of_ensemble_forecast": 1,
-                    "perturbation_number": "ordinal",
-                    "ensemble_size": 3,
-                    "type_of_generating_process": 4,
-                    "forecast_generating_process_id": 7,
-                },
-            },
-            "perturbed": {
-                "ordinals": {"first": 1, "last": 3},
-                "member_id": "p{ordinal:02d}", "token": "xp{ordinal:02d}",
-                "verification": {
-                    "product_definition_templates": [1, 11],
-                    "type_of_ensemble_forecast": 3,
-                    "perturbation_number": "ordinal",
-                    "ensemble_size": 3,
-                    "type_of_generating_process": 4,
-                    "forecast_generating_process_id": 7,
-                },
-            },
-        },
-        "statistics": {
-            "xavg": {
-                "statistic": "ensemble mean", "token": "xavg",
-                "product_definition_templates": [2, 12],
-                "derived_forecast": 0,
-            },
-        },
-        "products": {
-            "main": {
-                "relative_path":
-                    "cycle.{yyyymmdd}/{hh}/{token}.t{hh}z.f{fff}",
-            },
-        },
-    }
+    document = _document()
+    for declaration in document["classes"].values():
+        declaration["verification"].update(
+            type_of_generating_process=4, forecast_generating_process_id=7)
+    return document
 
 # ---------------------------------------------------------------------------
 # Declared rewrites: another writer's copy of the same members

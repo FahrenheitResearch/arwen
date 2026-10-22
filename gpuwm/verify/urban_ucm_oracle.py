@@ -150,16 +150,9 @@ def port_params(table, switches):
 
 
 def _inputs(rows, sel):
-    return {
-        "utype": rows["utype"][sel], "jmonth": rows["jmonth"][sel],
-        "ta": rows["ta"][sel], "qa": rows["qa"][sel], "ua": rows["ua"][sel],
-        "u1": rows["u1"][sel], "v1": rows["v1"][sel], "ssg": rows["ssg"][sel],
-        "llg": rows["llg"][sel], "rain": rows["rain"][sel],
-        "rhoo": rows["rhoo"][sel], "za": rows["za"][sel],
-        "omg": rows["omg"][sel], "delt": rows["delt"][sel],
-        "znt_in": rows["znt_in"][sel], "chs": rows["chs"][sel],
-        "chs2": rows["chs2"][sel],
-    }
+    from gpuwm.core.urban_ucm import UCM_COLUMN_INPUTS
+
+    return {name: rows[name][sel] for name in UCM_COLUMN_INPUTS}
 
 
 def _state_from(rows, sel, suffix: str):
@@ -215,8 +208,6 @@ def carried_replay(name: str, root: Path | None = None, *, generation="wrf_471")
     port_parts, ref_parts = [], []
     for step in range(int(steps.min()), int(steps.max()) + 1):
         idx = order + (step - int(steps.min()))
-        sel = np.zeros(rows["ta"].shape[0], dtype=bool)
-        sel[idx] = True
         if not np.all(rows["step"][idx] == step):
             raise ValueError(f"{name}: rows are not step-major within a column")
         outputs, after, codes = run_columns(params, _inputs(rows, idx), state,
@@ -298,11 +289,18 @@ def noah_replay(params, *, carried: bool, root: Path | None = None,
     the urban columns, WRF's words for the same, and whether the non-urban
     column's fields came through unchanged.
     """
+    return _coupled_replay(params, lsm=2, carried=carried, root=root,
+                           mutate=mutate)
+
+
+def _coupled_replay(params, *, lsm: int, carried: bool, root, mutate=None):
+    """Shared fixture stepping, state packing and result collection for both LSMs."""
     import cupy as cp
 
-    from gpuwm.core.urban_ucm import UCM_STATE_PLANES, after_lsm
+    from gpuwm.core.urban_ucm import (UCM_STATE_PLANES, after_lsm,
+                                      after_surface_diagnostics)
 
-    rows = load_noah(root)
+    rows = load_noah(root) if lsm == 2 else load_noahmp(root)
     steps = sorted(set(rows["step"].tolist()))
     ncol = int(np.count_nonzero(rows["step"] == steps[0]))
     ports, refs, untouched = [], [], True
@@ -310,7 +308,8 @@ def noah_replay(params, *, carried: bool, root: Path | None = None,
     for step in steps:
         sel = np.nonzero(rows["step"] == step)[0]
         assert np.all(rows["case"][sel] == np.arange(1, ncol + 1))
-        urban_cols = rows["tapped"][sel] == 1
+        urban_cols = (rows["tapped"][sel] == 1 if lsm == 2
+                      else rows["utype"][sel] > 0)
 
         def dev(values):
             return cp.asarray(np.asarray(values, np.float32).reshape(1, ncol))
@@ -333,29 +332,57 @@ def noah_replay(params, *, carried: bool, root: Path | None = None,
         state["urban_mask"] = cp.asarray(
             np.ascontiguousarray(urban_cols.reshape(1, ncol).astype(np.int32)))
         state["mh_urb2d"] = cp.zeros((1, ncol), cp.float32)
-        state["rural"] = {name: dev(rows[col][sel])
-                          for col, name in NOAH_TAP_RURAL.items()}
-        fields = {name: dev(rows[col][sel]) for col, name in NOAH_TAP_FIELDS.items()}
-        for name in ("albedo", "hfx", "qfx", "lh", "grdflx", "tsk", "qsfc"):
-            fields[name] = dev(np.full(ncol, 777.0, np.float32))
-        fields["swdown"] = dev(rows["swdown"][sel])
-        fields["rainbl"] = dev(rows["rainbl_grid"][sel])
+        if lsm == 2:
+            state["rural"] = {name: dev(rows[col][sel])
+                              for col, name in NOAH_TAP_RURAL.items()}
+            fields = {name: dev(rows[col][sel]) for col, name in NOAH_TAP_FIELDS.items()}
+            for name in ("albedo", "hfx", "qfx", "lh", "grdflx", "tsk", "qsfc"):
+                fields[name] = dev(np.full(ncol, 777.0, np.float32))
+            fields["swdown"] = dev(rows["swdown"][sel])
+            fields["rainbl"] = dev(rows["rainbl_grid"][sel])
+        else:
+            state["rural"] = {name: dev(rows[name][sel]) for name in
+                              ("fvegxy", "t2mvxy", "t2mbxy", "q2mvxy", "q2mbxy")}
+            fields = {name: dev(rows[f"{name}_in"][sel]) for name in NOAHMP_FIELDS_IN}
+            fields["glw"] = dev(rows["glw"][sel])
+            fields["znt"] = dev(rows["znt_in"][sel])
+            fields["swdown"] = dev(rows["swdown"][sel])
+            fields["rainbl"] = dev(rows["rainbl"][sel])
+            fields["psfc"] = dev(rows["psfc"][sel])
+            fields["t2"] = dev(rows["t2mbxy"][sel])
+            fields["q2"] = dev(rows["q2mbxy"][sel])
+            for name in ("th2", "u10", "v10", "psim", "psih", "gz1oz0", "akhs", "akms"):
+                fields[name] = dev(np.zeros(ncol, np.float32))
         before = {k: v.get().copy() for k, v in fields.items()}
-        atmosphere = {"u": dev(rows["u1"][sel])[None],
-                      "v": dev(rows["v1"][sel])[None]}
+        if lsm == 2:
+            atmosphere = {"u": dev(rows["u1"][sel])[None],
+                          "v": dev(rows["v1"][sel])[None]}
+        else:
+            atmosphere = {
+                "u": dev(rows["u1"][sel])[None], "v": dev(rows["v1"][sel])[None],
+                "temperature": dev(rows["t3d1"][sel])[None],
+                "qv": dev(rows["qv1"][sel])[None],
+                "p_interface": cp.concatenate([dev(rows["p8w1"][sel])[None],
+                                               dev(rows["p8w2"][sel])[None]]),
+                "dz": dev(rows["dz8w1"][sel])[None],
+            }
         solar = _Solar(dev(rows["omg"][sel]), NOAH_FIXTURE_JULDAY,
                        NOAH_FIXTURE_JULYR)
         if mutate is not None:
             mutate(state, fields)
-        after_lsm(state, params, lsm=2, fields=fields, atmosphere=atmosphere,
+        after_lsm(state, params, lsm=lsm, fields=fields, atmosphere=atmosphere,
                   dt=NOAH_FIXTURE_DT, itimestep=step + 1, solar=solar, cfg=None)
+        if lsm == 4:
+            after_surface_diagnostics(state, lsm=lsm, fields=fields,
+                                      atmosphere=atmosphere, cfg=None)
         for name, arr in fields.items():
             got = arr.get()[0]
             if not np.array_equal(got[~urban_cols].view(np.uint32),
                                   before[name][0][~urban_cols].view(np.uint32)):
                 untouched = False
         port, ref = {}, {}
-        for name in NOAH_FIELD_OUTPUTS:
+        for name in (NOAH_FIELD_OUTPUTS if lsm == 2
+                     else NOAHMP_FIELDS_IN + NOAHMP_OVERRIDE_OUTPUTS):
             port[name] = fields[name].get()[0][urban_cols]
             ref[name] = rows[name][sel][urban_cols]
         for col, (plane, layer) in STATE_COLUMNS.items():
@@ -411,88 +438,4 @@ def noahmp_replay(params, *, carried: bool, root: Path | None = None):
 
     Returns ``(port, ref, untouched)`` as :func:`noah_replay`.
     """
-    import cupy as cp
-
-    from gpuwm.core.urban_ucm import (UCM_STATE_PLANES, after_lsm,
-                                      after_surface_diagnostics)
-
-    rows = load_noahmp(root)
-    steps = sorted(set(rows["step"].tolist()))
-    ncol = int(np.count_nonzero(rows["step"] == steps[0]))
-    ports, refs, untouched = [], [], True
-    state_arrays = None
-    for step in steps:
-        sel = np.nonzero(rows["step"] == step)[0]
-        assert np.all(rows["case"][sel] == np.arange(1, ncol + 1))
-        urban_cols = rows["utype"][sel] > 0
-
-        def dev(values):
-            return cp.asarray(np.asarray(values, np.float32).reshape(1, ncol))
-
-        if state_arrays is None or not carried:
-            state_arrays = {}
-            for name, layers in UCM_STATE_PLANES:
-                shape = (1, ncol) if layers == 0 else (layers, 1, ncol)
-                state_arrays[name] = cp.zeros(shape, cp.float32)
-            for col, (plane, layer) in STATE_COLUMNS.items():
-                values = rows[f"{col}_in"][sel]
-                if layer is None:
-                    state_arrays[plane][...] = dev(values)
-                else:
-                    state_arrays[plane][layer] = dev(values)
-        state = dict(state_arrays)
-        state["utype_urb2d"] = cp.asarray(
-            np.ascontiguousarray(rows["utype"][sel].reshape(1, ncol)))
-        state["frc_urb2d"] = dev(rows["frc"][sel])
-        state["urban_mask"] = cp.asarray(
-            np.ascontiguousarray(urban_cols.reshape(1, ncol).astype(np.int32)))
-        state["mh_urb2d"] = cp.zeros((1, ncol), cp.float32)
-        state["rural"] = {name: dev(rows[name][sel]) for name in
-                          ("fvegxy", "t2mvxy", "t2mbxy", "q2mvxy", "q2mbxy")}
-        fields = {name: dev(rows[f"{name}_in"][sel]) for name in NOAHMP_FIELDS_IN}
-        fields["glw"] = dev(rows["glw"][sel])
-        fields["znt"] = dev(rows["znt_in"][sel])
-        fields["swdown"] = dev(rows["swdown"][sel])
-        fields["rainbl"] = dev(rows["rainbl"][sel])
-        fields["psfc"] = dev(rows["psfc"][sel])
-        fields["t2"] = dev(rows["t2mbxy"][sel])
-        fields["q2"] = dev(rows["q2mbxy"][sel])
-        for name in ("th2", "u10", "v10", "psim", "psih", "gz1oz0", "akhs", "akms"):
-            fields[name] = dev(np.zeros(ncol, np.float32))
-        before = {k: v.get().copy() for k, v in fields.items()}
-        atmosphere = {
-            "u": dev(rows["u1"][sel])[None], "v": dev(rows["v1"][sel])[None],
-            "temperature": dev(rows["t3d1"][sel])[None],
-            "qv": dev(rows["qv1"][sel])[None],
-            "p_interface": cp.concatenate([dev(rows["p8w1"][sel])[None],
-                                           dev(rows["p8w2"][sel])[None]]),
-            "dz": dev(rows["dz8w1"][sel])[None],
-        }
-        solar = _Solar(dev(rows["omg"][sel]), NOAH_FIXTURE_JULDAY,
-                       NOAH_FIXTURE_JULYR)
-        after_lsm(state, params, lsm=4, fields=fields, atmosphere=atmosphere,
-                  dt=NOAH_FIXTURE_DT, itimestep=step + 1, solar=solar, cfg=None)
-        after_surface_diagnostics(state, lsm=4, fields=fields,
-                                  atmosphere=atmosphere, cfg=None)
-        for name, arr in fields.items():
-            got = arr.get()[0]
-            if not np.array_equal(got[~urban_cols].view(np.uint32),
-                                  before[name][0][~urban_cols].view(np.uint32)):
-                untouched = False
-        port, ref = {}, {}
-        for name in NOAHMP_FIELDS_IN + NOAHMP_OVERRIDE_OUTPUTS:
-            port[name] = fields[name].get()[0][urban_cols]
-            ref[name] = rows[name][sel][urban_cols]
-        for col, (plane, layer) in STATE_COLUMNS.items():
-            arr = state_arrays[plane].get()
-            got = arr[0] if layer is None else arr[layer][0]
-            port[f"after:{col}"] = got[urban_cols]
-            ref[f"after:{col}"] = rows[col][sel][urban_cols]
-        for col, plane in NOAH_URBAN_OUTPUTS.items():
-            port[col] = state_arrays[plane].get()[0][urban_cols]
-            ref[col] = rows[col][sel][urban_cols]
-        ports.append(port)
-        refs.append(ref)
-    port = {k: np.concatenate([p[k] for p in ports]) for k in ports[0]}
-    ref = {k: np.concatenate([p[k] for p in refs]) for k in refs[0]}
-    return port, ref, untouched
+    return _coupled_replay(params, lsm=4, carried=carried, root=root)

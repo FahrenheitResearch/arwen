@@ -1,0 +1,3 @@
+[
+  {"names":["HS"],"standard_names":["sea_surface_wave_significant_height"],"product":"significant_wave_height","title":"Significant wave height","recipe":"total_qpf","default_units":"m","display_units":"m","unit_factors":{"m":1.0}}
+]

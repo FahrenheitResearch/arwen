@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # Session job keys are executable routes in ci-repro-289.sh.
 ENTRIES = {
     "ci.yml": {
+        "publication_contracts": ("R", "nightly contract selection and fetcher setup fixtures"),
         "syntax": ("S", "compileall under declared Python floor"),
         "imports": ("I", "import sweep; Linux plus Windows contract"),
         "cpu": ("B", "C", "Stage 1 Linux; Windows partition emulation"),
@@ -27,7 +28,8 @@ ENTRIES = {
         "gpu": ("R", "optional dispatch contract only; no GPU execution"),
     },
     "publish.yml": {
-        "test": ("P", "actual YAML steps, fresh checkout, Python and home"),
+        "controller": ("R", "controller hash and same-run artifact handoff fixtures"),
+        "test": ("P", "actual YAML steps, explicit local packet, fresh checkout, Python and home"),
         "release_authority": ("R", "capture authority and packet fixtures"),
         "ci": ("R", "commit-bound CI judgement fixtures"),
         "prepare": ("R", "packet, distribution and native proof fixtures"),

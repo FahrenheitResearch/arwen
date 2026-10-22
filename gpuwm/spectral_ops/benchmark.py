@@ -2,18 +2,16 @@
 
 from __future__ import annotations
 
-import json
 import math
 import time
-from typing import Any
 
 import numpy as np
 
-from .backend import asnumpy, backend_name, namespace, synchronize
+from .backend import synchronize
 from .elliptic import solve_helmholtz
 from .scalar import hyperdiffuse
 from .transfer import Hyperdiffusion
-from .vector import damp_divergence, spectral_divergence
+from .vector import damp_divergence
 
 
 def run_benchmark(*, nx: int = 512, ny: int = 384, levels: int = 32,

@@ -11,19 +11,12 @@ from gpuwm import physics_params as pp
 from gpuwm.config import RunConfig
 from gpuwm.core import kernels, model
 from gpuwm.experiment import experiment_from_run_config
+from test_physics_params import _fresh_process_binding as _binding
 
 
 class _ReachedBoundary(Exception):
     def __init__(self, experiment):
         self.experiment = experiment
-
-
-@pytest.fixture(autouse=True)
-def _binding(monkeypatch):
-    monkeypatch.delenv(pp.ENV_VAR, raising=False)
-    pp.reset_for_tests()
-    yield
-    pp.reset_for_tests()
 
 
 def _experiment(pset=None):

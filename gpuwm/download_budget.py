@@ -680,7 +680,7 @@ def _global_window_points(exp, axes: Mapping[str, Any], grid_points: int, *,
         return grid_points
     try:
         from gpuwm.domain_wizard import _root_grid
-        from gpuwm.ingest.horiz import global_ring_cut
+        from gpuwm.ingest.horiz import global_source_cut
 
         root = exp.root.run
         grid = _root_grid(
@@ -694,7 +694,10 @@ def _global_window_points(exp, axes: Mapping[str, Any], grid_points: int, *,
         west = float(axes["longitude_first"])
         longitude_axis = west + step * np.arange(nx, dtype=np.float64)
         longitudes = [np.asarray(longitude, dtype=np.float64) for _, longitude in pairs]
-        if ring and global_ring_cut(longitude_axis, *longitudes) is not None:
+        latitude_axis = float(axes["latitude_first"]) + step * np.arange(ny, dtype=np.float64)
+        if ring and global_source_cut(
+                latitude_axis, longitude_axis, *longitudes,
+                target_latitudes=tuple(lat for lat, _ in pairs)) is not None:
             return None
         latitude = np.concatenate([np.asarray(lat, dtype=np.float64).ravel() for lat, _ in pairs])
         longitude = np.concatenate([values.ravel() for values in longitudes])

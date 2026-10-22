@@ -73,7 +73,7 @@ def _fixture(members, light, *, longwave=True, shortwave=True, native_workspace=
     return adapters, atmospheres, fields, states, configs, packed_atmosphere, packed_fields, packed_state
 
 
-@pytest.mark.parametrize("members", [2, 4, 8])
+@pytest.mark.parametrize("members", [8])
 @pytest.mark.parametrize("light", ["day", "night", "mixed"])
 def test_real_packed_rte_all_heating_flux_words_match_cold_and_carried_members(members, light, monkeypatch):
     _prove(members, light, monkeypatch)

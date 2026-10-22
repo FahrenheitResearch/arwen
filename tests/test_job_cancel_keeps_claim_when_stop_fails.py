@@ -106,7 +106,24 @@ def _sleeper() -> subprocess.Popen:
     return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], **options)
 
 
-def test_cancel_ends_a_real_wrapper_and_frees_the_card(tmp_path):
+def test_cancel_ends_a_real_wrapper_and_frees_the_card(tmp_path, monkeypatch):
+    # A process can vanish after /proc was listed without blocking the real cancel.
+    from pathlib import Path
+    from itertools import chain
+    vanished = 2147483647
+    observed = []
+    if os.name == "posix" and hasattr(os, "pidfd_open"):
+        iterdir, getpgid = Path.iterdir, os.getpgid
+        def process_entries(path):
+            entries = iterdir(path)
+            return chain(entries, [Path(f"/proc/{vanished}")]) if path == Path("/proc") else entries
+        def process_group(pid):
+            if pid == vanished:
+                observed.append(pid)
+                raise ProcessLookupError("listed process already exited")
+            return getpgid(pid)
+        monkeypatch.setattr(Path, "iterdir", process_entries)
+        monkeypatch.setattr(os, "getpgid", process_group)
     process = _sleeper()
     try:
         identity = proc_identity.identify(process.pid)
@@ -115,6 +132,8 @@ def test_cancel_ends_a_real_wrapper_and_frees_the_card(tmp_path):
         process.wait(timeout=20)
         assert manager.gpu_lock.holder() is None
         assert (directory / "result.json").is_file()
+        if os.name == "posix" and hasattr(os, "pidfd_open"):
+            assert observed == [vanished]
     finally:
         if process.poll() is None:
             process.kill()

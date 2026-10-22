@@ -284,7 +284,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .product
                 .derived_forecast_type
                 .map_or_else(|| "-".to_owned(), |value| value.to_string()),
-            format!("{}\t{}\t{}\t{}\t{}", pv,
+            format_args!("{}\t{}\t{}\t{}\t{}", pv,
                 message.product.constituent_type.map_or_else(|| "-".into(), |v| v.to_string()),
                 message.product.aerosol_type.map_or_else(|| "-".into(), |v| v.to_string()),
                 interval(message.product.aerosol_size), interval(message.product.optical_wavelength)),

@@ -164,9 +164,6 @@ _ERRORS: Final[dict[int, str]] = {
     -9: "the polar range geometry is missing or non-physical",
 }
 
-#: ``BW_RIFT_FLAG_DISABLE_AUTOMATIC_SINGLE_SWEEP``.
-_RIFT_FLAG_DISABLE_AUTOMATIC: Final[int] = 1 << 0
-
 #: ``BW_RIFT_REASON_*``, for reading the per-sweep reason mask back out.
 RIFT_REASON_NAMES: Final[dict[int, str]] = {
     1 << 0: "residue_trigger",

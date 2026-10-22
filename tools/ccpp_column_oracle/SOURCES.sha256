@@ -1,0 +1,3 @@
+# ccpp-physics edd85a55502179611fdb7b902f0639c305cd1c3b (production/RRFS.v1, the RRFS v1 physics pin)
+acc610f30d256332156b9efec36e6661ac1067f9f730b49086900d605e75bebc  physics/GWD/drag_suite.F90
+ff38288d8a98e80be1f054c3e29bd0c24372b065577aa5184f59ed5c2ec4c899  physics/hooks/machine.F

@@ -94,11 +94,13 @@ def test_noaa_pair_no_longer_refuses_its_geog_tokens(tmp_path):
         import_namelists(*_pair(tmp_path, source))
     message = str(caught.value)
     assert "geog_data_res" not in message
-    assert "refuses 6 setting(s)" in message
+    # fc1e2df360 carries the HRRR v4.1.21 fork's &chem keys
+    # (simple_dir_fdb, enh_vermix, flam_part, aer_drydep_opt = 111), so the
+    # one setting the pair still refuses is num_land_cat.
     for key in ("aer_drydep_opt", "enh_vermix", "flam_part",
                 "simple_dir_fdb"):
-        assert f"&chem {key} = " in message, key
-    assert "&physics hailcast_opt = " in message
+        assert f"&chem {key} = " not in message, key
+    assert "&physics hailcast_opt = " not in message
     # WRF's own stop: geogrid stamps 20 categories for modis_15s.
     assert "&physics num_land_cat = [21]" in message
     assert "Set num_land_cat = 20" in message

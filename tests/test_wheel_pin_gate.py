@@ -243,3 +243,43 @@ def test_unpinned_checkout_supports_editable_install_without_release_override(
             assert "gpuwm/__init__.py" not in archive.namelist()
     else:
         assert list(destination.glob("*.dist-info/METADATA"))
+
+
+def test_wheel_carries_source_archive_build_provenance(tmp_path):
+    from zipfile import ZipFile
+    tree = _synthetic_tree(tmp_path, PINNED_PINS)
+    stamp = {'schema': 'gpuwm-build-provenance-v1', 'version': '0.0.1', 'commit': 'a' * 40}
+    (tree / 'gpuwm-build-provenance.json').write_text(json.dumps(stamp))
+    result = _bdist_wheel(tree, _env())
+    assert result.returncode == 0, result.stdout + result.stderr
+    with ZipFile(next((tree / 'dist').glob('*.whl'))) as wheel:
+        name = next(n for n in wheel.namelist() if n.endswith('.dist-info/build-provenance.json'))
+        assert json.loads(wheel.read(name)) == stamp
+
+
+def test_sdist_retains_checkout_hash_for_a_gitless_wheel_build(tmp_path):
+    import tarfile
+    from zipfile import ZipFile
+    tree = _synthetic_tree(tmp_path, PINNED_PINS)
+    (tree / 'MANIFEST.in').write_text('recursive-include gpuwm/data *.json\n')
+    subprocess.run(['git', 'init', '-q', str(tree)], check=True)
+    subprocess.run(['git', '-C', str(tree), '-c', 'user.name=Build test',
+                    '-c', 'user.email=build@localhost', 'commit', '-q',
+                    '--allow-empty', '-m', 'Build provenance fixture'], check=True)
+    commit = subprocess.check_output(['git', '-C', str(tree), 'rev-parse', 'HEAD'], text=True).strip()
+    result = subprocess.run([sys.executable, 'setup.py', 'sdist'], cwd=tree,
+                            capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stdout + result.stderr
+    unpacked = tmp_path / 'unpacked'
+    unpacked.mkdir()
+    with tarfile.open(next((tree / 'dist').glob('*.tar.gz'))) as archive:
+        archive.extractall(unpacked, filter='data')
+    source = next(unpacked.iterdir())
+    assert not (source / '.git').exists()
+    stamp = json.loads((source / 'gpuwm-build-provenance.json').read_text())
+    assert stamp['commit'] == commit
+    result = _bdist_wheel(source, _env())
+    assert result.returncode == 0, result.stdout + result.stderr
+    with ZipFile(next((source / 'dist').glob('*.whl'))) as wheel:
+        name = next(n for n in wheel.namelist() if n.endswith('.dist-info/build-provenance.json'))
+        assert json.loads(wheel.read(name)) == stamp

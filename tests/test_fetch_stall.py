@@ -23,7 +23,7 @@ import sys
 
 import pytest
 
-from gpuwm import fetch, fetch_pool, progress as progress_mod, rustwx_fetch
+from gpuwm import fetch_connections, fetch, fetch_pool, progress as progress_mod, rustwx_fetch
 from gpuwm.fetch_bars import CERTIFIED_RECORD_BARS
 from tools import download_hrrr_native_subset as hrrr_transport
 
@@ -138,19 +138,21 @@ def _run_through_python(real, command, **kwargs):
 
 
 @pytest.mark.parametrize("workers,files,host,share", [
-    (None, 74, None, fetch_pool.FETCH_STREAM_BUDGET
-     // fetch_pool.DEFAULT_FILE_WORKERS),
-    (1, 74, None, fetch_pool.FETCH_STREAM_BUDGET),
-    (6, 1, None, fetch_pool.FETCH_STREAM_BUDGET),
-    (64, 74, None, 1),
+    (None, 74, None, lambda budget: budget // fetch_pool.DEFAULT_FILE_WORKERS),
+    (1, 74, None, lambda budget: budget),
+    (6, 1, None, lambda budget: budget),
+    (64, 74, None, lambda budget: 1),
     (6, 74, "nomads.ncep.noaa.gov",
-     fetch_pool.FETCH_STREAM_BUDGET // min(
+     lambda budget: budget // min(
          6, fetch_pool.host_worker_cap("nomads.ncep.noaa.gov", 6))),
 ])
 def test_the_stream_budget_is_split_over_the_files_in_flight(
         workers, files, host, share):
+    # The budget is this process's share of the box cap, not the whole cap.
+    budget = min(fetch_pool.FETCH_STREAM_BUDGET,
+                 fetch_connections.process_share())
     assert fetch_pool.chunk_streams_per_file(
-        workers, files=files, host=host) == share
+        workers, files=files, host=host) == share(budget)
 
 
 def test_six_files_in_flight_stay_within_the_fetch_budget():

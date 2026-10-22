@@ -515,8 +515,16 @@ pub fn load_station_observations(
                 .as_f64()
                 .ok_or_else(|| format!("station {id} has no {key}"))
         };
-        let values: BTreeMap<String, f64> =
+        let mut values: BTreeMap<String, f64> =
             serde_json::from_value(report["values"].clone()).map_err(|e| e.to_string())?;
+        if !generic {
+            if let (Some(&t), Some(&td)) = (values.get("temperature_2m"), values.get("dewpoint_2m")) {
+                let (heat, apparent) = rustwx_calc::derived_heat::screen_heat(t, td, values.get("wind_speed_10m").copied());
+                for (name, value) in [("heat_index_2m", heat), ("apparent_temperature_2m", apparent)] {
+                    if value.is_finite() { values.insert(name.into(), value); }
+                }
+            }
+        }
         let observation_time = report["observation_time"]
             .as_str()
             .filter(|s| !s.is_empty())
@@ -827,6 +835,11 @@ pub fn hourly_messages(
 }
 
 pub fn load_arm(spec: &ArmSpec) -> Result<ArmData, String> {
+    load_arm_at(spec, 0)
+}
+
+/// Read one native history record; other formats retain their native selector.
+pub fn load_arm_at(spec: &ArmSpec, time_index: usize) -> Result<ArmData, String> {
     let fields = if spec.fields.is_empty() {
         standard_fields()
     } else {
@@ -908,10 +921,10 @@ pub fn load_arm(spec: &ArmSpec) -> Result<ArmData, String> {
         "netcdf" | "wrfout" => {
             let file = netcrust::open(&spec.path).map_err(|e| e.to_string())?;
             let wrf = wrf_core::WrfFile::open(&spec.path).ok();
-            result.provenance["metadata"] = serde_json::json!({"valid_time":file.read_strings("Times").ok().and_then(|v|v.into_iter().next()).map(|s|s.replace('_',"T")),"init_time":file.attribute("SIMULATION_START_DATE").or_else(||file.attribute("START_DATE")).and_then(|a|a.as_string().map(|s|s.replace('_',"T"))),"dx_km":file.attribute("DX").and_then(|a|a.as_f64()).map(|v|v*0.001),"dy_km":file.attribute("DY").and_then(|a|a.as_f64()).map(|v|v*0.001)});
+            result.provenance["metadata"] = serde_json::json!({"valid_time":file.read_strings("Times").ok().and_then(|v|v.into_iter().nth(time_index)).map(|s|s.replace('_',"T")),"init_time":file.attribute("SIMULATION_START_DATE").or_else(||file.attribute("START_DATE")).and_then(|a|a.as_string().map(|s|s.replace('_',"T"))),"dx_km":file.attribute("DX").and_then(|a|a.as_f64()).map(|v|v*0.001),"dy_km":file.attribute("DY").and_then(|a|a.as_f64()).map(|v|v*0.001)});
             let read = |name: &str| -> Result<Array, String> {
                 let a = file
-                    .read_array_f64_first_record_or_all(name)
+                    .read_array_f64_record_or_all(name, time_index as u64)
                     .map_err(|e| e.to_string())?;
                 Ok(Array {
                     shape: a.shape().to_vec(),
@@ -928,7 +941,20 @@ pub fn load_arm(spec: &ArmSpec) -> Result<ArmData, String> {
                 serde_json::to_value(result.grid.as_ref().unwrap().projection.as_ref())
                     .map_err(|e| e.to_string())?;
             let cells = result.grid.as_ref().unwrap().nx * result.grid.as_ref().unwrap().ny;
+            let requested: BTreeSet<_> = fields.keys().cloned().collect();
+            if requested.iter().any(|q|q.starts_with("ivt_") || q=="integrated_water_vapour") {
+                let native=crate::wrf_column_planes::read_vapour_integrals(wrf.as_ref().ok_or("IVT requires native WRF model levels")?,0)?;
+                for (quantity,values) in [
+                    ("ivt_1000_300",native.magnitude),("ivt_eastward_1000_300",native.eastward),
+                    ("ivt_northward_1000_300",native.northward),("integrated_water_vapour",native.iwv),
+                    ("ivt_full_column",native.full_magnitude),("ivt_eastward_full_column",native.full_eastward),
+                    ("ivt_northward_full_column",native.full_northward)] {
+                    if requested.contains(quantity) { result.fields.insert(quantity.into(),values.into_iter().map(f64::from).collect()); }
+                }
+                result.provenance["vapour_integral"]=serde_json::json!({"method":"native-pressure trapezoids; specific humidity; earth-relative winds", "operational_bounds_hpa":[1000,300],"reference_bounds":"surface to finite model lid; ERA5 reference surface to atmosphere top"});
+            }
             for (quantity, key) in fields {
+                if (quantity.starts_with("ivt_") || quantity=="integrated_water_vapour") && result.fields.contains_key(&quantity) { continue; }
                 if let Ok(array) = read(&key) {
                     let values =
                         if quantity == "composite_reflectivity" && array.values.len() > cells {
@@ -956,7 +982,7 @@ pub fn load_arm(spec: &ArmSpec) -> Result<ArmData, String> {
                         ..Default::default()
                     };
                     if let Ok(output) = crate::wrf_process::isolate_panics("2 m dewpoint", || {
-                        wrf_core::getvar(wrf, "td2", Some(0), &opts).map_err(|e| e.to_string())
+                        wrf_core::getvar(wrf, "td2", Some(time_index), &opts).map_err(|e| e.to_string())
                     }) {
                         result.fields.insert("dewpoint_2m".into(), output.data);
                     }
@@ -1070,6 +1096,7 @@ pub fn load_arm(spec: &ArmSpec) -> Result<ArmData, String> {
             }
             let selector = |q: &str| -> Option<FieldSelector> {
                 Some(match q {
+                    "solar_ghi" => FieldSelector::surface(CanonicalField::DownwardShortwaveRadiationFlux),
                     "temperature_2m" => FieldSelector::height_agl(CanonicalField::Temperature, 2),
                     "dewpoint_2m" => FieldSelector::height_agl(CanonicalField::Dewpoint, 2),
                     "wind_u_10m" => FieldSelector::height_agl(CanonicalField::UWind, 10),
@@ -1206,6 +1233,9 @@ pub fn load_arm(spec: &ArmSpec) -> Result<ArmData, String> {
 }
 
 pub fn load_radar(spec: &RadarSpec) -> Result<RadarData, String> {
+    if matches!(spec.path.extension().and_then(|s|s.to_str()),Some("nc"|"nc4")) {
+        return crate::gridded_verification::load(spec);
+    }
     fn pack(
         path: &Path,
     ) -> Result<(Value, Vec<u8>, BTreeMap<String, rw_obs::pack::ArrayEntry>), String> {
@@ -1686,5 +1716,26 @@ mod tests {
         };
         assert_eq!(g.sample(&[1., f64::NAN, 3., 4.], (0., 0.)), Some(1.));
         assert!(g.sample(&[1., f64::NAN, 3., 4.], (0.5, 0.5)).is_none());
+    }
+}
+
+#[cfg(test)]
+mod derived_heat_observation_tests {
+    #[test]
+    fn decoded_asos_rows_supply_heat_quantities_without_inventing_missing_wind() {
+        let path = std::env::temp_dir().join(format!("asos-heat-{}-{}.json", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let record = serde_json::json!({
+            "schema":"gpuwm-obs.asos-surface.v2", "provenance":{"is_stub":false},
+            "stations":[{"station_id":"SCREEN","latitude":40.,"longitude":-100.,"elevation_m":300.}],
+            "reports":[{"station_id":"SCREEN","valid_time":"2026-08-19T00:00:00","observation_time":"2026-08-18T23:53:00", "values":{"temperature_2m":308.15,"dewpoint_2m":303.15}}]
+        });
+        std::fs::write(&path,serde_json::to_vec(&record).unwrap()).unwrap();
+        let rows=super::load_station_observations(&path,"2026-08-19T00:00:00").unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(rows.len(),1);
+        assert!(rows[0].values["heat_index_2m"]>45.0);
+        assert!(!rows[0].values.contains_key("apparent_temperature_2m"));
+        assert!(!rows[0].values.contains_key("wbgt_2m"));
+        assert_eq!(rows[0].observation_time,"2026-08-18T23:53:00");
     }
 }

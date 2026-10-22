@@ -18,29 +18,13 @@ import sys
 import threading
 import time
 
+from gpuwm.remote_artifacts import _encoded, _file_sha as _hash, _stamp
+
 MAX_BLOB_BYTES = 16 * 1024 ** 3
 MAX_BUNDLE_BLOB_BYTES = 64 * 1024 ** 3
 MAX_BLOBS = 64
 MAX_HEADER = 128 * 1024
 SHA = re.compile(r"[0-9a-f]{64}\Z")
-
-
-def _encoded(value):
-    return json.dumps(value, sort_keys=True, ensure_ascii=False, allow_nan=False,
-                      separators=(",", ":")).encode("utf-8")
-
-
-def _stamp(path):
-    value = path.stat()
-    return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns
-
-
-def _hash(path):
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while block := stream.read(1024 * 1024):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def describe(path, role="forcing"):

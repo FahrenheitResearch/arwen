@@ -323,7 +323,7 @@ impl Window {
 
 pub fn pressure_levels(values: &[f64], plane_size: usize) -> Result<Vec<f64>> {
     if plane_size == 0
-        || values.len() % plane_size != 0
+        || !values.len().is_multiple_of(plane_size)
         || values.iter().any(|v| !v.is_finite() || *v <= 0.0)
     {
         return Err(frame_invalid(

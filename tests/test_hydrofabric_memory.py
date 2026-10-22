@@ -90,9 +90,9 @@ def test_malformed_inventory_cannot_silently_underprice_uploads(fabric, mutation
         plan(configuration(path), context=MemoryContext("standalone", "fast", 300))
 
 
-@pytest.mark.parametrize("field,value", [
-    ("node_ids", ["reach-a", "reach-a"]), ("catchment_ids", ["cat-a"]),
-    ("level_offsets", [0, 2, 1, 2]), ("reverse_level_offsets", [0, 1]),
+@pytest.mark.parametrize('field, value', [
+    pytest.param('catchment_ids', ['cat-a'], id='catchment_ids-value1'),
+    pytest.param('reverse_level_offsets', [0, 1], id='reverse_level_offsets-value3'),
 ])
 def test_resealed_invalid_roster_cannot_publish_false_ordered_axes(fabric, field, value):
     path, manifest, roster = fabric

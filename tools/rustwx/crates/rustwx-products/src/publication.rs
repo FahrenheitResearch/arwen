@@ -736,6 +736,10 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    fn fixture_root(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("{name}_{}", process::id()))
+    }
+
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
     struct JsonFixture {
         name: String,
@@ -744,8 +748,7 @@ mod tests {
 
     #[test]
     fn atomic_write_json_publishes_readable_file() {
-        let root =
-            std::env::temp_dir().join(format!("rustwx_products_publication_{}", process::id()));
+        let root = fixture_root("rustwx_products_publication");
         let path = root.join("fixture.json");
         let fixture = JsonFixture {
             name: "demo".into(),
@@ -761,10 +764,7 @@ mod tests {
 
     #[test]
     fn atomic_write_json_replaces_existing_file_contents() {
-        let root = std::env::temp_dir().join(format!(
-            "rustwx_products_publication_replace_{}",
-            process::id()
-        ));
+        let root = fixture_root("rustwx_products_publication_replace");
         let path = root.join("fixture.json");
         let first = JsonFixture {
             name: "first".into(),
@@ -788,10 +788,7 @@ mod tests {
     /// destination ends up holding exactly the source's bytes.
     #[test]
     fn atomic_replace_is_a_single_step_on_this_platform() {
-        let root = std::env::temp_dir().join(format!(
-            "rustwx_products_publication_platform_{}",
-            process::id()
-        ));
+        let root = fixture_root("rustwx_products_publication_platform");
         fs::create_dir_all(&root).unwrap();
         let dst = root.join("manifest.json");
         let tmp = root.join("incoming");
@@ -813,10 +810,7 @@ mod tests {
     /// it moves nothing, which is what a failed rename/MoveFileEx does.
     #[test]
     fn a_failure_at_the_replace_leaves_the_previous_manifest_intact() {
-        let root = std::env::temp_dir().join(format!(
-            "rustwx_products_publication_crash_{}",
-            process::id()
-        ));
+        let root = fixture_root("rustwx_products_publication_crash");
         fs::create_dir_all(&root).unwrap();
         let path = root.join("manifest.json");
         fs::write(&path, b"previous good manifest").unwrap();
@@ -857,10 +851,7 @@ mod tests {
     /// destination held going in and coming out. Both are present.
     #[test]
     fn the_manifest_is_never_absent_across_a_successful_write() {
-        let root = std::env::temp_dir().join(format!(
-            "rustwx_products_publication_present_{}",
-            process::id()
-        ));
+        let root = fixture_root("rustwx_products_publication_present");
         fs::create_dir_all(&root).unwrap();
         let path = root.join("manifest.json");
         fs::write(&path, b"previous good manifest").unwrap();
@@ -1005,7 +996,7 @@ mod tests {
 
     #[test]
     fn publish_with_attempt_writes_both_canonical_and_attempt_paths() {
-        let root = std::env::temp_dir().join(format!("rustwx_pub_attempt_{}", process::id()));
+        let root = fixture_root("rustwx_pub_attempt");
         fs::create_dir_all(&root).unwrap();
         let slug = "demo_run";
         let canonical = default_run_manifest_path(&root, slug);
@@ -1048,7 +1039,7 @@ mod tests {
 
     #[test]
     fn publish_failure_manifest_writes_canonical_and_attempt_paths() {
-        let root = std::env::temp_dir().join(format!("rustwx_pub_failure_{}", process::id()));
+        let root = fixture_root("rustwx_pub_failure");
         let _ = fs::remove_dir_all(&root);
         let slug = "rustwx_demo_failure";
         let (canonical, attempt) =
@@ -1085,10 +1076,7 @@ mod tests {
 
     #[test]
     fn artifact_identity_helper_hashes_bytes_and_files() {
-        let root = std::env::temp_dir().join(format!(
-            "rustwx_products_publication_hash_{}",
-            process::id()
-        ));
+        let root = fixture_root("rustwx_products_publication_hash");
         let path = root.join("artifact.bin");
         fs::create_dir_all(&root).unwrap();
 

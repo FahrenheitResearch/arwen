@@ -39,9 +39,11 @@ from gpuwm.mapped_source import (
     _grib_selectors_overlap,
     _load_json_bytes,
     _mapped_engine_choice,
+    _object,
     _require_authority_snapshot,
     _sha256,
     _snapshot_authority,
+    _string,
     load_mapping,
 )
 from gpuwm.native_wrf_distribution import bridge_identity
@@ -95,30 +97,6 @@ _GRIB2_SELECTOR_OVERRIDES = {
     "member",
 }
 _MAX_STABLE_SNAPSHOT_BYTES = 128 * 1024 * 1024
-
-
-def _object(
-    value: object,
-    label: str,
-    *,
-    allowed: set[str],
-    required: set[str] = frozenset(),
-) -> dict[str, object]:
-    if not isinstance(value, dict):
-        raise TypeError(f"{label} must be an object")
-    unknown = sorted(set(value) - allowed)
-    if unknown:
-        raise ValueError(f"{label} has unknown key(s): {unknown}")
-    missing = sorted(required - set(value))
-    if missing:
-        raise ValueError(f"{label} is missing required key(s): {missing}")
-    return value
-
-
-def _string(value: object, label: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{label} must be a non-empty string")
-    return value
 
 
 def _u8(value: object, label: str) -> int:

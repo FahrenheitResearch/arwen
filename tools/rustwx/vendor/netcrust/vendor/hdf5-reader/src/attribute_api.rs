@@ -329,6 +329,9 @@ pub(crate) fn collect_attribute_messages(
         )?);
     }
 
+    if attributes.iter().all(|a| a.creation_order.is_some()) {
+        attributes.sort_by_key(|a| a.creation_order);
+    }
     Ok(attributes)
 }
 
@@ -358,6 +361,9 @@ pub(crate) fn collect_attribute_messages_storage(
         )?);
     }
 
+    if attributes.iter().all(|a| a.creation_order.is_some()) {
+        attributes.sort_by_key(|a| a.creation_order);
+    }
     Ok(attributes)
 }
 
@@ -381,9 +387,9 @@ fn load_dense_attribute_messages(
 
     let mut attributes = Vec::new();
     for record in records {
-        let heap_id = match record {
-            btree_v2::BTreeV2Record::AttributeNameHash { heap_id, .. }
-            | btree_v2::BTreeV2Record::AttributeCreationOrder { heap_id, .. } => heap_id,
+        let (heap_id,creation_order) = match record {
+            btree_v2::BTreeV2Record::AttributeNameHash { heap_id, creation_order, .. }
+            | btree_v2::BTreeV2Record::AttributeCreationOrder { heap_id, order: creation_order, .. } => (heap_id,creation_order),
             _ => continue,
         };
 
@@ -394,16 +400,20 @@ fn load_dense_attribute_messages(
             };
 
         let mut attr_cursor = Cursor::new(&managed_bytes);
-        if let Ok(attr) = messages::attribute::parse(
+        if let Ok(mut attr) = messages::attribute::parse(
             &mut attr_cursor,
             offset_size,
             length_size,
             managed_bytes.len(),
         ) {
+            attr.creation_order=Some(creation_order as u64);
             attributes.push(attr);
         }
     }
 
+    if attributes.iter().all(|a| a.creation_order.is_some()) {
+        attributes.sort_by_key(|a| a.creation_order);
+    }
     Ok(attributes)
 }
 
@@ -429,9 +439,9 @@ fn load_dense_attribute_messages_storage(
 
     let mut attributes = Vec::new();
     for record in records {
-        let heap_id = match record {
-            btree_v2::BTreeV2Record::AttributeNameHash { heap_id, .. }
-            | btree_v2::BTreeV2Record::AttributeCreationOrder { heap_id, .. } => heap_id,
+        let (heap_id,creation_order) = match record {
+            btree_v2::BTreeV2Record::AttributeNameHash { heap_id, creation_order, .. }
+            | btree_v2::BTreeV2Record::AttributeCreationOrder { heap_id, order: creation_order, .. } => (heap_id,creation_order),
             _ => continue,
         };
 
@@ -442,16 +452,20 @@ fn load_dense_attribute_messages_storage(
             };
 
         let mut attr_cursor = Cursor::new(&managed_bytes);
-        if let Ok(attr) = messages::attribute::parse(
+        if let Ok(mut attr) = messages::attribute::parse(
             &mut attr_cursor,
             offset_size,
             length_size,
             managed_bytes.len(),
         ) {
+            attr.creation_order=Some(creation_order as u64);
             attributes.push(attr);
         }
     }
 
+    if attributes.iter().all(|a| a.creation_order.is_some()) {
+        attributes.sort_by_key(|a| a.creation_order);
+    }
     Ok(attributes)
 }
 
@@ -462,10 +476,9 @@ fn load_dense_attribute_records(
     offset_size: u8,
     length_size: u8,
 ) -> Result<Vec<btree_v2::BTreeV2Record>> {
-    let mut addrs = vec![info.btree_name_index_address];
-    if let Some(creation_order_addr) = info.btree_creation_order_address {
-        addrs.push(creation_order_addr);
-    }
+    let mut addrs = Vec::new();
+    if let Some(creation_order_addr) = info.btree_creation_order_address {addrs.push(creation_order_addr);}
+    addrs.push(info.btree_name_index_address);
 
     for addr in addrs {
         if Cursor::is_undefined_offset(addr, offset_size) {
@@ -502,10 +515,9 @@ fn load_dense_attribute_records_storage(
     offset_size: u8,
     length_size: u8,
 ) -> Result<Vec<btree_v2::BTreeV2Record>> {
-    let mut addrs = vec![info.btree_name_index_address];
-    if let Some(creation_order_addr) = info.btree_creation_order_address {
-        addrs.push(creation_order_addr);
-    }
+    let mut addrs = Vec::new();
+    if let Some(creation_order_addr) = info.btree_creation_order_address {addrs.push(creation_order_addr);}
+    addrs.push(info.btree_name_index_address);
 
     for addr in addrs {
         if Cursor::is_undefined_offset(addr, offset_size) {
@@ -560,32 +572,6 @@ pub(crate) fn read_one_vlen_string(
     heap_cursor.set_position(heap_addr);
     let collection = GlobalHeapCollection::parse(&mut heap_cursor, offset_size, offset_size)?;
 
-    match collection.get_object(obj_index as u16) {
-        Some(obj) => decode_string(&obj.data, padding, encoding),
-        None => Ok(String::new()),
-    }
-}
-
-pub(crate) fn read_one_vlen_string_storage(
-    raw_data: &[u8],
-    offset: usize,
-    storage: &dyn Storage,
-    offset_size: u8,
-    length_size: u8,
-    padding: StringPadding,
-    encoding: StringEncoding,
-) -> Result<String> {
-    let mut cursor = Cursor::new(&raw_data[offset..]);
-    let _seq_len = cursor.read_u32_le()?;
-    let heap_addr = cursor.read_offset(offset_size)?;
-    let obj_index = cursor.read_u32_le()?;
-
-    if Cursor::is_undefined_offset(heap_addr, offset_size) || obj_index == 0 {
-        return Ok(String::new());
-    }
-
-    let collection =
-        GlobalHeapCollection::parse_at_storage(storage, heap_addr, offset_size, length_size)?;
     match collection.get_object(obj_index as u16) {
         Some(obj) => decode_string(&obj.data, padding, encoding),
         None => Ok(String::new()),

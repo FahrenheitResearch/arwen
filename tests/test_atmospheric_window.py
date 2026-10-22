@@ -172,25 +172,6 @@ def test_decoded_window_validation_is_the_engine_s_own_spelling():
     assert match.group(1) == WINDOW_DECODED_VALIDATION
 
 
-def test_window_fallback_provider_does_not_retain_cached_atmosphere_cycle(source):
-    import gc
-    import weakref
-    _, bundle = source
-    enabled = gc.isenabled()
-    gc.disable()
-    try:
-        sequence = bundle.regular_snapshots().for_grids((target(),))
-        snapshot = sequence[0]
-        reference = weakref.ref(snapshot.fields["T"])
-        del sequence
-        assert reference() is not None
-        del snapshot
-        assert reference() is None
-    finally:
-        if enabled:
-            gc.enable()
-
-
 def test_plane_reader_has_no_full_atmospheric_allocation_and_keeps_global_median(source, monkeypatch):
     import weakref
     _, bundle = source

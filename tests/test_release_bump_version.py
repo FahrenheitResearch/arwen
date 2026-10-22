@@ -203,6 +203,28 @@ def test_readme_links_into_the_tagged_tree_name_this_release(tmp_path):
     assert f"/blob/v{to}/NOTICE" in readme.read_text(encoding="utf-8")
 
 
+def test_check_names_a_relative_readme_link_the_pypi_page_cannot_resolve(tmp_path):
+    """The 2.9.3 PyPI page carried eleven README links such as docs/public/SOURCES.md.
+
+    The README is the PyPI long description, where a relative target is a 404.
+    ``--check`` names each one with the tagged link to use, and the real README
+    carries none.
+    """
+    module = _load()
+    assert module.relative_links(REPO_ROOT) == []
+    root = _copy_tree(tmp_path)
+    lead = module.declared(root)[0][1]
+    readme = root / "README.md"
+    readme.write_text("See the [source table](docs/public/SOURCES.md) and "
+                      "[setup](https://github.com/FahrenheitResearch/arwen/blob/v%s/docs/public/SETUP.md).\n"
+                      '<img src="docs/img/a.png"> [top](#install)\n' % lead, encoding="utf-8")
+    wrong = [line for line in module.disagreements(root) if line.startswith("README.md:")]
+    assert len(wrong) == 2, wrong
+    assert "README.md:1 links docs/public/SOURCES.md relatively" in wrong[0]
+    assert f"/blob/v{lead}/docs/public/SOURCES.md" in wrong[0]
+    assert "README.md:2 links docs/img/a.png relatively" in wrong[1]
+
+
 def test_wheel_doc_links_name_the_installed_release():
     """Refusal and help texts sent a pinned install to ``main``'s documents."""
     from gpuwm.docs_links import release_ref, tree_url

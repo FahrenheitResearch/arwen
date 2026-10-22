@@ -1,129 +1,20 @@
-//! Rust-owned NetCDF serialization, using only the permissively licensed C
-//! container library. No netCDF-Fortran or hydrologic native runtime is linked.
+//! Typed NetCDF snapshots on the project's Rust CDF-5 / NetCDF-4 writer and reader.
 use crate::Result;
+use netcdf_writer::{AttrValue, NcFormat, NcType, NcWriter, Schema, VarData};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{
-    ffi::{CStr, CString, c_char, c_int, c_void},
+    ffi::CString,
     fs,
+    os::raw::c_int,
     path::Path,
-    sync::{
-        Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::atomic::{AtomicU64, Ordering},
     time::Instant,
 };
-
-// netCDF-C is not required to be thread safe. Marshalling and CSV formatting
-// use Rayon; the container library is serialized at the output boundary.
-static LOCK: Mutex<()> = Mutex::new(());
 static SERIAL: AtomicU64 = AtomicU64::new(0);
-
-unsafe extern "C" {
-    fn nc_strerror(code: c_int) -> *const c_char;
-    fn nc_inq_libvers() -> *const c_char;
-    fn nc_create(path: *const c_char, mode: c_int, id: *mut c_int) -> c_int;
-    fn nc_open(path: *const c_char, mode: c_int, id: *mut c_int) -> c_int;
-    fn nc_close(id: c_int) -> c_int;
-    fn nc_def_dim(id: c_int, name: *const c_char, len: usize, dim: *mut c_int) -> c_int;
-    fn nc_def_var(
-        id: c_int,
-        name: *const c_char,
-        ty: c_int,
-        n: c_int,
-        dims: *const c_int,
-        var: *mut c_int,
-    ) -> c_int;
-    fn nc_enddef(id: c_int) -> c_int;
-    fn nc_put_att(
-        id: c_int,
-        var: c_int,
-        name: *const c_char,
-        ty: c_int,
-        len: usize,
-        data: *const c_void,
-    ) -> c_int;
-    fn nc_put_att_text(
-        id: c_int,
-        var: c_int,
-        name: *const c_char,
-        len: usize,
-        data: *const c_char,
-    ) -> c_int;
-    fn nc_put_vara(
-        id: c_int,
-        var: c_int,
-        start: *const usize,
-        count: *const usize,
-        data: *const c_void,
-    ) -> c_int;
-    fn nc_put_vara_string(
-        id: c_int,
-        var: c_int,
-        start: *const usize,
-        count: *const usize,
-        data: *const *const c_char,
-    ) -> c_int;
-    fn nc_get_var(id: c_int, var: c_int, data: *mut c_void) -> c_int;
-    fn nc_get_var_string(id: c_int, var: c_int, data: *mut *mut c_char) -> c_int;
-    fn nc_free_string(n: usize, data: *mut *mut c_char) -> c_int;
-    fn nc_inq(
-        id: c_int,
-        nd: *mut c_int,
-        nv: *mut c_int,
-        na: *mut c_int,
-        unlim: *mut c_int,
-    ) -> c_int;
-    fn nc_inq_format(id: c_int, format: *mut c_int) -> c_int;
-    fn nc_inq_unlimdims(id: c_int, count: *mut c_int, dims: *mut c_int) -> c_int;
-    fn nc_inq_dim(id: c_int, dim: c_int, name: *mut c_char, len: *mut usize) -> c_int;
-    fn nc_inq_var(
-        id: c_int,
-        var: c_int,
-        name: *mut c_char,
-        ty: *mut c_int,
-        nd: *mut c_int,
-        dims: *mut c_int,
-        na: *mut c_int,
-    ) -> c_int;
-    fn nc_inq_attname(id: c_int, var: c_int, n: c_int, name: *mut c_char) -> c_int;
-    fn nc_inq_att(
-        id: c_int,
-        var: c_int,
-        name: *const c_char,
-        ty: *mut c_int,
-        len: *mut usize,
-    ) -> c_int;
-    fn nc_get_att(id: c_int, var: c_int, name: *const c_char, data: *mut c_void) -> c_int;
-    fn nc_get_att_text(id: c_int, var: c_int, name: *const c_char, data: *mut c_char) -> c_int;
+fn name(value: &str) -> Result<CString> {
+    Ok(CString::new(value)?)
 }
-
-fn check(code: c_int) -> Result<()> {
-    if code == 0 {
-        return Ok(());
-    }
-    Err(unsafe { CStr::from_ptr(nc_strerror(code)) }
-        .to_string_lossy()
-        .into_owned()
-        .into())
-}
-struct Handle(c_int);
-impl Drop for Handle {
-    fn drop(&mut self) {
-        if self.0 >= 0 {
-            unsafe {
-                nc_close(self.0);
-            }
-        }
-    }
-}
-impl Handle {
-    fn close(mut self) -> Result<()> {
-        let id = self.0;
-        self.0 = -1;
-        check(unsafe { nc_close(id) })
-    }
-}
-
 #[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct Dimension {
@@ -209,52 +100,6 @@ pub fn datatype(dtype: &str) -> Result<(c_int, usize)> {
         _ => return Err(format!("unsupported NetCDF type {dtype}").into()),
     })
 }
-fn typename(code: c_int) -> Result<String> {
-    for name in [
-        "i8", "char", "i16le", "i32le", "f32le", "f64le", "u8", "u16le", "u32le", "i64le", "u64le",
-        "string",
-    ] {
-        if datatype(name)?.0 == code {
-            return Ok(name.into());
-        }
-    }
-    Err("compound/vlen/enum data are not primitive resident arrays".into())
-}
-fn name(value: &str) -> Result<CString> {
-    Ok(CString::new(value)?)
-}
-fn attr(id: c_int, var: c_int, a: &Attribute) -> Result<()> {
-    let key = name(&a.name)?;
-    if a.dtype == "char" {
-        check(unsafe {
-            nc_put_att_text(id, var, key.as_ptr(), a.text.len(), a.text.as_ptr().cast())
-        })
-    } else {
-        let (ty, width) = datatype(&a.dtype)?;
-        if width == 0 || !a.bytes.len().is_multiple_of(width) {
-            return Err("invalid attribute byte count".into());
-        }
-        // Align the buffer for the C container library's primitive loads.
-        let aligned = aligned(&a.bytes);
-        check(unsafe {
-            nc_put_att(
-                id,
-                var,
-                key.as_ptr(),
-                ty,
-                a.bytes.len() / width,
-                aligned.as_ptr().cast(),
-            )
-        })
-    }
-}
-fn aligned(bytes: &[u8]) -> Vec<u64> {
-    let mut out = vec![0u64; bytes.len().div_ceil(8)];
-    unsafe {
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out.as_mut_ptr().cast(), bytes.len());
-    }
-    out
-}
 impl Dataset {
     pub fn elements(&self, var: &Variable) -> Result<usize> {
         var.dimensions.iter().try_fold(1usize, |n, key| {
@@ -324,266 +169,404 @@ impl Dataset {
     }
 }
 
+fn nc_type(dtype: &str) -> Result<NcType> {
+    Ok(match dtype {
+        "i8" => NcType::Byte,
+        "char" => NcType::Char,
+        "i16le" => NcType::Short,
+        "i32le" => NcType::Int,
+        "f32le" => NcType::Float,
+        "f64le" => NcType::Double,
+        "u8" => NcType::UByte,
+        "u16le" => NcType::UShort,
+        "u32le" => NcType::UInt,
+        "i64le" => NcType::Int64,
+        "u64le" => NcType::UInt64,
+        _ => return Err(format!("{dtype} has no classic NetCDF representation").into()),
+    })
+}
+fn attribute(a: &Attribute) -> Result<AttrValue> {
+    let (_, width) = datatype(&a.dtype)?;
+    if a.dtype == "char" {
+        return Ok(AttrValue::Text(a.text.clone()));
+    }
+    if width == 0 || !a.bytes.len().is_multiple_of(width) {
+        return Err("invalid attribute byte count".into());
+    }
+    Ok(match a.dtype.as_str() {
+        "i8" => AttrValue::Bytes(
+            a.bytes
+                .chunks_exact(1)
+                .map(|b| i8::from_le_bytes(b.try_into().unwrap()))
+                .collect(),
+        ),
+        "i16le" => AttrValue::Shorts(
+            a.bytes
+                .chunks_exact(2)
+                .map(|b| i16::from_le_bytes(b.try_into().unwrap()))
+                .collect(),
+        ),
+        "i32le" => AttrValue::Ints(
+            a.bytes
+                .chunks_exact(4)
+                .map(|b| i32::from_le_bytes(b.try_into().unwrap()))
+                .collect(),
+        ),
+        "f32le" => AttrValue::Floats(
+            a.bytes
+                .chunks_exact(4)
+                .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+                .collect(),
+        ),
+        "f64le" => AttrValue::Doubles(
+            a.bytes
+                .chunks_exact(8)
+                .map(|b| f64::from_le_bytes(b.try_into().unwrap()))
+                .collect(),
+        ),
+        "u8" => AttrValue::UBytes(
+            a.bytes
+                .chunks_exact(1)
+                .map(|b| u8::from_le_bytes(b.try_into().unwrap()))
+                .collect(),
+        ),
+        "u16le" => AttrValue::UShorts(
+            a.bytes
+                .chunks_exact(2)
+                .map(|b| u16::from_le_bytes(b.try_into().unwrap()))
+                .collect(),
+        ),
+        "u32le" => AttrValue::UInts(
+            a.bytes
+                .chunks_exact(4)
+                .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+                .collect(),
+        ),
+        "i64le" => AttrValue::Int64s(
+            a.bytes
+                .chunks_exact(8)
+                .map(|b| i64::from_le_bytes(b.try_into().unwrap()))
+                .collect(),
+        ),
+        "u64le" => AttrValue::UInt64s(
+            a.bytes
+                .chunks_exact(8)
+                .map(|b| u64::from_le_bytes(b.try_into().unwrap()))
+                .collect(),
+        ),
+        _ => return Err("unsupported attribute type".into()),
+    })
+}
+fn write_values(
+    writer: &mut NcWriter,
+    id: usize,
+    dtype: &str,
+    bytes: &[u8],
+    record: Option<(usize, usize)>,
+) -> Result<()> {
+    macro_rules! push {
+        ($ty:ty, $variant:ident) => {{
+            let values: Vec<$ty> = bytes
+                .par_chunks_exact(std::mem::size_of::<$ty>())
+                .map(|b| <$ty>::from_le_bytes(b.try_into().unwrap()))
+                .collect();
+            if let Some((count, slab)) = record {
+                for r in 0..count {
+                    writer.write_record(
+                        r as u64,
+                        id,
+                        VarData::$variant(&values[r * slab..(r + 1) * slab]),
+                    )?;
+                }
+            } else {
+                writer.write_var(id, VarData::$variant(&values))?;
+            }
+        }};
+    }
+    match dtype {
+        "i8" => push!(i8, I8),
+        "char" => push!(u8, Char),
+        "i16le" => push!(i16, I16),
+        "i32le" => push!(i32, I32),
+        "f32le" => push!(f32, F32),
+        "f64le" => push!(f64, F64),
+        "u8" => push!(u8, U8),
+        "u16le" => push!(u16, U16),
+        "u32le" => push!(u32, U32),
+        "i64le" => push!(i64, I64),
+        "u64le" => push!(u64, U64),
+        _ => return Err("unsupported variable type".into()),
+    }
+    Ok(())
+}
+
+fn write_classic(path: &Path, schema: &Dataset, payload: &[u8]) -> Result<()> {
+    let mut output = Schema::new(NcFormat::Cdf5);
+    for d in &schema.dimensions {
+        output.def_dim(&d.name, d.len, d.unlimited)?;
+    }
+    for a in &schema.attributes {
+        output.put_global_attr(&a.name, attribute(a)?)?;
+    }
+    for v in &schema.variables {
+        let dims = v
+            .dimensions
+            .iter()
+            .map(|key| {
+                schema
+                    .dimensions
+                    .iter()
+                    .position(|d| &d.name == key)
+                    .ok_or("undefined dimension")
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let id = output.def_var(&v.name, nc_type(&v.dtype)?, &dims)?;
+        for a in &v.attributes {
+            output.put_var_attr(id, &a.name, attribute(a)?)?;
+        }
+    }
+    let mut writer = NcWriter::create(path, output)?;
+    for (id, v) in schema.variables.iter().enumerate() {
+        let count = schema.elements(v)?;
+        let size = count * datatype(&v.dtype)?.1;
+        let record = v
+            .dimensions
+            .first()
+            .and_then(|key| {
+                schema
+                    .dimensions
+                    .iter()
+                    .find(|d| &d.name == key && d.unlimited)
+            })
+            .map(|d| (d.len, count / d.len));
+        write_values(
+            &mut writer,
+            id,
+            &v.dtype,
+            &payload[v.offset..v.offset + size],
+            record,
+        )?;
+    }
+    writer.finish()?;
+    Ok(())
+}
+fn write_netcdf4(path: &Path, schema: &Dataset, payload: &[u8]) -> Result<()> {
+    use netcdf_writer::netcdf4 as nc4;
+    if schema.dimensions.iter().any(|d| d.unlimited) {
+        return Err("NetCDF-4 snapshot writer cannot preserve unlimited dimensions; use CDF5 for record output".into());
+    }
+    fn attrs(items: &[Attribute]) -> Result<Vec<nc4::Attribute<'_>>> {
+        items
+            .iter()
+            .map(|a| {
+                Ok(nc4::Attribute {
+                    name: &a.name,
+                    dtype: nc_type(&a.dtype)?,
+                    bytes: if a.dtype == "char" {
+                        a.text.as_bytes()
+                    } else {
+                        &a.bytes
+                    },
+                })
+            })
+            .collect()
+    }
+    let dimensions = schema
+        .dimensions
+        .iter()
+        .map(|d| nc4::Dimension {
+            name: &d.name,
+            len: d.len,
+        })
+        .collect::<Vec<_>>();
+    let variables = schema
+        .variables
+        .iter()
+        .map(|v| {
+            let values = if v.dtype == "string" {
+                nc4::Values::Strings(&v.strings)
+            } else {
+                let size = schema.elements(v)? * datatype(&v.dtype)?.1;
+                nc4::Values::Primitive(nc_type(&v.dtype)?, &payload[v.offset..v.offset + size])
+            };
+            Ok(nc4::Variable {
+                name: &v.name,
+                dimensions: v
+                    .dimensions
+                    .iter()
+                    .map(|key| {
+                        schema
+                            .dimensions
+                            .iter()
+                            .position(|d| &d.name == key)
+                            .ok_or("undefined dimension")
+                    })
+                    .collect::<std::result::Result<Vec<_>, _>>()?,
+                attributes: attrs(&v.attributes)?,
+                values,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    nc4::write(path, &dimensions, &variables, &attrs(&schema.attributes)?)?;
+    Ok(())
+}
+
 pub fn write(path: &Path, schema: &Dataset, payload: &[u8]) -> Result<serde_json::Value> {
-    schema.validate(payload)?;
-    let _guard = LOCK.lock().map_err(|_| "NetCDF lock poisoned")?;
     let started = Instant::now();
-    let parent = path.parent().unwrap_or(Path::new("."));
+    schema.validate(payload)?;
+    let validation_ms = started.elapsed().as_secs_f64() * 1000.;
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
     fs::create_dir_all(parent)?;
     let serial = SERIAL.fetch_add(1, Ordering::Relaxed);
     let partial = path.with_file_name(format!(
         ".{}.partial-{}-{serial}",
         path.file_name()
-            .ok_or("missing file name")?
+            .ok_or("missing filename")?
             .to_string_lossy(),
         std::process::id()
     ));
-    let mut id = -1;
-    let flags = if schema.format == "netcdf4" {
-        0x1000
-    } else {
-        0x0020
-    };
-    check(unsafe {
-        nc_create(
-            name(partial.to_str().ok_or("non-UTF8 path")?)?.as_ptr(),
-            flags | 4,
-            &mut id,
-        )
-    })?;
-    let handle = Handle(id);
-    let result = (|| -> Result<(f64, f64, f64)> {
-        let mut dimids = std::collections::HashMap::new();
-        for dim in &schema.dimensions {
-            let mut d = -1;
-            check(unsafe {
-                nc_def_dim(
-                    id,
-                    name(&dim.name)?.as_ptr(),
-                    if dim.unlimited { 0 } else { dim.len },
-                    &mut d,
-                )
-            })?;
-            dimids.insert(&dim.name, d);
-        }
-        let mut variables = Vec::with_capacity(schema.variables.len());
-        for var in &schema.variables {
-            let dims = var.dimensions.iter().map(|d| dimids[d]).collect::<Vec<_>>();
-            let (ty, _) = datatype(&var.dtype)?;
-            let mut v = -1;
-            check(unsafe {
-                nc_def_var(
-                    id,
-                    name(&var.name)?.as_ptr(),
-                    ty,
-                    dims.len().try_into()?,
-                    dims.as_ptr(),
-                    &mut v,
-                )
-            })?;
-            // Define every attribute before data, retaining the caller's exact
-            // order even when _FillValue follows another attribute. Defining
-            // the entire header once also avoids repeated CDF5 data relocation.
-            for a in &var.attributes {
-                attr(id, v, a)?;
-            }
-            variables.push(v);
-        }
-        for a in &schema.attributes {
-            attr(id, -1, a)?;
-        }
-        check(unsafe { nc_enddef(id) })?;
-        let definition_ms = started.elapsed().as_secs_f64() * 1000.;
+    // Reserve an owned temporary name. Publication never replaces an existing file.
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&partial)?;
+    let result = (|| -> Result<f64> {
         let data_started = Instant::now();
-        for (var, v) in schema.variables.iter().zip(variables) {
-            let (_, width) = datatype(&var.dtype)?;
-            let starts = vec![0usize; var.dimensions.len()];
-            let counts = var
-                .dimensions
-                .iter()
-                .map(|key| {
-                    schema
-                        .dimensions
-                        .iter()
-                        .find(|d| &d.name == key)
-                        .unwrap()
-                        .len
-                })
-                .collect::<Vec<_>>();
-            if width == 0 {
-                let strings = var
-                    .strings
-                    .iter()
-                    .map(|s| name(s))
-                    .collect::<Result<Vec<_>>>()?;
-                let ptrs = strings.iter().map(|s| s.as_ptr()).collect::<Vec<_>>();
-                check(unsafe {
-                    nc_put_vara_string(id, v, starts.as_ptr(), counts.as_ptr(), ptrs.as_ptr())
-                })?;
-            } else {
-                let size = schema.elements(var)? * width;
-                let data = aligned(&payload[var.offset..var.offset + size]);
-                check(unsafe {
-                    nc_put_vara(
-                        id,
-                        v,
-                        starts.as_ptr(),
-                        counts.as_ptr(),
-                        data.as_ptr().cast(),
-                    )
-                })?;
-            }
+        if schema.format == "netcdf4" {
+            write_netcdf4(&partial, schema, payload)?;
+        } else {
+            write_classic(&partial, schema, payload)?;
         }
         let payload_write_ms = data_started.elapsed().as_secs_f64() * 1000.;
-        let publish_started = Instant::now();
-        handle.close()?;
-        fs::File::open(&partial)?.sync_all()?;
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&partial)?
+            .sync_all()?;
         fs::hard_link(&partial, path)?;
-        fs::File::open(parent)?.sync_all()?;
-        Ok((
-            definition_ms,
-            payload_write_ms,
-            publish_started.elapsed().as_secs_f64() * 1000.,
-        ))
+        crate::sync_directory(parent)?;
+        Ok(payload_write_ms)
     })();
-    let _ = fs::remove_file(&partial);
-    let (definition_ms, payload_write_ms, close_fsync_publish_ms) = result?;
+    let cleanup = fs::remove_file(&partial);
+    let payload_write_ms = result?;
+    cleanup?;
     Ok(
-        serde_json::json!({"operation":"netcdf-write","variables":schema.variables.len(),"payload_bytes":payload.len(),"container_and_fsync_ms":started.elapsed().as_secs_f64()*1000.,
-            "header_definition_ms":definition_ms,"payload_write_ms":payload_write_ms,"close_fsync_publish_ms":close_fsync_publish_ms,
-            "container_format":schema.format,"container_backend":"netCDF-C (HDF5 C backend for NetCDF-4)",
-            "netcdf_c_version":unsafe { CStr::from_ptr(nc_inq_libvers()) }.to_string_lossy(),
-            "parallelism":"Rust boundary marshalling; serialized netCDF-C container calls; no Fortran"}),
+        serde_json::json!({"operation":"netcdf-write", "variables":schema.variables.len(), "payload_bytes":payload.len(),
+        "container_and_fsync_ms":started.elapsed().as_secs_f64()*1000., "validation_ms":validation_ms,
+        "payload_write_ms":payload_write_ms, "container_format":schema.format, "container_backend":"netcdf-writer (Rust)",
+        "parallelism":format!("{} Rayon workers for typed payload conversion; ordered file I/O",rayon::current_num_threads())}),
     )
 }
 
-fn attrs(id: c_int, var: c_int, count: c_int) -> Result<Vec<Attribute>> {
-    (0..count)
-        .map(|n| {
-            let mut key = vec![0i8; 257];
-            check(unsafe { nc_inq_attname(id, var, n, key.as_mut_ptr()) })?;
-            let mut ty = 0;
-            let mut len = 0;
-            check(unsafe { nc_inq_att(id, var, key.as_ptr(), &mut ty, &mut len) })?;
-            let dtype = typename(ty)?;
-            let mut a = Attribute {
-                name: unsafe { CStr::from_ptr(key.as_ptr()) }.to_str()?.into(),
-                dtype: dtype.clone(),
+fn attributes(items: &[netcdf_reader::NcAttribute]) -> Result<Vec<Attribute>> {
+    use netcdf_reader::NcAttrValue as V;
+    items
+        .iter()
+        .map(|a| {
+            let mut out = Attribute {
+                name: a.name.clone(),
+                dtype: String::new(),
                 text: String::new(),
                 bytes: vec![],
             };
-            if dtype == "char" {
-                let mut text = vec![0u8; len];
-                check(unsafe { nc_get_att_text(id, var, key.as_ptr(), text.as_mut_ptr().cast()) })?;
-                a.text = String::from_utf8(text)?;
-            } else {
-                let width = datatype(&dtype)?.1;
-                if width == 0 {
-                    return Err("string attributes not yet captured".into());
-                }
-                let size = len.checked_mul(width).ok_or("attribute overflow")?;
-                let mut data = vec![0u64; size.div_ceil(8)];
-                check(unsafe { nc_get_att(id, var, key.as_ptr(), data.as_mut_ptr().cast()) })?;
-                a.bytes = unsafe { std::slice::from_raw_parts(data.as_ptr().cast::<u8>(), size) }
-                    .to_vec();
+            macro_rules! numeric {
+                ($v:expr, $dtype:expr) => {{
+                    out.dtype = $dtype.into();
+                    for x in $v {
+                        out.bytes.extend_from_slice(&x.to_le_bytes());
+                    }
+                }};
             }
-            Ok(a)
+            match &a.value {
+                V::Chars(s) => {
+                    out.dtype = "char".into();
+                    out.text = s.clone();
+                }
+                V::Bytes(v) => numeric!(v, "i8"),
+                V::Shorts(v) => numeric!(v, "i16le"),
+                V::Ints(v) => numeric!(v, "i32le"),
+                V::Floats(v) => numeric!(v, "f32le"),
+                V::Doubles(v) => numeric!(v, "f64le"),
+                V::UBytes(v) => numeric!(v, "u8"),
+                V::UShorts(v) => numeric!(v, "u16le"),
+                V::UInts(v) => numeric!(v, "u32le"),
+                V::Int64s(v) => numeric!(v, "i64le"),
+                V::UInt64s(v) => numeric!(v, "u64le"),
+                V::Strings(_) => return Err("string attributes not captured".into()),
+            }
+            Ok(out)
         })
         .collect()
 }
 
-/// Return a complete typed snapshot. No widening through f64 is performed.
+/// Read in each variable's native type: no float or integer widening.
 pub fn read(path: &Path) -> Result<(Dataset, Vec<u8>)> {
-    let _guard = LOCK.lock().map_err(|_| "NetCDF lock poisoned")?;
-    let mut id = -1;
-    check(unsafe {
-        nc_open(
-            name(path.to_str().ok_or("non-UTF8 path")?)?.as_ptr(),
-            0,
-            &mut id,
-        )
-    })?;
-    let handle = Handle(id);
-    let (mut nd, mut nv, mut na, mut unlim, mut format) = (0, 0, 0, 0, 0);
-    check(unsafe { nc_inq(id, &mut nd, &mut nv, &mut na, &mut unlim) })?;
-    let mut unlimited_count = 0;
-    check(unsafe { nc_inq_unlimdims(id, &mut unlimited_count, std::ptr::null_mut()) })?;
-    let mut unlimited = vec![0; unlimited_count as usize];
-    check(unsafe { nc_inq_unlimdims(id, &mut unlimited_count, unlimited.as_mut_ptr()) })?;
-    check(unsafe { nc_inq_format(id, &mut format) })?;
+    let file = netcdf_reader::NcFile::open(path)?;
     let mut schema = Dataset {
-        format: if format == 3 {
-            "netcdf4".into()
-        } else if format == 5 {
-            "cdf5".into()
-        } else {
-            return Err("expected NetCDF4 or CDF5".into());
-        },
-        dimensions: vec![],
+        format: match file.format() {
+            netcdf_reader::NcFormat::Cdf5 => "cdf5",
+            netcdf_reader::NcFormat::Nc4 | netcdf_reader::NcFormat::Nc4Classic => "netcdf4",
+            _ => return Err("expected NetCDF4 or CDF5".into()),
+        }
+        .into(),
+        dimensions: file
+            .dimensions()?
+            .iter()
+            .map(|d| {
+                Ok(Dimension {
+                    name: d.name.clone(),
+                    len: d.size.try_into()?,
+                    unlimited: d.is_unlimited,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?,
         variables: vec![],
-        attributes: attrs(id, -1, na)?,
+        attributes: attributes(file.global_attributes()?)?,
     };
-    for d in 0..nd {
-        let mut key = vec![0i8; 257];
-        let mut len = 0;
-        check(unsafe { nc_inq_dim(id, d, key.as_mut_ptr(), &mut len) })?;
-        schema.dimensions.push(Dimension {
-            name: unsafe { CStr::from_ptr(key.as_ptr()) }.to_str()?.into(),
-            len,
-            unlimited: unlimited.contains(&d),
-        });
-    }
     let mut payload = Vec::new();
-    for v in 0..nv {
-        let mut key = vec![0i8; 257];
-        let (mut ty, mut n, mut a) = (0, 0, 0);
-        // netCDF's maximum number of dimensions per variable is NC_MAX_VAR_DIMS=1024.
-        let mut dims = vec![0; 1024];
-        check(unsafe {
-            nc_inq_var(
-                id,
-                v,
-                key.as_mut_ptr(),
-                &mut ty,
-                &mut n,
-                dims.as_mut_ptr(),
-                &mut a,
-            )
-        })?;
-        let dtype = typename(ty)?;
+    for v in file.variables()? {
+        let dtype = match v.dtype.classic_type_code() {
+            Some(code) => [
+                "", "i8", "char", "i16le", "i32le", "f32le", "f64le", "u8", "u16le", "u32le",
+                "i64le", "u64le",
+            ][code as usize],
+            None if file.read_variable_char_bytes(&v.name).is_ok() => "char",
+            None => "string",
+        };
         let mut var = Variable {
-            name: unsafe { CStr::from_ptr(key.as_ptr()) }.to_str()?.into(),
-            dtype: dtype.clone(),
-            dimensions: dims[..n as usize]
-                .iter()
-                .map(|d| schema.dimensions[*d as usize].name.clone())
-                .collect(),
-            attributes: attrs(id, v, a)?,
+            name: v.name.clone(),
+            dtype: dtype.into(),
+            dimensions: v.dimensions.iter().map(|d| d.name.clone()).collect(),
+            attributes: attributes(&v.attributes)?,
             offset: payload.len(),
             strings: vec![],
         };
-        let count = schema.elements(&var)?;
-        let width = datatype(&dtype)?.1;
-        if width == 0 {
-            let mut strings = vec![std::ptr::null_mut(); count];
-            check(unsafe { nc_get_var_string(id, v, strings.as_mut_ptr()) })?;
-            let copied = strings
-                .iter()
-                .map(|p| unsafe { CStr::from_ptr(*p) }.to_str().map(String::from))
-                .collect::<std::result::Result<Vec<_>, _>>();
-            check(unsafe { nc_free_string(count, strings.as_mut_ptr()) })?;
-            var.strings = copied?;
-        } else {
-            let size = count.checked_mul(width).ok_or("variable size overflow")?;
-            let mut data = vec![0u64; size.div_ceil(8)];
-            check(unsafe { nc_get_var(id, v, data.as_mut_ptr().cast()) })?;
-            payload.extend_from_slice(unsafe {
-                std::slice::from_raw_parts(data.as_ptr().cast::<u8>(), size)
-            });
+        macro_rules! values {
+            ($ty:ty) => {
+                for x in file.read_variable::<$ty>(&v.name)?.iter() {
+                    payload.extend_from_slice(&x.to_le_bytes());
+                }
+            };
+        }
+        match dtype {
+            "i8" => values!(i8),
+            "i16le" => values!(i16),
+            "i32le" => values!(i32),
+            "f32le" => values!(f32),
+            "f64le" => values!(f64),
+            "u8" => values!(u8),
+            "u16le" => values!(u16),
+            "u32le" => values!(u32),
+            "i64le" => values!(i64),
+            "u64le" => values!(u64),
+            "char" => payload.extend_from_slice(&file.read_variable_char_bytes(&v.name)?),
+            "string" => var.strings = file.read_variable_as_strings(&v.name)?,
+            _ => unreachable!(),
         }
         schema.variables.push(var);
     }
-    handle.close()?;
     schema.validate(&payload)?;
     Ok((schema, payload))
 }

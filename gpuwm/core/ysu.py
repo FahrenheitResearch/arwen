@@ -35,7 +35,6 @@ from gpuwm.ysu_generations import YSU_DEFAULT_GENERATION, ysu_generation, ysu_ke
 from gpuwm.physics_vertical_contract import (
     outside_vertical_bounds, refuse_vertical_levels)
 
-_TPB = YSU_BLOCK
 _VALIDATE_TPB = 256
 _KMAX = 128
 
@@ -267,6 +266,45 @@ def launch_ysu(u, v, theta, qv, qc, qi, p, p_interface, exner, dz,
     return out
 
 
+def _launch_output_validation(out, status, *, scheme, names, level_names,
+                              surface_names, tpb, load_kernel):
+    """Check the common PBL output layout and launch its validation kernel."""
+    if tuple(out) != names:
+        raise ValueError(
+            f"native {scheme} validation requires outputs in launcher order "
+            f"{names}, got {tuple(out)}")
+    if (not isinstance(status, cp.ndarray) or status.shape != (1,)
+            or status.dtype != cp.uint32 or not status.flags.c_contiguous):
+        raise ValueError(
+            f"{scheme} validation status must be a C-contiguous uint32 device "
+            "array with shape (1,)")
+
+    shape_3d = out["du"].shape
+    shape_2d = out["hpbl"].shape
+    if len(shape_3d) != 3 or len(shape_2d) != 2:
+        raise ValueError(f"native {scheme} outputs must retain 3-D/2-D shapes")
+    for group, shape in ((level_names, shape_3d), (surface_names, shape_2d)):
+        for name in group:
+            value = out[name]
+            if (not isinstance(value, cp.ndarray) or value.shape != shape
+                    or value.dtype != DTYPE or not value.flags.c_contiguous):
+                raise ValueError(
+                    f"native {scheme} output {name} must be C-contiguous float32 "
+                    f"with shape {shape}")
+
+    status.fill(cp.uint32(0))
+    count_3d = out["du"].size
+    count_2d = out["hpbl"].size
+    blocks = (max(count_3d, count_2d) + tpb - 1) // tpb
+    key = "ysu" if scheme == "YSU" else "shinhong"
+    kernel = load_kernel(key + "_validation", key + "_validate_outputs")
+    kernel(
+        (blocks,), (tpb,),
+        tuple(out[name] for name in level_names)
+        + tuple(out[name] for name in surface_names)
+        + (status, np.int64(count_3d), np.int64(count_2d)))
+
+
 def validate_ysu_outputs(
         out: Mapping[str, cp.ndarray], status: cp.ndarray,
         *, refuse=None) -> str | None:
@@ -283,45 +321,10 @@ def validate_ysu_outputs(
     flagged name, preserving the historical first-invalid ordering because
     the bit order is the launcher order.  Without it the word is read here.
     """
-    if tuple(out) != _YSU_OUTPUTS:
-        raise ValueError(
-            "native YSU validation requires outputs in launcher order "
-            f"{_YSU_OUTPUTS}, got {tuple(out)}")
-    if (not isinstance(status, cp.ndarray) or status.shape != (1,)
-            or status.dtype != cp.uint32 or not status.flags.c_contiguous):
-        raise ValueError(
-            "YSU validation status must be a C-contiguous uint32 device "
-            "array with shape (1,)")
-
-    shape_3d = out["du"].shape
-    shape_2d = out["hpbl"].shape
-    if len(shape_3d) != 3 or len(shape_2d) != 2:
-        raise ValueError("native YSU outputs must retain 3-D/2-D shapes")
-    for name in _YSU_3D_FLOAT_OUTPUTS:
-        value = out[name]
-        if (not isinstance(value, cp.ndarray) or value.shape != shape_3d
-                or value.dtype != DTYPE or not value.flags.c_contiguous):
-            raise ValueError(
-                f"native YSU output {name} must be C-contiguous float32 "
-                f"with shape {shape_3d}")
-    for name in _YSU_2D_FLOAT_OUTPUTS:
-        value = out[name]
-        if (not isinstance(value, cp.ndarray) or value.shape != shape_2d
-                or value.dtype != DTYPE or not value.flags.c_contiguous):
-            raise ValueError(
-                f"native YSU output {name} must be C-contiguous float32 "
-                f"with shape {shape_2d}")
-
-    status.fill(cp.uint32(0))
-    count_3d = out["du"].size
-    count_2d = out["hpbl"].size
-    blocks = (max(count_3d, count_2d) + _VALIDATE_TPB - 1) // _VALIDATE_TPB
-    kernel = get_kernel("ysu_validation", "ysu_validate_outputs")
-    kernel(
-        (blocks,), (_VALIDATE_TPB,),
-        tuple(out[name] for name in _YSU_3D_FLOAT_OUTPUTS)
-        + tuple(out[name] for name in _YSU_2D_FLOAT_OUTPUTS)
-        + (status, np.int64(count_3d), np.int64(count_2d)))
+    _launch_output_validation(
+        out, status, scheme="YSU", names=_YSU_OUTPUTS,
+        level_names=_YSU_3D_FLOAT_OUTPUTS, surface_names=_YSU_2D_FLOAT_OUTPUTS,
+        tpb=_VALIDATE_TPB, load_kernel=get_kernel)
     from gpuwm.core import health_ledger
 
     def _first_name(flags: int) -> str | None:

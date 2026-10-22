@@ -40,6 +40,10 @@ sha2 = "0.10"
 # rw_mpas_static's stream comparator reads through the netCDF C library,
 # loaded at run time so no build or shipped binary needs it to link or start.
 libloading = "0.9"
+# Window coordinates and the nearest-cell map: pure IEEE `libm` (the same
+# vendored 0.2.16 static-fields pins), so they are the same bits on every
+# x86-64 CPU and C library. See the note at the top of src/window.rs.
+libm = { version = "0.2.16", default-features = false, features = ["force-soft-floats"] }
 thiserror.workspace = true
 
 [[bin]]

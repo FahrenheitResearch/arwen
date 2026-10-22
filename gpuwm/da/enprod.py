@@ -355,12 +355,21 @@ class FieldSpec:
     #: positive-definite intensity distribution whose peaks the mean
     #: smears.  On 2 m temperature it computes, and it means nothing.
     pmm_in_all: bool = False
+    #: Engine-declared probability thresholds, all in native units.
+    default_thresholds: tuple[float, ...] = ()
 
 
 #: Field registry: ``--field`` name -> spec.  Generic product fields
 #: only; no case, campaign, or source identity appears here or anywhere
 #: downstream of it.
+def _visibility_native_only(*args, **kwargs):
+    raise RuntimeError("visibility requires the native Rust column diagnostic; use --engine rust")
+
 FIELDS: dict[str, FieldSpec] = {
+    "visibility": FieldSpec(name="visibility",title="visibility",units="m",unit_slug="m",
+        default_threshold=1000.0,extract=_visibility_native_only),
+    "fog_prob": FieldSpec(name="fog_prob",title="visibility",units="m",unit_slug="m",
+        default_threshold=1000.0,extract=_visibility_native_only),
     "refl": FieldSpec(
         name="refl", title="composite reflectivity", units="dBZ",
         unit_slug="dbz", default_threshold=40.0, extract=_extract_refl,
@@ -2043,7 +2052,7 @@ def expand_requests(fields, products, thresholds, radii, *,
     requests: list[ProductRequest] = []
     for name in fields:
         spec = FIELDS[name]
-        field_thresholds = thresholds or (spec.default_threshold,)
+        field_thresholds = thresholds or ((1000.0, 400.0) if name in ("visibility", "fog_prob") else (spec.default_threshold,))
         for product in products:
             if product == "pmm" and not pmm_explicit and not spec.pmm_in_all:
                 continue
@@ -2425,7 +2434,8 @@ def engine_field_specs(engine_path) -> dict:
                 units=row.get("units", local.units),
                 unit_slug=row.get("unit_slug", local.unit_slug),
                 default_threshold=float(row.get("default_threshold",
-                                                local.default_threshold)))
+                                                local.default_threshold)),
+                default_thresholds=tuple(row.get("default_thresholds", ())))
             continue
         resolved[name] = FieldSpec(
             name=name, title=row.get("title", name),
@@ -2435,7 +2445,8 @@ def engine_field_specs(engine_path) -> dict:
             # No local drawing code: the engine draws this one, and the
             # matplotlib fallback refuses it by name rather than
             # pretending it can.
-            extract=None)
+            extract=None,
+            default_thresholds=tuple(row.get("default_thresholds", ())))
     return resolved
 
 
@@ -2862,7 +2873,7 @@ def run_suite_rust(ens_root, *, fields, products, thresholds, radii,
             # threshold read 30 degrees Celsius here and 303 kelvin
             # there.
             spec = (specs or FIELDS)[name]
-            field_thresholds = thresholds or (spec.default_threshold,)
+            field_thresholds = thresholds or ((1000.0, 400.0) if name in ("visibility", "fog_prob") else (spec.default_thresholds or (spec.default_threshold,)))
             for threshold in field_thresholds:
                 for radius_km in (radii or (0.0,)):
                     paths, problems, skipped, report = (
@@ -3009,15 +3020,15 @@ def register_cli(subparsers) -> None:
              f"(default)")
     parser.add_argument(
         "--threshold", default="", metavar="LIST",
-        help="comma-separated exceedance thresholds in the field's own "
+        help="comma-separated thresholds in the field's own "
              "units; default is the field's own (refl 40 dBZ, uh 75 "
-             "m2 s-2).  Every threshold gets its own probability and "
+             "m2 s-2; visibility strictly below 1000 and 400 m). Every threshold gets its own probability and "
              "paintball plot")
     parser.add_argument(
         "--neighborhood-km", default="0", metavar="LIST",
         help="comma-separated neighborhood radii in km for the "
              "probability product (default 0 = point probability).  Each "
-             "member is reduced to its maximum within the radius before "
+             "member uses its maximum (minimum for visibility) within the radius before "
              "the ensemble fraction is taken")
     parser.add_argument(
         "--domain", metavar="dNN",

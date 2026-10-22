@@ -28,13 +28,3 @@ LAKE_OUTPUT_WORDS = sum(size for _, size in LAKE_OUTPUT_LAYOUT)
 LAKE_DEFAULT_DEPTH = 50.0
 LAKE_DEFAULT_USE_DEPTH = 1
 LAKE_DEFAULT_MIN_ELEV = 5.0
-
-
-def layout_offsets(layout):
-    """Return stable field slices in a packed field-major array."""
-    result = {}
-    start = 0
-    for name, size in layout:
-        result[name] = slice(start, start + size)
-        start += size
-    return result

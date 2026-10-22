@@ -85,10 +85,6 @@ import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
-#: Cadence policies.  Membership is checked, so a typo is a refusal rather
-#: than a silent fall-through to whichever one came first.
-CADENCE_MODES = ("fixed", "per-volume")
-
 #: What to do when volumes arrive faster than a cycle can be computed.
 #: There is no fourth option that drops one quietly.
 OVERRUN_POLICIES = ("refuse", "skip", "queue")

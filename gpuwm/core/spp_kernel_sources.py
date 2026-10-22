@@ -96,6 +96,9 @@ def _mynn_surface(source: str) -> str:
         else if (isftcflx == 3) z0 = mynn_taylor_yelland_2001(wsp);
         else z0 = mynn_charnock_1955(ust, wsp, visc, za);
     }
+#ifdef OCEAN_WAVE_ROUGHNESS
+    if (xland >= 1.5f && ocean_z0[idx] > 0.0f) z0 = ocean_z0[idx];
+#endif
     real z0_nominal = z0;
     real rstoch = pattern_spp_pbl[idx];
     z0 = fmaxf(__fadd_rn(z0, __fmul_rn(z0, rstoch)), 1.0e-6f);
@@ -134,7 +137,7 @@ def specialized_source(name: str, *, capacity: int = 40, kernel_dir=None,
     if defines and name != "mynn_surface":
         raise ValueError(f"no SPP define route for {name!r}")
     for key, value in defines:
-        if (key, value) != ("MYNN_SFCLAY_GSL_WRF39", 1):
+        if (key, value) not in (("MYNN_SFCLAY_GSL_WRF39", 1), ("OCEAN_WAVE_ROUGHNESS", 1), ("OCEAN_SPP_SURFACE", 1)):
             raise ValueError(f"unknown MYNN surface SPP define {key}={value}")
     if name == "gf":
         if type(capacity) is not int or capacity < 1:

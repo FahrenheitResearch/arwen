@@ -1,0 +1,15 @@
+# Product physics tuning
+
+`python -m gpuwm.tuning` prepares, schedules and scores an opt-in city or research parameter search. It does not change ordinary forecasts or reference-code physics. A parameter table declares scheme and product applicability; inactive controls are recorded explicitly.
+
+Build `tools/tuning-harness` with its locked Cargo dependencies. Its executable samples a seeded Latin hypercube, imports native station CSVs, chooses finest common domain support, ranks mean daily RMSE, measures ensemble spread, and proposes bounded ensemble Kalman inversion updates. Python schedules these native operations and the unchanged prepared-tree forecast runner. The existing DA LETKF is a state-analysis algorithm; parameter inversion uses the new native solver.
+
+Each setting has its own process. Land model, soil layer count, mixing-length option and urban selector are bound to the actual preparation configuration. Source downloads and static caches are shared. Soil/SST changes use the surface-state initialization callback. Registered resistance constants use `GPUWM_PHYSICS_PARAMS`. The temporary urban adapter scales only the initialized canopy fraction and private GPU heat-capacity/conductivity table buffers, preserving verified base table bytes. Those private edits cannot resume from a checkpoint, so the recipe requires fresh starts and checkpointing off.
+
+Use `gpuwm.tuning_collect` to invoke the existing urban native station scorer on each original domain, plus the scoreboard's raw-temperature extraction and observation-scoring interface. Every comparison uses common member/station/hour support. Missing data remain missing. The selected local day/night periods and scoring unit are recorded. Numerical work runs in Rust or on the GPU.
+
+Freeze the winner from training days before evaluating held-out scores. Acceptance requires a strict gain on every held-out day, with no day/night regression. It creates an eligible candidate for review and never deploys or changes a product default. Ranked and EKI proposals consume only the frozen training result. EKI retains categorical groups and requires new forecasts and a new unseen holdout. A fixed feature variance leaves spatial and temporal correlations unmodeled. The parameter ensemble's spread is a measured sensitivity spread, not calibrated predictive uncertainty. See [the inverse-problem method](https://arxiv.org/abs/1209.2736).
+
+Run one day at a time. `gpuwm.tuning_retention` records exact scored-history deletions and keeps one comparison frame per member/domain, protected by a temporary `.keep`. Render the frozen best and current settings through `gpuwm.tuning_report maps`, which calls the Rust renderer. Remove retained frames and `.keep` after maps pass. Analysis scatter charts show joint-search marginal scores without claiming isolated causal effects.
+
+Each round preserves its sealed settings/configurations, actual source and native executable identities, completed-run receipts, common-support counts, selection, held-out decision and proposals. A missing or failed run cannot become a winning setting.

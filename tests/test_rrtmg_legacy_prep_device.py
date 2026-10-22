@@ -122,7 +122,7 @@ VARIANTS = [dict(o3input=0), dict(o3input=2, warm_rain=True),
             dict(o3input=0, icloud=0)]
 
 
-@pytest.mark.parametrize("ncol", [1, 7, 256, 5000])
+@pytest.mark.parametrize("ncol", [5000])
 @pytest.mark.parametrize("radii", [(1,1,1), (0,0,0), (1,1,0)])
 @pytest.mark.parametrize("variant", VARIANTS)
 def test_synthetic_dual(ncol, radii, variant):

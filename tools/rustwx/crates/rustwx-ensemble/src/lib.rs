@@ -515,6 +515,28 @@ pub fn neighborhood_max(
     Ok(out)
 }
 
+/// Strict below-threshold probability. Missing members mask the cell instead
+/// of silently shrinking the roster. A neighborhood is a per-member minimum.
+pub fn below_threshold_probability(
+    stack: &MemberStack,
+    threshold: f64,
+    radius_cells: f64,
+    policy: NanPolicy,
+) -> Result<Vec<f64>, EnsembleError> {
+    let negative = MemberStack::new(
+        stack.ny, stack.nx,
+        stack.numbers.iter().copied().zip(stack.values.iter()
+            .map(|v| v.iter().map(|x| -x).collect())).collect(),
+    )?;
+    let mut result = exceedance_probability(&negative, -threshold, radius_cells, policy)?;
+    for (i, v) in result.iter_mut().enumerate() {
+        if stack.values.iter().any(|grid| !grid[i].is_finite()) {
+            *v = f64::NAN;
+        }
+    }
+    Ok(result)
+}
+
 /// Fraction of members exceeding `threshold`; strictly greater.
 ///
 /// With a radius this is the neighbourhood-maximum ensemble probability
@@ -1041,4 +1063,16 @@ mod tests {
         assert!((levels[0] - 0.1).abs() < 1e-12);
         assert!((levels[9] - 1.0).abs() < 1e-12);
     }
+}
+
+#[cfg(test)] mod visibility_probability_tests {
+ use super::*;
+ #[test] fn strict_below_uses_complete_roster() {
+  let s=MemberStack::new(1,3,vec![(1,vec![399.0,1000.0,f64::NAN]),(2,vec![400.0,999.0,0.0])]).unwrap();
+  let p=below_threshold_probability(&s,400.0,0.0,NanPolicy::Mask).unwrap();
+  assert_eq!(&p[..2],&[0.5,0.0]); assert!(p[2].is_nan());
+  let p=below_threshold_probability(&s,1000.0,0.0,NanPolicy::Mask).unwrap();
+  assert_eq!(&p[..2],&[1.0,0.5]); assert!(p[2].is_nan());
+  assert!(below_threshold_probability(&s,1000.0,0.0,NanPolicy::Refuse).is_err());
+ }
 }

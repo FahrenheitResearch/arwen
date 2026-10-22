@@ -59,7 +59,7 @@ def prepare_add_arrays(state, pairs):
     rows = np.zeros((64, 3), dtype=np.uint64)
     rows[:len(pairs)] = [(src.data.ptr, dst.data.ptr, dst.size)
                         for src, dst in pairs]
-    table = rows.reshape(-1).view(np.dtype(('V', rows.nbytes)))[0]
+    table = rows.reshape(-1).view(np.dtype(('V', rows.nbytes)))
     nmax = max(dst.size for src, dst in pairs)
     grid = (max(1, (nmax + _TPB * _WORDS_PER_THREAD - 1)
                 // (_TPB * _WORDS_PER_THREAD)), len(pairs))

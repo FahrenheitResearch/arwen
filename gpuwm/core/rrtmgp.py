@@ -3738,6 +3738,8 @@ class RRTMGPRadiation:
     def __call__(self, *, atmosphere, fields, state, cfg):
         pressure = atmosphere["pressure"]
         nz, ny, nx = pressure.shape
+        from gpuwm.core.chem_radiation import prepare, solve_lw, solve_sw
+        chem_aerosols = prepare(state, cfg)
         full_validation = self.validation_mode == "full"
         if self.latitude_deg.shape != (ny, nx):
             raise ValueError("radiation latitude/longitude must match state grid")
@@ -4123,7 +4125,17 @@ class RRTMGPRadiation:
                     MCICA_PERMUTESEED_LW, validate=full_validation)
                 emiss = _expand_band_to_gpoint(
                     emiss_bands[sl], self.lw_tables, "surface emissivity")
-                if self.staged_solvers:
+                if chem_aerosols is not None:
+                    planck_in = PlanckInputs(
+                        tables=self.lw_tables, play=lw_profile.play,
+                        plev=lw_profile.plev, tlay=lw_profile.tlay,
+                        tlev=lw_profile.tlev, tsfc=tsfc[sl], vmr=vmr_lw,
+                        metadata=chunk_metadata)
+                    flux, clear = solve_lw(
+                        chem_aerosols, sl, self.lw_tables, gas_lw,
+                        cld_lw, mask_lw, emiss, planck_in)
+                    del planck_in
+                elif self.staged_solvers:
                     # The staged reference: finalize and Planck kernels
                     # write their cubes and the solver reads them back.
                     optics_lw = _finalize_cloud_optics(
@@ -4207,16 +4219,23 @@ class RRTMGPRadiation:
                     out=work["emiss_gpt"])
                 # Clear sky first, on fresh outputs: gas tau alone, the
                 # same solver-derived Planck sources.
-                clear = _lw_rte(
-                    gas_lw.tau, None, None, None, emiss, top_at_1=False,
-                    out=None, incident_out=None, planck=planck_in)
-                flux = _lw_rte(
-                    gas_lw.tau, None, None, None, emiss, top_at_1=False,
-                    out=(work["flux_up"], work["flux_dn"]),
-                    incident_out=work["incident"],
-                    fused_cloud=FusedCloudOptics(
-                        tables=self.lw_tables, cloud=cld_lw, mask=mask_lw),
-                    planck=planck_in)
+                if chem_aerosols is not None:
+                    flux, clear = solve_lw(
+                        chem_aerosols, sl, self.lw_tables, gas_lw,
+                        cld_lw, mask_lw, emiss, planck_in,
+                        out=(work["flux_up"], work["flux_dn"]),
+                        incident_out=work["incident"])
+                else:
+                    clear = _lw_rte(
+                        gas_lw.tau, None, None, None, emiss, top_at_1=False,
+                        out=None, incident_out=None, planck=planck_in)
+                    flux = _lw_rte(
+                        gas_lw.tau, None, None, None, emiss, top_at_1=False,
+                        out=(work["flux_up"], work["flux_dn"]),
+                        incident_out=work["incident"],
+                        fused_cloud=FusedCloudOptics(
+                            tables=self.lw_tables, cloud=cld_lw, mask=mask_lw),
+                        planck=planck_in)
                 del mask_lw, planck_in
             _store_model_flux_pair(
                 flux.flux_up, flux.flux_dn, nz, lw_up[sl], lw_dn[sl], xp=cp)
@@ -4343,7 +4362,11 @@ class RRTMGPRadiation:
                 albedo, inc, mu_chunk = _prepare_sw_inputs(
                     albedo_surface[sl], solar, mu[sl], sw_profile.play.shape[1],
                     xp=cp)
-                if self.staged_solvers:
+                if chem_aerosols is not None:
+                    flux, clear = solve_sw(
+                        chem_aerosols, sl, self.sw_tables, gas_sw, cld_sw,
+                        mask_sw, mu_chunk, albedo, inc)
+                elif self.staged_solvers:
                     clear = _sw_rte(
                         gas_sw.tau, gas_sw.ssa, None, mu_chunk, albedo,
                         albedo, inc, top_at_1=False, out=None,
@@ -4395,18 +4418,24 @@ class RRTMGPRadiation:
                     albedo_surface[sl], solar, mu[sl], sw_profile.play.shape[1],
                     out=(work["albedo_gpt"], work["inc_gpt"], work["mu0"]), xp=cp)
                 # Clear sky first, on fresh outputs (see the LW branch).
-                clear = _sw_rte(
-                    gas_sw.tau, gas_sw.ssa, None, mu_chunk,
-                    albedo, albedo, inc, top_at_1=False, out=None,
-                    fused_cloud=_clear_sky_cloud(
-                        self.sw_tables, *gas_sw.tau.shape[:2]))
-                flux = _sw_rte(
-                    gas_sw.tau, gas_sw.ssa, None, mu_chunk,
-                    albedo, albedo, inc, top_at_1=False,
-                    out=(work["flux_up"], work["flux_dn"],
-                         work["flux_dir"]),
-                    fused_cloud=FusedCloudOptics(
-                        tables=self.sw_tables, cloud=cld_sw, mask=mask_sw))
+                if chem_aerosols is not None:
+                    flux, clear = solve_sw(
+                        chem_aerosols, sl, self.sw_tables, gas_sw, cld_sw,
+                        mask_sw, mu_chunk, albedo, inc,
+                        out=(work["flux_up"], work["flux_dn"], work["flux_dir"]))
+                else:
+                    clear = _sw_rte(
+                        gas_sw.tau, gas_sw.ssa, None, mu_chunk,
+                        albedo, albedo, inc, top_at_1=False, out=None,
+                        fused_cloud=_clear_sky_cloud(
+                            self.sw_tables, *gas_sw.tau.shape[:2]))
+                    flux = _sw_rte(
+                        gas_sw.tau, gas_sw.ssa, None, mu_chunk,
+                        albedo, albedo, inc, top_at_1=False,
+                        out=(work["flux_up"], work["flux_dn"],
+                             work["flux_dir"]),
+                        fused_cloud=FusedCloudOptics(
+                            tables=self.sw_tables, cloud=cld_sw, mask=mask_sw))
                 del mask_sw
             _store_boundary_fluxes(
                 boundary_rows, "sw", sl, flux, clear,
@@ -5136,13 +5165,45 @@ def _rte_gpt_tile(kernel, ncol: int, ngpt: int, *,
     return max(1, min(tile, int(ngpt)))
 
 
+def _rte_launch(tile, ncol, ngpt, default_columns):
+    """Shared LW/SW fold validation, packing and launch dimensions."""
+    forced_fold = os.environ.get("GPUWM_RTE_FOLD", "auto").strip().lower()
+    forced_columns = os.environ.get("GPUWM_RTE_COLUMNS_PER_BLOCK", "").strip()
+    if forced_fold not in ("auto", "0", "1"):
+        raise ValueError("GPUWM_RTE_FOLD must be auto, 0 or 1")
+    requested_columns = int(forced_columns) if forced_columns else default_columns
+    if int(requested_columns) < 1:
+        raise ValueError("GPUWM_RTE_COLUMNS_PER_BLOCK must be positive")
+    warp_fold = 1 if (tile >= 16 and ngpt % tile == 0
+                      and tile <= _RTE_MAX_FOLD_BLOCK
+                      and 16 * (tile + 1) * 4 + 16 * 8 <= 49152) else 0
+    if forced_fold == "1" and not warp_fold:
+        raise ValueError("GPUWM_RTE_FOLD=1 requires a full tile of at least 16 "
+                         "within the shared-memory limit")
+    if forced_fold == "0":
+        warp_fold = 0
+    if warp_fold:
+        columns = max(1, min(int(requested_columns), 1024 // tile,
+                             49152 // (16 * (tile + 1) * 4 + 16 * 8)))
+        # Wide groups use block barriers, so their last block must be full.
+        if tile not in (16, 32) and ncol % columns:
+            columns = 1
+        threads = tile * columns
+        stage_blocks = (ncol + columns - 1) // columns
+        shared = columns * (16 * (tile + 1) * 4 + 16 * 8)
+    else:
+        threads = _RTE_BLOCK
+        stage_blocks = (ncol * tile + threads - 1) // threads
+        shared = 0
+    return warp_fold, threads, stage_blocks, shared
+
+
 def _lw_rte(tau, lay_source, lev_source, sfc_source, sfc_emis,
             incident_flux=None, *, top_at_1: bool, out,
             incident_out, fused_cloud=None,
             planck=None, _fold_columns=2,
             with_clear: bool = False, planck_staged: bool = False):
     import cupy as cp
-    from gpuwm.core.kernels import get_kernel
 
     tau = cp.ascontiguousarray(cp.asarray(tau, dtype=DTYPE))
     if tau.ndim != 3:
@@ -5197,37 +5258,13 @@ def _lw_rte(tau, lay_source, lev_source, sfc_source, sfc_emis,
     # owns a separate shared buffer. A 16- or 32-thread group synchronizes
     # its lanes, so a final block may contain unused groups. Wider groups
     # use block barriers and require a full final block.
-    forced_fold = os.environ.get("GPUWM_RTE_FOLD", "auto").strip().lower()
-    forced_columns = os.environ.get("GPUWM_RTE_COLUMNS_PER_BLOCK", "").strip()
-    if forced_fold not in ("auto", "0", "1"):
-        raise ValueError("GPUWM_RTE_FOLD must be auto, 0 or 1")
-    requested_columns = int(forced_columns) if forced_columns else _fold_columns
-    if int(requested_columns) < 1:
-        raise ValueError("GPUWM_RTE_COLUMNS_PER_BLOCK must be positive")
-    warp_fold = 1 if (tile >= 16 and ngpt % tile == 0
-                      and tile <= _RTE_MAX_FOLD_BLOCK
-                      and 16 * (tile + 1) * 4 + 16 * 8 <= 49152) else 0
-    if forced_fold == "1" and not warp_fold:
-        raise ValueError("GPUWM_RTE_FOLD=1 requires a full tile of at least 16 "
-                         "within the shared-memory limit")
-    if forced_fold == "0":
-        warp_fold = 0
+    warp_fold, threads, stage_blocks, shared = _rte_launch(
+        tile, ncol, ngpt, _fold_columns)
     if warp_fold:
         part_up, part_dn = up, down
-        columns = max(1, min(int(requested_columns), 1024 // tile,
-                             49152 // (16 * (tile + 1) * 4 + 16 * 8)))
-        # Wide groups use block barriers, so their last block must be full.
-        if tile not in (16, 32) and ncol % columns:
-            columns = 1
-        threads = tile * columns
-        stage_blocks = (ncol + columns - 1) // columns
-        shared = columns * (16 * (tile + 1) * 4 + 16 * 8)
     else:
         part_up = cp.empty((tile, nlev, ncol), dtype=DTYPE)
         part_dn = cp.empty_like(part_up)
-        threads = _RTE_BLOCK
-        stage_blocks = (ncol * tile + threads - 1) // threads
-        shared = 0
     fold_blocks = (ncol * nlev + _RTE_BLOCK - 1) // _RTE_BLOCK
     if with_clear:
         # All-sky and clear-sky in one pass (rrtmgp_lw_noscat_pair): the
@@ -5302,7 +5339,6 @@ def _sw_rte(tau, ssa, g, mu0, sfc_alb_dir, sfc_alb_dif, inc_flux_dir,
             *, top_at_1: bool, out, fused_cloud=None,
             _fold_columns=1, with_clear: bool = False):
     import cupy as cp
-    from gpuwm.core.kernels import get_kernel
 
     tau = cp.ascontiguousarray(cp.asarray(tau, dtype=DTYPE))
     if tau.ndim != 3:
@@ -5346,38 +5382,14 @@ def _sw_rte(tau, ssa, g, mu0, sfc_alb_dir, sfc_alb_dif, inc_flux_dir,
     # Each column owns a padded buffer of 16 independent flux values.
     # The fold retains ascending g-point order for every value. Whole
     # unused groups in the final block can return before their lane barriers.
-    forced_fold = os.environ.get("GPUWM_RTE_FOLD", "auto").strip().lower()
-    forced_columns = os.environ.get("GPUWM_RTE_COLUMNS_PER_BLOCK", "").strip()
-    if forced_fold not in ("auto", "0", "1"):
-        raise ValueError("GPUWM_RTE_FOLD must be auto, 0 or 1")
-    requested_columns = int(forced_columns) if forced_columns else _fold_columns
-    if int(requested_columns) < 1:
-        raise ValueError("GPUWM_RTE_COLUMNS_PER_BLOCK must be positive")
-    warp_fold = 1 if (tile >= 16 and ngpt % tile == 0
-                      and tile <= _RTE_MAX_FOLD_BLOCK
-                      and 16 * (tile + 1) * 4 + 16 * 8 <= 49152) else 0
-    if forced_fold == "1" and not warp_fold:
-        raise ValueError("GPUWM_RTE_FOLD=1 requires a full tile of at least 16 "
-                         "within the shared-memory limit")
-    if forced_fold == "0":
-        warp_fold = 0
+    warp_fold, threads, stage_blocks, shared = _rte_launch(
+        tile, ncol, ngpt, _fold_columns)
     if warp_fold:
         part_up, part_dn, part_dir = up, down, direct
-        columns = max(1, min(int(requested_columns), 1024 // tile,
-                             49152 // (16 * (tile + 1) * 4 + 16 * 8)))
-        # Wide groups use block barriers, so their last block must be full.
-        if tile not in (16, 32) and ncol % columns:
-            columns = 1
-        threads = tile * columns
-        stage_blocks = (ncol + columns - 1) // columns
-        shared = columns * (16 * (tile + 1) * 4 + 16 * 8)
     else:
         part_up = cp.empty((tile, nlev, ncol), dtype=DTYPE)
         part_dn = cp.empty_like(part_up)
         part_dir = cp.empty_like(part_up)
-        threads = _RTE_BLOCK
-        stage_blocks = (ncol * tile + threads - 1) // threads
-        shared = 0
     fold_blocks = (ncol * nlev + _RTE_BLOCK - 1) // _RTE_BLOCK
     if with_clear:
         # All-sky and clear-sky in one pass (rrtmgp_sw_2stream_pair): the

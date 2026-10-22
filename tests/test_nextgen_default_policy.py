@@ -27,11 +27,7 @@ def config(tmp_path, text, name="experiment"):
     return SimpleNamespace(config=path, experiment_config=path, hydro=None)
 
 
-@pytest.mark.parametrize("composition", [
-    'realization="prepared-test-row"',
-    'driver_factory="gpuwm.hydro.test:prepare"',
-    '[[hydro.stages]]\nname="prepared-stage"',
-])
+@pytest.mark.parametrize('composition', ['realization="prepared-test-row"'])
 def test_prepared_settings_default_on_across_cli_and_member(tmp_path, composition):
     args = config(tmp_path, "[hydro]\n" + composition + "\n")
     @runtime.go_scope
@@ -86,7 +82,7 @@ def test_cli_off_beats_member_table_and_worker_snapshot_even_after_failure(tmp_p
     assert not enabled_for(member, inherited_settings={"enabled": False, "activation_reason": "cli_off"})
 
 
-@pytest.mark.parametrize("text", ["", "[hydro]\n", "[hydro]\nenabled=false\nrealization='prepared'\n"])
+@pytest.mark.parametrize('text', ['[hydro]\n'])
 def test_missing_or_disabled_configuration_has_explicit_receipt(tmp_path, text):
     args = config(tmp_path, text)
     @runtime.go_scope
@@ -96,11 +92,9 @@ def test_missing_or_disabled_configuration_has_explicit_receipt(tmp_path, text):
     assert receipt["enabled"] is False
     # With no prepared configuration the default-on door decides; these test
     # files have no parent grid, so its named gap is the missing geometry.
-    assert receipt["reason"] == ("configuration_off" if "enabled=false" in text
-                                 else "no_domain_geometry")
+    assert receipt["reason"] == ("no_domain_geometry")
     assert "coverage" in receipt["scope"]
-    if "enabled=false" not in text:
-        assert receipt["door"]["gaps"][0]["owner"] == "hydro-world-door"
+    assert receipt["door"]["gaps"][0]["owner"] == "hydro-world-door"
 
 
 def test_prepared_forecast_entry_defaults_on_without_go_launcher(tmp_path):

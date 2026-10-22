@@ -287,7 +287,6 @@ _DUAL_RIMED_SELECTORS = (9, 18, 24)
 #: moments at all; what a mixed edge lacks for it is a PHASE closure.
 UNVALIDATED_MIXED_EDGE_SELECTORS: tuple[int, ...] = (3, 5, 30)
 
-_DYNAMIC_FIELDS = ("u", "v", "w", "t", "ph", "mu")
 _MASS_FIELDS = {
     2: ("qv", "qc", "qr", "qi", "qs", "qg"),
     1: ("qv", "qc", "qr"),

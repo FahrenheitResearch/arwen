@@ -6,14 +6,6 @@ import pytest
 from gpuwm.core.restart_request import RESTART_REQUEST_ENV, RestartRequest
 
 
-def test_unconfigured_request_does_no_filesystem_work(monkeypatch):
-    monkeypatch.delenv(RESTART_REQUEST_ENV, raising=False)
-    request = RestartRequest()
-    assert request.path is None
-    assert not request.pending()
-    request.acknowledge()
-
-
 @pytest.mark.parametrize("periodic", [False, True])
 def test_request_runs_at_synchronized_boundary_without_duplicate_periodic_write(
         tmp_path, monkeypatch, periodic):

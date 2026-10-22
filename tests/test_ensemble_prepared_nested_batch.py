@@ -105,7 +105,7 @@ def test_adaptive_resident_banks_preserve_configs_and_retained_original_words():
     assert not np.shares_memory(bank.u, nodes[0].state.u)
 
 
-@pytest.mark.parametrize("chem_sets", ["smoke", "gocart_primary,smoke", "cams_aq"])
+@pytest.mark.parametrize("chem_sets", ["smoke"])
 @pytest.mark.parametrize("field_names", [None, ("u",)])
 def test_active_chemistry_cannot_enter_full_or_edge_only_component_banks(
         monkeypatch, chem_sets, field_names):

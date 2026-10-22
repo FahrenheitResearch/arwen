@@ -120,3 +120,17 @@ def test_history_written_outside_the_ensemble_tree_is_not_ledgered(tmp_path):
     capture = MemberOutputCapture(collector.submit, 1, keep_member_files=True)
     assert capture.history_committer(grid_id=1)(proof, datetime(2026, 10, 4, 1)) is None
     assert not collector.history_ledger.inventory() and not collector.member_files
+
+
+def test_consumer_receipt_must_match_before_raw_can_be_retired(tmp_path):
+    import hashlib
+    from gpuwm.ensemble.history_ledger import EnsembleHistoryLedger
+    ledger = EnsembleHistoryLedger(tmp_path, member_order=(0,))
+    raw = tmp_path/'raw.nc'; raw.write_bytes(b'writer identity')
+    ledger.records['raw.nc'] = dict(path='raw.nc', bytes=raw.stat().st_size,
+        sha256=hashlib.sha256(raw.read_bytes()).hexdigest(), member_id=0, retirement_state='registered')
+    manifest = tmp_path/'receipt.json'; manifest.write_text('{}')
+    import pytest
+    with pytest.raises(RuntimeError, match='consumer product changed'):
+        ledger.retire_consumed(manifest, [dict(path='receipt.json', bytes=2, sha256='0'*64)])
+    assert raw.is_file()

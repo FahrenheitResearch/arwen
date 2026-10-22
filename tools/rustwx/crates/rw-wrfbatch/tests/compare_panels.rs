@@ -13,22 +13,8 @@ use serde_json::Value;
 use wx_core::grib2::writer::{Grib2Writer, MessageBuilder, PackingMethod};
 use wx_core::grib2::{GridDefinition, ProductDefinition};
 
-struct Scratch(PathBuf);
-
-impl Scratch {
-    fn new(tag: &str) -> Self {
-        let root = std::env::temp_dir().join(format!("rw-compare-panels-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        Self(root)
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+mod support;
+use support::Scratch;
 
 const WIDTH: u32 = 480;
 const HEIGHT: u32 = 360;
@@ -131,7 +117,7 @@ fn panel(sheet: &image::RgbaImage, row: u32, column: u32) -> image::RgbaImage {
 
 #[test]
 fn a_file_panel_is_the_panel_the_two_input_sheet_draws_for_that_file() {
-    let scratch = Scratch::new("identity");
+    let scratch = Scratch::new("rw-compare-panels", "identity");
     let refs = reference_dir(&scratch.0);
     let a = frame(&scratch.0, "a", 3600, 535.0);
     let b = frame(&scratch.0, "b", 3600, 600.0);
@@ -168,7 +154,7 @@ fn a_file_panel_is_the_panel_the_two_input_sheet_draws_for_that_file() {
 
 #[test]
 fn reductions_rows_and_model_only_sheets() {
-    let scratch = Scratch::new("reductions");
+    let scratch = Scratch::new("rw-compare-panels", "reductions");
     let refs = reference_dir(&scratch.0);
     let members: Vec<PathBuf> = [("m0", 500.0f32), ("m1", 600.0), ("m2", 700.0)]
         .iter()
@@ -219,7 +205,7 @@ fn reductions_rows_and_model_only_sheets() {
 
 #[test]
 fn an_order_that_drops_a_panel_or_a_row_of_another_valid_time_is_refused() {
-    let scratch = Scratch::new("refusals");
+    let scratch = Scratch::new("rw-compare-panels", "refusals");
     let refs = reference_dir(&scratch.0);
     let a = frame(&scratch.0, "a", 3600, 535.0);
     let late = frame(&scratch.0, "late", 7200, 535.0);

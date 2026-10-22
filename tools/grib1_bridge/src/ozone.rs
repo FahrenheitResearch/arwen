@@ -25,9 +25,11 @@ pub unsafe extern "C" fn gpuwm_ozone_validate_latitudes_f32(values: *const f32, 
         .unwrap_or(ERR_PANIC)
 }
 
+type Inputs<'a> = (&'a [f32], &'a [f32], &'a [f32]);
+
 unsafe fn inputs<'a>(values: *const f32, count: usize, latitude: *const f32,
     nlat: usize, ozone: *const f32, levels: usize, months: usize,
-) -> Result<(&'a [f32], &'a [f32], &'a [f32]), i32> {
+) -> Result<Inputs<'a>, i32> {
     let values = latitude_values(values, count)?;
     if nlat < 2 || levels == 0 || months != 12 { return Err(ERR_DIMENSION); }
     let length = levels.checked_mul(nlat).and_then(|v| v.checked_mul(months))
@@ -111,10 +113,10 @@ pub unsafe extern "C" fn gpuwm_ozone_latitude_f32(values: *const f32, count: usi
         let output = output as usize;
         let unsupported = AtomicBool::new(false);
         parallel::run_ranges(count, workers, |start, stop| {
-            for point in start..stop {
-                let lower = bracket(latitude, values[point]);
+            for (point, &latitude_value) in values.iter().enumerate().take(stop).skip(start) {
+                let lower = bracket(latitude, latitude_value);
                 let denominator = latitude[lower + 1] - latitude[lower];
-                let delta = values[point] - latitude[lower];
+                let delta = latitude_value - latitude[lower];
                 if !denominator.is_finite() || !delta.is_finite() {
                     unsupported.store(true, Ordering::Relaxed); return;
                 }
@@ -157,10 +159,10 @@ pub unsafe extern "C" fn gpuwm_ozone_latitude_time_f32(values: *const f32, count
         let output = output as usize;
         let unsupported = AtomicBool::new(false);
         parallel::run_ranges(count, workers, |start, stop| {
-            for point in start..stop {
-                let lower = bracket(latitude, values[point]);
+            for (point, &latitude_value) in values.iter().enumerate().take(stop).skip(start) {
+                let lower = bracket(latitude, latitude_value);
                 let denominator = latitude[lower + 1] - latitude[lower];
-                let delta = values[point] - latitude[lower];
+                let delta = latitude_value - latitude[lower];
                 let bound = envelopes[lower].0 * delta.abs();
                 let bound_sum = envelopes[lower].1 + bound;
                 if !denominator.is_finite() || !delta.is_finite() || !bound.is_finite() || !bound_sum.is_finite() {
@@ -207,7 +209,7 @@ mod tests {
     #[test]
     fn unused_month_overflow_declines_the_fused_route() {
         let lat = [-2.0f32, 0.0, 2.0];
-        let mut ozone = vec![1.0f32; 3 * 12];
+        let mut ozone = [1.0f32; 3 * 12];
         ozone[0] = -f32::MAX;
         ozone[12] = f32::MAX;
         let mut output = [0.0f32];

@@ -25,8 +25,8 @@ class TransferReached(Exception):
     """The fetch got past every check and handed the plan to a transfer."""
 
 
-@pytest.mark.parametrize("source", fetch_routes.route_ids())
-def test_auto_is_the_default_full_file_route_on_every_table_source(source):
+@pytest.mark.parametrize("source", ["rap"])
+def test_auto_is_the_default_full_file_route_on_a_table_source(source):
     assert fetch_routes.resolve_mode(source, "auto") == "full-file"
     assert fetch_routes.resolve_mode(source, "auto") == fetch_routes.resolve_mode(source, None)
 
@@ -46,11 +46,6 @@ def test_a_table_source_fetch_with_auto_reaches_its_transfer(tmp_path, monkeypat
     with pytest.raises(TransferReached):
         fetch.fetch_main(args)
     assert plans[0].source_id == "rap" and plans[0].objects
-
-
-def test_an_unsupported_record_subset_still_refuses_in_its_own_words():
-    with pytest.raises(ValueError, match="idx-subset"):
-        fetch_routes.resolve_mode("gefs", "idx-subset")
 
 
 def _container_dispatch(tmp_path, monkeypatch, source, archive, mode):

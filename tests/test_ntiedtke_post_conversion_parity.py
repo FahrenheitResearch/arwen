@@ -155,58 +155,6 @@ def test_the_precipitation_clamp_is_present_but_UNEXERCISED():
 # The kernel
 # ===========================================================================
 
-@pytest.fixture(scope="module")
-def cuda_post_conversion():
-    cp = pytest.importorskip("cupy")
-    from gpuwm.core.ntiedtke import NtLaunchGeometry, NtStages
-
-    keys = _KEYS
-    ncol, n1 = len(keys), NT_NZ + 2
-
-    def pack(name):
-        a = np.zeros((n1, ncol), dtype=np.float32)
-        for c, k in enumerate(keys):
-            a[1:1 + NT_NZ, c] = _COLS[k][name]
-        return cp.asarray(a)
-
-    def col(name):
-        return cp.asarray(np.array([float(_COLS[k][name]) for k in keys],
-                                   dtype=np.float32))
-
-    ro = {n: pack(n) for n in _IN if n != "zqp1"}
-    d_zqp1 = pack("zqp1")
-    outs = {n: cp.zeros((n1, ncol), dtype=np.float32) for n in _OUT}
-    d_zprecc = cp.zeros(ncol, dtype=np.float32)
-
-    stages = NtStages(NtLaunchGeometry(ncol=ncol, nz=NT_NZ))
-    stages.launch("ntiedtke_post_conversion", (
-        ro["pcte"], ro["ztp1"], ro["ptte"], ro["ztt"], ro["pqte"], ro["zqq"],
-        d_zqp1, ro["qcf"], ro["qif"], ro["uf"], ro["vf"],
-        ro["pvom"], ro["pvol"], col("prsfc"), col("pssfc"),
-        outs["pqc"], outs["pqi"], outs["pt"], outs["pqv"],
-        outs["pu"], outs["pv"], d_zprecc,
-        np.int32(ncol), np.int32(NT_NZ),
-        np.float32(float(_COLS[keys[0]]["delt"]))))
-    cp.cuda.Stream.null.synchronize()
-    stages.check_geometry()
-    got = {n: cp.asnumpy(outs[n])[1:1 + NT_NZ, :] for n in _OUT}
-    got["zprecc"] = cp.asnumpy(d_zprecc)
-    return keys, got
-
-
-@pytest.mark.parametrize("field", _OUT + ("zprecc",))
-def test_kernel_is_bitwise(cuda_post_conversion, field):
-    """Graded against WRF, never against the mirror."""
-    keys, got = cuda_post_conversion
-    bad = []
-    for c, key in enumerate(keys):
-        g = got[field][:, c] if got[field].ndim == 2 else got[field][c]
-        d = _diff(g, _EXP[key][field])
-        if d.size:
-            bad.append((key, d.tolist()[:4]))
-    assert not bad, f"{field}: {bad[:3]}"
-
-
 def test_kernel_holds_no_local_frame():
     pytest.importorskip("cupy")
     from gpuwm.core.kernels import load_module

@@ -1377,7 +1377,7 @@ ENVELOPE_A163_BASIS = (
 #: THE DEFECT.  Full HRRR (1797 x 1057 x 50, HRRR physics) on four RTX
 #: 5090 cards was refused: the 2x2 split priced 31.23-31.66 GiB per card
 #: against a 30.86 GiB budget, and the four cards measured 27.6-29.5 GiB
-#: at their peaks (box E, 2026-10-06, the A13 receipts).  Each rank's
+#: at their peaks (a rented box, 2026-10-06, the A13 receipts).  Each rank's
 #: price is the A163 envelope of a 25-26 GiB itemized subtotal: x1.13
 #: (the measured worst ratio 1.09 plus the 0.04 safety) prices a 3.3 GiB
 #: pool margin per rank.  The ratio was measured on 3.5-11 GiB subtotals
@@ -1430,7 +1430,7 @@ ENVELOPE_A163_BASIS = (
 #: The two band rows are the bounded price's own run, admitted BY
 #: DEFAULT (no refusal override): a 1797 x 557 x 50 exact crop of the
 #: HRRR lattice, HRRR physics, 2024-05-21 18Z, 1 h, ``[devices] 1x2`` on
-#: two RTX 5090 (box S, 2026-10-06), whose ranks (557 x 926 and 557 x
+#: two RTX 5090 (a rented box, 2026-10-06), whose ranks (557 x 926 and 557 x
 #: 927) are the rank shape of the full grid split 2x2.  Priced
 #: 30.70 / 30.75 GiB per card against 30.82 / 30.84 budgets with the
 #: MYNN chunk widened to 24,576 / 28,672 columns; the pool held 0.52 /
@@ -2151,14 +2151,22 @@ def read_compile_platform() -> tuple[str, str] | None:
 #: under-pricing is what put a run 1,630 MiB over; the bound is stated, not
 #: silently tightened.
 KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
+    # Production loaders, RTX 3080 sm_86 / NVRTC 13.0.48, 2026-10-21.
+    "output_diagnostics": 0, "gsd_diagnostics": 0, "gsd_helicity": 0,
     # WRF's ocean mixed layer, read at 0 B through the production loader
     # by the OML port lane (port289-1-ocean1-oml, tools/vram_reserve_probe.py).
     "oml": 0,
+    # Production loader, V58 sm_120 / NVRTC 12.8.93, 2026-10-20.
+    "hail": 7392,
     # 27,408 B on test host B (RTX 5090, sm_120, NVRTC 13.4.92, 2026-10-17);
     # the G2 reading under NVRTC 12.9.86 was 26,736 B (kernel_frame_recordings).
-    "fast_sbm": 27408,
+    # Ceiling: 28,576 B, test host A (RTX 4090, sm_89, NVRTC 13.4.92, fast
+    # numerics, 2026-10-22).
+    "fast_sbm": 28576,
     "thompson_column": 50016,
-    "g3": 512,  # Widest driver-read G3 ensemble variant on sm_120 / NVRTC 13.2.86.
+    # 512 B: widest driver-read G3 ensemble variant on sm_120 / NVRTC 13.2.86;
+    # 2,272 B on sm_89 / NVRTC 13.4.92 (2026-10-22), the ceiling.
+    "g3": 2272,
     # New port units: measured production-composed driver frames, V12 12.8.93.
     'fer_hires': 0,
 
@@ -2201,7 +2209,8 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     # Classic Thompson (mp=8), the transcription of WRF v4.6.1
     # mp_thompson: 0 B at every entry point, sm_120 / NVRTC 13.4,
     # 2026-10-05 (kernel_frame_recordings.SM120_NVRTC_13_4_92).
-    "thompson_classic": 0,
+    # 64 B on sm_89 / NVRTC 13.4.92 (2026-10-22), the ceiling.
+    "thompson_classic": 64,
     # Production lake loader.  Measured 2026-10-03 at 14,224 B (RTX 5090,
     # NVRTC 13.4.92) and 14,400 B (RTX PRO 6000, NVRTC 12.8.93) while the
     # column arrays lived in the local frame; that frame was the widest of
@@ -2210,8 +2219,10 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     # physics_array_shapes, kernels/lake_support.cuh), and the same probe
     # read 2026-10-05 on RTX 5090 / cupy-cuda13x through the production
     # loader: step 1,240 B, init 0 B; the card's non-pool residency after a
-    # 40,800-column step fell from 3,288 MiB to 58 MiB.
-    "lake": 1240,
+    # 40,800-column step fell from 3,288 MiB to 58 MiB.  The same source
+    # reads 4,496 B on an RTX 4090 (sm_89, NVRTC 13.4.92, 2026-10-22), the
+    # ceiling: priced at 1,240 B a 4090 lake run was under-charged 0.6 GiB.
+    "lake": 4496,
     # Test-only math grading unit, read on sm_89 and sm_120, NVRTC 13.4.59.
     "portable_libm64_grade": 48,
     # Added with this box's recording at 0 B. 'ntiedtke' is what
@@ -2228,6 +2239,12 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     "chem_mp_coupling": 0,
     "chem_optics": 1904,
     "chem_rrtmgp_aerosol": 0,
+    # cap-aer-optics: NVRTC sm_120 measured 0 B, gpu-tests.json 2026-10-20.
+    "chem_radiation": 0,
+    # cap-fzra (aa11dd9dc41): the saved-frame freezing-rain/FRAM unit,
+    # saved_frame_ice 0 B on sm_120 at NVRTC 13.4.92 (read 2026-10-20,
+    # lab box RTX 5090, its own --std=c++17 site and the loader alike).
+    "ice_accretion": 0,
     "chem_seasalt": 0,
     "chem_settling": 0,
     "chem_sulfur": 32,
@@ -2416,10 +2433,11 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     "mynn_surface": 0,
     "nest": 0,
     "nest_microphysics": 0,
-    # sm_86 compiles Noah 48 B wider than sm_120 (224 against 176); the
-    # ceiling is the sm_86 reading.  Well under the default stack either
+    # sm_86 compiles Noah 48 B wider than sm_120 (224 against 176); sm_89
+    # compiles the 2026-10-12 source to 320 B (re-read 2026-10-22), so the
+    # ceiling is the sm_89 reading.  Well under the default stack either
     # way, so it reserves nothing on any card.
-    "noah": 224,
+    "noah": 320,
     "noahmp_bareflux": 0,
     "noahmp_fluxprep": 0,
     "noahmp_leaves": 272,
@@ -2551,7 +2569,7 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     # Dudhia shortwave (lane/verify-dudhia-sw): 0 B, 48 registers, on sm_120
     # at NVRTC 12.9.86 and 13.4.92 (kernel_frame_recordings).
     "dudhia_sw": 0,
-    "rrtmg_aer3": 0,
+    "rrtmg_aer3": 24,  # sm_89 / NVRTC 13.4.92, 2026-10-22; 0 B on sm_120.
     "uh_diag": 0,
     # The UW moist-turbulence PBL (bl_pbl_physics = 9): uwpbl_columns keeps
     # CAM's automatic arrays in a global per-column workspace
@@ -2654,7 +2672,7 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     # goddard at its source default GDD_MAX_LEVELS tier; urban_ucm480 is
     # the WRF 4.8 full-canopy SLUCM (kernel_frame_recordings, same date).
     "goddard": 43664,
-    "urban_ucm480": 352,
+    "urban_ucm480": 848,  # sm_89 / NVRTC 13.4.92, 2026-10-22 (352 B on sm_120).
     # RTX 5070 Ti production loaders, 2026-10-18, both numerics modes.
     "nextgen_cfe": 0, "nextgen_reservoirs": 0,
     "nextgen_inundation": 0, "nextgen_terrain": 56,
@@ -3046,6 +3064,28 @@ UNMEASURED_KERNEL_MODULES = frozenset({
     # asserts the set of modules NVRTC refuses alone is exactly this set, and
     # both compiled alone on the 2.9.2 line.
     })
+
+#: Priced units whose committed ``.cu`` compiles only through its own
+#: production loader (a shared header spliced in, a composed prefix), so the
+#: generic loader cannot read them: ``module -> "package.module:function"``,
+#: the function returning ``(cupy module, the source text it compiled)``.
+#: The frame regenerator (``tools/vram_reserve_probe.py frames``) and the
+#: frame gate (tests/test_preflight.py) both measure these through
+#: :func:`load_production_kernel_unit`, so the number recorded is the frame
+#: of the image the run launches.  Breakage this prevents: the 2.9.4 hydro
+#: rows were priced in KERNEL_MAX_LOCAL_SIZE_BYTES from their loaders while
+#: the gate tried the generic loader, failed, and called them unpriced.
+PRODUCTION_LOADED_KERNEL_UNITS = {
+    "nextgen_cfe": "gpuwm.hydro.cfe:frame_module",
+    "nextgen_reservoirs": "gpuwm.hydro.reservoirs:frame_module",
+}
+
+
+def load_production_kernel_unit(module: str):
+    """``(cupy module, compiled source)`` for one production-loaded unit."""
+    from importlib import import_module
+    package, _, function = PRODUCTION_LOADED_KERNEL_UNITS[module].partition(":")
+    return getattr(import_module(package), function)()
 # face_mass, held_heating, rk_bookkeeping and surface_w (the dycore-host
 # speed lane's point-local units, 66af318bc) sat in this set on
 # 2026-09-30 under the same "no measurement platform in this lane"
@@ -3727,6 +3767,14 @@ def domain_kernel_modules(dc: DomainConfig, *,
         modules.add("rrtmg_aer3")
     if int(getattr(dc.run,"aer_opt",0) or 0) == 2:
         modules.add("aer_opt2")
+    from gpuwm.core.hail import enabled as hail_enabled
+    if hail_enabled(dc.run):
+        modules.add("hail")
+    if (float(getattr(dc.run, "prec_acc_dt", 0)) > 0
+            or float(getattr(dc.run, "prec_acc_dt1", 0)) > 0):
+        modules.add("output_diagnostics")
+    if int(getattr(dc.run, "gsd_diagnostics", 0)):
+        modules.update(("gsd_diagnostics", "gsd_helicity"))
     if int(getattr(dc.run, "sf_lake_physics", 0)) == 1:
         modules.add("lake")
     if int(getattr(dc.run, "sf_ocean_physics", 0)) == 1:
@@ -3785,6 +3833,8 @@ def domain_kernel_modules(dc: DomainConfig, *,
 
         modules.update(chem_kernel_modules(load_chem_table(dc.run),
                                            dc.run.chem_adv_opt))
+        if getattr(dc.run, "aer_ra_feedback", 0):
+            modules.update(("chem_radiation", "chem_rrtmgp_aerosol"))
     return frozenset(modules)
 
 
@@ -4865,10 +4915,14 @@ def physics_field_names_2d(cfg: RunConfig | None = None) -> tuple[str, ...]:
     if cfg is not None:
         # WRF's ocean mixed layer carries seven planes and reads GSW.
         from gpuwm.surface_ocean import ocean_fields
-        union.update(dict.fromkeys(ocean_fields(cfg)))
+        if int(getattr(cfg, "sf_ocean_physics", 0)) == 2:
+            union.update(dict.fromkeys(("om_ml", "_pwp_mx", "_pwp_my", "_pwp_land")))
+        else:
+            union.update(dict.fromkeys(ocean_fields(cfg)))
         if int(getattr(cfg, "sf_ocean_physics", 0)):
             union["gsw"] = None
-    if cfg is not None and cfg.nwp_diagnostics == 0:
+            union.update(dict.fromkeys(("ocean_sst", "ocean_sst_change")))
+    if cfg is not None and cfg.nwp_diagnostics == 0 and not cfg.gsd_diagnostics:
         union["refd_max"] = None
     union.update(dict.fromkeys(SFCLAY_OUTPUTS))
     if cfg is not None and int(cfg.sf_sfclay_physics) == 5:
@@ -4887,6 +4941,9 @@ def physics_field_names_2d(cfg: RunConfig | None = None) -> tuple[str, ...]:
         if not topo_shortwave_active(cfg):
             union["swnorm"] = None
     if cfg is not None:
+        from gpuwm.config import radiation_scheme_ids
+        if radiation_scheme_ids(cfg)[1]:
+            union.update(dict.fromkeys(("swddir", "swddif", "swddni")))
         from gpuwm.core.physics_inventory import radiation_boundary_flux_names
         for name in radiation_boundary_flux_names(cfg):
             union[name] = union["ac"+name] = None
@@ -4993,6 +5050,13 @@ def physics_array_shapes(cfg: RunConfig, *, cam_ozone: bool = False,
                 shapes[f"fields/{name}"] = m
     for name in physics_field_names_2d(cfg):
         shapes[f"fields/{name}"] = s2
+    if int(getattr(cfg, "sf_ocean_physics", 0)) == 2:
+        from gpuwm.ocean.mixed_layer import PROFILE_FIELDS
+        for name in (*PROFILE_FIELDS, "_pwp_w", "_pwp_p"):
+            shapes[f"fields/{name}"] = (cfg.ocean_levels, ny, nx)
+        for name in ("_pwp_base", "_pwp_tend"):
+            shapes[f"fields/{name}"] = (4*cfg.ocean_levels, ny, nx)
+        shapes["fields/_pwp_status"] = (1,)
     n_soil = soil_layer_count(cfg)
     for name in ("smois", "tslb", "sh2o", "smcrel"):
         shapes[f"fields/{name}"] = (n_soil, ny, nx)
@@ -5048,6 +5112,10 @@ def physics_array_shapes(cfg: RunConfig, *, cam_ozone: bool = False,
         for name in MYNN_PBL_STATE_3D:
             shapes[f"fields/{name}"] = m
         shapes["fields/tke_pbl"] = (nz + 1, ny, nx)
+    if int(cfg.bl_pbl_physics) == 11:
+        # Shin-Hong's Registry carriers TKE_PBL and EL_PBL (initialize_physics).
+        shapes["fields/tke_pbl"] = (nz + 1, ny, nx)
+        shapes["fields/el_pbl"] = m
     if int(cfg.bl_pbl_physics) == MYJ_PBL_SCHEME:
         # MYJ's carried TKE_MYJ and EL_MYJ, allocated by initialize_physics
         # for this selector only.  Missing them under-counts by 2*nz*ny*nx
@@ -5460,6 +5528,10 @@ def scratch_slot_registry(cfg: RunConfig, *,
     fl = (nz + 1, ny, nx)
     s2 = (ny, nx)
     slots: dict[str, tuple[int, ...]] = {}
+    from gpuwm.core.hail import scratch_shapes as hail_scratch_shapes
+    slots.update(hail_scratch_shapes(cfg))
+    from gpuwm.core.output_diagnostics import scratch_shapes as output_shapes
+    slots.update(output_shapes(cfg))
     if cfg.lightning_option:
         from gpuwm.lightning_contract import LIGHTNING_OPTIONS
         slots.update({"ltng_" + k: s2 for k in LIGHTNING_OPTIONS[cfg.lightning_option]["fields"]})
@@ -5574,11 +5646,12 @@ def scratch_slot_registry(cfg: RunConfig, *,
             for name in potential_external_scalar_fields(cfg):
                 slots[f"lbc_{name}_held"] = m
 
-    if cfg.nwp_diagnostics == 1:
+    if cfg.nwp_diagnostics == 1 or cfg.gsd_diagnostics == 1:
         # gpuwm/core/uh_diag.py: the serialized UP_HELI_MAX running max
         # (eagerly allocated by DomainState.__init__) plus two per-launch
         # work planes (column UH and the use_column flags).
         slots.update(up_heli_max=s2, uh_diag_col=s2, uh_diag_use=s2)
+    if cfg.nwp_diagnostics == 1:
         # The two consumer-owned tracking windows (gpuwm/core/uh_diag.py:
         # TRACKER_WINDOW_SLOTS).  Priced on the same gate that allocates
         # them, because they are allocated whenever the diagnostic runs
@@ -6445,7 +6518,24 @@ class ScratchSlotLifetime:
 # Committed audit table. tests/test_preflight.py expands every registry and
 # F4-manifest slot through this table, rejects gaps/overlaps, and separately
 # proves that every arena-admitted row is write-before-read classified.
+from gpuwm.core.hail import PERSISTENT as _HAIL_PERSISTENT
+
+from gpuwm.core.output_diagnostics import PERSISTENT as _OUTPUT_PERSISTENT
+
 SCRATCH_SLOT_LIFETIME_AUDIT = (
+    ScratchSlotLifetime(_OUTPUT_PERSISTENT + ("output_zero", "gsd_zero", "gsd_uh_use", "gsd_pressure_w", "gsd_temperature", "gsd_density", "gsd_wind10", "gsd_wind80"), "carrying",
+        "gpuwm/core/output_diagnostics.py:update_precipitation",
+        "Interval buckets survive history and checkpoint; absent inputs stay zero"),
+    ScratchSlotLifetime(
+        _HAIL_PERSISTENT
+        + ("hail_zero",), "carrying", "gpuwm/core/hail.py:update,reset_window",
+        "Embryos, history windows, run maxima and updraft duration survive "
+        "steps; the absent-species plane must remain zero"),
+    ScratchSlotLifetime(
+        ("hail_temperature", "hail_height", "hail_density", "hail_new_mask",
+         "hail_new_duration"), "write_before_read", "gpuwm/core/hail.py:update",
+        "Preparation and duration kernels overwrite every entry before use"),
+    ScratchSlotLifetime(("ieva_*",), "excluded_unproven", "gpuwm/core/ieva.py (zadvect_implicit = 1)", "the explicit/implicit eta mass-flux split and column masses are produced by the dynamics and reused by the scalar split later in the step; no audit has proven a sibling domain cannot interleave, so each domain keeps its own (found by the first HRRR-recipe tree, 2026-10-21)"),
     ScratchSlotLifetime(("fsbm_*",), "excluded_unproven", "gpuwm/core/fast_sbm_runtime.py:apply", "mixed uint64 pointers, int32 status and float64 tallies are not compatible with the float32 arena; all are rewritten inside each call"),
     # Strict WRF mode (gpuwm.wrf_exact.ENABLED).  acoustic_wrf_muts entered
     # the registry (9190ec5f2) without a row here, so every multi-domain
@@ -7809,17 +7899,20 @@ def mynn_scalar_transient_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
     Charge the larger phase, rather than summing nonconcurrent phases.
     The scalar-off estimate is unchanged.
     """
-    if int(cfg.scalar_pblmix) != 1 or int(cfg.bl_pbl_physics) not in (1, 5):
+    from gpuwm.config import scalar_pblmix_exchange, scalar_pblmix_mixes
+    if int(cfg.scalar_pblmix) != 1 or not scalar_pblmix_mixes(cfg):
         return {}
     nz, columns = int(cfg.nz), int(cfg.ny) * int(cfg.nx)
-    if int(cfg.bl_pbl_physics) == 1:
-        # YSU's arm (physics._ysu_scalar_pblmix): four raw rates, four
-        # coupled rates and the mass coefficient live together; each
-        # 32768-column chunk adds four packed inputs, 5*nz+1 work values
-        # and two outputs per column.
+    if not scalar_pblmix_exchange(cfg)["mixes_in_scheme"]:
+        # The shared post-PBL arm (physics._scalar_pblmix_rates, after YSU,
+        # MYJ, Shin-Hong or UW): four raw rates, four coupled rates and the
+        # mass coefficient live together; each 32768-column chunk adds four
+        # packed inputs, 5*nz+1 work values and two outputs per column.
+        # The YSU key keeps its historical name.
         chunk = min(32768, columns)
-        return {"ysu_scalar/local_diffusion_peak": (
-            9 * nz * columns + (11 * nz + 1) * chunk,)}
+        key = ("ysu_scalar/local_diffusion_peak" if int(cfg.bl_pbl_physics) == 1
+               else "pbl_scalar/local_diffusion_peak")
+        return {key: (9 * nz * columns + (11 * nz + 1) * chunk,)}
     chunk = mynn_pbl_column_chunk(cfg)
     solve = 8 * nz * columns + (8 * nz + 2) * chunk + 1
     coupling = 13 * nz * columns
@@ -8191,6 +8284,15 @@ def estimate_domain(dc: DomainConfig, *, spec_bdy_width: int | None = None,
                    for name, (shape, size) in classic_rrtm_column_shapes(
                        run, p_top, column_chunk=column_chunk).items())
     items += _items("transient", dudhia_column_shapes(run))
+    if getattr(run, "chem_sets", ""):
+        from gpuwm.core.chem_radiation import memory_shapes
+        from gpuwm.core.device_inventory import chem_process_memory_shapes
+        process_held, process_work = chem_process_memory_shapes(run)
+        items += _items("physics", process_held)
+        items += _items("transient", process_work)
+        optics_held, optics_transient = memory_shapes(run, p_top, column_chunk)
+        items += _items("physics", optics_held)
+        items += _items("transient", optics_transient)
     # The SASE closure's step working set gets its OWN category rather
     # than joining "transient": on a wide domain its dynamic-solve peak
     # is the single largest transient in the run, and a user reading a
@@ -10026,6 +10128,7 @@ def estimate_experiment(
     legacy_envelope = 0
     if uses_legacy:
         from gpuwm.core.rrtmg_legacy import legacy_radiation_vram_bytes
+        from gpuwm.core.chem_radiation import feedback_row_count
         # Modern tables/workspace persist while another domain executes legacy
         # radiation. Per-domain call peaks combine with that domain's other
         # transients; unrelated domains' transient maxima are not summed.
@@ -10071,7 +10174,8 @@ def estimate_experiment(
                 longwave=radiation_scheme_ids(dc.run)[0] == 4,
                 shortwave=radiation_scheme_ids(dc.run)[1] == 4,
                 resident_threads=device_profile.resident_thread_capacity,
-                aer_opt=int(getattr(dc.run, "aer_opt", 0)))
+                aer_opt=int(getattr(dc.run, "aer_opt", 0)),
+                chem_optics_rows=feedback_row_count(dc.run))
             if (4 in radiation_scheme_ids(dc.run)
                 and rrtmg_variant(dc.run) == RRTMG_VARIANT_LEGACY) else 0
             for dc in exp.domains)
@@ -10812,15 +10916,26 @@ def run_alloc_preflight(
 
     pool = cp.get_default_memory_pool()
     free_before, total = cp.cuda.runtime.memGetInfo()
-    used_peak = pool.used_bytes()
-    held_peak = pool.total_bytes()
+    # Growth from entry, not the pool's absolute level: the estimate prices
+    # THIS run's allocations, and free_before/free_at_peak are already a
+    # delta.  Breakage it prevents (2.9.4 R6 sweep, RTX 5070 Ti, 2026-10-22):
+    # tests/test_preflight.py::test_alloc_preflight_d01_measured_le_estimate
+    # failed in a pytest process whose earlier GPU test files still held
+    # pool memory (alone: 1.88 GB measured <= 2.66 GB estimate, green),
+    # because the absolute used level charged their arrays to this run.
+    # A fresh `gpuwm check --alloc` process starts at zero, so its numbers
+    # are unchanged.
+    used_base = pool.used_bytes()
+    held_base = pool.total_bytes()
+    used_peak = 0
+    held_peak = 0
     free_at_peak = free_before
 
     def sample(phase: str) -> None:
         nonlocal used_peak, held_peak, free_at_peak
         cp.cuda.runtime.deviceSynchronize()
-        used_peak = max(used_peak, pool.used_bytes())
-        held_peak = max(held_peak, pool.total_bytes())
+        used_peak = max(used_peak, pool.used_bytes() - used_base)
+        held_peak = max(held_peak, pool.total_bytes() - held_base)
         free_at_peak = min(free_at_peak, cp.cuda.runtime.memGetInfo()[0])
 
     per_domain = {}
@@ -10928,13 +11043,15 @@ def run_alloc_preflight(
             # adapter's worst single call.
             phase = "legacy-RRTMG call-peak envelope"
             from gpuwm.core.rrtmg_legacy import legacy_radiation_vram_bytes
+            from gpuwm.core.chem_radiation import feedback_row_count
             envelope = max(
                 legacy_radiation_vram_bytes(
                     ncol=dc.run.ny * dc.run.nx, nz=dc.run.nz,
                     p_top=exp.vertical.p_top, column_chunk=None,
                     longwave=radiation_scheme_ids(dc.run)[0] == 4,
                     shortwave=radiation_scheme_ids(dc.run)[1] == 4,
-                    aer_opt=int(getattr(dc.run, "aer_opt", 0)))
+                    aer_opt=int(getattr(dc.run, "aer_opt", 0)),
+                    chem_optics_rows=feedback_row_count(dc.run))
                 for dc in legacy_44)
             holdings.append(cp.zeros(envelope, dtype=cp.uint8))
         if any(4 in radiation_scheme_ids(dc.run)
@@ -11550,14 +11667,21 @@ def _warn_unstaged_physics_tables(exp) -> None:
     """
 
     try:
-        if not any(int(domain.run.mp_physics) == 8
-                   for domain in exp.domains):
+        selected = {int(domain.run.mp_physics) for domain in exp.domains}
+        if not selected & {8, 28}:
             return
+        from gpuwm.core.thompson_contract import CLASSIC_TABLE_ASSETS
         from gpuwm.table_assets import require_thompson_tables
 
+        assets = CLASSIC_TABLE_ASSETS
+        if 28 in selected:
+            from gpuwm.core.thompson_aerosol_contract import (
+                AEROSOL_TABLE_ASSETS)
+
+            assets = (*CLASSIC_TABLE_ASSETS, *AEROSOL_TABLE_ASSETS)
         # stage=False: a memory preflight must not start a 315 MiB
         # download; the run doors stage the set on first use.
-        require_thompson_tables(stage=False)
+        require_thompson_tables(assets=assets, stage=False)
     except FileNotFoundError as error:
         from gpuwm.explain import warn
 
@@ -12241,6 +12365,8 @@ def check_main(args) -> int:
     if getattr(getattr(exp, "devices", None), "enabled", False):
         from gpuwm.core.devices import probe_devices, validate_device_count
         from gpuwm.core.devices_memory import devices_gate, include_preparation
+        from gpuwm.free_threading import refuse_multi_card_under_gil
+        refuse_multi_card_under_gil(exp.devices.count, "gpuwm preflight")
         if args.alloc:
             raise ValueError("[devices] --alloc is not wired into the ranked road; "
                              "refused to prevent allocating a one-card reference domain")
@@ -12444,6 +12570,12 @@ def check_main(args) -> int:
                 if capped_to is not None:
                     free_source = ("measured, capped at the declared "
                                    "card's physical total")
+        from gpuwm.core.device_probe import sizing_free_memory
+        if free is not None:
+            lease_free, lease_note = sizing_free_memory(free)
+            if lease_note:
+                free = min(free, lease_free) if declared_memory else lease_free
+                free_source = lease_note
         gates = evaluate_alloc_gates(
             measured_used_bytes=None,
             estimate_bytes=estimate.alloc_estimate_bytes,

@@ -67,7 +67,6 @@ __all__ = [
     "describe_plan",
     "variant_of",
     "store_from_state",
-    "store_from_arrays",
     "slice_array",
     "install_slice",
     "reassemble",
@@ -224,8 +223,7 @@ def store_from_state(state, *, nz: int | None = None,
 
     This is the reference path: it is how the bit-exactness gate gets a
     domain to slice, and how a domain that fits one card is initialised from
-    the production ingest.  A domain too large to build monolithically needs
-    :func:`store_from_arrays` instead, which never materialises the state.
+    the production ingest.
     """
     from tilestream import driver as _driver
     from tilestream import physics_inventory as _physics
@@ -259,40 +257,6 @@ def store_from_state(state, *, nz: int | None = None,
     store.scalars = dict(_physics.carrier_scalars(state))
     store.geo_flags = dict(_driver.geography_scalars(store.geography))
     store.elapsed_seconds = float(getattr(state, "elapsed_seconds", 0.0))
-    store.provenance = dict(provenance or {})
-    return store
-
-
-def store_from_arrays(nx: int, ny: int, nz: int, arrays: Mapping[str, Any],
-                      geography: Mapping[str, Any] | None = None, *,
-                      scalars: Mapping[str, Any] | None = None,
-                      geo_flags: Mapping[str, bool] | None = None,
-                      elapsed_seconds: float = 0.0,
-                      provenance: Mapping[str, Any] | None = None
-                      ) -> DomainStore:
-    """A store assembled field by field, with no monolithic state anywhere.
-
-    The out-of-core route: the ingest writes each domain-extent field straight
-    into host memory (or a memmap) and this wraps them.  Nothing here ever
-    allocates ``nz*ny*nx`` on a device.
-    """
-    store = DomainStore(nx=int(nx), ny=int(ny), nz=int(nz))
-    for name, value in arrays.items():
-        host = _as_host(value)
-        if host.ndim >= 2:
-            variant_of(name, host.shape, nz, ny, nx)
-        store.arrays[name] = host
-    for key, value in (geography or {}).items():
-        host = _as_host(value)
-        if host.ndim >= 2:
-            variant_of(key, host.shape, nz, ny, nx)
-        store.geography[key] = host
-    store.scalars = dict(scalars or {})
-    if geo_flags is None:
-        from tilestream import driver as _driver
-        geo_flags = _driver.geography_scalars(store.geography)
-    store.geo_flags = dict(geo_flags)
-    store.elapsed_seconds = float(elapsed_seconds)
     store.provenance = dict(provenance or {})
     return store
 

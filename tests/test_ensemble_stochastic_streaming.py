@@ -1,8 +1,9 @@
 """Full-domain pattern lifecycle and exact staggered window coordinates."""
-from dataclasses import dataclass
 from types import SimpleNamespace
 import numpy as np
 import pytest
+
+from test_ensemble_stochastic_execution import Rates
 
 from gpuwm.ensemble.stochastic import StochasticTimestepHook
 from gpuwm.ensemble.stochastic_execution import StochasticPhysicsBinding
@@ -57,15 +58,6 @@ def test_provider_after_preserves_transform_then_single_complete_order():
     assert calls == [(original, 3)] and hook.completed_step == 3 and hook.pending_step is None
     with pytest.raises(ValueError, match="pending"):
         hook.complete_timestep()
-
-
-@dataclass
-class Rates:
-    ru: object
-    rv: object
-    rtheta: object
-    rqv: object
-    rqc: object
 
 
 class Hook:

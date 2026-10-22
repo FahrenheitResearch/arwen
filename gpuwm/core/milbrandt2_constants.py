@@ -85,8 +85,7 @@ F = np.float32
 # ---------------------------------------------------------------------------
 
 _LANCZOS_COF = (76.18009172947146, -86.50532032941677, 24.01409824083091,
-                -1.231739572450155, 0.1208650973866179e-2,
-                -0.5395239384953e-5)
+                -1.231739572450155)
 _LANCZOS_STP = 2.5066282746310005
 
 
@@ -101,19 +100,6 @@ def gamma_my2(xx: float) -> np.float32:
         y += 1.0
         ser += _LANCZOS_COF[j] / y
     return F(math.exp(tmp + math.log(_LANCZOS_STP * ser / x)))
-
-
-def gammln_my2(xx: float) -> np.float32:
-    """The scheme's 6-term ln(gamma) (:233-265); float32 result."""
-    x = float(F(xx))
-    y = x
-    tmp = x + 5.5
-    tmp = (x + 0.5) * math.log(tmp) - tmp
-    ser = 1.000000000190015
-    for j in range(6):
-        y += 1.0
-        ser += _LANCZOS_COF[j] / y
-    return F(tmp + math.log(_LANCZOS_STP * ser / x))
 
 
 def _build() -> dict[str, np.float32]:

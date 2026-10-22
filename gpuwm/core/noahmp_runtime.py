@@ -2337,39 +2337,9 @@ def _write_back_slab(fields, j, i, r, *, nsoil, dt) -> None:
     fields["q2mvxy"][at] = r["q2v"] / (one - r["q2v"])
     fields["q2mbxy"][at] = r["q2b"] / (one - r["q2b"])
 
-    # ---- :1305-1314, the canopy conductance inverse --------------------------
-    laisun = cp.where(zero > r["laisun"], zero, r["laisun"])
-    laisha = cp.where(zero > r["laisha"], zero, r["laisha"])
-    rb = cp.where(zero > r["rb"], zero, r["rb"])
-    closed = ((r["rssun"] <= zero) | (r["rssha"] <= zero)
-              | (laisun == zero) | (laisha == zero))
-    inverse = ((one / (r["rssun"] + rb)) * laisun
-               + (one / (r["rssha"] + rb)) * laisha)
-    fields["rs"][at] = cp.where(closed, zero, one / inverse)
-
-    # ---- :1381-1394, the two column-energy integrals -------------------------
-    stc = r["stc"]
-    zsnso = r["zsnso"]
-    hcpct = r["hcpct"]
-    isnow = r["isnow"].astype(cp.int32)
-    count = int(j.size)
-    soil_energy = cp.zeros(count, dtype=cp.float32)
-    snow_energy = cp.zeros(count, dtype=cp.float32)
-    for k in range(-NSNOW + 1, nsoil + 1):
-        slot = k + NSNOW - 1
-        live = k >= isnow + 1
-        top = k == isnow + 1
-        above = zsnso[:, slot - 1] if slot > 0 else zero
-        thickness = cp.where(top, -zsnso[:, slot], above - zsnso[:, slot])
-        term = ((thickness * hcpct[:, slot])
-                * (stc[:, slot] - np.float32(273.16))) * np.float32(0.001)
-        contribution = cp.where(live, term, zero)
-        if k >= 1:
-            soil_energy = soil_energy + contribution
-        else:
-            snow_energy = snow_energy + contribution
-    fields["soilenergy"][at] = soil_energy
-    fields["snowenergy"][at] = snow_energy
+    _write_back_canopy_and_energy(
+        fields, at, r, r["stc"], r["zsnso"], r["isnow"].astype(cp.int32),
+        r["hcpct"], nsoil=nsoil, arrays=cp)
 
 
 #: The ``SflxResult`` scalars the write-back reads, in one tuple so they can
@@ -2491,42 +2461,53 @@ def _write_back_batch(host, host_3d, staged, *, nsoil, dt) -> None:
                                     dtype=np.float32, count=count)
     host["isnowxy"][at] = isnow
 
-    # ---- :1305-1314, the canopy conductance inverse -----------------------
+    _write_back_canopy_and_energy(
+        host, at, r, stc, zsnso, isnow,
+        np.array([x.hcpct for x in results], dtype=np.float32),
+        nsoil=nsoil, arrays=np)
+
+
+def _write_back_canopy_and_energy(fields, at, r, stc, zsnso, isnow, hcpct,
+                                  *, nsoil, arrays) -> None:
+    """Shared host/device arithmetic from ``module_sf_noahmpdrv.F:1305-1394``.
+
+    Keep gfortran's signed-zero MAX spelling and layer-order FP32 sums.
+    The host skips wholly dead layers; the device masks their exact +0.0
+    contribution without synchronizing to the host.
+    """
     zero = np.float32(0.0)
-    laisun = np.where(zero > r["laisun"], zero, r["laisun"])
-    laisha = np.where(zero > r["laisha"], zero, r["laisha"])
-    rb = np.where(zero > r["rb"], zero, r["rb"])
+    one = np.float32(1.0)
+    laisun = arrays.where(zero > r["laisun"], zero, r["laisun"])
+    laisha = arrays.where(zero > r["laisha"], zero, r["laisha"])
+    rb = arrays.where(zero > r["rb"], zero, r["rb"])
     closed = ((r["rssun"] <= zero) | (r["rssha"] <= zero)
               | (laisun == zero) | (laisha == zero))
     with np.errstate(divide="ignore", invalid="ignore"):
-        inverse = ((np.float32(1.0) / (r["rssun"] + rb)) * laisun
-                   + (np.float32(1.0) / (r["rssha"] + rb)) * laisha)
-        host["rs"][at] = np.where(closed, zero, np.float32(1.0) / inverse)
+        inverse = ((one / (r["rssun"] + rb)) * laisun
+                   + (one / (r["rssha"] + rb)) * laisha)
+        fields["rs"][at] = arrays.where(closed, zero, one / inverse)
 
-    # ---- :1381-1394, the two column-energy integrals ----------------------
-    hcpct = np.array([x.hcpct for x in results], dtype=np.float32)
-    soil_energy = np.zeros(count, dtype=np.float32)
-    snow_energy = np.zeros(count, dtype=np.float32)
+    soil_energy = arrays.zeros(isnow.size, dtype=np.float32)
+    snow_energy = arrays.zeros(isnow.size, dtype=np.float32)
     for k in range(-NSNOW + 1, nsoil + 1):
         slot = k + NSNOW - 1
         live = k >= isnow + 1
-        if not live.any():
+        if arrays is np and not live.any():
             continue
         top = k == isnow + 1
         above = zsnso[:, slot - 1] if slot > 0 else zero
-        thickness = np.where(top, -zsnso[:, slot], above - zsnso[:, slot])
+        thickness = arrays.where(top, -zsnso[:, slot], above - zsnso[:, slot])
         term = ((thickness * hcpct[:, slot])
                 * (stc[:, slot] - np.float32(273.16))) * np.float32(0.001)
-        # A column that has not reached ISNOW+1 adds an exact +0.0, which is
-        # the identity for every value this accumulator can hold: it starts
-        # at +0.0 and the only way to reach -0.0 by addition is from -0.0.
-        contribution = np.where(live, term, zero)
+        # Exact +0.0 is the identity for these accumulators: they start at
+        # +0.0 and cannot reach -0.0 by addition from any other value.
+        contribution = arrays.where(live, term, zero)
         if k >= 1:
             soil_energy = soil_energy + contribution
         else:
             snow_energy = snow_energy + contribution
-    host["soilenergy"][at] = soil_energy
-    host["snowenergy"][at] = snow_energy
+    fields["soilenergy"][at] = soil_energy
+    fields["snowenergy"][at] = snow_energy
 
 
 __all__ = [

@@ -238,6 +238,8 @@ def execute_request(request):
     spool.members, spool.member_order = len(order), tuple(order)
     spool.member_positions = {member: position for position, member in enumerate(order)}
     spool.member_metadata = tuple(request.get("member_metadata", ()))
+    from gpuwm.ensemble.member_weights import roster_weights
+    spool.member_weights = roster_weights(spool.member_order, spool.member_metadata)
     spool.requests, spool.events = requests, deepcopy(events)
     spool.latitude, spool.longitude, spool.shape = latitude, longitude, tuple(shape)
     spool.gpu_replay, spool.tile_rows = False, tile_rows

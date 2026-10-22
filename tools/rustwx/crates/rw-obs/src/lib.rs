@@ -9,6 +9,7 @@
 //! one contiguous little-endian payload. A Python consumer needs `json` and
 //! `numpy.frombuffer` and nothing else.
 
+pub mod cli;
 pub mod pack;
 pub mod seam;
 pub mod net;
@@ -171,3 +172,5 @@ mod tests {
     }
 }
 pub mod csv;
+
+pub mod hail;

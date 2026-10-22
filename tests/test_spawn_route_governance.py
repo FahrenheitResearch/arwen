@@ -22,6 +22,8 @@ from pathlib import Path
 
 import pytest
 
+from types import SimpleNamespace
+
 from gpuwm.core.nest_spawn import SpawnConfig
 
 REPO = Path(__file__).resolve().parents[1]
@@ -32,11 +34,11 @@ REPO = Path(__file__).resolve().parents[1]
 GUARDED_FRONT_DOORS = {
     "gpuwm/era5_direct.py": "ERA5-direct prepared-cache",
     "gpuwm/gfs_direct.py": "GFS-direct prepared-cache",
-    "gpuwm/mapped_direct.py": "mapped-adapter prepared-cache",
+    # A mapped TREE prepares dormant slots (the prepared tree route spawns
+    # them, docs/storm-nests.md); a mapped single-domain bundle still refuses.
+    "gpuwm/mapped_direct.py": "mapped-adapter single-domain prepared-cache",
     "gpuwm/prepared_single_domain_forecast.py": "prepared single-domain",
-    "gpuwm/prepared_domain_tree_forecast.py": "prepared domain-tree",
     "gpuwm/da/nested_forecast.py": "DA nested free-forecast",
-    "gpuwm/native_hierarchy.py": "native hierarchy export",
 }
 
 
@@ -210,8 +212,10 @@ def test_the_run_route_still_refuses_a_dormant_nest_with_no_parent():
         domains=(SimpleNamespace(grid_id=1, spawn=object()),),
         relocation=SimpleNamespace(enabled=False, follow=None, moves=()),
         tiles=_STREAMING_OFF)
+    # The refusal lives in the body: run_experiment opens the step log off
+    # exp.start_time first (01d3e4ec2f), which this stub does not carry.
     with pytest.raises(ValueError, match="single-domain path runs no tree"):
-        runtime.run_experiment(exp, None, "out-single-spawn")
+        runtime._run_experiment(exp, None, "out-single-spawn")
 
 
 def test_the_driver_exists_where_the_lift_claims_it_does():
@@ -239,3 +243,37 @@ def test_the_run_route_admits_an_ordinary_nest():
     with pytest.raises(Exception) as err:
         runtime.run_experiment(exp, None, "out-control")
     assert "never born" not in str(err.value)
+
+
+def test_the_prepared_tree_route_spawns_instead_of_refusing():
+    """The prepared domain-tree runner reserves dormant slots, walks legs and
+    crops each newborn from its corridor; a slot with no corridor refuses by
+    name before anything restores."""
+    from gpuwm import prepared_domain_tree_forecast as tree
+    from gpuwm import runtime
+
+    source = Path(tree.__file__).read_text(encoding="utf-8")
+    assert "runtime.walk_spawn_legs(" in source
+    assert "runtime.build_prepared_tree_spawn_runner(" in source
+    assert "_refuse_dormant_without_corridor(exp, preparation)" in source
+    assert callable(runtime.build_prepared_tree_spawn_runner)
+    with pytest.raises(ValueError, match="seals no statics corridor"):
+        tree._refuse_dormant_without_corridor(
+            SimpleNamespace(domains=(SimpleNamespace(grid_id=1, spawn=None, parent_id=0),
+                                     SimpleNamespace(grid_id=2, spawn=object(), parent_id=1))),
+            {"statics_corridor": {"domains": {}}})
+
+
+def test_the_hierarchy_export_prepares_dormant_slots_but_not_their_stock_wrf_twin():
+    """The native export prepares a dormant slot at its placeholder (the
+    prepared tree route spawns it); the unchanged-WRF companion set, which
+    cannot spawn, refuses it by name."""
+    from gpuwm import native_hierarchy
+    from gpuwm.wrf_direct import StockWrfExportUnsupported
+
+    tree = SimpleNamespace(domains=(SimpleNamespace(grid_id=1, spawn=None),
+                                    SimpleNamespace(grid_id=2, spawn=object())))
+    with pytest.raises(StockWrfExportUnsupported, match="d02 spawn mid-run"):
+        native_hierarchy._dormant_stock_export_refusal(tree)
+    native_hierarchy._dormant_stock_export_refusal(
+        SimpleNamespace(domains=(SimpleNamespace(grid_id=1, spawn=None),)))

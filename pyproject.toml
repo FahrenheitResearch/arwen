@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpuwm"
-version = "2.9.3"
+version = "2.9.4"
 description = "Native WRF preprocessing and GPU-native limited-area weather modeling"
 readme = "README.md"
 # The SPDX expression (PEP 639), not `{ file = "LICENSE" }`: the file
@@ -112,7 +112,7 @@ requires-python = ">=3.11"
 #   has been a hard dependency here since the first release.
 #
 #   pyshp.  The basemap reader.  tools/da_nowcast_render.py, the
-#   launcher's basemap endpoint and tilestream/realcase_render.py read
+#   launcher's basemap endpoint read
 #   the vendored Natural Earth shapefiles with a bare `import shapefile`
 #   -- no try/except, no front-door check -- at the very END of the DA
 #   nowcast chain, after survey, fetch, prepare, forecast and every DA
@@ -147,7 +147,8 @@ requires-python = ">=3.11"
 # tests/test_companion_distribution.py fails if the two ever disagree.
 dependencies = ["numpy>=2.0", "netCDF4>=1.6", "matplotlib>=3.8",
                 "jsonschema>=4.0", "threadpoolctl>=3.1",
-                "scipy>=1.11", "pyshp>=2.3", "cdsapi>=0.7.7", "gpuwm-data==2.9.3"]
+                "scipy>=1.11", "pyshp>=2.3", "cdsapi>=0.7.7", "psutil>=5.9",
+                "gpuwm-data==2.9.4"]
 keywords = ["WRF", "WPS", "GRIB", "NetCDF", "weather", "CUDA"]
 # No `License ::` classifier: PEP 639 deprecates them outright and
 # setuptools >=77 refuses to combine one with the SPDX expression above.
@@ -304,14 +305,11 @@ geog = ["rasterio>=1.3", "pyproj>=3.6"]
 # install line that already works.
 obs = []
 dealias = []
-# psutil: tests/test_prepare_hrrr_wrf.py's Windows arm walks the process
-# ancestry to find the cmd.exe shim that owns a decoder worker, and a
-# fresh venv running the union battery breaks on the bare import.  It is
-# a test-time need only -- no gpuwm/ or tools/ module imports it -- so
-# it lives here beside pytest rather than in the runtime dependencies.
-# The two previously-audited undeclared imports of the same class are
-# already declared where their features live: pyshp (task #65) in
-# [render] and scipy (task #78) in [obs]/[dealias].
+# psutil is a base dependency, not a [dev] one (2.9.3): gpuwm/earth2_job.py
+# samples every stage's process tree with it so the run receipt records
+# single-core stalls, and before this a `pip install 'gpuwm[all-cu12]'`
+# receipt read "resource_monitor: unavailable" with empty cpu_stalls on
+# every stage.  The test suite's Windows decoder fixture still uses it too.
 # pyyaml: four contract tests read .github/workflows/publish.yml through
 # it, and publish.yml installs it by name for the same reason; a `[dev]`
 # venv without it reads two collection errors and two failures before
@@ -329,7 +327,7 @@ dealias = []
 # used and never defined, on a GPU-only path no CPU test reaches; this
 # lint finds that class in seconds.  Pinned exactly so a ruff release
 # cannot move what the gate reports.
-dev = ["pytest>=8.0", "pytest-xdist>=3.5", "psutil>=5.9", "pyyaml>=6.0",
+dev = ["pytest>=8.0", "pytest-xdist>=3.5", "pyyaml>=6.0",
        "setuptools>=77", "ruff==0.13.3"]
 # Maintainer-only, and both entries are the same shape: a tool that
 # REGENERATES something the wheel ships, reachable by nobody else.
@@ -562,6 +560,9 @@ exclude = ["tilestream.rescued-tools*", "tilestream.skeptic*", "gpuwm-data*"]
 # is both correct and incapable of going stale.
 # tests/test_package_data_coverage.py fails if any file lands outside these.
 [tool.setuptools.package-data]
+"gpuwm.ocean.waves" = ["*.cu", "*.json", "*.md", "native/*.rs", "native/*.sh", "native/NETCDF-COPYRIGHT", "examples/*.json"]
+"gpuwm.ocean.surge" = ["kernels/*.cu", "examples/*.json", "examples/*.py", "*.md", "tests/*.c"]
+"gpuwm.ocean.seaice" = ["*.cu", "README.md"]
 # Every hydro kernel (t-route Muskingum-Cunge and the runoff replay) with the
 # upstream notices beside them.
 "gpuwm.hydro" = ["kernels/*.cu", "kernels/t-route-LICENSE.txt", "kernels/t-route-TERMS.txt"]
@@ -571,6 +572,7 @@ exclude = ["tilestream.rescued-tools*", "tilestream.skeptic*", "gpuwm-data*"]
 gpuwm = [
     "*.json",
     "hydro/*.json",
+    "ocean/*.json",
     "timeline/*.json",
     "authorities/**/*",
     "data/**/*",
@@ -612,6 +614,7 @@ gpuwm = [
 "gpuwm.core.kernels" = ["**/*.cu", "**/*.cuh", "*.cpp", "LICENSE-third-party.txt", "**/NOTICE-*.txt"]
 # Resident Noah-OWP kernels, their field layout, and upstream redistribution notices.
 "gpuwm.hydro.noahowp" = ["*.cu", "schema.json", "LICENSE", "UPSTREAM-TERMS.md", "NOTICE", "parameters/*.TBL"]
+"gpuwm.ocean.mixed_layer" = ["*.cu", "*.md", "WRF-NOTICE.txt"]
 # The frozen surface-observation network table. It is the thing that turns a
 # domain anywhere on Earth into the network ids the surface front door is
 # asked for, so a wheel without it can fetch nothing outside whatever the
@@ -625,7 +628,11 @@ gpuwm = [
 # reader cannot validate is a receipt they have to take on trust.
 "gpuwm.certify" = ["*.json"]
 "gpuwm.ingest" = ["*.md"]
-tools = ["prepare_hrrr_*.sh", "release/*.json", "release/*.py", "release/*.cmd"]
+tools = ["prepare_hrrr_*.sh", "release/*.json", "release/*.py", "release/*.cmd",
+         # The default-on hydro door reads these source tables from an installed wheel
+         # (gpuwm.hydro.acquire, rw_hydro_world --sources, rw_hydro_params).
+         "hydro_world/data/sources.v1.json", "hydro_world/data/recipes.v1.json",
+         "hydro_world_params/data/params.v1.json"]
 # The one non-Python file under tilestream/ that a shipped module OPENS:
 # make_plots.py and make_output_json.py both resolve it as
 # `Path(__file__).with_name("output-scaling.json")`, which in an install

@@ -96,22 +96,25 @@ class _RecordingWriters:
         self.drains += 1
 
 
-def _model():
-    exp = load_scaffold()
-    clock = resolve_clock(exp)
+def _model_state():
+    return SimpleNamespace(elapsed_seconds=0.0)
+
+
+def _tree_model(exp, clock, *, fingerprint="fixture-fingerprint",
+                state_factory=_model_state):
     schedule = build_schedule(exp, clock)
     clocks = clock.clocks()
     grids = grids_from_projection_config(exp)
     root = DomainNode(
-        exp.domains[0], grids[0], SimpleNamespace(elapsed_seconds=0.0),
+        exp.domains[0], grids[0], state_factory(),
         clocks[1], None, [], None)
     child = DomainNode(
-        exp.domains[1], grids[1], SimpleNamespace(elapsed_seconds=0.0),
+        exp.domains[1], grids[1], state_factory(),
         clocks[2], root, [], None)
     child.coupler = _Coupler(child)
     root.children.append(child)
     model = ExperimentState(
-        root, {1: root, 2: child}, schedule, None, "fixture-fingerprint")
+        root, {1: root, 2: child}, schedule, None, fingerprint)
     model._runtime_status = ModelRuntimeStatus()
     model._resumed = False
     model._resume_committed_history_grid_ids = frozenset()
@@ -119,7 +122,12 @@ def _model():
     model._dycore_state_workspace = None
     model._io_manager = None
     model._last_checkpoint = None
-    return exp, model
+    return model
+
+
+def _model():
+    exp = load_scaffold()
+    return exp, _tree_model(exp, resolve_clock(exp))
 
 
 def _delayed_model():
@@ -132,28 +140,10 @@ def _delayed_model():
                 if dc.grid_id == 2 else dc.start_time))
         for dc in base.domains)
     exp = replace(base, run_seconds=300.0, domains=domains)
-    tick_clock = resolve_clock(exp, lbc_interval_s=60)
-    schedule = build_schedule(exp, tick_clock)
-    clocks = tick_clock.clocks()
-    grids = grids_from_projection_config(exp)
-    root = DomainNode(
-        domains[0], grids[0], SimpleNamespace(elapsed_seconds=0.0),
-        clocks[1], None, [], None)
-    child = DomainNode(
-        domains[1], grids[1], SimpleNamespace(elapsed_seconds=0.0),
-        clocks[2], root, [], None)
-    child.coupler = _Coupler(child)
-    child._started = False
-    root.children.append(child)
-    model = ExperimentState(
-        root, {1: root, 2: child}, schedule, None, "delayed-fixture")
-    model._runtime_status = ModelRuntimeStatus()
-    model._resumed = False
-    model._resume_committed_history_grid_ids = frozenset()
-    model._scratch_arena = None
-    model._dycore_state_workspace = None
-    model._io_manager = None
-    model._last_checkpoint = None
+    model = _tree_model(
+        exp, resolve_clock(exp, lbc_interval_s=60),
+        fingerprint="delayed-fixture")
+    model.node(2)._started = False
     return exp, model
 
 
@@ -167,26 +157,9 @@ def _history_model(run_seconds: float):
         for dc in exp.domains)
     exp = replace(exp, run_seconds=run_seconds,
                   restart_interval_s=1800.0, domains=domains)
-    tick_clock = resolve_clock(exp)
-    schedule = build_schedule(exp, tick_clock)
-    clocks = tick_clock.clocks()
-    grids = grids_from_projection_config(exp)
-    root = DomainNode(
-        domains[0], grids[0], _HistoryState(), clocks[1], None, [], None)
-    child = DomainNode(
-        domains[1], grids[1], _HistoryState(), clocks[2], root, [], None)
-    child.coupler = _Coupler(child)
-    root.children.append(child)
-    model = ExperimentState(
-        root, {1: root, 2: child}, schedule, None, "history-fixture")
-    model._runtime_status = ModelRuntimeStatus()
-    model._resumed = False
-    model._resume_committed_history_grid_ids = frozenset()
-    model._scratch_arena = None
-    model._dycore_state_workspace = None
-    model._io_manager = None
-    model._last_checkpoint = None
-    return model
+    return _tree_model(
+        exp, resolve_clock(exp), fingerprint="history-fixture",
+        state_factory=_HistoryState)
 
 
 def test_experiment_fingerprint_allows_only_schedule_extension_fields():
@@ -296,24 +269,6 @@ def test_executor_wires_step_force_feedback_and_before_solve_alarms(
         (1, 54.0, True), (2, 54.0, True)]
     assert {node.clock.ticks for node in model.walk_parent_first()} == {60}
     assert model._runtime_status.schedule_cursor == PERIOD_BEGIN
-
-
-def test_headless_executor_does_not_stage_unconsumable_reflectivity(
-        monkeypatch):
-    """A clock history alarm is not an output request without a handler."""
-    _exp, model = _model()
-    reflectivity_requests = []
-
-    def fake_step(_state, _cfg, *, refl_10cm_due=False, **_kwargs):
-        reflectivity_requests.append(bool(refl_10cm_due))
-
-    monkeypatch.setattr("gpuwm.core.dycore.step", fake_step)
-    report = execute_experiment(
-        model, validate_state=False, pool_trim_per_period=False)
-
-    assert report.histories == {1: 3, 2: 3}
-    assert reflectivity_requests
-    assert not any(reflectivity_requests)
 
 
 def test_health_debug_checks_each_domain_step_and_force(monkeypatch):

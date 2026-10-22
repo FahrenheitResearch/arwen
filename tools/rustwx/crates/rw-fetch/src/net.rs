@@ -458,64 +458,6 @@ impl Fetcher {
         Ok(self.client.get_bytes_parallel_whole(grib_url)?)
     }
 
-    /// Pull only the selected messages, as coalesced range GETs.
-    pub fn get_idx_subset(
-        &self,
-        grib_url: &str,
-        payload: &IdxPayload,
-        selection: &[usize],
-    ) -> Result<(Vec<u8>, Vec<RangeRecord>), TransferFault> {
-        // Range algebra stays upstream's: parse_idx -> byte_ranges,
-        // then coalesced so a 561-record selection becomes a handful of
-        // GETs instead of 561.
-        let entries = parse_idx(&payload.text);
-        let chosen: Vec<_> = selection.iter().map(|index| &entries[*index]).collect();
-        let raw = byte_ranges(&entries, &chosen);
-        let merged = coalesce_ranges(&raw);
-
-        let bytes = self.client.get_ranges(grib_url, &merged)?;
-
-        // Attribute each merged range back to the index rows it spans,
-        // so the Python side can author the per-range receipt.  The
-        // last selected message has no successor offset, so upstream's
-        // `byte_ranges` gives it an open end (`u64::MAX`); its true
-        // length is whatever is left over once the finite ranges are
-        // accounted for.
-        let finite: u64 = merged
-            .iter()
-            .filter(|(_, end)| *end != u64::MAX)
-            .map(|(start, end)| end - start + 1)
-            .sum();
-        let total = bytes.len() as u64;
-        let mut records = Vec::with_capacity(merged.len());
-        for (start, end) in &merged {
-            let spanned: Vec<u32> = payload
-                .rows
-                .iter()
-                .filter(|row| row.offset >= *start && (*end == u64::MAX || row.offset <= *end))
-                .map(|row| row.sequence)
-                .collect();
-            let length = if *end == u64::MAX {
-                total.saturating_sub(finite)
-            } else {
-                end - start + 1
-            };
-            records.push(RangeRecord {
-                start: *start,
-                end: start + length.saturating_sub(1),
-                bytes: length,
-                first_index_row: spanned.first().copied().unwrap_or_default(),
-                last_index_row: spanned.last().copied().unwrap_or_default(),
-            });
-        }
-        if records.iter().map(|record| record.bytes).sum::<u64>() != total {
-            return Err(TransferFault::Refused(format!(
-                "range accounting does not add up: {} range bytes vs {total} received",
-                records.iter().map(|record| record.bytes).sum::<u64>()
-            )));
-        }
-        Ok((bytes, records))
-    }
 }
 
 /// Select index rows by exact `VAR:LEVEL` patterns.

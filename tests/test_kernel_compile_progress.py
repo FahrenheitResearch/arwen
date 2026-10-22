@@ -158,7 +158,7 @@ def test_every_shipped_profile_hands_initialize_physics_a_longwave_it_accepts(
     monkeypatch.setattr(grid, "make_vertical_coord", lambda *a, **k: "coord")
     monkeypatch.setattr(grid, "make_base_state", lambda *a, **k: "base")
     monkeypatch.setattr(moist, "init_moist_balanced", lambda *a, **k: "state")
-    monkeypatch.setattr(dycore, "step", lambda state, cfg: None)
+    monkeypatch.setattr(dycore, "step", lambda state, cfg, **kwargs: None)
     handed = []
 
     def initialize_physics(state, cfg, **kwargs):
@@ -191,13 +191,10 @@ def test_every_shipped_profile_hands_initialize_physics_a_longwave_it_accepts(
                            for profile in physics_menu.shipped_profiles())
 
 
-def test_all_profiles_exits_by_what_failed_and_runs_past_it(
-        monkeypatch, tmp_path, capsys):
+def _cold_profile_cache(monkeypatch, tmp_path):
     from types import SimpleNamespace
 
-    from gpuwm import kernel_compile_notice as notice
-    from gpuwm import physics_menu, warm_kernels
-    from gpuwm.cli import build_parser
+    from gpuwm import physics_menu
 
     _stand_in_cupy(monkeypatch)
     monkeypatch.setattr(notice, "current_compute_capability", lambda: "120")
@@ -206,7 +203,15 @@ def test_all_profiles_exits_by_what_failed_and_runs_past_it(
     monkeypatch.setattr(notice, "kernel_cache_state",
                         lambda cache, **k: SimpleNamespace(
                             entries_for_capability=0))
-    profiles = physics_menu.shipped_profiles()
+    return physics_menu.shipped_profiles()
+
+
+def test_all_profiles_exits_by_what_failed_and_runs_past_it(
+        monkeypatch, tmp_path, capsys):
+    from gpuwm import warm_kernels
+    from gpuwm.cli import build_parser
+
+    profiles = _cold_profile_cache(monkeypatch, tmp_path)
     ran = []
 
     def run(profile, levels):
@@ -246,20 +251,10 @@ def test_a_profile_reading_an_unstaged_table_is_named_and_the_pass_goes_on(
     whole pass with a traceback at the first Thompson suite; it is a
     property of the suites that read the table, not of the card."""
 
-    from types import SimpleNamespace
-
-    from gpuwm import kernel_compile_notice as notice
-    from gpuwm import physics_menu, warm_kernels
+    from gpuwm import warm_kernels
     from gpuwm.cli import build_parser
 
-    _stand_in_cupy(monkeypatch)
-    monkeypatch.setattr(notice, "current_compute_capability", lambda: "120")
-    monkeypatch.setattr(notice, "cupy_kernel_cache_dir", lambda: tmp_path)
-    monkeypatch.setattr(notice, "scan_kernel_cache", lambda cache: (0, 0))
-    monkeypatch.setattr(notice, "kernel_cache_state",
-                        lambda cache, **k: SimpleNamespace(
-                            entries_for_capability=0))
-    profiles = physics_menu.shipped_profiles()
+    profiles = _cold_profile_cache(monkeypatch, tmp_path)
     unstaged = profiles[0]
     ran = []
 

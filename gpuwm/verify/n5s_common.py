@@ -13,6 +13,8 @@ from pathlib import Path
 import struct
 from typing import Mapping
 
+from gpuwm.file_digest import sha256_file
+
 
 RESTORED_INPUT_FILENAMES = (
     "wrfbdy_d01",
@@ -21,15 +23,6 @@ RESTORED_INPUT_FILENAMES = (
     "wrfinput_d03",
     "wrfinput_d04",
 )
-
-
-def sha256_file(path: str | Path, *, block_bytes: int = 8 * 1024 * 1024
-                ) -> str:
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as stream:
-        while block := stream.read(block_bytes):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def restored_input_sha256(directory: str | Path) -> str:

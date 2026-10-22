@@ -50,6 +50,8 @@ def test_public_regional_members_do_not_claim_missing_initialization_state(tmp_p
     assert not row.runnable
     assert "250 hPa" in row.composition_requirement
     assert "soil" in row.composition_requirement
+    assert "no soil state" in row.composition_requirement
+    assert "model top sits above the data" in row.composition_requirement
     grammar = load_member_grammar(packaged_member_grammar(row.member_set))
     assert [m.member_id for m in grammar.members()] == [f"m{n:03d}" for n in range(1, 6)]
     assert grammar.member_for_ordinal(0) is None
@@ -122,13 +124,22 @@ def test_posted_readiness_uses_replacement_index_suffix():
     assert urls[1].endswith("-0h-enfo-ef.index")
 
 
-def test_separate_control_layout_starts_at_first_50r1_cycle():
-    with pytest.raises(ValueError, match="publication|2026-05-12|2026-05"):
-        fetch_routes.resolve_request("ecmwf-ens", cycle=datetime(2026, 5, 12, 0),
+def test_archived_member_crosses_control_layout_change_without_date_refusal():
+    with pytest.raises(ValueError, match="publication|2024-03-18|2024-03"):
+        fetch_routes.resolve_request("ecmwf-ens", cycle=datetime(2024, 3, 18, 6),
                                      hours=3, member="p01")
-    plan = fetch_routes.resolve_request("ecmwf-ens", cycle=datetime(2026, 5, 12, 6),
-                                        hours=3, member="p01")
-    assert plan.objects[0].key.startswith("20260512/06z/")
+    for cycle in (datetime(2024, 10, 29), datetime(2026, 5, 12),
+                  datetime(2026, 5, 12, 6)):
+        plan = fetch_routes.resolve_request("ecmwf-ens", cycle=cycle,
+                                            hours=6, member="p01")
+        assert [obj.lead for obj in plan.objects] == [0, 3, 6]
+        assert all(obj.member_ordinal == 1 for obj in plan.objects)
+        assert plan.objects[0].key.startswith(cycle.strftime("%Y%m%d/%Hz/"))
+        assert plan.objects[0].idx_url.endswith("-enfo-ef.index")
+    row = source_adapters.get_source_adapter("ecmwf-ens")
+    archive = next(item for item in row.archive_windows if item.transport == "aws")
+    assert archive.start == "2024-03-18T12"
+    assert "CC-BY-4.0" in archive.note
 
 
 class Response(io.BytesIO):

@@ -229,12 +229,16 @@ def test_spp_specializations_leave_default_compiler_sources_frozen():
             # Source-only synchronization to the selected R1 capture in
             # test_mp8_frozen.FROZEN_MODULE_DIGESTS. This does not establish new PTX or
             # numerical replay identity for the assembled MYNN source.
-            "mynn_pbl": "01614cc90a77c120aa7a2ae92679ca85a24979e4b19f23629c5da83463109983",
+            # Slimming recorder follows the reviewed R1 export-arm fold.
+            "mynn_pbl": '1f5e6f64a206f602e4281d0d38bc8295b897a13050826f62d487ff5f0e61d871',
             # Match test_mp8_frozen's accepted staging source: selectable
             # GSL WRF 3.9 stability solver plus explicitly rounded ordinary
             # mynn_table interpolation. The SPP construction remains inert
             # for the default compiler string; the table source has changed.
-            "mynn_surface": "2c93b3baab586c642dbb988c866be65215a0e07f1d9d0f9087f3669cffa22e6e"}
+            # lane/cap-waves-couple (8cd59d74c15) adds the OCEAN_WAVE_ROUGHNESS
+            # block, off in the default string; synchronized with
+            # test_mp8_frozen.FROZEN_MODULE_DIGESTS.
+            "mynn_surface": "5b294157fb4224d0aa2ce11ce4856dafeb9e9f0a0e8145694dd6e0c48acfe64f"}
     for name, pin in pins.items():
         baseline = module_source(name)
         assert hashlib.sha256(baseline.encode()).hexdigest() == pin

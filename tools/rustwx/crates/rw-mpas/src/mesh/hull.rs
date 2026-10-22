@@ -43,7 +43,7 @@ const NONE: u32 = u32::MAX;
 /// SplitMix64. A dependency-free, counter-based generator: no global state, the
 /// same seed gives the same permutation on every machine, and the offline
 /// vendor tree does not have to grow a crate for it.
-struct SplitMix(u64);
+pub(super) struct SplitMix(pub(super) u64);
 
 impl SplitMix {
     fn next(&mut self) -> u64 {
@@ -52,6 +52,10 @@ impl SplitMix {
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
         z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
         z ^ (z >> 31)
+    }
+
+    pub(super) fn unit(&mut self) -> f64 {
+        (self.next() >> 11) as f64 / (1u64 << 53) as f64
     }
 }
 
@@ -333,7 +337,7 @@ fn build_hull_l(points: &[V3], labels: Option<&[u32]>) -> MpasResult<Vec<Face>> 
                 let (uu, ww) = horizon_xyz[k];
                 // Facet `first_new + k` is `[u, w, p]` by construction above,
                 // so these are the same four operands, in the same order,
-                // that `visible(points, &faces[first_new + k], q)` formed.
+                // that the former `visible` wrapper formed.
                 if visible_at_l(uu, ww, pp, qq, u, w, p, q, labels) {
                     home = first_new + k as u32;
                     break;
@@ -394,29 +398,7 @@ fn exact_duplicate(points: &[V3]) -> Option<(usize, usize)> {
     None
 }
 
-/// Is `p` outside the plane of this facet?
-///
-/// Ties -- an exactly coplanar quadruple -- are broken by index so the answer
-/// is at least deterministic and antisymmetric. Genuine exact ties need exactly
-/// symmetric input, which the golden-ratio spiral this crate seeds from does not
-/// produce; if one ever does slip through and the tie-break is not coherent, the
-/// hull fails to close and refuses by name rather than emitting a mesh.
-#[inline]
-#[allow(dead_code)]
-fn visible(points: &[V3], f: &Face, p: u32) -> bool {
-    visible_at(
-        points[f.v[0] as usize],
-        points[f.v[1] as usize],
-        points[f.v[2] as usize],
-        points[p as usize],
-        f.v[0],
-        f.v[1],
-        f.v[2],
-        p,
-    )
-}
-
-/// [`visible`] with the four generator POSITIONS already in hand.
+/// Facet visibility with the four generator POSITIONS already in hand.
 ///
 /// THE BREAKAGE THIS EXISTS FOR, and it is a cache one, not an arithmetic one.
 /// `visible` gathers four `V3` out of the whole point array. At 1.69 M cells
@@ -832,10 +814,6 @@ impl Triangulation {
 
     pub fn n_facets(&self) -> usize {
         self.tris.len()
-    }
-
-    pub fn n_points(&self) -> usize {
-        self.n_points
     }
 
     /// The neighbour rings of the current facet list.

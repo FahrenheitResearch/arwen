@@ -121,6 +121,7 @@ def nvrtc_banner(nvrtc, library, root=None):
 
     if library.get("status") != "resolved":
         return measure()
-    directory = root or os.environ.get("GPUWM_KERNEL_PLAN_DIR") or Path.home() / ".cache" / "gpuwm" / "kernel-plans"
+    from gpuwm.kernel_warm_pack import cache_root
+    directory = root or cache_root()
     cache = CompilerMetadata(Path(directory).expanduser(), {"nvrtc_library_sha256": library["sha256"]})
     return cache.resolve({"kind": "nvrtc-banner"}, measure)

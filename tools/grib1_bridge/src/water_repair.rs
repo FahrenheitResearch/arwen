@@ -26,6 +26,9 @@
 //!   seed the next (the skin repairs), so no result depends on the worker
 //!   count.
 
+
+type BodyRepair = (Vec<usize>, Vec<(usize, f64)>);
+
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -181,7 +184,7 @@ fn nearest_donor(body: &[bool], window: Window, index: &(Vec<i64>, Vec<i64>), ny
                     squared = value;
                 }
             }
-            if best.map_or(true, |(b, _)| squared < b) {
+            if best.is_none_or(|(b, _)| squared < b) {
                 best = Some((squared, d));
             }
         }
@@ -351,7 +354,7 @@ pub unsafe extern "C" fn gpuwm_water_repair_f64(
 
         // 1. each body from its own admissible water; bodies read and write
         //    only their own cells, so they run side by side.
-        let own: Vec<Option<(Vec<usize>, Vec<(usize, f64)>)>> = {
+        let own: Vec<Option<BodyRepair>> = {
             let snapshot: &[f64] = values;
             parallel_map(wanted.len(), workers, |n| {
                 let label = wanted[n];
@@ -451,8 +454,8 @@ pub unsafe extern "C" fn gpuwm_water_repair_f64(
                     continue;
                 };
                 let donor = values[cell];
-                for k in 0..left.len() {
-                    if left[k] {
+                for (k, &is_left) in left.iter().enumerate() {
+                    if is_left {
                         let g = window.global(k, nx);
                         values[g] = donor;
                         source[g] = surrounding_skin_code;
@@ -817,8 +820,8 @@ mod tests {
         let (ny, nx) = (3usize, 3usize);
         let mut values = vec![280.0, 281.0, 282.0, 283.0, 0.0, 285.0, 286.0, 287.0, 288.0];
         let mut source = vec![1i8; 9];
-        let water = vec![1u8; 9];
-        let labels = vec![1i32; 9];
+        let water = [1u8; 9];
+        let labels = [1i32; 9];
         let mut counts = [0u64; 3];
         let mut filled = vec![0u8; 9];
         let code = unsafe {
@@ -836,8 +839,8 @@ mod tests {
     fn a_negative_label_is_refused() {
         let mut values = vec![0.0; 4];
         let mut source = vec![0i8; 4];
-        let water = vec![1u8; 4];
-        let labels = vec![1, -1, 1, 1];
+        let water = [1u8; 4];
+        let labels = [1, -1, 1, 1];
         let mut counts = [0u64; 3];
         let mut filled = vec![0u8; 4];
         let code = unsafe {

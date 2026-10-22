@@ -290,8 +290,9 @@ pub unsafe extern "C" fn gpuwm_wrf_vertical_plan_apply(
                         let result = if lower != SURFACE {
                             let lower = lower as usize;
                             let tx = plan.target_x[slot];
-                            if level + 1 >= 1 + vboundb {
-                                let upper = lower + 2 <= count - 1;
+                            // Wrapping `k+1 >= 1+vboundb`, as lib.rs and the CUDA kernel (3b41df516e dropped the wrap).
+                            if level.wrapping_add(1) >= vboundb.wrapping_add(1) {
+                                let upper = lower + 2 < count;
                                 let previous = lower >= 1;
                                 if upper && previous {
                                     0.5 * (lagrange(&x[lower..lower + 3], &y[lower..lower + 3], 2, tx)

@@ -9,7 +9,10 @@ from gpuwm.core.devices import DevicesRefused, validate_ranked_physics
 
 
 def test_ranked_chemistry_refuses_before_any_device_allocation():
-    with pytest.raises(DevicesRefused, match="shared chemistry ledger owner"):
+    # Ranked smoke (2.9.4) qualified one rank ledger owner for the smoke set
+    # only; every other chemistry profile is still refused before any card
+    # is touched, naming the missing owner.
+    with pytest.raises(DevicesRefused, match="no qualified rank ledger owner"):
         validate_ranked_physics(SimpleNamespace(grid_id=3, chem_sets="tracer_test"))
     validate_ranked_physics(SimpleNamespace(grid_id=3, chem_sets=""))
 

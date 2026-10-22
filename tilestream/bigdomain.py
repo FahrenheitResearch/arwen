@@ -455,6 +455,30 @@ def build_slab_state(cfg_slab, geo_slab, noise: SeededNoise, j0: int, *,
     return state, driver
 
 
+def _hold_domain_carrier(dst: np.ndarray, src, name: str, k: int) -> None:
+    """Keep a domain-owned (fixed-shape) carrier whole; slabs must agree.
+
+    ``global_keys`` carriers such as the 3D PWP status word
+    ``fields/_pwp_status`` (shape (1,)) have no rows: scattering them raised
+    "IndexError: tuple index out of range" at the start of a streamed
+    forecast with sf_ocean_physics = 2 (the 48 h default;
+    2026-10-21).  Slab 0's words are kept and a slab that built different
+    words is refused.
+    """
+    host = np.asarray(src)
+    if host.shape != dst.shape:
+        raise ValueError(
+            f"slab {k} built domain carrier {name!r} at shape {host.shape}, "
+            f"not its fixed shape {dst.shape}")
+    if k == 0:
+        dst[...] = host
+    elif not np.array_equal(dst.view(np.uint8),
+                            np.ascontiguousarray(host).view(np.uint8)):
+        raise ValueError(
+            f"slab {k} built domain carrier {name!r} with words that differ "
+            "from slab 0's; a domain-owned carrier must be slab-invariant")
+
+
 def _scatter_rows(dst: np.ndarray, src, j0: int) -> None:
     """Write ``src``'s rows into ``dst`` at ``j0``, inferring the staggering.
 
@@ -614,6 +638,8 @@ def build_store_by_slabs(cfg, geo, *, slab_rows: int, noise: SeededNoise,
             for spec in manifest:
                 store[spec.name] = hoststore.alloc_pinned_array(
                     spec.shape(nz, ny, nx), spec.dtype)
+            domain_carriers = {spec.name for spec in manifest
+                               if spec.fixed_shape is not None}
             for name, shape in geo_shapes.items():
                 geo_store[name] = hoststore.alloc_pinned_array(
                     shape, np.dtype(ginv[name].dtype))
@@ -623,7 +649,10 @@ def build_store_by_slabs(cfg, geo, *, slab_rows: int, noise: SeededNoise,
                 raise KeyError(
                     f"slab {k} produced carrier {name!r} that slab 0 did "
                     "not; the manifest is not slab-invariant")
-            _scatter_rows(store[name], cp.asnumpy(arr), j0)
+            if name in domain_carriers:
+                _hold_domain_carrier(store[name], cp.asnumpy(arr), name, k)
+            else:
+                _scatter_rows(store[name], cp.asnumpy(arr), j0)
             seen.add(name)
         for name, arr in ginv.items():
             _scatter_rows(geo_store[name], _as_host(arr), j0)

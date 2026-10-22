@@ -52,7 +52,8 @@ def test_the_declared_divergences_are_exactly_the_known_ones(result):
         ("domains", "lowest_lev_from_sfc"), ("domains", "rebalance"),
         ("domains", "zap_close_levels"),
         ("physics", "fractional_seaice"),
-        ("physics", "prec_acc_dt"), ("physics", "seaice_threshold"),
+        # seaice_threshold is carried (RunConfig.seaice_threshold), no
+        # longer a divergence.
         ("time_control", "history_begin"), ("time_control", "history_end"),
     }
 
@@ -62,6 +63,6 @@ def test_the_swaps_this_lane_closed_refuse_by_name(result):
     # chem_opt is declared in &physics by the ARW Registry; an active
     # chemistry request never imports to run with none.
     assert ("stoch", "rand_perturb") in refused
-    assert ("physics", "hailcast_opt") in refused
+    assert ("physics", "hailcast_opt") in _rows(result, "translated")
     assert ("dfi_control", "dfi_opt") in refused
     assert ("fdda", "grid_fdda") in refused

@@ -40,6 +40,8 @@ def _library():
     library=rust_bridge.load()
     if not hasattr(library,"gpuwm_static_sfire_v1"):
         raise RuntimeError("Rust static-fields bridge lacks the SFIRE static builder; rebuild static-fields before preparing fire data")
+    if not hasattr(library,"gpuwm_static_sfire_canopy_v1"):
+        raise RuntimeError("Rust static-fields bridge lacks LANDFIRE canopy inputs; rebuild static-fields before preparing fire data")
     library.gpuwm_static_sfire_v1.argtypes=[]
     library.gpuwm_static_sfire_v1.restype=ctypes.c_uint32
     if library.gpuwm_static_sfire_v1()!=1:
@@ -161,10 +163,12 @@ def coverage_bounds(bounds,resolution,*,source_crs="EPSG:4326",pixel_edge_offset
     return tuple(out)
 
 
-def build_fire_static(grid_spec,sr_x,sr_y,terrain,fuel,*,output=None,observed_perimeter=None):
-    """Build all six named fire fields through the native static ABI."""
+def build_fire_static(grid_spec,sr_x,sr_y,terrain,fuel,*,output=None,observed_perimeter=None,canopy=None,source_provenance=None):
+    """Build terrain, fuel and admitted canopy fields through the native static ABI."""
     library=_library()
     request=dict(grid_spec=grid_spec,sr_x=sr_x,sr_y=sr_y,terrain=terrain,fuel=fuel)
+    if canopy:request["canopy"]=canopy
+    if source_provenance:request["source_provenance"]=source_provenance
     if observed_perimeter is not None:
         request["observed_perimeter"]=dict(observed_perimeter,grid_spec=grid_spec,sr_x=sr_x,sr_y=sr_y)
     if output is not None:
@@ -296,11 +300,14 @@ def acquire(source_id,year,bounds,cache_root):
     bbox=fetch.FootprintBBox(lat_min=bounds[1],lat_max=bounds[3],lon_min=bounds[0],lon_max=bounds[2])
     if row["kind"]=="terrain-tiles":
         tiles,absent=getattr(fetch,row["fetch_function"])(bbox,Path(cache_root))
-        if absent:
+        if absent and not row.get("allow_absent_tiles"):
             raise ValueError(f"SFIRE terrain source does not cover required tiles: {', '.join(absent)}")
-        result=getattr(fetch,row["derive_function"])(tiles,bbox,Path(cache_root))
+        result=getattr(fetch,row["derive_function"])(tiles,bbox,Path(cache_root),**row.get("derive_kwargs",{}))
+        audit=None
+        if row.get("derive_returns_audit"):result,audit=result
         return _bound(result),dict(source=source_id,license=row["license"],source_url=row["source_url"],
-                                   objects=[item.receipt() for item in tiles],derived=result.receipt())
+                                   license_url=row["license_url"],attribution=row.get("attribution"),liability_notice=row.get("liability_notice"),
+                                   absent_tiles=list(absent),audit=audit,objects=[item.receipt() for item in tiles],derived=result.receipt())
     if row["kind"]!="wcs-geotiff":
         raise ValueError(f"SFIRE source transport {row['kind']} is unknown")
     years=row.get("years",[])
@@ -327,6 +334,8 @@ def acquire(source_id,year,bounds,cache_root):
                     own.unlink()
         raise ValueError(f"SFIRE WCS returned an error payload instead of GeoTIFF; removed new files {deleted}")
     bound=_bound(result)
+    for key in ("scale_factor","nodata_override"):
+        if key in row:bound[key]=row[key]
     if crs=="EPSG:4326":
         bound["lattice_resolution_degrees"]=resolution
     return bound,dict(source=source_id,requested_year=year,source_year=selected,
@@ -351,20 +360,8 @@ def prepare(config,output,*,base=None):
     bounds=fire_bounds(grid,rx,ry)
     cache=Path(config.get("cache_root",base/"sfire-static-cache"))
     if not cache.is_absolute():cache=base/cache
-    metadata={};inputs={}
-    options=config.get("sources",{})
-    for role,default in DEFAULT_ROUTES:
-        if role in config:
-            bound=dict(config[role]);path=Path(bound["path"])
-            if not path.is_absolute():path=base/path
-            bound["path"]=str(path.resolve())
-            inputs[role]=bound
-            metadata[role]=dict(sha256=bound["sha256"],path=bound["path"])
-        else:
-            source=options.get(role,default)
-            if source_routes()[source]["role"]!=role:
-                raise ValueError(f"SFIRE source {source} cannot supply required {role} fields")
-            inputs[role],metadata[role]=acquire(source,int(options.get("fuel_year",2024)),bounds,cache)
+    from gpuwm.fire_inputs import prepare_sources,canopy_fields,source_provenance
+    inputs,metadata,acquisition=prepare_sources(config,bounds,base,cache,acquire,source_routes())
     output=Path(output);output.parent.mkdir(parents=True,exist_ok=True)
     observed=config.get("observed_perimeter")
     if observed is not None:
@@ -372,9 +369,13 @@ def prepare(config,output,*,base=None):
         for key in ("geojson","source_contract"):
             path=Path(observed[key])
             observed[key]=str((path if path.is_absolute() else base/path).resolve())
-    fields=build_fire_static(grid,rx,ry,inputs["terrain"],inputs["fuel"],output=output,observed_perimeter=observed)
+    build_started=time.monotonic()
+    fields=build_fire_static(grid,rx,ry,inputs["terrain"],inputs["fuel"],output=output,observed_perimeter=observed,
+        canopy={name:inputs[name] for name in canopy_fields() if name in inputs},source_provenance=source_provenance(metadata))
+    acquisition["rust_build_wall_seconds"]=time.monotonic()-build_started
+    acquisition["rust_parallelism"]="rayon raster sampling and concurrent canopy layers"
     return dict(schema=SCHEMA,compute="Rust static-fields",sr_x=rx,sr_y=ry,
-        grid_spec=grid,bounds=bounds,source_inputs=metadata,output=str(output.resolve()),
+        grid_spec=grid,bounds=bounds,source_inputs=metadata,stages=acquisition,output=str(output.resolve()),
         experiment=config.get("experiment_identity"),
         output_sha256=hashlib.sha256(output.read_bytes()).hexdigest(),
         fields={name:dict(shape=list(value.shape),dtype=str(value.dtype)) for name,value in fields.items()})

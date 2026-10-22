@@ -210,7 +210,7 @@ def test_gpu_oracle(case):
 
 
 @pytest.mark.gpu
-@pytest.mark.parametrize("case",sorted(CASES))
+@pytest.mark.parametrize("case", ("b0_map1_front1_v3_c2", "b0_map1_front1_v5_c2", "bounds_v3", "bounds_v5"))
 def test_gpu_mutation_fires(case,monkeypatch):
     """Make each device parity assertion fire on an authorized GPU run."""
     from conftest import HAS_GPU

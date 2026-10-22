@@ -506,6 +506,10 @@ def _walk_across_cores(walk, total: int) -> tuple[int, list[str]]:
     import os
 
     workers = min(os.cpu_count() or 1, 32)
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        # Under pytest -n N this worker is already one of N: a 24-process fork pool here
+        # multiplied one -n 2 run into 26 processes on a shared 24-core box (slim campaign, 2026-10-20).
+        workers = min(workers, 2)
     if total < 2 * workers or "fork" not in multiprocessing.get_all_start_methods():
         return walk(0, total)
     slices = max(1, workers * 4)

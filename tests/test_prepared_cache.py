@@ -320,8 +320,7 @@ def test_default_prepared_cache_bytes_ignore_disabled_seal_option(tmp_path):
             (second / other["file"]).read_bytes()
 
 
-def test_prepared_cache_extension_reuses_prefix_and_appends_nonzero_hour(
-        tmp_path):
+def _extension_identities():
     start = datetime(2026, 7, 20)
     prior_identity = _extension_identity(
         source_hours=[0, 1], model_start=start, domain_start=start,
@@ -330,10 +329,16 @@ def test_prepared_cache_extension_reuses_prefix_and_appends_nonzero_hour(
         source_hours=[1, 2], model_start=start + timedelta(hours=1),
         domain_start=start + timedelta(hours=1), bridge="e" * 64,
         source_manifest="f" * 64)
-    composite = "9" * 64
     extended_identity = _extension_identity(
         source_hours=[0, 1, 2], model_start=start, domain_start=start,
-        bridge=composite, source_manifest="f" * 64)
+        bridge="9" * 64, source_manifest="f" * 64)
+    return prior_identity, suffix_identity, extended_identity
+
+
+def test_prepared_cache_extension_reuses_prefix_and_appends_nonzero_hour(
+        tmp_path):
+    prior_identity, suffix_identity, extended_identity = _extension_identities()
+    composite = "9" * 64
     initial, met, boundaries = _fixture()
     suffix_initial, suffix_met, suffix_boundaries = _suffix_fixture()
     prior = tmp_path / "prior"
@@ -377,101 +382,30 @@ def test_prepared_cache_extension_reuses_prefix_and_appends_nonzero_hour(
 
 def test_prepared_cache_extension_refuses_changed_seam_without_output(
         tmp_path):
-    start = datetime(2026, 7, 20)
-    prior_identity = _extension_identity(
-        source_hours=[0, 1], model_start=start, domain_start=start,
-        bridge="a" * 64, source_manifest="b" * 64)
-    suffix_identity = _extension_identity(
-        source_hours=[1, 2], model_start=start + timedelta(hours=1),
-        domain_start=start + timedelta(hours=1), bridge="e" * 64,
-        source_manifest="f" * 64)
-    extended_identity = _extension_identity(
-        source_hours=[0, 1, 2], model_start=start, domain_start=start,
-        bridge="9" * 64,
-        source_manifest="f" * 64)
-    initial, met, boundaries = _fixture()
-    suffix_initial, suffix_met, suffix_boundaries = _suffix_fixture(
-        seam_delta=1.0)
-    prior, suffix, output = (
-        tmp_path / "prior", tmp_path / "suffix", tmp_path / "extended")
-    write_prepared_cache(
-        prior, identity=prior_identity, initial_result=initial, met=met,
-        boundaries=boundaries, sealed_forcing_extension=True)
-    write_prepared_cache(
-        suffix, identity=suffix_identity, initial_result=suffix_initial,
-        met=suffix_met, boundaries=suffix_boundaries)
+    prior, prior_identity, arguments = _extension_inputs(
+        tmp_path, seam_delta=1.0)
+    output = tmp_path / "extended"
 
     with pytest.raises(PreparedCacheMismatchError, match="shared endpoint"):
-        extend_prepared_cache(
-            output, predecessor=prior, suffix=suffix,
-            identity=extended_identity, metadata={},
-            source_manifest_extension=_manifest_extension(
-                prior_identity, extended_identity),
-            bridge_manifest_extension=_bridge_extension(
-                prior_identity, suffix_identity, extended_identity))
+        extend_prepared_cache(output, **arguments)
     assert not output.exists()
 
 
 def test_prepared_cache_extension_refuses_changed_namelist_invariant(
         tmp_path):
-    start = datetime(2026, 7, 20)
-    prior_identity = _extension_identity(
-        source_hours=[0, 1], model_start=start, domain_start=start,
-        bridge="a" * 64, source_manifest="b" * 64)
-    suffix_identity = _extension_identity(
-        source_hours=[1, 2], model_start=start + timedelta(hours=1),
-        domain_start=start + timedelta(hours=1), bridge="e" * 64,
-        source_manifest="f" * 64)
-    extended_identity = _extension_identity(
-        source_hours=[0, 1, 2], model_start=start, domain_start=start,
-        bridge="9" * 64, source_manifest="f" * 64)
-    extended_identity["namelist_extension_invariant"]["sha256"] = "2" * 64
-    initial, met, boundaries = _fixture()
-    suffix_initial, suffix_met, suffix_boundaries = _suffix_fixture()
-    prior, suffix, output = (
-        tmp_path / "prior", tmp_path / "suffix", tmp_path / "extended")
-    write_prepared_cache(
-        prior, identity=prior_identity, initial_result=initial, met=met,
-        boundaries=boundaries, sealed_forcing_extension=True)
-    write_prepared_cache(
-        suffix, identity=suffix_identity, initial_result=suffix_initial,
-        met=suffix_met, boundaries=suffix_boundaries)
+    prior, prior_identity, arguments = _extension_inputs(tmp_path)
+    arguments["identity"]["namelist_extension_invariant"]["sha256"] = "2" * 64
+    output = tmp_path / "extended"
 
     with pytest.raises(
             PreparedCacheMismatchError, match="immutable namelist fields"):
-        extend_prepared_cache(
-            output, predecessor=prior, suffix=suffix,
-            identity=extended_identity, metadata={},
-            source_manifest_extension=_manifest_extension(
-                prior_identity, extended_identity),
-            bridge_manifest_extension=_bridge_extension(
-                prior_identity, suffix_identity, extended_identity))
+        extend_prepared_cache(output, **arguments)
     assert not output.exists()
 
 
 def test_prepared_cache_extension_refuses_predecessor_mutation(tmp_path):
-    start = datetime(2026, 7, 20)
-    prior_identity = _extension_identity(
-        source_hours=[0, 1], model_start=start, domain_start=start,
-        bridge="a" * 64, source_manifest="b" * 64)
-    suffix_identity = _extension_identity(
-        source_hours=[1, 2], model_start=start + timedelta(hours=1),
-        domain_start=start + timedelta(hours=1), bridge="e" * 64,
-        source_manifest="f" * 64)
-    extended_identity = _extension_identity(
-        source_hours=[0, 1, 2], model_start=start, domain_start=start,
-        bridge="9" * 64,
-        source_manifest="f" * 64)
-    initial, met, boundaries = _fixture()
-    suffix_initial, suffix_met, suffix_boundaries = _suffix_fixture()
-    prior, suffix, output = (
-        tmp_path / "prior", tmp_path / "suffix", tmp_path / "extended")
-    write_prepared_cache(
-        prior, identity=prior_identity, initial_result=initial, met=met,
-        boundaries=boundaries, sealed_forcing_extension=True)
-    write_prepared_cache(
-        suffix, identity=suffix_identity, initial_result=suffix_initial,
-        met=suffix_met, boundaries=suffix_boundaries)
+    prior, prior_identity, arguments = _extension_inputs(tmp_path)
+    output = tmp_path / "extended"
     prior_reader = PreparedCacheReader(prior, expected_identity=prior_identity)
     payload = prior / prior_reader.arrays["state/u"]["file"]
     array = np.load(payload, allow_pickle=False)
@@ -480,39 +414,14 @@ def test_prepared_cache_extension_refuses_predecessor_mutation(tmp_path):
         np.save(stream, array, allow_pickle=False)
 
     with pytest.raises(PreparedCacheCorruptError, match="fails its manifest"):
-        extend_prepared_cache(
-            output, predecessor=prior, suffix=suffix,
-            identity=extended_identity, metadata={},
-            source_manifest_extension=_manifest_extension(
-                prior_identity, extended_identity),
-            bridge_manifest_extension=_bridge_extension(
-                prior_identity, suffix_identity, extended_identity))
+        extend_prepared_cache(output, **arguments)
     assert not output.exists()
 
 
 def test_prepared_cache_extension_rechecks_hardlinked_stage_for_toctou(
         tmp_path, monkeypatch):
-    start = datetime(2026, 7, 20)
-    prior_identity = _extension_identity(
-        source_hours=[0, 1], model_start=start, domain_start=start,
-        bridge="a" * 64, source_manifest="b" * 64)
-    suffix_identity = _extension_identity(
-        source_hours=[1, 2], model_start=start + timedelta(hours=1),
-        domain_start=start + timedelta(hours=1), bridge="e" * 64,
-        source_manifest="f" * 64)
-    extended_identity = _extension_identity(
-        source_hours=[0, 1, 2], model_start=start, domain_start=start,
-        bridge="9" * 64, source_manifest="f" * 64)
-    initial, met, boundaries = _fixture()
-    suffix_initial, suffix_met, suffix_boundaries = _suffix_fixture()
-    prior, suffix, output = (
-        tmp_path / "prior", tmp_path / "suffix", tmp_path / "extended")
-    write_prepared_cache(
-        prior, identity=prior_identity, initial_result=initial, met=met,
-        boundaries=boundaries, sealed_forcing_extension=True)
-    write_prepared_cache(
-        suffix, identity=suffix_identity, initial_result=suffix_initial,
-        met=suffix_met, boundaries=suffix_boundaries)
+    prior, prior_identity, arguments = _extension_inputs(tmp_path)
+    output = tmp_path / "extended"
     original = prepared_cache_module._BundleWriter.link_verified
     injected = False
 
@@ -532,31 +441,16 @@ def test_prepared_cache_extension_rechecks_hardlinked_stage_for_toctou(
         mutate_after_link)
 
     with pytest.raises(PreparedCacheCorruptError, match="fails its manifest"):
-        extend_prepared_cache(
-            output, predecessor=prior, suffix=suffix,
-            identity=extended_identity, metadata={},
-            source_manifest_extension=_manifest_extension(
-                prior_identity, extended_identity),
-            bridge_manifest_extension=_bridge_extension(
-                prior_identity, suffix_identity, extended_identity))
+        extend_prepared_cache(output, **arguments)
     assert injected
     assert not output.exists()
 
 
-def _linkless_extension_inputs(tmp_path):
-    start = datetime(2026, 7, 20)
-    prior_identity = _extension_identity(
-        source_hours=[0, 1], model_start=start, domain_start=start,
-        bridge="a" * 64, source_manifest="b" * 64)
-    suffix_identity = _extension_identity(
-        source_hours=[1, 2], model_start=start + timedelta(hours=1),
-        domain_start=start + timedelta(hours=1), bridge="e" * 64,
-        source_manifest="f" * 64)
-    extended_identity = _extension_identity(
-        source_hours=[0, 1, 2], model_start=start, domain_start=start,
-        bridge="9" * 64, source_manifest="f" * 64)
+def _extension_inputs(tmp_path, *, seam_delta=0.0):
+    prior_identity, suffix_identity, extended_identity = _extension_identities()
     initial, met, boundaries = _fixture()
-    suffix_initial, suffix_met, suffix_boundaries = _suffix_fixture()
+    suffix_initial, suffix_met, suffix_boundaries = _suffix_fixture(
+        seam_delta=seam_delta)
     prior, suffix = tmp_path / "prior", tmp_path / "suffix"
     write_prepared_cache(
         prior, identity=prior_identity, initial_result=initial, met=met,
@@ -602,7 +496,7 @@ def test_prepared_cache_extension_on_a_drive_without_hard_links_copies(
     from gpuwm import explain
 
     monkeypatch.setattr(explain, "_PRINTED_ONCE", set())
-    prior, prior_identity, arguments = _linkless_extension_inputs(tmp_path)
+    prior, prior_identity, arguments = _extension_inputs(tmp_path)
     before = {path.name: path.read_bytes() for path in prior.iterdir()}
     calls = _drive_without_hard_links(monkeypatch)
     output = tmp_path / "extended"
@@ -635,7 +529,7 @@ def test_prepared_cache_extension_refuses_a_copy_the_disk_cannot_hold(
     against the free space, refused by name when it does not fit."""
     from gpuwm import filesystem_paths
 
-    _prior, _identity, arguments = _linkless_extension_inputs(tmp_path)
+    _prior, _identity, arguments = _extension_inputs(tmp_path)
     _drive_without_hard_links(monkeypatch)
     monkeypatch.setattr(filesystem_paths, "_free_bytes", lambda folder: 1024)
     output = tmp_path / "extended"
@@ -650,37 +544,12 @@ def test_prepared_cache_extension_refuses_a_copy_the_disk_cannot_hold(
 
 
 def test_prepared_cache_extension_refuses_a_gap(tmp_path):
-    start = datetime(2026, 7, 20)
-    prior_identity = _extension_identity(
-        source_hours=[0, 1], model_start=start, domain_start=start,
-        bridge="a" * 64, source_manifest="b" * 64)
-    suffix_identity = _extension_identity(
-        source_hours=[1, 2], model_start=start + timedelta(hours=1),
-        domain_start=start + timedelta(hours=1), bridge="e" * 64,
-        source_manifest="f" * 64)
-    extended_identity = _extension_identity(
-        source_hours=[0, 1, 2], model_start=start, domain_start=start,
-        bridge="9" * 64, source_manifest="f" * 64)
-    extended_identity["forcing_hours"] = [0, 1, 3]
-    initial, met, boundaries = _fixture()
-    suffix_initial, suffix_met, suffix_boundaries = _suffix_fixture()
-    prior, suffix, output = (
-        tmp_path / "prior", tmp_path / "suffix", tmp_path / "extended")
-    write_prepared_cache(
-        prior, identity=prior_identity, initial_result=initial, met=met,
-        boundaries=boundaries, sealed_forcing_extension=True)
-    write_prepared_cache(
-        suffix, identity=suffix_identity, initial_result=suffix_initial,
-        met=suffix_met, boundaries=suffix_boundaries)
+    prior, prior_identity, arguments = _extension_inputs(tmp_path)
+    arguments["identity"]["forcing_hours"] = [0, 1, 3]
+    output = tmp_path / "extended"
 
     with pytest.raises(PreparedCacheMismatchError, match="exactly one"):
-        extend_prepared_cache(
-            output, predecessor=prior, suffix=suffix,
-            identity=extended_identity, metadata={},
-            source_manifest_extension=_manifest_extension(
-                prior_identity, extended_identity),
-            bridge_manifest_extension=_bridge_extension(
-                prior_identity, suffix_identity, extended_identity))
+        extend_prepared_cache(output, **arguments)
     assert not output.exists()
 
 
@@ -702,17 +571,7 @@ def _cleared_out_extension(tmp_path, *, predecessor_built=True,
 
     from gpuwm.ingest.lateral_bc import build_lateral_interval_from_sides
 
-    start = datetime(2026, 7, 20)
-    prior_identity = _extension_identity(
-        source_hours=[0, 1], model_start=start, domain_start=start,
-        bridge="a" * 64, source_manifest="b" * 64)
-    suffix_identity = _extension_identity(
-        source_hours=[1, 2], model_start=start + timedelta(hours=1),
-        domain_start=start + timedelta(hours=1), bridge="e" * 64,
-        source_manifest="f" * 64)
-    extended_identity = _extension_identity(
-        source_hours=[0, 1, 2], model_start=start, domain_start=start,
-        bridge="9" * 64, source_manifest="f" * 64)
+    prior_identity, suffix_identity, extended_identity = _extension_identities()
     rng = np.random.default_rng(5)
 
     def frame(values):

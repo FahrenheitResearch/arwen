@@ -360,3 +360,107 @@ def test_a_record_naming_a_file_that_is_gone_falls_back_to_the_crate(checkout):
     _record_inputs(binary, crate / "src" / "main.rs", crate / "src" / "removed.rs")
     _touch(only_the_sibling, 2_000_086_400)
     assert bridges.checkout_build_status(binary).current is False
+
+
+# ---------------------------------------------------------------------------
+# Content, not commit: a build is judged by what its inputs contain.
+# Breakage (V60, 2026-10-21): grib1_bridge built 05:33Z, a Python-only revert
+# committed at 06:12Z, and `gpuwm go` refused the CPU library as "older than
+# its sources" -- cargo's record of the artifact names the build scripts'
+# rerun-if-changed git files (.git/HEAD, the branch ref), which move on every
+# commit -- so 15 workspaces were rebuilt for a change that touched no Rust.
+# ---------------------------------------------------------------------------
+
+import shutil
+import subprocess
+import time
+
+requires_git = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+
+
+def _git(root: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t",
+         "-c", "commit.gpgsign=false", *args],
+        check=True, capture_output=True, text=True).stdout.strip()
+
+
+@pytest.fixture
+def committed(checkout):
+    """The checkout as a git repository, the binary stamped with its HEAD
+    and built after every source, with cargo's record naming the build
+    script's git inputs the way a real record does."""
+
+    workspace, binary = checkout
+    root = workspace.parent.parent
+    _git(root, "init", "-q")
+    _write(root / "gpuwm" / "door.py", "x = 1\n")
+    _git(root, "add", "-A", ".", ":!tools/rustwx/target")
+    _git(root, "commit", "-q", "-m", "base")
+    head = _git(root, "rev-parse", "HEAD")
+    branch_ref = Path(_git(root, "rev-parse", "--path-format=absolute",
+                           "--git-path", _git(root, "symbolic-ref", "-q", "HEAD")))
+    crate = workspace / "crates" / "rw-netcdf"
+    sources = (crate / "src" / "main.rs",
+               workspace / "vendor" / "netcrust" / "src" / "lib.rs")
+    built = time.time() - 600
+    for path in (*sources, crate / "Cargo.toml", workspace / "Cargo.toml",
+                 workspace / "vendor" / "netcrust" / "Cargo.toml"):
+        _touch(path, built - 600)
+    binary.write_bytes(b"\x7fELF GPUWM_BRIDGE_SOURCE_REV=" + head.encode())
+    _touch(binary, built)
+    _record_inputs(binary, *sources, root / ".git" / "HEAD", branch_ref)
+    assert bridges.checkout_build_status(binary).current is True
+    return root, workspace, binary
+
+
+@requires_git
+def test_a_python_only_commit_leaves_the_build_current(committed):
+    root, workspace, binary = committed
+    _write(root / "gpuwm" / "door.py", "x = 2\n")
+    _git(root, "commit", "-q", "-am", "python only")
+    assert bridges.checkout_build_status(binary).current is True
+    assert bridges.require_current_checkout_build(binary) == binary
+
+
+@requires_git
+def test_a_rewritten_but_identical_source_leaves_the_build_current(committed):
+    # A checkout, a revert or a rebase rewrites a file's time and not its bytes.
+    root, workspace, binary = committed
+    source = workspace / "crates" / "rw-netcdf" / "src" / "main.rs"
+    source.write_bytes(source.read_bytes())
+    _touch(source, time.time() + 60)
+    status = bridges.checkout_build_status(binary)
+    assert status.newest_at > status.built_at
+    assert status.current is True
+
+
+@requires_git
+def test_a_rust_change_still_condemns_the_build(committed):
+    root, workspace, binary = committed
+    source = workspace / "vendor" / "netcrust" / "src" / "lib.rs"
+    _write(source, "// reader, changed\n")
+    _touch(source, time.time() + 60)
+    assert bridges.checkout_build_status(binary).current is False   # uncommitted
+    _git(root, "commit", "-q", "-am", "rust change")
+    with pytest.raises(bridges.StaleCheckoutBuildError):
+        bridges.require_current_checkout_build(binary)                # committed
+
+
+@requires_git
+def test_an_untracked_input_leaves_the_file_time_verdict(committed):
+    root, workspace, binary = committed
+    crate = workspace / "crates" / "rw-netcdf"
+    generated = _write(crate / "src" / "generated.rs", "// untracked\n")
+    _touch(generated, time.time() + 60)
+    _record_inputs(binary, crate / "src" / "main.rs", generated)
+    assert bridges.checkout_build_status(binary).current is False
+
+
+def test_cargos_record_of_git_files_is_not_a_source(checkout, tmp_path):
+    workspace, binary = checkout
+    root = workspace.parent.parent
+    head = _write(root / ".git" / "HEAD", "ref: refs/heads/main\n")
+    _touch(head, 2_000_086_400)
+    _record_inputs(binary, workspace / "crates" / "rw-netcdf" / "src" / "main.rs", head)
+    assert bridges.checkout_build_status(binary).current is True

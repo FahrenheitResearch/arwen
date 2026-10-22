@@ -15,20 +15,6 @@ from gpuwm.nvrtc_cache_key import keyed_source
 from tools.cuda_rounding_dataflow import ptx_dataflow_signatures
 
 
-def nvrtc_metadata(library: Path) -> dict:
-    """Compiler version and accepted targets without a CUDA driver call."""
-    nvrtc = ctypes.CDLL(str(library))
-    major, minor, count = ctypes.c_int(), ctypes.c_int(), ctypes.c_int()
-    if nvrtc.nvrtcVersion(ctypes.byref(major), ctypes.byref(minor)):
-        raise RuntimeError("nvrtcVersion failed")
-    if nvrtc.nvrtcGetNumSupportedArchs(ctypes.byref(count)):
-        raise RuntimeError("nvrtcGetNumSupportedArchs failed")
-    arches = (ctypes.c_int * count.value)()
-    if nvrtc.nvrtcGetSupportedArchs(arches):
-        raise RuntimeError("nvrtcGetSupportedArchs failed")
-    return {"nvrtc_version": [major.value, minor.value], "supported_architectures": list(arches)}
-
-
 def compile_cubin(source: str, options: tuple[str, ...], library: Path) -> bytes:
     """NVRTC C API binary read with the exact reported size.
 

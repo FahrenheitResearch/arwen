@@ -48,7 +48,7 @@ export function basemap() {
   return basemapPromise;
 }
 
-function css(name, fallback) {
+export function css(name, fallback) {
   const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   return v || fallback;
 }
@@ -57,7 +57,7 @@ const EARTH_KM = 6370;
 const RAD = Math.PI / 180;
 const MERCATOR_MAX_LAT = 25;
 const LAMBERT_MAX_LAT = 60;
-const wrap180 = (v) => ((((v + 180) % 360) + 360) % 360) - 180;
+export const wrap180 = (v) => ((((v + 180) % 360) + 360) % 360) - 180;
 
 // The projection the domain wizard picks for a point (domain_wizard._projection_entries).
 export function projectionFor(lat, lon) {
@@ -410,7 +410,7 @@ export function boxMap(canvas, opts = {}) {
   observer.observe(canvas);
   size();
   draw();
-  basemap().then((m) => { state.map = m; draw(); if (opts.onmap) opts.onmap(m); });
+  basemap().then((m) => { state.map = m; draw(); });
 
   return {
     setBox(box) { state.box = box ? { ...box } : null; state.fit = null; reproject(); draw(); },
@@ -420,7 +420,6 @@ export function boxMap(canvas, opts = {}) {
       reproject();
       draw();
     },
-    box: () => (state.box ? { ...state.box } : null),
     zoom(f) { zoomAt(f, W / 2, H / 2); },
     frameBox() {
       let x0; let x1; let y0; let y1;

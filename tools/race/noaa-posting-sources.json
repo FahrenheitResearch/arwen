@@ -1,0 +1,27 @@
+{
+  "analysis": {
+    "model": "hrrr",
+    "bucket": "noaa-hrrr-bdp-pds",
+    "nomads_root": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hrrr/prod/",
+    "directory": "hrrr.{date}/conus/",
+    "prefix": "hrrr.t{hour:02d}z.",
+    "file": "hrrr.t{hour:02d}z.{product}f{lead:02d}.grib2",
+    "products": ["wrfnat", "wrfprs", "wrfsfc"],
+    "initial_product": "wrfnat",
+    "leads": [0, 18],
+    "extended_lead": 48,
+    "extended_cycle_hours": [0, 6, 12, 18]
+  },
+  "boundary": {
+    "model": "rap",
+    "bucket": "noaa-rap-pds",
+    "nomads_root": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/rap/prod/",
+    "directory": "rap.{date}/",
+    "prefix": "rap.t{hour:02d}z.awp130bgrbf",
+    "file": "rap.t{hour:02d}z.{product}f{lead:02d}.grib2",
+    "products": ["awp130bgrb"],
+    "lag_hours": 3,
+    "last_lead": 51,
+    "source_authority": "gpuwm/authorities/rw-wps-fetch-routes.v1.json:rap-native"
+  }
+}

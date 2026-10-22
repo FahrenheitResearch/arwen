@@ -10,6 +10,7 @@
 
 [workspace]
 members = [
+    "crates/fire-indices",
     "crates/netcdf-writer",
     "crates/obs-regrid",
     "crates/obs-score",

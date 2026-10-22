@@ -44,10 +44,10 @@ from pathlib import Path
 
 from gpuwm import bridges
 from gpuwm.bridges import (RUSTWX_CRATE_RELATIVE, artifact_remedy,
-                           default_bridge_dir,
-                           legacy_bridge_candidates, lazy_build_hints,
+                           lazy_build_hints,
                            rustwx_build_hint,
-                           executable_name, packaged_bridge_dir)
+                           executable_name)
+from gpuwm.rustwx import _candidates, crate_dir
 
 #: Environment variables naming prebuilt binaries.
 ENSEMBLE_ENV = "GPUWM_RW_ENSBATCH"
@@ -131,37 +131,13 @@ ENSEMBLE_PRODUCTS = ("mean", "spread", "prob", "pmm", "paintball")
 #: no binary to ask -- so a caller states a list it can prove rather
 #: than none at all.  A field added to ``ensbatch.rs`` is reachable
 #: without touching this tuple.
-ENSEMBLE_FIELDS = ("refl", "uh", "precip", "t2", "wspd10")
+ENSEMBLE_FIELDS = ("refl", "uh", "precip", "t2", "wspd10", "visibility", "fog_prob")
 
 #: Observation-grid products.
 OBSGRID_PRODUCTS = ("z-composite", "coverage-depth", "radar-overlap",
                     "vr-lowest", "radar-contribution")
 
 _PROBE_TIMEOUT_S = 20
-
-
-def crate_dir() -> Path:
-    """The vendored Rusty Weather workspace of a source checkout."""
-
-    return Path(__file__).resolve().parent.parent / "tools" / "rustwx"
-
-
-def _candidates(env_var: str, name: str) -> tuple[Path, ...]:
-    filename = executable_name(name)
-    candidates: list[Path] = []
-    override = os.environ.get(env_var)
-    if override:
-        candidates.append(Path(override))
-    root = Path(__file__).resolve().parent.parent
-    candidates.extend((
-        crate_dir() / "target" / "release" / filename,
-        crate_dir() / "target" / "debug" / filename,
-        root / "libexec" / "bridges" / filename,
-        packaged_bridge_dir() / filename,
-        default_bridge_dir() / filename,
-        *legacy_bridge_candidates(filename),
-    ))
-    return tuple(candidates)
 
 
 def _find(env_var: str, name: str) -> Path | None:
@@ -468,6 +444,11 @@ def list_ensemble_fields(engine: Path) -> dict[str, dict]:
             if key == "default_threshold":
                 try:
                     row["default_threshold"] = float(value)
+                except ValueError:
+                    continue
+            elif key == "default_thresholds":
+                try:
+                    row["default_thresholds"] = tuple(float(v) for v in value.split(","))
                 except ValueError:
                     continue
             elif key == "unit_slug":

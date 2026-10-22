@@ -62,6 +62,7 @@ use serde::Serialize;
 
 use crate::error::{MpasError, MpasResult};
 use crate::mesh::density::Shape;
+use crate::mesh::geom::{cross as cross3, dot as dot3, norm as norm3};
 
 use rw_store::netcdf_classic::{
     NcAttr, NcAttrValue, NcClassicWriter, NcData, NcDim, NcFormat, NcType, NcVarDef,
@@ -521,25 +522,6 @@ fn sphere_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     let s1 = (0.5 * (lat2 - lat1)).sin();
     let s2 = (0.5 * (lon2 - lon1)).sin();
     2.0 * (s1 * s1 + lat1.cos() * lat2.cos() * s2 * s2).sqrt().asin()
-}
-
-#[inline]
-fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-#[inline]
-fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-#[inline]
-fn norm3(a: [f64; 3]) -> f64 {
-    dot3(a, a).sqrt()
 }
 
 /// The tool's `rotate_about_vector` (Glenn Murray's formulas), verbatim.

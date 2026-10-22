@@ -2,6 +2,8 @@
 import hashlib
 import struct
 
+import sys
+
 import numpy as np
 import pytest
 
@@ -148,15 +150,24 @@ def test_cpu_real_receipts_batch_two_fields_and_match_original_hashes(entry, mon
     from test_real_init import _analyzed_hrrr_real_init
     original = native.array_fingerprints
     calls = []
+    side_by_side = []
     def observed(arrays, **kwargs):
         values = tuple(arrays)
-        calls.append((len(values), kwargs.get("workers")))
+        # The two-field bound is the species normalization's
+        # (receipt_fingerprints: FP32 receipt copies of float64 fields).
+        # 8a1ceeb1fc hashes independent arrays the receipt already holds
+        # side by side (_fingerprints_side_by_side), unbounded by design.
+        if sys._getframe(1).f_code.co_name == "_fingerprints_side_by_side":
+            side_by_side.append(len(values))
+        else:
+            calls.append((len(values), kwargs.get("workers")))
         return original(values, **kwargs)
     monkeypatch.setattr(native, "array_fingerprints", observed)
     actual, _cfg = _analyzed_hrrr_real_init(6, preprocess_backend="cpu",
         init_kwargs={"preprocess_workers": 8})
     assert any(count == 2 and workers == 2 for count, workers in calls)
     assert max(count for count, _workers in calls) <= 2
+    assert side_by_side and min(side_by_side) >= 2
     monkeypatch.setattr(native, "_native_entry", lambda: None)
     expected, _cfg = _analyzed_hrrr_real_init(6, preprocess_backend="cpu",
         init_kwargs={"preprocess_workers": 8})

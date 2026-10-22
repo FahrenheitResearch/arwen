@@ -87,8 +87,6 @@ TOOLS = [
           {"page": {"type": "string", "enum": ["library", "runs", "create", "machines", "run", "watch", "results", "event"]},
            "run": {"type": "string"}, "event": {"type": "string"}}, ["page"]),
 ]
-READ_TOOLS = {"list_runs", "run_status", "list_sources", "list_physics", "this_computer", "check_fit", "search_wiki",
-              "read_event", "read_run"}
 #: Where a read tool's answer comes from, as the panel names it beside the reply.
 READ_FROM = {"search_wiki": "wiki", "read_event": "wiki", "read_run": "run", "run_status": "run", "list_runs": "run",
              "check_fit": "fit", "list_sources": "engine", "list_physics": "engine", "this_computer": "engine"}

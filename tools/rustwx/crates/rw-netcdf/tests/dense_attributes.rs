@@ -82,18 +82,22 @@ fn assert_native_values(file: &netcrust::File) {
                 .read_strings(name)
                 .expect("read native character variable");
             let expected_bytes = bytes_from_hex(&variable["bytes_hex"]);
+            // NC_CHAR reads as one string per row of the last axis (the
+            // NetCDF meaning, and what a classic file answers), with the
+            // trailing NUL pad trimmed. Re-pad each row to rebuild the bytes.
+            let dims = shape(&variable["shape"]);
+            let width = dims.last().copied().unwrap_or(1).max(1);
             assert_eq!(
                 strings.len(),
-                expected_bytes.len(),
-                "{name}: fixed-width HDF5 characters"
+                expected_bytes.len() / width,
+                "{name}: one string per row of {width} characters"
             );
-            let actual: Vec<u8> = strings
-                .iter()
-                .map(|text| {
-                    assert!(text.is_ascii() && text.len() <= 1);
-                    text.as_bytes().first().copied().unwrap_or(0)
-                })
-                .collect();
+            let mut actual: Vec<u8> = Vec::with_capacity(expected_bytes.len());
+            for text in &strings {
+                assert!(text.is_ascii() && text.len() <= width, "{name}: {text:?}");
+                actual.extend_from_slice(text.as_bytes());
+                actual.resize(actual.len() + (width - text.len()), 0);
+            }
             assert_eq!(actual, expected_bytes, "{name}");
             let metadata = file.variable(name).expect("character variable metadata");
             assert_eq!(metadata.shape(), shape(&variable["shape"]), "{name}");

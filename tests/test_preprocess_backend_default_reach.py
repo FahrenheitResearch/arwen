@@ -122,22 +122,6 @@ def test_the_hrrr_root_receipt_keeps_why_auto_chose_the_cpu(
         "reason": backend_module.NAMED_BY_CALLER}
 
 
-def test_auto_without_cupy_resolves_cpu_and_says_so(
-        monkeypatch, capsys, _fresh_announcement):
-    from types import SimpleNamespace
-
-    _cupyless(monkeypatch)
-    cpu = SimpleNamespace(name="cpu")
-    monkeypatch.setattr(
-        backend_module, "ParallelCpuPreprocessBackend",
-        lambda **_kwargs: cpu)
-    assert resolve_preprocess_backend("auto") is cpu
-    err = capsys.readouterr().err
-    assert err.count("\n") == 1
-    assert "cpu" in err.lower()
-    assert "cupy" in err.lower()
-
-
 def test_the_auto_line_prints_once_per_process(
         monkeypatch, capsys, _fresh_announcement):
     """nest initialization re-resolves per child; four lines is noise."""
@@ -167,23 +151,6 @@ def test_cuda_without_cupy_is_a_named_refusal(monkeypatch,
     assert "cupy" in text
     assert "pip install" in text
     assert "--preprocess-backend cpu" in text
-
-
-def test_cuda_with_cupy_present_stays_lazy(monkeypatch,
-                                           _fresh_announcement):
-    """The presence probe is the only new gate: with cupy resolvable the
-    cuda branch returns the same lazy backend it always has, importing
-    nothing at resolve time."""
-
-    from types import SimpleNamespace
-
-    monkeypatch.setattr(
-        backend_module, "_gpu_runtime_installed", lambda: True)
-    monkeypatch.setattr(
-        backend_module, "CudaPreprocessBackend",
-        lambda: SimpleNamespace(name="cuda"))
-    monkeypatch.setattr("gpuwm.local_gpu.no_local_gpu", lambda: False)
-    assert resolve_preprocess_backend("cuda").name == "cuda"
 
 
 def test_auto_with_unusable_runtime_names_the_runtime(

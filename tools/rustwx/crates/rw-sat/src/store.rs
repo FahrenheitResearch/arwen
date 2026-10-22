@@ -28,7 +28,6 @@
 
 use std::error::Error;
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -41,6 +40,7 @@ use rw_store::reader::HourReader;
 use rw_store::run::{RwsHourEntry, RwsRunManifest};
 use rw_store::writer::HourWriter;
 
+use crate::boxed_error;
 use crate::abi::{AbiFixedGrid, AbiSector, GoesAbiField};
 use crate::geostationary::SweepAngleAxis;
 
@@ -410,10 +410,6 @@ fn goes_selector(field: &GoesAbiField, band: u8) -> serde_json::Value {
             },
         }
     })
-}
-
-fn boxed_error(message: impl Into<String>) -> Box<dyn Error> {
-    Box::new(io::Error::new(io::ErrorKind::InvalidData, message.into()))
 }
 
 #[cfg(test)]

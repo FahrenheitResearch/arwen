@@ -203,6 +203,12 @@ def _verify_wheel_matches_source(wheel: Path) -> dict[str, object]:
         forbidden.extend(sorted(
             name for name in wheel_names
             if name.startswith(FORBIDDEN_WHEEL_PREFIXES)
+            # These source-matched CPU harnesses generate pinned tables at
+            # first use; coefficient sets and oracle payloads remain excluded.
+            and name not in {
+                "gpuwm/data/thompson/fork-build/generate_tables.F90",
+                "gpuwm/data/thompson/fork-build/stub_wrf.F90",
+            }
         ))
         if forbidden:
             raise ValueError(

@@ -402,7 +402,8 @@ def fit_main(args):
                   forcing_interval_seconds=interval,
                   candidate_builder=starter.candidate,
                   clearance_rows=starter.exp.spec_bdy_width + starter.exp.blend_width,
-                  minimum_axis=max(dw.FIFTH_ORDER_STENCIL_AXIS,
+                  minimum_axis=max(dw.FIFTH_ORDER_STENCIL_AXIS if any(
+                      d.run.h_sca_adv_order == 5 for d in starter.exp.domains) else 1,
                       dw.boundary_axis(starter.exp.spec_bdy_width, interior_points=1),
                       *(dw.boundary_axis(max(d.run.spec_zone, d.run.relax_zone),
                                          interior_points=1) for d in starter.exp.domains)))
@@ -877,7 +878,8 @@ def register_cli(subparsers):
     target.add_argument("--polygon", type=Path, help="GeoJSON area; preserve its entire footprint")
     parser.add_argument("--point-extent-km", type=dw.point_extent_argument,
                         default=dw.POINT_FIT_MAX_EXTENT_KM, metavar="KM",
-                        help="largest root extent per axis a --point fit is sized to "
+                        help="largest root extent a --point fit is sized to, on the longer "
+                        "root axis (x); the root keeps its 5:4 shape, so y is 0.8 of it "
                         f"(default {dw.POINT_FIT_MAX_EXTENT_KM:.0f}); the projection pole, "
                         "one trip around the globe, the source's coverage and the card "
                         "still bound it, and an extent below the template's smallest "

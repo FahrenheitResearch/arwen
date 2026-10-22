@@ -162,7 +162,7 @@ struct Query {
     latest: bool,
 }
 
-fn drain(mut stream: impl Read + Send + 'static) -> JoinHandle<Vec<u8>> {
+pub(crate) fn drain(mut stream: impl Read + Send + 'static, limit: usize) -> JoinHandle<Vec<u8>> {
     std::thread::spawn(move || {
         let mut result = Vec::new();
         let mut block = [0u8; 8192];
@@ -170,7 +170,7 @@ fn drain(mut stream: impl Read + Send + 'static) -> JoinHandle<Vec<u8>> {
             if count == 0 {
                 break;
             }
-            if result.len() < 1024 * 1024 {
+            if result.len() < limit {
                 result.extend_from_slice(&block[..count]);
             }
         }
@@ -206,8 +206,8 @@ impl Query {
         let mut child = command
             .spawn()
             .map_err(|e| format!("Could not query source dates: {e}"))?;
-        let out = Some(drain(child.stdout.take().unwrap()));
-        let err = Some(drain(child.stderr.take().unwrap()));
+        let out = Some(drain(child.stdout.take().unwrap(), 1024 * 1024));
+        let err = Some(drain(child.stderr.take().unwrap(), 1024 * 1024));
         Ok(Self {
             child,
             out,
@@ -493,8 +493,8 @@ impl Form {
                 }
                 KeyCode::Backspace => { year.pop(); }
                 KeyCode::Char('u' | 'U') if ctrl => year.clear(),
-                KeyCode::Char(c) if !ctrl && c.is_ascii_digit() => {
-                    if year.len() < 4 { year.push(c); }
+                KeyCode::Char(c) if !ctrl && c.is_ascii_digit() && year.len() < 4 => {
+                    year.push(c);
                 }
                 _ => {}
             }

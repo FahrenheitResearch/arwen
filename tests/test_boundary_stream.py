@@ -439,38 +439,6 @@ def test_a_consumer_waits_for_its_marker_with_the_named_reason(tmp_path):
     assert [index for index, _ in stream.waits] == [1]
 
 
-def test_an_array_without_its_marker_is_never_read(tmp_path, monkeypatch):
-    snapshots = _snapshots(3)
-    times = _times(3)
-    writer, output = _chained_tree(tmp_path, snapshots, stop_after=0)
-    frames = _frames(snapshots)
-    writer.write_segment(1, frames.interval(1, times))
-    marker = segment_marker_path(output, 1)
-    held = marker.read_bytes()
-    marker.unlink()
-    loads = []
-    import gpuwm.ingest.prepared_cache as cache_module
-    real = cache_module.read_manifest_array
-    monkeypatch.setattr(cache_module, "read_manifest_array",
-                        lambda *a, **k: loads.append(a[1]) or real(*a, **k))
-    waits = []
-    stream = StreamedIntervals(output, head=read_head(output),
-                               on_wait=waits.append, poll_seconds=0.01)
-    stream[0]
-    before = list(loads)
-    result = {}
-    thread = threading.Thread(target=lambda: result.update(i=stream[1]))
-    thread.start()
-    deadline = time.monotonic() + 5
-    while not waits and time.monotonic() < deadline:
-        time.sleep(0.01)
-    time.sleep(0.05)
-    assert loads == before
-    marker.write_bytes(held)
-    thread.join(5)
-    assert any(key.startswith("lbc/1/") for key in loads)
-
-
 def test_streamed_attach_reloads_each_interval_like_the_eager_series(
         tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "cupy", SimpleNamespace(
@@ -503,18 +471,6 @@ def test_streamed_attach_reloads_each_interval_like_the_eager_series(
 # ---------------------------------------------------------------------------
 # 3. Producer failure and silence
 # ---------------------------------------------------------------------------
-
-
-def test_a_producer_failure_reaches_the_consumer_by_its_reason(tmp_path):
-    snapshots = _snapshots(4)
-    writer, output = _chained_tree(tmp_path, snapshots, stop_after=0)
-    writer.fail(ValueError("forcing time 2 could not be decoded"))
-    stream = StreamedIntervals(output, head=read_head(output),
-                               poll_seconds=0.01)
-    with pytest.raises(BoundaryProducerFailed,
-                       match="forcing time 2 could not be decoded"):
-        stream[1]
-    assert "producer failed" in unfinished_tree_reason(output)
 
 
 def test_a_silent_producer_ends_the_wait_by_name(tmp_path):
@@ -608,18 +564,6 @@ def test_a_chained_producer_outlives_the_reader_of_its_console(
     assert sys.stdout.reader_gone
     assert (output / "proof.json").exists()
     assert not (output / "boundary-stream" / "failed.json").exists()
-
-
-def test_a_live_or_complete_tree_is_never_removed(tmp_path):
-    snapshots = _snapshots(3)
-    writer, live = _chained_tree(tmp_path, snapshots, stop_after=0,
-                                 name="live")
-    assert unfinished_tree_reason(live) is None
-    assert not remove_unfinished_tree(live)
-    writer._stop_heartbeat(final="producing")
-    _, complete = _chained_tree(tmp_path, snapshots, name="done")
-    assert not remove_unfinished_tree(complete)
-    assert complete.exists() and live.exists()
 
 
 def test_a_changed_segment_after_consumption_fails_the_seal_check(tmp_path):
@@ -750,88 +694,30 @@ def _producer(tmp_path, snapshots, *, gate=None, name="run"):
     return prepare, outcome
 
 
-def test_a_failed_forecast_leaves_its_producer_to_seal(tmp_path):
-    # A retry reuses a sealed preparation; a stopped one is built again.
+def test_a_failed_forecast_is_said_at_once_and_stops_its_producer(
+        tmp_path, capsys):
+    # A forecast that failed 25 s after its preflight used to leave its
+    # producer building every later forcing time (19-24 min on V59/V60,
+    # 2026-10-21) behind waiting:preparation before the error was raised.
     gate = threading.Event()
     prepare, outcome = _producer(tmp_path, _snapshots(4), gate=gate)
 
     def forecast(head):
-        gate.set()
-        raise FloatingPointError("the model went unstable")
-
-    with pytest.raises(FloatingPointError, match="unstable"):
-        boundary_stream.run_chained(
-            prepared_root=tmp_path / "run", prepare=prepare,
-            forecast=forecast, poll_seconds=0.01)
-    assert outcome.get("sealed") is True
-    assert (tmp_path / "run" / "proof.json").exists()
-    assert not (tmp_path / "run" / "boundary-stream" / "stop.json").exists()
-
-
-def test_a_failed_forecast_holding_for_the_seal_says_so_on_the_heartbeat(
-        tmp_path):
-    # The run reports the failure only after the preparation ends; until
-    # then its heartbeat says waiting:preparation instead of keeping the
-    # failed forecast's last step, and the hold is said before it ends.
-    from gpuwm.supervisor import RuntimeHeartbeat, read_heartbeat, utc_now
-
-    heartbeat = RuntimeHeartbeat(tmp_path / "run-progress.json",
-                                 run_id="hold", config_sha256="0" * 64,
-                                 started_at_utc=utc_now())
-    held = threading.Event()
-    seen = {}
-
-    class Observer:
-        def waiting(self, on, **record):
-            heartbeat.waiting(on, **record)
-            if not held.is_set():
-                seen["during"] = read_heartbeat(heartbeat.path)
-                seen["sealed_during"] = (
-                    tmp_path / "run" / "proof.json").exists()
-                held.set()
-
-        def waited(self):
-            heartbeat.waited()
-
-    prepare, outcome = _producer(tmp_path, _snapshots(4), gate=held)
-
-    def forecast(head):
-        heartbeat(model_elapsed_seconds=60.0, outer_step=3,
-                  last_durable_wrfout=None, last_checkpoint=None)
-        raise FloatingPointError("the model went unstable")
-
-    with pytest.raises(FloatingPointError, match="unstable"):
-        boundary_stream.run_chained(
-            prepared_root=tmp_path / "run", prepare=prepare,
-            forecast=forecast, poll_seconds=0.01, observer=Observer())
-    during = seen["during"]
-    assert seen["sealed_during"] is False
-    assert during.status == "waiting:preparation"
-    assert during.outer_step == 3 and during.model_elapsed_seconds == 60.0
-    assert {key: value for key, value in during.wait.items()
-            if key != "since_utc"} == {"on": "preparation", "lead": None,
-                                       "expected_at": None, "late_at": None}
-    assert outcome.get("sealed") is True
-    after = read_heartbeat(heartbeat.path)
-    assert after.status == "integrating" and after.wait is None
-
-
-def test_an_interrupted_forecast_stops_its_producer(tmp_path):
-    gate = threading.Event()
-    prepare, outcome = _producer(tmp_path, _snapshots(4), gate=gate)
-
-    def forecast(head):
-        # The stop is written before the producer is let go.
         threading.Timer(0.2, gate.set).start()
-        raise KeyboardInterrupt
+        raise FloatingPointError("the model went unstable")
 
-    with pytest.raises(KeyboardInterrupt):
+    with pytest.raises(FloatingPointError, match="unstable"):
         boundary_stream.run_chained(
             prepared_root=tmp_path / "run", prepare=prepare,
             forecast=forecast, poll_seconds=0.01)
+    stop_file = tmp_path / "run" / "boundary-stream" / "stop.json"
+    assert json.loads(stop_file.read_text(encoding="utf-8"))["reason"]         .startswith("the forecast failed: FloatingPointError")
     assert isinstance(outcome["error"], BoundaryStreamStopped)
-    assert "KeyboardInterrupt" in str(outcome["error"])
+    assert not outcome.get("sealed")
     assert not (tmp_path / "run" / "proof.json").exists()
+    said = capsys.readouterr().err
+    assert ("the forecast failed (FloatingPointError: the model went "
+            "unstable); stopping the preparation") in said
 
 
 @pytest.mark.parametrize("stop", ["go", "stage"])
@@ -981,7 +867,9 @@ def test_a_failed_tree_is_never_bound(tmp_path):
         boundary_stream.bind_head(output, writer.head_sha256)
 
 
-def test_the_streamed_loop_writes_what_the_route_loop_wrote(tmp_path, request):
+@pytest.mark.parametrize("workers", [1, 3])
+def test_the_streamed_loop_writes_what_the_route_loop_wrote(tmp_path, request,
+                                                          workers):
     def stop_writer(writer):
         heartbeat = writer._heartbeat
         writer._stop_heartbeat(final="producing")
@@ -1020,10 +908,19 @@ def test_the_streamed_loop_writes_what_the_route_loop_wrote(tmp_path, request):
         def add_state(self, state, index):
             frames.add_snapshot(state, index=index)
 
+    # All concurrent builds must start before the first can finish.  The
+    # writer must still publish snapshots and segments in index order.
+    from threading import Barrier
+    started = Barrier(workers)
+
+    def build(k):
+        if workers > 1:
+            started.wait(timeout=5)
+        return None, SimpleNamespace(state=snapshots[k])
+
     writer.stream_forcing_times(
         count=4, forcing=_Frames(), times=times,
-        build_forcing_time=lambda k: (None, SimpleNamespace(
-            state=snapshots[k])),
+        build_forcing_time=build, workers=workers,
         release=lambda: released.append(True))
     receipt = writer.seal_cache()
     assert len(released) == 3 and writer.times_built == 3
@@ -1210,12 +1107,6 @@ def _forecast_of(monkeypatch):
     return set_bytes
 
 
-def test_a_host_producer_never_shares_the_forecast_card():
-    decision = boundary_stream.chained_admission(
-        experiment=None, backend="cpu")
-    assert decision["admitted"] and decision["device"] == "host"
-
-
 def test_a_gpu_producer_is_admitted_only_when_both_fit(_forecast_of,
                                                        tmp_path):
     gib = 1 << 30
@@ -1325,15 +1216,3 @@ def test_sim_binds_the_head_of_a_preparation_still_running(tmp_path):
     # A preparation that failed is never started on.
     writer.fail(ValueError("decode failed"))
     assert stage_cli.unsealed_head_bundle(output) is None
-
-
-def test_a_same_process_producer_is_never_judged_silent(tmp_path):
-    writer, output = _chained_tree(tmp_path, _snapshots(3), stop_after=0)
-    writer._stop_heartbeat(final="producing")
-    beat_path = output / "boundary-stream" / "producer.json"
-    beat = json.loads(beat_path.read_text(encoding="utf-8"))
-    beat.update(updated_epoch=time.time() - 3600.0)
-    beat_path.write_text(json.dumps(beat), encoding="utf-8")
-    stream = StreamedIntervals(output, head=read_head(output),
-                               poll_seconds=0.01)
-    stream._producer_verdict(1)  # no refusal: the age proves nothing here

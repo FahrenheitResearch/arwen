@@ -13,6 +13,18 @@ use ratatui::{
 };
 use serde_json::Value;
 
+fn edit_text(value: &mut String, code: KeyCode, ctrl: bool) {
+    if ctrl && code == KeyCode::Char('u') {
+        value.clear();
+    } else if code == KeyCode::Backspace {
+        value.pop();
+    } else if let KeyCode::Char(ch) = code {
+        if !ctrl && !ch.is_control() && value.len() < 4096 {
+            value.push(ch);
+        }
+    }
+}
+
 #[derive(Clone)]
 pub enum Screen {
     Error {
@@ -43,463 +55,7 @@ pub enum Screen {
     },
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ratatui::{backend::TestBackend, Terminal};
-    fn controller() -> Controller {
-        // Parallel tests read one clock tick on the 2.8.6 windows-2025 runner and collided on this name; the counter keeps each call distinct.
-        static NEXT_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let mut c = Controller::load(
-            &std::env::temp_dir().join(format!("arwen-ui-test-{}-{}", crate::remote::stamp(), NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed))),
-        );
-        let mut node = Node::blank();
-        node.host = "weather-node".into();
-        node.workspace = "/srv/weather".into();
-        node.config = "/srv/weather/storm.toml".into();
-        node.last_job = Some("job-1".into());
-        c.store.active = Some(node.id.clone());
-        c.store.nodes.push(node);
-        c.view.jobs = vec![serde_json::json!({"id":"job-1", "state":"completed"})];
-        c
-    }
-    fn press(panel: &mut Panel, code: KeyCode, c: &Controller) -> Intent {
-        panel.key(
-            KeyEvent::new(code, KeyModifiers::NONE),
-            c,
-            Ok("none".into()),
-        )
-    }
-    #[test]
-    fn all_node_screens_keep_primary_mouse_actions_at_supported_sizes() {
-        let c = controller();
-        for (width, height) in [(65, 20), (80, 24), (120, 36)] {
-            for (screen, label) in [
-                (Screen::Nodes, "Enter Use"),
-                (
-                    Screen::Edit {
-                        node: c.store.nodes[0].clone(),
-                        field: 9,
-                        editing: true,
-                    },
-                    "Ctrl+S Save",
-                ),
-                (Screen::Jobs, "Enter View"),
-                (Screen::Remove(c.store.nodes[0].clone()), "Enter Remove profile"),
-                (Screen::Job, "X Stop"),
-                (
-                    Screen::Stop {
-                        job: "job-1".into(),
-                    },
-                    "Enter Stop job",
-                ),
-                (
-                    Screen::Resume {
-                        job: "job-1".into(),
-                        checkpoint: "latest".into(),
-                        output: String::new(),
-                        field: 0,
-                    },
-                    "Enter Review",
-                ),
-                (
-                    Screen::Review {
-                        operation: Operation::Start {
-                            products: "none".into(),
-                            preview: true,
-                            binding: None,
-                        },
-                        review: serde_json::json!({"config":"/storm.toml","outdir":"/new","products":"none"}),
-                    },
-                    "Enter Start on node",
-                ),
-            ] {
-                let mut p = Panel {
-                    screen,
-                    ..Panel::default()
-                };
-                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-                terminal
-                    .draw(|f| p.draw(f, f.area(), &c, "General · 22"))
-                    .unwrap();
-                let buffer = terminal.backend().buffer();
-                let rendered: String = (0..height)
-                    .flat_map(|y| (0..width).map(move |x| buffer[(x, y)].symbol()))
-                    .collect();
-                assert!(rendered.contains(label), "{width}x{height}: {label}");
-                assert!(p
-                    .hits
-                    .iter()
-                    .all(|(r, _)| r.bottom() <= height && r.right() <= width));
-            }
-        }
-    }
-    #[test]
-    fn start_requires_review_and_stop_is_explicit() {
-        let c = controller();
-        let mut p = Panel::default();
-        assert!(matches!(
-            press(&mut p, KeyCode::Char('s'), &c),
-            Intent::Request(Operation::Start { preview: true, .. })
-        ));
-        p.screen = Screen::Job;
-        assert!(matches!(
-            press(&mut p, KeyCode::Char('x'), &c),
-            Intent::Keep
-        ));
-        assert!(matches!(p.screen, Screen::Stop { .. }));
-        assert!(matches!(press(&mut p, KeyCode::Esc, &c), Intent::Keep));
-        assert!(matches!(p.screen, Screen::Job));
-        press(&mut p, KeyCode::Char('x'), &c);
-        assert!(matches!(
-            press(&mut p, KeyCode::Enter, &c),
-            Intent::Request(Operation::Stop { .. })
-        ));
-    }
-    #[test]
-    fn removing_a_profile_is_reviewed_and_never_requests_a_remote_stop() {
-        let c = controller();
-        let original = c.store.nodes[0].clone();
-        let mut panel = Panel::default(); panel.open(&c);
-        assert!(matches!(press(&mut panel, KeyCode::Delete, &c), Intent::Keep));
-        assert!(matches!(&panel.screen, Screen::Remove(node) if node == &original));
-        let screen = render(&mut panel, &c, 65, 20);
-        assert!(screen.contains("Remote jobs keep running"), "{screen}");
-        let mut held = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-        held.kind = KeyEventKind::Repeat;
-        assert!(matches!(panel.key(held, &c, Ok("none".into())), Intent::Keep));
-        assert!(matches!(press(&mut panel, KeyCode::Esc, &c), Intent::Keep));
-        assert!(matches!(panel.screen, Screen::Nodes));
-        assert_eq!(c.store.nodes, vec![original.clone()]);
-        press(&mut panel, KeyCode::Delete, &c);
-        assert!(matches!(press(&mut panel, KeyCode::Enter, &c), Intent::Remove(id) if id == original.id));
-        assert_eq!(c.store.nodes, vec![original]);
-        assert!(c.pending.is_none());
-    }
-    #[test]
-    fn empty_jobs_explain_the_next_step_and_only_request_a_start_preview() {
-        let mut c = controller(); c.view.jobs.clear();
-        for (width, height) in [(65, 20), (80, 24), (120, 36)] {
-            let mut panel = Panel { screen: Screen::Jobs, ..Panel::default() };
-            let screen = render(&mut panel, &c, width, height);
-            assert!(screen.contains("No jobs are listed"), "{screen}");
-            assert!(screen.contains("Enter Review first start"), "{screen}");
-            assert!(screen.contains("L Local computer"), "{screen}");
-            for code in [KeyCode::Enter, KeyCode::Char('s')] {
-                assert!(matches!(press(&mut panel, code, &c), Intent::Request(Operation::Start { preview: true, binding: None, .. })));
-            }
-            assert!(c.pending.is_none());
-        }
-    }
-    #[test]
-    fn empty_nodes_keep_unavailable_actions_local_and_offer_local_computer() {
-        let mut c = controller(); c.store.nodes.clear(); c.store.active = None;
-        let mut panel = Panel::default(); panel.open(&c);
-        for code in [KeyCode::Char('p'), KeyCode::Char('j'), KeyCode::Char('s'), KeyCode::F(7)] {
-            assert!(matches!(press(&mut panel, code, &c), Intent::Keep));
-            assert!(matches!(panel.screen, Screen::Nodes));
-            assert!(panel.notice.contains("Press N"));
-        }
-        assert!(matches!(press(&mut panel, KeyCode::Delete, &c), Intent::Keep));
-        assert!(panel.notice.contains("cannot be removed"));
-        assert!(matches!(press(&mut panel, KeyCode::Char('l'), &c), Intent::Select(None)));
-        for (width, height) in [(65, 20), (80, 24), (120, 36)] {
-            let screen = render(&mut panel, &c, width, height);
-            assert!(screen.contains("L Local computer"), "{screen}");
-            assert!(!screen.contains("Jobs continue on the node"), "{screen}");
-        }
-    }
-    #[test]
-    fn held_enter_cannot_confirm_a_new_launch_resume_or_stop_review() {
-        let c = controller();
-        let review = serde_json::json!({
-            "outdir":"/new-run", "config_sha256":"a".repeat(64),
-            "input_sha256":"b".repeat(64), "checkpoint":"/old/checkpoint.npz",
-            "checkpoint_sha256":"c".repeat(64), "checkpoint_set_sha256":"d".repeat(64)
-        });
-        for screen in [
-            Screen::Review {
-                operation: Operation::Start {
-                    products: "none".into(),
-                    preview: true,
-                    binding: None,
-                },
-                review: review.clone(),
-            },
-            Screen::Review {
-                operation: Operation::Resume {
-                    job: "job-1".into(),
-                    checkpoint: "latest".into(),
-                    output: String::new(),
-                    preview: true,
-                    binding: None,
-                },
-                review,
-            },
-            Screen::Stop {
-                job: "job-1".into(),
-            },
-        ] {
-            let mut p = Panel {
-                screen,
-                ..Panel::default()
-            };
-            for kind in [KeyEventKind::Repeat, KeyEventKind::Release] {
-                let mut event = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-                event.kind = kind;
-                assert!(matches!(p.key(event, &c, Ok("none".into())), Intent::Keep));
-            }
-            assert!(matches!(
-                press(&mut p, KeyCode::Enter, &c),
-                Intent::Request(_)
-            ));
-        }
-    }
-    #[test]
-    fn clicked_save_preserves_case_and_spaces_and_does_not_start_job() {
-        let c = controller();
-        let mut p = Panel::default();
-        let mut n = c.store.nodes[0].clone();
-        n.config.clear();
-        p.screen = Screen::Edit {
-            node: n,
-            field: 4,
-            editing: true,
-        };
-        p.paste("/Weather Runs/Operator's Storm.toml");
-        let mut terminal = Terminal::new(TestBackend::new(65, 20)).unwrap();
-        terminal.draw(|f| p.draw(f, f.area(), &c, "None")).unwrap();
-        let r = p
-            .hits
-            .iter()
-            .find(|(_, k)| *k == KeyCode::Char('S'))
-            .unwrap()
-            .0;
-        let result = p.mouse(
-            MouseEvent {
-                kind: MouseEventKind::Down(MouseButton::Left),
-                column: r.x,
-                row: r.y,
-                modifiers: KeyModifiers::NONE,
-            },
-            &c,
-            Ok("none".into()),
-        );
-        let Intent::Save(node) = result else {
-            panic!("save button did not save")
-        };
-        assert_eq!(node.config, "/Weather Runs/Operator's Storm.toml");
-        assert_eq!(node.last_job.as_deref(), Some("job-1"));
-    }
-    fn render(panel: &mut Panel, c: &Controller, width: u16, height: u16) -> String {
-        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal
-            .draw(|frame| panel.draw(frame, Rect::new(0, 3, width, height - 3), c, "General · 22"))
-            .unwrap();
-        let buffer = terminal.backend().buffer();
-        (0..height)
-            .map(|y| {
-                (0..width)
-                    .map(|x| buffer[(x, y)].symbol())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-    fn capture(name: &str, width: u16, height: u16, screen: &str) {
-        if let Some(directory) = std::env::var_os("GPUWM_TUI_SNAPSHOT_DIR") {
-            let directory = std::path::PathBuf::from(directory);
-            std::fs::create_dir_all(&directory).unwrap();
-            std::fs::write(
-                directory.join(format!("{name}-{width}x{height}.txt")),
-                screen,
-            )
-            .unwrap();
-        }
-    }
-    #[test]
-    fn long_errors_scroll_to_the_final_remedy_and_return_to_saved_inputs() {
-        let c = controller();
-        for (width, height) in [(65, 20), (80, 24), (120, 36)] {
-            let node = c.store.nodes[0].clone();
-            let mut p = Panel::default();
-            p.screen = Screen::Edit {
-                node: node.clone(),
-                field: 11,
-                editing: true,
-            };
-            p.error(format!(
-                "{}\nFINAL remedy: fix the WPS path, then review again.",
-                (0..90)
-                    .map(|i| format!("Diagnostic {i}: {}", "weather path ".repeat(6)))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            ));
-            let initial = render(&mut p, &c, width, height);
-            assert!(!initial.contains("FINAL remedy"));
-            press(&mut p, KeyCode::End, &c);
-            let last = render(&mut p, &c, width, height);
-            assert!(last.contains("FINAL remedy: fix the WPS path"), "{last}");
-            assert!(last.contains("Esc Back"), "{last}");
-            capture("nodes-error-final-remedy", width, height, &last);
-            let rect = p
-                .hits
-                .iter()
-                .find(|(_, key)| *key == KeyCode::Esc)
-                .unwrap()
-                .0;
-            p.mouse(
-                MouseEvent {
-                    kind: MouseEventKind::Down(MouseButton::Left),
-                    column: rect.x,
-                    row: rect.y,
-                    modifiers: KeyModifiers::NONE,
-                },
-                &c,
-                Ok("none".into()),
-            );
-            let Screen::Edit {
-                node: restored,
-                field,
-                editing,
-            } = &p.screen
-            else {
-                panic!("did not restore inputs")
-            };
-            assert_eq!(restored, &node);
-            assert_eq!(*field, 11);
-            assert!(*editing);
-            assert!(c.pending.is_none());
-        }
-    }
-    #[test]
-    fn job_end_follows_new_tail_while_up_and_review_keep_their_position() {
-        let mut c = controller();
-        c.view.status = Some(serde_json::json!({"id":"job-1","state":"running"}));
-        for (width, height) in [(65, 20), (80, 24), (120, 36)] {
-            let mut p = Panel::default();
-            p.screen = Screen::Job;
-            press(&mut p,KeyCode::Char('g'),&c);
-            c.view.log = (0..90).map(|i| format!("Step {i}\n")).collect();
-            render(&mut p, &c, width, height);
-            press(&mut p, KeyCode::End, &c);
-            c.view.log.push_str("LATEST FIRST\n");
-            let screen = render(&mut p, &c, width, height);
-            assert!(screen.contains("LATEST FIRST"), "{screen}");
-            press(&mut p, KeyCode::PageUp, &c);
-            let before = p.offset;
-            c.view.log.push_str("LATEST SECOND\n");
-            let screen = render(&mut p, &c, width, height);
-            assert_eq!(p.offset, before);
-            assert!(!screen.contains("LATEST SECOND"));
-            press(&mut p, KeyCode::End, &c);
-            let screen = render(&mut p, &c, width, height);
-            assert!(screen.contains("LATEST SECOND"));
-            press(&mut p, KeyCode::Up, &c);
-            let before = p.offset;
-            c.view.log.push_str("LATEST THIRD\n");
-            render(&mut p, &c, width, height);
-            assert_eq!(p.offset, before);
-            press(&mut p, KeyCode::End, &c);
-            capture(
-                "nodes-log-follow",
-                width,
-                height,
-                &render(&mut p, &c, width, height),
-            );
-            p.update(&Update::Preview { operation:Operation::Start { products:"none".into(),preview:true,binding:None },
-                review:serde_json::json!({"config":"/storm.toml","outdir":"/new","products":"none","details":"x".repeat(4000)}) });
-            let screen = render(&mut p, &c, width, height);
-            assert_eq!(p.offset, 0);
-            assert!(screen.contains("START ON"), "{screen}");
-            render(&mut p, &c, width, height);
-            assert_eq!(p.offset, 0);
-        }
-    }
-    #[test]
-    fn actual_native_progress_is_primary_and_raw_logs_are_a_separate_view(){
-        let receipt:Value=serde_json::from_str(include_str!("../tests/fixtures/native-progress-newcastle-2013.json")).unwrap();
-        let mut c=controller();let mut status=receipt["native_result"].clone();
-        status["state"]=receipt["state"].clone();status["id"]=receipt["job_id"].clone();
-        c.view.status=Some(status);c.view.log="RAW EVENT LOG DETAIL".into();
-        for(width,height)in[(65,20),(80,24),(120,36)]{
-            let mut panel=Panel{screen:Screen::Job,..Panel::default()};
-            let screen=render(&mut panel,&c,width,height);
-            for expected in ["RUNNING","Rendering images","Steps 360","Sim time","Wall time","45.6× realtime","100.0%","Checkpoint saved","G Raw logs"]{assert!(screen.contains(expected),"{expected}: {screen}");}
-            assert!(!screen.contains("RAW EVENT LOG DETAIL"));assert!(!screen.contains("arwen.forecast-progress.v1"));
-            capture("nodes-native-progress",width,height,&screen);
-            assert!(matches!(press(&mut panel,KeyCode::Char('g'),&c),Intent::Keep));
-            let logs=render(&mut panel,&c,width,height);assert!(logs.contains("RAW EVENT LOG DETAIL"));assert!(logs.contains("G Progress"));
-            press(&mut panel,KeyCode::Char('g'),&c);assert!(render(&mut panel,&c,width,height).contains("Steps 360"));
-            assert!(c.pending.is_none());
-        }
-        c.view.status.as_mut().unwrap()["state"]=serde_json::json!("completed");
-        assert!(job_progress_text(c.view.status.as_ref().unwrap(),true).starts_with("COMPLETED · Finished"));
-    }
-    #[test]
-    fn a_sections_only_run_says_it_has_no_map_frames(){
-        let note="This run asked only for cross-section pictures, which need a line this viewer cannot take, so it has no map products to show here.";
-        let status=serde_json::json!({"state":"running","stage":"forecast",
-            "background_maps":{"state":"no_map_products","note":note,"committed":3,"ready":0,"done":false}});
-        let shown=job_progress_text(&status,false);
-        assert!(shown.contains(&format!("Map frames: {note}")),"{shown}");
-        assert!(!shown.contains("0 / 3 ready"),"{shown}");
-    }
-    #[test]
-    fn connected_workspace_restores_saved_job_without_opening_the_job_screen(){
-        let mut c=controller();c.view.runtime=Some(serde_json::json!({"capabilities":{}}));
-        c.view.last_refresh=Some(std::time::Instant::now());
-        let panel=Panel::default();assert!(matches!(panel.screen,Screen::Nodes));
-        assert!(!panel.should_refresh(&c));
-        assert!(panel.should_refresh_connected(&c,true),"A successful probe must fetch the remembered job immediately");
-        assert!(c.pending.is_none());assert_eq!(c.store.selected().unwrap().last_job.as_deref(),Some("job-1"));
-        c.view.status=Some(serde_json::json!({"id":"job-1","state":"running"}));c.view.eof=Some(true);
-        assert!(!panel.should_refresh_connected(&c,true));
-        c.view.last_refresh=Some(std::time::Instant::now()-std::time::Duration::from_secs(6));
-        assert!(panel.should_refresh_connected(&c,true),"A connected map must keep getting job status while the TUI shows another screen");
-        c.view.last_job_refresh=Some(std::time::Instant::now()-std::time::Duration::from_secs(4));
-        c.view.last_refresh=Some(std::time::Instant::now());
-        assert!(panel.should_refresh_connected(&c,true),"A just-finished timeline request must not postpone a due job-status update");
-        c.view.last_job_refresh=Some(std::time::Instant::now());
-        c.view.status=None;c.view.connection_error=Some("temporary SSH failure".into());c.view.last_refresh=Some(std::time::Instant::now());
-        assert!(!panel.should_refresh_connected(&c,true),"A failed reconnect must retain the retry backoff");
-    }
-    #[test]
-    fn all_node_fields_are_reachable_in_both_keyboard_directions() {
-        let c = controller();
-        let node = c.store.nodes[0].clone();
-        assert_eq!(node.fields().len(), 13);
-        for (width, height) in [(65, 20), (80, 24), (120, 36)] {
-            let mut p = Panel::default();
-            p.screen = Screen::Edit {
-                node: node.clone(),
-                field: 0,
-                editing: false,
-            };
-            for expected in 0..node.fields().len() {
-                let Screen::Edit { field, .. } = p.screen else {
-                    panic!("edit closed")
-                };
-                assert_eq!(field, expected);
-                let screen = render(&mut p, &c, width, height);
-                if expected == 11 {
-                    assert!(screen.contains("WPS namelist on node"), "{screen}");
-                }
-                if expected == 12 {
-                    assert!(screen.contains("Cross-section line"), "{screen}");
-                }
-                press(&mut p, KeyCode::Tab, &c);
-            }
-            for expected in (0..node.fields().len()).rev() {
-                press(&mut p, KeyCode::BackTab, &c);
-                let Screen::Edit { field, .. } = p.screen else {
-                    panic!("edit closed")
-                };
-                assert_eq!(field, expected);
-            }
-        }
-    }
-}
+
 pub struct Panel {
     pub screen: Screen,
     pub selected: usize,
@@ -514,7 +70,7 @@ pub enum Intent {
     Keep,
     Close,
     Select(Option<String>),
-    Save(Node),
+    Save(Box<Node>),
     Remove(String),
     Request(Operation),
     ChooseJob(String),
@@ -740,6 +296,7 @@ impl Panel {
             Update::Status | Update::Logs | Update::PlanReviewed(_) | Update::ArtifactsSynced(_) | Update::ProcessedFrameSynced(_) | Update::ProcessedFrameSyncedV2(_) | Update::NativePlotsSynced(_) | Update::ArtifactIndexed(_) => {}
         }
     }
+    #[cfg(test)]
     pub fn should_refresh(&self, c: &Controller) -> bool {
         self.should_refresh_connected(c,false)
     }
@@ -830,7 +387,7 @@ impl Panel {
                         return Intent::Keep;
                     }
                 } else if ctrl && matches!(code, KeyCode::Char('s' | 'S')) {
-                    return Intent::Save(node);
+                    return Intent::Save(Box::new(node));
                 } else if code == KeyCode::Tab || code == KeyCode::Down && !editing {
                     field = (field + 1) % node.fields().len();
                     editing = false;
@@ -841,15 +398,7 @@ impl Panel {
                     editing = !editing;
                 } else if editing {
                     let mut value = node.fields()[field].1.to_string();
-                    if ctrl && code == KeyCode::Char('u') {
-                        value.clear();
-                    } else if code == KeyCode::Backspace {
-                        value.pop();
-                    } else if let KeyCode::Char(ch) = code {
-                        if !ctrl && !ch.is_control() && value.len() < 4096 {
-                            value.push(ch);
-                        }
-                    }
+                    edit_text(&mut value, code, ctrl);
                     node.set_field(field, value);
                 }
                 self.screen = Screen::Edit {
@@ -889,15 +438,7 @@ impl Panel {
                     } else {
                         &mut output
                     };
-                    if ctrl && code == KeyCode::Char('u') {
-                        value.clear();
-                    } else if code == KeyCode::Backspace {
-                        value.pop();
-                    } else if let KeyCode::Char(ch) = code {
-                        if !ctrl && !ch.is_control() && value.len() < 4096 {
-                            value.push(ch);
-                        }
-                    }
+                    edit_text(value, code, ctrl);
                 }
                 self.screen = Screen::Resume {
                     job,
@@ -1022,7 +563,7 @@ impl Panel {
                 }
                 let job = c.store.selected().and_then(|n| n.last_job.clone());
                 match code {
-                    KeyCode::Char('g') => {self.show_logs=!self.show_logs;self.offset=0;}
+                    KeyCode::Char('g') => {self.show_logs = !self.show_logs;self.offset=0;}
                     KeyCode::Char('y' | 'Y') => return Intent::CopyLogs,
                     KeyCode::Char('o' | 'O') => return Intent::OpenLog,
                     KeyCode::Char('r') => {
@@ -1519,5 +1060,451 @@ impl Panel {
             ),
             area,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{backend::TestBackend, Terminal};
+    fn controller() -> Controller {
+        // Parallel tests read one clock tick on the 2.8.6 windows-2025 runner and collided on this name; the counter keeps each call distinct.
+        static NEXT_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let mut c = Controller::load(
+            &std::env::temp_dir().join(format!("arwen-ui-test-{}-{}", crate::remote::stamp(), NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed))),
+        );
+        let mut node = Node::blank();
+        node.host = "weather-node".into();
+        node.workspace = "/srv/weather".into();
+        node.config = "/srv/weather/storm.toml".into();
+        node.last_job = Some("job-1".into());
+        c.store.active = Some(node.id.clone());
+        c.store.nodes.push(node);
+        c.view.jobs = vec![serde_json::json!({"id":"job-1", "state":"completed"})];
+        c
+    }
+    fn press(panel: &mut Panel, code: KeyCode, c: &Controller) -> Intent {
+        panel.key(
+            KeyEvent::new(code, KeyModifiers::NONE),
+            c,
+            Ok("none".into()),
+        )
+    }
+    #[test]
+    fn all_node_screens_keep_primary_mouse_actions_at_supported_sizes() {
+        let c = controller();
+        for (width, height) in [(65, 20), (80, 24), (120, 36)] {
+            for (screen, label) in [
+                (Screen::Nodes, "Enter Use"),
+                (
+                    Screen::Edit {
+                        node: c.store.nodes[0].clone(),
+                        field: 9,
+                        editing: true,
+                    },
+                    "Ctrl+S Save",
+                ),
+                (Screen::Jobs, "Enter View"),
+                (Screen::Remove(c.store.nodes[0].clone()), "Enter Remove profile"),
+                (Screen::Job, "X Stop"),
+                (
+                    Screen::Stop {
+                        job: "job-1".into(),
+                    },
+                    "Enter Stop job",
+                ),
+                (
+                    Screen::Resume {
+                        job: "job-1".into(),
+                        checkpoint: "latest".into(),
+                        output: String::new(),
+                        field: 0,
+                    },
+                    "Enter Review",
+                ),
+                (
+                    Screen::Review {
+                        operation: Operation::Start {
+                            products: "none".into(),
+                            preview: true,
+                            binding: None,
+                        },
+                        review: serde_json::json!({"config":"/storm.toml","outdir":"/new","products":"none"}),
+                    },
+                    "Enter Start on node",
+                ),
+            ] {
+                let mut p = Panel {
+                    screen,
+                    ..Panel::default()
+                };
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal
+                    .draw(|f| p.draw(f, f.area(), &c, "General · 22"))
+                    .unwrap();
+                let buffer = terminal.backend().buffer();
+                let rendered = crate::tests::buffer_text(buffer, Rect::new(0, 0, width, height), "");
+                assert!(rendered.contains(label), "{width}x{height}: {label}");
+                assert!(p
+                    .hits
+                    .iter()
+                    .all(|(r, _)| r.bottom() <= height && r.right() <= width));
+            }
+        }
+    }
+    #[test]
+    fn start_requires_review_and_stop_is_explicit() {
+        let c = controller();
+        let mut p = Panel::default();
+        assert!(matches!(
+            press(&mut p, KeyCode::Char('s'), &c),
+            Intent::Request(Operation::Start { preview: true, .. })
+        ));
+        p.screen = Screen::Job;
+        assert!(matches!(
+            press(&mut p, KeyCode::Char('x'), &c),
+            Intent::Keep
+        ));
+        assert!(matches!(p.screen, Screen::Stop { .. }));
+        assert!(matches!(press(&mut p, KeyCode::Esc, &c), Intent::Keep));
+        assert!(matches!(p.screen, Screen::Job));
+        press(&mut p, KeyCode::Char('x'), &c);
+        assert!(matches!(
+            press(&mut p, KeyCode::Enter, &c),
+            Intent::Request(Operation::Stop { .. })
+        ));
+    }
+    #[test]
+    fn removing_a_profile_is_reviewed_and_never_requests_a_remote_stop() {
+        let c = controller();
+        let original = c.store.nodes[0].clone();
+        let mut panel = Panel::default(); panel.open(&c);
+        assert!(matches!(press(&mut panel, KeyCode::Delete, &c), Intent::Keep));
+        assert!(matches!(&panel.screen, Screen::Remove(node) if node == &original));
+        let screen = render(&mut panel, &c, 65, 20);
+        assert!(screen.contains("Remote jobs keep running"), "{screen}");
+        let mut held = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        held.kind = KeyEventKind::Repeat;
+        assert!(matches!(panel.key(held, &c, Ok("none".into())), Intent::Keep));
+        assert!(matches!(press(&mut panel, KeyCode::Esc, &c), Intent::Keep));
+        assert!(matches!(panel.screen, Screen::Nodes));
+        assert_eq!(c.store.nodes, vec![original.clone()]);
+        press(&mut panel, KeyCode::Delete, &c);
+        assert!(matches!(press(&mut panel, KeyCode::Enter, &c), Intent::Remove(id) if id == original.id));
+        assert_eq!(c.store.nodes, vec![original]);
+        assert!(c.pending.is_none());
+    }
+    #[test]
+    fn empty_jobs_explain_the_next_step_and_only_request_a_start_preview() {
+        let mut c = controller(); c.view.jobs.clear();
+        for (width, height) in [(65, 20), (80, 24), (120, 36)] {
+            let mut panel = Panel { screen: Screen::Jobs, ..Panel::default() };
+            let screen = render(&mut panel, &c, width, height);
+            assert!(screen.contains("No jobs are listed"), "{screen}");
+            assert!(screen.contains("Enter Review first start"), "{screen}");
+            assert!(screen.contains("L Local computer"), "{screen}");
+            for code in [KeyCode::Enter, KeyCode::Char('s')] {
+                assert!(matches!(press(&mut panel, code, &c), Intent::Request(Operation::Start { preview: true, binding: None, .. })));
+            }
+            assert!(c.pending.is_none());
+        }
+    }
+    #[test]
+    fn empty_nodes_keep_unavailable_actions_local_and_offer_local_computer() {
+        let mut c = controller(); c.store.nodes.clear(); c.store.active = None;
+        let mut panel = Panel::default(); panel.open(&c);
+        for code in [KeyCode::Char('p'), KeyCode::Char('j'), KeyCode::Char('s'), KeyCode::F(7)] {
+            assert!(matches!(press(&mut panel, code, &c), Intent::Keep));
+            assert!(matches!(panel.screen, Screen::Nodes));
+            assert!(panel.notice.contains("Press N"));
+        }
+        assert!(matches!(press(&mut panel, KeyCode::Delete, &c), Intent::Keep));
+        assert!(panel.notice.contains("cannot be removed"));
+        assert!(matches!(press(&mut panel, KeyCode::Char('l'), &c), Intent::Select(None)));
+        for (width, height) in [(65, 20), (80, 24), (120, 36)] {
+            let screen = render(&mut panel, &c, width, height);
+            assert!(screen.contains("L Local computer"), "{screen}");
+            assert!(!screen.contains("Jobs continue on the node"), "{screen}");
+        }
+    }
+    #[test]
+    fn held_enter_cannot_confirm_a_new_launch_resume_or_stop_review() {
+        let c = controller();
+        let review = serde_json::json!({
+            "outdir":"/new-run", "config_sha256":"a".repeat(64),
+            "input_sha256":"b".repeat(64), "checkpoint":"/old/checkpoint.npz",
+            "checkpoint_sha256":"c".repeat(64), "checkpoint_set_sha256":"d".repeat(64)
+        });
+        for screen in [
+            Screen::Review {
+                operation: Operation::Start {
+                    products: "none".into(),
+                    preview: true,
+                    binding: None,
+                },
+                review: review.clone(),
+            },
+            Screen::Review {
+                operation: Operation::Resume {
+                    job: "job-1".into(),
+                    checkpoint: "latest".into(),
+                    output: String::new(),
+                    preview: true,
+                    binding: None,
+                },
+                review,
+            },
+            Screen::Stop {
+                job: "job-1".into(),
+            },
+        ] {
+            let mut p = Panel {
+                screen,
+                ..Panel::default()
+            };
+            for kind in [KeyEventKind::Repeat, KeyEventKind::Release] {
+                let mut event = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+                event.kind = kind;
+                assert!(matches!(p.key(event, &c, Ok("none".into())), Intent::Keep));
+            }
+            assert!(matches!(
+                press(&mut p, KeyCode::Enter, &c),
+                Intent::Request(_)
+            ));
+        }
+    }
+    #[test]
+    fn clicked_save_preserves_case_and_spaces_and_does_not_start_job() {
+        let c = controller();
+        let mut p = Panel::default();
+        let mut n = c.store.nodes[0].clone();
+        n.config.clear();
+        p.screen = Screen::Edit {
+            node: n,
+            field: 4,
+            editing: true,
+        };
+        p.paste("/Weather Runs/Operator's Storm.toml");
+        let mut terminal = Terminal::new(TestBackend::new(65, 20)).unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &c, "None")).unwrap();
+        let r = p
+            .hits
+            .iter()
+            .find(|(_, k)| *k == KeyCode::Char('S'))
+            .unwrap()
+            .0;
+        let result = p.mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: r.x,
+                row: r.y,
+                modifiers: KeyModifiers::NONE,
+            },
+            &c,
+            Ok("none".into()),
+        );
+        let Intent::Save(node) = result else {
+            panic!("save button did not save")
+        };
+        assert_eq!(node.config, "/Weather Runs/Operator's Storm.toml");
+        assert_eq!(node.last_job.as_deref(), Some("job-1"));
+    }
+    fn render(panel: &mut Panel, c: &Controller, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| panel.draw(frame, Rect::new(0, 3, width, height - 3), c, "General · 22"))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        crate::tests::buffer_text(buffer, buffer.area, "\n")
+    }
+    fn capture(name: &str, width: u16, height: u16, screen: &str) {
+        if let Some(directory) = std::env::var_os("GPUWM_TUI_SNAPSHOT_DIR") {
+            let directory = std::path::PathBuf::from(directory);
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(
+                directory.join(format!("{name}-{width}x{height}.txt")),
+                screen,
+            )
+            .unwrap();
+        }
+    }
+    #[test]
+    fn long_errors_scroll_to_the_final_remedy_and_return_to_saved_inputs() {
+        let c = controller();
+        for (width, height) in [(65, 20), (80, 24), (120, 36)] {
+            let node = c.store.nodes[0].clone();
+            let mut p = Panel { screen: Screen::Edit {
+                node: node.clone(),
+                field: 11,
+                editing: true,
+            }, ..Panel::default() };
+            p.error(format!(
+                "{}\nFINAL remedy: fix the WPS path, then review again.",
+                (0..90)
+                    .map(|i| format!("Diagnostic {i}: {}", "weather path ".repeat(6)))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
+            let initial = render(&mut p, &c, width, height);
+            assert!(!initial.contains("FINAL remedy"));
+            press(&mut p, KeyCode::End, &c);
+            let last = render(&mut p, &c, width, height);
+            assert!(last.contains("FINAL remedy: fix the WPS path"), "{last}");
+            assert!(last.contains("Esc Back"), "{last}");
+            capture("nodes-error-final-remedy", width, height, &last);
+            let rect = p
+                .hits
+                .iter()
+                .find(|(_, key)| *key == KeyCode::Esc)
+                .unwrap()
+                .0;
+            p.mouse(
+                MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: rect.x,
+                    row: rect.y,
+                    modifiers: KeyModifiers::NONE,
+                },
+                &c,
+                Ok("none".into()),
+            );
+            let Screen::Edit {
+                node: restored,
+                field,
+                editing,
+            } = &p.screen
+            else {
+                panic!("did not restore inputs")
+            };
+            assert_eq!(restored, &node);
+            assert_eq!(*field, 11);
+            assert!(*editing);
+            assert!(c.pending.is_none());
+        }
+    }
+    #[test]
+    fn job_end_follows_new_tail_while_up_and_review_keep_their_position() {
+        let mut c = controller();
+        c.view.status = Some(serde_json::json!({"id":"job-1","state":"running"}));
+        for (width, height) in [(65, 20), (80, 24), (120, 36)] {
+            let mut p = Panel { screen: Screen::Job, ..Panel::default() };
+            press(&mut p,KeyCode::Char('g'),&c);
+            c.view.log = (0..90).map(|i| format!("Step {i}\n")).collect();
+            render(&mut p, &c, width, height);
+            press(&mut p, KeyCode::End, &c);
+            c.view.log.push_str("LATEST FIRST\n");
+            let screen = render(&mut p, &c, width, height);
+            assert!(screen.contains("LATEST FIRST"), "{screen}");
+            press(&mut p, KeyCode::PageUp, &c);
+            let before = p.offset;
+            c.view.log.push_str("LATEST SECOND\n");
+            let screen = render(&mut p, &c, width, height);
+            assert_eq!(p.offset, before);
+            assert!(!screen.contains("LATEST SECOND"));
+            press(&mut p, KeyCode::End, &c);
+            let screen = render(&mut p, &c, width, height);
+            assert!(screen.contains("LATEST SECOND"));
+            press(&mut p, KeyCode::Up, &c);
+            let before = p.offset;
+            c.view.log.push_str("LATEST THIRD\n");
+            render(&mut p, &c, width, height);
+            assert_eq!(p.offset, before);
+            press(&mut p, KeyCode::End, &c);
+            capture(
+                "nodes-log-follow",
+                width,
+                height,
+                &render(&mut p, &c, width, height),
+            );
+            p.update(&Update::Preview { operation:Operation::Start { products:"none".into(),preview:true,binding:None },
+                review:serde_json::json!({"config":"/storm.toml","outdir":"/new","products":"none","details":"x".repeat(4000)}) });
+            let screen = render(&mut p, &c, width, height);
+            assert_eq!(p.offset, 0);
+            assert!(screen.contains("START ON"), "{screen}");
+            render(&mut p, &c, width, height);
+            assert_eq!(p.offset, 0);
+        }
+    }
+    #[test]
+    fn actual_native_progress_is_primary_and_raw_logs_are_a_separate_view(){
+        let receipt:Value=serde_json::from_str(include_str!("../tests/fixtures/native-progress-newcastle-2013.json")).unwrap();
+        let mut c=controller();let mut status=receipt["native_result"].clone();
+        status["state"]=receipt["state"].clone();status["id"]=receipt["job_id"].clone();
+        c.view.status=Some(status);c.view.log="RAW EVENT LOG DETAIL".into();
+        for(width,height)in[(65,20),(80,24),(120,36)]{
+            let mut panel=Panel{screen:Screen::Job,..Panel::default()};
+            let screen=render(&mut panel,&c,width,height);
+            for expected in ["RUNNING","Rendering images","Steps 360","Sim time","Wall time","45.6× realtime","100.0%","Checkpoint saved","G Raw logs"]{assert!(screen.contains(expected),"{expected}: {screen}");}
+            assert!(!screen.contains("RAW EVENT LOG DETAIL"));assert!(!screen.contains("arwen.forecast-progress.v1"));
+            capture("nodes-native-progress",width,height,&screen);
+            assert!(matches!(press(&mut panel,KeyCode::Char('g'),&c),Intent::Keep));
+            let logs=render(&mut panel,&c,width,height);assert!(logs.contains("RAW EVENT LOG DETAIL"));assert!(logs.contains("G Progress"));
+            press(&mut panel,KeyCode::Char('g'),&c);assert!(render(&mut panel,&c,width,height).contains("Steps 360"));
+            assert!(c.pending.is_none());
+        }
+        c.view.status.as_mut().unwrap()["state"]=serde_json::json!("completed");
+        assert!(job_progress_text(c.view.status.as_ref().unwrap(),true).starts_with("COMPLETED · Finished"));
+    }
+    #[test]
+    fn a_sections_only_run_says_it_has_no_map_frames(){
+        let note="This run asked only for cross-section pictures, which need a line this viewer cannot take, so it has no map products to show here.";
+        let status=serde_json::json!({"state":"running","stage":"forecast",
+            "background_maps":{"state":"no_map_products","note":note,"committed":3,"ready":0,"done":false}});
+        let shown=job_progress_text(&status,false);
+        assert!(shown.contains(&format!("Map frames: {note}")),"{shown}");
+        assert!(!shown.contains("0 / 3 ready"),"{shown}");
+    }
+    #[test]
+    fn connected_workspace_restores_saved_job_without_opening_the_job_screen(){
+        let mut c=controller();c.view.runtime=Some(serde_json::json!({"capabilities":{}}));
+        c.view.last_refresh=Some(std::time::Instant::now());
+        let panel=Panel::default();assert!(matches!(panel.screen,Screen::Nodes));
+        assert!(!panel.should_refresh(&c));
+        assert!(panel.should_refresh_connected(&c,true),"A successful probe must fetch the remembered job immediately");
+        assert!(c.pending.is_none());assert_eq!(c.store.selected().unwrap().last_job.as_deref(),Some("job-1"));
+        c.view.status=Some(serde_json::json!({"id":"job-1","state":"running"}));c.view.eof=Some(true);
+        assert!(!panel.should_refresh_connected(&c,true));
+        c.view.last_refresh=Some(std::time::Instant::now()-std::time::Duration::from_secs(6));
+        assert!(panel.should_refresh_connected(&c,true),"A connected map must keep getting job status while the TUI shows another screen");
+        c.view.last_job_refresh=Some(std::time::Instant::now()-std::time::Duration::from_secs(4));
+        c.view.last_refresh=Some(std::time::Instant::now());
+        assert!(panel.should_refresh_connected(&c,true),"A just-finished timeline request must not postpone a due job-status update");
+        c.view.last_job_refresh=Some(std::time::Instant::now());
+        c.view.status=None;c.view.connection_error=Some("temporary SSH failure".into());c.view.last_refresh=Some(std::time::Instant::now());
+        assert!(!panel.should_refresh_connected(&c,true),"A failed reconnect must retain the retry backoff");
+    }
+    #[test]
+    fn all_node_fields_are_reachable_in_both_keyboard_directions() {
+        let c = controller();
+        let node = c.store.nodes[0].clone();
+        assert_eq!(node.fields().len(), 13);
+        for (width, height) in [(65, 20), (80, 24), (120, 36)] {
+            let mut p = Panel { screen: Screen::Edit {
+                node: node.clone(),
+                field: 0,
+                editing: false,
+            }, ..Panel::default() };
+            for expected in 0..node.fields().len() {
+                let Screen::Edit { field, .. } = p.screen else {
+                    panic!("edit closed")
+                };
+                assert_eq!(field, expected);
+                let screen = render(&mut p, &c, width, height);
+                if expected == 11 {
+                    assert!(screen.contains("WPS namelist on node"), "{screen}");
+                }
+                if expected == 12 {
+                    assert!(screen.contains("Cross-section line"), "{screen}");
+                }
+                press(&mut p, KeyCode::Tab, &c);
+            }
+            for expected in (0..node.fields().len()).rev() {
+                press(&mut p, KeyCode::BackTab, &c);
+                let Screen::Edit { field, .. } = p.screen else {
+                    panic!("edit closed")
+                };
+                assert_eq!(field, expected);
+            }
+        }
     }
 }

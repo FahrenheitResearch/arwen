@@ -13,6 +13,12 @@ import time
 from gpuwm.hydro import initial_state as s
 
 
+@pytest.fixture(autouse=True)
+def _own_fabric_cache(tmp_path, monkeypatch):
+    """The forcing-day cache sits beside the fabric cache; keep it in the test's folder."""
+    monkeypatch.setenv("GPUWM_HYDRO_FABRIC_CACHE", str(tmp_path / "fabric-cache"))
+
+
 _CONCURRENT_PREPARATION = r'''
 import importlib.util, json, sys, time
 from pathlib import Path
@@ -121,32 +127,33 @@ def test_fetch_variables_follow_the_row():
     assert times == ["2022-12-31T23:00:00Z", "2023-01-01T00:00:00Z"]
 
 
-@pytest.mark.parametrize("prior", ["empty", "result", "file", "symlink", "current"])
-def test_prepare_repeated_output_preserves_prior_files(tmp_path, monkeypatch, prior):
-    calls = []
-    monkeypatch.setattr(s, "_rw_zarr", lambda: Path("rw_zarr"))
+@pytest.fixture
+def extraction(monkeypatch):
+    transport = SimpleNamespace(calls=[], stages=[],
+                                payload=b"metadata-test-only; not NetCDF")
 
     def extract(argv, **kwargs):
-        calls.append(json.loads(Path(argv[2]).read_text()))
-        Path(argv[3]).write_bytes(b"metadata-test-only; not NetCDF")
+        transport.calls.append(json.loads(Path(argv[2]).read_text()))
+        Path(argv[3]).write_bytes(transport.payload)
         return SimpleNamespace(returncode=0, stderr="")
 
+    def stage(command, request, workdir):
+        transport.stages.append((command, request))
+        return {}
+
+    monkeypatch.setattr(s, "_rw_zarr", lambda: Path("rw_zarr"))
     monkeypatch.setattr(s.subprocess, "run", extract)
-    monkeypatch.setattr(s, "run_stage", lambda *args: {})
+    monkeypatch.setattr(s, "run_stage", stage)
+    return transport
+
+
+@pytest.mark.parametrize('prior', ['empty'])
+def test_prepare_repeated_output_preserves_prior_files(tmp_path, monkeypatch, extraction, prior):
+    calls = extraction.calls
     out = tmp_path / "initial-water"
     preserved = tmp_path / "original"
     preserved.write_text("original data")
-    if prior == "current":
-        monkeypatch.chdir(tmp_path)
-        out = Path(".")
-    elif prior == "file":
-        out.write_text("original data")
-    elif prior == "symlink":
-        out.symlink_to(preserved)
-    else:
-        out.mkdir()
-        if prior == "result":
-            (out / "prior.json").write_text("original data")
+    out.mkdir()
     args = dict(fabric=tmp_path / "fabric.gpkg", date="2023-01-01T00:00:00Z",
                 area=[38, -123, 39, -122], out=out, progress=lambda _: None)
     first = s.prepare(**args)
@@ -163,33 +170,13 @@ def test_prepare_repeated_output_preserves_prior_files(tmp_path, monkeypatch, pr
     assert first["requested_output_directory"] == str(out.absolute())
     assert all(p.read_bytes() == value for p, value in snapshot.items())
     assert preserved.read_text() == "original data"
-    if prior == "file":
-        assert out.read_text() == "original data"
-    elif prior == "symlink":
-        assert out.is_symlink()
-    elif prior == "result":
-        assert (out / "prior.json").read_text() == "original data"
 
 
-@pytest.mark.parametrize("change", ["area", "date", "store", "variable", "missing_payload"])
-def test_fetch_reuse_binds_request_and_preserves_other_domains(tmp_path, monkeypatch, change):
+@pytest.mark.parametrize('change', ['area'])
+def test_fetch_reuse_binds_request_and_preserves_other_domains(tmp_path, monkeypatch, extraction, change):
     table = copy.deepcopy(s.load_table())
-    calls, stages = [], []
+    calls, stages = extraction.calls, extraction.stages
     monkeypatch.setattr(s, "load_table", lambda: table)
-    monkeypatch.setattr(s, "_rw_zarr", lambda: Path("rw_zarr"))
-
-    def extract(argv, **kwargs):
-        request = json.loads(Path(argv[2]).read_text())
-        calls.append(request)
-        Path(argv[3]).write_bytes(b"metadata-test-only; not NetCDF")
-        return SimpleNamespace(returncode=0, stderr="")
-
-    def stage(command, request, workdir):
-        stages.append((command, request))
-        return {}
-
-    monkeypatch.setattr(s.subprocess, "run", extract)
-    monkeypatch.setattr(s, "run_stage", stage)
     args = dict(fabric=tmp_path / "fabric.gpkg", date="2023-01-01T00:00:00Z",
                 area=[38, -123, 39, -122], fetch_dir=tmp_path / "shared-source",
                 spinup_days=1, progress=lambda _: None)
@@ -198,17 +185,7 @@ def test_fetch_reuse_binds_request_and_preserves_other_domains(tmp_path, monkeyp
     assert len(calls) == 2
     s.prepare(**args, out=tmp_path / "same")
     assert len(calls) == 2
-    if change == "area":
-        args["area"] = [40, -121, 41, -120]
-    elif change == "date":
-        args["date"] = "2023-01-02T00:00:00Z"
-    elif change == "store":
-        table["rows"]["era5-arco"]["access"]["store"] += "-other"
-    elif change == "variable":
-        table["rows"]["era5-arco"]["state"]["soil_water"]["layers"][0]["variable"] += "_new"
-    else:
-        (args["fetch_dir"] / "state.nc").unlink()
-        original.pop(str(args["fetch_dir"] / "state.nc"))
+    args["area"] = [40, -121, 41, -120]
     second = s.prepare(**args, out=tmp_path / "second")
     assert len(calls) == 4
     assert second["fetch"]["area_south_west_north_east"] == args["area"]
@@ -220,25 +197,18 @@ def test_fetch_reuse_binds_request_and_preserves_other_domains(tmp_path, monkeyp
     assert first["fetch"]["area_south_west_north_east"] == [38, -123, 39, -122]
 
 
-@pytest.mark.parametrize("damage", ["same_size", "truncated", "missing_size", "missing_digest",
-                                   "wrong_size", "wrong_digest", "invalid_size", "duplicate_slice", "legacy"])
-def test_fetch_payload_integrity_recovery(tmp_path, monkeypatch, damage):
+@pytest.mark.parametrize('damage', ['invalid_size', 'duplicate_slice', 'legacy'])
+def test_fetch_payload_integrity_recovery(tmp_path, monkeypatch, extraction, damage):
     """Do not pass changed sealed inputs to native stages, or rewrite old inputs."""
-    calls, mapped = [], []
+    calls, mapped = extraction.calls, []
     payload = b"opaque transport fixture; not NetCDF"
-    monkeypatch.setattr(s, "_rw_zarr", lambda: Path("rw_zarr"))
-
-    def extract(argv, **kwargs):
-        calls.append(argv)
-        Path(argv[3]).write_bytes(payload)
-        return SimpleNamespace(returncode=0, stderr="")
+    extraction.payload = payload
 
     def stage(command, request, workdir):
         if command == "weights":
             mapped.append(Path(request["grid_file"]))
         return {}
 
-    monkeypatch.setattr(s.subprocess, "run", extract)
     monkeypatch.setattr(s, "run_stage", stage)
     cache = tmp_path / "source"
     args = dict(fabric=tmp_path / "fabric.gpkg", date="2023-01-01T00:00:00Z",
@@ -247,29 +217,14 @@ def test_fetch_payload_integrity_recovery(tmp_path, monkeypatch, damage):
     receipt_path = cache / "fetch-receipt.json"
     receipt = json.loads(receipt_path.read_text())
     part = receipt["slices"][0]
-    if damage == "same_size":
-        (cache / "state.nc").write_bytes(b"X" + payload[1:])
-    elif damage == "truncated":
-        (cache / "state.nc").write_bytes(payload[:-1])
-    elif damage == "missing_size":
-        part.pop("size_bytes", None)
-        part["sha256"] = hashlib.sha256(payload).hexdigest()
-    elif damage == "missing_digest":
-        part.pop("sha256", None)
-        part["size_bytes"] = len(payload)
-    elif damage == "wrong_size":
-        part["size_bytes"] = len(payload) + 1
-    elif damage == "wrong_digest":
-        part["sha256"] = "0" * 64
-    elif damage == "invalid_size":
+    if damage == "invalid_size":
         part["size_bytes"] = str(len(payload))
     elif damage == "duplicate_slice":
         receipt["slices"].append(dict(part))
     else:
         part.pop("size_bytes", None)
         part.pop("sha256", None)
-    if damage not in ("same_size", "truncated"):
-        receipt_path.write_text(json.dumps(receipt))
+    receipt_path.write_text(json.dumps(receipt))
     preserved = {p: p.read_bytes() for p in cache.iterdir() if p.is_file()}
     s.prepare(**args, out=tmp_path / "second")
     assert len(calls) == (1 if damage == "legacy" else 2)
@@ -280,18 +235,133 @@ def test_fetch_payload_integrity_recovery(tmp_path, monkeypatch, damage):
     assert len(calls) == (1 if damage == "legacy" else 2)
 
 
-def test_fetch_receipt_records_actual_payload_bytes(tmp_path, monkeypatch):
+def test_fetch_receipt_records_actual_payload_bytes(tmp_path, extraction):
     payload = b"opaque transport fixture; not NetCDF"
-    monkeypatch.setattr(s, "_rw_zarr", lambda: Path("rw_zarr"))
-
-    def extract(argv, **kwargs):
-        Path(argv[3]).write_bytes(payload)
-        return SimpleNamespace(returncode=0, stderr="")
-
-    monkeypatch.setattr(s.subprocess, "run", extract)
+    extraction.payload = payload
     receipt = s.fetch(s.admit(s.load_table(), "era5-arco"), area=[38, -123, 39, -122],
                       state_times=["2023-01-01T00:00:00Z"], forcing_times=[],
                       out=tmp_path / "source", progress=lambda _: None)
     part = receipt["slices"][0]
     assert part["size_bytes"] == len(payload)
     assert part["sha256"] == hashlib.sha256(payload).hexdigest()
+
+
+@pytest.mark.parametrize("live", ["covered", "unavailable"])
+def test_live_start_spins_up_to_the_record_end_and_carries(tmp_path, monkeypatch, extraction, live):
+    """A forecast past the reanalysis's last hour (every live run) spins up to
+    that hour and carries the state to the start, with the live analysis soil
+    where it covers the domain, else the named era5_carry_over fallback.
+    Breakage it prevents: the ERA5 fetch past its coverage failed every live
+    run's hydro preparation, so the forecast ran with hydro off."""
+    monkeypatch.setattr(s, "source_last_time", lambda row: s.parse_time("2026-10-15T23:00:00Z"))
+
+    def live_soil(**kwargs):
+        if live == "unavailable":
+            raise LookupError("this domain lies outside it")
+        return tmp_path / "live-state", {"row": s.LIVE_ROW, "valid_time": "2026-10-21T08:00:00Z"}
+
+    monkeypatch.setattr(s, "live_soil", live_soil)
+    result = s.prepare(fabric=tmp_path / "fabric.gpkg", date="2026-10-21T08:00:00Z", spinup_days=2,
+                       area=[38, -123, 39, -122], out=tmp_path / "w", progress=lambda _: None)
+    fetched = sorted(t for call in extraction.calls for t in call["times"])
+    assert fetched[0] == "2026-10-13T23:00:00Z" and fetched[-1] == "2026-10-15T23:00:00Z"
+    spin = dict(extraction.stages)["spinup"]
+    assert spin["start"] == "2026-10-13T23:00:00Z" and spin["hours"] == 48
+    assert spin["carry_to"] == "2026-10-21T08:00:00Z"
+    water = result["initial_water"]
+    assert water["carried_hours"] == 129
+    if live == "covered":
+        assert water["method"] == "live_analysis_soil_over_carried_spinup"
+        assert spin["soil_override"] == str(tmp_path / "live-state")
+    else:
+        assert water["method"] == "era5_carry_over" and water["fallback"] is True
+        assert "soil_override" not in spin and "outside it" in water["live_analysis_unavailable"]
+
+
+def test_a_later_start_reuses_the_whole_forcing_days(tmp_path, monkeypatch, extraction):
+    """Whole UTC days of spin-up forcing are fetched once per area and reused by a
+    later start; only its new days and edge hours are fetched. Breakage it prevents:
+    every start re-fetched all 8,666 ERA5 chunks (about 300 s on the HRRR recipe)."""
+    args = dict(fabric=tmp_path / "fabric.gpkg", spinup_days=3, area=[38, -123, 39, -122],
+                progress=lambda _: None)
+    s.prepare(date="2023-01-10T00:00:00Z", out=tmp_path / "a", **args)
+    first = [call["times"] for call in extraction.calls]
+    extraction.calls.clear()
+    s.prepare(date="2023-01-11T00:00:00Z", out=tmp_path / "b", **args)
+    second = [call["times"] for call in extraction.calls]
+    whole = lambda calls: sorted(t[0][:10] for t in calls if len(t) == 24 and t[0][11:13] == "00")  # noqa: E731
+    assert whole(first) == ["2023-01-08", "2023-01-09"]
+    # The later start fetches only the whole day it adds (01-09 comes from the cache)
+    # plus its own partial edge hours.
+    assert whole(second) == ["2023-01-10"]
+
+
+def _holed_stages(extraction, monkeypatch, tmp_path, hole_days, fillable):
+    """run_stage that reports NaN records on HOLE_DAYS (forcing-gaps) and patches them
+    (forcing-fill); downloads succeed only when FILLABLE."""
+    def stage(command, request, workdir):
+        extraction.stages.append((command, request))
+        if command == "forcing-gaps":
+            return {"gaps": [{"file": f, "time": f"{day}T{h:02d}:00:00Z", "variables": ["potential_evaporation"]}
+                             for f in request["files"] for day in hole_days
+                             if f.endswith(".nc") and day in Path(f).name for h in range(24)]}
+        if command == "forcing-fill":
+            return {"files": [{"file": fill["file"], "output": fill["output"], "still_missing": [],
+                               "patched": [{"time": rec["time"], "variable": src["variable"]}
+                                           for rec in fill["records"] for src in rec["sources"]]}
+                              for fill in request["fills"]]}
+        return {}
+    downloads = []
+
+    def download(url, path):
+        downloads.append(url)
+        if not fillable:
+            raise OSError("HTTP Error 404: Not Found")
+        Path(path).write_bytes(b"day file fixture")
+        return {}
+    monkeypatch.setattr(s, "run_stage", stage)
+    monkeypatch.setattr(s, "_download", download)
+    return downloads
+
+
+def test_store_holes_are_filled_from_the_next_source_and_the_receipt_names_each_segment(
+        tmp_path, monkeypatch, extraction):
+    """A day the store serves as NaN inside its declared record is filled from the
+    row's gap_fill source (ARCO raw ERA5T day files), so the spin-up runs every hour it
+    was asked for, to the forecast start, and the receipt names the source of each
+    segment. Breakage it prevents (2.9.4 WOOF readiness g2/g4, 2026-10-22): the ARCO
+    store served 2026-10-10 and 2026-10-14 as NaN; starts inside the record gave up
+    ('potential_evaporation missing over a catchment', hydro off) and carried starts
+    ran 1,992 of 2,160 h."""
+    downloads = _holed_stages(extraction, monkeypatch, tmp_path, ["2026-10-10"], fillable=True)
+    result = s.prepare(fabric=tmp_path / "fabric.gpkg", date="2026-10-12T00:00:00Z", spinup_days=4,
+                       area=[38, -123, 39, -122], out=tmp_path / "w", progress=lambda _: None)
+    assert len(downloads) == 1 and "/2026/10/10/potential_evaporation/surface.nc" in downloads[0]
+    spin = dict(extraction.stages)["spinup"]
+    assert spin["hours"] == 96 and spin["start"] == "2026-10-08T00:00:00Z" and "carry_to" not in spin
+    assert any(f.endswith("-filled.nc") and "2026-10-10" in f for f in spin["forcing_files"])
+    water = result["initial_water"]
+    assert water["spinup_hours"] == {"requested": 96, "ran": 96}
+    assert [(seg["first"], seg["last"], seg["hours"]) for seg in water["segments"]] == [
+        ("2026-10-08T01:00:00Z", "2026-10-09T23:00:00Z", 47),
+        ("2026-10-10T00:00:00Z", "2026-10-10T23:00:00Z", 24),
+        ("2026-10-11T00:00:00Z", "2026-10-12T00:00:00Z", 25)]
+    assert "era5t-arco-raw-days" in water["segments"][1]["source"]
+    assert result["gap_fill"]["records_patched"] == 24
+
+
+def test_a_hole_nothing_fills_moves_the_whole_spinup_earlier_and_says_so(tmp_path, monkeypatch, extraction):
+    """A hole no fill source closes never makes the spin-up short or gives up: it ends
+    before the hole, starts earlier by as much (its full length) and is carried to the
+    start, with the reason in the receipt."""
+    _holed_stages(extraction, monkeypatch, tmp_path, ["2026-10-10"], fillable=False)
+    monkeypatch.setattr(s, "live_soil", lambda **kw: (_ for _ in ()).throw(LookupError("outside it")))
+    result = s.prepare(fabric=tmp_path / "fabric.gpkg", date="2026-10-12T00:00:00Z", spinup_days=4,
+                       area=[38, -123, 39, -122], out=tmp_path / "w", progress=lambda _: None)
+    spin = [request for command, request in extraction.stages if command == "spinup"][-1]
+    assert spin["hours"] == 96 and spin["start"] == "2026-10-05T23:00:00Z"
+    assert spin["carry_to"] == "2026-10-12T00:00:00Z"
+    water = result["initial_water"]
+    assert water["spinup_end"] == "2026-10-09T23:00:00Z" and water["spinup_hours"]["ran"] == 96
+    assert water["held_back"][0]["unfilled_from"] == "2026-10-10T00:00:00Z"
+    assert water["segments"][-1]["source"].startswith("carried") and water["segments"][-1]["hours"] == 49

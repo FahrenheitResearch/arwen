@@ -62,6 +62,7 @@ SURFACE_UNITS: Mapping[str, str] = {
     "wind_gust_10m": "m s-1",
     "precipitation_1h": "mm",
     "mslp": "Pa",
+    "visibility": "m",
     **{name: row[0] for name, row in _AQ_VARIABLES.items()},
 }
 
@@ -71,6 +72,7 @@ SCORED_SURFACE_VARIABLES: tuple[str, ...] = (
 
 #: Gridded observation quantities the scorer understands, with pinned units.
 GRID_UNITS: Mapping[str, str] = {
+    "maximum_estimated_hail_size": "mm",
     "composite_reflectivity": "dBZ",
     "precipitation_accumulation": "mm",
 }
@@ -87,6 +89,8 @@ SEAM_BOUNDS: Mapping[str, tuple[float, float]] = {
     "wind_gust_10m": (0.0, 150.0),
     "precipitation_1h": (0.0, 2000.0),
     "mslp": (80000.0, 115000.0),
+    "visibility": (0.0, 90000.0),
+    "maximum_estimated_hail_size": (0.0, 1000.0),
     "composite_reflectivity": (-40.0, 100.0),
     "precipitation_accumulation": (0.0, 2000.0),
     **{name: (row[1], row[2]) for name, row in _AQ_VARIABLES.items()},

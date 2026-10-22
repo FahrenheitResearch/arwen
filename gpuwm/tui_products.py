@@ -41,6 +41,15 @@ def presets() -> dict:
                        "plot-presets.json").read_text(encoding="utf-8"))
 
 
+def _unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key {key!r}")
+        result[key] = value
+    return result
+
+
 def lane_capabilities(path: Path | None = None) -> dict:
     """The packaged lane record: unserved reasons and window requirements.
 
@@ -57,18 +66,10 @@ def lane_capabilities(path: Path | None = None) -> dict:
 
     path = DIAGNOSTICS_PATH if path is None else Path(path)
 
-    def unique_object(pairs):
-        result = {}
-        for key, value in pairs:
-            if key in result:
-                raise ValueError(f"duplicate JSON key {key!r}")
-            result[key] = value
-        return result
-
     try:
         payload = path.read_bytes()
         document = json.loads(payload.decode("utf-8"),
-                              object_pairs_hook=unique_object)
+                              object_pairs_hook=_unique_object)
     except (OSError, ValueError) as error:
         raise ValueError(
             f"Cannot read packaged lane diagnostic capabilities at {path}: "

@@ -425,30 +425,6 @@ def _difference_report(whole: np.ndarray, other: np.ndarray, ny: int, nx: int,
 # LETKF: the operator that DOES tile, and the halo that makes it
 # --------------------------------------------------------------------------
 
-def letkf_halo(loc, grid) -> tuple[int, int]:
-    """``(dj, di)`` half-widths of the localisation stencil, in cells.
-
-    This is the LETKF's halo and it is not a measurement, it is a property
-    of the operator: Gaspari-Cohn has COMPACT support, so
-    ``letkf._horizontal_stencil`` returns a bounded index box whose
-    half-widths are ``floor(horizontal_m / min_spacing)`` clamped to the
-    grid.  A slab that carries that many rows of neighbour sees every
-    observation any of its interior points can read, so its interior
-    analysis is the whole-domain analysis EXACTLY -- not approximately, and
-    not at some width that has to be swept for.
-
-    Contrast :func:`tile_filter_control`, where no such number exists.  That
-    is the whole difference between the two halves of this lane.
-    """
-    from gpuwm.da import letkf
-
-    dj, di = letkf._horizontal_stencil(loc, grid, int(grid.lat_deg.shape[1])
-                                       if grid.lat_deg is not None else 1,
-                                       int(grid.lat_deg.shape[0])
-                                       if grid.lat_deg is not None else 1)
-    return int(np.abs(dj).max()), int(np.abs(di).max())
-
-
 def letkf_slab_control(prior, obs, grid, config, *, nslabs: int,
                        halo: int) -> dict:
     """Analyse the domain in row slabs and compare to the whole-domain run.

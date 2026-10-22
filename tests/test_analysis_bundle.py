@@ -126,6 +126,24 @@ def test_an_increment_file_makes_the_analysis(tmp_path, pair):
     assert _sha(second.analysis) == _sha(first.analysis)
 
 
+def test_an_increment_that_takes_moisture_below_zero_makes_a_non_negative_analysis(tmp_path):
+    background = write_wrf_state(tmp_path / "background.nc")
+    qr = _read(background, "QRAIN").astype(np.float64)
+    increment = {name: np.zeros_like(_read(background, name), dtype=np.float64) for name in ab.REQUIRED_INCREMENT}
+    delta = np.zeros_like(qr)
+    delta[1, 2, 3] = -qr[1, 2, 3] - 4.0e-14       # an ensemble mean's rounding: just below zero
+    increment["QRAIN"] = delta
+    record = ab.write_analysis(background, increment, tmp_path / "analysis.nc")
+    analysis = _read(tmp_path / "analysis.nc", "QRAIN")
+    assert analysis.min() >= 0.0 and analysis[1, 2, 3] == 0.0
+    assert record["clipped_negative"]["QRAIN"]["values"] == 1
+    bundle, made = ab.make_bundle(tmp_path / "bundle", background=background, analysis=tmp_path / "analysis.nc",
+                                  iau_window_s=600.0, ph="analysis", **bundle_identity())
+    rebuilt = tmp_path / "rebuilt.nc"
+    ab.write_background(bundle.analysis, bundle.increment, rebuilt)
+    assert np.array_equal(_read(rebuilt, "QRAIN"), _read(background, "QRAIN"))
+
+
 def test_ph_is_the_engines_and_moves_only_where_the_column_changed(tmp_path, pair):
     background, analysis = pair
     bundle, record = _make(tmp_path, pair)
@@ -228,3 +246,30 @@ def test_an_increment_of_a_field_the_forecast_never_integrates_is_refused(tmp_pa
         extra[0] = np.zeros((6, 7))
     with pytest.raises(ab.BundleRefusal, match="TSK"):
         ab.increment_variables(odd)
+
+
+def test_bundle_prefetch_keeps_unmasked_scaled_values(tmp_path, monkeypatch):
+    """Reading prefetched bundle fields must not restart one decoder per field."""
+    from gpuwm import netcdf_bridge
+    path = write_wrf_state(tmp_path / 'state.nc')
+    with netCDF4.Dataset(path, 'r+') as ds:
+        ds['T'].missing_value = np.float32(-999.0)
+        ds['T'][0, 0, 0, 0] = -999.0
+    expected = netcdf_bridge.open_dataset(path)
+    expected.set_auto_mask(False)
+    names = ['T', 'U', 'QVAPOR']
+    reference = {name: np.asarray(expected.variables[name][...]) for name in names}
+    runs = []
+    original = netcdf_bridge._run
+    def counted(arguments, **kwargs):
+        runs.append(arguments[1])
+        return original(arguments, **kwargs)
+    monkeypatch.setattr(netcdf_bridge, '_run', counted)
+    actual = ab._open(path)
+    runs.clear()
+    # 2.9.4 batches through _prefetch_unmasked (the unmasked policy is set per variable before the batch).
+    ab._prefetch_unmasked(actual, names)
+    for name in names:
+        np.testing.assert_array_equal(ab._first_record(actual.variables[name]), reference[name][0])
+    assert runs == ['dump']
+    assert ab._first_record(actual.variables['T'])[0, 0, 0] == -999.0

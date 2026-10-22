@@ -38,7 +38,8 @@
 //!   Fail-closed; nothing is fabricated.
 
 use std::error::Error;
-use std::io;
+
+use crate::boxed_error;
 
 /// Density of liquid water, g cm⁻³.
 pub const LIQUID_WATER_DENSITY_G_CM3: f32 = 1.0;
@@ -161,10 +162,6 @@ pub fn cloud_water_path_plane(
         out.push(value);
     }
     Ok((out, counts))
-}
-
-fn boxed_error(message: impl Into<String>) -> Box<dyn Error> {
-    Box::new(io::Error::new(io::ErrorKind::InvalidData, message.into()))
 }
 
 #[cfg(test)]

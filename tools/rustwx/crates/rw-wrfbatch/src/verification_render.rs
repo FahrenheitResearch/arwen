@@ -45,9 +45,12 @@ pub fn scorecard(receipt: &VerificationReceipt, path: &Path) -> Result<(), Strin
                 .first()
                 .map(|s| s.arms.iter().map(|a| a.label.clone()).collect())
         })
+        .or_else(|| receipt.grid_errors.first().map(|s| s.arms.iter().map(|a| a.label.clone()).collect()))
         .unwrap_or_default();
-    let width = 480 + labels.len() as u32 * 330;
-    let height = 252 + (receipt.stations.len() + receipt.radar.len()) as u32 * 48;
+    let (label_width, arm_width) = if receipt.grid_errors.is_empty() { (450, 330) } else { (740, 480) };
+    let width = label_width + 30 + labels.len() as u32 * arm_width;
+    let height = 252 + (receipt.stations.len() + receipt.radar.len()) as u32 * 48
+        + if receipt.grid_errors.is_empty() { 0 } else { 60 + receipt.grid_errors.len() as u32 * 48 };
     let background = Color::rgba(245, 247, 250, 255);
     let ink = Color::rgba(23, 35, 52, 255);
     let muted = Color::rgba(75, 89, 106, 255);
@@ -80,7 +83,7 @@ pub fn scorecard(receipt: &VerificationReceipt, path: &Path) -> Result<(), Strin
         ink,
     );
     for (i, label) in labels.iter().enumerate() {
-        text(&mut image, label, 450 + i as i32 * 330, 106, ink);
+        text(&mut image, label, label_width as i32 + i as i32 * arm_width as i32, 106, ink);
     }
     let mut y = 146;
     for row in &receipt.stations {
@@ -106,7 +109,7 @@ pub fn scorecard(receipt: &VerificationReceipt, path: &Path) -> Result<(), Strin
             text(
                 &mut image,
                 &line,
-                450 + i as i32 * 330,
+                label_width as i32 + i as i32 * arm_width as i32,
                 y,
                 if row.winner.as_deref() == Some(&a.label) {
                     green
@@ -120,18 +123,15 @@ pub fn scorecard(receipt: &VerificationReceipt, path: &Path) -> Result<(), Strin
     y += 12;
     text(
         &mut image,
-        "Radar: FSS / paired neighbourhood count",
+        "Gridded observations: FSS / paired neighbourhood count",
         28,
         y,
         ink,
     );
     y += 42;
     for row in &receipt.radar {
-        let prefix = if row.quantity == "composite_reflectivity" {
-            "Reflectivity"
-        } else {
-            "Rain"
-        };
+        let prefix = RADAR_QUANTITIES.iter().find(|(q,_,_,_)|*q==row.quantity)
+            .map(|(_,title,_,_)|*title).unwrap_or(&row.quantity);
         text(
             &mut image,
             &format!(
@@ -162,7 +162,7 @@ pub fn scorecard(receipt: &VerificationReceipt, path: &Path) -> Result<(), Strin
             text(
                 &mut image,
                 &line,
-                450 + i as i32 * 330,
+                label_width as i32 + i as i32 * arm_width as i32,
                 y,
                 if row.winner.as_deref() == Some(&a.label) {
                     green
@@ -172,6 +172,25 @@ pub fn scorecard(receipt: &VerificationReceipt, path: &Path) -> Result<(), Strin
             );
         }
         y += 48;
+    }
+    if !receipt.grid_errors.is_empty() {
+        y += 12;
+        text(&mut image, "Gridded errors: bias / RMSE / MAE / paired cells", 28, y, ink);
+        y += 42;
+        for row in &receipt.grid_errors {
+            let title = RADAR_QUANTITIES.iter().find(|(q,_,_,_)|*q==row.quantity)
+                .map(|(_,t,_,_)|*t).unwrap_or(&row.quantity);
+            text(&mut image, &format!("{title} ({})", row.units), 28, y, ink);
+            for (i,a) in row.arms.iter().enumerate() {
+                let line = if a.count > 0 {
+                    let n=a.count as f64;
+                    format!("{:+.2} / {:.2} / {:.2} / {}", a.sum_error/n,
+                        (a.sum_squared_error/n).sqrt(), a.sum_absolute_error/n, a.count)
+                } else { "missing / missing / missing / 0".into() };
+                text(&mut image, &line, label_width as i32+i as i32*arm_width as i32, y, ink);
+            }
+            y += 48;
+        }
     }
     text(
         &mut image,
@@ -203,6 +222,10 @@ fn style(quantity: &str) -> Result<rustwx_products::viewer::StoreVariableStyle, 
             FieldSelector::surface(CanonicalField::TotalPrecipitation),
             "mm",
         ),
+        "ivt_full_column" => (FieldSelector::entire_atmosphere(CanonicalField::FullColumnIvtMagnitude), "kg m-1 s-1"),
+        "ivt_eastward_full_column" => (FieldSelector::entire_atmosphere(CanonicalField::FullColumnIvtEastward), "kg m-1 s-1"),
+        "ivt_northward_full_column" => (FieldSelector::entire_atmosphere(CanonicalField::FullColumnIvtNorthward), "kg m-1 s-1"),
+        "integrated_water_vapour" => (FieldSelector::entire_atmosphere(CanonicalField::IntegratedWaterVapour), "kg m-2"),
         _ => return Err(format!("no production style metadata for {quantity}")),
     };
     rustwx_products::viewer::operational_style_for_store_variable(

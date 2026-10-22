@@ -874,7 +874,10 @@ def _validate_published_levels(
     """
 
     label = f"fields.{name}.published_levels"
-    if name not in PUBLISHED_LEVELS_ZERO_FIELDS:
+    upper_boundary = field.get("published_levels", {}).get("absent") == "nearest_upper_boundary"
+    if upper_boundary and name != "specific_humidity":
+        raise ValueError(f"{label}: upper boundary extension is restricted to specific_humidity")
+    if name not in PUBLISHED_LEVELS_ZERO_FIELDS and not upper_boundary:
         raise ValueError(
             f"{label} is restricted to the hydrometeor mass mixing ratios "
             f"({', '.join(PUBLISHED_LEVELS_ZERO_FIELDS)}): their zero is "
@@ -911,8 +914,8 @@ def _validate_published_levels(
     value = _object(
         field["published_levels"], label,
         allowed={"levels", "absent"}, required={"levels", "absent"})
-    if value["absent"] != "zero":
-        raise ValueError(f"{label}.absent must be 'zero'")
+    if value["absent"] not in {"zero", "nearest_upper_boundary"}:
+        raise ValueError(f"{label}.absent must be zero or nearest_upper_boundary")
     published = value["levels"]
     if not isinstance(published, list) or not published:
         raise ValueError(f"{label}.levels must be a non-empty numeric list")
@@ -926,6 +929,8 @@ def _validate_published_levels(
         raise ValueError(
             f"{label}.levels names levels {stray} that vertical.levels does "
             "not declare; the decoder admits the declared levels only")
+    if upper_boundary and any(float(level) >= min(values) for level in declared - set(values)):
+        raise ValueError(f"{label}: boundary extension cannot fill interior or lower levels")
     if set(float(level) for level in values) == declared:
         raise ValueError(
             f"{label}.levels names every declared level, so the declaration "
@@ -936,6 +941,8 @@ def _published_levels(field: Mapping[str, object]) -> frozenset[float] | None:
     """The levels ``fields.<name>.published_levels`` names, or ``None``."""
 
     declaration = field.get("published_levels")
+    if declaration and declaration.get("absent") == "nearest_upper_boundary":
+        raise ValueError("nearest_upper_boundary requires the Rust mapped engine")
     if declaration is None:
         return None
     return frozenset(float(level) for level in declaration["levels"])
@@ -1441,9 +1448,13 @@ def load_mapping(
     horizontal = _object(
         coordinates["horizontal"],
         "mapping.coordinates.horizontal",
-        allowed={"kind", "latitude", "longitude"},
+        allowed={"kind", "latitude", "longitude", "normalization"},
         required={"kind"},
     )
+    if "normalization" in horizontal and (
+            horizontal["kind"] != "embedded_grid" or source_format != "grib2"
+            or horizontal["normalization"] != "coarsest_exact_subset"):
+        raise ValueError("GRIB normalization must declare coarsest_exact_subset")
     if horizontal["kind"] == "embedded_grid":
         if source_format == "netcdf":
             raise ValueError("NetCDF mappings require latitude/longitude selectors")
@@ -1801,7 +1812,9 @@ def load_mapping(
             allowed={"source", "target", "scale", "offset"},
             required={"source", "target"},
         )
-        _string(unit["source"], f"fields.{name}.units.source")
+        if not (isinstance(unit["source"], str) and not unit["source"].strip()
+                and unit["target"] == "1"):
+            _string(unit["source"], f"fields.{name}.units.source")
         _string(unit["target"], f"fields.{name}.units.target")
         _number(unit.get("scale", 1.0), f"fields.{name}.units.scale")
         _number(unit.get("offset", 0.0), f"fields.{name}.units.offset")
@@ -1920,6 +1933,10 @@ def load_mapping(
             _validate_when_absent(
                 field_name, field, fields, vertical, str(source_format))
         if field.get("published_levels") is not None:
+            if (isinstance(field["published_levels"], dict)
+                    and field["published_levels"].get("absent") == "nearest_upper_boundary"
+                    and vertical["kind"] != "pressure"):
+                raise ValueError("upper boundary extension requires pressure-level specific_humidity")
             _validate_published_levels(
                 field_name, field, numeric_levels, str(source_format))
         if (field.get("repeated_record") is not None
@@ -2531,14 +2548,6 @@ def _selector_names(selector: Mapping[str, object]) -> tuple[str, ...]:
     if isinstance(configured, str):
         return (configured,)
     return tuple(str(value) for value in configured)
-
-
-def _matching_nc_variables(
-    dataset: netcdf_bridge.Dataset, selector: Mapping[str, object]
-) -> list[object]:
-    """Variables satisfying one selector, by name OR CF standard name."""
-
-    return [variable for variable, _evidence in _match_nc_variables(dataset, selector)]
 
 
 def _match_nc_variables(
@@ -3803,10 +3812,6 @@ def _grib1_records(
                 grid_fingerprint=fingerprint,
             ))
         return tuple(result)
-
-
-def _parse_optional_int(value: str) -> int | None:
-    return None if value == "-" else int(value)
 
 
 def _grib2_tools_crate() -> Path:

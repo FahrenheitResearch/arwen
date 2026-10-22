@@ -127,25 +127,7 @@ impl CrossSectionProduct {
     pub const fn style_key(self) -> &'static str {
         match self {
             Self::Temperature => "temp",
-            Self::WindSpeed => "wind_speed",
-            Self::ThetaE => "theta_e",
-            Self::RelativeHumidity => "rh",
-            Self::SpecificHumidity => "q",
-            Self::Omega => "omega",
-            Self::Vorticity => "vorticity",
-            Self::Shear => "shear",
-            Self::LapseRate => "lapse_rate",
-            Self::CloudWater => "cloud",
-            Self::TotalCondensate => "cloud_total",
-            Self::WetBulb => "wetbulb",
-            Self::Icing => "icing",
-            Self::Frontogenesis => "frontogenesis",
-            Self::Smoke => "smoke",
-            Self::VaporPressureDeficit => "vpd",
-            Self::DewpointDepression => "dewpoint_dep",
-            Self::MoistureTransport => "moisture_transport",
-            Self::PotentialVorticity => "pv",
-            Self::FireWeather => "fire_wx",
+            _ => self.slug(),
         }
     }
 
@@ -426,11 +408,6 @@ impl CrossSectionStyle {
         self
     }
 
-    pub fn without_value_range(mut self) -> Self {
-        self.value_range = None;
-        self
-    }
-
     pub fn with_value_ticks(mut self, ticks: Vec<f32>) -> Self {
         self.value_ticks = ticks;
         self
@@ -441,20 +418,9 @@ impl CrossSectionStyle {
         self
     }
 
-    pub fn without_colorbar_label(mut self) -> Self {
-        self.colorbar_label = None;
-        self
-    }
-
     pub fn with_isotherms(mut self, levels_c: Vec<f32>, highlight_c: Option<f32>) -> Self {
         self.isotherms_c = levels_c;
         self.highlight_isotherm_c = highlight_c;
-        self
-    }
-
-    pub fn without_isotherms(mut self) -> Self {
-        self.isotherms_c.clear();
-        self.highlight_isotherm_c = None;
         self
     }
 

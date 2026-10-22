@@ -1,0 +1,216 @@
+{
+  "schema": "gpuwm.chem.source.v1",
+  "name": "rap-native-smoke",
+  "kind": "boundary",
+  "description": "RAP-Smoke's 3-D smoke (awp130bgrb MASSDEN on its 50 hybrid levels, with the pressure and temperature of the same levels): operational HRRR v4's smoke lateral boundaries (have_bcs_chem = .true.; exhrrr_makebc.sh runs real.exe on RAP awp130bgrb, hrrr_vtable MASSDEN 0/20/0 level 105 -> smoke_gc -> chem(p_smoke)). Edge values only when the smoke row's entry says so.",
+  "route": "rap",
+  "default_for_fetch_sources": [],
+  "credential": null,
+  "format": "grib2",
+  "grid": {
+    "kind": "lambert_conformal",
+    "projection": "lambert",
+    "nx": 451,
+    "ny": 337,
+    "levels": 50,
+    "earth_radius_m": 6371229.0,
+    "spacing_deg": 0.12,
+    "earth_radius_provenance": "GRIB2 shape of the earth 6 (6,371,229 m sphere) in RAP's awp130 records, as HRRR. spacing_deg only rounds the request area."
+  },
+  "vertical": {
+    "kind": "pressure_field",
+    "pressure_variable": "PRES",
+    "temperature_variable": "TMP",
+    "surface_pressure_variable": "PSFC",
+    "horizontal_remap": "bilinear",
+    "vertical_remap": "wrf_real_vert_interp",
+    "vertical_axis": "log_pressure",
+    "vertical_target": "total_hydrostatic_pressure",
+    "extrapolation": "constant",
+    "remap_note": "HRRR's hybrid levels carry their own pressure (PRES on level type 105), so no A/B coefficients are needed: the source pressure is that field, the lowest level sits in the surface slot at the surface pressure, and the column goes onto the frame's total hydrostatic half-level pressure, as for CAMS."
+  },
+  "acquisition": {
+    "kind": "noaa_index",
+    "api_url": "https://noaa-rap-pds.s3.amazonaws.com",
+    "site": "https://registry.opendata.aws/noaa-rap/",
+    "dataset": "rap-awp130bgrb",
+    "dataset_page": "https://registry.opendata.aws/noaa-rap/",
+    "path_template": "rap.{cycle:%Y%m%d}/rap.t{cycle:%H}z.awp130bgrbf{lead:02d}.grib2",
+    "index_suffix": ".idx",
+    "cycle_hours": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23
+    ],
+    "cadence_s": 3600,
+    "horizon_h": 21,
+    "latency_s": 3600,
+    "latency_note": "planning allowance for an hourly RAP cycle's awp130bgrb files to be posted, not a measured guarantee; RAP runs to f21 every hour (f51 at 03/09/15/21Z, not modelled here)",
+    "margin_cells": 0,
+    "keys": {
+      "variable": "variable",
+      "date": "date",
+      "cycle": "time",
+      "lead": "leadtime_hour",
+      "area": "area",
+      "area_order": [
+        "north",
+        "west",
+        "south",
+        "east"
+      ]
+    },
+    "requests": {
+      "hybrid_level": {
+        "fixed": {
+          "product": "awp130bgrb"
+        },
+        "levels_key": "hybrid_level",
+        "levels": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45,
+          46,
+          47,
+          48,
+          49,
+          50
+        ],
+        "index_level": "{level} hybrid level"
+      },
+      "surface": {
+        "fixed": {
+          "product": "awp130bgrb"
+        },
+        "levels_key": null,
+        "levels": [],
+        "index_level": "surface"
+      }
+    }
+  },
+  "variables": {
+    "MASSDEN": {
+      "group": "hybrid_level",
+      "request": "MASSDEN",
+      "selector": {
+        "discipline": 0,
+        "category": 20,
+        "parameter": 0,
+        "product_template": 0,
+        "level_type": 105
+      },
+      "units": "kg m-3",
+      "conversion_parameters": {
+        "density": "pressure_over_temperature",
+        "gas_constant_j_kg_k": 287.04,
+        "provenance": "UPP 1296eebb295251d0fe1cc697f47058c62d887977 MDLFLD.f:2442; params.F:57; no humidity factor"
+      }
+    },
+    "PRES": {
+      "group": "hybrid_level",
+      "request": "PRES",
+      "selector": {
+        "discipline": 0,
+        "category": 3,
+        "parameter": 0,
+        "level_type": 105
+      },
+      "units": "Pa"
+    },
+    "TMP": {
+      "group": "hybrid_level",
+      "request": "TMP",
+      "selector": {
+        "discipline": 0,
+        "category": 0,
+        "parameter": 0,
+        "level_type": 105
+      },
+      "units": "K"
+    },
+    "PSFC": {
+      "group": "surface",
+      "request": "PRES",
+      "selector": {
+        "discipline": 0,
+        "category": 3,
+        "parameter": 0,
+        "level_type": 1
+      },
+      "units": "Pa"
+    }
+  },
+  "time": {
+    "cadence_s": 3600,
+    "latency_s": 3600,
+    "persistence": null,
+    "interpolation": "linear"
+  },
+  "remap": "native_levels",
+  "licence": "NOAA public domain",
+  "attribution": "NOAA RAP-Smoke, NOAA Open Data Dissemination",
+  "provenance": "https://registry.opendata.aws/noaa-rap/; rap.tHHz.awp130bgrbfFF.grib2 carries MASSDEN, PRES and TMP on 50 hybrid levels (level type 105) and surface PRES (inventory checked 2026-10-21 on rap.20261020 t06z f01: MASSDEN:1..50 hybrid level). HRRR v4.1.21 smoke LBCs: scripts/conus/exhrrr_makebc.sh, parm hrrr_vtable MASSDEN line, registry.smoke smoke_gc. Inverse density as hrrr-native-smoke (UPP MDLFLD.f:2442, params.F:57)."
+}

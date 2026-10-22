@@ -1,0 +1,163 @@
+{
+  "schema": "gpuwm-archive-layouts-v1",
+  "note": "Bounds describe layouts, never object completeness. Shared by Python readiness and Rust acquisition. cycle_until is exclusive. Forecast rows never substitute analysis-only holdings.",
+  "layouts": [
+    {
+      "source_id": "gfs",
+      "transport": "s3",
+      "rust_source": "aws",
+      "product": "pgrb2.0p25",
+      "base": "https://noaa-gfs-bdp-pds.s3.amazonaws.com",
+      "record_start": "2021-01-01T00",
+      "cycle_until": "2021-03-22T12",
+      "path_template": "gfs.{YYYY}{MM}{DD}/{HH}/gfs.t{HH}z.pgrb2.0p25.f{FFF}",
+      "key_pattern": "^(?P<PREFIX>[^.]+)\\.(?P<YYYY>[0-9]{4})(?P<MM>[0-9]{2})(?P<DD>[0-9]{2})/(?P<HH>[0-9]{2})/atmos/[^/]+\\.f(?P<FFF>[0-9]{3})(?P<SUFFIX>\\.idx)?$",
+      "idx_available": true,
+      "transfer_rank": 2,
+      "why": "AWS pre-atmos layout; actual objects, not a calendar, decide availability.",
+      "documentation": [
+        "https://noaa-gfs-bdp-pds.s3.amazonaws.com/?list-type=2&prefix=gfs.&max-keys=1"
+      ],
+      "license": "US government public domain",
+      "append_host": false,
+      "product_aliases": [
+        "pgrb2.0.25",
+        "0p25",
+        "0.25",
+        "hourly",
+        "pgrb2"
+      ],
+      "exclusive_source": false
+    },
+    {
+      "source_id": "gfs",
+      "transport": "s3",
+      "rust_source": "aws",
+      "product": "pgrb2.0p25",
+      "base": "https://noaa-gfs-bdp-pds.s3.amazonaws.com",
+      "record_start": "2021-03-22T12",
+      "cycle_until": null,
+      "path_template": "gfs.{YYYY}{MM}{DD}/{HH}/atmos/gfs.t{HH}z.pgrb2.0p25.f{FFF}",
+      "key_pattern": "^(?P<PREFIX>[^.]+)\\.(?P<YYYY>[0-9]{4})(?P<MM>[0-9]{2})(?P<DD>[0-9]{2})/(?P<HH>[0-9]{2})/atmos/[^/]+\\.f(?P<FFF>[0-9]{3})(?P<SUFFIX>\\.idx)?$",
+      "idx_available": true,
+      "transfer_rank": 2,
+      "why": "AWS current atmos layout.",
+      "documentation": [
+        "https://registry.opendata.aws/noaa-gfs-bdp-pds/"
+      ],
+      "license": "US government public domain",
+      "append_host": false,
+      "product_aliases": [
+        "pgrb2.0.25",
+        "0p25",
+        "0.25",
+        "hourly",
+        "pgrb2"
+      ],
+      "exclusive_source": false
+    },
+    {
+      "source_id": "gfs",
+      "transport": "gdex",
+      "rust_source": "gdex",
+      "product": "pgrb2.0p25",
+      "base": "https://data.gdex.ucar.edu/d084001",
+      "record_start": "2015-01-15T00",
+      "cycle_until": null,
+      "path_template": "{YYYY}/{YYYY}{MM}{DD}/gfs.0p25.{YYYY}{MM}{DD}{HH}.f{FFF}.grib2",
+      "key_pattern": "^(?P<PREFIX>[^.]+)\\.(?P<YYYY>[0-9]{4})(?P<MM>[0-9]{2})(?P<DD>[0-9]{2})/(?P<HH>[0-9]{2})/atmos/[^/]+\\.f(?P<FFF>[0-9]{3})(?P<SUFFIX>\\.idx)?$",
+      "idx_available": false,
+      "transfer_rank": 2,
+      "why": "NCAR GDEX d084001 (RDA ds084.1), 0.25 degree; CC BY 4.0, attribution required. Anonymous HTTPS full objects; 3-hourly through 240, then 12-hourly.",
+      "documentation": [
+        "https://gdex.ucar.edu/datasets/d084001/",
+        "https://gdex.ucar.edu/datasets/d084001/dataaccess/"
+      ],
+      "license": "CC-BY-4.0",
+      "lead_segments": [
+        {
+          "through": 240,
+          "step": 3
+        },
+        {
+          "through": 384,
+          "step": 12
+        }
+      ],
+      "product_aliases": [
+        "pgrb2.0.25",
+        "0p25",
+        "0.25",
+        "hourly",
+        "pgrb2"
+      ],
+      "exclusive_source": true
+    },
+    {
+      "source_id": "gfs",
+      "transport": "ncei-0p5",
+      "rust_source": "ncei",
+      "product": "pgrb2.0p50",
+      "base": "https://www.ncei.noaa.gov/oa/prod-model/global-forecast-system/access/grid-004-0.5-degree/forecast",
+      "record_start": "2006-10-10T00",
+      "cycle_until": null,
+      "path_template": "{YYYY}{MM}/{YYYY}{MM}{DD}/gfs_4_{YYYY}{MM}{DD}_{HH}00_{FFF}.grb2",
+      "key_pattern": "^(?P<PREFIX>[^.]+)\\.(?P<YYYY>[0-9]{4})(?P<MM>[0-9]{2})(?P<DD>[0-9]{2})/(?P<HH>[0-9]{2})/atmos/[^/]+\\.f(?P<FFF>[0-9]{3})(?P<SUFFIX>\\.idx)?$",
+      "idx_available": false,
+      "transfer_rank": 3,
+      "why": "NCEI NOMADS 0.5 degree forecast archive, sparse online holdings. Full forecast objects only; analysis-only and tape holdings do not establish forecast availability.",
+      "documentation": [
+        "https://www.ncei.noaa.gov/products/weather-climate-models/global-forecast",
+        "https://www.ncei.noaa.gov/oa/prod-model/index.html#global-forecast-system/access/"
+      ],
+      "license": "US government public domain",
+      "lead_segments": [
+        {
+          "through": 192,
+          "step": 3
+        }
+      ],
+      "product_aliases": [
+        "pgrb2.0.50",
+        "0p50",
+        "0.50"
+      ],
+      "exclusive_source": true
+    },
+    {
+      "source_id": "gfs",
+      "transport": "ncei-1p0",
+      "rust_source": "ncei",
+      "product": "pgrb2.1p00",
+      "base": "https://www.ncei.noaa.gov/oa/prod-model/global-forecast-system/access/grid-003-1.0-degree/forecast",
+      "record_start": "2005-02-15T00",
+      "cycle_until": null,
+      "path_template": "{YYYY}{MM}/{YYYY}{MM}{DD}/gfs_3_{YYYY}{MM}{DD}_{HH}00_{FFF}.grb2",
+      "key_pattern": "^(?P<PREFIX>[^.]+)\\.(?P<YYYY>[0-9]{4})(?P<MM>[0-9]{2})(?P<DD>[0-9]{2})/(?P<HH>[0-9]{2})/atmos/[^/]+\\.f(?P<FFF>[0-9]{3})(?P<SUFFIX>\\.idx)?$",
+      "idx_available": false,
+      "transfer_rank": 4,
+      "why": "NCEI NOMADS 1.0 degree forecast archive, sparse online holdings. Full forecast objects only; analysis-only and tape holdings do not establish forecast availability.",
+      "documentation": [
+        "https://www.ncei.noaa.gov/products/weather-climate-models/global-forecast",
+        "https://www.ncei.noaa.gov/oa/prod-model/index.html#global-forecast-system/access/"
+      ],
+      "license": "US government public domain",
+      "lead_segments": [
+        {
+          "through": 240,
+          "step": 3
+        },
+        {
+          "through": 384,
+          "step": 12
+        }
+      ],
+      "product_aliases": [
+        "pgrb2.1.00",
+        "1p00",
+        "1.00"
+      ],
+      "exclusive_source": true
+    }
+  ]
+}

@@ -11,14 +11,7 @@
 // main map's extent outlined, so a close-in map still says where on Earth it is.
 //   m.close()
 
-import { basemap, makeProjection, projectionFor } from "./map.js";
-
-const wrap180 = (v) => ((((v + 180) % 360) + 360) % 360) - 180;
-
-function css(name, fallback) {
-  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-  return v || fallback;
-}
+import { basemap, css, makeProjection, projectionFor, wrap180 } from "./map.js";
 
 // every lon, lat the map should hold, unwrapped around the first one so a track across 180 stays in one piece
 function extent(opts) {
@@ -299,5 +292,5 @@ export function wikiMap(canvas, opts = {}) {
   size();
   draw();
   basemap().then((m) => { map = m; draw(); });
-  return { close() { observer.disconnect(); }, redraw: draw };
+  return { close() { observer.disconnect(); } };
 }

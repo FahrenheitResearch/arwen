@@ -1,0 +1,8 @@
+[
+ {"variable":"QKE","multiplier":0.5,"description":"MYNN twice TKE, m2 s-2"},
+ {"variable":"qke","multiplier":0.5,"description":"MYNN twice TKE, m2 s-2"},
+ {"variable":"TKE_SHINHONG","multiplier":1.0,"description":"scheme qualified diagnosed PBL TKE, m2 s-2"},
+ {"variable":"TKE_SASE","multiplier":1.0,"description":"scheme qualified prognostic PBL TKE, m2 s-2"},
+ {"variable":"TKE_PBL","multiplier":1.0,"description":"PBL TKE, mass or interface levels, m2 s-2"},
+ {"variable":"TKE","multiplier":1.0,"description":"unresolved turbulence TKE, m2 s-2"}
+]

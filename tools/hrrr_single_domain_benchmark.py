@@ -1835,6 +1835,9 @@ def _configured_physics_receipt(cfg, profile=None, *, acknowledgements=()):
     receipt = {
         "schema": "gpuwm-prepared-physics-profile-v1", "profile": profile,
         "front_door_selection": selection, "selection": "configured d01",
+        # The registry's 4/4 radiation option names the spectral pair
+        # ('rte-rrtmgp'); the engine that computes it is ra_rrtmg_variant.
+        "radiation_engine": getattr(cfg, "ra_rrtmg_variant", None),
         "resolved": resolved,
         "hrrr_initialization_contract": {
             "analyzed_mass_fields": ["QC", "QR", "QI", "QS", "QG"],

@@ -358,9 +358,6 @@ class RingPlan:
     def ntiles(self) -> int:
         return len(self.specs)
 
-    def bands_of(self, tile: int) -> list[Band]:
-        return [b for b in self.bands if b.tile == tile]
-
     def cells_by_kind(self) -> dict[str, int]:
         out = {k: 0 for k in self.kinds}
         for b in self.bands:

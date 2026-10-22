@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+from gpuwm.core.fast_sbm_contract import FLAG_FIELDS, TABLE_ORDER, STATE_FIELDS
 
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[1]
@@ -67,15 +68,6 @@ NOT_GLIBC_REASON = (
     "bits (and the packed tables checked against them) were computed calling "
     "glibc's exp/log/pow, and this host build calls the platform libm, which "
     f"on {sys.platform} is not glibc")
-
-#: FsbmFlags field order (fast_sbm_common.cuh).
-FLAG_FIELDS = ("hail", "rainnc_own_column", "rainnc_bottom_outflow",
-               "nucleation_water_sink", "dtcond_carry", "breakup_retry_cap",
-               "cloud_base_first_level", "fall_speed_own_bin",
-               "snow_clip_qi_plus_qs", "melt_exponential", "fusion_heat_334",
-               "homfrz_any_saturation", "dsupice_w_own_point",
-               "dsupice_wind_own_point", "supsat_rederived", "sedimentation_cell_depth", "collision_mass_conserved")
-
 
 def flags_wrf(hail: int = 1) -> dict:
     """WRF as written (the oracle preset)."""
@@ -162,12 +154,6 @@ def library() -> ctypes.CDLL:
     return lib
 
 
-#: The 27 tables as read, in the C ABI's order, with the oracle's names.
-TABLE_ORDER = ("xl", "xi", "xs", "xg", "xh", "vr1", "vr2", "vr3", "vr4", "vr5",
-               "rlec", "riec", "rsec", "rgec", "rhec", "ro1bl", "ro2bl", "ro3bl",
-               "ro4bl", "ro5bl", "ywll", "ywls", "ywlg", "ywlh", "ywss", "pkij", "qkj")
-
-
 def tables_from_read(read: dict, dtype) -> list[np.ndarray]:
     """The ABI's 27 flat Fortran-order tables from WRF's READ arrays
     (keys like ``ywll_1000mb``, each with Fortran dims)."""
@@ -191,10 +177,6 @@ DERIVED_LAYOUT = (("xl_mg", 33), ("xs_mg", 33), ("xg_mg", 33), ("xh_mg", 33),
                   ("dropradii", 33), ("fccnr_con", 43), ("fccnr_mar", 43),
                   ("xccn", 43), ("rccn", 43), ("ikr_spon_break", 1))
 
-STATE_FIELDS = ("w", "u", "v", "th_old", "chem", "dz8w", "rho", "p", "pii", "th",
-                "qv", "qv_old", "qc", "qr", "qi", "qs", "qg", "qnc", "qnr", "qni",
-                "qns", "qng", "qna", "xland", "rainnc", "rainncv", "snownc",
-                "snowncv", "graupelnc", "graupelncv")
 
 TALLY_NAMES = ("clip_mass", "activated_mass", "homfrz_mass", "ice_nucl_mass",
                "freez_mass", "melt_mass", "rime_mass", "homfrz_point_mass",

@@ -170,7 +170,17 @@ impl PointSampler {
     /// One field at every point: `out[point][level]`.
     pub fn field(&self, frame: &MpasFrame, wrf_name: &str) -> Option<Vec<Vec<f64>>> {
         let (values, levels) = frame.fields.get(wrf_name)?;
-        let flat = self.linear.gather(values, *levels);
+        // MPAS initializes unavailable diagnostics (notably F000 U10/V10)
+        // to -1e30. NetCDF's default float fill is positive ~1e37. Mask
+        // before interpolation so neither sentinel becomes a finite wind.
+        let flat = if values.iter().any(|v| !v.is_finite() || v.abs() >= 1e29) {
+            let clean: Vec<f32> = values.iter().map(|&v| {
+                if v.is_finite() && v.abs() < 1e29 { v } else { f32::NAN }
+            }).collect();
+            self.linear.gather(&clean, *levels)
+        } else {
+            self.linear.gather(values, *levels)
+        };
         let n = self.points.len();
         Some(
             (0..n)
@@ -340,6 +350,27 @@ mod tests {
         let b = compact.linear.gather(&subset, levels);
         assert_eq!(a.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), b.iter().map(|v| v.to_bits()).collect::<Vec<_>>());
         assert_eq!(compact.nearest_cell, sampler.nearest_cell);
+    }
+
+    #[test]
+    fn point_fields_mask_fill_before_interpolation() {
+        let sampler = PointSampler {
+            points: parse_points("sample@0,0").unwrap(),
+            linear: LinearWeights { cells: vec![[0, 1, 2]], weights: vec![[0.5, 0.25, 0.25]], contained: 1, widened: 0, clamped: 0 },
+            nearest_cell: vec![0], nearest_km: vec![0.0], off_mesh: vec![false], local_spacing_m: vec![1000.0],
+        };
+        let mut frame = MpasFrame {
+            history_path: "unused".into(), history_sha256: String::new(), init_path: None, init_sha256: None,
+            valid_time: crate::history::Timestamp::parse("2024-01-01_00:00:00").unwrap(),
+            n_cells: 3, n_levels: 1, n_soil_levels: 0, fields: Default::default(),
+            latitude_degrees: vec![], longitude_degrees: vec![], absent: vec![], science_attributes: vec![], split: None,
+        };
+        for fill in [-1e30, 9.96921e36, f32::NAN] {
+            frame.fields.insert("U10".into(), (vec![fill, 8.0, 12.0], 1));
+            assert!(sampler.field(&frame, "U10").unwrap()[0][0].is_nan());
+        }
+        frame.fields.insert("U10".into(), (vec![4.0, 8.0, 12.0], 1));
+        assert_eq!(sampler.field(&frame, "U10").unwrap()[0][0], 7.0);
     }
 
     #[test]

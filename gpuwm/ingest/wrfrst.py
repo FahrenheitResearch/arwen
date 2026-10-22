@@ -91,10 +91,6 @@ DISPOSITION_KINDS = frozenset({
 })
 
 
-def _never(_cfg) -> bool:
-    return False
-
-
 def _cfg(name: str, default=0):
     def read(cfg):
         return getattr(cfg, name, default)
@@ -432,15 +428,6 @@ def _scalar(dataset, name: str, path):
     if value.size != 1 or not np.isfinite(value.astype(np.float64)).all():
         raise ValueError(f"{path}: {name} must be one finite value")
     return value[0]
-
-
-def is_wrf_restart(path) -> bool:
-    """True when ``path`` is a NetCDF file WRF stamped ``FLAG_RESTART = 1``."""
-    try:
-        with netcdf_bridge.open_dataset(Path(path)) as dataset:
-            return int(float(dataset.getncattr("FLAG_RESTART"))) == 1
-    except Exception:  # noqa: BLE001 - "is this a restart" never raises
-        return False
 
 
 def read_wrfrst_clock(path) -> WrfRestartClock:
@@ -985,6 +972,14 @@ def _fields_absent_rules() -> dict[str, tuple]:
         rules[name] = ("cold", 0.0, (
             f"{name.upper()} is written by the first radiation call after "
             "the restart; zero until then, as in a wrf.exe restart without it"))
+    for name in ("swddir", "swddif", "swddni"):
+        # Allocated for every shortwave scheme since 04e65faa5f (native solar
+        # products in default history); NCAR's benchmark restart carries
+        # none of them and refused here by name.
+        rules[name] = ("cold", 0.0, (
+            f"{name.upper()} is the shortwave direct/diffuse split written by "
+            "the first radiation call after the restart; zero until then, as "
+            "in a wrf.exe restart without it"))
     rules["coszen"] = ("cold", 0.0, (
         "COSZEN is recomputed at the first radiation call after the restart"))
     rules["swnorm"] = ("cold", 0.0, (
@@ -1025,6 +1020,16 @@ def fields_restore_plan(name: str, restart_names) -> tuple | None:
         return ("fill", wrf_name)
     if name in FIELDS_REBUILT:
         return ("rebuilt", FIELDS_REBUILT[name])
+    from gpuwm.ocean import seaice
+    if name in seaice.COLD_SEEDED:
+        # WRF has no prognostic ice column, so its restart carries none of
+        # this model's ice state: the column is seeded from the restart's
+        # XICE, TSK, SST and SNOW exactly as a cold start seeds it.  Named
+        # breakage: NCAR's benchmark warm start (default seaice_prognostic)
+        # refused here naming ICE_ENERGY, ICE_GROWTH and the rest.
+        return ("seaice", "the prognostic sea ice column, which WRF does not "
+                "carry, cold-seeded from the restart's XICE, TSK, SST and "
+                "SNOW as a cold start seeds it (gpuwm/ocean/seaice)")
     return _fields_absent_rules().get(name)
 
 
@@ -1128,6 +1133,7 @@ def apply_warm_start_physics(state, driver, restored, cfg) -> OverlayReport:
     manifest.update(driver_manifest)
     unmapped: list[str] = []
     copies: list[tuple] = []
+    seaice_seeded: set[str] = set()
 
     def fill(key, target, wrf_name, *, transform=None):
         if wrf_name not in raw:
@@ -1183,6 +1189,9 @@ def apply_warm_start_physics(state, driver, restored, cfg) -> OverlayReport:
             elif plan[0] == "fill":
                 fill(key, target, plan[1])
             elif plan[0] == "rebuilt":
+                report.rebuilt[key] = plan[1]
+            elif plan[0] == "seaice":
+                seaice_seeded.add(name)
                 report.rebuilt[key] = plan[1]
             elif plan[0] == "cold":
                 target[...] = plan[1]
@@ -1269,6 +1278,9 @@ def apply_warm_start_physics(state, driver, restored, cfg) -> OverlayReport:
             continue
         target[...] = value.astype(target.dtype, copy=False)
         report.rebuilt[key] = reason
+    if seaice_seeded and driver is not None:
+        from gpuwm.ocean import seaice
+        seaice.cold_seed_in_place(driver.fields, cfg, seaice_seeded)
     if unmapped:
         raise ValueError(
             "the WRF restart cannot fill these cross-step carriers of the "
@@ -1460,6 +1472,6 @@ __all__ = [
     "OverlayReport", "PROGNOSTIC_RENAMES", "SCRATCH_SOURCES",
     "STATEFUL_SELECTORS", "WRFRST_DISPOSITIONS", "WarmStart",
     "WrfRestartClock", "apply_warm_start_clock", "apply_warm_start_physics",
-    "check_restart_physics", "discover_restart_files", "is_wrf_restart",
+    "check_restart_physics", "discover_restart_files",
     "read_wrfrst", "read_wrfrst_clock", "restart_file_name",
 ]

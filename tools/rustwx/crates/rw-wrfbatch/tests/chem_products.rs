@@ -10,19 +10,8 @@ const NX: usize = 8;
 const NY: usize = 6;
 const NZ: usize = 2;
 
-struct Scratch(PathBuf);
-impl Scratch {
-    fn new() -> Self {
-        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-            .unwrap().as_nanos();
-        let root = std::env::temp_dir().join(format!("chem-products-{}-{nonce}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
-        Self(root)
-    }
-}
-impl Drop for Scratch {
-    fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
-}
+mod support;
+use support::Scratch;
 
 fn write_fixture(root: &Path, chem: bool, only: Option<&str>) -> PathBuf {
     let path = root.join("wrfout_d01_2026-01-01_00_00_00");
@@ -66,7 +55,7 @@ fn write_fixture(root: &Path, chem: bool, only: Option<&str>) -> PathBuf {
 
 #[test]
 fn chem_off_wrfout_has_the_base_store_and_selector_plan() {
-    let scratch = Scratch::new();
+    let scratch = Scratch::new("chem-products", "");
     let path = write_fixture(&scratch.0, false, None);
     let file = WrfFile::open(path).unwrap();
     let options = WrfProcessOptions::default();
@@ -82,7 +71,7 @@ fn chem_off_wrfout_has_the_base_store_and_selector_plan() {
 #[test]
 fn chem_presence_is_checked_per_source() {
     for row in CHEM_CORE_FIELD_CATALOG {
-        let scratch = Scratch::new();
+        let scratch = Scratch::new("chem-products", "");
         let path = write_fixture(&scratch.0, true, Some(row.source));
         let file = WrfFile::open(path).unwrap();
         let options = WrfProcessOptions::default();
@@ -94,7 +83,7 @@ fn chem_presence_is_checked_per_source() {
 
 #[test]
 fn chem_level_one_and_ppb_scaling_are_bit_exact() {
-    let scratch = Scratch::new();
+    let scratch = Scratch::new("chem-products", "");
     let path = write_fixture(&scratch.0, true, None);
     let store = scratch.0.join("store");
     let options = WrfProcessOptions {
@@ -124,7 +113,7 @@ fn chem_level_one_and_ppb_scaling_are_bit_exact() {
 
 #[test]
 fn synthetic_chem_wrfout_renders_all_six_products() {
-    let scratch = Scratch::new();
+    let scratch = Scratch::new("chem-products", "");
     let path = write_fixture(&scratch.0, true, None);
     let products = CHEM_CORE_FIELD_CATALOG.iter().map(|row| row.store_name).collect::<Vec<_>>().join(",");
     let output = Command::new(env!("CARGO_BIN_EXE_rw_wrfbatch"))
@@ -196,13 +185,13 @@ fn stored(scratch: &Scratch, path: PathBuf, names: &[&str]) -> Vec<Vec<f32>> {
 #[test]
 fn the_coupled_fire_smoke_draws_on_the_smoke_maps_and_adds_to_aq_smoke() {
     // A fire-only run: SFIRE's bulk smoke alone reaches both smoke products.
-    let scratch = Scratch::new();
+    let scratch = Scratch::new("chem-products", "");
     let path = write_sources(&scratch.0, &[("SFIRE_SMOKE_SFC", 40.0), ("SFIRE_SMOKE_COLUMN", 3.0)]);
     let planes = stored(&scratch, path, &["smoke_near_surface", "smoke_column"]);
     assert!(planes[0].iter().all(|v| *v == 40.0_f32 * 1.0e-9));
     assert!(planes[1].iter().all(|v| *v == 3.0_f32 * 1.0e-6));
     // A run carrying both: the map is their total, in the same units.
-    let scratch = Scratch::new();
+    let scratch = Scratch::new("chem-products", "");
     let path = write_sources(&scratch.0, &[("SMOKE_SFC", 10.0), ("SFIRE_SMOKE_SFC", 40.0)]);
     let planes = stored(&scratch, path, &["smoke_near_surface"]);
     assert!(planes[0].iter().all(|v| *v == 10.0_f32 * 1.0e-9 + 40.0_f32 * 1.0e-9));

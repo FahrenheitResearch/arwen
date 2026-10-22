@@ -4,9 +4,9 @@
 //! Opt-in cross-check route only: the source row marks these inputs
 //! `research-only`, so a private cross-check needs the named licence opt-in; it cannot ship.
 use crate::build::{load_lakes, threads, Hydro, LakeIn, ReachIn, Receipt};
-use crate::grid::{BBox, Grid};
+use crate::grid::BBox;
 use crate::source::{BuildSpec, Input, SourceRow};
-use crate::{geo, grid, shp, Result};
+use crate::{geo, shp, Result};
 use rayon::prelude::*;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
@@ -78,7 +78,7 @@ fn clip_ring(r: &[(f64, f64)], b: &BBox) -> Vec<(f64, f64)> {
     pts
 }
 
-pub fn vector_hydro(row: &SourceRow, spec: &BuildSpec, b: &BBox, root: &Path, rc: &mut Receipt) -> Result<Hydro> {
+pub fn vector_hydro(row: &SourceRow, spec: &BuildSpec, b: &BBox, root: &Path, coarsen: u32, rc: &mut Receipt) -> Result<Hydro> {
     let cat = row.inputs.get("catchments").ok_or("row has no catchments input")?;
     let riv = row.inputs.get("river_network").ok_or("row has no river_network input")?;
     let min_inside = spec.basin_min_inside_fraction.unwrap_or(0.5);
@@ -178,10 +178,7 @@ pub fn vector_hydro(row: &SourceRow, spec: &BuildSpec, b: &BBox, root: &Path, rc
     }
     // DEM for slopes.
     let res = spec.grid_arcsec.ok_or("vector-basins needs grid_arcsec for the DEM")?;
-    let g = Grid::for_box(b, res)?;
-    let (tiles, _) = rc.time("1 read DEM tiles", &threads(), || crate::build::load_tiles(row, b, root))?;
-    let (z, _) = rc.time("1 mosaic DEM onto grid", &threads(), || grid::mosaic(&g, &tiles))?;
-    drop(tiles);
+    let (g, z, _) = crate::build::dem_on_grid(row, b, root, res, coarsen, None, rc)?;
     let zat = |p: (f64, f64)| g.rowcol(p.0, p.1).map(|(r, c)| z[r * g.nx + c] as f64);
     // Main stem per basin.
     let with_river: Vec<usize> = (0..kept.len()).filter(|&k| by_basin.contains_key(&kept[k].id)).collect();

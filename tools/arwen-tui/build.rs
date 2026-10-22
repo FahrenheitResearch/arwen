@@ -13,6 +13,7 @@ fn main() {
         "Cargo.lock",
         ".cargo",
         "../arwen-ui-vendor",
+        "../rustwx/vendor/crates-io",
     ] {
         println!("cargo:rerun-if-changed={path}");
     }
@@ -63,7 +64,7 @@ fn clean_revision() -> Option<String> {
     }
     // The terminal crate and its shared offline dependency mirror both
     // enter the build. Modified sources must not claim the checkout's HEAD.
-    if !git(&["status", "--porcelain", "-uno", "--", ".", "../arwen-ui-vendor"])?.is_empty() {
+    if !git(&["status", "--porcelain", "-uno", "--", ".", "../arwen-ui-vendor", "../rustwx/vendor/crates-io"])?.is_empty() {
         return None;
     }
     let revision = git(&["rev-parse", "HEAD"])?;

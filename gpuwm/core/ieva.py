@@ -92,6 +92,7 @@ import cupy as cp
 import numpy as np
 
 from gpuwm.core import constants as c
+from gpuwm.core.acoustic import _boundary_forced as _forced
 from gpuwm.wrf_exact import ENABLED as WRF_EXACT
 from gpuwm.core.ieva_constants import IEVA_LEVEL_TIERS, level_tier  # noqa: F401
 from gpuwm.core.kernels import get_kernel_int_defines
@@ -148,12 +149,6 @@ def _rdx_rdy(cfg) -> tuple[np.float32, np.float32]:
     # WRF solve_em: rdx = 1./dx in single precision.
     return (np.float32(1.0) / np.float32(cfg.dx),
             np.float32(1.0) / np.float32(cfg.dy))
-
-
-def _forced(cfg) -> bool:
-    """WRF ``specified_bdy``: external specified OR nested forcing."""
-    return bool(getattr(cfg, "specified", False)
-                or getattr(cfg, "nested", False))
 
 
 def _periodic_x(cfg) -> bool:

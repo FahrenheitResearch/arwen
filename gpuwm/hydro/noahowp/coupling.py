@@ -121,3 +121,65 @@ class PreparedRasterExchange(PreparedCatchmentExchange):
             "destination_shape": shape, "parent_grid_sha256": parent_grid_sha256,
             "terrain_grid_sha256": terrain_grid_sha256,
         })
+
+
+class PreparedAccumulatedExchange(PreparedCatchmentExchange):
+    """The same catchment area mean for a parent LSM that accumulates runoff.
+
+    Noah and RUC publish SFCRUNOFF/UDRUNOFF as mm accumulated since the start.
+    Each launch first differences them against the previous LSM call on the
+    card (``parent_accumulator_step``), then runs the routed exchange on those
+    step depths. ET is the parent's total surface moisture flux QFX (mm/s);
+    Noah and RUC publish no Noah-MP canopy/transpiration split, so the two
+    split carriers are zero. Bottom drainage is part of UDRUNOFF there, so the
+    separate SOLDRAIN carrier is zero. The previous accumulators are model
+    state: they are checkpointed with the exchange, and they start from the
+    parent accumulators at preparation.
+    """
+
+    def __init__(self, *, surface_total, subsurface_total, qfx, smois, sh2o, **kwargs):
+        import cupy as cp
+        import numpy as np
+        from gpuwm.core.ieee_module import compile_module
+
+        for name, array in (("sfcrunoff", surface_total), ("udrunoff", subsurface_total), ("qfx", qfx)):
+            if str(array.dtype) != "float32" or not array.flags.c_contiguous:
+                raise ValueError(f"{name}: require contiguous float32 on parent card")
+        if surface_total.shape != subsurface_total.shape or qfx.shape != surface_total.shape:
+            raise ValueError("parent accumulator sizes differ")
+        with cp.cuda.Device(surface_total.device.id):
+            previous_surface = surface_total.copy()
+            previous_subsurface = subsurface_total.copy()
+            surface_step = cp.zeros_like(surface_total)
+            subsurface_step = cp.zeros_like(surface_total)
+            zero = cp.zeros_like(surface_total)
+        super().__init__(runsrf=surface_step, runsub=subsurface_step, soldrain=zero,
+                         sfcheadrt=zero, smois=smois, sh2o=sh2o, ecan=qfx, etran=zero,
+                         edir=zero, **kwargs)
+        options = ["--std=c++17", "--ftz=false"]
+        if self.restart_identity["numerics"] == "strict":
+            options += ["--fmad=false", "--prec-div=true", "--prec-sqrt=true"]
+        module = compile_module(Path(__file__).with_name("coupling.cu").read_text(),
+                                options, "nextgen.parent.accumulator_step")
+        self._step_kernel = module.get_function("parent_accumulator_step")
+        cells = surface_total.size
+        self._step_grid, self._step_block = ((cells + 255) // 256,), (256,)
+        self._step_args = (np.int32(cells), surface_total, subsurface_total,
+                           previous_surface, previous_subsurface, surface_step, subsurface_step)
+        self.arrays = MappingProxyType(dict(self.arrays) | {
+            "sfcrunoff": surface_total, "udrunoff": subsurface_total,
+            "previous_sfcrunoff": previous_surface, "previous_udrunoff": previous_subsurface})
+        self.restart_identity.update({
+            "algorithm": "arwen.parent-accumulated.catchment-area-mean/v1",
+            "input_units": dict(self.restart_identity["input_units"],
+                                sfcrunoff="mm accumulated", udrunoff="mm accumulated",
+                                qfx="kg m-2 s-1 (mm s-1)"),
+            "runoff_partition": "per-call differences of SFCRUNOFF + UDRUNOFF; "
+                                "ET = QFX (no canopy/transpiration split published)",
+        })
+
+    def launch(self, dt_seconds, *, stream=None):
+        self._step_kernel(self._step_grid, self._step_block, self._step_args, stream=stream)
+        super().launch(dt_seconds, stream=stream)
+
+    advance = launch

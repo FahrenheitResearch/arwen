@@ -799,18 +799,6 @@ def test_each_streamed_attempt_keeps_its_own_folder(tmp_path):
             == ["progress.json", "wrfout"]
 
 
-def test_the_set_aside_leaves_the_heartbeat_in_the_run_folder(tmp_path):
-    from gpuwm.supervisor import HEARTBEAT_NAME
-
-    outdir = tmp_path / "run"
-    outdir.mkdir()
-    (outdir / "wrfout").mkdir()
-    (outdir / HEARTBEAT_NAME).write_text("worker")
-    attempt = tree._set_aside_streamed_attempt(outdir)
-    assert (outdir / HEARTBEAT_NAME).read_text() == "worker"
-    assert sorted(entry.name for entry in attempt.iterdir()) == ["wrfout"]
-
-
 # ---------------------------------------------------------------------------
 # The rerun under `gpuwm go`'s forecast watchdog
 # ---------------------------------------------------------------------------

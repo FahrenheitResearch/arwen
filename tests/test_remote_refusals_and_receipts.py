@@ -362,8 +362,7 @@ def _case_data(tmp_path, forcing, geog_root):
             "output_domain": 1, "output_title": "saved map"}
 
 
-def test_the_data_dir_refusal_names_the_breakage_and_both_ways_out(tmp_path):
-    """A plan that names both [case_data].forcing and run_options.data_dir."""
+def _saved_case_data_config(tmp_path, geog_root):
     import tomllib
     from datetime import datetime
     from gpuwm import domain_wizard as dw
@@ -378,8 +377,14 @@ def test_the_data_dir_refusal_names_the_breakage_and_both_ways_out(tmp_path):
     forcing = tmp_path / "forcing" / "declared.grib2"
     forcing.parent.mkdir(exist_ok=True)
     forcing.write_bytes(b"protocol fixture forcing bytes")
-    raw["case_data"] = _case_data(tmp_path, forcing, str(tmp_path / "local-geog"))
+    raw["case_data"] = _case_data(tmp_path, forcing, geog_root)
     saved_config.write_text(emit_experiment_toml(raw))
+    return saved_config
+
+
+def test_the_data_dir_refusal_names_the_breakage_and_both_ways_out(tmp_path):
+    """A plan that names both [case_data].forcing and run_options.data_dir."""
+    saved_config = _saved_case_data_config(tmp_path, str(tmp_path / "local-geog"))
     plan = tmp_path / "plan.json"
     plan.write_text(json.dumps({"schema": "gpuwm.run-plan.v1", "name": "reviewed-map",
         "route": "prepared", "config": {"path": str(saved_config)},
@@ -399,23 +404,8 @@ def test_the_data_dir_refusal_names_the_breakage_and_both_ways_out(tmp_path):
 
 
 def test_a_geography_less_case_data_configuration_gets_the_shared_sentence(tmp_path):
-    import tomllib
-    from datetime import datetime
-    from gpuwm import domain_wizard as dw
-    from gpuwm.toml_document import emit_experiment_toml
-    saved_config = tmp_path / "saved map.toml"
-    saved_config.write_text(dw.render_config(name="remote-map", start_time=datetime(2026, 9, 7, 18),
-        hours=24, projection=dw._projection_entries(18, -162.1, "auto"),
-        dims=dw._dims_for_scale(1, ()), ratios=(),
-        fetch_hints=dict(source="gfs", cycle="2026-09-07T12", forecast_start_hour=6, hours=24,
-                         out=str(tmp_path / "forcing"), cadence=3), case_data=None), encoding="utf-8")
-    raw = tomllib.loads(saved_config.read_text())
-    forcing = tmp_path / "forcing" / "declared.grib2"
-    forcing.parent.mkdir(exist_ok=True)
-    forcing.write_bytes(b"protocol fixture forcing bytes")
     declared_geography = str(tmp_path / "local-geog")
-    raw["case_data"] = _case_data(tmp_path, forcing, declared_geography)
-    saved_config.write_text(emit_experiment_toml(raw))
+    saved_config = _saved_case_data_config(tmp_path, declared_geography)
     plan = tmp_path / "plan.json"
     plan.write_text(json.dumps({"schema": "gpuwm.run-plan.v1", "name": "reviewed-map",
         "route": "prepared", "config": {"path": str(saved_config)},

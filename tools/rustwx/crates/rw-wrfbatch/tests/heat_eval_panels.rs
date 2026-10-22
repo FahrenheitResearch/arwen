@@ -8,106 +8,19 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use netcdf_writer::{AttrValue, NcFormat, NcType, NcWriter, Schema, VarData};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-const NX: usize = 24;
-const NY: usize = 18;
-const NZ: usize = 4;
+#[path = "support/reflectivity.rs"]
+mod reflectivity_fixture;
+use reflectivity_fixture::{NX, NY, NZ, composite, write_history};
+
 const WIDTH: u32 = 400;
 const HEIGHT: u32 = 300;
 
-struct Scratch(PathBuf);
+mod support;
+use support::Scratch;
 
-impl Scratch {
-    fn new(tag: &str) -> Self {
-        let root = std::env::temp_dir().join(format!("rw-heat-panels-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        Self(root)
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-/// The composite reflectivity every fixture holds at cell (y, x).
-fn composite(_y: usize, x: usize) -> f32 {
-    5.0 + 2.0 * x as f32
-}
-
-/// A wrfout-shaped file valid 2026-08-19 01Z from a 00Z start, on the
-/// regular 0.05 degree lattice from 36 N, 98 W; its REFL_10CM column
-/// maximum is `composite`.
-fn write_history(path: &Path) {
-    let cells = NX * NY;
-    let mut schema = Schema::new(NcFormat::Offset64);
-    let time = schema.def_dim("Time", 0, true).unwrap();
-    let strlen = schema.def_dim("DateStrLen", 19, false).unwrap();
-    let bt = schema.def_dim("bottom_top", NZ, false).unwrap();
-    let bts = schema.def_dim("bottom_top_stag", NZ + 1, false).unwrap();
-    let sn = schema.def_dim("south_north", NY, false).unwrap();
-    let we = schema.def_dim("west_east", NX, false).unwrap();
-    for (name, value) in [("START_DATE", "2026-08-19_00:00:00"), ("SIMULATION_START_DATE", "2026-08-19_00:00:00")] {
-        schema.put_global_attr(name, AttrValue::Text(value.into())).unwrap();
-    }
-    for (name, value) in [("MAP_PROJ", 1i32), ("GRID_ID", 1)] {
-        schema.put_global_attr(name, AttrValue::Ints(vec![value])).unwrap();
-    }
-    for (name, value) in [("DX", 3000.0f32), ("DY", 3000.0), ("TRUELAT1", 38.0), ("TRUELAT2", 38.0),
-        ("STAND_LON", -95.0), ("CEN_LAT", 38.0), ("CEN_LON", -95.0)] {
-        schema.put_global_attr(name, AttrValue::Floats(vec![value])).unwrap();
-    }
-    let times = schema.def_var("Times", NcType::Char, &[time, strlen]).unwrap();
-    let var = |schema: &mut Schema, name: &str, dims: &[usize], units: &str| {
-        let id = schema.def_var(name, NcType::Float, dims).unwrap();
-        schema.put_var_attr(id, "units", AttrValue::Text(units.into())).unwrap();
-        id
-    };
-    let xlat = var(&mut schema, "XLAT", &[time, sn, we], "degree_north");
-    let xlong = var(&mut schema, "XLONG", &[time, sn, we], "degree_east");
-    let t2 = var(&mut schema, "T2", &[time, sn, we], "K");
-    let t = var(&mut schema, "T", &[time, bt, sn, we], "K");
-    let qv = var(&mut schema, "QVAPOR", &[time, bt, sn, we], "kg kg-1");
-    let qr = var(&mut schema, "QRAIN", &[time, bt, sn, we], "kg kg-1");
-    let qs = var(&mut schema, "QSNOW", &[time, bt, sn, we], "kg kg-1");
-    let qg = var(&mut schema, "QGRAUP", &[time, bt, sn, we], "kg kg-1");
-    let refl = var(&mut schema, "REFL_10CM", &[time, bt, sn, we], "dBZ");
-    let w = var(&mut schema, "W", &[time, bts, sn, we], "m s-1");
-    let hgt = var(&mut schema, "HGT", &[time, sn, we], "m");
-    let ph = var(&mut schema, "PH", &[time, bts, sn, we], "m2 s-2");
-    let phb = var(&mut schema, "PHB", &[time, bts, sn, we], "m2 s-2");
-    let mut writer = NcWriter::create(path, schema).unwrap();
-    writer.write_record(0, times, VarData::Char(b"2026-08-19_01:00:00")).unwrap();
-    let plane = |f: &dyn Fn(usize, usize) -> f32| -> Vec<f32> {
-        (0..NY).flat_map(|y| (0..NX).map(move |x| (y, x))).map(|(y, x)| f(y, x)).collect()
-    };
-    writer.write_record(0, xlat, VarData::F32(&plane(&|y, _| 36.0 + 0.05 * y as f32))).unwrap();
-    writer.write_record(0, xlong, VarData::F32(&plane(&|_, x| -98.0 + 0.05 * x as f32))).unwrap();
-    writer.write_record(0, t2, VarData::F32(&vec![295.0; cells])).unwrap();
-    let volume: Vec<f32> = (0..NZ)
-        .flat_map(|k| (0..NY).flat_map(move |y| (0..NX).map(move |x| (k, y, x))))
-        .map(|(k, y, x)| if k == 1 { composite(y, x) } else { composite(y, x) - 20.0 })
-        .collect();
-    writer.write_record(0, refl, VarData::F32(&volume)).unwrap();
-    writer.write_record(0, t, VarData::F32(&vec![10.0; cells * NZ])).unwrap();
-    writer.write_record(0, qv, VarData::F32(&vec![0.01; cells * NZ])).unwrap();
-    for id in [qr, qs, qg] {
-        writer.write_record(0, id, VarData::F32(&vec![0.0; cells * NZ])).unwrap();
-    }
-    writer.write_record(0, w, VarData::F32(&vec![0.0; cells * (NZ + 1)])).unwrap();
-    writer.write_record(0, hgt, VarData::F32(&vec![320.0; cells])).unwrap();
-    writer.write_record(0, ph, VarData::F32(&vec![0.0; cells * (NZ + 1)])).unwrap();
-    let phb_values: Vec<f32> = (0..NZ + 1)
-        .flat_map(|k| std::iter::repeat_n(9.81 * (320.0 + 1_000.0 * k as f32), cells))
-        .collect();
-    writer.write_record(0, phb, VarData::F32(&phb_values)).unwrap();
-    writer.finish().unwrap();
-}
 
 fn hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
@@ -241,7 +154,7 @@ fn panel_arg(text: String) -> [String; 2] {
 
 #[test]
 fn a_frame_or_window_holding_the_history_composite_draws_the_history_panel() {
-    let scratch = Scratch::new("identity");
+    let scratch = Scratch::new("rw-heat-panels", "identity");
     let history = scratch.0.join("wrfout_d01_2026-08-19_01_00_00");
     write_history(&history);
     let frames = scratch.0.join("frames");
@@ -279,7 +192,7 @@ fn a_frame_or_window_holding_the_history_composite_draws_the_history_panel() {
 
 #[test]
 fn a_row_of_frames_and_windows_alone_takes_its_grid_from_panel_grid() {
-    let scratch = Scratch::new("alone");
+    let scratch = Scratch::new("rw-heat-panels", "alone");
     let history = scratch.0.join("wrfout_d01_2026-08-19_01_00_00");
     write_history(&history);
     let frames = scratch.0.join("frames");
@@ -311,7 +224,7 @@ fn a_row_of_frames_and_windows_alone_takes_its_grid_from_panel_grid() {
 
 #[test]
 fn wrong_times_grids_corners_and_bytes_are_refused() {
-    let scratch = Scratch::new("refusals");
+    let scratch = Scratch::new("rw-heat-panels", "refusals");
     let history = scratch.0.join("wrfout_d01_2026-08-19_01_00_00");
     write_history(&history);
 
@@ -367,7 +280,7 @@ fn wrong_times_grids_corners_and_bytes_are_refused() {
 
 #[test]
 fn the_reduction_keeps_the_member_distribution_and_the_majority_rule() {
-    let scratch = Scratch::new("reduce");
+    let scratch = Scratch::new("rw-heat-panels", "reduce");
     let frames = scratch.0.join("frames");
     write_frames(&frames, true, latlon_lattice(0.0), &[("2026-08-19T01:00:00Z", 3)],
         &|member, y, x| if y == 0 && member < 2 { f32::NAN } else { (member * 10) as f32 + x as f32 });

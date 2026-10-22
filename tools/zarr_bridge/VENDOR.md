@@ -1,6 +1,8 @@
 # Offline Zarr reader
 
-`vendor/crates-io` is unmodified Cargo vendor output for the exact Cargo.lock.
+Registry dependencies resolve from `../rustwx/vendor/crates-io`, shared with
+the other offline workspaces. Existing locally corrected rustwx copies are
+retained; `tools/rustwx/VENDOR.md` records those corrections.
 `vendor-manifest.json` records each registry checksum and declared licence.
 The source reader owns acquisition orchestration, while zarrs owns Zarr and
 codec decoding, netcrust owns NetCDF reads, and ArWen's existing NetCDF writer
@@ -12,8 +14,9 @@ a runtime dependency on the build host's libssl ABI. The release build still
 checks every ELF dependency and symbol version against its glibc 2.28 policy.
 The new reader must pass that check before a Linux release is sealed.
 
-Regenerate the mirror with `cargo vendor --locked --offline --versioned-dirs
-vendor/crates-io` from this directory, then run
+Add missing crates using the scratch-vendoring instructions in
+`tools/rustwx/VENDOR.md`; never regenerate or overwrite the shared registry.
+Then run
 `python tools/update_zarr_license_notice.py` from the repository root.
 The generated notices travel in both distributions and the bridge asset tree.
 They include nested native-library licence texts and distinguish the complete

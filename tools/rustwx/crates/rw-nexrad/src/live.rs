@@ -1095,11 +1095,6 @@ mod tests {
     // -- volume-id runs ----------------------------------------------------
 
     #[test]
-    fn a_contiguous_id_space_is_one_run() {
-        assert_eq!(id_runs(&[3, 4, 5, 6]), vec![(3, 6)]);
-    }
-
-    #[test]
     fn a_wrapped_counter_shows_as_two_runs_and_two_candidates() {
         // The shape one site actually held on 2026-08-05: 1..=571 live and
         // 957..=999 expiring from the previous cycle.

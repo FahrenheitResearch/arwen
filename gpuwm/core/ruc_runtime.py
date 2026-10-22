@@ -86,7 +86,7 @@ from gpuwm.core.ruc import (RUC_DRIVER_ARW_FORCING,
                             ruc_initialize_cold_start, ruc_soil_geometry)
 from gpuwm.core.ruc_contract import (NUM_SOIL_LAYERS,
                                      RUC_PACKAGE_STATE_FIELDS,
-                                     RUC_SOIL_LEVELS_M,
+                                     RUC_SOIL_LEVELS_M as RUC_SOIL_LEVELS_M,
                                      WRF_SUPPORTED_NUM_SOIL_LAYERS)
 from gpuwm.core.surface_forcing import SurfacePrecipitationForcing
 
@@ -609,7 +609,7 @@ def _cold_start_once(inputs, params):
     Breakage it removes: a DA card server wires every member leg from the
     same prepared cache, and each wire re-ran the scalar ``ruclsminit``
     transcription over the whole slab -- several seconds of one host core
-    per member leg (7.4 s under the profiler on box L, 2026-10-06) with the
+    per member leg (7.4 s under the profiler on a rented box, 2026-10-06) with the
     card idle.  The function is pure (it copies its inputs), so the stored
     result is the recomputed one byte for byte.
     """
@@ -713,6 +713,46 @@ def ruc_device_sfctmp_sets():
             RUC_DEVICE_ARRAYS)
 
 
+def _validate_runtime_options(
+        mosaic_lu, mosaic_soil, lakemodel, flag_sm_adj, spp_lsm,
+        ruc_irrigation, ruc_soilprop, ruc_qvg_cold_start,
+        ruc_2m_diagnostic, ruc_snow):
+    # Second line behind validate_run_config, at the seam that consumes each
+    # value, so the registry's citation of this file is true for all five.
+    from gpuwm.core.ruc_mosaic import irrigation_form, mosaic_option
+    mosaic_option(mosaic_lu, "mosaic_lu")
+    mosaic_option(mosaic_soil, "mosaic_soil")
+    mosaic_option(lakemodel, "lakemodel")
+    irrigation_form(ruc_irrigation)
+    from gpuwm.core.ruc_tier import (ruc_2m_diagnostic_form,
+                                     ruc_qvg_cold_start_form, ruc_snow_form,
+                                     ruc_soilprop_form)
+    ruc_soilprop_form(ruc_soilprop)
+    ruc_qvg_cold_start_form(ruc_qvg_cold_start)
+    ruc_2m_diagnostic_form(ruc_2m_diagnostic)
+    ruc_snow_form(ruc_snow)
+    from gpuwm.core.ruc_spp import validate_spp_mode
+    enabled_spp = validate_spp_mode(spp_lsm)
+    if int(flag_sm_adj) != 0:
+        # Not a runtime knob at all: share/module_soil_pre.F:2063 reads it
+        # inside init_soil_3_real, i.e. in real.exe.  It is refused here
+        # rather than accepted-and-ignored so a plan that asks for it is told,
+        # and it stays refused now that a RUC ingest exists -- LSMRUC is a
+        # timestep, and by the time it runs the adjustment has either already
+        # happened at setup or never will.  It belongs to
+        # gpuwm.ingest.ruc_soil.remap_soil_to_ruc_levels, whose
+        # moisture_adjustment argument implements it at max_ulp 0.
+        raise ValueError(
+            f"flag_sm_adj={flag_sm_adj}: this is a real.exe knob "
+            "(share/module_soil_pre.F:2063, RUC soil-moisture adjustment "
+            "from a Noah initial state) and not an LSMRUC argument.  Ask for "
+            "it at setup, through "
+            "gpuwm.ingest.ruc_soil.remap_soil_to_ruc_levels"
+            "(moisture_adjustment=True)")
+
+    return enabled_spp
+
+
 def ruc_lsm_step(
     fields,
     atmosphere: Mapping[str, object],
@@ -764,38 +804,10 @@ def ruc_lsm_step(
                 "from a source whose static catalogue carries LAI12M, or set "
                 "rdlai2d=false for SOILVEGIN's table LAI")
         params._seeded_lai_verified = True
-    # Second line behind validate_run_config, at the seam that consumes each
-    # value, so the registry's citation of this file is true for all five.
-    from gpuwm.core.ruc_mosaic import irrigation_form, mosaic_option
-    mosaic_option(mosaic_lu, "mosaic_lu")
-    mosaic_option(mosaic_soil, "mosaic_soil")
-    mosaic_option(lakemodel, "lakemodel")
-    irrigation_form(ruc_irrigation)
-    from gpuwm.core.ruc_tier import (ruc_2m_diagnostic_form,
-                                     ruc_qvg_cold_start_form, ruc_snow_form,
-                                     ruc_soilprop_form)
-    ruc_soilprop_form(ruc_soilprop)
-    ruc_qvg_cold_start_form(ruc_qvg_cold_start)
-    ruc_2m_diagnostic_form(ruc_2m_diagnostic)
-    ruc_snow_form(ruc_snow)
-    from gpuwm.core.ruc_spp import validate_spp_mode
-    enabled_spp = validate_spp_mode(spp_lsm)
-    if int(flag_sm_adj) != 0:
-        # Not a runtime knob at all: share/module_soil_pre.F:2063 reads it
-        # inside init_soil_3_real, i.e. in real.exe.  It is refused here
-        # rather than accepted-and-ignored so a plan that asks for it is told,
-        # and it stays refused now that a RUC ingest exists -- LSMRUC is a
-        # timestep, and by the time it runs the adjustment has either already
-        # happened at setup or never will.  It belongs to
-        # gpuwm.ingest.ruc_soil.remap_soil_to_ruc_levels, whose
-        # moisture_adjustment argument implements it at max_ulp 0.
-        raise ValueError(
-            f"flag_sm_adj={flag_sm_adj}: this is a real.exe knob "
-            "(share/module_soil_pre.F:2063, RUC soil-moisture adjustment "
-            "from a Noah initial state) and not an LSMRUC argument.  Ask for "
-            "it at setup, through "
-            "gpuwm.ingest.ruc_soil.remap_soil_to_ruc_levels"
-            "(moisture_adjustment=True)")
+    enabled_spp = _validate_runtime_options(
+        mosaic_lu, mosaic_soil, lakemodel, flag_sm_adj, spp_lsm,
+        ruc_irrigation, ruc_soilprop, ruc_qvg_cold_start,
+        ruc_2m_diagnostic, ruc_snow)
 
     if enabled_spp:
         # The retained orchestration stays on the GPU. The disabled route
@@ -852,38 +864,10 @@ def _ruc_lsm_step_reference(
 
     if int(itimestep) < 1:
         raise ValueError("LSMRUC ktau is one-based and starts at 1")
-    # Second line behind validate_run_config, at the seam that consumes each
-    # value, so the registry's citation of this file is true for all five.
-    from gpuwm.core.ruc_mosaic import irrigation_form, mosaic_option
-    mosaic_option(mosaic_lu, "mosaic_lu")
-    mosaic_option(mosaic_soil, "mosaic_soil")
-    mosaic_option(lakemodel, "lakemodel")
-    irrigation_form(ruc_irrigation)
-    from gpuwm.core.ruc_tier import (ruc_2m_diagnostic_form,
-                                     ruc_qvg_cold_start_form, ruc_snow_form,
-                                     ruc_soilprop_form)
-    ruc_soilprop_form(ruc_soilprop)
-    ruc_qvg_cold_start_form(ruc_qvg_cold_start)
-    ruc_2m_diagnostic_form(ruc_2m_diagnostic)
-    ruc_snow_form(ruc_snow)
-    from gpuwm.core.ruc_spp import validate_spp_mode
-    enabled_spp = validate_spp_mode(spp_lsm)
-    if int(flag_sm_adj) != 0:
-        # Not a runtime knob at all: share/module_soil_pre.F:2063 reads it
-        # inside init_soil_3_real, i.e. in real.exe.  It is refused here
-        # rather than accepted-and-ignored so a plan that asks for it is told,
-        # and it stays refused now that a RUC ingest exists -- LSMRUC is a
-        # timestep, and by the time it runs the adjustment has either already
-        # happened at setup or never will.  It belongs to
-        # gpuwm.ingest.ruc_soil.remap_soil_to_ruc_levels, whose
-        # moisture_adjustment argument implements it at max_ulp 0.
-        raise ValueError(
-            f"flag_sm_adj={flag_sm_adj}: this is a real.exe knob "
-            "(share/module_soil_pre.F:2063, RUC soil-moisture adjustment "
-            "from a Noah initial state) and not an LSMRUC argument.  Ask for "
-            "it at setup, through "
-            "gpuwm.ingest.ruc_soil.remap_soil_to_ruc_levels"
-            "(moisture_adjustment=True)")
+    _validate_runtime_options(
+        mosaic_lu, mosaic_soil, lakemodel, flag_sm_adj, spp_lsm,
+        ruc_irrigation, ruc_soilprop, ruc_qvg_cold_start,
+        ruc_2m_diagnostic, ruc_snow)
 
     names_2d = tuple(RUC_STATE_BINDING) + (
         "swdown", "glw", "chs", "chs2", "cqs2", "flqc", "flhc", "cpm",

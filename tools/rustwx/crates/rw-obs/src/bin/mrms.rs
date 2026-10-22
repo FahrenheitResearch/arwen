@@ -49,9 +49,9 @@ use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 
 use rw_nexrad::s3::{build_agent, list_s3, object_url, parse_time, ListRequest, S3Object};
+use rw_obs::cli::{out_pack_path, source_bytes};
 use rw_obs::pack::{
-    decode_pack, payload_digest, validate_arrays, write_pack, ArrayEntry, PayloadBuilder,
-    GEO_SCHEMA, GRID_SCHEMA,
+    payload_digest, write_pack, ArrayEntry, GeoPackMeta, PayloadBuilder, GRID_SCHEMA,
 };
 use rw_obs::seam::{
     seam_bounds, seam_time, wrap_longitude, Provenance, QUANTITY_COMPOSITE_REFLECTIVITY,
@@ -122,6 +122,12 @@ struct ProductDecodeSpec {
 }
 
 impl ProductDecodeSpec {
+    fn native_altitude_m(&self) -> f64 {
+        // MRMS product suffix is the declared altitude in kilometres.
+        self.product.rsplit('_').next().unwrap().parse::<f64>()
+            .expect("registered MRMS altitude suffix") * 1000.0
+    }
+
     /// `(value, observed, below_detection)`. Missing cells never become dry.
     fn normalize(&self, raw: f64, no_echo: f64) -> (f64, bool, bool) {
         if !raw.is_finite() || raw <= self.coverage_ceiling {
@@ -135,7 +141,7 @@ impl ProductDecodeSpec {
 }
 
 fn decode_specs() -> Vec<ProductDecodeSpec> {
-    vec![
+    let mut specs = vec![
         ProductDecodeSpec {
             product: DEFAULT_PRODUCT,
             selector: Some(FieldSelector::altitude_msl(CanonicalField::CompositeReflectivity, PRODUCT_ALTITUDE_M)),
@@ -187,13 +193,91 @@ fn decode_specs() -> Vec<ProductDecodeSpec> {
             quantity: "radar_quality_index", units: "non-dim", accepted_units: QUALITY_UNIT_MAPPINGS,
             coverage_ceiling: -0.5, no_echo_ceiling: None, fill: 0.0, accumulation_seconds: None,
         },
+        // NOAA MRMS v12.2 GRIB table: hail size in mm, -1 missing, -3 no coverage.
+        ProductDecodeSpec {
+            product: "MESH_00.50", selector: None, native_parameter: Some([209, 3, 28]),
+            quantity: "maximum_estimated_hail_size", units: UNITS_MM,
+            accepted_units: &[("mm", 1.0)], coverage_ceiling: -0.5,
+            no_echo_ceiling: None, fill: 0.0, accumulation_seconds: None,
+        },
+        ProductDecodeSpec {
+            product: "MESH_Max_30min_00.50", selector: None, native_parameter: Some([209, 3, 29]),
+            quantity: "maximum_estimated_hail_size", units: UNITS_MM,
+            accepted_units: &[("mm", 1.0)], coverage_ceiling: -0.5,
+            no_echo_ceiling: None, fill: 0.0, accumulation_seconds: None,
+        },
+        ProductDecodeSpec {
+            product: "MESH_Max_60min_00.50", selector: None, native_parameter: Some([209, 3, 30]),
+            quantity: "maximum_estimated_hail_size", units: UNITS_MM,
+            accepted_units: &[("mm", 1.0)], coverage_ceiling: -0.5,
+            no_echo_ceiling: None, fill: 0.0, accumulation_seconds: None,
+        },
+        ProductDecodeSpec {
+            product: "MESH_Max_120min_00.50", selector: None, native_parameter: Some([209, 3, 31]),
+            quantity: "maximum_estimated_hail_size", units: UNITS_MM,
+            accepted_units: &[("mm", 1.0)], coverage_ceiling: -0.5,
+            no_echo_ceiling: None, fill: 0.0, accumulation_seconds: None,
+        },
+        ProductDecodeSpec {
+            product: "MESH_Max_240min_00.50", selector: None, native_parameter: Some([209, 3, 32]),
+            quantity: "maximum_estimated_hail_size", units: UNITS_MM,
+            accepted_units: &[("mm", 1.0)], coverage_ceiling: -0.5,
+            no_echo_ceiling: None, fill: 0.0, accumulation_seconds: None,
+        },
+        ProductDecodeSpec {
+            product: "MESH_Max_360min_00.50", selector: None, native_parameter: Some([209, 3, 33]),
+            quantity: "maximum_estimated_hail_size", units: UNITS_MM,
+            accepted_units: &[("mm", 1.0)], coverage_ceiling: -0.5,
+            no_echo_ceiling: None, fill: 0.0, accumulation_seconds: None,
+        },
+        ProductDecodeSpec {
+            product: "MESH_Max_1440min_00.50", selector: None, native_parameter: Some([209, 3, 34]),
+            quantity: "maximum_estimated_hail_size", units: UNITS_MM,
+            accepted_units: &[("mm", 1.0)], coverage_ceiling: -0.5,
+            no_echo_ceiling: None, fill: 0.0, accumulation_seconds: None,
+        },
         ProductDecodeSpec {
             product: "RadarOnly_QPE_01H_00.00", selector: None, native_parameter: Some([209, 6, 2]),
             quantity: QUANTITY_PRECIPITATION_ACCUMULATION, units: UNITS_MM,
             accepted_units: ACCUMULATION_UNIT_MAPPINGS,
             coverage_ceiling: -0.5, no_echo_ceiling: None, fill: 0.0, accumulation_seconds: Some(3600),
         },
-    ]
+    ];
+    let known: Vec<&str> = specs.iter().map(|spec| spec.product).collect();
+    let extra = table_specs(&known);
+    specs.extend(extra);
+    specs
+}
+
+/// MRMS accumulation rows the built-in list does not carry, read from the
+/// shared precipitation product table (`data/precipitation-products.json`),
+/// so a new QPE accumulation is a table row, not code. Each row is decoded
+/// by its own GRIB parameter triple; its largest published missing value
+/// sets the coverage ceiling, and zero stays observed dry.
+fn table_specs(known: &[&str]) -> Vec<ProductDecodeSpec> {
+    static ROWS: std::sync::OnceLock<Vec<rw_obs::precipitation::Product>> = std::sync::OnceLock::new();
+    let rows = ROWS.get_or_init(|| rw_obs::precipitation::products().unwrap_or_default());
+    rows.iter()
+        .filter(|row| row.source == "mrms" && !known.contains(&row.name.as_str()))
+        .filter(|row| row.units == UNITS_MM && row.accumulation_seconds > 0)
+        .filter(|row| row.level_type == 102 && row.level_value == 0.0)
+        .filter_map(|row| {
+            let ceiling = row.missing_values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            let seconds = u32::try_from(row.accumulation_seconds).ok()?;
+            Some(ProductDecodeSpec {
+                product: row.name.as_str(),
+                selector: None,
+                native_parameter: Some([row.discipline, row.category, row.parameter]),
+                quantity: QUANTITY_PRECIPITATION_ACCUMULATION,
+                units: UNITS_MM,
+                accepted_units: ACCUMULATION_UNIT_MAPPINGS,
+                coverage_ceiling: if ceiling.is_finite() { ceiling + 0.5 } else { -0.5 },
+                no_echo_ceiling: None,
+                fill: 0.0,
+                accumulation_seconds: Some(seconds),
+            })
+        })
+        .collect()
 }
 
 fn decode_spec(product: &str) -> Result<ProductDecodeSpec, Box<dyn Error>> {
@@ -278,41 +362,26 @@ frames options (the composite only; --product must stay the default)
 
 fn main() -> ExitCode {
     let _ = std::hint::black_box(GPUWM_BRIDGE_SOURCE_REV_STAMP);
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    match run(&args) {
-        Ok(output) => {
-            print!("{output}");
-            ExitCode::SUCCESS
-        }
-        Err(error) => {
-            eprintln!("rw_mrms: {error}");
-            ExitCode::FAILURE
-        }
-    }
+    rw_obs::cli::main("rw_mrms", run)
 }
 
 fn run(args: &[String]) -> Result<String, Box<dyn Error>> {
-    let Some(first) = args.first() else {
-        return Ok(USAGE.to_string());
-    };
-    match first.as_str() {
-        "--help" | "-h" | "help" => return Ok(USAGE.to_string()),
-        "--version" | "-V" => return Ok(format!("rw_mrms {VERSION}\n")),
-        "--abi" => return Ok(format!("{ABI_MARKER}\n")),
-        "--list-products" => {
-            let products = decode_specs().iter().map(|spec| serde_json::json!({
-                "product": spec.product, "quantity": spec.quantity, "units": spec.units,
-                "selector": spec.selector, "native_grib_parameter": spec.native_parameter,
-                "accumulation_seconds": spec.accumulation_seconds,
-                "accepted_unit_mappings": spec.accepted_units,
-                "missing_ceiling": spec.coverage_ceiling,
-                "below_detection_ceiling": spec.no_echo_ceiling,
-            })).collect::<Vec<_>>();
-            return Ok(format!("{}\n", serde_json::json!({
-                "schema": "gpuwm.observation-products.v1", "products": products,
-            })));
-        }
-        _ => {}
+    if let Some(output) = rw_obs::cli::information(args, "rw_mrms", VERSION, USAGE, ABI_MARKER) {
+        return Ok(output);
+    }
+    let first = &args[0];
+    if first == "--list-products" {
+        let products = decode_specs().iter().map(|spec| serde_json::json!({
+            "product": spec.product, "quantity": spec.quantity, "units": spec.units,
+            "selector": spec.selector, "native_grib_parameter": spec.native_parameter,
+            "accumulation_seconds": spec.accumulation_seconds,
+            "accepted_unit_mappings": spec.accepted_units,
+            "missing_ceiling": spec.coverage_ceiling,
+            "below_detection_ceiling": spec.no_echo_ceiling,
+        })).collect::<Vec<_>>();
+        return Ok(format!("{}\n", serde_json::json!({
+            "schema": "gpuwm.observation-products.v1", "products": products,
+        })));
     }
     let options = Options::parse(&args[1..])?;
     match first.as_str() {
@@ -343,7 +412,7 @@ fn cmd_decode_batch(options: &Options) -> Result<String, Box<dyn Error>> {
             return Err(err("MRMS batch permits only local decode and grid; fetching would escape the frozen input inventory"));
         }
         let options = Options::parse(&job[1..])?;
-        let destination = out_pack_path(&options)?;
+        let destination = out_pack_path(options.out.as_deref())?;
         if !destination.is_absolute() || destination.components().any(|part| matches!(part, Component::ParentDir)) {
             return Err(err("batch outputs must be absolute without parent traversal; duplicate aliases could overwrite truth packs"));
         }
@@ -395,8 +464,22 @@ impl Options {
         let mut options = Options::default();
         let mut index = 0;
         while index < args.len() {
-            let flag = args[index].as_str();
+            // `--flag=value` is the same option as `--flag value`. The
+            // attached spelling is the only one argparse-style callers can
+            // use for a value that opens with a minus (a western longitude),
+            // so refusing it refused every CONUS --bbox they could build.
+            let (flag, attached) = match args[index].split_once('=') {
+                Some((name, value)) if name.starts_with("--") => (name, Some(value.to_string())),
+                _ => (args[index].as_str(), None),
+            };
+            let takes_no_value = flag == "--no-cache";
+            if takes_no_value && attached.is_some() {
+                return Err(err(format!("{flag} takes no value")));
+            }
             let mut value = || -> Result<String, Box<dyn Error>> {
+                if let Some(value) = attached.clone() {
+                    return Ok(value);
+                }
                 index += 1;
                 args.get(index)
                     .cloned()
@@ -482,20 +565,7 @@ impl Options {
     }
 
     fn window(&self) -> Result<(DateTime<Utc>, DateTime<Utc>), Box<dyn Error>> {
-        let start = parse_time(
-            self.start
-                .as_deref()
-                .ok_or_else(|| err("--start is required"))?,
-        )?;
-        let end = parse_time(self.end.as_deref().ok_or_else(|| err("--end is required"))?)?;
-        if end < start {
-            return Err(err(format!(
-                "--end {} precedes --start {}",
-                seam_time(end),
-                seam_time(start)
-            )));
-        }
-        Ok((start, end))
+        rw_obs::cli::window(self.start.as_deref(), self.end.as_deref())
     }
 
     fn cache_dir(&self) -> PathBuf {
@@ -559,10 +629,22 @@ impl BoundingBox {
                 return Err(err("--bbox components must be finite"));
             }
         }
+        // A 0..360 box (the MRMS grid's own longitude convention) names the
+        // same ground as its -180..180 spelling; normalize it rather than
+        // refuse it. Only a box that is unambiguously 0..360 (a longitude
+        // past 180, none below 0) is rewritten.
+        let (mut west, mut east) = (values[0], values[2]);
+        if (west > 180.0 || east > 180.0) && west >= 0.0 && east >= 0.0 {
+            if west > 360.0 || east > 360.0 {
+                return Err(err("--bbox 0..360 longitudes must lie inside [0, 360]"));
+            }
+            west = wrap_longitude(west);
+            east = wrap_longitude(east);
+        }
         let box_ = Self {
-            west: values[0],
+            west,
             south: values[1],
-            east: values[2],
+            east,
             north: values[3],
         };
         if box_.south >= box_.north {
@@ -818,17 +900,6 @@ struct GridPackMeta {
     content_sha256: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct GeoPackMeta {
-    schema: String,
-    status: String,
-    source_product: String,
-    grid: GridSpec,
-    arrays: std::collections::BTreeMap<String, ArrayEntry>,
-    payload_bytes: usize,
-    content_sha256: String,
-}
-
 /// The decoded field, already subset and already in seam conventions.
 struct Field {
     units: String,
@@ -864,7 +935,7 @@ fn load_field(
 fn decode_raw(raw: &[u8], spec: &ProductDecodeSpec) -> Result<DecodedField, Box<dyn Error>> {
     let (stream, _was_gzipped) = gunzip_if_wrapped(raw, "MRMS archive object")?;
     let mut field: DecodedField = if let Some(parameter) = spec.native_parameter {
-        decode_native_product(&stream, parameter, spec.units)?
+        decode_native_product(&stream, parameter, spec.units, spec.native_altitude_m())?
     } else {
         rustwx_io::extract_field_from_bytes(&stream, spec.selector.ok_or_else(|| err("MRMS product has no selector"))?)
             .map_err(|e| err(format!("MRMS decode failed: {e}")))?.into()
@@ -899,15 +970,15 @@ impl From<SelectedField2D> for DecodedField {
     }
 }
 
-fn decode_native_product(bytes: &[u8], parameter: [u8; 3], units: &str) -> Result<DecodedField, Box<dyn Error>> {
+fn decode_native_product(bytes: &[u8], parameter: [u8; 3], units: &str, altitude_m: f64) -> Result<DecodedField, Box<dyn Error>> {
     let file = Grib2File::from_bytes(bytes).map_err(|e| err(format!("MRMS product will not parse as GRIB2: {e}")))?;
     let matches = file.messages.iter().filter(|message|
         [message.discipline, message.product.parameter_category, message.product.parameter_number] == parameter
-        && message.product.level_type == 102 && message.product.level_value == 0.0
+        && message.product.level_type == 102 && message.product.level_value == altitude_m
         && message.product.second_level_type == 255
     ).collect::<Vec<_>>();
     if matches.len() != 1 {
-        return Err(err(format!("MRMS product requires one GRIB parameter {parameter:?} at 0 m MSL, found {}", matches.len())));
+        return Err(err(format!("MRMS product requires one GRIB parameter {parameter:?} at {altitude_m} m MSL, found {}", matches.len())));
     }
     let message = matches[0];
     if message.grid.template != 0 || message.grid.is_reduced || message.grid.scan_mode & 0x30 != 0 {
@@ -1321,34 +1392,9 @@ fn cmd_fetch(options: &Options) -> Result<String, Box<dyn Error>> {
     Ok(format!("{}\n", serde_json::to_string_pretty(&record)?))
 }
 
-/// The file to decode, its bytes, and the provenance those bytes earn.
-fn source_bytes(options: &Options) -> Result<(PathBuf, Vec<u8>, String), Box<dyn Error>> {
-    let path = options
-        .file
-        .as_deref()
-        .ok_or_else(|| err("--file is required (one archived object on disk)"))?;
-    let raw = std::fs::read(path).map_err(|e| err(format!("cannot read {}: {e}", path.display())))?;
-    let sha256 = hex_sha256(&raw);
-    Ok((path.to_path_buf(), raw, sha256))
-}
-
-fn out_pack_path(options: &Options) -> Result<PathBuf, Box<dyn Error>> {
-    let out = options
-        .out
-        .as_deref()
-        .ok_or_else(|| err("--out is required (the pack destination)"))?;
-    if out.is_dir() {
-        return Err(err(format!(
-            "--out {} is a directory; give the pack file path",
-            out.display()
-        )));
-    }
-    Ok(out.to_path_buf())
-}
-
 fn cmd_decode(options: &Options) -> Result<String, Box<dyn Error>> {
-    let (path, raw, sha256) = source_bytes(options)?;
-    let out = out_pack_path(options)?;
+    let (path, raw, sha256) = source_bytes(options.file.as_deref())?;
+    let out = out_pack_path(options.out.as_deref())?;
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -1436,49 +1482,19 @@ fn cmd_decode(options: &Options) -> Result<String, Box<dyn Error>> {
 }
 
 fn cmd_grid(options: &Options) -> Result<String, Box<dyn Error>> {
-    let (_path, raw, _sha) = source_bytes(options)?;
-    let out = out_pack_path(options)?;
+    let (_path, raw, _sha) = source_bytes(options.file.as_deref())?;
+    let out = out_pack_path(options.out.as_deref())?;
     let spec = decode_spec(options.product()?)?;
     let field = load_field(&raw, options.bbox, options.no_echo_dbz(), &spec)?;
-    let shape = vec![field.grid.ny, field.grid.nx];
-    let mut builder = PayloadBuilder::new();
-    builder.push_f64("latitude", &field.latitude, shape.clone());
-    builder.push_f64("longitude", &field.longitude, shape);
-    let (payload, arrays) = builder.finish();
-    let meta = GeoPackMeta {
-        schema: GEO_SCHEMA.to_string(),
-        status: "READY".to_string(),
-        source_product: options.product()?.to_string(),
-        grid: field.grid.clone(),
-        arrays,
-        payload_bytes: payload.len(),
-        content_sha256: payload_digest(&payload),
-    };
-    let bytes = write_pack(&out, &meta, &payload)?;
-
-    #[derive(Serialize)]
-    struct GridRecord<'a> {
-        schema: &'static str,
-        status: &'static str,
-        pack_path: String,
-        pack_schema: &'a str,
-        pack_bytes: usize,
-        payload_bytes: usize,
-        content_sha256: &'a str,
-        grid: &'a GridSpec,
-    }
-
-    let record = GridRecord {
-        schema: GRIDCMD_SCHEMA,
-        status: "READY",
-        pack_path: out.to_string_lossy().to_string(),
-        pack_schema: &meta.schema,
-        pack_bytes: bytes,
-        payload_bytes: meta.payload_bytes,
-        content_sha256: &meta.content_sha256,
-        grid: &meta.grid,
-    };
-    Ok(format!("{}\n", serde_json::to_string_pretty(&record)?))
+    rw_obs::pack::write_geometry(
+        &out,
+        &field.grid,
+        vec![field.grid.ny, field.grid.nx],
+        &field.latitude,
+        &field.longitude,
+        options.product()?,
+        GRIDCMD_SCHEMA,
+    )
 }
 
 fn cmd_verify(options: &Options) -> Result<String, Box<dyn Error>> {
@@ -1488,69 +1504,12 @@ fn cmd_verify(options: &Options) -> Result<String, Box<dyn Error>> {
         .or(options.file.as_deref())
         .or(options.out.as_deref())
         .ok_or_else(|| err("verify needs the pack path in --pack (or --file/--out)"))?;
-    let bytes =
-        std::fs::read(path).map_err(|e| err(format!("cannot read {}: {e}", path.display())))?;
-    // The metadata shape is not known before the schema is read, so the
-    // header is decoded into the permissive form first and the schema
-    // decides which typed reading has to succeed.
-    let (value, payload): (serde_json::Value, Vec<u8>) = decode_pack(&bytes)?;
-    let schema = value
-        .get("schema")
-        .and_then(|s| s.as_str())
-        .ok_or_else(|| err("observation pack metadata carries no schema"))?
-        .to_string();
-    let digest = payload_digest(&payload);
-    let declared = value
-        .get("content_sha256")
-        .and_then(|s| s.as_str())
-        .ok_or_else(|| err("observation pack metadata carries no content_sha256"))?;
-    if digest != declared {
-        return Err(err(format!(
-            "observation pack payload digest mismatch: metadata says {declared}, bytes hash \
-             to {digest}"
-        )));
-    }
-    let arrays = match schema.as_str() {
-        GRID_SCHEMA => {
-            let meta: GridPackMeta = serde_json::from_value(value.clone())?;
-            meta.arrays
-        }
-        GEO_SCHEMA => {
-            let meta: GeoPackMeta = serde_json::from_value(value.clone())?;
-            meta.arrays
-        }
-        other => {
-            return Err(err(format!(
-                "pack declares schema {other:?}; this bin writes {GRID_SCHEMA:?} and \
-                 {GEO_SCHEMA:?}"
-            )))
-        }
-    };
-    validate_arrays(&arrays, payload.len())?;
-
-    #[derive(Serialize)]
-    struct VerifyRecord {
-        schema: &'static str,
-        status: &'static str,
-        path: String,
-        pack_schema: String,
-        bytes: usize,
-        payload_bytes: usize,
-        content_sha256: String,
-        arrays: usize,
-    }
-
-    let record = VerifyRecord {
-        schema: VERIFY_SCHEMA,
-        status: "PASS",
-        path: path.to_string_lossy().to_string(),
-        pack_schema: schema,
-        bytes: bytes.len(),
-        payload_bytes: payload.len(),
-        content_sha256: digest,
-        arrays: arrays.len(),
-    };
-    Ok(format!("{}\n", serde_json::to_string_pretty(&record)?))
+    rw_obs::pack::verify_pack(
+        path,
+        VERIFY_SCHEMA,
+        |meta: GridPackMeta| meta.arrays,
+        |meta: GeoPackMeta<GridSpec>| meta.arrays,
+    )
 }
 
 // ------------------------------------------------------------- frames
@@ -1870,7 +1829,8 @@ mod tests {
         for spec in specs.iter().filter(|spec| spec.accumulation_seconds.is_some()) {
             assert_eq!(spec.quantity, QUANTITY_PRECIPITATION_ACCUMULATION);
             assert_eq!(spec.units, "mm");
-            assert_eq!(spec.accumulation_seconds, Some(3600));
+            let seconds = spec.accumulation_seconds.unwrap();
+            assert!(seconds > 0 && seconds % 3600 == 0, "{}: {seconds}", spec.product);
             assert_eq!(spec.normalize(0.0, -35.0), (0.0, true, false));
             assert_eq!(spec.normalize(5.0, -35.0), (5.0, true, false));
             assert_eq!(spec.normalize(-1.0, -35.0), (0.0, false, false));
@@ -1917,6 +1877,17 @@ mod tests {
         assert_eq!(result.units, "mm/hr");
         assert_eq!(result.values, vec![0.0, 12.0, 0.0]);
         assert_eq!(result.valid, vec![true, true, false]);
+    }
+
+    #[test]
+    fn mesh_keeps_observed_zero_and_uses_500_m_selector() {
+        for spec in decode_specs().iter().filter(|s| s.quantity == "maximum_estimated_hail_size") {
+            assert_eq!(spec.native_altitude_m(), 500.0);
+            assert_eq!(spec.normalize(0.0, -35.0), (0.0,true,false));
+            assert_eq!(spec.normalize(76.2, -35.0), (76.2,true,false));
+            assert_eq!(spec.normalize(-1.0, -35.0), (0.0,false,false));
+            assert_eq!(spec.normalize(-3.0, -35.0), (0.0,false,false));
+        }
     }
 
     #[test]
@@ -2041,6 +2012,61 @@ mod tests {
         ] {
             assert!(BoundingBox::parse(hostile).is_err(), "{hostile:?} must be refused");
         }
+    }
+
+    #[test]
+    fn a_western_box_parses_detached_and_attached() {
+        let want = BoundingBox { west: -125.0, south: 25.0, east: -67.0, north: 50.0 };
+        let detached = Options::parse(&["--bbox".to_string(), "-125,25,-67,50".to_string()]).unwrap();
+        assert_eq!(detached.bbox, Some(want));
+        let attached = Options::parse(&["--bbox=-125,25,-67,50".to_string()]).unwrap();
+        assert_eq!(attached.bbox, Some(want));
+        let product = Options::parse(&["--product=PrecipRate_00.00".to_string()]).unwrap();
+        assert_eq!(product.product.as_deref(), Some("PrecipRate_00.00"));
+        assert!(Options::parse(&["--no-cache=yes".to_string()]).is_err());
+        assert!(Options::parse(&["--nope=1".to_string()]).is_err());
+    }
+
+    #[test]
+    fn a_zero_to_360_box_names_the_same_ground() {
+        let box_ = BoundingBox::parse("235,25,293,50").unwrap();
+        assert_eq!(box_, BoundingBox { west: -125.0, south: 25.0, east: -67.0, north: 50.0 });
+        // One longitude under 180 and one past it: still the 0..360 convention.
+        let box_ = BoundingBox::parse("170,25,185,50");
+        assert!(box_.is_err(), "170..185 crosses the antimeridian once wrapped");
+        let box_ = BoundingBox::parse("120,25,250,50");
+        assert!(box_.is_err(), "120..250 crosses the antimeridian once wrapped");
+        let box_ = BoundingBox::parse("250,25,260,50").unwrap();
+        assert_eq!((box_.west, box_.east), (-110.0, -100.0));
+    }
+
+    #[test]
+    fn a_zero_to_360_box_still_refuses_what_it_cannot_mean() {
+        for hostile in [
+            "170,33,190,43",  // crosses the antimeridian once wrapped
+            "235,25,370,50",  // past 360
+            "-10,25,200,50",  // mixes a negative with a 0..360 longitude
+        ] {
+            assert!(BoundingBox::parse(hostile).is_err(), "{hostile:?} must be refused");
+        }
+    }
+
+    #[test]
+    fn longer_qpe_accumulations_come_from_the_product_table() {
+        let six = decode_spec("MultiSensor_QPE_06H_Pass2_00.00").unwrap();
+        assert_eq!(six.native_parameter, Some([209, 6, 39]));
+        assert_eq!(six.accumulation_seconds, Some(21_600));
+        assert_eq!(six.quantity, QUANTITY_PRECIPITATION_ACCUMULATION);
+        assert_eq!(six.normalize(-1.0, -35.0), (0.0, false, false));
+        assert_eq!(six.normalize(-3.0, -35.0), (0.0, false, false));
+        assert_eq!(six.normalize(0.0, -35.0), (0.0, true, false));
+        // The built-in hourly row keeps precedence over its table twin.
+        let hourly = decode_spec("MultiSensor_QPE_01H_Pass2_00.00").unwrap();
+        assert!(hourly.selector.is_some());
+        assert_eq!(
+            decode_specs().iter().filter(|s| s.product == "MultiSensor_QPE_01H_Pass2_00.00").count(),
+            1
+        );
     }
 
     #[test]

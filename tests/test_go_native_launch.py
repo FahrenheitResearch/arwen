@@ -266,8 +266,9 @@ def test_unsupported_source_refuses_before_creating_output(
 
 
 @pytest.mark.parametrize("with_supplement", [False, True])
+@pytest.mark.parametrize("with_initial", [False, True, "recipe"])
 def test_go_executes_the_existing_staged_chain_and_carries_the_manifest(
-        tmp_path, monkeypatch, capsys, with_supplement):
+        tmp_path, monkeypatch, capsys, with_supplement, with_initial):
     """Stub only expensive stages: real plan, route selection and handoff binding."""
     from gpuwm import stage_cli
 
@@ -282,8 +283,26 @@ def test_go_executes_the_existing_staged_chain_and_carries_the_manifest(
     donor = tmp_path / "declared donor.grib"
     donor.write_bytes(b"explicit donor bytes")
     extra = ["--supplement", f"surface={donor}"] if with_supplement else []
+    initial = tmp_path / "analysis.json"
+    initial.write_text("{}")
+    initial_flag = ["--initial-inputs", str(initial)] if with_initial is True else []
+    if with_initial == "recipe":
+        config.write_text(config.read_text().replace('[fetch]',
+            '[fetch]\ninitial_source = "hrrr-native"'))
 
     def fetch(argv, run_dir, **kwargs):
+        if argv[argv.index("--source") + 1] == "hrrr-native":
+            observed.append(("initial-fetch", list(argv)))
+            folder = Path(argv[argv.index("--out") + 1])
+            folder.mkdir(parents=True)
+            native = folder / "native.grib2"
+            native.write_bytes(b"analysis")
+            (folder / fetch_routes.PREP_ARGUMENTS_NAME).write_text(json.dumps({
+                "schema": fetch_routes.PREP_ARGUMENTS_SCHEMA,
+                "source": "hrrr-native", "prep_source": "hrrr-native",
+                "argv": ["--source", "hrrr-native", "--input", str(native)],
+                "unbound_supplement_roles": [], "member": None, "member_set": None}))
+            return {}
         observed.append(("fetch", list(argv)))
         data.mkdir()
         (data / fetch_routes.PREP_ARGUMENTS_NAME).write_text(json.dumps({
@@ -325,18 +344,26 @@ def test_go_executes_the_existing_staged_chain_and_carries_the_manifest(
     capsys.readouterr()
     assert main(["go", str(config), "--outdir", str(out), "--run-stamp", "off",
                  "--data-dir", str(data), "--geog-root", str(geog),
-                 "--products", "none", *extra]) == 0
+                 "--products", "none", *extra, *initial_flag]) == 0
     terminal = capsys.readouterr()
     assert "go: complete" in terminal.out
     assert "internal digest" not in terminal.out
     assert "declared fallback" in terminal.err
     assert "internal digest" in (out / "launch.log").read_text()
+    if with_initial == "recipe":
+        assert observed.pop(0)[0] == "initial-fetch"
+        initial = out / "chain" / "initial-inputs.json"
+        assert json.loads(initial.read_text())["source"] == "hrrr-native"
     assert [item[0] for item in observed] == ["fetch", "prepare", "binding",
                                             "forecast", "render"]
     fetch_argv = observed[0][1]
     assert fetch_argv[fetch_argv.index("--source") + 1] == "icon-eu"
     assert Path(fetch_argv[fetch_argv.index("--out") + 1]) == data
     prep_argv = observed[1][1]
+    if with_initial:
+        assert prep_argv[prep_argv.index("--initial-inputs") + 1] == str(initial)
+    else:
+        assert "--initial-inputs" not in prep_argv
     assert prep_argv[:len(handoff)] == handoff
     assert prep_argv[len(handoff):len(handoff) + len(extra)] == extra
     assert Path(prep_argv[prep_argv.index("--geog-root") + 1]) == geog

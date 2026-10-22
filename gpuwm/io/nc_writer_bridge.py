@@ -216,7 +216,6 @@ def resolve_ncwrite_bridge() -> Path:
 
 
 _LIBRARY: ctypes.CDLL | None = None
-_UNAVAILABLE: str | None = None
 
 
 def unavailable_reason() -> str | None:
@@ -251,37 +250,27 @@ def load() -> ctypes.CDLL:
     void = ctypes.c_void_p
     size = ctypes.c_size_t
 
-    library.gpuwm_ncwrite_last_error.argtypes = [u8p, size]
-    library.gpuwm_ncwrite_last_error.restype = size
-    library.gpuwm_ncwrite_schema_new.argtypes = [ctypes.c_uint32]
-    library.gpuwm_ncwrite_schema_new.restype = void
-    library.gpuwm_ncwrite_schema_free.argtypes = [void]
-    library.gpuwm_ncwrite_schema_free.restype = None
-    library.gpuwm_ncwrite_def_dim.argtypes = [
-        void, ctypes.c_char_p, size, ctypes.c_uint64, ctypes.c_int32]
-    library.gpuwm_ncwrite_def_dim.restype = ctypes.c_int64
-    library.gpuwm_ncwrite_def_var.argtypes = [
-        void, ctypes.c_char_p, size, ctypes.c_uint32, size, u64p]
-    library.gpuwm_ncwrite_def_var.restype = ctypes.c_int64
-    library.gpuwm_ncwrite_put_att.argtypes = [
-        void, ctypes.c_int64, ctypes.c_char_p, size, ctypes.c_uint32, size,
-        ctypes.c_char_p]
-    library.gpuwm_ncwrite_put_att.restype = ctypes.c_int32
-    library.gpuwm_ncwrite_create.argtypes = [void, ctypes.c_char_p, size]
-    library.gpuwm_ncwrite_create.restype = void
-    library.gpuwm_ncwrite_write_var.argtypes = [
-        void, ctypes.c_uint64, ctypes.c_uint32, ctypes.c_char_p, size]
-    library.gpuwm_ncwrite_write_var.restype = ctypes.c_int32
-    library.gpuwm_ncwrite_write_record.argtypes = [
-        void, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint32,
-        ctypes.c_char_p, size]
-    library.gpuwm_ncwrite_write_record.restype = ctypes.c_int32
-    library.gpuwm_ncwrite_finish.argtypes = [void]
-    library.gpuwm_ncwrite_finish.restype = ctypes.c_int32
-    library.gpuwm_ncwrite_abort.argtypes = [void]
-    library.gpuwm_ncwrite_abort.restype = None
-    library.gpuwm_ncwrite_num_records.argtypes = [void]
-    library.gpuwm_ncwrite_num_records.restype = ctypes.c_uint64
+    for name, args, result in (
+            ("gpuwm_ncwrite_last_error", [u8p, size], size),
+            ("gpuwm_ncwrite_schema_new", [ctypes.c_uint32], void),
+            ("gpuwm_ncwrite_schema_free", [void], None),
+            ("gpuwm_ncwrite_def_dim",
+                [void, ctypes.c_char_p, size, ctypes.c_uint64, ctypes.c_int32], ctypes.c_int64),
+            ("gpuwm_ncwrite_def_var",
+                [void, ctypes.c_char_p, size, ctypes.c_uint32, size, u64p], ctypes.c_int64),
+            ("gpuwm_ncwrite_put_att",
+                [void, ctypes.c_int64, ctypes.c_char_p, size, ctypes.c_uint32, size, ctypes.c_char_p], ctypes.c_int32),
+            ("gpuwm_ncwrite_create", [void, ctypes.c_char_p, size], void),
+            ("gpuwm_ncwrite_write_var", [void, ctypes.c_uint64, ctypes.c_uint32, ctypes.c_char_p, size], ctypes.c_int32),
+            ("gpuwm_ncwrite_write_record",
+                [void, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint32, ctypes.c_char_p, size], ctypes.c_int32),
+            ("gpuwm_ncwrite_finish", [void], ctypes.c_int32),
+            ("gpuwm_ncwrite_abort", [void], None),
+            ("gpuwm_ncwrite_num_records", [void], ctypes.c_uint64),
+    ):
+        function = getattr(library, name)
+        function.argtypes = args
+        function.restype = result
     # The read-back sweep. Bound here rather than probed at the call site
     # so a library predating it is refused at LOAD, with the rebuild
     # remedy, instead of half-way through an export.

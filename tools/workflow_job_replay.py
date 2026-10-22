@@ -20,14 +20,17 @@ How it stays the job and not a copy of it:
     carried between steps. Nothing is restated here: no install line, no test
     list, no cargo command.
   * A step this cannot reproduce is a refusal, never a skip: an action other
-    than checkout, setup-python and upload-artifact, an `if:`, or an
-    expression other than `${{ runner.temp }}`.
+    than checkout, setup-python and artifact handoffs, an unsupported `if:`,
+    or an expression without an explicit local binding.
   * The environment is built from nothing (no variable of the caller is
     inherited), HOME and RUNNER_TEMP are new folders under --work, and the
     interpreter is a new venv of --python. A clone that already holds a cargo
     target folder or an rw_fetch, or a PATH that reaches an rw_fetch or a
     gpuwm, is refused before the first step: the only natives the tests can
-    find are the ones the job's own steps build.
+    find are built by its steps or supplied in the explicit packet artifact.
+
+Packet test jobs require --release-proof and --release-version, supplied by
+the local packet producer. A missing artifact refuses; no source install is substituted.
 
 What it does not reproduce: the hosted runner image (its preinstalled tools
 and their versions), GitHub's checkout (ci-repro-289.sh clones at depth 1
@@ -37,12 +40,14 @@ Exit status: 0 when every step passed, else the failing step's status.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import yaml
@@ -106,6 +111,9 @@ def main(argv=None) -> int:
     parser.add_argument("--python", required=True, help="the interpreter setup-python would install")
     parser.add_argument("--workflow", default=".github/workflows/publish.yml")
     parser.add_argument("--job", default="test")
+    parser.add_argument("--release-proof", type=Path, help="local artifact from prepare (contains dists/)")
+    parser.add_argument("--release-version", help="captured release_authority version; required with --release-proof")
+    parser.add_argument("--publication-commit", help="captured commit; defaults to checkout HEAD")
     parser.add_argument("--rustup-home", default=None)
     parser.add_argument("--cargo-home", default=None)
     parser.add_argument("--pip-cache", default=None)
@@ -126,12 +134,26 @@ def main(argv=None) -> int:
 
     document = yaml.safe_load((tree / args.workflow).read_text(encoding="utf-8"))
     job = document["jobs"][args.job]
-    if job.get("runs-on") != "ubuntu-24.04" or "strategy" in job or "if" in job:
-        raise Unreproducible("this driver supports an unconditional ubuntu-24.04 job without a matrix only")
+    release_job = job.get("if") == "github.event_name != 'pull_request'"
+    if job.get("runs-on") != "ubuntu-24.04" or "strategy" in job or ("if" in job and not release_job):
+        raise Unreproducible("this driver supports ubuntu-24.04 without a matrix and only the release-event job condition")
     if document.get("defaults") or job.get("defaults") or args.cargo_jobs < 1:
         raise Unreproducible("workflow/job defaults or invalid CPU build cap")
     steps = job["steps"]
     context = {"runner.temp": str(work / "runner-temp")}
+    artifacts = {}
+    if bool(args.release_proof) != bool(args.release_version):
+        raise Unreproducible("--release-proof and --release-version must be supplied together")
+    if args.release_proof:
+        if not (args.release_proof / "dists").is_dir():
+            raise Unreproducible("release-proof has no dists directory")
+        artifacts["release-proof"] = args.release_proof.resolve()
+        context.update({"needs.release_authority.outputs.version": args.release_version,
+                        "needs.release_authority.outputs.commit": args.publication_commit or head.stdout.strip(),
+                        "needs.controller.outputs.controller_sha256": hashlib.sha256(
+                            (tree / "tools/promote_prepared_release.py").read_bytes()).hexdigest()})
+    if release_job and not args.release_proof:
+        raise Unreproducible("the packet test job requires --release-proof and --release-version; an editable install cannot qualify uploaded wheels")
 
     path = [str(work / "venv" / "bin")]
     if args.cargo_home:
@@ -164,8 +186,18 @@ def main(argv=None) -> int:
         "native_paths_before": [], "inherited_environment": False,
         "runner": job["runs-on"], "steps": len(steps)}, indent=2) + "\n", encoding="utf-8")
 
+    timings = []
+    job_started = time.monotonic()
+    def measured(label, started):
+        seconds = round(time.monotonic() - started, 3)
+        timings.append({"step": label, "wall_seconds": seconds})
+        say(f"    WALL_SECONDS={seconds:.3f}")
+        (work / "TIMINGS.json").write_text(json.dumps({"steps": timings,
+            "total_seconds": round(time.monotonic() - job_started, 3)}, indent=2) + "\n")
+
     python_ready = False
     for number, step in enumerate(steps, 1):
+        started = time.monotonic()
         label = step.get("name") or step.get("uses") or step.get("id") or "run"
         say(f"\n=== step {number}/{len(steps)}: {label}")
         unknown = set(step) - {"name", "id", "uses", "with", "run", "env", "shell", "working-directory"}
@@ -176,8 +208,10 @@ def main(argv=None) -> int:
         if action:
             kind = action.split("@", 1)[0]
             if kind == "actions/checkout":
-                if set(settings) - {"persist-credentials", "fetch-depth"}:
+                if set(settings) - {"persist-credentials", "fetch-depth", "ref"}:
                     raise Unreproducible(f"checkout with {sorted(settings)}")
+                if "ref" in settings and render(settings["ref"], context) != head.stdout.strip():
+                    raise Unreproducible("checkout ref differs from the replay checkout HEAD")
                 say(f"    the clone stands in for the checkout (fetch-depth {settings.get('fetch-depth', 1)} in the job)")
             elif kind == "actions/setup-python":
                 wanted = str(settings["python-version"])
@@ -189,6 +223,14 @@ def main(argv=None) -> int:
                     raise Unreproducible(f"the job wants Python {wanted}; --python is {got}")
                 say(f"    new venv of Python {got} at {work / 'venv'}")
                 python_ready = True
+            elif kind == "actions/download-artifact":
+                if set(settings) != {"name", "path"} or settings.get("name") not in artifacts:
+                    raise Unreproducible("artifact download needs an explicit local same-pass artifact mapping")
+                target = Path(render(settings["path"], context))
+                if not target.is_absolute():
+                    target = tree / target
+                shutil.copytree(artifacts[settings["name"]], target)
+                say(f"    local {settings['name']} copied to {target} (no remote read)")
             elif kind == "actions/upload-artifact":
                 target = Path(render(settings["path"], context))
                 target = target if target.is_absolute() else tree / target
@@ -198,6 +240,7 @@ def main(argv=None) -> int:
                 say(f"    {target} exists (nothing is uploaded here)")
             else:
                 raise Unreproducible(f"action {action} is not one this reproduction can stand in for")
+            measured(label, started)
             continue
         if "run" not in step:
             raise Unreproducible(f"step {label!r} has neither uses nor run")
@@ -220,6 +263,7 @@ def main(argv=None) -> int:
         cwd = tree / render(step.get("working-directory", "."), context)
         command = ["bash", "--noprofile", "--norc", "-eo", "pipefail", str(script)] if shell else ["bash", "-e", str(script)]
         status = subprocess.run(command, cwd=str(cwd), env=environment).returncode
+        measured(label, started)
         if status != 0:
             say(f"\nSTEP FAILED: {label} (exit {status}); job {args.job} of {args.workflow} FAILED")
             return status

@@ -46,6 +46,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+if __name__ == "__main__" and not __package__:
+    from mutation_study_driver import _run_mutants
+else:
+    from tools.noahmp_wrf461_oracle.mutation_study_driver import _run_mutants
+
 REPO = Path(__file__).resolve().parent.parent.parent
 SOURCE = REPO / "gpuwm" / "core" / "noahmp_sflx.py"
 TEST = REPO / "tests" / "test_noahmp_sflx.py"
@@ -530,46 +535,7 @@ def main(argv):
     if not run_tests(args.quick):
         raise SystemExit("the unmutated port already fails; fix that first")
 
-    survivors: list[str] = []
-    total = 0
-    try:
-        for label, anchor, statement in ARG_MUTANTS:
-            name = f"arg/{label}"
-            if args.filter and args.filter not in name:
-                continue
-            total += 1
-            write_source(build_arg_mutant(original, anchor, statement))
-            if run_tests(args.quick):
-                survivors.append(name)
-                print(f"SURVIVED  {name}", flush=True)
-            else:
-                print(f"killed    {name}", flush=True)
-
-        for label, needle, replacement in STRUCT_MUTANTS:
-            name = f"struct/{label}"
-            if args.filter and args.filter not in name:
-                continue
-            total += 1
-            write_source(build_struct_mutant(original, needle, replacement))
-            if run_tests(args.quick):
-                survivors.append(name)
-                print(f"SURVIVED  {name}", flush=True)
-            else:
-                print(f"killed    {name}", flush=True)
-
-        for site in constant_sites(original):
-            name = f"const/line{site[0]}/{site[3]!r}"
-            if args.filter and args.filter not in name:
-                continue
-            total += 1
-            write_source(build_const_mutant(original, site))
-            if run_tests(args.quick):
-                survivors.append(name)
-                print(f"SURVIVED  {name}", flush=True)
-            else:
-                print(f"killed    {name}", flush=True)
-    finally:
-        write_source(original)
+    survivors, total = _run_mutants(globals(), original, args, flush=True)
 
     equivalent = [s for s in survivors if s in EQUIVALENT]
     uncovered = [s for s in survivors if s in UNCOVERED]

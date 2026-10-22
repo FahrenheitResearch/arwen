@@ -391,6 +391,56 @@ const SURFACE_SPECS: [SurfaceSpec; 11] = [
     },
 ];
 
+/// The PBL height the cycle's own forecast carried into this analysis
+/// (HPBL, WMO 0/3/18, surface), read when the wrfnat publishes it.  An HRRR
+/// f00 is a cycled state: its wrfinput holds the background forecast's
+/// PBLH, so NOAA's f00 products (the GUST message, every PBL-depth
+/// product) see a boundary layer.  A cold start that seeds zero, as real.exe
+/// does, wrote PBLH = 0 at every point of the initial history, so the f00
+/// gust was the bare 10 m wind (measured 2026-10-21 06Z: WOOF f00 gust
+/// 2.6 m/s weaker than the same wrf-rust gust on NOAA's own f00 state,
+/// where PBLH averaged 347 m).  Optional: a file without it selects exactly
+/// the records it always did, and the run keeps the stock zero.
+///
+/// The low, middle and high cloud cover the cycle carries (LCDC, MCDC,
+/// HCDC, WMO 0/6/3-5 on the layer surfaces 214/224/234, percent) seed the
+/// initial CLDFRA's cover the same way: the wrfnat publishes no 3-D cloud
+/// fraction, and HRRR's cover is mostly MYNN subgrid cloud that a start
+/// state does not hold (2026-10-21 06Z: the radiation's own cloud fraction
+/// of the start state gave a column-maximum mean of 6 % against NOAA's 54 %).
+const OPTIONAL_SURFACE_SPECS: [SurfaceSpec; 4] = [
+    SurfaceSpec {
+        name: "PBLH",
+        parameter: Parameter { discipline: 0, category: 3, number: 18 },
+        level_type: SURFACE_LEVEL_TYPE,
+        level_value: 0.0,
+        nonnegative: true,
+    },
+    SurfaceSpec {
+        name: "LCDC",
+        parameter: Parameter { discipline: 0, category: 6, number: 3 },
+        level_type: 214,
+        level_value: 0.0,
+        nonnegative: true,
+    },
+    SurfaceSpec {
+        name: "MCDC",
+        parameter: Parameter { discipline: 0, category: 6, number: 4 },
+        level_type: 224,
+        level_value: 0.0,
+        nonnegative: true,
+    },
+    SurfaceSpec {
+        name: "HCDC",
+        parameter: Parameter { discipline: 0, category: 6, number: 5 },
+        level_type: 234,
+        level_value: 0.0,
+        nonnegative: true,
+    },
+];
+/// Units the gate declares for each optional surface field, in table order.
+const OPTIONAL_SURFACE_UNITS: [&str; 4] = ["m", "%", "%", "%"];
+
 // Optional analyzed fields carried beside the soil subset. The fetch source
 // metadata declares which records it appends; selection is numeric here.
 const OPTIONAL_SOIL_SURFACE_SPECS: [SurfaceSpec; 1] = [SurfaceSpec {
@@ -693,7 +743,7 @@ fn inventory_atmosphere_with_extras(
     let mut selected = Vec::with_capacity((HYBRID_SPECS.len() + extras.len()) * N_HYBRID_LEVELS + SURFACE_SPECS.len());
     let mut common_grid: Option<GridFingerprint> = None;
     for spec in HYBRID_SPECS.iter().chain(extras.iter()) {
-        let parameter = published_parameter(messages, &spec);
+        let parameter = published_parameter(messages, spec);
         for level in 1..=N_HYBRID_LEVELS {
             let description = format!("{} hybrid level {level}", spec.name);
             let index = unique_match(messages, &description, |message| {
@@ -792,6 +842,30 @@ fn inventory_atmosphere_with_extras(
             level_value: spec.level_value,
             parameter: spec.parameter,
         });
+    }
+    for spec in OPTIONAL_SURFACE_SPECS {
+        let matches: Vec<usize> = messages.iter().enumerate().filter(|(_, message)| {
+            parameter_matches(message, spec.parameter)
+                && message.product.template == 0
+                && message.product.level_type == spec.level_type
+                && level_matches(message.product.level_value, spec.level_value)
+        }).map(|(index, _)| index).collect();
+        if matches.len() > 1 {
+            return Err(format!("duplicate optional surface {} in atmosphere input: indices {matches:?}", spec.name).into());
+        }
+        if let Some(&index) = matches.first() {
+            let message = &messages[index];
+            validate_message_common(message, expected_cycle, forecast_hour)?;
+            if common_grid.as_ref() != Some(&GridFingerprint::from_grid(&message.grid)) {
+                return Err(format!("optional surface {} grid differs from the hybrid grid", spec.name).into());
+            }
+            selected.push(SelectedField {
+                index,
+                variable: spec.name,
+                level_value: spec.level_value,
+                parameter: spec.parameter,
+            });
+        }
     }
     Ok(AtmosInventory {
         source_grid: messages[selected[0].index].grid.clone(),
@@ -893,6 +967,35 @@ fn inventory_soil(
         forecast_hour,
         grid: common_grid.ok_or("empty soil inventory")?,
     })
+}
+
+/// The optional surface fields an atmosphere inventory selected, in table order.
+fn optional_surface_fields(inventory: &AtmosInventory) -> Vec<&'static str> {
+    OPTIONAL_SURFACE_SPECS
+        .iter()
+        .filter(|spec| inventory.selected.iter().any(|field| field.variable == spec.name))
+        .map(|spec| spec.name)
+        .collect()
+}
+
+/// Declared with its unit, so the reader binds exactly what was written.
+fn optional_surface_gate_lines(inventory: &AtmosInventory) -> Vec<String> {
+    let fields = optional_surface_fields(inventory);
+    if fields.is_empty() {
+        return Vec::new();
+    }
+    let units = fields
+        .iter()
+        .map(|name| {
+            let index = OPTIONAL_SURFACE_SPECS.iter().position(|spec| spec.name == *name).unwrap();
+            format!("{name}={}", OPTIONAL_SURFACE_UNITS[index])
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    vec![
+        format!("optional_surface_fields\t{}", fields.join(",")),
+        format!("optional_surface_units\t{units}"),
+    ]
 }
 
 /// The optional hybrid fields an atmosphere inventory selected, in table order.
@@ -1249,6 +1352,7 @@ fn atmosphere_nonnegative(variable: &str) -> bool {
         .or_else(|| {
             SURFACE_SPECS
                 .iter()
+                .chain(OPTIONAL_SURFACE_SPECS.iter())
                 .find(|spec| spec.name == variable)
                 .map(|spec| spec.nonnegative)
         })
@@ -1294,7 +1398,8 @@ fn write_atmosphere(
             .iter()
             .filter(|field| field.variable == spec.name)
             .collect();
-        let decoded: Vec<Result<(Vec<u8>, Option<Vec<u8>>, Stats), String>> = fields
+        type DecodedHybrid = Result<(Vec<u8>, Option<Vec<u8>>, Stats), String>;
+        let decoded: Vec<DecodedHybrid> = fields
             .par_iter()
             .map(|selected| {
                 let message = file
@@ -1359,7 +1464,8 @@ fn write_atmosphere(
         }
     }
     // The surface records decode together, then are written in spec order.
-    let decoded: Vec<Result<(&SelectedField, Vec<u8>, Stats), String>> = SURFACE_SPECS
+    type DecodedSurface<'a> = Result<(&'a SelectedField, Vec<u8>, Stats), String>;
+    let decoded: Vec<DecodedSurface<'_>> = SURFACE_SPECS
         .par_iter()
         .map(|spec| {
             let selected = inventory
@@ -1397,6 +1503,36 @@ fn write_atmosphere(
         if spec.name == "Q2" && stats.maximum > 1.0 {
             return Err(format!("{role} {} exceeds one: {}", spec.name, stats.maximum).into());
         }
+        writeln!(
+            manifest,
+            "{}",
+            manifest_row(
+                role,
+                selected.index,
+                spec.name,
+                selected.level_value,
+                message.product.level_type,
+                message.data_rep.template,
+                message.bitmap.is_some(),
+                stats,
+                &path.file_name().unwrap().to_string_lossy(),
+            )
+        )?;
+    }
+    for spec in OPTIONAL_SURFACE_SPECS {
+        let Some(selected) = inventory.selected.iter().find(|field| field.variable == spec.name) else {
+            continue;
+        };
+        let message = file
+            .messages
+            .get(selected.index)
+            .ok_or("selected optional surface index disappeared on reopen")?;
+        let (bytes, stats) = decode_crop(
+            message, selected.index, window, spec.name, spec.nonnegative, unit_fraction(spec.name))?;
+        let path = output.join(format!("{}.f32le", spec.name));
+        let mut writer = BufWriter::new(File::create(&path)?);
+        writer.write_all(&bytes)?;
+        writer.flush()?;
         writeln!(
             manifest,
             "{}",
@@ -2024,7 +2160,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let optional_hybrid = optional_hybrid_fields(atmosphere_reference);
     let payload_files = 24 + extras.len() + usize::from(supplemented != 0)
         + soil_reference.optional_surface.len()
-        + optional_hybrid.len();
+        + optional_hybrid.len()
+        + optional_surface_fields(atmosphere_reference).len();
 
     let parent = output.parent().unwrap_or_else(|| Path::new("."));
     let stem = output
@@ -2079,6 +2216,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         writeln!(gate, "hybrid_levels\t{N_HYBRID_LEVELS}")?;
         for line in optional_hybrid_gate_lines(atmosphere_reference) {
+            writeln!(gate, "{line}")?;
+        }
+        for line in optional_surface_gate_lines(atmosphere_reference) {
             writeln!(gate, "{line}")?;
         }
         if !soil_reference.optional_surface.is_empty() {
@@ -2444,16 +2584,17 @@ mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    #[test]
-    fn completed_publication_retains_staging_and_canonical_survives_cleanup() {
+    fn publication_root(prefix: &str) -> PathBuf {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "gpuwm-hrrr-publish-test-{}-{unique}",
-            std::process::id()
-        ));
+        std::env::temp_dir().join(format!("{prefix}-{}-{unique}", std::process::id()))
+    }
+
+    #[test]
+    fn completed_publication_retains_staging_and_canonical_survives_cleanup() {
+        let root = publication_root("gpuwm-hrrr-publish-test");
         let partial = root.join(format!(".native-bridge.partial-{}", std::process::id()));
         let nested = partial.join("atmosphere-f00");
         let output = root.join("native-bridge");
@@ -2483,14 +2624,7 @@ mod tests {
 
     #[test]
     fn non_streaming_publication_transfers_tree_without_hidden_leak() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "gpuwm-hrrr-direct-publish-test-{}-{unique}",
-            std::process::id()
-        ));
+        let root = publication_root("gpuwm-hrrr-direct-publish-test");
         let partial = root.join(format!(".native-bridge.partial-{}", std::process::id()));
         let output = root.join("native-bridge");
         fs::create_dir_all(partial.join("atmosphere-f00")).unwrap();
@@ -2509,14 +2643,7 @@ mod tests {
 
     #[test]
     fn publication_failure_cleans_direct_but_retains_streaming_owner_tree() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "gpuwm-hrrr-publish-failure-test-{}-{unique}",
-            std::process::id()
-        ));
+        let root = publication_root("gpuwm-hrrr-publish-failure-test");
         let output = root.join("native-bridge");
         fs::create_dir_all(&output).unwrap();
 
@@ -2780,6 +2907,40 @@ mod tests {
         let plain = inventory_atmosphere_messages(&wrfnat_records(CIMIXR, 0), CYCLE, 0).unwrap();
         assert!(optional_hybrid_fields(&plain).is_empty());
         assert_eq!(plain.selected.len(), 561);
+    }
+
+    #[test]
+    fn a_file_publishing_layer_cloud_cover_has_it_selected_and_gated() {
+        let mut records = wrfnat_records(CIMIXR, 0);
+        for spec in OPTIONAL_SURFACE_SPECS {
+            records.push(canonical_record(spec.parameter, spec.level_type, spec.level_value, 0));
+        }
+        let inventory = inventory_atmosphere_messages(&records, CYCLE, 0).unwrap();
+        assert_eq!(optional_surface_fields(&inventory), vec!["PBLH", "LCDC", "MCDC", "HCDC"]);
+        assert_eq!(inventory.selected.len(), 565);
+        assert_eq!(optional_surface_gate_lines(&inventory), vec![
+            "optional_surface_fields\tPBLH,LCDC,MCDC,HCDC",
+            "optional_surface_units\tPBLH=m,LCDC=%,MCDC=%,HCDC=%"]);
+    }
+
+    #[test]
+    fn a_file_publishing_hpbl_has_it_selected_and_gated() {
+        let mut records = wrfnat_records(CIMIXR, 0);
+        let spec = OPTIONAL_SURFACE_SPECS[0];
+        records.push(canonical_record(spec.parameter, spec.level_type, spec.level_value, 0));
+        let inventory = inventory_atmosphere_messages(&records, CYCLE, 0).unwrap();
+        assert_eq!(optional_surface_fields(&inventory), vec!["PBLH"]);
+        assert_eq!(inventory.selected.len(), 562);
+        assert_eq!(optional_surface_gate_lines(&inventory), vec![
+            "optional_surface_fields\tPBLH", "optional_surface_units\tPBLH=m"]);
+        // Without it: the 561 records and no declaration, as before.
+        let plain = inventory_atmosphere_messages(&wrfnat_records(CIMIXR, 0), CYCLE, 0).unwrap();
+        assert!(optional_surface_fields(&plain).is_empty());
+        assert!(optional_surface_gate_lines(&plain).is_empty());
+        // Twice is refused rather than one silently chosen.
+        records.push(canonical_record(spec.parameter, spec.level_type, spec.level_value, 0));
+        let error = inventory_atmosphere_messages(&records, CYCLE, 0).unwrap_err().to_string();
+        assert!(error.contains("duplicate optional surface PBLH"), "{error}");
     }
 
     #[test]

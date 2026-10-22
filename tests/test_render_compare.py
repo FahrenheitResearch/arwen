@@ -216,3 +216,153 @@ def test_engine_lines_are_relayed_in_the_door_s_own_words(capsys):
     assert "render: out/sheet.png" in said.out
     assert "skipped qpf1h for wrfout_d01_2026-10-03_06_00_00" in said.err
     assert "FAILED every product" in said.err
+
+
+# ---------------------------------------------------------------------------
+# `gpuwm go` finalize: a run is drawn beside the model it started from.
+# THE BREAKAGE: every HRRR-sourced run is to be read WOOF-left, HRRR-right
+# through the Rust engine, and that was reachable only by an operator typing
+# `gpuwm render --compare hrrr` after the run.
+# ---------------------------------------------------------------------------
+
+_CATALOG = {
+    "hrrr": {"label": "HRRR", "products": {"refc": "forecast", "t2m": "forecast"}},
+    "rrfs": {"label": "RRFS", "products": {"refc": "forecast"}},
+    "mrms": {"label": "MRMS", "products": {"refc": "observation"}},
+}
+
+
+def test_the_reference_comes_from_the_source_table_not_a_model_branch():
+    from gpuwm import go_cli
+
+    # The native route and the mapped pressure-level route both name HRRR
+    # as their upstream model in the source table.
+    assert go_cli.compare_reference("hrrr", _CATALOG) == "hrrr"
+    assert go_cli.compare_reference("hrrr-prs", _CATALOG) == "hrrr"
+    # A source whose upstream model the engine cannot draw has no reference.
+    assert go_cli.compare_reference("gfs", _CATALOG) is None
+    assert go_cli.compare_reference(None, _CATALOG) is None
+    assert go_cli.compare_reference("not-a-source", _CATALOG) is None
+    # An observation-only entry is never a forecast reference.
+    only_observed = {"hrrr": {"label": "HRRR", "products": {"refc": "observation"}}}
+    assert go_cli.compare_reference("hrrr", only_observed) is None
+    # And a model the engine's catalogue lacks is simply not compared.
+    assert go_cli.compare_reference("hrrr", {}) is None
+
+
+def _fake_engine(tmp_path: Path) -> Path:
+    engine = tmp_path / "rw_compare"
+    engine.write_text(
+        "#!/bin/sh\n"
+        "printf 'REFERENCE\thrrr\tHRRR\nCAPABILITY\thrrr\trefc\tforecast\n'\n")
+    engine.chmod(0o755)
+    return engine
+
+
+def _go_plan(tmp_path: Path, source: str) -> dict:
+    run = tmp_path / "case" / "run"
+    _touch(run / "wrfout", "wrfout_d01_2026-10-03_06_00_00")
+    return {"source": source, "run": run, "wrfout_dir": run / "wrfout",
+            "render": tmp_path / "case" / "png"}
+
+
+@pytest.mark.skipif(__import__("os").name == "nt", reason="shell-script engine stand-in")
+def test_an_hrrr_run_draws_its_comparison_sheets_by_default(tmp_path, monkeypatch):
+    from gpuwm import go_cli
+
+    monkeypatch.setattr(rustwx_lanes, "require_compare_bin", lambda: _fake_engine(tmp_path))
+    ran = []
+    monkeypatch.setattr(go_cli, "_run_stage",
+                        lambda label, command, **kw: ran.append((label, command, kw)))
+    plan = _go_plan(tmp_path, "hrrr")
+    go_cli._reference_compare_stage(plan, explain=False)
+    assert len(ran) == 1
+    label, command, kw = ran[0]
+    assert label == "compare hrrr"
+    assert command[1:4] == ["-m", "gpuwm.cli", "render"]
+    assert str(plan["wrfout_dir"]) in command
+    at = command.index("--compare")
+    assert command[at + 1] == "hrrr"
+    assert command[command.index("--out") + 1] == str(plan["render"])
+    assert command[command.index("--products") + 1] == go_cli.COMPARE_PRODUCTS
+    assert command[-2:] == ["--run-stamp", "off"], (
+        "the stage draws into the run folder go already claimed")
+    # Additive: its failure must never be said as the run stopping.
+    assert kw["secondary_failure"]() is True
+
+
+@pytest.mark.skipif(__import__("os").name == "nt", reason="shell-script engine stand-in")
+def test_the_compare_stage_reads_the_runs_own_download_before_fetching(tmp_path, monkeypatch):
+    # WOOF 1.1 readiness g1: the stage re-downloaded the HRRR cycle the run
+    # already had (724.6 s finalize, 2.7 GB); with the run's own download
+    # folder the same sheets took 43 s.  The fetch fallback stays (no
+    # --compare-offline), and a run that starts past its cycle keeps fetching
+    # because flat file names carry only the cycle hour.
+    from gpuwm import go_cli
+
+    monkeypatch.setattr(rustwx_lanes, "require_compare_bin", lambda: _fake_engine(tmp_path))
+    ran = []
+    monkeypatch.setattr(go_cli, "_run_stage",
+                        lambda label, command, **kw: ran.append(command))
+    download = tmp_path / "case" / "downloads" / "key"
+    download.mkdir(parents=True)
+    plan = {**_go_plan(tmp_path, "hrrr"), "data": download, "forecast_start_hour": 0}
+    go_cli._reference_compare_stage(plan, explain=False)
+    command = ran[-1]
+    assert command[command.index("--compare-reference-dir") + 1] == str(download)
+    assert "--compare-offline" not in command
+    go_cli._reference_compare_stage({**plan, "forecast_start_hour": 24}, explain=False)
+    assert "--compare-reference-dir" not in ran[-1]
+
+
+@pytest.mark.skipif(__import__("os").name == "nt", reason="shell-script engine stand-in")
+def test_a_run_with_no_reference_model_draws_nothing_extra(tmp_path, monkeypatch, capsys):
+    from gpuwm import go_cli
+
+    monkeypatch.setattr(rustwx_lanes, "require_compare_bin", lambda: _fake_engine(tmp_path))
+    ran = []
+    monkeypatch.setattr(go_cli, "_run_stage", lambda *a, **kw: ran.append(a))
+    go_cli._reference_compare_stage(_go_plan(tmp_path, "gfs"), explain=False)
+    assert ran == []
+    assert capsys.readouterr().out == ""
+
+
+def test_a_missing_engine_is_said_once_and_the_run_still_succeeds(tmp_path, monkeypatch, capsys):
+    from gpuwm import go_cli
+
+    def refuse():
+        raise RuntimeError("comparison sheets come from the rust engine rw_compare, "
+                           "and it is not built.")
+
+    monkeypatch.setattr(rustwx_lanes, "require_compare_bin", refuse)
+    go_cli._reference_compare_stage(_go_plan(tmp_path, "hrrr"), explain=False)
+    said = capsys.readouterr().out
+    assert said.count("compare skipped") == 1
+    assert "rw_compare" in said
+
+
+@pytest.mark.skipif(__import__("os").name == "nt", reason="shell-script engine stand-in")
+def test_a_failed_comparison_is_a_warning_not_a_failed_run(tmp_path, monkeypatch, capsys):
+    from gpuwm import go_cli
+
+    monkeypatch.setattr(rustwx_lanes, "require_compare_bin", lambda: _fake_engine(tmp_path))
+
+    def fail(*a, **kw):
+        raise go_cli.GoStageFailed(1, "reference not reachable")
+
+    monkeypatch.setattr(go_cli, "_run_stage", fail)
+    go_cli._reference_compare_stage(_go_plan(tmp_path, "hrrr"), explain=False)
+    said = capsys.readouterr().err
+    assert "hrrr comparison sheets were not drawn" in said
+    assert "every picture of the run itself is in place" in said
+
+
+def test_the_finalize_render_stage_runs_the_comparison_on_every_success_exit():
+    import inspect
+
+    from gpuwm import go_cli
+
+    source = inspect.getsource(go_cli._render_stage)
+    assert source.count("_reference_compare_stage(") == 2, (
+        "both of the render stage's success exits (drawn now, and every frame "
+        "already drawn while the forecast ran) must draw the comparison")

@@ -128,16 +128,6 @@ def _host(value, dtype=None) -> np.ndarray:
     return array if dtype is None else np.asarray(array, dtype=dtype)
 
 
-def _write_window(target, window, values) -> None:
-    """Assign host ``values`` into ``target[..., dst_j, dst_i]``."""
-    (dst_j, _src_j), (dst_i, _src_i) = window
-    if hasattr(target, "__cuda_array_interface__"):
-        import cupy as cp
-
-        values = cp.asarray(np.ascontiguousarray(values))
-    target[..., dst_j, dst_i] = values
-
-
 # ---------------------------------------------------------------------------
 # Overlap statics equality: asserted, never assumed
 # ---------------------------------------------------------------------------

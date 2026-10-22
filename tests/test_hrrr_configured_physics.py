@@ -19,12 +19,18 @@ from gpuwm.physics_compat import WSM6_PROFILE_ID, MYNN_RUC_PROFILE_ID, single_do
 from tools import hrrr_single_domain_benchmark as benchmark
 
 
-def _case(tmp_path, changes=None):
+def _native_tables():
+    """Build a fresh native configuration for each route scenario."""
     vertical = VerticalConfig(eta_levels=tuple(float(x) for x in np.linspace(1, 0, 13)),
                               p_top=5000., hybrid_opt=2, etac=.2)
     target = replace(HrrrTargetDomain.legacy_500x500(), nx=50, ny=50, nz=12)
     raw, _ = benchmark._experiment_tables(vertical, run_seconds=3600, target=target,
                                           physics_profile=WSM6_PROFILE_ID)
+    return raw, target
+
+
+def _case(tmp_path, changes=None):
+    raw, target = _native_tables()
     if changes:
         raw["shared"].update(changes)
     exp = build_experiment(copy.deepcopy(raw), source="configured native control")
@@ -86,11 +92,7 @@ def test_the_root_of_a_mixed_sase_tree_prepares_with_a_shared_sase_selector(
     whole-tree load succeeds stopped at prepare.  The root now prepares
     with the values it runs in the tree; a SASE root keeps the selector.
     """
-    vertical = VerticalConfig(eta_levels=tuple(float(x) for x in np.linspace(1, 0, 13)),
-                              p_top=5000., hybrid_opt=2, etac=.2)
-    target = replace(HrrrTargetDomain.legacy_500x500(), nx=50, ny=50, nz=12)
-    raw, _ = benchmark._experiment_tables(vertical, run_seconds=3600, target=target,
-                                          physics_profile=WSM6_PROFILE_ID)
+    raw, target = _native_tables()
     raw["shared"]["sase_moist_n2"] = False
     raw["domain"][0].update(bl_pbl_physics=root_pbl, km_opt=0 if root_pbl == 900 else 4)
     raw["domain"].append({
@@ -113,11 +115,7 @@ def test_the_root_of_a_mixed_sase_tree_prepares_with_a_shared_sase_selector(
 def _grell_tree_tables(*, root_cu, child_cu, shared=None, root=None,
                        child=None):
     """A route tree whose root and nest run the given cumulus schemes."""
-    vertical = VerticalConfig(eta_levels=tuple(float(x) for x in np.linspace(1, 0, 13)),
-                              p_top=5000., hybrid_opt=2, etac=.2)
-    target = replace(HrrrTargetDomain.legacy_500x500(), nx=50, ny=50, nz=12)
-    raw, _ = benchmark._experiment_tables(vertical, run_seconds=3600, target=target,
-                                          physics_profile=WSM6_PROFILE_ID)
+    raw, target = _native_tables()
     raw["shared"].update(cu_physics=0, cudt_minutes=0.0, **(shared or {}))
     raw["domain"][0].update(cu_physics=root_cu, **(root or {}))
     raw["domain"].append({
@@ -219,11 +217,7 @@ def _storm_following_tables(mover_source):
     grandchild whose parent slides to keep it contained
     (``containment``).
     """
-    vertical = VerticalConfig(eta_levels=tuple(float(x) for x in np.linspace(1, 0, 13)),
-                              p_top=5000., hybrid_opt=2, etac=.2)
-    target = replace(HrrrTargetDomain.legacy_500x500(), nx=50, ny=50, nz=12)
-    raw, _ = benchmark._experiment_tables(vertical, run_seconds=3600, target=target,
-                                          physics_profile=WSM6_PROFILE_ID)
+    raw, target = _native_tables()
     root = raw["domain"][0]
     raw["domain"].append({
         "grid_id": 2, "parent_id": 1, "i_parent_start": 14, "j_parent_start": 14,
@@ -672,11 +666,7 @@ _NOISE_BUBBLE = {"bubbles": [{
 
 def _perturbed_config(tmp_path, *, tree):
     """A route configuration carrying a 0.01 K [perturbation] block."""
-    vertical = VerticalConfig(eta_levels=tuple(float(x) for x in np.linspace(1, 0, 13)),
-                              p_top=5000., hybrid_opt=2, etac=.2)
-    target = replace(HrrrTargetDomain.legacy_500x500(), nx=50, ny=50, nz=12)
-    raw, _ = benchmark._experiment_tables(vertical, run_seconds=3600, target=target,
-                                          physics_profile=WSM6_PROFILE_ID)
+    raw, target = _native_tables()
     raw["experiment"]["name"] = target.name
     if tree:
         raw["domain"].append({

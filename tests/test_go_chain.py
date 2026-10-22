@@ -259,7 +259,19 @@ def test_the_pinned_card_is_what_the_gate_reads(gfs_config, tmp_path):
 # Refusals: never half-orchestrate
 # ---------------------------------------------------------------------------
 
-def test_wizard_era5_config_uses_the_shared_declared_input_launch(tmp_path, capsys):
+def test_wizard_era5_config_uses_the_shared_declared_input_launch(tmp_path, capsys, monkeypatch):
+    # Repeated previews reuse published archive bounds rather than probing again.
+    from datetime import datetime
+    from time import monotonic
+    from gpuwm import source_availability as availability
+    from gpuwm.source_adapters import get_source_adapter
+    from dataclasses import replace
+    original = get_source_adapter("era5").archive_windows[0]
+    window = replace(original, bounds_url="https://fixture.invalid/era5-bounds",
+                     bounds_stop_keys=("end",))
+    stop = datetime(2026, 8, 1, 23)
+    monkeypatch.setattr(availability, "_BOUNDS", {window.bounds_url: (monotonic(), stop)})
+    assert availability.published_stop(window) == stop
     config = _emit(tmp_path, "era5", source="era5")
     before = config.read_bytes()
     capsys.readouterr()  # Separate wizard output from the launch preview.
@@ -993,6 +1005,24 @@ class _FakeCompleted:
         self.stderr = stderr
 
 
+def _publish_chain_artifacts(command, *, frames=False):
+    """Stage artifacts shared by the output-policy tests."""
+    if "--author-front-door-manifest" in command:
+        manifest = Path(command[command.index("--manifest-out") + 1])
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text("{}", encoding="utf-8")
+    if "--output-root" in command:
+        prepared = Path(command[command.index("--output-root") + 1])
+        prepared.mkdir(parents=True, exist_ok=True)
+        (prepared / "proof.json").write_text(json.dumps({
+            "input_manifest_sha256": "a" * 64,
+            "prepared_cache": {"content_sha256": "b" * 64}}), encoding="utf-8")
+    if frames and "--io-mode" in command:
+        directory = Path(command[command.index("--outdir") + 1]) / "wrfout"
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "wrfout_d01_2026-07-29_18_00_00").write_text("", encoding="utf-8")
+
+
 # NEEDS CUPY INSTALLED, and opens no device.  The chain tests marked below
 # run the real `gpuwm go` door; without the array library it refuses
 # before the fetch stage (`this command needs cupy (cupy-cuda12x /
@@ -1032,6 +1062,9 @@ def test_a_failing_stage_replays_its_output_and_stops(
     # Popen too, but is independent of stage failure and output replay.
     monkeypatch.setattr(go_cli.SpeedHooks, "warm_kernels_spawn",
                         lambda args, plan: None)
+    # The hydro door's tool probe is stubbed outside the hydro test modules
+    # (conftest _hydro_door_tools_unprobed_outside_hydro_tests), so only chain
+    # stages reach this double.
     monkeypatch.setattr(subprocess, "Popen", _popen_double(fake_run))
     monkeypatch.setattr(go_cli, "resolve_bridge",
                         lambda: tmp_path / "gfs_grib2_bridge")
@@ -1040,6 +1073,12 @@ def test_a_failing_stage_replays_its_output_and_stops(
                    "--geog-root", str(staged_geog)])
     printed = capsys.readouterr().out
     assert rc == 3
+    # The hydro door's verdict sits in the memory gate's line block (V59: the
+    # headline run had hydro off and only the receipt said so).
+    lines = printed.splitlines()
+    memory = next(i for i, line in enumerate(lines) if line.startswith("go: memory -- "))
+    assert lines[memory + 1].startswith("go: hydro -- off (no_covering_fabric): "), lines[memory + 1]
+    assert "[hydro-world-global]" in lines[memory + 1]
     assert f"FAILED  {failing_label}" in printed
     # Verbatim, without --explain, because this is the reason.
     assert "line one of the real diagnosis" in printed
@@ -1126,30 +1165,7 @@ def test_a_succeeding_chain_reports_one_line_per_stage(tmp_path, capsys,
     plan_root = tmp_path / "go"
 
     def fake_run(command, **kwargs):
-        # Materialize the artifacts the relay reads back.
-        if "--author-front-door-manifest" in command:
-            manifest = Path(command[command.index("--manifest-out") + 1])
-            manifest.parent.mkdir(parents=True, exist_ok=True)
-            manifest.write_text("{}", encoding="utf-8")
-        if "--output-root" in command:
-            prepared = Path(command[command.index("--output-root") + 1])
-            prepared.mkdir(parents=True, exist_ok=True)
-            (prepared / "proof.json").write_text(json.dumps({
-                "input_manifest_sha256": "a" * 64,
-                "prepared_cache": {"content_sha256": "b" * 64}}),
-                encoding="utf-8")
-        if "--io-mode" in command:
-            # The forecast stage publishes history frames, and the render
-            # stage enumerates them: `gpuwm render` takes FILES, and
-            # handing it the directory is what a real run died on after
-            # the forecast had already succeeded.  A forecast that
-            # published nothing is a skipped render, not a rendered
-            # nothing, so this fake has to publish one.
-            frames = Path(
-                command[command.index("--outdir") + 1]) / "wrfout"
-            frames.mkdir(parents=True, exist_ok=True)
-            (frames / "wrfout_d01_2026-07-29_18_00_00").write_text(
-                "", encoding="utf-8")
+        _publish_chain_artifacts(command, frames=True)
         return _FakeCompleted(0, stdout="detail nobody asked for\n")
 
     monkeypatch.setattr(subprocess, "Popen", _popen_double(fake_run))
@@ -1157,6 +1173,18 @@ def test_a_succeeding_chain_reports_one_line_per_stage(tmp_path, capsys,
                         lambda: tmp_path / "gfs_grib2_bridge")
 
     monkeypatch.setattr(go_cli, "render_extra_missing", lambda: None)
+    # The finalize compare stage (d63a454a40) probes rw_compare --abi through
+    # subprocess.  The double above answers EVERY child with the stage
+    # stdout, so on a host whose environment names an rw_compare it
+    # impersonated a stale engine and the skip line quoted its answer.  Pin
+    # the engine absent: this test reads the stage lines, and the compare
+    # stage's own lines are pinned in tests/test_render_compare.py.
+    from gpuwm import rustwx_lanes
+
+    def no_compare_engine():
+        raise RuntimeError("rw_compare is not built")
+
+    monkeypatch.setattr(rustwx_lanes, "require_compare_bin", no_compare_engine)
 
     rc = cli_main(["go", str(gfs_config), "--outdir", str(plan_root),
                    "--geog-root", str(staged_geog)])
@@ -1199,17 +1227,7 @@ def test_a_passing_stages_note_survives_the_output_capture(
     plan_root = tmp_path / "go"
 
     def fake_run(command, **kwargs):
-        if "--author-front-door-manifest" in command:
-            manifest = Path(command[command.index("--manifest-out") + 1])
-            manifest.parent.mkdir(parents=True, exist_ok=True)
-            manifest.write_text("{}", encoding="utf-8")
-        if "--output-root" in command:
-            prepared = Path(command[command.index("--output-root") + 1])
-            prepared.mkdir(parents=True, exist_ok=True)
-            (prepared / "proof.json").write_text(json.dumps({
-                "input_manifest_sha256": "a" * 64,
-                "prepared_cache": {"content_sha256": "b" * 64}}),
-                encoding="utf-8")
+        _publish_chain_artifacts(command)
         return _FakeCompleted(0, stdout=(
             "note: render skipped 1 product render(s) (refl)\n"
             "warning: something to know\n"
@@ -1243,17 +1261,7 @@ def test_explain_replays_every_stage(tmp_path, capsys, monkeypatch,
     plan_root = tmp_path / "go"
 
     def fake_run(command, **kwargs):
-        if "--author-front-door-manifest" in command:
-            manifest = Path(command[command.index("--manifest-out") + 1])
-            manifest.parent.mkdir(parents=True, exist_ok=True)
-            manifest.write_text("{}", encoding="utf-8")
-        if "--output-root" in command:
-            prepared = Path(command[command.index("--output-root") + 1])
-            prepared.mkdir(parents=True, exist_ok=True)
-            (prepared / "proof.json").write_text(json.dumps({
-                "input_manifest_sha256": "a" * 64,
-                "prepared_cache": {"content_sha256": "b" * 64}}),
-                encoding="utf-8")
+        _publish_chain_artifacts(command)
         return _FakeCompleted(0, stdout="the full receipt\n")
 
     monkeypatch.setattr(subprocess, "Popen", _popen_double(fake_run))
@@ -2067,13 +2075,12 @@ def _staged_geog_tree(root: Path) -> Path:
     check under test.
     """
 
-    from gpuwm.geog_assets import geog_datasets
+    # The one stand-in (tests/_staged_geog.py) that stages each container
+    # archive's child indexes (soilgrids, the permissive default soil set
+    # since c3e7e0d647), which is where the go door's geography check looks.
+    from _staged_geog import staged_geog_tree
 
-    geog = root / "WPS_GEOG"
-    for name in geog_datasets():
-        (geog / name).mkdir(parents=True, exist_ok=True)
-        (geog / name / "index").write_text("", encoding="utf-8")
-    return geog
+    return staged_geog_tree(root / "WPS_GEOG")
 
 
 @pytest.fixture(scope="module")

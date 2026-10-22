@@ -11,7 +11,6 @@ the composite reflectivity level label.
 """
 from __future__ import annotations
 
-import argparse
 from dataclasses import dataclass
 import json
 import os

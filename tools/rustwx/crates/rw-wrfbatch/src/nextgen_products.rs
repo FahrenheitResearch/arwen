@@ -15,7 +15,7 @@ use std::{
 };
 
 pub const ABI: &str =
-    "gpuwm.nextgen-products.v1 node-map HAND terrain-depth ensemble-depth hydrograph component-series";
+    "gpuwm.nextgen-products.v1 node-map HAND terrain-depth ensemble-depth hydrograph component-series streamflow-map";
 
 /// Preserve prior products on ordinary repeated requests, including symlink
 /// destinations. A fresh sibling is claimed with create_dir, not a name probe.
@@ -245,6 +245,7 @@ fn depth_scale() -> f32 {
 struct TerrainData {
     lat: Vec<f32>,
     lon: Vec<f32>,
+    channel: Option<Vec<i64>>,
     drainage: Option<(Vec<f32>, Vec<i64>, Vec<i64>, Vec<f32>)>,
 }
 
@@ -657,23 +658,23 @@ pub fn run(path: &Path) -> Result<(), String> {
                     .ok_or("empty/overflow terrain")?;
             let lat = t.latitude.floats(root, n)?;
             let lon = t.longitude.floats(root, n)?;
-            let drainage = match (&t.elevation_m, &t.downstream_cell, &t.channel_node, &t.stream_order) {
-                (None, None, None, None) => None,
+            let channel = t.channel_node.as_ref().map(|b| b.integers(root, n)).transpose()?;
+            if channel.as_ref().is_some_and(|c| c.par_iter().any(|&i| i < -1 || i >= r.node_ids.len() as i64)) {
+                return Err("terrain channel_node exceeds explicit node roster".into());
+            }
+            let drainage = match (&t.elevation_m, &t.downstream_cell, &channel, &t.stream_order) {
+                (None, None, _, None) => None,
                 (Some(z), Some(next), Some(channel), Some(order)) => {
                     let z = z.floats(root, n)?;
                     let next = next.integers(root, n)?;
-                    let channel = channel.integers(root, n)?;
-                    if channel.par_iter().any(|&i| i < -1 || i >= r.node_ids.len() as i64) {
-                        return Err("terrain channel_node exceeds explicit node roster".into());
-                    }
                     let order = order.floats(root, n)?.into_par_iter().enumerate().map(|(i,v)| {
                         if channel[i] >= 0 && v.is_finite() && v > 0. && v.fract() == 0. {v} else {f32::NAN}
                     }).collect();
-                    Some((z, next, channel, order))
+                    Some((z, next, channel.clone(), order))
                 }
                 _ => return Err("HAND requires elevation_m, downstream_cell, channel_node and stream_order together; omit all for depth-only maps".into()),
             };
-            Ok::<_, String>(TerrainData { lat, lon, drainage })
+            Ok::<_, String>(TerrainData { lat, lon, channel, drainage })
         })
         .transpose()?;
     record("load_static", start);
@@ -697,6 +698,7 @@ pub fn run(path: &Path) -> Result<(), String> {
         let data = terrain.as_ref().unwrap();
         let (lat, lon) = (&data.lat, &data.lon);
         let upper = match slug {
+            "streamflow_map" => values.par_iter().copied().filter(|v| v.is_finite()).reduce(|| 1., f32::max),
             "flood_probability" | "hand_flood_probability" | "inundation_extent" => 1.,
             "stream_order" => values
                 .par_iter()
@@ -851,6 +853,13 @@ pub fn run(path: &Path) -> Result<(), String> {
         record("load_node_outputs", start);
         let start = Instant::now();
         let mut planes = Vec::new();
+        if f.discharge_m3_s.is_some() {
+            if let Some(channel) = terrain.as_ref().and_then(|t| t.channel.as_ref()) {
+                planes.push(("streamflow_map", channel.par_iter().map(|&i| {
+                    if i < 0 { f32::NAN } else { q[i as usize] as f32 }
+                }).collect(), "m3 s-1", "Routed streamflow on prepared channel cells"));
+            }
+        }
         let cells = r.terrain.as_ref().map_or(0, |t| t.nx * t.ny);
         if let Some(b) = &f.terrain_depth_m {
             let d = b

@@ -1176,6 +1176,7 @@ pub fn parse_reply(text: &str, action: &str) -> Result<Value, String> {
 }
 
 /// Bounded viewer state. A transport failure leaves the last known run state visible.
+#[derive(Default)]
 pub struct View {
     pub runtime: Option<Value>,
     pub status: Option<Value>,
@@ -1190,22 +1191,6 @@ pub struct View {
     pub last_job_refresh: Option<Instant>,
 }
 
-impl Default for View {
-    fn default() -> Self {
-        Self {
-            runtime: None,
-            status: None,
-            jobs: Vec::new(),
-            log: String::new(),
-            cursor: 0,
-            eof: None,
-            terminal_eof_confirmed: false,
-            connection_error: None,
-            last_refresh: None,
-            last_job_refresh: None,
-        }
-    }
-}
 
 pub struct Controller {
     pub store: Store,
@@ -1236,6 +1221,7 @@ impl Controller {
     /// Shared user preferences. Nothing is read from the launch folder: a
     /// `.arwen-nodes.json` there is untrusted input and is only opened through
     /// an explicit `--nodes-file ABSOLUTE_PATH`.
+    #[cfg(not(test))]
     pub fn load_user(cwd: &Path) -> Self {
         let base = if cfg!(windows) {
             std::env::var_os("APPDATA").map(PathBuf::from)
@@ -1374,11 +1360,9 @@ impl Controller {
             self.view.terminal_eof_confirmed = false;
         }
         node.last_job = Some(job.into());
-        if let Err(error) = self.store.save(&self.path) {
-            // Preserve the observed ID in this window even if persistence fails.
-            // Losing a local preference must not hide an already-created remote run.
-            return Err(error);
-        }
+        // Preserve the observed ID in this window even if persistence fails.
+        // Losing a local preference must not hide an already-created remote run.
+        self.store.save(&self.path)?;
         Ok(())
     }
 

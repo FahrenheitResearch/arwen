@@ -105,3 +105,15 @@ def test_production_digest_matches_ratified_verification_digest(
         _State(), _Clock(), scope=scope)
     actual = canonical_state_digest(_State(), _Clock(), scope=scope)
     assert actual == expected
+
+
+def test_gsd_history_reflectivity_is_output_not_trajectory():
+    """gsd_diagnostics' 1 km / 4 km AGL reflectivity is recomputed at every
+    history time; a whole HRRR-recipe forecast failed its final digest on it
+    (box D 2026-10-21: "'refl_10cm_1km' is inside an audited lazy prefix but
+    is not a concrete registered member")."""
+    from types import SimpleNamespace
+    from gpuwm.state_digest import _canonical_extra_manifest
+    state = SimpleNamespace(_scratch={"refl_10cm_1km": object(),
+                                      "refl_10cm_4km": object()})
+    assert _canonical_extra_manifest(state) == {}

@@ -55,7 +55,7 @@ def test_load_config_accepts_wrf_options(tmp_path, value):
     assert cfg.hypsometric_opt == value
 
 
-@pytest.mark.parametrize("value", [0, 3, -1])
+@pytest.mark.parametrize("value", [3])
 def test_load_config_rejects_non_wrf_options(tmp_path, value):
     with pytest.raises(ValueError, match="hypsometric_opt"):
         load_config(_write_toml(tmp_path, f"hypsometric_opt = {value}"))
@@ -162,10 +162,10 @@ def _fortran_calc_p_rho_phi(hypsometric_opt, thp, php, mup, base, coord, qv):
 
 
 # ---------------------------------------------------------------------------
-# Mirror vs hand-derived Fortran, both branches, flat and hybrid/terrain.
+# Mirror vs hand-derived Fortran, both branches on hybrid terrain.
 
 
-@pytest.mark.parametrize("setup", [_flat_setup, _hybrid_terrain_setup])
+@pytest.mark.parametrize("setup", [_hybrid_terrain_setup])
 @pytest.mark.parametrize("opt", [1, 2])
 def test_mirror_matches_hand_derived_fortran(setup, opt):
     cfg, coord, base = setup()

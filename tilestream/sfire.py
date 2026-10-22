@@ -21,9 +21,20 @@ def tile_static(owner, cfg):
     if owner.geometry["coordinate_mode"] == "geographic":
         result.update(FXLAT=cp.zeros(fine, cp.float32), FXLONG=cp.zeros(fine, cp.float32),
                       FIRE_COORDINATE_MODE="geographic", CEN_LAT=0.0)
-    if cfg.fire_is_real_perim:
+    if "observed_initialization" in owner._setup:
+        # Compute buffers retain the admitted runtime setup. Their neutral
+        # arrays are replaced by the carrier gather before physics runs.
+        result["_OBSERVED_INITIALIZATION"] = owner._setup["observed_initialization"]
+    if owner.grid.options.fire_is_real_perim:
         if "historical_tign" in owner.grid.data:
             result["HISTORICAL_TIGN"] = cp.zeros(fine, cp.float32)
+    # Admitted canopy planes (29fe0a4fb7) are fire/grid.<name> carriers of
+    # the owner; a tile's fire grid must hold the same keys for the carrier
+    # gather to fill them, exactly as HISTORICAL_TIGN above.
+    from gpuwm.fire_inputs import canopy_fields
+    for name in canopy_fields():
+        if name.lower() in owner.grid.data:
+            result[name] = cp.zeros(fine, cp.float32)
     if owner.grid.moisture is not None:
         for key, value in owner.grid.moisture.arrays().items():
             shape = tuple(value.shape[:-2]) + (int(cfg.ny), int(cfg.nx))

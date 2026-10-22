@@ -256,6 +256,16 @@ impl Nc4File {
         Ok(dataset.read_array::<T>()?)
     }
 
+    /// Read exact NC_CHAR bytes; reject variable-length NC_STRING.
+    pub fn read_variable_char_bytes(&self, path: &str) -> Result<Vec<u8>> {
+        let normalized = normalize_dataset_path(path)?;
+        let dataset = self.hdf5.dataset(normalized)?;
+        if !matches!(dataset.dtype(), hdf5_reader::messages::datatype::Datatype::String {
+            size:hdf5_reader::messages::datatype::StringSize::Fixed(1), ..
+        }) { return Err(Error::TypeMismatch {expected:"NC_CHAR".into(),actual:format!("{:?}",dataset.dtype())}); }
+        Ok(dataset.read_raw_bytes()?)
+    }
+
     /// Read a string variable as a single string.
     pub fn read_variable_as_string(&self, path: &str) -> Result<String> {
         let mut strings = self.read_variable_as_strings(path)?;
@@ -283,7 +293,23 @@ impl Nc4File {
                 actual: format!("{dtype:?}"),
             });
         }
-        Ok(dataset.read_strings()?)
+        let strings = dataset.read_strings()?;
+        // gpuwm (VENDOR.md): NetCDF-4 stores NC_CHAR as a fixed-length
+        // HDF5 string of ONE byte per element, so a WRF `Times(Time,
+        // DateStrLen)` array reads back as 19 one-character strings per
+        // time. The NetCDF meaning is one string per row along the last
+        // axis, which is what the classic reader returns; join the rows the
+        // same way (trailing NULs trimmed) so both formats agree.
+        if matches!(
+            dataset.dtype(),
+            hdf5_reader::messages::datatype::Datatype::String {
+                size: hdf5_reader::messages::datatype::StringSize::Fixed(1),
+                ..
+            }
+        ) {
+            return join_char_rows(dataset.shape(), &strings, dataset.name());
+        }
+        Ok(strings)
     }
 
     #[cfg(feature = "rayon")]
@@ -400,6 +426,41 @@ fn normalize_dataset_path(path: &str) -> Result<&str> {
 
 fn normalize_group_path(path: &str) -> Result<&str> {
     Ok(path.trim_matches('/'))
+}
+
+/// Join one-character elements into one string per row of the last axis.
+fn join_char_rows(shape: &[u64], chars: &[String], name: &str) -> Result<Vec<String>> {
+    // One element is one byte. The HDF5 layer hands a NUL byte back as an
+    // empty string, so an empty element is put back as NUL: an interior NUL
+    // then survives as it does in a classic file, and only the trailing pad
+    // is trimmed, as the classic reader trims it.
+    let row = |cells: &[String]| -> String {
+        let text: String = cells
+            .iter()
+            .map(|cell| if cell.is_empty() { "\0" } else { cell.as_str() })
+            .collect();
+        text.trim_end_matches('\0').to_string()
+    };
+    if shape.len() <= 1 {
+        return Ok(vec![row(chars)]);
+    }
+    let width = usize::try_from(*shape.last().unwrap_or(&0)).map_err(|_| {
+        Error::InvalidData(format!("char variable '{name}' string axis exceeds usize"))
+    })?;
+    if width == 0 {
+        let rows = shape[..shape.len() - 1].iter().product::<u64>();
+        let rows = usize::try_from(rows).map_err(|_| {
+            Error::InvalidData(format!("char variable '{name}' row count exceeds usize"))
+        })?;
+        return Ok(vec![String::new(); rows]);
+    }
+    if chars.len() % width != 0 {
+        return Err(Error::InvalidData(format!(
+            "char variable '{name}' holds {} characters, not a whole number of {width}-character rows",
+            chars.len()
+        )));
+    }
+    Ok(chars.chunks_exact(width).map(row).collect())
 }
 
 fn dataset_nc_type(dataset: &hdf5_reader::Dataset) -> Result<NcType> {

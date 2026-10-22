@@ -17,6 +17,7 @@ object::
      "group_factor": number,       # 9. (sea salt), 5 (sulfate), 8 (OC), 1
      "order": int,                 # position inside the group
      "unit_mass": number,          # get_niwfa's denominator, as written
+     "mass_multiplier": number,    # optional native mass -> GSL mass basis
      "from": "file:line"}
 
 GSL's denominators are single-precision literals dividing a REAL(8), so the
@@ -67,6 +68,39 @@ def rows(table):
     return table.rows_for(KEY)
 
 
+def effective_mode(cfg):
+    """Source-backed aerosol-aware Thompson diagnoses numbers by default."""
+    mode = getattr(cfg, "aerosol_mp_coupling", "auto")
+    if mode != "auto":
+        return mode
+    if int(getattr(cfg, "mp_physics", 0)) != 28:
+        return "none"
+    from gpuwm.chem_table import load
+    from gpuwm.chem_source_init import chem_boundary_fields
+    table = load(cfg)
+    if table is None:
+        return "none"
+    filled = set(chem_boundary_fields(table, cfg))
+    return ("diagnose" if any(row.state_attr in filled for row in rows(table))
+            else "none")
+
+
+
+def source_number_fields(cfg):
+    """Number targets whose composition mass is supplied on every frame."""
+    if effective_mode(cfg) != "diagnose":
+        return ()
+    from gpuwm.chem_table import load
+    from gpuwm.chem_source_init import chem_boundary_fields
+    table = load(cfg)
+    if table is None:
+        return ()
+    filled = set(chem_boundary_fields(table, cfg))
+    targets = {r.mp_coupling["target"] for r in rows(table)
+               if r.state_attr in filled and r.mp_coupling}
+    return tuple(name for name in ("nwfa", "nifa") if name in targets)
+
+
 def refusal(cfg):
     """Why ``aerosol_mp_coupling = 'diagnose'`` cannot run as configured, or None.
 
@@ -79,7 +113,7 @@ def refusal(cfg):
     active row feeds is left to the scheme (``launch_niwfa``), so only
     targets with feeding rows are checked.
     """
-    if getattr(cfg, "aerosol_mp_coupling", "none") != "diagnose":
+    if effective_mode(cfg) != "diagnose":
         return None
     from gpuwm.chem_source_init import chem_boundary_fields
     from gpuwm.chem_table import load
@@ -160,7 +194,8 @@ def pack_terms(row_dicts) -> list[CouplingTerm]:
             group_factor=float(spec["group_factor"]),
             denominator=float(np.float32(spec["unit_mass"])),
             to_kg_per_kg=to_kg_per_kg(get("units"),
-                                      get("molar_mass_g_mol", None))))
+                                      get("molar_mass_g_mol", None))
+                            * float(spec.get("mass_multiplier", 1.0))))
     terms.sort(key=lambda t: (t.target, t.group, t.order))
     for t in terms:
         if t.group_factor <= 0 or t.denominator <= 0:
@@ -177,6 +212,12 @@ def launch_niwfa(fields, terms, nifa, nwfa, *, nifa_f64=None, nwfa_f64=None):
     arrays, when given, receive the value before the float32 rounding (the
     oracle grades both).
     """
+    if isinstance(nifa, np.ndarray):
+        from gpuwm.ingest.cpu_backend import CpuPreprocessBackend
+        CpuPreprocessBackend().aerosol_numbers(
+            fields, terms, nifa, nwfa, scale=SCALE,
+            nifa_f64=nifa_f64, nwfa_f64=nwfa_f64)
+        return
     import cupy as cp
 
     from gpuwm.core.kernels import get_kernel
@@ -213,7 +254,7 @@ def launch_niwfa(fields, terms, nifa, nwfa, *, nifa_f64=None, nwfa_f64=None):
 
 
 def init(ctx):
-    mode = getattr(ctx.cfg, "aerosol_mp_coupling", "none")
+    mode = effective_mode(ctx.cfg)
     if mode != "diagnose":
         return
     for name in TARGETS:
@@ -226,8 +267,35 @@ def init(ctx):
 
 
 def step(ctx, dt, ktau):
-    if getattr(ctx.cfg, "aerosol_mp_coupling", "none") != "diagnose":
+    if effective_mode(ctx.cfg) != "diagnose":
         return
     terms = pack_terms(rows(ctx.table))
     fields = {t.name: ctx.field(ctx.table.row(t.name)) for t in terms}
     launch_niwfa(fields, terms, ctx.state.nifa, ctx.state.nwfa)
+
+
+def initialize_from_sources(state, cfg, receipts):
+    """Bind source aerosol mass before the first microphysics call."""
+    if not receipts or effective_mode(cfg) != "diagnose":
+        return None
+    terms = pack_terms(rows(state.chem.table))
+    filled = {name for receipt in receipts for name in receipt["rows"]}
+    for target in TARGETS:
+        feeding = [term for term in terms if term.target == TARGETS.index(target)]
+        if feeding and not any(term.name in filled for term in feeding):
+            raise ValueError(f"initial {target} diagnosis has no populated aerosol source")
+    for target in TARGETS:
+        if getattr(state, target, None) is None:
+            raise ValueError(f"initial aerosol coupling needs state.{target}; select aerosol-aware Thompson")
+    fields = {t.name: getattr(state, state.chem.table.row(t.name).state_attr) for t in terms}
+    launch_niwfa(fields, terms, state.nifa, state.nwfa)
+    initialized = [name for name in ("nwfa", "nifa")
+                   if any(TARGETS[t.target] == name for t in terms)]
+    result = dict(aerosol_source="composition-chemistry", dataset_used=True,
+                source_rows=[r["source"] for r in receipts],
+                aerosol_source_statement=("Thompson " + ", ".join(initialized) + " diagnosed from populated composition before first microphysics; other fields retain their recorded initialization policy"),
+                policy="source-mass-to-number-before-cold-start-closure",
+                operator="NOAA GSL get_niwfa", initialized_fields=initialized)
+    if set(initialized) == set(TARGETS):
+        result.update(synthetic_fallback_in_use=False, awaiting_profile_fill=False)
+    return result

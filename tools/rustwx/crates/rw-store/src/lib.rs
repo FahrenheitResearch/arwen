@@ -7,25 +7,20 @@ pub mod atomic;
 pub mod codec;
 pub mod diff;
 pub mod error;
-pub mod export;
 pub mod format;
 pub mod grid;
 pub mod header;
 pub mod index;
 pub mod ingest;
 pub mod lock;
-pub mod netcdf3;
 pub mod netcdf_classic;
 pub mod reader;
 pub mod run;
 pub mod validate;
 pub mod writer;
 
-pub use diff::{
-    Difference, build_matches, compare, meta_without_build, read_writer_build, record_at,
-};
+pub use diff::{Difference, build_matches, compare, read_writer_build};
 pub use error::{RwResult, RwStoreError};
-pub use export::{ExportSummary, export_hour_to_netcdf3};
 pub use format::RwsExactTime;
 pub use ingest::{
     DerivedFieldInput, HourIngestWriter, PressureVolumeInput, StoredField2D, WrittenHour,

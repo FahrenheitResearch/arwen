@@ -16,11 +16,12 @@ CPU-side throughout: the nvidia-smi reader is injected.
 from __future__ import annotations
 
 import ast
-from pathlib import Path
 import threading
 import time
 
 import pytest
+
+from test_gpu_mem_watch import _function_node, _runner_sources
 
 from gpuwm.core.gpu_mem_watch import (
     GpuPeakMemoryWatcher,
@@ -115,26 +116,6 @@ def test_probes_share_one_nvidia_smi_pass_and_are_never_strict():
                          "--query-gpu=uuid,memory.used"]
     assert "OTHER" in probes["nvml_other_processes_used"].scope
     assert "THIS" in probes["nvml_this_process_used"].scope
-
-
-def test_a_non_strict_probe_error_is_recorded_by_the_boundary_sample():
-    """A host without nvidia-smi must not lose its forecast to a receipt
-    row; the strict pool views still fail loud."""
-
-    def broken():
-        raise ProcessMemoryUnavailable("no nvidia-smi on PATH")
-
-    watcher = GpuPeakMemoryWatcher([
-        MemoryProbe(name="pool", scope="s", read=lambda: 11),
-        MemoryProbe(name="nvml", scope="s", read=broken, strict=False),
-    ])
-    watcher.sample()  # does not raise
-    summary = watcher.summary()["probes"]
-    assert summary["pool"]["peak_bytes"] == 11
-    assert summary["nvml"]["samples"] == 0
-    assert "no nvidia-smi" in summary["nvml"]["error"]
-    assert watcher.peak_bytes_observed("nvml") is None
-    assert watcher.peak_bytes_observed("pool") == 11
 
 
 def test_slow_probes_keep_their_own_cadence_on_both_paths():
@@ -419,23 +400,6 @@ def test_a_background_only_probe_cannot_be_strict():
 # ---------------------------------------------------------------------------
 # Wiring pins: both prepared runners carry the split into their receipts.
 # ---------------------------------------------------------------------------
-
-def _runner_sources():
-    import gpuwm.prepared_domain_tree_forecast as tree_runner
-    import gpuwm.prepared_single_domain_forecast as single_runner
-
-    return {
-        "single": (Path(single_runner.__file__), "run_prepared_forecast"),
-        "tree": (Path(tree_runner.__file__), "run_prepared_tree"),
-    }
-
-
-def _function_node(path: Path, name: str) -> ast.FunctionDef:
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    return next(
-        node for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and node.name == name)
-
 
 @pytest.mark.parametrize("runner_key", ["single", "tree"])
 def test_runner_watches_the_per_process_views(runner_key):

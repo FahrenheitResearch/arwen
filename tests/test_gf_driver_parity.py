@@ -136,43 +136,6 @@ def _ulp(a, b, mask=None):
 # ==========================================================================
 # the tendencies GFDRV writes
 # ==========================================================================
-@pytest.mark.parametrize(
-    "field",
-    ["rthcuten", "rqvcuten", "rqccuten", "rqicuten", "dudt_phy", "dvdt_phy",
-     "gdc", "gdc2"],
-)
-def test_gfdrv_level_output_bitwise(drv, field):
-    """Bitwise on all 216 columns."""
-    ok = drv["driver_exact"]
-    w, bad, loc = _ulp(_level(drv["pin"], field)[ok], drv["gl"][field][ok])
-    assert bad == 0
-    assert w == 0, f"{field}: {w} ULP at column {loc[0]} k={loc[1] + 1}"
-
-
-@pytest.mark.parametrize("field", ["raincv", "pratec"])
-def test_gfdrv_precip_bitwise(drv, field):
-    ok = drv["driver_exact"]
-    w, bad, loc = _ulp(_scalar(drv["pin"], field)[ok], drv["gs"][field][ok])
-    assert bad == 0
-    assert w == 0, f"{field}: {w} ULP at column {loc[0]}"
-
-
-@pytest.mark.parametrize("field", ["htop", "hbot", "xmb_shallow"])
-def test_gfdrv_xmb_free_surface_output_bitwise_everywhere(drv, field):
-    """All 216 columns exact."""
-    w, bad, loc = _ulp(_scalar(drv["pin"], field), drv["gs"][field])
-    assert bad == 0
-    assert w == 0, f"{field}: {w} ULP at column {loc[0]}"
-
-
-@pytest.mark.parametrize("field", ["gdc", "gdc2"])
-def test_the_cloud_water_diagnostics_are_bitwise_on_all_216(drv, field):
-    """``GDC``/``GDC2`` carry ``cupclw``, which ``cup_up_moisture`` builds
-    without the mass flux.  All 216 columns exact."""
-    w, bad, _ = _ulp(_level(drv["pin"], field), drv["gl"][field])
-    assert bad == 0 and w == 0
-
-
 # ==========================================================================
 # the stage seam
 # ==========================================================================

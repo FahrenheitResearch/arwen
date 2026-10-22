@@ -14,7 +14,6 @@ import hashlib
 import json
 import math
 from pathlib import Path
-import sys
 import tempfile
 from typing import Mapping, Sequence
 
@@ -39,7 +38,6 @@ from gpuwm.mapped_source import (
     _decode_netcdf,
     _grib2_inventory,
     _match_nc_variables,
-    _matching_nc_variables,
     _nc_selector_text,
     _nc_vocabulary,
     _selector_names,

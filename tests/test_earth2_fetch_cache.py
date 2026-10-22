@@ -57,8 +57,8 @@ def test_receipt_cache_checks_identity_coverage_and_bytes(tmp_path, monkeypatch)
     assert cache.reuse(spec, tmp_path / "retired") is None
 
 
-def test_legacy_cache_checks_defaults_and_native_clock_without_relabelling(tmp_path, monkeypatch):
-    from gpuwm import earth2_legacy_cache, tc_tracks
+def test_legacy_cache_checks_recorded_fields_and_native_clock_without_relabelling(tmp_path, monkeypatch):
+    from gpuwm import tc_tracks
     monkeypatch.setenv('GPUWM_EARTH2_FETCH_CACHE', str(tmp_path / 'index'))
     spec = build_spec(model='fcn3', cycle='2024-09-24T12', hours=24, storm='auto', nest='2.5km')
     row = earth2_run.resolve_model('fcn3')[1]
@@ -68,6 +68,7 @@ def test_legacy_cache_checks_defaults_and_native_clock_without_relabelling(tmp_p
     forecast.write_bytes(b'forecast')
     analysis.write_bytes(b'analysis')
     old_row = {key: row[key] for key in ('earth2studio_class', 'profile', 'step_hours')}
+    old_row['weights'] = {'host': 'huggingface', 'repository': 'nvidia/fourcastnet3'}
     receipt = dict(schema='gpuwm-earth2-fetch-v1', model='fcn3', model_row=old_row,
         initial_condition_source='era5', cycle=spec['cycle'], hours=72,
         forecast=str(forecast), analysis=str(analysis), profile=row['profile'],
@@ -77,7 +78,6 @@ def test_legacy_cache_checks_defaults_and_native_clock_without_relabelling(tmp_p
     (producer / 'earth2-request.json').write_text(json.dumps(dict(area=None,
         model_class=row['earth2studio_class'], ic_class='ARCO', steps=12)))
     monkeypatch.setenv('GPUWM_EARTH2_FETCH_RECEIPTS', str(parent))
-    monkeypatch.setattr(earth2_legacy_cache, 'default_identity', lambda *args: {'seed':333, 'package':row['weights']['uri']})
     metadata = {'variables':{
         'time':{'values':[0], 'attrs':{'units':'hours since 2024-09-24T12:00:00+00:00'}},
         'lead_time':{'values':list(range(0,73,6)), 'attrs':{'units':'hours'}},
@@ -87,6 +87,31 @@ def test_legacy_cache_checks_defaults_and_native_clock_without_relabelling(tmp_p
     result = cache.reuse(spec, tmp_path / 'reused')
     assert result['schema'] == 'gpuwm-earth2-fetch-v1' and result['model_row'] == old_row
     assert result['legacy_compatibility']['checked_leads_hours'] == [0,6,12,18,24]
+    compatibility = result['legacy_compatibility']
+    assert compatibility['producer_weights'] == 'unknown'
+    assert compatibility['producer_member_policy'] == 'unknown'
+    assert 'runtime_defaults' not in compatibility
+    # The earliest receipt may lack optional producer details and a request file.
+    minimal = {key: receipt[key] for key in
+               ('schema', 'model', 'cycle', 'hours', 'forecast', 'analysis')}
+    minimal['area'] = None
+    parent.write_text(json.dumps(minimal))
+    request_path = producer / 'earth2-request.json'
+    request_bytes = request_path.read_bytes()
+    request_path.unlink()
+    minimal_result = cache.reuse(spec, tmp_path / 'minimal', producer)
+    assert minimal_result['legacy_compatibility']['checked_producer_fields'] == {}
+    assert 'initial_condition_source' in minimal_result['legacy_compatibility']['unknown_producer_fields']
+    assert minimal_result['cache_reuse']['verified_artifacts'][str(forecast)] == hashlib.sha256(b'forecast').hexdigest()
+    minimal.pop('area')
+    parent.write_text(json.dumps(minimal))
+    with pytest.raises(ValueError, match='area is unknown'):
+        cache.reuse(spec, tmp_path / 'unknown-area', producer)
+    parent.write_text(json.dumps(dict(receipt, model_row=dict(old_row, step_hours=3))))
+    request_path.write_bytes(request_bytes)
+    with pytest.raises(ValueError, match='step_hours differs'):
+        cache.reuse(spec, tmp_path / 'conflict', producer)
+    parent.write_text(json.dumps(receipt))
     handoff = json.loads((tmp_path / 'reused/prep-arguments.json').read_text())
     assert handoff['argv'].count(str(forecast)) == 1 and handoff['unbound_supplement_roles'] == []
     analysis.write_bytes(b'changed')

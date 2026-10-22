@@ -25,6 +25,16 @@ def save(collector):
             arrays[name] = value
             entries.append({"tick": tick, "variable": name})
         rain.append({"key": list(key), "initial_tick": collector.rain_initial_ticks[key], "entries": entries})
+    ice = []
+    for number, (key, history) in enumerate(getattr(getattr(collector, "ice", None), "history", {}).items()):
+        row = {"key": list(key), "tick": history["tick"], "variables": {}}
+        for field, value in history.items():
+            if field == "tick":
+                continue
+            name = f"ice_{number}_{field}"
+            arrays[name] = value
+            row["variables"][field] = name
+        ice.append(row)
     for number, (key, spool) in enumerate(collector.spools.items()):
         names = (f"latitude_{number}", f"longitude_{number}")
         arrays[names[0]], arrays[names[1]] = spool.latitude, spool.longitude
@@ -68,13 +78,43 @@ def save(collector):
         "member_metadata": list(collector.member_metadata), "start_time": collector.start_time.isoformat(),
         "requests": [request.describe() for request in collector.requests],
         "arrays": array_file, "rain": rain, "spools": spools,
+        "rain_relocations": collector.rain_relocations,
+        "rain_placements": [[list(key), list(value)] for key, value in getattr(collector, "_placements", {}).items()],
+        "ice": ice, "ice_intervals_hours": sorted(getattr(getattr(collector, "ice", None), "intervals", set())) ,
         "output_ticks": [[list(key), tick] for key, tick in collector.output_ticks],
         "member_files": collector.member_files, "archive": archive, "files": sorted(files),
         "replay": {"gpu_replay": collector.gpu_replay, "defer_replay": collector.defer_replay,
             "render_products": list(collector.render_products)},
         "history_ledger": ledger}
     atomic_json(directory / "collector.json", document)
+    retire_superseded_arrays(root, keep=array_file)
     return document
+
+
+def retire_superseded_arrays(root, *, keep):
+    """Delete the arrays snapshots an earlier save wrote and nothing names any more.
+
+    THE BREAKAGE THIS PREVENTS: every save wrote a new digest-named arrays file
+    and never retired the previous one, about 100 MB per checkpoint per domain.
+    The 30-member, 48 h ice-storm ensemble (V58, 2026-10-21) held 1,039 of them,
+    59.9 GB, while the live collector.json named one.  The current file, and
+    any file the sealed restart roster names, are kept.  Each roster generation
+    snapshot holds its own link, so a sealed roster still restores.
+    """
+    import re
+    directory = Path(root) / ".ensemble-resume"
+    named = set()
+    roster = Path(root) / "ensemble-restart.json"
+    if roster.is_file():
+        named.update(re.findall(r"[0-9a-f]{64}\.nc", roster.read_text(encoding="utf-8")))
+    if keep is not None:
+        named.add(Path(keep).name)
+    removed = []
+    for path in directory.glob("*.nc"):
+        if re.fullmatch(r"[0-9a-f]{64}\.nc", path.name) and path.name not in named:
+            path.unlink(missing_ok=True)
+            removed.append(path.name)
+    return removed
 
 
 def restore(collector):
@@ -98,6 +138,27 @@ def restore(collector):
         key = tuple(row["key"])
         collector.rain_initial_ticks[key] = row["initial_tick"]
         collector.rain_history[key] = {entry["tick"]: arrays[entry["variable"]] for entry in row["entries"]}
+    collector.rain_relocations = document.get("rain_relocations", [])
+    collector._placements = {tuple(key): tuple(value) for key, value in document.get("rain_placements", [])}
+    # Older snapshots did not store placement state. Placement sequence is part
+    # of a moving nest's counter identity: recover the latest visit, including
+    # A -> B -> A, ordered by sequence then clock (relocation may capture both
+    # footprints at the same model clock), instead of comparing a return to an
+    # old footprint. Four-part keys from older checkpoints count as sequence 0.
+    placements = {}
+    for key, history in collector.rain_history.items():
+        tick = max((entry for entry in history if isinstance(entry, int)), default=-1)
+        sequence = key[4] if len(key) > 4 else 0
+        order = (sequence, tick)
+        if key[:3] not in placements or order > placements[key[:3]][0]:
+            placements[key[:3]] = (order, key[3])
+    for key, (order, geometry) in placements.items():
+        collector._placements.setdefault(key, (geometry, order[0]))
+    for row in document.get("ice", []):
+        collector.ice.history[tuple(row["key"])] = {"tick": row["tick"],
+            **{field: arrays[name] for field, name in row["variables"].items()}}
+    if hasattr(collector, "ice"):
+        collector.ice.intervals.update(document.get("ice_intervals_hours", []))
     collector.output_ticks = {(tuple(key), tick) for key, tick in document["output_ticks"]}
     collector._resume_output_ticks = set(collector.output_ticks)
     collector._resume_rain_ticks = {key: max((tick for tick in history if isinstance(tick, int)), default=-1)

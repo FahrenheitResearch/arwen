@@ -33,13 +33,11 @@ def _emit(tmp_path, source):
 
 
 def _staged(root):
-    from gpuwm.geog_assets import geog_datasets
+    # The shared stand-in stages each container archive child by child
+    # (soilgrids/texture_top carries the default soil categories).
+    from _staged_geog import staged_geog_tree
 
-    geog = root / "WPS_GEOG"
-    for name in geog_datasets():
-        (geog / name).mkdir(parents=True, exist_ok=True)
-        (geog / name / "index").write_text("", encoding="utf-8")
-    return geog
+    return staged_geog_tree(root / "WPS_GEOG")
 
 
 @pytest.mark.parametrize("source", ["gfs", "hrrr", "icon-eu"])

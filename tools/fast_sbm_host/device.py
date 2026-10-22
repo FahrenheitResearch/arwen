@@ -3,31 +3,12 @@
 The tile launch preserves WRF cross-column carries for oracle replay. The
 column launch uses the corrected preset and frozen neighbor inputs.
 """
-from pathlib import Path
-from functools import lru_cache
 import numpy as np
 import cupy as cp
 from . import host as H
+from gpuwm.core.fast_sbm_contract import EXTRA_TABLES
+from gpuwm.core.fast_sbm_cuda import module as _module
 
-EXTRA_TABLES = ("xl_mg", "xs_mg", "xg_mg", "xh_mg", "ima", "chucm",
-                "ecoalmassm", "prob", "gain_var_new", "dropradii",
-                "fccnr_con", "fccnr_mar", "rccn")
-
-
-@lru_cache(maxsize=None)
-def _module(device):
-    # RawModule appends -ftz=true after caller options in CuPy 14.2.
-    # Direct NVRTC keeps the scheme's subnormal intermediates in a bare run.
-    from gpuwm import nvrtc_ptx_cache as compiler
-    kernel_dir = H.KERNEL_DIR
-    options=("--std=c++17", "--fmad=false", "--ftz=false",
-             "--prec-div=true", "--prec-sqrt=true", f"-I{kernel_dir}")
-    with cp.cuda.Device(device):
-        ptx,_=compiler.compile_using_nvrtc((kernel_dir/"fast_sbm.cu").read_text(),
-                                         options,None,"fast_sbm.cu")
-        module=cp.cuda.function.Module()
-        module.load(ptx.encode() if isinstance(ptx,str) else ptx)
-    return module
 
 class Device:
     def __init__(self, host):

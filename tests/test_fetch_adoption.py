@@ -54,7 +54,8 @@ def _run(plan, out, downloader=None, **kwargs):
                                  probe=lambda _: False, progress=lambda _: None, **kwargs)
 
 
-@pytest.mark.parametrize("source", fetch_routes.route_ids())
+# Adoption verifies one object with two envelope branches: GRIB and BZh.
+@pytest.mark.parametrize("source", ["hrrr-prs", "icon-eu"])
 def test_adopts_matching_unrecorded_file_for_each_route(tmp_path, monkeypatch, source):
     plan = _plan(source)
     obj = plan.objects[0]

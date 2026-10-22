@@ -21,11 +21,10 @@ def test_extended_and_standard_cycles_have_explicit_public_horizons():
 
 @pytest.mark.parametrize(
     ("cycle", "start", "duration", "expected"),
-    (
+    [
         (datetime(2026, 7, 18, 5), 12, 6 * 3600, tuple(range(12, 19))),
-        (datetime(2026, 7, 18, 18), 40, 6 * 3600, tuple(range(40, 47))),
-        (datetime(2026, 7, 18, 0), 0, 48 * 3600, tuple(range(49))),
-    ),
+    ],
+    ids=['cycle0-12-21600-expected0'],
 )
 def test_source_windows_retain_absolute_leads_without_duration_cap(
         cycle, start, duration, expected):

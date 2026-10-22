@@ -13,7 +13,6 @@ import stat
 import zipfile
 
 
-EXTERNAL_SCHEMA = "arwen.case-catalog/v1"
 _TIERS = {"minimum": "lower", "preferred": "recommended", "large": "upper"}
 
 

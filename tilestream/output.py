@@ -241,7 +241,18 @@ _DERIVED_RULES = {
     "PHB": "broadcast(phb)",
     "PSFC": "z-extrapolated p (physics-free states only)",
     "P_TOP": "setup scalar",
+    # The coupled ocean's history rows publish the live diagnostic masked to
+    # NaN off the open ocean (gpuwm.core.surface_ocean.ocean_history_diagnostic),
+    # a fresh array that no carrier identity can match.  Named breakage: every
+    # streamed or store-direct run with an ocean (PWP is the 48 h+ default)
+    # refused its first frame with ShortFrameRefused(['OCEAN_SST',
+    # 'OCEAN_SST_CHANGE']) (full-CONUS HRRR 48 h on the fold, V58 2026-10-21).
+    "OCEAN_SST": "fields/ocean_sst where xland > 1.5 and lakemask < 0.5, else NaN",
+    "OCEAN_SST_CHANGE": "fields/ocean_sst_change where xland > 1.5 and lakemask < 0.5, else NaN",
 }
+
+_OCEAN_DIAGNOSTIC_ROWS = {"OCEAN_SST": "fields/ocean_sst",
+                          "OCEAN_SST_CHANGE": "fields/ocean_sst_change"}
 
 #: WRF history rows gpuwm emits UNCONDITIONALLY and fills with exact zeros
 #: when the producing scheme is absent.  ``RAINSH`` is always in this set --
@@ -358,6 +369,16 @@ def _frame_plan_on_device(state, *, include_diagnostic_pressure,
                          (*SFIRE_SPOTTING_COARSE_FIELDS, *SFIRE_PARTICLE_FIELDS, "FS_FIRE_ROSDT")})
     if getattr(getattr(getattr(state, "physics", None), "fire", None), "spotting", None) is None:
         fire_origins.update({name: f"fire/{name.lower()}" for name in SFIRE_SPOTTING_COARSE_FIELDS})
+    # The four admitted canopy planes (29fe0a4fb7) live in the fire grid
+    # when canopy inputs were admitted, so the carrier manifest holds them
+    # as fire/grid.<name> (restart._fire_manifest); a run without them
+    # writes zero planes (981de6d59b), which a streamed frame serves as
+    # structural zeros, asserted below.  The test is the manifest, not
+    # ``extra``: extra names diagnostic scatters and never holds fire keys.
+    from gpuwm.fire_inputs import canopy_fields
+    canopy_names = frozenset(canopy_fields())
+    fire_origins.update({name: f"fire/grid.{name.lower()}" for name in canopy_names
+                         if f"fire/grid.{name.lower()}" in manifest})
     chem_fields = getattr(getattr(state, 'chem', None), 'streamed_history', {})
     for name, value in fields.items():
         shape[name] = tuple(int(s) for s in np.shape(value))
@@ -399,7 +420,7 @@ def _frame_plan_on_device(state, *, include_diagnostic_pressure,
             source[name], origin[name] = SOURCE_CARRIER, stacked[0]
             row[name] = stacked[1]
             continue
-        if name in _ZERO_ROWS:
+        if name in _ZERO_ROWS or name in canopy_names:
             # Assert rather than assume: the classification says "the driver
             # handed out a fresh _zero_accumulator() because its producer is
             # off", and a nonzero array here would mean the producer IS
@@ -884,7 +905,9 @@ class StoreFrame:
     #: (``tilestream.ranks.RankedRun.download``) copies exactly these.
     _DERIVED_INPUTS = {"T": ("state/thp",), "THM": ("state/thp",), "P": ("state/p",),
                        "PSFC": ("state/php", "state/p"),
-                       "FS_GEN_IDMAX": ("fire/spotting.control",)}
+                       "FS_GEN_IDMAX": ("fire/spotting.control",),
+                       **{row: (key, "fields/xland", "fields/lakemask")
+                          for row, key in _OCEAN_DIAGNOSTIC_ROWS.items()}}
 
     def store_keys(self) -> tuple[str, ...]:
         """Every store member :meth:`fields` reads, in frame order."""
@@ -894,7 +917,9 @@ class StoreFrame:
             if kind == SOURCE_CARRIER:
                 keys.append(self.plan.origin[name])
             elif kind == SOURCE_DERIVED:
-                keys.extend(self._DERIVED_INPUTS.get(name, ()))
+                # An optional input (the lake mask) a run does not hold is not read.
+                keys.extend(key for key in self._DERIVED_INPUTS.get(name, ())
+                            if key != "fields/lakemask" or key in self._store)
         return tuple(dict.fromkeys(keys))
 
     def nbytes(self) -> int:
@@ -974,6 +999,19 @@ class StoreFrame:
                     out[name] = derive_psfc(self._phb, store["state/php"],
                                             store["state/p"],
                                             self._psfc_work)
+                elif name in _OCEAN_DIAGNOSTIC_ROWS:
+                    # ocean_history_diagnostic's own rule, on the host copy.
+                    wet = np.asarray(store["fields/xland"]) > 1.5
+                    if "fields/lakemask" in store:
+                        wet &= np.asarray(store["fields/lakemask"]) < 0.5
+                    dst = self._dst[name]
+                    dst.fill(np.float32("nan"))
+                    # Literal keys: test_store_frame_downloads_exactly_what_fields_reads
+                    # holds them to _DERIVED_INPUTS.
+                    source = (store["fields/ocean_sst"] if name == "OCEAN_SST"
+                              else store["fields/ocean_sst_change"])
+                    np.copyto(dst, source, where=wet)
+                    out[name] = dst
                 else:                                  # unreachable by _DERIVED_RULES
                     raise KeyError(f"no host rule for derived field {name}")
             else:
@@ -984,6 +1022,8 @@ class StoreFrame:
                 # up to 2.2.0.  Reachable only for the benches that price
                 # the unavailable set on purpose.
                 continue
+        from gpuwm.core.gsd_diagnostics import finalize_history_fields
+        finalize_history_fields(out)
         return out
 
 
@@ -1019,7 +1059,9 @@ class DeferredStoreFrame:
         if self.materialized:
             raise RuntimeError("a deferred frame is assembled once; this one already was")
         self.materialized = True
-        self._wait()
+        waited = self._wait()
+        #: Seconds the writer thread waited for this frame's D2H download.
+        self.wait_seconds = waited if isinstance(waited, (int, float)) else None
         return self._frame.fields()
 
 
@@ -1151,3 +1193,18 @@ class StoreHistoryWriter:
         else:
             self._queue.put(None)
             self._thread.join()
+
+
+def file_var_digests(path: Path) -> dict[str, str]:
+    """Per-variable SHA-256 of a wrfout, so timestamps cannot mask a diff."""
+    import hashlib
+    import netCDF4
+
+    out: dict[str, str] = {}
+    with netCDF4.Dataset(path, "r") as ds:
+        for name, var in ds.variables.items():
+            data = var[:]
+            arr = np.ascontiguousarray(
+                np.ma.getdata(data) if np.ma.isMaskedArray(data) else data)
+            out[name] = hashlib.sha256(arr.tobytes(order="C")).hexdigest()
+    return out

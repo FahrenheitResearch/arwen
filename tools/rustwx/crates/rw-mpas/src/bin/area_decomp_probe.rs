@@ -26,7 +26,6 @@
 //! This is an EVIDENCE instrument. It writes no grid file and it is not part of
 //! any shipped door.
 
-use std::path::PathBuf;
 use std::process::ExitCode;
 
 use rw_mpas::mesh::density::MeshSpec;
@@ -484,8 +483,3 @@ fn main() -> ExitCode {
         }
     }
 }
-
-// Silence the unused-import lint when the PathBuf helper is not needed on a
-// given build configuration.
-#[allow(dead_code)]
-fn _unused(_: PathBuf) {}

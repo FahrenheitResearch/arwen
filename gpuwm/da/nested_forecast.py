@@ -1007,7 +1007,6 @@ def _initialize_child_physics(initialized, child_run, inventory,
         **ruc_mosaic_physics_inputs(
             child_run, static, landuse_attrs=landuse_identity,
             xice=fields["SEAICE"], fractional_seaice=True))
-    from gpuwm.core.noah import noah_initial_snow_albedo
     from gpuwm.core.landuse import surface_snow_albedo
     driver.fields["snoalb"][...] = cp.asarray(
         surface_snow_albedo(child_run, static, driver.noah_params),

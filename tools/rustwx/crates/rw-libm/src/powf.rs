@@ -120,6 +120,8 @@ fn xflowf(sign: bool, y: f32) -> f32 {
 
 /// x^y for binary32, bit for bit as glibc 2.43 returns it.
 #[inline]
+// Preserve IEEE invalid-operation arithmetic and its NaN result.
+#[allow(clippy::eq_op)]
 pub fn powf(x: f32, y: f32) -> f32 {
     let mut sign_bias = 0u32;
     let mut ix = x.to_bits();

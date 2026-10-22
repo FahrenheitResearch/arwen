@@ -136,9 +136,22 @@ class FireState:
         lines = tuple(line if isinstance(line,core.IgnitionLine) else core.IgnitionLine(**line) for line in ignitions)
         if opt.fire_is_real_perim and not lines:
             raise ValueError("Observed-perimeter ignition requires an ignition start time")
-        return cls(data,float(dx),float(dy),b,ts,opt,table,lines,float(time_start),
+        state = cls(data,float(dx),float(dy),b,ts,opt,table,lines,float(time_start),
                    unit_x=float(unit_x),unit_y=float(unit_y),moisture=moisture_state,
                    moisture_lasttime=float(time_start),moisture_nexttime=float(time_start))
+        if (opt.fire_is_real_perim and historical_tign is not None
+                and np.float32(time_start) == np.float32(lines[0].start_time)):
+            # A dated perimeter is the initial state, including the history
+            # frame written before the first atmosphere step. Establish fuel
+            # already consumed without releasing any pre-start heat or water.
+            state._apply_ignitions(np.float32(time_start), np.float32(1.0))
+            core.continue_at_boundary(data["lfn"],bias=opt.core.lfn_ext_up,domain=b)
+            core.continue_at_boundary(data["tign"],bias=0.0,domain=b)
+            cp.copyto(data["lfn_out"],data["lfn"])
+            data["fuel_frac"],data["fire_area"] = core.fuel_left(
+                data["lfn"],data["tign"],data["fuel_time"],np.float32(time_start),
+                domain=b,tiles=ts,method=opt.core.fuel_left_method)
+        return state
 
     create = from_static
 

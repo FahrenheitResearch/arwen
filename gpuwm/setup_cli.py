@@ -123,9 +123,23 @@ def _geog_size_notice() -> str:
 
     from gpuwm.geog_assets import GEOG_ARCHIVES, size_phrase
 
-    return (f"setup: --with-geog will download all {len(GEOG_ARCHIVES)} "
-            f"WPS_GEOG datasets: {size_phrase()}.  That includes the "
-            "Noah-MP soil archive only `gpuwm mesh` reads; `gpuwm "
+    # The default fetch set, which is what the geog step stages (defect:
+    # this counted every pin, 25, while 15 were fetched).
+    count = sum(1 for archive in GEOG_ARCHIVES if archive.fetch_by_default)
+    # The default set is the permissive one (2026-10-21): SoilGrids250m soil
+    # categories (CC BY 4.0) and a deep-soil temperature BUILT here from
+    # ERA5 (Licence to Use Copernicus Products), so the notice names both
+    # credits and says one dataset is built rather than downloaded.
+    built = [archive.dataset for archive in GEOG_ARCHIVES
+             if archive.fetch_by_default and archive.producer]
+    built_phrase = (f" ({', '.join(built)} is built on this machine from "
+                    "ERA5)" if built else "")
+    return (f"setup: --with-geog will stage the {count} default "
+            f"WPS_GEOG datasets{built_phrase}: {size_phrase()}.  "
+            "Every default source is permissively licensed (SoilGrids250m "
+            "CC BY 4.0, ERA5 under the Licence to Use Copernicus Products; "
+            "credits in NOTICE); the FAO-UNESCO soil tiles and ISLSCP-I "
+            "soiltemp_1deg are fetched only when named.  `gpuwm "
             "fetch-geog --datasets wrf` stages the WRF set alone.  "
             "Resumable and re-run safe; omit --with-geog to skip it and "
             "run `gpuwm fetch-geog` later.")
@@ -169,10 +183,18 @@ def setup_main(args) -> int:
         steps.append(("geog", "gpuwm.geog_assets"))
 
     failed = 0
+    asked_failed = False
     for label, module_name in steps:
         overrides = {}
         if getattr(args, "from_dir", None) is not None and label != "geog":
             overrides["from_dir"] = args.from_dir
+        if label == "tables":
+            # The mixed-layer ocean is on by default (48 h and longer), so
+            # its WOA18 climatology is staged with the tables.  Breakage it
+            # prevents: NCEI THREDDS down for an hour (2026-10-22) killed
+            # every forecast with water at its first step on boxes and
+            # images that setup had called complete.
+            overrides["ocean"] = True
         code, output = _run_step(module_name, overrides)
         if code == 0:
             print(f"  ok      {label}")
@@ -194,6 +216,25 @@ def setup_main(args) -> int:
     # stopping at the first refusal would leave a second, unrelated gap
     # undiscovered until the reader re-ran and hit it next.
     #
+    # The Earth2Studio interpreter and TempestExtremes, which tc-tracks and
+    # earth2-diagnose run.  Breakage (2.9.3 door 6, 2026-10-20): no setup
+    # path built them, so a fresh install had no working tc-tracks backend.
+    if getattr(args, "with_earth2", False):
+        from gpuwm import earth2_env
+        try:
+            receipt = earth2_env.ensure(progress=print)
+        except (ValueError, RuntimeError, OSError) as error:
+            print("  FAILED  earth2")
+            _replay(str(error))
+            failed = failed or 2
+            # Asked for by name, so no complete estate excuses it. Breakage (2.9.4 R15, RTX 4090,
+            # 2026-10-22): the earth2 build failed, setup still exited 0 through the estate-complete
+            # note below, and the FCN3 fetch after it failed on "earth2studio is not installed".
+            asked_failed = True
+        else:
+            built = ", ".join(receipt["built"]) or "already complete, verified"
+            print(f"  ok      earth2 ({built}; {receipt['root']})")
+
     # Close with the estate report either way, because after a partial
     # setup "where do I stand" is exactly the question, and it is the
     # same function `gpuwm doctor` runs rather than a summary of it.
@@ -210,7 +251,7 @@ def setup_main(args) -> int:
     checks = collect_checks()
     print(format_report(checks) if explain else format_brief(checks))
     if failed:
-        if not blocking_gaps(checks):
+        if not asked_failed and not blocking_gaps(checks):
             # Field case: a checkout install has no published bundle
             # pins, so fetch-bridges refuses -- while the bridges it
             # would have fetched are already built and verified (the
@@ -236,7 +277,8 @@ def register_cli(subparsers) -> None:
         "setup",
         help="stage what a pip install still needs: the prebuilt Rust "
              "artifacts (gpuwm fetch-bridges) then the externalized "
-             "physics tables (gpuwm fetch-tables), then print the doctor "
+             "physics tables and ocean climatology (gpuwm fetch-tables "
+             "--ocean), then print the doctor "
              "summary.  Idempotent; static geography is opt-in via "
              "--with-geog")
     parser.add_argument(
@@ -244,6 +286,13 @@ def register_cli(subparsers) -> None:
         help="also stage the WPS_GEOG static geography ("
              + _geog_size_phrase() + "); the size is printed before "
              "anything downloads")
+    parser.add_argument(
+        "--with-earth2", action="store_true", dest="with_earth2",
+        help="also build the managed Earth2Studio environment (torch, "
+             "earth2studio with the fcn3, cyclone and diagnostic extras) and the "
+             "TempestExtremes tools that gpuwm tc-tracks and gpuwm "
+             "earth2-diagnose run; several GB of wheels, built at "
+             "GPUWM_EARTH2_ENV (default ~/.local/share/gpuwm/earth2-env)")
     parser.add_argument(
         "--from", dest="from_dir", metavar="DIR", default=None,
         help="stage the bridge and table artifacts from a local "

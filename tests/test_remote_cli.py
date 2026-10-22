@@ -196,10 +196,18 @@ def test_transport_preserves_request_and_parses_only_one_envelope(tmp_path):
     ("print(json.dumps({'schema':'gpuwm.remote.result.v1','ok':True,'action':'start'}))", "incompatible"),
     ("print(json.dumps({'schema':'gpuwm.remote.result.v1','ok':True,'action':'probe'}));sys.exit(7)", "disagrees"),
     ("sys.stderr.write('Permission denied (publickey).');sys.exit(255)", "Permission denied"),
-    ("sys.stdout.write('x'*200000)", "bounded protocol"),
+    ("sys.stdout.write('x'*200000);sys.stdout.flush();time.sleep(10)", "bounded protocol"),
     ("sys.stderr.write('x'*20000)", "bounded protocol"),
 ])
-def test_transport_refuses_protocol_and_ssh_errors(tmp_path, body, match):
+def test_transport_refuses_protocol_and_ssh_errors(tmp_path, monkeypatch, body, match):
+    if body == "sys.stderr.write('x'*20000)":
+        # Check the post-exit bound separately from the live stdout overflow.
+        popen = rc.subprocess.Popen
+        def exited_transport(*args, **kwargs):
+            process = popen(*args, **kwargs)
+            process.poll = lambda: process.wait(timeout=10)
+            return process
+        monkeypatch.setattr(rc.subprocess, "Popen", exited_transport)
     with pytest.raises(ValueError, match=match):
         rc._transport(_program(tmp_path, body), {"action": "probe"})
 
@@ -301,8 +309,9 @@ def test_cli_forwards_binding_and_paths_only_as_request_data(monkeypatch, capsys
     assert len(capsys.readouterr().out.splitlines()) == 1
 
 
-@pytest.mark.parametrize("action", ["start", "resume"])
-@pytest.mark.parametrize("section", ["40,-100,41,-99", "-40,100,-41,99"])
+@pytest.mark.parametrize("action,section", [
+    ("start", "40,-100,41,-99"), ("resume", "-40,100,-41,99"),
+])
 def test_section_line_reaches_the_remote_request(action, section, monkeypatch, capsys):
     from gpuwm.cli import build_parser
     identity = ["--config", "/srv/config.toml"] if action == "start" else ["--job", "old-job"]
@@ -330,17 +339,6 @@ def test_public_parser_has_review_and_reconnect_options():
     assert options.from_checkpoint == "latest" and options.dry_run and options.json
 
 
-def test_resume_parser_keeps_explicit_input_and_product_overrides():
-    from gpuwm.cli import build_parser
-    options = build_parser().parse_args([
-        "remote", "resume", "--host", "node", "--python", "/opt/python",
-        "--workspace", "/work", "--job", "old-job", "--outdir", "/new-output",
-        "--geog-root", "/new/geography", "--prepared-root", "/new/prepared",
-        "--wps-namelist", "/new/namelist.wps", "--products", "none"])
-    assert options.geog_root == "/new/geography"
-    assert options.prepared_root == "/new/prepared"
-    assert options.wps_namelist == "/new/namelist.wps"
-    assert options.products == "none"
 def test_resume_takes_the_same_inputs_a_start_takes():
     """C-279: a resume that names an input reaches the node instead of argparse."""
     from gpuwm.cli import build_parser

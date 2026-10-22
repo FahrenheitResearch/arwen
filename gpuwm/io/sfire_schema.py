@@ -97,6 +97,11 @@ SFIRE_SPOTTING_COARSE_FIELDS=("FS_FIRE_AREA","FS_FUEL_SPOTTING_RISK","FS_COUNT_L
     "FS_COUNT_LANDED_HIST","FS_LANDING_MASK","FS_GEN_INST","FS_FRAC_LANDED","FS_SPOTTING_LKHD")
 SFIRE_PARTICLE_FIELDS=frozenset(name for name,row in SFIRE_REGISTRY_FIELDS.items() if row[-1]=="particles")
 
+# Admitted fuel structure, an ArWen extension rather than a WRF registry claim.
+from gpuwm.fire_inputs import canopy_fields
+SFIRE_REGISTRY_FIELDS.update({name: ("real", "Z", name.lower().replace("_", " "), row["units"],
+    "gpuwm/authorities/sfire-input-fields.v1.json", True, "fine") for name, row in canopy_fields().items()})
+
 SFIRE_FINE_FIELDS = frozenset(name for name, row in SFIRE_REGISTRY_FIELDS.items() if row[-1] == "fine")
 SFIRE_CLASS_FIELDS = frozenset(name for name, row in SFIRE_REGISTRY_FIELDS.items() if row[-1] == "classes")
 SFIRE_VOLUME_FIELDS = frozenset(name for name, row in SFIRE_REGISTRY_FIELDS.items() if row[-1] == "volume")
@@ -135,6 +140,7 @@ def sfire_history_shapes(cfg):
     ny, nx, nz = int(cfg.ny), int(cfg.nx), int(cfg.nz)
     fine = (ny * int(cfg.sr_y), nx * int(cfg.sr_x))
     result = {name: fine for name in SFIRE_GRID_FIELD_MAP}
+    result.update({name: fine for name in canopy_fields()})
     result.update({name: (ny, nx) for name in SFIRE_COARSE_FIELD_NAMES})
     result.update(FZ0=fine, FXLAT=fine, FXLONG=fine,
                   UAH=(ny, nx+1), VAH=(ny+1, nx),

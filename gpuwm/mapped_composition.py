@@ -24,11 +24,10 @@ products).  The grammar is per-field source bindings in
 source's OWN sealed mapping document by SHA-256, and declares a
 grid-alignment and a cycle/time-alignment rule.  The primary mapping
 declares each borrowed field as ``provider: "composition_bound"`` so the
-gap is a declaration, never an absence.  Same-grid contributions (an exact
-coordinate subset) land; a cross-grid contribution refuses by NAMING the
-horizontal regrid capability this composition does not have; a
-member-bearing donor refuses by naming member alignment; a vertical-bearing
-borrow on a different ladder refuses by naming vertical alignment.  The
+gap is a declaration, never an absence.  A binding declares either exact
+coordinate subsetting or native bilinear alignment with nearest categories
+and land/sea-aware surface state.  Member alignment and vertical merging
+remain explicit contracts.  The
 contributing mapping document is deliberately NOT a row of the input
 manifest: the composition itself pins it by hash, and the manifest pins the
 composition, so the donor's table version is bound transitively while the
@@ -179,8 +178,10 @@ from gpuwm.mapped_source import (
     _load_json_bytes,
     _mapped_engine_choice,
     _materialize_frames,
+    _object,
     _require_authority_snapshot,
     _snapshot_authority,
+    _string,
     completed_field_summary,
     load_mapping,
     mapped_frames_to_regular_snapshots,
@@ -226,45 +227,20 @@ _SOIL_PAIR = ("soil_temperature", "volumetric_soil_moisture")
 #: receipt names every carried time so nothing is silently frozen.
 _BOUND_TIME_ALIGNMENTS = frozenset({
     "valid_time_exact", "cycle_invariant_broadcast",
-    "source_cycle_analysis_broadcast",
+    "source_cycle_analysis_broadcast", "source_cycle_analysis_select_broadcast",
 })
 
-#: The only landed grid relationship for a borrowed field: the donor grid
-#: contains the primary grid as an exact coordinate subset (identical grids
-#: are the degenerate full subset).  Anything else is cross-grid and
-#: refuses by naming the regrid capability.
+#: Borrowed fields support exact contiguous/strided subsets and native
+#: horizontal regridding. Continuous fields use bilinear weights; masks use nearest.
 _BOUND_GRID_ALIGNMENTS = frozenset({
-    "exact_coordinate_subset", "exact_coordinate_strided_subset",
+    "exact_coordinate_subset", "exact_coordinate_strided_subset", "nearest_coordinate",
+    "bilinear_mask_aware_nearest",
 })
 
 _BINDING_KEYS = {
     "source_id", "mapping_role", "mapping_sha256", "data_role",
     "provenance_role", "fields", "grid_alignment", "time_alignment", "vertical_merge",
 }
-
-
-def _object(
-    value: object,
-    label: str,
-    *,
-    allowed: set[str],
-    required: set[str] = frozenset(),
-) -> dict[str, object]:
-    if not isinstance(value, dict):
-        raise TypeError(f"{label} must be an object")
-    unknown = sorted(set(value) - allowed)
-    if unknown:
-        raise ValueError(f"{label} has unknown key(s): {unknown}")
-    missing = sorted(required - set(value))
-    if missing:
-        raise ValueError(f"{label} is missing required key(s): {missing}")
-    return value
-
-
-def _string(value: object, label: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{label} must be a non-empty string")
-    return value
 
 
 def _digest(value: object, label: str) -> str:
@@ -396,8 +372,8 @@ def _validate_terrain_supplement(
         raise ValueError("terrain supplement format must equal the mapping format")
     if spec["selector_authority"] != "mapping_field_exact":
         raise ValueError("terrain selector authority must be mapping_field_exact")
-    if spec["grid_alignment"] != "exact_coordinate_subset":
-        raise ValueError("terrain grid alignment must be exact_coordinate_subset")
+    if spec["grid_alignment"] not in {"exact_coordinate_subset", "exact_coordinate_strided_subset"}:
+        raise ValueError("terrain grid alignment must be exact_coordinate_subset or exact_coordinate_strided_subset")
     if spec["time_alignment"] not in _TERRAIN_TIME_ALIGNMENTS:
         raise ValueError(
             "terrain time alignment must be one of "
@@ -486,8 +462,7 @@ def _validate_field_sources(
         if binding["grid_alignment"] not in _BOUND_GRID_ALIGNMENTS:
             raise ValueError(
                 f"{label}.grid_alignment must be one of "
-                f"{sorted(_BOUND_GRID_ALIGNMENTS)}: a cross-grid "
-                "contribution has no landed regrid capability"
+                f"{sorted(_BOUND_GRID_ALIGNMENTS)}"
             )
         if binding["time_alignment"] not in _BOUND_TIME_ALIGNMENTS:
             raise ValueError(
@@ -899,12 +874,15 @@ def _compose_terrain(
     terrain: _DecodedCollection,
     *,
     time_alignment: str = "valid_time_exact",
+    grid_alignment: str = "exact_coordinate_subset",
 ) -> tuple[_DecodedCollection, dict[str, object]]:
     if time_alignment not in _TERRAIN_TIME_ALIGNMENTS:
         raise ValueError(
             "terrain supplement time_alignment must be one of "
             f"{sorted(_TERRAIN_TIME_ALIGNMENTS)}, got {time_alignment!r}"
         )
+    if grid_alignment != "exact_coordinate_subset":
+        raise ValueError("declared strided terrain selection requires the native Rust engine")
     primary_terrain = [key for key in primary.direct if key[2] == _EXTERNAL_FIELD]
     if primary_terrain:
         raise ValueError(
@@ -1092,6 +1070,8 @@ def _binding_subset_indices(
     binding_name: str,
     grid_alignment: str = "exact_coordinate_subset",
 ) -> tuple[np.ndarray, np.ndarray]:
+    if grid_alignment == "nearest_coordinate":
+        raise ValueError("nearest-coordinate data processing requires the Rust mapped engine")
     allow_strided = grid_alignment == "exact_coordinate_strided_subset"
     try:
         latitude = _exact_subset_indices(
@@ -1208,6 +1188,8 @@ def _compose_bound_fields(
                     f"{name!r} at primary valid time(s) {missing}"
                 )
             carrier = None
+        elif alignment == "source_cycle_analysis_select_broadcast":
+            raise ValueError("cycle analysis selection requires the Rust mapped engine")
         elif alignment == "source_cycle_analysis_broadcast":
             if len(primary_cycles) != 1:
                 raise ValueError(
@@ -1519,24 +1501,29 @@ class _RegularSnapshots(_ABCSequence):
         self._cached_position: int | None = None
         self._cached_snapshot = None
         self._target_longitudes: tuple[np.ndarray, ...] | None = None
-        self._ring_cuts: dict[bytes, object] = {}
+        self._ring_cuts: dict[tuple[bytes, bytes], object] = {}
 
-    def _ring_cut(self, longitude, projection):
+    def _ring_cut(self, latitude, longitude, projection):
         """The re-cut this sequence's targets need on ``longitude``, or ``None``."""
 
         if not self._target_grids or projection is not None:
             return None
-        from gpuwm.ingest.horiz import global_ring_cut
+        from gpuwm.ingest.horiz import global_source_cut
 
-        key = np.ascontiguousarray(longitude, dtype=np.float64).tobytes()
+        key = (np.ascontiguousarray(latitude, dtype=np.float64).tobytes(),
+               np.ascontiguousarray(longitude, dtype=np.float64).tobytes())
         if key not in self._ring_cuts:
             if self._target_longitudes is None:
                 self._target_longitudes = tuple(
                     pair[1] for grid in self._target_grids
                     for pair in (grid.latlon_mass(), grid.latlon_u(),
                                  grid.latlon_v()))
-            self._ring_cuts[key] = global_ring_cut(
-                longitude, *self._target_longitudes)
+            self._ring_cuts[key] = global_source_cut(
+                latitude, longitude, *self._target_longitudes,
+                target_latitudes=tuple(
+                    pair[0] for grid in self._target_grids
+                    for pair in (grid.latlon_mass(), grid.latlon_u(),
+                                 grid.latlon_v())))
         return self._ring_cuts[key]
 
     def __len__(self) -> int:
@@ -1591,8 +1578,10 @@ class _RegularSnapshots(_ABCSequence):
         projection = (None if grid.projection == "regular_latitude_longitude"
                       else {"family": grid.projection,
                             "parameters": dict(grid.parameters)})
-        cut = self._ring_cut(longitude, projection)
+        cut = self._ring_cut(latitude, longitude, projection)
         if cut is not None:
+            from gpuwm.ingest.horiz import polar_donor_latitude
+            latitude, _, _ = polar_donor_latitude(latitude, cut)
             longitude = cut.longitude
         # _pack always constructs Era5Snapshot, for every mapped input format.
         # Full field validation still happens in that constructor and frameset.
@@ -1619,6 +1608,14 @@ class _RegularSnapshots(_ABCSequence):
         else:
             pressure = field(index, "air_pressure").values
         return np.median(np.asarray(pressure), axis=(1, 2)) / 100.0
+
+    def prefetch_through(self, positions) -> None:
+        """Ask a batching frameset to decode every time ``positions`` name at once."""
+
+        hook = getattr(self._bundle.frames, "prefetch_through", None)
+        indices = [self._order[int(position)] for position in positions]
+        if hook is not None and indices:
+            hook(max(indices))
 
     def surface_field_values(self, position: int, legacy: str):
         """One surface field of one snapshot, as :meth:`_pack` packs it, or ``None``.
@@ -1686,7 +1683,7 @@ class _RegularSnapshots(_ABCSequence):
         if MAPPED_SOIL_TEMPERATURE not in snapshot.fields \
                 or MAPPED_SOIL_MOISTURE not in snapshot.fields:
             raise ValueError("canonical mapped soil arrays are absent")
-        cut = self._ring_cut(snapshot.longitude, snapshot.projection)
+        cut = self._ring_cut(snapshot.latitude, snapshot.longitude, snapshot.projection)
         if cut is not None:
             from gpuwm.ingest.horiz import recut_global_ring
 
@@ -2087,6 +2084,13 @@ def _compose_through_engine(
         except ScratchDiskRefusal as refusal:
             raise scratch_disk_refusal(refusal, scratch_base) from refusal
         evidence = mapped_engine_bridge.read_composition_evidence(directory)
+        for record in evidence["contributing_sources"]:
+            regrid = record.get("alignment", {}).get("horizontal_regrid")
+            if regrid:
+                print(f"prep donor regrid: {record['binding']} {regrid['method']} "
+                      f"{regrid['source_shape']} -> {regrid['target_shape']}, "
+                      f"{regrid['seconds']:.3f} s, {regrid['threads']} threads",
+                      flush=True)
         decode_control = {"budget_bytes": memory_budget_bytes,
                           "pending": bool(atmospheric_grids)}
         def full_fallback():
@@ -2518,6 +2522,9 @@ def decode_composed_source(
     before = {str(path): snapshots[path].sha256 for path in authorities}
     if any(binding.get("vertical_merge") for binding in bindings.values()) and engine_binary is None:
         raise ValueError("vertical_merge requires the native mapped engine for column splicing")
+    if any(binding.get("grid_alignment") == "bilinear_mask_aware_nearest"
+           for binding in bindings.values()) and engine_binary is None:
+        raise ValueError("horizontal donor regrid requires the native mapped engine")
     if memory_budget_bytes is not None and engine_binary is None:
         from gpuwm.ingest.memory_refusal import InitializationMemoryRefused
 
@@ -2579,6 +2586,7 @@ def decode_composed_source(
         combined, terrain_supplement_receipt = _compose_terrain(
             combined, terrain_collection,
             time_alignment=str(terrain_spec["time_alignment"]),
+            grid_alignment=str(terrain_spec["grid_alignment"]),
         )
         if derived_terrain is not None:
             # Recorded only when terrain was derived, so every receipt of
@@ -3049,10 +3057,17 @@ class PostedFrames(_ABCSequence):
     is answered from the batch's own frameset, one valid time at a time.
     """
 
-    def __init__(self, valid_times, locate):
+    def __init__(self, valid_times, locate, *, prefetch=None):
         self._valid_times = tuple(valid_times)
         self._locate = locate
+        self._prefetch = prefetch
         self._parts: list = []
+
+    def prefetch_through(self, index) -> None:
+        """Have every time through ``index`` decoded in one batch, if the source batches."""
+
+        if self._prefetch is not None:
+            self._prefetch(int(index))
 
     def __len__(self) -> int:
         return len(self._valid_times)

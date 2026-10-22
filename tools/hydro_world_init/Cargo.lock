@@ -196,6 +196,7 @@ name = "hydro-world-init"
 version = "0.1.0"
 dependencies = [
  "hydro-world",
+ "netcdf-writer",
  "netcrust",
  "rayon",
  "serde",
@@ -312,6 +313,10 @@ dependencies = [
  "rayon",
  "thiserror",
 ]
+
+[[package]]
+name = "netcdf-writer"
+version = "0.1.0"
 
 [[package]]
 name = "netcrust"

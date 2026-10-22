@@ -68,6 +68,13 @@
           "6": {"name": "organic", "theta_sat": 0.766, "theta_cap": 0.663, "theta_pwp": 0.267}
         }
       },
+      "gap_fill": {
+        "name": "era5t-arco-raw-days",
+        "about": "The next source for records the Zarr store serves as NaN. Breakage it prevents (2.9.4 WOOF readiness, 2026-10-22): the store declared ERA5T through 2026-10-16 but served 2026-10-10 and 2026-10-14 as NaN in every variable, so a spin-up over either day gave up (hydro off) or, carrying, ran 1,992 of 2,160 h. The same bucket's raw ERA5T day files (the ones the Zarr store is built from; equal word for word on complete days, measured 2026-10-22) held both days. One file per UTC day and variable on the global 0.25 degree grid; rw_hydro_init forcing-fill patches the crop's holed records from it. Same provider and licence as this row.",
+        "protocol": "https-file",
+        "url_template": "https://storage.googleapis.com/gcp-public-data-arco-era5/raw/date-variable-single_level/{yyyy}/{mm}/{dd}/{variable}/surface.nc",
+        "account_required": false
+      },
       "forcing": {
         "water_input": {
           "about": "Liquid water reaching the soil surface: rain plus snowmelt (total precipitation minus snowfall plus ERA5's own snowmelt), because CFE has no snow module.",
@@ -162,6 +169,7 @@
         "snow_depth": {"variable": "SNOWH", "units": "m", "scale": 1.0}
       },
       "soil_moisture_transfer": {"method": "volumetric"}
-    }
+    },
+    "nwm-analysis-assim-conus": {"status": "admitted", "description": "NOAA National Water Model v3 operational analysis (analysis_assim, tm00), land output on the NWM 1 km CONUS Lambert grid, hourly and current, from the public noaa-nwm-pds bucket (AWS Open Data, four-week rollover). The live initial water state for CONUS forecasts past the reanalysis's last hour: its soil water replaces the spun-up CFE soil at the forecast start where it covers a catchment; groundwater and channels keep the ERA5 spin-up.", "access": {"protocol": "https-file", "reader": "netcrust", "account_required": false, "url_template": "https://noaa-nwm-pds.s3.amazonaws.com/nwm.{yyyymmdd}/analysis_assim/nwm.t{hh}z.analysis_assim.land.tm00.conus.nc", "retention_days": 28, "domain_bbox_west_south_east_north": [-125.0, 23.0, -66.0, 51.0]}, "licence": {"spdx": "public-domain-us-gov", "status": "verified", "quote": "AWS Open Data registry noaa-nwm-pds.yaml: \"NOAA data disseminated through NODD are open to the public and can be used as desired.\" and \"NOAA requests attribution for the use or dissemination of unaltered NOAA data. However, it is not permissible to state or imply endorsement by or affiliation with NOAA.\"", "url": "https://raw.githubusercontent.com/awslabs/open-data-registry/main/datasets/noaa-nwm-pds.yaml", "read_utc": "2026-10-21T10:00:00Z", "attribution": "Contains modified NOAA National Water Model v3.0 operational analysis data (NOAA Office of Water Prediction, NOAA Open Data Dissemination). Not endorsed by NOAA."}, "grid": {"kind": "projected", "x": "x", "y": "y", "crs": "+proj=lcc +lat_0=40 +lon_0=-97 +lat_1=30 +lat_2=60 +x_0=0 +y_0=0 +R=6370000 +units=m +no_defs"}, "state": {"soil_water": {"units": "m3 m-3", "scale": 1.0, "layers": [{"variable": "SOIL_M[0]", "top_m": 0.0, "bottom_m": 0.1}, {"variable": "SOIL_M[1]", "top_m": 0.1, "bottom_m": 0.4}, {"variable": "SOIL_M[2]", "top_m": 0.4, "bottom_m": 1.0}, {"variable": "SOIL_M[3]", "top_m": 1.0, "bottom_m": 2.0}]}, "soil_temperature": {"units": "K", "scale": 1.0, "layers": [{"variable": "SOIL_T[0]", "top_m": 0.0, "bottom_m": 0.1}, {"variable": "SOIL_T[1]", "top_m": 0.1, "bottom_m": 0.4}, {"variable": "SOIL_T[2]", "top_m": 0.4, "bottom_m": 1.0}, {"variable": "SOIL_T[3]", "top_m": 1.0, "bottom_m": 2.0}]}, "snow_water_equivalent": {"variable": "SNEQV", "units": "kg m-2", "scale": 0.001}, "snow_depth": {"variable": "SNOWH", "units": "m", "scale": 1.0}, "land_fraction": {"from_valid_mask": "SOIL_M[0]"}}, "soil_moisture_note": "Volumetric transfer: NWM's Noah-MP layers are the target Noah layers (0.1/0.3/0.6/1.0 m), and the land output carries no soil class, so each catchment takes the volumetric water clamped to its own smcmax."}
   }
 }

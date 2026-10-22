@@ -165,6 +165,24 @@ class SpeciesRow:
     #: Logical WRF Registry array for operators that distinguish chemistry
     #: from tracers. The arena remains shared; groups keep their own indices.
     wrf_array: str = "chem"
+    #: How the row reaches the radiation (schema ``radiation``), or None:
+    #: ``{"shortwave": "hrrr_smoke_aod", ...}`` makes its mass a layer AOD in
+    #: the legacy RRTMG aer_opt = 3 shortwave when the run sets
+    #: ``simple_dir_fdb = 1`` (the HRRR v4 fork's smoke feedback,
+    #: gpuwm.core.rrtmg_aerosol_optics smoke_feedback).
+    radiation: Mapping | None = None
+
+    @property
+    def feeds_shortwave_aod(self) -> bool:
+        """True when the row declares a shortwave layer-AOD coupling.
+
+        The coupling's spelling is table data (schema.v1.json's
+        ``radiation.shortwave`` enum, which admits exactly one value, the
+        transported smoke layer AOD; species/smoke.json), so generic code
+        asks this instead of naming it.  A second coupling value in the
+        schema would add a parameter here.
+        """
+        return bool((self.radiation or {}).get("shortwave"))
 
     def acts_in(self, process: str, sets) -> bool:
         """True when ``process`` acts on this row in a run selecting ``sets``.
@@ -189,6 +207,10 @@ class SpeciesRow:
         out = {}
         for key in _ROW_FIELDS:
             out[key] = _thaw(getattr(self, key))
+        if self.radiation is not None:
+            # Only a row that declares it carries the key, so every other
+            # row's serialization (and the table identity) is unchanged.
+            out["radiation"] = _thaw(self.radiation)
         return out
 
 

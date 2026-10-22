@@ -330,21 +330,15 @@ def test_hydrostatic_height_requires_a_hybrid_vertical(tmp_path):
 # --------------------------------------------------------------------------
 
 
-def test_hybrid_descriptor_accepts_interface_coefficients():
+@pytest.mark.parametrize("a, b", [
+    (A_HALF, B_HALF),
+    ((5000.0, 2000.0, 0.0), (0.1, 0.5, 0.99)),
+], ids=["interface", "full-level"])
+def test_hybrid_descriptor_accepts_interface_coefficients(a, b):
     _validate_vertical("atmosphere", VerticalDescriptor(
         coordinate="hybrid", level_count=NLEV,
         level_values=(1.0, 2.0, 3.0),
-        a_coefficients=A_HALF, b_coefficients=B_HALF,
-        positive="down", units="1",
-    ))
-
-
-def test_hybrid_descriptor_accepts_full_level_coefficients():
-    _validate_vertical("atmosphere", VerticalDescriptor(
-        coordinate="hybrid", level_count=NLEV,
-        level_values=(1.0, 2.0, 3.0),
-        a_coefficients=(5000.0, 2000.0, 0.0),
-        b_coefficients=(0.1, 0.5, 0.99),
+        a_coefficients=a, b_coefficients=b,
         positive="down", units="1",
     ))
 

@@ -83,31 +83,6 @@ _FRAME_RE = re.compile(
 #: forcing a live nest receives every parent step.
 CADENCE_GUIDANCE_SECONDS = 900.0
 
-#: Keys the derived child config overrides on top of the parent's
-#: restart-evidence RunConfig.  Everything else (physics selections,
-#: diffusion/damping, acoustic settings) is inherited verbatim, which is
-#: receipted -- deriving new physics silently would be fake.
-_GEOMETRY_KEYS = (
-    "nx", "ny", "dx", "dy", "dt", "grid_id", "specified", "nested",
-    "run_seconds", "output_interval_s", "clock_dt", "case",
-    # The lateral zone, sized for the parent (child_lateral_zone).
-    "spec_zone", "relax_zone", "spec_bdy_width", "relax_timescale_s",
-    "relax_w", "spec_exp",
-)
-
-
-def _card_vram_gib() -> dict:
-    """The wizard's card-tier table, imported where it is used.
-
-    One table, two front doors: ``gpuwm domain`` and ``gpuwm downscale``
-    have to accept the same tier names or the product documents two
-    different answers to "what cards does this support".
-    """
-
-    from gpuwm.domain_wizard import CARD_VRAM_GIB
-
-    return CARD_VRAM_GIB
-
 
 def _frame_spacing_m(path: Path) -> float | None:
     """The DX global attribute of one history frame, or None if unreadable.

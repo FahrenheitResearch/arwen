@@ -1,0 +1,136 @@
+{
+  "schema": "measured-slimming-loader-source-replay-v1",
+  "base": "89107bdeb2d0b74e4fd42c79a1cb72d1af67ac74",
+  "tip": "c12074b86457e3ac60d93238b94f12d85d7c2f62",
+  "source": "gpuwm/core/kernels/__init__.py",
+  "before": {
+    "bytes": 55273,
+    "sha256": "6fa9bb4fa91503b62c9d9614a4cf86187430c8574375f9e20b0008f1b69c7511"
+  },
+  "after": {
+    "bytes": 55701,
+    "sha256": "737c3ca23a79c22b222c79ab7efee76e1fa8863593ef059ecd579bce99b41285"
+  },
+  "generator": "tools/assembled_legacy_replay.py",
+  "generator_sha256": "f53f4c541b052cdbef7ad554f8aae5b4c624e91a2b40515496b2523bea9e42fb",
+  "recorder": "tools/battery/loader_source_receipt.py",
+  "recorder_sha256": "14f15bb387b433fd8ece64f07dd1889295cd6a694f36920e70c9563c2e46905c",
+  "numerics": "strict",
+  "measurements": {
+    "coordinate": {
+      "arrays": 272,
+      "words": 178128,
+      "changed_arrays": 0,
+      "different_words": 0,
+      "changes": {}
+    },
+    "drivers": {
+      "arrays": 2618,
+      "words": 31686592,
+      "changed_arrays": 0,
+      "different_words": 0,
+      "changes": {}
+    },
+    "acoustic": {
+      "arrays": 132,
+      "words": 305632,
+      "changed_arrays": 0,
+      "different_words": 0,
+      "changes": {}
+    }
+  },
+  "artifacts": {
+    "base-coordinate/source-audit.json": "9833fb6e674df777f9d325dc826697f15d6dde88fa72a5ad5f152d200d5e0405",
+    "base-coordinate/direct-native-proof.json": "4dc97ecf10511fb14d425b589e0b0fe1beaa92933f5adc3576bcac74267cb77c",
+    "tip-coordinate/source-audit.json": "a0731ea956dfe79459ac8eb7397b7fa3515ff003d90267abfd2252e4047331b1",
+    "tip-coordinate/direct-native-proof.json": "729a39fee0b613c8a3d2edb396cbdfb9924fc194ab047a322a4f5ff6d67156ef",
+    "base-drivers/source-audit.json": "0a8937602228c36c16717e64cdf4e2db1c3766c0add767307ec56e279f400619",
+    "base-drivers/horizontal-driver.json": "8ff6239a15366c2794e0442e243958c103eb8084a90603c28ea22a5374e9936b",
+    "base-drivers/vertical-driver.json": "fd8e38c84b3e2153e0f41d4d8e4f7d817664fd2b78b608aa5156a9d54081c936",
+    "base-drivers/km-mutations.json": "b586de7aad2a6bc7736e35e4bdb73b8cdfe0d39a70f37c037467abf30337cdd6",
+    "tip-drivers/source-audit.json": "13af24a84257a664f8c1dcca34a8151c64c1a0488624561cf4f68f4b3c173959",
+    "tip-drivers/horizontal-driver.json": "8ff6239a15366c2794e0442e243958c103eb8084a90603c28ea22a5374e9936b",
+    "tip-drivers/vertical-driver.json": "fd8e38c84b3e2153e0f41d4d8e4f7d817664fd2b78b608aa5156a9d54081c936",
+    "tip-drivers/km-mutations.json": "b586de7aad2a6bc7736e35e4bdb73b8cdfe0d39a70f37c037467abf30337cdd6",
+    "base-acoustic/source-audit.json": "df90eee7c2e9f1a112b714920cad884b3664d991126a008a864cc2677d4e00eb",
+    "base-acoustic/acoustic-published-default-proof.json": "03ead038cae942e2864f156dcfa96a43bea10951b26226c0d43726614c49e94c",
+    "tip-acoustic/source-audit.json": "b75acb4a9002c549f5168b08a639727889db182ad928e751c1cefcfb0fe166cf",
+    "tip-acoustic/acoustic-published-default-proof.json": "5ce645684c1dd0cf0b08c193c3c5d4317a50b1c2bdb089c33128d39b8ab15dd3"
+  },
+  "capture_identity": {
+    "device": "b'NVIDIA GeForce RTX 5090'",
+    "compute_capability": [
+      12,
+      0
+    ],
+    "nvrtc_version": [
+      13,
+      4
+    ],
+    "cupy_version": "14.2.0",
+    "module_source_sha256": {
+      "smag2d": "e0ddc6075c1da84434eea66c55f39340e40a273c1080ae32578540a706b8e270",
+      "diff_opt1": "9737655267fca7f30d0a4053008997de55a8e12f4fe552622a09f70ea994e271",
+      "acoustic": "22704608360351a64d84bbf90ed1574e8e62edb5b06f5deea85376d93fca5cf8"
+    },
+    "module_options": {
+      "smag2d": [
+        "-std=c++17",
+        "--fmad=false",
+        "--ftz=false",
+        "--prec-div=true",
+        "--prec-sqrt=true",
+        "-DGPUWM_WRF_EXACT_C_DIFFUSION=1"
+      ],
+      "diff_opt1": [
+        "-std=c++17",
+        "--fmad=false",
+        "--ftz=false",
+        "--prec-div=true",
+        "--prec-sqrt=true",
+        "-DGPUWM_WRF_EXACT_C_DIFFUSION=1"
+      ],
+      "acoustic": [
+        "-std=c++17"
+      ]
+    },
+    "strict": false,
+    "default_diffusion": true,
+    "acoustic_function_options": {
+      "calc_coefs": [
+        "-std=c++17"
+      ],
+      "advance_w_phi": [
+        "-std=c++17"
+      ],
+      "advance_w_phi_msf": [
+        "-std=c++17"
+      ]
+    },
+    "default_acoustic_diffusion_route": false
+  },
+  "ysu_compiled_source_sha256": "6261061b62ef15ca30cf3746baf9177cdc1a0eafc2544937f41c674e0fd5a932",
+  "moved_sources": {
+    "gpuwm/core/acoustic.py": {
+      "sealed": {
+        "bytes": 35658,
+        "sha256": "c75ac26454b36015d898eb436633a6a281ce1ac30dc9ec82cd0c4f12b566b246"
+      },
+      "after": {
+        "bytes": 43505,
+        "sha256": "1105071240a84e04bb7dde1105a88b1fdd48b1a8881ee3ae1c247aaad78c2277"
+      }
+    },
+    "gpuwm/core/dycore.py": {
+      "sealed": {
+        "bytes": 253188,
+        "sha256": "4eb0bf2c6033bee0eb8fe2bbec2b2ab19cbea1638a3878cbe915790d24140077"
+      },
+      "after": {
+        "bytes": 253853,
+        "sha256": "fd19cd99d786d9cc2878741767ebb7f54fb3cf39bba57b7f1c1d1d4cac91e1dd"
+      }
+    }
+  },
+  "pin_changes": []
+}

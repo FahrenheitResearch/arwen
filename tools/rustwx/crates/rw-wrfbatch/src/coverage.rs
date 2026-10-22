@@ -26,7 +26,7 @@ pub const NO_COVERAGE_FILL: Color = Color::rgba(208, 208, 208, 255);
 /// The outline of the unobserved footprint on every other panel.
 pub const NO_COVERAGE_LINE: Color = Color::rgba(110, 110, 110, 255);
 /// The sheet header's legend entry.
-pub const NO_COVERAGE_LEGEND: &str = "grey = no radar coverage";
+pub const NO_COVERAGE_LEGEND: &str = "grey = no reference coverage";
 
 /// How one panel shows the sheet's no-coverage footprint.
 #[derive(Clone, Copy, Debug, Default)]

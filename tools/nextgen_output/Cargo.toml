@@ -22,6 +22,8 @@ sha2 = "0.10"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 parquet = { version = "=56.2.0", default-features = false, features = ["snap"] }
 bytes = "1"
+netcdf-writer = { path = "../rustwx/crates/netcdf-writer" }
+netcdf-reader = { path = "../rustwx/vendor/netcrust/vendor/netcdf-reader" }
 
 [profile.release]
 lto = "thin"

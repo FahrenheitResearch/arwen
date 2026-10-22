@@ -73,6 +73,21 @@ def inventory_shapes(cfg):
     shapes = {"state/" + key: shape
               for key, shape in pf.state_array_shapes(cfg).items()
               if key in STATE_SERIALIZED_ATTRS}
+    if getattr(cfg, "chem_sets", ""):
+        from gpuwm.core.device_inventory import chem_state_array_shapes
+        from gpuwm.core.chem_history import history_schema
+        from gpuwm.chem_table import load
+        from tilestream.sfire_smoke import OLD_MU_KEY, time_row_key
+        chem = chem_state_array_shapes(cfg)
+        shapes.update({"state/" + key: shape for key, shape in chem.items()
+                       if key.startswith(("chem_", "chemdiag_"))})
+        shapes[OLD_MU_KEY] = (cfg.ny, cfg.nx)
+        shapes.update({time_row_key(row): (cfg.nz, cfg.ny, cfg.nx)
+                       for row in load(cfg).transported})
+        # Diagnostics can alias carriers; counting them separately bounds
+        # snapshots and host stores even when a source adds an output row.
+        shapes.update({"diag/chem/" + name: spec[0]
+                       for name, spec in history_schema(cfg).items()})
     # Terrain drag is read-only geography, never a carrier exchanged at
     # every step or retained in an output snapshot.  Price it in geography
     # below, and in each rank's resident physics allocation.
@@ -429,7 +444,8 @@ def estimate_devices(exp, *, options=None, max_map_factor=1.0,
                 shape[-2] == cfg.ny + 1, shape[-1] == cfg.nx + 1,
                 layers=shape[0] if len(shape) == 3 and shape[0] not in (cfg.nz, cfg.nz + 1) else None)
                 for key, shape in shapes.items())
-        store = domain_bytes(manifest(inventory_shapes(cfg)), cfg.nz, cfg.ny, cfg.nx)
+        # Exact products include every leading chemistry species/process axis.
+        store = sum(prod(shape) * 4 for shape in inventory_shapes(cfg).values())
         from gpuwm.state_serialization_contract import STATE_SETUP_ARRAYS, STATE_DERIVED_SETUP_ARRAYS
         setup = {key: shape for key, shape in pf.state_array_shapes(cfg).items()
                  if key in STATE_SETUP_ARRAYS + STATE_DERIVED_SETUP_ARRAYS and len(shape) >= 2}

@@ -255,3 +255,25 @@ def test_retained_historic_incomplete_step_boundaries_stay_unknown(name):
     assert report["ff"] is None
     assert report["proxy_ff"] is None
     assert report["unplaced"]
+
+
+def test_parallelism_sampling_keeps_live_children_when_a_task_exits(monkeypatch):
+    """Regression: a task can exit between listing procfs and reading its children."""
+    import io
+    from gpuwm.timeline import parallelism
+
+    listdir, real_open = parallelism.os.listdir, open
+
+    def tasks(path):
+        return ["gone", "live"] if path == "/proc/123/task" else listdir(path)
+
+    def children(path, *args, **kwargs):
+        if path == "/proc/123/task/gone/children":
+            raise FileNotFoundError(path)
+        if path == "/proc/123/task/live/children":
+            return io.StringIO("234 345\n")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(parallelism.os, "listdir", tasks)
+    monkeypatch.setattr(parallelism, "open", children, raising=False)
+    assert parallelism._children(123) == [234, 345]

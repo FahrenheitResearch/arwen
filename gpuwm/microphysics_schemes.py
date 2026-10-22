@@ -38,8 +38,6 @@ class MicrophysicsScheme:
     sr_available: bool
     #: effective-radius family for cloud optics (rrtmgp/rrtmg_legacy)
     cloud_optics_family: str
-    #: the scheme predicts graupel volume (variable graupel density)
-    predicts_graupel_volume: bool
     #: the scheme is aerosol-aware (prognostic droplet number from CCN)
     aerosol_aware: bool
     #: restart algorithm identity string
@@ -59,7 +57,6 @@ TEMPO = MicrophysicsScheme(
     native_reflectivity=True,
     sr_available=True,
     cloud_optics_family="thompson",
-    predicts_graupel_volume=True,
     aerosol_aware=True,
     algorithm_identity="tempo-9adf9ef-gpu-f64-v1",
     discriminator="volg",
@@ -102,27 +99,6 @@ def scheme_for_state(state) -> MicrophysicsScheme | None:
         if getattr(state, s.discriminator, None) is not None:
             return s
     return None
-
-
-def scheme_name(mp) -> str | None:
-    s = scheme(mp)
-    return s.name if s else None
-
-
-def state_species(mp) -> tuple[str, ...] | None:
-    """Every 3-D field the named scheme allocates beyond qv/qc/qr."""
-    s = scheme(mp)
-    if s is None:
-        return None
-    return s.ice_mass_species + s.moment_species + s.aerosol_species
-
-
-def transported_species(mp) -> tuple[str, ...] | None:
-    """Fields advected with the moist package, in transport order."""
-    s = scheme(mp)
-    if s is None:
-        return None
-    return s.ice_mass_species + s.moment_species + s.aerosol_species
 
 
 def mass_loading_species(mp) -> tuple[str, ...] | None:

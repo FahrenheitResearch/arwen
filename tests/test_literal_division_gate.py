@@ -71,20 +71,20 @@ def test_no_production_unit_divides_by_a_compile_time_constant():
     Catches divisors that arrive through locals, integer literals and
     inlined helpers, which the source scan cannot see."""
     _nvrtc()
-    from tools.literal_division_census import census_unit, production_units
+    from tools.literal_division_census import census_tree
     offenders, compiled = [], 0
-    for unit in production_units(REPO_ROOT):
-        try:
-            row = census_unit(unit)
-        except Exception:
-            # A unit NVRTC refuses alone is a fragment compiled through
-            # another unit (p3 via p3_device) or an --ftz=false RRTMG
-            # source; the census covers the fragments through their real
-            # units.
+    # Every unit compiles with the flags the serial loop used, one unit per
+    # worker process, and the rows come back in production_units order, so
+    # the count and the listing are the serial loop's.  A unit NVRTC
+    # refuses alone (row None) is a fragment compiled through another unit
+    # (p3 via p3_device) or an --ftz=false RRTMG source; the census covers
+    # the fragments through their real units.
+    for key, row in census_tree(REPO_ROOT, "immediate"):
+        if row is None:
             continue
         compiled += 1
         for site in row["constant_divisor_sites"]:
-            offenders.append(f"{unit.key}: {site['file']}:{site['line']} "
+            offenders.append(f"{key}: {site['file']}:{site['line']} "
                              f"divides by {site['divisor']}")
     assert compiled >= 90, f"only {compiled} units compiled"
     assert not offenders, "A146:\n  " + "\n  ".join(offenders)
@@ -118,17 +118,15 @@ def test_no_production_line_becomes_a_reciprocal_multiply_on_compute_120():
     power of two too, and exempts it, since its reciprocal is exact; this
     pass does the same."""
     _nvrtc()
-    from tools.literal_division_census import production_units, rewrite_sites
+    from tools.literal_division_census import census_tree
     offenders, compiled = [], 0
-    for unit in production_units(REPO_ROOT):
-        try:
-            row = rewrite_sites(unit)
-        except Exception:
+    for key, row in census_tree(REPO_ROOT, "rewrites"):
+        if row is None:
             continue      # a fragment, compiled through its real unit
         compiled += 1
         for site in row["rewritten_sites"]:
             offenders.append(
-                f"{unit.key}: {site['file']}:{site['line']} IEEE quotients "
+                f"{key}: {site['file']}:{site['line']} IEEE quotients "
                 f"{site['quotients'][0]} -> {site['quotients'][1]}, multiplies "
                 f"by {', '.join(site['gained_immediates'])} on compute_120")
     assert compiled >= 90, f"only {compiled} units compiled"

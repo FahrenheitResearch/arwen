@@ -152,25 +152,6 @@ def test_metem_estimate_and_preparation_use_one_policy(tmp_path, monkeypatch, re
     assert not (tmp_path/'prepared').exists()
 
 
-def test_metem_auto_estimate_uses_the_existing_device_probe(tmp_path, monkeypatch):
-    from gpuwm.core import streaming
-    run = _case(tmp_path, monkeypatch, device_low=False, host_low=False)
-    observed = []
-    machine = object()
-    def planner(**kw):
-        observed.append(kw)
-        return machine
-    monkeypatch.setattr(streaming, 'planner_machine', planner)
-    phases = preflight.estimate_phases()
-    estimates = []
-    monkeypatch.setattr(preflight, 'estimate_phases',
-                        lambda *a, **kw: estimates.append(kw) or phases)
-    receipt = metem_door.metgrid_memory_admission(run, run.experiment)
-    assert receipt['policy'] == 'advisory'
-    assert observed[-1]['vram_bytes'] == 2048
-    assert estimates[-1]['machine'] is machine
-
-
 @pytest.mark.parametrize('requested', ['cuda', 'auto'])
 def test_metem_preparation_is_priced_and_decided_before_it_allocates(
         tmp_path, monkeypatch, capsys, requested):

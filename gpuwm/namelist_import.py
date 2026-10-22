@@ -1219,56 +1219,18 @@ MP_TEND_RADAR_APPLIED = (
     "does (module_big_step_utilities_em.F); mp_tend_lim is the namelist's")
 
 
-HAILCAST_REFUSAL = (
-    "the WRF-HAILCAST hail-size diagnostic is requested, and ArWen does not "
-    "run it on this line: HAILCAST_DIAM_MAX, HAILCAST_DIAM_MEAN, "
-    "HAILCAST_DIAM_STD and HAILCAST_DHAIL1..5 would be missing from "
-    "history.  HAILCAST feeds nothing back, so with it off every forecast "
-    "field is the one requested.  Next: set hailcast_opt = 0.")
-
-
 def _ra_sw_eclipse_decision(values, active, *, run_window, ra_sw, fix):
-    """ra_sw_eclipse = 1: exact when no eclipse is in the run, else refused.
-
-    WRF dims shortwave only while a row of its Besselian table covers the
-    radiation call (gpuwm/eclipse_windows.py); outside every row the switch
-    computes ra_sw_eclipse = 0's shortwave exactly.  ArWen carries no
-    eclipse obscuration on this line, so an eclipse inside the run is
-    refused, with the window named.  Until 2026-10-12 every request
-    imported as "no eclipse", including runs under the shadow.
-    """
+    """Record the reachable GPU eclipse switch without discarding it."""
     from gpuwm.eclipse_windows import eclipses_during
-
     if any(int(value) not in (0, 1) for value in active):
-        raise _err("physics", "ra_sw_eclipse", values,
-                   "must be 0 or 1 (Registry.EM_COMMON:2451)")
-    # WRF's own constraint (share/module_check_a_mundo.F): eclipse dims
-    # only the Dudhia, Goddard, RRTMG and new Goddard shortwave.
-    if any(scheme not in (1, 2, 4, 5) for scheme in ra_sw):
-        raise _err("physics", "ra_sw_eclipse", values,
-                   "WRF applies eclipse obscuration only under "
-                   "ra_sw_physics = 1, 2, 4 or 5; under "
-                   f"{sorted(set(ra_sw))} it would be ignored")
+        raise _err("physics", "ra_sw_eclipse", values, "must be 0 or 1")
     start, end = run_window
     during = eclipses_during(start, end)
-    if during:
-        raise _err(
-            "physics", "ra_sw_eclipse", values,
-            "solar-eclipse shortwave obscuration requested, and WRF's eclipse "
-            "table (run/eclipse_besselian_elements.dat) has an eclipse inside "
-            f"this run: {', '.join(w.label() for w in during)}.  ArWen has "
-            "no eclipse obscuration on this line, so incoming shortwave "
-            "would not be dimmed under the shadow (the qualified port "
-            "measured 2 m temperature up to 7.3 K warmer than its eclipse "
-            "run on 2024-04-08).  Next: set ra_sw_eclipse = 0 to run without "
-            "the eclipse, or move the run outside the window.")
-    fix("physics", "ra_sw_eclipse", values, 0,
-        "WRF's eclipse table has no eclipse between "
-        f"{start:%Y-%m-%d %H:%M} and {end:%Y-%m-%d %H:%M} UTC, so every "
-        "radiation call computes zero obscuration and exactly the "
-        "shortwave of ra_sw_eclipse = 0 (phys/module_ra_eclipse.F); the "
-        "only difference is that WRF's all-zero ECOBSC/ECMASK history "
-        "fields are not written")
+    reason = ("GPU Besselian obscuration on every model step: "
+              + ", ".join(w.label() for w in during) if during else
+              "no eclipse between " + f"{start:%Y-%m-%d %H:%M} and {end:%Y-%m-%d %H:%M} UTC; "
+              "GPU obscuration is zero and shortwave remains undimmed")
+    fix("physics", "ra_sw_eclipse", values, list(active), reason)
 
 
 def _consume_unrun_physics_controls(ph, inp: dict, max_dom: int, cu: list,
@@ -1280,10 +1242,7 @@ def _consume_unrun_physics_controls(ph, inp: dict, max_dom: int, cu: list,
 
     Each is inert when its package is off.  A requested package is refused
     by name unless it provably does nothing in this run (``ra_sw_eclipse``
-    outside every eclipse); HAILCAST is refused although it changes no
-    forecast field, because the package it names would not run.  Only the
-    interval precipitation bucket (``prec_acc_dt``), an output-file
-    cadence, stays a declared divergence the terminal prints.
+    outside every eclipse). Interval precipitation is translated separately into native GPU buckets.
     """
     def column(key):
         values = ph.take(key)
@@ -1329,73 +1288,6 @@ def _consume_unrun_physics_controls(ph, inp: dict, max_dom: int, cu: list,
             fix("physics", "mp_tend_radar", values, 1,
                 MP_TEND_RADAR_APPLIED.format(
                     domains=", ".join(f"d{gid:02d}" for gid in forced)))
-    values, active = column("ra_sw_eclipse")
-    if values is not None:
-        if _is_off(active, 0):
-            drop("physics", "ra_sw_eclipse", values,
-                 "solar-eclipse shortwave obscuration is off; inert")
-        else:
-            _ra_sw_eclipse_decision(values, active, run_window=run_window,
-                                    ra_sw=ra_sw, fix=fix)
-    # HAILCAST: refused by name (2026-10-12), as the WRF input door already
-    # refused it.  It writes hail sizes and feeds nothing back, so the
-    # refusal says the forecast fields would be the requested ones and
-    # names the history fields that would be missing.  The port exists
-    # (lane/port-hailcast, 0 ULP against WRF 4.6.1 on 308,000 words) but is
-    # not on this line: it does not apply to the 2.8.9 step epilogue and
-    # kernel loader without a hand merge and its GPU oracle rerun.  This
-    # refusal retires when it lands as a registry diagnostic package.
-    values, active = column("hailcast_opt")
-    if values is not None:
-        if _is_off(active, 0):
-            drop("physics", "hailcast_opt", values,
-                 "WRF-HAILCAST hail-size diagnostic is off; inert")
-            drop("physics", "haildt", ph.take("haildt"),
-                 "HAILCAST sampling interval; HAILCAST is off")
-        else:
-            raise _err("physics", "hailcast_opt", values, HAILCAST_REFUSAL)
-    elif "haildt" in ph.entries:
-        # hailcast_opt omitted is its Registry default 0: the interval of a
-        # package that is off.  (The refusal's set-aside pass reaches this
-        # too, so a refused HAILCAST is listed once, not again as haildt.)
-        drop("physics", "haildt", ph.take("haildt"),
-             "HAILCAST sampling interval; HAILCAST is off (hailcast_opt "
-             "omitted, Registry default 0)")
-    for key in ("prec_acc_dt", "prec_acc_dt1"):
-        values, active = column(key)
-        if values is None:
-            continue
-        if all(float(value) <= 0.0 for value in active):
-            drop("physics", key, values,
-                 "no interval precipitation bucket is requested")
-            continue
-        substitutions.append(Substitution(
-            key=key, wrf_value=active[0],
-            wrf_name=f"interval precipitation bucket every {active[0]:g} min",
-            gpuwm_key=key, gpuwm_value=0,
-            gpuwm_name="WOOF's own accumulated precipitation products",
-            reason="output only: the PREC_ACC interval-bucket fields are not "
-                   "written; WOOF's accumulated precipitation is, and the "
-                   "forecast is unchanged"))
-        drop("physics", key, values, "declared output difference above")
-    values, active = column("seaice_threshold")
-    if values is not None:
-        if all(float(value) <= 100.0 for value in active):
-            drop("physics", "seaice_threshold", values,
-                 "100 K or colder: no open-water point is that cold, so the "
-                 "threshold never converts water to ice")
-        else:
-            substitutions.append(Substitution(
-                key="seaice_threshold", wrf_value=active[0],
-                wrf_name=f"open water below {active[0]:g} K treated as ice",
-                gpuwm_key="seaice_threshold", gpuwm_value=None,
-                gpuwm_name="sea ice from the analysed ice fraction",
-                reason="WOOF takes sea ice from the analysed ice fraction "
-                       "only; water colder than the threshold is not "
-                       "converted to ice, which matters only where the "
-                       "analysis and the skin temperature disagree"))
-            drop("physics", "seaice_threshold", values,
-                 "declared divergence above")
     tracer_opt = inp.get("dynamics", {}).get("tracer_opt") or [0]
     if _is_off(tracer_opt[:max_dom], 0):
         drop("physics", "tracer_pblmix", ph.take("tracer_pblmix"),
@@ -1477,38 +1369,10 @@ def _translate_operational_fork_time_controls(tc, run_seconds: float, drop,
     """
     for key in ("diag_int", "wind_int"):
         drop("time_control", key, tc.take(key),
-             "averaging window of the operational fork's diagnostic output "
-             "(gsd_diagnostics/output_diagnostics), which WOOF does not "
-             "write; output only, no forecast-state effect")
-    interval2 = tc.take("history_interval2")
-    change = tc.take("history_interval_change")
-    if interval2 is not None or change is not None:
-        run_minutes = run_seconds / 60.0
-        change_min = float(change[0]) if change else 0.0
-        if interval2 is None or (change is not None
-                                 and change_min >= run_minutes):
-            reason = (f"the fork's history-cadence switch at {change_min:g} "
-                      f"min lies at or after the run end ({run_minutes:g} "
-                      "min), so it never acts" if interval2 is not None else
-                      "history_interval_change without history_interval2 "
-                      "selects no second cadence")
-            drop("time_control", "history_interval2", interval2, reason)
-            drop("time_control", "history_interval_change", change, reason)
-        else:
-            substitutions.append(Substitution(
-                key="history_interval2", wrf_value=interval2[0],
-                wrf_name=f"history every {interval2[0]} min after "
-                         f"{change_min:g} min (operational fork)",
-                gpuwm_key="history_interval_s", gpuwm_value=None,
-                gpuwm_name="history_interval for the whole run",
-                reason="WOOF keeps one history cadence per domain, so "
-                       f"history after {change_min:g} min is still written "
-                       "every history_interval; output only, the forecast "
-                       "is unchanged"))
-            drop("time_control", "history_interval2", interval2,
-                 "declared output difference above")
-            drop("time_control", "history_interval_change", change,
-                 "declared output difference above")
+             "climate-statistics window in module_diag_cl::clwrf_output_calc "
+             "(output_diagnostics), which is not ported; these controls do not "
+             "gate module_diag_gsd hourly maxima; no forecast-state effect")
+
 
 
 def ignored_time_control_reason(key: str) -> str | None:
@@ -1559,9 +1423,7 @@ PHYSICS_PINS: tuple[tuple[str, int, str], ...] = (
 #: table in either order cannot refuse the ported value.  The row is then
 #: retired with the port.
 UNPORTED_PACKAGE_SELECTORS: dict[str, tuple[int, dict[int, str]]] = {
-    # sf_ocean_physics left this table when the ocean mixed layer (1) was
-    # ported: its reader takes the key, and refuses the 3-D PWP ocean (2)
-    # by name itself.
+    # sf_ocean_physics is consumed by the Pollard / PWP reader below.
     "windfarm_opt": (0, {
         1: "the Fitch wind-farm drag scheme (fitchscheme) is not ported in "
            "this release",
@@ -1576,16 +1438,6 @@ UNPORTED_PACKAGE_SELECTORS: dict[str, tuple[int, dict[int, str]]] = {
 UNPORTED_SELECTOR_PARAMETERS: dict[tuple[str, str], tuple[str, str]] = {
     # oml_hml0, oml_gamma and oml_relaxation_time are the ported ocean
     # mixed layer's own settings, read by its reader.
-    **{("physics", key): ("sf_ocean_physics",
-                          "ocean-model parameter the ocean mixed layer port "
-                          "does not read (WRF's OML runs every physics "
-                          "step); inert")
-       for key in ("omdt", "omlcall")},
-    **{("domains", key): ("sf_ocean_physics",
-                          "3-D ocean profile; WRF reads it only when "
-                          "sf_ocean_physics = 2 (the PWP ocean), which is "
-                          "not ported")
-       for key in ("ocean_levels", "ocean_z", "ocean_t", "ocean_s")},
     **{("physics", key): ("windfarm_opt",
                           "wind-farm parameter; WRF reads it only when "
                           "windfarm_opt is on")
@@ -3451,27 +3303,10 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
     for key in carried_selectors:
         operational_ruc_defaults.pop(key, None)
         operational_thompson_defaults.pop(key, None)
-    gsd_diagnostics = tc.take("gsd_diagnostics")
-    if gsd_diagnostics is not None:
-        if any(value != 0 for value in gsd_diagnostics):
-            # Output only: the fork computes these fields from the state
-            # after each step and feeds nothing back, so the trajectory is
-            # the one requested; only the extra fields are missing.
-            substitutions.append(Substitution(
-                key="gsd_diagnostics", wrf_value=gsd_diagnostics[0],
-                wrf_name="operational fork extra diagnostic output",
-                gpuwm_key="gsd_diagnostics", gpuwm_value=0,
-                gpuwm_name="WOOF's own history product set",
-                reason="the operational fork's additional diagnostic "
-                       "output fields are not written; they are computed "
-                       "from the model state and feed nothing back, so the "
-                       "forecast itself is unchanged"))
-            drop("time_control", "gsd_diagnostics", gsd_diagnostics,
-                 "operational model diagnostics are requested; declared "
-                 "output difference above")
-        else:
-            drop("time_control", "gsd_diagnostics", gsd_diagnostics,
-                 "operational model diagnostics are disabled; no output is requested")
+    gsd_diagnostics = tc.scalar("gsd_diagnostics", 0)
+    if gsd_diagnostics not in (0, 1):
+        raise _err("time_control", "gsd_diagnostics", gsd_diagnostics,
+                   "only operational package 1 is carried; research package 2 is not")
     fire = _Section("fire", inp.get("fire", {}), str(input_path))
 
     # ---- &noah_mp: option-identity validation --------------------------
@@ -3519,6 +3354,7 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
                    "must be an integer in [1, 21] (WRF's compiled "
                    "max_domains default); refusing to expand per-domain "
                    "arrays for an implausible domain count.")
+    reset_interval1_column = tc.col("reset_interval1", max_dom, 60)
     # Validate the domain count before expanding any stochastic arrays.
     # A coefficient does not enable a scheme. The disabled route retains
     # its original output bytes; active controls bind a complete provider.
@@ -3840,6 +3676,10 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
         values = list(raw[:max_dom])
         return values + [0] * (max_dom - len(values))
 
+    history_interval2_s = _alarm_column(
+        "history_interval2", bare_minutes=True, fill=_last_value_fill)
+    history_interval_change_s = _alarm_column(
+        "history_interval_change", bare_minutes=True, fill=_last_value_fill)
     history_interval_s = _alarm_column(
         "history_interval", bare_minutes=True, fill=_last_value_fill)
     if history_interval_s is None or any(v <= 0.0
@@ -4342,6 +4182,24 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
                     "a dataset ArWen has never decoded, and reinterpreting "
                     "it silently would interpolate the wrong column")
 
+    ocean_profile_settings = {}
+    for key in ('ocean_levels', 'ocean_z', 'ocean_t', 'ocean_s'):
+        raw = dm.take(key)
+        if raw is None:
+            continue
+        if (ph.entries.get('sf_ocean_physics') or [0])[0] != 2:
+            drop('domains', key, raw, 'PWP profile is inert unless sf_ocean_physics=2')
+            continue
+        if key == 'ocean_levels':
+            value = _uniform('domains', key, raw)
+            if type(value) is not int or not 2 <= value <= 256:
+                raise _err('domains', key, raw, 'must be an integer from 2 through 256')
+        else:
+            value = list(raw)
+            if any(isinstance(x, bool) or not isinstance(x, (int,float)) or not math.isfinite(x) for x in value):
+                raise _err('domains', key, raw, 'must contain finite profile values')
+        ocean_profile_settings[key] = value
+        fix('domains', key, raw, value, 'WRF PWP ocean reference profile')
     _consume_unrun_domain_controls(dm, inp, drop, fix, substitutions)
     _consume_unported_package_selectors(dm, "domains", max_dom, drop)
     dm.finish()
@@ -4838,18 +4696,14 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
                        f"gpuwm implements {key} = {pin} only ({why}).")
         fix("physics", key, raw, pin, why)
     from gpuwm.surface_ocean import ocean_namelist_defaults
+    ocean_selection_explicit = bool(ph.entries.get("sf_ocean_physics"))
     ocean_settings = {}
     for key, default in {"sf_ocean_physics": 0, **ocean_namelist_defaults()}.items():
         raw = ph.take(key)
         value = default if raw is None else _uniform("physics", key, raw)
         if key == "sf_ocean_physics":
-            if type(value) is not int or value not in (0, 1):
-                raise _err("physics", key, raw,
-                           "the WRF 3-D PWP ocean (pwp3dscheme, "
-                           "sf_ocean_physics = 2) is not ported in this "
-                           "release; sf_ocean_physics = 1 runs the ocean "
-                           "mixed layer and 0 turns the ocean model off. "
-                           "Nothing is substituted for it")
+            if type(value) is not int or value not in (0, 1, 2):
+                raise _err("physics", key, raw, "must be 0 (off), 1 (Pollard) or 2 (3DPWP)")
         elif isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
             raise _err("physics", key, raw, "must be finite; nonfinite settings corrupt mixed-layer state")
         ocean_settings[key] = value
@@ -4857,6 +4711,21 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
             fix("physics", key, raw, value, "WRF scalar ocean setting")
     if ocean_settings["sf_ocean_physics"] and ocean_settings["oml_gamma"] <= 0:
         raise _err("physics", "oml_gamma", ocean_settings["oml_gamma"], "must be positive: OML1D divides by the lapse rate and buoyancy frequency")
+    raw = ph.take('omdt')
+    if raw is not None:
+        if ocean_settings['sf_ocean_physics'] == 2:
+            value=_uniform('physics','omdt',raw)
+            if isinstance(value,bool) or not isinstance(value,(float,int)) or not math.isfinite(value) or value<=0:
+                raise _err('physics','omdt',raw,'must be positive minutes; DPWP multiplies OMDT by 60')
+            ocean_settings['omdt']=value
+            fix('physics','omdt',raw,value,'maximum PWP substep in minutes; the surface interval is fully advanced')
+        else:
+            drop('physics','omdt',raw,'only DPWP reads OMDT; Pollard uses the surface physics interval')
+    raw = ph.take('omlcall')
+    if raw is not None:
+        if any(value != 0 for value in raw):
+            raise _err('physics','omlcall',raw,'retired WRF rename sentinel, not an ocean cadence; a nonzero value does not select a defined coupled scheme')
+        drop('physics','omlcall',raw,'zero retired WRF rename sentinel, Registry.EM_COMMON:2613')
     lake_raw = ph.take("sf_lake_physics")
     lake_column = [0] * max_dom
     if lake_raw is not None:
@@ -5927,6 +5796,43 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
                        "else"))
             drop("physics", "fractional_seaice", fractional_seaice_values,
                  "declared divergence above")
+    # seaice_threshold is real.exe's rule (share/module_soil_pre.F
+    # adjust_for_seaice_post, :245-246 and :341-342 of the HRRR v4.1.21
+    # fork): open water whose input skin is colder than it becomes sea ice.
+    # RunConfig.seaice_threshold carries it into the Noah/RUC/Noah-MP soil
+    # ingest (gpuwm/ingest/soil.py preprocess_noah_soil).  The Registry
+    # declares one REAL (default 100 K, which converts nothing).
+    seaice_threshold_values = ph.take("seaice_threshold")
+    seaice_threshold = None
+    if seaice_threshold_values is not None:
+        if any(isinstance(value, bool)
+               or not isinstance(value, (int, float))
+               for value in seaice_threshold_values):
+            raise _err("physics", "seaice_threshold", seaice_threshold_values,
+                       "WRF declares one REAL skin temperature in K.")
+        if len({float(value) for value in seaice_threshold_values}) != 1:
+            raise _err("physics", "seaice_threshold", seaice_threshold_values,
+                       "differs by domain, but WRF's Registry declares one "
+                       "value for the whole run; write one value")
+        threshold_value = float(seaice_threshold_values[0])
+        if threshold_value == 100.0:
+            fix("physics", "seaice_threshold", seaice_threshold_values, 100.0,
+                "WRF's Registry default, which converts no water cell to ice")
+        elif threshold_value <= 170.0 or sfsfc in (2, 3, 4):
+            seaice_threshold = threshold_value
+        else:
+            substitutions.append(Substitution(
+                key="seaice_threshold", wrf_value=threshold_value,
+                wrf_name=f"open water below {threshold_value:g} K treated "
+                         "as ice",
+                gpuwm_key="seaice_threshold", gpuwm_value=None,
+                gpuwm_name="sea ice from the analysed ice fraction",
+                reason="the threshold rule runs in the Noah, RUC and Noah-MP "
+                       "soil ingest; sf_surface_physics = "
+                       f"{sfsfc} has none, so water colder than the "
+                       "threshold stays water"))
+            drop("physics", "seaice_threshold", seaice_threshold_values,
+                 "declared divergence above")
     urban_settings = {}
     for key, default in (("sf_urban_physics", 0), ("use_wudapt_lcz", 0),
                          ("num_urban_hi", 15)):
@@ -6075,6 +5981,13 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
                 column[n] = 0
         if any(column):
             terrain_drag_columns["topo_wind"] = column
+    precipitation_columns = {key: ph.col(key, max_dom, 0.0)
+                             for key in ("prec_acc_dt", "prec_acc_dt1")}
+    precipitation_columns["reset_interval1"] = reset_interval1_column
+    hail_values = {
+        "hailcast_opt": _uniform("physics", "hailcast_opt", ph.col("hailcast_opt", max_dom, -1)),
+        "haildt": _uniform("physics", "haildt", ph.col("haildt", max_dom, 60.0)),
+    }
     from gpuwm.lightning_contract import LIGHTNING_DEFAULTS
     lightning_values = {key: _uniform("physics", key, ph.col(key, max_dom, default))
                         for key, default in LIGHTNING_DEFAULTS.items()}
@@ -6142,6 +6055,9 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
     # past the forecast end.
     _eclipse_end = (start_time + timedelta(seconds=run_seconds)
                     + timedelta(minutes=max([0.0, *radt])))
+    eclipse_sw = [int(v) for v in ph.col("ra_sw_eclipse", max_dom, 1)]
+    _ra_sw_eclipse_decision(eclipse_sw, eclipse_sw,
+        run_window=(start_time, _eclipse_end), ra_sw=list(sw_wrf), fix=fix)
     _consume_unrun_physics_controls(
         ph, inp, max_dom, cu, drop, fix, substitutions,
         run_window=(start_time, _eclipse_end), ra_sw=list(sw_wrf),
@@ -7151,8 +7067,13 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
         f"bl_pbl_physics = {bl_pbl_physics}",
         f"ra_physics = {ra_physics}",
     ]
+    if ocean_selection_explicit and ocean_settings["sf_ocean_physics"] == 0:
+        lines.append("sf_ocean_physics = 0")
     if ocean_settings["sf_ocean_physics"]:
         lines.extend(f"{key} = {_fmt(value)}" for key, value in ocean_settings.items())
+        for key, value in ocean_profile_settings.items():
+            literal = '[' + ', '.join(_fmt(x) for x in value) + ']' if isinstance(value, list) else _fmt(value)
+            lines.append(f'{key} = {literal}')
     for key, value in urban_settings.items():
         lines.append(f"{key} = {value}")
     if urban_settings["sf_urban_physics"] == 1 or water_values is not None:
@@ -7198,6 +7119,7 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
                        ("mp_tend_lim", mp_tend_lim),
                        ("ysu_topdown_pblmix", ysu_topdown_pblmix),
                        ("ysu_version", carried_selectors.get("ysu_version")),
+                       ("ra_sw_eclipse", eclipse_sw[0]),
                        ("swint_opt", swint_opt),
                        ("aer_opt", aer_opt),
                        ("alb_sol", alb_sol),
@@ -7213,6 +7135,7 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
                        ("usemonalb", usemonalb),
                        ("rdlai2d", rdlai2d),
                        ("fractional_seaice", fractional_seaice),
+                       ("seaice_threshold", seaice_threshold),
                        ("opt_thcnd", opt_thcnd),
                        ("o3input", o3input),
                        ("use_mp_re", use_mp_re),
@@ -7220,9 +7143,19 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
                         seaice_albedo_default),
                        ("rdmaxalb", rdmaxalb),
                        ("nwp_diagnostics", nwp_diagnostics),
+                       ("gsd_diagnostics", gsd_diagnostics if gsd_diagnostics else None),
                        ("cycling", cycling)):
         if value is not None:
             lines.append(f"{key} = {_fmt(value)}")
+    for key, column in precipitation_columns.items():
+        # reset_interval1 is emitted only when the namelist moves it off
+        # its 60 min Registry default, so an import that never names it
+        # keeps the bytes it had before the field existed.
+        if (any(value != 60 for value in column) if key == "reset_interval1"
+                else any(column)):
+            lines.append(f"{key} = {_fmt(column[0])}")
+    for key, value in hail_values.items():
+        lines.append(f"{key} = {_fmt(value)}")
     for key, value in lightning_values.items():
         lines.append(f"{key} = {_fmt(value)}")
     if wrf_rrtmg_compatibility != "none":
@@ -7324,6 +7257,10 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
             f"nested = {_fmt(nested[n])}",
             f"history_interval_s = {_fmt(history_interval_s[n])}",
         ]
+        if history_interval2_s is not None and history_interval2_s[n]:
+            lines.append(f"history_interval2_s = {_fmt(history_interval2_s[n])}")
+        if history_interval_change_s is not None and history_interval_change_s[n]:
+            lines.append(f"history_interval_change_s = {_fmt(history_interval_change_s[n])}")
         # Emitted only where set, so every namelist without a begin or
         # end offset keeps producing a byte-identical TOML.
         if history_begin_s is not None and history_begin_s[n]:
@@ -7379,6 +7316,9 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
         for _drag_key, _drag_col in terrain_drag_columns.items():
             if _drag_col[n] != _drag_col[0]:
                 lines.append(f"{_drag_key} = {_drag_col[n]}")
+        for key, column in precipitation_columns.items():
+            if column[n] != column[0]:
+                lines.append(f"{key} = {_fmt(column[n])}")
         # The adaptive clock's max_domains targets and clamps, same rule.
         for _clock_key, _, _ in ADAPTIVE_CLOCK_COLUMNS:
             _clock_col = adaptive_columns[_clock_key]
@@ -7399,6 +7339,8 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
         for key, column in lake_settings.items():
             if column[n] != column[0]:
                 lines.append(f"{key} = {_fmt(column[n])}")
+        if eclipse_sw[n] != eclipse_sw[0]:
+            lines.append(f"ra_sw_eclipse = {eclipse_sw[n]}")
         if radt[n] > 0.0:
             lines.append(f"radt = {_fmt(radt[n])}")
         else:

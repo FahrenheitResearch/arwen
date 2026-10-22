@@ -55,6 +55,7 @@ from gpuwm.core.thompson_aerosol_launch import (
     CCN_ACTIVATION_SHAPE,
     SAT_MODULE,
     launch_grid,
+    add_optional_fields,
     validate_fields,
     validate_fp64_fortran_table,
 )
@@ -90,13 +91,8 @@ def _vapor_accumulators(fields, qvten, tten, theta, exner):
     tendencies as WRF adds it, and ``temperature`` is re-formed as
     ``t1d + DT*tten``.
     """
-    given = {"qvten": qvten, "tten": tten, "theta": theta, "exner": exner}
-    present = [name for name, value in given.items() if value is not None]
-    if present and len(present) != 4:
-        raise ValueError("qvten, tten, theta and exner are given together "
-                         f"or not at all (got {present})")
-    if present:
-        fields.update(given)
+    add_optional_fields(fields, qvten=qvten, tten=tten,
+                        theta=theta, exner=exner)
 
 
 def launch_aerosol_saturation_adjust(
@@ -264,13 +260,8 @@ def launch_aerosol_rain_evaporation(
         fields["graupel_melt_marker"] = graupel_melt_marker
     if condensation_rate is not None:
         fields["condensation_rate"] = condensation_rate
-    if (qrten is None) != (nrten is None):
-        raise ValueError("qrten and nrten are given together or not at all")
-    if qrten is not None:
-        # WRF's rain accumulators: qr/nr are then the read-only entry rain
-        # and :3562/:3564 add to these instead (thompson_aerosol_sat.cu).
-        fields["qrten"] = qrten
-        fields["nrten"] = nrten
+    # With rain accumulators, qr/nr remain the read-only entry rain.
+    add_optional_fields(fields, qrten=qrten, nrten=nrten)
     if (heat_ocp is None) != (tau1_temperature is None):
         raise ValueError("heat_ocp and tau1_temperature are given together "
                          "or not at all")

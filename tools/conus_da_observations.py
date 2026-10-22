@@ -34,7 +34,6 @@ import concurrent.futures as cf
 import datetime as dt
 import hashlib
 import json
-import os
 from pathlib import Path
 import re
 import sys
@@ -46,6 +45,8 @@ import xml.etree.ElementTree as ET
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+from gpuwm.obs.obspack import sha256_of as sha  # noqa: E402
 
 UTC = dt.timezone.utc
 NS = {"s": "http://s3.amazonaws.com/doc/2006-03-01/"}
@@ -65,14 +66,6 @@ def utc(value):
 
 def iso(stamp):
     return stamp.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def sha(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as source:
-        for block in iter(lambda: source.read(1 << 20), b""):
-            h.update(block)
-    return h.hexdigest()
 
 
 def save(path, doc):
@@ -155,17 +148,6 @@ def download(row, root, *, timeout=120, cache=None):
 # ---------------------------------------------------------------------------
 
 _GRID = None
-
-
-def _worker_init(grid_path):
-    # Two threads per site process: the box is shared, sites are the
-    # parallel axis.
-    for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
-                 "RAYON_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
-        os.environ[name] = "2"
-    global _GRID
-    from gpuwm.obs.target_grid import TargetGrid
-    _GRID = TargetGrid.from_wrfout(Path(grid_path))
 
 
 def _deck_params():

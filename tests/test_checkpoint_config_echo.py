@@ -29,6 +29,10 @@ from test_restart import (
     _cfg, _fill_setup, _identity_bound_physics_state, _shim_driver_state)
 
 
+#: lane/cap-seaice: bound wherever a land surface runs prognostic sea ice.
+_SEAICE_BOUND = ("seaice_prognostic", "seaice_initial_thickness",
+                 "seaice_new_ice_thickness", "seaice_ocean_heat_flux")
+
 #: Every default-off field restart._drop_default_off_run_keys drops at its
 #: default, moved, as (overrides, the keys the echo must then carry).
 MOVED = {
@@ -57,9 +61,12 @@ MOVED = {
     "topo_wind": (dict(bl_pbl_physics=1, sf_sfclay_physics=1, topo_wind=1),
                   {"topo_wind", "ysu_version"}),
     "gwd_opt": (dict(gwd_opt=1), {"gwd_opt"}),
+    # Noah runs here, so lane/cap-seaice's default-on prognostic sea ice
+    # and its parameters are read and bound too (_SEAICE_BOUND).
     "sf_surface_mosaic": (dict(sf_surface_physics=2, sf_surface_mosaic=1,
                                mosaic_cat=2),
-                          {"sf_surface_mosaic", "mosaic_cat"}),
+                          {"sf_surface_mosaic", "mosaic_cat",
+                           *_SEAICE_BOUND}),
     # The single-layer urban model runs here, so its water-balance
     # generation (default wrf_480, 2.9.0) is bound too.
     "mosaic_urban_canopy": (dict(sf_surface_physics=2, sf_urban_physics=1,
@@ -67,7 +74,7 @@ MOVED = {
                                  mosaic_urban_canopy="every_tile"),
                             {"sf_surface_mosaic", "mosaic_cat",
                              "urban_water_balance",
-                             "mosaic_urban_canopy"}),
+                             "mosaic_urban_canopy", *_SEAICE_BOUND}),
     "diff_opt": (dict(diff_opt=1), {"diff_opt", "mix_full_fields"}),
     "mix_full_fields": (dict(diff_opt=1, mix_full_fields=False),
                         {"diff_opt", "mix_full_fields"}),
@@ -162,6 +169,12 @@ DEFAULT_OFF = frozenset({
     "tempo_ml_for_bl_nc", "tempo_surface_emission_before",
     # The RUC sea-ice threshold switch, absent at 0 as in a 2.8.5 header.
     "fractional_seaice",
+    # real.exe's seaice_threshold at its 100 K Registry default (converts
+    # nothing), and the operational output controls while off.
+    "seaice_threshold", "prec_acc_dt", "prec_acc_dt1", "gsd_diagnostics",
+    "reset_interval1", "history_interval2_s", "history_interval_change_s",
+    # The per-run smoke-off sentence, absent while empty.
+    "smoke_off_reason",
     # The WRF v4.6.1 sixth-order filter form and no mp_zero_out pass.
     "diff_6th_form", "diff_6th_factor2",
     "mp_zero_out", "mp_zero_out_thresh", "mp_zero_out_all",
@@ -191,6 +204,18 @@ DEFAULT_OFF = frozenset({
     "wdm6_conservative_surface", "thompson_cloud_surface_booking",
     "wsm3_conservative_surface", "wsm5_conservative_surface",
     "wsm7_conservative_surface",
+    # 2.9.4 capabilities campaign, each absent at its default as in a 2.9.3
+    # header: lane/cap-slab-ocean's 3-D PWP controls (dropped with the
+    # ocean off), lane/cap-eclipse's default-on shadow (explicit 0 binds),
+    # lane/cap-waves-couple's ocean door, lane/cap-hail's output-only
+    # HAILCAST selectors, lane/cap-seaice's keys (read only under a land
+    # surface) and lane/cap-lake's lake-state analysis.
+    "ocean_levels", "ocean_analysis", "ocean_analysis_source",
+    "ocean_mld_climatology", "omdt", "ocean_z", "ocean_t", "ocean_s",
+    "ra_sw_eclipse", "ocean_config", "hailcast_opt", "haildt",
+    "seaice_prognostic", "seaice_initial_thickness",
+    "seaice_new_ice_thickness", "seaice_ocean_heat_flux",
+    "lake_state_source", "lake_state_path", "lake_state_accept_licence",
 })
 
 
@@ -301,14 +326,24 @@ def test_active_fire_refuses_a_fire_off_checkpoint_both_ways(live):
         restart._require_config_match(on_echo, _cfg(), "fire-on-to-off")
 
 
-def test_every_writer_echoes_active_chemistry_alike(monkeypatch, tmp_path):
+@pytest.mark.parametrize("fork", [{}, dict(simple_dir_fdb=1, enh_vermix=True,
+                                         flam_part=0.75, aer_drydep_opt=111)])
+def test_every_writer_echoes_active_chemistry_alike(monkeypatch, tmp_path, fork):
     from gpuwm.config import CHEM_RUN_FIELDS
 
-    cfg = _cfg(chem_sets="tracer_test")
-    expected = restart.configuration_echo(cfg)
-    assert set(CHEM_RUN_FIELDS) <= expected.keys()
-    for road, echo in _echoes(cfg, monkeypatch, tmp_path).items():
-        assert echo == expected, road
+    # The smoke fork's keys (c363fd55ff, fc1e2df360) are absent at their
+    # defaults so chem checkpoints written before them keep their digest
+    # (tests/test_restart_287_header.py); stated, every writer echoes them.
+    fork = restart.CHEM_FORK_RUN_DEFAULTS
+    for cfg, fork_echoed in (
+            (_cfg(chem_sets="tracer_test"), set()),
+            (_cfg(chem_sets="tracer_test", aer_drydep_opt=111,
+                  flam_part=0.5), {"aer_drydep_opt", "flam_part"})):
+        expected = restart.configuration_echo(cfg)
+        assert set(CHEM_RUN_FIELDS) - set(fork) <= expected.keys()
+        assert set(fork) & expected.keys() == fork_echoed
+        for road, echo in _echoes(cfg, monkeypatch, tmp_path).items():
+            assert echo == expected, road
 
 
 def test_inactive_chemistry_does_not_change_prior_checkpoint_identity():

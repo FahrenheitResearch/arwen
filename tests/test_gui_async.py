@@ -895,16 +895,6 @@ def test_the_machines_list_never_waits_on_ssh(tmp_path):
 
 # ---------------------------------------------------------------- no page waits on a host, and no host is asked for nothing
 
-class _Present:
-    status = 200
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
-
-
 class Hosts:
     """Every HEAD a probe sends, each taking one second, counted where the fetch's probe and a page's meet."""
 

@@ -1,15 +1,18 @@
 //! Headless rendering of the sharppyrs SPC sounding window (and the
 //! skew-T-only widget) through egui_kittest's wgpu renderer, plus the
 //! ensemble overlays sharppyrs does not have yet (member spaghetti and a
-//! percentile envelope on the skew-T) and a time-height panel.
+//! percentile envelope on the skew-T).
 //!
-//! Each render thread owns one Harness (egui contexts are not Send).
+//! Each render thread owns one Harness (egui contexts are not Send). Hosts
+//! with no usable GPU device (a headless server without the Vulkan loader)
+//! draw through [`CpuRenderer`], a rasteriser of egui's own meshes.
 
+use egui_wgpu::wgpu;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Instant;
 
-use egui::{Align2, Color32, FontId, Pos2, Rect, Shape, Stroke, Vec2};
+use egui::{Align2, Color32, Pos2, Rect, Shape, Stroke, Vec2};
 use sharppyrs::{
     CornerPanel, DiagnosticTablePanelKind, NativeDiagnosticPatchBoard, ParcelType, SkewTStyle,
     SoundingLayout,
@@ -74,53 +77,8 @@ pub struct SoundingScene {
     pub overlay: Option<Overlay>,
 }
 
-pub struct TimeHeightScene {
-    pub title: String,
-    pub subtitle: String,
-    pub leads_min: Vec<u32>,
-    pub z_km: Vec<f64>,
-    /// [lead][z]
-    pub field: Vec<Vec<f64>>,
-    pub field_label: String,
-    pub ramp: Ramp,
-    /// (lead index, z km, wdir, wspd kt)
-    pub barbs: Vec<(usize, f64, f64, f64)>,
-    /// named height lines per lead (km AGL), e.g. ML LCL, MU LFC, effective inflow
-    pub lines: Vec<(String, Color32, Vec<f64>)>,
-    /// index strip rows: (label, per-lead values)
-    pub strip: Vec<(String, Vec<f64>)>,
-    pub style: SkewTStyle,
-}
-
-#[derive(Clone, Debug)]
-pub struct Ramp {
-    pub stops: Vec<(f64, Color32)>,
-}
-
-impl Ramp {
-    pub fn color(&self, v: f64) -> Color32 {
-        if !v.is_finite() || self.stops.is_empty() {
-            return Color32::TRANSPARENT;
-        }
-        let s = &self.stops;
-        if v <= s[0].0 {
-            return s[0].1;
-        }
-        for w in s.windows(2) {
-            if v <= w[1].0 {
-                let a = ((v - w[0].0) / (w[1].0 - w[0].0)).clamp(0.0, 1.0) as f32;
-                let (c0, c1) = (w[0].1, w[1].1);
-                let l = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * a).round() as u8;
-                return Color32::from_rgb(l(c0.r(), c1.r()), l(c0.g(), c1.g()), l(c0.b(), c1.b()));
-            }
-        }
-        s[s.len() - 1].1
-    }
-}
-
 pub enum Job {
     Sounding(SoundingScene),
-    TimeHeight(TimeHeightScene),
 }
 
 pub struct RenderRequest {
@@ -168,8 +126,128 @@ impl Drop for RenderPool {
     }
 }
 
-/// Spawn `n` render threads sharing one queue.
-pub fn spawn_pool(n: usize) -> RenderPool {
+/// The device every render thread draws with, chosen once per process.
+#[derive(Clone, Debug)]
+pub enum RenderDevice {
+    /// A wgpu adapter that created a device; `backends` recreates it per thread.
+    Gpu {
+        backends: wgpu::Backends,
+        adapter: String,
+    },
+    /// The CPU rasteriser in this file; `reason` says why no GPU device was used.
+    Cpu { reason: String },
+}
+
+impl std::fmt::Display for RenderDevice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RenderDevice::Gpu { adapter, .. } => write!(f, "gpu {adapter}"),
+            RenderDevice::Cpu { reason } => write!(f, "cpu rasteriser ({reason})"),
+        }
+    }
+}
+
+/// `GPUWM_SOUNDINGS_RENDERER`: `auto` (default: GPU, else the CPU
+/// rasteriser), `gpu` (refuse without a GPU device) or `cpu`.
+pub const RENDERER_ENV: &str = "GPUWM_SOUNDINGS_RENDERER";
+
+static DEVICE: std::sync::OnceLock<Result<RenderDevice, String>> = std::sync::OnceLock::new();
+
+/// Pick the render device once: Vulkan/Metal/DX12, then GL, then the CPU
+/// rasteriser. Breakage this prevents: on a headless NVIDIA server without
+/// the Vulkan loader (libvulkan1) wgpu's default choice was GL/EGL, whose
+/// device request fails with Device(Lost), and egui_kittest panicked inside
+/// every render thread.
+pub fn render_device() -> Result<RenderDevice, String> {
+    DEVICE.get_or_init(select_device).clone()
+}
+
+fn select_device() -> Result<RenderDevice, String> {
+    let mode = std::env::var(RENDERER_ENV).unwrap_or_default();
+    let mode = mode.trim().to_ascii_lowercase();
+    match mode.as_str() {
+        "" | "auto" | "gpu" => {}
+        "cpu" => {
+            return Ok(RenderDevice::Cpu {
+                reason: format!("{RENDERER_ENV}=cpu"),
+            });
+        }
+        other => return Err(format!("{RENDERER_ENV}={other}: use auto, gpu or cpu")),
+    }
+    let mut tried = Vec::new();
+    for backends in [
+        wgpu::Backends::PRIMARY - wgpu::Backends::BROWSER_WEBGPU,
+        wgpu::Backends::GL,
+    ] {
+        match create_render_state(backends) {
+            Ok(state) => {
+                let info = state.adapter.get_info();
+                return Ok(RenderDevice::Gpu {
+                    backends,
+                    adapter: format!("{} {:?} {:?}", info.name, info.backend, info.device_type),
+                });
+            }
+            Err(e) => tried.push(format!("{backends:?}: {e}")),
+        }
+    }
+    let mut reason = format!("no GPU render device; {}", tried.join("; "));
+    if !vulkan_loader_present() {
+        reason.push_str(
+            "; the Vulkan loader libvulkan.so.1 is not installed \
+             (apt-get install libvulkan1) for GPU rendering",
+        );
+    }
+    if mode == "gpu" {
+        Err(format!("{RENDERER_ENV}=gpu: {reason}"))
+    } else {
+        Ok(RenderDevice::Cpu { reason })
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn vulkan_loader_present() -> bool {
+    // SAFETY: loading the system Vulkan loader runs no user code beyond its
+    // initialisers, the same library wgpu itself opens.
+    unsafe { libloading::Library::new("libvulkan.so.1") }.is_ok()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn vulkan_loader_present() -> bool {
+    true
+}
+
+fn create_render_state(backends: wgpu::Backends) -> Result<egui_wgpu::RenderState, String> {
+    let mut setup = egui_wgpu::WgpuSetupCreateNew::without_display_handle();
+    setup.instance_descriptor.backends = backends;
+    setup.power_preference = wgpu::PowerPreference::HighPerformance;
+    let setup = egui_wgpu::WgpuSetup::CreateNew(setup);
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let instance = pollster::block_on(setup.new_instance());
+        pollster::block_on(egui_wgpu::RenderState::create(
+            &egui_wgpu::WgpuConfiguration {
+                wgpu_setup: setup,
+                ..Default::default()
+            },
+            &instance,
+            None,
+            egui_wgpu::RendererOptions::PREDICTABLE,
+        ))
+        .map_err(|e| e.to_string())
+    }))
+    .unwrap_or_else(|p| Err(panic_text(&p)))
+}
+
+fn panic_text(p: &Box<dyn std::any::Any + Send>) -> String {
+    p.downcast_ref::<String>()
+        .cloned()
+        .or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string()))
+        .unwrap_or_else(|| "render panic".into())
+}
+
+/// Spawn `n` render threads sharing one queue, after choosing the device.
+pub fn spawn_pool(n: usize) -> Result<RenderPool, String> {
+    let device = render_device()?;
+    eprintln!("soundings: rendering on {device}");
     let (tx, rx) = channel::<RenderRequest>();
     let rx = Arc::new(std::sync::Mutex::new(rx));
     let mut workers = Vec::new();
@@ -182,23 +260,52 @@ pub fn spawn_pool(n: usize) -> RenderPool {
                 .expect("spawn render thread"),
         );
     }
-    RenderPool {
+    Ok(RenderPool {
         sender: Some(tx),
         workers,
+    })
+}
+
+enum AnyRenderer {
+    Gpu(egui_kittest::wgpu::WgpuTestRenderer),
+    Cpu(CpuRenderer),
+}
+
+impl egui_kittest::TestRenderer for AnyRenderer {
+    fn handle_delta(&mut self, delta: &egui::TexturesDelta) {
+        match self {
+            AnyRenderer::Gpu(r) => r.handle_delta(delta),
+            AnyRenderer::Cpu(r) => r.handle_delta(delta),
+        }
+    }
+    fn render(
+        &mut self,
+        ctx: &egui::Context,
+        output: &egui::FullOutput,
+    ) -> Result<image::RgbaImage, String> {
+        match self {
+            AnyRenderer::Gpu(r) => r.render(ctx, output),
+            AnyRenderer::Cpu(r) => r.render(ctx, output),
+        }
     }
 }
 
-fn build_harness(ppp: f32) -> egui_kittest::Harness<'static, RState> {
+fn build_harness(ppp: f32) -> Result<egui_kittest::Harness<'static, RState>, String> {
+    // High-performance GPU first (see `render_device`), the CPU rasteriser
+    // when no GPU device can be created.
+    let renderer = match render_device()? {
+        RenderDevice::Gpu { backends, .. } => AnyRenderer::Gpu(
+            egui_kittest::wgpu::WgpuTestRenderer::from_render_state(create_render_state(
+                backends,
+            )?),
+        ),
+        RenderDevice::Cpu { .. } => AnyRenderer::Cpu(CpuRenderer::default()),
+    };
     let mut h = egui_kittest::Harness::builder()
         .with_size(Vec2::new(1630.0, 1100.0))
         .with_pixels_per_point(ppp)
         .with_max_steps(8)
-        // The snapshot harness defaults to preferring a CPU rasterizer. This
-        // public renderer uses wgpu's production adapter selection instead:
-        // high-performance GPU first, software when that is all that exists.
-        .wgpu_setup(egui_wgpu::WgpuSetup::CreateNew(
-            egui_wgpu::WgpuSetupCreateNew::without_display_handle(),
-        ))
+        .renderer(renderer)
         .build_ui_state(
             |ui: &mut egui::Ui, st: &mut RState| {
                 if !st.fonts {
@@ -216,18 +323,19 @@ fn build_harness(ppp: f32) -> egui_kittest::Harness<'static, RState> {
             },
         );
     h.run_steps(2);
-    h
+    Ok(h)
 }
 
 /// One Harness per pixels-per-point value (switching ppp on a live context
-/// only lands a frame late, which produced wrong-size images).
+/// only lands a frame late, which produced wrong-size images). A failure
+/// (device or render) is replied to the request as a plain error, never a
+/// panic that closes the queue.
 fn render_thread(rx: Arc<std::sync::Mutex<Receiver<RenderRequest>>>) {
     let mut harnesses: std::collections::HashMap<u32, egui_kittest::Harness<'static, RState>> =
         std::collections::HashMap::new();
-    harnesses.insert(100, build_harness(1.0));
     loop {
         let req = {
-            let guard = rx.lock().unwrap();
+            let guard = rx.lock().unwrap_or_else(|e| e.into_inner());
             match guard.recv() {
                 Ok(r) => r,
                 Err(_) => return,
@@ -235,14 +343,22 @@ fn render_thread(rx: Arc<std::sync::Mutex<Receiver<RenderRequest>>>) {
         };
         let t0 = Instant::now();
         let key = ((req.ppp * 4.0).round() * 25.0) as u32;
-        let h = harnesses
-            .entry(key)
-            .or_insert_with(|| build_harness(key as f32 / 100.0));
-        h.state_mut().job = Some(req.job.clone());
-        h.set_size(req.size);
-        h.run_steps(2);
-        let out = h.render();
-        h.state_mut().job = None;
+        let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if !harnesses.contains_key(&key) {
+                harnesses.insert(key, build_harness(key as f32 / 100.0)?);
+            }
+            let h = harnesses.get_mut(&key).unwrap();
+            h.state_mut().job = Some(req.job.clone());
+            h.set_size(req.size);
+            h.run_steps(2);
+            let out = h.render();
+            h.state_mut().job = None;
+            out
+        }))
+        .unwrap_or_else(|p| {
+            harnesses.remove(&key);
+            Err(format!("sounding render failed: {}", panic_text(&p)))
+        });
         let frame_ms = t0.elapsed().as_secs_f64() * 1e3;
         let res = out.and_then(|img| {
             let t1 = Instant::now();
@@ -264,18 +380,13 @@ fn render_thread(rx: Arc<std::sync::Mutex<Receiver<RenderRequest>>>) {
 
 fn draw_job(ui: &mut egui::Ui, job: &Job) {
     // cover the harness panel margin with the sounding background
-    let bg = match job {
-        Job::Sounding(s) => s.style.bg_color,
-        Job::TimeHeight(t) => t.style.bg_color,
-    };
+    let Job::Sounding(s) = job;
+    let bg = s.style.bg_color;
     let screen = ui.ctx().content_rect();
     ui.ctx()
         .layer_painter(egui::LayerId::background())
         .rect_filled(screen, 0.0, bg);
-    match job {
-        Job::Sounding(s) => draw_sounding(ui, s),
-        Job::TimeHeight(t) => draw_time_height(ui, t),
-    }
+    draw_sounding(ui, s);
 }
 
 fn draw_sounding(ui: &mut egui::Ui, s: &SoundingScene) {
@@ -619,194 +730,201 @@ fn draw_overlay(ui: &mut egui::Ui, skew: Rect, ov: &Overlay, st: &SkewTStyle) {
     }
 }
 
-fn draw_time_height(ui: &mut egui::Ui, s: &TimeHeightScene) {
-    let size = ui.available_size();
-    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-    let p = ui.painter_at(rect);
-    let st = &s.style;
-    p.rect_filled(rect, 0.0, st.bg_color);
-    let font = |sz: f32| st.regular_font(sz);
-    let strip_h = 18.0 * s.strip.len() as f32;
-    let plot = Rect::from_min_max(
-        Pos2::new(rect.min.x + 70.0, rect.min.y + 56.0),
-        Pos2::new(rect.max.x - 110.0, rect.max.y - 46.0 - strip_h),
-    );
-    p.text(
-        Pos2::new(rect.min.x + 12.0, rect.min.y + 8.0),
-        Align2::LEFT_TOP,
-        &s.title,
-        st.bold_font(18.0),
-        st.fg_color,
-    );
-    p.text(
-        Pos2::new(rect.min.x + 12.0, rect.min.y + 32.0),
-        Align2::LEFT_TOP,
-        &s.subtitle,
-        font(13.0),
-        st.fg_color,
-    );
-    let nl = s.leads_min.len();
-    if nl == 0 || s.z_km.len() < 2 {
-        return;
+/// Rasterises egui's tessellated meshes on the CPU the way egui-wgpu draws
+/// them into an Rgba8Unorm target: premultiplied vertex colour times the
+/// texture sample, blended `src + dst * (1 - src.a)` in gamma space, pixel
+/// centres sampled, egui's own feathering doing the anti-aliasing.
+#[derive(Default)]
+pub struct CpuRenderer {
+    textures: std::collections::HashMap<egui::TextureId, CpuTexture>,
+}
+
+struct CpuTexture {
+    w: usize,
+    h: usize,
+    px: Vec<[f32; 4]>,
+    linear: bool,
+}
+
+impl CpuTexture {
+    fn sample(&self, u: f32, v: f32) -> [f32; 4] {
+        if self.w == 0 || self.h == 0 {
+            return [1.0; 4];
+        }
+        let at = |x: i64, y: i64| {
+            let x = x.clamp(0, self.w as i64 - 1) as usize;
+            let y = y.clamp(0, self.h as i64 - 1) as usize;
+            self.px[y * self.w + x]
+        };
+        let (fx, fy) = (u * self.w as f32, v * self.h as f32);
+        if !self.linear {
+            return at(fx.floor() as i64, fy.floor() as i64);
+        }
+        let (fx, fy) = (fx - 0.5, fy - 0.5);
+        let (x0, y0) = (fx.floor(), fy.floor());
+        let (ax, ay) = (fx - x0, fy - y0);
+        let (x0, y0) = (x0 as i64, y0 as i64);
+        let (a, b, c, d) = (at(x0, y0), at(x0 + 1, y0), at(x0, y0 + 1), at(x0 + 1, y0 + 1));
+        std::array::from_fn(|k| {
+            let top = a[k] + (b[k] - a[k]) * ax;
+            let bot = c[k] + (d[k] - c[k]) * ax;
+            top + (bot - top) * ay
+        })
     }
-    let zmax = *s.z_km.last().unwrap();
-    let col_w = plot.width() / nl as f32;
-    let xc = |i: usize| plot.min.x + col_w * (i as f32 + 0.5);
-    let yz = |z: f64| plot.max.y - (z / zmax) as f32 * plot.height();
-    // shaded cells
-    for (i, col) in s.field.iter().enumerate() {
-        for k in 0..s.z_km.len().saturating_sub(1) {
-            let c = s.ramp.color(col[k]);
-            if c == Color32::TRANSPARENT {
+}
+
+fn unorm(c: Color32) -> [f32; 4] {
+    c.to_array().map(|x| x as f32 / 255.0)
+}
+
+impl egui_kittest::TestRenderer for CpuRenderer {
+    fn handle_delta(&mut self, delta: &egui::TexturesDelta) {
+        for (id, d) in &delta.set {
+            let egui::epaint::ImageData::Color(img) = &d.image;
+            let [w, h] = img.size;
+            let linear = d.options.magnification == egui::epaint::textures::TextureFilter::Linear;
+            match d.pos {
+                None => {
+                    self.textures.insert(
+                        *id,
+                        CpuTexture {
+                            w,
+                            h,
+                            px: img.pixels.iter().map(|c| unorm(*c)).collect(),
+                            linear,
+                        },
+                    );
+                }
+                Some([x0, y0]) => {
+                    if let Some(t) = self.textures.get_mut(id) {
+                        for y in 0..h.min(t.h.saturating_sub(y0)) {
+                            for x in 0..w.min(t.w.saturating_sub(x0)) {
+                                t.px[(y0 + y) * t.w + x0 + x] = unorm(img.pixels[y * w + x]);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Frees are not applied, as in egui_kittest's wgpu renderer: egui
+        // never reuses a managed texture id within a harness.
+    }
+
+    fn render(
+        &mut self,
+        ctx: &egui::Context,
+        output: &egui::FullOutput,
+    ) -> Result<image::RgbaImage, String> {
+        let ppp = ctx.pixels_per_point();
+        let size = ctx.content_rect().size() * ppp;
+        let (w, h) = (size.x.round().max(0.0) as usize, size.y.round().max(0.0) as usize);
+        let mut fb = vec![[0f32; 4]; w * h];
+        let white = CpuTexture {
+            w: 1,
+            h: 1,
+            px: vec![[1.0; 4]],
+            linear: false,
+        };
+        for egui::epaint::ClippedPrimitive {
+            clip_rect,
+            primitive,
+        } in ctx.tessellate(output.shapes.clone(), ppp)
+        {
+            let egui::epaint::Primitive::Mesh(mesh) = primitive else {
+                continue;
+            };
+            let clip = |v: f32, max: usize| (v * ppp).round().clamp(0.0, max as f32) as i64;
+            let (cx0, cy0) = (clip(clip_rect.min.x, w), clip(clip_rect.min.y, h));
+            let (cx1, cy1) = (clip(clip_rect.max.x, w), clip(clip_rect.max.y, h));
+            if cx1 <= cx0 || cy1 <= cy0 {
                 continue;
             }
-            let r = Rect::from_min_max(
-                Pos2::new(plot.min.x + col_w * i as f32, yz(s.z_km[k + 1])),
-                Pos2::new(plot.min.x + col_w * (i + 1) as f32, yz(s.z_km[k])),
-            );
-            p.rect_filled(r.expand(0.3), 0.0, c);
+            let tex = self.textures.get(&mesh.texture_id).unwrap_or(&white);
+            for tri in mesh.indices.chunks_exact(3) {
+                let mut v = [
+                    &mesh.vertices[tri[0] as usize],
+                    &mesh.vertices[tri[1] as usize],
+                    &mesh.vertices[tri[2] as usize],
+                ];
+                let p = |k: &egui::epaint::Vertex| (k.pos.x as f64 * ppp as f64, k.pos.y as f64 * ppp as f64);
+                let edge = |a: (f64, f64), b: (f64, f64), c: (f64, f64)| {
+                    (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
+                };
+                let mut area = edge(p(v[0]), p(v[1]), p(v[2]));
+                if !area.is_finite() || area == 0.0 {
+                    continue;
+                }
+                if area < 0.0 {
+                    v.swap(1, 2);
+                    area = -area;
+                }
+                let (p0, p1, p2) = (p(v[0]), p(v[1]), p(v[2]));
+                // A shared edge is walked in opposite directions by its two
+                // triangles, so this rule gives its pixels to exactly one.
+                let owns = |a: (f64, f64), b: (f64, f64)| {
+                    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+                    dy > 0.0 || (dy == 0.0 && dx > 0.0)
+                };
+                let (o0, o1, o2) = (owns(p1, p2), owns(p2, p0), owns(p0, p1));
+                let xs = ((p0.0.min(p1.0).min(p2.0) - 0.5).ceil() as i64).max(cx0);
+                let xe = ((p0.0.max(p1.0).max(p2.0) - 0.5).floor() as i64).min(cx1 - 1);
+                let ys = ((p0.1.min(p1.1).min(p2.1) - 0.5).ceil() as i64).max(cy0);
+                let ye = ((p0.1.max(p1.1).max(p2.1) - 0.5).floor() as i64).min(cy1 - 1);
+                if xs > xe || ys > ye {
+                    continue;
+                }
+                let col = [unorm(v[0].color), unorm(v[1].color), unorm(v[2].color)];
+                let flat = v[0].color == v[1].color
+                    && v[1].color == v[2].color
+                    && v[0].uv == v[1].uv
+                    && v[1].uv == v[2].uv;
+                let flat_src = {
+                    let t = tex.sample(v[0].uv.x, v[0].uv.y);
+                    std::array::from_fn::<f32, 4, _>(|k| col[0][k] * t[k])
+                };
+                for y in ys..=ye {
+                    let py = y as f64 + 0.5;
+                    let row = y as usize * w;
+                    for x in xs..=xe {
+                        let q = (x as f64 + 0.5, py);
+                        let (w0, w1, w2) = (edge(p1, p2, q), edge(p2, p0, q), edge(p0, p1, q));
+                        if w0 < 0.0
+                            || w1 < 0.0
+                            || w2 < 0.0
+                            || (w0 == 0.0 && !o0)
+                            || (w1 == 0.0 && !o1)
+                            || (w2 == 0.0 && !o2)
+                        {
+                            continue;
+                        }
+                        let src = if flat {
+                            flat_src
+                        } else {
+                            let (l0, l1, l2) =
+                                ((w0 / area) as f32, (w1 / area) as f32, (w2 / area) as f32);
+                            let u = l0 * v[0].uv.x + l1 * v[1].uv.x + l2 * v[2].uv.x;
+                            let vv = l0 * v[0].uv.y + l1 * v[1].uv.y + l2 * v[2].uv.y;
+                            let t = tex.sample(u, vv);
+                            std::array::from_fn(|k| {
+                                (l0 * col[0][k] + l1 * col[1][k] + l2 * col[2][k]) * t[k]
+                            })
+                        };
+                        let d = &mut fb[row + x as usize];
+                        let keep = 1.0 - src[3];
+                        for k in 0..4 {
+                            d[k] = src[k] + d[k] * keep;
+                        }
+                    }
+                }
+            }
         }
-    }
-    // height lines
-    for (name, c, vals) in &s.lines {
-        let pts: Vec<Pos2> = vals
+        let bytes = fb
             .iter()
-            .enumerate()
-            .filter(|(_, z)| z.is_finite() && **z <= zmax)
-            .map(|(i, z)| Pos2::new(xc(i), yz(*z)))
+            .flat_map(|p| p.map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8))
             .collect();
-        if pts.len() > 1 {
-            p.add(Shape::line(pts.clone(), Stroke::new(2.0, *c)));
-        }
-        for q in &pts {
-            p.circle_filled(*q, 3.0, *c);
-        }
-        if let Some(last) = pts.last() {
-            p.text(
-                Pos2::new(last.x + 6.0, last.y),
-                Align2::LEFT_CENTER,
-                name,
-                font(11.0),
-                *c,
-            );
-        }
+        image::RgbaImage::from_raw(w as u32, h as u32, bytes)
+            .ok_or_else(|| "cpu rasteriser: bad frame size".into())
     }
-    // barbs
-    for (i, z, d, sp) in &s.barbs {
-        if *z <= zmax {
-            sharppyrs::barbs::draw_barb(&p, Pos2::new(xc(*i), yz(*z)), *d, *sp, false);
-        }
-    }
-    // axes
-    let ax = Stroke::new(1.0, st.fg_color);
-    p.rect_stroke(plot, 0.0, ax, egui::StrokeKind::Inside);
-    let mut z = 0.0;
-    let step = if zmax > 8.0 { 1.0 } else { 0.5 };
-    while z <= zmax + 1e-9 {
-        let y = yz(z);
-        p.line_segment(
-            [Pos2::new(plot.min.x - 5.0, y), Pos2::new(plot.min.x, y)],
-            ax,
-        );
-        p.text(
-            Pos2::new(plot.min.x - 8.0, y),
-            Align2::RIGHT_CENTER,
-            format!("{z:.1}"),
-            font(12.0),
-            st.fg_color,
-        );
-        z += step;
-    }
-    p.text(
-        Pos2::new(rect.min.x + 10.0, plot.center().y),
-        Align2::LEFT_CENTER,
-        "km\nAGL",
-        font(12.0),
-        st.fg_color,
-    );
-    for (i, l) in s.leads_min.iter().enumerate() {
-        p.text(
-            Pos2::new(xc(i), plot.max.y + 6.0),
-            Align2::CENTER_TOP,
-            format!("+{l}"),
-            font(12.0),
-            st.fg_color,
-        );
-    }
-    p.text(
-        Pos2::new(plot.center().x, plot.max.y + 24.0),
-        Align2::CENTER_TOP,
-        "lead (min)",
-        font(12.0),
-        st.fg_color,
-    );
-    // index strip
-    for (r, (label, vals)) in s.strip.iter().enumerate() {
-        let y = plot.max.y + 46.0 + 18.0 * r as f32;
-        p.text(
-            Pos2::new(plot.min.x - 8.0, y),
-            Align2::RIGHT_TOP,
-            label,
-            font(12.0),
-            st.fg_color,
-        );
-        for (i, v) in vals.iter().enumerate() {
-            let txt = if !v.is_finite() {
-                "--".to_string()
-            } else if v.abs() >= 100.0 {
-                format!("{v:.0}")
-            } else {
-                format!("{v:.1}")
-            };
-            p.text(
-                Pos2::new(xc(i), y),
-                Align2::CENTER_TOP,
-                txt,
-                font(12.0),
-                st.fg_color,
-            );
-        }
-    }
-    // colour bar
-    let cb = Rect::from_min_max(
-        Pos2::new(plot.max.x + 40.0, plot.min.y),
-        Pos2::new(plot.max.x + 58.0, plot.max.y),
-    );
-    let (v0, v1) = (
-        s.ramp.stops.first().map(|x| x.0).unwrap_or(0.0),
-        s.ramp.stops.last().map(|x| x.0).unwrap_or(1.0),
-    );
-    let n = 100;
-    for j in 0..n {
-        let a = j as f64 / n as f64;
-        let v = v0 + (v1 - v0) * a;
-        let y0 = cb.max.y - cb.height() * (j as f32 / n as f32);
-        let y1 = cb.max.y - cb.height() * ((j + 1) as f32 / n as f32);
-        p.rect_filled(
-            Rect::from_min_max(Pos2::new(cb.min.x, y1), Pos2::new(cb.max.x, y0 + 0.5)),
-            0.0,
-            s.ramp.color(v),
-        );
-    }
-    p.rect_stroke(cb, 0.0, ax, egui::StrokeKind::Inside);
-    for (v, _) in &s.ramp.stops {
-        let y = cb.max.y - cb.height() * ((v - v0) / (v1 - v0)) as f32;
-        p.text(
-            Pos2::new(cb.max.x + 4.0, y),
-            Align2::LEFT_CENTER,
-            format!("{v:.0}"),
-            font(11.0),
-            st.fg_color,
-        );
-    }
-    p.text(
-        Pos2::new(cb.center().x, cb.min.y - 6.0),
-        Align2::CENTER_BOTTOM,
-        &s.field_label,
-        font(12.0),
-        st.fg_color,
-    );
-    let _ = FontId::default();
 }
 
 /// Patches every rendered window carries: the two ECAPE cells are blanked,

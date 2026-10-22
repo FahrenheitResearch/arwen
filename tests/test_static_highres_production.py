@@ -155,36 +155,16 @@ def test_parse_static_table_accepts_and_resolves(tmp_path):
         "fields": "auto", "landcover_source": "auto"}
 
 
-def test_parse_static_table_refuses_unknown_key(tmp_path):
-    with pytest.raises(ValueError, match="cache_roots"):
-        parse_static_table(
-            {"highres": {"enabled": True, "cache_roots": "x"}},
-            source="case.toml", base_dir=tmp_path)
-
-
-def test_parse_static_table_refuses_unknown_subtable(tmp_path):
-    with pytest.raises(ValueError, match="hires"):
-        parse_static_table({"hires": {}}, source="case.toml",
-                           base_dir=tmp_path)
-
-
-def test_parse_static_table_refuses_empty_static(tmp_path):
-    with pytest.raises(ValueError, match="declares nothing"):
-        parse_static_table({}, source="case.toml", base_dir=tmp_path)
-
-
-def test_parse_static_table_refuses_bad_on_refuse(tmp_path):
-    with pytest.raises(ValueError, match="on_refuse"):
-        parse_static_table(
-            {"highres": {"enabled": True, "cache_root": "x",
-                         "on_refuse": "warn"}},
-            source="case.toml", base_dir=tmp_path)
-
-
-def test_parse_static_table_refuses_missing_cache_root(tmp_path):
-    with pytest.raises(ValueError, match="cache_root"):
-        parse_static_table({"highres": {"enabled": True}},
-                           source="case.toml", base_dir=tmp_path)
+@pytest.mark.parametrize("table,match", [
+    ({"highres": {"enabled": True, "cache_roots": "x"}}, "cache_roots"),
+    ({"hires": {}}, "hires"),
+    ({}, "declares nothing"),
+    ({"highres": {"enabled": True, "cache_root": "x", "on_refuse": "warn"}}, "on_refuse"),
+    ({"highres": {"enabled": True}}, "cache_root"),
+])
+def test_parse_static_table_refuses_invalid_config(tmp_path, table, match):
+    with pytest.raises(ValueError, match=match):
+        parse_static_table(table, source="case.toml", base_dir=tmp_path)
 
 
 def test_case_data_loader_carries_static_block(tmp_path):
@@ -207,18 +187,10 @@ def test_case_data_loader_carries_static_block(tmp_path):
 # Application identity and refusal gates (no network, no rasters)
 # ---------------------------------------------------------------------------
 
-def test_apply_absent_config_is_identity_object():
+@pytest.mark.parametrize("disabled", [False, True], ids=["absent", "disabled"])
+def test_apply_inactive_config_is_identity_object(tmp_path, disabled):
     baseline = _baseline(4, 4)
-    fields, receipt = apply_highres_statics(
-        baseline, _us_interior_grid(), config=None, domain_id=1,
-        case_date=date(2021, 5, 15), landuse_attrs=MODIS21_ATTRS)
-    assert fields is baseline
-    assert receipt is None
-
-
-def test_apply_disabled_config_is_identity_object(tmp_path):
-    baseline = _baseline(4, 4)
-    config = HighresStaticConfig(enabled=False, cache_root=tmp_path)
+    config = HighresStaticConfig(enabled=False, cache_root=tmp_path) if disabled else None
     fields, receipt = apply_highres_statics(
         baseline, _us_interior_grid(), config=config, domain_id=1,
         case_date=date(2021, 5, 15), landuse_attrs=MODIS21_ATTRS)

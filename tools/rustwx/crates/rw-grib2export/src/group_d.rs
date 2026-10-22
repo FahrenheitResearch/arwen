@@ -22,10 +22,6 @@ use rw_post::group_d::{self, history::OwnedCarriers, Options, FIELDS};
 use rw_post::state::{ColumnState, StateInputs};
 use rw_post::PostDevice;
 
-/// Omission reason used only if Group D cannot run at all (kept for the
-/// `--list` status text of older callers).
-pub const PENDING: &str = "Group D (reflectivity, cloud, visibility) could not run for this frame";
-
 /// Group D planes of one frame, by catalog id, plus per-field omissions.
 pub struct Output {
     pub planes: BTreeMap<&'static str, Vec<f32>>,
@@ -52,7 +48,7 @@ pub fn compute(
     inputs: &StateInputs,
     #[cfg(any(windows, target_os = "linux"))] gpu: Option<&rw_post::gpu::GpuPost>,
     device: PostDevice,
-) -> Result<Option<Output>, String> {
+) -> Result<Output, String> {
     let owned = OwnedCarriers::read(history).map_err(|e| format!("{}: {e}", history.display()))?;
     let c = owned.carriers();
     let opt = Options::default();
@@ -71,7 +67,7 @@ pub fn compute(
         }
         planes.insert(f.id, d.planes[k * n..(k + 1) * n].to_vec());
     }
-    Ok(Some(Output {
+    Ok(Output {
         planes,
         omitted: d.omitted.clone(),
         device: d.device.clone(),
@@ -84,5 +80,5 @@ pub fn compute(
             None => group_d::aerosol_note(&owned.aerosol_source, &opt),
         },
         ir_source: d.ir_source,
-    }))
+    })
 }

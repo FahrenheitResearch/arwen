@@ -31,11 +31,11 @@ class _Response(C.Structure):
 def _library():
     global _LIBRARY
     if _LIBRARY is None:
-        # A development build supplies its path; deployment staging must carry
-        # this Rust artifact and the netCDF-C container dependency.
-        path = os.environ.get("GPUWM_NEXTGEN_OUTPUT_LIBRARY")
-        target = Path(path) if path else Path(__file__).with_name("librw_nextgen_output.so")
+        target = _library_path()
         library = C.CDLL(str(target))
+        library.rw_nextgen_output_abi_version.restype = C.c_uint32
+        if library.rw_nextgen_output_abi_version() != 1:
+            raise RuntimeError("Rust coupled hydro output ABI mismatch")
         library.rw_nextgen_output_call.argtypes = [C.c_void_p, C.c_size_t,
                                                  C.c_void_p, C.c_size_t]
         library.rw_nextgen_output_call.restype = C.POINTER(_Response)
@@ -43,6 +43,28 @@ def _library():
         library.rw_nextgen_output_free.restype = None
         _LIBRARY = library
     return _LIBRARY
+
+
+def _library_path():
+    from gpuwm import bridges
+    filename = ("rw_nextgen_output.dll" if os.name == "nt" else
+                "librw_nextgen_output.dylib" if sys.platform == "darwin" else
+                "librw_nextgen_output.so")
+    env = "GPUWM_NEXTGEN_OUTPUT_LIBRARY"
+    def found():
+        paths = bridges.artifact_candidates(env, filename, crate_relative="tools/nextgen_output")
+        for path in paths:
+            if path.is_file():
+                return path
+            if os.environ.get(env) and path == Path(os.environ[env]):
+                raise FileNotFoundError(f"{env} names a missing file: {path}")
+        return None
+    target = found()
+    if target is None and not os.environ.get(env) and bridges.fetch_on_demand("rw_nextgen_output"):
+        target = found()
+    if target is None:
+        raise FileNotFoundError(f"coupled hydro output needs {filename} ({env})")
+    return target
 
 
 def _call(request, payload=None):

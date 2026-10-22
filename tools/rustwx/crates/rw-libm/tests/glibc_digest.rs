@@ -87,7 +87,7 @@ fn inputs_f64(salt: u64) -> impl Iterator<Item = f64> {
         let w = word(i, salt);
         if i % 2 == 0 {
             // every encoding with |x| <= 1, uniformly over bit patterns
-            f64::from_bits(w % 0x3ff0_0000_0000_0001 | (w & (1 << 63)))
+            f64::from_bits((w % 0x3ff0_0000_0000_0001) | (w & (1 << 63)))
         } else {
             (w >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
         }

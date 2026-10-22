@@ -78,6 +78,59 @@ def _validate_prepared_surface(surface, cfg) -> Mapping[str, object]:
     return fields
 
 
+_PBLH_LOGGED: set[str] = set()
+
+
+def _seeded_initial_pblh(landuse, met):
+    """The initial PBLH: the source's own, when it publishes one.
+
+    An HRRR f00 is a cycled state.  Its wrfinput carries the background
+    forecast's PBL height, so NOAA's f00 products (the GUST message and
+    every PBL-depth product) see a boundary layer, and the first
+    surface-layer call reads that depth for its convective velocity.  A
+    cold start seeds zero, as real.exe does, and the initial history then
+    wrote PBLH = 0 at every point: the f00 gust was the bare 10 m wind
+    (2026-10-21 06Z full CONUS: WOOF f00 gust 2.6 m/s weaker than the same
+    wrf-rust gust on NOAA's own f00 state, whose HPBL averaged 347 m).
+
+    A source that publishes a PBL height (the mapped ``PBLH`` met field:
+    HRRR wrfnat HPBL today) seeds it.  Every other source keeps stock WRF's
+    zero, and the run says so once.
+    """
+    from dataclasses import replace
+
+    fields = getattr(met, "fields", None) or {}
+    value = fields.get("PBLH")
+    if value is None:
+        message = ("physics init: PBLH starts at 0 everywhere (stock WRF "
+                   "cold start): the initial source publishes no PBL height")
+        if message not in _PBLH_LOGGED:
+            _PBLH_LOGGED.add(message)
+            print(message, flush=True)
+        return landuse
+    host = value.get() if hasattr(value, "get") else value
+    array = np.asarray(host)
+    expected = np.shape(landuse.pblh)
+    if array.shape != expected:
+        raise ValueError(
+            f"source PBLH has shape {array.shape}, expected {expected}; a "
+            "PBL height on another grid would seed the wrong columns")
+    if (array.dtype.hasobject or not np.issubdtype(array.dtype, np.number)
+            or not np.isfinite(array).all()):
+        raise ValueError("source PBLH must be finite numeric data")
+    if array.min() < -1.0 or array.max() > 10_000.0:
+        raise ValueError(
+            "source PBLH is outside 0..10000 m: observed "
+            f"{float(array.min()):.6g}..{float(array.max()):.6g}")
+    message = ("physics init: PBLH seeded from the initial source's own PBL "
+               "height (as a cycled HRRR wrfinput carries it)")
+    if message not in _PBLH_LOGGED:
+        _PBLH_LOGGED.add(message)
+        print(message, flush=True)
+    return replace(landuse, pblh=np.ascontiguousarray(
+        np.maximum(array, 0.0), dtype=np.float32))
+
+
 def _validate_prepared_near_surface(result, met, cfg) -> Mapping[str, np.ndarray]:
     """Validate exact, physical near-surface arrays before GPU allocation."""
 
@@ -165,6 +218,7 @@ def initialize_prepared_physics(
 
     from gpuwm.core.diagnostics import update_diagnostics
     from gpuwm.core.landuse import (initialize_landuse,
+                                    prepared_sea_ice_cells,
                                     usemonalb_landuse_inputs)
     from gpuwm.core.physics import initialize_physics
     from gpuwm.ingest.ruc_mosaic import ruc_mosaic_physics_inputs
@@ -199,7 +253,12 @@ def initialize_prepared_physics(
         # real.exe's landmask/soil-category reconciliation decides a
         # disagreeing column from its soil temperature, then its SST.
         soil_temperature=fields["TSLB"], sst=fields.get("SST"),
+        # The cells the solved surface made sea ice (XICE or real.exe's
+        # seaice_threshold), so the ice category lands where its column is.
+        sea_ice_cells=prepared_sea_ice_cells(
+            fields, getattr(met, "fields", None), static["LANDMASK"]),
         **usemonalb_landuse_inputs(cfg, static, valid_time))
+    landuse = _seeded_initial_pblh(landuse, met)
     vegfra = initial_vegetation_fraction(met, static, valid_time)
     from gpuwm.core.landuse import surface_leaf_area
     lai = surface_leaf_area(cfg, static["LAI12M"], valid_time)
@@ -212,6 +271,10 @@ def initialize_prepared_physics(
         trace_gas_overrides=trace_gas_overrides, ozone_parent=ozone_parent)
     driver = initialize_physics(
         state, cfg, landuse=landuse, radiation=radiation, tsk=fields["TSK"],
+        # The coupled hydro exchange binds to this exact parent grid (2.9.3
+        # improve-1: the prepared GFS/ERA5 route passed none, so a default-on
+        # hydro forecast stopped with "needs the actual forecast ProjectedGrid").
+        hydro_parent_geometry=grid,
         soil_temperature=fields["TSLB"],
         soil_moisture=fields["SMOIS"],
         liquid_moisture=fields["SH2O"],
@@ -262,7 +325,103 @@ def initialize_prepared_physics(
             driver, cfg, landusef=static.get("LANDUSEF"), processed=False,
             landuse_attrs=landuse_attrs, landmask=static["LANDMASK"],
             fractional_seaice=fractional_seaice)
+    _seed_initial_cldfra(driver, state, cfg, met)
     return driver
+
+
+#: UPP's RAP/HRRR cloud-layer tops (Pa): low cloud is below 642 hPa,
+#: middle 642-350 hPa, high above 350 hPa -- the layers the source's
+#: LCDC/MCDC/HCDC describe.
+_CLOUD_LAYER_TOPS_PA = (64200.0, 35000.0)
+
+
+def _seed_initial_cldfra(driver, state, cfg, met=None) -> None:
+    """The initial CLDFRA: the radiation's own cloud fraction of the start.
+
+    CLDFRA is the cloud fraction the radiation radiated through, written by
+    each due radiation call and held between calls; it is output only (no
+    physics reads ``driver.cldfra``).  Before the first call it was zero,
+    as WRF's t=0 frame is, so every f00 cloud product was blank: the
+    2026-10-21 06Z full-CONUS f00 column-maximum cloud fraction was 0 at
+    every point (the plot floor) against NOAA's 54 % mean, and low, middle
+    and high cloud cover drew nothing.
+
+    Seeded here with the SAME function the radiation applies on its first
+    call (icloud=1: WRF's cal_cldfra1 Xu-Randall fraction; icloud=2: the
+    binary cal_cldfra2), on the initial hydrometeors, temperature and
+    pressure (``_prepare_atmosphere``, the radiation's own inputs), with the
+    microphysics' F_QI/F_QS pair.  The MYNN subgrid merge adds nothing at
+    a start: CLDFRA_BL is zero until the PBL scheme first runs.  The first
+    radiation call overwrites the field as before.
+
+    Where the source carries its own low/middle/high cloud cover (HRRR
+    wrfnat LCDC/MCDC/HCDC; it publishes no 3-D cloud fraction), each layer
+    of each column is brought up to the source's cover: levels with
+    resolved cloud take max(own, cover); a layer with cover but no resolved
+    cloud puts it on its most humid level.  So the column's cover in each
+    layer is the source's (HRRR's cover is mostly MYNN subgrid cloud,
+    which the start state cannot hold: 2026-10-21 06Z, resolved clouds
+    alone gave a column-maximum mean of 6 % against NOAA's 54 %).
+    """
+    cldfra = getattr(driver, "cldfra", None)
+    icloud = int(getattr(cfg, "icloud", 1))
+    if cldfra is None or icloud not in (1, 2):
+        return
+    import cupy as cp
+
+    from gpuwm.core.physics import _prepare_atmosphere
+    from gpuwm.core.rrtmg_legacy import legacy_cloud_fraction_flags
+    from gpuwm.core.rrtmgp import cal_cldfra1, cal_cldfra2
+
+    atmosphere = _prepare_atmosphere(state)
+    nz, ny, nx = atmosphere["pressure"].shape
+    ncol = ny * nx
+    zeros = cp.zeros((nz, ncol), dtype=cp.float32)
+
+    def grid(value):
+        return cp.ascontiguousarray(
+            cp.asarray(value, dtype=cp.float32)).reshape(nz, ncol)
+
+    def species(name):
+        value = getattr(state, name, None)
+        return zeros if value is None else grid(value)
+
+    mp_physics = int(cfg.mp_physics)
+    f_qi, f_qs = ((True, True) if mp_physics == 7
+                  else legacy_cloud_fraction_flags(mp_physics))
+    if icloud == 2:
+        values = cal_cldfra2(species("qc"), species("qi"), f_qc=True, f_qi=f_qi)
+    else:
+        values = cal_cldfra1(
+            species("qv"), species("qc"), species("qi"), species("qs"),
+            grid(atmosphere["temperature"]), grid(atmosphere["pressure"]),
+            f_qc=True, f_qi=f_qi, f_qs=f_qs, mp_physics=mp_physics)
+    values = cp.asarray(values, dtype=cp.float32)
+    fields = getattr(met, "fields", None) or {}
+    covers = [fields.get(name) for name in ("LCDC", "MCDC", "HCDC")]
+    if all(cover is not None for cover in covers):
+        pressure = grid(atmosphere["pressure"])
+        temperature = grid(atmosphere["temperature"])
+        es = cp.float32(611.2) * cp.exp(cp.float32(17.67) * (temperature - cp.float32(273.15))
+                                        / (temperature - cp.float32(29.65)))
+        humidity = species("qv") / (cp.float32(0.622) * es / cp.maximum(pressure - es, cp.float32(1.0)))
+        low_top, mid_top = _CLOUD_LAYER_TOPS_PA
+        layers = (pressure >= low_top,
+                  (pressure < low_top) & (pressure >= mid_top),
+                  pressure < mid_top)
+        for inside, cover in zip(layers, covers):
+            host = cover.get() if hasattr(cover, "get") else cover
+            cover = cp.clip(cp.asarray(host, dtype=cp.float32).reshape(ncol)
+                            / cp.float32(100.0), 0.0, 1.0)
+            resolved = inside & (values > 0)
+            values = cp.where(resolved, cp.maximum(values, cover[None, :]), values)
+            # Layers with cover and no resolved cloud: the most humid level.
+            empty = ~resolved.any(axis=0) & (cover > 0) & inside.any(axis=0)
+            level = cp.argmax(cp.where(inside, humidity, cp.float32(-1.0)), axis=0)
+            columns = cp.nonzero(empty)[0]
+            values[level[columns], columns] = cp.maximum(
+                values[level[columns], columns], cover[columns])
+    cldfra[...] = values.astype(cldfra.dtype).reshape(cldfra.shape)
 
 
 def resolve_prepared_noah_surface(met, cfg, static, *, surface=None, soil_mesh=None):
@@ -328,7 +487,8 @@ def resolve_prepared_noah_surface(met, cfg, static, *, surface=None, soil_mesh=N
             "again; nothing here can reconstruct soil that was never "
             "written.")
     from gpuwm.core.landuse import (
-        ruc_fractional_seaice as _ruc_fractional_seaice)
+        ruc_fractional_seaice as _ruc_fractional_seaice,
+        seaice_threshold_of as _seaice_threshold_of)
     soil = preprocess_land_surface_soil(
         fields, sf_surface_physics=int(cfg.sf_surface_physics),
         # real.exe's adjust_for_seaice_pre/post keep the fraction under
@@ -336,6 +496,7 @@ def resolve_prepared_noah_surface(met, cfg, static, *, surface=None, soil_mesh=N
         # otherwise (module_soil_pre.F:216-219, :337-343, :392-393 of the HRRR
         # v4.1.21 fork).
         fractional_seaice=_ruc_fractional_seaice(cfg),
+        seaice_threshold=_seaice_threshold_of(cfg),
         # The RESOLVED count, the same number :func:`_soil_shape` above
         # allocates from.  Left off, RUC's soil ingest took its own
         # nine-level default, so a six-level config prepared a nine-level

@@ -132,9 +132,9 @@ def read_output(path, ncol, nz):
     return out
 
 
-def run_gpu(ncol, nz, mode, dt, fields, surf):
+def _run_gpu(ncol, nz, mode, dt, fields, surf, steps, columns_per_call=None):
     import cupy as cp
-    from gpuwm.core.morrison import WORK_T3D, launch_morrison
+    from gpuwm.core import morrison
     from gpuwm.core.refl import launch_refl10cm_morrison
 
     def dev(a):
@@ -142,15 +142,32 @@ def run_gpu(ncol, nz, mode, dt, fields, surf):
 
     d = {name: dev(fields[name]) for name in LEVEL_IN}
     nc = cp.zeros((nz, 1, ncol), dtype=cp.float32)
-    s = {name: cp.asarray(surf[name].reshape(1, ncol)) for name in SURF}
-    work = launch_morrison(
-        d["th"], d["qv"], d["qc"], d["qr"], d["qi"], d["qs"], d["qg"], nc,
-        d["nr"], d["ni"], d["ns"], d["ng"], d["rho"], d["pii"], d["p"],
-        d["dz"], s["rainnc"], s["rainncv"], s["snownc"], s["snowncv"],
-        s["graupelnc"], s["graupelncv"], s["sr"], float(dt),
-        qrcuten=d["qrcuten"], qscuten=d["qscuten"], qicuten=d["qicuten"],
-        morr_rimed_ice=mode)
-    t1d = cp.ascontiguousarray(work[WORK_T3D * nz:(WORK_T3D + 1) * nz])
+    s = {name: cp.asarray(np.ascontiguousarray(surf[name]).reshape(1, ncol))
+         for name in SURF}
+    work = None
+    chunked = columns_per_call is not None and columns_per_call < ncol
+    t1d = cp.empty_like(d["th"]) if chunked else None
+    extra = ({"columns_per_call": columns_per_call, "t1d_out": t1d}
+             if chunked else {})
+    for _ in range(steps):
+        work = morrison.launch_morrison(
+            d["th"], d["qv"], d["qc"], d["qr"], d["qi"], d["qs"], d["qg"],
+            nc, d["nr"], d["ni"], d["ns"], d["ng"], d["rho"], d["pii"],
+            d["p"], d["dz"], s["rainnc"], s["rainncv"], s["snownc"],
+            s["snowncv"], s["graupelnc"], s["graupelncv"], s["sr"],
+            float(dt), qrcuten=d["qrcuten"], qscuten=d["qscuten"],
+            qicuten=d["qicuten"], morr_rimed_ice=mode, **extra)
+    if chunked:
+        temperature_source = "t1d_out of the column calls (WRF's t1d)"
+    elif work is not None and hasattr(morrison, "WORK_T3D"):
+        k = morrison.WORK_T3D
+        t1d = cp.ascontiguousarray(work[k * nz:(k + 1) * nz])
+        temperature_source = "process T3D (WRF's t1d)"
+    else:
+        # Pre-transcription API returns nothing; the closest stand-in for
+        # WRF's t1d is theta * pii after the call.
+        t1d = d["th"] * d["pii"]
+        temperature_source = "theta*pii stand-in"
     refl = cp.empty_like(d["th"])
     launch_refl10cm_morrison(d["qv"], d["qr"], d["nr"], d["qs"], d["ns"],
                              d["qg"], d["ng"], t1d, d["p"], refl,
@@ -160,7 +177,11 @@ def run_gpu(ncol, nz, mode, dt, fields, surf):
     out["refl_10cm"] = cp.asnumpy(refl).reshape(nz, ncol)
     for name in SURF:
         out[name] = cp.asnumpy(s[name]).reshape(ncol)
-    return out
+    return out, temperature_source
+
+
+def run_gpu(ncol, nz, mode, dt, fields, surf):
+    return _run_gpu(ncol, nz, mode, dt, fields, surf, 1)[0]
 
 
 def compare(in_path, wrf_path, row37=True):

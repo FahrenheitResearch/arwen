@@ -1398,7 +1398,10 @@ mod tests {
             }
         }
 
-        let levels: [u16; 3] = [1000, 500, 200];
+        write_valid_hour_with_values(path, &values_2d, &[1000, 500, 200]);
+    }
+
+    fn write_valid_hour_with_values(path: &std::path::Path, values_2d: &[f32], levels: &[u16]) {
         let planes: Vec<Vec<f32>> = levels
             .iter()
             .map(|&level| {
@@ -1425,7 +1428,7 @@ mod tests {
                 "temp_2m",
                 "K",
                 serde_json::json!({"test": true}),
-                &values_2d,
+                values_2d,
             )
             .unwrap();
         writer
@@ -1433,7 +1436,7 @@ mod tests {
                 "wind_iso",
                 "m/s",
                 serde_json::json!({"test3d": true}),
-                &levels,
+                levels,
                 &plane_refs,
             )
             .unwrap();
@@ -1456,21 +1459,6 @@ mod tests {
     // -----------------------------------------------------------------------
     // Happy-path tests
     // -----------------------------------------------------------------------
-
-    #[test]
-    fn valid_hour_structural_ok() {
-        let dir = test_dir("valid-structural");
-        let path = dir.join("f003.rws");
-        write_valid_hour(&path);
-        let report = validate_hour_file(&path, ValidateDepth::Structural).unwrap();
-        assert!(
-            report.is_ok(),
-            "valid file must pass structural: {:?}",
-            report.errors
-        );
-        assert_eq!(report.stats.variables, 2);
-        let _ = fs::remove_dir_all(&dir);
-    }
 
     #[test]
     fn valid_hour_deep_ok_with_two_variables() {
@@ -2510,46 +2498,7 @@ mod tests {
             .flat_map(|y| (0..NX).map(move |x| 0.1 * x as f32 + 0.2 * y as f32 + 273.15))
             .collect();
 
-        let levels: [u16; 2] = [1000, 500];
-        let planes: Vec<Vec<f32>> = levels
-            .iter()
-            .map(|&level| {
-                (0..NY)
-                    .flat_map(|_y| {
-                        (0..NX).map(move |x| 100.0 + 0.5 * x as f32 + 0.01 * level as f32)
-                    })
-                    .collect()
-            })
-            .collect();
-        let plane_refs: Vec<&[f32]> = planes.iter().map(|p| p.as_slice()).collect();
-
-        let mut writer = HourWriter::new(
-            "hrrr",
-            "2026-06-10T00:00:00Z",
-            3,
-            NX,
-            NY,
-            "test-grid-hash",
-            "validate-test",
-        );
-        writer
-            .add_surface2d(
-                "temp_2m",
-                "K",
-                serde_json::json!({"test": true}),
-                &values_2d,
-            )
-            .unwrap();
-        writer
-            .add_pressure3d(
-                "wind_iso",
-                "m/s",
-                serde_json::json!({"test3d": true}),
-                &levels,
-                &plane_refs,
-            )
-            .unwrap();
-        writer.finish(path).unwrap();
+        write_valid_hour_with_values(path, &values_2d, &[1000, 500]);
     }
 
     /// Helper: find the first TILE2D index record (kind == KIND_TILE2D) with

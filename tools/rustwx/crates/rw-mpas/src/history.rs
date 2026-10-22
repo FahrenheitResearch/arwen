@@ -4,7 +4,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::error::{MpasError, MpasResult};
-use crate::fieldmap::{FIELD_MAP, FieldMapping, FieldSource, native_history_name};
+use crate::fieldmap::{
+    FIELD_MAP, FieldMapping, FieldSource, field_set_allows, field_set_is_known, native_history_name,
+};
 use crate::weights::MeshCoordinates;
 use rw_store::netcdf_classic::{NcAttr, NcAttrValue};
 
@@ -558,12 +560,37 @@ pub fn read_history_on_mesh(
     history_sha256: Option<&str>,
     mesh: Option<&MeshCoordinates>,
 ) -> MpasResult<MpasFrame> {
+    read_history_on_mesh_with_field_set(history_path, init, valid_time, history_sha256, mesh, "full")
+}
+
+/// [`read_history_on_mesh`] that decodes only the fields the requested
+/// output set carries ([`field_set_allows`]); `"full"` is
+/// [`read_history_on_mesh`] itself.
+///
+/// THE BREAKAGE THIS PREVENTS: `rw_mpas_convert --field-set surface` wrote
+/// only the surface set but decoded every mapped history field first, so a
+/// 3 km CONUS frame inflated every hydrometeor and number-concentration
+/// profile (each 2.3 M cells x 59 levels) only to drop it, and an unrequested
+/// profile that was not finite refused the whole frame.
+pub fn read_history_on_mesh_with_field_set(
+    history_path: &Path,
+    init: Option<&InitFields>,
+    valid_time: Option<Timestamp>,
+    history_sha256: Option<&str>,
+    mesh: Option<&MeshCoordinates>,
+    field_set: &str,
+) -> MpasResult<MpasFrame> {
+    if !field_set_is_known(field_set) {
+        return Err(MpasError::Refusal(format!(
+            "unknown history field set '{field_set}'; its requested fields cannot be determined"
+        )));
+    }
     // Hashing the history and reading its fields are independent passes over
     // the same file, so they run side by side; a digest mismatch is still
     // refused before anything read is used.
     let (digest, body) = rayon::join(
         || crate::sha256_file(history_path),
-        || read_history_body(history_path, init, valid_time, mesh),
+        || read_history_body(history_path, init, valid_time, mesh, field_set),
     );
     let digest = digest?;
     if let Some(want) = history_sha256 {
@@ -586,7 +613,15 @@ fn read_history_body(
     init: Option<&InitFields>,
     valid_time: Option<Timestamp>,
     mesh: Option<&MeshCoordinates>,
+    field_set: &str,
 ) -> MpasResult<MpasFrame> {
+    // A WRF name with no FIELD_MAP row is kept: only the set's own rows decide.
+    let requested = |wrf_name: &str| {
+        FIELD_MAP
+            .iter()
+            .find(|m| m.wrf_name == wrf_name)
+            .map_or(true, |m| field_set_allows(field_set, m))
+    };
     let digest = String::new();
     let mut fields: BTreeMap<String, (Vec<f32>, usize)> = BTreeMap::new();
     let mut absent: Vec<String> = Vec::new();
@@ -636,7 +671,7 @@ fn read_history_body(
     }
     let mut planned: Vec<(&'static str, Option<Carrier>)> = Vec::new();
     for mapping in FIELD_MAP.iter() {
-        if mapping.source != FieldSource::History {
+        if mapping.source != FieldSource::History || !field_set_allows(field_set, mapping) {
             continue;
         }
         let Some(mpas_name) = mapping.mpas_name else {
@@ -708,15 +743,17 @@ fn read_history_body(
                 )));
             }
             for (name, value) in &init.fields {
-                fields.insert(name.clone(), value.clone());
+                if requested(name) {
+                    fields.insert(name.clone(), value.clone());
+                }
             }
-            absent.extend(init.absent.iter().cloned());
+            absent.extend(init.absent.iter().filter(|name| requested(name)).cloned());
             init_resolved = Some(init.path.clone());
             init_digest = Some(init.sha256.clone());
         }
         None => {
             for mapping in FIELD_MAP.iter() {
-                if mapping.source == FieldSource::Init {
+                if mapping.source == FieldSource::Init && field_set_allows(field_set, mapping) {
                     absent.push(mapping.wrf_name.to_string());
                 }
             }
@@ -1140,6 +1177,65 @@ pub fn expected_levels(mapping: &FieldMapping, frame: &MpasFrame) -> Option<usiz
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The surface set decodes only its own rows: an unrequested profile is
+    /// never read (so its non-finite value cannot refuse the frame), while
+    /// the full set still reads and refuses it.
+    #[test]
+    fn surface_read_does_not_decode_an_unrequested_nonfinite_profile() {
+        use rw_store::netcdf_classic::{NcClassicWriter, NcData, NcDim, NcFormat, NcType, NcVarDef};
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        struct CreatedFixture(PathBuf);
+        impl Drop for CreatedFixture {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let fixture = CreatedFixture(std::env::temp_dir().join(format!(
+            "rw-mpas-field-set-{}-{}.nc",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        )));
+        let mut writer = NcClassicWriter::create(
+            &fixture.0,
+            NcFormat::Offset64,
+            vec![NcDim::fixed("nCells", 2), NcDim::fixed("nVertLevels", 2)],
+            vec![],
+            vec![
+                NcVarDef::new("latCell", NcType::Double, vec![0]),
+                NcVarDef::new("lonCell", NcType::Double, vec![0]),
+                NcVarDef::new("t2", NcType::Float, vec![0]),
+                NcVarDef::new("qc", NcType::Float, vec![0, 1]),
+            ],
+            0,
+        )
+        .unwrap();
+        writer.put("latCell", NcData::Doubles(&[0.0, 0.01])).unwrap();
+        writer.put("lonCell", NcData::Doubles(&[0.0, 0.01])).unwrap();
+        writer.put("t2", NcData::Floats(&[280.0, 281.0])).unwrap();
+        writer
+            .put("qc", NcData::Floats(&[1.0e-4, 2.0e-4, 3.0e-4, f32::NAN]))
+            .unwrap();
+        writer.finish().unwrap();
+        let time = Some(Timestamp::parse("2026-01-01_00:00:00").unwrap());
+        let surface =
+            read_history_on_mesh_with_field_set(&fixture.0, None, time, None, None, "surface")
+                .expect("unrequested profile is not decoded");
+        assert_eq!(surface.fields["T2"].0, [280.0, 281.0]);
+        assert!(!surface.fields.contains_key("QCLOUD"));
+        assert!(!surface.absent.iter().any(|name| name == "QCLOUD"));
+        let error = read_history_on_mesh(&fixture.0, None, time, None, None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("history qc is not finite"), "{error}");
+        let unknown =
+            read_history_on_mesh_with_field_set(&fixture.0, None, time, None, None, "nope")
+                .unwrap_err()
+                .to_string();
+        assert!(unknown.contains("unknown history field set"), "{unknown}");
+    }
 
     #[test]
     fn a_history_file_name_yields_its_valid_time() {

@@ -100,7 +100,8 @@ def domain_geometry(config_path):
                                 parent_grid_contract=contract,
                                 time_origin=experiment.start_time.isoformat() + "Z",
                                 duration_seconds=float(experiment.run_seconds),
-                                interval_seconds=float(run.bldt * 60.0 or run.dt))
+                                interval_seconds=float(run.bldt * 60.0 or run.dt),
+                                adaptive_clock=bool(getattr(run, "use_adaptive_time_step", False)))
 
 
 def geometry_from_points(lat, lon, *, center_lon, parent_lsm, grid_key, **extra):
@@ -130,13 +131,19 @@ def covered_fraction(coverage, points):
 # -- availability probes (each runs the provider's own tool) -----------------
 
 def _executable(spec):
+    """The provider tool from the bridge ladder; a wheel install stages it on demand."""
     from gpuwm import bridges
-    candidates = bridges.artifact_candidates(spec["env"], spec["filename"],
-                                             crate_relative=spec.get("crate"))
-    for path in candidates:
-        if path.is_file() and os.access(path, os.X_OK):
-            return path
-    return None
+
+    def found():
+        candidates = bridges.artifact_candidates(spec["env"], spec["filename"],
+                                                 crate_relative=spec.get("crate"))
+        return next((path for path in candidates
+                     if path.is_file() and os.access(path, os.X_OK)), None)
+
+    path = found()
+    if path is None and not os.environ.get(spec["env"]) and bridges.fetch_on_demand(spec["filename"]):
+        path = found()
+    return path
 
 
 def _expand(value):
@@ -189,13 +196,15 @@ def probe(row):
                                    f"{detail[-1] if detail else 'exit ' + str(admit.returncode)}")
     for need in builder.get("paths", ()):
         resolved = _builder_path(need)
-        if resolved is None or not resolved.is_dir():
+        # A path with an acquisition hook is filled at preparation for the
+        # footprint (gpuwm.hydro.acquire); only an unresolvable root is a gap.
+        if resolved is None or (not resolved.is_dir() and not need.get("acquire")):
             reasons.append(f"{need['label']} not available (set {need['env']})")
     if row.get("preparation"):
         from .provider import recipe_path
-        for name in ("parameters", "hydrofabric", "reservoirs"):
-            spec = row["preparation"][name]
-            if _executable(spec) is None:
+        for name in ("parameters", "hydrofabric", "reservoirs", "initial_state"):
+            spec = row["preparation"].get(name)
+            if spec is not None and _executable(spec) is None:
                 reasons.append(f"provider preparation needs {spec['filename']} ({spec['env']})")
         try:
             path = recipe_path(row)
@@ -206,19 +215,39 @@ def probe(row):
     return reasons
 
 
-def _realization_reasons(row):
-    name = row.get("realization")
+def row_realization(row, parent_lsm):
+    """The coupled realization for this parent LSM: ``realization_by_parent_lsm``
+    picks per LSM (Noah, RUC and Noah-MP publish runoff differently), else the
+    row's single ``realization``."""
+    by_lsm = row.get("realization_by_parent_lsm")
+    if by_lsm:
+        return by_lsm.get(str(parent_lsm))
+    return row.get("realization")
+
+
+def _realization_reasons(row, parent_lsm=None, adaptive_clock=False):
+    name = row_realization(row, parent_lsm)
+    if not name and row.get("realization_by_parent_lsm"):
+        return [f"no coupled realization for parent sf_surface_physics={parent_lsm} "
+                f"(rows: {sorted(row['realization_by_parent_lsm'])})"]
     if not name:
         return [f"no admitted coupled realization: {row.get('realization_gap', 'none named')}"]
     from .config import resolve_configuration
     try:
-        resolve_configuration(name)
+        selected = resolve_configuration(name)
     except ValueError as error:
         return [str(error)]
+    exchange = selected.as_dict().get("parent_exchange", {})
+    if adaptive_clock and exchange and exchange.get("cadence") != "routing":
+        # gpuwm.hydro.driver.allow_variable_interval would refuse it at attach,
+        # after the forecast had started; name the gap here instead.
+        return [f"realization {name} needs a fixed parent LSM interval and this parent clock is "
+                "adaptive (use_adaptive_time_step); owner astra-c-hydro-coupling"]
     return []
 
 
-def evaluate(row, geometry, *, probe_row=probe):
+def evaluate(row, geometry, *, probe_row=None):
+    probe_row = probe_row or probe  # the module's probe at call time
     fraction = covered_fraction(row["coverage"], geometry["points"])
     reasons = []
     minimum = float(row.get("min_covered_fraction", 0.0))
@@ -231,14 +260,16 @@ def evaluate(row, geometry, *, probe_row=probe):
     licence = row["data_licence"]
     if licence["status"] != "verified":
         reasons.append(f"data licence {licence['status']} ({licence['name']}): {licence['reason']}")
-    reasons.extend(_realization_reasons(row))
+    reasons.extend(_realization_reasons(row, geometry["parent_lsm"],
+                                        geometry.get("adaptive_clock", False)))
     if fraction > 0.0:
         try:
             reasons.extend(probe_row(row))
         except Exception as error:  # noqa: BLE001 - a failing probe is a named gap
             reasons.append(f"availability probe failed: {type(error).__name__}: {error}")
     return {"id": row["id"], "owner": row["owner"], "kind": row["kind"],
-            "covered_fraction": round(fraction, 6), "reasons": reasons,
+            "covered_fraction": round(fraction, 6),
+            "realization": row_realization(row, geometry["parent_lsm"]), "reasons": reasons,
             "verdict": "available" if not reasons else "rejected"}
 
 
@@ -258,7 +289,7 @@ def _summary(geometry):
 
 
 def decide(*, settings, requested, config_path=None, table=None, geometry=None,
-           probe_row=probe, geometry_reader=None):
+           probe_row=None, geometry_reader=None):
     """Return the door decision for one forecast; never touches a GPU.
 
     ``requested`` is the CLI value: None (default), "" (bare ``--hydro``),
@@ -308,7 +339,7 @@ def decide(*, settings, requested, config_path=None, table=None, geometry=None,
         return {**base, "enabled": False, "reason": "no_covering_fabric", "gaps": gaps}
     row = next(r for r in providers["providers"] if r["id"] == chosen["id"])
     return {**base, "enabled": True, "reason": "fabric_covered", "provider": row["id"],
-            "provider_kind": row["kind"], "realization": row["realization"],
+            "provider_kind": row["kind"], "realization": chosen["realization"],
             "manifest_binding": row.get("manifest_binding", "fabric_manifest"),
             "attribution": row["data_licence"].get("attribution"), "gaps": [],
             "_row": row}
@@ -316,11 +347,26 @@ def decide(*, settings, requested, config_path=None, table=None, geometry=None,
 
 # -- materialisation at preparation -------------------------------------------
 
-def cache_root(config_path):
+CACHE_DIRNAME = "hydro-fabric"
+
+
+def cache_root(config_path=None):
+    """Where prepared fabrics and their warm water state are built and reused.
+
+    ``$GPUWM_HYDRO_FABRIC_CACHE`` when set, else ``<case-data root>/hydro-fabric``:
+    the user data root ``gpuwm setup`` and ``fetch-geog`` stage into
+    (:func:`gpuwm.case_data.case_data_root`). Entries are keyed by the
+    preparation request, not by the configuration, so a second run on the same
+    domain from any configuration reuses the build. Never beside the
+    configuration: that wrote ~1.5 GB of start-up state into a checkout's
+    ``configs/.gpuwm-hydro`` on the gfs_12km quickstart and fails outright where
+    ``configs/`` is read-only. ``config_path`` is accepted for callers and unused.
+    """
     configured = os.environ.get(ENV_CACHE)
-    if configured:
-        return Path(configured).expanduser()
-    return Path(config_path).expanduser().resolve().parent / ".gpuwm-hydro"
+    if configured and configured.strip():
+        return Path(configured.strip()).expanduser()
+    from gpuwm.case_data import case_data_root
+    return case_data_root().expanduser() / CACHE_DIRNAME
 
 
 def _fill(template, values):
@@ -347,11 +393,13 @@ def materialize(decision, *, config_path, runner=subprocess.run, prepare=None):
         manifest = None
         if receipt.is_file():
             manifest = Path(json.loads(receipt.read_text())["manifest"])
-        paths = {}
+        paths, acquirers = {}, []
         for need in row["builder"].get("paths", ()):
             if "argument" in need:
                 resolved = _builder_path(need)
-                if resolved is None or not resolved.is_dir():
+                if resolved is not None and need.get("acquire"):
+                    acquirers.append((need, resolved))
+                elif resolved is None or not resolved.is_dir():
                     raise RuntimeError(f"{need['label']} not available (set {need['env']})")
                 paths[need["argument"]] = str(resolved)
         request = {"preparation": row.get("preparation"), "provider": row["id"], "footprint": footprint,
@@ -371,13 +419,60 @@ def materialize(decision, *, config_path, runner=subprocess.run, prepare=None):
             manifest = (Path(json.loads(receipt.read_text())["manifest"])
                         if receipt.is_file() else None)
         stamp = out / "door-request.json"
+        # The fabric and its parameters do not depend on the forecast's start
+        # time: they are kept once per domain and request (hard links into
+        # each start's folder), and a new cycle on the same domain fetches
+        # nothing and rebuilds only initial water and routing. Breakage it
+        # prevents: every cycle and every new tip rebuilt the whole fabric and
+        # parameters (2.2 GB and about 3 minutes for the Oklahoma WoFS box).
+        static_request = dict(request, footprint={k: v for k, v in footprint.items()
+                                                  if k not in _TIME_KEYS})
+        static_dir = cache_root(config_path) / row["id"] / ("static-" + _digest(static_request)[:16])
+        static_ready = (row.get("preparation") is not None
+                        and (static_dir / "static-ready.json").is_file())
         if (manifest is not None and manifest.is_file() and stamp.is_file()
                 and json.loads(stamp.read_text()) == request):
             build["reused"] = True
+        elif static_ready:
+            out.mkdir(parents=True, exist_ok=True)
+            _link_static(static_dir, out)
+            build["static_reused"] = str(static_dir)
+            if "parent_grid_contract" in footprint:
+                (out / "parent-grid.json").write_text(json.dumps(footprint["parent_grid_contract"]["grid"], indent=2) + "\n")
+            config = {"geopackage": str(out / row["builder"].get("geopackage", "fabric.gpkg")),
+                      "output": str(out / "prepared"),
+                      "data_license": row["data_licence"]["name"]}
+            if "parent_grid_contract" in footprint:
+                config["grid"] = footprint["parent_grid_contract"]["grid"]
+                config["parent_grid_contract"] = footprint["parent_grid_contract"]
+            (out / "prepare.json").write_text(json.dumps(config, indent=2) + "\n")
+            from .provider import prepare as prepare_provider
+            prepared = prepare_provider(row=row, footprint=footprint, out=out, config=config,
+                                        runner=runner, static_ready=True)
+            if isinstance(prepared, Mapping) and not prepared.get("manifest") and prepared.get("output"):
+                prepared = dict(prepared, manifest=str(Path(prepared["output"]) / "manifest.json"))
+            manifest = Path(prepared["manifest"]).resolve()
+            if not manifest.is_relative_to(out.resolve()) or not manifest.is_file():
+                raise RuntimeError(f"hydro preparation wrote no manifest inside {out}")
+            receipt.write_text(json.dumps(prepared, indent=2, sort_keys=True) + "\n")
+            stamp.write_text(json.dumps(request, indent=2, sort_keys=True) + "\n")
+            build["reused"] = False
         else:
             out.mkdir(parents=True, exist_ok=True)
             exe = _executable(row["builder"]["executable"])
             table = row["builder"].get("source_table") or {}
+            sources = None
+            for need, resolved in acquirers:
+                import importlib
+                module, _, entry = need["acquire"].partition(":")
+                recipe = None
+                if row.get("preparation"):
+                    from .provider import recipe_path
+                    recipe = json.loads(recipe_path(row).read_text())
+                sources, acquired = getattr(importlib.import_module(module), entry)(
+                    footprint=footprint, data_root=resolved, builder_exe=exe,
+                    builder_row=table.get("row", ""), recipe=recipe)
+                build.setdefault("acquisition", []).append(acquired)
             values = {"exe": exe, "out": out, "row": table.get("row", ""),
                       "table": _repo_root() / table["path"] if table else "",
                       "west": footprint["west"], "south": footprint["south"],
@@ -403,7 +498,7 @@ def materialize(decision, *, config_path, runner=subprocess.run, prepare=None):
             if row.get("preparation"):
                 from .provider import prepare as prepare_provider
                 prepared = prepare_provider(row=row, footprint=footprint, out=out,
-                                            config=config, runner=runner)
+                                            config=config, runner=runner, sources=sources)
             else:
                 if prepare is None:
                     from gpuwm.hydrofabric import prepare
@@ -420,14 +515,29 @@ def materialize(decision, *, config_path, runner=subprocess.run, prepare=None):
             receipt.write_text(json.dumps(prepared, indent=2, sort_keys=True) + "\n")
             stamp.write_text(json.dumps(request, indent=2, sort_keys=True) + "\n")
             build["reused"] = False
+            if row.get("preparation"):
+                _keep_static(out, static_dir)
     build["manifest"] = str(manifest)
     build["seconds"] = time.perf_counter() - started
-    composed = {"enabled": True, "realization": row["realization"],
+    # Where the initial water came from travels with the decision into the
+    # run receipt: reanalysis spin-up, live analysis soil over a carried
+    # spin-up, or the named era5_carry_over fallback.
+    try:
+        stages = json.loads((out / "provider-stages.json").read_text())
+        water = [s for s in stages if s.get("stage") == "initial-water"][-1]["receipt"]["initial_water"]
+        build["initial_water"] = {key: value for key, value in water.items() if key != "live"} | (
+            {"live_valid_time": water["live"]["valid_time"], "live_url": water["live"]["fetch"]["url"]}
+            if "live" in water else {})
+    except (OSError, ValueError, KeyError, IndexError, TypeError):
+        pass
+    realization = decision.get("realization") or row_realization(row, footprint.get("parent_lsm"))
+    composed = {"enabled": True, "realization": realization,
                 "settings_bindings": {decision["manifest_binding"]: str(manifest)},
                 "activation_reason": "fabric_covered"}
     if row.get("preparation"):
         from .provider import composition
-        composed.update(composition(manifest=manifest, footprint=footprint))
+        composed.update(composition(manifest=manifest, footprint=footprint,
+                                    realization=realization))
     out.mkdir(parents=True, exist_ok=True)
     settings_path = out / "hydro-door.toml"
     settings_path.write_text(to_toml(composed))
@@ -476,21 +586,168 @@ def publish_decision(decision):
     os.environ[ENV_DECISION] = json.dumps(public(decision), sort_keys=True)
 
 
+def launch_line(decision):
+    """The one line `gpuwm go` prints beside the memory verdict: hydro on or
+    off, the fabric and its coverage of the parent grid, or the reason off.
+
+    Breakage it prevents: on the 2.9.3 headline HRRR run hydro was off with
+    no_covering_fabric and only the receipt said so.
+    """
+    if decision is None:
+        return "go: hydro -- off: no door decision for this launch"
+    candidates = {c["id"]: c for c in decision.get("candidates", ())}
+    if decision.get("enabled"):
+        provider = decision.get("provider") or decision.get("fabric") or "explicit settings"
+        covered = candidates.get(provider, {}).get("covered_fraction")
+        cover = "" if covered is None else f", covering {covered:.3f} of the parent grid"
+        build = decision.get("build") or {}
+        beside = ""
+        if build.get("beside") and build.get("seconds") is not None:
+            beside = (f" beside the fetch and the preparation (the forecast waited "
+                      f"{build.get('waited_seconds', 0.0):.0f} s for it)")
+        when = ("; prepared when the launch runs (dry run)" if build.get("deferred")
+                else "; preparing beside the fetch and the preparation" if build.get("pending")
+                else "; reused" + beside if build.get("reused")
+                else f"; prepared in {build['seconds']:.0f} s" + beside if build.get("seconds") is not None
+                else "")
+        realization = decision.get("realization")
+        water = build.get("initial_water") or {}
+        initial = ("" if not water else
+                   f"; initial water {water['method']}" + (" (FALLBACK)" if water.get("fallback") else "")
+                   + (" (spin-up {ran} of {requested} h)".format(**water["spinup_hours"])
+                      if isinstance(water.get("spinup_hours"), dict) else ""))
+        return (f"go: hydro -- on: fabric {provider}{cover}"
+                + (f", realization {realization}" if realization else "") + when + initial)
+    gaps = "; ".join(f"[{gap.get('provider') or gap.get('owner')}] {gap.get('gap')}"
+                     for gap in decision.get("gaps", ()))
+    return f"go: hydro -- off ({decision.get('reason')})" + (f": {gaps}" if gaps else "")
+
+
 def inherited_decision():
     text = os.environ.get(ENV_DECISION)
     return None if not text else json.loads(text)
 
 
-def resolve_launch(settings, *, requested, config_path, table=None):
+#: Footprint keys a forecast's start time sets; the fabric and parameters do not read them.
+_TIME_KEYS = ("time_origin", "duration_seconds", "interval_seconds", "adaptive_clock")
+
+#: The time-independent artifacts of a provider preparation (builder and parameters).
+_STATIC_FILES = ("fabric.gpkg", "fabric.gpkg.dams.json", "fabric.gpkg.terrain.json", "builder-receipt.json",
+                 "parameterized.gpkg", "parameter-request.json", "static-gauges.json")
+_STATIC_DIRS = ("parameters",)
+
+
+def _link(src, dst):
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists():
+        return
+    try:
+        os.link(src, dst)
+    except OSError:
+        import shutil
+        shutil.copy2(src, dst)
+
+
+def _keep_static(out, static_dir):
+    """Keep this preparation's fabric and parameters for later starts on the domain."""
+    if (static_dir / "static-ready.json").is_file():
+        return
+    staging = static_dir.with_name(static_dir.name + f".partial.{os.getpid()}")
+    for name in _STATIC_FILES:
+        if (out / name).is_file():
+            _link(out / name, staging / name)
+    for name in _STATIC_DIRS:
+        for path in (out / name).rglob("*") if (out / name).is_dir() else ():
+            if path.is_file():
+                _link(path, staging / path.relative_to(out))
+    gauges = {}
+    if (out / "static-gauges.json").is_file():
+        gauges = json.loads((out / "static-gauges.json").read_text()).get("gauges") or {}
+    (staging / "static-ready.json").write_text(json.dumps({"static_dir": str(static_dir), "from": str(out),
+                                                           "gauges": gauges}) + "\n")
+    try:
+        os.replace(staging, static_dir)
+    except OSError:
+        import shutil
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+def _link_static(static_dir, out):
+    for path in static_dir.rglob("*"):
+        if path.is_file():
+            _link(path, out / path.relative_to(static_dir))
+
+
+def _failure_memo(decision, config_path):
+    """Where a failed fabric preparation for this footprint is recorded."""
+    return (cache_root(config_path) / decision["provider"] / _digest(decision["footprint"])[:16]
+            / "preparation-failed.json")
+
+
+def resolve_launch(settings, *, requested, config_path, table=None, plan_only=False,
+                   prepared_launch=False, decision=None):
     """Launcher entry: the decision, the settings to run, and the settings file.
 
     Returns (settings, settings_path_or_None, decision). Explicit ``--hydro``
     without a covering fabric raises HydroDoorRefusal naming every gap.
+    ``plan_only`` (a dry run) records which fabric covers the domain and
+    builds nothing. Breakage it prevents: ``gpuwm go --dry-run`` on a
+    continental domain fetched the hydro sources and built and spun up the
+    fabric before printing its plan. ``decision`` is :func:`decide`'s answer
+    when the caller already holds it (the launcher that prepares the fabric
+    beside the fetch, gpuwm.hydro.runtime), so the door does not decide twice.
     """
-    decision = decide(settings=settings, requested=requested, config_path=config_path,
-                      table=table)
+    if decision is None:
+        decision = decide(settings=settings, requested=requested, config_path=config_path,
+                          table=table)
+    if decision["reason"] == "fabric_covered" and plan_only:
+        decision.pop("_row", None)
+        decision["build"] = {"deferred": "dry run: the covering fabric is prepared when this launch runs"}
+        return dict(settings or {}), None, decision
+    memo = _failure_memo(decision, config_path) if decision["reason"] == "fabric_covered" else None
+    if memo is not None and prepared_launch and memo.is_file() and requested != "":
+        # A forecast from a prepared root takes the preparation's own answer:
+        # it never fetches again what its --prepare-only step already tried.
+        # Breakage it prevents: the Milton forecast retried 739 hydro inputs
+        # its preparation had given up on, after the preparation's 516 s.
+        recorded = json.loads(memo.read_text())
+        decision.pop("_row", None)
+        decision.update(enabled=False, reason="fabric_preparation_failed",
+                        gaps=[{"owner": recorded.get("owner"), "provider": decision["provider"],
+                               "gap": recorded.get("gap", "") + " (recorded by this footprint's preparation at "
+                                      + recorded.get("at", "?") + "; not fetched again)"}])
+        settings = dict(settings or {})
+        settings["enabled"] = False
+        settings["activation_reason"] = decision["reason"]
+        return settings, None, decision
     if decision["reason"] == "fabric_covered":
-        composed, path, build = materialize(decision, config_path=config_path)
+        try:
+            composed, path, build = materialize(decision, config_path=config_path)
+            if memo is not None:
+                memo.unlink(missing_ok=True)
+        except Exception as error:  # noqa: BLE001 - default runs keep the forecast, loudly
+            if requested == "":
+                raise HydroDoorRefusal(f"--hydro was requested but preparing the covering fabric "
+                                       f"{decision['provider']} failed: {type(error).__name__}: {error}") from error
+            # Default-on run: the forecast still runs, hydro is off for this run
+            # only and the receipt and stderr name the failure and its owner.
+            import sys
+            message = f"{type(error).__name__}: {error}"
+            print(f"hydro: preparing fabric {decision['provider']} failed; this forecast runs "
+                  f"without hydro: {message}", file=sys.stderr)
+            row = decision.pop("_row")
+            decision.update(enabled=False, reason="fabric_preparation_failed",
+                            gaps=[{"owner": row["owner"], "provider": row["id"], "gap": message}])
+            try:
+                memo.parent.mkdir(parents=True, exist_ok=True)
+                memo.write_text(json.dumps({"owner": row["owner"], "gap": message,
+                                            "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}) + chr(10))
+            except OSError:
+                pass
+            settings = dict(settings or {})
+            settings["enabled"] = False
+            settings["activation_reason"] = decision["reason"]
+            return settings, None, decision
         decision["build"] = build
         merged = dict(settings or {})
         merged.update(composed)

@@ -32,7 +32,7 @@ def test_bnu_soil_selection_is_independent_per_domain(tmp_path):
                    " geog_data_res='bnu_soil_30s+default',\n/\n")
     data = SimpleNamespace(geog_root=tmp_path, wps_namelist=wps)
     assert GeogSelection.from_case_data(data, 1).soil_top == "bnu_soiltype_top"
-    assert GeogSelection.from_case_data(data, 2).soil_top == "soiltype_top_30s"
+    assert GeogSelection.from_case_data(data, 2).soil_top == "soilgrids/texture_top"
 
 
 def test_bnu_soil_archives_are_optional_pinned_upstream_rows():

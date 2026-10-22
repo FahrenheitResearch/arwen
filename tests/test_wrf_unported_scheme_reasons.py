@@ -119,7 +119,12 @@ def test_ocean_windfarm_and_lagday_off_import_as_if_absent(tmp_path, lines):
     plain, _ = import_namelists(*_pair(tmp_path, inp=INPUT_TEXT), name="x")
     written, report = import_namelists(*_pair(tmp_path, inp=_extra(lines)),
                                        name="x")
-    assert written == plain
+    # An omitted ocean selector now resolves to the default selection (PWP
+    # on multi-day forecasts, lane/cap-slab-ocean a382c235f2b), so the
+    # importer keeps an explicit off as its own line; nothing else moves.
+    kept = "sf_ocean_physics = 0\n" if "sf_ocean_physics" in lines else ""
+    assert kept in written
+    assert written.replace(kept, "", 1) == plain
     reported = ({entry.key for entry in report.dropped}
                 | {entry.key for entry in report.fixed})
     for key in ("oml_hml0", "omdt", "windfarm_ij", "lagday"):
@@ -127,8 +132,14 @@ def test_ocean_windfarm_and_lagday_off_import_as_if_absent(tmp_path, lines):
             assert key in reported
 
 
+def test_the_3d_pwp_ocean_imports(tmp_path):
+    """WRF's 3-D PWP ocean is ported (lane/cap-slab-ocean, aa6bdeed308)."""
+    written, _ = import_namelists(
+        *_pair(tmp_path, inp=_extra(" sf_ocean_physics = 2,")), name="x")
+    assert "sf_ocean_physics = 2\n" in written
+
+
 @pytest.mark.parametrize("lines,needle", [
-    (" sf_ocean_physics = 2,", "3-D PWP ocean"),
     (" windfarm_opt = 1, 1,\n windfarm_ij = 1,", "Fitch"),
 ])
 def test_ocean_and_windfarm_on_are_refused_by_name(tmp_path, lines, needle):

@@ -36,25 +36,43 @@ def recipe_path(row):
         return Path(configured).expanduser().resolve()
     root = next(_builder_path(need) for need in row['builder']['paths']
                 if need.get('argument') == 'data_root')
+    if root is not None and (root / spec['relative']).is_file():
+        return root / spec['relative']
+    if spec.get('template'):
+        # The shipped recipe, bound to the acquired source root at preparation.
+        return Path(__file__).resolve().parents[1] / 'data' / 'hydro' / spec['template']
     if root is None:
         raise FileNotFoundError('hydro parameter recipe has no source root')
     return root / spec['relative']
 
 
 def preparation_identity(row):
+    """What the preparation depends on: the recipe and gauge files' bytes.
+
+    Their paths are not part of it. Breakage it prevents: the recipe's path
+    names the source tree (src-f08fe0b623, src-fe99a1680d), so every new
+    checkout or tip rebuilt every domain's fabric and parameters (2.2 GB and
+    about 3 minutes for the Oklahoma WoFS box on a 5070 Ti host, 2026-10-21).
+    """
     path = recipe_path(row)
-    identity = {'parameter_recipe': str(path),
+    identity = {'parameter_recipe': path.name,
                 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
     gauges = json.loads(path.read_text()).get('gauges')
     if gauges:
-        identity['gauges'] = {name: {'path': str(Path(gauges[name]).resolve()),
+        identity['gauges'] = {name: {'name': Path(gauges[name]).name,
             'sha256': hashlib.sha256(Path(gauges[name]).read_bytes()).hexdigest()}
             for name in ('table', 'stations', 'observations') if gauges.get(name)}
     return identity
 
 
-def prepare(*, row, footprint, out, config, runner):
-    """Return the final warm-routing manifest, not an intermediate fabric path."""
+def prepare(*, row, footprint, out, config, runner, sources=None, static_ready=False):
+    """Return the final warm-routing manifest, not an intermediate fabric path.
+
+    ``sources`` binds the recipe template's tokens (gpuwm.hydro.acquire).
+    ``static_ready``: the fabric and its parameters were linked in from this
+    domain's time-independent cache (gpuwm.hydro.door), so only the
+    time-dependent stages run.
+    """
     from gpuwm.hydrofabric import prepare as prepare_fabric
     from .initial_state import prepare as prepare_water
     policy = row['preparation']
@@ -75,11 +93,38 @@ def prepare(*, row, footprint, out, config, runner):
         return json.loads(result.stdout) if json_output else None
 
     source_recipe = recipe_path(row)
+    if static_ready:
+        stamp = json.loads((out / 'static-ready.json').read_text())
+        gauges = stamp.get('gauges')
+        stages.append({'stage': 'parameters', 'seconds': 0.0, 'reused_from': stamp['static_dir']})
+        return _prepare_after_parameters(row=row, footprint=footprint, out=out, config=config,
+                                         run=run, stages=stages, gauges=gauges, source_recipe=source_recipe)
     if not source_recipe.is_file():
         raise FileNotFoundError(f"hydro parameter source recipe missing: {source_recipe}; "
                                 'same-network soil/land-cover source bindings are required')
     recipe = json.loads(source_recipe.read_text())
+    if sources:
+        from .acquire import bind_recipe
+        recipe = bind_recipe(recipe, sources)
+    from .acquire import bind_recipe as _bind
+    # No geography fallback unless acquisition named one (SoilGrids out of reach).
+    recipe = _bind(recipe, {"geog_soilcomp": ""})
+    unbound = [token for token in ('{data_root}', '{params_table}', '{soil_prefix}')
+               if token in json.dumps(recipe)]
+    if unbound:
+        raise ValueError(f'hydro parameter recipe {source_recipe} still has {unbound}: '
+                         'its sources were not acquired for this domain')
     gauges = recipe.pop("gauges", None)
+    # The parameter grid is never finer than the fabric's working grid: the
+    # builder coarsens continental and global boxes (rw_hydro_world auto rule
+    # `coarsen`), and a 1200-per-degree parameter grid over such a box is
+    # 5.7 G cells (about 90 GB of land-cover counts and DEM).
+    builder_receipt = out / 'builder-receipt.json'
+    if builder_receipt.is_file() and 'cells_per_degree' in recipe:
+        grid = json.loads(builder_receipt.read_text()).get('counts', {}).get('grid') or {}
+        if grid.get('res_as'):
+            recipe['cells_per_degree'] = min(int(recipe['cells_per_degree']),
+                                             max(1, round(3600.0 / float(grid['res_as']))))
     # All source rows, classification and calibration recipe choices come from
     # the acquired-source request. Only this forecast's domain/output is bound.
     recipe.update(domain=footprint['grid_key'],
@@ -89,6 +134,17 @@ def prepare(*, row, footprint, out, config, runner):
                   out_dir=str(out / 'parameters'))
     request = _write(out / 'parameter-request.json', recipe)
     run('parameters', [_tool(policy['parameters']), 'derive', request])
+    _write(out / 'static-gauges.json', {'gauges': gauges})
+    return _prepare_after_parameters(row=row, footprint=footprint, out=out, config=config,
+                                     run=run, stages=stages, gauges=gauges, source_recipe=source_recipe)
+
+
+def _prepare_after_parameters(*, row, footprint, out, config, run, stages, gauges, source_recipe):
+    """Projected fabric, initial water, reservoirs and routing: the stages a
+    forecast's start time changes."""
+    from gpuwm.hydrofabric import prepare as prepare_fabric
+    from .initial_state import prepare as prepare_water
+    policy = row['preparation']
     config = dict(config, geopackage=str(out / 'parameterized.gpkg'))
     fabric_request = _write(out / 'fabric-request.json', config)
     start = time.perf_counter()
@@ -144,12 +200,24 @@ def prepare(*, row, footprint, out, config, runner):
         'time_origin': origin, 'routing_manifest': str(final),
         'initial_state': str(initial_dir / 'manifest.json'), 'stages': stages,
         'state_method': 'reanalysis plus soil replay; complete historical runoff routed through MC and reservoirs at admitted GPU startup',
-        'runoff_partition': 'parent Noah-MP RUNSRF+RUNSUB; SOLDRAIN excluded'})
+        'runoff_partition': 'parent LSM surface + subsurface runoff; the realization row names the exchange'})
     return prepared
 
 
-def composition(*, manifest, footprint):
+def _parent_exchange(realization):
+    """The realization row's parent exchange (factory, runoff partition)."""
+    default = {'factory': 'gpuwm.hydro.noahowp.factory:prepare_exchange',
+               'source_partition': 'RUNSRF+RUNSUB; exclude SOLDRAIN'}
+    if not realization:
+        return default
+    from .config import resolve_configuration
+    row = resolve_configuration(realization).as_dict()
+    return dict(default, **row.get('parent_exchange', {}))
+
+
+def composition(*, manifest, footprint, realization=None):
     """Create a connected stage list from the actual prepared network metadata."""
+    exchange = _parent_exchange(realization)
     manifest = Path(manifest)
     metadata = json.loads(manifest.read_text())
     contract = metadata.get('parent_grid_contract')
@@ -170,7 +238,7 @@ def composition(*, manifest, footprint):
     stages = [
         {'name': 'network', 'factory': 'gpuwm.hydrofabric:prepare_resource', 'phase': 'prepare',
          'options': {'manifest': str(manifest)}},
-        {'name': 'exchange', 'factory': 'gpuwm.hydro.noahowp.factory:prepare_exchange',
+        {'name': 'exchange', 'factory': exchange['factory'],
          'options': {'network_component': 'network', 'weights_sha256': weights_sha,
                      'fabric_sha256': metadata['input']['sha256']}},
         {'name': 'areas', 'factory': 'gpuwm.hydro.runoff:prepare_areas', 'phase': 'prepare',
@@ -180,7 +248,16 @@ def composition(*, manifest, footprint):
                      'area_component': 'areas', 'depth_field': 'runoff_depth_m',
                      'area_array': 'areasqkm', 'area_units': 'km2',
                      'routing_period_seconds': routing_interval,
-                     'source_partition': 'RUNSRF+RUNSUB; exclude SOLDRAIN'}}]
+                     'source_partition': exchange['source_partition']}}]
+    if exchange.get('cadence') == 'routing':
+        # An accumulated parent (Noah, RUC) differences its totals over any span,
+        # so exchange and transfer run once per routing interval: the same water
+        # in one launch instead of one per LSM call, and a clock the adaptive
+        # parent can drive (gpuwm.hydro.driver.allow_variable_interval).
+        for row in stages:
+            if row['name'] in ('exchange', 'runoff'):
+                row.update(cadence_steps=routing_cadence, interval_seconds=routing_interval)
+        stages[1]['options']['interval_seconds'] = routing_interval
     routing = {'network_component': 'network', 'lateral_component': 'runoff',
                'time_origin': footprint['time_origin'], 'publish_channels': True,
                'dt_seconds': routing_interval, 'continuous_initialization': True,
@@ -192,6 +269,10 @@ def composition(*, manifest, footprint):
     stages.append({'name': 'routing', 'factory': 'gpuwm.hydro.troute_mc:prepare',
                    'launch_method': 'launch', 'options': routing,
                    'cadence_steps': routing_cadence, 'interval_seconds': routing_interval})
+    # Hourly flow frames; a run shorter than an hour writes one frame at its end instead of
+    # refusing at start (breakage 2026-10-22 14:59Z: a 600 s forecast with default hydro
+    # stopped on 'history capacity must contain at least one chosen output interval').
+    history_cadence = max(1, int(min(3600.0, duration) / routing_interval))
     output_key = metadata['routing'].get('output_reach_ids', 'node_ids')
     count = metadata['files'][output_key]['shape'][0]
     # Reach type is the output schema's series category, not a numerical field.
@@ -200,7 +281,7 @@ def composition(*, manifest, footprint):
                    'options': {'source': 'routing', 'origin': footprint['time_origin'],
                                'interval_seconds': routing_interval,
                                'capacity_steps': int(duration / routing_interval),
-                               'cadence_steps': max(1, int(3600 / routing_interval)),
+                               'cadence_steps': history_cadence,
                                'types': ['flowpath'] * count}})
     return {'driver_factory': 'gpuwm.hydro.assembly:prepare', 'stages': stages,
             'time_origin': footprint['time_origin'], 'interval_seconds': interval}

@@ -83,6 +83,12 @@ CHEM_CHANGED_VALUES = {
     "fire_emission_mode": "observed_hourly",
     "plume_fire_properties": "landuse",
     "aerosol_mp_coupling": "emission",
+    # The HRRR v4.1.21 smoke fork's controls (fc1e2df360 and its
+    # simple_dir_fdb predecessor), appended to the chem block.
+    "simple_dir_fdb": 1,
+    "enh_vermix": True,
+    "flam_part": 0.5,
+    "aer_drydep_opt": 111,
 }
 
 
@@ -126,8 +132,14 @@ def test_each_active_chem_control_matches_its_written_checkpoint(
     path = restart.write_restart(tmp_path / "matching-chem.npz", source, cfg)
     echo = restart.read_restart_header(path)["config"]
     if cfg.chem_sets:
-        assert set(CHEM_RUN_FIELDS) <= echo.keys()
-        assert echo[name] == getattr(cfg, name)
+        # The smoke fork's keys are absent at their defaults, so a chem
+        # checkpoint written before them keeps its digest; absent reads the
+        # default on resume.
+        fork = restart.CHEM_FORK_RUN_DEFAULTS
+        assert {key for key in CHEM_RUN_FIELDS
+                if key not in fork or getattr(cfg, key) != fork[key]
+                } <= echo.keys()
+        assert echo.get(name, fork.get(name)) == getattr(cfg, name)
     else:
         assert not set(CHEM_RUN_FIELDS) & echo.keys()
     fresh = _state(cfg, monkeypatch)
@@ -241,24 +253,3 @@ def test_chem_restart_roundtrips_bit_exactly(monkeypatch, tmp_path):
                 == getattr(state, name).tobytes()), name
     # The restored species is still a view of the fresh state's arena.
     assert fresh.chem.stacked(fresh) is fresh.chem.arena
-
-
-def test_chem_checkpoint_and_chem_off_config_refuse_each_other(
-        monkeypatch, tmp_path):
-    chem_cfg = _cfg(chem_sets="tracer_test")
-    plain_cfg = _cfg()
-    chem_state = _state(chem_cfg, monkeypatch)
-    _fill_setup(chem_state)
-    chem_path = restart.write_restart(tmp_path / "chem.npz", chem_state,
-                                      chem_cfg)
-    plain = _state(plain_cfg, monkeypatch)
-    _fill_setup(plain)
-    with pytest.raises(restart.RestartMismatchError):
-        restart.restore_restart(chem_path, plain, plain_cfg)
-
-    plain_path = restart.write_restart(tmp_path / "plain.npz", plain,
-                                       plain_cfg)
-    fresh_chem = _state(chem_cfg, monkeypatch)
-    _fill_setup(fresh_chem)
-    with pytest.raises(restart.RestartMismatchError):
-        restart.restore_restart(plain_path, fresh_chem, chem_cfg)

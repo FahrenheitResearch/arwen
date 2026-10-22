@@ -229,6 +229,19 @@ pub fn operational_fill_scale_for_recipe_in(
     filled_selector: FieldSelector,
     hemisphere: Hemisphere,
 ) -> ColorScale {
+    let moisture_levels = match filled_selector.field {
+        CanonicalField::IvtMagnitude | CanonicalField::FullColumnIvtMagnitude => Some(vec![0.,100.,250.,500.,750.,1000.,1250.,1500.,2000.]),
+        CanonicalField::IvtEastward | CanonicalField::IvtNorthward | CanonicalField::FullColumnIvtEastward | CanonicalField::FullColumnIvtNorthward
+            | CanonicalField::IntegratedVaporTransportU | CanonicalField::IntegratedVaporTransportV => Some(vec![-2000.,-1500.,-1000.,-750.,-500.,-250.,0.,250.,500.,750.,1000.,1500.,2000.]),
+        CanonicalField::IntegratedWaterVapour => Some(vec![0.,5.,10.,15.,20.,25.,30.,35.,40.,50.,60.,70.]),
+        _ if recipe.slug == "freezing_level" => Some(vec![0.,500.,1000.,1500.,2000.,2500.,3000.,3500.,4000.,5000.,6000.]),
+        _ => None,
+    };
+    if let Some(levels)=moisture_levels {
+        let signed=matches!(filled_selector.field,CanonicalField::IvtEastward|CanonicalField::IvtNorthward|CanonicalField::FullColumnIvtEastward|CanonicalField::FullColumnIvtNorthward|CanonicalField::IntegratedVaporTransportU|CanonicalField::IntegratedVaporTransportV);
+        return ColorScale::Discrete(DiscreteColorScale {levels,colors:weather_palette(if signed {WeatherPalette::Advection} else if recipe.slug=="freezing_level" {WeatherPalette::IsothermHeight} else {WeatherPalette::Rh}),extend:ExtendMode::Both,mask_below:None});
+    }
+
     if recipe.slug == "mslp_10m_winds" || recipe.slug == "gefs_avg_mslp_10m_winds" {
         return ColorScale::Discrete(ten_meter_wind_speed_scale());
     }
@@ -348,6 +361,24 @@ pub fn operational_fill_scale_for_recipe_in(
         RenderStyle::WeatherWindGust | RenderStyle::WeatherWinds => {
             wind_speed_scale_for_selector(filled_selector)
         }
+        // One signed m/s scale for both heights and every frame. Blue is
+        // descent, near-zero is neutral, orange/red is ascent.
+        RenderStyle::WeatherVerticalVelocity => DiscreteColorScale {
+            levels: vec![-20.0, -10.0, -5.0, -2.0, -1.0, -0.5, -0.1,
+                         0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0],
+            colors: vec![
+                Color::rgba(8, 48, 107, 255), Color::rgba(8, 81, 156, 255),
+                Color::rgba(33, 113, 181, 255), Color::rgba(66, 146, 198, 255),
+                Color::rgba(107, 174, 214, 255), Color::rgba(158, 202, 225, 255),
+                Color::rgba(198, 219, 239, 255), Color::rgba(245, 245, 245, 255),
+                Color::rgba(254, 224, 182, 255), Color::rgba(253, 184, 99, 255),
+                Color::rgba(244, 109, 67, 255), Color::rgba(215, 48, 39, 255),
+                Color::rgba(178, 24, 43, 255), Color::rgba(128, 0, 38, 255),
+                Color::rgba(77, 0, 25, 255),
+            ],
+            extend: ExtendMode::Both,
+            mask_below: None,
+        },
         RenderStyle::WeatherUh => DiscreteColorScale {
             levels: {
                 let mut levels = range_step(0.0, 200.0, 5.0);
@@ -364,8 +395,34 @@ pub fn operational_fill_scale_for_recipe_in(
         RenderStyle::WeatherHydrometeorMixingRatio => hydrometeor_mixing_ratio_scale(),
         RenderStyle::WeatherCloudCover => cloud_cover_scale(),
         RenderStyle::WeatherPrecipitableWater => precipitable_water_inches_scale(),
+        RenderStyle::WeatherIvt => DiscreteColorScale {
+            levels: vec![0., 100., 250., 500., 750., 1000., 1250., 1500., 2000.],
+            colors: vec![Color::rgba(245,245,245,255), Color::rgba(202,233,246,255),
+                Color::rgba(105,194,165,255), Color::rgba(55,150,65,255),
+                Color::rgba(242,220,62,255), Color::rgba(244,151,40,255),
+                Color::rgba(220,62,42,255), Color::rgba(142,45,144,255)],
+            extend: ExtendMode::Max, mask_below: None,
+        },
         RenderStyle::WeatherQpf => crate::qpf::qpf_inches_scale(),
         RenderStyle::WeatherSnowfall => crate::qpf::snowfall_inches_scale(),
+        RenderStyle::WeatherCategorical if filled_selector.field == CanonicalField::FogFlag => DiscreteColorScale {
+            levels: vec![-0.5, 0.5, 1.5],
+            colors: vec![Color::rgba(242, 242, 242, 255), Color::rgba(216, 34, 34, 255)],
+            extend: ExtendMode::Neither,
+            mask_below: None,
+        },
+        RenderStyle::WeatherSnowDepthChange => {
+            let mut scale = rustwx_render::difference::difference_scale(rustwx_render::difference::DifferenceTable::builtin(), 24.0);
+            // Preserve sub-inch melt/settling without losing the storm-depth tails.
+            scale.levels = vec![-24., -8., -2., -0.5, -0.1, 0., 0.1, 0.5, 2., 8., 24.];
+            scale
+        },
+        RenderStyle::WeatherHail => DiscreteColorScale {
+            levels: vec![0.0, 5.0, 10.0, 20.0, 25.4, 38.1, 50.8, 76.2, 101.6, 127.0, 152.4, 203.2],
+            colors: weather_palette(WeatherPalette::Uh),
+            extend: ExtendMode::Max,
+            mask_below: Some(5.0),
+        },
         RenderStyle::WeatherCategorical => DiscreteColorScale {
             levels: vec![0.0, 0.5, 1.0],
             colors: vec![
@@ -375,10 +432,17 @@ pub fn operational_fill_scale_for_recipe_in(
             extend: ExtendMode::Neither,
             mask_below: Some(0.5),
         },
+        // Aviation display range; larger values retain the final clear-air color.
+        // The diagnostic itself remains uncapped by this 2 km display range.
         RenderStyle::WeatherVisibility => DiscreteColorScale {
-            levels: range_step(0.0, 10.5, 0.5),
-            colors: weather_palette(WeatherPalette::MlMetric),
-            extend: ExtendMode::Both,
+            levels: vec![0.0, 100.0, 200.0, 400.0, 600.0, 1000.0, 1600.0, 2000.0],
+            colors: vec![
+                Color::rgba(128, 0, 38, 255), Color::rgba(189, 0, 38, 255),
+                Color::rgba(240, 59, 32, 255), Color::rgba(253, 141, 60, 255),
+                Color::rgba(254, 217, 118, 255), Color::rgba(199, 233, 180, 255),
+                Color::rgba(127, 205, 187, 255), Color::rgba(65, 182, 196, 255),
+            ],
+            extend: ExtendMode::Max,
             mask_below: None,
         },
         RenderStyle::WeatherSatellite => DiscreteColorScale {
@@ -386,6 +450,31 @@ pub fn operational_fill_scale_for_recipe_in(
             colors: weather_palette(WeatherPalette::SimIr),
             extend: ExtendMode::Both,
             mask_below: None,
+        },
+        RenderStyle::WeatherWbgt => DiscreteColorScale {
+            levels: range_step(10.0, 46.0, 1.0), colors: weather_palette(WeatherPalette::Temperature),
+            extend: ExtendMode::Both, mask_below: None,
+        },
+        RenderStyle::WeatherHdw => DiscreteColorScale {
+            levels: vec![0.0,10.0,25.0,50.0,100.0,150.0,200.0,300.0,400.0,600.0,800.0,1200.0], colors: weather_palette(WeatherPalette::Uh),
+            extend: ExtendMode::Max, mask_below: None,
+        },
+        RenderStyle::WeatherHaines => DiscreteColorScale {
+            levels: vec![1.5,2.5,3.5,4.5,5.5,6.5],
+            colors: vec![Color::rgba(80,180,95,255), Color::rgba(245,220,70,255), Color::rgba(245,145,40,255), Color::rgba(220,55,40,255), Color::rgba(130,25,60,255)],
+            extend: ExtendMode::Neither, mask_below: None,
+        },
+        RenderStyle::WeatherLightningThreat => DiscreteColorScale {
+            // Threshold legend preserves weak, spatially sparse signals.
+            levels: vec![0.0,0.001,0.01,0.05,0.1,0.25,0.5,1.0,2.0,5.0,10.0,20.0],
+            colors: vec![Color::rgba(255,255,255,255), Color::rgba(170,220,245,255), Color::rgba(50,190,230,255), Color::rgba(40,100,210,255), Color::rgba(40,180,100,255), Color::rgba(245,220,50,255), Color::rgba(245,150,35,255), Color::rgba(225,55,40,255), Color::rgba(160,45,170,255), Color::rgba(230,100,190,255), Color::rgba(100,20,110,255)],
+            extend: ExtendMode::Max, mask_below: None,
+        },
+        RenderStyle::WeatherFlashRate => DiscreteColorScale {
+            // Domain-distributed PR92 rates can be much smaller than 1e-4.
+            levels: vec![0.0,1e-7,1e-6,1e-5,1e-4,0.001,0.01,0.1,1.0],
+            colors: vec![Color::rgba(255,255,255,255), Color::rgba(50,190,230,255), Color::rgba(40,100,210,255), Color::rgba(40,180,100,255), Color::rgba(245,150,35,255), Color::rgba(225,55,40,255), Color::rgba(160,45,170,255), Color::rgba(230,100,190,255)],
+            extend: ExtendMode::Max, mask_below: None,
         },
         RenderStyle::WeatherLightning => DiscreteColorScale {
             levels: range_step(0.0, 20.5, 0.5),
@@ -415,6 +504,7 @@ pub fn operational_contour_layer_for_values(
         values.to_vec()
     };
     let (levels, color, width, labels, major_every, major_width, show_extrema) = match selector {
+        FieldSelector { field: CanonicalField::IvtMagnitude, .. } => (vec![250.0], Color::BLACK, 2, true, None, None, false),
         FieldSelector {
             field: CanonicalField::GeopotentialHeight,
             vertical: rustwx_core::VerticalSelector::IsobaricHpa(200),
@@ -822,6 +912,66 @@ fn hydrometeor_mixing_ratio_scale() -> DiscreteColorScale {
 
 /// `n` bands linearly interpolated through `anchors`, so a level set has
 /// exactly one colour per interval whatever its length.
+/// An isobaric temperature ladder moved onto the field it colours.
+///
+/// The ladders above are fixed per level for mid-latitude air (300 hPa:
+/// -70..-29 C).  A tropical domain sits wholly above the warm end: Milton's
+/// d02 at f000 (2.9.4 rolling pass) drew one saturated colour over the
+/// whole map.  When the field's 2nd..98th percentile already lies inside
+/// the ladder it is returned unchanged, byte for byte, so mid-latitude maps
+/// and the comparability of two of them are untouched.  Otherwise the
+/// ladder keeps its step and width and is moved, by whole steps, to centre
+/// on the field, narrowed to the field's span with a margin (at least 12
+/// steps, never wider than the fixed ladder); a field wider than the ladder
+/// widens it to the field.  The palette is resampled over the new count.  The same colours, in the same
+/// order, still run cold to warm.
+pub fn fit_isobaric_temperature_scale(
+    scale: DiscreteColorScale,
+    values: &[f32],
+) -> DiscreteColorScale {
+    let levels = &scale.levels;
+    if levels.len() < 3 {
+        return scale;
+    }
+    let mut finite: Vec<f32> = values.iter().copied().filter(|v| v.is_finite()).collect();
+    if finite.len() < 16 {
+        return scale;
+    }
+    let mut quantile = |q: f64| {
+        let index = ((finite.len() - 1) as f64 * q).round() as usize;
+        let (_, value, _) = finite.select_nth_unstable_by(index, |a, b| a.total_cmp(b));
+        f64::from(*value)
+    };
+    let (low, high) = (quantile(0.02), quantile(0.98));
+    let step = levels[1] - levels[0];
+    let (lo, last) = (levels[0], levels[levels.len() - 1]);
+    // The ladder runs lo..=last (range_step is inclusive).
+    if !(step > 0.0) || (low >= lo && high <= last) {
+        return scale;
+    }
+    let width = last - lo;
+    let (start, stop) = if high - low <= width {
+        // As wide as the field needs with a margin (at least 12 steps, at
+        // most the fixed ladder), so a narrow tropical field gets the
+        // palette's contrast instead of a third of it.
+        let fitted = (((high - low) * 1.6 / step).ceil() * step).clamp(12.0 * step, width);
+        let start = (((low + high) * 0.5 - fitted * 0.5) / step).floor() * step;
+        (start, start + fitted)
+    } else {
+        ((low / step).floor() * step, (high / step).ceil() * step)
+    };
+    let new_levels = range_step(start, stop, step);
+    // Keep the ladder's own colours-per-level relation (one colour per
+    // interval for these ladders).
+    let colors = if new_levels.len() == levels.len() {
+        scale.colors.clone()
+    } else {
+        let count = (new_levels.len() + scale.colors.len()).saturating_sub(levels.len());
+        resampled_palette(&scale.colors, count)
+    };
+    DiscreteColorScale { levels: new_levels, colors, ..scale }
+}
+
 fn resampled_palette(anchors: &[Color], n: usize) -> Vec<Color> {
     if n == 0 || anchors.is_empty() {
         return Vec::new();
@@ -948,6 +1098,46 @@ fn smoke_scale_colors() -> Vec<Color> {
     tracer_scale_colors()
 }
 
+#[cfg(test)]
+mod isobaric_temperature_fit_tests {
+    use super::*;
+
+    fn ladder_300() -> DiscreteColorScale {
+        let recipe = rustwx_models::plot_recipe("300mb_temperature_height_winds").unwrap();
+        let selector = FieldSelector::isobaric(CanonicalField::Temperature, 300);
+        match operational_fill_scale_for_recipe(recipe, selector) {
+            ColorScale::Discrete(scale) => scale,
+            _ => panic!("discrete"),
+        }
+    }
+
+    #[test]
+    fn a_midlatitude_field_keeps_the_fixed_ladder_byte_for_byte() {
+        let fixed = ladder_300();
+        let values: Vec<f32> = (0..1000).map(|i| -60.0 + 25.0 * i as f32 / 999.0).collect();
+        let fitted = fit_isobaric_temperature_scale(fixed.clone(), &values);
+        assert_eq!(fitted.levels, fixed.levels);
+        assert_eq!(fitted.colors, fixed.colors);
+    }
+
+    #[test]
+    fn a_tropical_field_moves_the_ladder_onto_itself() {
+        // Milton-like 300 hPa air: -33..-24 C, above the fixed -29 C top.
+        let fixed = ladder_300();
+        let values: Vec<f32> = (0..1000).map(|i| -33.0 + 9.0 * i as f32 / 999.0).collect();
+        let fitted = fit_isobaric_temperature_scale(fixed.clone(), &values);
+        let (lo, hi) = (fitted.levels[0], *fitted.levels.last().unwrap());
+        assert!(lo <= -33.0 && hi >= -24.0, "ladder {lo}..{hi} misses the field");
+        // Fitted to the field's span (9 C, x1.6 margin -> 15 steps), not the
+        // fixed 41-step width, so the palette's contrast lands on the field.
+        assert!(hi - lo <= 20.0, "ladder {lo}..{hi} is wider than the field needs");
+        assert_eq!(fitted.levels.len() - fitted.colors.len(), fixed.levels.len() - fixed.colors.len());
+        assert_eq!(fitted.levels[1] - fitted.levels[0], fixed.levels[1] - fixed.levels[0]);
+        assert_eq!(fitted.colors.first(), fixed.colors.first());
+        assert_eq!(fitted.colors.last(), fixed.colors.last());
+    }
+}
+
 fn range_step(start: f64, stop: f64, step: f64) -> Vec<f64> {
     let mut out = Vec::new();
     let mut value = start;
@@ -1003,6 +1193,23 @@ mod tests {
         )
     }
 
+
+    // 2.9.4 rolling test (GFS 24 h, f012): the model-column IVT components ivt_column_eastward/northward drew a
+    // signed transport on the 0-100 RH ladder, so every value below 0 or above 100 kg m-1 s-1 clipped to one colour.
+    #[test]
+    fn model_column_ivt_components_draw_on_the_signed_transport_scale() {
+        for slug in ["ivt_column_eastward", "ivt_column_northward", "ivt_eastward_full_column", "ivt_northward_full_column"] {
+            let recipe = rustwx_models::plot_recipe(slug).unwrap_or_else(|| panic!("recipe {slug}"));
+            let selector = recipe.filled.selector.unwrap_or_else(|| panic!("selector {slug}"));
+            match operational_fill_scale_for_recipe_in(recipe, selector, Hemisphere::Northern) {
+                ColorScale::Discrete(scale) => {
+                    assert_eq!(scale.levels.first().copied(), Some(-2000.0), "{slug}");
+                    assert_eq!(scale.levels.last().copied(), Some(2000.0), "{slug}");
+                }
+                other => panic!("{slug}: {other:?}"),
+            }
+        }
+    }
     #[test]
     fn clear_sky_under_the_first_cloud_level_draws_nothing() {
         let scale = cloud_cover_scale();

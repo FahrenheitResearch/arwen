@@ -576,14 +576,6 @@ def test_table_install_is_bound_to_the_bytes_it_verified(tmp_path):
     assert legacy.read_bytes() == b"evil"   # untouched, and never installed
 
 
-def test_table_staging_names_are_unique_per_writer(tmp_path):
-    root = tmp_path / "tables"
-    asset = _table_asset(root, b"x")
-    names = {table_assets._staging_path(root, asset).name for _ in range(50)}
-    assert len(names) == 50
-    assert all(str(os.getpid()) in name for name in names)
-
-
 # ---------------------------------------------------------------------------
 # Geog: LS-9, LS-10, LS-11, LS-12
 # ---------------------------------------------------------------------------

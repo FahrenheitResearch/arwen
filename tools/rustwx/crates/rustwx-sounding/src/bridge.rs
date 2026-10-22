@@ -283,10 +283,6 @@ impl VerifiedEcapeParcelParams {
             el_m: f64::NAN,
         }
     }
-
-    pub fn has_ecape(&self) -> bool {
-        self.ecape.is_finite() && self.ncape.is_finite()
-    }
 }
 
 impl Default for VerifiedEcapeParcelParams {

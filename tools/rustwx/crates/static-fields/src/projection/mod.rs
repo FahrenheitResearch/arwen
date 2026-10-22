@@ -61,17 +61,6 @@ pub enum ProjectionKind {
 }
 
 impl ProjectionKind {
-    pub fn wrf_code(self) -> i32 {
-        match self {
-            ProjectionKind::Lambert => 1,
-            ProjectionKind::Polar => 2,
-            ProjectionKind::Mercator => 3,
-            // No WRF map projection describes explicit rows; 0 is WRF's
-            // "no projection" header value.
-            ProjectionKind::Rows => 0,
-        }
-    }
-
     fn python_class_name(self) -> &'static str {
         match self {
             ProjectionKind::Lambert => "LambertGrid",
@@ -186,10 +175,6 @@ impl ProjectedGrid {
         grid.cen_lat = cen_lat;
         grid.cen_lon = cen_lon;
         Ok(grid)
-    }
-
-    pub(crate) fn state(&self) -> &State {
-        &self.state
     }
 
     pub fn sampling_ij_to_latlon(&self, x: f64, y: f64) -> (f64, f64) {

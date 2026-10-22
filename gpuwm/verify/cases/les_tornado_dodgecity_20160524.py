@@ -56,6 +56,7 @@ from datetime import datetime
 from pathlib import Path
 
 from gpuwm.verify.cases import _repo_config
+from gpuwm.verify.cases.les_tornado_mayfield_20211210 import _levels_below
 
 #: This module's dotted name, correct under ``python -m`` too.
 MODULE = _repo_config.module_name(__name__, globals().get("__spec__"))
@@ -83,18 +84,14 @@ INGEST_FINDING = "docs/les/ATTEMPT1-INGEST-FINDING.md"
 #: Dodge City on the evening of 2016-05-24: initiation around 21-22Z,
 #: tornadoes roughly 23:00-01:30Z, storm motion northward.
 CASE_DAY = datetime(2016, 5, 24)
-CONVECTIVE_INITIATION_UTC = (datetime(2016, 5, 24, 21),
-                             datetime(2016, 5, 24, 22))
-TORNADO_WINDOW_UTC = (datetime(2016, 5, 24, 23),
-                      datetime(2016, 5, 25, 1, 30))
 
 #: The 100 m box centre, and the two towns that bracket it. The box is
 #: 20 km square, so it spans about 37.509-37.691 N: Dodge City sits just
 #: north of its top edge and Minneola just south of its bottom edge, and
 #: the tornado family tracked northward through the ground between them.
 BOX_CENTER_LAT, BOX_CENTER_LON = 37.6, -100.0
-DODGE_CITY_LAT, DODGE_CITY_LON = 37.7528, -99.9682
-MINNEOLA_LAT, MINNEOLA_LON = 37.4442, -100.0104
+DODGE_CITY_LAT = 37.7528
+MINNEOLA_LAT = 37.4442
 
 #: The HRRR cycle the route is pointed at, and the window taken off it.
 #: f02..f12 = 20Z through 06Z next day; the 2016 18Z cycle publishes to
@@ -143,31 +140,6 @@ RESTART_INTERVAL_S = 3600.0
 INFLOW_DOMAINS = (3,)
 INFLOW_SEED = 20160524
 INFLOW_AMPLITUDE_SCALE = 1.0
-
-
-def _levels_below(eta, p_top: float, bl_top: float) -> int:
-    """Half levels below ``bl_top`` metres, through the shipped tool.
-
-    ``tools`` IS a shipped package, so asking for it by name is the route
-    that works from a wheel.  The path form below still resolves under an
-    installed wheel -- ``<CONFIG>/..`` lands on site-packages and
-    ``site-packages/tools`` exists -- but only by coincidence, and while it
-    sits on ``sys.path[0]`` its 142 top-level module names shadow the
-    standard library.  It stays only as a fallback for a checkout run whose
-    repository root is not on ``sys.path``.
-    """
-
-    try:
-        from tools.build_stretched_eta_ladder import score_ladder
-    except ImportError:  # pragma: no cover - checkout-only fallback
-        sys.path.insert(0, str(_repo_config.default_path(".").parent.parent
-                               / "tools"))
-        try:
-            from build_stretched_eta_ladder import score_ladder
-        finally:
-            sys.path.pop(0)
-    return score_ladder(list(eta), p_top=p_top, hybrid_opt=2, etac=0.2,
-                        bl_top=bl_top)["levels_below_bl_top"]
 
 
 def audit(config: Path | None = None) -> list[str]:

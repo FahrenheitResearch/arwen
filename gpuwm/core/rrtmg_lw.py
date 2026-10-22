@@ -70,6 +70,7 @@ from __future__ import annotations
 
 from gpuwm.core.device_cache import cuda_cache
 
+from functools import partial
 import struct
 import threading
 
@@ -131,34 +132,6 @@ def powf(x, y) -> np.float32:
     return F(_libm.powf(float(x), float(y)))
 
 
-def logf_v(arr):
-    """Elementwise logf over a float32 array (scalar transcription applied
-    per element; independent lanes, so bitwise identical to a Fortran loop)."""
-    flat = np.asarray(arr, dtype=np.float32).ravel()
-    out = np.empty_like(flat)
-    for i, v in enumerate(flat):
-        out[i] = logf(v)
-    return out.reshape(np.shape(arr))
-
-
-def expf_v(arr):
-    """Elementwise expf over a float32 array."""
-    flat = np.asarray(arr, dtype=np.float32).ravel()
-    out = np.empty_like(flat)
-    for i, v in enumerate(flat):
-        out[i] = expf(v)
-    return out.reshape(np.shape(arr))
-
-
-def powf_v(arr, y):
-    """Elementwise powf(x, y) with scalar y over a float32 array."""
-    flat = np.asarray(arr, dtype=np.float32).ravel()
-    out = np.empty_like(flat)
-    for i, v in enumerate(flat):
-        out[i] = powf(v, y)
-    return out.reshape(np.shape(arr))
-
-
 def pow4(x):
     """Fortran x**4 with an INTEGER literal exponent: gfortran expands by
     squaring, (x*x)*(x*x), which differs bitwise from powf(x, 4.0)."""
@@ -193,16 +166,9 @@ NSPA = np.array([1, 1, 9, 9, 9, 1, 9, 1, 9, 1, 1, 9, 9, 1, 9, 9],
                 dtype=np.int32)
 NSPB = np.array([1, 1, 5, 5, 5, 0, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0],
                 dtype=np.int32)
-WAVENUM1 = np.array([10., 350., 500., 630., 700., 820., 980., 1080.,
-                     1180., 1390., 1480., 1800., 2080., 2250., 2380.,
-                     2600.], dtype=np.float32)
-WAVENUM2 = np.array([350., 500., 630., 700., 820., 980., 1080., 1180.,
-                     1390., 1480., 1800., 2080., 2250., 2380., 2600.,
-                     3250.], dtype=np.float32)
 DELWAVE = np.array([340., 150., 130., 70., 120., 160., 100., 100., 210.,
                     90., 320., 280., 170., 130., 220., 650.],
                    dtype=np.float32)
-NXMOL = 4
 IXINDX = np.array([1, 2, 3, 4] + [0] * (MAXXSEC + 34 - 4), dtype=np.int32)
 
 # lwcmbdat
@@ -295,28 +261,8 @@ def lwdatinit_scalars(cpdair):
 
 def _compute_rwgt():
     """rrtmg_lw_ini's relative weights for the g-point reduction (FP32)."""
-    rwgt = np.zeros(NBNDLW * MG, dtype=np.float32)
-    igcsm = 0
-    for ibnd in range(1, NBNDLW + 1):
-        iprsm = 0
-        if NGC[ibnd - 1] < MG:
-            wtsm = np.zeros(MG, dtype=np.float32)
-            for igc in range(1, NGC[ibnd - 1] + 1):
-                igcsm += 1
-                wtsum = F(0.0)
-                for _ in range(int(NGN[igcsm - 1])):
-                    iprsm += 1
-                    wtsum = F(wtsum + WT[iprsm - 1])
-                wtsm[igc - 1] = wtsum
-            for ig in range(1, int(NG[ibnd - 1]) + 1):
-                ind = (ibnd - 1) * MG + ig
-                rwgt[ind - 1] = F(WT[ig - 1] / wtsm[NGM[ind - 1] - 1])
-        else:
-            for ig in range(1, int(NG[ibnd - 1]) + 1):
-                igcsm += 1
-                ind = (ibnd - 1) * MG + ig
-                rwgt[ind - 1] = F(1.0)
-    return rwgt
+    from gpuwm.core.rrtm_tables import _build_rwgt
+    return _build_rwgt({"NGC": NGC, "NGN": NGN, "NGM": NGM, "NG": NG, "WT": WT})
 
 
 def _compute_tables():
@@ -358,28 +304,10 @@ def _reduce_g(raw_arr, band, rwgt, weighted=True):
     (band-1)*16), sequentially in FP32.  With weighted=False mirrors the
     fracref plain sums.
     """
-    ngc_b = int(NGC[band - 1])
-    ngn_b = _ngn_for_band(band)
-    out_shape = raw_arr.shape[:-1] + (ngc_b,)
-    out = np.zeros(out_shape, dtype=np.float32)
-    iprsm = 0
-    for igc in range(ngc_b):
-        n = ngn_b[igc]
-        acc = np.zeros(raw_arr.shape[:-1], dtype=np.float32)
-        for _ in range(n):
-            iprsm += 1
-            term = raw_arr[..., iprsm - 1]
-            if weighted:
-                term = (term * rwgt[(band - 1) * MG + iprsm - 1]) \
-                    .astype(np.float32)
-            acc = (acc + term).astype(np.float32)
-        out[..., igc] = acc
-    return out
-
-
-def _ngn_for_band(band):
-    start = int(NGC[:band - 1].sum())
-    return [int(v) for v in NGN[start:start + int(NGC[band - 1])]]
+    from gpuwm.core.rrtm_tables import _group_spans, _reduce_g as reduce_g
+    spans = _group_spans(band, NGC, NGS, NGN)
+    weights = rwgt[(band - 1) * MG:band * MG] if weighted else None
+    return reduce_g(raw_arr, spans, weights)
 
 
 def build_lw_coefficients(raw, cpdair):
@@ -390,9 +318,8 @@ def build_lw_coefficients(raw, cpdair):
     any minor-gas arrays), FP32, Fortran shapes.
 
     Returns a flat dict keyed 'kgNN/name' for the reduced band arrays plus
-    'tbl/...', 'con/...' entries.  NOTE: the full per-band reduction set
-    (cmbgb1..cmbgb16) is completed by _CMBGB_IMPLS below; bands not yet
-    ported raise KeyError at access time rather than returning wrong data.
+    'tbl/...', 'con/...' entries. All sixteen bands use the ordered
+    field lists in _CMBGB_FIELDS and the shared FP32 reducers.
     """
     rwgt = _compute_rwgt()
     tau_tbl, exp_tbl, tfn_tbl, bpade = _compute_tables()
@@ -413,22 +340,55 @@ def build_lw_coefficients(raw, cpdair):
     return out
 
 
-def _cmbgb1(mod, rwgt, out):
-    """cmbgb1: ka/kb over (5,13|47,g), self/for, ka_mn2/kb_mn2, fracref."""
-    out["kg01/ka"] = _reduce_g(mod["kao"], 1, rwgt)
-    out["kg01/kb"] = _reduce_g(mod["kbo"], 1, rwgt)
-    out["kg01/selfref"] = _reduce_g(mod["selfrefo"], 1, rwgt)
-    out["kg01/forref"] = _reduce_g(mod["forrefo"], 1, rwgt)
-    out["kg01/ka_mn2"] = _reduce_g(mod["kao_mn2"], 1, rwgt)
-    out["kg01/kb_mn2"] = _reduce_g(mod["kbo_mn2"], 1, rwgt)
-    out["kg01/fracrefa"] = _reduce_g(mod["fracrefao"], 1, rwgt,
-                                     weighted=False)
-    out["kg01/fracrefb"] = _reduce_g(mod["fracrefbo"], 1, rwgt,
-                                     weighted=False)
+# Ordered raw fields from WRF v4.6.1 cmbgb1..cmbgb16.
+# Every field keeps its original FP32 reducer and sum order.
+_CMBGB_FIELDS = {
+    1: "kao kbo selfrefo forrefo kao_mn2 kbo_mn2 fracrefao fracrefbo",
+    2: "kao kbo selfrefo forrefo fracrefao fracrefbo",
+    3: "kao kbo kao_mn2o kbo_mn2o selfrefo forrefo fracrefao fracrefbo",
+    4: "kao kbo selfrefo forrefo fracrefao fracrefbo",
+    5: "kao kbo kao_mo3 selfrefo forrefo fracrefao fracrefbo ccl4o",
+    6: "kao kao_mco2 selfrefo forrefo fracrefao cfc11adjo cfc12o",
+    7: "kao kbo kao_mco2 kbo_mco2 selfrefo forrefo fracrefao fracrefbo",
+    8: ("kao kbo selfrefo forrefo kao_mco2 kbo_mco2 kao_mo3 kao_mn2o "
+        "kbo_mn2o fracrefao fracrefbo cfc12o cfc22adjo"),
+    9: "kao kbo kao_mn2o kbo_mn2o selfrefo forrefo fracrefao fracrefbo",
+    10: "kao kbo selfrefo forrefo fracrefao fracrefbo",
+    11: "kao kbo kao_mo2 kbo_mo2 selfrefo forrefo fracrefao fracrefbo",
+    12: "kao selfrefo forrefo fracrefao",
+    13: "kao kao_mco2 kao_mco kbo_mo3 selfrefo forrefo fracrefbo fracrefao",
+    14: "kao kbo selfrefo forrefo fracrefao fracrefbo",
+    15: "kao kao_mn2 selfrefo forrefo fracrefao",
+    16: "kao kbo selfrefo forrefo fracrefbo fracrefao",
+}
+_CMBGB_FIRST_AXIS = {
+    3: ("fracrefao", "fracrefbo"),
+    4: ("fracrefao", "fracrefbo"),
+    5: ("fracrefao", "fracrefbo"),
+    7: ("fracrefao",),
+    9: ("fracrefao",),
+    12: ("fracrefao",),
+    13: ("fracrefao",),
+    15: ("fracrefao",),
+    16: ("fracrefao",),
+}
 
 
-#: band -> reduction implementation; filled in as bands are ported.
-_CMBGB_IMPLS = {1: _cmbgb1}
+def _cmbgb(band, mod, rwgt, out):
+    """Reduce one band's coefficients without changing FP32 summation."""
+    for name in _CMBGB_FIELDS[band].split():
+        reduced = (name[:2] + name[3:] if name.startswith(("kao", "kbo"))
+                   else name[:-1])
+        if name in _CMBGB_FIRST_AXIS.get(band, ()):
+            value = _reduce_first(mod[name], band)
+        else:
+            value = _reduce_g(mod[name], band, rwgt,
+                              weighted=not name.startswith("fracref"))
+        out[f"kg{band:02d}/{reduced}"] = value
+
+
+# Keep the oracle's band -> callable interface.
+_CMBGB_IMPLS = {band: partial(_cmbgb, band) for band in _CMBGB_FIELDS}
 
 
 # ---------------------------------------------------------------------------
@@ -1480,7 +1440,6 @@ def taumol(nlayers, st, C):
     return fracs, taug
 
 
-
 # ---------------------------------------------------------------------------
 # Section 6b -- taugb/cmbgb implementations merged from the gated band
 # fragments (each held at max_ulp 0 / bitwise before merging; the module-
@@ -2382,215 +2341,14 @@ def _reduce_first(raw_arr, band):
     sumf`: for each new g-point igc, sum the ngn consecutive original
     g-points sequentially in FP32, independently for every jp column.
     """
-    ngc_b = int(NGC[band - 1])
-    ngn_b = _ngn_for_band(band)
-    out = np.zeros((ngc_b,) + raw_arr.shape[1:], dtype=np.float32)
-    iprsm = 0
-    for igc in range(ngc_b):
-        acc = np.zeros(raw_arr.shape[1:], dtype=np.float32)
-        for _ in range(ngn_b[igc]):
-            iprsm += 1
-            acc = (acc + raw_arr[iprsm - 1]).astype(np.float32)
-        out[igc] = acc
-    return out
-
-
-def _cmbgb2(mod, rwgt, out):
-    """cmbgb2 (module lines 8432-8512): ka/kb/self/for, 1-D fracrefs."""
-    out["kg02/ka"] = _reduce_g(mod["kao"], 2, rwgt)
-    out["kg02/kb"] = _reduce_g(mod["kbo"], 2, rwgt)
-    out["kg02/selfref"] = _reduce_g(mod["selfrefo"], 2, rwgt)
-    out["kg02/forref"] = _reduce_g(mod["forrefo"], 2, rwgt)
-    out["kg02/fracrefa"] = _reduce_g(mod["fracrefao"], 2, rwgt,
-                                     weighted=False)
-    out["kg02/fracrefb"] = _reduce_g(mod["fracrefbo"], 2, rwgt,
-                                     weighted=False)
-
-
-def _cmbgb3(mod, rwgt, out):
-    """cmbgb3 (8515-8642): 9-species; fracrefs reduce over axis 0."""
-    out["kg03/ka"] = _reduce_g(mod["kao"], 3, rwgt)
-    out["kg03/kb"] = _reduce_g(mod["kbo"], 3, rwgt)
-    out["kg03/ka_mn2o"] = _reduce_g(mod["kao_mn2o"], 3, rwgt)
-    out["kg03/kb_mn2o"] = _reduce_g(mod["kbo_mn2o"], 3, rwgt)
-    out["kg03/selfref"] = _reduce_g(mod["selfrefo"], 3, rwgt)
-    out["kg03/forref"] = _reduce_g(mod["forrefo"], 3, rwgt)
-    out["kg03/fracrefa"] = _reduce_first(mod["fracrefao"], 3)
-    out["kg03/fracrefb"] = _reduce_first(mod["fracrefbo"], 3)
-
-
-def _cmbgb4(mod, rwgt, out):
-    """cmbgb4 (8645-8741): 9-species; fracrefa jp=1..9, fracrefb jp=1..5."""
-    out["kg04/ka"] = _reduce_g(mod["kao"], 4, rwgt)
-    out["kg04/kb"] = _reduce_g(mod["kbo"], 4, rwgt)
-    out["kg04/selfref"] = _reduce_g(mod["selfrefo"], 4, rwgt)
-    out["kg04/forref"] = _reduce_g(mod["forrefo"], 4, rwgt)
-    out["kg04/fracrefa"] = _reduce_first(mod["fracrefao"], 4)
-    out["kg04/fracrefb"] = _reduce_first(mod["fracrefbo"], 4)
-
-
-def _cmbgb5(mod, rwgt, out):
-    """cmbgb5 (8744-8867): 9-species + ka_mo3 + rwgt-weighted ccl4 tail."""
-    out["kg05/ka"] = _reduce_g(mod["kao"], 5, rwgt)
-    out["kg05/kb"] = _reduce_g(mod["kbo"], 5, rwgt)
-    out["kg05/ka_mo3"] = _reduce_g(mod["kao_mo3"], 5, rwgt)
-    out["kg05/selfref"] = _reduce_g(mod["selfrefo"], 5, rwgt)
-    out["kg05/forref"] = _reduce_g(mod["forrefo"], 5, rwgt)
-    out["kg05/fracrefa"] = _reduce_first(mod["fracrefao"], 5)
-    out["kg05/fracrefb"] = _reduce_first(mod["fracrefbo"], 5)
-    out["kg05/ccl4"] = _reduce_g(mod["ccl4o"], 5, rwgt)
-
-
-def _cmbgb6(mod, rwgt, out):
-    """cmbgb6 (8870-8958): ka/ka_mco2/self/for; fracrefa plain,
-    cfc11adj/cfc12 rwgt-weighted (interleaved in one Fortran loop)."""
-    out["kg06/ka"] = _reduce_g(mod["kao"], 6, rwgt)
-    out["kg06/ka_mco2"] = _reduce_g(mod["kao_mco2"], 6, rwgt)
-    out["kg06/selfref"] = _reduce_g(mod["selfrefo"], 6, rwgt)
-    out["kg06/forref"] = _reduce_g(mod["forrefo"], 6, rwgt)
-    out["kg06/fracrefa"] = _reduce_g(mod["fracrefao"], 6, rwgt,
-                                     weighted=False)
-    out["kg06/cfc11adj"] = _reduce_g(mod["cfc11adjo"], 6, rwgt)
-    out["kg06/cfc12"] = _reduce_g(mod["cfc12o"], 6, rwgt)
-
-
-def _cmbgb7(mod, rwgt, out):
-    """cmbgb7 (8961-9082): 9-species low key, 1-species high key;
-    fracrefa over axis 0, fracrefb 1-D plain."""
-    out["kg07/ka"] = _reduce_g(mod["kao"], 7, rwgt)
-    out["kg07/kb"] = _reduce_g(mod["kbo"], 7, rwgt)
-    out["kg07/ka_mco2"] = _reduce_g(mod["kao_mco2"], 7, rwgt)
-    out["kg07/kb_mco2"] = _reduce_g(mod["kbo_mco2"], 7, rwgt)
-    out["kg07/selfref"] = _reduce_g(mod["selfrefo"], 7, rwgt)
-    out["kg07/forref"] = _reduce_g(mod["forrefo"], 7, rwgt)
-    out["kg07/fracrefa"] = _reduce_first(mod["fracrefao"], 7)
-    out["kg07/fracrefb"] = _reduce_g(mod["fracrefbo"], 7, rwgt,
-                                     weighted=False)
-
-
-def _cmbgb8(mod, rwgt, out):
-    """cmbgb8 (9085-9201): five 2-D minor-gas arrays (interleaved
-    sumk1..sumk5 in the Fortran), plain fracrefs, weighted cfc tails."""
-    out["kg08/ka"] = _reduce_g(mod["kao"], 8, rwgt)
-    out["kg08/kb"] = _reduce_g(mod["kbo"], 8, rwgt)
-    out["kg08/selfref"] = _reduce_g(mod["selfrefo"], 8, rwgt)
-    out["kg08/forref"] = _reduce_g(mod["forrefo"], 8, rwgt)
-    out["kg08/ka_mco2"] = _reduce_g(mod["kao_mco2"], 8, rwgt)
-    out["kg08/kb_mco2"] = _reduce_g(mod["kbo_mco2"], 8, rwgt)
-    out["kg08/ka_mo3"] = _reduce_g(mod["kao_mo3"], 8, rwgt)
-    out["kg08/ka_mn2o"] = _reduce_g(mod["kao_mn2o"], 8, rwgt)
-    out["kg08/kb_mn2o"] = _reduce_g(mod["kbo_mn2o"], 8, rwgt)
-    out["kg08/fracrefa"] = _reduce_g(mod["fracrefao"], 8, rwgt,
-                                     weighted=False)
-    out["kg08/fracrefb"] = _reduce_g(mod["fracrefbo"], 8, rwgt,
-                                     weighted=False)
-    out["kg08/cfc12"] = _reduce_g(mod["cfc12o"], 8, rwgt)
-    out["kg08/cfc22adj"] = _reduce_g(mod["cfc22adjo"], 8, rwgt)
-
-
-def _cmbgb9(mod, rwgt, out):
-    """cmbgb9 (9204-9326): fracrefa over axis 0, fracrefb 1-D plain."""
-    out["kg09/ka"] = _reduce_g(mod["kao"], 9, rwgt)
-    out["kg09/kb"] = _reduce_g(mod["kbo"], 9, rwgt)
-    out["kg09/ka_mn2o"] = _reduce_g(mod["kao_mn2o"], 9, rwgt)
-    out["kg09/kb_mn2o"] = _reduce_g(mod["kbo_mn2o"], 9, rwgt)
-    out["kg09/selfref"] = _reduce_g(mod["selfrefo"], 9, rwgt)
-    out["kg09/forref"] = _reduce_g(mod["forrefo"], 9, rwgt)
-    out["kg09/fracrefa"] = _reduce_first(mod["fracrefao"], 9)
-    out["kg09/fracrefb"] = _reduce_g(mod["fracrefbo"], 9, rwgt,
-                                     weighted=False)
-
-
-def _cmbgb10(mod, rwgt, out):
-    """cmbgb10 (9329-9413): ka/kb/self/for, 1-D fracrefs."""
-    out["kg10/ka"] = _reduce_g(mod["kao"], 10, rwgt)
-    out["kg10/kb"] = _reduce_g(mod["kbo"], 10, rwgt)
-    out["kg10/selfref"] = _reduce_g(mod["selfrefo"], 10, rwgt)
-    out["kg10/forref"] = _reduce_g(mod["forrefo"], 10, rwgt)
-    out["kg10/fracrefa"] = _reduce_g(mod["fracrefao"], 10, rwgt,
-                                     weighted=False)
-    out["kg10/fracrefb"] = _reduce_g(mod["fracrefbo"], 10, rwgt,
-                                     weighted=False)
-
-
-def _cmbgb11(mod, rwgt, out):
-    """cmbgb11 (9416-9516): ka_mo2/kb_mo2 interleaved in the Fortran."""
-    out["kg11/ka"] = _reduce_g(mod["kao"], 11, rwgt)
-    out["kg11/kb"] = _reduce_g(mod["kbo"], 11, rwgt)
-    out["kg11/ka_mo2"] = _reduce_g(mod["kao_mo2"], 11, rwgt)
-    out["kg11/kb_mo2"] = _reduce_g(mod["kbo_mo2"], 11, rwgt)
-    out["kg11/selfref"] = _reduce_g(mod["selfrefo"], 11, rwgt)
-    out["kg11/forref"] = _reduce_g(mod["forrefo"], 11, rwgt)
-    out["kg11/fracrefa"] = _reduce_g(mod["fracrefao"], 11, rwgt,
-                                     weighted=False)
-    out["kg11/fracrefb"] = _reduce_g(mod["fracrefbo"], 11, rwgt,
-                                     weighted=False)
-
-
-def _cmbgb12(mod, rwgt, out):
-    """cmbgb12 (9519-9588): low key only; fracrefa over axis 0."""
-    out["kg12/ka"] = _reduce_g(mod["kao"], 12, rwgt)
-    out["kg12/selfref"] = _reduce_g(mod["selfrefo"], 12, rwgt)
-    out["kg12/forref"] = _reduce_g(mod["forrefo"], 12, rwgt)
-    out["kg12/fracrefa"] = _reduce_first(mod["fracrefao"], 12)
-
-
-def _cmbgb13(mod, rwgt, out):
-    """cmbgb13 (9591-9701): ka_mco2/ka_mco interleaved; kb_mo3 only in
-    the high region; fracrefb (1-D plain) precedes fracrefa in the
-    Fortran -- order is bitwise-irrelevant, both transcribed."""
-    out["kg13/ka"] = _reduce_g(mod["kao"], 13, rwgt)
-    out["kg13/ka_mco2"] = _reduce_g(mod["kao_mco2"], 13, rwgt)
-    out["kg13/ka_mco"] = _reduce_g(mod["kao_mco"], 13, rwgt)
-    out["kg13/kb_mo3"] = _reduce_g(mod["kbo_mo3"], 13, rwgt)
-    out["kg13/selfref"] = _reduce_g(mod["selfrefo"], 13, rwgt)
-    out["kg13/forref"] = _reduce_g(mod["forrefo"], 13, rwgt)
-    out["kg13/fracrefb"] = _reduce_g(mod["fracrefbo"], 13, rwgt,
-                                     weighted=False)
-    out["kg13/fracrefa"] = _reduce_first(mod["fracrefao"], 13)
-
-
-def _cmbgb14(mod, rwgt, out):
-    """cmbgb14 (9704-9788): ka/kb/self/for, 1-D fracrefs."""
-    out["kg14/ka"] = _reduce_g(mod["kao"], 14, rwgt)
-    out["kg14/kb"] = _reduce_g(mod["kbo"], 14, rwgt)
-    out["kg14/selfref"] = _reduce_g(mod["selfrefo"], 14, rwgt)
-    out["kg14/forref"] = _reduce_g(mod["forrefo"], 14, rwgt)
-    out["kg14/fracrefa"] = _reduce_g(mod["fracrefao"], 14, rwgt,
-                                     weighted=False)
-    out["kg14/fracrefb"] = _reduce_g(mod["fracrefbo"], 14, rwgt,
-                                     weighted=False)
-
-
-def _cmbgb15(mod, rwgt, out):
-    """cmbgb15 (9791-9875): low key only + ka_mn2; fracrefa over axis 0."""
-    out["kg15/ka"] = _reduce_g(mod["kao"], 15, rwgt)
-    out["kg15/ka_mn2"] = _reduce_g(mod["kao_mn2"], 15, rwgt)
-    out["kg15/selfref"] = _reduce_g(mod["selfrefo"], 15, rwgt)
-    out["kg15/forref"] = _reduce_g(mod["forrefo"], 15, rwgt)
-    out["kg15/fracrefa"] = _reduce_first(mod["fracrefao"], 15)
-
-
-def _cmbgb16(mod, rwgt, out):
-    """cmbgb16 (9878-9971): fracrefb (1-D plain) precedes fracrefa
-    (axis-0) in the Fortran."""
-    out["kg16/ka"] = _reduce_g(mod["kao"], 16, rwgt)
-    out["kg16/kb"] = _reduce_g(mod["kbo"], 16, rwgt)
-    out["kg16/selfref"] = _reduce_g(mod["selfrefo"], 16, rwgt)
-    out["kg16/forref"] = _reduce_g(mod["forrefo"], 16, rwgt)
-    out["kg16/fracrefb"] = _reduce_g(mod["fracrefbo"], 16, rwgt,
-                                     weighted=False)
-    out["kg16/fracrefa"] = _reduce_first(mod["fracrefao"], 16)
+    reduced = _reduce_g(np.moveaxis(raw_arr, 0, -1), band, None,
+                        weighted=False)
+    return np.ascontiguousarray(np.moveaxis(reduced, -1, 0))
 
 
 TAUGB_IMPLS.update({
     2: _taugb2, 6: _taugb6, 7: _taugb7, 8: _taugb8, 9: _taugb9,
     10: _taugb10, 11: _taugb11, 12: _taugb12,
-})
-_CMBGB_IMPLS.update({
-    2: _cmbgb2, 3: _cmbgb3, 4: _cmbgb4, 5: _cmbgb5, 6: _cmbgb6,
-    7: _cmbgb7, 8: _cmbgb8, 9: _cmbgb9, 10: _cmbgb10, 11: _cmbgb11,
-    12: _cmbgb12, 13: _cmbgb13, 14: _cmbgb14, 15: _cmbgb15, 16: _cmbgb16,
 })
 
 
@@ -2606,51 +2364,7 @@ def _spec_major(specparm, fs, facp, fact, absa, ind, speccomb):
     loop; they are per-layer scalars, so computing them here per call is
     the identical op sequence.
     """
-    if specparm < F("0.125"):
-        p = fs - F("1.0")
-        p4 = pow4(p)              # p**4, gfortran square-and-multiply
-        fk0 = p4
-        fk1 = F("1.0") - p - F("2.0") * p4
-        fk2 = p + p4
-        fac0p = fk0 * facp
-        fac1p = fk1 * facp
-        fac2p = fk2 * facp
-        fac0t = fk0 * fact
-        fac1t = fk1 * fact
-        fac2t = fk2 * fact
-        return speccomb * (fac0p * absa[ind - 1, :]
-                           + fac1p * absa[ind, :]
-                           + fac2p * absa[ind + 1, :]
-                           + fac0t * absa[ind + 8, :]
-                           + fac1t * absa[ind + 9, :]
-                           + fac2t * absa[ind + 10, :])
-    elif specparm > F("0.875"):
-        p = -fs
-        p4 = pow4(p)
-        fk0 = p4
-        fk1 = F("1.0") - p - F("2.0") * p4
-        fk2 = p + p4
-        fac0p = fk0 * facp
-        fac1p = fk1 * facp
-        fac2p = fk2 * facp
-        fac0t = fk0 * fact
-        fac1t = fk1 * fact
-        fac2t = fk2 * fact
-        return speccomb * (fac2p * absa[ind - 2, :]
-                           + fac1p * absa[ind - 1, :]
-                           + fac0p * absa[ind, :]
-                           + fac2t * absa[ind + 7, :]
-                           + fac1t * absa[ind + 8, :]
-                           + fac0t * absa[ind + 9, :])
-    else:
-        fac0p = (F("1.0") - fs) * facp
-        fac0t = (F("1.0") - fs) * fact
-        fac1p = fs * facp
-        fac1t = fs * fact
-        return speccomb * (fac0p * absa[ind - 1, :]
-                           + fac1p * absa[ind, :]
-                           + fac0t * absa[ind + 8, :]
-                           + fac1t * absa[ind + 9, :])
+    return _nine_major(specparm, fs, facp, fact, absa, ind, speccomb)
 
 
 def _taugb3(st, C, taug, fracs):
@@ -3728,7 +3442,10 @@ def _gpu_source():
     parts = [open(_os.path.join(kdir, "rrtmg_lw.cu"),
                   encoding="utf-8").read()]
     for path in sorted(_glob.glob(_os.path.join(kdir, "rrtmg_lw_*.cu"))):
-        parts.append(open(path, encoding="utf-8").read())
+        part = open(path, encoding="utf-8").read()
+        parts.append(part)
+        if _os.path.basename(path) == "rrtmg_lw_chain.cu":
+            parts.append(_LW_COALESCED_HEADER + _lw_coalesced_source(part))
     # Insert each device helper beside its standalone body, before local
     # coefficient indexing macros are undefined. Statements stay verbatim.
     for index, part in enumerate(parts):
@@ -3757,20 +3474,185 @@ def _gpu_source():
                 r"\1if (gpoint == \3) \2", ghelper)
             part = part[:end] + "\n" + helper + "\n" + ghelper + part[end:]
         parts[index] = part
+    parts[0] = _with_setcoef_layers(parts[0])
+    for index, part in enumerate(parts):
+        if 'extern "C" __global__ void rlw_rtrn_march_coalesced(' in part:
+            parts[index] = _with_march_inline(part)
     return "\n".join(parts)
 
 
-#: First line of kernels/rrtmg_lw_chain_coalesced.cu, the committed output of
-#: :func:`_lw_coalesced_source` over kernels/rrtmg_lw_chain.cu (the sorted
-#: ``rrtmg_lw_*.cu`` glob above puts it right after the chain it twins).
-_LW_COALESCED_HEADER = (
-    "// GENERATED from rrtmg_lw_chain.cu by "
-    "gpuwm.core.rrtmg_lw._lw_coalesced_source\n")
+# Preserve the historical twin header as part of the compiled source identity.
+_LW_COALESCED_HEADER = """// GENERATED from rrtmg_lw_chain.cu by gpuwm.core.rrtmg_lw._lw_coalesced_source
+// (tests/test_rrtmg_lw_speed_identity.py fails if this file and the generator
+// disagree): the address-only twin of the chain kernels the BATCHED LW engine
+// launches.  Every per-g-point slab (cloud inputs, odcld, efclfrac and the
+// radiance profiles) is laid out (column, layer, g-point) instead of
+// (column, g-point, layer), so the one-thread-per-(column, g-point) kernels
+// read and write consecutive words across a warp.  Only index expressions
+// and kernel names (suffix _coalesced) differ from rrtmg_lw_chain.cu; every
+// arithmetic statement is the same text in the same order.  The unsuffixed
+// kernels stay for the single-column entry points and their oracle gates.
+// Regenerate with:
+//   python -c "from gpuwm.core import rrtmg_lw as m; m._write_coalesced_twin()"
+
+"""
+def _march_inline_source(coalesced):
+    """``rlw_rtrn_march_inline``: the coalesced march with its three
+    per-(column, layer, g-point) inputs taut, odcld and efclfrac formed in
+    the thread instead of read from slabs, every statement verbatim.
+
+    Each of those slabs is one statement of a kernel the batched engine ran
+    just before the march, on that same (column, layer, g-point):
+      taut     = RLW_AD(taug, taua(band))                 rlw_taut_coalesced
+      odcld    = cldfmc == 1 ? RLW_MU(secdiff(band), taucmc) : 0  rlw_rtrn_prol_*
+      efclfrac = cldfmc == 1 ? RLW_MU(RLW_SU(1, rlw_exp(-odcld)), cldfmc) : 0
+    The march's band ``iband = ngb[igc - 1]`` is the g-point's band in both
+    producers and its ``sd`` is the secdiff they read, so the macros below
+    evaluate the same operations on the same operands and store nothing:
+    the slabs (two written and two read per engine window, plus taut) and
+    two launches go away.  Edits are asserted to occur exactly once."""
+    marker = 'extern "C" __global__ void rlw_rtrn_march_coalesced('
+    start = coalesced.index(marker)
+    brace = coalesced.index("{", start)
+    depth, end = 1, brace + 1
+    while depth:
+        depth += (coalesced[end] == "{") - (coalesced[end] == "}")
+        end += 1
+    text = coalesced[start:end]
+    lay_g = "((long long)col * nl + ((l) - 1)) * NGPTLW + (igc - 1)"
+    edits = (
+        ("void rlw_rtrn_march_coalesced(", "void rlw_rtrn_march_inline("),
+        ("    const float* __restrict__ odcld,\n"
+         "    const float* __restrict__ efclfrac,\n",
+         "    const float* __restrict__ taucmc,   // (ncol, nl, NGPTLW)\n"),
+        ("    const float* __restrict__ taut,     // (ncol, nl, NGPTLW)\n",
+         "    const float* __restrict__ taug,     // (ncol, nl, NGPTLW)\n"
+         "    const float* __restrict__ taua,     // (ncol, nl, 16)\n"),
+        ("#define TT(l) taut[" + lay_g + "]\n",
+         "#define TT(l) RLW_AD(taug[" + lay_g + "], \\\n"
+         "    taua[((long long)col * nl + ((l) - 1)) * NBNDLW + (iband - 1)])\n"
+         "#define CF_AT(l) cldfmc[" + lay_g + "]\n"
+         "#define OD_AT(l) (CF_AT(l) == 1.0f ? RLW_MU(sd, PRO(taucmc, l)) : 0.0f)\n"
+         "#define EF_AT(l) (CF_AT(l) == 1.0f ? \\\n"
+         "    RLW_MU(RLW_SU(1.0f, rlw_exp(-OD_AT(l))), CF_AT(l)) : 0.0f)\n"),
+        ("float oc = PRO(odcld, lev);", "float oc = OD_AT(lev);"),
+        ("#undef TT\n", "#undef TT\n#undef CF_AT\n#undef OD_AT\n#undef EF_AT\n"),
+    )
+    for old_text, new_text in edits:
+        if text.count(old_text) != 1:
+            raise RuntimeError(
+                "rlw_rtrn_march_coalesced changed shape; rlw_rtrn_march_inline "
+                f"cannot be derived (expected one {old_text!r})")
+        text = text.replace(old_text, new_text)
+    if text.count("float ef = PRO(efclfrac, lev);") != 2:
+        raise RuntimeError("rlw_rtrn_march_coalesced changed shape; expected "
+                           "two efclfrac reads")
+    text = text.replace("float ef = PRO(efclfrac, lev);", "float ef = EF_AT(lev);")
+    if "odcld" in text or "efclfrac" in text or "taut[" in text:
+        raise RuntimeError("rlw_rtrn_march_inline still reads a removed slab")
+    return text
+
+
+_CLOUDY_LAYERS_SOURCE = '''
+// icldlyr alone: the layer flag rlw_rtrn_prol_gpoints sets (a layer is
+// cloudy when any of its g-points has cldfmc == 1), without the odcld and
+// efclfrac slabs rlw_rtrn_march_inline now forms in the thread.  Integer
+// flags only; icldlyr enters zeroed.
+extern "C" __global__ void rlw_rtrn_cloudy_layers(
+    int ncol, int nl,
+    const float* __restrict__ cldfmc,   // (ncol, nl, NGPTLW)
+    int* __restrict__ icldlyr)          // (ncol, nl)
+{
+    long long tid = blockIdx.x;
+    if (tid >= (long long)ncol * nl) return;
+    int flag = 0;
+    for (int ig = threadIdx.x; ig < NGPTLW; ig += blockDim.x)
+        if (cldfmc[tid * NGPTLW + ig] == 1.0f) flag = 1;
+    unsigned int cloudy = __ballot_sync(0xffffffff, flag);
+    if (threadIdx.x % 32 == 0 && cloudy)
+        atomicOr(&icldlyr[tid], 1);
+}
+'''
+
+
+def _with_march_inline(part):
+    """``part`` (kernels/rrtmg_lw_chain_coalesced.cu) with
+    rlw_rtrn_march_inline and rlw_rtrn_cloudy_layers appended after the
+    coalesced march."""
+    marker = 'extern "C" __global__ void rlw_rtrn_march_coalesced('
+    start = part.index(marker)
+    brace = part.index("{", start)
+    depth, end = 1, brace + 1
+    while depth:
+        depth += (part[end] == "{") - (part[end] == "}")
+        end += 1
+    return (part[:end] + "\n\n" + _march_inline_source(part) + "\n"
+            + _CLOUDY_LAYERS_SOURCE + part[end:])
+
+
+def _setcoef_layers_source(serial):
+    """``rlw_setcoef_layers``: the batched engine's setcoef, derived from
+    the serial ``rlw_setcoef`` text with every arithmetic statement verbatim.
+
+    The serial kernel runs one thread per column down the layer loop, so a
+    1,536-column engine chunk fills 12 of a 4090's 128 SMs.  No statement
+    of that loop reads another layer's result: the per-column prologue
+    (stpfac, the surface and level-0 Planck indices) is recomputed by every
+    thread from the same inputs, and the only cross-layer quantity, the
+    integer tropospheric count laytrop, becomes an exact integer atomicAdd
+    into the zeroed per-column counter.  So one thread per (column, layer)
+    stores exactly the serial kernel's words.  Four textual edits, each
+    asserted to occur once: the column prologue becomes the (column, layer)
+    index, the layer loop header becomes a block, and the laytrop
+    accumulation and its final store become the atomic count."""
+    marker = 'extern "C" __global__ void rlw_setcoef('
+    start = serial.index(marker)
+    brace = serial.index("{", start)
+    depth, end = 1, brace + 1
+    while depth:
+        depth += (serial[end] == "{") - (serial[end] == "}")
+        end += 1
+    text = serial[start:end].replace("void rlw_setcoef(",
+                                     "void rlw_setcoef_layers(", 1)
+    edits = (
+        ("{\n    int col = blockIdx.x * blockDim.x + threadIdx.x;\n"
+         "    if (col >= ncol) return;\n",
+         "{\n    long long tid = (long long)blockIdx.x * blockDim.x"
+         " + threadIdx.x;\n"
+         "    if (tid >= (long long)ncol * nlayers) return;\n"
+         "    int col = (int)(tid / nlayers);\n"
+         "    int lay = (int)(tid % nlayers) + 1;\n"),
+        ("    int laytrop = 0;\n\n    for (int lay = 1; lay <= nl; ++lay) {\n",
+         "    {\n"),
+        ("laytrop = laytrop + 1;", "atomicAdd(&laytrop_v[col], 1);"),
+        ("    laytrop_v[col] = laytrop;\n", ""),
+    )
+    for old, new in edits:
+        if text.count(old) != 1:
+            raise RuntimeError(
+                "rlw_setcoef changed shape; rlw_setcoef_layers cannot be "
+                f"derived (expected one {old!r})")
+        text = text.replace(old, new)
+    return text
+
+
+def _with_setcoef_layers(part):
+    """``part`` (kernels/rrtmg_lw.cu) with rlw_setcoef_layers inserted right
+    after rlw_setcoef, inside the same macro scope."""
+    marker = 'extern "C" __global__ void rlw_setcoef('
+    start = part.index(marker)
+    brace = part.index("{", start)
+    depth, end = 1, brace + 1
+    while depth:
+        depth += (part[end] == "{") - (part[end] == "}")
+        end += 1
+    return (part[:end] + "\n\n" + _setcoef_layers_source(part) + "\n"
+            + part[end:])
 
 
 def _lw_coalesced_source(chain):
-    """The address-only twin of the chain kernels (committed as
-    kernels/rrtmg_lw_chain_coalesced.cu): kernel names gain ``_coalesced``
+    """Generate the address-only twin at module composition: kernel names
+    gain ``_coalesced``
     and every (column, g-point, layer) slab index becomes (column, layer,
     g-point), so the batched one-thread-per-(column, g-point) kernels touch
     consecutive words across a warp.  No arithmetic statement changes; the
@@ -3785,19 +3667,6 @@ def _lw_coalesced_source(chain):
             new = "((long long)col * nl + " + layer + ") * NGPTLW + " + lane
             chain = re.sub(pattern, lambda m: new, chain)
     return chain
-
-
-def _write_coalesced_twin():
-    """Regenerate kernels/rrtmg_lw_chain_coalesced.cu from the chain,
-    keeping its committed header (everything up to the first blank line)."""
-    from pathlib import Path
-    kdir = Path(__file__).resolve().parent / "kernels"
-    target = kdir / "rrtmg_lw_chain_coalesced.cu"
-    text = target.read_text(encoding="utf-8")
-    header = text[:text.index("\n\n") + 2]
-    chain = (kdir / "rrtmg_lw_chain.cu").read_text(encoding="utf-8")
-    with open(target, "w", encoding="utf-8", newline="\n") as fh:
-        fh.write(header + _lw_coalesced_source(chain))
 
 
 @cuda_cache(maxsize=None)
@@ -4397,7 +4266,8 @@ LW_GPU_KERNEL_NAMES = (
     "rlw_probe", "rlw_inatm", "rlw_cldprmc", "rlw_setcoef", "rlw_taut",
     "rlw_rtrn_secdiff", "rlw_rtrn_prol", "rlw_rtrn_march",
     "rlw_rtrn_accum", "rlw_rtrn_final", "rlw_taumol_batched",
-    "rlw_rtrn_accum_rows", "rlw_rtrn_prol_gpoints",
+    "rlw_rtrn_accum_rows", "rlw_rtrn_prol_gpoints", "rlw_setcoef_layers",
+    "rlw_rtrn_march_inline", "rlw_rtrn_cloudy_layers",
 ) + tuple("rlw_taugb%d" % b for b in range(1, 17))
 
 
@@ -4691,7 +4561,7 @@ def gpu_rrtmg_lw_batched_device(ncol, nlay, icld, play, plev, tlay, tlev,
                                 ciwpmcl, clwpmcl, cswpmcl, reicmcl,
                                 relqmcl, resnmcl, tauaer, C,
                                 column_chunk=None, _stage_probe=None, *,
-                                mcica_layout="gpoint"):
+                                mcica_layout="gpoint", _march="inline"):
     """Batched full LW chain, device-resident: same kernels, same compile
     path, same launch-side numerics as gpu_rrtmg_lw -- the only changes
     are grid sizes (ncol > 1) and host plumbing.  Inputs numpy or cupy
@@ -4705,9 +4575,16 @@ def gpu_rrtmg_lw_batched_device(ncol, nlay, icld, play, plev, tlay, tlev,
     remains (NGPTLW, ncol, nlay).
     ``_stage_probe`` is test instrumentation (called at the allocation
     high-water stages); it must not affect results.
+    ``_march="inline"`` (the default) runs rlw_rtrn_march_inline, which forms
+    taut, odcld and efclfrac in the thread from taug, taua and taucmc
+    (_march_inline_source); ``"staged"`` runs the taut and prol kernels and
+    the coalesced march it replaced, kept as the in-suite reference.  Same
+    bits.
     """
     if mcica_layout not in ("gpoint", "column"):
         raise ValueError("mcica_layout must be gpoint or column")
+    if _march not in ("inline", "staged"):
+        raise ValueError("_march must be inline or staged")
     import cupy as cp
     gpu_preflight()
     if icld < 1:
@@ -4723,7 +4600,7 @@ def gpu_rrtmg_lw_batched_device(ncol, nlay, icld, play, plev, tlay, tlev,
         raise ValueError("column_chunk must be >= 1")
 
     K = _lw_dev_consts(cp, C)
-    i32, f32 = np.int32, np.float32
+    i32 = np.int32
 
     uflx = cp.zeros((ncol, nl + 1), dtype=cp.float32)
     dflx = cp.zeros((ncol, nl + 1), dtype=cp.float32)
@@ -4812,8 +4689,12 @@ def gpu_rrtmg_lw_batched_device(ncol, nlay, icld, play, plev, tlay, tlev,
         def IV(name):
             return isv_d[islot[name]]
 
-        _gpu_kernel("rlw_setcoef")(
-            ((nc + 63) // 64,), (64,),
+        # One thread per (column, layer): the serial kernel's statements,
+        # laytrop counted atomically into the zeroed laytrop_d
+        # (_setcoef_layers_source).
+        total = nc * nl
+        _gpu_kernel("rlw_setcoef_layers")(
+            ((total + 127) // 128,), (128,),
             (i32(nc), i32(nl), i32(1),
              FV("pavel"), tlay_d, tlev_d, tsfc_d, emis_d,
              FV("coldry"), wkl_d, wbrodl_d,
@@ -4854,29 +4735,11 @@ def gpu_rrtmg_lw_batched_device(ncol, nlay, icld, play, plev, tlay, tlev,
         fs_d = isv_d = None
         del wx_d
 
-        # ---- taut --------------------------------------------------------
-        taut_d = cp.empty((nc, nl, NGPTLW), dtype=cp.float32)
-        total = nc * nl * NGPTLW
-        _gpu_kernel("rlw_taut")(
-            ((total + 127) // 128,), (128,),
-            (i32(nc), i32(nl), taug_d, taua_d, K["ngb"], taut_d))
-        del taug_d, taua_d
-
-        # ---- rtrnmc pipeline ----------------------------------------------
+        # ---- secdiff -----------------------------------------------------
         secdiff = cp.empty((nc, NBNDLW), dtype=cp.float32)
         _gpu_kernel("rlw_rtrn_secdiff")(
             ((nc + 63) // 64,), (64,),
             (i32(nc), pwvcm_d, K["a0"], K["a1"], K["a2"], secdiff))
-
-        odcld = cp.empty((nc, nl, NGPTLW), dtype=cp.float32)
-        efclfrac = cp.empty((nc, nl, NGPTLW), dtype=cp.float32)
-        icldlyr = cp.zeros((nc, nl), dtype=cp.int32)
-        total = nc * nl
-        _gpu_kernel("rlw_rtrn_prol_gpoints")(
-            (total,), (128,),
-            (i32(nc), i32(nl), cldfmc_d, taucmc_d, secdiff, K["ngb"],
-             odcld, efclfrac, icldlyr))
-        del taucmc_d
 
         radld_p = scratch.take("radld_p", (nc, nl, NGPTLW), dtype=cp.float32)
         radclrd_p = scratch.take("radclrd_p", (nc, nl, NGPTLW), dtype=cp.float32)
@@ -4885,19 +4748,53 @@ def gpu_rrtmg_lw_batched_device(ncol, nlay, icld, play, plev, tlay, tlev,
         iclddn_p = scratch.take("iclddn_p", (nc, nl, NGPTLW), dtype=cp.uint8)
         radlu_sfc = scratch.take("radlu_sfc", (nc, NGPTLW), dtype=cp.float32)
         radclru_sfc = scratch.take("radclru_sfc", (nc, NGPTLW), dtype=cp.float32)
-        total = nc * NGPTLW
-        _gpu_kernel("rlw_rtrn_march_coalesced")(
-            ((total + 127) // 128,), (128,),
-            (i32(nc), i32(nl), cldfmc_d, odcld, efclfrac, icldlyr,
-             secdiff, emis_d, planklay, planklev, plankbnd,
-             fracs_d, taut_d, K["tau_tbl"], K["exp_tbl"], K["tfn_tbl"],
-             K["bpade"], K["ngb"],
-             radld_p, radclrd_p, radlu_p, radclru_p, iclddn_p,
-             radlu_sfc, radclru_sfc))
-        if _stage_probe is not None:
-            _stage_probe("march")
-        del (cldfmc_d, odcld, efclfrac, fracs_d, taut_d, planklay,
-             planklev, plankbnd, secdiff, icldlyr)
+        icldlyr = cp.zeros((nc, nl), dtype=cp.int32)
+        if _march == "inline":
+            # The cloudy-layer flags alone, then the march forming taut,
+            # odcld and efclfrac per (layer, g-point) in the thread.
+            _gpu_kernel("rlw_rtrn_cloudy_layers")(
+                (nc * nl,), (128,), (i32(nc), i32(nl), cldfmc_d, icldlyr))
+            total = nc * NGPTLW
+            _gpu_kernel("rlw_rtrn_march_inline")(
+                ((total + 127) // 128,), (128,),
+                (i32(nc), i32(nl), cldfmc_d, taucmc_d, icldlyr,
+                 secdiff, emis_d, planklay, planklev, plankbnd,
+                 fracs_d, taug_d, taua_d, K["tau_tbl"], K["exp_tbl"],
+                 K["tfn_tbl"], K["bpade"], K["ngb"],
+                 radld_p, radclrd_p, radlu_p, radclru_p, iclddn_p,
+                 radlu_sfc, radclru_sfc))
+            if _stage_probe is not None:
+                _stage_probe("march")
+            del (cldfmc_d, taucmc_d, fracs_d, taug_d, taua_d, planklay,
+                 planklev, plankbnd, secdiff, icldlyr)
+        else:
+            taut_d = cp.empty((nc, nl, NGPTLW), dtype=cp.float32)
+            total = nc * nl * NGPTLW
+            _gpu_kernel("rlw_taut")(
+                ((total + 127) // 128,), (128,),
+                (i32(nc), i32(nl), taug_d, taua_d, K["ngb"], taut_d))
+            del taug_d, taua_d
+            odcld = cp.empty((nc, nl, NGPTLW), dtype=cp.float32)
+            efclfrac = cp.empty((nc, nl, NGPTLW), dtype=cp.float32)
+            total = nc * nl
+            _gpu_kernel("rlw_rtrn_prol_gpoints")(
+                (total,), (128,),
+                (i32(nc), i32(nl), cldfmc_d, taucmc_d, secdiff, K["ngb"],
+                 odcld, efclfrac, icldlyr))
+            del taucmc_d
+            total = nc * NGPTLW
+            _gpu_kernel("rlw_rtrn_march_coalesced")(
+                ((total + 127) // 128,), (128,),
+                (i32(nc), i32(nl), cldfmc_d, odcld, efclfrac, icldlyr,
+                 secdiff, emis_d, planklay, planklev, plankbnd,
+                 fracs_d, taut_d, K["tau_tbl"], K["exp_tbl"], K["tfn_tbl"],
+                 K["bpade"], K["ngb"],
+                 radld_p, radclrd_p, radlu_p, radclru_p, iclddn_p,
+                 radlu_sfc, radclru_sfc))
+            if _stage_probe is not None:
+                _stage_probe("march")
+            del (cldfmc_d, odcld, efclfrac, fracs_d, taut_d, planklay,
+                 planklev, plankbnd, secdiff, icldlyr)
 
         totuflux = cp.empty((nc, nl + 1), dtype=cp.float32)
         totdflux = cp.empty((nc, nl + 1), dtype=cp.float32)

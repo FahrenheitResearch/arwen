@@ -87,7 +87,7 @@ from pathlib import Path
 from typing import Callable, Mapping
 
 from gpuwm.ensemble.config import EnsembleConfig
-from gpuwm.ensemble.engine import default_member_runner, run_ensemble
+from gpuwm.ensemble.engine import _emit, default_member_runner, run_ensemble
 from gpuwm.ensemble.increments import (STAGED_SUFFIX,
                                        apply_increments_to_checkpoint,
                                        publish_staged_analysis)
@@ -541,18 +541,6 @@ def read_analysis_roster(leg_root: str | Path, *, n_members: int,
             "and others are not is not one ensemble; refusing rather than "
             "reporting part of it." + hint)
     return found
-
-
-def _recover_all_publications(root: Path, *, on_event=None) -> list[dict]:
-    """Settle every leg under ``root`` before the run reads any of them."""
-    reports = []
-    for leg_root in sorted(Path(root).glob("cycle_*")):
-        if not leg_root.is_dir():
-            continue
-        report = recover_analysis_publication(leg_root, on_event=on_event)
-        if report is not None:
-            reports.append(report)
-    return reports
 
 
 def _replace_entry(manifest: dict, entry: dict) -> None:
@@ -1143,8 +1131,3 @@ def _member_background_checkpoint(member_dir: Path) -> Path:
             "to rewrite. Set restart_interval_s in the base experiment "
             "config so each leg checkpoints at its end.")
     return candidates[-1]
-
-
-def _emit(on_event, payload) -> None:
-    if on_event is not None:
-        on_event(payload)

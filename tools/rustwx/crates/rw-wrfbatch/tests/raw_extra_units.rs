@@ -10,42 +10,14 @@
 
 mod stored_plane_fixture;
 
-use std::path::{Path, PathBuf};
 
 use rustwx_core::ModelId;
 use rustwx_products::viewer::curated_style_for_store_variable;
 use rw_store::reader::HourReader;
 use rw_wrfbatch::wrf_process::{WrfProcessMessage, WrfProcessOptions, spawn_process_paths};
 
-struct Scratch(PathBuf);
-
-impl Scratch {
-    fn new(tag: &str) -> Self {
-        // Parallel tests read one clock tick on the 2.8.6 windows-2025 runner and collided on this name; the counter keeps each call distinct.
-        static NEXT_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "rw-wrfbatch-raw-units-{tag}-{}-{:?}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|value| value.as_nanos())
-                .unwrap_or_default(),
-            NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-        ));
-        std::fs::create_dir_all(&dir).expect("create scratch dir");
-        Self(dir)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+mod support;
+use support::Scratch;
 
 /// `(file name, units the file declares, value, store name)`.
 const PLANES: [(&str, &str, f32, &str); 5] = [
@@ -111,7 +83,7 @@ fn assert_file_units(reader: &HourReader, route: &str) {
 
 #[test]
 fn raw_extras_carry_the_units_their_file_declares() {
-    let scratch = Scratch::new("default");
+    let scratch = Scratch::new("rw-wrfbatch-raw-units", "default");
     let reader = import(&scratch, WrfProcessOptions::default());
     assert_file_units(&reader, "default");
 }
@@ -120,7 +92,7 @@ fn raw_extras_carry_the_units_their_file_declares() {
 fn raw_extras_carry_file_units_with_the_stored_plane_pass_off() {
     // Turning the stored-plane pass off is a speed choice; it must not
     // cost the raw extras their units.
-    let scratch = Scratch::new("raw-only");
+    let scratch = Scratch::new("rw-wrfbatch-raw-units", "raw-only");
     let reader = import(
         &scratch,
         WrfProcessOptions {
@@ -133,7 +105,7 @@ fn raw_extras_carry_file_units_with_the_stored_plane_pass_off() {
 
 #[test]
 fn stored_hail_draws_in_inches_on_the_precipitation_palette() {
-    let scratch = Scratch::new("hail-style");
+    let scratch = Scratch::new("rw-wrfbatch-raw-units", "hail-style");
     let reader = import(&scratch, WrfProcessOptions::default());
     let hail = reader
         .meta()

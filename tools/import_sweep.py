@@ -43,18 +43,17 @@ what `python -m tools.import_sweep` did -- exit 2, no verdict -- because
 `tilestream/attack_real12gb.py` refuses at import scope when the card is not
 idle.  A gate a module can terminate says nothing about the modules after it.
 
-WHY NOT `tools`, AND WHY NOT THE FIVE PROGRAMS UNDER `tilestream`
------------------------------------------------------------------
+WHY NOT `tools`
+---------------
 `tools/` ships, but several of its top-level modules print a report at import
 (`tools/perf_survey.py` and neighbours write their tables to stdout) and some
 open files beside them.  Importing them is a side effect, not a check, so the
 sweep covers the two packages whose modules are libraries.
 
-`tilestream/` carries five modules of the same shape -- the four `attack_*`
-one-off structural attacks and `digest_dump`, whose module bodies ARE the
-program: they read the device, spawn `tilestream.vram_probe` subprocesses,
-print their tables and, in `digest_dump`'s case, open `sys.argv[1]`.  They are
-named in `SCRIPT_MODULES`, walked, reported, and not imported.
+The former tilestream attack and digest programs have been retired.
+`SCRIPT_MODULES` remains an explicit inventory for any future script-only
+module: the sweep reports such an exclusion and tests forbid library imports
+from depending on it.
 """
 
 from __future__ import annotations
@@ -87,27 +86,11 @@ OPTIONAL_MODULES: dict[str, str] = {
     "rw_wps": "cargo build --release (tools/rw_wps)",
 }
 
-#: Modules the sweep ENUMERATES BUT DOES NOT IMPORT, each with what its
-#: module body does instead of defining names.  These are programs: importing
-#: `tilestream.attack_real12gb` spawns four `tilestream.vram_probe` trials on
-#: the device, `tilestream.attack_timing` runs a two-arm benchmark, and
-#: `tilestream.digest_dump` opens `sys.argv[1]` after a full physics reference
-#: run.  That is the objection the WHY NOT `tools` paragraph above makes,
-#: inside a package the sweep does cover, so it is answered the same way it is
-#: there and the way `OPTIONAL_MODULES` answers a missing extra: by name, with
-#: the reason, in a table -- never by widening an `except`.
-#:
-#: The exclusion costs no transitive coverage, because nothing else the two
-#: packages ship imports any of them; that is gated by
-#: tests/test_import_sweep.py::test_no_shipped_module_imports_a_declared_script.
-#: The `syntax` lane's `compileall` still parses every one of them.
-SCRIPT_MODULES: dict[str, str] = {
-    "tilestream.attack_instrument": "runs the overlap-instrument attack",
-    "tilestream.attack_intersect": "walks the carrier/arena intersection",
-    "tilestream.attack_real12gb": "spawns vram_probe trials on the device",
-    "tilestream.attack_timing": "runs the two-arm timing benchmark",
-    "tilestream.digest_dump": "writes sys.argv[1] after a reference run",
-}
+#: Script-only modules are enumerated and reported without importing their
+#: program bodies. No such module remains in the shipped packages.
+#: tests/test_import_sweep.py exercises this contract with a synthetic program
+#: and checks that future exclusions exist and have no library callers.
+SCRIPT_MODULES: dict[str, str] = {}
 
 #: The packages the wheel ships that are libraries rather than scripts.
 PACKAGES = ("gpuwm", "tilestream")

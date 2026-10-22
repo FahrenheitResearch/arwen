@@ -392,6 +392,15 @@ SOURCE_SEA = (4, 3)
 SOURCE_LAKE_ON_BASELINE_OCEAN = (6, N - 1)
 
 
+def _uniform_soil_fractions(sources, weights, grid, *, category_count):
+    ny, nx = grid.e_sn - 1, grid.e_we - 1
+    fractions = np.zeros((category_count, ny, nx))
+    fractions[5] = 1.0
+    return fractions, {"raw_component_total_percent_min": 100.0,
+                       "raw_component_total_percent_max": 100.0,
+                       "valid_source_pixels": ny * nx}
+
+
 def _stub_categories(monkeypatch):
     def fake_categories(source, grid, mapping, *, category_count):
         ny, nx = grid.e_sn - 1, grid.e_we - 1
@@ -404,18 +413,10 @@ def _stub_categories(monkeypatch):
             fractions[category - 1, row + halo, col + halo] = 1.0
         return fractions
 
-    def fake_soil(sources, weights, grid, *, category_count):
-        ny, nx = grid.e_sn - 1, grid.e_we - 1
-        fractions = np.zeros((category_count, ny, nx))
-        fractions[5] = 1.0
-        return fractions, {"raw_component_total_percent_min": 100.0,
-                           "raw_component_total_percent_max": 100.0,
-                           "valid_source_pixels": ny * nx}
-
     monkeypatch.setattr(highres_module, "resample_mapped_categories",
                         fake_categories)
     monkeypatch.setattr(highres_module, "soilgrids_category_fractions",
-                        fake_soil)
+                        _uniform_soil_fractions)
 
 
 @pytest.mark.parametrize("rule, sea, lake", [
@@ -752,16 +753,8 @@ def test_cells_past_the_tiles_edges_take_the_baseline(tmp_path,
     window = derive_landcover_window(raster, bbox, tmp_path / "cache")
     assert landcover_window_audit(window)["clipped_to_raster"] is True
 
-    def fake_soil(sources, weights, grid, *, category_count):
-        ny, nx = grid.e_sn - 1, grid.e_we - 1
-        fractions = np.zeros((category_count, ny, nx))
-        fractions[5] = 1.0
-        return fractions, {"raw_component_total_percent_min": 100.0,
-                           "raw_component_total_percent_max": 100.0,
-                           "valid_source_pixels": ny * nx}
-
     monkeypatch.setattr(highres_module, "soilgrids_category_fractions",
-                        fake_soil)
+                        _uniform_soil_fractions)
     baseline = _noah_baseline(n - 1)
     baseline["LU_INDEX"][:] = 12.0
     baseline["LANDMASK"][:] = 1.0

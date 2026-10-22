@@ -210,18 +210,10 @@ _FORECAST_EXECUTOR_MODULES = (
 )
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as stream:
-        for block in iter(lambda: stream.read(8 * 1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
+_sha256 = prepared_single._sha256
 
 
-def _canonical(value) -> str:
-    return json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False
-    )
+_canonical = prepared_single._canonical
 
 
 def _chem_ledger_receipt(state):
@@ -443,15 +435,7 @@ def _inside(path: Path, root: Path) -> bool:
         return False
 
 
-def _sibling_outdir(protected: Path) -> Path:
-    """A concrete --outdir the guard below will accept, beside ``protected``.
-
-    Named in the refusal so it reads as an instruction rather than a
-    rule.  It matches what the front door now suggests, so the two
-    surfaces send the user to the same directory.
-    """
-    protected = Path(protected)
-    return protected.parent / f"{protected.name}-forecast"
+_sibling_outdir = prepared_single._sibling_outdir
 
 
 def claim_output_directory(output: Path, *, protected_roots: tuple[Path, ...]) -> Path:
@@ -1268,18 +1252,7 @@ def _validate_domain_receipt(
         raise RuntimeError("domain artifact path escaped its bundle")
 
 
-def _announce_adopted_coordinate(sentence: str) -> None:
-    """Say, once, which coordinate this forecast is actually integrating."""
-
-    from gpuwm.explain import warn
-
-    warn(sentence,
-         "The prepared inputs carry the hybrid coefficient arrays "
-         "themselves, the way WRF's wrfinput carries C3H/C4H, so the model "
-         "integrates them rather than rebuilding from the configuration.  "
-         "The preparation derived this etac from the terrain the run can "
-         "touch because the configured one could not order every column; "
-         "its receipt names the governing column.  p_top is unchanged.")
+_announce_adopted_coordinate = prepared_single._announce_adopted_coordinate
 
 
 def _validate_vertical(reader: PreparedCacheReader, exp, grid_id: int) -> None:
@@ -1371,15 +1344,22 @@ class StreamedClockGuard:
                  run_seconds: float):
         from gpuwm.ingest.boundary_stream import derived_clock
         from gpuwm.terrain_clock import (
-            boundary_geometry_from_cache, start_winds_from_cache)
+            MemoStartWinds, boundary_geometry_from_cache,
+            start_winds_from_cache)
 
         self.basis = basis
         self.root = int(root_grid_id)
         self.run_seconds = float(run_seconds)
         self.expected = derived_clock(run_clock)
+        # Read once each: the start states do not move while the forecast
+        # runs, and each boundary instant is read at the interval that
+        # brings it, not again at every later one (MemoStartWinds,
+        # MemoBoundaryWinds).
         self.starts = {
-            int(gid): start_winds_from_cache(reader, f"d{int(gid):02d}")
+            int(gid): MemoStartWinds.wrap(
+                start_winds_from_cache(reader, f"d{int(gid):02d}"))
             for gid, reader in basis.readers.items()}
+        self._boundary_memo: dict = {}
         reader = basis.readers.get(self.root)
         self.geometry = (None if reader is None else
                          boundary_geometry_from_cache(
@@ -1396,7 +1376,7 @@ class StreamedClockGuard:
             StreamedClockChanged, derived_clock)
         from gpuwm.ingest.lateral_bc import LateralBoundaries
         from gpuwm.terrain_clock import (
-            BoundaryWinds, clock_for_domains, clock_receipt)
+            MemoBoundaryWinds, clock_for_domains, clock_receipt)
 
         if self.geometry is None:
             # The sealed derivation reads no boundary winds either
@@ -1405,9 +1385,10 @@ class StreamedClockGuard:
             return
         self.intervals[float(interval.start_seconds)] = interval
         ordered = tuple(self.intervals[key] for key in sorted(self.intervals))
-        boundary = BoundaryWinds(
+        boundary = MemoBoundaryWinds(
             f"d{self.root:02d}", LateralBoundaries(ordered, 1, 1, 1),
-            self.geometry, self.run_seconds)
+            self.geometry, self.run_seconds,
+            memo=getattr(self, "_boundary_memo", {}))
         _, clock = clock_for_domains(
             self.basis.experiment, self.basis.acoustic,
             statics=self.basis.statics, starts=self.starts,
@@ -1762,6 +1743,32 @@ def validate_physics_profile(exp, *, source: str, profile: str | None):
         exp, source=source, profile=profile, all_domains=True)
 
 
+def _refuse_dormant_without_corridor(exp, preparation) -> None:
+    """A dormant nest needs a sealed corridor: its birth ground is a crop of it.
+
+    Breakage it prevents: a spawn firing mid-run at a placement no static
+    was prepared for, after hours of integration.  Named here, before
+    anything restores, instead.
+    """
+    from gpuwm.experiment import dormant_domain_ids
+    dormant = [int(gid) for gid in dormant_domain_ids(exp)]
+    if not dormant:
+        return
+    corridor_set = preparation.get("statics_corridor")
+    covered = (corridor_set.get("domains")
+               if isinstance(corridor_set, Mapping) else None)
+    missing = [f"d{gid:02d}" for gid in dormant
+               if not isinstance(covered, Mapping)
+               or f"d{gid:02d}" not in covered]
+    if missing:
+        raise ValueError(
+            f"{', '.join(missing)} declare(s) spawn, but this prepared bundle "
+            "seals no statics corridor for them: a nest born at a placement "
+            "chosen mid-run takes its ground from its corridor on this route. "
+            "Re-prepare with --statics-corridor (gpuwm go passes it for a "
+            "config whose nests follow a storm), or give the slot a follow table.")
+
+
 def preflight_prepared_tree(
     *,
     prepared_root: Path,
@@ -1860,6 +1867,8 @@ def preflight_prepared_tree(
     from gpuwm.core.devices import validate_device_road, validate_tree_devices
     validate_device_road(exp.devices, getattr(exp, "tiles", None), exp.domains)
     validate_tree_devices(exp)
+    from gpuwm.free_threading import refuse_multi_card_under_gil
+    refuse_multi_card_under_gil(exp.devices.count, "prepared tree forecast")
     # THE COORDINATE THE PREPARED INPUTS CARRY, before anything derived
     # from the configuration's own etac exists: the per-domain identity
     # comparison below, a streamed tile buffer's rebuilt coordinate, a
@@ -1875,8 +1884,12 @@ def preflight_prepared_tree(
     # so it neither reserves a dormant nest's VRAM nor evaluates its
     # trigger.  A declared spawn must not integrate as a silently absent
     # nest.
-    from gpuwm.experiment import refuse_unrouted_spawn
-    refuse_unrouted_spawn(exp, "prepared domain-tree")
+    # Dormant (spawn-declared) nests are reserved and spawned on this route:
+    # run_prepared_tree builds the startup tree without them and walks the
+    # run in legs (gpuwm.runtime.walk_spawn_legs), cropping each newborn's
+    # statics from its sealed corridor (runtime.build_prepared_tree_spawn_runner,
+    # which refuses by name a dormant slot the bundle sealed no corridor for).
+    _refuse_dormant_without_corridor(exp, preparation)
     _validate_delayed_prepared_geometry(exp)
     # NO streaming refusal for [tiles]: this route wires a streamed-domain
     # builder (streaming.builders_for_tree, below), so mode = 'on' is
@@ -2452,21 +2465,7 @@ def _verify_inputs_unchanged(inputs: PreparedTreeInputs) -> None:
             )
 
 
-def _provenance_receipt() -> dict:
-    """The running tree, for the report.  Never raises.
-
-    Same contract as the single-domain runner's: beside
-    ``runtime_source_identity``, never instead of it.  That one binds
-    the implementation's bytes; this one names the install they came
-    out of.
-    """
-
-    try:
-        from gpuwm.provenance_gate import receipt_block
-
-        return receipt_block()
-    except Exception as error:                          # noqa: BLE001
-        return {"unavailable": f"{type(error).__name__}: {error}"}
+_provenance_receipt = prepared_single._provenance_receipt
 
 
 #: How long one ``git rev-parse`` may take before it is treated as
@@ -3075,6 +3074,19 @@ def _warm_start_resume(initialization, start_time):
                   for grid, clock in clocks.items()}})
 
 
+def _settle_checkpoint(publisher) -> None:
+    """Land a checkpoint already snapshotted, without masking a failure.
+
+    Called on a failure path: the run's own error is the news, so a
+    checkpoint write that failed too is reported on stderr, not raised.
+    """
+    try:
+        publisher.wait()
+    except BaseException as late:  # noqa: BLE001 - keep the first failure
+        print("prepared tree: the last checkpoint could not be written "
+              f"({type(late).__name__}: {late})", file=sys.stderr, flush=True)
+
+
 from gpuwm.hydro.runtime import forecast_scope as _hydro_forecast_scope
 
 
@@ -3406,8 +3418,22 @@ def run_prepared_tree(
         radiation_workspace=radiation_workspace,
     )
 
-    clock = resolve_clock(exp, lbc_interval_s=float(inputs.boundary_interval_seconds))
-    schedule = build_schedule(exp, clock)
+    # Dormant (spawn-declared) nests are PRICED above -- the estimate, the
+    # shared arena and the dycore workspace all span exp.domains -- and
+    # integrate nothing until they fire: clocks, schedule and nodes come
+    # from the startup tree (gpuwm.experiment.pre_spawn_experiment), the
+    # same split gpuwm.core.model.build_experiment makes on the case route.
+    from gpuwm.experiment import dormant_domain_ids, pre_spawn_experiment
+    dormant_ids = frozenset(int(gid) for gid in dormant_domain_ids(exp))
+    startup_exp = pre_spawn_experiment(exp) if dormant_ids else exp
+    clock = resolve_clock(
+        startup_exp, lbc_interval_s=float(inputs.boundary_interval_seconds),
+        # The declared tree's tick (dormant nests included), so a spawn
+        # never re-means a tick the live clocks already count in.
+        tick_den_floor=(resolve_clock(
+            exp, lbc_interval_s=float(inputs.boundary_interval_seconds)).tick_den
+            if dormant_ids else None))
+    schedule = build_schedule(startup_exp, clock)
     clocks = clock.clocks()
     nodes = {}
     prepared = {}
@@ -3677,6 +3703,10 @@ def run_prepared_tree(
                 case)
 
     for domain, grid, bundle in zip(exp.domains, inputs.grids, inputs.domains):
+        if int(domain.grid_id) in dormant_ids:
+            # Reserved, not built: the spawn walk materializes it from the
+            # live parent when its trigger fires.
+            continue
         initialized = None
         store_bundle = None
         if domain.grid_id in store_ids and initialization is None:
@@ -3959,8 +3989,12 @@ def run_prepared_tree(
     # itself only when it first records something leaves every
     # checkpoint taken before the opening cadence boundary silently
     # follower-free, and a resume then rebuilds the follower cold.
+    spawn_runner = runtime.build_prepared_tree_spawn_runner(
+        exp, statics_corridor=inputs.statics_corridor, model=model,
+        outdir=outdir, radiation_workspace=radiation_workspace)
     runtime.publish_lifecycle_runners(
-        model, relocation_runner=relocation_runner)
+        model, spawn_runner=spawn_runner,
+        relocation_runner=relocation_runner)
 
     from gpuwm.ensemble.runtime_context import bind_current_member_model
     bind_current_member_model(model)
@@ -4203,8 +4237,27 @@ def run_prepared_tree(
         memory_watch.sample()
 
     checkpoint_publisher = prepared_single._CheckpointPublisher()
+    # ``--checkpoint-at`` (gpuwm.checkpoint_schedule): the instants a later
+    # leg restarts from.  Resolved here, before the first step, so an
+    # instant this run never reaches is refused now and not discovered by
+    # the leg that needed it.  Absent, every scheduled checkpoint is written.
+    from gpuwm import checkpoint_schedule
+    checkpoint_instants = checkpoint_schedule.current()
+    checkpoint_selection = (None if checkpoint_instants is None else
+                            checkpoint_schedule.resolve(
+                                checkpoint_instants,
+                                start_time=model.schedule.clock.start_time,
+                                run_ticks=model.schedule.clock.run_ticks,
+                                restart_ticks=model.root.clock.spec.restart_ticks,
+                                tick_den=model.schedule.clock.tick_den))
 
     def restart_handler(tree, ticks):
+        if (checkpoint_selection is not None
+                and not checkpoint_selection.keeps(ticks)
+                and not checkpoint_schedule.restart_requested()):
+            # Scheduled, and no later leg restarts from it.
+            return
+        # At most one checkpoint in flight; a failed one fails the run here.
         checkpoint_publisher.wait()
         valid = exp.start_time + timedelta(seconds=ticks / tree.schedule.clock.tick_den)
         restart_started = time.perf_counter()
@@ -4299,7 +4352,7 @@ def run_prepared_tree(
         getattr(observer, "output_committed", None),
         step_log.output_committed if step_log.enabled else None,
         None if first_products is None else
-        lambda **event: first_products.frame_committed(**event))
+        first_products.frame_committed)
     if landing and writers is not None:
         writers.attach_progress_callback(landing)
     if writers is not None:
@@ -4401,8 +4454,42 @@ def run_prepared_tree(
         before_rewind=rearm_products,
         sealed_forcing_extension=sealed_forcing_extension)
 
+    def _newborn_stepper(grid_id, _node):
+        # A spawned nest was priced by the cold plan before the first step
+        # (the reservation contract); it runs on the road that plan chose.
+        decision = cold_decisions.get(int(grid_id))
+        if decision is not None and getattr(decision, "stream", False):
+            raise RuntimeError(
+                f"d{int(grid_id):02d} was planned to stream, and a spawned nest "
+                "has no streamed-domain builder on the prepared tree route; give "
+                "the slot a smaller size_km or the card more room")
+        return None
+
     def execute_leg(active_experiment):
         try:
+            if spawn_runner is not None:
+                # The leg walk: dormant nests are born mid-run, follow their
+                # storm, retire on their own and re-arm (docs/nest-lifecycle.md).
+                return runtime.walk_spawn_legs(
+                    model, active_experiment, None,
+                    spawn_runner=spawn_runner, writers=writers,
+                    lbc_interval_s=float(inputs.boundary_interval_seconds),
+                    relocation_runner=relocation_runner,
+                    relocation_runner_factory=(
+                        lambda: runtime.build_prepared_tree_relocation_runners(
+                            active_experiment,
+                            statics_corridor=inputs.statics_corridor,
+                            model=model, outdir=outdir,
+                            radiation_workspace=radiation_workspace)),
+                    spawned_stepper_factory=_newborn_stepper,
+                    history_handler=None if writers is None else history_handler,
+                    restart_handler=restart_handler,
+                    progress_callback=progress_callback,
+                    validate_state=True, health_debug=health_debug,
+                    skip_feedback_path=(int(exp.feedback) == 0),
+                    steppers=steppers, step_observer=step_observer,
+                    delayed_child_initializer=initialize_delayed_child,
+                    **({} if schedule_dispatch is None else {"schedule_dispatch": schedule_dispatch}))
             return execute_experiment(
                 model, history_handler=None if writers is None else history_handler,
                 restart_handler=restart_handler, progress_callback=progress_callback,
@@ -4437,22 +4524,39 @@ def run_prepared_tree(
             execution = (
                 _completed_execution_report(model) if already_complete
                 else recovery.run(execute_leg))
+            checkpoint_publisher.wait()
             wrfout_paths = ()
         else:
             with writers:
                 execution = (
                     _completed_execution_report(model) if already_complete
                     else recovery.run(execute_leg))
+                # The last checkpoint is durable, or its failure is raised,
+                # before anything below reports the run.
+                checkpoint_publisher.wait()
                 writers.drain(before_domain=runtime._drain_progress(observer))
                 wrfout_paths = writers.paths
         exp = recovery.experiment
         inputs = replace(inputs, experiment=exp)
+        if spawn_runner is not None:
+            # One row per nest life (spawn, track, stop reason), from the
+            # receipts the walk just closed.
+            from gpuwm.nest_lives import write_nest_lives
+            try:
+                write_nest_lives(outdir)
+            except Exception as error:  # the forecast is done; never lose it here
+                print(f"prepared tree: nest-lives summary not written: {error}", flush=True)
         runtime._finalizing_progress(observer, "close-relocation-receipt")
+        if spawn_runner is not None:
+            # The walk rebinds the runner as newborn followers come alive;
+            # the live binding is the one that holds their moves.
+            relocation_runner = getattr(model, "_relocation_runner", relocation_runner)
         if relocation_runner is not None:
             relocation_runner.close_receipt(model)
     except BaseException as error:
         from gpuwm.ingest.boundary_stream import SourceBehind
 
+        _settle_checkpoint(checkpoint_publisher)
         stopped = None
         if isinstance(error, SourceBehind):
             # A late source lead: the tree is at a clean seam (asked for
@@ -4503,7 +4607,9 @@ def run_prepared_tree(
     final_health = {}
     final_stability = {}
     final_digests = {}
-    for grid_id, node in nodes.items():
+    # The LIVE tree: a spawned nest still integrating at the end is checked
+    # beside the startup grids; a retired one was detached at its boundary.
+    for grid_id, node in dict(model.nodes_by_grid_id).items():
         validator = health_validator_for_domain(model, node)
         runtime._finalizing_progress(observer, f"final-health-d{grid_id:02d}",
             work_bytes=getattr(validator, "host_scan_bytes", None))
@@ -4583,8 +4689,16 @@ def run_prepared_tree(
 
     mynn_column_chunk = mynn_column_chunk_receipt()
     from gpuwm.hydro.runtime import current_settings as _hydro_settings, activation_receipt
+    from gpuwm import numerics as _numerics
+    from gpuwm.free_threading import host_threads_report as _host_threads_report
+    from gpuwm.smoke_receipts import receipt as smoke_execution_receipt
     report = {
+        **smoke_execution_receipt(exp.root.run),
         "hydro_activation": activation_receipt(_hydro_settings()),
+        # Read by the release gate's defaults-active leg (R15); see the
+        # single-domain report.
+        "numerics": _numerics.receipt(),
+        "host_threads": _host_threads_report(),
         **({} if inputs.physics_profile_assertion is None else
            {"physics_profile_assertion": dict(inputs.physics_profile_assertion)}),
         **({} if inputs.acoustic_substeps is None else
@@ -5112,6 +5226,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="plot selectors for every committed frame of every "
                              "grid, each drawn as it lands, 'all', or 'none'; "
                              "omitted means no rendering")
+    from gpuwm.product_publish import add_arguments as add_publish_arguments
+    add_publish_arguments(parser)
     parser.add_argument("--render-dir", type=Path, default=None, metavar="DIR",
                         help="picture directory (default OUTDIR/png); "
                              "ignored without --render-products")

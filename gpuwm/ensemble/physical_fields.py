@@ -18,12 +18,22 @@ from collections.abc import Mapping
 from copy import deepcopy
 import hashlib
 import json
+from pathlib import Path
 
 FIELD_SCHEMA = "gpuwm-ensemble-physical-fields.v1"
 
 
 def canonical_json(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def sha256_of_file(path: Path) -> str:
+    """Content sha256 of ``path`` (streamed)."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for block in iter(lambda: stream.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def canonical_grid_sha256(grid):

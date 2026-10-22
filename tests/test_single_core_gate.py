@@ -137,8 +137,14 @@ def test_cli_watch_fails_a_serial_command_and_allowlist_names_it(tmp_path):
     allow = tmp_path / "allow.json"
     allow.write_text(json.dumps([{"match": "^python", "reason": "the test's own spin", "owner": "this test",
                                   "retire_when": "never"}]))
-    done = subprocess.run(gate[:3] + ["--allow", str(allow)] + gate[3:], capture_output=True, text=True,
-                          timeout=60)
+    # Contention comes and goes on a shared Stage-1 host: a spin that got 0.44 of a core here while the
+    # calibration spin a moment later got a whole one (2.9.4 pass 723a0719).  Up to three readings; the
+    # calibration still decides whether a miss is the host or the gate.
+    for _attempt in range(3):
+        done = subprocess.run(gate[:3] + ["--allow", str(allow)] + gate[3:], capture_output=True, text=True,
+                              timeout=60)
+        if done.returncode != 0 or "allowed" in done.stdout:
+            break
     assert done.returncode == 0, done.stdout + done.stderr
     if "allowed" not in done.stdout:
         _skip_if_host_cannot_give_one_core("CLI watch did not read the allowed spin as single-core")
@@ -183,6 +189,25 @@ def test_stage_meter_records_cores():
             _skip_if_host_cannot_give_one_core("stage meter read the spin below one core")
         assert 0.6 <= rec["cores"] <= 1.3 and rec["verdict"] == "single-core", rec
     assert set(rec) >= {"wall_s", "cpu_s", "cores", "card_busy", "verdict"}
+
+
+def test_many_waiting_processes_summing_to_one_core_are_a_wait_and_one_pinned_process_is_not():
+    # 2.9.4 R11 (2026-10-22): the hydro spin-up forcing fetch ran 24 rw_zarr extracts at once, each ~0.05 core on
+    # network reads; the tree summed to ~1.1 cores and the gate called it single-core. Own CPU per process tells
+    # the two apart; one process pinned on a core stays red.
+    def ticks(per_process, processes):
+        rows = []
+        for i in range(30):
+            own = {str(p): int(i * per_process * par._TICK) for p in range(2, 2 + processes)}
+            rows.append({"t": float(i), "mono": float(i), "total": sum(own.values()), "per": dict(own),
+                         "own": own, "on_card": False})
+        return rows
+    names = {p: "rw_zarr extract" for p in range(2, 30)}
+    spread = par.analyse(ticks(0.05, 22), names, None, interval=1.0, ncpu=24, **QUICK)
+    assert spread["windows"] and {w["verdict"] for w in spread["windows"]} == {"waiting"}
+    assert par.verdict(spread, [])[0] == []
+    pinned = par.analyse(ticks(1.0, 1), names, None, interval=1.0, ncpu=24, **QUICK)
+    assert par.verdict(pinned, [])[0]
 
 
 def test_a_busy_card_that_the_tree_does_not_hold_excuses_nothing():

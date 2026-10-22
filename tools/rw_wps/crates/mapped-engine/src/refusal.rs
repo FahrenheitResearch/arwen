@@ -103,7 +103,11 @@ pub fn python_float_repr(value: f64) -> String {
         };
     }
     let magnitude = value.abs();
-    if value != 0.0 && (magnitude < 1e-4 || magnitude >= 1e16) {
+    // Spelled as two comparisons on purpose: a NaN magnitude must take the plain branch, and
+    // the range-contains spelling would send it to the exponent formatter.
+    #[allow(clippy::manual_range_contains)]
+    let exponent_form = magnitude < 1e-4 || magnitude >= 1e16;
+    if value != 0.0 && exponent_form {
         let text = format!("{value:e}");
         // Rust: `1.5e30` / `1.5e-7`.  Python: `1.5e+30` / `1.5e-07`.
         let (mantissa, exponent) = text.split_once('e').expect("exponent form");
@@ -150,12 +154,10 @@ pub fn python_repr(value: &str) -> String {
     text
 }
 
-/// Refusal classes, 1:1 with `gpuwm.mapped_engine_bridge.REFUSAL_CLASSES`.
+/// Refusal classes.
 pub mod class {
     /// argv grammar the engine could not parse.
     pub const USAGE: &str = "usage";
-    /// a declared subcommand or option that this build does not implement.
-    pub const NOT_IMPLEMENTED: &str = "not_implemented";
     /// a declared input file is absent, unreadable, or empty.
     pub const MISSING_INPUT: &str = "missing_input";
     /// the mapping document is not a well-formed `rw-wps.mapping.v1`.

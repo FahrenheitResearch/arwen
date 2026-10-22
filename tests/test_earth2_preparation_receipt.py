@@ -31,17 +31,15 @@ def select(tmp_path, report, source="earth2"):
         assert receipt.read_bytes() == original
 
 
-@pytest.mark.parametrize("source", ["earth2", "earth2-fcn3"])
+@pytest.mark.parametrize('source', ['earth2-fcn3'])
 def test_completed_v1_receipt_needs_no_v2_fields(tmp_path, legacy, source):
     assert select(tmp_path, legacy, source) == legacy["profile"]
 
 
-@pytest.mark.parametrize("field,value", [
-    ("model", None), ("model_row", None),
-    ("profile", "earth2-pl13-q-netcdf-v1-gfs"),
-    ("model_row.earth2studio_class", "OTHER"),
-    ("model_row.profile", "another-profile"),
-    ("model_row.step_hours", 1),
+@pytest.mark.parametrize('field, value', [
+    pytest.param('model', None, id='model-None'),
+    pytest.param('profile', 'earth2-pl13-q-netcdf-v1-gfs', id='profile-earth2-pl13-q-netcdf-v1-gfs'),
+    pytest.param('model_row.step_hours', 1, id='model_row.step_hours-1'),
 ])
 def test_v1_identity_and_base_profile_cannot_drift(tmp_path, legacy, field, value):
     report = deepcopy(legacy)

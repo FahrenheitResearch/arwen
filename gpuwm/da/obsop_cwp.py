@@ -102,40 +102,11 @@ from dataclasses import dataclass
 import numpy as np
 
 from gpuwm.core import constants as c
+from gpuwm.da.spread_repair import _xp as _module_for
 from gpuwm.obs.goes_cwp import CLASS_CLEAR, CLASS_ICE, CLASS_LIQUID
 
 #: kg m-2 -> g m-2, the unit the packs and the gridded product both use.
 KG_TO_G = 1000.0
-
-#: What the operator names as its authorities, carried into receipts so a
-#: reader never has to take this module's word for where the numbers came
-#: from.
-FORMULATION = {
-    "form": ("CWP = 1000 * sum_k q_cond * (c1h*mu + c2h) * (-dnw) / G "
-             "[g m-2]"),
-    "measure_authority": ("gpuwm/verify/cases/moist_bubble.py:125-134 "
-                          "(_water_mass), the model's own eta-coordinate "
-                          "column mass integral"),
-    "measure_note": ("exact in the discretisation via "
-                     "gpuwm/core/kernels/diagnostics.cu:11 "
-                     "(alt = -(dph)*rdnw/(c1h*mu+c2h)); avoids state.alt, "
-                     "which gpuwm/da/perturb.py:1639 documents as stale "
-                     "after any state mutation"),
-    "species_authority": ("gpuwm/core/rrtmgp.py:1097-1098 and "
-                          "gpuwm/core/rrtmg_legacy_prep.py:538-539: the "
-                          "model's own optical condensate, liquid = qc, "
-                          "ice = qi + qs"),
-    "rain_excluded_authority": ("gpuwm/core/rrtmgp.py:1243 (rain never "
-                                "enters QCLD) and gpuwm/core/refl.py:13 "
-                                "(qr/qs/qg are the reflectivity side)"),
-    "gravity": "gpuwm.core.constants.G = 9.81",
-    "gravity_note": ("gpuwm/core/rrtmgp.py:1096 uses 9.80665 for its own "
-                     "paths; a comparison against clwp+ciwp differs by "
-                     "0.035% on this constant alone"),
-    "phase_source": ("the observation's phase class, never the model's; a "
-                     "state-dependent species selection would make H "
-                     "discontinuous in x"),
-}
 
 
 class CwpOperatorError(ValueError):
@@ -191,16 +162,6 @@ class CwpComposition:
                 "matches docs/obs-goes-cwp-operator-spec.md v1 (qs excluded "
                 "from the ice branch)"),
         }
-
-
-def _module_for(array):
-    """NumPy or CuPy, chosen by what the state actually holds."""
-
-    if type(array).__module__.split(".")[0] == "cupy":
-        import cupy  # noqa: PLC0415
-
-        return cupy
-    return np
 
 
 def column_mass_per_area(c1h, c2h, dnw, mu, *, xp=np):

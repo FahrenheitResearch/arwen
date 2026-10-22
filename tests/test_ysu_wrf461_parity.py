@@ -31,7 +31,7 @@ WRF's NaN into a ULP maximum hides it behind a big number:
 
 CLOSED in golden/ports-pbl (2026-10-12), and now inside the ordinary table:
 
-* case 12 -- ``ust``, ``hfx`` and ``qfx`` are all exactly zero.  ``ysu.cu``
+* case 12 -- ``ust``, ``hfx`` and ``qfx`` are all exactly zero.  ``ysu_480.cu``
   used to short circuit this column (zero tendencies, ``PBLH = dz(1)``,
   ``KPBL = 1``) and, through ``-ftz``, case 13's subnormal ``ust`` too.
   ``bl_ysu_run`` has no such branch: it computes a 703 m PBL with nine levels
@@ -47,7 +47,7 @@ CLOSED in lane/parity-286, and now inside the ordinary table:
   also true and the column went convective (wstar 0.2362 and delta 18.49 where
   WRF writes 0, hpbl 1525 ULP, momentum 4.5e7 ULP, theta 1.8e9 ULP).  The
   compare is now made in double through the bit-decoding ``ysu_f2d``
-  (ysu_topo.cuh, the Shin-Hong ``sh_f2d`` fix), and case 7 measures inside
+  (ysu_480_topo.cuh, the Shin-Hong ``sh_f2d`` fix), and case 7 measures inside
   the table below with kpbl equal to WRF's.
 * the surface-drag arm -- WRF's driver passes ``ctopo = ctopo2 = 1`` on every
   default run (``module_bl_ysu.F:404``), so ``bl_ysu.F90:1308`` is the drag
@@ -86,7 +86,7 @@ from gpuwm.verify.ysu_oracle import (
 #: when the zero-flux short circuit was removed (golden/ports-pbl).
 BRANCH_DIVERGENCE_CASES = (13,)
 
-#: Worst ULP distance from ``kernels/ysu.cu`` to the word ``bl_ysu_run`` wrote,
+#: Worst ULP distance from ``kernels/ysu_480.cu`` to the word ``bl_ysu_run`` wrote,
 #: over the 23 columns where WRF wrote numbers (22 until golden/ports-pbl
 #: removed the zero-flux short circuit and case 12 joined at 0 ULP on every
 #: field; the maxima below did not move -- RTX PRO 6000, NVRTC 12.9).  This is the kernel
@@ -254,7 +254,7 @@ def test_wrfs_default_ctopo_arm_differs_from_the_ctopo_absent_arm():
     Registry default fills both with 1.0, so ``bl_ysu.F90:1308`` -- not
     ``:1315`` -- is the surface-drag diagonal of every default WRF run.  The
     kernel takes that arm (the paj TKE block, ``get_pblh`` and the Beljaars
-    ``vconv`` in ysu_topo.cuh) on every entry point.  This pins that the two
+    ``vconv`` in ysu_480_topo.cuh) on every entry point.  This pins that the two
     arms really differ on this fixture, so the gate below is not vacuous.
     """
     fixture = _fixture()
@@ -504,7 +504,7 @@ def test_case_13_is_wrfs_word_wherever_wrf_wrote_a_number():
     ``ust`` is the smallest subnormal.  WRF's ``ust**3`` underflows to zero
     while ``wstar3`` is zero and ``sfcflg`` is true, so ``prfac2`` is 0/0
     (bl_ysu.F90:963) and the heat tendency fills with NaN.  gpuwm implements
-    the defined algebraic value instead (kernels/ysu.cu's float64
+    the defined algebraic value instead (kernels/ysu_480.cu's float64
     re-evaluation of ``prfac2``) -- a DECLARED divergence where WRF is
     undefined.  On every lane WRF wrote a number the port writes WRF's word,
     and ``kpbl``/``hpbl`` are WRF's.

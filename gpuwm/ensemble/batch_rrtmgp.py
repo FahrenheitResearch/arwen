@@ -23,15 +23,7 @@ import numpy as np
 
 from gpuwm.ensemble.batch_storage import BatchArraySpec, BatchMemoryPlan, BatchStorage
 from gpuwm.ensemble.batch_state import _temporal_key
-
-
-def _positive(value, name):
-    if isinstance(value, (bool, np.bool_)):
-        raise TypeError(f"{name} must be an integer")
-    result = index(value)
-    if result <= 0:
-        raise ValueError(f"{name} must be positive")
-    return result
+from gpuwm.ensemble.batch_storage import _positive_count as _positive
 
 
 def _scalar(value):

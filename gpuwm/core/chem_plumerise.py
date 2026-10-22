@@ -28,6 +28,23 @@ KERNEL_MODULES = ('chem_plumerise',)
 PLUME_WORKSPACE_WORDS = 131 * 202
 #: Fire columns per launch (bounds the workspace at 2048 x 106 KB).
 PLUME_BATCH_COLUMNS = 2048
+
+
+def memory_shapes(cfg, nrows):
+    """All columns may burn; only the solver workspace is batch bounded."""
+    n = cfg.nx * cfg.ny
+    z = cfg.nz
+    return {}, {
+        'workspace': (min(n, PLUME_BATCH_COLUMNS), PLUME_WORKSPACE_WORDS),
+        'selected_met': (n, 8, z + 1),
+        'packed_met': (n, 8, z + 1),
+        'incoming': (n, nrows), 'output': (n, nrows, z),
+        'properties': (n, 24),  # full-grid prop and packed selected props
+        'results': (n, 38),  # columns, gate, bounds, diagnostics, iterations, groups
+        'unit_emission': (n, nrows),
+    }
+
+
 ALLOCATES = (
     ChemAllocation('plume_k_min','2d','int32'),
     ChemAllocation('plume_k_max','2d','int32'),
@@ -307,6 +324,11 @@ def step(ctx,dt,ktau):
     result=launch(met,unit,arm=arm,**inputs)
     scatter(result,ctx.diag['plume_k_min'],ctx.diag['plume_k_max'],
             ctx.diag['plume_flam_frac'],ctx.diag['plume_top'])
+    flam_part=float(getattr(ctx.cfg,'flam_part',-1.0))
+    if flam_part!=-1.0 and result['columns'].size:
+        # HRRR v4.1.21 fork (smoke/module_plumerise1.F:141, :176-180): one
+        # flaming fraction, config_flags%flam_part, on every plume column.
+        ctx.diag['plume_flam_frac'].ravel()[result['columns']]=np.float32(flam_part)
     if arm=='frp':
         inactive=inputs['frp_inst']<np.float32(inputs.get('parameters',defaults).frp_min)
     else:

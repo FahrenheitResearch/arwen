@@ -158,7 +158,8 @@ def metgrid_soil(case, cfg, *, fractional_seaice):
         num_soil_layers=soil_layer_count(cfg), soil_type=static['SCT_DOM'],
         deep_soil_temperature=static['TMN'], soil_layer_contract=contract,
         landmask=static['LANDMASK'], terrain=static['HGT_M'], source_orography=case.source_orography,
-        water_temperature_policy='wrf_compat', fractional_seaice=fractional_seaice)
+        water_temperature_policy='wrf_compat', fractional_seaice=fractional_seaice,
+        seaice_threshold=float(getattr(cfg, 'seaice_threshold', 100.0)))
     return static, replace(case.snapshot, fields=fields), canonical_noah_surface(prepared), contract
 
 

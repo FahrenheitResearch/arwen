@@ -207,9 +207,19 @@ def _prep_argv(tmp_path, *extra):
     ]
 
 
-def test_the_front_door_fills_the_mapped_command_in_from_the_profile(
+def test_the_front_door_tells_the_mapped_runner_which_source_it_is(
     tmp_path, capsys,
 ):
+    """So the mapped route can print its forecast command when it ends.
+
+    The prepared-forecast command is bound to a source id, and the
+    mapped runner is generic -- it has no idea which name the front door
+    was called by.  Without the id forwarded, the route finished a
+    preparation and printed nothing, while the GFS route printed a
+    complete hash-bound line; that gap sent a pilot hunting digests
+    inside proof.json and onto the one field that never matches.
+    """
+
     assert main(_prep_argv(tmp_path)) == 0
     command = capsys.readouterr().out
     authorities = packaged_authorities("20crv3-netcdf-v1")
@@ -228,22 +238,7 @@ def test_the_front_door_fills_the_mapped_command_in_from_the_profile(
         f"--provenance {profile['provenance_role']}="
         in command)
 
-
-def test_the_front_door_tells_the_mapped_runner_which_source_it_is(
-    tmp_path, capsys,
-):
-    """So the mapped route can print its forecast command when it ends.
-
-    The prepared-forecast command is bound to a source id, and the
-    mapped runner is generic -- it has no idea which name the front door
-    was called by.  Without the id forwarded, the route finished a
-    preparation and printed nothing, while the GFS route printed a
-    complete hash-bound line; that gap sent a pilot hunting digests
-    inside proof.json and onto the one field that never matches.
-    """
-
-    assert main(_prep_argv(tmp_path)) == 0
-    assert "--prepared-forecast-source 20crv3-cf" in capsys.readouterr().out
+    assert "--prepared-forecast-source 20crv3-cf" in command
 
 
 def test_a_caller_may_not_substitute_their_own_mapping_into_the_name(

@@ -330,7 +330,7 @@ def carrier_inventory(obj, names=None) -> dict[str, object]:
 #: it and the post-step hook that clears each tile's one-frame stash -- and
 #: this package re-exports its name rather than typing the string again.
 #: Audit R-052 found the string typed out in two more modules of this
-#: package (``case_hrrr``, ``case_wrfout``) beside the one that owns it, and
+#: package beside the one that owns it, and
 #: a store built by one of them while the sweep was configured by another is
 #: how a computed field came to be thrown away.
 REFL_KEY = _streaming.REFL_STORE_KEY

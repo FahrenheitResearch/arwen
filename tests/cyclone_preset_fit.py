@@ -66,3 +66,11 @@ def cycle_for(source, default=WALK_CYCLE):
         return default
     # The same month, day and hour in the last full year the archive holds.
     return wanted.replace(year=last.year - 1).strftime("%Y%m%d%H")
+
+
+def source_licence(source):
+    """Explicitly accept only the swept row's licence for configuration checks."""
+    from gpuwm.earth2_licensing import licence_scope, model_row
+    adapter = get_source_adapter(source)
+    found = model_row(adapter.source_id) if adapter.acquisition_owner else None
+    return licence_scope([found[1]["weights"]["licence"]] if found else [])

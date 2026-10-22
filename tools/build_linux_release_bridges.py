@@ -31,7 +31,10 @@ RUST_VERSION = "1.94.0"
 WORKSPACES = ("tools/grib1_bridge", "tools/region_global_dealias",
               "tools/rustwx", "tools/rw_wps", "tools/arwen-tui",
               "tools/zarr_bridge", "tools/nextgen_hydrofabric",
-              "tools/nextgen_forcing", "tools/nextgen_verify")
+              "tools/nextgen_forcing", "tools/nextgen_verify", "tools/nextgen_output",
+              "tools/hydro_world", "tools/hydro_world_params",
+              "tools/nextgen_reservoir_prepare", "tools/hydro_world_init",
+              "tools/ocean_prepare", "tools/rw-bathy")
 CONTEXT_NAME = ".arwen-manylinux-build-context.json"
 CONTEXT_SCHEMA = "arwen.manylinux.build-context.v1"
 

@@ -63,6 +63,31 @@ def _price_recorder(seen: dict, value):
     return price
 
 
+def _stub_multi_run(monkeypatch, multi_run, seen, uuid, price):
+    # Worker admission scenarios stay independent of the local card.
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", uuid)
+    monkeypatch.setattr(multi_run, "GPUFileLock", _NullLock)
+    monkeypatch.setattr(multi_run, "priced_reservation_bytes",
+                        _price_recorder(seen, price))
+    monkeypatch.setattr(multi_run, "preflight_exclusive_gpu",
+                        lambda uuid, **kwargs: seen.update(preflight=kwargs))
+    monkeypatch.setattr(multi_run.importlib, "import_module",
+                        lambda name: SimpleNamespace(main=lambda arguments: 0))
+
+
+def _stub_supervisor(monkeypatch, supervisor, seen, price):
+    # Both resolved-input doors use the same card and subprocess stand-ins.
+    monkeypatch.setattr(supervisor, "select_gpu",
+                        lambda uuid: SimpleNamespace(uuid="GPU-alpha"))
+    monkeypatch.setattr(supervisor, "GPUFileLock", _NullLock)
+    monkeypatch.setattr(supervisor, "priced_reservation_bytes",
+                        _price_recorder(seen, price))
+    monkeypatch.setattr(supervisor, "preflight_exclusive_gpu",
+                        lambda uuid, **kwargs: seen.update(preflight=kwargs))
+    monkeypatch.setattr(subprocess, "run",
+                        lambda *_args, **_kwargs: SimpleNamespace(returncode=0))
+
+
 def _gate_module():
     spec = importlib.util.spec_from_file_location(
         "gf_real74_dual_gpu_free_gate", GATE_PATH)
@@ -117,17 +142,7 @@ def test_multi_run_worker_prices_its_admission_from_its_experiment_config(
     config.write_text("[experiment]\nname='fixture'\n", encoding="utf-8")
 
     seen: dict[str, object] = {}
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-alpha")
-    monkeypatch.setattr(multi_run, "GPUFileLock", _NullLock)
-    monkeypatch.setattr(
-        multi_run, "priced_reservation_bytes",
-        _price_recorder(seen, 9 * 2 ** 30))
-    monkeypatch.setattr(
-        multi_run, "preflight_exclusive_gpu",
-        lambda uuid, **kwargs: seen.update(preflight=kwargs))
-    monkeypatch.setattr(
-        multi_run.importlib, "import_module",
-        lambda name: SimpleNamespace(main=lambda arguments: 0))
+    _stub_multi_run(monkeypatch, multi_run, seen, 'GPU-alpha', 9 * 2 ** 30)
 
     assert multi_run._locked_module_main(
         gpu_uuid="GPU-alpha",
@@ -222,17 +237,7 @@ def test_multi_run_check_worker_prices_the_configuration_it_reviews(
     config.write_text("[experiment]\nname='fixture'\n", encoding="utf-8")
 
     seen: dict[str, object] = {}
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-beta")
-    monkeypatch.setattr(multi_run, "GPUFileLock", _NullLock)
-    monkeypatch.setattr(
-        multi_run, "priced_reservation_bytes",
-        _price_recorder(seen, 3 * 2 ** 30))
-    monkeypatch.setattr(
-        multi_run, "preflight_exclusive_gpu",
-        lambda uuid, **kwargs: seen.update(preflight=kwargs))
-    monkeypatch.setattr(
-        multi_run.importlib, "import_module",
-        lambda name: SimpleNamespace(main=lambda arguments: 0))
+    _stub_multi_run(monkeypatch, multi_run, seen, 'GPU-beta', 3 * 2 ** 30)
 
     assert multi_run._locked_check_main(
         gpu_uuid="GPU-beta", config=config, mode="alloc") == 0
@@ -256,19 +261,7 @@ def test_metem_run_door_prices_the_experiment_it_already_resolved(
         metem_door, "resolve_metem_run", lambda directory, **kwargs: run)
 
     seen: dict[str, object] = {}
-    monkeypatch.setattr(
-        supervisor, "select_gpu",
-        lambda uuid: SimpleNamespace(uuid="GPU-alpha"))
-    monkeypatch.setattr(supervisor, "GPUFileLock", _NullLock)
-    monkeypatch.setattr(
-        supervisor, "priced_reservation_bytes",
-        _price_recorder(seen, 11 * 2 ** 30))
-    monkeypatch.setattr(
-        supervisor, "preflight_exclusive_gpu",
-        lambda uuid, **kwargs: seen.update(preflight=kwargs))
-    monkeypatch.setattr(
-        subprocess, "run",
-        lambda *_args, **_kwargs: SimpleNamespace(returncode=0))
+    _stub_supervisor(monkeypatch, supervisor, seen, 11 * 2 ** 30)
 
     source = tmp_path / "source"
     source.mkdir()
@@ -291,19 +284,7 @@ def test_wrfinput_run_door_prices_the_experiment_the_directory_declares(
         wrfinput_door, "resolve_wrfinput_run", lambda directory, **kwargs: run)
 
     seen: dict[str, object] = {}
-    monkeypatch.setattr(
-        supervisor, "select_gpu",
-        lambda uuid: SimpleNamespace(uuid="GPU-alpha"))
-    monkeypatch.setattr(supervisor, "GPUFileLock", _NullLock)
-    monkeypatch.setattr(
-        supervisor, "priced_reservation_bytes",
-        _price_recorder(seen, 5 * 2 ** 30))
-    monkeypatch.setattr(
-        supervisor, "preflight_exclusive_gpu",
-        lambda uuid, **kwargs: seen.update(preflight=kwargs))
-    monkeypatch.setattr(
-        subprocess, "run",
-        lambda *_args, **_kwargs: SimpleNamespace(returncode=0))
+    _stub_supervisor(monkeypatch, supervisor, seen, 5 * 2 ** 30)
 
     # The --outdir claim refuses an output inside the input tree, so the
     # two are siblings here as they are on a real command line.

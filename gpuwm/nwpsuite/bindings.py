@@ -6,7 +6,6 @@ They supply prepared authority and existing CPU doors, never measured admission.
 from __future__ import annotations
 
 from copy import deepcopy
-import hashlib
 import json
 import math
 from pathlib import Path
@@ -15,6 +14,7 @@ import sys
 import tomllib
 
 from gpuwm.cycle.ledger import write_receipt_atomically
+from .prepare import _sha256 as _file_hash
 
 # Row ids carry hyphens (cam-det), so artifact names such as
 # {artifacts.cam-det.12.0.run_plan} do too; without "-" those stayed literal in
@@ -333,14 +333,6 @@ def resolve_context(row, context):
         if not progress:
             raise ValueError(f"suite_binding_cycle: unresolved {sorted(values)}")
     return context
-
-
-def _file_hash(path):
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1048576), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def materialize(row, context, plan, *, check_source=True):

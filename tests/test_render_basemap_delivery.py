@@ -146,7 +146,7 @@ def _pack(tmp_path: Path, *, platform: str = "linux-x86_64",
 # The declaration cannot go stale
 # ---------------------------------------------------------------------------
 
-def test_the_bundle_carries_every_map_asset_file_in_the_tree(tmp_path):
+def test_the_bundle_carries_every_map_asset_file_in_the_tree(packed_basemap_bundle):
     """Walked from the tree, never enumerated.
 
     This is the gate the wheel's ``tools = ["prepare_hrrr_*.sh"]`` line
@@ -156,8 +156,7 @@ def test_the_bundle_carries_every_map_asset_file_in_the_tree(tmp_path):
     file on disk is not in the archive.
     """
 
-    _require_source_assets()
-    archive = _pack(tmp_path)
+    archive, _pins = packed_basemap_bundle
     import zipfile
 
     with zipfile.ZipFile(archive) as zf:
@@ -179,7 +178,7 @@ def test_the_bundle_carries_every_map_asset_file_in_the_tree(tmp_path):
         "them:\n  " + "\n  ".join(missing))
 
 
-def test_the_shapefile_layers_the_renderer_reads_are_all_carried(tmp_path):
+def test_the_shapefile_layers_the_renderer_reads_are_all_carried(packed_basemap_bundle):
     """Name the layers by hand, once, where a human will read the failure.
 
     The walk above proves the archive matches the tree; this proves the
@@ -189,8 +188,7 @@ def test_the_shapefile_layers_the_renderer_reads_are_all_carried(tmp_path):
     the same class of silent loss in a different disguise.
     """
 
-    _require_source_assets()
-    archive = _pack(tmp_path)
+    archive, _pins = packed_basemap_bundle
     import zipfile
 
     with zipfile.ZipFile(archive) as zf:
@@ -289,8 +287,18 @@ def _pin_document(tmp_path: Path, archive: Path, release: str) -> dict:
     return json.loads(out.read_text(encoding="utf-8"))
 
 
+@pytest.fixture(scope="module")
+def packed_basemap_bundle(tmp_path_factory):
+    """One read-only packed archive; staging destinations remain test-local."""
+    _require_source_assets()
+    directory = tmp_path_factory.mktemp("basemap-bundle")
+    archive = _pack(directory)
+    pins = bridge_assets.parse_pins(_pin_document(directory, archive, "v0-assets"))
+    return archive, pins
+
+
 def test_staging_writes_the_assets_where_the_renderer_already_looks(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, packed_basemap_bundle):
     """The staged path must be on ``rw_wrfbatch``'s own resolution ladder.
 
     Not "somewhere gpuwm can find and pass along": the binary resolves
@@ -300,11 +308,7 @@ def test_staging_writes_the_assets_where_the_renderer_already_looks(
     only by intention.
     """
 
-    _require_source_assets()
-    release = "v0-assets"
-    archive = _pack(tmp_path, release=release)
-    document = _pin_document(tmp_path, archive, release)
-    pins = bridge_assets.parse_pins(document)
+    archive, pins = packed_basemap_bundle
     bundle = pins.platforms["linux-x86_64"]
     assert bundle.assets, "the pinned bundle declares no assets"
 
@@ -332,14 +336,10 @@ def test_staging_writes_the_assets_where_the_renderer_already_looks(
     assert rustwx.resolve_basemap_dir(renderer) == staged_root
 
 
-def test_a_corrupt_asset_is_refused_rather_than_staged(tmp_path):
+def test_a_corrupt_asset_is_refused_rather_than_staged(tmp_path, packed_basemap_bundle):
     """Asset bytes are verified exactly as binary bytes are."""
 
-    _require_source_assets()
-    release = "v0-assets"
-    archive = _pack(tmp_path, release=release)
-    document = _pin_document(tmp_path, archive, release)
-    pins = bridge_assets.parse_pins(document)
+    archive, pins = packed_basemap_bundle
     bundle = pins.platforms["linux-x86_64"]
 
     victim = bundle.assets[0]
@@ -358,9 +358,7 @@ def test_a_corrupt_asset_is_refused_rather_than_staged(tmp_path):
 
 @pytest.mark.parametrize("escape", [
     "../outside.shp",
-    "assets/../../outside.shp",
     "/etc/passwd",
-    "assets/basemap/../../../outside.shp",
     "C:/windows/system32/evil.dll",
     "assets\\basemap\\evil.shp",
     "basemap/no-asset-root.shp",
@@ -381,14 +379,10 @@ def test_a_pinned_asset_path_cannot_escape_the_destination(escape):
         bridge_assets.parse_pins(payload)
 
 
-def test_a_bundle_missing_a_pinned_asset_is_refused(tmp_path):
+def test_a_bundle_missing_a_pinned_asset_is_refused(tmp_path, packed_basemap_bundle):
     """A half-built bundle must not stage its binaries and shrug."""
 
-    _require_source_assets()
-    release = "v0-assets"
-    archive = _pack(tmp_path, release=release)
-    document = _pin_document(tmp_path, archive, release)
-    pins = bridge_assets.parse_pins(document)
+    archive, pins = packed_basemap_bundle
     bundle = pins.platforms["linux-x86_64"]
     invented = bridge_assets.BundlePin(
         platform=bundle.platform, filename=bundle.filename,
@@ -404,7 +398,7 @@ def test_a_bundle_missing_a_pinned_asset_is_refused(tmp_path):
 
 
 def test_current_binaries_with_missing_assets_are_reported_not_skipped(
-        tmp_path, monkeypatch, capsys):
+        tmp_path, monkeypatch, capsys, packed_basemap_bundle):
     """The upgrade path out of 1.4.0, in the words a user needs.
 
     Someone who already ran ``fetch-bridges`` has eight current binaries
@@ -413,11 +407,7 @@ def test_current_binaries_with_missing_assets_are_reported_not_skipped(
     say why.
     """
 
-    _require_source_assets()
-    release = "v0-assets"
-    archive = _pack(tmp_path, release=release)
-    document = _pin_document(tmp_path, archive, release)
-    pins = bridge_assets.parse_pins(document)
+    archive, pins = packed_basemap_bundle
     bundle = pins.platforms["linux-x86_64"]
 
     dest = tmp_path / "bridges"

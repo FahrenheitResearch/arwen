@@ -139,19 +139,12 @@ def _validate_volume_fields(
     if nz < 2 or nz > _KMAX:
         raise ValueError(
             f"NSSL driver support requires 2 <= nz <= {_KMAX}, got {nz}")
-    for name, value in fields.items():
-        if value.shape != shape:
-            raise ValueError(
-                f"{name} must have shape {shape}, got {value.shape}")
-        if value.dtype != DTYPE:
-            raise TypeError(f"{name} must be float32, got {value.dtype}")
-        if not value.flags.c_contiguous:
-            raise ValueError(f"{name} must be C-contiguous")
+    _validate_surface_fields(fields, shape)
     return (nz, ny, nx), int(np.prod(shape, dtype=np.int64))
 
 
 def _validate_surface_fields(
-        fields: dict[str, object], shape: tuple[int, int],
+        fields: dict[str, object], shape: tuple[int, ...],
         ) -> None:
     for name, value in fields.items():
         if value.shape != shape:

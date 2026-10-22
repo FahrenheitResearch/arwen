@@ -29,6 +29,7 @@
         "fields": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
         "weights": {"type": "array", "minItems": 1, "items": {"type": "number"}},
         "conversion": {"enum": ["identity", "kg_m3_to_ug_kg_dry", "kg_kg_moist_to_ug_kg_dry", "kg_kg_moist_to_ppmv_dry"]},
+        "frames": {"enum": ["all", "initial", "boundary"]},
         "provenance": {"$ref": "#/definitions/provenance"}
       }
     },
@@ -138,6 +139,7 @@
         "aging": {"oneOf": [{"type": "null"}, {"$ref": "#/definitions/aging"}]},
         "optics": {"type": ["object", "null"]},
         "mp_coupling": {"type": ["object", "null"]},
+        "radiation": {"type": ["object", "null"], "additionalProperties": false, "required": ["shortwave", "provenance"], "properties": {"shortwave": {"enum": ["hrrr_smoke_aod"]}, "provenance": {"$ref": "#/definitions/provenance"}}},
         "exclusive_group": {"type": ["string", "null"]},
         "dust_emission": {"oneOf": [{"type": "null"}, {"$ref": "#/definitions/dust_emission"}]},
         "seasalt_emission": {"oneOf": [{"type": "null"}, {"$ref": "#/definitions/seasalt_emission"}]},

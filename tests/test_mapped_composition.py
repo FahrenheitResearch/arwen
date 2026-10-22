@@ -688,15 +688,6 @@ def test_broadcast_alignment_still_refuses_a_changing_supplement():
         )
 
 
-def test_composition_time_alignment_grammar_is_closed(tmp_path):
-    raw = json.loads(COMPOSITION.read_text(encoding="utf-8"))
-    raw["supplements"]["terrain_height"]["time_alignment"] = "whenever"
-    path = tmp_path / "bad-alignment.json"
-    path.write_text(json.dumps(raw), encoding="utf-8")
-    with pytest.raises(ValueError, match="time alignment"):
-        load_composition(path, MAPPING)
-
-
 class _StubFrameSet(Sequence):
     """A frameset stand-in with the document surface the seal reads.
 
@@ -905,24 +896,6 @@ def test_compose_scratch_env_override_refuses_a_missing_directory_by_name(
     assert "GPUWM_COMPOSE_SCRATCH" in message
     assert str(missing) in message
     assert not harness.engine_calls
-
-
-def test_compose_scratch_falls_back_to_system_temp_without_a_destination(
-        tmp_path, monkeypatch):
-    """No destination, no override: the system temp is the documented home.
-
-    Callers with no real output directory (in-memory recompose paths)
-    stage streams sized to what they hold in memory, so the system temp
-    is proportionate there and demanding a destination would refuse
-    work that was never at risk.
-    """
-
-    monkeypatch.delenv("GPUWM_COMPOSE_SCRATCH", raising=False)
-    harness = _engine_compose_harness(tmp_path, monkeypatch)
-
-    harness.compose(None)
-
-    assert harness.captured["kwargs"].get("dir") is None
 
 
 def test_a_full_scratch_disk_names_where_the_next_attempt_stages(

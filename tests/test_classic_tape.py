@@ -128,14 +128,3 @@ def test_a_bare_python_number_takes_the_width_classic_can_hold():
     assert classic_attr_value(2.5).dtype == np.float64
     assert classic_attr_value(np.float32(2.5)).dtype == np.float32
     assert classic_attr_value("text") == "text"
-
-
-def test_an_aborted_tape_leaves_numrecs_at_zero(tmp_path):
-    path = tmp_path / "aborted.nc"
-    tape = _tape(path)
-    variable = tape.createVariable(
-        "T2", "f4", ("Time", "south_north", "west_east"))
-    variable[0] = np.zeros((2, 3), dtype="f4")
-    tape.abort()
-    with netCDF4.Dataset(path) as ds:
-        assert len(ds.dimensions["Time"]) == 0

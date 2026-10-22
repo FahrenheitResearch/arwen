@@ -167,7 +167,7 @@ def _run_front_door(config: pathlib.Path, outdir: pathlib.Path) -> None:
 
 def _wrfout_digests(outdir: pathlib.Path) -> dict[str, dict[str, str]]:
     """``{wrfout name: {variable: sha256}}`` for every history file written."""
-    from tilestream.bench_ooc_output import file_var_digests
+    from tilestream.output import file_var_digests
 
     files = sorted(p for p in outdir.rglob("wrfout*") if p.is_file())
     if not files:

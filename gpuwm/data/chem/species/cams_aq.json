@@ -33,6 +33,17 @@
           ],
           "conversion": "kg_kg_moist_to_ppmv_dry",
           "provenance": "CAMS mass mixing ratio per moist air is taken to dry air as q/(1-q_v) with the same frame's CAMS specific humidity, then to ppmv as q_dry * mwdry / M_i * 1e6 with mwdry = 28.966 g/mol (share/module_model_constants.F:34) and M_i this row's molar_mass_g_mol."
+        },
+        {
+          "source": "cams-reanalysis",
+          "fields": [
+            "ozone"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ppmv_dry",
+          "provenance": "CAMS mass mixing ratio per moist air is taken to dry air as q/(1-q_v) with the same frame's CAMS specific humidity, then to ppmv as q_dry * mwdry / M_i * 1e6 with mwdry = 28.966 g/mol (share/module_model_constants.F:34) and M_i this row's molar_mass_g_mol."
         }
       ],
       "drydep": {
@@ -85,6 +96,17 @@
           ],
           "conversion": "kg_kg_moist_to_ppmv_dry",
           "provenance": "CAMS mass mixing ratio per moist air is taken to dry air as q/(1-q_v) with the same frame's CAMS specific humidity, then to ppmv as q_dry * mwdry / M_i * 1e6 with mwdry = 28.966 g/mol (share/module_model_constants.F:34) and M_i this row's molar_mass_g_mol."
+        },
+        {
+          "source": "cams-reanalysis",
+          "fields": [
+            "nitrogen_dioxide"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ppmv_dry",
+          "provenance": "CAMS mass mixing ratio per moist air is taken to dry air as q/(1-q_v) with the same frame's CAMS specific humidity, then to ppmv as q_dry * mwdry / M_i * 1e6 with mwdry = 28.966 g/mol (share/module_model_constants.F:34) and M_i this row's molar_mass_g_mol."
         }
       ],
       "drydep": {
@@ -129,6 +151,17 @@
       "boundary": [
         {
           "source": "cams-global",
+          "fields": [
+            "carbon_monoxide"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ppmv_dry",
+          "provenance": "CAMS mass mixing ratio per moist air is taken to dry air as q/(1-q_v) with the same frame's CAMS specific humidity, then to ppmv as q_dry * mwdry / M_i * 1e6 with mwdry = 28.966 g/mol (share/module_model_constants.F:34) and M_i this row's molar_mass_g_mol."
+        },
+        {
+          "source": "cams-reanalysis",
           "fields": [
             "carbon_monoxide"
           ],

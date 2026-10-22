@@ -31,12 +31,13 @@ def test_address_twin_preserves_float_statements():
     kdir = Path(lw.__file__).parent / "kernels"
     chain = (kdir / "rrtmg_lw_chain.cu").read_text(encoding="utf-8")
     twin = lw._lw_coalesced_source(chain)
-    # The committed twin is exactly the generator's output after its header,
-    # so an edit to the chain that is not regenerated here fails.
-    committed = (kdir / "rrtmg_lw_chain_coalesced.cu").read_text(
-        encoding="utf-8")
-    assert committed.startswith(lw._LW_COALESCED_HEADER)
-    assert committed[committed.index("\n\n") + 2:] == twin
+    # The generated twin occupies the historical sorted-glob position, with
+    # the batched engine's inline march (rlw_rtrn_march_inline, derived from
+    # the twin's march) appended after the coalesced march.
+    source = lw._gpu_source()
+    generated = lw._with_march_inline(lw._LW_COALESCED_HEADER + twin)
+    assert source.count(generated) == 1
+    assert source.index(chain) < source.index(generated)
     # Intrinsic arithmetic statements retain their exact source order.
     assert re.findall(r"RLW_\w+\([^;]+", chain) == re.findall(r"RLW_\w+\([^;]+", twin)
     assert "#define PRO(a, l) a[((long long)col * nl + ((l) - 1)) * NGPTLW + (igc - 1)]" in twin

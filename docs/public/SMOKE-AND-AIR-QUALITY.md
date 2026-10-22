@@ -17,6 +17,8 @@ that feed them.
 
 ### Wildfire smoke (HRRR-Smoke style)
 
+HRRR-Smoke is off by default in 2.9.4 (opt in with --smoke; it currently costs ~11x per step); history is hourly (the 15-min history subset stream is next release). The packaged `hrrr_v4_gsd41` recipe ships smoke off; `--smoke` on `gpuwm go`, `gpuwm domain --recipe`, `gpuwm standby` and `gpuwm race` turns on its full HRRR-Smoke set (measured on full CONUS, 8x RTX 5090). A card that cannot hold the smoke still drops it for that run and says so.
+
 ```toml
 [shared]
 chem_sets = "smoke"
@@ -164,8 +166,10 @@ gpuwm render --products smoke_near_surface,pm25_near_surface,aod_550 OUT/wrfout_
 ## What it is not
 
 - No gas-phase chemistry, by design (see the top of this page).
-- Aerosols do not feed radiation yet: the optics are computed and written,
-  and `aer_ra_feedback = 1` is refused because no radiation scheme reads them.
+- `aer_ra_feedback = 1` in `[shared]` connects active `optics.gocart`
+  mass to option 4 RRTMG or RRTMGP radiation, including clear-sky fluxes.
+  See [chemistry radiation feedback](../chem-radiation-feedback.md) for
+  spectral assumptions, bulk-smoke composition and event qualification.
 - With a cumulus scheme on (grids coarser than about 4 km), set
   `chem_conv_tr = 0`: convective transport of the species is not
   transcribed, and leaving it at WRF's default 1 is refused.

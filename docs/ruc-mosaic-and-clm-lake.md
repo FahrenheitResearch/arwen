@@ -95,6 +95,22 @@ The separate stochastic RUC inputs and `flag_sm_adj` remain outside this
 runtime change. WRF's existing defined-value treatment for uninitialized
 thin-snow `ilnb` is unchanged.
 
+**Declared divergence from the operational WRF 3.9 fork (HRRR v4.1.21):**
+the lake column keeps WRF v4.6.1's open-water scalar roughness,
+`z0hg = z0qg = z0mg`, on every route, including HRRR configurations.
+The fork replaces it with a COARE form
+(`sorc/hrrr_wrfarw.fd/WRFV3.9/phys/module_sf_lake.F`, lines 984-997,
+sha256 7cf098f3...): `Ren = MAX(ustar(p)*z0mg(p)/visc, 0.1)` and
+`z0hg = 5.5e-5 * Ren**(-0.60)`, clamped to 2e-9..1e-4 m, with
+`z0qg = z0hg`. At line 991 `ustar` is a local array that
+`FrictionVelocity` has not yet assigned for this call, so the fork's value
+depends on whatever the memory held and cannot be reproduced; any value
+this port chose in its place would be invented, not ported. The ruling
+(2026-10-05) is to keep the defined WRF v4.6.1 form and record the fork
+difference here. Lake heat and moisture fluxes at HRRR lake points can
+therefore differ from HRRR's own; the referee for them is observations,
+not the fork.
+
 WRF and WPS source attribution and notices are in `NOTICE`,
 `licenses/LICENSE-WRF-public-domain.txt`, and beside the oracle sources.
 The WPS download page points to the same public-domain notice:

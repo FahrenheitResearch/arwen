@@ -196,24 +196,7 @@ def test_both_engines_publish_a_portable_digest_that_survives_a_move(engine, tmp
         directory.mkdir()
         copied = directory / SAMPLE.name
         shutil.copy2(SAMPLE, copied)
-        environment = dict(os.environ)
-        environment[engine_bridge.ENGINE_ENV] = engine
-        completed = subprocess.run(
-            [
-                sys.executable, "-c",
-                "import json,sys;from gpuwm.mapped_source import inspect_mapped_source;"
-                "print(json.dumps(inspect_mapped_source(sys.argv[1], [sys.argv[2]])"
-                "['materialization']))",
-                str(MAPPING), str(copied),
-            ],
-            capture_output=True, text=True, env=environment, cwd=str(REPOSITORY),
-        )
-        if completed.returncode:
-            pytest.fail(
-                f"{engine} engine refused on the committed sample: "
-                f"{completed.stderr.strip().splitlines()[-1:] or ['(no stderr)']}"
-            )
-        materialization = json.loads(completed.stdout.strip().splitlines()[-1])
+        materialization = _materialization(engine, copied)
         assert materialization["verdict"] == "PASS"
         digests.append(
             (

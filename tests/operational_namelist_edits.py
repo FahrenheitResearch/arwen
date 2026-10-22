@@ -1,19 +1,14 @@
 """The operational HRRR namelist as tests import it since 2026-10-12.
 
-Three decisions of the namelist door changed what NOAA's own namelist
+Two decisions of the namelist door changed what NOAA's own namelist
 (NOAA-EMC/HRRR v4.1.21 ``parm/conus/hrrr_wrf.nl``) becomes:
 
 * its HRRR-Smoke chemistry (``chem_opt = 18``) is no longer imported to
   run with none.  It maps onto ArWen's ``smoke`` set, and the four smoke
   settings ArWen does not carry are refused by name
   (tests/test_operational_namelist_door.py pins that refusal).  A test
-  that is about something else in that namelist imports it through
-  :func:`importable`, which changes exactly those four settings and
-  ``hailcast_opt`` (next point).
-* its ``hailcast_opt = 1`` is refused by name (ArWen does not run
-  WRF-HAILCAST on this line; it feeds nothing back, so 0 changes no
-  forecast field).  :func:`importable` writes 0, as does
-  :func:`without_smoke`.
+  that is about something else imports it through :func:`importable`,
+  which changes exactly those four settings. HAILCAST remains enabled.
 * the namelist omits ``&dynamics top_lid``, which now imports as WRF's
   open top instead of the profile's rigid lid.  A control pinned to the
   bytes or the hash of an earlier import reads the one lid line through
@@ -31,17 +26,6 @@ _SMOKE_EDITS = (
     (re.compile(r"^(\s*simple_dir_fdb\s*=\s*)1,", re.M), r"\g<1>0,"),
 )
 
-#: The HAILCAST request, refused by name since 2026-10-12.
-_HAILCAST_EDIT = (re.compile(r"^(\s*hailcast_opt\s*=\s*)1$", re.M), r"\g<1>0")
-
-
-def _without_hailcast(text: str) -> str:
-    pattern, replacement = _HAILCAST_EDIT
-    text, count = pattern.subn(replacement, text)
-    assert count == 1, pattern.pattern
-    return text
-
-
 OPEN_TOP_LINE = "\ntop_lid = false\n"
 RIGID_LID_LINE = "\ntop_lid = true\n"
 
@@ -49,11 +33,11 @@ RIGID_LID_LINE = "\ntop_lid = true\n"
 def importable(text: str) -> str:
     """NOAA's namelist with the four refused smoke settings changed to the
     spelling ArWen carries (smoke dry deposition off, no enhanced mixing,
-    no flaming fraction, no direct radiative feedback), and HAILCAST off."""
+    no flaming fraction, no direct radiative feedback)."""
     for pattern, replacement in _SMOKE_EDITS:
         text, count = pattern.subn(replacement, text)
         assert count == 1, pattern.pattern
-    return _without_hailcast(text)
+    return text
 
 
 _SMOKE_SELECTOR = re.compile(r"^(\s*chem_opt\s*=\s*)18,", re.M)
@@ -61,11 +45,10 @@ _SMOKE_SELECTOR = re.compile(r"^(\s*chem_opt\s*=\s*)18,", re.M)
 
 def without_smoke(text: str) -> str:
     """NOAA's namelist with its chemistry switched off (``chem_opt = 0``):
-    the meteorology alone, for a door that cannot carry chemistry; HAILCAST
-    off as in :func:`importable`."""
+    the meteorology alone, for a door that cannot carry chemistry."""
     text, count = _SMOKE_SELECTOR.subn(r"\g<1>0,", text)
     assert count == 1
-    return _without_hailcast(text)
+    return text
 
 
 def write_importable(source, target):

@@ -12,6 +12,7 @@ receipt and printed, never skipped silently.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 import sys
 import time
@@ -87,6 +88,19 @@ def publish(physics, settings, *, outdir, dx_m, renderer_runner=None):
             request["gauges"] = gauges
             request["domain"] = domain
             request["out_dir"] = str((Path(outdir) / "hydro-products").resolve())
+            if manifest and Path(manifest).is_file():
+                from .provider import _tool
+                tool = _tool({"env": "GPUWM_RW_HYDROFABRIC", "filename": "rw_hydrofabric",
+                              "crate": "tools/nextgen_hydrofabric"})
+                map_dir = request_path.parent / "routing-map"
+                result = subprocess.run([str(tool), "prepare-render-map", str(manifest), str(map_dir)],
+                                        capture_output=True, text=True, timeout=600)
+                if result.returncode:
+                    raise RuntimeError(f"routing map binding failed: {result.stderr[-2000:]}")
+                binding = json.loads(result.stdout)
+                request["terrain"] = binding["terrain"]
+                request["source_label"] = "Coupled discharge; prepared channel cells; no obs"
+                receipt["map_binding"] = binding
             request_path.write_text(json.dumps(request, indent=2) + "\n")
             entry = {"history": history, "request": str(request_path), "domain": domain,
                      "gauges": gauges, "gauge_gap": why}
@@ -94,7 +108,22 @@ def publish(physics, settings, *, outdir, dx_m, renderer_runner=None):
                 print(f"hydro products: {why}", file=sys.stderr)
             try:
                 entry["renderer_receipt"] = str(renderer_runner(request_path))
-                entry["status"] = "partial" if why else "rendered"
+                # Gauges are optional: a fabric with no matched gauge still
+                # publishes every product it owes, and the receipt says no gauge
+                # matched. "partial" is kept for a product that should exist and
+                # does not: one streamflow map per requested frame. Breakage it
+                # prevents: every covered run without a gauge table reported
+                # hydro_products "partial" (a 5070 Ti host, 2026-10-21), so a
+                # real missing product read the same.
+                rendered = json.loads(Path(entry["renderer_receipt"]).read_text())
+                maps = [p for p in rendered.get("outputs", [])
+                        if Path(p).suffix == ".png" and "streamflow_map" in Path(p).parts
+                        and Path(p).is_file()]
+                entry["streamflow_maps"] = maps
+                entry["required_streamflow_complete"] = len(maps) == len(request.get("frames", []))
+                entry["status"] = "rendered" if entry["required_streamflow_complete"] else "partial"
+                if why:
+                    entry["note"] = f"no gauge matched; streamflow and hydrographs published without gauge comparison ({why})"
             except (OSError, RuntimeError) as error:
                 entry["status"] = "gap"
                 entry["gap"] = f"Rust renderer: {error}"
@@ -102,6 +131,8 @@ def publish(physics, settings, *, outdir, dx_m, renderer_runner=None):
             receipt["products"].append(entry)
         receipt["status"] = ("rendered" if all(p.get("status") == "rendered"
                                                for p in receipt["products"]) else "partial")
+        receipt["required_streamflow_complete"] = bool(receipt["products"]) and all(
+            p.get("required_streamflow_complete", False) for p in receipt["products"])
     except Exception as error:  # noqa: BLE001 - the forecast output is kept; the failure is named
         receipt["status"] = "failed"
         receipt["error"] = f"{type(error).__name__}: {error}"
@@ -116,10 +147,16 @@ def finalize_forecast(physics, *, outdir, dx_m, forecast_seconds, atmosphere_ste
 
     The ERA5/config front door also runs through runtime.integrate_prepared_case;
     the prepared-cache reporters alone cannot publish that route's resident state.
+    An unattached forecast (no fabric, ``--hydro off``) returns the not-run
+    block, so the route's receipts still name the gap the way the prepared
+    reporters do (an ERA5 OKC run of 2026-10-20 carried no hydro block at all).
     """
-    if getattr(physics, "hydro", None) is None:
-        return None
     from .cost import receipt, refuse_if_over_budget
+    if getattr(physics, "hydro", None) is None:
+        return {"schema": "gpuwm-coupled-forecast.v1",
+                "hydro_cost": receipt(physics, forecast_seconds=forecast_seconds,
+                                      atmosphere_steps=atmosphere_steps),
+                "hydro_products": publish(physics, None, outdir=outdir, dx_m=dx_m)}
     from .runtime import current_settings
     block = {"schema": "gpuwm-coupled-forecast.v1",
              "hydro_cost": receipt(physics, forecast_seconds=forecast_seconds,
@@ -138,6 +175,6 @@ def finalize_forecast(physics, *, outdir, dx_m, forecast_seconds, atmosphere_ste
     if error is not None:
         raise error
     refuse_if_over_budget(block["hydro_cost"])
-    if block["hydro_products"]["status"] != "rendered":
+    if not block["hydro_products"].get("required_streamflow_complete", False):
         raise RuntimeError(f"coupled hydro products incomplete; see {path}")
     return block

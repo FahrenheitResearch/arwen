@@ -138,6 +138,8 @@ GPU_INTEGER_EXCLUSIONS = frozenset({
     "nest.scratch.nest_sint_cj_y", "nest.scratch.nest_sint_jp_y",
 })
 _GPU_RANGE_CHECKED_INT32 = frozenset({
+    # PWP atomically ORs solver failure bits; only zero is healthy.
+    "surface._pwp_status",
     # G3 stores its four cloud levels and averaging clock as native integers.
     "surface.g3_isfc", "surface.g3_diag_clock",
     # Noah writes one of four energy-balance solution cases.
@@ -180,6 +182,8 @@ _GPU_RANGE_CHECKED_INT32 = frozenset({
     # [0, 1], not nz-dependent.  Without a policy every topo_shading forecast
     # refused at initialization (seen on the first real run of the port).
     "surface.shadowmask",
+    # WRF eclipse states: clear=0, partial=1, total=2, annular=3.
+    "surface.ecmask",
 })
 
 #: ``NSNOW``, WRF's fixed snow-layer count (``module_sf_noahmpdrv.F:628``), and
@@ -504,6 +508,9 @@ def rule_for_field(name: str, *, p_top: float | None = None) -> FieldRule:
         # lifted.  Finiteness and the 1.0 ceiling stand.
         return FieldRule("soil_moisture", None, 1.0)
     if lower_name.startswith("surface."):
+        if leaf == "_pwp_status":
+            return FieldRule("surface", 0.0, 0.0,
+                             bound_note="PWP failure bits: 1 Richardson mixing did not converge; 2 nonfinite ocean state")
         if leaf == "ebal":
             # Noah's energy-balance case (kernels/noah.cu): 0-3 are the land
             # SFLX branches, 4 marks an SFLX_GLACIAL (land-ice) column.
@@ -525,6 +532,10 @@ def rule_for_field(name: str, *, p_top: float | None = None) -> FieldRule:
         if leaf == "pgsxy":
             return FieldRule("surface", 0.0,
                              float(NOAHMP_MAX_GROWTH_STAGE))
+        if leaf == "ecmask":
+            return FieldRule("surface", 0.0, 3.0)
+        if leaf == "ecobsc":
+            return FieldRule("surface", 0.0, 1.0)
         if leaf == "shadowmask":
             return FieldRule("surface", 0.0, 1.0)
         return FieldRule("surface")

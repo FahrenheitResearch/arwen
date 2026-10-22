@@ -86,12 +86,6 @@ def _powi3(x) -> np.float32:
 # ---------------------------------------------------------------------------
 # RAGRB -- module_sf_noahmplsm.F:4483-4579
 # ---------------------------------------------------------------------------
-RAGRB_INTS = ("iter", "vegtyp", "iloc", "jloc")
-RAGRB_INPUTS = (
-    "vai", "rhoair", "hg", "tv", "tah", "zpd", "z0mg", "z0hg", "hcan", "uc",
-    "z0h", "fv", "cwp", "mpe", "mozg", "fhg", "dleaf",
-)
-RAGRB_OUTPUTS = ("mozg", "fhg", "ramg", "rahg", "rawg", "rb")
 
 
 def ragrb(iteration, vai, rhoair, hg, tah, zpd, z0mg, z0hg, hcan, uc, z0h,
@@ -152,14 +146,6 @@ def ragrb(iteration, vai, rhoair, hg, tah, zpd, z0mg, z0hg, hcan, uc, z0h,
 # ---------------------------------------------------------------------------
 # SFCDIF1 -- module_sf_noahmplsm.F:4583-4743
 # ---------------------------------------------------------------------------
-SFCDIF1_INTS = ("iter", "mozsgn", "iloc", "jloc")
-SFCDIF1_INPUTS = (
-    "sfctmp", "rhoair", "h", "qair", "zlvl", "zpd", "z0m", "z0h", "ur", "mpe",
-    "moz", "fm", "fh", "fm2", "fh2", "fv",
-)
-SFCDIF1_OUTPUTS = (
-    "moz", "mozsgn", "fm", "fh", "fm2", "fh2", "fv", "cm", "ch", "ch2",
-)
 
 
 class SfcdifDomainError(ValueError):
@@ -273,13 +259,6 @@ def sfcdif1(iteration, mozsgn, sfctmp, rhoair, h, qair, zlvl, zpd, z0m, z0h,
 # ---------------------------------------------------------------------------
 # STOMATA -- module_sf_noahmplsm.F:5005-5137
 # ---------------------------------------------------------------------------
-STOMATA_INTS = ("vegtyp", "iloc", "jloc")
-STOMATA_INPUTS = (
-    "mpe", "apar", "foln", "tv", "ei", "ea", "sfctmp", "sfcprs", "fveg", "o2",
-    "co2", "igs", "btran", "rb", "bp", "folnmx", "qe25", "kc25", "akc",
-    "ko25", "ako", "vcmx25", "avcmx", "c3psn", "mp",
-)
-STOMATA_OUTPUTS = ("rs", "psn")
 
 #: ``DATA NITER /3/`` at :5045.  A compile-time constant, not a convergence
 #: test: STOMATA always runs exactly three Ball-Berry sweeps.

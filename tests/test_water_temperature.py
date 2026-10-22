@@ -54,7 +54,18 @@ def _target_grid():
     return lat, lon, land, lake, ocean, skin
 
 
-def test_a_lake_never_takes_ocean_water():
+@pytest.fixture(scope="module")
+def coherent_water_case():
+    lat, lon, sst = _source_grid()
+    tlat, tlon, land, lake, ocean, skin = _target_grid()
+    values, source, receipt = assemble_water_temperature(
+        mapped_sst=None, mapped_skin=skin, target_land=land,
+        target_lake=lake, source_sst=sst, source_lat=lat, source_lon=lon,
+        target_lat=tlat, target_lon=tlon)
+    return land, lake, ocean, skin, (values, source, receipt)
+
+
+def test_a_lake_never_takes_ocean_water(coherent_water_case):
     """Component identity, not a search radius, is what keeps basins apart.
 
     The shipped selector had no notion of a body at all, and the operator
@@ -63,20 +74,14 @@ def test_a_lake_never_takes_ocean_water():
     radius wide enough to rescue a starved shoreline cell would show up as
     ocean water inside the lake.
     """
-    lat, lon, sst = _source_grid()
-    tlat, tlon, land, lake, ocean, skin = _target_grid()
-
-    values, source, receipt = assemble_water_temperature(
-        mapped_sst=None, mapped_skin=skin, target_land=land,
-        target_lake=lake, source_sst=sst, source_lat=lat, source_lon=lon,
-        target_lat=tlat, target_lon=tlon)
+    land, lake, ocean, skin, (values, source, receipt) = coherent_water_case
 
     assert values[lake].max() < 285.0, "ocean water reached the lake"
     assert np.allclose(values[ocean], 295.0, atol=1e-6)
     assert receipt["components"] == 2
 
 
-def test_land_values_are_never_donors_for_water():
+def test_land_values_are_never_donors_for_water(coherent_water_case):
     """Only water-defined source cells may feed a water target.
 
     A source analysis is undefined over land.  Writing a land temperature
@@ -87,10 +92,7 @@ def test_land_values_are_never_donors_for_water():
     tlat, tlon, land, lake, ocean, skin = _target_grid()
     poisoned = np.where(np.isfinite(sst), sst, 330.0)
 
-    clean, _, _ = assemble_water_temperature(
-        mapped_sst=None, mapped_skin=skin, target_land=land,
-        target_lake=lake, source_sst=sst, source_lat=lat, source_lon=lon,
-        target_lat=tlat, target_lon=tlon)
+    clean, _, _ = coherent_water_case[-1]
     dirty, _, _ = assemble_water_temperature(
         mapped_sst=None, mapped_skin=skin, target_land=land,
         target_lake=lake, source_sst=poisoned, source_lat=lat,
@@ -104,15 +106,9 @@ def test_land_values_are_never_donors_for_water():
     assert not np.allclose(clean[water], skin[water])
 
 
-def test_every_water_cell_carries_a_declared_provider():
+def test_every_water_cell_carries_a_declared_provider(coherent_water_case):
     """WATER_TEMP_SOURCE is total over water, and land is marked land."""
-    lat, lon, sst = _source_grid()
-    tlat, tlon, land, lake, ocean, skin = _target_grid()
-
-    values, source, receipt = assemble_water_temperature(
-        mapped_sst=None, mapped_skin=skin, target_land=land,
-        target_lake=lake, source_sst=sst, source_lat=lat, source_lon=lon,
-        target_lat=tlat, target_lon=tlon)
+    land, lake, ocean, skin, (values, source, receipt) = coherent_water_case
 
     water = ~land
     assert not np.any(source[water] == SOURCE_LAND)
@@ -205,20 +201,8 @@ def test_the_soil_seam_takes_the_assembled_field_and_refuses_a_broken_one():
     shape = (6, 7)
     land = np.zeros(shape, dtype=bool)
     land[:, :3] = True
-    fields = {
-        "LANDSEA": land.astype(np.float64),
-        "SKINTEMP": np.full(shape, 291.0),
-        "SST": np.zeros(shape),
-        "ST000007": np.full(shape, 288.0),
-        "ST007028": np.full(shape, 287.0),
-        "ST028100": np.full(shape, 286.0),
-        "ST100289": np.full(shape, 285.0),
-        "SM000007": np.full(shape, 0.3),
-        "SM007028": np.full(shape, 0.3),
-        "SM028100": np.full(shape, 0.3),
-        "SM100289": np.full(shape, 0.3),
-        "TMN": np.full(shape, 285.0),
-    }
+    fields = _soil_fields(shape, land)
+    fields["SST"] = np.zeros(shape)
     assembled = np.where(land, 291.0, 283.5)
 
     state = preprocess_noah_soil(
@@ -255,14 +239,10 @@ def test_silence_selects_the_coherent_policy_and_a_declaration_wins():
         validate_water_temperature_policy("coherent-ish")
 
 
-def test_the_advisory_names_the_policy_and_the_higher_accuracy_option():
+def test_the_advisory_names_the_policy_and_the_higher_accuracy_option(
+        coherent_water_case):
     """Warn, never block, and say what would be better."""
-    lat, lon, sst = _source_grid()
-    tlat, tlon, land, lake, ocean, skin = _target_grid()
-    _, _, receipt = assemble_water_temperature(
-        mapped_sst=None, mapped_skin=skin, target_land=land,
-        target_lake=lake, source_sst=sst, source_lat=lat, source_lon=lon,
-        target_lat=tlat, target_lon=tlon)
+    _, _, receipt = coherent_water_case[-1]
 
     line = water_temperature_advisory(receipt)
     assert "era5_class_coherent" in line
@@ -685,7 +665,8 @@ def test_every_soil_router_caller_in_the_tree_is_accounted_for():
     callers = set()
     for path in sorted(root.rglob("*.py")):
         text = path.read_text(encoding="utf-8")
-        if list(_soil_router_calls(ast.parse(text))):
+        if any(name in text for name in _SOIL_ROUTERS) and list(
+                _soil_router_calls(ast.parse(text))):
             callers.add(path.relative_to(root.parent).as_posix())
     assert callers == {
         # Assemble and consume (the gate above).

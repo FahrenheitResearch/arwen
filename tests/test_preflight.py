@@ -836,6 +836,9 @@ def test_strict_mode_scratch_is_priced_and_builds_a_multi_domain_arena(
     """
     import types
 
+    # Price strict shapes without importing a launcher under the temporary
+    # flag: acoustic captures ENABLED at import and outlives monkeypatch.
+    import gpuwm.core.acoustic  # noqa: F401
     import gpuwm.core.state as state_mod
     import gpuwm.wrf_exact as wrf_exact
 
@@ -2008,11 +2011,15 @@ def test_p3_is_out_of_the_reflectivity_rail_by_a_named_decision():
 
     big = dict(nx=200, ny=200, nz=50, dx=3000.0, dy=3000.0, ztop=20000.0,
                dt=15.0, run_seconds=3600.0)
+    # 97e9a3ca061 (cap-hail): automatic HAILCAST at this 3-km spacing loads
+    # the 7,392-B hail frame, wider than refl's 5,184 B, which would hide
+    # the rail's cost behind it; the consequence is measured with HAILCAST
+    # off, where refl is the widest frame the docstring names.
     cfg = RunConfig(**big, moist=True, mp_physics=50,
-                    output_interval_s=900.0)
+                    output_interval_s=900.0, hailcast_opt=0)
     exp = experiment_from_run_config(cfg, _dt(1974, 4, 3, 12))
     modules = pf.physics_kernel_modules(exp)
-    assert "p3_composed" in modules
+    assert "p3_composed" in modules and "hail" not in modules
     assert "refl" not in modules and "wdm6_refl" not in modules
     priced = pf.kernel_local_memory_bytes(exp)
 
@@ -3665,15 +3672,18 @@ def test_estimate_domain_itemization_pins(exp1):
     # 18,075,000 B of transient.
     # Held-zero backing sharing removes 2*u + 2*mass = 39,278,400 B
     # (radiation's three extra backings plus KF's smaller momentum face).
+    # 04e65faa5ff (cap-solar): the default radiation split history carries
+    # SWDDIR, SWDDNI and SWDDIF, three 4*200*250 FP32 physics planes,
+    # 600,000 B on top of the previous 274,428,360-B physics pin.
     assert by_cat == {'state': 573358148,
- 'physics': 274428360,
+ 'physics': 275028360,
  'scratch': 597187064,
  'lbc': 67091504,
  'nest': 0,
  'transient': 469137500}
     assert d01.resident_bytes == sum(
         v for c, v in by_cat.items() if c != "transient")
-    assert d01.resident_bytes == 1512065076
+    assert d01.resident_bytes == 1512665076
     assert est.resident_bytes == d01.resident_bytes + est.k_tables_bytes
     assert d01.transient_bytes == 469137500
 
@@ -3846,7 +3856,8 @@ def test_d01_calibration_bounds_measured_fixture(exp1):
     # 2.8.7) adds 9,800,000 B, 1,523,330,992 B or 96.5 %.
     # This comparison does not turn that old run into a new measurement.
     # The six 0-d SCM forcing scalars (24 B) are strict-only too (scm_forcing_fields).
-    assert est.domains[0].resident_bytes == 1512065076
+    # The cap-solar SWDDIR/SWDDNI/SWDDIF history planes add 600,000 B.
+    assert est.domains[0].resident_bytes == 1512665076
     # Compare the recorded pre-intake residency to its historical measurement.
     # New history carriers are separately priced above; this is no new pool measurement.
     ratio = 1523343280 / measured
@@ -4558,7 +4569,9 @@ def test_check_cli_legacy_config_wraps(capsys):
     # 22aa4243869: check prices the forcing slots a chained `gpuwm go` holds (one
     # streamed lateral slot for a one-domain, one-card config), not the whole
     # schedule: 8,899,840 B of boundary tables leave the d01 resident pin.
-    assert payload["domains"]["d01"]["resident_bytes"] == 1503165236
+    # 04e65faa5ff (cap-solar): the SWDDIR/SWDDNI/SWDDIF split history
+    # planes add 600,000 B.
+    assert payload["domains"]["d01"]["resident_bytes"] == 1503765236
 
 
 def test_check_cli_fails_closed_when_nothing_is_evaluable(capsys,
@@ -5454,12 +5467,18 @@ def test_the_six_tornado_les_configs_are_the_ones_this_moves():
                for _, wsm6, widest in frames), frames
 
     # WSM6 widest: the total moves by the frame's whole reservation delta.
+    # 97e9a3ca061 (cap-hail): HAILCAST is automatic at dx <= 4 km and its
+    # 7,392-B frame is wider than WSM6's 64-tier 7,216 B, so on a default
+    # domain the 64 rung is hail-priced and the WSM6 tier step is hidden.
+    # The tier is measured on hailcast_opt = 0 domains; the six shipped
+    # configurations above keep HAILCAST on and are still WSM6-widest.
     start = datetime(2021, 12, 10, 3)
     totals = {}
     for nz in (64, 72):
         cfg = RunConfig(nx=400, ny=400, nz=nz, dx=100.0, dy=100.0,
                         ztop=18000.0, dt=0.5, run_seconds=60.0,
-                        moist=True, moist_cq=True, mp_physics=6)
+                        moist=True, moist_cq=True, mp_physics=6,
+                        hailcast_opt=0)
         exp = experiment_from_run_config(cfg, start)
         assert max(pf.kernel_local_frame_bytes(exp),
                    key=pf.kernel_local_frame_bytes(exp).get) == "wsm6"
@@ -5847,6 +5866,10 @@ def test_the_recorded_local_frames_match_the_driver():
             # A default process's text of <module>, compiled and priced
             # under <module>'s own name (kernels._unit_text).
             continue
+        if path.stem in pf.PRODUCTION_LOADED_KERNEL_UNITS:
+            # Compiled only through its own loader; measured below
+            # through that loader (preflight.load_production_kernel_unit).
+            continue
         if path.stem in ("noah_mosaic", "thompson_fork"):
             # Both mosaic launchers have dedicated --fmad=false composed
             # loaders and measured chained rows. The generic C++17 image
@@ -5870,6 +5893,33 @@ def test_the_recorded_local_frames_match_the_driver():
                 continue
             widest = max(widest, local_bytes)
         observed[path.stem] = widest
+    # Logical modules with no committed .cu of their own since slimming wave 3 (lanes 11-13), the same three
+    # tests/test_kernel_frame_recordings.py adds to its source set: ysu and mynn_dmp_sibling compile retained
+    # files under their own names (kernels._unit_text), so they are measured here like any unit;
+    # rrtmg_lw._lw_coalesced_source generates rrtmg_lw_chain_coalesced inside the composed longwave unit, so it
+    # cannot compile alone and stays declared unmeasured.
+    from gpuwm.core.kernels import module_source
+    for logical in ("ysu", "mynn_dmp_sibling"):
+        module = load_module(logical)
+        widest = 0
+        for name in sorted(set(symbol.findall(module_source(logical)))):
+            try:
+                local_bytes = kernel_local_size_bytes(module.get_function(name))
+            except Exception:  # noqa: BLE001
+                continue
+            widest = max(widest, local_bytes)
+        observed[logical] = widest
+    uncompilable.add("rrtmg_lw_chain_coalesced")
+    for unit in sorted(pf.PRODUCTION_LOADED_KERNEL_UNITS):
+        module, source = pf.load_production_kernel_unit(unit)
+        widest = 0
+        for name in sorted(set(symbol.findall(source))):
+            try:
+                local_bytes = kernel_local_size_bytes(module.get_function(name))
+            except Exception:  # noqa: BLE001
+                continue
+            widest = max(widest, local_bytes)
+        observed[unit] = widest
     assert uncompilable == set(pf.UNMEASURED_KERNEL_MODULES)
 
     # The shipped table must know about every module that compiled, and
@@ -6775,15 +6825,8 @@ _HOST_MEMORY_CASES = json.loads(
      / "host_memory_cgroup_cases.json").read_text(encoding="utf-8"))["cases"]
 
 
-@pytest.mark.parametrize("case", _HOST_MEMORY_CASES,
-                         ids=[case["name"] for case in _HOST_MEMORY_CASES])
-def test_host_available_bytes_is_capped_by_the_memory_cgroup_it_runs_in(
-        tmp_path, monkeypatch, case):
-    """THE BREAKAGE: MemAvailable inside a container is the host's, and the
-    cap read only the mount root's limit, never what the process had used
-    under it nor a limit on its own scope or slice.  A render planned
-    against that figure ran past the limit and was killed.  The renderer's
-    reader answers the same table (cargo test -p rusty-weather)."""
+def _host_memory_case(tmp_path, monkeypatch, case):
+    """Stage one shared host-memory table row for either reader."""
     import sys
 
     from tilestream import autoplan
@@ -6803,8 +6846,23 @@ def test_host_available_bytes_is_capped_by_the_memory_cgroup_it_runs_in(
     monkeypatch.setattr(autoplan, "_CGROUP_ROOT", str(root))
     monkeypatch.setattr(autoplan, "_PROC_SELF_CGROUP", str(membership))
     monkeypatch.setattr(autoplan, "_PROC_MEMINFO", str(meminfo))
-    # The procfs route, which is the one a container has.
+    # Exercise the procfs route used inside a container.
     monkeypatch.setattr(sys, "platform", "linux")
+
+
+@pytest.mark.parametrize("case", _HOST_MEMORY_CASES,
+                         ids=[case["name"] for case in _HOST_MEMORY_CASES])
+def test_host_available_bytes_is_capped_by_the_memory_cgroup_it_runs_in(
+        tmp_path, monkeypatch, case):
+    """THE BREAKAGE: MemAvailable inside a container is the host's, and the
+    cap read only the mount root's limit, never what the process had used
+    under it nor a limit on its own scope or slice.  A render planned
+    against that figure ran past the limit and was killed.  The renderer's
+    reader answers the same table (cargo test -p rusty-weather)."""
+
+    from tilestream import autoplan
+
+    _host_memory_case(tmp_path, monkeypatch, case)
 
     assert autoplan._cgroup_memory_headroom() == case["headroom"]
     assert pf.host_available_bytes() == case["available"]
@@ -6823,28 +6881,12 @@ def test_the_host_total_is_the_smallest_limit_on_the_process_cgroup_path(
     the mount, the table the renderer's and the MPAS builder's readers
     answer (cargo test -p rw-host-memory, -p rw-mpas)."""
     import re
-    import sys
 
     from gpuwm.core import streaming
     from tilestream import autoplan
 
     assert "limit" in case, "the shared table's case names no limit"
-    root = tmp_path / "cgroup"
-    root.mkdir()
-    for relative, text in case["cgroup"].items():
-        path = root / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(text.encode("ascii"))
-    meminfo = tmp_path / "meminfo"
-    if case["meminfo"] is not None:
-        meminfo.write_bytes(case["meminfo"].encode("ascii"))
-    membership = tmp_path / "proc-self-cgroup"
-    if case["proc_self_cgroup"] is not None:
-        membership.write_bytes(case["proc_self_cgroup"].encode("ascii"))
-    monkeypatch.setattr(autoplan, "_CGROUP_ROOT", str(root))
-    monkeypatch.setattr(autoplan, "_PROC_SELF_CGROUP", str(membership))
-    monkeypatch.setattr(autoplan, "_PROC_MEMINFO", str(meminfo))
-    monkeypatch.setattr(sys, "platform", "linux")
+    _host_memory_case(tmp_path, monkeypatch, case)
 
     assert autoplan._cgroup_memory_limit() == case["limit"]
     memtotal = int(re.search(r"^MemTotal:\s+(\d+) kB$", case["meminfo"],

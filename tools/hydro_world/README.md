@@ -82,7 +82,12 @@ receipt (`counts.device`). `--device cuda` fails without a GPU; `--device cpu` f
 
 New table rows:
 - `global-copernicus-glo30` (1 arc-second, id namespace 3), and the table's `auto` list: `--row auto` takes GLO-30 when its
-  grid over the box has at most 80 M cells, GLO-90 otherwise.
+  grid over the box has at most 80 M cells, GLO-90 up to 250 M cells, and above that (continental and global boxes) GLO-90
+  on a grid coarsened by the smallest integer factor that fits 250 M cells, each cell the block mean of the GLO-90 cells it
+  holds (`coarsen` on the auto rule; tile rows are streamed north to south, so host memory holds two tile rows of DEM). No box
+  is refused for its size: a named row coarsens only as far as the u32 cell index needs. The 12 km continental ArWen domain
+  (-140.54..-54.46 E, 10.61..56.63 N; 5.7 G cells at 3") builds at 15" (k = 5, 228 M cells) in 2 min 20 s on all CPU
+  cores of a shared 24-thread node, 8.6 GB peak host memory, 740,474 flowpaths, 0 contract errors.
 - a `dams` input (GDW v1.0 barriers) on both Copernicus rows: every dam in the box is snapped to the derived network (same
   area-ratio rule as lakes), linked to its fabric lake through the HydroLAKES id, and written to `FABRIC.gpkg.dams.json`
   (GDW id, name, flowpath, lake nexus, height, length, capacity, year, main use). The contract tables do not change; level-pool

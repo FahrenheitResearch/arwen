@@ -10,8 +10,14 @@ from __future__ import annotations
 import math
 
 import numpy as np
+import pytest
 
 from gpuwm.verify.cases import gabls1
+
+
+@pytest.fixture(scope="module")
+def prescribed_run():
+    return gabls1.run()
 
 
 def test_the_case_registry_discovers_it():
@@ -92,7 +98,7 @@ def test_the_gates_are_the_published_ensemble_and_nothing_narrower():
         assert mean + 2.0 * sigma <= band[1], key
 
 
-def test_the_closure_scores_inside_the_large_eddy_band():
+def test_the_closure_scores_inside_the_large_eddy_band(prescribed_run):
     """THE RESULT, and the reason this case is in the tree.
 
     Run as prescribed, the closure's stable limb lands inside ONE
@@ -118,7 +124,7 @@ def test_the_closure_scores_inside_the_large_eddy_band():
     trajectory -- one sigma of the LES reference on the depth, which is
     the claim, and the gate bands on the rest.
     """
-    m = gabls1.run()
+    m = prescribed_run
     assert m["nan"] == 0.0
     for name, (lo, hi) in gabls1.GATES.items():
         assert lo <= m[name] <= hi, (name, m[name])
@@ -203,7 +209,8 @@ def test_the_benchmark_refuses_the_tke_deficit_move():
     assert min(abs(d - ref) for d in depths) == abs(depths[0] - ref)
 
 
-def test_the_rejected_stable_coefficient_over_deepens_it_like_the_pack():
+def test_the_rejected_stable_coefficient_over_deepens_it_like_the_pack(
+        prescribed_run):
     """INDEPENDENT CORROBORATION of a RED this project already carries.
 
     ``RunConfig.sase_stable_dissipation`` ships False because it exits
@@ -221,7 +228,7 @@ def test_the_rejected_stable_coefficient_over_deepens_it_like_the_pack():
     Two independent instruments, same verdict, opposite construction.
     That is what adopting a published benchmark buys.
     """
-    head = gabls1.run()
+    head = prescribed_run
     red = gabls1.run(stable_dissipation=True)
     ref = gabls1.LES_REFERENCE["boundary_layer_depth_m"][0]
     assert red["boundary_layer_depth"] > head["boundary_layer_depth"]

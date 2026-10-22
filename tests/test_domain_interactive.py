@@ -166,7 +166,6 @@ def test_every_prompt_shows_its_default_and_enter_accepts_it(monkeypatch):
 @pytest.mark.parametrize("bad, good, complaint", [
     ("not a point", "35.3,-97.5", "decimal degrees"),
     ("95,-97.5", "35.3,-97.5", "[-90, 90]"),
-    ("90,-97.5", "35.3,-97.5", "pole itself"),
     # -200 now wraps with a warning (warn-not-block); -400 is beyond
     # the wrappable window and still re-prompts.
     ("35.3,-400", "35.3,-97.5", "[-180, 180]"),
@@ -185,6 +184,18 @@ def test_a_bad_point_re_prompts_and_says_why(monkeypatch, capsys, bad,
     argv = interactive.collect(printer=lambda *a, **k: None)
     assert complaint in capsys.readouterr().out
     assert f"--point={good}" in argv
+
+
+def test_a_pole_point_is_a_domain_centre(monkeypatch, capsys):
+    """The pole-enclosing lane (281ce4ce0d5) retired the "pole itself"
+    refusal: a polar stereographic domain may now contain the pole, so the
+    prompt takes the point the flag path takes, without a re-prompt."""
+
+    _answers(monkeypatch, ["90,-97.5", "", "2026-07-29T18", "", ""])
+    _no_gpu(monkeypatch)
+    argv = interactive.collect(printer=lambda *a, **k: None)
+    assert "pole itself" not in capsys.readouterr().out
+    assert "--point=90,-97.5" in argv
 
 
 @pytest.mark.parametrize("bad", ["GFS2", "era-5", "not-a-model"])

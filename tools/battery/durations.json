@@ -50,7 +50,6 @@
     "tests/test_fastfix_selector.py": 40.1,
     "tests/test_fetch_analysis_first.py": 1.17,
     "tests/test_first_products.py": 24.06,
-    "tests/test_flagship_tools.py": 14.14,
     "tests/test_ftz_claim_consistency.py": 5.08,
     "tests/test_ftz_render.py": 0.22,
     "tests/test_ftz_route_inventory.py": 17.61,

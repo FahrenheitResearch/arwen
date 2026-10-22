@@ -12,6 +12,7 @@ from types import MappingProxyType
 from gpuwm.ensemble.recipes import SourceRecipe, SourceTrajectory
 from gpuwm.ensemble.source_preparation import PostedSourcePreparation
 from gpuwm.ensemble.posted_execution import PostedRuntimeMemberBinding
+from gpuwm.ensemble.physical_fields import canonical_json as _canonical
 
 
 @dataclass(frozen=True)
@@ -32,10 +33,6 @@ def _utc(value):
     if not isinstance(value, datetime):
         raise ValueError("ordinary source trajectory has no valid UTC clock")
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
-
-
-def _canonical(value):
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 def _reader_signature(inputs):

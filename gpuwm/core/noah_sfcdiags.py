@@ -32,6 +32,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from gpuwm.core.noah_forcing import device_arrays as device_arrays
+
 _KERNEL_TEXT = r"""
 extern "C" __global__
 void noah_sfcdiags(const float* psfc, const float* tsk, const float* cqs2,
@@ -100,16 +102,6 @@ def _kernel():
                       options=(), module=module)
         _KERNEL = module.get_function("noah_sfcdiags")
     return _KERNEL
-
-
-def device_arrays(shape, *arrays) -> bool:
-    """True when every array is a C-contiguous float32 CuPy ``shape`` array."""
-    try:
-        import cupy as cp
-    except ImportError:  # pragma: no cover - the driver imports CuPy
-        return False
-    return all(type(a) is cp.ndarray and a.dtype == np.float32
-               and a.flags.c_contiguous and a.shape == shape for a in arrays)
 
 
 def refresh(fields, qv1, *, rd, cp_air, p0, rcp, active_floor) -> None:

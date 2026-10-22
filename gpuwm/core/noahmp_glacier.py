@@ -108,18 +108,15 @@ def _f(x) -> np.float32:
 
 
 # --- NOAHMP_GLACIER_GLOBALS, module_sf_noahmp_glacier.F:10-26 --------------
-GRAV = _f(9.80616)
 SB = _f(5.67e-08)
 VKC = _f(0.40)
 TFRZ = _f(273.16)
 HSUB = _f(2.8440e06)
-HVAP = _f(2.5104e06)
 HFUS = _f(0.3336e06)
 CWAT = _f(4.188e06)
 CICE = _f(2.094e06)
 CPAIR = _f(1004.64)
 RAIR = _f(287.04)
-RW = _f(461.269)
 DENH2O = _f(1000.0)
 DENICE = _f(917.0)
 

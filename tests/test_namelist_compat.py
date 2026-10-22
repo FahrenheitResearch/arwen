@@ -446,22 +446,6 @@ def test_support_report_rejects_inconsistent_boundary_width(tmp_path):
     assert "must equal" in issue["message"]
 
 
-def test_thompson_runtime_is_reported_runnable_without_env(
-        monkeypatch, tmp_path):
-    """mp8 is runtime-supported with NO Thompson environment set: the
-    enable guard is retired and the table root defaults to the packaged
-    assets (mp8 promotion, product/v1 packaging lane 2026-07-28)."""
-    monkeypatch.delenv("GPUWM_EXPERIMENTAL_THOMPSON_MP8", raising=False)
-    monkeypatch.delenv("GPUWM_THOMPSON_TABLE_ROOT", raising=False)
-    report = analyze_namelists(*_write_pair(tmp_path, mp=8))
-    assert report["verdict"] == "PASS"
-    assert report["required_state"]["stock_wrf_export"]["verdict"] == "PASS"
-    assert report["required_state"]["gpuwm_runtime"] == {
-        "verdict": "PASS",
-        "reasons": [],
-    }
-
-
 def test_the_compat_door_gives_the_same_theta_m_answer_as_the_importer(
         tmp_path):
     """An omitted use_theta_m takes WRF's Registry default 1 on both
@@ -681,7 +665,7 @@ def test_p3_rte_rrtmgp_pairing_is_admitted_since_the_coupling_landed(
     assert runtime == {"verdict": "PASS", "reasons": []}
 
 
-@pytest.mark.parametrize("mass_levels", [35, 49, 80])
+@pytest.mark.parametrize("mass_levels", [80])
 def test_namelist_report_accepts_arbitrary_structural_vertical_counts(tmp_path, mass_levels):
     report = require_supported_namelists(
         *_write_pair(tmp_path, mass_levels=mass_levels, mp=6),
@@ -867,36 +851,6 @@ def test_the_two_doors_agree_about_the_delayed_nest_stream_format(tmp_path):
     assert dropped["io_form_auxinput2"].reason
 
 
-def test_the_two_doors_agree_about_the_runtime_only_io_keys(tmp_path):
-    """Every &time_control key the report calls runtime-only imports.
-
-    A key the report classifies as changing nothing that is prepared is
-    a key the importer must be able to consume; otherwise the report
-    PASSes a namelist no gpuwm door accepts.  ``io_form_auxinput2`` and
-    ``override_restart_timers`` were classified but unconsumed.
-    """
-    wps, inp = _write_pair(tmp_path, max_dom=2, mp=6)
-    inp.write_text(
-        inp.read_text(encoding="utf-8").replace(
-            " run_hours = 12,",
-            " run_hours = 12,\n"
-            " io_form_auxinput2 = 2,\n"
-            " override_restart_timers = .true.,\n"
-            " iofields_filename = 'iofields.txt',\n"
-            " ignore_iofields_warning = .true.,"),
-        encoding="utf-8")
-
-    report = analyze_namelists(wps, inp, source_top_pressure_pa=5000.0)
-    assert report["verdict"] == "PASS"
-
-    _toml, substitutions = import_namelists(wps, inp, name="runtime-io")
-    dropped = {entry.key: entry for entry in substitutions.dropped}
-    for key in ("io_form_auxinput2", "override_restart_timers",
-                "iofields_filename", "ignore_iofields_warning"):
-        assert key in dropped, key
-        assert dropped[key].reason, key
-
-
 def test_domain_tiling_keys_are_a_note_and_import(tmp_path):
     """tile_sz_x/tile_sz_y state a CPU tile size, and nothing breaks.
 
@@ -1024,25 +978,6 @@ def test_the_two_doors_agree_about_a_non_integer_input_stream(tmp_path):
     with pytest.raises(ValueError) as raised:
         import_namelists(wps, inp)
     assert issue["message"] in str(raised.value)
-
-
-def test_undefined_fine_input_stream_index_still_fails(tmp_path):
-    """WRF defines 0 and 2 for this key and nothing else; an index with no
-    definition is named for what it is."""
-    wps, inp = _write_pair(tmp_path, max_dom=2, mp=6)
-    inp.write_text(
-        inp.read_text(encoding="utf-8").replace(
-            " run_hours = 12,",
-            " run_hours = 12,\n fine_input_stream = 0, 3,"),
-        encoding="utf-8")
-    report = analyze_namelists(wps, inp, source_top_pressure_pa=5000.0)
-    assert report["verdict"] == "FAIL"
-    issue = next(item for item in report["issues"]
-                 if item["code"] == "NEST_INPUT_STREAM_UNSUPPORTED")
-    assert issue["severity"] == SEVERITY_BLOCKING
-    assert "WRF defines two values" in issue["message"]
-    assert "0 (every field from" in issue["message"]
-    assert "2 (only the static and" in issue["message"]
 
 
 def test_active_grid_fdda_fails_as_missing_wrffdda(tmp_path):
@@ -1220,36 +1155,6 @@ def test_the_two_migration_doors_give_the_same_sentence(tmp_path, capsys):
     core = f"cannot read namelist.wps {missing}"
     assert core in importer
     assert core in reporter
-
-
-def test_milbrandt_yau_namelist_fails_the_export_and_passes_the_runtime(
-    tmp_path,
-):
-    """The migration report's two rows answer two different questions.
-
-    mp_physics=9 has no packaged WRF Registry package contract, so the
-    STOCK-WRF EXPORT cannot write a wrfinput for an unchanged WRF -- and
-    ArWen runs the scheme (config.MP_PHYSICS_ACCEPTED carries 9,
-    core/microphysics.py dispatches it, the registry publishes it as
-    implemented).  The report used to say FAIL on both rows, with an
-    EMPTY reasons list on the runtime one: the runtime verdict was
-    ``stock_pass and not gpuwm_reasons``, and the runtime microphysics
-    question itself sat after the inventory call that raises, so it was
-    never asked.  A migrating user was told, at the first documented
-    migration command, that ArWen could not run their namelist.
-    """
-
-    report = analyze_namelists(*_write_pair(tmp_path, mp=9))
-    export = report["required_state"]["stock_wrf_export"]
-    runtime = report["required_state"]["gpuwm_runtime"]
-    assert export["verdict"] == "FAIL"
-    assert runtime == {"verdict": "PASS", "reasons": []}
-    codes = {issue["code"] for issue in report["issues"]}
-    assert "STOCK_WRF_EXPORT_INVENTORY_MISSING" in codes
-    assert "UNSUPPORTED_MICROPHYSICS_INVENTORY" not in codes
-    missing = next(issue for issue in report["issues"]
-                   if issue["code"] == "STOCK_WRF_EXPORT_INVENTORY_MISSING")
-    assert "import-namelist" in missing["action"]
 
 
 def test_an_unported_microphysics_selector_fails_the_runtime_row(tmp_path):

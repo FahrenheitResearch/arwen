@@ -11,40 +11,12 @@ CARGO_TARGET_DIR and TMPDIR set to a data-disk scratch directory:
 cargo build --release --locked
 ```
 
-The default developer build requires the system netCDF-C development library. The shared library is
-`librw_nextgen_output.so`; supply its path in `GPUWM_NEXTGEN_OUTPUT_LIBRARY`
-during development.
-
-For a Linux stage without system netCDF/HDF5, use the pinned local-file-only
-backend recipe. Choose a new scratch stage and keep Cargo caches/targets on
-the data disk:
-
-```
-python3 tools/nextgen_output/build_local_backend.py \
-  --scratch "$LANE_SCRATCH/output-backend" \
-  --cargo-home "$LANE_SCRATCH/cargo" \
-  --cargo-target "$LANE_SCRATCH/target" --jobs 24 --fetch
-```
-
-The recipe verifies archive and licence hashes in `backend-sources.json`,
-builds PIC static netCDF-C/HDF5/zlib, and stages the CLI plus a sibling Rust
-library beside `gpuwm/hydro/output.py`, matching the existing loader contract.
-No output/checkpoint wire changes are needed. C symbols stay private to the
-library. DAP, remote access, NCZarr, optional compression plugins, MPI and
-Fortran are disabled; local NetCDF-4, deflate and CDF5 remain available.
-`BACKEND-BUILD.json` records actual commands, times, dependencies, artifacts
-and notices. An unexpected dynamic dependency beyond the system C/math/GCC
-runtime fails staging. Source archives, expanded sources and C build trees
-are removed after the receipt unless `--keep-work` is explicit. An existing
-stage is preserved; retries use a new scratch path or clear their own failed
-stage after recording its failure.
-Rust builds use `--offline --locked`; the supplied Cargo home must already
-contain the locked crate dependencies. `--fetch` fetches the three C archives.
-
-This is a host-built Linux stage, not a manylinux wheel qualification.
-Public bridge roster integration and installed-product verification remain
-pending. System glibc/libm and GCC support libraries remain runtime requirements;
-the recipe does not bundle those platform libraries.
+The build is native Rust on Linux and Windows, with no netCDF-C, HDF5 C,
+zlib C or Fortran link. Run `cargo test --offline --locked` in this directory.
+The shared library is `librw_nextgen_output.so` on Linux and
+`rw_nextgen_output.dll` on Windows. It is an ABI-1 on-demand bridge artifact;
+the wheel resolver and `gpuwm doctor` use the normal bridge roster. A developer
+may set `GPUWM_NEXTGEN_OUTPUT_LIBRARY` to an explicit build.
 
 The realization adds `gpuwm.hydro.output:prepare_history` after its routing and
 reservoir stages, before the resident inventory is sealed. Options are:
@@ -133,55 +105,19 @@ fails without publishing an earlier requested product. This check does not
 make the whole multi-format export a transaction: later format-specific or
 I/O failures can still leave completed earlier products.
 
-NetCDF-4 is Rust-owned serialization through the **netCDF-C / HDF5 C**
-container backend, not a pure-Rust NetCDF-4 encoder. The CDF5 checkpoint
-contract remains `arwen.nextgen.checkpoint/v1`, with unchanged array inventory,
-metadata and payload SHA validation before GPU mutation. No netCDF-Fortran,
-Fortran runtime or native hydrologic model is used. netCDF-C and HDF5 notices
-are retained in `NETCDF-C-NOTICE` and `HDF5-NOTICE.txt`.
+NetCDF-4 history is emitted by `netcdf-writer::netcdf4`: uncompressed,
+contiguous HDF5 datasets, native numeric types, NC_CHAR and NC_STRING, compact
+object headers, dimension scales and global heaps. The complete fixed-size
+snapshot interface has no append mode; NetCDF-4 unlimited dimensions are
+rejected rather than silently changed. Hydro history uses fixed dimensions.
+Restart files retain CDF5 and `arwen.nextgen.checkpoint/v1`, including typed
+inventory, metadata, checksums and validation before GPU mutation.
 
-The writer defines all dimensions, variables and attributes in supplied order,
-ends definition once, then writes native arrays. In particular, `_FillValue`
-stays in its declared attribute position while still being defined before data.
-This also avoids repeatedly relocating CDF5 data as a checkpoint header grows.
-Receipts report header definition, payload write and close/fsync/publication
-times, format and actual netCDF-C library version. Container calls are
-serialized under the library lock; upstream numerical marshalling uses Rust
-and Rayon at the output boundary, with no work added per routing step.
-
-Header evidence distinguishes ordered typed metadata and literal `ncdump -h`
-bytes from physical HDF5 file bytes. The measured native file uses
-netCDF-C 4.10.1/HDF5 2.2.0; this system backend uses netCDF-C 4.9.3/HDF5 1.14.6.
-Their generated `_NCProperties` therefore differ. No version attribute is
-spoofed, and physical header/file identity is not claimed from a logical dump.
-
-The Rust series boundary validates the complete format list before creating
-any output directory or file. An empty list, unknown format or repeated format
-fails without publishing an earlier requested product. This check does not
-make the whole multi-format export a transaction: later format-specific or
-I/O failures can still leave completed earlier products.
-
-NetCDF-4 is Rust-owned serialization through the **netCDF-C / HDF5 C**
-container backend, not a pure-Rust NetCDF-4 encoder. The CDF5 checkpoint
-contract remains `arwen.nextgen.checkpoint/v1`, with unchanged array inventory,
-metadata and payload SHA validation before GPU mutation. No netCDF-Fortran,
-Fortran runtime or native hydrologic model is used. netCDF-C and HDF5 notices
-are retained in `NETCDF-C-NOTICE` and `HDF5-NOTICE.txt`.
-
-The writer defines all dimensions, variables and attributes in supplied order,
-ends definition once, then writes native arrays. In particular, `_FillValue`
-stays in its declared attribute position while still being defined before data.
-This also avoids repeatedly relocating CDF5 data as a checkpoint header grows.
-Receipts report header definition, payload write and close/fsync/publication
-times, format and actual netCDF-C library version. Container calls are
-serialized under the library lock; upstream numerical marshalling uses Rust
-and Rayon at the output boundary, with no work added per routing step.
-
-Header evidence distinguishes ordered typed metadata and literal `ncdump -h`
-bytes from physical HDF5 file bytes. The measured native file uses
-netCDF-C 4.10.1/HDF5 2.2.0; this system backend uses netCDF-C 4.9.3/HDF5 1.14.6.
-Their generated `_NCProperties` therefore differ. No version attribute is
-spoofed, and physical header/file identity is not claimed from a logical dump.
+Dimensions, variables and user attributes retain their declared order and types.
+Physical HDF5 bytes differ from netCDF-C; no generated `_NCProperties` claims a
+C backend version. Receipts identify `netcdf-writer (Rust)` and the selected
+container. Rayon handles typed conversion and transposition at the output
+boundary; file publication remains ordered and refuses an existing path.
 
 Catchment/module histories use the separate Rust boundary operation
 `module-series-write`. It accepts native fields without requiring reach

@@ -14,28 +14,11 @@ import numpy as np
 from gpuwm.core import dycore
 from gpuwm.prepared_domain_tree_forecast import main as run
 from gpuwm.native_step import Plan
-from host_annotations import annotate
+from host_annotations import annotate,inventory
 class Complete(BaseException):pass
 receipt={'purpose':__doc__,'pid':os.getpid(),'numerics':a.numerics,'binding':binding,'cases':[], 'source':{},'completed_forecast':False}
 for name in ('gpuwm/core/dycore.py','gpuwm/core/physics.py','gpuwm/core/noahmp_column_slab.py','gpuwm/core/noahmp_flux_slab.py','gpuwm/core/kernels/noahmp_vegeflux.cu','gpuwm/native_step/recorder.c','gpuwm/native_step/__init__.py','tools/native_step/host_annotations.py','tools/native_step/probe_domain_step.py'):
  receipt['source'][name]=hashlib.sha256((ROOT/name).read_bytes()).hexdigest()
-
-def inventory(state):
- seen=set();arrays={}
- def visit(value,label):
-  if id(value) in seen:return
-  seen.add(id(value))
-  if isinstance(value,cp.ndarray):
-   key=(value.data.ptr,value.shape,value.strides,value.dtype.str)
-   arrays.setdefault(key,{'label':label,'array':value});return
-  if isinstance(value,dict):
-   for name,item in value.items():visit(item,label+'.'+str(name))
-  elif isinstance(value,(list,tuple)):
-   for i,item in enumerate(value):visit(item,label+f'[{i}]')
-  elif type(value).__module__.startswith('gpuwm.') and hasattr(value,'__dict__'):
-   for name,item in vars(value).items():visit(item,label+'.'+name)
- visit(state,'state')
- return arrays
 
 def snapshot(arrays):
  return {key:entry['array'].copy() for key,entry in arrays.items()}

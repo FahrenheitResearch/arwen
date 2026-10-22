@@ -26,7 +26,7 @@ import pytest
 
 import gpuwm.io.restart as restart
 from gpuwm.core.model import ADAPTIVE_TIMESTEP_RUN_FIELDS
-from test_restart import (_HISTORICAL_FORMAT_VERSION,
+from test_restart import (_HISTORICAL_FORMAT_VERSION, _unwind_hailcast_members,
                                 _PINNED_UNDER_MEASURED_CLOCK,
                                 _PRE_REAL_CLAMP_ALGORITHMS,
                                 _VOLATILE_CHECKPOINT_HEADER,
@@ -87,11 +87,15 @@ def _digest_without_the_adaptive_config_keys(
             setup["algorithms"][component] = identity
         header["physics_setup"] = setup
         header["physics_setup_fingerprint"] = restart._json_sha256(setup)
+        # The historical anchor also predates lane/cap-hail's eleven
+        # persistent HAILCAST members (tests/test_restart.py
+        # _LIFECYCLE_FREE_ROOT_DIGEST): unwind exactly those.
+        names = _unwind_hailcast_members(
+            header, [name for name in sorted(data.files)
+                     if name != restart._HEADER_KEY])
         digest = hashlib.sha256()
         digest.update(json.dumps(header, sort_keys=True).encode("utf-8"))
-        for name in sorted(data.files):
-            if name == restart._HEADER_KEY:
-                continue
+        for name in names:
             host = data[name]
             digest.update(name.encode("utf-8"))
             digest.update(str(host.dtype).encode("utf-8"))

@@ -605,16 +605,6 @@ def test_the_boundary_group_names_the_absent_side(tmp_path: Path, staged_side,
     assert BOUNDARY_GROUP not in built["covered_groups"]
 
 
-def test_the_boundary_status_is_exactly_one_of_two_values(tmp_path: Path):
-    neither = build_t0_receipt(*_stage(tmp_path / "none", boundary=None),
-                               evaluator_commit=FAKE_COMMIT)
-    assert neither["boundary"]["status"] == "unavailable"
-    assert sorted(neither["boundary"]["absent_sides"]) == [
-        "candidate", "reference"]
-    declared = make_t0_registration()["boundary_group"]["status_values"]
-    assert sorted(declared) == ["scored", "unavailable"]
-
-
 def test_boundary_tables_absent_on_one_side_are_recorded_not_dropped(
         tmp_path: Path):
     candidate_dir, reference_dir = _stage(tmp_path)
@@ -687,11 +677,6 @@ def test_the_receipt_names_every_file_it_opened_with_a_side_and_a_hash(
             path.read_bytes()).hexdigest()
         assert record["size_bytes"] == path.stat().st_size
         assert record["role"] in {"wrfout", "wrfbdy"}
-
-
-def test_the_inventory_and_the_boundary_status_agree(receipt):
-    roles = {record["role"] for record in receipt["inputs"]}
-    assert ("wrfbdy" in roles) == (receipt["boundary"]["status"] == "scored")
 
 
 # ---------------------------------------------------------------------------

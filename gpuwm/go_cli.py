@@ -150,6 +150,9 @@ def checked_config_fetch_cycle(fetch_table: dict, *, start_time=None):
     """Keep a saved experiment and its download on the same fixed clock."""
     from datetime import datetime, timedelta
     from gpuwm.fetch import parse_cycle
+    from gpuwm.initial_source import boundary_fetch_request
+
+    fetch_table = boundary_fetch_request(fetch_table)
 
     raw = str(fetch_table["cycle"])
     if raw.strip().lower() == "latest":
@@ -190,9 +193,12 @@ def fetch_request(fetch_table, *, p_top=None) -> dict:
     that already states a top or asks for every level is left as it is.
     """
 
-    from gpuwm.source_adapters import fetch_model_top_pa
+    from gpuwm.source_adapters import fetch_model_top_pa, source_for_cycle
 
-    request = dict(fetch_table or {})
+    from gpuwm.initial_source import boundary_fetch_request
+    request = boundary_fetch_request(fetch_table or {})
+    if request.get("source") and request.get("cycle"):
+        request["source"] = source_for_cycle(request["source"], request["cycle"])
     if request.get("p_top_pa") is not None or request.get("all_levels"):
         return request
     top = fetch_model_top_pa(request.get("source"), p_top)
@@ -398,23 +404,6 @@ def managed_download_dir(case_root: Path, fetch_table: dict) -> Path:
         # A cache without either a complete or recovery receipt cannot
         # establish input identity. Preserve it and select another slot.
         attempt += 1
-
-
-def _repo_root() -> Path:
-    """The directory containing the ``gpuwm`` package.
-
-    A checkout root in a clone; ``site-packages`` in an install.  Only
-    used to notice which of the two this is -- nothing is located
-    through it any more.
-    """
-
-    return Path(__file__).resolve().parent.parent
-
-
-def _is_checkout() -> bool:
-    """True when this install is a repository clone."""
-
-    return (_repo_root() / RUNNER_RELATIVE).is_file()
 
 
 def _stage_cwd() -> Path:
@@ -707,6 +696,10 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
     from dataclasses import replace
     experiment = replace(experiment, devices=override_device_count(
         experiment.devices, devices)) if devices is not None else experiment
+    # Before the download: a multi-card split on an interpreter whose lock
+    # is on runs its ranks one at a time (gpuwm.free_threading).
+    from gpuwm.free_threading import refuse_multi_card_under_gil
+    refuse_multi_card_under_gil(experiment.devices.count, "gpuwm go")
     if len(experiment.domains) != 1:
         # A split tree runs through the tree runner (--devices relayed by
         # tree_forecast_command, the table riding the hash-bound config);
@@ -872,6 +865,7 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
         "era5_provider": fetch_table.get("era5_provider"),
         "era5_product": fetch_table.get("era5_product"),
         "member": fetch_table.get("member"),
+        "reuse_fetch": fetch_table.get("reuse_fetch"),
         "retrieve": fetch_table.get("retrieve", False),
         # Essential too: the model top the download must reach, from
         # this config's own [shared].p_top.  None when the source's
@@ -979,9 +973,16 @@ def chem_data_store_sources(experiment) -> tuple[str, ...]:
         return ()
     sources = chem_names(getattr(run, "chem_sources", None), "chem_sources")
     table = load_sets(sets, sources)
+    from gpuwm.data_store_fetch import is_listed_emission
+    # The published-listing emission sources (RAVE's hourly fire files) are
+    # fetched here too: the forecast otherwise first reached the publisher
+    # at its first fire step, after a whole preparation, and a date its
+    # archive does not hold failed there instead of at the door.
     return tuple(name for name in sources
                  if name in table.sources
-                 and table.sources[name].acquisition is not None)
+                 and ((table.sources[name].acquisition is not None
+                       and table.sources[name].acquisition.get("kind") != "published_files")
+                      or is_listed_emission(table.sources[name])))
 
 
 def chem_fetch_command(plan: dict) -> list[str] | None:
@@ -1162,7 +1163,7 @@ def fetch_command(plan: dict) -> list[str]:
     if plan.get("forecast_start_hour"):
         command.extend(
             ("--forecast-start-hour", str(plan["forecast_start_hour"])))
-    for key in ("era5_provider", "era5_product", "member", "fetch_max_connections"):
+    for key in ("era5_provider", "era5_product", "member", "fetch_max_connections", "reuse_fetch"):
         if plan.get(key) is not None:
             command.extend(("--" + key.replace("_", "-"), str(plan[key])))
     if plan.get("retrieve"):
@@ -1368,6 +1369,9 @@ def _early_render_flags(plan: dict, early_render: str | None) -> list[str]:
     section = plan.get("render_section")
     if section:
         flags.append(f"--render-section={section}")
+    for key in ("publish_root", "publish_cmd"):
+        if plan.get(key) is not None:
+            flags.extend(["--" + key.replace("_", "-"), str(plan[key])])
     return flags
 
 
@@ -1533,15 +1537,17 @@ def _checkpoint_retention(keep: int | None):
     The forecast's checkpoint writer reads the number of sets to keep from
     :data:`gpuwm.resume.KEEP_CHECKPOINTS_ENV` (0 keeps every set), in this
     process when it is hosted here and in the stage subprocess, which
-    inherits this environment, when it is not.  ``None`` leaves whatever
-    the caller set, which is how a hosting ``gpuwm run-plan`` keeps its own
-    policy.
+    inherits this environment, when it is not. ``None`` inherits a hosting
+    caller's policy, or selects the ordinary one-set default when unset.
+    Recipe and resumed ensembles bypass the run plan that sets that default.
     """
-    from gpuwm.resume import KEEP_CHECKPOINTS_ENV
+    from gpuwm.resume import KEEP_CHECKPOINTS_ENV, DEFAULT_KEEP_CHECKPOINTS
 
     if keep is None:
-        yield
-        return
+        if os.environ.get(KEEP_CHECKPOINTS_ENV, "").strip():
+            yield
+            return
+        keep = DEFAULT_KEEP_CHECKPOINTS
     previous = os.environ.get(KEEP_CHECKPOINTS_ENV)
     os.environ[KEEP_CHECKPOINTS_ENV] = str(int(keep))
     try:
@@ -1589,8 +1595,14 @@ def _run_forecast(plan: dict, digests: dict, *, explain: bool,
     # in process, and it does not make the stage observer a host.
     from gpuwm.ensemble.runtime_context import current_session
     observer_hosts = observer is not None and getattr(observer, "hosts_forecast", True)
-    hosted = current_session() is not None or observer_hosts
+    from gpuwm.tc_accumulator import active as cyclone_active
+    hosted = current_session() is not None or observer_hosts or cyclone_active()
     _join_kernel_prewarm(plan)
+    # The covering hydro fabric prepared beside the fetch and the preparation
+    # (gpuwm.hydro.runtime._Beside): its answer is bound before the runner
+    # is spawned, so the runner inherits it exactly as a synchronous door's.
+    from gpuwm.hydro.runtime import join_beside as _join_hydro_fabric
+    _join_hydro_fabric()
     early = None if hosted else _early_render_products(plan)
     command = (tree_forecast_command(
                    plan, early_render=early,
@@ -1821,6 +1833,11 @@ def render_command(plan: dict, frames: list[Path] | None = None, *,
     products = plan.get("render_products")
     if products:
         command += ["--products", str(products)]
+    if not products or any(term.strip().startswith("hub_") or term.strip().casefold() == "all"
+                        for term in str(products).split(",")):
+        config = plan.get("config")
+        if config is not None:
+            command += ["--hubwind-config", str(config)]
     # The line every `xsec:` product is cut along, `gpuwm render
     # --section`'s own value.  Without it the render front door drops each
     # section product before the renderer starts, so a run that asked for
@@ -2045,6 +2062,8 @@ def unknown_render_products(spec) -> list[str]:
     known = {str(entry.get("name") or "") for entry in products
              if isinstance(entry, dict)}
     known |= set(RUST_PRODUCT_ALIASES)
+    from gpuwm.hubwind import product_names as hubwind_product_names
+    known |= hubwind_product_names()
     # The renderer matches ``all`` and its group keywords without regard
     # to case (rw-wrfbatch section.rs, split_product_spec); product names
     # are matched as written.
@@ -2326,6 +2345,8 @@ def _render_stage(plan: dict, *, explain: bool,
         print(f"  -- render complete: {len(already)} frame(s) were "
               "published while the forecast ran and verified by digest; "
               "nothing was left to draw.")
+        _reference_compare_stage(plan, explain=explain, observer=observer,
+                                 door=door)
         summary = _print_closing_notes(plan, explain=explain)
         if summary is not None:
             _notify(observer, "stage_end", label="render", exit_code=0, ok=True,
@@ -2389,8 +2410,140 @@ def _render_stage(plan: dict, *, explain: bool,
     # to run only on a failure, so a successful run kept whatever its
     # renders left: 741 MB on one 24 h 3 km forecast (finding F7).
     _close_stage_scratch(plan, prefix=stage_prefix, observer=observer)
+    _reference_compare_stage(plan, explain=explain, observer=observer,
+                             door=door)
     _print_closing_notes(plan, explain=explain)
     return True
+
+
+#: The products a run is drawn beside its reference model with at finalize:
+#: the WOOF-vs-HRRR campaign set (composite radar, 2 m temperature and
+#: dewpoint, 10 m wind, 500 hPa height) plus the hourly rain, whose
+#: previous-hour frame is on disk at finalize.  The comparison engine's own
+#: capability table decides which of them a reference can draw; one it
+#: cannot is skipped by name, never failed.
+COMPARE_PRODUCTS = "refc,t2m,td2m,wspd10,hgt500,qpf1h"
+
+
+def compare_reference(source: str | None, catalog: dict) -> str | None:
+    """The reference model a run from ``source`` is drawn beside, or None.
+
+    TABLE WORK, not a per-model branch: the source table's
+    ``upstream_model_id`` names the model the run was started from, and the
+    comparison engine's own catalogue (``rw_compare --list-products``) says
+    which models it can draw as a forecast reference.  A source whose
+    upstream model is in that catalogue is compared against it, so a model
+    added to either table is compared without a line changing here; a
+    source with no such model (GFS, ERA5, a WRF input) has no reference
+    and draws nothing extra.
+    """
+
+    model = _source_upstream({"source": source})
+    reference = catalog.get(model) if model else None
+    if not reference or "forecast" not in set(reference.get("products", {}).values()):
+        return None
+    return str(model)
+
+
+def _reference_compare_stage(plan: dict, *, explain: bool, observer=None,
+                             door: str = "go") -> None:
+    """Draw the run beside the model it started from (WOOF left, reference right).
+
+    THE BREAKAGE THIS CLOSES: every run started from HRRR is to be read
+    beside HRRR's own forecast for the same valid times, through the Rust
+    comparison engine, and that was reachable only by an operator typing
+    ``gpuwm render --compare hrrr`` after the run (report
+    WOOF-VS-HRRR-PANELS-2026-10-03, follow-up 3).  Finalize now draws those
+    sheets by default into the run's own picture tree
+    (``<render>/<domain>/compare_<reference>_<product>/<valid-day>/``).
+
+    Additive: the forecast and its own pictures are already published, so
+    a comparison that cannot be drawn (no ``rw_compare`` in this install,
+    the reference not reachable) is said on one line and the run still
+    succeeds.
+    """
+
+    from gpuwm import render_compare, rustwx, rustwx_lanes
+
+    upstream = _source_upstream(plan)
+    if upstream is None:
+        # No upstream model (GFS-style analyses, ERA5, a WRF input): there
+        # is nothing to be drawn beside, and nothing to say.
+        return
+    try:
+        engine = rustwx_lanes.require_compare_bin()
+    except RuntimeError as error:
+        print(f"  -- compare skipped: a run from {upstream} is drawn beside "
+              f"that model's own forecast when it is a comparison reference, "
+              f"and the comparison engine is not usable here: {error}")
+        return
+    listing = subprocess.run([str(engine), "--list-products"],
+                             capture_output=True, text=True, errors="replace",
+                             env=rustwx.renderer_env())
+    if listing.returncode != 0:
+        print("  -- compare skipped: the comparison engine's catalogue "
+              f"failed ({(listing.stderr or '').strip() or listing.returncode})")
+        return
+    reference = compare_reference(
+        plan.get("source"), render_compare.reference_catalog(listing.stdout))
+    if reference is None:
+        return
+    frames = Path(plan.get("wrfout_dir", plan["run"] / "wrfout"))
+    command = [sys.executable, "-m", "gpuwm.cli", "render", str(frames),
+               "--compare", reference, "--products", COMPARE_PRODUCTS,
+               "--out", str(plan["render"]),
+               *_compare_reference_dir_flags(plan),
+               *run_stamp_module.stage_flags()]
+    try:
+        _run_stage(f"compare {reference}", command, explain=explain,
+                   observer=observer, door=door,
+                   secondary_failure=lambda: True)
+    except GoStageFailed as failure:
+        why = (failure.diagnostic or "").strip() or str(failure)
+        print(f"render: warning: the {reference} comparison sheets were not "
+              f"drawn ({why}); every picture of the run itself is in "
+              "place", file=sys.stderr)
+
+
+def _compare_reference_dir_flags(plan: dict) -> list[str]:
+    """``--compare-reference-dir`` = the run's own download, when it can serve.
+
+    THE BREAKAGE THIS CLOSES: the finalize compare stage ran without it, so
+    ``rw_compare`` re-downloaded from the public bucket the very cycle the
+    fetch stage had already put in the run's download folder (WOOF 1.1
+    readiness g1, NYC 750 m from HRRR 2026-10-21T12: finalize 724.6 s,
+    2.7 GB fetched, card idle; the same 98 sheets from the download folder
+    took 43 s and are byte-identical).  ``rw_compare`` reads the folder
+    first and still fetches any lead it lacks, so nothing is made offline.
+
+    The folder holds the run's CYCLE, and the comparison cycle is the run's
+    START; a flat file name carries only the cycle hour, so a start a whole
+    number of days past the cycle would alias the wrong day.  The folder is
+    therefore handed over only when the run starts at its cycle.
+    """
+
+    data = plan.get("data")
+    if data is None or int(plan.get("forecast_start_hour") or 0) != 0:
+        return []
+    folder = Path(data)
+    if not folder.is_dir():
+        return []
+    return ["--compare-reference-dir", str(folder)]
+
+
+def _source_upstream(plan: dict) -> str | None:
+    """The run's source's upstream model id from the source table, or None."""
+
+    source = plan.get("source")
+    if not source:
+        return None
+    from gpuwm.source_adapters import get_source_adapter
+
+    try:
+        model = get_source_adapter(str(source)).upstream_model_id
+    except (KeyError, ValueError):
+        return None
+    return str(model) if model else None
 
 
 def _print_closing_notes(plan: dict, *, explain: bool):
@@ -2976,7 +3129,7 @@ def _run_stage(label: str, command: list[str], *, explain: bool,
             #
             # The stage dies with this process: _stage_env() carries
             # gpuwm.parent_death's entry and the stage binds itself after
-            # exec.  THE BREAKAGE: a `gpuwm go` killed by pid (box B,
+            # exec.  THE BREAKAGE: a `gpuwm go` killed by pid (a rented box,
             # 2026-10-07) left its forecast supervisor reparented to init,
             # holding 63.9 GB on a card for 43 minutes with no owner.  This
             # thread stays blocked on the child until it ends, which is
@@ -3790,7 +3943,7 @@ def memory_refusal_text(gate: dict) -> str:
         return ("[devices] memory admission refused before download: prevent "
                 "a card or pinned host allocation failure\n" + gate["verdict"])
     free = gate.get("free_bytes")
-    free_words = ("" if free is None else
+    free_words = ("" if free is None or gate.get("pool_lease_note") else
                   f", and the card has {free / (1024 ** 3):.2f} GiB "
                   "free right now")
     # THE ARITHMETIC UNDER A STREAMED REFUSAL.  The verdict above is one
@@ -3900,15 +4053,14 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None,
     budget -- said out loud, never blocking).
     """
 
-    from gpuwm.core.preflight import (ReservePolicy, _load_experiment_any,
+    from gpuwm.core.preflight import (_load_experiment_any,
                                       config_forcing_source,
                                       config_forcing_schedule,
                                       DEFAULT_FORCING_INTERVAL_SECONDS,
                                       device_memory_probe_reason,
                                       device_memory_probe_subprocess,
                                       estimate_phases,
-                                      profile_from_device_probe,
-                                      unpriced_ingest_note)
+                                      profile_from_device_probe)
 
     config = Path(plan["config"])
     source = config_forcing_source(config, priced_only=False)
@@ -3980,6 +4132,11 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None,
     # on -- and where saying "no card here" for an uninstalled runtime
     # was the whole defect.
     probe = device_memory_probe_subprocess()
+    from gpuwm.core.device_probe import sizing_free_memory
+    pool_lease_note = None
+    if probe is not None:
+        free, pool_lease_note = sizing_free_memory(int(probe["free_bytes"]))
+        probe = dict(probe, free_bytes=free)
     probe_reason = None if probe is not None else device_memory_probe_reason()
     profile = profile_from_device_probe(probe)
     # Actual staged case metadata outranks fetch hints; wider supplied
@@ -4137,6 +4294,9 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None,
     # The card's budget is the forecast's and the card's alone; the host
     # side is said beside it with its own number (decode clause below).
     verdict = _card_budget_words(phases.verdict(budget))
+    if pool_lease_note:
+        verdict = verdict.replace("GiB card budget", "GiB pool lease budget")
+        verdict += "; " + pool_lease_note
     # A resident reference number cannot admit a configuration for which the
     # native tree planner explicitly refused the configured execution road.
     # A planning REPORT that died is not such a refusal (planner_gate).
@@ -4176,6 +4336,7 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None,
         "refuse": refuse,
         "warn": peak > budget or not phases.ingest_priced,
         "free_bytes": free,
+        "pool_lease_note": pool_lease_note,
         "budget_bytes": budget,
         # Present on every return of this function, so a caller never
         # has to distinguish "the key is absent" from "there was no
@@ -4657,6 +4818,8 @@ def _registered_launch(args, *, config: Path, payload: dict,
                              else str(Path(args.geog_root).resolve())),
                "render_products": (args.render_products if args.render_products is not None
                                    else DEFAULT_RENDER_PRODUCTS)}
+    if getattr(args, "initial_inputs", None) is not None:
+        options["initial_inputs"] = str(Path(args.initial_inputs).resolve())
     if getattr(args, "grib2", False):
         options["grib2"] = True
     from gpuwm.ensemble.runtime_context import current_session
@@ -4716,7 +4879,8 @@ def _registered_launch(args, *, config: Path, payload: dict,
     bundle = runplan._existing_prepared_bundle(plan)
     if bundle is None:
         acquisition = runplan.declared_forcing_fetch(
-            payload, data, base_dir=config.resolve().parent)
+            payload, data, base_dir=config.resolve().parent,
+            cache_root=case_root)
         if acquisition is not None:
             raw["fetch"] = {"args": acquisition}
             identity = hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest()
@@ -4791,6 +4955,7 @@ def _registered_launch(args, *, config: Path, payload: dict,
         gate = memory_gate({"config": config, "source": source,
                             "cadence": fetch.get("cadence")}, experiment=exp)
         print(f"go: memory -- {gate['verdict']}")
+        _print_hydro_decision()
         if gate["refuse"]:
             raise GoRefusal(memory_refusal_text(gate))
         if gate["warn"]:
@@ -4822,6 +4987,8 @@ def _registered_launch(args, *, config: Path, payload: dict,
                 missing))
     output = run_stamp_module.resolve(case_root, init=cycle, enabled=stamp,
                                      create=True)
+    from gpuwm.tc_accumulator import bind_output as bind_cyclone_output
+    bind_cyclone_output(output)
     raw["output_root"] = str(output.resolve())
     identity = hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest()
     plan = runplan.build_plan(raw, source=f"gpuwm go {config}",
@@ -5247,6 +5414,14 @@ def _at_flag_cycle(args, config: Path, payload: dict, cycle: str
 
         pinned, _from = pinned_transport(fetch_table, getattr(args, "transport", None))
         hints = pin_request(config_fetch_request(payload), pinned)
+        if fetch_table.get("initial_source"):
+            # Resolve the forecast clock from the analysis that starts it.
+            # Resolving a newer boundary cycle then applying a negative lag
+            # would ask for an analysis that has not been published yet.
+            hints = {"source": fetch_table["initial_source"], "hours": 0,
+                     "as_posted": False}
+            initial_pin, _ = pinned_transport(hints, getattr(args, "transport", None))
+            hints = pin_request(hints, initial_pin)
         hints["cycle"] = "latest"
         if getattr(args, "whole_cycle", False):
             hints["as_posted"] = False
@@ -5493,12 +5668,94 @@ class SpeedHooks:
         return None
 
 
+from gpuwm.tc_accumulator import go_scope as _cyclone_go_scope
 from gpuwm.stage_timing import ledger_main as _ledger_main
 from gpuwm.hydro.runtime import go_scope as _hydro_go_scope
 
 
+def _hydro_cycle_applied(args):
+    """The hydro door decides a ``--cycle`` launch from the re-timed CONFIG."""
+    from gpuwm.hydro.runtime import rebind_launch
+    rebind_launch(args, cycle_applied=True, beside=True)
+
+
+def _print_hydro_decision():
+    """The hydro door's verdict, in the memory gate's line block."""
+    from gpuwm.hydro import door as _hydro_door
+    print(_hydro_door.launch_line(_hydro_door.inherited_decision()))
+
+
+def _at_flag_storm_nests(args) -> None:
+    """Expand ``[storm_nests]`` / ``--storm-nests`` / ``--nest-at`` into a copy.
+
+    The table authors dormant ``[[domain]]`` slots (gpuwm.storm_nests), and
+    every later stage -- preparation, the statics corridor, the prepared tree
+    forecast -- reads that copy, so the slots are priced, prepared and walked
+    exactly like hand-written ones.  Breakage it prevents: a launch whose
+    nests are asked for on the command line running without them.
+    """
+    import tomllib
+
+    config = getattr(args, "config", None)
+    flag = getattr(args, "storm_nests", None)
+    points = getattr(args, "nest_at", None)
+    if config is None:
+        if flag is not None or points:
+            raise GoRefusal("--storm-nests and --nest-at need a CONFIG to add the nests to")
+        return
+    config = Path(config)
+    if not config.is_file():
+        return
+    payload = tomllib.loads(config.read_text(encoding="utf-8-sig"))
+    if "storm_nests" not in payload and flag is None and not points:
+        return
+    from gpuwm import storm_nests
+
+    slots = None
+    if flag is not None:
+        token = str(flag).strip().lower()
+        if token == "off":
+            slots = 0
+        elif token == "auto":
+            slots = "auto"
+        else:
+            try:
+                slots = int(token)
+            except ValueError:
+                raise GoRefusal(f"--storm-nests takes N, auto or off, got {flag!r}") from None
+    elif "storm_nests" not in payload:
+        slots = 0          # only --nest-at points were asked for
+    free_bytes = None
+    table_slots = (payload.get("storm_nests") or {}).get("slots")
+    if slots == "auto" or (slots is None and table_slots == "auto"):
+        vram = getattr(args, "vram_gib", None)
+        if vram is not None:
+            free_bytes = int(float(vram) * 2**30)
+        else:
+            try:
+                import cupy as cp
+                free_bytes = int(cp.cuda.Device().mem_info[0])
+            except Exception:      # no card on this host: the table must say vram_gib
+                free_bytes = None
+    if getattr(args, "outdir", None) is None:
+        args.outdir = config.parent / f"{config.stem}-go"
+    out = Path(args.outdir) / "storm-nests" / config.name
+    try:
+        _path, receipt = storm_nests.expand_config_file(
+            config, out, slots_override=slots,
+            points_override=[storm_nests.parse_point(p) for p in (points or ())],
+            free_bytes=free_bytes)
+    except storm_nests.StormNestsRefusal as error:
+        raise GoRefusal(str(error)) from None
+    print(f"go: storm nests: {receipt['automatic_slots']} automatic slot(s) and "
+          f"{len(receipt['points'])} on-command nest(s) at "
+          f"{receipt['shape']['root_dx_km'] / receipt['shape']['ratio']:g} km "
+          f"(grids {receipt['slot_grid_ids']}); config re-stated as {out}")
+    args.config = out
+
 @_ledger_main
-@_hydro_go_scope
+@_cyclone_go_scope
+@_hydro_go_scope(beside=True)
 def go_main(args, *, observer=None) -> int:
     """Launch through the source's existing native preparation chain.
 
@@ -5509,6 +5766,7 @@ def go_main(args, *, observer=None) -> int:
     """
     from gpuwm.earth2_licensing import check_namespace
     check_namespace(args)
+    _at_flag_storm_nests(args)
     if getattr(args, "branch_from", None) is not None:
         from gpuwm.ensemble.mass_launcher import run as run_branches
         return run_branches(args)
@@ -5537,7 +5795,15 @@ def go_main(args, *, observer=None) -> int:
         ensemble_request = (len(families) > 1 or (getattr(args, "members", None) or 1) > 1
                             or getattr(args, "recipe", None) == "wofs")
         selected_source = None if ensemble_request else families[0]["source"]
-    owner = get_source_adapter(selected_source).acquisition_owner if selected_source else None
+    # Only an acquisition owner is asked for here. A source no adapter knows
+    # has none, and the plan's own refusal below names it with its next step
+    # ("... has no automatic native launch route. Next: gpuwm sources").
+    # Breakage this prevents: the bare adapter lookup refused an unregistered
+    # source first, with a raw list of every adapter id and no next step.
+    try:
+        owner = get_source_adapter(selected_source).acquisition_owner if selected_source else None
+    except ValueError:
+        owner = None
     materialize = getattr(import_module(owner), "prepare_launch", None) if owner else None
     if materialize is not None:
         materialize(args)
@@ -5545,6 +5811,10 @@ def go_main(args, *, observer=None) -> int:
         raise GoRefusal("This source has no generated-member launch contract")
     from gpuwm.ensemble.wofs_recipe import prepare_launch
     prepare_launch(args)
+    # A source-only launch has its domain configuration only now; the hydro
+    # door decided on entry without it (no_domain_geometry). Ask it again.
+    from gpuwm.hydro.runtime import rebind_launch as _hydro_rebind_launch
+    _hydro_rebind_launch(args, beside=True)
     from gpuwm.core.resident_admission import memory_gate_override
     from gpuwm.verification_visuals import verification_scope
     enabled = getattr(args, "verify_visuals", None)
@@ -5574,7 +5844,9 @@ def go_main(args, *, observer=None) -> int:
         if request is None:
             raise GoRefusal("--restart-roster requires the original ensemble configuration")
         from gpuwm.ensemble.restart_roster import resume_prepared_roster
-        return resume_prepared_roster(args, request, observer=observer)
+        _hydro_cycle_applied(args)
+        with _checkpoint_retention(getattr(args, "keep_checkpoints", None)):
+            return resume_prepared_roster(args, request, observer=observer)
     from gpuwm.ensemble import member_inputs
     if getattr(args, "prepare_only", False) and not (
             request is not None and (request.recipe is not None
@@ -5831,8 +6103,15 @@ def _go_recipe(args, request, *, observer=None) -> int:
     cycle = _recipe_flag_cycle(args, payload)
     if getattr(args, "readiness", False):
         return _recipe_readiness(args, request, config, payload, cycle, posting)
+    # No dated-archive probe here (32dea003f45 put one in): it answered for
+    # the config's own window, while a recipe runs its members' windows
+    # (time-lagged members fetch earlier cycles), and it broke the recipe
+    # dry-run's network-free plan (tests/test_ensemble_member_inputs.py,
+    # GUARD_EVENTS=[] since 69eabda5a28).  `--readiness` answers every
+    # member's window, archive boundaries included (_recipe_readiness).
     if cycle is not None:
         config, payload = _at_flag_cycle(args, config, payload, cycle)
+    _hydro_cycle_applied(args)
     _extend_outdir(args, config, payload)
     # --prepare-only on the recipe route prepares EVERY member and stops at
     # the forecast (recipe_door.run_recipe_ensemble).  Breakage it prevents:
@@ -5844,6 +6123,24 @@ def _go_recipe(args, request, *, observer=None) -> int:
     with _checkpoint_retention(getattr(args, "keep_checkpoints", None)):
         return recipe_door.run_recipe_ensemble(args, request, observer=observer,
                                                options=posting)
+
+
+def _archive_dry_readiness(args, payload: dict, cycle) -> int | None:
+    """Dated archive dry-runs prove every requested boundary exists."""
+    if not getattr(args, "dry_run", False):
+        return None
+    from gpuwm import fetch_endpoints, source_readiness
+    table = payload.get("fetch", {})
+    requested = cycle or table.get("cycle")
+    if (not fetch_endpoints.archive_rows(str(table.get("source", "")))
+            or not requested or requested == "latest"):
+        return None
+    probe_payload = {**payload, "fetch": {**table, "cycle": requested}}
+    pinned, _ = pinned_transport(table, getattr(args, "transport", None))
+    document, code = _readiness_answer(
+        probe_payload, {"as_posted": False}, pinned, no_probe=False)
+    source_readiness.print_document(document)
+    return code or None
 
 
 def _go_launch(args, *, observer=None) -> int:
@@ -5889,15 +6186,31 @@ def _go_launch(args, *, observer=None) -> int:
             "as_posted": False if getattr(args, "whole_cycle", False) else None,
             "late_after_minutes": getattr(args, "late_after_minutes", None)},
             pinned, no_probe=getattr(args, "no_probe", False))
+    archive_code = _archive_dry_readiness(args, payload, cycle)
+    if archive_code is not None:
+        return archive_code
     if cycle is not None:
         config, payload = _at_flag_cycle(args, config, payload, cycle)
+    _hydro_cycle_applied(args)
     config, payload = _at_flag_tiles(args, config, payload)
+    from gpuwm.smoke_execution import (
+        at_flag_smoke, at_launch as smoke_at_launch)
+    if getattr(args, "smoke", False) and _prepared_launch(args):
+        # Breakage it prevents: a prepared bundle's config is hash-bound and
+        # was prepared without smoke inputs, so --smoke would be read by
+        # nothing and the run would silently forecast without smoke.
+        raise GoRefusal(
+            "--smoke turns HRRR-Smoke on in a config that fetches and "
+            "prepares; a prepared bundle (--prepared-root, --restart) keeps "
+            "the chemistry it was prepared with. Next: gpuwm go CONFIG --smoke.")
+    config, payload = at_flag_smoke(args, config, payload)
+    config, payload = smoke_at_launch(args, config, payload)
     _extend_outdir(args, config, payload)
     if getattr(args, "prepare_only", False):
         # Decided before ANY other branch.  The registered run-plan
         # launch has no prepare-only option, so every prepare-only run
         # that reached it ran the whole forecast after its preparation:
-        # the 2.8.6 HRRR route (box B, the two-domain Toronto 750 m city
+        # the 2.8.6 HRRR route (a rented box, the two-domain Toronto 750 m city
         # template: 12 h, 27 history writes, 441 s), and still on
         # integrate/2.8.7 a [case_data] config or one given --wps-namelist
         # or --prepared-root, because that branch sat above this one.
@@ -5999,7 +6312,7 @@ def _prepare_only_launch(args, *, config, payload, observer=None):
     output = run_stamp_module.resolve(case_root, init=fetch.get("cycle"),
                                       enabled=stamp, create=True)
     options = {key: str(Path(getattr(args, key)).resolve()) for key in
-               ("data_dir", "geog_root") if getattr(args, key, None) is not None}
+               ("data_dir", "geog_root", "initial_inputs") if getattr(args, key, None) is not None}
     if getattr(args, "transport", None) is not None:
         options["transport"] = args.transport
     if getattr(args, "whole_cycle", False):
@@ -6089,6 +6402,8 @@ def _disk_admission(plan: dict, args) -> None:
     keep = getattr(args, "keep_checkpoints", None)
     options = {"keep_checkpoints": DEFAULT_KEEP_CHECKPOINTS if keep is None else keep,
                "verify_visuals": os.environ.get("GPUWM_VERIFY_VISUALS", "1").lower() not in ("0", "false", "off"),
+               "publish_root": str(plan.get("publish_root") or Path(plan["root"]) / "www"),
+               "publish_cmd": plan.get("publish_cmd"),
                "render_products": plan.get("render_products") or None,
                # The line its sections are cut along: a plan naming an
                # xsec: product and no line is refused when it is built.
@@ -6198,6 +6513,9 @@ def _go_prepared_main(args, *, observer=None) -> int:
                                        else None),
                             late_after_minutes=getattr(
                                 args, "late_after_minutes", None))
+    plan["publish_root"] = Path(getattr(args, "publish_root", None) or Path(plan["root"]) / "www")
+    plan["publish_cmd"] = getattr(args, "publish_cmd", None)
+    plan["hydro"] = getattr(args, "hydro", None) or "auto"
     try:
         bridge = resolve_bridge()
     except GoRefusal as missing:
@@ -6375,6 +6693,7 @@ def _go_prepared_main(args, *, observer=None) -> int:
                 and not _prepare_only_needs_no_card(args)):
             gate = memory_gate(plan)
             print(f"go: memory -- {gate['verdict']}")
+            _print_hydro_decision()
             if gate["refuse"]:
                 raise GoRefusal(memory_refusal_text(gate))
             if gate["warn"]:
@@ -6430,6 +6749,8 @@ def _go_prepared_main(args, *, observer=None) -> int:
         # And the run folder is CLAIMED here, on the same side of the
         # gates and for the same reason: the plan above only named it.
         claim_run_root(plan)
+        from gpuwm.tc_accumulator import bind_output as bind_cyclone_output
+        bind_cyclone_output(plan["root"])
         from gpuwm.stage_timing import bind_ledger, LedgerObserver
         # The launch root owns diagnostics. The forecast subdirectory must
         # stay empty until the runner takes its existing create-only claim.
@@ -6649,7 +6970,7 @@ def _go_prepared_main(args, *, observer=None) -> int:
                     raise failed from None
                 if not fetch_first and first:
                     # A later preparation or fetch stage may have told
-                    # the observer it failed during the seal hold. The
+                    # the observer it failed while it was stopped. The
                     # complete callback's first failure remains primary.
                     error = first["error"]
                     code = getattr(error, "code", getattr(
@@ -6855,10 +7176,25 @@ def _checkpoint_sets(text: str) -> int:
 
 
 def register_cli(subparsers) -> None:
-    import argparse
     parser = subparsers.add_parser(
-        "go", aliases=["ensemble"],
-        help="prepare, run and render a forecast, fetching inputs when needed")
+        "go", help="prepare, run and render a forecast, fetching inputs when needed")
+    _add_go_arguments(parser)
+    # `gpuwm ensemble` is `go` by another name.  It gets its own parser
+    # built from the same arguments, not an argparse alias: an alias
+    # reuses go's parser, so `gpuwm ensemble --help` printed
+    # "usage: gpuwm go ..." and --help-all listed it as "go (ensemble)".
+    _add_go_arguments(subparsers.add_parser(
+        "ensemble",
+        help="run a forecast ensemble; the same program as gpuwm go",
+        description="Run a forecast ensemble.  The same program, flags and "
+                    "routes as `gpuwm go`; --members N or [ensemble].members "
+                    "in CONFIG sets the member count."))
+    return parser
+
+
+def _add_go_arguments(parser) -> None:
+    """Every argument of ``gpuwm go``, spelled once for ``go`` and ``ensemble``."""
+    import argparse
     parser.add_argument("config", type=Path, nargs="?", metavar="CONFIG",
                         help="an experiment TOML from gpuwm domain; its source and "
                              "domain tree choose the preparation route")
@@ -6908,6 +7244,8 @@ def register_cli(subparsers) -> None:
                         help=argparse.SUPPRESS)
     parser.add_argument("--readiness-fold", action="store_true",
                         help=argparse.SUPPRESS)
+    from gpuwm.product_publish import add_arguments as add_publish_arguments
+    add_publish_arguments(parser)
     parser.add_argument("--live-products-width", type=int, default=None,
                         help=argparse.SUPPRESS)
     from gpuwm.ensemble.door import add_arguments, add_recipe_arguments
@@ -6922,7 +7260,7 @@ def register_cli(subparsers) -> None:
     parser.add_argument("--resume-ensemble", type=Path, default=None, metavar="RUN",
                         help="retry unfinished checkpoint branches in RUN; preserve completed members and failed attempts")
     parser.add_argument("--cyclone-products", type=Path, default=None, metavar="JSON",
-                        help="common Earth grid, every-step wind swath, cyclone track and verification product request")
+                        help="JSON common_grid and optional grid_id/products; ordinary go accumulates max-wind, gust, min-pressure and track at every committed step")
     parser.add_argument("--branch-surface", action="store_true",
                         help="also apply the WoFS seeded soil-moisture and SST draws after restore")
     parser.add_argument("--outdir", type=Path, default=None, metavar="DIR",
@@ -6949,6 +7287,22 @@ def register_cli(subparsers) -> None:
                              "never into its hash-bound config; a fetching "
                              "launch runs a copy of the config with the mode "
                              "re-stated, as --cycle does")
+    from gpuwm.smoke_execution import SMOKE_FLAG_HELP
+    parser.add_argument("--smoke", action="store_true", default=False,
+                        help=SMOKE_FLAG_HELP)
+    parser.add_argument("--storm-nests", default=None, metavar="N|auto|off",
+                        help="storm-following fine nests that spawn on their own: "
+                             "N dormant slots (or 'auto', priced from the card's "
+                             "free memory) watch the parent's 2-5 km updraft "
+                             "helicity, each nest follows its storm and stops when "
+                             "it decays, merges or leaves the domain. Overrides "
+                             "the config's [storm_nests] slots; 'off' removes "
+                             "the automatic slots (docs/storm-nests.md)")
+    parser.add_argument("--nest-at", action="append", default=None,
+                        metavar="LAT,LON[@TIME]",
+                        help="spawn a storm-following nest at this point (at TIME, "
+                             "an ISO time or seconds into the run; default the "
+                             "first step); repeatable")
     parser.add_argument("--initial-inputs", type=Path, default=None, metavar="JSON",
                         help="a separate packaged analysis for the initial state "
                              "(gpuwm prep --initial-inputs); the fetched source "
@@ -6965,10 +7319,8 @@ def register_cli(subparsers) -> None:
                         dest="data_dir",
                         help="download routes only: use this existing download "
                              "instead of the automatically managed request cache")
-    parser.add_argument("--geog-root", type=Path, default=None, metavar="DIR",
-                        help="override the geography tree (default: the config's "
-                             "[case_data].geog_root or [static].geog_root, "
-                             "otherwise the staged WPS_GEOG tree)")
+    from gpuwm.geog_assets import add_geog_root_argument
+    add_geog_root_argument(parser)
     from gpuwm.fetch import FETCH_TRANSPORTS
     parser.add_argument("--transport", default=None, choices=FETCH_TRANSPORTS,
                         help="download routes only: pin the fetch stage to one host "
@@ -7061,7 +7413,6 @@ def register_cli(subparsers) -> None:
                              "envelope; a model state too big to build at "
                              "all is still refused")
     parser.set_defaults(func=go_main)
-    return parser
 
 
 __all__ = [

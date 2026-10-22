@@ -1,7 +1,7 @@
 use crate::RustwxRenderError;
 use crate::colormap::{LegendControls, LegendMode, LevelDensity, RenderDensity};
 use crate::presentation::{LineworkRole, PolygonRole, ProductVisualMode};
-use crate::projected_map::{ProjectedBasemap, ProjectedMap};
+use crate::projected_map::ProjectedMap;
 use crate::projection::ProjectionSpec;
 use rustwx_core as core;
 use serde::{Deserialize, Serialize};
@@ -684,6 +684,9 @@ impl ContourLayer {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WindBarbLayer {
+    /// Direction-only arrows, in the same earth-relative convention as winds.
+    #[serde(default)]
+    pub direction_arrows: bool,
     pub u: Vec<f32>,
     pub v: Vec<f32>,
     pub stride_x: usize,
@@ -726,6 +729,7 @@ impl Default for WindBarbStyle {
 impl WindBarbLayer {
     pub fn from_fields(u: &Field2D, v: &Field2D, style: WindBarbStyle) -> Self {
         Self {
+            direction_arrows: false,
             u: u.values.clone(),
             v: v.values.clone(),
             stride_x: style.stride_x.max(1),
@@ -969,13 +973,6 @@ impl MapRenderRequest {
         request
     }
 
-    pub fn for_core_derived_product(
-        field: core::Field2D,
-        product: crate::weather::DerivedProductStyle,
-    ) -> Self {
-        Self::for_derived_product(field.into(), product)
-    }
-
     pub fn for_palette_fill(
         field: Field2D,
         palette: crate::weather::WeatherPalette,
@@ -1002,11 +999,6 @@ impl MapRenderRequest {
         self
     }
 
-    pub fn with_raster_sample_mode(mut self, raster_sample_mode: RasterSampleMode) -> Self {
-        self.raster_sample_mode = raster_sample_mode;
-        self
-    }
-
     pub fn with_semantics(mut self, semantics: ProductSemantics) -> Self {
         self.semantics = Some(semantics);
         self
@@ -1014,50 +1006,6 @@ impl MapRenderRequest {
 
     pub fn with_product_metadata(mut self, product_metadata: core::ProductKeyMetadata) -> Self {
         self.product_metadata = Some(product_metadata);
-        self
-    }
-
-    pub fn with_product_provenance(mut self, provenance: core::ProductProvenance) -> Self {
-        let metadata =
-            self.product_metadata.take().unwrap_or_else(|| {
-                core::ProductKeyMetadata::new(self.title.clone().unwrap_or_else(|| {
-                    self.field.product.as_named().unwrap_or("field").to_string()
-                }))
-                .with_native_units(self.field.units.clone())
-            });
-        self.product_metadata = Some(metadata.with_provenance(provenance.clone()));
-        self.semantics = Some(provenance.into());
-        self
-    }
-
-    pub fn set_rgba_grid(&mut self, rgba_grid: RgbaGridField) -> &mut Self {
-        self.rgba_grid = Some(rgba_grid);
-        self
-    }
-
-    pub fn with_rgba_grid(mut self, rgba_grid: RgbaGridField) -> Self {
-        self.rgba_grid = Some(rgba_grid);
-        self
-    }
-
-    pub fn set_projected_domain(&mut self, domain: ProjectedDomain) -> &mut Self {
-        self.projected_domain = Some(domain);
-        self
-    }
-
-    pub fn with_projected_domain(mut self, domain: ProjectedDomain) -> Self {
-        self.projected_domain = Some(domain);
-        self
-    }
-
-    pub fn apply_projected_basemap(&mut self, basemap: &ProjectedBasemap) -> &mut Self {
-        self.projected_lines = basemap.lines.clone();
-        self.projected_polygons = basemap.polygons.clone();
-        self
-    }
-
-    pub fn with_projected_basemap(mut self, basemap: &ProjectedBasemap) -> Self {
-        self.apply_projected_basemap(basemap);
         self
     }
 
@@ -1071,16 +1019,6 @@ impl MapRenderRequest {
 
     pub fn with_projected_map(mut self, projected: &ProjectedMap) -> Self {
         self.apply_projected_map(projected);
-        self
-    }
-
-    pub fn add_projected_place_label(&mut self, place_label: ProjectedPlaceLabel) -> &mut Self {
-        self.projected_place_labels.push(place_label);
-        self
-    }
-
-    pub fn with_projected_place_label(mut self, place_label: ProjectedPlaceLabel) -> Self {
-        self.projected_place_labels.push(place_label);
         self
     }
 

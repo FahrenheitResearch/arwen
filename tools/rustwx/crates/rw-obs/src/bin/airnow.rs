@@ -450,8 +450,7 @@ fn table(
     std::fs::write(output.with_extension("json"), &text)?;
     Ok(text)
 }
-fn run() -> Result<String, Box<dyn Error>> {
-    let a: Vec<String> = std::env::args().skip(1).collect();
+fn run(a: &[String]) -> Result<String, Box<dyn Error>> {
     match a.first().map(String::as_str) {Some("--abi")=>return Ok(ABI.into()),Some("--version")=>return Ok(format!("rw_airnow {}",env!("CARGO_PKG_VERSION"))),Some("--help")|None=>return Ok("rw_airnow fetch --start TIME --end TIME --out DIR\nrw_airnow table --dir DIR --start TIME --end TIME --out FILE.csv [--bbox W,S,E,N] [--fetch-record FILE] [--time-basis utc|local]".into()),_=>{}}
     // The subcommand is judged before its options, as the sibling front
     // doors do: a mistyped one is named, not reported as a missing --start.
@@ -470,16 +469,7 @@ fn run() -> Result<String, Box<dyn Error>> {
 }
 fn main() -> ExitCode {
     let _ = std::hint::black_box(GPUWM_BRIDGE_SOURCE_REV_STAMP);
-    match run() {
-        Ok(s) => {
-            println!("{s}");
-            ExitCode::SUCCESS
-        }
-        Err(e) => {
-            eprintln!("rw_airnow: {e}");
-            ExitCode::FAILURE
-        }
-    }
+    rw_obs::cli::main("rw_airnow", |args| run(args).map(|output| format!("{output}\n")))
 }
 #[cfg(test)]
 mod tests {

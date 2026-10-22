@@ -39,9 +39,10 @@ import numpy as np
 import cupy as cp
 
 from gpuwm.config import RunConfig
-from gpuwm.core import constants as c
 from gpuwm.core.kernels import get_kernel, get_kernel_int_defines
 from gpuwm.core.state import DTYPE, DomainState
+from gpuwm.core.wsm_family import (check_surface, check_volume, finish_fields,
+                                    precipitation_surface)
 from gpuwm.core.wsm3_constants import (WSM3_DEEP_KMAX, WSM3_SHALLOW_KMAX,
                                        WSM3_VERTICAL_LEVEL_BOUNDS,
                                        wrf_init_words, wsm3_level_tier)
@@ -109,22 +110,10 @@ def launch_wsm3(theta, qv, qc, qr, w, rho, pii, pressure, dz,
         "rho": rho, "pii": pii, "pressure": pressure, "dz": dz,
         "effc": effc, "effi": effi, "effs": effs,
     }
-    for name, value in volume.items():
-        if value.shape != shape:
-            raise ValueError(f"{name} must have shape {shape}, got {value.shape}")
-        if value.dtype != DTYPE:
-            raise TypeError(f"{name} must be float32, got {value.dtype}")
-        if not value.flags.c_contiguous:
-            raise ValueError(f"{name} must be C-contiguous")
-    surface_shape = (ny, nx)
-    for name, value in {
+    check_volume(volume, shape)
+    check_surface({
             "rainnc": rainnc, "rainncv": rainncv,
-            "snownc": snownc, "snowncv": snowncv, "sr": sr}.items():
-        if value.shape != surface_shape or value.dtype != DTYPE:
-            raise ValueError(f"{name} must be float32 {surface_shape}, got "
-                             f"{value.dtype} {value.shape}")
-        if not value.flags.c_contiguous:
-            raise ValueError(f"{name} must be C-contiguous")
+            "snownc": snownc, "snowncv": snowncv, "sr": sr}, (ny, nx))
     ncol = ny * nx
     blocks = (ncol + _COLUMN_TPB - 1) // _COLUMN_TPB
     kernel = wsm3_kernel("wsm3_column", nz, conservative_surface)
@@ -145,50 +134,26 @@ def apply(state: DomainState, cfg: RunConfig, dt: float, *,
     if missing:
         raise ValueError("mp_physics=3 state lacks WSM3 fields: "
                          + ", ".join(missing))
-    thb = state.thb if state.thb.ndim == 3 else state.thb[:, None, None]
-    phb = state.phb if state.phb.ndim == 3 else state.phb[:, None, None]
-    theta = state.scratch((nz, ny, nx), "wsm3_theta")
-    rho = state.scratch((nz, ny, nx), "wsm3_rho")
-    pii = state.scratch((nz, ny, nx), "wsm3_pii")
-    dz = state.scratch((nz, ny, nx), "wsm3_dz")
-    z8w = state.scratch((nz + 1, ny, nx), "wsm3_z8w")
-    w = state.scratch((nz, ny, nx), "wsm3_w")
-    theta[...] = thb + state.thp
-    rho[...] = 1.0 / state.alt
-    pii[...] = cp.power(state.p / DTYPE(c.P0), DTYPE(c.RCP))
-    z8w[...] = (phb + state.php) / DTYPE(c.G)
-    dz[...] = z8w[1:] - z8w[:-1]
+    from gpuwm.core.wsm6 import _wsm6_prepare
+    theta, rho, pii, dz = _wsm6_prepare(state, "wsm3")
     # WRF solve_em passes the physical full-level w_2 straight through the
     # microphysics driver (module_microphysics_driver.F:2235, W=w); the
     # scheme reads w(i,k) for k = kts..kte, the lower face of each level.
+    w = state.scratch((nz, ny, nx), "wsm3_w")
     w[...] = state.w[:nz]
 
-    surface = (ny, nx)
-    rainnc = state.scratch(surface, "mp_rainnc")
-    rainncv = state.scratch(surface, "mp_rainncv")
-    snownc = state.scratch(surface, "mp_snownc")
-    snowncv = state.scratch(surface, "mp_snowncv")
-    sr = state.scratch(surface, "mp_sr")
+    surface = precipitation_surface(state, ("rain", "snow"))
 
-    from gpuwm.core.microphysics import (MicrophysicsDiagnostics,
-                                         moist_physics_finish,
-                                         save_pre_mp_theta)
+    from gpuwm.core.microphysics import save_pre_mp_theta
     save_pre_mp_theta(state)
     launch_wsm3(
         theta, state.qv, state.qc, state.qr, w, rho, pii, state.p, dz,
-        rainnc, rainncv, snownc, snowncv, sr, dt,
+        dt=dt, **surface,
         effc=state.effc, effi=state.effi, effs=state.effs,
         conservative_surface=bool(
             getattr(cfg, "wsm3_conservative_surface", False)))
-    if refl_10cm_due:
-        from gpuwm.core.refl import compute_and_stash_refl_10cm
-        refl_t = state.scratch((nz, ny, nx), "refl_t")
-        refl_t[...] = theta * pii
-        compute_and_stash_refl_10cm(state, cfg, refl_t, state.p)
-    moist_physics_finish(state, cfg, theta, dt)
-    return MicrophysicsDiagnostics(
-        rainnc=rainnc, rainncv=rainncv, sr=sr,
-        snownc=snownc, snowncv=snowncv)
+    return finish_fields(state, cfg, theta, pii, dt, surface,
+                         refl_10cm_due=refl_10cm_due)
 
 
 __all__ = ["apply", "launch_wsm3", "wsm3_kernel"]

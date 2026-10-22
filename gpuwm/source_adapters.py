@@ -26,6 +26,7 @@ from gpuwm.source_coverage import (COVERAGE_WINDOW_TYPES, CoverageWindow,
                                    LambertGridWindow, RegularLatLonWindow)
 from gpuwm.source_cycles import CycleGrid
 from gpuwm.source_availability import ArchiveWindow
+from gpuwm import fetch_endpoints
 from gpuwm.grid_requirements import NATIVE_TARGET_INTERIOR_AXIS
 from gpuwm.source_credentials import (CredentialLocation, SourceCredential,
                                       credential_declaration)
@@ -37,7 +38,7 @@ RUSTY_WEATHER_INVENTORY_HASHES = {
         "cb5a6fbf87f0d0f5cac35f4735bfc0053c7f4dd79985a64afc1b920c7b20a2eb"
     ),
     "crates/rustwx-models/src/lib.rs": (
-        "125b919608b1981fa314755d2a5419f4fdb3783b3abd52200806cb0252268d3c"
+        "2b7c449a4f9e90ba242856c9955a8d1c9d813d7c6328943033074e7b058b2340"
     ),
     "README.md": (
         "6eb3ea080d78a634fea1fc74e32795fde14af30ad48032efe62bcd90e98db6f3"
@@ -61,14 +62,10 @@ class AdapterStatus(str, Enum):
     """Readiness for direct native production of stock-WRF inputs."""
 
     CERTIFIED = "certified_stock_wrf"
-    NATIVE_EXPORT_PENDING = "native_ingest_direct_export_pending"
     MAPPING_REQUIRED = "adapter_mapping_required"
     MEMBER_SELECTION_REQUIRED = "member_selection_and_mapping_required"
     COMPOSITION_REQUIRED = "explicit_composition_required"
     ARCHIVE_MAPPING_REQUIRED = "wrf_archive_mapping_required"
-    DECODE_IMPLEMENTED_CERTIFICATION_REQUIRED = (
-        "mapped_decode_implemented_stock_wrf_certification_required"
-    )
     RUNNABLE_NOT_CERTIFIED = "runnable_mapping_not_stock_wrf_certified"
 
 
@@ -630,13 +627,13 @@ _HRRR_NATIVE_ARCHIVE = ArchiveWindow(
 #: begins, so a date before it answers no in plain words at the date
 #: picker instead of failing at the download.
 _GEFS_ARCHIVE = ArchiveWindow(
-    "aws", "2020-09-23T00",
+    "aws", "2020-09-23T12",
     "The GEFS v12 atmos/pgrb2ap5 layout this route reads starts with the "
     "2020-09-23 implementation; older objects in the bucket are GEFS v11 "
     "under other paths. Not every cycle of the first days is present.",
-    ("https://noaa-gefs-pds.s3.amazonaws.com/?list-type=2&max-keys=5&prefix=gefs.20200923/00/atmos/pgrb2ap5/gec00",
+    ("https://noaa-gefs-pds.s3.amazonaws.com/?list-type=2&max-keys=5&prefix=gefs.20200923/12/atmos/pgrb2ap5/gec00",
      "https://www.emc.ncep.noaa.gov/emc/pages/numerical_forecast_systems/gefs.php"),
-    checked_at="2026-09-25",
+    checked_at="2026-10-20",
 )
 _AIGEFS_ARCHIVE = ArchiveWindow(
     "aws", "2025-06-01T00",
@@ -644,6 +641,18 @@ _AIGEFS_ARCHIVE = ArchiveWindow(
     "exist before it.",
     ("https://noaa-nws-graphcastgfs-pds.s3.amazonaws.com/?list-type=2&delimiter=/&max-keys=3&prefix=EAGLE_ensemble/",),
     checked_at="2026-09-25",
+)
+_ECMWF_ENS_ARCHIVE = ArchiveWindow(
+    "aws", "2024-03-18T12",
+    "Archived 0.25-degree ENS members with nine pressure levels and four "
+    "soil layers are read from the open-data AWS replica. Its date listing "
+    "begins 2023-01-18, but earlier soil inventories do not satisfy this "
+    "preparation. CC-BY-4.0 and ECMWF Terms of Use. TIGGE is separate, "
+    "CC-BY-NC-4.0 research-only data, never an automatic fallback.",
+    ("https://ecmwf-forecasts.s3.eu-central-1.amazonaws.com/20240318/12z/ifs/0p25/enfo/20240318120000-0h-enfo-ef.index",
+     "https://www.ecmwf.int/en/forecasts/datasets/open-data",
+     "https://apps.ecmwf.int/datasets/licences/tigge/"),
+    checked_at="2026-10-20",
 )
 _AIFS_OPEN_ARCHIVE = ArchiveWindow(
     "aws", "2025-02-25T06",
@@ -1068,7 +1077,12 @@ _ADAPTERS = (
         forecast_time_owner="gfs_forecast_hours",
         seed_fields=('air_pressure', 'air_temperature', 'eastward_wind',
                      'northward_wind', 'mean_sea_level_pressure'),
-        archives=(_GLOBAL_PGRB2_ARCHIVE,),
+        archives=tuple(ArchiveWindow(
+            row["transport"], row["record_start"], row["why"],
+            tuple(row["documentation"]), user_note=row["license"])
+            for row in fetch_endpoints.archive_rows("gfs")
+            if row is next(r for r in fetch_endpoints.archive_rows("gfs")
+                           if r["transport"] == row["transport"])),
         name="GFS (global, 0.25 degree)", aliases=("gfs-0p25", "gfs-0.25"),
         default_product="pgrb2.0p25", max_hour=384,
         upstream_ingest="full",
@@ -1173,6 +1187,120 @@ _ADAPTERS = (
             "cycle by ~7 h (delayed-cutoff cycle), far later than GFS.  "
             "Not yet accepted by unchanged stock WRF."
         ),
+    ),
+    _adapter(
+        "gefs-v11-flat",
+        ensemble_source="gefs-v11-flat",
+        archives=(ArchiveWindow("aws", "2017-01-01T00", "Legacy flat layout; exact member and lead objects are required, not inferred from date.", ("https://noaa-gefs-pds.s3.amazonaws.com/?list-type=2&prefix=gefs.20180101/00/",), checked_at="2026-10-20"),),
+        name="GEFS v11 flat archive member", aliases=(),
+        kind=SourceKind.ENSEMBLE_MEMBERS,
+        file_family="GRIB2",
+        decoder=(
+            "packaged GEFS ensemble-member profile + "
+            "vendored rusty-weather GRIB2 bridges"
+        ),
+        default_product="pgrb2a+pgrb2b/member",
+        required_products=("pgrb2a", "pgrb2b"),
+        max_hour=384,
+        upstream_ingest="declarative_mapping_v1_over_packaged_profile",
+        status=AdapterStatus.RUNNABLE_NOT_CERTIFIED,
+        field_mapping="packaged-rw-wps-gefs-v11-flat-grib2-v1",
+        level_mapping="26-pressure-level-to-explicit-wrf-eta-v2",
+        cadence_mapping="uniform-six-hour-forecast-series-v1",
+        stock_wrf_gate="live-unchanged-stock-wrf-gate-pending",
+        runnable=True,
+        runner="mapped_composition_v1",
+        packaged_profile="gefs-v11-flat-grib2-v1",
+        forcing_interval_seconds=21600.0,
+        composition="Initialize from one verified member's pgrb2a+pgrb2b pair; ensemble means/spread are not trajectory states.",
+        member_set="gefs-v11-flat-grib2-members-v1",
+        notes="Verified 20180101/00 v11: one-degree, 21 members, six-hour leads, 26 pressure levels. Both products of one member are required. Not stock-WRF certified.",
+    ),
+    _adapter(
+        "gefs-reforecast",
+        ensemble_source="gefs-reforecast",
+        archives=(ArchiveWindow("aws", "2000-01-01T00", "GEFSv12 historical reforecast; exact requested objects and indexed leads checked", ("https://registry.opendata.aws/noaa-gefs-reforecast/",), checked_at="2026-10-20"),),
+        name="GEFSv12 retrospective daily member", aliases=(),
+        kind=SourceKind.ENSEMBLE_MEMBERS,
+        file_family="GRIB2",
+        decoder=(
+            "packaged GEFS ensemble-member profile + "
+            "vendored rusty-weather GRIB2 bridges"
+        ),
+        default_product="reforecast/member",
+        required_products=("pressure",),
+        max_hour=384,
+        upstream_ingest="declarative_mapping_v1_over_packaged_profile",
+        status=AdapterStatus.RUNNABLE_NOT_CERTIFIED,
+        field_mapping="packaged-rw-wps-gefs-reforecast-grib2-v1",
+        level_mapping="25-pressure-level-to-explicit-wrf-eta-v2",
+        cadence_mapping="three-hour-through-f240-six-hour-after-v1",
+        stock_wrf_gate="live-unchanged-stock-wrf-gate-pending",
+        runnable=True,
+        runner="mapped_composition_v1",
+        packaged_profile="gefs-reforecast-grib2-v1",
+        forcing_interval_seconds=10800.0,
+        composition="Exact coarsest pressure grid; static land and same-cycle NOAA ice analysis donors.",
+        member_set="gefs-reforecast-grib2-members-v1",
+        notes="5 published members. f003 first instantaneous state, no f000; indexed native member verification. Not stock-WRF certified.",
+    ),
+    _adapter(
+        "gefs-reforecast-weekly",
+        ensemble_source="gefs-reforecast-weekly",
+        archives=(ArchiveWindow("aws", "2000-01-01T00", "GEFSv12 historical reforecast; exact requested objects and indexed leads checked", ("https://registry.opendata.aws/noaa-gefs-reforecast/",), checked_at="2026-10-20"),),
+        name="GEFSv12 retrospective weekly member", aliases=(),
+        kind=SourceKind.ENSEMBLE_MEMBERS,
+        file_family="GRIB2",
+        decoder=(
+            "packaged GEFS ensemble-member profile + "
+            "vendored rusty-weather GRIB2 bridges"
+        ),
+        default_product="reforecast/member",
+        required_products=("pressure",),
+        max_hour=840,
+        upstream_ingest="declarative_mapping_v1_over_packaged_profile",
+        status=AdapterStatus.RUNNABLE_NOT_CERTIFIED,
+        field_mapping="packaged-rw-wps-gefs-reforecast-weekly-grib2-v1",
+        level_mapping="25-pressure-level-to-explicit-wrf-eta-v2",
+        cadence_mapping="three-hour-through-f240-six-hour-after-v1",
+        stock_wrf_gate="live-unchanged-stock-wrf-gate-pending",
+        runnable=True,
+        runner="mapped_composition_v1",
+        packaged_profile="gefs-reforecast-grib2-v1",
+        forcing_interval_seconds=10800.0,
+        composition="Exact coarsest pressure grid; static land and same-cycle NOAA ice analysis donors.",
+        member_set="gefs-reforecast-weekly-grib2-members-v1",
+        notes="11 published members. f003 first instantaneous state, no f000; indexed native member verification. Not stock-WRF certified.",
+    ),
+    _adapter("gefs-reforecast-land", name="NOAA surface donor: gefs-reforecast-land", kind=SourceKind.SURFACE_ANALYSIS, file_family="GRIB2", default_product="surface", max_hour=0, upstream_ingest="table_route_donor_only", notes="Partial surface state used only by a declared composition; cannot initialize an atmosphere alone."),
+    _adapter("ncep-r1-seaice", name="NOAA surface donor: ncep-r1-seaice", kind=SourceKind.SURFACE_ANALYSIS, file_family="NetCDF", default_product="surface", max_hour=0, upstream_ingest="table_route_donor_only", notes="Partial surface state used only by a declared composition; cannot initialize an atmosphere alone."),
+    _adapter(
+        "gefs-v11",
+        ensemble_source="gefs-v11",
+        archives=(ArchiveWindow("aws", "2018-07-27T00", "Legacy product-directory layout; exact member and lead objects are required, not inferred from date.", ("https://noaa-gefs-pds.s3.amazonaws.com/?list-type=2&prefix=gefs.20190201/00/",), checked_at="2026-10-20"),),
+        name="GEFS v11 legacy archive member", aliases=("gefs-legacy",),
+        kind=SourceKind.ENSEMBLE_MEMBERS,
+        file_family="GRIB2",
+        decoder=(
+            "packaged GEFS ensemble-member profile + "
+            "vendored rusty-weather GRIB2 bridges"
+        ),
+        default_product="pgrb2a+pgrb2b/member",
+        required_products=("pgrb2a", "pgrb2b"),
+        max_hour=384,
+        upstream_ingest="declarative_mapping_v1_over_packaged_profile",
+        status=AdapterStatus.RUNNABLE_NOT_CERTIFIED,
+        field_mapping="packaged-rw-wps-gefs-v11-grib2-v1",
+        level_mapping="26-pressure-level-to-explicit-wrf-eta-v2",
+        cadence_mapping="uniform-six-hour-forecast-series-v1",
+        stock_wrf_gate="live-unchanged-stock-wrf-gate-pending",
+        runnable=True,
+        runner="mapped_composition_v1",
+        packaged_profile="gefs-v11-grib2-v1",
+        forcing_interval_seconds=21600.0,
+        composition="Initialize from one verified member's pgrb2a+pgrb2b pair; ensemble means/spread are not trajectory states.",
+        member_set="gefs-v11-grib2-members-v1",
+        notes="Verified 20190201/00 v11: one-degree, 21 members, six-hour leads, 26 pressure levels. Both products of one member are required. Not stock-WRF certified.",
     ),
     _adapter(
         "gefs",
@@ -1401,7 +1529,7 @@ _ADAPTERS = (
         "ecmwf-ens",
         ensemble_source="ecmwf-ens",
         ensemble_control_source="ecmwf-open-data",
-        archives=(_ECMWF_OPEN_DOOR,),
+        archives=(_ECMWF_OPEN_DOOR, _ECMWF_ENS_ARCHIVE),
         name="ECMWF ENS (open data, member)",
         aliases=("ifs-ens", "ecmwf-ensemble"),
         kind=SourceKind.ENSEMBLE_MEMBERS,
@@ -1431,7 +1559,9 @@ _ADAPTERS = (
             "geopotential is absent. The separately published oper-fc "
             "control makes 51 trajectories. Fetch-as-posted remains active "
             "for each member's forcing series. Historical publication "
-            "layouts before IFS cycle 50r1 are not declared by this route. "
+            "layouts from 2024-03-18T12 use the AWS open-data archive, "
+            "the published nine-level atmosphere and legacy soil aliases. "
+            "TIGGE is CC-BY-NC-4.0 research-only, not a fallback. "
             "Data: ECMWF open data, CC BY 4.0. Not stock-WRF certified."
         ),
     ),
@@ -1776,9 +1906,14 @@ _ADAPTERS = (
         composition=(
             "The public member column stops at 250 hPa and publishes no "
             "soil temperature, soil moisture, skin temperature or land "
-            "mask. A complete upper atmosphere and explicit land-state "
-            "composition are required before these members can initialize "
-            "a normal full-column run. No automatic top lowering."
+            "mask: alone it has no soil state and the model top sits above "
+            "the data. The same-cycle RRFS deterministic run (same grid) "
+            "can supply the land state through the cross-source "
+            "composition, but the levels above 250 hPa need a vertical "
+            "extension of the member's ladder from that companion, which "
+            "the composition does not have (it refuses a vertical borrow on "
+            "a different ladder, and one decode may not mix members or "
+            "generating processes). No automatic top lowering."
         ),
         notes=(
             "Five real member trajectories, m001 through m005, are posted "
@@ -2635,3 +2770,37 @@ def source_capability_manifest() -> dict[str, object]:
         ],
         "sources": [adapter.to_dict() for adapter in _ADAPTERS],
     }
+
+
+def source_for_cycle(source: str, cycle) -> str:
+    """Select a dated publication's complete source row before planning.
+
+    A publication can change its member population, vertical ladder and
+    cadence as well as its URL. These are separate rows, selected by data.
+    The chosen row still checks its own archive bounds and exact objects.
+    """
+    import json
+    from datetime import datetime, timezone
+    try:
+        source = canonical_source_token(source)
+    except ValueError:
+        # Dynamically registered acquisition rows need not have a native
+        # preparation adapter. Their route remains the validation owner.
+        return source
+    if isinstance(cycle, str):
+        if cycle == "latest":
+            return source
+        from gpuwm.source_availability import parse_cycle
+        cycle = parse_cycle(cycle)
+    if not isinstance(cycle, datetime):
+        return source
+    if cycle.tzinfo is not None:
+        cycle = cycle.astimezone(timezone.utc).replace(tzinfo=None)
+    rows = json.loads((Path(__file__).parent / "authorities" /
+                       "source-publications.v1.json").read_text())
+    for row in rows["sources"].get(source, []):
+        if ((not row.get("valid_from") or cycle >= datetime.fromisoformat(row["valid_from"]))
+                and (not row.get("valid_until") or cycle < datetime.fromisoformat(row["valid_until"]))
+                and (not row.get("weekdays") or cycle.weekday() in row["weekdays"])):
+            return canonical_source_token(row["source"])
+    return source

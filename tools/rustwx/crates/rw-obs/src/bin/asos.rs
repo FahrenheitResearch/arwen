@@ -57,7 +57,7 @@ use rw_nexrad::s3::parse_time;
 use rw_obs::net::{agent, get_text, query_encode};
 use rw_obs::seam::{seam_time, wrap_longitude, Provenance, TIME_FORMAT};
 use rw_obs::table::{
-    altimeter_inhg_to_station_pa, fahrenheit_to_kelvin as table_fahrenheit_to_kelvin,
+    altimeter_inhg_to_station_pa, fahrenheit_to_kelvin,
     knots_to_m_s, wind_components, RowProvenance, TableRow, TableWriter,
     ERROR_DEWPOINT_SURFACE_K, ERROR_SURFACE_PRESSURE_PA, ERROR_TEMPERATURE_SURFACE_K,
     ERROR_WIND_SURFACE_M_S, GROSS_DEWPOINT_K, GROSS_SURFACE_PRESSURE_PA, GROSS_TEMPERATURE_K,
@@ -81,7 +81,7 @@ pub static GPUWM_BRIDGE_SOURCE_REV_STAMP: &str =
 const DEFAULT_ARCHIVE: &str = "https://mesonet.agron.iastate.edu";
 /// The columns requested, in the order the request states them.
 const DATA_COLUMNS: &[&str] = &[
-    "tmpf", "dwpf", "drct", "sknt", "gust", "alti", "mslp", "p01i",
+    "tmpf", "dwpf", "drct", "sknt", "gust", "alti", "mslp", "p01i", "vsby",
 ];
 /// The one-minute route's variables, in the order the request states them.
 /// The one-minute pages carry no MSLP, gust, altimeter or hourly
@@ -268,29 +268,14 @@ table options
 
 fn main() -> ExitCode {
     let _ = std::hint::black_box(GPUWM_BRIDGE_SOURCE_REV_STAMP);
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    match run(&args) {
-        Ok(output) => {
-            print!("{output}");
-            ExitCode::SUCCESS
-        }
-        Err(error) => {
-            eprintln!("rw_asos: {error}");
-            ExitCode::FAILURE
-        }
-    }
+    rw_obs::cli::main("rw_asos", run)
 }
 
 fn run(args: &[String]) -> Result<String, Box<dyn Error>> {
-    let Some(first) = args.first() else {
-        return Ok(USAGE.to_string());
-    };
-    match first.as_str() {
-        "--help" | "-h" | "help" => return Ok(USAGE.to_string()),
-        "--version" | "-V" => return Ok(format!("rw_asos {VERSION}\n")),
-        "--abi" => return Ok(format!("{ABI_MARKER}\n")),
-        _ => {}
+    if let Some(output) = rw_obs::cli::information(args, "rw_asos", VERSION, USAGE, ABI_MARKER) {
+        return Ok(output);
     }
+    let first = &args[0];
     let options = Options::parse(&args[1..])?;
     match first.as_str() {
         "stations" => cmd_stations(&options),
@@ -334,12 +319,7 @@ impl Options {
         let mut index = 0;
         while index < args.len() {
             let flag = args[index].as_str();
-            let mut value = || -> Result<String, Box<dyn Error>> {
-                index += 1;
-                args.get(index)
-                    .cloned()
-                    .ok_or_else(|| err(format!("{flag} needs a value")))
-            };
+            let mut value = || rw_obs::cli::value(args, &mut index, flag);
             let rate = |raw: String, flag: &str| -> Result<f64, Box<dyn Error>> {
                 let parsed: f64 = raw
                     .parse()
@@ -525,16 +505,7 @@ impl Options {
     }
 
     fn window(&self) -> Result<(DateTime<Utc>, DateTime<Utc>), Box<dyn Error>> {
-        let start = parse_time(self.start.as_deref().ok_or_else(|| err("--start is required"))?)?;
-        let end = parse_time(self.end.as_deref().ok_or_else(|| err("--end is required"))?)?;
-        if end < start {
-            return Err(err(format!(
-                "--end {} precedes --start {}",
-                seam_time(end),
-                seam_time(start)
-            )));
-        }
-        Ok((start, end))
+        rw_obs::cli::window(self.start.as_deref(), self.end.as_deref())
     }
 
     fn out(&self) -> Result<&Path, Box<dyn Error>> {
@@ -1017,6 +988,7 @@ struct RawReport {
     mslp_hpa: Option<f64>,
     gust_kt: Option<f64>,
     precipitation_in: Option<f64>,
+    visibility_sm: Option<f64>,
 }
 
 fn split_csv(line: &str) -> Vec<String> {
@@ -1061,6 +1033,7 @@ fn parse_product_csv(text: &str, product: &Product) -> Result<Vec<RawReport>, Bo
     let mslp_at = index_of("mslp");
     let gust_at = index_of("gust");
     let precipitation_at = index_of("p01i");
+    let visibility_at = index_of("vsby");
 
     let mut reports = Vec::new();
     for line in lines {
@@ -1097,13 +1070,10 @@ fn parse_product_csv(text: &str, product: &Product) -> Result<Vec<RawReport>, Bo
             mslp_hpa: get(mslp_at),
             gust_kt: get(gust_at),
             precipitation_in: get(precipitation_at),
+            visibility_sm: get(visibility_at).filter(|v| (0.0..=100.0).contains(v)),
         });
     }
     Ok(reports)
-}
-
-fn fahrenheit_to_kelvin(value: f64) -> f64 {
-    (value - 32.0) * 5.0 / 9.0 + 273.15
 }
 
 fn knots_to_ms(value: f64) -> f64 {
@@ -1334,6 +1304,13 @@ fn cmd_decode(options: &Options) -> Result<String, Box<dyn Error>> {
             if let Some(rain) = best.precipitation_in.filter(|v| (0.0..=30.0).contains(v)) {
                 values.insert("precipitation_1h".into(), rain * 25.4);
             }
+            let mut flags = Vec::new();
+            if let Some(sm) = best.visibility_sm {
+                // ASOS METAR visibility at 10 SM is right censored. Retain
+                // the lower bound; never treat it as exact clear-air truth.
+                values.insert("visibility".into(), sm.min(10.0) * 1609.344);
+                if sm >= 10.0 { flags.push("metar_visibility_ge_10sm".into()); }
+            }
             if values.is_empty() {
                 // A report that carries no scored variable is not a report
                 // for this purpose; emitting it would inflate the
@@ -1346,7 +1323,7 @@ fn cmd_decode(options: &Options) -> Result<String, Box<dyn Error>> {
                 valid_time: seam_time(*target),
                 observation_time: seam_time(best.valid),
                 values,
-                flags: Vec::new(),
+                flags,
             });
         }
     }
@@ -2164,7 +2141,7 @@ fn table_rows_for(
         }
         None => counters.values_underivable += 1,
     }
-    let t_k = raw.tmpf.map(table_fahrenheit_to_kelvin);
+    let t_k = raw.tmpf.map(fahrenheit_to_kelvin);
     match t_k {
         Some(t) if GROSS_TEMPERATURE_K.0 <= t && t <= GROSS_TEMPERATURE_K.1 => {
             let mut r = base.clone();
@@ -2177,7 +2154,7 @@ fn table_rows_for(
         Some(_) => counters.values_temperature_out_of_range += 1,
         None => counters.values_underivable += 1,
     }
-    match raw.dwpf.map(table_fahrenheit_to_kelvin) {
+    match raw.dwpf.map(fahrenheit_to_kelvin) {
         Some(td) if !(GROSS_DEWPOINT_K.0 <= td && td <= GROSS_DEWPOINT_K.1) => {
             counters.values_dewpoint_out_of_range += 1
         }
@@ -2468,6 +2445,7 @@ mod tests {
             mslp_hpa: None,
             gust_kt: None,
             precipitation_in: None,
+            visibility_sm: None,
         }
     }
 
@@ -2845,7 +2823,7 @@ mod tests {
         let table=StationTable{schema:STATIONS_SCHEMA.into(),status:"READY".into(),archive:DEFAULT_ARCHIVE.into(),networks:vec!["XX_ASOS".into()],frozen_at:"2025-05-01T00:00:00".into(),content_sha256:station_rows_digest(std::slice::from_ref(&station)),stations:vec![station]};
         let stations=dir.join("stations.json");let csv=dir.join("obs.csv");let out=dir.join("surface.json");
         std::fs::write(&stations,serde_json::to_vec(&table).unwrap()).unwrap();
-        std::fs::write(&csv,"station,valid,tmpf,dwpf,sknt,gust,p01i\nAAA,2025-05-01 17:00,80,60,10,20,0.1\nAAA,2025-05-01 18:00,80,60,10,,T\n").unwrap();
+        std::fs::write(&csv,"station,valid,tmpf,dwpf,sknt,gust,p01i,vsby\nAAA,2025-05-01 17:00,80,60,10,20,0.1,0.25\nAAA,2025-05-01 18:00,80,60,10,,T,10\n").unwrap();
         let args=["--stations",stations.to_str().unwrap(),"--obs",csv.to_str().unwrap(),"--start","2025-05-01T17:00:00Z","--end","2025-05-01T18:00:00Z","--out",out.to_str().unwrap()].map(str::to_string);
         cmd_decode(&Options::parse(&args).unwrap()).unwrap();
         let record:serde_json::Value=serde_json::from_slice(&std::fs::read(&out).unwrap()).unwrap();
@@ -2853,6 +2831,9 @@ mod tests {
         assert!((record["reports"][0]["values"]["precipitation_1h"].as_f64().unwrap()-2.54).abs()<1e-12);
         assert!(record["reports"][1]["values"].get("wind_gust_10m").is_none());
         assert!(record["reports"][1]["values"].get("precipitation_1h").is_none());
+        assert!((record["reports"][0]["values"]["visibility"].as_f64().unwrap()-402.336).abs()<1e-10);
+        assert_eq!(record["reports"][1]["values"]["visibility"], 16093.44);
+        assert_eq!(record["reports"][1]["flags"][0], "metar_visibility_ge_10sm");
         for entry in std::fs::read_dir(&dir).unwrap() {let entry=entry.unwrap();println!("deleted {} {}",entry.path().display(),entry.metadata().unwrap().len());std::fs::remove_file(entry.path()).unwrap();}
         std::fs::remove_dir(&dir).unwrap();
     }

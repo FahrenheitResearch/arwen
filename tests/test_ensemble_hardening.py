@@ -43,39 +43,11 @@ from gpuwm.ensemble.state_sha import (
     serialized_state_attrs, checkpoint_state_sha256,
 )
 
-BASE_TOML = """
-[experiment]
-name = "ensemble_hardening_unit"
-start_time = 1999-05-03T12:00:00
-run_seconds = 120.0
-restart_interval_s = 60.0
+from test_ensemble_engine import (
+    BASE_TOML as _ENGINE_BASE_TOML, _write_overlay as _engine_overlay,
+)
 
-[projection]
-map_proj = "lambert"
-ref_lat = 39.6848
-ref_lon = -83.9297
-truelat1 = 30.0
-truelat2 = 60.0
-stand_lon = -83.9297
-
-[shared]
-nz = 4
-ztop = 20000.0
-p_top = 10000.0
-
-[[domain]]
-grid_id = 1
-parent_id = 0
-i_parent_start = 1
-j_parent_start = 1
-parent_grid_ratio = 1
-parent_time_step_ratio = 1
-nx = 8
-ny = 8
-time_step = 60
-dx = 12000.0
-history_interval_s = 60.0
-"""
+BASE_TOML = _ENGINE_BASE_TOML.replace("ensemble_engine_unit", "ensemble_hardening_unit")
 
 
 def _write_overlay(directory, *, n_members=2, base_seed=20260730,
@@ -83,22 +55,11 @@ def _write_overlay(directory, *, n_members=2, base_seed=20260730,
     directory.mkdir(parents=True, exist_ok=True)
     base = directory / "base.toml"
     base.write_text(BASE_TOML, encoding="utf-8")
-    body = [
-        "[ensemble]",
-        'base_config = "base.toml"',
-        f"n_members = {n_members}",
-        f"base_seed = {base_seed}",
-        f'perturbation = "{perturbation}"',
-    ]
-    if options:
-        body.append("")
-        body.append("[ensemble.perturbation_options]")
-        for key, value in options.items():
-            body.append(f"{key} = {json.dumps(value)}")
+    path = _engine_overlay(directory, n_members=n_members, base_seed=base_seed,
+                           perturbation=perturbation, options=options, base_config=base)
     if extra_comment:
-        body.append(f"# {extra_comment}")
-    path = directory / "ensemble.toml"
-    path.write_text("\n".join(body) + "\n", encoding="utf-8")
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write(f"# {extra_comment}\n")
     return path
 
 

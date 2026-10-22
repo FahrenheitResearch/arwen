@@ -1328,10 +1328,6 @@
     "sha256": "1952dfec0483c0002d5addb45e1ff3f10a54c8c42450efe8acfb124e7b2dbe9d"
    },
    {
-    "file": "gpuwm/core/kernels/nssl2_default.cu",
-    "sha256": "37173f1bcc9ec0fd6c6f4afe060c0d984bcd14abc5d4841d05aa62e6ac85d3ea"
-   },
-   {
     "file": "gpuwm/core/kernels/nssl2_diagnostics.cu",
     "sha256": "aea3a5b1157ca95b69c8df077680e27058b752d5e707f2134f408d0aa7f42bd2"
    },
@@ -1501,10 +1497,6 @@
    },
    {
     "file": "gpuwm/core/kernels/rrtmgp_cloud.cu",
-    "sha256": "512157c75edf4637d99a1cad490e8db71e51cd2c3643ff129adebefa81557560"
-   },
-   {
-    "file": "gpuwm/core/kernels/rrtmgp_cloud_default.cu",
     "sha256": "512157c75edf4637d99a1cad490e8db71e51cd2c3643ff129adebefa81557560"
    },
    {
@@ -1896,10 +1888,6 @@
     "sha256": "cfa0a7736efc1d755d185bebe1f8f351c469466e844139bc73d7144a44c2d344"
    },
    {
-    "file": "gpuwm/core/kernels/ysu.cu",
-    "sha256": "a475314b6e83bbc9dc08785b24b528f873819f6eb8207630f0d12e7a3f398385"
-   },
-   {
     "file": "gpuwm/core/kernels/ysu_480.cu",
     "sha256": "44acadb46d994d46614dbfa54b5474f0abe144385a54f245b731d8abe530f3ea"
    },
@@ -1910,10 +1898,6 @@
    {
     "file": "gpuwm/core/kernels/ysu_default.cu",
     "sha256": "f56e3ec7646a111d07c5447383ae136b2959b5f4545441a598b51be16ccdc768"
-   },
-   {
-    "file": "gpuwm/core/kernels/ysu_topo.cuh",
-    "sha256": "422c73f2649327609a4b3fbd083f3747f5a152c477fbeff38296c95210113459"
    },
    {
     "file": "gpuwm/core/kernels/ysu_topo_default.cuh",

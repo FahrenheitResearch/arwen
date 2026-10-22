@@ -764,15 +764,14 @@ pub fn validate_mapping(mapping: &NativeMapping) -> ValidationReport {
                 );
             }
         }
-        if let Some(derivation) = field.derivation.as_deref() {
-            if !derivations.contains_key(derivation) {
+        if let Some(derivation) = field.derivation.as_deref()
+            && !derivations.contains_key(derivation) {
                 error(
                     "unknown_derivation",
                     Some(name),
                     format!("derivation {derivation:?} is not declared"),
                 );
             }
-        }
         if field.units.source.trim().is_empty() || field.units.target.trim().is_empty() {
             error(
                 "missing_units",
@@ -807,15 +806,14 @@ pub fn validate_mapping(mapping: &NativeMapping) -> ValidationReport {
                 );
             }
         }
-        if let MissingPolicy::Value { value } = field.missing {
-            if !value.is_finite() {
+        if let MissingPolicy::Value { value } = field.missing
+            && !value.is_finite() {
                 error(
                     "nonfinite_fill",
                     Some(name),
                     "missing-data fill value must be finite".to_owned(),
                 );
             }
-        }
         if let MissingPolicy::Attribute { name: attribute } = &field.missing {
             if mapping.format != SourceFormat::Netcdf {
                 error(
@@ -866,15 +864,14 @@ pub fn validate_mapping(mapping: &NativeMapping) -> ValidationReport {
                 );
             }
         }
-        if let Derivation::GeopotentialHeight { gravity_m_s2, .. } = &item.operation {
-            if !gravity_m_s2.is_finite() || *gravity_m_s2 <= 0.0 {
+        if let Derivation::GeopotentialHeight { gravity_m_s2, .. } = &item.operation
+            && (!gravity_m_s2.is_finite() || *gravity_m_s2 <= 0.0) {
                 error(
                     "invalid_gravity",
                     Some(&item.name),
                     "gravity_m_s2 must be finite and positive".to_owned(),
                 );
             }
-        }
         if matches!(item.operation, Derivation::PressureFromVerticalCoordinate)
             && mapping.coordinates.vertical.kind != VerticalKind::Pressure
         {
@@ -1041,18 +1038,17 @@ pub fn validate_mapping(mapping: &NativeMapping) -> ValidationReport {
         }
     }
 
-    if let Some(top) = mapping.coordinates.vertical.model_top_pressure_pa {
-        if !top.is_finite() || top <= 0.0 || !matches!(
+    if let Some(top) = mapping.coordinates.vertical.model_top_pressure_pa
+        && (!top.is_finite() || top <= 0.0 || !matches!(
             mapping.coordinates.vertical.kind,
             VerticalKind::ModelLevel | VerticalKind::HybridSigmaPressure
-        ) {
+        )) {
             error(
                 "invalid_native_model_top",
                 None,
                 "model_top_pressure_pa must be a positive native model-level interface pressure".to_owned(),
             );
         }
-    }
 
     if matches!(
         mapping.coordinates.vertical.kind,
@@ -1413,8 +1409,8 @@ fn validate_coordinate_selectors(
             },
         ),
     ] {
-        if let Some(selector) = selector {
-            if selector.name.as_ref().is_none_or(NameSpec::is_unmatchable)
+        if let Some(selector) = selector
+            && selector.name.as_ref().is_none_or(NameSpec::is_unmatchable)
                 && selector.standard_name.as_deref().is_none_or(str::is_empty)
             {
                 error(
@@ -1423,7 +1419,6 @@ fn validate_coordinate_selectors(
                     "dimension selector needs name and/or standard_name".to_owned(),
                 );
             }
-        }
     }
     if matches!(
         (&mapping.format, mapping.coordinates.member.as_ref()),

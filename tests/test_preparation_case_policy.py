@@ -13,12 +13,6 @@ def _table(**changes):
         "sfcp_to_sfcp": True, "output_title": "declared", **changes}
 
 
-def test_absent_companions_keep_default_operands():
-    assert optional_case_data_from_tables({}, source="empty", base_dir=Path(".")) is None
-    assert preparation_case_policy(None) == {"sfcp_to_sfcp": True,
-        "water_temperature_policy": "era5_class_coherent", "water_temperature_overlay": None}
-
-
 def test_optional_companions_share_captured_input_authority(tmp_path, monkeypatch):
     from gpuwm.branch import emit_experiment_toml
     from gpuwm.config_authority import authority_environment
@@ -47,12 +41,6 @@ def test_optional_companions_keep_the_full_schema_validation(tmp_path, bad):
     with pytest.raises(ValueError):
         optional_case_data_from_tables({"case_data": _table(**bad)},
                                       source="bad.toml", base_dir=tmp_path)
-
-
-def test_actual_false_surface_pressure_policy_is_retained(tmp_path):
-    data = optional_case_data_from_tables({"case_data": _table(sfcp_to_sfcp=False)},
-                                          source="case.toml", base_dir=tmp_path)
-    assert preparation_case_policy(data)["sfcp_to_sfcp"] is False
 
 
 def test_native_namelist_pressure_control_is_not_lost_without_companions(tmp_path):

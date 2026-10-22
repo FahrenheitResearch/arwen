@@ -273,8 +273,7 @@ impl Editor {
         clusters(&self.lines[self.row])
             .iter()
             .map(|c| c.0)
-            .filter(|&p| p < self.col)
-            .last()
+            .rfind(|&p| p < self.col)
             .unwrap_or(0)
     }
     fn next(&self) -> usize {

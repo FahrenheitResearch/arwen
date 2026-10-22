@@ -109,7 +109,7 @@ pub fn run(req: Request) -> Res<()> {
         started.elapsed().as_secs_f64(),
         req.threads
     );
-    let tx = render::spawn_pool(2);
+    let tx = render::spawn_pool(2)?;
     let ao = options::parse_analysis(&req.settings)?;
     let display = options::parse_display(&req.settings)?;
     let mut pages: BTreeMap<PathBuf, Vec<(String, String)>> = BTreeMap::new();

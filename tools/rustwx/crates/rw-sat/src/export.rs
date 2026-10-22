@@ -3,12 +3,11 @@
 //! egui viewer texture path consumes the same anchor tables).
 
 use std::error::Error;
-use std::io;
 use std::path::{Path, PathBuf};
 
 use image::RgbaImage;
 
-use crate::composite::{GoesAbiRgbCompositeStyle, Rgba, compose_rgb_pixels};
+use crate::boxed_error;
 use crate::palette::band_color;
 use crate::store::read_frame;
 
@@ -21,21 +20,6 @@ pub fn render_band_image(values: &[f32], nx: usize, ny: usize, band: u8) -> Rgba
         *pixel = image::Rgba(color);
     }
     image
-}
-
-/// Compose an RGB style from same-grid band planes into an image.
-pub fn render_composite_image(
-    style: GoesAbiRgbCompositeStyle,
-    bands: &std::collections::HashMap<u8, Vec<f32>>,
-    nx: usize,
-    ny: usize,
-) -> Result<RgbaImage, Box<dyn Error>> {
-    let pixels: Vec<Rgba> = compose_rgb_pixels(style, bands, nx * ny)?;
-    let mut image = RgbaImage::new(nx as u32, ny as u32);
-    for (pixel, color) in image.pixels_mut().zip(pixels) {
-        *pixel = image::Rgba(color);
-    }
-    Ok(image)
 }
 
 /// Read a stored frame and export it as a PNG. The band comes from the
@@ -62,10 +46,6 @@ pub fn export_frame_png(
     }
     image.save(out_path)?;
     Ok(out_path.to_path_buf())
-}
-
-fn boxed_error(message: impl Into<String>) -> Box<dyn Error> {
-    Box::new(io::Error::new(io::ErrorKind::InvalidData, message.into()))
 }
 
 #[cfg(test)]

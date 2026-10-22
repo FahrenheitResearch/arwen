@@ -37,8 +37,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from gpuwm.core.fast_sbm import tables as T
-from gpuwm.core.fast_sbm.constants import FsbmRefusal
+from tools.fast_sbm_host import tables as T
+from tools.fast_sbm_host.constants import FsbmRefusal
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "gpuwm" / "data" / "fast_sbm"
@@ -524,8 +524,8 @@ def test_nearest_float32_rounds_once_where_double_then_cast_does_not():
 # ---------------------------------------------------------------------------
 
 def test_no_module_of_the_package_imports_cupy():
-    package = ROOT / "gpuwm" / "core" / "fast_sbm"
-    for path in sorted(package.glob("*.py")):
+    package = ROOT / "tools" / "fast_sbm_host"
+    for path in (package / "tables.py", package / "constants.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             names = []
@@ -537,8 +537,8 @@ def test_no_module_of_the_package_imports_cupy():
 
 
 def test_importing_the_package_reads_no_table():
-    code = ("import sys, gpuwm.core.fast_sbm; "
-            "print('gpuwm.core.fast_sbm.tables' in sys.modules)")
+    code = ("import sys, tools.fast_sbm_host; "
+            "print('tools.fast_sbm_host.tables' in sys.modules)")
     result = subprocess.run([sys.executable, "-c", code], cwd=ROOT,
                             capture_output=True, text=True, check=True)
     assert result.stdout.strip() == "False"

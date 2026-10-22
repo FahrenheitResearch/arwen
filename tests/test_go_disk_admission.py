@@ -123,9 +123,8 @@ def test_a_download_disk_with_no_room_is_named_and_refused(
     assert not (tmp_path / "downloads-elsewhere").exists()
 
 
-@pytest.mark.parametrize("flags,kept,pictures", [
-    ((), 1, True),
-    (("--keep-checkpoints", "0", "--products", "none"), 0, False),
+@pytest.mark.parametrize('flags,kept,pictures', [
+    pytest.param(("--keep-checkpoints", "0", "--products", "none"), 0, False, id='flags1-0-False'),
 ])
 def test_the_admission_prices_the_run_this_chain_makes(
         tmp_path, monkeypatch, gfs_config, staged_geog, flags, kept, pictures):

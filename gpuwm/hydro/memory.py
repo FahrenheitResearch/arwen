@@ -251,7 +251,14 @@ def plan(settings, *, context):
 
 def forecast_plan(exp):
     """The current forecast scope's plan, or None for an inactive hydro door."""
-    from .runtime import current_settings, resolve_settings
+    from .runtime import beside_pending, current_settings, resolve_settings
+    if beside_pending():
+        # `gpuwm go`'s gate runs before the fetch, while the covering fabric
+        # is still preparing beside it (runtime._Beside): there is no manifest
+        # to price yet, and waiting here would put the build back ahead of the
+        # fetch. The allocation is admitted at construction (admit_plan) and
+        # by the forecast runner's own gate, after the join.
+        return None
     settings = current_settings()
     if not settings or settings.get("enabled") is not True:
         return None

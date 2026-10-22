@@ -180,7 +180,8 @@ def halo_radius(cfg) -> int:
     if ns % 2 != 0:
         raise ValueError(f"time_step_sound must be even, got {ns}")
     radius = 10 + 3 * ns // 2
-    if int(getattr(cfg, "nwp_diagnostics", 0) or 0):
+    if (int(getattr(cfg, "nwp_diagnostics", 0) or 0)
+            or int(getattr(cfg, "gsd_diagnostics", 0) or 0)):
         from gpuwm.core.uh_diag import UH_DIAGNOSTIC_HALO_CELLS
 
         radius += UH_DIAGNOSTIC_HALO_CELLS

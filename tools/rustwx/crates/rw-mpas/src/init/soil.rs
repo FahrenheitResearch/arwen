@@ -56,25 +56,6 @@ pub enum DeepMoisture {
     Corrected,
 }
 
-/// Everything the soil step produces, plus the counts that qualify it.
-#[derive(Debug, Default)]
-pub struct SoilState {
-    /// `(nSoilLevels, nCells)`, indexed `[cell][layer]`.
-    pub tslb: Vec<[f32; 4]>,
-    pub smois: Vec<[f32; 4]>,
-    pub sh2o: Vec<[f32; 4]>,
-    pub smcrel: Vec<[f32; 4]>,
-    pub tmn: Vec<f32>,
-    pub xland: Vec<f32>,
-    pub sfc_albbck: Vec<f32>,
-    pub vegfra: Vec<f32>,
-    pub shdmin: Vec<f32>,
-    pub shdmax: Vec<f32>,
-    pub snowc: Vec<f32>,
-    pub snowh: Vec<f32>,
-    pub counts: SoilCounts,
-}
-
 /// The numbers a reader needs to know whether to trust the soil column.
 #[derive(Debug, Default, Clone, serde::Serialize)]
 pub struct SoilCounts {
@@ -163,19 +144,6 @@ pub fn first_guess_consistency_pass(
         }
     }
     (bad_temperature, repaired_moisture)
-}
-
-/// The first-guess soil column as the horizontal interpolation left it.
-pub struct SoilFirstGuess<'a> {
-    pub n_cells: usize,
-    pub n_fg_soil_levels: usize,
-    /// `[cell][level]`, kelvin.
-    pub st_fg: &'a mut Vec<Vec<f32>>,
-    /// `[cell][level]`, m3/m3.
-    pub sm_fg: &'a Vec<Vec<f32>>,
-    /// Layer thicknesses in centimetres, `[level]`, uniform over cells as the
-    /// dispatch sets them.
-    pub dzs_fg_cm: &'a Vec<f32>,
 }
 
 /// `adjust_input_soiltemps`: move the deep and skin temperatures, and every

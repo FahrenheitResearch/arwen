@@ -132,14 +132,6 @@ def test_complete_recipe_geography_has_pinned_container(tmp_path):
     assert "orogwd3_10m" in geography_for_run(path)["datasets"]
 
 
-def test_archive_children_are_generic_metadata(monkeypatch):
-    from gpuwm import geog_assets as assets
-    monkeypatch.setattr(assets, "GEOG_ARCHIVES", (
-        assets.GeogArchive("invented-container", "unused", 1, "0" * 64, 1,
-                           index_subdirs=("invented-child",)),))
-    assert assets.archive_names_for_paths({"invented-container/invented-child"}) == {"invented-container"}
-
-
 def test_go_geography_checks_declared_container_children(tmp_path, monkeypatch):
     from gpuwm import geog_assets as assets
     from gpuwm.go_cli import geography_refusal

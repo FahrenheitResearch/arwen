@@ -37,6 +37,7 @@ from typing import Any
 from urllib.parse import urlparse
 import uuid
 
+from ..files import utc_now as _utc
 from . import catalog
 from .agent import Agent
 from .decide import DecisionError, LocalDecider, Question, SystemOneDecider
@@ -49,10 +50,6 @@ OFF_MESSAGE = "The assistant is off."
 OFF_FIX = "Turn it on in Settings, or press Turn on in the assistant panel. Nothing is downloaded until you say so."
 FORECAST_NOTE = ("A forecast is running on this card, so the assistant's model stays off it until the "
                  "forecast ends. You can still use every control on the page.")
-
-
-def _utc() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class Assistant:

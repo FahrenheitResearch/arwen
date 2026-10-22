@@ -107,14 +107,6 @@ impl Regrid {
             })
             .collect()
     }
-
-    /// Apply to a stack of planes (`[levels, ny_src, nx_src]`).
-    pub fn apply_stack(&self, stack: &[f32], src_cells: usize) -> Vec<f32> {
-        stack
-            .chunks(src_cells)
-            .flat_map(|plane| self.apply(plane))
-            .collect()
-    }
 }
 
 fn nearest_spacing(target: f64, table: &[f64]) -> f64 {

@@ -135,14 +135,6 @@ def _write(path: Path, payload: dict) -> Path:
     return path
 
 
-def test_time_binding_cycle_invariant_loads_on_a_grib2_mapping(tmp_path):
-    payload = json.loads(TWENTYCR_MAPPING.read_text(encoding="utf-8"))
-    payload["fields"]["land_fraction"]["time_binding"] = "cycle_invariant"
-    mapping = load_mapping(_write(tmp_path / "ok.json", payload))
-    assert mapping["fields"]["land_fraction"]["time_binding"] == "cycle_invariant"
-    assert "time_binding" not in mapping["fields"]["surface_pressure"]
-
-
 def test_time_binding_refuses_unknown_values(tmp_path):
     payload = json.loads(TWENTYCR_MAPPING.read_text(encoding="utf-8"))
     payload["fields"]["land_fraction"]["time_binding"] = "sometimes"

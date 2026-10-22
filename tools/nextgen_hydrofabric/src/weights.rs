@@ -547,6 +547,29 @@ fn poly_area(p: &Polygon, bounds: Option<[f64; 4]>) -> f64 {
         .sum::<f64>()
         .max(0.)
 }
+/// `f` over `items` on all threads, in order, with one PROJ transformation per
+/// work chunk (None when the CRSs agree). Breakage it prevents: rayon's
+/// map_init built a PROJ context and opened proj.db for every split job, so
+/// area weights and the channel raster of a 740 k-catchment fabric ran at
+/// about 1.3 cores (17.4 s and 15.8 s on a 24-core host; 0.9 s and 0.8 s now, every
+/// output file byte-identical). Same per-item function, same order.
+pub(crate) fn par_map_projected<T, R, F>(items: &[T], source: &str, target: &str, f: F) -> Result<Vec<R>>
+where
+    T: Sync,
+    R: Send,
+    F: Fn(Option<&Projection>, &T) -> Result<R> + Sync,
+{
+    let chunk = items.len().div_ceil(rayon::current_num_threads().max(1) * 8).max(1);
+    let parts = items
+        .par_chunks(chunk)
+        .map(|part| {
+            let projection = if source != target { Some(Projection::new(source, target)?) } else { None };
+            part.iter().map(|item| f(projection.as_ref(), item)).collect::<Result<Vec<R>>>()
+        })
+        .collect::<Result<Vec<Vec<R>>>>()?;
+    Ok(parts.into_iter().flatten().collect())
+}
+
 pub fn build(prepared: &Prepared, grid: &Grid) -> Result<Weights> {
     if grid.nx == 0
         || grid.ny == 0
@@ -570,20 +593,14 @@ pub fn build(prepared: &Prepared, grid: &Grid) -> Result<Weights> {
         .crs
         .as_deref()
         .ok_or("geometry CRS missing from gpkg_spatial_ref_sys")?;
-    let pieces = prepared
-        .network
-        .catchment_ids
-        .par_iter()
-        .map_init(
-            || None::<Projection>,
+    let pieces = par_map_projected(
+        &prepared.network.catchment_ids,
+        source,
+        &grid.crs,
             |projection, s| -> Result<(Vec<(u32, f64)>, f64)> {
                 let row = rows.get(s).ok_or("missing selected divide")?;
                 let mut polys = polygons(row.geometry.as_deref().ok_or("divide geometry absent")?)?;
-                if source != grid.crs {
-                    if projection.is_none() {
-                        *projection = Some(Projection::new(source, &grid.crs)?)
-                    }
-                    let p = projection.as_ref().unwrap();
+                if let Some(p) = projection {
                     for poly in &mut polys {
                         for ring in poly {
                             for point in ring {
@@ -633,8 +650,7 @@ pub fn build(prepared: &Prepared, grid: &Grid) -> Result<Weights> {
                 }
                 Ok((edges, total))
             },
-        )
-        .collect::<Result<Vec<_>>>()?;
+    )?;
     let mut out=Weights{offsets:vec![0],indices:vec![],weights:vec![],overlap_m2:vec![],catchment_area_m2:vec![],coverage_fraction:vec![],grid:grid.clone(),method:"projected_polygon_rectangle_area_v1; x-fast; grid.row_order; f64; normalized_covered_area"};
     for (edges, total) in pieces {
         let covered = edges.iter().map(|(_, a)| a).sum::<f64>();
@@ -854,20 +870,14 @@ pub fn rasterize(prepared: &Prepared, grid: &Grid) -> Result<ChannelRaster> {
         .crs
         .as_deref()
         .ok_or("geometry CRS missing from gpkg_spatial_ref_sys")?;
-    let cells = prepared
-        .network
-        .node_ids
-        .par_iter()
-        .map_init(
-            || None::<Projection>,
+    let cells = par_map_projected(
+        &prepared.network.node_ids,
+        source,
+        &grid.crs,
             |projection, s| -> Result<(Vec<u32>, i32)> {
                 let row = rows.get(s).ok_or("missing selected flowpath")?;
                 let mut ls = lines(row.geometry.as_deref().ok_or("missing flowpath geometry")?)?;
-                if source != grid.crs {
-                    if projection.is_none() {
-                        *projection = Some(Projection::new(source, &grid.crs)?)
-                    }
-                    let p = projection.as_ref().unwrap();
+                if let Some(p) = projection {
                     for line in &mut ls {
                         for point in line {
                             *point = p.transform(*point)?
@@ -892,8 +902,7 @@ pub fn rasterize(prepared: &Prepared, grid: &Grid) -> Result<ChannelRaster> {
                 }
                 Ok((cells, order as i32))
             },
-        )
-        .collect::<Result<Vec<_>>>()?;
+    )?;
     let mut out = ChannelRaster {
         channel_node: vec![-1; grid.nx as usize * grid.ny as usize],
         stream_order: vec![0; grid.nx as usize * grid.ny as usize],

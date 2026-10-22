@@ -220,11 +220,23 @@ def history_frames(exp, domain, run_seconds: float | None = None, *,
     interval = Fraction(str(domain.history_interval_s))
     if interval <= 0:
         return int(after_seconds is None or start + begin > Fraction(str(after_seconds)))
-    last = (end - begin) // interval
-    first = 0
-    if after_seconds is not None:
-        first = max(0, (Fraction(str(after_seconds)) - start - begin) // interval + 1)
-    return max(0, int(last - first + 1))
+    after = None if after_seconds is None else Fraction(str(after_seconds)) - start
+
+    def count(origin, period, limit):
+        last = (limit - origin) // period
+        # Inclusive begin and exclusive resume, on the same alarm lattice.
+        first = max(0, -((origin - begin) // period))
+        if after is not None:
+            first = max(first, (after - origin) // period + 1)
+        return max(0, int(last - first + 1))
+
+    run = getattr(domain, "run", None)
+    interval2 = Fraction(str(getattr(run, "history_interval2_s", 0)))
+    if interval2 <= 0:
+        return count(begin, interval, end)
+    change = Fraction(str(run.history_interval_change_s))
+    return (count(begin, interval, min(end, change))
+            + count(change + interval2, interval2, end))
 
 
 def _history_window_seconds(exp, domain):

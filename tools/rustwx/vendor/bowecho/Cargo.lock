@@ -2569,7 +2569,7 @@ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 [[package]]
 name = "wrf-core"
 version = "0.1.0"
-source = "git+https://github.com/FahrenheitResearch/wrf-rust.git?rev=9874474d9566a7536a90f457a48be30caa5f973a#9874474d9566a7536a90f457a48be30caa5f973a"
+source = "git+https://github.com/FahrenheitResearch/wrf-rust.git?rev=93bd2ca670c13fec35bcfc27a58108e6fd71c627#93bd2ca670c13fec35bcfc27a58108e6fd71c627"
 dependencies = [
  "ecape-rs",
  "flate2",

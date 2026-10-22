@@ -43,21 +43,13 @@ F = np.float32
 # ---------------------------------------------------------------------------
 # module_sf_noahmplsm.F:204-220 module parameters.
 # ---------------------------------------------------------------------------
-GRAV = F(9.80616)
-SB = F(5.67e-08)
-VKC = F(0.40)
 TFRZ = F(273.16)
-HSUB = F(2.8440e06)
-HVAP = F(2.5104e06)
-HFUS = F(0.3336e06)
 CWAT = F(4.188e06)
 CICE = F(2.094e06)
 CPAIR = F(1004.64)
 TKWAT = F(0.6)
 TKICE = F(2.2)
-TKAIR = F(0.023)
 RAIR = F(287.04)
-RW = F(461.269)
 DENH2O = F(1000.0)
 DENICE = F(917.0)
 
@@ -84,18 +76,7 @@ from gpuwm.core.noahmp_libm import powf as _powf        # noqa: E402
 # ---------------------------------------------------------------------------
 # ATM -- module_sf_noahmplsm.F:1083-1251
 # ---------------------------------------------------------------------------
-RHO_GRPL = F(500.0)   # :1130
-RHO_HAIL = F(917.0)   # :1131
 
-ATM_INPUTS = (
-    "sfcprs", "sfctmp", "q2", "prcpconv", "prcpnonc", "prcpshcv",
-    "prcpsnow", "prcpgrpl", "prcphail", "soldn", "cosz",
-)
-ATM_OUTPUTS = (
-    "thair", "qair", "eair", "rhoair", "qprecc", "qprecl", "solad1", "solad2",
-    "solai1", "solai2", "swdown", "bdfall", "rain", "snow", "fp", "fpice",
-    "prcp",
-)
 
 
 def atm(sfcprs, sfctmp, q2, prcpconv, prcpnonc, prcpshcv,
@@ -180,8 +161,6 @@ _ESAT_D = (F(5.030305237e-01), F(3.773255020e-02), F(1.267995369e-03),
            F(2.477563108e-05), F(3.005693132e-07), F(2.158542548e-09),
            F(7.131097725e-12))
 
-ESAT_INPUTS = ("tc",)
-ESAT_OUTPUTS = ("esw", "esi", "desw", "desi")
 
 
 def _esat_poly(t: np.float32, k: Sequence[np.float32]) -> np.float32:
@@ -284,8 +263,6 @@ def csnow(isnow, snice, snliq, dzsnso, nsnow=NSNOW, nsoil=NSOIL):
 # ---------------------------------------------------------------------------
 # TDFCND -- module_sf_noahmplsm.F:2573-2680
 # ---------------------------------------------------------------------------
-TDFCND_INPUTS = ("smc", "sh2o", "smcmax", "quartz")
-TDFCND_OUTPUTS = ("df",)
 
 
 def tdfcnd(smc, sh2o, smcmax, quartz):
@@ -407,9 +384,6 @@ def thermoprop(isnow, ist, dzsnso, dt, snowh, snice, snliq, smc, sh2o, stc,
 # ---------------------------------------------------------------------------
 # WDFCND1 -- module_sf_noahmplsm.F:9153-9188
 # ---------------------------------------------------------------------------
-WDFCND1_INPUTS = ("smc", "fcr", "smcmax", "bexp", "dwsat", "dksat")
-WDFCND2_INPUTS = ("smc", "sice", "smcmax", "bexp", "dwsat", "dksat")
-WDFCND_OUTPUTS = ("wdf", "wcnd")
 
 
 def wdfcnd1(smc, fcr, smcmax, bexp, dwsat, dksat):

@@ -12,3 +12,6 @@ rayon.workspace = true
 serde.workspace = true
 rustwx-core = { path = "../rustwx-core" }
 metrust = { path = "../../vendor/metrust" }
+
+[dev-dependencies]
+serde_json.workspace = true

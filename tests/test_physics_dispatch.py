@@ -66,7 +66,10 @@ def test_dispatch_table_routes_only_values_with_a_real_runner():
                            901: "_run_satmedmf"},
         # 1 is WRF's one-dimensional ocean mixed layer (OML1D), graded
         # against WRF's own column module.
-        "sf_ocean_physics": {0: None, 1: "_run_surface_ocean"},
+        # 2 is WRF's 3-D PWP ocean (lane/cap-slab-ocean, aa6bdeed308), run by
+        # the same surface-ocean owner as the Pollard mixed layer.
+        "sf_ocean_physics": {0: None, 1: "_run_surface_ocean",
+                             2: "_run_surface_ocean"},
     }
 
 

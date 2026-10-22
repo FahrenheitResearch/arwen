@@ -50,7 +50,6 @@ the kernel and in the CPU reference ``gpuwm/verify/urban_ucm_ref.py``:
 """
 from __future__ import annotations
 
-import calendar
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -90,7 +89,6 @@ UCM_TABLE_COLUMNS = (
 UCM480_TABLE_COLUMNS = UCM_TABLE_COLUMNS + (
     "albvg", "albt", "fvg", "rtree", "rtree_m", "rw_m", "htree", "dtree",
     "lai_tree", "lai_veg", "z0vg", "z0hvg", "capvg", "epsvg", "epst")
-_TBL_NAME = {name: f"{name.upper()}_TBL" for name in UCM_TABLE_COLUMNS}
 
 #: The module-level arrays and scalars ``urban`` reads, in the kernel's PG_*
 #: layout: (name, length).
@@ -203,10 +201,6 @@ class UcmParams:
     switches: np.ndarray     # table switches, n_utype, water-balance generation
     frc_urb: np.ndarray      # (n_utype,) FRC_URB_TBL, for init defaulting
     generation: str = "wrf_471"
-
-    @property
-    def n_utype(self) -> int:
-        return int(self.table.shape[0])
 
 
 def _pack(table_rows: np.ndarray, glob: Mapping[str, object],
@@ -602,8 +596,6 @@ def after_lsm(state, params, *, lsm: int, fields: dict, atmosphere: Mapping,
 def after_surface_diagnostics(state, *, lsm: int, fields: dict,
                               atmosphere: Mapping, cfg) -> None:
     """The option-1 overrides after the 2 m diagnostics, in place."""
-    import cupy as cp
-
     from gpuwm.core.kernels import get_kernel
 
     del atmosphere, cfg
@@ -692,15 +684,9 @@ UCM480_LOCAL_STATE = {
 }
 
 
-def _run_columns480(params, inputs, state):
-    """The same full argument entry used by the independent column oracle."""
-    import json
-    from pathlib import Path
-    import cupy as cp
-    from gpuwm.core.kernels import get_kernel
-    schema = json.loads((Path(__file__).resolve().parents[1]/"data/urban/oracle/ucm480/schema.json").read_text())["arguments"]
+def _column_arrays480(params, inputs, state, schema, *, copy=False):
+    """Pack the shared native/CUDA column ABI; native calls need private copies."""
     n = len(inputs["ta"])
-    values = {}
     for v in schema:
         name, layers = v["name"], v["layers"]
         dtype = np.int32 if v["type"] in ("int", "bool") else np.float32
@@ -719,9 +705,23 @@ def _run_columns480(params, inputs, state):
             value = inputs[name]
         else:
             value = np.zeros(shape, dtype)
-        array = np.ascontiguousarray(value, dtype=dtype)
+        array = (np.array(value, dtype=dtype, order="C", copy=True) if copy
+                 else np.ascontiguousarray(value, dtype=dtype))
         if array.shape != shape:
             raise ValueError(f"{name}: expected {shape}, got {array.shape}")
+        yield name, array
+
+
+def _run_columns480(params, inputs, state):
+    """The same full argument entry used by the independent column oracle."""
+    import json
+    from pathlib import Path
+    import cupy as cp
+    from gpuwm.core.kernels import get_kernel
+    schema = json.loads((Path(__file__).resolve().parents[1]/"data/urban/oracle/ucm480/schema.json").read_text())["arguments"]
+    n = len(inputs["ta"])
+    values = {}
+    for name, array in _column_arrays480(params, inputs, state, schema):
         values[name] = cp.asarray(array)
     for required in ("declin", "cosz", "xlat"):
         if required not in inputs:

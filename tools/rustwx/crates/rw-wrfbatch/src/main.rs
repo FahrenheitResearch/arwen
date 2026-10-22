@@ -33,7 +33,10 @@ mod wrf_process;
 mod wrf_volumes;
 mod wrf_chart_planes;
 mod wrf_column_planes;
+mod ivt;
+mod wrf_vertical_velocity;
 mod snowfall;
+mod visibility;
 mod source_memo;
 #[path = "mesh.rs"]
 mod mesh;
@@ -344,6 +347,10 @@ meshdiff:<...> (need --mesh-grid FILE.nc; meshdiff also --mesh-reference)"
         // fields, and a same-prefixed two-field line is a trap.
         println!("  {slug}");
     }
+    for row in rw_wrfbatch::hubwind_products::product_catalog() {
+        println!("  {}", row);
+        println!("WRFOUT\t{}\tdirect\teligible\t\thubwind native columns and timeline", row);
+    }
     for (slug,field,_,_) in sfire::PRODUCTS {
         println!("  {slug}");
         println!("NEEDS\t{slug}\tFXLAT\tFXLONG\tLFN\t{field}");
@@ -399,7 +406,12 @@ meshdiff:<...> (need --mesh-grid FILE.nc; meshdiff also --mesh-reference)"
     // Not "total=": the store-aware listing already owns that word for its
     // own count of catalog ROWS (which includes rows no --products spelling
     // selects).  This is the size of the --products vocabulary.
-    println!("selectable_slugs={}", slugs.len()+sfire::PRODUCTS.len());
+    // The hub-height maps (lane/cap-hubwind, 089efd92470) are printed as
+    // products above and `gpuwm render --products hub_*` routes them, so
+    // they are part of the --products vocabulary this count declares.
+    println!("selectable_slugs={}", slugs.len()
+        + rw_wrfbatch::hubwind_products::product_catalog().len()
+        + sfire::PRODUCTS.len());
     println!(
         "pass --store-root DIR --out-dir DIR wrfout... with --list-products \
          for per-frame availability"
@@ -1455,7 +1467,7 @@ fn run(mut args: Args) -> Result<(), String> {
     // frame and its grid file; `xsec:` cuts the wrfout files directly.
     // Both are split off here, and when they are all that was asked for the
     // import is skipped entirely.
-    let (non_fire_products,fire_products)=sfire::split_products(&args.products);
+    let (non_fire_products,fire_products)=sfire::split_products_for(&args.products,&args.inputs);
     let (non_mesh_products, mesh_products) = mesh::split_product_spec(&non_fire_products)?;
     let (store_products, section_products) = section::split_product_spec(&non_mesh_products)?;
     if !mesh_products.is_empty() && !(store_products.is_empty() && section_products.is_empty() && fire_products.is_empty()) {
@@ -3284,35 +3296,6 @@ mod tests {
     }
 
     #[test]
-    fn the_fileless_requirement_rows_need_no_store_and_no_file() {
-        // The pair that answers "can this install draw that?" before a
-        // wrfout exists: what a slug needs, and what the import writes.
-        let planned = crate::wrf_process::WrfProcessOptions::default().planned_store_fields();
-        assert!(!planned.is_empty(), "the import plans no store field at all");
-        let mut described = 0usize;
-        for slug in rusty_weather::render_all::known_product_slugs() {
-            if let Ok(requirements) = rustwx_models::plot_recipe_store_requirements(&slug) {
-                if requirements.iter().any(|row| row.selector.is_some()) {
-                    described += 1;
-                }
-            }
-        }
-        assert!(
-            described > 0,
-            "no catalog slug resolves a store selector without a file"
-        );
-    }
-
-    #[test]
-    fn the_product_vocabulary_is_non_empty_and_deduplicated() {
-        let slugs = rusty_weather::render_all::known_product_slugs();
-        assert!(!slugs.is_empty(), "no product is selectable at all");
-        let mut unique = slugs.clone();
-        unique.dedup();
-        assert_eq!(unique.len(), slugs.len(), "the vocabulary repeats a slug");
-    }
-
-    #[test]
     fn resolution_tokens_are_trimmed_km_or_integer_metres() {
         assert_eq!(resolution_token(3_000.0).as_deref(), Some("3km"));
         assert_eq!(resolution_token(12_000.0).as_deref(), Some("12km"));
@@ -3459,7 +3442,16 @@ fn dispatch() -> Result<(), CliError> {
 }
 
 fn render_main() -> ExitCode {
+    if let Some(result) = rw_wrfbatch::hubwind_products::cli(&std::env::args().skip(1).collect::<Vec<_>>()) {
+        return match result { Ok(()) => ExitCode::SUCCESS, Err(message) => { eprintln!("FAILED\t{message}"); ExitCode::FAILURE } };
+    }
+    if let Some(result) = rw_wrfbatch::solar_products::cli(&std::env::args().skip(1).collect::<Vec<_>>()) {
+        return match result { Ok(()) => ExitCode::SUCCESS, Err(message) => { eprintln!("FAILED\t{message}"); ExitCode::FAILURE } };
+    }
     if let Some(result) = rw_wrfbatch::nextgen_products::cli(&std::env::args().skip(1).collect::<Vec<_>>()) {
+        return match result { Ok(()) => ExitCode::SUCCESS, Err(message) => { eprintln!("FAILED\t{message}"); ExitCode::FAILURE } };
+    }
+    if let Some(result) = rw_wrfbatch::ocean_products::cli(&std::env::args().skip(1).collect::<Vec<_>>()) {
         return match result { Ok(()) => ExitCode::SUCCESS, Err(message) => { eprintln!("FAILED\t{message}"); ExitCode::FAILURE } };
     }
     let _ = std::hint::black_box(GPUWM_BRIDGE_SOURCE_REV_STAMP);
@@ -3543,3 +3535,5 @@ fn main() -> ExitCode {
         _ => render_main(),
     }
 }
+
+mod fire_observations;

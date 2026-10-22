@@ -123,7 +123,7 @@ pub fn lake_nearest(skin: &[f64], water: &[u8], ny: usize, nx: usize, y: f64, x:
             let mut bound: Option<f64> = None;
             let mut consider = |value: f64| {
                 bound = Some(match bound {
-                    Some(current) if !(value < current) => current,
+                    Some(current) if value.partial_cmp(&current) != Some(std::cmp::Ordering::Less) => current,
                     _ => value,
                 });
             };
@@ -632,7 +632,7 @@ mod tests {
 
     #[test]
     fn lake_nearest_without_water_is_none() {
-        let water = vec![0u8; 9];
+        let water = [0u8; 9];
         let skin = vec![1.0; 9];
         assert!(lake_nearest(&skin, &water, 3, 3, 1.0, 1.0).is_none());
     }
@@ -663,7 +663,7 @@ mod tests {
         let (ny, nx) = (3usize, 3usize);
         let nan = f64::NAN;
         let mut values = vec![nan, 2.0, nan, 4.0, nan, 6.0, nan, 8.0, nan];
-        let component = vec![1u8; 9];
+        let component = [1u8; 9];
         let mut sweeps = 0u64;
         unsafe {
             assert_eq!(gpuwm_component_fill_f64(values.as_mut_ptr(), component.as_ptr(), ny, nx, 1000, &mut sweeps, 3), OK);
@@ -683,7 +683,7 @@ mod tests {
             0, 0, 0, 0, 1, //
             1, 0, 0, 0, 0, //
         ];
-        let mut labels = vec![-1i32; 25];
+        let mut labels = [-1i32; 25];
         let mut count = 0u64;
         unsafe {
             assert_eq!(gpuwm_label_components_8(mask.as_ptr(), 5, 5, labels.as_mut_ptr(), &mut count), OK);
@@ -698,11 +698,11 @@ mod tests {
 
     #[test]
     fn blend_refuses_a_corner_off_the_source() {
-        let field = vec![1.0; 4];
-        let donors = vec![1u8; 4];
-        let cy = vec![0i64, 2];
-        let cx = vec![0i64, 0];
-        let w = vec![0.5, 0.5];
+        let field = [1.0; 4];
+        let donors = [1u8; 4];
+        let cy = [0i64, 2];
+        let cx = [0i64, 0];
+        let w = [0.5, 0.5];
         let mut out = vec![0.0; 1];
         let code = unsafe { gpuwm_masked_bilinear_blend_f64(field.as_ptr(), donors.as_ptr(), 2, 2, cy.as_ptr(), cx.as_ptr(), w.as_ptr(), 2, 1, 1e-6, out.as_mut_ptr(), 1) };
         assert_eq!(code, ERR_CORNER);

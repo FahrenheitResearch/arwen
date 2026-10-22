@@ -25,7 +25,6 @@ when the forecast has ended and every picture is here.
 from __future__ import annotations
 
 import base64
-from datetime import datetime, timezone
 import json
 import re
 from pathlib import Path, PurePosixPath
@@ -33,9 +32,10 @@ import time
 from typing import Any
 
 from . import runs
+from .files import utc_now as _utc
 from .files import long_path, read_json, write_json
 from .machines import (FOLLOW_TICK_S, LOCAL, MACHINE, REMOTE_MANIFEST, RENDER, Machine,
-                       MachineError, Registry, extract, relay)
+                       MachineError, Registry, relay)
 
 END_STATES = runs.REMOTE_END_STATES
 #: A follower gives up after this many consecutive failed ticks (about
@@ -44,10 +44,6 @@ END_STATES = runs.REMOTE_END_STATES
 #: Resume updates button starts a new one.
 MAX_FAILED_TICKS = 120
 WAIT_TICK_S = 30.0
-
-
-def _utc() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def remote_rundir(machine: Machine, run: str) -> str:

@@ -10,6 +10,7 @@ import time
 from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from gpuwm.ensemble.physical_fields import sha256_of_file as digest_file
 
 CONTRACT = "gpuwm-ensemble-restart.v1"
 IDENTITIES = "ensemble-identities.json"
@@ -96,14 +97,6 @@ def atomic_json(path, record):
     pending = path.with_suffix(path.suffix + ".pending")
     pending.write_text(json.dumps(record, sort_keys=True, indent=2, default=str) + "\n", encoding="utf-8")
     pending.replace(path)
-
-
-def digest_file(path):
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as source:
-        for block in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def relative_file(root, path):
@@ -303,21 +296,6 @@ def get_checkpoint_member(path):
         "memberInputs": descriptors["members"]}
 
 
-def relocate_inputs(root, bindings):
-    """Rebind fetched preparation addresses without changing member identities."""
-    root = Path(root)
-    document = json.loads((root / INPUTS).read_text(encoding="utf-8"))
-    for row in document["members"]:
-        selected = bindings.get(row["member_id"], bindings.get(str(row["member_id"])))
-        if selected is None:
-            continue
-        if set(selected) - {"prepared_root", "experiment_config", "wps_namelist"}:
-            raise ValueError("ensemble input relocation may change only fetched preparation addresses")
-        row.update({name: str(value) for name, value in selected.items()})
-    atomic_json(root / INPUTS, document)
-    return seal(root)
-
-
 def resume_prepared_roster(args, request, *, observer=None):
     """Run the fetched member handoffs through the ordinary native front door."""
     from gpuwm import stage_cli
@@ -335,8 +313,23 @@ def resume_prepared_roster(args, request, *, observer=None):
     verify_roster(roster, identities, root=root)
     first = identities["member_order"][0]
     bundle = stage_cli.resolve_bundle(Path(prepared[first]["prepared_root"]))
+    # Resume must retain the recipe's sharing of immutable prepared banks.
+    # Reopening one bank per member retains thousands of duplicate mmap
+    # regions and can exhaust vm.max_map_count before forecasting starts.
+    # Configuration and WPS bindings are part of the key: a shared directory
+    # alone does not establish matching physics or preparation arguments.
+    def binding(row):
+        return tuple(str(Path(row[name]).resolve()) if row.get(name) else None
+                     for name in ("prepared_root", "experiment_config", "wps_namelist"))
+
+    banks = {}
+
     def provider(*, shared_inputs, member_id, **unused):
-        return shared_inputs if member_id == first else member_inputs(shared_inputs, prepared[member_id])
+        banks.setdefault(binding(prepared[first]), shared_inputs)
+        key = binding(prepared[member_id])
+        if key not in banks:
+            banks[key] = member_inputs(shared_inputs, prepared[member_id])
+        return banks[key]
     sim = stage_cli.sim_command(bundle, experiment_config=Path(prepared[first]["experiment_config"]),
         wps_namelist=(Path(prepared[first]["wps_namelist"]) if prepared[first]["wps_namelist"] else None),
         outdir=root, physics_profile=None, progress_format="jsonl", render_products=None,

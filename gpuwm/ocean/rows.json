@@ -1,0 +1,123 @@
+{
+  "schema": "gpuwm.ocean.rows/v1",
+  "solvers": {
+    "waves": {
+      "factory": "gpuwm.ocean.waves:create_solver",
+      "report_lane": "astra-cap-waves"
+    },
+    "surge": {
+      "factory": "gpuwm.ocean.surge:create_solver",
+      "report_lane": "astra-cap-surge"
+    }
+  },
+  "sources": {
+    "etopo2022": {
+      "licence": "CC0-1.0",
+      "datum": "EGM2008",
+      "licence_url": "https://www.ncei.noaa.gov/metadata/geoportal/rest/metadata/item/gov.noaa.ngdc.mgg.dem:etopo_2022/html",
+      "licence_quote": "SPDX License: Creative Commons Zero v1.0 Universal (CC0-1.0)",
+      "catalog": "https://www.ngdc.noaa.gov/thredds/catalog/global/ETOPO2022/catalog.html"
+    },
+    "ncei-coastal": {
+      "licence": "required-per-dataset",
+      "datum": "required-per-dataset",
+      "licence_url": "https://www.ncei.noaa.gov/products/coastal-elevation-models",
+      "requires_dataset_licence_and_datum": true
+    }
+  },
+  "products": {
+    "hs": {
+      "title": "Significant wave height",
+      "units": "m",
+      "range": [
+        0,
+        15
+      ],
+      "history_name": "OCEAN_HS"
+    },
+    "tp": {
+      "title": "Peak wave period",
+      "units": "s",
+      "range": [
+        0,
+        25
+      ],
+      "history_name": "OCEAN_TP"
+    },
+    "direction": {
+      "title": "Wave propagation towards true north",
+      "units": "degree",
+      "range": [
+        0,
+        360
+      ],
+      "history_name": "OCEAN_DIRECTION"
+    },
+    "eta": {
+      "title": "Water level above bathymetry datum",
+      "units": "m",
+      "range": [
+        -3,
+        5
+      ],
+      "history_name": "OCEAN_ETA",
+      "mask": "wet-or-inundated"
+    },
+    "inundation": {
+      "title": "Inundation depth on initially dry land",
+      "units": "m",
+      "range": [
+        0,
+        5
+      ],
+      "history_name": "OCEAN_INUNDATION"
+    },
+    "elevation": {
+      "title": "Bed elevation above bathymetry datum",
+      "units": "m",
+      "range": [
+        -5000,
+        500
+      ],
+      "history_name": "OCEAN_ELEVATION"
+    },
+    "wet": {
+      "title": "Ocean-connected initial wet mask",
+      "units": "1",
+      "range": [
+        0,
+        1
+      ],
+      "history_name": "OCEAN_WET"
+    },
+    "wind_speed": {
+      "title": "Atmospheric 10 m wind speed",
+      "units": "m/s",
+      "range": [
+        0,
+        50
+      ],
+      "history_name": "OCEAN_WIND_SPEED"
+    },
+    "psfc": {
+      "title": "Atmospheric surface pressure",
+      "units": "hPa",
+      "range": [
+        950,
+        1030
+      ],
+      "scale": 0.01,
+      "history_name": "OCEAN_PSFC",
+      "storage_units": "Pa"
+    },
+    "stress": {
+      "title": "Wind stress on water",
+      "units": "N/m2",
+      "range": [
+        0,
+        6
+      ],
+      "history_name": "OCEAN_STRESS"
+    }
+  }
+}

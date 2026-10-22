@@ -7,7 +7,7 @@ from pathlib import Path
 import hashlib,json
 import numpy as np
 from . import host as H
-from gpuwm.core.fast_sbm.tables import load_tables
+from .tables import load_tables
 from gpuwm.core.fast_sbm_contract import TABLE_ORDER
 
 

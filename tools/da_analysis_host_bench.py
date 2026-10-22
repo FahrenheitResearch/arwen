@@ -30,8 +30,7 @@ from pathlib import Path
 import numpy as np
 
 R, NZ, NY, NX = 32, 49, 241, 241
-FIELDS = ("thp", "qv", "u", "v", "qs", "qg", "qc", "nc", "qr", "nr", "qi",
-          "ni", "nwfa", "nifa")
+
 def cycle_argv():
     """The deck's analysis flags (receipts/da-arm-argv.json), host solve."""
     return ["--source", "rap-native", "--prepared-root", "/x", "--physics-profile",

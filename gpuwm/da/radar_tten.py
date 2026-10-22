@@ -2082,11 +2082,9 @@ class LatentHeatNudging:
         self._counts = cp.zeros(2, dtype=np.uint64)
         self._pending = None
 
-    def minutes(self) -> np.float32:
-        return wrf_minutes(self.elapsed_seconds)
+    minutes = RadarTtenForcing.minutes
 
-    def slot_index(self) -> int:
-        return select_slot(self.minutes(), self.slot_minutes)
+    slot_index = RadarTtenForcing.slot_index
 
     def check_state(self, state, cfg=None) -> None:
         RadarTtenForcing.check_state(self, state, cfg)
@@ -2096,15 +2094,7 @@ class LatentHeatNudging:
             self.case_mp_tend_lim = float(cfg.mp_tend_lim)
         return cfg
 
-    def before_microphysics(self, state, cfg, dt: float) -> None:
-        cp = _require_device()
-        self.check_state(state, cfg)
-        self._inactive = _ended(self)
-        if self._inactive:
-            self._pending = -1
-            return
-        cp.copyto(self._theta_before, state.thp)
-        self._pending = self.slot_index()
+    before_microphysics = RadarTtenForcing.before_microphysics
 
     def after_microphysics(self, state, cfg, dt: float, *,
                            ring_width: int = 0) -> None:

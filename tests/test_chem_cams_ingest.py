@@ -214,7 +214,7 @@ def _imported_cache(tmp_path, area):
         now=CYCLE + timedelta(days=30))
     groups = {r.group: r.sha256 for r in plan.requests}
     root = tmp_path / "cache"
-    dsf.fetch(plan, cache_root=root, progress=lambda *_: None,
+    dsf.fetch(plan, licence="CC-BY-4.0", cache_root=root, progress=lambda *_: None,
               files={groups["model_level"]: ml, groups["single_level"]: sl},
               files_note="SYNTHETIC test fixture")
     return root

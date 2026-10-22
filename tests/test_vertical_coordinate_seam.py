@@ -404,25 +404,6 @@ def test_a_nested_run_hands_the_survey_its_catalog_and_its_overlay(
     assert seen["static_fields_kwargs"]["static_highres"] is highres
 
 
-def test_a_single_domain_run_hands_the_survey_no_catalog(
-        monkeypatch, adapted, tmp_path):
-    from dataclasses import replace
-
-    import gpuwm.core.model as core_model
-
-    configured_exp, adapted_exp, _ = adapted
-    single = replace(configured_exp, domains=configured_exp.domains[:1])
-    case_data = _validated_case_data(tmp_path)
-    catalog = SimpleNamespace(files=())
-    seen = {}
-    _survey_route_stubs(monkeypatch, adapted_exp, np.full((6, 7), 10.0), seen)
-
-    core_model._adapt_experiment_vertical_for_case(single, case_data, catalog)
-
-    assert seen["survey_kwargs"]["static_catalog"] is None
-    assert seen["survey_kwargs"]["static_highres"] is None
-
-
 def test_the_survey_selects_the_catalog_the_way_a_child_is_initialised():
     """One selection rule, in the module that owns the derivation."""
     from gpuwm.ingest.nest_init import _static_catalog

@@ -52,6 +52,15 @@ ALLOCATES = (
       ("fire_input_mass", "fire_input_frp", "fire_flux", "fire_area", "fire_prev_hwp", "fire_prev_rain", "fire_end")),
 )
 KERNEL_MODULES = ("chem_fire",)
+
+
+def memory_shapes(cfg, nrows):
+    # Each emitted row retains its trailing-window means; accumulation,
+    # conversion, diurnal and input masks overlap at the source-hour peak.
+    plane = (nrows, cfg.ny, cfg.nx)
+    return {'trailing_means': (2, *plane)}, {'trailing_work': (16, *plane)}
+
+
 RULE_PATH = Path(__file__).resolve().parents[1] / "data/chem/fire/fire_type_rules.json"
 
 
@@ -189,10 +198,28 @@ def trailing_planes(ctx, frames, source, field, frp_field, valid):
     cache = getattr(chem, "fire_trailing", None)
     if cache is None or cache["key"] != key:
         latency = float((getattr(source, "time", None) or {}).get("latency_s") or 0.0)
-        hours = trailing_window(frames.reference_time,
-                                frames.available_hours(source.name, field), latency)
+        try:
+            hours = trailing_window(frames.reference_time,
+                                    frames.available_hours(source.name, field), latency)
+        except FileNotFoundError as missing:
+            # The publisher's archive does not reach this date (RAVE's
+            # public index starts 2024-09): the run keeps the smoke already
+            # in the air (HRRR's own start state, RAP's edges) and emits no
+            # NEW fire smoke, said on screen and kept on the chem state for
+            # the receipt.  Breakage this prevents: the packaged HRRR recipe
+            # (smoke on by default) stopped at its first fire step on every
+            # date before the archive, after a whole preparation.
+            import sys
+            reason = (f"{source.name}: {missing}; this run emits no new fire "
+                      "smoke (the smoke already in the air still runs)")
+            print(f"warning: fire emissions absent: {reason}", file=sys.stderr, flush=True)
+            shape = tuple(cp.asarray(ctx.met("xlong")).shape)
+            zero = cp.zeros(shape, cp.float32)
+            cache = chem.fire_trailing = {"key": key, "hours": (), "mass": zero,
+                                          "frp": zero, "absent": reason}
+            hours = None
         mass_sum = frp_sum = count = None
-        for hour in hours:
+        for hour in hours or ():
             mass = cp.asarray(frames.at(source.name, field, hour), dtype=cp.float32)
             power = cp.asarray(frames.at(source.name, frp_field, hour), dtype=cp.float32)
             burning = mass > 0
@@ -203,11 +230,12 @@ def trailing_planes(ctx, frames, source, field, frp_field, valid):
             mass_sum += cp.where(burning, mass, 0)
             frp_sum += cp.where(burning, cp.maximum(power, 0), 0)
             count += burning
-        seen = cp.maximum(count, 1)
-        cache = chem.fire_trailing = {
-            "key": key, "hours": hours,
-            "mass": (mass_sum / seen).astype(cp.float32),
-            "frp": (frp_sum / seen).astype(cp.float32)}
+        if hours is not None:
+            seen = cp.maximum(count, 1)
+            cache = chem.fire_trailing = {
+                "key": key, "hours": hours,
+                "mass": (mass_sum / seen).astype(cp.float32),
+                "frp": (frp_sum / seen).astype(cp.float32)}
     hour = valid.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
     factor = diurnal_factor(cp, ctx.met("xlong"), hour + timedelta(minutes=30))
     return cache["mass"] * factor, cache["frp"] * factor, hour

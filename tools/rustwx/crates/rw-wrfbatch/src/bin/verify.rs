@@ -13,7 +13,7 @@ pub static GPUWM_BRIDGE_SOURCE_REV_STAMP: &str =
     concat!("GPUWM_BRIDGE_SOURCE_REV=", env!("GPUWM_BRIDGE_SOURCE_REV"));
 
 use crate::cli_contracts::VERIFY as ABI;
-const USAGE:&str="rw_verify --request REQUEST.json --json RECEIPT.json [--image CARD.png]\nrw_verify --inventory REQUEST.json\nrw_verify --prepare REQUEST.json --json PREPARED_REQUEST.json\nrw_verify --help | --abi";
+const USAGE:&str="rw_verify --request REQUEST.json --json RECEIPT.json [--image CARD.png]\nrw_verify --inventory REQUEST.json\nrw_verify --prepare REQUEST.json --json PREPARED_REQUEST.json\nrw_verify --request LIGHTNING_REQUEST.json --json COUNTS.json\nrw_verify --help | --abi";
 
 fn prepare(request: &VerificationRequest) -> Result<Value, String> {
     let root = request
@@ -186,7 +186,7 @@ fn score(
             }
         } else {
             for q in &request.station_quantities {
-                let unit = match q.quantity.as_str() { "temperature_2m"|"dewpoint_2m" => "K", "wind_speed_10m"|"wind_gust_10m"=>"m s-1", "precipitation_1h"=>"mm", _=>return Err(format!("ASOS has no declared units for {}",q.quantity)) };
+                let unit = match q.quantity.as_str() { "temperature_2m"|"dewpoint_2m" => "K", "heat_index_2m"|"apparent_temperature_2m" => "degC", "wind_speed_10m"|"wind_gust_10m"=>"m s-1", "precipitation_1h"=>"mm", _=>return Err(format!("ASOS has no declared units for {}",q.quantity)) };
                 if q.units != unit { return Err(format!("{} ASOS values are {unit}, not {}",q.quantity,q.units)); }
                 if q.quantity == "precipitation_1h" && !q.exact_time { return Err("station 1 h precipitation requires exact_time to prevent comparing different interval end times".into()); }
             }
@@ -354,15 +354,22 @@ pub(crate) fn main() -> ExitCode {
         }
         let path = request_path.ok_or("--request or --inventory is required")?;
         let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
-        let request: VerificationRequest =
-            serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-        let value = if inventory_only {
-            inventory(&request)?
-        } else if prepare_only {
-            prepare(&request)?
+        let document: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+        let value = if document["schema"] == rw_wrfbatch::lightning_verification::REQUEST_SCHEMA {
+            if inventory_only || prepare_only || card.is_some() {
+                return Err("lightning count requests produce JSON receipts via --request and --json".into());
+            }
+            rw_wrfbatch::lightning_verification::score(serde_json::from_value(document).map_err(|e|e.to_string())?)?
         } else {
-            serde_json::to_value(score(&request, &bytes, card.as_deref())?)
-                .map_err(|e| e.to_string())?
+            let request: VerificationRequest = serde_json::from_value(document).map_err(|e| e.to_string())?;
+            if inventory_only {
+                inventory(&request)?
+            } else if prepare_only {
+                prepare(&request)?
+            } else {
+                serde_json::to_value(score(&request, &bytes, card.as_deref())?)
+                    .map_err(|e| e.to_string())?
+            }
         };
         let text = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?;
         if let Some(path) = output {

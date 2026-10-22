@@ -134,67 +134,9 @@ def test_the_fixture_actually_transports_momentum():
 
 
 # ===========================================================================
-# The kernel, graded against the SAME oracle rows as the mirror
+# Kernel frame contract. Output words are graded in the assembled pipeline
+# by test_ntiedtke_pipeline_boundaries.py on these same WRF capture rows.
 # ===========================================================================
-
-@pytest.fixture(scope="module")
-def cuda_cududvn():
-    cp = pytest.importorskip("cupy")
-    from gpuwm.core.ntiedtke import NtLaunchGeometry, NtStages
-
-    keys = _KEYS
-    ncol, n1 = len(keys), NT_NZ + 2
-
-    def pack(name, sfc=None):
-        a = np.zeros((n1, ncol), dtype=np.float32)
-        for c, k in enumerate(keys):
-            a[1:1 + NT_NZ, c] = _COLS[k][name]
-            if sfc:
-                a[1 + NT_NZ, c] = _COLS[k][sfc]
-        return cp.asarray(a)
-
-    def ivec(name):
-        return cp.asarray(np.array([int(_COLS[k][name]) for k in keys],
-                                   dtype=np.int32))
-
-    ro = {n: pack(n) for n in ("puen", "pven", "pmfu", "pmfd",
-                               "puu", "pud", "pvu", "pvd")}
-    io_ = {"ptenu": pack("ptenu_in"), "ptenv": pack("ptenv_in")}
-    # The port's only scratch: the four zmf* arrays are not single-level
-    # lookback, so they cannot be registers.  Caller-owned, so the FRAME
-    # stays 0 B and the cost is visible in this allocation.
-    scr = [cp.zeros((n1, ncol), dtype=np.float32) for _ in range(4)]
-
-    ktopm2 = _COLS[keys[0]]["ktopm2"]
-    assert all(_COLS[k]["ktopm2"] == ktopm2 for k in keys)
-
-    stages = NtStages(NtLaunchGeometry(ncol=ncol, nz=NT_NZ))
-    stages.launch("ntiedtke_cududvn", (
-        ivec("ldcum"), ivec("ktype"), ivec("kcbot"),
-        pack("paph", sfc="paph_sfc"),
-        ro["puen"], ro["pven"], ro["pmfu"], ro["pmfd"],
-        ro["puu"], ro["pud"], ro["pvu"], ro["pvd"],
-        io_["ptenu"], io_["ptenv"], scr[0], scr[1], scr[2], scr[3],
-        np.int32(ncol), np.int32(NT_NZ), np.int32(ktopm2),
-        np.float32(1004.5), np.float32(287.0), np.float32(461.6),
-        np.float32(2.5e6), np.float32(3.50e5), np.float32(9.81)))
-    cp.cuda.Stream.null.synchronize()
-    stages.check_geometry()
-    return keys, {n: cp.asnumpy(v)[1:1 + NT_NZ, :] for n, v in io_.items()}
-
-
-@pytest.mark.parametrize("field", _OUT)
-def test_kernel_outputs_are_bitwise(cuda_cududvn, field):
-    """Graded against WRF, never against the mirror."""
-    keys, got = cuda_cududvn
-    bad = []
-    for c, key in enumerate(keys):
-        g, e = got[field][:, c], _EXP[key][field]
-        d = np.nonzero(g.view(np.uint32) != e.view(np.uint32))[0]
-        if d.size:
-            bad.append((key, d.tolist()[:4], g[d[0]], e[d[0]]))
-    assert not bad, f"{field}: {bad[:3]}"
-
 
 def test_kernel_holds_no_local_frame():
     """0 B even though this kernel is the one that needs scratch.

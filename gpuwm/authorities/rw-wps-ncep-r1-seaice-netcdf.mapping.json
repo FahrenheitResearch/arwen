@@ -1,0 +1,582 @@
+{
+  "schema": "rw-wps.mapping.v1",
+  "name": "ncep-r1-seaice",
+  "format": "netcdf",
+  "coordinates": {
+    "horizontal": {
+      "kind": "variables",
+      "latitude": {
+        "format": "netcdf",
+        "name": [
+          "lat"
+        ]
+      },
+      "longitude": {
+        "format": "netcdf",
+        "name": [
+          "lon"
+        ]
+      }
+    },
+    "vertical": {
+      "kind": "pressure",
+      "units": "Pa",
+      "positive": "down",
+      "levels": [],
+      "selector": {
+        "format": "netcdf",
+        "name": [
+          "level"
+        ]
+      }
+    },
+    "time": {
+      "kind": "dimension",
+      "units": "hours since 1800-01-01 00:00:0.0",
+      "calendar": "gregorian",
+      "selector": {
+        "name": [
+          "time"
+        ]
+      }
+    }
+  },
+  "fields": {
+    "air_temperature": {
+      "units": {
+        "source": "K",
+        "target": "K"
+      },
+      "source_axes": [
+        "vertical",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "vertical",
+        "y",
+        "x"
+      ],
+      "missing": {
+        "kind": "reject"
+      },
+      "provider": "composition_bound",
+      "location": "mass"
+    },
+    "specific_humidity": {
+      "units": {
+        "source": "kg kg-1",
+        "target": "kg kg-1"
+      },
+      "source_axes": [
+        "vertical",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "vertical",
+        "y",
+        "x"
+      ],
+      "missing": {
+        "kind": "reject"
+      },
+      "provider": "composition_bound",
+      "location": "mass"
+    },
+    "eastward_wind": {
+      "units": {
+        "source": "m s-1",
+        "target": "m s-1"
+      },
+      "source_axes": [
+        "vertical",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "vertical",
+        "y",
+        "x"
+      ],
+      "missing": {
+        "kind": "reject"
+      },
+      "provider": "composition_bound",
+      "location": "mass"
+    },
+    "northward_wind": {
+      "units": {
+        "source": "m s-1",
+        "target": "m s-1"
+      },
+      "source_axes": [
+        "vertical",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "vertical",
+        "y",
+        "x"
+      ],
+      "missing": {
+        "kind": "reject"
+      },
+      "provider": "composition_bound",
+      "location": "mass"
+    },
+    "geopotential_height": {
+      "units": {
+        "source": "m",
+        "target": "m"
+      },
+      "source_axes": [
+        "vertical",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "vertical",
+        "y",
+        "x"
+      ],
+      "missing": {
+        "kind": "reject"
+      },
+      "provider": "composition_bound",
+      "location": "mass"
+    },
+    "air_pressure": {
+      "units": {
+        "source": "Pa",
+        "target": "Pa"
+      },
+      "source_axes": [
+        "vertical",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "vertical",
+        "y",
+        "x"
+      ],
+      "missing": {
+        "kind": "reject"
+      },
+      "provider": "composition_bound",
+      "location": "mass"
+    },
+    "surface_pressure": {
+      "units": {
+        "source": "Pa",
+        "target": "Pa"
+      },
+      "source_axes": [
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "missing": {
+        "kind": "reject"
+      },
+      "provider": "composition_bound",
+      "location": "surface"
+    },
+    "terrain_height": {
+      "units": {
+        "source": "m",
+        "target": "m"
+      },
+      "source_axes": [
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "missing": {
+        "kind": "reject"
+      },
+      "provider": "composition_bound",
+      "location": "surface"
+    },
+    "skin_temperature": {
+      "units": {
+        "source": "K",
+        "target": "K"
+      },
+      "source_axes": [
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "missing": {
+        "kind": "reject"
+      },
+      "provider": "composition_bound",
+      "location": "surface"
+    },
+    "air_temperature_2m": {
+      "units": {
+        "source": "K",
+        "target": "K"
+      },
+      "source_axes": [
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "missing": {
+        "kind": "reject"
+      },
+      "provider": "composition_bound",
+      "location": "surface"
+    },
+    "specific_humidity_2m": {
+      "units": {
+        "source": "kg kg-1",
+        "target": "kg kg-1"
+      },
+      "source_axes": [
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "missing": {
+        "kind": "reject"
+      },
+      "provider": "composition_bound",
+      "location": "surface"
+    },
+    "eastward_wind_10m": {
+      "units": {
+        "source": "m s-1",
+        "target": "m s-1"
+      },
+      "source_axes": [
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "missing": {
+        "kind": "reject"
+      },
+      "provider": "composition_bound",
+      "location": "surface"
+    },
+    "northward_wind_10m": {
+      "units": {
+        "source": "m s-1",
+        "target": "m s-1"
+      },
+      "source_axes": [
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "missing": {
+        "kind": "reject"
+      },
+      "provider": "composition_bound",
+      "location": "surface"
+    },
+    "land_fraction": {
+      "units": {
+        "source": "0/1 Flag",
+        "target": "1"
+      },
+      "source_axes": [
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "missing": {
+        "kind": "reject"
+      },
+      "provider": "composition_bound",
+      "location": "surface"
+    },
+    "sea_ice_fraction": {
+      "selectors": [
+        {
+          "format": "netcdf",
+          "name": [
+            "icec"
+          ]
+        }
+      ],
+      "units": {
+        "source": " ",
+        "target": "1",
+        "scale": 1.0
+      },
+      "source_axes": [
+        "time",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      }
+    },
+    "soil_temperature": {
+      "units": {
+        "source": "K",
+        "target": "K"
+      },
+      "source_axes": [
+        "soil",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "soil",
+        "y",
+        "x"
+      ],
+      "missing": {
+        "kind": "preserve_mask"
+      },
+      "provider": "composition_bound",
+      "location": "soil"
+    },
+    "volumetric_soil_moisture": {
+      "units": {
+        "source": "m3 m-3",
+        "target": "m3 m-3"
+      },
+      "source_axes": [
+        "soil",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "soil",
+        "y",
+        "x"
+      ],
+      "missing": {
+        "kind": "preserve_mask"
+      },
+      "provider": "composition_bound",
+      "location": "soil"
+    }
+  },
+  "derivations": [],
+  "target": {
+    "name": "gpuwm/WRF-real NCEP GEFS ensemble-member source",
+    "physics_suite": "WSM6+YSU+classic-MM5+Noah4",
+    "max_dom": 4,
+    "require_lateral_boundaries": true,
+    "target_vertical_levels": 49,
+    "soil_layer_count": 4,
+    "boundary_interval_seconds": 10800,
+    "accept_boundary_interval_multiples": true,
+    "required_fields": [
+      {
+        "name": "air_temperature",
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "location": "mass",
+        "target_units": "K"
+      },
+      {
+        "name": "specific_humidity",
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "location": "mass",
+        "target_units": "kg kg-1"
+      },
+      {
+        "name": "eastward_wind",
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "location": "mass",
+        "target_units": "m s-1"
+      },
+      {
+        "name": "northward_wind",
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "location": "mass",
+        "target_units": "m s-1"
+      },
+      {
+        "name": "geopotential_height",
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "location": "mass",
+        "target_units": "m"
+      },
+      {
+        "name": "air_pressure",
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "location": "mass",
+        "target_units": "Pa"
+      },
+      {
+        "name": "surface_pressure",
+        "axes": [
+          "y",
+          "x"
+        ],
+        "location": "surface",
+        "target_units": "Pa"
+      },
+      {
+        "name": "terrain_height",
+        "axes": [
+          "y",
+          "x"
+        ],
+        "location": "surface",
+        "target_units": "m"
+      },
+      {
+        "name": "skin_temperature",
+        "axes": [
+          "y",
+          "x"
+        ],
+        "location": "surface",
+        "target_units": "K"
+      },
+      {
+        "name": "air_temperature_2m",
+        "axes": [
+          "y",
+          "x"
+        ],
+        "location": "surface",
+        "target_units": "K"
+      },
+      {
+        "name": "specific_humidity_2m",
+        "axes": [
+          "y",
+          "x"
+        ],
+        "location": "surface",
+        "target_units": "kg kg-1"
+      },
+      {
+        "name": "eastward_wind_10m",
+        "axes": [
+          "y",
+          "x"
+        ],
+        "location": "surface",
+        "target_units": "m s-1"
+      },
+      {
+        "name": "northward_wind_10m",
+        "axes": [
+          "y",
+          "x"
+        ],
+        "location": "surface",
+        "target_units": "m s-1"
+      },
+      {
+        "name": "land_fraction",
+        "axes": [
+          "y",
+          "x"
+        ],
+        "location": "surface",
+        "target_units": "1"
+      },
+      {
+        "name": "soil_temperature",
+        "axes": [
+          "soil",
+          "y",
+          "x"
+        ],
+        "location": "soil",
+        "target_units": "K"
+      },
+      {
+        "name": "volumetric_soil_moisture",
+        "axes": [
+          "soil",
+          "y",
+          "x"
+        ],
+        "location": "soil",
+        "target_units": "m3 m-3"
+      }
+    ],
+    "pressure_requirement": "air_pressure",
+    "policy_controlled_fields": [
+      "cloud_water_mixing_ratio",
+      "rain_water_mixing_ratio",
+      "cloud_ice_mixing_ratio",
+      "snow_mixing_ratio",
+      "graupel_or_hail_mixing_ratio",
+      "vertical_velocity",
+      "snow_water_equivalent",
+      "snow_depth",
+      "sea_ice_fraction"
+    ],
+    "initialization_policies": {
+      "cloud_water_mixing_ratio": "explicit_zero_with_adapter_validation",
+      "rain_water_mixing_ratio": "explicit_zero_with_adapter_validation",
+      "cloud_ice_mixing_ratio": "explicit_zero_with_adapter_validation",
+      "snow_mixing_ratio": "explicit_zero_with_adapter_validation",
+      "graupel_or_hail_mixing_ratio": "explicit_zero_with_adapter_validation",
+      "vertical_velocity": "explicit_zero_with_adapter_validation",
+      "snow_water_equivalent": "published_under_a_55_percent_ocean_bitmap_whose_surface_semantics_are_not_a_declared_engine_shape",
+      "snow_depth": "published_under_a_55_percent_ocean_bitmap_whose_surface_semantics_are_not_a_declared_engine_shape"
+    }
+  }
+}

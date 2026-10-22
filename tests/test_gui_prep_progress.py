@@ -354,7 +354,9 @@ def _builder_to_the_first_nest(monkeypatch):
             ("gpuwm.core.model._forcing_cadence_seconds", lambda catalog: 10800.0),
             ("gpuwm.experiment.pre_spawn_experiment", lambda e: active),
             ("gpuwm.vertical_adaptation.refuse_tree_off_the_experiment_coordinate", lambda *a, **k: None),
-            ("gpuwm.core.clock.resolve_clock", lambda *a, **k: SimpleNamespace(clocks=lambda: clocks)),
+            # A real TickClock carries tick_den; the builder reads the declared tree's (dormant d02 included)
+            # as the startup tree's tick floor since 801ccab134.
+            ("gpuwm.core.clock.resolve_clock", lambda *a, **k: SimpleNamespace(clocks=lambda: clocks, tick_den=1)),
             ("gpuwm.core.clock.build_schedule", lambda *a, **k: None),
             ("gpuwm.core.preflight.estimate_experiment", lambda *a, **k: estimate),
             ("gpuwm.core.state.build_shared_dycore_state_workspace", lambda domains: empty),

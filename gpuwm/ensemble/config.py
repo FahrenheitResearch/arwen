@@ -28,6 +28,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
+from gpuwm.ensemble.physical_fields import sha256_of_file
 
 #: Versioned schema of the overlay file itself.
 ENSEMBLE_CONFIG_SCHEMA = "gpuwm-ensemble-config.v1"
@@ -42,15 +43,6 @@ _REQUIRED_KEYS = ("base_config", "n_members", "base_seed", "perturbation")
 #: guard.  Sequential execution means N members cost N forecasts; a
 #: mistyped n_members would otherwise burn a night of GPU time.
 MAX_MEMBERS = 512
-
-
-def sha256_of_file(path: Path) -> str:
-    """Content sha256 of ``path`` (streamed; used for base-config binding)."""
-    digest = hashlib.sha256()
-    with open(path, "rb") as stream:
-        for block in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def canonical_sha256(value) -> str:

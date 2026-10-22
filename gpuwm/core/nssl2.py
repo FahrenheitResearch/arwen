@@ -8,11 +8,10 @@ official-WRF column gates.  Importing this module does not make
 
 from __future__ import annotations
 
-import math
-
 import numpy as np
 
 from gpuwm.core.kernels import get_kernel
+from gpuwm.core.nssl2_driver_support import _step32, _validate_surface_fields
 from gpuwm.core.state import DTYPE
 
 
@@ -27,15 +26,18 @@ def _validate_fields(fields: dict[str, object]) -> tuple[tuple[int, ...], int]:
     shape = first.shape
     if not shape:
         raise ValueError("NSSL fields must be arrays")
-    for name, value in fields.items():
-        if value.shape != shape:
-            raise ValueError(
-                f"{name} must have shape {shape}, got {value.shape}")
-        if value.dtype != DTYPE:
-            raise TypeError(f"{name} must be float32, got {value.dtype}")
-        if not value.flags.c_contiguous:
-            raise ValueError(f"{name} must be C-contiguous")
+    _validate_surface_fields(fields, shape)
     return shape, int(np.prod(shape, dtype=np.int64))
+
+
+def _launch_process(kernel_name, fields, dt_s):
+    _, size = _validate_fields(fields)
+    step = _step32(dt_s)
+    threads = 256
+    blocks = (size + threads - 1) // threads
+    get_kernel("nssl2", kernel_name)(
+        (blocks,), (threads,),
+        (*fields.values(), step, np.int32(size)))
 
 
 def launch_effective_radius(
@@ -115,26 +117,11 @@ def launch_rain_self_collection(air_density, qr, qnr, dt_s: float) -> None:
     bounds, 2-mm shutoff, exponential breakup efficiency, and timestep sink
     limiter.  Other warm-rain processes remain outside this admitted slice.
     """
-    _, size = _validate_fields({
+    _launch_process("nssl2_rain_self_collection", {
         "air_density": air_density,
         "qr": qr,
         "qnr": qnr,
-    })
-    try:
-        step = float(dt_s)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("dt_s must be a positive finite scalar") from exc
-    if not math.isfinite(step) or step <= 0.0:
-        raise ValueError("dt_s must be a positive finite scalar")
-    step32 = np.float32(step)
-    if not np.isfinite(step32) or step32 <= 0.0:
-        raise ValueError("dt_s must be representable as positive float32")
-
-    threads = 256
-    blocks = (size + threads - 1) // threads
-    get_kernel("nssl2", "nssl2_rain_self_collection")(
-        (blocks,), (threads,),
-        (air_density, qr, qnr, step32, np.int32(size)))
+    }, dt_s)
 
 
 def launch_snow_aggregation(
@@ -148,27 +135,12 @@ def launch_snow_aggregation(
     Deposition, melting, fragmentation, ice conversion, and sedimentation are
     separate cold-phase admission slices.
     """
-    _, size = _validate_fields({
+    _launch_process("nssl2_snow_aggregation", {
         "air_density": air_density,
         "temperature_k": temperature_k,
         "qs": qs,
         "qns": qns,
-    })
-    try:
-        step = float(dt_s)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("dt_s must be a positive finite scalar") from exc
-    if not math.isfinite(step) or step <= 0.0:
-        raise ValueError("dt_s must be a positive finite scalar")
-    step32 = np.float32(step)
-    if not np.isfinite(step32) or step32 <= 0.0:
-        raise ValueError("dt_s must be representable as positive float32")
-
-    threads = 256
-    blocks = (size + threads - 1) // threads
-    get_kernel("nssl2", "nssl2_snow_aggregation")(
-        (blocks,), (threads,),
-        (air_density, temperature_k, qs, qns, step32, np.int32(size)))
+    }, dt_s)
 
 
 def launch_ice_deposition_conversion(
@@ -184,7 +156,7 @@ def launch_ice_deposition_conversion(
     Sublimation and deposition onto existing snow/graupel/hail remain
     separate admission slices.
     """
-    _, size = _validate_fields({
+    _launch_process("nssl2_ice_deposition_conversion", {
         "full_theta": full_theta,
         "air_density": air_density,
         "pressure_pa": pressure_pa,
@@ -194,23 +166,7 @@ def launch_ice_deposition_conversion(
         "qni": qni,
         "qs": qs,
         "qns": qns,
-    })
-    try:
-        step = float(dt_s)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("dt_s must be a positive finite scalar") from exc
-    if not math.isfinite(step) or step <= 0.0:
-        raise ValueError("dt_s must be a positive finite scalar")
-    step32 = np.float32(step)
-    if not np.isfinite(step32) or step32 <= 0.0:
-        raise ValueError("dt_s must be representable as positive float32")
-
-    threads = 256
-    blocks = (size + threads - 1) // threads
-    get_kernel("nssl2", "nssl2_ice_deposition_conversion")(
-        (blocks,), (threads,),
-        (full_theta, air_density, pressure_pa, exner,
-         qv, qi, qni, qs, qns, step32, np.int32(size)))
+    }, dt_s)
 
 
 def launch_frozen_vapor_exchange(
@@ -225,7 +181,7 @@ def launch_frozen_vapor_exchange(
     during sublimation, and default ``iscni=4`` depositional conversion.
     Graupel/hail exchange and their density moments remain separate.
     """
-    _, size = _validate_fields({
+    _launch_process("nssl2_frozen_vapor_exchange", {
         "full_theta": full_theta,
         "air_density": air_density,
         "pressure_pa": pressure_pa,
@@ -235,23 +191,7 @@ def launch_frozen_vapor_exchange(
         "qni": qni,
         "qs": qs,
         "qns": qns,
-    })
-    try:
-        step = float(dt_s)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("dt_s must be a positive finite scalar") from exc
-    if not math.isfinite(step) or step <= 0.0:
-        raise ValueError("dt_s must be a positive finite scalar")
-    step32 = np.float32(step)
-    if not np.isfinite(step32) or step32 <= 0.0:
-        raise ValueError("dt_s must be representable as positive float32")
-
-    threads = 256
-    blocks = (size + threads - 1) // threads
-    get_kernel("nssl2", "nssl2_frozen_vapor_exchange")(
-        (blocks,), (threads,),
-        (full_theta, air_density, pressure_pa, exner,
-         qv, qi, qni, qs, qns, step32, np.int32(size)))
+    }, dt_s)
 
 
 def launch_graupel_hail_vapor_exchange(
@@ -267,7 +207,7 @@ def launch_graupel_hail_vapor_exchange(
     category-specific deposition density.  Collection, melting, conversion,
     breakup, and sedimentation remain separate admission slices.
     """
-    _, size = _validate_fields({
+    _launch_process("nssl2_graupel_hail_vapor_exchange", {
         "full_theta": full_theta,
         "air_density": air_density,
         "pressure_pa": pressure_pa,
@@ -279,24 +219,7 @@ def launch_graupel_hail_vapor_exchange(
         "qh": qh,
         "qnh": qnh,
         "qvolh": qvolh,
-    })
-    try:
-        step = float(dt_s)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("dt_s must be a positive finite scalar") from exc
-    if not math.isfinite(step) or step <= 0.0:
-        raise ValueError("dt_s must be a positive finite scalar")
-    step32 = np.float32(step)
-    if not np.isfinite(step32) or step32 <= 0.0:
-        raise ValueError("dt_s must be representable as positive float32")
-
-    threads = 256
-    blocks = (size + threads - 1) // threads
-    get_kernel("nssl2", "nssl2_graupel_hail_vapor_exchange")(
-        (blocks,), (threads,),
-        (full_theta, air_density, pressure_pa, exner,
-         qv, qg, qng, qvolg, qh, qnh, qvolh,
-         step32, np.int32(size)))
+    }, dt_s)
 
 
 def launch_bigg_rain_freezing(
@@ -313,7 +236,7 @@ def launch_bigg_rain_freezing(
     remain coupled.  Optional snow routing and splinter production are
     deliberately outside this admitted slice.
     """
-    _, size = _validate_fields({
+    _launch_process("nssl2_bigg_rain_freezing", {
         "full_theta": full_theta,
         "air_density": air_density,
         "exner": exner,
@@ -323,23 +246,7 @@ def launch_bigg_rain_freezing(
         "qg": qg,
         "qng": qng,
         "qvolg": qvolg,
-    })
-    try:
-        step = float(dt_s)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("dt_s must be a positive finite scalar") from exc
-    if not math.isfinite(step) or step <= 0.0:
-        raise ValueError("dt_s must be a positive finite scalar")
-    step32 = np.float32(step)
-    if not np.isfinite(step32) or step32 <= 0.0:
-        raise ValueError("dt_s must be representable as positive float32")
-
-    threads = 256
-    blocks = (size + threads - 1) // threads
-    get_kernel("nssl2", "nssl2_bigg_rain_freezing")(
-        (blocks,), (threads,),
-        (full_theta, air_density, exner, temperature_k,
-         qr, qnr, qg, qng, qvolg, step32, np.int32(size)))
+    }, dt_s)
 
 
 def launch_warm_autoconversion(
@@ -355,30 +262,14 @@ def launch_warm_autoconversion(
     accretion, rain self-collection, condensation, and sedimentation are
     separate process slices.
     """
-    _, size = _validate_fields({
+    _launch_process("nssl2_warm_autoconversion", {
         "air_density": air_density,
         "temperature_k": temperature_k,
         "qc": qc,
         "qr": qr,
         "qndrop": qndrop,
         "qnr": qnr,
-    })
-    try:
-        step = float(dt_s)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("dt_s must be a positive finite scalar") from exc
-    if not math.isfinite(step) or step <= 0.0:
-        raise ValueError("dt_s must be a positive finite scalar")
-    step32 = np.float32(step)
-    if not np.isfinite(step32) or step32 <= 0.0:
-        raise ValueError("dt_s must be representable as positive float32")
-
-    threads = 256
-    blocks = (size + threads - 1) // threads
-    get_kernel("nssl2", "nssl2_warm_autoconversion")(
-        (blocks,), (threads,),
-        (air_density, temperature_k, qc, qr, qndrop, qnr,
-         step32, np.int32(size)))
+    }, dt_s)
 
 
 def launch_rain_cloud_accretion(
@@ -390,28 +281,13 @@ def launch_rain_cloud_accretion(
     initiation-radius gate, large/small collector branches, independent mass
     and number depletion guards, and final mean-volume bounds.
     """
-    _, size = _validate_fields({
+    _launch_process("nssl2_rain_cloud_accretion", {
         "air_density": air_density,
         "qc": qc,
         "qr": qr,
         "qndrop": qndrop,
         "qnr": qnr,
-    })
-    try:
-        step = float(dt_s)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("dt_s must be a positive finite scalar") from exc
-    if not math.isfinite(step) or step <= 0.0:
-        raise ValueError("dt_s must be a positive finite scalar")
-    step32 = np.float32(step)
-    if not np.isfinite(step32) or step32 <= 0.0:
-        raise ValueError("dt_s must be representable as positive float32")
-
-    threads = 256
-    blocks = (size + threads - 1) // threads
-    get_kernel("nssl2", "nssl2_rain_cloud_accretion")(
-        (blocks,), (threads,),
-        (air_density, qc, qr, qndrop, qnr, step32, np.int32(size)))
+    }, dt_s)
 
 
 def launch_clear_air_activation(
@@ -427,7 +303,7 @@ def launch_clear_air_activation(
     Cells containing existing cloud are left for the adjacent cloudy-water
     adjustment and cloud-interior renucleation launchers.
     """
-    _, size = _validate_fields({
+    _launch_process("nssl2_clear_air_activation", {
         "full_theta": full_theta,
         "air_density": air_density,
         "pressure_pa": pressure_pa,
@@ -437,23 +313,7 @@ def launch_clear_air_activation(
         "qc": qc,
         "qndrop": qndrop,
         "qnn": qnn,
-    })
-    try:
-        step = float(dt_s)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("dt_s must be a positive finite scalar") from exc
-    if not math.isfinite(step) or step <= 0.0:
-        raise ValueError("dt_s must be a positive finite scalar")
-    step32 = np.float32(step)
-    if not np.isfinite(step32) or step32 <= 0.0:
-        raise ValueError("dt_s must be representable as positive float32")
-
-    threads = 256
-    blocks = (size + threads - 1) // threads
-    get_kernel("nssl2", "nssl2_clear_air_activation")(
-        (blocks,), (threads,),
-        (full_theta, air_density, pressure_pa, exner, vertical_velocity,
-         qv, qc, qndrop, qnn, step32, np.int32(size)))
+    }, dt_s)
 
 
 def launch_cloudy_water_adjustment(
@@ -481,15 +341,7 @@ def launch_cloudy_water_adjustment(
         "qndrop": qndrop,
         "qnn": qnn,
     })
-    try:
-        step = float(dt_s)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("dt_s must be a positive finite scalar") from exc
-    if not math.isfinite(step) or step <= 0.0:
-        raise ValueError("dt_s must be a positive finite scalar")
-    step32 = np.float32(step)
-    if not np.isfinite(step32) or step32 <= 0.0:
-        raise ValueError("dt_s must be representable as positive float32")
+    step32 = _step32(dt_s)
 
     threads = 256
     blocks = (size + threads - 1) // threads
@@ -532,15 +384,7 @@ def launch_cloud_interior_renucleation(
         raise ValueError(
             "NSSL cloud-interior renucleation requires nz >= "
             f"{VERTICAL_LEVEL_BOUNDS[0]}, got {nz}")
-    try:
-        step = float(dt_s)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("dt_s must be a positive finite scalar") from exc
-    if not math.isfinite(step) or step <= 0.0:
-        raise ValueError("dt_s must be a positive finite scalar")
-    step32 = np.float32(step)
-    if not np.isfinite(step32) or step32 <= 0.0:
-        raise ValueError("dt_s must be representable as positive float32")
+    step32 = _step32(dt_s)
 
     threads = 256
     blocks = (size + threads - 1) // threads
@@ -565,7 +409,7 @@ def launch_primary_ice_nucleation(
     number/latent-heat updates.  Neighboring deposition and collision
     processes remain separate admission slices.
     """
-    _, size = _validate_fields({
+    _launch_process("nssl2_primary_ice_nucleation", {
         "full_theta": full_theta,
         "air_density": air_density,
         "pressure_pa": pressure_pa,
@@ -578,24 +422,7 @@ def launch_primary_ice_nucleation(
         "qv": qv,
         "qi": qi,
         "qni": qni,
-    })
-    try:
-        step = float(dt_s)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("dt_s must be a positive finite scalar") from exc
-    if not math.isfinite(step) or step <= 0.0:
-        raise ValueError("dt_s must be a positive finite scalar")
-    step32 = np.float32(step)
-    if not np.isfinite(step32) or step32 <= 0.0:
-        raise ValueError("dt_s must be representable as positive float32")
-
-    threads = 256
-    blocks = (size + threads - 1) // threads
-    get_kernel("nssl2", "nssl2_primary_ice_nucleation")(
-        (blocks,), (threads,),
-        (full_theta, air_density, pressure_pa, exner, vertical_velocity,
-         dz, nuclei_minus, nuclei_center, nuclei_plus, qv, qi, qni,
-         step32, np.int32(size)))
+    }, dt_s)
 
 
 def launch_ice_cloud_riming(
@@ -611,7 +438,7 @@ def launch_ice_cloud_riming(
     Ice-to-graupel conversion and neighboring vapor/freezing processes remain
     separate admission slices.
     """
-    _, size = _validate_fields({
+    _launch_process("nssl2_ice_cloud_riming", {
         "full_theta": full_theta,
         "air_density": air_density,
         "exner": exner,
@@ -619,23 +446,7 @@ def launch_ice_cloud_riming(
         "qndrop": qndrop,
         "qi": qi,
         "qni": qni,
-    })
-    try:
-        step = float(dt_s)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("dt_s must be a positive finite scalar") from exc
-    if not math.isfinite(step) or step <= 0.0:
-        raise ValueError("dt_s must be a positive finite scalar")
-    step32 = np.float32(step)
-    if not np.isfinite(step32) or step32 <= 0.0:
-        raise ValueError("dt_s must be representable as positive float32")
-
-    threads = 256
-    blocks = (size + threads - 1) // threads
-    get_kernel("nssl2", "nssl2_ice_cloud_riming")(
-        (blocks,), (threads,),
-        (full_theta, air_density, exner, qc, qndrop, qi, qni,
-         step32, np.int32(size)))
+    }, dt_s)
 
 
 def launch_snow_cloud_riming(
@@ -651,7 +462,7 @@ def launch_snow_cloud_riming(
     snow-to-graupel conversion, melting, and neighboring collection processes
     remain separate admission slices.
     """
-    _, size = _validate_fields({
+    _launch_process("nssl2_snow_cloud_riming", {
         "full_theta": full_theta,
         "air_density": air_density,
         "exner": exner,
@@ -659,23 +470,7 @@ def launch_snow_cloud_riming(
         "qndrop": qndrop,
         "qs": qs,
         "qns": qns,
-    })
-    try:
-        step = float(dt_s)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("dt_s must be a positive finite scalar") from exc
-    if not math.isfinite(step) or step <= 0.0:
-        raise ValueError("dt_s must be a positive finite scalar")
-    step32 = np.float32(step)
-    if not np.isfinite(step32) or step32 <= 0.0:
-        raise ValueError("dt_s must be representable as positive float32")
-
-    threads = 256
-    blocks = (size + threads - 1) // threads
-    get_kernel("nssl2", "nssl2_snow_cloud_riming")(
-        (blocks,), (threads,),
-        (full_theta, air_density, exner, qc, qndrop, qs, qns,
-         step32, np.int32(size)))
+    }, dt_s)
 
 
 def launch_graupel_cloud_riming(
@@ -692,7 +487,7 @@ def launch_graupel_cloud_riming(
     moment bounds.  Hail conversion and neighboring collection/freezing
     processes remain separate admission slices.
     """
-    _, size = _validate_fields({
+    _launch_process("nssl2_graupel_cloud_riming", {
         "full_theta": full_theta,
         "air_density": air_density,
         "exner": exner,
@@ -701,23 +496,7 @@ def launch_graupel_cloud_riming(
         "qg": qg,
         "qng": qng,
         "qvolg": qvolg,
-    })
-    try:
-        step = float(dt_s)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("dt_s must be a positive finite scalar") from exc
-    if not math.isfinite(step) or step <= 0.0:
-        raise ValueError("dt_s must be a positive finite scalar")
-    step32 = np.float32(step)
-    if not np.isfinite(step32) or step32 <= 0.0:
-        raise ValueError("dt_s must be representable as positive float32")
-
-    threads = 256
-    blocks = (size + threads - 1) // threads
-    get_kernel("nssl2", "nssl2_graupel_cloud_riming")(
-        (blocks,), (threads,),
-        (full_theta, air_density, exner, qc, qndrop, qg, qng, qvolg,
-         step32, np.int32(size)))
+    }, dt_s)
 
 
 def launch_hail_cloud_riming(
@@ -735,7 +514,7 @@ def launch_hail_cloud_riming(
     and final hail moment bounds.  Neighboring hail growth, shedding, melting,
     conversion, and vapor-exchange processes remain separate admission slices.
     """
-    _, size = _validate_fields({
+    _launch_process("nssl2_hail_cloud_riming", {
         "full_theta": full_theta,
         "air_density": air_density,
         "exner": exner,
@@ -745,23 +524,7 @@ def launch_hail_cloud_riming(
         "qh": qh,
         "qnh": qnh,
         "qvolh": qvolh,
-    })
-    try:
-        step = float(dt_s)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("dt_s must be a positive finite scalar") from exc
-    if not math.isfinite(step) or step <= 0.0:
-        raise ValueError("dt_s must be a positive finite scalar")
-    step32 = np.float32(step)
-    if not np.isfinite(step32) or step32 <= 0.0:
-        raise ValueError("dt_s must be representable as positive float32")
-
-    threads = 256
-    blocks = (size + threads - 1) // threads
-    get_kernel("nssl2", "nssl2_hail_cloud_riming")(
-        (blocks,), (threads,),
-        (full_theta, air_density, exner, dz, qc, qndrop,
-         qh, qnh, qvolh, step32, np.int32(size)))
+    }, dt_s)
 
 
 def launch_rain_ice_collection_freezing(
@@ -781,7 +544,7 @@ def launch_rain_ice_collection_freezing(
     remain coupled.  Bigg freezing, snow routing, splinters, vapor exchange,
     and rain self-collection remain separate admission slices.
     """
-    _, size = _validate_fields({
+    _launch_process("nssl2_rain_ice_collection_freezing", {
         "full_theta": full_theta,
         "air_density": air_density,
         "pressure_pa": pressure_pa,
@@ -795,23 +558,7 @@ def launch_rain_ice_collection_freezing(
         "qg": qg,
         "qng": qng,
         "qvolg": qvolg,
-    })
-    try:
-        step = float(dt_s)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("dt_s must be a positive finite scalar") from exc
-    if not math.isfinite(step) or step <= 0.0:
-        raise ValueError("dt_s must be a positive finite scalar")
-    step32 = np.float32(step)
-    if not np.isfinite(step32) or step32 <= 0.0:
-        raise ValueError("dt_s must be representable as positive float32")
-
-    threads = 256
-    blocks = (size + threads - 1) // threads
-    get_kernel("nssl2", "nssl2_rain_ice_collection_freezing")(
-        (blocks,), (threads,),
-        (full_theta, air_density, pressure_pa, exner, temperature_k, qv,
-         qr, qnr, qi, qni, qg, qng, qvolg, step32, np.int32(size)))
+    }, dt_s)
 
 
 def launch_frozen_cross_collection(
@@ -830,7 +577,7 @@ def launch_frozen_cross_collection(
     Native two-moment snow--rain collection is intentionally a no-op.
     Wet growth, shedding, melting, and category conversion remain separate.
     """
-    _, size = _validate_fields({
+    _launch_process("nssl2_frozen_cross_collection", {
         "full_theta": full_theta,
         "air_density": air_density,
         "exner": exner,
@@ -849,25 +596,7 @@ def launch_frozen_cross_collection(
         "qh": qh,
         "qnh": qnh,
         "qvolh": qvolh,
-    })
-    try:
-        step = float(dt_s)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("dt_s must be a positive finite scalar") from exc
-    if not math.isfinite(step) or step <= 0.0:
-        raise ValueError("dt_s must be a positive finite scalar")
-    step32 = np.float32(step)
-    if not np.isfinite(step32) or step32 <= 0.0:
-        raise ValueError("dt_s must be representable as positive float32")
-
-    threads = 256
-    blocks = (size + threads - 1) // threads
-    get_kernel("nssl2", "nssl2_frozen_cross_collection")(
-        (blocks,), (threads,),
-        (full_theta, air_density, exner, temperature_k, dz, qc,
-         qr, qnr, qi, qni, qs, qns,
-         qg, qng, qvolg, qh, qnh, qvolh,
-         step32, np.int32(size)))
+    }, dt_s)
 
 
 def launch_melting_liquid_shedding(
@@ -885,7 +614,7 @@ def launch_melting_liquid_shedding(
     ``imltshddmr=1`` rain-number routing, phase-change heat, and final
     two-moment bounds. Frozen-category conversion remains a separate slice.
     """
-    _, size = _validate_fields({
+    _launch_process("nssl2_melting_liquid_shedding", {
         "full_theta": full_theta,
         "air_density": air_density,
         "pressure_pa": pressure_pa,
@@ -905,25 +634,7 @@ def launch_melting_liquid_shedding(
         "qh": qh,
         "qnh": qnh,
         "qvolh": qvolh,
-    })
-    try:
-        step = float(dt_s)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("dt_s must be a positive finite scalar") from exc
-    if not math.isfinite(step) or step <= 0.0:
-        raise ValueError("dt_s must be a positive finite scalar")
-    step32 = np.float32(step)
-    if not np.isfinite(step32) or step32 <= 0.0:
-        raise ValueError("dt_s must be representable as positive float32")
-
-    threads = 256
-    blocks = (size + threads - 1) // threads
-    get_kernel("nssl2", "nssl2_melting_liquid_shedding")(
-        (blocks,), (threads,),
-        (full_theta, air_density, pressure_pa, exner, temperature_k, qv, dz,
-         qc, qndrop, qr, qnr, qs, qns,
-         qg, qng, qvolg, qh, qnh, qvolh,
-         step32, np.int32(size)))
+    }, dt_s)
 
 
 def launch_secondary_ice_conversions(
@@ -940,7 +651,7 @@ def launch_secondary_ice_conversions(
     rates are recomputed only as prerequisites; the mutations are the isolated
     full-minus-baseline process tendency including final moment-bound effects.
     """
-    _, size = _validate_fields({
+    _launch_process("nssl2_secondary_ice_conversions", {
         "full_theta": full_theta,
         "air_density": air_density,
         "pressure_pa": pressure_pa,
@@ -962,25 +673,7 @@ def launch_secondary_ice_conversions(
         "qh": qh,
         "qnh": qnh,
         "qvolh": qvolh,
-    })
-    try:
-        step = float(dt_s)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("dt_s must be a positive finite scalar") from exc
-    if not math.isfinite(step) or step <= 0.0:
-        raise ValueError("dt_s must be a positive finite scalar")
-    step32 = np.float32(step)
-    if not np.isfinite(step32) or step32 <= 0.0:
-        raise ValueError("dt_s must be representable as positive float32")
-
-    threads = 256
-    blocks = (size + threads - 1) // threads
-    get_kernel("nssl2", "nssl2_secondary_ice_conversions")(
-        (blocks,), (threads,),
-        (full_theta, air_density, pressure_pa, exner, temperature_k, qv, dz,
-         qc, qndrop, qr, qnr, qi, qni, qs, qns,
-         qg, qng, qvolg, qh, qnh, qvolh,
-         step32, np.int32(size)))
+    }, dt_s)
 
 
 def launch_rain_evaporation(
@@ -994,7 +687,7 @@ def launch_rain_evaporation(
     native saturation lookup, Wisner ventilation, 10-percent depletion cap,
     proportional number loss, and final mean-volume bounds.
     """
-    _, size = _validate_fields({
+    _launch_process("nssl2_rain_evaporation", {
         "full_theta": full_theta,
         "air_density": air_density,
         "pressure_pa": pressure_pa,
@@ -1002,23 +695,36 @@ def launch_rain_evaporation(
         "qv": qv,
         "qr": qr,
         "qnr": qnr,
-    })
-    try:
-        step = float(dt_s)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("dt_s must be a positive finite scalar") from exc
-    if not math.isfinite(step) or step <= 0.0:
-        raise ValueError("dt_s must be a positive finite scalar")
-    step32 = np.float32(step)
-    if not np.isfinite(step32) or step32 <= 0.0:
-        raise ValueError("dt_s must be representable as positive float32")
+    }, dt_s)
 
-    threads = 256
-    blocks = (size + threads - 1) // threads
-    get_kernel("nssl2", "nssl2_rain_evaporation")(
-        (blocks,), (threads,),
-        (full_theta, air_density, pressure_pa, exner, qv, qr, qnr,
-         step32, np.int32(size)))
+
+def _launch_sedimentation(category, fields, surfaces, dt_s):
+    shape, _ = _validate_fields(fields)
+    if len(shape) != 3:
+        raise ValueError(f"NSSL {category} fields must be 3-D, got {shape}")
+    nz, ny, nx = shape
+    if nz < 2 or nz > _KMAX:
+        raise ValueError(
+            f"NSSL {category} sedimentation requires 2 <= nz <= {_KMAX}, "
+            f"got {nz}")
+    step = _step32(dt_s)
+    surface_shape = (ny, nx)
+    for name, value in surfaces:
+        if value.shape != surface_shape:
+            raise ValueError(
+                f"{name} must have shape {surface_shape}, got {value.shape}")
+        if value.dtype != DTYPE:
+            raise TypeError(f"{name} must be float32, got {value.dtype}")
+        if not value.flags.c_contiguous:
+            raise ValueError(f"{name} must be C-contiguous")
+
+    suffix = "64" if nz <= _SHALLOW_KMAX else "256"
+    kernel = get_kernel("nssl2", f"nssl2_{category}_sediment_{suffix}")
+    ncol = ny * nx
+    blocks = (ncol + _COLUMN_TPB - 1) // _COLUMN_TPB
+    kernel((blocks,), (_COLUMN_TPB,),
+           (*fields.values(), *(value for _, value in surfaces), step,
+            np.int32(nz), np.int32(ny), np.int32(nx)))
 
 
 def launch_rain_sedimentation(
@@ -1033,46 +739,12 @@ def launch_rain_sedimentation(
     correction; it is an independently admitted sedimentation slice rather
     than a complete NSSL process driver.
     """
-    shape, _ = _validate_fields({
+    _launch_sedimentation("rain", {
         "air_density": air_density,
         "qr": qr,
         "qnr": qnr,
         "dz": dz,
-    })
-    if len(shape) != 3:
-        raise ValueError(f"NSSL rain fields must be 3-D, got {shape}")
-    nz, ny, nx = shape
-    if nz < 2 or nz > _KMAX:
-        raise ValueError(
-            f"NSSL rain sedimentation requires 2 <= nz <= {_KMAX}, got {nz}")
-    try:
-        step = float(dt_s)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("dt_s must be a positive finite scalar") from exc
-    if not math.isfinite(step) or step <= 0.0:
-        raise ValueError("dt_s must be a positive finite scalar")
-    step32 = np.float32(step)
-    if not np.isfinite(step32) or step32 <= 0.0:
-        raise ValueError("dt_s must be representable as positive float32")
-
-    surface_shape = (ny, nx)
-    for name, value in (("rainnc", rainnc), ("rainncv", rainncv)):
-        if value.shape != surface_shape:
-            raise ValueError(
-                f"{name} must have shape {surface_shape}, got {value.shape}")
-        if value.dtype != DTYPE:
-            raise TypeError(f"{name} must be float32, got {value.dtype}")
-        if not value.flags.c_contiguous:
-            raise ValueError(f"{name} must be C-contiguous")
-
-    kernel_name = ("nssl2_rain_sediment_64" if nz <= _SHALLOW_KMAX
-                   else "nssl2_rain_sediment_256")
-    kernel = get_kernel("nssl2", kernel_name)
-    ncol = ny * nx
-    blocks = (ncol + _COLUMN_TPB - 1) // _COLUMN_TPB
-    kernel((blocks,), (_COLUMN_TPB,),
-           (air_density, qr, qnr, dz, rainnc, rainncv, step32,
-            np.int32(nz), np.int32(ny), np.int32(nx)))
+    }, (("rainnc", rainnc), ("rainncv", rainncv)), dt_s)
 
 
 def launch_snow_sedimentation(
@@ -1086,46 +758,12 @@ def launch_snow_sedimentation(
     The implementation preserves WRF's default Ferrier snow velocities,
     adaptive substeps, and mass-weighted number lower-bound correction.
     """
-    shape, _ = _validate_fields({
+    _launch_sedimentation("snow", {
         "air_density": air_density,
         "qs": qs,
         "qns": qns,
         "dz": dz,
-    })
-    if len(shape) != 3:
-        raise ValueError(f"NSSL snow fields must be 3-D, got {shape}")
-    nz, ny, nx = shape
-    if nz < 2 or nz > _KMAX:
-        raise ValueError(
-            f"NSSL snow sedimentation requires 2 <= nz <= {_KMAX}, got {nz}")
-    try:
-        step = float(dt_s)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("dt_s must be a positive finite scalar") from exc
-    if not math.isfinite(step) or step <= 0.0:
-        raise ValueError("dt_s must be a positive finite scalar")
-    step32 = np.float32(step)
-    if not np.isfinite(step32) or step32 <= 0.0:
-        raise ValueError("dt_s must be representable as positive float32")
-
-    surface_shape = (ny, nx)
-    for name, value in (("snownc", snownc), ("snowncv", snowncv)):
-        if value.shape != surface_shape:
-            raise ValueError(
-                f"{name} must have shape {surface_shape}, got {value.shape}")
-        if value.dtype != DTYPE:
-            raise TypeError(f"{name} must be float32, got {value.dtype}")
-        if not value.flags.c_contiguous:
-            raise ValueError(f"{name} must be C-contiguous")
-
-    kernel_name = ("nssl2_snow_sediment_64" if nz <= _SHALLOW_KMAX
-                   else "nssl2_snow_sediment_256")
-    kernel = get_kernel("nssl2", kernel_name)
-    ncol = ny * nx
-    blocks = (ncol + _COLUMN_TPB - 1) // _COLUMN_TPB
-    kernel((blocks,), (_COLUMN_TPB,),
-           (air_density, qs, qns, dz, snownc, snowncv, step32,
-            np.int32(nz), np.int32(ny), np.int32(nx)))
+    }, (("snownc", snownc), ("snowncv", snowncv)), dt_s)
 
 
 def launch_ice_sedimentation(
@@ -1138,46 +776,12 @@ def launch_ice_sedimentation(
     preserves WRF's adjusted-Ferrier ice velocities, adaptive substeps, and
     mass-weighted number lower-bound correction.
     """
-    shape, _ = _validate_fields({
+    _launch_sedimentation("ice", {
         "air_density": air_density,
         "qi": qi,
         "qni": qni,
         "dz": dz,
-    })
-    if len(shape) != 3:
-        raise ValueError(f"NSSL ice fields must be 3-D, got {shape}")
-    nz, ny, nx = shape
-    if nz < 2 or nz > _KMAX:
-        raise ValueError(
-            f"NSSL ice sedimentation requires 2 <= nz <= {_KMAX}, got {nz}")
-    try:
-        step = float(dt_s)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("dt_s must be a positive finite scalar") from exc
-    if not math.isfinite(step) or step <= 0.0:
-        raise ValueError("dt_s must be a positive finite scalar")
-    step32 = np.float32(step)
-    if not np.isfinite(step32) or step32 <= 0.0:
-        raise ValueError("dt_s must be representable as positive float32")
-
-    surface_shape = (ny, nx)
-    for name, value in (("icenc", icenc), ("icencv", icencv)):
-        if value.shape != surface_shape:
-            raise ValueError(
-                f"{name} must have shape {surface_shape}, got {value.shape}")
-        if value.dtype != DTYPE:
-            raise TypeError(f"{name} must be float32, got {value.dtype}")
-        if not value.flags.c_contiguous:
-            raise ValueError(f"{name} must be C-contiguous")
-
-    kernel_name = ("nssl2_ice_sediment_64" if nz <= _SHALLOW_KMAX
-                   else "nssl2_ice_sediment_256")
-    kernel = get_kernel("nssl2", kernel_name)
-    ncol = ny * nx
-    blocks = (ncol + _COLUMN_TPB - 1) // _COLUMN_TPB
-    kernel((blocks,), (_COLUMN_TPB,),
-           (air_density, qi, qni, dz, icenc, icencv, step32,
-            np.int32(nz), np.int32(ny), np.int32(nx)))
+    }, (("icenc", icenc), ("icencv", icencv)), dt_s)
 
 
 def launch_graupel_sedimentation(
@@ -1192,49 +796,13 @@ def launch_graupel_sedimentation(
     diagnosis, Milbrandt--Morrison terminal velocities, adaptive substeps,
     volume fallout, and hybrid reflectivity/mass-weighted number correction.
     """
-    shape, _ = _validate_fields({
+    _launch_sedimentation("graupel", {
         "air_density": air_density,
         "qg": qg,
         "qng": qng,
         "qvolg": qvolg,
         "dz": dz,
-    })
-    if len(shape) != 3:
-        raise ValueError(f"NSSL graupel fields must be 3-D, got {shape}")
-    nz, ny, nx = shape
-    if nz < 2 or nz > _KMAX:
-        raise ValueError(
-            f"NSSL graupel sedimentation requires 2 <= nz <= {_KMAX}, "
-            f"got {nz}")
-    try:
-        step = float(dt_s)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("dt_s must be a positive finite scalar") from exc
-    if not math.isfinite(step) or step <= 0.0:
-        raise ValueError("dt_s must be a positive finite scalar")
-    step32 = np.float32(step)
-    if not np.isfinite(step32) or step32 <= 0.0:
-        raise ValueError("dt_s must be representable as positive float32")
-
-    surface_shape = (ny, nx)
-    for name, value in (("graupelnc", graupelnc),
-                        ("graupelncv", graupelncv)):
-        if value.shape != surface_shape:
-            raise ValueError(
-                f"{name} must have shape {surface_shape}, got {value.shape}")
-        if value.dtype != DTYPE:
-            raise TypeError(f"{name} must be float32, got {value.dtype}")
-        if not value.flags.c_contiguous:
-            raise ValueError(f"{name} must be C-contiguous")
-
-    kernel_name = ("nssl2_graupel_sediment_64" if nz <= _SHALLOW_KMAX
-                   else "nssl2_graupel_sediment_256")
-    kernel = get_kernel("nssl2", kernel_name)
-    ncol = ny * nx
-    blocks = (ncol + _COLUMN_TPB - 1) // _COLUMN_TPB
-    kernel((blocks,), (_COLUMN_TPB,),
-           (air_density, qg, qng, qvolg, dz, graupelnc, graupelncv,
-            step32, np.int32(nz), np.int32(ny), np.int32(nx)))
+    }, (("graupelnc", graupelnc), ("graupelncv", graupelncv)), dt_s)
 
 
 def launch_hail_sedimentation(
@@ -1249,48 +817,13 @@ def launch_hail_sedimentation(
     predicted-density diagnosis, Milbrandt--Morrison terminal velocities,
     adaptive substeps, volume fallout, and hybrid number correction.
     """
-    shape, _ = _validate_fields({
+    _launch_sedimentation("hail", {
         "air_density": air_density,
         "qh": qh,
         "qnh": qnh,
         "qvolh": qvolh,
         "dz": dz,
-    })
-    if len(shape) != 3:
-        raise ValueError(f"NSSL hail fields must be 3-D, got {shape}")
-    nz, ny, nx = shape
-    if nz < 2 or nz > _KMAX:
-        raise ValueError(
-            f"NSSL hail sedimentation requires 2 <= nz <= {_KMAX}, "
-            f"got {nz}")
-    try:
-        step = float(dt_s)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("dt_s must be a positive finite scalar") from exc
-    if not math.isfinite(step) or step <= 0.0:
-        raise ValueError("dt_s must be a positive finite scalar")
-    step32 = np.float32(step)
-    if not np.isfinite(step32) or step32 <= 0.0:
-        raise ValueError("dt_s must be representable as positive float32")
-
-    surface_shape = (ny, nx)
-    for name, value in (("hailnc", hailnc), ("hailncv", hailncv)):
-        if value.shape != surface_shape:
-            raise ValueError(
-                f"{name} must have shape {surface_shape}, got {value.shape}")
-        if value.dtype != DTYPE:
-            raise TypeError(f"{name} must be float32, got {value.dtype}")
-        if not value.flags.c_contiguous:
-            raise ValueError(f"{name} must be C-contiguous")
-
-    kernel_name = ("nssl2_hail_sediment_64" if nz <= _SHALLOW_KMAX
-                   else "nssl2_hail_sediment_256")
-    kernel = get_kernel("nssl2", kernel_name)
-    ncol = ny * nx
-    blocks = (ncol + _COLUMN_TPB - 1) // _COLUMN_TPB
-    kernel((blocks,), (_COLUMN_TPB,),
-           (air_density, qh, qnh, qvolh, dz, hailnc, hailncv,
-            step32, np.int32(nz), np.int32(ny), np.int32(nx)))
+    }, (("hailnc", hailnc), ("hailncv", hailncv)), dt_s)
 
 
 __all__ = [

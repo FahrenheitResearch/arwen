@@ -210,7 +210,12 @@ def _input_frames(path):
         if (path / "ensemble-set.json").is_file():
             path = path / "ensemble-set.json"
         else:
-            manifests = sorted(path.glob("**/ensemble-manifest.json"))
+            # A run keeps resume generations under hidden folders
+            # (.ensemble-resume/generations/<id>/d01/...); they are copies,
+            # not more domains. Breakage it prevents: a one-domain run was
+            # refused "name one ensemble manifest explicitly".
+            manifests = sorted(found for found in path.glob("**/ensemble-manifest.json")
+                               if not any(part.startswith(".") for part in found.relative_to(path).parts))
             if len(manifests) != 1:
                 raise ValueError("name one ensemble manifest explicitly when a run contains multiple domains")
             path = manifests[0]

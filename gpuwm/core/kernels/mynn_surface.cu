@@ -421,6 +421,9 @@ void mynn_surface_column(
     real* __restrict__ cda_o, real* __restrict__ wstar_o,
     real* __restrict__ qstar_o, real* __restrict__ cpm_o,
     real* __restrict__ znt_o,
+#ifdef OCEAN_WAVE_ROUGHNESS
+    const real* __restrict__ ocean_z0,
+#endif
     real dx, int itimestep, int isfflx, int isftcflx, int n)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -521,6 +524,15 @@ void mynn_surface_column(
         else mynn_zilitinkevich_land(z0, restar, zt, zq);
     }
 
+#if defined(OCEAN_WAVE_ROUGHNESS) && !defined(OCEAN_SPP_SURFACE)
+    // Use the wave-age momentum roughness before calculating exchange.
+    if (xland >= 1.5f && ocean_z0[idx] > 0.0f) {
+        z0 = ocean_z0[idx];
+        restar = fmaxf(ust * z0 / visc, 0.1f);
+        if (isftcflx == 2) mynn_garratt_1992(z0, restar, xland, zt, zq);
+        else mynn_fairall_etal_2003(restar, zt, zq);
+    }
+#endif
     real zratio = z0 / zt;
     real gz1oz0 = SL_LOG((za + z0) / z0);
 #ifdef MYNN_SFCLAY_GSL_WRF39

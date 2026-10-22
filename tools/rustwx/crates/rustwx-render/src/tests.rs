@@ -95,21 +95,20 @@ fn weather_product_mapping_covers_ecape_and_severe_aliases() {
     );
 }
 
-#[test]
-fn render_png_emits_valid_nonempty_image() {
-    let request = MapRenderRequest {
-        field: sample_field("sbecape"),
+fn sample_canvas_request(product: &str, title: &str, colorbar: bool) -> MapRenderRequest {
+    MapRenderRequest {
+        field: sample_field(product),
         rgba_grid: None,
         product_metadata: None,
         width: 320,
         height: 240,
         scale: ColorScale::Weather(crate::weather::WeatherPreset::Cape),
         background: Color::WHITE,
-        colorbar: true,
-        title: Some("SBECAPE".into()),
-        subtitle_left: Some("HRRR 2026-04-14 20Z F00".into()),
-        subtitle_center: Some("rustwx-render".into()),
-        subtitle_right: Some("rustwx-render".into()),
+        colorbar,
+        title: Some(title.into()),
+        subtitle_left: None,
+        subtitle_center: None,
+        subtitle_right: None,
         cbar_tick_step: Some(500.0),
         render_density: RenderDensity::default(),
         legend: LegendControls::default(),
@@ -133,8 +132,15 @@ fn render_png_emits_valid_nonempty_image() {
         wind_barbs: Vec::new(),
         wind_streamlines: Vec::new(),
         semantics: None,
-    };
+    }
+}
 
+#[test]
+fn render_png_emits_valid_nonempty_image() {
+    let mut request = sample_canvas_request("sbecape", "SBECAPE", true);
+    request.subtitle_left = Some("HRRR 2026-04-14 20Z F00".into());
+    request.subtitle_center = Some("rustwx-render".into());
+    request.subtitle_right = Some("rustwx-render".into());
     let png = render_png(&request).unwrap();
     assert!(png.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]));
 
@@ -166,44 +172,7 @@ fn save_png_writes_file() {
 
 #[test]
 fn render_image_emits_rgba_canvas_without_png_decode_in_callers() {
-    let request = MapRenderRequest {
-        field: sample_field("mucape"),
-        rgba_grid: None,
-        product_metadata: None,
-        width: 320,
-        height: 240,
-        scale: ColorScale::Weather(crate::weather::WeatherPreset::Cape),
-        background: Color::WHITE,
-        colorbar: false,
-        title: Some("MUCAPE".into()),
-        subtitle_left: None,
-        subtitle_center: None,
-        subtitle_right: None,
-        cbar_tick_step: Some(500.0),
-        render_density: RenderDensity::default(),
-        legend: LegendControls::default(),
-        chrome_scale: ChromeScale::default(),
-        supersample_factor: 1,
-        supersample_sharpen: true,
-        visual_mode: ProductVisualMode::FilledMeteorology,
-        raster_sample_mode: RasterSampleMode::default(),
-        domain_frame: None,
-        projected_domain: None,
-        projected_polygons: Vec::new(),
-        projected_data_polygons: Vec::new(),
-        mesh_cells: None,
-        inverse_raster_projection: None,
-        resolved_projection: None,
-        geographic_bounds: None,
-        projected_place_labels: Vec::new(),
-        projected_points: Vec::new(),
-        projected_lines: Vec::new(),
-        contours: Vec::new(),
-        wind_barbs: Vec::new(),
-        wind_streamlines: Vec::new(),
-        semantics: None,
-    };
-
+    let request = sample_canvas_request("mucape", "MUCAPE", false);
     let image = render_image(&request).unwrap();
     assert_eq!(image.width(), 320);
     assert_eq!(image.height(), 240);
@@ -422,6 +391,40 @@ fn marker_centroid(image: &RgbaImage, color: Color) -> Option<(f64, f64)> {
     (count > 0).then(|| (sum_x / count as f64, sum_y / count as f64))
 }
 
+fn regional_lambert_request(
+    bounds: (f64, f64, f64, f64),
+) -> (MapRenderRequest, Vec<f32>, Vec<f32>, ProjectedMapBuildOptions) {
+    let mut lat = Vec::new();
+    let mut lon = Vec::new();
+    for row in 0..16 {
+        for col in 0..26 {
+            lat.push(30.0 + row as f32);
+            lon.push(-110.0 + col as f32);
+        }
+    }
+    let mut options = ProjectedMapBuildOptions::from_bounds(bounds, 1.6)
+        .with_projection(ProjectionSpec::LambertConformal {
+            standard_parallel_1_deg: 33.0,
+            standard_parallel_2_deg: 45.0,
+            central_meridian_deg: -96.0,
+        })
+        .without_basemap();
+    options.domain.reference_latitude_deg = Some(39.0);
+    let projected = build_projected_map_with_options(&lat, &lon, &options).unwrap();
+    let resolved = resolved_projection_for_options(&lat, &lon, &options.domain).unwrap();
+    let shape = GridShape::new(26, 16).unwrap();
+    let values: Vec<f32> = (0..shape.len()).map(|value| value as f32).collect();
+    let grid = LatLonGrid::new(shape, lat.clone(), lon.clone()).unwrap();
+    let field = Field2D::new(ProductKey::named("georef_pixel_probe"), "K", grid, values).unwrap();
+    let mut request = MapRenderRequest::contour_only(field);
+    request.width = 800;
+    request.height = 600;
+    request.projected_domain = Some(projected.domain());
+    request.resolved_projection = Some(resolved);
+    request.geographic_bounds = Some(bounds);
+    (request, lat, lon, options)
+}
+
 /// The regional pixel gate, both directions.  A regional Lambert panel
 /// takes the map-viewport crop -- the biggest of the three post-render
 /// passes -- and its plot rectangle must FOLLOW the map through it:
@@ -438,40 +441,14 @@ fn marker_centroid(image: &RgbaImage, color: Color) -> Option<(f64, f64)> {
 /// is the gate that keeps the adjustment accurate.
 #[test]
 fn published_georeference_survives_the_crop_on_a_regional_lambert_panel() {
-    let mut lat = Vec::new();
-    let mut lon = Vec::new();
-    for row in 0..16 {
-        for col in 0..26 {
-            lat.push(30.0 + row as f32);
-            lon.push(-110.0 + col as f32);
-        }
-    }
-    let bounds = (-110.0, -85.0, 30.0, 45.0);
-    let mut options = ProjectedMapBuildOptions::from_bounds(bounds, 1.6)
-        .with_projection(ProjectionSpec::LambertConformal {
-            standard_parallel_1_deg: 33.0,
-            standard_parallel_2_deg: 45.0,
-            central_meridian_deg: -96.0,
-        })
-        .without_basemap();
-    options.domain.reference_latitude_deg = Some(39.0);
-    let projected = build_projected_map_with_options(&lat, &lon, &options).unwrap();
-    let resolved = resolved_projection_for_options(&lat, &lon, &options.domain).unwrap();
+    let (mut request, lat, lon, options) =
+        regional_lambert_request((-110.0, -85.0, 30.0, 45.0));
+    let resolved = request.resolved_projection.unwrap();
     assert!(
         matches!(resolved, ResolvedProjection::LambertConformal { .. }),
         "the regional gate must run on a Lambert panel, got {resolved:?}"
     );
 
-    let shape = GridShape::new(26, 16).unwrap();
-    let values: Vec<f32> = (0..shape.len()).map(|value| value as f32).collect();
-    let grid = LatLonGrid::new(shape, lat.clone(), lon.clone()).unwrap();
-    let field = Field2D::new(ProductKey::named("georef_pixel_probe"), "K", grid, values).unwrap();
-    let mut request = MapRenderRequest::contour_only(field);
-    request.width = 800;
-    request.height = 600;
-    request.projected_domain = Some(projected.domain());
-    request.resolved_projection = Some(resolved);
-    request.geographic_bounds = Some(bounds);
     request.domain_frame = Some(DomainFrame::map_viewport_default());
 
     // Known points spread across the frame, each marked in a color
@@ -648,36 +625,9 @@ fn a_clipped_georeference_places_a_point_where_the_unclipped_one_did() {
 /// markers.
 #[test]
 fn a_recentred_grid_that_overhangs_the_image_still_publishes_a_clipped_georeference() {
-    let mut lat = Vec::new();
-    let mut lon = Vec::new();
-    for row in 0..16 {
-        for col in 0..26 {
-            lat.push(30.0 + row as f32);
-            lon.push(-110.0 + col as f32);
-        }
-    }
     // The frame reaches 25 degrees east of the data.
-    let bounds = (-110.0, -60.0, 30.0, 45.0);
-    let mut options = ProjectedMapBuildOptions::from_bounds(bounds, 1.6)
-        .with_projection(ProjectionSpec::LambertConformal {
-            standard_parallel_1_deg: 33.0,
-            standard_parallel_2_deg: 45.0,
-            central_meridian_deg: -96.0,
-        })
-        .without_basemap();
-    options.domain.reference_latitude_deg = Some(39.0);
-    let projected = build_projected_map_with_options(&lat, &lon, &options).unwrap();
-    let resolved = resolved_projection_for_options(&lat, &lon, &options.domain).unwrap();
-    let shape = GridShape::new(26, 16).unwrap();
-    let values: Vec<f32> = (0..shape.len()).map(|value| value as f32).collect();
-    let grid = LatLonGrid::new(shape, lat.clone(), lon.clone()).unwrap();
-    let field = Field2D::new(ProductKey::named("georef_pixel_probe"), "K", grid, values).unwrap();
-    let mut request = MapRenderRequest::contour_only(field);
-    request.width = 800;
-    request.height = 600;
-    request.projected_domain = Some(projected.domain());
-    request.resolved_projection = Some(resolved);
-    request.geographic_bounds = Some(bounds);
+    let (mut request, lat, lon, options) =
+        regional_lambert_request((-110.0, -60.0, 30.0, 45.0));
     request.domain_frame = Some(DomainFrame::model_data_default());
     // Three points inside the frame the grid draws.
     let points = [(33.0, -105.0), (36.5, -97.0), (34.0, -92.5)];

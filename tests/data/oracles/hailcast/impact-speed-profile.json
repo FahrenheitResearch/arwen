@@ -1,0 +1,21 @@
+{
+  "source": "Exact device inputs at first invalid HAILCAST trajectory in the whole 360x360x49 @3km forecast, 2023-03-31T16:12:58.830078125Z",
+  "format": "little endian int32 ncol,nz; eleven float32 profiles T,z,p,rho,qv,qi,qc,qr,qs,qg,w; float32 terrain,duration",
+  "sha256": "56469198102e60a3d2e285f92712ba3fec765145d380bf5290ace26a8c2bd221",
+  "original_wrf_diameters_mm": [
+    0,
+    0,
+    0,
+    0,
+    "NaN"
+  ],
+  "failure": "WRF line1250: negative fitted VIMP=-0.00475211m/s at NS=0.104819, RE=21.4069 gives negative AFACTOR=-0.000161348 under fractional power .44",
+  "correction": "Limit empirical impact speed to its nonnegative physical domain before evaluating rime density. All other stone growth/melting remains unchanged.",
+  "corrected_independent_fortran_diameters_mm": [
+    0,
+    0,
+    0,
+    0,
+    23.934831619262695
+  ]
+}

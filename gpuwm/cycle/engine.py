@@ -35,14 +35,13 @@ from gpuwm.cycle.anchor import (latest_anchor, prognostic_sha256, read_anchor,
 from gpuwm.cycle.children import ChildSlot, SlotPool
 from gpuwm.cycle.children import plan_children as plan_children_at_boundary
 from gpuwm.cycle.consistency import (CONSISTENCY_THRESHOLD,
-                                     UNIT_VERTICAL_METRIC, derived_is_stale,
+                                     UNIT_VERTICAL_METRIC,
                                      hydrostatic_residual, rebuild_exner)
 from gpuwm.cycle.contracts import CycleRefusal
 from gpuwm.cycle.ingestion import verify_ingestion
 from gpuwm.cycle.placement import (ObsPlacementProvider,
                                    SchedulePlacementProvider,
-                                   TrackerPlacementProvider,
-                                   parent_geometry_from_fields, rank_and_assign)
+                                   TrackerPlacementProvider)
 
 #: A child that no longer has this much signal under it is retired and its
 #: reservation returns to the pool.  Named, not inlined, because it is the

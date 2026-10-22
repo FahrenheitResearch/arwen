@@ -91,6 +91,14 @@ def compilation_receipt(module, *, strict=None):
             "reservoir_power": "gfk_pow" if selected else "powf"}
 
 
+def frame_module():
+    """The module this process's numerics launch and its compiled source,
+    for the local-frame regenerator and gate (preflight
+    PRODUCTION_LOADED_KERNEL_UNITS)."""
+    import cupy as cp
+    return _module(None, cp.cuda.Device().id), kernel_source(None)
+
+
 def _module(strict, device):
     strict = _resolve_strict(strict)
     key = (device, strict)

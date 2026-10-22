@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 from typing import Mapping
+from gpuwm.ensemble.physical_fields import sha256_of_file as _digest
 
 
 def member_contract(source: str, member: str | None = None):
@@ -20,14 +21,6 @@ def member_contract(source: str, member: str | None = None):
     grammar = load_member_grammar(packaged_member_grammar(adapter.member_set))
     grammar.member(selection)
     return adapter, grammar, selection
-
-
-def _digest(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def verify_handoff(hints: Mapping, handoff: Mapping, *, out: Path) -> dict | None:

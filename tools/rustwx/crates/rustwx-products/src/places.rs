@@ -605,14 +605,6 @@ pub fn major_us_city_places() -> &'static [PlacePreset] {
     MAJOR_US_CITY_PRESETS
 }
 
-pub fn aux_us_city_places() -> &'static [PlacePreset] {
-    AUX_US_CITY_PRESETS
-}
-
-pub fn micro_us_place_presets() -> &'static [PlacePreset] {
-    MICRO_US_PLACE_PRESETS
-}
-
 pub fn major_us_city_domains() -> Vec<DomainSpec> {
     MAJOR_US_CITY_PRESETS
         .iter()
@@ -626,16 +618,6 @@ pub fn select_major_us_city_places(
     options: PlaceSelectionOptions,
 ) -> Vec<SelectedPlace> {
     select_places_for_bounds(MAJOR_US_CITY_PRESETS, bounds, options)
-}
-
-pub fn select_major_us_city_domains(
-    bounds: (f64, f64, f64, f64),
-    options: PlaceSelectionOptions,
-) -> Vec<DomainSpec> {
-    select_major_us_city_places(bounds, options)
-        .into_iter()
-        .map(|place| place.domain())
-        .collect()
 }
 
 pub fn apply_place_label_overlay(
@@ -700,35 +682,12 @@ pub fn apply_place_label_overlay(
     Ok(())
 }
 
-pub fn apply_major_place_labels(
-    request: &mut MapRenderRequest,
-    domain: &DomainSpec,
-    grid_lat_deg: &[f32],
-    grid_lon_deg: &[f32],
-    projection: Option<&GridProjection>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    apply_place_label_overlay(
-        request,
-        &PlaceLabelOverlay::major_us_cities(),
-        domain,
-        grid_lat_deg,
-        grid_lon_deg,
-        projection,
-    )
-}
-
 pub fn default_place_label_overlay_for_domain(
     domain: &DomainSpec,
     density: PlaceLabelDensityTier,
 ) -> Option<PlaceLabelOverlay> {
     place_label_plan_for_domain(domain)
         .map(|_| PlaceLabelOverlay::major_us_cities().with_density(density))
-}
-
-pub fn default_major_place_label_overlay_for_domain(
-    domain: &DomainSpec,
-) -> Option<PlaceLabelOverlay> {
-    default_place_label_overlay_for_domain(domain, PlaceLabelDensityTier::Major)
 }
 
 pub fn select_places_for_bounds(

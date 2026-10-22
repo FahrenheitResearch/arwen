@@ -9,7 +9,7 @@ from pathlib import Path
 from gpuwm.rustwx import find_renderer, renderer_env
 
 
-NEXTGEN_PRODUCTS_ABI = "gpuwm.nextgen-products.v1 node-map HAND terrain-depth ensemble-depth hydrograph component-series"
+NEXTGEN_PRODUCTS_ABI = "gpuwm.nextgen-products.v1 node-map HAND terrain-depth ensemble-depth hydrograph component-series streamflow-map"
 
 
 def run_nextgen_products(request: Path, *, renderer: Path | None = None,

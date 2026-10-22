@@ -1,0 +1,68 @@
+{
+  "schema": "gpuwm-sfire-regions-v1",
+  "regions": [
+    {
+      "id": "conus",
+      "bounds": [
+        -125.0,
+        24.0,
+        -66.0,
+        50.0
+      ],
+      "terrain": "usgs-3dep-13as",
+      "fuel": "landfire-fbfm40",
+      "canopy": {
+        "CANOPY_COVER": "landfire-cc",
+        "CANOPY_HEIGHT": "landfire-ch",
+        "CANOPY_BASE_HEIGHT": "landfire-cbh",
+        "CANOPY_BULK_DENSITY": "landfire-cbd"
+      }
+    },
+    {
+      "id": "hi",
+      "bounds": [
+        -161.0,
+        18.0,
+        -154.0,
+        23.0
+      ],
+      "terrain": "usgs-3dep-13as",
+      "fuel": "landfire-fbfm40-hi",
+      "canopy": {
+        "CANOPY_COVER": "landfire-cc-hi",
+        "CANOPY_HEIGHT": "landfire-ch-hi",
+        "CANOPY_BASE_HEIGHT": "landfire-cbh-hi",
+        "CANOPY_BULK_DENSITY": "landfire-cbd-hi"
+      }
+    },
+    {
+      "id": "ak",
+      "bounds": [
+        -179.9,
+        50.0,
+        -129.0,
+        72.0
+      ],
+      "terrain": "copernicus-dem-glo30",
+      "fuel": "landfire-fbfm40-ak",
+      "canopy": {
+        "CANOPY_COVER": "landfire-cc-ak",
+        "CANOPY_HEIGHT": "landfire-ch-ak",
+        "CANOPY_BASE_HEIGHT": "landfire-cbh-ak",
+        "CANOPY_BULK_DENSITY": "landfire-cbd-ak"
+      }
+    },
+    {
+      "id": "global",
+      "bounds": [
+        -180.0,
+        -90.0,
+        180.0,
+        90.0
+      ],
+      "terrain": "copernicus-dem-glo30",
+      "fuel": null,
+      "canopy": {}
+    }
+  ]
+}

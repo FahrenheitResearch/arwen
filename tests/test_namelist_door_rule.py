@@ -158,15 +158,13 @@ def _on_eclipse_day(text, *, wps=False):
     return text
 
 
-def test_eclipse_inside_the_run_is_refused_with_the_window_named(tmp_path):
+def test_eclipse_inside_the_run_imports_with_the_window_named(tmp_path):
     inp = _on_eclipse_day(INPUT_TEXT).replace(
         "&physics\n", "&physics\n ra_sw_eclipse = 1,\n")
-    with pytest.raises(NamelistRefusal) as caught:
-        _import(tmp_path, inp, wps=_on_eclipse_day(WPS_TEXT, wps=True))
-    message = str(caught.value)
-    assert "2024-04-08 15:00-21:00 UTC" in message
-    assert "would not be dimmed under the shadow" in message
-    assert caught.value.keys == (("physics", "ra_sw_eclipse"),)
+    text, report = _import(tmp_path, inp, wps=_on_eclipse_day(WPS_TEXT, wps=True))
+    assert tomllib.loads(text)["shared"]["ra_sw_eclipse"] == 1
+    fixed = {(f.section, f.key): f for f in report.fixed}
+    assert "2024-04-08 15:00-21:00 UTC" in fixed[("physics", "ra_sw_eclipse")].reason
 
 
 def test_eclipse_switch_outside_every_eclipse_is_exact(tmp_path):
@@ -179,7 +177,7 @@ def test_eclipse_switch_outside_every_eclipse_is_exact(tmp_path):
     plain, _ = _import(plain_dir, INPUT_TEXT)
     fixed = {(f.section, f.key): f for f in report.fixed}
     row = fixed[("physics", "ra_sw_eclipse")]
-    assert row.fixed_value == 0 and "no eclipse between" in row.reason
+    assert row.fixed_value == [1, 1] and "no eclipse between" in row.reason
     assert "ra_sw_eclipse" not in {s.key for s in report.substitutions}
     # The model configuration is the one ra_sw_eclipse = 0 gives.
     assert tomllib.loads(text) == tomllib.loads(plain)
@@ -194,8 +192,8 @@ def test_eclipse_window_includes_the_last_radiation_call(tmp_path):
     inp = inp.replace("end_hour = 18, 18,", "end_hour = 14, 14,\n end_minute = 50, 50,")
     wps = _on_eclipse_day(WPS_TEXT, wps=True).replace(
         "2024-04-08_18:00:00", "2024-04-08_14:50:00")
-    with pytest.raises(NamelistRefusal, match="ra_sw_eclipse"):
-        _import(tmp_path, inp, wps=wps)
+    text, _ = _import(tmp_path, inp, wps=wps)
+    assert tomllib.loads(text)["shared"]["ra_sw_eclipse"] == 1
 
 
 def test_eclipse_table_is_wrfs_pinned_file():
@@ -327,35 +325,25 @@ def test_chemistry_registry_table_is_wrfs_471_chem_vocabulary():
     assert keys["chem_opt"]["default"] == "0"
     assert keys["plumerisefire_frq"]["default"] == "180"
 
-# ---- hailcast_opt (refused; the port is not on this line) -------------------
+# ---- hailcast_opt (GPU WRF diagnostic) -------------------------------------
 
-def test_hailcast_request_is_refused_naming_the_missing_outputs(tmp_path):
-    # Until 2026-10-12 this imported as a declared divergence that ran
-    # without HAILCAST.  The port is not on this line, so the door refuses
-    # the request by name, as the WRF input door already did: the history
-    # fields that would be missing, and that 0 changes no forecast field.
+def test_hailcast_request_reaches_the_gpu_diagnostic(tmp_path):
     inp = INPUT_TEXT.replace(
         "&physics\n", "&physics\n hailcast_opt = 1, 1,\n haildt = 60, 60,\n")
-    with pytest.raises(NamelistRefusal) as caught:
-        _import(tmp_path, inp)
-    message = str(caught.value)
-    assert "&physics hailcast_opt = " in message
-    for field in ("HAILCAST_DIAM_MAX", "HAILCAST_DHAIL1..5"):
-        assert field in message
-    assert "Next: set hailcast_opt = 0." in message
-
-
-def test_hailcast_off_is_inert(tmp_path):
-    inp = INPUT_TEXT.replace(
-        "&physics\n", "&physics\n hailcast_opt = 0, 0,\n haildt = 60, 60,\n")
     text, report = _import(tmp_path, inp)
-    plain_dir = tmp_path / "plain"
-    plain_dir.mkdir()
-    plain, _ = _import(plain_dir, INPUT_TEXT)
-    assert tomllib.loads(text)["shared"] == tomllib.loads(plain)["shared"]
-    dropped = {(d.section, d.key): d.reason for d in report.dropped}
-    assert "HAILCAST is off" in dropped[("physics", "haildt")]
+    shared = tomllib.loads(text)["shared"]
+    assert shared["hailcast_opt"] == 1
+    assert shared["haildt"] == 60
     assert "hailcast_opt" not in {s.key for s in report.substitutions}
+
+
+def test_hailcast_off_preserves_explicit_opt_out(tmp_path):
+    inp = INPUT_TEXT.replace(
+        "&physics\n", "&physics\n hailcast_opt = 0, 0,\n haildt = 0, 0,\n")
+    text, _ = _import(tmp_path, inp)
+    shared = tomllib.loads(text)["shared"]
+    assert shared["hailcast_opt"] == 0
+    assert shared["haildt"] == 0
 
 # ---- dfi_opt (refused; WOOF has no digital filter) ---------------------------
 

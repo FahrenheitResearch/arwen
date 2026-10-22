@@ -103,6 +103,14 @@ def test_shared_preparation_resources_follow_native_dependency_closures():
         assert "tools/preparation_resources.rs" in bridge_assets.NATIVE_BUILD_INPUTS[crate]
 
 
+@pytest.mark.parametrize("crate", (
+    "tools/grib1_bridge", "tools/rw_wps", "tools/zarr_bridge", "tools/arwen-tui",
+))
+def test_shared_registry_changes_invalidate_every_new_consumer(crate):
+    """A shared dependency edit must not reuse an old private-registry binary."""
+    assert "tools/rustwx/vendor/crates-io" in bridge_assets.NATIVE_BUILD_INPUTS[crate]
+
+
 def _cargo_path_dependency(manifest: Path, name: str) -> Path:
     document = tomllib.loads(manifest.read_text(encoding="utf-8"))
     dependency = document["dependencies"][name]
@@ -135,7 +143,9 @@ def test_the_table_covers_every_outside_input_the_sources_reach():
         closure = set(paths)
         for path in paths:
             other = _root_of(path)
-            if other is not None:
+            # The registry is an independent directory source, not a path
+            # dependency on rustwx's first-party workspace and its inputs.
+            if other is not None and path != "tools/rustwx/vendor/crates-io":
                 closure |= references[other]
         gaps = sorted(path for path in closure
                       if not _covered(path, bridge_assets.NATIVE_BUILD_INPUTS[root]))
@@ -171,9 +181,9 @@ def test_no_rust_source_embeds_from_an_excluded_path():
     assert not embedding, embedding
 
 
-@pytest.fixture()
-def history(tmp_path):
-    repo = tmp_path / "repo"
+@pytest.fixture(scope="module")
+def history(tmp_path_factory):
+    repo = tmp_path_factory.mktemp("native-history") / "repo"
     repo.mkdir()
     env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid"}

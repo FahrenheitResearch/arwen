@@ -342,6 +342,50 @@ that the emitted `namelist.wps` carries the cadence the row declared and
 that a regional variant refuses outside the window the row declared, with
 no code added anywhere.
 
+## Parameterized model sources
+
+A registry row can declare a model table. Its concrete source keys use
+`<row>-<model>` and model aliases use the same prefix. `earth2` reads
+`gpuwm/authorities/earth2-models.v1.json`; bare model names are not source
+aliases. Each row retains its own output cadence and weight licence.
+Rows without a preparation profile refuse initialization with their declared
+missing inputs. Restricted or unresolved weight terms require an explicit
+`--accept-licence` naming those terms, before acquisition or planning.
+The shared decoder accepts whole multiples of its minimum cadence.
+
+| source | default output spacing | preparation profile | weight licence class |
+|---|---|---|---|
+| `earth2-fcn3` | 6 h | earth2-pl13-q-netcdf-v1 | permissive |
+| `earth2-sfno` | 6 h | earth2-pl13-q-netcdf-v1 | permissive |
+| `earth2-pangu` | 6 h | earth2-pl13-q-netcdf-v1 | research_only |
+| `earth2-aurora` | 6 h | earth2-pl13-q-netcdf-v1 | permissive |
+| `earth2-fengwu` | 6 h | earth2-pl13-q-netcdf-v1 | unresolved |
+| `earth2-aifs` | 6 h | earth2-pl13-q-netcdf-v1 | permissive |
+| `earth2-fuxi` | 6 h | earth2-pl13-rh-netcdf-v1 | unresolved |
+| `earth2-fcn` | 6 h | unavailable, see model table needs | unresolved |
+| `earth2-stormcast` | 1 h | unavailable, see model table needs | unresolved |
+| `earth2-corrdiff` | unspecified h | unavailable, see model table needs | unresolved |
+| `earth2-dlwp` | 6 h | unavailable, see model table needs | unresolved |
+| `earth2-atlas` | 6 h | earth2-pl13-q-netcdf-v1 | permissive |
+| `earth2-atlas-si` | 6 h | earth2-pl13-q-netcdf-v1 | permissive |
+| `earth2-aifs2` | 6 h | earth2-pl13-q-netcdf-v1 | permissive |
+| `earth2-aifs-ens` | 6 h | earth2-pl13-q-netcdf-v1 | permissive |
+| `earth2-aifs2-ens` | 6 h | earth2-pl13-q-netcdf-v1 | permissive |
+| `earth2-aurora15` | 1 h | earth2-pl13-q-netcdf-v1 | permissive |
+| `earth2-aurora15-6h` | 6 h | earth2-pl13-q-netcdf-v1 | permissive |
+| `earth2-aurora15-ensemble` | 1 h | earth2-pl13-q-netcdf-v1 | permissive |
+| `earth2-aurora15-ensemble-6h` | 6 h | earth2-pl13-q-netcdf-v1 | permissive |
+| `earth2-gencast-mini` | 12 h | earth2-pl13-q-netcdf-v1 | permissive |
+| `earth2-weathernext2` | 6 h | earth2-pl13-q-netcdf-v1 | permissive |
+| `earth2-weathernext2-mini` | 6 h | earth2-pl13-q-netcdf-v1 | permissive |
+| `earth2-dlesym` | 6 h | unavailable, see model table needs | permissive |
+| `earth2-ace2` | 6 h | unavailable, see model table needs | permissive |
+| `earth2-ucast` | 12 h | earth2-pl13-q-netcdf-v1 | permissive |
+| `earth2-graphcast-operational` | 6 h | earth2-pl13-q-netcdf-v1 | research_only |
+| `earth2-graphcast-small` | 6 h | earth2-pl13-q-netcdf-v1 | research_only |
+| `earth2-interpmodafno` | 1 h | unavailable, see model table needs | research_only |
+| `earth2-fuxi-s2s` | 24 h | unavailable, see model table needs | research_only |
+
 Hugging Face packages can be fetched independently of a forecast:
 
 ```console

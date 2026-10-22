@@ -33,7 +33,10 @@ in `tools/arwen-tui`, the Zarr reader in `tools/zarr_bridge`, the default
 mapped-source decode engine in `tools/rw_wps` and the default velocity
 dealiasing library in `tools/region_global_dealias` with the same locked
 offline command, build the hydro payload (`tools/nextgen_hydrofabric`),
-forcing (`tools/nextgen_forcing`) and gauge verification (`tools/nextgen_verify`)
+forcing (`tools/nextgen_forcing`), gauge verification (`tools/nextgen_verify`) and
+hydro fabric preparation (`tools/hydro_world`, `tools/hydro_world_params`,
+`tools/nextgen_reservoir_prepare`, `tools/hydro_world_init`) and ocean
+preparation (`tools/ocean_prepare`, `tools/rw-bathy`) and hydro output (`tools/nextgen_output`)
 workspaces (fetching their locked dependencies first), and finish with `gpuwm doctor`, whose exit status the script propagates.
 
 A pip install on Windows x86-64 or Linux x86-64 needs no toolchain for
@@ -102,7 +105,7 @@ python -m pip install --upgrade pip
 python -m pip install -e gpuwm-data
 python -m pip install -e '.[gpu-cu12,render]'   # or gpu-cu13
 gpuwm fetch-tables
-for workspace in tools/grib1_bridge tools/rustwx tools/arwen-tui tools/zarr_bridge tools/rw_wps tools/region_global_dealias tools/nextgen_hydrofabric tools/nextgen_forcing tools/nextgen_verify; do
+for workspace in tools/grib1_bridge tools/rustwx tools/arwen-tui tools/zarr_bridge tools/rw_wps tools/region_global_dealias tools/nextgen_hydrofabric tools/nextgen_forcing tools/nextgen_verify tools/hydro_world tools/hydro_world_params tools/nextgen_reservoir_prepare tools/hydro_world_init tools/ocean_prepare tools/rw-bathy tools/nextgen_output; do
   (cd "$workspace" && cargo fetch --locked && cargo build --release --locked --offline)
 done
 gpuwm doctor
@@ -118,7 +121,7 @@ python -m pip install --upgrade pip
 python -m pip install -e gpuwm-data
 python -m pip install -e '.[gpu-cu12,render]'   # or gpu-cu13
 gpuwm fetch-tables
-foreach ($workspace in 'tools\grib1_bridge', 'tools\rustwx', 'tools\arwen-tui', 'tools\zarr_bridge', 'tools\rw_wps', 'tools\region_global_dealias', 'tools\nextgen_hydrofabric', 'tools\nextgen_forcing', 'tools\nextgen_verify') {
+foreach ($workspace in 'tools\grib1_bridge', 'tools\rustwx', 'tools\arwen-tui', 'tools\zarr_bridge', 'tools\rw_wps', 'tools\region_global_dealias', 'tools\nextgen_hydrofabric', 'tools\nextgen_forcing', 'tools\nextgen_verify', 'tools\hydro_world', 'tools\hydro_world_params', 'tools\nextgen_reservoir_prepare', 'tools\hydro_world_init', 'tools\ocean_prepare', 'tools\rw-bathy', 'tools\nextgen_output') {
   Push-Location $workspace; cargo fetch --locked; cargo build --release --locked --offline; Pop-Location
 }
 gpuwm doctor
@@ -153,11 +156,18 @@ bundle carries, and the gate below judges each one it finds built:
 | `tools/nextgen_hydrofabric` | hydro payload transport and source preparation |
 | `tools/nextgen_forcing` | external hydro forcing preparation |
 | `tools/nextgen_verify` | gauge verification |
+| `tools/hydro_world` | `rw_hydro_world`, the default-on hydro door's fabric builder |
+| `tools/hydro_world_params` | `rw_hydro_params`, hydro catchment parameters |
+| `tools/nextgen_reservoir_prepare` | `nextgen-reservoir-prepare`, hydro reservoirs |
+| `tools/hydro_world_init` | `rw_hydro_init`, hydro initial water state |
+| `tools/ocean_prepare` | `rw_ocean`, ocean bathymetry and atmospheric forcing preparation |
+| `tools/rw-bathy` | `rw_bathy`, storm-surge bathymetry ingest and products |
+| `tools/nextgen_output` | `rw_nextgen_output`, coupled hydro history, restart and products |
 
 By hand, POSIX:
 
 ```bash
-for workspace in tools/grib1_bridge tools/rustwx tools/arwen-tui tools/zarr_bridge tools/rw_wps tools/region_global_dealias tools/nextgen_hydrofabric tools/nextgen_forcing tools/nextgen_verify; do
+for workspace in tools/grib1_bridge tools/rustwx tools/arwen-tui tools/zarr_bridge tools/rw_wps tools/region_global_dealias tools/nextgen_hydrofabric tools/nextgen_forcing tools/nextgen_verify tools/hydro_world tools/hydro_world_params tools/nextgen_reservoir_prepare tools/hydro_world_init tools/ocean_prepare tools/rw-bathy tools/nextgen_output; do
   (cd "$workspace" && cargo fetch --locked && cargo build --release --locked --offline)
 done
 ```
@@ -165,7 +175,7 @@ done
 Windows (PowerShell):
 
 ```powershell
-foreach ($workspace in 'tools\grib1_bridge', 'tools\rustwx', 'tools\arwen-tui', 'tools\zarr_bridge', 'tools\rw_wps', 'tools\region_global_dealias', 'tools\nextgen_hydrofabric', 'tools\nextgen_forcing', 'tools\nextgen_verify') {
+foreach ($workspace in 'tools\grib1_bridge', 'tools\rustwx', 'tools\arwen-tui', 'tools\zarr_bridge', 'tools\rw_wps', 'tools\region_global_dealias', 'tools\nextgen_hydrofabric', 'tools\nextgen_forcing', 'tools\nextgen_verify', 'tools\hydro_world', 'tools\hydro_world_params', 'tools\nextgen_reservoir_prepare', 'tools\hydro_world_init', 'tools\ocean_prepare', 'tools\rw-bathy', 'tools\nextgen_output') {
   Push-Location $workspace; cargo fetch --locked; cargo build --release --locked --offline; Pop-Location
 }
 ```
@@ -401,7 +411,7 @@ observation battery and the demo gallery's basemaps.
 | `gpuwm[gpu-cu13]` | `cupy-cuda13x[ctk]` | running the model on a CUDA-13-only box |
 | `gpuwm[gpu]` | alias of `gpu-cu12` | kept so existing install lines keep working |
 | `gpuwm[render]` | `wrf-rust>=0.2.39` | `gpuwm render`'s matplotlib engine, `gpuwm enprod`, and derived quantities. The default rust engine needs none of it. The floor is 0.2.39 because that is the oldest release with wheels for every supported interpreter (cp310-cp314); no environment marker, nothing skipped |
-| `gpuwm[dev]` | `pytest`, `psutil`, `pyyaml`, `setuptools` | running the test battery (setuptools because the wheel-gate tests run `setup.py` with the battery's interpreter) |
+| `gpuwm[dev]` | `pytest`, `pyyaml`, `setuptools` | running the test battery (setuptools because the wheel-gate tests run `setup.py` with the battery's interpreter) |
 | `gpuwm[publish]` | `huggingface_hub` | maintainers only: publishing the WPS_GEOG mirror snapshot. Needs write credentials nobody else has, so it is deliberately outside `[all]` |
 | `gpuwm[all-cu12]` | `gpu-cu12` + `render` | one line for a CUDA 12.x forecasting box |
 | `gpuwm[all-cu13]` | `gpu-cu13` + `render` | one line for a CUDA-13-only forecasting box |

@@ -30,35 +30,8 @@ const FIXTURE_G: f64 = 9.81;
 const REFERENCE_G: f64 = 9.81;
 const T_FREEZE_K: f64 = 273.15;
 
-struct Scratch(PathBuf);
-
-impl Scratch {
-    fn new(tag: &str) -> Self {
-        // Parallel tests read one clock tick on the 2.8.6 windows-2025 runner and collided on this name; the counter keeps each call distinct.
-        static NEXT_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "rw-wrfbatch-column-planes-{tag}-{}-{:?}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|value| value.as_nanos())
-                .unwrap_or_default(),
-            NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-        ));
-        std::fs::create_dir_all(&dir).expect("create scratch dir");
-        Self(dir)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+mod support;
+use support::Scratch;
 
 struct Imported {
     variables: Vec<String>,
@@ -129,7 +102,7 @@ fn assert_every_cell_near(values: &[f32], expected: f64, tolerance: f64, what: &
 
 #[test]
 fn a_file_with_eta_levels_and_no_thicknesses_stores_every_column_plane() {
-    let scratch = Scratch::new("planes");
+    let scratch = Scratch::new("rw-wrfbatch-column-planes", "planes");
     let wrfout = fixture::write(scratch.path());
     let imported = import(&wrfout, &scratch.path().join("store"));
 
@@ -161,7 +134,7 @@ fn a_file_with_eta_levels_and_no_thicknesses_stores_every_column_plane() {
 
 #[test]
 fn the_supercooled_path_integrates_the_cold_levels_inside_each_layer() {
-    let scratch = Scratch::new("path");
+    let scratch = Scratch::new("rw-wrfbatch-column-planes", "path");
     let wrfout = fixture::write(scratch.path());
     let imported = import(&wrfout, &scratch.path().join("store"));
 
@@ -197,7 +170,7 @@ fn the_supercooled_path_integrates_the_cold_levels_inside_each_layer() {
 
 #[test]
 fn the_isotherm_height_is_the_interpolated_crossing_and_nan_above_the_coldest_level() {
-    let scratch = Scratch::new("isotherm");
+    let scratch = Scratch::new("rw-wrfbatch-column-planes", "isotherm");
     let wrfout = fixture::write(scratch.path());
     let imported = import(&wrfout, &scratch.path().join("store"));
 
@@ -226,7 +199,7 @@ fn the_isotherm_height_is_the_interpolated_crossing_and_nan_above_the_coldest_le
 /// 300 K.
 #[test]
 fn the_brightness_temperature_is_the_reference_cloud_top_and_the_column_maximum_is_the_mixing_ratio() {
-    let scratch = Scratch::new("opaque");
+    let scratch = Scratch::new("rw-wrfbatch-column-planes", "opaque");
     let wrfout = fixture::write(scratch.path());
     let imported = import(&wrfout, &scratch.path().join("store"));
 

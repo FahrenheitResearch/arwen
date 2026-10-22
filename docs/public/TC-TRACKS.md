@@ -166,3 +166,155 @@ needed only for that optional intensity product.
 Native float staging and temporary NetCDF/Zarr are deleted on success or failure;
 `deleted-files.json` records their paths and sizes. Small requests, logs, output
 tracks and receipts remain for review.
+
+## Track-stratified source member selection
+
+`gpuwm tc-strata` selects source trajectories from a single parent family's saved
+`gpuwm.tc-tracks.v1` document. It never runs an AI model or drops a parent with no
+associated target. Use an initial fix with an explicit UTC time, or `--storm auto`
+for cyclone-setup's existing lowest-window-pressure selection independently within
+each member. A target fix associates the nearest candidate at that exact common
+valid time within the authority's radius, with lexical track-id ties. A missing
+initial fix is no storm; it is never extrapolated from a later system.
+
+```bash
+export GPUWM_NO_LOCAL_GPU=1 CUDA_VISIBLE_DEVICES=-1
+export GPUWM_RW_WRFBATCH=/path/to/rw_wrfbatch
+python -m gpuwm tc-strata --tracks tc-tracks-32.json \
+  --target 19.25,-84.0,2024-09-24T12:00:00Z --hours 48 \
+  --select 6 --seed 377778 --workers 4 --author-nests --render --out selected/
+python -m gpuwm ensemble selected/member-CONFIG/experiment.toml \
+  --recipe member-roster --members 6 --trajectories selected/roster.json --dry-run
+```
+
+Use an actual selected member configuration path printed in `roster.json` in place
+of `member-CONFIG`. If tracking labels differ from source-member tokens, supply
+`--member-map source-member-map.json`, a JSON object mapping each tracking label
+to its original source member token. Otherwise the token must be explicit in a
+member's `member` or `ancestry.member`; labels are never parsed as fetch tokens.
+Deterministic sources without a member grammar retain a null source member.
+
+`gpuwm/authorities/tc-track-strata.v1.json` declares the 500 km association radius,
+fixed longitude sector edges, hours-since-window-start landfall bins, minimum-MSLP
+bins, default six-stratum cap, merge/allocation rules and 12/3 km nest settings.
+Use `--rules FILE` for another declared authority, `--max-strata N` for a recorded
+cap override, and `--start UTC` to declare another window. Native renderer
+coastline intersections supply the first ocean-to-land crossing in that window.
+No-landfall and no-storm begin as explicit strata. The cap also respects K:
+merge the smallest pair sharing an outcome first, with lexical ties; then merge
+storm outcomes if necessary. No-storm remains separate. K=1 with both storm and
+no-storm mass is refused because it cannot retain both populations.
+
+Every nonempty final stratum receives one representative. Remaining slots use
+capacity-bounded largest remainder proportional to population count, with lexical
+ties. SHA256 ordering of `[seed,stratum,member_id]` samples without replacement,
+independent of input order and Python RNG versions. Inclusion probability is
+`k_s/N_s`. Each selected member carries `stratum_parent_mass/k_s`, giving
+`N_s/(N*k_s)` for equal parent weights. Input weights are normalized once; all
+must be finite and positive, from one family. This is a stratified representative
+estimator with equal contributions within each stratum, not calibrated event probabilities.
+
+`selection.json` (`gpuwm.tc-selection.v1`) saves input and rule hashes, effective
+rules, code revision and selector digest, association decisions, raw stratum
+components, every merge, parent membership and mass, allocations, inclusion
+probabilities and selected weights. `landfalls.json` preserves the native crossing
+receipt. `selected-tracks.json` retains only associated selected tracks and all
+selected parents, including no-storm parents, with reweighted masses. The native
+plume legend shows member weight and stratum; the existing ATCF/HURDAT2 readers
+supply black best track through the input document or `--best-track FILE`.
+
+`--author-nests` uses cyclone-setup's existing `select_track` and `plan_cyclone`
+functions to author each member's pinned experiment and WPS companions. Each
+associated member uses its own track corridor and seed. A no-storm member uses
+the explicitly supplied target fix, recorded as such; auto-only selection with a
+selected no-storm member needs a declared placement and is refused. Individual
+ordinary-tree memory envelopes and their conservative sum are in `nest-plans.json`.
+These are CPU estimates, not measured GPU allocation or a packing qualification.
+
+The roster preserves source, cycle, source member, weight, stratum, track identity
+and pinned configuration. The existing ensemble door reviews each member's own
+configuration and source preparation chain. Its `--dry-run` prints both domains,
+weight and stratum, and stops before hardware admission.
+
+To execute on the forecast host, use the same command without `--dry-run` and
+without the CPU-only environment variables above:
+
+```bash
+unset GPUWM_NO_LOCAL_GPU CUDA_VISIBLE_DEVICES
+python -m gpuwm ensemble selected/member-CONFIG/experiment.toml \
+  --recipe member-roster --members 6 --trajectories selected/roster.json \
+  --outdir ensemble-selected/
+```
+
+A roster carrying strata and saved tracks automatically requests cyclone
+products through `ensemble/cyclone_products.py`. Optional `--cyclone-products
+cyclone.json` overrides that request, for example:
+
+```json
+{"workers":4,"backend":"tempestextremes","best_track":"best-track.dat"}
+```
+
+Relative best-track paths resolve beside that JSON. ATCF, HURDAT2 and a saved
+`gpuwm.tc-tracks.v1` document containing `best_track` are accepted. Without an
+explicit reference the roster's saved best track is reused, when present. The
+post-run `gpuwm tc-tracks --manifest ... --backend tempestextremes --render` call
+uses ArWen parent histories, roster weights and strata. Its exact command and
+stages are saved under `forecast/cyclone/`. All members, including members with
+no detected storm, remain in the track manifest. The plume labels member weights
+and strata and draws supplied best track in black.
+
+Gridded means, threshold probabilities, compound-event probabilities, spread and
+probability-matched means use roster weights normalized over the frame's member
+inventory. Nonfinite cells remain masked under the existing complete-roster
+policy. Spread uses reliability-weighted sample variance,
+`sum(w*(x-mean)^2)/(W-sum(w*w)/W)`, with zero spread for one member. Equal masses
+use the existing count arithmetic. PMM draws from the pooled distribution with
+member masses; extrema, finite counts and member identity layers keep their
+existing meanings. Reach-exceedance probabilities also use member masses.
+Weights, normalization and spread policy appear in each frame/product receipt
+and in the aggregate NetCDF metadata.
+
+Members with different parent or moving-nest coordinates retain separate geometry
+hashes. Their gridded aggregate products are marked unavailable per product with
+the coordinate mismatch reason. Each member's reflectivity, 10 m wind and MSLP
+maps still render from its own parent and moving-nest histories. After durable
+maps and tracks exist, the writer ledger verifies and retires raw histories;
+consumer receipts and per-file deletion sizes remain. A failed product stage
+keeps the histories for diagnosis. Forecast hosts need a rebuilt native ensemble
+reducer advertising `member-weights-v1`; the native capability check names a stale
+binary before it can publish equal-count probabilities for weighted input.
+
+A short moving-nest acceptance forecast can reuse a selection based on the full
+saved parent-track window. Author each selected configuration through the same
+cyclone planner for three hours, retaining the saved member identities and
+weights. The forecast duration comes from those configurations; a full-window
+parent plume is guidance for selection, not verification of the short nested
+forecast. The CPU roster dry-run reviews all plans before hardware admission.
+
+Each trajectory may declare `"fetch_root": "/path/to/completed-fetch"`. The
+member config binds that candidate as `[fetch].reuse_fetch`, equivalent to
+`gpuwm fetch --reuse-fetch DIR`. A covering authored forcing window is retained
+when the run starts at its cycle, so a three-hour forecast can use six-hourly
+bracketing fields. Earth2 reuse checks the model row and table hash, UTC cycle,
+initial-condition source, member, time and crop coverage, recorded frame and
+donor digests, and native member/seed attributes before publishing the ordinary
+preparation handoff. The model runtime is not loaded on a verified match.
+The shared payloads remain in place; only receipts and input lists are published
+in the managed member download. A missing or nonmatching receipt follows the
+ordinary acquisition path; corrupt recorded payloads name the mismatching file.
+`--force-refetch` bypasses reuse.
+
+To bind an existing local population without changing configuration hashes:
+
+```bash
+python3 - roster.json /path/to/completed-fetch roster-reuse.json <<'PYTHON'
+import json, pathlib, sys
+roster = json.loads(pathlib.Path(sys.argv[1]).read_text())
+for trajectory in roster["trajectories"]:
+    trajectory["fetch_root"] = str(pathlib.Path(sys.argv[2]).resolve())
+pathlib.Path(sys.argv[3]).write_text(json.dumps(roster, indent=2) + "\n")
+PYTHON
+gpuwm ensemble /path/to/first-member/experiment.toml --recipe member-roster \
+  --members 6 --trajectories roster-reuse.json --dry-run
+# Use the same command without --dry-run for execution.
+```

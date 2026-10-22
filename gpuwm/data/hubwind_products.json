@@ -1,0 +1,22 @@
+[
+ {"name":"hub_speed","title":"Hub wind speed","units":"m/s","kind":"frame","upper":30},
+ {"name":"hub_direction","title":"Hub wind direction from true north","units":"degree","kind":"frame","upper":360},
+ {"name":"hub_ti","title":"PBL TKE isotropic turbulence intensity estimate","units":"1","kind":"frame","upper":0.5},
+ {"name":"hub_power","title":"Ideal single turbine power","units":"MW","kind":"frame","upper":0},
+ {"name":"hub_shear","title":"Wind shear exponent between adjacent requested heights","units":"1","kind":"shear","upper":1},
+ {"name":"hub_mean","title":"Time weighted mean hub wind","units":"m/s","kind":"stat","upper":30},
+ {"name":"hub_max","title":"Maximum sampled hub wind","units":"m/s","kind":"stat","upper":30},
+ {"name":"hub_exceedance_hours","title":"Hub wind threshold exceedance","units":"h","kind":"stat","upper":0},
+ {"name":"hub_cut_in_hours","title":"Operating below rated wind","units":"h","kind":"stat","upper":0},
+ {"name":"hub_rated_hours","title":"Operating at rated wind","units":"h","kind":"stat","upper":0},
+ {"name":"hub_cut_out_hours","title":"Shutdown at cut out wind","units":"h","kind":"stat","upper":0},
+ {"name":"hub_below_cut_in_hours","title":"Below cut in wind","units":"h","kind":"stat","upper":0},
+ {"name":"hub_valid_hours","title":"Valid wind time coverage","units":"h","kind":"stat","upper":0},
+ {"name":"hub_capacity_factor","title":"Ideal turbine capacity factor","units":"1","kind":"stat","upper":1},
+ {"name":"hub_energy","title":"Ideal single turbine energy","units":"MWh","kind":"stat","upper":0},
+ {"name":"hub_ramp_up_events","title":"Wind ramp up episodes","units":"count","kind":"stat","upper":6},
+ {"name":"hub_ramp_down_events","title":"Wind ramp down episodes","units":"count","kind":"stat","upper":6},
+ {"name":"hub_power_ramp_up_events","title":"Power ramp up episodes","units":"count","kind":"stat","upper":6},
+ {"name":"hub_power_ramp_down_events","title":"Power ramp down episodes","units":"count","kind":"stat","upper":6},
+ {"name":"hub_max_abs_ramp","title":"Maximum absolute trailing window wind ramp","units":"m/s","kind":"stat","upper":15}
+]

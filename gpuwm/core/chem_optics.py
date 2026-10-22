@@ -338,6 +338,37 @@ def init(ctx):
 def step(ctx, dt, ktau):
     if not photolysis_step(ctx.cfg, ktau, dt):
         return
+    if getattr(ctx.cfg, "aer_ra_feedback", 0):
+        # Radiation owns the optics clock when it consumes the result.
+        return
+    update_diagnostics(ctx)
+
+
+def prepare_history(state):
+    """Evaluate live optics at every frame, including the untouched IC.
+
+    History can precede the first chemistry/radiation call, or fall between
+    radiation calls. A cached radiation result therefore cannot supply it.
+    The diagnostic needs meteorology and mass only, with no process clock.
+    """
+    from gpuwm.core.chem_context import ChemContext
+    from gpuwm.core.chem_prep import ChemPrep
+    from gpuwm.core.chem_state import process_attr
+
+    chem = state.chem
+    prep = getattr(chem, "prep", None)
+    if prep is None:
+        prep = chem.prep = ChemPrep(state)
+    else:
+        prep.refresh(state)
+    diag = {alloc.name: getattr(state, process_attr(alloc))
+            for alloc in ALLOCATES}
+    update_diagnostics(ChemContext(state, None, chem.table,
+                                   prep=prep, diag=diag))
+
+
+def update_diagnostics(ctx):
+    """Live 550 nm products, also called before the first radiation solve."""
     import cupy as cp
 
     rs = rows(ctx.table)

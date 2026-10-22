@@ -267,21 +267,3 @@ def prepare_flux_div_scalar(q, ru, rv, rw, tend, rdnw, fnm, fnp, msf, **options)
     """Bind the existing mass-point scalar flux-divergence entry."""
     return prepare_flux_div(q, ru, rv, rw, tend, rdnw, fnm, fnp, msf,
                             stagger="", **options)
-
-
-def prepare_flux_div_u(u, ru, rv, rw, tend, rdnw, fnm, fnp, msf, **options):
-    """Bind the existing u-point momentum flux-divergence entry."""
-    return prepare_flux_div(u, ru, rv, rw, tend, rdnw, fnm, fnp, msf,
-                            stagger="x", **options)
-
-
-def prepare_flux_div_v(v, ru, rv, rw, tend, rdnw, fnm, fnp, msf, **options):
-    """Bind the existing v-point momentum flux-divergence entry."""
-    return prepare_flux_div(v, ru, rv, rw, tend, rdnw, fnm, fnp, msf,
-                            stagger="y", **options)
-
-
-def prepare_flux_div_w(w, ru, rv, rw, tend, rdn, fnm, fnp, msf, **options):
-    """Bind the existing w-point momentum flux-divergence entry."""
-    return prepare_flux_div(w, ru, rv, rw, tend, rdn, fnm, fnp, msf,
-                            stagger="z", **options)

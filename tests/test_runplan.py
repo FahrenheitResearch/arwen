@@ -36,6 +36,13 @@ from gpuwm.runplan import (EVENT_SCHEMA, EVENT_TAGS, EVENTS_FILENAME,
 from test_case_data import make_case_toml
 
 
+#: A fetched-source receipt in the real fetch's shape.  Since abf04433ed8
+#: (parallel cache reuse) the chain snapshots it (launch_supplements.
+#: hrrr_source_manifest) right after the fetch, so a placeholder byte is a
+#: malformed manifest that stops the chain before the preparation stage.
+_FETCHED_SUMS = "0" * 64 + "  hrrr.t12z.wrfprsf00.grib2\n"
+
+
 def _plan_document(config_path: Path, run_dir: Path, **overrides):
     document = {
         "schema": PLAN_SCHEMA,
@@ -76,6 +83,8 @@ def test_a_plan_round_trips_through_the_loader_with_paths_made_absolute(
     assert set(plan.run_options) == {
         "device", "dry_run", "restart", "health_debug", "grib2", "verify_visuals",
         "geog_root", "render_products", "render_section", "keep_checkpoints", "input_cycle",
+        # Where the hourly products are published (gpuwm.product_publish).
+        "publish_root", "publish_cmd",
         # The ensemble option every route carries; absent means one forecast.
         "ensemble"}
     assert plan.run_options["ensemble"] is None
@@ -1467,11 +1476,12 @@ def test_the_staged_chain_says_the_seal_before_the_stage_bookkeeping_ends(
 
 
 @requires_cupy
-def test_a_failed_staged_forecast_says_it_waits_for_the_preparation(
+def test_a_failed_staged_forecast_stops_its_preparation_at_once(
         tmp_path, monkeypatch):
-    """The failure is reported after the preparation ends, and until then
-    the run's heartbeat says ``waiting:preparation`` rather than keeping the
-    failed forecast's last phase."""
+    """The failure is said at once and the preparation is asked to stop
+    (``stop.json``); the run never sits in ``waiting:preparation`` while the
+    producer builds every later forcing time (V59 run 2a, V60 r1b/r1d,
+    2026-10-21: a failed forecast hid behind 19-24 min of that)."""
 
     import threading
     import time
@@ -1480,11 +1490,11 @@ def test_a_failed_staged_forecast_says_it_waits_for_the_preparation(
     monkeypatch.setenv("GPUWM_CHAINED_PREP", "1")
 
     import gpuwm.stage_cli as stage_cli
-    from gpuwm.ingest.boundary_stream import HEAD_SCHEMA, head_sha256
+    from gpuwm.ingest.boundary_stream import HEAD_SCHEMA, STOP_NAME, head_sha256
     from gpuwm.supervisor import HEARTBEAT_NAME, read_heartbeat
 
     started = threading.Event()
-    seen = {}
+    seen = {"statuses": set()}
 
     def chained_prep(arguments):
         prep_root = Path(arguments[arguments.index("--output-root") + 1])
@@ -1501,15 +1511,17 @@ def test_a_failed_staged_forecast_says_it_waits_for_the_preparation(
         assert started.wait(10), "the forecast did not start at the head"
         progress = prep_root.parent.parent / HEARTBEAT_NAME
         deadline = time.monotonic() + 10
-        while "during" not in seen and time.monotonic() < deadline:
+        # A producer reads stop.json between forcing times; this one polls it.
+        while not (stream / STOP_NAME).is_file() and time.monotonic() < deadline:
             try:
                 beat = read_heartbeat(progress)
             except (OSError, ValueError):
                 beat = None
-            if beat is not None and beat.status.startswith("waiting:"):
-                seen["during"] = beat
+            if beat is not None:
+                seen["statuses"].add(beat.status)
             time.sleep(0.01)
-        (prep_root / "proof.json").write_text("{}", encoding="utf-8")
+        seen["stop"] = json.loads((stream / STOP_NAME).read_text(encoding="utf-8"))
+        raise RuntimeError("stopped by its forecast")
 
     def head_bundle(prepared_root, head):
         return {"document": Path(prepared_root) / "proof.json",
@@ -1527,9 +1539,8 @@ def test_a_failed_staged_forecast_says_it_waits_for_the_preparation(
         tmp_path, monkeypatch, prep=chained_prep, forecast=forecast,
         sim=lambda bundle, **kw: ["python", "-m", "runner",
                                   "--outdir", str(kw["outdir"])])
-    during = seen["during"]
-    assert during.status == "waiting:preparation"
-    assert during.wait["on"] == "preparation" and during.wait["lead"] is None
+    assert seen["stop"]["reason"].startswith("the forecast failed: RuntimeError")
+    assert "waiting:preparation" not in seen["statuses"]
     failed = next(record for record in events if record["event"] == "failed")
     assert "unstable" in failed["message"]
     assert read_heartbeat(plan.run_dir / HEARTBEAT_NAME).status == "failed"
@@ -1579,7 +1590,7 @@ def _staged_hrrr_chain(tmp_path, monkeypatch, **plan_overrides):
     def fake_fetch(arguments, run_dir, **_kwargs):
         out = Path(arguments[arguments.index("--out") + 1])
         out.mkdir(parents=True, exist_ok=True)
-        (out / "SHA256SUMS").write_text("x", encoding="utf-8")
+        (out / "SHA256SUMS").write_text(_FETCHED_SUMS, encoding="utf-8")
         staged.append(("fetch", list(arguments)))
         return {}
 
@@ -3999,3 +4010,25 @@ def test_a_source_that_falls_behind_exits_75_naming_the_lead(
     assert failed["message"].startswith(
         "gefs f030 of the 2026-09-30T12 cycle has not posted by 16:53Z")
     assert "The forecast stopped at 27:00" in failed["message"]
+
+
+def test_a_staged_chain_render_plan_carries_the_config_data_source(tmp_path):
+    """THE BREAKAGE: `gpuwm go` renders an HRRR run through the staged chain,
+    whose render plan named no data source, so finalize could not draw the
+    run beside HRRR (measured on a real 1 h HRRR run on a 4090, 2026-10-05)."""
+    from gpuwm.runplan import _chain_render_plan
+
+    def plan_for(config_text):
+        return build_plan(
+            {"schema": PLAN_SCHEMA, "name": "x", "route": "experiment",
+             "config": {"inline": config_text}},
+            source="probe.json", base_dir=tmp_path, sha256="0" * 64)
+
+    forecast = tmp_path / "chain" / "run"
+    sourced = _chain_render_plan(plan_for('[fetch]\nsource = "hrrr"\n'),
+                                 forecast_dir=forecast, run_dir=tmp_path)
+    assert sourced["source"] == "hrrr"
+    assert sourced["render"] == forecast.parent / "png"
+    unsourced = _chain_render_plan(plan_for("x = 1\n"),
+                                   forecast_dir=forecast, run_dir=tmp_path)
+    assert "source" not in unsourced

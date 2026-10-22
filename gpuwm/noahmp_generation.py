@@ -4,7 +4,6 @@ This selector changes only call placement. It does not select the complete
 Noah-MP 5.1.2 model shipped with WRF v4.8.0.
 """
 
-NOAHMP_SNOW_AGE_DEFAULT = "wrf_470"
 NOAHMP_SNOW_AGE_GENERATIONS = ("wrf_470", "wrf_461")
 
 

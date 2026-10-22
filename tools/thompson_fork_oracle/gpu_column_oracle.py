@@ -52,6 +52,10 @@ for _p in (str(ROOT), str(HERE)):
 
 import regime_columns as RC  # noqa: E402
 
+from tools.thompson_aerosol_column_oracle.column_state import (
+    ColumnState as OracleColumnState,
+)
+
 f32 = np.float32
 
 SPECIES = RC.SPECIES
@@ -66,54 +70,12 @@ FORK_OUT2 = ("rainnc", "rainncv", "snownc", "snowncv", "graupelnc",
 COMPARED = FORK_OUT3 + FORK_OUT2[:-1]
 
 
-class GpuColumnState:
-    """The mp=28 DomainState surface over (nz, 1, ncol) CuPy arrays: the
-    whole theta in ``thp`` over a zero ``thb``, the whole geopotential in
-    ``php`` over a zero ``phb`` (as tools/thompson_real_column_parity's
-    ColumnState, on the device)."""
+class GpuColumnState(OracleColumnState):
+    """The fork's mp=28 DomainState over (nz, 1, ncol) device arrays."""
 
     def __init__(self, cp, cols):
-        ncol, nz = cols["p"].shape
-
-        def vol(a):
-            a = np.ascontiguousarray(np.asarray(a, f32).T)
-            return cp.asarray(a.reshape(a.shape[0], 1, ncol))
-
         self._cp = cp
-        self.p = vol(cols["p"])
-        self.thb = cp.zeros((nz,), cp.float32)
-        self.thp = vol(cols["th"])
-        self.phb = cp.zeros((nz + 1,), cp.float32)
-        self.php = vol(cols["geop"])
-        self.w = vol(cols["w"])
-        for s in SPECIES:
-            setattr(self, s, vol(cols[s]))
-        self.effc = cp.zeros((nz, 1, ncol), cp.float32)
-        self.effi = cp.zeros((nz, 1, ncol), cp.float32)
-        self.effs = cp.zeros((nz, 1, ncol), cp.float32)
-        self.nwfa2d = cp.asarray(np.asarray(cols["nwfa2d"], f32)
-                                 .reshape(1, ncol))
-        self.nifa2d = cp.asarray(np.asarray(cols["nifa2d"], f32)
-                                 .reshape(1, ncol))
-        self.h_diabatic = cp.zeros((nz, 1, ncol), cp.float32)
-        self.physics = SimpleNamespace(refl_10cm=None, state=self)
-        self._scratch = {}
-
-    def scratch(self, shape, slot, dtype=None):
-        cp = self._cp
-        shape = tuple(shape)
-        want = np.dtype(np.float32 if dtype is None else dtype)
-        value = self._scratch.get(slot)
-        if value is None:
-            value = cp.zeros(shape, dtype=want)
-            self._scratch[slot] = value
-        elif value.shape != shape or value.dtype != want:
-            raise ValueError(f"scratch slot {slot!r} reused with a new "
-                             "shape or dtype")
-        return value
-
-    def existing_scratch(self, slot):
-        return self._scratch.get(slot)
+        super().__init__(cols, cp, SPECIES)
 
 
 def _cols(cp, a):

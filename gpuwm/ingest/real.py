@@ -50,12 +50,6 @@ def surface_fields_to_device(met, array_module, *, preserve_dtype=False):
     }
 
 
-def _available_cpu_count() -> int:
-    """The CPUs this process may run on (its affinity where the OS has one)."""
-    from gpuwm.ingest.cpu_backend import available_cpu_count
-    return available_cpu_count()
-
-
 def _default_column_workers(preprocess_backend, preprocess_workers) -> int:
     """Setup column threads when the caller named none.
 
@@ -996,10 +990,10 @@ def _mp28_aerosol_source_policy(cfg: RunConfig, state, *, receipt=True) -> dict[
     # source-absent zeros once the cold-start closure has run over the
     # analyzed mass, and their receipt is
     # hydrometeor_initialization["cold_start_moment_closure"].
-    receipt["source_absent_state_fields"] = {
-        name: array_correspondence_fingerprint(getattr(state, name))
-        for name in ("nwfa", "nifa", "nwfa2d", "nifa2d")
-    }
+    absent_names = ("nwfa", "nifa", "nwfa2d", "nifa2d")
+    receipt["source_absent_state_fields"] = dict(zip(
+        absent_names,
+        _fingerprints_side_by_side(getattr(state, name) for name in absent_names)))
     return receipt
 
 
@@ -1490,8 +1484,47 @@ def _receipt_array_fingerprint(value):
 
 def _receipt_nonnegative_finite(value):
     valid = getattr(value, "receipt_valid", None)
-    return (bool(valid) if valid is not None else
-            bool(np.isfinite(value).all()) and not bool(np.any(value < 0.0)))
+    if valid is not None:
+        return bool(valid)
+    array = np.asarray(value)
+    if array.size < _RECEIPT_HASH_MIN_CELLS or not array.flags.c_contiguous:
+        return bool(np.isfinite(array).all()) and not bool(np.any(array < 0.0))
+    # A host replay output is one CONUS volume per source level: the two
+    # whole-array passes took 6.3 s of the receipt thread on one core
+    # (bounded CUDA road, a 5090 host, 2026-10-21).  Chunks answer the same
+    # question side by side (NumPy releases the GIL); the verdict is an AND.
+    flat = array.reshape(-1)
+    step = 1 << 22
+    chunks = [flat[start:start + step] for start in range(0, flat.size, step)]
+
+    def ok(chunk):
+        return bool(np.isfinite(chunk).all()) and not bool(np.any(chunk < 0.0))
+    from os import cpu_count
+    with ThreadPoolExecutor(max_workers=max(1, min(16, cpu_count() or 1)),
+                            thread_name_prefix="receipt-check") as pool:
+        return all(pool.map(ok, chunks))
+
+
+def _fingerprints_side_by_side(values) -> list:
+    """``[array_correspondence_fingerprint(v) for v in values]``, hashed side by side.
+
+    Each array is still one ordered SHA-256 stream (so every receipt is the
+    one the serial call writes); independent arrays run on separate native
+    workers instead of one after another on the calling thread.
+    """
+    arrays = []
+    for value in values:
+        if hasattr(value, "get"):
+            value = value.get()
+        arrays.append(np.ascontiguousarray(np.asarray(value)))
+    if len(arrays) < 2 or any(array.size == 0 for array in arrays):
+        return [array_correspondence_fingerprint(array) for array in arrays]
+    from os import cpu_count
+    from gpuwm.ingest.preparation_fingerprints import array_fingerprints
+    receipts = array_fingerprints(arrays, workers=max(1, min(len(arrays), cpu_count() or 1)))
+    if receipts is None:
+        return [array_correspondence_fingerprint(array) for array in arrays]
+    return receipts
 
 
 class _ReceiptHasher:
@@ -1517,6 +1550,17 @@ class _ReceiptHasher:
         return job
 
 
+#: CUDA runtime statuses that mean "no card here", not a device fault.
+#: 100 cudaErrorNoDevice: the card is masked (CUDA_VISIBLE_DEVICES empty, the
+#: CPU preprocess backend).  35 cudaErrorInsufficientDriver: a host with cupy
+#: installed and no NVIDIA driver at all, where the backend choice already fell
+#: back to the CPU ("cupy is installed but CUDA could not start").  Breakage
+#: the 35 prevents: every HRRR prepare on a CPU-only host (the WOOF bake's
+#: data stage, 2026-10-22 dry bake prepare_la-basin-750m) died in this receipt
+#: job after the whole CPU preparation had run.
+_NO_CARD_STATUSES = frozenset({100, 35})
+
+
 def _start_receipt_job(function, *args, **kwargs):
     """Run one receipt builder on its own thread, on this thread's card.
 
@@ -1535,7 +1579,7 @@ def _start_receipt_job(function, *args, **kwargs):
         try:
             device = cupy.cuda.runtime.getDevice()
         except cupy.cuda.runtime.CUDARuntimeError as exc:
-            if exc.status != 100:  # cudaErrorNoDevice
+            if exc.status not in _NO_CARD_STATUSES:
                 raise
             # No card on this thread (the CPU preprocess backend masks it;
             # a host without one): the receipt runs on the host, as the
@@ -1552,7 +1596,10 @@ def _start_receipt_job(function, *args, **kwargs):
             if binding is None:
                 value = function(*args, **kwargs)
             else:
-                value = pm.run_with_cpu_bridge_binding(
+                # The caller's worker cap, not a private worker's one thread:
+                # this is one job beside its caller, and its CPU replays are
+                # the start's critical path (run_with_shared_cpu_bridge_binding).
+                value = pm.run_with_shared_cpu_bridge_binding(
                     binding, function, *args, **kwargs)
         except BaseException as error:  # re-raised by the caller's result()
             job.set_exception(error)
@@ -1712,14 +1759,14 @@ def _build_hrrr_hydrometeor_vertical_disposition(
     }
     del raw_production_support, packed_production_support
 
+    pressure_fingerprints = _fingerprints_side_by_side(
+        (geometry["source_pressure"], geometry["surface_pressure"],
+         geometry["target_pressure"], order))
     geometry_receipt = {
-        "source_pressure": array_correspondence_fingerprint(
-            geometry["source_pressure"]),
-        "surface_pressure": array_correspondence_fingerprint(
-            geometry["surface_pressure"]),
-        "target_pressure": array_correspondence_fingerprint(
-            geometry["target_pressure"]),
-        "source_level_order": array_correspondence_fingerprint(order),
+        "source_pressure": pressure_fingerprints[0],
+        "surface_pressure": pressure_fingerprints[1],
+        "target_pressure": pressure_fingerprints[2],
+        "source_level_order": pressure_fingerprints[3],
         "source_level_order_values": order.tolist(),
         "production_target_support": production_support_receipt,
         "pressure_partition": pressure_partition_receipt,
@@ -3983,6 +4030,12 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         # Boundary callers retain only state. Checks stay at their owners.
         return {} if boundary_only else array_correspondence_fingerprint(value)
 
+    def receipt_fingerprints_of(values):
+        # receipt_fingerprint over several independent arrays, side by side.
+        values = tuple(values)
+        return ([{} for _ in values] if boundary_only
+                else _fingerprints_side_by_side(values))
+
     def receipt_fingerprints(names, value_for):
         names = tuple(names)
         if boundary_only:
@@ -4460,8 +4513,20 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     order_backend = backend_xp.asarray(order, dtype=backend_xp.int32)
 
     def backend_ordered_levels(value):
-        return backend_xp.take(
-            plan_float32(value), order_backend, axis=0)
+        value = plan_float32(value)
+        if backend_xp is host_numpy and value.ndim == 3 and value.size >= _RECEIPT_HASH_MIN_CELLS:
+            # The same take, one source level per copy, side by side: on the
+            # host roads a CONUS volume per field was one 4.6 s single-core
+            # np.take (bounded CUDA road, a 5090 host, 2026-10-21).
+            out = host_numpy.empty((len(order), *value.shape[1:]), dtype=value.dtype)
+            def copy(level):
+                out[level] = value[int(order[level])]
+            from os import cpu_count
+            with ThreadPoolExecutor(max_workers=max(1, min(16, cpu_count() or 1)),
+                                    thread_name_prefix="ordered-levels") as pool:
+                list(pool.map(copy, range(len(order))))
+            return out
+        return backend_xp.take(value, order_backend, axis=0)
 
     mass_source_pd_f32 = plan_float32(source_pd)
     mass_surface_pd_f32 = plan_float32(surface_pd)
@@ -4611,7 +4676,14 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         def replay_hydrometeor_support(ordered_mask, _plan=mass_vertical_plan,
                                        _surface=zero_surface, _xp=backend_xp,
                                        _vboundb=cfg.nz + 1):
-            if (_xp is not host_numpy and isinstance(ordered_mask, host_numpy.ndarray)
+            if (_xp is host_numpy and getattr(_plan, "accepts_bool_mask", False)
+                    and isinstance(ordered_mask, host_numpy.ndarray)
+                    and ordered_mask.dtype == host_numpy.bool_):
+                # The bounded CUDA plan widens each batch's bytes on the card
+                # (bounded_cuda._VerticalPlan): the host never builds the
+                # 380 MB float copy per replay (6.7 s of the receipt thread).
+                operand = ordered_mask
+            elif (_xp is not host_numpy and isinstance(ordered_mask, host_numpy.ndarray)
                     and ordered_mask.dtype == host_numpy.bool_):
                 # Upload the mask as bytes and widen it on the card: the
                 # same 0/1 floats, a quarter of the host conversion and
@@ -4731,9 +4803,11 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                 "source": "WRF module_initialize_real.F:1862-1997",
                 "operation": "linear Q interpolation with supplied surface before moist-pressure recurrence",
                 "source_level_order": order.tolist(),
-                "source_dry_pressure": receipt_fingerprint(mass_source_pd_f32),
-                "surface_dry_pressure": receipt_fingerprint(mass_surface_pd_f32),
-                "target_dry_pressure": receipt_fingerprint(mass_target_pd_f32),
+                **dict(zip(("source_dry_pressure", "surface_dry_pressure",
+                            "target_dry_pressure"),
+                           receipt_fingerprints_of((mass_source_pd_f32,
+                                                    mass_surface_pd_f32,
+                                                    mass_target_pd_f32)))),
             }
     from gpuwm.ingest.native_extras import interpolate_boundary_tracers
     # A snapshot-shaped namespace (the HRRR runner's boundary strips, a
@@ -4795,8 +4869,8 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
             if any(not bool(backend_xp.isfinite(value).all()) or bool((value < 0).any())
                    for value in (source, surface)):
                 raise ValueError(f"analyzed number field {name} is non-finite or negative")
-            source_numbers[name] = receipt_fingerprint(source)
-            surface_numbers[name] = receipt_fingerprint(surface)
+            source_numbers[name], surface_numbers[name] = receipt_fingerprints_of(
+                (source, surface))
             if name not in number_targets:
                 continue
             number_plan = donor_plan if name in donor_numbers else mass_vertical_plan
@@ -5506,8 +5580,10 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
             if wif_resolution is not None:
                 aerosol_initialization["dataset"] = describe_wif_source(
                     wif_resolution)
-            _warn_synthetic_aerosol_fallback(
-                _source_choice, wif_resolution)
+            from gpuwm.core.chem_mp_coupling import effective_mode
+            if effective_mode(cfg) != "diagnose":
+                _warn_synthetic_aerosol_fallback(
+                    _source_choice, wif_resolution)
     # Install supplied moments after the explicit source-absent MP8/28
     # branches. The analysis must never be overwritten by their zero policy.
     if decoded_numbers:
@@ -5533,6 +5609,37 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
             boundary_species=boundary_masses)
         hydrometeor_initialization["lateral_boundary_species"] = list(
             boundary_hydrometeor_fields(cfg, boundary_masses))
+    # CHEM BOUNDARY SOURCES (gpuwm/chem_source_init.py).  Rows whose first
+    # enabled boundary source is a data-store composition source take their
+    # field for THIS frame on its final total hydrostatic pressure (WRF's
+    # p+pb, the target WRF-Chem's mozbc uses), so source and target are both
+    # total pressure.  A chem-off state has no ``chem`` attribute and nothing
+    # here runs; a chem state with no such source returns at once.
+    chem_initialization = ()
+    if getattr(state, "chem", None) is not None:
+        from gpuwm.chem_source_init import fill_boundary_sources
+        chem_initialization = tuple(fill_boundary_sources(
+            state, cfg, valid_time=getattr(snapshot, "valid_time", None),
+            latlon=_wif_grid_latlon_from(grid, state),
+            pressure=_host_float32(total_pressure_h),
+            frame="boundary" if boundary_only else "initial"))
+        for receipt in chem_initialization:
+            if "thompson_initialization" in receipt:
+                number_source = receipt["thompson_initialization"]
+                aerosol_initialization.update(number_source)
+                boundary_aerosol_from_input = True
+                carried = getattr(state, "_external_scalar_boundary_fields", ())
+                state._external_scalar_boundary_fields = tuple(dict.fromkeys(
+                    (*carried, *number_source["initialized_fields"])))
+                initialized = aerosol_initialization.setdefault("initialized_state_fields", {})
+                absent = aerosol_initialization.get("source_absent_state_fields", {})
+                names = tuple(number_source["initialized_fields"])
+                initialized.update(zip(names, _fingerprints_side_by_side(
+                    getattr(state, name) for name in names)))
+                for name in names:
+                    absent.pop(name, None)
+                if not absent:
+                    aerosol_initialization.pop("source_absent_state_fields", None)
     # Thompson's cold-start numbers (module_initialize_real.F:4819-4855),
     # which real.exe runs after every analysed field is in place and which
     # fill only where the number is at or below zero: an installed
@@ -5607,19 +5714,6 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     # already returned nothing below this floor.
     published_surface_qv, surface_qv_floor = (
         _ops._floor_flag_sh_surface_mixing_ratio(surface_qv, fields["PSFC"]))
-    # CHEM BOUNDARY SOURCES (gpuwm/chem_source_init.py).  Rows whose first
-    # enabled boundary source is a data-store composition source take their
-    # field for THIS frame on its final total hydrostatic pressure (WRF's
-    # p+pb, the target WRF-Chem's mozbc uses), so source and target are both
-    # total pressure.  A chem-off state has no ``chem`` attribute and nothing
-    # here runs; a chem state with no such source returns at once.
-    chem_initialization = ()
-    if getattr(state, "chem", None) is not None:
-        from gpuwm.chem_source_init import fill_boundary_sources
-        chem_initialization = tuple(fill_boundary_sources(
-            state, cfg, valid_time=getattr(snapshot, "valid_time", None),
-            latlon=_wif_grid_latlon_from(grid, state),
-            pressure=_host_float32(total_pressure_h)))
     # The native and preprocessing workers above free on their own threads
     # too; the next forcing time and the companion files start without it.
     _return_freed_host_memory()

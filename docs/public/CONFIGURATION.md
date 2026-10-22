@@ -27,9 +27,9 @@ A setting that changes the forecast maps onto an implemented equivalent or
 is refused with the breakage named ("What a WRF namelist setting becomes",
 at the end of this page). Machinery WOOF does not run (`&dfi_control`,
 `&logging`, the operational fork's `gsd_diagnostics` and history-cadence
-switch, `prec_acc_dt`, HAILCAST, real.exe vertical-interpolation choices)
+switch, `prec_acc_dt`, real.exe vertical-interpolation choices)
 is inert while its selector is off. Requested, the digital filter
-(`dfi_opt`) and HAILCAST (`hailcast_opt`) are refused by name; the
+(`dfi_opt`) is refused by name; the
 others are a declared divergence printed under "Physics substitutions",
 limited to the initial placement or the output files.
 
@@ -357,7 +357,7 @@ consumed `RunConfig` field -- the knob-parity battery
 consuming kernel/module rather than being decorative -- and every one
 is importable from a WRF namelist.
 
-**Which keys a `[[domain]]` table may override.** Exactly these 250,
+**Which keys a `[[domain]]` table may override.** Exactly these 261,
 and no others (`gpuwm/experiment.py`'s `_DOMAIN_RUN_OVERRIDES`):
 
     lightning_option  lightning_dt  lightning_start_seconds  flashrate_factor
@@ -380,6 +380,8 @@ and no others (`gpuwm/experiment.py`'s `_DOMAIN_RUN_OVERRIDES`):
     max_time_step  max_time_step_den  min_time_step  min_time_step_den
     min_time_step_sound  slope_rad  topo_shading  mosaic_urban_canopy
     sf_lake_physics  use_lakedepth  lakedepth_default  lake_min_elev  topo_wind
+    history_interval2_s  history_interval_change_s  prec_acc_dt  prec_acc_dt1
+    gsd_diagnostics  reset_interval1
     gwd_opt  fmoist_run  fmoist_interp  fmoist_only  fmoist_freq  fmoist_dt  ifire
     fire_boundary_guard  fire_num_ignitions  fire_ignition_ros1
     fire_ignition_start_lon1  fire_ignition_start_lat1  fire_ignition_end_lon1
@@ -420,6 +422,15 @@ and no others (`gpuwm/experiment.py`'s `_DOMAIN_RUN_OVERRIDES`):
     fire_lsm_band_ngp  fire_lsm_zcoupling  fire_lsm_zcoupling_ref  fire_tracer_smoke
     fire_viscosity_bg  fire_viscosity_band  fire_viscosity_ngp  fire_slope_factor
     fuel_crosswalk  sr_x  sr_y  fire_static  fire_fuel_namelist  fire_smoke
+    hailcast_opt  haildt  lake_state_source  lake_state_path
+    lake_state_accept_licence
+
+`hailcast_opt` and `haildt` select the GPU WRF HAILCAST hail diameter per
+domain (see the physics table below). `lake_state_source` picks the lake
+initial-state row from `gpuwm/data/surface_obs/lake-state-sources.v1.toml`
+(`auto` and `forcing` are the two built-in choices); a research-only row
+also needs `lake_state_path`, its acquired CF NetCDF file, and
+`lake_state_accept_licence` set to that row's licence string.
 
 `clos_choice` and `ishallow` configure the Grell-Freitas cumulus scheme
 (`cu_physics = 3`): which closure the deep scheme uses (0, the default,
@@ -1289,14 +1300,14 @@ keeps the count of keys consumed with no record at zero.
 | `&chem` with `chem_opt` on | mapped onto ArWen's chemistry (`chem_sets`, `chem_sources`, the carried `&chem` keys) or refused key by key; never run with no chemistry |
 | a `&stoch` selector with no consumer | refused, naming the WRF operation that would be lost |
 | `fractional_seaice = 1` under a non-RUC land surface | declared divergence: whole-cell ice at XICE >= 0.5; differs only where the sea-ice fraction is strictly between 0.02 and 1 |
-| `hailcast_opt = 1` | refused, naming the HAILCAST hail-size history fields that would be missing (it was a declared divergence until 2026-10-12); 0 changes no forecast field |
+| `hailcast_opt = 1` | GPU WRF HAILCAST and PSD hail diameter; automatic at spacing up to 4 km by default. `haildt` is seconds (60 by default, 0 means every step); [hail diameter products](HAIL-DIAMETER.md) |
 | `dfi_opt` other than 0 | refused: WOOF has no digital filter, so every hour would integrate from a different initial state (a declared divergence until 2026-10-12) |
 
 The unmodified operational 3 km namelist (NOAA-EMC/HRRR v4.1.21
 `parm/conus/hrrr_wrf.nl`) is refused with its four uncarried smoke
-settings and its `hailcast_opt = 1` listed in one message (smoke dry
-deposition, `enh_vermix`, `flam_part`, smoke direct radiative feedback,
-HAILCAST); with those changed it imports with `chem_sets = "smoke"`.
+settings listed in one message (smoke dry deposition, `enh_vermix`,
+`flam_part`, smoke direct radiative feedback); with those changed it
+imports with `chem_sets = "smoke"` and HAILCAST enabled.
 Its WPS partner (`parm/conus/hrrr_namelist.wps`) names
 `geog_data_res = 'modis_15s+modis_fpar+modis_lai+30s'`, which builds: the
 15 arc-second MODIS land use, the MODIS FPAR greenness fraction (the same

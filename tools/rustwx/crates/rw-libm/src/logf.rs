@@ -32,6 +32,8 @@ const OFF: u32 = 0x3f33_0000;
 
 /// log(x) for binary32, bit for bit as glibc 2.43 returns it.
 #[inline]
+// Preserve IEEE invalid-operation arithmetic and its NaN result.
+#[allow(clippy::eq_op)]
 pub fn logf(x: f32) -> f32 {
     let mut ix = x.to_bits();
     if ix == 0x3f80_0000 {

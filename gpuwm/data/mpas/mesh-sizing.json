@@ -75,6 +75,25 @@
         ],
         "provenance": "mpas-port docs/device-memory-ledger.md, task #264: float32, nVertLevels=55, full physics, 6 steps, GFS 2026-08-12 06Z, both ledger runs rc 0. The two mesh sizes separate the fixed and per-cell terms by subtraction rather than by assumption. The 38,857-cell point is a real forecast on a generated mesh, its peak read off nvidia-smi at 13,679 MiB against a 514 MiB idle baseline, which is why its tolerance is wider.",
         "notes": "Whole-process figures measured on an otherwise-idle card. device_addressable_mib is NOT MEASURED on this part -- no CUDA memGetInfo total was read -- so the nvidia-smi figure is the only one there is, and it is optimistic by whatever this part's equivalent of the 5070 Ti's 422 MiB gap turns out to be. Anything else resident on the device comes out of the same memory, so pass --vram-gib with the free budget when the card is shared."
+      },
+      "rtx-pro-6000": {
+        "display_name": "NVIDIA RTX PRO 6000 Blackwell (96 GiB)",
+        "device_total_mib": 97887,
+        "device_addressable_mib": 97251.75,
+        "streaming_multiprocessors": 188,
+        "max_threads_per_sm": 1536,
+        "compute_capability": "sm_120",
+        "measured": true,
+        "local_store_residue_mib": 2826.8,
+        "residue_measured_against_arwen_commit": "629ddb6f0",
+        "bytes_per_cell": 86630.0,
+        "bytes_per_cell_provenance": "The same per-cell term as rtx-5070-ti and rtx-5090, which were measured card-independent between themselves. On this part it is checked, not separated: in the same session as a control run on an RTX 5090 at the same build, the two whole-process peaks differ by 796 MiB, the derived local-memory stores by 744.6 MiB, and everything else by 51 MiB, so no per-cell difference shows at x1.40962. A second mesh on this part would separate it by subtraction.",
+        "measured_on": "2026-10-20",
+        "anchors": [
+          {"mesh": "x1.40962", "cells": 40962, "process_mib": 13988.0, "tolerance_mib": 20.0}
+        ],
+        "provenance": "RTX PRO 6000 Blackwell Server Edition (188 SM, sm_120), float32, nVertLevels=55, full physics (WSM6, GF, YSU, YSU-GWDO, revised MO, NoahMP, cloud fraction, legacy RRTMG), 6 steps at dt 120 s, GFS 2026-10-11 12Z on x1.40962, rc 0. Build: the gpuwm-hex 0.1.0 port tree with its ArWen seam on 629ddb6f0 itself, including the two pre-cut GF files, so gf_gfdrv_stage and its 29,264 B frame are in the launched set exactly as the store above assumes; CuPy 14.2.0 (cuda13x). Per-process nvidia-smi peak 13,988 MiB at 250 ms sampling, unconstrained, 96,694 MiB free at start. Residue = 13,988 - 40,962 x 86,630 B (3,384.2 MiB) - 7,777.0 MiB derived store = 2,826.8 MiB. Same-session control on an idle RTX 5090, same build and stack: 13,192 MiB against the 13,182 MiB rtx-5090 anchor in this table, +10 MiB and inside its 20 MiB tolerance, so the build reproduces the frame and residues of record.",
+        "notes": "device_addressable_mib is CUDA's own memGetInfo total, 635 MiB under the 97,887 MiB nvidia-smi prints. The residue sits 61 MiB above the 170 SM part's and 339 MiB above the 70 SM part's, so it still does not scale with the SM count and is not carryable to another part. Anything else resident on the device comes out of the same memory, so pass --vram-gib with the free budget when the card is shared."
       }
     }
   },

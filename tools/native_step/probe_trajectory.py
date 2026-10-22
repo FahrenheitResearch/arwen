@@ -14,81 +14,16 @@ import numpy as np
 from gpuwm.core import dycore
 from gpuwm.prepared_domain_tree_forecast import main as run
 from gpuwm.native_step import Plan
-from host_annotations import annotate
+from host_annotations import annotate,inventory,host_inventory,phase,finish_trajectory
 from time_slots import Frame,frame_for,capture_slots,bind_slots
 class Complete(BaseException):pass
 receipt={'purpose':__doc__,'pid':os.getpid(),'numerics':a.numerics,'binding':binding,'cases':[], 'arm':a.arm, 'source':{},'completed_forecast':False}
 for name in ('gpuwm/core/dycore.py','gpuwm/core/physics.py','gpuwm/core/noahmp_column_slab.py','gpuwm/core/noahmp_flux_slab.py','gpuwm/core/kernels/noahmp_vegeflux.cu','gpuwm/native_step/recorder.c','gpuwm/native_step/__init__.py','tools/native_step/host_annotations.py','tools/native_step/probe_trajectory.py','tools/native_step/time_slots.py','gpuwm/ingest/lateral_bc.py'):
  receipt['source'][name]=hashlib.sha256((ROOT/name).read_bytes()).hexdigest()
 
-def inventory(state):
- seen=set();arrays={}
- def visit(value,label):
-  if id(value) in seen:return
-  seen.add(id(value))
-  if isinstance(value,cp.ndarray):
-   key=(value.data.ptr,value.shape,value.strides,value.dtype.str)
-   arrays.setdefault(key,{'label':label,'array':value});return
-  if isinstance(value,dict):
-   for name,item in value.items():visit(item,label+'.'+str(name))
-  elif isinstance(value,(list,tuple)):
-   for i,item in enumerate(value):visit(item,label+f'[{i}]')
-  elif type(value).__module__.startswith('gpuwm.') and hasattr(value,'__dict__'):
-   for name,item in vars(value).items():visit(item,label+'.'+name)
- visit(state,'state')
- return arrays
-
-def host_inventory(state):
- seen=set();values={}
- def visit(value,label):
-  if isinstance(value,(bool,int,float,str,type(None))):
-   values[label]=value;return
-  if id(value) in seen:return
-  seen.add(id(value))
-  if isinstance(value,(cp.ndarray,np.ndarray)):return
-  if isinstance(value,dict):
-   for k,v in value.items():visit(v,label+'.'+str(k))
-  elif isinstance(value,(list,tuple)):
-   for i,v in enumerate(value):visit(v,label+f'[{i}]')
-  elif type(value).__module__.startswith('gpuwm.') and hasattr(value,'__dict__'):
-   for k,v in vars(value).items():visit(v,label+'.'+k)
- visit(state,'state');return values
-
-from gpuwm.core.physics import _physics_interval_steps, _radiation_step_due, _surface_pbl_step_due
 original=dycore.step;counts={};plans={};states={}
-def phase(state,cfg,kwargs):
-    physics=state.physics
-    epoch=float(getattr(state,'domain_start_offset',0.0) or 0.0)
-    itimestep=int(np.floor((state.elapsed_seconds-epoch)/cfg.dt+0.5))+1
-    assert all(getattr(physics,name,None) is None for name in ('radiation_due_override','surface_pbl_due_override','cumulus_due_override'))
-    assert not cfg.cu_physics and physics.fire is None and getattr(state,'chem',None) is None
-    return (_radiation_step_due(itimestep,_physics_interval_steps(physics.radt_minutes,cfg.dt),physics.radt_minutes),
-            _surface_pbl_step_due(itimestep,physics.stepbl,cfg.bldt,None),tuple(sorted(kwargs.items())))
 def finish():
-    cp.cuda.get_current_stream().synchronize()
-    receipt['final']=[]
-    for key,state in states.items():
-        rows=[]
-        arrays=inventory(state)
-        addresses={}
-        for item in arrays.values():addresses.setdefault(item['array'].data.ptr,[]).append(item['label'])
-        def pointer(value):
-            value=int(value)
-            if value==0:return None
-            assert value in addresses,('unresolved device address',value)
-            return sorted(addresses[value])
-        for entry in arrays.values():
-            x=cp.asnumpy(entry['array'])
-            row={'name':entry['label'],'shape':list(x.shape),'dtype':x.dtype.str,'words':int(x.size),'sha256':hashlib.sha256(x.tobytes()).hexdigest()}
-            if entry['label'] in ('state._scratch.integration_health_field_ptr','state._scratch.integration_health_aux_ptr'):
-                row['pointer_targets']=[pointer(v) for v in x.view(np.uint64)]
-            rows.append(row)
-        host=host_inventory(state)
-        for name,value in list(host.items()):
-            if any(name.startswith('state.'+prefix+'[0]') for prefix in ('_rk_copy_launch','_rk_zero_launch','_glue_add_launch')) and name.endswith('[0]'):
-                host[name]={'pointer_target':pointer(value)}
-        receipt['final'].append({'shape':list(key),'arrays':rows,'host':host})
-    raise Complete()
+    finish_trajectory(states,receipt,Complete)
 
 def step(state,cfg,**kwargs):
     key=(cfg.nx,cfg.ny,cfg.nz);states[key]=state;counts[key]=counts.get(key,0)+1

@@ -277,6 +277,29 @@ def test_the_reading_is_taken_before_the_run_fills_the_cache(tmp_path):
         ARCHITECTURE_MISSING
 
 
+class _CompileLog:
+    def __init__(self):
+        self.announced = None
+
+    def announce_kernel_compile(self, **fields):
+        self.announced = fields
+
+
+def _stall_watch(tmp_path, *, census, step_log, road=None, now=None):
+    # The same named card, input and timer for every stall scenario.
+    from types import SimpleNamespace
+    from gpuwm.prepared_single_domain_forecast import _FirstStepStallWatch
+
+    options = {} if road is None else {"road": road}
+    return _FirstStepStallWatch(
+        progress_path=tmp_path / "progress.json",
+        inputs=SimpleNamespace(source="gfs"),
+        exp=SimpleNamespace(run_seconds=21600.0),
+        step_log=step_log, census=census, capability="86",
+        cache_census_now=lambda: census if now is None else now,
+        delay=0.05, **options)
+
+
 def test_a_stalled_first_step_announces_itself_and_a_fast_one_does_not(
         tmp_path, capsys):
     """THE THIRD AND LAST HALF.  Prediction is not enough, so the run
@@ -294,32 +317,17 @@ def test_a_stalled_first_step_announces_itself_and_a_fast_one_does_not(
     wrong about whether a reader is waiting.
     """
 
-    import types
-
-    from gpuwm.prepared_single_domain_forecast import _FirstStepStallWatch
-
-    class _Log:
-        def __init__(self):
-            self.announced = None
-
-        def announce_kernel_compile(self, **fields):
-            self.announced = fields
-
     # The card and the cache are named, not borrowed from the host: left
     # to ask, the watch read the host's real card and real kernel cache,
     # so this passed on an sm_86 card and failed on the sm_120 node, where
     # 200 sm_120 entries are that card's own and rightly read as warm.
     def _watch(log, census):
-        return _FirstStepStallWatch(
-            progress_path=tmp_path / "progress.json",
-            inputs=types.SimpleNamespace(source="gfs"),
-            exp=types.SimpleNamespace(run_seconds=21600.0),
-            step_log=log, census=census, capability="86",
-            cache_census_now=lambda: census, delay=0.05)
+        return _stall_watch(
+            tmp_path, census=census, step_log=log)
 
     # A stall: it says so, names what the cache looked like at launch,
     # and publishes the status `gpuwm go`'s heartbeat relays verbatim.
-    log = _Log()
+    log = _CompileLog()
     watch = _watch(log, (200, 0, {"120": 200}))
     watch.arm()
     time.sleep(0.4)
@@ -333,7 +341,7 @@ def test_a_stalled_first_step_announces_itself_and_a_fast_one_does_not(
     assert published["status"] == COMPILING_STATUS
 
     # A fast first step: the observer disarms it and nothing is said.
-    quiet = _Log()
+    quiet = _CompileLog()
     fast = _watch(quiet, (200, 0, {"120": 200}))
     fast.arm()
     fast.observe(grid_id=1, step_count=1, model_seconds=6.0,
@@ -355,25 +363,9 @@ def test_a_stalled_step_on_a_warm_cache_names_the_road_not_a_compile(
     reader is waiting; it does not say what for.
     """
 
-    import types
-
-    from gpuwm.prepared_single_domain_forecast import _FirstStepStallWatch
-
-    class _Log:
-        def __init__(self):
-            self.announced = None
-
-        def announce_kernel_compile(self, **fields):
-            self.announced = fields
-
-    log = _Log()
-    watch = _FirstStepStallWatch(
-        progress_path=tmp_path / "progress.json",
-        inputs=types.SimpleNamespace(source="gfs"),
-        exp=types.SimpleNamespace(run_seconds=21600.0),
-        step_log=log, census=(388, 0, {"86": 388}), capability="86",
-        road="store", cache_census_now=lambda: (388, 0, {"86": 388}),
-        delay=0.05)
+    log = _CompileLog()
+    watch = _stall_watch(
+        tmp_path, census=(388, 0, {'86': 388}), step_log=log, road='store')
     watch.arm()
     time.sleep(0.4)
     printed = capsys.readouterr().out
@@ -396,17 +388,8 @@ def test_a_stalled_step_on_a_warm_cache_off_the_store_road_claims_nothing(
         tmp_path, capsys):
     """No road to name is not licence to invent a cause."""
 
-    import types
-
-    from gpuwm.prepared_single_domain_forecast import _FirstStepStallWatch
-
-    watch = _FirstStepStallWatch(
-        progress_path=tmp_path / "progress.json",
-        inputs=types.SimpleNamespace(source="gfs"),
-        exp=types.SimpleNamespace(run_seconds=21600.0),
-        step_log=None, census=(388, 0, {"86": 388}), capability="86",
-        road="resident", cache_census_now=lambda: (388, 0, {"86": 388}),
-        delay=0.05)
+    watch = _stall_watch(
+        tmp_path, census=(388, 0, {'86': 388}), step_log=None, road='resident')
     watch.arm()
     time.sleep(0.4)
     printed = capsys.readouterr().out
@@ -421,24 +404,9 @@ def test_a_cold_census_still_says_the_compile_is_what_is_happening(
         tmp_path, capsys):
     """The notice this class exists for is not weakened, only evidenced."""
 
-    import types
-
-    from gpuwm.prepared_single_domain_forecast import _FirstStepStallWatch
-
-    class _Log:
-        def __init__(self):
-            self.announced = None
-
-        def announce_kernel_compile(self, **fields):
-            self.announced = fields
-
-    log = _Log()
-    watch = _FirstStepStallWatch(
-        progress_path=tmp_path / "progress.json",
-        inputs=types.SimpleNamespace(source="gfs"),
-        exp=types.SimpleNamespace(run_seconds=21600.0),
-        step_log=log, census=(0, 0, {}), capability="86",
-        road="store", cache_census_now=lambda: (0, 0, {}), delay=0.05)
+    log = _CompileLog()
+    watch = _stall_watch(
+        tmp_path, census=(0, 0, {}), step_log=log, road='store')
     watch.arm()
     time.sleep(0.4)
     printed = capsys.readouterr().out
@@ -463,26 +431,10 @@ def test_a_cache_that_grew_during_the_stall_is_a_compile_on_any_census(
     stalls can, and that is positive evidence rather than a timer.
     """
 
-    import types
-
-    from gpuwm.prepared_single_domain_forecast import _FirstStepStallWatch
-
-    class _Log:
-        def __init__(self):
-            self.announced = None
-
-        def announce_kernel_compile(self, **fields):
-            self.announced = fields
-
-    log = _Log()
-    watch = _FirstStepStallWatch(
-        progress_path=tmp_path / "progress.json",
-        inputs=types.SimpleNamespace(source="gfs"),
-        exp=types.SimpleNamespace(run_seconds=21600.0),
-        step_log=log, census=(200, 0, {"86": 200}), capability="86",
-        road="store",
-        # 37 cubins that did not exist when the run started.
-        cache_census_now=lambda: (237, 0, {"86": 237}), delay=0.05)
+    log = _CompileLog()
+    watch = _stall_watch(
+        tmp_path, census=(200, 0, {'86': 200}), step_log=log, road='store',
+        now=(237, 0, {'86': 237}))
     watch.arm()
     time.sleep(0.4)
     printed = capsys.readouterr().out

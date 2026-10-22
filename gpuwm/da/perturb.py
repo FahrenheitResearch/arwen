@@ -2850,7 +2850,7 @@ def perturbed_lateral_boundaries(boundaries, cfg: PerturbationConfig, *,
         hashlib all run without the GIL -- and combined in frame order, the
         serial result byte for byte; the fields run side by side the same
         way.  Drawn one after another they were 40 s of one host core per
-        member at the start of every 9 km CONUS run (box L probe,
+        member at the start of every 9 km CONUS run (a rented box probe,
         2026-10-06), with the member's card idle meanwhile.
         """
         spec, table, weight, shape, exner, _entry = plan

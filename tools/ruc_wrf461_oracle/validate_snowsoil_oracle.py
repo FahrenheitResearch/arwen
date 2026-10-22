@@ -16,13 +16,17 @@ the entry ``qsg`` and the entry ``ilnb``).
 
 from __future__ import annotations
 
-import csv
-from pathlib import Path
 import sys
 
 import numpy as np
 
-from gpuwm.core.fp32_ulp import monotone_fp32_key
+if __package__:
+    from .validate_qsn_oracle import _report as _report_metrics
+    from .validate_soil_oracle import _load_profiles
+else:
+    from validate_qsn_oracle import _report as _report_metrics
+    from validate_soil_oracle import _load_profiles
+
 from gpuwm.core.ruc import RUC_SNOW_SOIL_COLUMN_INPUTS, ruc_snow_soil_step
 
 
@@ -58,32 +62,8 @@ ENTRY_NAMES = {
 }
 
 
-#: Monotonic integer ordering of float32 bits; +0 and -0 collapse.  Shared
-#: rather than re-derived: see gpuwm/core/fp32_ulp.py.
-_ordinal = monotone_fp32_key
-
-
 def _report(name: str, actual: np.ndarray, expected: np.ndarray) -> int:
-    difference = np.abs(
-        actual.astype(np.float64) - expected.astype(np.float64)
-    )
-    denominator = np.abs(expected.astype(np.float64))
-    relative = np.zeros_like(difference)
-    np.divide(difference, denominator, out=relative, where=denominator > 0.0)
-    ulp = np.abs(_ordinal(actual) - _ordinal(expected))
-    signed_zero = int(
-        np.count_nonzero(
-            (actual == 0.0)
-            & (expected == 0.0)
-            & (np.signbit(actual) != np.signbit(expected))
-        )
-    )
-    print(
-        f"  {name:<11s} max_abs={float(np.max(difference)):.6e} "
-        f"max_rel={float(np.max(relative)):.6e} "
-        f"max_ulp={int(np.max(ulp))} signed_zero_mismatch={signed_zero}"
-    )
-    return int(np.max(ulp)) + signed_zero
+    return _report_metrics(name, actual, expected, width=11)
 
 
 def _shared_bounds(values: dict[str, np.ndarray], ncase: int) -> None:
@@ -246,21 +226,8 @@ def _structure_contract(values: dict[str, np.ndarray]) -> None:
 def main(path: str, contract: bool = False) -> None:
     cases = CONTRACT_CASES if contract else CASES
     ncase = len(cases)
-    with Path(path).open(newline="", encoding="ascii") as stream:
-        rows = list(csv.DictReader(stream))
-    if len(rows) != ncase * NZS:
-        raise SystemExit(f"expected {ncase * NZS} rows, got {len(rows)}")
-    found = tuple(dict.fromkeys(row["case"] for row in rows))
-    if found != cases:
-        raise SystemExit(f"unexpected case inventory {found!r}")
-
-    numeric = tuple(key for key in rows[0] if key != "case")
-    field = {
-        name: np.asarray([float(row[name]) for row in rows], dtype=np.float32)
-        .reshape(ncase, NZS)
-        .T
-        for name in numeric
-    }
+    values = _load_profiles(path, cases, shape=(ncase, NZS), excluded=("case",))
+    field = {name: value.T for name, value in values.items()}
     if not all(np.all(np.isfinite(value)) for value in field.values()):
         raise SystemExit("RUC snowsoil oracle contains non-finite output")
     if contract:

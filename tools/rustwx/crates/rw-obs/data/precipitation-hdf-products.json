@@ -8,6 +8,7 @@
       "value_variable": "/Grid/precipitation",
       "value_units": "mm/hr",
       "value_axes": "time,lon,lat",
+      "axes_attribute": "DimensionNames",
       "latitude_variable": "/Grid/lat",
       "longitude_variable": "/Grid/lon",
       "time_bounds_variable": "/Grid/time_bnds",
@@ -21,6 +22,26 @@
       "header_last_included_key": "StopGranuleDateTime",
       "header_last_included_tick_milliseconds": 1,
       "required_header_values": {"AlgorithmID": "3IMERGHH", "ProductVersion": "V07B", "TimeInterval": "HALF_HOUR", "EmptyGranule": "NOT_EMPTY"}
+    },
+    {
+      "name": "cpc-unified-conus-rt",
+      "source": "cpc-unified-gauge",
+      "reference": "https://psl.noaa.gov/data/gridded/data.unified.daily.conus.rt.html",
+      "value_variable": "precip",
+      "value_units": "mm",
+      "value_axes": "time,lat,lon",
+      "latitude_variable": "lat",
+      "longitude_variable": "lon",
+      "time_variable": "time",
+      "time_units": "hours since 1800-01-01 00:00:0.0",
+      "time_origin": "1800-01-01T00:00:00Z",
+      "time_value_seconds": 3600,
+      "period_end_offset_seconds": 43200,
+      "accumulation_seconds": 86400,
+      "required_root_attributes": {
+        "title": "CPC Unified Gauge-Based Analysis of Daily Precipitation over CONUS RT at PSD",
+        "Comments": "Preciptation is accumulated from 12z of previous day to 12z of day stored"
+      }
     }
   ]
 }

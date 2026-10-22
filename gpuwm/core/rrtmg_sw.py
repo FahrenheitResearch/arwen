@@ -98,20 +98,23 @@ if tuple(int(part) for part in np.__version__.split(".")[:2]) < (2, 0):
         f"of its bitwise FP32 contract); found numpy {np.__version__}")
 
 
-from gpuwm.core import noahmp_libm as _libm
+from gpuwm.core.rrtmg_lw import (
+    _libm as _libm,
+    logf, expf,
+    _r512,
+    _lw_dev_chunk as _sw_dev_chunk,
+    _lw_dev_mcica as _sw_dev_mcica,
+)
 
 F = np.float32
-I4 = np.int32
 
 # ---------------------------------------------------------------------------
 # parrrsw constants (module parrrsw, WRF v4.6.1)
 # ---------------------------------------------------------------------------
-MG = 16
 NBNDSW = 14
 NGPTSW = 112
 MXMOL = 38
 NMOL = 7
-JPBAND = 29
 JPB1, JPB2 = 16, 29
 RRSW_SCON = F(1.36822e+03)
 # All layer arrays use caller-owned workspace; there is no fixed SW ceiling.
@@ -128,7 +131,6 @@ def _radiation_layer_count(value):
         raise ValueError("radiation layer count must be positive and fit the CUDA int32 layer/g-point index")
     return count
 
-NG_BAND = (16,) * 14                                   # ng(16:29)
 NSPA = (9, 9, 9, 9, 1, 9, 9, 1, 9, 1, 0, 1, 9, 1)      # nspa(16:29)
 NSPB = (1, 5, 1, 1, 1, 5, 1, 0, 1, 0, 0, 1, 5, 1)      # nspb(16:29)
 NGC = (6, 12, 8, 8, 10, 10, 2, 10, 8, 6, 6, 8, 6, 12)  # reduced g per band
@@ -152,16 +154,6 @@ GLIBC_VERSION = "2.39"
 # probes (0 mismatches, including both multiarch residual arguments) before
 # removal; the fixture decks re-gate the chain end-to-end on every run.
 # ===========================================================================
-
-
-def logf(x) -> np.float32:
-    """glibc 2.39 ``logf`` via the audited shared transcription."""
-    return F(_libm.logf(float(x)))
-
-
-def expf(x) -> np.float32:
-    """glibc 2.39 ``expf`` via the audited shared transcription."""
-    return F(_libm.expf(float(x)))
 
 
 # ===========================================================================
@@ -2498,15 +2490,9 @@ def decode_aer1_climatology(payload, shape) -> np.ndarray:
 
 def load_sw_tables(path=None, *, aer_opt=0, data_dir=None) -> SWTables:
     """Production entry: load coefficients via gpuwm.ingest.rrtmg_coeffs
-    (imported lazily; lands on the integration branch) and assemble tables.
+    (imported lazily) and assemble tables.
     """
-    try:
-        from gpuwm.ingest.rrtmg_coeffs import load_rrtmg_sw_coefficients
-    except ImportError as exc:                            # pragma: no cover
-        raise ImportError(
-            "gpuwm.ingest.rrtmg_coeffs is not available on this branch; "
-            "it lands with the radiation foundation lane.  Tests use "
-            "tables_from_dump() on the oracle dump instead.") from exc
+    from gpuwm.ingest.rrtmg_coeffs import load_rrtmg_sw_coefficients
     tables = tables_from_coeffs(load_rrtmg_sw_coefficients(path))
     if aer_opt == 1:
         from gpuwm.ingest.rrtmg_coeffs import DATA_DIR
@@ -2701,7 +2687,6 @@ def rrtmg_sw(tab: SWTables, nlay, icld, play, plev, tlay, tlev, tsfc,
     swdkdir/swdkdif/swdkdirc, and swuflxcln/swdflxcln (zeros; WRF_CHEM=0),
     all bottom-to-top like the Fortran.
     """
-    one = F(1.0)
     zepzen = F(1.0e-10)
     if aer_opt in (0, 2, 3):
         iaer = 10
@@ -4176,43 +4161,6 @@ SW_GPU_KERNEL_NAMES = (
     "rsw_spcvmc_gpt_b", "rsw_spc_accum_b", "rsw_inatm_layers_b",
     "rsw_post_b", "rsw_laysolfr_b",
 )
-
-
-def _r512(nbytes):
-    """Round up to CuPy's 512-byte pool allocation quantum."""
-    return (int(nbytes) + 511) & ~511
-
-
-def _sw_dev_chunk(cp, a, rows, cols=None):
-    """Contiguous float32 device copy of a leading-axis chunk of ``a``.
-
-    numpy in: host slice -> float32 cast (numpy semantics, same as the
-    per-column driver) -> upload.  cupy f32 in: device slice + copy
-    (pure data movement, bit-preserving).  cupy non-f32: host round-trip
-    cast so the conversion uses numpy semantics, never a CuPy ufunc.
-    """
-    sub = a[rows] if cols is None else a[(rows,) + cols]
-    if isinstance(sub, cp.ndarray):
-        if sub.dtype == cp.float32:
-            return cp.ascontiguousarray(sub)
-        sub = cp.asnumpy(sub)
-    return cp.asarray(np.ascontiguousarray(np.asarray(sub,
-                                                      dtype=np.float32)))
-
-
-def _sw_dev_mcica(cp, a, c0, c1, nl, layout="gpoint"):
-    """(NGPTSW, ncol, nlay) input -> (nc, nl, NGPTSW) contiguous device
-    chunk whose per-column slab is exactly the (NGPTSW, nl) F-order frame
-    the single-column kernels index (transpose is data movement only)."""
-    if layout == "column":
-        return _sw_dev_chunk(cp, a, slice(c0, c1), (slice(None, nl), slice(None)))
-    sub = a[:, c0:c1, :nl]
-    if isinstance(sub, cp.ndarray):
-        if sub.dtype == cp.float32:
-            return cp.ascontiguousarray(sub.transpose(1, 2, 0))
-        sub = cp.asnumpy(sub)
-    sub = np.asarray(sub, dtype=np.float32)
-    return cp.asarray(np.ascontiguousarray(sub.transpose(1, 2, 0)))
 
 
 def sw_batched_scratch_bytes(ncol_chunk, nlay):

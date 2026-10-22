@@ -72,6 +72,13 @@ def validate_surface_radiation_policy(policy: str) -> str:
 @dataclass(frozen=True)
 class RunConfig:
     def __post_init__(self):
+        # The PWP reference profiles (lane/cap-slab-ocean) arrive as lists
+        # from TOML, the namelist importer and callers; store tuples so the
+        # frozen configuration stays hashable.
+        for name in ("ocean_z", "ocean_t", "ocean_s"):
+            value = getattr(self, name)
+            if isinstance(value, list):
+                object.__setattr__(self, name, tuple(value))
         # Resolve named microphysics before all consumers inspect its id.
         # Keep this in the same initializer as the chemistry shortcut.
         if not isinstance(self.mp_physics, int) or isinstance(self.mp_physics, bool):
@@ -1402,11 +1409,20 @@ class RunConfig:
     wsm3_conservative_surface: bool = _correct_mode.CORRECT_KEYS_DEFAULT
     wsm5_conservative_surface: bool = _correct_mode.CORRECT_KEYS_DEFAULT
     wsm7_conservative_surface: bool = _correct_mode.CORRECT_KEYS_DEFAULT
-    # WRF's one-dimensional ocean mixed layer (2.9.1), appended after the
-    # correct-mode keys and ahead of the chem block: off by default, so
-    # every earlier configuration resolves as before and positional
-    # construction does not shift.
+    # WRF's Pollard and three-dimensional PWP oceans. New PWP controls
+    # are keyword-only so the existing positional constructor is stable.
     sf_ocean_physics: int = 0
+    ocean_levels: int = _config_field(default=30, kw_only=True)
+    ocean_analysis: str = _config_field(default="", kw_only=True)
+    ocean_analysis_source: str = _config_field(default="rtofs", kw_only=True)
+    ocean_mld_climatology: str = _config_field(default="woa18", kw_only=True)
+    omdt: float = _config_field(default=1.0, kw_only=True)
+    # Profiles are tuples: RunConfig is frozen and hashable (a list field
+    # made hash(cfg) raise TypeError for every configuration); __post_init__
+    # normalizes a list from TOML or a direct constructor call.
+    ocean_z: tuple[float, ...] = _config_field(default=(), kw_only=True)
+    ocean_t: tuple[float, ...] = _config_field(default=(), kw_only=True)
+    ocean_s: tuple[float, ...] = _config_field(default=(), kw_only=True)
     oml_hml0: float = ocean_namelist_defaults()["oml_hml0"]
     oml_gamma: float = ocean_namelist_defaults()["oml_gamma"]
     oml_relaxation_time: float = ocean_namelist_defaults()["oml_relaxation_time"]
@@ -1510,9 +1526,33 @@ class RunConfig:
     #: ArWen: plume-rise fire properties, ``frp`` (HRRR-Smoke) or ``landuse``
     #: (WRF-Chem plumerise_driver).
     plume_fire_properties: str = "frp"
-    #: ArWen: aerosol to aerosol-aware Thompson, ``none``, ``diagnose`` or
-    #: ``emission`` (DESIGN 5.6, 6.7).
-    aerosol_mp_coupling: str = "none"
+    #: ArWen: aerosol to aerosol-aware Thompson. ``auto`` diagnoses numbers
+    #: when chemistry has a composition IC/BC source; ``none`` opts out.
+    aerosol_mp_coupling: str = "auto"
+    #: WRF ``&chem simple_dir_fdb`` (HRRR v4.1.21 fork, registry.smoke): 1 =
+    #: the transported smoke's layer AOD (smoke/module_add_emiss_burn.F:194,
+    #: 1e-6 x 4.5 m2/g x ug/kg x dry density x dz) joins the aer_opt = 3
+    #: shortwave AOD, MIN(3, layer AOD) (phys/module_radiation_driver.F:
+    #: 979-984), at every radiation call.  Keyword-only so the positional
+    #: API is unchanged.
+    simple_dir_fdb: int = _config_field(default=0, kw_only=True)
+    #: HRRR v4.1.21 fork ``&chem enh_vermix`` (smoke/dry_dep_driver.F:
+    #: 178-195): the chem vertical mixing's eddy diffusivity is raised over
+    #: burning columns (FRP > 1 MW: levels kts+1..kts+4 to MAX(1.1 K, 10);
+    #: diurnal FRP > 250 MW: kts+1..kts+5 to MAX(1.1 K, 20)).
+    enh_vermix: bool = _config_field(default=False, kw_only=True)
+    #: HRRR v4.1.21 fork ``&chem flam_part`` (smoke/module_plumerise1.F:141):
+    #: the flaming fraction of the fire emission lifted into the plume
+    #: (the rest stays in the lowest layer), constant over every burning
+    #: column.  -1 keeps the GSL plume's own fraction (0.85 / 0.9 by FRP,
+    #: gpuwm/core/kernels/chem_plumerise.cu).
+    flam_part: float = _config_field(default=-1.0, kw_only=True)
+    #: HRRR v4.1.21 fork ``&chem aer_drydep_opt``: 111 is the smoke dry
+    #: deposition velocity (smoke/dry_dep_driver.F:244-256, ust/500 with the
+    #: unstable and humid corrections, capped at 0.5 m/s) as the lower
+    #: boundary of the chem vertical mixing, for aerosol rows with no dry
+    #: deposition scheme of their own.  0 = those rows deposit nothing.
+    aer_drydep_opt: int = _config_field(default=0, kw_only=True)
     # The WRF v4.7.1 fire (SFIRE) namelist, appended keyword-only so the
     # positional API and the order of every field above are unchanged.
     # Names, types and defaults are gpuwm.sfire_config.FireRunFields'
@@ -1687,6 +1727,57 @@ class RunConfig:
     fire_static: str = ""
     fire_fuel_namelist: str = ""
     fire_smoke: bool = False
+    # Ocean door TOML; empty preserves uncoupled configurations.
+    ocean_config: str = ""
+
+    # Auto enables hail diagnostics on convection-allowing moist grids.
+    hailcast_opt: int = -1
+    haildt: float = 60.0
+
+    # Prognostic zero-layer ice defaults on in domains containing ocean ice.
+    seaice_prognostic: bool = True
+    seaice_initial_thickness: float = 1.0  # declared prior, not an analysis
+    seaice_new_ice_thickness: float = 0.5
+    seaice_ocean_heat_flux: float = 2.0  # W m-2, positive ocean to ice
+
+    # Automatic eclipse dimming; 0 is the undimmed counterfactual.
+    ra_sw_eclipse: int = 1
+
+    # Observed lake state, table-driven and default-on where covered.
+    lake_state_source: str = "auto"
+    lake_state_path: str = ""
+    lake_state_accept_licence: str = ""
+
+    # APPENDED LAST, on the config-freeze discipline.
+    #: WRF ``&physics seaice_threshold`` (Registry.EM_COMMON, real,
+    #: default 100 K).  A real.exe (initialisation) rule only, never read by
+    #: the model: share/module_soil_pre.F adjust_for_seaice_post (HRRR
+    #: v4.1.21 fork :245-246, :341-342) turns every WATER cell whose input
+    #: skin temperature is below it into sea ice -- ice land use and soil
+    #: category, LANDMASK 1, TMN 271.4 K, the ice soil column -- whatever
+    #: its analysed XICE says.  Under ``fractional_seaice = 1`` the cell's
+    #: XICE is left as analysed (possibly 0); under 0 it is set to 1.  The
+    #: default 100 K converts nothing, so every run before this field is
+    #: unchanged; HRRR v4 runs 271.4.
+    seaice_threshold: float = 100.0
+
+    # HRRR v4 output (lane/hrrr-v4-output: e55b68accb, bd4a1c2090,
+    # f80ac46aeb), APPENDED LAST and keyword-only.  The lane first inserted
+    # these six after nwp_diagnostics, in the positional block: that shifted
+    # every positional RunConfig field after it and moved the pre-mosaic
+    # checkpoint identity (tests/test_noah_mosaic_config.py, 2.9.4 pass
+    # c4a7d932).  Every default is off, so no earlier run changes.
+    # WRF precipitation accumulation windows, minutes (0 disables).
+    prec_acc_dt: float = 0.0
+    prec_acc_dt1: float = 0.0
+    gsd_diagnostics: int = 0
+    reset_interval1: int = 60
+    # Optional second history cadence, seconds from simulation start.
+    history_interval2_s: float = 0.0
+    history_interval_change_s: float = 0.0
+
+    #: Per-run capacity decision, retained through preparation and receipts.
+    smoke_off_reason: str = _config_field(default="", kw_only=True)
 
 #: The ways a domain's clock meets the measured terrain rules
 #: (:attr:`RunConfig.terrain_clock`).
@@ -2080,19 +2171,53 @@ RUC_OPTION_IDENTITY: dict[str, object] = {
 }
 
 
+def scalar_pblmix_exchange(cfg) -> dict | None:
+    """The registry's EXCH_H producer row for ``cfg``'s PBL scheme, or None."""
+    from gpuwm.physics_registry import consumer_row_for_selector
+    return consumer_row_for_selector(
+        "pbl", "scalar_diffusion_exchange", cfg.bl_pbl_physics)
+
+
+def scalar_pblmix_mixes(cfg) -> bool:
+    """Whether scalar_pblmix=1 runs WRF's post-PBL diff4d for ``cfg``.
+
+    False for no PBL and SASE (the registry row declares them no-ops, as
+    WRF does not call its PBL driver without a PBL scheme).
+    """
+    if cfg.scalar_pblmix != 1:
+        return False
+    row = scalar_pblmix_exchange(cfg)
+    return bool(row and row["writes_exch_h"])
+
+
 def validate_scalar_pblmix_consumer(cfg) -> None:
-    """scalar_pblmix=1 needs its one implemented consumer pair.
+    """scalar_pblmix=1 is admitted where its diff4d tendencies are carried.
+
+    WRF runs diff4d on the selected scheme's EXCH_H after any PBL scheme
+    (module_pbl_driver.F:2251-2259, v4.6.1); the registry row
+    ``scalar_diffusion_exchange`` names each producer.  The implemented
+    solve carries the mp=28 nc/ni/nwfa/nifa family, so a producer with any
+    other microphysics is refused: WRF would diffuse that package's
+    nonprecipitating scalars and this run would omit those tendencies.
 
     Shared with plan review (gpuwm.physics_registry), which calls it on the
     resolved settings so a plan is not offered that this refuses.
     """
-    if cfg.scalar_pblmix == 1 and (cfg.bl_pbl_physics not in (1, 5)
-                                   or cfg.mp_physics != 28):
+    if cfg.scalar_pblmix != 1:
+        return
+    row = scalar_pblmix_exchange(cfg)
+    if row is None:
         raise UnsupportedConfiguration(
-            "scalar_pblmix=1 requires bl_pbl_physics=1 (YSU) or 5 (MYNN) "
-            "and mp_physics=28; the implemented coupling reads that "
-            "scheme's exch_h and the Thompson aerosol scalar fields "
-            "nc/ni/nwfa/nifa; other pairs would omit the requested vertical-mixing tendencies.")
+            f"scalar_pblmix=1 with bl_pbl_physics={cfg.bl_pbl_physics}: the "
+            "registry declares no EXCH_H producer row for that scheme; "
+            "running it would omit the requested vertical-mixing tendencies.")
+    if row["writes_exch_h"] and cfg.mp_physics != 28:
+        raise UnsupportedConfiguration(
+            f"scalar_pblmix=1 with mp_physics={cfg.mp_physics}: WRF diff4d "
+            "would mix that package's nonprecipitating scalars on the PBL "
+            "scheme's exch_h, and the implemented coupling carries only the "
+            "mp=28 Thompson aerosol scalar fields nc/ni/nwfa/nifa; other "
+            "pairs would omit the requested vertical-mixing tendencies.")
 
 
 def validate_mynn_generation_spp(cfg) -> None:
@@ -3335,19 +3460,6 @@ def unported_mp_scheme_refusal(value: int) -> str | None:
     return None
 
 
-def unported_wdm_sibling_refusal(value: int) -> str:
-    """A WDM sibling's refusal: its own missing physics, then the menu.
-
-    Same shape as :func:`unported_p3_variant_refusal`, for the same reason:
-    14 and 26 are the obvious next things a WDM6 user types, and they are
-    still values the schema does not admit, so the message ends the way
-    every other out-of-schema mp value's does.
-    """
-
-    return (f"{_WDM_UNPORTED_SIBLINGS[value]} "
-            f"{_MP_PHYSICS_SCHEMA_MENU}, got {value}.")
-
-
 def unported_p3_variant_refusal(value: int) -> str:
     """A P3 sibling's refusal: its own missing physics, then the menu.
 
@@ -4170,6 +4282,7 @@ def load_streaming_options(path: str | Path):
 CONFIG_RELATIVE_FILE_KEYS: tuple[str, ...] = (
     "wif_climatology_path", "rrtmg_smoke_manifest",
     "fire_static", "fire_fuel_namelist",
+    "ocean_config",
 )
 
 
@@ -4322,6 +4435,8 @@ def load_config(path: str | Path, *, accept_epssm_auto: bool = False,
         merged["eta_levels"] = tuple(merged["eta_levels"])
     join_chem_name_lists(merged)
     apply_chem_set_defaults(merged)
+    from gpuwm.surface_ocean import apply_ocean_defaults
+    apply_ocean_defaults(merged)
     return validate_run_config(RunConfig(**merged),
                                native_fire_ideal=native_fire_ideal)
 
@@ -4448,7 +4563,8 @@ CHEM_RUN_FIELDS = (
     "wetscav_onoff", "chem_conv_tr", "vertmix_onoff", "aer_ra_feedback",
     "aer_op_opt", "dust_alpha", "dust_gamma", "dust_smtune", "dust_ustune",
     "mynn_chem_vertmx", "fire_emission_mode", "plume_fire_properties",
-    "aerosol_mp_coupling")
+    "aerosol_mp_coupling", "simple_dir_fdb", "enh_vermix", "flam_part",
+    "aer_drydep_opt")
 
 #: Every RunConfig field of the fire (SFIRE) block, in declaration order,
 #: appended keyword-only after CHEM_RUN_FIELDS: inert while ``ifire`` is 0
@@ -5913,7 +6029,7 @@ CHEM_ADV_OPT_MODULES = {1: None, 2: "gpuwm.core.chem_advect_mono"}
 FIRE_EMISSION_MODES = ("trailing_24h_dcycle", "daily_mean_dcycle",
                        "observed_hourly")
 PLUME_FIRE_PROPERTIES = ("frp", "landuse")
-AEROSOL_MP_COUPLINGS = ("none", "diagnose", "emission")
+AEROSOL_MP_COUPLINGS = ("auto", "none", "diagnose", "emission")
 
 
 def _module_in_build(name: str) -> bool:
@@ -5934,6 +6050,10 @@ def validate_chem_config(cfg) -> None:
     """
     from gpuwm.chem_table import ChemTableError, chem_names
 
+    if getattr(cfg, "simple_dir_fdb", 0) and not getattr(cfg, "chem_sets", ""):
+        raise ConfigurationRefused(
+            "simple_dir_fdb=1 with chem_sets empty: there is no transported "
+            "smoke for the shortwave to read, so the switch would do nothing.")
     for name in ("chem_sets", "chem_sources"):
         value = getattr(cfg, name, "")
         if not isinstance(value, str):
@@ -5958,7 +6078,8 @@ def validate_chem_config(cfg) -> None:
     for name in ("chem_adv_opt", "kemit", "biomass_burn_opt",
                  "plumerisefire_frq", "dust_opt", "seas_opt", "dmsemis_opt",
                  "wetscav_onoff", "chem_conv_tr", "vertmix_onoff",
-                 "aer_ra_feedback", "aer_op_opt"):
+                 "aer_ra_feedback", "aer_op_opt", "simple_dir_fdb",
+                 "aer_drydep_opt"):
         value = getattr(cfg, name)
         if isinstance(value, bool) or not isinstance(value, int):
             raise ConfigurationRefused(f"{name} must be an integer (WRF declares it an "
@@ -6016,19 +6137,21 @@ def validate_chem_config(cfg) -> None:
              AEROSOL_MP_COUPLINGS)):
         if value not in allowed:
             raise ConfigurationRefused(f"{name}={value!r}: must be one of {allowed}.")
-    if cfg.aerosol_mp_coupling != "none" and int(cfg.mp_physics) != 28:
+    from gpuwm.core.chem_mp_coupling import effective_mode
+    coupling_mode = effective_mode(cfg)
+    if coupling_mode != "none" and int(cfg.mp_physics) != 28:
         raise ConfigurationRefused(
             f"aerosol_mp_coupling={cfg.aerosol_mp_coupling!r} needs "
             f"mp_physics=28 (aerosol-aware Thompson), got {cfg.mp_physics}: "
             "no other scheme carries the nwfa/nifa fields it writes.")
-    if cfg.aerosol_mp_coupling == "emission":
+    if coupling_mode == "emission":
         raise ConfigurationRefused(
             "aerosol_mp_coupling='emission' (GSL rrfs_smoke_wrapper.F90:"
             "632-655: emitted smoke, sea-salt and dust number added to "
             "nwfa/nifa at kemit) is not in this build: no process adds it, "
             "so Thompson would see none of the emitted aerosol while the "
             "configuration says it does; use 'diagnose' or 'none'.")
-    if (cfg.aerosol_mp_coupling == "diagnose"
+    if (coupling_mode == "diagnose"
             and (int(getattr(cfg, "aer_init_opt", 0)) != 0
                  or int(getattr(cfg, "wif_input_opt", 0)) != 0)):
         raise ConfigurationRefused(
@@ -6054,7 +6177,7 @@ def validate_chem_config(cfg) -> None:
         reason = hook(cfg) if hook is not None else None
         if reason:
             raise ConfigurationRefused(f"chem process {key}: {reason}.")
-    if (cfg.aerosol_mp_coupling == "diagnose"
+    if (coupling_mode == "diagnose"
             and not table.rows_for("coupling.thompson")):
         raise ConfigurationRefused(
             f"aerosol_mp_coupling='diagnose' with chem_sets {list(sets)}: no "
@@ -6088,21 +6211,90 @@ def validate_chem_config(cfg) -> None:
             "optics.gocart: radiation would be handed aerosol optics nothing "
             "computes.")
     if cfg.aer_ra_feedback != 0:
-        # The optics and WRF's RRTMG SW band conversion are ported
-        # (gpuwm/core/chem_optics.py), but no radiation scheme in this build
-        # reads them: the batched legacy RRTMG SW engine builds WRF's neutral
-        # aer_opt=0 optics internally and has no aerosol inputs
-        # (gpuwm/core/rrtmg_legacy.py, "SW aerosol"), and neither the LW
-        # engine's tauaer nor RTE-RRTMGP is handed chem optics.  Accepting
-        # the switch would run radiation aerosol-free under a namelist that
-        # says the aerosol feeds it.
+        lw, sw = radiation_scheme_ids(cfg)
+        if any(int(value) not in (0, 4) for value in (lw, sw)) or not (lw or sw):
+            raise ConfigurationRefused(
+                "aer_ra_feedback=1 needs RRTMG or RRTMGP radiation "
+                "(ra_lw_physics/ra_sw_physics=4): another solver would discard "
+                "the chemistry aerosol optical properties.")
+        if cfg.aer_opt != 0 or cfg.rrtmg_smoke_manifest:
+            raise ConfigurationRefused(
+                "aer_ra_feedback=1 owns the aerosol optical properties; "
+                "aer_opt climatology/user/Thompson optics or a prescribed smoke "
+                "manifest would overwrite or double count that same aerosol. "
+                "Use aer_opt=0 with prognostic chemistry feedback.")
+    if cfg.simple_dir_fdb not in (0, 1):
         raise ConfigurationRefused(
-            f"aer_ra_feedback={cfg.aer_ra_feedback}: aerosol-radiation "
-            "feedback is not wired in this build -- the chem optics are "
-            "computed (EXTCOF55, AOD5502D) but no radiation scheme reads "
-            "them, so radiation would run aerosol-free.  Set "
-            "aer_ra_feedback = 0.")
-    if cfg.aer_op_opt != 1 and table.rows_for("optics.gocart"):
+            f"simple_dir_fdb={cfg.simple_dir_fdb}: the HRRR fork defines 0 (off) "
+            "and 1 (smoke AOD into the aer_opt = 3 shortwave) only.")
+    if cfg.simple_dir_fdb:
+        smoke_rows = [row for row in table.transported if row.feeds_shortwave_aod]
+        if len(smoke_rows) != 1:
+            raise ConfigurationRefused(
+                "simple_dir_fdb=1 needs exactly one transported chem row whose "
+                "radiation.shortwave declares the smoke layer AOD (chem_sets = \"smoke\"); "
+                f"this selection has {[r.name for r in smoke_rows]}, so the "
+                "shortwave would read no smoke or pick one row arbitrarily.")
+        lw, sw = radiation_scheme_ids(cfg)
+        if (int(sw) != 4 or cfg.ra_rrtmg_variant != RRTMG_VARIANT_LEGACY
+                or cfg.aer_opt != 3):
+            raise ConfigurationRefused(
+                "simple_dir_fdb=1 adds smoke to the legacy RRTMG aer_opt = 3 "
+                "shortwave AOD (the HRRR fork's only smoke coupling); with "
+                f"ra_sw_physics={sw}, ra_rrtmg_variant={cfg.ra_rrtmg_variant!r}, "
+                f"aer_opt={cfg.aer_opt} no solver would read it.")
+        if cfg.aer_ra_feedback or cfg.rrtmg_smoke_manifest:
+            raise ConfigurationRefused(
+                "simple_dir_fdb=1 with aer_ra_feedback or a prescribed smoke "
+                "manifest: the shortwave would count the same plume twice "
+                "(the transported smoke's AOD and the chem optics or the "
+                "prescribed profile); keep one.")
+    if cfg.aer_drydep_opt not in (0, 111):
+        raise ConfigurationRefused(
+            f"aer_drydep_opt={cfg.aer_drydep_opt}: only the HRRR fork's 111 "
+            "(smoke deposition velocity in the vertical mixing) is a run "
+            "field; other aerosol dry deposition is a row's drydep scheme.")
+    if cfg.aer_drydep_opt == 111 and not (
+            cfg.vertmix_onoff > 0 and table.rows_for("mixing.vertmx")):
+        raise ConfigurationRefused(
+            "aer_drydep_opt=111 deposits through the chem vertical mixing "
+            "(dry_dep_driver.F:256), and this run mixes no row "
+            "(vertmix_onoff or no mixing.vertmx row): nothing would deposit.")
+    if not isinstance(cfg.enh_vermix, bool):
+        raise ConfigurationRefused(f"enh_vermix must be a boolean, got {cfg.enh_vermix!r}.")
+    if cfg.enh_vermix and not (table.rows_for("emission.fire")
+                               and table.rows_for("mixing.vertmx")):
+        raise ConfigurationRefused(
+            "enh_vermix raises the mixing over burning columns from the "
+            "fire FRP; this run has no emission.fire or mixing.vertmx row, "
+            "so the switch would read no FRP or mix nothing.")
+    flam = cfg.flam_part
+    if isinstance(flam, bool) or not isinstance(flam, (int, float)) or not (
+            flam == -1.0 or 0.0 <= flam <= 1.0):
+        raise ConfigurationRefused(
+            f"flam_part={flam!r}: a flaming fraction in [0, 1] (the fork "
+            "refuses > 1, smoke_init.F:70), or -1 for the plume's own.")
+    if flam != -1.0 and not table.rows_for("plumerise.freitas"):
+        raise ConfigurationRefused(
+            "flam_part splits the plume-rise injection; this run has no "
+            "plumerise.freitas row, so it would split nothing.")
+    if cfg.aer_ra_feedback and cfg.ra_rrtmg_variant == RRTMG_VARIANT_RTE_RRTMGP:
+        missing = [row.name for row in table.rows_for("optics.gocart")
+                   if not row.optics or row.optics.get("merra_type") is None]
+        if missing:
+            raise ConfigurationRefused(
+                "RRTMGP aerosol feedback needs native MERRA optical table "
+                f"metadata for rows {missing}: these masses would otherwise "
+                "be omitted from the radiation spectrum.")
+    # aer_op_opt = 0 is WRF-Chem's "no optical averaging": with the feedback
+    # off nothing consumes an optical mixing rule, so only 2-4 (Maxwell-
+    # Garnett, exact Mie) or a feedback run with no rule can be handed the
+    # wrong one.  The bulk smoke row gained optics.gocart metadata
+    # (lane/cap-aer-optics, 177a585dd32), and HRRR's own namelist (smoke,
+    # aer_op_opt = 0, feedback off) must still import.
+    if table.rows_for("optics.gocart") and (
+            cfg.aer_op_opt not in (0, 1)
+            or (cfg.aer_op_opt == 0 and cfg.aer_ra_feedback)):
         raise ConfigurationRefused(
             f"aer_op_opt={cfg.aer_op_opt}: only WRF-Chem's volume "
             "approximation (aer_op_opt = 1, module_optical_averaging.F) is "
@@ -6156,6 +6348,18 @@ def _catalog_sources():
 CUMULUS_PARAMETER_IDENTITY_RULES = {'nsas_dx_factor': (0, (96,)), 'sas_pgcon': (0.55, (96,))}
 
 
+def validate_seaice_parameters(cfg):
+    """Configuration-only validation, also available in preprocessing installs."""
+    if type(cfg.seaice_prognostic) is not bool:
+        raise ValueError("seaice_prognostic must be boolean")
+    for key in ("seaice_initial_thickness", "seaice_new_ice_thickness"):
+        value = getattr(cfg, key)
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError(f"{key} must be finite and positive")
+    if not math.isfinite(cfg.seaice_ocean_heat_flux):
+        raise ValueError("seaice_ocean_heat_flux must be finite, positive into ice")
+
+
 def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> RunConfig:
     """The RunConfig invariant battery, shared by BOTH loaders.
 
@@ -6169,7 +6373,15 @@ def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> R
     """
     from gpuwm.lightning_contract import validate_lightning
     validate_lightning(cfg)
+    if type(cfg.hailcast_opt) is not int or cfg.hailcast_opt not in (-1, 0, 1):
+        raise ConfigurationRefused("hailcast_opt must be -1 (automatic), 0 or 1")
+    if not math.isfinite(cfg.haildt) or not 0 <= cfg.haildt <= 60:
+        raise ConfigurationRefused("haildt must be between 0 (every step) and 60 seconds")
     validate_fire_config(cfg)
+    if not isinstance(cfg.ocean_config, str):
+        raise ValueError("ocean_config must name a TOML ocean contract")
+    if cfg.ocean_config and not cfg.sf_sfclay_physics:
+        raise ValueError("ocean_config requires an active surface layer to supply 10m winds and friction velocity")
     if type(cfg.surface_energy_diag) is not bool:
         raise ConfigurationRefused("surface_energy_diag must be boolean")
     why = terrain_drag_refusal(
@@ -6377,6 +6589,7 @@ def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> R
     validate_surface_radiation_policy(cfg.surface_radiation_policy)
     from gpuwm.noahmp_generation import snow_age_generation
     snow_age_generation(cfg.noahmp_snow_age)
+    validate_seaice_parameters(cfg)
     if (not math.isfinite(cfg.seaice_albedo_default)
             or not 0.0 <= cfg.seaice_albedo_default <= 1.0):
         raise ConfigurationRefused(
@@ -6426,6 +6639,24 @@ def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> R
             "0 (sea-ice threshold 0.5) or 1 (threshold 0.02), WRF's two "
             "values (module_surface_driver.F fractional_seaice select)."
         )
+    if (isinstance(cfg.seaice_threshold, bool)
+            or not isinstance(cfg.seaice_threshold, (int, float))
+            or not math.isfinite(float(cfg.seaice_threshold))
+            or not 0.0 < float(cfg.seaice_threshold) <= 400.0):
+        raise ConfigurationRefused(
+            f"seaice_threshold={cfg.seaice_threshold!r} must be a finite "
+            "skin temperature in K, 0 < value <= 400 (WRF &physics "
+            "seaice_threshold, a REAL; the default 100 converts no water "
+            "cell to ice).")
+    if (float(cfg.seaice_threshold) > 170.0
+            and cfg.sf_surface_physics not in (2, 3, 4)):
+        raise ConfigurationRefused(
+            f"seaice_threshold={cfg.seaice_threshold!r} converts open water "
+            "colder than it to sea ice in the soil ingest of Noah, RUC and "
+            "Noah-MP (gpuwm/ingest/soil.py preprocess_noah_soil, real.exe's "
+            "adjust_for_seaice_post); sf_surface_physics="
+            f"{cfg.sf_surface_physics} has no such ingest, so the cells would "
+            "stay open water and the requested rule would silently not run.")
     if cfg.fractional_seaice == 1 and cfg.sf_surface_physics != 3:
         raise ConfigurationRefused(
             "fractional_seaice=1 is implemented by the RUC seam only "
@@ -6710,7 +6941,7 @@ def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> R
                     "write the same number-species rate. Select one mixing "
                     "path.")
         validate_scalar_pblmix_consumer(cfg)
-        if cfg.bldt != 0.0:
+        if cfg.bldt != 0.0 and scalar_pblmix_mixes(cfg):
             raise UnsupportedConfiguration(
                 "scalar_pblmix=1 requires bldt=0: scalar tendencies are "
                 "recomputed every step and are not stored in the restart "
@@ -6821,17 +7052,36 @@ def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> R
             f"({evidence}), and no nearby branch is substituted for an "
             "unported one."
         )
-    if type(cfg.sf_ocean_physics) is not int or cfg.sf_ocean_physics not in (0, 1):
-        raise ValueError("sf_ocean_physics must be 0 or 1; the 3D PWP ocean is not implemented")
+    if type(cfg.sf_ocean_physics) is not int or cfg.sf_ocean_physics not in (0, 1, 2):
+        raise ValueError("sf_ocean_physics must be 0 (off), 1 (Pollard) or 2 (3DPWP)")
     for name in ocean_namelist_defaults():
         value = getattr(cfg, name)
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
             raise ValueError(f"{name} must be finite: nonfinite ocean settings corrupt mixed-layer state")
+    if type(cfg.ocean_levels) is not int or not 2 <= cfg.ocean_levels <= 256:
+        raise ValueError("ocean_levels must be an integer from 2 through 256: PWP needs adjacent levels and bounded per-column device storage")
+    from gpuwm.surface_ocean import validate_pwp_profile
+    validate_pwp_profile(cfg)
     if cfg.sf_ocean_physics:
         if cfg.oml_gamma <= 0:
             raise ValueError("oml_gamma must be positive: OML1D divides by the lapse rate and buoyancy frequency")
         if cfg.sf_sfclay_physics == 0:
-            raise ValueError("sf_ocean_physics=1 requires surface-layer fluxes: UST, HFX and LH would otherwise stay zero")
+            raise ValueError("sf_ocean_physics requires surface-layer fluxes: UST, HFX and LH would otherwise stay zero")
+    from gpuwm.ingest.lake_state import source_rows
+    rows = source_rows()
+    if cfg.lake_state_source not in ("auto", "forcing", *rows):
+        raise ConfigurationRefused(
+            f"lake_state_source={cfg.lake_state_source!r} is unknown; "
+            "an unknown row would leave requested lake observations unbound")
+    row = rows.get(cfg.lake_state_source)
+    if row is not None and row.get("research_only"):
+        if cfg.lake_state_accept_licence != row["licence"]:
+            raise ConfigurationRefused(
+                f"lake source {row['id']} requires lake_state_accept_licence="
+                f"{row['licence']!r}; restricted data cannot become a default")
+        if not cfg.lake_state_path:
+            raise ConfigurationRefused(
+                f"lake source {row['id']} requires lake_state_path to its acquired CF NetCDF file")
     if type(cfg.sf_lake_physics) is not int or cfg.sf_lake_physics not in (0, 1):
         raise ConfigurationRefused(
             f"sf_lake_physics={cfg.sf_lake_physics!r} must be the integer 0 "
@@ -7006,6 +7256,8 @@ def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> R
             "ra_physics must be 0 (off), 4 (RTE+RRTMGP), or 90 "
             f"(analytic clear-sky proxy), got {cfg.ra_physics}."
         )
+    if type(cfg.ra_sw_eclipse) is not int or cfg.ra_sw_eclipse not in (0, 1):
+        raise ConfigurationRefused("ra_sw_eclipse must be 0 (undimmed) or 1 (Besselian eclipse)")
     ra_lw_physics, ra_sw_physics = radiation_scheme_ids(cfg)
     if ra_lw_physics not in RA_LW_PHYSICS_ACCEPTED:
         why = radiation_unported_reason("ra_lw_physics", ra_lw_physics)
@@ -7377,12 +7629,30 @@ def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> R
             f"and requires mp_physics=50 (got mp_physics={cfg.mp_physics}); "
             "no other scheme reads it, and gpuwm refuses a stray value "
             "instead of silently dropping it.")
+    for name in ("history_interval2_s", "history_interval_change_s"):
+        value = getattr(cfg, name)
+        if not math.isfinite(value) or value < 0:
+            raise ConfigurationRefused(f"{name} must be finite and non-negative")
+    if cfg.history_interval_change_s and not cfg.history_interval2_s:
+        raise ConfigurationRefused("history_interval_change_s needs history_interval2_s")
+    if cfg.history_interval2_s and cfg.history_interval2_s <= cfg.output_interval_s:
+        raise ConfigurationRefused("history_interval2_s must exceed output_interval_s, as in the fork history alarm")
     _validate_adaptive_time_step(cfg)
     if cfg.no_mp_heating not in (0, 1):
         raise ConfigurationRefused(
             "no_mp_heating must be 0 (microphysics latent heating on, the "
             f"WRF default) or 1 (heating off), got {cfg.no_mp_heating}."
         )
+    if cfg.gsd_diagnostics not in (0, 1):
+        raise ValueError("gsd_diagnostics must be 0 or 1; research package 2 is not carried")
+    if type(cfg.reset_interval1) is not int or cfg.reset_interval1 <= 0:
+        raise ValueError("reset_interval1 must be positive whole minutes")
+    if cfg.gsd_diagnostics and cfg.mp_physics not in (0, 8, 28):
+        raise ValueError("gsd_diagnostics hail PSD supports mp_physics 8/28; other fork PSD tables are not carried")
+    for key in ("prec_acc_dt", "prec_acc_dt1"):
+        value = getattr(cfg, key)
+        if not math.isfinite(value) or value < 0:
+            raise ValueError(f"{key} must be finite and nonnegative minutes")
     if cfg.nwp_diagnostics not in (0, 1):
         raise ConfigurationRefused(
             "nwp_diagnostics must be 0 (off, the WRF default) or 1 "

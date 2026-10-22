@@ -75,6 +75,55 @@ def gil_enabled() -> bool:
     return True if probe is None else bool(probe())
 
 
+#: The sentence every multi-card door refuses with on an interpreter whose
+#: lock is on (:func:`multi_card_lock_reason`), and the remedy the doctor
+#: row prints.  THE BREAKAGE IT NAMES, measured 2026-10-08: on CPython 3.12
+#: two cards ran at 0.78x the speed of one, because every rank thread waits
+#: its turn on the interpreter lock; on free-threaded 3.14t 1/2/4 cards ran
+#: 33/20/17 s per forecast hour (2026-10-06).  Origin of the refusal: an
+#: 8-card box got the wheel installed by hand into a venv on the box's GIL
+#: Python and ``--devices 8`` was about to run with nothing said.
+MULTI_CARD_GIL_REFUSAL = (
+    "multi-card stepping is serialised by the GIL: measured 2 cards 0.78x of "
+    "1 card; install with install.sh (python3.14t, PYTHON_GIL=0) or run under "
+    "python3.14t with PYTHON_GIL=0")
+
+
+def multi_card_lock_reason() -> str | None:
+    """Why this interpreter cannot step several cards at once, or ``None``.
+
+    A GIL build, or a free-threaded build whose lock is on in this process
+    (an explicit ``PYTHON_GIL=1``, or an extension that re-enabled it in a
+    process that was not started with ``PYTHON_GIL=0``).
+    """
+    version = ".".join(str(v) for v in sys.version_info[:3])
+    if not free_threaded_build():
+        return f"Python {version} is a GIL build"
+    if gil_enabled():
+        env = os.environ.get("PYTHON_GIL")
+        why = f"PYTHON_GIL={env}" if env is not None else "PYTHON_GIL is not 0"
+        return f"free-threaded Python {version} has the interpreter lock on ({why})"
+    return None
+
+
+def refuse_multi_card_under_gil(count: int, route: str) -> None:
+    """Refuse a ``count > 1`` card split on an interpreter whose lock is on.
+
+    Single-card runs (``count <= 1``) are never refused.  Raises
+    :class:`gpuwm.core.devices.DevicesRefused`.
+    """
+    if int(count or 1) <= 1:
+        return
+    reason = multi_card_lock_reason()
+    if reason is None:
+        return
+    from gpuwm.core.devices import DevicesRefused
+    raise DevicesRefused(
+        f"{route}: a {int(count)}-card split is refused on this interpreter "
+        f"({reason}): "
+        f"{MULTI_CARD_GIL_REFUSAL}")
+
+
 def host_threads_report() -> dict:
     """What the ranked receipts record about the host threads."""
     return dict(python=sys.version.split()[0],
@@ -227,6 +276,8 @@ def keep_gil_disabled() -> None:
     raise SystemExit(run_bound_child(command, env, job))
 
 
-__all__ = ["NO_JOB_WARNING", "REEXEC_MARKER", "free_threaded_build", "gil_enabled",
+__all__ = ["MULTI_CARD_GIL_REFUSAL", "NO_JOB_WARNING", "REEXEC_MARKER",
+           "free_threaded_build", "gil_enabled", "multi_card_lock_reason",
+           "refuse_multi_card_under_gil",
            "host_threads_report", "keep_gil_disabled", "reexec_command",
            "run_bound_child"]

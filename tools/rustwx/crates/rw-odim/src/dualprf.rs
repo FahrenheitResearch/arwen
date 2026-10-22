@@ -41,7 +41,7 @@
 
 use crate::censor;
 use crate::quantity::QuantityKind;
-use crate::volume::{Moment, NyquistSource, PolarVolume, Sweep};
+use crate::volume::{Moment, NyquistSource, Sweep};
 
 /// Rays either side of the gate in the reference window.
 pub const AZ_HALF: usize = 2;
@@ -271,15 +271,6 @@ pub fn correct_sweep(sweep: &mut Sweep) -> DualPrfReport {
         if let Some(values) = values {
             moment.values = values;
         }
-    }
-    report
-}
-
-/// Correct every dual-PRF velocity moment of a volume in place.
-pub fn correct_volume(volume: &mut PolarVolume) -> DualPrfReport {
-    let mut report = DualPrfReport::default();
-    for sweep in &mut volume.sweeps {
-        report.add(&correct_sweep(sweep));
     }
     report
 }

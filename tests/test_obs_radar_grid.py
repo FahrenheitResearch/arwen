@@ -232,20 +232,22 @@ def _rewrite(source, destination, *, mutate):
     return destination
 
 
-def _square_grid_file(tmp_path, name="square.nc"):
+@pytest.fixture(scope="module")
+def _square_grid_file(tmp_path_factory):
     """A 2x3x3 file: square, so a transpose keeps every array shape."""
 
+    tmp_path = tmp_path_factory.mktemp("square-radar-grid")
     grid = _grid(nx=3, ny=3, dx=100000.0, nz=2, top_m=8000.0)
     volume = _volume(grid, reflectivity=[30.0, 35.0], velocity=[5.0, 6.0],
                      nyquist=32.0)
     observations, params = _gridded(grid, volume)
-    path = tmp_path / name
+    path = tmp_path / "square.nc"
     write_radar_grid(path, observations, grid,
                      valid_time="2026-07-28T20:03:16Z", params=params)
     return path, grid
 
 
-def test_a_transposed_or_staggered_variable_is_refused_not_regridded(tmp_path):
+def test_a_transposed_or_staggered_variable_is_refused_not_regridded(tmp_path, _square_grid_file):
     """RAD-H2, rebuilt from the audit's own adversarial construction.
 
     A square 2x3x3 file whose ``z_obs`` is declared over
@@ -259,7 +261,7 @@ def test_a_transposed_or_staggered_variable_is_refused_not_regridded(tmp_path):
 
     import netCDF4
 
-    source, grid = _square_grid_file(tmp_path)
+    source, grid = _square_grid_file
     attacked = tmp_path / "transposed.nc"
 
     def mutate(src, dst):
@@ -289,8 +291,8 @@ def test_a_transposed_or_staggered_variable_is_refused_not_regridded(tmp_path):
                         expected_grid_identity=grid.identity_sha256())
 
 
-def test_the_dimension_tuple_is_checked_for_order_type_and_units(tmp_path):
-    source, _ = _square_grid_file(tmp_path)
+def test_the_dimension_tuple_is_checked_for_order_type_and_units(tmp_path, _square_grid_file):
+    source, _ = _square_grid_file
 
     def transpose_plane(src, dst):
         out = dst.createVariable("z_err", "f4",
@@ -329,8 +331,8 @@ def test_the_dimension_tuple_is_checked_for_order_type_and_units(tmp_path):
         read_radar_grid(tmp_path / "wide-mask.nc")
 
 
-def test_the_identity_is_bound_to_the_coordinates_the_file_stores(tmp_path):
-    source, grid = _square_grid_file(tmp_path)
+def test_the_identity_is_bound_to_the_coordinates_the_file_stores(tmp_path, _square_grid_file):
+    source, grid = _square_grid_file
 
     def move_a_gridpoint(src, dst):
         out = dst.createVariable("XLAT", "f4",
@@ -355,7 +357,7 @@ def test_the_identity_is_bound_to_the_coordinates_the_file_stores(tmp_path):
         read_radar_grid(tmp_path / "unbound.nc")
 
 
-def test_a_relabelled_identity_cannot_reach_the_da_read_path(tmp_path):
+def test_a_relabelled_identity_cannot_reach_the_da_read_path(tmp_path, _square_grid_file):
     """The file stores no vertical coordinate, so a reader alone cannot bind.
 
     Two grids identical in every horizontal array and different only in
@@ -370,7 +372,7 @@ def test_a_relabelled_identity_cannot_reach_the_da_read_path(tmp_path):
     ever have done harm -- and requires a refusal.
     """
 
-    source, grid = _square_grid_file(tmp_path)
+    source, grid = _square_grid_file
     assert read_radar_grid(source, expected_grid=grid)["dims"]["level"] == 2
 
     stretched = _grid(nx=3, ny=3, dx=100000.0, nz=2, top_m=9000.0)
@@ -454,7 +456,7 @@ def test_a_relabelled_identity_cannot_reach_the_da_read_path(tmp_path):
 
 
 def test_the_document_shape_is_bound_by_its_digest_table_not_its_identity(
-        tmp_path):
+        tmp_path, _square_grid_file):
     """A hand-assembled document cannot skip the binding either.
 
     The adapter accepts an already-read document so a cycle can read once
@@ -466,7 +468,7 @@ def test_the_document_shape_is_bound_by_its_digest_table_not_its_identity(
 
     from gpuwm.da import obs_radar
 
-    source, grid = _square_grid_file(tmp_path)
+    source, grid = _square_grid_file
     document = read_radar_grid(source)
     assert obs_radar.read_document(document, expected_grid=grid) is document
 
@@ -491,8 +493,8 @@ def test_the_document_shape_is_bound_by_its_digest_table_not_its_identity(
             obs_radar.read_document(mangled, expected_grid=grid)
 
 
-def test_a_scaled_beam_vector_is_refused_under_a_true_mask(tmp_path):
-    source, _ = _square_grid_file(tmp_path)
+def test_a_scaled_beam_vector_is_refused_under_a_true_mask(tmp_path, _square_grid_file):
+    source, _ = _square_grid_file
 
     def scale_the_beam(src, dst):
         # As above: this case is about beam MAGNITUDE, so it follows the

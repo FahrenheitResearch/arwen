@@ -175,7 +175,6 @@ def test_comparing_across_courses_refuses_and_names_both_courses():
 def test_comparing_across_product_sets_refuses_and_names_the_field():
     left = _capsule()
     right = copy.deepcopy(left)
-    del right["seal"]
     right["course"]["products"] = right["course"]["products"][:-1]
     right["course"]["product_set_sha256"] = speedrun.product_set_digest(
         right["course"]["products"])
@@ -189,7 +188,6 @@ def test_comparing_across_product_sets_refuses_and_names_the_field():
 def test_comparing_a_cold_record_against_a_warm_one_refuses():
     left = _capsule()
     right = copy.deepcopy(left)
-    del right["seal"]
     right["compile"]["mode"] = "warm"
     right["comparability"] = speedrun.comparability_block(right)
     right = speedrun.seal(right)
@@ -213,7 +211,6 @@ def test_a_tampered_capsule_cannot_reach_the_comparison_at_all():
 
 def test_zero_wrfout_frames_is_a_void_record_naming_the_reason():
     capsule = _capsule()
-    del capsule["seal"]
     capsule["evidence"]["wrfout_frames"] = 0
     capsule = speedrun.seal(capsule)
     status, reasons = speedrun.evidence_verdict(capsule)
@@ -223,7 +220,6 @@ def test_zero_wrfout_frames_is_a_void_record_naming_the_reason():
 
 def test_a_missing_declared_product_is_a_void_record_naming_the_product():
     capsule = _capsule()
-    del capsule["seal"]
     dropped = capsule["evidence"]["products_rendered"].pop()
     capsule = speedrun.seal(capsule)
     status, reasons = speedrun.evidence_verdict(capsule)
@@ -233,7 +229,6 @@ def test_a_missing_declared_product_is_a_void_record_naming_the_product():
 
 def test_an_empty_product_file_is_a_void_record():
     capsule = _capsule()
-    del capsule["seal"]
     capsule["outputs"]["files"][0]["bytes"] = 0
     capsule = speedrun.seal(capsule)
     status, reasons = speedrun.evidence_verdict(capsule)
@@ -242,7 +237,6 @@ def test_an_empty_product_file_is_a_void_record():
 
 def test_a_forecast_that_did_not_pass_validity_is_void():
     capsule = _capsule()
-    del capsule["seal"]
     capsule["evidence"]["forecast_validity"] = "FAIL"
     capsule = speedrun.seal(capsule)
     status, reasons = speedrun.evidence_verdict(capsule)
@@ -253,7 +247,6 @@ def test_a_forecast_that_did_not_pass_validity_is_void():
 def test_a_void_record_cannot_be_compared():
     left = _capsule()
     right = _capsule()
-    del right["seal"]
     right["evidence"]["wrfout_frames"] = 0
     right = speedrun.seal(right)
     with pytest.raises(speedrun.RecordVoid) as excinfo:
@@ -263,7 +256,6 @@ def test_a_void_record_cannot_be_compared():
 
 def test_stage_walls_must_account_for_the_capsule_wall():
     capsule = _capsule()
-    del capsule["seal"]
     capsule["clock"]["stages"] = {"prepare": 5.0}
     capsule = speedrun.seal(capsule)
     status, reasons = speedrun.evidence_verdict(capsule)
@@ -490,7 +482,6 @@ def test_the_dual_run_screen_sets_the_claim_from_the_product_digests():
 def test_a_dual_run_whose_products_differ_sets_the_claim_false():
     arm_a = _capsule()
     arm_b = _capsule()
-    del arm_b["seal"]
     arm_b["outputs"]["product_set_sha256"] = "f" * 64
     arm_b = speedrun.seal(arm_b)
     block = speedrun.determinism_screen(arm_a, arm_b)
@@ -506,7 +497,6 @@ def test_the_screen_refuses_two_arms_from_different_courses():
 
 def test_a_record_may_not_claim_determinism_without_the_screen():
     capsule = _capsule()
-    del capsule["seal"]
     capsule["determinism"] = {"status": speedrun.NOT_SCREENED, "claim": True}
     capsule = speedrun.seal(capsule)
     status, reasons = speedrun.evidence_verdict(capsule)
@@ -774,7 +764,6 @@ def test_stage_walls_that_exceed_the_records_own_clock_are_void():
     """
 
     capsule = _capsule()
-    del capsule["seal"]
     capsule["clock"]["stages"] = {"prepare": 5.0, "forecast": 806.0,
                                   "render": 241.0}
     capsule = speedrun.seal(capsule)
@@ -786,7 +775,6 @@ def test_stage_walls_that_exceed_the_records_own_clock_are_void():
 
 def test_a_record_that_attributed_nothing_but_orchestration_is_void():
     capsule = _capsule()
-    del capsule["seal"]
     capsule["clock"]["stages"] = {
         "orchestration": capsule["clock"]["wall_seconds"]}
     capsule = speedrun.seal(capsule)
@@ -880,7 +868,6 @@ def test_the_prepare_cell_is_every_on_clock_stage_before_the_forecast():
     """
 
     capsule = _capsule()
-    del capsule["seal"]
     capsule["clock"]["wall_seconds"] = 111.3
     capsule["clock"]["stages"] = {
         "authority": 0.201, "manifest": 6.315, "forecast": 95.394,

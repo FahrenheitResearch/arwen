@@ -13,11 +13,16 @@ itself lives in
 
 from __future__ import annotations
 
-import csv
-from pathlib import Path
 import sys
 
 import numpy as np
+
+if __package__:
+    from .validate_soil_oracle import _load_profiles
+    from .validate_snowtemp_oracle import _shared_bounds
+else:
+    from validate_soil_oracle import _load_profiles
+    from validate_snowtemp_oracle import _shared_bounds
 
 
 CASES = (
@@ -36,51 +41,10 @@ XLMELT = 3.35e5
 
 
 def main(path: str) -> None:
-    with Path(path).open(newline="", encoding="ascii") as stream:
-        rows = list(csv.DictReader(stream))
-    if len(rows) != NCASE * NZS:
-        raise SystemExit(f"expected {NCASE * NZS} rows, got {len(rows)}")
-    cases = tuple(dict.fromkeys(row["case"] for row in rows))
-    if cases != CASES:
-        raise SystemExit(f"unexpected case inventory {cases!r}")
-    numeric = tuple(key for key in rows[0] if key != "case")
-    values = {
-        name: np.asarray([float(row[name]) for row in rows], dtype=np.float32)
-        .reshape(NCASE, NZS)
-        for name in numeric
-    }
+    values = _load_profiles(path, CASES, shape=(NCASE, NZS), excluded=("case",))
     if not all(np.all(np.isfinite(field)) for field in values.values()):
         raise SystemExit("RUC snowtemp contract oracle has non-finite output")
-    col = {name: field[:, 0] for name, field in values.items()}
-
-    # --- the same physical bounds the six-regime fixture is held to --------
-    for name in ("tso_before", "tso_after", "soilt_after", "soilt1_after"):
-        field = values[name]
-        if not np.all((field > 180.0) & (field < 330.0)):
-            raise SystemExit(f"{name} left the plausible temperature range")
-    if not np.all(col["snwe_after"] >= 0.0):
-        raise SystemExit("snowtemp produced negative snow water equivalent")
-    if not np.all(col["snhei_after"] >= 0.0):
-        raise SystemExit("snowtemp produced negative snow depth")
-    if not np.all((col["rhosn_after"] >= 58.8) & (col["rhosn_after"] <= 500.0)):
-        raise SystemExit("snow density left the Koren 58.8-500 kg/m^3 band")
-    if not np.all((col["beta_after"] > 0.0) & (col["beta_after"] <= 1.0)):
-        raise SystemExit("sublimation efficiency beta left (0,1]")
-    for name in ("smelt", "snoh", "rsm", "qvg_after", "qsg_after", "qcg_after"):
-        if not np.all(col[name] >= 0.0):
-            raise SystemExit(f"{name} went negative")
-    if not np.all((col["tsnav_after"] > -100.0) & (col["tsnav_after"] < 60.0)):
-        raise SystemExit("snow-pack mean temperature left the plausible range")
-    if not np.allclose(
-        col["snheiprint"], col["snweprint"] * 1.0e3 / col["rhosn_after"],
-        rtol=1e-5, atol=1e-9,
-    ):
-        raise SystemExit("reported snow depth is inconsistent with its density")
-    if not np.allclose(col["snweprint"], col["snwe_after"], rtol=1e-6, atol=1e-12):
-        raise SystemExit("snweprint does not mirror the updated snwe")
-    if not all(np.any(values["tso_after"][n] != values["tso_before"][n])
-               for n in range(NCASE)):
-        raise SystemExit("snowtemp failed to evolve every temperature profile")
+    col = _shared_bounds(values, NCASE)
 
     snth = col["snth"]
     deltsn = col["deltsn"]

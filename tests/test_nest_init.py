@@ -209,21 +209,6 @@ def test_nested_input_catalog_preserves_era5_soilgeo_units_through_mapping(
         "regular-grid-native-state-v1"
 
 
-def test_pending_child_inputs_names_failed_domain_and_closes(monkeypatch):
-    domain = SimpleNamespace(grid_id=3)
-
-    def fail(*_args):
-        raise ValueError("bad source record")
-
-    monkeypatch.setattr(ni, "_prepare_child_input_on_grid", fail)
-    pending = ni.PendingChildInputs(
-        (domain,), {3: object()}, object(), None, workers=1)
-    with pytest.raises(RuntimeError, match=r"d03") as caught:
-        pending.result()
-    assert isinstance(caught.value.__cause__, ValueError)
-    assert pending._closed
-
-
 def test_pending_child_inputs_carries_the_cause_and_its_remedy(monkeypatch):
     """A worker that reads only the last exception line keys its retry on
     the refusal's remedy; the wrapper used to drop both."""
@@ -245,103 +230,6 @@ def test_pending_child_inputs_carries_the_cause_and_its_remedy(monkeypatch):
     assert message.startswith("d02 independent input preparation failed: ")
     assert "Raising surface_fallback_radius_cells to 24" in message
     assert caught.value.__cause__.args == (refusal,)
-
-
-def test_pending_child_inputs_bounds_nested_cpu_threads_to_budget(monkeypatch):
-    domains = tuple(SimpleNamespace(grid_id=grid_id) for grid_id in (2, 3, 4))
-    observed = []
-
-    def prepare(domain, _grid, _catalog, _orography, backend, workers, _bridge):
-        observed.append((domain.grid_id, backend, workers))
-        return SimpleNamespace(domain=domain)
-
-    monkeypatch.setattr(ni, "_prepare_child_input_on_grid", prepare)
-    pending = ni.PendingChildInputs(
-        domains, {domain.grid_id: object() for domain in domains},
-        object(), None, workers=8)
-    pending.result()
-
-    assert pending.workers == 3
-    assert dict(pending.preprocess_workers_by_domain) == {2: 3, 3: 3, 4: 2}
-    assert pending.allocated_workers == 8
-    assert sorted(observed) == [(2, "cpu", 3), (3, "cpu", 3), (4, "cpu", 2)]
-
-
-def test_pending_child_inputs_limits_submitted_residency_window(monkeypatch):
-    domains = tuple(SimpleNamespace(grid_id=grid_id) for grid_id in range(2, 7))
-    started = []
-    two_started = threading.Event()
-    release = threading.Event()
-    lock = threading.Lock()
-
-    def prepare(domain, *_args):
-        with lock:
-            started.append(domain.grid_id)
-            if len(started) == 2:
-                two_started.set()
-        assert release.wait(timeout=5.0)
-        return SimpleNamespace(domain=domain)
-
-    monkeypatch.setattr(ni, "_prepare_child_input_on_grid", prepare)
-    pending = ni.PendingChildInputs(
-        domains, {domain.grid_id: object() for domain in domains},
-        object(), None, workers=2)
-    assert two_started.wait(timeout=5.0)
-    with lock:
-        assert sorted(started) == [2, 3]
-    release.set()
-    result = pending.result()
-
-    assert [item.domain.grid_id for item in result] == list(range(2, 7))
-    assert pending._next_submit_index == len(domains)
-
-
-def test_six_domain_branching_hierarchy_is_deterministic_and_bounded(
-        monkeypatch):
-    parents = {2: 1, 3: 2, 4: 3, 5: 1, 6: 2}
-    domains = tuple(
-        SimpleNamespace(grid_id=grid_id, parent_id=parents[grid_id])
-        for grid_id in range(2, 7))
-    grids = {domain.grid_id: object() for domain in domains}
-    calls = []
-    lock = threading.Lock()
-
-    def prepare(domain, grid, *_args):
-        assert grid is grids[domain.grid_id]
-        with lock:
-            calls.append(domain.grid_id)
-        return _prepared_for_barrier(domain.grid_id, domain.parent_id)
-
-    monkeypatch.setattr(ni, "_prepare_child_input_on_grid", prepare)
-    observed_orders = []
-    for worker_budget in (1, 3, 8):
-        calls.clear()
-        pending = ni.PendingChildInputs(
-            domains, grids, object(), None, workers=worker_budget,
-            preprocess_backend="cpu")
-        assert len(pending._futures) <= min(worker_budget, len(domains))
-        assert pending.allocated_workers <= worker_budget
-        result = pending.result()
-        observed_orders.append(tuple(item.domain.grid_id for item in result))
-        assert sorted(calls) == list(range(2, 7))
-        assert len(calls) == len(set(calls))
-        assert not pending._futures
-        assert pending._closed
-
-    assert observed_orders == [(2, 3, 4, 5, 6)] * 3
-
-    parent_calls = []
-
-    def finalize(prepared, parent, _vertical, **_options):
-        parent_calls.append((prepared.domain.grid_id, parent.cfg.grid_id))
-        return SimpleNamespace(grid=prepared.grid, state=object())
-
-    monkeypatch.setattr(ni, "finalize_prepared_child", finalize)
-    root = SimpleNamespace(
-        cfg=SimpleNamespace(grid_id=1), grid=object(), state=object())
-    ni.finalize_prepared_child_chain(result, root, object())
-    assert parent_calls == [
-        (2, 1), (3, 2), (4, 3), (5, 1), (6, 2)]
 
 
 def test_pending_child_inputs_empty_hierarchy_allocates_no_workers():

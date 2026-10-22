@@ -38,13 +38,24 @@ import numpy as np
 # glibc 2.39 transcriptions.  The module name is the Noah-MP lane's; the
 # functions are not Noah-MP-specific, and its own docstring says so.  They are
 # imported rather than re-derived because rounding an FP64 evaluation is a
-# different function from what the oracle's libm computes.
+# different function from what the oracle's libm computes.  Import directly
+# under the reference's private names rather than adding delegation wrappers.
+# The expf FP64-then-round shim disagreed on 0.062% of a 35-million-point
+# sweep: mym_initialize's (b1*pmz*elv)**(2/3) on a 30-level cloudy column
+# moved el by 25,193 ULP downstream.  Real-exponent ** uses powf; that cold
+# start failed before it too was repointed to glibc.  FP32 ATAN uses atanf:
+# glibc is faithfully, not correctly, rounded; NumPy's FP32 atan is platform
+# dependent and FP64-then-round gives a third function.  The stfunc oracle's
+# (1-phi_m)/zet cancellation amplified that error: 22/814 phim and 9/814 phih
+# values differed by up to 80/84 ULP; all four counts are zero with glibc.
+# log10f and expm1f likewise use the shared glibc 2.39 FP32 transcriptions.
 from gpuwm.core.noahmp_libm import (
-    atanf as _glibc_atanf,
-    expf as _glibc_expf,
-    log10f as _glibc_log10f,
+    atanf as _atanf,
+    expf as _expf,
+    expm1f as _expm1f,
+    log10f as _log10f,
     logf as _glibc_logf,
-    powf as _glibc_powf,
+    powf as _powf,
 )
 
 
@@ -94,29 +105,7 @@ B1_PMZ = F(B1 * PMZ)
 PHH_B2 = F(PHH * B2)
 # module_bl_mynn.F:1595 fixes the mym_initialize iteration count.
 MYM_INITIALIZE_ITERATIONS = 5
-# glibc / fdlibm s_expm1f.c coefficients, pinned to their exact FP32 words so
-# a wrong decimal literal cannot slip through: 0x3f317180, 0x3717f7d1,
-# 0x3fb8aa3b, 0xbd088889, 0x3ad00d01, 0xb8a670cd, 0x36867e54, 0xb457edbb.
 EXPM1F_TINY = F(1.0e-30)
-EXPM1F_LN2_HI = F(6.9313812256e-01)
-EXPM1F_LN2_LO = F(9.0580006145e-06)
-EXPM1F_INVLN2 = F(1.4426950216e00)
-EXPM1F_Q1 = F(-3.3333335072e-02)
-EXPM1F_Q2 = F(1.5873016091e-03)
-EXPM1F_Q3 = F(-7.9365076090e-05)
-EXPM1F_Q4 = F(4.0082177293e-06)
-EXPM1F_Q5 = F(-2.0109921195e-07)
-for _name, _value, _word in (
-    ("ln2_hi", EXPM1F_LN2_HI, 0x3F317180),
-    ("ln2_lo", EXPM1F_LN2_LO, 0x3717F7D1),
-    ("invln2", EXPM1F_INVLN2, 0x3FB8AA3B),
-    ("q1", EXPM1F_Q1, 0xBD088889), ("q2", EXPM1F_Q2, 0x3AD00D01),
-    ("q3", EXPM1F_Q3, 0xB8A670CD), ("q4", EXPM1F_Q4, 0x36867E54),
-    ("q5", EXPM1F_Q5, 0xB457EDBB),
-):
-    if int(_value.view(np.uint32)) != _word:
-        raise AssertionError(f"expm1f coefficient {_name} is not {_word:#010x}")
-del _name, _value, _word
 
 # module_model_constants.F / module_bl_mynn_common.F thermodynamic constants,
 # rounded exactly the way the Fortran parameter chain rounds them.
@@ -364,13 +353,11 @@ def mynn_get_pblh(
     kzi_out = np.empty(ncol, dtype=np.int32)
     for column in range(ncol):
         kzi = 2
-        kthv = 1  # WRF one-based index.
         minthv = F(9.0e9)
         k = 2
         while interface[column, k - 1] <= F(200.0):
             if minthv > theta[column, k - 1]:
                 minthv = F(theta[column, k - 1])
-                kthv = k
             k += 1
             if k > nz:
                 raise ValueError("MYNN PBLH column has no interface above 200 m")
@@ -1317,7 +1304,7 @@ def mynn_turbulence_default(
             # module_bl_mynn.F:3135-3140. DFQ retains its earlier value.
             for k in range(nz):
                 exponent = F(-max(F(zw[column, k] - F(8000.0)), F(0.0)) / F(2000.0))
-                taper = max(_glibc_expf(exponent), F(0.001))
+                taper = max(_expf(exponent), F(0.001))
                 for name in ("dfm", "dfh"):
                     value = outputs[name][column, k]
                     outputs[name][column, k] = F(value + F(F(F(value * rstoch[column, k]) * F(1.5)) * taper))
@@ -1548,114 +1535,6 @@ def mynn_predict_default(
     return {"qke": qke_out, "tsq": tsq_out, "qsq": qsq_out, "cov": cov_out}
 
 
-def _expf(x: np.float32) -> np.float32:
-    """The FP32 ``EXP`` the oracle's Fortran calls, i.e. glibc 2.39 ``expf``.
-
-    This used to round an FP64 evaluation.  That is a *third* function: glibc
-    is not correctly rounded, so the shim disagrees with it on 0.062% of a
-    35-million-point sweep, and the MYNN driver found one of those points --
-    ``mym_initialize``'s ``(b1*pmz*elv)**(2/3)`` on a 30-level cloudy column
-    landed on the wrong side and moved ``el`` by 25,193 ULP downstream.
-    """
-
-    return _glibc_expf(x)
-
-
-def _log10f(x: np.float32) -> np.float32:
-    """glibc 2.39 ``log10f``; see :func:`_expf` for why not FP64-then-round."""
-
-    return _glibc_log10f(x)
-
-
-def _expm1f(x: np.float32) -> np.float32:
-    """Transcription of glibc's FP32 ``expm1f`` (fdlibm ``s_expm1f.c``).
-
-    ``TANH`` is the one libm entry point in this module that cannot be
-    reproduced by rounding an FP64 evaluation.  glibc's ``tanhf`` is built on
-    ``expm1f`` in FP32 arithmetic, so it is only faithfully rounded: over a
-    4-million-point sweep it disagrees with the correctly rounded result on
-    1.8% of arguments, in both directions.  NumPy's own FP32 ``tanh`` disagrees
-    on 13%.  Reproducing the algorithm is therefore the only way to be bitwise,
-    and it is also what makes the port platform independent rather than tied to
-    whichever libm the host happens to ship.
-    """
-
-    x = F(x)
-    word = int(np.float32(x).view(np.uint32))
-    sign = word & 0x80000000
-    magnitude = word & 0x7FFFFFFF
-    if magnitude >= 0x4195B844:  # |x| >= 27*ln2
-        if magnitude >= 0x42B17218:  # |x| >= 88.72
-            if magnitude > 0x7F800000:
-                return F(x + x)
-            if magnitude == 0x7F800000:
-                return x if sign == 0 else F(-1.0)
-            if x > F(8.8721679688e01):
-                return F(np.inf)
-        if sign != 0:
-            return F(EXPM1F_TINY - F(1.0))
-    if magnitude > 0x3EB17218:  # |x| > 0.5*ln2
-        if magnitude < 0x3F851592:  # |x| < 1.5*ln2
-            if sign == 0:
-                hi = F(x - EXPM1F_LN2_HI)
-                lo = EXPM1F_LN2_LO
-                k = 1
-            else:
-                hi = F(x + EXPM1F_LN2_HI)
-                lo = F(-EXPM1F_LN2_LO)
-                k = -1
-        else:
-            k = int(F(F(EXPM1F_INVLN2 * x)
-                      + (F(0.5) if sign == 0 else F(-0.5))))
-            scale = F(k)
-            hi = F(x - F(scale * EXPM1F_LN2_HI))
-            lo = F(scale * EXPM1F_LN2_LO)
-        x = F(hi - lo)
-        correction = F(F(hi - x) - lo)
-    elif magnitude < 0x33000000:  # |x| < 2**-25
-        return x
-    else:
-        k = 0
-        correction = F(0.0)
-
-    hfx = F(F(0.5) * x)
-    hxs = F(x * hfx)
-    r1 = F(F(1.0) + F(hxs * F(EXPM1F_Q1 + F(hxs * F(
-        EXPM1F_Q2 + F(hxs * F(EXPM1F_Q3 + F(hxs * F(
-            EXPM1F_Q4 + F(hxs * EXPM1F_Q5))))))))))
-    t = F(F(3.0) - F(r1 * hfx))
-    e = F(hxs * F(F(r1 - t) / F(F(6.0) - F(x * t))))
-    if k == 0:
-        return F(x - F(F(x * e) - hxs))
-    e = F(F(x * F(e - correction)) - correction)
-    e = F(e - hxs)
-    if k == -1:
-        return F(F(F(0.5) * F(x - e)) - F(0.5))
-    if k == 1:
-        if x < F(-0.25):
-            return F(-F(2.0) * F(e - F(x + F(0.5))))
-        return F(F(1.0) + F(F(2.0) * F(x - e)))
-    if k <= -2 or k > 56:
-        y = F(F(1.0) - F(e - x))
-        y = _scale_exponent(y, k)
-        return F(y - F(1.0))
-    if k < 23:
-        t = np.uint32(0x3F800000 - (0x1000000 >> k)).view(np.float32)
-        y = F(t - F(e - x))
-    else:
-        t = np.uint32((0x7F - k) << 23).view(np.float32)
-        y = F(x - F(e + t))
-        y = F(y + F(1.0))
-    return _scale_exponent(y, k)
-
-
-def _scale_exponent(y: np.float32, k: int) -> np.float32:
-    """Add ``k`` to a finite FP32 value's biased exponent field."""
-
-    word = int(np.float32(y).view(np.uint32)) + (k << 23)
-    return np.uint32(word & 0xFFFFFFFF).view(np.float32)
-
-
 def _tanhf(x: np.float32) -> np.float32:
     """Transcription of glibc's FP32 ``tanhf``; see :func:`_expm1f`."""
 
@@ -1674,33 +1553,6 @@ def _tanhf(x: np.float32) -> np.float32:
     else:
         z = F(F(1.0) - EXPM1F_TINY)
     return z if word & 0x80000000 == 0 else F(-z)
-
-
-def _atanf(x: np.float32) -> np.float32:
-    """glibc 2.39 ``atanf``, which is what a real-argument ``ATAN`` links to.
-
-    This used to round an FP64 evaluation, on the reasoning that NumPy's FP32
-    arc tangent is platform dependent while FP64-then-round is not.  Both
-    halves of that are true and the conclusion is still wrong, for the reason
-    :func:`_expf` records: glibc's ``atanf`` is faithfully rounded, not
-    correctly rounded, so the correctly rounded value is a *third* function.
-    ``mynn_phim``/``mynn_phih`` amplify the difference through the
-    ``(1 - phi_m)/zet`` cancellation, and the stfunc oracle measured it: 22 of
-    814 ``phim`` values and 9 of 814 ``phih`` values differed, worst case 80
-    and 84 ULP.  On the verified shim all four counts are zero.
-    """
-
-    return _glibc_atanf(x)
-
-
-def _powf(x: np.float32, y: np.float32) -> np.float32:
-    """glibc 2.39 ``powf``, which is what a real-exponent ``**`` compiles to.
-
-    See :func:`_expf`: FP64-then-round is a different function and this is the
-    call that broke the driver's cold start before it was repointed.
-    """
-
-    return _glibc_powf(x, y)
 
 
 def _blend_polynomial(coefficients: tuple, xc: np.float32) -> np.float32:
@@ -3539,10 +3391,10 @@ def _phi_stable(zet, a_st, b_st, rb_st) -> np.float32:
     routes it onto the verified glibc transcription, so this arm is bitwise.
     """
 
-    dummy_0 = F(F(1.0) + _glibc_powf(zet, b_st))
-    dummy_1 = F(zet + _glibc_powf(dummy_0, rb_st))
-    dummy_11 = F(F(1.0) + F(_glibc_powf(dummy_0, F(rb_st - F(1.0)))
-                            * _glibc_powf(zet, F(b_st - F(1.0)))))
+    dummy_0 = F(F(1.0) + _powf(zet, b_st))
+    dummy_1 = F(zet + _powf(dummy_0, rb_st))
+    dummy_11 = F(F(1.0) + F(_powf(dummy_0, F(rb_st - F(1.0)))
+                            * _powf(zet, F(b_st - F(1.0)))))
     dummy_2 = F(F(-a_st / dummy_1) * dummy_11)
     return F(F(1.0) - F(zet * dummy_2))
 
@@ -3551,11 +3403,11 @@ def _phi_unstable(zet, phi, dummy_psi, a_unst) -> np.float32:
     """The ``zet < 0`` tail shared by ``phim`` and ``phih`` (Grachev 2000)."""
 
     dummy_0 = F(F(1.0) - F(a_unst * zet))
-    dummy_1 = _glibc_powf(dummy_0, F(0.333333))
+    dummy_1 = _powf(dummy_0, F(0.333333))
     dummy_11 = F(F(F(-0.33333) * a_unst)
-                 * _glibc_powf(dummy_0, F(-0.6666667)))
+                 * _powf(dummy_0, F(-0.6666667)))
     dummy_2 = F(F(0.33333)
-                * F(F(_glibc_powf(dummy_1, F(2.0)) + dummy_1) + F(1.0)))
+                * F(F(_powf(dummy_1, F(2.0)) + dummy_1) + F(1.0)))
     dummy_22 = F(F(F(0.3333) * dummy_11) * F(F(F(2.0) * dummy_1) + F(1.0)))
     dummy_3 = F(F(0.57735) * F(F(F(2.0) * dummy_1) + F(1.0)))
     dummy_33 = F(F(1.1547) * dummy_11)
@@ -3595,7 +3447,7 @@ def mynn_phim(zet: object) -> np.float32:
     zet = F(zet)
     if zet >= F(0.0):
         return _phi_stable(zet, PHI_AM_ST, PHI_BM_ST, PHI_RBM_ST)
-    dummy_0 = _glibc_powf(F(F(1.0) - F(CPHM_UNST * zet)), F(0.25))
+    dummy_0 = _powf(F(F(1.0) - F(CPHM_UNST * zet)), F(0.25))
     phi_m = F(F(1.0) / dummy_0)
     dummy_psi = F(
         F(F(F(F(2.0) * _glibc_logf(F(F(0.5) * F(F(1.0) + dummy_0))))
@@ -3614,7 +3466,7 @@ def mynn_phih(zet: object) -> np.float32:
     zet = F(zet)
     if zet >= F(0.0):
         return _phi_stable(zet, PHI_AH_ST, PHI_BH_ST, PHI_RBH_ST)
-    dummy_0 = _glibc_powf(F(F(1.0) - F(CPHH_UNST * zet)), F(0.5))
+    dummy_0 = _powf(F(F(1.0) - F(CPHH_UNST * zet)), F(0.5))
     phh = F(F(1.0) / dummy_0)
     dummy_psi = F(F(2.0) * _glibc_logf(F(F(0.5) * F(F(1.0) + dummy_0))))
     return _phi_unstable(zet, phh, dummy_psi, PHI_AH_UNST)
@@ -3640,17 +3492,6 @@ MYNN_DRIVER_STATE = (
 MYNN_DRIVER_INPUTS = (
     *MYNN_DRIVER_LAYER_INPUTS, *MYNN_DRIVER_SCALAR_INPUTS,
     *MYNN_DRIVER_STATE, "pblh", "kpbl", "rmol",
-)
-MYNN_DRIVER_TENDENCY_OUTPUTS = (
-    "rublten", "rvblten", "rthblten", "rqvblten", "rqcblten", "rqiblten",
-    "rqsblten", "dozone", "exch_h", "exch_m",
-)
-MYNN_DRIVER_COLUMN_OUTPUTS = (
-    "pblh", "kpbl", "rmol", "maxwidth", "maxmf", "ztop_plume", "ktop_plume",
-)
-MYNN_DRIVER_OUTPUTS = (
-    *MYNN_DRIVER_TENDENCY_OUTPUTS, *MYNN_DRIVER_STATE,
-    *MYNN_DRIVER_COLUMN_OUTPUTS,
 )
 
 
@@ -4050,11 +3891,11 @@ def mynn_bl_driver(
         qke = predicted["qke"][column]
         for k in range(nz - 1):
             blend = max(F(F(0.5) * F(F(el[k]) + F(el[k + 1]))), F(1.0))
-            value = F(F(F(F(1.0) * _glibc_powf(F(qke[k]), F(1.5)))
+            value = F(F(F(F(1.0) * _powf(F(qke[k]), F(1.5)))
                         / F(B1 * blend)) / CP)
             value = min(max(value, F(0.0)), F(0.002))
             diss_heat[column, k] = F(
-                value * _glibc_expf(
+                value * _expf(
                     F(-F(F(10000.0) / max(F(layers["p"][column, k]), F(1.0))))
                 )
             )

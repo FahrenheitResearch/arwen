@@ -26,7 +26,7 @@ def test_thirty_second_namelist_import_records_every_static_field(tmp_path):
             ("lai", "lai_modis_10m"),
             ("albedo", "albedo_modis"),
             ("snow_albedo", "maxsnowalb_modis"),
-            ("soil_temperature", "soiltemp_1deg")):
+            ("soil_temperature", "soiltemp_era5_1deg")):
         assert f"{field}={dataset}" in notice
     assert "no dataset substitution is applied" in report.format()
 

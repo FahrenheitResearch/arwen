@@ -31,7 +31,7 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use super::{
-    ERR, OK, bytes, clear_error, guard, register_fieldset, set_error, utf8, with_fieldset,
+    ERR, OK, clear_error, guard, register_fieldset, set_error, utf8, with_fieldset,
     with_fieldsets, with_grid,
 };
 use crate::HALO;
@@ -1459,10 +1459,4 @@ pub unsafe extern "C" fn gpuwm_static_highres_derive_window(
             Ok(audit) => copy_out(buf, cap, &audit),
         }
     })
-}
-
-/// Keep the shared byte helper referenced (mirror of grid.rs).
-#[allow(dead_code)]
-fn _reserved(ptr: *const u8, len: usize) -> usize {
-    unsafe { bytes(ptr, len) }.map_or(0, <[u8]>::len)
 }

@@ -38,6 +38,8 @@ mod soil_recovery;
 mod invariant_binding;
 mod compose_source;
 mod storm_diagnostics;
+mod composition_stack;
+mod aeronet_aod;
 
 /// The contract marker. Printed by `--abi`, and -- because it is a
 /// literal in the binary -- readable straight out of the bytes by the
@@ -48,8 +50,9 @@ const ABI: &str = concat!(
     "\tdtype\t<f8\t|S1\twater_layer_conversion\tsource_soil_recovery",
     "\tdump_window_v1",
     "\tdump_sample_window_v1",
+    "\tdump_sample_window_masked_v1",
     "\tbind_published_invariants_v1",
-    "\tcompose_source_v1 storm_diagnostics_v1",
+    "\tcompose_source_v1 storm_diagnostics_v1 composition_stack_v1 aeronet_aod_v1",
 );
 
 const INVENTORY_SCHEMA: &str = "gpuwm-rw-netcdf-inventory-v1";
@@ -65,10 +68,12 @@ pub static GPUWM_BRIDGE_SOURCE_REV_STAMP: &str =
 
 const USAGE: &str = "\
 usage: rw_netcdf inventory FILE
-       rw_netcdf dump [--raw|--no-mask] [--unit-scale=N] [--unit-offset=N] [--water-layer-thickness=VARIABLE] [--window=I0:NI,J0:NJ] [--sample-window=X0:NI,Y0:NJ --sample-method=nearest|bilinear] FILE OUTPUT_DIR VARIABLE [VARIABLE...]
+       rw_netcdf dump [--raw|--no-mask] [--unit-scale=N] [--unit-offset=N] [--water-layer-thickness=VARIABLE] [--window=I0:NI,J0:NJ] [--sample-window=X0:NI,Y0:NJ --sample-method=nearest|bilinear|bilinear-masked [--sample-mask=VARIABLE]] FILE OUTPUT_DIR VARIABLE [VARIABLE...]
        rw_netcdf recover-wrf-soil WRFINPUT MET_EM AUTHORITY_JSON OUTPUT_DIR
        rw_netcdf bind-invariants HEIGHT_FILE HEIGHT_VAR LAND_FILE LAND_VAR OUTPUT_FILE TIME_FILE [TIME_FILE...]
        rw_netcdf storm-diagnostics OUTPUT_DIR HEIGHTS_CSV GRAVITY JOBS FILE...
+       rw_netcdf aeronet-aod MANIFEST OUTPUT_DIR JOBS
+       rw_netcdf composition-stack MANIFEST OUTPUT_DIR JOBS
        rw_netcdf compose-source MANIFEST OUTPUT_DIR JOBS
        rw_netcdf --abi | --help
 
@@ -82,6 +87,12 @@ usage: rw_netcdf inventory FILE
              last two dimensions (x last, 0-based), after CF decoding; a
              window that leaves the variable, or a variable with fewer
              than two dimensions, is refused
+  --sample-mask=VARIABLE  with --sample-method=bilinear-masked: a 2-D
+             class field of FILE (a land mask); each output point
+             averages only the source points of its own class (the class
+             of its nearest source point), the masked interpolation WPS
+             applies to land-only fields so coast cells do not blend in
+             the other class's fill value
   --raw     skip CF decoding: no _FillValue/missing_value masking and no
              scale_factor/add_offset, so stored sentinels survive.  This
              is what netCDF4's set_auto_mask(False) asks for, and some
@@ -181,6 +192,9 @@ struct DumpRecord {
     window: Option<[usize; 4]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     sample_window: Option<SampleWindow>,
+    /// The class field a `bilinear-masked` sample was restricted by.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sample_mask: Option<String>,
 }
 
 /// Same-spacing rectangular sampling in the last two axes. Origins are
@@ -196,7 +210,26 @@ struct SampleWindow {
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-enum SampleMethod { Nearest, Bilinear }
+enum SampleMethod {
+    Nearest,
+    Bilinear,
+    /// Bilinear over the source points that share the class (mask zero
+    /// or nonzero) of the output point's nearest source point.  A point
+    /// whose positive-weight neighbours are all of one class gets exactly
+    /// the `bilinear` bits; only class boundaries differ.
+    #[serde(rename = "bilinear-masked")]
+    BilinearMasked,
+}
+
+/// The class plane a masked sample reads: the last two dimensions of the
+/// mask variable, one plane.
+#[derive(Clone, Copy, Debug)]
+struct SampleMask<'a> {
+    name: &'a str,
+    values: &'a [f64],
+    ny: usize,
+    nx: usize,
+}
 
 impl SampleWindow {
     fn parse(text: &str, method: &str) -> Result<Self, String> {
@@ -209,7 +242,8 @@ impl SampleWindow {
             j0: j0.parse().map_err(|_| bad())?, nj: nj.parse().map_err(|_| bad())?,
             method: match method { "nearest" => SampleMethod::Nearest,
                 "bilinear" => SampleMethod::Bilinear,
-                _ => return Err(format!("--sample-method must be nearest or bilinear, got {method:?}")), },
+                "bilinear-masked" => SampleMethod::BilinearMasked,
+                _ => return Err(format!("--sample-method must be nearest, bilinear or bilinear-masked, got {method:?}")), },
         };
         if !parsed.i0.is_finite() || !parsed.j0.is_finite()
             || parsed.i0 < 0.0 || parsed.j0 < 0.0 || parsed.ni == 0 || parsed.nj == 0 {
@@ -218,8 +252,17 @@ impl SampleWindow {
         Ok(parsed)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn apply(&self, name: &str, values: &[f64], shape: &[usize])
              -> Result<(Vec<f64>, Vec<usize>), String> {
+        self.apply_masked(name, values, shape, None)
+    }
+
+    fn apply_masked(&self, name: &str, values: &[f64], shape: &[usize], mask: Option<SampleMask<'_>>)
+             -> Result<(Vec<f64>, Vec<usize>), String> {
+        if (self.method == SampleMethod::BilinearMasked) != mask.is_some() {
+            return Err(format!("{name}: bilinear-masked sampling and a sample mask go together"));
+        }
         if shape.len() < 2 {
             return Err(format!("{name}: sampling needs at least two dimensions, got {shape:?}"));
         }
@@ -243,6 +286,12 @@ impl SampleWindow {
             return Err(format!("{name}: sampling input shape differs from decoded value count"));
         }
         let lead = checked_product(&shape[..shape.len() - 2])?;
+        if let Some(mask) = mask {
+            if mask.ny != ny || mask.nx != nx || mask.values.len() != ny * nx {
+                return Err(format!("{name}: sample mask {} is {} x {}, the variable's plane {ny} x {nx}",
+                                   mask.name, mask.ny, mask.nx));
+            }
+        }
         let count = checked_product(&[lead, self.ni, self.nj])?;
         let mut out = Vec::new();
         out.try_reserve_exact(count).map_err(|_| format!("{name}: sampled output allocation is too large"))?;
@@ -258,23 +307,66 @@ impl SampleWindow {
                             Err(format!("{name}: non-finite source value needed for sampling at ({xx}, {yy})"))
                         } else { Ok(value) }
                     };
+                    let bilinear = || -> Result<f64, String> {
+                        let xx = x.floor() as usize;
+                        let yy = y.floor() as usize;
+                        let fx = x - xx as f64;
+                        let fy = y - yy as f64;
+                        let a = get(xx, yy)?;
+                        // Exact integer origins keep their original f64 bits and
+                        // do not read zero-weight neighbors at the source edge.
+                        let top = if fx == 0.0 { a } else {
+                            a * (1.0 - fx) + get(xx + 1, yy)? * fx };
+                        Ok(if fy == 0.0 { top } else {
+                            let c = get(xx, yy + 1)?;
+                            let bottom = if fx == 0.0 { c } else {
+                                c * (1.0 - fx) + get(xx + 1, yy + 1)? * fx };
+                            top * (1.0 - fy) + bottom * fy
+                        })
+                    };
                     let value = match self.method {
                         SampleMethod::Nearest => get((x + 0.5).floor() as usize, (y + 0.5).floor() as usize)?,
-                        SampleMethod::Bilinear => {
+                        SampleMethod::Bilinear => bilinear()?,
+                        SampleMethod::BilinearMasked => {
+                            let mask = mask.expect("checked above");
+                            let class = |xx: usize, yy: usize| -> Result<bool, String> {
+                                let flag = mask.values[yy * nx + xx];
+                                if !flag.is_finite() {
+                                    Err(format!("{name}: sample mask {} is non-finite at ({xx}, {yy})", mask.name))
+                                } else { Ok(flag != 0.0) }
+                            };
+                            let own = class((x + 0.5).floor() as usize, (y + 0.5).floor() as usize)?;
                             let xx = x.floor() as usize;
                             let yy = y.floor() as usize;
                             let fx = x - xx as f64;
                             let fy = y - yy as f64;
-                            let a = get(xx, yy)?;
-                            // Exact integer origins keep their original f64 bits and
-                            // do not read zero-weight neighbors at the source edge.
-                            let top = if fx == 0.0 { a } else {
-                                a * (1.0 - fx) + get(xx + 1, yy)? * fx };
-                            if fy == 0.0 { top } else {
-                                let c = get(xx, yy + 1)?;
-                                let bottom = if fx == 0.0 { c } else {
-                                    c * (1.0 - fx) + get(xx + 1, yy + 1)? * fx };
-                                top * (1.0 - fy) + bottom * fy
+                            // Positive-weight neighbours only: a zero weight never
+                            // reads past the source edge.  The nearest point is
+                            // always among them, so `own` carries weight.
+                            let mut corners = [(xx, yy, (1.0 - fx) * (1.0 - fy)), (0, 0, 0.0),
+                                               (0, 0, 0.0), (0, 0, 0.0)];
+                            let mut used = 1;
+                            if fx != 0.0 { corners[used] = (xx + 1, yy, fx * (1.0 - fy)); used += 1; }
+                            if fy != 0.0 {
+                                corners[used] = (xx, yy + 1, (1.0 - fx) * fy); used += 1;
+                                if fx != 0.0 { corners[used] = (xx + 1, yy + 1, fx * fy); used += 1; }
+                            }
+                            let mut mixed = false;
+                            for &(cx, cy, _) in &corners[..used] {
+                                mixed |= class(cx, cy)? != own;
+                            }
+                            if !mixed { bilinear()? } else {
+                                let (mut sum, mut weight) = (0.0_f64, 0.0_f64);
+                                for &(cx, cy, w) in &corners[..used] {
+                                    if w > 0.0 && class(cx, cy)? == own {
+                                        sum += w * get(cx, cy)?;
+                                        weight += w;
+                                    }
+                                }
+                                if weight <= 0.0 {
+                                    return Err(format!("{name}: no source point of the output point's own class carries weight"));
+                                }
+                                sum / weight
                             }
                         },
                     };
@@ -425,6 +517,16 @@ fn main() {
             let files = args[5..].iter().map(PathBuf::from).collect::<Vec<_>>();
             if let Err(error) = storm_diagnostics::run(Path::new(&args[1]), &heights, gravity, jobs, &files) { fail(&error); }
         }
+        "aeronet-aod" => {
+            if args.len()!=4 { fail("aeronet-aod takes MANIFEST OUTPUT_DIR JOBS"); }
+            let jobs=args[3].parse().unwrap_or_else(|_|fail("invalid jobs"));
+            if let Err(error)=aeronet_aod::run(Path::new(&args[1]),Path::new(&args[2]),jobs){fail(&error);}
+        }
+        "composition-stack" => {
+            if args.len()!=4 { fail("composition-stack takes MANIFEST OUTPUT_DIR JOBS"); }
+            let jobs=args[3].parse().unwrap_or_else(|_|fail("invalid jobs"));
+            if let Err(error)=composition_stack::run(Path::new(&args[1]),Path::new(&args[2]),jobs){fail(&error);}
+        }
         "compose-source" => {
             if args.len() != 4 { fail("compose-source takes MANIFEST OUTPUT_DIR JOBS"); }
             let jobs = args[3].parse().unwrap_or_else(|_| { fail("JOBS must be an unsigned integer"); });
@@ -476,6 +578,10 @@ fn main() {
                 _ => fail("--sample-window and --sample-method must be specified together"),
             };
             if window.is_some() && sample_window.is_some() { fail("--window and --sample-window cannot be combined"); }
+            let sample_mask = args.iter().find_map(|a| a.strip_prefix("--sample-mask="));
+            if sample_mask.is_some() != sample_window.is_some_and(|s| s.method == SampleMethod::BilinearMasked) {
+                fail("--sample-mask goes with --sample-method=bilinear-masked, and only with it");
+            }
             if water_layer.is_some() && (raw || no_mask) {
                 fail("layer water conversion requires CF masking and unpacking");
             }
@@ -497,14 +603,14 @@ fn main() {
                     && !a.starts_with("--unit-scale=") && !a.starts_with("--unit-offset=")
                     && !a.starts_with("--water-layer-thickness=")
                     && !a.starts_with("--window=") && !a.starts_with("--sample-window=")
-                    && !a.starts_with("--sample-method="))
+                    && !a.starts_with("--sample-method=") && !a.starts_with("--sample-mask="))
                 .collect();
             if positional.len() < 3 {
                 fail("dump takes FILE, OUTPUT_DIR and at least one VARIABLE");
             }
             let names: Vec<String> =
                 positional[2..].iter().map(|s| (*s).clone()).collect();
-            if let Err(error) = dump_sampled(
+            if let Err(error) = dump_sampled_masked(
                 Path::new(positional[0]),
                 Path::new(positional[1]),
                 &names,
@@ -514,6 +620,7 @@ fn main() {
                 water_layer,
                 window,
                 sample_window,
+                sample_mask,
             ) {
                 fail(&error);
             }
@@ -545,7 +652,10 @@ fn attribute_json(value: &netcrust::AttributeValue) -> serde_json::Value {
         }
     }
     match value {
-        V::Chars(text) => serde_json::Value::String(text.clone()),
+        // NC_CHAR text as netCDF4-python and this tool returned it before the reader kept every declared
+        // byte: trailing NULs are padding, so "" stored as one NUL reads back "" (an empty attribute
+        // read as a lone NUL defeated every empty-value check; 2.9.4 final pass R5, test_obs_radar_grid).
+        V::Chars(text) => serde_json::Value::String(text.trim_end_matches('\0').to_string()),
         V::Strings(values) if values.len() == 1 => serde_json::Value::String(values[0].clone()),
         V::Strings(values) => serde_json::Value::Array(
             values
@@ -1013,11 +1123,24 @@ fn dump_windowed(path: &Path, out_dir: &Path, names: &[String], apply_mask: bool
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg_attr(not(test), allow(dead_code))]
 fn dump_sampled(path: &Path, out_dir: &Path, names: &[String], apply_mask: bool,
                  apply_scale: bool, unit_transform: [f64; 2], water_layer: Option<&str>,
                  window: Option<Window>, sample_window: Option<SampleWindow>) -> Result<(), String> {
+    dump_sampled_masked(path, out_dir, names, apply_mask, apply_scale, unit_transform,
+                        water_layer, window, sample_window, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dump_sampled_masked(path: &Path, out_dir: &Path, names: &[String], apply_mask: bool,
+                 apply_scale: bool, unit_transform: [f64; 2], water_layer: Option<&str>,
+                 window: Option<Window>, sample_window: Option<SampleWindow>,
+                 sample_mask: Option<&str>) -> Result<(), String> {
     if window.is_some() && sample_window.is_some() {
         return Err("exact and sampled windows cannot be combined".into());
+    }
+    if sample_mask.is_some() != sample_window.is_some_and(|s| s.method == SampleMethod::BilinearMasked) {
+        return Err("a sample mask goes with bilinear-masked sampling, and only with it".into());
     }
     let transformed = unit_transform != [1.0, 0.0];
     if !unit_transform.iter().all(|v| v.is_finite()) || unit_transform[0] == 0.0 {
@@ -1026,6 +1149,21 @@ fn dump_sampled(path: &Path, out_dir: &Path, names: &[String], apply_mask: bool,
     let (file, metadata) = open(path)?;
     fs::create_dir_all(out_dir)
         .map_err(|error| format!("cannot create {}: {error}", out_dir.display()))?;
+    // The class plane is decoded once and shared by every sampled variable.
+    let mask_plane = match sample_mask {
+        Some(mask_name) => {
+            let array = file.read_array_f64(mask_name)
+                .map_err(|error| format!("cannot decode sample mask {mask_name}: {error}"))?;
+            let shape = array.shape().to_vec();
+            if shape.len() < 2 || shape[..shape.len() - 2].iter().product::<usize>() != 1 {
+                return Err(format!("sample mask {mask_name} must be one plane, got shape {shape:?}"));
+            }
+            Some((mask_name, array.into_values(), shape[shape.len() - 2], shape[shape.len() - 1]))
+        }
+        None => None,
+    };
+    let sample_mask = mask_plane.as_ref().map(|(name, values, ny, nx)|
+        SampleMask { name: *name, values: values.as_slice(), ny: *ny, nx: *nx });
 
     // Variables decode concurrently (each one's chunks are already
     // decompressed in parallel underneath), gated by a byte budget so a
@@ -1033,7 +1171,7 @@ fn dump_sampled(path: &Path, out_dir: &Path, names: &[String], apply_mask: bool,
     // Records and files keep the order and names the caller asked for,
     // and the first refusal in that order is the one reported.
     let options = DumpOptions { apply_mask, apply_scale, unit_transform, transformed,
-                                water_layer, window, sample_window };
+                                water_layer, window, sample_window, sample_mask };
     let results = run_bounded(names.len(), |index| {
         let estimate = estimated_dump_bytes(&file, &names[index]);
         let _held = DUMP_BUDGET.acquire(estimate);
@@ -1065,13 +1203,14 @@ struct DumpOptions<'a> {
     water_layer: Option<&'a str>,
     window: Option<Window>,
     sample_window: Option<SampleWindow>,
+    sample_mask: Option<SampleMask<'a>>,
 }
 
 /// Decode one variable into `out_dir/<index>` and describe it.
 fn dump_one(path: &Path, file: &netcrust::File, out_dir: &Path, index: usize, name: &str,
             options: &DumpOptions<'_>) -> Result<DumpRecord, String> {
     let DumpOptions { apply_mask, apply_scale, unit_transform, transformed, water_layer,
-                      window, sample_window } = *options;
+                      window, sample_window, sample_mask } = *options;
     // An HDF5 dataset the variable table does not list (a dimension
     // scale the reader hides -- see `recover_dimension_scales`) is
     // still reachable: `read_array_f64` falls back to a raw-HDF5 read
@@ -1110,6 +1249,7 @@ fn dump_one(path: &Path, file: &netcrust::File, out_dir: &Path, index: usize, na
                 water_layer_conversion: None,
                 window: None,
                 sample_window: None,
+                sample_mask: None,
             });
         }
     } else if !file.has_hdf5_dataset(name) {
@@ -1237,7 +1377,7 @@ fn dump_one(path: &Path, file: &netcrust::File, out_dir: &Path, index: usize, na
         None => None,
     };
     if let Some(sample) = sample_window {
-        let (sampled, sampled_shape) = sample.apply(name, &values, &shape)?;
+        let (sampled, sampled_shape) = sample.apply_masked(name, &values, &shape, sample_mask)?;
         values = sampled;
         shape = sampled_shape;
     }
@@ -1288,6 +1428,7 @@ fn dump_one(path: &Path, file: &netcrust::File, out_dir: &Path, index: usize, na
         water_layer_conversion,
         window: applied_window,
         sample_window,
+        sample_mask: sample_mask.map(|mask| mask.name.to_string()),
     })
 }
 
@@ -2363,6 +2504,39 @@ mod tests {
             assert!(error.contains("overflows the index range"), "{error}");
         }
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn masked_bilinear_averages_only_the_output_points_own_class() {
+        // 2 x 3 plane; the right column is water (mask 0) holding a 0 fill.
+        let values = vec![280.0, 290.0, 0.0,
+                          300.0, 310.0, 0.0];
+        let mask_values = vec![1.0, 1.0, 0.0,
+                               1.0, 1.0, 0.0];
+        let mask = SampleMask { name: "LANDMASK", values: &mask_values, ny: 2, nx: 3 };
+        // Interior land point: every neighbour is land, so the bits are bilinear's.
+        let inner = SampleWindow::parse("0.25:1,0.5:1", "bilinear-masked").unwrap();
+        let plain = SampleWindow::parse("0.25:1,0.5:1", "bilinear").unwrap();
+        assert_eq!(inner.apply_masked("F", &values, &[2, 3], Some(mask)).unwrap().0[0].to_bits(),
+                   plain.apply("F", &values, &[2, 3]).unwrap().0[0].to_bits());
+        // A land point beside the water column: plain bilinear blends the
+        // 0 fill in; the masked sample keeps only the land neighbours.
+        let coast = SampleWindow::parse("1.25:1,0.5:1", "bilinear-masked").unwrap();
+        let blended = SampleWindow::parse("1.25:1,0.5:1", "bilinear").unwrap()
+            .apply("F", &values, &[2, 3]).unwrap().0[0];
+        assert!(blended < 250.0, "{blended}");
+        assert_eq!(coast.apply_masked("F", &values, &[2, 3], Some(mask)).unwrap().0[0], 300.0);
+        // A water point keeps the water class's own value.
+        let sea = SampleWindow::parse("1.75:1,0.5:1", "bilinear-masked").unwrap();
+        assert_eq!(sea.apply_masked("F", &values, &[2, 3], Some(mask)).unwrap().0[0], 0.0);
+        // Integer origins stay exact copies.
+        let exact = SampleWindow::parse("1:2,0:2", "bilinear-masked").unwrap();
+        assert_eq!(exact.apply_masked("F", &values, &[2, 3], Some(mask)).unwrap().0,
+                   vec![290.0, 0.0, 310.0, 0.0]);
+        // The method and the mask go together; a mask of another plane is refused.
+        assert!(coast.apply("F", &values, &[2, 3]).unwrap_err().contains("go together"));
+        let small = SampleMask { name: "LANDMASK", values: &mask_values[..4], ny: 2, nx: 2 };
+        assert!(coast.apply_masked("F", &values, &[2, 3], Some(small)).unwrap_err().contains("plane"));
     }
 
     #[test]

@@ -475,6 +475,12 @@ REGISTRY_BLOCKS_OUTSIDE_PHYSICS_IDENTITY: Mapping[str, str] = {
     "warning_policy": (
         "which maturity tiers print a warning; it decides what is said "
         "about a run, never what runs (maturity_never_blocks)"),
+    "system_suites": (
+        "rows describing another forecast system's suites in this engine's "
+        "terms (gpuwm/system_suites.py): no template, route or default "
+        "resolves to one, so they decide nothing a selection runs; a "
+        "profile that imitates a suite carries the settings itself and is "
+        "bound through them"),
     "templates": (
         "bound per part: only the profile a receipt names "
         "(templates.<profile>)"),
@@ -1286,6 +1292,10 @@ CONSUMER_ROW_CONTRACT: dict[str, dict[str, str]] = {
             "here"),
     },
     "pbl": {
+        "scalar_diffusion_exchange": (
+            "scalar_pblmix admission, the post-PBL diff4d coupling and VRAM "
+            "admission read the EXCH_H producer, its levels and the no-op "
+            "reason here"),
         "restart_algorithm_identity": (
             "the checkpoint writer names the PBL scheme at the first restart "
             "interval"),

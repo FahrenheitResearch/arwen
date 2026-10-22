@@ -322,3 +322,7 @@ collector snapshots bind the depth-file hashes and restore one permitted
 re-emission of a sealed deadline. Mass workers seal their depth metadata with
 their integer discharge shards; the parent verifies the files and publishes
 the full roster without averaging member probabilities.
+
+Visibility is now a default headline field, in metres, with strict-below
+probabilities at 1000 m and 400 m. See [visibility and fog](visibility-and-fog.md)
+for the hydrometeor/RH method, unknown-member mask and METAR censoring.

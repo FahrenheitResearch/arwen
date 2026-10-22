@@ -546,6 +546,9 @@ class RucSoilState:
     #: (:func:`account_for_zero_ruc_soil_moisture`); EMPTY when nothing was
     #: below it.
     soil_moisture_floor: Mapping[str, object] = field(default_factory=dict)
+    #: The sea-ice cells of the Noah surface call, spelled as
+    #: :class:`gpuwm.ingest.soil.NoahSoilState`'s ``sea_ice_cells``.
+    sea_ice_cells: np.ndarray | None = None
 
 
 def _midpoint_cm(name: str, prefix: str) -> int:
@@ -680,6 +683,7 @@ def preprocess_ruc_soil(
     soil_mesh=None,
     route=None,
     fractional_seaice: bool = False,
+    seaice_threshold: float = 100.0,
 ) -> RucSoilState:
     """Build a RUC initial soil state, in ``preprocess_noah_soil``'s signature.
 
@@ -778,6 +782,7 @@ def preprocess_ruc_soil(
     surface = preprocess_noah_soil(
         fields,
         **({"fractional_seaice": True} if fractional_seaice else {}),
+        **_threshold_keyword(seaice_threshold),
             soil_type=soil_type,
         deep_soil_temperature=deep_soil_temperature,
         lake_mask=lake_mask, lake_skin_temperature=lake_skin_temperature,
@@ -892,6 +897,7 @@ def preprocess_ruc_soil(
         tsk, soil_temperature, soil_moisture, liquid_moisture = (
             fractional_sea_ice_post(
                 xice=surface.xice, tsk=tsk, sst=sea_water,
+                ice=surface.sea_ice_cells,
                 deep_soil_temperature=surface.deep_soil_temperature,
                 soil_temperature=soil_temperature,
                 soil_moisture=soil_moisture,
@@ -913,7 +919,16 @@ def preprocess_ruc_soil(
         soil_texture_downscale=downscale_receipt,
         soil_temperature_repair=temperature_repair,
         soil_moisture_floor=moisture_floor,
+        sea_ice_cells=surface.sea_ice_cells,
     )
+
+
+def _threshold_keyword(seaice_threshold) -> dict:
+    """``seaice_threshold`` for a soil call, empty at WRF's 100 K default
+    so a default call is the call it was before the field existed."""
+    if float(seaice_threshold) == 100.0:
+        return {}
+    return {"seaice_threshold": float(seaice_threshold)}
 
 
 #: real.exe's floor for a RUC column built from a LAYER source
@@ -979,7 +994,8 @@ def account_for_zero_ruc_soil_moisture(soil_moisture, geometry: str):
 
 
 def fractional_sea_ice_post(*, xice, tsk, sst, deep_soil_temperature,
-                            soil_temperature, soil_moisture, liquid_moisture):
+                            soil_temperature, soil_moisture, liquid_moisture,
+                            ice=None):
     """real.exe's RUC sea-ice column under ``fractional_seaice = 1``.
 
     ``share/module_soil_pre.F`` adjust_for_seaice_post, the RUCLSMSCHEME arm
@@ -1000,10 +1016,16 @@ def fractional_sea_ice_post(*, xice, tsk, sst, deep_soil_temperature,
     missing or outside 170..400 K blends with its own TSK, which is the
     ``flag_sst = 0`` arm for that cell.  Only called under
     ``fractional_seaice = 1``: at the default the binary arm is unchanged.
+
+    ``ice`` is the Noah call's ``sea_ice_cells``: the ``xice >= 0.02``
+    cells and the ``seaice_threshold`` cells (water colder than the
+    threshold, :341-342), which take this column with their XICE as
+    analysed -- possibly 0, so the blend is then the SST.  ``None`` keeps
+    the fraction-only decision ``xice > 0``.
     """
     f32 = np.float32
     xice = np.asarray(xice, dtype=f32)
-    ice = xice > f32(0.0)
+    ice = (xice > f32(0.0)) if ice is None else np.asarray(ice, dtype=bool)
     tsk = np.array(tsk, dtype=f32, copy=True)
     if sst is None:
         water = tsk
@@ -1055,6 +1077,7 @@ def preprocess_land_surface_soil(
     route=None,
     fractional_seaice: bool = False,
     soil_no_source_land=None,
+    seaice_threshold: float = 100.0,
 ):
     """Route a soil source to the selected land surface's own geometry.
 
@@ -1101,6 +1124,7 @@ def preprocess_land_surface_soil(
         return preprocess_ruc_soil(
             fields,
             **({"fractional_seaice": True} if fractional_seaice else {}),
+            **_threshold_keyword(seaice_threshold),
             soil_type=soil_type,
             deep_soil_temperature=deep_soil_temperature,
             lake_mask=lake_mask, lake_skin_temperature=lake_skin_temperature,
@@ -1122,6 +1146,7 @@ def preprocess_land_surface_soil(
         return preprocess_noah_soil(
             fields,
             **({"fractional_seaice": True} if fractional_seaice else {}),
+            **_threshold_keyword(seaice_threshold),
             soil_type=soil_type,
             deep_soil_temperature=deep_soil_temperature,
             lake_mask=lake_mask, lake_skin_temperature=lake_skin_temperature,

@@ -335,6 +335,11 @@ def append_runtime_surface_records(path, *, adapter, cycle, lead, host,
                 # subset refuses before any payload moves, so the absence
                 # is recorded from the index instead of from a file.
                 if not _index_lists_no_record(error, selector):
+                    # Say which file: the caller's label is the soil job's.
+                    progress(f"fetch {adapter.source_id} f{int(lead):02d}: "
+                             f"runtime surface field {name} is cut from the "
+                             f"cycle's {product!r} file, which could not be "
+                             f"fetched ({error})")
                     raise
                 entry = _probed_entry(
                     binary, adapter=adapter, cycle=cycle, lead=lead,

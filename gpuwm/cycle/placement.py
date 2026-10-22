@@ -29,8 +29,8 @@ owner rule).
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
-from typing import Any, Callable, Mapping, Sequence
+from dataclasses import dataclass
+from typing import Any, Callable, Sequence
 
 import numpy as np
 
@@ -47,8 +47,6 @@ DEFAULT_KEEPOUT_PARENT_CELLS = DEFAULT_SPEC_BDY_WIDTH + DEFAULT_BLEND_WIDTH
 #: Mean Earth radius, for the great-circle separation used to keep two
 #: nests from being planted on the same storm.
 EARTH_RADIUS_KM = 6371.0088
-
-PLACEMENT_SOURCES = ("tracker", "schedule", "obs")
 
 
 # ---------------------------------------------------------------------------

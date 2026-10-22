@@ -1,26 +1,16 @@
-use crate::direct::build_projected_map_with_projection;
-use crate::ecape::compute_ecape_map_fields_with_prepared_volume;
 use crate::gridded::{
     CroppedHeavyDomain, PressureFields, ProjectedGridIntersection, SharedTiming, SurfaceFields,
     classify_projected_grid_intersection, crop_heavy_domain_for_projected_extent,
-    prepare_heavy_volume_timed, resolve_thermo_pair_run,
 };
 use crate::publication::{
     ArtifactContentIdentity, PublishedFetchIdentity, artifact_identity_from_path,
 };
-use crate::runtime::{BundleLoaderConfig, load_execution_plan};
-use crate::severe::{
-    build_planned_input_fetches, build_severe_execution_plan, build_shared_timing_for_pair,
-    compute_severe_panel_fields_with_prepared_volume,
-};
 use crate::shared_context::{
-    DomainSpec, ProjectedMap, WeatherPanelField, build_weather_map_request, model_time_subtitle,
-    source_subtitle,
+    DomainSpec, ProjectedMap, WeatherPanelField, build_weather_map_request,
 };
 use rustwx_core::{LatLonGrid, ModelId, SourceId};
 use rustwx_render::{ProductVisualMode, map_frame_aspect_ratio_for_mode, save_png_profile};
 use serde::{Deserialize, Serialize};
-use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -303,187 +293,5 @@ pub fn crop_and_guard_heavy_domain(
         cropped,
         stats,
         crop_ms: crop_start.elapsed().as_millis(),
-    })
-}
-
-pub fn run_heavy_panel_hour(
-    request: &HeavyPanelHourRequest,
-) -> Result<HeavyPanelHourReport, Box<dyn std::error::Error>> {
-    fs::create_dir_all(&request.out_dir)?;
-    if request.use_cache {
-        fs::create_dir_all(&request.cache_root)?;
-    }
-
-    let total_start = Instant::now();
-    let latest = resolve_thermo_pair_run(
-        request.model,
-        &request.date_yyyymmdd,
-        request.cycle_override_utc,
-        request.forecast_hour,
-        request.source,
-        request.surface_product_override.as_deref(),
-        request.pressure_product_override.as_deref(),
-    )?;
-    let plan = build_severe_execution_plan(
-        &latest,
-        request.forecast_hour,
-        request.surface_product_override.as_deref(),
-        request.pressure_product_override.as_deref(),
-    );
-    let loaded = load_execution_plan(
-        plan,
-        &BundleLoaderConfig {
-            cache_root: request.cache_root.clone(),
-            use_cache: request.use_cache,
-        },
-    )?;
-
-    let (surface_planned, surface_decode, pressure_planned, pressure_decode) = loaded
-        .require_surface_pressure_pair()
-        .map_err(|err| format!("heavy surface/pressure pair unavailable: {err}"))?;
-    let full_surface = &surface_decode.value;
-    let full_pressure = &pressure_decode.value;
-    let target_ratio = heavy_map_target_aspect_ratio();
-    let owned_full_grid = full_surface.core_grid()?;
-    let project_start = Instant::now();
-    let full_projected = build_projected_map_with_projection(
-        &owned_full_grid.lat_deg,
-        &owned_full_grid.lon_deg,
-        full_surface.projection.as_ref(),
-        request.domain.bounds,
-        target_ratio,
-    )?;
-    let heavy_domain = crop_and_guard_heavy_domain(
-        full_surface,
-        full_pressure,
-        &full_projected,
-        &request.domain,
-        2,
-        request.allow_large_heavy_domain,
-    )?;
-    let (surface, pressure, grid) =
-        heavy_domain.bind(full_surface, full_pressure, &owned_full_grid);
-    let projected = if heavy_domain.cropped.is_some() {
-        build_projected_map_with_projection(
-            &grid.lat_deg,
-            &grid.lon_deg,
-            surface.projection.as_ref(),
-            request.domain.bounds,
-            target_ratio,
-        )?
-    } else {
-        full_projected
-    };
-    let project_ms = project_start.elapsed().as_millis();
-
-    let compute_start = Instant::now();
-    let (prepared, prep_timing) = prepare_heavy_volume_timed(surface, pressure, false)?;
-    let ecape_triplet_start = Instant::now();
-    let (ecape_fields, failure_count) =
-        compute_ecape_map_fields_with_prepared_volume(surface, pressure, &prepared)?;
-    let ecape_triplet_ms = ecape_triplet_start.elapsed().as_millis();
-    let severe_fields_start = Instant::now();
-    let severe_fields =
-        compute_severe_panel_fields_with_prepared_volume(surface, pressure, &prepared)?;
-    let severe_fields_ms = severe_fields_start.elapsed().as_millis();
-    let compute_ms = compute_start.elapsed().as_millis();
-
-    let model_slug = request.model.as_str().replace('-', "_");
-    let subtitle_left = model_time_subtitle(
-        request.model,
-        &request.date_yyyymmdd,
-        loaded.latest.cycle.hour_utc,
-        request.forecast_hour,
-    );
-    let source_label = source_subtitle(loaded.latest.source);
-    let (ecape_outputs, ecape_render_ms) = render_heavy_map_group(
-        &request.out_dir,
-        &model_slug,
-        &request.date_yyyymmdd,
-        loaded.latest.cycle.hour_utc,
-        request.forecast_hour,
-        &request.domain.slug,
-        "ecape",
-        &grid,
-        &projected,
-        &ecape_fields,
-        &subtitle_left,
-        |field| match field.artifact_slug() {
-            "sb_ecape_derived_cape_ratio"
-            | "ml_ecape_derived_cape_ratio"
-            | "mu_ecape_derived_cape_ratio" => Some(format!("{source_label} | EXP | derived")),
-            "sb_ecape_native_cape_ratio"
-            | "ml_ecape_native_cape_ratio"
-            | "mu_ecape_native_cape_ratio" => Some(format!("{source_label} | EXP | native")),
-            "ecape_scp" | "ecape_ehi_0_1km" | "ecape_ehi_0_3km" | "ecape_stp" => {
-                Some(format!("{source_label} | experimental"))
-            }
-            _ => Some(source_label.clone()),
-        },
-    )?;
-    let (severe_outputs, severe_render_ms) = render_heavy_map_group(
-        &request.out_dir,
-        &model_slug,
-        &request.date_yyyymmdd,
-        loaded.latest.cycle.hour_utc,
-        request.forecast_hour,
-        &request.domain.slug,
-        "severe",
-        &grid,
-        &projected,
-        &severe_fields,
-        &subtitle_left,
-        |field| match field.artifact_slug() {
-            "stp_fixed" => Some(format!("{source_label} | fixed-layer composite")),
-            "scp_mu_0_3km_0_6km_proxy" => Some(format!(
-                "{source_label} | proxy: MUCAPE + 0-3 km SRH + 0-6 km shear"
-            )),
-            "ehi_0_1km" => Some(format!("{source_label} | proxy: SBCAPE + 0-1 km SRH")),
-            _ => Some(source_label.clone()),
-        },
-    )?;
-    let render_ms = ecape_render_ms + severe_render_ms;
-
-    let shared_timing = build_shared_timing_for_pair(&loaded, surface_planned, pressure_planned)?;
-    let input_fetches = build_planned_input_fetches(&loaded);
-    let total_ms = total_start.elapsed().as_millis();
-    let heavy_timing = HeavyComputeTiming {
-        full_cells: heavy_domain.stats.full_cells,
-        cropped_cells: heavy_domain.stats.cropped_cells,
-        pressure_levels: heavy_domain.stats.pressure_levels,
-        crop_kind: heavy_domain.stats.crop_kind,
-        crop_ms: heavy_domain.crop_ms,
-        prepare_height_agl_ms: prep_timing.prepare_height_agl_ms,
-        broadcast_pressure_ms: prep_timing.broadcast_pressure_ms,
-        pressure_3d_bytes: prep_timing.pressure_3d_bytes,
-        ecape_triplet_ms,
-        severe_fields_ms,
-        render_ms,
-        total_ms,
-    };
-
-    Ok(HeavyPanelHourReport {
-        model: request.model,
-        date_yyyymmdd: request.date_yyyymmdd.clone(),
-        cycle_utc: loaded.latest.cycle.hour_utc,
-        forecast_hour: request.forecast_hour,
-        source: loaded.latest.source,
-        domain: request.domain.clone(),
-        input_fetches,
-        shared_timing,
-        project_ms,
-        compute_ms,
-        heavy_timing,
-        severe: HeavyRenderedArtifactGroup {
-            family: "severe".to_string(),
-            outputs: severe_outputs,
-            failure_count: None,
-        },
-        ecape: HeavyRenderedArtifactGroup {
-            family: "ecape".to_string(),
-            outputs: ecape_outputs,
-            failure_count: Some(failure_count),
-        },
-        total_ms,
     })
 }

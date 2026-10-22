@@ -313,64 +313,6 @@ pub fn resolve_thermo_pair_run(
     }
 }
 
-pub fn load_model_timestep_from_parts(
-    model: ModelId,
-    date_yyyymmdd: &str,
-    cycle_override_utc: Option<u8>,
-    forecast_hour: u16,
-    source: SourceId,
-    surface_product_override: Option<&str>,
-    pressure_product_override: Option<&str>,
-    cache_root: &Path,
-    use_cache: bool,
-) -> Result<LoadedModelTimestep, Box<dyn std::error::Error>> {
-    let latest = resolve_model_run(
-        model,
-        date_yyyymmdd,
-        cycle_override_utc,
-        forecast_hour,
-        source,
-    )?;
-    load_model_timestep_from_latest(
-        latest,
-        forecast_hour,
-        surface_product_override,
-        pressure_product_override,
-        cache_root,
-        use_cache,
-    )
-}
-
-pub fn load_model_timestep_from_parts_cropped(
-    model: ModelId,
-    date_yyyymmdd: &str,
-    cycle_override_utc: Option<u8>,
-    forecast_hour: u16,
-    source: SourceId,
-    surface_product_override: Option<&str>,
-    pressure_product_override: Option<&str>,
-    cache_root: &Path,
-    use_cache: bool,
-    bounds: (f64, f64, f64, f64),
-) -> Result<LoadedModelTimestep, Box<dyn std::error::Error>> {
-    let latest = resolve_model_run(
-        model,
-        date_yyyymmdd,
-        cycle_override_utc,
-        forecast_hour,
-        source,
-    )?;
-    load_model_timestep_from_latest_cropped(
-        latest,
-        forecast_hour,
-        surface_product_override,
-        pressure_product_override,
-        cache_root,
-        use_cache,
-        bounds,
-    )
-}
-
 pub fn load_surface_geometry_from_latest(
     latest: LatestRun,
     forecast_hour: u16,
@@ -2584,20 +2526,6 @@ pub struct NativeCapePlanes {
     pub sbcape_jkg: Option<Vec<f64>>,
     pub mlcape_jkg: Option<Vec<f64>>,
     pub mucape_jkg: Option<Vec<f64>>,
-}
-
-/// Decode the native CAPE planes from raw surface-product GRIB bytes.
-/// Only the (up to three) matching CAPE messages unpack; the rest of the
-/// file is index-parsed only.
-pub fn decode_native_cape_planes(
-    bytes: &[u8],
-) -> Result<NativeCapePlanes, Box<dyn std::error::Error>> {
-    let file = Grib2File::from_bytes(bytes)?;
-    Ok(NativeCapePlanes {
-        sbcape_jkg: decode_optional_native_cape(&file.messages, NativeCapeLayer::Surface)?,
-        mlcape_jkg: decode_optional_native_cape(&file.messages, NativeCapeLayer::MixedLayer)?,
-        mucape_jkg: decode_optional_native_cape(&file.messages, NativeCapeLayer::MostUnstable)?,
-    })
 }
 
 /// Decode the surface + pressure thermodynamic pair from raw family GRIB

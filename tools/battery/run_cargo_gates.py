@@ -48,14 +48,25 @@ differently -- a leg that could not run has proven nothing.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import os
+import json
+import secrets
+import threading
+from multiprocessing.connection import Client, Listener
 from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
 import time
+import tempfile
+
+# Off POSIX (the desktop NTFS runner) rows of one workspace run one at a time and get no per-row link clones.
+# A module flag, so a test can take the off-POSIX branch on Linux without setting the global os.name, which
+# makes every pathlib.Path() raise NotImplementedError (2.9.4 R7b route B INTERNALERROR, 2026-10-21).
+POSIX = os.name == "posix"
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = REPOSITORY_ROOT / "tools" / "battery" / "cargo_gates.txt"
@@ -272,8 +283,203 @@ def resolve_target_dir(explicit: str | None) -> Path:
     return target
 
 
+def available_cores() -> int:
+    """Respect the host affinity, including CI containers and Windows."""
+    try:
+        return len(os.sched_getaffinity(0))
+    except AttributeError:
+        return os.cpu_count() or 1
+
+
+def runner_toml(host: str, argv: list[str]) -> str:
+    """Serialize the runner table as TOML basic strings, without shell quoting.
+
+    JSON string escapes with ensure_ascii=False are also TOML basic-string
+    escapes. Encoding strings separately avoids non-TOML JSON types and
+    surrogate-pair escapes, including paths or labels with quotes/backslashes.
+    """
+    string = lambda value: json.dumps(value, ensure_ascii=False)
+    return f'[target.{string(host)}]\nrunner = [' + ', '.join(map(string, argv)) + ']\n'
+
+
+class BinaryPool:
+    """Run Cargo-selected test binaries on a shared host-sized worker pool.
+
+    Cargo's runner hook preserves its exact argv, package cwd and runtime
+    environment. The hook acknowledges submission so Cargo can submit the next
+    integration binary instead of serializing the whole package. This parent
+    retains every result and makes any failed binary fail its manifest row.
+    Doctests still run through Cargo and keep their original accounting.
+    """
+    def __init__(self, host, workers):
+        self.host = host
+        self.key = secrets.token_bytes(32)
+        self.listener = Listener(('127.0.0.1', 0), backlog=max(128, workers * 2), authkey=self.key)
+        self.pool = ThreadPoolExecutor(max_workers=workers)
+        self.pending = {}
+        self.configs = tempfile.TemporaryDirectory(prefix='cargo-gate-runners-')
+        self.thread = threading.Thread(target=self.serve, daemon=True)
+        self.thread.start()
+
+    def serve(self):
+        while True:
+            with self.listener.accept() as connection:
+                job = connection.recv()
+                if job is None:
+                    return
+                entry, argv, cwd, environment = job
+                future = self.pool.submit(subprocess.run, argv, cwd=cwd,
+                    env=environment, text=True, stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT)
+                self.pending.setdefault(entry, []).append((argv, future))
+                connection.send(True)
+
+    def configuration(self, entry):
+        address, port = self.listener.address
+        runner = [sys.executable, str(Path(__file__).resolve()),
+                  '--gate-test-runner', address, str(port), entry]
+        # Keep the TOML out of Windows batch argument parsing. Each row gets
+        # its own file so concurrent Cargo processes cannot replace a runner.
+        path = Path(self.configs.name) / (secrets.token_hex(16) + '.toml')
+        path.write_text(runner_toml(self.host, runner), encoding='utf-8')
+        return ['--config', str(path)]
+
+    def collect(self, entry):
+        rows = []
+        for argv, future in self.pending.get(entry, []):
+            try:
+                rows.append((argv, future.result()))
+            except Exception as error:  # a binary that could not start fails its row, never the whole run
+                rows.append((argv, subprocess.CompletedProcess(argv, 127, f'could not run: {error!r}\n')))
+        return rows
+
+    def close(self):
+        with Client(self.listener.address, authkey=self.key) as connection:
+            connection.send(None)
+        self.thread.join()
+        self.listener.close()
+        self.pool.shutdown(wait=True)
+        self.configs.cleanup()
+
+
+def is_doctest(command) -> bool:
+    """A doctest binary rustdoc built in its own temporary folder (``.../rustdoctestXXXX/rust_out``)."""
+    return bool(command) and any(part.startswith('rustdoctest') for part in Path(command[0]).parts)
+
+
+def test_runner(argv):
+    address, port, entry, *command = argv
+    if is_doctest(command):
+        # rustdoc deletes its temporary folder as soon as the runner returns, so a doctest runs here, in place.
+        # Breakage it prevents (2.9.4 fold pass R7b route A, 2026-10-21): the pool ran it later and found
+        # '/work/tmp/rustdoctest7SDHLp/rust_out' gone (FileNotFoundError), and the whole gate run ended.
+        return subprocess.run(command).returncode
+    environment = dict(os.environ)
+    key = environment.pop("ARWEN_CARGO_GATE_KEY")
+    # Runtime context is transferred only over authenticated loopback IPC.
+    # It is never written to logs or to a file.
+    with Client((address, int(port)), authkey=bytes.fromhex(key)) as connection:
+        connection.send((entry, command, os.getcwd(), environment))
+        assert connection.recv() is True
+    return 0
+
+
+def run_entries(entries, *, target_dir, cargo, log_dir, workers=None, prebuild_jobs=None):
+    """Overlap packages and their integration binaries without changing gates.
+
+    The CPU shard builds every workspace ONCE (``prebuild_workspaces``) before any row runs."""
+    # The CPU gate owns this parallel budget. GPU shards share an admitted
+    # card and overlapping their binaries can exceed that card's VRAM lease.
+    # Other shards retain their existing invocation order.
+    if any(entry.shard != BATTERY_SHARD for entry in entries):
+        for entry in entries:
+            yield run_entry(entry, target_dir=target_dir, cargo=cargo, log_dir=log_dir)
+        return
+    workers = workers or available_cores()
+    version = subprocess.run([cargo, '-vV'], capture_output=True, text=True)
+    host = re.search(r'^host: (\S+)$', version.stdout, re.M)
+    if not host:
+        raise RuntimeError('cargo -vV did not report its host target; cannot configure the '
+                           'runner that prevents serial integration binaries on the release path')
+    binaries = BinaryPool(host[1], workers)
+    def run(entry):
+        kwargs = {'binary_pool': binaries}
+        clone = row_target_clone(workspace_target_dir(target_dir, entry), entry)
+        try:
+            return run_entry(entry, target_dir=target_dir, cargo=cargo,
+                             log_dir=log_dir, cargo_target=clone, **kwargs)
+        finally:
+            if clone is not None:
+                shutil.rmtree(clone, ignore_errors=True)
+    # Rows may select the same test binary, whose fixed fixture filenames
+    # cannot tolerate two instances. Complete every row, including its queued
+    # binaries, before starting another row of the same workspace/package.
+    groups = {}
+    for index, entry in enumerate(entries):
+        key = ((REPOSITORY_ROOT / entry.workspace).resolve(), entry.package)
+        if not POSIX:
+            # Without per-row clones (row_target_clone), rows of one workspace share its folder: one at a time,
+            # so no row rebuilds a unit another row's rustdoc or linker is reading. Workspaces still overlap.
+            key = (REPOSITORY_ROOT / entry.workspace).resolve()
+        groups.setdefault(key, []).append((index, entry))
+    def run_group(group):
+        return [(index, run(entry)) for index, entry in group]
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            # Rows of ONE workspace also rebuild each other's units: package
+            # selections differ, so a row's run phase rebuilt static_fields /
+            # rw_nexrad under rw-wrfbatch's running rustdoc ("can't find crate",
+            # "possibly newer version", V58 lane/cap-base 2026-10-21, 720 tests
+            # passed and the row FAILED).  Every workspace is built once and every
+            # row fingerprinted BEFORE any row runs; then each row runs on its own
+            # hard-link clone of its workspace folder, so no row can replace a file
+            # another row reads (rustc replaces files, never writes through a link;
+            # no extra disk unless a row rebuilds).
+            prebuild_workspaces(entries, target_dir=target_dir, cargo=cargo, log_dir=log_dir,
+                                jobs=prebuild_jobs)
+            results = {index: outcome for group in pool.map(run_group, groups.values())
+                       for index, outcome in group}
+            yield from (results[index] for index in range(len(entries)))
+    finally:
+        binaries.close()
+
+
+def workspace_target_dir(target_dir: Path, entry: Entry) -> Path:
+    """The overlapping runner's target folder for ``entry``'s workspace, below the external target folder."""
+    name = entry.workspace.strip("/").replace("/", "__") or "root"
+    return target_dir / "ws" / ("root" if name == "." else name)
+
+
+def row_target_clone(folder: Path, entry: Entry) -> Path | None:
+    """A private hard-link copy of a built workspace folder for one row (`cp -al` where POSIX cp exists, else one
+    os.link per file, which NTFS supports); None only when the folder does not exist yet or links are refused, and
+    the row then runs on the shared workspace folder.
+
+    Breakage it prevents on Windows (2.9.4 R8 runs on the desktop): the first version cloned on POSIX only, so the
+    desktop's rows of one workspace still rebuilt each other's units under a running rustdoc."""
+    if not Path(folder).is_dir():
+        return None
+    clone = Path(folder).parent / (Path(folder).name + "--row--"
+                                   + re.sub(r"[^A-Za-z0-9_.-]", "_", entry.label))
+    shutil.rmtree(clone, ignore_errors=True)
+    if POSIX and shutil.which("cp") is not None:
+        done = subprocess.run(["cp", "-al", str(folder), str(clone)],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if done.returncode == 0:
+            return clone
+        shutil.rmtree(clone, ignore_errors=True)
+        return None
+    # No clone off POSIX: rows of one workspace run one after another instead (run_entries groups them).
+    # Breakage it prevents (2.9.4 pass ec5dbbdb R8, desktop, 2026-10-21): on the NTFS hard-link clone
+    # rw-wrfbatch's lib failed E0308 x5 'multiple different versions of crate serde_json' against the one vendored
+    # serde_json, mixing rlibs of two feature sets (fire-indices turns on float_roundtrip); the same rows on
+    # V58's cp -al clones pass.
+    return None
+
+
 def run_entry(entry: Entry, *, target_dir: Path, cargo: str,
-              log_dir: Path | None = None) -> Outcome:
+              log_dir: Path | None = None, binary_pool=None,
+              cargo_target: Path | None = None, compile_only: bool = False) -> Outcome | None:
     workspace = REPOSITORY_ROOT / entry.workspace
     if not (workspace / "Cargo.toml").is_file():
         raise RuntimeError(
@@ -283,15 +489,18 @@ def run_entry(entry: Entry, *, target_dir: Path, cargo: str,
             f"{entry.label}: {entry.workspace}/.cargo/config.toml does not "
             "exist, so --offline has no vendored source to resolve against")
 
-    environment = os.environ.copy()
-    environment["CARGO_TARGET_DIR"] = str(target_dir)
-    for assignment in entry.env:
-        key, _, value = assignment.partition("=")
-        # Worker integration tests need the same installed Python as this
-        # battery, including when its path contains spaces. No shell expansion.
-        environment[key] = sys.executable if value == "@python" else value
-
-    argv = [cargo] + entry.invocation()[1:]
+    environment = row_environment(entry, target_dir=target_dir, binary_pool=binary_pool, cargo_target=cargo_target)
+    if compile_only:
+        # Same selection and environment as the run, `--no-run`: the run then
+        # compiles nothing of its own unless its selection differs.  Not a
+        # verdict: a compile error recurs, and is reported, in the row's run.
+        selection = entry.invocation()[2:]
+        if "--" in selection:
+            selection = selection[:selection.index("--")]
+        subprocess.run([cargo, "test", "--no-run"] + selection, cwd=workspace, env=environment,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return None
+    argv = [cargo, "test"] + (binary_pool.configuration(entry.label) if binary_pool else []) + entry.invocation()[2:]
     # cwd is the WORKSPACE, never the repository root: cargo reads
     # .cargo/config.toml from the working directory upward, and that file
     # is what replaces crates.io with the vendored directory.  Invoked
@@ -301,6 +510,11 @@ def run_entry(entry: Entry, *, target_dir: Path, cargo: str,
     completed = subprocess.run(
         argv, cwd=workspace, env=environment, text=True,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if binary_pool:
+        for command, result in binary_pool.collect(entry.label):
+            completed.stdout += "\n$ " + " ".join(command) + "\n" + result.stdout
+            if result.returncode and not completed.returncode:
+                completed.returncode = result.returncode
     seconds = time.monotonic() - started
 
     log_path = None
@@ -323,6 +537,167 @@ def run_entry(entry: Entry, *, target_dir: Path, cargo: str,
                    returncode=completed.returncode, seconds=seconds,
                    output=completed.stdout, log_path=log_path)
 
+
+
+def prebuild_jobs_default() -> int:
+    """Parallel rustc jobs for the one-time build: ARWEN_CARGO_PREBUILD_JOBS, else CARGO_BUILD_JOBS, else the host's cores."""
+    for key in ("ARWEN_CARGO_PREBUILD_JOBS", "CARGO_BUILD_JOBS"):
+        value = os.environ.get(key, "")
+        if value.isdigit() and int(value) > 0:
+            return int(value)
+    return available_cores()
+
+
+def target_flags(entry: Entry) -> tuple[tuple[str, ...], ...]:
+    """The target selection of a row's cargo arguments (``--lib``, ``--test NAME`` ...) as flag groups, without the
+    test-name filter after ``--``: the part that decides WHICH binaries cargo builds."""
+    args = list(entry.args)
+    if "--" in args:
+        args = args[:args.index("--")]
+    groups: list[tuple[str, ...]] = []
+    for token in args:
+        if token.startswith("-") or not groups:
+            groups.append((token,))
+        else:
+            groups[-1] = groups[-1] + (token,)
+    return tuple(groups)
+
+
+def prebuild_calls(entries) -> list[tuple[str, list[str], tuple[str, ...]]]:
+    """The ``cargo test --no-run`` selections that build every row's binaries once: (workspace, cargo arguments, env).
+
+    Rows of one workspace are merged into as few calls as their shapes allow: every package with an unrestricted row
+    (``-p pkg`` and no target flag) is built whole, in ONE call with the other whole packages; a package whose rows all
+    name targets is built with the union of those targets (target flags apply to every ``-p`` of a call, so packages
+    with different unions get their own call); rows whose environment differs keep their own call, since a build
+    script may read it.  Workspaces keep manifest order; inside one, the whole-package call comes first.
+    """
+    shapes: dict[tuple, dict] = {}
+    for entry in entries:
+        key = (entry.workspace, entry.package, tuple(sorted(entry.env)))
+        record = shapes.setdefault(key, {"whole": False, "flags": []})
+        flags = target_flags(entry)
+        if not flags:
+            record["whole"] = True
+        for group in flags:
+            if group not in record["flags"]:
+                record["flags"].append(group)
+    calls: dict[tuple, list[str]] = {}
+    for (workspace, package, env), record in shapes.items():
+        flags = () if record["whole"] else tuple(record["flags"])
+        calls.setdefault((workspace, env, flags), []).append(package)
+    ordered = []
+    for workspace in dict.fromkeys(entry.workspace for entry in entries):
+        mine = [(key, packages) for key, packages in calls.items() if key[0] == workspace]
+        mine.sort(key=lambda item: (item[0][2] != (), item[0][2], item[0][1]))
+        for (_, env, flags), packages in mine:
+            arguments = ["test", "--no-run", "--locked", "--offline"]
+            for package in packages:
+                arguments += ["-p", package]
+            for group in flags:
+                arguments += list(group)
+            ordered.append((workspace, arguments, env))
+    return ordered
+
+
+def prebuild_workspaces(entries, *, target_dir: Path, cargo: str, log_dir: Path | None, jobs: int | None = None,
+                        report=print) -> dict[str, dict]:
+    """Build every row's test binaries ONCE per workspace, then fingerprint each row's exact selection, before any
+    row runs.  Not a verdict: a compile error recurs, and is reported, in the row's own run.
+
+    The build runs at ``jobs`` parallel rustc jobs (``prebuild_jobs_default``; the driver sets it) and, on Windows,
+    below normal priority, so it is a short burst on a shared desktop rather than a long trickle.  Each row's own
+    ``cargo test --no-run`` then takes 1-3 s: it compiles only a feature variant the merged call did not produce,
+    at the same ``jobs``, into the shared workspace folder, so the next run is warm for it too.
+
+    Breakage it prevents (2.9.4 R8 on the desktop, 2026-10-21): 59 rows each ran their own ``cargo test --no-run``
+    at once on one workspace folder with CARGO_BUILD_JOBS=4; cargo's build-directory lock serialised them into one
+    4-job build ("Blocking waiting for file lock on build directory" in every row) and the leg took 2,016-2,130 s
+    with a warm target.
+    """
+    jobs = jobs or prebuild_jobs_default()
+    flags = getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0) if sys.platform == "win32" else 0
+    summary: dict[str, dict] = {}
+
+    def invoke(workspace_name: str, arguments: list[str], env: tuple[str, ...]):
+        probe = Entry("cpu", workspace_name, "", 1, env, ())
+        environment = row_environment(probe, target_dir=target_dir, binary_pool=None,
+                                      cargo_target=workspace_target_dir(target_dir, probe))
+        environment["CARGO_BUILD_JOBS"] = str(jobs)
+        started = time.monotonic()
+        done = subprocess.run([cargo] + arguments, cwd=REPOSITORY_ROOT / workspace_name, env=environment, text=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=flags)
+        output = getattr(done, "stdout", "") or ""
+        if not isinstance(output, str):
+            output = output.decode("utf-8", "replace")
+        return (time.monotonic() - started, getattr(done, "returncode", 0),
+                len(re.findall(r"^\s*Compiling ", output, re.M)), output,
+                len(re.findall(r"Blocking waiting for file lock", output)), [cargo] + arguments)
+
+    for workspace_name in dict.fromkeys(entry.workspace for entry in entries):
+        workspace = REPOSITORY_ROOT / workspace_name
+        if not (workspace / "Cargo.toml").is_file() or not (workspace / ".cargo" / "config.toml").is_file():
+            continue  # the row's run reports it
+        record = {"jobs": jobs, "builds": 0, "build_seconds": 0.0, "build_compiled": 0, "build_failed": 0,
+                  "rows": 0, "row_seconds": 0.0, "row_compiled": 0, "row_lock_waits": 0}
+        lines: list[str] = []
+        for call_workspace, arguments, env in prebuild_calls(entries):
+            if call_workspace != workspace_name:
+                continue
+            seconds, code, compiled, output, _, argv = invoke(workspace_name, arguments, env)
+            record["builds"] += 1
+            record["build_seconds"] += seconds
+            record["build_compiled"] += compiled
+            record["build_failed"] += int(code != 0)
+            lines.append(f"$ {' '.join(argv)}\n(cargo exit {code}; {seconds:.1f}s; {compiled} compiled)\n{output}\n")
+        for entry in entries:
+            if entry.workspace != workspace_name:
+                continue
+            selection = entry.invocation()[1:]
+            if "--" in selection:
+                selection = selection[:selection.index("--")]
+            seconds, code, compiled, output, waits, argv = invoke(
+                workspace_name, [selection[0], "--no-run"] + selection[1:], entry.env)
+            record["rows"] += 1
+            record["row_seconds"] += seconds
+            record["row_compiled"] += compiled
+            record["row_lock_waits"] += waits
+            lines.append(f"$ {' '.join(argv)}\n(cargo exit {code}; {seconds:.1f}s; {compiled} compiled)\n{output}\n")
+        if log_dir is not None:
+            folder = Path(log_dir) / "prebuild"
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / (re.sub(r"[^A-Za-z0-9._-]+", "_", workspace_name).strip("_") + ".log")).write_text(
+                "".join(lines), encoding="utf-8", errors="replace")
+        summary[workspace_name] = record
+        report(f"  prebuild {workspace_name:<24} {record['builds']} build(s) at {jobs} jobs "
+               f"{record['build_seconds']:.1f}s, {record['build_compiled']} compiled"
+               + (f", {record['build_failed']} failed (the row reports it)" if record["build_failed"] else "")
+               + f"; {record['rows']} rows fingerprinted {record['row_seconds']:.1f}s, "
+               f"{record['row_compiled']} compiled, {record['row_lock_waits']} lock waits", flush=True)
+    return summary
+
+
+def row_environment(entry: Entry, *, target_dir: Path, binary_pool=None, cargo_target: Path | None = None) -> dict:
+    """The environment one row's cargo runs with (target folder, build jobs, the row's own KEY=VALUE assignments)."""
+    environment = os.environ.copy()
+    # Overlapping rows build into one target folder per WORKSPACE. Breakage it prevents (2.9.4 pass 4b R8,
+    # 2026-10-21 02:38Z): with one folder for every workspace, grib1_bridge's doctests compiled against
+    # deps/librayon-<hash>.rlib while rw-zarr and mapped-engine, other workspaces with the same crate name and
+    # hash but their own vendored copy and settings, rebuilt that same file ("can't find crate for rayon/sha2").
+    # Rows of one workspace still share their folder and its incremental reuse; serial shards keep the one folder.
+    environment["CARGO_TARGET_DIR"] = str(cargo_target or (workspace_target_dir(target_dir, entry) if binary_pool else target_dir))
+    environment.setdefault("CARGO_BUILD_JOBS", str(available_cores()))
+    for assignment in entry.env:
+        key, _, value = assignment.partition("=")
+        # Worker integration tests need the same installed Python as this
+        # battery, including when its path contains spaces. No shell expansion.
+        environment[key] = sys.executable if value == "@python" else value
+    if binary_pool:
+        environment["ARWEN_CARGO_GATE_KEY"] = binary_pool.key.hex()
+    return environment
+
+
+_compile_entry = run_entry
 
 def _print_matrix(outcomes: list[Outcome]) -> None:
     header = (f"{'package':<34} {'passed':>7} {'failed':>7} {'ign':>5} "
@@ -355,6 +730,9 @@ def main(argv: list[str] | None = None) -> int:
                              "(default: <CARGO_TARGET_DIR>/gate-logs)")
     parser.add_argument("--list", action="store_true",
                         help="print the entries and exit without running")
+    parser.add_argument("--prebuild-jobs", type=int, default=None,
+                        help="parallel rustc jobs for the one-time build of each workspace before the rows "
+                             "run (default: ARWEN_CARGO_PREBUILD_JOBS, else CARGO_BUILD_JOBS, else the cores)")
     args = parser.parse_args(argv)
 
     try:
@@ -395,20 +773,21 @@ def main(argv: list[str] | None = None) -> int:
     print(f"full output     {log_dir}")
     print(f"shard           {args.shard}, {len(selected)} entries, "
           f"cargo test --locked --offline")
+    print(f"prebuild jobs   {args.prebuild_jobs or prebuild_jobs_default()} "
+          f"(each workspace built once before its rows run)")
     print()
 
     outcomes: list[Outcome] = []
-    for entry in selected:
-        try:
-            outcome = run_entry(entry, target_dir=target_dir,
-                                cargo=args.cargo, log_dir=log_dir)
-        except RuntimeError as exc:
-            print(f"CARGO GATE COULD NOT RUN: {exc}", file=sys.stderr)
-            return CANNOT_RUN
-        outcomes.append(outcome)
-        print(f"  {outcome.entry.label:<34} {outcome.verdict:<10} "
-              f"{outcome.passed} passed, {outcome.failed} failed, "
-              f"{outcome.seconds:.1f}s", flush=True)
+    try:
+        for outcome in run_entries(selected, target_dir=target_dir,
+                                   cargo=args.cargo, log_dir=log_dir, prebuild_jobs=args.prebuild_jobs):
+            outcomes.append(outcome)
+            print(f"  {outcome.entry.label:<34} {outcome.verdict:<10} "
+                  f"{outcome.passed} passed, {outcome.failed} failed, "
+                  f"{outcome.seconds:.1f}s", flush=True)
+    except RuntimeError as exc:
+        print(f"CARGO GATE COULD NOT RUN: {exc}", file=sys.stderr)
+        return CANNOT_RUN
 
     print()
     _print_matrix(outcomes)
@@ -442,4 +821,6 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == '--gate-test-runner':
+        raise SystemExit(test_runner(sys.argv[2:]))
     raise SystemExit(main())

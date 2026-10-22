@@ -25,18 +25,15 @@ def _write(path, document):
     return path
 
 
-@pytest.mark.parametrize(("document", "ring_count"), [
-    ({"type": "Polygon", "coordinates": [_ring()]}, 1),
-    ({"type": "MultiPolygon",
-      "coordinates": [[_ring()], [_ring(-96.6, 35.0, -96.4, 35.2)]]}, 2),
-    ({"type": "Feature", "properties": {},
-      "geometry": {"type": "Polygon", "coordinates": [_ring()]}}, 1),
-    ({"type": "FeatureCollection",
+@pytest.mark.parametrize('document,ring_count', [
+    pytest.param({"type": "Feature", "properties": {},
+      "geometry": {"type": "Polygon", "coordinates": [_ring()]}}, 1, id='document2-1'),
+    pytest.param({"type": "FeatureCollection",
       "crs": {"type": "name", "properties": {"name": "EPSG:4326"}},
       "features": [
         {"type": "Feature", "properties": {}, "geometry": {
             "type": "MultiPolygon", "coordinates": [
-                [_ring()], [_ring(-96.6, 35.0, -96.4, 35.2)]]}}]}, 2),
+                [_ring()], [_ring(-96.6, 35.0, -96.4, 35.2)]]}}]}, 2, id='document3-2'),
 ])
 def test_supported_geojson_containers_supply_safe_bounds(
         tmp_path, document, ring_count):

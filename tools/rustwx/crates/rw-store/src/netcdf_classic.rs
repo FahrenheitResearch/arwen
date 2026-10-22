@@ -5,9 +5,8 @@
 //! needs more than that — an unlimited `Time` dimension, an `NC_CHAR`
 //! `Times(Time, DateStrLen)` stamp, `NC_INT` bookkeeping variables such as
 //! `ITIMESTEP`, and (for a whole-mesh initial condition) 64-bit data offsets.
-//! This module is that writer.  It is a sibling rather than an extension so
-//! the exporter's proven byte path keeps its exact shape; nothing here
-//! changes what [`crate::netcdf3`] emits.
+//! This module is that writer and shares its header serializer with
+//! [`crate::netcdf3`].
 //!
 //! Still pure Rust and still no HDF5: the classic formats are big-endian byte
 //! containers written straight against the Unidata "classic format"
@@ -634,9 +633,10 @@ impl NcClassicWriter {
 
         // Two-pass header serialization. Pass 1 measures with placeholder
         // begins; every width is fixed, so pass 2 has the same length.
+        let slab_strides: Vec<u64> = layouts.iter().map(|layout| layout.slab_stride).collect();
         let placeholder: Vec<u64> = vec![0; layouts.len()];
         let header_pass1 =
-            serialize_header(format, &dims, &gattrs, &vars, &layouts, &placeholder, 0);
+            serialize_header(format, &dims, &gattrs, &vars, &slab_strides, &placeholder, 0);
         let header_len = (header_pass1.len() as u64).max(min_header_bytes);
 
         // Fixed variables first, in definition order, then the record section.
@@ -677,7 +677,7 @@ impl NcClassicWriter {
             &dims,
             &gattrs,
             &vars,
-            &layouts,
+            &slab_strides,
             &begins,
             num_records,
         );
@@ -858,22 +858,7 @@ impl NcClassicWriter {
 
     fn write_slab(&mut self, idx: usize, record: u64, data: NcData<'_>) -> RwResult<()> {
         let layout = &self.layouts[idx];
-        if data.nc_type() != layout.ty {
-            return Err(RwStoreError::Format(format!(
-                "netcdf_classic: variable '{}' is {} but was handed {} data",
-                layout.name,
-                layout.ty.name(),
-                data.nc_type().name()
-            )));
-        }
-        if data.len() as u64 != layout.slab_elems {
-            return Err(RwStoreError::Format(format!(
-                "netcdf_classic: variable '{}' expects {} value(s) per slab but got {}",
-                layout.name,
-                layout.slab_elems,
-                data.len()
-            )));
-        }
+        check_slab(layout, &data)?;
         if self.written[idx][record as usize] {
             return Err(RwStoreError::Format(format!(
                 "netcdf_classic: variable '{}' record {record} was already written",
@@ -1138,12 +1123,12 @@ fn put_att_list(buf: &mut Vec<u8>, format: NcFormat, attrs: &[NcAttr]) {
     }
 }
 
-fn serialize_header(
+pub(crate) fn serialize_header(
     format: NcFormat,
     dims: &[NcDim],
     gattrs: &[NcAttr],
     vars: &[NcVarDef],
-    layouts: &[VarLayout],
+    slab_strides: &[u64],
     begins: &[u64],
     num_records: u64,
 ) -> Vec<u8> {
@@ -1184,7 +1169,7 @@ fn serialize_header(
             }
             put_att_list(&mut buf, format, &var.attrs);
             put_u32(&mut buf, var.ty.tag());
-            put_nonneg(&mut buf, format, layouts[i].slab_stride);
+            put_nonneg(&mut buf, format, slab_strides[i]);
             put_offset(&mut buf, format, begins[i]);
         }
     }

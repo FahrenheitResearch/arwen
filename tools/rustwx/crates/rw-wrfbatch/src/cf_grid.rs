@@ -2,12 +2,14 @@
 use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use netcrust::{File, NcSliceInfo, NcSliceInfoElem, Variable};
 use rayon::prelude::*;
-use rustwx_render::ColorScale;
+use rustwx_render::{Color, ColorScale, DiscreteColorScale, ExtendMode};
 use serde::Deserialize;
 use std::{collections::BTreeMap, path::Path};
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct ProductRow {
+    #[serde(default)]
+    pub levels: Vec<f64>,
     pub names: Vec<String>,
     pub standard_names: Vec<String>,
     pub product: String,
@@ -18,7 +20,30 @@ pub struct ProductRow {
     pub unit_factors: BTreeMap<String, f64>,
     pub contour_level: Option<f64>,
     pub observation_product: Option<String>,
+    pub scale: Option<CfScale>,
 }
+/// Optional physical-unit ladder supplied by a CF product row.
+#[derive(Clone, Debug, Deserialize)]
+pub struct CfScale {
+    pub levels: Vec<f64>,
+    pub colors: Vec<[u8; 3]>,
+}
+impl CfScale {
+    fn color_scale(&self) -> Result<ColorScale, String> {
+        if self.levels.len() < 2 || self.colors.len() + 1 != self.levels.len()
+            || self.levels.iter().any(|v| !v.is_finite())
+            || self.levels.windows(2).any(|v| v[0] >= v[1]) {
+            return Err("CF scale needs increasing finite levels and one RGB color per interval".into());
+        }
+        Ok(ColorScale::Discrete(DiscreteColorScale {
+            levels: self.levels.clone(),
+            colors: self.colors.iter().map(|[r,g,b]| Color::rgba(*r,*g,*b,255)).collect(),
+            extend: ExtendMode::Both,
+            mask_below: None,
+        }))
+    }
+}
+
 impl ProductRow {
     pub fn factor(&self, units: &str) -> Result<f64, String> {
         self.unit_factors.get(units).copied().ok_or_else(|| {
@@ -29,6 +54,20 @@ impl ProductRow {
         })
     }
     pub fn scale(&self) -> Result<ColorScale, String> {
+        if let Some(scale) = &self.scale { return scale.color_scale(); }
+        if !self.levels.is_empty() {
+            if self.levels.len() != 10 || self.levels.iter().any(|v| !v.is_finite())
+                || self.levels.windows(2).any(|p| p[0] >= p[1]) {
+                return Err("CF custom levels need ten increasing finite edges".into());
+            }
+            let colors = [[49,54,149],[69,117,180],[116,173,209],[171,217,233],
+                [224,243,248],[254,224,144],[253,174,97],[244,109,67],[165,0,38]];
+            return Ok(ColorScale::Discrete(rustwx_render::DiscreteColorScale {
+                levels: self.levels.clone(),
+                colors: colors.iter().map(|c| rustwx_render::Color::rgba(c[0],c[1],c[2],255)).collect(),
+                extend: rustwx_render::ExtendMode::Both, mask_below: None,
+            }));
+        }
         match self.recipe.as_deref() {
             Some(slug) => {
                 let recipe = rustwx_models::plot_recipe(slug)
@@ -403,6 +442,21 @@ pub fn window(
 mod tests {
     use super::*;
     #[test]
+    fn custom_fire_levels_are_valid_and_cover_physical_values() {
+        let rows = product_rows(None).unwrap();
+        for name in ["fwi_ffmc", "fwi_dmc", "fwi_dc", "fwi_isi", "fwi_bui", "fwi_fwi", "kbdi", "nfdrs_mc1", "nfdrs_mc10", "nfdrs_mc100", "nfdrs_mc1000", "nfdrs_live_herb", "nfdrs_live_wood", "nfdrs_gsi", "nfdrs_erc", "nfdrs_bi", "nfdrs_sc"] {
+            let mut row = resolve(&rows, name, "").unwrap().clone();
+            assert_eq!(row.factor(&row.default_units).unwrap(), 1.);
+            assert!(row.scale().is_ok());
+            assert!(row.levels.last().unwrap() > &0.);
+            row.levels[1] = row.levels[0];
+            assert!(row.scale().is_err());
+            row.levels.clear();
+            row.levels.push(f64::NAN);
+            assert!(row.scale().is_err());
+        }
+    }
+    #[test]
     fn cf_reader_rotates_north_to_south_classic_grid() {
         use netcdf_writer::{AttrValue, NcFormat, NcType, NcWriter, Schema, VarData};
         let path = std::env::temp_dir().join(format!("cf-reader-{}.nc", std::process::id()));
@@ -504,5 +558,18 @@ mod tests {
             resolve(&rows, "climnet_ar", "").unwrap().contour_level,
             Some(0.5)
         );
+    }
+}
+
+#[cfg(test)]
+mod cf_physical_scale_tests {
+    use super::*;
+    #[test]
+    fn signed_physical_ladder_validates_before_render() {
+        let scale = CfScale { levels: vec![-1., 0., 1.], colors: vec![[0,0,255],[255,0,0]] };
+        assert!(scale.color_scale().is_ok());
+        for levels in [vec![0., 0., 1.], vec![0., f64::NAN, 1.], vec![0., 1.]] {
+            assert!(CfScale { levels, colors: scale.colors.clone() }.color_scale().is_err());
+        }
     }
 }

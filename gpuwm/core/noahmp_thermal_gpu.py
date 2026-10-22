@@ -22,6 +22,7 @@ from functools import lru_cache
 
 import numpy as np
 
+from gpuwm.core.noahmp_driver_gpu import _current_device
 from gpuwm.core.noahmp_kernel_sources import (
     DEFAULT_OPTIONS, compile_runtime_unit, runtime_unit)
 
@@ -56,20 +57,6 @@ _THREADS = 64
 def thermal_source() -> str:
     """The exact translation unit the thermal kernels are compiled from."""
     return runtime_unit("noahmp_thermal").source
-
-
-def _current_device() -> int:
-    """The card a compiled module must be loaded on: the current one.
-
-    ``compile_runtime_unit`` loads its image with ``cupy.cuda.function.Module``
-    into the CURRENT context only, so a module cached per process and reused
-    on a second card hands that card the first card's function handles
-    (CUDA_ERROR_INVALID_HANDLE at the first launch; the two-card HRRR start,
-    2026-10-16).  The device is therefore part of every module cache key.
-    """
-    import cupy as cp
-
-    return cp.cuda.runtime.getDevice()
 
 
 @lru_cache(maxsize=None)

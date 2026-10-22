@@ -48,6 +48,8 @@ pub fn generate(e_vert: usize, p: EtaOptions) -> Result<Vec<f32>, &'static str> 
     Ok(eta)
 }
 
+// Preserve WRF operand order, including NaN propagation in a * dz.
+#[allow(clippy::assign_op_pattern)]
 fn stretched(nlev: usize, p: EtaOptions) -> Result<Vec<f32>, &'static str> {
     if p.dzbot <= 0.0 || p.stretch_s <= 0.0 || p.stretch_u <= 0.0 {
         return Err("dzbot, dzstretch_s and dzstretch_u must be positive for auto_levels_opt=2");

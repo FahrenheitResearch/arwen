@@ -230,11 +230,6 @@ impl StoreFieldSource {
         read_grid_2d(&self.reader, &self.grid, name)
     }
 
-    /// Read one precomputed derived/heavy grid by recipe slug.
-    pub fn derived_grid(&self, slug: &str) -> Result<StoredField2D, RwStoreError> {
-        read_grid_2d(&self.reader, &self.grid, slug)
-    }
-
     /// The full hour grid (coordinates from `grid.rwg`).
     pub fn full_grid(&self) -> rustwx_core::LatLonGrid {
         rustwx_core::LatLonGrid {
@@ -681,7 +676,7 @@ pub fn render_derived_recipes_from_store(
     let mut skipped = Vec::new();
     let mut winds: Option<(Vec<f64>, Vec<f64>)> = None;
     for slug in recipe_slugs {
-        let stored = match source.derived_grid(slug) {
+        let stored = match source.generic_grid(slug) {
             Ok(stored) => stored,
             Err(RwStoreError::UnknownVariable(_)) => {
                 skipped.push(StoreRenderSkip {

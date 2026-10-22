@@ -577,15 +577,6 @@ def divergences(nl, ws):
     return out
 
 
-def finish(rows, stratum, space_name):
-    out = []
-    for c in rows:
-        nl, ws = render(c)
-        out.append({"stratum": stratum, "factors": {k: v for k, v in c.items() if v != NA},
-                    "namelist": nl, "woof_settings": ws})
-    return out
-
-
 # ---------------------------------------------------------------------------
 # Production suites
 # ---------------------------------------------------------------------------
@@ -768,10 +759,6 @@ C_FACTORS = OrderedDict([
     ("mp_zero_out", [0, 2]),
     ("mp_zero_out_all", [0, 1]),
 ])
-
-
-class CSpace(Space):
-    pass
 
 
 def c_constraints(space):

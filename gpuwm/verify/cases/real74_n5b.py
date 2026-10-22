@@ -44,7 +44,6 @@ import itertools
 import json
 import math
 import re
-import subprocess
 from dataclasses import asdict, dataclass, fields, replace
 from datetime import datetime
 from pathlib import Path
@@ -173,10 +172,10 @@ PERTURBATION_FIELD_DEFINITION = (
 
 def _git_main_root() -> Path:
     """Return the main checkout root even when this module runs in a worktree."""
-    result = subprocess.run(
-        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-        cwd=shared.REPOSITORY_ROOT, check=True, capture_output=True, text=True)
-    return Path(result.stdout.strip()).resolve().parent
+    from gpuwm.provenance import _resolve_git_dir
+    directories = _resolve_git_dir(shared.REPOSITORY_ROOT)
+    return (directories[1].resolve().parent if directories is not None
+            else shared.REPOSITORY_ROOT)
 
 
 def default_plan_path() -> Path:

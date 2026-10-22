@@ -178,7 +178,7 @@ fn is_level(token: &str) -> bool {
         None => (token, None),
     };
     let numeric = |text: &str| !text.is_empty() && text.trim().parse::<f32>().is_ok();
-    numeric(level) && highlight.map_or(true, numeric)
+    numeric(level) && highlight.is_none_or(numeric)
 }
 
 pub fn normalize(spec: &str) -> Result<String, String> {
@@ -439,8 +439,9 @@ mod tests {
         // cloud_cover left it when every run was measured drawing 20 of
         // 24 -- no wrfout carries their fields -- with cloud_cover_levels,
         // which a wrfout does carry, in place of the total
-        // (gpuwm/data/tui/plot-presets.json).
-        assert_eq!(load(&config).unwrap().spec.split(',').count(), 22);
+        // (gpuwm/data/tui/plot-presets.json).  26 since lane/cap-ivt added
+        // ivt, iwv, freezing_level and ar_outline, which a wrfout draws.
+        assert_eq!(load(&config).unwrap().spec.split(',').count(), 26);
         assert!(!sidecar(&config).exists());
         let selection = Selection {
             label: "Custom".into(),

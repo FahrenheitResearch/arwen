@@ -2193,6 +2193,30 @@ def test_the_recipe_reproduces_every_constructor_parameter():
         f"the recipe does not reproduce {sorted(declared - recipe.reproduces)}")
 
 
+@pytest.mark.gpu
+def test_the_twin_carries_the_transported_smoke_feedback():
+    """simple_dir_fdb = 1 (c363fd55ff): a buffer's twin reads the same
+    smoke tracer as the domain's adapter, and a smoke-free adapter's twin
+    stays smoke-free.  Breakage this prevents: every tiled legacy-RRTMG
+    run refused at forecast start ("does not reproduce ...
+    ['transported_smoke']"), and a twin left at the default would run a
+    smoky domain's tiles with no smoke in the shortwave."""
+    from datetime import datetime
+
+    import numpy as np
+    from gpuwm.core.rrtmg_legacy import RRTMGLegacyRadiation
+
+    lat = np.zeros((2, 2), np.float32)
+    start = datetime(2026, 10, 2, 21)
+    for smoke in ("chem_smoke", None):
+        scheme = RRTMGLegacyRadiation(start, lat, lat, longwave=False,
+                                      shortwave=True, aer_opt=3,
+                                      transported_smoke=smoke)
+        twin = streaming._twin_rrtmg_legacy(
+            scheme, RRTMGLegacyRadiation, lat[:1], lat[:1])
+        assert twin._transported_smoke == smoke
+
+
 class _RequiresArgs:
     """A stand-in with legacy RRTMG's SHAPE: required args plus policy."""
 

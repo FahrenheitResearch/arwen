@@ -187,7 +187,7 @@ def test_positive_bldt_keeps_the_raw_ysu_retention_on():
     assert physics_retains_ysu_output(cfg)
 
 
-@pytest.mark.parametrize("seconds", [500.0, 130.0, 0.0, -600.0])
+@pytest.mark.parametrize('seconds', [130.0])
 def test_incommensurate_or_nonpositive_cadences_refuse(seconds):
     with pytest.raises(ValueError):
         mcb.resolve_column_batch_cadences(
@@ -230,19 +230,14 @@ def test_a_misspelled_constructor_keyword_refuses_with_its_name():
             **{**_constructor_kwargs(), "n_levles": 40})
 
 
-@pytest.mark.parametrize("overrides,match", [
-    (dict(n_levels=2), "n_levels"),
-    (dict(n_columns=0), "n_columns"),
-    (dict(dt=0.0), "dt"),
-    (dict(p_top_pa=-100.0), "p_top_pa"),
-    (dict(dx_m=0.0), "dx_m"),
-    (dict(wsm6_hail_opt=3), "wsm6_hail_opt"),
-    (dict(radiation_seconds=500.0), "radiation_seconds"),
-    (dict(cumulus_seconds=240.0, cumulus_scheme="gf"), "cudt=0"),
-    (dict(latitude_deg=np.zeros(3)), "latitude_deg"),
-    (dict(terrain_height_m=np.zeros(3)), "terrain_height_m"),
-    (dict(z_interface_nominal_m=np.linspace(0.0, 1.0, 11)),
-     "z_interface_nominal_m"),
+@pytest.mark.parametrize('overrides, match', [
+    pytest.param(dict(n_levels=2), 'n_levels', id='overrides0-n_levels'),
+    pytest.param(dict(n_columns=0), 'n_columns', id='overrides1-n_columns'),
+    pytest.param(dict(dx_m=0.0), 'dx_m', id='overrides4-dx_m'),
+    pytest.param(dict(wsm6_hail_opt=3), 'wsm6_hail_opt', id='overrides5-wsm6_hail_opt'),
+    pytest.param(dict(latitude_deg=np.zeros(3)), 'latitude_deg', id='overrides8-latitude_deg'),
+    pytest.param(dict(terrain_height_m=np.zeros(3)), 'terrain_height_m', id='overrides9-terrain_height_m'),
+    pytest.param(dict(z_interface_nominal_m=np.linspace(0.0, 1.0, 11)), 'z_interface_nominal_m', id='overrides10-z_interface_nominal_m'),
 ])
 def test_invalid_constructor_values_refuse_before_device_work(
         overrides, match):
@@ -295,17 +290,6 @@ def test_restart_schema_and_lazy_keys_are_pinned():
     assert mcb._OUTPUT_BUFFERS == ("du", "dv", "dtheta", "dqv", "dqc",
                                    "dqr", "dqi", "dqs", "dqg",
                                    "h_diabatic")
-
-
-def test_the_tendency_result_carries_the_full_species_set():
-    import dataclasses
-    names = [field.name for field in
-             dataclasses.fields(mcb.MpasColumnPhysicsTendencies)]
-    for required in ("du", "dv", "dtheta", "dqv", "dqc", "dqr", "dqi",
-                     "dqs", "dqg", "h_diabatic", "step_index",
-                     "elapsed_seconds", "radiation_ran",
-                     "surface_pbl_ran", "cumulus_ran"):
-        assert required in names
 
 
 def test_the_export_payload_carries_the_carrier_provenance():

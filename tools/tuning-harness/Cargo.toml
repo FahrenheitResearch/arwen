@@ -1,0 +1,18 @@
+[package]
+name = "tuning-harness-core"
+version = "0.1.0"
+edition = "2021"
+description = "Opt-in ensemble parameter sampling, station scoring and inversion"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+csv = "1"
+
+[lib]
+name = "tuning_harness_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tuning-harness-core"
+path = "src/main.rs"

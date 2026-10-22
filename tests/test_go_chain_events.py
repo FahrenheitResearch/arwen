@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import hashlib
 import io
-import itertools
 import json
 import os
 import subprocess
@@ -32,38 +31,15 @@ from gpuwm.chain_events import (
 )
 from gpuwm.cli import main as cli_main
 from gpuwm.runplan import EVENT_SCHEMA, EVENT_TAGS
+from test_go_chain import (
+    _a_card_whose_free_vram_this_file_decides, gfs_config, staged_geog,
+    _FakePopen, _FakeCompleted,
+)
 
 REPO = Path(__file__).resolve().parents[1]
 
 #: The pinned baseline the Rust reset diffs against.
 BASELINE = REPO / "tests" / "data" / "pre-sim-stage-baseline.json"
-
-#: What the pinned card below reports free -- above this file's fixture
-#: config so the memory gate's verdict is "fits", on every box.
-_PINNED_FREE_BYTES = 30 * 1024 ** 3
-
-
-@pytest.fixture(autouse=True)
-def _a_card_whose_free_vram_this_file_decides(monkeypatch):
-    """Pin the one number the outside world moves in the memory gate.
-
-    Same reason and same seam as ``test_go_chain``: the gate refuses
-    when the binding phase exceeds the free VRAM it measures right now,
-    so on a shared card every chain test here would go red whenever
-    another run held the card.  Everything else in the gate stays real.
-    """
-
-    from gpuwm.core import preflight
-    from types import SimpleNamespace
-    from gpuwm import doctor
-    monkeypatch.setattr(doctor, "_cuda_headers_check", lambda **kwargs: SimpleNamespace(status="verified"))
-
-    monkeypatch.setattr(
-        preflight, "device_memory_probe_subprocess",
-        lambda **_kwargs: {"free_bytes": _PINNED_FREE_BYTES,
-                           "total_bytes": 32 * 1024 ** 3,
-                           "profile": None})
-
 
 #: The renderer's product listing as this file's chains see it: two
 #: products a wrfout carries, in the shape ``render_catalog`` returns.
@@ -124,70 +100,9 @@ def _a_gpu_runtime_this_file_decides(monkeypatch):
                         or resolves(module)))
 
 
-@pytest.fixture(scope="module")
-def gfs_config(tmp_path_factory):
-    out = tmp_path_factory.mktemp("gfs") / "myarea.toml"
-    assert cli_main([
-        "domain", "--point=35.3,-97.5", "--card", "24gb", "--ladder", "12",
-        "--source", "gfs", "--cycle", "2026-07-29T18", "--hours", "6",
-        "--out", str(out), "--physics-profile",
-        "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1"]) == 0
-    return out
-
-
-@pytest.fixture(scope="module")
-def staged_geog(tmp_path_factory):
-    """A WPS_GEOG tree shaped the way ``gpuwm fetch-geog`` leaves one.
-
-    Directory names and the ``index`` file are the whole of what the
-    chain's precondition reads, and the names come from the module that
-    stages the real tree so this cannot drift from the check.
-    """
-
-    from gpuwm.geog_assets import geog_datasets
-
-    geog = tmp_path_factory.mktemp("geog") / "WPS_GEOG"
-    for name in geog_datasets():
-        (geog / name).mkdir(parents=True, exist_ok=True)
-        (geog / name / "index").write_text("", encoding="utf-8")
-    return geog
-
-
 # ---------------------------------------------------------------------------
 # A whole chain, faked at the subprocess boundary
 # ---------------------------------------------------------------------------
-
-
-class _FakePopen:
-    """The same ``Popen`` double ``test_go_chain`` uses, for one reason:
-    ``_run_stage`` spells ``subprocess.run`` out as Popen so the
-    interrupt path can name the child's pid, and reads the child's two
-    pipes as it writes them."""
-
-    _pids = itertools.count(717171)
-
-    def __init__(self, completed):
-        self._completed = completed
-        self.pid = next(self._pids)
-        self.returncode = None
-        self.stdout = io.StringIO(completed.stdout or "")
-        self.stderr = io.StringIO(completed.stderr or "")
-
-    def wait(self, timeout=None):
-        self.returncode = self._completed.returncode
-        return self.returncode
-
-    # The first-products render still waits through communicate.
-    def communicate(self):
-        self.returncode = self._completed.returncode
-        return self._completed.stdout, self._completed.stderr
-
-
-class _FakeCompleted:
-    def __init__(self, returncode, stdout="", stderr=""):
-        self.returncode = returncode
-        self.stdout = stdout
-        self.stderr = stderr
 
 
 def _run_a_chain(tmp_path, monkeypatch, gfs_config, staged_geog, *,
@@ -272,6 +187,23 @@ def _run_a_chain(tmp_path, monkeypatch, gfs_config, staged_geog, *,
     return rc, (run_stamp.latest(root) or root)
 
 
+@pytest.fixture(scope="module")
+def completed_chain(tmp_path_factory, gfs_config, staged_geog):
+    """Run the default chain once per worker; consumers only read its artifacts."""
+    from contextlib import redirect_stdout, redirect_stderr
+
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with pytest.MonkeyPatch.context() as patch:
+        _a_card_whose_free_vram_this_file_decides.__wrapped__(patch)
+        _a_renderer_catalog_this_file_decides.__wrapped__(patch)
+        _a_gpu_runtime_this_file_decides.__wrapped__(patch)
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            rc, root = _run_a_chain(
+                tmp_path_factory.mktemp("completed-chain"), patch,
+                gfs_config, staged_geog)
+    return rc, root, stdout.getvalue()
+
+
 def _write_step_log(run_dir: Path) -> None:
     """A progress.jsonl shaped like a cold run's: phases, then a step 1
     that dwarfs its neighbours."""
@@ -349,10 +281,8 @@ def _sha256(path: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_a_bare_go_leaves_an_events_file_nobody_asked_for(
-        tmp_path, monkeypatch, gfs_config, staged_geog, capsys):
-    rc, root = _run_a_chain(tmp_path, monkeypatch, gfs_config, staged_geog)
-    capsys.readouterr()
+def test_a_bare_go_leaves_an_events_file_nobody_asked_for(completed_chain):
+    rc, root, printed = completed_chain
     assert rc == 0
 
     events = read_chain_events(root / CHAIN_EVENTS_FILENAME)
@@ -363,10 +293,8 @@ def test_a_bare_go_leaves_an_events_file_nobody_asked_for(
     assert {record["event"] for record in events} <= set(EVENT_TAGS)
 
 
-def test_every_stage_of_the_chain_is_named_with_its_wall(
-        tmp_path, monkeypatch, gfs_config, staged_geog, capsys):
-    _, root = _run_a_chain(tmp_path, monkeypatch, gfs_config, staged_geog)
-    capsys.readouterr()
+def test_every_stage_of_the_chain_is_named_with_its_wall(completed_chain):
+    _, root, printed = completed_chain
     walls = stage_walls(read_chain_events(root / CHAIN_EVENTS_FILENAME))
 
     # THE AUDIT'S OWN STAGE LIST, minus nothing.  `boot` is the CLI's
@@ -386,6 +314,17 @@ def test_the_stages_account_for_the_process_wall(
     reader who has to subtract to find the time nobody named.
     """
 
+    # A profiler sample must survive a thread exiting between listing and read.
+    from gpuwm.timeline import parallelism
+    listdir = os.listdir
+    def listed_threads(path):
+        entries = listdir(path)
+        if str(path).startswith("/proc/") and str(path).endswith("/task"):
+            entries.append("exited-thread")
+        return entries
+    monkeypatch.setattr(parallelism.os, "listdir", listed_threads)
+    if parallelism._LINUX:
+        assert os.getpid() in parallelism.tree_ticks()
     _, root = _run_a_chain(tmp_path, monkeypatch, gfs_config, staged_geog)
     capsys.readouterr()
     summary = summarize(root / CHAIN_EVENTS_FILENAME)
@@ -455,8 +394,7 @@ def test_a_verify_skip_is_never_reported_as_bandwidth(tmp_path):
         5_000_000.0)
 
 
-def test_the_forecast_stage_is_decomposed_from_its_own_step_log(
-        tmp_path, monkeypatch, gfs_config, staged_geog, capsys):
+def test_the_forecast_stage_is_decomposed_from_its_own_step_log(completed_chain):
     """THE AUDIT'S HARDEST QUESTION, answerable from one file.
 
     Runner setup, model step 1 and the integration were three separate
@@ -465,8 +403,7 @@ def test_the_forecast_stage_is_decomposed_from_its_own_step_log(
     step 1's wall.
     """
 
-    _, root = _run_a_chain(tmp_path, monkeypatch, gfs_config, staged_geog)
-    capsys.readouterr()
+    _, root, printed = completed_chain
     forecast = summarize(root / CHAIN_EVENTS_FILENAME)["forecast"]
     assert forecast["phases"]["preflight_verify"] == pytest.approx(1.9)
     assert forecast["phases"]["restore_prepared_cache"] == pytest.approx(2.4)
@@ -590,10 +527,8 @@ def test_the_forecast_stage_is_asked_to_draw_the_first_frame(tmp_path,
         plan, {"proof": "a", "source_manifest": "b", "prepared_content": "c"})
 
 
-def test_time_to_first_plot_is_printed_and_persisted(
-        tmp_path, monkeypatch, gfs_config, staged_geog, capsys):
-    _, root = _run_a_chain(tmp_path, monkeypatch, gfs_config, staged_geog)
-    printed = capsys.readouterr().out
+def test_time_to_first_plot_is_printed_and_persisted(completed_chain):
+    _, root, printed = completed_chain
     assert "go: time to first plot" in printed
 
     summary = summarize(root / CHAIN_EVENTS_FILENAME)
@@ -795,13 +730,11 @@ def test_an_untouched_picture_keeps_the_receipt_instant(tmp_path: Path):
         render_dir=render_dir)["pictures_still_original"] is True
 
 
-def test_the_printed_number_never_predates_the_tree(
-        tmp_path, monkeypatch, gfs_config, staged_geog, capsys):
+def test_the_printed_number_never_predates_the_tree(completed_chain):
     """The property, over a whole chain: the reported instant is one at
     which a picture in the published tree actually existed."""
 
-    _, root = _run_a_chain(tmp_path, monkeypatch, gfs_config, staged_geog)
-    capsys.readouterr()
+    _, root, printed = completed_chain
     summary = summarize(root / CHAIN_EVENTS_FILENAME)
     reported = summary["launch_unix_ms"] + int(
         summary["time_to_first_plot_seconds"] * 1000)
@@ -818,14 +751,12 @@ def test_the_summary_states_what_the_number_measures():
     assert "still present in the render tree" in TTFP_DEFINITION
 
 
-def test_the_early_frame_is_not_redrawn_by_the_finalize_stage(
-        tmp_path, monkeypatch, gfs_config, staged_geog, capsys):
+def test_the_early_frame_is_not_redrawn_by_the_finalize_stage(completed_chain):
     """The anchor fix.  `go` never hosts the early render, so the skip was
     unreachable and the finalize stage overwrote the early pictures --
     which is what moved the tree's earliest mtime to 2m 45s."""
 
-    _, root = _run_a_chain(tmp_path, monkeypatch, gfs_config, staged_geog)
-    printed = capsys.readouterr().out
+    _, root, printed = completed_chain
     assert "1 frame already published by the early render" in printed
     assert "digests verified" in printed
     summary = summarize(root / CHAIN_EVENTS_FILENAME)
@@ -862,8 +793,7 @@ def test_a_baseline_without_provenance_is_refused(tmp_path):
     assert "provenance" in str(refusal.value)
 
 
-def test_the_baseline_names_stages_the_chain_actually_emits(
-        tmp_path, monkeypatch, gfs_config, staged_geog, capsys):
+def test_the_baseline_names_stages_the_chain_actually_emits(completed_chain):
     """The binding that keeps the baseline usable.
 
     A pinned number is only diffable while the stage it names still
@@ -872,8 +802,7 @@ def test_the_baseline_names_stages_the_chain_actually_emits(
     against a stage nobody emits any more.
     """
 
-    _, root = _run_a_chain(tmp_path, monkeypatch, gfs_config, staged_geog)
-    capsys.readouterr()
+    _, root, printed = completed_chain
     emitted = set(stage_walls(read_chain_events(root / CHAIN_EVENTS_FILENAME)))
 
     baseline = chain_events.load_baseline(BASELINE)

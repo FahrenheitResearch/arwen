@@ -57,6 +57,7 @@ by name under them instead.  Given none, nothing changes.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -346,6 +347,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-directory", required=True, type=Path)
     parser.add_argument("--domain", default="d01")
+    parser.add_argument("--posted-field-table", type=Path, default=None,
+                        help="read posted GRIB2 through a declared record and unit table")
+    parser.add_argument("--posted-reader-library", type=Path, default=None,
+                        help="native posted_forecast_reader shared library")
     parser.add_argument("--read-only", action="store_true")
     parser.add_argument("--case-id")
     parser.add_argument("--arm-id")
@@ -358,6 +363,10 @@ def main() -> int:
                              "window the registration scores, by default")
     parser.add_argument("--asos-stations", type=Path, default=None)
     parser.add_argument("--asos-surface", type=Path, default=None)
+    parser.add_argument("--station-set-in", type=Path, default=None,
+                        help="score the shared station ids exported for these observations and leads")
+    parser.add_argument("--station-set-out", type=Path, default=None,
+                        help="export the admitted station ids before any score is computed")
     parser.add_argument("--boundary-width-cells", type=int, default=None)
     parser.add_argument("--reported-lead-hours", default=None,
                         help="comma-separated leads to report and never "
@@ -379,6 +388,8 @@ def main() -> int:
     parser.add_argument("--registration-out", type=Path, default=None)
     parser.add_argument("--score-out", type=Path, default=None)
     arguments = parser.parse_args()
+    if (arguments.station_set_in is not None or arguments.station_set_out is not None) and arguments.asos_surface is None:
+        parser.error("shared station sets require --asos-surface and --asos-stations")
 
     # Explicit lead and window sets are checked before anything is opened: a
     # request for a lead that cannot exist is a usage error, and it should
@@ -395,8 +406,18 @@ def main() -> int:
     except ValueError as error:
         parser.error(str(error))
 
-    arm = model_source.WrfHistorySource(arguments.run_directory,
-                                        domain=arguments.domain)
+    if (arguments.posted_field_table is None) != (arguments.posted_reader_library is None):
+        parser.error("--posted-field-table and --posted-reader-library are required together")
+    if arguments.posted_field_table is not None:
+        if arguments.precipitation_packs is not None:
+            parser.error("the posted reader admits instantaneous fields only; interval precipitation needs an explicit accumulation operator")
+        from gpuwm.verify.obs.posted_source import PostedGrib2Source
+        arm = PostedGrib2Source(arguments.run_directory,
+                                field_table=arguments.posted_field_table,
+                                reader_library=arguments.posted_reader_library)
+    else:
+        arm = model_source.WrfHistorySource(arguments.run_directory,
+                                            domain=arguments.domain)
     if arguments.read_only:
         record = {"schema": "gpuwm.obs-battery-arm-readback/v1",
                   "run_directory": str(arguments.run_directory),
@@ -519,6 +540,32 @@ def main() -> int:
                 registration.DEFAULT_MATCH_TOLERANCE_SECONDS),
             maximum_screen_fraction=(
                 registration.DEFAULT_MAXIMUM_SCREEN_FRACTION))
+        if arguments.station_set_out is not None:
+            exported = {"schema": "obs-shared-station-set-v1",
+                        "station_table_sha256": station_table_sha256,
+                        "valid_times": list(hours),
+                        "station_ids": list(frozen.station_ids)}
+            arguments.station_set_out.write_text(
+                json.dumps(exported, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8")
+        if arguments.station_set_in is not None:
+            raw = arguments.station_set_in.read_bytes()
+            shared = json.loads(raw)
+            ids = shared.get("station_ids", [])
+            if (shared.get("schema") != "obs-shared-station-set-v1"
+                    or shared.get("station_table_sha256") != station_table_sha256
+                    or shared.get("valid_times") != list(hours)
+                    or not ids or ids != sorted(set(ids))):
+                raise ValueError("the shared station set must bind this station table, these valid times and ascending unique station ids")
+            rejected = sorted(set(ids) - set(frozen.station_ids))
+            if rejected:
+                raise ValueError(f"this arm cannot admit shared stations {rejected}; quietly dropping them would compare different points")
+            frozen = stations.FrozenStationSet(
+                station_ids=tuple(ids), positions=frozen.positions,
+                drops=frozen.drops,
+                parameters={**frozen.parameters,
+                    "shared_station_set_sha256": hashlib.sha256(raw).hexdigest(),
+                    "candidate_station_count": len(frozen.station_ids)})
         print(f"frozen station set: {len(frozen.station_ids)} kept, "
               f"{len(frozen.drops)} dropped")
 

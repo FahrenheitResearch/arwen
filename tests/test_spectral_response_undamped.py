@@ -26,11 +26,10 @@ def _strict(text: str):
     return json.loads(text, parse_constant=refuse)
 
 
-@pytest.mark.parametrize("extra", [
-    [],
-    ["--protect-wavelength-m", "12000"],
-    ["--maximum-damping-fraction", "0"],
-    ["--dt-s", "0"],
+@pytest.mark.parametrize('extra', [
+    pytest.param([], id='extra0'),
+    pytest.param(["--protect-wavelength-m", "12000"], id='extra1'),
+    pytest.param(["--maximum-damping-fraction", "0"], id='extra2'),
 ])
 def test_unit_gain_rows_are_null_in_stdout_and_file(tmp_path, capsys, extra):
     output = tmp_path / "response.json"

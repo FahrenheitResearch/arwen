@@ -92,7 +92,9 @@ ROUTE_TABLE_SHA256 = (
     # breakage), and cadence_note states the grammar that replaces it.
     # Native-level atmosphere and analysis-soil routes are table entries,
     # merged with the ecmwf-ens and rrfs-ens input-ensemble rows.
-    "e29085717ec57872f12dcbea255fda7068e4f567bd96f26b4d8136b947cdcd56"
+    # Moved by the capabilities landing: the ecmwf-ens historical-archive rows
+    # merged over the gfs/gefs archive publication rows.
+    "12d26a7e89eb039381e5049b99d77d6cf3a4cffa25cfe7d55ee438f9561f6340"
 )
 
 #: Sources whose acquisition predates the route table and keeps its own
@@ -185,6 +187,8 @@ class FileRow:
     #: The byte ranges are copied unchanged, then verified by Rust inventory.
     member_index: Mapping[str, object] | None = None
     index_suffix_replaces: str | None = None
+    lead_min: int = 0
+    lead_max: int | None = None
 
 
 @dataclass(frozen=True)
@@ -263,6 +267,7 @@ class Route:
     record_subset_supported: bool
     record_subset_why: str
     prep: Mapping[str, object]
+    first_lead: int = 0
     publication_eras: tuple[PublicationEra, ...] = ()
     #: How a cycle posts and how long a run waits for a lead
     #: (:class:`PostingRow`).  Every loaded route has one: the loader
@@ -333,6 +338,8 @@ def _file_row(raw: Mapping[str, object]) -> FileRow:
             f"{ROUTE_TABLE_NAME}: file role {raw.get('role')!r} declares lead "
             f"rule {leads!r}; the planner reads {sorted(FILE_LEAD_RULES)}")
     return FileRow(
+        lead_min=int(raw.get("lead_min", 0)),
+        lead_max=int(raw["lead_max"]) if raw.get("lead_max") is not None else None,
         role=str(raw["role"]),
         path=str(raw["path"]),
         primary=bool(raw.get("primary", False)),
@@ -695,6 +702,7 @@ def _build_routes() -> Mapping[str, Route]:
              tuple((int(step[0]), int(step[1])) for step in entry["steps"]))
             for entry in raw["ladders"])
         routes[source_id] = Route(
+            first_lead=int(raw.get("first_lead", 0)),
             source_id=source_id,
             label=str(raw["label"]),
             measured=str(raw.get("measured", "")),
@@ -1257,7 +1265,7 @@ def ladder_for(route: Route, cycle: datetime) -> tuple[int, ...]:
         start = 0 if index == 0 else previous + step
         leads.extend(range(start, through + 1, step))
         previous = leads[-1]
-    return tuple(leads)
+    return tuple(lead for lead in leads if lead >= route.first_lead)
 
 
 def _extended_cycle_hours(route: Route) -> tuple[int, ...]:
@@ -1531,7 +1539,10 @@ def _ladder_words(route: Route, cycle: datetime) -> str:
     parts = []
     previous = 0
     for index, (through, step) in enumerate(_lead_steps(route, cycle)):
-        start = 0 if index == 0 else previous + step
+        # The first segment begins at the route's first published lead
+        # (ladder_for drops the leads below it), not at f000.
+        start = (-(-route.first_lead // step) * step if index == 0
+                 else previous + step)
         parts.append(f"f{start:03d}..f{through:03d} every {step} h")
         previous = through
     return ", then ".join(parts)
@@ -1797,6 +1808,7 @@ def resolve_request(source: str, *, cycle: datetime, hours: int,
                     now: datetime | None = None) -> FetchPlan:
     """Everything a fetch will do, decided before a single byte moves."""
 
+    source = source_adapters.source_for_cycle(source, cycle)
     route = route_for(source)
     host = fetch_endpoints.policy_transport(route.source_id, host)
     if area is not None:
@@ -1847,18 +1859,23 @@ def resolve_request(source: str, *, cycle: datetime, hours: int,
     step0_only: list[str] = []
 
     def emit(row: FileRow, lead: int | None) -> None:
+        if lead is not None and (lead < row.lead_min or (row.lead_max is not None and lead > row.lead_max)):
+            return
         lead_context = dict(context)
         if lead is not None:
             lead_context.update({
                 "F": str(lead), "FF": f"{lead:02d}", "FFF": f"{lead:03d}"})
         for entry in (_axis_entries(route, row.axis) if row.axis else ({},)):
             key = _render(row.path, {**lead_context, **entry})
-            if key in seen:
+            identity = (key, lead) if row.member_index and row.member_index.get("format") == "wgrib2" else key
+            if identity in seen:
                 continue
-            seen.add(key)
+            seen.add(identity)
             relpath = _relpath(route, key)
             if row.member_index is not None:
-                relpath = f"members/{member_name}/{relpath}"
+                relpath = (f"members/{member_name}/leads/f{lead:03d}/{relpath}"
+                           if row.member_index.get("format") == "wgrib2"
+                           else f"members/{member_name}/{relpath}")
             index_base = key
             if row.index_suffix_replaces:
                 if not key.endswith(row.index_suffix_replaces):
@@ -2022,7 +2039,7 @@ def _verify_payload(path: Path, *, magic: str, label: str) -> None:
         raise ValueError(f"{label}: the server returned an empty object")
     with path.open("rb") as handle:
         head = handle.read(len(magic))
-        if head != magic.encode("ascii"):
+        if head != magic.encode("latin1"):
             raise ValueError(
                 f"{label}: expected a {magic} payload and the first bytes "
                 f"are {head!r} -- the host answered with something that is "
@@ -2144,7 +2161,8 @@ def _download_along_ladder(plan: FetchPlan, obj: PlannedObject, dest: Path, *,
             return download_indexed_member(
                 url, endpoint.url(obj.index_key), dest,
                 declaration=obj.member_index, member_ordinal=obj.member_ordinal,
-                source=plan.source_id, member=plan.member, opener=opener)
+                source=plan.source_id, member=plan.member, opener=opener,
+                forecast_hour=obj.lead)
         return fetch(url, dest, magic=magic, opener=opener)
 
     endpoint, entry = fetch_endpoints.ask_along_ladder(

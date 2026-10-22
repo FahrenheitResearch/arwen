@@ -35,7 +35,12 @@ def test_an_ordinary_install_still_walks_nomads_first(monkeypatch):
     assert fetch_endpoints.serving_ladder("hrrr", cycle=cycle, now=cycle)[0].name == "nomads"
     assert go_cli.pinned_transport({"source": "hrrr"}) == (None, None)
     assert fetch_pool.host_worker_cap("nomads.ncep.noaa.gov", 6) == 2
-    assert "--mode full-file" in fetch.transport_refusal("gfs", "s3")
+    # Since the GFS archive lane (32dea003f45, lane/cap-gfs-archive) the S3
+    # host declares dated layouts, and pinning a layout host makes the fetch
+    # take whole objects itself (fetch._fetch_main), so the pin is admitted;
+    # the crop host, which has no whole-object layout, is still refused.
+    assert fetch.transport_refusal("gfs", "s3") is None
+    assert "archive host" in fetch.transport_refusal("gfs", "nomads")
 
 
 def test_aws_policy_pins_each_source_but_preserves_a_nomads_only_primary(aws_policy):
@@ -65,7 +70,7 @@ def test_latest_hrrr_keeps_the_newest_start_when_later_soil_is_missing(aws_polic
     assert missing not in seen
     assert all("noaa-hrrr-bdp-pds.s3.amazonaws.com" in url for url in seen)
     accepted = {fetch.hrrr_object_url(selected, lead, product, transport="s3")
-                for lead in (0, 1) for product in ("wrfnat", "wrfprs")}
+                for lead in (0, 1) for product in fetch.hrrr_lead_products()}
     assert accepted <= set(seen)
 
 
@@ -398,7 +403,9 @@ def test_latest_selects_early_aws_start_before_prediction_and_ignores_later_lead
     assert seen and not any("wrfprsf24." in url or "wrfprsf48." in url for url in seen)
 
 
-@pytest.mark.parametrize("missing_product,suffix", [("wrfnat", ""), ("wrfprs", ""), ("wrfprs", ".idx")])
+@pytest.mark.parametrize("missing_product,suffix", [
+    ("wrfnat", ""), ("wrfprs", ""), ("wrfprs", ".idx"),
+    ("wrfsfc", ""), ("wrfsfc", ".idx")])
 def test_latest_backs_off_only_when_first_inputs_are_missing(aws_policy, missing_product, suffix):
     now = datetime(2026, 10, 1, 23, 59)
     cycle = datetime(2026, 10, 1, 23)

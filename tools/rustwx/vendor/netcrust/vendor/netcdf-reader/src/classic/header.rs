@@ -317,11 +317,12 @@ fn read_attr_values(
         }
         NcType::Char => {
             let bytes = cur.read_bytes(raw_bytes)?;
-            // Trim trailing null bytes (common in NetCDF char attributes).
-            let s = String::from_utf8_lossy(bytes);
-            let trimmed = s.trim_end_matches('\0').to_string();
+            // NC_CHAR's declared length includes trailing NUL bytes. They
+            // are values, not container padding (hydro code_version is one NUL).
+            let text = String::from_utf8(bytes.to_vec())
+                .map_err(|e| Error::InvalidData(format!("non-UTF8 char attribute: {e}")))?;
             cur.skip(padded - raw_bytes)?;
-            Ok(NcAttrValue::Chars(trimmed))
+            Ok(NcAttrValue::Chars(text))
         }
         NcType::Short => {
             let mut values = Vec::with_capacity(nvalues);

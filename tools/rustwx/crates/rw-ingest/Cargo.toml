@@ -29,10 +29,8 @@ profiling = ["dep:puffin"]
 # underlying calc kernels directly with identically prepared inputs.
 rustwx-calc = { path = "../rustwx-calc" }
 
-# Polite-mode priority APIs (src/throttle.rs): process-wide drop for the
-# headless bins plus the per-thread variant interactive hosts use for their
-# dedicated background pool. Win32_System_Threading carries
-# SetPriorityClass / SetThreadPriority / GetCurrentThread.
+# Per-thread priority APIs for the dedicated background pool (src/throttle.rs).
+# Win32_System_Threading carries SetThreadPriority / GetCurrentThread.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",

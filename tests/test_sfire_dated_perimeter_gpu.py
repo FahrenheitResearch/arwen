@@ -28,6 +28,15 @@ def test_dated_perimeter_releases_only_current_interval(burn_age):
     expected_tign = cp.asarray(tign)
     start, _ = fuel_left(expected_lfn, expected_tign, state.data["fuel_time"],
                          np.float32(0.0), domain=state.domain)
+    # The initial history must already contain the observation. Applying it
+    # only in advance() produced a blank t=0 perimeter and delayed spread.
+    assert state.perimeter_applied
+    assert state.time_seconds == 0.0 and state.step_count == 0
+    np.testing.assert_array_equal(cp.asnumpy(state.data["lfn"][9:17, 9:19]),
+                                  lfn[9:17, 9:19])
+    assert bool(cp.any(state.data["fire_area"] > 0))
+    for name in ("fgrnhfx", "fgrnqfx", "dry_burnt_mass"):
+        assert bool(cp.all(state.data[name] == 0))
     end, _ = fuel_left(expected_lfn, expected_tign, state.data["fuel_time"],
                        np.float32(0.5), domain=state.domain)
     state.advance(0.5)

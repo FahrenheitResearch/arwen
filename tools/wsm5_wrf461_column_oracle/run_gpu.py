@@ -49,6 +49,12 @@ from pathlib import Path
 import numpy as np
 
 if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from tools.wsm6_wrf461_column_oracle.common import (
+    _header)
+
+if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import oracle_io as io  # type: ignore
 else:
@@ -93,17 +99,6 @@ def run_gpu(columns: Path, dt: float, nsteps: int):
         sf = {k: v.get().reshape(ncol) for k, v in sf.items()}
         steps.append((lv, sf))
     return {"steps": steps}
-
-
-def _header():
-    import cupy as cp
-    import gpuwm.wrf_exact as wrf_exact
-
-    name = cp.cuda.runtime.getDeviceProperties(0)["name"]
-    return {"strict_build": bool(wrf_exact.ENABLED),
-            "device": name.decode() if isinstance(name, bytes) else str(name),
-            "nvrtc": ".".join(map(str, cp.cuda.nvrtc.getVersion())),
-            "cupy": cp.__version__}
 
 
 def _probe_columns(run, names):

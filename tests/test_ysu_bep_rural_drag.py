@@ -110,11 +110,12 @@ def _rural_index(fx):
     return idx
 
 
-def test_the_kernel_removes_the_whole_of_its_own_drag_under_bep():
+@pytest.mark.parametrize("module", ("ysu", "ysu_480"))
+def test_the_kernel_removes_the_whole_of_its_own_drag_under_bep(module):
     """The one expression, spelled where it lives, with WRF's stock line
     recorded beside it so the revert is one line."""
-    text = (REPO / "gpuwm" / "core" / "kernels" / "ysu.cu").read_text(
-        encoding="utf-8")
+    from gpuwm.core.kernels import _unit_text
+    text = _unit_text(module)
     # Since lane/parity-286 the BEP entry point takes WRF's ctopo drag arm
     # (ctopo = 1, as WRF's driver passes it), so the removal is spelled on
     # WRF's own bracket, fric*vconvlim + ctopo*fric*(1-vconvlim).

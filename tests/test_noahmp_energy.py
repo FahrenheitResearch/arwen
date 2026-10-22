@@ -267,10 +267,6 @@ def test_energy_bit_exact(case):
     want = np.asarray([w for _, _, w in pairs], dtype=np.float32)
     assert max_ulp(got, want) == 0
 
-
-@pytest.mark.parametrize("case", CASES)
-def test_integer_and_logical_outputs_bit_exact(case):
-    st = _run(case)
     out = FX[case]["out"]
     for k in range(-NSNOW + 1, NSOIL + 1):
         key = f"IMELT_{k:+d}"
@@ -278,17 +274,12 @@ def test_integer_and_logical_outputs_bit_exact(case):
             assert st.imelt[k + NSNOW - 1] == _to_int(out[key]), (case, key)
     assert int(st.frozen_canopy) == _to_int(out["FROZEN_CANOPY"]), case
     assert int(st.frozen_ground) == _to_int(out["FROZEN_GROUND"]), case
+    # WRF leaves these unassigned; the port must produce exactly 0.0.
+    #
+    # The fixture never pins the residue -- see
+    # ``tests/data/oracles/noahmp/PROVENANCE-energy.md`` -- so this is the only
+    # statement of what the port is allowed to do there.
 
-
-@pytest.mark.parametrize("case", CASES)
-def test_undefined_slots_get_the_defined_zero(case):
-    """WRF leaves these unassigned; the port must produce exactly 0.0.
-
-    The fixture never pins the residue -- see
-    ``tests/data/oracles/noahmp/PROVENANCE-energy.md`` -- so this is the only
-    statement of what the port is allowed to do there.
-    """
-    st = _run(case)
     isnow = _to_int(FX[case]["in"]["ISNOW"])
     nroot = _to_int(FX[case]["par"]["NROOT"])
     cosz = _from_bits(FX[case]["in"]["COSZ"])

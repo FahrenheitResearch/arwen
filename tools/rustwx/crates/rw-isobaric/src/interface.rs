@@ -171,13 +171,6 @@ impl InterfaceStencil {
         Self::new(&eta_mass, eta_interface)
     }
 
-    /// The stencil of a grid that states its layer thicknesses in the
-    /// vertical coordinate (WRF's `DNW`, `ZNW[k + 1] - ZNW[k]`, negative
-    /// upward) with the ground at 1: the interfaces are their running sum.
-    pub fn from_layer_thickness(dnw: &[f64]) -> Result<Self, String> {
-        Self::from_interfaces(&interfaces_from_layer_thickness(dnw))
-    }
-
     /// Mass levels per column.
     pub fn levels(&self) -> usize {
         self.lower.len() - 1

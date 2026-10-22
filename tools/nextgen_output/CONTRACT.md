@@ -368,8 +368,10 @@ source hashes, native verdicts, pictures and separate boundary/stage times are
 retained in the output delivery's `evidence/root-restart-review/`. No per-step
 output work or wire schema changes accompany this documentation.
 
-Rust owns serialization with permissive netCDF-C/HDF5-C/zlib containers; NC4
-is not pure Rust. No Fortran/model runtime is shipped. The current static
-Linux host stage requires GLIBC2.38 and is not a manylinux/installed-product
-qualification. Calls into netCDF-C serialize under the library lock; Rust
-formatting uses Rayon outside the routing loop. Native referees are tools only.
+Rust emits NetCDF-4/HDF5 fixed snapshots through netcdf-writer::netcdf4,
+including NC_STRING reach labels, dimension scales and native little-endian
+payloads. CDF5 remains the restart container. No netCDF-C, HDF5 C, zlib C or
+Fortran runtime is linked. NetCDF-4 append/unlimited snapshots are outside this
+complete fixed-history interface and are rejected. User metadata and data are
+preserved; physical HDF5 bytes and generated backend metadata are not a file
+identity claim. Native referees remain verification tools only.

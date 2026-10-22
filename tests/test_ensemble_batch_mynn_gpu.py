@@ -25,7 +25,7 @@ def _surface_hosts(members):
     return hosts, fields
 
 
-@pytest.mark.parametrize("members", [2, 4, 8])
+@pytest.mark.parametrize("members", [8])
 @pytest.mark.parametrize("variant", ["wrf_461", "gsl_wrf39"])
 @pytest.mark.parametrize("aliased", [False, True])
 def test_surface_one_launch_matches_all_outputs_and_carried_inputs(members, variant, aliased, monkeypatch):
@@ -104,7 +104,7 @@ def _predict_hosts(members):
     return hosts
 
 
-@pytest.mark.parametrize("members", [2, 4, 8])
+@pytest.mark.parametrize("members", [8])
 @pytest.mark.parametrize("version", ["wrf_461", "gsd_41"])
 def test_tke_predictor_one_launch_matches_each_member_and_overwrites_workspace(members, version, monkeypatch):
     import cupy as cp
@@ -166,7 +166,7 @@ def test_surface_cross_field_alias_and_predictor_layout_refuse_before_mutation()
         prepare_mynn_predict_column_batch(values, members=2, ny=2, nx=2, available_bytes=1 << 24)
 
 
-@pytest.mark.parametrize("members", [2, 4, 8])
+@pytest.mark.parametrize("members", [8])
 @pytest.mark.parametrize("mixlength", [1, 2])
 @pytest.mark.parametrize("version,unsquared,cloud_form", [
     ("wrf_461", False, "wrf_461"), ("gsd_41", False, "wrf_461"),

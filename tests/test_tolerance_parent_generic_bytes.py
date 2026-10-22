@@ -9,6 +9,7 @@ import pytest
 from gpuwm.domain_wizard import render_config
 from gpuwm.namelist_import import import_namelists
 from ishmael_retirement import requested_by_own_number, without_retired_line
+from test_audit_parent_generic_bytes import without_import_capability_lines
 from wrf_clock_lines import without_wrf_clock_lines
 
 
@@ -70,7 +71,8 @@ def test_ordinary_namelist_bytes_match_tolerance_original_parent(case, tmp_path)
     wps.write_bytes(documents["wps"].encode("utf-8"))
     inp.write_bytes(requested_by_own_number(documents["input"]).encode("utf-8"))
     emitted, _ = import_namelists(wps, inp)
-    _assert_old_bytes("original-nine", pins, "namelist/" + case, emitted,
+    _assert_old_bytes("original-nine", pins, "namelist/" + case,
+                      without_import_capability_lines(emitted),
                       retired=without_retired_line)
 
 

@@ -1091,6 +1091,21 @@ fn subtract(
         None => None,
     };
     let (max_abs, defined_cells, differing_cells) = difference_extent(&diff.field.values);
+    {
+        let (mut n, mut sa, mut sb, mut saa, mut sbb, mut sab, mut sd, mut sdd) = (0f64, 0f64, 0f64, 0f64, 0f64, 0f64, 0f64, 0f64);
+        for ((d, x), y) in diff.field.values.iter().zip(&request.field.values).zip(&b.field.values) {
+            if !d.is_finite() || !x.is_finite() || !y.is_finite() { continue; }
+            let (d, x, y) = (*d as f64, *x as f64, *y as f64);
+            n += 1.0; sa += x; sb += y; saa += x * x; sbb += y * y; sab += x * y; sd += d; sdd += d * d;
+        }
+        if n > 0.0 {
+            let cov = sab / n - (sa / n) * (sb / n);
+            let va = saa / n - (sa / n).powi(2);
+            let vb = sbb / n - (sb / n).powi(2);
+            let corr = if va > 0.0 && vb > 0.0 { cov / (va * vb).sqrt() } else { f64::NAN };
+            println!("FULLSTATS	{key}	{}	{}	{:.6}	{:.6}	{:.6}	{:.6}	{:.6}	{max_abs}", request.field.units, n as u64, sd / n, (sdd / n).sqrt(), corr, sa / n, sb / n);
+        }
+    }
     let drawn = DrawnDifference {
         key: key.to_string(),
         output,

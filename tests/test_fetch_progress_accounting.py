@@ -35,6 +35,12 @@ import pytest
 from gpuwm import fetch_endpoints, fetch_pool, progress, rustwx_fetch
 
 
+@pytest.fixture(autouse=True)
+def _private_stub_connections(tmp_path, monkeypatch):
+    # Stub subprocesses in parallel tests must not consume each other's slots.
+    monkeypatch.setenv("GPUWM_FETCH_CONNECTION_DIR", str(tmp_path / "connections"))
+
+
 class _Stream(io.StringIO):
     """A stderr stand-in that is not a terminal and takes whole writes."""
 
@@ -201,6 +207,7 @@ def test_a_monitor_driven_without_a_declared_request_keeps_its_old_stream():
 
 def _backbone(tmp_path: Path, name: str, *, stderr: str, hold_s: float,
               marker: Path | None = None, until: Path | None = None,
+              ready: Path | None = None,
               record: dict | None = None, code: int = 0) -> list[str]:
     """A stand-in rw_fetch: draws ``stderr``, holds, then answers.
 
@@ -213,6 +220,8 @@ def _backbone(tmp_path: Path, name: str, *, stderr: str, hold_s: float,
         "import json, pathlib, sys, time\n"
         f"sys.stderr.write({stderr!r})\n"
         "sys.stderr.flush()\n"
+        f"ready = {str(ready) if ready else None!r}\n"
+        "if ready: pathlib.Path(ready).write_text('started')\n"
         f"deadline = time.monotonic() + {hold_s!r}\n"
         f"until = {str(until) if until else None!r}\n"
         "while time.monotonic() < deadline:\n"
@@ -286,13 +295,14 @@ def test_a_late_failure_stops_the_backbones_in_flight_instead_of_waiting(
 
     admitted: list[int] = []
     markers = [tmp_path / f"ran-{index}" for index in range(9)]
+    ready = [tmp_path / f"started-{index}" for index in range(9)]
     failed_at: list[float] = []
 
     def slow(index):
         command = _backbone(
             tmp_path, f"slow_{index}",
             stderr="\nrw_fetch-progress f000 16777216 503316480\n",
-            hold_s=10.0, marker=markers[index], record={"schema": "x"})
+            hold_s=10.0, marker=markers[index], ready=ready[index], record={"schema": "x"})
         return lambda: rustwx_fetch._run(command, what="fetch")
 
     def fails_at_once():
@@ -300,7 +310,9 @@ def test_a_late_failure_stops_the_backbones_in_flight_instead_of_waiting(
         # where the last-submitted file failed with the others in flight.
         _wait_until(lambda: stream.getvalue().count(" starting") >= 10,
                     timeout=10.0)
-        time.sleep(0.2)
+        assert _wait_until(lambda: any(path.exists() and not marker.exists()
+                                      for path, marker in zip(ready, markers)),
+                           timeout=60.0), "no backbone actually entered its hold"
         failed_at.append(time.monotonic())
         raise ValueError("downloaded hrrr.t06z.soilf18.grib2 carries 0 "
                          "GRIB2 messages")
@@ -512,40 +524,6 @@ def test_a_serial_fetch_says_what_it_did_not_start():
         fetch_pool.run_transfers(jobs, workers=1, monitor=monitor)
     assert ("f000 failed, so the request cannot complete; not starting the "
             "3 files still queued") in stream.getvalue()
-
-
-def test_the_gfs_full_file_route_stops_its_progress_ticker(tmp_path,
-                                                           monkeypatch):
-    """The route never closed its monitor, so the ticker thread kept
-    repeating the last files line for the rest of the process."""
-
-    from gpuwm import fetch
-    from tools import download_gfs_native_subset as gfs_transport
-
-    one = (b"GRIB" + b"\x00\x00" + b"\x00" + b"\x02"
-           + (20).to_bytes(8, "big") + b"7777")
-
-    def download(url, destination, **kwargs):
-        destination.write_bytes(one * 696)
-
-    monkeypatch.setattr(gfs_transport, "_download", download)
-    monkeypatch.setattr(fetch, "gfs_live_index", lambda *a, **k: None)
-    monkeypatch.setattr(fetch, "_gfs_index_record_count",
-                        lambda url, **kwargs: 696)
-    made: list[progress.TransferMonitor] = []
-
-    class Recorded(progress.TransferMonitor):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            made.append(self)
-
-    monkeypatch.setattr(fetch.progress_mod, "TransferMonitor", Recorded)
-    fetch.fetch_gfs_fullfile(
-        cycle=datetime(2026, 7, 28, 6), hours=(0, 3), area=None,
-        out=tmp_path / "gfs-full", progress=lambda line: None)
-    assert made, "the route made no monitor"
-    assert all(monitor._stop.is_set() and monitor._thread is None
-               for monitor in made)
 
 
 def test_an_interrupt_inside_a_transfer_stops_the_rest_and_propagates():

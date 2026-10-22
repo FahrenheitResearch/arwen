@@ -45,6 +45,28 @@
           ],
           "conversion": "kg_kg_moist_to_ppmv_dry",
           "provenance": "CAMS mass mixing ratio per moist air is taken to dry air as q/(1-q_v) with the same frame's CAMS specific humidity, then to ppmv as q_dry * mwdry / M_i * 1e6 with mwdry = 28.966 g/mol (share/module_model_constants.F:34) and M_i this row's molar_mass_g_mol."
+        },
+        {
+          "source": "cams-reanalysis",
+          "fields": [
+            "sulphur_dioxide"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ppmv_dry",
+          "provenance": "CAMS EAC4 uses the same mass bins and units as the forecast source; CAMS mass mixing ratio per moist air is taken to dry air as q/(1-q_v) with the same frame's CAMS specific humidity, then to ppmv as q_dry * mwdry / M_i * 1e6 with mwdry = 28.966 g/mol (share/module_model_constants.F:34) and M_i this row's molar_mass_g_mol."
+        },
+        {
+          "source": "merra2",
+          "fields": [
+            "so2"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ppmv_dry",
+          "provenance": "NASA MERRA-2 M2I3NVAER GOCART mass bins map directly to GOCART species; SS001+SS002 preserve mass in the first transported sea-salt bin. kg/kg moist air becomes dry air with the matched M2I3NVASM QV before the row unit conversion."
         }
       ],
       "drydep": {
@@ -109,6 +131,39 @@
           ],
           "conversion": "kg_kg_moist_to_ppmv_dry",
           "provenance": "CAMS sulphate aerosol mass mixing ratio (as SO4) to GOCART's sulf in ppmv with the row's molar mass (SO4, 96.0576 g/mol, chem/module_gocart_aerosols.F:85) and mwdry 28.966."
+        },
+        {
+          "source": "cams-reanalysis",
+          "fields": [
+            "sulphate"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ppmv_dry",
+          "provenance": "CAMS EAC4 uses the same mass bins and units as the forecast source; CAMS sulphate aerosol mass mixing ratio (as SO4) to GOCART's sulf in ppmv with the row's molar mass (SO4, 96.0576 g/mol, chem/module_gocart_aerosols.F:85) and mwdry 28.966."
+        },
+        {
+          "source": "merra2",
+          "fields": [
+            "sulf"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ppmv_dry",
+          "provenance": "NASA MERRA-2 M2I3NVAER GOCART mass bins map directly to GOCART species; SS001+SS002 preserve mass in the first transported sea-salt bin. kg/kg moist air becomes dry air with the matched M2I3NVASM QV before the row unit conversion."
+        },
+        {
+          "source": "geos-fp",
+          "fields": [
+            "sulf"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ppmv_dry",
+          "provenance": "GEOS-FP inst3_3d_aer_Nv primary aerosol, GMAO Office Note 22 v1.1 sections 2.1,2.2,2.5.1. NASA MERRA-2 M2I3NVAER GOCART mass bins map directly to GOCART species; SS001+SS002 preserve mass in the first transported sea-salt bin. kg/kg moist air becomes dry air with the matched M2I3NVASM QV before the row unit conversion."
         }
       ],
       "drydep": {
@@ -165,7 +220,19 @@
         "mixing.vertmx"
       ],
       "emissions": [],
-      "boundary": [],
+      "boundary": [
+        {
+          "source": "merra2",
+          "fields": [
+            "dms"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ppmv_dry",
+          "provenance": "NASA MERRA-2 M2I3NVAER GOCART mass bins map directly to GOCART species; SS001+SS002 preserve mass in the first transported sea-salt bin. kg/kg moist air becomes dry air with the matched M2I3NVASM QV before the row unit conversion."
+        }
+      ],
       "drydep": null,
       "settling": null,
       "wetdep_ls_alpha": 0.0,
@@ -196,7 +263,19 @@
         "mixing.vertmx"
       ],
       "emissions": [],
-      "boundary": [],
+      "boundary": [
+        {
+          "source": "merra2",
+          "fields": [
+            "msa"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ppmv_dry",
+          "provenance": "MERRA-2 M2I3NVAER MSA mass mixing ratio, NASA README page 13; moist to dry air using matched QV."
+        }
+      ],
       "drydep": {
         "scheme": "gocart_aerosol"
       },
@@ -342,6 +421,39 @@
           ],
           "conversion": "kg_kg_moist_to_ug_kg_dry",
           "provenance": "Hydrophobic black carbon to bc1, hydrophilic to bc2, as GOCART ages bc1 into bc2 (chem/module_gocart_aerosols.F:6-75)."
+        },
+        {
+          "source": "cams-reanalysis",
+          "fields": [
+            "black_carbon_hydrophobic"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "CAMS EAC4 uses the same mass bins and units as the forecast source; Hydrophobic black carbon to bc1, hydrophilic to bc2, as GOCART ages bc1 into bc2 (chem/module_gocart_aerosols.F:6-75)."
+        },
+        {
+          "source": "merra2",
+          "fields": [
+            "bc1"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "NASA MERRA-2 M2I3NVAER GOCART mass bins map directly to GOCART species; SS001+SS002 preserve mass in the first transported sea-salt bin. kg/kg moist air becomes dry air with the matched M2I3NVASM QV before the row unit conversion."
+        },
+        {
+          "source": "geos-fp",
+          "fields": [
+            "bc1"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "GEOS-FP inst3_3d_aer_Nv primary aerosol, GMAO Office Note 22 v1.1 sections 2.1,2.2,2.5.1. NASA MERRA-2 M2I3NVAER GOCART mass bins map directly to GOCART species; SS001+SS002 preserve mass in the first transported sea-salt bin. kg/kg moist air becomes dry air with the matched M2I3NVASM QV before the row unit conversion."
         }
       ],
       "drydep": {
@@ -415,6 +527,39 @@
           ],
           "conversion": "kg_kg_moist_to_ug_kg_dry",
           "provenance": "Hydrophobic black carbon to bc1, hydrophilic to bc2, as GOCART ages bc1 into bc2 (chem/module_gocart_aerosols.F:6-75)."
+        },
+        {
+          "source": "cams-reanalysis",
+          "fields": [
+            "black_carbon_hydrophilic"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "CAMS EAC4 uses the same mass bins and units as the forecast source; Hydrophobic black carbon to bc1, hydrophilic to bc2, as GOCART ages bc1 into bc2 (chem/module_gocart_aerosols.F:6-75)."
+        },
+        {
+          "source": "merra2",
+          "fields": [
+            "bc2"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "NASA MERRA-2 M2I3NVAER GOCART mass bins map directly to GOCART species; SS001+SS002 preserve mass in the first transported sea-salt bin. kg/kg moist air becomes dry air with the matched M2I3NVASM QV before the row unit conversion."
+        },
+        {
+          "source": "geos-fp",
+          "fields": [
+            "bc2"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "GEOS-FP inst3_3d_aer_Nv primary aerosol, GMAO Office Note 22 v1.1 sections 2.1,2.2,2.5.1. NASA MERRA-2 M2I3NVAER GOCART mass bins map directly to GOCART species; SS001+SS002 preserve mass in the first transported sea-salt bin. kg/kg moist air becomes dry air with the matched M2I3NVASM QV before the row unit conversion."
         }
       ],
       "drydep": {
@@ -487,6 +632,39 @@
           ],
           "conversion": "kg_kg_moist_to_ug_kg_dry",
           "provenance": "CAMS carries organic MATTER; GOCART's oc rows carry organic CARBON and its PM sums multiply them back by oc_mfac = 1.8 (chem/module_data_gocartchem.F:20, chem/module_gocart_aerosols.F:120), so OC = OM/1.8. Hydrophobic to oc1, hydrophilic to oc2, as GOCART ages oc1 into oc2 (chem/module_gocart_aerosols.F:6-75)."
+        },
+        {
+          "source": "cams-reanalysis",
+          "fields": [
+            "organic_matter_hydrophobic"
+          ],
+          "weights": [
+            0.555555556
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "CAMS EAC4 uses the same mass bins and units as the forecast source; CAMS carries organic MATTER; GOCART's oc rows carry organic CARBON and its PM sums multiply them back by oc_mfac = 1.8 (chem/module_data_gocartchem.F:20, chem/module_gocart_aerosols.F:120), so OC = OM/1.8. Hydrophobic to oc1, hydrophilic to oc2, as GOCART ages oc1 into oc2 (chem/module_gocart_aerosols.F:6-75)."
+        },
+        {
+          "source": "merra2",
+          "fields": [
+            "oc1"
+          ],
+          "weights": [
+            0.5555555555555556
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "NASA GMAO Office Note 22 v1.1 section 2.5.1: OCPHOBIC/OCPHILIC already contain particulate organic matter (source OC multiplied by 1.8). WRF-Chem oc1/oc2 carry organic carbon, so divide by 1.8; the optical/PM operator restores that factor. https://gmao.gsfc.nasa.gov/pubs/docs/Collow1489.pdf"
+        },
+        {
+          "source": "geos-fp",
+          "fields": [
+            "oc1"
+          ],
+          "weights": [
+            0.5555555555555556
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "GEOS-FP inst3_3d_aer_Nv primary aerosol, GMAO Office Note 22 v1.1 sections 2.1,2.2,2.5.1. NASA GMAO Office Note 22 v1.1 section 2.5.1: OCPHOBIC/OCPHILIC already contain particulate organic matter (source OC multiplied by 1.8). WRF-Chem oc1/oc2 carry organic carbon, so divide by 1.8; the optical/PM operator restores that factor. https://gmao.gsfc.nasa.gov/pubs/docs/Collow1489.pdf"
         }
       ],
       "drydep": {
@@ -557,6 +735,39 @@
           ],
           "conversion": "kg_kg_moist_to_ug_kg_dry",
           "provenance": "CAMS carries organic MATTER; GOCART's oc rows carry organic CARBON and its PM sums multiply them back by oc_mfac = 1.8 (chem/module_data_gocartchem.F:20, chem/module_gocart_aerosols.F:120), so OC = OM/1.8. Hydrophobic to oc1, hydrophilic to oc2, as GOCART ages oc1 into oc2 (chem/module_gocart_aerosols.F:6-75)."
+        },
+        {
+          "source": "cams-reanalysis",
+          "fields": [
+            "organic_matter_hydrophilic"
+          ],
+          "weights": [
+            0.555555556
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "CAMS EAC4 uses the same mass bins and units as the forecast source; CAMS carries organic MATTER; GOCART's oc rows carry organic CARBON and its PM sums multiply them back by oc_mfac = 1.8 (chem/module_data_gocartchem.F:20, chem/module_gocart_aerosols.F:120), so OC = OM/1.8. Hydrophobic to oc1, hydrophilic to oc2, as GOCART ages oc1 into oc2 (chem/module_gocart_aerosols.F:6-75)."
+        },
+        {
+          "source": "merra2",
+          "fields": [
+            "oc2"
+          ],
+          "weights": [
+            0.5555555555555556
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "NASA GMAO Office Note 22 v1.1 section 2.5.1: OCPHOBIC/OCPHILIC already contain particulate organic matter (source OC multiplied by 1.8). WRF-Chem oc1/oc2 carry organic carbon, so divide by 1.8; the optical/PM operator restores that factor. https://gmao.gsfc.nasa.gov/pubs/docs/Collow1489.pdf"
+        },
+        {
+          "source": "geos-fp",
+          "fields": [
+            "oc2"
+          ],
+          "weights": [
+            0.5555555555555556
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "GEOS-FP inst3_3d_aer_Nv primary aerosol, GMAO Office Note 22 v1.1 sections 2.1,2.2,2.5.1. NASA GMAO Office Note 22 v1.1 section 2.5.1: OCPHOBIC/OCPHILIC already contain particulate organic matter (source OC multiplied by 1.8). WRF-Chem oc1/oc2 carry organic carbon, so divide by 1.8; the optical/PM operator restores that factor. https://gmao.gsfc.nasa.gov/pubs/docs/Collow1489.pdf"
         }
       ],
       "drydep": {
@@ -588,7 +799,9 @@
         "order": 0,
         "group_factor": 8,
         "unit_mass": 0.3232698,
-        "from": "ccpp-physics 3e6660c6 physics/MP/Thompson/mp_thompson.F90:1062-1066 (get_niwfa, Apache-2.0)"
+        "from": "ccpp-physics 3e6660c6 physics/MP/Thompson/mp_thompson.F90:1062-1066 (get_niwfa, Apache-2.0)",
+        "mass_multiplier": 1.8,
+        "mass_basis": "NOAA GSL get_niwfa uses MERRA organic matter; WRF-Chem OC is carbon, so restore the 1.8 particulate organic matter factor before number diagnosis."
       },
       "exclusive_group": null,
       "provenance": "registry.chem:3610; default_inflow: bdy_chem_value_gocart, chem/module_input_chem_data.F:1267-1298; wetdep_ls_alpha: chem/module_wetdep_ls.F:39-46 (chem_opt >= 300) (0.8)"
@@ -635,6 +848,43 @@
           ],
           "conversion": "kg_kg_moist_to_ug_kg_dry",
           "provenance": "CAMS dust bins are radius 0.03-0.55, 0.55-0.9 and 0.9-20 um (ADS variable names); GOCART's are 0.1-1.0, 1.0-1.8, 1.8-3.0, 3.0-6.0 and 6.0-10.0 um (phys/module_data_gocart_dust.F:33-34). Mass is taken as uniform in ln(r) inside each CAMS bin, the assumption WRF-Chem's own PM sums make inside GOCART bins (chem/module_gocart_aerosols.F:97-99, d_2_5 = ln(2.5/2)/ln(3.6/2)). Mass outside GOCART's range goes to the nearest GOCART bin (below 0.1 um to dust_1, 10-20 um to dust_5), so the column mass is conserved. A declared data choice: WRF-Chem defines no map from CAMS bins."
+        },
+        {
+          "source": "cams-reanalysis",
+          "fields": [
+            "dust_0p03_0p55um",
+            "dust_0p55_0p9um",
+            "dust_0p9_20um"
+          ],
+          "weights": [
+            1.0,
+            1.0,
+            0.0339752864
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "CAMS EAC4 uses the same mass bins and units as the forecast source; CAMS dust bins are radius 0.03-0.55, 0.55-0.9 and 0.9-20 um (ADS variable names); GOCART's are 0.1-1.0, 1.0-1.8, 1.8-3.0, 3.0-6.0 and 6.0-10.0 um (phys/module_data_gocart_dust.F:33-34). Mass is taken as uniform in ln(r) inside each CAMS bin, the assumption WRF-Chem's own PM sums make inside GOCART bins (chem/module_gocart_aerosols.F:97-99, d_2_5 = ln(2.5/2)/ln(3.6/2)). Mass outside GOCART's range goes to the nearest GOCART bin (below 0.1 um to dust_1, 10-20 um to dust_5), so the column mass is conserved. A declared data choice: WRF-Chem defines no map from CAMS bins."
+        },
+        {
+          "source": "merra2",
+          "fields": [
+            "dust_1"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "NASA MERRA-2 M2I3NVAER GOCART mass bins map directly to GOCART species; SS001+SS002 preserve mass in the first transported sea-salt bin. kg/kg moist air becomes dry air with the matched M2I3NVASM QV before the row unit conversion."
+        },
+        {
+          "source": "geos-fp",
+          "fields": [
+            "dust_1"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "GEOS-FP inst3_3d_aer_Nv primary aerosol, GMAO Office Note 22 v1.1 sections 2.1,2.2,2.5.1. NASA MERRA-2 M2I3NVAER GOCART mass bins map directly to GOCART species; SS001+SS002 preserve mass in the first transported sea-salt bin. kg/kg moist air becomes dry air with the matched M2I3NVASM QV before the row unit conversion."
         }
       ],
       "drydep": {
@@ -722,6 +972,39 @@
           ],
           "conversion": "kg_kg_moist_to_ug_kg_dry",
           "provenance": "CAMS dust bins are radius 0.03-0.55, 0.55-0.9 and 0.9-20 um (ADS variable names); GOCART's are 0.1-1.0, 1.0-1.8, 1.8-3.0, 3.0-6.0 and 6.0-10.0 um (phys/module_data_gocart_dust.F:33-34). Mass is taken as uniform in ln(r) inside each CAMS bin, the assumption WRF-Chem's own PM sums make inside GOCART bins (chem/module_gocart_aerosols.F:97-99, d_2_5 = ln(2.5/2)/ln(3.6/2)). Mass outside GOCART's range goes to the nearest GOCART bin (below 0.1 um to dust_1, 10-20 um to dust_5), so the column mass is conserved. A declared data choice: WRF-Chem defines no map from CAMS bins."
+        },
+        {
+          "source": "cams-reanalysis",
+          "fields": [
+            "dust_0p9_20um"
+          ],
+          "weights": [
+            0.189541786
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "CAMS EAC4 uses the same mass bins and units as the forecast source; CAMS dust bins are radius 0.03-0.55, 0.55-0.9 and 0.9-20 um (ADS variable names); GOCART's are 0.1-1.0, 1.0-1.8, 1.8-3.0, 3.0-6.0 and 6.0-10.0 um (phys/module_data_gocart_dust.F:33-34). Mass is taken as uniform in ln(r) inside each CAMS bin, the assumption WRF-Chem's own PM sums make inside GOCART bins (chem/module_gocart_aerosols.F:97-99, d_2_5 = ln(2.5/2)/ln(3.6/2)). Mass outside GOCART's range goes to the nearest GOCART bin (below 0.1 um to dust_1, 10-20 um to dust_5), so the column mass is conserved. A declared data choice: WRF-Chem defines no map from CAMS bins."
+        },
+        {
+          "source": "merra2",
+          "fields": [
+            "dust_2"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "NASA MERRA-2 M2I3NVAER GOCART mass bins map directly to GOCART species; SS001+SS002 preserve mass in the first transported sea-salt bin. kg/kg moist air becomes dry air with the matched M2I3NVASM QV before the row unit conversion."
+        },
+        {
+          "source": "geos-fp",
+          "fields": [
+            "dust_2"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "GEOS-FP inst3_3d_aer_Nv primary aerosol, GMAO Office Note 22 v1.1 sections 2.1,2.2,2.5.1. NASA MERRA-2 M2I3NVAER GOCART mass bins map directly to GOCART species; SS001+SS002 preserve mass in the first transported sea-salt bin. kg/kg moist air becomes dry air with the matched M2I3NVASM QV before the row unit conversion."
         }
       ],
       "drydep": {
@@ -809,6 +1092,39 @@
           ],
           "conversion": "kg_kg_moist_to_ug_kg_dry",
           "provenance": "CAMS dust bins are radius 0.03-0.55, 0.55-0.9 and 0.9-20 um (ADS variable names); GOCART's are 0.1-1.0, 1.0-1.8, 1.8-3.0, 3.0-6.0 and 6.0-10.0 um (phys/module_data_gocart_dust.F:33-34). Mass is taken as uniform in ln(r) inside each CAMS bin, the assumption WRF-Chem's own PM sums make inside GOCART bins (chem/module_gocart_aerosols.F:97-99, d_2_5 = ln(2.5/2)/ln(3.6/2)). Mass outside GOCART's range goes to the nearest GOCART bin (below 0.1 um to dust_1, 10-20 um to dust_5), so the column mass is conserved. A declared data choice: WRF-Chem defines no map from CAMS bins."
+        },
+        {
+          "source": "cams-reanalysis",
+          "fields": [
+            "dust_0p9_20um"
+          ],
+          "weights": [
+            0.164724392
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "CAMS EAC4 uses the same mass bins and units as the forecast source; CAMS dust bins are radius 0.03-0.55, 0.55-0.9 and 0.9-20 um (ADS variable names); GOCART's are 0.1-1.0, 1.0-1.8, 1.8-3.0, 3.0-6.0 and 6.0-10.0 um (phys/module_data_gocart_dust.F:33-34). Mass is taken as uniform in ln(r) inside each CAMS bin, the assumption WRF-Chem's own PM sums make inside GOCART bins (chem/module_gocart_aerosols.F:97-99, d_2_5 = ln(2.5/2)/ln(3.6/2)). Mass outside GOCART's range goes to the nearest GOCART bin (below 0.1 um to dust_1, 10-20 um to dust_5), so the column mass is conserved. A declared data choice: WRF-Chem defines no map from CAMS bins."
+        },
+        {
+          "source": "merra2",
+          "fields": [
+            "dust_3"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "NASA MERRA-2 M2I3NVAER GOCART mass bins map directly to GOCART species; SS001+SS002 preserve mass in the first transported sea-salt bin. kg/kg moist air becomes dry air with the matched M2I3NVASM QV before the row unit conversion."
+        },
+        {
+          "source": "geos-fp",
+          "fields": [
+            "dust_3"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "GEOS-FP inst3_3d_aer_Nv primary aerosol, GMAO Office Note 22 v1.1 sections 2.1,2.2,2.5.1. NASA MERRA-2 M2I3NVAER GOCART mass bins map directly to GOCART species; SS001+SS002 preserve mass in the first transported sea-salt bin. kg/kg moist air becomes dry air with the matched M2I3NVASM QV before the row unit conversion."
         }
       ],
       "drydep": {
@@ -896,6 +1212,39 @@
           ],
           "conversion": "kg_kg_moist_to_ug_kg_dry",
           "provenance": "CAMS dust bins are radius 0.03-0.55, 0.55-0.9 and 0.9-20 um (ADS variable names); GOCART's are 0.1-1.0, 1.0-1.8, 1.8-3.0, 3.0-6.0 and 6.0-10.0 um (phys/module_data_gocart_dust.F:33-34). Mass is taken as uniform in ln(r) inside each CAMS bin, the assumption WRF-Chem's own PM sums make inside GOCART bins (chem/module_gocart_aerosols.F:97-99, d_2_5 = ln(2.5/2)/ln(3.6/2)). Mass outside GOCART's range goes to the nearest GOCART bin (below 0.1 um to dust_1, 10-20 um to dust_5), so the column mass is conserved. A declared data choice: WRF-Chem defines no map from CAMS bins."
+        },
+        {
+          "source": "cams-reanalysis",
+          "fields": [
+            "dust_0p9_20um"
+          ],
+          "weights": [
+            0.223517072
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "CAMS EAC4 uses the same mass bins and units as the forecast source; CAMS dust bins are radius 0.03-0.55, 0.55-0.9 and 0.9-20 um (ADS variable names); GOCART's are 0.1-1.0, 1.0-1.8, 1.8-3.0, 3.0-6.0 and 6.0-10.0 um (phys/module_data_gocart_dust.F:33-34). Mass is taken as uniform in ln(r) inside each CAMS bin, the assumption WRF-Chem's own PM sums make inside GOCART bins (chem/module_gocart_aerosols.F:97-99, d_2_5 = ln(2.5/2)/ln(3.6/2)). Mass outside GOCART's range goes to the nearest GOCART bin (below 0.1 um to dust_1, 10-20 um to dust_5), so the column mass is conserved. A declared data choice: WRF-Chem defines no map from CAMS bins."
+        },
+        {
+          "source": "merra2",
+          "fields": [
+            "dust_4"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "NASA MERRA-2 M2I3NVAER GOCART mass bins map directly to GOCART species; SS001+SS002 preserve mass in the first transported sea-salt bin. kg/kg moist air becomes dry air with the matched M2I3NVASM QV before the row unit conversion."
+        },
+        {
+          "source": "geos-fp",
+          "fields": [
+            "dust_4"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "GEOS-FP inst3_3d_aer_Nv primary aerosol, GMAO Office Note 22 v1.1 sections 2.1,2.2,2.5.1. NASA MERRA-2 M2I3NVAER GOCART mass bins map directly to GOCART species; SS001+SS002 preserve mass in the first transported sea-salt bin. kg/kg moist air becomes dry air with the matched M2I3NVASM QV before the row unit conversion."
         }
       ],
       "drydep": {
@@ -983,6 +1332,39 @@
           ],
           "conversion": "kg_kg_moist_to_ug_kg_dry",
           "provenance": "CAMS dust bins are radius 0.03-0.55, 0.55-0.9 and 0.9-20 um (ADS variable names); GOCART's are 0.1-1.0, 1.0-1.8, 1.8-3.0, 3.0-6.0 and 6.0-10.0 um (phys/module_data_gocart_dust.F:33-34). Mass is taken as uniform in ln(r) inside each CAMS bin, the assumption WRF-Chem's own PM sums make inside GOCART bins (chem/module_gocart_aerosols.F:97-99, d_2_5 = ln(2.5/2)/ln(3.6/2)). Mass outside GOCART's range goes to the nearest GOCART bin (below 0.1 um to dust_1, 10-20 um to dust_5), so the column mass is conserved. A declared data choice: WRF-Chem defines no map from CAMS bins."
+        },
+        {
+          "source": "cams-reanalysis",
+          "fields": [
+            "dust_0p9_20um"
+          ],
+          "weights": [
+            0.388241464
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "CAMS EAC4 uses the same mass bins and units as the forecast source; CAMS dust bins are radius 0.03-0.55, 0.55-0.9 and 0.9-20 um (ADS variable names); GOCART's are 0.1-1.0, 1.0-1.8, 1.8-3.0, 3.0-6.0 and 6.0-10.0 um (phys/module_data_gocart_dust.F:33-34). Mass is taken as uniform in ln(r) inside each CAMS bin, the assumption WRF-Chem's own PM sums make inside GOCART bins (chem/module_gocart_aerosols.F:97-99, d_2_5 = ln(2.5/2)/ln(3.6/2)). Mass outside GOCART's range goes to the nearest GOCART bin (below 0.1 um to dust_1, 10-20 um to dust_5), so the column mass is conserved. A declared data choice: WRF-Chem defines no map from CAMS bins."
+        },
+        {
+          "source": "merra2",
+          "fields": [
+            "dust_5"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "NASA MERRA-2 M2I3NVAER GOCART mass bins map directly to GOCART species; SS001+SS002 preserve mass in the first transported sea-salt bin. kg/kg moist air becomes dry air with the matched M2I3NVASM QV before the row unit conversion."
+        },
+        {
+          "source": "geos-fp",
+          "fields": [
+            "dust_5"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "GEOS-FP inst3_3d_aer_Nv primary aerosol, GMAO Office Note 22 v1.1 sections 2.1,2.2,2.5.1. NASA MERRA-2 M2I3NVAER GOCART mass bins map directly to GOCART species; SS001+SS002 preserve mass in the first transported sea-salt bin. kg/kg moist air becomes dry air with the matched M2I3NVASM QV before the row unit conversion."
         }
       ],
       "drydep": {
@@ -1071,6 +1453,45 @@
           ],
           "conversion": "kg_kg_moist_to_ug_kg_dry",
           "provenance": "CAMS sea-salt bins (radius 0.03-0.5, 0.5-5, 5-20 um) and mass are stated at 80 % relative humidity. Dry radius = r80/1.99 and dry mass = mass80/4.3, the CAMS/IFS convention for converting its sea salt to dry matter (the 4.3 mass factor with sea-salt densities 2160 dry and 1182 kg m-3 wet gives the 1.99 radius ratio). GOCART sea-salt bins are dry radius 0.1-0.5, 0.5-1.5, 1.5-5.0, 5.0-10.0 um (chem/module_data_gocart_seas.F:2-3). Mass uniform in ln(r) inside each CAMS bin, out-of-range mass to the nearest GOCART bin. A declared data choice."
+        },
+        {
+          "source": "cams-reanalysis",
+          "fields": [
+            "sea_salt_0p03_0p5um",
+            "sea_salt_0p5_5um"
+          ],
+          "weights": [
+            0.23255814,
+            0.0695007154
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "CAMS EAC4 uses the same mass bins and units as the forecast source; CAMS sea-salt bins (radius 0.03-0.5, 0.5-5, 5-20 um) and mass are stated at 80 % relative humidity. Dry radius = r80/1.99 and dry mass = mass80/4.3, the CAMS/IFS convention for converting its sea salt to dry matter (the 4.3 mass factor with sea-salt densities 2160 dry and 1182 kg m-3 wet gives the 1.99 radius ratio). GOCART sea-salt bins are dry radius 0.1-0.5, 0.5-1.5, 1.5-5.0, 5.0-10.0 um (chem/module_data_gocart_seas.F:2-3). Mass uniform in ln(r) inside each CAMS bin, out-of-range mass to the nearest GOCART bin. A declared data choice."
+        },
+        {
+          "source": "merra2",
+          "fields": [
+            "seas_1",
+            "seas_2"
+          ],
+          "weights": [
+            1.0,
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "NASA GEOS-ESM/GOCART SS2G_instance_SS.rc radius_lower 0.03,0.1,0.5,1.5,5; radius_upper 0.1,0.5,1.5,5,10 um. Preserve total source mass by grouping the first two bins into the first represented 0.1-0.5 um model bin; the sub-0.1 um optical/activation size distinction is unresolved. Remaining source and model edges coincide. q/(1-QV) converts moist to dry air before 1e9 ug/kg scaling."
+        },
+        {
+          "source": "geos-fp",
+          "fields": [
+            "seas_1",
+            "seas_2"
+          ],
+          "weights": [
+            1.0,
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "GEOS-FP inst3_3d_aer_Nv primary aerosol, GMAO Office Note 22 v1.1 sections 2.1,2.2,2.5.1. NASA GEOS-ESM/GOCART SS2G_instance_SS.rc radius_lower 0.03,0.1,0.5,1.5,5; radius_upper 0.1,0.5,1.5,5,10 um. Preserve total source mass by grouping the first two bins into the first represented 0.1-0.5 um model bin; the sub-0.1 um optical/activation size distinction is unresolved. Remaining source and model edges coincide. q/(1-QV) converts moist to dry air before 1e9 ug/kg scaling."
         }
       ],
       "drydep": {
@@ -1154,6 +1575,39 @@
           ],
           "conversion": "kg_kg_moist_to_ug_kg_dry",
           "provenance": "CAMS sea-salt bins (radius 0.03-0.5, 0.5-5, 5-20 um) and mass are stated at 80 % relative humidity. Dry radius = r80/1.99 and dry mass = mass80/4.3, the CAMS/IFS convention for converting its sea salt to dry matter (the 4.3 mass factor with sea-salt densities 2160 dry and 1182 kg m-3 wet gives the 1.99 radius ratio). GOCART sea-salt bins are dry radius 0.1-0.5, 0.5-1.5, 1.5-5.0, 5.0-10.0 um (chem/module_data_gocart_seas.F:2-3). Mass uniform in ln(r) inside each CAMS bin, out-of-range mass to the nearest GOCART bin. A declared data choice."
+        },
+        {
+          "source": "cams-reanalysis",
+          "fields": [
+            "sea_salt_0p5_5um"
+          ],
+          "weights": [
+            0.110958431
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "CAMS EAC4 uses the same mass bins and units as the forecast source; CAMS sea-salt bins (radius 0.03-0.5, 0.5-5, 5-20 um) and mass are stated at 80 % relative humidity. Dry radius = r80/1.99 and dry mass = mass80/4.3, the CAMS/IFS convention for converting its sea salt to dry matter (the 4.3 mass factor with sea-salt densities 2160 dry and 1182 kg m-3 wet gives the 1.99 radius ratio). GOCART sea-salt bins are dry radius 0.1-0.5, 0.5-1.5, 1.5-5.0, 5.0-10.0 um (chem/module_data_gocart_seas.F:2-3). Mass uniform in ln(r) inside each CAMS bin, out-of-range mass to the nearest GOCART bin. A declared data choice."
+        },
+        {
+          "source": "merra2",
+          "fields": [
+            "seas_3"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "NASA GEOS-ESM/GOCART SS2G_instance_SS.rc radius_lower 0.03,0.1,0.5,1.5,5; radius_upper 0.1,0.5,1.5,5,10 um. Preserve total source mass by grouping the first two bins into the first represented 0.1-0.5 um model bin; the sub-0.1 um optical/activation size distinction is unresolved. Remaining source and model edges coincide. q/(1-QV) converts moist to dry air before 1e9 ug/kg scaling."
+        },
+        {
+          "source": "geos-fp",
+          "fields": [
+            "seas_3"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "GEOS-FP inst3_3d_aer_Nv primary aerosol, GMAO Office Note 22 v1.1 sections 2.1,2.2,2.5.1. NASA GEOS-ESM/GOCART SS2G_instance_SS.rc radius_lower 0.03,0.1,0.5,1.5,5; radius_upper 0.1,0.5,1.5,5,10 um. Preserve total source mass by grouping the first two bins into the first represented 0.1-0.5 um model bin; the sub-0.1 um optical/activation size distinction is unresolved. Remaining source and model edges coincide. q/(1-QV) converts moist to dry air before 1e9 ug/kg scaling."
         }
       ],
       "drydep": {
@@ -1239,6 +1693,41 @@
           ],
           "conversion": "kg_kg_moist_to_ug_kg_dry",
           "provenance": "CAMS sea-salt bins (radius 0.03-0.5, 0.5-5, 5-20 um) and mass are stated at 80 % relative humidity. Dry radius = r80/1.99 and dry mass = mass80/4.3, the CAMS/IFS convention for converting its sea salt to dry matter (the 4.3 mass factor with sea-salt densities 2160 dry and 1182 kg m-3 wet gives the 1.99 radius ratio). GOCART sea-salt bins are dry radius 0.1-0.5, 0.5-1.5, 1.5-5.0, 5.0-10.0 um (chem/module_data_gocart_seas.F:2-3). Mass uniform in ln(r) inside each CAMS bin, out-of-range mass to the nearest GOCART bin. A declared data choice."
+        },
+        {
+          "source": "cams-reanalysis",
+          "fields": [
+            "sea_salt_0p5_5um",
+            "sea_salt_5_20um"
+          ],
+          "weights": [
+            0.0520989928,
+            0.11543819
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "CAMS EAC4 uses the same mass bins and units as the forecast source; CAMS sea-salt bins (radius 0.03-0.5, 0.5-5, 5-20 um) and mass are stated at 80 % relative humidity. Dry radius = r80/1.99 and dry mass = mass80/4.3, the CAMS/IFS convention for converting its sea salt to dry matter (the 4.3 mass factor with sea-salt densities 2160 dry and 1182 kg m-3 wet gives the 1.99 radius ratio). GOCART sea-salt bins are dry radius 0.1-0.5, 0.5-1.5, 1.5-5.0, 5.0-10.0 um (chem/module_data_gocart_seas.F:2-3). Mass uniform in ln(r) inside each CAMS bin, out-of-range mass to the nearest GOCART bin. A declared data choice."
+        },
+        {
+          "source": "merra2",
+          "fields": [
+            "seas_4"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "NASA GEOS-ESM/GOCART SS2G_instance_SS.rc radius_lower 0.03,0.1,0.5,1.5,5; radius_upper 0.1,0.5,1.5,5,10 um. Preserve total source mass by grouping the first two bins into the first represented 0.1-0.5 um model bin; the sub-0.1 um optical/activation size distinction is unresolved. Remaining source and model edges coincide. q/(1-QV) converts moist to dry air before 1e9 ug/kg scaling."
+        },
+        {
+          "source": "geos-fp",
+          "fields": [
+            "seas_4"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "GEOS-FP inst3_3d_aer_Nv primary aerosol, GMAO Office Note 22 v1.1 sections 2.1,2.2,2.5.1. NASA GEOS-ESM/GOCART SS2G_instance_SS.rc radius_lower 0.03,0.1,0.5,1.5,5; radius_upper 0.1,0.5,1.5,5,10 um. Preserve total source mass by grouping the first two bins into the first represented 0.1-0.5 um model bin; the sub-0.1 um optical/activation size distinction is unresolved. Remaining source and model edges coincide. q/(1-QV) converts moist to dry air before 1e9 ug/kg scaling."
         }
       ],
       "drydep": {
@@ -1322,6 +1811,39 @@
           ],
           "conversion": "kg_kg_moist_to_ug_kg_dry",
           "provenance": "CAMS sea-salt bins (radius 0.03-0.5, 0.5-5, 5-20 um) and mass are stated at 80 % relative humidity. Dry radius = r80/1.99 and dry mass = mass80/4.3, the CAMS/IFS convention for converting its sea salt to dry matter (the 4.3 mass factor with sea-salt densities 2160 dry and 1182 kg m-3 wet gives the 1.99 radius ratio). GOCART sea-salt bins are dry radius 0.1-0.5, 0.5-1.5, 1.5-5.0, 5.0-10.0 um (chem/module_data_gocart_seas.F:2-3). Mass uniform in ln(r) inside each CAMS bin, out-of-range mass to the nearest GOCART bin. A declared data choice."
+        },
+        {
+          "source": "cams-reanalysis",
+          "fields": [
+            "sea_salt_5_20um"
+          ],
+          "weights": [
+            0.11711995
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "CAMS EAC4 uses the same mass bins and units as the forecast source; CAMS sea-salt bins (radius 0.03-0.5, 0.5-5, 5-20 um) and mass are stated at 80 % relative humidity. Dry radius = r80/1.99 and dry mass = mass80/4.3, the CAMS/IFS convention for converting its sea salt to dry matter (the 4.3 mass factor with sea-salt densities 2160 dry and 1182 kg m-3 wet gives the 1.99 radius ratio). GOCART sea-salt bins are dry radius 0.1-0.5, 0.5-1.5, 1.5-5.0, 5.0-10.0 um (chem/module_data_gocart_seas.F:2-3). Mass uniform in ln(r) inside each CAMS bin, out-of-range mass to the nearest GOCART bin. A declared data choice."
+        },
+        {
+          "source": "merra2",
+          "fields": [
+            "seas_5"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "NASA GEOS-ESM/GOCART SS2G_instance_SS.rc radius_lower 0.03,0.1,0.5,1.5,5; radius_upper 0.1,0.5,1.5,5,10 um. Preserve total source mass by grouping the first two bins into the first represented 0.1-0.5 um model bin; the sub-0.1 um optical/activation size distinction is unresolved. Remaining source and model edges coincide. q/(1-QV) converts moist to dry air before 1e9 ug/kg scaling."
+        },
+        {
+          "source": "geos-fp",
+          "fields": [
+            "seas_5"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "GEOS-FP inst3_3d_aer_Nv primary aerosol, GMAO Office Note 22 v1.1 sections 2.1,2.2,2.5.1. NASA GEOS-ESM/GOCART SS2G_instance_SS.rc radius_lower 0.03,0.1,0.5,1.5,5; radius_upper 0.1,0.5,1.5,5,10 um. Preserve total source mass by grouping the first two bins into the first represented 0.1-0.5 um model bin; the sub-0.1 um optical/activation size distinction is unresolved. Remaining source and model edges coincide. q/(1-QV) converts moist to dry air before 1e9 ug/kg scaling."
         }
       ],
       "drydep": {

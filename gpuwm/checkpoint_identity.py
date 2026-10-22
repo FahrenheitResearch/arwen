@@ -36,6 +36,78 @@ the spelling the tree already uses, so there is ONE copy of each table and
 from __future__ import annotations
 
 
+#: The 2.9.4 capabilities campaign's start-only and door keys at the value
+#: every earlier header ran: lane/cap-waves-couple's ocean door (no ocean
+#: contract) and lane/cap-lake's lake-state analysis (an initialization
+#: input; a resumed lake continues from its checkpointed columns).  Absent
+#: means this value on either side of a resume; any other value binds.
+CAMPAIGN_IMPLICIT_RUN_KEYS = {
+    "smoke_off_reason": "",
+    "ocean_config": "",
+    "lake_state_source": "auto",
+    "lake_state_path": "",
+    "lake_state_accept_licence": "",
+}
+
+#: lane/cap-seaice: prognostic sea ice and its parameters are read only
+#: where a land surface runs it (gpuwm.ocean.seaice: ``seaice_prognostic``
+#: and ``sf_surface_physics``).
+SEAICE_RUN_KEYS = ("seaice_prognostic", "seaice_initial_thickness",
+                   "seaice_new_ice_thickness", "seaice_ocean_heat_flux")
+
+#: lane/cap-hail: HAILCAST's output-only selectors at their defaults
+#: (CONFIG_DIAGNOSTIC_FIELDS keeps them out of the resume walk).
+HAILCAST_DEFAULT_RUN_KEYS = {"hailcast_opt": -1, "haildt": 60.0}
+
+
+def seaice_read(values: dict) -> bool:
+    return bool(values.get("sf_surface_physics", 0)) and bool(
+        values.get("seaice_prognostic", False))
+
+
+def drop_capability_campaign_keys(values: dict) -> None:
+    """Omit the campaign keys while they reach nothing.
+
+    Shared by the checkpoint echo and digest (gpuwm.io.restart) and the
+    public experiment document (gpuwm.experiment), so a default run keeps
+    the 2.9.3 bytes in both and an active value binds in both.  Named
+    breakage: every 2.9.3 checkpoint refused on resume ("lake_state_path:
+    absent from the restart file") and every public document's bytes moved.
+    """
+    for name, default in CAMPAIGN_IMPLICIT_RUN_KEYS.items():
+        if values.get(name, default) == default:
+            values.pop(name, None)
+    if not seaice_read(values):
+        for name in SEAICE_RUN_KEYS:
+            values.pop(name, None)
+    for name, default in HAILCAST_DEFAULT_RUN_KEYS.items():
+        if values.get(name, default) == default:
+            values.pop(name, None)
+    # 4c82704f8f's seaice_threshold is a real.exe rule read only by the
+    # initial surface; the Registry default 100 K converts nothing, so it is
+    # absent there and a stated threshold binds.  Named breakage: every
+    # default public experiment document's bytes moved (the checkpoint echo
+    # already omitted it, gpuwm.io.restart).
+    if float(values.get("seaice_threshold", 100.0)) == 100.0:
+        values.pop("seaice_threshold", None)
+
+
+def drop_default_output_controls(values: dict) -> None:
+    """Keep pre-output-control document and checkpoint bytes at their defaults.
+
+    Nondefault output requests remain explicit. The GSD reset cadence is
+    implicit only while its diagnostic package is off at the default cadence.
+    """
+    for key in ("prec_acc_dt", "prec_acc_dt1", "history_interval2_s",
+                "history_interval_change_s"):
+        if float(values.get(key, 0.0) or 0.0) == 0.0:
+            values.pop(key, None)
+    if int(values.get("gsd_diagnostics", 0) or 0) == 0:
+        values.pop("gsd_diagnostics", None)
+        if int(values.get("reset_interval1", 60)) == 60:
+            values.pop("reset_interval1", None)
+
+
 def drop_default_cumulus_selectors(values: dict) -> None:
     """Keep earlier identity bytes while binding every consumed setting."""
     from gpuwm.config import CUMULUS_PARAMETER_IDENTITY_RULES
@@ -100,7 +172,7 @@ def drop_default_spp_selectors(values: dict) -> None:
 #: (``sase_moist_n2``, ``sase_stable_dissipation``,
 #: ``sase_additive_dissipation``) move the trajectory and are NOT here.
 CONFIG_DIAGNOSTIC_FIELDS = frozenset(
-    {"nwp_diagnostics", "tke_budget", "sase_flux_diag", "hmix_k_diag",
+    {"hailcast_opt", "haildt", "nwp_diagnostics", "tke_budget", "sase_flux_diag", "hmix_k_diag",
      "surface_energy_diag",
      # Correct mode WB1 (gpuwm/correct_mode.py OUTPUT_ONLY_KEYS): books the
      # settled-cloud total CLOUDNC and changes no prognostic word.

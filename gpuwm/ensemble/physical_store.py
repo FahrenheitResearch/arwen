@@ -18,6 +18,8 @@ from gpuwm.ensemble.physical_fields import (
     FIELD_SCHEMA, canonical_grid_sha256, field_contract_sha256,
     native_field_attributes, validate_field_contract, validate_field_inventory,
 )
+from gpuwm.ensemble.physical_fields import sha256_of_file as digest_file
+from gpuwm.ensemble.physical_fields import _digest as _valid_digest
 
 LEGACY_SCHEMA = "gpuwm-ensemble-physical-store.v1"
 SCHEMA = "gpuwm-ensemble-physical-store.v2"
@@ -53,14 +55,6 @@ def _plain(value):
 
 def _canonical(value):
     return json.dumps(_plain(value), sort_keys=True, separators=(",", ":"), allow_nan=False)
-
-
-def digest_file(path):
-    value = hashlib.sha256()
-    with Path(path).open("rb") as stream:
-        for block in iter(lambda: stream.read(1024*1024), b""):
-            value.update(block)
-    return value.hexdigest()
 
 
 def _host(value):
@@ -121,10 +115,6 @@ def physical_static_identity(static, attrs=None):
     if not fields:
         raise ValueError("physical mapping has no numerical static fields")
     return {"schema": STATIC_SCHEMA, "fields": fields, "attributes": attributes}
-
-
-def _valid_digest(value):
-    return isinstance(value,str) and len(value) == 64 and not set(value) - set("0123456789abcdef")
 
 
 def _validate_static_identity(identity):

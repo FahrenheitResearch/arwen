@@ -37,6 +37,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+
+from gpuwm.static.build import _DEFAULT_GEOG_DIRS
 import pytest
 
 from gpuwm.static.build import GeogSelection, build_static
@@ -114,7 +116,7 @@ def _seam_wps_geog(root: Path) -> Path:
            lambda x, y, z: np.where(((x // 37) + (y // 41)) % 5 == 0, 17,
                                     1 + (3 * x + 5 * y) % 21))
 
-    for name in ("soiltype_top_30s", "soiltype_bot_30s"):
+    for name in (_DEFAULT_GEOG_DIRS["soil_top"], _DEFAULT_GEOG_DIRS["soil_bottom"]):
         kv = _write_index(root / name,
                           dict(_COARSE, type="categorical", category_min=1,
                                category_max=16, wordsize=1, tile_z=1))
@@ -125,7 +127,7 @@ def _seam_wps_geog(root: Path) -> Path:
                                   ("lai_modis_10m", 12, 0.1, 60),
                                   ("albedo_modis", 12, 1.0, 30),
                                   ("maxsnowalb_modis", 1, 1.0, 80),
-                                  ("soiltemp_1deg", 1, 1.0, 300)):
+                                  (_DEFAULT_GEOG_DIRS["soil_temperature"], 1, 1.0, 300)):
         kv = _write_index(root / name,
                           dict(_COARSE, type="continuous", signed="yes",
                                wordsize=2, tile_z=nz, scale_factor=scale))
@@ -355,7 +357,7 @@ def _dateline_wps_geog(root: Path) -> Path:
                 lambda x, y, z: np.where(((x // 23) + (y // 29)) % 4 == 0, 17,
                                          1 + (7 * x + 3 * y) % 21))
 
-    for name in ("soiltype_top_30s", "soiltype_bot_30s"):
+    for name in (_DEFAULT_GEOG_DIRS["soil_top"], _DEFAULT_GEOG_DIRS["soil_bottom"]):
         kv = _write_index(root / name,
                           dict(_TRUNC, type="categorical", category_min=1,
                                category_max=16, wordsize=1, tile_z=1))
@@ -366,7 +368,7 @@ def _dateline_wps_geog(root: Path) -> Path:
                                   ("lai_modis_10m", 12, 0.1, 60),
                                   ("albedo_modis", 12, 1.0, 30),
                                   ("maxsnowalb_modis", 1, 1.0, 80),
-                                  ("soiltemp_1deg", 1, 1.0, 300)):
+                                  (_DEFAULT_GEOG_DIRS["soil_temperature"], 1, 1.0, 300)):
         kv = _write_index(root / name,
                           dict(_TRUNC_COARSE, type="continuous", signed="yes",
                                wordsize=2, tile_z=nz, scale_factor=scale))

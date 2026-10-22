@@ -422,7 +422,12 @@ AIRNOW = FrontDoor(
     abi_marker="gpuwm-obs.airnow-fetch.v1\tgpuwm-obs.airnow-table.v1\tgpuwm-obs.table.v2",
 )
 
-FRONT_DOORS = {"mrms": MRMS, "stage4": STAGE4, "asos": ASOS, "goes": GOES,
+HAIL = FrontDoor(
+    name="rw_hail", env_var="GPUWM_RW_HAIL", subject="hail observations and verification",
+    abi_marker="gpuwm-obs.hail.v1\tSPC\tMESH\tmm\tsize_bins",
+)
+
+FRONT_DOORS = {"hail": HAIL, "mrms": MRMS, "stage4": STAGE4, "asos": ASOS, "goes": GOES,
                "opera": OPERA, "odim": ODIM, "airnow": AIRNOW,
                "radar-feeds": RADAR_FEEDS}
 

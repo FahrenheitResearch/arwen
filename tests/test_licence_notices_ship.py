@@ -395,11 +395,11 @@ def test_the_arm_scope_list_is_derived_from_the_tree() -> None:
     """
     _requires_source_tree()
     derived = _arm_files()
-    # Twenty since the 2.9.1 exact-chain intake: mynn_surface_libm.cuh (the
-    # MYNN surface layer's copy of mynn_pbl.cu's logf/expf/powf) and
-    # rrtmgp_libm.cuh joined.
-    assert len(derived) == 20, derived
-    assert len([name for name in derived if name != "glibc_trig_flt32.cuh"]) == 19, derived
+    assert derived, "no Arm table carriers found"
+    from tools.update_kernel_license_scopes import generated_notices
+    for path, expected in generated_notices(ROOT).items():
+        assert path.read_text(encoding="utf-8") == expected, (
+            f"{path} is stale; run python -m tools.update_kernel_license_scopes")
     assert "glibc_trig_flt32.cuh" in derived
     listed = _read(KERNEL_NOTICE)
     missing = [name for name in derived if name not in listed]
@@ -417,51 +417,7 @@ def test_the_arm_scope_list_is_derived_from_the_tree() -> None:
 #: Pinned rather than derived because each file names the routine
 #: differently -- r_atan, ng_atanf, glibc_atanf, mynn_tanhf, nmpe_expm1f,
 #: ruc_tanhf_glibc -- and the derivation below is what keeps the pin accurate.
-FDLIBM_FILES: tuple[str, ...] = (
-    "mynn_dmp_sibling.cu", "mynn_pbl.cu", "noahmp_bareflux.cu",
-    "noahmp_energy.cu", "noahmp_fluxprep.cu", "noahmp_glacier.cu",
-    "noahmp_leaves.cu", "noahmp_vegeflux.cu", "ruc.cu",
-    # gfk_log10, the Milbrandt-Yau units' log10 (the same reduction as
-    # mynn_pbl.cu's), lane/verify-milbrandt2mom-mp9.
-    "log10_flt32.cuh",
-    # Shipped in 2.8.8/2.8.9 outside the notice while the gate below was
-    # deleted (7f00a76db); joined the list for 2.9.0.
-    # mp28: binary32 log10f (e_log10f.c); binary64 log10 (e_log10.c),
-    # log1p (s_log1p.c), atan (s_atan.c) and atan2 (e_atan2.c).
-    "thompson_aerosol_libm.cuh",
-    # MYNN surface layer: mynn_pbl.cu's atanf (s_atanf.c, glibc's 2**25
-    # threshold), character for character.
-    "mynn_libm.cuh",
-    # MM5 surface layers, options 1 and 91: the same atanf and table words
-    # (sf_atan / SFC_ATANF_TAB, sfc_classic_atanf).
-    "sfclay.cu", "sfclay_classic.cuh",
-    # YSU get_pblh: mynn_pbl.cu's expm1f and tanhf (ysu_expm1f, ysu_tanhf).
-    "ysu_480_topo.cuh",
-    # Found by the 2.9.0 verifier after the five above, same defect class.
-    # Dudhia shortwave's dsw_log10f is e_log10f.c's reduction (FDLIBM's
-    # log10(2) split 0x3e9a2080/0x355427db and ivln10 0x3ede5bd9), the same
-    # code as gfk_log10 in log10_flt32.cuh; it had been excused below as
-    # WOOF's own.  New on the 2.9.0 line.
-    "dudhia_sw.cu",
-    # TEMPO's device log10 (tempo_device_log10) is FDLIBM's binary64
-    # e_log10.c line for line; shipped in 2.8.9 unlisted, below the top level.
-    "tempo/tempo_common.cuh",
-    # The Rust libm transcription's log1p (log1p.rs, from s_log1p.c) and
-    # glibc's s_log1pf.c (plm_log1p, plm_log1pf); the root NOTICE gives the
-    # file its own paragraph and its header carries the Sun notices.
-    "portable_libm64.cuh",
-    # The 2.9.1 intake of the WRF exact chain: FDLIBM's atanf (the
-    # sfclay table words) in atan_scalar_flt32.cuh, mynn_surface_libm.cuh
-    # and terrain_drag.cu; s_expm1f.c in gf_wrf_normalization.cuh; expm1f
-    # and tanhf in shinhong.cu and ysu_topo.cuh (the ysu_480_topo.cuh
-    # code); e_log10f.c's reduction in nssl2_diagnostics.cu and
-    # thompson_fork.cu; e_log10.c in thompson_classic.cu.
-    "atan_scalar_flt32.cuh", "gf_wrf_normalization.cuh",
-    "mynn_surface_libm.cuh", "nssl2_diagnostics.cu", "shinhong.cu",
-    "terrain_drag.cu", "thompson_classic.cu", "thompson_fork.cu",
-    "ysu_topo.cuh",
-)
-
+from tools.update_kernel_license_scopes import FDLIBM_FILES
 #: Device routines whose NAME looks like an FDLIBM one but which are not
 #: FDLIBM transcriptions: these are libm calls rounded once or CORE-MATH,
 #: as identified beside each entry.  Listed with the reason so that adding a
@@ -516,6 +472,9 @@ _NOT_FDLIBM = {
     "morrison.cu": ("mo_log10d",),
     # The fork Thompson's DOUBLE LOG10 is CUDA's binary64 log10.
     "thompson_fork.cu": ("tf_log10",),
+    # HAILCAST support (cap-hail, 2.9.4): lake_log10 is the HAILCAST
+    # transcription's LOG10 kind shim, CUDA's log10f/log10 called directly.
+    "hailcast_support.cuh": ("lake_log10",),
 }
 
 _FDLIBM_DEF = re.compile(
@@ -534,6 +493,7 @@ def test_the_fdlibm_scope_list_matches_the_tree() -> None:
     portable_libm64.cuh (log1p) were outside the kernel notice too, and
     dudhia_sw.cu's FDLIBM log10f had been excused as first-party."""
     _requires_source_tree()
+    assert all((KERNELS / name).is_file() for name in FDLIBM_FILES)
     listed = _read(KERNEL_NOTICE)
     missing = [name for name in FDLIBM_FILES if name not in listed]
     assert missing == [], (
@@ -565,7 +525,7 @@ def test_the_fdlibm_scope_list_matches_the_tree() -> None:
 #: the third category, which is where both 2.7.0 breaches were.
 _FIRST_PARTY_ROOTS = (
     "tools/rustwx/crates", "tools/rw_wps/crates", "tools/grib1_bridge/src",
-    "tools/region_global_dealias/src", "tools/mpas_render_bridge",
+    "tools/region_global_dealias/src",
 )
 
 _LICENCE_MARKER = re.compile(
@@ -1170,3 +1130,63 @@ def test_the_zarr_notice_reproduces_the_binary_notice_as_it_is_now() -> None:
         "the Zarr notice reproduces an earlier binary notice; " + remedy)
     assert binary.decode("utf-8").rstrip() in notice, (
         "the Zarr notice names the binary notice's digest without its text; " + remedy)
+
+
+def test_the_sounding_notice_generator_is_idempotent_on_the_tree() -> None:
+    """tools/update_soundings_license_notice.py run on an untouched tree must
+    change nothing.  It rewrote ~3,466 lines of both binary notices while this
+    file stayed green: the committed section lacked cudarc (rustwx-render gained
+    it in 529053024f without a refresh), a merge had folded the head of the
+    t-route block into the sounding section, and the tool's own output varied
+    with Python's per-process hash seed (a path crate and its git twin share a
+    name and version) and, on Windows, with case-insensitive path order.  Two
+    runs under different hash seeds, each in --check mode, must both find the
+    committed copies current."""
+    _requires_source_tree()
+    import os
+    import shutil
+    import subprocess
+    import sys
+    if shutil.which("cargo") is None:
+        pytest.skip("cargo is not on PATH; the generator resolves the lock with cargo metadata")
+    tool = _notice_tool("update_soundings_license_notice.py")
+    notice = (LICENSES / "THIRD-PARTY-LICENSES-bridge-binaries.txt").read_bytes().decode("utf-8")
+    assert notice.count(tool.MARKER) == 1 and notice.count(tool.END) == 1
+    _, _, rest = notice.partition(tool.MARKER)
+    section, _, after = rest.partition(tool.END)
+    assert "NEXTGEN RESERVOIR ADAPTATION" not in section, (
+        "the t-route block sits inside the generated sounding section; the "
+        "generator would delete it")
+    assert "NEXTGEN RESERVOIR ADAPTATION" in after
+    for seed in ("0", "1"):
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "tools" / "update_soundings_license_notice.py"), "--check"],
+            cwd=ROOT, capture_output=True, text=True, timeout=600,
+            env={**os.environ, "PYTHONHASHSEED": seed})
+        assert result.returncode == 0, (
+            f"PYTHONHASHSEED={seed}: the sounding notices are not what the generator writes; "
+            f"run python tools/update_soundings_license_notice.py\n{result.stderr[-2000:]}")
+
+
+def test_the_hydro_output_notice_generator_is_current_on_the_tree() -> None:
+    """librw_nextgen_output joined the bridge roster at 2.9.4 (on demand), so its
+    locked closure (parquet, thrift, snap, crc32fast, ...) reaches users in binary
+    form. tools/update_nextgen_output_license_notice.py writes that closure's
+    inventory and texts into both binary notices; run in --check mode it must find
+    both committed copies current, or the bundle ships the library without the
+    licence texts its dependencies require."""
+    _requires_source_tree()
+    import shutil
+    import subprocess
+    import sys
+    if shutil.which("cargo") is None:
+        pytest.skip("cargo is not on PATH; the generator resolves the lock with cargo metadata")
+    tool = _notice_tool("update_nextgen_output_license_notice.py")
+    notice = (LICENSES / "THIRD-PARTY-LICENSES-bridge-binaries.txt").read_bytes().decode("utf-8")
+    assert notice.count(tool.MARKER) == 1 and notice.count(tool.END) == 1
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "tools" / "update_nextgen_output_license_notice.py"), "--check"],
+        cwd=ROOT, capture_output=True, text=True, timeout=600)
+    assert result.returncode == 0, (
+        "the hydro output notices are not what the generator writes; run python "
+        f"tools/update_nextgen_output_license_notice.py\n{result.stderr[-2000:]}")

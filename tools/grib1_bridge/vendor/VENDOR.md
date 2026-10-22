@@ -277,8 +277,9 @@ lives here re-expressed as
 
 The manifest declares optional `png` and `libaec-sys`, and cargo resolves a
 ROOT package's optional dependencies whether or not their features are on.
-Neither is in `crates-io/` -- `png` is vendored in the renderer workspace,
-`libaec-sys` nowhere -- so `cargo test` with this directory as the workspace
+Neither is in `crates-io/` -- `png` is vendored in the renderer workspace
+(the shared registry grib1_bridge resolves from, so the bridge's own build
+turns `png_codec` on for MRMS's DRT 5.41), `libaec-sys` nowhere -- so `cargo test` with this directory as the workspace
 root fails resolution offline.  Run it from a consumer workspace instead,
 which is also the posture that ships:
 

@@ -134,7 +134,9 @@ fn write_atomically(path: &Path, bytes: &[u8]) {
     }
 }
 
-const FINGERPRINT_SCHEMA: &str = "rw-source-fingerprint-v1";
+/// v2: the digest is `rw-source-file-v3` (pieces hashed in parallel), so a
+/// memo of the one-stream digest is never handed back as this one.
+const FINGERPRINT_SCHEMA: &str = "rw-source-fingerprint-v2";
 
 /// The memoized whole-file fingerprint of `path` under `name` (the name the
 /// digest covers), if a memo was made from this exact file.
@@ -246,6 +248,72 @@ pub(crate) fn remember_snowfall(window: &str, memo: &SnowfallMemo) {
     write_atomically(&path, &planes_to_bytes(&header, &memo.previous, &memo.accumulated));
 }
 
+const FRAME_PLANE_SCHEMA: &str = "rw-frame-plane-v1";
+
+fn frame_plane_key(stamp: &str, timeidx: usize, kind: &str) -> String {
+    format!("{stamp}\u{0}{timeidx}\u{0}{kind}")
+}
+
+/// A plane computed from one record of one unchanged history file (the
+/// 500 hPa column temperature maximum a Kuchera interval needs), if a memo
+/// was made from this exact file.  `kind` names what the plane is.
+///
+/// WHAT BREAKAGE THIS PREVENTS: a Kuchera window replayed from an earlier
+/// memo re-read every earlier frame's 3-D temperature and pressure on one
+/// core, because the window memo of the frame before was not written yet
+/// while 2-3 live frames drew at once; on an 8x5090 host (1799x1059x50) the
+/// frames that replayed from initialization took 251 s at F009 and more
+/// than 420 s at F024 against 140-170 s for the rest.  Each frame's own
+/// render saves its plane, so a replay reads two-dimensional memos.
+pub(crate) fn recall_frame_plane(path: &Path, timeidx: usize, kind: &str, cells: usize) -> Option<Vec<f32>> {
+    let stamp = file_stamp(path)?;
+    let key = frame_plane_key(&stamp, timeidx, kind);
+    let bytes = std::fs::read(key_path("frame-planes", &key, ".bin")?).ok()?;
+    let length = u64::from_le_bytes(bytes.get(..8)?.try_into().ok()?) as usize;
+    let header: serde_json::Value = serde_json::from_slice(bytes.get(8..8 + length)?).ok()?;
+    if header.get("schema")?.as_str()? != FRAME_PLANE_SCHEMA
+        || header.get("key")?.as_str()? != key
+        || header.get("cells")?.as_u64()? as usize != cells
+    {
+        return None;
+    }
+    let plane = bytes.get(8 + length..)?;
+    if plane.len() != 4 * cells {
+        return None;
+    }
+    Some(
+        plane
+            .chunks_exact(4)
+            .map(|chunk| f32::from_bits(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])))
+            .collect(),
+    )
+}
+
+/// Memoize `values` as plane `kind` of record `timeidx` of `path`.
+/// `stamp_before` is the file's stamp taken before it was read; nothing is
+/// written unless the file still carries it.
+pub(crate) fn remember_frame_plane(path: &Path, timeidx: usize, kind: &str, stamp_before: &str, values: &[f32]) {
+    let Some(stamp) = file_stamp(path) else { return };
+    if stamp != stamp_before {
+        return;
+    }
+    let key = frame_plane_key(&stamp, timeidx, kind);
+    let Some(memo) = key_path("frame-planes", &key, ".bin") else { return };
+    let header = serde_json::json!({
+        "schema": FRAME_PLANE_SCHEMA,
+        "key": key,
+        "cells": values.len(),
+    })
+    .to_string();
+    let mut bytes = Vec::with_capacity(8 + header.len() + 4 * values.len());
+    bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(header.as_bytes());
+    for value in values {
+        bytes.extend_from_slice(&value.to_bits().to_le_bytes());
+    }
+    write_atomically(&memo, &bytes);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,6 +345,22 @@ mod tests {
         std::fs::File::options().write(true).open(&file).unwrap().set_modified(old).unwrap();
         let stamp = file_stamp(&file).unwrap();
         let digest = [7u8; 32];
+        // A failed memo replacement must leave no partial file and must not
+        // prevent the same fingerprint from being saved once the path clears.
+        let memo = key_path(
+            "source-fingerprints",
+            &format!("{stamp}\u{0}wrfout_d01_2026-10-17_00_00_00"),
+            ".txt",
+        ).unwrap();
+        std::fs::create_dir_all(&memo).unwrap();
+        remember_fingerprint(&file, "wrfout_d01_2026-10-17_00_00_00", &stamp, &digest);
+        assert_eq!(recall_fingerprint(&file, "wrfout_d01_2026-10-17_00_00_00"), None);
+        assert!(memo.is_dir());
+        let partial = memo.with_file_name(format!(
+            ".{}.{}.partial", memo.file_name().unwrap().to_str().unwrap(), std::process::id()
+        ));
+        assert!(!partial.exists(), "failed memo replacement left a partial file");
+        std::fs::remove_dir(&memo).unwrap();
         remember_fingerprint(&file, "wrfout_d01_2026-10-17_00_00_00", &stamp, &digest);
         assert_eq!(recall_fingerprint(&file, "wrfout_d01_2026-10-17_00_00_00"), Some(digest));
         assert_eq!(recall_fingerprint(&file, "other_name"), None);

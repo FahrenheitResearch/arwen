@@ -38,40 +38,6 @@ use super::ingest_profile::IngestProfile;
 use super::planned_store_variables;
 use crate::fetch_plan;
 
-/// Default calibration inputs for a predictive estimate: the newest (by
-/// modification time) `.rws` hour files of `model_slug` under `store_root`,
-/// at most three so the header walk stays cheap. Empty when the model has
-/// no stored hours yet — callers fall back to
-/// [`Calibration::builtin_default`]. (Extracted from `rw_ingest`'s
-/// `calibration_paths` so the UI estimate reuses the same discovery.)
-pub fn default_calibration_paths(store_root: &Path, model_slug: &str) -> Vec<std::path::PathBuf> {
-    let mut hour_files: Vec<std::path::PathBuf> = Vec::new();
-    let model_dir = store_root.join(model_slug);
-    let Ok(runs) = std::fs::read_dir(&model_dir) else {
-        return Vec::new();
-    };
-    for run in runs.flatten() {
-        if let Ok(entries) = std::fs::read_dir(run.path()) {
-            hour_files.extend(
-                entries
-                    .flatten()
-                    .map(|entry| entry.path())
-                    .filter(|path| path.extension().is_some_and(|ext| ext == "rws")),
-            );
-        }
-    }
-    // Newest first by modification time; the 3 newest bound the walk cost.
-    hour_files.sort_by_key(|path| {
-        std::cmp::Reverse(
-            std::fs::metadata(path)
-                .and_then(|meta| meta.modified())
-                .ok(),
-        )
-    });
-    hour_files.truncate(3);
-    hour_files
-}
-
 /// One variable's exact on-disk size inside an hour file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VarSize {
@@ -850,68 +816,6 @@ mod tests {
     use super::*;
     use rustwx_core::ModelId;
 
-    /// Calibration walk against the live GFS store — prints the per-variable
-    /// bytes table for copy-pasting into the GFS builtin consts.
-    /// Run with: cargo test -p rw-ingest -- --nocapture print_gfs_calibration_table
-    #[test]
-    #[ignore]
-    fn print_gfs_calibration_table() {
-        use std::collections::BTreeMap;
-        // Resolve from the workspace root (two dirs up from the crate root).
-        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap();
-        let paths: Vec<std::path::PathBuf> = [
-            "out/gfs_store/gfs/20260611_00z/f001.rws",
-            "out/gfs_store/gfs/20260611_00z/f002.rws",
-            "out/gfs_store/gfs/20260611_00z/f003.rws",
-        ]
-        .iter()
-        .map(|p| workspace.join(p))
-        .collect();
-        let mut sums_2d: BTreeMap<String, (u64, u64)> = BTreeMap::new();
-        let mut sums_3d: BTreeMap<String, (u64, u64)> = BTreeMap::new();
-        let mut meta_per_var = 0u64;
-        let mut nx = 0;
-        let mut ny = 0;
-        for path in &paths {
-            let sizes = walk_hour_sizes(path).expect("walk");
-            if meta_per_var == 0 && !sizes.vars.is_empty() {
-                meta_per_var = sizes.meta_len / sizes.vars.len() as u64;
-                nx = sizes.nx;
-                ny = sizes.ny;
-                println!(
-                    "dims={}x{} meta_per_var={} file_bytes={}",
-                    nx, ny, meta_per_var, sizes.file_bytes
-                );
-            }
-            for var in &sizes.vars {
-                if var.kind == "pressure3d" {
-                    if var.levels == 0 {
-                        continue;
-                    }
-                    let e = sums_3d.entry(var.name.clone()).or_insert((0, 0));
-                    e.0 += var.bytes / var.levels as u64;
-                    e.1 += 1;
-                } else {
-                    let e = sums_2d.entry(var.name.clone()).or_insert((0, 0));
-                    e.0 += var.bytes;
-                    e.1 += 1;
-                }
-            }
-        }
-        println!("nx={nx} ny={ny} meta_per_var={meta_per_var}");
-        println!("=== GFS_2D ===");
-        for (n, (t, c)) in &sums_2d {
-            println!("    (\"{n}\", {}),", t / c);
-        }
-        println!("=== GFS_3D ===");
-        for (n, (t, c)) in &sums_3d {
-            println!("    (\"{n}\", {}),", t / c);
-        }
-    }
     use rustwx_core::{
         CanonicalField, FieldSelector, GridProjection, GridShape, LatLonGrid, SelectedField2D,
     };
@@ -1148,6 +1052,32 @@ mod tests {
         );
     }
 
+    /// 2D planes the full HRRR plan gained after the 2026-06-08 calibration
+    /// store was measured, so that store's measured average does not contain
+    /// them: the 925 hPa height and winds behind `925mb_height_winds`.  The
+    /// anchor tests add their priced bytes to the measured average, which
+    /// keeps the pin on the calibrated planes exact.
+    const HRRR_PLANES_ADDED_AFTER_CALIBRATION: &[&str] = &[
+        "geopotential_height_925hpa",
+        "u_wind_925hpa",
+        "v_wind_925hpa",
+    ];
+
+    /// Measured HRRR full-profile average plus the priced bytes of the
+    /// planes added after it was measured (each must be in the plan).
+    fn hrrr_full_profile_anchor(estimate: &SizeEstimate, calibration: &Calibration) -> u64 {
+        let names: Vec<&str> = estimate.breakdown.iter().map(|(n, _)| n.as_str()).collect();
+        let measured_avg = 709_779_736u64;
+        measured_avg
+            + HRRR_PLANES_ADDED_AFTER_CALIBRATION
+                .iter()
+                .map(|plane| {
+                    assert!(names.contains(plane), "full HRRR plan prices {plane}");
+                    calibration.lookup_2d(plane)
+                })
+                .sum::<u64>()
+    }
+
     #[test]
     fn estimate_full_profile_covers_every_builtin_variable() {
         let calibration = Calibration::builtin_default();
@@ -1155,10 +1085,14 @@ mod tests {
         // Every variable the 20260608 store realized must be priced: 110
         // 2D (26 surface-plan + 3 trailing + 5 vorticity + 31 direct
         // planes + 29 derived + 16 heavy, as measured) + 5 volumes +
-        // the overhead entry = 115 + 1.
-        assert_eq!(estimate.breakdown.len(), 115 + 1);
+        // the overhead entry = 115 + 1, plus the 3 planes added after
+        // that store was measured.
+        assert_eq!(
+            estimate.breakdown.len(),
+            115 + 1 + HRRR_PLANES_ADDED_AFTER_CALIBRATION.len()
+        );
         // Within bookkeeping noise of the real measured hours (~677 MB).
-        let measured_avg = 709_779_736u64;
+        let measured_avg = hrrr_full_profile_anchor(&estimate, &calibration);
         let diff = estimate.per_hour_store_bytes.abs_diff(measured_avg);
         assert!(
             diff as f64 / measured_avg as f64 <= 0.01,
@@ -1270,8 +1204,9 @@ mod tests {
     fn hrrr_full_profile_estimate_is_unchanged_after_gfs_table_added() {
         let calibration = Calibration::builtin_default();
         let estimate = estimate(&IngestProfile::full(), ModelId::Hrrr, 1, &calibration);
-        // Measured HRRR average used as the regression anchor (709,779,736 bytes).
-        let pinned_hrrr_avg = 709_779_736u64;
+        // Measured HRRR average used as the regression anchor (709,779,736
+        // bytes), plus the planes added after it was measured.
+        let pinned_hrrr_avg = hrrr_full_profile_anchor(&estimate, &calibration);
         let diff = estimate.per_hour_store_bytes.abs_diff(pinned_hrrr_avg);
         assert!(
             diff as f64 / pinned_hrrr_avg as f64 <= 0.01,

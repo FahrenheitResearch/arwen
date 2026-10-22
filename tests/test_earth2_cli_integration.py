@@ -48,6 +48,7 @@ def test_exact_diagnostic_licence_reaches_worker_and_keeps_other_refusals(tmp_pa
             resolve('windgust-afno')
     monkeypatch.setattr(diagnostic, 'earth2_python', lambda: 'unused-python')
     monkeypatch.setattr(diagnostic.subprocess, 'run', lambda *a, **k: SimpleNamespace(returncode=0))
+    (tmp_path/'forecast.nc').write_bytes(b'export fixture')
     destination = tmp_path/'accepted'
     with licence_scope([licence]):
         _preflight(spec)

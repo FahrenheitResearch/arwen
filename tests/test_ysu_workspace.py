@@ -60,8 +60,6 @@ from gpuwm.core.ysu import (                                 # noqa: E402
     YSU_BLOCK, YSUWS_SLOTS, ysu_workspace_floats,
 )
 
-_CU = os.path.join(_ROOT, "gpuwm", "core", "kernels", "ysu.cu")
-
 #: The CUDA default per-thread stack.  A frame at or under this reserves
 #: nothing, because the driver's backing store is
 #: ``(frame - default stack) x SMs x threads/SM`` floored at zero.
@@ -69,13 +67,13 @@ DEFAULT_STACK_BYTES = 1024
 
 
 def _source() -> str:
-    with open(_CU, encoding="utf-8") as fh:
-        return fh.read()
+    from gpuwm.core.kernels import _unit_text
+    return _unit_text("ysu")
 
 
 def _define(name: str) -> int:
     m = re.search(rf"^#define {name} (\d+)$", _source(), re.M)
-    assert m, f"ysu.cu has no #define {name}"
+    assert m, f"the live YSU unit has no #define {name}"
     return int(m.group(1))
 
 
@@ -92,9 +90,9 @@ def test_the_python_side_mirrors_the_kernels_workspace_geometry():
 
 def test_every_workspace_slot_id_is_used_once():
     ids = [int(m) for m in re.findall(r"YSUWS_AT\(wsb,\s*(\d+),", _source())]
-    assert ids, "no workspace slots found in ysu.cu"
+    assert ids, "no workspace slots found in the live YSU unit"
     assert len(ids) == YSUWS_SLOTS, (
-        f"ysu.cu binds {len(ids)} slots but declares YSUWS_SLOTS="
+        f"the live YSU unit binds {len(ids)} slots but declares YSUWS_SLOTS="
         f"{YSUWS_SLOTS}")
     assert sorted(ids) == list(range(YSUWS_SLOTS)), (
         f"slot ids must be 0..{YSUWS_SLOTS - 1} exactly once, got "

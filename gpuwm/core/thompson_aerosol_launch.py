@@ -154,6 +154,18 @@ def validate_fields(fields: dict[str, object]) -> tuple[tuple[int, ...], int]:
     return shape, int(np.prod(shape, dtype=np.int64))
 
 
+def add_optional_fields(fields, **group):
+    """Add an all-or-none accumulator group, preserving argument order."""
+    present = [name for name, value in group.items() if value is not None]
+    if present and len(present) != len(group):
+        names = list(group)
+        label = ", ".join(names[:-1]) + " and " + names[-1]
+        detail = f" (got {present})" if len(group) > 2 else ""
+        raise ValueError(label + " are given together or not at all" + detail)
+    if present:
+        fields.update(group)
+
+
 def validate_fp64_fortran_table(name, value, shape) -> None:
     """Require a float64 Fortran-ordered device table of the given shape.
 

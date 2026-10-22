@@ -162,7 +162,7 @@ from __future__ import annotations
 import functools
 import json
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from fractions import Fraction
 from pathlib import Path
 from typing import Callable, ClassVar, Iterable, Mapping, Sequence
@@ -176,10 +176,6 @@ TERRAIN_CLOCK_SCHEMA = "gpuwm-terrain-clock-adaptation-v1"
 
 #: The measured map this rule reads.
 MAP_PATH = Path(__file__).with_name("terrain_clock_map.json")
-
-#: The two substep counts the map measured.  A configured count of six or
-#: more reads the six-substep rows; any smaller count the four-substep rows.
-MAPPED_SOUND_STEPS = (4, 6)
 
 #: How far a domain's crest may sit above a mapped crest and still read
 #: that row, as a share of the crest.  The mapped heights are the ridges'
@@ -693,16 +689,6 @@ def _strongest(speed, heights, crest_height):
     return value, float(heights.flat[index])
 
 
-def mass_speed(u, v) -> np.ndarray:
-    """Horizontal wind speed at mass points from C-grid ``u``/``v``."""
-
-    u = np.asarray(u, dtype=np.float64)
-    v = np.asarray(v, dtype=np.float64)
-    ua = 0.5 * (u[..., :-1] + u[..., 1:])
-    va = 0.5 * (v[..., :-1, :] + v[..., 1:, :])
-    return np.hypot(ua, va)
-
-
 def mass_heights(geopotential_full) -> np.ndarray:
     """Heights of the mass levels from full-level geopotential."""
 
@@ -1023,6 +1009,75 @@ class BoundaryWinds:
         return speed, heights[..., cells], jj, ii
 
 
+@dataclass(frozen=True)
+class MemoStartWinds(StartWinds):
+    """A :class:`StartWinds` that reads its crest band once per crest height.
+
+    For a reader asked the same question again and again: the streamed
+    clock guard re-derives the clock at every boundary interval, and a
+    start state does not change while the forecast runs.  Breakage this
+    prevents: every hourly interval of a head-bound HRRR run re-read the
+    four whole 3-D start fields (u, v, php, phb, each hashed on read) on the
+    stepping thread, part of a 6.5-15.4 s stall per forecast hour on
+    8 x RTX 5090 (V59, 2026-10-21).  The answer is the same call's answer.
+    """
+
+    memo: dict = field(default_factory=dict, compare=False, repr=False)
+
+    @classmethod
+    def wrap(cls, start):
+        return None if start is None else cls(start.source, start.fields)
+
+    def strongest(self, crest_height):
+        key = float(crest_height)
+        if key not in self.memo:
+            self.memo[key] = StartWinds.strongest(self, crest_height)
+        return self.memo[key]
+
+
+_UNREAD = object()
+
+
+@dataclass(frozen=True)
+class MemoBoundaryWinds(BoundaryWinds):
+    """A :class:`BoundaryWinds` that reads each boundary instant once.
+
+    ``memo`` is shared across the readings of one run, so a reading over
+    intervals 0..k reads only interval k's slabs when 0..k-1 were read
+    before.  Same instants, same sides, same order and the same
+    strictly-greater rule as :meth:`BoundaryWinds.strongest`, so the
+    strongest wind, its height and its "when" are the ones the full
+    reading gives.  Breakage this prevents: the streamed clock guard read
+    every interval so far at every new interval, so its cost grew with the
+    forecast hour on the stepping thread (the stall grew from 7.3 s to
+    15.4 s over 14 h on V59, 2026-10-21).
+    """
+
+    memo: dict = field(default_factory=dict, compare=False, repr=False)
+
+    def strongest(self, crest_height):
+        best = None
+        for interval, offset, at in self.instants():
+            fields = interval.fields
+            if not {"u", "v", "mu"} <= set(fields):
+                continue
+            key = (float(interval.start_seconds), float(interval.end_seconds),
+                   float(offset), float(crest_height))
+            found = self.memo.get(key, _UNREAD)
+            if found is _UNREAD:
+                self._refuse_another_grid(fields)
+                found = None
+                for side in ("west", "east", "south", "north"):
+                    side_found = self._side(fields, side, offset, crest_height)
+                    if side_found is not None and (
+                            found is None or side_found[0] > found[0]):
+                        found = side_found
+                self.memo[key] = found
+            if found is not None and (best is None or found[0] > best[0]):
+                best = (found[0], found[1], _boundary_when(at))
+        return best
+
+
 def _boundary_when(seconds: float) -> str:
     if float(seconds) <= 0.0:
         return "boundary at the start"
@@ -1178,6 +1233,13 @@ class ClockAdaptation:
     held_per_km: float | None
     reading: MapReading | None
     adaptive: bool = False
+    #: On the adaptive clock, the interval it runs as configured:
+    #: ``(start, min, max)`` in seconds, with WRF's ``-1`` fill-ins for
+    #: min and max and the configured step for an unset start
+    #: (:mod:`gpuwm.core.adaptive_clock`).  ``None`` on a fixed clock.
+    #: A pinned domain names it, since that clock (not a fixed
+    #: configured step) is what it runs.
+    adaptive_span: tuple | None = None
     ceiling: Fraction | None = None
     #: The longest step the reading lets the domain run, s/km, where a
     #: cell read saw a longer step stop: ``held_per_km`` or, where the
@@ -1302,6 +1364,23 @@ class ClockAdaptation:
                          f"{_seconds(Fraction(ceiling))}")
         return " and ".join(parts)
 
+    def _pinned_runs(self) -> str:
+        """What a pinned domain runs as configured.  On the adaptive clock
+        that is the clock itself, not a fixed step: it starts at its
+        configured step and follows its Courant number between its min
+        and max, with the substep count from its live step.  Breakage it
+        prevents: the HRRR route's pinned line said "runs 15 s steps on 4
+        acoustic substeps" while the run took 1028 adaptive steps from
+        11.85 s to 24 s (2.9.3 doors, okc3-hrrr on G12)."""
+        if self.adaptive and self.adaptive_span is not None:
+            start, low, high = self.adaptive_span
+            return (f"its adaptive clock as configured, starting at "
+                    f"{_seconds(start)} and following its Courant number "
+                    f"between {_seconds(low)} and {_seconds(high)} on at "
+                    f"least {self.configured_sound} acoustic substeps")
+        return (f"{_seconds(self.configured_dt)} steps on "
+                f"{self.configured_sound} acoustic substeps as configured")
+
     def pinned_sentence(self) -> str:
         """The line a pinned domain prints: what runs, and what the
         measured rule would have done instead (not applied)."""
@@ -1309,15 +1388,12 @@ class ClockAdaptation:
         what = ("no wind reading" if self.crest is None else self._what())
         if self.advice_differs:
             return (f"time step: {self.label}'s clock is pinned, so it runs "
-                    f"{_seconds(self.configured_dt)} steps on "
-                    f"{self.configured_sound} acoustic substeps as "
-                    f"configured; {what}, and the measured terrain clock "
-                    f"would have run {self._advice_runs()} (advice only, "
-                    "recorded in the receipt and not applied)")
+                    f"{self._pinned_runs()}; {what}, and the measured "
+                    f"terrain clock would have run {self._advice_runs()} "
+                    "(advice only, recorded in the receipt and not applied)")
         return (f"time step: {self.label}'s clock is pinned and runs "
-                f"{_seconds(self.configured_dt)} steps on "
-                f"{self.configured_sound} acoustic substeps as configured; "
-                f"{what}, and the measured terrain clock holds that clock")
+                f"{self._pinned_runs()}; {what}, and the measured terrain "
+                "clock holds that clock")
 
     def _what(self) -> str:
         crest = self.crest
@@ -1678,9 +1754,26 @@ def _derive_measured(grid_id: int, run, dt: Fraction, slope: float,
     dx = float(run.dx)
     configured_sound = least_sound_steps(run)
     adaptive = bool(getattr(run, "use_adaptive_time_step", False))
+    span = None
+    if adaptive:
+        from gpuwm.core.adaptive_clock import wrf_default_clamps
+
+        # The interval the live clock runs (the adaptive clock's own
+        # resolution): an explicit starting_time_step, else the configured
+        # step; min and max as set, else WRF's 3 and 8 s per km.
+        _start, wrf_max, wrf_min = wrf_default_clamps(run.dx, run.dy)
+        whole = int(getattr(run, "starting_time_step", -1))
+        den = int(getattr(run, "starting_time_step_den", 0))
+        start = (None if whole == -1 and den == 0 else
+                 Fraction(whole) if den == 0 else Fraction(whole, den))
+        low, high = _adaptive_lower(run), _adaptive_upper(run)
+        span = (dt if start is None else start,
+                Fraction(wrf_min) if low is None else low,
+                Fraction(wrf_max) if high is None else high)
     base = dict(grid_id=int(grid_id), label=label, slope=float(slope),
                 crest=crest, dx=dx, configured_dt=dt,
                 configured_sound=configured_sound, adaptive=adaptive,
+                adaptive_span=span,
                 adaptive_nest_lattice=bool(getattr(
                     run, "adaptive_nest_lattice", False)),
                 implicit_vertical=int(getattr(

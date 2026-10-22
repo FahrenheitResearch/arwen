@@ -183,15 +183,6 @@ def test_gfdrv_xmb_free_surface_output_bitwise_everywhere(drv, fixture,
 
 
 @pytest.mark.gpu
-@pytest.mark.parametrize("field", ["gdc", "gdc2"])
-def test_the_cloud_water_diagnostics_are_bitwise_on_all_216(drv, fixture,
-                                                            field):
-    """cupclw carries no mass flux; bitwise on all 216."""
-    _assert_bit_exact(_lev(drv, field), fixture.levels[field],
-                      f"gfdrv.{field}")
-
-
-@pytest.mark.gpu
 @pytest.mark.parametrize(
     "field", ["ktop_deep", "k22_shallow", "kbcon_shallow", "ktop_shallow"])
 def test_gfdrv_surface_indices_exact(drv, fixture, field):

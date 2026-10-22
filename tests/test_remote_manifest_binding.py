@@ -101,7 +101,7 @@ def test_preparation_publishes_its_waiting_receipt_before_the_manifest_exists(go
     assert state["state"] == "waiting_for_output"
 
 
-def test_native_progress_reads_the_heartbeat_a_configuration_job_writes(go_case):
+def _write_go_heartbeat(go_case):
     from gpuwm.supervisor import HEARTBEAT_SCHEMA
     progress_path = go_case.output / "run-progress.json"
     go_case.manifest["progress_path"] = str(progress_path)
@@ -115,6 +115,10 @@ def test_native_progress_reads_the_heartbeat_a_configuration_job_writes(go_case)
         "started_at_utc": go_case.manifest["started_at_utc"],
         "updated_at_utc": "2026-09-07T18:00:20Z", "status": "integrating",
         "model_elapsed_seconds": 120.0}))
+
+
+def test_native_progress_reads_the_heartbeat_a_configuration_job_writes(go_case):
+    _write_go_heartbeat(go_case)
     summary = ra.native_progress(go_case.record, go_case.status)
     assert summary["phase"] == "integrating" and summary["model_elapsed_seconds"] == 120.0
     assert summary["valid_time"] == go_case.event["valid_time"]
@@ -133,17 +137,7 @@ def test_the_viewer_reads_the_initialization_from_the_snapshot_the_run_loads(go_
 
 
 def test_a_re_emitted_snapshot_keeps_its_forecast_progress_source_identity(go_case):
-    from gpuwm.supervisor import HEARTBEAT_SCHEMA
-    progress_path = go_case.output / "run-progress.json"
-    go_case.manifest["progress_path"] = str(progress_path)
-    go_case.manifest_path.write_bytes(encoded(go_case.manifest))
-    go_case.record["config_sha256"] = "d" * 64
-    progress_path.write_bytes(encoded({
-        "schema": HEARTBEAT_SCHEMA, "run_id": go_case.manifest["run_id"], "pid": 123,
-        "config_digest": go_case.record["snapshot_sha256"],
-        "started_at_utc": go_case.manifest["started_at_utc"],
-        "updated_at_utc": "2026-09-07T18:00:20Z", "status": "integrating",
-        "model_elapsed_seconds": 120.0}))
+    _write_go_heartbeat(go_case)
     progress = ra.native_progress(go_case.record, go_case.status)["progress"]
     # The reported field names the snapshot, so it carries the snapshot digest.
     assert progress["source"]["snapshot_config_sha256"] == go_case.record["snapshot_sha256"]

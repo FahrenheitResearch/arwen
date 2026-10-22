@@ -396,14 +396,14 @@ def _max_offset_deg(values, expected, *, longitude: bool = False) -> float:
     return largest if np.isfinite(largest) else float("inf")
 
 
-def _array_sha256(array: np.ndarray) -> str:
+def _array_sha256(array: np.ndarray, dtype=np.float64) -> str:
     """Digest an array with its dtype and shape, C-ordered.
 
     Same construction as :mod:`gpuwm.ingest.prepared_cache`: the bytes alone
     would let a reshape or a dtype change pass as identical.
     """
 
-    contiguous = np.ascontiguousarray(array, dtype=np.float64)
+    contiguous = np.ascontiguousarray(array, dtype=dtype)
     hasher = hashlib.sha256()
     hasher.update(contiguous.dtype.str.encode("ascii"))
     hasher.update(b";")

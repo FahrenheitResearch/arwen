@@ -13,8 +13,8 @@ from typing import Mapping, Sequence
 import numpy as np
 
 from gpuwm.ingest.wrfinput import (
-    RELOCATION_REQUIREMENT, WrfinputMetadata, check_boundary_coverage,
-    check_grid_agreement, format_scheme_matrix, read_wrfinput_metadata,
+    WrfinputMetadata, check_boundary_coverage,
+    check_grid_agreement, read_wrfinput_metadata,
     wrfbdy_coverage,
 )
 
@@ -61,11 +61,6 @@ class WrfinputRun:
     @property
     def grid_ids(self) -> tuple[int, ...]:
         return tuple(sorted(self.restart_paths or self.wrfinput_paths))
-
-    @property
-    def state_paths(self) -> Mapping[int, Path]:
-        """The files each domain's state is restored from."""
-        return self.restart_paths or self.wrfinput_paths
 
 
 def discover_run_directory(directory: str | Path, *, restart: bool = False
@@ -781,89 +776,3 @@ def _check_start_time(experiment, metadata, coverage, *, source: str) -> None:
             + "\n".join(problems)
             + "\nreal.exe stamped these files for one instant; running "
             "them from another silently shifts the whole forecast.")
-
-
-def format_run_report(run: WrfinputRun) -> str:
-    """The human summary of everything the door established, on CPU."""
-    lines = [
-        f"wrfinput door: {run.directory}",
-        f"  namelist.input   {run.namelist_input}",
-        f"  experiment       {run.experiment.name}",
-        f"  start            {run.experiment.start_time}",
-        f"  run length       {run.experiment.run_seconds:.0f} s",
-    ]
-    clock = getattr(run, "restart_clock", None)
-    if clock is not None:
-        lines.append(
-            f"  warm start       {clock.path.name}: "
-            f"{clock.valid_time:%Y-%m-%d_%H:%M:%S}, step {clock.itimestep} "
-            f"({clock.elapsed_seconds:.0f} s into the simulation)")
-        lines.extend(f"    declared change: {note}" for note in run.restart_notes)
-    for grid_id in run.grid_ids:
-        item = run.metadata[grid_id]
-        lines.append(
-            f"  d{grid_id:02d}  {item.nx} x {item.ny} x {item.nz}, "
-            f"{item.soil_layers} soil layers, "
-            f"mp_physics={item.mp_physics}, "
-            f"sf_surface_physics={item.sf_surface_physics}")
-        if item.mp_physics == 8:
-            lines.append(f"    Thompson generation {run.experiment.domain(grid_id).run.thompson_version}")
-    coverage = run.coverage
-    lines.append(
-        f"  wrfbdy_d01       {len(coverage.times)} record(s), "
-        f"{coverage.forcing_interval_seconds} s cadence, "
-        f"bdy_width {coverage.spec_bdy_width}, "
-        f"covers {coverage.coverage_seconds:.0f} s "
-        f"({coverage.start:%Y-%m-%d_%H:%M:%S} -> "
-        f"{coverage.end:%Y-%m-%d_%H:%M:%S})")
-    lines.append("  LIMITS OF THIS ENTRY POINT")
-    lines.append(
-        "    vertical grid and domain layout are fixed by real.exe; "
-        "ArWen's eta-ladder, per-domain vertical grids and the "
-        "nz=129-256 tier are unavailable for this run")
-    lines.append(
-        f"    run length is capped at {coverage.coverage_seconds:.0f} s by "
-        "wrfbdy_d01 coverage")
-    lines.append("    " + RELOCATION_REQUIREMENT.replace("\n", " "))
-    return "\n".join(lines)
-
-
-def wrfinput_help_epilog() -> str:
-    """The ``--help`` text for ``--wrfinput``: what it is and what it costs."""
-    return (
-        "--wrfinput DIR enters ArWen where WRF's real.exe left off.  DIR is "
-        "a WRF run directory holding wrfinput_d0N, wrfbdy_d01 and "
-        "namelist.input; the namelist supplies the run settings and the "
-        "physics exactly as it does for wrf.exe, and the domain layout and "
-        "projection are read out of the wrfinput global attributes (so no "
-        "namelist.wps is needed).  The translation is `gpuwm "
-        "import-namelist`'s, unchanged.\n"
-        "\n"
-        "WARM START: --restart-from WRFRST continues a WRF run from its "
-        "restart file (wrfrst_d01_<time>, any suffix; DIR defaults to the "
-        "file's own directory), and a namelist.input that says restart = "
-        ".true. restarts from wrf.exe's own file name.  State, soil and "
-        "snow, held radiation, PBL and cumulus persistence, accumulators "
-        "and the clock come from the file; the run ends where the namelist "
-        "ends, and --run-seconds is the window after the restart instant.  "
-        "Restart state ArWen cannot continue is refused by name.\n"
-        "\n"
-        "WHAT THIS ENTRY POINT COSTS -- real.exe already made these "
-        "choices, so ArWen cannot revisit them:\n"
-        "  * the VERTICAL GRID is fixed: eta levels, the hybrid "
-        "coefficients and p_top are read from the file, so ArWen's "
-        "eta-ladder construction, its per-domain vertical grids and its "
-        "nz=129-256 tier are unavailable for such a run;\n"
-        "  * the DOMAIN LAYOUT is fixed: nx, ny, dx, the projection and "
-        "the nest placement are whatever real.exe wrote;\n"
-        "  * RUN LENGTH IS CAPPED by wrfbdy_d01 coverage (its records plus "
-        "one forcing interval), and a longer run is refused at this door, "
-        "naming both numbers, before any integration;\n"
-        "  * the SCHEME SET IS CLOSED -- a wrfinput carries one scheme's "
-        "hydrometeor inventory and one land-surface scheme's soil "
-        "geometry:\n"
-        + format_scheme_matrix() + "\n"
-        "    anything else is refused by name with a remedy.\n"
-        "\n"
-        "WHAT SURVIVES: " + RELOCATION_REQUIREMENT
-    )

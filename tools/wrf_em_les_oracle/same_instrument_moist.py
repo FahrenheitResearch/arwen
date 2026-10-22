@@ -74,14 +74,6 @@ import numpy as np
 QC_CR = 1.0e-5
 
 
-def _carrier_or_none(a):
-    """An all-zero SGS-TKE array is an ABSENT carrier, not a zero one."""
-    if a is None:
-        return None
-    arr = np.asarray(a)
-    return None if float(np.abs(arr).max()) == 0.0 else arr
-
-
 def reduce_moist(z_mass, t_seconds, wthv_res_t, wthv_sgs_t, wqv_res_t,
                  wqv_sgs_t, qv_t, qc_t, qr_t, cloud_t, sat_t, n2_t, lwp_t,
                  window_s):

@@ -129,7 +129,9 @@ def external_scalar_fields(cfg, *, aerosol_from_input: bool | None = None,
     hydrometeors = boundary_hydrometeor_fields(cfg, boundary_species)
     if int(cfg.mp_physics) == 28 and aerosol_from_input:
         return ("qv", *hydrometeors, *AEROSOL_BOUNDARY_FIELDS)
-    return ("qv", *hydrometeors)
+    from gpuwm.core.chem_mp_coupling import source_number_fields
+    composition = source_number_fields(cfg) if int(cfg.mp_physics) == 28 else ()
+    return ("qv", *hydrometeors, *composition)
 
 
 def potential_external_scalar_fields(cfg, *, boundary_species=()):
@@ -152,8 +154,7 @@ def potential_external_scalar_fields(cfg, *, boundary_species=()):
 def admissible_boundary_inventory(cfg, scalars) -> bool:
     """Whether a sealed boundary table's scalar inventory fits ``cfg``.
 
-    Water vapour always; the aerosol pair together or not at all, on mp=28
-    only; any subset of the masses the scheme carries, each with exactly
+    Water vapour always; supplied aerosol fields on mp=28 only; any subset of the masses the scheme carries, each with exactly
     the number moments the cold start seeds from it.  Order-free: a cache
     records its fields sorted.
     """
@@ -168,9 +169,12 @@ def admissible_boundary_inventory(cfg, scalars) -> bool:
             return False
         rest.discard("qke_adv")
     aerosol = rest & set(AEROSOL_BOUNDARY_FIELDS)
-    if aerosol and (aerosol != set(AEROSOL_BOUNDARY_FIELDS)
-                    or int(getattr(cfg, "mp_physics", 0)) != 28):
+    if aerosol and int(getattr(cfg, "mp_physics", 0)) != 28:
         return False
+    if aerosol and aerosol != set(AEROSOL_BOUNDARY_FIELDS):
+        from gpuwm.core.chem_mp_coupling import source_number_fields
+        if aerosol != set(source_number_fields(cfg)):
+            return False
     rest -= aerosol
     # The chem rows a data-store source fills on every forcing frame
     # (WRF-Chem have_bcs_chem, gpuwm.chem_source_init.chem_boundary_fields):

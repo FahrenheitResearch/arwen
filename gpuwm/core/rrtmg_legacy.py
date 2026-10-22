@@ -713,9 +713,7 @@ def unsized_mynn_radii(re_cloud, re_ice, supplied_liquid, supplied_ice, *,
     return re_cloud, re_ice
 
 
-def _r512(nbytes):
-    """CuPy's 512-byte pool allocation quantum."""
-    return (int(nbytes) + 511) & ~511
+_r512 = _lw._r512
 
 
 @lru_cache(maxsize=1)
@@ -736,20 +734,26 @@ def legacy_radiation_vram_bytes(*, ncol, nz, p_top, column_chunk=None,
                                 ncol_day=None, lw_coefficients=None,
                                 longwave=True, shortwave=True,
                                 resident_threads=None, o3input=2,
-                                aer_opt=0):
+                                aer_opt=0, chem_optics_rows=0):
     """Peak transient device bytes of ONE adapter call.
 
     Composes the engines' own accurate pricing functions
     (``lw_batched_vram_bytes`` + ``lw_batched_const_bytes``,
     ``sw_batched_vram_bytes``) and the McICA device pricing
-    (``mcica_device_vram_bytes``) with the adapter-held device arrays the
-    engine functions do not price: the McICA output slabs and radii
-    pass-throughs that stay alive as engine inputs.  The LW and SW
-    pipelines run sequentially per adapter chunk with chunk storage freed
-    in between, so the estimate is the max over the four allocation
-    phases (LW generate, LW engine, SW generate, SW engine). Both engines'
-    immutable coefficients remain resident across those phases and are
-    added once outside the maximum. ``ncol_day`` bounds the SW day-column count (default:
+    (``mcica_device_vram_bytes``, fused column layout) with the
+    adapter-held device arrays the engine functions do not price.
+
+    The adapter runs each spectrum in SPANS (:data:`ADAPTER_SPAN_COLUMNS`,
+    :func:`adapter_span`) and each span in engine-chunk WINDOWS.  A span
+    holds its prep profiles (the engine inputs plus the cloud profiles
+    the McICA windows read) for the whole span; a window adds its McICA
+    slabs and radii pass-throughs, then either the generator's transient
+    (generate phase) or the engine's (engine phase).  The LW and SW
+    pipelines run sequentially with span storage freed in between, so the
+    estimate is the max over the four allocation phases (LW generate, LW
+    engine, SW generate, SW engine). Both engines' immutable coefficients
+    remain resident across those phases and are added once outside the
+    maximum. ``ncol_day`` bounds the SW day-column count (default:
     ``ncol``, the preflight upper bound).
 
     Whole-call result storage and the reusable ozone grid are priced
@@ -760,8 +764,8 @@ def legacy_radiation_vram_bytes(*, ncol, nz, p_top, column_chunk=None,
     device and prices the unchanged workspace ceilings; None retains the
     engines' live-device behavior for existing direct callers.
 
-    ``aer_opt = 3`` adds what the SW chunk holds for the aerosol: the
-    three (14 x nlay) optics slabs alive through the engine call, the
+    ``aer_opt = 3`` adds what the SW span holds for the aerosol: the
+    three (14 x nlay) optics slabs alive through the engine windows, the
     layer AOD and the two gathered Thompson number blocks (an upper bound:
     the engine's own zero-aerosol constants are priced by the engine
     function and not allocated on this path).
@@ -772,13 +776,17 @@ def legacy_radiation_vram_bytes(*, ncol, nz, p_top, column_chunk=None,
     nlay_sw = nz + 1
     nday = ncol if ncol_day is None else int(ncol_day)
     chunk = None if column_chunk is None else int(column_chunk)
-    nc_lw = min(chunk or _lw.batch_column_chunk(
+    chunk_lw = chunk or _lw.batch_column_chunk(
         _lw.NGPTLW, _lw.LW_BATCH_COLUMN_CHUNK_CEILING,
-        resident_threads=resident_threads), ncol)
+        resident_threads=resident_threads)
+    nc_lw = min(chunk_lw, ncol)
+    span_lw = adapter_span(chunk_lw, ncol) if ncol else 0
     # Host-side pricing passes no free-VRAM figure, so this is the
     # saturation width: an upper bound on the width a device run picks.
-    nc_sw = min(chunk or _sw.sw_batch_column_chunk(
-        nlay_sw, resident_threads=resident_threads), max(nday, 0))
+    chunk_sw = chunk or _sw.sw_batch_column_chunk(
+        nlay_sw, resident_threads=resident_threads)
+    nc_sw = min(chunk_sw, max(nday, 0))
+    span_sw = adapter_span(chunk_sw, nday) if nday > 0 else 0
     f = 4
     estimate = 0
     constants = legacy_shortwave_constant_bytes() if shortwave else 0
@@ -786,50 +794,75 @@ def legacy_radiation_vram_bytes(*, ncol, nz, p_top, column_chunk=None,
         C = lw_coefficients if lw_coefficients is not None else _lw_coeffs()
         constants += _lw.lw_batched_const_bytes(C)
 
+        # Span-held LW prep profiles: play tlay h2o o3 and the eight
+        # other gas profiles (12 x nlay), hgt and the seven cloud profiles
+        # the McICA windows read (8 x nlay), plev tlev (nlay+1), emis
+        # (16), tauaer (nlay x 16) and tsfc.
+        sp_nl = _r512(span_lw * nlay_lw * f)
+        span_held_lw = (20 * sp_nl + 2 * _r512(span_lw * (nlay_lw + 1) * f)
+                        + _r512(span_lw * _lw.NBNDLW * f)
+                        + _r512(span_lw * nlay_lw * _lw.NBNDLW * f)
+                        + _r512(span_lw * f)
+                        # the span's McICA stream states (16 B per subcolumn)
+                        + _r512(span_lw * _lw.NGPTLW * 16))
+        # One window's McICA slabs and its rei/rel/res pass-through copies.
         s_mcl = _r512(nc_lw * _lw.NGPTLW * nlay_lw * f)
         s_nl = _r512(nc_lw * nlay_lw * f)
-        held_lw = 5 * s_mcl + 3 * s_nl        # mcl slabs + rei/rel/res
-        # The device-resident prep outputs the engine reads, alive for the
-        # whole engine call: play tlay and the ten gas profiles (nlay),
-        # plev tlev (nlay+1), emis (16), tauaer (nlay x 16), tsfc.
-        held_lw += (12 * s_nl + 2 * _r512(nc_lw * (nlay_lw + 1) * f)
-                    + _r512(nc_lw * _lw.NBNDLW * f)
-                    + _r512(nc_lw * nlay_lw * _lw.NBNDLW * f)
-                    + _r512(nc_lw * f))
-        lw_gen = (held_lw + 5 * s_nl          # play cldfrac ciwp clwp cswp
+        window_lw = 5 * s_mcl + 3 * s_nl
+        lw_gen = (span_held_lw + window_lw
                   + _r512(_mcica.NBNDLW * nc_lw * nlay_lw * f)   # tauc
                   + _mcica.mcica_device_vram_bytes(
                       min(nc_lw, _mcica.MCICA_DEVICE_COLUMN_CHUNK),
-                      nlay_lw, _lw.NGPTLW))
-        lw_eng = held_lw + _lw.lw_batched_vram_bytes(
+                      nlay_lw, _lw.NGPTLW, layout="column"))
+        lw_eng = span_held_lw + window_lw + _lw.lw_batched_vram_bytes(
             nc_lw, nlay_lw, mcica_layout="column")
+        if chem_optics_rows:
+            # Selected rows/met, Mie LW tau and padded LW tau coexist.
+            extra = _r512(nc_lw * nz * (chem_optics_rows + 20) * f)
+            extra += _r512(nc_lw * nlay_lw * 16 * f)
+            extra += _r512(chem_optics_rows * 64 * f)
+            lw_gen += extra
+            lw_eng += extra
         estimate = max(lw_gen, lw_eng)
 
     if shortwave and nc_sw:
+        # Span-held SW prep profiles: play tlay h2o o3 and four gas
+        # profiles (8 x nlay), hgt and the seven cloud profiles (8 x
+        # nlay), plev tlev (nlay+1), and the per-column tsfc, four
+        # albedos, coszen, scon and the prep's solcon/obscur fills.
+        sp_nl_s = _r512(span_sw * nlay_sw * f)
+        span_held_sw = (16 * sp_nl_s + 2 * _r512(span_sw * (nlay_sw + 1) * f)
+                        + 9 * _r512(span_sw * f)
+                        + _r512(span_sw * _sw.NGPTSW * 16))   # McICA states
+        if int(aer_opt) == 2:
+            span_held_sw += (3 * _r512(span_sw * _sw.NBNDSW * nlay_sw * f)
+                             + _r512(span_sw * nz * f)
+                             + 2 * _r512(span_sw * 4 * f))
+        if int(aer_opt) == 1:
+            span_held_sw += (3 * _r512(span_sw * _sw.NBNDSW * nlay_sw * f)
+                             + _r512(ncol * nz * 6 * f) + _r512(ncol * 72 * f))
+        if int(aer_opt) == 3:
+            span_held_sw += (3 * _r512(span_sw * _sw.NBNDSW * nlay_sw * f)
+                             + 3 * _r512(span_sw * nz * f))
         s_mcl_s = _r512(nc_sw * _sw.NGPTSW * nlay_sw * f)
         s_nl_s = _r512(nc_sw * nlay_sw * f)
-        held_sw = 8 * s_mcl_s + 3 * s_nl_s
-        # The device-resident prep outputs the engine reads: play tlay and
-        # six gas profiles (nlay), plev tlev (nlay+1), and the per-column
-        # tsfc, four albedos, coszen and scon.
-        held_sw += (8 * s_nl_s + 2 * _r512(nc_sw * (nlay_sw + 1) * f)
-                    + 7 * _r512(nc_sw * f))
-        if int(aer_opt) == 2:
-            held_sw += (3 * _r512(nc_sw * _sw.NBNDSW * nlay_sw * f)
-                        + _r512(nc_sw * nz * f) + 2 * _r512(nc_sw * 4 * f))
-        if int(aer_opt) == 1:
-            held_sw += 3 * _r512(nc_sw * _sw.NBNDSW * nlay_sw * f) + _r512(ncol * nz * 6 * f) + _r512(ncol * 72 * f)
-        if int(aer_opt) == 3:
-            held_sw += (3 * _r512(nc_sw * _sw.NBNDSW * nlay_sw * f)
-                        + 3 * _r512(nc_sw * nz * f))
-        sw_gen = (held_sw + 5 * s_nl_s
-                  + 4 * _r512(_mcica.NBNDSW * nc_sw * nlay_sw * f)
+        window_sw = 8 * s_mcl_s + 3 * s_nl_s
+        sw_gen = (span_held_sw + window_sw
+                  + 2 * _r512(_mcica.NBNDSW * nc_sw * nlay_sw * f)  # 0 and 1 bands
                   + _mcica.mcica_device_vram_bytes(
                       min(nc_sw, _mcica.MCICA_DEVICE_COLUMN_CHUNK),
-                      nlay_sw, _sw.NGPTSW))
-        sw_eng = held_sw + _sw.sw_batched_vram_bytes(nc_sw, nlay_sw, mcica_layout="column")
+                      nlay_sw, _sw.NGPTSW, layout="column"))
+        sw_eng = span_held_sw + window_sw + _sw.sw_batched_vram_bytes(
+            nc_sw, nlay_sw, mcica_layout="column")
+        if chem_optics_rows:
+            # Four Mie wavelengths, converted bands and padded SW optics.
+            extra = _r512(nc_sw * nz * (chem_optics_rows + 58) * f)
+            extra += _r512(nc_sw * nlay_sw * 42 * f)
+            extra += _r512(chem_optics_rows * 64 * f)
+            sw_gen += extra
+            sw_eng += extra
         estimate = max(estimate, sw_gen, sw_eng)
-    # Whole-call storage is separate from the per-chunk McICA terms.
+    # Whole-call storage is separate from the per-window McICA terms.
     # SWDOWN is allocated after the engines and does not raise this peak.
     result_bytes = 2 * _r512(nz * ncol * f) + 3 * _r512(ncol * f)
     ozone_bytes = _r512(nz * ncol * f) if int(o3input) == 2 else 0
@@ -1090,6 +1123,28 @@ def adapter_gpu_preflight(force=False):
 _LW_PREP_EXTRAS = ("o31d", "hgt", "cldfrac", "pdel")
 _SW_PREP_EXTRAS = ("o31d", "pdel", "coszr", "mcica_inputs")
 
+#: Columns one adapter SPAN covers.  The wrapper glue of a span -- the
+#: column gather, t8w, the cloud fraction, the radii and the prep kernel
+#: -- runs once over the whole span, so its one-thread-per-column kernels
+#: fill the card and its launches are paid once per span; the McICA slabs
+#: and the engines then run one engine chunk (WINDOW) at a time inside the
+#: span, so the (column, layer, g-point) slabs never exist for more than
+#: one window.  Every stage is per column (the prep kernel and the glue
+#: by construction, the McICA stream by its per-column seed, the engines
+#: by their own gated contracts), so a span is bitwise invisible.  The
+#: span holds about 15 KB of prep profiles per column on top of one
+#: window's engine transient (legacy_radiation_vram_bytes prices both).
+ADAPTER_SPAN_COLUMNS = 16384
+
+
+def adapter_span(chunk, ncol):
+    """Columns per adapter span: the largest whole number of engine
+    chunks within ADAPTER_SPAN_COLUMNS (at least one chunk), never more
+    than the ``ncol`` columns there are."""
+    chunk = int(chunk)
+    span = chunk * max(1, ADAPTER_SPAN_COLUMNS // chunk)
+    return max(1, min(span, int(ncol)))
+
 
 def _grid_launch(n):
     return ((int(n) + _ADAPTER_BLOCK - 1) // _ADAPTER_BLOCK,), (_ADAPTER_BLOCK,)
@@ -1115,13 +1170,6 @@ def _device_flat(a):
         return cp.ascontiguousarray(a.reshape(-1))
     h = np.asarray(RRTMGLegacyRadiation._host(a), np.float32)
     return cp.asarray(np.ascontiguousarray(h.reshape(-1)))
-
-
-def _device_columns(grid, sel):
-    """Rows ``sel`` (a slice or a device index array over columns) of a
-    (nk, ncol) device grid as a C-contiguous (nc, nk) column block."""
-    import cupy as cp
-    return cp.ascontiguousarray(grid[:, sel].T)
 
 
 class _ColumnGather:
@@ -1358,7 +1406,7 @@ class RRTMGLegacyRadiation:
                  p_top=None, column_chunk=None, ozone_parent=None,
                  o3input=2, longwave=True, shortwave=True, trace_gas_overrides=None,
                  ozone_routing=None, aer_opt=0, smoke_provider=None,
-                 aer3_type_source="rural"):
+                 aer3_type_source="rural", transported_smoke=None):
         if not isinstance(start_time, datetime):
             raise TypeError("radiation_start_time must be a datetime")
         self.start_time = start_time
@@ -1401,6 +1449,22 @@ class RRTMGLegacyRadiation:
         self.aer3_type_source = aer3_type_source
         self.publishes_aodtot = self.shortwave and self.aer_opt == 1
         self._smoke_provider = smoke_provider
+        #: simple_dir_fdb = 1: the state attribute of the forecast's own
+        #: transported smoke, whose layer AOD joins the aer_opt = 3 aerosol
+        #: at every shortwave call (HRRR v4.1.21 module_radiation_driver.F
+        #: :979-984, rural optics, MIN(3, layer AOD)).
+        if transported_smoke is not None:
+            if not (self.shortwave and self.aer_opt == 3):
+                raise ValueError("simple_dir_fdb=1 (transported smoke) acts "
+                                 "on the legacy shortwave with aer_opt=3")
+            if smoke_provider is not None:
+                raise ValueError("transported smoke and a prescribed smoke "
+                                 "profile would count the plume twice")
+            if aer3_type_source != "rural":
+                raise ValueError(
+                    "transported smoke follows the HRRR fork's rural optics; "
+                    "the NOAA MPAS land/water aerosol type has no smoke coupling")
+        self._transported_smoke = transported_smoke
         self.publishes_olr = self.longwave
         from gpuwm.core.trace_gases import (
             LEGACY_LW_GASES, LEGACY_SW_GASES, validate_trace_gas_overrides)
@@ -1576,27 +1640,6 @@ class RRTMGLegacyRadiation:
         return cp.asarray(np.ascontiguousarray(
             np.asarray(cls._host(value), np.float32)))
 
-    def _cols(self, a, nk):
-        """(nk, ny, nx) device/host -> host float32 (ny*nx, nk) columns."""
-        h = np.asarray(self._host(a), np.float32)
-        return np.ascontiguousarray(
-            h.transpose(1, 2, 0).reshape(-1, nk))
-
-    @staticmethod
-    def _flat(a):
-        """(ny, nx) device/host -> host float32 (ny*nx,)."""
-        h = RRTMGLegacyRadiation._host(a)
-        return np.ascontiguousarray(np.asarray(h, np.float32).reshape(-1))
-
-    def _grid3(self, cols, nz, ny, nx):
-        import cupy as cp
-        return cp.asarray(np.ascontiguousarray(
-            cols.reshape(ny, nx, nz).transpose(2, 0, 1)))
-
-    def _grid2(self, flat, ny, nx):
-        import cupy as cp
-        return cp.asarray(np.ascontiguousarray(flat.reshape(ny, nx)))
-
     # ------------------------------------------------------------------
     def restart_identity(self):
         """Strict-JSON identity: distinct from every RTE+RRTMGP identity
@@ -1651,6 +1694,11 @@ class RRTMGLegacyRadiation:
                     AER3_MARITIME_TABLES_SHA256)
         if getattr(self, "_smoke_provider", None) is not None:
             identity["prescribed_smoke"] = self._smoke_provider.identity()
+        if getattr(self, "_transported_smoke", None) is not None:
+            identity["transported_smoke"] = {
+                "state": self._transported_smoke,
+                "optics": ("HRRR v4.1.21 simple_dir_fdb=1: 1e-6*4.5 m2/g*ug/kg*"
+                           "(1/ALT)*dz8w, MIN(3, AOD), rural aer_opt=3")}
         if self.o3input == 2:
             # Constant pins only -- importing wrf_ozone performs no file I/O;
             # a child adapter still never CALLS its climatology chain.
@@ -1705,6 +1753,10 @@ class RRTMGLegacyRadiation:
         if self.shortwave and bool(getattr(cfg, "rrtmg_smoke_manifest", "")) != (
                 getattr(self, "_smoke_provider", None) is not None):
             raise ValueError("prescribed smoke configuration differs from the bound radiation adapter")
+        if self.shortwave and bool(int(getattr(cfg, "simple_dir_fdb", 0) or 0)) != (
+                getattr(self, "_transported_smoke", None) is not None):
+            raise ValueError("simple_dir_fdb differs from the bound radiation "
+                             "adapter's transported smoke; rebuild the adapter")
         requested_o3input = int(getattr(cfg, "o3input", 2))
         if requested_o3input != self.o3input:
             raise ValueError(
@@ -1779,6 +1831,8 @@ class RRTMGLegacyRadiation:
         pressure = atmosphere["pressure"]
         nz, ny, nx = pressure.shape
         ncol = ny * nx
+        from gpuwm.core.chem_radiation import prepare
+        chem_aerosols = prepare(state, cfg)
         if self.latitude_deg.shape != (ny, nx):
             raise ValueError(
                 "radiation latitude/longitude must match state grid")
@@ -1839,6 +1893,18 @@ class RRTMGLegacyRadiation:
                 del smoke_mass, dry_density
             smoke_gather = _ColumnGather((_device_grid(smoke_aod, nz),), ncol)
             del profile, smoke_aod
+        transported = getattr(self, "_transported_smoke", None)
+        if transported is not None:
+            smoke_mass = getattr(state, transported, None)
+            if smoke_mass is None:
+                raise ValueError(
+                    f"simple_dir_fdb=1 reads transported smoke from "
+                    f"state.{transported} and this state carries none; the "
+                    "plume would not dim the sun")
+            smoke_aod = _aer3.smoke_aod_from_transported_device(
+                smoke_mass, state.alt, atmosphere["dz"])
+            smoke_gather = _ColumnGather((_device_grid(smoke_aod, nz),), ncol)
+            del smoke_mass, smoke_aod
 
         g_moist = {}
         f_flags = {}
@@ -2245,59 +2311,85 @@ class RRTMGLegacyRadiation:
         # columns once more (cost only: chunk_inputs is per column and
         # touches nothing outside its own gathered blocks).
         cldfra_cols = cp.empty((ncol, nz), dtype=cp.float32)
-        for c0 in range(0, 0 if self.longwave else ncol, chunk_lw):
-            c1 = min(c0 + chunk_lw, ncol)
+        span_lw = adapter_span(chunk_lw, ncol)
+        for c0 in range(0, 0 if self.longwave else ncol, span_lw):
+            c1 = min(c0 + span_lw, ncol)
             kw = chunk_inputs(slice(c0, c1))
             cldfra_cols[c0:c1] = kw["cldfra3d"]
             del kw
-        for c0 in range(0, ncol if self.longwave else 0, chunk_lw):
-            c1 = min(c0 + chunk_lw, ncol)
+        for c0 in range(0, ncol if self.longwave else 0, span_lw):
+            c1 = min(c0 + span_lw, ncol)
+            # ``sel`` is the span's column selector, and the ONE site
+            # gpuwm/ensemble/batch_physics_init.py's member adapter rewrites
+            # (to the member-interleaved device indices of logical columns
+            # [c0, c1)); every per-column read of the span goes through it,
+            # and the windows below pass logical offsets c0 + w0 to the
+            # output kernel, which the adapter's kernel source interleaves.
             sel = slice(c0, c1)
             kw = chunk_inputs(sel)
             cldfra_cols[c0:c1] = kw["cldfra3d"]
             # The wrapper glue on the device: rrtmg_legacy_device holds
             # lwrad_prep_batch's statements bitwise
-            # (tests/test_rrtmg_legacy_prep_device.py).
+            # (tests/test_rrtmg_legacy_prep_device.py).  The McICA slabs
+            # are deferred to the engine windows below.
             pl = _prep_device.lwrad_prep_batch_device(
                 **kw, emiss=surf["emiss"][sel],
                 nlayers=nlayers, trace_gas_overrides=lw_gases,
                 subcolumn_generator=self._mcica_generator(
                     _mcica.gpu_generate_lw_subcolumns),
-                **shared)
+                defer_subcolumns=True, **shared)
             del kw
+            window = pl.pop("mcica_window")
             # The WRF-level extras are not engine inputs: drop them before
             # the engine runs (legacy_radiation_vram_bytes prices what the
             # engine phase holds).
             for extra in _LW_PREP_EXTRAS:
                 pl.pop(extra, None)
-            res = _lw.gpu_rrtmg_lw_batched_device(
-                pl["ncol"], pl["nlay"], pl["icld"], pl["play"],
-                pl["plev"], pl["tlay"], pl["tlev"], pl["tsfc"],
-                pl["h2ovmr"], pl["o3vmr"], pl["co2vmr"], pl["ch4vmr"],
-                pl["n2ovmr"], pl["o2vmr"], pl["cfc11vmr"],
-                pl["cfc12vmr"], pl["cfc22vmr"], pl["ccl4vmr"],
-                pl["emis"], pl["inflglw"], pl["iceflglw"],
-                pl["liqflglw"], pl["cldfmcl"], pl["taucmcl"],
-                pl["ciwpmcl"], pl["clwpmcl"], pl["cswpmcl"],
-                pl["reicmcl"], pl["relqmcl"], pl["resnmcl"],
-                pl["tauaer"], self._C, column_chunk=chunk_lw, mcica_layout="column",
-                _stage_probe=self._stage_probe)
-            del pl
-            nc = c1 - c0
-            nl = int(res["hr"].shape[1])
-            # Map directly into the global grids and read Exner there.
-            _adapter_kernel("rla_lw_out_grid")(
-                *blk(nc * nz),
-                (np.int32(nc), np.int32(nz), np.int32(nl), res["hr"],
-                 res["uflx"], res["dflx"], g_pi3d, day_seconds,
-                 np.int64(ncol), np.int64(c0), rthratenlw, glw, olr))
-            for suffix, key, level in (
-                    ("upt","uflx",-1),("uptc","uflxc",-1),
-                    ("dnt","dflx",-1),("dntc","dflxc",-1),
-                    ("upb","uflx",0),("upbc","uflxc",0),
-                    ("dnb","dflx",0),("dnbc","dflxc",0)):
-                boundary_fluxes["lw"+suffix][sel] = res[key][:,level]
-            del res
+            if self._stage_probe is not None:
+                self._stage_probe("prep")
+            for w0 in range(0, c1 - c0, chunk_lw):
+                w1 = min(w0 + chunk_lw, c1 - c0)
+                rows = slice(w0, w1)
+                nc = w1 - w0
+                # The window's columns through the span selector, so a
+                # member adapter's interleaved indices reach the chemistry
+                # optics and the boundary-flux rows as they did per chunk.
+                wsel = (slice(c0 + w0, c0 + w1) if isinstance(sel, slice)
+                        else sel[w0:w1])
+                tauaer = (pl["tauaer"][rows] if chem_aerosols is None else
+                          chem_aerosols.legacy(wsel, int(pl["nlay"]), "lw"))
+                mc = window(w0, w1)
+                res = _lw.gpu_rrtmg_lw_batched_device(
+                    nc, pl["nlay"], pl["icld"], pl["play"][rows],
+                    pl["plev"][rows], pl["tlay"][rows], pl["tlev"][rows],
+                    pl["tsfc"][rows], pl["h2ovmr"][rows], pl["o3vmr"][rows],
+                    pl["co2vmr"][rows], pl["ch4vmr"][rows],
+                    pl["n2ovmr"][rows], pl["o2vmr"][rows],
+                    pl["cfc11vmr"][rows], pl["cfc12vmr"][rows],
+                    pl["cfc22vmr"][rows], pl["ccl4vmr"][rows],
+                    pl["emis"][rows], pl["inflglw"], pl["iceflglw"],
+                    pl["liqflglw"], mc["cldfmcl"], mc["taucmcl"],
+                    mc["ciwpmcl"], mc["clwpmcl"], mc["cswpmcl"],
+                    mc["reicmcl"], mc["relqmcl"], mc["resnmcl"],
+                    tauaer, self._C, column_chunk=chunk_lw,
+                    mcica_layout="column", _stage_probe=self._stage_probe)
+                del mc, tauaer
+                nl = int(res["hr"].shape[1])
+                # Map directly into the global grids and read Exner there.
+                _adapter_kernel("rla_lw_out_grid")(
+                    *blk(nc * nz),
+                    (np.int32(nc), np.int32(nz), np.int32(nl), res["hr"],
+                     res["uflx"], res["dflx"], g_pi3d, day_seconds,
+                     np.int64(ncol), np.int64(c0 + w0), rthratenlw, glw,
+                     olr))
+                for suffix, key, level in (
+                        ("upt","uflx",-1),("uptc","uflxc",-1),
+                        ("dnt","dflx",-1),("dntc","dflxc",-1),
+                        ("upb","uflx",0),("upbc","uflxc",0),
+                        ("dnb","dflx",0),("dnbc","dflxc",0)):
+                    boundary_fluxes["lw"+suffix][wsel] = res[key][:,level]
+                del res
+            del pl, window
 
         # ---- SW: driver-level zeroing (dossier section 3) + day gather
         day_idx = np.nonzero(coszen > F(0.0))[0]
@@ -2337,8 +2429,9 @@ class RRTMGLegacyRadiation:
                 sel=cp.asarray(night_idx[off:off+chunk_sw].astype(np.int64))
                 user_optics(chunk_inputs(sel),sel)
         day_idx_d = cp.asarray(day_idx.astype(np.int64))
-        for c0 in range(0, day_idx.size if self.shortwave else 0, chunk_sw):
-            sel = day_idx_d[c0:c0 + chunk_sw]
+        span_sw = adapter_span(chunk_sw, day_idx.size)
+        for a0 in range(0, day_idx.size if self.shortwave else 0, span_sw):
+            sel = day_idx_d[a0:a0 + span_sw]
             kw = chunk_inputs(sel)
             # Optional qualification hook. Off, no extra arrays or transfers.
             # It records all/clear flux at the same radiation-call sun; a
@@ -2385,56 +2478,78 @@ class RRTMGLegacyRadiation:
                 sf_surface_physics=sf_surface_physics, trace_gas_overrides=sw_gases,
                 subcolumn_generator=self._mcica_generator(
                     _mcica.gpu_generate_sw_subcolumns),
-                **shared)
+                defer_subcolumns=True, **shared)
             del kw
+            window = ps.pop("mcica_window")
             for extra in _SW_PREP_EXTRAS:
                 ps.pop(extra, None)
-            nc = int(ps["ncol"])
-            adjes = np.full(nc, ps["adjes"], np.float32)
-            res = _cuda_sw(self._sw_tables).rrtmg_sw_batched_device(
-                nc, ps["nlay"], ps["icld"], ps["play"], ps["plev"],
-                ps["tlay"], ps["tlev"], ps["tsfc"], ps["h2ovmr"],
-                ps["o3vmr"], ps["co2vmr"], ps["ch4vmr"], ps["n2ovmr"],
-                ps["o2vmr"], ps["asdir"], ps["asdif"], ps["aldir"],
-                ps["aldif"], ps["coszen"], adjes, int(ps["dyofyr"]),
-                ps["scon"], ps["inflgsw"], ps["iceflgsw"],
-                ps["liqflgsw"], ps["cldfmcl"], ps["taucmcl"],
-                ps["ssacmcl"], ps["asmcmcl"], ps["fsfcmcl"],
-                ps["ciwpmcl"], ps["clwpmcl"], ps["cswpmcl"],
-                ps["reicmcl"], ps["relqmcl"], ps["resnmcl"],
-                aer_opt=0 if aerosol is None else self.aer_opt, aerosol=aerosol,
-                column_chunk=chunk_sw, _stage_probe=self._stage_probe, mcica_layout="column")
-            del ps, aerosol
-            if diagnostic_sink is not None:
-                diagnostic_sink(
-                    elapsed_seconds=float(state.elapsed_seconds), shape=(ny, nx),
-                    indices=day_idx[c0:c0 + chunk_sw],
-                    coszen=coszen[day_idx[c0:c0 + chunk_sw]],
-                    swdnb=res["swdflx"][:, 0], swdnbc=res["swdflxc"][:, 0],
-                    cloud_fraction=diagnostic_cloud, aerosol=diagnostic_aerosol,
-                    adapter=self)
-            del diagnostic_cloud, diagnostic_aerosol
-            if swddif is not None:
-                swddif[sel] = res["swdflx"][:, 0] - res["swdkdir"][:, 0]
-            nlay_sw = int(res["swhr"].shape[1])
-            if int(res["swdflx"].shape[1]) != nlay_sw + 1:
-                raise ValueError("SW engine flux/heating-rate layer counts "
-                                 "disagree")
-            _adapter_kernel("rla_sw_out_grid")(
-                *blk(nc * nz),
-                (np.int32(nc), np.int32(nz), np.int32(nlay_sw),
-                 res["swdflx"], res["swuflx"], res["swhr"], g_pi3d,
-                 day_seconds, np.int64(ncol), sel, rthratensw, gsw))
-            if swddir is not None:
-                # SWDDIR at the surface for BEP+BEM: rrtmg_swrad's swdkdir.
-                swddir[sel] = res["swdkdir"][:, 0]
-            for suffix, key, level in (
-                    ("upt","swuflx",-1),("uptc","swuflxc",-1),
-                    ("dnt","swdflx",-1),("dntc","swdflxc",-1),
-                    ("upb","swuflx",0),("upbc","swuflxc",0),
-                    ("dnb","swdflx",0),("dnbc","swdflxc",0)):
-                boundary_fluxes["sw"+suffix][sel] = res[key][:,level]
-            del res
+            if self._stage_probe is not None:
+                self._stage_probe("prep")
+            nspan = int(ps["ncol"])
+            for w0 in range(0, nspan, chunk_sw):
+                w1 = min(w0 + chunk_sw, nspan)
+                rows = slice(w0, w1)
+                nc = w1 - w0
+                selw = sel[rows]
+                if chem_aerosols is not None:
+                    aerosol_w = chem_aerosols.legacy(selw, int(ps["nlay"]), "sw")
+                else:
+                    aerosol_w = (None if aerosol is None
+                                 else tuple(a[rows] for a in aerosol))
+                mc = window(w0, w1)
+                adjes = np.full(nc, ps["adjes"], np.float32)
+                res = _cuda_sw(self._sw_tables).rrtmg_sw_batched_device(
+                    nc, ps["nlay"], ps["icld"], ps["play"][rows],
+                    ps["plev"][rows], ps["tlay"][rows], ps["tlev"][rows],
+                    ps["tsfc"][rows], ps["h2ovmr"][rows], ps["o3vmr"][rows],
+                    ps["co2vmr"][rows], ps["ch4vmr"][rows],
+                    ps["n2ovmr"][rows], ps["o2vmr"][rows], ps["asdir"][rows],
+                    ps["asdif"][rows], ps["aldir"][rows], ps["aldif"][rows],
+                    ps["coszen"][rows], adjes, int(ps["dyofyr"]),
+                    ps["scon"][rows], ps["inflgsw"], ps["iceflgsw"],
+                    ps["liqflgsw"], mc["cldfmcl"], mc["taucmcl"],
+                    mc["ssacmcl"], mc["asmcmcl"], mc["fsfcmcl"],
+                    mc["ciwpmcl"], mc["clwpmcl"], mc["cswpmcl"],
+                    mc["reicmcl"], mc["relqmcl"], mc["resnmcl"],
+                    aer_opt=(1 if chem_aerosols is not None else
+                             (0 if aerosol_w is None else self.aer_opt)),
+                    aerosol=aerosol_w,
+                    column_chunk=chunk_sw, _stage_probe=self._stage_probe,
+                    mcica_layout="column")
+                del mc, aerosol_w
+                if diagnostic_sink is not None:
+                    idx = day_idx[a0 + w0:a0 + w1]
+                    diagnostic_sink(
+                        elapsed_seconds=float(state.elapsed_seconds), shape=(ny, nx),
+                        indices=idx, coszen=coszen[idx],
+                        swdnb=res["swdflx"][:, 0], swdnbc=res["swdflxc"][:, 0],
+                        cloud_fraction=diagnostic_cloud[rows],
+                        aerosol=(None if diagnostic_aerosol is None else
+                                 {key: value[rows] for key, value
+                                  in diagnostic_aerosol.items()}),
+                        adapter=self)
+                if swddif is not None:
+                    swddif[selw] = res["swdflx"][:, 0] - res["swdkdir"][:, 0]
+                nlay_sw = int(res["swhr"].shape[1])
+                if int(res["swdflx"].shape[1]) != nlay_sw + 1:
+                    raise ValueError("SW engine flux/heating-rate layer counts "
+                                     "disagree")
+                _adapter_kernel("rla_sw_out_grid")(
+                    *blk(nc * nz),
+                    (np.int32(nc), np.int32(nz), np.int32(nlay_sw),
+                     res["swdflx"], res["swuflx"], res["swhr"], g_pi3d,
+                     day_seconds, np.int64(ncol), selw, rthratensw, gsw))
+                if swddir is not None:
+                    # SWDDIR at the surface for BEP+BEM: rrtmg_swrad's swdkdir.
+                    swddir[selw] = res["swdkdir"][:, 0]
+                for suffix, key, level in (
+                        ("upt","swuflx",-1),("uptc","swuflxc",-1),
+                        ("dnt","swdflx",-1),("dntc","swdflxc",-1),
+                        ("upb","swuflx",0),("upbc","swuflxc",0),
+                        ("dnb","swdflx",0),("dnbc","swdflxc",0)):
+                    boundary_fluxes["sw"+suffix][selw] = res[key][:,level]
+                del res
+            del ps, window, aerosol, diagnostic_cloud, diagnostic_aerosol
         if self.shortwave:
             # The engine's per-chunk workspace served every chunk of this
             # event; handing it back here lets the model's step-boundary

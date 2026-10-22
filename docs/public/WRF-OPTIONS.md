@@ -27,7 +27,7 @@ WRF source: https://github.com/wrf-model/WRF at v4.7.1 (f52c197ed39d).
 | `sf_sfclay_physics` | 0, 1, 2, 5, 91 | 3, 4, 7, 10, 89 |
 | `sf_surface_physics` | 0, 2, 3, 4 | 1, 5, 6, 7, 8 |
 | `sf_urban_physics` | 1, 2, 3 | - |
-| `sf_ocean_physics` | 1 | 2 |
+| `sf_ocean_physics` | 1, 2 | - |
 | `ra_lw_physics` | 1, 4, 5 | 3, 7, 14, 24, 31, 99 |
 | `ra_sw_physics` | 1, 4, 5 | 2, 3, 7, 14, 24, 99 |
 | `sst_update` | - | 1 |
@@ -178,7 +178,7 @@ WRF source: https://github.com/wrf-model/WRF at v4.7.1 (f52c197ed39d).
 | value | WRF option | gpuwm |
 |---|---|---|
 | `1` | 1-D ocean mixed layer | imports |
-| `2` | 3-D Price-Weller-Pinkel ocean | refused: &physics sf_ocean_physics = [2]: the WRF 3-D PWP ocean (pwp3dscheme, sf_ocean_physics = 2) is not ported in this release; sf_ocean_physics = 1 runs the ocean mixed layer and 0 turns the ocean model off. Nothing is substituted for it |
+| `2` | 3-D Price-Weller-Pinkel ocean | imports |
 
 ## `ra_lw_physics`
 

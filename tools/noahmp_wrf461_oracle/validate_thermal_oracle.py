@@ -29,17 +29,17 @@ Usage:
 
 from __future__ import annotations
 
-import csv
-import math
 import struct
 import sys
-from collections import defaultdict
 from pathlib import Path
 
+if __name__ == "__main__" and not __package__:
+    import validate_leaf_oracle as _leaf
+else:
+    from tools.noahmp_wrf461_oracle import validate_leaf_oracle as _leaf
 
-def _f32(bits: str) -> float:
-    return struct.unpack("<f", struct.pack("<I", int(bits, 16)))[0]
 
+_f32 = _leaf._f32
 
 def _r32(value: float) -> float:
     """Round a Python float to FP32.
@@ -143,106 +143,16 @@ class ThermalOracleError(RuntimeError):
 
 
 def load_leaves(path: Path):
-    rows = list(csv.DictReader(path.open(newline="")))
-    if not rows:
-        raise ThermalOracleError(f"{path} is empty")
-    table: dict[tuple[str, str, str], dict] = defaultdict(dict)
-    for row in rows:
-        key = (row["leaf"], row["case"], row["role"])
-        table[key][int(row["slot"])] = row
-    return table
-
+    return _leaf._load_leaves(path, ThermalOracleError)
 
 def check_structure(table) -> None:
-    seen_leaves = {key[0] for key in table}
-    if seen_leaves != set(LEAVES):
-        raise ThermalOracleError(
-            f"leaf set mismatch: extra={sorted(seen_leaves - set(LEAVES))}, "
-            f"missing={sorted(set(LEAVES) - seen_leaves)}")
-    for leaf, spec in LEAVES.items():
-        cases = {key[1] for key in table if key[0] == leaf}
-        if cases != set(spec["cases"]):
-            raise ThermalOracleError(
-                f"{leaf}: case mismatch "
-                f"extra={sorted(cases - set(spec['cases']))} "
-                f"missing={sorted(set(spec['cases']) - cases)}")
-        for case in spec["cases"]:
-            for role, count in (("int", spec["n_int"]), ("in", spec["n_in"]),
-                                ("out", spec["n_out"])):
-                got = len(table.get((leaf, case, role), {}))
-                if got != count:
-                    raise ThermalOracleError(
-                        f"{leaf}/{case}: role {role} has {got} slots, "
-                        f"expected {count}")
-
+    return _leaf._check_structure(table, LEAVES, ThermalOracleError)
 
 def check_bits(table) -> int:
-    checked = 0
-    for (leaf, case, role), slots in table.items():
-        for slot, row in slots.items():
-            from_bits = _f32(row["bits"])
-            printed = float(row["value"])
-            if struct.pack("<f", printed) != struct.pack("<f", from_bits):
-                raise ThermalOracleError(
-                    f"{leaf}/{case}/{role}[{slot}]: bits {row['bits']} "
-                    f"({from_bits!r}) does not round-trip the printed value "
-                    f"{row['value']}")
-            if role == "out" and row["live"] == "1":
-                if not math.isfinite(from_bits):
-                    raise ThermalOracleError(
-                        f"{leaf}/{case}/out[{slot}] {row['name']} is "
-                        f"non-finite: {from_bits}")
-            if role == "out" and row["live"] == "0":
-                if row["bits"] != "00000000":
-                    raise ThermalOracleError(
-                        f"{leaf}/{case}/out[{slot}] {row['name']} is flagged "
-                        f"live=0 but carries {row['bits']}, not the 0.0 "
-                        f"pre-fill")
-            checked += 1
-    return checked
-
+    return _leaf._check_bits(table, ThermalOracleError)
 
 def check_discrimination(disc_path: Path) -> dict[str, int]:
-    rows = list(csv.DictReader(disc_path.open(newline="")))
-    if not rows:
-        raise ThermalOracleError(f"{disc_path} is empty")
-    probes: dict[tuple[str, int], list] = defaultdict(list)
-    for row in rows:
-        probes[(row["leaf"], int(row["slot"]))].append(
-            (row["name"], int(row["index"]), int(row["already_zero"]),
-             int(row["noutputs_changed"])))
-
-    counts: dict[str, int] = defaultdict(int)
-    for (leaf, slot), entries in sorted(probes.items()):
-        spec = LEAVES[leaf]
-        name, index = entries[0][0], entries[0][1]
-        declared_inert = (name, index) in spec["inert"]
-        informative = [e for e in entries if e[2] == 0]
-        moved = [e for e in entries if e[3] > 0]
-        if not informative:
-            raise ThermalOracleError(
-                f"{leaf}: input slot {slot} ({name}[{index}]) is zero in "
-                f"every case, so the fixture cannot tell whether the port "
-                f"reads it. Give at least one case a non-zero value.")
-        if declared_inert and moved:
-            raise ThermalOracleError(
-                f"{leaf}: {name}[{index}] is declared inert "
-                f"({spec['inert'][(name, index)]}) but zeroing it moved "
-                f"{moved[0][3]} outputs")
-        if not declared_inert and not moved:
-            raise ThermalOracleError(
-                f"{leaf}: zeroing {name}[{index}] moves no live output in "
-                f"any of {len(entries)} cases, and it is not declared inert. "
-                f"Either the fixture cannot detect a dropped variable or the "
-                f"argument really is dead -- decide and record which.")
-        counts[leaf] += 1
-    for leaf, spec in LEAVES.items():
-        if counts[leaf] != spec["n_in"]:
-            raise ThermalOracleError(
-                f"{leaf}: discrimination sweep covered {counts[leaf]} of "
-                f"{spec['n_in']} input slots")
-    return counts
-
+    return _leaf._check_discrimination(disc_path, LEAVES, ThermalOracleError)
 
 def _lookup(table, leaf, case, role, name, index):
     for row in table[(leaf, case, role)].values():

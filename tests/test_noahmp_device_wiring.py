@@ -202,7 +202,7 @@ def test_the_slab_orchestration_is_what_answers_the_columns(monkeypatch):
 
     state, cfg, _driver = _build(nx=6, ny=4, water_columns=1)
 
-    def trip(fields, n):
+    def trip(fields, n, *, noahmp_snow_age):
         raise SlabPathTripwire(f"evaluate_sflx_slab reached with n={n}")
 
     monkeypatch.setattr(column_slab, "evaluate_sflx_slab", trip)

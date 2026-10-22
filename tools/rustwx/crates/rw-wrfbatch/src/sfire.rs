@@ -4,10 +4,12 @@ use netcrust::File;
 use rustwx_render::{Color,ColorScale,ContourLayer,DiscreteColorScale,ExtendMode};
 use crate::panel::{PanelRequest,render_panel_with_rgba};
 
-pub const PRODUCTS:[(&str,&str,&str,&str);3]=[
+pub const PRODUCTS:[(&str,&str,&str,&str);5]=[
     ("fire_perimeter","FIRE_AREA","Fire perimeter", "1"),
     ("fire_ros","ROS_FRONT","Fire front rate of spread", "m/s"),
     ("fire_heat_flux","FGRNHFX","Ground fire sensible heat flux", "W/m2"),
+    ("fire_fuel","NFUEL_CAT","Surface fuel model", "category"),
+    ("fire_terrain","ZSF","Fire-grid terrain", "m"),
 ];
 
 pub fn split_products(spec:&str) -> (String,Vec<String>) {
@@ -20,6 +22,22 @@ pub fn split_products(spec:&str) -> (String,Vec<String>) {
         }
     }
     fire.sort();fire.dedup();(remaining.join(","),fire)
+}
+
+/// `split_products` for a render over `inputs`.  Fire rows that came only
+/// from expanding the `all`/`direct` group are dropped when no input ran a
+/// coupled fire (`all_inactive`): a group asks for what the files can draw,
+/// as the store catalog already leaves out its other undrawable group rows,
+/// so a plain forecast no longer reports three undrawn fire maps on every
+/// render.  A fire slug named outright is kept and still skips by name with
+/// the inactive-fire-domain reason.
+pub fn split_products_for(spec:&str,inputs:&[PathBuf]) -> (String,Vec<String>) {
+    let (remaining,mut fire)=split_products(spec);
+    if !fire.is_empty() && all_inactive(inputs) {
+        let named:Vec<&str>=spec.split(',').map(str::trim).collect();
+        fire.retain(|slug|named.contains(&slug.as_str()));
+    }
+    (remaining,fire)
 }
 
 pub type CatalogRow=(String,&'static str,&'static str,String,&'static str);
@@ -70,6 +88,34 @@ fn plane(file:&File,name:&str,record:usize,shape:Option<[usize;2]>) -> Result<(V
 }
 
 fn scale(slug:&str) -> ColorScale {
+    scale_values(slug,&[])
+}
+
+fn scale_values(slug:&str,values:&[f32]) -> ColorScale {
+    if slug=="fire_terrain" {
+        let min=values.iter().copied().filter(|v|v.is_finite()).fold(f32::INFINITY,f32::min) as f64;
+        let max=values.iter().copied().filter(|v|v.is_finite()).fold(f32::NEG_INFINITY,f32::max) as f64;
+        let (lo,hi)=if min.is_finite() && max.is_finite() {(min,(max-min).max(1.)+min)} else {(0.,1.)};
+        let levels=(0..=7).map(|i|lo+(hi-lo)*(i as f64)/7.).collect();
+        let colors=[[22,76,52],[55,112,65],[113,146,76],[176,169,107],[183,149,112],[170,151,132],[232,229,217]]
+            .into_iter().map(|[r,g,b]|Color::rgba(r,g,b,255)).collect();
+        return ColorScale::Discrete(DiscreteColorScale {levels,colors,extend:ExtendMode::Both,mask_below:None});
+    }
+    if slug=="fire_fuel" {
+        // Each admitted model gets its own interval, preserving category identity.
+        let mut cats:Vec<i32>=values.iter().filter(|v|v.is_finite()).map(|v|v.round() as i32).collect();
+        cats.sort();cats.dedup();if cats.is_empty() {cats.push(0);}
+        let mut levels:Vec<f64>=cats.iter().map(|v|*v as f64-0.5).collect();
+        levels.push(*cats.last().unwrap() as f64+0.5);
+        let colors=cats.iter().map(|v| {
+            let n=v.unsigned_abs();
+            let [r,g,b]=if *v==98 {[111,164,214]} else if (91..=99).contains(v) {
+                let gray=120+((*v-91)*12) as u8;[gray,gray,gray]
+            } else {[(40+(n*73+29)%211) as u8,(40+(n*127+41)%211) as u8,(40+(n*149+67)%211) as u8]};
+            Color::rgba(r,g,b,255)
+        }).collect();
+        return ColorScale::Discrete(DiscreteColorScale {levels,colors,extend:ExtendMode::Both,mask_below:None});
+    }
     let levels=match slug {
         "fire_perimeter"=>vec![0.0,0.01,0.25,0.5,0.75,1.00001],
         "fire_ros"=>vec![0.0,0.05,0.1,0.2,0.4,0.8,1.6,3.2],
@@ -86,14 +132,14 @@ fn scale(slug:&str) -> ColorScale {
         mask_below:Some(if slug=="fire_perimeter" {0.01} else {f64::MIN_POSITIVE})})
 }
 
-fn context_pixels(values:&[f32],terrain:&[f32],shape:[usize;2],dx:f64,dy:f64,scale:&ColorScale) -> Result<Vec<Color>,String> {
+fn context_pixels(values:&[f32],terrain:&[f32],shape:[usize;2],dx:f64,dy:f64,scale:&ColorScale,legend:rustwx_render::LegendControls) -> Result<Vec<Color>,String> {
     if !dx.is_finite() || !dy.is_finite() || dx<=0. || dy<=0.
         || terrain.len()!=values.len() || terrain.iter().any(|v|!v.is_finite()) {
         return Err("Fire terrain context needs finite ZSF and positive fine-grid spacing".into());
     }
     let style=rustwx_render::StaticPlotStyle::from_env();
     let map=rustwx_render::build_colormap(scale,rustwx_render::ColormapBuildOptions {
-        render_density:style.render_density(Default::default()),legend:Default::default()});
+        render_density:style.render_density(Default::default()),legend});
     let [ny,nx]=shape;let mut pixels=Vec::with_capacity(values.len());
     for j in 0..ny {for i in 0..nx {
         let west=i.saturating_sub(1);let east=(i+1).min(nx-1);
@@ -224,20 +270,31 @@ pub fn render(products:&[String],config:&RenderConfig<'_>) -> Result<(usize,usiz
                 let (terrain,_)=plane(&file,"ZSF",record,Some(shape))?;
                 let fdx=attr("DX").zip(attr("SR_X")).filter(|(_,sr)|*sr>0.).map(|(dx,sr)|((dx as f32)/(sr as f32)) as f64).ok_or("Fire terrain context needs DX and SR_X")?;
                 let fdy=attr("DY").zip(attr("SR_Y")).filter(|(_,sr)|*sr>0.).map(|(dy,sr)|((dy as f32)/(sr as f32)) as f64).ok_or("Fire terrain context needs DY and SR_Y")?;
-                let colors=scale(slug);let pixels=context_pixels(&values,&terrain,shape,fdx,fdy,&colors)?;
+                let colors=scale_values(slug,&values);
+                // Preserve the listed fuel colours across unequal category intervals.
+                // The normal stepped palette densifies and invents intermediate colours.
+                let legend=rustwx_render::LegendControls {mode:if slug=="fire_fuel" {
+                    rustwx_render::LegendMode::Thresholds
+                } else {rustwx_render::LegendMode::Stepped},..Default::default()};
+                let pixels=context_pixels(&values,&terrain,shape,fdx,fdy,&colors,legend)?;
                 let mut overlays=config.overlays.cloned().unwrap_or_default();
                 overlays.labels.extend(graticule_labels(&lat,&lon,shape));
                 let mut contours=Vec::new();
                 for coordinates in [&lat,&lon] {contours.push(ContourLayer {data:coordinates.clone(),levels:graticule(coordinates),
                     color:Color::rgba(90,98,106,155),width:1,labels:true,show_extrema:false,pattern:Default::default(),major_every:None,major_width:None});}
+                let output_path=map_path(config.out_dir,&folder,slug,&time);
+                let observed_overlay=crate::fire_observations::overlay(&file,record,&time,&lat,&lon,&lfn,
+                    shape,fdx,fdy,&output_path)?;
+                let overlay_label=if observed_overlay.is_some() {" | model red, observed cyan"} else {""};
+                if let Some(observed)=observed_overlay {contours.push(observed);}
                 contours.push(ContourLayer {data:lfn,levels:vec![0.0],color:Color::rgba(88,12,25,255),
                     width:3,labels:false,show_extrema:false,pattern:Default::default(),major_every:None,major_width:None});
                 let grid_label=match (attr("DX"),attr("SR_X")) { (Some(dx),Some(sr)) if sr>0.=>format!("{} m fire grid",(dx as f32)/(sr as f32)),_=>format!("{} x {} fire grid",shape[1],shape[0])};
                 render_panel_with_rgba(PanelRequest {lat_deg:&lat,lon_deg:&lon,projection:projection.as_ref(),ny:shape[0],nx:shape[1],values,
                     product_slug:slug.clone(),title:if *units=="1" {(*title).into()} else {format!("{title} ({units})")},
-                    display_units:(*units).into(),scale:colors,cbar_tick_step:None,legend:Default::default(),
+                    display_units:(*units).into(),scale:colors,cbar_tick_step:None,legend,
                     render_density:Default::default(),subtitle_left:config.source_label.into(),
-                    subtitle_center:Some(format!("{domain} | {grid_label}")),subtitle_right:format!("{time} UTC"),
+                    subtitle_center:Some(format!("{domain} | {grid_label}{overlay_label}")),subtitle_right:format!("{time} UTC"),
                     width:config.width,height:config.height,contours,colorbar:*units!="1",
                     overlays:Some(&overlays),annotations:config.annotations,
                     out_path:map_path(config.out_dir,&folder,slug,&time)},Some(pixels))
@@ -286,6 +343,9 @@ mod tests {
             assert_eq!(all_inactive(&inputs),active<=0);
             let expected=if active<=0 {"inactive-fire-domain"} else {"invalid-active-fire-domain"};
             assert!(catalog(&inputs).iter().all(|row|row.4==expected));
+            // A group request drops the fire rows on a no-fire domain; a named slug is kept.
+            assert_eq!(split_products_for("all",&inputs).1.len(),if active<=0 {0} else {PRODUCTS.len()});
+            assert_eq!(split_products_for("all,fire_ros",&inputs).1,if active<=0 {vec!["fire_ros".to_string()]} else {split_products("all").1});
             let (_,skipped,failed,_)=render(&vec!["fire_ros".into()],&RenderConfig {
                 inputs:&inputs,out_dir:&folder,frame:None,width:120,height:100,
                 source_label:"control",overlays:None,annotations:None}).unwrap();
@@ -370,22 +430,43 @@ mod tests {
             root.join("d01-1km").join("fire_ros").join("20250107").join("fire_ros_20250107T180000.png"));
     }
     #[test]
+    fn static_scales_distinguish_fuels_and_follow_terrain_range() {
+        let values=vec![1.,13.,91.,92.,98.,101.,204.];
+        let ColorScale::Discrete(fuel)=scale_values("fire_fuel",&values) else {panic!("discrete fuel");};
+        assert_eq!(fuel.colors.len(),values.len());
+        for (i,a) in fuel.colors.iter().enumerate() {for b in &fuel.colors[i+1..] {
+            assert!((a.r,a.g,a.b)!=(b.r,b.g,b.b));
+        }}
+        let scale=ColorScale::Discrete(fuel.clone());
+        let legend=rustwx_render::LegendControls {mode:rustwx_render::LegendMode::Thresholds,..Default::default()};
+        let map=rustwx_render::build_colormap(&scale,rustwx_render::ColormapBuildOptions {
+            render_density:rustwx_render::StaticPlotStyle::from_env().render_density(Default::default()),legend});
+        for (i,value) in values.iter().enumerate() {
+            assert_eq!(map.map(*value as f64),fuel.colors[i].into(),"fuel category {value} changed colour");
+        }
+        let pixels=context_pixels(&values,&vec![0.;values.len()],[1,values.len()],30.,30.,&scale,legend).unwrap();
+        assert_eq!(pixels,fuel.colors,"map fill must retain the legend's exact colours");
+        let ColorScale::Discrete(terrain)=scale_values("fire_terrain",&[1540.,1550.,1560.]) else {panic!("terrain");};
+        assert_eq!(terrain.levels.first(),Some(&1540.));assert_eq!(terrain.levels.last(),Some(&1560.));
+        assert_eq!(terrain.mask_below,None);
+    }
+    #[test]
     fn zero_fire_keeps_terrain_context_and_positive_ros_keeps_legend_color() {
         let terrain=vec![0.,100.,0.,100.];let scale=scale("fire_ros");
-        let zero=context_pixels(&[0.;4],&terrain,[2,2],50.,50.,&scale).unwrap();
+        let zero=context_pixels(&[0.;4],&terrain,[2,2],50.,50.,&scale,Default::default()).unwrap();
         assert!(zero.iter().all(|pixel|pixel.a==255 && pixel.r>160 && pixel.g>pixel.r));
-        let lit=context_pixels(&[1.;4],&terrain,[2,2],50.,50.,&scale).unwrap();
+        let lit=context_pixels(&[1.;4],&terrain,[2,2],50.,50.,&scale,Default::default()).unwrap();
         let legend=rustwx_render::build_colormap(&scale,rustwx_render::ColormapBuildOptions {
             render_density:rustwx_render::StaticPlotStyle::from_env().render_density(Default::default()),legend:Default::default()}).map(1.);
         assert!(lit.iter().all(|pixel|*pixel==Color::rgba(legend.r,legend.g,legend.b,legend.a)));
-        let varied=context_pixels(&[0.;4],&[0.,100.,0.,0.],[2,2],50.,50.,&scale).unwrap();
+        let varied=context_pixels(&[0.;4],&[0.,100.,0.,0.],[2,2],50.,50.,&scale,Default::default()).unwrap();
         assert!(varied.windows(2).any(|pair|pair[0]!=pair[1]));
-        assert!(context_pixels(&[0.;4],&[f32::NAN;4],[2,2],50.,50.,&scale).is_err());
+        assert!(context_pixels(&[0.;4],&[f32::NAN;4],[2,2],50.,50.,&scale,Default::default()).is_err());
     }
     #[test]
     fn fire_products_keep_the_refined_lane_beside_atmospheric_products() {
         assert_eq!(split_products("t2m,fire_ros,fire_perimeter"),("t2m".into(),vec!["fire_perimeter".into(),"fire_ros".into()]));
-        assert_eq!(split_products("all").1.len(),3);
+        assert_eq!(split_products("all").1.len(),PRODUCTS.len());
         assert_eq!(split_products("fire_ros,fire_ros").1.len(),1);
     }
 }

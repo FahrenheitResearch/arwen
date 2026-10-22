@@ -1028,11 +1028,14 @@ neither is an open deviation and neither is a registry warning:
   reader sees; WRF forces `qnwfa`/`qnifa` at the boundary, so in WRF
   this zero does not arise. This matches ArWen's existing
   hydrometeor policy and is documented, not fixed.
-- **MYNN aerosol number mixing is selectable.** `scalar_pblmix = 1`
-  applies WRF's post-PBL `diff4d` diffusion using MYNN's `exch_h` to
+- **PBL aerosol number mixing is selectable.** `scalar_pblmix = 1`
+  applies WRF's post-PBL `diff4d` diffusion using the selected PBL
+  scheme's `exch_h` (YSU, MYJ, MYNN, UW, Shin-Hong) to
   `nc`, `ni`, `nwfa` and `nifa`. Rain number is excluded, as in WRF.
+  With no PBL scheme WRF does not call its PBL driver, so the key mixes
+  nothing there (and under SASE, which publishes no `exch_h`).
   `bl_mynn_mixscalars = 1` selects MYNN's separate plume transport.
-  `scalar_pblmix = 1` requires `mp_physics = 28`, `bl_pbl_physics = 5`
+  `scalar_pblmix = 1` under a mixing PBL scheme requires `mp_physics = 28`
   and `bldt = 0`. `bl_mynn_mixscalars = 1` mixes the qn family under
   `bl_pbl_physics = 5` with `mp_physics = 28` (then `bldt = 0` is
   required); under a microphysics with no number species (`mp_physics`
@@ -1321,8 +1324,9 @@ distinguish the selections. The false path allocates no carrier.
 
 `bl_mynn_mixlength` accepts 1 (default) and 2, the WRF v4.6.1
 mixing-length branches. `bl_mynn_mixscalars` and `scalar_pblmix` accept
-0 (default, off) and 1. `scalar_pblmix = 1` needs MYNN with aerosol-aware
-Thompson and `bldt = 0`; `bl_mynn_mixscalars = 1` mixes under that same
+0 (default, off) and 1. `scalar_pblmix = 1` needs aerosol-aware Thompson
+and `bldt = 0` under any PBL scheme that mixes (YSU, MYJ, MYNN, UW,
+Shin-Hong); `bl_mynn_mixscalars = 1` mixes under that same
 combination, is WRF's no-op under a microphysics with no number species,
 and is refused by name under a scheme WRF mixes only in part. The former
 uses MYNN plume transport, the latter local post-PBL diffusion. Selecting
@@ -2046,8 +2050,8 @@ with Grell-Freitas, SASE on the revised MM5 surface layer, and the three
 large-eddy closures (1.5-order TKE, 3D Smagorinsky, constant K). None of
 them reads anything source-specific, so none of them is a source's
 choice to make, and every source that names any suite at all names all
-six. On the prepared single-domain route that is forty-nine of its
-fifty sources; the other one is the caller-supplied composition row,
+six. On the prepared single-domain route that is fifty-three of its
+fifty-four sources; the other one is the caller-supplied composition row,
 which names no suite because the caller states the physics. A source
 with no measured suite of its own is not emptied: it reports the suites
 that route names for every source it HAS measured, with the limitation
@@ -2501,7 +2505,8 @@ exactly two substitutions. The monthly WIF namelist pair and
 `use_rap_aero_icbc` are implemented. The latter selects analyzed
 three-dimensional aerosol while retaining the operational monthly surface
 emission; see [analyzed aerosol inputs](ANALYZED-AEROSOL-INPUT.md).
-`scalar_pblmix` imports and runs for MYNN with aerosol-aware Thompson.
+`scalar_pblmix` imports and runs for aerosol-aware Thompson under YSU,
+MYJ, MYNN, UW and Shin-Hong, and is WRF's no-op with no PBL scheme.
 The other surrounding options (`qna_update`, `grav_settling`,
 `dust_emis`, `wif_fire_emit`, `wif_fire_inj`) retain their declared refusals.
 Precisely, in `share/module_check_a_mundo.F`: `grav_settling` is forced

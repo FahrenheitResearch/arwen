@@ -33,24 +33,16 @@ why ``grid`` names neither continent.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
 
 from gpuwm.cli_help import ForecastParser
 from gpuwm.cli_numbers import float_between, positive_float
+from gpuwm.obs.obspack import sha256_of as _sha256
 
 #: An elevation angle, which is a finite number of degrees above (or just
 #: below) the horizon.
 _ELEVATION = float_between(-90.0, 90.0)
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as handle:
-        for block in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _print(record: dict) -> int:
@@ -608,6 +600,7 @@ def _instrument_main(args) -> int:
 #: ``tests/test_obs_front_doors_are_shipped.py``, so a door added to one
 #: and not the other fails rather than going unreachable.
 _INSTRUMENTS = {
+    "hail": "SPC hail reports and MESH size-bin verification",
     "mrms": "MRMS composite reflectivity",
     "stage4": "Stage-IV precipitation accumulation",
     "asos": "ASOS/METAR surface reports",

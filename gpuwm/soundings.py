@@ -8,12 +8,15 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 
 ABI = "gpuwm-soundings.v1 plain-run png json html"
 
 
 ENV = "GPUWM_SOUNDINGS"
+#: auto (GPU, else the CPU rasteriser), gpu (refuse without one) or cpu.
+RENDERER_ENV = "GPUWM_SOUNDINGS_RENDERER"
 
 
 def find_binary() -> Path | None:
@@ -56,11 +59,49 @@ def probe(path) -> tuple[bool, str]:
     return True, f"--abi reports {ABI!r}"
 
 
+def device(path) -> tuple[bool, str]:
+    """Which device renders would use; the renderer creates a real one to say.
+
+    ``(True, "gpu ...")`` or ``(True, "cpu rasteriser (<why no GPU, e.g. the
+    Vulkan loader libvulkan1 is missing>)")``; ``(False, cause)`` only when no
+    device at all can draw (``GPUWM_SOUNDINGS_RENDERER=gpu`` on a host without
+    one) or the build predates the probe.
+    """
+    try:
+        result = subprocess.run([str(path), "--probe-device"], capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        return False, "--probe-device did not answer in 120 s"
+    line = next((row for row in result.stdout.splitlines() if row.startswith("render device: ")), None)
+    if result.returncode or line is None:
+        cause = _cause(result.stderr) or "--probe-device is not supported; rebuild rw-soundings"
+        return False, cause
+    return True, line.removeprefix("render device: ")
+
+
+def _cause(stderr: str) -> str:
+    """The renderer's own ``soundings: <cause>`` line, else its last line."""
+    rows = [row.strip() for row in (stderr or "").splitlines() if row.strip()]
+    named = [row.removeprefix("soundings: ") for row in rows if row.startswith("soundings: ")]
+    return named[-1] if named else rows[-1] if rows else ""
+
+
 def binary() -> Path:
     found = find_binary()
     if found is None:
-        raise FileNotFoundError("the sounding renderer is missing; build it with: "
-                                "cargo build --release --manifest-path tools/rustwx/Cargo.toml -p rw-soundings")
+        # Same shape as gpuwm.obs.frontdoor.FrontDoor.require: say why the
+        # on-demand staging failed (a 404 for an unpublished bundle, no
+        # network, a pin mismatch) and give the remedy true for THIS install
+        # (a pip install has no tools/rustwx to cargo-build).
+        from gpuwm.bridges import (RUSTWX_CRATE_RELATIVE, artifact_remedy, executable_name,
+                                   on_demand_failure, rustwx_build_hint)
+        failure = on_demand_failure("rw_soundings")
+        raise FileNotFoundError(
+            "the sounding renderer (rw_soundings) is not built or not found"
+            + (f"; {failure}" if failure else "") + ".\n"
+            + artifact_remedy(env_var=ENV, filename=executable_name("rw_soundings"),
+                              subject="the sounding renderer",
+                              crate_relative=RUSTWX_CRATE_RELATIVE,
+                              one_liner=rustwx_build_hint(), artifact="rw_soundings"))
     ok, evidence = probe(found)
     if not ok:
         raise RuntimeError(f"{found} does not support this sounding request ({evidence})")
@@ -146,9 +187,17 @@ def render_run(run, *, points, out=None, modes=("mean", "all"), domain=None,
     with tempfile.TemporaryDirectory(prefix="gpuwm-soundings-") as temporary:
         path = Path(temporary) / "request.json"
         path.write_text(json.dumps(request), encoding="utf-8")
-        result = subprocess.run([str(exe), str(path)])
-    if result.returncode:
-        raise RuntimeError(f"sounding renderer exited {result.returncode}")
+        # stderr is relayed line by line and its cause line kept, so a failure
+        # names what broke instead of a bare exit status.
+        process = subprocess.Popen([str(exe), str(path)], stderr=subprocess.PIPE, text=True)
+        tail = []
+        for row in process.stderr:
+            sys.stderr.write(row)
+            tail = (tail + [row])[-50:]
+        returncode = process.wait()
+    if returncode:
+        cause = _cause("".join(tail))
+        raise RuntimeError(f"sounding renderer exited {returncode}" + (f": {cause}" if cause else ""))
     if listing:
         lineage_viewer(output, listing)
     return output / "soundings-manifest.json"

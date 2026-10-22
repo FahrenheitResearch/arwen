@@ -88,6 +88,47 @@ def _page_sources():
     return [source for source in wizard_planable_source_ids() if source in _menus()]
 
 
+def _served(source, when):
+    """``when``, or the same hour two days before the end of the source's last
+    publication era when ``when`` lies outside every era.
+
+    A dated publication row (the GEFS v11 archive layouts,
+    lane/cap-gefs-archive) serves only its own era, so a recent epoch asks it
+    for objects it never published.  Read from the route table, so the
+    next dated row needs no edit here.
+    """
+
+    from datetime import timedelta
+    from gpuwm import fetch_routes
+
+    if source not in fetch_routes.route_ids():
+        return when
+    route = fetch_routes.route_for(source)
+    # A producer that runs fewer cycles (the reforecast's 00Z only) is read
+    # at its latest cycle at or before the hour.
+    hours = [hour for hour in route.cycle_hours if hour <= when.hour]
+    when = when.replace(hour=max(hours) if hours else min(route.cycle_hours))
+    if not route.publication_eras:
+        return when
+    naive = when.replace(tzinfo=None)
+    if any(era.valid_from <= naive and (era.valid_until is None or naive < era.valid_until)
+           for era in route.publication_eras):
+        return when
+    era = max(route.publication_eras, key=lambda era: era.valid_from)
+    moved = (era.valid_until - timedelta(days=2)).replace(hour=when.hour)
+    return moved.replace(tzinfo=when.tzinfo)
+
+
+def _first_lead(source):
+    """The first lead the source's route publishes (3 for the GEFSv12
+    reforecast, which has no f000), where a draft's window opens."""
+
+    from gpuwm import fetch_routes
+
+    return (fetch_routes.route_for(source).first_lead
+            if source in fetch_routes.route_ids() else 0)
+
+
 def _draft(source, grid, profile=None):
     """New forecast's draft of a BOX_KM box inside the source's coverage."""
 
@@ -95,7 +136,7 @@ def _draft(source, grid, profile=None):
     from gpuwm import cf_archive_fetch
 
     lat, lon = _point(source)
-    cycle = CYCLE
+    cycle = _served(source, datetime.fromisoformat(CYCLE)).strftime("%Y-%m-%dT%H")
     if source in cf_archive_fetch.sources():
         # A closed analysis archive needs a representative epoch inside
         # its declared coverage, including this fixture's final boundary.
@@ -107,7 +148,7 @@ def _draft(source, grid, profile=None):
         cycle = anchor.strftime("%Y-%m-%dT%H")
     return {"name": "agreement", "source": source, "cycle": cycle, "hours": 3, "card": "24gb",
             "lat": lat, "lon": lon, "width_km": BOX_KM, "height_km": BOX_KM,
-            "start_hour": 0, "products": None, "profile": profile,
+            "start_hour": _first_lead(source), "products": None, "profile": profile,
             "dx_km": grid.get("dx_km"), "ladder": grid.get("ladder"), "chain": grid.get("chain")}
 
 
@@ -290,6 +331,7 @@ def test_the_local_da_door_binds_the_default_row_at_its_rungs_grid(source):
 
     # A settled cycle every catalogued source still serves: two days back, at 12Z.
     epoch = (datetime.now(timezone.utc) - timedelta(days=2)).replace(hour=12, minute=0, second=0, microsecond=0)
+    epoch = _served(source, epoch)
     below = []
     for scale in LOCAL_DA_SCALES:
         where = f"{source} at local DA rung {scale}"

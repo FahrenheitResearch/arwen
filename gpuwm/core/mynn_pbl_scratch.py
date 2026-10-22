@@ -58,6 +58,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import lru_cache
+from math import prod
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -1326,9 +1327,7 @@ class MynnPblScratch:
         """One contiguous sub-array of ``shape`` per name, in order."""
         names = tuple(names)
         shape = tuple(int(extent) for extent in shape)
-        unit = 1
-        for extent in shape:
-            unit *= extent
+        unit = prod(shape)
         buf = self._backing(slot, len(names) * unit, DTYPE)
         return {name: self._view(buf[index * unit:(index + 1) * unit], shape)
                 for index, name in enumerate(names)}
@@ -1336,9 +1335,7 @@ class MynnPblScratch:
     def one(self, slot: str, shape) -> cp.ndarray:
         """The first (and usually only) array in a slot."""
         shape = tuple(int(extent) for extent in shape)
-        unit = 1
-        for extent in shape:
-            unit *= extent
+        unit = prod(shape)
         return self._view(self._backing(slot, unit, DTYPE)[:unit], shape)
 
     def index(self, slot: str, shape) -> cp.ndarray:
@@ -1346,9 +1343,7 @@ class MynnPblScratch:
         import cupy as cp
 
         shape = tuple(int(extent) for extent in shape)
-        unit = 1
-        for extent in shape:
-            unit *= extent
+        unit = prod(shape)
         return self._backing(slot, unit, cp.int32)[:unit].reshape(shape)
 
     def flags(self, slot: str = MYNN_PBL_FLAG_SLOTS[0]) -> cp.ndarray:

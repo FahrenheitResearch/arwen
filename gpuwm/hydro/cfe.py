@@ -133,7 +133,21 @@ OPTION_NAMES = ('num_giuh_ordinates',
  'nash_surface_params.has_storage')
 OFFSET_NAMES = ('giuh_ordinates', 'runoff_queue', 'nash_subsurface', 'nash_surface', 'soil_profile')
 FIELD_INDEX = MappingProxyType({name: i for i, name in enumerate(FIELD_NAMES)})
-OPTION_INDEX = MappingProxyType({name: i for i, name in enumerate(OPTION_NAMES)})
+
+
+def _cfe_source():
+    """The committed unit with its libm header spliced in, as compiled."""
+    path = Path(__file__).parents[1] / "core" / "kernels" / "nextgen_cfe.cu"
+    return path, path.read_text().replace(
+        '#include "glibc_flt64.cuh"',
+        (path.parent / "glibc_flt64.cuh").read_text())
+
+
+def frame_module():
+    """The module this process's numerics launch and its compiled source,
+    for the local-frame regenerator and gate (preflight
+    PRODUCTION_LOADED_KERNEL_UNITS)."""
+    return _compile_cfe(is_strict())[0], _cfe_source()[1]
 
 
 @cuda_cache(maxsize=None)
@@ -142,10 +156,7 @@ def _compile_cfe(strict):
     from gpuwm import nvrtc_ptx_cache
     from gpuwm.kernel_compile_notice import observe_module_compile
 
-    path = Path(__file__).parents[1] / "core" / "kernels" / "nextgen_cfe.cu"
-    source = path.read_text().replace(
-        '#include "glibc_flt64.cuh"',
-        (path.parent / "glibc_flt64.cuh").read_text())
+    path, source = _cfe_source()
     flags = ("-std=c++17", "--ftz=false")
     if strict:
         flags += ("--fmad=false", "--prec-div=true", "--prec-sqrt=true")

@@ -22,174 +22,18 @@ Usage (on the node that owns the GPU)::
 from __future__ import annotations
 
 import argparse
-import glob
-import hashlib
 import json
 import os
 import shutil
-import subprocess
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-
-def now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-class Transcript:
-    def __init__(self, directory: Path) -> None:
-        self.directory = directory
-        directory.mkdir(parents=True, exist_ok=True)
-        self.log = (directory / "transcript.log").open("a", encoding="utf-8")
-        self.records: list[dict] = []
-
-    def say(self, text: str) -> None:
-        line = f"{now()} {text}"
-        print(line, flush=True)
-        self.log.write(line + "\n")
-        self.log.flush()
-
-    def record(self, kind: str, **fields) -> None:
-        entry = {"time": now(), "kind": kind, **fields}
-        self.records.append(entry)
-        with (self.directory / "transcript.jsonl").open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(entry, sort_keys=True, default=str) + "\n")
-
-    def copy(self, source: Path, name: str) -> None:
-        if source.is_file():
-            shutil.copy2(source, self.directory / name)
-
-
-class Controller:
-    def __init__(self, args, transcript: Transcript) -> None:
-        self.args = args
-        self.transcript = transcript
-        self.root = Path(args.root)
-        self.output = self.root / "runs"
-        self.output.mkdir(parents=True, exist_ok=True)
-        self.counter = 0
-        self.stderr = (transcript.directory / "controller.stderr.log").open("ab")
-        command = [args.controller, "--headless-companion", "--python", args.python,
-                   "--companion", args.workspace, "--output", str(self.output)]
-        transcript.say("controller: " + " ".join(command))
-        self.process = subprocess.Popen(command, cwd=self.root, stdin=subprocess.DEVNULL,
-                                        stdout=self.stderr, stderr=self.stderr)
-        deadline = time.monotonic() + 60
-        self.handoff = None
-        while self.handoff is None:
-            for candidate in glob.glob(str(self.output / ".arwen-tui" / "companion-*" / "handoff.json")):
-                try:
-                    self.handoff = json.loads(Path(candidate).read_text(encoding="utf-8"))
-                except (OSError, ValueError):
-                    continue
-            if self.handoff is None:
-                if self.process.poll() is not None or time.monotonic() > deadline:
-                    raise SystemExit("controller did not publish a handoff")
-                time.sleep(0.2)
-        transcript.record("handoff", handoff=self.handoff)
-        transcript.copy(Path(candidate), "handoff.json")
-        self.control = Path(self.handoff["control_dir"])
-        self.status_path = Path(self.handoff["status_path"])
-        transcript.say(f"handoff: session {self.handoff['session_id']} control {self.control}")
-
-    def status(self) -> dict:
-        for _ in range(20):
-            try:
-                return json.loads(self.status_path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                time.sleep(0.05)
-        return {}
-
-    def send(self, action: str, fields: dict, timeout: float = 120.0) -> dict:
-        self.counter += 1
-        request_id = f"proof-{self.counter:03d}-{action}"
-        request = dict(fields)
-        request.update({"schema": "arwen.companion-request.v1",
-                        "session_id": self.handoff["session_id"],
-                        "id": request_id, "action": action})
-        temporary = self.control / "requests" / f"{request_id}.tmp"
-        temporary.write_text(json.dumps(request, indent=2, sort_keys=True), encoding="utf-8")
-        os.replace(temporary, self.control / "requests" / f"{request_id}.json")
-        response_path = self.control / "responses" / f"{request_id}.json"
-        deadline = time.monotonic() + timeout
-        while not response_path.is_file():
-            if time.monotonic() > deadline:
-                raise SystemExit(f"no response to {request_id} within {timeout}s")
-            time.sleep(0.1)
-        time.sleep(0.05)
-        response = json.loads(response_path.read_text(encoding="utf-8"))
-        self.transcript.record("exchange", request=request, response=response)
-        self.transcript.say(f"{action} -> ok={response.get('ok')} {response.get('message', '')!s}"
-                            + (f" job={response['job_id']}" if response.get("job_id") else ""))
-        return response
-
-    def wait_job(self, job_id: str, label: str, timeout: float, sample_every: float = 15.0) -> dict:
-        """Follow status.json's job until it is terminal; keep progress samples."""
-        deadline = time.monotonic() + timeout
-        last_sample = 0.0
-        samples = []
-        last = {}
-        while True:
-            status = self.status()
-            job = status.get("job") or {}
-            if job.get("job_id") == job_id:
-                last = job
-                state = job.get("state")
-                if time.monotonic() - last_sample >= sample_every:
-                    last_sample = time.monotonic()
-                    progress = job.get("progress") or {}
-                    sample = {"time": now(), "state": state, "stage": job.get("stage"),
-                              "phase": job.get("phase"),
-                              "model_elapsed_seconds": job.get("model_elapsed_seconds"),
-                              "model_seconds": progress.get("model_seconds"),
-                              "valid_time": job.get("valid_time"),
-                              "outputs": progress.get("outputs_written")}
-                    samples.append(sample)
-                    self.transcript.say(f"{label}: {json.dumps(sample, default=str)}")
-                if state in ("completed", "failed", "stopped"):
-                    break
-            elif last and last.get("state") in ("completed", "failed", "stopped"):
-                break
-            elif last:
-                # The controller moved on; the saved receipts are the answer.
-                break
-            if time.monotonic() > deadline:
-                raise SystemExit(f"{label}: job {job_id} did not finish within {timeout}s")
-            time.sleep(1.0)
-        self.transcript.record("job_end", label=label, job=last, samples=samples)
-        return last
-
-    def stop(self) -> None:
-        # Closing the stand-in workspace is how a desktop session ends: the
-        # controller exits once the workspace is gone and no job is running.
-        status = self.status()
-        pid = status.get("workspace_pid")
-        # The stand-in workspace is the controller's own child; end it by
-        # identity rather than by a command-line pattern, which would match
-        # this driver's own argv as well.
-        children = subprocess.run(["pgrep", "-P", str(self.process.pid)], check=False,
-                                  capture_output=True, text=True).stdout.split()
-        for child in children:
-            subprocess.run(["kill", child], check=False)
-        try:
-            self.process.wait(timeout=60)
-        except subprocess.TimeoutExpired:
-            self.process.terminate()
-        self.transcript.record("controller_exit", returncode=self.process.returncode,
-                               workspace_pid=pid)
-        self.transcript.say(f"controller exited {self.process.returncode}")
-        self.transcript.copy(self.status_path, "status-final.json")
-
-
-def copy_receipts(transcript: Transcript, job_dir: Path, prefix: str) -> None:
-    for name in ("job.json", "process.json", "result.json", "job.log"):
-        transcript.copy(job_dir / name, f"{prefix}.{name}")
+if __package__:
+    from tools.saved_setups_proof import Controller, Transcript, copy_receipts, sha256
+else:
+    from saved_setups_proof import Controller, Transcript, copy_receipts, sha256
 
 
 def copy_run_receipts(transcript: Transcript, run_dir: Path, prefix: str) -> None:

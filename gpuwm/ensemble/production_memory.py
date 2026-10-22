@@ -38,7 +38,8 @@ def ordinary_output_memory_components(experiment, collector, *, other_experiment
         upload = BatchMemoryPlan(tuple(spec for spec in full.arrays if spec.name not in existing), reserved_bytes=0)
         uploads.append(upload.required_bytes(1))
         replay = replay_memory_plan_for_shape(collector.requests, shape,
-            members=collector.members, tile_rows=collector.tile_rows)
+            members=collector.members, tile_rows=collector.tile_rows,
+            member_weights=getattr(collector, "member_weights", None))
         replays.append(replay.required_bytes(collector.members))
     points = getattr(collector, "nextgen_points", None)
     return (() if points is None else (MemoryComponent("nextgen_reach_products", "products",

@@ -445,7 +445,8 @@ def _refuse_uncovered_in_source_plane(snapshot, pairings):
             target_geographic=(target_lat, target_lon))
 
 
-def orient_global_source_longitudes(snapshot, *target_longitudes):
+def orient_global_source_longitudes(snapshot, *target_longitudes,
+                                    target_latitudes=()):
     """Cut a globally periodic source axis opposite the target domain.
 
     A whole-globe source crop is a ring, but it is stored as a finite
@@ -481,7 +482,10 @@ def orient_global_source_longitudes(snapshot, *target_longitudes):
     target. If that guess is still unsafe, use the largest circular gap
     between target longitudes, and accept it only after checking all donor
     stencils. This remains a permutation of one source ring: no repeated
-    source pixels or different masked-search semantics are introduced.
+    source pixels or different masked-search semantics are introduced when
+    such a cut exists. A pole-enclosing target has no empty meridian: in
+    that case the same column selection keeps periodic donor halos on
+    both sides, so stencils crossing the stored seam see their neighbours.
     """
 
     from gpuwm.ingest.grib import Era5Snapshot
@@ -494,7 +498,9 @@ def orient_global_source_longitudes(snapshot, *target_longitudes):
         # the period detection below never fires -- this guard says so
         # explicitly rather than by arithmetic accident).
         return snapshot
-    cut = global_ring_cut(snapshot.longitude, *target_longitudes)
+    cut = global_source_cut(snapshot.latitude, snapshot.longitude,
+                            *target_longitudes,
+                            target_latitudes=target_latitudes)
     if cut is None:
         return snapshot
     return recut_global_ring(snapshot, cut)
@@ -505,7 +511,8 @@ class GlobalRingCut:
     """Where a whole-globe longitude ring is re-cut, and the axis it then has.
 
     ``start`` is the stored column that becomes column 0 and ``longitude``
-    is the re-cut axis.  Applying it is a permutation of stored columns
+    is the re-cut axis. ``halo`` adds periodic donor columns when the
+    targets cover every meridian. Applying it selects stored columns
     (:func:`recut_global_ring`), so a caller that holds only a source's
     axes -- a lazily packed forcing series describing its geometry before
     any field is read -- can state the geometry its snapshots will have
@@ -515,6 +522,9 @@ class GlobalRingCut:
     start: int
     period: int
     longitude: np.ndarray
+    halo: int = 0
+    pole_south: int = 0
+    pole_north: int = 0
 
     def columns(self) -> np.ndarray:
         """Stored column of each re-cut column."""
@@ -580,9 +590,64 @@ def global_ring_cut(longitude, *target_longitudes):
         if (float(candidate_x.min()) >= 1.0
                 and float(candidate_x.max()) <= longitude.size - 3.0):
             start, rotated = candidate, candidate_axis
+    proposed = _regular_longitude_index(rotated, pooled)
+    if not (float(proposed.min()) >= 1.0
+            and float(proposed.max()) <= longitude.size - 3.0):
+        # A polar cap reaches every meridian, so no cut can clear all
+        # stencils. Keep three periodic donor columns at both ends of the
+        # stored ring. This is the same column selection as a re-cut,
+        # including the masked-field donors, with no resampling.
+        halo = 3
+        start = -halo
+        extended = float(longitude[0]) + (
+            start + np.arange(longitude.size + 2 * halo)) * increment
+        return GlobalRingCut(start=start, period=period,
+                             longitude=extended, halo=halo)
     if start == 0:
         return None
     return GlobalRingCut(start=start, period=period, longitude=rotated)
+
+
+def global_source_cut(latitude, longitude, *target_longitudes,
+                      target_latitudes=()):
+    """Plan longitude and pole donors on the same unread source geometry.
+
+    A small cap can have a clear longitude cut while still needing rows
+    beyond the pole. Latitude support must therefore be checked separately.
+    """
+    cut = global_ring_cut(longitude, *target_longitudes)
+    period = global_longitude_period_columns(longitude)
+    latitude = np.asarray(latitude, dtype=np.float64)
+    if period is None or latitude.size < 4 or not target_latitudes:
+        return cut
+    low = min(float(np.min(values)) for values in target_latitudes)
+    high = max(float(np.max(values)) for values in target_latitudes)
+    south = (3 if abs(latitude[0] + 90.0) <= 1.0e-8
+             and low < latitude[1] else 0)
+    north = (3 if abs(latitude[-1] - 90.0) <= 1.0e-8
+             and high >= latitude[-2] else 0)
+    if not (south or north):
+        return cut
+    if cut is None:
+        cut = GlobalRingCut(start=0, period=period,
+                            longitude=np.asarray(longitude, dtype=np.float64))
+    return replace(cut, pole_south=south, pole_north=north)
+
+
+def polar_donor_latitude(latitude, cut):
+    """Metadata for the reflected rows beyond a global ring's poles."""
+    latitude = np.asarray(latitude, dtype=np.float64)
+    south, north = cut.pole_south, cut.pole_north
+    if cut.halo and latitude.size >= 4:
+        if abs(latitude[0] + 90.0) <= 1.0e-8:
+            south = cut.halo
+        if abs(latitude[-1] - 90.0) <= 1.0e-8:
+            north = cut.halo
+    if not (south or north):
+        return latitude, 0, 0
+    step = float(latitude[1] - latitude[0])
+    return (latitude[0] + (np.arange(latitude.size + south + north) - south)
+            * step, south, north)
 
 
 def recut_global_ring(snapshot, cut):
@@ -597,7 +662,7 @@ def recut_global_ring(snapshot, cut):
 
     stored = np.asarray(snapshot.longitude, dtype=np.float64)
     take = cut.columns()
-    if stored.size != cut.longitude.size or global_longitude_period_columns(
+    if stored.size + 2 * cut.halo != cut.longitude.size or global_longitude_period_columns(
             stored) != cut.period:
         raise ValueError(
             "a longitude re-cut was taken on another source axis; applying "
@@ -609,12 +674,20 @@ def recut_global_ring(snapshot, cut):
             "it would move values to longitudes they were not produced at")
     if isinstance(snapshot, WindowedAtmosphericSnapshot):
         snapshot = snapshot.full_snapshot()
-    return replace(
-        snapshot,
-        longitude=cut.longitude,
-        fields={name: np.asarray(value)[..., take]
-                for name, value in snapshot.fields.items()},
-    )
+    latitude, south, north = polar_donor_latitude(snapshot.latitude, cut)
+    if cut.halo or south or north:
+        from gpuwm.static.rust_bridge import global_source_donors
+        fields = {
+            name: global_source_donors(
+                value, period=cut.period, first=cut.start,
+                out_nx=cut.longitude.size, south=south, north=north,
+                vector=name in {"U", "V", "U10", "V10"})
+            for name, value in snapshot.fields.items()}
+    else:
+        fields = {name: np.asarray(value)[..., take]
+                  for name, value in snapshot.fields.items()}
+    return replace(snapshot, latitude=latitude,
+                   longitude=cut.longitude, fields=fields)
 
 
 def unrolled_source_ring(arrays, longitude, x):
@@ -2094,8 +2167,12 @@ class DailyMeanAirTemperature:
         self._snapshots = snapshots
         self._hours = float(hours)
         self._value = None
+        self._by_shape = {}
 
     def __call__(self, snapshot):
+        shape = tuple(np.shape(snapshot.fields["SKINTEMP"]))
+        if shape in self._by_shape:
+            return self._by_shape[shape]
         if self._value is None:
             times = tuple(getattr(self._snapshots, "valid_times", None)
                           or (item.valid_time for item in self._snapshots))
@@ -2103,6 +2180,11 @@ class DailyMeanAirTemperature:
             chosen = [index for index, when in enumerate(times)
                       if (when - start).total_seconds() < self._hours * 3600.0]
             reader = getattr(self._snapshots, "surface_field_values", None)
+            prefetch = getattr(self._snapshots, "prefetch_through", None)
+            if prefetch is not None:
+                # A source decoded batch by batch decodes the whole window in
+                # one batch, and only the window, before the reads below.
+                prefetch(chosen)
             values = [None] * len(chosen)
             if reader is not None and len(chosen) > 1:
                 # Every time's 2 m field read and verified side by side; the
@@ -2132,11 +2214,53 @@ class DailyMeanAirTemperature:
                            f"over {span:g} h from {start.isoformat()}"),
                 "times": [times[index].isoformat() for index in chosen]})
         field, receipt = self._value
-        if field.shape != np.shape(snapshot.fields["SKINTEMP"]):
-            raise ValueError(
-                "the daily-mean 2 m air temperature's grid differs from "
-                "this forcing time's")
+        if field.shape != shape:
+            # A series whose times come on two source grids (an analysis
+            # initial state on its own grid ahead of a boundary model's
+            # times): the mean for THIS time is the mean over the times on
+            # its own grid, which is what a per-source WPS avg_tsfc would be.
+            field, receipt = self._same_grid_mean(shape, snapshot)
+        self._by_shape[shape] = (field, receipt)
         return field, receipt
+
+    def _same_grid_mean(self, shape, snapshot):
+        times = tuple(getattr(self._snapshots, "valid_times", None)
+                      or (item.valid_time for item in self._snapshots))
+        start = min(times)
+        reader = getattr(self._snapshots, "surface_field_values", None)
+        total, used = None, []
+        for index, when in enumerate(times):
+            if (when - start).total_seconds() >= self._hours * 3600.0:
+                continue
+            value = (reader(index, _INLAND_AIR_FIELD) if reader is not None
+                     else self._snapshots[index].fields.get(_INLAND_AIR_FIELD))
+            if value is None:
+                continue
+            value = _as_host_float64(value)
+            if tuple(value.shape) != shape:
+                continue
+            total = value.copy() if total is None else total + value
+            used.append(when)
+        if total is None:
+            # An initial analysis alone on its grid: its own 2 m air
+            # temperature is the only one that grid has.
+            own = snapshot.fields.get(_INLAND_AIR_FIELD)
+            if own is None:
+                raise ValueError(
+                    "the daily-mean 2 m air temperature has no forcing time "
+                    f"on this forcing time's grid {shape}, and this time "
+                    f"carries no {_INLAND_AIR_FIELD} of its own")
+            when = getattr(snapshot, "valid_time", None)
+            return _as_host_float64(own), {
+                "window": ("this forcing time's own 2 m air temperature: no "
+                           "other forcing time shares its source grid"),
+                "times": [None if when is None else when.isoformat()]}
+        span = (used[-1] - used[0]).total_seconds() / 3600.0
+        return total / len(used), {
+            "window": (f"daily mean of {len(used)} forcing time(s) on this "
+                       f"time's own source grid over {span:g} h from "
+                       f"{used[0].isoformat()}"),
+            "times": [when.isoformat() for when in used]}
 
 _INLAND_AIR_PROVIDERS: list = []
 

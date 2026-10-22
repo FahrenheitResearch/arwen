@@ -47,32 +47,24 @@ fn hash(v: &[f32]) -> String {
     format!("{:x}", h.finalize())
 }
 
-struct Scratch(PathBuf);
-impl Scratch {
-    fn new() -> Self {
-        let p = std::env::temp_dir().join(format!(
-            "snowfall-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&p).unwrap();
-        Self(p)
-    }
-}
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+mod support;
+use support::Scratch;
 
 fn frame(dir: &Path, hour: u32, snow: f32, graupel: f32, depth: f32, temp: f64) -> PathBuf {
     frame_series(dir, &[(hour, snow, graupel, depth, temp)])
 }
 
 fn frame_series(dir: &Path, records: &[(u32, f32, f32, f32, f64)]) -> PathBuf {
+    frame_series_without(dir, records, &[])
+}
+
+/// A history whose schemes write none of `omitted` (a Noah run writes no
+/// RUC `SNOWFALLAC`).
+fn frame_series_without(
+    dir: &Path,
+    records: &[(u32, f32, f32, f32, f64)],
+    omitted: &[&str],
+) -> PathBuf {
     const NX: usize = 24;
     const NY: usize = 18;
     const NZ: usize = 4;
@@ -102,11 +94,16 @@ fn frame_series(dir: &Path, records: &[(u32, f32, f32, f32, f64)]) -> PathBuf {
         ("SNOWNC", "mm"),
         ("GRAUPELNC", "mm"),
         ("SNOWFALLAC", ""),
+        ("SNOWH", "m"),
     ] {
+        if omitted.contains(&n) {
+            surfaces.push(None);
+            continue;
+        }
         let id = s.def_var(n, NcType::Float, &[time, y, x]).unwrap();
         s.put_var_attr(id, "units", AttrValue::Text(u.into()))
             .unwrap();
-        surfaces.push(id);
+        surfaces.push(Some(id));
     }
     let t = s.def_var("T", NcType::Float, &[time, z, y, x]).unwrap();
     let p = s.def_var("P", NcType::Float, &[time, z, y, x]).unwrap();
@@ -131,8 +128,11 @@ fn frame_series(dir: &Path, records: &[(u32, f32, f32, f32, f64)]) -> PathBuf {
             vec![snow; NX * NY],
             vec![graupel; NX * NY],
             vec![depth; NX * NY],
+            vec![depth / 1000.; NX * NY],
         ]) {
-            w.write_record(rec, id, VarData::F32(&v)).unwrap();
+            if let Some(id) = id {
+                w.write_record(rec, id, VarData::F32(&v)).unwrap();
+            }
         }
         let pressures = [90000.0f64, 70000., 50000., 30000.];
         let theta: Vec<f32> = pressures
@@ -174,6 +174,9 @@ fn import(path: &Path, root: &Path, since: Option<&str>) -> (PathBuf, Vec<String
                 "snowfall_window".into(),
                 "snow_10to1_window".into(),
                 "snow_kuchera_window".into(),
+                "snowfall_liquid_equivalent".into(),
+                "snow_depth_total".into(),
+                "snow_depth_change".into(),
             ],
             snow_since: since.map(str::to_string),
             ..Default::default()
@@ -192,7 +195,7 @@ fn import(path: &Path, root: &Path, since: Option<&str>) -> (PathBuf, Vec<String
 
 #[test]
 fn real_import_registry_render_and_points() {
-    let s = Scratch::new();
+    let s = Scratch::new("snowfall", "");
     frame(&s.0, 0, 0., 0., 0., 272.16);
     let middle = frame(&s.0, 1, 1., 1., 18., 272.16);
     let end = frame(&s.0, 2, 2., 1., 30., 269.16);
@@ -202,6 +205,9 @@ fn real_import_registry_render_and_points() {
         ("snowfall_window", 30.),
         ("snow_10to1_window", 30.),
         ("snow_kuchera_window", 34.),
+        ("snowfall_liquid_equivalent", 3.),
+        ("snow_depth_total", 30.),
+        ("snow_depth_change", 30.),
     ] {
         let values = reader
             .read_full_2d(name)
@@ -261,7 +267,7 @@ fn real_import_registry_render_and_points() {
     let output = Command::new(env!("CARGO_BIN_EXE_rw_wrfbatch"))
         .args([
             "--products",
-            "snowfall_window,snow_10to1_window,snow_kuchera_window",
+            "snowfall_window,snow_10to1_window,snow_kuchera_window,snowfall_liquid_equivalent,snow_depth_total,snow_depth_change",
             "--width",
             "480",
             "--height",
@@ -280,6 +286,16 @@ fn real_import_registry_render_and_points() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    if let Ok(dir) = std::env::var("RW_SNOW_PICTURE_DIR") {
+        let out=PathBuf::from(dir); std::fs::create_dir_all(&out).unwrap();
+        fn collect(src:&Path,dst:&Path) {
+            for e in std::fs::read_dir(src).unwrap() {let e=e.unwrap();
+                if e.file_type().unwrap().is_dir(){collect(&e.path(),dst);}
+                else if e.path().extension().is_some_and(|s|s=="png") {std::fs::copy(e.path(),dst.join(e.file_name())).unwrap();}
+            }
+        }
+        collect(&s.0.join("png"),&out);
+    }
     let point = Command::new(env!("CARGO_BIN_EXE_rw_points"))
         .args(["--point", "site,47.01,-111.99", "--out"])
         .arg(s.0.join("points.csv"))
@@ -312,7 +328,7 @@ fn real_import_registry_render_and_points() {
 
 #[test]
 fn incomplete_history_cannot_publish_a_total() {
-    let s = Scratch::new();
+    let s = Scratch::new("snowfall", "");
     let end = frame(&s.0, 2, 2., 1., 30., 269.16);
     let (_, notes) = import(&end, &s.0.join("store"), None);
     assert!(
@@ -321,11 +337,17 @@ fn incomplete_history_cannot_publish_a_total() {
             .any(|s| s.contains("exact snowfall baseline frame missing")),
         "{notes:?}"
     );
+    // The note names the record the window needed, so the render summary
+    // can say which frame a host removed.
+    assert!(
+        notes.iter().any(|s| s.contains("no history record valid at 2026-01-01_00:00:00")),
+        "{notes:?}"
+    );
 }
 
 #[test]
 fn an_incomplete_future_frame_does_not_break_a_completed_window() {
-    let s = Scratch::new();
+    let s = Scratch::new("snowfall", "");
     frame(&s.0, 0, 0., 0., 0., 272.16);
     let end = frame(&s.0, 2, 2., 1., 30., 269.16);
     std::fs::write(s.0.join("wrfout_d02_2026-01-01_03_00_00"), []).unwrap();
@@ -383,7 +405,7 @@ fn supplied_planes_are_renderable_without_claiming_download_support() {
 
 #[test]
 fn multi_record_history_uses_every_interval_and_points_record() {
-    let s = Scratch::new();
+    let s = Scratch::new("snowfall", "");
     let path = frame_series(
         &s.0,
         &[
@@ -488,4 +510,89 @@ fn real_history_matches_source_patch() {
         std::fs::write(p, serde_json::to_vec_pretty(&receipt).unwrap()).unwrap();
     }
     assert_eq!(mismatch, 0, "{receipt}");
+}
+
+#[test]
+fn opposing_counter_changes_cannot_hide_a_reset() {
+    let d=Scratch::new("snowfall", "");
+    frame(&d.0,0,10.,0.,0.,270.);
+    let p=frame(&d.0,1,5.,10.,0.,270.);
+    let f=WrfFile::open(&p).unwrap();
+    let values=rw_wrfbatch::snowfall::window(&f,&p,0,None,false).unwrap();
+    assert!(values.iter().all(|v|v.is_nan()),"a reset in SNOWNC is unknown even when GRAUPELNC growth masks it in the sum");
+}
+
+#[test]
+fn depth_change_retains_settling_and_liquid_is_not_depth() {
+    let d=Scratch::new("snowfall", "");
+    frame(&d.0,0,0.,0.,200.,270.);
+    let p=frame(&d.0,2,2.,1.,150.,270.);
+    let (hour,notes)=import(&p,&d.0.join("store"),None);
+    let r=rw_store::reader::HourReader::open(&hour).unwrap();
+    for (name,want) in [("snow_depth_change",-50.),("snow_depth_total",150.),("snowfall_liquid_equivalent",3.),("snow_10to1_window",30.)] {
+        assert!(r.read_full_2d(name).unwrap_or_else(|e|panic!("{e}: {notes:?}")).iter().all(|v|(*v-want).abs()<0.002),"{name}");
+    }
+}
+
+// The breakage: a host removed earlier history frames to save disk, and a
+// Kuchera total summed across the hole takes one end temperature for every
+// interval it spans.  The run's ledger of written frames tells a removed
+// frame from a cadence that never wrote one.
+#[test]
+fn a_removed_frame_skips_kuchera_by_name_and_keeps_the_exact_windows() {
+    let s = Scratch::new("snowfall", "");
+    let first = frame(&s.0, 0, 0., 0., 0., 272.16);
+    let removed = frame(&s.0, 1, 1., 0., 10., 270.16);
+    let end = frame(&s.0, 2, 2., 1., 30., 269.16);
+    let names = [&first, &removed, &end]
+        .iter()
+        .map(|p| p.file_name().unwrap().to_str().unwrap().to_string() + "\n")
+        .collect::<String>();
+    std::fs::write(s.0.join(rw_wrfbatch::snowfall::HISTORY_LEDGER), names).unwrap();
+    std::fs::remove_file(&removed).unwrap();
+    let (_, notes) = import(&end, &s.0.join("store"), None);
+    assert!(
+        notes.iter().any(|n| n.starts_with("snow_kuchera_window unavailable: history frame(s) this run wrote were removed: wrfout_d02_2026-01-01_01_00_00 (valid 2026-01-01_01:00:00)")),
+        "{notes:?}"
+    );
+    assert!(!notes.iter().any(|n| n.starts_with("snow_10to1_window unavailable")), "{notes:?}");
+    assert!(!notes.iter().any(|n| n.starts_with("snowfall_liquid_equivalent unavailable")), "{notes:?}");
+}
+
+#[test]
+fn a_cadence_that_never_wrote_a_time_keeps_kuchera() {
+    let s = Scratch::new("snowfall", "");
+    let first = frame(&s.0, 0, 0., 0., 0., 272.16);
+    let end = frame(&s.0, 2, 2., 1., 30., 269.16);
+    let names = [&first, &end]
+        .iter()
+        .map(|p| p.file_name().unwrap().to_str().unwrap().to_string() + "\n")
+        .collect::<String>();
+    std::fs::write(s.0.join(rw_wrfbatch::snowfall::HISTORY_LEDGER), names).unwrap();
+    let (_, notes) = import(&end, &s.0.join("store"), None);
+    assert!(!notes.iter().any(|n| n.starts_with("snow_kuchera_window unavailable")), "{notes:?}");
+}
+
+// The breakage: SNOWFALLAC is a RUC land-model field, so a default Noah
+// forecast never writes it, and snowfall_window's "unavailable" note on
+// every frame made every default `gpuwm go` close with "snowfall_window
+// drew no picture".  A history without the field does not carry the
+// product; the other windows still build from SNOWNC.
+#[test]
+fn a_history_without_snowfallac_does_not_offer_snowfall_window() {
+    let s = Scratch::new("snowfall", "");
+    frame_series_without(&s.0, &[(0, 0., 0., 0., 272.16)], &["SNOWFALLAC"]);
+    let end = frame_series_without(&s.0, &[(2, 2., 1., 30., 269.16)], &["SNOWFALLAC"]);
+    let (_, notes) = import(&end, &s.0.join("store"), None);
+    assert!(!notes.iter().any(|n| n.starts_with("snowfall_window")), "{notes:?}");
+    for slug in ["snow_10to1_window", "snow_kuchera_window", "snowfall_liquid_equivalent",
+                 "snow_depth_total", "snow_depth_change"] {
+        assert!(notes.iter().any(|n| n.starts_with(&format!("{slug}: stored mm"))), "{slug}: {notes:?}");
+        assert!(!notes.iter().any(|n| n.starts_with(&format!("{slug} unavailable"))), "{slug}: {notes:?}");
+    }
+    // A history that carries SNOWFALLAC still names a window it cannot build.
+    let t = Scratch::new("snowfall", "");
+    let lone = frame(&t.0, 2, 2., 1., 30., 269.16);
+    let (_, notes) = import(&lone, &t.0.join("store"), Some("2026-01-01_00:00:00"));
+    assert!(notes.iter().any(|n| n.starts_with("snowfall_window unavailable: exact explicit snowfall baseline missing")), "{notes:?}");
 }

@@ -59,7 +59,15 @@ def test_the_six_doors_are_bundled_on_demand_and_not_in_the_wheel():
     assert {a.name for a in bridge_assets.on_demand_artifacts()} == (
         set(STREAM_DOORS) | {"rw_radar_feeds"}
         # 2.9.3 (PyPI per-file limit): five front doors, the sounding renderer, the gauge verifier.
-        | {"rw_mrms", "rw_stage4", "rw_asos", "rw_goes", "rw_opera", "rw_soundings", "rw_nextgen_verify"})
+        | {"rw_mrms", "rw_stage4", "rw_asos", "rw_goes", "rw_opera", "rw_soundings", "rw_nextgen_verify"}
+        # 2.9.3 improve-1: the hydro door's provider tools, staged by its first preparation.
+        | {"rw_hydro_world", "rw_hydro_params", "rw_hydrofabric", "nextgen-reservoir-prepare", "rw_hydro_init"}
+        # 2.9.4 capability lanes: ocean preparation, ocean SST verification, ice observation binding.
+        | {"rw_ocean", "rw_ocean_verify", "rw_ice_verify", "rw_bathy"}
+        # 2.9.4 (PyPI per-file limit): verification and post-run doors no forecast reaches.
+        | {"rw_hail", "rw_airnow", "rw_scoreboard", "rw_tc_fields", "rw_fire_indices"}
+        # Post-2.9.4: native Rust coupled hydro output.
+        | {"rw_nextgen_output"})
 
 
 def test_every_stream_with_a_door_names_a_bundled_artifact():

@@ -1,0 +1,254 @@
+"""Actual CUDA PWP driver, finite radiation, unequal depths, and restart."""
+import dataclasses
+import json
+import numpy as np
+import pytest
+from conftest import requires_gpu
+from test_oml_gpu import make_state
+from gpuwm.ocean.mixed_layer import initialize, step, check, STATE_FIELDS
+from test_oml_contract import run_config
+
+
+def columns(cp,levels=30):
+    fields={name:cp.zeros((8,10),cp.float32) for name in
+            ('hfx','lh','gsw','glw','qfx','ust','uair','vair','f')}
+    fields['xland']=cp.full((8,10),2.,cp.float32)
+    fields['xland'][:,-1]=1.
+    fields['tsk']=cp.full((8,10),302.,cp.float32)
+    cfg=run_config(sf_ocean_physics=2,ocean_levels=levels,ocean_mld_climatology='configured_uniform_mld')
+    with pytest.warns(RuntimeWarning,match='configured_uniform_mld'):
+        initialize(fields,cfg)
+    return fields
+
+
+@requires_gpu
+@pytest.mark.gpu
+def test_zero_radiation_is_finite_and_heat_loss_has_correct_sign():
+    import cupy as cp
+    a=columns(cp);a['hfx'].fill(80.);a['lh'].fill(300.)
+    before=a['om_tmp'].copy()
+    step(a,dt=30.,dx=10000.,dy=10000.);check(a)
+    assert bool(cp.all(cp.isfinite(a['om_tmp'])))
+    assert bool(cp.all(a['om_tmp'][0,:,:-1]<before[0,:,:-1]))
+    assert bool(cp.all(a['tsk'][:,-1]==302.))
+    assert bool(cp.all(a['om_u'][:,:,-1]==0.))
+
+
+@requires_gpu
+@pytest.mark.gpu
+def test_unequal_layers_mix_without_truncated_weight_and_conserve_tracers():
+    import cupy as cp
+    a=columns(cp,4)
+    z=cp.asarray([5.,20.,50.,100.],dtype=cp.float32)[:,None,None]
+    a['om_depth'][...]=z
+    a['om_tmp'][...]=cp.asarray([300.,299.99,299.,297.],dtype=cp.float32)[:,None,None]
+    a['om_tini'][...]=a['om_tmp']
+    a['om_u'][0]=3.
+    a['glw'][...]=cp.float32(5.67051e-8)*a['om_tmp'][0]**4
+    # Balance the *integrated* heat flux, accounting for penetrating radiation.
+    dz=cp.diff(cp.concatenate((cp.zeros_like(z[:1]),z)),axis=0)
+    before=cp.sum(a['om_tmp']*dz,axis=0)
+    step(a,dt=30.,dx=10000.,dy=10000.);check(a)
+    assert bool(cp.all(cp.isfinite(a['om_u'])))
+    assert float(a['om_u'][0,3,3])<3.
+    # Outgoing longwave is fully emitted, incoming longwave partly exits below 100 m.
+    expected=before-30*a['glw']*cp.exp(-100/20)/(1024*4183.3)
+    cp.testing.assert_allclose(cp.sum(a['om_tmp']*dz,axis=0)[:,:-1],expected[:,:-1],rtol=2e-6,atol=0.01)
+
+
+@requires_gpu
+@pytest.mark.gpu
+def test_pwp_surface_driver_cadence():
+    import cupy as cp
+    from gpuwm.core.dycore import run_steps
+    with pytest.warns(RuntimeWarning,match='configured_uniform_mld'):
+        state,cfg,driver=make_state(cp,ocean=2)
+    run_steps(state,cfg,1);first=cp.asnumpy(driver.fields['om_tmp'])
+    run_steps(state,cfg,4)
+    assert cp.asnumpy(driver.fields['om_tmp']).tobytes()==first.tobytes()
+    run_steps(state,cfg,1)
+    assert cp.asnumpy(driver.fields['om_tmp']).tobytes()!=first.tobytes()
+    check(driver.fields)
+
+
+@requires_gpu
+@pytest.mark.gpu
+def test_actual_pwp_restart_roundtrip_and_continuation(tmp_path):
+    import cupy as cp
+    from gpuwm.core.dycore import run_steps
+    from gpuwm.io import restart
+    def make():
+        with pytest.warns(RuntimeWarning,match='configured_uniform_mld'):
+            return make_state(cp,ocean=2)
+    a,cfg,da=make();run_steps(a,cfg,16)
+    ref=restart.write_restart(tmp_path/'reference.npz',a,cfg)
+    b,cfg,db=make();run_steps(b,cfg,8)
+    mid=restart.write_restart(tmp_path/'mid.npz',b,cfg)
+    c,cfg,dc=make();restart.restore_restart(mid,c,cfg)
+    for name in STATE_FIELDS:
+        cp.testing.assert_array_equal(dc.fields[name],db.fields[name])
+    run_steps(c,cfg,8)
+    resumed=restart.write_restart(tmp_path/'resumed.npz',c,cfg)
+    with np.load(ref,allow_pickle=False) as expected,np.load(resumed,allow_pickle=False) as got:
+        assert set(expected.files)==set(got.files)
+        for name in expected.files:
+            if name=='__gpuwm_restart_header__':
+                left=json.loads(expected[name].tobytes());right=json.loads(got[name].tobytes())
+                for key in ('elapsed_seconds','setup_fingerprint','physics_setup_fingerprint','physics_setup','driver','array_manifest','config'):
+                    assert left[key]==right[key],key
+            else:
+                assert expected[name].tobytes()==got[name].tobytes(),name
+
+
+@requires_gpu
+@pytest.mark.gpu
+def test_nearest_bins_match_spherical_search_at_dateline_and_poles():
+    import cupy as cp
+    from gpuwm.ocean.mixed_layer import kernels
+    rng=np.random.default_rng(1020)
+    slat=np.concatenate((rng.uniform(-90,90,512),[89.9,-89.9,0,0])).astype('f4')
+    slon=np.concatenate((rng.uniform(-180,180,512),[-170,170,179.9,-179.9])).astype('f4')
+    tlat=np.array([89.99,-89.99,0,0,35,-35],dtype='f4')
+    tlon=np.array([50,-50,-179.95,179.95,80,-80],dtype='f4')
+    surface=cp.full(slat.size,300,dtype='f4');surface[2]=cp.nan
+    lat,lon=cp.asarray(slat),cp.asarray(slon)
+    counts=cp.zeros(64800,cp.int32);offset=cp.zeros(64801,cp.int32)
+    cursor=cp.zeros_like(counts);members=cp.empty(slat.size,cp.int32)
+    mod=kernels(2);ns=np.int32(slat.size);nt=np.int32(tlat.size)
+    mod.get_function('ocean_bin_count')((3,),(256,),(lat,lon,surface,counts,ns))
+    cp.cumsum(counts,dtype=cp.int32,out=offset[1:])
+    mod.get_function('ocean_bin_scatter')((3,),(256,),(lat,lon,surface,offset,cursor,members,ns))
+    out=cp.empty(tlat.size,cp.int32)
+    mod.get_function('ocean_nearest')((int(nt),),(256,),
+        (lat,lon,offset,members,cp.asarray(tlat),cp.asarray(tlon),cp.full(int(nt),2.,cp.float32),out,nt))
+    expected=[]
+    for a,b in zip(tlat,tlon):
+        dy=np.sin(np.deg2rad(a-slat)*.5);dx=np.sin(np.deg2rad(b-slon)*.5)
+        d=dy*dy+np.cos(np.deg2rad(a))*np.cos(np.deg2rad(slat))*dx*dx
+        d[2]=np.inf;j=int(d.argmin());expected.append(j if d[j]<=0.00007615242 else -1)
+    cp.testing.assert_array_equal(out,cp.asarray(expected,dtype=cp.int32))
+
+
+@requires_gpu
+@pytest.mark.gpu
+def test_lakes_do_not_receive_ocean_cooling_or_currents():
+    import cupy as cp
+    a=columns(cp,4);a['lakemask']=cp.zeros_like(a['xland']);a['lakemask'][:,4]=1
+    cfg=run_config(sf_ocean_physics=2,ocean_levels=4,ocean_mld_climatology='configured_uniform_mld')
+    with pytest.warns(RuntimeWarning,match='configured_uniform_mld'):
+        initialize(a,cfg)
+    a['lh'].fill(300);a['ust'].fill(2);a['uair'].fill(40)
+    step(a,dt=30,dx=10000,dy=10000);check(a)
+    cp.testing.assert_array_equal(a['tsk'][:,4],cp.full(8,302,cp.float32))
+    cp.testing.assert_array_equal(a['om_u'][:,:,4],cp.zeros((4,8),cp.float32))
+    assert bool(cp.all(a['tsk'][:,3]<302))
+
+
+@requires_gpu
+@pytest.mark.gpu
+def test_surface_interval_is_fully_advanced_by_bounded_ocean_substeps():
+    import cupy as cp
+    from gpuwm.core.surface_ocean import launch_ocean_step
+    a=columns(cp,4);b=columns(cp,4)
+    for fields in (a,b):
+        fields['lh'].fill(300);fields['ust'].fill(1);fields['uair'].fill(30)
+    launch_ocean_step(a,dt=150,dx=10000,dy=10000,gamma=.14,relaxation_time=0,ocean_timestep_minutes=1)
+    for _ in range(3):step(b,dt=50,dx=10000,dy=10000)
+    check(a);check(b)
+    for name in STATE_FIELDS:cp.testing.assert_array_equal(a[name],b[name])
+
+
+@requires_gpu
+@pytest.mark.gpu
+def test_actual_history_rust_roundtrip_keeps_independent_ocean_axis(tmp_path):
+    import cupy as cp
+    from gpuwm.io.wrfout import WrfoutWriter, state_frame
+    from gpuwm.netcdf_bridge import open_dataset
+    with pytest.warns(RuntimeWarning,match='configured_uniform_mld'):
+        state,cfg,driver=make_state(cp,ocean=2)
+    frame=state_frame(state,include_diagnostic_pressure=True)
+    path=tmp_path/'ocean-history.nc'
+    with WrfoutWriter(path,nx=cfg.nx,ny=cfg.ny,nz=cfg.nz,dx=cfg.dx,dy=cfg.dy,engine='rust') as writer:
+        writer.write_frame('2022-09-26_00:00:00',frame)
+    with open_dataset(path) as ds:
+        assert ds.variables['OM_TMP'].dimensions==('Time','ocean_levels','south_north','west_east')
+        assert ds.variables['OM_TMP'].shape==(1,30,cfg.ny,cfg.nx)
+        np.testing.assert_array_equal(ds.variables['OM_TMP'][0],cp.asnumpy(driver.fields['om_tmp']))
+        assert ds.variables['T'].shape==(1,cfg.nz,cfg.ny,cfg.nx)
+        delta=ds.variables['OCEAN_SST_CHANGE'][0]
+        np.testing.assert_array_equal(delta[:,:-1],0.)
+
+
+@requires_gpu
+@pytest.mark.gpu
+@pytest.mark.parametrize('option',[1,2])
+def test_ocean_sst_change_tracks_coupled_initial_state_and_masks_land(option):
+    import cupy as cp
+    from gpuwm.core.surface_ocean import update_ocean_diagnostics
+    from gpuwm.core.dycore import run_steps
+    if option==2:
+        with pytest.warns(RuntimeWarning,match='configured_uniform_mld'):
+            state,cfg,driver=make_state(cp,ocean=option)
+    else:
+        state,cfg,driver=make_state(cp,ocean=option)
+    f=driver.fields
+    f['lakemask']=cp.zeros_like(f['xland']);f['lakemask'][:,4]=1
+    before=f['tsk'].copy()
+    run_steps(state,cfg,7)
+    update_ocean_diagnostics(f)
+    wet=(f['xland']>1.5)&(f['lakemask']<.5)
+    cp.testing.assert_array_equal(f['ocean_sst_change'][wet],(f['tsk']-before)[wet])
+    assert bool(cp.all(cp.isfinite(f['ocean_sst_change'])))
+    assert bool(cp.all(cp.isfinite(f['ocean_sst'])))
+    from gpuwm.io.wrfout import state_frame
+    frame = state_frame(state)
+    # state_frame hands history writers host arrays; index them with a host mask.
+    land = ~cp.asnumpy(wet)
+    assert bool(np.all(np.isnan(np.asarray(frame['OCEAN_SST_CHANGE'])[land])))
+    assert bool(np.all(np.isnan(np.asarray(frame['OCEAN_SST'])[land])))
+
+
+@requires_gpu
+@pytest.mark.gpu
+def test_water_beyond_one_degree_of_woa18_borrows_the_nearest_mld_instead_of_refusing():
+    # PWP is the 48 h+ default; inland water far from the WOA18 ocean refused
+    # every continental forecast (full-CONUS HRRR, V58 2026-10-21).
+    import cupy as cp
+    from gpuwm.ocean.mixed_layer.climatology import _borrow_beyond_one_degree
+    lon, lat = cp.meshgrid(cp.arange(0., 4., 0.25, dtype=cp.float32),
+                           cp.arange(0., 2., 0.25, dtype=cp.float32))
+    valid = cp.zeros(lat.shape, dtype=cp.bool_)
+    valid[0, 0] = True          # (0, 0)
+    valid[0, 12] = True         # (0, 3)
+    target_lat = cp.asarray([[0.0, 0.0, 1.0]], dtype=cp.float32)
+    target_lon = cp.asarray([[0.1, 8.0, 4.4]], dtype=cp.float32)
+    indices = cp.asarray([[0, -1, -1]], dtype=cp.int32)   # first covered within one degree
+    farthest, count = _borrow_beyond_one_degree(indices, target_lat, target_lon, lat, lon, valid)
+    assert count == 2
+    assert indices.get().tolist() == [[0, 12, 12]]
+    assert 550 < farthest < 560   # (0, 8) -> (0, 3): 5 degrees of the equator
+    untouched = cp.asarray([[0, -2]], dtype=cp.int32)
+    assert _borrow_beyond_one_degree(untouched, target_lat[:, :2], target_lon[:, :2],
+                                     lat, lon, valid) is None
+
+
+@requires_gpu
+@pytest.mark.gpu
+def test_the_woa18_profile_stops_its_lapse_rate_at_sea_water_freezing():
+    # Cold (275 K) water under a 10 m WOA18 MLD fell below 260 K at 150 m with
+    # the 0.14 K/m default lapse rate and the forecast refused its ocean
+    # (full-CONUS HRRR 48 h on the fold, V58 2026-10-21).
+    import cupy as cp
+    import numpy as np
+    from gpuwm.ocean.mixed_layer import kernels
+    levels, n = 30, 3
+    mld = cp.asarray([10.0], dtype=cp.float32)
+    index = cp.zeros(n, dtype=cp.int32)
+    sst = cp.asarray([275.0, 300.0, 270.0], dtype=cp.float32)
+    out = {name: cp.empty((levels, n), dtype=cp.float32) for name in ('t', 's', 'u', 'v', 'z')}
+    kernels(levels).get_function('ocean_mld_profiles')(((n*levels+127)//128,), (128,),
+        (mld, index, sst, out['t'], out['s'], out['u'], out['v'], out['z'], np.float32(0.14), np.int32(n)))
+    t = out['t'].get()
+    assert t[:, 0].min() == np.float32(271.25)          # clamped at freezing
+    assert abs(float(t[-1, 1]) - (300.0 - 0.14 * 140.0)) < 1e-3   # warm column: lapse rate as before
+    assert (t[:, 2] == np.float32(270.0)).all()        # already below freezing: holds its SST

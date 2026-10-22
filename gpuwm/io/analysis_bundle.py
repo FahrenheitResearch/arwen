@@ -61,7 +61,6 @@ import hashlib
 import contextvars
 import functools
 import json
-import os
 from pathlib import Path
 import re
 import shutil
@@ -567,10 +566,6 @@ class AnalysisBundle:
         return wrf_time(self.manifest["valid_time"])
 
     @property
-    def valid_datetime(self) -> datetime:
-        return parse_valid_time(self.manifest["valid_time"])
-
-    @property
     def form(self) -> str:
         return str(self.manifest["analysis"]["form"])
 
@@ -926,13 +921,23 @@ def write_background(analysis: str | Path, increment: str | Path, out: str | Pat
 
 def write_analysis(background: str | Path, increments: Mapping[str, np.ndarray], out: str | Path) -> dict[str, Any]:
     """The analysis a producer's increments make: background plus increment, rounded to each
-    variable's stored type, every other byte the background's."""
+    variable's stored type, every other byte the background's.
+
+    A moisture species, number or volume (``Q*``) that background plus increment leaves below
+    zero is set to zero and counted, the rule the door's at-once insertion already applies
+    ("moisture clipped at zero").  Breakage it prevents: a direct-insertion start of such an
+    analysis stops at the engine's initial health check (2026-10-15, a cycled convective analysis mean:
+    ``qc`` -4.1e-14 from averaging 33 member increments, "violates lower bound >= 0.0").  The
+    bundle's increment is then written from the clipped analysis, so analysis minus increment is
+    still the producer's background.
+    """
 
     background, out = Path(background), Path(out)
     require_classic(background, "the background")
     b = _open(background)
     _prefetch_unmasked(b, list(increments))
     updates = {}
+    clipped: dict[str, dict[str, float]] = {}
     for name, delta in sorted(increments.items()):
         if name not in b.variables:
             raise _refuse(f"the increment carries {name} and the background has no {name}")
@@ -940,9 +945,14 @@ def write_analysis(background: str | Path, increments: Mapping[str, np.ndarray],
         values = _first_record(variable) + np.asarray(delta, dtype=np.float64)
         if not np.all(np.isfinite(values)):
             raise _refuse(f"background {name} plus its increment is not finite")
+        if name.startswith(_NON_NEGATIVE_PREFIX):
+            negative = values < 0
+            if negative.any():
+                clipped[name] = {"values": int(negative.sum()), "min": float(values[negative].min())}
+                values = np.where(negative, 0.0, values)
         updates[name] = values.astype(variable.dtype)
     _patched_copy(background, out, updates)
-    return {"analysis": str(out), "changed": sorted(updates)}
+    return {"analysis": str(out), "changed": sorted(updates), "clipped_negative": clipped}
 
 
 # ---------------------------------------------------------------------------

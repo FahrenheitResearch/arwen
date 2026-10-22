@@ -731,33 +731,22 @@ pub struct PackMeta {
 }
 
 /// Accumulates `<f4` arrays into one contiguous payload.
+#[derive(Default)]
 pub struct PayloadBuilder {
     payload: Vec<u8>,
     arrays: std::collections::BTreeMap<String, ArrayEntry>,
-    next: usize,
-}
-
-impl Default for PayloadBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl PayloadBuilder {
     pub fn new() -> Self {
-        Self {
-            payload: Vec::new(),
-            arrays: std::collections::BTreeMap::new(),
-            next: 0,
-        }
+        Self::default()
     }
 
     /// Append one f32 array, returning its key.
     pub fn push_f32(&mut self, values: &[f32], shape: Vec<usize>) -> String {
         let expected: usize = shape.iter().product();
         debug_assert_eq!(expected, values.len(), "declared shape must match the data");
-        let key = format!("a{:05}", self.next);
-        self.next += 1;
+        let key = format!("a{:05}", self.arrays.len());
         let offset = self.payload.len();
         self.payload.reserve(values.len() * 4);
         for value in values {
@@ -777,14 +766,13 @@ impl PayloadBuilder {
 
     /// Append one `|u1` array, returning its key.
     ///
-    /// Shares the `a{:05}` key counter with [`Self::push_f32`], so a censor
+    /// Shares the `a{:05}` key sequence with [`Self::push_f32`], so a censor
     /// plane can never collide with a moment plane and the payload stays one
     /// contiguous, self-describing block.
     pub fn push_u8(&mut self, values: &[u8], shape: Vec<usize>) -> String {
         let expected: usize = shape.iter().product();
         debug_assert_eq!(expected, values.len(), "declared shape must match the data");
-        let key = format!("a{:05}", self.next);
-        self.next += 1;
+        let key = format!("a{:05}", self.arrays.len());
         let offset = self.payload.len();
         self.payload.extend_from_slice(values);
         self.arrays.insert(

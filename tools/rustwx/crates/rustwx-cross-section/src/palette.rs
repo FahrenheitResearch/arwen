@@ -5,8 +5,9 @@ use crate::render::{Color, CrossSectionRenderRequest};
 /// The temperature variants are ported from the `wxsection_ref` temperature
 /// colormap options. The remaining palettes are lightweight Rust-side presets
 /// aligned to the broader reference style catalog.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum CrossSectionPalette {
+    #[default]
     TemperatureStandard,
     TemperatureWhiteZero,
     TemperatureNwsNdfd,
@@ -85,12 +86,6 @@ struct FahrenheitAnchor {
 impl FahrenheitAnchor {
     const fn new(degrees_f: f32, color: Color) -> Self {
         Self { degrees_f, color }
-    }
-}
-
-impl Default for CrossSectionPalette {
-    fn default() -> Self {
-        Self::TemperatureStandard
     }
 }
 

@@ -53,8 +53,10 @@ def _author(out, roles, source, start):
     return json.loads(manifest.read_text(encoding="utf-8"))
 
 
-@pytest.mark.parametrize("source", ["gfs", "gdas"])
-@pytest.mark.parametrize("start", [0, 1])
+@pytest.mark.parametrize('source,start', [
+    pytest.param("gfs", 0, id='0-gfs'),
+    pytest.param("gdas", 1, id='1-gdas'),
+])
 def test_every_named_start_writes_the_series_it_names(tmp_path, source, start):
     out, roles = _fetched(tmp_path, source)
     document = _author(out, roles, source, start)
@@ -69,7 +71,9 @@ def test_every_named_start_writes_the_series_it_names(tmp_path, source, start):
         f"grib-f{hour:03d}" for hour in range(start, 3)]
 
 
-@pytest.mark.parametrize("source", ["gfs", "gdas"])
+@pytest.mark.parametrize('source', [
+    pytest.param("gfs", id='gfs'),
+])
 def test_an_explicit_analysis_start_is_the_whole_fetched_series(tmp_path, source):
     out, roles = _fetched(tmp_path, source)
     explicit = _author(out, roles, source, 0)

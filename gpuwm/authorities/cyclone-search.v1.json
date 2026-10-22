@@ -1,10 +1,17 @@
 {
   "schema": "gpuwm-cyclone-search-v1",
   "default_auto_region": "north-atlantic",
+  "early_start": {
+    "maximum_hours": 24,
+    "maximum_displacement_km": 300,
+    "maximum_fix_interval_hours": 6,
+    "method": "constant-motion back projection; first detected pressure held, never described as measured cycle pressure"
+  },
   "regions": {
     "north-atlantic": {
       "area": [0, -100, 55, -20],
-      "description": "North Atlantic, Caribbean and Gulf search rectangle. Bounds limit cycle-position selection; this is not an ocean-basin polygon."
+      "polygon_lon_lat": [[-100,55],[-100,22],[-97,18],[-93,17],[-90,15],[-87,14],[-85,11],[-83,9],[-80,8],[-77,7],[-75,0],[-20,0],[-20,55],[-100,55]],
+      "description": "North Atlantic nest target region: Gulf, Caribbean and Atlantic within the acquisition envelope. The southwest boundary follows the inland divide through Mexico and Central America at generalized regional scale, excluding East Pacific waters. This target polygon is not an official NHC jurisdiction boundary."
     }
   }
 }

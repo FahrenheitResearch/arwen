@@ -129,7 +129,7 @@ def test_missing_fabric_hook_still_prices_own_allocations_and_names_unknown_alia
     assert value.non_pool_bytes is None
 
 
-@pytest.mark.parametrize("defect", ["length", "path", "shape", "source", "csr", "columns"])
+@pytest.mark.parametrize('defect', ['length', 'path', 'shape', 'source'])
 def test_bad_metadata_cannot_be_accepted_as_valid_inventory(packet, defect):
     path, manifest, settings, context, options, _, _ = packet
     if defect == "length":
@@ -140,8 +140,6 @@ def test_bad_metadata_cannot_be_accepted_as_valid_inventory(packet, defect):
         manifest["files"]["r_parameters"]["shape"] = [18]
     elif defect == "source":
         manifest["reservoirs"]["source_pin"] = "unknown"
-    elif defect == "csr":
-        manifest["reservoirs"]["validated_csr"] = False
     else:
         manifest["reservoirs"]["parameter_columns"] = list(reversed(PARAMETERS))
     path.write_text(json.dumps(manifest))

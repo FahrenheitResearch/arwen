@@ -14,8 +14,7 @@
 //!   decode lane.
 //! - [`size_estimate`]: exact (`walk_hour_sizes`) and predictive
 //!   (`estimate` against a [`size_estimate::Calibration`]) sizing.
-//! - [`throttle`]: polite scheduling — the bins' process-wide knobs plus
-//!   the per-thread / dedicated-pool variants for interactive hosts.
+//! - [`throttle`]: per-thread / dedicated-pool scheduling for interactive hosts.
 //! - [`events`] (re-exported at the crate root): [`IngestEvent`] progress
 //!   stream, [`IngestStage`], [`IngestError`] (with a `Cancelled` variant),
 //!   and [`print_event`] — the sink that reproduces the bins' historical
@@ -620,19 +619,6 @@ mod tests {
                 "the one {model} file serves both the surface and pressure roles"
             );
         }
-    }
-
-    #[test]
-    fn fetch_plan_rap_is_one_file_serving_both_roles() {
-        use rustwx_core::ModelId;
-        let plan = fetch_plan(ModelId::Rap).expect("RAP plan");
-        assert_eq!(plan.len(), 1, "RAP fetches a single awp130pgrb file");
-        assert_eq!(plan[0].product, "awp130pgrb");
-        assert!(
-            plan[0].surface_source && plan[0].pressure_source,
-            "the one RAP file serves both the surface and pressure roles"
-        );
-        assert!(plan[0].idx_patterns.is_empty());
     }
 
     #[test]

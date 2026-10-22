@@ -1,0 +1,21 @@
+{
+ "cells_per_degree": 1200,
+ "params_table": "{params_table}",
+ "dem": {
+  "source": "copernicus-glo90",
+  "dir": "{data_root}/copernicus-dem-glo90/tiles"
+ },
+ "soil": {
+  "source": "soilgrids-2.0-wcs-4326",
+  "dir": "{data_root}/soilgrids/wcs-4326",
+  "prefix": "{soil_prefix}",
+  "geog_soilcomp": "{geog_soilcomp}"
+ },
+ "land_cover": {
+  "source": "esa-worldcover-v200-2021",
+  "dir": "{data_root}/worldcover/v200-2021"
+ },
+ "soil_recipe": "nwm-stas-lookup",
+ "lgar_recipe": "lgar-c-default-vg",
+ "veg_class_table": "USGS"
+}

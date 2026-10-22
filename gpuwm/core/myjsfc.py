@@ -25,13 +25,12 @@ on it.
 
 from __future__ import annotations
 
-from functools import lru_cache
 from gpuwm.core.device_cache import cuda_cache
 
 import cupy as cp
 import numpy as np
 
-from gpuwm.core.kernels import get_kernel
+from gpuwm.core.kernels import get_kernel, get_kernel_int_defines
 from gpuwm.core.myjsfc_tables import build_psi_tables
 # WRF INOUT surface state and pure outputs, in kernel argument order.  The
 # tables live in the runtime-free inventory module so the VRAM estimator
@@ -67,7 +66,7 @@ def _device_tables():
 
 
 def launch_myj_sfclay(columns, surface, state, outputs, *,
-                      itimestep: int) -> None:
+                      itimestep: int, ocean_z0=None) -> None:
     """Run one MYJ surface-layer step in place.
 
     ``columns`` supplies the full bottom-up ``(nz, ny, nx)`` ``dz`` and
@@ -98,9 +97,19 @@ def launch_myj_sfclay(columns, surface, state, outputs, *,
                 or not array.flags.c_contiguous):
             raise ValueError("launch_myj_sfclay requires same-shape "
                              "contiguous float32 surface arrays")
+    ocean_args = ()
+    if ocean_z0 is not None:
+        if (not isinstance(ocean_z0, cp.ndarray)
+                or ocean_z0.shape != shape or ocean_z0.dtype != DTYPE
+                or not ocean_z0.flags.c_contiguous
+                or ocean_z0.device.id != surface["psfc"].device.id):
+            raise ValueError("MYJ wave roughness requires contiguous float32 on the surface device/grid")
+        ocean_args = (ocean_z0,)
     arrays, scalars = _device_tables()
     n = int(np.prod(shape))
     blocks = (n + _TPB - 1) // _TPB
-    kernel = get_kernel("myjsfc", "myjsfc_column")
-    kernel((blocks,), (_TPB,), tuple(named) + arrays + scalars
+    kernel = (get_kernel_int_defines("myjsfc", "myjsfc_column",
+              (("OCEAN_WAVE_ROUGHNESS", 1),)) if ocean_z0 is not None
+              else get_kernel("myjsfc", "myjsfc_column"))
+    kernel((blocks,), (_TPB,), tuple(named) + arrays + scalars + ocean_args
            + (np.int32(itimestep), np.int32(nz), np.int32(n)))

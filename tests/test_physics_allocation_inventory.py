@@ -168,8 +168,18 @@ _PHYSICS_ALLOCATION_INVENTORY = {
     "gpuwm/core/lin.py": {},  # Persistent DomainState scratch, no raw allocation sites.
     # Integer-define launchers are part of the same kernel family. Chem
     # vertical mixing and IEVA draw only declared caller/state buffers;
-    # their empty rows reject any future raw allocation.
-    'gpuwm/core/chem_vertmx.py': {},
+    # their empty rows reject any future raw allocation.  The one vertmx
+    # site is the HRRR-fork smoke dry-deposition velocity (aer_drydep_opt =
+    # 111 only): one (ny, nx) float32 surface plane per chemistry vertmx
+    # call, 4 bytes per column, owned by the caller for that call and back
+    # in the pool when it returns.  It is a surface plane, not a column
+    # working set, so it does not scale with the nest's levels.
+    'gpuwm/core/chem_vertmx.py': {'smoke_deposition_velocity': 1},
+    # lane/hrrr-v4-output: one history-time copy per finalized GSD field
+    # (finalize_history_fields), never per step; the output-diagnostics
+    # launchers draw only state carriers.
+    'gpuwm/core/gsd_diagnostics.py': {'finalize_history_fields': 1},
+    'gpuwm/core/output_diagnostics.py': {},
     'gpuwm/core/ieva.py': {},
     # The WRF v4.4 Thompson column (thompson_version = "wrf_44") draws its
     # working fields from state.scratch slots and its coefficient tables
@@ -183,6 +193,14 @@ _PHYSICS_ALLOCATION_INVENTORY = {
     # slab per call for the global tier, bounded by GLOBAL_SCRATCH_BYTES
     # (or GLOBAL_MIN_IN_FLIGHT matrices) and freed on return.
     'gpuwm/core/jacobi_eigh.py': {'batched_eigh': 3, '_launch_global': 1},
+    # The live GSD/precipitation steps use DomainState.scratch; their
+    # scratch_shapes feed preflight.scratch_slot_registry (no raw sites).
+    'gpuwm/core/output_diagnostics.py': {},
+    # Standalone assembled-frame recomputation (not called by a forecast
+    # route) stages at most three float32 horizontal planes: two host
+    # carriers and one output, plus CuPy reduction scalars/workspace.
+    # The raw output allocation belongs to this helper, not a step arena.
+    'gpuwm/core/gsd_diagnostics.py': {'finalize_history_fields': 1},
     # SASE's pool-backed closure is priced by the two live-set phases in
     # preflight.sase_workspace_phases, including the driver-held fields.
     # The CPU allocation/lifetime witness executes its actual step with
@@ -213,7 +231,11 @@ _PHYSICS_ALLOCATION_INVENTORY = {
     # CLM lake columns (sf_lake_physics = 1): per-lake-column state and
     # refresh scratch, bounded by the lake-column count.
     "gpuwm/core/lake.py": {
-        "initialize_lake": 6,
+        # lane/cap-lake (f9eb12244a9): one (7, ncolumns) float32 staging
+        # block for the table-driven lake analysis fields, filled once at
+        # initialization and bound by lake_bind_source_columns (28 B per
+        # lake column).
+        "initialize_lake": 7,
         "refresh_columns": 6,
         # c4ef64622 moved the CLM lake column storage out of the per-thread
         # local frame into one device arena per lake model: at most
@@ -269,8 +291,11 @@ _PHYSICS_ALLOCATION_INVENTORY = {
     # the trailing window's mass and FRP sums (float64) and burning-hour
     # count (int32) on the fire source's 2-D grid, 20 bytes per source cell,
     # cached on the chem state and never reallocated per step.
+    # Missing source archives take a mutually exclusive branch: one
+    # float32 zero plane shared by mass/FRP (4 B/cell), below the existing
+    # 20 B/cell bound; this adds a site without increasing the peak.
     'gpuwm/core/chem_fire.py': {
-        "trailing_planes": 3,
+        "trailing_planes": 4,
     },
     'gpuwm/core/chem_wetdep.py': {},
     # WRF's monotonic final stage.  The forecast route hands it the six
@@ -332,7 +357,20 @@ _PHYSICS_ALLOCATION_INVENTORY = {
         'gocart_optics': 6,
         'opt_out': 2,
         'rrtmg_sw_bands': 2,
-        'step': 1,
+        # lane/cap-aer-optics (177a585dd32) moved the held four-wavelength
+        # tauaer work buffer (16 B per cell, once per domain) from step into
+        # update_diagnostics, which the live radiation call also runs.
+        'update_diagnostics': 1,
+    },
+    # lane/cap-aer-optics (177a585dd32): live chemistry aerosol optics into
+    # both radiation engines.  Per radiation call, sized by the radiation
+    # column batch: RRTMG SW three (nc, 14, nlay) band planes or one LW
+    # (nc, nlay, 16); RRTMGP three (nc, nlay, nbands); finalize one to three
+    # g-point arrays shaped like the gas optical depth it mixes into.
+    'gpuwm/core/chem_radiation.py': {
+        'legacy': 2,
+        'modern': 1,
+        'finalize': 1,
     },
     'gpuwm/core/chem_rrtmgp_aerosol.py': {
         '_outputs': 2,
@@ -1024,7 +1062,9 @@ _PHYSICS_ALLOCATION_INVENTORY = {
     # Physics constructor allocations are fixed domain/soil/history carriers,
     # priced by physics_inventory_census. Default WSM6 delegates its kernels
     # to the common loader and has no per-call allocation.
-    'gpuwm/core/physics.py': {'couple_sase_w_tendency': 1, '_held_zero_tendency_views': 1, 'scalar': 1, 'zero': 2, 'zeros': 1, 'materialize': 2, 'couple_column_tendencies': 1, '_physics_exner': 1, '_prepare_atmosphere': 1, '__init__': 21, 'zero_surface': 1, '_run_cumulus': 8, '_compose_tendencies': 1, '_run_sfclay': 4, '_run_myj_pbl': 1, '_run_ysu': 2, '_ysu_scalar_pblmix': 1, '_run_shinhong': 2, '_run_sase': 2, '_zero_accumulator': 1, '_attach_urban': 2, 'initialize_physics': 35},
+    # _prepare_atmosphere_fused (lane/opus-radiation-fusion): the five phy_prep
+    # fields the unfused ufunc chain allocated implicitly, now named.
+    'gpuwm/core/physics.py': {'couple_sase_w_tendency': 1, '_held_zero_tendency_views': 1, 'scalar': 1, 'zero': 2, 'zeros': 1, 'materialize': 2, 'couple_column_tendencies': 1, '_physics_exner': 1, '_prepare_atmosphere': 1, '_prepare_atmosphere_fused': 5, '__init__': 22, 'zero_surface': 1, '_run_cumulus': 8, '_compose_tendencies': 1, '_run_sfclay': 4, '_run_myj_pbl': 1, '_run_ysu': 2, '_scalar_pblmix_rates': 1, '_run_shinhong': 2, '_run_sase': 2, '_zero_accumulator': 1, '_attach_urban': 2, 'initialize_physics': 37, '_run_radiation': 1},
 
     # Physics constructor allocations are fixed domain/soil/history carriers,
     # priced by physics_inventory_census. Default WSM6 delegates its kernels
@@ -1481,6 +1521,16 @@ _PHYSICS_ALLOCATION_INVENTORY['gpuwm/core/rrtmgp.py']['_sw_rte'] += 2
 # WRF's ocean mixed layer (2.9.1): initialize_ocean fills an absent (ny, nx)
 # mixed-layer field once at domain start, a persistent driver field.
 _PHYSICS_ALLOCATION_INVENTORY['gpuwm/core/surface_ocean.py'] = {'initialize_ocean': 1}
+# lane/cap-slab-ocean (aa6bdeed308): the coupled-ocean SST and SST-change history planes,
+# two (ny, nx) float32 allocated once on first diagnostic update.
+_PHYSICS_ALLOCATION_INVENTORY['gpuwm/core/surface_ocean.py']['update_ocean_diagnostics'] = 1
+# lane/cap-solar (04e65faa5ff): the native SW direct/diffuse/DNI history
+# split, three (ny, nx) float32 planes at driver construction (__init__ 21 ->
+# 22, one loop site); _run_radiation's DNI site allocates only when a caller
+# removed that plane.
+# lane/cap-hail (97e9a3ca061): hail.py draws all its working set from the
+# state scratch arena (21 hail_*/hailcast_* slots); no pool allocation.
+_PHYSICS_ALLOCATION_INVENTORY['gpuwm/core/hail.py'] = {}
 
 
 def _live_inventory() -> dict[str, dict[str, int]]:

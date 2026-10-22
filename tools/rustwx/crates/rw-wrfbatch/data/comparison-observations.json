@@ -117,5 +117,166 @@
         "accumulation_seconds": 21600
       }
     ]
-  }
+  },
+{
+  "name": "nohrsc",
+  "label": "NOHRSC national snowfall analysis",
+  "source_label": "NOAA NOHRSC national snowfall analysis (reports and estimates)",
+  "bucket": "",
+  "region": "CONUS",
+  "file_prefix": "",
+  "parameter_table": "https://www.nohrsc.noaa.gov/snowfall_v2/",
+  "products": [
+    {
+      "product": "snow10",
+      "message": "24 h analyzed snowfall depth",
+      "candidates": [
+        "analysis"
+      ],
+      "parameters": [
+        [
+          0,
+          0,
+          0
+        ]
+      ],
+      "center": 0,
+      "subcenter": 0,
+      "level_type": 1,
+      "level_value": 0,
+      "units": "mm",
+      "message_template": 0,
+      "forecast_time": 0,
+      "valid_time_basis": "reference_time",
+      "missing_values": [
+        -99999,
+        -9999
+      ],
+      "unobserved_values": [
+        -99999,
+        -9999
+      ],
+      "time": {
+        "kind": "nearest",
+        "tolerance_seconds": 0
+      },
+      "accumulation_seconds": 86400,
+      "raster": {
+        "kind": "netcdf",
+        "standard_name": "thickness_of_snowfall_amount",
+        "variable": "Data",
+        "latitude": "lat",
+        "longitude": "lon",
+        "start_attribute": "start_date",
+        "stop_attribute": "stop_date",
+        "units": "m",
+        "factor": 1000.0
+      },
+      "url_template": "https://www.nohrsc.noaa.gov/snowfall_v2/data/%Y%m/sfav2_CONUS_24h_%Y%m%d%H_grid184.nc"
+    },
+    {
+      "product": "snowkuchera",
+      "message": "24 h analyzed snowfall depth",
+      "candidates": [
+        "analysis"
+      ],
+      "parameters": [
+        [
+          0,
+          0,
+          0
+        ]
+      ],
+      "center": 0,
+      "subcenter": 0,
+      "level_type": 1,
+      "level_value": 0,
+      "units": "mm",
+      "message_template": 0,
+      "forecast_time": 0,
+      "valid_time_basis": "reference_time",
+      "missing_values": [
+        -99999,
+        -9999
+      ],
+      "unobserved_values": [
+        -99999,
+        -9999
+      ],
+      "time": {
+        "kind": "nearest",
+        "tolerance_seconds": 0
+      },
+      "accumulation_seconds": 86400,
+      "raster": {
+        "kind": "netcdf",
+        "standard_name": "thickness_of_snowfall_amount",
+        "variable": "Data",
+        "latitude": "lat",
+        "longitude": "lon",
+        "start_attribute": "start_date",
+        "stop_attribute": "stop_date",
+        "units": "m",
+        "factor": 1000.0
+      },
+      "url_template": "https://www.nohrsc.noaa.gov/snowfall_v2/data/%Y%m/sfav2_CONUS_24h_%Y%m%d%H_grid184.nc"
+    }
+  ]
+},
+{
+  "name": "snodas",
+  "label": "SNODAS snow depth analysis",
+  "source_label": "NOAA SNODAS modeled snow depth with assimilated observations",
+  "bucket": "",
+  "region": "CONUS",
+  "file_prefix": "",
+  "parameter_table": "https://nsidc.org/data/g02158/versions/1",
+  "products": [
+    {
+      "product": "snow_depth",
+      "message": "Daily standing snow depth at 06 UTC",
+      "candidates": [
+        "analysis"
+      ],
+      "parameters": [
+        [
+          0,
+          0,
+          0
+        ]
+      ],
+      "center": 0,
+      "subcenter": 0,
+      "level_type": 1,
+      "level_value": 0,
+      "units": "mm",
+      "message_template": 0,
+      "forecast_time": 0,
+      "valid_time_basis": "reference_time",
+      "missing_values": [
+        -99999,
+        -9999
+      ],
+      "unobserved_values": [
+        -99999,
+        -9999
+      ],
+      "time": {
+        "kind": "nearest",
+        "tolerance_seconds": 0
+      },
+      "accumulation_seconds": null,
+      "raster": {
+        "kind": "i16_header_archive",
+        "data_member": "us_ssmv11036tS__T0001TTNATS%Y%m%d05HP001.dat.gz",
+        "header_member": "us_ssmv11036tS__T0001TTNATS%Y%m%d05HP001.txt.gz",
+        "units": "Meters / 1000.000000",
+        "description": "Modeled snow layer thickness, total of snow layers",
+        "factor": 1.0,
+        "big_endian": true
+      },
+      "url_template": "https://noaadata.apps.nsidc.org/NOAA/G02158/masked/%Y/%m_%b/SNODAS_%Y%m%d.tar"
+    }
+  ]
+}
 ]

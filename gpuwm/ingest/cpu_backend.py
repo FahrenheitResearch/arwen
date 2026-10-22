@@ -92,11 +92,9 @@ WPS_MASKED_CHAIN_ENTRY: Final[str] = "gpuwm_wps_masked_chain_f64"
 #: The same chain with the inland-water source reach (skin mode): every
 #: call goes through it, with no reach unless the caller gives one.
 WPS_MASKED_REACH_ENTRY: Final[str] = "gpuwm_wps_masked_chain_reach_f64"
-WPS_LAND_UNIT_SCAN_ENTRY: Final[str] = "gpuwm_wps_land_unit_scan_f64"
 WPS_MASKED_CHAIN_IMPLEMENTATION: Final[str] = "rust-wps-masked-chain-f64-v3"
 #: The native HRRR route's soil stencil (build, then apply).
 MASKED_STENCIL_ENTRY: Final[str] = "gpuwm_masked_bilinear_stencil_f64"
-MASKED_STENCIL_APPLY_ENTRY: Final[str] = "gpuwm_masked_stencil_apply_f32"
 MASKED_STENCIL_IMPLEMENTATION: Final[str] = "rust-masked-bilinear-stencil-f64-v1"
 #: Count slots of the stencil entry's report.
 MASKED_STENCIL_COUNT_SLOTS: Final[int] = 10
@@ -124,7 +122,6 @@ WATER_ENTRIES: Final[tuple[str, ...]] = (
     LAKE_WATER_NEAREST_ENTRY, WATER_BLEND_ENTRY, COMPONENT_FILL_ENTRY,
     OVERLAY_SAMPLE_ENTRY, LABEL_COMPONENTS_ENTRY, WATER_REPAIR_ENTRY,
     WATER_BODIES_ENTRY, COMPONENT_OWNER_ENTRY)
-WATER_BLEND_IMPLEMENTATION: Final[str] = "rust-water-blend-f64-v3"
 #: ``surface`` codes of the surface-nearest entry.
 _NEAREST_SURFACES = {"match": 0, "land": 1, "water": 2}
 #: Count slots per body of the per-body assembly entry.
@@ -209,11 +206,6 @@ def resolve_cpu_bridge(path: Path | str | None = None) -> Path:
     raise FileNotFoundError(
         "GPUWM parallel CPU preprocessing bridge was not found; searched:\n  "
         + rendered + "\n" + cpu_bridge_remedy(filename))
-
-
-#: The reference width of the saved host-RAM calibration. Runtime uses
-#: the CPU and memory budget, with extra worker scratch priced in preflight.
-AUTOMATIC_PREPARATION_WORKERS: Final[int] = 8
 
 
 def available_cpu_count() -> int:
@@ -567,10 +559,41 @@ class CpuPreprocessBackend:
         fn = self._chem_symbol("gpuwm_hybrid_full_pressure_f32",
             [ptr, ptr, ctypes.c_size_t, ptr, ctypes.c_size_t, ptr, ctypes.c_size_t, ptr, ctypes.c_size_t])
         code = fn(a.ctypes.data, b.ctypes.data, a.size, lev.ctypes.data, lev.size,
-                  ps.ctypes.data, ps.size, out.ctypes.data, 1)
+                  ps.ctypes.data, ps.size, out.ctypes.data, host_step_workers(self))
         if code:
             raise ValueError(f"gpuwm_hybrid_full_pressure_f32: {_ERRORS.get(code, str(code))}")
         return out
+
+    def aerosol_numbers(self, fields, terms, nifa, nwfa, *, scale,
+                        nifa_f64=None, nwfa_f64=None):
+        """Diagnose source aerosol numbers with the native GSL operator."""
+        if not terms:
+            return
+        shape = nifa.shape
+        arrays = [fields[t.name] for t in terms]
+        for value in [*arrays, nifa, nwfa]:
+            if value.dtype != np.float32 or value.shape != shape or not value.flags.c_contiguous:
+                raise ValueError("aerosol numbers require contiguous FP32 fields of one shape")
+        for value in (nifa_f64, nwfa_f64):
+            if value is not None and (value.dtype != np.float64 or value.shape != shape or not value.flags.c_contiguous):
+                raise ValueError("aerosol double outputs require contiguous FP64 fields of one shape")
+        pointers = np.array([v.ctypes.data for v in arrays], dtype=np.uintp)
+        conv = np.array([t.to_kg_per_kg for t in terms], dtype=np.float64)
+        den = np.array([t.denominator for t in terms], dtype=np.float64)
+        tgt = np.array([t.target for t in terms], dtype=np.int32)
+        grp = np.array([t.group for t in terms], dtype=np.int32)
+        fac = np.array([t.group_factor for t in terms], dtype=np.float64)
+        ptr = ctypes.c_void_p
+        fn = self._chem_symbol("gpuwm_aerosol_numbers_f32",
+            [ptr] * 6 + [ctypes.c_size_t] * 2 + [ctypes.c_double] + [ptr] * 4 + [ctypes.c_size_t])
+        code = fn(pointers.ctypes.data, conv.ctypes.data, den.ctypes.data,
+                  tgt.ctypes.data, grp.ctypes.data, fac.ctypes.data,
+                  len(terms), nifa.size, scale, nifa.ctypes.data, nwfa.ctypes.data,
+                  None if nifa_f64 is None else nifa_f64.ctypes.data,
+                  None if nwfa_f64 is None else nwfa_f64.ctypes.data,
+                  host_step_workers(self))
+        if code:
+            raise ValueError(f"gpuwm_aerosol_numbers_f32: {_ERRORS.get(code, str(code))}")
 
     def weighted_combination(self, fields, weights, *, scale=1.0, humidity=None):
         f = np.ascontiguousarray(fields, dtype=np.float32)
@@ -585,7 +608,7 @@ class CpuPreprocessBackend:
         fn = self._chem_symbol("gpuwm_weighted_combination_f32",
             [ptr, ptr, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_double, ptr, ptr, ctypes.c_size_t])
         code = fn(f.ctypes.data, w.ctypes.data, w.size, out.size, scale,
-                  None if q is None else q.ctypes.data, out.ctypes.data, 1)
+                  None if q is None else q.ctypes.data, out.ctypes.data, host_step_workers(self))
         if code:
             raise ValueError(f"gpuwm_weighted_combination_f32: {_ERRORS.get(code, str(code))}; humidity must be finite and in [0, 1)")
         return out

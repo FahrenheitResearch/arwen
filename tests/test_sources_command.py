@@ -114,7 +114,9 @@ def test_the_listing_carries_every_registered_row_and_nothing_else(capsys):
 
     code, out, _err = _run(capsys, "sources")
     assert code == 0
-    registered = [adapter.source_id for adapter in source_adapters()]
+    from gpuwm.composition_source import inventory_rows
+    registered = ([adapter.source_id for adapter in source_adapters()]
+                  + [row["source_id"] for row in inventory_rows()])
     listed = [line.split()[0] for line in out.splitlines()
               if line.startswith("  ") and line.strip()
               and not line.strip().startswith("id ")]

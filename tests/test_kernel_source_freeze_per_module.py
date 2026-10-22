@@ -216,7 +216,12 @@ BASELINE_PINNED: dict[str, str] = {
     # WRF's one-dimensional ocean mixed layer (sf_ocean_physics = 1), joined
     # for 2.9.1: graded against WRF's own module_sf_oml column (112 columns,
     # 16 steps) at 0 ULP in both arithmetic modes (tests/test_oml_gpu.py).
-    "oml": "969bc5688f9acdba8532484e1836249a9743b4fcbdc57b2a2e87d3de7dd469bc",
+    # RE-PINNED by lane/cap-seaice (7047f0c9bd7, 172be416a1e): oml_step takes
+    # the prognostic sea-ice heat and mask and a coupled_ice switch; with
+    # coupled_ice = 0 every statement of the open-water column is the 2.9.1
+    # one.  Under ice it carries the ice owner's heat and keeps entrained
+    # polar water at or above freezing.  Previously 969bc568.
+    "oml": "ce97181b17e72439ceb7cab26a9e088013669bb94e42b786b1b14293e4241728",
     # e677dccb6: active table edits multiply binary64 values on the GPU,
     # round once to REAL, and reject non-positive crop roughness.
     "physics_params":
@@ -257,7 +262,11 @@ BASELINE_PINNED: dict[str, str] = {
     # before the column is built.  No statement of the column changed;
     # test_lake_gpu compares every word against the native oracle, in one
     # window and in three.
-    "lake": "0624bfb3866df26de935fbf1914f53f5d50bb5a9c1090789b313f34c1b247983",
+    # RE-PINNED by lane/cap-lake (f9eb12244a9): one new entry point,
+    # lake_bind_source_columns, binds table-driven lake analyses to the CLM
+    # restart layers.  Appended after the existing units; no statement of
+    # lakeini or the lake column changed.  Previously 0624bfb3.
+    "lake": "b36729b9e1b58b0f58ce51a244b515f943cafb0e52cab7cd417b579176eebde7",
     # Native bulk source/units bridge, both GPU receipts; FTZ disabled.
     "chem_sfire": "01a0c2dd43046d33254e4365d4cd87ee472b468d65077dfc06716b9bfe6e6596",
     # lane/283-sfire: compiled WRF v4.7.1 routine controls at 0 ULP
@@ -480,16 +489,15 @@ BASELINE_PINNED: dict[str, str] = {
     # default arithmetic (tests/test_myjsfc_wrf461_parity.py).  Previously
     # 7ce67cdd; then d6a84892 while REAL**REAL was a contracted pow, now
     # gfk_pow (same oracle result).
+    # RE-PINNED by lane/cap-waves-couple (b8b94dcf810): the sea-point flux
+    # iteration consumes the wave model's roughness, compiled in only under
+    # OCEAN_WAVE_ROUGHNESS (gpuwm/core/myjsfc.py defines it only when an
+    # ocean_z0 field is passed); without it the preprocessed unit is the
+    # previous one.  Previously 840d7099.
     "myjsfc":
-        '840d7099b117f3923ddef1137d62f8f2ac5084939efe0993f8855273bfaf3331',
-    # 4a0bb3f69 mynn(mixscalars): MYNN-EDMF mixes the qn family, and the DMP unit exports it
-    # RE-PINNED by the 2026-09-30 MYNN speed lane (2f5dd16f9): level-major
-    # column storage.  Addressing only; every output replayed bitwise
-    # identical (tests/test_mynn_dmp_sibling.py records it).
-    # Re-pinned for A146 (a98f2482e): constant-divisor float divisions
-    # spelled __fdiv_rn.  Previously 90c71fa1.
-    "mynn_dmp_sibling":
-        '863169b2e1e35be848ca663162333b7adb2131bb2a46565b034a2edb61d49446',
+        '7cb49b17e31cdf4890adece1a5e4b95facaccecb67fe39ac7221174122e61005',
+    # Wave3: mynn_dmp_sibling is a logical export-arm alias of mynn_pbl,
+    # pinned in test_mp8_frozen.py and test_mynn_dmp_sibling.py.
     # 4a0bb3f69 mynn(mixscalars): MYNN-EDMF mixes the qn family, and the DMP unit exports it
     # RE-PINNED by the 2026-09-30 MYNN speed lane (2f5dd16f9): the flux kernel reads
     # level-major plume and column storage.  Addressing only; the
@@ -1081,8 +1089,9 @@ BASELINE_PINNED: dict[str, str] = {
         "2c8e91bd3c2af915967aa1287e946961d5e9f0b9403ab66281d7a94c5f222d67",
     "chem_outputs":
         "313503588f5c85ace60be4967995046c958e61ad63b8f1cd36b509b0348f0d99",
-    "chem_ledger":
-        "b253f8a0528c790212c9850b9b298ec84939b77de4a8cabfb27fd05b3a89b929",
+    # Ranked interior bounds (280def6e2f) are pinned in the extension manifest.
+    # The 20-step prepared-store seam gate matches resident state/history
+    # words and float64 ledger totals to the declared reduction tolerance.
     # chem_prep: chem_prep's column inputs, 0 ULP to the Fortran on the CPU
     # reference and the card (tests/test_chem_prep_wrf471_parity.py).
     # chem_vertmx: vertmx with deposition as its lower boundary, 0 ULP the
@@ -1092,8 +1101,14 @@ BASELINE_PINNED: dict[str, str] = {
     # (tests/test_chem_advect_mono_wrf471_parity.py).
     "chem_prep":
         "bc3547b12038132555c7cb39ce93746719a51a50ad457f9e065ec002ed4ceb09",
+    # Re-pinned for the HRRR v4.1.21 fork's enh_vermix (smoke/
+    # dry_dep_driver.F:178-195), behind a launch flag that is 0 unless
+    # RunConfig.enh_vermix: the stock floors are unchanged text, the 74
+    # WRF 4.7.1 oracle cases stay 0 ULP (test_chem_vertmx_wrf471_parity),
+    # and tests/test_chem_smoke_fork_processes_gpu.py holds the raised
+    # ekmfull words to the fork's MAX(1.1*ekm, 10/20) rule.
     "chem_vertmx":
-        "bc7c583f93775ff20c4a6ce8c8e492c4b3edeed7426c96f88b98d01410c3e0f9",
+        "c571534c6ab5a4300301a15cbaed2a033348a3a3faf6b358b6d80a492c1a88da",
     "mono_advection":
         "ba9417639e3f0105dcf67e0e3eb18ae59d33dac00c1d0c84009a8b1c17c3a853",
     # lane/aq-smoke.  chem_fire: GSL smoke_dust's fire preparation, unit
@@ -1214,8 +1229,14 @@ BASELINE_PINNED: dict[str, str] = {
         "d0d9fa08a5ff854f9059f0151ddaa2fdb80ca1a13245c774b33432a065bb5d64",
     # WRF 4.8 YSU (ysu_version = "wrf_480"): graded against WRF 4.8 MMM
     # 550b5b4 bl_ysu.F90 by tools/ysu_generations_oracle/gate.py.
+    # Re-pinned for the YSU column speed change (ysu_480): register-carried and
+    # index-only changes, no floating operation moved.  Every output word
+    # of every launch in one captured model step of a 300x300x49 3 km real
+    # case equals the previous kernel's (default and strict builds, sm_89
+    # and sm_120); first-hour wrfout byte-identical.  Previously 74892789; after the
+    # fold's entrainment Courant cap (1edfbfe953) previously 44acadb4.
     "ysu_480":
-        "44acadb46d994d46614dbfa54b5474f0abe144385a54f245b731d8abe530f3ea",
+        "3692a061665fb01fe1b900d4f63ed5cd20b76eb90ac375d4977775d432d74ddc",
     # The 2.9.1 intake of the WRF exact chain (r290/exact-chain 6cb618fce):
     # source identity here, numerical gates in their own suites.
     # physics_exner, thompson_classic and thompson_fork are the strict
@@ -1223,13 +1244,11 @@ BASELINE_PINNED: dict[str, str] = {
     # the *_default units are what a default process compiles for
     # nssl2*, rrtmgp_* and ysu (ysu_default.cu is 2.9.1's ysu.cu, byte for
     # byte), kernels/__init__.py _DEFAULT_SOURCE_MODULES.
-    "nssl2_default": "37173f1bcc9ec0fd6c6f4afe060c0d984bcd14abc5d4841d05aa62e6ac85d3ea",
     "nssl2_diagnostics_default": "a95ae9e0bc3dd20a13865cfa6d1148d2a78ee5d7c17c9c1bca9a0c8dbdf19868",
     "nssl2_driver_support_default": "12f193c6918056b995577930304867cd8369a46ab1facfcde589d244cbd6eca8",
     "nssl2_fused_gs_default": "07dff4bf34509e89b75683a83d356c4691b6eab1aa96140af3e6fa5b00fe429b",
     "nssl2_nucond_default": "b4819a1e912924fe2e30c33897585e3a46c32e89dcb3ab43eb1ee32b212b6db1",
     "physics_exner": "14d8847f39847e9637efc83b63dbf323eddfe4d3f21675210b6398ffe85c3636",
-    "rrtmgp_cloud_default": "512157c75edf4637d99a1cad490e8db71e51cd2c3643ff129adebefa81557560",
     "rrtmgp_gas_default": "d13b914a28ad8b7ef88904977c7e33b9a7d7e800592473c0fb8debebca031edf",
     "rrtmgp_rte_default": "731bd84717398320a1710b2c151a466b9e5bf1a30b633d858fd31d7162dbd173",
     "thompson_classic": "e9225efd38ba652b743eb3ff02e3c45794941862a46603db996e4de93d9da985",
@@ -1246,7 +1265,10 @@ _FROZEN = _frozen_module()
 # FROZEN_MODULE_DIGESTS itself (tests/test_mp8_frozen.py), so it is not a
 # drift entry here.
 PINNED: dict[str, str] = dict(
-    (name, digests[0]) for name, digests in _FROZEN.FROZEN_MODULE_DIGESTS.items())
+    (name, digests[0]) for name, digests in _FROZEN.FROZEN_MODULE_DIGESTS.items()
+    if name != "ysu")
+# The unreachable strict ysu.cu copy is retired; ysu_default and ysu_480
+# retain independent source pins below. Historical freeze evidence stays.
 PINNED.update((name, sha) for name, (sha, _c) in RE_PINNED_DRIFT.items())
 PINNED.update(BASELINE_PINNED)
 _EXTENSION_PINS = _extension_pins()
@@ -1357,10 +1379,6 @@ PINNED_HEADERS = {
     # graded with tiedtke.cu.  PINNED at 2.8.9.
     "tiedtke_support.cuh": "555385246fe3c17fbe9bb0594bc14295109755dd88dad62d0ef2c6ee7646c84f",
     "tiedtke_routines.cuh": "ec1fbc12102836c26cb24d11f172947ccb4d59b1744e208624a2e4a6dbac5b6c",
-    # lane/282-terrain-drag: YSU's topo_wind arm (get_pblh, the hill-top 10 m
-    # blend), prepended to ysu.cu by _EXTRA_HEADERS["ysu"]; graded with it by
-    # tests/test_terrain_drag_wrf471_parity.py.
-    "ysu_topo.cuh": '422c73f2649327609a4b3fbd083f3747f5a152c477fbeff38296c95210113459',
     # The WRF 4.8 YSU unit's own topo arm (bounded get_pblh searches).
     "ysu_480_topo.cuh": 'c1a4a8539d4d9d8301cc3edaf92115f480f76ae02b626d4248d2f33daf631b7e',
     # The UW PBL's prepended headers, in the loader's order
@@ -1440,6 +1458,8 @@ PINNED_HEADERS = {
     'f64cr.cuh': '3adb76fc5f559a21a457572848772debd000f77ab6557428edfa2765f2a458bb',
     # r290 exact-chain intake: source identity, numerical gates separate.
     'nssl2_wrf_math.cuh': '15578ff62956b321b6145d1eff2bfff88a22576ff24dc4b9d4200f9ca1b7fcb0',
+    # Slimming promotes the retained YSU header to the loader closure.
+    'ysu_topo_default.cuh': '031efb139b827dd94fa9407455c3392e85cb29f4af6b954ef18d931e735890b0',
 }
 
 #: Headers a module composes ITSELF rather than through the loader's
@@ -1556,10 +1576,17 @@ def test_the_kernel_source_is_byte_identical_to_its_pin(module: str) -> None:
     """One node per translation unit.  A tenth red is a NEW node id."""
 
     source = KERNELS / f"{module}.cu"
-    assert source.is_file(), (
-        f"{source} is pinned and does not exist; a frozen kernel module "
-        "disappeared")
-    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    if module == "rrtmg_lw_chain_coalesced":
+        from gpuwm.core.rrtmg_lw import (
+            _LW_COALESCED_HEADER, _lw_coalesced_source)
+        chain = (KERNELS / "rrtmg_lw_chain.cu").read_text(encoding="utf-8")
+        payload = (_LW_COALESCED_HEADER + _lw_coalesced_source(chain)).encode()
+    else:
+        assert source.is_file(), (
+            f"{source} is pinned and does not exist; a frozen kernel module "
+            "disappeared")
+        payload = source.read_bytes()
+    digest = hashlib.sha256(payload).hexdigest()
     where = ("RE_PINNED_DRIFT" if module in RE_PINNED_DRIFT
              else "BASELINE_PINNED in this file" if module in BASELINE_PINNED
              else "tests/test_mp8_frozen.py FROZEN_MODULE_DIGESTS")

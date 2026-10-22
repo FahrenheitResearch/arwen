@@ -95,12 +95,26 @@ def _require_export_mode(stock_wrf_export: str) -> None:
             f"got {stock_wrf_export!r}")
 
 
+def _dormant_stock_export_refusal(exp) -> None:
+    """Stock WRF has no spawn trigger: a dormant nest's wrfinput at its
+    placeholder would run there as a fixed nest from t = 0.  Breakage it
+    prevents: a companion WRF set that silently runs a different tree."""
+    from gpuwm.experiment import dormant_domain_ids
+    dormant = dormant_domain_ids(exp)
+    if dormant:
+        named = ", ".join(f"d{int(gid):02d}" for gid in dormant)
+        raise StockWrfExportUnsupported(
+            f"{named} spawn mid-run, which stock WRF cannot do; the companion "
+            "WRF file set would run them as fixed nests from the start")
+
+
 def _require_root(exp, root_node, root_initial_result) -> None:
-    # This export prepares every declared child up front and writes it to
-    # wrfinput_dNN; a dormant nest has no fired placement to prepare AT,
-    # and nothing here watches its trigger.  Refused by name.
-    from gpuwm.experiment import refuse_unrouted_spawn
-    refuse_unrouted_spawn(exp, "native hierarchy export")
+    # A dormant (spawn-declared) nest is prepared here at its declared
+    # placeholder like any t = 0 child: that bundle prices it, and the
+    # prepared tree route that consumes this export reserves it and spawns
+    # it from the live parent when its trigger fires (docs/storm-nests.md).
+    # The unchanged-WRF companion set cannot spawn, so that half refuses a
+    # dormant nest below (_dormant_stock_export_refusal).
     if root_node.state is not root_initial_result.state:
         raise ValueError(
             "root node and root initial result do not share the same state")
@@ -219,6 +233,7 @@ def export_native_hierarchy(
             export_stage["outcome"] = "not_requested"
         else:
             try:
+                _dormant_stock_export_refusal(exp)
                 wrf_manifest = export_prepared_wrf_hierarchy(
                     exp, artifact_build.artifacts, wrf_output,
                     valid_time=exp.start_time,

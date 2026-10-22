@@ -50,16 +50,20 @@ def validate_route(values, *, chain, source_root=None):
 
 
 def hrrr_source_manifest(values, *, source_root, fetched_manifest, output):
-    """Bind explicit donor bytes in a run-local manifest; retain fetch receipts."""
+    """Snapshot fetched checksums and donor bytes for this preparation."""
     from gpuwm.fetch import sha256_file
     from gpuwm.fetch_guard import atomic_write_text
     from gpuwm.ingest.native_supplements import supplement_bindings
     from tools.hrrr_pipeline import _parse_manifest
 
-    if not values:
-        return fetched_manifest
     validate_route(values, chain="prepared:hrrr", source_root=source_root)
-    entries = _parse_manifest(fetched_manifest)
+    # A second member can resume the same download and republish each
+    # partial checksum prefix. Wait for its writer, then detach this run's
+    # binding before the next writer starts. Never hold this lock through
+    # decoding: independent member preparations must remain parallel.
+    from gpuwm.fetch_guard import hold
+    with hold("fetch-out", source_root):
+        entries = _parse_manifest(fetched_manifest)
     for _, path in supplement_bindings(values):
         relative = path.relative_to(Path(source_root).resolve()).as_posix()
         digest = sha256_file(path)

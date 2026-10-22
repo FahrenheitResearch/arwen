@@ -10,12 +10,13 @@ in its key order, and every refusal's words and facts.
 """
 from __future__ import annotations
 
-import ast
 import json
 from pathlib import Path
 
 import numpy as np
 import pytest
+
+from test_water_blend_native import _runtime_oracle_importers
 
 from gpuwm.ingest import hrrr
 from gpuwm.ingest.cpu_backend import (
@@ -370,24 +371,7 @@ def test_the_sealed_distribution_runs_the_stencil_at_both_worker_counts():
 
 def test_nothing_at_run_time_imports_the_stencil_oracle_or_a_tree():
     """The NumPy builder is a test oracle, never a silent runtime fallback."""
-    offenders = []
-    for base in ("gpuwm", "tilestream", "tools"):
-        for path in sorted((ROOT / base).rglob("*.py")):
-            relative = path.relative_to(ROOT).as_posix()
-            if relative.startswith("gpuwm/verify/"):
-                continue
-            text = path.read_text(encoding="utf-8", errors="replace")
-            if "hrrr_stencil_oracle" not in text:
-                continue
-            for node in ast.walk(ast.parse(text)):
-                names = []
-                if isinstance(node, ast.Import):
-                    names = [alias.name for alias in node.names]
-                elif isinstance(node, ast.ImportFrom):
-                    names = [node.module or ""] + [
-                        alias.name for alias in node.names]
-                if any("hrrr_stencil_oracle" in name for name in names):
-                    offenders.append(relative)
+    offenders = _runtime_oracle_importers()["hrrr_stencil_oracle"]
     assert offenders == []
     source = (ROOT / "gpuwm" / "ingest" / "hrrr.py").read_text(
         encoding="utf-8")

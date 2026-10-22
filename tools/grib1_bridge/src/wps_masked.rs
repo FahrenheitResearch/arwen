@@ -205,7 +205,7 @@ fn prologue(
         });
     }
     let any_usable = usable.iter().any(|&v| v);
-    let any_outside = outside.as_ref().map_or(false, |v| v.iter().any(|&o| o));
+    let any_outside = outside.as_ref().is_some_and(|v| v.iter().any(|&o| o));
     Prologue {
         usable,
         safe,
@@ -1104,7 +1104,7 @@ pub unsafe extern "C" fn gpuwm_wps_masked_chain_reach_f64(
             return ERR_DIMENSION;
         }
         let range = if has_range != 0 {
-            if !(low < high) {
+            if low.partial_cmp(&high) != Some(std::cmp::Ordering::Less) {
                 return ERR_DIMENSION;
             }
             Some((low, high))
@@ -1228,7 +1228,7 @@ pub unsafe extern "C" fn gpuwm_wps_land_unit_scan_f64(
         if source.is_null() || land.is_null() || partial.is_null() || stats_counts.is_null() || stats_span.is_null() {
             return ERR_NULL;
         }
-        if nlayer == 0 || ny == 0 || nx == 0 || workers == 0 || !(low < high) {
+        if nlayer == 0 || ny == 0 || nx == 0 || workers == 0 || low.partial_cmp(&high) != Some(std::cmp::Ordering::Less) {
             return ERR_DIMENSION;
         }
         let cells = match ny.checked_mul(nx) {

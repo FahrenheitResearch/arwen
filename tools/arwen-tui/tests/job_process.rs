@@ -1,5 +1,5 @@
 #[path = "../src/job.rs"]
-mod job;
+pub mod job;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -19,8 +19,13 @@ fn scratch(label: &str) -> PathBuf {
     fs::create_dir(&path).unwrap();
     path
 }
+/// How long a test lets a real Python child run before calling it hung. A
+/// hang guard, not a speed bound: the 2.9.4 R8 gate runs these tests beside
+/// the other cargo rows on one loaded desktop, where `python -m gpuwm.cli
+/// --help` (2.6 s on a quiet machine) ran past the old 20 s bound.
+const HANG_GUARD: Duration = Duration::from_secs(600);
 fn wait(job: &mut job::Job) -> i32 {
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = Instant::now() + HANG_GUARD;
     loop {
         if let Some(code) = job.poll().unwrap() {
             return code;
@@ -34,14 +39,14 @@ fn wait(job: &mut job::Job) -> i32 {
     }
 }
 fn await_file(path: &Path) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + HANG_GUARD;
     while !path.exists() {
         assert!(Instant::now() < deadline, "missing {}", path.display());
         std::thread::sleep(Duration::from_millis(20));
     }
 }
 fn await_started(job: &mut job::Job) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + HANG_GUARD;
     while !job.dir.join("start").is_file() {
         assert!(job.poll().unwrap().is_none(), "startup failed: {}", job.log_tail(20));
         assert!(Instant::now() < deadline, "worker did not become ready");
@@ -368,13 +373,38 @@ fn an_ignored_interrupt_escalates_automatically_or_on_an_explicit_retry() {
 fn slow_python_startup_keeps_input_responsive_and_can_stop_before_the_cli() {
     let root = scratch("slow-startup");
     fixture(&root);
-    fs::write(root.join("gpuwm/__init__.py"), "import time\ntime.sleep(3)\n").unwrap();
-    let started = Instant::now();
+    // The package import parks on a gate this test never opens, so the
+    // interpreter cannot become ready while the test runs. A launcher that
+    // waited for the interpreter would therefore wait until the import gives
+    // up (25 s, under the 30 s the old launcher froze input for), and the
+    // import leaves a marker when it does. So the property is asserted by
+    // ORDER, not by a wall clock: `start` returned while Python was still
+    // inside its import. The previous form asserted `start` took under 2 s,
+    // which a loaded Windows host (an Intel Xeon 8488C running the R8 gate
+    // at 32 jobs) missed while the launcher did nothing wrong.
+    fs::write(
+        root.join("gpuwm/__init__.py"),
+        "import pathlib, sys, time\n\
+         pathlib.Path('import-started').write_text('')\n\
+         deadline = time.monotonic() + 25\n\
+         while not pathlib.Path('import-release').exists():\n\
+         \x20   if time.monotonic() > deadline:\n\
+         \x20       pathlib.Path('import-gave-up').write_text('')\n\
+         \x20       sys.exit(7)\n\
+         \x20   time.sleep(0.05)\n",
+    )
+    .unwrap();
     let mut running = job::Job::start_with_module_path(
         &python(), "fixture-finish", &[], &root.join("job"), &root, Some(&root)).unwrap();
-    assert!(started.elapsed() < Duration::from_secs(2), "UI waited for the delayed interpreter");
+    assert!(
+        !root.join("import-gave-up").exists(),
+        "UI waited for the delayed interpreter: start returned only after the import gave up"
+    );
     assert!(running.poll().unwrap().is_none());
     assert!(!running.dir.join("start").exists());
+    // Stop while Python is demonstrably mid-import, not before it ran.
+    await_file(&root.join("import-started"));
+    assert!(running.poll().unwrap().is_none(), "the parked import ended: {}", running.log_tail(20));
     running.stop().unwrap();
     assert_ne!(wait(&mut running), 0);
     assert!(!running.dir.join("start").exists());

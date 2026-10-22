@@ -508,9 +508,9 @@ pub(super) fn run(args: &[String]) -> Result<()> {
     );
     let start = Instant::now();
     let endpoints = parallel(&[0, 1, 2], 3, |i| match i {
-        0 => numbers(time, &[0..1]).map_err(message),
-        1 => numbers(time, &[time.shape()[0] - 1..time.shape()[0]]).map_err(message),
-        _ => numbers(features, &[0..features.shape()[0].min(3)]).map_err(message),
+        0 => numbers(time, std::slice::from_ref(&(0..1))).map_err(message),
+        1 => numbers(time, std::slice::from_ref(&(time.shape()[0] - 1..time.shape()[0]))).map_err(message),
+        _ => numbers(features, std::slice::from_ref(&(0..features.shape()[0].min(3)))).map_err(message),
     })?;
     let first = cf_time(time, endpoints[0][0])?;
     let last = cf_time(time, endpoints[1][0])?;
@@ -568,9 +568,9 @@ pub(super) fn run(args: &[String]) -> Result<()> {
     let start = Instant::now();
     let coordinates = parallel(&[0, 1], 2, |kind| {
         if *kind == 0 {
-            numbers(features, &[0..features.shape()[0]]).map_err(message)
+            numbers(features, std::slice::from_ref(&(0..features.shape()[0]))).map_err(message)
         } else {
-            numbers(time, &[lo..hi]).map_err(message)
+            numbers(time, std::slice::from_ref(&(lo..hi))).map_err(message)
         }
     })?;
     for (i, v) in coordinates[1].iter().enumerate() {

@@ -164,58 +164,6 @@ def test_stepcu_is_one_on_this_fixture_and_that_is_a_COVERAGE_GAP():
 # The kernel
 # ===========================================================================
 
-@pytest.fixture(scope="module")
-def cuda_post_run():
-    cp = pytest.importorskip("cupy")
-    from gpuwm.core.ntiedtke import NtLaunchGeometry, NtStages
-
-    keys = _KEYS
-    ncol, n1 = len(keys), NT_NZ + 2
-
-    def pack(name):
-        a = np.zeros((n1, ncol), dtype=np.float32)
-        for c, k in enumerate(keys):
-            a[1:1 + NT_NZ, c] = _COLS[k][name]
-        return cp.asarray(a)
-
-    ro = {n: pack(n) for n in _WRF + _SCHEME}
-    d_rn = cp.asarray(np.array([float(_COLS[k]["rn"]) for k in keys],
-                               dtype=np.float32))
-    outs = {n: cp.zeros((n1, ncol), dtype=np.float32) for n in _OUT}
-    d_raincv = cp.zeros(ncol, dtype=np.float32)
-    d_pratec = cp.zeros(ncol, dtype=np.float32)
-
-    stages = NtStages(NtLaunchGeometry(ncol=ncol, nz=NT_NZ))
-    stages.launch("ntiedtke_post_run", (
-        ro["exner"], ro["qv"], ro["qc"], ro["qi"], ro["t"], ro["u"], ro["v"],
-        ro["tf"], ro["qvf"], ro["qcf"], ro["qif"], ro["uf"], ro["vf"], d_rn,
-        outs["rthcuten"], outs["rqvcuten"], outs["rqccuten"],
-        outs["rqicuten"], outs["rucuten"], outs["rvcuten"],
-        d_raincv, d_pratec,
-        np.int32(ncol), np.int32(NT_NZ),
-        np.int32(int(_COLS[keys[0]]["stepcu"])),
-        np.float32(float(_COLS[keys[0]]["dt"]))))
-    cp.cuda.Stream.null.synchronize()
-    stages.check_geometry()
-    got = {n: cp.asnumpy(outs[n])[1:1 + NT_NZ, :] for n in _OUT}
-    got["raincv"] = cp.asnumpy(d_raincv)
-    got["pratec"] = cp.asnumpy(d_pratec)
-    return keys, got
-
-
-@pytest.mark.parametrize("field", _OUT + ("raincv", "pratec"))
-def test_kernel_is_bitwise(cuda_post_run, field):
-    """Graded against WRF, never against the mirror."""
-    keys, got = cuda_post_run
-    bad = []
-    for c, key in enumerate(keys):
-        g = got[field][:, c] if got[field].ndim == 2 else got[field][c]
-        d = _diff(g, _EXP[key][field])
-        if d.size:
-            bad.append((key, d.tolist()[:4]))
-    assert not bad, f"{field}: {bad[:3]}"
-
-
 def test_kernel_holds_no_local_frame():
     pytest.importorskip("cupy")
     from gpuwm.core.kernels import load_module

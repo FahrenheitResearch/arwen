@@ -561,9 +561,9 @@ impl<'a> FieldSpec<'a> {
         let Some(declaration) = self.raw.field("published_levels") else {
             return Ok(None);
         };
-        if declaration.get("absent").and_then(Node::as_str) != Some("zero") {
+        if !matches!(declaration.get("absent").and_then(Node::as_str), Some("zero") | Some("nearest_upper_boundary")) {
             return Err(mapping_invalid(format!(
-                "fields.{}.published_levels.absent must be 'zero'",
+                "fields.{}.published_levels.absent must be zero or nearest_upper_boundary",
                 self.name
             )));
         }

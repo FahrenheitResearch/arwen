@@ -10,7 +10,10 @@ import sys
 
 import numpy as np
 
-from gpuwm.core.fp32_ulp import monotone_fp32_key
+if __package__:
+    from .validate_initialize_oracle import _report as _report
+else:
+    from validate_initialize_oracle import _report as _report
 from gpuwm.core.mynn_pbl import (
     MYNN_DMP_MF_COLUMN_INPUTS,
     MYNN_DMP_MF_INTERFACE_OUTPUTS,
@@ -39,26 +42,6 @@ EXPECTED_CASES = (
 )
 NZ = 30
 EXPECTED_ROWS = len(EXPECTED_CASES) * NZ
-
-
-#: The total-order FP32 key is shared rather than re-derived here.
-#: Thirteen local copies of this two-line bit trick carried the same
-#: sign error, which reported -0.0 as 2**32 ULP from +0.0; see
-#: gpuwm/core/fp32_ulp.py for the measurement and the live case.
-_ordered_bits = monotone_fp32_key
-
-
-def _report(got: np.ndarray, expected: np.ndarray) -> dict[str, float | int]:
-    absolute = np.abs(got.astype(np.float64) - expected.astype(np.float64))
-    relative = absolute / np.maximum(
-        np.abs(expected.astype(np.float64)), 1.0e-30
-    )
-    ulp = np.abs(_ordered_bits(got) - _ordered_bits(expected))
-    return {
-        "max_abs": float(absolute.max(initial=0.0)),
-        "max_rel": float(relative.max(initial=0.0)),
-        "max_ulp": int(ulp.max(initial=0)),
-    }
 
 
 def case_inputs(selected: list[dict[str, str]]) -> dict[str, np.ndarray]:

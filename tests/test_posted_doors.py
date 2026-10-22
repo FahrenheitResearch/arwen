@@ -470,15 +470,15 @@ def test_forecast_validation_failure_precedes_a_later_source_timeout(
 
     data = tmp_path / "data"
     held = threading.Event()
-    hold_for_seal = boundary_stream._hold_for_seal
+    stop_for_failed_forecast = boundary_stream._stop_for_failed_forecast
 
-    def hold(root, worker, observer):
+    def hold(root, worker, error):
         held.set()
         (data / "forecast-failed").touch()
-        return hold_for_seal(root, worker, observer, report_seconds=0.01)
+        return stop_for_failed_forecast(root, worker, error)
 
     monkeypatch.setattr(go_cli, "head_digests", head_digests)
-    monkeypatch.setattr(boundary_stream, "_hold_for_seal", hold)
+    monkeypatch.setattr(boundary_stream, "_stop_for_failed_forecast", hold)
     args = _args(gfs_config, tmp_path / "go")
     args.data_dir = data
     from gpuwm import runplan

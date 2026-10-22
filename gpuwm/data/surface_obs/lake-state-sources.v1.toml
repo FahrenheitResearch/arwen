@@ -1,0 +1,89 @@
+# Regular CF NetCDF sources. Source names, fields, units and availability are rows.
+schema = "gpuwm-lake-state-sources-v1"
+
+[[source]]
+id = "glsea"
+automatic = true
+analysis_hour = 12
+south = 38.8749871947297
+north = 50.6059751976539
+west = -92.4199507342304
+east = -75.8816402880531
+licence = "US Government work; NOAA GLERL free use and redistribution"
+licence_url = "https://apps.glerl.noaa.gov/erddap/info/GLSEA_GCS/index.json"
+citation = "NOAA GLERL, Great Lakes Surface Environmental Analysis (GLSEA)"
+research_only = false
+latitude = "latitude"
+longitude = "longitude"
+time = "time"
+max_age_hours = 48
+[[source.field]]
+name = "water_temperature"
+variable = "sst"
+units = "degree_C"
+scale = 1.0
+offset = 273.15
+dataset = "GLSEA_GCS"
+start = "1995-01-01"
+end = "2023-12-31"
+url = "https://apps.glerl.noaa.gov/erddap/griddap/{dataset}.nc?{variable}[({time})][({south}):1:({north})][({west}):1:({east})]"
+[[source.field]]
+name = "water_temperature"
+variable = "sst"
+units = "degree_C"
+scale = 1.0
+offset = 273.15
+dataset = "GLSEA_ACSPO_GCS"
+start = "2024-01-01"
+end = "2100-01-01"
+url = "https://apps.glerl.noaa.gov/erddap/griddap/{dataset}.nc?{variable}[({time})][({south}):1:({north})][({west}):1:({east})]"
+[[source.field]]
+name = "ice_fraction"
+variable = "ice_concentration"
+units = "percent"
+scale = 0.01
+offset = 0.0
+dataset = "GL_Ice_Concentration_GCS"
+start = "1995-01-01"
+end = "2100-01-01"
+url = "https://apps.glerl.noaa.gov/erddap/griddap/{dataset}.nc?{variable}[({time})][({south}):1:({north})][({west}):1:({east})]"
+
+[[source]]
+id = "era5-land"
+licence = "CC-BY-4.0"
+licence_url = "https://cds.climate.copernicus.eu/datasets/reanalysis-era5-land?tab=overview"
+citation = "Copernicus Climate Change Service (C3S), ERA5-Land hourly data, doi:10.24381/cds.e2161bac"
+# CC-BY-4.0 permits commercial use with attribution (the citation above), as for the
+# CAMS rows (lane/cap-fix-c 0a059824451): no named acceptance is needed.
+research_only = false
+latitude = "latitude"
+longitude = "longitude"
+time = "valid_time"
+max_age_hours = 3
+[[source.field]]
+name = "water_temperature"
+variable = "lmlt"
+units = "K"
+[[source.field]]
+name = "bottom_temperature"
+variable = "lblt"
+units = "K"
+[[source.field]]
+name = "mixed_layer_depth"
+variable = "lmld"
+units = "m"
+[[source.field]]
+name = "temperature_shape_factor"
+variable = "lshf"
+units = "1"
+unit_aliases = ["~", "(0 - 1)", "dimensionless"]
+[[source.field]]
+name = "ice_thickness"
+variable = "licd"
+units = "m"
+# Converted GRIB zero ice can be -2.1684e-19 m; preserve material depths.
+zero_roundoff_tolerance = 1e-12
+[[source.field]]
+name = "ice_temperature"
+variable = "lict"
+units = "K"

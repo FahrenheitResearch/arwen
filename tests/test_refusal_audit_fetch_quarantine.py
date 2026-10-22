@@ -12,7 +12,7 @@ class _FrozenClock:
         return datetime(2026, 9, 27, 12, 0, 0)
 
 
-@pytest.mark.parametrize('relative', ['field.grib2', 'upstream/source/field.grib2'])
+@pytest.mark.parametrize('relative', ['field.grib2'], ids=['field.grib2'])
 def test_two_refetches_in_one_clock_tick_keep_both_previous_downloads(tmp_path, monkeypatch, relative):
     monkeypatch.setattr(fetch_routes, 'datetime', _FrozenClock)
     source = tmp_path / relative

@@ -1,0 +1,32 @@
+{
+  "schema": "gpuwm-fire-observation-routes-v1",
+  "sources": {
+    "wfigs-incidents": {
+      "url": "https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/WFIGS_Incident_Locations/FeatureServer/0",
+      "id_property": "IrwinID",
+      "time_property": "FireDiscoveryDateTime",
+      "license": "Public Domain",
+      "terms_url": "https://www.arcgis.com/sharing/rest/content/items/b4402f7887ca4ea9a6189443f220ef28?f=json",
+      "object_id_property": "OBJECTID",
+      "license_policy_url": "https://www.doi.gov/copyright"
+    },
+    "wfigs-perimeters": {
+      "url": "https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/WFIGS_Interagency_Perimeters/FeatureServer/0",
+      "id_property": "poly_IRWINID",
+      "time_property": "poly_PolygonDateTime",
+      "license": "Public Domain",
+      "terms_url": "https://data-nifc.opendata.arcgis.com/datasets/nifc::wfigs-interagency-fire-perimeters/about",
+      "object_id_property": "OBJECTID",
+      "license_policy_url": "https://www.doi.gov/copyright"
+    },
+    "nifc-geomac-2018": {
+      "url": "https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/Historic_Geomac_Perimeters_2018/FeatureServer/0",
+      "id_property": "irwinid",
+      "time_property": "perimeterdatetime",
+      "object_id_property": "OBJECTID",
+      "license": "Public Domain",
+      "terms_url": "https://www.arcgis.com/sharing/rest/content/items/e51384680f7e47bf9a93c8b61e83bdfc?f=json",
+      "license_policy_url": "https://www.doi.gov/copyright"
+    }
+  }
+}

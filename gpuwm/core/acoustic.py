@@ -486,13 +486,23 @@ def prepare_acoustic_coefficients(state: DomainState, cfg: RunConfig,
 
 def prepare_acoustic_substep_launch(state: DomainState, cfg: RunConfig,
                                     dtau: float, coefficients: tuple, *,
-                                    mudf=None):
+                                    mudf=None, emdiv_args=None, sumflux=None):
     """Bind one stage's invariant acoustic launch metadata once.
 
-    The returned callable submits the same raw kernels, grids, blocks and
-    argument values as :func:`acoustic_substep`.  Device arrays are retained
-    by reference and continue to expose their in-place updates; only the
-    immutable Python launch containers and scalar wrappers are reused.
+    The returned callable submits the same arithmetic as
+    :func:`acoustic_substep`.  Device arrays are retained by reference and
+    continue to expose their in-place updates; only the immutable Python
+    launch containers and scalar wrappers are reused.
+
+    In the default build apply_emdiv and advance_uv run as one joined launch
+    (:mod:`gpuwm.core.acoustic_fusion`); a joined column launch (mu''/theta''/
+    Omega'', the w''-phi'' solve, the specified frame and the sumflux
+    accumulation) is selectable there and off by default, as measured.  ``emdiv_args`` is the argument tuple the
+    caller would launch ``apply_emdiv`` with before this substep and
+    ``sumflux`` the (ru_m, rv_m, ww_m) the caller would zero before the
+    stage's first substep and accumulate after each one.  The returned
+    callable's ``absorbs`` names which of those it now submits itself
+    ("emdiv", "sumflux"); the caller launches the rest as before.
     """
     nz, ny, nx = cfg.nz, cfg.ny, cfg.nx
     upper_wind_limiter = prepare_upper_wind_limiter(state, cfg, dtau)
@@ -624,6 +634,27 @@ def prepare_acoustic_substep_launch(state: DomainState, cfg: RunConfig,
     sy = (state.scratch((nz, 2, nx), "openbc_vpp_faces")
           if radiative_y else None)
 
+    joined_uv = joined_column = None
+    joined_written = {}
+    frame_after_column = False
+    if _fusion_enabled(nz):
+        from gpuwm.core.acoustic_fusion import FusionUnsupported
+        try:
+            (joined_uv, joined_column, joined_written,
+             frame_after_column) = _prepare_joined(
+                state, cfg, mu_name, mu_args, w_name, w_args,
+                frame_kernel is not None and not _frame_takes_table_w(cfg),
+                frame_args, int(mass_w_zone), uv_first_args, uv_later_args,
+                emdiv_args if not (radiative_x or radiative_y) else None,
+                sumflux, upper_wind_limiter is None
+                and exact_frame_kernel is None
+                and (frame_kernel is None or not _frame_takes_table_w(cfg)))
+        except FusionUnsupported as refusal:
+            # The separate kernels are the reference the joined text is
+            # proven against, so they are always a correct substep; say
+            # once why this process runs them.
+            _warn_separate_substep(str(refusal))
+
     def launch(*, first: bool) -> None:
         if radiative_x:
             sx[..., 0] = state.u_pp[:, :, 0]
@@ -632,8 +663,11 @@ def prepare_acoustic_substep_launch(state: DomainState, cfg: RunConfig,
             sy[:, 0, :] = state.v_pp[:, 0, :]
             sy[:, 1, :] = state.v_pp[:, -1, :]
 
-        uv_kernel(uv_grid, block,
-                  uv_first_args if first else uv_later_args)
+        if joined_uv is not None:
+            joined_uv[0](uv_grid, block, joined_uv[1] if first else joined_uv[2])
+        else:
+            uv_kernel(uv_grid, block,
+                      uv_first_args if first else uv_later_args)
 
         if radiative_x:
             state.u_pp[:, :, 0] = (sx[..., 0]
@@ -646,6 +680,12 @@ def prepare_acoustic_substep_launch(state: DomainState, cfg: RunConfig,
             state.v_pp[:, -1, :] = (sy[:, 1, :]
                                     + dtau_arg * state.rv_t[:, -1, :])
 
+        if joined_column is not None:
+            joined_column[0](column_grid, block,
+                             joined_column[1] if first else joined_column[2])
+            if frame_after_column:
+                frame_kernel(column_grid, block, frame_args)
+            return
         mu_kernel(column_grid, block, mu_args)
         if exact_frame_kernel is not None:
             exact_frame_kernel(column_grid, block, exact_frame_args)
@@ -655,7 +695,112 @@ def prepare_acoustic_substep_launch(state: DomainState, cfg: RunConfig,
         if frame_kernel is not None:
             frame_kernel(column_grid, block, frame_args)
 
+    launch.absorbs = frozenset(
+        (("emdiv",) if joined_uv is not None else ())
+        + (("sumflux",) if joined_written.get("ru_m") is not None else ()))
+    launch.joined = (joined_uv is not None, joined_column is not None)
+    launch.joined_written = joined_written
     return launch
+
+
+_SEPARATE_SUBSTEP_WARNED: set = set()
+
+
+def _warn_separate_substep(reason: str) -> None:
+    if reason in _SEPARATE_SUBSTEP_WARNED:
+        return
+    _SEPARATE_SUBSTEP_WARNED.add(reason)
+    import warnings
+    warnings.warn("acoustic substep: the joined launches refused this kernel "
+                  f"text ({reason}); running the separate kernels",
+                  RuntimeWarning, stacklevel=3)
+
+
+def _fusion_enabled(nz: int) -> bool:
+    """Joined substep launches: default arithmetic build, shipped w tier, and
+    the loader's own kernels.
+
+    The breakage the last condition prevents: verification harnesses (the
+    WRF 4.7.1 small-step oracles, gpuwm/verify/smallstep_*_oracle.py) swap
+    ``get_kernel``/``_w_phi_kernel`` here for probe kernels and measure what
+    the substep launches.  A joined launch would bypass the probe and the
+    harness would grade the wrong kernel (measured: 7 setup errors and one
+    word gate that no longer rejected its defective probe).
+    """
+    from gpuwm.core import acoustic_fusion
+    return (acoustic_fusion.ENABLED and not WRF_EXACT
+            and not wphi_module_defines(nz)
+            and get_kernel is _LOADER_GET_KERNEL
+            and _w_phi_kernel is _LOADER_W_PHI_KERNEL)
+
+
+def _prepare_joined(state, cfg, mu_name, mu_args, w_name, w_args,
+                    specified_frame, frame_args, mass_w_zone,
+                    uv_first_args, uv_later_args, emdiv_args, sumflux,
+                    column_ok):
+    """The joined u/v and column launches as (kernel, first args, later args).
+
+    Returns those two (each None where the separate kernels stay), the
+    arrays the joined launches may write, by parameter name, and whether the
+    specified-frame kernel still runs as its own launch after the joined
+    column (the separate order: mu, w, frame).  Each joined
+    entry's arguments are bound by name from the argument tuples
+    the separate kernels are launched with, so every parameter receives the
+    very array or value its original kernel received.  A configuration the
+    joined text does not cover keeps the separate kernel (None).
+    """
+    from gpuwm.core import acoustic_fusion as fusion
+
+    source = fusion.acoustic_source()
+    options = fusion._audit_options()
+    params = lambda entry: fusion.original_parameters(source, entry, options)
+    # The frame's w copy is turned around (the source column writes it), which
+    # needs the frame to be exactly the columns the w''-phi'' solve skips.
+    # Which phases join the column is a measured choice (fusion.JOIN_*).
+    frame = (frame_args is not None and specified_frame and fusion.JOIN_COLUMN_FRAME
+             and int(cfg.spec_zone) == mass_w_zone)
+    frame_after = frame_args is not None and specified_frame and not frame
+    column = column_ok and fusion.JOIN_COLUMN and (frame_args is None or frame or frame_after)
+    sumflux = sumflux if fusion.JOIN_COLUMN_SUMFLUX else None
+    if emdiv_args is None and not column:
+        return None, None, {}, False
+    unit, uv_names, column_names, receipt = fusion.joined_unit(
+        source, bool(state.has_msf), frame, sumflux is not None, options)
+    joined_uv = joined_column = None
+    if emdiv_args is not None:
+        emdiv = (params("apply_emdiv"), emdiv_args, {"spec_zone": "emdiv_spec_zone"})
+        joined_uv = (fusion.kernel(unit, fusion.UV_ENTRY),
+                     fusion.bind(uv_names, emdiv, (params("advance_uv"), uv_first_args, {})),
+                     fusion.bind(uv_names, emdiv, (params("advance_uv"), uv_later_args, {})))
+    if column:
+        named = [(params(mu_name), mu_args, {}), (params(w_name), w_args, {})]
+        if frame:
+            named.append((params("advance_specified_phi_w"), frame_args,
+                          {"spec_zone": "frame_spec_zone"}))
+        if sumflux is not None:
+            named.append((("ru_m", "rv_m", "ww_m"), tuple(sumflux), {}))
+        joined_column = (
+            fusion.kernel(unit, fusion.COLUMN_ENTRY),
+            fusion.bind(column_names, *named, (("sumflux_first",), (np.int32(1),), {})),
+            fusion.bind(column_names, *named, (("sumflux_first",), (np.int32(0),), {})))
+    # Every array the whole substep may write -- joined launch or separate
+    # kernel -- for tools/acoustic_fusion_replay.py, which must restore all
+    # of them between the two paths (a separate column run twice on one
+    # state is two substeps).
+    written = {}
+    originals = [("advance_uv", uv_first_args, {}), (mu_name, mu_args, {}),
+                 (w_name, w_args, {})]
+    if emdiv_args is not None:
+        originals.append(("apply_emdiv", emdiv_args, {"spec_zone": "emdiv_spec_zone"}))
+    if frame_args is not None and specified_frame:
+        originals.append(("advance_specified_phi_w", frame_args, {}))
+    for entry, args, _ in originals:
+        for name, value in zip(params(entry), args):
+            if name in fusion.writable_parameters(source, entry, options):
+                written.setdefault(f"{entry}.{name}", value)
+    if joined_column is not None and sumflux is not None:
+        written.update(zip(("ru_m", "rv_m", "ww_m"), sumflux))
+    return joined_uv, joined_column, written, column and frame_after
 
 
 def acoustic_substep(state: DomainState, cfg: RunConfig,
@@ -768,3 +913,9 @@ def run_acoustic_only(state: DomainState, cfg: RunConfig,
         state, cfg, dtau, coefficients)
     for i in range(n):
         launch_substep(first=(i == 0))
+
+
+#: The loader's kernel accessors as this module bound them at import; a
+#: harness that swaps either keeps the separate kernels (_fusion_enabled).
+_LOADER_GET_KERNEL = get_kernel
+_LOADER_W_PHI_KERNEL = _w_phi_kernel

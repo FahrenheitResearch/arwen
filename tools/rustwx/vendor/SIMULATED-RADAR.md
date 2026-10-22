@@ -22,9 +22,9 @@ crates the same way, and the Rust lockfile records them as local packages
 without a registry or Git source. No recast-radar Rust crate needs a crates.io
 release or a Git URL.
 
-The rest of the Rust dependency closure is checked in under `crates-io` and
-`bowecho-git`. The parent `.cargo/config.toml` replaces registry and pinned
-Git sources with those directories. Build from `tools/rustwx`, so Cargo reads
+The rest of the Rust dependency closure is checked in under `crates-io`.
+The parent `.cargo/config.toml` replaces registry and pinned Git sources
+with that directory. Build from `tools/rustwx`, so Cargo reads
 that configuration:
 
 ```sh

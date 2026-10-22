@@ -23,10 +23,13 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import glob
 import re
 import subprocess
 import sys
 from pathlib import Path
+
+from gpuwm.render import default_source_label
 
 #: The brand a comparison sheet puts over the run's panel.
 RUN_LABEL = "WOOF"
@@ -55,8 +58,36 @@ def frame_identity(path: Path):
     return match.group("domain"), valid
 
 
+def _expand_patterns(inputs) -> list[Path]:
+    """Each ``*``, ``?`` or ``[`` pattern becomes its matches, sorted.
+
+    gpuwm reads the pattern itself, so a quoted glob (the render line
+    ``gpuwm go --dry-run`` prints) and PowerShell, which expands none,
+    name the same frames an expanding shell would.  A name that exists
+    as written stays as written; a pattern that matches nothing is
+    refused, since a literal ``wrfout_d01_*`` file can only fail later
+    with a bare "No such file".
+    """
+
+    out: list[Path] = []
+    for item in inputs:
+        text = str(item)
+        if not glob.has_magic(text) or Path(text).exists():
+            out.append(Path(item))
+            continue
+        matched = sorted(glob.glob(text))
+        if not matched:
+            raise ValueError(
+                f"{text} matches no file or folder; the pattern is read by "
+                "gpuwm itself, so spell the directory the way this system "
+                "does (a drive-letter path on Windows)")
+        out.extend(Path(name) for name in matched)
+    return out
+
+
 def expand_inputs(inputs) -> list[Path]:
-    """Files stay files; a run folder becomes its history frames.
+    """Files stay files; a run folder becomes its history frames; a
+    glob pattern becomes its matches (see :func:`_expand_patterns`).
 
     A folder is searched where a run keeps its frames (itself, then
     ``wrfout/``, ``out/wrfout/``, ``forecast/wrfout/``) and the first of
@@ -65,7 +96,7 @@ def expand_inputs(inputs) -> list[Path]:
     """
 
     frames: list[Path] = []
-    for item in inputs:
+    for item in _expand_patterns(inputs):
         path = Path(item)
         if not path.is_dir():
             frames.append(path)
@@ -125,21 +156,6 @@ def group_frames(frames) -> list[tuple[list[Path], list[Path]]]:
                     break
         out.append((members, context))
     return out
-
-
-def default_source_label() -> str:
-    """``WOOF <executing version>``: the stamp under the run's panel."""
-
-    from gpuwm.provenance import UNKNOWN_VERSION
-    from gpuwm.provenance_gate import executing_version
-
-    try:
-        version = executing_version()
-    except Exception:                                   # noqa: BLE001
-        return RUN_LABEL
-    if not version or version == UNKNOWN_VERSION:
-        return RUN_LABEL
-    return f"{RUN_LABEL} {version}"
 
 
 def default_reference_cache() -> Path:
@@ -293,6 +309,8 @@ def compare_main(args: argparse.Namespace) -> int:
               + ", ".join(str(frame) for frame in missing), file=sys.stderr)
         return 2
 
+    environment, device = rustwx.raster_device_env(rustwx.renderer_env())
+    print(f"render: {device}")
     render._claim_run_dir(args, frames)
     tally = {"rendered": [], "skipped": 0, "failed": 0}
     status = 0
@@ -304,7 +322,7 @@ def compare_main(args: argparse.Namespace) -> int:
                     context=context, size=size)
                 process = subprocess.Popen(
                     command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, errors="replace", env=rustwx.renderer_env())
+                    text=True, errors="replace", env=environment)
                 assert process.stdout is not None
                 for line in process.stdout:
                     _relay(line, tally)
@@ -331,7 +349,10 @@ def register_arguments(parser: argparse.ArgumentParser) -> None:
              "Forecast references share the valid time; observation panels "
              "label their actual observation time. The native --list-products "
              "catalogue lists references and supported products. WRFOUT may "
-             "be frames or a run folder")
+             "be frames or a run folder. The map rasters are filled on a "
+             "CUDA card: the first one CUDA_VISIBLE_DEVICES exposes (CUDA's "
+             "device 0 when it is unset; the run names the card it uses). "
+             "RUSTWX_RASTER_DEVICE=cpu fills them on the CPU")
     parser.add_argument(
         "--compare-difference", choices=("auto", "on", "off"),
         default="auto",

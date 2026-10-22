@@ -297,3 +297,38 @@ def test_run_options_cycle_is_refused_on_an_inline_config(tmp_path):
         source="test", base_dir=tmp_path, sha256="0" * 64)
     with pytest.raises(runplan.PlanError, match="inline configuration has no"):
         runplan.plan_at_cycle(plan, tmp_path / "run")
+
+
+@needs_bridge
+def test_go_cycle_hydro_door_decides_from_the_retimed_config(tmp_path, monkeypatch):
+    """The hydro door reads the run's own cycle, never the file's stored one.
+
+    Breakage it prevents: on `gpuwm go RECIPE.toml --cycle X` the door read
+    the stored [fetch] cycle (a 21Z RAP-boundary recipe looked for RAP 18Z
+    f51, which does not exist) and reported no_domain_geometry.
+    """
+    from gpuwm.hydro import door
+
+    source, _raw = delayed_gfs_case(tmp_path)
+    read = []
+
+    def geometry(config_path):
+        start = tomllib.loads(Path(config_path).read_text(encoding="utf-8"))["experiment"]["start_time"]
+        read.append((Path(config_path), start))
+        raise ValueError(f"door read start {start}")
+
+    monkeypatch.setattr(door, "domain_geometry", geometry)
+    seen = {}
+
+    def launch(args, *, observer=None):
+        seen["decision"] = door.inherited_decision()
+        seen["config"] = Path(args.config)
+        return 0
+
+    monkeypatch.setattr(go_cli, "_go_prepared_main", launch)
+    monkeypatch.setattr(go_cli, "_registered_launch", lambda args, **kwargs: launch(args))
+    args = cli.build_parser().parse_args(["go", str(source), "--cycle", "2013-06-01T00"])
+    assert go_cli.go_main(args) == 0
+    assert read == [(seen["config"], NEW_CYCLE)]
+    assert seen["decision"]["reason"] == "no_domain_geometry"
+    assert str(seen["config"]) in seen["decision"]["gaps"][0]["gap"]

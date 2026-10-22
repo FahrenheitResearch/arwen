@@ -26,7 +26,7 @@ PHASE2_DEFAULTS = {
 }
 
 
-def _write_toml(tmp_path, *, nz=64, time_step_sound=4, grid="", dynamics=""):
+def _write_toml(tmp_path, *, nz=64, time_step_sound=4, grid="", dynamics="", run="", tail=""):
     """Minimal valid TOML; ``grid``/``dynamics`` append extra key lines
     (TOML tolerates the ragged indentation of interpolated lines)."""
     f = tmp_path / "run.toml"
@@ -45,28 +45,13 @@ def _write_toml(tmp_path, *, nz=64, time_step_sound=4, grid="", dynamics=""):
         {dynamics}
         [run]
         run_seconds = 900.0
+        {run}
+        {tail}
     """))
     return f
 
 def test_load_config(tmp_path):
-    f = tmp_path / "run.toml"
-    f.write_text(textwrap.dedent("""
-        [grid]
-        nx = 512
-        ny = 1
-        nz = 64
-        dx = 100.0
-        dy = 100.0
-        ztop = 6400.0
-        [dynamics]
-        dt = 0.5
-        time_step_sound = 4
-        khdif = 75.0
-        kvdif = 75.0
-        [run]
-        run_seconds = 900.0
-        case = "straka"
-    """))
+    f = _write_toml(tmp_path, dynamics="khdif = 75.0\nkvdif = 75.0", run='case = "straka"')
     cfg = load_config(f)
     assert cfg.nx == 512 and cfg.nz == 64
     assert cfg.dt == 0.5
@@ -102,39 +87,22 @@ def test_phase2_fields_roundtrip(tmp_path):
     combination (Task 12 final review: fail-loud guards): the open/moist
     file keeps flat terrain, the terrain file stays periodic.
     """
-    f = tmp_path / "run.toml"
-    f.write_text(textwrap.dedent("""
-        [grid]
-        nx = 512
-        ny = 1
-        nz = 64
-        dx = 100.0
-        dy = 100.0
-        ztop = 6400.0
-        [dynamics]
-        dt = 0.5
-        time_step_sound = 4
-        hybrid_opt = 2
-        etac = 0.15
-        moist = true
-        mp_physics = 1
-        moist_adv_opt = 2
-        diff_6th_opt = 2
-        diff_6th_factor = 0.25
-        km_opt = 4
-        c_s = 0.18
-        w_damping = 1
-        open_x = true
-        open_y = true
-        bl_pbl_physics = 1
-        # A PBL scheme without a surface layer is refused by
-        # validate_run_config and by gpuwm/core/physics.py
-        # initialize_physics alike: YSU consumes UST/HFX/QFX/WSPD/RMOL and
-        # nothing writes them at sf_sfclay_physics=0.
-        sf_sfclay_physics = 91
-        [run]
-        run_seconds = 900.0
-    """))
+    f = _write_toml(tmp_path, dynamics=(
+        'hybrid_opt = 2\n'
+        'etac = 0.15\n'
+        'moist = true\n'
+        'mp_physics = 1\n'
+        'moist_adv_opt = 2\n'
+        'diff_6th_opt = 2\n'
+        'diff_6th_factor = 0.25\n'
+        'km_opt = 4\n'
+        'c_s = 0.18\n'
+        'w_damping = 1\n'
+        'open_x = true\n'
+        'open_y = true\n'
+        'bl_pbl_physics = 1\n'
+        'sf_sfclay_physics = 91\n'
+    ))
     cfg = load_config(f)
     assert cfg.hybrid_opt == 2
     assert cfg.etac == 0.15
@@ -148,24 +116,11 @@ def test_phase2_fields_roundtrip(tmp_path):
     assert cfg.w_damping == 1
     assert cfg.open_x is True
     assert cfg.open_y is True
-    g = tmp_path / "terrain.toml"
-    g.write_text(textwrap.dedent("""
-        [grid]
-        nx = 512
-        ny = 1
-        nz = 64
-        dx = 100.0
-        dy = 100.0
-        ztop = 6400.0
-        terrain_opt = 1
-        hill_height = 500.0
-        hill_halfwidth = 5000.0
-        [dynamics]
-        dt = 0.5
-        time_step_sound = 4
-        [run]
-        run_seconds = 900.0
-    """))
+    g = _write_toml(tmp_path, grid=(
+        'terrain_opt = 1\n'
+        'hill_height = 500.0\n'
+        'hill_halfwidth = 5000.0\n'
+    ))
     tcfg = load_config(g)
     assert tcfg.terrain_opt == 1
     assert tcfg.hill_height == 500.0
@@ -283,22 +238,7 @@ def test_step_guards_unsupported_combinations_cpu():
 
 
 def test_rejects_unknown_table(tmp_path):
-    f = tmp_path / "run.toml"
-    f.write_text(textwrap.dedent("""
-        [grid]
-        nx = 512
-        ny = 1
-        nz = 64
-        dx = 100.0
-        dy = 100.0
-        ztop = 6400.0
-        [dynamics]
-        dt = 0.5
-        [run]
-        run_seconds = 900.0
-        [physics]
-        mp_physics = 1
-    """))
+    f = _write_toml(tmp_path, tail="[physics]\nmp_physics = 1")
     with pytest.raises(ValueError) as excinfo:
         load_config(f)
     msg = str(excinfo.value)
@@ -340,21 +280,7 @@ def test_rejects_invalid_hybrid_opt(tmp_path):
 
 
 def test_rejects_unknown_key(tmp_path):
-    f = tmp_path / "run.toml"
-    f.write_text(textwrap.dedent("""
-        [grid]
-        nx = 512
-        ny = 1
-        nz = 64
-        dx = 100.0
-        dy = 100.0
-        ztop = 6400.0
-        [dynamics]
-        dt = 0.5
-        not_a_real_option = 1
-        [run]
-        run_seconds = 900.0
-    """))
+    f = _write_toml(tmp_path, dynamics="not_a_real_option = 1")
     with pytest.raises(ValueError) as excinfo:
         load_config(f)
     msg = str(excinfo.value)

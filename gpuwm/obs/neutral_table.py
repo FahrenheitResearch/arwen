@@ -96,11 +96,6 @@ VARIABLE_TABLE: dict[str, dict[str, object]] = {
     "brightness_temperature_k": {"units": "K", "gross_bounds": (100.0, 340.0)},
 }
 
-#: Variables of the vocabulary that no obs-table decoder writes as a row
-#: and no point operator evaluates: they reach the filter as batches with
-#: their own operator (the radiance streams).
-FOREIGN_OPERATOR_VARIABLES = ("brightness_temperature_k",)
-
 # The neutral table itself as a stream.  ``gpuwm-obs.table.v2`` is what the
 # Rust front doors write (``rw-obs/src/table.rs`` keeps the same header
 # text); v1 is the ten-column form without the bookkeeping, still read.

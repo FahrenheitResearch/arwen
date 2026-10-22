@@ -216,16 +216,6 @@ impl CrossSectionRenderRequest {
         self
     }
 
-    pub fn with_wind_overlay(mut self, overlay: WindOverlayBundle) -> Self {
-        self.wind_overlay = Some(overlay);
-        self
-    }
-
-    pub fn with_contour_overlay(mut self, overlay: ScalarContourOverlayBundle) -> Self {
-        self.contour_overlays.push(overlay);
-        self
-    }
-
     pub fn with_contour_overlays(mut self, overlays: Vec<ScalarContourOverlayBundle>) -> Self {
         self.contour_overlays = overlays;
         self
@@ -2316,7 +2306,7 @@ fn compact_datetime_token(value: &str) -> String {
 }
 
 fn terrain_surface_y(axis: &VerticalAxis, plot: &PlotRect, surface_value: f64) -> Option<u32> {
-    let maybe_surface_y = if let Some(frac) = axis.plot_fraction_of_value(surface_value) {
+    if let Some(frac) = axis.plot_fraction_of_value(surface_value) {
         Some(plot.y + (frac * (plot.height as f64 - 1.0)).round() as u32)
     } else {
         match axis.kind() {
@@ -2326,8 +2316,7 @@ fn terrain_surface_y(axis: &VerticalAxis, plot: &PlotRect, surface_value: f64) -
             VerticalKind::Height if surface_value <= axis.plot_bottom() => None,
             _ => None,
         }
-    };
-    maybe_surface_y
+    }
 }
 
 fn map_value_to_color(value: f32, min_value: f32, max_value: f32, palette: &[Color]) -> Color {

@@ -31,6 +31,11 @@ struct VertmxColumn {
     // (all gated on CO presence and sf_urban_physics == 0), or fire CO > 0,
     // raise kts+1:kte/2 to 2.
     bool raise1, raise2;
+    // HRRR v4.1.21 fork enh_vermix (smoke/dry_dep_driver.F:178-195): a
+    // column with fire FRP > 1 MW raises kts+1:kts+4 to MAX(1.1*ekm, 10),
+    // then one whose diurnal FRP (coef_bb_dc * FRP) exceeds 250 MW raises
+    // kts+1:kts+5 to MAX(1.1*ekm, 20), in that order.
+    bool enh1, enh2;
 
     __device__ float phi(int k) const {
         return fmaxf(floor, chem[k * n + c]);
@@ -49,6 +54,8 @@ struct VertmxColumn {
         float e = fmaxf(1.e-6f, exch[k * n + c]);
         if (raise1 && k <= 10) e = fmaxf(e, 1.f);
         if (raise2 && k < nz / 2) e = fmaxf(e, 2.f);
+        if (enh1 && k <= 4) e = fmaxf(M(1.1f, e), 10.f);
+        if (enh2 && k <= 5) e = fmaxf(M(1.1f, e), 20.f);
         return e;
     }
     __device__ float a(int k) const {           // coeffs' a_coeff, k >= 1
@@ -64,7 +71,8 @@ extern "C" __global__ void chem_vertmx(
  const float *exch,const float *vd,float dt,float floor,int gas,float *accum,
  const float *anth,const float *fire,const float *pm1,const float *pm2,const float *pm,
  int ha,int hf,int hp,int hs,int urban,int nz,int n,
- float *mixed_out,float *ek_out,float *dd_out,int debug) {
+ float *mixed_out,float *ek_out,float *dd_out,int debug,
+ const float *frp,const float *coef,int enh) {
  int c=blockIdx.x*blockDim.x+threadIdx.x;
  if(c>=n)return;
  float f[CHEM_NZ],q[CHEM_NZ];
@@ -72,6 +80,8 @@ extern "C" __global__ void chem_vertmx(
  col.chem=chem;col.alt=alt;col.zw=zw;col.z=z;col.exch=exch;
  col.c=c;col.n=n;col.nz=nz;col.floor=floor;
  col.raise1=false;col.raise2=false;
+ col.enh1=enh && frp[c]>1.f;
+ col.enh2=enh && M(coef[c],frp[c])>250.f;
  if(ha && urban==0) {
   if(anth[c]>0.f)col.raise1=true;
   if(anth[c]>200.f || (hp && A(pm1[c],pm2[c])>M(8.19e-4f,200.f)) ||

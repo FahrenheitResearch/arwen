@@ -548,12 +548,3 @@ class AutomaticPreparationOwner:
                 self.close()
         else:
             self.close()
-
-
-def start_ensemble_sources(selection, context, *, output_root, observer=None,
-                           cpu_workers=1, temporary_root=None, existing_sources=None,
-                           timeout=None, cpu_bridge=None):
-    owner = AutomaticPreparationOwner(selection, context, output_root=output_root,
-        observer=observer, cpu_workers=cpu_workers, temporary_root=temporary_root,
-        existing_sources=existing_sources, cpu_bridge=cpu_bridge)
-    return owner.start(timeout=timeout)

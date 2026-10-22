@@ -5,19 +5,58 @@
       "id": "hrrr_v4_gsd41",
       "config": "hrrr_v4_gsd41.toml",
       "default_source": "gfs",
+      "default_region": "US",
+      "default_spacing_km": 3.0,
       "aerosol_sources": [
         {
           "id": "analysed",
-          "providers": ["hrrr", "hrrr-native", "rap", "rap-native"],
-          "settings": {"use_rap_aero_icbc": true, "aer_init_opt": 1, "wif_input_opt": 1},
+          "providers": [
+            "hrrr",
+            "hrrr-native",
+            "rap",
+            "rap-native"
+          ],
+          "settings": {
+            "use_rap_aero_icbc": true,
+            "aer_init_opt": 1,
+            "wif_input_opt": 1
+          },
           "difference": "Analysed aerosol initial and boundary pair; actual fields required on every frame."
         },
         {
           "id": "monthly-climatology",
-          "settings": {"mp28_aerosol_source": "climatology", "use_rap_aero_icbc": false, "aer_init_opt": 1, "wif_input_opt": 1},
+          "settings": {
+            "mp28_aerosol_source": "climatology",
+            "use_rap_aero_icbc": false,
+            "aer_init_opt": 1,
+            "wif_input_opt": 1
+          },
           "difference": "Monthly WRF aerosol climatology replaces analysed aerosol. This forcing differs from operational HRRR outside RAP coverage."
         }
-      ]
+      ],
+      "aliases": [
+        "hrrr",
+        "hrrr_v4"
+      ],
+      "race": {
+        "endpoint": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com",
+        "prefix": "hrrr.{date}/conus/hrrr.t{hour}z.wrf",
+        "analysis_key": "hrrr.{date}/conus/hrrr.t{hour}z.wrfnatf00.grib2",
+        "hour_key": "hrrr.{date}/conus/hrrr.t{hour}z.wrfprsf{lead:02d}.grib2",
+        "max_hours": 48,
+        "short_cycle_hours": 18,
+        "extended_cycle_hours": [
+          0,
+          6,
+          12,
+          18
+        ],
+        "mirror_directory_url": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hrrr/prod/hrrr.{date}/conus/",
+        "final_comparison_keys": [
+          "hrrr.{date}/conus/hrrr.t{hour}z.wrfnatf{lead:02d}.grib2",
+          "hrrr.{date}/conus/hrrr.t{hour}z.wrfsfcf{lead:02d}.grib2"
+        ]
+      }
     }
   ]
 }

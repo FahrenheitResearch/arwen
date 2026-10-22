@@ -3,28 +3,9 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
 from typing import Any
 
 from .backend import namespace
-
-
-@dataclass(frozen=True)
-class SpectralGrid:
-    ny: int
-    nx: int
-    dy_m: float
-    dx_m: float
-
-    def __post_init__(self) -> None:
-        if self.ny < 2 or self.nx < 2:
-            raise ValueError("a spectral grid needs at least 2x2 cells")
-        if not all(math.isfinite(v) and v > 0.0 for v in (self.dx_m, self.dy_m)):
-            raise ValueError("dx_m and dy_m must be positive and finite")
-
-    @property
-    def isotropic_nyquist_rad_m(self) -> float:
-        return math.pi / max(self.dx_m, self.dy_m)
 
 
 def angular_wavenumbers(array: Any, *, dy_m: float, dx_m: float):
@@ -71,5 +52,5 @@ def crop_even_extension(array: Any, ny: int, nx: int):
     return array[..., :ny, :nx]
 
 
-__all__ = ["SpectralGrid", "angular_wavenumbers", "crop_even_extension",
+__all__ = ["angular_wavenumbers", "crop_even_extension",
            "edge_window", "even_extension"]

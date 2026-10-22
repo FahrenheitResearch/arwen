@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
-from gpuwm import fetch, fetch_pool, fetch_routes
+from gpuwm import fetch_connections, fetch, fetch_pool, fetch_routes
 
 
 def grib(length=113):
@@ -263,6 +263,7 @@ def test_scoped_completion_hook_restores_outer_hook():
 def test_packaged_width_rows(row, width, budget, monkeypatch):
     monkeypatch.setenv("GPUWM_FETCH_ROW", row)
     assert fetch_pool.resolve_file_workers(None) == width
+    budget = min(budget, fetch_connections.process_share())
     assert fetch_pool.chunk_streams_per_file(None, files=49) == budget // width
     assert fetch_pool.resolve_file_workers(1) == 1
 

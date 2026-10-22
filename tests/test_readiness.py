@@ -181,6 +181,37 @@ def test_latest_skips_a_cycle_whose_first_boundary_is_not_posted():
         SOURCE, hours=12, cadence=3, now=now, probe=probe) == earlier
 
 
+@pytest.mark.parametrize("lead", [0, 1])
+def test_hrrr_latest_waits_for_runtime_surface_start_objects(lead):
+    cycle = datetime(2026, 10, 20, 12)
+    earlier = cycle - timedelta(hours=1)
+    missing = fetch.hrrr_object_url(cycle, lead, "wrfsfc")
+
+    def probe(url):
+        return (f"hrrr.t{earlier:%H}z." in url
+                or (f"hrrr.t{cycle:%H}z." in url
+                    and url not in (missing, missing + ".idx")))
+
+    now = cycle + timedelta(hours=1)
+    assert readiness.resolve_startable_cycle(
+        "hrrr", hours=12, now=now, probe=probe, transport="s3") == earlier
+    assert readiness.resolve_startable_cycle(
+        "hrrr", hours=12, now=now,
+        probe=lambda url: probe(url) or url in (missing, missing + ".idx"),
+        transport="s3") == cycle
+
+
+def test_hrrr_window_rejects_a_missing_intermediate_runtime_surface():
+    cycle = datetime(2026, 10, 20, 12)
+    missing = fetch.hrrr_object_url(cycle, 7, "wrfsfc")
+    result = fetch.probe_cycle_window(
+        "hrrr", cycle, tuple(range(13)), transport="s3",
+        now=cycle + timedelta(hours=1), probe=lambda url: url != missing)
+    assert result["available"] is False
+    assert result["checks"][-1]["url"] == missing
+    assert result["checks"][-1]["lead"] == 7
+
+
 def test_start_needs_name_the_donor_of_a_donor_gated_route():
     from gpuwm import fetch_routes
 

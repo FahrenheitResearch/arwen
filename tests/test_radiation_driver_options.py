@@ -89,10 +89,29 @@ def test_the_checkpoint_echo_drops_both_at_their_default():
     from gpuwm.io import restart
     echo = restart.configuration_echo(_cfg())
     assert "swint_opt" not in echo and "aer_opt" not in echo
+    assert "smoke_off_reason" not in echo
     echo = restart.configuration_echo(_cfg(swint_opt=1, aer_opt=3, **_HRRR))
     assert echo["swint_opt"] == 1 and echo["aer_opt"] == 3
     from gpuwm.config import CHEM_RUN_FIELDS, FIRE_RUN_FIELDS
     names = [field.name for field in dataclasses.fields(RunConfig)]
+    # Appended last after the campaign, keyword-only: sea ice's real.exe
+    # threshold (4c82704f8f) and the HRRR v4 output controls
+    # (lane/hrrr-v4-output: e55b68accb, bd4a1c2090, f80ac46aeb).
+    later = ["seaice_threshold", "prec_acc_dt", "prec_acc_dt1",
+             "gsd_diagnostics", "reset_interval1", "history_interval2_s",
+             "history_interval_change_s", "smoke_off_reason"]
+    assert names[-len(later):] == later
+    names = names[:-len(later)]
+    # The 2.9.4 capabilities campaign's keyword-only keys follow the fire
+    # block: lane/cap-waves-couple, cap-hail, cap-seaice, cap-eclipse and
+    # cap-lake, in merge order.
+    campaign = ["ocean_config", "hailcast_opt", "haildt",
+                "seaice_prognostic", "seaice_initial_thickness",
+                "seaice_new_ice_thickness", "seaice_ocean_heat_flux",
+                "ra_sw_eclipse", "lake_state_source", "lake_state_path",
+                "lake_state_accept_licence"]
+    assert names[-len(campaign):] == campaign
+    names = names[:-len(campaign)]
     # The keyword-only fire block follows the chem block.
     names = names[:-len(FIRE_RUN_FIELDS)]
     assert names[-len(CHEM_RUN_FIELDS):] == list(CHEM_RUN_FIELDS)
@@ -125,7 +144,11 @@ def test_the_checkpoint_echo_drops_both_at_their_default():
         "wsm3_conservative_surface", "wsm5_conservative_surface",
         "wsm7_conservative_surface",
         # 2.9.1: WRF's ocean mixed layer, appended after the correct-mode keys.
-        "sf_ocean_physics", "oml_hml0", "oml_gamma", "oml_relaxation_time",
+        "sf_ocean_physics",
+        # lane/cap-slab-ocean: the keyword-only 3-D PWP controls.
+        "ocean_levels", "ocean_analysis", "ocean_analysis_source",
+        "ocean_mld_climatology", "omdt", "ocean_z", "ocean_t", "ocean_s",
+        "oml_hml0", "oml_gamma", "oml_relaxation_time",
         # golden/ports-cu: Grell 3D and New SAS controls.
         "cugd_avedx", "maxiens", "maxens", "maxens2", "maxens3",
         "ensdim", "cu_diag", "convtrans_avglen_m",
@@ -144,34 +167,38 @@ def test_the_checkpoint_echo_drops_both_at_their_default():
     assert echo["rrtmg_aer3_type_source"] == "landmask"
 
 
-@pytest.mark.parametrize("kind,words", [
-    ("relocation", "grid_id = 2 of t.toml moves and sets swint_opt = 1"),
-    ("follow", "grid_id = 2 of t.toml moves and sets swint_opt = 1"),
-    ("spawn", "grid_id = 2 of t.toml is spawned mid-run and sets swint_opt = 1")])
-def test_a_nest_rebuilt_mid_run_refuses_shortwave_interpolation(kind, words):
-    """A move or a spawn rebuilds the nest cold without the fit, so its
-    daylight shortwave would be zero until the next radiation call; a
-    still nest, or swint_opt = 0, is not this refusal's business."""
+@pytest.mark.parametrize("kind", ["relocation", "follow", "spawn"])
+def test_a_nest_rebuilt_mid_run_admits_shortwave_interpolation(kind):
+    """The refusal is retired: a rebuilt driver calls radiation on its first
+    step (force_radiation_next_step), so swint_opt = 1 loads on a moving or
+    spawned nest exactly as on a still one."""
     from types import SimpleNamespace
 
     from gpuwm.experiment import _refuse_rebuilt_nest_shortwave_interpolation
 
-    def tree(swint):
-        run = SimpleNamespace(swint_opt=swint)
-        return [SimpleNamespace(grid_id=1, run=run, follow=None, spawn=None),
-                SimpleNamespace(grid_id=2, run=run,
-                                follow=object() if kind == "follow" else None,
-                                spawn=object() if kind == "spawn" else None)]
+    run = SimpleNamespace(swint_opt=1)
+    tree = [SimpleNamespace(grid_id=1, run=run, follow=None, spawn=None),
+            SimpleNamespace(grid_id=2, run=run,
+                            follow=object() if kind == "follow" else None,
+                            spawn=object() if kind == "spawn" else None)]
     moving = SimpleNamespace(enabled=True, grid_id=2, moves=(), follow=object())
-    relocation = moving if kind == "relocation" else None
-    with pytest.raises(ValueError, match=words + r".*set swint_opt = 0"):
-        _refuse_rebuilt_nest_shortwave_interpolation(tree(1), relocation, "t.toml")
-    _refuse_rebuilt_nest_shortwave_interpolation(tree(0), relocation, "t.toml")
-    still = [SimpleNamespace(grid_id=1, run=SimpleNamespace(swint_opt=1),
-                             follow=None, spawn=None)]
     _refuse_rebuilt_nest_shortwave_interpolation(
-        still, SimpleNamespace(enabled=False, grid_id=2, moves=(), follow=None),
-        "t.toml")
+        tree, moving if kind == "relocation" else None, "t.toml")
+
+
+def test_a_rebuilt_driver_calls_radiation_on_its_first_step():
+    """The cause fix behind the retired refusal, read at its two ends: the
+    rebuild sets the flag and the physics step consumes it once."""
+    import inspect
+
+    from gpuwm import runtime
+    from gpuwm.core import physics
+
+    rebuild = inspect.getsource(runtime.rebuild_child_driver_from_land_state)
+    assert "driver.force_radiation_next_step = True" in rebuild
+    step = inspect.getsource(physics)
+    assert 'if getattr(self, "force_radiation_next_step", False):' in step
+    assert "self.force_radiation_next_step = False" in step
 
 
 def test_the_fork_cloud_wrapper_is_explicit_and_legacy_only():

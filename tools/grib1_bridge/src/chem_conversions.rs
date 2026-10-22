@@ -5,6 +5,9 @@
 //! https://github.com/NOAA-EMC/UPP/blob/1296eebb295251d0fe1cc697f47058c62d887977/sorc/ncep_post.fd/MDLFLD.f#L2442
 
 /// No state persists between calls. Each cell uses its own source P and T.
+/// # Safety
+/// All input pointers address `length` initialized f32 elements; output addresses
+/// `length` writable elements, disjoint from the inputs, for the duration of the call.
 #[no_mangle]
 pub unsafe extern "C" fn gpuwm_kg_m3_to_ug_kg_dry_f32(
     mass: *const f32, pressure: *const f32, temperature: *const f32,
@@ -32,6 +35,9 @@ pub unsafe extern "C" fn gpuwm_kg_m3_to_ug_kg_dry_f32(
 }
 
 /// Table-ordered weighted source terms, one contiguous source-major buffer.
+/// # Safety
+/// `fields` addresses `nfields * length` initialized f32 elements and `weights`
+/// addresses `nfields`; output addresses `length` writable, non-overlapping elements.
 #[no_mangle]
 pub unsafe extern "C" fn gpuwm_boundary_weighted_sum_f32(
     fields: *const f32, weights: *const f32, output: *mut f32,

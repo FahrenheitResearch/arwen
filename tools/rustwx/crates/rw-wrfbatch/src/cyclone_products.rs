@@ -86,9 +86,9 @@ fn threshold() -> f32 {
 fn onshore_threshold() -> f32 {
     10.
 }
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Fix {
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     footprint: Vec<(f64, f64)>,
     valid_time: String,
     latitude: f64,
@@ -529,7 +529,7 @@ fn overlay(tracks: &[Track], best: &[Fix], until: Option<&str>) -> MapOverlays {
     });
     overlays
 }
-fn legend(path: &Path, tracks: &[Track]) -> Result<(), String> {
+fn legend(path: &Path, tracks: &[Track], has_best: bool) -> Result<(), String> {
     let families: BTreeMap<_, _> = tracks
         .iter()
         .map(|t| (t.parent_id.to_string(), t.color.clone()))
@@ -568,7 +568,11 @@ fn legend(path: &Path, tracks: &[Track]) -> Result<(), String> {
         );
     }
     let y = map.height() as i32 - 116;
-    rustwx_render::draw_text_line(&mut figure, "Black: NHC verification", left, y, ink, 2);
+    // NHC wording only when a best-track line is actually drawn (tc-tracks plume showed the
+    // label with no black line, improve-55).
+    if has_best {
+        rustwx_render::draw_text_line(&mut figure, "Black: NHC verification", left, y, ink, 2);
+    }
     rustwx_render::draw_text_line(&mut figure, "Tracks: 30-min centroid", left, y + 32, ink, 2);
     rustwx_render::draw_text_line(&mut figure, "Raw fixes in receipt", left, y + 60, ink, 2);
     rustwx_render::save_rgba_png_profile_with_options(
@@ -675,8 +679,9 @@ fn run(path: &Path) -> Result<(), String> {
         &r,
         "track-plume",
         format!(
-            "{}: track plume; black=NHC verification",
-            r.experiment_label
+            "{}: track plume{}",
+            r.experiment_label,
+            if best.is_empty() { "" } else { "; black=NHC verification" }
         ),
         valid,
         &lat,
@@ -688,7 +693,7 @@ fn run(path: &Path) -> Result<(), String> {
         Some(&layers),
         false,
     )?;
-    legend(&plume, &tracks)?;
+    legend(&plume, &tracks, !best.is_empty())?;
     let winds: Vec<_> = r
         .members
         .par_iter()
@@ -827,8 +832,9 @@ fn run(path: &Path) -> Result<(), String> {
                 &r,
                 "members-vs-best-track",
                 format!(
-                    "{}: tracks + nest footprints; NHC black verification; {} members",
+                    "{}: tracks + nest footprints;{} {} members",
                     r.experiment_label,
+                    if best.is_empty() { "" } else { " NHC black verification;" },
                     r.members.len()
                 ),
                 time,
@@ -841,7 +847,7 @@ fn run(path: &Path) -> Result<(), String> {
                 Some(&layers),
                 false,
             )?;
-            legend(&frame, &tracks)?;
+            legend(&frame, &tracks, !best.is_empty())?;
             Ok(())
         })?;
     // One valid time, identical physical units, scale and Earth coordinates.
@@ -898,8 +904,79 @@ fn run(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+// Deterministic go uses the same panels and overlays as the branch products.
+// The manifest carries already accumulated GPU fields, never saved-frame maxima.
+#[derive(Deserialize)]
+struct Accumulator {
+    schema: String,
+    request: serde_json::Value,
+    common_wind: Common,
+    fixes: Vec<Fix>,
+    out: PathBuf,
+}
+fn render_accumulator(path: &Path) -> Result<(), String> {
+    let a: Accumulator = serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    if a.schema != "gpuwm.tc-accumulator.v1" || a.common_wind.samples < 2
+        || a.fixes.len() != a.common_wind.samples || a.common_wind.shape.iter().any(|&n| n < 2) {
+        return Err("every-step accumulator schema, shape or track/sample count mismatch".into());
+    }
+    let analysis = a.request["analysis_time"].as_str().ok_or("analysis_time missing")?;
+    let r = Request {
+        analysis_time: analysis.into(), observation_cutoff: analysis.into(), issue_time: analysis.into(),
+        landfall_reference: a.fixes.last().ok_or("no every-step fixes")?.valid_time.clone(), out: a.out, members: vec![], best_track: PathBuf::new(),
+        observed_radar: None,
+        experiment_label: a.request["experiment_label"].as_str().unwrap_or("Cyclone").into(),
+        model_analysis_seconds: 0., grid_id: a.request["grid_id"].as_u64().ok_or("grid_id missing")? as usize,
+        wind_threshold_m_s: threshold(), onshore_threshold_m_s: onshore_threshold(),
+    };
+    let shape = a.common_wind.shape;
+    let cells = shape[0].checked_mul(shape[1]).ok_or("accumulator grid overflow")?;
+    let plane = |name: &str| read(&a.common_wind.directory.join(format!("{name}.f32")), cells);
+    let lat = plane("latitude")?;
+    let lon = plane("longitude")?;
+    let valid = a.fixes.last().ok_or("no every-step fixes")?.valid_time.clone();
+    let tracks = vec![Track {member_id: 0, parent_id: serde_json::json!("go"), weight: 1.,
+        color: "#111111".into(), plotted_fixes: a.fixes.clone(), fixes: a.fixes}];
+    let layers = overlay(&tracks, &[], None);
+    let products = a.request["products"].as_array().ok_or("products missing")?;
+    for (product, name, title, unit, scale) in [
+        ("max-wind", "time_max_wind10", "Every-step maximum 10 m wind", "m s-1", scales::spread_scale(80.)),
+        ("gust", "time_max_gust", "Every-step maximum diagnostic gust (surface-layer similarity)", "m s-1", scales::spread_scale(80.)),
+        ("min-pressure", "time_min_mslp", "Every-step minimum sea-level pressure", "hPa", scales::radial_velocity_scale(1050.)),
+    ] {
+        if !products.iter().any(|p| p.as_str() == Some(product)) { continue; }
+        let values = plane(name)?;
+        if !values.iter().any(|v| v.is_finite()) {
+            return Err(format!("{name}: no Earth-grid cell covered at every step; choose a common_grid within the forecast footprint"));
+        }
+        let mut scale = scale;
+        if product == "min-pressure" {
+            scale = scales::spread_scale(120.);
+            if let rustwx_render::ColorScale::Discrete(ref mut d) = scale {
+                d.levels.iter_mut().for_each(|v| *v += 930.);
+            }
+        }
+        draw(&r, product, format!("{}: {title}", r.experiment_label), &valid,
+            &lat, &lon, shape, values, unit, scale, Some(&layers), true)?;
+    }
+    if products.iter().any(|p| p.as_str() == Some("track")) {
+        draw(&r, "track", format!("{}: pressure minimum at every committed step", r.experiment_label),
+            &valid, &lat, &lon, shape, vec![f32::NAN;cells], "", scales::probability_scale(), Some(&layers), false)?;
+    }
+    Ok(())
+}
+
 pub fn try_cli(args: &[String]) -> Option<Result<(), String>> {
     let flag = args.first()?;
+    if flag == "--tc-accumulator-abi" {
+        println!("gpuwm.tc-accumulator.v1");
+        return Some(Ok(()));
+    }
+    if flag == "--tc-accumulator" {
+        return Some(if args.len() == 2 {render_accumulator(Path::new(&args[1]))}
+            else {Err("usage: rw_wrfbatch --tc-accumulator RECEIPT.json".into())});
+    }
     if flag == "--tc-track-landfalls" {
         return Some(if args.len() == 3 {
             track_landfalls(Path::new(&args[1]), Path::new(&args[2]))
@@ -1049,6 +1126,8 @@ struct Plume {
     members: Vec<serde_json::Value>,
     tracks: Vec<PlumeTrack>,
     best_track: Option<serde_json::Value>,
+    #[serde(default)]
+    plot: serde_json::Value,
 }
 fn read_plume(bytes: &[u8]) -> Result<Plume, String> {
     let p: Plume = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
@@ -1139,7 +1218,9 @@ fn render_plume(path: &Path, out: &Path) -> Result<(), String> {
         .map(|k| (lo + (hi - lo) * (k % nx) as f64 / (nx - 1) as f64) as f32)
         .collect();
     let overlays = overlay(&tracks, &best, None);
-    crate::panel::render_panel(PanelRequest {
+    // A track-only canvas has no finite weather footprint to recenter.
+    // Keep the requested geographic frame and overlay transform together.
+    crate::panel::render_panel_bounds(PanelRequest {
         lat_deg: &lat,
         lon_deg: &lon,
         projection: None,
@@ -1147,7 +1228,7 @@ fn render_plume(path: &Path, out: &Path) -> Result<(), String> {
         nx,
         values: vec![f32::NAN; ny * nx],
         product_slug: "tc-track-plume".into(),
-        title: "Completed-output tropical cyclone tracks".into(),
+        title: p.plot["title"].as_str().unwrap_or("Completed-output cyclone tracks").into(),
         display_units: String::new(),
         scale: scales::probability_scale(),
         cbar_tick_step: None,
@@ -1156,9 +1237,19 @@ fn render_plume(path: &Path, out: &Path) -> Result<(), String> {
             mode: LegendMode::Stepped,
         },
         render_density: RenderDensity::default(),
-        subtitle_left: "Raw tracker fixes | gaps retained | black: NHC verification".into(),
+        // A request may name its own labels (medicane / polar-low tracks have no agency reference);
+        // otherwise the tropical-cyclone wording, keyed on whether an observed best track is drawn.
+        subtitle_left: p.plot["subtitle_left"].as_str().map(String::from).unwrap_or_else(|| if best.is_empty() {
+            "Raw tracker fixes | gaps retained".into()
+        } else {
+            "Raw tracker fixes | gaps retained | black: observed best track".into()
+        }),
         subtitle_center: None,
-        subtitle_right: "Instantaneous model wind differs from NHC 1-minute sustained wind".into(),
+        subtitle_right: p.plot["subtitle_right"].as_str().map(String::from).unwrap_or_else(|| if best.is_empty() {
+            "Model wind: instantaneous 10 m maximum".into()
+        } else {
+            "Instantaneous model wind differs from observed 1-minute sustained wind".into()
+        }),
         width: 1440,
         height: 1080,
         contours: vec![],
@@ -1166,13 +1257,26 @@ fn render_plume(path: &Path, out: &Path) -> Result<(), String> {
         overlays: Some(&overlays),
         annotations: None,
         out_path: out.into(),
-    })?;
+    }, Some((lo, hi, so, no)))?;
     // Reuse the existing native overlay legend; plume labels include member weights.
-    plume_legend(out, &p)?;
+    plume_legend(out, &p, !best.is_empty())?;
     println!("RENDERED\t{}", out.display());
     Ok(())
 }
-fn plume_legend(path: &Path, p: &Plume) -> Result<(), String> {
+/// Members with at least one located fix, i.e. members that have a line on the map.
+/// Breakage it fixes: a partial moving ensemble's legend listed all 8 members with
+/// coloured swatches while only 3 had tracks (hexcap-moving-ens ensemble-03), so the
+/// legend claimed lines the map does not draw.
+fn plume_members_with_fixes(p: &Plume) -> std::collections::BTreeSet<String> {
+    p.tracks
+        .iter()
+        .filter(|t| t.fixes.iter().flatten().any(|f| f.lat.is_some() && f.lon.is_some()))
+        .map(|t| t.member_id.clone())
+        .collect()
+}
+
+fn plume_legend(path: &Path, p: &Plume, has_best: bool) -> Result<(), String> {
+    let drawn = plume_members_with_fixes(p);
     let map = image::open(path).map_err(|e| e.to_string())?.to_rgba8();
     let rows = ((map.height() - 180) / 28).max(1) as usize;
     let cols = p.members.len().div_ceil(rows).max(1) as u32;
@@ -1185,7 +1289,7 @@ fn plume_legend(path: &Path, p: &Plume) -> Result<(), String> {
     let ink = rustwx_render::Color::rgba(23, 35, 52, 255);
     rustwx_render::draw_text_line(
         &mut fig,
-        "Member / weight",
+        "Member / weight / stratum",
         map.width() as i32 + 12,
         28,
         ink,
@@ -1194,18 +1298,24 @@ fn plume_legend(path: &Path, p: &Plume) -> Result<(), String> {
     for (i, m) in p.members.iter().enumerate() {
         let x = map.width() + 12 + (i / rows) as u32 * 360;
         let y = 70 + (i % rows) as u32 * 28;
-        let c = parse_color(&color(i));
-        for yy in y + 4..y + 8 {
-            for xx in x..x + 24 {
-                fig.put_pixel(xx, yy, image::Rgba([c.r, c.g, c.b, 255]))
+        let id = m["member_id"].as_str().unwrap_or("?");
+        let has_track = drawn.contains(id);
+        if has_track {
+            let c = parse_color(&color(i));
+            for yy in y + 4..y + 8 {
+                for xx in x..x + 24 {
+                    fig.put_pixel(xx, yy, image::Rgba([c.r, c.g, c.b, 255]))
+                }
             }
         }
         rustwx_render::draw_text_line(
             &mut fig,
             &format!(
-                "{} w={:.4}",
-                m["member_id"].as_str().unwrap_or("?"),
-                m["weight"].as_f64().unwrap_or(0.)
+                "{} w={:.4} {}{}",
+                id,
+                m["weight"].as_f64().unwrap_or(0.),
+                m["stratum"].as_str().unwrap_or(""),
+                if has_track { "" } else { " no track (no tracker fix)" }
             ),
             x as i32 + 30,
             y as i32,
@@ -1213,14 +1323,16 @@ fn plume_legend(path: &Path, p: &Plume) -> Result<(), String> {
             1,
         );
     }
-    rustwx_render::draw_text_line(
-        &mut fig,
-        "Black: NHC best track",
-        map.width() as i32 + 12,
-        map.height() as i32 - 60,
-        ink,
-        2,
-    );
+    if has_best {
+        rustwx_render::draw_text_line(
+            &mut fig,
+            &format!("Black: {}", p.plot["reference_label"].as_str().unwrap_or("observed best track")),
+            map.width() as i32 + 12,
+            map.height() as i32 - 60,
+            ink,
+            2,
+        );
+    }
     rustwx_render::save_rgba_png_profile_with_options(
         &fig,
         path,
@@ -1232,6 +1344,23 @@ fn plume_legend(path: &Path, p: &Plume) -> Result<(), String> {
 #[cfg(test)]
 mod plume_tests {
     use super::*;
+    #[test]
+    fn northern_plume_keeps_track_inside_geographic_frame() {
+        let dir=std::env::temp_dir().join(format!("northern-plume-{}",std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let input=dir.join("track.json");let output=dir.join("track.png");
+        fs::write(&input,br#"{"schema":"gpuwm.tc-tracks.v1","members":[{"member_id":"a","weight":1.0}],"tracks":[{"member_id":"a","weight":1.0,"fixes":[{"valid":"2024-01-01T00:00:00Z","lat":72.0,"lon":5.75},{"valid":"2024-01-01T03:00:00Z","lat":76.0,"lon":30.0},{"valid":"2024-01-01T06:00:00Z","lat":68.25,"lon":49.0}]}]}"#).unwrap();
+        render_plume(&input,&output).unwrap();
+        let image=image::open(&output).unwrap().to_rgb8();
+        // Exclude the member legend. A clipped northern map leaves no red
+        // track pixels in the map panel, even though the PNG write succeeds.
+        let red=image.enumerate_pixels().filter(|(x,_,p)| *x<1400 && p[0]>150 && p[1]<80 && p[2]<80).count();
+        assert!(red>300,"northern track was clipped: {red} visible red pixels");
+        fs::remove_file(input).unwrap();fs::remove_file(output).unwrap();
+        // Native georeference sidecars are small test products in this directory.
+        for entry in fs::read_dir(&dir).unwrap() { let p=entry.unwrap().path();if p.is_file(){fs::remove_file(p).unwrap();} }
+        fs::remove_dir(dir).unwrap();
+    }
     #[test]
     fn plume_reader_keeps_missing_fixes_and_member_weights() {
         let bytes=br#"{"schema":"gpuwm.tc-tracks.v1","members":[{"member_id":"a","weight":0.25}],"tracks":[{"member_id":"a","weight":0.25,"fixes":[null,{"valid":"2024-09-27T00:00:00Z","lat":29.0,"lon":-84.0,"mslp_pa":97000,"max_wind10_ms":40}]}]}"#;
@@ -1250,6 +1379,17 @@ mod plume_tests {
                 .into_bytes()
         )
         .is_err());
+    }
+
+    #[test]
+    fn plume_legend_marks_members_without_a_located_fix() {
+        let p = read_plume(br#"{"schema":"gpuwm.tc-tracks.v1",
+            "members":[{"member_id":"m1","weight":0.5},{"member_id":"m2","weight":0.5}],
+            "tracks":[{"member_id":"m1","weight":0.5,"fixes":[null,{"valid":"2022-09-28T01:00:00","lat":24.5,"lon":-83.1}]},
+                      {"member_id":"m2","weight":0.5,"fixes":[null,null]}]}"#).unwrap();
+        let drawn = plume_members_with_fixes(&p);
+        assert!(drawn.contains("m1"));
+        assert!(!drawn.contains("m2"));
     }
 }
 

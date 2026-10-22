@@ -51,6 +51,10 @@ for _p in (str(ROOT), str(HERE)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+from tools.thompson_aerosol_column_oracle.column_state import (
+    ColumnState as OracleColumnState,
+)
+
 DEFAULT_FIXTURE = ROOT / "tests" / "data" / "thompson_real_columns_wrf461_mp8.npz"
 SPECIES = ("qv", "qc", "qr", "qi", "qs", "qg", "ni", "nr")
 LEVEL_FIELDS = SPECIES + ("th", "refl", "re_cloud", "re_ice", "re_snow")
@@ -74,44 +78,12 @@ def _prepare(z, xp):
     return inp
 
 
-class _State:
-    """The DomainState surface ``_apply_thompson`` reads, over
-    ``(nz, 1, ncol)`` arrays of the chosen array module."""
+class _State(OracleColumnState):
+    _scratch_error = " reused"
 
     def __init__(self, inp, xp):
-        ncol, nz = inp["p"].shape
         self._xp = xp
-
-        def vol(a):
-            return xp.asarray(np.array(a.T.reshape(a.shape[1], 1, ncol),
-                                       dtype=f32, order="C", copy=True))
-
-        self.p = vol(inp["p"])
-        self.thb = xp.asarray(np.zeros((nz,), f32))
-        self.thp = vol(inp["th"])
-        self.phb = xp.asarray(np.zeros((nz + 1,), f32))
-        self.php = vol(inp["geop"])
-        self.w = vol(inp["w"])
-        for s in SPECIES:
-            setattr(self, s, vol(inp[s]))
-        for name in ("effc", "effi", "effs", "h_diabatic"):
-            setattr(self, name, xp.asarray(np.zeros((nz, 1, ncol), f32)))
-        self.physics = SimpleNamespace(refl_10cm=None, state=self)
-        self._scratch = {}
-
-    def scratch(self, shape, slot, dtype=None):
-        shape = tuple(shape)
-        want = np.dtype(f32 if dtype is None else dtype)
-        value = self._scratch.get(slot)
-        if value is None:
-            value = self._xp.asarray(np.zeros(shape, dtype=want))
-            self._scratch[slot] = value
-        elif value.shape != shape or value.dtype != want:
-            raise ValueError(f"scratch slot {slot!r} reused")
-        return value
-
-    def existing_scratch(self, slot):
-        return self._scratch.get(slot)
+        super().__init__(inp, xp, SPECIES, copy_inputs=True, host_zeros=True)
 
 
 def _host(a):

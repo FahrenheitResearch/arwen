@@ -39,11 +39,11 @@ JS = Path(__file__).resolve().parents[1] / "gpuwm" / "gui" / "static" / "js"
 def stage_geography(root: Path) -> None:
     """A tree the WRF static builder's check accepts: each dataset it opens, each with its WPS index."""
 
-    from gpuwm.geog_assets import GEOG_CONSUMER_WRF, datasets_required_by
+    # By directory, as the check reads them: the default soil categories are
+    # children of the soilgrids container (permissive geog set, 2026-10-21).
+    from _staged_geog import staged_wrf_geog_tree
 
-    for name in datasets_required_by(GEOG_CONSUMER_WRF):
-        (root / name).mkdir(parents=True, exist_ok=True)
-        (root / name / "index").write_text("type = continuous\n", encoding="utf-8")
+    staged_wrf_geog_tree(root)
 
 
 def _serve(tmp_path, runner):

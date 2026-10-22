@@ -573,9 +573,19 @@ def test_check_on_a_config_that_does_not_stream_is_byte_identical(
     # subtotal: 59,397,800 + 2 x 59,290,000 + 59,397,800 = 237,375,600 B,
     # or 268,234,428 B of estimate and of envelope with the unchanged
     # 1.13 pool margin (15,646,499,635 before).
-    assert payload["peak_envelope_bytes"] == 15378265207
-    assert payload["observed_peak_envelope_bytes"] == 15378265207
-    assert payload["alloc_estimate_bytes"] == 12092580983
+    # 04e65faa5ff (cap-solar): default SWDDIR/SWDDNI/SWDDIF history, three
+    # 550x550 FP32 planes, 3,630,000 B.  97e9a3ca061 (cap-hail): HAILCAST is
+    # automatic at this 3-km spacing; its persistent and rebuilt diagnostic
+    # slots are 17 550x550 planes (20,570,000 B) and four 49x550x550 volumes
+    # (hail_density/height/temperature/zero, 237,160,000 B).  The 261,360,000
+    # B subtotal is 295,336,800 B with the 1.13 pool margin (12,092,580,983
+    # before).  The hail kernel's 7,392-B frame is now the widest (Morrison
+    # 5,120 B): (7,392 - 5,120) * 170 SMs * 1,536 threads = 593,264,640 B more
+    # local-memory reservation, so the envelope moves by 888,601,440 B
+    # (15,378,265,207 before).
+    assert payload["peak_envelope_bytes"] == 16266866647
+    assert payload["observed_peak_envelope_bytes"] == 16266866647
+    assert payload["alloc_estimate_bytes"] == 12387917783
     # The reserve's 0.03 retention term follows the estimate: A163 moved
     # it by 0.03 x -212,355,128 = -6,370,653 B.
     # The density addition raises its retention reserve by 2,009,931 B, and
@@ -585,7 +595,10 @@ def test_check_on_a_config_that_does_not_stream_is_byte_identical(
     # The RRTMGP addition raises its 0.03 retention reserve by 2,514,194 B.
     # The shared tendency backings lower it by 0.03 x 268,234,428 =
     # 8,047,033 B.
-    assert payload["reserve_bytes"] == 3648461654
+    # The cap-solar + cap-hail allocations raise it by 0.03 x 295,336,800 =
+    # 8,860,104 B and the hail frame's local memory by 593,264,640 B
+    # (3,648,461,654 before).
+    assert payload["reserve_bytes"] == 4250586398
     assert payload["budget_bytes"] == _FITS_STREAMED_GIB * GIB
     assert payload["gates"]["alloc_estimate_le_wddm_budget"] is False
     assert rc == 1
@@ -619,7 +632,9 @@ def test_check_on_a_config_that_does_not_stream_is_byte_identical(
             == radiation_modules)
     assert radiation_modules <= set(frames)
     assert frames["rrtmgp_rte"] == 3600
-    assert frames["morrison"] == max(frames.values()) == 5120
+    # cap-hail (97e9a3ca061): the automatic HAILCAST frame is the widest.
+    assert frames["hail"] == max(frames.values()) == 7392
+    assert frames["morrison"] == 5120
     with monkeypatch.context() as old_accounting:
         # Remove only the newly reachable module accounting, preserving all
         # physics selectors, arrays, workspace prices and admission logic.
@@ -628,7 +643,7 @@ def test_check_on_a_config_that_does_not_stream_is_byte_identical(
         old_frames = preflight.kernel_local_frame_bytes(exp)
         assert old_frames == {name: size for name, size in frames.items()
                               if name not in radiation_modules}
-        assert old_frames["morrison"] == max(old_frames.values()) == 5120
+        assert old_frames["hail"] == max(old_frames.values()) == 7392
         old_estimate = preflight.estimate_experiment(
             exp, vram_gib=None, boundary_species=species)
         old_rc, old_payload = _check(capsys, config, "--budget-gib",
@@ -639,10 +654,10 @@ def test_check_on_a_config_that_does_not_stream_is_byte_identical(
     # change nothing this configuration is charged. The density allocation
     # and its unchanged pool and retention margins remain present in both,
     # as does the priced CLDFRA buffer, and the strict-rim health table.
-    assert old_payload["peak_envelope_bytes"] == 15378265207
-    assert old_payload["observed_peak_envelope_bytes"] == 15378265207
-    assert old_payload["alloc_estimate_bytes"] == 12092580983
-    assert old_payload["reserve_bytes"] == 3648461654
+    assert old_payload["peak_envelope_bytes"] == 16266866647
+    assert old_payload["observed_peak_envelope_bytes"] == 16266866647
+    assert old_payload["alloc_estimate_bytes"] == 12387917783
+    assert old_payload["reserve_bytes"] == 4250586398
     assert old_rc == rc == 1
     assert old_estimate == estimate
     for key in ("peak_envelope_bytes", "observed_peak_envelope_bytes",
@@ -707,7 +722,12 @@ def test_an_unconfigured_run_is_priced_exactly_as_it_always_was(tmp_path):
 #: the omission admits and the run dies on, and the FORECAST is what has
 #: to bind here or the leg is measuring the ingest term instead.  The
 #: tests do not pin either figure: they re-add both from the terms.
-_FITS_STEADY_NOT_PEAK_BYTES = int(9.0 * GIB)
+#: 9.0 GiB until 97e9a3ca061 (cap-hail): automatic HAILCAST at 3 km adds
+#: its diagnostic slots and the widest (7,392-B) kernel frame to the hold
+#: between radiation calls, 8.54 -> 9.24 GB (9,237,835,900 B), past the
+#: 9.13-GB sizing budget 9.0 GiB gives; the peak is 13.45 GB.  9.5 GiB
+#: (9.66-GB budget) straddles them again.
+_FITS_STEADY_NOT_PEAK_BYTES = int(9.5 * GIB)
 
 #: ``--budget-gib`` whose 8.80 GiB envelope budget straddles the same
 #: pair: the hold without radiation storage fits it and the priced peak

@@ -27,39 +27,12 @@ mod stored_plane_fixture;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-struct Scratch(PathBuf);
-
-impl Scratch {
-    fn new(tag: &str) -> Self {
-        // Parallel tests read one clock tick on the 2.8.6 windows-2025 runner and collided on this name; the counter keeps each call distinct.
-        static NEXT_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "rw-wrfbatch-georef-{tag}-{}-{:?}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|value| value.as_nanos())
-                .unwrap_or_default(),
-            NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-        ));
-        std::fs::create_dir_all(&dir).expect("create scratch dir");
-        Self(dir)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+mod support;
+use support::Scratch;
 
 #[test]
 fn a_real_run_writes_the_manifest_and_accounts_for_every_rendered_panel() {
-    let scratch = Scratch::new("run");
+    let scratch = Scratch::new("rw-wrfbatch-georef", "run");
     let wrfout = stored_plane_fixture::write(scratch.path());
     let store_root = scratch.path().join("store");
     let out_dir = scratch.path().join("out");
@@ -223,7 +196,7 @@ fn rendered_keys(child: std::process::Child, out_dir: &Path) -> Vec<String> {
 /// panel rendered twice must be recorded once.
 #[test]
 fn every_batch_into_one_out_dir_stays_in_the_manifest() {
-    let scratch = Scratch::new("batches");
+    let scratch = Scratch::new("rw-wrfbatch-georef", "batches");
     let out_dir = scratch.path().join("out");
     let frames: Vec<PathBuf> = (0..3)
         .map(|index| {

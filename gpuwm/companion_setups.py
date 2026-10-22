@@ -797,10 +797,14 @@ def retime_to_cycle(config_path, cycle: datetime, out) -> dict:
         # A cycle the route does not publish (a 00Z-only product at 06Z) or
         # a window its ladder does not carry at that cycle is refused here,
         # in the route's words, before anything is written.
-        fetch_routes.resolve_cycle(route, cycle)
+        from gpuwm.initial_source import boundary_fetch_request
+        boundary = boundary_fetch_request(raw["fetch"])
+        boundary_cycle = fetch.parse_cycle(boundary["cycle"], source)
+        fetch_routes.resolve_cycle(route, boundary_cycle)
         fetch_routes.resolve_leads(
-            route, cycle, int(math.ceil(float(raw["fetch"].get("hours", 0)))),
-            cadence=int(_cadence_hours(raw["fetch"], source)), start_hour=lead)
+            route, boundary_cycle, int(math.ceil(float(boundary.get("hours", 0)))),
+            cadence=int(_cadence_hours(boundary, source)),
+            start_hour=boundary.get("forecast_start_hour", 0))
     exp = _build(raw, out)
     text = CYCLE_HEADER.format(source=authority.source.name,
                                cycle=raw["fetch"]["cycle"]) + emit_experiment_toml(raw)

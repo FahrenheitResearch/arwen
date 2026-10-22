@@ -47,6 +47,7 @@ from gpuwm.obs.superob import SuperobParams, merge_contributions, superob_volume
 from gpuwm.obs.target_grid import TargetGrid
 from gpuwm.static.lambert import LambertGrid
 
+from test_obs_radar_grid import _rewrite
 from test_obs_superob_window import (  # noqa: E402
     PLACED,
     REF_LAT,
@@ -152,6 +153,8 @@ def test_v2_carries_bit_identical_observations_to_v1(tmp_path, monkeypatch):
     windowed = _merged(grid, params, dense=False)
     _write(tmp_path / "v2.nc", windowed, grid, params)
     v2 = read_radar_grid(tmp_path / "v2.nc", expected_grid=grid)
+    assert int(np.sum(v2["variables"]["vr_mask"])) > 0
+    assert int(np.sum(v2["variables"]["z_mask"])) > 0
 
     dense = _merged(grid, params, dense=True, monkeypatch=monkeypatch)
     _write(tmp_path / "v1.nc", dense, grid, params)
@@ -175,15 +178,6 @@ def test_v2_carries_bit_identical_observations_to_v1(tmp_path, monkeypatch):
         np.testing.assert_array_equal(v2["variables"][name],
                                       v1["variables"][name],
                                       err_msg=f"{name} differs")
-
-
-def test_the_fixture_actually_carries_observations(tmp_path):
-    grid, params = _grid(), _params()
-    observations = _merged(grid, params, dense=False)
-    _write(tmp_path / "v2.nc", observations, grid, params)
-    document = read_radar_grid(tmp_path / "v2.nc")
-    assert int(np.sum(document["variables"]["vr_mask"])) > 0
-    assert int(np.sum(document["variables"]["z_mask"])) > 0
 
 
 def test_the_adapter_builds_identical_batches_from_either_layout(
@@ -286,26 +280,12 @@ def test_the_reader_refuses_a_window_that_falls_off_the_grid(tmp_path):
 
 def test_the_reader_refuses_a_v2_file_missing_its_window_variables(tmp_path):
     """Without them the planes are bytes without a coordinate system."""
-    import netCDF4
-
     grid, params = _grid(), _params()
     observations = _merged(grid, params, dense=False)
     _write(tmp_path / "v2.nc", observations, grid, params)
 
-    with netCDF4.Dataset(tmp_path / "v2.nc", "r") as src, \
-            netCDF4.Dataset(tmp_path / "stripped.nc", "w",
-                            format="NETCDF4_CLASSIC") as dst:
-        dst.setncatts({k: src.getncattr(k) for k in src.ncattrs()})
-        for name, dimension in src.dimensions.items():
-            dst.createDimension(name, len(dimension))
-        for name, variable in src.variables.items():
-            if name == "radar_j0":
-                continue
-            out = dst.createVariable(name, variable.dtype,
-                                     variable.dimensions)
-            out.setncatts({k: variable.getncattr(k)
-                           for k in variable.ncattrs() if k != "_FillValue"})
-            out[:] = variable[:]
+    _rewrite(tmp_path / "v2.nc", tmp_path / "stripped.nc",
+             mutate=lambda src, dst: {"radar_j0"})
 
     with pytest.raises(RadarGridSchemaError, match="missing variables"):
         read_radar_grid(tmp_path / "stripped.nc")

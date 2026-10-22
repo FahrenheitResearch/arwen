@@ -5,7 +5,6 @@ use grib_core::grib2::{
 use rustwx_core::{GridShape, LatLonGrid, ModelId};
 use serde::{Deserialize, Serialize};
 
-use crate::source::ProductSourceMode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -172,14 +171,6 @@ pub fn native_candidate_for_slug(model: ModelId, slug: &str) -> Option<NativeThe
     native_candidate(model, recipe)
 }
 
-pub fn native_candidate_allowed_in_fastest(
-    mode: ProductSourceMode,
-    model: ModelId,
-    recipe: NativeThermoRecipe,
-) -> bool {
-    matches!(mode, ProductSourceMode::Fastest) && native_candidate(model, recipe).is_some()
-}
-
 pub fn extract_native_thermo_field(
     model: ModelId,
     recipe: NativeThermoRecipe,
@@ -213,111 +204,6 @@ pub fn extract_native_thermo_field(
         return Ok(None);
     };
     Ok(Some(build_native_field(recipe, candidate, message)?))
-}
-
-pub fn crop_native_field(
-    field: &NativeThermoField,
-    bounds: (f64, f64, f64, f64),
-) -> Result<NativeThermoField, Box<dyn std::error::Error>> {
-    let nx = field.grid.shape.nx;
-    let ny = field.grid.shape.ny;
-    let mut min_x = nx;
-    let mut max_x = 0usize;
-    let mut min_y = ny;
-    let mut max_y = 0usize;
-    let mut found = false;
-
-    for y in 0..ny {
-        let row_offset = y * nx;
-        for x in 0..nx {
-            let idx = row_offset + x;
-            let lat = f64::from(field.grid.lat_deg[idx]);
-            let lon = f64::from(field.grid.lon_deg[idx]);
-            if point_in_geographic_bounds(lon, lat, bounds) {
-                min_x = min_x.min(x);
-                max_x = max_x.max(x);
-                min_y = min_y.min(y);
-                max_y = max_y.max(y);
-                found = true;
-            }
-        }
-    }
-
-    if !found {
-        return Err("requested native thermo crop produced an empty domain".into());
-    }
-
-    if min_x == 0 && max_x + 1 == nx && min_y == 0 && max_y + 1 == ny {
-        return Ok(field.clone());
-    }
-
-    let x_start = min_x;
-    let x_end = max_x + 1;
-    let y_start = min_y;
-    let y_end = max_y + 1;
-    let width = x_end - x_start;
-    let height = y_end - y_start;
-
-    let crop_2d = |values: &[f32]| -> Vec<f32> {
-        let mut cropped = Vec::with_capacity(width * height);
-        for y in y_start..y_end {
-            let start = y * nx + x_start;
-            let end = y * nx + x_end;
-            cropped.extend_from_slice(&values[start..end]);
-        }
-        cropped
-    };
-    let crop_2d_f64 = |values: &[f64]| -> Vec<f64> {
-        let mut cropped = Vec::with_capacity(width * height);
-        for y in y_start..y_end {
-            let start = y * nx + x_start;
-            let end = y * nx + x_end;
-            cropped.extend_from_slice(&values[start..end]);
-        }
-        cropped
-    };
-
-    let grid = LatLonGrid::new(
-        GridShape::new(width, height)?,
-        crop_2d(&field.grid.lat_deg),
-        crop_2d(&field.grid.lon_deg),
-    )?;
-
-    Ok(NativeThermoField {
-        recipe: field.recipe,
-        candidate: field.candidate.clone(),
-        units: field.units.clone(),
-        grid,
-        values: crop_2d_f64(&field.values),
-        parameter_name: field.parameter_name.clone(),
-        level_name: field.level_name.clone(),
-        level_type: field.level_type,
-        level_value: field.level_value,
-    })
-}
-
-fn point_in_geographic_bounds(lon: f64, lat: f64, bounds: (f64, f64, f64, f64)) -> bool {
-    if !lon.is_finite() || !lat.is_finite() || lat < bounds.2 || lat > bounds.3 {
-        return false;
-    }
-    let west = normalize_longitude_for_bounds(bounds.0);
-    let east = normalize_longitude_for_bounds(bounds.1);
-    let lon = normalize_longitude_for_bounds(lon);
-    if west <= east {
-        lon >= west && lon <= east
-    } else {
-        lon >= west || lon <= east
-    }
-}
-
-fn normalize_longitude_for_bounds(lon: f64) -> f64 {
-    let mut lon = lon % 360.0;
-    if lon > 180.0 {
-        lon -= 360.0;
-    } else if lon <= -180.0 {
-        lon += 360.0;
-    }
-    lon
 }
 
 pub fn compare_native_vs_derived(

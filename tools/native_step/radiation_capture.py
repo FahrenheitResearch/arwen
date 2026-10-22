@@ -200,12 +200,6 @@ class RecordedRadiation:
             raise RuntimeError("shortwave distance factor requires a live slot")
         return self.constant(np.full(size, value, np.float32))
 
-    def static_f32(self, value):
-        if np.dtype(value.dtype) != np.dtype("float32"):
-            raise RuntimeError("fixed vertical radiation geometry must be float32")
-        with self.plan.constant_uploads(private_events=True, allow_empty=True):
-            return self.cp.ascontiguousarray(self.cp.asarray(value, dtype=self.cp.float32))
-
     def solar(self, *args):
         from gpuwm.core import solar
         if hashlib.sha256(Path(solar.__file__).read_bytes()).hexdigest() != SOLAR_SHA256:

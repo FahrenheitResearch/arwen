@@ -33,6 +33,8 @@ from typing import Iterable, Mapping
 
 import numpy as np
 
+from gpuwm.io.classic_tape import classic_attr_value as _classic_attr_value
+
 #: The container these products are written in.  CDF-5 rather than the
 #: wrfout tape's CDF-2 because a CDF-2 fixed variable is capped at 4 GiB
 #: unless it is the last one, and a multi-radar velocity volume over a
@@ -52,28 +54,6 @@ _HDF5_ONLY_KEYWORDS = ("zlib", "complevel", "shuffle", "fletcher32",
 
 class ClassicProductError(RuntimeError):
     """The product could not be written as declared."""
-
-
-def _classic_attr_value(value):
-    """An attribute value as the classic container stores it.
-
-    Same coercion :mod:`gpuwm.io.wrfout` applies for the same reason:
-    netCDF4-python stores a bare Python ``int`` as NC_INT and a bare
-    ``float`` as NC_DOUBLE in a classic-model file, while the Rust seam
-    takes numpy's word for the type and numpy 2 spells a bare int
-    ``int64`` -- which CDF-1/CDF-2 cannot hold at all.  A numpy-typed
-    value passes through untouched: a caller who chose a width keeps it.
-    """
-
-    if isinstance(value, (str, bytes, bytearray, np.generic, np.ndarray)):
-        return value
-    if isinstance(value, bool):
-        return np.int32(int(value))
-    if isinstance(value, int):
-        return np.int32(value)
-    if isinstance(value, float):
-        return np.float64(value)
-    return value
 
 
 class ProductVariable:

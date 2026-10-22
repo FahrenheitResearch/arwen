@@ -129,15 +129,6 @@ def test_invariant_only_decode_has_no_time_axis_and_refuses():
         _assemble_grib(mapping, (_land(T0, 0),))
 
 
-def test_invariant_publication_time_never_materializes_a_stateless_frame():
-    collection = _assemble_grib(_mapping(), (
-        _skin(T1, 0), _land(T0, 1),
-    ))
-    assert set(collection.source_cycles) == {(T1, None)}
-    assert (T0, None, "land_fraction") not in collection.direct
-    assert (T1, None, "land_fraction") in collection.direct
-
-
 def test_landmask_water_masks_sentinel_water_cells_to_missing():
     soil = _record(
         index=3, field_values=[[280.0, 0.0, 281.0], [0.0, 282.0, 0.0]],

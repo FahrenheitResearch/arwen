@@ -162,19 +162,12 @@ def test_a_stand_in_cannot_be_built_without_saying_so():
             center_latitude=37.0, center_longitude=-97.0, shape=(20, 20))
 
 
-def test_building_a_stand_in_warns():
+def test_a_stand_in_field_is_flagged_at_every_level(recwarn):
     with pytest.warns(stubs.ObsStubWarning, match="not measurements"):
-        stubs.StubGriddedObsSource(
+        source = stubs.StubGriddedObsSource(
             acknowledgement=stubs.STUB_ACKNOWLEDGEMENT,
             quantity="composite_reflectivity", center_latitude=37.0,
-            center_longitude=-97.0, shape=(20, 20))
-
-
-def test_a_stand_in_field_is_flagged_at_every_level(recwarn):
-    source = stubs.StubGriddedObsSource(
-        acknowledgement=stubs.STUB_ACKNOWLEDGEMENT,
-        quantity="composite_reflectivity", center_latitude=37.0,
-        center_longitude=-97.0, shape=(40, 40), spacing_deg=0.02)
+            center_longitude=-97.0, shape=(40, 40), spacing_deg=0.02)
     field = source.field("2026-08-03T14:00:00")
     assert field.provenance.is_stub is True
     assert field.provenance.stub_reason

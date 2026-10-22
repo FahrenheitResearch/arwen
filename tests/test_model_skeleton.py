@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 from dataclasses import fields
-from types import NoneType, SimpleNamespace
+from types import SimpleNamespace
 from typing import Literal, cast, get_type_hints
 
 import numpy as np
@@ -13,29 +13,10 @@ import pytest
 from gpuwm.config import RunConfig
 from gpuwm.core.clock import DomainClock, DomainTicks, Schedule
 from gpuwm.core.model import (PERIOD_BEGIN, DomainNode, ExperimentState,
-                              FeedbackScratch, NestCoupler, RestartPhase)
+                              NestCoupler, RestartPhase)
 from gpuwm.core.state import DomainState
 from gpuwm.experiment import DomainConfig
 from gpuwm.static.lambert import LambertGrid
-
-
-class DummyCoupler:
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, int]] = []
-
-    def force(self, node: DomainNode) -> None:
-        self.calls.append(("force", node.cfg.grid_id))
-
-    def feedback_prepare(self, node: DomainNode,
-                         out: FeedbackScratch) -> None:
-        out.payload = ("prepared", node.cfg.grid_id)
-        self.calls.append(("feedback_prepare", node.cfg.grid_id))
-
-    def feedback_commit(self, node: DomainNode) -> None:
-        self.calls.append(("feedback_commit", node.cfg.grid_id))
-
-    def feedback_finalize(self, node: DomainNode) -> None:
-        self.calls.append(("feedback_finalize", node.cfg.grid_id))
 
 
 def _cfg(grid_id: int, parent_id: int, *,
@@ -124,33 +105,6 @@ def test_experiment_state_field_contract() -> None:
     assert RestartPhase == Literal["PERIOD_BEGIN"]
 
 
-def test_nest_coupler_is_runtime_structural_protocol() -> None:
-    coupler = DummyCoupler()
-    root = _node(1)
-    assert isinstance(coupler, NestCoupler)
-    assert get_type_hints(NestCoupler.force) == {
-        "node": DomainNode, "return": NoneType}
-    assert get_type_hints(NestCoupler.feedback_prepare) == {
-        "node": DomainNode, "out": FeedbackScratch, "return": NoneType}
-    assert get_type_hints(NestCoupler.feedback_commit) == {
-        "node": DomainNode, "return": NoneType}
-    assert get_type_hints(NestCoupler.feedback_finalize) == {
-        "node": DomainNode, "return": NoneType}
-
-    scratch = FeedbackScratch()
-    coupler.force(root)
-    coupler.feedback_prepare(root, scratch)
-    coupler.feedback_commit(root)
-    coupler.feedback_finalize(root)
-    assert scratch.payload == ("prepared", 1)
-    assert coupler.calls == [
-        ("force", 1),
-        ("feedback_prepare", 1),
-        ("feedback_commit", 1),
-        ("feedback_finalize", 1),
-    ]
-
-
 def test_parent_first_walk_on_four_node_chain() -> None:
     root = _node(1)
     d02 = _node(2, parent=root)
@@ -168,19 +122,6 @@ def test_parent_first_walk_on_four_node_chain() -> None:
         state.node(99)
 
 
-def test_parent_first_walk_on_branching_tree() -> None:
-    root = _node(1)
-    d02 = _node(2, parent=root)
-    d03 = _node(3, parent=root)
-    d04 = _node(4, parent=d02)
-    root.children.extend((d02, d03))
-    d02.children.append(d04)
-
-    state = _experiment_state(root, d02, d03, d04)
-    assert [node.cfg.grid_id for node in state.walk_parent_first()] == [
-        1, 2, 4, 3]
-
-
 @pytest.mark.parametrize(
     ("make_bad_node", "message"),
     [
@@ -188,7 +129,7 @@ def test_parent_first_walk_on_branching_tree() -> None:
         (lambda: _node(1, clock_grid_id=9), "grid_id mismatch"),
         (lambda: _node(2, parent=_node(1), parent_id=0),
          "root DomainNode.*parent=None"),
-        (lambda: _node(1, coupler=DummyCoupler()),
+        (lambda: _node(1, coupler=cast(NestCoupler, object())),
          "root DomainNode.*coupler=None"),
         (lambda: _node(2, parent_id=1), "parent-before-child"),
         (lambda: _node(2, parent=_node(1), parent_id=9),

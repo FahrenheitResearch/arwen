@@ -46,8 +46,8 @@ def test_shared_grid_load_audit_changes_only_integer_indices():
     ("noah", ("ivgtyp", "isltyp", "xland_a", "shdmin_a", "shdmax_a", "tmn_a", "snoalb_a", "embck_a")),
 ])
 def test_default_physics_sources_have_only_audited_shared_field_loads(module, pointers):
-    path = Path(__file__).parents[1] / "gpuwm" / "core" / "kernels" / f"{module}.cu"
-    original = path.read_text()
+    from gpuwm.core.kernels import _unit_text
+    original = _unit_text(module)
     transformed = remap_shared_column_loads(original, pointers, member_columns=22500)
     assert transformed != original
     for pointer in pointers:

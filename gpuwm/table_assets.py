@@ -262,24 +262,59 @@ def unstaged_table_assets(
     return gaps
 
 
+def _first_use_staged_assets() -> frozenset[TableAsset]:
+    """Every pinned asset :func:`stage_classic_tables` puts in the root.
+
+    The classic mp=8 set plus the mp=28 activation table
+    (``CCN_ACTIVATE.BIN``), which the staging leg copies into the same
+    root because the aerosol contract shares it.
+    """
+
+    from gpuwm.core.thompson_aerosol_contract import AEROSOL_TABLE_ASSETS
+
+    return frozenset((*CLASSIC_TABLE_ASSETS, *AEROSOL_TABLE_ASSETS))
+
+
+def _thompson_scheme_label(assets: tuple[TableAsset, ...]) -> str:
+    """``mp_physics=28 (aerosol-aware Thompson)`` or ``=8 (Thompson)``.
+
+    Derived from the asset set the caller binds: only mp=28 binds the
+    aerosol activation table.  The refusal used to hard-code ``8``, so an
+    mp=28 run was told it was mp=8.
+    """
+
+    from gpuwm.core.thompson_aerosol_contract import AEROSOL_TABLE_ASSETS
+
+    if any(asset in AEROSOL_TABLE_ASSETS for asset in assets):
+        return "mp_physics=28 (aerosol-aware Thompson)"
+    return "mp_physics=8 (Thompson)"
+
+
 def auto_stage_applies(
         assets: tuple[TableAsset, ...] = CLASSIC_TABLE_ASSETS) -> bool:
     """Will an incomplete root be staged on first use rather than refused?
 
     True when no operator named a root (``GPUWM_THOMPSON_TABLE_ROOT``
-    unset) and ``assets`` is the classic set ``gpuwm fetch-tables``
-    stages.  A named root is the operator's mirror and is never filled
-    behind their back (the rule :func:`staging_is_self_chosen` states),
-    and a caller binding its own table set must not be handed this one.
+    unset) and every asset in ``assets`` is one ``gpuwm fetch-tables``
+    stages, pins included: the classic mp=8 set, or the classic set plus
+    the mp=28 activation table.  It used to demand exactly the classic
+    set, so an mp=28 run on a fresh install (classic + CCN_ACTIVATE.BIN)
+    skipped first-use staging and was refused at prepare, after go had
+    already downloaded the forcing.  A named root is the operator's
+    mirror and is never filled behind their back (the rule
+    :func:`staging_is_self_chosen` states), and a caller binding its own
+    table set (different pins) must not be handed this one.
     """
 
     from gpuwm.physics_compat import THOMPSON_TABLE_ROOT_ENV
 
     return (not os.environ.get(THOMPSON_TABLE_ROOT_ENV)
-            and tuple(assets) == tuple(CLASSIC_TABLE_ASSETS))
+            and bool(assets)
+            and set(assets) <= _first_use_staged_assets())
 
 
-def _stage_on_first_use(gaps: list[TableAsset]) -> str | None:
+def _stage_on_first_use(gaps: list[TableAsset],
+                        scheme: str = "mp_physics=8 (Thompson)") -> str | None:
     """Run the ``gpuwm fetch-tables`` classic leg; None, or why it failed.
 
     The defect this closes (2.9.2): a clean ``pip install gpuwm`` could
@@ -301,7 +336,7 @@ def _stage_on_first_use(gaps: list[TableAsset]) -> str | None:
     import contextlib
 
     mib = sum(asset.bytes for asset in gaps) / (1024 * 1024)
-    print(f"gpuwm: mp_physics=8 (Thompson) first use on this machine: "
+    print(f"gpuwm: {scheme} first use on this machine: "
           f"staging {', '.join(asset.filename for asset in gaps)} "
           f"({mib:.0f} MiB, SHA-256 verified against the packaged pins) "
           f"into the user table root, once -- offline machines stage them "
@@ -342,6 +377,7 @@ def require_thompson_tables(
     """
 
     resolved_here = root is None
+    scheme = _thompson_scheme_label(tuple(assets))
     if root is None:
         from gpuwm.physics_compat import thompson_table_root
 
@@ -357,7 +393,7 @@ def require_thompson_tables(
     failure = None
     automatic_staging = resolved_here and auto_stage_applies(assets)
     if stage and automatic_staging:
-        failure = _stage_on_first_use(gaps)
+        failure = _stage_on_first_use(gaps, scheme)
         if failure is None:
             from gpuwm.physics_compat import thompson_table_root
 
@@ -366,7 +402,7 @@ def require_thompson_tables(
             if not gaps:
                 return root
     mib = sum(asset.bytes for asset in gaps) / (1024 * 1024)
-    missing = (f"mp_physics=8 (Thompson) needs "
+    missing = (f"{scheme} needs "
                f"{', '.join(asset.filename for asset in gaps)}, which "
                f"{'are' if len(gaps) > 1 else 'is'} not staged at {root}")
     if not stage and automatic_staging:
@@ -782,6 +818,13 @@ def fetch_tables_main(args) -> int:
         fork_code = stage_thompson_fork_tables(
             getattr(args, "from_dir", None), getattr(args, "thompson_fork_root", None))
 
+    ocean_requested = bool(getattr(args, "ocean", False))
+    ocean_only = bool(getattr(args, "ocean_only", False))
+    ocean_code: int | None = None
+    if ocean_requested or ocean_only:
+        ocean_code = stage_ocean_climatology(getattr(args, "from_dir", None),
+                                             getattr(args, "ocean_root", None))
+
     wif_code: int | None = None
     if wif_requested:
         wif_code = stage_wif_dataset(getattr(args, "from_dir", None),
@@ -790,7 +833,7 @@ def fetch_tables_main(args) -> int:
     # --wif-only is the one flag that legitimately skips the mandatory
     # leg, because it is the operator saying so in as many words.
     classic_code: int | None = None
-    if not wif_only and not fork_only:
+    if not wif_only and not fork_only and not ocean_only:
         classic_code = stage_classic_tables(args)
 
     legs = []
@@ -800,11 +843,43 @@ def fetch_tables_main(args) -> int:
         legs.append(("--wif aerosol climatology dataset", wif_code))
     if fork_code is not None:
         legs.append(("--thompson-fork coefficient tables", fork_code))
+    if ocean_code is not None:
+        legs.append(("--ocean WOA18 mixed-layer-depth climatology", ocean_code))
     if len(legs) > 1 or (wif_requested and not wif_only):
         for label, code in legs:
             state = "staged" if code == 0 else "REFUSED"
             print(f"gpuwm fetch-tables: {label}: {state}")
     return max((code for _, code in legs), default=0)
+
+
+def stage_ocean_climatology(source_dir=None, root=None) -> int:
+    """Stage all 12 NOAA WOA18 monthly mixed-layer-depth files.
+
+    The mixed-layer ocean is on by default for forecasts of 48 h and
+    more, and its initial mixed-layer depth is this climatology.  Each
+    month is SHA-256 verified against
+    :data:`gpuwm.ocean.mixed_layer.climatology.MONTH_PINS` before the
+    atomic install, into the very cache the forecast reads
+    (``GPUWM_OCEAN_CACHE``, else ``<case data root>/ocean``), so an image
+    or AMI baked with this command never touches NCEI at forecast start.
+    Named breakage: NCEI THREDDS answered 503 for over an hour on
+    2026-10-22 and every run with water in its domain died at its first
+    step, because nothing could stage the file ahead of time.
+    """
+
+    from gpuwm.ocean.mixed_layer import climatology
+
+    target = climatology.cache_root(root)
+    print(f"gpuwm fetch-tables --ocean: staging 12 WOA18 monthly MLD files "
+          f"into {target}" + (f" from {source_dir}" if source_dir else ""))
+    staged, failed = climatology.stage_all(cache=target, source_dir=source_dir)
+    if failed:
+        print(f"gpuwm fetch-tables --ocean: {len(staged)} of 12 months staged; "
+              f"months {', '.join(f'{m:02d}' for m in failed)} REFUSED -- re-run "
+              "when the source answers, or stage them with --from DIR")
+        return 2
+    print(f"gpuwm fetch-tables --ocean: all 12 months staged and verified at {target}")
+    return 0
 
 
 def stage_wif_dataset(source_dir=None, root=None) -> int:
@@ -925,6 +1000,21 @@ def register_cli(subparsers) -> None:
     parser.add_argument(
         "--thompson-fork-root", metavar="DIR", default=None,
         help="stage fork tables into DIR instead of the selected fork cache")
+    parser.add_argument(
+        "--ocean", action="store_true",
+        help="also stage the 12 NOAA WOA18 monthly mixed-layer-depth files "
+             "(about 85 MB) the default mixed-layer ocean initializes from, "
+             "SHA-256 verified, into the cache forecasts read "
+             "(GPUWM_OCEAN_CACHE, else <case data root>/ocean), so no "
+             "forecast fetches them from NCEI at start")
+    parser.add_argument(
+        "--ocean-only", action="store_true",
+        help="stage only the ocean climatology and leave the coefficient "
+             "tables alone")
+    parser.add_argument(
+        "--ocean-root", metavar="DIR", default=None,
+        help="stage the ocean climatology into DIR (same meaning as "
+             "GPUWM_OCEAN_CACHE)")
     parser.set_defaults(func=fetch_tables_main)
     return parser
 
@@ -946,6 +1036,7 @@ __all__ = [
     "require_thompson_tables",
     "staging_is_self_chosen",
     "stage_classic_tables",
+    "stage_ocean_climatology",
     "stage_wif_dataset",
     "staging_root",
     "unstaged_table_assets",

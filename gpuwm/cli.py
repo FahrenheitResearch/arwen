@@ -174,6 +174,7 @@ cycle_register_cli = _lazy_register("gpuwm.cycle.cli")
 doctor_register_cli = _lazy_register("gpuwm.doctor")
 domain_register_cli = _lazy_register("gpuwm.domain_wizard")
 tc_tracks_register_cli = _lazy_register("gpuwm.tc_tracks")
+tc_strata_register_cli = _lazy_register("gpuwm.tc_strata")
 cyclone_setup_register_cli = _lazy_register("gpuwm.cyclone_setup")
 earth2_register_cli = _lazy_register("gpuwm.earth2_door")
 earth2_diagnostics_register_cli = _lazy_register("gpuwm.earth2_diagnostics")
@@ -183,6 +184,7 @@ fire_static_register_cli = _lazy_register("gpuwm.static.sfire")
 fire_ideal_register_cli = _lazy_register("gpuwm.fire_ideal")
 geog_register_cli = _lazy_register("gpuwm.geog_assets")
 go_register_cli = _lazy_register("gpuwm.go_cli")
+race_register_cli = _lazy_register("gpuwm.race_cli")
 hydro_register_cli = _lazy_register("gpuwm.hydro.cli")
 speedrun_register_cli = _lazy_register("gpuwm.speedrun_cli")
 ingest_register_cli = _lazy_register("gpuwm.ingest.preflight")
@@ -209,6 +211,7 @@ tui_register_cli = _lazy_register("gpuwm.tui_cli")
 update_register_cli = _lazy_register("gpuwm.update_cli")
 version_register_cli = _lazy_register("gpuwm.version_cli")
 warm_kernels_register_cli = _lazy_register("gpuwm.warm_kernels")
+kernels_register_cli = _lazy_register("gpuwm.kernel_warm_pack")
 spectral_register_cli = _lazy_register("gpuwm.verify.spectral_cli")
 cells_register_cli = _lazy_register("gpuwm.cells.cli")
 
@@ -472,12 +475,20 @@ def _register_run_parser(sub):
     run.add_argument("--wrfinput", type=Path, metavar="DIR",
                      help="WRF real.exe directory containing wrfinput_d0*, "
                           "wrfbdy_d01 and producing namelist.input (instead of CONFIG)")
+    run.add_argument("--hydro", default=None, metavar="off|SETTINGS.toml",
+                     help="hydro is on wherever a hydrofabric covers the domain; "
+                          "off disables it, a TOML file selects settings (as on gpuwm go)")
     run.add_argument("--restart-from", type=Path, default=None, metavar="WRFRST",
                      help="continue a WRF run from its restart file (wrfrst_d01_<time>, any "
                           "suffix): the state, physics and clock are the file's, and the "
                           "namelist.input and wrfbdy_d01 beside it (or in --wrfinput DIR) "
                           "supply the settings and the lateral forcing.  With --run-seconds, "
                           "the window after the restart instant")
+    run.add_argument("--checkpoint-at", default=None, metavar="TIMES",
+                     help="WRF inputs: write only these scheduled checkpoints, as "
+                          "comma-separated WRF valid times (2022-06-13_22:00:00) or "
+                          "`end`; each must be a restart_interval instant of the run. "
+                          "Absent writes every scheduled checkpoint")
     run.add_argument("--benchmark", action="store_true",
                      help="WRF inputs: time the forecast as a benchmark. Draws no "
                           "products and runs no post-run verification, then prints "
@@ -525,7 +536,7 @@ def _register_run_parser(sub):
 
 
 def build_parser(*, render_only: bool = False, preset_only: bool = False,
-                 run_only: bool = False, go_only: bool = False) -> argparse.ArgumentParser:
+                 run_only: bool = False, go_only: bool = False, race_only: bool = False) -> argparse.ArgumentParser:
     """The whole gpuwm command surface, assembled.
 
     Split out of :func:`main` so the parser can be inspected without
@@ -543,6 +554,10 @@ def build_parser(*, render_only: bool = False, preset_only: bool = False,
     parser.add_argument("--help-all", nargs=0, action=AllCommandsHelp,
                         help="show every command")
     sub = parser.add_subparsers(prog=parser.prog, dest="command", metavar="COMMAND", required=True)
+    if race_only:
+        race_register_cli(sub)
+        add_explain_flag(sub.choices["race"])
+        return parser
     if go_only:
         # Use the complete go registrar without importing unrelated products.
         go_register_cli(sub)
@@ -573,6 +588,7 @@ def build_parser(*, render_only: bool = False, preset_only: bool = False,
         add_explain_flag(parser)
         add_explain_flag(sub.choices["render"])
         return parser
+    _lazy_register("gpuwm.hubwind")(sub)
     preflight_register_cli(sub)
     _lazy_register("gpuwm.ensemble.family_products")(sub)
     ingest_register_cli(sub)
@@ -583,6 +599,7 @@ def build_parser(*, render_only: bool = False, preset_only: bool = False,
     fetch_register_cli(sub)
     _lazy_register("gpuwm.hf_fetch")(sub)
     fire_static_register_cli(sub)
+    _lazy_register("gpuwm.fire_ignition")(sub)
     fire_ideal_register_cli(sub)
     cds_credentials_register_cli = _lazy_register("gpuwm.cds_credentials")
     cds_credentials_register_cli(sub)
@@ -598,9 +615,11 @@ def build_parser(*, render_only: bool = False, preset_only: bool = False,
     geog_register_cli(sub)
     domain_register_cli(sub)
     cyclone_setup_register_cli(sub)
+    _lazy_register("gpuwm.solar")(sub)
     earth2_register_cli(sub)
     earth2_diagnostics_register_cli(sub)
     tc_tracks_register_cli(sub)
+    tc_strata_register_cli(sub)
     local_da_register_cli = _lazy_register("gpuwm.local_da")
     local_da_register_cli(sub)
     research_register_cli = _lazy_register("gpuwm.research_workspaces")
@@ -637,7 +656,10 @@ def build_parser(*, render_only: bool = False, preset_only: bool = False,
     _lazy_register("gpuwm.source_intermediate")(sub)
     _lazy_register("gpuwm.storm_diagnostics")(sub)
     go_register_cli(sub)
+    _lazy_register("gpuwm.standby_cli")(sub)
+    race_register_cli(sub)
     hydro_register_cli(sub)
+    _lazy_register("gpuwm.ocean.door")(sub)
     # Registered beside `go` because it IS `go`, on a fixed course, with a
     # clock and a sealed capsule around it.  The internal bench surface:
     # release-facing pages carry capability statements, this one carries
@@ -685,6 +707,7 @@ def build_parser(*, render_only: bool = False, preset_only: bool = False,
     version_register_cli(sub)
     # The first forecast's GPU kernel compile, paid ahead of time.
     warm_kernels_register_cli(sub)
+    kernels_register_cli(sub)
     spectral_register_cli(sub)
     cells_register_cli(sub)
     lst = sub.add_parser(
@@ -834,7 +857,8 @@ def build_parser(*, render_only: bool = False, preset_only: bool = False,
     for subcommand_parser in sub.choices.values():
         add_explain_flag(subcommand_parser)
     from gpuwm.earth2_licensing import add_licence_argument
-    for name in ("fetch", "prep", "domain", "go", "ensemble", "source-intermediate", "earth2", "earth2-diagnose"):
+    for name in ("fetch", "prep", "domain", "go", "ensemble", "source-intermediate", "earth2", "earth2-diagnose",
+                 "hf-fetch"):
         if name in sub.choices:
             add_licence_argument(sub.choices[name])
     return parser
@@ -903,7 +927,9 @@ def _dispatch_argv(argv: list[str] | None = None) -> int:
               build_parser(run_only=True)
               if tokens and tokens[0] == "run" else
               build_parser(go_only=True)
-              if tokens and tokens[0] == "go" else build_parser())
+              if tokens and tokens[0] == "go" else
+              build_parser(race_only=True)
+              if tokens and tokens[0] == "race" else build_parser())
     if not tokens:
         parser.print_help()
         return 0
@@ -956,6 +982,13 @@ def _dispatch_argv(argv: list[str] | None = None) -> int:
             parser.error("--rrtmg-variant is for WRF inputs; set radiation in CONFIG")
         if args.thompson_version is not None and (args.config is not None or args.met_em is not None):
             parser.error("--thompson-version is for WRF folders; set thompson_version in CONFIG")
+        if getattr(args, "checkpoint_at", None) is not None and args.wrfinput is None:
+            # Breakage it prevents: only the WRF-input door reads the
+            # selection, so on another route every scheduled checkpoint
+            # would still be written while the caller believed it was not.
+            parser.error("--checkpoint-at selects the WRF-input door's checkpoints "
+                         "(--wrfinput DIR or --restart-from WRFRST); the other routes "
+                         "do not read it")
         if args.benchmark and args.wrfinput is None:
             # Breakage it prevents: the flag would be read by nothing on the
             # other routes, so a timed run would still render and verify
@@ -1071,6 +1104,10 @@ def _dispatch_argv(argv: list[str] | None = None) -> int:
         from gpuwm.core.resident_admission import memory_gate_override
 
         with memory_gate_override(getattr(args, "no_memory_gate", False)):
+            if args.command == "run" and getattr(args, "hydro", None) is not None:
+                from gpuwm.hydro.runtime import run_scope
+                with run_scope(args.hydro, getattr(args, "config", None)):
+                    return _dispatch(args)
             return _dispatch(args)
     except KeyboardInterrupt:
         # Ctrl-C.  Every subcommand gets the same bounded contract: one
@@ -1371,7 +1408,6 @@ def _dispatch(args) -> int:
         if args.json:
             import json
             for record in records:
-                record = record  # manifest records are already dicts
                 record["door"] = case_door(record)
             print(json.dumps(records, indent=2, sort_keys=True))
         else:
@@ -1612,7 +1648,9 @@ def _dispatch(args) -> int:
                                   if args.met_em is None and args.restart_from is not None else {}),
                                **({"analysis": analysis_request}
                                   if args.met_em is None and analysis_request is not None else {}),
-                               **({"benchmark": True} if args.benchmark else {}))
+                               **({"benchmark": True} if args.benchmark else {}),
+                               **({"checkpoint_at": args.checkpoint_at}
+                                  if getattr(args, "checkpoint_at", None) is not None else {}))
 
     # [[domain]]/[experiment] tables route to the experiment path; the
     # legacy [grid]/[dynamics]/[run] shape stays on the frozen case path.
@@ -1630,9 +1668,7 @@ def _dispatch(args) -> int:
     # identity its payload is bound to, and `read_config_authority`
     # checks that binding itself.  Requiring that path to still be a
     # readable file on the worker would refuse a legitimate run.
-    config_authority = None
-    from gpuwm.config_authority import (CONFIG_PAYLOAD_ENV,
-                                        read_config_authority)
+    from gpuwm.config_authority import read_config_authority
     config_authority = read_config_authority(args.config)
     if (config_authority is not None
             and is_experiment_toml_bytes(config_authority.payload)):

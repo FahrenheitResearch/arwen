@@ -77,15 +77,10 @@ fn head_of_clean_checkout() -> Option<String> {
             println!("cargo:rerun-if-changed={path}");
         }
     }
-    if let Some(reference) = git(&["symbolic-ref", "-q", "HEAD"]) {
-        if let Some(path) = git(&[
-            "rev-parse",
-            "--path-format=absolute",
-            "--git-path",
-            &reference,
-        ]) {
-            println!("cargo:rerun-if-changed={path}");
-        }
+    if let Some(path) = git(&["symbolic-ref", "-q", "HEAD"]).and_then(|reference| {
+        git(&["rev-parse", "--path-format=absolute", "--git-path", &reference])
+    }) {
+        println!("cargo:rerun-if-changed={path}");
     }
     // Tracked modifications under this workspace mean the binary is not
     // HEAD, whatever HEAD says.  Untracked files (target/, dist output)

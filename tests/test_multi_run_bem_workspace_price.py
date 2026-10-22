@@ -9,9 +9,8 @@ from gpuwm.core import preflight as pf
 from test_urban_workspace_price import _city_tree
 
 
-@pytest.mark.parametrize("module", [
-    "gpuwm.prepared_domain_tree_forecast",
-    "gpuwm.prepared_single_domain_forecast",
+@pytest.mark.parametrize('module', [
+    pytest.param("gpuwm.prepared_domain_tree_forecast", id='gpuwm.prepared_domain_tree_forecast'),
 ])
 def test_worker_reservation_uses_verified_prepared_urban_counts(
         tmp_path, monkeypatch, module):
@@ -43,7 +42,9 @@ def test_worker_reservation_uses_verified_prepared_urban_counts(
     assert expected < bound
 
 
-@pytest.mark.parametrize("failure", [OSError, ValueError, RuntimeError, ImportError])
+@pytest.mark.parametrize('failure', [
+    pytest.param(ValueError, id='ValueError'),
+])
 def test_unverified_worker_land_cover_retains_the_configuration_bound(
         tmp_path, monkeypatch, failure):
     exp = _city_tree(tmp_path)

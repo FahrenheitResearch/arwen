@@ -1025,12 +1025,6 @@ pub fn validate(mesh: &MpasMesh, limits: Limits) -> MpasResult<MeshReport> {
     })
 }
 
-/// Difference vector between two unit vectors, exposed for callers that want to
-/// measure a displacement without pulling in the whole geometry module.
-pub fn displacement(a: V3, b: V3) -> V3 {
-    sub(a, b)
-}
-
 #[cfg(test)]mod fp32_floor_tests {
     use super::*;
     use crate::mesh::density::MeshSpec;

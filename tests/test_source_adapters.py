@@ -60,6 +60,12 @@ EXPECTED_SOURCE_IDS = (
     "hrrr-ak",
     "gfs",
     "gdas",
+    "gefs-v11-flat",
+    "gefs-reforecast",
+    "gefs-reforecast-weekly",
+    "gefs-reforecast-land",
+    "ncep-r1-seaice",
+    "gefs-v11",
     "gefs",
     "aigfs",
     "aigefs",
@@ -145,6 +151,10 @@ def test_registry_covers_bound_inventory_and_external_source_routes_including_ea
         "icon-d2",
         "gfs",
         "gdas",
+        "gefs-v11-flat",
+        "gefs-reforecast",
+        "gefs-reforecast-weekly",
+        "gefs-v11",
         "gefs",
         "aigfs",
         "aigefs",
@@ -724,9 +734,8 @@ def test_non_hrrr_sources_reject_explicit_zero_hrrr_only_flag(
         in capsys.readouterr().err
 
 
-def test_cli_20crv3_authors_create_only_member_manifest(
-    tmp_path: Path, capsys
-):
+def _twentycr_source(tmp_path):
+    """One two-time member inventory for the authoring door checks."""
     source = tmp_path / "member072"
     source.mkdir()
     for stamp in ("1932032100", "1932032103"):
@@ -735,6 +744,13 @@ def test_cli_20crv3_authors_create_only_member_manifest(
                 f"fixture:{stamp}:{role}".encode()
             )
     manifest = tmp_path / "member072.manifest.json"
+    return source, manifest
+
+
+def test_cli_20crv3_authors_create_only_member_manifest(
+    tmp_path: Path, capsys
+):
+    source, manifest = _twentycr_source(tmp_path)
 
     result = main([
         "--source",
@@ -767,14 +783,7 @@ def test_cli_20crv3_authoring_says_what_to_do_with_the_manifest(
     written still had to locate it and compute its SHA-256 by hand.
     """
 
-    source = tmp_path / "member072"
-    source.mkdir()
-    for stamp in ("1932032100", "1932032103"):
-        for role in ("pl", "sfc"):
-            (source / f"mem072_{stamp}_{role}.grb2").write_bytes(
-                f"fixture:{stamp}:{role}".encode()
-            )
-    manifest = tmp_path / "member072.manifest.json"
+    source, manifest = _twentycr_source(tmp_path)
 
     assert main([
         "--source", "20crv3",
@@ -843,14 +852,7 @@ def test_the_20crv3_handoff_runs_at_the_door_with_exactly_the_flags_it_names(
     from gpuwm.mapped_engine_bridge import ENGINE_ENV
 
     monkeypatch.delenv(ENGINE_ENV, raising=False)
-    source = tmp_path / "member072"
-    source.mkdir()
-    for stamp in ("1932032100", "1932032103"):
-        for role in ("pl", "sfc"):
-            (source / f"mem072_{stamp}_{role}.grb2").write_bytes(
-                f"fixture:{stamp}:{role}".encode()
-            )
-    manifest = tmp_path / "member072.manifest.json"
+    source, manifest = _twentycr_source(tmp_path)
     assert main([
         "--source", "20crv3",
         "--source-root", str(source),
@@ -1480,34 +1482,46 @@ def test_cli_validates_preprocess_options_before_authoring(
     assert "cpu-preprocess-bridge requires" in capsys.readouterr().err
 
 
+def _hrrr_args(*, cycle="2026-07-18_00:00:00",
+               static_cache="/case/static.npz", static_receipt="/case/static.json"):
+    """Fresh arguments for the cached-static HRRR preparation door."""
+    return [
+        "--source", "hrrr", "--source-root", "/source",
+        "--source-sha256s", "/source/SHA256SUMS",
+        "--source-sha256s-sha256", "abc123",
+        "--static-cache", static_cache, "--static-receipt", static_receipt,
+        "--namelist-input", "/case/namelist.input", "--valid-time", cycle,
+        "--output-root", "/output",
+    ]
+
+
+def _gfs_inputs():
+    """The common GFS series and decoder fixture."""
+    return [
+        "--gfs-series", "/source/gfs-series.tsv", "--cycle", "2026-07-20_00:00:00",
+        "--bridge", "/bin/gfs_grib2_bridge",
+    ]
+
+
+def _regular_args(*, experiment="/case/experiment.toml"):
+    """Fresh static and authority arguments shared by regular-grid source doors."""
+    return [
+        "--wps-namelist", "/case/namelist.wps",
+        "--static-input", "/case/static.npz", "--static-receipt", "/case/static-receipt.json",
+        "--experiment-config", experiment,
+        "--source-sha256s", "/source/input-manifest.json",
+        "--source-sha256s-sha256", "abc123", "--output-root", "/output",
+    ]
+
+
 def test_cli_hrrr_dry_run_routes_to_certified_internal_adapter(capsys):
     result = main(
         [
-            "--source",
-            "hrrr",
-            "--source-root",
-            "/source",
-            "--source-sha256s",
-            "/source/SHA256SUMS",
-            "--source-sha256s-sha256",
-            "abc123",
-            "--static-cache",
-            "/static/cache.npz",
-            "--static-receipt",
-            "/static/receipt.json",
-            "--namelist-input",
-            "/case/namelist.input",
-            "--valid-time",
-            "2026-07-18_00:00:00",
-            "--output-root",
-            "/output",
-            "--pipeline-workers",
-            "8",
-            "--history-interval-seconds",
-            "3600",
-            "--prepare-workers",
-            "4",
-            "--dry-run",
+            *_hrrr_args(static_cache='/static/cache.npz', static_receipt='/static/receipt.json'),
+            '--pipeline-workers', '8',
+            '--history-interval-seconds', '3600',
+            '--prepare-workers', '4',
+            '--dry-run',
         ]
     )
     assert result == 0
@@ -1535,17 +1549,9 @@ def test_cli_hrrr_relays_cpu_workers_under_the_preparers_auto_default(capsys):
     """
 
     result = main([
-        "--source", "hrrr",
-        "--source-root", "/source",
-        "--source-sha256s", "/source/SHA256SUMS",
-        "--source-sha256s-sha256", "abc123",
-        "--static-cache", "/static/cache.npz",
-        "--static-receipt", "/static/receipt.json",
-        "--namelist-input", "/case/namelist.input",
-        "--valid-time", "2026-07-18_00:00:00",
-        "--output-root", "/output",
-        "--preprocess-workers", "4",
-        "--dry-run",
+        *_hrrr_args(static_cache='/static/cache.npz', static_receipt='/static/receipt.json'),
+        '--preprocess-workers', '4',
+        '--dry-run',
     ])
     assert result == 0, capsys.readouterr().err
     command = capsys.readouterr().out
@@ -1557,27 +1563,9 @@ def test_cli_hrrr_relays_cpu_workers_under_the_preparers_auto_default(capsys):
 def test_cli_hrrr_rejects_invalid_history_interval(cadence, capsys):
     result = main(
         [
-            "--source",
-            "hrrr",
-            "--source-root",
-            "/source",
-            "--source-sha256s",
-            "/source/SHA256SUMS",
-            "--source-sha256s-sha256",
-            "abc123",
-            "--static-cache",
-            "/static/cache.npz",
-            "--static-receipt",
-            "/static/receipt.json",
-            "--namelist-input",
-            "/case/namelist.input",
-            "--valid-time",
-            "2026-07-18_00:00:00",
-            "--output-root",
-            "/output",
-            "--history-interval-seconds",
-            cadence,
-            "--dry-run",
+            *_hrrr_args(static_cache='/static/cache.npz', static_receipt='/static/receipt.json'),
+            '--history-interval-seconds', cadence,
+            '--dry-run',
         ]
     )
     assert result == EXIT_USAGE
@@ -1594,20 +1582,12 @@ def test_cli_hrrr_rejects_invalid_history_interval(cadence, capsys):
 def test_cli_hrrr_routes_absolute_source_windows_and_thompson_profile(
         cycle, start, end, capsys):
     result = main([
-        "--source", "hrrr",
-        "--source-root", "/source",
-        "--source-sha256s", "/source/SHA256SUMS",
-        "--source-sha256s-sha256", "abc123",
-        "--static-cache", "/static/cache.npz",
-        "--static-receipt", "/static/receipt.json",
-        "--namelist-input", "/case/namelist.input",
-        "--valid-time", cycle,
-        "--output-root", "/output",
-        "--run-seconds", str(6 * 3600),
-        "--forecast-start-hour", start,
-        "--forecast-end-hour", end,
-        "--physics-profile", "thompson-mp8-ysu-mm5-noah-dudhia-daytime-v1",
-        "--dry-run",
+        *_hrrr_args(static_cache='/static/cache.npz', static_receipt='/static/receipt.json', cycle=cycle),
+        '--run-seconds', str(6 * 3600),
+        '--forecast-start-hour', start,
+        '--forecast-end-hour', end,
+        '--physics-profile', 'thompson-mp8-ysu-mm5-noah-dudhia-daytime-v1',
+        '--dry-run',
     ])
     assert result == 0
     command = capsys.readouterr().out
@@ -1619,19 +1599,11 @@ def test_cli_hrrr_routes_absolute_source_windows_and_thompson_profile(
 
 def test_cli_hrrr_rejects_source_window_beyond_standard_cycle(capsys):
     result = main([
-        "--source", "hrrr",
-        "--source-root", "/source",
-        "--source-sha256s", "/source/SHA256SUMS",
-        "--source-sha256s-sha256", "abc123",
-        "--static-cache", "/static/cache.npz",
-        "--static-receipt", "/static/receipt.json",
-        "--namelist-input", "/case/namelist.input",
-        "--valid-time", "2026-07-18_05:00:00",
-        "--output-root", "/output",
-        "--run-seconds", "3600",
-        "--forecast-start-hour", "18",
-        "--forecast-end-hour", "19",
-        "--dry-run",
+        *_hrrr_args(static_cache='/static/cache.npz', static_receipt='/static/receipt.json', cycle='2026-07-18_05:00:00'),
+        '--run-seconds', '3600',
+        '--forecast-start-hour', '18',
+        '--forecast-end-hour', '19',
+        '--dry-run',
     ])
     assert result == EXIT_USAGE
     assert "horizon f18" in capsys.readouterr().err
@@ -1843,25 +1815,8 @@ def test_cli_hrrr_refuses_mixed_static_modes(capsys):
 def test_cli_hrrr_refuses_non_hourly_cycle(capsys):
     result = main(
         [
-            "--source",
-            "hrrr",
-            "--source-root",
-            "/source",
-            "--source-sha256s",
-            "/source/SHA256SUMS",
-            "--source-sha256s-sha256",
-            "abc123",
-            "--static-cache",
-            "/case/static.npz",
-            "--static-receipt",
-            "/case/static.json",
-            "--namelist-input",
-            "/case/namelist.input",
-            "--valid-time",
-            "2026-07-18_00:30:00",
-            "--output-root",
-            "/output",
-            "--dry-run",
+            *_hrrr_args(cycle='2026-07-18_00:30:00'),
+            '--dry-run',
         ]
     )
     assert result == EXIT_USAGE
@@ -1871,27 +1826,9 @@ def test_cli_hrrr_refuses_non_hourly_cycle(capsys):
 def test_cli_hrrr_rejects_worker_count_above_decoder_limit(capsys):
     result = main(
         [
-            "--source",
-            "hrrr",
-            "--source-root",
-            "/source",
-            "--source-sha256s",
-            "/source/SHA256SUMS",
-            "--source-sha256s-sha256",
-            "abc123",
-            "--static-cache",
-            "/case/static.npz",
-            "--static-receipt",
-            "/case/static.json",
-            "--namelist-input",
-            "/case/namelist.input",
-            "--valid-time",
-            "2026-07-18_00:00:00",
-            "--output-root",
-            "/output",
-            "--pipeline-workers",
-            "65",
-            "--dry-run",
+            *_hrrr_args(),
+            '--pipeline-workers', '65',
+            '--dry-run',
         ]
     )
     assert result == EXIT_USAGE
@@ -1901,17 +1838,9 @@ def test_cli_hrrr_rejects_worker_count_above_decoder_limit(capsys):
 def test_cli_hrrr_accepts_64_decoder_hour_workers(capsys):
     result = main(
         [
-            "--source", "hrrr",
-            "--source-root", "/source",
-            "--source-sha256s", "/source/SHA256SUMS",
-            "--source-sha256s-sha256", "abc123",
-            "--static-cache", "/case/static.npz",
-            "--static-receipt", "/case/static.json",
-            "--namelist-input", "/case/namelist.input",
-            "--valid-time", "2026-07-18_00:00:00",
-            "--output-root", "/output",
-            "--pipeline-workers", "64",
-            "--dry-run",
+            *_hrrr_args(),
+            '--pipeline-workers', '64',
+            '--dry-run',
         ]
     )
 
@@ -2034,35 +1963,13 @@ def test_cli_era5_refuses_hrrr_only_arguments(capsys):
 def test_cli_gfs_dry_run_routes_to_certified_internal_adapter(capsys):
     result = main(
         [
-            "--source",
-            "gfs",
-            "--gfs-series",
-            "/source/gfs-series.tsv",
-            "--cycle",
-            "2026-07-20_00:00:00",
-            "--bridge",
-            "/bin/gfs_grib2_bridge",
-            "--wps-namelist",
-            "/case/namelist.wps",
-            "--static-input",
-            "/case/static.npz",
-            "--static-receipt",
-            "/case/static-receipt.json",
-            "--experiment-config",
-            "/case/experiment.toml",
-            "--source-sha256s",
-            "/source/input-manifest.json",
-            "--source-sha256s-sha256",
-            "abc123",
-            "--output-root",
-            "/output",
-            "--preprocess-backend",
-            "cpu",
-            "--preprocess-workers",
-            "8",
-            "--cpu-preprocess-bridge",
-            "/bundle/libgpuwm_preprocess_cpu.so",
-            "--dry-run",
+            '--source', 'gfs',
+            *_gfs_inputs(),
+            *_regular_args(),
+            '--preprocess-backend', 'cpu',
+            '--preprocess-workers', '8',
+            '--cpu-preprocess-bridge', '/bundle/libgpuwm_preprocess_cpu.so',
+            '--dry-run',
         ]
     )
     assert result == 0
@@ -2087,20 +1994,12 @@ def test_cli_gfs_dry_run_routes_to_certified_internal_adapter(capsys):
 def test_cli_gfs_accepts_every_newly_reachable_profile(
         profile, acknowledgement, capsys):
     arguments = [
-        "--source", "gfs",
-        "--preprocess-backend", "cpu",
-        "--gfs-series", "/source/gfs-series.tsv",
-        "--cycle", "2026-07-20_00:00:00",
-        "--bridge", "/bin/gfs_grib2_bridge",
-        "--wps-namelist", "/case/namelist.wps",
-        "--static-input", "/case/static.npz",
-        "--static-receipt", "/case/static-receipt.json",
-        "--experiment-config", "/case/experiment.toml",
-        "--source-sha256s", "/source/input-manifest.json",
-        "--source-sha256s-sha256", "abc123",
-        "--output-root", "/output",
-        "--physics-profile", profile,
-        "--dry-run",
+        '--source', 'gfs',
+        '--preprocess-backend', 'cpu',
+        *_gfs_inputs(),
+        *_regular_args(),
+        '--physics-profile', profile,
+        '--dry-run',
     ]
     if acknowledgement is not None:
         arguments[-1:-1] = [
@@ -2115,20 +2014,12 @@ def test_cli_gfs_accepts_every_newly_reachable_profile(
 
 def test_cli_gfs_noahmp_warns_without_expert_acknowledgement(capsys):
     result = main([
-        "--source", "gfs",
-        "--preprocess-backend", "cpu",
-        "--gfs-series", "/source/gfs-series.tsv",
-        "--cycle", "2026-07-20_00:00:00",
-        "--bridge", "/bin/gfs_grib2_bridge",
-        "--wps-namelist", "/case/namelist.wps",
-        "--static-input", "/case/static.npz",
-        "--static-receipt", "/case/static-receipt.json",
-        "--experiment-config", "/case/experiment.toml",
-        "--source-sha256s", "/source/input-manifest.json",
-        "--source-sha256s-sha256", "abc123",
-        "--output-root", "/output",
-        "--physics-profile", NOAHMP_PROFILE_ID,
-        "--dry-run",
+        '--source', 'gfs',
+        '--preprocess-backend', 'cpu',
+        *_gfs_inputs(),
+        *_regular_args(),
+        '--physics-profile', NOAHMP_PROFILE_ID,
+        '--dry-run',
     ])
     assert result == 0
     assert "noahmp-host-column-throughput-v1" in capsys.readouterr().err
@@ -2186,19 +2077,11 @@ def test_cli_gfs_accepts_noahmp_acknowledgement_from_experiment_toml(
     capsys.readouterr()
 
     result = main([
-        "--source", "gfs",
-        "--gfs-series", "/source/gfs-series.tsv",
-        "--cycle", "2026-07-20_00:00:00",
-        "--bridge", "/bin/gfs_grib2_bridge",
-        "--wps-namelist", "/case/namelist.wps",
-        "--static-input", "/case/static.npz",
-        "--static-receipt", "/case/static-receipt.json",
-        "--experiment-config", str(experiment),
-        "--source-sha256s", "/source/input-manifest.json",
-        "--source-sha256s-sha256", "abc123",
-        "--output-root", "/output",
-        "--physics-profile", NOAHMP_PROFILE_ID,
-        "--dry-run",
+        '--source', 'gfs',
+        *_gfs_inputs(),
+        *_regular_args(experiment=str(experiment)),
+        '--physics-profile', NOAHMP_PROFILE_ID,
+        '--dry-run',
     ])
 
     assert result == 0
@@ -2229,19 +2112,11 @@ def test_cli_gfs_names_an_undecodable_experiment_config_not_the_ack_it_holds(
     )
 
     result = main([
-        "--source", "gfs",
-        "--gfs-series", "/source/gfs-series.tsv",
-        "--cycle", "2026-07-20_00:00:00",
-        "--bridge", "/bin/gfs_grib2_bridge",
-        "--wps-namelist", "/case/namelist.wps",
-        "--static-input", "/case/static.npz",
-        "--static-receipt", "/case/static-receipt.json",
-        "--experiment-config", str(experiment),
-        "--source-sha256s", "/source/input-manifest.json",
-        "--source-sha256s-sha256", "abc123",
-        "--output-root", "/output",
-        "--physics-profile", NOAHMP_PROFILE_ID,
-        "--dry-run",
+        '--source', 'gfs',
+        *_gfs_inputs(),
+        *_regular_args(experiment=str(experiment)),
+        '--physics-profile', NOAHMP_PROFILE_ID,
+        '--dry-run',
     ])
 
     assert result == EXIT_USAGE
@@ -2270,21 +2145,13 @@ def test_cli_gfs_defers_a_decodable_but_invalid_experiment_config(
         '[experiment]\nname = "no-tables-at-all"\n', encoding="utf-8")
 
     result = main([
-        "--source", "gfs",
-        "--gfs-series", "/source/gfs-series.tsv",
-        "--cycle", "2026-07-20_00:00:00",
-        "--bridge", "/bin/gfs_grib2_bridge",
-        "--wps-namelist", "/case/namelist.wps",
-        "--static-input", "/case/static.npz",
-        "--static-receipt", "/case/static-receipt.json",
-        "--experiment-config", str(experiment),
-        "--source-sha256s", "/source/input-manifest.json",
-        "--source-sha256s-sha256", "abc123",
-        "--output-root", "/output",
         # A profile that needs no acknowledgement, so the only thing that
         # could refuse here is a diagnostic this door should not be giving.
-        "--physics-profile", WSM6_PROFILE_ID,
-        "--dry-run",
+        '--source', 'gfs',
+        *_gfs_inputs(),
+        *_regular_args(experiment=str(experiment)),
+        '--physics-profile', WSM6_PROFILE_ID,
+        '--dry-run',
     ])
 
     assert result == 0
@@ -2293,21 +2160,19 @@ def test_cli_gfs_defers_a_decodable_but_invalid_experiment_config(
 
 def test_cli_gfs_d06_hierarchy_routes_source_neutral_controls(capsys):
     result = main([
-        "--source", "gfs",
-        "--gfs-series", "/source/gfs-series.tsv",
-        "--cycle", "2026-07-20_00:00:00",
-        "--bridge", "/bin/gfs_grib2_bridge",
-        "--wps-namelist", "/case/namelist.wps",
-        "--experiment-config", "/case/experiment.toml",
-        "--source-sha256s", "/source/input-manifest.json",
-        "--source-sha256s-sha256", "abc123",
-        "--output-root", "/output",
-        "--geog-root", "/wps-geog",
-        "--hierarchy-workers", "6",
-        "--preprocess-backend", "cpu",
-        "--preprocess-workers", "8",
-        "--cpu-preprocess-bridge", "/bundle/libgpuwm_preprocess_cpu.so",
-        "--dry-run",
+        '--source', 'gfs',
+        *_gfs_inputs(),
+        '--wps-namelist', '/case/namelist.wps',
+        '--experiment-config', '/case/experiment.toml',
+        '--source-sha256s', '/source/input-manifest.json',
+        '--source-sha256s-sha256', 'abc123',
+        '--output-root', '/output',
+        '--geog-root', '/wps-geog',
+        '--hierarchy-workers', '6',
+        '--preprocess-backend', 'cpu',
+        '--preprocess-workers', '8',
+        '--cpu-preprocess-bridge', '/bundle/libgpuwm_preprocess_cpu.so',
+        '--dry-run',
     ])
     assert result == 0
     command = capsys.readouterr().out.replace("\\", "/")
@@ -2361,31 +2226,11 @@ def test_cli_named_source_refuses_parallel_cuda_hierarchy(source, capsys):
 def test_cli_hrrr_routes_explicit_cpu_backend_options(capsys):
     result = main(
         [
-            "--source",
-            "hrrr",
-            "--source-root",
-            "/source",
-            "--source-sha256s",
-            "/source/SHA256SUMS",
-            "--source-sha256s-sha256",
-            "abc123",
-            "--static-cache",
-            "/case/static.npz",
-            "--static-receipt",
-            "/case/static.json",
-            "--namelist-input",
-            "/case/namelist.input",
-            "--valid-time",
-            "2026-07-18_00:00:00",
-            "--output-root",
-            "/output",
-            "--preprocess-backend",
-            "cpu",
-            "--preprocess-workers",
-            "8",
-            "--cpu-preprocess-bridge",
-            "/bundle/libgpuwm_preprocess_cpu.so",
-            "--dry-run",
+            *_hrrr_args(),
+            '--preprocess-backend', 'cpu',
+            '--preprocess-workers', '8',
+            '--cpu-preprocess-bridge', '/bundle/libgpuwm_preprocess_cpu.so',
+            '--dry-run',
         ]
     )
     assert result == 0
@@ -2401,18 +2246,10 @@ def test_cli_hrrr_routes_explicit_cpu_backend_options(capsys):
 def test_cli_hrrr_routes_auto_backend_workers(capsys):
     result = main(
         [
-            "--source", "hrrr",
-            "--source-root", "/source",
-            "--source-sha256s", "/source/SHA256SUMS",
-            "--source-sha256s-sha256", "abc123",
-            "--static-cache", "/case/static.npz",
-            "--static-receipt", "/case/static.json",
-            "--namelist-input", "/case/namelist.input",
-            "--valid-time", "2026-07-18_00:00:00",
-            "--output-root", "/output",
-            "--preprocess-backend", "auto",
-            "--preprocess-workers", "4",
-            "--dry-run",
+            *_hrrr_args(),
+            '--preprocess-backend', 'auto',
+            '--preprocess-workers', '4',
+            '--dry-run',
         ]
     )
     assert result == 0
@@ -2430,18 +2267,10 @@ def test_cli_hrrr_forwards_cuda_host_workers(capsys):
     """
     result = main(
         [
-            "--source", "hrrr",
-            "--source-root", "/source",
-            "--source-sha256s", "/source/SHA256SUMS",
-            "--source-sha256s-sha256", "abc123",
-            "--static-cache", "/case/static.npz",
-            "--static-receipt", "/case/static.json",
-            "--namelist-input", "/case/namelist.input",
-            "--valid-time", "2026-07-18_00:00:00",
-            "--output-root", "/output",
-            "--preprocess-backend", "cuda",
-            "--preprocess-workers", "8",
-            "--dry-run",
+            *_hrrr_args(),
+            '--preprocess-backend', 'cuda',
+            '--preprocess-workers', '8',
+            '--dry-run',
         ]
     )
     assert result == 0
@@ -2455,18 +2284,10 @@ def test_cli_hrrr_forwards_cuda_host_workers(capsys):
 def test_cli_hrrr_rejects_cpu_bridge_with_auto(capsys):
     result = main(
         [
-            "--source", "hrrr",
-            "--source-root", "/source",
-            "--source-sha256s", "/source/SHA256SUMS",
-            "--source-sha256s-sha256", "abc123",
-            "--static-cache", "/case/static.npz",
-            "--static-receipt", "/case/static.json",
-            "--namelist-input", "/case/namelist.input",
-            "--valid-time", "2026-07-18_00:00:00",
-            "--output-root", "/output",
-            "--preprocess-backend", "auto",
-            "--cpu-preprocess-bridge", "/bundle/libgpuwm_preprocess_cpu.so",
-            "--dry-run",
+            *_hrrr_args(),
+            '--preprocess-backend', 'auto',
+            '--cpu-preprocess-bridge', '/bundle/libgpuwm_preprocess_cpu.so',
+            '--dry-run',
         ]
     )
     assert result == EXIT_USAGE
@@ -2477,29 +2298,12 @@ def test_cli_gfs_uses_distribution_bridge_environment(monkeypatch, capsys):
     monkeypatch.setenv("GPUWM_GFS_GRIB2_BRIDGE", "/bundle/gfs_grib2_bridge")
     result = main(
         [
-            "--source",
-            "gfs",
-            "--preprocess-backend",
-            "cpu",
-            "--gfs-series",
-            "/source/gfs-series.tsv",
-            "--cycle",
-            "2026-07-20_00:00:00",
-            "--wps-namelist",
-            "/case/namelist.wps",
-            "--static-input",
-            "/case/static.npz",
-            "--static-receipt",
-            "/case/static-receipt.json",
-            "--experiment-config",
-            "/case/experiment.toml",
-            "--source-sha256s",
-            "/source/input-manifest.json",
-            "--source-sha256s-sha256",
-            "abc123",
-            "--output-root",
-            "/output",
-            "--dry-run",
+            '--source', 'gfs',
+            '--preprocess-backend', 'cpu',
+            '--gfs-series', '/source/gfs-series.tsv',
+            '--cycle', '2026-07-20_00:00:00',
+            *_regular_args(),
+            '--dry-run',
         ]
     )
     assert result == 0
@@ -2509,39 +2313,14 @@ def test_cli_gfs_uses_distribution_bridge_environment(monkeypatch, capsys):
 def test_cli_installed_distribution_rejects_explicit_decoder_substitution(
     tmp_path, monkeypatch, capsys
 ):
-    bridge_root = tmp_path / "libexec" / "bridges"
-    bridge_root.mkdir(parents=True)
-    inventory = bridge_root / "grib2_inventory"
-    dump = bridge_root / "grib2_dump"
-    for path, payload in ((inventory, b"inventory"), (dump, b"dump")):
-        path.write_bytes(payload)
-        path.chmod(0o755)
-    manifest = tmp_path / "manifest.json"
-    manifest.write_text(
-        json.dumps(
-            complete_runtime_manifest(
-                {
-                    f"libexec/bridges/{path.name}": {
-                        "bytes": path.stat().st_size,
-                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-                        "executable": True,
-                    }
-                    for path in (inventory, dump)
-                }
-            )
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("GPUWM_NATIVE_DISTRIBUTION_MANIFEST", str(manifest))
-    monkeypatch.setenv("GPUWM_GRIB2_INVENTORY", str(inventory))
-    monkeypatch.setenv("GPUWM_GRIB2_DUMP", str(dump))
+    _installed_grib2_distribution(tmp_path, monkeypatch, clear_engine=False)
 
     assert main(_mapped_args() + ["--dry-run"]) == EXIT_CONFIG
     error = capsys.readouterr().err
     assert "--grib2-inventory differs from the decoder bound" in error
 
 
-def _installed_grib2_distribution(tmp_path, monkeypatch, suffix=""):
+def _installed_grib2_distribution(tmp_path, monkeypatch, suffix="", *, clear_engine=True):
     """A sealed installed runtime whose manifest binds both GRIB2 tools.
 
     This is the estate a wheel user has: a runtime manifest naming the
@@ -2576,7 +2355,8 @@ def _installed_grib2_distribution(tmp_path, monkeypatch, suffix=""):
     monkeypatch.setenv("GPUWM_NATIVE_DISTRIBUTION_MANIFEST", str(manifest))
     monkeypatch.setenv("GPUWM_GRIB2_INVENTORY", str(inventory))
     monkeypatch.setenv("GPUWM_GRIB2_DUMP", str(dump))
-    monkeypatch.delenv("GPUWM_MAPPED_ENGINE", raising=False)
+    if clear_engine:
+        monkeypatch.delenv("GPUWM_MAPPED_ENGINE", raising=False)
     return inventory, dump
 
 
@@ -2679,31 +2459,12 @@ def test_cli_installed_windows_distribution_uses_exe_decoders_on_python(
 def test_cli_gfs_rejects_common_options_that_it_does_not_apply(flag, value, capsys):
     result = main(
         [
-            "--source",
-            "gfs",
-            "--gfs-series",
-            "/source/gfs-series.tsv",
-            "--cycle",
-            "2026-07-20_00:00:00",
-            "--bridge",
-            "/bin/gfs_grib2_bridge",
-            "--wps-namelist",
-            "/case/namelist.wps",
-            "--static-input",
-            "/case/static.npz",
-            "--static-receipt",
-            "/case/static-receipt.json",
-            "--experiment-config",
-            "/case/experiment.toml",
-            "--source-sha256s",
-            "/source/input-manifest.json",
-            "--source-sha256s-sha256",
-            "abc123",
-            "--output-root",
-            "/output",
+            '--source', 'gfs',
+            *_gfs_inputs(),
+            *_regular_args(),
             flag,
             value,
-            "--dry-run",
+            '--dry-run',
         ]
     )
     assert result == EXIT_USAGE

@@ -193,9 +193,15 @@ def test_the_detector_follows_a_chain_rather_than_one_hop():
 # The real package
 # --------------------------------------------------------------------------
 
-def test_the_entry_points_exist():
-    """Anti-vacuity: a typo in an entry point would clear every check."""
+@pytest.fixture(scope="module")
+def certification_reachability():
     graph = build_call_graph(_package_sources())
+    return graph, reachable_from(graph, ENTRY_POINTS)
+
+
+def test_the_entry_points_exist(certification_reachability):
+    """Anti-vacuity: a typo in an entry point would clear every check."""
+    graph, _ = certification_reachability
     for entry in ENTRY_POINTS:
         assert entry in graph, f"{entry} is not a function in gpuwm/certify"
 
@@ -214,15 +220,15 @@ def test_the_declared_check_list_is_not_empty_and_names_real_functions():
 
 
 @pytest.mark.parametrize("qualified", CERTIFICATION_CHECKS)
-def test_every_declared_check_is_reachable_from_a_front_door(qualified):
+def test_every_declared_check_is_reachable_from_a_front_door(
+        qualified, certification_reachability):
     """THE GUARD.  A check the command cannot reach is a check that is off.
 
     This is the test that would have been red for
     ``compile_platform_fingerprint``, ``describe_drift`` and
     ``manifest_is_empty`` on 2.3.3 and every release before it.
     """
-    graph = build_call_graph(_package_sources())
-    reached = reachable_from(graph, ENTRY_POINTS)
+    _, reached = certification_reachability
     assert qualified in reached, (
         f"{qualified} is declared a certification check but nothing reaches "
         f"it from {list(ENTRY_POINTS)} -- it cannot refuse anything, so "
@@ -281,20 +287,19 @@ def test_no_public_function_under_certify_is_wholly_unreferenced():
             module = ast.Module(body=list(tree.body), type_ignores=[])
             referenced |= _names_used(module)
 
+    for text in sources.values():
+        for node in _function_defs(text).values():
+            referenced |= _names_used(node)
+
     orphans = []
     for module, text in sources.items():
-        own = _function_defs(text)
-        for name in own:
+        for name in _function_defs(text):
             if name.startswith("_"):
                 continue
             # A reference from anywhere counts here -- including the
             # module itself, which is why this is the weaker sweep and
             # the reachability test above is the real guard.
-            elsewhere = any(name in _names_used(node)
-                            for other, other_text in sources.items()
-                            for node in _function_defs(other_text).values()
-                            if not (other == module and node is own[name]))
-            if name in referenced or elsewhere:
+            if name in referenced:
                 continue
             orphans.append(f"{module}:{name}")
     assert orphans == [], (

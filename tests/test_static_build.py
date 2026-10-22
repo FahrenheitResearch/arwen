@@ -144,9 +144,19 @@ def test_thirty_second_selector_resolves_wps_soils_and_other_field_defaults(tmp_
     selection = GeogSelection.from_tokens(tmp_path, "30s")
     default = GeogSelection.fallback(tmp_path)
     assert selection.resolution_tokens == ("30s",)
-    for field in ("terrain", "landuse", "soil_top", "soil_bottom", "greenfrac",
+    for field in ("terrain", "landuse", "greenfrac",
                   "lai", "albedo", "snow_albedo", "soil_temperature"):
         assert selection.path(field) == default.path(field)
+    # 30s names WPS's own FAO/STATSGO soil tiles, which the permissive
+    # default (SoilGrids) does not read.
+    assert selection.soil_top == "soiltype_top_30s"
+    assert selection.soil_bottom == "soiltype_bot_30s"
+    assert default.soil_top == "soilgrids/texture_top"
+    assert default.soil_bottom == "soilgrids/texture_bot"
+    assert default.soil_temperature == "soiltemp_era5_1deg"
+    assert GeogSelection.from_tokens(tmp_path, "soilgrids").soil_top ==         "soilgrids/texture_top"
+    assert GeogSelection.from_tokens(
+        tmp_path, "islscp_soiltemp").soil_temperature == "soiltemp_1deg"
     # WPS token ordering applies independently to each field. Soil takes
     # 30s, while terrain and land use have no bare 30s entry and take 5m.
     mixed = GeogSelection.from_tokens(tmp_path, "30s+5m")
@@ -172,7 +182,7 @@ def test_geog_selection_resolves_complete_global_five_minute_inventory(
     assert selection.lai == "lai_modis_10m"
     assert selection.albedo == "albedo_modis"
     assert selection.snow_albedo == "maxsnowalb_modis"
-    assert selection.soil_temperature == "soiltemp_1deg"
+    assert selection.soil_temperature == "soiltemp_era5_1deg"
 
     # Resolution tokens retain WPS per-field priority: the LAI-specific
     # product wins for LAI while all other fields fall through to 5m.
@@ -1001,24 +1011,25 @@ def test_d01_field_shapes_and_dtypes(d01):
 
 
 @requires_bundle
-def test_d01_hgt_gate(d01):
-    delta = d01["HGT_M"] - _geo(1)["HGT_M"]
+@pytest.mark.parametrize("grid_id", [1, 4])
+def test_bundle_hgt_gate(request, grid_id):
+    fields = request.getfixturevalue(f"d{grid_id:02d}")
+    label = "" if grid_id == 1 else "d04 "
+    delta = fields["HGT_M"] - _geo(grid_id)["HGT_M"]
     rmse = float(np.sqrt(np.mean(delta ** 2)))
     mx = float(np.abs(delta).max())
-    assert rmse < 5.0, f"HGT_M RMSE {rmse:.3f} m"
-    assert mx < 50.0, f"HGT_M max|delta| {mx:.2f} m"
+    assert rmse < 5.0, f"{label}HGT_M RMSE {rmse:.3f} m"
+    assert mx < 50.0, f"{label}HGT_M max|delta| {mx:.2f} m"
 
 
 @requires_bundle
-def test_d01_landmask_gate(d01):
-    agree = float((d01["LANDMASK"] == _geo(1)["LANDMASK"]).mean())
-    assert agree >= 0.995, f"LANDMASK agreement {agree:.4f}"
-
-
-@requires_bundle
-def test_d01_lu_index_gate(d01):
-    agree = float((d01["LU_INDEX"] == _geo(1)["LU_INDEX"]).mean())
-    assert agree >= 0.98, f"LU_INDEX agreement {agree:.4f}"
+@pytest.mark.parametrize("grid_id", [1, 4])
+@pytest.mark.parametrize("name,minimum", [("LANDMASK", 0.995), ("LU_INDEX", 0.98)])
+def test_bundle_category_gate(request, grid_id, name, minimum):
+    fields = request.getfixturevalue(f"d{grid_id:02d}")
+    label = "" if grid_id == 1 else "d04 "
+    agree = float((fields[name] == _geo(grid_id)[name]).mean())
+    assert agree >= minimum, f"{label}{name} agreement {agree:.4f}"
 
 
 @requires_bundle
@@ -1029,30 +1040,30 @@ def test_d01_landusef_fractions_close(d01):
 
 
 @requires_bundle
-def test_d01_soil_gates(d01):
-    ref = _geo(1)
-    top = float((d01["SCT_DOM"] == ref["SCT_DOM"]).mean())
-    bot = float((d01["SCB_DOM"] == ref["SCB_DOM"]).mean())
-    assert top >= 0.95, f"SCT_DOM agreement {top:.4f}"
-    assert bot >= 0.95, f"SCB_DOM agreement {bot:.4f}"
-    top_frac = float(np.abs(d01["SOILCTOP"] - ref["SOILCTOP"]).mean())
-    bot_frac = float(np.abs(d01["SOILCBOT"] - ref["SOILCBOT"]).mean())
-    assert top_frac <= 1e-2, f"SOILCTOP fraction mean|delta| {top_frac:.6f}"
-    assert bot_frac <= 1e-2, f"SOILCBOT fraction mean|delta| {bot_frac:.6f}"
+@pytest.mark.parametrize("grid_id", [1, 4])
+def test_bundle_soil_gates(request, grid_id):
+    fields = request.getfixturevalue(f"d{grid_id:02d}")
+    label = "" if grid_id == 1 else "d04 "
+    ref = _geo(grid_id)
+    top = float((fields["SCT_DOM"] == ref["SCT_DOM"]).mean())
+    bot = float((fields["SCB_DOM"] == ref["SCB_DOM"]).mean())
+    assert top >= 0.95, f"{label}SCT_DOM agreement {top:.4f}"
+    assert bot >= 0.95, f"{label}SCB_DOM agreement {bot:.4f}"
+    top_frac = float(np.abs(fields["SOILCTOP"] - ref["SOILCTOP"]).mean())
+    bot_frac = float(np.abs(fields["SOILCBOT"] - ref["SOILCBOT"]).mean())
+    assert top_frac <= 1e-2, f"{label}SOILCTOP fraction mean|delta| {top_frac:.6f}"
+    assert bot_frac <= 1e-2, f"{label}SOILCBOT fraction mean|delta| {bot_frac:.6f}"
 
 
 @requires_bundle
-def test_d01_greenfrac_gate(d01):
-    err = np.abs(d01["GREENFRAC"] - _geo(1)["GREENFRAC"])
+@pytest.mark.parametrize("grid_id", [1, 4])
+@pytest.mark.parametrize("name", ["GREENFRAC", "ALBEDO12M"])
+def test_bundle_monthly_gate(request, grid_id, name):
+    fields = request.getfixturevalue(f"d{grid_id:02d}")
+    message = f"{name} worst monthly max abs" if grid_id == 1 else f"d04 {name} full-field max|delta|"
+    err = np.abs(fields[name] - _geo(grid_id)[name])
     worst = float(err.max())
-    assert worst <= 1e-2, f"GREENFRAC worst monthly max abs {worst:.4f}"
-
-
-@requires_bundle
-def test_d01_albedo_gate(d01):
-    err = np.abs(d01["ALBEDO12M"] - _geo(1)["ALBEDO12M"])
-    worst = float(err.max())
-    assert worst <= 1e-2, f"ALBEDO12M worst monthly max abs {worst:.4f}"
+    assert worst <= 1e-2, f"{message} {worst:.4f}"
 
 
 @requires_bundle
@@ -1096,53 +1107,3 @@ def test_d01_tmn_elevation_correction(d01):
     exp = d01["SOILTEMP"] - 0.0065 * d01["HGT_M"]
     np.testing.assert_allclose(d01["TMN"][land], exp[land], rtol=0, atol=1e-12)
     np.testing.assert_array_equal(d01["TMN"][~land], d01["SOILTEMP"][~land])
-
-
-# ---------------------------------------------------------------------------
-# Bundle-gated: d04 spot-check (source coarser than grid -> interp path)
-# ---------------------------------------------------------------------------
-
-@requires_bundle
-def test_d04_hgt_spot_gate(d04):
-    delta = d04["HGT_M"] - _geo(4)["HGT_M"]
-    rmse = float(np.sqrt(np.mean(delta ** 2)))
-    mx = float(np.abs(delta).max())
-    assert rmse < 5.0, f"d04 HGT_M RMSE {rmse:.3f} m"
-    assert mx < 50.0, f"d04 HGT_M max|delta| {mx:.2f} m"
-
-
-@requires_bundle
-def test_d04_lu_index_spot_gate(d04):
-    agree = float((d04["LU_INDEX"] == _geo(4)["LU_INDEX"]).mean())
-    assert agree >= 0.98, f"d04 LU_INDEX agreement {agree:.4f}"
-
-
-@requires_bundle
-def test_d04_landmask_spot_gate(d04):
-    agree = float((d04["LANDMASK"] == _geo(4)["LANDMASK"]).mean())
-    assert agree >= 0.995, f"d04 LANDMASK agreement {agree:.4f}"
-
-
-@requires_bundle
-def test_d04_soil_spot_gates(d04):
-    ref = _geo(4)
-    top = float((d04["SCT_DOM"] == ref["SCT_DOM"]).mean())
-    bot = float((d04["SCB_DOM"] == ref["SCB_DOM"]).mean())
-    assert top >= 0.95, f"d04 SCT_DOM agreement {top:.4f}"
-    assert bot >= 0.95, f"d04 SCB_DOM agreement {bot:.4f}"
-    top_frac = float(np.abs(d04["SOILCTOP"] - ref["SOILCTOP"]).mean())
-    bot_frac = float(np.abs(d04["SOILCBOT"] - ref["SOILCBOT"]).mean())
-    assert top_frac <= 1e-2, f"d04 SOILCTOP fraction mean|delta| {top_frac:.6f}"
-    assert bot_frac <= 1e-2, f"d04 SOILCBOT fraction mean|delta| {bot_frac:.6f}"
-
-
-@requires_bundle
-def test_d04_greenfrac_spot_gate(d04):
-    worst = float(np.abs(d04["GREENFRAC"] - _geo(4)["GREENFRAC"]).max())
-    assert worst <= 1e-2, f"d04 GREENFRAC full-field max|delta| {worst:.4f}"
-
-
-@requires_bundle
-def test_d04_albedo_spot_gate(d04):
-    worst = float(np.abs(d04["ALBEDO12M"] - _geo(4)["ALBEDO12M"]).max())
-    assert worst <= 1e-2, f"d04 ALBEDO12M full-field max|delta| {worst:.4f}"

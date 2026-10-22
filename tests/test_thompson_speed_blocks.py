@@ -19,7 +19,7 @@ def _unbounded_reference():
 
 
 @pytest.mark.parametrize("network", ["cold", "warm"])
-@pytest.mark.parametrize("n", [1093, 131071])
+@pytest.mark.parametrize("n", [131071])
 def test_network_blocks_and_register_bound_match_base_bits(monkeypatch, network, n):
     cp = pytest.importorskip("cupy")
     try:

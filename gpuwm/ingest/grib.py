@@ -1092,43 +1092,6 @@ def decode_era5_grib(
     ).snapshots
 
 
-def decode_era5_gribs(
-    grib_paths: Sequence[str | Path],
-    vtable_path: str | Path,
-    *,
-    bridge: str | Path | None = None,
-    valid_times: Sequence[datetime] | None = None,
-    excluded_valid_times: Sequence[datetime] = (),
-) -> Era5DecodeResult:
-    """Decode and merge complementary ERA5 GRIB1 files by valid time.
-
-    Pressure-level and single-level products may be separate files.  Their
-    mapped fields are merged only when coordinates and times agree exactly;
-    duplicate variables remain a hard error.  The existing single-file
-    :func:`decode_era5_grib` protocol and return type stay unchanged.
-    """
-
-    paths = tuple(Path(path) for path in grib_paths)
-    if not paths:
-        raise ValueError("at least one ERA5 GRIB1 input is required")
-    for path in paths:
-        if not path.is_file():
-            raise FileNotFoundError(path)
-    entries = parse_vtable(vtable_path)
-    executable = Path(bridge) if bridge is not None else build_rust_bridge(release=True)
-    if not executable.is_file():
-        raise FileNotFoundError(executable)
-    partials = [
-        partial
-        for path in paths
-        for partial in _decode_bridge_partials(path, entries, executable)
-    ]
-    return _merge_catalog_partials(
-        partials, valid_times=valid_times,
-        excluded_valid_times=excluded_valid_times,
-    )
-
-
 @lru_cache(maxsize=8)
 def _decode_era5_grib_resolved(
     grib_path: str, vtable_path: str, bridge: str | None
@@ -1303,5 +1266,5 @@ __all__ = [
     "Era5DecodeResult", "Era5Snapshot", "Grib1Envelope", "VtableEntry",
     "build_rust_bridge", "cached_era5_forcing", "cached_era5_snapshots",
     "canonical_units", "clear_forcing_caches", "decode_era5_grib", "forcing_container",
-    "decode_era5_gribs", "inspect_grib1_envelopes", "inspect_era5_forcing_times", "parse_vtable",
+    "inspect_grib1_envelopes", "inspect_era5_forcing_times", "parse_vtable",
 ]

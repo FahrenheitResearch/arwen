@@ -29,6 +29,15 @@ def prebuild_kernels(rows, *, settings, device_id):
             hook(settings=settings, options=row.get("options", {}), device_id=device_id)
 
 
+def _whole_calls(period, lsm_interval):
+    """LSM calls in one stage period, or None when the period is not a whole number of them."""
+    if not (lsm_interval > 0 and period > 0):
+        return None
+    ratio = period / lsm_interval
+    whole = round(ratio)
+    return whole if whole >= 1 and abs(ratio - whole) <= 1e-9 * max(1.0, ratio) else None
+
+
 def prepare(*, settings, state, physics, device_id, mode):
     rows = settings.get("stages", ())
     if not rows:
@@ -38,6 +47,8 @@ def prepare(*, settings, state, physics, device_id, mode):
         settings, physics=physics, state=state, mode=mode), device_id=device_id)
     prebuild_kernels(rows, settings=settings, device_id=device_id)
     before, after, resources, components, status_fatal_masks = [], [], [], {}, {}
+    interval = physics.bldt_seconds if mode == "coupled" else settings["interval_seconds"]
+    stage_clocks = False
     for row in rows:
         name = row["name"]
         if name in components:
@@ -60,12 +71,24 @@ def prepare(*, settings, state, physics, device_id, mode):
         if phase == "prepare":
             resources.append((name, component))
             continue
+        cadence = row.get("cadence_steps", 1)
+        if row.get("interval_seconds") is not None and phase == "after":
+            # The cadence is counted in the forecast's ACTUAL LSM calls, not the
+            # prepared ones: go may lower the root step after preparation (the
+            # terrain clock's CFL bound), and bldt follows it. A period that is
+            # no whole number of LSM calls runs on its own clock instead
+            # (stage_clocks). Breakage it prevents (2.9.4 WOOF readiness g3/u6,
+            # 2026-10-22): d01 prepared at 60 s ran 30 s steps, the rows kept
+            # cadence 300/60 = 5, and attach died ("stage interval must span its
+            # whole number of parent LSM calls"); 2.8.7 finished that run.
+            cadence = _whole_calls(float(row["interval_seconds"]), float(interval))
+            if cadence is None:
+                cadence, stage_clocks = 1, True
         stage = Stage(name, component, getattr(component, row.get("launch_method", "advance")),
                       parallelism=row.get("parallelism", "GPU"),
-                      cadence_steps=row.get("cadence_steps", 1),
+                      cadence_steps=cadence,
                       interval_seconds=row.get("interval_seconds"))
         (before if phase == "before" else after).append(stage)
-    interval = physics.bldt_seconds if mode == "coupled" else settings["interval_seconds"]
     output = channel_output = None
     launched = {id(stage.component) for stage in (*before, *after)}
     for component in components.values():
@@ -88,7 +111,8 @@ def prepare(*, settings, state, physics, device_id, mode):
                                resources=resources,
                                reach_output=output, channel_output=channel_output,
                                status_fatal_masks=status_fatal_masks,
-                               after_schedule=settings.get("after_schedule"))
+                               after_schedule=settings.get("after_schedule"),
+                               stage_clocks=stage_clocks)
     driver.memory_admission = memory_admission
     verify_driver(memory_admission, driver)
     return driver

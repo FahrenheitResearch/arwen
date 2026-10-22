@@ -103,6 +103,7 @@ def test_the_fixture_covers_every_field_the_document_declares(fixture, spec):
 @pytest.mark.parametrize("index", range(26))
 def test_every_real_object_carries_the_declared_identity(fixture, spec, index):
     row = fixture["objects"][index]
+    obj = norm.parse_object(spec, Path("/not-downloaded") / row["object"])
     seen = observed(row)
     declared = spec.native_grid
     assert seen["grid_template"] == declared["grid_template"]
@@ -113,12 +114,6 @@ def test_every_real_object_carries_the_declared_identity(fixture, spec, index):
     assert seen["product_template"] == 0
     assert seen["reference_time"] == (2026, 9, 15, 12, 0, 0)
 
-
-@pytest.mark.parametrize("index", range(26))
-def test_every_real_selector_matches_the_document(fixture, spec, index):
-    row = fixture["objects"][index]
-    obj = norm.parse_object(spec, Path("/not-downloaded") / row["object"])
-    seen = observed(row)
     declared = obj.selector
     assert (seen["discipline"], seen["category"], seen["parameter"]) == declared[:3]
     assert seen["level_type"] == declared[3]
@@ -126,15 +121,7 @@ def test_every_real_selector_matches_the_document(fixture, spec, index):
     assert seen["second_level_type"] == declared[5]
     assert seen["second_level_value"] == pytest.approx(declared[6], abs=1e-9)
 
-
-@pytest.mark.parametrize("index", range(26))
-def test_the_forecast_lead_is_minutes_and_matches_the_object_name(
-        fixture, spec, index):
-    """DWD stamps the lead in MINUTES (Code Table 4.4 value 0), not hours."""
-
-    row = fixture["objects"][index]
-    obj = norm.parse_object(spec, Path("/not-downloaded") / row["object"])
-    seen = observed(row)
+    # DWD stamps the lead in MINUTES (Code Table 4.4 value 0), not hours.
     assert seen["time_unit"] == 0
     assert seen["forecast_time"] * 60 == (obj.lead or 0) * 3600
 

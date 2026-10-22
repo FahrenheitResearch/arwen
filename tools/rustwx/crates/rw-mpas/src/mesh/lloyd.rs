@@ -17,23 +17,8 @@ use crate::mesh::density::{DensityField, MeshSpec};
 use crate::mesh::derive::Rings;
 use crate::mesh::geom::{V3, add, arc, circumcenter, scale, tri_area, unit};
 use crate::mesh::hull::{
-    TriangulationMode, delaunay_rings, delaunay_triangulation, repair_or_rebuild,
+    SplitMix, TriangulationMode, delaunay_rings, delaunay_triangulation, repair_or_rebuild,
 };
-
-/// Counter-based PRNG so a mesh is reproducible on every machine without a
-/// crate dependency or global state.
-struct SplitMix(u64);
-
-impl SplitMix {
-    fn unit(&mut self) -> f64 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^= z >> 31;
-        (z >> 11) as f64 / (1u64 << 53) as f64
-    }
-}
 
 /// Place `n_target` generators so their number density already follows the
 /// spec, before any relaxation.
@@ -753,64 +738,6 @@ mod tests {
             err.contains("stalled") || err.contains("used its whole budget"),
             "{err}"
         );
-    }
-
-    #[test]
-    #[ignore]
-    fn measure_the_convergence_curve() {
-        for (label, spec, n) in [
-            ("uniform 1200", MeshSpec::uniform(600.0), 1200usize),
-            (
-                "cap 4x 1200",
-                MeshSpec {
-                    background_km: 600.0,
-                    regions: vec![Region {
-                        shape: Shape::Cap {
-                            center_deg: [39.0, -98.0],
-                            radius_km: 2500.0,
-                        },
-                        spacing_km: 150.0,
-                        transition: TransitionField::Km(2000.0),
-                    }],
-                    name: None,
-                },
-                1200usize,
-            ),
-        ] {
-            for &omega in &[1.0f64, 1.4, 1.8] {
-                let mut pts = seed_points(&spec, n).unwrap();
-                let opts = LloydOptions {
-                    tolerance: 1e-12,
-                    max_sweeps: 400,
-                    omega,
-                    stall_window: 1_000_000,
-                    oscillation_window: 1_000_000,
-                    ..Default::default()
-                };
-                let err = relax(&mut pts, &spec, &opts).unwrap_err();
-                let _ = err;
-                // rerun capturing history via a direct loop
-                let mut pts = seed_points(&spec, n).unwrap();
-                let mut rings = delaunay_rings(&pts).unwrap();
-                let mut marks: Vec<String> = Vec::new();
-                for s in 1..=400usize {
-                    let step: Vec<(V3, f64)> = (0..pts.len())
-                        .map(|i| cell_step(&pts, &rings, &spec, i))
-                        .collect();
-                    let worst = step.iter().map(|(_, r)| *r).fold(0.0f64, f64::max);
-                    let mean = step.iter().map(|(_, r)| *r).sum::<f64>() / step.len() as f64;
-                    for (i, (c, _)) in step.iter().enumerate() {
-                        let d = crate::mesh::geom::sub(*c, pts[i]);
-                        pts[i] = unit(add(pts[i], scale(d, omega))).unwrap_or(*c);
-                    }
-                    if s % 50 == 0 || s <= 3 {
-                        marks.push(format!("{s}:{worst:.2e}/{mean:.2e}"));
-                    }
-                    rings = delaunay_rings(&pts).unwrap();
-                }
-                eprintln!("{label} omega={omega}: {}", marks.join("  "));
-            }
-        }
     }
 
     #[test]

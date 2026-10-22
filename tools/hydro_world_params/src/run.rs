@@ -19,6 +19,11 @@ pub struct InputRef {
     pub dir: String,
     #[serde(default)]
     pub prefix: String,
+    /// Soil only: the WPS_GEOG soilgrids/soilcomp directory (SoilGrids-derived
+    /// sand and clay on the 30" geography mirror every install has). Used when
+    /// the soil source's own files are not there (the ISRIC WCS was down).
+    #[serde(default)]
+    pub geog_soilcomp: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -154,9 +159,6 @@ pub fn run(cfg_path: &str) -> Result<Value> {
     if lc_src.classes.iter().any(|c| !c.veg.contains_key(&cfg.veg_class_table)) {
         return Err(format!("land cover row {} has no {} vegetation mapping", cfg.land_cover.source, cfg.veg_class_table).into());
     }
-    if cfg.cells_per_degree < 800 {
-        return Err("cells_per_degree below 800 would overflow the 8-bit land-cover pixel counts".into());
-    }
     std::fs::create_dir_all(&cfg.out_dir)?;
     st.mark("load table + grid", "1 thread (startup, < 1 s)", t0, json!({"nx": g.nx, "ny": g.ny, "cells": g.n()}));
 
@@ -171,11 +173,21 @@ pub fn run(cfg_path: &str) -> Result<Value> {
     st.mark("land cover pixel counts", &par, t0, json!({"tiles": lc_used.len(), "missing_tiles": lc_missing.len()}));
 
     let t0 = Instant::now();
-    let (soil_layers, soil_paths) = grid::load_soil(&soil_src, &cfg.soil.dir, &cfg.soil.prefix)?;
+    // geog_soilcomp set: acquisition chose our own WPS_GEOG mirror (primary
+    // when it covers the box, or the fallback when SoilGrids was out of reach).
+    let geog = !cfg.soil.geog_soilcomp.is_empty();
+    let (soil_src, soil_layers, soil_paths) = if geog {
+        let (src, layers) = grid::load_geog_soilcomp(&soil_src, &cfg.soil.geog_soilcomp, cfg.bbox)?;
+        (src, layers, vec![cfg.soil.geog_soilcomp.clone()])
+    } else {
+        let (layers, paths) = grid::load_soil(&soil_src, &cfg.soil.dir, &cfg.soil.prefix)?;
+        (soil_src, layers, paths)
+    };
     let sc = soil::classify(&soil_src, &recipe, &soil_layers);
     let soil_grid = soil_layers.values().next().map(|l| (l.ox, l.oy, l.dx, l.dy, l.w, l.h)).unwrap();
     let soil_valid = sc.class.par_iter().filter(|&&c| c != 0).count();
-    st.mark("soil load + texture classes", &par, t0, json!({"files": soil_paths.len(), "soil_cells": sc.w * sc.h, "valid": soil_valid}));
+    st.mark("soil load + texture classes", &par, t0, json!({"files": soil_paths.len(), "soil_cells": sc.w * sc.h, "valid": soil_valid,
+        "source": if geog { "WPS_GEOG soilgrids/soilcomp (our geography mirror: SoilGrids-derived sand and clay, 30 arc-seconds)" } else { soil_src.dataset.as_str() }}));
 
     let t0 = Instant::now();
     let (slope, aspect) = terrain::slope_aspect(&g, &dem);
@@ -186,7 +198,7 @@ pub fn run(cfg_path: &str) -> Result<Value> {
     let dom: Vec<u8> = lc_counts
         .par_chunks(ncl)
         .map(|c| {
-            let (mut b, mut bv) = (u8::MAX, 0u8);
+            let (mut b, mut bv) = (u8::MAX, 0u16);
             for (k, &v) in c.iter().enumerate() {
                 if v > bv {
                     bv = v;

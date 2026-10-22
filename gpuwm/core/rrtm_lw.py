@@ -74,7 +74,7 @@ from gpuwm.core.rrtm import (RRTM_DELTAP_HPA, rrtm_default_trace_gases,
 from gpuwm.core.rrtm_tables import (RRTM_BPADE, RRTM_FLUXFAC, RRTM_NBANDS,
                                     RRTM_SECANG, RRTM_WTNUM,
                                     load_rrtm_lw_tables)
-from gpuwm.core.rrtm_taumol import RRTM_NGPT, rrtm_taumol
+from gpuwm.core.rrtm_taumol import RRTM_NGPT, _array_namespace, rrtm_taumol
 
 
 #: MM5ATM's molecular-weight ratios and cloud absorption coefficients,
@@ -172,14 +172,6 @@ def _device_constant(xp, dtype, key, build):
         value = xp.asarray(build(), dtype=dtype)
         _DEVICE_CONSTANT_CACHE[cache_key] = value
     return value
-
-
-def _array_namespace(*values):
-    """Return CuPy only when at least one input is a CUDA array."""
-    if any(hasattr(value, "__cuda_array_interface__") for value in values):
-        import cupy as cp
-        return cp
-    return np
 
 
 # ---------------------------------------------------------------------------

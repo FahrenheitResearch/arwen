@@ -122,15 +122,6 @@ def test_the_runtime_heartbeat_publishes_the_restart(tmp_path):
         "attempt": 3, "reason": "again"}
 
 
-def test_a_callback_without_the_hook_is_left_alone():
-    supervisor.restart_attempt(object(), "the clock moved")
-    heard = []
-    supervisor.restart_attempt(
-        type("Observer", (), {"restarting": lambda self, why: heard.append(
-            why)})(), "the clock moved")
-    assert heard == ["the clock moved"]
-
-
 def test_a_new_attempt_enters_again_under_the_forecast_watchdog(tmp_path):
     """The new attempt's first step beat is entry, as the process's was."""
 

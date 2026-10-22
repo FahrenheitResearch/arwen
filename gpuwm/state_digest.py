@@ -132,6 +132,14 @@ _CANONICAL_EXTRA_PREFIXES = ("nest_", "lbc_weights_", "refl_")
 # Reflectivity phase arrays are overwritten on each WSM3 diagnostic call.
 _CANONICAL_EXCLUDED_FRAME_SCRATCH = frozenset({
     "refl_t", "refl_wsm3_rain", "refl_wsm3_snow", "refl_wsm3_graupel",
+    # The fork's gsd_diagnostics reflectivity at 1 km and 4 km AGL
+    # (gpuwm/core/gsd_diagnostics.py), recomputed from the state at every
+    # history time and read by nothing that steps: output, not trajectory.
+    # Breakage this prevents: a whole HRRR-recipe forecast finished 3 h and
+    # then failed its final digest, "canonical frame-state scratch member
+    # 'refl_10cm_1km' is inside an audited lazy prefix but is not a concrete
+    # registered member" (a rented box, 2026-10-21 19:23Z).
+    "refl_10cm_1km", "refl_10cm_4km",
 })
 CHILD_DUTY_SCRATCH_MEMBERS = (
     "scratch/nest_parent_field",
@@ -274,7 +282,10 @@ def _canonical_digest_document(manifest: Mapping[str, object],
         ).encode("ascii")
         digest.update(len(descriptor).to_bytes(8, "little"))
         digest.update(descriptor)
-        digest.update(host.tobytes(order="C"))
+        # The array's C-order bytes, hashed in place (the bytes tobytes()
+        # returns, without its copy of every member).
+        digest.update(memoryview(
+            np.ascontiguousarray(host).reshape(-1).view(np.uint8)))
         members.append(member)
     inventory = {
         "schema": CANONICAL_INVENTORY_SCHEMA,

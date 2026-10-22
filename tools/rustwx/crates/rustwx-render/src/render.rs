@@ -788,25 +788,6 @@ pub fn map_frame_aspect_ratio_for_mode_with_chrome_scale(
     layout.map_w as f64 / (layout.map_h.max(1) as f64)
 }
 
-pub fn map_frame_aspect_ratio_for_mode_with_domain_frame(
-    mode: ProductVisualMode,
-    total_w: u32,
-    total_h: u32,
-    has_cbar: bool,
-    has_title: bool,
-    has_domain_frame: bool,
-) -> f64 {
-    map_frame_aspect_ratio_for_mode_with_domain_frame_and_chrome_scale(
-        mode,
-        total_w,
-        total_h,
-        has_cbar,
-        has_title,
-        has_domain_frame,
-        ChromeScale::default(),
-    )
-}
-
 pub fn map_frame_aspect_ratio_for_mode_with_domain_frame_and_chrome_scale(
     mode: ProductVisualMode,
     total_w: u32,
@@ -963,32 +944,7 @@ fn subtitle_left_width(
 }
 
 fn ellipsize_text_to_width(text: &str, max_width: u32, scale: u32, bold: bool) -> String {
-    if measure_text_width(text, scale, bold) <= max_width {
-        return text.to_string();
-    }
-
-    let ellipsis = "...";
-    let ellipsis_w = measure_text_width(ellipsis, scale, bold);
-    if ellipsis_w >= max_width {
-        return ellipsis.to_string();
-    }
-
-    let mut kept = String::new();
-    for ch in text.chars() {
-        let mut candidate = kept.clone();
-        candidate.push(ch);
-        candidate.push_str(ellipsis);
-        if measure_text_width(&candidate, scale, bold) > max_width {
-            break;
-        }
-        kept.push(ch);
-    }
-
-    if kept.is_empty() {
-        ellipsis.to_string()
-    } else {
-        format!("{kept}{ellipsis}")
-    }
+    ellipsize_text_to_width_with_factor(text, max_width, scale, 1.0, bold)
 }
 
 fn fit_chrome_title_metadata(
@@ -2950,9 +2906,13 @@ fn contour_cell_intersections(
     base: usize,
     cell_step: usize,
     level: f64,
-) -> Option<([(f64, f64); 4], usize)> {
+) -> Option<([(f64, f64); 4], usize, f64)> {
     let cell_step = cell_step.max(1);
     let (c0, c1, c2, c3) = contour_cell_corners(layout, overlay, pixel_points, base, cell_step)?;
+    let extent = point_distance(c0, c1)
+        .max(point_distance(c1, c2))
+        .max(point_distance(c2, c3))
+        .max(point_distance(c3, c0));
     let p0 = (c0.0, c0.1, overlay.data[base]);
     let p1 = (c1.0, c1.1, overlay.data[base + cell_step]);
     let p2 = (
@@ -2969,7 +2929,7 @@ fn contour_cell_intersections(
     emit_interp_point(&mut pts, &mut count, p2, p3, level);
     emit_interp_point(&mut pts, &mut count, p3, p0, level);
 
-    if count >= 2 { Some((pts, count)) } else { None }
+    if count >= 2 { Some((pts, count, extent)) } else { None }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3059,6 +3019,9 @@ struct ContourLevelLabelState {
     max_labels: usize,
     min_spacing_sq: f64,
     centers: Vec<(f64, f64)>,
+    /// Longest projected side, in pixels, of the grid cell whose segments
+    /// are being offered.  Set by the contour walk before each cell.
+    cell_extent_px: f64,
 }
 
 impl ContourLevelLabelState {
@@ -3071,6 +3034,7 @@ impl ContourLevelLabelState {
             max_labels,
             min_spacing_sq: min_spacing * min_spacing,
             centers: Vec::with_capacity(max_labels),
+            cell_extent_px: f64::INFINITY,
         }
     }
 
@@ -3100,12 +3064,13 @@ fn maybe_place_contour_label(
     y1: f64,
     label_state: &mut ContourLevelLabelState,
     label_placer: &mut ContourLabelPlacer,
+    clip_mask: Option<&RgbaImage>,
 ) {
     if !contour_level_gets_label(overlay, level_index) {
         return;
     }
     let segment_len = (x1 - x0).hypot(y1 - y0);
-    if segment_len <= 2.0 {
+    if segment_len <= contour_label_min_segment_px(label_state.cell_extent_px) {
         return;
     }
     let center = ((x0 + x1) * 0.5, (y0 + y1) * 0.5);
@@ -3140,6 +3105,7 @@ fn maybe_place_contour_label(
         || rect.max_x > map_rect.max_x
         || rect.min_y < map_rect.min_y
         || rect.max_y > map_rect.max_y
+        || !label_rect_inside_clip_mask(layout, rect, contour_label_halo_width(layout), clip_mask)
         || !label_placer.can_place(rect)
     {
         return;
@@ -3161,6 +3127,49 @@ fn maybe_place_contour_label(
         bold: true,
     });
     label_state.record(center);
+}
+
+/// The shortest segment a contour label may sit on.  Two pixels keeps a
+/// label off a cell corner the line merely clips, which is what the floor
+/// was for on grids whose cells span several pixels.  On a grid whose
+/// cells are a pixel or less (a 3 km CONUS grid on a 1200 px panel) EVERY
+/// segment is two pixels or shorter, so a fixed floor rejected every
+/// segment and no contour label was ever drawn, though one was requested
+/// (the WOOF-vs-HRRR 500 hPa height sheets).  The floor is therefore half
+/// the cell's longest projected side, capped at the old two pixels:
+/// identical on coarse grids, and a dense grid's segments qualify.
+fn contour_label_min_segment_px(cell_extent_px: f64) -> f64 {
+    if cell_extent_px.is_finite() && cell_extent_px > 0.0 {
+        (0.5 * cell_extent_px).min(2.0)
+    } else {
+        2.0
+    }
+}
+
+/// A label is drawn only where its whole box, halo included, survives the
+/// clear outside the drawn domain.  Before, a label placed inside the map
+/// rectangle but across the domain frame was cut in half by that clear
+/// (a "564" reading "64" at the frame edge).
+fn label_rect_inside_clip_mask(
+    layout: &Layout,
+    rect: LabelRect,
+    halo_px: u32,
+    clip_mask: Option<&RgbaImage>,
+) -> bool {
+    let Some(mask) = clip_mask else {
+        return true;
+    };
+    let halo = halo_px as i32;
+    let x0 = rect.min_x - halo - layout.map_x as i32;
+    let x1 = rect.max_x + halo - layout.map_x as i32;
+    let y0 = rect.min_y - halo - layout.map_y as i32;
+    let y1 = rect.max_y + halo - layout.map_y as i32;
+    let xs = [x0, (x0 + x1) / 2, x1];
+    let ys = [y0, (y0 + y1) / 2, y1];
+    xs.iter().all(|&x| {
+        ys.iter()
+            .all(|&y| mask_contains_local_pixel(mask, x as f64, y as f64))
+    })
 }
 
 fn contour_level_gets_label(overlay: &ContourOverlay, level_index: usize) -> bool {
@@ -3256,7 +3265,7 @@ fn draw_contour_stroke(
     }
 }
 
-fn draw_contour_segments_unmasked(
+fn draw_contour_segments(
     img: &mut RgbaImage,
     layout: &Layout,
     overlay: &ContourOverlay,
@@ -3264,6 +3273,7 @@ fn draw_contour_segments_unmasked(
     level: f64,
     pts: &[(f64, f64); 4],
     count: usize,
+    clip_mask: Option<&RgbaImage>,
     label_state: &mut ContourLevelLabelState,
     label_placer: &mut ContourLabelPlacer,
 ) {
@@ -3276,53 +3286,7 @@ fn draw_contour_segments_unmasked(
     for &(a, b) in segments {
         let (x0, y0) = pts[a];
         let (x1, y1) = pts[b];
-        draw_contour_stroke(
-            img,
-            layout.map_x as f64 + x0,
-            layout.map_y as f64 + y0,
-            layout.map_x as f64 + x1,
-            layout.map_y as f64 + y1,
-            overlay.color,
-            contour_level_width(overlay, level_index),
-            overlay.pattern,
-        );
-        maybe_place_contour_label(
-            layout,
-            overlay,
-            level_index,
-            level,
-            x0,
-            y0,
-            x1,
-            y1,
-            label_state,
-            label_placer,
-        );
-    }
-}
-
-fn draw_contour_segments_masked(
-    img: &mut RgbaImage,
-    layout: &Layout,
-    overlay: &ContourOverlay,
-    level_index: usize,
-    level: f64,
-    pts: &[(f64, f64); 4],
-    count: usize,
-    mask: &RgbaImage,
-    label_state: &mut ContourLevelLabelState,
-    label_placer: &mut ContourLabelPlacer,
-) {
-    let segments: &[(usize, usize)] = if count == 4 {
-        &[(0, 1), (2, 3)]
-    } else {
-        &[(0, 1)]
-    };
-
-    for &(a, b) in segments {
-        let (x0, y0) = pts[a];
-        let (x1, y1) = pts[b];
-        if !segment_intersects_mask(mask, x0, y0, x1, y1) {
+        if clip_mask.is_some_and(|mask| !segment_intersects_mask(mask, x0, y0, x1, y1)) {
             continue;
         }
         draw_contour_stroke(
@@ -3346,6 +3310,7 @@ fn draw_contour_segments_masked(
             y1,
             label_state,
             label_placer,
+            clip_mask,
         );
     }
 }
@@ -3418,68 +3383,36 @@ fn draw_contours_bucketed(
     let buckets = build_contour_buckets(overlay, pixel_points, cell_step);
     timing.bucket_ms = bucket_start.elapsed().as_millis();
 
-    if let Some(mask) = clip_mask {
-        for (level_index, &level) in overlay.levels.iter().enumerate() {
-            let mut label_state = ContourLevelLabelState::new(overlay.labels, layout);
-            for &base in &buckets[level_index] {
-                let Some((pts, count)) = contour_cell_intersections(
-                    layout,
-                    overlay,
-                    pixel_points,
-                    base as usize,
-                    cell_step,
-                    level,
-                ) else {
-                    continue;
-                };
-                timing.segment_count =
-                    timing
-                        .segment_count
-                        .saturating_add(if count == 4 { 2 } else { 1 });
-                draw_contour_segments_masked(
-                    img,
-                    layout,
-                    overlay,
-                    level_index,
-                    level,
-                    &pts,
-                    count,
-                    mask,
-                    &mut label_state,
-                    label_placer,
-                );
-            }
-        }
-    } else {
-        for (level_index, &level) in overlay.levels.iter().enumerate() {
-            let mut label_state = ContourLevelLabelState::new(overlay.labels, layout);
-            for &base in &buckets[level_index] {
-                let Some((pts, count)) = contour_cell_intersections(
-                    layout,
-                    overlay,
-                    pixel_points,
-                    base as usize,
-                    cell_step,
-                    level,
-                ) else {
-                    continue;
-                };
-                timing.segment_count =
-                    timing
-                        .segment_count
-                        .saturating_add(if count == 4 { 2 } else { 1 });
-                draw_contour_segments_unmasked(
-                    img,
-                    layout,
-                    overlay,
-                    level_index,
-                    level,
-                    &pts,
-                    count,
-                    &mut label_state,
-                    label_placer,
-                );
-            }
+    for (level_index, &level) in overlay.levels.iter().enumerate() {
+        let mut label_state = ContourLevelLabelState::new(overlay.labels, layout);
+        for &base in &buckets[level_index] {
+            let Some((pts, count, cell_extent)) = contour_cell_intersections(
+                layout,
+                overlay,
+                pixel_points,
+                base as usize,
+                cell_step,
+                level,
+            ) else {
+                continue;
+            };
+            label_state.cell_extent_px = cell_extent;
+            timing.segment_count =
+                timing
+                    .segment_count
+                    .saturating_add(if count == 4 { 2 } else { 1 });
+            draw_contour_segments(
+                img,
+                layout,
+                overlay,
+                level_index,
+                level,
+                &pts,
+                count,
+                clip_mask,
+                &mut label_state,
+                label_placer,
+            );
         }
     }
     timing
@@ -3502,7 +3435,7 @@ fn draw_contours_legacy(
             let row_base = j * overlay.nx;
             for i in (0..overlay.nx.saturating_sub(cell_step)).step_by(cell_step) {
                 let base = row_base + i;
-                let Some((pts, count)) = contour_cell_intersections(
+                let Some((pts, count, cell_extent)) = contour_cell_intersections(
                     layout,
                     overlay,
                     pixel_points,
@@ -3512,37 +3445,24 @@ fn draw_contours_legacy(
                 ) else {
                     continue;
                 };
+                label_state.cell_extent_px = cell_extent;
                 timing.segment_count =
                     timing
                         .segment_count
                         .saturating_add(if count == 4 { 2 } else { 1 });
 
-                if let Some(mask) = clip_mask {
-                    draw_contour_segments_masked(
-                        img,
-                        layout,
-                        overlay,
-                        level_index,
-                        level,
-                        &pts,
-                        count,
-                        mask,
-                        &mut label_state,
-                        label_placer,
-                    );
-                } else {
-                    draw_contour_segments_unmasked(
-                        img,
-                        layout,
-                        overlay,
-                        level_index,
-                        level,
-                        &pts,
-                        count,
-                        &mut label_state,
-                        label_placer,
-                    );
-                }
+                draw_contour_segments(
+                    img,
+                    layout,
+                    overlay,
+                    level_index,
+                    level,
+                    &pts,
+                    count,
+                    clip_mask,
+                    &mut label_state,
+                    label_placer,
+                );
             }
         }
     }
@@ -4382,19 +4302,18 @@ fn draw_barbs(
             // A planned frame draws no glyph for a calm point: the calm
             // circle, repeated on a barb lattice over a light-wind area,
             // read as a grid of dots over the whole map.
-            if layout.plan.is_some()
+            if !overlay.direction_arrows && layout.plan.is_some()
                 && (overlay.u[idx] as f64).hypot(overlay.v[idx] as f64) < CALM_KT
             {
                 continue;
             }
-            draw_wind_barb_with_halo(
-                img,
-                overlay,
-                x,
-                y,
-                overlay.u[idx] as f64,
-                overlay.v[idx] as f64,
-            );
+            let (u, v) = if overlay.direction_arrows {
+                match projected_transport_direction(overlay.direction_projection.as_deref(), idx,
+                    overlay.u[idx] as f64, overlay.v[idx] as f64, layout.map_w, layout.map_h) {
+                    Some(vector) => vector, None => continue,
+                }
+            } else { (overlay.u[idx] as f64, overlay.v[idx] as f64) };
+            draw_wind_barb_with_halo(img, overlay, x, y, u, v);
         }
     }
 }
@@ -4429,6 +4348,33 @@ fn accept_pixel_spaced_barb(
     true
 }
 
+// Project a short physical east/north displacement, then apply the map's
+// actual pixel aspect. Pick the shorter one-sided derivative at a map seam.
+fn projected_transport_direction(
+    projection: Option<&crate::overlay::DirectionProjection>, idx: usize,
+    u: f64, v: f64, width: u32, height: u32,
+) -> Option<(f64, f64)> {
+    let Some(projection) = projection else { return Some((u, v)); };
+    let &(lat, lon) = projection.lat_lon.get(idx)?;
+    let (lat, lon) = (lat as f64, lon as f64);
+    if !lat.is_finite() || !lon.is_finite() || lat.abs() > 89.999 { return None; }
+    let origin = projection.projection.project(lat, lon);
+    let h = 1e-4;
+    let tangent = |dlat: f64, dlon: f64| {
+        let a = projection.projection.project(lat + dlat, lon + dlon);
+        let b = projection.projection.project(lat - dlat, lon - dlon);
+        let forward = (a.0-origin.0, a.1-origin.1);
+        let backward = (origin.0-b.0, origin.1-b.1);
+        if forward.0.hypot(forward.1) < backward.0.hypot(backward.1) { forward } else { backward }
+    };
+    let east = tangent(0.0, h / lat.to_radians().cos());
+    let north = tangent(h, 0.0);
+    let e = &projection.extent;
+    let x = (u*east.0+v*north.0) * width as f64 / (e.x_max-e.x_min);
+    let y = (u*east.1+v*north.1) * height as f64 / (e.y_max-e.y_min);
+    (x.is_finite() && y.is_finite()).then_some((x, y))
+}
+
 fn draw_wind_barb_with_halo(
     img: &mut RgbaImage,
     overlay: &BarbOverlay,
@@ -4437,6 +4383,28 @@ fn draw_wind_barb_with_halo(
     u: f64,
     v: f64,
 ) {
+    if overlay.direction_arrows {
+        let speed = u.hypot(v);
+        if !speed.is_finite() || speed <= 0.0 { return; }
+        let (dx, dy) = (u / speed, -v / speed);
+        let length = overlay.length_px;
+        let tip = (x + dx * length * 0.5, y + dy * length * 0.5);
+        let tail = (x - dx * length * 0.5, y - dy * length * 0.5);
+        let head = length * 0.28;
+        let draw_arrow = |img: &mut RgbaImage, color, width| {
+            draw::draw_line_aa_width(img, tail.0, tail.1, tip.0, tip.1, color, width);
+            for sign in [-1.0, 1.0] {
+                draw::draw_line_aa_width(img, tip.0, tip.1,
+                    tip.0 - head * dx + sign * head * 0.5 * dy,
+                    tip.1 - head * dy - sign * head * 0.5 * dx, color, width);
+            }
+        };
+        if overlay.halo_color.a > 0 && overlay.halo_width > 0 {
+            draw_arrow(img, overlay.halo_color, overlay.width + 2 * overlay.halo_width);
+        }
+        draw_arrow(img, overlay.color, overlay.width);
+        return;
+    }
     if overlay.halo_color.a > 0 && overlay.halo_width > 0 {
         draw::draw_wind_barb(
             img,

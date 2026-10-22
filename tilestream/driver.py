@@ -2446,8 +2446,8 @@ class TiledRun:
                     # output write -- from inside a multi-step sweep.  (A
                     # caller that drives one model step per call already has
                     # that seam for free: it is the return of ``sweep``.  This
-                    # is for the callers that do not, and tilestream/
-                    # run_case_hrrr.py is one.)  Before the shadow swap, so
+                    # is for callers driving multi-step sweeps.)
+                    # Before the shadow swap, so
                     # ``dst`` is the generation just written in every
                     # write_mode.
                     on_sweep(istep, dst, clock)

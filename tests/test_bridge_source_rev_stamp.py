@@ -386,6 +386,7 @@ _STAMP_SOURCES = {
     "rw_goes": "crates/rw-goes/src/main.rs",
     "rw_netcdf": "crates/rw-netcdf/src/main.rs",
     "netcdf_writer": "crates/netcdf-writer/src/capi.rs",
+    "rw_nextgen_output": ("src/lib.rs", 'env!("GPUWM_BRIDGE_SOURCE_REV")'),
     "static_fields": "crates/static-fields/src/capi/mod.rs",
     "gpuwm_mapped_engine": "crates/mapped-engine/src/main.rs",
     # 2.9.1: the projected MET library, the second gpuwm-authored crate
@@ -397,13 +398,37 @@ _STAMP_SOURCES = {
     "rw_mpas_hostprep": "crates/rw-mpas/src/bin/rw_mpas_hostprep.rs",
     "rw_isobaric": "crates/rw-isobaric/src/capi.rs",
     "rw_superob": "crates/rw-superob/src/capi.rs",
+    # 2.9.3 improve-1: the default-on hydro door's provider tools.
+    "rw_hydro_world": "src/main.rs",
+    "rw_hydro_params": "src/main.rs",
+    "rw_hydrofabric": ("src/main.rs", "SOURCE_REVISION"),
+    "nextgen-reservoir-prepare": "src/main.rs",
+    "rw_hydro_init": "src/main.rs",
+    # 2.9.4 capability lanes: ocean preparation (cap-waves-couple, its own
+    # workspace and build.rs) and the freezing-rain, hail and ocean SST
+    # verifiers (cap-fzra, cap-hail, cap-slab-ocean: bins of rw-obs, stamped
+    # by that crate's build.rs).
+    "rw_ocean": "src/main.rs",
+    # cap-surge: the bathymetry tool, its own tools/rw-bathy workspace and build.rs.
+    "rw_bathy": "src/main.rs",
+    "rw_ice_verify": "crates/rw-obs/src/bin/ice_verify.rs",
+    "rw_hail": "crates/rw-obs/src/bin/hail.rs",
+    "rw_ocean_verify": "crates/rw-obs/src/bin/ocean_verify.rs",
+    "rw_fire_indices": ("crates/fire-indices/src/main.rs", 'env!("GPUWM_BRIDGE_SOURCE_REV")'),
 }
 
 #: The build script that injects the revision for each artifact.
 _STAMP_BUILDS = {
     "tools/nextgen_hydrofabric": (("build.rs", "GPUWM_HYDROFABRIC_REV"),),
     "tools/nextgen_forcing": ("build.rs",),
+    "tools/nextgen_output": ("build.rs",),
     "tools/nextgen_verify": ("build.rs",),
+    "tools/hydro_world": ("build.rs",),
+    "tools/hydro_world_params": ("build.rs",),
+    "tools/nextgen_reservoir_prepare": ("build.rs",),
+    "tools/hydro_world_init": ("build.rs",),
+    "tools/ocean_prepare": ("build.rs",),
+    "tools/rw-bathy": ("build.rs",),
     "tools/zarr_bridge": ("build.rs",),
     "tools/arwen-tui": ("build.rs",),
     bridges.CRATE_RELATIVE: ("build.rs",),
@@ -427,7 +452,8 @@ _STAMP_BUILDS = {
                                     "crates/obs-score/build.rs",
                                     "crates/rw-isobaric/build.rs",
                                     "crates/rw-superob/build.rs",
-                                    "crates/rw-scoreboard/build.rs"),
+                                    "crates/rw-scoreboard/build.rs",
+                                    "crates/fire-indices/build.rs"),
     # The engine workspace carries one gpuwm-authored crate beside the
     # donor snapshot (tools/rw_wps/VENDOR.md); the snapshot's own crate
     # ships nothing, so it is stamped by nothing.

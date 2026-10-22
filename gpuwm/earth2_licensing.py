@@ -111,11 +111,23 @@ def check_argv(tokens):
     """Check raw names before argparse canonicalizes aliases or rejects go choices."""
     tokens = list(tokens)
     if not tokens or tokens[0] not in ("fetch", "prep", "domain", "go", "ensemble", "source-intermediate",
-                                       "earth2-diagnose"):
+                                       "earth2-diagnose", "hf-fetch"):
         return
     if "--help" in tokens or "-h" in tokens:
         return
     accepted = tuple(_values(tokens, "--accept-licence"))
+    if tokens[0] == "hf-fetch":
+        # The positional target is a bare model row (an hf:// URL has no row).
+        rest = iter(tokens[1:])
+        for token in rest:
+            if token in ("--cache", "--connections", "--accept-licence"):
+                next(rest, None)
+            elif not token.startswith("-"):
+                found = None if token.startswith("hf://") else model_row(token)
+                if found:
+                    require_licence(*found, accept_licence=accepted)
+                break
+        return
     if tokens[0] == "earth2-diagnose":
         # The diagnostics door runs consumers rows (their weights are what the
         # licence names), never a models row; nothing below applies to it.

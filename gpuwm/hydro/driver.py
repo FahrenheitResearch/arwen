@@ -78,7 +78,8 @@ class ResidentHydroDriver:
 
     def __init__(self, *, device_id, interval_seconds, identity,
                  before=(), after=(), resources=(), parent_grid_id=1, reach_output=None,
-                 channel_output=None, status_fatal_masks=None, after_schedule=None):
+                 channel_output=None, status_fatal_masks=None, after_schedule=None,
+                 stage_clocks=False):
         from gpuwm.numerics import mode
         from .runtime import current_member_id
         self._member_id = current_member_id()
@@ -98,8 +99,10 @@ class ResidentHydroDriver:
         for stage in (*self._before, *self._after):
             if not isinstance(stage, Stage) or not callable(stage.launch):
                 raise ValueError("hydro stages need unique flat names and prebound launches")
+            clocked = (stage_clocks and stage.interval_seconds is not None and stage.cadence_steps == 1
+                       and not any(stage is bound for bound in self._before))
             if (type(stage.cadence_steps) is not int or stage.cadence_steps < 1
-                    or (stage.interval_seconds is not None
+                    or (stage.interval_seconds is not None and not clocked
                         and stage.interval_seconds != self.interval_seconds * stage.cadence_steps)):
                 raise ValueError("stage interval must span its whole number of parent LSM calls")
             if any(stage is bound for bound in self._before) and stage.cadence_steps != 1:
@@ -233,6 +236,34 @@ class ResidentHydroDriver:
         self.steps = 0
         self.elapsed_seconds = 0.0
         self._pending = False
+        # stage_clocks: a fixed LSM interval that does not divide a post-LSM
+        # stage's period. Those stages then run on their own clock, launched at
+        # the first LSM call at or after each multiple of their period (the
+        # adaptive-parent schedule), so a forecast whose root step go lowered
+        # below the prepared one keeps hydro on instead of dying at attach.
+        self.variable_interval = bool(stage_clocks)
+
+    def allow_variable_interval(self):
+        """Follow an adaptive parent clock whose LSM interval changes every call.
+
+        Every post-LSM stage must then run on a fixed time interval of its own
+        (``interval_seconds``) and is launched at the first LSM call at or after
+        each multiple of it, with that interval; no stage may need every LSM
+        call. Breakage it prevents (2.9.3 improve-1): the default product suite
+        runs ``use_adaptive_time_step`` with ``bldt = 0``, so the parent LSM
+        interval moves with the integration step and every coupled forecast
+        stopped at the first LSM call with "hydro interval differs from the
+        parent LSM cadence". A stage that needs every LSM call (Noah-MP's
+        per-step RUNSRF exchange) still refuses, by name.
+        """
+        if self._before:
+            raise ValueError("an adaptive parent clock cannot drive pre-LSM hydro stages: "
+                             + ", ".join(stage.name for stage in self._before))
+        every_call = [stage.name for stage in self.after_stages if stage.interval_seconds is None]
+        if every_call:
+            raise ValueError("an adaptive parent clock changes the LSM interval every call; these "
+                             "hydro stages need a fixed one: " + ", ".join(every_call))
+        self.variable_interval = True
 
     @property
     def member_id(self):
@@ -265,6 +296,8 @@ class ResidentHydroDriver:
             launch(self.interval_seconds, stream=stream)
 
     def advance(self, dt_seconds=None, *, stream=None):
+        if self.variable_interval:
+            return self._advance_variable(dt_seconds, stream=stream)
         if dt_seconds is not None and dt_seconds != self.interval_seconds:
             raise ValueError("hydro interval differs from the parent LSM cadence")
         if not self._pending:
@@ -274,6 +307,22 @@ class ResidentHydroDriver:
                 launch(interval, stream=stream)
         self.steps += 1
         self.elapsed_seconds = self.steps * self.interval_seconds
+        self._pending = False
+
+    def _advance_variable(self, dt_seconds, *, stream=None):
+        dt = self.interval_seconds if dt_seconds is None else float(dt_seconds)
+        if not math.isfinite(dt) or dt <= 0:
+            raise ValueError("hydro needs a positive parent LSM interval")
+        if not self._pending:
+            raise RuntimeError("hydro advance requires its matching before_lsm call")
+        before, after = self.elapsed_seconds, self.elapsed_seconds + dt
+        for launch, _, interval in self._after_calls:
+            # Host arithmetic on the clock only; a millisecond tolerance keeps a
+            # step that lands on the boundary from slipping to the next call.
+            if math.floor((after + 1e-3) / interval) > math.floor((before + 1e-3) / interval):
+                launch(interval, stream=stream)
+        self.steps += 1
+        self.elapsed_seconds = after
         self._pending = False
 
     def check_health(self, *, stream=None):
@@ -345,7 +394,8 @@ class ResidentHydroDriver:
         steps, elapsed = metadata.get("steps"), metadata.get("elapsed_seconds")
         if (type(steps) is not int or steps < 0 or type(elapsed) not in (int, float)
                 or not math.isfinite(elapsed)
-                or elapsed != steps * self.interval_seconds):
+                or (elapsed != steps * self.interval_seconds
+                    and not (self.variable_interval and 0 <= elapsed))):
             raise ValueError("NextGen checkpoint has inconsistent clocks")
         expected = {name for name, component in self._components
                     if callable(getattr(component, "checkpoint_metadata", None))}

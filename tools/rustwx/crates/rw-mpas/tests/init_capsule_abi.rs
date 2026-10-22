@@ -58,6 +58,14 @@ struct CapsuleSpec {
     carried_model_name: Option<&'static str>,
 }
 
+const BASE_CAPSULE: CapsuleSpec = CapsuleSpec {
+    with_theta_slot: true,
+    with_double_scalar: false,
+    with_double_coordinate: false,
+    with_unsupplied_char: false,
+    carried_model_name: None,
+};
+
 fn write_capsule(path: &PathBuf, spec: &CapsuleSpec) {
     let dims = vec![
         NcDim::record("Time"),
@@ -160,13 +168,7 @@ fn a_capsule_that_predeclares_the_landing_sites_is_accepted() {
     let out = scratch("predeclared.init.nc");
     write_capsule(
         &capsule,
-        &CapsuleSpec {
-            with_theta_slot: true,
-            with_double_scalar: false,
-            with_double_coordinate: false,
-            with_unsupplied_char: false,
-            carried_model_name: None,
-        },
+        &BASE_CAPSULE,
     );
 
     let ledger = write_init(
@@ -220,10 +222,7 @@ fn a_computed_value_with_no_landing_site_refuses_and_names_it() {
         &capsule,
         &CapsuleSpec {
             with_theta_slot: false,
-            with_double_scalar: false,
-            with_double_coordinate: false,
-            with_unsupplied_char: false,
-            carried_model_name: None,
+            ..BASE_CAPSULE
         },
     );
 
@@ -256,11 +255,8 @@ fn a_double_typed_capsule_variable_refuses_by_type_name() {
     write_capsule(
         &capsule,
         &CapsuleSpec {
-            with_theta_slot: true,
             with_double_scalar: true,
-            with_double_coordinate: false,
-            with_unsupplied_char: false,
-            carried_model_name: None,
+            ..BASE_CAPSULE
         },
     );
 
@@ -289,11 +285,8 @@ fn an_unsupplied_char_variable_refuses_as_an_identity_label() {
     write_capsule(
         &capsule,
         &CapsuleSpec {
-            with_theta_slot: true,
-            with_double_scalar: false,
-            with_double_coordinate: false,
             with_unsupplied_char: true,
-            carried_model_name: None,
+            ..BASE_CAPSULE
         },
     );
 
@@ -332,13 +325,7 @@ fn an_init_carries_the_lineage_a_boundary_producer_reads() {
     let capsule = scratch("lineage_capsule.nc");
     write_capsule(
         &capsule,
-        &CapsuleSpec {
-            with_theta_slot: true,
-            with_double_scalar: false,
-            with_double_coordinate: false,
-            with_unsupplied_char: false,
-            carried_model_name: None,
-        },
+        &BASE_CAPSULE,
     );
     let out = scratch("lineage_init.nc");
     let _ = std::fs::remove_file(&out);
@@ -390,11 +377,8 @@ fn a_capsule_that_carries_a_lineage_is_not_overwritten() {
     write_capsule(
         &capsule,
         &CapsuleSpec {
-            with_theta_slot: true,
-            with_double_scalar: false,
-            with_double_coordinate: false,
-            with_unsupplied_char: false,
             carried_model_name: Some("the-capsules-own-model"),
+            ..BASE_CAPSULE
         },
     );
     let out = scratch("lineage_carried_init.nc");
@@ -450,11 +434,8 @@ fn a_double_coordinate_array_is_carried_at_its_own_width() {
     write_capsule(
         &capsule,
         &CapsuleSpec {
-            with_theta_slot: true,
-            with_double_scalar: false,
             with_double_coordinate: true,
-            with_unsupplied_char: false,
-            carried_model_name: None,
+            ..BASE_CAPSULE
         },
     );
 
@@ -501,10 +482,7 @@ fn a_double_coordinate_array_is_carried_at_its_own_width() {
 fn thompson_package_adds_a_computed_pair_to_a_capsule_without_aerosols() {
     let capsule = scratch("thompson-package.capsule.nc");
     let out = scratch("thompson-package.init.nc");
-    write_capsule(&capsule, &CapsuleSpec {
-        with_theta_slot: true, with_double_scalar: false, with_double_coordinate: false,
-        with_unsupplied_char: false, carried_model_name: None,
-    });
+    write_capsule(&capsule, &BASE_CAPSULE);
     let mut computed = computed_with_theta();
     let nifa = vec![f32::from_bits(1); N_CELLS * N_LEV];
     let nwfa = vec![-0.0_f32; N_CELLS * N_LEV];

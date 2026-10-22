@@ -2128,3 +2128,13 @@ fn downward_shortwave_average_alone_is_missing() {
     assert!(result.extracted.is_empty());
     assert_eq!(result.missing, vec![selector]);
 }
+
+#[test]
+fn surface_temperature_does_not_select_two_metre_air_temperature() {
+    let air = ieee_f32_message(ParameterCode { discipline: 0, category: 0, number: 0 }, 103, 2.0, &[270.0, 271.0], 0.0, 1.0);
+    let sea = ieee_f32_message(ParameterCode { discipline: 0, category: 0, number: 0 }, 1, 0.0, &[285.0, 286.0], 0.0, 1.0);
+    let grib = Grib2File { messages: vec![air, sea] };
+    let field = extract_field_from_grib2(&grib, FieldSelector::surface(CanonicalField::Temperature)).unwrap();
+    assert_eq!(field.values, vec![285.0, 286.0]);
+    assert_eq!(field.units, "K");
+}

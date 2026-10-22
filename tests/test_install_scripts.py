@@ -83,7 +83,10 @@ if kind == 'git':
     for name in ('gpuwm', 'gpuwm-data', 'tools/grib1_bridge', 'tools/rustwx',
                  'tools/arwen-tui', 'tools/zarr_bridge', 'tools/rw_wps',
                  'tools/region_global_dealias', 'tools/nextgen_hydrofabric',
-                 'tools/nextgen_forcing', 'tools/nextgen_verify'):
+                 'tools/nextgen_forcing', 'tools/nextgen_verify', 'tools/hydro_world',
+                 'tools/hydro_world_params', 'tools/nextgen_reservoir_prepare',
+                 'tools/hydro_world_init', 'tools/ocean_prepare',
+                 'tools/rw-bathy', 'tools/nextgen_output'):
         (checkout / name).mkdir(parents=True, exist_ok=True)
         if name.startswith('tools/'):
             # The real manifests: the installers read their rust-version.
@@ -195,7 +198,14 @@ elif kind == 'rustup':
     installed.mkdir(parents=True, exist_ok=True)
     (installed / args[2]).touch()
 elif kind == 'cargo':
-    hydro = cwd.name in ('nextgen_hydrofabric', 'nextgen_forcing', 'nextgen_verify')
+    hydro = cwd.name in ('nextgen_hydrofabric', 'nextgen_forcing', 'nextgen_verify', 'hydro_world',
+                         'hydro_world_params', 'nextgen_reservoir_prepare', 'hydro_world_init',
+                         # 2.9.4 cap-waves-couple: rw_ocean, locked registry deps fetched first.
+                         'ocean_prepare',
+                         # cap-surge: rw_bathy, same reason.
+                         'rw-bathy',
+                         # librw_nextgen_output (coupled hydro output), same loop.
+                         'nextgen_output')
     if args == ['fetch', '--locked']:
         assert hydro, cwd
         (cwd / '.dependencies-fetched').touch()
@@ -441,7 +451,8 @@ def test_clean_clone_installs_matching_companion_then_engine_and_builds_tui(tmp_
              if row['kind'] == 'cargo' and row['args'][0] == 'build']
     assert built == ['grib1_bridge', *([] if no_render else ['rustwx']), 'arwen-tui', 'zarr_bridge',
                      'rw_wps', 'region_global_dealias', 'nextgen_hydrofabric',
-                     'nextgen_forcing', 'nextgen_verify']
+                     'nextgen_forcing', 'nextgen_verify', 'hydro_world', 'hydro_world_params', 'nextgen_reservoir_prepare', 'hydro_world_init',
+                     'ocean_prepare', 'rw-bathy', 'nextgen_output']
     # A workspace the bundle roster builds from and the installer skips leaves
     # doctor reporting its default route MISSING on every source install.
     assert _required_workspaces(no_render) <= set(built)

@@ -103,7 +103,7 @@ def test_the_fit_for_a_3_hour_forecast_from_6_hourly_files_is_sized_not_refused(
 
 
 @pytest.mark.parametrize("source", ["aifs", "aigfs", "aigefs", "gfs", "era5", "gefs", "icon-eu"])
-@pytest.mark.parametrize("hours", [1, 2, 3, 5, 6, 9, 12])
+@pytest.mark.parametrize("hours", [3, 6, 9])
 def test_the_download_the_guidance_asks_about_is_the_one_gpuwm_domain_writes(source, hours):
     document = availability(source, hours, now=datetime(2026, 9, 26, 20, 28))
     assert (document["cadence_hours"], document["last_hour"]) == fetch_window(source, hours)

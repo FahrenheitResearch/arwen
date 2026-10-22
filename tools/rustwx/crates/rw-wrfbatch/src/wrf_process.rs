@@ -23,6 +23,8 @@ use crate::wrf_volumes::{
 };
 use wrf_core::variables::{VARS, VarDim};
 use wrf_core::{ComputeOpts, VarOutput, WrfFile, getvar};
+#[path = "derived_diagnostics.rs"]
+mod derived_diagnostics;
 
 #[derive(Debug)]
 pub struct WrfProcessTask {
@@ -253,14 +255,16 @@ impl WrfProcessOptions {
 
     /// Whether the 3-D fields most diagnostics start from are read up
     /// front for wrf-core's cache: always on a whole plan; on a scoped one
-    /// only when a required plane is not a surface plane read straight off
-    /// the file.  A read skipped here is made by the first product that
+    /// only when a required plane needs the shared thermodynamic fields.
+    /// Surface planes and geometric W skip it. A read skipped here is made by the first product that
     /// needs it, to the same values.
     pub(crate) fn wants_three_dimensional_prefetch(&self) -> bool {
         let Some(required) = &self.required_fields else {
             return true;
         };
-        required.iter().any(|name| !surface_only_store_name(name))
+        required.iter().any(|name| !surface_only_store_name(name)
+            // W needs geometry, but none of the thermodynamic warm-up.
+            && !matches!(name.as_str(), "vertical_velocity_1km_agl" | "vertical_velocity_3km_agl"))
     }
 
     /// Whether the stored-plane sweep (and the NetCDF index it needs) runs:
@@ -342,7 +346,9 @@ impl WrfProcessOptions {
                 names.push(store_name);
             }
         }
+        names.extend(derived_diagnostics::planned_fields(self));
         names.extend(crate::wrf_column_planes::planned_store_fields(self));
+        names.extend(crate::visibility::PRODUCTS.iter().filter(|(n,_,_)|crate::visibility::selected(self,n)).map(|(n,_,_)|n.to_string()));
         if self.should_process("SNOW_LEVEL_FT", Some("wrf_snow_level_ft"), WrfProductGroup::Raw) {
             names.push("wrf_snow_level_ft".to_string());
         }
@@ -376,6 +382,7 @@ impl WrfProcessOptions {
     /// skipped at process time with a note, exactly like a planned field.
     pub fn planned_store_selectors(&self) -> Vec<FieldSelector> {
         let mut selectors = Vec::new();
+        selectors.extend(derived_diagnostics::planned_selectors(self));
         selectors.extend(rustwx_products::vertical::ROWS.iter().filter(|r| {
             let key = r.selector.key();
             self.should_process(&key, Some(&key), WrfProductGroup::Core)
@@ -414,6 +421,7 @@ impl WrfProcessOptions {
             }
         }
         selectors.extend(crate::wrf_column_planes::planned_store_selectors(self));
+        selectors.extend(crate::visibility::PRODUCTS.iter().filter(|(n,_,_)|crate::visibility::selected(self,n)).map(|(_,f,_)|FieldSelector::surface(*f)));
         for (diagnostic, _, field) in DIAGNOSTIC_CHART_PLANES {
             let source = derived_name(diagnostic, None);
             if self.needs_diagnostic_grid(diagnostic, &source)
@@ -449,7 +457,7 @@ impl WrfProcessOptions {
     }
 
     fn chem_rows_for<'a>(&'a self, file: &'a WrfFile) -> impl Iterator<Item = &'static ChemProductRow> + 'a {
-        CHEM_CORE_FIELD_CATALOG.iter().filter(move |row| {
+        CHEM_CORE_FIELD_CATALOG.iter().chain(HAIL_CORE_FIELD_CATALOG.iter()).filter(move |row| {
             row.sources().any(|source| file.has_var(source))
                 && self.should_process(row.source, Some(row.store_name), WrfProductGroup::Core)
         })
@@ -524,6 +532,8 @@ const CORE_FIELD_CATALOG: &[(&str, &str)] = &[
     ("pw", "pwat"),
     (COMPOSITE_REFLECTIVITY_FILTER, COMPOSITE_REFLECTIVITY_STORE),
     (REFLECTIVITY_1KM_FILTER, REFLECTIVITY_1KM_STORE),
+    ("wa", "vertical_velocity_1km_agl"),
+    ("wa", "vertical_velocity_3km_agl"),
     ("UP_HELI_MAX", "updraft_helicity_2to5km"),
     ("apcp", "apcp"),
 ];
@@ -553,6 +563,25 @@ impl ChemProductRow {
         std::iter::once(self.source).chain(self.also.iter().copied())
     }
 }
+
+pub const HAIL_CORE_FIELD_CATALOG: &[ChemProductRow] = &[
+    ChemProductRow { source: "HAIL_MAXK1", also: &[], store_name: "hail_max_surface",
+        selector: FieldSelector::surface(CanonicalField::HailMaxSurface), lowest_level: false, scale: 1000.0 },
+    ChemProductRow { source: "HAIL_MAX2D", also: &[], store_name: "hail_max_column",
+        selector: FieldSelector::surface(CanonicalField::HailMaxColumn), lowest_level: false, scale: 1000.0 },
+    ChemProductRow { source: "HAIL_MAXK1_RUN", also: &[], store_name: "hail_max_surface_run",
+        selector: FieldSelector::surface(CanonicalField::HailMaxSurfaceRun), lowest_level: false, scale: 1000.0 },
+    ChemProductRow { source: "HAIL_MAX2D_RUN", also: &[], store_name: "hail_max_column_run",
+        selector: FieldSelector::surface(CanonicalField::HailMaxColumnRun), lowest_level: false, scale: 1000.0 },
+    ChemProductRow { source: "HAILCAST_DIAM_MAX", also: &[], store_name: "hail_max_hailcast",
+        selector: FieldSelector::surface(CanonicalField::HailcastMax), lowest_level: false, scale: 1.0 },
+    ChemProductRow { source: "HAILCAST_DIAM_MEAN", also: &[], store_name: "hail_max_hailcast_mean",
+        selector: FieldSelector::surface(CanonicalField::HailcastMean), lowest_level: false, scale: 1.0 },
+    ChemProductRow { source: "HAILCAST_DIAM_STD", also: &[], store_name: "hail_max_hailcast_std",
+        selector: FieldSelector::surface(CanonicalField::HailcastStd), lowest_level: false, scale: 1.0 },
+    ChemProductRow { source: "HAILCAST_RUNMAX", also: &[], store_name: "hail_max_hailcast_run",
+        selector: FieldSelector::surface(CanonicalField::HailcastRun), lowest_level: false, scale: 1.0 },
+];
 
 pub const CHEM_CORE_FIELD_CATALOG: &[ChemProductRow] = &[
     ChemProductRow { source: "SMOKE_SFC", also: &["SFIRE_SMOKE_SFC"], store_name: "smoke_near_surface",
@@ -584,7 +613,7 @@ pub const CHEM_CORE_FIELD_CATALOG: &[ChemProductRow] = &[
 /// selectors for one plane.  Every catalog row has an arm; the
 /// `every_core_row_has_one_selector` test holds the two tables together.
 pub(crate) fn core_field_selector(store_name: &str) -> FieldSelector {
-    if let Some(row) = CHEM_CORE_FIELD_CATALOG.iter().find(|row| row.store_name == store_name) {
+    if let Some(row) = CHEM_CORE_FIELD_CATALOG.iter().chain(HAIL_CORE_FIELD_CATALOG.iter()).find(|row| row.store_name == store_name) {
         return row.selector;
     }
     match store_name {
@@ -600,6 +629,8 @@ pub(crate) fn core_field_selector(store_name: &str) -> FieldSelector {
         "pwat" => FieldSelector::entire_atmosphere(CanonicalField::PrecipitableWater),
         COMPOSITE_REFLECTIVITY_STORE => composite_reflectivity_selector(),
         REFLECTIVITY_1KM_STORE => reflectivity_1km_selector(),
+        "vertical_velocity_1km_agl" => FieldSelector::height_agl(CanonicalField::GeometricVerticalVelocity, 1000),
+        "vertical_velocity_3km_agl" => FieldSelector::height_agl(CanonicalField::GeometricVerticalVelocity, 3000),
         "updraft_helicity_2to5km" => {
             FieldSelector::height_layer_agl(CanonicalField::UpdraftHelicity, 2000, 5000)
         }
@@ -611,10 +642,13 @@ pub(crate) fn core_field_selector(store_name: &str) -> FieldSelector {
 /// Chart planes use selector keys unless a shared writer table assigns a
 /// public store name to that selector.
 fn store_name_for_selector(selector: FieldSelector) -> String {
+    if let Some((name,_)) = derived_diagnostics::PRODUCTS.iter().find(|(_,field)| FieldSelector::surface(*field)==selector) {
+        return name.to_string();
+    }
     if let Some((name,_)) = crate::snowfall::PRODUCTS.iter().find(|(_,field)| FieldSelector::surface(*field)==selector) {
         return name.to_string();
     }
-    if let Some(row) = CHEM_CORE_FIELD_CATALOG.iter().find(|row| row.selector == selector) {
+    if let Some(row) = CHEM_CORE_FIELD_CATALOG.iter().chain(HAIL_CORE_FIELD_CATALOG.iter()).find(|row| row.selector == selector) {
         return row.store_name.to_string();
     }
     CORE_FIELD_CATALOG
@@ -664,6 +698,11 @@ fn surface_only_store_name(store_name: &str) -> bool {
             | "surface_pressure"
             | "apcp"
             | "updraft_helicity_2to5km"
+            | "heat_index_2m"
+            | "apparent_temperature_2m"
+            | "wetbulb_2m"
+            | "fire_weather_composite"
+            | "vpd_2m"
     ) || RAW_EXTRA_CATALOG
         .iter()
         .any(|raw| derived_name(raw, None) == store_name)
@@ -825,6 +864,9 @@ pub const RAW_EXTRA_CATALOG: &[&str] = &[
     "HFX",
     "LH",
     "SWDOWN",
+    "SWDDNI",
+    "SWDDIR",
+    "SWDDIF",
     "GLW",
     "OLR",
     "TSK",
@@ -869,7 +911,10 @@ const PROFILE_FNV64_PRIME: u64 = 0x0000_0100_0000_01b3;
 /// writer provenance so a reflectivity-method change cannot silently replace
 /// an older imported run. v5: raw extras carry the file's own units, so an
 /// import that stored HAILNC or UP_HELI_MAX with no unit is not reused.
-const WRF_PROCESS_SCIENCE_MARKER: &str = "wrf_science_v6_winter";
+/// v7 (two lines, merged in 2.9.4): hail extras and fixed-height W planes,
+/// including to a full import. v8 carries both, so an import made by
+/// either v7 alone is not reused.
+const WRF_PROCESS_SCIENCE_MARKER: &str = "wrf_science_v8_hail_vertical_velocity";
 const COMPOSITE_REFLECTIVITY_FILTER: &str = "maxdbz";
 const COMPOSITE_REFLECTIVITY_STORE: &str = "composite_reflectivity";
 const REFLECTIVITY_1KM_FILTER: &str = "reflectivity_1km";
@@ -1031,6 +1076,34 @@ fn frame_lane_count(plans: &[WrfSourcePlan], jobs: usize) -> usize {
     let largest = plans.iter().map(plan_frame_bytes).max().unwrap_or(1).max(1);
     let by_memory = (frame_budget().total / largest).max(1) as usize;
     jobs.min(threads).min(by_memory).max(1)
+}
+
+/// Wall time of one import stage, reported as a progress line when
+/// `RUSTWX_IMPORT_TIMINGS` is set (one `Instant` per stage otherwise, and
+/// no line), so a slow frame says which stage held it.
+struct ImportStageTimer<'a> {
+    name: &'static str,
+    started: std::time::Instant,
+    report: Option<&'a (dyn Fn(String) + Sync)>,
+}
+
+impl<'a> ImportStageTimer<'a> {
+    fn new(name: &'static str, report: &'a (dyn Fn(String) + Sync)) -> Self {
+        let report = std::env::var_os("RUSTWX_IMPORT_TIMINGS").map(|_| report);
+        Self { name, started: std::time::Instant::now(), report }
+    }
+}
+
+impl Drop for ImportStageTimer<'_> {
+    fn drop(&mut self) {
+        if let Some(report) = self.report {
+            report(format!(
+                "IMPORT_STAGE {} {:.3}s",
+                self.name,
+                self.started.elapsed().as_secs_f64()
+            ));
+        }
+    }
 }
 
 pub(crate) struct WrfHourFields {
@@ -1513,12 +1586,23 @@ fn process_paths_with_target(
     // Include them in both cache identity and the end-of-import mutation
     // check, so a revised intermediate frame cannot reuse an old total.
     let mut dependencies = files.clone();
+    let mut history = Vec::new();
     if crate::snowfall::PRODUCTS.iter().any(|(name,field)|
         options.should_process(&FieldSelector::surface(*field).key(), Some(name), WrfProductGroup::Diagnostic)) {
-        for path in &files { dependencies.extend(crate::snowfall::history_paths(path)?); }
+        for path in &files { history.extend(crate::snowfall::history_paths(path)?); }
+        history.sort(); history.dedup();
+        dependencies.extend(history.iter().cloned());
         dependencies.sort(); dependencies.dedup();
     }
-    let source_snapshot = crate::local_import::capture_source_set_identity(&dependencies)?;
+    let hash_started = std::time::Instant::now();
+    let source_snapshot = crate::local_import::capture_source_set_identity_with_history(&files, &history)?;
+    if std::env::var_os("RUSTWX_IMPORT_TIMINGS").is_some() {
+        let _ = tx.send(WrfProcessMessage::Progress(format!(
+            "IMPORT_STAGE source-identity files={} {:.3}s",
+            dependencies.len(),
+            hash_started.elapsed().as_secs_f64()
+        )));
+    }
     let source_identity = &source_snapshot.identity;
     // A store hour is replaced as a unit. Keep every full-processing plan in
     // its own run so a later core-only/custom import cannot erase fields from
@@ -1863,6 +1947,7 @@ fn process_paths_with_target(
             let mut progress = |message: String| {
                 let _ = tx.send(WrfProcessMessage::Progress(message));
             };
+            let hour_started = std::time::Instant::now();
             let mut fields = read_wrf_products(
                 &file,
                 path,
@@ -1910,6 +1995,14 @@ fn process_paths_with_target(
                 .iter()
                 .map(IsoVolume::as_input)
                 .collect::<Vec<_>>();
+            let write_started = std::time::Instant::now();
+            if std::env::var_os("RUSTWX_IMPORT_TIMINGS").is_some() {
+                let _ = tx.send(WrfProcessMessage::Progress(format!(
+                    "IMPORT_STAGE hour-fields {} {:.3}s",
+                    display_name(path),
+                    hour_started.elapsed().as_secs_f64()
+                )));
+            }
             let _writing = write_lock.lock().unwrap_or_else(|poison| poison.into_inner());
             let result = match record.exact_time {
                 Some(exact_time) => write_hour_from_grid_with_derived_exact(
@@ -1941,6 +2034,13 @@ fn process_paths_with_target(
                 ),
             }
             .map_err(|err| format!("Write WRF {} failed: {err}", record.display_key()))?;
+            if std::env::var_os("RUSTWX_IMPORT_TIMINGS").is_some() {
+                let _ = tx.send(WrfProcessMessage::Progress(format!(
+                    "IMPORT_STAGE store-write {} {:.3}s",
+                    display_name(path),
+                    write_started.elapsed().as_secs_f64()
+                )));
+            }
             all_vars.extend(result.vars.iter().cloned());
             all_notes.extend(fields.notes);
             written.push(result);
@@ -1987,6 +2087,12 @@ fn process_paths_with_target(
         written.extend(outcome.written);
         all_vars.extend(outcome.all_vars);
         all_notes.extend(outcome.all_notes);
+    }
+    for gone in source_snapshot.gone() {
+        all_notes.push(format!(
+            "snowfall history frame {} was removed before this render read it",
+            display_name(gone)
+        ));
     }
 
     all_vars.sort();
@@ -2228,6 +2334,8 @@ fn read_wrf_products(
     // A field the file lacks is left for the product that needs it to note.
     // A scoped plan of surface planes alone (2 m temperature, 10 m winds)
     // reads no 3-D field at all, so it skips the warm-up.
+    let timings = std::env::var_os("RUSTWX_IMPORT_TIMINGS").is_some();
+    let prefetch_started = std::time::Instant::now();
     if options.wants_three_dimensional_prefetch() {
         rayon::join(
             || {
@@ -2246,6 +2354,9 @@ fn read_wrf_products(
                 let _ = rayon::join(|| file.qvapor(timeidx), || file.geopotential_stag(timeidx));
             },
         );
+    }
+    if timings {
+        progress(format!("IMPORT_STAGE prefetch-3d {:.3}s", prefetch_started.elapsed().as_secs_f64()));
     }
     let part = || WrfHourFields {
         grid: grid.clone(),
@@ -2268,6 +2379,7 @@ fn read_wrf_products(
         let snowfall_cache = &mut *snowfall_cache;
         rayon::scope(|scope| {
         scope.spawn(move |_| {
+            let _timer = ImportStageTimer::new("ga-core", report);
             #[allow(unused_mut)]
             let mut fields = ga;
             macro_rules! push_core {
@@ -2427,6 +2539,7 @@ fn read_wrf_products(
             );
         });
         scope.spawn(move |_| {
+            let _timer = ImportStageTimer::new("gb-reflectivity", report);
             #[allow(unused_mut)]
             let mut fields = gb;
             let progress = &mut |message: String| report(message);
@@ -2441,6 +2554,7 @@ fn read_wrf_products(
             );
         });
         scope.spawn(move |_| {
+            let _timer = ImportStageTimer::new("gc-uh", report);
             #[allow(unused_mut)]
             let mut fields = gc;
             macro_rules! push_core {
@@ -2461,6 +2575,9 @@ fn read_wrf_products(
                 };
             }
 
+            crate::wrf_vertical_velocity::push(
+                &mut fields, file, timeidx, &grid, projection.clone(), options,
+            );
             push_core!(
                 "UP_HELI_MAX",
                 "updraft_helicity_2to5km",
@@ -2469,9 +2586,11 @@ fn read_wrf_products(
             );
         });
         scope.spawn(move |_| {
+            let _timer = ImportStageTimer::new("gd-visibility-columns", report);
             #[allow(unused_mut)]
             let mut fields = gd;
             let progress = &mut |message: String| report(message);
+            crate::visibility::push(&mut fields,file,timeidx,&grid,projection.clone(),options,progress);
             crate::wrf_column_planes::push_column_planes(
                 &mut fields,
                 file,
@@ -2483,6 +2602,7 @@ fn read_wrf_products(
             );
         });
         scope.spawn(move |_| {
+            let _timer = ImportStageTimer::new("ge-apcp", report);
             #[allow(unused_mut)]
             let mut fields = ge;
             if options.should_process("apcp", Some("apcp"), WrfProductGroup::Core) {
@@ -2500,32 +2620,38 @@ fn read_wrf_products(
             }
         });
         scope.spawn(move |_| {
+            let _timer = ImportStageTimer::new("gf-chem-vertical", report);
             #[allow(unused_mut)]
             let mut fields = gf;
             push_chem_products(&mut fields, file, timeidx, &grid, projection.clone(), options);
             push_vertical_products(&mut fields, file, timeidx, &grid, projection.clone(), options);
         });
         scope.spawn(move |_| {
+            let _timer = ImportStageTimer::new("gg-gust", report);
             #[allow(unused_mut)]
             let mut fields = gg;
             push_gust_10m(&mut fields, file, timeidx, &grid, projection.clone(), shape.len(), options);
         });
         scope.spawn(move |_| {
+            let _timer = ImportStageTimer::new("gh-ptype", report);
             #[allow(unused_mut)]
             let mut fields = gh;
             push_precip_type(&mut fields, file, timeidx, &grid, projection.clone(), shape.len(), options);
         });
         scope.spawn(move |_| {
+            let _timer = ImportStageTimer::new("gi-snowlevel", report);
             #[allow(unused_mut)]
             let mut fields = gi;
             push_snow_level_ft(&mut fields, file, timeidx, shape.len(), options);
         });
         scope.spawn(move |_| {
+            let _timer = ImportStageTimer::new("gj-snowfall", report);
             #[allow(unused_mut)]
             let mut fields = gj;
             crate::snowfall::push(&mut fields, file, path, timeidx, options, &grid, projection.clone(), snowfall_cache);
         });
         scope.spawn(move |_| {
+            let _timer = ImportStageTimer::new("gk-diagnostics", report);
             let total_twod = VARS
                 .iter()
                 .filter(|def| def.dim == VarDim::TwoD && !excluded_from_full_twod_pass(def.name))
@@ -2568,6 +2694,7 @@ fn read_wrf_products(
             }
         });
         scope.spawn(move |_| {
+            let _timer = ImportStageTimer::new("gl-raw-extra", report);
             #[allow(unused_mut)]
             let mut fields = gl;
             for raw in RAW_EXTRA_CATALOG {
@@ -2742,6 +2869,8 @@ fn read_wrf_products(
             }
         }
     }
+
+    derived_diagnostics::compute(&mut fields, file, timeidx, &grid, projection.clone(), options);
 
     // Release wrf-core's per-timestep intermediate cache before the caller
     // writes the hour to the store. `getvar` memoizes every 3-D f64
@@ -3415,7 +3544,7 @@ fn push_canonical(
 /// of the canonical 37-level ladder the volumes interpolate, so publishing
 /// them is a copy of existing certified planes, never a second
 /// interpolation.
-const ISOBARIC_RECIPE_LEVELS_HPA: [u16; 6] = [200, 250, 300, 500, 700, 850];
+const ISOBARIC_RECIPE_LEVELS_HPA: [u16; 7] = [200, 250, 300, 500, 700, 850, 925];
 
 /// Publish the chart-recipe levels of the interpolated `*_iso` volumes as
 /// canonical selector planes (`geopotential_height_500hpa`, ...).  Values
@@ -4064,7 +4193,7 @@ fn processing_profile_suffix(options: &WrfProcessOptions) -> String {
     let normalized = options.clone().normalized();
     let mut hash = profile_hash_update(PROFILE_FNV64_OFFSET, b"rw-wrf-profile-v2\0");
     hash = profile_hash_update(hash, WRF_PROCESS_SCIENCE_MARKER.as_bytes());
-    hash = profile_hash_update(hash, b"snowfall-window-v1\0");
+    hash = profile_hash_update(hash, b"snowfall-window-v2\0");
     if let Some(since) = &normalized.snow_since {
         hash = profile_hash_update(hash, since.replace(':', "_").as_bytes());
     }
@@ -4189,7 +4318,7 @@ fn writer_build() -> &'static str {
         env!("CARGO_PKG_NAME"),
         " ",
         env!("CARGO_PKG_VERSION"),
-        " wrf_science_v6_winter"
+        " wrf_science_v8_hail_vertical_velocity"
     )
 }
 
@@ -4935,20 +5064,11 @@ mod tests {
             covered += 1;
             for requirement in requirements {
                 let selector = requirement.selector.unwrap();
-                let store_name = CORE_FIELD_CATALOG
-                    .iter()
-                    .find(|(_, name)| core_field_selector(name) == selector)
-                    .map(|(_, name)| *name)
-                    .or_else(|| {
-                        crate::wrf_column_planes::COLUMN_PLANE_CATALOG
-                            .iter()
-                            .find(|plane| plane.selector() == selector)
-                            .map(|plane| plane.store_name)
-                    })
-                    .or_else(|| crate::snowfall::PRODUCTS.iter()
-                        .find(|(_,field)| FieldSelector::surface(*field)==selector).map(|(name,_)| *name))
-                    .map(str::to_string)
-                    .unwrap_or_else(|| selector.key());
+                // The writer's own selector -> store-name table, so every
+                // shared catalog (diagnostics, snowfall, chem, hail, core,
+                // column planes) names its planes here exactly as the
+                // planner and writer do.
+                let store_name = store_name_for_selector(selector);
                 assert!(fields.contains(&store_name), "{slug} needs {store_name}");
             }
         }
@@ -5211,11 +5331,29 @@ fn winter_selectors() -> Vec<(&'static str, FieldSelector)> {
     rows
 }
 
-/// 10 m wind gust, NCEP UPP method (CALGUST): the wind at the top of the
-/// boundary layer mixed down, damped as the layer deepens:
+/// 10 m wind gust: the wind at the top of the boundary layer mixed down,
+/// damped as the layer deepens:
 /// gust = w10 + (w_pbltop - w10) * (1 - min(0.5, PBLH / 2000 m)), never
-/// below w10.  Published on the canonical 10 m WindGust selector, so the
-/// catalog's `10m_wind_gusts` product and its standard gust table draw it.
+/// below w10, where PBLH is the MODEL's own PBL height (the history's
+/// PBLH) and w_pbltop is the wind speed on the first mass level at or above
+/// it.  wrf-python defines no gust, so this is the definition the renderer
+/// uses for every model's files.
+///
+/// It is the single-level form of the NCEP post-processor's gust, NOT the
+/// form NCEP applies to RAP/HRRR (and RRFS/GFS): for those, UPP diagnoses
+/// its own PBL depth from virtual potential temperature (a 0.5 K excess
+/// over the lowest level, then smoothed over many grid lengths) and takes
+/// the MAXIMUM over every level from the second up to just above that
+/// depth, each level damped by its own height above ground.  The HRRR
+/// `GUST` message is therefore a different quantity from this plane; a
+/// like-for-like comparison runs this function on the reference's own
+/// native state (`rw_native_wrfout`), measured 2026-10-21 on the HRRR 06Z
+/// f01: WOOF minus NOAA-through-this-function mean -0.06 m/s, rms 0.71
+/// m/s, where WOOF minus NOAA's GUST message was +1.5 m/s, rms 2.9 m/s.
+/// The plane is only as good as PBLH: at a run's initial time PBLH is 0
+/// until the PBL scheme has run (as in WRF), so the gust is the 10 m wind.
+/// Published on the canonical 10 m WindGust selector, so the catalog's
+/// `10m_wind_gusts` product and its standard gust table draw it.
 /// Breakage it prevents: WOOF wrfouts carry no gust field, so a downslope
 /// wind event had only sustained-wind maps (the gust product was "missing").
 fn push_gust_10m(

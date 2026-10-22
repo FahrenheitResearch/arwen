@@ -17,6 +17,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from test_water_blend_native import _same
+
 from gpuwm.ingest import cpu_backend, water_temperature
 from gpuwm.ingest.cpu_backend import (
     COMPONENT_OWNER_ENTRY,
@@ -41,13 +43,6 @@ WORKERS = (1, 3, 64)
 
 def _native() -> CpuPreprocessBackend:
     return CpuPreprocessBackend()
-
-
-def _same(got, want):
-    got = np.asarray(got)
-    want = np.asarray(want)
-    assert got.dtype == want.dtype and got.shape == want.shape
-    assert got.tobytes() == want.tobytes()
 
 
 # ---- the source owner ------------------------------------------------

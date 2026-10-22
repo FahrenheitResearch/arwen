@@ -66,6 +66,7 @@ from pathlib import Path
 from typing import Mapping
 
 import numpy as np
+from gpuwm.ensemble.state_sha import _host as _host
 
 #: Versioned contract label recorded in every increment receipt.
 INCREMENT_CONTRACT = "gpuwm-da-increments.v1"
@@ -77,10 +78,6 @@ SATURATION_CAP_SCHEMA = "gpuwm-da.saturation-cap.v1"
 #: inverse dry density and vapour give the background's temperature
 #: through the equation of state, so no setup array (``thb``) is needed.
 SATURATION_CAP_READS = ("p", "alt", "qv")
-
-#: The ledger stage a caller records the cap's removal under.
-SATURATION_CAP_STAGE = "saturation_cap"
-
 
 #: Cells per block of the cap's arithmetic (:func:`_saturation_cap`), so
 #: its float64 scratch is a few arrays of the moved cells of one block on
@@ -486,13 +483,6 @@ def _moment_guard(resulting: Mapping[str, object],
                                       pairs=pairs,
                                       morr_rimed_ice=morr_rimed_ice)
     return repaired, {**policy_receipt, **report}
-
-
-def _host(value) -> np.ndarray:
-    get = getattr(value, "get", None)
-    if callable(get) and hasattr(value, "__cuda_array_interface__"):
-        return np.ascontiguousarray(get())
-    return np.ascontiguousarray(np.asarray(value))
 
 
 def _array_sha256(value) -> str:

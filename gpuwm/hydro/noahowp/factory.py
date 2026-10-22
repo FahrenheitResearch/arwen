@@ -141,6 +141,51 @@ def prepare_exchange(*, settings, options, state, physics, device_id, mode, comp
     return component
 
 
+def prepare_accumulated_exchange(*, settings, options, state, physics, device_id, mode, components):
+    """Parent exchange for an LSM that accumulates runoff (Noah, RUC).
+
+    Binds the parent's resident SFCRUNOFF/UDRUNOFF (mm accumulated), QFX and
+    soil carriers to the same Rust-prepared catchment CSR the Noah-MP exchange
+    uses; the step depth is differenced on the card at each LSM call.
+    """
+    if mode != "coupled":
+        raise ValueError("parent runoff exchange requires coupled hydro mode")
+    from gpuwm.hydro.parent_geometry import bind
+    from gpuwm.hydrofabric import parent_grid_contract
+    from .coupling import PreparedAccumulatedExchange
+
+    fields = physics.fields
+    missing = [name for name in ("sfcrunoff", "udrunoff", "qfx", "smois", "sh2o") if name not in fields]
+    if missing:
+        raise ValueError(f"parent LSM publishes no {missing}; the accumulated-runoff exchange needs them")
+    fabric = components[options["network_component"]]
+    grid = getattr(physics, "hydro_parent_geometry", None)
+    if grid is None:
+        raise ValueError("parent runoff exchange needs the actual forecast ProjectedGrid")
+    if fabric.manifest.get("parent_grid_contract") != parent_grid_contract(bind(grid)):
+        raise ValueError("prepared hydro weights differ from the actual forecast parent grid")
+    arrays = fabric.arrays
+    component = PreparedAccumulatedExchange(
+        offsets=arrays["exchange_offsets"], indices=arrays["exchange_indices"],
+        weights=arrays["exchange_weights"], surface_total=fields["sfcrunoff"],
+        subsurface_total=fields["udrunoff"], qfx=fields["qfx"], smois=fields["smois"],
+        sh2o=fields["sh2o"],
+        # Launched once per routing interval when the realization says so: the
+        # depth is everything accumulated since the previous launch.
+        dt_seconds=float(options.get("interval_seconds", physics.bldt_seconds)),
+        weights_sha256=options["weights_sha256"], fabric_sha256=options["fabric_sha256"],
+        numerics=settings.get("numerics", "fast"))
+    component.restart_identity["hydrofabric"] = fabric.restart_identity
+    component.restart_identity["catchment_ids"] = list(fabric.catchment_ids)
+    return component
+
+
+def prepare_accumulated_exchange_memory(*, settings, options, context, components):
+    from ..coupling_memory import accumulated_exchange_memory
+    return accumulated_exchange_memory(settings=settings, options=options, context=context,
+                                       components=components)
+
+
 def prepare_terrain_exchange(*, settings, options, state, physics, device_id, mode, components):
     """Map parent depths to terrain rates using Rust-prepared destination CSR.
 

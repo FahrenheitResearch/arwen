@@ -998,10 +998,12 @@ class HrrrPipelineProducer:
         self.preflight = values
         staging_root = self._validated_staging_root()
         from gpuwm.ingest.native_supplements import (
-            gate_optional_hybrid_fields, gate_soil_surface_fields)
+            gate_optional_hybrid_fields, gate_optional_surface_fields,
+            gate_soil_surface_fields)
         staged_gate = _read_tsv(staging_root / "gate.txt")
         soil_surface_count = (len(gate_soil_surface_fields(staged_gate))
-                              + len(gate_optional_hybrid_fields(staged_gate)))
+                              + len(gate_optional_hybrid_fields(staged_gate))
+                              + len(gate_optional_surface_fields(staged_gate)))
         self.hour_payload_files = {
             hour: count + soil_surface_count
             for hour, count in self._base_hour_payload_files.items()}

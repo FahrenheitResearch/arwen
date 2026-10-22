@@ -1,4 +1,4 @@
-"""Shared source-scan pieces for the Noah-MP CUDA kernel gates.
+"""Shared source scans and oracle fixtures for the Noah-MP kernel gates.
 
 WHY THIS MODULE EXISTS
 
@@ -29,8 +29,17 @@ duplicated constant -- which matters especially for ``SCALARS`` and
 
 from __future__ import annotations
 
+from collections import defaultdict
+import csv
+import importlib.util
 import os
+from pathlib import Path
 import re
+import struct
+
+import numpy as np
+
+from gpuwm.core.fp32_ulp import fp32_ulp_distance
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -109,3 +118,43 @@ def snow_section(text: str) -> str:
     for n in names:
         s = re.sub(r"\b%s\b" % n, "SN_" + n, s)
     return s.rstrip() + "\n"
+
+
+# Shared committed-oracle fixture decoding for the leaf, flux and thermal gates.
+
+
+def load_oracle_tool(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def oracle_f32_from_bits(bits: str) -> np.float32:
+    return np.frombuffer(struct.pack("<I", int(bits, 16)),
+                         dtype=np.float32)[0]
+
+
+def oracle_ulp_delta(got: np.float32, want: np.float32) -> int:
+    return int(fp32_ulp_distance(got, want).reshape(-1)[0])
+
+
+def load_oracle_cases(path: Path, leaves: set[str] | None = None):
+    with path.open(newline="", encoding="ascii") as stream:
+        rows = list(csv.DictReader(stream))
+    packed = defaultdict(lambda: {"int": {}, "in": {}, "out": {}})
+    for row in rows:
+        if leaves is not None and row["leaf"] not in leaves:
+            continue
+        packed[(row["leaf"], row["case"])][row["role"]][int(row["slot"])] = row
+    cases = {}
+    for key, roles in packed.items():
+        ints = np.array([int(float(roles["int"][s]["value"]))
+                         for s in sorted(roles["int"])], dtype=np.int64)
+        x = np.array([oracle_f32_from_bits(roles["in"][s]["bits"])
+                      for s in sorted(roles["in"])], dtype=np.float32)
+        outs = [(s, roles["out"][s]["name"], int(roles["out"][s]["index"]),
+                 roles["out"][s]["live"] == "1", roles["out"][s]["bits"])
+                for s in sorted(roles["out"])]
+        cases[key] = (ints, x, outs)
+    return cases

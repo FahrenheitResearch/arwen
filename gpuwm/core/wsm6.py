@@ -27,9 +27,10 @@ import numpy as np
 import cupy as cp
 
 from gpuwm.config import RunConfig
-from gpuwm.core import constants as c
 from gpuwm.core.kernels import get_kernel, get_kernel_int_defines
 from gpuwm.core.state import DTYPE, DomainState
+from gpuwm.core.wsm_family import (check_surface, check_volume, finish_fields,
+                                    precipitation_surface, prepare_fields)
 
 from gpuwm.core.device_cache import cuda_cache
 from gpuwm.core.wsm6_constants import (WSM6_DEEP_KMAX, WSM6_SHALLOW_KMAX,
@@ -158,24 +159,12 @@ def launch_wsm6(theta, qv, qc, qr, qi, qs, qg, rho, pii, pressure, dz,
         "pressure": pressure, "dz": dz,
         "effc": effc, "effi": effi, "effs": effs,
     }
-    for name, value in volume.items():
-        if value.shape != shape:
-            raise ValueError(f"{name} must have shape {shape}, got {value.shape}")
-        if value.dtype != DTYPE:
-            raise TypeError(f"{name} must be float32, got {value.dtype}")
-        if not value.flags.c_contiguous:
-            raise ValueError(f"{name} must be C-contiguous")
-    surface_shape = (ny, nx)
-    for name, value in {
+    check_volume(volume, shape)
+    check_surface({
             "rainnc": rainnc, "rainncv": rainncv,
             "snownc": snownc, "snowncv": snowncv,
             "graupelnc": graupelnc, "graupelncv": graupelncv,
-            "sr": sr}.items():
-        if value.shape != surface_shape or value.dtype != DTYPE:
-            raise ValueError(f"{name} must be float32 {surface_shape}, got "
-                             f"{value.dtype} {value.shape}")
-        if not value.flags.c_contiguous:
-            raise ValueError(f"{name} must be C-contiguous")
+            "sr": sr}, (ny, nx))
     ncol = ny * nx
     if not isinstance(conservative_surface, bool):
         raise TypeError("conservative_surface must be a bool, got "
@@ -242,24 +231,12 @@ def launch_wsm6r(theta, qv, qc, qr, qi, qs, qg, rho, pii, pressure, dz,
         "qi": qi, "qs": qs, "qg": qg, "rho": rho, "pii": pii,
         "pressure": pressure, "dz": dz,
     }
-    for name, value in volume.items():
-        if value.shape != shape:
-            raise ValueError(f"{name} must have shape {shape}, got {value.shape}")
-        if value.dtype != DTYPE:
-            raise TypeError(f"{name} must be float32, got {value.dtype}")
-        if not value.flags.c_contiguous:
-            raise ValueError(f"{name} must be C-contiguous")
+    check_volume(volume, shape)
     if (work.shape != (3,) + shape or work.dtype != DTYPE
             or not work.flags.c_contiguous):
         raise ValueError(f"work must be C-contiguous float32 {(3,) + shape}, "
                          f"got {work.dtype} {work.shape}")
-    surface_shape = (ny, nx)
-    for name, value in {"rainnc": rainnc, "rainncv": rainncv}.items():
-        if value.shape != surface_shape or value.dtype != DTYPE:
-            raise ValueError(f"{name} must be float32 {surface_shape}, got "
-                             f"{value.dtype} {value.shape}")
-        if not value.flags.c_contiguous:
-            raise ValueError(f"{name} must be C-contiguous")
+    check_surface({"rainnc": rainnc, "rainncv": rainncv}, (ny, nx))
     ncol = ny * nx
     blocks = (ncol + _COLUMN_TPB - 1) // _COLUMN_TPB
     get_kernel("wsm6r", "wsm6r_column")(
@@ -323,67 +300,30 @@ def apply(state: DomainState, cfg: RunConfig, dt: float, *,
     if missing:
         raise ValueError("mp_physics=6 state lacks WSM6 fields: "
                          + ", ".join(missing))
-    thb = state.thb if state.thb.ndim == 3 else state.thb[:, None, None]
-    phb = state.phb if state.phb.ndim == 3 else state.phb[:, None, None]
-    theta = state.scratch((nz, ny, nx), "wsm6_theta")
-    rho = state.scratch((nz, ny, nx), "wsm6_rho")
-    pii = state.scratch((nz, ny, nx), "wsm6_pii")
-    dz = state.scratch((nz, ny, nx), "wsm6_dz")
-    z8w = state.scratch((nz + 1, ny, nx), "wsm6_z8w")
-    theta[...] = thb + state.thp
-    rho[...] = 1.0 / state.alt
-    from gpuwm.core.microphysics import prepare_microphysics_exner
-    prepare_microphysics_exner(state.p, pii)
-    z8w[...] = (phb + state.php) / DTYPE(c.G)
-    dz[...] = z8w[1:] - z8w[:-1]
+    theta, rho, pii, dz = _wsm6_prepare(state, "wsm6", rounded_exner=True)
+    surface = precipitation_surface(state)
 
-    surface = (ny, nx)
-    rainnc = state.scratch(surface, "mp_rainnc")
-    rainncv = state.scratch(surface, "mp_rainncv")
-    snownc = state.scratch(surface, "mp_snownc")
-    snowncv = state.scratch(surface, "mp_snowncv")
-    graupelnc = state.scratch(surface, "mp_graupelnc")
-    graupelncv = state.scratch(surface, "mp_graupelncv")
-    sr = state.scratch(surface, "mp_sr")
-
-    from gpuwm.core.microphysics import (MicrophysicsDiagnostics,
-                                         moist_physics_finish,
-                                         save_pre_mp_theta)
+    from gpuwm.core.microphysics import save_pre_mp_theta
     save_pre_mp_theta(state)
     launch_wsm6(
         theta, state.qv, state.qc, state.qr, state.qi, state.qs, state.qg,
-        rho, pii, state.p, dz, rainnc, rainncv, snownc, snowncv,
-        graupelnc, graupelncv, sr, dt, effc=state.effc,
+        rho, pii, state.p, dz, dt=dt, **surface, effc=state.effc,
         effi=state.effi, effs=state.effs, hail_opt=cfg.wsm6_hail_opt,
         conservative_surface=bool(
             getattr(cfg, "wsm6_conservative_surface", False)))
-    if refl_10cm_due:
-        from gpuwm.core.refl import compute_and_stash_refl_10cm
-        refl_t = state.scratch((nz, ny, nx), "refl_t")
-        refl_t[...] = theta * pii
-        compute_and_stash_refl_10cm(state, cfg, refl_t, state.p)
-    moist_physics_finish(state, cfg, theta, dt)
-    return MicrophysicsDiagnostics(
-        rainnc=rainnc, rainncv=rainncv, sr=sr,
-        snownc=snownc, snowncv=snowncv,
-        graupelnc=graupelnc, graupelncv=graupelncv)
+    return finish_fields(state, cfg, theta, pii, dt, surface,
+                         refl_10cm_due=refl_10cm_due)
 
 
-def _wsm6_prepare(state: DomainState, prefix: str):
-    """moist_physics_prep_em's theta, rho, pii and dz8w for one call."""
+def _wsm6_prepare(state: DomainState, prefix: str, *, rounded_exner=False):
+    """Shared named allocator, retained at the scratch-inventory pinned site."""
     nz, ny, nx = state.p.shape
-    thb = state.thb if state.thb.ndim == 3 else state.thb[:, None, None]
-    phb = state.phb if state.phb.ndim == 3 else state.phb[:, None, None]
     theta = state.scratch((nz, ny, nx), f"{prefix}_theta")
     rho = state.scratch((nz, ny, nx), f"{prefix}_rho")
     pii = state.scratch((nz, ny, nx), f"{prefix}_pii")
     dz = state.scratch((nz, ny, nx), f"{prefix}_dz")
     z8w = state.scratch((nz + 1, ny, nx), f"{prefix}_z8w")
-    theta[...] = thb + state.thp
-    rho[...] = 1.0 / state.alt
-    pii[...] = cp.power(state.p / DTYPE(c.P0), DTYPE(c.RCP))
-    z8w[...] = (phb + state.php) / DTYPE(c.G)
-    dz[...] = z8w[1:] - z8w[:-1]
+    prepare_fields(state, theta, rho, pii, dz, z8w, rounded_exner=rounded_exner)
     return theta, rho, pii, dz
 
 
@@ -414,28 +354,19 @@ def _apply_wsm6r(state: DomainState, cfg: RunConfig, dt: float, *,
                          + ", ".join(missing))
     theta, rho, pii, dz = _wsm6_prepare(state, "wsm6r")
     work = state.scratch((3, nz, ny, nx), "wsm6r_work")
-    surface = (ny, nx)
-    rainnc = state.scratch(surface, "mp_rainnc")
-    rainncv = state.scratch(surface, "mp_rainncv")
-    sr = state.scratch(surface, "mp_sr")
-    sr.fill(0.0)
+    surface = precipitation_surface(state, ("rain",))
+    surface["sr"].fill(0.0)
 
-    from gpuwm.core.microphysics import (MicrophysicsDiagnostics,
-                                         moist_physics_finish,
-                                         save_pre_mp_theta)
+    from gpuwm.core.microphysics import save_pre_mp_theta
     save_pre_mp_theta(state)
     launch_wsm6r(theta, state.qv, state.qc, state.qr, state.qi, state.qs,
-                 state.qg, rho, pii, state.p, dz, rainnc, rainncv, dt,
+                 state.qg, rho, pii, state.p, dz, surface["rainnc"],
+                 surface["rainncv"], dt,
                  work=work)
     launch_wsm6r_effective_radii(theta, pii, state.qc, state.qi, state.qs,
                                  rho, state.effc, state.effi, state.effs)
-    if refl_10cm_due:
-        from gpuwm.core.refl import compute_and_stash_refl_10cm
-        refl_t = state.scratch((nz, ny, nx), "refl_t")
-        refl_t[...] = theta * pii
-        compute_and_stash_refl_10cm(state, cfg, refl_t, state.p)
-    moist_physics_finish(state, cfg, theta, dt)
-    return MicrophysicsDiagnostics(rainnc=rainnc, rainncv=rainncv, sr=sr)
+    return finish_fields(state, cfg, theta, pii, dt, surface,
+                         refl_10cm_due=refl_10cm_due)
 
 
 __all__ = ["WSM6_FAMILY", "apply", "launch_wsm6", "launch_wsm6r",

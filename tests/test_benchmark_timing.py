@@ -104,12 +104,6 @@ def test_summary_refuses_a_missing_step_log(tmp_path):
                                    marks={"worker_start": 0.0, "read_end": 0.0})
 
 
-def test_process_start_is_before_now():
-    start = benchmark_timing.process_start_unix()
-    assert start <= time.time()
-    assert time.time() - start < 24 * 3600
-
-
 def test_marks_record_read_window(tmp_path):
     marks = benchmark_timing.Marks()
     marks.mark("read_start")

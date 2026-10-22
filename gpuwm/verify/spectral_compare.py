@@ -27,12 +27,14 @@ pinned arithmetic.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-import hashlib
 import json
 import math
 from typing import Iterable, Mapping, Sequence
 
 import numpy as np
+
+from gpuwm.verify.spectral import (_canonical_hash,
+                                   detrend_plane as _detrend_plane)
 
 COMPARISON_SCHEMA = "gpuwm.spectral-comparison/v2"
 IMPLEMENTATION_PINS_SCHEMA = "gpuwm.spectral-comparison-pins/v2"
@@ -292,13 +294,6 @@ IMPLEMENTATION_PINS: dict[str, object] = {
 }
 
 
-def _canonical_hash(value: object) -> str:
-    payload = json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
-        allow_nan=False).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
-
-
 IMPLEMENTATION_PINS_SHA256 = _canonical_hash(IMPLEMENTATION_PINS)
 
 
@@ -380,22 +375,7 @@ def crop_plane(plane: np.ndarray, crop_cells: int) -> np.ndarray:
 def detrend_plane(plane: np.ndarray) -> np.ndarray:
     """Remove the least-squares plane ``a + b*x + c*y`` in float64."""
 
-    values = _as_finite_plane(plane, label="detrend input")
-    ny, nx = values.shape
-    y = np.arange(ny, dtype=np.float64) - 0.5 * (ny - 1)
-    x = np.arange(nx, dtype=np.float64) - 0.5 * (nx - 1)
-    result = values - float(np.mean(values, dtype=np.float64))
-    yy = float(np.sum(y * y, dtype=np.float64)) * nx
-    xx = float(np.sum(x * x, dtype=np.float64)) * ny
-    if yy > 0.0:
-        result = result - (
-            float(np.sum(result * y[:, None], dtype=np.float64)) / yy
-        ) * y[:, None]
-    if xx > 0.0:
-        result = result - (
-            float(np.sum(result * x[None, :], dtype=np.float64)) / xx
-        ) * x[None, :]
-    return result
+    return _detrend_plane(_as_finite_plane(plane, label="detrend input"))
 
 
 def hann_window(ny: int, nx: int) -> np.ndarray:

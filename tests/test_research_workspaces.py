@@ -169,21 +169,6 @@ def test_native_creation_honors_reviewed_bubble_and_exact_diagnostics(tmp_path, 
     assert (tmp_path / "new.namelist.wps").is_file()
 
 
-def test_moving_recipe_uses_effective_inner_domain_and_native_units(tmp_path, known_products):
-    recipe = next(row for row in research.catalog_document()["configurations"]
-                  if row["method"] == "moving_nest" and row["tracker"]["field"] == "uh")
-    receipt = research.create_workspace(_args(tmp_path, recipe["id"], "--hardware-class=16", "--vram-gib=16"))
-    raw = tomllib.loads((tmp_path / "new.toml").read_text())
-    assert len(raw["domain"]) == 3
-    assert raw["relocation"]["grid_id"] == 3
-    assert raw["relocation"]["follow"]["field"] == "uh"
-    assert raw["relocation"]["follow"]["threshold"] == recipe["tracker"]["threshold"]
-    assert raw["relocation"]["follow"]["fallback_threshold"] == recipe["tracker"]["fallback_threshold"]
-    assert raw["relocation"]["track"] == {"path": "storm-track.csv"}
-    assert receipt["effective_profile"]["geometry"]["nest_ratios"] == [4, 3]
-    assert any("statics-corridor" in step for step in receipt["required_next_steps"])
-
-
 @pytest.mark.parametrize("recipe", ["rotation.follow", "tropical-track.follow"])
 def test_follow_disclosure_matches_native_placement_edges_and_plan_track(tmp_path, known_products, recipe):
     from dataclasses import replace
@@ -195,6 +180,18 @@ def test_follow_disclosure_matches_native_placement_edges_and_plan_track(tmp_pat
     config = tmp_path / "new.toml"
     original = config.read_bytes()
     exp = wizard.experiment_from_text(config.read_text(), source=str(config))
+    if recipe == "rotation.follow":
+        raw = tomllib.loads(config.read_text())
+        expected = next(row for row in research.catalog_document()["configurations"]
+                        if row["id"] == recipe)
+        assert len(raw["domain"]) == 3
+        assert raw["relocation"]["grid_id"] == 3
+        assert raw["relocation"]["follow"]["field"] == "uh"
+        for key in ("threshold", "fallback_threshold"):
+            assert raw["relocation"]["follow"][key] == expected["tracker"][key]
+        assert raw["relocation"]["track"] == {"path": "storm-track.csv"}
+        assert receipt["effective_profile"]["geometry"]["nest_ratios"] == [4, 3]
+        assert any("statics-corridor" in step for step in receipt["required_next_steps"])
     moving = receipt["geometry_review"]["moving_nest"]
     child = next(domain for domain in exp.domains if domain.grid_id == moving["grid_id"])
     parent = next(domain for domain in exp.domains if domain.grid_id == moving["parent_id"])

@@ -37,7 +37,12 @@ def ruc_mosaic_physics_inputs(cfg, static, *, landuse_attrs=None,
             result[keyword] = value
             continue
         landmask = np.asarray(static["LANDMASK"], dtype=np.float32)
-        ice = np.asarray(xice, dtype=np.float32)
+        # A relocation hands the transplanted land state over on the card;
+        # the mosaic inputs are host arrays (a rented box, 2026-10-21: the first
+        # follow move of a spawned HRRR-physics nest stopped on the
+        # implicit conversion).
+        ice = np.asarray(xice.get() if hasattr(xice, "__cuda_array_interface__")
+                         else xice, dtype=np.float32)
         ice = np.broadcast_to(ice, landmask.shape)
         if name == "LANDUSEF":
             from gpuwm.core.noah_mosaic import real_exe_landusef

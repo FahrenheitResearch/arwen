@@ -17,7 +17,8 @@ fn inward(value: f64, lower: bool) -> f32 {
 }
 
 fn cell(base: f32, donors: &[f32], index: usize, cells: usize, population: usize,
-        selected: usize, amplitude: f64, bound: f64, lower: f64, upper: f64) -> f32 {
+        selected: usize, limits: [f64; 4]) -> f32 {
+    let [amplitude, bound, lower, upper] = limits;
     if amplitude == 0.0 || bound == 0.0 || (base as f64) < lower || (base as f64) > upper { return base; }
     let mut mean = 0.0;
     for donor in 0..population { mean += donors[donor*cells + index] as f64; }
@@ -37,6 +38,10 @@ fn cell(base: f32, donors: &[f32], index: usize, cells: usize, population: usize
 
 /// Same operation and population order as recentered_physical in CUDA.
 /// Buffers must be non-overlapping and contain the declared element counts.
+/// # Safety
+/// `base` has `cells` initialized elements, `donors` has `cells * population`,
+/// and `selected` has `members`. Output has `cells * members` writable
+/// elements; it does not overlap any input and remains valid until return.
 #[no_mangle]
 pub unsafe extern "C" fn gpuwm_ensemble_recenter_f32(
     base: *const f32, donors: *const f32, selected: *const i32, out: *mut f32,
@@ -68,8 +73,7 @@ pub unsafe extern "C" fn gpuwm_ensemble_recenter_f32(
                     for (offset, target) in chunk.iter_mut().enumerate() {
                         let position = start+offset;
                         let index = position % cells;
-                        *target = cell(base[index], donors, index, cells, population,
-                            selected[position / cells] as usize, amplitude, bound, lower, upper);
+                        *target = cell(base[index], donors, index, cells, population, selected[position / cells] as usize, [amplitude, bound, lower, upper]);
                     }
                 });
             }
@@ -79,6 +83,9 @@ pub unsafe extern "C" fn gpuwm_ensemble_recenter_f32(
 }
 
 /// Native pressure-level coordinate expansion. Levels retain source order.
+/// # Safety
+/// `levels_hpa` addresses `nz` initialized f64 elements; output addresses
+/// `nz * plane` writable f32 elements without overlap for the duration of the call.
 #[no_mangle]
 pub unsafe extern "C" fn gpuwm_ensemble_pressure_levels_f32(
     levels_hpa: *const f64, out: *mut f32, nz: usize, plane: usize,
@@ -99,7 +106,8 @@ pub unsafe extern "C" fn gpuwm_ensemble_pressure_levels_f32(
 }
 
 fn humidity_value(t: f64, p: f64, value: f64, to_rh: bool,
-                  svp1: f64, svp2: f64, svpt0: f64, svp3: f64) -> f64 {
+                  svp: [f64; 4]) -> f64 {
+    let [svp1, svp2, svpt0, svp3] = svp;
     // WRF rh_to_mxrat1 uses local EPS=0.622. Keep the ordinary native
     // real initializer's Bolton operation order and its RH clipping/floor.
     let exponential = libm::exp(svp2 * (t - svpt0) / (t - svp3));
@@ -119,6 +127,9 @@ fn humidity_value(t: f64, p: f64, value: f64, to_rh: bool,
 
 /// Humidity representation conversion for donor alignment only.
 /// Base fields and their native initializer route are retained unchanged.
+/// # Safety
+/// Each input addresses `cells` initialized f32 elements. Output addresses
+/// `cells` writable elements, disjoint from every input until return.
 #[no_mangle]
 pub unsafe extern "C" fn gpuwm_ensemble_humidity_f32(
     temperature: *const f32, pressure: *const f32, input: *const f32,
@@ -138,7 +149,7 @@ pub unsafe extern "C" fn gpuwm_ensemble_humidity_f32(
         for (((&t, &p), &value), target) in temperature.iter().zip(pressure).zip(input).zip(output) {
             if !t.is_finite() || !p.is_finite() || !value.is_finite() || p <= 0.0
                 || (mode == 1 && ((value as f64) < minimum_specific || value >= 1.0)) { return ERR_NONFINITE; }
-            let converted = humidity_value(t as f64, p as f64, value as f64, mode == 1, svp1, svp2, svpt0, svp3);
+            let converted = humidity_value(t as f64, p as f64, value as f64, mode == 1, [svp1, svp2, svpt0, svp3]);
             *target = converted as f32;
             if !target.is_finite() { return ERR_NONFINITE; }
         }
@@ -147,6 +158,9 @@ pub unsafe extern "C" fn gpuwm_ensemble_humidity_f32(
 }
 
 /// Temporal interpolation at fixed physical coordinates, one final rounding.
+/// # Safety
+/// Both inputs address `cells` initialized f32 elements. Output addresses
+/// `cells` writable elements, disjoint from both inputs until return.
 #[no_mangle]
 pub unsafe extern "C" fn gpuwm_ensemble_time_blend_f32(
     left: *const f32, right: *const f32, out: *mut f32, cells: usize, weight: f64,
@@ -167,6 +181,10 @@ pub unsafe extern "C" fn gpuwm_ensemble_time_blend_f32(
 }
 
 /// WRF pressure staggering for a layer-major pressure coordinate.
+/// # Safety
+/// Input addresses `nz * ny * nx` initialized f32 elements. Output addresses
+/// `nz * (ny + 1) * nx` elements for axis 1 or `nz * ny * (nx + 1)` for
+/// axis 2; it is writable and disjoint from the input until return.
 #[no_mangle]
 pub unsafe extern "C" fn gpuwm_ensemble_pressure_stagger_f32(
     input: *const f32, out: *mut f32, nz: usize, ny: usize, nx: usize, axis: i32,
@@ -199,20 +217,17 @@ mod tests {
     use super::*;
     #[test]
     fn relative_humidity_keeps_native_portable_exp_and_association() {
-        let first = humidity_value(f32::from_bits(0x4339_0000) as f64,
-            f32::from_bits(0x461c_4000) as f64, f32::from_bits(0x42ab_6db7) as f64,
-            false, 0.6112, 17.67, 273.15, 29.65);
+        let first = humidity_value(f32::from_bits(0x4339_0000) as f64, f32::from_bits(0x461c_4000) as f64, f32::from_bits(0x42ab_6db7) as f64, false, [0.6112, 17.67, 273.15, 29.65]);
         assert_eq!(first.to_bits(), 0x3eb8_2c02_ed05_0cea);
-        let second = humidity_value(190.0, 10000.0, f32::from_bits(0x41de_db6e) as f64,
-            false, 0.6112, 17.67, 273.15, 29.65);
+        let second = humidity_value(190.0, 10000.0, f32::from_bits(0x41de_db6e) as f64, false, [0.6112, 17.67, 273.15, 29.65]);
         assert_eq!(second.to_bits(), 0x3eb2_a1d2_0be1_7f2f);
     }
     #[test]
     fn off_preserves_signed_zero_and_population_bounds() {
         let donors = [-9.0, 0.0, 8.0];
-        assert_eq!(cell(-0.0, &donors, 0, 1, 3, 0, 0.0, 1.0, -2.0, 2.0).to_bits(), (-0.0f32).to_bits());
+        assert_eq!(cell(-0.0, &donors, 0, 1, 3, 0, [0.0, 1.0, -2.0, 2.0]).to_bits(), (-0.0f32).to_bits());
         for member in 0..3 {
-            let result = cell(1.0, &donors, 0, 1, 3, member, 2.0, 0.1, -2.0, 2.0);
+            let result = cell(1.0, &donors, 0, 1, 3, member, [2.0, 0.1, -2.0, 2.0]);
             assert!((result as f64 - 1.0).abs() <= 0.1);
         }
     }
@@ -227,8 +242,8 @@ mod tests {
     fn moisture_anomalies_do_not_spend_an_existing_undershoot_allowance() {
         let donors = [0.0, 0.006];
         for member in 0..2 {
-            assert!(cell(0.0001, &donors, 0, 1, 2, member, 1.0, 0.005, 0.0, 0.1) >= 0.0);
-            assert_eq!(cell(-0.0001, &donors, 0, 1, 2, member, 1.0, 0.005, 0.0, 0.1), -0.0001);
+            assert!(cell(0.0001, &donors, 0, 1, 2, member, [1.0, 0.005, 0.0, 0.1]) >= 0.0);
+            assert_eq!(cell(-0.0001, &donors, 0, 1, 2, member, [1.0, 0.005, 0.0, 0.1]), -0.0001);
         }
     }
 }

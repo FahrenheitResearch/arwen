@@ -910,6 +910,12 @@ fn panel_axes(img: &mut RgbaImage, p: &Panel, title: &str, unit: &str, xs: &[f64
 }
 
 fn padded(lo: f64, hi: f64, min_span: f64) -> (f64, f64) {
+    // No valid samples: retain a labelled empty panel with a finite axis.
+    let (lo, hi) = if lo.is_finite() && hi.is_finite() && hi >= lo {
+        (lo, hi)
+    } else {
+        (0.0, min_span)
+    };
     let span = (hi - lo).max(min_span);
     let mid = 0.5 * (hi + lo);
     let lo = mid - span * 0.6;
@@ -1119,6 +1125,9 @@ fn run() -> Result<(), String> {
             s.valid.push(*valid);
             s.t2_f.push(c_to_f(t2_c));
             s.td2_f.push(c_to_f(dewpoint_c(c.psfc_pa, c.q2).min(t2_c)));
+            if !c.u10.is_finite() || !c.v10.is_finite() {
+                println!("POINTS MISSING\t{}\tf{:.0}\tU10/V10 unavailable; wind diagnostics show gaps or n/a", sampler.points[k].slug(), lead_h);
+            }
             s.u10_kt.push(c.u10 * KNOTS);
             s.v10_kt.push(c.v10 * KNOTS);
             s.wind_kt.push((c.u10 * c.u10 + c.v10 * c.v10).sqrt() * KNOTS);
@@ -1255,6 +1264,14 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn absent_samples_have_a_finite_empty_axis() {
+        let (lo, hi) = padded(f64::INFINITY, f64::NEG_INFINITY, 10.0);
+        assert!(lo.is_finite() && hi.is_finite() && hi > lo);
+        let (lo, hi) = padded(4.0, 4.0, 10.0);
+        assert!(lo < 4.0 && hi > 4.0);
+    }
 
     #[test]
     fn nice_steps_are_1_2_5() {

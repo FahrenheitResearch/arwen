@@ -42,7 +42,8 @@ fn events(path:&Path,tail:bool)->Result<Vec<Value>,String>{
     let begin=if offset>0{bytes.iter().position(|c|*c==b'\n').map(|n|n+1).unwrap_or(bytes.len())}else{0};
     let mut result=Vec::new();let mut sequence=0;
     for line in bytes[begin..].split_inclusive(|b|*b==b'\n'){
-        if !line.ends_with(b"\n"){break;}if line.len()>128*1024{return Err("Native progress event exceeds its byte limit".into());}
+        if !line.ends_with(b"\n"){break;}
+        if line.len()>128*1024{return Err("Native progress event exceeds its byte limit".into());}
         let value:Value=serde_json::from_slice(line).map_err(|_|"Native progress event is not JSON")?;
         let next=value["sequence"].as_u64().filter(|n|*n>sequence).ok_or("Native event sequence moved backward")?;
         if value["schema_version"]!="gpuwm.run-plan.event.v1"{return Err("Unknown native progress event schema".into());}sequence=next;result.push(value);
@@ -148,7 +149,7 @@ pub(crate) fn utc_ms(value:&str)->Result<i64,String>{
     let parsed=value.parse::<toml_edit::Datetime>().map_err(|_|"Invalid UTC timestamp in native metadata")?;
     let date=parsed.date.ok_or("Native timestamp has no date")?;let time=parsed.time.ok_or("Native timestamp has no time")?;
     let year=i64::from(date.year);
-    if year<1||year>9999||!(1..=12).contains(&date.month)||i64::from(date.day)>month_days(year,date.month)||date.day==0||time.second>59{return Err("Invalid calendar timestamp in native metadata".into());}
+    if !(1..=9999).contains(&year)||!(1..=12).contains(&date.month)||i64::from(date.day)>month_days(year,date.month)||date.day==0||time.second>59{return Err("Invalid calendar timestamp in native metadata".into());}
     let days=before_year(year)-before_year(1970)+(1..date.month).map(|m|month_days(year,m)).sum::<i64>()+i64::from(date.day)-1;
     let offset=match parsed.offset{Some(toml_edit::Offset::Custom{minutes})=>i64::from(minutes)*60_000,_=>0};
     Ok((days*86400+i64::from(time.hour)*3600+i64::from(time.minute)*60+i64::from(time.second))*1000+i64::from(time.nanosecond/1_000_000)-offset)
@@ -194,7 +195,8 @@ pub(crate) fn pipeline_progress(events:&[Value],result:&Value,started:i64,ended:
     }
     let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis().min(i64::MAX as u128) as i64;let now=ended.map_or(now,|end|end.min(now));
     let mut value=json!({"schema":"arwen.pipeline-progress.v1","stage":stage,"phase":phase,"state":Value::Null,"started_unix_ms":began,"updated_unix_ms":updated,"wall_seconds":finished.unwrap_or_else(||((now-began) as f64/1000.).max(0.))});
-    if acquisition.as_object().is_some_and(|v|!v.is_empty()){value["acquisition"]=acquisition;}if !preparation.is_null(){value["preparation"]=preparation;}value
+    if acquisition.as_object().is_some_and(|v|!v.is_empty()){value["acquisition"]=acquisition;}
+    if !preparation.is_null(){value["preparation"]=preparation;}value
 }
 fn table_number(table:&toml_edit::Table,key:&str)->Option<f64>{table.get(key).and_then(|v|v.as_float().or_else(||v.as_integer().map(|n|n as f64))).filter(|v|v.is_finite()&&*v>=0.)}
 fn planned(current:Option<f64>,interval:f64,total:f64)->Option<f64>{let now=current?;if interval<=0.||now>=total{return None;}let next=((now/interval+1e-9).floor()+1.)*interval;(next<=total+1e-7).then_some(next)}
@@ -341,7 +343,7 @@ mod tests{
         for hosted in [false,true]{let f=fixture(hosted);let value=read(&f.job,&f.command).unwrap();let p=&value["progress"];
             for key in ["outer_step","model_seconds","run_seconds","wall_seconds","speed_x","step_ms","valid_time","domains","checkpoint"]{assert_eq!(p[key],f.expected[key],"{key}");}
             assert_eq!(value["source_config_sha256"],digest(&fs::read(&f.config).unwrap()));assert_eq!(value["source_config_path"],json!(f.config));assert_eq!(value["phase"],"render");assert_eq!(value["manifest_ready"],true);
-            assert_eq!(Path::new(value["run_dir"].as_str().unwrap()).starts_with(&f.run),true);
+            assert!(Path::new(value["run_dir"].as_str().unwrap()).starts_with(&f.run));
             assert!(f.root.is_dir());
         }
     }

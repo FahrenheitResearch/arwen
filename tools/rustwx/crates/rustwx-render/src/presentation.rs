@@ -654,6 +654,10 @@ impl RenderPresentation {
 mod tests {
     use super::*;
 
+    fn filled_presentation(style: StaticPlotStyle) -> RenderPresentation {
+        RenderPresentation::for_mode_with_style(ProductVisualMode::FilledMeteorology, style)
+    }
+
     #[test]
     fn static_plot_style_parses_clean_atlas_aliases() {
         assert_eq!(
@@ -702,10 +706,7 @@ mod tests {
     #[test]
     fn clean_atlas_uses_broader_chrome_spacing() {
         let default = RenderPresentation::for_mode(ProductVisualMode::FilledMeteorology);
-        let clean = RenderPresentation::for_mode_with_style(
-            ProductVisualMode::FilledMeteorology,
-            StaticPlotStyle::CleanAtlas,
-        );
+        let clean = filled_presentation(StaticPlotStyle::CleanAtlas);
 
         assert_eq!(clean.plot_style, StaticPlotStyle::CleanAtlas);
         assert!(clean.layout.title_h > default.layout.title_h);
@@ -715,10 +716,7 @@ mod tests {
 
     #[test]
     fn clean_atlas_fast_uses_clean_atlas_presentation_and_dense_rendering() {
-        let clean = RenderPresentation::for_mode_with_style(
-            ProductVisualMode::FilledMeteorology,
-            StaticPlotStyle::CleanAtlasFast,
-        );
+        let clean = filled_presentation(StaticPlotStyle::CleanAtlasFast);
         let density = StaticPlotStyle::CleanAtlasFast.render_density(RenderDensity {
             fill: LevelDensity::default(),
             palette_multiplier: 1,
@@ -749,11 +747,8 @@ mod tests {
 
     #[test]
     fn clean_atlas_uses_sleek_basemap_line_widths() {
-        let style = RenderPresentation::for_mode_with_style(
-            ProductVisualMode::FilledMeteorology,
-            StaticPlotStyle::CleanAtlas,
-        )
-        .linework_style(LineworkRole::Coast, Rgba::BLACK, 1);
+        let style = filled_presentation(StaticPlotStyle::CleanAtlas)
+            .linework_style(LineworkRole::Coast, Rgba::BLACK, 1);
 
         assert!(style.visible);
         assert_eq!(style.width, 1);
@@ -761,10 +756,7 @@ mod tests {
 
     #[test]
     fn operational_style_uses_crisp_black_chrome_and_linework() {
-        let presentation = RenderPresentation::for_mode_with_style(
-            ProductVisualMode::FilledMeteorology,
-            StaticPlotStyle::OperationalFast,
-        );
+        let presentation = filled_presentation(StaticPlotStyle::OperationalFast);
         let coast = presentation.linework_style(LineworkRole::Coast, Rgba::BLACK, 1);
         let land = presentation.polygon_style(PolygonRole::Land, Rgba::new(250, 250, 246));
 
@@ -786,10 +778,7 @@ mod tests {
 
     #[test]
     fn operational_filled_political_linework_uses_wrf_hardened_clean_atlas_values() {
-        let presentation = RenderPresentation::for_mode_with_style(
-            ProductVisualMode::FilledMeteorology,
-            StaticPlotStyle::OperationalFast,
-        );
+        let presentation = filled_presentation(StaticPlotStyle::OperationalFast);
         let international =
             presentation.linework_style(LineworkRole::International, Rgba::BLACK, 1);
         let state = presentation.linework_style(LineworkRole::State, Rgba::BLACK, 1);
@@ -802,10 +791,7 @@ mod tests {
 
     #[test]
     fn operational_filled_maps_show_faint_county_linework() {
-        let presentation = RenderPresentation::for_mode_with_style(
-            ProductVisualMode::FilledMeteorology,
-            StaticPlotStyle::OperationalFast,
-        );
+        let presentation = filled_presentation(StaticPlotStyle::OperationalFast);
         let county = presentation.linework_style(LineworkRole::County, Rgba::BLACK, 1);
 
         assert!(county.visible);
@@ -860,11 +846,8 @@ mod tests {
 
     #[test]
     fn clean_atlas_lake_linework_is_neutral_not_blue() {
-        let style = RenderPresentation::for_mode_with_style(
-            ProductVisualMode::FilledMeteorology,
-            StaticPlotStyle::CleanAtlasFast,
-        )
-        .linework_style(LineworkRole::Lake, Rgba::BLACK, 1);
+        let style = filled_presentation(StaticPlotStyle::CleanAtlasFast)
+            .linework_style(LineworkRole::Lake, Rgba::BLACK, 1);
 
         assert!(style.visible);
         assert_eq!(style.color, Rgba::with_alpha(64, 70, 78, 125));

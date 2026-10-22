@@ -1,10 +1,9 @@
-# HRRR v4 source configuration on a trimmed 1797 x 1057 mass grid.
-# This removes one outer row on each side of the 1799 x 1059 HRRR grid.
+# HRRR v4 source configuration on HRRR's own 1799 x 1059 mass grid.
 # Stage WIF and the published native-grid static fields.
 # The GSD MYNN source version is explicit. Remaining fork rows are in docs/dev/mynn-gsd41.md.
 # This grid needs a larger card than the home nodes. Do not run it there.
 [experiment]
-name = "hrrr-v4-fork-trimmed-configuration"
+name = "hrrr-v4-fork-configuration"
 start_time = 2026-10-02T21:00:00
 run_seconds = 7200.0
 feedback = 1
@@ -12,6 +11,9 @@ smooth_option = 0
 blend_width = 5
 spec_bdy_width = 10
 restart_interval_s = 0.0
+# HRRR &domains smooth_cg_topo = .true. (hrrr_wrf.nl, hrrr_real.nl): the outer
+# spec_bdy_width + blend_width rows of terrain blend toward RAP's own terrain.
+smooth_cg_topo = true
 
 [projection]
 # HRRR's Lambert grid (hrrr_namelist.wps).
@@ -69,11 +71,22 @@ emdiv = 0.01
 smdiv = 0.1
 hypsometric_opt = 2
 h_sca_adv_order = 5
+# HRRR v_mom_adv_order = v_sca_adv_order = 5 (hrrr_wrf.nl); omitted they resolve to 3.
+v_mom_adv_order = 5
+v_sca_adv_order = 5
 moist_adv_opt = 1
 km_opt = 4
 diff_6th_opt = 2
 diff_6th_slopeopt = 1
 diff_6th_thresh = 0.05
+# The fork's sixth-order filter: moist and scalar rows take diff_6th_factor2
+# = 0.04 (hrrr_wrf.nl; fork solve_em.F rk_scalar_tend calls), not 0.12.
+diff_6th_form = "noaa_wrf39"
+diff_6th_factor2 = 0.04
+# The fork's advance_w upper-wind limiter (module_small_step_em.F:1703-1735).
+upper_wind_limiter_form = "noaa_wrf39"
+# hrrr_wrf.nl omits mix_full_fields (fork Registry default .false.).
+mix_full_fields = false
 moist_mix6_off = false
 w_damping = 0
 damp_opt = 3
@@ -92,8 +105,10 @@ terrain_clock = "pinned"
 use_adaptive_time_step = true
 step_to_output_time = true
 adaptation_domain = 1
-target_cfl = 1.4
-target_hcfl = 0.98
+# hrrr_wrf.nl target_cfl = 1.2; target_hcfl is the fork Registry default 0.84.
+# Both are inert while min = max = 20 s pins the step.
+target_cfl = 1.2
+target_hcfl = 0.84
 max_step_increase_pct = 5
 starting_time_step = 20
 starting_time_step_den = 0
@@ -108,6 +123,19 @@ relax_zone = 9
 moist = true
 moist_cq = true
 mp_physics = 28
+# hrrr_wrf.nl mp_zero_out = 2, mp_zero_out_thresh = 1.e-12; the fork always
+# applies it to the number arrays too (solve_em.F:4078-4141).
+mp_zero_out = 2
+mp_zero_out_thresh = 1.0e-12
+mp_zero_out_all = 1
+# hrrr_wrf.nl hailcast_opt = 1 (haildt = 60 s).
+hailcast_opt = 1
+# Operational GSD output with the fork's 60-minute maxima reset.
+nwp_diagnostics = 1
+gsd_diagnostics = 1
+reset_interval1 = 60
+prec_acc_dt = 60.0
+prec_acc_dt1 = 15.0
 # Three-dimensional aerosol initial and boundary values come from RAP.
 # (HRRR's metgrid constants_name QNWFA_QNIFA_Monthly_GFS); staged by
 # `gpuwm fetch-tables --wif`.
@@ -125,6 +153,19 @@ ruc_2m_diagnostic = "log_profile"
 rdlai2d = true
 usemonalb = true
 num_soil_layers = 9
+# hrrr_wrf.nl fractional_seaice = 1: RUC takes the ice column at XICE >= 0.02.
+fractional_seaice = 1
+# hrrr_wrf.nl seaice_threshold = 271.4: real.exe turns open water colder than this into sea ice.
+seaice_threshold = 271.4
+# fork Registry default (hrrr_wrf.nl omits it); inert while w_damping = 0
+w_crit_cfl = 2.0
+# Operational HRRR runs no ocean model (hrrr_wrf.nl sets no sf_ocean_physics;
+# fork Registry default 0). Pinned so a 48 h run does not take the multi-day
+# mixed-layer ocean default.
+sf_ocean_physics = 0
+# Sea ice is RUC's own ice column with the analysed ice fraction held, as in
+# operational HRRR; the zero-layer prognostic ice model stays off.
+seaice_prognostic = false
 # ra_lw_physics = ra_sw_physics = 4, WRF's own RRTMG (legacy engine), every 15 min.
 ra_physics = 4
 wrf_rrtmg_compatibility = "wrf-rrtmg-4-4-legacy-v1"
@@ -132,24 +173,59 @@ ra_rrtmg_variant = "rrtmg_legacy"
 rrtmg_cloud_optics_form = "noaa_wrf39"
 aer_opt = 3
 swint_opt = 1
+# HRRR-Smoke (hrrr_wrf.nl &chem): chem_opt = 18 is the one transported smoke
+# tracer, the smoke set (satellite fires with Freitas plume rise every
+# plumerisefire_frq = 60 min, bb_dcycle diurnal cycle, vertmix_onoff = 1,
+# wetscav_onoff = -1 washout). HRRR's own 3-D smoke is the start state
+# (hrrr-native-smoke) and RAP's smoke the edge values (rap-native-smoke), as
+# operational HRRR; fire emissions are NOAA RAVE (rave-3km), where HRRR v4's
+# own prep reads VIIRS/MODIS active fires (named divergence).
+# simple_dir_fdb = 1: the smoke's layer AOD joins the aer_opt = 3 shortwave,
+# MIN(3) per layer, so thick plumes dim the sun (aer_ra_feedback stays 0).
+# enh_vermix: stronger mixing over burning columns; flam_part = 0.75 of the
+# fire emission rides the plume; aer_drydep_opt = 111: the fork's smoke dry
+# deposition velocity. &dynamics chem_adv_opt = 2 (monotonic), chem_mix6_off.
+#
+# HRRR-Smoke is off by default in 2.9.4 (opt in with --smoke; it currently
+# costs ~11x per step); history is hourly (the 15-min history subset stream
+# is next release): on full CONUS, 8x RTX 5090, ordinary steps 3.50 s with
+# smoke vs 0.295 s without, radiation steps 5.0-5.4 s vs 1.85 s.  The keys
+# below are the smoke-off form (chemistry off, every other chem switch at its
+# default).  --smoke on gpuwm go, gpuwm domain --recipe, gpuwm standby and
+# gpuwm race restores the smoke-on set described above from ONE place,
+# gpuwm.smoke_execution.HRRR_SMOKE_SETTINGS:
+#   chem_sets = "smoke", chem_sources = "rave-3km,rap-native-smoke,hrrr-native-smoke",
+#   simple_dir_fdb = 1, biomass_burn_opt = 4, enh_vermix = true, flam_part = 0.75,
+#   aer_drydep_opt = 111, chem_adv_opt = 2, chem_mix6_off = true, vertmix_onoff = 1,
+#   wetscav_onoff = -1, plumerisefire_frq = 60, chem_conv_tr = 0
+chem_sets = ""
+chem_sources = ""
+simple_dir_fdb = 0
+smoke_off_reason = "HRRR-Smoke is off by default in 2.9.4 (opt in with --smoke; it currently costs ~11x per step); history is hourly (the 15-min history subset stream is next release)"
 bldt = 0.0
 
 [[domain]]
-# HRRR e_we = 1800, e_sn = 1060 (1799 x 1059 mass points); one row trimmed
-# on every side, same centre.
+# HRRR e_we = 1800, e_sn = 1060: 1799 x 1059 mass points, HRRR's own grid
+# point for point (the native static file pairs by identity, so its relaxation
+# zone sits on HRRR's own outer rows; the old one-row trim is retired).
 grid_id = 1
 parent_id = 0
 i_parent_start = 1
 j_parent_start = 1
 parent_grid_ratio = 1
 parent_time_step_ratio = 1
-nx = 1797
-ny = 1057
+nx = 1799
+ny = 1059
 time_step = 20
 dx = 3000.0
 spec_exp = 0.0
 specified = true
 nested = false
+# Hourly history in 2.9.4.  NOAA's HRRR writes every 15 min to f18, then
+# hourly (history_interval = 15, history_interval2 = 60,
+# history_interval_change = 1080); each full write blocks the step loop
+# 10-30 s on full CONUS (V61), so the 15-min history subset stream is a named
+# next-release item and this recipe writes hourly.
 history_interval_s = 3600.0
 radt = 15.0
 cu_physics = 0
@@ -157,6 +233,11 @@ diff_6th_factor = 0.12
 
 [fetch]
 source = "rap-native"
+initial_source = "hrrr-native"
+# Nominal cycle = analysis time. RAP f03..f51 of the previous cycle
+# covers a 48 h forecast. RAP-native remains selectable for either role.
+boundary_cycle_offset_hours = -3
+boundary_lead_offset_hours = 3
 cycle = "2026-10-02T21"
 hours = 3
 # Hourly boundaries, the route's own default: RAP posts every hour. A 3 h row

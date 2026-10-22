@@ -14,31 +14,19 @@ remains a transport-free numerical stage and never dispatches itself.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 
 import numpy as np
 
 from gpuwm.core.kernels import get_kernel
-from gpuwm.core.nssl2_driver_support import NSSL2DriverWorkspace
+from gpuwm.core.nssl2_driver_support import (
+    NSSL2DriverWorkspace, _step32, _validate_surface_fields,
+)
 from gpuwm.core.state import DTYPE
 
 _FIELD_COUNT = 16
 _THREADS = 128
 NSSL2_FUSED_TEMPERATURE_SCRATCH = "nssl2_fused_temperature"
 NSSL2_PRIMARY_ICE_TARGET_SCRATCH = "nssl2_primary_ice_target"
-
-
-def _step32(dt_s: float) -> np.float32:
-    try:
-        step = float(dt_s)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("dt_s must be a positive finite scalar") from exc
-    if not math.isfinite(step) or step <= 0.0:
-        raise ValueError("dt_s must be a positive finite scalar")
-    converted = np.float32(step)
-    if not np.isfinite(converted) or converted <= 0.0:
-        raise ValueError("dt_s must be representable as positive float32")
-    return converted
 
 
 def _validate_workspace(workspace: NSSL2DriverWorkspace) -> int:
@@ -57,18 +45,6 @@ def _validate_workspace(workspace: NSSL2DriverWorkspace) -> int:
     if not workspace.state.flags.c_contiguous:
         raise ValueError("workspace state must be C-contiguous")
     return int(np.prod(workspace.shape, dtype=np.int64))
-
-
-def _validate_environment(
-    shape: tuple[int, int, int], fields: dict[str, object]
-) -> None:
-    for name, value in fields.items():
-        if value.shape != shape:
-            raise ValueError(f"{name} must have shape {shape}, got {value.shape}")
-        if value.dtype != DTYPE:
-            raise TypeError(f"{name} must be float32, got {value.dtype}")
-        if not value.flags.c_contiguous:
-            raise ValueError(f"{name} must be C-contiguous")
 
 
 def _validate_vertical_velocity(
@@ -185,12 +161,12 @@ def launch_fused_gs(
         "primary_ice_target_m3": primary_ice_target_m3,
         "dz": dz,
     }
-    _validate_environment(workspace.shape, fields)
+    _validate_surface_fields(fields, workspace.shape)
     _validate_vertical_velocity(workspace.shape, vertical_velocity)
     if loaded_vapor is None:
         loaded_vapor = workspace.field("qv")
     else:
-        _validate_environment(workspace.shape, {"loaded_vapor": loaded_vapor})
+        _validate_surface_fields({"loaded_vapor": loaded_vapor}, workspace.shape)
     nz, ny, nx = workspace.shape
     step = _step32(dt_s)
 

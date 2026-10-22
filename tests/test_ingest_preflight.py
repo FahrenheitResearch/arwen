@@ -163,11 +163,8 @@ def synthetic_case(tmp_path, monkeypatch):
     _valid_grib(forcing)
     _vtable(tmp_path / "Vtable.ERA5")
     _orography(tmp_path / "invariant.nc")
-    for name in (
-            "topo_gmted2010_30s", "modis_landuse_20class_30s_with_lakes",
-            "soiltype_top_30s", "soiltype_bot_30s",
-            "greenfrac_fpar_modis", "lai_modis_10m", "albedo_modis",
-            "maxsnowalb_modis", "soiltemp_1deg"):
+    from gpuwm.geog_assets import WRF_DEFAULT_GEOG_DIRS
+    for name in WRF_DEFAULT_GEOG_DIRS:
         _write_geog_dataset(tmp_path / "GEOG" / name)
     data = replace(data, forcing=(forcing,), forcing_interval_s=5400.0)
     monkeypatch.setattr("gpuwm.ingest.preflight._grid_for",
@@ -954,3 +951,26 @@ def test_a_complete_forcing_inventory_is_not_gated():
         snapshots = ()
 
     assert _missing_required_inventory(_Catalog()) == []
+
+
+def test_child_catalog_retains_selected_lake_geography_with_shared_baseline(
+        synthetic_case):
+    from gpuwm.static.build import geog_selection_from_catalog
+    case = synthetic_case
+    start = case.exp.start_time
+    case.install((start, start + timedelta(minutes=90)))
+    selected = case.root / "selected-geog"
+    selected.mkdir()
+    for dataset in case.data.geog_root.iterdir():
+        (selected / dataset.name).symlink_to(dataset, target_is_directory=True)
+    lake = selected / "lake_depth"
+    lake.mkdir()
+    (lake / "index").write_text("selected supplemental lake dataset\n")
+    catalog = build_input_catalog(replace(case.data, geog_root=selected))
+    # Baseline hashes point into the donor; optional lake physics must retain
+    # the separately selected supplemental dataset in the declared root.
+    assert catalog.geog_root == selected
+    selection = geog_selection_from_catalog(catalog, 1)
+    assert selection.root == selected
+    assert (selection.root / "lake_depth" / "index").is_file()
+    assert not (case.data.geog_root / "lake_depth").exists()

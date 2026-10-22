@@ -5,8 +5,9 @@ Task #166 inherits a receipt -- transfers fully exposed at ~0.628 s/step,
 longer has.  The build targets what IS, so this file is the re-measurement on
 the box the build will be proven on, with the three named candidates (the
 `tile_hook` bind, the ring waits, `_advance_clock`'s readback) measured
-rather than suspected.  Instrument: `tilestream/overlap_attrib.py`; raw
-per-step JSON in `tilestream/evidence/overlap-attrib/`.
+rather than suspected. The instrument was `tilestream/overlap_attrib.py`
+(retired as unreached by wave 3); the raw per-step JSON remains in
+`tilestream/evidence/overlap-attrib/`.
 
 ## The venue, stated first because the ratios depend on it
 
@@ -79,7 +80,7 @@ h2d 687, ring_save 124.
 ## The three named candidates, measured
 
 * **`tile_hook` bind -- split verdict, and the split is the finding.**  The
-  LAZY streaming bind this harness (and run_case_hrrr) uses costs
+  LAZY streaming bind used by this harness and the former HRRR case runner costs
   0.005-0.014 ms/step: nothing.  The EAGER `gpuwm.ingest.lateral_bc
   .attach_lateral_boundaries`, which is what PRODUCTION `attach()` installs
   via `make_tile_hook`, costs 27-63 ms per bind on a real tile buffer with

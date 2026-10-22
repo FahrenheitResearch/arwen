@@ -192,30 +192,32 @@ bytes are outside the numerical oracle.
   `-ftz=true` to whatever the caller passed, at
   `cupy.cuda.compiler` line 585 (`options += ('-ftz=true',)`), after the
   caller's options, and NVRTC honours the last occurrence.
-  The inventory records 11 distinct caller-supplied option tuples across the
-  112 compile sites in the shipped package, each listed here with a site
+  The inventory records 12 distinct caller-supplied option tuples across the
+  130 compile sites in the shipped package, each listed here with a site
   that supplies it:
   - no caller options -- `gpuwm/core/attribute_tracking.py:99`
-    (xp.ElementwiseKernel), and 71 other site(s)
-  - `-std=c++17` -- `gpuwm/core/kernels/__init__.py:809` (cp.RawModule), and
-    12 other site(s)
+    (xp.ElementwiseKernel), and 85 other site(s)
+  - `-std=c++17` -- `gpuwm/core/acoustic_fusion.py:403` (cp.RawModule), and
+    13 other site(s)
   - `--std=c++17` -- `gpuwm/ensemble/batch_perturbation.py:51`
-    (xp.RawModule), and 8 other site(s)
+    (xp.RawModule), and 9 other site(s)
   - `-std=c++17` `--ftz=false` -- `gpuwm/core/chem_plumerise_cache.py:37`
     (compiler.compile_using_nvrtc), and 5 other site(s)
-  - `-fmad=false` -- `gpuwm/core/dycore.py:300` (cp.ElementwiseKernel), and
-    2 other site(s)
   - `--std=c++11` -- `gpuwm/hydro/module_history.py:72` (cp.RawModule), and
-    1 other site(s)
-  - `-std=c++17` `--fmad=false` -- `gpuwm/core/kernels/__init__.py:679`
+    2 other site(s)
+  - `-fmad=false` -- `gpuwm/core/dycore.py:302` (cp.ElementwiseKernel), and
+    2 other site(s)
+  - `-std=c++17` `--fmad=false` -- `gpuwm/core/kernels/__init__.py:685`
     (cp.RawModule), and 1 other site(s)
   - `-std=c++17` `--fmad=false` `--ftz=false` --
     `gpuwm/core/thompson_fork.py:109` (compiler.compile_using_nvrtc), and 1
     other site(s)
   - `--fmad=false` `-std=c++14` -- `gpuwm/da/letkf_device.py:363`
     (cp.RawModule)
+  - `--std=c++17` a target flag built from the device architecture at run
+    time -- `gpuwm/ocean/waves/model.py:73` (cp.RawModule)
   - `-std=c++17` `--ftz=false` `--fmad=false` --
-    `gpuwm/core/kernels/__init__.py:795` (compiler.compile_using_nvrtc)
+    `gpuwm/core/kernels/__init__.py:801` (compiler.compile_using_nvrtc)
   - `-std=c++17` `-fmad=false` -- `gpuwm/core/nest_interp.py:261`
     (cp.RawModule)
   `R5` and `R1` are kernels inside ONE compiled object -- same device, same

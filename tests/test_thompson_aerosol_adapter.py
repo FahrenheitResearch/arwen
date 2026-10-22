@@ -4749,3 +4749,23 @@ def test_activation_bin_edge_policy_is_documented_not_absorbed():
         offset = np.abs(((t - f32(243.15)) / f32(10.0)) % f32(1.0) - f32(0.5))
         assert float(offset.min()) > 1.0e-3, (
             f"{name} has a level within 0.01 K of an activ_ncloud bin edge")
+
+
+@requires_gpu
+def test_thompson_init_preserves_supplied_zero_aerosol_profiles():
+    """A source zero must survive initialization and repeated initialization."""
+    import cupy as cp
+    _require_device()
+    from gpuwm.core.microphysics_aerosol import thompson_aerosol_init_fill
+    state, cfg = _real_domain_state(cp, aerosol_present=False)
+    state._external_scalar_boundary_fields = ("qv", "nwfa", "nifa")
+    for _ in range(2):
+        assert thompson_aerosol_init_fill(state, cfg) == {"ccn": False, "in": False}
+        assert cp.count_nonzero(state.nwfa).item() == 0
+        assert cp.count_nonzero(state.nifa).item() == 0
+    # A dust-only source supplies IN; the missing CCN still gets its declared
+    # fallback rather than pretending a source supplied both number fields.
+    state._external_scalar_boundary_fields = ("qv", "nifa")
+    assert thompson_aerosol_init_fill(state, cfg) == {"ccn": True, "in": False}
+    assert cp.count_nonzero(state.nwfa).item() > 0
+    assert cp.count_nonzero(state.nifa).item() == 0

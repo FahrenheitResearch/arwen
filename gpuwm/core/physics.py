@@ -957,15 +957,15 @@ _SASE_POSITIVE_PRODUCER_INPUTS = frozenset({"ust", "dz1", "p1", "t1"})
 
 #: The same question asked of YSU's producers, answered from YSU's own
 #: divisions rather than by analogy.  ``ust`` cubes into the Prandtl
-#: shape factor's denominator (kernels/ysu.cu:380) and collapses the
-#: velocity scale that divides the countergradient factor (ysu.cu:181,
-#: 185); ``psih`` is the bare divisor of the stability parameter
-#: (ysu.cu:166); ``znt`` divides the over-water critical Richardson
-#: number (ysu.cu:247); ``dz1`` sets the first mass level, which the
-#: entrainment depth divides by (ysu.cu:370); and ``p1``/``dp1`` are the
+#: shape factor's denominator (kernels/ysu_default.cu:535) and collapses the
+#: velocity scale that divides the countergradient factor (ysu_default.cu:314,
+#: 320); ``psih`` is the bare divisor of the stability parameter
+#: (ysu_default.cu:300); ``znt`` divides the over-water critical Richardson
+#: number (ysu_default.cu:402); ``dz1`` sets the first mass level, which the
+#: entrainment depth divides by (ysu_default.cu:507); and ``p1``/``dp1`` are the
 #: surface density and the first layer's mass, the latter being the
 #: divisor of the surface heat source that begins the heat solve
-#: (ysu.cu:480).  Each is a degenerate INPUT at zero, not a scheme fault.
+#: (ysu_default.cu:641).  Each is a degenerate INPUT at zero, not a scheme fault.
 _YSU_POSITIVE_PRODUCER_INPUTS = frozenset(
     {"ust", "znt", "psih", "dz1", "p1", "dp1"})
 
@@ -1095,7 +1095,7 @@ def validate_ysu_tendencies(
     rather than from theory.  A user on 1.5.2 lost an ERA5 run on its
     FIRST step to ``non-finite dtheta``, and that name is a false lead:
     the kernel writes ``dtheta`` from one solve whose only surface term
-    is HFX (kernels/ysu.cu:480), so a non-finite HFX handed IN is
+    is HFX (kernels/ysu_default.cu:641), so a non-finite HFX handed IN is
     reported as a dtheta produced OUT.  1.5 million fuzzed columns of
     finite, extreme, degenerate input never produce a non-finite rate at
     all, so when one appears an input is overwhelmingly the cause.  The
@@ -1110,12 +1110,12 @@ def validate_ysu_tendencies(
     branches, poisoning each of the 22 fixture-supplied inputs in turn:
 
     - STABLE (``br > 0``): the sweep's result holds exactly.  ``wstar3``
-      is a literal zero (kernels/ysu.cu:177), so the surface buoyancy
-      flux reaches nothing but ``rhs[0]`` (:480), and ``hfx`` is the
+      is a literal zero (kernels/ysu_default.cu:311), so the surface buoyancy
+      flux reaches nothing but ``rhs[0]`` (:641), and ``hfx`` is the
       UNIQUE input whose corruption surfaces as ``dtheta`` and nothing
       else.  That is the shape the field report described.
     - UNSTABLE (``br <= 0``): NO input has that signature.  The buoyancy
-      flux sets the convective velocity scale (:173), which sets the
+      flux sets the convective velocity scale (:307), which sets the
       mixed-layer diffusivity for momentum and moisture as well as heat,
       so a non-finite ``hfx`` poisons the whole column and the refusal
       names ``du``, first in launcher order.
@@ -1756,6 +1756,107 @@ def _physics_exner(pressure, *, out=None):
         out[...] = result
         return out
     return result
+#: phy_prep's mass-point chain in one launch per call (see
+#: _prepare_atmosphere_fused).  Each statement is one CuPy ufunc of the
+#: unfused chain, in its order: the same float32 operation on the same
+#: operands, written as the round-to-nearest intrinsic so the compiler can
+#: contract nothing, and compiled by CuPy itself, so it carries the same
+#: subnormal flushing as the ufuncs it replaces.
+_PHY_PREP_MASS_BODY = """
+temperature = __fmul_rn(theta, exner);
+float q = 0.0f;
+{species}
+qtot = q;
+float onep = __fadd_rn(1.0f, q);
+float c = __fmul_rn(c1h, mu);
+c = __fadd_rn(c, c2h);
+layer = __fmul_rn(__fmul_rn(onep, c), dnw);
+rho = __fdiv_rn(__fadd_rn(1.0f, qv_rho), alt);
+"""
+
+#: phy_prep's hydrostatic pressures, one thread per column: p_hyd_w(kte) =
+#: p_top, the downward subtraction in the Fortran loop order, then the
+#: interface mean -- the per-level CuPy subtract loop of the unfused chain.
+_PHY_PREP_COLUMN_BODY = """
+const long long ncol = (long long)ny * nx;
+pint[(long long)nz * ncol + i] = ptop;
+for (int k = nz - 1; k >= 0; --k)
+    pint[(long long)k * ncol + i] = __fsub_rn(pint[(long long)(k + 1) * ncol + i],
+                                              layer[(long long)k * ncol + i]);
+for (int k = 0; k < nz; ++k)
+    pres[(long long)k * ncol + i] = __fmul_rn(
+        0.5f, __fadd_rn(pint[(long long)k * ncol + i],
+                        pint[(long long)(k + 1) * ncol + i]));
+"""
+
+_PHY_PREP_KERNELS = {}
+
+
+def _device_float32(*arrays):
+    """True when every array is a float32 array of the device module this
+    file runs on.  The CPU shard rebinds this module's ``cp`` to NumPy,
+    which has no ElementwiseKernel (and whose arrays a cached CuPy kernel
+    refuses): the fused launches then decline and the unfused statements
+    run on whatever arrays they were given, as before the fusion."""
+    if getattr(cp, "ElementwiseKernel", None) is None:
+        return False
+    return all(isinstance(a, cp.ndarray) and a.dtype == np.float32
+               for a in arrays)
+
+
+def _phy_prep_mass_kernel(species):
+    kernel = _PHY_PREP_KERNELS.get(species)
+    if kernel is None:
+        names = ", ".join("float32 sp_%s" % name for name in species)
+        adds = "\n".join("q = __fadd_rn(q, sp_%s);" % name for name in species)
+        kernel = cp.ElementwiseKernel(
+            "float32 theta, float32 exner"
+            + (", " + names if names else "")
+            + ", float32 mu, float32 c1h, float32 c2h, "
+              "float32 dnw, float32 qv_rho, float32 alt",
+            "float32 temperature, float32 qtot, float32 layer, float32 rho",
+            _PHY_PREP_MASS_BODY.replace("{species}", adds),
+            "gpuwm_phy_prep_mass_" + ("_".join(species) or "dry"))
+        _PHY_PREP_KERNELS[species] = kernel
+    return kernel
+
+
+def _phy_prep_column_kernel():
+    kernel = _PHY_PREP_KERNELS.get("column")
+    if kernel is None:
+        kernel = cp.ElementwiseKernel(
+            "raw float32 layer, float32 ptop, int32 nz, int32 ny, int32 nx",
+            "raw float32 pint, raw float32 pres",
+            _PHY_PREP_COLUMN_BODY, "gpuwm_phy_prep_column")
+        _PHY_PREP_KERNELS["column"] = kernel
+    return kernel
+
+
+def _compose_three(out, pbl, radiation, cumulus):
+    """``out[...] = pbl; out += radiation; out += cumulus`` -- the composed
+    RK target's held PBL + radiation + cumulus sum, in that order.
+
+    float32 device operands take one launch: the two adds of the unfused
+    statements as round-to-nearest intrinsics in the same order, compiled by
+    CuPy like the ufuncs they replace (the copy is exact).  ``out`` may be
+    ``pbl`` itself (the bldt = 0 composition reuses the PBL stack); each
+    element is read before it is written.  Anything else runs the three
+    statements unchanged."""
+    arrays = (out, pbl, radiation, cumulus)
+    if (_device_float32(*arrays)
+            and all(a.shape == out.shape for a in arrays)):
+        kernel = _PHY_PREP_KERNELS.get("compose")
+        if kernel is None:
+            kernel = cp.ElementwiseKernel(
+                "float32 a, float32 b, float32 c", "float32 out",
+                "out = __fadd_rn(__fadd_rn(a, b), c);",
+                "gpuwm_compose_pbl_radiation_cumulus")
+            _PHY_PREP_KERNELS["compose"] = kernel
+        kernel(pbl, radiation, cumulus, out)
+        return
+    out[...] = pbl
+    out += radiation
+    out += cumulus
 
 
 def _prepare_atmosphere(state: DomainState) -> dict[str, cp.ndarray]:
@@ -1773,6 +1874,9 @@ def _prepare_atmosphere(state: DomainState) -> dict[str, cp.ndarray]:
         # calls) above and below this seam is shared, not duplicated.
         return supplied()
     nz, ny, nx = state.p.shape
+    fused = _prepare_atmosphere_fused(state)
+    if fused is not None:
+        return fused
     theta = cp.ascontiguousarray(state.total_theta())
     pressure = state.p
     exner = cp.ascontiguousarray(_physics_exner(pressure))
@@ -1842,6 +1946,88 @@ def _prepare_atmosphere(state: DomainState) -> dict[str, cp.ndarray]:
         rho = cp.ascontiguousarray((DTYPE(1.0) / state.alt) * (DTYPE(1.0) + qv))
     else:
         rho = cp.ascontiguousarray((DTYPE(1.0) + qv) / state.alt)
+    return {"theta": theta, "temperature": temperature, "pressure": pressure,
+            "p_interface": p_interface, "exner": exner, "u": u, "v": v,
+            "z_interface": z_interface, "dz": dz, "qv": qv, "qc": qc,
+            "qi": qi, "qs": qs, "rho": rho}
+
+
+def _prepare_atmosphere_fused(state: DomainState):
+    """:func:`_prepare_atmosphere` with its mass-point chain in one launch
+    and its hydrostatic-pressure loop in one column launch, or ``None``
+    when an input is not a float32 device array (the unfused chain then
+    runs unchanged).
+
+    Same fields, same words: every fused statement is one ufunc of the
+    unfused chain on the same float32 operands in the same order
+    (_PHY_PREP_MASS_BODY, _PHY_PREP_COLUMN_BODY), and the Exner function,
+    the face winds and the interface heights stay the CuPy operations they
+    were.  Total theta and total mu come from the state's own
+    ``total_theta()`` / ``total_mu()``, exactly as the unfused chain reads
+    them, so a state that defines them differently (the compiled-WRF
+    phy_prep oracle's state carries WRF's T + 300 and no thb/thp) gets the
+    same fused words as the unfused chain would give it.  The two launches
+    replace 15 full-field ufuncs, the qtot fill, and the 1 + nz launches
+    of the pressure loop."""
+    if np.dtype(DTYPE) != np.float32 or getattr(cp, "ElementwiseKernel", None) is None:
+        return None
+    if WRF_EXACT:
+        # Strict numerics rounds phy_prep differently (_physics_exner's
+        # scalar WRF power, the reciprocal-first rho); the fused body is the
+        # default arithmetic only, so strict runs keep the unfused chain.
+        return None
+    nz, ny, nx = state.p.shape
+    species = tuple(name for name in ("qv", "qc", "qr", "qi", "qs", "qg", "qh")
+                    if getattr(state, name, None) is not None)
+    if not _device_float32(state.p, state.c1h, state.c2h, state.dnw,
+                           state.alt, *(getattr(state, n) for n in species)):
+        return None
+    theta = cp.ascontiguousarray(state.total_theta())
+    mu = state.total_mu()
+    if (not _device_float32(theta, mu) or theta.shape != (nz, ny, nx)
+            or mu.shape != (ny, nx)):
+        return None
+    pressure_eos = state.p
+    exner = cp.ascontiguousarray(_physics_exner(pressure_eos))
+    u = cp.ascontiguousarray(0.5 * (state.u[:, :, :-1]
+                                    + state.u[:, :, 1:]))
+    v = cp.ascontiguousarray(0.5 * (state.v[:, :-1, :]
+                                    + state.v[:, 1:, :]))
+    phb = state.phb
+    phb3 = phb[:, None, None] if phb.ndim == 1 else phb
+    z_interface = cp.ascontiguousarray((phb3 + state.php) / DTYPE(c.G))
+    dz = cp.ascontiguousarray(z_interface[1:] - z_interface[:-1])
+
+    qtot = state.scratch((nz, ny, nx), "physics_qtot")
+    qv = (state.qv if state.qv is not None
+          else state.scratch((nz, ny, nx), "physics_dry_qv"))
+    temperature = cp.empty((nz, ny, nx), dtype=DTYPE)
+    layer = cp.empty((nz, ny, nx), dtype=DTYPE)
+    rho = cp.empty((nz, ny, nx), dtype=DTYPE)
+    _phy_prep_mass_kernel(species)(
+        theta, exner, *(getattr(state, n) for n in species),
+        mu, state.c1h[:, None, None], state.c2h[:, None, None],
+        state.dnw[:, None, None], qv, state.alt,
+        temperature, qtot, layer, rho)
+    p_interface = cp.empty((nz + 1, ny, nx), dtype=DTYPE)
+    pressure = cp.empty((nz, ny, nx), dtype=DTYPE)
+    _phy_prep_column_kernel()(
+        layer, np.float32(state.p_top), np.int32(nz), np.int32(ny),
+        np.int32(nx), p_interface, pressure, size=ny * nx)
+    del layer
+
+    qc = (state.qc if state.qc is not None
+          else state.scratch((nz, ny, nx), "physics_dry_qc"))
+    if getattr(state, "qi", None) is not None:
+        qi = state.qi
+    else:
+        qi = state.scratch((nz, ny, nx), "physics_qi")
+        qi[...] = 0.0
+    if getattr(state, "qs", None) is not None:
+        qs = state.qs
+    else:
+        qs = state.scratch((nz, ny, nx), "physics_qs")
+        qs[...] = 0.0
     return {"theta": theta, "temperature": temperature, "pressure": pressure,
             "p_interface": p_interface, "exner": exner, "u": u, "v": v,
             "z_interface": z_interface, "dz": dz, "qv": qv, "qc": qc,
@@ -2031,7 +2217,7 @@ class PhysicsDriver:
         # state starts at zero and remains held. REFD_MAX likewise retains
         # its initial state when the NWP diagnostic producer is disabled.
         self.fields["sstsk"] = cp.zeros(state.p.shape[1:], dtype=DTYPE)
-        if cfg.nwp_diagnostics == 0:
+        if cfg.nwp_diagnostics == 0 and not cfg.gsd_diagnostics:
             self.fields["refd_max"] = cp.zeros(state.p.shape[1:], dtype=DTYPE)
         if cfg.bl_pbl_physics:
             self.pbl_history_rates = pbl_history_rates(cfg)
@@ -2084,6 +2270,10 @@ class PhysicsDriver:
         #: initialize_physics fills it right after construction; a
         #: hand-built driver keeps the empty dict.
         self.surface_classification: dict = {}
+        #: The lake-state analysis receipt (lane/cap-lake): which source
+        #: initialized the lake columns.  initialize_physics fills it; a
+        #: hand-built driver keeps None.
+        self.lake_initialization_receipt = None
         if int(cfg.sf_surface_physics) == 4:
             if noahmp_params is None:
                 raise ValueError(
@@ -2115,11 +2305,21 @@ class PhysicsDriver:
                 "RUC parameters cannot be attached to "
                 f"sf_surface_physics={cfg.sf_surface_physics}")
         self.radiation_callable = radiation
+        from gpuwm.eclipse_windows import EclipseRadiation
+        self.eclipse = EclipseRadiation.for_run(cfg, radiation)
         self.cumulus_callable = cumulus
         self.ra_physics = cfg.ra_physics
         self.ra_lw_physics, self.ra_sw_physics = radiation_scheme_ids(cfg)
         self.radiation_active = bool(
             self.ra_lw_physics or self.ra_sw_physics)
+        # History output is a consumer of native direct/diffuse radiation.
+        # Allocate for every SW scheme. Schemes without a split leave it absent
+        # from history and the solar door records an Erbs decomposition.
+        if self.ra_sw_physics:
+            for name in ("swddir", "swddif", "swddni"):
+                if name not in self.fields:
+                    self.fields[name] = cp.zeros(
+                        state.p.shape[1:], dtype=DTYPE)
         self.cu_physics = cfg.cu_physics
         self.mp_physics = cfg.mp_physics
         # SR validator envelope, granted by shared-expression family
@@ -2510,6 +2710,9 @@ class PhysicsDriver:
         else:
             self.nssl2_binding = None
 
+        if self.eclipse is not None:
+            self.eclipse.bind(self)
+
     def accept_microphysics(self, result: MicrophysicsDiagnostics, *,
                             dt: float | None = None) -> None:
         """Capture one post-RK microphysics result for the next surface call.
@@ -2795,6 +2998,18 @@ class PhysicsDriver:
                 self._swdd_from_scheme = True
             else:
                 self._swdd_from_scheme = False
+        if self._swdd_from_scheme and result.coszen is not None:
+            # Native horizontal beam / the producer's own zenith cosine.
+            # Keep the actual scheme split; never call a decomposition native.
+            cosine = _checked_array(result.coszen, (ny, nx), "radiation COSZEN")
+            if "swddni" not in self.fields:
+                self.fields["swddni"] = cp.zeros((ny, nx), dtype=DTYPE)
+            cp.divide(self.fields["swddir"], cp.maximum(cosine, 1.0e-6),
+                      out=self.fields["swddni"])
+            # An elementwise masked store: boolean-mask assignment counts the
+            # mask on the host (a D2H read every radiation step, refused
+            # inside a graph capture).
+            cp.copyto(self.fields["swddni"], 0.0, where=cosine <= 0.0)
         if "gsw" in self.fields:
             if result.gsw is None:
                 raise ValueError(
@@ -2904,6 +3119,11 @@ class PhysicsDriver:
         # mask).  None on every domain that does not turn slope_rad on.
         if self.topo_shortwave is not None:
             self.topo_shortwave.after_radiation(result, state, cfg)
+
+        eclipse = getattr(self, "eclipse", None)
+        if eclipse is not None:
+            eclipse.capture(self)
+            eclipse.apply(self, state, cfg)
 
     def _run_cumulus(self, atmosphere: Mapping[str, cp.ndarray],
                       state: DomainState, cfg: RunConfig) -> None:
@@ -3431,9 +3651,9 @@ class PhysicsDriver:
                 getattr(target, name).__iadd__(contribution)
         for name in ("rtheta", "rqv", "rqc"):
             value = getattr(target, name)
-            value[...] = getattr(pbl, name)
-            value += getattr(self.radiation_tendencies, name)
-            value += getattr(self.cumulus_tendencies, name)
+            _compose_three(value, getattr(pbl, name),
+                           getattr(self.radiation_tendencies, name),
+                           getattr(self.cumulus_tendencies, name))
         for name in ("rqr", "rqi", "rqs"):
             sources = [getattr(component, name) for component in (
                 pbl, self.radiation_tendencies, self.cumulus_tendencies)
@@ -3585,6 +3805,7 @@ class PhysicsDriver:
                 pattern_spp_pbl=(self.spp_patterns["pbl"][0]
                                  if cfg.spp_pbl else None),
                 variant=cfg.mynn_sfclay_variant,
+                ocean_z0=(self.ocean.z0 if getattr(self, "ocean", None) is not None else None),
             )
             if fractional_ruc:
                 # module_surface_driver.F:5441-5506.  Force the second call
@@ -3623,6 +3844,7 @@ class PhysicsDriver:
                     pattern_spp_pbl=(self.spp_patterns["pbl"][0]
                                      if cfg.spp_pbl else None),
                     variant=cfg.mynn_sfclay_variant,
+                    ocean_z0=(self.ocean.z0 if getattr(self, "ocean", None) is not None else None),
                 )
 
                 # :5508-5554.  These diagnostics become grid-cell values
@@ -3746,7 +3968,8 @@ class PhysicsDriver:
         outputs.update({name: f[name] for name in MYJ_SFCLAY_OUTPUTS
                         if name != "rib"})
         launch_myj_sfclay(columns, surface, state, outputs,
-                          itimestep=itimestep)
+                          itimestep=itimestep,
+                          ocean_z0=self.ocean.z0 if getattr(self, "ocean", None) is not None else None)
         # module_surface_driver.F:2226-2231, the driver's own post-call
         # block.  Without it USTM/WSPD/CH keep the previous step's values
         # and the LES TKE path reads a stale friction velocity.
@@ -3948,6 +4171,7 @@ class PhysicsDriver:
         f["el_myj"][...] = out["el_myj"]
         self.pbl_tendencies = self._couple_pbl_slot(
             cfg, out, atmosphere=atmosphere)
+        self._couple_scalar_pblmix(cfg, atmosphere)
         pbl_components = (
             _composed_optional_tendency_components(cfg)
             if physics_reuses_pbl_composition(cfg)
@@ -4025,8 +4249,14 @@ class PhysicsDriver:
         """
         from gpuwm.core.noah import launch_noah_seaice
 
+        ice_fields = self.fields
+        if "ice_volume" in self.fields:
+            # Only the owned ocean columns leave the prescribed solver;
+            # lake ice keeps its original owner on the same domain.
+            ice_fields = dict(self.fields, xice=cp.where(
+                self.fields["ice_ocean_mask"] > 0, DTYPE(0), self.fields["xice"]))
         first = not getattr(self, "_noah_seaice_checked", False)
-        launch_noah_seaice(self.fields, self.noah_seaice_dt, frpcpn=frpcpn,
+        launch_noah_seaice(ice_fields, self.noah_seaice_dt, frpcpn=frpcpn,
                            xice_threshold=xice_threshold,
                            albedo_default=self.noah_seaice_albedo_default,
                            check_snow_density=first)
@@ -4411,9 +4641,7 @@ class PhysicsDriver:
         # every other scheme in the PBL slot.
         self.pbl_tendencies = self._couple_pbl_slot(
             cfg, out, atmosphere=atmosphere)
-        if cfg.scalar_pblmix == 1:
-            self.pbl_tendencies.extra_scalars = self._ysu_scalar_pblmix(
-                cfg, atmosphere, out["exch_h"])
+        self._couple_scalar_pblmix(cfg, atmosphere)
         pbl_components = (
             _composed_optional_tendency_components(cfg)
             if physics_reuses_pbl_composition(cfg)
@@ -4429,10 +4657,33 @@ class PhysicsDriver:
         else:
             self.last_ysu = None
 
-    def _ysu_scalar_pblmix(self, cfg: RunConfig,
-                           atmosphere: Mapping[str, cp.ndarray],
-                           exch_h: cp.ndarray) -> dict[str, cp.ndarray]:
-        """WRF ``scalar_pblmix`` after YSU: ``diff4d`` on YSU's EXCH_H.
+    def _couple_scalar_pblmix(self, cfg: RunConfig,
+                              atmosphere: Mapping[str, cp.ndarray]) -> None:
+        """WRF's post-PBL ``diff4d`` for the scheme just run, if it mixes here.
+
+        One owner for every PBL scheme the registry row
+        ``scalar_diffusion_exchange`` declares: the row names the producer's
+        EXCH_H field, the declared no-ops (no PBL, SASE) and the one scheme
+        whose wrapper runs the solve itself (MYNN).  WRF's diff4d replaces
+        the scalar tendencies a scheme wrote for the same species (UW's ice
+        number), so its rates overwrite those keys.  Called by each scheme
+        arm after its own coupling and before ``materialize``.
+        """
+        from gpuwm.config import scalar_pblmix_exchange
+        if cfg.scalar_pblmix != 1:
+            return
+        row = scalar_pblmix_exchange(cfg)
+        if row is None or not row["writes_exch_h"] or row["mixes_in_scheme"]:
+            return
+        mixed = self._scalar_pblmix_rates(cfg, atmosphere, self.fields[row["field"]])
+        extra = dict(getattr(self.pbl_tendencies, "extra_scalars", None) or {})
+        extra.update(mixed)
+        self.pbl_tendencies.extra_scalars = extra
+
+    def _scalar_pblmix_rates(self, cfg: RunConfig,
+                             atmosphere: Mapping[str, cp.ndarray],
+                             exch_h: cp.ndarray) -> dict[str, cp.ndarray]:
+        """WRF ``scalar_pblmix``: ``diff4d`` on the PBL scheme's EXCH_H.
 
         module_pbl_driver.F:2251-2259 (v4.6.1) runs the same local scalar
         diffusion after any PBL scheme, on that scheme's heat diffusivity;
@@ -4459,7 +4710,7 @@ class PhysicsDriver:
             scalar = getattr(self.state, name, None)
             if scalar is None:
                 raise ValueError(
-                    f"scalar_pblmix=1 under YSU needs the mp=28 number "
+                    f"scalar_pblmix=1 needs the mp=28 number "
                     f"field {name}, which this state does not carry")
             source = scalar.reshape(nz, ncol)
             rate = cp.empty((nz, ny, nx), dtype=DTYPE)
@@ -4760,6 +5011,7 @@ class PhysicsDriver:
         self.state.e_sgs[...] = out["tke"]
         self.pbl_tendencies = self._couple_pbl_slot(
             cfg, out, atmosphere=atmosphere)
+        self._couple_scalar_pblmix(cfg, atmosphere)
         pbl_components = (
             _composed_optional_tendency_components(cfg)
             if physics_reuses_pbl_composition(cfg)
@@ -4911,6 +5163,7 @@ class PhysicsDriver:
             if cfg.specified or cfg.nested:
                 _specified_mass_mask(coupled)
             self.pbl_tendencies.extra_scalars = {ice_name: coupled}
+        self._couple_scalar_pblmix(cfg, atmosphere)
         pbl_components = (
             _composed_optional_tendency_components(cfg)
             if physics_reuses_pbl_composition(cfg)
@@ -5572,8 +5825,13 @@ class PhysicsDriver:
         forcing.update(uair=cp.ascontiguousarray(atmosphere["u"][0]),
                        vair=cp.ascontiguousarray(atmosphere["v"][0]),
                        f=self.state.f)
+        if "ice_volume" in self.fields:
+            forcing["tsk"] = self.fields["sst"]
         launch_ocean_step(forcing, dt=self.bldt_seconds, gamma=cfg.oml_gamma,
-                          relaxation_time=cfg.oml_relaxation_time)
+                          relaxation_time=cfg.oml_relaxation_time, dx=cfg.dx, dy=cfg.dy,
+                          ocean_timestep_minutes=cfg.omdt)
+        from gpuwm.ocean.seaice import reconcile_ocean
+        reconcile_ocean(self.fields, cfg)
 
     def bind_spp_patterns(self, patterns: Mapping[str, cp.ndarray]) -> None:
         """Borrow one member's patterns after its stochastic timestep update.
@@ -5671,6 +5929,14 @@ class PhysicsDriver:
                 itimestep, self.stepra, self.radt_minutes)
         else:
             radiation_due = bool(override)
+        if getattr(self, "force_radiation_next_step", False):
+            # A driver rebuilt mid-run (a spawn or a move) has no radiation
+            # call behind it: gpuwm.runtime.rebuild_child_driver_from_land_state.
+            radiation_due = True
+            self.force_radiation_next_step = False
+        eclipse = getattr(self, "eclipse", None)
+        if eclipse is not None and not eclipse.ready():
+            radiation_due = True  # Cold cache needs its first undimmed producer.
         if radiation_due:
             if (self.cam_ozone is not None
                     and self.cam_ozone.mode == "root-climatology"):
@@ -5706,6 +5972,9 @@ class PhysicsDriver:
             self.swint.between_calls(
                 self.fields, elapsed_seconds=float(state.elapsed_seconds))
 
+        if eclipse is not None and not radiation_due:
+            eclipse.apply(self, state, cfg)
+
         # radiation_driver.F:3195-3243 integrates the held boundary fluxes
         # every model step, even when the wrapper did not run this step.
         self.accumulate_radiation_boundary_fluxes(cfg)
@@ -5727,9 +5996,15 @@ class PhysicsDriver:
             # for RUC/Noah-MP or YSU for MYNN.
             dispatch = resolve_physics_dispatch(cfg)
             sfclay_method = dispatch["sf_sfclay_physics"]
+            ocean = getattr(self, "ocean", None)
+            if ocean is not None:
+                ocean.surface_roughness(self.fields["znt"], self.fields["ust"],
+                                        ice=self.fields.get("xice"))
             if sfclay_method is not None:
                 getattr(self, sfclay_method)(atmosphere, cfg)
                 self.call_counts["sfclay"] += 1
+            if ocean is not None:
+                ocean.surface_roughness(self.fields["znt"], self.fields["ust"], ice=self.fields.get("xice"))
             land_method = dispatch["sf_surface_physics"]
             if land_method is not None:
                 # THE ANALYTIC COSZEN PROVIDER, on the radiation cadence a
@@ -5847,7 +6122,10 @@ class PhysicsDriver:
                     hydro.before_lsm()
                     if meter is not None:
                         meter.before_lsm_end()
+                from gpuwm.ocean.seaice import capture_precipitation, step as seaice_step
+                capture_precipitation(self, atmosphere)
                 getattr(self, land_method)(atmosphere, cfg, itimestep)
+                seaice_step(self, atmosphere, cfg)
                 if hydro is not None:
                     if meter is not None:
                         meter.advance_start()
@@ -5915,6 +6193,14 @@ class PhysicsDriver:
                     self.call_counts["sase"] += 1
             else:
                 self.pbl_tendencies = PhysicsTendencies.zeros(state)
+
+        # Ocean time follows each atmosphere step, independently of STEPBL.
+        ocean = getattr(self, "ocean", None)
+        if ocean is not None:
+            if atmosphere is None:
+                atmosphere = _prepare_atmosphere(state)
+            self.fields["psfc"][...] = atmosphere["p_interface"][0]
+            ocean.atmosphere_step(self.fields, atmosphere, now, float(cfg.dt))
 
         # WRF fire_driver follows surface/PBL and precedes cumulus on every
         # atmospheric step, independently of the surface/PBL call cadence.
@@ -6653,6 +6939,11 @@ def initialize_physics(
         "snow": _as_2d(snow, shape, "snow"),
         "snowh": _as_2d(snow_depth, shape, "snow_depth"),
     }
+    from gpuwm.ingest.lake_state import initialize_surface
+    lake_initial_state, lake_init_receipt = initialize_surface(
+        f, cfg, valid_time=radiation_start_time,
+        latitude=radiation_latitude, longitude=radiation_longitude,
+        cold_start=lsm_cold_start)
     if int(cfg.sf_surface_physics) == 3:
         for switch, name, value in ((cfg.mosaic_lu, "landusef", landusef),
                                     (cfg.mosaic_soil, "soilctop", soilctop)):
@@ -6894,6 +7185,18 @@ def initialize_physics(
             f[name] = cp.zeros(shape, dtype=DTYPE)
         for name in MYNN_PBL_DIAGNOSTICS_INT_2D:
             f[name] = cp.zeros(shape, dtype=cp.int32)
+    if int(cfg.bl_pbl_physics) == 11:
+        # Registry.EM_COMMON:3173 gives the Shin-Hong package TKE_PBL and
+        # EL_PBL, and both are stock history.  shinhonginit sets TKE_PBL to
+        # epsq2l/2 on the mass levels (module_bl_shinhong.F, epsq2l = 0.01)
+        # and EL_PBL stays zero; with shinhong_tke_diag = 0, the only branch
+        # this port carries, the scheme never writes either again, so the
+        # cold values are what every frame holds (stock WRF 4.6.1 recordings
+        # A121, A146, A185: one hash across all 21 frames).  The scheme's own
+        # per-step TKE stays published as TKE_SHINHONG.
+        f["tke_pbl"] = cp.zeros((cfg.nz + 1, *shape), dtype=DTYPE)
+        f["tke_pbl"][:cfg.nz] = DTYPE(0.01) / DTYPE(2.0)
+        f["el_pbl"] = cp.zeros((cfg.nz, *shape), dtype=DTYPE)
     # Noah-MP's carried state and published diagnostics, for its selector
     # only, for the same reason: 46 extra 2-D arrays and four snow-stack
     # arrays in a Noah run would change that run's restart inventory, its
@@ -7179,6 +7482,7 @@ def initialize_physics(
             "glacier_columns": int(masks["glacier"].sum()),
         })
     driver.surface_classification = surface_classification
+    driver.lake_initialization_receipt = lake_init_receipt
     if getattr(state, "chem", None) is not None:
         # The chem processes' mass-grid geometry (DESIGN 2.5): the fire
         # process remaps satellite fire pixels onto these points and the
@@ -7237,6 +7541,7 @@ def initialize_physics(
             f, latitude=(noahmp_geometry.latitude_deg
                          if noahmp_geometry is not None else radiation_latitude),
             lake_depth=lake_depth, lake_depth_flag=lake_depth_flag,
+            initial_state=lake_initial_state,
             use_lakedepth=cfg.use_lakedepth,
             lakedepth_default=cfg.lakedepth_default, iswater=lake_iswater,
             # The lake reads the land-surface seam's threshold
@@ -7379,12 +7684,31 @@ def initialize_physics(
                              longitude=radiation_longitude if radiation_longitude is not None else noahmp_longitude,
                              start_time=radiation_start_time if radiation_start_time is not None else noahmp_start_time,
                              inputs=lightning_inputs)
+    from gpuwm.ocean.seaice import initialize as initialize_seaice
+    initialize_seaice(driver.fields, cfg)
     if cfg.sf_ocean_physics:
         from gpuwm.core.surface_ocean import initialize_ocean
-        initialize_ocean(driver.fields, cfg, ocean_initial, start=lsm_cold_start)
+        ocean_fields = dict(driver.fields)
+        if "ice_volume" in driver.fields:
+            ocean_fields["tsk"] = driver.fields["sst"]
+        initialize_ocean(ocean_fields, cfg, ocean_initial, start=lsm_cold_start,
+                         latitude=radiation_latitude if radiation_latitude is not None else noahmp_latitude,
+                         longitude=radiation_longitude if radiation_longitude is not None else noahmp_longitude,
+                         rotation=(state.sina, state.cosa),
+                         expected_time=radiation_start_time if radiation_start_time is not None else noahmp_start_time)
+        # Every field the ocean initialised (OML state, PWP columns, SST diagnostics) comes back;
+        # TSK stays the driver's own (under sea ice the ocean initialises from SST).
+        driver.fields.update({key: value for key, value in ocean_fields.items() if key != "tsk"})
+        if cfg.sf_ocean_physics == 2:
+            driver.fields["_pwp_mx"][...] = state.msft
+            driver.fields["_pwp_my"][...] = state.msft
     driver.hydro_parent_geometry = hydro_parent_geometry
     from gpuwm.hydro.runtime import attach_parent
     attach_parent(driver, state, cfg)
+    from gpuwm.ocean.door import attach_atmosphere
+    attach_atmosphere(driver, cfg,
+        latitude=radiation_latitude if radiation_latitude is not None else noahmp_latitude,
+        longitude=radiation_longitude if radiation_longitude is not None else noahmp_longitude)
     return driver
 
 

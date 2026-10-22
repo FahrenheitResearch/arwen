@@ -1503,8 +1503,9 @@ fn convert_filled_field_applies_operational_unit_transforms() {
         vec![1609.344; 4],
     );
     let converted_vis = convert_filled_field(vis_recipe, &vis_field);
-    assert_eq!(converted_vis.units, "mi");
-    assert!((converted_vis.values[0] - 1.0).abs() < 1.0e-4);
+    assert_eq!(converted_vis.units, "m");
+    assert_eq!(super::rendering::direct_recipe_render_controls(vis_recipe, vis_field.selector), (Some(rustwx_render::LegendMode::Thresholds), Some(200.0)));
+    assert!((converted_vis.values[0] - 1609.344).abs() < 1.0e-4);
 
     let vort_recipe = plot_recipe("500mb_absolute_vorticity_height_winds").unwrap();
     let vort_field = sample_selected_field(

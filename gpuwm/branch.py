@@ -116,6 +116,8 @@ _RUN_FIELD_SPELLING: dict[str, str] = {
     "run_seconds": "run_seconds",
     "restart_interval_s": "restart_interval_s",
     "output_interval_s": "domain.<grid_id>.history_interval_s",
+    "history_interval2_s": "domain.<grid_id>.history_interval2_s",
+    "history_interval_change_s": "domain.<grid_id>.history_interval_change_s",
     "surface_energy_diag": "domain.<grid_id>.surface_energy_diag",
     # Correct mode WB1: output-only, so a branch may switch it (books CLOUDNC).
     "thompson_cloud_surface_booking": "domain.<grid_id>.thompson_cloud_surface_booking",
@@ -482,6 +484,7 @@ def _rebase(value: str, base_dir: Path) -> str | None:
 # ---------------------------------------------------------------------------
 
 from gpuwm.toml_document import emit_experiment_toml
+from gpuwm.ensemble.physical_fields import sha256_of_file as _sha256
 
 
 # ---------------------------------------------------------------------------
@@ -502,10 +505,6 @@ class BranchPlan:
     manifest_path: Path
     receipt: Mapping[str, Any]
     manifest: Mapping[str, Any]
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _publish(path: Path, encoded: bytes) -> None:

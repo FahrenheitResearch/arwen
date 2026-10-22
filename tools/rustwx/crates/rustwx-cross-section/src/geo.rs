@@ -323,13 +323,6 @@ impl SampledPath {
             .collect()
     }
 
-    pub fn bearings_deg(&self) -> Vec<f64> {
-        self.samples
-            .iter()
-            .map(|sample| sample.bearing_deg)
-            .collect()
-    }
-
     pub fn points(&self) -> Vec<GeoPoint> {
         self.samples.iter().map(|sample| sample.point).collect()
     }

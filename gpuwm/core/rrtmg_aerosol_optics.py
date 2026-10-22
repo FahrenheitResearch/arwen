@@ -614,6 +614,54 @@ def smoke_aod_from_dry_mixing_ratio_device(smoke_ugkg, rho_dry, dz8w):
     return _smoke_array_device("smoke_aod", result, shape)
 
 
+def smoke_aod_from_transported_device(smoke_ugkg, alt, dz8w):
+    """Layer AOD at 550 nm of the forecast's own transported smoke, on device.
+
+    The HRRR v4.1.21 fork (smoke/module_add_emiss_burn.F:186-194): a value
+    outside [0, 1.1e4) ug/kg, NaN included, is taken as 1e-16, then
+    ``aod3d = 1e-6 * (4.0 + 0.5) * smoke * rho * dz8w`` with rho = 1/ALT, the
+    dry density chem_driver hands it (smoke/chem_driver.F:200).  The radiation
+    driver applies MIN(3, aod3d) (rrtmg_aer3_smoke_sw_optics).  Unlike the
+    prescribed-profile path this neither raises nor syncs: a transported
+    tracer is clamped the way the fork clamps it, every radiation call.  One
+    fused pass, one (nz, ny, nx) output and no temporaries: the same words as
+    rrtmg_smoke_dry_density + rrtmg_smoke_aod (round-to-nearest, no FMA).
+    """
+    import cupy as cp
+    shape = getattr(smoke_ugkg, "shape", None)
+    if shape is None or getattr(alt, "shape", None) != shape or (
+            getattr(dz8w, "shape", None) != shape):
+        raise ValueError(
+            "transported smoke, ALT and dz8w must share one (nz, ny, nx) shape; "
+            f"got {shape}, {getattr(alt, 'shape', None)}, "
+            f"{getattr(dz8w, 'shape', None)}")
+    result = cp.empty(shape, dtype=cp.float32)
+    if result.size:
+        _transported_smoke_kernel()(
+            cp.asarray(smoke_ugkg, dtype=cp.float32),
+            cp.asarray(alt, dtype=cp.float32),
+            cp.asarray(dz8w, dtype=cp.float32), result)
+    return result
+
+
+_TRANSPORTED_SMOKE_KERNEL = None
+
+
+def _transported_smoke_kernel():
+    global _TRANSPORTED_SMOKE_KERNEL
+    if _TRANSPORTED_SMOKE_KERNEL is None:
+        import cupy as cp
+        _TRANSPORTED_SMOKE_KERNEL = cp.ElementwiseKernel(
+            "float32 smoke, float32 alt, float32 dz", "float32 aod",
+            """
+            float x = (smoke >= 0.0f && smoke < 1.1e4f) ? smoke : 1.e-16f;
+            float ext2 = __fadd_rn(4.0f, 0.5f);
+            float rho = __fdiv_rn(1.0f, alt);
+            aod = __fmul_rn(__fmul_rn(__fmul_rn(__fmul_rn(1.e-6f, ext2), x), rho), dz);
+            """, "gpuwm_transported_smoke_aod")
+    return _TRANSPORTED_SMOKE_KERNEL
+
+
 def smoke_dry_air_density_device(alt):
     """Source dry density 1/ALT with an explicit single-rounded division."""
     import cupy as cp

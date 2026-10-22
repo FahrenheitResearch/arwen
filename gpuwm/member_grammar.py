@@ -55,7 +55,7 @@ SUPPORTED_LAYOUTS = ("file_per_member", "indexed_members")
 #: zero-pads the member ordinal to N digits; the rest are filled at
 #: resolution time from the cycle and forecast step.
 _ORDINAL_FIELD = re.compile(r"\{ordinal:0([1-9])d\}")
-_PATH_FIELDS = ("{yyyymmdd}", "{hh}", "{fff}", "{token}")
+_PATH_FIELDS = ("{yyyy}", "{yyyymmdd}", "{hh}", "{fff}", "{ff}", "{token}")
 
 #: The GRIB2 Section 1 octets a rewrite declares as its writer, spelled
 #: as the Rust inventory's columns.  Generic vocabulary: which centre,
@@ -596,9 +596,11 @@ class MemberGrammar:
         template = str(declaration["relative_path"])
         return (template
                 .replace("{token}", member.token)
+                .replace("{yyyy}", cycle.strftime("%Y"))
                 .replace("{yyyymmdd}", cycle.strftime("%Y%m%d"))
                 .replace("{hh}", f"{cycle.hour:02d}")
-                .replace("{fff}", f"{step_hours:03d}"))
+                .replace("{fff}", f"{step_hours:03d}")
+                .replace("{ff}", f"{step_hours:02d}"))
 
     def classify_relative_path(
         self, relative_path: str,
@@ -640,9 +642,11 @@ def _template_regex(template: str) -> re.Pattern[str]:
         return cached
     pattern = re.escape(template)
     for field, expression in (
+            (r"\{yyyy\}", r"\d{4}"),
             (r"\{yyyymmdd\}", r"\d{8}"),
             (r"\{hh\}", r"\d{2}"),
-            (r"\{fff\}", r"\d{3}")):
+            (r"\{fff\}", r"\d{3}"),
+            (r"\{ff\}", r"\d{2,}")):
         pattern = pattern.replace(field, expression)
     compiled = re.compile(pattern)
     _REGEX_CACHE[template] = compiled

@@ -26,7 +26,9 @@ use crate::windowed::{
 };
 use rustwx_core::{BundleRequirement, CanonicalBundleDescriptor, ModelId, SourceId};
 use rustwx_models::{LatestRun, latest_available_run_at_forecast_hour, plot_recipe};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
+#[cfg(test)]
+use std::collections::HashMap;
 use std::fs;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
@@ -97,117 +99,6 @@ impl SharedLoaderProfile {
     }
 }
 
-fn non_ecape_request_from_hrrr(request: &HrrrNonEcapeHourRequest) -> NonEcapeHourRequest {
-    NonEcapeHourRequest {
-        model: ModelId::Hrrr,
-        date_yyyymmdd: request.date_yyyymmdd.clone(),
-        cycle_override_utc: request.cycle_override_utc,
-        forecast_hour: request.forecast_hour,
-        source: request.source,
-        domain: request.domain.clone(),
-        out_dir: request.out_dir.clone(),
-        cache_root: request.cache_root.clone(),
-        use_cache: request.use_cache,
-        source_mode: request.source_mode,
-        direct_recipe_slugs: request.direct_recipe_slugs.clone(),
-        derived_recipe_slugs: request.derived_recipe_slugs.clone(),
-        direct_product_overrides: HashMap::new(),
-        surface_product_override: None,
-        pressure_product_override: None,
-        allow_large_heavy_domain: false,
-        windowed_products: request.windowed_products.clone(),
-        output_width: request.output_width,
-        output_height: request.output_height,
-        png_compression: request.png_compression,
-        place_label_overlay: request.place_label_overlay.clone(),
-    }
-}
-
-fn non_ecape_multi_request_from_hrrr(
-    request: &HrrrNonEcapeMultiDomainRequest,
-) -> NonEcapeMultiDomainRequest {
-    NonEcapeMultiDomainRequest {
-        model: ModelId::Hrrr,
-        date_yyyymmdd: request.date_yyyymmdd.clone(),
-        cycle_override_utc: request.cycle_override_utc,
-        forecast_hour: request.forecast_hour,
-        source: request.source,
-        domains: request.domains.clone(),
-        out_dir: request.out_dir.clone(),
-        cache_root: request.cache_root.clone(),
-        use_cache: request.use_cache,
-        source_mode: request.source_mode,
-        direct_recipe_slugs: request.direct_recipe_slugs.clone(),
-        derived_recipe_slugs: request.derived_recipe_slugs.clone(),
-        direct_product_overrides: HashMap::new(),
-        surface_product_override: None,
-        pressure_product_override: None,
-        allow_large_heavy_domain: false,
-        windowed_products: request.windowed_products.clone(),
-        output_width: request.output_width,
-        output_height: request.output_height,
-        png_compression: request.png_compression,
-        place_label_overlay: request.place_label_overlay.clone(),
-        domain_jobs: request.domain_jobs,
-    }
-}
-
-fn hrrr_hour_report_from_generic(report: NonEcapeHourReport) -> HrrrNonEcapeHourReport {
-    HrrrNonEcapeHourReport {
-        date_yyyymmdd: report.date_yyyymmdd,
-        cycle_utc: report.cycle_utc,
-        forecast_hour: report.forecast_hour,
-        source: report.source,
-        domain: report.domain,
-        out_dir: report.out_dir,
-        cache_root: report.cache_root,
-        use_cache: report.use_cache,
-        source_mode: report.source_mode,
-        publication_manifest_path: report.publication_manifest_path,
-        attempt_manifest_path: report.attempt_manifest_path,
-        requested: report.requested,
-        shared_timing: report.shared_timing,
-        summary: report.summary,
-        direct: report.direct,
-        derived: report.derived,
-        windowed: report.windowed,
-        total_ms: report.total_ms,
-    }
-}
-
-fn hrrr_multi_domain_report_from_generic(
-    report: NonEcapeMultiDomainReport,
-) -> HrrrNonEcapeMultiDomainReport {
-    HrrrNonEcapeMultiDomainReport {
-        date_yyyymmdd: report.date_yyyymmdd,
-        cycle_utc: report.cycle_utc,
-        forecast_hour: report.forecast_hour,
-        source: report.source,
-        out_dir: report.out_dir,
-        cache_root: report.cache_root,
-        use_cache: report.use_cache,
-        source_mode: report.source_mode,
-        requested: report.requested,
-        shared_timing: report.shared_timing,
-        fanout_timing: report.fanout_timing,
-        domains: report
-            .domains
-            .into_iter()
-            .map(|domain| HrrrNonEcapeDomainReport {
-                domain: domain.domain,
-                publication_manifest_path: domain.publication_manifest_path,
-                attempt_manifest_path: domain.attempt_manifest_path,
-                summary: domain.summary,
-                direct: domain.direct,
-                derived: domain.derived,
-                windowed: domain.windowed,
-                total_ms: domain.total_ms,
-            })
-            .collect(),
-        total_ms: report.total_ms,
-    }
-}
-
 pub fn run_model_non_ecape_hour(
     request: &NonEcapeHourRequest,
 ) -> Result<NonEcapeHourReport, Box<dyn std::error::Error>> {
@@ -262,13 +153,6 @@ pub fn run_model_non_ecape_hour(
         windowed: domain_report.windowed,
         total_ms: domain_report.total_ms,
     })
-}
-
-pub fn run_hrrr_non_ecape_hour(
-    request: &HrrrNonEcapeHourRequest,
-) -> Result<HrrrNonEcapeHourReport, Box<dyn std::error::Error>> {
-    let report = run_model_non_ecape_hour(&non_ecape_request_from_hrrr(request))?;
-    Ok(hrrr_hour_report_from_generic(report))
 }
 
 pub fn run_model_non_ecape_hour_multi_domain(
@@ -409,14 +293,6 @@ fn run_prepared_model_non_ecape_hour_multi_domain(
         domains: domain_reports,
         total_ms: total_start.elapsed().as_millis(),
     })
-}
-
-pub fn run_hrrr_non_ecape_hour_multi_domain(
-    request: &HrrrNonEcapeMultiDomainRequest,
-) -> Result<HrrrNonEcapeMultiDomainReport, Box<dyn std::error::Error>> {
-    let report =
-        run_model_non_ecape_hour_multi_domain(&non_ecape_multi_request_from_hrrr(request))?;
-    Ok(hrrr_multi_domain_report_from_generic(report))
 }
 
 fn resolve_model_run(

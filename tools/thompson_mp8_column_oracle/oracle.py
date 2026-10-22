@@ -69,6 +69,10 @@ for _p in (str(ROOT), str(PARITY), str(HERE)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+from tools.thompson_aerosol_column_oracle.column_state import (
+    ColumnState as OracleColumnState,
+)
+
 f32 = np.float32
 SPECIES = ("qv", "qc", "qr", "qi", "qs", "qg", "ni", "nr")
 OUT3 = ("qv", "qc", "qr", "qi", "qs", "qg", "ni", "nr", "th", "refl",
@@ -170,46 +174,14 @@ def run_wrf(build, out_dir):
         np.savez_compressed(out_dir / f"wrf-{name}.npz", **result)
 
 
-class _State:
-    """The DomainState surface ``_apply_thompson`` reads, over
-    ``(nz, 1, ncol)`` arrays (mp8_wrf_ulp's, with the column count taken
-    from the set)."""
+class _State(OracleColumnState):
+    _scratch_error = " reused"
 
     def __init__(self, z, xp):
-        ncol, nz = z["in_p"].shape
         self._xp = xp
-
-        def vol(a):
-            a = np.asarray(a, f32)
-            return xp.asarray(np.array(a.T.reshape(a.shape[1], 1, ncol),
-                                       dtype=f32, order="C", copy=True))
-
-        self.p = vol(z["in_p"])
-        self.thb = xp.asarray(np.zeros((nz,), f32))
-        self.thp = vol(z["in_th"])
-        self.phb = xp.asarray(np.zeros((nz + 1,), f32))
-        self.php = vol(z["in_geop"])
-        self.w = vol(z["in_w"])
-        for s in SPECIES:
-            setattr(self, s, vol(z[f"in_{s}"]))
-        for name in ("effc", "effi", "effs", "h_diabatic"):
-            setattr(self, name, xp.asarray(np.zeros((nz, 1, ncol), f32)))
-        self.physics = SimpleNamespace(refl_10cm=None, state=self)
-        self._scratch = {}
-
-    def scratch(self, shape, slot, dtype=None):
-        shape = tuple(shape)
-        want = np.dtype(f32 if dtype is None else dtype)
-        value = self._scratch.get(slot)
-        if value is None:
-            value = self._xp.asarray(np.zeros(shape, dtype=want))
-            self._scratch[slot] = value
-        elif value.shape != shape or value.dtype != want:
-            raise ValueError(f"scratch slot {slot!r} reused")
-        return value
-
-    def existing_scratch(self, slot):
-        return self._scratch.get(slot)
+        cols = {name: np.asarray(z[f"in_{name}"], f32)
+                for name in ("p", "th", "geop", "w", *SPECIES)}
+        super().__init__(cols, xp, SPECIES, copy_inputs=True, host_zeros=True)
 
 
 def _host(a):

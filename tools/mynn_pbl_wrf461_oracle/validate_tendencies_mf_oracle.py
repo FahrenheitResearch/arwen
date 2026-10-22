@@ -10,7 +10,10 @@ import sys
 
 import numpy as np
 
-from gpuwm.core.fp32_ulp import monotone_fp32_key
+if __package__:
+    from .validate_initialize_oracle import _report as _report
+else:
+    from validate_initialize_oracle import _report as _report
 from gpuwm.core.mynn_pbl import (
     MYNN_TENDENCIES_INTERFACE_INPUTS,
     MYNN_TENDENCIES_LAYER_INPUTS,
@@ -52,21 +55,6 @@ LIVE_MASS_FLUX = (
     "momentum_off", "momentum_off_probe", "downdraft_probe",
     "moisture_repair", "subsidence_probe",
 )
-
-_ordered_bits = monotone_fp32_key
-
-
-def _report(got: np.ndarray, expected: np.ndarray) -> dict[str, float | int]:
-    absolute = np.abs(got.astype(np.float64) - expected.astype(np.float64))
-    relative = absolute / np.maximum(
-        np.abs(expected.astype(np.float64)), 1.0e-30
-    )
-    ulp = np.abs(_ordered_bits(got) - _ordered_bits(expected))
-    return {
-        "max_abs": float(absolute.max(initial=0.0)),
-        "max_rel": float(relative.max(initial=0.0)),
-        "max_ulp": int(ulp.max(initial=0)),
-    }
 
 
 def _case_values(selected: list[dict[str, str]]) -> dict[str, np.ndarray]:

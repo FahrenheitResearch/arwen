@@ -1,0 +1,14 @@
+CCPP GSL drag suite (ccpp-physics edd85a55) against WOOF's gwd_opt 3 on the 64 x 40 oracle columns.
+Built and run with gfortran 15.2 at -O0, kind_phys 8 and 4; WOOF's kernel on an RTX 4090.
+
+drag_suite_vs_woof_imx15800_dt36.json  CCPP at RRFS v1's own host values: imx 15800 (4 x 3950, det/input.nml:117
+                                       npx 3951; atmos_model.F90:683; GFS_typedefs.F90:4622), deltim 36 s
+                                       (det/input.nml:189). WOOF run at 36 s too (woof_drag_columns.py --dt 36).
+drag_suite_vs_woof_imx15800_dt20.json  CCPP at imx 15800 and the WRF fixture's 20 s; WOOF at the fixture step,
+                                       so the WOOF-against-WRF parity rows are included.
+drag_suite_vs_woof_imx192_dt20.json    the first receipt's host values (imx 192, 20 s); every value equals the
+                                       first receipt (drag_suite_vs_woof.json at 1b3ad7aed), so it supersedes it.
+
+Form-drag summary rows (form_drag) are per grid length, per cdmbgwd and per precision: the ratio of the
+largest form-drag tendencies, and per column the ratio of the vertically integrated form stress
+(sum of dtau * dp / g) over the columns where WOOF's is non-zero.

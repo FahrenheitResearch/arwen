@@ -1901,6 +1901,13 @@ fn point_in_geographic_bounds(lon: f64, lat: f64, bounds: (f64, f64, f64, f64)) 
     if !lon.is_finite() || !lat.is_finite() || lat < bounds.2 || lat > bounds.3 {
         return false;
     }
+    // Native projected grids can cross the date line. Their padded
+    // coordinate envelope may cover a full revolution; wrapping its two
+    // endpoints first would turn that envelope into a narrow date-line
+    // strip and crop windowed fields into the wrong hemisphere.
+    if (bounds.1 - bounds.0).abs() >= 359.0 {
+        return true;
+    }
     let west = normalize_longitude_for_bounds(bounds.0);
     let east = normalize_longitude_for_bounds(bounds.1);
     let lon = normalize_longitude_for_bounds(lon);

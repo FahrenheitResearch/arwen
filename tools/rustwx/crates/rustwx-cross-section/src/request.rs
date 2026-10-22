@@ -2,14 +2,6 @@ use crate::data::SectionMetadata;
 use crate::error::CrossSectionError;
 use crate::geo::{SampledPath, SectionPath};
 
-/// Horizontal interpolation preference for downstream extractors.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum HorizontalInterpolation {
-    Nearest,
-    #[default]
-    Bilinear,
-}
-
 /// Horizontal sampling choice for building a [`SectionLayout`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SamplingStrategy {
@@ -23,22 +15,12 @@ impl Default for SamplingStrategy {
     }
 }
 
-/// Optional vertical-domain hint for extractors before a concrete [`crate::VerticalAxis`] exists.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum VerticalWindow {
-    PressureHpa { top: f64, bottom: f64 },
-    HeightMeters { top: f64, bottom: f64 },
-    HeightKilometers { top: f64, bottom: f64 },
-}
-
 /// Public request builder for clients that want path geometry and layout decisions without
 /// committing to any specific data backend.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CrossSectionRequest {
     path: SectionPath,
     sampling: SamplingStrategy,
-    interpolation: HorizontalInterpolation,
-    vertical_window: Option<VerticalWindow>,
     field_key: Option<String>,
     metadata: SectionMetadata,
 }
@@ -48,8 +30,6 @@ impl CrossSectionRequest {
         Self {
             path,
             sampling: SamplingStrategy::default(),
-            interpolation: HorizontalInterpolation::default(),
-            vertical_window: None,
             field_key: None,
             metadata: SectionMetadata::default(),
         }
@@ -57,16 +37,6 @@ impl CrossSectionRequest {
 
     pub fn with_sampling(mut self, sampling: SamplingStrategy) -> Self {
         self.sampling = sampling;
-        self
-    }
-
-    pub fn with_horizontal_interpolation(mut self, interpolation: HorizontalInterpolation) -> Self {
-        self.interpolation = interpolation;
-        self
-    }
-
-    pub fn with_vertical_window(mut self, vertical_window: VerticalWindow) -> Self {
-        self.vertical_window = Some(vertical_window);
         self
     }
 
@@ -88,8 +58,6 @@ impl CrossSectionRequest {
 
         Ok(SectionLayout {
             sampled_path,
-            interpolation: self.interpolation,
-            vertical_window: self.vertical_window,
             field_key: self.field_key.clone(),
             metadata: self.metadata.clone(),
         })
@@ -100,8 +68,6 @@ impl CrossSectionRequest {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SectionLayout {
     pub sampled_path: SampledPath,
-    pub interpolation: HorizontalInterpolation,
-    pub vertical_window: Option<VerticalWindow>,
     pub field_key: Option<String>,
     pub metadata: SectionMetadata,
 }

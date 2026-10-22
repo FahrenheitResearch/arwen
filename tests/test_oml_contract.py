@@ -53,7 +53,7 @@ def test_registry_has_surface_ocean_selector_and_knobs():
     # land surface, its three settings read only when it is on.
     from gpuwm.physics_registry import physics_registry
     r = physics_registry()
-    assert r["parameters"]["sf_ocean_physics"]["enum"] == [0, 1]
+    assert r["parameters"]["sf_ocean_physics"]["enum"] == [0, 1, 2]
     assert r["parameters"]["sf_ocean_physics"]["default"] == 0
     for name in ("oml_hml0", "oml_gamma", "oml_relaxation_time"):
         assert r["parameters"][name]["component_id"] == "land_surface"

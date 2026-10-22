@@ -6,7 +6,6 @@ from dataclasses import dataclass, replace
 from hashlib import sha256
 import json
 import math
-from pathlib import Path
 from types import MappingProxyType
 
 import numpy as np

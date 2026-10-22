@@ -882,6 +882,27 @@ def _isolated_fetch_lock_root(tmp_path_factory):
         os.environ[fetch_guard.LOCK_ROOT_ENV] = previous
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _isolated_fetch_connection_slots(tmp_path_factory):
+    """Keep the suite's fetch connection slots off the box-wide /tmp/gpuwm-fetch-connections.
+
+    Pools size themselves from the slots free on the box
+    (:func:`gpuwm.fetch_connections.process_share`), so on a farm host where
+    real fetches run the expected widths would depend on whoever else holds
+    slots.  Tests that need their own slot directory set the variable per test.
+    """
+    from gpuwm import fetch_connections
+
+    root = tmp_path_factory.mktemp("fetch-connections")
+    previous = os.environ.get(fetch_connections.DIRECTORY_ENV)
+    os.environ[fetch_connections.DIRECTORY_ENV] = str(root)
+    yield root
+    if previous is None:
+        os.environ.pop(fetch_connections.DIRECTORY_ENV, None)
+    else:
+        os.environ[fetch_connections.DIRECTORY_ENV] = previous
+
+
 @pytest.fixture(autouse=True)
 def _wizard_probe_pinned_to_a_24gib_card(monkeypatch):
     """Pin the ONE number the outside world moves in the domain wizard.
@@ -909,6 +930,47 @@ def _wizard_probe_pinned_to_a_24gib_card(monkeypatch):
         lambda **_kwargs: {"free_bytes": int(domain_wizard.card_assumed_free_gib(24) * 1024 ** 3),
                            "total_bytes": 24 * 1024 ** 3,
                            "profile": None})
+
+
+@pytest.fixture(autouse=True)
+def _multi_card_doors_pinned_to_a_free_threaded_interpreter(monkeypatch):
+    """Pin the interpreter-lock answer every multi-card door refuses on.
+
+    ``gpuwm go``/``check``/``sim``/ensemble refuse ``--devices N>1`` on an
+    interpreter whose lock is on (gpuwm.free_threading.
+    refuse_multi_card_under_gil).  This suite and its CI legs run on GIL
+    CPython, and its [devices] tests exercise plumbing and admission, not
+    stepping threads, so unpinned every one of them would stop at the
+    refusal.  The refusal itself is tested in tests/test_free_threading.py,
+    which restores the real answer.  In-process invocations only.
+    """
+
+    from gpuwm import free_threading
+
+    monkeypatch.setattr(free_threading, "multi_card_lock_reason", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _hydro_door_tools_unprobed_outside_hydro_tests(request, monkeypatch):
+    """Outside the hydro test modules, the default-on hydro door sees no builder.
+
+    A natives env.sh exports GPUWM_RW_HYDRO_WORLD and the other hydro provider
+    tools, so every `gpuwm go` a test drives (33 test files) reached the real
+    door: its tool probe ran through the tests' stage-counting Popen doubles
+    (test_a_failing_stage_replays_its_output_and_stops returned 2, not 3), and
+    non-dry launches prepared a real continental fabric, its parameters and a
+    90-day spin-up in the shared cache (test_the_memory_gate_warns_*,
+    2026-10-21). Without the env the door finds no tools; this makes
+    the env battery see the same. Hydro behaviour is tested in the modules
+    named *hydro*, which keep the real probe (or pass their own probe_row).
+    """
+
+    module = getattr(request.node, "module", None)
+    if "hydro" in getattr(module, "__name__", "hydro"):
+        return
+    from gpuwm.hydro import door as hydro_door
+    monkeypatch.setattr(hydro_door, "probe", lambda row: [
+        "hydro provider tools not probed outside the hydro test modules"])
 
 
 @pytest.fixture(autouse=True)

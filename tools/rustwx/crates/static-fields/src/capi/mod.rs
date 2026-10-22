@@ -24,6 +24,7 @@ pub mod build;
 pub mod grid;
 pub mod highres;
 pub mod hydrofabric;
+pub mod polar_halo;
 pub mod scalar;
 pub mod sfire;
 pub mod soil;

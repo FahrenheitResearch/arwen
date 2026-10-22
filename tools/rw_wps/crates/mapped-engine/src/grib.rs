@@ -51,6 +51,11 @@ pub struct GribRecord {
     pub latitude: Vec<f64>,
     pub longitude: Vec<f64>,
     pub grid_fingerprint: String,
+    /// The record's full-plane pressure-ladder value (median / 100,
+    /// `window::pressure_levels`) when the record was decoded over an
+    /// atmospheric window but answers `air_pressure`, whose whole plane
+    /// states the frame's per-level pressure; `None` otherwise.
+    pub plane_ladder_hpa: Option<f64>,
 }
 
 /// The selector-visible identity of a record, without its bytes — the
@@ -757,6 +762,23 @@ fn published_first_point(declaration: &GridDeclaration, lat1: f64, lon1: f64) ->
         .any(|&(lat, lon)| close(lat1, lat) && close(lon1, lon))
 }
 
+/// The canonical (projected y, x) axes of a declared Lambert grid, read
+/// from Section 3 of one message before anything is unpacked; `None` when
+/// the message is not the declared grid in the layout the decode accepts
+/// (GDT 30, scan 0x40), which the record decode then refuses as before.
+pub fn declared_lambert_axes(
+    message: &Grib2Message,
+    index: usize,
+    declaration: &GridDeclaration,
+    source: &str,
+) -> Option<(Vec<f64>, Vec<f64>)> {
+    if !declaration.is_lambert() || message.grid.template != 30 || message.grid.scan_mode != 0x40 {
+        return None;
+    }
+    require_declared_grid(message, index, declaration, source).ok()?;
+    declaration.parameters.as_ref().map(|parameters| parameters.projected_axes())
+}
+
 /// `mapped_source._require_declared_grib2_grid`.
 fn require_declared_grid(
     message: &Grib2Message,
@@ -828,46 +850,131 @@ fn require_declared_grid(
 /// GRIB2 Data Representation Template 5.40: JPEG2000 packing.
 const JPEG2000_TEMPLATE: u16 = 40;
 
-/// `unpack_message`, with the one template whose decoder is not
-/// re-entrant serialized against itself.
+/// `unpack_message`, with the one decoder path that touches process-global
+/// state serialized against itself.
 ///
-/// THE BREAKAGE THIS PREVENTS: `openjp2`'s HTJ2K path carries decoder
-/// state in a process-global `static mut` (`only_cleanup_pass_is_decoded`
-/// in its `ht_dec` module).  Two threads decoding Template 5.40
-/// codestreams at the same time can therefore read each other's pass
-/// state, and the corruption lands in float values that are still
-/// finite, still the right shape, and wrong — the failure mode no
-/// downstream check catches.  Every other template unpacks from `&self`
-/// into a fresh `Vec` with no shared state, so only this one pays.
-/// Sources that pack this way are real and staged (RAP/NAM AWIPS grids,
-/// MSC GDPS), so it is guarded rather than refused.
+/// `openjp2`'s HTJ2K block decoder (`ht_dec`, ITU-T T.814 code-blocks)
+/// keeps a process-global `static mut` (`only_cleanup_pass_is_decoded`)
+/// that two threads may write at once.  It only decides whether one
+/// "malformed HT codeblock" warning is printed (the pass count it guards is
+/// set the same way either way), but a racing write is still a data race,
+/// so a codestream that can reach that decoder takes [`JPEG2000_HT`].
+///
+/// Classic JPEG2000 (ISO 15444-1), which is what GRIB2 Template 5.40 packs
+/// (RAP/NAM AWIPS grids, MSC GDPS), never reaches it: `openjp2` enters the
+/// HT decoder only for a code-block whose coding style carries the HT bit
+/// (`J2K_CCP_CBLKSTY_HT`, 0x40, `t1.rs`), and every other table it reads
+/// is immutable.  So only a codestream whose COD/COC markers declare HT
+/// code-blocks, or one this scan cannot read, is serialized
+/// ([`jpeg2000_may_decode_ht`]).
+///
+/// Named breakage this split fixes: the lock used to cover EVERY Template
+/// 5.40 decode, so a RAP awp130 native compose (all 5.40) decoded one
+/// message at a time across the whole process: on a 491-core box the
+/// 13-time initial compose ran 131 s with about one core busy for 110 s
+/// of it, and the 36-time boundary compose about 6 min, while the card
+/// waited (V59, 2026-10-21).
 fn unpack_shared(message: &Grib2Message) -> std::result::Result<Vec<f64>, grib_core::GribError> {
-    if message.data_rep.template != JPEG2000_TEMPLATE {
+    if message.data_rep.template != JPEG2000_TEMPLATE || !jpeg2000_may_decode_ht(&message.raw_data) {
         return unpack_message(message);
     }
     // A panic inside one message's decode must not turn every later
-    // JPEG2000 message into a poisoned-lock refusal about threading:
-    // the guard protects a `static mut`, and the next decode
-    // initializes what it reads.
-    let _guard = JPEG2000_CODEC.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    // HT message into a poisoned-lock refusal about threading.
+    let _guard = JPEG2000_HT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     unpack_message(message)
 }
 
 /// [`unpack_shared`] for a stored rectangle: a JPEG2000 area decode runs
-/// the same `openjp2` decoder, so it takes the same lock.
+/// the same `openjp2` decoder, so it takes the same lock on the same terms.
 fn decode_rect_shared(
     message: &Grib2Message,
     rect: grib_core::grib2::StoredRect,
 ) -> std::result::Result<Vec<f64>, grib_core::GribError> {
-    if message.data_rep.template != JPEG2000_TEMPLATE {
+    if message.data_rep.template != JPEG2000_TEMPLATE || !jpeg2000_may_decode_ht(&message.raw_data) {
         return grib_core::grib2::unpack_message_stored_rect(message, rect);
     }
-    let _guard = JPEG2000_CODEC.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = JPEG2000_HT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     grib_core::grib2::unpack_message_stored_rect(message, rect)
 }
 
-/// The one lock every `openjp2` decode in this process takes.
-static JPEG2000_CODEC: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// The lock every `openjp2` decode that may reach its HT block decoder takes.
+static JPEG2000_HT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Whether `openjp2` may run its HT block decoder on this codestream:
+/// true when any COD or COC marker, in the main header or in any
+/// tile-part header, declares HT code-blocks (style bit 0x40), and true
+/// whenever the codestream cannot be walked to its end (not a raw J2K
+/// codestream, a truncated or malformed marker segment) -- an unreadable
+/// header is serialized rather than guessed at.
+fn jpeg2000_may_decode_ht(data: &[u8]) -> bool {
+    const HT: u8 = 0x40;
+    let be16 = |at: usize| data.get(at..at + 2).map(|b| u16::from_be_bytes([b[0], b[1]]) as usize);
+    let be32 = |at: usize| data.get(at..at + 4).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize);
+    if data.get(0..2) != Some(&[0xFF, 0x4F]) {
+        return true;
+    }
+    // Csiz decides whether a COC names its component in one octet or two.
+    let mut wide_components = None;
+    let mut position = 2usize;
+    // Where the tile-part being read ends, once its SOT has been read.
+    let mut tile_part_end: Option<usize> = None;
+    loop {
+        if data.get(position) != Some(&0xFF) {
+            return true;
+        }
+        let Some(&marker) = data.get(position + 1) else { return true };
+        match marker {
+            // EOC: every header has been read.
+            0xD9 => return false,
+            // SOD: the tile-part's data follows; resume at its end.
+            0x93 => match tile_part_end {
+                Some(end) if end > position => {
+                    if end >= data.len() {
+                        return false;
+                    }
+                    position = end;
+                    tile_part_end = None;
+                    continue;
+                }
+                _ => return true,
+            },
+            _ => {}
+        }
+        let Some(length) = be16(position + 2) else { return true };
+        if length < 2 || position + 2 + length > data.len() {
+            return true;
+        }
+        let segment = &data[position + 2..position + 2 + length];
+        match marker {
+            // SIZ: Lsiz Rsiz Xsiz Ysiz XOsiz YOsiz XTsiz YTsiz XTOsiz YTOsiz Csiz.
+            0x51 => {
+                let Some(count) = be16(position + 2 + 36) else { return true };
+                wide_components = Some(count >= 257);
+            }
+            // SOT: Lsot Isot Psot TPsot TNsot; Psot 0 runs to the end.
+            0x90 => {
+                let Some(psot) = be32(position + 6) else { return true };
+                tile_part_end = Some(if psot == 0 { data.len() } else { position + psot });
+            }
+            // COD: Lcod Scod SGcod(4) then levels, xcb, ycb, style.
+            0x52 => match segment.get(10) {
+                Some(style) if style & HT == 0 => {}
+                _ => return true,
+            },
+            // COC: Lcoc Ccoc(1|2) Scoc then levels, xcb, ycb, style.
+            0x53 => {
+                let Some(wide) = wide_components else { return true };
+                let at = 2 + if wide { 2 } else { 1 } + 1 + 3;
+                match segment.get(at) {
+                    Some(style) if style & HT == 0 => {}
+                    _ => return true,
+                }
+            }
+            _ => {}
+        }
+        position += 2 + length;
+    }
+}
 
 /// `mapped_source._grib2_records`: the selected records of one object,
 /// decoded CONCURRENTLY.
@@ -897,6 +1004,11 @@ pub struct RecordWindow<'a> {
     pub rows: [usize; 2],
     pub columns: [usize; 2],
     pub records: &'a std::collections::BTreeSet<usize>,
+    /// Those of `records` that answer `air_pressure`: each keeps its
+    /// full-plane ladder value (`GribRecord::plane_ladder_hpa`), taken
+    /// from the whole unpacked plane before it is cropped.  Only a
+    /// projected record, which is unpacked whole, can state it.
+    pub ladder: &'a std::collections::BTreeSet<usize>,
 }
 
 /// [`grib2_records`], with the records `window` names decoded over its
@@ -938,11 +1050,14 @@ fn grib2_record(
             "GRIB2 object {source_label} has no field {index}"
         ))
     })?;
-    if let Some(window) = window {
-        if declaration.is_lambert() {
-            return Err(grid_mismatch(format!(
-                "GRIB2 field {index} in {source_label}: a canonical window is \
-                 only decoded from a regular latitude/longitude grid"
+    // A projected (Lambert) record has no row/column-addressable packing,
+    // so it is unpacked whole below and cropped to the window at once: one
+    // plane is transient on its worker, and only the window is retained.
+    let projected_window = window.filter(|_| declaration.is_lambert());
+    if let Some(window) = window.filter(|_| !declaration.is_lambert()) {
+        if window.ladder.contains(&index) {
+            return Err(decode_failed(format!(
+                "GRIB2 field {index} in {source_label}: a regular-grid window decode \n                 never unpacks the whole plane its pressure ladder is taken from"
             )));
         }
         let axes = regular_latlon_axes(message)?;
@@ -994,6 +1109,37 @@ fn grib2_record(
     } else {
         regular_latlon_frame(message, &raw)?
     };
+    if let Some(window) = projected_window {
+        let (ny, nx) = (latitude.len(), longitude.len());
+        let ([r0, r1], [c0, c1]) = (window.rows, window.columns);
+        if !(r0 < r1 && r1 <= ny && c0 < c1 && c1 <= nx) || values.len() != ny * nx {
+            return Err(decode_failed(format!(
+                "GRIB2 field {index} in {source_label}: rows {r0}..{r1} and columns \
+                 {c0}..{c1} do not lie inside its {ny}x{nx} canonical grid"
+            )));
+        }
+        let mut cropped = Vec::with_capacity((r1 - r0) * (c1 - c0));
+        for row in r0..r1 {
+            cropped.extend_from_slice(&values[row * nx + c0..row * nx + c1]);
+        }
+        // The frame states `air_pressure`'s per-level pressure as the
+        // median of its whole plane; that plane is here, so the value is
+        // the one the full decode states (`frames::field_work`).
+        let ladder = if window.ladder.contains(&index) {
+            Some(crate::window::pressure_levels(&values, values.len())?[0])
+        } else {
+            None
+        };
+        drop(values);
+        let array = ArrayD::from_shape_vec(IxDyn(&[r1 - r0, c1 - c0]), cropped).map_err(|error| {
+            decode_failed(format!(
+                "GRIB2 field {index} in {source_label} does not fill its window: {error}"
+            ))
+        })?;
+        let mut record = record_from(message, source_label, index, array, latitude, longitude)?;
+        record.plane_ladder_hpa = ladder;
+        return Ok(record);
+    }
     let array = ArrayD::from_shape_vec(IxDyn(&[latitude.len(), longitude.len()]), values)
         .map_err(|error| {
             decode_failed(format!(
@@ -1049,6 +1195,7 @@ fn record_from(
         latitude,
         longitude,
         grid_fingerprint: grid_fingerprint(message),
+        plane_ladder_hpa: None,
     })
 }
 
@@ -1391,5 +1538,47 @@ mod tests {
         // The same code means DAYS in no edition; 254 is edition 1's second.
         assert!(embedded_valid_time(reference, 254, 1, 2).is_err());
         assert!(embedded_valid_time(reference, 254, 1, 1).is_ok());
+    }
+
+    /// A raw J2K codestream: SOC, SIZ (one component), COD with code-block
+    /// `style`, then one tile-part whose header carries `tile_header`.
+    fn codestream(style: u8, tile_header: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![0xFF, 0x4F];
+        // SIZ: Lsiz 41, Rsiz, sizes and offsets (32 octets), Csiz 1, one component.
+        bytes.extend([0xFF, 0x51, 0x00, 41, 0x00, 0x00]);
+        bytes.extend([0u8; 32]);
+        bytes.extend([0x00, 0x01, 0x07, 0x01, 0x01]);
+        // COD: Lcod 12, Scod, SGcod(4), levels, xcb, ycb, style, transform.
+        bytes.extend([0xFF, 0x52, 0x00, 12, 0x00, 0x00, 0x00, 0x01, 0x00, 0x05, 0x04, 0x04, style, 0x01]);
+        let sot = bytes.len();
+        let psot = (12 + tile_header.len() + 2 + 3) as u32;
+        bytes.extend([0xFF, 0x90, 0x00, 10, 0x00, 0x00]);
+        bytes.extend(psot.to_be_bytes());
+        bytes.extend([0x00, 0x01]);
+        bytes.extend(tile_header);
+        bytes.extend([0xFF, 0x93, 0xAB, 0xFF, 0x52]);
+        assert_eq!(bytes.len() - sot, psot as usize);
+        bytes.extend([0xFF, 0xD9]);
+        bytes
+    }
+
+    #[test]
+    fn a_classic_jpeg2000_codestream_decodes_without_the_ht_lock() {
+        // Tile data that happens to look like a COD marker is skipped, not read.
+        assert!(!jpeg2000_may_decode_ht(&codestream(0x00, &[])));
+        // A classic COC in a tile-part header leaves it classic.
+        assert!(!jpeg2000_may_decode_ht(&codestream(0x00, &[0xFF, 0x53, 0x00, 9, 0x00, 0x00, 0x05, 0x04, 0x04, 0x00, 0x01])));
+    }
+
+    #[test]
+    fn a_codestream_that_may_reach_the_ht_decoder_takes_the_lock() {
+        // HT code-blocks declared in the main header COD.
+        assert!(jpeg2000_may_decode_ht(&codestream(0x40, &[])));
+        // ... or only in a tile-part header's COC.
+        assert!(jpeg2000_may_decode_ht(&codestream(0x00, &[0xFF, 0x53, 0x00, 9, 0x00, 0x00, 0x05, 0x04, 0x04, 0x40, 0x01])));
+        // A header this scan cannot read is serialized, not guessed at.
+        assert!(jpeg2000_may_decode_ht(&[0x00, 0x00, 0x00, 0x0C, 0x6A, 0x50]));
+        let whole = codestream(0x00, &[]);
+        assert!(jpeg2000_may_decode_ht(&whole[..40]));
     }
 }

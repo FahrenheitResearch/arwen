@@ -1,5 +1,124 @@
 # Changelog
 
+## 2.9.4 (2026-10-21)
+
+New:
+- `gpuwm cyclone-setup --storm auto|ID|NAME` selects a storm without a track file: the NHC ATCF best tracks active at the cycle by default, or the strongest system inside the target region.
+- `gpuwm render` expands glob patterns in its inputs, so the render command that `gpuwm go --dry-run` prints runs as printed.
+- `gpuwm mesh --card rtx-pro-6000` sizes meshes for the RTX PRO 6000.
+- `gpuwm ensemble` writes a run-root timeline and a per-stage timing table in `ensemble-run.json`.
+- Integrated vapour transport, integrated water vapour, freezing level and atmospheric-river outline maps in the default product set.
+- Visibility and fog maps, with ensemble fog probability (visibility below 1000 m and 400 m) by default.
+- Snowfall, snow depth, snow-to-liquid ratio and liquid equivalent products, with 1/4/8/12 in ensemble exceedance and NOHRSC/SNODAS comparison.
+- Hail size from the microphysics and HAILCAST on the GPU, on by default at 4 km and finer, with `gpuwm obs hail verify` against MESH and SPC reports.
+- Hub-height wind at any height, shear, turbulence intensity, ramps and table-driven turbine power (`gpuwm render --products hub_*`).
+- Solar products: GHI, DNI, DHI, plane-of-array, PV power, clear-sky and ramps (`gpuwm solar products`).
+- Fire danger indices with carried state: Canadian FWI system, KBDI and NFDRS 2016 (`python -m gpuwm.fire_danger_state`).
+- `gpuwm go --cyclone-products` drives the every-step tropical cyclone accumulator on a moving nest.
+- Heat index, WBGT, HDWI, Haines and lightning threat maps in the standard render sets.
+- Coupled atmosphere, ocean wave and storm surge runs (`gpuwm ocean run`), with GPU spectral waves and GPU shallow-water surge.
+- A GPU mixed-layer ocean is the default for multi-day marine runs, initialised from RTOFS/HYCOM.
+- Prognostic sea ice on the GPU, on by default.
+- Live aerosol optics into RRTMG and RRTMGP on the GPU (`aer_ra_feedback=1`), with AOD at 550 nm written.
+- Composition sources from MERRA-2, CAMS reanalysis and GEOS-FP through one Rust decoder (`chem_sources`).
+- LANDFIRE fuels and 3DEP terrain for coupled fire runs (`gpuwm fire-static`).
+- Fire ignition from incident points, perimeters and FIRMS detections (`gpuwm fire-ignition`).
+- Archived GFS from GDEX and NCEI as initial and boundary sources.
+- Dated operational GEFS and the GEFSv12 reforecast as ensemble sources.
+- Historical ECMWF ENS members as a source (`gpuwm domain --source ecmwf-ens --member`).
+- Polar stereographic domains that enclose either pole, chosen automatically by the domain wizard.
+- Solar eclipse shading on the GPU, on by default (`ra_sw_eclipse=0` turns it off).
+- The packaged HRRR recipe now matches operational HRRR v4 physics: 5th-order vertical advection, the HRRR sixth-order filter and upper-wind limiter, microphysics zero-out, fractional sea ice, smoothed boundary terrain, RUC sea ice, HAILCAST and hourly maximum diagnostics.
+- Medicane and polar-low detection and tracking on the GPU (`python -m gpuwm storm-detect`).
+- Storm tracks fetched automatically from IBTrACS, HURDAT2, ATCF and JTWC; cyclone setup by storm name (`gpuwm cyclone-setup --storm`) and track scoring (`gpuwm tc-tracks --best-track auto`).
+- GLSEA and ERA5-Land lake temperatures bound to lake columns when the lake model is on.
+- `gpuwm setup --with-geog` stages a permissively licensed default geography set, including SoilGrids soil texture.
+- `gpuwm race` and `gpuwm standby` start the packaged HRRR recipe the moment NOAA posts its analysis, and publish each forecast hour's products as it closes.
+- Storm-following 1 km nests on the HRRR recipe (`gpuwm go --storm-nests N`), spawned on updraft helicity and moved with the storm.
+- HRRR-Smoke for the packaged HRRR recipe, turned on with `--smoke` on `gpuwm go`, `gpuwm domain --recipe`, `gpuwm standby` and `gpuwm race`: RAVE fire emissions with HRRR and RAP smoke for the start and boundaries, across several cards with `--devices`.
+- 2 m vapour pressure deficit products, including daily maximum, minimum and range.
+
+Changed:
+- The source tree is about 7.6 million lines smaller: the vendored Rust crates share one offline registry, one wrf-core (v0.2.38) is vendored instead of two, and dead code, duplicate tests and the frozen gpuwm-hex 0.3.3 snapshot are removed.
+- Simulated radar from mixing ratios matches wrf-python's CALCDBZ (used when the file has no REFL_10CM, or with the classic Stoelinga operator).
+- `rw_simradar --estimate` accepts a wrfout without T; a radar run on that file still refuses and names the missing T.
+- Faster first forecast step on large domains: the initial atmosphere's wind rotations run in whole planes.
+- Faster McICA radiation and acoustic dycore kernels.
+
+Fixed:
+- Default-on hydro can reach a fully covered domain on any install: the five hydro provider tools (fabric, parameters, routing, reservoirs, initial water) are built by `install.sh`, fetched on demand by a pip install, and reported by `gpuwm doctor`.
+- ERA5 and the other experiment-route runs write `report.json` with the hydro decision, timing and health, like the GFS and HRRR routes.
+- `gpuwm ensemble` hands its domain to the hydro door, so members are no longer refused hydro for "no domain geometry".
+- An mp=28 run stages its Thompson tables on first use, before the forcing download, so HRRR preparation no longer fails on a bare pip install.
+- The HRRR kernel pre-warm needs no WIF aerosol dataset and warms the forecast's own kernels, so the first forecast step no longer compiles for about a minute with the card idle.
+- An HRRR `latest` run started while its cycle is still publishing waits for each lead's surface file instead of failing.
+- A download waiting for a fetch connection slot takes what is free, says who holds the rest, and refuses instead of hanging.
+- `gpuwm setup --with-geog` stages `orogwd3_10m`, which the packaged CONUS HRRR recipe needs.
+- An HRRR-sourced domain off the HRRR projection (for example `--ladder 12-3`) no longer emits an HRRR static source it cannot use.
+- ERA5 `gpuwm go` downloads its forcing under `--outdir`, and the ERA5 and case-data route logs each restart and history write.
+- `gpuwm cycle` picks a default parent time step that divides the cycle, so a 15-minute cycle runs with no extra options.
+- `gpuwm domain --recipe` stands alone on its row's declared region and spacing; `--point-extent-km` help names the longer axis and the 5:4 root.
+- A pinned adaptive domain's time-step message names its adaptive clock instead of a fixed step.
+- Fire products are no longer requested, and reported undrawn, on runs without fire.
+- `gpuwm render --compare` names the card it renders on, uses a readable 1 h precipitation scale and fits the MRMS subtitle.
+- `gpuwm go` reuses its own sealed Earth-2 fetch instead of refusing the data directory.
+- `gpuwm earth2 --storm auto --nest` prepares: the default ERA5 surface donor covers the full 360-degree band.
+- `gpuwm earth2 --dry-run` applies the real run's preflight refusals.
+- Earth-2 FCN3 no longer stalls in model load on a busy host: its DISCO basis is built on the card and construction uses a bounded thread pool sized by the CPU quota. `gpuwm fetch --source earth2-*` runs its CPU stage with no card and keeps model construction out of the card lease.
+- `gpuwm earth2-diagnose` refuses a missing `--input` before starting.
+- `gpuwm tc-tracks` finds or builds its Earth2Studio interpreter and TempestExtremes, builds every lead from an Earth-2 per-lead file, draws NHC wording only with a best track, and no longer draws a 0.25-degree staircase.
+- `gpuwm setup --with-earth2` builds the FCN3 environment on glibc 2.42 and newer (Ubuntu 26.04), and exits nonzero when that build fails; `gpuwm doctor` reports the Earth2Studio interpreter and TempestExtremes as opt-in until their first use builds them.
+- `gpuwm hf-fetch` asks for `--accept-licence` before downloading a restricted model, and refuses a gated repository in one line at exit 2 with no partial files left.
+- The AtlasCRPS row is admitted under its permissive weights licence.
+- psutil is a runtime dependency, so Earth-2 receipts record CPU stalls on a default install.
+- Runtime provenance no longer needs `git`.
+- The sounding renderer runs on headless servers, with a CPU rasteriser when no GPU device is available.
+- On-demand tools (the sounding renderer, hydro gauge verification) say why a fetch failed, with a remedy that works for a pip install.
+- CLI: `gpuwm ensemble` has its own parser, `rw-wps` names itself, and `gpuwm prep` takes T-form cycles.
+- `gpuwm setup --with-earth2` installs what FCN3 needs (torch-harmonics and makani from earth2studio's pinned sources, built against the matching CUDA compiler).
+- FCN3 runs on 24 GB and 32 GB cards: its band-wise convolution now works with the pinned torch-harmonics (peak card memory 16.6 GB, was 60 GB).
+- `gpuwm go` keeps hydro start-up state under the data folder instead of beside the configuration.
+- Default-on hydro builds its fabric for large and global domains (the grid coarsens instead of refusing), and `gpuwm go --dry-run` decides hydro without building a fabric.
+- On CONUS, a live hydro run starts from the National Water Model analysis soil water when ERA5 does not reach the forecast start; elsewhere it carries the ERA5 spin-up and says so.
+- `gpuwm run` takes `--hydro off` and `--hydro SETTINGS.toml`, as `gpuwm go` does, and a `--wrfinput` run on a covered domain runs coupled hydro.
+- The kernel pre-warm column is a physically valid sounding for any model top, so FCN3-driven runs pre-warm instead of failing.
+- `gpuwm earth2` takes `--geog-root`, the same option `gpuwm go` uses.
+- Multi-card runs (`--devices` above 1) refuse on a Python with the GIL and say so; `gpuwm doctor` reports the interpreter and its GIL state.
+- GFS complex-packed fields with missing-value mode 1 decode correctly.
+- A concurrent kernel-plan initialisation could deadlock.
+- Runs of 48 h and longer with the default mixed-layer ocean no longer refuse continental domains with inland water outside the lake mask.
+- A forecast that fails while its preparation is still running reports the error at once.
+- An HRRR run whose fetch covers more hours than the run itself (as with the packaged HRRR recipe) no longer stops at "Publish prepared head".
+- Preparation decodes JPEG2000 GRIB2 fields in parallel, so a full-CONUS HRRR run reaches its first step about three times sooner.
+- HAILCAST no longer produces negative impact speeds.
+- An ensemble that checkpoints keeps only its latest product-collector snapshot instead of one per checkpoint.
+- Windowed products whose bounds span the whole globe keep every longitude.
+- The longwave layer count stays valid on 80-level high-top grids.
+- The tropical cyclone track plume no longer gives a legend swatch to a member with no track.
+- The NCAR CONUS 12 km benchmark warm start from a wrf.exe restart runs with prognostic sea ice and the shortwave direct/diffuse split on.
+- The HRRR recipe with storm nests prepares on the HRRR hierarchy route.
+- An HRRR native start seeds the boundary-layer height from the cycle's own HPBL.
+- Hub turbulence intensity is diagnosed from surface-layer similarity when the boundary-layer scheme carries no TKE, and a blank hub map is reported undrawn.
+- Upper-air temperature maps fit their colour scale to tropical fields.
+- `--tiles auto` on one card prices the full-CONUS road from the run's own holdings, so it takes the store road instead of running out of memory.
+- Hydro soil comes from the geography mirror first, so default-on hydro attaches when the SoilGrids service is down; source fetches ask for land tiles only, each file once.
+- Hydro preparation is kept once per domain and reused by later starts and new installs of the same recipe.
+- `gpuwm ensemble` prices hydro in its disk check and refuses before any download.
+- A multi-card race or standby with `--tiles auto` takes the multi-card road instead of refusing.
+- The mixed-layer ocean reads its WOA18 climatology from a local cache: `gpuwm fetch-tables --ocean` stages it (as do `gpuwm setup` and `install.sh`), a missing month is fetched over two routes with retries, and `gpuwm doctor` reports it.
+- Hydro writes its products on a pip install, its spin-up fills reanalysis gaps and always runs its full length, and it stays attached when a forecast lowers its time step over steep terrain.
+- The hydrofabric builds beside fetch and preparation, so a first run starts downloading at once.
+- HRRR preparation works on a host with no NVIDIA driver.
+- `gpuwm render --products all` no longer asks for a snowfall window on a history that stores no snowfall.
+- The `gpuwm doctor` remedy for the MPAS static geography quotes the real download size.
+- HRRR-sourced static fields that exist only over land (deep soil temperature, albedo, greenness, leaf area, snow albedo) are sampled with the land mask, so coastal and lakeshore land no longer blends toward the water value.
+- RRFS comparison sheets fetch their reference from the NOAA AWS bucket, so cycles older than two days still draw.
+- A nest that keeps 3-hourly history no longer fails its render on the hourly precipitation window.
+- A storm-following nest parks when its storm's track ends and follows only a minimum that is the storm, instead of wandering to other lows.
+- `gpuwm go`'s HRRR comparison reads the run's own downloads instead of fetching the cycle again.
+- Storm-nest expansion keeps a configuration's own fixed nests.
+- A forecast shorter than an hour runs with hydro on and writes one flow frame at its end.
+
 ## 2.9.3 (2026-10-19)
 
 New:

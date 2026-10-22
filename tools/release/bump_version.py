@@ -38,7 +38,8 @@ since: Rust libm, the CORE-MATH transcriptions and further Arm
 optimized-routines files the wheel carries) and whose stage contract and
 changelog were three weeks old.
 ``--check`` now names any such link whose tag is not ``pyproject.toml``'s
-version, so the release contract set refuses the stale tag.
+version, so the release contract set refuses the stale tag. It also names a
+README link with a relative target, which is a 404 on the PyPI page.
 
 Usage:
   python tools/release/bump_version.py --to 2.7.5    # rewrite, open the changelog section
@@ -117,12 +118,33 @@ def tag_links(root: Path) -> list[tuple[str, int, str]]:
     return found
 
 
+#: A Markdown link or HTML href/src target in the README that is not absolute.
+#: The README is also the PyPI page, where a relative target resolves under
+#: pypi.org/project/gpuwm/ and is a 404: the 2.9.3 page carried eleven such
+#: links (docs/public/SOURCES.md, SETUP.md, CONFIGURATION.md, ...). A README
+#: link names the tagged tree instead, which TAG_LINK then keeps in step.
+RELATIVE_LINK = re.compile(r'\]\((?!https?:|mailto:|#)([^)\s]+)\)|(?:href|src)="(?!https?:|mailto:|#)([^"]+)"')
+
+
+def relative_links(root: Path) -> list[tuple[int, str]]:
+    """Every (line, target) in README.md that would not resolve on the PyPI page."""
+    path = root / "README.md"
+    if not path.is_file():
+        return []
+    return [(number, match.group(1) or match.group(2))
+            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+            for match in RELATIVE_LINK.finditer(line)]
+
+
 def disagreements(root: Path) -> list[str]:
     found = declared(root)
     lead = found[0][1]
     wrong = [f"{relative} says {version}, pyproject.toml says {lead}" for relative, version in found if version != lead]
     wrong.extend(f"{relative}:{number} links the v{version} tree, pyproject.toml says {lead}"
                  for relative, number, version in tag_links(root) if version != lead)
+    wrong.extend(f"README.md:{number} links {target} relatively, a 404 on the PyPI page; "
+                 f"link https://github.com/FahrenheitResearch/arwen/blob/v{lead}/{target}"
+                 for number, target in relative_links(root))
     return wrong
 
 

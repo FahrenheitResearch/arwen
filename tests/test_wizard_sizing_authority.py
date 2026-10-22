@@ -272,3 +272,42 @@ def test_declared_tier_never_asks_the_probe(tmp_path, monkeypatch):
     assert cli_main(
         ["domain", *_WIZARD, "--card", "24gb", "--out", str(out)]) == 0
     assert out.is_file()
+
+
+def test_pool_lease_budget_replaces_busy_card_free_for_sizing(tmp_path, monkeypatch):
+    import json
+    from gpuwm.core import preflight
+    from gpuwm.go_cli import memory_gate, memory_refusal_text
+
+    out = tmp_path / "leased.toml"
+    assert cli_main(["domain", *_WIZARD, "--card", "16gb",
+                     "--point-extent-km", "600", "--out", str(out)]) == 0
+    probe = dict(free_bytes=GIB, total_bytes=32 * GIB, profile=None)
+    monkeypatch.setattr(preflight, "device_memory_probe_subprocess", lambda: probe)
+    monkeypatch.setattr(domain_wizard, "device_memory_probe_subprocess", lambda: probe)
+    monkeypatch.setenv("GPU_MUTEX_DIR", str(tmp_path))
+    monkeypatch.setenv("GPU_MUTEX_CARDS", "3")
+    assert memory_gate({"config": out})["refuse"]
+    # Physical card 3 is visible as CUDA 0. An unrelated owner's budget
+    # must not be used; the matching live ancestor supplies this lease.
+    birth = Path(f"/proc/{os.getpid()}/stat").read_text().rsplit(")", 1)[1].split()[19]
+    owner = dict(pid=os.getpid(), birth=birth, mode="pool", budget_bytes=12000 * 2**20)
+    ledger = tmp_path / "OWNER-3.json"
+    def write_owner():
+        ledger.write_text(json.dumps(dict(schema="gpu-mutex.owner.v1", owners=[owner])))
+    write_owner()
+    gate = memory_gate({"config": out})
+    assert not gate["refuse"], gate["verdict"]
+    assert gate["free_bytes"] == owner["budget_bytes"]
+    assert "pool lease budget 12000 MiB" in gate["verdict"]
+    assert "card's 1.00 GiB free" in gate["verdict"]
+    assert domain_wizard.resolve_sizing_budget(None, None).free_bytes == owner["budget_bytes"]
+    assert domain_wizard.resolve_sizing_budget("32gb", None).free_bytes == owner["budget_bytes"]
+    owner["budget_bytes"] = GIB
+    write_owner()
+    gate = memory_gate({"config": out})
+    assert gate["refuse"]
+    assert "pool lease budget" in memory_refusal_text(gate)
+    owner["birth"] = "stale"
+    write_owner()
+    assert memory_gate({"config": out})["pool_lease_note"] is None

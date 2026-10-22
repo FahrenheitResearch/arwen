@@ -459,6 +459,38 @@ def resume_completed(root, receipt, parents, members, hours):
     return list(completed.values())
 
 
+def priced_card_reservation(parents):
+    """One card worker's priced reservation, from the parents it forecasts.
+
+    A worker keeps one parent resident at a time, so a card holds at most
+    the largest parent's forecast: each parent is priced through
+    :func:`gpuwm.supervisor.priced_reservation_bytes`, the function every
+    other run door prices from, and the largest priced figure is the card's.
+    None (admitted against measured free memory, and said so) only when no
+    parent can be priced.
+    """
+    from gpuwm.supervisor import priced_reservation_bytes
+    prices = []
+    for parent in parents:
+        price = None
+        try:
+            if 'wrfinput' in parent:
+                from gpuwm.wrfinput_door import resolve_wrfinput_run
+                from gpuwm.wrfinput_forecast import wrfinput_urban_columns
+                parent_run = resolve_wrfinput_run(parent['wrfinput'])
+                urban_columns = wrfinput_urban_columns(parent_run)
+                price = priced_reservation_bytes(
+                    parent_run.experiment,
+                    **({} if urban_columns is None else {'urban_columns': urban_columns}))
+            elif 'experiment_config' in parent:
+                price = priced_reservation_bytes(parent['experiment_config'])
+        except Exception:  # noqa: BLE001 - pricing is advisory, never a gate
+            price = None
+        if price:
+            prices.append(int(price))
+    return max(prices) if prices else None
+
+
 def run(args):
     """CLI entry; locks and child lifetimes belong to this one invocation."""
     from contextlib import ExitStack
@@ -521,11 +553,14 @@ def run(args):
     started = time.perf_counter()
     processes, channels = [], {}
     atomic_json(root/'ensemble-set.json', receipt)
+    reservation_bytes = priced_card_reservation(parents)
+    receipt['card_reservation_bytes'] = reservation_bytes
     with ExitStack() as leases:
         try:
             for card in sorted(cards, key=lambda card: card.uuid):
                 leases.enter_context(supervisor.GPUFileLock(card.uuid, run_id=str(root)))
-                supervisor.preflight_exclusive_gpu(card.uuid, approved_pids={os.getpid()}, allow_shared_gpu=False)
+                supervisor.preflight_exclusive_gpu(card.uuid, approved_pids={os.getpid()}, allow_shared_gpu=False,
+                                                   reservation_bytes=reservation_bytes)
         except BaseException as error:
             receipt.update(status='failed', error=f'{type(error).__name__}: {error}',
                            wall_seconds=time.perf_counter()-started)

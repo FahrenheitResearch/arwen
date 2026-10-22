@@ -15,15 +15,7 @@ import numpy as np
 
 from gpuwm.core.physics_inventory import MYNN_SURFACE_OUTPUTS
 from gpuwm.ensemble.batch_storage import BatchArraySpec, BatchMemoryPlan, BatchStorage
-
-
-def _positive(value, name):
-    if isinstance(value, (bool, np.bool_)):
-        raise TypeError(f"{name} must be an integer")
-    result = index(value)
-    if result <= 0:
-        raise ValueError(f"{name} must be positive")
-    return result
+from gpuwm.ensemble.batch_storage import _positive_count as _positive
 
 
 def mynn_surface_output_plan(*, ny, nx, reserved_bytes=0):

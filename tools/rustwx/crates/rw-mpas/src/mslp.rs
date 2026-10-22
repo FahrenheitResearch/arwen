@@ -96,9 +96,6 @@ pub fn shuell_mslp_plane(
         .collect()
 }
 
-/// What a receipt says the reduction is.
-pub const DESCRIPTION: &str = "NCEP Shuell reduction (as the GFS post computes PRMSL): the lowest model level's virtual temperature carried to the ground at 6.5 K/km, a 6.5 K/km fictitious column below the terrain, its sea-level temperature adjusted only when it exceeds 290.66 K";
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -73,13 +73,18 @@ def main():
     gate = dict(
         line.split("\t", 1)
         for line in (args.root / "gate.txt").read_text().splitlines())
-    from gpuwm.ingest.native_supplements import gate_optional_hybrid_fields
+    from gpuwm.ingest.native_supplements import (
+        gate_optional_hybrid_fields, gate_optional_surface_fields)
     optional_hybrid = gate_optional_hybrid_fields(gate)
+    # The cycle's PBL height (HPBL), one record and one payload when the
+    # wrfnat publishes it (hrrr_grib2_bridge OPTIONAL_SURFACE_SPECS).
+    optional_surface = gate_optional_surface_fields(gate)
     required = {
         "status": "PASS",
         "forecast_hours": ",".join(map(str, hours)),
         "series_count": str(len(hours)),
-        "atmosphere_selected_per_time": str(561 + 50 * len(optional_hybrid)),
+        "atmosphere_selected_per_time": str(
+            561 + 50 * len(optional_hybrid) + len(optional_surface)),
         "soil_selected_per_time": "18",
         "window_shape": args.expected_window_shape,
     }
@@ -110,7 +115,8 @@ def main():
             raise ValueError("native supplement publication lacks its GRIB selection receipt")
     for hour in hours:
         for role, expected_files in (("atmosphere", 22 + len(fields)
-                                      + len(optional_hybrid)),
+                                      + len(optional_hybrid)
+                                      + len(optional_surface)),
                                      ("soil", 2 + len(soil_surface_fields))):
             directory = args.root / f"{role}-f{hour:02d}"
             files = sorted(directory.glob("*.f32le"))

@@ -45,7 +45,7 @@ from __future__ import annotations
 
 from typing import Mapping, NamedTuple, Sequence
 
-from gpuwm.core.noahmp_slab_libm import copy_slab_slots, split_slab_slots
+from gpuwm.core.noahmp_slab_libm import copy_slab_slots
 
 import numpy as np
 

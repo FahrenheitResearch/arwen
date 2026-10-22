@@ -624,7 +624,7 @@ pub fn write(plan: &Plan, payload: &[u8]) -> Result<serde_json::Value> {
                         }))
                     })
                     .collect::<std::result::Result<Vec<_>, _>>()?;
-                fs::File::open(&directory)?.sync_all()?;
+                crate::sync_directory(&directory)?;
                 let domain = plan
                     .renderer
                     .as_ref()
@@ -954,8 +954,8 @@ pub fn write(plan: &Plan, payload: &[u8]) -> Result<serde_json::Value> {
             _ => unreachable!("validated output format roster"),
         }
     }
-    fs::File::open(&plan.output_directory)?.sync_all()?;
+    crate::sync_directory(&plan.output_directory)?;
     Ok(
-        serde_json::json!({"operation":"series-write","frames":plan.frames,"reaches":plan.reaches,"boundary_ms":started.elapsed().as_secs_f64()*1000.,"parallelism":format!("{} Rayon workers transpose/format; serialized netCDF-C container",rayon::current_num_threads()),"receipts":receipts,"scope":"serialization only; native replay qualification separate"}),
+        serde_json::json!({"operation":"series-write","frames":plan.frames,"reaches":plan.reaches,"boundary_ms":started.elapsed().as_secs_f64()*1000.,"parallelism":format!("{} Rayon workers transpose/format; native Rust NetCDF containers; ordered file I/O",rayon::current_num_threads()),"receipts":receipts,"scope":"serialization only; native replay qualification separate"}),
     )
 }

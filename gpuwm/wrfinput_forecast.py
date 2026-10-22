@@ -16,12 +16,12 @@ from gpuwm.progress_log import ProgressOptions, add_progress_arguments
 
 
 def _sha(path: Path) -> str:
+    # Once per process for an unchanged file (gpuwm.file_digest): the leg
+    # hashes each input before and after its read, for the receipt and at
+    # the end of the run, and a changed file is still hashed again.
+    from gpuwm.file_digest import sha256_file
     from gpuwm.filesystem_paths import io_path
-    digest = hashlib.sha256()
-    with io_path(path).open('rb') as stream:
-        for block in iter(lambda: stream.read(8*1024*1024), b''):
-            digest.update(block)
-    return digest.hexdigest()
+    return sha256_file(io_path(path))
 
 
 @dataclass(frozen=True)
@@ -137,6 +137,7 @@ class WrfInitialization:
                 landuse=bundle.landuse,
                 constant_glw_wm2=declared_constant_glw(self.inputs.experiment),
                 fractional_seaice=bundle.fractional_seaice,
+                hydro_parent_geometry=grid,
                 **({"cam_ozone": cam} if cam is not None else {}))
         return DomainInitialization(wrf_initial_result(bundle.restored, state), initialize)
 
@@ -682,6 +683,10 @@ def build_parser():
     parser.add_argument('--restart', type=Path)
     parser.add_argument('--restart-from', type=Path, default=None, metavar='WRFRST',
                         help='continue a WRF run from its wrfrst_d01 restart file (warm start)')
+    parser.add_argument('--checkpoint-at', default=None, metavar='TIMES',
+                        help='write only these scheduled checkpoints: comma-separated WRF valid times '
+                             '(2022-06-13_22:00:00) or `end`; each must be a restart_interval instant of '
+                             'the run.  Absent writes every scheduled checkpoint')
     parser.add_argument('--health-debug', action='store_true')
     from gpuwm.ensemble.door import add_arguments
     add_arguments(parser)
@@ -724,7 +729,8 @@ def run_wrf_forecast(directory, outdir, *, run_seconds=None, restart=None,
                      render_products=None, render_dir=None,
                      progress_options=None, relaunched=False, allow_shared_gpu=False,
                      output_owner=None, soil_source=None, ensemble_request=None,
-                     restart_from=None, benchmark=False, analysis=None):
+                     restart_from=None, benchmark=False, analysis=None,
+                     checkpoint_at=None):
     import os
     import subprocess
     import sys
@@ -732,6 +738,10 @@ def run_wrf_forecast(directory, outdir, *, run_seconds=None, restart=None,
     from gpuwm.stage_reuse import claim_run_output
     from gpuwm.wrfinput_door import resolve_wrfinput_run
     started = time.perf_counter()
+    from gpuwm import checkpoint_schedule
+    # Parsed here, at plan review, so a malformed value is refused before
+    # a card is reserved; resolved against the run's clock in the worker.
+    checkpoint_instants = checkpoint_schedule.parse(checkpoint_at)
     marks = None
     if benchmark:
         # NV recipe dry run, D6: a timed run draws nothing and verifies
@@ -851,6 +861,8 @@ def run_wrf_forecast(directory, outdir, *, run_seconds=None, restart=None,
                 command += ['--render-dir', str(Path(render_dir).resolve())]
             if benchmark:
                 command += ['--benchmark']
+            if checkpoint_instants is not None:
+                command += ['--checkpoint-at', ','.join(checkpoint_instants)]
             if analysis_plan is not None:
                 command += ['--analysis-plan', str(analysis_plan)]
             command += ProgressOptions.worker_flags(progress_options)
@@ -863,9 +875,14 @@ def run_wrf_forecast(directory, outdir, *, run_seconds=None, restart=None,
                 # Priced against THIS run's reservation through the same
                 # function `gpuwm run` prices from, so a co-tenant admitted
                 # at one door is admitted at the other.
+                env = dict(os.environ, CUDA_VISIBLE_DEVICES=cuda_mask)
+                if marks is not None:
+                    # The door's own share of the start-up, for the worker's
+                    # summary (benchmark_timing.DOOR_MARKS_ENV).
+                    env[benchmark_timing.DOOR_MARKS_ENV] = benchmark_timing.door_marks(
+                        marks, spawn=time.time())
                 status = worker_exit_status(subprocess.run(
-                    command, env=dict(os.environ, CUDA_VISIBLE_DEVICES=cuda_mask),
-                    check=False).returncode)
+                    command, env=env, check=False).returncode)
             if benchmark and status == 0:
                 benchmark_timing.report(
                     outdir, process_start=benchmark_timing.process_start_unix())
@@ -880,6 +897,13 @@ def run_wrf_forecast(directory, outdir, *, run_seconds=None, restart=None,
         # units (32 s of a 33.5 s first step on a warm kernel cache);
         # they now compile on a background thread while the input is read.
         from gpuwm import kernel_prewarm
+        # Prebuilt kernel images under a mounted cache (gpuwm.kernel_cache_seed);
+        # nothing when GPUWM_KERNEL_CACHE_SEED is unset.
+        from gpuwm import kernel_cache_seed, kernel_prebuild
+        kernel_cache_seed.seed()
+        # GPUWM_KERNEL_RECORD: what this run compiles, for a prebuild on
+        # other cards (gpuwm.kernel_prebuild); nothing when unset.
+        kernel_prebuild.install_recorder()
         # The configuration's whole kernel set compiles on every core while
         # the input is read (gpuwm.kernel_plan), not one module at a time
         # inside step 1.
@@ -889,6 +913,8 @@ def run_wrf_forecast(directory, outdir, *, run_seconds=None, restart=None,
         if analysis_plan is not None:
             from gpuwm.da.analysis_door import load_plan
             plan_document = load_plan(analysis_plan)
+        if marks is not None:
+            marks.mark('prepare_start')
         inputs = prepare_wrf_run(run, worker_output/'input', run_seconds=run_seconds,
                                  **({} if soil_source is None else {'soil_source': soil_source}),
                                  **({} if plan_document is None or not plan_document.get('boundary_pair_file')
@@ -904,17 +930,18 @@ def run_wrf_forecast(directory, outdir, *, run_seconds=None, restart=None,
         with production_run_scope(request, output_directory=worker_output):
             first_products = arm_door_first_products(plan, outdir=worker_output, started=started)
             try:
-                run_prepared_tree(inputs, output_directory=worker_output, io_mode=io_mode,
-                                  restart=None if restart is None else io_path(restart),
-                                  health_debug=health_debug,
-                                  progress_options=progress_options,
-                                  initialization=_door_initialization(
-                                      (WrfRestartInitialization(inputs)
-                                       if getattr(run, 'restart_paths', None) is not None
-                                       else WrfInitialization(inputs)),
-                                      analysis_plan, worker_output),
-                                  **({} if first_products is None
-                                     else {'first_products': first_products}))
+                with checkpoint_schedule.selected(checkpoint_instants):
+                    run_prepared_tree(inputs, output_directory=worker_output, io_mode=io_mode,
+                                    restart=None if restart is None else io_path(restart),
+                                    health_debug=health_debug,
+                                    progress_options=progress_options,
+                                    initialization=_door_initialization(
+                                        (WrfRestartInitialization(inputs)
+                                         if getattr(run, 'restart_paths', None) is not None
+                                         else WrfInitialization(inputs)),
+                                        analysis_plan, worker_output),
+                                    **({} if first_products is None
+                                       else {'first_products': first_products}))
             except BaseException as error:
                 stop_door_renders(first_products, error)
                 raise
@@ -945,7 +972,11 @@ def analysis_request(args):
     return request_from_args(args)
 
 
-def main(argv=None):
+def main(argv=None, *, in_process=False):
+    """The door.  ``in_process=True`` runs the forecast in this process (the
+    worker's body, as ``gpuwm run --no-supervise`` does) instead of a fresh
+    supervised worker: the warm leg executor (:mod:`gpuwm.leg_executor`)
+    runs successive legs this way on the card it was started on."""
     args = build_parser().parse_args(argv)
     try:
         from gpuwm.ensemble.calibration_admission import refuse_public_arguments
@@ -959,7 +990,8 @@ def main(argv=None):
             members=args.members, keep_member_files=args.keep_member_files)
         return run_wrf_forecast(args.wrfinput, args.outdir, run_seconds=args.run_seconds,
                                restart=args.restart, io_mode=args.io_mode,
-                               health_debug=args.health_debug, exclusive_gpu=not args._worker,
+                               health_debug=args.health_debug,
+                               exclusive_gpu=not (args._worker or in_process),
                                rrtmg_variant=args.rrtmg_variant,
                                thompson_version=args.thompson_version,
                                urban_ucm_generation=args.urban_ucm_generation,
@@ -972,6 +1004,7 @@ def main(argv=None):
                                output_owner=args._output_owner, soil_source=args.soil_source,
                                restart_from=args.restart_from, benchmark=args.benchmark,
                                analysis=analysis_request(args),
+                               checkpoint_at=args.checkpoint_at,
                                **({} if request is None else {"ensemble_request": request.receipt()}))
     except (ValueError, OSError) as error:
         import sys

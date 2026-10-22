@@ -39,12 +39,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-LEVEL_IN = ("th", "qv", "qc", "qr", "qi", "qs", "qg", "ni", "ns", "nr",
-            "ng", "rho", "pii", "p", "dz", "qrcuten", "qscuten", "qicuten")
-SURF = ("rainnc", "rainncv", "snownc", "snowncv", "graupelnc",
-        "graupelncv", "sr")
-LEVEL_OUT = ("th", "qv", "qc", "qr", "qi", "qs", "qg", "ni", "ns", "nr",
-             "ng", "refl_10cm")
+from tools.morrison_wrf461_oracle.stress_columns import (
+    LEVEL_IN, LEVEL_OUT, SURF, _row37_off as _stress_row37_off,
+    read_output, write_input,
+    _run_gpu as _stress_run_gpu,
+)
 
 REGIMES = ("supercell", "mcs_stratiform", "kf_seeded", "night_fog",
            "night_frost", "synoptic_snow", "freezing_rain", "marine_sc",
@@ -413,17 +412,6 @@ def make_set(nz, mode, seed):
     return fields, surf
 
 
-def write_input(path, fields, surf, mode, dt):
-    nz, ncol = fields["th"].shape
-    with open(path, "wb") as out:
-        np.asarray([ncol, nz, mode], dtype="<i4").tofile(out)
-        np.asarray([dt], dtype="<f4").tofile(out)
-        for name in LEVEL_IN:
-            fields[name].astype("<f4").tofile(out)
-        for name in SURF:
-            surf[name].astype("<f4").tofile(out)
-
-
 def read_input(path):
     raw = np.fromfile(path, dtype="<i4", count=3)
     ncol, nz, mode = (int(x) for x in raw)
@@ -440,85 +428,15 @@ def read_input(path):
     return ncol, nz, mode, dt, fields, surf
 
 
-def read_output(path, ncol, nz):
-    data = np.fromfile(path, dtype="<f4")
-    out, pos = {}, 0
-    for name in LEVEL_OUT:
-        out[name] = data[pos:pos + nz * ncol].reshape(nz, ncol)
-        pos += nz * ncol
-    for name in SURF:
-        out[name] = data[pos:pos + ncol]
-        pos += ncol
-    return out
-
-
 # ------------------------------------------------------------------ GPU side
 
 def run_gpu(ncol, nz, mode, dt, fields, surf, steps, columns_per_call=None):
-    import cupy as cp
-    from gpuwm.core import morrison
-    from gpuwm.core.refl import launch_refl10cm_morrison
-
-    def dev(a):
-        return cp.asarray(np.ascontiguousarray(a).reshape(nz, 1, ncol))
-
-    d = {name: dev(fields[name]) for name in LEVEL_IN}
-    nc = cp.zeros((nz, 1, ncol), dtype=cp.float32)
-    s = {name: cp.asarray(np.ascontiguousarray(surf[name]).reshape(1, ncol))
-         for name in SURF}
-    work = None
-    chunked = columns_per_call is not None and columns_per_call < ncol
-    t1d = cp.empty_like(d["th"]) if chunked else None
-    extra = ({"columns_per_call": columns_per_call, "t1d_out": t1d}
-             if chunked else {})
-    for _ in range(steps):
-        work = morrison.launch_morrison(
-            d["th"], d["qv"], d["qc"], d["qr"], d["qi"], d["qs"], d["qg"],
-            nc, d["nr"], d["ni"], d["ns"], d["ng"], d["rho"], d["pii"],
-            d["p"], d["dz"], s["rainnc"], s["rainncv"], s["snownc"],
-            s["snowncv"], s["graupelnc"], s["graupelncv"], s["sr"],
-            float(dt), qrcuten=d["qrcuten"], qscuten=d["qscuten"],
-            qicuten=d["qicuten"], morr_rimed_ice=mode, **extra)
-    if chunked:
-        temperature_source = "t1d_out of the column calls (WRF's t1d)"
-    elif work is not None and hasattr(morrison, "WORK_T3D"):
-        k = morrison.WORK_T3D
-        t1d = cp.ascontiguousarray(work[k * nz:(k + 1) * nz])
-        temperature_source = "process T3D (WRF's t1d)"
-    else:
-        # Pre-transcription API returns nothing; the closest stand-in for
-        # WRF's t1d is theta * pii after the call.
-        t1d = d["th"] * d["pii"]
-        temperature_source = "theta*pii stand-in"
-    refl = cp.empty_like(d["th"])
-    launch_refl10cm_morrison(d["qv"], d["qr"], d["nr"], d["qs"], d["ns"],
-                             d["qg"], d["ng"], t1d, d["p"], refl,
-                             morr_rimed_ice=mode)
-    out = {name: cp.asnumpy(d[name]).reshape(nz, ncol)
-           for name in LEVEL_OUT if name != "refl_10cm"}
-    out["refl_10cm"] = cp.asnumpy(refl).reshape(nz, ncol)
-    for name in SURF:
-        out[name] = cp.asnumpy(s[name]).reshape(ncol)
-    return out, temperature_source
+    return _stress_run_gpu(ncol, nz, mode, dt, fields, surf, steps,
+                           columns_per_call=columns_per_call)
 
 
 def _row37_off():
-    import cupy as cp
-    from gpuwm.core import kernels
-    original = kernels.load_module
-
-    def load(name):
-        if name != "morrison":
-            return original(name)
-        module = cp.RawModule(
-            code="#define MORR_ROW37_OFF 1" + chr(10)
-            + kernels.module_source("morrison"),
-            options=kernels.module_options("morrison"))
-        module.compile()
-        return module
-
-    kernels.load_module = load
-    kernels.get_kernel.cache_clear()
+    _stress_row37_off()
 
 
 def grade(got, want, labels):

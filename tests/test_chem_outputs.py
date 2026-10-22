@@ -123,7 +123,7 @@ _NC_SAFE = __import__("re").compile(r"^[A-Za-z_][A-Za-z0-9_+.@-]*$")
     ["smoke"], ["dust"], ["gocart_primary"], ["gocart_simple"], ["cams_aq"],
     ["smoke", "gocart_primary"], ["smoke", "gocart_lite", "cams_aq"],
 ])
-def test_history_names_every_process_array_once_and_nc_safe(sets):
+def test_history_names_every_process_array_once_and_nc_safe(sets, monkeypatch):
     """Every process array a run writes reaches history under one netCDF-safe
     name per row.  The smoke and GOCART lanes each added a process-output
     block to history_fields and the merge kept both: the smoke block wrote
@@ -152,7 +152,20 @@ def test_history_names_every_process_array_once_and_nc_safe(sets):
     state.chem = SimpleNamespace(
         transported=table.transported, prescribed=table.prescribed,
         table=table, processes=processes)
+    # A process that refreshes its outputs before each frame (live aerosol
+    # optics, lane/cap-aer-optics f82d16b1c20) evaluates a CUDA kernel on the
+    # real state; this host fake carries names only, so the refresh is
+    # recorded here and must run once per such process per frame.
+    refreshed = []
+    expected_refresh = []
+    for key, module in processes:
+        if getattr(module, "prepare_history", None) is not None:
+            expected_refresh.append(key)
+            monkeypatch.setattr(
+                module, "prepare_history",
+                lambda st, _key=key: refreshed.append(_key))
     out = history_fields(state)
+    assert refreshed == expected_refresh
     bad = [name for name in out if not _NC_SAFE.match(name)]
     assert bad == []
     rows_out = sum(1 for row in table.rows if row.output_name)

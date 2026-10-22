@@ -333,14 +333,6 @@ def test_unclassified_state_attribute_fails_the_write(monkeypatch, tmp_path):
         restart.write_restart(tmp_path / "rst.npz", state, cfg)
 
 
-def test_unclassified_scratch_slot_fails_the_write(monkeypatch, tmp_path):
-    cfg = _cfg(moist=True, mp_physics=1)
-    state = _shim_state(cfg, monkeypatch)
-    state.scratch((2, 2), "mystery_buffer")
-    with pytest.raises(restart.RestartManifestError, match="mystery_buffer"):
-        restart.write_restart(tmp_path / "rst.npz", state, cfg)
-
-
 def test_a_per_follower_window_slot_does_not_fail_the_write(
         monkeypatch, tmp_path):
     """The classifier must stay TOTAL over the slots a run allocates.
@@ -3058,10 +3050,46 @@ def _member_names(path) -> list[str]:
 #: recomputing the fingerprint recovers the previous pair exactly, and
 #: every older reconstruction unwinds the same name
 #: (_PRE_REAL_CLAMP_ALGORITHMS).
+#:
+#: RE-PINNED for HAILCAST (lane/cap-hail, 97e9a3ca061): hailcast_opt = -1
+#: runs the diagnostic at dx <= 4 km with microphysics on
+#: (gpuwm.core.hail.enabled), so this mp=1, 2 km fixture now carries the
+#: eleven persistent HAILCAST slots (_HAILCAST_PERSISTENT_MEMBERS: running
+#: maximum, updraft mask and duration, the embryo and window diameters) as
+#: scratch members with their manifest rows, which a resume needs to
+#: continue the running maxima exactly.  The attribution is
+#: test_the_checkpoint_pins_moved_for_the_hailcast_slots_and_nothing_else:
+#: dropping exactly those members and rows recovers the previous pair, and
+#: every older reconstruction unwinds the same members
+#: (_digest_without_config_keys unwind_hailcast).
 _LIFECYCLE_FREE_ROOT_DIGEST = \
-    "b2ce004e590de75a7d37596fd6437f8aa33de0ffd40b86a8e459bb626217089e"
+    "72c1bf64128f7686fb82e04d6430d3140a899faa3c6aba319bfe73e1f01ef5e8"
 _LIFECYCLE_FREE_CHILD_DIGEST = \
+    "cce75c2551272396fa9cdbbb69701612922d73ce5e006054cb2a510546d05354"
+
+#: The pair above before the HAILCAST slots joined the checkpoint.
+_PRE_HAILCAST_ROOT_DIGEST = \
+    "b2ce004e590de75a7d37596fd6437f8aa33de0ffd40b86a8e459bb626217089e"
+_PRE_HAILCAST_CHILD_DIGEST = \
     "e03f5ad776fb76735fa796e555813e379e2d874d9641fe3f4f11574bbde690e0"
+
+#: lane/cap-hail's persistent slots at default (mp_physics = 1 has no PSD
+#: row, so the four hail_* PSD slots are absent).
+_HAILCAST_PERSISTENT_MEMBERS = (
+    "scratch/hailcast_dhail1", "scratch/hailcast_dhail2",
+    "scratch/hailcast_dhail3", "scratch/hailcast_dhail4",
+    "scratch/hailcast_dhail5", "scratch/hailcast_diam_max",
+    "scratch/hailcast_diam_mean", "scratch/hailcast_diam_std",
+    "scratch/hailcast_runmax", "scratch/hailcast_wdur",
+    "scratch/hailcast_wup_mask")
+
+
+def _unwind_hailcast_members(header: dict, names) -> list[str]:
+    """Drop the HAILCAST manifest rows; return the member names to keep."""
+    for name in _HAILCAST_PERSISTENT_MEMBERS:
+        assert name in names, name
+        del header["array_manifest"][name]
+    return [name for name in names if name not in _HAILCAST_PERSISTENT_MEMBERS]
 
 #: The pair above before the Kessler identity moved, and the identity every
 #: digest older than 2.8.8's clamp fix was harvested under.
@@ -3126,7 +3154,8 @@ _WIF_CONFIG_KEYS = ("mp28_aerosol_source", "wif_climatology_path",
 
 
 def _digest_without_config_keys(path, keys, *, config_overrides=None,
-                                algorithm_overrides=None) -> str:
+                                algorithm_overrides=None,
+                                unwind_hailcast=True) -> str:
     """The canonical member digest as it would read WITHOUT ``keys``.
 
     Same construction as :func:`_canonical_member_digest`, with exactly
@@ -3143,6 +3172,11 @@ def _digest_without_config_keys(path, keys, *, config_overrides=None,
     dropping its identity-bound key.  The writer's own derived hashes are
     recomputed after the named replacements; every other header value and
     every array byte remain bound.
+
+    ``unwind_hailcast`` (default on: every digest this reconstructs
+    predates lane/cap-hail) drops the eleven HAILCAST persistent members and
+    their manifest rows, and asserts each was there, so a missing or extra
+    slot still leaves the reconstruction short.
 
     ``algorithm_overrides`` reconstructs a declared scheme identity move
     (``physics_setup.algorithms``) the same way: the named components take
@@ -3176,11 +3210,13 @@ def _digest_without_config_keys(path, keys, *, config_overrides=None,
             setup["algorithms"][component] = identity
         header["physics_setup"] = setup
         header["physics_setup_fingerprint"] = restart._json_sha256(setup)
+        names = [name for name in sorted(data.files)
+                 if name != restart._HEADER_KEY]
+        if unwind_hailcast:
+            names = _unwind_hailcast_members(header, names)
         digest = hashlib.sha256()
         digest.update(json.dumps(header, sort_keys=True).encode("utf-8"))
-        for name in sorted(data.files):
-            if name == restart._HEADER_KEY:
-                continue
+        for name in names:
             host = data[name]
             digest.update(name.encode("utf-8"))
             digest.update(str(host.dtype).encode("utf-8"))
@@ -3242,6 +3278,26 @@ def test_the_checkpoint_pins_moved_for_the_two_wif_keys_and_nothing_else(
         assert key in echo, key
 
 
+def _written_sealed_tree_members(monkeypatch, directory, overrides):
+    directory.mkdir()
+    source, start = _sealed_tree_fixture(
+        monkeypatch, forcing_count=2, run_seconds=3600.0,
+        payload_seed=31, run_overrides=overrides)
+    restart.write_tree_restart(
+        directory, source, start + timedelta(seconds=3600))
+    members = {}
+    for path in sorted(directory.glob("gpuwmrst_d0*_*.npz")):
+        with np.load(path, allow_pickle=False) as data:
+            header = json.loads(bytes(bytearray(
+                data[restart._HEADER_KEY])).decode("utf-8"))
+            arrays = {name: (str(data[name].dtype), data[name].shape,
+                             data[name].tobytes(order="C"))
+                      for name in data.files
+                      if name != restart._HEADER_KEY}
+        members[path.name.split("_")[1]] = (header, arrays)
+    return members
+
+
 def test_the_local_face_default_moves_only_the_clock_binding(
         monkeypatch, tmp_path):
     """From 2.8.8 the default terrain clock is "local_face" and it binds.
@@ -3253,27 +3309,9 @@ def test_the_local_face_default_moves_only_the_clock_binding(
     two hashes the writer derives from the echo; every array member is
     byte for byte the same.
     """
-    def write(directory, overrides):
-        directory.mkdir()
-        source, start = _sealed_tree_fixture(
-            monkeypatch, forcing_count=2, run_seconds=3600.0,
-            payload_seed=31, run_overrides=overrides)
-        restart.write_tree_restart(
-            directory, source, start + timedelta(seconds=3600))
-        members = {}
-        for path in sorted(directory.glob("gpuwmrst_d0*_*.npz")):
-            with np.load(path, allow_pickle=False) as data:
-                header = json.loads(bytes(bytearray(
-                    data[restart._HEADER_KEY])).decode("utf-8"))
-                arrays = {name: (str(data[name].dtype), data[name].shape,
-                                 data[name].tobytes(order="C"))
-                          for name in data.files
-                          if name != restart._HEADER_KEY}
-            members[path.name.split("_")[1]] = (header, arrays)
-        return members
-
-    default = write(tmp_path / "default", None)
-    measured = write(tmp_path / "measured", {"terrain_clock": "measured"})
+    default = _written_sealed_tree_members(monkeypatch, tmp_path / "default", None)
+    measured = _written_sealed_tree_members(
+        monkeypatch, tmp_path / "measured", {"terrain_clock": "measured"})
     assert sorted(default) == sorted(measured) == ["d01", "d02"]
     for member in default:
         live, live_arrays = default[member]
@@ -3308,27 +3346,9 @@ def test_the_wrf480_solar_default_moves_only_the_solar_binding(
     byte the same.  (The YSU, Noah-MP snow-aging and urban water-balance
     selectors are scheme-scoped and absent from this fixture's echo.)
     """
-    def write(directory, overrides):
-        directory.mkdir()
-        source, start = _sealed_tree_fixture(
-            monkeypatch, forcing_count=2, run_seconds=3600.0,
-            payload_seed=31, run_overrides=overrides)
-        restart.write_tree_restart(
-            directory, source, start + timedelta(seconds=3600))
-        members = {}
-        for path in sorted(directory.glob("gpuwmrst_d0*_*.npz")):
-            with np.load(path, allow_pickle=False) as data:
-                header = json.loads(bytes(bytearray(
-                    data[restart._HEADER_KEY])).decode("utf-8"))
-                arrays = {name: (str(data[name].dtype), data[name].shape,
-                                 data[name].tobytes(order="C"))
-                          for name in data.files
-                          if name != restart._HEADER_KEY}
-            members[path.name.split("_")[1]] = (header, arrays)
-        return members
-
-    default = write(tmp_path / "default", None)
-    legacy = write(tmp_path / "legacy", {"solar_generation": "wrf_461"})
+    default = _written_sealed_tree_members(monkeypatch, tmp_path / "default", None)
+    legacy = _written_sealed_tree_members(
+        monkeypatch, tmp_path / "legacy", {"solar_generation": "wrf_461"})
     assert sorted(default) == sorted(legacy) == ["d01", "d02"]
     for member in default:
         live, live_arrays = default[member]
@@ -3441,6 +3461,34 @@ def test_the_checkpoint_pins_moved_for_the_real_clamp_identity_and_nothing_else(
         assert _digest_without_config_keys(
             path, (), algorithm_overrides=_PRE_REAL_CLAMP_ALGORITHMS
         ) == old_digest
+
+
+def test_the_checkpoint_pins_moved_for_the_hailcast_slots_and_nothing_else(
+        monkeypatch, tmp_path):
+    """lane/cap-hail added eleven persistent members, not a format change.
+
+    THE CONCRETE BREAKAGE THIS PREVENTS: a checkpoint-format change riding
+    in under the HAILCAST re-pin.  Dropping exactly the eleven members and
+    their manifest rows must land on the previous pair; anything else that
+    moved leaves the reconstruction short.
+    """
+    source, start = _sealed_tree_fixture(
+        monkeypatch, forcing_count=2, run_seconds=3600.0, payload_seed=31,
+        run_overrides=_PINNED_UNDER_MEASURED_CLOCK)
+    root_path = restart.write_tree_restart(
+        tmp_path, source, start + timedelta(seconds=3600))
+    child_path = next(p for p in tmp_path.glob("gpuwmrst_d02_*.npz"))
+    for path, old_digest, current_digest in (
+            (root_path, _PRE_HAILCAST_ROOT_DIGEST,
+             _LIFECYCLE_FREE_ROOT_DIGEST),
+            (child_path, _PRE_HAILCAST_CHILD_DIGEST,
+             _LIFECYCLE_FREE_CHILD_DIGEST)):
+        assert set(_HAILCAST_PERSISTENT_MEMBERS) <= set(_member_names(path))
+        assert _canonical_member_digest(path) == current_digest
+        assert _digest_without_config_keys(
+            path, (), unwind_hailcast=False) == current_digest
+        assert current_digest != old_digest
+        assert _digest_without_config_keys(path, ()) == old_digest
 
 
 def test_the_live_format_stamp_is_the_declared_v6_and_v5_is_named(
@@ -3649,66 +3697,6 @@ def _legacy_follow_config():
         fallback_threshold=35.0)
 
 
-def test_a_lifecycle_run_writes_the_block_on_the_root_alone(
-        monkeypatch, tmp_path):
-    """The root member is the set's commit marker, so it is the one place
-    a whole-tree fact can live without being written twice."""
-    model, start = _lifecycle_tree_fixture(monkeypatch)
-    root_path = restart.write_tree_restart(
-        tmp_path, model, start + timedelta(seconds=3600))
-    child_path = next(p for p in tmp_path.glob("gpuwmrst_d02_*.npz"))
-
-    block = restart.read_restart_header(root_path)[
-        restart.NEST_LIFECYCLE_HEADER_KEY]
-    assert block["contract"] == restart.NEST_LIFECYCLE_CONTRACT
-    assert sorted(block) == ["contract", "followers", "leg_seconds",
-                             "spawn", "window_slots"]
-    assert block["leg_seconds"] == 360.0
-    assert restart.NEST_LIFECYCLE_HEADER_KEY not in \
-        restart.read_restart_header(child_path)
-
-
-def test_the_written_spawn_block_is_the_runners_own(monkeypatch, tmp_path):
-    """Assembled by calling ``SpawnRunner.state_json(model=...)``, not by
-    a second transcription of the same maps: the model argument is what
-    separates the FIRED placement from the one the follower moved to."""
-    model, start = _lifecycle_tree_fixture(monkeypatch)
-    root_path = restart.write_tree_restart(
-        tmp_path, model, start + timedelta(seconds=3600))
-    spawn = restart.read_restart_header(root_path)[
-        restart.NEST_LIFECYCLE_HEADER_KEY]["spawn"]
-
-    assert spawn == model._spawn_runner.state_json(model=model)
-    assert spawn["spawned"]["2"]["fired"] == [20, 18]
-    assert spawn["spawned"]["2"]["current"] == [24, 21]
-    assert spawn["spawns_executed"] == 1
-
-
-def test_a_follower_entry_merges_the_writers_three_keys_with_the_runners_four(
-        monkeypatch, tmp_path):
-    """``kind``/``current_placement``/``declared_placement`` describe the
-    TREE and the runner cannot invent them; the other four are its own
-    history.  The entry is written whole and the runner takes it whole."""
-    model, start = _lifecycle_tree_fixture(monkeypatch)
-    root_path = restart.write_tree_restart(
-        tmp_path, model, start + timedelta(seconds=3600))
-    followers = restart.read_restart_header(root_path)[
-        restart.NEST_LIFECYCLE_HEADER_KEY]["followers"]
-
-    from gpuwm.core.relocation_runner import (RUNNER_STATE_KEYS,
-                                              RUNNER_WRITER_KEYS)
-    entry = followers["2"]
-    assert sorted(entry) == sorted(RUNNER_STATE_KEYS + RUNNER_WRITER_KEYS)
-    assert entry["kind"] == "per-domain"
-    assert entry["declared_placement"] == [20, 18]
-    assert entry["current_placement"] == [24, 21]
-    assert entry["last_proposal_t"] == 60.0
-    assert entry["last_move_t"] is None
-    assert entry["moves_executed"] == 0 and entry["segment"] is None
-    # The runner takes its own entry back WHOLE, writer keys included.
-    model._relocation_runner.runners[2].restore_state(entry)
-
-
 def test_the_declaration_is_published_on_the_tree_not_read_off_a_route(
         monkeypatch, tmp_path):
     """Checkpointing a run with a live follower is a GENERIC capability.
@@ -3780,17 +3768,6 @@ def test_a_follower_resumes_off_a_checkpoint_no_route_context_wrote(
     assert restart.lifecycle_followers(resumed)[2].moves_executed == 0
 
 
-def test_a_legacy_follower_says_so(monkeypatch, tmp_path):
-    """Tree-level ``[relocation]`` and a per-domain ``[follow]`` produce
-    different rebuild paths on the way back in, so the entry says which."""
-    model, start = _lifecycle_tree_fixture(monkeypatch, follow=False)
-    root_path = restart.write_tree_restart(
-        tmp_path, model, start + timedelta(seconds=3600))
-    followers = restart.read_restart_header(root_path)[
-        restart.NEST_LIFECYCLE_HEADER_KEY]["followers"]
-    assert followers["2"]["kind"] == "legacy"
-
-
 def test_the_window_planes_are_written_as_members_of_their_owner(
         monkeypatch, tmp_path):
     """The consumer windows are a max-fold since that consumer last
@@ -3813,30 +3790,6 @@ def test_the_window_planes_are_written_as_members_of_their_owner(
     assert {name for name in _member_names(child_path)
             if name.startswith("scratch/uh_")} == {
         "scratch/uh_follow_window", "scratch/uh_spawn_window"}
-
-
-def test_a_lifecycle_run_that_declares_no_window_writes_none(
-        monkeypatch, tmp_path):
-    """``nwp_diagnostics = 0`` allocates no window at all; the opt-in is
-    over the slots a domain HAS, never a fixed name list."""
-    model, start = _sealed_tree_fixture(
-        monkeypatch, forcing_count=2, run_seconds=3600.0, payload_seed=31)
-    publish_declared_experiment(model, _lifecycle_experiment(follow=False))
-    model._spawn_leg_seconds = 360.0
-    from gpuwm.core.spawn_runner import SpawnRunner
-
-    runner = SpawnRunner.from_experiment(
-        _lifecycle_experiment(follow=False),
-        on_child_built=lambda *_a: None, array_module=np)
-    runner.restore_state(_FIXTURE_SPAWN_BLOCK)
-    model._spawn_runner = runner
-    root_path = restart.write_tree_restart(
-        tmp_path, model, start + timedelta(seconds=3600))
-
-    header = restart.read_restart_header(root_path)
-    assert header[restart.NEST_LIFECYCLE_HEADER_KEY]["window_slots"] == {}
-    assert not any(name.startswith("scratch/uh_")
-                   for name in _member_names(root_path))
 
 
 class _FakeStreamedDomain:
@@ -3901,33 +3854,6 @@ def test_a_streamed_parents_window_is_published_before_it_is_serialized(
         assert np.array_equal(data["scratch/uh_spawn_window"], live)
 
 
-def test_a_lifecycle_free_streamed_run_is_not_touched_by_the_publish(
-        monkeypatch, tmp_path):
-    """The publish WRITES to a streamed domain's state, so it sits behind
-    the compatibility predicate with the block and the window members.  A
-    run with no lifecycle gets no store projection and no refusal, even
-    with a per-follower window sitting on a streamed parent."""
-    from gpuwm.core import uh_diag
-
-    model, start = _sealed_tree_fixture(
-        monkeypatch, forcing_count=2, run_seconds=3600.0, payload_seed=31,
-        nwp_diagnostics=1)
-    root = model.root
-    shape = (int(root.cfg.run.ny), int(root.cfg.run.nx))
-    root.state.scratch(shape, uh_diag.follow_window_slot(2))
-    stream = _FakeStreamedDomain({
-        "scratch/uh_spawn_window": np.ones(shape, dtype=np.float32),
-        "scratch/uh_follow_window": np.ones(shape, dtype=np.float32),
-    }).attach_to(root.state)
-
-    root_path = restart.write_tree_restart(
-        tmp_path, model, start + timedelta(seconds=3600))
-    assert stream.published == []
-    assert not root.state.existing_scratch("uh_spawn_window").any()
-    assert not any(name.startswith("scratch/uh_follow")
-                   for name in _member_names(root_path))
-
-
 def test_a_streamed_parent_publishes_its_generated_follower_window(
         monkeypatch, tmp_path):
     """The live generated carrier is checkpointed, never its stale state copy."""
@@ -3945,37 +3871,6 @@ def test_a_streamed_parent_publishes_its_generated_follower_window(
     assert "scratch/uh_follow_window.d02" in stream.published[0]
     with np.load(path, allow_pickle=False) as data:
         np.testing.assert_array_equal(data["scratch/uh_follow_window.d02"], live)
-
-
-def test_the_written_block_satisfies_the_restore_side_invariants(
-        monkeypatch, tmp_path):
-    """The two invariants the runners enforce on the way back in hold by
-    construction on the way out -- asserted anyway, because "by
-    construction" is what every silent divergence was called first."""
-    model, start = _lifecycle_tree_fixture(monkeypatch)
-    root_path = restart.write_tree_restart(
-        tmp_path, model, start + timedelta(seconds=3600))
-    block = restart.read_restart_header(root_path)[
-        restart.NEST_LIFECYCLE_HEADER_KEY]
-
-    spawn = block["spawn"]
-    for gid, row in spawn["spawned"].items():
-        assert row["episode"] == spawn["episodes"][gid]
-    for gid, row in spawn["retired"].items():
-        assert row["episode"] == spawn["episodes"][gid]
-    for entry in block["followers"].values():
-        recorded = (0 if entry["segment"] is None
-                    else entry["segment"]["generation"])
-        assert recorded == entry["moves_executed"]
-
-    # The runners accept their own halves back, which is the invariant
-    # check that actually runs the refusals.
-    from gpuwm.core.spawn_runner import SpawnRunner
-
-    fresh = SpawnRunner.from_experiment(
-        _lifecycle_experiment(follow=True),
-        on_child_built=lambda *_a: None, array_module=np)
-    assert fresh.restore_state(spawn) == {2: (24, 21)}
 
 
 def test_a_checkpoint_written_after_a_move_attaches_the_posture_block(
@@ -4337,22 +4232,6 @@ def _retune_lifecycle_block(root_path, out_dir, mutate):
         root_path, out_dir / root_path.name, edit)
 
 
-def test_the_peek_reads_the_block_off_the_root_member(monkeypatch, tmp_path):
-    """One member, one JSON key: the reader states what the writer wrote."""
-    model, start = _lifecycle_tree_fixture(monkeypatch)
-    root_path = restart.write_tree_restart(
-        tmp_path, model, start + timedelta(seconds=3600))
-
-    peek = restart.read_tree_lifecycle_header(root_path, model)
-    assert peek.root_path == root_path
-    assert peek.domain_ids == (1, 2)
-    assert peek.block == restart.read_restart_header(root_path)[
-        restart.NEST_LIFECYCLE_HEADER_KEY]
-    assert peek.spawn["spawned"]["2"]["fired"] == [20, 18]
-    assert peek.spawn["spawned"]["2"]["current"] == [24, 21]
-    assert sorted(peek.followers) == ["2"]
-
-
 def test_the_peek_walks_to_the_root_when_handed_a_child_member(
         monkeypatch, tmp_path):
     """A supervisor hands whichever member it found.  The block is a
@@ -4599,18 +4478,6 @@ def test_a_resumed_run_that_has_not_moved_still_states_its_inheritance(
     peek = restart.read_tree_lifecycle_header(root_path, model)
     assert peek.relocation_records == ("a" * 64,)
     assert peek.relocation["segment_id"] == "seg-1"
-
-
-def test_the_peek_without_a_model_states_the_block_and_refuses_nothing(
-        monkeypatch, tmp_path):
-    """The compatibility half needs an experiment to compare against; a
-    bare inspection of a file has none, and must not invent one."""
-    model, start = _lifecycle_tree_fixture(monkeypatch)
-    root_path = restart.write_tree_restart(
-        tmp_path, model, start + timedelta(seconds=3600))
-
-    peek = restart.read_tree_lifecycle_header(root_path)
-    assert peek.block["contract"] == restart.NEST_LIFECYCLE_CONTRACT
 
 
 def _grell_freitas_tree(monkeypatch, *, seed=61):

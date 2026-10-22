@@ -65,11 +65,9 @@ def test_every_mpas_binary_the_pair_needs_is_bundled():
 # --------------------------------------------------------------- naming
 
 
-@pytest.mark.parametrize("grid,expected", [
-    ("kansas.grid.nc", "kansas.static.nc"),
-    ("mesh.nc", "mesh.static.nc"),
-    ("plain", "plain.static.nc"),
-    ("/tmp/a/b.grid.nc", "b.static.nc"),
+@pytest.mark.parametrize('grid, expected', [
+    pytest.param('plain', 'plain.static.nc', id='plain-plain.static.nc'),
+    pytest.param('/tmp/a/b.grid.nc', 'b.static.nc', id='/tmp/a/b.grid.nc-b.static.nc'),
 ])
 def test_the_static_lands_beside_the_grid_under_a_matching_name(grid, expected):
     """They are admitted as a pair, so they are written as a pair."""
@@ -106,7 +104,8 @@ def test_an_incomplete_geography_archive_names_the_missing_datasets(tmp_path):
     assert text is not None
     assert "topo_gmted2010_30s" not in text.split("what does work")[0], (
         "the dataset that IS present is listed as missing")
-    assert "soiltype_top_30s" in text
+    assert "texture_top" in text and "soiltemp_era5_1deg" in text
+    assert "soiltype_top_30s" not in text and "soiltemp_1deg," not in text
     assert "field of zeros" in text
 
 

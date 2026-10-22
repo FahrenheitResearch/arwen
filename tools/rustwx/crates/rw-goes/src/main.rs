@@ -2674,9 +2674,6 @@ mod tests {
         planes.insert("cwp".to_string(), key);
         let meta = PackMeta {
             schema: CWP_SCHEMA_V1.to_string(),
-            status: "READY".to_string(),
-            satellite: "G19".to_string(),
-            sector: "C".to_string(),
             scan_start: "2026-08-04T18:01:17Z".to_string(),
             scan_end: "2026-08-04T18:03:54.500Z".to_string(),
             sources: vec![SourceEntry {
@@ -2691,32 +2688,10 @@ mod tests {
                 // real historical JSON deserialize here.
                 dqf_plane: String::new(),
             }],
-            window: None,
-            projection: ProjectionEntry {
-                perspective_point_height_m: 35786023.0,
-                semi_major_axis_m: 6378137.0,
-                semi_minor_axis_m: 6356752.31414,
-                longitude_of_projection_origin_deg: -75.0,
-                sweep_angle_axis: "x".to_string(),
-            },
-            nx: 2,
-            ny: 1,
-            x_scan_rad: vec![0.0, 1.0e-4],
-            y_scan_rad: vec![0.0],
             planes,
             plane_order: vec!["cwp".to_string()],
             arrays,
-            payload_bytes: payload.len(),
-            content_sha256: hex_sha256(&payload),
-            cwp_counts: CwpRow::default(),
-            coefficients: CoefficientTable {
-                formula: CWP_FORMULA.to_string(),
-                liquid_density_g_cm3: 1.0,
-                ice_density_g_cm3: 0.917,
-                ice_coefficient_provisional: true,
-                mixed_phase_takes_ice_branch_provisional: true,
-                clear_sky_emits_zero: true,
-            },
+            ..pack::tests::minimal_meta(&payload)
         };
         let path = dir.join("historical.goespack");
         std::fs::write(&path, encode_pack(&meta, &payload).unwrap()).unwrap();
@@ -3089,38 +3064,13 @@ mod tests {
         planes.insert("cwp".to_string(), key);
         let meta = PackMeta {
             schema: CWP_SCHEMA.to_string(),
-            status: "READY".to_string(),
-            satellite: "G19".to_string(),
-            sector: "C".to_string(),
             scan_start: "2026-08-04T18:01:17Z".to_string(),
             scan_end: "2026-08-04T18:03:54.500Z".to_string(),
             sources: Vec::new(),
-            window: None,
-            projection: ProjectionEntry {
-                perspective_point_height_m: 35786023.0,
-                semi_major_axis_m: 6378137.0,
-                semi_minor_axis_m: 6356752.31414,
-                longitude_of_projection_origin_deg: -75.0,
-                sweep_angle_axis: "x".to_string(),
-            },
-            nx: 2,
-            ny: 1,
-            x_scan_rad: vec![0.0, 1.0e-4],
-            y_scan_rad: vec![0.0],
             planes,
             plane_order: vec!["cwp".to_string()],
             arrays,
-            payload_bytes: payload.len(),
-            content_sha256: hex_sha256(&payload),
-            cwp_counts: CwpRow::default(),
-            coefficients: CoefficientTable {
-                formula: CWP_FORMULA.to_string(),
-                liquid_density_g_cm3: 1.0,
-                ice_density_g_cm3: 0.917,
-                ice_coefficient_provisional: true,
-                mixed_phase_takes_ice_branch_provisional: true,
-                clear_sky_emits_zero: true,
-            },
+            ..pack::tests::minimal_meta(&payload)
         };
         std::fs::write(&path, encode_pack(&meta, &payload).unwrap()).unwrap();
 
@@ -3162,33 +3112,10 @@ mod tests {
         let mut planes = BTreeMap::new();
         planes.insert("cloud_top_height_m".to_string(), key);
         let meta = CloudTopMeta {
-            schema: CLOUDTOP_SCHEMA.to_string(),
-            status: "READY".to_string(),
-            satellite: "G19".to_string(),
-            sector: "C".to_string(),
-            scan_start: "2026-08-04T18:01:17Z".to_string(),
-            scan_end: "2026-08-04T18:03:54.500Z".to_string(),
-            sources: Vec::new(),
-            window: None,
-            projection: ProjectionEntry {
-                perspective_point_height_m: 35786023.0,
-                semi_major_axis_m: 6378137.0,
-                semi_minor_axis_m: 6356752.31414,
-                longitude_of_projection_origin_deg: -75.0,
-                sweep_angle_axis: "x".to_string(),
-            },
-            nx: 2,
-            ny: 1,
-            x_scan_rad: vec![0.0, 5.0e-4],
-            y_scan_rad: vec![0.0],
             planes,
             plane_order: vec!["cloud_top_height_m".to_string()],
             arrays,
-            payload_bytes: payload.len(),
-            content_sha256: hex_sha256(&payload),
-            pairs_with_schema: pairs_with_schema(),
-            regrid: NO_REGRID.to_string(),
-            sibling: None,
+            ..cloudtop::tests::minimal_meta(&payload)
         };
         // Deliberately a name that says nothing, and a name that lies.
         for name in ["anonymous.bin", "definitely_a_cwp_pack.goespack"] {

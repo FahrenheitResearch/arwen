@@ -26,7 +26,7 @@ from gpuwm.io.wrf_output_schema import (SCHEME_OUTPUT_FIELDS,
                                         SCM_FORCING_OUTPUT_FIELDS,
                                         INACTIVE_DIAGNOSTIC_OUTPUT_FIELDS,
                                         RADIATION_BOUNDARY_OUTPUT_FIELDS)
-from gpuwm.io.sfire_schema import (SFIRE_VOLUME_FIELDS, SFIRE_CLASS_FIELDS,
+from gpuwm.io.sfire_schema import (SFIRE_VOLUME_FIELDS,
                                    sfire_history_shapes)
 from gpuwm.io.wrf_input_history_schema import (WRF_INPUT_HISTORY_ROWS,
     WRF_INITIALIZED_HISTORY_ROWS, WRF_GNU_RANDOM_SEED_WORDS)
@@ -196,6 +196,16 @@ def live_state_history_fields(state) -> dict[str, object]:
         value = getattr(state, "_scratch", {}).get("ltng_" + symbol)
         if value is not None:
             fields[symbol.upper()] = value
+    from gpuwm.core.output_diagnostics import HISTORY as OUTPUT_HISTORY
+    for slot, (output_name, units, description) in OUTPUT_HISTORY.items():
+        value = getattr(state, "_scratch", {}).get(slot)
+        if value is not None:
+            fields[output_name] = value
+    from gpuwm.core.hail import HISTORY as HAIL_HISTORY
+    for slot, (output_name, units, description) in HAIL_HISTORY.items():
+        value = getattr(state, "_scratch", {}).get(slot)
+        if value is not None:
+            fields[output_name] = value
     # Correct mode, finding WB1 (gpuwm/core/thompson_cloud_booking.py): the
     # settled-cloud total and its last-call amount, present exactly when the
     # run carries them (a correct-mode Thompson run, after its first call).
@@ -234,15 +244,25 @@ def live_state_history_fields(state) -> dict[str, object]:
     # PhysicsDriver refuses to build when a selector value is unrouted.
     dispatch = getattr(physics, "scheme_dispatch", None)
     live_surface = getattr(physics, "fields", {})
+    from gpuwm.ocean.seaice import history as seaice_history
+    fields.update(seaice_history(live_surface))
     from gpuwm.core.physics_inventory import CUMULUS_HISTORY_LAYOUT
     for name, (key, index) in CUMULUS_HISTORY_LAYOUT.items():
         if key in live_surface:
             fields[SCHEME_OUTPUT_FIELDS[name].netcdf_name] = (
                 live_surface[key] if index is None else live_surface[key][index])
     if dispatch and dispatch.get("sf_ocean_physics"):
-        from gpuwm.io.wrf_output_schema import OCEAN_OUTPUT_FIELDS
-        for key, metadata in OCEAN_OUTPUT_FIELDS.items():
-            fields[metadata.netcdf_name] = live_surface[key]
+        from gpuwm.io.wrf_output_schema import OCEAN_OUTPUT_FIELDS, PWP_OUTPUT_FIELDS, OCEAN_DIAGNOSTIC_FIELDS
+        if "_pwp_status" in live_surface and hasattr(live_surface["_pwp_status"], "item"):
+            from gpuwm.ocean.mixed_layer import check
+            check(live_surface)
+        for key, metadata in (OCEAN_OUTPUT_FIELDS | PWP_OUTPUT_FIELDS | OCEAN_DIAGNOSTIC_FIELDS).items():
+            if key in live_surface:
+                value = live_surface[key]
+                if key in OCEAN_DIAGNOSTIC_FIELDS:
+                    from gpuwm.core.surface_ocean import ocean_history_diagnostic
+                    value = ocean_history_diagnostic(value, live_surface)
+                fields[metadata.netcdf_name] = value
     if dispatch is not None:
         from gpuwm.core.physics_inventory import PHYSICS_SLOT_DISPATCH
         noah_runner = PHYSICS_SLOT_DISPATCH["sf_surface_physics"][2]
@@ -281,6 +301,13 @@ def live_state_history_fields(state) -> dict[str, object]:
             # 1660-1720). Preserve this separate initialized carrier.
             if "tke_pbl" in live_surface:
                 fields[SCHEME_OUTPUT_FIELDS["tke_pbl"].netcdf_name] = live_surface["tke_pbl"]
+        if dispatch.get("bl_pbl_physics") == PHYSICS_SLOT_DISPATCH["bl_pbl_physics"][11]:
+            # Shin-Hong's two Registry carriers (cold values, see
+            # initialize_physics); a run without them writes neither.
+            for field_name in ("tke_pbl", "el_pbl"):
+                if field_name in live_surface:
+                    fields[SCHEME_OUTPUT_FIELDS[field_name].netcdf_name] = \
+                        live_surface[field_name]
     # Noah-MP's carried state and published diagnostics, on the same terms:
     # they exist only under sf_surface_physics=4, wrfout does not auto-walk
     # ``fields``, and the gate is the resolved routing.  The output names come
@@ -387,6 +414,8 @@ def physics_history_fields(physics) -> dict[str, object]:
     """
     output = {name: physics.fields[field]
               for name, field in _OUTPUT_FIELDS.items()}
+    from gpuwm.ocean.seaice import history as seaice_history
+    output.update(seaice_history(physics.fields))
     # Publish the same live carriers the schemes consume. Omitting these
     # loses evolving land and solar state from an otherwise valid history.
     for key, schema in CARRIED_SURFACE_OUTPUT_FIELDS.items():
@@ -396,27 +425,18 @@ def physics_history_fields(physics) -> dict[str, object]:
     # fraction consumed by Noah, and is never reconstructed by the writer.
     if "snoalb" in physics.fields:
         output["SNOALB"] = physics.fields["snoalb"]
-    for key,schema in RADIATION_BOUNDARY_OUTPUT_FIELDS.items():
-        if key in physics.fields:
-            output[schema.netcdf_name] = physics.fields[key]
-    for key, schema in PHYSICS_PRESSURE_OUTPUT_FIELDS.items():
-        if key in physics.fields:
-            output[schema.netcdf_name] = physics.fields[key]
-    for key, schema in SURFACE_ENERGY_OUTPUT_FIELDS.items():
-        if key in physics.fields:
-            output[schema.netcdf_name] = physics.fields[key]
-    for key, schema in PBL_RATE_OUTPUT_FIELDS.items():
-        if key in physics.fields:
-            output[schema.netcdf_name] = physics.fields[key]
-    for key, schema in CUMULUS_RATE_OUTPUT_FIELDS.items():
-        if key in physics.fields:
-            output[schema.netcdf_name] = physics.fields[key]
-    for key, schema in SCM_FORCING_OUTPUT_FIELDS.items():
-        if key in physics.fields:
-            output[schema.netcdf_name] = physics.fields[key]
-    for key, schema in INACTIVE_DIAGNOSTIC_OUTPUT_FIELDS.items():
-        if key in physics.fields:
-            output[schema.netcdf_name] = physics.fields[key]
+    for table in (
+            RADIATION_BOUNDARY_OUTPUT_FIELDS,
+            PHYSICS_PRESSURE_OUTPUT_FIELDS,
+            SURFACE_ENERGY_OUTPUT_FIELDS,
+            PBL_RATE_OUTPUT_FIELDS,
+            CUMULUS_RATE_OUTPUT_FIELDS,
+            SCM_FORCING_OUTPUT_FIELDS,
+            INACTIVE_DIAGNOSTIC_OUTPUT_FIELDS,
+    ):
+        for key, schema in table.items():
+            if key in physics.fields:
+                output[schema.netcdf_name] = physics.fields[key]
     # WRF's live surface masks (core history rows in stock wrf.exe; the
     # seaice and lake branches can move them during a run).  2.9.0 wrote
     # neither, so a wrfout reader found no land/water mask beside LANDMASK.
@@ -426,6 +446,9 @@ def physics_history_fields(physics) -> dict[str, object]:
     if getattr(physics, "surface_energy_diag", False):
         if "gsw" in physics.fields:
             output["GSW"] = physics.fields["gsw"]
+    ocean = getattr(physics, "ocean", None)
+    if ocean is not None:
+        output.update(ocean.history_fields())
     urban = getattr(physics, "urban", None)
     if urban is not None and urban.option == 1:
         output.update({name: urban.fields[field]
@@ -481,8 +504,16 @@ def physics_history_fields(physics) -> dict[str, object]:
         if hasattr(physics, "radiation_flux_diagnostics"):
             output.update({name:physics.radiation_flux_diagnostics[index]
                 for index,name in enumerate(physics.radiation_callable.diagnostics)})
+        if getattr(physics, "eclipse", None) is not None:
+            output.update(ECOBSC=physics.fields["ecobsc"],
+                          ECMASK=physics.fields["ecmask"])
         output.update(SWDOWN=physics.fields["swdown"],
                       GLW=physics.fields["glw"])
+        # Publish only real producer output, held/interpolated like SWDOWN.
+        if getattr(physics, "_swdd_from_scheme", False):
+            for key in ("swddir", "swddif", "swddni"):
+                if key in physics.fields:
+                    output[key.upper()] = physics.fields[key]
         for name in ("albsol", "albbcksol"):
             if name in physics.fields:
                 output[SCHEME_OUTPUT_FIELDS[name].netcdf_name] = physics.fields[name]
@@ -712,10 +743,15 @@ def produced_history_shapes(cfg, *, include_reflectivity: bool = True
     if cfg.lightning_option:
         from gpuwm.lightning_contract import LIGHTNING_OPTIONS
         state._scratch = {"ltng_" + name: carrier(surface) for name in LIGHTNING_OPTIONS[cfg.lightning_option]["fields"]}
+    from gpuwm.core.output_diagnostics import scratch_shapes as output_shapes
+    from gpuwm.core.hail import scratch_shapes as hail_shapes
+    state._scratch = dict(getattr(state, "_scratch", {}))
+    state._scratch.update({slot: carrier(shape) for slot, shape in
+                          (output_shapes(cfg) | hail_shapes(cfg)).items()})
     state.p_top = 0.0
     state.physics = None
-    uh = carrier(surface) if int(cfg.nwp_diagnostics) == 1 else None
-    state.existing_scratch = lambda name: uh if name == "up_heli_max" else None
+    uh = carrier(surface) if int(cfg.nwp_diagnostics) == 1 or cfg.gsd_diagnostics else None
+    state.existing_scratch = lambda name: uh if name == "up_heli_max" else state._scratch.get(name)
     if physics_driver_required(cfg):
         allocated = physics_array_shapes(cfg)
         live_fields = {name.removeprefix("fields/"): carrier(shape)
@@ -726,7 +762,9 @@ def produced_history_shapes(cfg, *, include_reflectivity: bool = True
             # TopoShortwave attaches its output buffer after the ordinary
             # surface allocation pass, so it is not a preflight fields row.
             live_fields["swnorm"] = carrier(surface)
+        from gpuwm.core.physics_inventory import solar_split_history_expected
         physics = SimpleNamespace(
+            _swdd_from_scheme=solar_split_history_expected(cfg),
             fields=live_fields, state=state, mp_physics=cfg.mp_physics,
             surface_energy_diag=bool(cfg.surface_energy_diag),
             microphysics=SimpleNamespace(sr=carrier(surface)),

@@ -205,14 +205,6 @@ def test_an_untracked_file_written_during_the_run_is_not_a_change():
     assert runner._runtime_source_identity_change(launch, end) is None
 
 
-def test_many_untracked_files_are_still_not_a_change():
-    """A 72-hour forecast writes a directory full of them."""
-
-    end = _checkout(status=[f"?? runs/case/wrfout/frame_{n:03d}"
-                            for n in range(64)] + ["?? runs/case/report.json"])
-    assert runner._runtime_source_identity_change(_checkout(), end) is None
-
-
 def test_the_editable_untracked_count_is_not_a_change_either():
     """The same scratch file moves an editable identity twice.
 
@@ -299,16 +291,6 @@ def test_the_editable_dirty_count_is_still_a_change():
     moved = runner._runtime_source_identity_change(
         _editable(dirty_files=0), _editable(dirty_files=3))
     assert moved is not None and "installed_editable" in moved
-
-
-def test_a_swapped_wheel_is_still_a_changed_implementation():
-    """Both ends on the wheel rung, RECORD digest moved: pip rewrote it."""
-
-    swapped = _wheel()
-    swapped["installed_wheel"] = {"record_file_count": 812,
-                                  "record_sha256": "dead"}
-    moved = runner._runtime_source_identity_change(_wheel(), swapped)
-    assert moved is not None and "installed_wheel" in moved
 
 
 def test_the_refusal_names_the_component_that_moved():

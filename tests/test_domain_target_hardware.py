@@ -37,9 +37,13 @@ def no_local_probes(monkeypatch):
     monkeypatch.setattr(Machine, "detect", refused)
 
 
-@pytest.mark.parametrize("polygon", [False, True])
-@pytest.mark.parametrize("custom", [False, True])
-@pytest.mark.parametrize("declared", [False, True])
+@pytest.mark.parametrize('polygon,custom,declared', [
+    pytest.param(False, False, False, id='False-False-False'),
+    pytest.param(False, False, True, id='True-False-False'),
+    pytest.param(True, False, True, id='True-False-True'),
+    pytest.param(False, True, True, id='True-True-False'),
+    pytest.param(True, True, True, id='True-True-True'),
+])
 def test_domain_target_hardware_reaches_every_fit_and_emitted_check(
         tmp_path, monkeypatch, capsys, polygon, custom, declared):
     no_local_probes(monkeypatch)

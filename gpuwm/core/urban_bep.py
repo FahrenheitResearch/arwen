@@ -23,6 +23,8 @@ from collections.abc import Mapping
 from hashlib import sha256
 import numpy as np
 
+from gpuwm.core.urban_state import BEP_SPEC
+
 NDM, NZ_UM, NG_U, NWR_U, NBUI, NURBMAX, DZ_U = 2, 18, 10, 10, 1, 11, 5.0
 #: WRF v4.7.1 module_sf_bep.F header (bep_ndm() ..), in the keys
 #: gpuwm.core.urban_state.WRF_URBAN_DIMENSIONS checks them against.
@@ -41,17 +43,7 @@ _STATE_ORDER = ("trb_urb4d", "tw1_urb4d", "tw2_urb4d", "tgb_urb4d",
 #: Registry.EM_COMMON rows BEP carries (options 2 and 3), in
 #: gpuwm.core.urban_state's (dtype, layers) form: a string names an
 #: urban_map_* size (check_a_mundo.F:3274-3302), 0 is a 2-D field.
-STATE_SPEC = {
-    "tsk_rural_bep": ("f4", 0),
-    "trb_urb4d": ("f4", "zrd"),
-    "tw1_urb4d": ("f4", "zwd"),
-    "tw2_urb4d": ("f4", "zwd"),
-    "tgb_urb4d": ("f4", "gd"),
-    "sfw1_urb3d": ("f4", "zd"),
-    "sfw2_urb3d": ("f4", "zd"),
-    "sfr_urb3d": ("f4", "zdf"),
-    "sfg_urb3d": ("f4", "ndm"),
-}
+STATE_SPEC = dict(BEP_SPEC)
 
 # Static ABI offsets mirrored by CUDA static_asserts in urban_bep.cu.
 # (field name, numpy scalar type, element count, byte offset)
@@ -83,54 +75,13 @@ TABLE_LAYOUT = (
     ('hpercent_bin_tbl', '<f4', 550, 3436),
 )
 TABLE_BYTES = 5636
-CLASS_LAYOUT = (
-    ('alag_u', '<f4', 11, 0),
-    ('alaw_u', '<f4', 11, 44),
-    ('alar_u', '<f4', 11, 88),
-    ('csg_u', '<f4', 11, 132),
-    ('csw_u', '<f4', 11, 176),
-    ('csr_u', '<f4', 11, 220),
-    ('twini_u', '<f4', 11, 264),
-    ('trini_u', '<f4', 11, 308),
-    ('tgini_u', '<f4', 11, 352),
-    ('albg_u', '<f4', 11, 396),
-    ('albw_u', '<f4', 11, 440),
-    ('albr_u', '<f4', 11, 484),
-    ('emg_u', '<f4', 11, 528),
-    ('emw_u', '<f4', 11, 572),
-    ('emr_u', '<f4', 11, 616),
-    ('z0g_u', '<f4', 11, 660),
-    ('z0r_u', '<f4', 11, 704),
-    ('nd_u', '<i4', 11, 748),
-    ('strd_u', '<f4', 22, 792),
-    ('drst_u', '<f4', 22, 880),
-    ('ws_u', '<f4', 22, 968),
-    ('bs_u', '<f4', 22, 1056),
-    ('h_b', '<f4', 198, 1144),
-    ('d_b', '<f4', 198, 1936),
-    ('ss_u', '<f4', 198, 2728),
-    ('pb_u', '<f4', 198, 3520),
-    ('nz_u', '<i4', 11, 4312),
-    ('z_u', '<f4', 18, 4356),
-    ('error', '<i4', 1, 4428),
-)
 CLASS_BYTES = 4432
 
-def _abi_dtype(layout, size):
-    dtype = np.dtype({
-        'names': [row[0] for row in layout],
-        'formats': [(row[1], (row[2],)) if row[2] > 1 else row[1] for row in layout],
-        'offsets': [row[3] for row in layout], 'itemsize': size,
-    })
-    assert dtype.itemsize == size
-    for name, scalar, count, offset in layout:
-        assert dtype.fields[name][1] == offset
-        assert dtype.fields[name][0].itemsize == 4 * count
-    return dtype
-
-
-TABLE_DTYPE = _abi_dtype(TABLE_LAYOUT, TABLE_BYTES)
-CLASS_DTYPE = _abi_dtype(CLASS_LAYOUT, CLASS_BYTES)
+TABLE_DTYPE = np.dtype({
+    'names': [row[0] for row in TABLE_LAYOUT],
+    'formats': [(row[1], (row[2],)) if row[2] > 1 else row[1] for row in TABLE_LAYOUT],
+    'offsets': [row[3] for row in TABLE_LAYOUT], 'itemsize': TABLE_BYTES,
+})
 
 
 def pack_bep_table(params):
@@ -344,18 +295,7 @@ BEP_TABLE_WORDS = ("ICATE",) + tuple(row[0].upper() for row in TABLE_LAYOUT[1:])
 
 #: UrbanState.pbl_terms key -> launch_bep_columns output name.  a_q_bep is
 #: not a BEP output (the couple zeroes it).
-PBL_OUTPUT_NAMES = {
-    "a_u_bep": "a_u", "a_v_bep": "a_v", "a_t_bep": "a_t", "a_e_bep": "a_e",
-    "b_u_bep": "b_u", "b_v_bep": "b_v", "b_t_bep": "b_t", "b_e_bep": "b_e",
-    "b_q_bep": "b_q", "dlg_bep": "dlg", "dl_u_bep": "dl_u", "vl_bep": "vl",
-    "sf_bep": "sf",
-}
-
-
-def _word(params, name):
-    if isinstance(params, Mapping):
-        return params[name]
-    return getattr(params, name)
+PBL_OUTPUT_NAMES = {f"{name}_bep": name for name in (*_THREE_D, "sf")}
 
 
 def bep_table_words(params) -> dict:
@@ -365,7 +305,8 @@ def bep_table_words(params) -> dict:
     words = {}
     for name in BEP_TABLE_WORDS:
         try:
-            words[name] = _word(params, name)
+            words[name] = (params[name] if isinstance(params, Mapping)
+                           else getattr(params, name))
         except (KeyError, AttributeError):
             if name != "ICATE":
                 raise

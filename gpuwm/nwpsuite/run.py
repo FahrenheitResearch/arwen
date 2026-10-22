@@ -123,11 +123,6 @@ def expand(values, context):
     return [TOKEN.sub(binding, str(value)) for value in values]
 
 
-def bind_reservations(plan):
-    from .bindings import bind_plan
-    return bind_plan(plan)
-
-
 class SuiteRunner:
     def __init__(self, plan, root, *, clock=time.time, phase_hook=None, rehearsal=False):
         self.root = Path(root).resolve()

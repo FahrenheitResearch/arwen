@@ -152,6 +152,9 @@ extern "C" __global__ void myjsfc_column(
     const real* __restrict__ psim2, const real* __restrict__ psih2,
     real dzeta1, real dzeta2, real ztmin1, real ztmax1,
     real ztmin2, real ztmax2, real fh01, real fh02,
+#ifdef OCEAN_WAVE_ROUGHNESS
+    const real* __restrict__ ocean_z0,
+#endif
     int itimestep, int nz, int n)
 {
     int col = blockIdx.x * blockDim.x + threadIdx.x;
@@ -238,6 +241,10 @@ extern "C" __global__ void myjsfc_column(
         // ---- sea points (:443-636) ----
         for (int itr = 0; itr < SFC_ITRMX; ++itr) {
             z0 = fmaxf(SFC_USTFC * ust * ust, 1.59e-5f);
+#ifdef OCEAN_WAVE_ROUGHNESS
+            // Consume wave roughness before this iteration's transfer coefficients.
+            if (ocean_z0[col] > 0.0f) z0 = ocean_z0[col];
+#endif
             if (ust < SFC_USTC) {
                 if (ust < SFC_USTR) {
                     if (ntsd == 1) {

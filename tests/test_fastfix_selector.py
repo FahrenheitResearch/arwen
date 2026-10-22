@@ -58,12 +58,27 @@ def _have_commit(ref: str) -> bool:
         stderr=subprocess.DEVNULL).returncode == 0
 
 
+@pytest.fixture(scope="module")
+def repository_importers():
+    """Share the unchanged checkout walk; probe trees still build fresh indexes."""
+    return fastfix.build_index()[1]
+
+
+@pytest.fixture(scope="module")
+def validation_selection(repository_importers):
+    if not _have_commit(VALIDATION_COMMIT):
+        pytest.skip(f"{VALIDATION_COMMIT} is not in this clone")
+    touched = fastfix.changed_files(f"{VALIDATION_COMMIT}~1",
+                                    VALIDATION_COMMIT)
+    return touched, fastfix.select(touched, importers=repository_importers)
+
+
 # ---------------------------------------------------------------------------
 # The validated behaviour
 # ---------------------------------------------------------------------------
 
 
-def test_the_validation_commit_still_selects_the_test_that_catches_it():
+def test_the_validation_commit_still_selects_the_test_that_catches_it(validation_selection):
     """The audit's own experiment, pinned as a regression.
 
     ``6e9c690f0`` replaced an eager ``cp.multiply/add/divide`` chain in
@@ -75,15 +90,10 @@ def test_the_validation_commit_still_selects_the_test_that_catches_it():
     stops selecting, the setting has been changed by accident.
     """
 
-    if not _have_commit(VALIDATION_COMMIT):
-        pytest.skip(f"{VALIDATION_COMMIT} is not in this clone")
-
-    touched = fastfix.changed_files(f"{VALIDATION_COMMIT}~1",
-                                    VALIDATION_COMMIT)
+    touched, selected = validation_selection
     assert "gpuwm/core/moist.py" in touched, touched
     assert "gpuwm/core/dycore.py" in touched, touched
 
-    selected = fastfix.select(touched)
     assert VALIDATION_CATCH in selected, (
         f"{VALIDATION_CATCH} is the test that catches {VALIDATION_COMMIT}'s "
         "CPU-backend defect, and the selector no longer picks it.  Selected "
@@ -93,7 +103,7 @@ def test_the_validation_commit_still_selects_the_test_that_catches_it():
         selected[VALIDATION_CATCH]
 
 
-def test_the_selection_stays_a_selection():
+def test_the_selection_stays_a_selection(validation_selection):
     """Depth 0's reason to exist: it must not select most of the estate.
 
     Transitive closure selected 441 of 591 files (75%) on this repository,
@@ -102,12 +112,7 @@ def test_the_selection_stays_a_selection():
     is "no longer a selector", and that is measurable.
     """
 
-    if not _have_commit(VALIDATION_COMMIT):
-        pytest.skip(f"{VALIDATION_COMMIT} is not in this clone")
-
-    touched = fastfix.changed_files(f"{VALIDATION_COMMIT}~1",
-                                    VALIDATION_COMMIT)
-    selected = fastfix.select(touched)
+    touched, selected = validation_selection
     total = sum(len(list((REPOSITORY_ROOT / tree).rglob("test_*.py")))
                 for tree in fastfix.TEST_TREES)
     share = len(selected) / total
@@ -118,7 +123,7 @@ def test_the_selection_stays_a_selection():
         "a selector; something has widened the walk")
 
 
-def test_a_non_python_change_falls_back_to_the_always_list():
+def test_a_non_python_change_falls_back_to_the_always_list(repository_importers):
     """The accurate answer to a ``.cu`` edit, and it must not be silence.
 
     Import analysis says nothing about a CUDA translation unit, a config
@@ -133,7 +138,7 @@ def test_a_non_python_change_falls_back_to_the_always_list():
                     ["configs/some_case.toml"],
                     ["tools/ftz_receipt/receipt/route_inventory.json"],
                     ["docs/public/HARDWARE.md"]):
-        selected = fastfix.select(touched)
+        selected = fastfix.select(touched, importers=repository_importers)
         assert set(selected) == always, (touched, sorted(selected))
 
     # A .cu edit must additionally say WHY the kernel gates ran.  Updated
@@ -147,7 +152,7 @@ def test_a_non_python_change_falls_back_to_the_always_list():
     # it.  The file SET is unchanged and still pinned above -- this asserts
     # the reason, which is strictly more than before.
     kernel_gates = fastfix._NON_PYTHON_GATES[".cu"]
-    selected = fastfix.select(["gpuwm/core/kernels/morrison.cu"])
+    selected = fastfix.select(["gpuwm/core/kernels/morrison.cu"], importers=repository_importers)
     for gate in kernel_gates:
         assert gate in selected, (gate, sorted(selected))
         assert any("morrison.cu" in reason for reason in selected[gate]), (
@@ -155,12 +160,12 @@ def test_a_non_python_change_falls_back_to_the_always_list():
 
     # And a change of a DIFFERENT non-Python kind must not claim the kernel
     # gates ran because of it -- otherwise the reason is decoration.
-    selected = fastfix.select(["docs/public/HARDWARE.md"])
+    selected = fastfix.select(["docs/public/HARDWARE.md"], importers=repository_importers)
     for gate in kernel_gates:
         assert selected[gate] == ["always (repo-scanning gate)"], selected[gate]
 
 
-def test_a_change_to_a_research_authority_file_runs_the_research_catalog():
+def test_a_change_to_a_research_authority_file_runs_the_research_catalog(repository_importers):
     """The catalog pins renderer sources by digest, and nothing imports them.
 
     A renderer edit that moved local_import.rs left the recorded digest in
@@ -174,20 +179,20 @@ def test_a_change_to_a_research_authority_file_runs_the_research_catalog():
     assert authority, "the research catalog pins no authority files"
     for path in sorted(authority):
         assert (REPOSITORY_ROOT / path).is_file(), path
-        selected = fastfix.select([path])
+        selected = fastfix.select([path], importers=repository_importers)
         assert "tests/test_research_catalog.py" in selected, (path, sorted(selected))
 
 
-def test_an_empty_change_still_runs_the_always_list():
+def test_an_empty_change_still_runs_the_always_list(repository_importers):
     """A selector that can return nothing is a lane that can gate nothing."""
 
-    selected = fastfix.select([])
+    selected = fastfix.select([], importers=repository_importers)
     assert set(selected) == set(fastfix.read_manifest(ALWAYS_LIST))
     assert selected, "the ALWAYS list parsed to nothing"
 
 
-def test_a_touched_test_file_selects_itself():
-    selected = fastfix.select(["tests/test_stage1_manifest.py"])
+def test_a_touched_test_file_selects_itself(repository_importers):
+    selected = fastfix.select(["tests/test_stage1_manifest.py"], importers=repository_importers)
     assert "tests/test_stage1_manifest.py" in selected
     assert "its own file was touched" in \
         selected["tests/test_stage1_manifest.py"]
@@ -267,7 +272,7 @@ def test_the_manifest_parse_ignores_comments():
         assert fastfix.read_manifest(path) == ["tests/test_real.py"]
 
 
-def test_a_receipt_gate_is_not_reachable_from_the_code_it_inventories():
+def test_a_receipt_gate_is_not_reachable_from_the_code_it_inventories(repository_importers):
     """The ALWAYS list's premise, stated precisely enough to be true.
 
     The audit reported ``tests/test_ftz_route_inventory.py`` as "a MISS at
@@ -285,7 +290,7 @@ def test_a_receipt_gate_is_not_reachable_from_the_code_it_inventories():
     left the receipt stale.
     """
 
-    _modules, importers = fastfix.build_index()
+    importers = repository_importers
     gate = "tests/test_ftz_route_inventory.py"
 
     for inventoried in ("gpuwm/core/moist.py", "gpuwm/core/dycore.py"):
@@ -410,7 +415,8 @@ def test_an_unparseable_test_file_is_named_rather_than_dropped(tmp_path):
     assert "reports green" in message, message
 
 
-def test_the_probe_tree_is_the_tree_the_selector_walked(tmp_path):
+def test_the_probe_tree_is_the_tree_the_selector_walked(
+        tmp_path, repository_importers):
     """The control for both tests above: ``root`` is obeyed, not decorative.
 
     A ``root`` the walk ignored would leave both probes measuring the
@@ -432,7 +438,7 @@ def test_the_probe_tree_is_the_tree_the_selector_walked(tmp_path):
     importer = "tests/test_fastfix_root_probe_importer.py"
 
     assert importer in fastfix.select([rel], root=tmp_path)
-    assert importer not in fastfix.select([rel])
+    assert importer not in fastfix.select([rel], importers=repository_importers)
     assert not (REPOSITORY_ROOT / rel).exists()
 
 

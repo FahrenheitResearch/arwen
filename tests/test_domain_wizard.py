@@ -60,6 +60,24 @@ requires_staged_real_inputs = pytest.mark.skipif(
 )
 
 
+def _as_windows(monkeypatch, pf):
+    """Price the card as Windows does, without breaking this host's TLS.
+
+    ``pf.sys`` is the interpreter's one ``sys``: under ``platform =
+    "win32"`` a first ``urllib`` opener on Linux reaches
+    ``ssl._load_windows_store_certs`` and dies (NameError
+    enum_certificates).  The keyless ERA5 default reads the ARCO store's
+    bounds document over HTTPS, so these tests answer that read the way an
+    unreadable document is answered (None: the declared publication delay
+    stands) instead of opening a socket under a faked platform.
+    """
+    from gpuwm import source_availability
+
+    monkeypatch.setattr(source_availability, "published_stop",
+                        lambda window, **_kw: None)
+    monkeypatch.setattr(pf.sys, "platform", "win32")
+
+
 def _run_wizard(tmp_path, *extra, point="39.7,-96.6", card="16gb",
                 ladder="12-3", source="era5", cycle="1999-05-03T12"):
     out = tmp_path / "area.toml"
@@ -125,8 +143,6 @@ def _assert_refused(capsys, needle: str, rc: int) -> None:
     ("35.3", "lat,lon"),
     ("abc,-97.5", "decimal degrees"),
     ("95.0,-60.0", "[-90, 90]"),
-    ("90.0,-60.0", "pole itself"),
-    ("-90.0,10.0", "pole itself"),
     ("35.3,-400.0", "[-180, 180]"),
 ])
 def test_point_rejections(tmp_path, capsys, point, needle):
@@ -455,45 +471,20 @@ def test_tropical_points_get_the_halved_root_clock(tmp_path, capsys):
     assert "TROPICAL CLOCK" not in text
 
 
-def test_polar_fetch_box_stays_clear_of_the_pole(tmp_path, capsys):
-    """PP-11: the wizard suggested `--area ...,90.00,...` for Tromso.
-
-    The README refuses domains touching a pole; suggesting a forcing box
-    whose top edge IS the pole, with no comment, contradicts it -- and
-    `gpuwm fetch` accepted the box and downloaded 89 MB.
-    """
-    from gpuwm.domain_wizard import MAX_FETCH_ABS_LAT, POLE_CLEARANCE_DEG
-
-    assert 0.0 < POLE_CLEARANCE_DEG < 1.0
-    assert MAX_FETCH_ABS_LAT == pytest.approx(90.0 - POLE_CLEARANCE_DEG)
-
-    # A 32 GiB card, so the footprint is large enough to reach the pole
-    # in the first place -- on the small tiers the fitted domain now stops
-    # short of it and the clamp never fires, which proves nothing.
-    rc, out = _run_wizard(tmp_path, point="69.65,18.96", source="gfs",
-                          cycle="2026-07-29T18", card="32gb")
-    captured = capsys.readouterr()
-    printed = captured.out
-    assert rc == 0, printed
-    raw = tomllib.loads(out.read_text(encoding="utf-8"))
-    south, west, north, east = (
-        float(v) for v in raw["fetch"]["area"].split(","))
-    assert abs(north) <= MAX_FETCH_ABS_LAT + 1e-9
-    assert abs(south) <= MAX_FETCH_ABS_LAT + 1e-9
-    assert north < 90.0 and south > -90.0
-    # This particular point clamps, so it must say so rather than
-    # silently handing over a box it refuses elsewhere.  The clamp is
-    # a one-line warning now (stderr), with the mechanism on --explain.
-    assert "clear of the pole" in captured.err
-    from gpuwm.fetch import parse_area
-    parse_area(raw["fetch"]["area"])  # still a valid fetch box
-
-
-def test_pole_containing_domain_refused(tmp_path, capsys):
-    # Genuine limit: the fitted footprint may not contain the pole.
-    rc, _ = _run_wizard(tmp_path, point="89.0,-100.0", ladder="12",
-                        source="gfs", cycle="2026-07-28T06")
-    _assert_refused(capsys, "pole", rc)
+@pytest.mark.parametrize("lat", [90.0, -90.0, 89.0])
+def test_pole_containing_polar_domain_roundtrips(tmp_path, capsys, lat):
+    rc, out = _run_wizard(tmp_path, point=f"{lat},0", ladder="12",
+                          source="gfs", cycle="2026-07-29T18")
+    assert rc == 0, capsys.readouterr().err
+    raw = tomllib.loads(out.read_text())
+    assert raw["projection"]["map_proj"] == "polar"
+    south, west, north, east = map(float, raw["fetch"]["area"].split(","))
+    assert (west, east) == (-180.0, 180.0)
+    assert (north if lat > 0 else south) == (90.0 if lat > 0 else -90.0)
+    exp = load_experiment(out)
+    assert exp.projection.map_proj == "polar"
+    grids = grids_from_wps_namelist(out.with_suffix(".namelist.wps"))
+    assert grids[0].map_proj == "polar"
 
 
 def test_margined_span_over_180_is_never_emitted_as_a_flipped_box():
@@ -760,7 +751,7 @@ def test_the_wizard_budgets_with_the_platform_envelope_factor(
     """
     import gpuwm.core.preflight as pf
 
-    monkeypatch.setattr(pf.sys, "platform", "win32")
+    _as_windows(monkeypatch, pf)
     rc, out = _run_wizard(tmp_path / "win", "--explain", card="24gb")
     windows_out = capsys.readouterr().out
     assert rc == 0
@@ -814,7 +805,7 @@ def test_windows_12gib_sizes_under_the_measured_model(
     """
     import gpuwm.core.preflight as pf
 
-    monkeypatch.setattr(pf.sys, "platform", "win32")
+    _as_windows(monkeypatch, pf)
     rc, out = _run_wizard(tmp_path / ladder, "--explain", card="12gb",
                           ladder=ladder)
     assert rc == 0, ladder
@@ -851,7 +842,7 @@ def test_every_windows_card_takes_the_one_measured_accounting(
     """Card size never selects a different formula (the #162 split)."""
     import gpuwm.core.preflight as pf
 
-    monkeypatch.setattr(pf.sys, "platform", "win32")
+    _as_windows(monkeypatch, pf)
     rc, _ = _run_wizard(tmp_path / "sixteen", "--explain", card="16gb")
     assert rc == 0
     printed = capsys.readouterr().out
@@ -1063,10 +1054,8 @@ def test_native_source_keeps_explicit_geography_root(
     for key in ("GPUWM_CASE_DATA_ROOT", "XDG_DATA_HOME", "CDSAPI_KEY", "CDSAPI_URL"):
         monkeypatch.delenv(key, raising=False)
     geog = tmp_path / "elsewhere" / "WPS_GEOG"
-    for dataset in geog_datasets():
-        index = geog / dataset / "index"
-        index.parent.mkdir(parents=True, exist_ok=True)
-        index.write_text("")
+    from _staged_geog import staged_geog_tree
+    staged_geog_tree(geog)
     # These fixtures cover index discovery, not terrain sampling.
     monkeypatch.setattr(terrain_autosmooth, "survey_domain_terrain",
                         lambda *args, **kwargs: [])
@@ -2820,6 +2809,25 @@ def test_no_fit_advice_names_only_profiles_the_same_source_accepts(
     # Advice ranking needs a valid request to reach memory sizing, not a
     # 2026 window refused by the source's unchanged temporal guard.
     cycle = "1957-12-18T12" if source == "20crv3-cf" else "2026-08-12T00"
+    # The dated GEFS archive rows (lane/cap-gefs-archive, 11c73fea3b9 and
+    # 6a3b8fd50bf) are closed publication eras, and the GEFS reforecast
+    # publishes no f000: the request is placed inside the source's own
+    # declared era and starts at its own first published lead, both read
+    # from the route table.
+    start = []
+    from gpuwm import fetch_routes
+    canonical = fetch_routes.canonical_source(source)
+    if canonical in fetch_routes.route_ids():
+        route = fetch_routes.route_for(canonical)
+        from datetime import datetime
+        asked = datetime.fromisoformat(cycle)
+        eras = route.publication_eras
+        if eras and not any(era.valid_from <= asked and (
+                era.valid_until is None or asked < era.valid_until)
+                for era in eras):
+            cycle = f"{eras[-1].valid_from:%Y-%m-%d}T00"
+        if route.first_lead:
+            start = ["--forecast-start-hour", str(route.first_lead)]
 
     opt_in = [token for licence in _named_licence_opt_in(source)
               for token in ("--accept-licence", licence)]
@@ -2827,7 +2835,7 @@ def test_no_fit_advice_names_only_profiles_the_same_source_accepts(
     def _argv(vram: str) -> list[str]:
         return ["domain", f"--point={point}", "--ladder", "12",
                 "--source", source, "--cycle", cycle,
-                "--hours", "6", "--vram-gib", vram, *opt_in]
+                "--hours", "6", "--vram-gib", vram, *start, *opt_in]
 
     # Force the fit loop's own refusal -- the one that ranks lighter
     # profiles.  The card size that reaches it depends on the source's
@@ -3463,9 +3471,14 @@ def test_the_minimum_layout_refusal_does_not_contradict_itself(
     # spacing table's heavier suite, whose kernel set alone overflows a
     # 4 GiB card (the no-layout-can-help arm, pinned in
     # tests/test_domain_wizard_memory_remedy.py).
+    # 5 GiB since 97e9a3ca061 (cap-hail): automatic HAILCAST's 7,392-B
+    # kernel frame lifted the grid-independent floor to 2.88 GiB, over the
+    # 4 GiB card's 2.75 GiB budget, so 4 GiB now answers with the
+    # no-layout-can-help arm; 5 GiB (3.75 GiB budget) sits between that
+    # floor and the minimum layout's 4.34 GiB envelope.
     from gpuwm.physics_menu import default_profile_for
 
-    rc = cli_main(["domain", "--point=35.22,-97.44", "--vram-gib", "4",
+    rc = cli_main(["domain", "--point=35.22,-97.44", "--vram-gib", "5",
                    "--ladder", "12-3-1-0.5", "--source", "gfs",
                    "--physics-profile", default_profile_for("gfs"),
                    "--cumulus", "grid",
@@ -3805,3 +3818,12 @@ def test_the_cadence_advisory_fires_for_every_offered_suite(profile):
     assert len(notes) == 1
     assert f"radt {float(switches['radt']):g}" in notes[0]
     assert radiation_cadence_advisory(profile, 1) == []
+
+
+@pytest.mark.parametrize("source", ["gfs", "ifs", "aifs", "gdas"])
+def test_polar_cap_full_longitude_uses_global_coverage_metadata(source):
+    from gpuwm.domain_wizard import _projection_entries, fetch_area_hint
+    projection = _projection_entries(90.0, 0.0)
+    area = tuple(map(float, fetch_area_hint(
+        projection, 250, 200, source=source, root_dx_m=12000.0).split(',')))
+    assert area[1:] == (-180.0, 90.0, 180.0)

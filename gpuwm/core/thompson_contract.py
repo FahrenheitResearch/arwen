@@ -254,11 +254,11 @@ class ClassicTableSet:
 
 
 def _sha256_file(path: Path, *, block_bytes: int = 8 * 1024 * 1024) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while block := stream.read(block_bytes):
-            digest.update(block)
-    return digest.hexdigest()
+    # Once per process for an unchanged file (gpuwm.file_digest): the table
+    # validation and every checkpoint's physics identity hash these bytes,
+    # and a replaced or rewritten table is still hashed again.
+    from gpuwm.file_digest import sha256_file
+    return sha256_file(path, block_bytes=block_bytes)
 
 
 def validate_table_assets(

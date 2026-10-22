@@ -181,3 +181,200 @@ def test_composed_inventory_uses_runtime_factory_not_nonexistent_file(monkeypatc
             monkeypatch.setattr(target, '_sw_tables', lambda: tables)
         kernel_prewarm._warm_composed(name)
     assert calls == [(n, (tables,) if n == 'rrtmg_sw_legacy' else ()) for n in selected]
+
+
+def test_the_forecast_column_is_open_so_the_helicity_diagnostic_runs(monkeypatch):
+    # Breakage it prevents (2.9.4 landing, V58 2026-10-20): the synthetic forecast column was periodic, the run's
+    # nwp_diagnostics=1 helicity refused it ("WRF's cal_helicity periodic branch is not transcribed"), and the HRRR
+    # forecast's step 1 compiled 51 s cold.
+    import dataclasses
+
+    import gpuwm.config as config
+    from gpuwm import warm_kernels
+    from gpuwm.core.uh_diag import _supported_boundary_geometry
+
+    @dataclasses.dataclass
+    class Run:
+        dt: float = 15.0
+        nx: int = 500
+        ny: int = 400
+        terrain_opt: int = 1
+        run_seconds: float = 21600.0
+        clock_dt: float = 15.0
+        output_interval_s: float = 3600.0
+        open_x: bool = False
+        open_y: bool = False
+        specified: bool = True
+        nested: bool = False
+        nwp_diagnostics: int = 1
+        spec_bdy_width: int = 10
+        zadvect_implicit: int = 1
+
+    monkeypatch.setattr(config, "validate_run_config", lambda cfg: cfg)
+    # A specified run (the HRRR recipe) warms on a specified column wide enough for its boundary width: the
+    # helicity diagnostic accepts it, and so does zadvect_implicit = 1, which refused the open column ("with
+    # radiative open boundaries is not wired", hrrr_v4_gsd41, 2026-10-21).
+    cfg = warm_kernels.forecast_column_config(Run())
+    assert cfg.nwp_diagnostics == 1 and _supported_boundary_geometry(cfg)
+    assert cfg.specified and not cfg.nested and not (cfg.open_x or cfg.open_y)
+    assert cfg.nx == cfg.ny == 2 * Run.spec_bdy_width + 4
+    # A run with no lateral forcing keeps the open column.
+    cfg = warm_kernels.forecast_column_config(Run(specified=False, zadvect_implicit=0))
+    assert cfg.nwp_diagnostics == 1 and _supported_boundary_geometry(cfg)
+    assert not cfg.specified and cfg.open_x and cfg.open_y
+    assert (cfg.nx, cfg.ny) == (warm_kernels._NX, warm_kernels._NY)
+
+
+def _column_layer_temperatures(nz, ztop):
+    import numpy as np
+
+    from gpuwm.core import constants as c
+    from gpuwm.core.grid import make_base_state, make_vertical_coord
+    from gpuwm.warm_kernels import _theta
+
+    base = make_base_state(make_vertical_coord(nz), _theta, p_surf=1.0e5, ztop=ztop)
+    return np.asarray(base.thb) * (np.asarray(base.pb) / c.P0) ** c.RCP
+
+
+def test_fcn3_nest_column_stays_inside_the_radiation_tables():
+    # The Earth-2 FCN3 nest (V58 2026-10-20, repro-e2 g.toml): nz 49, ztop
+    # 20 km, p_top 50 hPa.  The constant-N column's top layer was 159.2 K,
+    # below RRTMG's 160 K floor, and the pre-warm child exited 1.
+    temperature = _column_layer_temperatures(49, 20000.0)
+    assert temperature.min() >= 160.0
+    assert temperature.max() <= 355.0
+
+
+def test_column_is_valid_for_any_model_top():
+    for nz, ztop in ((40, 16000.0), (60, 30000.0), (80, 45000.0)):
+        temperature = _column_layer_temperatures(nz, ztop)
+        assert 160.0 <= temperature.min() and temperature.max() <= 355.0, (nz, ztop)
+
+
+def _hrrr_recipe_experiment():
+    from importlib.resources import files
+
+    from gpuwm.experiment import load_experiment
+
+    return load_experiment(str(files("gpuwm") / "data" / "recipes" / "hrrr_v4_gsd41.toml"))
+
+
+def _loader_route_exists(factory, args) -> bool:
+    import importlib
+
+    from gpuwm.core import kernels
+
+    if factory is kernel_prewarm._warm_composed:
+        module, function = kernel_prewarm._COMPOSED_LOADERS[args[0]]
+    elif factory is kernel_prewarm._warm_device_loader:
+        module, function = kernel_prewarm._DEVICE_LOADERS[args[0]]
+    elif factory is kernels.load_module.__wrapped__:
+        source = "mynn_pbl" if args[0] == "mynn_dmp_sibling" else args[0]
+        return (kernels._KDIR / f"{source}.cu").exists()
+    else:
+        return True
+    return callable(getattr(importlib.import_module("gpuwm.core." + module), function, None))
+
+
+def test_every_static_job_of_the_hrrr_recipe_has_a_loader_route():
+    # V59 8x5090, 2026-10-21: the hrrr_v4_gsd41 plan named terrain_drag_composed (gwd_opt = 3), load_module looked
+    # for terrain_drag_composed.cu, and the pre-warm child exited 1 with FileNotFoundError.
+    from gpuwm.core import kernels
+    from gpuwm.core.preflight import CHAINED_TRANSLATION_UNIT_FRAMES
+
+    jobs = kernel_prewarm.static_jobs(_hrrr_recipe_experiment())
+    assert "terrain_drag_composed" in {label for label, _factory, _args in jobs}
+    for label, factory, args in jobs:
+        assert _loader_route_exists(factory, args), label
+    # Every chained unit preflight prices has a route; none is a file.
+    for name in CHAINED_TRANSLATION_UNIT_FRAMES:
+        assert name in kernel_prewarm._COMPOSED_LOADERS or name in kernel_prewarm._DEVICE_LOADERS, name
+        assert not (kernels._KDIR / f"{name}.cu").exists()
+
+
+def test_parallel_plan_covers_selected_physics_and_code_dependent_shapes():
+    experiment = _hrrr_recipe_experiment()
+    jobs = kernel_prewarm.static_jobs(experiment)
+    tiers = {(args[0], args[1]) for _, _, args in jobs
+             if len(args) == 2 and isinstance(args[1], tuple)}
+    assert ("thompson_aerosol_sed", (("THOMPSON_AA_WRF39", 1),)) in tiers
+    assert ("mynn_pbl", (("MYNN_GSD41", 1),)) in tiers
+    for cfg in [experiment.domains[0].run, *kernel_prewarm.forecast_columns(experiment)]:
+        dims = (("GPUWM_SHAPE_NZ", cfg.nz), ("GPUWM_SHAPE_NY", cfg.ny),
+                ("GPUWM_SHAPE_NX", cfg.nx))
+        assert ("acoustic", dims) in tiers
+        columns = (("GPUWM_SHAPE_NZ", cfg.nz), ("GPUWM_SHAPE_NY", 1),
+                   ("GPUWM_SHAPE_NX", cfg.ny * cfg.nx))
+        assert ("mynn_pbl", (("MYNN_GSD41", 1),) + columns) in tiers
+
+
+def test_hrrr_recipe_prewarm_receipt_says_first_step_ready(monkeypatch):
+    # The whole warm_static pass on the hrrr_v4_gsd41 recipe with the compiler stubbed: every static loader route
+    # is resolved and called, the preparation and forecast-column groups run, and the receipt says
+    # first_step_ready.  A job without a loader route fails the way V59's did (FileNotFoundError).
+    from gpuwm import kernel_plan
+    from gpuwm.ingest import preparation_prewarm
+
+    compiled = []
+    real_jobs = kernel_prewarm.static_jobs
+
+    def stubbed(label, ok):
+        def factory(*args):
+            if not ok:
+                raise FileNotFoundError(f"{label}.cu")
+            compiled.append(label)
+        return factory
+
+    def stubbed_jobs(experiment):
+        return [(label, stubbed(label, _loader_route_exists(factory, args)), args)
+                for label, factory, args in real_jobs(experiment)]
+
+    monkeypatch.setattr(kernel_prewarm, "static_jobs", stubbed_jobs)
+    monkeypatch.setattr(kernel_prewarm, "submit_static", lambda experiment: len(stubbed_jobs(experiment)))
+    monkeypatch.setattr(kernel_plan, "install", lambda **kwargs: True)
+    monkeypatch.setattr(kernel_plan, "start", lambda: {})
+    monkeypatch.setattr(kernel_plan, "close", lambda **kwargs: None)
+    monkeypatch.setattr(kernel_plan, "receipt", lambda: {"stub": True})
+    monkeypatch.setattr(preparation_prewarm, "warm_preparation_job", lambda options: None)
+    monkeypatch.setattr(kernel_prewarm, "warm_forecast_columns", lambda experiment: 1)
+
+    receipt = kernel_prewarm.warm_static(_hrrr_recipe_experiment(), preparation=True, forecast=True)
+    assert receipt["errors"] == {}
+    assert "terrain_drag_composed" in compiled
+    assert receipt["loaded"] == receipt["static_jobs"] == len(compiled)
+    assert receipt["preparation"] == {"groups": 4, "loaded": 4}
+    assert receipt["forecast_columns"] == 1
+    assert receipt["first_step_ready"] is True
+    assert kernel_prewarm.first_step_ready({**receipt, "errors": {"x": "y"}}) is False
+    assert kernel_prewarm.first_step_ready({**receipt, "forecast_columns": 0}, forecast=True) is False
+
+
+def test_hrrr_recipe_column_carries_mosaic_fractions_and_orographic_statics():
+    # 2026-10-21, hrrr_v4_gsd41 (mosaic_lu = mosaic_soil = 1, gwd_opt = 3): the forecast column refused
+    # "RUC mosaic needs LANDUSEF category fractions", then "this initialization route hands the physics no static
+    # field set", so the run's own variants compiled in step 1.
+    import numpy as np
+
+    from gpuwm import warm_kernels
+    from gpuwm.core.ruc import load_ruc_parameters
+    from gpuwm.static.orographic import required_static_fields
+
+    run = _hrrr_recipe_experiment().domains[0].run
+    cfg = warm_kernels.forecast_column_config(run)
+    grid = (cfg.ny, cfg.nx)
+    fractions = warm_kernels._synthetic_mosaic_fractions(cfg, grid)
+    bundle = load_ruc_parameters()
+    assert fractions["landusef"].shape == (len(bundle.vegetation_for("MODIFIED_IGBP_MODIS_NOAH").rows), *grid)
+    assert fractions["soilctop"].shape == (len(bundle.soil.rows), *grid)
+    for value in fractions.values():
+        assert np.allclose(value.sum(axis=0), 1.0)
+    static = warm_kernels._synthetic_orographic_static(cfg, grid)["terrain_drag_static"]
+    assert static["HGT_M"].shape == grid
+    for name in required_static_fields(int(cfg.topo_wind), int(cfg.gwd_opt)):
+        assert static[name].shape == grid and np.isfinite(static[name]).all()
+    # Suites without a mosaic or a drag get nothing extra.
+    import dataclasses
+
+    plain = dataclasses.replace(cfg, mosaic_lu=0, mosaic_soil=0, gwd_opt=0, topo_wind=0)
+    assert warm_kernels._synthetic_mosaic_fractions(plain, grid) == {}
+    assert warm_kernels._synthetic_orographic_static(plain, grid) == {}

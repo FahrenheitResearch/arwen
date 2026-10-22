@@ -635,6 +635,22 @@ def rung_of(cfg) -> str:
     return "dry"
 
 
+def output_carrier_bytes_per_cell(cfg) -> float:
+    """Bytes per domain cell of the persistent output carriers ``cfg`` enables.
+
+    Exactly the slots the store and the tile buffers carry
+    (gpuwm.core.output_diagnostics.PERSISTENT) at the shapes their
+    initializer allocates, float32, spread over the nx * ny * nz cells the
+    footprint is priced in.  Zero when the output controls are off.
+    """
+    import math
+    from gpuwm.core.output_diagnostics import PERSISTENT, scratch_shapes
+    shapes = scratch_shapes(cfg)
+    carried = sum(4 * math.prod(shapes[slot]) for slot in PERSISTENT if slot in shapes)
+    cells = int(cfg.nx) * int(cfg.ny) * int(cfg.nz)
+    return carried / cells if carried and cells else 0.0
+
+
 def footprint_for(cfg, *, rung: str | None = None, radiation_context=None,
                   follower_slots=()) -> Footprint:
     """The :class:`Footprint` to plan ``cfg`` with."""
@@ -653,6 +669,18 @@ def footprint_for(cfg, *, rung: str | None = None, radiation_context=None,
         fp = replace(fp, bytes_per_cell=fp.bytes_per_cell + per_cell,
                      store_bytes_per_cell=fp.store_bytes_per_cell + per_cell,
                      source=fp.source + "; declared follower window carriers")
+    output_cell = output_carrier_bytes_per_cell(cfg)
+    if output_cell:
+        # The operational output controls' carriers (interval precipitation
+        # buckets, the gsd_diagnostics maxima and rel_vort) ride the store and
+        # every tile buffer (gpuwm.core.streaming's persistent output slots),
+        # and no measured rung carries them.  Breakage this prevents: a
+        # streamed HRRR-recipe root (1562 x 926 x 50) was refused restoring its
+        # store, "store needs 21.12 GiB but budget_bytes is 20.74 GiB"
+        # (box D, 2026-10-21 21:xxZ).
+        fp = replace(fp, bytes_per_cell=fp.bytes_per_cell + output_cell,
+                     store_bytes_per_cell=fp.store_bytes_per_cell + output_cell,
+                     source=fp.source + "; operational output carriers")
     if wrf_cfl_recording_requested(cfg):
         fp = replace(fp, domain_fixed_bytes=fp.domain_fixed_bytes + WRF_CFL_BYTES)
     if radiation_context is not None and radiation_context.cam_ozone:

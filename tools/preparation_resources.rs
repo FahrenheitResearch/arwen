@@ -65,8 +65,8 @@ pub fn available_cpus() -> usize {
     #[cfg(target_os = "linux")]
     {
         let membership = std::fs::read_to_string("/proc/self/cgroup").unwrap_or_default();
-        return available.min(cgroup_cpus(Path::new("/sys/fs/cgroup"), &membership)
-            .unwrap_or(available)).max(1);
+        available.min(cgroup_cpus(Path::new("/sys/fs/cgroup"), &membership)
+            .unwrap_or(available)).max(1)
     }
     #[cfg(not(target_os = "linux"))]
     available.max(1)

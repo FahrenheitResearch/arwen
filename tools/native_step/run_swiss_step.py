@@ -18,7 +18,7 @@ from gpuwm.core.physics_inventory import RADIATION_BOUNDARY_FLUXES
 from gpuwm.core.state import refresh_model_time
 from gpuwm.wrfinput_forecast import run_wrf_forecast as run
 from gpuwm.native_step import Plan
-from host_annotations import annotate
+from host_annotations import annotate,contexts
 from whole_health_annotations import annotate_health
 from validator_annotations import annotate_descriptors
 from whole_metadata import Metadata
@@ -26,7 +26,7 @@ from whole_inventory import inventory
 from time_slots import Frame,frame_for,capture_slots,bind_slots
 from radiation_capture import RadiationFrame,RecordedRadiation
 from radiation_deferred import DeferredNativeChecks
-from radiation_step import conditional_step,RADIATION_FLAG
+from radiation_step import conditional_step,RADIATION_FLAG,CadenceScope
 from native_bundle import Bundle
 from rational_boundary_slots import RationalBoundarySlots
 from glacier_capture import RecordedGlacier
@@ -38,13 +38,9 @@ destination=ROOT/f'receipts/swiss-step-{a.numerics}-{a.arm}-{a.attempt}.json';as
 for name in ['gpuwm/prepared_domain_tree_forecast.py','tools/native_step/whole_inventory.py','tools/native_step/run_canary_step.sh','gpuwm/core/physics.py','gpuwm/core/dycore.py','gpuwm/core/rrtmg_legacy.py','gpuwm/core/clock.py','gpuwm/core/model.py','gpuwm/core/nest.py','gpuwm/native_step/__init__.py','gpuwm/native_step/recorder.c','tools/native_step/run_swiss_step.py','tools/native_step/boundary_slots.py','tools/native_step/rational_boundary_slots.py','tools/native_step/glacier_capture.py','gpuwm/ingest/lateral_bc.py','tools/native_step/phase_health_witness.py','tools/native_step/native_bundle.py','tools/native_step/native_bundle.c','tools/native_step/radiation_step.py','tools/native_step/radiation_capture.py','tools/native_step/radiation_daylight.py','tools/native_step/radiation_deferred.py','tools/native_step/radiation_ozone.py','tools/native_step/host_annotations.py','tools/native_step/whole_health_annotations.py','tools/native_step/whole_metadata.py','tools/native_step/time_slots.py','tools/native_step/validator_annotations.py','receipts/libnative-bundle.so','receipts/libradiation-composed-host.so']:
  receipt['source'][name]=hashlib.sha256((ROOT/name).read_bytes()).hexdigest()
 receipt['recorder_library_sha256']=hashlib.sha256(Path(os.environ['GPUWM_NATIVE_STEP_LIBRARY']).read_bytes()).hexdigest()
-CAPTURE_PERIOD=66;VALIDATOR_PERIOD=67;LAST_NATIVE=1597;LAST_PERIOD=1599
 plans={};original_schedule=clock.execute_schedule
 def sync():cp.cuda.get_current_stream().synchronize()
-def due(state,cfg):
- epoch=float(getattr(state,'domain_start_offset',0.) or 0.)
- n=int(np.floor((state.elapsed_seconds-epoch)/cfg.dt+0.5))+1
- return _radiation_step_due(n,_physics_interval_steps(state.physics.radt_minutes,cfg.dt),state.physics.radt_minutes)
+from whole_metadata import due
 def warm_day(node):
  adapter=legacy_radiation_adapter(node.state.physics.radiation_callable);new=copy.copy(adapter)
  if new.__dict__.get('_ozmixt_buf') is not None:new._ozmixt_buf=new._ozmixt_buf.copy()
@@ -88,14 +84,6 @@ def schedule(*args,**kwargs):
  recordings={};metadata=RadiationMetadata(model,closure,recordings)
  objects={'model':model,'status':closure['status'],'ledger':closure['step_ledger'],'feedback_scratch':closure['feedback_scratch'],'validators':closure['validators']}
  live={'period':-1,'plan':None,'capture':False,'step_numbers':{}}
- @contextmanager
- def contexts(plan):
-  with ExitStack() as stack:
-   stack.enter_context(plan.record(objects))
-   stack.enter_context(annotate(plan,receipt.setdefault('annotations',[]),layout_guard=True))
-   stack.enter_context(annotate_health(plan,receipt.setdefault('health_annotations',[]),step_label=lambda gid,n:live['step_numbers'].get(gid,n)))
-   stack.enter_context(annotate_descriptors(plan,receipt['health_annotations']))
-   yield
  def retire(reason):
   if live['plan'] is not None:
    sync();before=cp.get_default_memory_pool().total_bytes()
@@ -132,20 +120,13 @@ def schedule(*args,**kwargs):
    glacier=RecordedGlacier(plan,node.state.physics,receipt.setdefault('glacier_transport',[]))
    frame_type=type('SwissDomainFrame',(C.Structure,),{'_fields_':DomainFrame._fields_+boundary.fields})
    recorded=RecordedRadiation(plan,ROOT/'receipts/libradiation-composed-host.so',rrtmg_legacy,DeferredNativeChecks(plan,ROOT/'receipts/libradiation-composed-host.so',deferred_device_checks));recordings[gid]=recorded
-   class CadenceScope:
-    @contextmanager
-    def when(self,**flags):
-     assert flags=={'require':RADIATION_FLAG}
-     before_records=metadata.ledger.records
-     with plan.when(**flags):yield
-     metadata.radiation_records[gid]=metadata.ledger.records-before_records
    cls=rrtmg_legacy.RRTMGLegacyRadiation;original=cls.__call__
    def capture_radiation(adapter,**inputs):
     with recorded.install():return cls.__call__(adapter,**inputs)
    cls.__call__=capture_radiation
    before=metadata.capture_before(gid)
    try:
-    with contexts(plan),capture_slots(plan,slots),conditional_step(CadenceScope(),physics),boundary.capture(),glacier.install():callbacks['on_step'](gid,dom)
+    with contexts(plan,objects,receipt,live),capture_slots(plan,slots),conditional_step(CadenceScope(plan,metadata,gid),physics),boundary.capture(),glacier.install():callbacks['on_step'](gid,dom)
    finally:cls.__call__=original
    sync();metadata.step_deltas.pop(gid,None);metadata.capture_after(gid,before)
    frame=frame_type();recorded.bind(frame,prefix='rad_');recorded.frame_template=bytes(frame);boundary.bind(frame_type)

@@ -224,10 +224,6 @@ class UrbanParams:
         value = self.values[name]
         return value.item() if value.ndim == 0 else value
 
-    def row(self, name: str, utype: int):
-        """``<name>_TBL(UTYPE)`` for a 1-based urban type."""
-        return self.values[f"{name}_TBL"][int(utype) - 1]
-
 
 def urban_table_path(use_wudapt_lcz: int, tbl_dir: Path | None = None) -> Path:
     name = "URBPARM_LCZ.TBL" if int(use_wudapt_lcz) else "URBPARM.TBL"

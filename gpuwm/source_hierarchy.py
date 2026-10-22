@@ -356,6 +356,24 @@ def _projection_identity(snapshot) -> object:
     return (str(projection["family"]), dict(projection["parameters"]))
 
 
+def _on_own_lattice(y, x, *, nx: int, ny: int) -> bool:
+    """Whether fractional source indices sit on the source's own lattice
+    (whole cells, or the half-cell faces lattice_identity clamps onto the
+    edge), inside the grid."""
+    y = np.asarray(y, dtype=np.float64)
+    x = np.asarray(x, dtype=np.float64)
+    if not (np.isfinite(y).all() and np.isfinite(x).all()):
+        return False
+    # Axis arithmetic (index x spacing / unit, back over the axis step)
+    # leaves a few ULP on lattice positions; a whole cell is never near.
+    tolerance = 1.0e-6
+    halves_y, halves_x = y * 2.0, x * 2.0
+    return bool(np.abs(halves_y - np.rint(halves_y)).max() < tolerance
+                and np.abs(halves_x - np.rint(halves_x)).max() < tolerance
+                and y.min() > -tolerance and x.min() > -tolerance
+                and y.max() < ny - 1 + tolerance and x.max() < nx - 1 + tolerance)
+
+
 def _spatial_coverage_receipt(
         snapshots: tuple[object, ...], grids: tuple[object, ...], exp,
         source_name: str,
@@ -402,6 +420,21 @@ def _spatial_coverage_receipt(
     # without one still takes the identity.
     transform, projected_source = source_coordinate_transform(first)
     axis_space = source_axis_space(first)
+    # A source that declares identity pairing (HRRR's own lattice) copies a
+    # target that IS its grid index for index -- the transform above has
+    # already snapped such a target onto the lattice
+    # (gpuwm.ingest.source_coverage.lattice_identity) -- so that target
+    # needs no interpolation halo past the source's edge, exactly as the
+    # single-domain route certifies it.  Breakage this prevents: every
+    # nested tree under the HRRR recipe's full 1799 x 1059 grid was refused,
+    # "RW-WPS-MAPPED source lacks the complete parabolic donor halo for d01
+    # mass" (a rented box 2026-10-21, 2024-04-27 18Z), while the same root prepared
+    # on the single-domain route.
+    from gpuwm.ingest.horiz import declared_source_projection
+    declared = declared_source_projection(first)
+    identity_declared = bool(
+        declared and (declared.get("parameters") or {}).get(
+            "same_grid_pairing") == "identity")
 
     ny = int(first_latitude.size)
     nx = int(first_longitude.size)
@@ -418,6 +451,13 @@ def _spatial_coverage_receipt(
                 *transform(target_latitude, target_longitude),
                 axis_space=axis_space,
                 target_geographic=(target_latitude, target_longitude))
+            if identity_declared and _on_own_lattice(y, x, nx=nx, ny=ny):
+                staggering_receipts[staggering] = {
+                    "pairing": "identity",
+                    "source_x_range": [float(x.min()), float(x.max())],
+                    "source_y_range": [float(y.min()), float(y.max())],
+                }
+                continue
             floor_y = np.floor(y).astype(np.int64)
             floor_x = np.floor(x).astype(np.int64)
             parabolic = {
@@ -446,6 +486,13 @@ def _spatial_coverage_receipt(
         # the crop must retain usable donors of BOTH surface classes,
         # otherwise a masked class would silently fill where full-grid WPS
         # finds a remote donor.
+        if all(row.get("pairing") == "identity"
+               for row in staggering_receipts.values()):
+            # Every staggering copies its own cells: no masked-surface
+            # stencil reaches past the grid either.
+            domains[f"d{int(domain.grid_id):02d}"] = {
+                "staggerings": staggering_receipts, "pairing": "identity"}
+            continue
         mass_latitude, mass_longitude = grid.latlon_mass()
         mass_y, mass_x = _regular_coordinates(
             first_latitude, first_longitude,

@@ -1550,19 +1550,6 @@ def _run_snowseaice_case(fields, case: int):
     )
 
 
-def test_snow_sea_ice_step_matches_unmodified_wrf_bit_for_bit():
-    rows, cases, fields = _snowseaice_oracle("snowseaice.csv", 5)
-    assert len(rows) == 45
-    assert cases == (
-        "blended_thin_on_ice", "one_layer_on_ice", "two_layer_deep_on_ice",
-        "melting_on_ice", "sublimating_on_ice",
-    )
-    for case in range(len(cases)):
-        _assert_snowseaice_bitwise(
-            fields, cases, case, _run_snowseaice_case(fields, case)
-        )
-
-
 def test_snow_sea_ice_step_matches_unmodified_wrf_argument_contract():
     """The supplementary oracle pins the arguments snowseaice.csv leaves flat.
 
@@ -1691,7 +1678,12 @@ def test_snow_sea_ice_step_covers_every_snow_regime_and_rejects_drift():
 
 
 def test_snow_sea_ice_step_solves_independent_columns_together():
-    _, cases, fields = _snowseaice_oracle("snowseaice.csv", 5)
+    rows, cases, fields = _snowseaice_oracle("snowseaice.csv", 5)
+    assert len(rows) == 45
+    assert cases == (
+        "blended_thin_on_ice", "one_layer_on_ice", "two_layer_deep_on_ice",
+        "melting_on_ice", "sublimating_on_ice",
+    )
     selection = list(range(len(cases)))
     values = {
         name: np.ascontiguousarray(fields[name][:, selection])
@@ -1833,33 +1825,6 @@ def test_snow_temperature_step_matches_unmodified_wrf_bit_for_bit(fixture):
     rows, cases, fields = _snowtemp_oracle(fixture)
     assert cases == _SNOWTEMP_FIXTURES[fixture]
     assert len(rows) == len(cases) * 9
-    for case in range(len(cases)):
-        actual = ruc_snow_temperature_step(
-            _snowtemp_inputs(fields, [case]),
-            delt=float(fields["delt"][0, case]),
-            conflx=float(fields["conflx"][0, case]),
-            nroot=int(fields["nroot"][0, case]),
-            ilnb=int(fields["ilnb_before"][0, case]),
-            xlvm=float(fields["xlvm"][0, case]),
-            cvw=float(fields["cvw"][0, case]),
-        )
-        np.testing.assert_array_equal(
-            actual.tso[:, 0].view(np.uint32),
-            fields["tso_after"][:, case].view(np.uint32),
-            err_msg=f"{cases[case]}/tso",
-        )
-        for name, column in _SNOWTEMP_AFTER.items():
-            np.testing.assert_array_equal(
-                getattr(actual, name).view(np.uint32),
-                fields[column][0, case : case + 1].view(np.uint32),
-                err_msg=f"{cases[case]}/{name}",
-            )
-        assert int(actual.ilnb[0]) == int(fields["ilnb_after"][0, case])
-
-
-@pytest.mark.parametrize("fixture", sorted(_SNOWTEMP_FIXTURES))
-def test_snow_temperature_step_solves_every_regime_in_one_call(fixture):
-    _, cases, fields = _snowtemp_oracle(fixture)
     selection = list(range(len(cases)))
     actual = ruc_snow_temperature_step(
         _snowtemp_inputs(fields, selection),
@@ -2277,27 +2242,6 @@ def test_unmodified_wrf_snowsoil_oracle_covers_every_snow_regime():
 
 
 def test_snow_soil_step_matches_unmodified_wrf_bit_for_bit():
-    _, cases, fields = _snowsoil_oracle()
-    for case in range(len(cases)):
-        actual = _snowsoil_call(fields, [case])
-        for name in _SNOWSOIL_PROFILE_OUTPUTS:
-            expected = fields.get(f"{name}_after", fields.get(name))
-            np.testing.assert_array_equal(
-                getattr(actual, name)[:, 0].view(np.uint32),
-                expected[:, case].view(np.uint32),
-                err_msg=f"{cases[case]}/{name}",
-            )
-        for name in _SNOWSOIL_COLUMN_OUTPUTS:
-            expected = fields.get(f"{name}_after", fields.get(name))
-            np.testing.assert_array_equal(
-                getattr(actual, name).view(np.uint32),
-                expected[0, case : case + 1].view(np.uint32),
-                err_msg=f"{cases[case]}/{name}",
-            )
-        assert int(actual.ilnb[0]) == int(fields["ilnb_after"][0, case])
-
-
-def test_snow_soil_step_solves_every_regime_in_one_batched_call():
     _, cases, fields = _snowsoil_oracle()
     # Per-case calls cannot catch a column-stride defect; every case here
     # shares delt, conflx and cw, so they batch into one call.

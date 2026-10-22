@@ -5,7 +5,18 @@ import pytest
 from conftest import requires_gpu
 
 
-def _state(cp):
+def _canopy(cp, shape):
+    """Deterministic in-range canopy planes (29fe0a4fb7's admitted set)."""
+    y, x = cp.meshgrid(cp.arange(shape[0], dtype=cp.float32),
+                       cp.arange(shape[1], dtype=cp.float32), indexing="ij")
+    wave = 0.5 + 0.5 * cp.sin(0.07 * x + 0.11 * y)
+    return {"CANOPY_COVER": wave.astype(cp.float32),
+            "CANOPY_HEIGHT": (30.0 * wave).astype(cp.float32),
+            "CANOPY_BASE_HEIGHT": (4.0 * wave).astype(cp.float32),
+            "CANOPY_BULK_DENSITY": (0.2 * wave).astype(cp.float32)}
+
+
+def _state(cp, canopy=False):
     from test_restart import _physics_state
     result = _physics_state(cp, nx=96, ny=72, nz=16, dx=90.0, dy=120.0, dt=0.25,
         mp_physics=1, cu_physics=0, ra_physics=0, ifire=2, sr_x=4, sr_y=3,
@@ -17,9 +28,11 @@ def _state(cp):
     from gpuwm.core.streaming import prime_lazy_carriers
     from gpuwm.core.sfire_coupler import FireCoupler
     state,cfg,physics=result
-    physics.fire=FireCoupler(state,cfg,physics.fields,{
-        "LFN_HIST":cp.full(physics.fire.fine_shape,-17.5,cp.float32),
-        "LFN_TIME":cp.asarray([-125.5],cp.float32)})
+    static = {"LFN_HIST":cp.full(physics.fire.fine_shape,-17.5,cp.float32),
+              "LFN_TIME":cp.asarray([-125.5],cp.float32)}
+    if canopy:
+        static.update(_canopy(cp, physics.fire.fine_shape))
+    physics.fire=FireCoupler(state,cfg,physics.fields,static)
     prime_lazy_carriers(result[0], result[1])
     return result
 
@@ -46,14 +59,17 @@ def _assert_words(cp, arrays, store):
 
 
 @requires_gpu
+@pytest.mark.parametrize("canopy", [False, True], ids=["no-canopy", "canopy"])
 @pytest.mark.parametrize("mode", ["shadow", "ring"])
-def test_coupled_fire_refined_host_tiles_and_restart_are_word_exact(tmp_path, mode):
+def test_coupled_fire_refined_host_tiles_and_restart_are_word_exact(tmp_path, mode, canopy):
+    # canopy: admitted canopy planes are fire/grid carriers a streamed frame
+    # serves from the store, not asserted zeros (ShortFrameRefused, R6 2.9.4).
     import cupy as cp
     from gpuwm.core.dycore import step
     from gpuwm.core.streaming import streamed_store_inventory
     from gpuwm.io.wrfout import _device_state_frame
-    reference, cfg, _ = _state(cp)
-    tiled, tiled_cfg, _ = _state(cp)
+    reference, cfg, _ = _state(cp, canopy)
+    tiled, tiled_cfg, _ = _state(cp, canopy)
     stream = _stream(tiled, tiled_cfg, mode)
     for number in range(8):
         step(reference, cfg)
@@ -62,7 +78,7 @@ def test_coupled_fire_refined_host_tiles_and_restart_are_word_exact(tmp_path, mo
         if number == 3:
             checkpoint = tmp_path / "tiled-mid.npz"
             stream.write_restart(checkpoint, tiled_cfg)
-            tiled, tiled_cfg, _ = _state(cp)
+            tiled, tiled_cfg, _ = _state(cp, canopy)
             stream = _stream(tiled, tiled_cfg, mode)
             stream.restore_restart(checkpoint, tiled_cfg)
     fire = reference.physics.fire
@@ -70,6 +86,8 @@ def test_coupled_fire_refined_host_tiles_and_restart_are_word_exact(tmp_path, mo
     resident_frame = _device_state_frame(reference)
     tiled_frame = stream.history_fields()
     assert set(resident_frame) == set(tiled_frame)
+    if canopy:
+        assert float(cp.asnumpy(resident_frame["CANOPY_HEIGHT"]).max()) > 1.0
     for name, expected in resident_frame.items():
         value = cp.asnumpy(expected)
         assert np.array_equal(value.view(np.uint32), tiled_frame[name].view(np.uint32)), name

@@ -62,7 +62,6 @@ tools/arwen-tui/target/
 # `cargo build --locked` in a fresh clone died on a missing checksum.
 # Mirror crates under vendor/crates-io are never built in place.
 tools/rw_wps/vendor/netcrust/target/
-tools/rw_wps/vendor/netcrust/vendor/*/target/
 !tools/rustwx/vendor/**
 # ... but not build output or a lock file cargo drops there when an
 # excluded vendor crate is built on its own manifest.  Build the
@@ -109,6 +108,6 @@ docs/branch-dispositions-private.md
 # Local coordinator brief; the source copy lives in lane scratch.
 /NEXTGEN-BRIEF.md
 
-# Cargo checksum manifests require every upstream source and documentation file.
-!tools/arwen-ui-vendor/**
-tools/arwen-ui-vendor/**/__pycache__/
+
+# Pre-port netCDF-C hydro schema/data identity reference.
+!tools/nextgen_output/tests/fixtures/*.nc

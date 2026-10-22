@@ -31,13 +31,6 @@ from gpuwm.mapped_source import (
 )
 
 
-def test_authority_snapshot_accepts_windows_executable_suffix(tmp_path):
-    authority = tmp_path / "grib2_dump.exe"
-    authority.write_bytes(b"decoder")
-    snapshot = _snapshot_authority(authority)
-    assert snapshot.size == 7
-
-
 THREE_D = {
     "air_temperature": "K",
     "specific_humidity": "kg kg-1",
@@ -333,10 +326,7 @@ def test_netcdf_mapping_materializes_two_complete_canonical_frames(tmp_path):
 
 def test_regular_snapshot_conversion_leaves_a_source_land_soil_gap_missing(
         tmp_path):
-    mapping_path = tmp_path / "mapping.json"
-    source = tmp_path / "source.nc"
-    _write_mapping(mapping_path, _mapping())
-    _write_source(source)
+    mapping_path, source = _netcdf_inputs(tmp_path)
     frame = decode_mapped_source(mapping_path, [source])[0]
     fields = dict(frame.fields)
     land = fields["land_fraction"]
@@ -397,10 +387,7 @@ def test_mapped_snow_water_equivalent_is_packed_under_the_kg_m2_name(tmp_path):
     """
     from gpuwm.ingest.soil import preprocess_noah_soil
 
-    mapping_path = tmp_path / "mapping.json"
-    source = tmp_path / "source.nc"
-    _write_mapping(mapping_path, _mapping())
-    _write_source(source)
+    mapping_path, source = _netcdf_inputs(tmp_path)
     frame = decode_mapped_source(mapping_path, [source])[0]
     surface = frame.fields["land_fraction"]
     fields = dict(frame.fields)
@@ -1016,6 +1003,7 @@ def test_authority_snapshot_accepts_unchanged_executable_suffix(tmp_path):
     executable.write_bytes(b"stable-decoder-bytes")
 
     snapshot = mapped_source._snapshot_authority(executable)
+    assert snapshot.size == len(b"stable-decoder-bytes")
 
     assert snapshot.sha256 == hashlib.sha256(b"stable-decoder-bytes").hexdigest()
     mapped_source._require_authority_snapshot(snapshot)
@@ -1240,6 +1228,15 @@ def _observed_engine_calls(monkeypatch) -> list[tuple[str, Path, list[str]]]:
     return calls
 
 
+def _netcdf_inputs(tmp_path):
+    """Fresh source bytes and mapping for mapped-source checks."""
+    mapping_path = tmp_path / "mapping.json"
+    source = tmp_path / "source.nc"
+    _write_mapping(mapping_path, _mapping())
+    _write_source(source)
+    return mapping_path, source
+
+
 def test_engine_decode_frame_stream_lands_in_the_compose_scratch(
         tmp_path, monkeypatch):
     """``GPUWM_COMPOSE_SCRATCH`` covers the decode route's frame stream.
@@ -1255,10 +1252,7 @@ def test_engine_decode_frame_stream_lands_in_the_compose_scratch(
     override, and the engine reads no ``TMPDIR`` of its own.
     """
 
-    mapping_path = tmp_path / "mapping.json"
-    source = tmp_path / "source.nc"
-    _write_mapping(mapping_path, _mapping())
-    _write_source(source)
+    mapping_path, source = _netcdf_inputs(tmp_path)
     scratch = tmp_path / "disk-backed-scratch"
     scratch.mkdir()
     monkeypatch.setenv("GPUWM_COMPOSE_SCRATCH", str(scratch))
@@ -1280,10 +1274,7 @@ def test_engine_inspect_scratch_lands_in_the_compose_scratch(
         tmp_path, monkeypatch):
     """The sibling ``inspect`` route stages under the same variable."""
 
-    mapping_path = tmp_path / "mapping.json"
-    source = tmp_path / "source.nc"
-    _write_mapping(mapping_path, _mapping())
-    _write_source(source)
+    mapping_path, source = _netcdf_inputs(tmp_path)
     scratch = tmp_path / "disk-backed-scratch"
     scratch.mkdir()
     monkeypatch.setenv("GPUWM_COMPOSE_SCRATCH", str(scratch))
@@ -1312,10 +1303,7 @@ def test_engine_decode_refuses_a_missing_compose_scratch_by_name(
 
     from gpuwm import mapped_engine_bridge
 
-    mapping_path = tmp_path / "mapping.json"
-    source = tmp_path / "source.nc"
-    _write_mapping(mapping_path, _mapping())
-    _write_source(source)
+    mapping_path, source = _netcdf_inputs(tmp_path)
     missing = tmp_path / "no-such-scratch"
     monkeypatch.setenv("GPUWM_COMPOSE_SCRATCH", str(missing))
     launched: list[str] = []
@@ -1343,10 +1331,7 @@ def test_engine_decode_on_a_full_scratch_disk_names_where_it_stages(
     from gpuwm import mapped_engine_bridge
     from gpuwm.ingest.source_coverage import ScratchDiskRefusal
 
-    mapping_path = tmp_path / "mapping.json"
-    source = tmp_path / "source.nc"
-    _write_mapping(mapping_path, _mapping())
-    _write_source(source)
+    mapping_path, source = _netcdf_inputs(tmp_path)
     scratch = tmp_path / "small-scratch"
     scratch.mkdir()
     monkeypatch.setenv("GPUWM_COMPOSE_SCRATCH", str(scratch))

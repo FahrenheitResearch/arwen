@@ -840,24 +840,7 @@ pub fn compose_sheet(panels: &[RgbaImage], header: &SheetHeader) -> Result<RgbaI
     let background = Color::rgba(corner[0], corner[1], corner[2], 255);
     let layout = sheet_layout(panels.len(), width, height, background)?;
     let mut sheet = compose_panel_images(&layout, panels).map_err(|error| error.to_string())?;
-    let metrics = sheet_metrics(width);
-    let (title_ink, subtitle_ink) = ink_for(background);
-    rustwx_render::draw_text_bold(
-        &mut sheet,
-        &header.title,
-        metrics.margin_x as i32,
-        metrics.title_y as i32,
-        title_ink,
-        metrics.title_scale,
-    );
-    rustwx_render::draw_text(
-        &mut sheet,
-        &header.subtitle,
-        metrics.margin_x as i32,
-        metrics.subtitle_y as i32,
-        subtitle_ink,
-        metrics.subtitle_scale,
-    );
+    draw_sheet_header(&mut sheet, header, width, background);
     Ok(sheet)
 }
 
@@ -920,9 +903,15 @@ pub fn compose_sheet_rows(
         .with_background(background);
     let panels: Vec<RgbaImage> = rows.iter().flat_map(|row| row.iter().cloned()).collect();
     let mut sheet = compose_panel_images(&layout, &panels).map_err(|error| error.to_string())?;
+    draw_sheet_header(&mut sheet, header, width, background);
+    Ok(sheet)
+}
+
+fn draw_sheet_header(sheet: &mut RgbaImage, header: &SheetHeader, width: u32, background: Color) {
+    let metrics = sheet_metrics(width);
     let (title_ink, subtitle_ink) = ink_for(background);
     rustwx_render::draw_text_bold(
-        &mut sheet,
+        sheet,
         &header.title,
         metrics.margin_x as i32,
         metrics.title_y as i32,
@@ -930,14 +919,13 @@ pub fn compose_sheet_rows(
         metrics.title_scale,
     );
     rustwx_render::draw_text(
-        &mut sheet,
+        sheet,
         &header.subtitle,
         metrics.margin_x as i32,
         metrics.subtitle_y as i32,
         subtitle_ink,
         metrics.subtitle_scale,
     );
-    Ok(sheet)
 }
 
 /// Where panel `(row, column)` of a sheet of `width x height` panels sits:

@@ -82,7 +82,8 @@ def _masses(state, cfg, rows, fields, mup) -> cp.ndarray:
         (nz * ny, len(fields)), (256,),
         (table, state.mub2d, mup, state.c1h, state.c2h, state.dnw,
          state.msft, np.int32(bool(state.has_msf)), np.int32(nz),
-         np.int32(ny), np.int32(nx), partial))
+         np.int32(ny), np.int32(nx),
+         *map(np.int32, getattr(getattr(state, "chem", None), "ledger_window", (0, ny, 0, nx))), partial))
     scale = float(cfg.dx) * float(cfg.dy) / float(c.G)
     units = cp.asarray([_kg_per_unit(row) * scale for row in rows],
                        dtype=cp.float64)
@@ -216,15 +217,14 @@ def chem_pre_transport(state, cfg, dt: float) -> None:
 def chem_step(state, cfg, dt: float) -> None:
     """Close one model step with the chem operator (see module docstring)."""
     chem = state.chem
-    if getattr(chem, "externally_managed_ledger", False):
-        processes = getattr(chem, "processes", None)
-        if processes is None:
-            processes = chem.processes = chem_processes(chem.table)
-        if any(getattr(module, "TIMING", "post_step") != "pre_transport"
-               for _, module in processes):
-            raise ValueError("externally managed tiled smoke ledger supports only native pre-transport sources; "
-                             "post-step chemical operators need whole-column tile accounting")
-        for _, module in processes:
+    external = getattr(chem, "externally_managed_ledger", False)
+    # Source-only streamed profiles retain their pre-transport owner. Resident
+    # ranks additionally own an interior window and run every post-step process.
+    if external and not hasattr(chem, "ledger_window"):
+        for _, module in chem_processes(chem.table):
+            if getattr(module, "TIMING", "post_step") != "pre_transport":
+                raise ValueError("post-step chemistry needs an owned interior ledger window; "
+                                 "otherwise overlapping halos double-count process mass")
             refresh = getattr(module, "refresh_output", None)
             if refresh is not None:
                 refresh(state)
@@ -233,7 +233,17 @@ def chem_step(state, cfg, dt: float) -> None:
     ktau = int(round(state.elapsed_seconds / float(cfg.dt))) + 1
     fields = chem.fields(state)
     mass = _masses(state, cfg, rows, fields, state.mup)
-    _ledger_begin(state, cfg, rows)
+    if external:
+        # One step's deltas only. The rank owner folds these into the domain's
+        # persisted vectors; halos never participate in a mass reduction.
+        before = _masses(state, cfg, rows,
+                         tuple(getattr(state, row.time_attr) for row in rows), state.mup0)
+        for bucket in LEDGER_BUCKETS:
+            getattr(state, ledger_attr(bucket))[...] = 0
+        getattr(state, ledger_attr("initial"))[...] = before
+        getattr(state, ledger_attr("current"))[...] = before
+    else:
+        _ledger_begin(state, cfg, rows)
     current = getattr(state, ledger_attr("current"))
     getattr(state, ledger_attr("transport"))[...] += mass - current
     processes = getattr(chem, "processes", None)
@@ -266,7 +276,7 @@ def chem_step(state, cfg, dt: float) -> None:
             refresh(state)
 
 
-def chem_ledger_receipt(state) -> dict | None:
+def chem_ledger_receipt(state, *, store=None) -> dict | None:
     """The forecast receipt's chem ledger for one domain, None when chem is
     off (so a chem-off receipt keeps its bytes).
 
@@ -276,7 +286,7 @@ def chem_ledger_receipt(state) -> dict | None:
     """
     if getattr(state, "chem", None) is None:
         return None
-    report = ledger_report(state)
+    report = ledger_report(state, store=store)
     worst = 0.0
     for entry in report["rows"].values():
         scale = max(abs(entry["initial_kg"]), abs(entry["current_kg"]))
@@ -315,16 +325,16 @@ def boundary_inflow(table) -> dict:
     return out
 
 
-def ledger_report(state) -> dict:
+def ledger_report(state, *, store=None) -> dict:
     """Host copy of the ledger: per row, every bucket, the totals, closure."""
     chem = state.chem
     from gpuwm.core.streaming import domain_store
-    store = domain_store(state)
+    if store is None:
+        store = domain_store(state)
     def vector(name):
         key = 'state/' + ledger_attr(name)
         if store is not None:
-            from tilestream.sfire_spotting import mapped_host_array
-            return mapped_host_array(store[key])
+            return store[key]
         return getattr(state, ledger_attr(name))
     host = {name: cp.asnumpy(vector(name))
             for name in ("initial", "current", *LEDGER_BUCKETS)}

@@ -333,7 +333,7 @@ def test_every_repo_local_registry_citation_still_says_what_the_claim_says():
     # claims are about: the guard by its anchor, the WRF line as a declared
     # external citation.
     guard = [citation for citation, row in checker.RESOLVED.items()
-             if row == ("gpuwm/core/kernels/ysu.cu", "kpbl < nz")]
+             if row == ("gpuwm/core/kernels/ysu_480.cu", "kpbl < nz")]
     assert len(guard) == 1 and guard[0] in found, guard
     # bl_ysu.F90:1315 (the ctopo-absent drag arm) left the registry with the
     # warning that cited it: lane/parity-286 put every YSU entry point on

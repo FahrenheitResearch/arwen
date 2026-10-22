@@ -37,6 +37,8 @@ def test_a_file_holding_the_whole_forecast_prepares_only_the_run_window():
                   for k in range(17))
     kept = _within_run_window(leads, start, 48 * 3600)
     assert [s.valid_time for s in kept] == [start + timedelta(hours=6 * k) for k in range(9)]
+    short = _within_run_window(leads, start, 3 * 3600)
+    assert [s.valid_time for s in short] == [start, start + timedelta(hours=6)]
 
 
 def test_short_forecast_keeps_next_boundary_without_loading_lazy_fields():

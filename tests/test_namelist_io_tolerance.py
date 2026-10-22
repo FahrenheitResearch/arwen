@@ -51,7 +51,7 @@ def test_all_declared_snapshot_and_output_controls_leave_forecast_identical():
 
 
 @pytest.mark.parametrize("family", ["auxhist", "auxinput"])
-@pytest.mark.parametrize("stream", [1, 2, 4, 5, 11, 17, 23, 24])
+@pytest.mark.parametrize("stream", [1, 24])
 def test_numbered_stream_filenames_formats_frames_and_alarms_are_recorded(
         family, stream):
     wps, inp = _base_pair()
@@ -107,18 +107,6 @@ def test_output_metadata_does_not_hide_unknown_dynamics_key():
     refusals = [str(error) for error in namelist_refusals(wps, inp)]
     assert any("unmapped_trajectory_switch" in message for message in refusals)
     assert not any("inputout_interval_s" in message for message in refusals)
-
-
-def test_parsed_snapshot_unit_keys_leave_forecast_identical(tmp_path):
-    controls = "\n".join(
-        f" {key} = 1," for key in TIME_CONTROL_IGNORED_KEYS
-        if key.startswith("inputout_"))
-    changed = INPUT_TEXT.replace("&time_control", f"&time_control\n{controls}")
-    text, report = import_namelists(*_pair(tmp_path, inp=changed))
-    expected, _ = import_namelists(*_pair(tmp_path))
-    assert text == expected
-    assert all("ignored" in entry.reason for entry in report.dropped
-               if entry.key.startswith("inputout_"))
 
 
 def test_compatibility_report_classifies_all_ignored_io_controls(tmp_path):

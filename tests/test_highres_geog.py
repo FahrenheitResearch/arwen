@@ -45,29 +45,18 @@ def _bound(path: Path, *, role: str = "test") -> BoundRaster:
     )
 
 
-def test_bound_raster_rejects_hash_mismatch_before_decode(tmp_path):
+@pytest.mark.parametrize("mismatch", ["hash", "size"])
+def test_bound_raster_rejects_mismatch_before_decode(tmp_path, mismatch):
     path = tmp_path / "source.bin"
     path.write_bytes(b"payload")
     source = BoundRaster(
-        path=path, sha256="0" * 64, source_id="synthetic", role="terrain",
+        path=path, sha256="0" * 64 if mismatch == "hash" else sha256_file(path),
+        source_id="synthetic", role="terrain",
         source_url="https://example.invalid/source", license_id="test-only",
-        license_url="https://example.invalid/license",
-        nominal_resolution="test",
+        license_url="https://example.invalid/license", nominal_resolution="test",
+        expected_bytes=999 if mismatch == "size" else None,
     )
-    with pytest.raises(ValueError, match="hash mismatch"):
-        source.verify()
-
-
-def test_bound_raster_rejects_size_mismatch_before_hashing(tmp_path):
-    path = tmp_path / "source.bin"
-    path.write_bytes(b"payload")
-    source = BoundRaster(
-        path=path, sha256=sha256_file(path), source_id="synthetic",
-        role="terrain", source_url="https://example.invalid/source",
-        license_id="test-only", license_url="https://example.invalid/license",
-        nominal_resolution="test", expected_bytes=999,
-    )
-    with pytest.raises(ValueError, match="size mismatch"):
+    with pytest.raises(ValueError, match=f"{mismatch} mismatch"):
         source.verify()
 
 

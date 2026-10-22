@@ -52,11 +52,12 @@ pub fn draw_circle_fill_aa(img: &mut RgbaImage, cx: f64, cy: f64, radius: f64, c
 
     let radius = radius.max(0.0);
     let bounds = radius + 1.0;
-    let min_x = (cx - bounds).floor() as i32;
-    let max_x = (cx + bounds).ceil() as i32;
-    let min_y = (cy - bounds).floor() as i32;
-    let max_y = (cy + bounds).ceil() as i32;
+    let min_x = ((cx - bounds).floor() as i32).max(0);
+    let max_x = ((cx + bounds).ceil() as i32).min(img.width() as i32 - 1);
+    let min_y = ((cy - bounds).floor() as i32).max(0);
+    let max_y = ((cy + bounds).ceil() as i32).min(img.height() as i32 - 1);
 
+    // Raster work is bounded by visible pixels, even for off-canvas geometry.
     for y in min_y..=max_y {
         for x in min_x..=max_x {
             let dx = (x as f64 + 0.5) - cx;
@@ -88,11 +89,12 @@ pub fn draw_circle_stroke_aa(
 
     let half_width = width.max(1) as f64 * 0.5;
     let bounds = radius + half_width + 1.0;
-    let min_x = (cx - bounds).floor() as i32;
-    let max_x = (cx + bounds).ceil() as i32;
-    let min_y = (cy - bounds).floor() as i32;
-    let max_y = (cy + bounds).ceil() as i32;
+    let min_x = ((cx - bounds).floor() as i32).max(0);
+    let max_x = ((cx + bounds).ceil() as i32).min(img.width() as i32 - 1);
+    let min_y = ((cy - bounds).floor() as i32).max(0);
+    let max_y = ((cy + bounds).ceil() as i32).min(img.height() as i32 - 1);
 
+    // Raster work is bounded by visible pixels, even for off-canvas geometry.
     for y in min_y..=max_y {
         for x in min_x..=max_x {
             let dx = (x as f64 + 0.5) - cx;
@@ -146,6 +148,10 @@ fn draw_line_aa_kernel(
     let mut max_x = (x0.max(x1) + radius).ceil() as i32;
     let mut min_y = (y0.min(y1) - radius).floor() as i32;
     let mut max_y = (y0.max(y1) + radius).ceil() as i32;
+    min_x = min_x.max(0);
+    max_x = max_x.min(img.width() as i32 - 1);
+    min_y = min_y.max(0);
+    max_y = max_y.min(img.height() as i32 - 1);
     if let Some((cx0, cy0, cx1, cy1)) = clip {
         min_x = min_x.max(cx0);
         max_x = max_x.min(cx1);
@@ -153,6 +159,7 @@ fn draw_line_aa_kernel(
         max_y = max_y.min(cy1);
     }
 
+    // Raster work is bounded by visible pixels, even for off-canvas geometry.
     for y in min_y..=max_y {
         for x in min_x..=max_x {
             let px = x as f64 + 0.5;
@@ -494,6 +501,19 @@ pub fn draw_wind_barb(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn off_canvas_primitives_visit_only_visible_pixels() {
+        let mut img = RgbaImage::from_pixel(24, 24, image::Rgba([255, 255, 255, 255]));
+        draw_line_aa_width(&mut img, -1e30, 12.0, 1e30, 12.0, Rgba::BLACK, 1);
+        draw_line_aa_width(&mut img, -100.0, 12.0, 100.0, 12.0, Rgba::BLACK, 1);
+        assert_ne!(img.get_pixel(12, 12).0, [255, 255, 255, 255]);
+        let before = img.clone();
+        draw_circle_fill_aa(&mut img, -1e30, 1e30, 4.0, Rgba::BLACK);
+        draw_circle_stroke_aa(&mut img, -1e30, 1e30, 4.0, Rgba::BLACK, 1);
+        draw_line_aa_width(&mut img, f64::NAN, 0.0, 12.0, 12.0, Rgba::BLACK, 1);
+        assert_eq!(img, before);
+    }
 
     #[test]
     fn anti_aliased_line_blends_neighbor_pixels() {

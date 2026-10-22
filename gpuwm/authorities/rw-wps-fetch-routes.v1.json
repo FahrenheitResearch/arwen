@@ -857,6 +857,250 @@
       }
     },
 
+    "gefs-v11-flat": {
+      "label": "GEFS v11 flat archive member",
+      "publication_lag": [
+        {
+          "cycle_hours": null,
+          "hours": 0,
+          "measured": "Historical archive. PublicationEra bounds limit accepted cycles."
+        }
+      ],
+      "measured": "2026-10-20: 20180101/00 Rust inventories and 20180726/27 cycle-hour listings",
+      "hosts": [
+        {
+          "name": "aws",
+          "base": "https://noaa-gefs-pds.s3.amazonaws.com",
+          "retention_hours": null,
+          "transfer_rank": 0,
+          "why": "Public legacy archive; object presence is checked for every requested member and lead.",
+          "default": true
+        }
+      ],
+      "cycle_hours": [
+        0,
+        6,
+        12,
+        18
+      ],
+      "posting": {
+        "shape": "archive",
+        "ready_check": "objects_and_index",
+        "why": "Fixed historical archive. Each member, lead, a/b file and index must exist."
+      },
+      "ladders": [
+        {
+          "cycle_hours": null,
+          "steps": [
+            [
+              384,
+              6
+            ]
+          ]
+        }
+      ],
+      "default_cadence": 6,
+      "layout": "upstream",
+      "members": {
+        "default": "c00",
+        "default_token": "gec00",
+        "perturbed_name_format": "p%02d",
+        "perturbed_token_format": "gep%02d",
+        "perturbed_range": [
+          1,
+          20
+        ],
+        "why_path_identity": "21 members observed in 20190201/00 listing; byte identity is verified by the v11 member grammar."
+      },
+      "files": [
+        {
+          "role": "pgrb2a",
+          "primary": false,
+          "leads": "all",
+          "path": "gefs.{YYYYMMDD}/{HH}/{MEMBER}.t{HH}z.pgrb2af{FFF}",
+          "idx_sidecar": ".idx"
+        },
+        {
+          "role": "pgrb2b",
+          "primary": false,
+          "leads": "all",
+          "path": "gefs.{YYYYMMDD}/{HH}/{MEMBER}.t{HH}z.pgrb2bf{FFF}",
+          "idx_sidecar": ".idx"
+        }
+      ],
+      "compose": [
+        {
+          "kind": "concat_per_lead",
+          "roles": [
+            "pgrb2a",
+            "pgrb2b"
+          ],
+          "primary": true,
+          "name": "pairs/{MEMBER}.t{HH}z.pair.1p00.f{FFF}.grib2",
+          "why": "the a and b pressure-level sets are exactly disjoint -- specific humidity, soil layers 2/3/4 and the land-sea mask are 100% in b -- so either file alone is a torso. GRIB2 messages are self-delimiting, so the pair concatenated in that order is the multi-record form the profile decodes."
+        }
+      ],
+      "record_subset": {
+        "supported": false,
+        "why": "the pair is required whole: an index-selected subset of either half cannot restore the disjoint level set the other half carries"
+      },
+      "prep": {
+        "source": "gefs-v11-flat",
+        "supplement": {
+          "from": "every_input",
+          "role": "gefs_member_in_band_surface"
+        }
+      },
+      "publication_eras": [
+        {
+          "label": "GEFS v11 flat publication",
+          "valid_from": "2017-01-01T00:00:00",
+          "valid_until": "2018-07-27T00:00:00",
+          "resolution_degrees": 1.0,
+          "steps": [
+            [
+              384,
+              6
+            ]
+          ],
+          "files": [
+            {
+              "role": "pgrb2a",
+              "primary": false,
+              "leads": "all",
+              "path": "gefs.{YYYYMMDD}/{HH}/{MEMBER}.t{HH}z.pgrb2af{FFF}",
+              "idx_sidecar": ".idx"
+            },
+            {
+              "role": "pgrb2b",
+              "primary": false,
+              "leads": "all",
+              "path": "gefs.{YYYYMMDD}/{HH}/{MEMBER}.t{HH}z.pgrb2bf{FFF}",
+              "idx_sidecar": ".idx"
+            }
+          ]
+        }
+      ]
+    },
+    "gefs-v11": {
+      "label": "GEFS v11 one-degree archive member",
+      "publication_lag": [{"cycle_hours": null, "hours": 0, "measured": "Historical archive. PublicationEra bounds limit accepted cycles."}],
+      "measured": "2026-10-20: 20190201/00 object listing and Rust inventories",
+      "hosts": [
+        {
+          "name": "aws",
+          "base": "https://noaa-gefs-pds.s3.amazonaws.com",
+          "retention_hours": null,
+          "transfer_rank": 0,
+          "why": "Public legacy archive; object presence is checked for every requested member and lead.",
+          "default": true
+        }
+      ],
+      "cycle_hours": [
+        0,
+        6,
+        12,
+        18
+      ],
+      "posting": {
+        "shape": "archive",
+        "ready_check": "objects_and_index",
+        "why": "Fixed historical archive. Each member, lead, a/b file and index must exist."
+      },
+      "ladders": [
+        {
+          "cycle_hours": null,
+          "steps": [
+            [
+              384,
+              6
+            ]
+          ]
+        }
+      ],
+      "default_cadence": 6,
+      "layout": "upstream",
+      "members": {
+        "default": "c00",
+        "default_token": "gec00",
+        "perturbed_name_format": "p%02d",
+        "perturbed_token_format": "gep%02d",
+        "perturbed_range": [
+          1,
+          20
+        ],
+        "why_path_identity": "21 members observed in 20190201/00 listing; byte identity is verified by the v11 member grammar."
+      },
+      "files": [
+        {
+          "role": "pgrb2a",
+          "primary": false,
+          "leads": "all",
+          "path": "gefs.{YYYYMMDD}/{HH}/pgrb2a/{MEMBER}.t{HH}z.pgrb2af{FF}",
+          "idx_sidecar": ".idx"
+        },
+        {
+          "role": "pgrb2b",
+          "primary": false,
+          "leads": "all",
+          "path": "gefs.{YYYYMMDD}/{HH}/pgrb2b/{MEMBER}.t{HH}z.pgrb2bf{FF}",
+          "idx_sidecar": ".idx"
+        }
+      ],
+      "compose": [
+        {
+          "kind": "concat_per_lead",
+          "roles": [
+            "pgrb2a",
+            "pgrb2b"
+          ],
+          "primary": true,
+          "name": "pairs/{MEMBER}.t{HH}z.pair.1p00.f{FFF}.grib2",
+          "why": "the a and b pressure-level sets are exactly disjoint -- specific humidity, soil layers 2/3/4 and the land-sea mask are 100% in b -- so either file alone is a torso. GRIB2 messages are self-delimiting, so the pair concatenated in that order is the multi-record form the profile decodes."
+        }
+      ],
+      "record_subset": {
+        "supported": false,
+        "why": "the pair is required whole: an index-selected subset of either half cannot restore the disjoint level set the other half carries"
+      },
+      "prep": {
+        "source": "gefs-v11",
+        "supplement": {
+          "from": "every_input",
+          "role": "gefs_member_in_band_surface"
+        }
+      },
+      "publication_eras": [
+        {
+          "label": "GEFS v11 flat archive",
+          "valid_from": "2018-07-27T00:00:00",
+          "valid_until": "2020-09-23T12:00:00",
+          "resolution_degrees": 1.0,
+          "steps": [
+            [
+              384,
+              6
+            ]
+          ],
+          "files": [
+            {
+              "role": "pgrb2a",
+              "primary": false,
+              "leads": "all",
+              "path": "gefs.{YYYYMMDD}/{HH}/pgrb2a/{MEMBER}.t{HH}z.pgrb2af{FF}",
+              "idx_sidecar": ".idx"
+            },
+            {
+              "role": "pgrb2b",
+              "primary": false,
+              "leads": "all",
+              "path": "gefs.{YYYYMMDD}/{HH}/pgrb2b/{MEMBER}.t{HH}z.pgrb2bf{FF}",
+              "idx_sidecar": ".idx"
+            }
+          ]
+        }
+      ]
+    },
     "gefs": {
       "label": "GEFS v12 pgrb2a+pgrb2b 0.50 deg ensemble member",
       "measured": "2026-08-17",
@@ -1466,6 +1710,18 @@
             18
           ],
           "resolution_degrees": 0.25
+        },
+        {
+          "label": "Archived ENS with in-band control and four soil layers",
+          "valid_from": "2024-03-18T12",
+          "valid_until": "2026-05-12T06",
+          "cycle_hours": [
+            0,
+            6,
+            12,
+            18
+          ],
+          "resolution_degrees": 0.25
         }
       ],
       "cycle_hours": [
@@ -1558,7 +1814,13 @@
         ],
         "perturbed_name_format": "p%02d",
         "perturbed_token_format": "%d"
-      }
+      },
+      "publication_era_sources": [
+        "https://ecmwf-forecasts.s3.eu-central-1.amazonaws.com/20240318/12z/ifs/0p25/enfo/20240318120000-0h-enfo-ef.index",
+        "https://ecmwf-forecasts.s3.eu-central-1.amazonaws.com/20241029/00z/ifs/0p25/enfo/20241029000000-0h-enfo-ef.index"
+      ],
+      "publication_era_measured": "2026-10-20",
+      "coverage_note": "AWS open-data replica lists dates from 2023-01-18; this member preparation route supports archived 0.25-degree ENS from 2024-03-18T12 with nine pressure levels and four soil layers. Missing objects remain a provider availability error. CC-BY-4.0 with ECMWF attribution and Terms of Use. TIGGE is a separate CC-BY-NC-4.0 research-only archive, never an automatic fallback."
     },
 
     "aifs": {
@@ -1811,6 +2073,1172 @@
         "source": "gem-gdps",
         "supplement": {"from": "role:terrain", "role": "gdps_analysis_invariant_surface"}
       }
+    },
+    "gefs-reforecast": {
+      "label": "NOAA GEFSv12 retrospective gefs-reforecast",
+      "publication_lag": [
+        {
+          "cycle_hours": null,
+          "hours": 0,
+          "measured": "Historical archive. PublicationEra bounds limit accepted cycles."
+        }
+      ],
+      "measured": "2026-10-20: 20190201/00 object listing and Rust inventories",
+      "hosts": [
+        {
+          "name": "aws",
+          "base": "https://noaa-gefs-retrospective.s3.amazonaws.com",
+          "retention_hours": null,
+          "transfer_rank": 0,
+          "why": "Public legacy archive; object presence is checked for every requested member and lead.",
+          "default": true
+        }
+      ],
+      "cycle_hours": [
+        0
+      ],
+      "posting": {
+        "shape": "archive",
+        "ready_check": "objects_and_index",
+        "why": "Fixed historical archive. Each member, lead, a/b file and index must exist."
+      },
+      "ladders": [
+        {
+          "cycle_hours": null,
+          "steps": [
+            [
+              240,
+              3
+            ],
+            [
+              384,
+              6
+            ]
+          ]
+        }
+      ],
+      "default_cadence": 3,
+      "layout": "upstream",
+      "members": {
+        "default": "c00",
+        "default_token": "c00",
+        "perturbed_name_format": "p%02d",
+        "perturbed_token_format": "p%02d",
+        "perturbed_range": [
+          1,
+          4
+        ],
+        "why_path_identity": "Daily five; Wednesday eleven; member bytes independently checked."
+      },
+      "files": [
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/tmp_pres_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:10-16/tmp_pres_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 246,
+          "lead_max": 384
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/tmp_pres_abv700mb_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/spfh_pres_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:10-16/spfh_pres_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 246,
+          "lead_max": 384
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/spfh_pres_abv700mb_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/ugrd_pres_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:10-16/ugrd_pres_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 246,
+          "lead_max": 384
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/ugrd_pres_abv700mb_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/vgrd_pres_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:10-16/vgrd_pres_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 246,
+          "lead_max": 384
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/vgrd_pres_abv700mb_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/hgt_pres_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:10-16/hgt_pres_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 246,
+          "lead_max": 384
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/hgt_pres_abv700mb_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/pres_sfc_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:10-16/pres_sfc_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 246,
+          "lead_max": 384
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/hgt_sfc_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:10-16/hgt_sfc_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 246,
+          "lead_max": 384
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/tmp_sfc_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:10-16/tmp_sfc_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 246,
+          "lead_max": 384
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/tmp_2m_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:10-16/tmp_2m_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 246,
+          "lead_max": 384
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/spfh_2m_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:10-16/spfh_2m_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 246,
+          "lead_max": 384
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/ugrd_hgt_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:10-16/ugrd_hgt_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 246,
+          "lead_max": 384
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/vgrd_hgt_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:10-16/vgrd_hgt_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 246,
+          "lead_max": 384
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/tsoil_bgrnd_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:10-16/tsoil_bgrnd_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 246,
+          "lead_max": 384
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/soilw_bgrnd_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:10-16/soilw_bgrnd_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 246,
+          "lead_max": 384
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/weasd_sfc_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:10-16/weasd_sfc_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 246,
+          "lead_max": 384
+        }
+      ],
+      "compose": [
+        {
+          "kind": "concat_per_lead",
+          "roles": [
+            "state"
+          ],
+          "primary": true,
+          "name": "members/{MEMBER}/state.f{FFF}.grib2",
+          "why": "Native index selects one lead from each variable file; lower/upper pressure grids normalized by mapping."
+        }
+      ],
+      "record_subset": {
+        "supported": true,
+        "why": "Native wgrib2 lead selection with byte-level member validation."
+      },
+      "prep": {
+        "source": "gefs-reforecast",
+        "supplement": {
+          "from": "every_input",
+          "role": "gefs_member_in_band_surface"
+        }
+      },
+      "first_lead": 3,
+      "donors": [
+        {
+          "source": "gefs-reforecast-land",
+          "role": "land_data",
+          "leads": [
+            0
+          ],
+          "cycle": "same",
+          "why": "Published invariant land mask, producer reference retained."
+        },
+        {
+          "source": "ncep-r1-seaice",
+          "role": "seaice_data",
+          "leads": [
+            0
+          ],
+          "cycle": "same",
+          "why": "Exact cycle sea-ice analysis; no future observations."
+        }
+      ]
+    },
+    "gefs-reforecast-weekly": {
+      "label": "NOAA GEFSv12 retrospective gefs-reforecast-weekly",
+      "publication_lag": [
+        {
+          "cycle_hours": null,
+          "hours": 0,
+          "measured": "Historical archive. PublicationEra bounds limit accepted cycles."
+        }
+      ],
+      "measured": "2026-10-20: 20190201/00 object listing and Rust inventories",
+      "hosts": [
+        {
+          "name": "aws",
+          "base": "https://noaa-gefs-retrospective.s3.amazonaws.com",
+          "retention_hours": null,
+          "transfer_rank": 0,
+          "why": "Public legacy archive; object presence is checked for every requested member and lead.",
+          "default": true
+        }
+      ],
+      "cycle_hours": [
+        0
+      ],
+      "posting": {
+        "shape": "archive",
+        "ready_check": "objects_and_index",
+        "why": "Fixed historical archive. Each member, lead, a/b file and index must exist."
+      },
+      "ladders": [
+        {
+          "cycle_hours": null,
+          "steps": [
+            [
+              240,
+              3
+            ],
+            [
+              840,
+              6
+            ]
+          ]
+        }
+      ],
+      "default_cadence": 3,
+      "layout": "upstream",
+      "members": {
+        "default": "c00",
+        "default_token": "c00",
+        "perturbed_name_format": "p%02d",
+        "perturbed_token_format": "p%02d",
+        "perturbed_range": [
+          1,
+          10
+        ],
+        "why_path_identity": "Daily five; Wednesday eleven; member bytes independently checked."
+      },
+      "files": [
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/tmp_pres_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:10-35/tmp_pres_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 246,
+          "lead_max": 840
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/tmp_pres_abv700mb_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/spfh_pres_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:10-35/spfh_pres_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 246,
+          "lead_max": 840
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/spfh_pres_abv700mb_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/ugrd_pres_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:10-35/ugrd_pres_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 246,
+          "lead_max": 840
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/ugrd_pres_abv700mb_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/vgrd_pres_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:10-35/vgrd_pres_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 246,
+          "lead_max": 840
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/vgrd_pres_abv700mb_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/hgt_pres_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:10-35/hgt_pres_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 246,
+          "lead_max": 840
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/hgt_pres_abv700mb_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/pres_sfc_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:10-35/pres_sfc_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 246,
+          "lead_max": 840
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/hgt_sfc_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:10-35/hgt_sfc_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 246,
+          "lead_max": 840
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/tmp_sfc_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:10-35/tmp_sfc_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 246,
+          "lead_max": 840
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/tmp_2m_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:10-35/tmp_2m_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 246,
+          "lead_max": 840
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/spfh_2m_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:10-35/spfh_2m_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 246,
+          "lead_max": 840
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/ugrd_hgt_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:10-35/ugrd_hgt_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 246,
+          "lead_max": 840
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/vgrd_hgt_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:10-35/vgrd_hgt_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 246,
+          "lead_max": 840
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/tsoil_bgrnd_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:10-35/tsoil_bgrnd_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 246,
+          "lead_max": 840
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/soilw_bgrnd_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:10-35/soilw_bgrnd_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 246,
+          "lead_max": 840
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:1-10/weasd_sfc_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 3,
+          "lead_max": 240
+        },
+        {
+          "role": "state",
+          "primary": false,
+          "leads": "all",
+          "path": "GEFSv12/reforecast/{YYYY}/{YYYYMMDDHH}/{MEMBER}/Days:10-35/weasd_sfc_{YYYYMMDDHH}_{MEMBER}.grib2",
+          "idx_sidecar": ".idx",
+          "member_index": {
+            "format": "wgrib2"
+          },
+          "lead_min": 246,
+          "lead_max": 840
+        }
+      ],
+      "compose": [
+        {
+          "kind": "concat_per_lead",
+          "roles": [
+            "state"
+          ],
+          "primary": true,
+          "name": "members/{MEMBER}/state.f{FFF}.grib2",
+          "why": "Native index selects one lead from each variable file; lower/upper pressure grids normalized by mapping."
+        }
+      ],
+      "record_subset": {
+        "supported": true,
+        "why": "Native wgrib2 lead selection with byte-level member validation."
+      },
+      "prep": {
+        "source": "gefs-reforecast-weekly",
+        "supplement": {
+          "from": "every_input",
+          "role": "gefs_member_in_band_surface"
+        }
+      },
+      "first_lead": 3,
+      "donors": [
+        {
+          "source": "gefs-reforecast-land",
+          "role": "land_data",
+          "leads": [
+            0
+          ],
+          "cycle": "same",
+          "why": "Published invariant land mask, producer reference retained."
+        },
+        {
+          "source": "ncep-r1-seaice",
+          "role": "seaice_data",
+          "leads": [
+            0
+          ],
+          "cycle": "same",
+          "why": "Exact cycle sea-ice analysis; no future observations."
+        }
+      ]
+    },
+    "gefs-reforecast-land": {
+      "label": "gefs-reforecast-land",
+      "publication_lag": [
+        {
+          "cycle_hours": null,
+          "hours": 0,
+          "measured": "Historical archive. PublicationEra bounds limit accepted cycles."
+        }
+      ],
+      "measured": "2026-10-20: 20190201/00 object listing and Rust inventories",
+      "hosts": [
+        {
+          "name": "aws",
+          "base": "https://noaa-gefs-retrospective.s3.amazonaws.com",
+          "retention_hours": null,
+          "transfer_rank": 0,
+          "why": "Public legacy archive; object presence is checked for every requested member and lead.",
+          "default": true
+        }
+      ],
+      "cycle_hours": [
+        0,
+        6,
+        12,
+        18
+      ],
+      "posting": {
+        "shape": "archive",
+        "ready_check": "objects",
+        "why": "Fixed historical archive. Each member, lead, a/b file and index must exist."
+      },
+      "ladders": [
+        {
+          "cycle_hours": null,
+          "steps": [
+            [
+              0,
+              6
+            ]
+          ]
+        }
+      ],
+      "default_cadence": 6,
+      "layout": "upstream",
+      "members": null,
+      "files": [
+        {
+          "role": "surface",
+          "primary": true,
+          "leads": "none",
+          "path": "landsfc.pgrb2.0p50",
+          "magic": "GRIB"
+        }
+      ],
+      "compose": [],
+      "record_subset": {
+        "supported": false,
+        "why": "Small complete surface donor object."
+      },
+      "prep": {}
+    },
+    "ncep-r1-seaice": {
+      "label": "ncep-r1-seaice",
+      "publication_lag": [
+        {
+          "cycle_hours": null,
+          "hours": 0,
+          "measured": "Historical archive. PublicationEra bounds limit accepted cycles."
+        }
+      ],
+      "measured": "2026-10-20: 20190201/00 object listing and Rust inventories",
+      "hosts": [
+        {
+          "name": "aws",
+          "base": "https://downloads.psl.noaa.gov",
+          "retention_hours": null,
+          "transfer_rank": 0,
+          "why": "Public legacy archive; object presence is checked for every requested member and lead.",
+          "default": true
+        }
+      ],
+      "cycle_hours": [
+        0,
+        6,
+        12,
+        18
+      ],
+      "posting": {
+        "shape": "archive",
+        "ready_check": "objects",
+        "why": "Fixed historical archive. Each member, lead, a/b file and index must exist."
+      },
+      "ladders": [
+        {
+          "cycle_hours": null,
+          "steps": [
+            [
+              0,
+              6
+            ]
+          ]
+        }
+      ],
+      "default_cadence": 6,
+      "layout": "upstream",
+      "members": null,
+      "files": [
+        {
+          "role": "surface",
+          "primary": true,
+          "leads": "none",
+          "path": "Datasets/ncep.reanalysis/surface_gauss/icec.sfc.gauss.{YYYY}.nc",
+          "magic": "\u0089HDF"
+        }
+      ],
+      "compose": [],
+      "record_subset": {
+        "supported": false,
+        "why": "Small complete surface donor object."
+      },
+      "prep": {}
     }
   },
 

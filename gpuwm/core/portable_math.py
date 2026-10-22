@@ -43,7 +43,7 @@ import numpy as np
 
 __all__ = ["IMPLEMENTATION", "FALLBACK_IMPLEMENTATION", "implementation",
            "worker_limit", "cpu_bridge_scope", "current_cpu_bridge_binding",
-           "run_with_cpu_bridge_binding", "exp", "log", "log1p", "log10", "sin", "cos",
+           "run_with_cpu_bridge_binding", "run_with_shared_cpu_bridge_binding", "exp", "log", "log1p", "log10", "sin", "cos",
            "tan", "arcsin", "arccos", "arctan", "arctan2", "power"]
 
 #: The implementation name a receipt records for the library route.
@@ -146,6 +146,27 @@ def run_with_cpu_bridge_binding(binding, function, *args, **kwargs):
     from gpuwm.ingest.cpu_backend import cpu_bridge_scope as native_bridge_scope
     if binding is not None:
         binding = replace(binding, worker_cap=1)
+    with native_bridge_scope(None if binding is None else binding.path,
+                             worker_cap=None if binding is None else binding.worker_cap):
+        token = _cpu_bridge_binding.set(binding)
+        try:
+            return function(*args, **kwargs)
+        finally:
+            _cpu_bridge_binding.reset(token)
+
+
+def run_with_shared_cpu_bridge_binding(binding, function, *args, **kwargs):
+    """Carry the caller's math library AND its worker cap into one background job.
+
+    :func:`run_with_cpu_bridge_binding` pins a private worker to one native
+    thread, because it is one of several running side by side.  A single
+    job that runs beside its caller (the HRRR hydrometeor disposition
+    receipt) is not one of many: pinned to one thread, its 50 per-level
+    replays of the CPU vertical operator ran on one core for 120-170 s of a
+    full-CONUS start while the start waited for it (V58, 2026-10-21).
+    Native results do not depend on the worker count.
+    """
+    from gpuwm.ingest.cpu_backend import cpu_bridge_scope as native_bridge_scope
     with native_bridge_scope(None if binding is None else binding.path,
                              worker_cap=None if binding is None else binding.worker_cap):
         token = _cpu_bridge_binding.set(binding)

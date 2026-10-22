@@ -2,9 +2,11 @@
   "schema": "arwen.research.diagnostics.v1",
   "scope": "A reviewed subset of products supported by the ArWen WRF-history import path. Product membership is source-capability metadata, not forecast-skill or GPU qualification. The renderer still checks actual saved fields and complete time windows.",
   "authority": {
-    "tools/rustwx/crates/rw-wrfbatch/src/wrf_process.rs": "e0c0e939e39ef6bfd3c90b579231b7ba4183bb73b4c7b913fbf521be6aff8833",
-    "tools/rustwx/crates/rw-wrfbatch/src/local_import.rs": "d7b3553c780260fe2cf4be7c843681666c33ed41c2a5c6bee031ecab27997664",
-    "tools/rustwx/crates/rustwx-products/src/windowed.rs": "56c5e5afe2e4682afbaa76e7ac0c208216086a7e454a132d32ade29bbd08082c"
+    "tools/rustwx/crates/rw-wrfbatch/src/wrf_process.rs": "1815f21e69acccfdead003df3aa76e60d12022575f350ced0a6327f4e9037d8f",
+    "tools/rustwx/crates/rw-wrfbatch/src/local_import.rs": "5c9a234120d439e4ca72681a5f736c2797a167c9d13c7cc5a8b5fd81f74ef068",
+    "tools/rustwx/crates/rustwx-products/src/windowed.rs": "d06f4fc397698cf82f3191e9219add909d6fc4086733fa69a061d0bf405f7fdd",
+    "tools/rustwx/crates/rw-wrfbatch/src/derived_diagnostics.rs": "ab83ca2532b4572c9d765f5c4a2fa54c857ecb375609dcab7912d308ed573d99",
+    "tools/rustwx/crates/rustwx-calc/src/derived.rs": "d1fa81ea69b88fbd4a5e708fe6d0090034b6159b663e66bf603a5c4245e411c6"
   },
   "products": {
     "10m_wind_1h_max": {
@@ -266,6 +268,91 @@
       "kind": "generic",
       "minimum_hours": 0,
       "input_note": "stored 2-D variable 'wrf_lapse_rate_700_500' [degC/km]"
+    },
+    "heat_index_2m": {
+      "kind": "derived",
+      "minimum_hours": 0,
+      "input_note": "NWS Steadman/Rothfusz screen heat index, degC; T2, Q2 and PSFC."
+    },
+    "apparent_temperature_2m": {
+      "kind": "derived",
+      "minimum_hours": 0,
+      "input_note": "NWS heat-index/wind-chill/air-temperature convention, degC; screen thermodynamics and 10 m wind."
+    },
+    "wetbulb_2m": {
+      "kind": "derived",
+      "minimum_hours": 0,
+      "input_note": "Thermodynamic screen wet bulb, degC; T2, Q2 and PSFC."
+    },
+    "fire_weather_composite": {
+      "kind": "derived",
+      "minimum_hours": 0,
+      "input_note": "Screen wind times vapor-pressure deficit; instantaneous composite, not Canadian FWI."
+    },
+    "wbgt_2m": {
+      "kind": "derived",
+      "minimum_hours": 0,
+      "input_note": "Liljegren sensor balances, degC; SWDOWN, screen fields and native temperature/height profiles."
+    },
+    "hot_dry_windy": {
+      "kind": "derived",
+      "minimum_hours": 0,
+      "input_note": "Independent maximum wind and surface-adjusted VPD in the lowest 500 m; instantaneous hPa m/s."
+    },
+    "haines_low": {
+      "kind": "derived",
+      "minimum_hours": 0,
+      "input_note": "Haines 950/850 hPa stability plus 850 hPa dewpoint-depression categories; below-terrain surfaces remain missing."
+    },
+    "haines_mid": {
+      "kind": "derived",
+      "minimum_hours": 0,
+      "input_note": "Haines 850/700 hPa stability plus 850 hPa dewpoint-depression categories; below-terrain surfaces remain missing."
+    },
+    "haines_high": {
+      "kind": "derived",
+      "minimum_hours": 0,
+      "input_note": "Haines 700/500 hPa stability plus 700 hPa dewpoint-depression categories; below-terrain surfaces remain missing."
+    },
+    "lightning_threat_1": {
+      "kind": "derived",
+      "minimum_hours": 0,
+      "input_note": "Experimental McCaul updraft/graupel proxy at -15 degC; native microphysics required; flashes/km2/5min."
+    },
+    "lightning_threat_2": {
+      "kind": "derived",
+      "minimum_hours": 0,
+      "input_note": "Experimental McCaul ice-column proxy; graupel, snow and cloud ice required; flashes/km2/5min."
+    },
+    "lightning_threat_3": {
+      "kind": "derived",
+      "minimum_hours": 0,
+      "input_note": "Experimental McCaul 0.95 LTG1 + 0.05 LTG2 blend; native microphysics required; flashes/km2/5min."
+    },
+    "pr92_flash_rate": {
+      "kind": "derived",
+      "minimum_hours": 0,
+      "input_note": "Experimental WRF PR92 domain-wide maximum updraft and widest >20 dBZ echo area; flashes/s/cell."
+    },
+    "vpd_2m": {
+      "kind": "derived",
+      "minimum_hours": 0,
+      "input_note": "2 m vapor-pressure deficit in hPa, calculated in Rust from native WRF T2, Q2 and PSFC using the surface thermodynamics kernel."
+    },
+    "2m_vpd_0_24h_max": {
+      "kind": "windowed",
+      "minimum_hours": 24,
+      "input_note": "max of stored vpd_2m in hPa over every hourly snapshot F001-F024; missing hours block the window."
+    },
+    "2m_vpd_0_24h_min": {
+      "kind": "windowed",
+      "minimum_hours": 24,
+      "input_note": "min of stored vpd_2m in hPa over every hourly snapshot F001-F024; missing hours block the window."
+    },
+    "2m_vpd_0_24h_range": {
+      "kind": "windowed",
+      "minimum_hours": 24,
+      "input_note": "range of stored vpd_2m in hPa over every hourly snapshot F001-F024; missing hours block the window."
     }
   },
   "unavailable": {
@@ -276,15 +363,12 @@
     "cloud_cover": "The requested cloud panel shows low, middle and high layer cloud cover. It does not calculate total cloud fraction.",
     "dcape": "The current ArWen history renderer does not produce DCAPE. Moisture and temperature context cannot establish downdraft energy; that parcel calculation requires separate analysis.",
     "dewpoint_depression_2m": "Air temperature and dewpoint are shown separately. Dewpoint depression is not calculated by this history-rendering path and requires separate analysis.",
-    "heat_index_2m": "Air temperature and relative humidity are shown separately. Heat index is not calculated by this history-rendering path and requires separate analysis.",
     "lapse_rate_0_3km": "The stored 0-3 km lapse-rate plot uses plain temperature. It is not the virtual-temperature lapse rate; the virtual-temperature quantity requires separate analysis.",
     "lapse_rate_700_500": "The stored 700-500 hPa lapse-rate plot uses plain temperature. It is not the virtual-temperature lapse rate; the virtual-temperature quantity requires separate analysis.",
     "precipitation_type": "Precipitation-type categories are not supplied by the current ArWen history renderer. Temperature and moisture plots provide environmental context; rain/snow/freezing-rain/ice-pellet classification requires separate analysis or observations.",
     "simulated_ir_satellite": "Simulated infrared brightness temperature needs a forward radiative-transfer operator, and no such operator exists on the history-import lane; this product is served only from a fetched GRIB store. The nearest stored quantity on this lane is top-of-atmosphere outgoing longwave radiation, drawn with --products var:wrf_olr, which is a flux in W m-2 and NOT a brightness temperature: the two are different quantities and one must not be read as the other.",
     "theta_e_2m_10m_winds": "The plots show temperature, dewpoint and winds separately. The current ArWen history renderer does not calculate 2 m equivalent potential temperature; that quantity requires separate analysis.",
     "visibility": "Low cloud cover and near-surface humidity describe the fog environment, not visibility distance. Visibility and verified fog boundaries require separate analysis or observations.",
-    "vpd_2m": "Air temperature and relative humidity are context only. Vapour-pressure deficit is not calculated by this history-rendering path and requires separate analysis.",
-    "wetbulb_2m": "The current ArWen history renderer does not produce 2 m wet-bulb temperature. Air temperature and humidity are context only; wet-bulb temperature requires a separate calculation.",
     "wind_chill_2m": "Air temperature and 10 m wind are shown separately. Wind chill is not calculated by this history-rendering path and requires separate analysis."
   },
   "authority_normalization": "UTF-8 with LF line endings"

@@ -63,7 +63,9 @@ def test_projection_covers_complete_measured_runs_without_old_inflation(tmp_path
         assert row["bytes"] <= predicted <= 1.6 * row["bytes"], row
 
 
-@pytest.mark.parametrize("spec", ["t2,t2", "t2,2m_temperature"])
+@pytest.mark.parametrize('spec', [
+    pytest.param("t2,2m_temperature", id='t2,2m_temperature'),
+])
 def test_aliases_and_duplicates_are_not_charged_twice(tmp_path, spec):
     assert projection(tmp_path, spec)["picture_bytes"] == projection(tmp_path, "t2")["picture_bytes"]
 

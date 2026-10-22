@@ -258,6 +258,24 @@ class DomainTicks:
     #: after it (the alarm stops once the clock passes its StopTime).
     history_end_ticks: int | None = None
 
+    history_interval2_ticks: int | None = None
+    history_interval_change_ticks: int = 0
+
+    def next_history_offset(self, elapsed: int) -> int:
+        """First history alarm strictly after elapsed (domain-relative ticks)."""
+        origin = self.history_begin_ticks
+        interval = self.history_ticks
+        if self.history_interval2_ticks is not None:
+            change = self.history_interval_change_ticks
+            if elapsed >= change:
+                origin, interval = change, self.history_interval2_ticks
+            else:
+                due = origin if elapsed < origin else origin + ((elapsed-origin)//interval+1)*interval
+                if due > change:
+                    return change + self.history_interval2_ticks
+                return due
+        return origin if elapsed < origin else origin + ((elapsed-origin)//interval+1)*interval
+
     def history_offset_due(self, elapsed: int) -> bool:
         """Whether a frame is due ``elapsed`` ticks after this domain's
         start: on the interval lattice anchored at the begin offset, and
@@ -267,6 +285,9 @@ class DomainTicks:
         if (self.history_end_ticks is not None
                 and elapsed > self.history_end_ticks):
             return False
+        if (self.history_interval2_ticks is not None
+                and elapsed > self.history_interval_change_ticks):
+            return (elapsed - self.history_interval_change_ticks) % self.history_interval2_ticks == 0
         return (elapsed - self.history_begin_ticks) % self.history_ticks == 0
 
     def first_history_ticks(self) -> int:
@@ -275,7 +296,7 @@ class DomainTicks:
         offset suppresses the start frame."""
         if self.history_begin_ticks:
             return self.start_ticks + self.history_begin_ticks
-        return self.start_ticks + self.history_ticks
+        return self.start_ticks + self.next_history_offset(0)
 
 
 @dataclass(frozen=True)
@@ -531,7 +552,8 @@ def _cadence_ticks(label: str, seconds: Fraction, step_ticks: int,
 
 def resolve_clock(exp: ExperimentConfig, *,
                   lbc_interval_s: float | None = None,
-                  live_born_children=()) -> TickClock:
+                  live_born_children=(),
+                  tick_den_floor: int | None = None) -> TickClock:
     """Resolve the experiment's exact-rational clock into integer ticks.
 
     ``fractions.Fraction`` appears HERE ONLY (config resolution, section
@@ -575,6 +597,15 @@ def resolve_clock(exp: ExperimentConfig, *,
 
     dt_exact = {dc.grid_id: exp.dt_exact(dc.grid_id) for dc in exp.domains}
     tick_den = lcm(*(dt.denominator for dt in dt_exact.values()))
+    if tick_den_floor is not None:
+        # A tree that GROWS mid-run (a dormant nest spawning) re-mints its
+        # clocks over a larger domain set and carries every live clock's
+        # integer ticks across.  The tick has to mean the same second on
+        # both sides, so the leg's denominator is the declared tree's
+        # (gpuwm.experiment.declared tick denominator), never the startup
+        # subset's: with HRRR's 20 s root and a ratio-3 nest it was 1 then
+        # 3, and a newborn born at 1800 ticks read model second 600.
+        tick_den = lcm(tick_den, int(tick_den_floor))
     if any(dc.run.use_adaptive_time_step for dc in exp.domains):
         # An adaptive clock emits hundredths -- calc_dt requantises every
         # interval to n/100 (adapt_timestep_em.F:179-184) -- so the
@@ -706,6 +737,18 @@ def resolve_clock(exp: ExperimentConfig, *,
                 "lbc_interval_s", Fraction(lbc_interval_s), step_ticks,
                 tick_den, dc.grid_id)
 
+        history_interval2_ticks = None
+        history_interval_change_ticks = 0
+        if run.history_interval2_s:
+            history_interval2_ticks = _cadence_ticks(
+                "history_interval2_s", Fraction(str(run.history_interval2_s)),
+                step_ticks, tick_den, dc.grid_id,
+                require_step_multiple=not run.use_adaptive_time_step)
+            change = Fraction(str(run.history_interval_change_s)) * tick_den
+            if change.denominator != 1 or (not run.use_adaptive_time_step and int(change) % step_ticks):
+                raise ValueError("history_interval_change_s must lie on the model clock")
+            history_interval_change_ticks = int(change)
+
         specs.append(DomainTicks(
             grid_id=dc.grid_id, parent_id=dc.parent_id,
             parent_time_step_ratio=dc.parent_time_step_ratio,
@@ -717,7 +760,9 @@ def resolve_clock(exp: ExperimentConfig, *,
             lbc_interval_ticks=lbc_interval_ticks,
             start_ticks=start_ticks,
             history_begin_ticks=history_begin_ticks,
-            history_end_ticks=history_end_ticks))
+            history_end_ticks=history_end_ticks,
+            history_interval2_ticks=history_interval2_ticks,
+            history_interval_change_ticks=history_interval_change_ticks))
         step_by_id[dc.grid_id] = step_ticks
         fp32_by_id[dc.grid_id] = dt_fp32
 

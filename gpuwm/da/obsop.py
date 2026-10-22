@@ -604,7 +604,6 @@ def mass_point_heights(state):
     base state, extended to the perturbed column.
     """
     php = state.php
-    xp = _array_module(php)
     phb = state.phb
     if getattr(phb, "ndim", 0) == 1:
         phb = phb[:, None, None]

@@ -28,7 +28,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
 import sys
 import textwrap
 from types import SimpleNamespace
@@ -49,7 +48,6 @@ from gpuwm.physics_compat import (
 )
 from gpuwm.ingest.prepared_cache import (
     _reader_boundaries, PreparedCacheReader,
-    prepared_domain_config_identity, write_prepared_cache,
 )
 from gpuwm.ingest.cpu_backend import resolve_cpu_bridge
 from gpuwm.core.grid import BaseState, VerticalCoord
@@ -74,16 +72,9 @@ from tools.hrrr_single_domain_benchmark import (
 from test_hrrr_single_domain_benchmark import (
     _decoded_native_hrrr_initialization, _write_native_physics_namelist)
 from test_hrrr_native_static import _fixture as _native_static_fixture
-from test_prepared_cache import (
-    _extension_identity, _fixture as _prepared_fixture,
-    _suffix_fixture as _prepared_suffix_fixture,
-)
-from test_prepared_domain_tree_forecast import _write_two_domain_config
 from test_native_domain_artifacts import _inputs as _domain_artifact_inputs
 from test_restart import (
-    _cfg as _restart_cfg, _fill_setup as _restart_fill_setup,
     _sealed_tree_fixture,
-    _shim_state as _restart_shim_state,
 )
 
 
@@ -1330,395 +1321,6 @@ def test_public_wrapper_extension_passes_production_tree_contracts(
                for row in f002_headers.values())
 
 
-def _legacy_public_wrapper_extends_one_hour_without_rebuilding_prefix(
-        tmp_path, monkeypatch):
-    cycle = datetime(2026, 7, 18, 5)
-    source = tmp_path / "source"
-    source.mkdir()
-    names_by_hour = {}
-    for hour in (0, 1, 2):
-        names = []
-        for product in ("wrfnat", "soil"):
-            name = f"hrrr.t05z.{product}f{hour:02d}.grib2"
-            (source / name).write_bytes(f"{product}:{hour}".encode("ascii"))
-            names.append(name)
-        names_by_hour[hour] = names
-    prior_sums_bytes = "".join(
-        f"{_file_sha256(source / name)}  {name}\n"
-        for hour in (0, 1) for name in sorted(names_by_hour[hour]))
-    current_sums = source / "SHA256SUMS"
-    current_sums.write_text(
-        "".join(
-            f"{_file_sha256(source / name)}  {name}\n"
-            for hour in (0, 1, 2) for name in sorted(names_by_hour[hour])),
-        encoding="utf-8")
-    namelist = tmp_path / "namelist.input"
-    namelist.write_text("&time_control\n/\n", encoding="utf-8")
-    domain = tmp_path / "domain.json"
-    domain.write_text("{}\n", encoding="utf-8")
-    decoder = tmp_path / "decoder"
-    decoder.write_bytes(b"decoder")
-    monkeypatch.setattr(prepare, "_decoder", lambda _env: decoder)
-    tree_config = _write_two_domain_config(tmp_path)
-    tree_config.write_text(
-        tree_config.read_text(encoding="utf-8").replace(
-            "2026-07-23T00:00:00", cycle.isoformat()),
-        encoding="utf-8")
-    initial_tree = load_experiment(tree_config)
-    final_tree_config = tmp_path / "tree-f002.toml"
-    final_tree_config.write_text(
-        tree_config.read_text(encoding="utf-8").replace(
-            "run_seconds = 3600.0", "run_seconds = 7200.0"),
-        encoding="utf-8")
-
-    prior = tmp_path / "prior"
-    native = prior / "native"
-    native.mkdir(parents=True)
-    (native / "source-manifest.snapshot").write_text(
-        prior_sums_bytes, encoding="utf-8")
-    static = prior / "native-static.npz"
-    with static.open("wb") as stream:
-        np.savez(stream, DUMMY=np.ones((1,), dtype=np.float32))
-    for name in ("native-static-receipt.json",
-                 "native-geometry-receipt.json"):
-        (prior / name).write_text("{}\n", encoding="utf-8")
-    prior_bridge = _fake_sealed_bridge(native / "native-bridge", [0, 1])
-    prior_identity = _extension_identity(
-        source_hours=[0, 1], model_start=cycle, domain_start=cycle,
-        bridge=_file_sha256(prior_bridge / "SHA256SUMS"),
-        source_manifest=_file_sha256(
-            native / "source-manifest.snapshot"))
-    prior_identity.update({
-        "static_cache_sha256": _file_sha256(static),
-        "namelist_sha256": _file_sha256(namelist),
-        "domain_config": prepared_domain_config_identity(
-            initial_tree.root),
-    })
-    prior_identity["source_identity"]["source_cycle"] = cycle.isoformat()
-    prior_identity["source_identity"]["grid_id"] = 1
-    initial, met, boundaries = _prepared_fixture()
-    prior_cache = native / "prepared-cache"
-    prior_cache_receipt = write_prepared_cache(
-        prior_cache, identity=prior_identity, initial_result=initial,
-        met=met, boundaries=boundaries,
-        metadata={
-            "initial_valid_time": cycle.isoformat(),
-            "last_valid_time": (cycle + timedelta(hours=1)).isoformat(),
-            "source_cycle": cycle.isoformat(),
-            "source_forecast_hours": [0, 1],
-            "model_forcing_hours": [0, 1],
-            "forcing_hours": [0, 1],
-        }, sealed_forcing_extension=True)
-    prior_report = native / "preparation-report" / "report.json"
-    prior_report.parent.mkdir()
-    prior_report.write_text(json.dumps({
-        "status": "PASS",
-        "source_cycle": cycle.isoformat(),
-        "model_start_time": cycle.isoformat(),
-        "source_forecast_hours": [0, 1],
-        "model_forcing_hours": [0, 1],
-        "source_identity": prior_identity["source_identity"],
-        "prepared_cache": prior_cache_receipt,
-        "target_domain_sha256": "target",
-    }), encoding="utf-8")
-    (prior / "public-wrapper-result.json").write_text(json.dumps({
-        "status": "PASS",
-        "source_cycle": cycle.isoformat(),
-        "source_forecast_hours": [0, 1],
-        "history_interval_seconds": 3600.0,
-        "physics": {"profile": WSM6_PROFILE_ID},
-        "prepared_cache_contract": {
-            "mode": "sealed-prefix-v1", "operation": "initial"},
-    }), encoding="utf-8")
-
-    def fake_run(command, _env, cwd=None):
-        del cwd
-        if any(str(value).endswith("hrrr_single_domain_benchmark.py")
-               for value in command):
-            suffix_bridge = Path(command[command.index("--bridge") + 1])
-            _fake_sealed_bridge(suffix_bridge, [1, 2])
-            suffix_identity = _extension_identity(
-                source_hours=[1, 2],
-                model_start=cycle + timedelta(hours=1),
-                domain_start=cycle + timedelta(hours=1),
-                bridge=_file_sha256(suffix_bridge / "SHA256SUMS"),
-                source_manifest=_file_sha256(current_sums))
-            suffix_identity.update({
-                "static_cache_sha256": _file_sha256(static),
-                "namelist_sha256": _file_sha256(namelist),
-            })
-            suffix_domain = copy.deepcopy(prior_identity["domain_config"])
-            suffix_domain["start_time"] = (
-                cycle + timedelta(hours=1)).isoformat()
-            suffix_domain["run"]["run_seconds"] = 3600.0
-            suffix_identity["domain_config"] = suffix_domain
-            suffix_identity["source_identity"][
-                "source_cycle"] = cycle.isoformat()
-            suffix_identity["source_identity"]["grid_id"] = 1
-            suffix_initial, suffix_met, suffix_boundaries = \
-                _prepared_suffix_fixture()
-            write_prepared_cache(
-                Path(command[command.index("--prepared-cache") + 1]),
-                identity=suffix_identity, initial_result=suffix_initial,
-                met=suffix_met, boundaries=suffix_boundaries)
-            outdir = Path(command[command.index("--outdir") + 1])
-            outdir.mkdir(parents=True)
-            (outdir / "report.json").write_text(json.dumps({
-                "status": "PASS",
-                "source_forecast_hours": [1, 2],
-                "model_forcing_hours": [0, 1],
-                "source_identity": suffix_identity["source_identity"],
-                "physics": {"profile": WSM6_PROFILE_ID},
-                "pipeline": {}, "preparation": {},
-            }), encoding="utf-8")
-        elif "gpuwm.wrf_direct" in command:
-            Path(command[command.index("--output") + 1]).mkdir()
-
-    monkeypatch.setattr(prepare, "_run", fake_run)
-    monkeypatch.setattr(prepare, "_run_keeping_refusal",
-                        _keeping_refusal(fake_run))
-    monkeypatch.setattr(
-        prepare, "_validated_worker_receipts",
-        lambda *args, **kwargs: ({"backend": "fixture"}, {}, {}))
-    monkeypatch.setattr(
-        prepare, "_validated_physics_receipt",
-        lambda *args, **kwargs: {"profile": WSM6_PROFILE_ID})
-    output = tmp_path / "extended"
-    argv = [
-        "--source-root", str(source),
-        "--source-manifest", str(current_sums),
-        "--source-manifest-sha256", _file_sha256(current_sums),
-        "--static-cache", str(static),
-        "--static-receipt", str(prior / "native-static-receipt.json"),
-        "--domain-spec", str(domain),
-        "--namelist-input", str(namelist),
-        "--physics-profile", WSM6_PROFILE_ID,
-        "--valid-time", "2026-07-18_05:00:00",
-        "--forecast-start-hour", "0", "--forecast-end-hour", "2",
-        "--run-seconds", "7200",
-        "--history-interval-seconds", "3600",
-        "--output-root", str(output),
-        "--sealed-prepared-cache",
-        "--extend-root-preparation", str(prior),
-    ]
-
-    assert prepare.main(argv) == 0
-
-    result = json.loads(
-        (output / "public-wrapper-result.json").read_text())
-    assert result["source_forecast_hours"] == [0, 1, 2]
-    assert result["prepared_cache_contract"]["operation"] == \
-        "extend-one-hour"
-    header = json.loads(
-        (output / "native" / "prepared-cache" / "header.json").read_text())
-    assert header["identity"]["forcing_hours"] == [0, 1, 2]
-    assert len(header["metadata"]["lbc"]["intervals"]) == 2
-    PreparedCacheReader(
-        output / "native" / "prepared-cache",
-        expected_identity=header["identity"]).verify_all()
-    report = json.loads((
-        output / "native" / "preparation-report" / "report.json"
-    ).read_text())
-    report_input = report["input"]
-    assert report_input["bridge"] == str(
-        (output / "native" / "native-bridge").resolve())
-    assert report_input["bridge_manifest_sha256"] == \
-        _file_sha256(output / "native" / "native-bridge" / "SHA256SUMS")
-    assert report_input["source_manifest_sha256"] == \
-        _file_sha256(current_sums)
-    assert report_input["source_forecast_hours"] == [0, 1, 2]
-    assert report_input["model_forcing_hours"] == [0, 1, 2]
-    assert report_input["forcing_hours"] == [0, 1, 2]
-    assert report_input["native_physics_profile"] == WSM6_PROFILE_ID
-    assert isinstance(report_input["native_physics_profile"], str)
-    assert (output / "native" / "native-bridge" /
-            "atmosphere-f00" / "field-00.f32le").samefile(
-                prior_bridge / "atmosphere-f00" / "field-00.f32le")
-    assert not (output / "native" / "extension-work").exists()
-
-    # Consume the wrapper's actual extended cache through the hierarchy
-    # runner's real CPU preflight.  Only grid/static loaders are replaced:
-    # both PreparedCacheReaders, their payload hashes, domain identities,
-    # forcing ownership, and every hierarchy receipt remain production code.
-    final_tree = load_experiment(final_tree_config)
-    prepared_tree = tmp_path / "prepared-tree-f002"
-    artifacts = prepared_tree / "hierarchy-artifacts"
-    domains = artifacts / "domains"
-    domains.mkdir(parents=True)
-    domain_receipts = []
-    common_static = output / "native-static.npz"
-    for domain_config in final_tree.domains:
-        grid_id = int(domain_config.grid_id)
-        bundle = domains / f"d{grid_id:02d}"
-        bundle.mkdir()
-        cache = bundle / "prepared-cache"
-        if grid_id == 1:
-            shutil.copytree(output / "native" / "prepared-cache", cache)
-        else:
-            child_initial, child_met, _child_boundaries = \
-                _prepared_fixture()
-            child_identity = copy.deepcopy(header["identity"])
-            child_identity["domain_config"] = \
-                prepared_domain_config_identity(domain_config)
-            child_identity["source_identity"]["grid_id"] = grid_id
-            write_prepared_cache(
-                cache, identity=child_identity,
-                initial_result=child_initial, met=child_met,
-                boundaries=None)
-        static_path = bundle / "native-static.npz"
-        shutil.copy2(common_static, static_path)
-        geometry = {"geometry": {"grid_id": grid_id}}
-        geometry_path = bundle / "geometry-receipt.json"
-        geometry_path.write_text(json.dumps(geometry), encoding="utf-8")
-        cache_header = json.loads((cache / "header.json").read_text())
-        cache_reader = PreparedCacheReader(
-            cache, expected_identity=cache_header["identity"])
-        verification = cache_reader.verify_all()
-        with np.load(static_path, allow_pickle=False) as archive:
-            static_fields = sorted(archive.files)
-        domain_receipt = {
-            "schema": "gpuwm-native-domain-artifact-build-v1",
-            "status": "READY",
-            "grid_id": grid_id,
-            "parent_id": int(domain_config.parent_id),
-            "boundary_mode": (
-                "external-specified" if grid_id == 1
-                else "nested-parent-forced"),
-            "artifacts": {
-                "prepared_cache": {
-                    "path": "prepared-cache",
-                    "content_sha256": cache_reader.content_sha256,
-                    "payload_bytes": cache_reader.payload_bytes,
-                    "array_count": len(cache_reader.arrays),
-                },
-                "static_cache": {
-                    "path": "native-static.npz",
-                    "bytes": static_path.stat().st_size,
-                    "sha256": _file_sha256(static_path),
-                    "fields": static_fields,
-                },
-                "geometry_receipt": {
-                    "path": "geometry-receipt.json",
-                    "sha256": _file_sha256(geometry_path),
-                    "geometry": geometry["geometry"],
-                },
-            },
-            "verification": verification,
-        }
-        (bundle / "receipt.json").write_text(
-            json.dumps(domain_receipt), encoding="utf-8")
-        domain_receipts.append(domain_receipt)
-
-    grid_ids = [int(domain.grid_id) for domain in final_tree.domains]
-    manifest = {
-        "schema": tree_runner.ARTIFACT_MANIFEST_SCHEMA,
-        "domains": [
-            {
-                "grid_id": grid_id,
-                "prepared_cache":
-                    f"domains/d{grid_id:02d}/prepared-cache",
-                "static_cache":
-                    f"domains/d{grid_id:02d}/native-static.npz",
-                "geometry_receipt":
-                    f"domains/d{grid_id:02d}/geometry-receipt.json",
-            }
-            for grid_id in grid_ids
-        ],
-    }
-    manifest_path = artifacts / "domain-artifacts.json"
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    artifact_receipt = {
-        "schema": tree_runner.ARTIFACT_RECEIPT_SCHEMA,
-        "status": "READY",
-        "domain_count": len(grid_ids),
-        "grid_ids": grid_ids,
-        "manifest": {
-            "path": manifest_path.name,
-            "sha256": _file_sha256(manifest_path),
-        },
-        "boundary_inventory": {
-            "external": [grid_ids[0]],
-            "nested_parent_forced": grid_ids[1:],
-        },
-        "domains": domain_receipts,
-    }
-    (artifacts / "receipt.json").write_text(
-        json.dumps(artifact_receipt), encoding="utf-8")
-    preparation_receipt = {
-        "schema": tree_runner.HIERARCHY_SCHEMA,
-        "status": "PASS",
-        "valid_time": cycle.isoformat(),
-        "domain_count": len(grid_ids),
-        "forcing_hours": [0, 1, 2],
-        "provenance": {
-            "bridge_manifest_sha256": header["identity"][
-                "bridge_manifest_sha256"],
-            "source_manifest_sha256": header["identity"][
-                "source_manifest_sha256"],
-            "native_namelist_input_sha256": header["identity"][
-                "namelist_sha256"],
-        },
-        "artifact_receipt": artifact_receipt,
-    }
-    receipt_path = prepared_tree / "receipt.json"
-    receipt_path.write_text(
-        json.dumps(preparation_receipt), encoding="utf-8")
-    monkeypatch.setattr(
-        tree_runner, "grids_from_projection_config",
-        lambda _exp: tuple(object() for _ in grid_ids))
-    monkeypatch.setattr(
-        tree_runner, "verify_native_static_receipt",
-        lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        tree_runner, "load_native_static_cache",
-        lambda *_args, **_kwargs: {})
-    monkeypatch.setattr(
-        tree_runner, "_validate_vertical",
-        lambda *_args, **_kwargs: None)
-    tree_inputs = tree_runner.preflight_prepared_tree(
-        prepared_root=prepared_tree,
-        preparation_receipt_sha256=_file_sha256(receipt_path),
-        experiment_config=final_tree_config,
-        experiment_config_sha256=_file_sha256(final_tree_config))
-    assert tree_inputs.forcing_hours == (0, 1, 2)
-    assert tree_inputs.domains[0].cache_reader.content_sha256 == \
-        header["content_sha256"]
-
-    # The actual restart-extension validator accepts the f001 checkpoint
-    # against the wrapper's f002 forcing cache.  This is the CPU seam the
-    # hierarchy forecast runner exercises before applying checkpoint bytes.
-    prior_cache_header = json.loads((
-        prior / "native" / "prepared-cache" / "header.json").read_text())
-    prior_reader = PreparedCacheReader(
-        prior / "native" / "prepared-cache",
-        expected_identity=prior_cache_header["identity"])
-    extended_reader = PreparedCacheReader(
-        output / "native" / "prepared-cache",
-        expected_identity=header["identity"])
-    prior_boundaries = _reader_boundaries(prior_reader)
-    extended_boundaries = _reader_boundaries(extended_reader)
-    restart_cfg = _restart_cfg(
-        moist=True, mp_physics=1, specified=True,
-        spec_bdy_width=5, spec_zone=1, relax_zone=4)
-    checkpoint_state = _restart_shim_state(restart_cfg, monkeypatch)
-    _restart_fill_setup(checkpoint_state)
-    checkpoint_state.lateral_boundaries = prior_boundaries
-    checkpoint_state.elapsed_seconds = 3600.0
-    checkpoint = restart_io.write_restart(
-        tmp_path / "f001.npz", checkpoint_state, restart_cfg,
-        sealed_forcing_extension=True)
-    resumed_state = _restart_shim_state(restart_cfg, monkeypatch)
-    _restart_fill_setup(resumed_state)
-    resumed_state.lateral_boundaries = extended_boundaries
-    resumed_state._lateral_boundary_device = SimpleNamespace(
-        rolling=False, clock=None)
-    validated = restart_io._validate_restart(
-        checkpoint, resumed_state, restart_cfg,
-        sealed_forcing_extension=True)
-    assert validated.elapsed == 3600.0
-    assert len(extended_boundaries.intervals) == 2
-
-
 @pytest.mark.parametrize(
     "physics_profile",
     (
@@ -2426,6 +2028,21 @@ def test_stock_wrf_export_pass_is_earned_by_manifested_outputs(tmp_path):
     assert "REFUSED" not in prepare.STOCK_WRF_EXPORT_STATES
 
 
+def _source_and_decoder_fixture(tmp_path, monkeypatch, hours=(0, 1, 2)):
+    """Deterministic source files and decoder for native preparation."""
+    source = tmp_path / "source"
+    source.mkdir()
+    for hour in hours:
+        for product in ("wrfnat", "soil"):
+            (source / f"hrrr.t05z.{product}f{hour:02d}.grib2").write_bytes(
+                f"fixture:{product}:{hour}".encode())
+    manifest = source / "SHA256SUMS"
+    manifest.write_text("".join(f"{_file_sha256(path)}  {path.name}\n"
+                        for path in sorted(source.iterdir())), encoding="utf-8")
+    monkeypatch.setenv("GPUWM_HRRR_DECODER", str(_fixture_decoder(tmp_path)))
+    return source, manifest
+
+
 def test_cuda_native_preparation_runs_its_host_steps_on_the_requested_workers(
         tmp_path, monkeypatch):
     """Real CUDA native preparation with --preprocess-workers, end to end.
@@ -2450,16 +2067,7 @@ def test_cuda_native_preparation_runs_its_host_steps_on_the_requested_workers(
     authority = _configured_wrapper_input(
         tmp_path, namelist, target=target, write_namelist=False,
         vertical=vertical)
-    source = tmp_path / "source"
-    source.mkdir()
-    for hour in (0, 1, 2):
-        for product in ("wrfnat", "soil"):
-            (source / f"hrrr.t05z.{product}f{hour:02d}.grib2").write_bytes(
-                f"fixture:{product}:{hour}".encode())
-    manifest = source / "SHA256SUMS"
-    manifest.write_text("".join(f"{_file_sha256(path)}  {path.name}\n"
-                        for path in sorted(source.iterdir())), encoding="utf-8")
-    monkeypatch.setenv("GPUWM_HRRR_DECODER", str(_fixture_decoder(tmp_path)))
+    source, manifest = _source_and_decoder_fixture(tmp_path, monkeypatch)
     try:
         resolve_cpu_bridge()
     except FileNotFoundError:
@@ -2509,16 +2117,7 @@ def test_cpu_native_preparation_checks_every_slot_against_the_controller(
     authority = _configured_wrapper_input(
         tmp_path, namelist, target=target, write_namelist=False,
         vertical=vertical)
-    source = tmp_path / "source"
-    source.mkdir()
-    for hour in (0, 1, 2):
-        for product in ("wrfnat", "soil"):
-            (source / f"hrrr.t05z.{product}f{hour:02d}.grib2").write_bytes(
-                f"fixture:{product}:{hour}".encode())
-    manifest = source / "SHA256SUMS"
-    manifest.write_text("".join(f"{_file_sha256(path)}  {path.name}\n"
-                        for path in sorted(source.iterdir())), encoding="utf-8")
-    monkeypatch.setenv("GPUWM_HRRR_DECODER", str(_fixture_decoder(tmp_path)))
+    source, manifest = _source_and_decoder_fixture(tmp_path, monkeypatch)
     # Auto must find no card, whether or not this box has one.
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "-1")
     try:
@@ -2571,16 +2170,8 @@ def test_configured_native_preparation_publishes_selected_soil_and_physics(
                    bl_pbl_physics=pbl, sf_sfclay_physics=sfclay)
     authority = _configured_wrapper_input(tmp_path, namelist, target=target,
         write_namelist=False, vertical=vertical, changes=changes)
-    source = tmp_path / "source"
-    source.mkdir()
-    for hour in (0, 1):
-        for product in ("wrfnat", "soil"):
-            (source / f"hrrr.t05z.{product}f{hour:02d}.grib2").write_bytes(
-                f"fixture:{product}:{hour}".encode())
-    manifest = source / "SHA256SUMS"
-    manifest.write_text("".join(f"{_file_sha256(path)}  {path.name}\n"
-                        for path in sorted(source.iterdir())), encoding="utf-8")
-    monkeypatch.setenv("GPUWM_HRRR_DECODER", str(_fixture_decoder(tmp_path)))
+    source, manifest = _source_and_decoder_fixture(
+        tmp_path, monkeypatch, hours=(0, 1))
     try:
         bridge = resolve_cpu_bridge()
     except FileNotFoundError:

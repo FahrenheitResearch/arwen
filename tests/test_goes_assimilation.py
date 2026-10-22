@@ -111,6 +111,14 @@ def _product(tmp_path, grid, cells, *, phase, cod, cps, tops=None):
     return out, observations
 
 
+@pytest.fixture(scope="module")
+def ice_product(tmp_path_factory):
+    grid = _grid()
+    path, _ = _product(tmp_path_factory.mktemp("ice-product"), grid, [(4, 4)],
+                       phase=[4.0], cod=[20.0], cps=[30.0])
+    return grid, path
+
+
 def _checkpoints(tmp_path, grid, members, *, qc, qi=1.0e-8, qs=1.0e-8,
                  seed=7):
     """Member npz checkpoints with condensate that has ensemble spread.
@@ -174,10 +182,8 @@ def test_the_product_round_trips_and_carries_its_three_receipts(tmp_path):
         "COD", "CPS", "ACTP"}
 
 
-def test_the_product_is_welded_to_one_grid(tmp_path):
-    grid = _grid()
-    path, _ = _product(tmp_path, grid, [(4, 4)], phase=[4.0], cod=[20.0],
-                       cps=[30.0])
+def test_the_product_is_welded_to_one_grid(ice_product):
+    grid, path = ice_product
     other = TargetGrid.from_projection(
         _projection(), z_w=np.linspace(0.0, 12000.0, NZ + 1), name="other")
     # Same horizontal arrays, a different vertical stretching -- and z_w is
@@ -230,27 +236,21 @@ def test_a_column_integral_is_one_observation_not_nz_of_them(tmp_path):
     assert mask[3, jc, ic] and mask[1, 4, 5]
 
 
-def test_the_adapter_refuses_a_three_dimensional_hx(tmp_path):
-    grid = _grid()
-    path, _ = _product(tmp_path, grid, [(4, 4)], phase=[4.0], cod=[20.0],
-                       cps=[30.0])
+def test_the_adapter_refuses_a_three_dimensional_hx(ice_product):
+    grid, path = ice_product
     with pytest.raises(GoesObsAdapterError, match="H\\(x\\) for a column"):
         goes_grid_to_gridded_obs(path, expected_grid=grid,
                                  cwp_simulated=np.zeros((3, NZ, NY, NX)))
 
 
-def test_the_adapter_requires_the_callers_own_grid(tmp_path):
-    grid = _grid()
-    path, _ = _product(tmp_path, grid, [(4, 4)], phase=[4.0], cod=[20.0],
-                       cps=[30.0])
+def test_the_adapter_requires_the_callers_own_grid(ice_product):
+    grid, path = ice_product
     with pytest.raises(GoesObsAdapterError, match="expected_grid is required"):
         read_document(path, expected_grid=None)
 
 
-def test_the_adapter_records_how_far_the_lens_reaches(tmp_path):
-    grid = _grid()
-    path, _ = _product(tmp_path, grid, [(4, 4)], phase=[4.0], cod=[20.0],
-                       cps=[30.0])
+def test_the_adapter_records_how_far_the_lens_reaches(ice_product):
+    grid, path = ice_product
     _, provenance = goes_grid_to_gridded_obs(
         path, expected_grid=grid, cwp_simulated=np.zeros((3, NY, NX)),
         localization=Localization(horizontal_m=24000.0, vertical_m=2500.0))
@@ -261,10 +261,8 @@ def test_the_adapter_records_how_far_the_lens_reaches(tmp_path):
     assert provenance["error_model"]["calibration"] == "UNCALIBRATED"
 
 
-def test_error_inflation_below_one_is_refused(tmp_path):
-    grid = _grid()
-    path, _ = _product(tmp_path, grid, [(4, 4)], phase=[4.0], cod=[20.0],
-                       cps=[30.0])
+def test_error_inflation_below_one_is_refused(ice_product):
+    grid, path = ice_product
     with pytest.raises(GoesObsAdapterError, match="claim of skill"):
         goes_grid_to_gridded_obs(path, expected_grid=grid,
                                  cwp_simulated=np.zeros((3, NY, NX)),
@@ -342,10 +340,8 @@ def test_an_obs_cloudy_column_adds_cloud_to_a_dry_model(tmp_path):
     assert added.max() > 0.0
 
 
-def test_the_analysis_refuses_cwp_without_its_operator(tmp_path):
-    grid = _grid()
-    product, _ = _product(tmp_path, grid, [(4, 4)], phase=[4.0], cod=[20.0],
-                          cps=[30.0])
+def test_the_analysis_refuses_cwp_without_its_operator(tmp_path, ice_product):
+    grid, product = ice_product
     checkpoints = _checkpoints(tmp_path, grid, 4, qc=1.0e-4)
     with pytest.raises(RadarAssimilationError, match="no cwp_provider"):
         assimilate_radar_grid(checkpoints, None, grid, _config(),
@@ -361,10 +357,8 @@ def test_the_analysis_refuses_cwp_against_a_wind_only_state_vector():
         _config(analysis_fields=("u", "v"), positivity_policy=None)
 
 
-def test_the_analysis_refuses_a_product_from_another_grid(tmp_path):
-    grid = _grid()
-    product, _ = _product(tmp_path, grid, [(4, 4)], phase=[4.0], cod=[20.0],
-                          cps=[30.0])
+def test_the_analysis_refuses_a_product_from_another_grid(tmp_path, ice_product):
+    grid, product = ice_product
     other = TargetGrid.from_projection(
         _projection(), z_w=np.linspace(0.0, 12000.0, NZ + 1), name="other")
     checkpoints = _checkpoints(tmp_path, grid, 4, qc=1.0e-4)

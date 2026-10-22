@@ -51,6 +51,44 @@ fn fss(f:&[Option<f64>],o:&[Option<f64>],valid:&[bool],spec:&GridSpec,threshold:
     }).collect::<Vec<_>>();
     rw_scoreboard::fractions(&f.iter().map(|v|v.unwrap_or(f64::NAN)).collect::<Vec<_>>(),&o.iter().map(|v|v.unwrap_or(f64::NAN)).collect::<Vec<_>>(),valid,spec.nx,spec.ny,threshold,&widths,hy,false)
 }
+/// Gross-error limits for point observations, per native variable: an
+/// observation farther than this from EVERY scored model (the forecast, and
+/// the baseline when the score is paired) is a bad report, not a forecast
+/// error, and is rejected and counted in `gross_error_rejected_by_variable`.
+///
+/// The breakage this prevents, named: one METAR station pressure hundreds of
+/// hPa wrong passes the 30-110 kPa climate screen in `observe::screen` and set
+/// both models' station-pressure RMSE to 566 Pa at f06 and 1,502 Pa at f12 of
+/// the 2026-10-02 00Z WOOF-vs-HRRR comparison, against 70-100 Pa at every
+/// other lead. 50 hPa is far outside any forecast error at a lead of a day or
+/// two (the RMSE is under 1.2 hPa) and well inside a mis-keyed altimeter or a
+/// station-elevation error. The rule asks every model, so it cannot favour one.
+const GROSS_ERROR_LIMITS: &[(&str, f64)] = &[("pressure_surface", 5_000.0)];
+
+fn gross_error_limit(variable: &str) -> Option<f64> {
+    GROSS_ERROR_LIMITS
+        .iter()
+        .find(|(name, _)| *name == variable)
+        .map(|(_, limit)| *limit)
+}
+
+fn gross_error(variable: &str, observed: f64, forecast: f64, baseline: Option<f64>) -> bool {
+    let Some(limit) = gross_error_limit(variable) else {
+        return false;
+    };
+    (observed - forecast).abs() > limit
+        && baseline.map_or(true, |b| (observed - b).abs() > limit)
+}
+
+fn gross_error_limits_json() -> Value {
+    Value::Object(
+        GROSS_ERROR_LIMITS
+            .iter()
+            .map(|(name, limit)| ((*name).to_string(), json!(limit)))
+            .collect(),
+    )
+}
+
 fn alias(name: &str) -> &str {
     match name {
         "temperature_2m" => "t2",
@@ -147,6 +185,7 @@ pub fn run(request: &Value) -> Result<Value> {
     let mut summary = vec![];
     let mut cohort = vec![];
     let mut dropped = BTreeMap::<String, u64>::new();
+    let mut gross_rejected = BTreeMap::<String, u64>::new();
     let mut coverage_rows = vec![];
     let (mut forecast_samples, mut baseline_samples, mut observation_samples) = (0u64, 0u64, 0u64);
     for (variable, units) in [
@@ -183,6 +222,14 @@ pub fn run(request: &Value) -> Result<Value> {
             bcount += u64::from(bv.is_some_and(f64::is_finite));
             ocount += u64::from(observation.is_some_and(f64::is_finite));
             match (observation, fv, bv) {
+                (Some(o), Some(f), bval)
+                    if o.is_finite()
+                        && f.is_finite()
+                        && (baseline.is_none() || bval.is_some_and(f64::is_finite))
+                        && gross_error(variable, o, f, bval) =>
+                {
+                    *gross_rejected.entry(variable.into()).or_default() += 1;
+                }
                 (Some(o), Some(f), bval)
                     if o.is_finite()
                         && f.is_finite()
@@ -434,7 +481,7 @@ pub fn run(request: &Value) -> Result<Value> {
         &forecast.valid_time,
         &cohort,
     ))?);
-    let result = json!({"schema":"woof.scoreboard.scores.v1","methodId":METHOD,"validTime":forecast.valid_time,"domain":forecast.domain,"leadSeconds":forecast_lead,"supportHash":forecast.support_hash,"comparison_support_hash":comparison,"paired":baseline.is_some(),"baseline_policy":policy,"baseline_init_time":baseline.as_ref().map(|b|b.init_time.clone()),"baseline_lead_seconds":baseline_lead,"baseline_cycle_gap_seconds":baseline_gap,"cycle_gap_seconds":baseline_gap,"forecast_sha256":forecast.source_sha256,"observations_sha256":observations.source_sha256,"baseline_sha256":baseline.as_ref().map(|a|a.source_sha256.clone()),"pairs":pairs,"summary":summary,"dropped_by_variable":dropped,"coverage":{"forecastSamples":forecast_samples,"baselineSamples":baseline_samples,"observationSamples":observation_samples},"coverage_by_variable":coverage_rows});
+    let result = json!({"schema":"woof.scoreboard.scores.v1","methodId":METHOD,"validTime":forecast.valid_time,"domain":forecast.domain,"leadSeconds":forecast_lead,"supportHash":forecast.support_hash,"comparison_support_hash":comparison,"paired":baseline.is_some(),"baseline_policy":policy,"baseline_init_time":baseline.as_ref().map(|b|b.init_time.clone()),"baseline_lead_seconds":baseline_lead,"baseline_cycle_gap_seconds":baseline_gap,"cycle_gap_seconds":baseline_gap,"forecast_sha256":forecast.source_sha256,"observations_sha256":observations.source_sha256,"baseline_sha256":baseline.as_ref().map(|a|a.source_sha256.clone()),"pairs":pairs,"summary":summary,"dropped_by_variable":dropped,"gross_error_rejected_by_variable":gross_rejected,"gross_error_limits":gross_error_limits_json(),"coverage":{"forecastSamples":forecast_samples,"baselineSamples":baseline_samples,"observationSamples":observation_samples},"coverage_by_variable":coverage_rows});
     if let Some(path) = request["output"].as_str() {
         std::fs::write(path, serde_json::to_vec_pretty(&result)?)?;
     }
@@ -469,5 +516,18 @@ mod tests {
     fn contingency_undefined_is_null() {
         let s = contingency(&[Some(0.)], &[Some(0.)], &[true], 1.);
         assert!(categorical(&s)["ets"].is_null());
+    }
+    #[test]
+    fn a_station_pressure_far_from_every_model_is_rejected() {
+        // a mis-keyed report 300 hPa off: rejected, paired or not
+        assert!(gross_error("pressure_surface", 70_000.0, 100_000.0, Some(100_050.0)));
+        assert!(gross_error("pressure_surface", 70_000.0, 100_000.0, None));
+        // an ordinary forecast error is scored
+        assert!(!gross_error("pressure_surface", 100_000.0, 100_150.0, Some(99_900.0)));
+        // close to ONE model: kept, so the rule cannot favour either side
+        assert!(!gross_error("pressure_surface", 94_000.0, 100_000.0, Some(94_100.0)));
+        // variables without a limit are untouched
+        assert!(!gross_error("temperature_2m", 200.0, 300.0, Some(300.0)));
+        assert_eq!(gross_error_limits_json()["pressure_surface"], json!(5_000.0));
     }
 }

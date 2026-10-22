@@ -357,39 +357,6 @@ def test_the_manifest_records_the_engine_mode_and_bars(tmp_path,
 # Engine resolution and the binary contract
 # ---------------------------------------------------------------------------
 
-def test_engine_python_never_looks_for_the_backbone(monkeypatch):
-    def explode():  # pragma: no cover - must not be reached
-        raise AssertionError("--engine python must not probe for a binary")
-
-    monkeypatch.setattr(rustwx_fetch, "find_fetch_bin", explode)
-    assert fetch.resolve_fetch_engine("python") == ("python", None)
-
-
-def test_engine_auto_falls_through_when_the_backbone_is_absent(monkeypatch):
-    monkeypatch.setattr(rustwx_fetch, "find_fetch_bin", lambda: None)
-    assert fetch.resolve_fetch_engine("auto") == ("python", None)
-
-
-def test_engine_rust_is_explicit_and_fails_loudly(monkeypatch):
-    monkeypatch.setattr(rustwx_fetch, "find_fetch_bin", lambda: None)
-    with pytest.raises(ValueError) as error:
-        fetch.resolve_fetch_engine("rust")
-    assert "cargo build --release --locked --offline" in str(error.value)
-
-
-def test_engine_auto_downgrades_loudly_when_the_backbone_is_unusable(
-        tmp_path, monkeypatch):
-    stale = tmp_path / "rw_fetch"
-    stale.write_bytes(b"")
-    said: list[str] = []
-    monkeypatch.setattr(rustwx_fetch, "find_fetch_bin", lambda: stale)
-    monkeypatch.setattr(rustwx_fetch, "probe_fetch_bin",
-                        lambda path: (False, "different fetch-record ABI"))
-    assert fetch.resolve_fetch_engine(
-        "auto", progress=said.append) == ("python", None)
-    assert said and "unusable" in said[0]
-
-
 def test_an_unknown_engine_is_refused():
     with pytest.raises(ValueError, match="unknown fetch engine"):
         fetch.resolve_fetch_engine("wget")
@@ -743,82 +710,31 @@ def test_a_resume_that_re_resolves_a_bar_records_the_new_one(tmp_path,
 # payload and the manifest carries the arithmetic.
 # ---------------------------------------------------------------------------
 
-def test_the_manifest_carries_the_cache_dedup_summary(tmp_path, monkeypatch):
-    """Per-transfer accounting, summed over the transfers of one run."""
-
+@pytest.mark.parametrize("dedup, expected", [
+    pytest.param({"cache_bytes_written": 700, "cache_bytes_deduplicated": 500,
+                  "reference_entries": 1},
+                 {"transfers": 2, "cache_bytes_written": 1400,
+                  "cache_bytes_deduplicated": 1000, "reference_entries": 2}, id="accounted"),
+    pytest.param(None, {"transfers": 0, "cache_bytes_written": 0,
+                        "cache_bytes_deduplicated": 0, "reference_entries": 0}, id="older-backbone"),
+    pytest.param({"cache_bytes_written": "lots", "reference_entries": 3},
+                 {"transfers": 2, "cache_bytes_written": 0,
+                  "cache_bytes_deduplicated": 0, "reference_entries": 6}, id="malformed-count"),
+])
+def test_the_manifest_carries_the_cache_dedup_summary(tmp_path, monkeypatch, dedup, expected):
+    """Account valid arithmetic, absent older records and malformed counts separately."""
     from test_fetch import _install_runtime_surface_inputs, _assert_runtime_surface_requests
     runtime_calls = _install_runtime_surface_inputs(monkeypatch)
-
-    _install_fake_backbone(
-        monkeypatch, CERTIFIED_RECORD_BARS["hrrr-atmosphere"],
-        dedup={"cache_bytes_written": 700,
-               "cache_bytes_deduplicated": 500,
-               "reference_entries": 1})
+    _install_fake_backbone(monkeypatch, CERTIFIED_RECORD_BARS["hrrr-atmosphere"], dedup=dedup)
     out = tmp_path / "hrrr"
     manifest = fetch.fetch_hrrr(
         cycle=datetime(2026, 7, 28, 5), hours=(0,), area=None, out=out,
-        transport="s3", engine="rust", engine_bin=Path("rw_fetch"),
-        progress=lambda _: None)
-
+        transport="s3", engine="rust", engine_bin=Path("rw_fetch"), progress=lambda _: None)
     payload = json.loads(manifest.read_text(encoding="utf-8"))
     _assert_runtime_surface_requests(runtime_calls, payload, datetime(2026, 7, 28, 5))
-    # Two products in one forecast hour, so two transfers.
-    assert payload["dedup"] == {
-        "transfers": 2,
-        "cache_bytes_written": 1400,
-        "cache_bytes_deduplicated": 1000,
-        "reference_entries": 2,
-    }
-
-
-def test_a_record_without_a_dedup_block_still_publishes(tmp_path,
-                                                        monkeypatch):
-    """An older backbone reports nothing; the receipt claims nothing."""
-
-    from test_fetch import _install_runtime_surface_inputs, _assert_runtime_surface_requests
-    runtime_calls = _install_runtime_surface_inputs(monkeypatch)
-
-    _install_fake_backbone(monkeypatch,
-                           CERTIFIED_RECORD_BARS["hrrr-atmosphere"])
-    out = tmp_path / "hrrr"
-    manifest = fetch.fetch_hrrr(
-        cycle=datetime(2026, 7, 28, 5), hours=(0,), area=None, out=out,
-        transport="s3", engine="rust", engine_bin=Path("rw_fetch"),
-        progress=lambda _: None)
-
-    payload = json.loads(manifest.read_text(encoding="utf-8"))
-    _assert_runtime_surface_requests(runtime_calls, payload, datetime(2026, 7, 28, 5))
-    assert payload["dedup"]["transfers"] == 0
-    assert payload["dedup"]["cache_bytes_written"] == 0
-    assert payload["dedup"]["cache_bytes_deduplicated"] == 0
-    assert payload["dedup"]["reference_entries"] == 0
-    # And the run itself is unaffected: the files and their bars landed.
+    assert payload["dedup"] == expected
     assert (out / "hrrr.t05z.wrfnatf00.grib2").is_file()
-    assert {bar["kind"] for bar in payload["record_bars"]} == {
-        "hrrr-atmosphere", "hrrr-soil"}
-
-
-def test_a_malformed_dedup_block_is_ignored_rather_than_fatal(tmp_path,
-                                                              monkeypatch):
-    """A key of the wrong shape is not arithmetic; it is not counted."""
-
-    from test_fetch import _install_runtime_surface_inputs, _assert_runtime_surface_requests
-    runtime_calls = _install_runtime_surface_inputs(monkeypatch)
-
-    _install_fake_backbone(
-        monkeypatch, CERTIFIED_RECORD_BARS["hrrr-atmosphere"],
-        dedup={"cache_bytes_written": "lots", "reference_entries": 3})
-    out = tmp_path / "hrrr"
-    manifest = fetch.fetch_hrrr(
-        cycle=datetime(2026, 7, 28, 5), hours=(0,), area=None, out=out,
-        transport="s3", engine="rust", engine_bin=Path("rw_fetch"),
-        progress=lambda _: None)
-
-    payload = json.loads(manifest.read_text(encoding="utf-8"))
-    _assert_runtime_surface_requests(runtime_calls, payload, datetime(2026, 7, 28, 5))
-    assert payload["dedup"]["transfers"] == 2
-    assert payload["dedup"]["cache_bytes_written"] == 0
-    assert payload["dedup"]["reference_entries"] == 6
+    assert {bar["kind"] for bar in payload["record_bars"]} == {"hrrr-atmosphere", "hrrr-soil"}
 
 
 # ---------------------------------------------------------------------------

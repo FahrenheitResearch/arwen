@@ -337,6 +337,10 @@ class RankedRun(multigpu.MultiGPUDomain):
                     except cp.cuda.runtime.CUDARuntimeError as exc:
                         if exc.status != 704:  # cudaErrorPeerAccessAlreadyEnabled
                             raise
+        self.smoke_ledger = None
+        from tilestream.sfire_smoke import accepts, ranked_accepts, RankedSmokeLedger
+        if cfg.chem_sets and not accepts(cfg) and ranked_accepts(cfg):
+            self.smoke_ledger = RankedSmokeLedger(self)
         self.fire_names = tuple(name for name in self.names
                                if name.startswith(("fire/", "driver/fire_tendencies/")))
         self.exchange_names = [name for name in self.names if name not in self.fire_names]
@@ -1029,6 +1033,8 @@ class RankedRun(multigpu.MultiGPUDomain):
                 else:
                     schedule.finish()
                 self._exchange_fire()
+                if self.smoke_ledger is not None:
+                    self.smoke_ledger.end()
                 if timing:
                     self.sync_all()
                     exchange_seconds += perf_counter() - middle

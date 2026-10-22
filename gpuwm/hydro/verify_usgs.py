@@ -28,7 +28,14 @@ def _binary() -> str:
     found = shutil.which("rw_nextgen_verify")
     if found:
         return found
-    raise RuntimeError("The NextGen gauge verification executable is unavailable. Build tools/nextgen_verify and set GPUWM_NEXTGEN_VERIFY to its executable.")
+    failure = bridges.on_demand_failure("rw_nextgen_verify")
+    raise RuntimeError(
+        "the NextGen gauge verification executable (rw_nextgen_verify) is not built or not found"
+        + (f"; {failure}" if failure else "") + ".\n"
+        + bridges.artifact_remedy(env_var="GPUWM_NEXTGEN_VERIFY", filename=name,
+                                  subject="the NextGen gauge verification executable",
+                                  crate_relative="tools/nextgen_verify",
+                                  artifact="rw_nextgen_verify"))
 
 
 def _execute(args: argparse.Namespace) -> int:

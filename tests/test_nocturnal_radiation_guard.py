@@ -607,16 +607,25 @@ def test_wizard_door_negative_controls_still_emit_without_any_ack(tmp_path):
                     "--cycle", "2026-08-05T00", "--hours", "6",
                     "--out", str(hrrr)]) == 0
     assert _loaded(hrrr).acknowledgements == ()
-    # The static owner intentionally declares the HRRR source in this
-    # one-file case. Keep it in the file and use the canonical load seam.
-    from gpuwm.static.source_defaults import source_static_defaults
+    # This point root is 12 km on a cone centred on the point, not the HRRR
+    # row's cone, so since f0acb58ada7 (lane/improve-44-hrrr-ladder-static:
+    # no [static] source emitted for a HRRR grid off the row cone) the door
+    # writes no [static] table: the metadata default stays a DEFAULT and
+    # takes the WPS_GEOG fallback instead of becoming a declared source that
+    # refuses the grid.  Both load seams build it, and a [static] table the
+    # file does carry is still validated key by key.
+    from gpuwm.static.source_defaults import (defaulted_source_fallback,
+                                              source_static_defaults,
+                                              with_source_static_defaults)
     raw = tomllib.loads(hrrr.read_text())
-    assert raw["static"] == source_static_defaults("hrrr")
+    assert "static" not in raw
+    assert defaulted_source_fallback(source_static_defaults("hrrr")["source"],
+                                     raw["projection"])["used"] == "WPS_GEOG"
+    assert with_source_static_defaults(raw, "hrrr") is raw
     assert experiment_from_text(hrrr.read_text(), source=str(hrrr)).root.run.mp_physics == 28
-    with pytest.raises(ValueError, match="static"):
-        build_experiment(_raw(hrrr.read_text()), source="bare-wizard-case")
-    invalid = hrrr.read_text().replace(
-        "[static]\n", "[static]\nnot_a_static_key = true\n", 1)
+    assert build_experiment(_raw(hrrr.read_text()),
+                            source="bare-wizard-case").root.run.mp_physics == 28
+    invalid = hrrr.read_text() + "\n[static]\nnot_a_static_key = true\n"
     with pytest.raises(ValueError, match="not_a_static_key"):
         experiment_from_text(invalid, source=str(hrrr))
 

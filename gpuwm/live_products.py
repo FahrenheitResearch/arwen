@@ -21,6 +21,15 @@ How it runs, and why each part is shaped so:
   only when the frames already drawing leave room for it, so a large
   grid's frames draw one or two at a time where a small grid's overlap.
   Publication remains serialized.
+- **Memory read at every admission.**  On top of that budget, which is
+  read once at the start, a frame starts only while the host's memory
+  read NOW, less what the frames drawing are still expected to grow and
+  this frame's expected peak (learned from the renders that ran), leaves
+  the model's protected floor free.  The oldest waiting frame always
+  runs when it would run alone, so at worst frames are drawn one at a
+  time and catch up after the forecast; none is dropped.  Frames are
+  admitted in queue order.  ``GPUWM_LIVE_RENDER_ADAPTIVE=0`` restores the
+  one-shot budget exactly (:class:`LiveRenderMemorySettings`).
 - **Never blocks the model.**  :meth:`LiveProducts.frame_committed`
   appends to a queue and returns; it is called on the wrfout writer's
   thread and never raises.
@@ -110,7 +119,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from gpuwm.first_products import (FirstProducts, WorkerEnd, finished_pictures,
-                                 render_was_stopped)
+                                 render_was_stopped, _write_receipt)
 from gpuwm.render_layout import fs_path, iter_rendered
 
 #: The record of every frame drawn while the forecast ran.
@@ -180,6 +189,373 @@ LIVE_BASELINE_BYTES_PER_CELL = 12
 #: guest beside the forecast, whose host memory grows after the frames
 #: are budgeted.
 _LIVE_MEMORY_FRACTION = 0.5
+
+
+# -- memory admission, read at every render -----------------------------
+#
+# THE BREAKAGE: production NYC 500 m 12Z on 2026-10-05 died at forecast
+# hour 46.7 of 48 on a 32 GiB, 8 vCPU host (RTX PRO 4500), with no
+# traceback.  The live frame slots read the host's available memory ONCE,
+# when the forecast's renderer was set up, and admitted up to three
+# renders against half of that for the rest of the run, however much the
+# model and the host's other work had taken since.  The cause of that
+# death is not confirmed; renders competing with the model for memory
+# late in the run is the leading suspect, and a budget that cannot see
+# the memory it budgets is a defect either way.
+#
+# So each render is admitted against memory as it is NOW: the host's
+# MemAvailable (capped by a container's cgroup room), read at every
+# admission, less what the renders already running are still expected to
+# grow, less this render's expected peak, must leave the model's
+# protected floor free (:func:`live_render_keep_free`).  A render's peak
+# is learned from the renders that ran (their process tree's peak
+# resident memory, ``rw_wrfbatch`` included).  The oldest waiting render
+# always runs when no other render is running: the forecast runner waits
+# for its live renders before it ends the stage, so holding them all
+# would stall the run.  At worst renders run one at a time, nothing is
+# dropped, and what the live pass has not drawn when the forecast ends
+# is drawn then (the drain, then finalize).  This changes only WHEN a
+# render runs, never what the forecast writes.
+#
+# Every number below is settable through the environment (the name
+# beside it) so a host or worker can tune it; an unreadable value keeps
+# the default.  The thresholds and their reasons were measured for the
+# site worker's version of this budget, which this replaces inside the
+# engine.
+
+#: The kill switch.  ``0``, ``off``, ``false`` or ``no`` restores the
+#: one-shot budget exactly as it was before this admission existed: the
+#: memory read once at the start, frames priced from their cells only.
+LIVE_RENDER_ADAPTIVE_ENV = "GPUWM_LIVE_RENDER_ADAPTIVE"
+
+_GIB = 1 << 30
+_MIB = 1 << 20
+
+
+class LiveRenderMemorySettings:
+    """The memory admission's thresholds, each with its environment name.
+
+    ``peak_default`` (``GPUWM_LIVE_RENDER_PEAK_DEFAULT_BYTES``, 4 GiB):
+    one render's peak before any render of this run has finished.  The
+    cells price a city 500 m nest frame at 1 to 2 GiB and an 880x704x55
+    frame at 7.0 GiB; 4 GiB covers the common case without letting a
+    second render start on a 32 GiB host that has only the model's floor
+    left.  A frame's own cell price (:func:`live_frame_peak_bytes`) is
+    used when it is larger.
+
+    ``peaks_kept`` (``GPUWM_LIVE_RENDER_PEAKS_KEPT``, 16): once renders
+    have finished, a render is reckoned at the largest of this many most
+    recent measured peaks (or its cell price, if larger).
+
+    ``model_margin_fraction`` and ``model_margin_bytes``
+    (``GPUWM_LIVE_RENDER_MODEL_MARGIN_FRACTION``, 0.25;
+    ``GPUWM_LIVE_RENDER_MODEL_MARGIN_BYTES``, 1 GiB): the model's floor
+    is its measured resident memory plus this fraction of it plus these
+    bytes, room for the history writes and a nest's growth between reads.
+
+    ``small_host_bytes`` and ``small_host_fraction``
+    (``GPUWM_LIVE_RENDER_SMALL_HOST_BYTES``, 64 GiB;
+    ``GPUWM_LIVE_RENDER_SMALL_HOST_FRACTION``, 0.40): on a host under
+    this size the model's floor is at least this share of the host.
+    12.8 GiB on the 32 GiB host NYC died on, twice the 6.43 GiB the
+    engine priced that forecast at.
+
+    ``system_reserve`` (``GPUWM_LIVE_RENDER_SYSTEM_RESERVE_BYTES``,
+    2 GiB): kept free beyond the model's floor for the kernel, the page
+    cache the history writes go through, and the host's other work.  The
+    kernel's OOM killer acts before MemAvailable reaches zero.
+
+    ``hysteresis`` (``GPUWM_LIVE_RENDER_HYSTERESIS_BYTES``, 512 MiB): a
+    render that was already refused starts only with this much to spare,
+    so one near the line does not flap between refused and admitted.
+
+    ``poll_seconds`` (``GPUWM_LIVE_RENDER_POLL_SECONDS``, 1.0): how often
+    a refused render reads memory again.  ``sample_seconds``
+    (``GPUWM_LIVE_RENDER_SAMPLE_SECONDS``, 0.5): how often the running
+    renders' process trees are measured while any runs.
+    """
+
+    FIELDS = {
+        "peak_default": ("GPUWM_LIVE_RENDER_PEAK_DEFAULT_BYTES", 4 * _GIB, "bytes"),
+        "peaks_kept": ("GPUWM_LIVE_RENDER_PEAKS_KEPT", 16, "count"),
+        "model_margin_fraction": ("GPUWM_LIVE_RENDER_MODEL_MARGIN_FRACTION", 0.25, "fraction"),
+        "model_margin_bytes": ("GPUWM_LIVE_RENDER_MODEL_MARGIN_BYTES", 1 * _GIB, "bytes"),
+        "small_host_bytes": ("GPUWM_LIVE_RENDER_SMALL_HOST_BYTES", 64 * _GIB, "bytes"),
+        "small_host_fraction": ("GPUWM_LIVE_RENDER_SMALL_HOST_FRACTION", 0.40, "fraction"),
+        "system_reserve": ("GPUWM_LIVE_RENDER_SYSTEM_RESERVE_BYTES", 2 * _GIB, "bytes"),
+        "hysteresis": ("GPUWM_LIVE_RENDER_HYSTERESIS_BYTES", 512 * _MIB, "bytes"),
+        "poll_seconds": ("GPUWM_LIVE_RENDER_POLL_SECONDS", 1.0, "seconds"),
+        "sample_seconds": ("GPUWM_LIVE_RENDER_SAMPLE_SECONDS", 0.5, "seconds"),
+    }
+
+    def __init__(self, **values: Any):
+        for name, (_env, default, _kind) in self.FIELDS.items():
+            setattr(self, name, values.pop(name, default))
+        if values:
+            raise TypeError(f"unknown setting(s): {', '.join(sorted(values))}")
+
+    @classmethod
+    def from_env(cls, environ: Mapping[str, str] | None = None
+                 ) -> "LiveRenderMemorySettings":
+        environ = os.environ if environ is None else environ
+        values = {}
+        for name, (env, default, kind) in cls.FIELDS.items():
+            parsed = _parse_setting(environ.get(env), kind)
+            values[name] = default if parsed is None else parsed
+        return cls(**values)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {name: getattr(self, name) for name in self.FIELDS}
+
+
+_BYTE_SUFFIXES = {"": 1, "k": 1 << 10, "kib": 1 << 10, "m": _MIB, "mib": _MIB,
+                  "g": _GIB, "gib": _GIB, "t": 1 << 40, "tib": 1 << 40}
+
+
+def _parse_setting(text: str | None, kind: str):
+    """One environment value, or ``None`` (keep the default) if unreadable.
+
+    Bytes take a plain number or a binary suffix (``2G``, ``512MiB``).
+    """
+
+    if text is None or not str(text).strip():
+        return None
+    word = str(text).strip().lower()
+    try:
+        if kind == "bytes":
+            match = re.fullmatch(r"([0-9]*\.?[0-9]+)\s*([a-z]*)", word)
+            if match is None or match.group(2) not in _BYTE_SUFFIXES:
+                return None
+            value = int(float(match.group(1)) * _BYTE_SUFFIXES[match.group(2)])
+            return value if value >= 0 else None
+        if kind == "count":
+            value = int(word)
+            return value if value >= 1 else None
+        value = float(word)
+    except ValueError:
+        return None
+    if kind == "fraction":
+        return value if 0.0 <= value <= 1.0 else None
+    return value if value > 0 else None
+
+
+def live_render_adaptive(environ: Mapping[str, str] | None = None) -> bool:
+    """Whether renders are admitted against memory read at each admission."""
+
+    environ = os.environ if environ is None else environ
+    text = str(environ.get(LIVE_RENDER_ADAPTIVE_ENV, "1")).strip().lower()
+    return text not in ("0", "off", "false", "no")
+
+
+def live_render_model_floor(model_rss: float, host_total: float | None,
+                            settings: LiveRenderMemorySettings) -> float:
+    """The memory kept for the model: its resident memory with a margin,
+    and on a small host at least a share of the host."""
+
+    floor = (model_rss * (1.0 + settings.model_margin_fraction)
+             + settings.model_margin_bytes)
+    if host_total and host_total < settings.small_host_bytes:
+        floor = max(floor, host_total * settings.small_host_fraction)
+    return floor
+
+
+def live_render_keep_free(model_rss: float, host_total: float | None,
+                          settings: LiveRenderMemorySettings) -> float:
+    """What must stay available while renders run: the part of the model's
+    floor the model has not taken yet, and the system reserve.
+
+    The model's resident memory is already outside MemAvailable, so only
+    its growth room is kept free, not its whole floor again.
+    """
+
+    return (max(0.0, live_render_model_floor(model_rss, host_total, settings)
+                - model_rss) + settings.system_reserve)
+
+
+def _proc_stat(pid: int) -> tuple[int, int] | None:
+    """``(parent pid, resident bytes)`` of one Linux process, or ``None``."""
+
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as handle:
+            text = handle.read().decode("ascii", "replace")
+    except OSError:
+        return None
+    # The command name is in parentheses and may hold spaces or ')'.
+    fields = text[text.rfind(")") + 2:].split()
+    try:
+        return int(fields[1]), int(fields[21]) * _PAGE_BYTES
+    except (IndexError, ValueError):
+        return None
+
+
+def _proc_peak(pid: int) -> int | None:
+    """One Linux process's peak resident memory (``VmHWM``), or ``None``."""
+
+    try:
+        with open(f"/proc/{pid}/status", encoding="ascii", errors="replace") as handle:
+            for line in handle:
+                if line.startswith("VmHWM:"):
+                    return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+try:
+    _PAGE_BYTES = os.sysconf("SC_PAGE_SIZE")
+except (AttributeError, ValueError, OSError):
+    _PAGE_BYTES = 4096
+
+
+def _own_resident_bytes() -> int | None:
+    """This process's resident memory now, on any platform, or ``None``."""
+
+    if os.path.exists("/proc/self/stat"):
+        stat = _proc_stat(os.getpid())
+        return None if stat is None else stat[1]
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class Counters(ctypes.Structure):
+                _fields_ = [("cb", wintypes.DWORD),
+                            ("PageFaultCount", wintypes.DWORD),
+                            ("PeakWorkingSetSize", ctypes.c_size_t),
+                            ("WorkingSetSize", ctypes.c_size_t),
+                            ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                            ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                            ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                            ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                            ("PagefileUsage", ctypes.c_size_t),
+                            ("PeakPagefileUsage", ctypes.c_size_t)]
+
+            counters = Counters()
+            counters.cb = ctypes.sizeof(counters)
+            if ctypes.windll.psapi.GetProcessMemoryInfo(
+                    ctypes.windll.kernel32.GetCurrentProcess(),
+                    ctypes.byref(counters), counters.cb):
+                return int(counters.WorkingSetSize)
+        except Exception:  # noqa: BLE001 - unknown is no reading
+            return None
+    return None
+
+
+class _HostMemoryProbe:
+    """The readings the memory admission takes, in one place for tests.
+
+    ``available()`` is the engine's one host probe (MemAvailable capped
+    by the cgroup's room).  ``total()`` is the host's memory capped by
+    the cgroup limit.  ``sample(pids)`` measures, on Linux, the model
+    (this process and every process below it that is not a render) and
+    each render's process tree by its root pid: ``(model_rss, {pid:
+    (tree_rss, tree_peak)})``.  Off Linux the trees are unmeasured and
+    the model is this process alone.
+    """
+
+    def available(self) -> int | None:
+        return _available_memory_bytes()
+
+    def total(self) -> int | None:
+        try:
+            from gpuwm.core.preflight import _host_total_bytes_or_none
+
+            return _host_total_bytes_or_none()
+        except Exception:  # noqa: BLE001 - unknown host size, no small-host floor
+            return None
+
+    def sample(self, render_pids: Sequence[int]
+               ) -> tuple[int | None, dict[int, tuple[int, int]]]:
+        if not os.path.isdir("/proc/self"):
+            return _own_resident_bytes(), {}
+        me = os.getpid()
+        children = _proc_children_reader()
+        if children is None:
+            return _own_resident_bytes(), {}
+        table: dict[int, tuple[int, int]] = {}
+
+        def tree(root: int) -> set[int]:
+            members, todo = {root}, [root]
+            while todo:
+                for child in children(todo.pop()):
+                    if child not in members:
+                        members.add(child)
+                        todo.append(child)
+            for member in members:
+                if member not in table:
+                    stat = _proc_stat(member)
+                    if stat is not None:
+                        table[member] = stat
+            return members
+
+        trees = {}
+        rendering: set[int] = set()
+        for pid in render_pids:
+            members = {member for member in tree(pid) if member in table}
+            if not members:
+                continue
+            rendering |= members
+            rss = sum(table[member][1] for member in members)
+            # Each process's own high-water mark, so a peak between two
+            # samples is still seen while the process lives.
+            peak = sum(max(table[member][1], _proc_peak(member) or 0)
+                       for member in members)
+            trees[pid] = (rss, peak)
+        mine = tree(me)
+        model = (sum(table[member][1] for member in mine - rendering
+                     if member in table)
+                 if me in table else _own_resident_bytes())
+        return model, trees
+
+
+def _proc_children_reader() -> Callable[[int], list[int]] | None:
+    """A function listing a Linux process's children, or ``None``.
+
+    ``/proc/<pid>/task/<tid>/children`` where the kernel provides it
+    (cheap: only the processes below this one are read); otherwise one
+    scan of every ``/proc/<pid>/stat`` for this call.
+    """
+
+    def from_tasks(pid: int) -> list[int]:
+        found: list[int] = []
+        try:
+            tasks = os.listdir(f"/proc/{pid}/task")
+        except OSError:
+            return found
+        for task in tasks:
+            try:
+                with open(f"/proc/{pid}/task/{task}/children", encoding="ascii") as handle:
+                    found.extend(int(word) for word in handle.read().split())
+            except (OSError, ValueError):
+                continue
+        return found
+
+    if os.path.exists(f"/proc/self/task/{os.getpid()}/children"):
+        return from_tasks
+    try:
+        names = os.listdir("/proc")
+    except OSError:
+        return None
+    by_parent: dict[int, list[int]] = {}
+    for name in names:
+        if name.isdigit():
+            stat = _proc_stat(int(name))
+            if stat is not None:
+                by_parent.setdefault(stat[0], []).append(int(name))
+    return lambda pid: by_parent.get(pid, [])
+
+
+def _render_pid(ident: int) -> int | None:
+    """The pid of the render a thread is running, if it is running one."""
+
+    try:
+        from gpuwm.first_products import _RUNNING, _RUNNING_LOCK
+
+        with _RUNNING_LOCK:
+            process = _RUNNING.get(ident)
+        return None if process is None else int(process.pid)
+    except Exception:  # noqa: BLE001 - an unmeasured render keeps its estimate
+        return None
 
 
 def _read_words(path: Path) -> list[str] | None:
@@ -343,6 +719,12 @@ def _render_width(budget: int | None) -> int:
     # Two native workers per frame, one processor for the forecast, and at
     # most three simultaneous imports even on hosts with many more cores.
     width = min(3, max(1, (available - 1) // 2))
+    # Race box override: the per-frame wrfout import is ~28 s on one core for a
+    # full-CONUS frame, so three slots fall behind a 56 s/fh forecast (a rented box,
+    # 2026-10-21: 190-200 s per 145-product frame). More slots keep up.
+    override = os.environ.get("GPUWM_LIVE_RENDER_SLOTS")
+    if override:
+        width = max(1, min(int(override), max(1, (available - 1) // 2)))
     affordable = _frames_memory_affords(budget)
     return width if affordable is None else min(width, affordable)
 
@@ -448,7 +830,15 @@ def live_render_requested(render_products: Any) -> bool:
     return text.lower() != "none"
 
 
-def _run_render(command: Sequence[str], *, width: int | None = None, **options: Any
+#: How much nicer than the forecast a render beside it runs (POSIX).
+#: THE BREAKAGE: live renders ran at the forecast's own priority (nice 0
+#: on an 8x5090 host, 2.9.3), so on a host short of cores a render's ~170
+#: worker threads competed with the model's host threads as equals.
+LIVE_RENDER_NICE = 10
+
+
+def _run_render(command: Sequence[str], *, width: int | None = None,
+                finishing: bool = False, **options: Any
                 ) -> subprocess.CompletedProcess:
     """Spawn the render exactly as the early and finalize renders do."""
 
@@ -459,8 +849,9 @@ def _run_render(command: Sequence[str], *, width: int | None = None, **options: 
     options["env_overrides"] = {
         "RUSTWX_LIVE_RENDER_SLOTS": str(concurrency),
         "RAYON_NUM_THREADS": os.environ.get(
-            "RAYON_NUM_THREADS", str(max(1, (available - 1) // concurrency))),
+            "RAYON_NUM_THREADS", str(max(1, (available - (0 if finishing else 1)) // concurrency))),
     }
+    options.setdefault("nice", 0 if finishing else LIVE_RENDER_NICE)
     return run(command, **options)
 
 
@@ -494,6 +885,12 @@ class LiveProducts:
                  own_group: bool = False,
                  windowed_slugs: Callable[[], Any] | None = None):
         self._plan = dict(render_plan)
+        from gpuwm.product_publish import LocalPublisher
+        self._web = LocalPublisher(
+            self._plan.get("publish_root") or Path(self._plan["render"]).parent / "www",
+            cycle=self._plan.get("cycle"), command=self._plan.get("publish_cmd"),
+            hydro=self._plan.get("hydro") or "auto")
+        self._closed_at: dict[tuple[int, str], str] = {}
         self._report = report
         self._warn = warn
         self._first = first
@@ -502,8 +899,10 @@ class LiveProducts:
         # declared width; guessing from the host would divide a serial render.
         self._concurrency = (self._slot.width
                              if isinstance(self._slot, _LiveRenderSlots) else 1)
+        self._active = 0
         self._runner = (partial(_run_render, width=self._concurrency)
                         if runner is None else runner)
+        self._default_runner = self._runner if runner is None else None
         #: Each render starts in a process group of its own, for a host
         #: that ends it itself on a stop (:meth:`halt`); passed to the
         #: runner as ``own_group`` (:func:`gpuwm.first_products._run_render`).
@@ -593,6 +992,14 @@ class LiveProducts:
 
     # -- the hook -------------------------------------------------------
 
+    def frame_submitted(self, *, domain: int, valid_time: Any) -> None:
+        """Hour-close timestamp, captured before the history writer is queued."""
+        from gpuwm.product_publish import utc_now, instant
+        with self._cond:
+            self._closed_at[(int(domain), instant(valid_time).isoformat())] = utc_now()
+            if self._web.cycle is None:
+                self._web.cycle = instant(valid_time)
+
     def frame_committed(self, *, domain: int, valid_time: Any, path: Any,
                         draw: bool = True) -> None:
         """Queue one durable frame and return at once.
@@ -603,15 +1010,20 @@ class LiveProducts:
         """
 
         frame = Path(path)
+        from gpuwm.product_publish import instant
         with self._cond:
             if self._closed:
                 return
+            if self._web.cycle is None:
+                self._web.cycle = instant(valid_time)
             closes = self._closes_a_window(frame)
             context = self._closing_frames(frame)
             if not draw:
                 return
             self._queue.append({"domain": int(domain),
                                 "valid_time": valid_time,
+                                "hour_closed_at": self._closed_at.pop(
+                                    (int(domain), instant(valid_time).isoformat()), None),
                                 "frame": frame,
                                 "context": context,
                                 "closes": closes})
@@ -786,9 +1198,13 @@ class LiveProducts:
 
     def _summary(self, dropped: int) -> dict[str, Any]:
         seconds = self._render_seconds
-        return {"published": len(self._entries), "dropped": dropped,
-                "render_seconds_total": round(sum(seconds), 3),
-                "render_seconds_max": round(max(seconds), 3) if seconds else None}
+        summary = {"published": len(self._entries), "dropped": dropped,
+                   "render_seconds_total": round(sum(seconds), 3),
+                   "render_seconds_max": round(max(seconds), 3) if seconds else None}
+        record = self._memory_record()
+        if record is not None:
+            summary["memory_admission"] = record
+        return summary
 
     # -- the worker -----------------------------------------------------
 
@@ -814,48 +1230,74 @@ class LiveProducts:
                 if not self._queue:
                     return
                 item = self._queue.popleft()
-            if not item.pop("closes", True) and self._draws_windows_only():
-                # A request made only of windows has nothing to draw where
-                # no window ends: its render exited 1 with no picture and
-                # the frame was said as left to the end of the run, which
-                # has nothing to draw there either.
-                continue
-            first = self._first
-            if first is not None and first.dispatched:
-                # Finish the early render before publishing later frames.
-                first.wait()
-            if self._abandoned:
-                # Halted while this frame waited its turn.
-                return
+                # The admission order is the queue's order: the place is
+                # taken here, under the queue's lock, not when this thread
+                # happens to reach the slots.
+                turn = (self._slot.ticket()
+                        if isinstance(self._slot, _LiveRenderSlots) else None)
             try:
-                with self._admission(item):
-                    if self._abandoned:
-                        return
-                    self._render(**item)
-            except BaseException as error:  # noqa: BLE001 - never fail a run
-                try:
-                    self._warn(
-                        "live_products_failed",
-                        f"drawing {Path(item['frame']).name} as it landed "
-                        f"raised {type(error).__name__}: {error}; the "
-                        "end-of-run render draws it",
-                        frame=str(item["frame"]))
-                except Exception:  # noqa: BLE001 - nor its warning
-                    pass
+                if not self._draw_one(item, turn):
+                    return
+            finally:
+                if turn is not None:
+                    self._slot.cancel(turn)
 
-    def _admission(self, item: Mapping[str, Any]):
+    def _draw_one(self, item: dict[str, Any], turn: object | None) -> bool:
+        """Draw one queued frame; ``False`` once the pass was halted."""
+
+        if not item.pop("closes", True) and self._draws_windows_only():
+            # A request made only of windows has nothing to draw where
+            # no window ends: its render exited 1 with no picture and
+            # the frame was said as left to the end of the run, which
+            # has nothing to draw there either.
+            return True
+        first = self._first
+        if first is not None and first.dispatched:
+            # Finish the early render before publishing later frames.
+            first.wait()
+        if self._abandoned:
+            # Halted while this frame waited its turn.
+            return False
+        try:
+            with self._admission(item, turn):
+                if self._abandoned:
+                    return False
+                with self._cond:
+                    self._active += 1
+                try:
+                    self._render(**item)
+                finally:
+                    with self._cond:
+                        self._active -= 1
+        except BaseException as error:  # noqa: BLE001 - never fail a run
+            try:
+                self._warn(
+                    "live_products_failed",
+                    f"drawing {Path(item['frame']).name} as it landed "
+                    f"raised {type(error).__name__}: {error}; the "
+                    "end-of-run render draws it",
+                    frame=str(item["frame"]))
+            except Exception:  # noqa: BLE001 - nor its warning
+                pass
+        return True
+
+    def _admission(self, item: Mapping[str, Any], turn: object | None = None):
         """The slot one queued frame is drawn under.
 
         On the host's shared slots a frame waits until its own price fits
-        beside the frames already drawing; a caller's own lock is one
-        frame at a time, which no price can narrow.
+        beside the frames already drawing, and, with the memory admission
+        on, until memory read now leaves the model its floor; a caller's
+        own lock is one frame at a time, which no price can narrow.
         """
 
         if not isinstance(self._slot, _LiveRenderSlots):
             return self._slot
         frame = Path(item["frame"])
-        return self._slot.admit(live_frame_peak_bytes(
-            frame, self._imported_baselines(item.get("context") or ())))
+        price = live_frame_peak_bytes(
+            frame, self._imported_baselines(item.get("context") or ()))
+        if turn is None:
+            return self._slot.admit(price)
+        return self._slot.admit(price, turn)
 
     def _imported_baselines(self, context: Sequence[Path]) -> list[Path]:
         """The earlier frames a render imports beside its frame."""
@@ -876,11 +1318,13 @@ class LiveProducts:
                 if context and self._requests_windows() else [])
 
     def _render(self, *, domain: int, valid_time: Any, frame: Path,
-                context: Sequence[Path] = ()) -> None:
+                context: Sequence[Path] = (), hour_closed_at=None) -> None:
         from gpuwm.go_cli import render_command
         from gpuwm.render import SCRATCH_SUFFIX, announce_missing_basemap
+        from gpuwm.product_publish import PRIORITY_PRODUCTS, utc_now
 
         started = time.perf_counter()
+        render_start = utc_now()
         render_dir = self.render_dir
         # Once, not per frame: the first frame drawn (here or by the early
         # render) checks the renderer's map assets and the rest return.
@@ -891,9 +1335,31 @@ class LiveProducts:
         scratch.mkdir(parents=True)
         baselines = self._imported_baselines(context)
         try:
+            # A small native import for the headline set starts before the
+            # expensive pressure volumes/parcel diagnostics of the full set.
+            # Explicit subsets retain their meaning; never add unasked products.
+            terms = {p.strip() for p in (self.render_products or "all").split(",")}
+            priority = [p for p in PRIORITY_PRODUCTS if "all" in terms or p in terms]
+            if len(priority) == len(PRIORITY_PRODUCTS) and terms != set(priority):
+                priority_done = self._run_render(render_command(
+                    {**self._plan, "render": scratch,
+                     "render_products": ",".join(priority)}, [frame],
+                    context_frames=baselines))
+                if self._abandoned or _render_was_stopped(priority_done.returncode):
+                    return
+                pictures = finished_pictures(scratch, iter_rendered(scratch),
+                                             priority_done.returncode)
+                if pictures:
+                    with self._publish:
+                        if self._abandoned:
+                            return
+                        self._publish_web(scratch, pictures, domain=domain,
+                            valid_time=valid_time, hour_closed_at=hour_closed_at,
+                            render_start=render_start, render_end=utc_now(), complete=False)
             completed = self._run_render(render_command(
                 {**self._plan, "render": scratch}, [frame],
                 context_frames=baselines))
+            render_end = utc_now()
             if self._abandoned:
                 # Halted while it drew: the halt ended this render, and
                 # nothing it left is published.
@@ -930,6 +1396,11 @@ class LiveProducts:
                     scratch, render_dir, written, domain=domain,
                     valid_time=valid_time, frame=frame, started=started,
                     completed=completed, baselines=baselines)
+                published["publication"] = self._publish_web(
+                    render_dir, [render_dir / p["name"] for p in published["written"]],
+                    domain=domain, valid_time=valid_time, hour_closed_at=hour_closed_at,
+                    render_start=render_start, render_end=render_end,
+                    complete=published["complete"])
         finally:
             shutil.rmtree(fs_path(scratch, descend=True), ignore_errors=True)
             shutil.rmtree(
@@ -938,10 +1409,33 @@ class LiveProducts:
                 ignore_errors=True)
         self._report(published)
 
+    def publish_first(self, receipt):
+        from gpuwm.product_publish import instant
+        with self._cond:
+            closed = self._closed_at.pop((int(receipt["domain"]),
+                instant(receipt["valid_time"]).isoformat()), None)
+        return self._publish_web(self.render_dir,
+            [self.render_dir / p["name"] for p in receipt["written"]],
+            domain=receipt["domain"], valid_time=receipt["valid_time"],
+            hour_closed_at=closed, render_start=receipt.get("render_start"),
+            render_end=receipt.get("render_end"), complete=receipt["complete"])
+
+    def _publish_web(self, source, pictures, **fields):
+        try:
+            return self._web.publish(source, pictures, **fields,
+                timing_source=("frame_submitted" if fields["hour_closed_at"] else "unknown"))
+        except Exception as error:
+            self._warn("local_publish_failed", f"local publication failed: {error}")
+            return None
+
     def _run_render(self, command):
         """One render of this pass, in its own process group when the pass was asked for that."""
 
         kwargs = {"own_group": True} if self._own_group else {}
+        with self._cond:
+            finishing = self._closed and not self._queue and self._active == 1
+        if finishing and self._runner is self._default_runner:
+            return _run_render(command, width=1, finishing=True, **kwargs)
         return self._runner(command, **kwargs)
 
     def _publish_frame(self, scratch: Path, render_dir: Path,
@@ -1005,14 +1499,34 @@ class LiveProducts:
             self._entries.append(entry)
             self._render_seconds.append(elapsed)
             entries = list(self._entries)
-        _write_receipt(render_dir / LIVE_PRODUCTS_RECEIPT, {
+        self._write_live_receipt(render_dir, entries)
+        return {**entry, "pictures": len(published),
+                "queued": self.pending}
+
+    def _memory_record(self) -> dict[str, Any] | None:
+        """The memory admission's record, when it is on, else ``None``."""
+
+        if isinstance(self._slot, _LiveRenderSlots) and self._slot.adaptive:
+            try:
+                return self._slot.record()
+            except Exception:  # noqa: BLE001 - telemetry never fails a run
+                return None
+        return None
+
+    def _write_live_receipt(self, render_dir: Path,
+                            entries: Sequence[Mapping[str, Any]]) -> None:
+        payload = {
             "schema": LIVE_PRODUCTS_SCHEMA,
             "render_products": self.render_products,
             "render_section": self.render_section,
-            "frames": entries,
-        })
-        return {**entry, "pictures": len(published),
-                "queued": self.pending}
+            "frames": list(entries),
+        }
+        # How the renders were admitted, so a run on a small host shows
+        # afterwards whether renders were held for memory and for how long.
+        record = self._memory_record()
+        if record is not None:
+            payload["memory_admission"] = record
+        _write_receipt(render_dir / LIVE_PRODUCTS_RECEIPT, payload)
 
 
 class _EarlyRenderOnly:
@@ -1080,9 +1594,24 @@ class _LiveRenderSlots(threading.Semaphore):
     run alone.  Frames are admitted in the order they asked, so a large
     frame is not passed over indefinitely by smaller ones.  ``width`` of
     the smallest frames always fit: the width was sized to hold them.
+
+    ``adaptive`` (the default, unless :data:`LIVE_RENDER_ADAPTIVE_ENV`
+    turns it off) adds the memory admission described above
+    :class:`LiveRenderMemorySettings`: on top of that one-shot budget, a
+    frame starts only while memory read NOW leaves the model's floor free
+    after it and the frames already drawing reach their expected peaks.
+    Frames are then admitted in the order they took a :meth:`ticket`
+    (the order they left the queue), and the oldest always runs when it
+    would run alone.  With ``adaptive`` off this is exactly the one-shot
+    budget it was before.
     """
 
-    def __init__(self, width: int, budget: int | None = None):
+    def __init__(self, width: int, budget: int | None = None, *,
+                 adaptive: bool | None = None,
+                 settings: LiveRenderMemorySettings | None = None,
+                 probe: Any = None,
+                 render_pid: Callable[[int], int | None] | None = None,
+                 clock: Callable[[], float] = time.monotonic):
         super().__init__(width)
         self.width = width
         self.budget = (None if budget is None
@@ -1091,14 +1620,145 @@ class _LiveRenderSlots(threading.Semaphore):
         self._reserved = 0
         self._running = 0
         self._waiting: deque[object] = deque()
+        self.adaptive = live_render_adaptive() if adaptive is None else bool(adaptive)
+        self.settings = (LiveRenderMemorySettings.from_env()
+                         if settings is None else settings)
+        self._probe = _HostMemoryProbe() if probe is None else probe
+        self._render_pid = _render_pid if render_pid is None else render_pid
+        self._clock = clock
+        self._host_total: int | None = None
+        self._host_total_read = False
+        # Each running frame: its cell price, the thread drawing it, and
+        # its tree's latest and peak resident memory once measured.
+        self._flights: dict[object, dict[str, Any]] = {}
+        self._peaks: deque[int] = deque(maxlen=max(1, int(self.settings.peaks_kept)))
+        self._sampler: threading.Thread | None = None
+        self._record: dict[str, Any] = {
+            "renders_admitted": 0, "renders_held": 0,
+            "longest_hold_seconds": 0.0, "model_rss_bytes": None,
+            "keep_free_bytes": None, "available_bytes": None}
 
     def _fits(self, price: int) -> bool:
         return (self._running == 0 or self.budget is None
                 or self._reserved + price <= self.budget)
 
+    # -- the memory admission ------------------------------------------
+
+    def ticket(self) -> object | None:
+        """A place in the admission order, taken when a frame leaves the
+        queue; ``None`` with the admission off (the old order: whichever
+        thread reaches :meth:`admit` first)."""
+
+        if not self.adaptive:
+            return None
+        turn = object()
+        with self._memory:
+            self._waiting.append(turn)
+        return turn
+
+    def cancel(self, turn: object | None) -> None:
+        """Give up a ticket whose frame will not be drawn.  Idempotent."""
+
+        if turn is None:
+            return
+        with self._memory:
+            try:
+                self._waiting.remove(turn)
+            except ValueError:
+                return
+            self._memory.notify_all()
+
+    def peak_estimate(self, price: int = 0) -> int:
+        """What a frame of cell price ``price`` is reckoned to reach."""
+
+        learned = max(self._peaks) if self._peaks else int(self.settings.peak_default)
+        return max(int(price), learned)
+
+    def _total(self) -> int | None:
+        if not self._host_total_read:
+            self._host_total_read = True
+            try:
+                self._host_total = self._probe.total()
+            except Exception:  # noqa: BLE001 - unknown size, no small-host floor
+                self._host_total = None
+        return self._host_total
+
+    def _sample_locked(self) -> int | None:
+        """Measure the model and every running frame's tree; the model's
+        resident memory, or ``None`` when it cannot be read."""
+
+        pids = {}
+        for flight in self._flights.values():
+            pid = self._render_pid(flight["ident"]) if flight["ident"] else None
+            if pid is not None:
+                pids[pid] = flight
+        try:
+            model, trees = self._probe.sample(list(pids))
+        except Exception:  # noqa: BLE001 - an unmeasured run keeps its estimates
+            return None
+        for pid, (rss, peak) in trees.items():
+            flight = pids.get(pid)
+            if flight is not None:
+                flight["rss"] = int(rss)
+                flight["peak"] = max(flight["peak"], int(peak), int(rss))
+        if model is not None:
+            self._record["model_rss_bytes"] = int(model)
+        return model
+
+    def _room(self, price: int, refused: bool) -> bool:
+        """Whether a frame of cell price ``price`` may start now beside the
+        frames drawing.  Held under ``_memory``."""
+
+        if self._running == 0:
+            return True
+        try:
+            available = self._probe.available()
+        except Exception:  # noqa: BLE001 - no reading imposes no cap
+            available = None
+        self._record["available_bytes"] = available
+        if available is None:
+            return True
+        model = self._sample_locked()
+        keep = live_render_keep_free(model or 0, self._total(), self.settings)
+        self._record["keep_free_bytes"] = int(keep)
+        growth = sum(max(0, self.peak_estimate(flight["price"]) - flight["rss"])
+                     for flight in self._flights.values())
+        line = keep + (self.settings.hysteresis if refused else 0)
+        return available - growth - self.peak_estimate(price) >= line
+
+    def _sample_loop(self) -> None:
+        while True:
+            with self._memory:
+                if not self._flights:
+                    self._sampler = None
+                    return
+                self._sample_locked()
+                self._memory.wait(self.settings.sample_seconds)
+
+    def record(self) -> dict[str, Any]:
+        """What the memory admission did, for the run's summary."""
+
+        with self._memory:
+            return {**self._record, "adaptive": self.adaptive,
+                    "peak_estimate_bytes": self.peak_estimate(),
+                    "peaks_measured": len(self._peaks),
+                    "host_bytes": self._host_total,
+                    "settings": self.settings.as_dict()}
+
     @contextmanager
-    def admit(self, price: int):
+    def admit(self, price: int, turn: object | None = None):
         """Hold one slot and ``price`` bytes of the budget for one frame."""
+
+        if not self.adaptive:
+            with self._admit_once(price):
+                yield self
+            return
+        with self._admit_adaptive(price, turn):
+            yield self
+
+    @contextmanager
+    def _admit_once(self, price: int):
+        """The one-shot budget, unchanged (the kill switch's path)."""
 
         self.acquire()
         try:
@@ -1120,6 +1780,68 @@ class _LiveRenderSlots(threading.Semaphore):
             yield self
         finally:
             with self._memory:
+                self._reserved -= price
+                self._running -= 1
+                self._memory.notify_all()
+            self.release()
+
+    @contextmanager
+    def _admit_adaptive(self, price: int, turn: object | None):
+        if turn is None:
+            turn = self.ticket()
+        acquired = False
+        flight: dict[str, Any] | None = None
+        try:
+            with self._memory:
+                if turn not in self._waiting:
+                    self._waiting.append(turn)
+                # Only the head of the order takes a slot, so a later
+                # frame can never hold the slot the oldest is waiting for.
+                while self._waiting[0] is not turn:
+                    self._memory.wait()
+            self.acquire()
+            acquired = True
+            with self._memory:
+                held_since = None
+                while not (self._fits(price)
+                           and self._room(price, held_since is not None)):
+                    if held_since is None:
+                        held_since = self._clock()
+                        self._record["renders_held"] += 1
+                    self._memory.wait(self.settings.poll_seconds)
+                if held_since is not None:
+                    self._record["longest_hold_seconds"] = max(
+                        self._record["longest_hold_seconds"],
+                        round(self._clock() - held_since, 3))
+                self._waiting.remove(turn)
+                flight = {"price": int(price), "ident": threading.get_ident(),
+                          "rss": 0, "peak": 0}
+                self._flights[turn] = flight
+                self._reserved += price
+                self._running += 1
+                self._record["renders_admitted"] += 1
+                self._memory.notify_all()
+                if self._sampler is None:
+                    self._sampler = threading.Thread(
+                        target=self._sample_loop,
+                        name="gpuwm-live-render-memory", daemon=True)
+                    self._sampler.start()
+        except BaseException:
+            with self._memory:
+                if turn in self._waiting:
+                    self._waiting.remove(turn)
+                self._memory.notify_all()
+            if acquired:
+                self.release()
+            raise
+        try:
+            yield self
+        finally:
+            with self._memory:
+                self._flights.pop(turn, None)
+                if flight["peak"] > 0:
+                    # A render that ran to its end: its measured peak.
+                    self._peaks.append(flight["peak"])
                 self._reserved -= price
                 self._running -= 1
                 self._memory.notify_all()
@@ -1181,12 +1903,18 @@ class LandingRenders(FirstProducts):
                                   subprocess.CompletedProcess] | None = None,
                  own_group: bool = False):
         slot, early_slot = shared_render_slots()
-        super().__init__(render_plan, report=report, warn=warn,
+        def report_first(receipt):
+            self.live.publish_first(receipt)
+            report(receipt)
+        super().__init__(render_plan, report=report_first, warn=warn,
                          runner=early_render_runner if runner is None else runner,
                          slot=early_slot, own_group=own_group)
         self.live = LiveProducts(render_plan, report=report_live, warn=warn,
                                  first=_EarlyRenderOnly(self), runner=runner,
                                  slot=slot, own_group=own_group)
+
+    def frame_submitted(self, **event) -> None:
+        self.live.frame_submitted(**event)
 
     def frame_committed(self, *, domain: int, valid_time: Any,
                         path: Any) -> bool:
@@ -1240,13 +1968,6 @@ class LandingRenders(FirstProducts):
             for scratch in _render_scratch(self.render_dir):
                 shutil.rmtree(fs_path(scratch, descend=True), ignore_errors=True)
         return {**summary, "ended": ended}
-
-
-def _write_receipt(path: Path, payload: Mapping[str, Any]) -> None:
-    temporary = path.with_name(path.name + ".partial")
-    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n",
-                         encoding="utf-8", newline="\n")
-    os.replace(temporary, path)
 
 
 def read_receipt(render_dir) -> dict[str, Any] | None:

@@ -219,12 +219,8 @@ def test_water_matches_oracle(case):
                      if k not in got and k[0] not in PASS_THROUGH)
     assert not bad, f"{case}: " + "; ".join(bad)
     assert not missing, f"{case}: port produced nothing for {missing}"
+    # The four locals that decide a branch but never reach a WRF output.
 
-
-@pytest.mark.parametrize("case", CASES)
-def test_water_matches_probe_stage(case):
-    """The four locals that decide a branch but never reach a WRF output."""
-    col, out = _run(case)
     want = TABLE[(case, "probe")]
     for name, value in (("qsnsub", out.qsnsub), ("qsnfro", out.qsnfro),
                         ("snoflow", out.snoflow), ("qsnbot", out.qsnbot),
@@ -233,18 +229,13 @@ def test_water_matches_probe_stage(case):
         assert _bits(value) == _bits(want[(name, 0)]), \
             f"{case}: probe {name} port={_bits(value)} " \
             f"oracle={_bits(want[(name, 0)])}"
+    # QSEVA/QSDEW before 6145, which is where the frozen branch forks.
+    #
+    # The probe's values are the pre-FROZEN_GROUND ones, so the comparison only
+    # applies where that block is off; where it is on, the port must have zeroed
+    # both, and 6147-6148 say so.
 
-
-@pytest.mark.parametrize("case", CASES)
-def test_qseva_and_qsdew_reach_the_soil_unmodified(case):
-    """QSEVA/QSDEW before 6145, which is where the frozen branch forks.
-
-    The probe's values are the pre-FROZEN_GROUND ones, so the comparison only
-    applies where that block is off; where it is on, the port must have zeroed
-    both, and 6147-6148 say so.
-    """
     x = TABLE[(case, "input")]
-    col, out = _run(case)
     want = TABLE[(case, "probe")]
     if bool(x[("frozen_ground", 0)]):
         assert _bits(out.qseva) == _bits(np.float32(0.0))

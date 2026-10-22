@@ -55,6 +55,466 @@
       "resolution": "1/3 arc-second",
       "license": "US-PD",
       "license_url": "https://www.usgs.gov/information-policies-and-instructions/copyrights-and-credits"
+    },
+    "landfire-cc": {
+      "kind": "wcs-geotiff",
+      "role": "canopy_cover",
+      "url": "https://edcintl.cr.usgs.gov/geoserver/landfire_wcs/conus_{year}/wcs",
+      "coverage": "landfire_wcs:LF{year}_CC_CONUS",
+      "wcs_version": "2.0.1",
+      "coverage_id": "landfire_wcs__LF{year}_CC_CONUS",
+      "axis_labels": [
+        "X",
+        "Y"
+      ],
+      "years": [
+        2016,
+        2023,
+        2024,
+        2025
+      ],
+      "crs": "EPSG:5070",
+      "resolution": 30.0,
+      "pixel_edge_offset": 15.0,
+      "source_url": "https://www.landfire.gov/fuel/cc",
+      "service_url": "https://landfire.gov/data/lf_wcs_wms",
+      "license": "US-PD",
+      "license_url": "https://www.usgs.gov/centers/eros/data-citation",
+      "nodata_override": -9999.0,
+      "scale_factor": 0.01
+    },
+    "landfire-ch": {
+      "kind": "wcs-geotiff",
+      "role": "canopy_height",
+      "url": "https://edcintl.cr.usgs.gov/geoserver/landfire_wcs/conus_{year}/wcs",
+      "coverage": "landfire_wcs:LF{year}_CH_CONUS",
+      "wcs_version": "2.0.1",
+      "coverage_id": "landfire_wcs__LF{year}_CH_CONUS",
+      "axis_labels": [
+        "X",
+        "Y"
+      ],
+      "years": [
+        2016,
+        2023,
+        2024,
+        2025
+      ],
+      "crs": "EPSG:5070",
+      "resolution": 30.0,
+      "pixel_edge_offset": 15.0,
+      "source_url": "https://www.landfire.gov/fuel/ch",
+      "service_url": "https://landfire.gov/data/lf_wcs_wms",
+      "license": "US-PD",
+      "license_url": "https://www.usgs.gov/centers/eros/data-citation",
+      "nodata_override": -9999.0,
+      "scale_factor": 0.1
+    },
+    "landfire-cbh": {
+      "kind": "wcs-geotiff",
+      "role": "canopy_base_height",
+      "url": "https://edcintl.cr.usgs.gov/geoserver/landfire_wcs/conus_{year}/wcs",
+      "coverage": "landfire_wcs:LF{year}_CBH_CONUS",
+      "wcs_version": "2.0.1",
+      "coverage_id": "landfire_wcs__LF{year}_CBH_CONUS",
+      "axis_labels": [
+        "X",
+        "Y"
+      ],
+      "years": [
+        2016,
+        2023,
+        2024,
+        2025
+      ],
+      "crs": "EPSG:5070",
+      "resolution": 30.0,
+      "pixel_edge_offset": 15.0,
+      "source_url": "https://www.landfire.gov/fuel/cbh",
+      "service_url": "https://landfire.gov/data/lf_wcs_wms",
+      "license": "US-PD",
+      "license_url": "https://www.usgs.gov/centers/eros/data-citation",
+      "nodata_override": -9999.0,
+      "scale_factor": 0.1
+    },
+    "landfire-cbd": {
+      "kind": "wcs-geotiff",
+      "role": "canopy_bulk_density",
+      "url": "https://edcintl.cr.usgs.gov/geoserver/landfire_wcs/conus_{year}/wcs",
+      "coverage": "landfire_wcs:LF{year}_CBD_CONUS",
+      "wcs_version": "2.0.1",
+      "coverage_id": "landfire_wcs__LF{year}_CBD_CONUS",
+      "axis_labels": [
+        "X",
+        "Y"
+      ],
+      "years": [
+        2016,
+        2023,
+        2024,
+        2025
+      ],
+      "crs": "EPSG:5070",
+      "resolution": 30.0,
+      "pixel_edge_offset": 15.0,
+      "source_url": "https://www.landfire.gov/fuel/cbd",
+      "service_url": "https://landfire.gov/data/lf_wcs_wms",
+      "license": "US-PD",
+      "license_url": "https://www.usgs.gov/centers/eros/data-citation",
+      "nodata_override": -9999.0,
+      "scale_factor": 0.01
+    },
+    "landfire-fbfm13-hi": {
+      "kind": "wcs-geotiff",
+      "role": "fuel",
+      "url": "https://edcintl.cr.usgs.gov/geoserver/landfire_wcs/hi_{year}/wcs",
+      "coverage": "landfire_wcs:LF{year}_FBFM13_HI",
+      "wcs_version": "2.0.1",
+      "coverage_id": "landfire_wcs__LF{year}_FBFM13_HI",
+      "axis_labels": [
+        "x",
+        "y"
+      ],
+      "years": [
+        2016,
+        2023,
+        2024
+      ],
+      "crs": "+proj=aea +lat_1=8 +lat_2=18 +lat_0=13 +lon_0=-157 +datum=NAD83",
+      "resolution": 30.0,
+      "pixel_edge_offset": [
+        15.0,
+        3.0
+      ],
+      "source_url": "https://www.landfire.gov/fuel/fbfm13",
+      "service_url": "https://landfire.gov/data/lf_wcs_wms",
+      "license": "US-PD",
+      "license_url": "https://www.usgs.gov/centers/eros/data-citation",
+      "nodata_override": -9999.0
+    },
+    "landfire-fbfm40-hi": {
+      "kind": "wcs-geotiff",
+      "role": "fuel",
+      "url": "https://edcintl.cr.usgs.gov/geoserver/landfire_wcs/hi_{year}/wcs",
+      "coverage": "landfire_wcs:LF{year}_FBFM40_HI",
+      "wcs_version": "2.0.1",
+      "coverage_id": "landfire_wcs__LF{year}_FBFM40_HI",
+      "axis_labels": [
+        "x",
+        "y"
+      ],
+      "years": [
+        2016,
+        2023,
+        2024
+      ],
+      "crs": "+proj=aea +lat_1=8 +lat_2=18 +lat_0=13 +lon_0=-157 +datum=NAD83",
+      "resolution": 30.0,
+      "pixel_edge_offset": [
+        15.0,
+        3.0
+      ],
+      "source_url": "https://www.landfire.gov/fuel/fbfm40",
+      "service_url": "https://landfire.gov/data/lf_wcs_wms",
+      "license": "US-PD",
+      "license_url": "https://www.usgs.gov/centers/eros/data-citation",
+      "nodata_override": -9999.0
+    },
+    "landfire-cc-hi": {
+      "kind": "wcs-geotiff",
+      "role": "canopy_cover",
+      "url": "https://edcintl.cr.usgs.gov/geoserver/landfire_wcs/hi_{year}/wcs",
+      "coverage": "landfire_wcs:LF{year}_CC_HI",
+      "wcs_version": "2.0.1",
+      "coverage_id": "landfire_wcs__LF{year}_CC_HI",
+      "axis_labels": [
+        "x",
+        "y"
+      ],
+      "years": [
+        2016,
+        2023,
+        2024
+      ],
+      "crs": "+proj=aea +lat_1=8 +lat_2=18 +lat_0=13 +lon_0=-157 +datum=NAD83",
+      "resolution": 30.0,
+      "pixel_edge_offset": [
+        15.0,
+        3.0
+      ],
+      "source_url": "https://www.landfire.gov/fuel/cc",
+      "service_url": "https://landfire.gov/data/lf_wcs_wms",
+      "license": "US-PD",
+      "license_url": "https://www.usgs.gov/centers/eros/data-citation",
+      "nodata_override": -9999.0,
+      "scale_factor": 0.01
+    },
+    "landfire-ch-hi": {
+      "kind": "wcs-geotiff",
+      "role": "canopy_height",
+      "url": "https://edcintl.cr.usgs.gov/geoserver/landfire_wcs/hi_{year}/wcs",
+      "coverage": "landfire_wcs:LF{year}_CH_HI",
+      "wcs_version": "2.0.1",
+      "coverage_id": "landfire_wcs__LF{year}_CH_HI",
+      "axis_labels": [
+        "x",
+        "y"
+      ],
+      "years": [
+        2016,
+        2023,
+        2024
+      ],
+      "crs": "+proj=aea +lat_1=8 +lat_2=18 +lat_0=13 +lon_0=-157 +datum=NAD83",
+      "resolution": 30.0,
+      "pixel_edge_offset": [
+        15.0,
+        3.0
+      ],
+      "source_url": "https://www.landfire.gov/fuel/ch",
+      "service_url": "https://landfire.gov/data/lf_wcs_wms",
+      "license": "US-PD",
+      "license_url": "https://www.usgs.gov/centers/eros/data-citation",
+      "nodata_override": -9999.0,
+      "scale_factor": 0.1
+    },
+    "landfire-cbh-hi": {
+      "kind": "wcs-geotiff",
+      "role": "canopy_base_height",
+      "url": "https://edcintl.cr.usgs.gov/geoserver/landfire_wcs/hi_{year}/wcs",
+      "coverage": "landfire_wcs:LF{year}_CBH_HI",
+      "wcs_version": "2.0.1",
+      "coverage_id": "landfire_wcs__LF{year}_CBH_HI",
+      "axis_labels": [
+        "x",
+        "y"
+      ],
+      "years": [
+        2016,
+        2023,
+        2024
+      ],
+      "crs": "+proj=aea +lat_1=8 +lat_2=18 +lat_0=13 +lon_0=-157 +datum=NAD83",
+      "resolution": 30.0,
+      "pixel_edge_offset": [
+        15.0,
+        3.0
+      ],
+      "source_url": "https://www.landfire.gov/fuel/cbh",
+      "service_url": "https://landfire.gov/data/lf_wcs_wms",
+      "license": "US-PD",
+      "license_url": "https://www.usgs.gov/centers/eros/data-citation",
+      "nodata_override": -9999.0,
+      "scale_factor": 0.1
+    },
+    "landfire-cbd-hi": {
+      "kind": "wcs-geotiff",
+      "role": "canopy_bulk_density",
+      "url": "https://edcintl.cr.usgs.gov/geoserver/landfire_wcs/hi_{year}/wcs",
+      "coverage": "landfire_wcs:LF{year}_CBD_HI",
+      "wcs_version": "2.0.1",
+      "coverage_id": "landfire_wcs__LF{year}_CBD_HI",
+      "axis_labels": [
+        "x",
+        "y"
+      ],
+      "years": [
+        2016,
+        2023,
+        2024
+      ],
+      "crs": "+proj=aea +lat_1=8 +lat_2=18 +lat_0=13 +lon_0=-157 +datum=NAD83",
+      "resolution": 30.0,
+      "pixel_edge_offset": [
+        15.0,
+        3.0
+      ],
+      "source_url": "https://www.landfire.gov/fuel/cbd",
+      "service_url": "https://landfire.gov/data/lf_wcs_wms",
+      "license": "US-PD",
+      "license_url": "https://www.usgs.gov/centers/eros/data-citation",
+      "nodata_override": -9999.0,
+      "scale_factor": 0.01
+    },
+    "landfire-fbfm13-ak": {
+      "kind": "wcs-geotiff",
+      "role": "fuel",
+      "url": "https://edcintl.cr.usgs.gov/geoserver/landfire_wcs/ak_{year}/wcs",
+      "coverage": "landfire_wcs:LF{year}_FBFM13_AK",
+      "wcs_version": "2.0.1",
+      "coverage_id": "landfire_wcs__LF{year}_FBFM13_AK",
+      "axis_labels": [
+        "X",
+        "Y"
+      ],
+      "years": [
+        2016,
+        2023,
+        2024,
+        2025
+      ],
+      "crs": "+proj=aea +lat_1=55 +lat_2=65 +lat_0=50 +lon_0=-154 +datum=NAD83",
+      "resolution": 30.0,
+      "pixel_edge_offset": 15.0,
+      "source_url": "https://www.landfire.gov/fuel/fbfm13",
+      "service_url": "https://landfire.gov/data/lf_wcs_wms",
+      "license": "US-PD",
+      "license_url": "https://www.usgs.gov/centers/eros/data-citation",
+      "nodata_override": -9999.0
+    },
+    "landfire-fbfm40-ak": {
+      "kind": "wcs-geotiff",
+      "role": "fuel",
+      "url": "https://edcintl.cr.usgs.gov/geoserver/landfire_wcs/ak_{year}/wcs",
+      "coverage": "landfire_wcs:LF{year}_FBFM40_AK",
+      "wcs_version": "2.0.1",
+      "coverage_id": "landfire_wcs__LF{year}_FBFM40_AK",
+      "axis_labels": [
+        "X",
+        "Y"
+      ],
+      "years": [
+        2016,
+        2023,
+        2024,
+        2025
+      ],
+      "crs": "+proj=aea +lat_1=55 +lat_2=65 +lat_0=50 +lon_0=-154 +datum=NAD83",
+      "resolution": 30.0,
+      "pixel_edge_offset": 15.0,
+      "source_url": "https://www.landfire.gov/fuel/fbfm40",
+      "service_url": "https://landfire.gov/data/lf_wcs_wms",
+      "license": "US-PD",
+      "license_url": "https://www.usgs.gov/centers/eros/data-citation",
+      "nodata_override": -9999.0
+    },
+    "landfire-cc-ak": {
+      "kind": "wcs-geotiff",
+      "role": "canopy_cover",
+      "url": "https://edcintl.cr.usgs.gov/geoserver/landfire_wcs/ak_{year}/wcs",
+      "coverage": "landfire_wcs:LF{year}_CC_AK",
+      "wcs_version": "2.0.1",
+      "coverage_id": "landfire_wcs__LF{year}_CC_AK",
+      "axis_labels": [
+        "X",
+        "Y"
+      ],
+      "years": [
+        2016,
+        2023,
+        2024,
+        2025
+      ],
+      "crs": "+proj=aea +lat_1=55 +lat_2=65 +lat_0=50 +lon_0=-154 +datum=NAD83",
+      "resolution": 30.0,
+      "pixel_edge_offset": 15.0,
+      "source_url": "https://www.landfire.gov/fuel/cc",
+      "service_url": "https://landfire.gov/data/lf_wcs_wms",
+      "license": "US-PD",
+      "license_url": "https://www.usgs.gov/centers/eros/data-citation",
+      "nodata_override": -9999.0,
+      "scale_factor": 0.01
+    },
+    "landfire-ch-ak": {
+      "kind": "wcs-geotiff",
+      "role": "canopy_height",
+      "url": "https://edcintl.cr.usgs.gov/geoserver/landfire_wcs/ak_{year}/wcs",
+      "coverage": "landfire_wcs:LF{year}_CH_AK",
+      "wcs_version": "2.0.1",
+      "coverage_id": "landfire_wcs__LF{year}_CH_AK",
+      "axis_labels": [
+        "X",
+        "Y"
+      ],
+      "years": [
+        2016,
+        2023,
+        2024,
+        2025
+      ],
+      "crs": "+proj=aea +lat_1=55 +lat_2=65 +lat_0=50 +lon_0=-154 +datum=NAD83",
+      "resolution": 30.0,
+      "pixel_edge_offset": 15.0,
+      "source_url": "https://www.landfire.gov/fuel/ch",
+      "service_url": "https://landfire.gov/data/lf_wcs_wms",
+      "license": "US-PD",
+      "license_url": "https://www.usgs.gov/centers/eros/data-citation",
+      "nodata_override": -9999.0,
+      "scale_factor": 0.1
+    },
+    "landfire-cbh-ak": {
+      "kind": "wcs-geotiff",
+      "role": "canopy_base_height",
+      "url": "https://edcintl.cr.usgs.gov/geoserver/landfire_wcs/ak_{year}/wcs",
+      "coverage": "landfire_wcs:LF{year}_CBH_AK",
+      "wcs_version": "2.0.1",
+      "coverage_id": "landfire_wcs__LF{year}_CBH_AK",
+      "axis_labels": [
+        "X",
+        "Y"
+      ],
+      "years": [
+        2016,
+        2023,
+        2024,
+        2025
+      ],
+      "crs": "+proj=aea +lat_1=55 +lat_2=65 +lat_0=50 +lon_0=-154 +datum=NAD83",
+      "resolution": 30.0,
+      "pixel_edge_offset": 15.0,
+      "source_url": "https://www.landfire.gov/fuel/cbh",
+      "service_url": "https://landfire.gov/data/lf_wcs_wms",
+      "license": "US-PD",
+      "license_url": "https://www.usgs.gov/centers/eros/data-citation",
+      "nodata_override": -9999.0,
+      "scale_factor": 0.1
+    },
+    "landfire-cbd-ak": {
+      "kind": "wcs-geotiff",
+      "role": "canopy_bulk_density",
+      "url": "https://edcintl.cr.usgs.gov/geoserver/landfire_wcs/ak_{year}/wcs",
+      "coverage": "landfire_wcs:LF{year}_CBD_AK",
+      "wcs_version": "2.0.1",
+      "coverage_id": "landfire_wcs__LF{year}_CBD_AK",
+      "axis_labels": [
+        "X",
+        "Y"
+      ],
+      "years": [
+        2016,
+        2023,
+        2024,
+        2025
+      ],
+      "crs": "+proj=aea +lat_1=55 +lat_2=65 +lat_0=50 +lon_0=-154 +datum=NAD83",
+      "resolution": 30.0,
+      "pixel_edge_offset": 15.0,
+      "source_url": "https://www.landfire.gov/fuel/cbd",
+      "service_url": "https://landfire.gov/data/lf_wcs_wms",
+      "license": "US-PD",
+      "license_url": "https://www.usgs.gov/centers/eros/data-citation",
+      "nodata_override": -9999.0,
+      "scale_factor": 0.01
+    },
+    "copernicus-dem-glo30": {
+      "kind": "terrain-tiles",
+      "role": "terrain",
+      "fetch_function": "fetch_copernicus_dem_tiles",
+      "derive_function": "derive_global_terrain_window",
+      "derive_kwargs": {
+        "sea_level_fill": null
+      },
+      "derive_returns_audit": true,
+      "allow_absent_tiles": true,
+      "source_url": "https://dataspace.copernicus.eu/explore-data/data-collections/copernicus-contributing-missions/collections-description/COP-DEM",
+      "resolution": "1 arc-second latitude, banded longitude",
+      "license": "Copernicus-DEM-EULA-free-open",
+      "license_url": "https://documentation.dataspace.copernicus.eu/APIs/SentinelHub/Data/DEM/resources/license/License-COPDEM-30.pdf",
+      "requires_license_acceptance": true,
+      "vertical_datum": "EGM2008",
+      "surface": "DSM including vegetation and buildings",
+      "attribution": "produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved",
+      "liability_notice": "The organisations in charge of the Copernicus programme by law or by delegation do not incur any liability for any use of the Copernicus WorldDEM-30"
     }
   }
 }

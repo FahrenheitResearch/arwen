@@ -277,8 +277,8 @@ def _value_rules() -> dict[tuple[str, str], dict]:
         rules[("physics", key)]["unported"] = {
             str(value): reason for value, reason
             in sorted(unported_scheme_reasons(key).items())}
-    rule("physics", "sf_ocean_physics", [0, 1],
-         "must be 0 or 1; the 3-D PWP ocean (2) is not ported", scalar=True)
+    rule("physics", "sf_ocean_physics", [0, 1, 2],
+         "must be 0 (off), 1 (Pollard) or 2 (3DPWP)", scalar=True)
     rule("physics", "sf_lake_physics", [0, 1],
          "must be integer 0 (off) or 1 (CLM lake).")
     rule("physics", "use_lakedepth", [0, 1],

@@ -235,7 +235,7 @@ def _fake_downloader(record):
     return download
 
 
-def test_the_table_route_names_each_object_it_lands(tmp_path):
+def test_the_table_route_names_each_object_it_lands(tmp_path, monkeypatch):
     """The wrfvet's 792 MB fetch printed nothing between the opening
     line and the manifest.  Every object gets a line now, in submission
     order, so a reader can tell a slow transfer from a hung one."""
@@ -244,10 +244,30 @@ def test_the_table_route_names_each_object_it_lands(tmp_path):
 
     plan = fetch_routes.resolve_request(
         "hrrr-prs", cycle=datetime(2026, 8, 16, 0), hours=1)
+    # Keep the host-slot waiter in this whole-route check deterministic.
+    from gpuwm import fetch_pool
+    waiting = threading.Event()
+    initialize = fetch_pool._HostTurns.__init__
+    def host_turns(self, cap, indices):
+        initialize(self, cap, indices)
+        wait = self._cond.wait
+        def wait_for_turn(timeout=None):
+            waiting.set()
+            return wait(timeout)
+        self._cond.wait = wait_for_turn
+    monkeypatch.setattr(fetch_pool._HostTurns, "__init__", host_turns)
+    monkeypatch.setattr(fetch_pool, "host_worker_cap", lambda host, workers: 1)
+    download = _fake_downloader([])
+    first = threading.Lock()
+    def held_download(*args, **kwargs):
+        if first.acquire(blocking=False):
+            assert waiting.wait(10), "second transfer never waited for its host slot"
+        return download(*args, **kwargs)
     said: list[str] = []
-    fetch_routes.run_plan(plan, out=tmp_path,
-                          downloader=_fake_downloader([]),
+    fetch_routes.run_plan(plan, out=tmp_path, file_workers=2,
+                          downloader=held_download,
                           progress=said.append)
+    assert waiting.is_set()
 
     assert said, "the route said nothing at all"
     opening = said[0]

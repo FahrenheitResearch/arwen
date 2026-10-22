@@ -260,11 +260,20 @@ class ForecastLedger:
 class LedgerObserver:
     """Add C1 to an existing go observer without changing hosting behavior."""
 
-    def __init__(self, observer, ledger, run):
+    def __init__(self, observer, ledger, run, *, relay_forecast=True):
         self.observer, self.ledger, self.run = observer, ledger, run
         self.hosts_forecast = getattr(observer, "hosts_forecast", True)
+        #: False when the forecast's own members relay their steps into this
+        #: ledger (an ensemble's member_timeline); a run-level relay would add
+        #: a forecast.construct span over the whole roster that no step ends.
+        self.relay_forecast = relay_forecast
         self.forecast = None
-        self.open_stages = set()
+        #: label -> how many are open.  An ensemble prepares its members
+        #: concurrently under one label; the stage is one span from the first
+        #: begin to the last end (a set closed it at the FIRST member's end,
+        #: opened the idle span while members still prepared, and left every
+        #: other member's begin unmatched).
+        self.open_stages = {}
         self.closed = False
         self.idle = True
         self.ledger.emit("post.orchestration", "begin")
@@ -284,11 +293,12 @@ class LedgerObserver:
             self.ledger.emit("post.orchestration", "end")
             self.idle = False
         stage = GO_STAGES.get(label, "prep." + label.replace(" ", "_"))
-        self.ledger.emit(stage, "begin", attrs={"label": label})
-        self.open_stages.add(label)
-        if label == "forecast":
-            self.forecast = ForecastLedger(self.ledger, self.run)
-            self.forecast.start()
+        if not self.open_stages.get(label):
+            self.ledger.emit(stage, "begin", attrs={"label": label})
+            if label == "forecast" and self.relay_forecast:
+                self.forecast = ForecastLedger(self.ledger, self.run)
+                self.forecast.start()
+        self.open_stages[label] = self.open_stages.get(label, 0) + 1
         return self._forward("stage_begin", label=label, command=command)
 
     def stage_end(self, *, label, **fields):
@@ -299,15 +309,21 @@ class LedgerObserver:
         self._end(label, fields)
         return self._forward("stage_secondary_end", label=label, **fields)
 
-    def _end(self, label, fields):
+    def _end(self, label, fields, *, every=False):
+        if label not in self.open_stages:
+            return
+        self.open_stages[label] -= 1
+        if every:
+            self.open_stages[label] = 0
+        if self.open_stages[label] > 0:
+            return
+        del self.open_stages[label]
         if label == "forecast" and self.forecast is not None:
             self.forecast.finish()
             self.forecast = None
-        if label in self.open_stages:
-            self.ledger.emit(GO_STAGES.get(label, "prep." + label.replace(" ", "_")), "end",
-                             attrs={"label": label, "ok": fields.get("ok"),
-                                    "exit_code": fields.get("exit_code")})
-            self.open_stages.discard(label)
+        self.ledger.emit(GO_STAGES.get(label, "prep." + label.replace(" ", "_")), "end",
+                         attrs={"label": label, "ok": fields.get("ok"),
+                                "exit_code": fields.get("exit_code")})
         if not self.open_stages and not self.idle:
             self.ledger.emit("post.orchestration", "begin")
             self.idle = True
@@ -320,7 +336,7 @@ class LedgerObserver:
             return
         self.closed = True
         for label in list(self.open_stages):
-            self._end(label, {"ok": False})
+            self._end(label, {"ok": False}, every=True)
         if self.idle:
             self.ledger.emit("post.orchestration", "end")
             self.idle = False

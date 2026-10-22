@@ -2,6 +2,8 @@
 
 `gpuwm domain --recipe hrrr_v4_gsd41 --region PH --spacing-km 3 --source gfs --cycle 2025-11-03T00 --hours 6 --out country.toml`
 
+HRRR-Smoke is off by default in 2.9.4 (opt in with --smoke; it currently costs ~11x per step); history is hourly (the 15-min history subset stream is next release); add `--smoke` to write the recipe with HRRR-Smoke on.
+
 Run `gpuwm check country.toml`, stage the required geography and tables, then
 `gpuwm go country.toml`. The recipe contains the physics, eta ladder, model
 top, clock, lateral widths and output settings. Only geometry, cycle, duration,

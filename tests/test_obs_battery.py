@@ -279,20 +279,6 @@ def test_scoring_one_arm_produces_a_complete_score_file(tmp_path):
         "faithful"
 
 
-def test_the_score_file_records_that_it_was_built_on_stand_ins():
-    obs = _reflectivity_obs()
-    arm = MemoryArm(obs)
-    payload = battery.score_case_arm(
-        registration=_registration(), case_id="case-01", arm_id="faithful",
-        init_time=INIT, model=arm, reflectivity_obs=obs,
-        boundary_width_cells=2)
-    assert payload["uses_stub_inputs"] is True
-    assert all(record["is_stub"] for record in
-               payload["observation_provenance"])
-    assert all(row["observation_is_stub"] for row in
-               payload["reflectivity"]["leads"])
-
-
 def test_an_unperformed_rehash_counts_as_a_failed_one():
     obs = _reflectivity_obs()
     arm = MemoryArm(obs)
@@ -303,6 +289,11 @@ def test_an_unperformed_rehash_counts_as_a_failed_one():
     assert payload["observation_rehash"]
     assert all(not record["matches"] and not record["rehash_performed"]
                for record in payload["observation_rehash"])
+    assert payload["uses_stub_inputs"] is True
+    assert all(record["is_stub"] for record in
+               payload["observation_provenance"])
+    assert all(row["observation_is_stub"] for row in
+               payload["reflectivity"]["leads"])
 
 
 def test_a_better_arm_scores_higher_on_the_primary_scalar():

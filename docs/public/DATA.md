@@ -883,11 +883,16 @@ Details: [PHYSICS.md](PHYSICS.md#which-suites-each-data-route-can-actually-prepa
 ## Static geography (WPS_GEOG)
 
 Terrain, land use, soil texture, vegetation fraction, LAI, albedo,
-snow albedo, and deep-soil temperature come from the standard NCAR WPS
+snow albedo, and deep-soil temperature come from the NCAR WPS
 geographical dataset -- nine dataset directories the WRF static builder
-opens (global coverage, so any domain works), plus the Noah-MP soil
-archive `gpuwm mesh` needs for the static half of its pair. One command
-downloads and stages all of it:
+opens (global coverage, so any domain works), plus the land-use
+datasets `gpuwm mesh` needs for the static half of its pair. The
+default set carries only permissively licensed sources: soil categories
+are the SoilGrids250m tiles (CC BY 4.0) WPS selects with `soilgrids`,
+and deep-soil temperature is built on your machine from the ERA5
+climatology (Licence to Use Copernicus Products). WPS's own defaults for
+those two fields are held out for their licences (see *Provenance and
+attribution* below). One command downloads and stages all of it:
 
 ```bash
 gpuwm fetch-geog
@@ -899,11 +904,12 @@ gpuwm fetch-geog
   `~/Downloads` on Windows and to the XDG data directory
   (`$XDG_DATA_HOME/gpuwm`, usually `~/.local/share/gpuwm`) everywhere
   else.
-- **Size:** ~2.2 GB download, ~30 GB unpacked for the default set.
-  `--datasets wrf` stages the nine the WRF static builder opens
-  (~1.3 GB download, ~17 GB unpacked) and skips the Noah-MP soil
-  archive only `gpuwm mesh` reads; `--datasets mesh` narrows the other
-  way. `--list` previews the per-dataset table (and what is already
+- **Size:** ~2.7 GB download, ~34 GB unpacked for the default set.
+  `--datasets wrf` stages what the WRF static builder opens (~2.6 GB
+  download, ~28 GB unpacked) and skips the land-use datasets only
+  `gpuwm mesh` reads; `--datasets mesh` narrows the other way. Both
+  include the `soilgrids` archive (864 MB, ~13 GB unpacked), which
+  holds the default soil categories. `--list` previews the per-dataset table (and what is already
   staged) without touching the network; `--datasets NAME,NAME` stages
   an explicit subset.
 - **Resumable and idempotent:** an interrupted download resumes from
@@ -914,6 +920,17 @@ gpuwm fetch-geog
   WPS `index` file (the same bar `gpuwm doctor` applies), and a local
   `geog-fetch-manifest.json` records the observed hashes for future
   re-verification.
+- **Built, not downloaded: deep-soil temperature.** `soiltemp_era5_1deg`
+  is produced by the native reader (`rw_zarr soiltemp-climatology`) from
+  WeatherBench 2's public copy of the ERA5 1990-2019 hourly climatology
+  on Google Cloud (keyless; it reads 459 MB and took 8 s on a rented
+  box): the annual mean of 2 m temperature over every hour and day,
+  reduced to sea level with the 0.0065 K/m lapse rate that
+  TMN = SOILTEMP - 0.0065 x HGT undoes, averaged onto 1-degree cells
+  area-conservatively over land only. It has `soiltemp_1deg`'s exact
+  layout (same index keys, tiles, units, 0 = ocean), so every reader of
+  that dataset reads it unchanged. Its `PROVENANCE.json` carries the
+  request, the receipt, the tile hashes and the Copernicus attribution.
 
 Two hosts serve byte-identical archives:
 
@@ -951,31 +968,35 @@ tarballs under `https://www2.mmm.ucar.edu/wrf/src/wps_files/`:
 |---|---|---|
 | `topo_gmted2010_30s` | `topo_gmted2010_30s.tar.bz2` | 174 MiB |
 | `modis_landuse_20class_30s_with_lakes` | `modis_landuse_20class_30s_with_lakes.tar.bz2` | 31 MiB |
-| `soiltype_top_30s` | `soiltype_top_30s.tar.bz2` | 1.6 MiB |
-| `soiltype_bot_30s` | `soiltype_bot_30s.tar.bz2` | 1.8 MiB |
 | `greenfrac_fpar_modis` | `greenfrac_fpar_modis.tar.bz2` | 945 MiB |
 | `lai_modis_10m` | `lai_modis_10m.tar.bz2` | 2.5 MiB |
 | `albedo_modis` | `albedo_modis.tar.bz2` | 74 MiB |
 | `maxsnowalb_modis` | `maxsnowalb_modis.tar.bz2` | 4.2 MiB |
-| `soiltemp_1deg` | `soiltemp_1deg.tar.bz2` | 30 KiB |
-| `soilgrids` (`gpuwm mesh` only) | `soilgrids.tar.bz2` | 824 MiB |
+| `soilgrids` | `soilgrids.tar.bz2` | 824 MiB |
+| `soiltemp_era5_1deg` | none: built by `gpuwm fetch-geog --datasets soiltemp_era5_1deg` | 459 MB read |
 
-`soilgrids` is the Noah-MP soil archive. Unlike the nine it holds
-seven dataset directories under one parent -- `soilcomp`,
-`texture_top`, `texture_bot` and `texture_layer1` through
-`texture_layer4` -- each with its own WPS `index`. The MPAS static
-builder reads `soilcomp` and the four texture layers and cannot write
-its 82-variable static without them, so it is **required for the
-`gpuwm mesh` door** and part of the default `fetch-geog` set (~13 GB
-unpacked). The WRF static builder opens none of them: a WRF-only
-install can skip it with `gpuwm fetch-geog --datasets wrf`, and
-`gpuwm doctor`'s WRF verdict does not call such a tree incomplete.
-Doctor reports a second, mesh-scoped verdict over the same tree, which
-fails the exit code only on a box where `rw_mpas_static` is installed
-and its geography is not. Its pin was computed the same way as the
-others, from a TLS download from UCAR on 2026-08-23. NCAR's
-mandatory-fields bundle does not carry it, so `--bundle` refuses it
-and the per-dataset route is the only one.
+`soilgrids` holds seven dataset directories under one parent --
+`soilcomp`, `texture_top`, `texture_bot` and `texture_layer1` through
+`texture_layer4` -- each with its own WPS `index`. The WRF static
+builder's default soil categories are `texture_top` and `texture_bot`
+(the same 16 categories, water 14, and tile layout as WPS's
+`soiltype_*_30s`), and the MPAS static builder reads `texture_top`,
+`soilcomp` and the four texture layers, so it is **required by both
+doors** and part of the default `fetch-geog` set (~13 GB unpacked). Its
+pin was computed the same way as the others, from a TLS download from
+UCAR on 2026-08-23. NCAR's mandatory-fields bundle does not carry it,
+so `--bundle` refuses it and the per-dataset route is the only one.
+
+**Held out of the default set.** WPS's own soil-category tiles
+(`soiltype_top_30s`, `soiltype_bot_30s`, 1.6 and 1.8 MiB) and
+deep-soil temperature (`soiltemp_1deg`, 30 KiB) do not clear the
+licence bar (next section). They stay selectable by name and are
+fetched from NCAR, never the mirror: `gpuwm fetch-geog --datasets
+soiltype_top_30s,soiltype_bot_30s,soiltemp_1deg`, then
+`geog_data_res = '30s'` (soil) or `'islscp_soiltemp'` (deep-soil
+temperature) for the WRF builder, and `--soilcat-data STATSGO` /
+`--soiltemp-data ISLSCP` for `rw_mpas_static`. Whenever one is staged
+or read, the line naming its terms is printed.
 
 Untar each into one root so the directories sit side by side
 (each tarball already contains its directory), then point
@@ -987,25 +1008,42 @@ directory must contain its WPS `index` file.
 
 The WPS geographical datasets are assembled and distributed by
 NCAR/UCAR for the WRF ecosystem (no license or citation text is
-attached to the download page). Underlying sources:
+attached to the download page). Every dataset in the default set has a
+permissive source; a source that is not permissive, or whose licence no
+one states, is said so here and held out of the default set. Underlying
+sources and licences:
 
-| dataset | contents | ultimate source |
-|---|---|---|
-| `topo_gmted2010_30s` | 30-arc-sec terrain elevation | USGS/NGA GMTED2010 (Danielson & Gesch 2011, USGS OFR 2011-1073); U.S. public domain |
-| `modis_landuse_20class_30s_with_lakes` | Noah-modified 20-category IGBP land use + inland lakes | NASA MODIS (MCD12Q1-derived); NASA data are free and open |
-| `soiltype_top_30s`, `soiltype_bot_30s` | 16-category top-/bottom-layer soil texture | STATSGO inside CONUS (USDA NRCS, public domain) + the FAO-UNESCO Soil Map of the World (FAO Digital Soil Map of the World) elsewhere; FAO applies CC BY 4.0 to its datasets unless their metadata says otherwise, and the DSMW catalogue record states no licence |
-| `greenfrac_fpar_modis` | monthly green-vegetation-fraction climatology | NASA MODIS FPAR |
-| `lai_modis_10m` | monthly leaf-area-index climatology (10 arc-min) | NASA MODIS |
-| `albedo_modis` | monthly surface albedo climatology | NASA MODIS |
-| `maxsnowalb_modis` | maximum snow albedo | MODIS-derived (Barlage et al. 2005) |
-| `soiltemp_1deg` | 1-degree annual-mean deep-soil temperature | climatology distributed with WPS; NCAR's pages do not state the ultimate source |
-| `soilgrids` (seven directories) | Noah-MP soil composition and four-layer texture | ISRIC -- World Soil Information, SoilGrids250m (Hengl et al. 2017, PLOS ONE 12(2): e0169748), from whose 2017 texture classes NCAR generated the WPS tiles; CC BY 4.0 (ISRIC's terms for SoilGrids products since 2019), attribution required |
+| dataset | contents | ultimate source and licence | default set |
+|---|---|---|---|
+| `topo_gmted2010_30s` | 30-arc-sec terrain elevation | USGS/NGA GMTED2010 (Danielson & Gesch 2011, USGS OFR 2011-1073); U.S. public domain | yes |
+| `modis_landuse_20class_30s_with_lakes` | Noah-modified 20-category IGBP land use + inland lakes | NASA MODIS (MCD12Q1-derived); NASA data are free and open | yes |
+| `greenfrac_fpar_modis` | monthly green-vegetation-fraction climatology | NASA MODIS FPAR | yes |
+| `lai_modis_10m` | monthly leaf-area-index climatology (10 arc-min) | NASA MODIS | yes |
+| `albedo_modis` | monthly surface albedo climatology | NASA MODIS | yes |
+| `maxsnowalb_modis` | maximum snow albedo | MODIS-derived (Barlage et al. 2005) | yes |
+| `soilgrids` (seven directories; `texture_top` and `texture_bot` are the default soil categories) | 16-category top-/bottom-layer soil texture, Noah-MP soil composition and four-layer texture | ISRIC -- World Soil Information, SoilGrids250m (Hengl et al. 2017, PLOS ONE 12(2): e0169748), from whose 2017 texture classes NCAR generated the WPS tiles; CC BY 4.0 (ISRIC's terms for SoilGrids products since 2019), attribution required | yes |
+| `soiltemp_era5_1deg` | 1-degree annual-mean deep-soil temperature (2 m temperature reduced to sea level) | ERA5 (Hersbach et al. 2020, doi:10.1002/qj.3803), 1990-2019 hourly climatology as published by WeatherBench 2 (Rasp et al. 2024, doi:10.1029/2023MS004019), built locally by `gpuwm fetch-geog`; Licence to Use Copernicus Products (<https://cds.climate.copernicus.eu/api/v2/terms/static/licence-to-use-copernicus-products.pdf>): free, worldwide, commercial use allowed, attribution required | yes |
+| `soiltype_top_30s`, `soiltype_bot_30s` | 16-category top-/bottom-layer soil texture (WPS's default) | STATSGO inside CONUS (USDA NRCS, public domain) + the FAO-UNESCO Digital Soil Map of the World elsewhere. The DSMW's own notes (Version 3.6, Jan 2003, <https://swat.tamu.edu/media/116411/notes.txt>) say "(C) FAO/UNESCO, 1995 All rights reserved worldwide", "All proprietary rights ... shall remain the property of FAO" and "The user shall not reproduce for the benefit of third parties the data", with permission required from FAO's Publications Division. **Not permissive.** | no: by name only (`30s`, `--soilcat-data STATSGO`) |
+| `soiltemp_1deg` | 1-degree annual-mean deep-soil temperature (WPS's default) | The Noah-MP TBOT READ_ME (<https://ral.ucar.edu/sites/default/files/public/product-tool/noah-multiparameterization-land-surface-model-noah-mp-lsm/tbot/READ_ME>): 1-degree annual-mean 2 m air temperature from ISLSCP-I (ECMWF 1987-88 analyses, adjusted to 1000 mb). The ISLSCP-I Vol. 4 record at CEDA (<https://catalogue.ceda.ac.uk/uuid/b9c3effaab9fe9a2206b58af500f157d>) states Permitted Use "Unstated" and links a missing licence file; NCAR states none. **Licence unclear, so not cleared.** | no: by name only (`islscp_soiltemp`, `--soiltemp-data ISLSCP`) |
 
 If you publish work built on these fields, credit NCAR/UCAR's WPS
-geographical data distribution and the underlying providers (USGS for
-GMTED2010; NASA for the MODIS-derived fields; FAO and UNESCO for the
-soil texture outside the United States; ISRIC for SoilGrids250m, whose
-CC BY 4.0 licence makes that credit a condition of reuse).
+geographical data distribution and the underlying providers: USGS for
+GMTED2010; NASA for the MODIS-derived fields; ISRIC for SoilGrids250m,
+whose CC BY 4.0 licence makes that credit a condition of reuse; and, for
+the deep-soil temperature, "Contains modified Copernicus Climate Change
+Service information (ERA5); neither the European Commission nor ECMWF is
+responsible for any use of this information", which the Copernicus
+licence requires. A run that opts into a held-out dataset should also
+credit FAO/UNESCO or ISLSCP-I, and is bound by their terms.
+
+Against the held-out WPS field, the ERA5 deep-soil temperature is 1.9 K
+warmer on average over common land cells (median 1.8 K, 5th to 95th
+percentile -0.6 to +4.8 K). The largest differences are over high
+terrain, where ISLSCP-I's 1000 mb adjustment and ERA5's sea-level
+reduction part ways (+8.9 K at 30.5 N 85.5 E on the Tibetan Plateau,
++0.7 K at 38.5 N 98.5 W in Kansas). It also marks 27,542 land cells to
+ISLSCP-I's 21,656: every cell ISLSCP-I has, plus small islands and
+coasts.
 
 `gpuwm check` verifies the exact tiles your footprint intersects
 (presence and hashes) before anything expensive runs. Static fields
@@ -1067,7 +1105,7 @@ $GPUWM_CASE_DATA_ROOT/
 
 | item | size | when |
 |---|---|---|
-| WPS_GEOG static tree (`gpuwm fetch-geog`) | ~2.2 GB download, ~30 GB unpacked; `--datasets wrf` skips the mesh-only soil archive for ~1.3 GB download, ~17 GB unpacked | once |
+| WPS_GEOG static tree (`gpuwm fetch-geog`) | ~2.7 GB download, ~34 GB unpacked; `--datasets wrf` skips the mesh-only land use for ~2.6 GB download, ~28 GB unpacked | once |
 | CGLC-MODIS-LCZ land cover (`[static.highres]`, default) | 2.28 GB | once per `cache_root` |
 | GFS subsets | ~3.3 KB/deg2/h (e.g. ~3 MB/h at 30x30 deg) | per case |
 | HRRR, default whole files | ~1.1 GB/h (~21 GB for f00..f18) -- `wrfnat` 704 MB + `wrfprs` 427 MB, measured | per case |

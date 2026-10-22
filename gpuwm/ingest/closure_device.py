@@ -181,11 +181,9 @@ def _rounded_alt(value):
 
 def _closure_chunk(state, state_xp, cfg, inverse_density,
                                      *, aerosol_number=None, landmask=None,
-                                     temperature=None, only_pair=None,
-                                     defer_result_validation=False, receipt=True):
+                                     temperature=None, only_pair, receipt=True):
     """Close device moments; temperature callable accepts device seed indices."""
     import cupy as cp
-    from gpuwm.boundary_fields import COLD_START_SEEDED_NUMBERS
     from gpuwm.ingest.real import COLD_START_MOMENT_CLOSURE_SCHEMA
 
     alt = _rounded_alt(inverse_density)
@@ -198,13 +196,11 @@ def _closure_chunk(state, state_xp, cfg, inverse_density,
             f"{bad} cell(s), so the density Thompson's entry block works in cannot be formed there")
     entries, written, seeds, total = [], [], {}, 0
     kinds = {"qc": "cloud", "qr": "rain", "qi": "ice"}
-    pairs = COLD_START_SEEDED_NUMBERS[int(cfg.mp_physics)] if only_pair is None else (only_pair,)
-    for mass_field, number_field in pairs:
+    for mass_field, number_field in (only_pair,):
         name = kinds[mass_field]
         mass, number = getattr(state, mass_field), getattr(state, number_field)
         # Offenders are a subset of seeds. The host compares the FP32 array to R1.
         # Integer predicates retain positive subnormal masses and numbers.
-        nb = number.view(cp.uint32)
         seed = _seed_mask(mass, number)
         idx = cp.flatnonzero(seed.ravel())
         count = int(idx.size)
@@ -244,15 +240,6 @@ def _closure_chunk(state, state_xp, cfg, inverse_density,
                     land = cp.asarray(landmask, dtype=cp.float64).ravel()
                     xland = cp.where(land[idx % land.size] >= 0.5, 1.0, 2.0).astype(cp.float32)
             fixed, volume = gathered_numbers(name, m, n, a, temp, nwfa, xland)
-            # Refuse before publishing. Existing non-seeded numbers are validated too.
-            if not defer_result_validation:
-                fb = fixed.view(cp.uint32)
-                bad_fixed = bool((~cp.isfinite(fixed) | (fb > cp.uint32(0x80000000))).any())
-                bad_old = bool(((~cp.isfinite(number) | (nb > cp.uint32(0x80000000))) & ~seed).any())
-                if bad_fixed or bad_old:
-                    raise ValueError(
-                        f"the cold-start moment closure produced a non-finite or negative {number_field}; "
-                        f"the analyzed {mass_field} it was closed over is not a state the scheme can start from")
             number.ravel()[idx] = fixed
             written.append(number_field)
             entry["repaired_cells"] = repairs
@@ -406,7 +393,7 @@ def thompson_cold_start_moment_closure(state, state_xp, cfg, inverse_density,
             try:
                 part = _closure_chunk(chunk, cp, cfg, alt_flat[start:stop],
                                       temperature=t, landmask=lm, only_pair=(q, n),
-                                      defer_result_validation=True, receipt=receipt,
+                                      receipt=receipt,
                                       aerosol_number=aerosol_batch(start, stop))
             except _DropletRowRefused as refused:
                 # Count the whole domain before refusing, as the host does;

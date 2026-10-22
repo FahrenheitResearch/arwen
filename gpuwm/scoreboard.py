@@ -7,6 +7,7 @@ import subprocess
 import sys
 import json
 
+from gpuwm.bridges import fetch_on_demand, on_demand_failure
 from gpuwm.ml_export import Binary
 
 ABI_MARKER = ("rw_scoreboard --request JSON schema=woof.scoreboard.request.v1 "
@@ -41,7 +42,14 @@ def probe(path: Path) -> tuple[bool, str]:
 def run_request(request: Path) -> int:
     """Forward an immutable request to the native data path."""
     path = BINARY.find()
+    if path is None and fetch_on_demand(BINARY.name):
+        # On demand since 2.9.4 (PyPI per-file limit): pinned in this
+        # release's bundle, staged by the first request that needs it.
+        path = BINARY.find()
     if path is None:
+        failure = on_demand_failure(BINARY.name)
+        if failure:
+            print(f"{BINARY.name}: {failure}", file=sys.stderr)
         print(BINARY.remedy(), file=sys.stderr)
         return 3
     stdout = abi_line(path)

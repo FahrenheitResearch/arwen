@@ -15,7 +15,7 @@ from functools import lru_cache
 import cupy as cp
 import numpy as np
 
-from gpuwm.core import ruc, ruc_gpu
+from gpuwm.core import ruc, ruc_gpu, ruc_memory as layout
 from gpuwm.core.ruc_tier import ruc_fused_kernel
 
 
@@ -72,25 +72,6 @@ def _runtime_sfctmp(values, *, run, delt, conflx, ivgtyp, iland, nroot, ilnb,
 
 _RUC_SFCTMP_FULL_WIDTH = _runtime_sfctmp
 
-_COLUMNS = (ruc.RUC_DRIVER_COLUMN_STATE + ruc.RUC_DRIVER_COLUMN_FORCING
-            + ruc.RUC_DRIVER_ARW_FORCING)
-_EXTRAS = ("psfc", "chs2", "cqs2", "cpm", "qgh", "tsk_save", "tsk_sea",
-           "flhc_sea", "flqc_sea", "cpm_sea", "cqs2_sea", "chs2_sea",
-           "chs_sea", "qsfc_sea", "qgh_sea", "hfx_sea", "qfx_sea", "lh_sea")
-_LOCALS = ("patm", "conflx", "prcpms", "newsnms", "snowrat", "grauprat",
-           "icerat", "curat", "qkms", "tkms", "snwe", "snhei", "canwatr",
-           "snowfrac", "rhosnfall", "rhosn", "emissl", "pc", "qwrtz",
-           "rhocs", "bclh", "dqm", "ksat", "psis", "qmin", "ref", "wilt",
-           "meltfactor", "lmavail", "sat", "cn", "snoh", "snflx", "s",
-           "sublim", "evapl", "infiltr", "smelt", "runoff1", "runoff2",
-           "t2", "th2", "q2", "scale", "inverse")
-_PROFILES = ruc.RUC_DRIVER_PROFILE_STATE
-_WORK_PROFILES = ("soilm1d", "tso1d", "smfrkeep", "keepfr", "soiliqw", "soilice")
-_SCRATCH_NAMES = _COLUMNS + _EXTRAS + _LOCALS + _PROFILES + _WORK_PROFILES
-_INPUT_NAMES = _COLUMNS + _EXTRAS + _PROFILES
-_SF_OUTPUTS = tuple(ruc.RucSurfaceTemperatureStep.__dataclass_fields__)
-_OUTPUT_NAMES = tuple(name for name in ruc.RucLandSurfaceStep.__dataclass_fields__
-                      if name != "ilnb")
 
 _SF_VALUES = {
     "soilm1d": "soilm1d", "ts1d": "tso1d", "smfrkeep": "smfrkeep",
@@ -110,7 +91,6 @@ _SF_VALUES = {
     "cn": "cn", "soilt1": "soilt1", "qvg": "qvg", "qsg": "qsg", "qcg": "qcg",
     "snom": "snom", "acsnow": "acsnow", **{n: n for n in ruc.RUC_DRIVER_STALE_LOCALS},
 }
-_SCRATCH_NAMES += ("seaice",)
 
 
 def _pinned(shape, dtype):
@@ -123,12 +103,12 @@ class _Workspace:
     def __init__(self, shape, nzs):
         self.shape, self.nzs = shape, nzs
         self.n = int(np.prod(shape))
-        profiles = set(_PROFILES + _WORK_PROFILES)
-        rows = sum(nzs if name in profiles else 1 for name in _SCRATCH_NAMES)
+        profiles = set(layout.DRIVER_PROFILES + layout.DRIVER_WORK_PROFILES)
+        rows = sum(nzs if name in profiles else 1 for name in layout.DRIVER_SCRATCH_NAMES)
         self.storage = cp.empty((rows, self.n), dtype=cp.float32)
         self.arrays = {}
         row = 0
-        for name in _SCRATCH_NAMES:
+        for name in layout.DRIVER_SCRATCH_NAMES:
             count = nzs if name in profiles else 1
             self.arrays[name] = (self.storage[row:row + count] if name in profiles
                                  else self.storage[row])
@@ -142,9 +122,9 @@ class _Workspace:
         self.flags = self.flag_slab[:_DRIVER_FLAG_SLOTS].view(cp.uint32)
         self.sflags = self.flag_slab[_DRIVER_FLAG_SLOTS:]
         self.sptr = cp.asarray(np.asarray([self.storage.data.ptr], dtype=np.uint64))
-        self.iptr = cp.empty(len(_INPUT_NAMES) + 2, dtype=cp.uint64)
-        self.optr = cp.empty(len(_SF_OUTPUTS), dtype=cp.uint64)
-        self.cptr = cp.empty(len(_INPUT_NAMES), dtype=cp.uint64)
+        self.iptr = cp.empty(len(layout.DRIVER_INPUT_NAMES) + 2, dtype=cp.uint64)
+        self.optr = cp.empty(len(layout.SFCTMP_OUTPUT_NAMES), dtype=cp.uint64)
+        self.cptr = cp.empty(len(layout.DRIVER_INPUT_NAMES), dtype=cp.uint64)
         self.ihost = _pinned(self.iptr.shape, np.uint64)
         self.ohost = _pinned(self.optr.shape, np.uint64)
         self.chost = _pinned(self.cptr.shape, np.uint64)
@@ -187,7 +167,7 @@ def _refusal(slab, params, sflags_key):
     if not (np.any(flags[:FLAG_WORDS])
             or np.any(swords[:ruc_gpu._SFCTMP_FLAG_WORDS])):
         return
-    admissions = _PROFILES + _COLUMNS
+    admissions = layout.DRIVER_PROFILES + layout.DRIVER_COLUMNS
     messages = [f"{name} must be finite" for name in admissions]
     vegetation = params.bundle.vegetation_for(params.dataset_identifier)
     messages += [f"RUC ivgtyp is outside 1..{len(vegetation.rows)} for {vegetation.name}",
@@ -206,7 +186,7 @@ def _refusal(slab, params, sflags_key):
         if int(flags[bit // 32]) & (1 << (bit % 32)):
             raise ValueError("RUC qsn temperatures must be finite" if bit == 1024
                              else "RUC qsn index expression overflows Fortran INT")
-    for index, name in enumerate(_OUTPUT_NAMES):
+    for index, name in enumerate(layout.DRIVER_OUTPUT_NAMES):
         bit = OUTPUT_FLAG_FIRST + index
         if int(flags[bit // 32]) & (1 << (bit % 32)):
             raise ValueError(f"RUC driver produced non-finite {name}")
@@ -298,21 +278,21 @@ def step(fields, atmosphere, *, params, precipitation, dt, itimestep,
                    "rainncv": precipitation.rain_nonconvective,
                    "snowncv": precipitation.snow_nonconvective,
                    "graupelncv": precipitation.graupel_nonconvective})
-    for name in _INPUT_NAMES:
+    for name in layout.DRIVER_INPUT_NAMES:
         if name not in values:
             values[name] = fields[name]
     _observe_driver(values, fields, params, timestep, itimestep,
                     mosaic_lu, mosaic_soil, lakemodel, irrigation, soilprop,
                     qvg_cold_start, snow)
     keep = []
-    for index, name in enumerate(_INPUT_NAMES):
+    for index, name in enumerate(layout.DRIVER_INPUT_NAMES):
         array = cp.ascontiguousarray(values[name], dtype=cp.float32)
-        expected = (nzs,) + shape if name in _PROFILES else shape
+        expected = (nzs,) + shape if name in layout.DRIVER_PROFILES else shape
         if array.shape != expected:
             raise ValueError(f"{name} shape {array.shape}; expected {expected}")
         keep.append(array)
         w.ihost[index] = array.data.ptr
-    for offset, name in enumerate(("ivgtyp", "isltyp"), len(_INPUT_NAMES)):
+    for offset, name in enumerate(("ivgtyp", "isltyp"), len(layout.DRIVER_INPUT_NAMES)):
         raw = cp.asarray(fields[name])
         if raw.shape != shape:
             raise ValueError(f"{name} shape {raw.shape}; expected {shape}")
@@ -384,7 +364,7 @@ def step(fields, atmosphere, *, params, precipitation, dt, itimestep,
     except Exception:
         _refusal(w.flag_slab.get(), params, sflags_key)
         raise
-    for index, name in enumerate(_SF_OUTPUTS):
+    for index, name in enumerate(layout.SFCTMP_OUTPUT_NAMES):
         w.ohost[index] = result[name].data.ptr
     w.optr.set(w.ohost, stream=stream)
     # The two power expressions stay on the host with their float32
@@ -407,13 +387,12 @@ def step(fields, atmosphere, *, params, precipitation, dt, itimestep,
                            np.int32(params.fractional_seaice)))
     targets = {argument: fields[name] for name, argument in RUC_STATE_BINDING.items()}
     targets.update({argument: fields[name] for name, argument in RUC_PROFILE_BINDING.items()})
-    targets.update({name: fields[name] for name in _EXTRAS})
+    targets.update({name: fields[name] for name in layout.DRIVER_EXTRAS})
     targets.update({name: fields["ruc_" + name] for name in ("infiltr", "smelt", "runoff1", "runoff2")})
     targets.update({name: fields[name] for name in ("t2", "th2", "q2")})
     # Commit has a fixed target order shared with the generated CUDA source.
     targets.update({name: fields[name] for name in ("albbck", "chs", "flhc", "flqc")})
-    target_names = ruc.RUC_DRIVER_COLUMN_STATE + ("albbck", "chs", "flhc", "flqc") + _EXTRAS + _PROFILES + (
-        "infiltr", "smelt", "runoff1", "runoff2", "t2", "th2", "q2")
+    target_names = layout.DRIVER_TARGET_NAMES
     if w.cptr.size != len(target_names):
         w.cptr = cp.empty(len(target_names), dtype=cp.uint64)
         w.chost = _pinned(w.cptr.shape, np.uint64)

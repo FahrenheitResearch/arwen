@@ -181,9 +181,11 @@ def _only(nodes, description):
 
 
 def _body_call(body, name):
+    # A direct statement: the bare call, or the call bound to one name (the
+    # spawn walk keeps each leg's executor report).
     return _only([
         statement.value for statement in body
-        if isinstance(statement, ast.Expr)
+        if isinstance(statement, (ast.Expr, ast.Assign))
         and isinstance(statement.value, ast.Call)
         and _same_expression(statement.value.func, name)
     ], f"expected one direct {name} call")
@@ -337,10 +339,14 @@ def test_both_spawn_capable_routes_either_stream_or_refuse_by_name():
     from gpuwm import prepared_domain_tree_forecast as tree
     from gpuwm import prepared_single_domain_forecast as single
 
-    for module in (tree, single):
-        src = inspect.getsource(module)
-        assert "refuse_unrouted_spawn" in src
-        assert "steppers_for_tree" in src
+    src = inspect.getsource(single)
+    assert "refuse_unrouted_spawn" in src
+    assert "steppers_for_tree" in src
+    # The prepared tree route spawns (docs/storm-nests.md) and adjudicates
+    # each newborn against the cold plan that priced it.
+    src = inspect.getsource(tree)
+    assert "steppers_for_tree" in src
+    assert "spawned_stepper_factory=_newborn_stepper" in src
 
 
 # ---------------------------------------------------------------------------

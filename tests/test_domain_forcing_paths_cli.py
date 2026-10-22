@@ -13,7 +13,10 @@ from gpuwm.cli import main
 from gpuwm.ingest import grib
 
 
-@pytest.mark.parametrize("kind", ["missing", "folder", "folder-by-glob"])
+@pytest.mark.parametrize('kind', [
+    pytest.param("missing", id='missing'),
+    pytest.param("folder-by-glob", id='folder-by-glob'),
+])
 def test_supplied_forcing_must_be_files(tmp_path, capsys, monkeypatch, kind):
     def never(*_args, **_kwargs):
         pytest.fail("the native inventory was reached with an unusable path")

@@ -9,6 +9,7 @@ use crate::raster::{geotiff::TiffReader, transform_points, Crs};
 use crate::types::{Field, FieldSet, Grid2};
 use std::collections::BTreeMap;
 use sha2::{Digest,Sha256};
+use rayon::prelude::*;
 
 const FIELD_NAMES:[&str;6]=["DZDXF","DZDYF","FXLAT","FXLONG","NFUEL_CAT","ZSF"];
 
@@ -23,6 +24,10 @@ pub struct FireStaticMetadata {
     pub fine_dx_m:f64,
     pub fine_dy_m:f64,
     pub source_sha256:BTreeMap<String,String>,
+    #[serde(default, skip_serializing_if="BTreeMap::is_empty")]
+    pub canopy_fields:BTreeMap<String,String>,
+    #[serde(default,skip_serializing_if="BTreeMap::is_empty")]
+    pub source_provenance:BTreeMap<String,serde_json::Value>,
     pub field_sha256:BTreeMap<String,String>,
     #[serde(default,skip_serializing_if="Option::is_none")]
     pub observed_initialization:Option<serde_json::Value>,
@@ -106,7 +111,7 @@ fn grid_location_matches(actual:&GridSpec,expected:&GridSpec) -> Result<bool> {
         && (y-expected.known_y).abs()<=1e-3)
 }
 
-fn field_digest(field:&Field) -> String {
+pub(crate) fn field_digest(field:&Field) -> String {
     let mut hash=Sha256::new();
     for value in field.data() {hash.update(value.to_le_bytes());}
     format!("{:x}",hash.finalize())
@@ -114,12 +119,16 @@ fn field_digest(field:&Field) -> String {
 
 fn metadata(request:&FireStaticRequest,fields:&FieldSet) -> FireStaticMetadata {
     let (_,ny,nx)=fields.fields["ZSF"].dims();
+    let table=crate::landfire::contract();
+    let mut source_sha256:BTreeMap<String,String>=[("terrain".into(),request.terrain.raster.sha256.clone()),
+        ("fuel".into(),request.fuel.raster.sha256.clone())].into();
+    source_sha256.extend(request.canopy.iter().map(|(name,source)|(name.clone(),source.raster.sha256.clone())));
     FireStaticMetadata {schema:"gpuwm-sfire-static-bundle-v1".into(),grid_spec:request.grid_spec.clone(),
         sr_x:request.sr_x,sr_y:request.sr_y,fine_shape:[ny,nx],
         fine_dx_m:((request.grid_spec.dx as f32)/(request.sr_x as f32)) as f64,
         fine_dy_m:((request.grid_spec.dy as f32)/(request.sr_y as f32)) as f64,
-        source_sha256:[("terrain".into(),request.terrain.raster.sha256.clone()),
-            ("fuel".into(),request.fuel.raster.sha256.clone())].into(),
+        source_sha256,source_provenance:request.source_provenance.clone(),
+        canopy_fields:request.canopy.keys().map(|name|(name.clone(),table[name].units.clone())).collect(),
         observed_initialization:fields.coverage_reports.get("SFIRE_OBSERVED").and_then(|text|serde_json::from_str(text).ok()),
         field_sha256:fields.fields.iter().map(|(name,field)|(name.clone(),field_digest(field))).collect()}
 }
@@ -143,6 +152,10 @@ pub struct FireStaticRequest {
     pub terrain: FireRasterSpec,
     pub fuel: FireRasterSpec,
     #[serde(default)]
+    pub canopy:BTreeMap<String,FireRasterSpec>,
+    #[serde(default)]
+    pub source_provenance:BTreeMap<String,serde_json::Value>,
+    #[serde(default)]
     pub observed_perimeter:Option<FirePerimeterRequest>,
     #[serde(default)]
     pub output: Option<std::path::PathBuf>,
@@ -165,10 +178,10 @@ pub struct FirePerimeterRequest {
     pub output:Option<std::path::PathBuf>,
 }
 
-type FireRing=Vec<[f64;2]>;
-type FirePolygon=Vec<FireRing>;
+pub(crate) type FireRing=Vec<[f64;2]>;
+pub(crate) type FirePolygon=Vec<FireRing>;
 
-fn perimeter_rings(geometry:&serde_json::Value,grid:&ProjectedGrid) -> Result<Vec<FirePolygon>> {
+pub(crate) fn perimeter_rings(geometry:&serde_json::Value,grid:&ProjectedGrid) -> Result<Vec<FirePolygon>> {
     use serde_json::Value;
     let ring=|v:&Value|->Result<FireRing> {
         let points=v.as_array().ok_or_else(||invalid("Observed fire ring is not an array"))?;
@@ -212,18 +225,23 @@ fn in_ring(point:[f64;2],ring:&FireRing) -> bool {
     inside
 }
 
-fn perimeter_distance(point:[f64;2],polygons:&[FirePolygon]) -> f64 {
-    let inside=polygons.iter().any(|poly|in_ring(point,&poly[0]) && !poly[1..].iter().any(|ring|in_ring(point,ring)));
-    let mut distance=f64::INFINITY;
-    for ring in polygons.iter().flatten() {
-        for pair in ring.windows(2) {
-            let a=pair[0];let b=pair[1];let dx=b[0]-a[0];let dy=b[1]-a[1];
-            let length2=dx*dx+dy*dy;
-            let fraction=if length2==0. {0.} else {((point[0]-a[0])*dx+(point[1]-a[1])*dy)/length2}.clamp(0.,1.);
-            distance=distance.min((point[0]-a[0]-fraction*dx).hypot(point[1]-a[1]-fraction*dy));
+pub(crate) fn perimeter_distance(point:[f64;2],polygons:&[FirePolygon]) -> f64 {
+    // The minimum of each polygon's signed function represents their union.
+    // Taking unsigned distances first introduces false zero contours where
+    // overlapping hotspot footprints have an internal ring boundary.
+    polygons.iter().map(|poly| {
+        let inside=in_ring(point,&poly[0]) && !poly[1..].iter().any(|ring|in_ring(point,ring));
+        let mut distance=f64::INFINITY;
+        for ring in poly {
+            for pair in ring.windows(2) {
+                let a=pair[0];let b=pair[1];let dx=b[0]-a[0];let dy=b[1]-a[1];
+                let length2=dx*dx+dy*dy;
+                let fraction=if length2==0. {0.} else {((point[0]-a[0])*dx+(point[1]-a[1])*dy)/length2}.clamp(0.,1.);
+                distance=distance.min((point[0]-a[0]-fraction*dx).hypot(point[1]-a[1]-fraction*dy));
+            }
         }
-    }
-    if inside {-distance} else {distance}
+        if inside {-distance} else {distance}
+    }).fold(f64::INFINITY,f64::min)
 }
 
 /// Native source validation, coordinate transform and signed-distance raster.
@@ -257,13 +275,16 @@ pub fn observed_perimeter(request:&FirePerimeterRequest) -> Result<FieldSet> {
     let dy=(request.grid_spec.dy as f32/request.sr_y as f32) as f64;
     let mut lfn=Grid2::filled(ny,nx,0.);let mut tign=Grid2::filled(ny,nx,1.0e10);
     let ignition=request.model_elapsed_seconds-request.assumed_burn_age_seconds;
-    let mut burnt=0_usize;
-    for j in 0..ny {for i in 0..nx {
-        let distance=perimeter_distance([(i as f64+0.5)*dx,(j as f64+0.5)*dy],&polygons);
-        if !distance.is_finite() {return Err(invalid("Observed fire signed distance is nonfinite"));}
-        lfn.set(j,i,distance);
-        if distance<=0. {tign.set(j,i,ignition);burnt+=1;}
-    }}
+    use rayon::prelude::*;
+    lfn.data.par_iter_mut().zip(tign.data.par_iter_mut()).enumerate()
+        .try_for_each(|(p,(level,time))| -> Result<()> {
+            let distance=perimeter_distance([((p%nx) as f64+0.5)*dx,((p/nx) as f64+0.5)*dy],&polygons);
+            if !distance.is_finite() {return Err(invalid("Observed fire signed distance is nonfinite"));}
+            *level=distance;
+            if distance<=0. {*time=ignition;}
+            Ok(())
+        })?;
+    let burnt=lfn.data.par_iter().filter(|v|**v<=0.).count();
     if burnt==0 || burnt==nx*ny {return Err(invalid("Observed perimeter must contain burned and unburned cells within this fire grid"));}
     let mut fields=FieldSet {fields:[("LFN_HIST".into(),Field::Plane(lfn)),("HISTORICAL_TIGN".into(),Field::Plane(tign))].into(),..Default::default()};
     let metadata=json!({"schema":"gpuwm-sfire-observed-initialization-v1","source_sha256":digest,
@@ -283,7 +304,7 @@ fn invalid(message: impl Into<String>) -> StaticError {
     StaticError::Invalid(message.into())
 }
 
-fn coordinates(spec: &GridSpec, sr_x: usize, sr_y: usize, halo: usize)
+pub(crate) fn coordinates(spec: &GridSpec, sr_x: usize, sr_y: usize, halo: usize)
     -> Result<(Grid2, Grid2)> {
     if sr_x == 0 || sr_y == 0 || spec.e_we < 2 || spec.e_sn < 2 {
         return Err(invalid("SFIRE grid needs positive refinement and nonempty atmospheric cells"));
@@ -329,8 +350,12 @@ pub fn coverage_bounds(bounds:[f64;4],resolution:f64) -> Result<[f64;4]> {
 /// Project an acquisition envelope into the route's declared source CRS and
 /// snap it to native pixel edges before asking the coverage service.
 pub fn projected_coverage_bounds(bounds:[f64;4],resolution:f64,source_crs:&str,pixel_edge_offset:f64) -> Result<[f64;4]> {
+    projected_coverage_bounds_offsets(bounds,resolution,source_crs,[pixel_edge_offset;2])
+}
+
+pub fn projected_coverage_bounds_offsets(bounds:[f64;4],resolution:f64,source_crs:&str,pixel_edge_offset:[f64;2]) -> Result<[f64;4]> {
     if !resolution.is_finite() || resolution<=0. || bounds.iter().any(|v|!v.is_finite())
-        || bounds[0]>=bounds[2] || bounds[1]>=bounds[3] || !pixel_edge_offset.is_finite() {
+        || bounds[0]>=bounds[2] || bounds[1]>=bounds[3] || pixel_edge_offset.iter().any(|v|!v.is_finite()) {
         return Err(invalid("SFIRE coverage bounds need a finite geographic rectangle and positive source resolution"));
     }
     let crs=if source_crs.eq_ignore_ascii_case("EPSG:5070") {
@@ -348,9 +373,9 @@ pub fn projected_coverage_bounds(bounds:[f64;4],resolution:f64,source_crs:&str,p
     }
     let min=|v:&[f64]|v.iter().copied().fold(f64::INFINITY,f64::min);
     let max=|v:&[f64]|v.iter().copied().fold(f64::NEG_INFINITY,f64::max);
-    let lo=|value:f64| ((value-pixel_edge_offset)/resolution).floor()*resolution+pixel_edge_offset-2.*resolution;
-    let hi=|value:f64| ((value-pixel_edge_offset)/resolution).ceil()*resolution+pixel_edge_offset+2.*resolution;
-    Ok([lo(min(&x)),lo(min(&y)),hi(max(&x)),hi(max(&y))])
+    let lo=|value:f64,offset:f64| ((value-offset)/resolution).floor()*resolution+offset-2.*resolution;
+    let hi=|value:f64,offset:f64| ((value-offset)/resolution).ceil()*resolution+offset+2.*resolution;
+    Ok([lo(min(&x),pixel_edge_offset[0]),lo(min(&y),pixel_edge_offset[1]),hi(max(&x),pixel_edge_offset[0]),hi(max(&y),pixel_edge_offset[1])])
 }
 
 /// WPS geogrid four_pt arithmetic in REAL precision. Pixel fractions are
@@ -414,7 +439,7 @@ fn sample(source: &FireRasterSpec,lat:&Grid2,lon:&Grid2,bilinear:bool,allow_miss
     let width=cmax as usize-c0+1;let height=rmax as usize-r0+1;
     let raster=reader.read_window(c0,r0,width,height,Some(crs),bound.nodata_override,bound.scale_factor)?;
     let mut out=Grid2::filled(lat.ny,lat.nx,f64::NAN);
-    for p in 0..out.data.len() {
+    out.data.par_iter_mut().enumerate().try_for_each(|(p,out_value)| -> Result<()> {
         let c=cols[p]-c0 as f64-shift;let r=rows[p]-r0 as f64-shift;
         let i=c.floor() as usize;let j=r.floor() as usize;
         let value=if bilinear {
@@ -427,8 +452,9 @@ fn sample(source: &FireRasterSpec,lat:&Grid2,lon:&Grid2,bilinear:bool,allow_miss
         if !value.is_finite() && !allow_missing {
             return Err(invalid(format!("SFIRE {} source has missing data at fine-grid cell {}",if bilinear {"terrain"} else {"fuel"},p)));
         }
-        out.data[p]=value;
-    }
+        *out_value=value;
+        Ok(())
+    })?;
     Ok(out)
 }
 
@@ -500,6 +526,22 @@ pub fn build(request:&FireStaticRequest) -> Result<FieldSet> {
     for (name,field) in [("ZSF",zsf),("DZDXF",gx),("DZDYF",gy),("NFUEL_CAT",fuel),("FXLAT",lat),("FXLONG",lon)] {
         fields.fields.insert(name.to_string(),Field::Plane(field));
     }
+    crate::landfire::validate_names(request.canopy.keys().map(String::as_str))?;
+    // The four independent public rasters use nearest pixels, preserving the
+    // published class midpoints rather than inventing intermediate canopies.
+    let latitude=match &fields.fields["FXLAT"] {Field::Plane(v)=>v,_=>unreachable!()};
+    let longitude=match &fields.fields["FXLONG"] {Field::Plane(v)=>v,_=>unreachable!()};
+    let canopy:Result<Vec<_>>=request.canopy.par_iter().map(|(name,source)| {
+        let mut plane=sample(source,latitude,longitude,false,true)?;
+        for (i,value) in plane.data.iter_mut().enumerate() {
+            // Only captured water cells may replace missing canopy by zero.
+            // A LANDFIRE non-forested pixel is already an explicit zero.
+            if !value.is_finite() && fields.fields["NFUEL_CAT"].data()[i]==98. {*value=0.;}
+        }
+        Ok((name.clone(),Field::Plane(plane)))
+    }).collect();
+    fields.fields.extend(canopy?);
+    crate::landfire::validate_fields(&fields)?;
     if let Some(perimeter)=&request.observed_perimeter {
         if perimeter.sr_x!=request.sr_x || perimeter.sr_y!=request.sr_y
             || serde_json::to_value(&perimeter.grid_spec).unwrap()!=serde_json::to_value(&request.grid_spec).unwrap() {
@@ -575,7 +617,7 @@ fn read_plane(bytes:&[u8],ny:usize,nx:usize,name:&str) -> Result<Field> {
     Ok(Field::Plane(Grid2 {ny,nx,data:values}))
 }
 
-/// Restore six fields word for word, with their portable mesh metadata.
+/// Restore static fields word for word, with their portable mesh metadata.
 pub fn load(request:&FireStaticLoadRequest) -> Result<(FieldSet,FireStaticMetadata)> {
     let bytes=std::fs::read(&request.path)?;
     if let Some(expected)=&request.expected_sha256 {
@@ -603,6 +645,12 @@ pub fn load(request:&FireStaticLoadRequest) -> Result<(FieldSet,FireStaticMetada
     }
     ProjectedGrid::new(spec.clone())?;
     let mut names=FIELD_NAMES.to_vec();
+    crate::landfire::validate_names(metadata.canopy_fields.keys().map(String::as_str))?;
+    let table=crate::landfire::contract();
+    for (name,units) in &metadata.canopy_fields {
+        if *units!=table[name].units {return Err(invalid(format!("SFIRE {name} units differ from the canopy contract")));}
+        names.push(name.as_str());
+    }
     if let Some(observed)=&metadata.observed_initialization {
         use serde_json::Value;
         let hash=observed.get("source_sha256").and_then(Value::as_str).unwrap_or("");
@@ -617,9 +665,10 @@ pub fn load(request:&FireStaticLoadRequest) -> Result<(FieldSet,FireStaticMetada
         names.extend(["LFN_HIST","HISTORICAL_TIGN"]);
     }
     if members.len()!=names.len()+1 || metadata.field_sha256.len()!=names.len() {
-        return Err(invalid("SFIRE bundle requires six static fields and the declared optional observed-perimeter pair"));
+        return Err(invalid("SFIRE bundle requires six base fields, the declared canopy set and the declared optional observed-perimeter pair"));
     }
-    if metadata.source_sha256.len()!=2 || ["terrain","fuel"].iter().any(|name|
+    let source_names:Vec<&str>=["terrain","fuel"].into_iter().chain(metadata.canopy_fields.keys().map(String::as_str)).collect();
+    if metadata.source_sha256.len()!=source_names.len() || source_names.iter().any(|name|
         metadata.source_sha256.get(*name).is_none_or(|hash|hash.len()!=64 || !hash.bytes().all(|v|v.is_ascii_hexdigit()))) {
         return Err(invalid("SFIRE bundle requires its captured terrain and fuel source hashes"));
     }
@@ -629,6 +678,7 @@ pub fn load(request:&FireStaticLoadRequest) -> Result<(FieldSet,FireStaticMetada
         if metadata.field_sha256.get(name)!=Some(&field_digest(&field)) {return Err(invalid(format!("SFIRE {name} words differ from the sealed field hash")));}
         fields.fields.insert(name.into(),field);
     }
+    crate::landfire::validate_fields(&fields)?;
     if fields.fields["NFUEL_CAT"].data().iter().any(|value|!fuel_code(*value)) {return Err(invalid("SFIRE bundle contains unmapped fuel categories"));}
     if fields.fields["FXLAT"].data().iter().any(|v|!(-90.0..=90.0).contains(v))
         || fields.fields["FXLONG"].data().iter().any(|v|!(-180.0..=180.0).contains(v)) {return Err(invalid("SFIRE bundle coordinates leave geographic ranges"));}
@@ -777,6 +827,16 @@ mod tests {
         let native=projected_coverage_bounds([-123.,38.,-122.,39.],30.,"EPSG:5070",15.).unwrap();
         assert!(native.iter().all(|value|((value-15.)/30.).fract()==0.));
         assert!(native[0]<native[2] && native[1]<native[3]);
+        let islands=projected_coverage_bounds_offsets([-156.8,20.8,-156.5,21.],30.,"ESRI:102007",[15.,3.]).unwrap();
+        assert!([islands[0],islands[2]].iter().all(|v|((v-15.)/30.).fract()==0.));
+        assert!([islands[1],islands[3]].iter().all(|v|((v-3.)/30.).fract()==0.));
+        for id in ["EPSG:3338","ESRI:102007"] {
+            let crs=Crs::parse_override(id).unwrap();
+            let (lat,lon)=match &crs {Crs::AlbersConusNad83 {lat_0,lon_0,..}=>(*lat_0,*lon_0),_=>unreachable!()};
+            let mut x=vec![lon];let mut y=vec![lat];
+            transform_points(&Crs::Geographic,&crs,&mut x,&mut y).unwrap();
+            assert!(x[0].abs()<1e-7 && y[0].abs()<1e-7);
+        }
     }
     #[test]
     fn independent_refinement_stays_centered_on_atmospheric_cells() {
@@ -818,7 +878,7 @@ mod tests {
             e_we:3,e_sn:3,known_x:1.,known_y:1.,moad_cen_lat:0.,moad_cen_lon:0.,
             lat_deg:vec![],lon0_deg:0.,dlon_deg:0.};
         let request=FireStaticRequest {grid_spec:spec,sr_x:4,sr_y:2,
-            terrain:bound(&terrain_path),fuel:bound(&fuel_path),observed_perimeter:None,output:Some(output.clone())};
+            terrain:bound(&terrain_path),fuel:bound(&fuel_path),canopy:BTreeMap::new(),source_provenance:BTreeMap::new(),observed_perimeter:None,output:Some(output.clone())};
         let fields=build(&request).unwrap();
         assert_eq!(fields.fields.len(),6);
         for (name,expected) in [("DZDXF",0.1),("DZDYF",0.2),("NFUEL_CAT",201.)] {
@@ -831,6 +891,38 @@ mod tests {
         let (restored,meta)=load(&load_request).unwrap();
         assert_eq!(meta.fine_shape,[4,8]);assert_eq!((meta.sr_x,meta.sr_y),(4,2));
         for name in FIELD_NAMES {assert_eq!(fields.fields[name].data(),restored.fields[name].data());}
+        let mut canopy_request=request.clone();
+        canopy_request.source_provenance.insert("terrain".into(),serde_json::json!({"license":"US-PD","attribution":"source notice"}));
+        let mut canopy_paths=Vec::new();
+        for (name,encoded,scale,expected) in [("CANOPY_COVER",65.,0.01,0.65),("CANOPY_HEIGHT",110.,0.1,11.),("CANOPY_BASE_HEIGHT",25.,0.1,2.5),("CANOPY_BULK_DENSITY",14.,0.01,0.14)] {
+            let path=folder.join(format!("{name}.tif"));
+            let mut raster=terrain.clone();raster.values.fill(encoded);
+            geotiff::write_band1(&path,&raster,SampleType::I16,Some(-9999.)).unwrap();
+            let mut source=bound(&path);source.raster.scale_factor=scale;
+            canopy_request.canopy.insert(name.into(),source);
+            canopy_paths.push((path,expected));
+        }
+        let canopy_fields=build(&canopy_request).unwrap();
+        let (loaded,canopy_meta)=load(&FireStaticLoadRequest {path:output.clone(),expected_sha256:None,expected_grid_spec:None}).unwrap();
+        assert_eq!(canopy_meta.source_provenance,canopy_request.source_provenance);
+        assert_eq!(canopy_meta.canopy_fields.len(),4);assert_eq!(canopy_meta.source_sha256.len(),6);
+        for (path,expected) in &canopy_paths {
+            let name=path.file_stem().unwrap().to_str().unwrap();
+            assert!(canopy_fields.fields[name].data().iter().all(|v|(*v-*expected).abs()<1e-7));
+            assert_eq!(canopy_fields.fields[name].data(),loaded.fields[name].data());
+        }
+        let mut partial=canopy_request.clone();partial.canopy.remove("CANOPY_COVER");
+        assert!(build(&partial).unwrap_err().to_string().contains("complete"));
+        let mut invalid_canopy=terrain.clone();invalid_canopy.values.fill(-9999.);
+        let path=&canopy_paths[0].0;
+        geotiff::write_band1(path,&invalid_canopy,SampleType::I16,Some(-9999.)).unwrap();
+        canopy_request.canopy.get_mut("CANOPY_COVER").unwrap().raster.sha256=crate::highres::sha256_file(path).unwrap();
+        assert!(build(&canopy_request).unwrap_err().to_string().contains("CANOPY_COVER"));
+        for (path,_) in canopy_paths {
+            println!("deleted owned test artifact {} bytes {}",path.display(),std::fs::metadata(&path).unwrap().len());
+            std::fs::remove_file(path).unwrap();
+        }
+        build(&request).unwrap();
         let mut expected=request.grid_spec.clone();expected.ref_lon+=0.01;
         let location=FireStaticLoadRequest {path:output.clone(),expected_sha256:None,expected_grid_spec:Some(expected)};
         assert!(load(&location).unwrap_err().to_string().contains("location or projection"));

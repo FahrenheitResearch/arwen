@@ -68,3 +68,93 @@ def annotate(plan, receipt, *, layout_guard=False):
     finally:
         cp.asarray,cp.asnumpy,mynn_pbl_gpu._flag_mask=old_array,old_numpy,old_mask
         mynn_pbl_runtime._flag_mask=old_runtime_mask
+
+
+def inventory(state):
+ import cupy as cp
+ seen=set();arrays={}
+ def visit(value,label):
+  if id(value) in seen:return
+  seen.add(id(value))
+  if isinstance(value,cp.ndarray):
+   key=(value.data.ptr,value.shape,value.strides,value.dtype.str)
+   arrays.setdefault(key,{'label':label,'array':value});return
+  if isinstance(value,dict):
+   for name,item in value.items():visit(item,label+'.'+str(name))
+  elif isinstance(value,(list,tuple)):
+   for i,item in enumerate(value):visit(item,label+f'[{i}]')
+  elif type(value).__module__.startswith('gpuwm.') and hasattr(value,'__dict__'):
+   for name,item in vars(value).items():visit(item,label+'.'+name)
+ visit(state,'state')
+ return arrays
+
+def host_inventory(state):
+ import cupy as cp
+ import numpy as np
+ seen=set();values={}
+ def visit(value,label):
+  if isinstance(value,(bool,int,float,str,type(None))):
+   values[label]=value;return
+  if id(value) in seen:return
+  seen.add(id(value))
+  if isinstance(value,(cp.ndarray,np.ndarray)):return
+  if isinstance(value,dict):
+   for k,v in value.items():visit(v,label+'.'+str(k))
+  elif isinstance(value,(list,tuple)):
+   for i,v in enumerate(value):visit(v,label+f'[{i}]')
+  elif type(value).__module__.startswith('gpuwm.') and hasattr(value,'__dict__'):
+   for k,v in vars(value).items():visit(v,label+'.'+k)
+ visit(state,'state');return values
+
+def phase(state,cfg,kwargs):
+    import numpy as np
+    from gpuwm.core.physics import _physics_interval_steps, _radiation_step_due, _surface_pbl_step_due
+    physics=state.physics
+    epoch=float(getattr(state,'domain_start_offset',0.0) or 0.0)
+    itimestep=int(np.floor((state.elapsed_seconds-epoch)/cfg.dt+0.5))+1
+    assert all(getattr(physics,name,None) is None for name in ('radiation_due_override','surface_pbl_due_override','cumulus_due_override'))
+    assert not cfg.cu_physics and physics.fire is None and getattr(state,'chem',None) is None
+    return (_radiation_step_due(itimestep,_physics_interval_steps(physics.radt_minutes,cfg.dt),physics.radt_minutes),
+            _surface_pbl_step_due(itimestep,physics.stepbl,cfg.bldt,None),tuple(sorted(kwargs.items())))
+
+def finish_trajectory(states,receipt,complete):
+    import cupy as cp
+    import numpy as np
+    import hashlib
+    cp.cuda.get_current_stream().synchronize()
+    receipt['final']=[]
+    for key,state in states.items():
+        rows=[]
+        arrays=inventory(state)
+        addresses={}
+        for item in arrays.values():addresses.setdefault(item['array'].data.ptr,[]).append(item['label'])
+        def pointer(value):
+            value=int(value)
+            if value==0:return None
+            assert value in addresses,('unresolved device address',value)
+            return sorted(addresses[value])
+        for entry in arrays.values():
+            x=cp.asnumpy(entry['array'])
+            row={'name':entry['label'],'shape':list(x.shape),'dtype':x.dtype.str,'words':int(x.size),'sha256':hashlib.sha256(x.tobytes()).hexdigest()}
+            if entry['label'] in ('state._scratch.integration_health_field_ptr','state._scratch.integration_health_aux_ptr'):
+                row['pointer_targets']=[pointer(v) for v in x.view(np.uint64)]
+            rows.append(row)
+        host=host_inventory(state)
+        for name,value in list(host.items()):
+            if any(name.startswith('state.'+prefix+'[0]') for prefix in ('_rk_copy_launch','_rk_zero_launch','_glue_add_launch')) and name.endswith('[0]'):
+                host[name]={'pointer_target':pointer(value)}
+        receipt['final'].append({'shape':list(key),'arrays':rows,'host':host})
+    raise complete()
+
+from contextlib import ExitStack
+from whole_health_annotations import annotate_health
+from validator_annotations import annotate_descriptors
+
+@contextmanager
+def contexts(plan,objects,receipt,live):
+ with ExitStack() as stack:
+  stack.enter_context(plan.record(objects))
+  stack.enter_context(annotate(plan,receipt.setdefault('annotations',[]),layout_guard=True))
+  stack.enter_context(annotate_health(plan,receipt.setdefault('health_annotations',[]),step_label=lambda gid,n:live['step_numbers'].get(gid,n)))
+  stack.enter_context(annotate_descriptors(plan,receipt['health_annotations']))
+  yield

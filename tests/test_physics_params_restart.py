@@ -2,20 +2,12 @@
 from dataclasses import asdict, replace
 import json
 
-import pytest
-
 from gpuwm import experiment, physics_params as pp
 from gpuwm.core.model import restart_identity_payload
 from gpuwm.io.restart import configuration_echo
-from test_physics_params import _EXPERIMENT, _build
-
-
-@pytest.fixture(autouse=True)
-def fresh_binding(monkeypatch):
-    monkeypatch.delenv(pp.ENV_VAR, raising=False)
-    pp.reset_for_tests()
-    yield
-    pp.reset_for_tests()
+from test_physics_params import (
+    _EXPERIMENT, _build, _fresh_process_binding as fresh_binding,
+)
 
 
 def _bytes(document):

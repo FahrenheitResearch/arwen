@@ -432,6 +432,16 @@ def test_the_prepared_cache_identity_needs_no_scheme_entry():
     # identity that reads neither, by the rule every run document applies.
     from gpuwm.config import drop_inactive_radiation_port_keys
     drop_inactive_radiation_port_keys(expected_run)
+    # The 2.9.4 capabilities campaign (lane/cap-*) leaves the identity by
+    # the checkpoint echo's rule (drop_capability_campaign_keys): the
+    # HAILCAST selectors, the ocean door and the lake-state analysis at
+    # their defaults.
+    from gpuwm.checkpoint_identity import drop_capability_campaign_keys
+    drop_capability_campaign_keys(expected_run)
+    # lane/hrrr-v4-output's controls leave it off, by the document's rule
+    # (drop_default_output_controls).
+    from gpuwm.checkpoint_identity import drop_default_output_controls
+    drop_default_output_controls(expected_run)
     neutral = {"surface_energy_diag": False, "cycling": False,
                "ruc_irrigation": "wrf_461", "ruc_qvg_cold_start": "wrf",
                "ruc_2m_diagnostic": "flux", "ruc_snow": "wrf_461",
@@ -452,7 +462,13 @@ def test_the_prepared_cache_identity_needs_no_scheme_entry():
                "urban_table_dir": "",
                # 2.9.1: the ocean mixed layer off leaves the identity.
                "sf_ocean_physics": 0, "oml_hml0": 50.0, "oml_gamma": 0.14,
-               "oml_relaxation_time": 0.0}
+               "oml_relaxation_time": 0.0,
+               # 2.9.4: lane/cap-eclipse at its default-on shadow and
+               # lane/cap-slab-ocean's PWP controls with the ocean off.
+               "ra_sw_eclipse": 1, "ocean_levels": 30, "ocean_analysis": "",
+               "ocean_analysis_source": "rtofs",
+               "ocean_mld_climatology": "woa18", "omdt": 1.0,
+               "ocean_z": (), "ocean_t": (), "ocean_s": ()}
     for name, default in neutral.items():
         assert expected_run.pop(name) == default
     # 2.9.0 correct mode (gpuwm/correct_mode.py): a key leaves the document

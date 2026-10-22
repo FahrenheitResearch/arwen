@@ -810,7 +810,7 @@ acceleration).  The fix is the standard implicit surface-stress
 bottom boundary condition, exactly YSU's pattern (authority
 ``npref.np_ysu_column``: ``fric = ust*ust/wspd1 * rho*G/delp[0]*dt2
 ...; diag[0] = 1.0 + fric`` -- npref.py:6495-6497, transcribing WRF
-bl_ysu tridi's implicit surface stress; kernels/ysu.cu:493-496 is the
+bl_ysu tridi's implicit surface stress; kernels/ysu_default.cu:772-774 is the
 device twin):
 
     tau      = u*^2 * (u1, v1)/|V1|          [surface kinematic stress]

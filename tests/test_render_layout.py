@@ -54,6 +54,8 @@ def _frame(seed: int) -> dict:
         "V10": rng.uniform(-10.0, 10.0, (_NY, _NX)).astype(np.float32),
         "RAINC": rng.uniform(0.0, 5.0, (_NY, _NX)).astype(np.float32),
         "RAINNC": rng.uniform(0.0, 30.0, (_NY, _NX)).astype(np.float32),
+        # TOA outgoing longwave, the range a frame with cold cloud tops
+        # over a warm surface actually spans (W m-2).
         "OLR": rng.uniform(90.0, 320.0, (_NY, _NX)).astype(np.float32),
         "XLAT": lat.astype(np.float32),
         "XLONG": lon.astype(np.float32),
@@ -61,6 +63,51 @@ def _frame(seed: int) -> dict:
         "SINALPHA": np.zeros((_NY, _NX), np.float32),
         "COSALPHA": np.ones((_NY, _NX), np.float32),
     }
+
+
+class _RendererResult:
+    returncode = 0
+    stderr = ""
+
+    def __init__(self, stdout: str):
+        self.stdout = stdout
+
+
+def _stub_flat_renderer(monkeypatch, tmp_path, names):
+    import subprocess
+
+    from gpuwm import render as render_module
+
+    def fake_run(command, **kwargs):
+        out_dir = Path(command[command.index("--out-dir") + 1])
+        out_dir.mkdir(parents=True, exist_ok=True)
+        lines = []
+        for name in names:
+            (out_dir / name).write_bytes(b"PNG")
+            lines.append(f"RENDERED slug {out_dir / name}")
+        return _RendererResult("\n".join(lines) + "\n")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(render_module, "renderer_refusal", lambda _r: None)
+    monkeypatch.setattr("gpuwm.rustwx.find_renderer",
+                        lambda: tmp_path / "rw_wrfbatch")
+
+
+def _early_runner(relative):
+    def fake_runner(command):
+        scratch = Path(command[command.index("--out") + 1])
+        target = scratch / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"PNG-bytes")
+
+        class Completed:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return Completed()
+
+    return fake_runner
 
 
 def _write_wrfout(path: Path, *, dx: float = 1000.0) -> Path:
@@ -128,25 +175,8 @@ def test_the_valid_day_is_read_from_every_stamp_spelling():
     assert render_layout.valid_day("not-a-time") is None
 
 
-def test_the_path_is_a_pure_function_of_domain_product_and_day():
-    """Predictable without globbing -- the whole point of documenting it."""
-
-    root = Path("out") / "case"
-    assert render_layout.place(
-        root, domain="d04-100m", product="refl", day="2026-05-20",
-        filename="refl_d04-100m_2026-05-20_18-00-00.png",
-    ) == (root / "d04-100m" / "refl" / "2026-05-20"
-          / "refl_d04-100m_2026-05-20_18-00-00.png")
-
-
-def test_an_unreadable_valid_time_gets_a_named_bucket_not_the_root():
-    """A file whose day cannot be read still has ONE predictable home."""
-
-    root = Path("out") / "case"
-    assert render_layout.place(
-        root, domain="native_grid", product="t2", day=None,
-        filename="t2.png",
-    ) == root / "native_grid" / "t2" / render_layout.UNDATED / "t2.png"
+def test_nested_is_the_default():
+    assert render_layout.DEFAULT_LAYOUT == render_layout.NESTED
 
 
 def test_flat_is_the_v241_spelling_exactly():
@@ -159,8 +189,25 @@ def test_flat_is_the_v241_spelling_exactly():
     ) == root / "refl_d02-3km_x.png"
 
 
-def test_nested_is_the_default():
-    assert render_layout.DEFAULT_LAYOUT == render_layout.NESTED
+def test_an_unreadable_valid_time_gets_a_named_bucket_not_the_root():
+    """A file whose day cannot be read still has ONE predictable home."""
+
+    root = Path("out") / "case"
+    assert render_layout.place(
+        root, domain="native_grid", product="t2", day=None,
+        filename="t2.png",
+    ) == root / "native_grid" / "t2" / render_layout.UNDATED / "t2.png"
+
+
+def test_the_path_is_a_pure_function_of_domain_product_and_day():
+    """Predictable without globbing -- the whole point of documenting it."""
+
+    root = Path("out") / "case"
+    assert render_layout.place(
+        root, domain="d04-100m", product="refl", day="2026-05-20",
+        filename="refl_d04-100m_2026-05-20_18-00-00.png",
+    ) == (root / "d04-100m" / "refl" / "2026-05-20"
+          / "refl_d04-100m_2026-05-20_18-00-00.png")
 
 
 # -- the matplotlib engine --------------------------------------------
@@ -428,8 +475,6 @@ def test_the_rust_engine_output_is_relocated_into_the_layout(monkeypatch,
     tests are: what is under test is the placement, not the drawing.
     """
 
-    import subprocess
-
     from gpuwm import render as render_module
 
     wrfout = _write_wrfout(tmp_path / "wrfout_d02_1974-04-03_18-00-00.nc",
@@ -441,26 +486,7 @@ def test_the_rust_engine_output_is_relocated_into_the_layout(monkeypatch,
         "rustwx_wrf_19740403_18z_f000_d02-3km_2m_temperature.png",
     )
 
-    class Result:
-        returncode = 0
-        stderr = ""
-
-        def __init__(self, stdout: str):
-            self.stdout = stdout
-
-    def fake_run(command, **kwargs):
-        out_dir = Path(command[command.index("--out-dir") + 1])
-        out_dir.mkdir(parents=True, exist_ok=True)
-        lines = []
-        for name in names:
-            (out_dir / name).write_bytes(b"PNG")
-            lines.append(f"RENDERED slug {out_dir / name}")
-        return Result("\n".join(lines) + "\n")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    monkeypatch.setattr(render_module, "renderer_refusal", lambda _r: None)
-    monkeypatch.setattr("gpuwm.rustwx.find_renderer",
-                        lambda: tmp_path / "rw_wrfbatch")
+    _stub_flat_renderer(monkeypatch, tmp_path, names)
 
     written, failures, skipped = render_module.render_wrfouts_rust(
         [wrfout], products="all", timeidx=None, outdir=out,
@@ -492,8 +518,6 @@ def test_a_06z_case_is_filed_nested_not_silently_left_flat(monkeypatch,
     printed ``layout nested``.
     """
 
-    import subprocess
-
     from gpuwm import render as render_module
 
     wrfout = _write_wrfout(tmp_path / "wrfout_d02_2026-04-16_06-00-00.nc",
@@ -505,26 +529,7 @@ def test_a_06z_case_is_filed_nested_not_silently_left_flat(monkeypatch,
         "rustwx_wrf_20260416_6z_f000_d02-3km_2m_temperature.png",
     )
 
-    class Result:
-        returncode = 0
-        stderr = ""
-
-        def __init__(self, stdout: str):
-            self.stdout = stdout
-
-    def fake_run(command, **kwargs):
-        out_dir = Path(command[command.index("--out-dir") + 1])
-        out_dir.mkdir(parents=True, exist_ok=True)
-        lines = []
-        for name in names:
-            (out_dir / name).write_bytes(b"PNG")
-            lines.append(f"RENDERED slug {out_dir / name}")
-        return Result("\n".join(lines) + "\n")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    monkeypatch.setattr(render_module, "renderer_refusal", lambda _r: None)
-    monkeypatch.setattr("gpuwm.rustwx.find_renderer",
-                        lambda: tmp_path / "rw_wrfbatch")
+    _stub_flat_renderer(monkeypatch, tmp_path, names)
 
     written, failures, skipped = render_module.render_wrfouts_rust(
         [wrfout], products="all", timeidx=None, outdir=out,
@@ -553,8 +558,6 @@ def test_an_engine_output_that_defeats_the_parse_lands_flat_but_loudly(
     hours shipped a flat directory under a ``layout nested`` banner.
     """
 
-    import subprocess
-
     from gpuwm import render as render_module
 
     wrfout = _write_wrfout(tmp_path / "wrfout_d02_2026-04-16_06-00-00.nc",
@@ -566,26 +569,7 @@ def test_an_engine_output_that_defeats_the_parse_lands_flat_but_loudly(
         "rustwx_scratch_note.png",
     )
 
-    class Result:
-        returncode = 0
-        stderr = ""
-
-        def __init__(self, stdout: str):
-            self.stdout = stdout
-
-    def fake_run(command, **kwargs):
-        out_dir = Path(command[command.index("--out-dir") + 1])
-        out_dir.mkdir(parents=True, exist_ok=True)
-        lines = []
-        for name in names:
-            (out_dir / name).write_bytes(b"PNG")
-            lines.append(f"RENDERED slug {out_dir / name}")
-        return Result("\n".join(lines) + "\n")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    monkeypatch.setattr(render_module, "renderer_refusal", lambda _r: None)
-    monkeypatch.setattr("gpuwm.rustwx.find_renderer",
-                        lambda: tmp_path / "rw_wrfbatch")
+    _stub_flat_renderer(monkeypatch, tmp_path, names)
 
     written, failures, skipped = render_module.render_wrfouts_rust(
         [wrfout], products="all", timeidx=None, outdir=out,
@@ -760,24 +744,11 @@ def test_the_early_render_publishes_the_layout_it_drew(tmp_path):
 
     relative = "d01-1km/refl/1974-04-03/refl_d01-1km_1974-04-03_18-00-00.png"
 
-    def fake_runner(command):
-        scratch = Path(command[command.index("--out") + 1])
-        target = scratch / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(b"PNG-bytes")
-
-        class Completed:
-            returncode = 0
-            stdout = ""
-            stderr = ""
-
-        return Completed()
-
     trigger = first_products.FirstProducts(
         {"render": render_dir, "render_products": "refl"},
         report=lambda _event: None,
         warn=lambda *args, **kwargs: None,
-        runner=fake_runner)
+        runner=_early_runner(relative))
     trigger.frame_committed(domain=1, valid_time="1974-04-03T18:00:00",
                             path=frame)
     receipt = trigger.wait(timeout=60.0)
@@ -1169,30 +1140,6 @@ def test_an_episode_is_spelled_one_way_for_the_whole_tree():
             render_layout.episode_segment(number)) == number
 
 
-def test_the_episode_extends_the_ruling_instead_of_inverting_it():
-    """Domain, then episode, then product, then valid day.
-
-    The 2026-08-06 ruling's order is preserved exactly -- domain before
-    product before valid day -- with the episode slotted under the
-    domain it belongs to, which is where the history tree already puts
-    it.  Nothing collapses back towards flat.
-    """
-
-    root = Path("out") / "case"
-    placed = render_layout.place(
-        root, domain="d05-500m", product="composite_reflectivity",
-        day="1974-04-03", episode=2,
-        filename="arwen_wrf_19740403_18z_f001.png")
-    assert placed == (root / "d05-500m" / "episode-002"
-                      / "composite_reflectivity" / "1974-04-03"
-                      / "arwen_wrf_19740403_18z_f001.png")
-    ordering = [part for part in placed.parts
-                if part in ("d05-500m", "episode-002",
-                            "composite_reflectivity", "1974-04-03")]
-    assert ordering == ["d05-500m", "episode-002",
-                        "composite_reflectivity", "1974-04-03"]
-
-
 def test_a_run_with_no_lifecycle_files_exactly_where_it_always_did():
     """The byte-identity promise: no episode, no segment, no change.
 
@@ -1226,6 +1173,30 @@ def test_a_run_with_no_lifecycle_files_exactly_where_it_always_did():
         root, domain="d02-3km", product="refl", day="1974-04-03",
         episode=2, filename="x.png",
         layout=render_layout.FLAT) == root / "x.png"
+
+
+def test_the_episode_extends_the_ruling_instead_of_inverting_it():
+    """Domain, then episode, then product, then valid day.
+
+    The 2026-08-06 ruling's order is preserved exactly -- domain before
+    product before valid day -- with the episode slotted under the
+    domain it belongs to, which is where the history tree already puts
+    it.  Nothing collapses back towards flat.
+    """
+
+    root = Path("out") / "case"
+    placed = render_layout.place(
+        root, domain="d05-500m", product="composite_reflectivity",
+        day="1974-04-03", episode=2,
+        filename="arwen_wrf_19740403_18z_f001.png")
+    assert placed == (root / "d05-500m" / "episode-002"
+                      / "composite_reflectivity" / "1974-04-03"
+                      / "arwen_wrf_19740403_18z_f001.png")
+    ordering = [part for part in placed.parts
+                if part in ("d05-500m", "episode-002",
+                            "composite_reflectivity", "1974-04-03")]
+    assert ordering == ["d05-500m", "episode-002",
+                        "composite_reflectivity", "1974-04-03"]
 
 
 def test_the_history_writer_and_the_delivered_tree_agree_on_the_segment():
@@ -1301,13 +1272,6 @@ def test_two_episodes_of_one_domain_no_longer_share_a_delivered_name(
     name = ("rustwx_wrf_19740403_18z_f001_d05-500m_"
             "composite_reflectivity.png")
 
-    class Result:
-        returncode = 0
-        stderr = ""
-
-        def __init__(self, stdout: str):
-            self.stdout = stdout
-
     drawn = []
 
     def fake_run(command, **kwargs):
@@ -1317,7 +1281,7 @@ def test_two_episodes_of_one_domain_no_longer_share_a_delivered_name(
         # detectable rather than merely suspected.
         drawn.append(len(drawn))
         (out_dir / name).write_bytes(f"PNG-{drawn[-1]}".encode())
-        return Result(f"RENDERED slug {out_dir / name}\n")
+        return _RendererResult(f"RENDERED slug {out_dir / name}\n")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(render_module, "renderer_refusal", lambda _r: None)
@@ -1346,8 +1310,6 @@ def test_a_lifecycle_free_render_is_byte_identical_through_the_seam(
     every run shipped so far.
     """
 
-    import subprocess
-
     from gpuwm import render as render_module
 
     wrfout = _write_wrfout(tmp_path / "wrfout_d02_1974-04-03_18-00-00.nc",
@@ -1356,23 +1318,7 @@ def test_a_lifecycle_free_render_is_byte_identical_through_the_seam(
     name = ("rustwx_wrf_19740403_18z_f000_d02-3km_"
             "composite_reflectivity.png")
 
-    class Result:
-        returncode = 0
-        stderr = ""
-
-        def __init__(self, stdout: str):
-            self.stdout = stdout
-
-    def fake_run(command, **kwargs):
-        out_dir = Path(command[command.index("--out-dir") + 1])
-        out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / name).write_bytes(b"PNG")
-        return Result(f"RENDERED slug {out_dir / name}\n")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    monkeypatch.setattr(render_module, "renderer_refusal", lambda _r: None)
-    monkeypatch.setattr("gpuwm.rustwx.find_renderer",
-                        lambda: tmp_path / "rw_wrfbatch")
+    _stub_flat_renderer(monkeypatch, tmp_path, (name,))
 
     written, _failures, _skipped = render_module.render_wrfouts_rust(
         [wrfout], products="all", timeidx=None, outdir=out,
@@ -1461,24 +1407,11 @@ def test_the_early_render_publishes_an_episodic_layout(tmp_path):
     relative = ("d05-500m/episode-002/refl/1974-04-03/"
                 "refl_d05-500m_1974-04-03_18-00-00.png")
 
-    def fake_runner(command):
-        scratch = Path(command[command.index("--out") + 1])
-        target = scratch / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(b"PNG-bytes")
-
-        class Completed:
-            returncode = 0
-            stdout = ""
-            stderr = ""
-
-        return Completed()
-
     trigger = first_products.FirstProducts(
         {"render": render_dir, "render_products": "refl"},
         report=lambda _event: None,
         warn=lambda *args, **kwargs: None,
-        runner=fake_runner)
+        runner=_early_runner(relative))
     trigger.frame_committed(domain=5, valid_time="1974-04-03T18:00:00",
                             path=frame)
     receipt = trigger.wait(timeout=60.0)

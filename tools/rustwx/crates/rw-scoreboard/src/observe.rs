@@ -717,9 +717,11 @@ fn mrms(request: &Value, bytes: &[u8], artifact: &mut Artifact) -> Result<()> {
         return Err(fail("MRMS variable must be precipitation or reflectivity"));
     }
     let window = request["window_minutes"].as_u64().unwrap_or(0) as u32;
-    if variable == "precipitation" && !matches!(window, 60 | 360) {
+    // 180 minutes: MRMS publishes MultiSensor_QPE_03H_Pass2, whose encoded
+    // duration is checked against the window just below like the others.
+    if variable == "precipitation" && !matches!(window, 60 | 180 | 360) {
         return Err(fail(
-            "MRMS QPE window must be the registered 60 or 360 minutes",
+            "MRMS QPE window must be the registered 60, 180 or 360 minutes",
         ));
     }
     if let Some(duration) = msg.product.statistical_time_range_seconds() {

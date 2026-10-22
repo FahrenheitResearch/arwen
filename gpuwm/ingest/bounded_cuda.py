@@ -49,6 +49,42 @@ def _elementwise(function, values, cells, **options):
     return outputs if multiple else outputs[0]
 
 
+def _plane_rotation(function, values, cells):
+    """A wind rotation in whole horizontal planes, or ``None`` when it is not one.
+
+    The rotation kernel reads its geometry modulo the plane
+    (``horizontal_rotate``), so a batch of whole planes takes the 2-D sin/cos
+    once, as the resident road does.  Named breakage: :func:`_elementwise`
+    broadcast the 2-D float64 geometry to the 3-D wind and flat-copied and
+    cast it on the host for every batch of every wind pair, about 9 s of the
+    start's main thread on one core (a 5090 host, full CONUS, 2026-10-21).  The
+    words written are the same: each output cell is the same kernel on the
+    same four float32 operands.
+    """
+    if len(values) != 4:
+        return None
+    u, v, sina, cosa = (_host(value) for value in values)
+    if (u.shape != v.shape or sina.shape != cosa.shape or sina.ndim < 1
+            or u.ndim <= sina.ndim or u.shape[-sina.ndim:] != sina.shape):
+        return None
+    plane = int(sina.size)
+    u_planes = np.ascontiguousarray(u).reshape(-1, plane)
+    v_planes = np.ascontiguousarray(v).reshape(-1, plane)
+    out_u = np.empty(u_planes.shape, dtype=np.float32)
+    out_v = np.empty(v_planes.shape, dtype=np.float32)
+    per_batch = max(1, int(cells) // max(1, plane))
+    geometry = (sina, cosa)
+    for start, stop in _batches(u_planes.shape[0], per_batch):
+        ou, ov = function(u_planes[start:stop].reshape((stop - start, *sina.shape)),
+                          v_planes[start:stop].reshape((stop - start, *sina.shape)),
+                          *geometry)
+        out_u[start:stop] = _host(ou).reshape(stop - start, plane)
+        out_v[start:stop] = _host(ov).reshape(stop - start, plane)
+        del ou, ov
+        _release()
+    return out_u.reshape(u.shape), out_v.reshape(u.shape)
+
+
 class _RegularPlan:
     def __init__(self, backend, latitude, longitude, target_lat, target_lon):
         self.backend = backend
@@ -82,23 +118,62 @@ class _RegularPlan:
 
 
 class _VerticalPlan:
+    #: A boolean field (the hydrometeor receipt's one-hot level masks) is
+    #: uploaded as bytes and widened to the same 0/1 float32 words on the card.
+    accepts_bool_mask = True
+
+    #: Share of the device budget the prepared batch geometries may keep
+    #: between applies.  A geometry is the batch's three float32 pressure
+    #: blocks (about 0.8 GB for a whole 3 km CONUS column set).
+    GEOMETRY_CACHE_SHARE = 0.25
+
     def __init__(self, backend, source, surface, target):
         self.backend = backend
         self.source, self.surface, self.target = map(_host, (source, surface, target))
+        # Prepared geometries by batch, kept while they fit the share above.
+        # Named breakage: the hydrometeor receipt applies this plan once per
+        # source level (50+ times) and every apply re-uploaded and re-checked
+        # each batch's pressures (8 s of the receipt thread, plus the pool
+        # flushes after them; a 5090 host, full CONUS, 2026-10-21).  The geometry
+        # depends only on the pressures, so a kept one is the same plan.
+        self._geometries: dict = {}
+        self._geometry_bytes = 0
+
+    def _geometry(self, start, stop):
+        plan = self._geometries.get((start, stop))
+        if plan is not None:
+            return plan
+        plan = CudaPreprocessBackend.prepare_wrf_vertical(
+            self.backend, self.source[:, start:stop], self.surface[start:stop],
+            self.target[:, start:stop])
+        size = 4 * (self.source[:, start:stop].size + self.surface[start:stop].size
+                    + self.target[:, start:stop].size)
+        budget = int(self.backend.device_budget_bytes * self.GEOMETRY_CACHE_SHARE)
+        if self._geometry_bytes + size <= budget:
+            self._geometries[(start, stop)] = plan
+            self._geometry_bytes += size
+        return plan
 
     def apply(self, field, surface_value, **options):
         field, surface_value = map(_host, (field, surface_value))
         output = np.empty(self.target.shape, dtype=np.float32)
         rows = self.backend.column_rows((max(self.source.shape[0], self.target.shape[0]),
                                          *self.source.shape[1:]))
+        device_mask = None
+        if field.dtype == np.bool_:
+            # One contiguous upload of the mask bytes (a quarter of the float
+            # words); each batch is cut and widened on the card.
+            import cupy as cp
+            device_mask = cp.asarray(np.ascontiguousarray(field))
         for start, stop in _batches(self.source.shape[1], rows):
-            plan = CudaPreprocessBackend.prepare_wrf_vertical(
-                self.backend, self.source[:, start:stop], self.surface[start:stop],
-                self.target[:, start:stop])
-            result = plan.apply(field[:, start:stop], surface_value[start:stop], **options)
+            plan = self._geometry(start, stop)
+            batch = (field[:, start:stop] if device_mask is None
+                     else device_mask[:, start:stop].astype(cp.float32))
+            result = plan.apply(batch, surface_value[start:stop], **options)
             output[:, start:stop] = _host(result)
-            del plan, result
+            del plan, result, batch
             _release()
+        del device_mask
         return output
 
 
@@ -147,6 +222,9 @@ class BoundedCudaPreprocessBackend(CudaPreprocessBackend):
 
     def rotate_earth_to_grid(self, *args):
         from gpuwm.ingest.horiz import rotate_earth_to_grid_gpu
+        planes = _plane_rotation(rotate_earth_to_grid_gpu, args, self.chunk_cells)
+        if planes is not None:
+            return planes
         return _elementwise(rotate_earth_to_grid_gpu, args, self.chunk_cells)
 
     def era5_rh_to_water(self, *args):

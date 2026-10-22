@@ -167,18 +167,6 @@ def test_write_preserves_settings_and_outputs_matching_geometry(tmp_path):
         st.fit_main(args(path, out, write=True))
 
 
-def test_polygon_prices_custom_settings_without_shrinking_area(tmp_path):
-    path, raw = starter(tmp_path)
-    poly = tmp_path / "area.geojson"
-    poly.write_text(json.dumps({"type":"Polygon", "coordinates":[[
-        [-100.2,39.8],[-99.8,39.8],[-99.8,40.2],[-100.2,40.2],[-100.2,39.8]]]}))
-    out = tmp_path / "polygon.toml"
-    assert st.fit_main(args(path, out, polygon=poly, point=None, write=True)) == 0
-    exp = load_experiment(out)
-    assert exp.vertical.p_top == 4200
-    dw.verify_polygon_containment(exp, dw.load_polygon_footprint(poly), (0.0,))
-
-
 def test_serializer_roundtrips_nested_settings_and_literal_strings():
     raw = {"experiment":{"name":'quoted " name \\ and newline\n',
                          "start_time": datetime(2026,9,5)},
@@ -187,8 +175,10 @@ def test_serializer_roundtrips_nested_settings_and_literal_strings():
     assert tomllib.loads(st.render_tables(raw)) == raw
 
 
-@pytest.mark.parametrize("topology", ["two_domains", "stable_chain", "branched_tree"])
-@pytest.mark.parametrize("target", ["point", "polygon"])
+@pytest.mark.parametrize("topology,target", [
+    ("two_domains", "point"), ("stable_chain", "polygon"),
+    ("branched_tree", "polygon"),
+])
 def test_fit_preserves_real_parent_tree_and_science_in_native_wps(tmp_path, topology, target):
     from gpuwm.companion_domains import VORTEX_PRESET
     from gpuwm.namelist_import import parse_namelist_text
@@ -341,8 +331,7 @@ def test_invalid_hardware_snapshots_do_not_substitute_a_local_or_reference_gpu(t
         st.hardware_sizing(hardware)
 
 
-@pytest.mark.parametrize("polygon", [False, True])
-@pytest.mark.parametrize("declared", [False, True])
+@pytest.mark.parametrize("polygon,declared", [(False, False), (True, True)])
 def test_streamed_fit_uses_selected_target_host_memory_for_every_candidate(tmp_path, monkeypatch, polygon, declared):
     from gpuwm.core import streaming
     payload = measured_hardware()

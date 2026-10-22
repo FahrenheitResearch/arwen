@@ -55,6 +55,11 @@ path = "src/bin/opera.rs"
 name = "rw_igra2"
 path = "src/bin/igra2.rs"
 
+# Scores WRF history frames against the rw_igra2 table (radiosonde levels).
+[[bin]]
+name = "rw_sonde_score"
+path = "src/bin/sonde_score.rs"
+
 [[bin]]
 name = "rw_amv"
 path = "src/bin/amv.rs"
@@ -90,6 +95,7 @@ name = "rw_madis"
 path = "src/bin/madis.rs"
 
 [dependencies]
+rustwx-calc = { path = "../rustwx-calc" }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # `rust_backend` rather than the zlib C shim, matching rustwx-io and
 # rw-nexrad: these bins build --offline from the vendor closure and must not
@@ -142,3 +148,15 @@ netcdf-writer = { path = "../netcdf-writer" }
 [[bin]]
 name = "rw_airnow"
 path = "src/bin/airnow.rs"
+
+[[bin]]
+name = "rw_ice_verify"
+path = "src/bin/ice_verify.rs"
+
+[[bin]]
+name = "rw_hail"
+path = "src/bin/hail.rs"
+
+[[bin]]
+name = "rw_ocean_verify"
+path = "src/bin/ocean_verify.rs"

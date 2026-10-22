@@ -600,9 +600,9 @@ impl ObjectHeader {
             let msg_data_size = cursor.read_u16_le()? as usize;
             let msg_flags = cursor.read_u8()?;
 
-            if creation_order_tracked {
-                let _creation_order = cursor.read_u16_le()?;
-            }
+            let creation_order = if creation_order_tracked {
+                Some(cursor.read_u16_le()? as u64)
+            } else {None};
 
             if msg_type == MSG_TYPE_NIL {
                 if msg_data_size == 0
@@ -645,13 +645,14 @@ impl ObjectHeader {
                 continuations.push((cont.offset, cont.length));
                 messages.push(HdfMessage::ObjectHeaderContinuation);
             } else {
-                let parsed = parse_message(
+                let mut parsed = parse_message(
                     msg_type,
                     msg_data.len(),
                     &mut Cursor::new(msg_data),
                     offset_size,
                     length_size,
                 )?;
+                if let HdfMessage::Attribute(ref mut attr) = parsed {attr.creation_order = creation_order;}
                 messages.push(parsed);
             }
         }
@@ -735,9 +736,9 @@ impl ObjectHeader {
             let msg_data_size = cursor.read_u16_le()? as usize;
             let msg_flags = cursor.read_u8()?;
 
-            if creation_order_tracked {
-                let _creation_order = cursor.read_u16_le()?;
-            }
+            let creation_order = if creation_order_tracked {
+                Some(cursor.read_u16_le()? as u64)
+            } else {None};
 
             if msg_type == MSG_TYPE_NIL {
                 if msg_data_size == 0
@@ -779,13 +780,14 @@ impl ObjectHeader {
                 continuations.push((cont.offset, cont.length));
                 messages.push(HdfMessage::ObjectHeaderContinuation);
             } else {
-                let parsed = parse_message(
+                let mut parsed = parse_message(
                     msg_type,
                     msg_data.len(),
                     &mut Cursor::new(msg_data),
                     offset_size,
                     length_size,
                 )?;
+                if let HdfMessage::Attribute(ref mut attr) = parsed {attr.creation_order = creation_order;}
                 messages.push(parsed);
             }
         }
@@ -1171,7 +1173,7 @@ mod tests {
 
     #[test]
     fn v2_empty_header() {
-        // Flags=0 → 1-byte size field, no timestamps, no phase change, no creation order.
+        // Flags=0 â†’ 1-byte size field, no timestamps, no phase change, no creation order.
         let data = build_v2_header(0x00, &[], None, None);
         let hdr = ObjectHeader::parse_at(&data, 0, 8, 8).unwrap();
         assert_eq!(hdr.version, 2);
@@ -1237,7 +1239,7 @@ mod tests {
 
     #[test]
     fn v2_2byte_size_field() {
-        // bits 0-1 = 1 → 2-byte size field.
+        // bits 0-1 = 1 â†’ 2-byte size field.
         let flags = 0x01;
         let payload = [0x42; 5];
         let data = build_v2_header(flags, &[(0xFE, 0, &payload)], None, None);
@@ -1247,7 +1249,7 @@ mod tests {
 
     #[test]
     fn v2_4byte_size_field() {
-        // bits 0-1 = 2 → 4-byte size field.
+        // bits 0-1 = 2 â†’ 4-byte size field.
         let flags = 0x02;
         let data = build_v2_header(flags, &[(0xFE, 0, &[0x01])], None, None);
         let hdr = ObjectHeader::parse_at(&data, 0, 8, 8).unwrap();
@@ -1256,7 +1258,7 @@ mod tests {
 
     #[test]
     fn v2_8byte_size_field() {
-        // bits 0-1 = 3 → 8-byte size field.
+        // bits 0-1 = 3 â†’ 8-byte size field.
         let flags = 0x03;
         let data = build_v2_header(flags, &[(0xFE, 0, &[0x01])], None, None);
         let hdr = ObjectHeader::parse_at(&data, 0, 8, 8).unwrap();

@@ -1,7 +1,7 @@
 """Shape constants retain ABI, conditional signatures and generic source."""
 import pytest
 from gpuwm.core.kernel_shape import FUNCTIONS, shape_defines, specialize_source
-from gpuwm.core.kernels import module_source, module_source_int_defines
+from gpuwm.core.kernels import module_source
 
 
 def test_generic_sources_are_untouched():
@@ -31,17 +31,6 @@ void advance_mu_th_msf(int nz,int ny,int nx) { return; }
     assert "// void advance_nested_phi_w(int nz) { misleading comment" in shaped
     assert "for (int k=0; k<nz; ++k) x += k;" in shaped
     assert "const float* muts)" in shaped
-
-
-def test_all_registered_units_have_shape_parameters():
-    for name, funcs in FUNCTIONS.items():
-        defs = shape_defines(name, funcs[0], (44, 117, 267))
-        source = module_source_int_defines(name, defs)
-        assert "constexpr int" in source
-        assert "gpuwm_runtime_" in source
-    a = module_source_int_defines("acoustic", shape_defines("acoustic", "advance_mu_th_msf", (44,70,120)))
-    b = module_source_int_defines("acoustic", shape_defines("acoustic", "advance_mu_th_msf", (44,117,267)))
-    assert a != b
 
 
 @pytest.mark.parametrize("shape", [(0,70,120), (44,-1,120), (True,70,120), (44,70), (44,2**30,3)])

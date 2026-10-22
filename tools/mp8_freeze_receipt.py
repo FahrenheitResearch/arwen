@@ -92,7 +92,15 @@ def present_kernel_modules() -> tuple[str, ...]:
     frozen tree and ignores additions, so WP-02..WP-08 can land new mp=28
     modules without the freeze gate going red for the wrong reason.
     """
-    return tuple(sorted(p.stem for p in KERNEL_DIR.glob("*.cu")))
+    # Slimming retains these loader names after removing their duplicate files.
+    return tuple(sorted({p.stem for p in KERNEL_DIR.glob("*.cu")}
+                        | {"ysu", "mynn_dmp_sibling"}))
+
+
+def kernel_source_path(name: str) -> Path:
+    """Physical authority for the two retained logical loader modules."""
+    source = {"ysu": "ysu_default", "mynn_dmp_sibling": "mynn_pbl"}.get(name, name)
+    return KERNEL_DIR / f"{source}.cu"
 
 
 def _sha256_bytes(payload: bytes) -> str:
@@ -148,9 +156,13 @@ def capture_compiled_source(name: str) -> tuple[str, str]:
     try:
         import cupy as cp
     except Exception:                                    # pragma: no cover
-        src = kernels._preamble() + (
-            kernels._KDIR / f"{name}.cu").read_text(encoding="utf-8")
-        return src, "reconstructed"
+        # The two logical loader modules slimming kept without files of their
+        # own read their physical authority (kernel_source_path); the sibling
+        # is mynn_pbl.cu under the one define the loader prepends.
+        text = kernel_source_path(name).read_text(encoding="utf-8")
+        if name == "mynn_dmp_sibling":
+            text = "#define MYNN_EXPORT_PLUME_EDGE 1\n" + text
+        return kernels._preamble() + text, "reconstructed"
 
     captured: dict[str, str] = {}
 
@@ -189,7 +201,7 @@ def receipt_r1_sources() -> dict:
 
     modules = {}
     for name in present_kernel_modules():
-        path = kdir / f"{name}.cu"
+        path = kernel_source_path(name)
         source, method = capture_compiled_source(name)
         reconstructed = preamble + path.read_text(encoding="utf-8")
         modules[name] = {

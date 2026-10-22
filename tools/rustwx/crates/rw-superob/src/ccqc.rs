@@ -206,7 +206,6 @@ pub struct Masker<'a> {
     velocity: Option<PlaneRef<'a>>,
     azimuth: &'a [f64],
     params: CcParams,
-    pub reason: &'static str,
     pub companion_sweep_index: Option<i64>,
     rotation_plane: Option<(Vec<bool>, usize, usize)>,
     masks: BTreeMap<String, MomentMasks>,
@@ -238,14 +237,13 @@ pub fn build_plans<'a>(sweeps: &[SweepPlanInput<'a>], params: &CcParams) -> Vec<
             plans.push(Plan { reason: REASON_NO_REF, masker: None });
             continue;
         };
-        let make = |rho: PlaneRef<'a>, rows: Vec<i64>, reason, companion| Masker {
+        let make = |rho: PlaneRef<'a>, rows: Vec<i64>, companion| Masker {
             rho,
             rho_rows: rows,
             reflectivity,
             velocity: sweep.velocity,
             azimuth: sweep.azimuth,
             params: params.clone(),
-            reason,
             companion_sweep_index: companion,
             rotation_plane: None,
             masks: BTreeMap::new(),
@@ -262,7 +260,7 @@ pub fn build_plans<'a>(sweeps: &[SweepPlanInput<'a>], params: &CcParams) -> Vec<
             let rows = (0..rho.rows as i64).collect();
             plans.push(Plan {
                 reason: REASON_COLOCATED,
-                masker: Some(make(rho, rows, REASON_COLOCATED, None)),
+                masker: Some(make(rho, rows, None)),
             });
             continue;
         }
@@ -293,7 +291,7 @@ pub fn build_plans<'a>(sweeps: &[SweepPlanInput<'a>], params: &CcParams) -> Vec<
         );
         plans.push(Plan {
             reason: REASON_COMPANION,
-            masker: Some(make(near, rows, REASON_COMPANION, Some(neighbour.sweep_index))),
+            masker: Some(make(near, rows, Some(neighbour.sweep_index))),
         });
     }
     plans

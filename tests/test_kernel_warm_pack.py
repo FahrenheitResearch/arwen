@@ -15,7 +15,7 @@ def test_exact_request_survives_process_and_changed_requests_miss(tmp_path):
     assert second.get(dict(args, options=["--fmad=true"])) is None
     assert second.get(dict(args, filename="b.cu")) is None
     assert WarmImages(tmp_path, {"compiler": "cu13"}, "shape/options/strict", "120").get(args) is None
-    assert WarmImages(tmp_path, {"compiler": "cu12"}, "other-shape", "120").get(args) is None
+    assert WarmImages(tmp_path, {"compiler": "cu12"}, "other-shape", "120").get(args) == result
     assert WarmImages(tmp_path, {"compiler": "cu12"}, "shape/options/strict", "89").get(args) is None
     # Returned mappings cannot mutate the retained symbol aliases.
     second.get(args)[1]["k<float>"] = "wrong"
@@ -144,11 +144,13 @@ def test_banner_persists_measured_bytes_and_refuses_unresolved_identity(tmp_path
 
 
 def test_literal_and_nested_headers_bind_actual_bytes(tmp_path):
-    header = tmp_path / 'one.h'
-    nested = tmp_path / 'two.h'
+    headers = tmp_path / 'include'
+    headers.mkdir()
+    header = headers / 'one.h'
+    nested = headers / 'two.h'
     header.write_text('#include "two.h"\n')
     nested.write_text('#define VALUE 1\n')
-    args = dict(source='#include "one.h"\n', options=['-I'+str(tmp_path)])
+    args = dict(source='#include "one.h"\n', options=['-I'+str(headers)])
     one = WarmImages(tmp_path / 'packs', {}, 'shape', '120')
     one.put(args, (b'\x7fELFheader-one', None));one.close()
     assert WarmImages(tmp_path / 'packs', {}, 'shape', '120').get(args)[0] == b'\x7fELFheader-one'
@@ -157,7 +159,7 @@ def test_literal_and_nested_headers_bind_actual_bytes(tmp_path):
 
 
 def test_macro_header_refuses_old_image_and_storing_unbound_result(tmp_path):
-    args = dict(source='#define H "owned.h"\n#include H\n', options=['-I'+str(tmp_path)])
+    args = dict(source='#define H "owned.h"\n#include H\n', options=[])
     pack = WarmImages(tmp_path, {}, 'shape', '120')
     with pytest.warns(RuntimeWarning, match='dependency is unbound'):
         pack.put(args, (b'\x7fELFstale-header', None))
@@ -194,3 +196,88 @@ def test_header_comment_replacement_preserves_directive_boundaries(tmp_path):
     assert header_dependencies('#\ninclude "missing.h"\n', options) == []
     with pytest.raises(ValueError, match='macro or nonliteral'):
         header_dependencies('/* a\n b */ #include NAME\n', options)
+
+
+def test_content_pack_moves_installation_and_run_tag(tmp_path):
+    from gpuwm.kernel_warm_pack import pack, seed
+    first = tmp_path / 'box-one' / 'include'
+    second = tmp_path / 'box-two' / 'include'
+    for root in (first, second):
+        root.mkdir(parents=True)
+        (root / 'value.h').write_text('#define VALUE 7\n')
+    args = dict(source='#include "value.h"\n', options=['-I'+str(first)], filename='unit.cu')
+    cache = WarmImages(tmp_path / 'cold', {'nvrtc': [13, 4]}, 'cycle-one-shape', '120')
+    result = (b'\x7fELFcompiled-unit', None)
+    cache.put(args, result); cache.close()
+    archive = tmp_path / 'images.tar.gz'
+    receipt = pack(archive, root=tmp_path / 'cold', architectures=['sm_120'])
+    seed(archive, root=tmp_path / 'seeded', sha256=receipt['sha256'])
+    target = WarmImages(tmp_path / 'seeded', {'nvrtc': [13, 4]}, 'other-cycle-shape', 'sm_120')
+    relocated = dict(args, options=['-I'+str(second)])
+    assert target.get(relocated) == result
+    (second / 'value.h').write_text('#define VALUE 8\n')
+    assert WarmImages(tmp_path / 'seeded', {'nvrtc': [13, 4]}, '', '120').get(relocated) is None
+    assert WarmImages(tmp_path / 'seeded', {'nvrtc': [13, 5]}, '', '120').get(relocated) is None
+    archive.write_bytes(archive.read_bytes() + b'damaged')
+    with pytest.raises(ValueError, match='SHA256 mismatch'):
+        seed(archive, root=tmp_path / 'refused')
+    assert not (tmp_path / 'refused').exists()
+
+
+def test_guarded_inlined_header_and_conditional_discovery(tmp_path):
+    args = dict(source='#define GUARD\n#ifndef GUARD\n#include "inlined.h"\n#endif\n'
+                '#if __has_include("optional.h")\n#define VALUE 1\n#endif\n', options=['-I'+str(tmp_path)])
+    before = WarmImages.key(args)
+    (tmp_path / 'optional.h').write_text('// optional exists\n')
+    assert WarmImages.key(args) != before
+
+
+def test_macro_selected_headers_bind_tree_and_relocation(tmp_path):
+    roots = [tmp_path / 'one', tmp_path / 'two']
+    for root in roots:
+        root.mkdir()
+        (root / 'chosen.h').write_text('#define VALUE 4\n')
+    args = dict(source='#define H "chosen.h"\n#include H\n', options=['-I'+str(roots[0])])
+    assert WarmImages.key(args) == WarmImages.key(dict(args, options=['-I'+str(roots[1])]))
+    (roots[1] / 'chosen.h').write_text('#define VALUE 5\n')
+    assert WarmImages.key(args) != WarmImages.key(dict(args, options=['-I'+str(roots[1])]))
+
+
+def test_program_names_are_normalized_before_compiling():
+    from gpuwm.kernel_warm_pack import program_name
+    assert program_name('code', 'a'*40+'.cubin.cu') == program_name('code', 'b'*40+'.cubin.cu')
+    assert program_name('different', 'a'*40+'.cubin.cu') != program_name('code', 'a'*40+'.cubin.cu')
+    assert program_name('code', 'direct.cu') == 'direct.cu'
+
+
+def test_seed_merges_local_images_and_rejects_corrupt_index(tmp_path):
+    from gpuwm.kernel_warm_pack import pack, seed
+    source = WarmImages(tmp_path / 'source', {}, None, '89')
+    source.put({'source': 'remote'}, (b'\x7fELFremote', None)); source.close()
+    local = WarmImages(tmp_path / 'target', {}, None, '89')
+    local.put({'source': 'local'}, (b'\x7fELFlocal', None)); local.close()
+    archive = tmp_path / 'pack.tar.gz'
+    pack(archive, root=tmp_path / 'source')
+    seed(archive, root=tmp_path / 'target')
+    target = WarmImages(tmp_path / 'target', {}, None, '89')
+    assert target.get({'source': 'local'})[0] == b'\x7fELFlocal'
+    assert target.get({'source': 'remote'})[0] == b'\x7fELFremote'
+    document = json.loads(source.index.read_text())
+    next(iter(document['entries'].values()))['mapping'] = {'bad': 'alias'}
+    source.index.write_text(json.dumps(document))
+    with pytest.raises(ValueError, match='entry digest mismatch'):
+        pack(tmp_path / 'bad.tar.gz', root=tmp_path / 'source')
+
+
+def test_cache_environment_and_arch_binding(tmp_path, monkeypatch):
+    from gpuwm.kernel_warm_pack import cache_root
+    monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / 'xdg'))
+    monkeypatch.delenv('GPUWM_KERNEL_CACHE', raising=False)
+    assert cache_root() == tmp_path / 'xdg/gpuwm/kernels'
+    monkeypatch.setenv('GPUWM_KERNEL_CACHE', str(tmp_path / 'explicit'))
+    assert cache_root() == tmp_path / 'explicit'
+    images = WarmImages(cache_root(), {}, None, '120')
+    images.put({'source': 'code', 'arch': 'device'}, (b'\x7fELFcode', None))
+    assert images.get({'source': 'code', 'arch': '120'})[0] == b'\x7fELFcode'
+    assert images.get({'source': 'code', 'arch': '89'}) is None
+    images.close()

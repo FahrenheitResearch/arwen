@@ -67,7 +67,6 @@ def _slot(k: int) -> int:
 # ---------------------------------------------------------------------------
 # HRT -- module_sf_noahmplsm.F:5375-5473
 # ---------------------------------------------------------------------------
-HRT_OUTPUTS = ("ai", "bi", "ci", "rhsts", "botflx")
 
 
 def hrt(isnow, zsnso, stc, tbot, zbot, df, hcpct, ssoil, phi,

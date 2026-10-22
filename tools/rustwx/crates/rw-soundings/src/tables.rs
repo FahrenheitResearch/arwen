@@ -290,20 +290,6 @@ pub fn tables_json(a: &Analysis, blank: &[String]) -> Value {
     Value::Array(out)
 }
 
-/// Options-schema cell list.
-pub fn cells_catalogue() -> Value {
-    let mut v = vec![];
-    for k in [K::Convective, K::Kinematics, K::Severe] {
-        for id in sharppyrs::native_diagnostic_slot_ids(k)
-            .iter()
-            .filter(|id| !BLOCKED.contains(id))
-        {
-            v.push(json!({"id": id, "panel": panel_name(k), "label": label(id)}));
-        }
-    }
-    Value::Array(v)
-}
-
 pub fn slot_panel(id: &str) -> Option<K> {
     [K::Convective, K::Kinematics, K::Severe]
         .into_iter()

@@ -267,12 +267,7 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
         let mut hits = Vec::new();
         terminal.draw(|frame| browser.draw(frame, frame.area(), &mut hits, false)).unwrap();
-        let mut text = String::new();
-        for y in 0..height {
-            for x in 0..width { text.push_str(terminal.backend().buffer()[(x, y)].symbol()); }
-            text.push('\n');
-        }
-        text
+        crate::tests::buffer_text(terminal.backend().buffer(), Rect::new(0, 0, width, height), "\n") + "\n"
     }
     #[test]
     fn each_leaf_has_reachable_setup_and_back_preserves_no_external_action() {

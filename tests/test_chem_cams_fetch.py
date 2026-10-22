@@ -89,13 +89,13 @@ def test_cache_and_corruption(row, tmp_path):
     Client.calls = []
     p = plan(row)
     root = tmp_path/'cache'
-    a = ds.fetch(p, cache_root=root, client_factory=Client, progress=lambda x: None)
+    a = ds.fetch(p, licence='CC-BY-4.0', cache_root=root, client_factory=Client, progress=lambda x: None)
     assert a.reused == (False, False)
     assert len(Client.calls) == 2
-    b = ds.fetch(p, cache_root=root, client_factory=lambda **kw: pytest.fail('cache submits'), progress=lambda x: None)
+    b = ds.fetch(p, licence='CC-BY-4.0', cache_root=root, client_factory=lambda **kw: pytest.fail('cache submits'), progress=lambda x: None)
     assert b.reused == (True, True)
     a.files[0].write_bytes(b'corruption')
-    c = ds.fetch(p, cache_root=root, client_factory=Client, progress=lambda x: None)
+    c = ds.fetch(p, licence='CC-BY-4.0', cache_root=root, client_factory=Client, progress=lambda x: None)
     assert c.reused == (False, True)
     assert len(Client.calls) == 3
     receipt = json.loads(a.receipts[0].read_text())
@@ -108,7 +108,7 @@ def test_concurrency(row, tmp_path):
         def retrieve(self, dataset, request):
             barrier.wait(timeout=5)
             return self
-    ds.fetch(plan(row), cache_root=tmp_path/'cache', client_factory=Concurrent, progress=lambda x: None)
+    ds.fetch(plan(row), licence='CC-BY-4.0', cache_root=tmp_path/'cache', client_factory=Concurrent, progress=lambda x: None)
 
 
 def test_antimeridian_and_full_band(row):
@@ -162,7 +162,7 @@ def test_user_files_and_cache_only_reader(row, tmp_path, monkeypatch, mapping):
     monkeypatch.setattr(ds, 'load_credentials', lambda: pytest.fail('credential declaration read'))
     files = {r.sha256: path for r, path in zip(p.requests, inputs)} if mapping else inputs
     root = tmp_path/'cache'
-    result = ds.fetch(p, cache_root=root, files=files,
+    result = ds.fetch(p, licence='CC-BY-4.0', cache_root=root, files=files,
         client_factory=lambda **kwargs: pytest.fail('user files submitted'), progress=lambda text: None)
     assert ds.cached_files(p, cache_root=root) == result.files
     for original, published in zip(inputs, result.files):
@@ -194,7 +194,7 @@ def test_cli_plan_cache_path(row, tmp_path, capsys, monkeypatch):
 def test_cache_receipt_integrity(row, tmp_path, monkeypatch, field, value):
     p = plan(row)
     root = tmp_path/'cache'
-    result = ds.fetch(p, cache_root=root, client_factory=Client, progress=lambda text: None)
+    result = ds.fetch(p, licence='CC-BY-4.0', cache_root=root, client_factory=Client, progress=lambda text: None)
     receipt = json.loads(result.receipts[0].read_text())
     receipt[field] = value
     result.receipts[0].write_text(json.dumps(receipt))
@@ -225,3 +225,17 @@ def test_the_fetch_and_initialization_read_one_cache_root(monkeypatch, tmp_path)
     monkeypatch.delenv(data_store_fetch.CACHE_ENV)
     assert (data_store_fetch._cache_root(None)
             == chem_source_init.data_store_cache_root())
+
+
+def test_research_licence_is_named_before_credentials_are_read(row, tmp_path, monkeypatch):
+    # CAMS itself is CC-BY-4.0 (commercial use with attribution), so it
+    # carries no opt-in; the gate is for a row whose licence limits use.
+    limited = replace(row, acquisition={**row.acquisition, "research_only_licence": "CC-BY-NC-4.0"})
+    monkeypatch.setattr(ds, "load_credentials", lambda: pytest.fail("credential read before licence acceptance"))
+    with pytest.raises(ds.DataStoreLicenceNotAccepted, match="--licence CC-BY-NC-4.0"):
+        ds.fetch(plan(limited), cache_root=tmp_path)
+
+
+def test_cams_cc_by_needs_no_research_opt_in(row):
+    assert "research_only_licence" not in row.acquisition
+    assert row.licence.startswith("CC-BY-4.0")

@@ -82,14 +82,28 @@ def with_declared_source_static_defaults(raw):
 
 
 def with_source_static_defaults_text(text, source_id):
-    """Emit a declared default; every undeclared source returns the same bytes."""
+    """Emit a declared default; every undeclared source returns the same bytes.
+
+    A configuration whose ``[projection]`` is not the row's cone gets no
+    ``[static] source`` line, exactly as :func:`with_source_static_defaults`
+    keeps it: writing the default out would turn it into a DECLARED source,
+    which refuses an off-cone nest by name instead of taking the defaulted
+    WPS_GEOG fallback (``gpuwm domain --source hrrr --ladder 12-3``: the
+    12 km root keeps the generic cone, its 3 km nest lands at the row's
+    spacing on another cone, and ``go`` refused it).
+    """
     defaults = source_static_defaults(source_id)
     if not defaults:
         return text
     import tomllib
+    from collections.abc import Mapping
     raw = tomllib.loads(text)
     table = raw.get("static")
     if table is not None and "source" in table:
+        return text
+    projection = raw.get("projection")
+    if (isinstance(projection, Mapping)
+            and defaulted_source_fallback(defaults["source"], projection)):
         return text
     # Config emitters currently write no [static] table. A source-only table
     # is appended without changing any physics, domain or fetch setting.

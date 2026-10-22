@@ -19,17 +19,11 @@ Changes: original Rust serializers, batched CPU formatting/transposition,
 GPU history capture, primitive-array resident checkpoint envelope and C ABI.
 No withdrawn WRF-Hydro code, schemas, fixtures or native runtime are used.
 
-The NetCDF container calls use netCDF-C. The default developer build links
-the system library; build_local_backend.py statically links pinned local-file
-netCDF-C 4.9.3 (3a6b1debf1557f07b606ce3653e44f0d711203be), HDF5 1.14.6
-(7bf340440909d468dbb3cf41f0ea0d87f5050cea), and zlib 1.3.1
-(51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf). Archive and licence hashes
-are in backend-sources.json. NETCDF-C-NOTICE retains the netCDF grant;
-netCDF-Fortran is not linked or shipped.
-NetCDF-4 uses netCDF-C's HDF5 C backend; its full HDF5/LBNL grants are
-retained in HDF5-NOTICE.txt. This is not a pure-Rust NetCDF-4 container.
-ZLIB-NOTICE.txt and UTF8PROC-NOTICE.txt retain the zlib, bundled utf8proc
-and processed Unicode-data grants. The C source files are unmodified.
+NetCDF containers: the project's netcdf-writer and netcdf-reader Rust crates.
+The HDF5 byte grammar follows the HDF Group file-format specification and the
+NetCDF-4 dimension-scale mapping. The metadata checksum is seeded from the
+project's hdf5-reader (Jenkins lookup3). No netCDF-C/HDF5 C/zlib C sources or
+native runtime are built or distributed by this crate.
 
 Parquet container: Apache Arrow parquet-rs 56.2.0, Apache-2.0.
 Its complete Apache notice is retained in PARQUET-NOTICE.txt.

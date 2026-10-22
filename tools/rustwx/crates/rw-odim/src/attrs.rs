@@ -86,11 +86,6 @@ impl Attrs {
         self.values_f64(attr).map(Some)
     }
 
-    /// Every element of a required numeric attribute.
-    pub fn f64_vec(&self, name: &str) -> Result<Vec<f64>> {
-        self.f64_vec_opt(name)?.ok_or_else(|| self.missing(name))
-    }
-
     fn values_f64(&self, attr: &Attribute) -> Result<Vec<f64>> {
         let mismatch = |expected: &str| OdimError::AttributeType {
             group: self.path.clone(),
@@ -98,50 +93,28 @@ impl Attrs {
             found: format!("{:?}", attr.datatype),
             expected: expected.to_string(),
         };
-        let widen = |values: Result<Vec<f64>>| values;
+        macro_rules! read_values {
+            ($ty:ty) => {
+                attr.read_1d::<$ty>()
+                    .map(|v| v.into_iter().map(|x| x as f64).collect())
+                    .map_err(|_| mismatch(stringify!($ty)))
+            };
+        }
         match &attr.datatype {
             Datatype::FloatingPoint { size, .. } => match size {
-                4 => widen(
-                    attr.read_1d::<f32>()
-                        .map(|v| v.into_iter().map(f64::from).collect())
-                        .map_err(|_| mismatch("f32")),
-                ),
+                4 => read_values!(f32),
                 8 => attr.read_1d::<f64>().map_err(|_| mismatch("f64")),
                 _ => Err(mismatch("a 4- or 8-byte float")),
             },
             Datatype::FixedPoint { size, signed, .. } => match (size, signed) {
-                (1, true) => attr
-                    .read_1d::<i8>()
-                    .map(|v| v.into_iter().map(f64::from).collect())
-                    .map_err(|_| mismatch("i8")),
-                (1, false) => attr
-                    .read_1d::<u8>()
-                    .map(|v| v.into_iter().map(f64::from).collect())
-                    .map_err(|_| mismatch("u8")),
-                (2, true) => attr
-                    .read_1d::<i16>()
-                    .map(|v| v.into_iter().map(f64::from).collect())
-                    .map_err(|_| mismatch("i16")),
-                (2, false) => attr
-                    .read_1d::<u16>()
-                    .map(|v| v.into_iter().map(f64::from).collect())
-                    .map_err(|_| mismatch("u16")),
-                (4, true) => attr
-                    .read_1d::<i32>()
-                    .map(|v| v.into_iter().map(f64::from).collect())
-                    .map_err(|_| mismatch("i32")),
-                (4, false) => attr
-                    .read_1d::<u32>()
-                    .map(|v| v.into_iter().map(f64::from).collect())
-                    .map_err(|_| mismatch("u32")),
-                (8, true) => attr
-                    .read_1d::<i64>()
-                    .map(|v| v.into_iter().map(|x| x as f64).collect())
-                    .map_err(|_| mismatch("i64")),
-                (8, false) => attr
-                    .read_1d::<u64>()
-                    .map(|v| v.into_iter().map(|x| x as f64).collect())
-                    .map_err(|_| mismatch("u64")),
+                (1, true) => read_values!(i8),
+                (1, false) => read_values!(u8),
+                (2, true) => read_values!(i16),
+                (2, false) => read_values!(u16),
+                (4, true) => read_values!(i32),
+                (4, false) => read_values!(u32),
+                (8, true) => read_values!(i64),
+                (8, false) => read_values!(u64),
                 _ => Err(mismatch("a 1-, 2-, 4- or 8-byte integer")),
             },
             _ => Err(mismatch("a numeric type")),

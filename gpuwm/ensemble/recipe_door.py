@@ -38,6 +38,8 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 
+from gpuwm.stage_timing import ledger_main
+
 
 #: Host bytes one member preparation is charged before any preparation of
 #: this launch has finished and been measured.  Defect it guards (V50
@@ -316,11 +318,13 @@ def _member_plan(request, payload, experiment, cycle):
         # A plain member count (no recipe named) is the planner's automatic
         # choice: the operational ensemble the source's adapter row declares.
         variants = tuple(getattr(request, "member_variants", ()) or ())
-        return build_recipe(source=str(fetch["source"]), cycle=base_cycle, start=start, end=end,
+        recipe = build_recipe(source=str(fetch["source"]), cycle=base_cycle, start=start, end=end,
                             count=request.members, base_seed=request.base_seed,
                             kind=request.recipe or "auto", trajectories=trajectories,
                              member=None if member is None else str(member),
                              perturbation=request.perturbation, member_variants=variants)
+        from dataclasses import replace
+        return replace(recipe, selection_roster=tuple(request.trajectories))
     except RecipeRefusal:
         raise
     except ValueError as error:
@@ -370,7 +374,11 @@ def member_fetch(raw, experiment, recipe, member) -> dict:
     if trajectory.source == recipe.base.source:
         fetch = dict(raw["fetch"])
         fetch["cycle"] = stamp
-        fetch["hours"] = last - first
+        # Authored forcing can bracket a shorter forecast on its native clock.
+        # Keep a covering cycle-start window instead of shrinking it off clock.
+        if not (first == 0 and not fetch.get("forecast_start_hour", 0)
+                and int(fetch.get("hours", 0)) >= last):
+            fetch["hours"] = last - first
         fetch.pop("forecast_start_hour", None)
         if first:
             fetch["forecast_start_hour"] = first
@@ -386,6 +394,9 @@ def member_fetch(raw, experiment, recipe, member) -> dict:
     fetch.pop("member", None)
     if trajectory.member is not None:
         fetch["member"] = trajectory.member
+    selected = recipe.selection_roster[member.index] if recipe.selection_roster else {}
+    if selected.get("fetch_root"):
+        fetch["reuse_fetch"] = str(Path(selected["fetch_root"]).expanduser().resolve())
     return fetch
 
 
@@ -410,7 +421,28 @@ def member_configuration(raw, config, wps, recipe, member, directory):
     from gpuwm.toml_document import emit_experiment_toml
 
     trajectory = member.trajectory
+    selected = recipe.selection_roster[member.index] if recipe.selection_roster else {}
+    if selected.get("tracks") and not selected.get("configuration"):
+        raise RecipeRefusal("track-selected trajectory needs its own cyclone-setup configuration; "
+                            "using the shared config would seed every moving nest on the same track")
+    if selected.get("configuration"):
+        import tomllib
+        chosen = Path(selected["configuration"])
+        if not chosen.is_file() or hashlib.sha256(chosen.read_bytes()).hexdigest() != selected.get("configuration_sha256"):
+            raise RecipeRefusal("member configuration differs from the selected cyclone-setup bytes")
+        config = chosen
+        raw = tomllib.loads(chosen.read_text(encoding="utf-8"))
     original = load_experiment(config)
+    if selected.get("configuration"):
+        from gpuwm.ensemble.recipes import SourceTrajectory
+        fetch = raw.get("fetch", {})
+        actual = SourceTrajectory(fetch["source"], _utc(fetch["cycle"]), fetch.get("member"))
+        if actual.identity != trajectory.identity:
+            raise RecipeRefusal("member configuration belongs to another source trajectory")
+        from datetime import timezone
+        if (original.start_time.replace(tzinfo=timezone.utc) != recipe.start
+                or original.run_seconds != (recipe.end-recipe.start).total_seconds()):
+            raise RecipeRefusal("member configuration belongs to another forecast window")
     changed = deepcopy(raw)
     if recipe.member_variants:
         from gpuwm.ensemble.member_variants import variant_configuration
@@ -465,7 +497,10 @@ def member_configuration(raw, config, wps, recipe, member, directory):
     target.write_text(emit_experiment_toml(changed), encoding="utf-8")
     experiment = load_experiment(target)
     namelist = directory / "experiment.namelist.wps"
-    if trajectory.source == recipe.base.source:
+    if selected.get("configuration"):
+        from gpuwm.companion_domains import configuration_wps_namelist
+        namelist = configuration_wps_namelist(target, experiment, raw=changed, into=directory)
+    elif trajectory.source == recipe.base.source:
         namelist.write_bytes(Path(wps).read_bytes())
     else:
         from gpuwm.companion_domains import candidate_wps_text
@@ -577,9 +612,60 @@ def review_members(raw, config, wps, recipe, *, scratch, options=None):
     return tuple(plans)
 
 
+class _MemberPreparationLedger:
+    """One member's preparation spans in the ledger its siblings share.
+
+    Members prepare concurrently in one process, so their same-named spans
+    (fetch.inputs, prep.inputs, post.orchestration) pair by ``span_id``, the
+    way :func:`gpuwm.ensemble.timeline.member_timeline` tags each member's
+    forecast steps.
+    """
+
+    def __init__(self, ledger, member_id):
+        self._ledger, self._member_id = ledger, member_id
+
+    def emit(self, stage, phase="mark", *, attrs=None, **clocks):
+        return self._ledger.emit(stage, phase, attrs={
+            **(attrs or {}), "member_id": self._member_id,
+            "span_id": f"ensemble-prepare-{self._member_id}"}, **clocks)
+
+
+def _fetch_seconds(directories, start_unix, end_unix):
+    """Wall seconds of [start, end] in which at least one member was fetching.
+
+    Read from each member preparation's own stage events, so the ensemble's
+    fetch and prepare split is measured, not apportioned.
+    """
+    from gpuwm.timeline.report import union_seconds
+
+    spans = []
+    for directory in directories:
+        try:
+            lines = (Path(directory) / "prepare-events.jsonl").read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        opened = None
+        for line in lines:
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if event.get("stage") != "fetch" or not isinstance(event.get("emitted_unix_ms"), (int, float)):
+                continue
+            at = event["emitted_unix_ms"] / 1000.0
+            if event.get("event") == "stage_started":
+                opened = at
+            elif event.get("event") == "stage_finished" and opened is not None:
+                begin, end = max(opened, start_unix), min(at, end_unix)
+                if end > begin:
+                    spans.append((begin, end))
+                opened = None
+    return union_seconds(spans)
+
+
 def prepare_member(config, experiment, *, source, directory, downloads, geog_root,
                    recipe_sha256, options=None, composition_bank=None,
-                   composition_source_key=None):
+                   composition_source_key=None, member_id=None):
     """Prepare every domain from one trajectory through its ordinary source chain.
 
     The chain consumes this member's complete experiment, including its
@@ -601,9 +687,6 @@ def prepare_member(config, experiment, *, source, directory, downloads, geog_roo
     request = pin_request(fetch_request(hints, p_top=experiment.vertical.p_top), pinned)
     run_options = {"geog_root": str(geog_root), "supplement": [],
                    "data_dir": str(managed_download_dir(downloads, request)), **posting}
-    if os.environ.get('GPUWM_BENCH_MEMBER_INPUTS_JSON'):
-        from tools.bench.member_inputs import directory_for
-        run_options['data_dir'] = directory_for(hints)
     plan = SimpleNamespace(run_options=run_options, config_intent={}, sha256=recipe_sha256)
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
@@ -623,11 +706,19 @@ def prepare_member(config, experiment, *, source, directory, downloads, geog_roo
             check()
             return super().emit(event, **fields)
     events = _CanaryEvents(directory / "prepare-events.jsonl", mirror=None)
+    observer = runplan.RunObserver(events)
+    if member_id is not None:
+        observer._timeline = _MemberPreparationLedger(observer._timeline, member_id)
     try:
         with scope:
             result = owner(plan, config_path=Path(config), exp=experiment,
-                           observer=runplan.RunObserver(events), run_dir=directory / "prepare",
+                           observer=observer, run_dir=directory / "prepare",
                            prepare_only=True)
+        # This member's timeline ends with its preparation.  Left to the
+        # command's exit, its idle post.orchestration span ran through the
+        # whole ensemble forecast and its products (450 s of a 6-member
+        # HRRR run, 2026-10-20).
+        observer.close()
     finally:
         stop_watch()
         events.close()
@@ -712,13 +803,22 @@ def disk_refusal(plans, *, case_root, request, options=None) -> str | None:
         basis.append(f"member {plan.member.index}: {row['download']['basis']}")
     stream = max(rows, key=lambda row: int(row.get("compose_scratch_min_bytes") or 0))
     members = len(rows)
+    # The default-on hydro preparation (shared by every member) is priced
+    # here and built only after this admission passes (gpuwm.hydro.runtime
+    # ADMISSION_PENDING), so a refusal spends nothing.
+    from gpuwm.hydro.runtime import hydro_disk_estimate
+    hydro_config = getattr(plans[0], "config", None) if plans else None
+    hydro_bytes, hydro_basis = hydro_disk_estimate(hydro_config) if hydro_config else (0, None)
+    if hydro_basis:
+        basis.append(hydro_basis)
     projection = {
         "download_bytes": sum(int(row["download_bytes"]) for row in distinct.values()),
         # Shared frame streams sit beside output, even if the caller's
         # ordinary scratch override is on another disk. Conservatively price
         # every multi-tail source, including streams released early below.
         "preparation_bytes": (sum(int(row["preparation_bytes"]) for row in preparation_banks.values()) +
-                              sum(size for source, size in source_streams.items() if len(source_tails[source]) > 1)),
+                              sum(size for source, size in source_streams.items() if len(source_tails[source]) > 1)
+                              + hydro_bytes),
         "history_bytes": (sum(int(row["history_bytes"]) for row in rows)
                           if request.keep_member_files else 0),
         "checkpoint_bytes": 0, "picture_bytes": 0,
@@ -744,8 +844,8 @@ def disk_refusal(plans, *, case_root, request, options=None) -> str | None:
         remedy="Free some disk, run fewer members, or name an --outdir on a disk with room")
     if refusal is None:
         return None
-    return (refusal[0].upper() + refusal[1:] + ". Refused before the first download, "
-            "so nothing was spent. " + "; ".join(basis))
+    return (refusal[0].upper() + refusal[1:] + ". Refused before the first download and before "
+            "the hydro preparation, so nothing was spent. " + "; ".join(basis))
 
 
 def admit(plans, *, config, geog_root, case_root, request, options=None,
@@ -961,6 +1061,7 @@ def _relaunch_preparations(case_root, root, recipe, context):
     return {}
 
 
+@ledger_main
 def run_recipe_ensemble(args, request, *, observer=None, options=None) -> int:
     """Plan, review, prepare and run a time-lagged or multi-model ensemble.
 
@@ -978,7 +1079,9 @@ def run_recipe_ensemble(args, request, *, observer=None, options=None) -> int:
     from gpuwm.experiment import load_experiment
     from gpuwm.explain import explain_enabled
     from gpuwm.geog_assets import default_geog_root
+    from gpuwm.stage_timing import LedgerObserver, bind_ledger
 
+    door_started = time.monotonic()
     options = dict(options or {})
     options["prepare_only"] = bool(getattr(args, "prepare_only", False))
     options.setdefault("render_products", getattr(args, "render_products", None))
@@ -990,6 +1093,14 @@ def run_recipe_ensemble(args, request, *, observer=None, options=None) -> int:
     raw = tomllib.loads(config.read_text(encoding="utf-8-sig"))
     experiment = load_experiment(config)
     recipe = plan_recipe(request, raw, experiment)
+    # A selected trajectory roster requests the existing cyclone product path.
+    # Retain the ordinary writer histories until maps and tracks consume them.
+    from gpuwm.ensemble.cyclone_products import roster_product_request
+    cyclone_request = roster_product_request(request.trajectories,
+        getattr(args, "cyclone_products", None))
+    if cyclone_request is not None:
+        from dataclasses import replace
+        request = replace(request, cyclone_products=cyclone_request)
     named_wps = getattr(args, "wps_namelist", None)
     if named_wps is not None and not Path(named_wps).is_file():
         raise RecipeRefusal(
@@ -1020,14 +1131,34 @@ def run_recipe_ensemble(args, request, *, observer=None, options=None) -> int:
              f"{recipe.start:%Y-%m-%dT%H:%M}Z to {recipe.end:%Y-%m-%dT%H:%M}Z")
         for plan in plans:
             _say(plan.line)
+            if recipe.selection_roster:
+                row = recipe.selection_roster[plan.member.index]
+                layout = "; ".join(f"d{d.grid_id:02d} {d.run.nx}x{d.run.ny}x{d.run.nz} dx={d.run.dx:g}m"
+                                   for d in plan.experiment.domains)
+                _say(f"  {layout}; weight={row.get('weight', 1/len(plans)):.12g}; "
+                     f"stratum={row.get('stratum', 'unstratified')}")
+                if row.get("fetch_root"):
+                    _say(f"  forcing: {plan.fetch['hours']} h; verified reuse candidate {plan.fetch['reuse_fetch']}")
         if getattr(args, "dry_run", False):
             _say("dry run: nothing was fetched, prepared or run")
             return 0
         admit(plans, config=config, geog_root=geog_root, case_root=case_root,
               request=request, options=options, command=command)
+        # Admitted: the hydro door now builds the covering fabric.
+        from gpuwm.hydro.runtime import rebind_launch
+        rebind_launch(args, admitted=True)
     root = run_stamp.resolve(case_root, init=str(raw["fetch"]["cycle"]),
                              enabled=run_stamp.run_stamp_enabled(args), create=True)
     root = Path(root)
+    # The run root's own timeline, bound once the root is claimed, as a
+    # single go run binds its own: the ensemble's prepare and forecast
+    # stages, every member's preparation and every member's forecast steps
+    # land in <run>/timeline.jsonl.  Breakage it prevents: an ensemble wrote
+    # no run-level timeline at all; its stage notices reached no ledger, and
+    # its forecast appeared only as each member preparation's idle span.
+    hosted_observer = observer
+    observer = LedgerObserver(observer, bind_ledger(root, product="ensemble"), root,
+                              relay_forecast=False)
     wps = companion_wps(root / "route-inputs")
     context = _preparation_context_sha256(wps, geog_root, options)
     reusable = _relaunch_preparations(case_root, root, recipe, context)
@@ -1114,6 +1245,7 @@ def run_recipe_ensemble(args, request, *, observer=None, options=None) -> int:
             cpu_workers = os.cpu_count() or 1
         workers = max(1, min(len(plans), cpu_workers))
         preparation_started = time.monotonic()
+        preparation_started_unix = time.time()
         admission = _PreparationAdmission(workers)
         receipt["preparation_execution"] = {"backend": "independent_member_workers",
             "workers": workers, "available_cpu_workers": cpu_workers,
@@ -1138,7 +1270,7 @@ def run_recipe_ensemble(args, request, *, observer=None, options=None) -> int:
                         composition_bank=(composition_banks[binding.source_key].name
                                           if binding.source_key in composition_banks else None),
                         composition_source_key=binding.source_key,
-                        recipe_sha256=recipe.sha256, options={**options,
+                        recipe_sha256=recipe.sha256, member_id=member.index, options={**options,
                         "_head_canaries": canaries, "_canary_namelist": member_wps})
                 return result, reused_run, time.monotonic() - started
             except BaseException as error:
@@ -1205,6 +1337,18 @@ def run_recipe_ensemble(args, request, *, observer=None, options=None) -> int:
             # No worker can still read a shared bank when it is removed.
             pool.shutdown(wait=True, cancel_futures=True)
         receipt["preparation_execution"]["elapsed_seconds"] = time.monotonic() - preparation_started
+        fetched = _fetch_seconds(
+            [root / "members" / f"member-{plan.member.index:03d}"
+             for plan, binding, original_member, future in jobs
+             if original_member is None and future.result()[1] is None],
+            preparation_started_unix, time.time())
+        #: The door's stage clocks, handed to the session so ensemble-run.json
+        #: names where the whole run's wall went (fetch, prepare, forecast,
+        #: products), not only the forecast session's own wall.
+        stage_clock = {"started": door_started,
+                       "plan": preparation_started - door_started,
+                       "fetch": fetched,
+                       "prepare": receipt["preparation_execution"]["elapsed_seconds"] - fetched}
         receipt["preparation_execution"]["host_admission"] = admission.receipt()
 
         for bank in composition_banks.values():
@@ -1286,7 +1430,9 @@ def run_recipe_ensemble(args, request, *, observer=None, options=None) -> int:
                                   input_provider=provider,
                                   **({"restart_roster": args.restart_roster}
                                      if getattr(args, "restart_roster", None) is not None else {})) as session:
-            code = runner.main(sim[3:], observer=observer)
+            if session is not None:
+                session.door_stage_clock = {**stage_clock, "forecast_started": where["started"]}
+            code = runner.main(sim[3:], observer=hosted_observer)
             if code:
                 # The runner said why on its own line (a refusal, or a
                 # source lead later than its budget) and returned its code.
@@ -1304,6 +1450,7 @@ def run_recipe_ensemble(args, request, *, observer=None, options=None) -> int:
                       f"{root / RECEIPT_NAME} records it.", file=sys.stderr, flush=True)
                 return code
             products_receipt = session.completed_products()
+            timing_seconds = (getattr(session, "last_manifest", None) or {}).get("timing_seconds")
         _notify(observer, "stage_end", label="forecast", exit_code=0, ok=True,
                 elapsed_seconds=time.monotonic() - where["started"], progress=None)
     except BaseException as error:  # noqa: BLE001 - every exit is recorded in the receipt
@@ -1356,6 +1503,8 @@ def run_recipe_ensemble(args, request, *, observer=None, options=None) -> int:
             bank.cleanup()
     receipt["status"] = "complete"
     receipt["products"] = products_receipt
+    if timing_seconds is not None:
+        receipt["timing_seconds"] = timing_seconds
     publish()
     _say(f"complete: {len(recipe.members)} members, products under {forecast_dir}; "
          f"member plan in {root / RECEIPT_NAME}")

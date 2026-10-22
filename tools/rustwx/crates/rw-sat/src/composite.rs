@@ -9,9 +9,8 @@
 
 use std::collections::HashMap;
 use std::error::Error;
-use std::io;
 
-use crate::abi::{GoesAbiField, GoesAbiScene};
+use crate::boxed_error;
 
 /// Plain RGBA color, `[r, g, b, a]`.
 pub type Rgba = [u8; 4];
@@ -181,7 +180,7 @@ where
 }
 
 /// Compose a full plane of pixels from full-grid band planes (all on the
-/// same fixed grid, e.g. after [`values_on_base_grid`]).
+/// same fixed grid).
 pub fn compose_rgb_pixels(
     style: GoesAbiRgbCompositeStyle,
     bands: &HashMap<u8, Vec<f32>>,
@@ -205,77 +204,6 @@ fn band_value(
         .get(&channel)
         .and_then(|values| values.get(idx).copied())
         .ok_or_else(|| boxed_error(format!("missing C{channel:02} value at index {idx}")))
-}
-
-/// Resample `field` onto `base_scene`'s fixed grid (bilinear in scan-angle
-/// space; identity when the grids already match). This is how 0.5/1 km bands
-/// land on a 2 km composite base grid and vice versa.
-pub fn values_on_base_grid(
-    field: &GoesAbiField,
-    base_scene: &GoesAbiScene,
-) -> Result<Vec<f32>, Box<dyn Error>> {
-    if same_fixed_grid(&field.scene, base_scene) {
-        return Ok(field.values.clone());
-    }
-    resample_fixed_grid_to_scene(field, base_scene)
-}
-
-fn same_fixed_grid(left: &GoesAbiScene, right: &GoesAbiScene) -> bool {
-    left.fixed_grid.nx == right.fixed_grid.nx
-        && left.fixed_grid.ny == right.fixed_grid.ny
-        && left.fixed_grid.x_scan_rad.len() == right.fixed_grid.x_scan_rad.len()
-        && left.fixed_grid.y_scan_rad.len() == right.fixed_grid.y_scan_rad.len()
-        && left
-            .fixed_grid
-            .x_scan_rad
-            .iter()
-            .zip(right.fixed_grid.x_scan_rad.iter())
-            .all(|(a, b)| (a - b).abs() <= 1.0e-12)
-        && left
-            .fixed_grid
-            .y_scan_rad
-            .iter()
-            .zip(right.fixed_grid.y_scan_rad.iter())
-            .all(|(a, b)| (a - b).abs() <= 1.0e-12)
-}
-
-fn resample_fixed_grid_to_scene(
-    field: &GoesAbiField,
-    base_scene: &GoesAbiScene,
-) -> Result<Vec<f32>, Box<dyn Error>> {
-    let source = &field.scene.fixed_grid;
-    let target = &base_scene.fixed_grid;
-    let x_map = build_axis_resample(&source.x_scan_rad, &target.x_scan_rad);
-    let y_map = build_axis_resample(&source.y_scan_rad, &target.y_scan_rad);
-    let mut out = vec![f32::NAN; target.nx.saturating_mul(target.ny)];
-
-    for (j, y_bracket) in y_map.iter().enumerate() {
-        let Some((j0, j1, fy)) = *y_bracket else {
-            continue;
-        };
-        for (i, x_bracket) in x_map.iter().enumerate() {
-            let Some((i0, i1, fx)) = *x_bracket else {
-                continue;
-            };
-            let idx = |yy: usize, xx: usize| yy * source.nx + xx;
-            out[j * target.nx + i] = bilinear_f32(
-                field.values[idx(j0, i0)],
-                field.values[idx(j0, i1)],
-                field.values[idx(j1, i0)],
-                field.values[idx(j1, i1)],
-                fx,
-                fy,
-            );
-        }
-    }
-    Ok(out)
-}
-
-fn build_axis_resample(source: &[f64], target: &[f64]) -> Vec<Option<(usize, usize, f32)>> {
-    target
-        .iter()
-        .map(|&value| bracket_axis(source, value))
-        .collect()
 }
 
 /// Bracket `value` between two axis samples (binary search; the axis may be
@@ -318,21 +246,6 @@ pub fn bracket_axis(axis: &[f64], value: f64) -> Option<(usize, usize, f32)> {
         ((value - a) / (b - a)).clamp(0.0, 1.0)
     };
     Some((lo, hi, t as f32))
-}
-
-/// Bilinear blend that degrades to the first finite corner when any corner
-/// is NaN (limb pixels), and NaN when every corner is.
-pub fn bilinear_f32(v00: f32, v10: f32, v01: f32, v11: f32, fx: f32, fy: f32) -> f32 {
-    if v00.is_finite() && v10.is_finite() && v01.is_finite() && v11.is_finite() {
-        let south = v00 * (1.0 - fx) + v10 * fx;
-        let north = v01 * (1.0 - fx) + v11 * fx;
-        south * (1.0 - fy) + north * fy
-    } else {
-        [v00, v10, v01, v11]
-            .into_iter()
-            .find(|value| value.is_finite())
-            .unwrap_or(f32::NAN)
-    }
 }
 
 fn k_to_c(value: f32) -> f64 {
@@ -413,10 +326,6 @@ fn lerp_color(left: Rgba, right: Rgba, t: f64) -> Rgba {
         blend_u8(left[2], right[2], t),
         blend_u8(left[3], right[3], t),
     ]
-}
-
-fn boxed_error(message: impl Into<String>) -> Box<dyn Error> {
-    Box::new(io::Error::new(io::ErrorKind::InvalidData, message.into()))
 }
 
 #[cfg(test)]

@@ -9,7 +9,7 @@ Two CSVs live in ``gpuwm/data/ysu/oracle/``:
     per-level word it wrote, plus ``rthblten``, which is
     ``module_bl_ysu.F:452``'s ``ttnp/pi2d`` -- the potential-temperature
     tendency the WRF driver actually hands the solver, and therefore the
-    quantity ``kernels/ysu.cu``'s ``dtheta`` has to be compared against.
+    quantity ``kernels/ysu_480.cu``'s ``dtheta`` has to be compared against.
 ``ysu-surface.csv``
     one row per case: the surface-coupling inputs and ``hpbl``/``kpbl``/
     ``wstar``/``delta``.
@@ -18,7 +18,7 @@ Both CSVs also carry the momentum tendencies from a *second* call made with
 ``ctopo = ctopo2 = 1``.  That second call is not an alternative -- it is what
 WRF's own driver does on every column of every default run
 (``module_bl_ysu.F:404``), and since lane/parity-286 it is the arm every
-entry point of ``kernels/ysu.cu`` takes, so the port's ``du``/``dv`` are
+entry point of ``kernels/ysu_480.cu`` takes, so the port's ``du``/``dv`` are
 graded against it.  The first, ctopo-absent call (``utnp``/``vtnp``) is
 kept as the WRF-against-WRF control that shows the two arms differ.
 
@@ -96,10 +96,6 @@ class YsuOracleFixture:
     @property
     def ncase(self) -> int:
         return len(self.cases)
-
-
-def _f32(rows, key) -> np.ndarray:
-    return np.asarray([np.float32(row[key]) for row in rows], dtype=np.float32)
 
 
 def load_ysu_oracle(directory: Path | None = None) -> YsuOracleFixture:

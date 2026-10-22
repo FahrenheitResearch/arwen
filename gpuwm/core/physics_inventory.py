@@ -794,7 +794,7 @@ PHYSICS_SLOT_DISPATCH: dict[str, dict[int, str | None]] = {
         5: "_run_sfclay",     # MYNN surface layer
         91: "_run_sfclay",    # classic MM5
     },
-    "sf_ocean_physics": {0: None, 1: "_run_surface_ocean"},
+    "sf_ocean_physics": {0: None, 1: "_run_surface_ocean", 2: "_run_surface_ocean"},
     "sf_surface_physics": {
         0: None,
         2: "_run_noah",       # Noah LSM
@@ -929,3 +929,10 @@ def cumulus_state_layout(cfg):
     return {name: (tuple(getattr(cfg, dim) if isinstance(dim,str) else dim for dim in dims), dtype)
             for name,(dims,dtype,flag) in CUMULUS_STATE_LAYOUTS.get(cfg.cu_physics,{}).items()
             if flag is None or getattr(cfg,flag)}
+
+
+def solar_split_history_expected(cfg):
+    """Schemes with a native surface split, or the model's SW interpolation."""
+    from gpuwm.config import radiation_scheme_ids
+    shortwave = radiation_scheme_ids(cfg)[1]
+    return bool(shortwave and (shortwave in (4, 5) or cfg.swint_opt == 1))

@@ -124,24 +124,11 @@ def test_streaming_does_not_unbind_the_point_fit(lat: float) -> None:
 
 
 @pytest.mark.parametrize("lat", [70.0, 80.0, -75.0])
-def test_the_polar_envelope_binds_before_the_extent_cap_does(
-        lat: float) -> None:
-    """High latitude is where the projection, not the cap, decides.
-
-    The extent cap alone would leave a 6,000 km root centred at 80
-    degrees swallowing the pole, so this is the bound that has to exist
-    separately -- and it has to shrink rather than refuse, because the
-    request is legal and a smaller domain honours it.  Below about 65
-    degrees the extent cap is the one that bites first, so the
-    latitudes here are the ones where it does not.
-    """
+def test_polar_domains_use_the_extent_cap_without_pole_shrinking(lat: float) -> None:
     projection, dims, _ = _fit(lat)
     dw._pole_clearance_refusal(projection, *dims[0], dw.ROOT_DX_M)
-    assert _extent_km(dims) < dw.POINT_FIT_MAX_EXTENT_KM
-    # Poleward of 60 the fit gets smaller as the centre gets closer to
-    # the singularity; a bound that never bit would pass the line above
-    # by accident.
-    assert dims[0][0] >= 12
+    assert _extent_km(dims) <= dw.POINT_FIT_MAX_EXTENT_KM
+    assert _extent_km(dims) > 0.95 * dw.POINT_FIT_MAX_EXTENT_KM
 
 
 def test_a_bound_that_bit_is_reported_and_not_silent(capsys) -> None:
@@ -206,56 +193,26 @@ def test_the_extent_cap_is_default(capsys) -> None:
     assert "cap" not in inspect.signature(dw.fit_ladder).parameters
 
 
-def test_a_point_no_layout_can_help_is_still_refused(tmp_path, capsys) -> None:
-    """The refusal that must survive: the centre itself is the problem."""
+def test_near_pole_point_uses_polar_route(tmp_path, capsys) -> None:
     out = tmp_path / "near-pole.toml"
     rc = cli_main(["domain", "--point=89.0,-100.0", "--card", "16gb",
                    "--ladder", "12", "--source", "gfs",
                    "--cycle", "2026-07-28T06", "--out", str(out)])
-    assert rc == 2
-    err = capsys.readouterr().err
-    assert "pole" in err and "Traceback" not in err
-    # The remedy is the centre, and only the centre.  "Choose a smaller
-    # layout (--vram-gib / a shallower --ladder)" was true while an
-    # unbounded fit could grow a mid-latitude request into the pole; a
-    # request that reaches this refusal now has already been shrunk to
-    # its ladder's smallest layout, so that advice moved nothing.
-    assert "move --point away from the pole" in err
-    assert "the centre is what moves" in err
-    assert "--vram-gib" not in err and "shallower --ladder" not in err
-    # The phrase the desktop maps, and the token it routes on.
-    assert "not pole-capable" in err and "--polygon" not in err
-    assert not out.exists()
+    assert rc == 0, capsys.readouterr().err
+    assert out.exists()
 
 
-def test_a_drawn_area_reaching_the_pole_is_still_refused(
-        tmp_path, capsys) -> None:
-    """The drawn-area refusal keeps its wording, which the desktop maps.
-
-    Shrinking cannot help here: the domain has to contain what the user
-    drew, so the refusal is the correct answer and the remedy it names
-    (draw a smaller area away from the poles) is the one that works.
-    """
+def test_drawn_area_reaching_pole_uses_polar_route(tmp_path, capsys) -> None:
     area = tmp_path / "area.geojson"
-    area.write_text(json.dumps({
-        "type": "Polygon",
-        "coordinates": [[[-150.0, 80.0], [150.0, 80.0], [150.0, 89.9],
-                         [-150.0, 89.9], [-150.0, 80.0]]]}),
-        encoding="utf-8")
+    area.write_text(json.dumps({"type": "Polygon", "coordinates": [[
+        [-150.0, 80.0], [150.0, 80.0], [150.0, 89.9],
+        [-150.0, 89.9], [-150.0, 80.0]]]}))
     out = tmp_path / "drawn.toml"
     rc = cli_main(["domain", f"--polygon={area}", "--card", "16gb",
                    "--ladder", "12", "--source", "gfs",
                    "--cycle", "2026-07-28T06", "--out", str(out)])
-    assert rc == 2
-    err = capsys.readouterr().err
-    # The two phrases the desktop's summary keys on, unchanged.
-    assert "contains or touches the north pole" in err
-    assert "not pole-capable" in err
-    assert "--polygon" in err
-    # And the remedy that works on this route: the drawing, not the card.
-    assert "the drawing is what moves" in err
-    assert "--vram-gib" not in err
-    assert not out.exists()
+    assert rc == 0, capsys.readouterr().err
+    assert out.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -553,24 +510,11 @@ def test_the_bounded_search_reports_no_bound_when_memory_stopped_it() -> None:
     assert stop == {}
 
 
-def test_the_bounded_search_shrinks_off_the_projection_pole() -> None:
-    """The other request bound, on the other road.
-
-    A high-latitude centre on a large card is exactly where an unbounded
-    road runs away: memory never binds, so the ladder's largest rung wins
-    and its footprint swallows the projection pole, where lat-lon source
-    interpolation and static-tile windowing do not work.
-    """
-
-    projection, dims, _exp = _bounded_fit(72.0, tiles="auto")
-    assert not dw._footprint_contains_pole(projection, dims[0][0], dims[0][1],
-                                           dw.ROOT_DX_M)
-    # And the same request on the bisecting road agrees, which is the
-    # point: one door, one answer.
+def test_both_fit_roads_admit_polar_cap() -> None:
+    projection, dims, _ = _bounded_fit(72.0, tiles="auto")
+    assert dw._footprint_contains_pole(projection, *dims[0], dw.ROOT_DX_M)
     bisected_projection, bisected_dims, _ = _fit(72.0, tiles="auto")
-    assert not dw._footprint_contains_pole(
-        bisected_projection, bisected_dims[0][0], bisected_dims[0][1],
-        dw.ROOT_DX_M)
+    assert dw._footprint_contains_pole(bisected_projection, *bisected_dims[0], dw.ROOT_DX_M)
 
 
 def _road_fit(*, bounded: bool, source: str = "gfs", lat: float = 41.5,
@@ -606,23 +550,9 @@ def test_a_source_stop_is_warned_about_on_both_roads(capsys, bounded) -> None:
     assert "a larger card buys no more grid here" in err
 
 
-def test_a_request_bound_that_exhausts_the_ladder_names_what_moves() -> None:
-    """A refusal with no way out is the defect the refusal law is about.
-
-    When every rung of a bounded ladder reaches the projection pole the
-    road runs out of rungs and used to say only which bound rejected the
-    last one.  The bisecting road cannot end this way -- it shrinks to
-    its minimum layout and `_pole_clearance_refusal` names the remedy --
-    so the bounded road owed the same sentence.
-    """
-
-    with pytest.raises(dw.DomainFitError) as caught:
-        _road_fit(bounded=True, lat=89.0)
-    text = str(caught.value)
-    assert "reaches the north pole" in text
-    assert "the centre is what moves" in text
-    assert "request a point further from it" in text
-    assert caught.value.resource == "extent"
+def test_bounded_ladder_admits_near_pole_point() -> None:
+    projection, dims, _ = _road_fit(bounded=True, lat=89.0)
+    assert dw._footprint_contains_pole(projection, *dims[0], dw.ROOT_DX_M)
 
 
 def test_a_memory_exhausted_ladder_claims_no_request_bound() -> None:

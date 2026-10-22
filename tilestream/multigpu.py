@@ -273,8 +273,6 @@ __all__ = [
     "hash_host",
     "negative_controls",
     "plan_split",
-    "plan_split_x",
-    "plan_split_y",
     "seam_plan",
     "validate_forced_plan",
     "verify_geometry",
@@ -487,30 +485,6 @@ def validate_forced_plan(cfg, specs, halo: int, boundaries, *,
                 f"the specified/relaxation frame width {active} (needs both "
                 "extents > twice that): the boundary kernel would have no "
                 "unique interior.  Use fewer ranks or a wider domain.")
-
-
-def plan_split_x(nx: int, ny: int, halo: int, ngpu: int = 2,
-                 periodic: bool = True) -> list[_spec.TileSpec]:
-    """``ngpu`` sub-domains side by side in x; y is not split.  See :func:`plan_split`."""
-    if int(ngpu) < 2:
-        raise ValueError(f"ngpu must be >= 2, got {ngpu}")
-    return plan_split(nx, ny, halo, gx=int(ngpu), gy=1, periodic=periodic)
-
-
-def plan_split_y(nx: int, ny: int, halo: int, ngpu: int = 2,
-                 periodic: bool = True) -> list[_spec.TileSpec]:
-    """``ngpu`` sub-domains stacked in y; x is not split.
-
-    The transpose of :func:`plan_split_x`, and worth having as its own gate
-    row: the seam bands are contiguous runs of whole rows rather than strided
-    column strips, and the staggered variant at the seam is ``v``
-    (``ny+1`` rows) rather than ``u`` (``nx+1`` columns).  Different strides,
-    different alias slot, same arithmetic -- which is exactly the kind of pair
-    where a transposed index survives one orientation and not the other.
-    """
-    if int(ngpu) < 2:
-        raise ValueError(f"ngpu must be >= 2, got {ngpu}")
-    return plan_split(nx, ny, halo, gx=1, gy=int(ngpu), periodic=periodic)
 
 
 def _owner_x(specs, ty: int, logical: int, nx: int) -> int:

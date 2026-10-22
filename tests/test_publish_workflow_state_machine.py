@@ -60,7 +60,7 @@ def scripts(job):
 
 def test_public_mutation_waits_for_exact_assets_and_both_platforms(workflow):
     jobs = workflow["jobs"]
-    ordered = ["test", "release_authority", "prepare", "qualify", "assets", "publish", "release"]
+    ordered = ["controller", "release_authority", "prepare", "test", "qualify", "assets", "publish", "release"]
     for predecessor, successor in zip(ordered, ordered[1:]):
         assert predecessor in ancestors(jobs, successor), (predecessor, successor)
     matrix = jobs["qualify"]["strategy"]["matrix"]["include"]
@@ -79,7 +79,7 @@ def test_release_events_and_dispatch_share_a_serialized_authority(workflow):
     assert workflow["concurrency"]["cancel-in-progress"] is False
     assert "github.ref" in workflow["concurrency"]["group"]
     for name, job in workflow["jobs"].items():
-        if name != "test":
+        if name != "controller":
             assert job["if"] == "github.event_name != 'pull_request'"
 
 
@@ -106,14 +106,15 @@ def test_release_jobs_execute_the_tested_controller_after_hash_verification(work
     jobs = workflow["jobs"]
     assert "controller_sha256" in jobs["test"]["outputs"]
     for name, job in jobs.items():
-        if name == "test":
+        if name in {"controller", "test"}:
             continue
         steps = job["steps"]
         uses = [i for i, step in enumerate(steps)
                 if re.search(r"python\s+(?:tools|controller)/promote_prepared_release\.py\s", step.get("run", ""))]
+        source = "controller" if name in {"release_authority", "ci", "prepare"} else "test"
         checks = [i for i, step in enumerate(steps)
                   if "sha256sum --check --strict" in step.get("run", "")
-                  and step.get("env", {}).get("CONTROLLER_SHA256") == "${{ needs.test.outputs.controller_sha256 }}"]
+                  and step.get("env", {}).get("CONTROLLER_SHA256") == "${{ needs." + source + ".outputs.controller_sha256 }}"]
         assert uses and len(checks) == 1, name
         assert checks[0] < min(uses), name
         if name in {"prepare", "qualify"}:
@@ -148,12 +149,23 @@ def test_promotion_uses_prepared_bytes_and_keeps_existing_packaging_checks(workf
         if name != "test":
             assert not re.search(r"python\s+-m\s+build|cargo\s+build|gh\s+release\s+(?:upload|create|delete)|git\s+(?:push|tag)", scripts(job)), name
     test_script = scripts(jobs["test"])
-    for name in ("bridge_fetch", "table_fetch", "package_data_coverage", "companion_distribution",
-                 "configs_are_packaged", "doctor", "doctor_nexrad", "cli", "tui_cli", "source_adapters",
-                 "namelist_compat", "native_wrf_distribution", "prepared_publication",
-                 "publish_workflow_state_machine", "publish_dist_shape_agreement", "release_version_declaration",
-                 "bridge_bundle_adopt", "verify_source_bridge_pins", "verify_release_artifacts"):
-        assert f"tests/test_{name}.py" in test_script
+    selected = {"publish_workflow_state_machine", "release_version_declaration", "publish_dist_shape_agreement",
+                "verify_release_artifacts", "package_data_coverage", "prepared_publication"}
+    assert set(re.findall(r"tests/test_(\w+)\.py", test_script)) == selected
+    assert "cargo build" not in test_script and "rustup" not in test_script and "-e " not in test_script
+    ci = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
+    nightly = ci["jobs"]["publication_contracts"]
+    assert nightly["if"] == "github.event_name == 'schedule'"
+    assert ci.get("on", ci.get(True))["schedule"] == [{"cron": "0 9 * * *"}]
+    # Keep the entire former tag-time selection, including the fetcher callers.
+    previous = {"bridge_fetch", "table_fetch", "package_data_coverage", "companion_distribution",
+        "configs_are_packaged", "doctor", "doctor_nexrad", "cli", "tui_cli", "source_adapters",
+        "namelist_compat", "native_wrf_distribution", "prepared_publication", "carried_channel",
+        "carried_release_packet", "publish_workflow_state_machine", "publish_dist_shape_agreement",
+        "release_version_declaration", "release_bump_version", "precut_gate_completion", "gpu_pin_set",
+        "bridge_bundle_adopt", "verify_source_bridge_pins", "verify_release_artifacts", "native_build_inputs",
+        "workflow_rehearsals", "workflow_job_replay", "pypi_capacity", "publish_preflight", "vendor_cache_ignore"}
+    assert set(re.findall(r"tests/test_(\w+)\.py", scripts(nightly))) == previous
 
 
 #: What marks a listed test file as one that stages through the fetcher:
@@ -162,7 +174,7 @@ def test_promotion_uses_prepared_bytes_and_keeps_existing_packaging_checks(workf
 FETCHER_USE = ("fetch_tables", "geog_assets", "rw_fetch", "find_fetch_bin")
 
 
-def test_the_test_job_builds_the_fetcher_before_the_files_that_need_it(workflow):
+def test_nightly_builds_the_fetcher_before_the_files_that_need_it(workflow):
     """The job that roots the publish chain has the one native its files use.
 
     The breakage, named: the v2.8.9 publish run 38124857348 failed in this
@@ -171,7 +183,8 @@ def test_the_test_job_builds_the_fetcher_before_the_files_that_need_it(workflow)
     fetcher on the leg that builds no natives; this job had not, and nothing
     compared the two. This file runs in ci.yml on every push.
     """
-    steps = workflow["jobs"]["test"]["steps"]
+    ci = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
+    steps = ci["jobs"]["publication_contracts"]["steps"]
     runners = [i for i, step in enumerate(steps) if "python -m pytest" in step.get("run", "")]
     assert len(runners) == 1, runners
     tests = steps[runners[0]]
@@ -220,6 +233,27 @@ def test_docker_publisher_upload_paths_are_workspace_relative(workflow):
         assert directory and not PurePosixPath(directory).is_absolute()
         assert not any(token in directory for token in ("$", "..", "\\", ":")), directory
         assert re.search(r"--out\s+[\"']?" + re.escape(directory) + r"[\"']?(?:\s|$)", stage["run"])
+
+
+def test_packet_smoke_consumes_upload_bytes_before_any_public_mutation(workflow):
+    jobs = workflow["jobs"]
+    job = jobs["test"]
+    assert needs(job) == {"controller", "release_authority", "prepare"}
+    assert job["timeout-minutes"] == 8
+    assert job["env"]["RELEASE_VERSION"] == "${{ needs.release_authority.outputs.version }}"
+    downloads = [step["with"] for step in job["steps"] if step.get("uses", "").startswith("actions/download-artifact@")]
+    assert downloads == [{"name": "release-proof", "path": "${{ runner.temp }}/release-proof"}]
+    assert 'publish_packet_smoke.py install --dists "$RUNNER_TEMP/release-proof/dists"' in scripts(job)
+    assert 'publish_packet_smoke.py check --dists "$RUNNER_TEMP/release-proof/dists"' in scripts(job)
+    assert '--dists "$RUNNER_TEMP/release-proof/dists"' in scripts(jobs["publish"])
+    # The shared _chain_static_staging_kept_off_the_network fixture imports
+    # numpy before every selected metadata contract, even on a bare venv.
+    assert "python -m pip install pytest pyyaml 'setuptools>=77' wheel 'numpy>=2'" in scripts(job)
+    for name in ("qualify", "assets", "publish", "release"):
+        assert "test" in ancestors(jobs, name)
+    uploads = [step for step in jobs["controller"]["steps"] if step.get("uses", "").startswith("actions/upload-artifact@")]
+    assert len(uploads) == 1 and uploads[0]["with"]["name"] == "publication-controller"
+    assert 'sha256sum tools/promote_prepared_release.py' in scripts(job)
 
 
 @pytest.fixture
@@ -369,14 +403,14 @@ def test_complete_index_retry_does_not_upload_again(publication, controller_case
 def test_publication_depends_on_ci_passing_on_the_published_commit(workflow):
     jobs = workflow["jobs"]
     gate = jobs["ci"]
-    assert needs(gate) == {"test", "release_authority"}
+    assert needs(gate) == {"controller", "release_authority"}
     assert gate["permissions"] == {"actions": "read"}
     run = scripts(gate)
     assert re.search(r"promote_prepared_release\.py ci-passed .*--commit \"\$PUBLICATION_COMMIT\"", run), run
     assert "GH_TOKEN" in json.dumps(gate["steps"])
     # Every job that verifies, qualifies, promotes or uploads waits for it.
     for name in jobs:
-        if name not in {"test", "release_authority", "ci"}:
+        if name not in {"controller", "release_authority", "ci"}:
             assert "ci" in ancestors(jobs, name), name
 
 

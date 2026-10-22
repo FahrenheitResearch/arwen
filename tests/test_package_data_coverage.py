@@ -543,7 +543,6 @@ def test_externalized_assets_match_the_fetch_contract() -> None:
     assert root_excludes == [
         "exclude tests/test_n5s_toolchain.py",
         "exclude tests/test_branch_dispositions.py",
-        "exclude tests/test_obs_parallel_native.py",
         "exclude tests/test_regional_packing_bench.py",
         "exclude tests/test_timeline_qualification.py",
         "exclude configs/da_rerun_286/recent/active-241/case-plan.json",

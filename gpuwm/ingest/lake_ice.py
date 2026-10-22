@@ -51,7 +51,6 @@ from __future__ import annotations
 import ctypes
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-import hashlib
 import os
 from pathlib import Path
 import sys
@@ -61,6 +60,8 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 import numpy as np
+
+from gpuwm.ingest.backend_contract import _sha256
 
 #: ``gfs_lake_ice`` values; the first is the default.
 LAKE_ICE_CHOICES = ("observed", "wps")
@@ -153,14 +154,6 @@ class ObservedLakeIce:
             "url": self.url,
             "licence": self.source.licence,
         }
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _download(url: str, destination: Path, *, opener, timeout_s: float) -> None:

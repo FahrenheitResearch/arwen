@@ -390,12 +390,19 @@ pub enum CanonicalField {
     MiddleCloudCover,
     HighCloudCover,
     PrecipitableWater,
+    IntegratedVaporTransport,
+    IntegratedVaporTransportU,
+    IntegratedVaporTransportV,
     TotalPrecipitation,
     ModelSnowfall,
     Snowfall10to1,
     SnowfallKuchera,
+    SnowfallLiquidEquivalent,
+    SnowDepth,
+    SnowDepthChange,
     ProbabilityOfPrecipitation,
     Visibility,
+    FogFlag,
     SimulatedInfraredBrightnessTemperature,
     RadarReflectivity,
     LightningFlashDensity,
@@ -424,6 +431,31 @@ pub enum CanonicalField {
     DustMassConcentration,
     OzoneConcentration,
     AerosolOpticalDepth550,
+    IvtMagnitude,
+    IvtEastward,
+    IvtNorthward,
+    IntegratedWaterVapour,
+    FullColumnIvtEastward,
+    FullColumnIvtNorthward,
+    FullColumnIvtMagnitude,
+
+    HailMaxSurface,
+    HailMaxColumn,
+    HailMaxSurfaceRun,
+    HailMaxColumnRun,
+    HailcastMax,
+    HailcastMean,
+    HailcastStd,
+    HailcastRun,
+    Wbgt,
+    HotDryWindy,
+    HainesLow,
+    HainesMid,
+    HainesHigh,
+    LightningThreat1,
+    LightningThreat2,
+    LightningThreat3,
+    Pr92FlashRate,
 }
 
 impl CanonicalField {
@@ -449,12 +481,20 @@ impl CanonicalField {
             Self::MiddleCloudCover => "middle_cloud_cover",
             Self::HighCloudCover => "high_cloud_cover",
             Self::PrecipitableWater => "precipitable_water",
+            Self::IntegratedVaporTransport => "integrated_vapor_transport",
+            Self::IntegratedVaporTransportU => "integrated_vapor_transport_u",
+            Self::IntegratedVaporTransportV => "integrated_vapor_transport_v",
+
             Self::TotalPrecipitation => "total_precipitation",
             Self::ModelSnowfall => "model_snowfall",
             Self::Snowfall10to1 => "snowfall_10to1",
             Self::SnowfallKuchera => "snowfall_kuchera",
+            Self::SnowfallLiquidEquivalent => "snowfall_liquid_equivalent",
+            Self::SnowDepth => "snow_depth_total",
+            Self::SnowDepthChange => "snow_depth_change",
             Self::ProbabilityOfPrecipitation => "probability_of_precipitation",
             Self::Visibility => "visibility",
+            Self::FogFlag => "fog_flag",
             Self::SimulatedInfraredBrightnessTemperature => {
                 "simulated_infrared_brightness_temperature"
             }
@@ -474,6 +514,31 @@ impl CanonicalField {
             Self::DustMassConcentration => "dust_mass_concentration",
             Self::OzoneConcentration => "ozone_concentration",
             Self::AerosolOpticalDepth550 => "aerosol_optical_depth_550",
+            Self::IvtMagnitude => "ivt_1000_300",
+            Self::IvtEastward => "ivt_eastward_1000_300",
+            Self::IvtNorthward => "ivt_northward_1000_300",
+            Self::IntegratedWaterVapour => "integrated_water_vapour",
+            Self::FullColumnIvtEastward => "ivt_eastward_full_column",
+            Self::FullColumnIvtNorthward => "ivt_northward_full_column",
+            Self::FullColumnIvtMagnitude => "ivt_full_column",
+
+            Self::HailMaxSurface => "hail_max_surface",
+            Self::HailMaxColumn => "hail_max_column",
+            Self::HailMaxSurfaceRun => "hail_max_surface_run",
+            Self::HailMaxColumnRun => "hail_max_column_run",
+            Self::HailcastMax => "hail_max_hailcast",
+            Self::HailcastMean => "hail_max_hailcast_mean",
+            Self::HailcastStd => "hail_max_hailcast_std",
+            Self::HailcastRun => "hail_max_hailcast_run",
+            Self::Wbgt => "wbgt_2m",
+            Self::HotDryWindy => "hot_dry_windy",
+            Self::HainesLow => "haines_low",
+            Self::HainesMid => "haines_mid",
+            Self::HainesHigh => "haines_high",
+            Self::LightningThreat1 => "lightning_threat_1",
+            Self::LightningThreat2 => "lightning_threat_2",
+            Self::LightningThreat3 => "lightning_threat_3",
+            Self::Pr92FlashRate => "pr92_flash_rate",
 
             Self::CloudWaterMixingRatio => "cloud_water_mixing_ratio",
             Self::RainWaterMixingRatio => "rain_water_mixing_ratio",
@@ -506,12 +571,20 @@ impl CanonicalField {
             Self::MiddleCloudCover => "Middle Cloud Cover",
             Self::HighCloudCover => "High Cloud Cover",
             Self::PrecipitableWater => "Precipitable Water",
+            Self::IntegratedVaporTransport => "Integrated Vapor Transport",
+            Self::IntegratedVaporTransportU => "Eastward Integrated Vapor Transport",
+            Self::IntegratedVaporTransportV => "Northward Integrated Vapor Transport",
+
             Self::TotalPrecipitation => "Total Precipitation",
             Self::ModelSnowfall => "Model Snowfall",
             Self::Snowfall10to1 => "10:1 Snowfall",
             Self::SnowfallKuchera => "Kuchera Snowfall",
+            Self::SnowfallLiquidEquivalent => "Snowfall Liquid Equivalent",
+            Self::SnowDepth => "LSM Snow Depth",
+            Self::SnowDepthChange => "LSM Snow Depth Change",
             Self::ProbabilityOfPrecipitation => "Probability of Precipitation",
             Self::Visibility => "Visibility",
+            Self::FogFlag => "Low visibility (< 1000 m)",
             Self::SimulatedInfraredBrightnessTemperature => {
                 "Simulated Infrared Brightness Temperature"
             }
@@ -531,6 +604,31 @@ impl CanonicalField {
             Self::DustMassConcentration => "Dust Mass Concentration",
             Self::OzoneConcentration => "Ozone Concentration",
             Self::AerosolOpticalDepth550 => "550 nm Aerosol Optical Depth",
+            Self::IvtMagnitude => "IVT 1000-300 hPa",
+            Self::IvtEastward => "Eastward IVT 1000-300 hPa",
+            Self::IvtNorthward => "Northward IVT 1000-300 hPa",
+            Self::IntegratedWaterVapour => "Integrated Water Vapour Surface to Model Top",
+            Self::FullColumnIvtEastward => "Eastward Water Vapour Flux Surface to Model Top",
+            Self::FullColumnIvtNorthward => "Northward Water Vapour Flux Surface to Model Top",
+            Self::FullColumnIvtMagnitude => "Water Vapour Flux Surface to Model Top",
+
+            Self::HailMaxSurface => "PSD maximum hail diameter at lowest model level",
+            Self::HailMaxColumn => "PSD maximum hail diameter over column",
+            Self::HailMaxSurfaceRun => "Run maximum PSD surface hail diameter",
+            Self::HailMaxColumnRun => "Run maximum PSD column hail diameter",
+            Self::HailcastMax => "HAILCAST maximum surviving ice diameter",
+            Self::HailcastMean => "HAILCAST mean surviving ice diameter",
+            Self::HailcastStd => "HAILCAST diameter standard deviation",
+            Self::HailcastRun => "Run maximum HAILCAST diameter",
+            Self::Wbgt => "Outdoor WBGT, radiation balance",
+            Self::HotDryWindy => "Hot Dry Windy, instantaneous",
+            Self::HainesLow => "Haines index, low elevation",
+            Self::HainesMid => "Haines index, middle elevation",
+            Self::HainesHigh => "Haines index, high elevation",
+            Self::LightningThreat1 => "Lightning threat LTG1",
+            Self::LightningThreat2 => "Lightning threat LTG2",
+            Self::LightningThreat3 => "Lightning threat LTG3",
+            Self::Pr92FlashRate => "PR92 maximum-updraft flash rate",
 
             Self::CloudWaterMixingRatio => "Cloud Water Mixing Ratio",
             Self::RainWaterMixingRatio => "Rain Water Mixing Ratio",
@@ -558,10 +656,15 @@ impl CanonicalField {
             Self::TotalCloudCover => "%",
             Self::LowCloudCover | Self::MiddleCloudCover | Self::HighCloudCover => "%",
             Self::PrecipitableWater => "kg/m^2",
+            Self::IntegratedVaporTransport => "kg m-1 s-1",
+            Self::IntegratedVaporTransportU => "kg m-1 s-1",
+            Self::IntegratedVaporTransportV => "kg m-1 s-1",
+
             Self::TotalPrecipitation => "kg/m^2",
-            Self::ModelSnowfall | Self::Snowfall10to1 | Self::SnowfallKuchera => "mm",
+            Self::ModelSnowfall | Self::Snowfall10to1 | Self::SnowfallKuchera | Self::SnowfallLiquidEquivalent | Self::SnowDepth | Self::SnowDepthChange => "mm",
             Self::ProbabilityOfPrecipitation => "%",
             Self::Visibility => "m",
+            Self::FogFlag => "1",
             Self::SimulatedInfraredBrightnessTemperature => "K",
             Self::RadarReflectivity => "dBZ",
             Self::LightningFlashDensity => "km^-2 day^-1",
@@ -579,6 +682,31 @@ impl CanonicalField {
             Self::DustMassConcentration => "ug/m^3",
             Self::OzoneConcentration => "ppb",
             Self::AerosolOpticalDepth550 => "1",
+            Self::IvtMagnitude => "kg m-1 s-1",
+            Self::IvtEastward => "kg m-1 s-1",
+            Self::IvtNorthward => "kg m-1 s-1",
+            Self::IntegratedWaterVapour => "kg m-2",
+            Self::FullColumnIvtEastward => "kg m-1 s-1",
+            Self::FullColumnIvtNorthward => "kg m-1 s-1",
+            Self::FullColumnIvtMagnitude => "kg m-1 s-1",
+
+            Self::HailMaxSurface => "mm",
+            Self::HailMaxColumn => "mm",
+            Self::HailMaxSurfaceRun => "mm",
+            Self::HailMaxColumnRun => "mm",
+            Self::HailcastMax => "mm",
+            Self::HailcastMean => "mm",
+            Self::HailcastStd => "mm",
+            Self::HailcastRun => "mm",
+            Self::Wbgt => "degC",
+            Self::HotDryWindy => "hPa m s^-1",
+            Self::HainesLow => "1",
+            Self::HainesMid => "1",
+            Self::HainesHigh => "1",
+            Self::LightningThreat1 => "flashes km^-2 (5 min)^-1",
+            Self::LightningThreat2 => "flashes km^-2 (5 min)^-1",
+            Self::LightningThreat3 => "flashes km^-2 (5 min)^-1",
+            Self::Pr92FlashRate => "flashes s^-1 cell^-1",
 
             Self::CloudWaterMixingRatio
             | Self::RainWaterMixingRatio
@@ -792,18 +920,6 @@ impl FieldSelector {
 
     pub const fn with_ensemble_standard_deviation(self) -> Self {
         self.with_product(FieldProduct::EnsembleStandardDeviation)
-    }
-
-    pub const fn with_ensemble_spread(self) -> Self {
-        self.with_product(FieldProduct::EnsembleSpread)
-    }
-
-    pub const fn with_ensemble_minimum(self) -> Self {
-        self.with_product(FieldProduct::EnsembleMinimum)
-    }
-
-    pub const fn with_ensemble_maximum(self) -> Self {
-        self.with_product(FieldProduct::EnsembleMaximum)
     }
 
     pub const fn with_percentile(self, percentile: u8) -> Self {
@@ -1298,14 +1414,6 @@ pub struct ModelTimestep {
     pub valid_time: TimeStamp,
     pub source: Option<SourceId>,
 }
-
-/// Maximum representable forecast lead in rustwx's current request schema.
-///
-/// Early rustwx only used operational GRIB products whose file names fit
-/// `f000`..`f999`. Local inference archives can carry much longer leads
-/// (for example 5-year AIFS experiments), so the core type now accepts the
-/// full `u16` range and lets each model registry entry enforce its own horizon.
-pub const MAX_FORECAST_HOUR: u16 = u16::MAX;
 
 impl ModelTimestep {
     pub fn new(

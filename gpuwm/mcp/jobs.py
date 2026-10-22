@@ -276,17 +276,6 @@ class JobManager:
             if result is not None:
                 self.gpu_lock.release_locked(job_id)
 
-    def card_refusal(self) -> str | None:
-        """The sentence a launch that needs the card would be refused with now, or None when it would start.
-
-        The same question :meth:`launch` asks, finished jobs reaped first,
-        so a caller that checks before writing anything cannot disagree
-        with the launch that follows.
-        """
-
-        self._reap_gpu_lock()
-        return self.gpu_lock.refusal()
-
     # -- events ----------------------------------------------------------
 
     def _stream_path(self, jobdir: Path, receipt: dict,

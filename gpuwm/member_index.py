@@ -70,7 +70,7 @@ def _joined_ranges(ranges):
 def download_indexed_member(url: str, index_url: str, dest: Path, *,
                             declaration: Mapping[str, object], member_ordinal: int,
                             source: str, member: str, opener=None,
-                            timeout: float = 300.0) -> dict:
+                            timeout: float = 300.0, forecast_hour: int | None = None) -> dict:
     """Range-fetch, verify every GRIB message, then publish one member file.
 
 Servers must return the requested range exactly. A 200 whole-ensemble reply
@@ -89,13 +89,34 @@ to one version while an as-posted source may still be publishing.
         index = response.read(16 * 1024 * 1024 + 1)
     if len(index) > 16 * 1024 * 1024:
         raise ValueError("Member index exceeds 16 MiB; refusing an unbounded response")
-    ranges = select_member_ranges(index, declaration, member_ordinal)
+    initial_etag = None
+    object_bytes = None
+    if declaration.get("format") == "wgrib2":
+        if set(declaration) != {"format"} or forecast_hour is None:
+            raise ValueError("wgrib2 lead index requires an explicit forecast hour")
+        with paced_urlopen(Request(url, method="HEAD"), timeout=timeout, **options) as response:
+            object_bytes = int(response.headers["Content-Length"])
+            initial_etag = response.headers.get("ETag")
+        from gpuwm.mapped_engine_bridge import require_engine
+        import subprocess
+        import tempfile
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=dest.parent, suffix=".idx") as sidecar:
+            sidecar.write(index)
+            sidecar.flush()
+            result = subprocess.run([str(require_engine()), "index-ranges", sidecar.name,
+                                     str(forecast_hour), str(object_bytes)],
+                                    capture_output=True, text=True, check=True, timeout=60.0)
+        selected = json.loads(result.stdout)
+        ranges = tuple(tuple(row) for row in selected["ranges"])
+    else:
+        ranges = select_member_ranges(index, declaration, member_ordinal)
     dest = io_path(Path(dest))
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_name(dest.name + ".part")
     digest = hashlib.sha256()
-    etag = None
-    total_size = None
+    etag = initial_etag
+    total_size = object_bytes
     written = 0
     try:
         with part.open("wb") as target:

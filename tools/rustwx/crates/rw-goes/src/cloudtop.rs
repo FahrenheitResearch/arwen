@@ -156,13 +156,13 @@ pub fn write_cloudtop_pack(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::pack::{
         PayloadBuilder, decode_pack, encode_container, hex_sha256, pack_schema,
     };
 
-    fn minimal_meta(payload: &[u8]) -> CloudTopMeta {
+    pub(crate) fn minimal_meta(payload: &[u8]) -> CloudTopMeta {
         CloudTopMeta {
             schema: CLOUDTOP_SCHEMA.to_string(),
             status: "READY".to_string(),

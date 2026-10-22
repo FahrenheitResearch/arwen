@@ -35,6 +35,7 @@ stock host-library result is retained independently.
 It emits only physics statements. WOOF's own float32 math routines supply its
 math, and no external math source is vendored. `--trace` emits an isolated
 scalar/array diagnostic listing; that listing is not the production kernel.
+Regenerate it with `python tools/urban_wrf480_oracle/transcribe.py "$L/sources/v4.8.0/phys/module_sf_urban.F" "$L/trace.generated.cuh" --trace`.
 
 `check.py` retains the root/water helper checks and one-bit root mutation.
 `cpu_modes.py` grades each state and diagnostic at each carried step across

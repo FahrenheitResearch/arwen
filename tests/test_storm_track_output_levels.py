@@ -26,19 +26,12 @@ import gpuwm.core.storm_track_writer as tw
 from gpuwm.core.storm_track_writer import TrackConfig, TrackWriter
 from gpuwm.core.storm_tracking import FollowConfig, all_levels_of
 
+from test_storm_track_writer import _Grid
+
 INIT = tw.dt.datetime(2025, 10, 24, 12, 0, 0)
 STEERING = (850.0, 700.0, 500.0)
 PROFILE = (925.0, 900.0, 850.0, 800.0, 750.0, 700.0, 650.0, 600.0,
            550.0, 500.0, 450.0, 400.0, 350.0, 300.0)
-
-
-class _Grid:
-    def __init__(self, lat0=10.0, lon0=-80.0, step=0.01):
-        self.lat0, self.lon0, self.step = lat0, lon0, step
-
-    def ij_to_latlon(self, x, y):
-        return (self.lat0 + (y - 1.0) * self.step,
-                self.lon0 + (x - 1.0) * self.step)
 
 
 def _follow(level_hpa=STEERING, report=()):

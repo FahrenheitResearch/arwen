@@ -211,7 +211,7 @@ owns it.
 |---|---|---|
 | `--root DIR` | required | the ledger, the anchors and the receipts are one lineage; the spine will not guess where it lives |
 | `--epoch-anchor ISO8601` | required | the only `datetime` in the spine. A default would be a second authority |
-| `--parent-dt-seconds` | `120.0` | a coarse-mesh MPAS step. Must be a whole number of ticks; `--cycle-seconds` must be a whole number of these |
+| `--parent-dt-seconds` | 120 s if it divides `--cycle-seconds`, else the largest step dividing both (60 s for a 900 s cycle) | a coarse-mesh MPAS step. Must be a whole number of ticks; `--cycle-seconds` must be a whole number of these |
 | `--cycle-seconds` | required | the DA cycle length is the run's shape; there is no safe default |
 | `--cycles N` | required | how far the lineage runs |
 | `--parent-kind` | required, from `PARENT_KINDS` | which engine advances the parent. `replay` advances the clock alone and is how you rehearse a lattice; a kind with no engine adapter in this tree refuses at plan time rather than pretending to integrate an atmosphere |
@@ -327,6 +327,10 @@ grid with no coordinates named for it (pass `--parent-geo-file`).
 
 ### A note on `--cycle-seconds` and `--parent-dt-seconds`
 
+With `--parent-dt-seconds` unset, the parent step defaults to 120 s when
+that divides the cycle, and otherwise to the largest step that divides
+both 120 s and the cycle, so a bare `--cycle-seconds 900` (the 15-minute
+DA cycle) runs on a 60 s parent step. An explicit step is never changed:
 `--cycle-seconds 900` with `--parent-dt-seconds 120` is 7.5 parent steps
 and is **refused**, naming `remainder_ticks=60000`. A 15-minute DA cycle
 needs a parent step that divides 900 s (30 s, 60 s, 180 s, 300 s); a

@@ -1,3 +1,6 @@
+pub mod visibility;
+pub mod snow;
+pub mod ice_accretion;
 mod derived;
 mod ecape;
 mod error;
@@ -13,6 +16,7 @@ pub use derived::{
     compute_ehi_layers, compute_lapse_rate_0_3km, compute_lapse_rate_700_500, compute_lifted_index,
     compute_mlcape, compute_mlcape_cin, compute_mlcin, compute_mucape, compute_mucape_cin,
     compute_mucin, compute_relative_humidity_from_pressure_temperature_and_mixing_ratio,
+    compute_vpd_from_pressure_temperature_and_mixing_ratio,
     compute_sbcape, compute_sbcape_cin, compute_sbcin, compute_sblcl, compute_shear_01km,
     compute_shear_06km, compute_srh_01km, compute_srh_01km_hemispheric, compute_srh_03km,
     compute_srh_03km_hemispheric, compute_surface_thermo, compute_temperature_advection,
@@ -239,3 +243,10 @@ mod tests {
         assert!(advection.iter().all(|value| value.is_finite()));
     }
 }
+
+pub mod ivt;
+pub mod hubwind;
+pub mod hubwind_cuda;
+pub mod solar;
+pub mod derived_heat;
+pub mod lightning_threat;

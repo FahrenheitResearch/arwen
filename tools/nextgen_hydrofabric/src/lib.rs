@@ -5,6 +5,7 @@ pub mod dbf;
 pub mod manifest;
 pub mod network;
 pub mod replay;
+pub mod render_map;
 pub mod routing_capture;
 pub mod source_network;
 pub mod source_waterbodies;

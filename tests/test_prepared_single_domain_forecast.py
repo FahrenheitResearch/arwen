@@ -389,6 +389,8 @@ def test_prepared_runner_capability_query_is_side_effect_free_without_run_args(
     assert payload["supported_sources"] == sorted({
         "20crv3", "20crv3-cf", "aifs", "aigefs", "aigfs",
         "ecmwf-ens", "ecmwf-open-data", "era5", "era5-l137", "gdas", "gefs",
+        # lane/cap-gefs-archive (6a3b8fd50bf): the indexed GEFS retrospectives.
+        "gefs-reforecast", "gefs-reforecast-weekly", "gefs-v11", "gefs-v11-flat",
         "gem-gdps", "gfs", "hex-global", "hrrr", "hrrr-native", "hrrr-prs", "icon-d2", "icon-eu",
         "icon-global", "mapped", "rap", "rap-native", "rrfs"} | model_table_rows)
     assert payload["physics_profile_ids"] == list(runner.PHYSICS_PROFILES)
@@ -3603,36 +3605,25 @@ def test_preflight_accepts_guarded_thompson_for_each_prepared_source(
     ]) == len(runtime.assets)
 
 
-def test_thompson_profile_rejects_wsm6_cache_before_restore(
-        tmp_path, monkeypatch):
+@pytest.mark.parametrize("prepared_profile,requested_profile,message", [
+    (runner.PHYSICS_PROFILE, runner.THOMPSON_PHYSICS_PROFILE,
+     "guarded Thompson MP8"),
+    (runner.THOMPSON_PHYSICS_PROFILE, runner.PHYSICS_PROFILE,
+     "supported prepared-cache profile"),
+])
+def test_prepared_profile_rejects_another_cache_before_restore(
+        tmp_path, monkeypatch, prepared_profile, requested_profile, message):
     _bind_test_thompson_runtime(tmp_path, monkeypatch)
-    fixture = _prepared_fixture(tmp_path, "gfs")
+    fixture = _prepared_fixture(tmp_path, "gfs", physics_profile=prepared_profile)
 
-    with pytest.raises(ValueError, match="guarded Thompson MP8"):
+    with pytest.raises(ValueError, match=message):
         runner.preflight_prepared_forecast(
             source="gfs", prepared_root=fixture.prepared,
             proof_sha256=_sha256(fixture.proof),
             source_manifest_sha256=_sha256(fixture.source_manifest),
             prepared_content_sha256=fixture.content_sha256,
             experiment_config=fixture.experiment, wps_namelist=fixture.wps,
-            physics_profile=runner.THOMPSON_PHYSICS_PROFILE,
-            run_seconds=fixture.run_seconds, history_interval_seconds=3600)
-
-
-def test_wsm6_profile_rejects_thompson_cache_before_restore(
-        tmp_path, monkeypatch):
-    _bind_test_thompson_runtime(tmp_path, monkeypatch)
-    fixture = _prepared_fixture(
-        tmp_path, "gfs", physics_profile=runner.THOMPSON_PHYSICS_PROFILE)
-
-    with pytest.raises(ValueError, match="supported prepared-cache profile"):
-        runner.preflight_prepared_forecast(
-            source="gfs", prepared_root=fixture.prepared,
-            proof_sha256=_sha256(fixture.proof),
-            source_manifest_sha256=_sha256(fixture.source_manifest),
-            prepared_content_sha256=fixture.content_sha256,
-            experiment_config=fixture.experiment, wps_namelist=fixture.wps,
-            physics_profile=runner.PHYSICS_PROFILE,
+            physics_profile=requested_profile,
             run_seconds=fixture.run_seconds, history_interval_seconds=3600)
 
 
@@ -4408,42 +4399,27 @@ def test_cli_requires_explicit_source_physics_run_and_history_output_contract():
     assert args.history_interval_seconds == 900.0
 
 
-def test_cli_accepts_explicit_nssl2_validation_candidate_profile():
+@pytest.mark.parametrize("source,profile,run_seconds", [
+    ("era5", runner.NSSL2_PHYSICS_PROFILE, "43200"),
+    ("gfs", runner.THOMPSON_PHYSICS_PROFILE, "10800"),
+])
+def test_cli_accepts_explicit_candidate_profile(source, profile, run_seconds):
     args = runner._parse_args([
-        "--source", "era5",
+        "--source", source,
         "--prepared-root", "prepared",
         "--proof-sha256", "1" * 64,
         "--source-manifest-sha256", "2" * 64,
         "--prepared-content-sha256", "3" * 64,
         "--experiment-config", "experiment.toml",
         "--wps-namelist", "namelist.wps",
-        "--physics-profile", runner.NSSL2_PHYSICS_PROFILE,
-        "--run-seconds", "43200",
+        "--physics-profile", profile,
+        "--run-seconds", run_seconds,
         "--history-interval-seconds", "3600",
         "--io-mode", "history",
         "--outdir", "run",
     ])
 
-    assert args.physics_profile == runner.NSSL2_PHYSICS_PROFILE
-
-
-def test_cli_accepts_explicit_guarded_thompson_profile():
-    args = runner._parse_args([
-        "--source", "gfs",
-        "--prepared-root", "prepared",
-        "--proof-sha256", "1" * 64,
-        "--source-manifest-sha256", "2" * 64,
-        "--prepared-content-sha256", "3" * 64,
-        "--experiment-config", "experiment.toml",
-        "--wps-namelist", "namelist.wps",
-        "--physics-profile", runner.THOMPSON_PHYSICS_PROFILE,
-        "--run-seconds", "10800",
-        "--history-interval-seconds", "3600",
-        "--io-mode", "history",
-        "--outdir", "run",
-    ])
-
-    assert args.physics_profile == runner.THOMPSON_PHYSICS_PROFILE
+    assert args.physics_profile == profile
 
 
 # ---------------------------------------------------------------------------
@@ -5077,20 +5053,12 @@ def test_a_floor_receipt_that_differs_from_its_proof_still_refuses():
             proof_extra={"soil_moisture_floor": {"floored_land_cells": 99}}))
 
 
-def test_a_cache_receipt_absent_from_the_proof_still_refuses():
-    """A cache claiming a floor its proof never recorded is inconsistent."""
-
+@pytest.mark.parametrize("side", ["user_extra", "proof_extra"])
+def test_a_receipt_absent_from_one_authority_still_refuses(side):
+    """A floor recorded only in the cache or only in its proof is inconsistent."""
     with pytest.raises(ValueError, match="user metadata differs"):
         runner._validate_cache_metadata(**_cache_metadata_case(
-            user_extra={"soil_moisture_floor": _FLOOR_RECEIPT}))
-
-
-def test_a_proof_receipt_absent_from_the_cache_still_refuses():
-    """And the mirror: the proof recorded a floor the cache did not."""
-
-    with pytest.raises(ValueError, match="user metadata differs"):
-        runner._validate_cache_metadata(**_cache_metadata_case(
-            proof_extra={"soil_moisture_floor": _FLOOR_RECEIPT}))
+            **{side: {"soil_moisture_floor": _FLOOR_RECEIPT}}))
 
 
 def test_a_genuinely_mismatched_knob_is_still_refused():
@@ -5246,17 +5214,21 @@ def test_a_bundle_prepared_before_a_tolerant_run_field_still_loads(tmp_path):
         == {f"domain_config.run.{name}" for name in dropped}
 
 
-def test_a_bundle_that_really_used_the_feature_is_still_refused(tmp_path):
-    """Absence is tolerated; a DIFFERENT value is not."""
+@pytest.mark.parametrize("field,value,message", [
+    ("use_adaptive_time_step", True, "use_adaptive_time_step"),
+    ("mp_physics", 10, r"mp_physics \(prepared 10"),
+])
+def test_changed_cache_identity_names_the_differing_field(tmp_path, field, value, message):
+    """Changed adaptive-step values refuse; identity refusals name what differs."""
     fixture = _prepared_fixture(tmp_path, "20crv3")
     header = json.loads(
         (fixture.domain_bundle / "prepared-cache" / "header.json").read_text(
             encoding="utf-8"))
     expected = header["identity"]
     observed = json.loads(_canonical(expected))
-    observed["domain_config"]["run"]["use_adaptive_time_step"] = True
+    observed["domain_config"]["run"][field] = value
 
-    with pytest.raises(ValueError, match="use_adaptive_time_step"):
+    with pytest.raises(ValueError, match=message):
         runner._resolve_cache_identity_compatibility(
             source="20crv3", observed=observed, expected=expected)
 
@@ -5342,25 +5314,6 @@ def test_an_output_only_switch_keeps_the_single_domain_cache(tmp_path, name):
     assert [entry["field"] for entry in receipt["compatibility_overrides"]] \
         == [f"domain_config.run.{name}"]
     run["mp_physics"] = 10
-    with pytest.raises(ValueError, match=r"mp_physics \(prepared 10"):
-        runner._resolve_cache_identity_compatibility(
-            source="20crv3", observed=observed, expected=expected)
-
-
-def test_the_identity_refusal_names_what_differs(tmp_path):
-    """The sentence stood alone and named nothing.
-
-    A user could not tell an upgrade from a changed configuration, which
-    is the whole diagnostic question at that moment.
-    """
-    fixture = _prepared_fixture(tmp_path, "20crv3")
-    header = json.loads(
-        (fixture.domain_bundle / "prepared-cache" / "header.json").read_text(
-            encoding="utf-8"))
-    expected = header["identity"]
-    observed = json.loads(_canonical(expected))
-    observed["domain_config"]["run"]["mp_physics"] = 10
-
     with pytest.raises(ValueError, match=r"mp_physics \(prepared 10"):
         runner._resolve_cache_identity_compatibility(
             source="20crv3", observed=observed, expected=expected)

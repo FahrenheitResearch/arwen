@@ -77,7 +77,9 @@ def source(n=21805, dtype="float32"):
         json.dumps({"context": {"numerics": "fast"}, "reach_output": fields}))
 
 
-@pytest.mark.parametrize("dtype,width", [("float32", 4), ("float64", 8)])
+@pytest.mark.parametrize('dtype, width', [
+    pytest.param('float32', 4, id='float32-4'),
+])
 def test_hourly_history_prices_full_slabs_and_borrows_source_views(context, dtype, width):
     route = source(dtype=dtype)
     value = history(settings={}, options=dict(source="routing", capacity_steps=2880, cadence_steps=120),
@@ -92,7 +94,10 @@ def test_hourly_history_prices_full_slabs_and_borrows_source_views(context, dtyp
     assert not value.gaps and value.non_pool_bytes is None
 
 
-@pytest.mark.parametrize("offset", [-4, 1, 21805*12])
+@pytest.mark.parametrize('offset', [
+    pytest.param(-4, id='-4'),
+    pytest.param(21805 * 12, id='261660'),
+])
 def test_history_rejects_outside_or_misaligned_views(context, offset):
     route = source()
     evidence = json.loads(route.evidence)

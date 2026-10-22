@@ -197,9 +197,28 @@ def publish_experiment_document(
         observed = [prepared_domain_config_identity(domain)
                     for domain in reloaded.domains]
         if observed != expected:
+            def _flat(document, prefix=""):
+                out = {}
+                for key, value in (document or {}).items():
+                    name = f"{prefix}{key}"
+                    if isinstance(value, dict):
+                        out.update(_flat(value, name + "."))
+                    else:
+                        out[name] = value
+                return out
+            differing = []
+            for index, (want, got) in enumerate(zip(expected, observed)):
+                want, got = _flat(want), _flat(got)
+                for key in sorted(set(want) | set(got)):
+                    if want.get(key, "<absent>") != got.get(key, "<absent>"):
+                        differing.append(
+                            f"domain {index + 1} {key}: rendered "
+                            f"{want.get(key, '<absent>')!r} reloads "
+                            f"{got.get(key, '<absent>')!r}")
             raise ExperimentDocumentError(
                 "published experiment document does not reload to the "
-                "prepared domain identity it was rendered from")
+                "prepared domain identity it was rendered from: "
+                + "; ".join(differing[:12]))
         if reloaded.start_time != experiment.start_time:
             raise ExperimentDocumentError(
                 "published experiment document reloads to a different "

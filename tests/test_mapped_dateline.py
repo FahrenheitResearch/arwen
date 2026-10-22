@@ -164,3 +164,95 @@ def test_a_re_cut_taken_on_another_axis_is_refused(global_bundle):
     assert cut is not None
     with pytest.raises(ValueError, match="another source axis"):
         recut_global_ring(snapshot, cut)
+
+
+@pytest.mark.parametrize("pole", [90.0, -90.0])
+def test_polar_cap_keeps_periodic_donors_on_every_stagger(global_bundle, pole):
+    from gpuwm.static.projection import PolarStereoGrid
+    from gpuwm.ingest.horiz import global_ring_cut
+
+    grid = PolarStereoGrid(pole, 0.0, pole, pole, 0.0,
+                           12000.0, 12000.0, 250, 200)
+    original = global_bundle.regular_snapshots()[0]
+    cut = global_ring_cut(original.longitude, *_targets(grid))
+    assert cut is not None and cut.halo == 3
+    oriented = orient_global_source_longitudes(original, *_targets(grid))
+    assert oriented.longitude.size == original.longitude.size + 6
+    # The source bytes, including opposite-side seam donors, are retained.
+    for name, value in original.fields.items():
+        np.testing.assert_array_equal(oriented.fields[name][..., 3:-3, :],
+                                      np.asarray(value)[..., cut.columns()])
+    for lat, lon in (grid.latlon_mass(), grid.latlon_u(), grid.latlon_v()):
+        y, x = _regular_coordinates(oriented.latitude, oriented.longitude, lat, lon)
+        assert x.min() >= 1.0
+        assert x.max() <= oriented.longitude.size - 3.0
+        assert np.isfinite(y).all()
+    # The lazy forcing geometry and loaded field agree on the expanded ring.
+    sequence = global_bundle.regular_snapshots().for_grids((grid,))
+    assert snapshot_metadata(sequence, 0).longitude.tobytes() == oriented.longitude.tobytes()
+    assert snapshot_metadata(sequence, 0).latitude.tobytes() == oriented.latitude.tobytes()
+    assert sequence[0].longitude.tobytes() == oriented.longitude.tobytes()
+
+    from gpuwm.gfs_direct import _source_coverage_receipt
+    receipt = _source_coverage_receipt(
+        oriented, grid, np.zeros(grid.latlon_mass()[0].shape, dtype=bool))
+    for stagger in receipt["staggerings"].values():
+        assert 0 <= stagger["parabolic_donor_y"][0]
+        assert stagger["parabolic_donor_y"][1] < oriented.latitude.size
+
+
+@pytest.mark.parametrize("pole", [90.0, -90.0])
+def test_polar_donors_preserve_a_smooth_cartesian_tangent_wind(global_bundle, pole):
+    from gpuwm.static.projection import PolarStereoGrid
+    from gpuwm.ingest.cpu_backend import shared_cpu_backend
+
+    grid = PolarStereoGrid(pole, 0.0, pole, pole, 0.0,
+                           12000.0, 12000.0, 250, 200)
+    original = global_bundle.regular_snapshots()[0]
+    lon, lat = np.meshgrid(np.deg2rad(original.longitude),
+                          np.deg2rad(original.latitude))
+    # Tangential projection of the fixed Cartesian vector (1,0,0).
+    # Its earth components turn with longitude but the vector is smooth
+    # through the pole. Scalars also reverse their longitude there.
+    fields = {"U10": -np.sin(lon), "V10": -np.sin(lat) * np.cos(lon),
+              "SKINTEMP": np.cos(lat) * np.cos(lon)}
+    snapshot = replace(original, fields=fields)
+    oriented = orient_global_source_longitudes(snapshot, *_targets(grid))
+    lon, lat = np.meshgrid(np.deg2rad(oriented.longitude),
+                          np.deg2rad(oriented.latitude))
+    expected = {"U10": -np.sin(lon), "V10": -np.sin(lat) * np.cos(lon),
+                "SKINTEMP": np.cos(lat) * np.cos(lon)}
+    for name in fields:
+        np.testing.assert_allclose(oriented.fields[name], expected[name],
+                                   rtol=0, atol=3e-15)
+    target_lat, target_lon = grid.latlon_mass()
+    plan = shared_cpu_backend().regular_plan(
+        oriented.latitude, oriented.longitude, target_lat, target_lon)
+    actual_u = plan.apply(oriented.fields["U10"], "parabolic", workers=8)
+    actual_v = plan.apply(oriented.fields["V10"], "parabolic", workers=8)
+    np.testing.assert_allclose(actual_u, -np.sin(np.deg2rad(target_lon)),
+                               rtol=0, atol=2e-6)
+    np.testing.assert_allclose(
+        actual_v, -np.sin(np.deg2rad(target_lat)) * np.cos(np.deg2rad(target_lon)),
+        rtol=0, atol=3e-6)
+
+
+@pytest.mark.parametrize("pole", [90.0, -90.0])
+def test_pole_latitude_donors_do_not_require_a_longitude_recut(global_bundle, pole):
+    from gpuwm.ingest.horiz import global_ring_cut
+    original = global_bundle.regular_snapshots()[0]
+    target_lat = np.array([[pole * (89.99 / 90.0)]])
+    target_lon = np.array([[0.1]])
+    assert global_ring_cut(original.longitude, target_lon) is None
+    oriented = orient_global_source_longitudes(
+        original, target_lon, target_latitudes=(target_lat,))
+    assert oriented.longitude.tobytes() == original.longitude.tobytes()
+    assert oriented.latitude.size == original.latitude.size + 3
+    y, x = _regular_coordinates(oriented.latitude, oriented.longitude,
+                                target_lat, target_lon)
+    assert np.floor(y).min() - 1 >= 0
+    assert np.floor(y).max() + 2 < oriented.latitude.size
+    retained = slice(0, -3) if pole > 0 else slice(3, None)
+    for name in original.fields:
+        np.testing.assert_array_equal(oriented.fields[name][..., retained, :],
+                                      original.fields[name])

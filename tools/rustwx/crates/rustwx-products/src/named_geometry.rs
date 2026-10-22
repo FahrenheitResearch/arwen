@@ -324,20 +324,9 @@ pub fn built_in_named_geometry_catalog() -> NamedGeometryCatalog {
     NamedGeometryCatalog::new(assets)
 }
 
-pub fn built_in_named_geometry_assets() -> Vec<NamedGeometryAsset> {
-    built_in_named_geometry_catalog().assets
-}
-
 pub fn built_in_country_assets() -> Vec<NamedGeometryAsset> {
     static CACHE: OnceLock<Vec<NamedGeometryAsset>> = OnceLock::new();
     CACHE.get_or_init(load_country_assets).clone()
-}
-
-pub fn built_in_country_domains() -> Vec<DomainSpec> {
-    built_in_country_assets()
-        .into_iter()
-        .filter_map(|asset| asset.domain_spec())
-        .collect()
 }
 
 pub fn built_in_region_assets() -> Vec<NamedGeometryAsset> {
@@ -359,27 +348,6 @@ pub fn built_in_split_region_assets() -> Vec<NamedGeometryAsset> {
     built_in_region_assets()
         .into_iter()
         .filter(|asset| asset.has_group(GROUP_US_SPLIT_REGION))
-        .collect()
-}
-
-pub fn built_in_region_domains() -> Vec<DomainSpec> {
-    built_in_region_assets()
-        .into_iter()
-        .filter_map(|asset| asset.domain_spec())
-        .collect()
-}
-
-pub fn built_in_standard_region_domains() -> Vec<DomainSpec> {
-    built_in_standard_region_assets()
-        .into_iter()
-        .filter_map(|asset| asset.domain_spec())
-        .collect()
-}
-
-pub fn built_in_split_region_domains() -> Vec<DomainSpec> {
-    built_in_split_region_assets()
-        .into_iter()
-        .filter_map(|asset| asset.domain_spec())
         .collect()
 }
 

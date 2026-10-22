@@ -897,7 +897,7 @@ impl Session {
                 .map_err(|error| format!("The control center could not record its claim on this request: {error}"));
             drop(claimed);
             let action = claimed_action(value.as_ref().ok());
-            let parsed = recorded.and_then(|_| value).and_then(|value| parse_request(&value, id, &self.id));
+            let parsed = recorded.and(value).and_then(|value| parse_request(&value, id, &self.id));
             match parsed {
                 Ok(request) => requests.push(request),
                 Err(error) => { let _ = self.respond(id, &action, Err(error), None); }
@@ -1590,7 +1590,13 @@ mod tests {
     fn ended_process()->u32{
         let mut child=other_process(false);
         child.wait().unwrap();
-        child.id()
+        let id=child.id();
+        // Keep the exited child's handle open for the rest of the test run: on
+        // Windows a pid is not handed to a new process while a handle to the old
+        // one is open, so a loaded host cannot reuse it under the assertion
+        // (R8 c4a7d932: an ended pid read as running and the sweep kept it).
+        std::mem::forget(child);
+        id
     }
     #[test]
     fn a_running_process_is_told_from_one_that_ended(){
@@ -1872,6 +1878,8 @@ mod tests {
         assert!(!root.exists());
         let mut session = Session::create(&root).unwrap();
         let value = json!({"schema":"arwen.companion-request.v1","session_id":session.id,"id":"one","action":"focus_logs"});
+        // Keep an in-flight writer beside the valid request throughout the replay.
+        fs::write(session.directory.join("requests/not-a-request.tmp"), b"pending write").unwrap();
         atomic_json(&session.directory.join("requests/one.json"), &value).unwrap();
         assert_eq!(session.requests().len(), 1);
         assert!(session.requests().is_empty());

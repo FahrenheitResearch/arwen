@@ -98,18 +98,6 @@ def test_physical_capture_refuses_changed_native_member_input(tmp_path):
         source.physical_evidence(0)
 
 
-def test_physical_capture_propagates_the_ordinary_future_lead_failure():
-    source = _source()
-    class SourceFailure(RuntimeError):
-        pass
-    def through(index):
-        if index == 1:
-            raise SourceFailure("ordinary source did not post its next lead")
-    source.through = through
-    with pytest.raises(SourceFailure, match="ordinary source"):
-        source.physical_evidence(1)
-
-
 def test_mapped_cli_keeps_the_original_physical_member_index(monkeypatch):
     from test_mapped_direct import _mapped_cli_args
     captured = {}

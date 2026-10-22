@@ -89,7 +89,7 @@ def test_wrf_wrapper_preserves_ordinary_initializer_inputs_and_delegates_once(mo
                          cuda=SimpleNamespace(get_current_stream=lambda: SimpleNamespace(synchronize=lambda: None)))
     batch, cfg, restored = object(), object(), SimpleNamespace(raw={"XLAT": object(), "XLONG": object()})
     state = SimpleNamespace(p_top=5000.0)
-    driver, radiation, landuse, ozone, trace = object(), SimpleNamespace(), object(), object(), object()
+    driver, radiation, landuse, ozone, trace, grid = object(), SimpleNamespace(), object(), object(), object(), object()
     def restore(actual, actual_cfg):
         assert actual is restored and actual_cfg is cfg
         calls.append("restore")
@@ -104,7 +104,8 @@ def test_wrf_wrapper_preserves_ordinary_initializer_inputs_and_delegates_once(mo
         assert actual_state is state and actual_restored is restored and actual_cfg is cfg
         assert kwargs == {"radiation": radiation, "radiation_start_time": "clock-authority",
                           "radiation_latitude": restored.raw["XLAT"], "radiation_longitude": restored.raw["XLONG"],
-                          "landuse": landuse, "constant_glw_wm2": 310.0, "fractional_seaice": True, "cam_ozone": ozone}
+                          "landuse": landuse, "constant_glw_wm2": 310.0, "fractional_seaice": True, "cam_ozone": ozone,
+                          "hydro_parent_geometry": grid}
         calls.append("initialize")
         return driver
     def packed(actual_batch, actual_state, actual_driver, **kwargs):
@@ -121,7 +122,8 @@ def test_wrf_wrapper_preserves_ordinary_initializer_inputs_and_delegates_once(mo
     monkeypatch.setitem(sys.modules, "gpuwm.core.radiation_composition", SimpleNamespace(make_radiation=make_radiation))
     result = module.initialize_wrfinput_member_physics(batch, restored, start_time="clock-authority",
         landuse=landuse, available_bytes=123456, column_chunk=16, constant_glw_wm2=310.0,
-        fractional_seaice=True, cam_ozone=ozone, trace_gas_overrides=trace, array_module=xp)
+        fractional_seaice=True, cam_ozone=ozone, trace_gas_overrides=trace, array_module=xp,
+        hydro_parent_geometry=grid)
     assert calls == ["restore", "radiation", "initialize", "pack"]
     assert radiation.column_chunk == 16
     assert result.receipt["pool_live_after_initialization_bytes"] == 900

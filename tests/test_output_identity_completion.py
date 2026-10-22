@@ -95,10 +95,13 @@ def test_same_size_replacement_cannot_inherit_writer_proof(tmp_path):
 
 
 def test_in_place_change_with_restored_mtime_is_detected(tmp_path):
+    import time
+
     path = tmp_path / "frame"
     path.write_bytes(b"original")
     proof = _completed(path)
     before = path.stat()
+    time.sleep(0.02)  # Keep the edit out of the creation timestamp tick.
     with path.open("r+b") as stream:
         stream.write(b"modified")
     os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))

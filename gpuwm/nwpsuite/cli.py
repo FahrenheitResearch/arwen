@@ -156,9 +156,6 @@ def register_cli(subparsers):
 
 """CPU-only suite commands. Parsing does not import numerical engines."""
 import argparse
-from copy import deepcopy
-import json
-from pathlib import Path
 import shlex
 import tomllib
 from .hardware import box_from_check

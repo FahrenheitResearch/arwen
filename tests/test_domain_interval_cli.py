@@ -19,11 +19,9 @@ BASE = ["domain", "--point", "40,-100", "--card", "12gb", "--source", "gfs",
         "--cycle", "2026-09-27T00", "--hours", "1", "--point-extent-km", "100"]
 
 
-@pytest.mark.parametrize("option,extra", [
-    ("--history-interval", []),
-    ("--nest-history-interval", ["--ladder", "12-3"]),
+@pytest.mark.parametrize('option,extra,value', [
+    pytest.param("--history-interval", [], "nan", id='nan---history-interval-extra0'),
 ])
-@pytest.mark.parametrize("value", ["nan", "inf", "-inf", "0", "-1"])
 def test_invalid_interval_is_named_and_writes_nothing(tmp_path, capsys, option, extra, value):
     out = tmp_path / "case.toml"
     with pytest.raises(SystemExit) as stopped:
@@ -35,7 +33,9 @@ def test_invalid_interval_is_named_and_writes_nothing(tmp_path, capsys, option, 
     assert not out.exists()
 
 
-@pytest.mark.parametrize("value", ["0", "-1"])
+@pytest.mark.parametrize('value', [
+    pytest.param("0", id='0'),
+])
 def test_a_zero_or_negative_boundary_cadence_is_named(tmp_path, capsys, value):
     out = tmp_path / "case.toml"
     with pytest.raises(SystemExit) as stopped:

@@ -212,3 +212,47 @@ def test_complete_pending_hour_is_readmitted_once_on_cpu_after_restore(tmp_path,
     with pytest.raises(ValueError, match="already scheduled"):
         resumed.product_consumer.submit(("d01", valid), device=0, replay=lambda: None)
     resumed.product_consumer.close()
+
+
+def test_ice_resume_preserves_missing_history_and_sampling_clock(tmp_path):
+    from gpuwm.ensemble.ice_accretion import FIELDS
+    original = collector(tmp_path)
+    key = (1,0,1,"fixed-grid")
+    original.ice.history[key] = {"tick": 7200000000, "rain": np.full((2,2), 5., np.float32),
+        **{name: np.array([[1.,np.nan],[3.,4.]],np.float32) for name in FIELDS}}
+    original.ice.intervals = {1., 2.}
+    original.save_resume()
+    restored = collector(tmp_path)
+    restored.restore_resume()
+    assert restored.ice.intervals == {1., 2.}
+    assert restored.ice.history[key]["tick"] == 7200000000
+    for name in ("rain", *FIELDS):
+        np.testing.assert_array_equal(restored.ice.history[key][name], original.ice.history[key][name])
+    original.product_consumer.close()
+    restored.product_consumer.close()
+
+
+
+def test_save_retires_superseded_arrays_snapshots(tmp_path):
+    from gpuwm.ensemble.ice_accretion import FIELDS
+    original = collector(tmp_path)
+    key = (1, 0, 1, "fixed-grid")
+    directory = tmp_path / ".ensemble-resume"
+    sealed = directory / ("a" * 64 + ".nc")
+    directory.mkdir(parents=True, exist_ok=True)
+    sealed.write_bytes(b"sealed")
+    (tmp_path / "ensemble-restart.json").write_text(json.dumps({"files": [
+        {"path": ".ensemble-resume/" + sealed.name}]}))
+    names = []
+    for tick in (3600000000, 7200000000, 10800000000):
+        original.ice.history[key] = {"tick": tick, "rain": np.full((2, 2), tick / 1e9, np.float32),
+            **{name: np.full((2, 2), tick / 1e9, np.float32) for name in FIELDS}}
+        names.append(Path(original.save_resume()["arrays"]).name)
+    assert len(set(names)) == 3
+    left = sorted(p.name for p in directory.glob("*.nc"))
+    assert left == sorted([names[-1], sealed.name])
+    restored = collector(tmp_path)
+    restored.restore_resume()
+    assert restored.ice.history[key]["tick"] == 10800000000
+    original.product_consumer.close()
+    restored.product_consumer.close()

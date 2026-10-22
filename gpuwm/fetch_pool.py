@@ -175,15 +175,17 @@ def chunk_streams_per_file(workers: int | None, *, files: int,
 
     ``workers`` is the pool size the route asked for, ``files`` how many
     it has to move and ``host`` the host they come from, whose own cap
-    may keep fewer in flight. File workers are clipped to the box cap;
-    every admitted file gets at least one stream.
+    may keep fewer in flight. File workers are clipped to this process's
+    share of the box cap (:func:`gpuwm.fetch_connections.process_share`),
+    so other gpuwm processes on the box still find slots; every admitted
+    file gets at least one stream.
     """
 
     pool = resolve_file_workers(workers)
     in_flight = min(pool, max(1, files))
     if host:
         in_flight = min(in_flight, host_worker_cap(host, pool))
-    budget = min(worker_profile()["stream_budget"], fetch_connections.max_connections())
+    budget = min(worker_profile()["stream_budget"], fetch_connections.process_share())
     if host and host.lower() == "nomads.ncep.noaa.gov":
         return 1
     return max(1, budget // max(1, in_flight))
@@ -254,13 +256,13 @@ def resolve_file_workers(requested: int | None) -> int:
     """
 
     if requested is None:
-        return min(worker_profile()["workers"], fetch_connections.max_connections())
+        return min(worker_profile()["workers"], fetch_connections.process_share())
     workers = int(requested)
     if workers < 1:
         raise ValueError(
             f"--fetch-workers {requested} is not a schedulable pool; pass "
             "a positive count (1 is the serial transport)")
-    return min(workers, fetch_connections.max_connections())
+    return min(workers, fetch_connections.process_share())
 
 
 class TransferCancelled(RuntimeError):

@@ -49,7 +49,8 @@ def init(ctx):
 def launch_vertmx(chem, alt, z_at_w, z, dz8w, exch_h, vd, dt, deposited, *,
                   phase, floor=1e-16, anth_co_kts=None, fire_co_k1=None,
                   anth_pm25_pair=None, anth_pm25=None, sf_urban_physics=0,
-                  mixed=None, ekmfull=None, ddmassn=None):
+                  mixed=None, ekmfull=None, ddmassn=None, enh_frp=None,
+                  enh_coef=None):
     """One column thread per row launch, independent of row storage order.
 
     Optional outputs let the node parity gate measure solver and floor words.
@@ -80,9 +81,16 @@ def launch_vertmx(chem, alt, z_at_w, z, dz8w, exch_h, vd, dt, deposited, *,
     args=(chem,alt,z_at_w,z,dz8w,exch_h,vd,np.float32(dt),np.float32(floor),
           np.int32(phase=='gas'),deposited)+tuple(chem if x is None else x for x in optional)
     args+=tuple(np.int32(x is not None) for x in (anth_co_kts,fire_co_k1,anth_pm25_pair,anth_pm25))
+    if (enh_frp is None)!=(enh_coef is None):
+        raise ValueError('enh_vermix needs the fire FRP and its diurnal coefficient together')
+    for x in (enh_frp,enh_coef):
+        if x is not None and x.shape!=(ny,nx):
+            raise ValueError('enh_vermix FRP/coefficient planes must match columns')
     args+=(np.int32(sf_urban_physics),np.int32(nz),np.int32(ny*nx),
            chem if mixed is None else mixed,chem if ekmfull is None else ekmfull,
-           chem if ddmassn is None else ddmassn,np.int32(mixed is not None))
+           chem if ddmassn is None else ddmassn,np.int32(mixed is not None),
+           vd if enh_frp is None else enh_frp,vd if enh_coef is None else enh_coef,
+           np.int32(enh_frp is not None))
     get_kernel_int_defines('chem_vertmx','chem_vertmx',(('CHEM_NZ',nz),))(
         ((ny*nx+127)//128,),(128,),args)
 
@@ -103,8 +111,61 @@ def step(ctx, dt, ktau):
     inputs={name:f.get(name) for name in ('anth_co_kts','fire_co_k1','anth_pm25_pair','anth_pm25')}
     inputs['sf_urban_physics']=getattr(ctx.cfg,'sf_urban_physics',0)
     met={name:ctx.met(name) for name in REQUIRES}
+    if getattr(ctx.cfg,'enh_vermix',False):
+        inputs['enh_frp']=ctx.diag['fire_frp_mean']
+        inputs['enh_coef']=ctx.diag['fire_coef_bb_dc'][0]
+    smoke_vd=None
+    if int(getattr(ctx.cfg,'aer_drydep_opt',0))==SMOKE_DRYDEP_OPT:
+        smoke_vd=smoke_deposition_velocity(ctx.met('ust'),ctx.met('rmol'),ctx.state.qv,
+                                           ctx.met('t_phy'),ctx.met('p_phy'))
     for index,row in enumerate(rows(ctx.table)):
         chem=ctx.field(row);vel=ctx.ddvel[ctx.row_index(row)]
+        if smoke_vd is not None and row.phase=='aerosol' and row.drydep is None:
+            vel=smoke_vd
         accum=ctx.diag['vertmx_deposited'][index]
         launch_vertmx(chem,met['alt'],met['z_at_w'],met['z'],met['dz8w'],met['exch_h'],vel,dt,accum,
                       phase=row.phase,floor=row.floor,**inputs)
+
+
+#: HRRR v4.1.21 fork ``aer_drydep_opt = 111`` (smoke/dry_dep_driver.F:244-256).
+SMOKE_DRYDEP_OPT = 111
+
+
+def smoke_deposition_velocity(ust, rmol, qv, t_phy, p_phy):
+    """The fork's smoke dry deposition velocity (m/s), one GPU pass.
+
+    smoke/dry_dep_driver.F:244-256 with kpart = 500: vd = ust/kpart, times
+    1 + (-300 rmol)^0.66667 when rmol < 0, times 1 + 0.37 exp((rh1 - 0.8)/0.2)
+    when the lowest level's relative humidity exceeds 0.8, capped at 0.5.
+    rh1 is chem_driver's clipped estimate (smoke/chem_driver.F:203-205):
+    max(.1, min(.95, qv / (3.80 exp(17.27 (T - 273)/(T - 36)) / (.01 p)))).
+    """
+    import cupy as cp
+    kernel = _smoke_vd_kernel()
+    out = cp.empty(ust.shape, dtype=cp.float32)
+    kernel(cp.asarray(ust, cp.float32), cp.asarray(rmol, cp.float32),
+           cp.asarray(qv[0], cp.float32), cp.asarray(t_phy[0], cp.float32),
+           cp.asarray(p_phy[0], cp.float32), out)
+    return out
+
+
+_SMOKE_VD = None
+
+
+def _smoke_vd_kernel():
+    global _SMOKE_VD
+    if _SMOKE_VD is None:
+        import cupy as cp
+        _SMOKE_VD = cp.ElementwiseKernel(
+            "float32 ust, float32 rmol, float32 qv, float32 t, float32 p",
+            "float32 vd",
+            """
+            float es = __fmul_rn(3.80f, expf(__fdiv_rn(__fmul_rn(17.27f, __fsub_rn(t, 273.f)),
+                                                      __fsub_rn(t, 36.f))));
+            float rh = fmaxf(.1f, fminf(.95f, __fdiv_rn(qv, __fdiv_rn(es, __fmul_rn(.01f, p)))));
+            float v = __fdiv_rn(ust, 500.f);
+            if (rmol < 0.f) v = __fmul_rn(v, __fadd_rn(1.f, powf(__fmul_rn(-300.f, rmol), .66667f)));
+            if (rh > .8f) v = __fmul_rn(v, __fadd_rn(1.f, __fmul_rn(.37f, expf(__fdiv_rn(__fsub_rn(rh, .8f), .2f)))));
+            vd = fminf(.5f, v);
+            """, "gpuwm_smoke_drydep_vd")
+    return _SMOKE_VD

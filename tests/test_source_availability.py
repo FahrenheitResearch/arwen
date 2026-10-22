@@ -46,13 +46,23 @@ def test_publication_eras_own_calendar_and_fetch_refusals(transport, cycle, reas
 
 
 def test_current_transport_layout_bound_is_not_the_scientific_record_start():
-    for source in ("gfs", "gfs-0p25", "gdas"):
+    from gpuwm import fetch_endpoints
+
+    # GDAS reads only the current /atmos/ S3 layout.  GFS also reads the
+    # dated archive layouts (32dea003f45, lane/cap-gfs-archive), so its
+    # bound is the oldest declared layout, still a layout bound and not the
+    # model's scientific record start.
+    oldest = min(row["record_start"] for row in fetch_endpoints.archive_rows("gfs"))
+    assert oldest == "2005-02-15T00"
+    for source, earliest, era in (("gfs", oldest, "pre-atmos"),
+                                  ("gfs-0p25", oldest, "pre-atmos"),
+                                  ("gdas", "2021-03-22T12", "/atmos/")):
         document = availability(source, 6, now=NOW)
-        assert document["earliest"] == "2021-03-22T12"
+        assert document["earliest"] == earliest
         assert document["cycle_hours"] == [0, 6, 12, 18]
         assert document["latest_candidate"] == "2026-09-06T12"
         archive = next(row for row in document["transports"] if row["transport"] == "s3")
-        assert "/atmos/" in archive["note"]
+        assert era in archive["note"]
         assert archive["documentation"]
     # A reader who deliberately selected the rolling endpoint is not handed
     # its archive's range or an automatic probe against a different host.
@@ -255,7 +265,10 @@ LIVE = datetime(2026, 9, 26, 6, 4)
 
 
 def _nothing_from_06z(url):
-    return ".t06z." not in url
+    # Every host's grammar for the 06Z run: the NCEP tree (.t06z.) and the
+    # dated archive layouts the GFS archive lane (32dea003f45) appended to
+    # the ladder (GDEX gfs.0p25.YYYYMMDDHH, NCEI gfs_*_YYYYMMDD_HH00_).
+    return not any(token in url for token in (".t06z.", "2026092606", "_0600_"))
 
 
 def _stand_in(probe):

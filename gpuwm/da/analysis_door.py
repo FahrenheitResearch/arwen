@@ -42,6 +42,8 @@ import shutil
 import sys
 from typing import Any, Mapping
 
+from gpuwm.da.member_wave import sha256 as _sha
+
 PLAN_SCHEMA = "gpuwm.analysis-door-plan/1"
 RECEIPT_SCHEMA = "gpuwm.analysis-door/1"
 START_SCHEMA = "gpuwm.forecast-start/1"
@@ -167,12 +169,6 @@ def refuse_unrouted(args, route: str) -> None:
 # ---------------------------------------------------------------------------
 # the plan (parent side)
 # ---------------------------------------------------------------------------
-def _sha(path: Path) -> str:
-    from gpuwm.io.analysis_bundle import sha256_file
-
-    return sha256_file(path)
-
-
 def _place(source: Path, target: Path) -> None:
     try:
         os.link(source, target)

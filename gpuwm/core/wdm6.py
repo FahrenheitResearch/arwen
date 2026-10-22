@@ -50,9 +50,10 @@ import numpy as np
 import cupy as cp
 
 from gpuwm.config import RunConfig
-from gpuwm.core import constants as c
 from gpuwm.core.kernels import get_kernel, get_kernel_int_defines
 from gpuwm.core.state import DTYPE, DomainState
+from gpuwm.core.wsm_family import (check_surface, check_volume, finish_fields,
+                                    precipitation_surface)
 from gpuwm.core.wdm6_constants import (WDM6_DEEP_KMAX, WDM6_NUMBER_SPECIES,
                                        WDM6_SHALLOW_KMAX,
                                        WDM6_VERTICAL_LEVEL_BOUNDS,
@@ -104,25 +105,13 @@ def launch_wdm6(theta, qv, qc, qr, qi, qs, qg, nn, nc, nr,
         "rho": rho, "pii": pii, "pressure": pressure, "dz": dz,
         "effc": effc, "effi": effi, "effs": effs,
     }
-    for name, value in volume.items():
-        if value.shape != shape:
-            raise ValueError(f"{name} must have shape {shape}, got {value.shape}")
-        if value.dtype != DTYPE:
-            raise TypeError(f"{name} must be float32, got {value.dtype}")
-        if not value.flags.c_contiguous:
-            raise ValueError(f"{name} must be C-contiguous")
-    surface_shape = (ny, nx)
-    for name, value in {
+    check_volume(volume, shape)
+    check_surface({
             "xland": xland,
             "rainnc": rainnc, "rainncv": rainncv,
             "snownc": snownc, "snowncv": snowncv,
             "graupelnc": graupelnc, "graupelncv": graupelncv,
-            "sr": sr}.items():
-        if value.shape != surface_shape or value.dtype != DTYPE:
-            raise ValueError(f"{name} must be float32 {surface_shape}, got "
-                             f"{value.dtype} {value.shape}")
-        if not value.flags.c_contiguous:
-            raise ValueError(f"{name} must be C-contiguous")
+            "sr": sr}, (ny, nx))
     ncol = ny * nx
     blocks = (ncol + _COLUMN_TPB - 1) // _COLUMN_TPB
     if count_status is None:
@@ -190,52 +179,24 @@ def apply(state: DomainState, cfg: RunConfig, dt: float, *,
         raise ValueError("mp_physics=16 state lacks WDM6 fields: "
                          + ", ".join(missing))
     xland = column_land_mask(state)
-    thb = state.thb if state.thb.ndim == 3 else state.thb[:, None, None]
-    phb = state.phb if state.phb.ndim == 3 else state.phb[:, None, None]
-    theta = state.scratch((nz, ny, nx), "wdm6_theta")
-    rho = state.scratch((nz, ny, nx), "wdm6_rho")
-    pii = state.scratch((nz, ny, nx), "wdm6_pii")
-    dz = state.scratch((nz, ny, nx), "wdm6_dz")
-    z8w = state.scratch((nz + 1, ny, nx), "wdm6_z8w")
-    theta[...] = thb + state.thp
-    rho[...] = 1.0 / state.alt
-    pii[...] = cp.power(state.p / DTYPE(c.P0), DTYPE(c.RCP))
-    z8w[...] = (phb + state.php) / DTYPE(c.G)
-    dz[...] = z8w[1:] - z8w[:-1]
+    from gpuwm.core.wsm6 import _wsm6_prepare
+    theta, rho, pii, dz = _wsm6_prepare(state, "wdm6")
 
-    surface = (ny, nx)
-    rainnc = state.scratch(surface, "mp_rainnc")
-    rainncv = state.scratch(surface, "mp_rainncv")
-    snownc = state.scratch(surface, "mp_snownc")
-    snowncv = state.scratch(surface, "mp_snowncv")
-    graupelnc = state.scratch(surface, "mp_graupelnc")
-    graupelncv = state.scratch(surface, "mp_graupelncv")
-    sr = state.scratch(surface, "mp_sr")
+    surface = precipitation_surface(state)
 
-    from gpuwm.core.microphysics import (MicrophysicsDiagnostics,
-                                         moist_physics_finish,
-                                         save_pre_mp_theta)
+    from gpuwm.core.microphysics import save_pre_mp_theta
     save_pre_mp_theta(state)
     launch_wdm6(
         theta, state.qv, state.qc, state.qr, state.qi, state.qs, state.qg,
         state.nn, state.nc, state.nr,
         rho, pii, state.p, dz, cp.ascontiguousarray(xland),
-        rainnc, rainncv, snownc, snowncv,
-        graupelnc, graupelncv, sr, dt, effc=state.effc,
+        dt=dt, **surface, effc=state.effc,
         effi=state.effi, effs=state.effs, hail_opt=cfg.wdm6_hail_opt,
         count_status=state.scratch((1,), 'wdm6_count_status', dtype=cp.uint32),
         conservative_surface=bool(
             getattr(cfg, "wdm6_conservative_surface", False)))
-    if refl_10cm_due:
-        from gpuwm.core.refl import compute_and_stash_refl_10cm
-        refl_t = state.scratch((nz, ny, nx), "refl_t")
-        refl_t[...] = theta * pii
-        compute_and_stash_refl_10cm(state, cfg, refl_t, state.p)
-    moist_physics_finish(state, cfg, theta, dt)
-    return MicrophysicsDiagnostics(
-        rainnc=rainnc, rainncv=rainncv, sr=sr,
-        snownc=snownc, snowncv=snowncv,
-        graupelnc=graupelnc, graupelncv=graupelncv)
+    return finish_fields(state, cfg, theta, pii, dt, surface,
+                         refl_10cm_due=refl_10cm_due)
 
 
 __all__ = ["WDM6_NUMBER_SPECIES", "apply", "column_land_mask", "launch_wdm6"]

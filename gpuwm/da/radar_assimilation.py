@@ -105,7 +105,7 @@ from gpuwm.da.letkf import (RELAXATION_MODES, GriddedObs, LetkfConfig,
 from gpuwm.da.moments import (MOMENT_POLICIES, DEFAULT_MOMENT_POLICY,
                               validate_analysis_fields)
 from gpuwm.da.obs_goes import goes_grid_to_gridded_obs
-from gpuwm.da.obs_radar import (Z_SOURCES, beam_unit_vectors,
+from gpuwm.da.obs_radar import (Z_SOURCES,
                                 observed_radial_velocity,
                                 letkf_grid_geometry, radar_grid_to_gridded_obs,
                                 read_document, simulated_radial_velocity)
@@ -1539,89 +1539,58 @@ def thin_mask(mask, counts, errors, cells: int):
     return keep[:, :ny, :nx]
 
 
-def _thinned_reflectivity_document(document, cfg: RadarAssimilationConfig):
-    """A working copy with the merged reflectivity batch thinned/inflated.
-
-    The reflectivity batch has no radar axis -- the superob writer merges
-    it across radars -- so this is :func:`thin_mask` applied once, with
-    ``z_count`` as the "most gates" key.  Same rule, same determinism,
-    same receipt shape as the velocity path; separate function because
-    conflating a per-radar stack with a merged field is how one of them
-    silently gets indexed as the other.
-    """
-    cells = int(cfg.reflectivity_thinning_cells)
-    inflation = float(cfg.reflectivity_error_inflation)
+def _thinned_merged_document(document, cells, inflation, prefix, rule):
     if cells == 1 and inflation == 1.0:
         return document, None
     variables = dict(document["variables"])
-    z_mask = np.asarray(variables["z_mask"]).astype(bool)
-    z_err = np.asarray(variables["z_err"], dtype=np.float64)
-    counts = variables.get("z_count")
-    counts = (np.ones_like(z_err) if counts is None
+    if prefix == "z0" and f"{prefix}_mask" not in variables:
+        # Let the adapter explain a missing clear-air batch.
+        return document, None
+    mask = np.asarray(variables[f"{prefix}_mask"]).astype(bool)
+    errors = np.asarray(variables[f"{prefix}_err"], dtype=np.float64)
+    counts = variables.get(f"{prefix}_count")
+    counts = (np.ones_like(errors) if counts is None
               else np.asarray(counts, dtype=np.float64))
-    kept = thin_mask(z_mask, counts, z_err, cells) if cells > 1 else z_mask
-    variables["z_mask"] = kept.astype(np.int8)
+    kept = thin_mask(mask, counts, errors, cells) if cells > 1 else mask
+    variables[f"{prefix}_mask"] = kept.astype(np.int8)
     if inflation != 1.0:
-        variables["z_err"] = z_err * inflation
+        variables[f"{prefix}_err"] = errors * inflation
     copied = dict(document)
     copied["variables"] = variables
     receipt = {
         "cells": cells,
         "error_inflation": inflation,
-        "points_before": int(z_mask.sum()),
+        "points_before": int(mask.sum()),
         "points_after": int(kept.sum()),
-        "rule": "one obs per block: most gates, then smallest error, "
-                "then first cell; blocks with no obs keep none",
+        "rule": rule,
         "merged_across_radars": True,
     }
     return copied, receipt
+
+
+def _thinned_reflectivity_document(document, cfg: RadarAssimilationConfig):
+    """Thin/inflate merged reflectivity, without a per-radar axis."""
+    return _thinned_merged_document(
+        document, int(cfg.reflectivity_thinning_cells),
+        float(cfg.reflectivity_error_inflation), "z",
+        "one obs per block: most gates, then smallest error, "
+        "then first cell; blocks with no obs keep none",
+    )
 
 
 def _thinned_clear_air_document(document, cfg: RadarAssimilationConfig):
-    """A working copy with the clear-air batch thinned/inflated.
+    """Thin/inflate clear air, preferring cells with most supporting gates.
 
-    Same rule and same determinism as the reflectivity path, keyed on
-    ``z0_count`` -- the cell in each block with the most supporting
-    measured gates wins, which is the cell whose clear-air claim rests on
-    the most evidence.
-
-    Thinning matters more here than anywhere else in the lane.  Clear air
-    is most of any volume and it is smooth, so an unthinned zero batch
-    puts thousands of near-identical numbers inside one localisation lens
-    against an ensemble with a few tens of degrees of freedom.  That is
-    the rank starvation the velocity precedent already measured, with a
-    field that is far more correlated with itself than velocity is.
+    Clear air is smooth and fills most of a volume. An unthinned zero
+    batch puts thousands of correlated values inside one localisation
+    lens against a few tens of ensemble degrees of freedom, starving rank.
     """
-    cells = int(cfg.clear_air_thinning_cells)
-    inflation = float(cfg.clear_air_error_inflation)
-    if cells == 1 and inflation == 1.0:
-        return document, None
-    variables = dict(document["variables"])
-    if "z0_mask" not in variables:
-        # The adapter raises the explanatory error; thinning a batch that
-        # is not there must not pre-empt it with a KeyError.
-        return document, None
-    z0_mask = np.asarray(variables["z0_mask"]).astype(bool)
-    z0_err = np.asarray(variables["z0_err"], dtype=np.float64)
-    counts = variables.get("z0_count")
-    counts = (np.ones_like(z0_err) if counts is None
-              else np.asarray(counts, dtype=np.float64))
-    kept = thin_mask(z0_mask, counts, z0_err, cells) if cells > 1 else z0_mask
-    variables["z0_mask"] = kept.astype(np.int8)
-    if inflation != 1.0:
-        variables["z0_err"] = z0_err * inflation
-    copied = dict(document)
-    copied["variables"] = variables
-    receipt = {
-        "cells": cells,
-        "error_inflation": inflation,
-        "points_before": int(z0_mask.sum()),
-        "points_after": int(kept.sum()),
-        "rule": "one obs per block: most supporting gates, then smallest "
-                "error, then first cell; blocks with no obs keep none",
-        "merged_across_radars": True,
-    }
-    return copied, receipt
+    return _thinned_merged_document(
+        document, int(cfg.clear_air_thinning_cells),
+        float(cfg.clear_air_error_inflation), "z0",
+        "one obs per block: most supporting gates, then smallest "
+        "error, then first cell; blocks with no obs keep none",
+    )
 
 
 def _thinned_cwp_document(document, cfg: RadarAssimilationConfig):

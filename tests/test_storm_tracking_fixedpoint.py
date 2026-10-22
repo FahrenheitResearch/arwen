@@ -38,17 +38,9 @@ import gpuwm.core.storm_tracking as st
 from gpuwm.core.storm_tracking import (CENTROID_MAX_ITERATIONS,
                                        locate_signal, weighted_centroid)
 
+from test_storm_tracking_radius import _bowl as _vortex
+
 BOX = (slice(0, 200), slice(0, 200))
-
-
-def _vortex(ny, nx, cj, ci, depth=40.0, width=25.0, slope=0.10,
-            floor=1500.0):
-    """One vortex in an environmental gradient (see the radius suite for
-    why the gradient is essential in a fixture)."""
-    j, i = np.mgrid[0:ny, 0:nx]
-    r2 = (j - cj) ** 2 + (i - ci) ** 2
-    return (floor - depth * np.exp(-r2 / (2.0 * width ** 2))
-            + slope * i + 0.6 * slope * j).astype(np.float64)
 
 
 def _two_vortices(ny, nx, a, b, depth_a=40.0, depth_b=38.0, width=18.0):

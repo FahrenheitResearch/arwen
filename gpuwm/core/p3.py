@@ -138,10 +138,7 @@ SXTH = f32(1.0) / f32(6.0)                # :181
 PIOV3 = PI * THRD                         # :182
 PIOV6 = PI * SXTH                         # :183
 MAX_TOTAL_NI = f32(2000.0e3)              # :186
-IPARAM = 3                                # :193 Khairoutdinov and Kogan 2000
 NCCNST = f32(200.0e6)                     # :196
-KC = f32(9.44e9)                          # :199 (Seifert-Beheng, iparam=1)
-KR = f32(5.78e3)                          # :200
 CP = f32(1005.0)                          # :203
 INV_CP = f32(1.0) / CP                    # :204
 G = f32(9.816)                            # :205
@@ -150,11 +147,8 @@ RV = f32(461.51)                          # :207
 EP_2 = f32(0.622)                         # :208
 RHOSUR = f32(100000.0) / (RD * f32(273.15))   # :209
 RHOSUI = f32(60000.0) / (RD * f32(253.15))    # :210
-AR = f32(841.99667)                       # :211
-BR = f32(0.8)                             # :212
 F1R = f32(0.78)                           # :213
 F2R = f32(0.32)                           # :214
-ECR = f32(1.0)                            # :215
 RHOW = f32(1000.0)                        # :216
 CPW = f32(4218.0)                         # :217
 INV_RHOW = f32(1.0) / RHOW                # :218
@@ -168,28 +162,17 @@ NSMALL = f32(1.0e-16)                     # :231
 BSMALL = QSMALL * INV_RHO_RIMEMAX         # :232
 BIMM = f32(2.0)                           # :239 Barklie and Gokhale (1959)
 AIMM = f32(0.65)                          # :240
-RIN = f32(0.1e-6)                         # :241
 MI0 = f32(4.0) * PIOV3 * f32(900.0) * f32(1.0e-18)   # :242
 ECI = f32(0.5)                            # :244
 ERI = f32(1.0)                            # :245
 BCN = f32(2.0)                            # :246
-DBRK = f32(600.0e-6)                      # :249
 NMLTRATIO = f32(1.0)                      # :251
-MU_I_INITIAL = f32(10.0)                  # :254 (3-moment only; unused here)
 CONS1 = PIOV6 * RHOW                                       # :259
 CONS2 = f32(4.0) * PIOV3 * RHOW                            # :260
 CONS3 = f32(1.0) / (CONS2 * f32(25.0e-6) ** f32(3.0))      # :261
-CONS4 = f32(1.0) / (DBRK ** f32(3.0) * PI * RHOW)          # :262
 CONS5 = PIOV6 * BIMM                                       # :263
 CONS6 = PIOV6 ** f32(2.0) * RHOW * BIMM                    # :264
 CONS7 = f32(4.0) * PIOV3 * RHOW * f32(1.0e-6) ** f32(3.0)  # :265
-CONS8 = f32(1.0) / (CONS2 * f32(40.0e-6) ** f32(3.0))      # :266
-
-#: Droplet mass spectral shape values (:301-316), Seifert-Beheng only
-#: (iparam = 1); kept for textual parity, unread under iparam = 3.
-DNU = np.asarray([0.0, -0.557, -0.430, -0.307, -0.186, -0.067, 0.050,
-                  0.167, 0.282, 0.397, 0.512, 0.626, 0.739, 0.853,
-                  0.966, 0.966], dtype=np.float32)
 
 
 def polysvp1(t: np.float32, i_type: int) -> np.float32:
@@ -407,11 +390,7 @@ def get_cloud_dsd2(qc_grd, nc_grd, rho, iscf):
         mu_c = f32(1.0) / (mu_c * mu_c) - f32(1.0)  # 1./(mu_c**2)-1.
         mu_c = max(mu_c, f32(2.0))
         mu_c = min(mu_c, f32(15.0))
-        if IPARAM == 1:  # pragma: no cover - iparam is pinned to 3 (:193)
-            dumi = int(mu_c)
-            nu = DNU[dumi-1] + (DNU[dumi] - DNU[dumi-1]) * (mu_c - f32(dumi))
-        else:
-            nu = f32(0.0)
+        nu = f32(0.0)
         lamc = (CONS1 * nc * (mu_c + f32(3.0)) * (mu_c + f32(2.0))
                 * (mu_c + f32(1.0)) / qc) ** THRD
         lammin = (mu_c + f32(1.0)) * f32(2.5e4)
@@ -509,6 +488,57 @@ def impose_max_total_Ni(nitot, inv_rho_local):
 # p3_main (:1905-5201), nCat = 1 / 2-moment ice / WRF orientation.
 # ---------------------------------------------------------------------------
 
+def _rain_table_value(table, ii, jj, rdumii, rdumjj):
+    dum1 = table[ii-1, jj-1] + (rdumii - f32(ii)) * (
+        table[ii, jj-1] - table[ii-1, jj-1])
+    dum2 = table[ii-1, jj] + (rdumii - f32(ii)) * (
+        table[ii, jj] - table[ii-1, jj])
+    return dum1 + (rdumjj - f32(jj)) * (dum2 - dum1)
+
+
+def _sediment_column(moments, fraction, dt, rho, inv_rho, inv_dz, speeds_at):
+    """The shared adaptive flux transport, preserving scalar float32 order."""
+    mass = moments[0]
+    nk = mass.size
+    top = next((k for k in range(nk - 1, -1, -1)
+                if mass[k] * fraction >= QSMALL), None)
+    if top is None:
+        return None
+    bottom = next(k for k in range(top + 1) if mass[k] * fraction >= QSMALL)
+    velocities = [np.zeros(nk, dtype=np.float32) for _ in moments]
+    fluxes = [np.zeros(nk, dtype=np.float32) for _ in moments]
+    dt_left = dt
+    prt_accum = f32(0.0)
+    while dt_left > f32(1.0e-4):
+        Co_max = f32(0.0)
+        for velocity in velocities:
+            velocity[:] = f32(0.0)
+        for k in range(top, bottom - 1, -1):
+            for velocity, value in zip(velocities, speeds_at(k)):
+                velocity[k] = value
+            Co_max = max(Co_max, velocities[0][k] * dt_left * inv_dz[k])
+        tmpint1 = int(Co_max + f32(1.0))
+        dt_sub = min(dt_left, dt_left / f32(tmpint1))
+        k_temp = bottom if bottom == 0 else bottom - 1
+        for k in range(k_temp, top + 1):
+            for flux, velocity, q in zip(fluxes, velocities, moments):
+                flux[k] = velocity[k] * q[k] * rho[k]
+        if bottom == 0:
+            prt_accum = prt_accum + fluxes[0][0] * dt_sub
+        k = top
+        divs = [-flux[k] * inv_dz[k] for flux in fluxes]
+        for q, div in zip(moments, divs):
+            q[k] = q[k] + div * dt_sub * inv_rho[k]
+        for k in range(top - 1, k_temp - 1, -1):
+            divs = [(flux[k + 1] - flux[k]) * inv_dz[k] for flux in fluxes]
+            for q, div in zip(moments, divs):
+                q[k] = q[k] + div * dt_sub * inv_rho[k]
+        dt_left = dt_left - dt_sub
+        if bottom != 0:
+            bottom = bottom - 1
+    return prt_accum
+
+
 def p3_main(qc, nc, qr, nr, th_old, th, qv_old, qv, dt, qitot, qirim, nitot,
             birim, ssat, pres, dzq, it, prt_liq, prt_sol,
             diag_ze, diag_effc, diag_effi, diag_vmi, diag_di, diag_rhoi,
@@ -542,7 +572,6 @@ def p3_main(qc, nc, qr, nr, th_old, th, qv_old, qv, dt, qitot, qirim, nitot,
     revap_table = rt.revap_table
 
     ni_pts, nk = qc.shape
-    kbot, ktop, kdir = 0, nk - 1, 1     # WRF orientation (:2211-2215)
 
     dt = f32(dt)
     odt = f32(1.0) / dt                 # :2261
@@ -994,15 +1023,7 @@ def p3_main(qc, nc, qr, nr, th_old, th, qv_old, qv, dt, qitot, qirim, nitot,
                 if qr[i, k] * ispf >= QSMALL:   # :3114-3129
                     dumii_r, dumjj_r, dum1, rdumii, rdumjj, inv_dum3 = \
                         find_lookupTable_indices_3(mu_r, lamr)
-                    dum1 = revap_table[dumii_r-1, dumjj_r-1] \
-                        + (rdumii - f32(dumii_r)) * (
-                            revap_table[dumii_r, dumjj_r-1]
-                            - revap_table[dumii_r-1, dumjj_r-1])
-                    dum2 = revap_table[dumii_r-1, dumjj_r] \
-                        + (rdumii - f32(dumii_r)) * (
-                            revap_table[dumii_r, dumjj_r]
-                            - revap_table[dumii_r-1, dumjj_r])
-                    dum = dum1 + (rdumjj - f32(dumjj_r)) * (dum2 - dum1)
+                    dum = _rain_table_value(revap_table, dumii_r, dumjj_r, rdumii, rdumjj)
                     epsr = f32(2.0) * PI * cdistr * rho[k] * dv * (
                         F1R * _gammaf(mu_r + f32(2.0)) / lamr
                         + F2R * (rho[k] / mu) ** f32(0.5) * sc ** THRD * dum)
@@ -1380,226 +1401,71 @@ def p3_main(qc, nc, qr, nr, th_old, th, qv_old, qv, dt, qitot, qirim, nitot,
         # Sedimentation (:3984-4495), adaptive substepping.
         # ==================================================================
 
-        # ---- cloud, 1-moment (log_predictNc = .false., :4072-4119) ----
-        log_qxpresent = False
-        k_qxtop = kbot
-        for k in range(ktop, kbot - 1, -kdir):
-            if qc[i, k] * iscf >= QSMALL:
-                log_qxpresent = True
-                k_qxtop = k
-                break
-        if log_qxpresent:
-            dt_left = dt
-            prt_accum = f32(0.0)
-            k_qxbot = kbot
-            for k in range(kbot, k_qxtop + 1, kdir):
-                if qc[i, k] * iscf >= QSMALL:
-                    k_qxbot = k
-                    break
-            V_qc = np.zeros(nk, dtype=np.float32)
-            flux_qx = np.zeros(nk, dtype=np.float32)
-            while dt_left > f32(1.0e-4):
-                Co_max = f32(0.0)
-                V_qc[:] = f32(0.0)
-                for k in range(k_qxtop, k_qxbot - 1, -kdir):
-                    if qc[i, k] * iscf > QSMALL:
-                        nc[i, k], mu_c, nu, lamc, _t1, _t2 = get_cloud_dsd2(
-                            qc[i, k], nc[i, k], rho[k], iscf)
-                        dum = f32(1.0) / lamc ** BCN
-                        V_qc[k] = acn[k] * _gammaf(f32(4.0) + BCN + mu_c) \
-                            * dum / _gammaf(mu_c + f32(4.0))
-                    Co_max = max(Co_max, V_qc[k] * dt_left * inv_dzq[i, k])
-                tmpint1 = int(Co_max + f32(1.0))
-                dt_sub = min(dt_left, dt_left / f32(tmpint1))
-                if k_qxbot == kbot:
-                    k_temp = k_qxbot
-                else:
-                    k_temp = k_qxbot - kdir
-                for k in range(k_temp, k_qxtop + 1, kdir):
-                    flux_qx[k] = V_qc[k] * qc[i, k] * rho[k]
-                if k_qxbot == kbot:
-                    prt_accum = prt_accum + flux_qx[kbot] * dt_sub
-                k = k_qxtop
-                fluxdiv_qx = -flux_qx[k] * inv_dzq[i, k]
-                qc[i, k] = qc[i, k] + fluxdiv_qx * dt_sub * inv_rho[k]
-                for k in range(k_qxtop - kdir, k_temp - 1, -kdir):
-                    fluxdiv_qx = (flux_qx[k + kdir] - flux_qx[k]) \
-                        * inv_dzq[i, k]
-                    qc[i, k] = qc[i, k] + fluxdiv_qx * dt_sub * inv_rho[k]
-                dt_left = dt_left - dt_sub
-                if k_qxbot != kbot:
-                    k_qxbot = k_qxbot - kdir
+        def cloud_speeds(k):
+            V_qc = f32(0.0)
+            if qc[i, k] * iscf > QSMALL:
+                nc[i, k], mu_c, nu, lamc, _t1, _t2 = get_cloud_dsd2(
+                    qc[i, k], nc[i, k], rho[k], iscf)
+                dum = f32(1.0) / lamc ** BCN
+                V_qc = acn[k] * _gammaf(f32(4.0) + BCN + mu_c) \
+                    * dum / _gammaf(mu_c + f32(4.0))
+            return (V_qc,)
+
+        prt_accum = _sediment_column(
+            (qc[i],), iscf, dt,
+            rho, inv_rho, inv_dzq[i], cloud_speeds)
+        if prt_accum is not None:
             prt_liq[i] = prt_accum * INV_RHOW * odt
 
-        # ---- rain (:4131-4245) ----
-        log_qxpresent = False
-        k_qxtop = kbot
-        for k in range(ktop, kbot - 1, -kdir):
-            if qr[i, k] * ispf >= QSMALL:
-                log_qxpresent = True
-                k_qxtop = k
-                break
-        if log_qxpresent:
-            dt_left = dt
-            prt_accum = f32(0.0)
-            k_qxbot = kbot
-            for k in range(kbot, k_qxtop + 1, kdir):
-                if qr[i, k] * ispf >= QSMALL:
-                    k_qxbot = k
-                    break
-            V_qr = np.zeros(nk, dtype=np.float32)
-            V_nr = np.zeros(nk, dtype=np.float32)
-            flux_qx = np.zeros(nk, dtype=np.float32)
-            flux_nx = np.zeros(nk, dtype=np.float32)
-            while dt_left > f32(1.0e-4):
-                Co_max = f32(0.0)
-                V_qr[:] = f32(0.0)
-                V_nr[:] = f32(0.0)
-                for k in range(k_qxtop, k_qxbot - 1, -kdir):
-                    if qr[i, k] * ispf > QSMALL:
-                        nr[i, k] = max(nr[i, k], NSMALL)
-                        nr[i, k], mu_r, lamr, cdistr, logn0r = get_rain_dsd2(
-                            qr[i, k], nr[i, k], ispf)
-                        dumii_r, dumjj_r, dum1, rdumii, rdumjj, inv_dum3 = \
-                            find_lookupTable_indices_3(mu_r, lamr)
-                        dum1 = vm_table[dumii_r-1, dumjj_r-1] \
-                            + (rdumii - f32(dumii_r)) * (
-                                vm_table[dumii_r, dumjj_r-1]
-                                - vm_table[dumii_r-1, dumjj_r-1])
-                        dum2 = vm_table[dumii_r-1, dumjj_r] \
-                            + (rdumii - f32(dumii_r)) * (
-                                vm_table[dumii_r, dumjj_r]
-                                - vm_table[dumii_r-1, dumjj_r])
-                        V_qr[k] = dum1 + (rdumjj - f32(dumjj_r)) * (dum2 - dum1)
-                        V_qr[k] = V_qr[k] * rhofacr[k]
-                        dum1 = vn_table[dumii_r-1, dumjj_r-1] \
-                            + (rdumii - f32(dumii_r)) * (
-                                vn_table[dumii_r, dumjj_r-1]
-                                - vn_table[dumii_r-1, dumjj_r-1])
-                        dum2 = vn_table[dumii_r-1, dumjj_r] \
-                            + (rdumii - f32(dumii_r)) * (
-                                vn_table[dumii_r, dumjj_r]
-                                - vn_table[dumii_r-1, dumjj_r])
-                        V_nr[k] = dum1 + (rdumjj - f32(dumjj_r)) * (dum2 - dum1)
-                        V_nr[k] = V_nr[k] * rhofacr[k]
-                    Co_max = max(Co_max, V_qr[k] * dt_left * inv_dzq[i, k])
-                tmpint1 = int(Co_max + f32(1.0))
-                dt_sub = min(dt_left, dt_left / f32(tmpint1))
-                if k_qxbot == kbot:
-                    k_temp = k_qxbot
-                else:
-                    k_temp = k_qxbot - kdir
-                for k in range(k_temp, k_qxtop + 1, kdir):
-                    flux_qx[k] = V_qr[k] * qr[i, k] * rho[k]
-                    flux_nx[k] = V_nr[k] * nr[i, k] * rho[k]
-                if k_qxbot == kbot:
-                    prt_accum = prt_accum + flux_qx[kbot] * dt_sub
-                k = k_qxtop
-                fluxdiv_qx = -flux_qx[k] * inv_dzq[i, k]
-                fluxdiv_nx = -flux_nx[k] * inv_dzq[i, k]
-                qr[i, k] = qr[i, k] + fluxdiv_qx * dt_sub * inv_rho[k]
-                nr[i, k] = nr[i, k] + fluxdiv_nx * dt_sub * inv_rho[k]
-                for k in range(k_qxtop - kdir, k_temp - 1, -kdir):
-                    fluxdiv_qx = (flux_qx[k + kdir] - flux_qx[k]) \
-                        * inv_dzq[i, k]
-                    fluxdiv_nx = (flux_nx[k + kdir] - flux_nx[k]) \
-                        * inv_dzq[i, k]
-                    qr[i, k] = qr[i, k] + fluxdiv_qx * dt_sub * inv_rho[k]
-                    nr[i, k] = nr[i, k] + fluxdiv_nx * dt_sub * inv_rho[k]
-                dt_left = dt_left - dt_sub
-                if k_qxbot != kbot:
-                    k_qxbot = k_qxbot - kdir
+        def rain_speeds(k):
+            V_qr = f32(0.0)
+            V_nr = f32(0.0)
+            if qr[i, k] * ispf > QSMALL:
+                nr[i, k] = max(nr[i, k], NSMALL)
+                nr[i, k], mu_r, lamr, cdistr, logn0r = get_rain_dsd2(
+                    qr[i, k], nr[i, k], ispf)
+                dumii_r, dumjj_r, dum1, rdumii, rdumjj, inv_dum3 = \
+                    find_lookupTable_indices_3(mu_r, lamr)
+                V_qr = _rain_table_value(vm_table, dumii_r, dumjj_r, rdumii, rdumjj)
+                V_qr = V_qr * rhofacr[k]
+                V_nr = _rain_table_value(vn_table, dumii_r, dumjj_r, rdumii, rdumjj)
+                V_nr = V_nr * rhofacr[k]
+            return (V_qr, V_nr,)
+
+        prt_accum = _sediment_column(
+            (qr[i], nr[i],), ispf, dt,
+            rho, inv_rho, inv_dzq[i], rain_speeds)
+        if prt_accum is not None:
             prt_liq[i] = prt_liq[i] + prt_accum * INV_RHOW * odt
 
-        # ---- ice, 2-moment (:4251-4495) ----
-        log_qxpresent = False
-        k_qxtop = kbot
-        for k in range(ktop, kbot - 1, -kdir):
+        def ice_speeds(k):
+            V_qit = f32(0.0)
+            V_nit = f32(0.0)
             if qitot[i, k] >= QSMALL:
-                log_qxpresent = True
-                k_qxtop = k
-                break
-        if log_qxpresent:
-            dt_left = dt
-            prt_accum = f32(0.0)
-            k_qxbot = kbot
-            for k in range(kbot, k_qxtop + 1, kdir):
-                if qitot[i, k] >= QSMALL:
-                    k_qxbot = k
-                    break
-            V_qit = np.zeros(nk, dtype=np.float32)
-            V_nit = np.zeros(nk, dtype=np.float32)
-            flux_qit = np.zeros(nk, dtype=np.float32)
-            flux_nit = np.zeros(nk, dtype=np.float32)
-            flux_qir = np.zeros(nk, dtype=np.float32)
-            flux_bir = np.zeros(nk, dtype=np.float32)
-            while dt_left > f32(1.0e-4):
-                Co_max = f32(0.0)
-                V_qit[:] = f32(0.0)
-                V_nit[:] = f32(0.0)
-                for k in range(k_qxtop, k_qxbot - 1, -kdir):
-                    if qitot[i, k] >= QSMALL:
-                        nitot[i, k] = max(nitot[i, k], NSMALL)
-                        qirim[i, k], birim[i, k], rhop = calc_bulkRhoRime(
-                            qitot[i, k], qirim[i, k], birim[i, k])
-                        dumi, dumjj, dumii, dum1, dum4, dum5 = \
-                            find_lookupTable_indices_1a(
-                                qitot[i, k], nitot[i, k], qirim[i, k], rhop)
-                        f1pr01 = access_lookup_table(
-                            itab, dumjj, dumii, dumi, 1, dum1, dum4, dum5)
-                        f1pr02 = access_lookup_table(
-                            itab, dumjj, dumii, dumi, 2, dum1, dum4, dum5)
-                        f1pr09 = access_lookup_table(
-                            itab, dumjj, dumii, dumi, 7, dum1, dum4, dum5)
-                        f1pr10 = access_lookup_table(
-                            itab, dumjj, dumii, dumi, 8, dum1, dum4, dum5)
-                        nitot[i, k] = min(nitot[i, k], f1pr09 * qitot[i, k])
-                        nitot[i, k] = max(nitot[i, k], f1pr10 * qitot[i, k])
-                        V_qit[k] = f1pr02 * rhofaci[k]
-                        V_nit[k] = f1pr01 * rhofaci[k]
-                    Co_max = max(Co_max, V_qit[k] * dt_left * inv_dzq[i, k])
-                tmpint1 = int(Co_max + f32(1.0))
-                dt_sub = min(dt_left, dt_left / f32(tmpint1))
-                if k_qxbot == kbot:
-                    k_temp = k_qxbot
-                else:
-                    k_temp = k_qxbot - kdir
-                for k in range(k_temp, k_qxtop + 1, kdir):
-                    flux_qit[k] = V_qit[k] * qitot[i, k] * rho[k]
-                    flux_nit[k] = V_nit[k] * nitot[i, k] * rho[k]
-                    flux_qir[k] = V_qit[k] * qirim[i, k] * rho[k]
-                    flux_bir[k] = V_qit[k] * birim[i, k] * rho[k]
-                if k_qxbot == kbot:
-                    prt_accum = prt_accum + flux_qit[kbot] * dt_sub
-                k = k_qxtop
-                fluxdiv_qit = -flux_qit[k] * inv_dzq[i, k]
-                fluxdiv_qir = -flux_qir[k] * inv_dzq[i, k]
-                fluxdiv_bir = -flux_bir[k] * inv_dzq[i, k]
-                fluxdiv_nit = -flux_nit[k] * inv_dzq[i, k]
-                qitot[i, k] = qitot[i, k] + fluxdiv_qit * dt_sub * inv_rho[k]
-                qirim[i, k] = qirim[i, k] + fluxdiv_qir * dt_sub * inv_rho[k]
-                birim[i, k] = birim[i, k] + fluxdiv_bir * dt_sub * inv_rho[k]
-                nitot[i, k] = nitot[i, k] + fluxdiv_nit * dt_sub * inv_rho[k]
-                for k in range(k_qxtop - kdir, k_temp - 1, -kdir):
-                    fluxdiv_qit = (flux_qit[k + kdir] - flux_qit[k]) \
-                        * inv_dzq[i, k]
-                    fluxdiv_qir = (flux_qir[k + kdir] - flux_qir[k]) \
-                        * inv_dzq[i, k]
-                    fluxdiv_bir = (flux_bir[k + kdir] - flux_bir[k]) \
-                        * inv_dzq[i, k]
-                    fluxdiv_nit = (flux_nit[k + kdir] - flux_nit[k]) \
-                        * inv_dzq[i, k]
-                    qitot[i, k] = qitot[i, k] + fluxdiv_qit * dt_sub \
-                        * inv_rho[k]
-                    qirim[i, k] = qirim[i, k] + fluxdiv_qir * dt_sub \
-                        * inv_rho[k]
-                    birim[i, k] = birim[i, k] + fluxdiv_bir * dt_sub \
-                        * inv_rho[k]
-                    nitot[i, k] = nitot[i, k] + fluxdiv_nit * dt_sub \
-                        * inv_rho[k]
-                dt_left = dt_left - dt_sub
-                if k_qxbot != kbot:
-                    k_qxbot = k_qxbot - kdir
+                nitot[i, k] = max(nitot[i, k], NSMALL)
+                qirim[i, k], birim[i, k], rhop = calc_bulkRhoRime(
+                    qitot[i, k], qirim[i, k], birim[i, k])
+                dumi, dumjj, dumii, dum1, dum4, dum5 = \
+                    find_lookupTable_indices_1a(
+                        qitot[i, k], nitot[i, k], qirim[i, k], rhop)
+                f1pr01 = access_lookup_table(
+                    itab, dumjj, dumii, dumi, 1, dum1, dum4, dum5)
+                f1pr02 = access_lookup_table(
+                    itab, dumjj, dumii, dumi, 2, dum1, dum4, dum5)
+                f1pr09 = access_lookup_table(
+                    itab, dumjj, dumii, dumi, 7, dum1, dum4, dum5)
+                f1pr10 = access_lookup_table(
+                    itab, dumjj, dumii, dumi, 8, dum1, dum4, dum5)
+                nitot[i, k] = min(nitot[i, k], f1pr09 * qitot[i, k])
+                nitot[i, k] = max(nitot[i, k], f1pr10 * qitot[i, k])
+                V_qit = f1pr02 * rhofaci[k]
+                V_nit = f1pr01 * rhofaci[k]
+            return (V_qit, V_qit, V_qit, V_nit,)
+
+        prt_accum = _sediment_column(
+            (qitot[i], qirim[i], birim[i], nitot[i],), f32(1.0), dt,
+            rho, inv_rho, inv_dzq[i], ice_speeds)
+        if prt_accum is not None:
             prt_sol[i] = prt_sol[i] + prt_accum * INV_RHOW * odt
 
         # third compute_SCPF (:4521-4523), quick: off-branch again.
@@ -1607,28 +1473,18 @@ def p3_main(qc, nc, qr, nr, th_old, th, qv_old, qv, dt, qitot, qirim, nitot,
 
         # ---- homogeneous freezing of cloud and rain (:4528-4610) ----
         for k in range(nk):
-            if qc[i, k] >= QSMALL and t[i, k] < f32(233.15):
-                Q_nuc = qc[i, k]
-                nc[i, k] = max(nc[i, k], NSMALL)
-                N_nuc = nc[i, k]
-                qirim[i, k] = qirim[i, k] + Q_nuc
-                qitot[i, k] = qitot[i, k] + Q_nuc
-                birim[i, k] = birim[i, k] + Q_nuc * INV_RHO_RIMEMAX
-                nitot[i, k] = nitot[i, k] + N_nuc
-                th[i, k] = th[i, k] + invexn[i, k] * Q_nuc * xlf * INV_CP
-                qc[i, k] = f32(0.0)
-                nc[i, k] = f32(0.0)
-            if qr[i, k] >= QSMALL and t[i, k] < f32(233.15):
-                Q_nuc = qr[i, k]
-                nr[i, k] = max(nr[i, k], NSMALL)
-                N_nuc = nr[i, k]
-                qirim[i, k] = qirim[i, k] + Q_nuc
-                qitot[i, k] = qitot[i, k] + Q_nuc
-                birim[i, k] = birim[i, k] + Q_nuc * INV_RHO_RIMEMAX
-                nitot[i, k] = nitot[i, k] + N_nuc
-                th[i, k] = th[i, k] + invexn[i, k] * Q_nuc * xlf * INV_CP
-                qr[i, k] = f32(0.0)
-                nr[i, k] = f32(0.0)
+            for q, number in ((qc, nc), (qr, nr)):
+                if q[i, k] >= QSMALL and t[i, k] < f32(233.15):
+                    Q_nuc = q[i, k]
+                    number[i, k] = max(number[i, k], NSMALL)
+                    N_nuc = number[i, k]
+                    qirim[i, k] = qirim[i, k] + Q_nuc
+                    qitot[i, k] = qitot[i, k] + Q_nuc
+                    birim[i, k] = birim[i, k] + Q_nuc * INV_RHO_RIMEMAX
+                    nitot[i, k] = nitot[i, k] + N_nuc
+                    th[i, k] = th[i, k] + invexn[i, k] * Q_nuc * xlf * INV_CP
+                    q[i, k] = f32(0.0)
+                    number[i, k] = f32(0.0)
 
         # category merge (:4615-4697): nCat > 1 only, not ported.
 

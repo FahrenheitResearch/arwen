@@ -5,7 +5,7 @@ Files and revisions are data, never model-specific download implementations.
 """
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
@@ -41,7 +41,7 @@ def _safe_path(value: str) -> str:
     return value
 
 
-def target_for(value: str) -> Target:
+def target_for(value: str, accept_licence=()) -> Target:
     if value.startswith("hf://"):
         tail = value[5:]
         kind = "dataset" if tail.startswith("datasets/") else "model"
@@ -56,6 +56,11 @@ def target_for(value: str) -> Target:
     from gpuwm.earth2_run import model_table
     for name, row in model_table()["models"].items():
         if value.lower() == name or value.lower() in [a.lower() for a in row.get("aliases", [])]:
+            # A table row carries its weight licence: restricted rows need the
+            # same explicit opt-in here as on every other door, before any I/O
+            # (the ambient licence_scope covers internal fetches by such doors).
+            from gpuwm.earth2_licensing import require_licence
+            require_licence(name, row, accept_licence=accept_licence)
             weights = row.get("weights", {})
             if weights.get("host") != "huggingface":
                 raise ValueError(f"{name}: weights.host is not huggingface")
@@ -66,6 +71,16 @@ def target_for(value: str) -> Target:
 
 class FetchError(RuntimeError):
     """A named repository, HTTP or integrity failure."""
+
+
+class AccessRefused(FetchError):
+    """HTTP 401/403: a credential refusal, not an interrupted transfer."""
+
+
+def _access_message(repository, status, token):
+    credential = ("HF_TOKEN is not set in the environment; set it or pick a public model"
+                  if not token else "the environment token has no access; grant access or pick a public model")
+    return f"{repository} is gated or private (HTTP {status}) and {credential}"
 
 
 class _Redirects(HTTPRedirectHandler):
@@ -104,9 +119,7 @@ class _Transport:
                     status = exc.code
                     exc.close()
                     if status in (401, 403):
-                        credential = ("HF_TOKEN is not set in the environment; set it or pick a public model"
-                                      if not self.token else "the environment token has no access; grant access or pick a public model")
-                        raise FetchError(f"{self.repository} is gated or private (HTTP {status}) and {credential}") from None
+                        raise AccessRefused(_access_message(self.repository, status, self.token)) from None
                     raise FetchError(f"{self.repository}: HTTP {status}") from None
                 with response:
                     yield response
@@ -138,12 +151,19 @@ def _metadata(target, transport):
     # Resolve public revisions anonymously, even when an environment token exists.
     try:
         with transport.open(url, anonymous=True) as response:
-            return json.load(response)
-    except FetchError as exc:
-        if not transport.token or not any(s in str(exc) for s in ("HTTP 401", "HTTP 403")):
+            metadata = json.load(response)
+    except AccessRefused:
+        if not transport.token:
             raise
         with transport.open(url) as response:
             return json.load(response)
+    # The API serves metadata for gated repos anonymously (gated="manual"),
+    # and the resolve endpoint serves their README/LICENSE too, so without
+    # this check a tokenless fetch of a gated repo downloads those files and
+    # only then refuses on the first gated file, leaving .part files behind.
+    if not transport.token and (metadata.get("gated") or metadata.get("private")):
+        raise AccessRefused(_access_message(target.repository, 401, None))
+    return metadata
 
 
 def _download_range(transport, url, path, start, end, total):
@@ -213,10 +233,10 @@ def _cache_lock(path):
                 fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
 
-def fetch(target: Target | str, *, cache_root=None, connections=None, progress=print) -> dict:
+def fetch(target: Target | str, *, cache_root=None, connections=None, progress=print, accept_licence=()) -> dict:
     """Fetch a pinned package. The returned receipt never contains credentials."""
     if isinstance(target, str):
-        target = target_for(target)
+        target = target_for(target, accept_licence=accept_licence)
     if not re.fullmatch(r"[\w.-]+/[\w.-]+", target.repository) or any(p in (".", "..") for p in target.repository.split("/")):
         raise ValueError("HF repository must be <owner>/<repo>")
     if target.repo_type not in ("model", "dataset"):
@@ -226,7 +246,7 @@ def fetch(target: Target | str, *, cache_root=None, connections=None, progress=p
         raise ValueError("HF connections must be between 1 and 30")
     root = Path(cache_root or os.environ.get("GPUWM_HF_CACHE", Path.home() / ".cache/gpuwm/hf")).expanduser().resolve()
     repo_root = root / ("datasets" if target.repo_type == "dataset" else "") / target.repository
-    repo_root.mkdir(parents=True, exist_ok=True)
+    root.mkdir(parents=True, exist_ok=True)
     # A host-wide governor is independent of the data cache, so cold caches
     # and distinct dataset roots cannot each open another pool of 30.
     governor = Path(os.environ.get("GPUWM_HF_GOVERNOR",
@@ -247,7 +267,8 @@ def _fetch_locked(target, repo_root, connections, progress):
     if re.fullmatch(r"[0-9a-f]{40}", target.revision) and sha != target.revision:
         raise FetchError(f"{target.repository}: API revision differs from the requested pin")
     package = repo_root / sha
-    package.mkdir(exist_ok=True)
+    created = [p for p in (package, *package.parents) if not p.exists()]
+    package.mkdir(parents=True, exist_ok=True)
     receipt_path = repo_root / f"{sha}.receipt.json"
     try:
         previous = json.loads(receipt_path.read_text())
@@ -307,6 +328,7 @@ def _fetch_locked(target, repo_root, connections, progress):
                 progress(f"hf-fetch {name}: verified cache, 0 bytes downloaded")
                 continue
             dest = package / name
+            created += [p for p in (dest.parent, *dest.parent.parents) if not p.exists()]
             dest.parent.mkdir(parents=True, exist_ok=True)
             part = dest.with_name(dest.name + ".part")
             count = max(1, math.ceil(size / CHUNK_BYTES))
@@ -315,16 +337,36 @@ def _fetch_locked(target, repo_root, connections, progress):
             parts = []
             url = f"{API}/{'datasets/' if target.repo_type == 'dataset' else ''}{target.repository}/resolve/{sha}/{quote(name, safe='/')}"
             if size == 0:
+                if not part.exists():
+                    created.append(part)
                 part.touch()
             for index in range(count) if size else ():
                 chunk = part if count == 1 else dest.with_name(dest.name + f".chunk-{index}.part")
                 parts.append(chunk)
+                if not chunk.exists():
+                    created.append(chunk)
                 start = index * CHUNK_BYTES
                 jobs.append(workers.submit(_download_range, transport, url, chunk, start,
                                            min(size, start + CHUNK_BYTES) - 1, size))
             plans.append((spec, dest, part, parts))
-        for job in jobs:
-            job.result()
+        try:
+            for job in jobs:
+                job.result()
+        except AccessRefused:
+            # A credential refusal is not an interrupted transfer: nothing
+            # will resume these partials, so drop what this call created.
+            for job in jobs:
+                job.cancel()
+            wait(jobs)
+            for path in created:
+                if path.is_file():
+                    path.unlink(missing_ok=True)
+            for path in sorted((p for p in created if p.is_dir()), key=lambda p: len(p.parts), reverse=True):
+                try:
+                    path.rmdir()
+                except OSError:
+                    pass
+            raise
         def finish(plan):
             spec, dest, part, parts = plan
             if len(parts) > 1:
@@ -359,7 +401,14 @@ def _fetch_locked(target, repo_root, connections, progress):
 
 
 def cli(args):
-    result = fetch(args.target, cache_root=args.cache, connections=args.connections)
+    try:
+        result = fetch(args.target, cache_root=args.cache, connections=args.connections,
+                       accept_licence=getattr(args, "accept_licence", ()) or ())
+    except FetchError as exc:
+        # A documented refusal: one sentence at exit 2, never a traceback.
+        import sys
+        print(f"gpuwm hf-fetch: {exc}", file=sys.stderr)
+        return 2
     print(json.dumps(result, sort_keys=True))
     return 0
 
@@ -369,6 +418,8 @@ def register_cli(subparsers):
     parser.add_argument("target", help="Earth-2 model row or hf://[datasets/]<owner>/<repo>[@revision][/path]")
     parser.add_argument("--cache", help="cache root (default GPUWM_HF_CACHE or ~/.cache/gpuwm/hf)")
     parser.add_argument("--connections", type=int, help="parallel HTTP connections, 1..30 (default 30)")
+    from gpuwm.earth2_licensing import add_licence_argument
+    add_licence_argument(parser)
     parser.set_defaults(func=cli)
 
 

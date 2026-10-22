@@ -18,6 +18,15 @@ import numpy as np
 Ownership = Literal["member", "shared"]
 
 
+def _positive_count(value, name):
+    if isinstance(value, (bool, np.bool_)):
+        raise TypeError(f"{name} must be an integer")
+    value = index(value)
+    if value < 1:
+        raise ValueError(f"{name} must be positive")
+    return value
+
+
 def _positive(value, name):
     if isinstance(value, (bool, np.bool_)):
         raise TypeError(f"{name} must be an integer, not a boolean")

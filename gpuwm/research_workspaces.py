@@ -22,6 +22,7 @@ import tomllib
 from gpuwm.configuration_recovery import MemoryAdmissionError, retain_final_candidate
 from gpuwm.explain import warn
 from gpuwm.filesystem_paths import publish_new
+from gpuwm.tui_products import _unique_object
 
 
 CATALOG_PATH = Path(__file__).parent / "data" / "tui" / "research-workspaces.json"
@@ -83,16 +84,9 @@ def _qualification_fields(recipe: dict) -> dict[str, str]:
 
 
 def _read_json(path: Path, label: str) -> tuple[dict, str]:
-    def unique_object(pairs):
-        result = {}
-        for key, value in pairs:
-            if key in result:
-                raise ValueError(f"duplicate JSON key {key!r}")
-            result[key] = value
-        return result
     try:
         payload = path.read_bytes()
-        document = json.loads(payload.decode("utf-8"), object_pairs_hook=unique_object)
+        document = json.loads(payload.decode("utf-8"), object_pairs_hook=_unique_object)
     except (OSError, ValueError) as error:
         raise ValueError(f"Cannot read packaged {label} at {path}: {error}. "
                          "Restore that file from the matching ArWen installation, then retry.") from error
@@ -185,8 +179,7 @@ def validate_recipe(recipe: dict, *, known_products: set[str] | None = None,
         raise ValueError("A regional recipe cannot silently create nests")
     if method in {"nested", "moving_nest", "controlled_scenario"} and not ratios:
         raise ValueError(f"{method} requires at least two domains")
-    if "minimum_root_span_km" in geometry:
-        _number(geometry["minimum_root_span_km"], "geometry.minimum_root_span_km", positive=False)
+    _number(geometry["minimum_root_span_km"], "geometry.minimum_root_span_km", positive=False)
     if not isinstance(recipe["requires_existing_state"], bool):
         raise ValueError("requires_existing_state must be a boolean")
     if method == "archived_downscale" and not recipe["requires_existing_state"]:

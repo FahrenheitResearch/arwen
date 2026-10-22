@@ -30,6 +30,15 @@
 #                      name differs; every other field keeps its own name
 #   drag_semantics     what the drag fields mean, for the reader
 #   provenance         how the file was made, as far as it is known
+#   off_grid_geog_data_res
+#                      WPS geog_data_res tokens that rebuild the file's own
+#                      datasets from WPS_GEOG on a grid the file does not
+#                      describe (another spacing).  A domain that names the
+#                      source but is not a sub-window of it builds its
+#                      statics with these tokens instead of WPS's default
+#                      inventory, so the land surface the source's soil
+#                      state was made on (soil texture above all) carries to
+#                      the new spacing.  Empty: the WPS default, as before.
 
 schema = "gpuwm-static-sources-v1"
 
@@ -62,6 +71,25 @@ fields = [
 ]
 drag_semantics = "wrf39-gsl: CON/VAR/OA*/OL* are the GSL drag suite's large-scale set and the *SS names its small-scale set; in this file the small-scale set equals the large-scale set, one GSL-made set serving both scales"
 provenance = "GEOGRID V3.9.1 output; BNU 30-second soil, MODIS 20-class 15-second land use with HRRR's own lakes, MODIS LAI and albedo, GMTED2010 terrain with the v4.1.1 Great Lakes height edit; drag fields grafted from GSL's GWD_mdt_10newfields.HRRR.nc (2019-02-19)"
+# HRRR's soil texture and leaf area, rebuilt at any other spacing.  Measured
+# on a 1800 x 1400 1 km window centred 38.5 N 97.5 W (2026-10-05): with WPS's
+# default inventory the 1 km dominant soil category differs from this file's
+# on 63% of land cells and HRRR's analysed soil moisture reads +0.047 wetter
+# in RUC moisture availability at 10 cm (+0.062 at the surface), the measured
+# cause of 1 km HRRR-physics runs scoring cold and moist against stations;
+# with these tokens 14% differ (resolution alone) and the bias is +0.001.
+# October leaf area: 0.677 (10 arc-minute default) vs 0.731 here vs 0.728 in
+# the file.  The file's 15-second land use has no WPS token this engine
+# builds, so land use stays on the 30-second MODIS default.
+off_grid_geog_data_res = "bnu_soil_30s+modis_lai"
+# The land-only fields (masked = water in WPS's GEOGRID.TBL) hold a fill
+# over water in this file (SOILTEMP 0 K).  Sampled plain bilinear at a
+# fractional same-spacing offset, every land cell beside a lake or coast
+# blended toward that fill: TMN/SOILTEMP 180-238 K on 103 land cells of a
+# 3 km window on the Lake Michigan shore and 48 of a San Joaquin window
+# (2026-10-22).  "bilinear-masked" averages only source points of the
+# output point's own class in this field, as WPS does.
+sampling_mask = "LANDMASK"
 
 [source.grid]
 map_proj = "lambert"
@@ -107,11 +135,11 @@ SOILCTOP = "bilinear"
 SOILCBOT = "bilinear"
 HGT_M = "bilinear"
 SLOPECAT = "nearest"
-GREENFRAC = "bilinear"
-LAI12M = "bilinear"
-ALBEDO12M = "bilinear"
-SNOALB = "bilinear"
-SOILTEMP = "bilinear"
+GREENFRAC = "bilinear-masked"
+LAI12M = "bilinear-masked"
+ALBEDO12M = "bilinear-masked"
+SNOALB = "bilinear-masked"
+SOILTEMP = "bilinear-masked"
 LAKE_DEPTH = "bilinear"
 VAR_SSO = "bilinear"
 CON = "bilinear"

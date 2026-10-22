@@ -1105,16 +1105,8 @@ fn parse_geokeys(
         2 => Ok(Some(Crs::Geographic)),
         1 => {
             let pcs = short_keys.get(&3072).copied().unwrap_or(32767);
-            // The one wired projected EPSG code: NAD83 / Conus Albers.
-            if pcs == 5070 {
-                return Ok(Some(Crs::AlbersConusNad83 {
-                    lat_1: 29.5,
-                    lat_2: 45.5,
-                    lat_0: 23.0,
-                    lon_0: -96.0,
-                    false_easting: 0.0,
-                    false_northing: 0.0,
-                }));
+            if pcs != 32767 {
+                if let Ok(crs)=Crs::parse_override(&format!("EPSG:{pcs}")) {return Ok(Some(crs));}
             }
             if pcs != 32767 {
                 return Err(invalid(format!(
@@ -1386,6 +1378,48 @@ fn write_band1_from(
     )
 }
 
+/// The `(col0, row0, w, h)` of output tile `(tile_col, tile_row)`.
+fn tile_window(tile_col: usize, tile_row: usize, nx: usize, ny: usize) -> (usize, usize, usize, usize) {
+    let col0 = tile_col * WRITE_TILE;
+    let row0 = tile_row * WRITE_TILE;
+    (col0, row0, WRITE_TILE.min(nx - col0), WRITE_TILE.min(ny - row0))
+}
+
+/// One output tile's file payload: padded to 256 by 256, nodata applied,
+/// predictor, deflate level 6.  A pure function of the tile's values, so
+/// tiles encoded on any thread are the same bytes.
+fn encode_tile(
+    values: Vec<f64>,
+    w: usize,
+    h: usize,
+    sample: SampleType,
+    nodata: Option<f64>,
+) -> Result<Vec<u8>> {
+    if values.len() != w * h {
+        return Err(invalid("tile callback returned the wrong sample count"));
+    }
+    let mut block = Vec::with_capacity(WRITE_TILE * WRITE_TILE * sample.bytes());
+    for row in 0..WRITE_TILE {
+        for col in 0..WRITE_TILE {
+            let mut value = if row < h && col < w {
+                values[row * w + col]
+            } else {
+                0.0
+            };
+            if value.is_nan() {
+                value = match (nodata, sample) {
+                    (Some(sentinel), _) => sentinel,
+                    (None, SampleType::F32 | SampleType::F64) => f64::NAN,
+                    (None, _) => 0.0,
+                };
+            }
+            cast_sample(value, sample, &mut block);
+        }
+    }
+    apply_predictor(&mut block, WRITE_TILE, WRITE_TILE, sample);
+    Ok(miniz_oxide::deflate::compress_to_vec_zlib(&block, 6))
+}
+
 /// Deterministic tile writer. Only one decoded and compressed tile is resident.
 /// The callback supplies the valid part of each 256 by 256 output tile.
 #[allow(clippy::too_many_arguments)]
@@ -1398,6 +1432,85 @@ pub fn write_band1_tiles(
     sample: SampleType,
     nodata: Option<f64>,
     mut tile_values: impl FnMut(usize, usize, usize, usize) -> Result<Vec<f64>>,
+) -> Result<()> {
+    let tiles_across = nx.div_ceil(WRITE_TILE);
+    write_band1_tile_batches(path, ny, nx, transform, crs, sample, nodata, 1, |first, rows| {
+        let mut payloads = Vec::with_capacity(rows * tiles_across);
+        for tile_row in first..first + rows {
+            for tile_col in 0..tiles_across {
+                let (col0, row0, w, h) = tile_window(tile_col, tile_row, nx, ny);
+                payloads.push(encode_tile(tile_values(col0, row0, w, h)?, w, h, sample, nodata)?);
+            }
+        }
+        Ok(payloads)
+    })
+}
+
+/// [`write_band1_tiles`] with output tile ROWS read and encoded on
+/// `workers` threads, `workers` rows at a time, and written in order: the
+/// same file, byte for byte.  Each row starts from a fresh `init()` state
+/// (its own source readers), so no reader is shared between threads.  At
+/// most `workers` rows of encoded tiles are resident.
+///
+/// Origin: the Copernicus GLO-30 mosaic of a 1 km CONUS footprint is
+/// 17.15 billion source pixels; read, predicted and deflated on one thread
+/// it ran about an hour inside "Prepare root static fields".
+#[allow(clippy::too_many_arguments)]
+pub fn write_band1_tiles_parallel<S>(
+    path: &Path,
+    ny: usize,
+    nx: usize,
+    transform: &[f64; 6],
+    crs: &Crs,
+    sample: SampleType,
+    nodata: Option<f64>,
+    workers: usize,
+    init: impl Fn() -> S + Sync,
+    tile_values: impl Fn(&mut S, usize, usize, usize, usize) -> Result<Vec<f64>> + Sync,
+) -> Result<()> {
+    use rayon::prelude::*;
+    let workers = workers.max(1);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(workers)
+        .build()
+        .map_err(|error| invalid(format!("tile writer pool: {error}")))?;
+    let tiles_across = nx.div_ceil(WRITE_TILE);
+    write_band1_tile_batches(path, ny, nx, transform, crs, sample, nodata, workers, |first, rows| {
+        let encoded: Vec<Result<Vec<Vec<u8>>>> = pool.install(|| {
+            (first..first + rows)
+                .into_par_iter()
+                .map(|tile_row| {
+                    let mut state = init();
+                    (0..tiles_across)
+                        .map(|tile_col| {
+                            let (col0, row0, w, h) = tile_window(tile_col, tile_row, nx, ny);
+                            encode_tile(tile_values(&mut state, col0, row0, w, h)?, w, h, sample, nodata)
+                        })
+                        .collect()
+                })
+                .collect()
+        });
+        let mut payloads = Vec::with_capacity(rows * tiles_across);
+        for row in encoded {
+            payloads.extend(row?);
+        }
+        Ok(payloads)
+    })
+}
+
+/// The writer both tile writers share.  `produce(first_tile_row, rows)`
+/// returns the payloads of those whole tile rows in row-major order.
+#[allow(clippy::too_many_arguments)]
+fn write_band1_tile_batches(
+    path: &Path,
+    ny: usize,
+    nx: usize,
+    transform: &[f64; 6],
+    crs: &Crs,
+    sample: SampleType,
+    nodata: Option<f64>,
+    batch_rows: usize,
+    mut produce: impl FnMut(usize, usize) -> Result<Vec<Vec<u8>>>,
 ) -> Result<()> {
     if ny == 0 || nx == 0 {
         return Err(invalid(format!("cannot write {path:?}: empty raster")));
@@ -1705,36 +1818,14 @@ pub fn write_band1_tiles(
     let mut tile_offsets = Vec::with_capacity(tile_count);
     let mut tile_counts = Vec::with_capacity(tile_count);
     let mut cursor = data_start as u64;
-    for tile_row in 0..tiles_down {
-        for tile_col in 0..tiles_across {
-            let col0 = tile_col * WRITE_TILE;
-            let row0 = tile_row * WRITE_TILE;
-            let w = WRITE_TILE.min(nx - col0);
-            let h = WRITE_TILE.min(ny - row0);
-            let values = tile_values(col0, row0, w, h)?;
-            if values.len() != w * h {
-                return Err(invalid("tile callback returned the wrong sample count"));
-            }
-            let mut block = Vec::with_capacity(WRITE_TILE * WRITE_TILE * sample_bytes);
-            for row in 0..WRITE_TILE {
-                for col in 0..WRITE_TILE {
-                    let mut value = if row < h && col < w {
-                        values[row * w + col]
-                    } else {
-                        0.0
-                    };
-                    if value.is_nan() {
-                        value = match (nodata, sample) {
-                            (Some(sentinel), _) => sentinel,
-                            (None, SampleType::F32 | SampleType::F64) => f64::NAN,
-                            (None, _) => 0.0,
-                        };
-                    }
-                    cast_sample(value, sample, &mut block);
-                }
-            }
-            apply_predictor(&mut block, WRITE_TILE, WRITE_TILE, sample);
-            let payload = miniz_oxide::deflate::compress_to_vec_zlib(&block, 6);
+    let mut tile_row = 0;
+    while tile_row < tiles_down {
+        let rows = batch_rows.max(1).min(tiles_down - tile_row);
+        let payloads = produce(tile_row, rows)?;
+        if payloads.len() != rows * tiles_across {
+            return Err(invalid("tile producer returned the wrong tile count"));
+        }
+        for payload in payloads {
             if !big && cursor > u32::MAX as u64 {
                 return Err(invalid("derived GeoTIFF exceeds classic TIFF offsets"));
             }
@@ -1746,6 +1837,7 @@ pub fn write_band1_tiles(
             }
             cursor += (payload.len() + (payload.len() & 1)) as u64;
         }
+        tile_row += rows;
     }
     let mut extra_cursor = (ifd_offset as usize + ifd_size) as u64;
     for (index, tag) in tag_list.iter().enumerate() {

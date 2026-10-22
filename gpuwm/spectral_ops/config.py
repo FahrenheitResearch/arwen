@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import dataclasses
-import json
 import math
 from dataclasses import dataclass, field
 from typing import Any, Mapping
@@ -144,10 +143,5 @@ def from_mapping(mapping: Mapping[str, Any] | None) -> SpectralNumericsConfig:
     return config
 
 
-def canonical_document(config: SpectralNumericsConfig) -> dict[str, Any]:
-    config.validate()
-    return json.loads(json.dumps(dataclasses.asdict(config)))
-
-
 __all__ = ["ScalarTarget", "SpectralNumericsConfig", "WindControl",
-           "canonical_document", "from_mapping"]
+           "from_mapping"]

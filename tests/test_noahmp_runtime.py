@@ -1114,7 +1114,8 @@ def test_the_write_back_comparison_can_see_a_misrouted_column(monkeypatch):
 # ---------------------------------------------------------------------------
 
 @requires_gpu
-def test_the_slab_and_staged_paths_write_the_same_slab(monkeypatch):
+@pytest.mark.parametrize("fused_write_back", [True, False])
+def test_the_slab_and_staged_paths_write_the_same_slab(monkeypatch, fused_write_back):
     """The orchestration against the per-column seam, at the forecast level.
 
     Same device leaves on both sides -- the staged arm keeps the default
@@ -1124,6 +1125,10 @@ def test_the_slab_and_staged_paths_write_the_same_slab(monkeypatch):
     than the 45-array carried digest precisely where the write-back branches
     are.
     """
+    if not fused_write_back:
+        import gpuwm.core.noahmp_slab_libm as slab_libm
+        monkeypatch.setattr(slab_libm, "write_slab_arithmetic",
+                            lambda *args, **kwargs: False)
     slab = _six_steps(monkeypatch, nx=6, ny=4, water_columns=1,
                       snow_mm=45.0, snow_depth_m=0.16)
     staged = _six_steps(monkeypatch, staged=True, nx=6, ny=4, water_columns=1,

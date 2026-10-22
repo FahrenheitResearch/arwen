@@ -5,6 +5,9 @@
 //! REAL, including both divisions before multiplication by the cell area.
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
+/// # Safety
+/// Each input points to `count` initialized f32 elements. Output points to
+/// `count` writable elements and does not overlap any input until return.
 #[no_mangle]
 pub unsafe extern "C" fn gpuwm_aerosol_surface_mass_f32(
     number: *const f32,

@@ -26,6 +26,11 @@ from typing import Mapping
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
+
+from gpuwm.verify.n5s_common import sha256_file, stable_hash  # noqa: E402
+
 CONFIG_TEMPLATE = REPOSITORY_ROOT / "configs" / "real74_nssl2_500m.toml"
 
 INPUT_MANIFEST_SCHEMA = "gpuwm.real74-nssl2-500m-input-manifest/v1"
@@ -129,21 +134,6 @@ _FATAL_LOG = re.compile(
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(8 * 1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def stable_hash(value: object) -> str:
-    encoded = json.dumps(
-        value, sort_keys=True, separators=(",", ":"), allow_nan=False,
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
 
 
 def atomic_json(path: Path, payload: Mapping[str, object]) -> None:

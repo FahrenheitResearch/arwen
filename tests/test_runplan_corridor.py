@@ -594,7 +594,8 @@ def test_the_retained_refusal_still_says_something_useful():
     """
     from gpuwm.runplan import _follow_unsupported_refusal
 
-    message = _follow_unsupported_refusal("prepared:someday", 3)
+    message = _follow_unsupported_refusal("prepared:someday",
+                                          relocation_grid_id=3)
     assert "[relocation] follow source on d03" in message
     assert "'prepared:someday' chain cannot supply the statics" in message
     assert "seals no child-resolution statics corridor" in message

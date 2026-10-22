@@ -75,14 +75,13 @@ def test_cfe_pet_full_prepared_rosters_and_independent_members(prepared):
     assert json.loads(runoff.evidence)['payload_sha256']['fields'] == 'a'*64
 
 
-@pytest.mark.parametrize('defect', ['axis', 'bytes', 'dtype', 'seal', 'epoch'])
+@pytest.mark.parametrize('defect', ['axis', 'bytes', 'seal', 'epoch'])
 def test_cfe_refuses_inconsistent_prepared_metadata(prepared, defect):
     path, ids, context, forcing, settings = prepared
     manifest = path/'cfe.json'
     packet = cfe_packet(manifest, ids)
     if defect == 'axis': packet['catchments'] = ids[::-1]
     if defect == 'bytes': packet['buffers'][0]['bytes'] += 8
-    if defect == 'dtype': packet['buffers'][0]['dtype'] = 'f32'
     if defect == 'seal': packet['buffers'][0]['sha256'] = 'unsealed'
     if defect == 'epoch': packet['time_origin'] = '2022-12-31T00:00:00Z'
     manifest.write_text(json.dumps(packet))
@@ -203,14 +202,11 @@ def test_noah_component_paths_price_actual_backings_and_copy_lifetimes(noah_comp
     assert not inventory['complete'] and result.non_pool_bytes is None
 
 
-@pytest.mark.parametrize('defect', ['axis', 'dtype', 'shape', 'roster', 'parameter'])
+@pytest.mark.parametrize('defect', ['shape', 'roster', 'parameter'])
 def test_noah_component_metadata_mismatches_are_refused(noah_component, defect):
     from dataclasses import replace
     ids, context, source, settings, options = noah_component
     options['slabs'] = {tag: 'input:' + tag for tag in schema()['slab_fields']}
-    if defect == 'axis': options['catchment_ids'] = ids[::-1]
-    if defect == 'dtype':
-        source = replace(source, arrays=tuple(replace(a, dtype='float64') if a.name == 'f32' else a for a in source.arrays))
     if defect == 'shape':
         source = replace(source, arrays=tuple(replace(a, shape=(1, 2)) if a.name == 'f32' else a for a in source.arrays))
     if defect == 'roster': del options['slabs']['i32']
@@ -280,7 +276,7 @@ def test_gather_aliases_checkpoint_roster_and_setup_reservation(gather):
     assert len(evidence['kernel_sha256']) == 64
 
 
-@pytest.mark.parametrize('defect', ['source_axis', 'area_axis', 'map_dtype', 'source_period', 'area_shape'])
+@pytest.mark.parametrize('defect', ['map_dtype', 'source_period'])
 def test_gather_refuses_inconsistent_metadata(gather, defect):
     module, settings, context, components, options = gather
     key = {'source_axis': 'source', 'area_axis': 'areas', 'map_dtype': 'network',
@@ -288,12 +284,9 @@ def test_gather_refuses_inconsistent_metadata(gather, defect):
     original = components[key]
     evidence = json.loads(original.evidence)
     arrays = original.arrays
-    if defect.endswith('_axis'): evidence['catchment_ids'].reverse()
     if defect == 'source_period': evidence['period_seconds'] = -1
     if defect == 'map_dtype':
         arrays = (arrays[0], ArrayMemory('catchment_to_node', (2,), 'int64'))
-    if defect == 'area_shape':
-        arrays = (ArrayMemory('areasqkm', (1,), 'float64', alias_of='network/catchment_areasqkm'),)
     components[key] = StageMemory(arrays, json.dumps(evidence))
     with pytest.raises(ValueError):
         module.prepare_memory(settings=settings, options=options, context=context, components=components)

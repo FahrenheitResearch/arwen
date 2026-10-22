@@ -9,14 +9,7 @@ from gpuwm import physics_params as pp
 from gpuwm import prepared_single_domain_forecast as single
 from gpuwm.io import restart
 from test_restart import _cfg, _fill_setup, _shim_driver_state
-
-
-@pytest.fixture(autouse=True)
-def _binding(monkeypatch):
-    monkeypatch.delenv(pp.ENV_VAR, raising=False)
-    pp.reset_for_tests()
-    yield
-    pp.reset_for_tests()
+from test_physics_params import _fresh_process_binding as _binding
 
 
 def _bytes(value):

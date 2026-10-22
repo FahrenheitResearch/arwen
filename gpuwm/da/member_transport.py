@@ -828,7 +828,7 @@ class _Prefetch:
     Breakage it removes: a member job's host start -- reading and hashing
     its sealed request, the common inputs and its restart set, and the
     prepared-authority preflight -- ran with the card idle between two
-    members' stepping (box N fullN3, 2026-10-06: 12-17 s of each 40-48 s
+    members' stepping (a rented box fullN3, 2026-10-06: 12-17 s of each 40-48 s
     member leg on the host).  The controller queues the next job beside
     the running one (gpuwm.da.member_wave.SERVER_QUEUE_DEPTH); this reads
     it while the running one steps, and also reads its restart files once

@@ -27,6 +27,10 @@ fn run() -> nextgen_hydrofabric::Result<()> {
                 std::process::exit(2)
             }
         }
+        Some("prepare-render-map") => println!("{}", serde_json::to_string_pretty(
+            &nextgen_hydrofabric::render_map::prepare(
+                std::path::Path::new(args.get(2).ok_or("missing routing manifest")?),
+                std::path::Path::new(args.get(3).ok_or("missing fresh map directory")?))?)?),
         Some("prepare") => println!(
             "{}",
             serde_json::to_string_pretty(&nextgen_hydrofabric::bundle::prepare(

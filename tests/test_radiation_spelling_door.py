@@ -216,3 +216,24 @@ def test_the_shortwave_only_refusal_names_its_consumer():
     assert constant_longwave_refusal(
         [SimpleNamespace(grid_id=1, **switches)],
         acknowledgements=(CONSTANT_DOWNWARD_LONGWAVE_ACK,)) is None
+
+
+def test_the_selection_receipt_reports_the_resolved_radiation_and_its_engine():
+    """The HRRR recipe spells radiation through ra_physics = 4 with the
+    legacy RRTMG engine; its preparation report's front_door_selection said
+    ra_lw_physics/ra_sw_physics -1/-1 beside a resolved profile of 4/4
+    legacy (rolling tests, 2026-10-21).  The receipt now reads the selectors
+    the way the engine does and names the engine."""
+    from pathlib import Path
+    from gpuwm.experiment import load_experiment
+    from gpuwm.physics_compat import single_domain_physics_selection
+    recipe = Path(__file__).resolve().parents[1] / "gpuwm/data/recipes/hrrr_v4_gsd41.toml"
+    run = load_experiment(recipe).root.run
+    selection = single_domain_physics_selection(run)
+    selectors = selection["domains"]["1"]["selectors"]
+    assert (selectors["ra_lw_physics"], selectors["ra_sw_physics"]) == (4, 4)
+    from tools.hrrr_single_domain_benchmark import _configured_physics_receipt
+    receipt = _configured_physics_receipt(run)
+    assert receipt["radiation_engine"] == "rrtmg_legacy"
+    fds = receipt["front_door_selection"]["domains"]["1"]["selectors"]
+    assert (fds["ra_lw_physics"], fds["ra_sw_physics"]) == (4, 4)

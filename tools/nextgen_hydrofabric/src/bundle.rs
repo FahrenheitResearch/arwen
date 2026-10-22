@@ -60,7 +60,10 @@ pub fn prepare(config: &Path) -> Result<Value> {
             return Err("parent_grid_contract must bind the executed-parent identity to the exact configured grid".into());
         }
     }
-    let prepared = network::prepare(&c)?;
+    // The input digest (one pass over the GeoPackage) runs beside the parallel
+    // table reads instead of after them.
+    let (prepared, input_hash) = rayon::join(|| network::prepare(&c), || digest(Path::new(&c.geopackage)));
+    let (prepared, input_hash) = (prepared?, input_hash?);
     let n = &prepared.network;
     let weight_timer = Instant::now();
     let w = c
@@ -76,7 +79,6 @@ pub fn prepare(config: &Path) -> Result<Value> {
         .map(|g| weights::rasterize(&prepared, g))
         .transpose()?;
     let raster_ms = raster_timer.elapsed().as_secs_f64() * 1000.;
-    let input_hash = digest(Path::new(&c.geopackage))?;
     let mut identity = Sha256::new();
     identity.update(fs::read(config)?);
     identity.update(input_hash.as_bytes());
@@ -215,7 +217,7 @@ pub fn prepare(config: &Path) -> Result<Value> {
         }
     }
     fs::write(out.join("parsed_network.tsv"), parsed)?;
-    let mut manifest = json!({"schema":"arwen.nextgen.hydrofabric.v1","output":out,"request_sha256":key,"ngen_parser_pin":"be11a180565a78ff069d855b0b5dbfc23845e7d8","input":{"path":c.geopackage,"sha256":digest(Path::new(&c.geopackage))?,"data_license":c.data_license},"node_count":n.node_ids.len(),"catchment_count":n.catchment_ids.len(),"level_count":n.level_offsets.len()-1,"node_order":"flowpaths_SQLite_scan; string_IDs_preserved","upstream_order":n.upstream_order,"grid":c.grid,"files":files,"layers":prepared.layers.iter().map(|(role,l)|json!({"role":role,"table":l.name,"row_count":l.rows.len(),"srs_id":l.srs_id,"geometry_column":l.geom_column})).collect::<Vec<_>>(),"timings_ms":{"sqlite_read":prepared.read_ms,"topology":prepared.topology_ms,"area_weights":weights_ms,"channel_raster":raster_ms,"write_hash":write_timer.elapsed().as_secs_f64()*1000.,"total":timer.elapsed().as_secs_f64()*1000.},"parallelism":{"rayon_threads":rayon::current_num_threads(),"table_reads":"independent read-only connections in parallel","geometry":"parallel catchments; deterministic serial cell order","topology":"startup-only dependency traversal","gpu":"none; no per-step host work"},"numerics":"fast default; no numerical routing in this tool; f64 geometry/f32 MC parameters"});
+    let mut manifest = json!({"schema":"arwen.nextgen.hydrofabric.v1","output":out,"request_sha256":key,"ngen_parser_pin":"be11a180565a78ff069d855b0b5dbfc23845e7d8","input":{"path":c.geopackage,"sha256":input_hash,"data_license":c.data_license},"node_count":n.node_ids.len(),"catchment_count":n.catchment_ids.len(),"level_count":n.level_offsets.len()-1,"node_order":"flowpaths_SQLite_scan; string_IDs_preserved","upstream_order":n.upstream_order,"grid":c.grid,"files":files,"layers":prepared.layers.iter().map(|(role,l)|json!({"role":role,"table":l.name,"row_count":l.rows.len(),"srs_id":l.srs_id,"geometry_column":l.geom_column})).collect::<Vec<_>>(),"timings_ms":{"sqlite_read":prepared.read_ms,"topology":prepared.topology_ms,"area_weights":weights_ms,"channel_raster":raster_ms,"write_hash":write_timer.elapsed().as_secs_f64()*1000.,"total":timer.elapsed().as_secs_f64()*1000.},"parallelism":{"rayon_threads":rayon::current_num_threads(),"table_reads":"independent read-only connections in parallel","geometry":"parallel catchments; deterministic serial cell order","topology":"startup-only dependency traversal","gpu":"none; no per-step host work"},"numerics":"fast default; no numerical routing in this tool; f64 geometry/f32 MC parameters"});
     if let Some(parent) = &c.parent_grid_contract {
         manifest["parent_grid_contract"] = parent.clone();
     }

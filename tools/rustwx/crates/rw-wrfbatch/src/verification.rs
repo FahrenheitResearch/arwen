@@ -30,6 +30,10 @@ pub const RADAR_QUANTITIES: &[(&str, &str, &str, &[f64])] = &[
         "mm h-1",
         &[1.0, 5.0],
     ),
+    ("ivt_full_column", "Total-column vapour transport", "kg m-1 s-1", &[250.0,500.0]),
+    ("ivt_eastward_full_column", "Eastward vapour flux", "kg m-1 s-1", &[]),
+    ("ivt_northward_full_column", "Northward vapour flux", "kg m-1 s-1", &[]),
+    ("integrated_water_vapour", "Integrated water vapour", "kg m-2", &[20.0,40.0]),
 ];
 
 fn default_widths() -> Vec<f64> {

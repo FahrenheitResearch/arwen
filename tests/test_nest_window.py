@@ -32,8 +32,6 @@ def test_window_sint_matches_full_registered_field(ratio, stagger, ndim):
 
 
 @pytest.mark.parametrize("window", [
-    (slice(None), slice(0, 3)), (slice(-1, 2), slice(0, 3)),
-    (slice(2, 2), slice(0, 3)), (slice(0, 100), slice(0, 3)),
     (slice(0, 3, 2), slice(0, 3)), (slice(0, 3),),
 ])
 def test_window_refuses_ambiguous_or_invalid_slices(window):

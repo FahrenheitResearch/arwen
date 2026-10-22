@@ -529,8 +529,8 @@ fn require_geographic(variable: &NcVariable, values: &[f64], axis: &str) -> Resu
     };
     let units = attribute_string(variable, "units");
     let standard_name = attribute_string(variable, "standard_name");
-    if let Some(standard) = standard_name.as_deref() {
-        if CF_PROJECTION_STANDARD_NAMES.contains(&standard) {
+    if let Some(standard) = standard_name.as_deref()
+        && CF_PROJECTION_STANDARD_NAMES.contains(&standard) {
             return Err(frame_invalid(format!(
                 "{axis} selector resolved NetCDF variable {} whose CF \
                  standard_name is {}; that is a projection axis, not \
@@ -542,7 +542,6 @@ fn require_geographic(variable: &NcVariable, values: &[f64], axis: &str) -> Resu
                 crate::refusal::python_repr(canonical)
             )));
         }
-    }
     let units_ok = units
         .as_deref()
         .is_some_and(|value| accepted.contains(&value));
@@ -596,7 +595,7 @@ fn python_format_g(value: f64) -> String {
             text
         }
     };
-    if exponent < -4 || exponent >= 6 {
+    if !(-4..6).contains(&exponent) {
         let mantissa = trim(format!("{:.5}", value / 10f64.powi(exponent)));
         let sign = if exponent < 0 { '-' } else { '+' };
         return format!("{mantissa}e{sign}{:02}", exponent.abs());
@@ -617,8 +616,8 @@ fn python_format_g(value: f64) -> String {
 fn cf_grid_mapping_names(variables: &[NcVariable]) -> BTreeMap<String, Vec<String>> {
     let mut declared: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for variable in variables {
-        if let Some(container_name) = attribute_string(variable, "grid_mapping") {
-            if !container_name.trim().is_empty() {
+        if let Some(container_name) = attribute_string(variable, "grid_mapping")
+            && !container_name.trim().is_empty() {
                 // CF-1.7 extended syntax: "crs: x y" — the container is
                 // token 0, and the colon is a separator rather than part
                 // of the name.
@@ -645,12 +644,10 @@ fn cf_grid_mapping_names(variables: &[NcVariable]) -> BTreeMap<String, Vec<Strin
                     .or_default()
                     .push(variable.name().to_owned());
             }
-        }
-        if let Some(projection) = attribute_string(variable, "grid_mapping_name") {
-            if !projection.trim().is_empty() {
+        if let Some(projection) = attribute_string(variable, "grid_mapping_name")
+            && !projection.trim().is_empty() {
                 declared.entry(projection).or_default();
             }
-        }
     }
     declared
 }
@@ -1522,12 +1519,11 @@ pub fn decode_netcdf(mapping: &Mapping, files: &[String]) -> Result<DecodedColle
                      use distinct dimensions",
                 ));
             }
-            if !declared_levels.is_empty() {
-                if let Some(indices) = declared_level_indices(&declared_levels, &offered, source)? {
+            if !declared_levels.is_empty()
+                && let Some(indices) = declared_level_indices(&declared_levels, &offered, source)? {
                     vertical_selection = Some((dimension.clone(), indices));
                     vertical_values = Some(declared_levels.clone());
                 }
-            }
         }
         if stacks_vertical && vertical_values.is_none() {
             vertical_values = Some(declared_levels.clone());
@@ -1851,13 +1847,12 @@ pub fn decode_netcdf(mapping: &Mapping, files: &[String]) -> Result<DecodedColle
                             values = taken;
                             dimensions.remove(axis);
                         }
-                        if let Some((dimension, indices)) = &vertical_selection {
-                            if let Some(axis) = dimensions.iter().position(|item| item == dimension) {
+                        if let Some((dimension, indices)) = &vertical_selection
+                            && let Some(axis) = dimensions.iter().position(|item| item == dimension) {
                                 let (taken_shape, taken) = take_axis(&shape, &values, axis, indices);
                                 shape = taken_shape;
                                 values = taken;
                             }
-                        }
                         let missing: Vec<bool> = values.iter().map(|value| !value.is_finite()).collect();
                         let policy = field.missing_kind()?;
                         if ["reject", "composition_fill"].contains(&policy) && missing.iter().any(|flag| *flag) {
@@ -2113,7 +2108,7 @@ pub fn decode_netcdf(mapping: &Mapping, files: &[String]) -> Result<DecodedColle
             mapping.doc.get("grid").unwrap().to_value()).as_bytes())
     } else { grid_fingerprint };
     let direct = if declaration.rotates_winds() {
-        crate::assemble::rotate_grid_relative_winds(direct, declaration.parameters.as_ref().unwrap())?
+        crate::assemble::rotate_grid_relative_winds(direct, declaration.parameters.as_ref().unwrap(), None)?
     } else { direct };
     Ok(DecodedCollection {
         latitude,
@@ -2124,6 +2119,7 @@ pub fn decode_netcdf(mapping: &Mapping, files: &[String]) -> Result<DecodedColle
         grid_fingerprint,
         hybrid_a,
         hybrid_b,
+        original_pressure_hpa: None,
     })
 }
 

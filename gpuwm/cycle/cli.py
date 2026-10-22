@@ -66,9 +66,13 @@ def register_cli(subparsers) -> None:
                         help="the parent init's config_start_time (UTC); "
                              "the ONLY datetime in the cycling spine, every "
                              "other time is an integer tick from it")
-    parser.add_argument("--parent-dt-seconds", type=positive_float, default=120.0,
+    parser.add_argument("--parent-dt-seconds", type=positive_float, default=None,
                         help="parent model step; must be a whole number of "
-                             "milliseconds (default 120.0)")
+                             "milliseconds and divide --cycle-seconds "
+                             "(default: 120 s when it divides the cycle, "
+                             "else the largest step that divides both 120 s "
+                             "and the cycle, e.g. 60 s for a 15-minute "
+                             "cycle)")
     parser.add_argument("--cycle-seconds", type=positive_float, required=True,
                         help="model seconds between cycle boundaries; must "
                              "be a whole number of parent steps")
@@ -308,7 +312,31 @@ def _stopped_by_user(error: BaseException) -> bool:
     return isinstance(error, SystemExit) or _is_interrupt(error)
 
 
+DEFAULT_PARENT_DT_SECONDS = 120.0
+
+
+def _default_parent_dt_seconds(cycle_seconds: float) -> float:
+    """The default parent step for a cycle length.
+
+    120 s when it divides the cycle; otherwise the largest step that
+    divides both 120 s and the cycle (60 s for the 15-minute DA cycle),
+    so a default run never trips the whole-number-of-steps refusal.
+    """
+    from math import gcd
+
+    cycle_ticks = seconds_to_ticks(cycle_seconds, label="cycle length")
+    default_ticks = seconds_to_ticks(DEFAULT_PARENT_DT_SECONDS,
+                                     label="parent dt")
+    return ticks_to_seconds(gcd(cycle_ticks, default_ticks))
+
+
 def _build_clock(args) -> CycleClock:
+    # An explicit --parent-dt-seconds is the user's step and the clock
+    # refuses it if it does not divide the cycle; an unset one is resolved
+    # to a step that does, and written back so every child-dt fallback
+    # downstream uses the same value.
+    if args.parent_dt_seconds is None:
+        args.parent_dt_seconds = _default_parent_dt_seconds(args.cycle_seconds)
     return CycleClock.build(epoch_anchor=_parse_epoch(args.epoch_anchor),
                             parent_dt_seconds=args.parent_dt_seconds,
                             cycle_seconds=args.cycle_seconds,

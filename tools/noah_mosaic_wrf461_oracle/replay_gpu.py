@@ -41,12 +41,6 @@ def _family_dirs(root: Path) -> dict[str, Path]:
     return out
 
 
-def _fold(entry, measured):
-    entry["max_ulp"] = max(entry["max_ulp"], int(measured["max_ulp"]))
-    entry["n_nonzero"] += int(measured["n_nonzero"])
-    entry["n"] += int(measured["n"])
-
-
 def _classify(record):
     """One differing column/field pair: how its differing words differ.
 

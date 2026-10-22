@@ -143,7 +143,7 @@ def _cpu_preparation(monkeypatch, exp):
                                       fields={"SKINTEMP": np.ones((3, 3))})
                       for hour in (0, 3))
     monkeypatch.setattr(gfs_direct, "_load_bridge_snapshots", lambda *_a, **_k: snapshots)
-    monkeypatch.setattr(gfs_direct, "orient_global_source_longitudes", lambda source, *_a: source)
+    monkeypatch.setattr(gfs_direct, "orient_global_source_longitudes", lambda source, *_a, **_k: source)
     monkeypatch.setattr(gfs_direct, "_source_coverage_receipt", lambda *_a: {})
     monkeypatch.setattr(gfs_direct, "interpolate_era5_to_lambert", lambda source, *_a, **_k: source)
     monkeypatch.setattr(gfs_direct, "soil_source_orography", lambda *_a: None)

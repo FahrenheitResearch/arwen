@@ -241,7 +241,8 @@ def _source_values():
         "LAI12M": np.stack([(j + k) / 10.0 for k in range(12)]).astype(np.float32),
         "ALBEDO12M": np.stack([10.0 + (i + k) / 10.0 for k in range(12)]).astype(np.float32),
         "SNOALB": (20.0 + i).astype(np.float32),
-        "SOILTEMP": (280.0 + i / 10.0).astype(np.float32),
+        # A WPS land-only field: a 0 fill over water, as HRRR's file holds.
+        "SOILTEMP": np.where((i + j) % 3 != 0, 280.0 + i / 10.0, 0.0).astype(np.float32),
         "LAKE_DEPTH": (2.0 + j).astype(np.float32),
         "VAR": (i * j).astype(np.float32),
         "VARSS": (i * j).astype(np.float32),
@@ -340,32 +341,6 @@ def test_crop_window_is_computed_from_identity(synthetic):
         es.crop_window(row, _lambert(61, 11))
 
 
-def test_overlay_takes_the_file_exactly(synthetic):
-    grid = _lambert(21, 11)
-    ny, nx = 10, 20
-    setting = es.StaticSourceSetting(id="test-src")
-    fields = es.overlay_static_source(
-        _base_fields(ny, nx), grid, synthetic.geog, setting,
-        requested=("VARLS", "VARSS", "SLOPECAT"), landuse_attrs=LEGEND,
-        report=(report := {}))
-    window = (Ellipsis, slice(10, 10 + ny), slice(10, 10 + nx))
-    for engine, file_name in (("LANDMASK", "LANDMASK"), ("LANDUSEF", "LANDUSEF"),
-                               ("SOILCTOP", "SOILCTOP"), ("HGT_M", "HGT_M"),
-                               ("SLOPECAT", "SLOPECAT"),
-                              ("VARLS", "VAR"), ("VARSS", "VARSS")):
-        expected = synthetic.values[file_name][window].astype(np.float64)
-        assert fields[engine].dtype == np.float64
-        assert np.array_equal(fields[engine], expected), engine
-    land = fields["LANDMASK"] > 0.5
-    tmn = np.where(land, fields["SOILTEMP"] - 0.0065 * fields["HGT_M"],
-                   fields["SOILTEMP"])
-    assert np.array_equal(fields["TMN"], tmn)
-    applied = report["static_source"]
-    assert applied["status"] == "APPLIED"
-    assert applied["window"] == {"i0": 10, "j0": 10, "ni": 20, "nj": 10}
-    assert applied["fields"]["VARLS"] == "VAR"
-
-
 def test_overlay_groups_and_legend(synthetic):
     grid = _lambert(21, 11)
     base = _base_fields(10, 20)
@@ -440,10 +415,15 @@ def test_complete_source_build_reads_its_full_inventory(synthetic, monkeypatch):
     fields = build.build_static(grid, synthetic.geog, selection=selection,
                                 source_coverage_report=report)
     for name, file_name in selection.static_source.row.served().items():
+        assert fields[name].dtype == np.float64
         assert np.array_equal(fields[name],
                               synthetic.values[file_name][..., 10:20, 10:30]), name
-    assert np.array_equal(fields["TMN"], build.deep_soil_temperature_at_terrain(
-        fields["SOILTEMP"], fields["HGT_M"], fields["LANDMASK"]))
+    land = fields["LANDMASK"] > 0.5
+    tmn = np.where(land, fields["SOILTEMP"] - 0.0065 * fields["HGT_M"],
+                   fields["SOILTEMP"])
+    assert np.array_equal(fields["TMN"], tmn)
+    assert report["static_source"]["window"] == {"i0": 10, "j0": 10, "ni": 20, "nj": 10}
+    assert report["static_source"]["fields"]["VARLS"] == "VAR"
     assert report["static_source"]["status"] == "APPLIED"
     assert report["static_source"]["sha256"] == selection.static_source.sha256
 
@@ -518,13 +498,19 @@ def test_fetch_tries_pinned_mirror_after_wrong_origin_bytes(synthetic, tmp_path,
     es.verify_local_file(final, row)
 
 
-def _declare_sampling(synthetic):
+def _declare_sampling(synthetic, masked=()):
     row = es.static_source_row("test-src")
     nearest = {"LANDMASK", "LU_INDEX", "SCT_DOM", "SCB_DOM", "SLOPECAT"}
+    if masked:
+        text = es.TABLE_PATH.read_text(encoding="utf-8")
+        es.TABLE_PATH.write_text(text.replace(
+            "[source.grid]", 'sampling_mask = "LANDMASK"\n[source.grid]', 1), encoding="utf-8")
     with es.TABLE_PATH.open("a", encoding="utf-8") as stream:
         stream.write("\n[source.field_sampling]\n")
         for name in row.fields:
-            stream.write(f'{name} = "{("nearest" if name in nearest else "bilinear")}"\n')
+            method = ("nearest" if name in nearest
+                      else "bilinear-masked" if name in masked else "bilinear")
+            stream.write(f'{name} = "{method}"\n')
     es._load_table.cache_clear()
 
 
@@ -555,6 +541,61 @@ def test_fractional_policy_keeps_strict_crop_and_samples_in_rust(synthetic):
         es.sampling_window(row, _lambert(62, 12))
 
 
+def test_masked_policy_keeps_coast_land_cells_off_the_water_fill(synthetic):
+    """The breakage (2026-10-22): HRRR's SOILTEMP is 0 K over water, and
+    sampled plain bilinear on a grid offset from HRRR's it pulled every
+    land cell beside a lake or coast toward 0 K (TMN 180-238 K)."""
+    land_only = ("SOILTEMP", "GREENFRAC", "LAI12M", "ALBEDO12M", "SNOALB")
+    _declare_sampling(synthetic, masked=land_only)
+    row = es.static_source_row("test-src")
+    assert row.sampling_mask == "LANDMASK"
+    center_lat, center_lon = es.source_grid(row).ij_to_latlon(20.25, 15.25)
+    grid = _lambert(22, 12, ref_lat=float(center_lat), ref_lon=float(center_lon))
+    fields = es.overlay_static_source(_base_fields(11, 21), grid, synthetic.geog,
+        es.StaticSourceSetting(id="test-src"), requested=land_only, landuse_attrs=LEGEND,
+        report=(report := {}))
+    land = fields["LANDMASK"] == 1.0
+    assert land.any() and (~land).any()
+    # Independent reference: each point averages the source points of its
+    # nearest point's class, with bilinear weights (origin 9.25, 9.25).
+    mask = synthetic.values["LANDMASK"].astype(bool)
+    src = synthetic.values["SOILTEMP"].astype(np.float64)
+    expected = np.empty((11, 21))
+    for j in range(11):
+        for i in range(21):
+            xx, yy = 9 + i, 9 + j
+            own = mask[yy, xx]
+            num = den = 0.0
+            for cx, cy, w in ((xx, yy, .5625), (xx + 1, yy, .1875),
+                              (xx, yy + 1, .1875), (xx + 1, yy + 1, .0625)):
+                if mask[cy, cx] == own:
+                    num += w * src[cy, cx]
+                    den += w
+            expected[j, i] = num / den
+    np.testing.assert_allclose(fields["SOILTEMP"], expected, rtol=0, atol=1e-9)
+    assert fields["SOILTEMP"][land].min() >= 280.0
+    assert (fields["SOILTEMP"][~land] == 0.0).all()
+    assert fields["TMN"][land].min() > 250.0
+    # Plain bilinear over the same window is the defect this prevents.
+    from gpuwm.netcdf_bridge import Dataset
+    plain = Dataset(synthetic.path).variables["SOILTEMP"].read_sample_window(
+        i0=9.25, ni=21, j0=9.25, nj=11, method="bilinear")[0]
+    assert plain[land].min() < 250.0
+    evidence = report["static_source"]["sampling"]
+    assert evidence["mask"] == "LANDMASK"
+    assert {evidence["methods"][name] for name in land_only} == {"bilinear-masked"}
+    assert evidence["methods"]["HGT_M"] == "bilinear"
+    # The table refuses a masked field without its mask field.
+    entry = {"id": "x", "describes": "x", "format": "wps-geo_em", "filename": "x",
+             "url": "x", "mirrors": [], "sha256": "0" * 64, "bytes": 1,
+             "grid": dict(SRC), "attrs": {}, "fields": ["LANDMASK", "SOILTEMP"],
+             "field_sampling": {"LANDMASK": "nearest", "SOILTEMP": "bilinear-masked"}}
+    with pytest.raises(es.StaticSourceError, match="sampling_mask"):
+        es._row_from_table(entry, where="t")
+    assert es._row_from_table({**entry, "sampling_mask": "LANDMASK"},
+                              where="t").sampling_mask == "LANDMASK"
+
+
 def test_native_sample_integer_origin_has_exact_crop_bytes(synthetic):
     from gpuwm.netcdf_bridge import Dataset
     variable = Dataset(synthetic.path).variables["HGT_M"]
@@ -579,3 +620,123 @@ def test_fractional_source_registration_mutation_is_refused(synthetic, monkeypat
     with pytest.raises(es.StaticSourceError, match="latitudes and longitudes"):
         es.overlay_static_source(_base_fields(11, 21), _lambert(22, 12), synthetic.geog,
             es.StaticSourceSetting(id="test-src"), landuse_attrs=LEGEND)
+
+
+# ---------------------------------------------------------------------------
+# The off-grid recipe: a named source on a grid it does not describe.
+# The breakage it prevents (2026-10-05): 1 km HRRR-physics runs built WPS's
+# default STATSGO soil texture under HRRR's BNU-made soil moisture and scored
+# cold and moist against stations.
+# ---------------------------------------------------------------------------
+
+_RECIPE_DIRS = ("bnu_soiltype_top", "bnu_soiltype_bot", "lai_modis_30s")
+
+
+def _hrrr_selection(root, **kwargs):
+    from dataclasses import replace
+    from gpuwm.static.build import GeogSelection
+    setting = es.parse_static_source({"source": "hrrr-conus-v4", **kwargs},
+                                     source="t")
+    return replace(GeogSelection.fallback(root), static_source=setting)
+
+
+def _capture_baseline(monkeypatch):
+    from gpuwm.static import build
+    seen = []
+
+    def capture(grid, geog_root, halo=build.HALO, *, selection=None,
+                source_coverage_report=None):
+        seen.append(selection)
+        return {}
+    monkeypatch.setattr(build, "_build_static_routed", capture)
+    return seen
+
+
+def test_packaged_hrrr_row_names_its_off_grid_recipe():
+    row = es.static_source_row("hrrr-conus-v4")
+    assert row.off_grid_geog_data_res == "bnu_soil_30s+modis_lai"
+    every = es.parse_static_source({"source": "hrrr-conus-v4"}, source="t")
+    one_km = _lambert(1801, 1401, dx=1000.0)
+    assert es.off_grid_tokens(every, one_km) == "bnu_soil_30s+modis_lai"
+    # The file's own grid is overlaid as before: no recipe.
+    assert es.off_grid_tokens(every, _lambert(1800, 1060)) is None
+    # A setting that takes no soil from the source asked for none of it.
+    drag = es.parse_static_source(
+        {"source": "hrrr-conus-v4", "source_fields": ["drag"]}, source="t")
+    assert es.off_grid_tokens(drag, one_km) is None
+    assert es.off_grid_tokens(None, one_km) is None
+
+
+def test_off_grid_row_tokens_are_validated(tmp_path, monkeypatch):
+    row = es.static_source_row("hrrr-conus-v4")
+    base = {"id": "x", "describes": "x", "format": "wps-geo_em",
+            "filename": "x.nc", "url": "https://example.invalid/x.nc",
+            "mirrors": [], "sha256": "0" * 64, "bytes": 1,
+            "grid": row.grid_map, "attrs": row.attrs_map, "fields": ["HGT_M"]}
+    assert es._row_from_table(base, where="t").off_grid_geog_data_res == ""
+    with pytest.raises(es.StaticSourceError, match="off_grid_geog_data_res"):
+        es._row_from_table({**base, "off_grid_geog_data_res": "bnu_soil_30s+nope"},
+                           where="t")
+    with pytest.raises(es.StaticSourceError, match="off_grid_geog_data_res"):
+        es._row_from_table({**base, "off_grid_geog_data_res": 3}, where="t")
+
+
+def test_off_grid_build_takes_the_sources_datasets(tmp_path, monkeypatch):
+    from gpuwm.static import build
+    for name in _RECIPE_DIRS:
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "index").write_text("type = categorical\n")
+    seen = _capture_baseline(monkeypatch)
+    report = {}
+    build.build_static(_lambert(31, 21, dx=1000.0), tmp_path,
+                       selection=_hrrr_selection(tmp_path),
+                       source_coverage_report=report)
+    (selection,) = seen
+    assert selection.soil_top == "bnu_soiltype_top"
+    assert selection.soil_bottom == "bnu_soiltype_bot"
+    assert selection.lai == "lai_modis_30s"
+    # Everything the recipe does not name stays on WPS's default.
+    default = build.GeogSelection.fallback(tmp_path)
+    for field in ("terrain", "landuse", "greenfrac", "albedo", "snow_albedo",
+                  "soil_temperature"):
+        assert getattr(selection, field) == getattr(default, field), field
+    assert selection.resolution_tokens == ("bnu_soil_30s", "modis_lai")
+    recipe = report["static_source_recipe"]
+    assert recipe["status"] == "OFF_GRID_RECIPE" and recipe["id"] == "hrrr-conus-v4"
+    assert recipe["fields"] == {"lai": "lai_modis_30s",
+                                "soil_bottom": "bnu_soiltype_bot",
+                                "soil_top": "bnu_soiltype_top"}
+    # The source-grid receipt key is untouched: no overlay ran.
+    assert "static_source" not in report
+
+
+def test_off_grid_recipe_keeps_a_namelists_own_datasets(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from gpuwm.static import build
+    seen = _capture_baseline(monkeypatch)
+    chosen = replace(build.GeogSelection.from_tokens(tmp_path, "30s"),
+                     static_source=_hrrr_selection(tmp_path).static_source)
+    report = {}
+    build.build_static(_lambert(31, 21, dx=1000.0), tmp_path,
+                       selection=chosen, source_coverage_report=report)
+    assert seen == [chosen]
+    assert "static_source_recipe" not in report
+    # No source named: the default inventory, exactly as before.
+    seen.clear()
+    plain = build.GeogSelection.fallback(tmp_path)
+    build.build_static(_lambert(31, 21, dx=1000.0), tmp_path, selection=plain)
+    assert seen == [plain]
+
+
+def test_off_grid_recipe_refuses_unstaged_datasets_with_the_fetch(tmp_path,
+                                                                  monkeypatch):
+    from gpuwm.static import build
+    _capture_baseline(monkeypatch)
+    (tmp_path / "bnu_soiltype_top").mkdir()
+    (tmp_path / "bnu_soiltype_top" / "index").write_text("type = categorical\n")
+    with pytest.raises(FileNotFoundError) as caught:
+        build.build_static(_lambert(31, 21, dx=1000.0), tmp_path,
+                           selection=_hrrr_selection(tmp_path))
+    text = str(caught.value)
+    assert "gpuwm fetch-geog --datasets bnu_soiltype_bot,lai_modis_30s" in text
+    assert "--source ncar" in text and "soil texture" in text

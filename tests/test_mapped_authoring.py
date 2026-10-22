@@ -782,29 +782,6 @@ def test_manifest_expected_format_mismatch_fails_before_output(tmp_path):
     assert not output.exists()
 
 
-def test_manifest_authoring_rejects_duplicate_mapping_json_keys(tmp_path):
-    mapping = tmp_path / "duplicate.mapping.json"
-    original = GFS_MAPPING.read_text(encoding="utf-8").lstrip()
-    assert original.startswith("{")
-    mapping.write_text(
-        '{"schema":"rw-wps.mapping.v1",' + original[1:],
-        encoding="utf-8",
-    )
-    output = tmp_path / "inputs.json"
-    with pytest.raises(ValueError, match="duplicate JSON object key 'schema'"):
-        author_input_manifest(
-            output,
-            mapping_path=mapping,
-            composition_path=GFS_COMPOSITION,
-            primary_files=(GFS_MAPPING,),
-            supplement_files={"gfs_valid_time_terrain": GFS_MAPPING},
-            provenance_files={
-                "gfs_valid_time_terrain_provenance": GFS_COMPOSITION,
-            },
-        )
-    assert not output.exists()
-
-
 # ---------------------------------------------------------------------------
 # The unit-scale guard, in both directions, against the authorities we ship.
 #

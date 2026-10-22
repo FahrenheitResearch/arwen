@@ -231,7 +231,7 @@ def test_gfs_geometry_and_static_receipt_fail_closed(tmp_path):
         _verify_static_receipt(receipt, static, grid, exp.root.run)
 
 
-@pytest.mark.parametrize("nz", [7, 49, 80, 113])
+@pytest.mark.parametrize("nz", [7, 113])
 def test_gfs_vertical_contract_accepts_any_source_covered_explicit_eta(
         tmp_path, nz):
     config = Path(__file__).parents[1] / "configs" / "gfs_wrf_direct_proof.toml"
@@ -470,6 +470,14 @@ def test_git_identity_degrades_accurately_outside_a_checkout(monkeypatch):
         raise subprocess_module.CalledProcessError(128, "git")
 
     monkeypatch.setattr(gfs_direct.subprocess, "run", fail)
+    # An unstamped install: no build-metadata commit either. Without this the
+    # test read whatever wheel ran it; the release cut's science stage runs on
+    # its own stamped wheel, where the metadata commit is real and available
+    # is True (2.9.4 pass 4b, 2026-10-21, gfs-lake-ice-ims 104/105).
+    import gpuwm.build_provenance as build_provenance
+    monkeypatch.setattr(build_provenance, "package_build_identity", lambda: dict(
+        version="unknown", commit="unknown",
+        identity_source="installed-package-metadata", receipt_line=""))
     identity = gfs_direct._git_source_identity()
     assert identity["available"] is False
     assert identity["identity_source"] == "unavailable-installed-runtime"
@@ -2064,3 +2072,23 @@ def test_the_gfs_route_keeps_its_lakes_on_the_wps_search_by_default():
     chained = inspect.getsource(gfs_direct._prepare_chained_gfs_tree)
     assert chained.count('relative_humidity_convention="gfs_mixed"') == 1
     assert 'c.case_policy["gfs_lake_skin"] == "wps"),' in chained
+
+
+def test_git_disappearing_after_root_probe_falls_back_to_package_metadata(tmp_path, monkeypatch):
+    import subprocess
+    from types import SimpleNamespace
+    from gpuwm import build_provenance, gfs_direct
+    root = tmp_path / 'source'
+    (root / '.git').mkdir(parents=True)
+    monkeypatch.setattr(gfs_direct, '__file__', str(root / 'gpuwm' / 'gfs_direct.py'))
+    monkeypatch.delenv('GPUWM_NATIVE_DISTRIBUTION_MANIFEST', raising=False)
+    def query(command, **kwargs):
+        if command[-1] == '--show-toplevel':
+            return SimpleNamespace(stdout=str(root))
+        raise FileNotFoundError('git disappeared')
+    monkeypatch.setattr(subprocess, 'run', query)
+    monkeypatch.setattr(build_provenance, 'owning_distribution', lambda: None)
+    identity = gfs_direct._git_source_identity()
+    assert identity['commit'] == 'unknown'
+    assert identity['tracked_worktree_clean'] is None
+    assert 'build_hash=unknown' in identity['package_provenance']['receipt_line']

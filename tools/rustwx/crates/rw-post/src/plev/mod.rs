@@ -51,16 +51,6 @@ use crate::PostDevice as Device;
 
 /// Pressure-level fields in output order.
 pub const PLEV_FIELDS: [&str; 6] = ["height", "temperature", "dewpoint", "rh", "u", "v"];
-/// GRIB2 (discipline.category.parameter) and units of [`PLEV_FIELDS`].
-pub const PLEV_GRIB: [(&str, &str); 6] = [
-    ("0.3.5", "gpm"),
-    ("0.0.0", "K"),
-    ("0.0.6", "K"),
-    ("0.1.1", "%"),
-    ("0.2.2", "m s-1"),
-    ("0.2.3", "m s-1"),
-];
-
 /// Indices of the 2D planes after the pressure-level block of `out32`.
 pub const P2_PWAT: usize = 0;
 pub const P2_MSLP: usize = 1;
@@ -169,11 +159,6 @@ impl Scratch {
             vv: z(nz),
         }
     }
-}
-
-#[inline]
-fn clamp0(x: f64) -> f64 {
-    if x > 0.0 { x } else { 0.0 }
 }
 
 /// Linear-in-ln-p interpolation of `a` at `lnp_t` between mass levels k,

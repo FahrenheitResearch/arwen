@@ -170,6 +170,7 @@ def test_the_latest_pointer_names_the_newest_run(tmp_path, monkeypatch):
         lambda: _LAUNCH + datetime.timedelta(minutes=5))
     newest = run_stamp.allocate(tmp_path, init=_INIT)
     pointer = tmp_path / run_stamp.LATEST_POINTER
+    run_stamp.record_latest(tmp_path, newest)
     assert pointer.read_text(encoding="utf-8").strip() == newest.name
     assert run_stamp.latest(tmp_path) == newest
     # A pointer naming a folder that has been moved away must not lie:

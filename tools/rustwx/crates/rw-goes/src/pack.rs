@@ -184,7 +184,6 @@ pub struct PackMeta {
 pub struct PayloadBuilder {
     payload: Vec<u8>,
     arrays: BTreeMap<String, ArrayEntry>,
-    next: usize,
 }
 
 impl PayloadBuilder {
@@ -195,8 +194,7 @@ impl PayloadBuilder {
     pub fn push_f32(&mut self, values: &[f32], shape: Vec<usize>) -> String {
         let expected: usize = shape.iter().product();
         debug_assert_eq!(expected, values.len(), "declared shape must match the data");
-        let key = format!("a{:05}", self.next);
-        self.next += 1;
+        let key = format!("a{:05}", self.arrays.len());
         let offset = self.payload.len();
         self.payload.reserve(values.len() * 4);
         for value in values {
@@ -411,10 +409,10 @@ pub fn write_pack(path: &Path, meta: &PackMeta, payload: &[u8]) -> Result<usize,
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn minimal_meta(payload: &[u8]) -> PackMeta {
+    pub(crate) fn minimal_meta(payload: &[u8]) -> PackMeta {
         PackMeta {
             schema: CWP_SCHEMA.to_string(),
             status: "READY".to_string(),

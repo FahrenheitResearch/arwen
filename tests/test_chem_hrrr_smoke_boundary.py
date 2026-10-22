@@ -131,6 +131,67 @@ def test_targets_land_on_hrrrs_own_grid_points():
         _horizontal_plan(backend, ROW, [field], None, None, far)
 
 
+def test_hrrrs_own_outer_rows_land_on_its_edge_points():
+    """The recipe runs HRRR's own 1799 x 1059 grid, so its outer rows ARE the
+    source's outer rows.  Projection round-off put them a hair past the edge
+    and the start state was refused ("the domain reaches outside its 1799 x
+    1059 grid"); they now land exactly on the edge, and a point a real cell
+    outside is still refused."""
+    from gpuwm.chem_boundary_remap import TargetGrid, _horizontal_plan
+    from gpuwm.static.lambert import LambertGrid
+    from gpuwm.ingest.hrrr import hrrr_source_grid
+    grid = hrrr_source_grid()
+    i = np.array([[1.0, 1799.0, 1.0, 1799.0, 900.0]])
+    j = np.array([[1.0, 1.0, 1059.0, 1059.0, 530.0]])
+    lat, lon = grid.ij_to_latlon(i, j)   # 1-based, as the grid declares (known_x = 1)
+    # As the static file stores them: float32.
+    lat, lon = (np.asarray(v, np.float32).astype(np.float64) for v in (lat, lon))
+    seen = {}
+    backend = SimpleNamespace(indexed_plan=lambda shape, y, x: seen.update(shape=shape, y=y, x=x) or "plan")
+    field = SimpleNamespace(projection=_hrrr_projection())
+    target = TargetGrid(lat, lon, np.ones((2, 1, 5), np.float32))
+    assert _horizontal_plan(backend, ROW, [field], None, None, target) == "plan"
+    assert seen["x"].min() >= 0.0 and seen["x"].max() <= 1798.0
+    assert seen["y"].min() >= 0.0 and seen["y"].max() <= 1058.0
+    assert np.allclose(seen["x"], i - 1.0, atol=1e-2)
+    assert np.allclose(seen["y"], j - 1.0, atol=1e-2)
+    lat, lon = grid.ij_to_latlon(np.array([[-1.0]]), np.array([[500.0]]))
+    with pytest.raises(ValueError, match="outside"):
+        _horizontal_plan(backend, ROW, [field], None, None,
+                         TargetGrid(lat, lon, np.ones((2, 1, 1), np.float32)))
+
+
+def test_the_full_hrrr_grid_copies_its_own_cells_index_for_index():
+    """The recipe's 1799 x 1059 grid as WPS builds it (dx 3000 m on the
+    6370 km sphere, the static file's float32 latitude/longitude) against
+    HRRR's GRIB header (3000 m on 6371229 m): the two descriptions drift to
+    0.35 cell at the north-east corner, and the start state was refused
+    ("target x 0..1798.35, y 0..1058.2").  It now takes the identity route:
+    every point its own cell, exactly."""
+    from gpuwm.chem_boundary_remap import TargetGrid, _horizontal_plan
+    from gpuwm.static.lambert import LambertGrid
+    wps = LambertGrid(ref_lat=21.138123, ref_lon=-122.719528, truelat1=38.5,
+                      truelat2=38.5, stand_lon=-97.5, dx=3000.0, dy=3000.0,
+                      e_we=1800, e_sn=1060, known_x=1.0, known_y=1.0)
+    j, i = np.meshgrid(np.arange(1, 1060, dtype=np.float64),
+                       np.arange(1, 1800, dtype=np.float64), indexing="ij")
+    lat, lon = wps.ij_to_latlon(i, j)
+    lat, lon = (np.asarray(v, np.float32).astype(np.float64) for v in (lat, lon))
+    seen = {}
+    backend = SimpleNamespace(indexed_plan=lambda shape, y, x: seen.update(shape=shape, y=y, x=x) or "plan")
+    field = SimpleNamespace(projection=_hrrr_projection())
+    target = TargetGrid(lat, lon, np.ones((2, 1059, 1799), np.float32))
+    assert _horizontal_plan(backend, ROW, [field], None, None, target) == "plan"
+    assert np.array_equal(seen["x"], i - 1.0) and np.array_equal(seen["y"], j - 1.0)
+    # An index-aligned window of it (columns 349.., every row) is its own
+    # cells too.
+    window = TargetGrid(lat[:, 349:1450], lon[:, 349:1450],
+                        np.ones((2, 1059, 1101), np.float32))
+    assert _horizontal_plan(backend, ROW, [field], None, None, window) == "plan"
+    assert np.array_equal(seen["x"], i[:, 349:1450] - 1.0)
+    assert np.array_equal(seen["y"], j[:, 349:1450] - 1.0)
+
+
 def test_mass_density_becomes_mixing_ratio_on_the_models_levels():
     """A synthetic HRRR column end to end on the real Rust operators: smoke
     density rho*q with rho = P/(R T) on four hybrid levels numbered from the
@@ -206,3 +267,29 @@ def test_the_hrrr_smoke_row_is_a_data_store_boundary_source_with_its_own_levels(
     validate_chem_config(cfg)          # the old "no forcing-frame fill" refusal is retired
     table = load_sets(["smoke"], ["rave-3km", "hrrr-native-smoke"])
     assert chem_boundary_fields(table, cfg) == ("chem_smoke",)
+
+
+def test_the_surface_group_never_takes_the_hybrid_level_file(tmp_path):
+    """Both receipts of one HRRR fetch name PRES; only the surface one holds
+    PRES at the surface.  The hybrid-level file's content-addressed name
+    sorted first and was handed to the surface group, so PSFC stacked from it
+    matched zero records (box D 2026-10-21 06Z and 2024-04-27 18Z)."""
+    import json
+    from gpuwm.chem_source_init import covering_files
+    area = [53.001, -135.0, 20.979, -59.994]
+    common = {"date": "2026-10-21/2026-10-21", "time": ["06:00"],
+              "leadtime_hour": ["0", "1"], "product": "wrfnat", "area": area}
+    receipts = {
+        "0hybrid": dict(common, variable=["MASSDEN", "PRES", "TMP"],
+                        hybrid_level=[str(k) for k in range(1, 51)]),
+        "1surface": dict(common, variable=["PRES"]),
+    }
+    for stem, request in receipts.items():
+        (tmp_path / f"{stem}.json").write_text(json.dumps(
+            {"dataset": "hrrr-wrfnat", "request": request}))
+        (tmp_path / f"{stem}.grib2").write_bytes(b"GRIB")
+    files = covering_files(ROW, ("MASSDEN", "PRES", "TMP", "PSFC"),
+                           datetime(2026, 10, 21, 6, tzinfo=timezone.utc),
+                           cache_root=tmp_path)
+    assert files == {"hybrid_level": tmp_path / "0hybrid.grib2",
+                     "surface": tmp_path / "1surface.grib2"}

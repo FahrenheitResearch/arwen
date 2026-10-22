@@ -246,6 +246,109 @@ extern "C" __global__ void rmcw_fill_outputs(
     }
 }
 
+// ---------------------------------------------------------------------
+// Fused column-layout path (the forecast adapter's layout).  The three
+// kernels above materialise a 4-byte raw CDF slab and a 1-byte mask per
+// (subcolumn, column, layer) cell; these two kernels compute the same
+// cells without either slab.
+//
+// The draw order is unchanged: one stream per column, subcolumn outer,
+// layer inner, one advance + one draw per (isub, ilev).  So the stream
+// state at the first draw of subcolumn isub is the column's seeded state
+// after change_seed + isub * nlay advances.  rmcw_subcol_states walks
+// each column's stream once with advances only (a draw's float result
+// never feeds back into the state, the same fact the warm-up relies on)
+// and records that state per subcolumn; rmcw_walk_fill_column then
+// restarts every (column, subcolumn) pair from its recorded state and
+// produces exactly the draws rmcw_fill_cdf would have stored, walks them
+// exactly as rmcw_walk_mask does and stores the outputs exactly as
+// rmcw_fill_outputs_column does.  Every float operation is the same
+// RMCW_* intrinsic in the same order on the same operands.
+// ---------------------------------------------------------------------
+
+// Kernel 4 -- one thread per column of the chunk: seeds, warm-up, then
+// the stream state before each subcolumn's first draw.
+extern "C" __global__ void rmcw_subcol_states(
+    int col0, int nc, int nlay, int ngpt, int change_seed,
+    const float *__restrict__ play,     // (ncol_total, nlay) mb
+    uint4 *__restrict__ states)         // (nc, ngpt)
+{
+    int cc = blockDim.x * blockIdx.x + threadIdx.x;
+    if (cc >= nc) return;
+    const float *pcol = play + (size_t)(col0 + cc) * nlay;
+    unsigned int s1 = rmcw_seed_from_play(pcol[0]);
+    unsigned int s2 = rmcw_seed_from_play(pcol[1]);
+    unsigned int s3 = rmcw_seed_from_play(pcol[2]);
+    unsigned int s4 = rmcw_seed_from_play(pcol[3]);
+    for (int i = 0; i < change_seed; ++i)
+        rmcw_kiss_advance(s1, s2, s3, s4);
+    uint4 *row = states + (size_t)cc * ngpt;
+    for (int g = 0; g < ngpt; ++g) {
+        row[g] = make_uint4(s1, s2, s3, s4);
+        for (int l = 0; l < nlay; ++l)
+            rmcw_kiss_advance(s1, s2, s3, s4);
+    }
+}
+
+// Kernel 5 -- one thread per (column, subcolumn), subcolumn fastest so a
+// warp's stores at one layer are consecutive words of the column layout
+// (ncol_total, nlay, ngpt).  Draw (rmcw_kiss_draw), walk and cloud
+// decision are rmcw_walk_mask's statements; the store is
+// rmcw_fill_outputs_column's.
+extern "C" __global__ void rmcw_walk_fill_column(
+    int ncol_total, int col0, int nc, int nlay, int ngpt,
+    const uint4 *__restrict__ states,                // (nc, ngpt)
+    const float *__restrict__ cldfrac,               // (ncol_total, nlay)
+    int nout,
+    const unsigned long long *__restrict__ outptrs,  // [nout] float*
+    const unsigned long long *__restrict__ srcptrs,  // [nout] float*
+    const int *__restrict__ srckind,                 // [nout]
+    const float *__restrict__ clearval,              // [nout]
+    const int *__restrict__ bandoff)                 // [ngpt] 0-based
+{
+    long long t = (long long)blockDim.x * blockIdx.x + threadIdx.x;
+    if (t >= (long long)ngpt * nc) return;
+    int isub = (int)(t % ngpt);
+    int cc = (int)(t / ngpt);
+    int col = col0 + cc;
+    uint4 st = states[t];
+    unsigned int s1 = st.x, s2 = st.y, s3 = st.z, s4 = st.w;
+    const float *cfcol = cldfrac + (size_t)col * nlay;
+    int band = bandoff[isub];
+    float prev = 0.0f;
+    for (int l = 0; l < nlay; ++l) {
+        float walked = rmcw_kiss_draw(s1, s2, s3, s4);
+        if (l > 0) {
+            float cfb = cfcol[l - 1];
+            cfb = (cfb < RMCW_CLDMIN) ? 0.0f : cfb;
+            float clear = RMCW_SU(1.0f, cfb);
+            walked = (prev > clear) ? prev : RMCW_MU(walked, clear);
+        }
+        float cfl = cfcol[l];
+        cfl = (cfl < RMCW_CLDMIN) ? 0.0f : cfl;
+        bool cloudy = walked >= RMCW_SU(1.0f, cfl);
+        prev = walked;
+        size_t oidx = ((size_t)col * nlay + l) * ngpt + isub;
+        for (int j = 0; j < nout; ++j) {
+            float v;
+            if (cloudy) {
+                int kind = srckind[j];
+                const float *src = (const float *)srcptrs[j];
+                if (kind == RMCW_SRC_CONST1) {
+                    v = 1.0f;
+                } else if (kind == RMCW_SRC_PERCOL) {
+                    v = src[(size_t)col * nlay + l];
+                } else {
+                    v = src[((size_t)band * ncol_total + col) * nlay + l];
+                }
+            } else {
+                v = clearval[j];
+            }
+            ((float *)outptrs[j])[oidx] = v;
+        }
+    }
+}
+
 // Column layout changes only the copy addresses.
 extern "C" __global__ void rmcw_fill_outputs_column(
     int ncol_total, int col0, int nc, int nlay, int ngpt,

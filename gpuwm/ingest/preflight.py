@@ -21,6 +21,8 @@ from typing import Mapping, Sequence
 
 import numpy as np
 
+from gpuwm.ingest.backend_contract import _sha256
+
 from gpuwm.ingest.grib import (Era5DecodeResult, Era5Snapshot,
                                cached_era5_forcing, canonical_units,
                                inspect_grib1_envelopes, parse_vtable,
@@ -39,17 +41,9 @@ _REQUIRED_SURFACE = frozenset({
     "SM000007", "SM007028", "SM028100", "SM100289",
 })
 _WATER_OPTIONAL_FIELDS = frozenset(("SST", "SEAICE"))
-_REQUIRED_GEOG = (
-    "topo_gmted2010_30s",
-    "modis_landuse_20class_30s_with_lakes",
-    "soiltype_top_30s",
-    "soiltype_bot_30s",
-    "greenfrac_fpar_modis",
-    "lai_modis_10m",
-    "albedo_modis",
-    "maxsnowalb_modis",
-    "soiltemp_1deg",
-)
+#: The static builder's default inventory (gpuwm/static/build.py
+#: _DEFAULT_GEOG_DIRS), kept by gpuwm.geog_assets.
+from gpuwm.geog_assets import WRF_DEFAULT_GEOG_DIRS as _REQUIRED_GEOG  # noqa: E402
 
 # Broad physical plausibility bounds.  ERA5 pressure-level RH can extend
 # beyond 0..100 % in supersaturated/extrapolated columns, so the limits retain
@@ -216,6 +210,9 @@ class InputCatalog:
     #: its parent did not would seam at the nest boundary in every field
     #: soil moisture drives.
     soil_texture_downscale: bool = True
+    #: Keep supplemental lake statics in the declared root even when the
+    #: baseline dataset indices resolve through links to a shared donor tree.
+    geog_root: Path | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "provenance",
@@ -436,14 +433,6 @@ class PreflightReport:
     def raise_for_failures(self) -> None:
         if self.errors:
             raise ValueError(self.format())
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _catalog_file(role: str, path: Path, *, product_id: str = "",
@@ -846,6 +835,7 @@ def _build_input_catalog(case_data) -> tuple[InputCatalog,
         excluded_valid_times=excluded_times, levels_hpa=levels,
         inventory=inventory, units=units, spatial_coverage=coverage,
         masks=masks, snapshots=snapshots, field_sources=field_sources,
+        geog_root=geog_root,
     )
     return catalog, tuple(issues)
 

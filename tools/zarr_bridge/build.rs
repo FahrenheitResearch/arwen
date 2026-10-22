@@ -30,10 +30,10 @@ fn clean_revision() -> Option<String> {
             println!("cargo:rerun-if-changed={path}");
         }
     }
-    if let Some(reference) = git(&["symbolic-ref", "-q", "HEAD"]) {
-        if let Some(path) = git(&["rev-parse", "--path-format=absolute", "--git-path", &reference]) {
-            println!("cargo:rerun-if-changed={path}");
-        }
+    if let Some(path) = git(&["symbolic-ref", "-q", "HEAD"]).and_then(|reference| {
+        git(&["rev-parse", "--path-format=absolute", "--git-path", &reference])
+    }) {
+        println!("cargo:rerun-if-changed={path}");
     }
     // Path dependencies enter this executable too. Untracked source files
     // must not allow a new crate to impersonate the old committed tree.

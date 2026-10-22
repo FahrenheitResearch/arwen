@@ -59,11 +59,12 @@ from __future__ import annotations
 
 from functools import lru_cache
 import ctypes
-import hashlib
 from pathlib import Path
 from typing import NamedTuple
 
 import numpy as np
+
+from gpuwm.ingest.backend_contract import _sha256
 
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "wrf_radiation"
@@ -79,8 +80,6 @@ OZONE_PLEV_SHA256 = \
 
 LEVSIZ = 59   #: climatology pressure levels (module_check_a_mundo for RRTMG)
 LATSIZ = 64   #: climatology latitudes (oznini local parameter)
-LONSIZ = 1    #: zonal climatology
-NUM_MONTHS = 13  #: n_ozmixm; WRF month slots 2..13 carry Jan..Dec
 
 #: ozn_time_int's date_oz: mid-month Julian day of each monthly sample.
 DATE_OZ = (16, 45, 75, 105, 136, 166, 197, 228, 258, 289, 319, 350)
@@ -101,14 +100,6 @@ class OzoneClimatology(NamedTuple):
     plev: np.ndarray
     lat: np.ndarray
     ozmix: np.ndarray
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _read_formatted(path: Path, count: int, label: str) -> np.ndarray:

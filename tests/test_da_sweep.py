@@ -9,22 +9,17 @@
    scored itself on a different threshold or a different box than the
    figures would produce numbers that look comparable and are not.
 
-3. There is exactly ONE scorer of record -- ``tools/da_sweep_score.py``
-   -- and any other scorer is a caller of it.  Two scorers with two
-   copies of the same constants agreed at 3 km and only at 3 km; the
-   copy meant a different metric on any other grid while reporting it
-   under the same name.  The last block below holds the unification.
+The ensemble campaign scorer and its cross-scorer checks live in the
+private campaign export. The public scoring, FSS and nest-member checks
+remain here.
 """
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 
 import numpy as np
 import pytest
 
-REPO = Path(__file__).resolve().parents[1]
 # Four campaign-plan gates live in work/test_da_sweep_plan.py and run in the
 # required private pretag leg. Their evidence/ plan is excluded from public source;
 # the scoring, FSS, and nest-member assertions below remain public Stage 1 coverage.
@@ -54,81 +49,6 @@ def test_scorer_takes_its_constants_from_the_renderer():
     assert const["FSS_THRESHOLD_DBZ"] == render.FSS_THRESHOLD_DBZ
     assert const["MISSING_OBS_FILL_DBZ"] == render.MISSING_OBS_FILL_DBZ
     assert const["COLUMN_THRESHOLD_DBZ"] == render.COLUMN_THRESHOLD_DBZ
-
-
-# ---------------------------------------------------------------------------
-# One scorer of record; the other is a caller
-# ---------------------------------------------------------------------------
-
-def _ensemble_scorer():
-    """Import ``tools/ens_sweep/score_free_forecast.py`` by path.
-
-    It is not in a package -- its own siblings import it by bare name
-    after cd'ing into the directory -- so a dotted import cannot reach
-    it and the test loads the file the shell scripts actually run.
-    """
-
-    import importlib.util
-
-    path = REPO / "tools" / "ens_sweep" / "score_free_forecast.py"
-    spec = importlib.util.spec_from_file_location("_ens_scorer", path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["_ens_scorer"] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-def test_the_ensemble_scorer_imports_the_record_constants_rather_than_copying():
-    """The unification, at the level that actually prevents divergence."""
-
-    from tools.da_sweep_score import metric_constants
-
-    const, _ = metric_constants()
-    scorer = _ensemble_scorer()
-    assert scorer.THRESHOLD_DBZ == const["FSS_THRESHOLD_DBZ"]
-    assert scorer.COLUMN_THRESHOLD_DBZ == const["COLUMN_THRESHOLD_DBZ"]
-    assert scorer.MISSING_OBS_FILL_DBZ == const["MISSING_OBS_FILL_DBZ"]
-    assert scorer.FSS_BOX_KM == const["FSS_BOX_KM"]
-
-
-def test_the_ensemble_scorer_declares_no_metric_constant_of_its_own():
-    """A hard-coded VALUE here is the divergence.
-
-    Read the assignments, not the text: the module's own comments
-    quote the literals they replaced, and a substring search would
-    match the explanation of the bug as though it were the bug.
-    """
-
-    import ast
-
-    source = (REPO / "tools" / "ens_sweep" / "score_free_forecast.py"
-              ).read_text(encoding="utf-8")
-    metric_names = {"THRESHOLD_DBZ", "COLUMN_THRESHOLD_DBZ",
-                    "MISSING_OBS_FILL_DBZ", "FSS_BOX_KM", "HALF_WIDTH_CELLS"}
-    for node in ast.parse(source).body:
-        if not isinstance(node, ast.Assign):
-            continue
-        for target in node.targets:
-            if isinstance(target, ast.Name) and target.id in metric_names:
-                assert not isinstance(node.value, ast.Constant), (
-                    f"{target.id} is assigned a literal here; it must be "
-                    "derived from tools.da_sweep_score so the two scorers "
-                    "cannot drift apart")
-
-
-def test_the_ensemble_scorer_derives_its_neighborhood_from_the_spacing():
-    """4 cells is the 27 km box at 3 km, and is wrong at any other dx."""
-
-    from tools.da_sweep_score import half_width_cells, metric_constants
-
-    const, _ = metric_constants()
-    scorer = _ensemble_scorer()
-    assert scorer.HALF_WIDTH_CELLS == half_width_cells(scorer.DX_KM, const)
-    assert scorer.HALF_WIDTH_CELLS == 4, "unchanged at the 3 km it runs on"
-    # The derivation is the point: a finer grid needs more cells for the
-    # same physical box, which a hard-coded 4 would silently get wrong.
-    assert half_width_cells(1.5, const) > 4
-    assert half_width_cells(6.0, const) < 4
 
 
 def test_fss_of_a_field_against_itself_is_one():

@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -63,6 +64,11 @@ from tools.smoke_rw_wps_cpu_install import _safe_extract, _safe_extract_zip
 ROOT = Path(__file__).parents[1]
 
 
+def _run_python(*arguments, **options):
+    return subprocess.run([sys.executable, *arguments], capture_output=True,
+                          text=True, check=False, **options)
+
+
 def _stage_or_skip(destination):
     """Stage the standalone project, or say why the tree cannot.
 
@@ -83,18 +89,36 @@ def _stage_or_skip(destination):
         pytest.skip(str(error))
 
 
+@pytest.fixture(scope="module")
+def staged_project(tmp_path_factory):
+    """The standalone project, staged once for the module (once per
+    pytest-xdist worker), as ``(path, receipt)``.
+
+    Staging copies and import-scans about 735 tracked files, 3 s on an
+    idle desktop and longer on a loaded battery host, and fifteen tests
+    here used to stage a copy each to read it.  They read this one.  A
+    test that writes into the staged tree takes ``staged_copy``; the two
+    tests whose subject is a refused staging call the real staging.
+    """
+
+    destination = tmp_path_factory.mktemp("rw-wps-staging") / "rw-wps-python"
+    receipt = _stage_or_skip(destination)
+    return destination, receipt
+
+
+@pytest.fixture
+def staged_copy(staged_project, tmp_path):
+    """A private copy of the shared staging, for a test that writes into it."""
+
+    source, receipt = staged_project
+    destination = tmp_path / "rw-wps-python"
+    shutil.copytree(source, destination,
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    return destination, receipt
+
+
 def test_distribution_builder_runs_directly_outside_checkout(tmp_path):
-    completed = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "tools" / "build_native_wrf_distribution.py"),
-            "--help",
-        ],
-        cwd=tmp_path,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    completed = _run_python(str(ROOT / 'tools' / 'build_native_wrf_distribution.py'), '--help', cwd=tmp_path)
     assert completed.returncode == 0, completed.stderr
     assert "Build a hash-bound Linux gpuwm" in completed.stdout
     assert "native-WRF runtime distribution." in completed.stdout
@@ -110,13 +134,7 @@ def test_distribution_builder_runs_directly_outside_checkout(tmp_path):
 def test_standalone_release_tools_run_directly_outside_checkout(
     tmp_path, script, marker,
 ):
-    completed = subprocess.run(
-        [sys.executable, str(ROOT / "tools" / script), "--help"],
-        cwd=tmp_path,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    completed = _run_python(str(ROOT / 'tools' / script), '--help', cwd=tmp_path)
     assert completed.returncode == 0, completed.stderr
     assert marker in completed.stdout
 
@@ -161,17 +179,7 @@ def test_release_builder_stdout_is_one_strict_json_document(
 
 
 def test_windows_release_tool_runs_directly_outside_checkout(tmp_path):
-    completed = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "tools" / "build_rw_wps_windows_release.py"),
-            "--help",
-        ],
-        cwd=tmp_path,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    completed = _run_python(str(ROOT / 'tools' / 'build_rw_wps_windows_release.py'), '--help', cwd=tmp_path)
     assert completed.returncode == 0, completed.stderr
     assert "complete Windows x86_64 CPU RW-WPS runtime" in completed.stdout
 
@@ -420,13 +428,13 @@ def test_windows_installer_and_launcher_are_fail_closed():
     assert launcher.count("& $python -B -P -m") == 2
 
 
-def test_standalone_parser_resolves_a_named_parameter_set_without_forecast_runtime(tmp_path):
+def test_standalone_parser_resolves_a_named_parameter_set_without_forecast_runtime(
+        tmp_path, staged_copy):
     """The staged parser carries its registry and fixed-clock dependencies."""
     import tomllib
     from test_physics_params import _EXPERIMENT
 
-    staged = tmp_path / "rw-wps-python"
-    receipt = _stage_or_skip(staged)
+    staged, receipt = staged_copy
     assert "gpuwm/physics_params.py" in receipt["files"]
     assert "gpuwm/physics_params_registry_v1.json" in receipt["files"]
     assert "gpuwm/core/adaptive_clock.py" in receipt["files"]
@@ -481,17 +489,16 @@ for module in ("gpuwm.core.physics", "gpuwm.core.ruc", "gpuwm.core.ruc_gpu", "gp
         'wrf_rrtmg_compatibility = "wrf-rrtmg-4-4-legacy-v1"',
         'wrf_rrtmg_compatibility = "none"')
     environment["GPUWM_PHYSICS_PARAMS"] = str(set_path)
-    completed = subprocess.run([sys.executable, "-P", "-c", script], cwd=tmp_path,
-                               env=environment, capture_output=True, text=True, check=False)
+    completed = _run_python('-P', '-c', script, cwd=tmp_path, env=environment)
     assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
-def test_standalone_terrain_preparation_reads_measured_maps_without_forecast(tmp_path):
+def test_standalone_terrain_preparation_reads_measured_maps_without_forecast(
+        staged_project):
     """Non-flat preparation reaches the staged map readers and their data."""
     import tomllib
 
-    staged = tmp_path / "rw-wps-python"
-    receipt = _stage_or_skip(staged)
+    staged, receipt = staged_project
     names = {
         "terrain_clock_map.json", "terrain_clock_map_local_face.json",
         "terrain_clock_adaptive_local_face.json",
@@ -531,14 +538,12 @@ for name in ("gpuwm.core.model", "gpuwm.core.dycore", "gpuwm.core.physics", "cup
     environment = os.environ.copy()
     environment.update(PYTHONPATH=str(staged), CUDA_VISIBLE_DEVICES="",
                        GPUWM_NO_LOCAL_GPU="1", PYTHONDONTWRITEBYTECODE="1")
-    completed = subprocess.run([sys.executable, "-P", "-c", script], cwd=staged,
-                               env=environment, capture_output=True, text=True, check=False)
+    completed = _run_python('-P', '-c', script, cwd=staged, env=environment)
     assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
-def test_standalone_python_project_excludes_forecast_executor(tmp_path):
-    staged = tmp_path / "rw-wps-python"
-    receipt = _stage_or_skip(staged)
+def test_standalone_python_project_excludes_forecast_executor(staged_project):
+    staged, receipt = staged_project
     files = set(receipt["files"])
 
     assert receipt["distribution"] == "rw-wps"
@@ -603,8 +608,7 @@ assert callable(compile_platform.nvrtc_banner)
 assert "gpuwm.supervisor" not in sys.modules
 assert "cupy" not in sys.modules
 """
-    completed = subprocess.run([sys.executable, "-P", "-c", script], cwd=staged,
-                               env=environment, capture_output=True, text=True, check=False)
+    completed = _run_python('-P', '-c', script, cwd=staged, env=environment)
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert "gpuwm/core/attribute_tracking.py" in files
     assert "gpuwm/toml_document.py" in files
@@ -734,9 +738,9 @@ assert "cupy" not in sys.modules
     assert "matplotlib" not in metadata
 
 
-def test_standalone_python_project_imports_without_source_tree_or_cupy(tmp_path):
-    staged = tmp_path / "rw-wps-python"
-    _stage_or_skip(staged)
+def test_standalone_python_project_imports_without_source_tree_or_cupy(
+        tmp_path, staged_project):
+    staged, _receipt = staged_project
     script = r"""
 from importlib.abc import MetaPathFinder
 from pathlib import Path
@@ -983,14 +987,7 @@ for name in (
     environment = os.environ.copy()
     environment["PYTHONPATH"] = str(staged)
     environment["RW_WPS_STAGED_ROOT"] = str(staged)
-    completed = subprocess.run(
-        [sys.executable, "-P", "-c", script],
-        cwd=tmp_path,
-        env=environment,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    completed = _run_python('-P', '-c', script, cwd=tmp_path, env=environment)
     assert completed.returncode == 0, completed.stderr
 
 
@@ -1047,17 +1044,16 @@ def test_the_planning_door_reads_its_member_list_without_the_forecast_door(tmp_p
         "                     '--trajectories', sys.argv[1]])\n"
         "assert code == 0, code\n"
         "assert 'gpuwm.ensemble.recipe_door' not in sys.modules\n")
-    completed = subprocess.run(
-        [sys.executable, "-c", script, str(listed)], cwd=tmp_path,
-        env={**os.environ, "PYTHONPATH": os.pathsep.join(
-            [str(ROOT), os.environ.get("PYTHONPATH", "")])},
-        capture_output=True, text=True, timeout=120)
+    completed = _run_python(
+        '-c', script, str(listed),
+        cwd=tmp_path, env={**os.environ, "PYTHONPATH": os.pathsep.join(
+            [str(ROOT), os.environ.get("PYTHONPATH", "")])}, timeout=120)
     assert completed.returncode == 0, completed.stderr
     plan = json.loads(completed.stdout)
     assert [member["trajectory"]["source"] for member in plan["members"]] == ["hrrr", "rap"]
 
 
-def test_standalone_auto_backend_reads_the_card_load(tmp_path):
+def test_standalone_auto_backend_reads_the_card_load(tmp_path, staged_project):
     """The staged package prices its preparation against the card's load.
 
     Auto's load probe lived in the forecast memory preflight, which this
@@ -1075,8 +1071,7 @@ def test_standalone_auto_backend_reads_the_card_load(tmp_path):
     not read as a CuPy that could not load.
     """
 
-    staged = tmp_path / "rw-wps-python"
-    _stage_or_skip(staged)
+    staged, _receipt = staged_project
     shadow = tmp_path / "shadow"
     (shadow / "cupy").mkdir(parents=True)
     (shadow / "cupy" / "__init__.py").write_text(
@@ -1185,19 +1180,12 @@ assert Path(probe.__file__).resolve().is_relative_to(root)
     environment["CUDA_VISIBLE_DEVICES"] = "-1"
     environment["PYTHONPATH"] = os.pathsep.join((str(shadow), str(staged)))
     environment["RW_WPS_STAGED_ROOT"] = str(staged)
-    completed = subprocess.run(
-        [sys.executable, "-P", "-c", script],
-        cwd=tmp_path,
-        env=environment,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    completed = _run_python('-P', '-c', script, cwd=tmp_path, env=environment)
     assert completed.returncode == 0, completed.stderr
     assert "could not be loaded" not in completed.stderr
 
 
-def test_standalone_preparation_publishes_at_its_seal(tmp_path):
+def test_standalone_preparation_publishes_at_its_seal(tmp_path, staged_project):
     """The staged chained writer admits a CUDA producer without a forecast.
 
     The package stages the chained writer for its era5, gfs and mapped
@@ -1207,8 +1195,7 @@ def test_standalone_preparation_publishes_at_its_seal(tmp_path):
     prices nothing.
     """
 
-    staged = tmp_path / "rw-wps-python"
-    _stage_or_skip(staged)
+    staged, _receipt = staged_project
     script = r"""
 from pathlib import Path
 import os
@@ -1236,14 +1223,7 @@ assert "gpuwm.core.preflight" not in sys.modules
     environment["PYTHONPATH"] = str(staged)
     environment["RW_WPS_STAGED_ROOT"] = str(staged)
     environment["RW_WPS_WORK"] = str(tmp_path)
-    completed = subprocess.run(
-        [sys.executable, "-P", "-c", script],
-        cwd=tmp_path,
-        env=environment,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    completed = _run_python('-P', '-c', script, cwd=tmp_path, env=environment)
     assert completed.returncode == 0, completed.stderr
 
 
@@ -1369,9 +1349,9 @@ def test_standalone_scan_reads_from_gpuwm_import_verify(tmp_path):
     }]
 
 
-def test_standalone_fire_static_keeps_metadata_without_forecast_commands(tmp_path):
-    staged = tmp_path / "rw-wps-python"
-    _stage_or_skip(staged)
+def test_standalone_fire_static_keeps_metadata_without_forecast_commands(
+        staged_project):
+    staged, _receipt = staged_project
     for name in ("fire_ideal.py", "sfire_debug.py"):
         assert not (staged / "gpuwm" / name).exists()
     for name in ("core/sfire_clock.py", "io/sfire_schema.py",
@@ -1402,19 +1382,18 @@ try: sfire.main(['--help'])
 except SystemExit as stopped: assert stopped.code == 0
 else: raise AssertionError('the staged static helper did not expose its CLI')
 """
-    result = subprocess.run([sys.executable, "-I", "-c", script, str(staged)],
-                            capture_output=True, text=True)
+    result = _run_python('-I', '-c', script, str(staged))
     assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_standalone_forecast_supervisor_annotation_still_guards_staging(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, staged_project):
     import tools.build_rw_wps_release as release
     # The symbol-aware closure can now stage chem_sfire.import_native as a
     # leaf, so removing that old annotation no longer crosses an executor
     # boundary. Supervisor is still forbidden, regardless of its imports.
+    # The unmodified tree stages: ``staged_project`` is that staging.
     key = ("gpuwm/certify/capsule.py", "gpuwm.supervisor")
-    _stage_or_skip(tmp_path / "ready")
     monkeypatch.setattr(release, "_OPTIONAL_STAGED_IMPORTS", {
         name: reason for name, reason in release._OPTIONAL_STAGED_IMPORTS.items()
         if name != key})
@@ -1424,17 +1403,16 @@ def test_standalone_forecast_supervisor_annotation_still_guards_staging(
     assert "gpuwm/certify/capsule.py" in str(refused.value)
 
 
-def _finish_a_staged_preparation(tmp_path, preamble=""):
+def _finish_a_staged_preparation(tmp_path, staged, preamble=""):
     """Run a mapped preparation to its handoff through the staged door.
 
-    A stand-in adapter child writes a finished bundle; ``preamble`` runs
-    in the child interpreter before gpuwm is imported.
+    ``staged`` is the staged project (the module's shared staging).  A
+    stand-in adapter child writes a finished bundle; ``preamble`` runs in
+    the child interpreter before gpuwm is imported.
     """
 
     from test_source_adapters import _mapped_args
 
-    staged = tmp_path / "rw-wps-python"
-    _stage_or_skip(staged)
     root = tmp_path / "prepared"
     argv = _mapped_args()
     argv[argv.index("--output-root") + 1] = str(root)
@@ -1477,14 +1455,7 @@ for name in ("gpuwm.prepared_single_domain_forecast",
     environment["RW_WPS_STAGED_ROOT"] = str(staged)
     environment["RW_WPS_ADAPTER"] = str(adapter)
     environment["RW_WPS_ARGV"] = json.dumps(argv)
-    completed = subprocess.run(
-        [sys.executable, "-P", "-c", script],
-        cwd=tmp_path,
-        env=environment,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    completed = _run_python('-P', '-c', script, cwd=tmp_path, env=environment)
     assert completed.returncode == 0, completed.stderr
     assert "Traceback" not in completed.stderr, completed.stderr
     assert "prep: complete" in completed.stdout
@@ -1496,7 +1467,8 @@ for name in ("gpuwm.prepared_single_domain_forecast",
     return completed
 
 
-def test_standalone_preparation_finishes_without_the_forecast_runners(tmp_path):
+def test_standalone_preparation_finishes_without_the_forecast_runners(
+        tmp_path, staged_project):
     """A finished preparation hands off without a forecast to hand to.
 
     The package stages prep_output and stage_cli but neither forecast
@@ -1507,7 +1479,7 @@ def test_standalone_preparation_finishes_without_the_forecast_runners(tmp_path):
     with a stand-in adapter child that writes a finished bundle.
     """
 
-    _finish_a_staged_preparation(tmp_path)
+    _finish_a_staged_preparation(tmp_path, staged_project[0])
 
 
 #: The finder an editable gpuwm install (``pip install -e .``, as the
@@ -1542,7 +1514,7 @@ print("CHECKOUT RUNNER", _spec.origin)
 
 
 def test_standalone_preparation_ignores_a_runner_another_tree_provides(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, staged_project):
     """A runner only another gpuwm tree has is a runner this one lacks.
 
     With gpuwm installed editable (publish.yml's test job) and the staged
@@ -1558,7 +1530,7 @@ def test_standalone_preparation_ignores_a_runner_another_tree_provides(
     assert checkout_runner.is_file()
     monkeypatch.setenv("RW_WPS_CHECKOUT", str(ROOT))
     completed = _finish_a_staged_preparation(
-        tmp_path, preamble=_EDITABLE_GPUWM_FINDER)
+        tmp_path, staged_project[0], preamble=_EDITABLE_GPUWM_FINDER)
     first = completed.stdout.splitlines()[0]
     # The finder is in effect: it hands the checkout's runner to find_spec.
     assert first.startswith("CHECKOUT RUNNER "), completed.stdout
@@ -1566,7 +1538,8 @@ def test_standalone_preparation_ignores_a_runner_another_tree_provides(
         checkout_runner.resolve())
 
 
-def test_the_standalone_package_reports_its_own_distribution_version(tmp_path):
+def test_the_standalone_package_reports_its_own_distribution_version(
+        tmp_path, staged_project):
     """A clean rw-wps install knows its version.
 
     gpuwm/__init__.py read the ``gpuwm`` distribution alone, and a clean
@@ -1581,8 +1554,7 @@ def test_the_standalone_package_reports_its_own_distribution_version(tmp_path):
 
     assert PYTHON_DISTRIBUTION in gpuwm.DISTRIBUTION_NAMES
     assert gpuwm.DISTRIBUTION_NAMES[0] == gpuwm.DISTRIBUTION_NAME
-    staged = tmp_path / "rw-wps-python"
-    _stage_or_skip(staged)
+    staged, _receipt = staged_project
     site = tmp_path / "site"
     info = site / "rw_wps-9.8.7.dist-info"
     info.mkdir(parents=True)
@@ -1591,15 +1563,9 @@ def test_the_standalone_package_reports_its_own_distribution_version(tmp_path):
         encoding="utf-8")
     environment = os.environ.copy()
     environment["PYTHONPATH"] = os.pathsep.join((str(staged), str(site)))
-    completed = subprocess.run(
-        [sys.executable, "-S", "-P", "-c",
-         "import gpuwm; print(gpuwm.__version__); print(gpuwm.__file__)"],
-        cwd=tmp_path,
-        env=environment,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    completed = _run_python(
+        '-S', '-P', '-c', 'import gpuwm; print(gpuwm.__version__); print(gpuwm.__file__)',
+        cwd=tmp_path, env=environment)
     assert completed.returncode == 0, completed.stderr
     version, location = completed.stdout.splitlines()
     assert version == "9.8.7"
@@ -1607,7 +1573,7 @@ def test_the_standalone_package_reports_its_own_distribution_version(tmp_path):
 
 
 def test_a_staged_package_reads_its_own_version_beside_an_installed_gpuwm(
-        tmp_path):
+        tmp_path, staged_copy):
     """The staged package's runtime check passes beside another gpuwm.
 
     install_gpuwm_native_wrf.sh installs the rw-wps wheel with ``pip
@@ -1621,8 +1587,7 @@ def test_a_staged_package_reads_its_own_version_beside_an_installed_gpuwm(
     later site directory carries an installed gpuwm, package and all.
     """
 
-    staged = tmp_path / "rw-wps-python"
-    _stage_or_skip(staged)
+    staged, _receipt = staged_copy
     info = staged / "rw_wps-9.8.7.dist-info"
     info.mkdir()
     (info / "METADATA").write_text(
@@ -1653,14 +1618,7 @@ def test_a_staged_package_reads_its_own_version_beside_an_installed_gpuwm(
         "print(json.dumps({'version': gpuwm.__version__,"
         " 'file': gpuwm.__file__,"
         " 'receipt': _installed_record_receipt()}))")
-    completed = subprocess.run(
-        [sys.executable, "-S", "-P", "-c", program],
-        cwd=tmp_path,
-        env=environment,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    completed = _run_python('-S', '-P', '-c', program, cwd=tmp_path, env=environment)
     assert "version mismatch" not in completed.stderr, completed.stderr
     assert completed.returncode == 0, completed.stderr
     payload = json.loads(completed.stdout)
@@ -1735,7 +1693,7 @@ def test_the_installed_record_check_finds_the_console_scripts_pip_wrote(
         distribution._installed_record_receipt()
 
 
-def test_standalone_radar_grid_writer_is_staged(tmp_path):
+def test_standalone_radar_grid_writer_is_staged(tmp_path, staged_project):
     """gpuwm.obs.write_radar_grid writes, or refuses by name.
 
     The staged gpuwm.obs exports the radar-grid writer, whose default
@@ -1746,8 +1704,7 @@ def test_standalone_radar_grid_writer_is_staged(tmp_path):
     the named one, not an ImportError.
     """
 
-    staged = tmp_path / "rw-wps-python"
-    _stage_or_skip(staged)
+    staged, _receipt = staged_project
     script = r"""
 import os
 from pathlib import Path
@@ -1818,14 +1775,7 @@ else:
     else:
         environment[superob_bridge.SUPEROB_BRIDGE_ENV] = str(built)
         environment.pop(superob_bridge.SUPEROB_PYTHON_ENV, None)
-    completed = subprocess.run(
-        [sys.executable, "-P", "-c", script],
-        cwd=tmp_path,
-        env=environment,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    completed = _run_python('-P', '-c', script, cwd=tmp_path, env=environment)
     assert completed.returncode == 0, completed.stderr
     # Without the Rust static-fields library (publish.yml's test job
     # builds no natives) the grid helper's projection prints its
@@ -1885,13 +1835,7 @@ for module in (
 ):
     assert module not in sys.modules
 """
-    completed = subprocess.run(
-        [sys.executable, "-c", script],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    completed = _run_python('-c', script, cwd=ROOT)
     assert completed.returncode == 0, completed.stderr
 
 
@@ -2335,9 +2279,9 @@ def test_runtime_check_usage_errors_reach_the_user(argv, message, monkeypatch,
     assert message in capsys.readouterr().err
 
 
-def test_preparation_package_carries_ocean_configuration_without_gpu(tmp_path):
-    project = tmp_path / "ocean-preparation"
-    _stage_rw_wps_python_project(project)
+def test_preparation_package_carries_ocean_configuration_without_gpu(
+        tmp_path, staged_project):
+    project, _receipt = staged_project
     asset = project / "gpuwm/data/surface_ocean.json"
     assert asset.read_bytes() == (ROOT / "gpuwm/data/surface_ocean.json").read_bytes()
     code = """
@@ -2352,6 +2296,21 @@ for key, value in ocean_namelist_defaults().items():
 assert 'cupy' not in sys.modules
 """
     env = dict(os.environ, GPUWM_NO_LOCAL_GPU="1", PYTHONPATH="")
-    result = subprocess.run([sys.executable, "-P", "-c", code, str(project)],
-                            cwd=tmp_path, env=env, text=True, capture_output=True)
+    result = _run_python('-P', '-c', code, str(project), cwd=tmp_path, env=env)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_runtime_identity_keeps_a_git_status_timeout_unverified(monkeypatch):
+    """The receipt fallback remains truthful when the status subprocess times out."""
+    from gpuwm import provenance
+
+    monkeypatch.setattr(provenance, "git_executable", lambda: "git")
+    monkeypatch.setattr("gpuwm.runtime_manifest.git_checkout_root", lambda root: root)
+    monkeypatch.setattr(provenance.subprocess, "run", lambda *args, **kwargs: (
+        _ for _ in ()).throw(subprocess.TimeoutExpired(args[0], timeout=10)))
+    identity = provenance.git_identity(ROOT)
+    assert identity is not None and identity["dirty"] is None
+    assert "timed out" in identity["dirty_unknown_reason"]
+    assert not provenance.worktree_is_clean(identity)
+    receipt = provenance.Provenance(str(ROOT / "gpuwm"), str(ROOT), "source", git=identity)
+    assert "worktree unverified" in receipt.banner()

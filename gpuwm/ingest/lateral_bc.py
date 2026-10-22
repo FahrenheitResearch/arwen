@@ -1799,9 +1799,6 @@ class StateBoundaryFrames:
             for side in ("west", "east", "south", "north")
         })
 
-    def replace_state(self, state, *, index: int) -> None:
-        """Use the published start-state coupling and inventory checks."""
-        self.replace_start_state(state, index=index)
     def build(self, times: Sequence[datetime | float]) -> LateralBoundaries:
         """Assemble the intervals from the accumulated perimeter frames."""
         if len(self._frames) != len(times) or len(self._frames) < 2:
@@ -1855,7 +1852,7 @@ class StateBoundaryFrames:
             start_seconds=float(seconds[index]),
             end_seconds=float(seconds[index + 1]))
         self._built.add(index)
-        if index == len(seconds) - 2:
+        if len(self._built) == len(seconds) - 1:
             self._setup.close()
         return result
 
@@ -1939,6 +1936,9 @@ def attach_lateral_boundaries(state, boundaries: LateralBoundaries) -> None:
     bound keeps ``clock=None`` exactly as before.
     """
     _validate_lateral_attachment(state, boundaries)
+    prestage = getattr(boundaries, "_prestage_owner", None)
+    if prestage is not None and prestage.try_attach(state, boundaries):
+        return
     carried_clock = _carried_external_clock(state)
     total_values = sum(
         array.size
@@ -2037,6 +2037,9 @@ def attach_streaming_lateral_boundaries(
     first = boundaries.intervals[0]
     _validate_lateral_attachment(
         state, boundaries, intervals=(first,) if lazy else None)
+    prestage = getattr(boundaries, "_prestage_owner", None)
+    if prestage is not None and prestage.try_attach(state, boundaries):
+        return
     if lazy:
         reference = None
 
@@ -2417,13 +2420,6 @@ def apply_state_lateral_boundaries(state, cfg, *, rk_stage: int) -> None:
         weights=weights)
 
 
-def apply_state_qv_lateral_boundary(state, cfg, tendency, *,
-                                    apply_relax=True) -> None:
-    """Compatibility wrapper for the qv scalar forcing path."""
-    return apply_state_scalar_lateral_boundary(
-        state, cfg, "qv", tendency, apply_relax=apply_relax)
-
-
 def apply_state_scalar_lateral_boundary(state, cfg, field_name, tendency, *,
                                         apply_relax=True,
                                         source_field=None) -> None:
@@ -2747,7 +2743,6 @@ __all__ = ["BoundaryInterval", "FieldBoundary", "LateralBoundaries",
            "apply_specified_relaxation",
            "apply_specified_w_zero_gradient", "apply_state_boundary_values",
            "apply_state_lateral_boundaries",
-           "apply_state_qv_lateral_boundary",
            "apply_state_scalar_lateral_boundary",
            "attach_lateral_boundaries", "attach_nest_boundaries",
            "attach_streaming_lateral_boundaries",

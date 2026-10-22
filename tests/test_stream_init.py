@@ -46,14 +46,6 @@ class _Decision:
         return "[tiles] OFF: test double"
 
 
-class _Cfg:
-    """The three extents the pricing reads off a run config."""
-
-    def __init__(self, n, nz=49):
-        self.nx = self.ny = int(n)
-        self.nz = int(nz)
-
-
 #: THE GATE (b) CASE, to the byte, from the receipts in
 #: the stream-attach measurement record.  1024 x 1024 x 49 on a
 #: 5070 Ti: ``state/*`` in the cache manifest, the free memory the decision was
@@ -148,6 +140,93 @@ def test_the_larger_of_the_two_terms_wins_in_both_directions():
         1 * GIB, 16 * GIB, 16 * GIB, columns=1024 * 1024, nz=49)
     assert wide["priced_from"] == "measured-per-column"
     assert wide["priced_resident_bytes"] == wide["measured_priced_bytes"]
+
+
+@pytest.mark.parametrize("size, expected", [(None, "store"), (128, "resident")])
+def test_full_conus_recipe_prices_its_own_resident_inventory(size, expected):
+    """Box D's 2026-10-21 OOM: the lighter measured route said 69.05 GiB fits.
+
+    Use the packaged recipe with smoke off, as in the failing forecast, and
+    the same free/total card readings. A small crop keeps the resident road.
+    Both pricing and road selection run entirely on the CPU.
+    """
+    from dataclasses import replace
+
+    from gpuwm.core import preflight, streaming
+    from gpuwm.experiment import load_experiment
+
+    exp = load_experiment(runner.REPO / "gpuwm/data/recipes/hrrr_v4_gsd41.toml")
+    cfg = replace(exp.root.run, chem_sets="", chem_sources="")
+    if size is not None:
+        cfg = replace(cfg, nx=size, ny=size)
+    exp = replace(exp, domains=(replace(exp.root, run=cfg),))
+    estimate = preflight.admission_estimate(exp, source="rap-native")
+    free, total = int(87.35 * GIB), int(94.97 * GIB)
+    # Box D's selected tiles were 900 x 530; its streamed peak was 40.48 GiB.
+    decision = streaming.decide(cfg, streaming.StreamingOptions(
+        mode="on", tile_nx=900 if size is None else 128,
+        tile_ny=530 if size is None else 128))
+    state_bytes = int(8.20 * GIB * cfg.nx * cfg.ny / (1799 * 1059))
+    reader = _manifest(state_bytes)
+    road, receipt = runner._choose_stream_init_road(
+        "auto", decision=decision, reader=reader, cfg=cfg,
+        resident_estimate=estimate, device_memory=(free, total))
+    assert road == expected
+    assert receipt["fits"] is (expected == "resident")
+    terms = {label: estimate.domains[0].category_bytes(category)
+             for label, category in (("model state", "state"),
+                                     ("physics", "physics"),
+                                     ("lateral boundary tables", "lbc"))}
+    assert receipt["configuration_resident_terms"] == terms
+    assert receipt["configuration_priced_bytes"] == sum(terms.values())
+    assert receipt["priced_resident_bytes"] == max(
+        receipt["manifest_priced_bytes"], receipt["measured_priced_bytes"],
+        sum(terms.values()))
+    if size is None:
+        old = runner._stream_init_pricing(
+            state_bytes, free, total, columns=cfg.nx * cfg.ny, nz=cfg.nz,
+            streamed_bytes=receipt["streamed_peak_bytes"])
+        assert old["fits"] is True
+        # Box D's old resident price was 28.57 GiB (its 69.05 GiB peak less
+        # the 40.48 GiB streamed term); the streamed term now also carries
+        # the output controls' tile-buffer carriers (autoplan
+        # output_carrier_bytes_per_cell), so the old resident price is pinned.
+        assert (old["resident_peak_bytes"] - receipt["streamed_peak_bytes"]) / GIB             == pytest.approx(69.05 - 40.48, abs=0.02)
+        assert receipt["priced_from"] == "configuration"
+        assert receipt["resident_peak_bytes"] > receipt["fit_allowance_bytes"]
+        assert "configuration-aware preflight inventory" in receipt["why"]
+        assert "physics" in receipt["why"]
+
+
+def test_pinned_tiling_prices_cfg_when_no_admission_estimate_was_taken():
+    """Pinned tiles skip admission, but still need the same resident floor."""
+    from dataclasses import replace
+
+    from gpuwm.core import preflight, streaming
+    from gpuwm.experiment import load_experiment
+
+    exp = load_experiment(runner.REPO / "gpuwm/data/recipes/hrrr_v4_gsd41.toml")
+    cfg = replace(exp.root.run, chem_sets="", chem_sources="")
+    reader = _manifest(int(8.20 * GIB))
+    reader.header = {"metadata": {"lbc": {"intervals": [{}, {}, {}]}}}
+    priced = runner._stream_init_pricing(
+        int(8.20 * GIB), int(87.35 * GIB), int(94.97 * GIB),
+        columns=cfg.nx * cfg.ny, nz=cfg.nz, cfg=cfg,
+        forcing_intervals=3, boundary_species=("qc", "qr"),
+        streamed_bytes=int(40.48 * GIB))
+    expected = preflight.estimate_domain(
+        replace(exp.root, run=cfg), n_lbc_intervals=3,
+        boundary_species=("qc", "qr"))
+    assert priced["configuration_priced_bytes"] == sum(
+        expected.category_bytes(category) for category in ("state", "physics", "lbc"))
+    assert priced["fits"] is False
+    road, receipt = runner._choose_stream_init_road(
+        "auto", cfg=cfg, decision=streaming.decide(
+            cfg, streaming.StreamingOptions(mode="on", tile_nx=900, tile_ny=530)),
+        reader=reader,
+        device_memory=(int(87.35 * GIB), int(94.97 * GIB)))
+    assert road == "store"
+    assert receipt["configuration_resident_terms"]["lateral boundary tables"] > 0
 
 
 def test_the_measured_term_scales_with_nz():
@@ -326,7 +405,7 @@ def test_bare_auto_takes_the_store_road_on_the_case_that_used_to_crash():
     road, receipt = runner._choose_stream_init_road(
         "auto", decision=_Decision(True),
         reader=_manifest(OC1024_STATE_MANIFEST_BYTES),
-        cfg=_Cfg(1024), device_memory=(OC1024_FREE_BYTES, OC1024_TOTAL_BYTES))
+        cfg=_real_cfg(1024), device_memory=(OC1024_FREE_BYTES, OC1024_TOTAL_BYTES))
     assert road == "store"
     assert receipt["fits"] is False
     assert receipt["priced_from"] == "measured-per-column"
@@ -414,7 +493,7 @@ def test_a_fitting_domain_still_takes_the_resident_road():
         "auto", decision=_Decision(True),
         reader=_manifest(OC1024_STATE_MANIFEST_BYTES * 384 * 384
                          // (1024 * 1024)),
-        cfg=_Cfg(384), device_memory=(15 * GIB, 16 * GIB))
+        cfg=_real_cfg(384), device_memory=(15 * GIB, 16 * GIB))
     assert road == "resident"
     assert receipt["fits"] is True
     assert "faster one" in receipt["why"]
@@ -430,7 +509,7 @@ def test_the_road_flips_at_the_width_the_measurement_puts_it_at():
     roads = {
         n: runner._choose_stream_init_road(
             "auto", decision=_Decision(True), reader=_manifest(1 * GIB),
-            cfg=_Cfg(n), device_memory=(OC1024_FREE_BYTES,
+            cfg=_real_cfg(n), device_memory=(OC1024_FREE_BYTES,
                                         OC1024_TOTAL_BYTES))[0]
         for n in (256, 512, 704, 768, 896, 1024, 1152, 1280)}
     assert roads[256] == roads[512] == "resident"
@@ -575,3 +654,27 @@ def test_the_unchecked_block_names_the_setup_fingerprint():
     assert gaps["setup_fingerprint"]["checked"] is False
     assert gaps["setup_fingerprint"]["cache_content_sha256"] == "beef"
     assert "domain-shaped state" in gaps["setup_fingerprint"]["why"]
+
+
+def test_the_operational_output_carriers_are_priced_in_the_store():
+    """The HRRR recipe's output controls (interval precipitation, the
+    gsd_diagnostics maxima and rel_vort) ride the streamed store and every
+    tile buffer; the planner priced none of them and a streamed 1562 x 926 x
+    50 root was refused restoring its store, "store needs 21.12 GiB but
+    budget_bytes is 20.74 GiB" (box D, 2026-10-21)."""
+    import math
+    from dataclasses import replace
+    from pathlib import Path
+    from gpuwm.experiment import load_experiment
+    from gpuwm.core.output_diagnostics import PERSISTENT, scratch_shapes
+    from tilestream import autoplan
+    recipe = Path(__file__).resolve().parents[1] / "gpuwm/data/recipes/hrrr_v4_gsd41.toml"
+    run = replace(load_experiment(recipe).root.run, nx=1562, ny=926)
+    shapes = scratch_shapes(run)
+    carried = sum(4 * math.prod(shapes[s]) for s in PERSISTENT if s in shapes)
+    assert carried > 0.5 * 2**30
+    off = replace(run, gsd_diagnostics=0, prec_acc_dt=0.0, prec_acc_dt1=0.0)
+    cells = run.nx * run.ny * run.nz
+    on_fp, off_fp = autoplan.footprint_for(run), autoplan.footprint_for(off)
+    assert on_fp.store_bytes_per_cell - off_fp.store_bytes_per_cell == pytest.approx(carried / cells)
+    assert on_fp.bytes_per_cell - off_fp.bytes_per_cell == pytest.approx(carried / cells)

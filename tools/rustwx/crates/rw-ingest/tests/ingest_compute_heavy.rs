@@ -17,6 +17,10 @@ use rustwx_calc::{
 use rustwx_products::derived::store_heavy_recipe_slugs;
 use rustwx_products::gridded::{PressureFields, SurfaceFields, mixing_ratio_from_dewpoint_k};
 
+#[path = "common/compute_fixture.rs"]
+mod fixture;
+use fixture::{Synthetic, flatten_with, assert_bits_eq};
+
 // The bin-shared module carries both compute stages; this test exercises
 // only the heavy lane, so the non-heavy entry is intentionally unused here.
 use rw_ingest::ingest_compute::{self, ProductsComputeInputs};
@@ -29,25 +33,6 @@ const NXY: usize = NX * NY;
 /// storm motion need a full troposphere to produce finite values.
 const LEVELS: [u16; 9] = [1000, 925, 850, 700, 500, 400, 300, 250, 200];
 const NZ: usize = LEVELS.len();
-
-/// A warm, moist, strongly sheared synthetic hour with a conditionally
-/// unstable troposphere: enough instability and shear that sbecape is
-/// finite and nonzero somewhere, so the comparison is not all-NaN-trivial.
-struct Synthetic {
-    lat: Vec<f64>,
-    lon: Vec<f64>,
-    psfc_pa: Vec<f64>,
-    t2_k: Vec<f64>,
-    q2_kgkg: Vec<f64>,
-    u10_ms: Vec<f64>,
-    v10_ms: Vec<f64>,
-    orog_m: Vec<f64>,
-    temperature_k: Vec<(u16, Vec<f64>)>,
-    dewpoint_k: Vec<(u16, Vec<f64>)>,
-    u_ms: Vec<(u16, Vec<f64>)>,
-    v_ms: Vec<(u16, Vec<f64>)>,
-    height_m: Vec<(u16, Vec<f64>)>,
-}
 
 fn synthetic() -> Synthetic {
     let mut lat = Vec::with_capacity(NXY);
@@ -128,20 +113,6 @@ fn synthetic() -> Synthetic {
     }
 }
 
-/// Flatten `(level, plane)` pairs into `[k][ij]` in LEVELS order with a
-/// per-value conversion — the layout the decode lane hands over.
-fn flatten_with(planes: &[(u16, Vec<f64>)], convert: impl Fn(f64) -> f64) -> Vec<f64> {
-    let mut out = Vec::with_capacity(NZ * NXY);
-    for &level in &LEVELS {
-        let (_, plane) = planes
-            .iter()
-            .find(|(have, _)| *have == level)
-            .expect("synthetic volumes carry every level");
-        out.extend(plane.iter().map(|&value| convert(value)));
-    }
-    out
-}
-
 fn native_planes() -> (Vec<f64>, Vec<f64>, Vec<f64>) {
     (
         (0..NXY).map(|ij| 600.0 + 40.0 * ij as f64).collect(),
@@ -153,72 +124,14 @@ fn native_planes() -> (Vec<f64>, Vec<f64>, Vec<f64>) {
 /// The decoded pair exactly as `decode_store_thermo_pair` shapes it, with
 /// optional native CAPE planes riding on the surface fields.
 fn decoded_pair(synthetic: &Synthetic, with_native_cape: bool) -> (SurfaceFields, PressureFields) {
-    let qvapor_kgkg_3d: Vec<f64> = LEVELS
-        .iter()
-        .flat_map(|&level| {
-            let (_, plane) = synthetic
-                .dewpoint_k
-                .iter()
-                .find(|(have, _)| *have == level)
-                .unwrap();
-            plane
-                .iter()
-                .map(move |&td_k| mixing_ratio_from_dewpoint_k(f64::from(level), td_k))
-        })
-        .collect();
-    let (native_sb, native_ml, native_mu) = if with_native_cape {
+    let (mut surface, pressure) = fixture::decoded_pair(synthetic);
+    if with_native_cape {
         let (sb, ml, mu) = native_planes();
-        (Some(sb), Some(ml), Some(mu))
-    } else {
-        (None, None, None)
-    };
-    (
-        SurfaceFields {
-            lat: synthetic.lat.clone(),
-            lon: synthetic.lon.clone(),
-            nx: NX,
-            ny: NY,
-            projection: None,
-            psfc_pa: synthetic.psfc_pa.clone(),
-            orog_m: synthetic.orog_m.clone(),
-            orog_is_proxy: false,
-            t2_k: synthetic.t2_k.clone(),
-            q2_kgkg: synthetic.q2_kgkg.clone(),
-            u10_ms: synthetic.u10_ms.clone(),
-            v10_ms: synthetic.v10_ms.clone(),
-            native_sbcape_jkg: native_sb,
-            native_mlcape_jkg: native_ml,
-            native_mucape_jkg: native_mu,
-            native_pblh_m: None,
-        },
-        PressureFields {
-            pressure_levels_hpa: LEVELS.iter().map(|&level| f64::from(level)).collect(),
-            pressure_3d_pa: None,
-            temperature_c_3d: flatten_with(&synthetic.temperature_k, |v| v - 273.15),
-            qvapor_kgkg_3d,
-            u_ms_3d: flatten_with(&synthetic.u_ms, |v| v),
-            v_ms_3d: flatten_with(&synthetic.v_ms, |v| v),
-            gh_m_3d: flatten_with(&synthetic.height_m, |v| v),
-            omega_pa_s_3d: None,
-            absolute_vorticity_s_3d: None,
-            cloud_liquid_kgkg_3d: None,
-            cloud_ice_kgkg_3d: None,
-            rain_kgkg_3d: None,
-            snow_kgkg_3d: None,
-            graupel_kgkg_3d: None,
-        },
-    )
-}
-
-fn assert_bits_eq(actual: &[f32], expected: &[f32], context: &str) {
-    assert_eq!(actual.len(), expected.len(), "{context}: length mismatch");
-    for (i, (a, e)) in actual.iter().zip(expected.iter()).enumerate() {
-        assert_eq!(
-            a.to_bits(),
-            e.to_bits(),
-            "{context}: value mismatch at index {i} (actual {a}, expected {e})"
-        );
+        surface.native_sbcape_jkg = Some(sb);
+        surface.native_mlcape_jkg = Some(ml);
+        surface.native_mucape_jkg = Some(mu);
     }
+    (surface, pressure)
 }
 
 #[test]

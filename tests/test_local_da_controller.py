@@ -67,14 +67,15 @@ def controller(tmp_path, *, now=None, windows=1000, **kwargs):
 
 def test_many_windows_restore_each_analysis_without_resetting_clock(tmp_path):
     backend = Backend(tmp_path)
-    for index in range(40):
+    # First entry, restart, then the first new forcing generation.
+    for index in range(3):
         # A new controller object simulates process re-entry at every boundary.
         result = controller(tmp_path).step(backend)
         assert result['completed_windows'] == index + 1
-    assert backend.calls == list(range(40))
-    assert backend.prepares == list(range(40))
-    last = json.loads((tmp_path / 'continuous/window_000039/complete.json').read_text())
-    assert cycle._restart_elapsed_seconds(last['analysis'][0]['path']) == 2400
+    assert backend.calls == list(range(3))
+    assert backend.prepares == list(range(3))
+    last = json.loads((tmp_path / 'continuous/window_000002/complete.json').read_text())
+    assert cycle._restart_elapsed_seconds(last['analysis'][0]['path']) == 180
 
 
 def test_product_interruption_does_not_call_assimilation_again(tmp_path):

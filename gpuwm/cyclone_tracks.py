@@ -157,6 +157,44 @@ def fix_at(fixes, moment):
     return None, {}
 
 
+def early_start_fix(fixes, start, member):
+    """Bounded placement estimate for a developing track, not a detection.
+
+    Only the leading gap of a forecast can be filled. Two consecutive early
+    detections establish motion; intensity is held rather than extrapolated.
+    The live nest follower subsequently diagnoses centres from its own fields.
+    """
+    from gpuwm.cyclone_search import TABLE
+    policy = json.loads(TABLE.read_text())["early_start"]
+    if not member.get("init") or start < _time(member["init"]):
+        return None, {}
+    indices = [i for i,f in enumerate(fixes) if f is not None and f["lat"] is not None]
+    if len(indices) < 2 or indices[1] != indices[0]+1:
+        return None, {}
+    first, second = (fixes[i] for i in indices[:2])
+    delay = (_time(first["valid"])-start).total_seconds()/3600
+    interval = (_time(second["valid"])-_time(first["valid"])).total_seconds()/3600
+    if not 0 < delay <= policy["maximum_hours"] or not 0 < interval <= policy["maximum_fix_interval_hours"]:
+        return None, {}
+    a,b = math.radians(first["lat"]),math.radians(second["lat"])
+    dl = math.radians(second["lon"]-first["lon"])
+    arc = 2*math.asin(min(1.,math.sqrt(math.sin((b-a)/2)**2+math.cos(a)*math.cos(b)*math.sin(dl/2)**2)))
+    distance = arc*6371*delay/interval
+    if distance > policy["maximum_displacement_km"]:
+        return None, {}
+    bearing = math.atan2(math.sin(dl)*math.cos(b), math.cos(a)*math.sin(b)-math.sin(a)*math.cos(b)*math.cos(dl)) + math.pi
+    step = distance/6371
+    lat = math.asin(math.sin(a)*math.cos(step)+math.cos(a)*math.sin(step)*math.cos(bearing))
+    lon = math.radians(first["lon"])+math.atan2(math.sin(bearing)*math.sin(step)*math.cos(a),math.cos(step)-math.sin(a)*math.sin(lat))
+    center = dict(first, valid=start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                  lead_hours=first["lead_hours"]-delay, lat=math.degrees(lat),
+                  lon=(math.degrees(lon)+180)%360-180,
+                  flags=list(first["flags"])+["estimated-start-position", "first-detection-intensity-held"])
+    return center, dict(method="bounded-constant-motion-back-projection", valid=[first["valid"],second["valid"]],
+                        estimated=True, delay_hours=delay, displacement_km=distance,
+                        pressure_valid=first["valid"], pressure_basis="first detection held; cycle pressure unknown", policy=policy)
+
+
 def select_track(path, *, storm, member, source, start, hours, search_area=None):
     from gpuwm.cyclone_sources import source_adapter, validate_center
     from gpuwm.source_coverage import points_outside
@@ -171,13 +209,20 @@ def select_track(path, *, storm, member, source, start, hours, search_area=None)
         raise ValueError(f"track-member-not-found: {member!r} is not in the tracks file")
     end = start + timedelta(hours=hours)
     window = source_adapter(source).coverage_window
-    from gpuwm.cyclone_search import window as search_window
-    search = search_window(search_area) if search_area is not None else None
-    ranked, rejected = [], []
+    from gpuwm.cyclone_search import resolve_region, contains, distance_to_region_km
+    region = resolve_region(search_area, automatic=storm == "auto")
+    metadata = next(m for m in doc["members"] if m["member_id"] == member)
+    ranked, rejected, considered = [], [], []
     for track in doc["tracks"]:
         if track["member_id"] != member:
             continue
         center, interpolation = fix_at(track["fixes"], start)
+        if center is None:
+            center, interpolation = early_start_fix(track["fixes"], start, metadata)
+        available = next((f for f in track["fixes"] if f is not None and f["lat"] is not None), None)
+        review = {k: track[k] for k in ("track_id", "storm_id", "atcf_id", "name", "storm_name") if track.get(k)}
+        review.update(center_fix=center, first_fix=available, interpolation=interpolation)
+        considered.append(review)
         fixes = [f for f in track["fixes"] if f is not None and f["lat"] is not None
                  and start <= _time(f["valid"]) <= end]
         last, _ = fix_at(track["fixes"], end)
@@ -188,7 +233,7 @@ def select_track(path, *, storm, member, source, start, hours, search_area=None)
         reason = None
         if center is None:
             reason = "track-missing-start-fix"
-        elif search is not None and bool(points_outside(search, center["lat"], center["lon"])):
+        elif not contains(region, center["lat"], center["lon"]):
             reason = "track-outside-search-area"
         elif any(bool(points_outside(window, f["lat"], f["lon"])) for f in fixes):
             reason = "track-outside-source-coverage"
@@ -198,6 +243,10 @@ def select_track(path, *, storm, member, source, start, hours, search_area=None)
             reason = "track-no-cycle-pressure"
         if reason:
             rejected.append({"track_id": track["track_id"], "reason": reason})
+            review["reason"] = reason
+            position = center or available
+            if position is not None and region["area"] is not None:
+                review["distance_to_region_km"] = distance_to_region_km(region, position["lat"], position["lon"])
             continue
         validate_center(source, (center["lat"], center["lon"]))
         # Identity labels belong to the generic track data, never a model or
@@ -210,11 +259,18 @@ def select_track(path, *, storm, member, source, start, hours, search_area=None)
         ranked.append({"track_id": track["track_id"], "minimum_mslp_pa": min(pressures) if pressures else None,
                        "cycle_mslp_pa": cycle_pressure, "aliases": aliases,
                        "center_fix": center, "interpolation": interpolation, "fixes": fixes})
+        review.update(ranking_mslp_pa=cycle_pressure,
+                      cycle_mslp_pa=None if interpolation.get("estimated") else cycle_pressure,
+                      pressure_valid=interpolation.get("pressure_valid", center["valid"]))
     ranked.sort(key=lambda t: (t["cycle_mslp_pa"] is None, t["cycle_mslp_pa"] or 0., t["track_id"]))
     catalogue_identity = None
     if storm == "auto":
         if not ranked:
-            raise ValueError("track-no-eligible-system: " + json.dumps(rejected))
+            nearest = sorted((t for t in considered if "distance_to_region_km" in t),
+                             key=lambda t: t["distance_to_region_km"])[:3]
+            raise ValueError(f"track-no-eligible-system: region {region['id']} at {start.isoformat()}Z; "
+                             "nearest seen systems (boundary distance km): " + json.dumps(nearest) +
+                             "; all rejections: " + json.dumps(rejected))
         chosen = ranked[0]
     else:
         matches = [t for t in ranked if storm.casefold() in t["aliases"]]
@@ -234,15 +290,24 @@ def select_track(path, *, storm, member, source, start, hours, search_area=None)
             reason = next((r["reason"] for r in rejected if r["track_id"] == storm), "track-id-not-found")
             raise ValueError(f"{reason}: {storm!r} for member {member!r}")
     competitors = [t for t in ranked if t is not chosen]
+    for rank, candidate in enumerate(ranked, 1):
+        review = next(t for t in considered if t["track_id"] == candidate["track_id"])
+        review.update(rank=rank, reason=("selected" if candidate is chosen else
+                      "not-requested" if storm != "auto" else
+                      "weaker" if candidate["cycle_mslp_pa"] != chosen["cycle_mslp_pa"] else "lexical-tie-break"))
     def summary(t):
-        return {k: t[k] for k in ("track_id", "cycle_mslp_pa", "minimum_mslp_pa") if t[k] is not None}
+        result = {k: t[k] for k in ("track_id", "cycle_mslp_pa", "minimum_mslp_pa") if t[k] is not None}
+        if t["interpolation"].get("estimated"):
+            result["ranking_mslp_pa"] = result.pop("cycle_mslp_pa", None)
+            result["pressure_valid"] = t["interpolation"]["pressure_valid"]
+        return result
     score = chosen["cycle_mslp_pa"]
     metadata = next(m for m in doc["members"] if m["member_id"] == member)
     lineage = {"tracks_file": filename, "tracks_sha256": digest,
                "tracker": doc["tracker"], "member": metadata, "member_id": member,
                "track_id": chosen["track_id"], "center_fix": chosen["center_fix"],
                "interpolation": chosen["interpolation"],
-               "selection_rule": ("lowest-cycle-mslp-pa; track-id lexical tie break" if storm == "auto" else "explicit-track-id"),
+               "selection_rule": ("lowest-cycle-mslp-pa (first-detection pressure proxy for bounded early starts); track-id lexical tie break" if storm == "auto" else "explicit-track-id"),
                "window_start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
                "window_end": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
                "runner_up": summary(competitors[0]) if competitors else {},
@@ -250,12 +315,15 @@ def select_track(path, *, storm, member, source, start, hours, search_area=None)
                "near_ties": [summary(t) for t in competitors if score is not None and t["cycle_mslp_pa"] is not None
                              and abs(t["cycle_mslp_pa"]-score) <= NEAR_TIE_PA],
                "rejected": rejected,
+               "selected": next(t for t in considered if t["track_id"] == chosen["track_id"]),
+               "alternatives": [t for t in considered if t["track_id"] != chosen["track_id"]],
+               "search_region": region,
                "metadata_status": "json" if doc["tracker"] else "not-supplied-by-standalone-csv"}
     if catalogue_identity is not None:
         lineage["catalogue_identity"] = catalogue_identity
         lineage["selection_rule"] = "explicit-catalogue-cycle-position-match"
-    if search is not None:
-        lineage["search_area"] = list(search_area)
+    if region["area"] is not None:
+        lineage["search_area"] = region["area"]
         lineage["search_area_basis"] = "position at window_start; source coverage also enforced"
     if "metadata_input" in doc:
         lineage["metadata_input"] = doc["metadata_input"]
@@ -342,3 +410,46 @@ def placement_report(text, selection):
             "leaves_parent": [f for f in checked if not f["inside_parent"]],
             "leaves_follower_clearance": [f for f in checked if not f["follower_clearance"]],
             "policy": "path envelope plus follower search, movement and boundary/blend clearance; start-centered fallback when it does not fit"}
+
+
+def native_track_binary(command):
+    """Require the requested mode without invalidating older fetch modes."""
+    from gpuwm.tc_tracks import binary
+    path = binary("rw_fetch")
+    marker = f"rw_fetch {command} --request JSON".encode()
+    if marker not in Path(path).read_bytes():
+        raise ValueError(f"{path} predates {command} and cannot read this request; "
+                         "rebuild rw-fetch from tools/rustwx with cargo build "
+                         "--release --locked --offline -p rw-fetch")
+    return path
+
+
+def acquire_tracks(*, storm, start, source="auto", cache=None):
+    """Acquire observed guidance through the bundled Rust fetch/parser."""
+    import os
+    import tempfile
+    import subprocess
+    cache = Path(cache or os.environ.get("XDG_CACHE_HOME", str(Path.home()/".cache"))) / "gpuwm/cyclone-best-tracks"
+    cache.mkdir(parents=True, exist_ok=True)
+    sources = json.loads(Path(__file__).with_name("authorities").joinpath("cyclone-track-sources.v1.json").read_text())
+    request = dict(storm=storm or "auto", start=start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                   source=("ibtracs" if source == "auto" and (storm or "auto") == "auto" else source), cache=str(cache), sources=sources)
+    # Every invocation owns its request and normalized output. Concurrent setup
+    # commands cannot overwrite the guidance that another command is reading.
+    with tempfile.TemporaryDirectory(prefix="selection-", dir=cache) as directory:
+        directory = Path(directory)
+        output = directory/"tracks.json"
+        request["output"] = str(output)
+        path = directory/"request.json"
+        path.write_text(json.dumps(request))
+        result = subprocess.run([native_track_binary("cyclone-tracks"), "cyclone-tracks", "--request", str(path)],
+                                text=True, capture_output=True, timeout=600)
+        if result.returncode:
+            raise ValueError("best-track-acquisition: " + result.stderr.strip())
+        data = output.read_bytes()
+        destination = cache/(hashlib.sha256(data).hexdigest()+".json")
+        if not destination.exists():
+            temporary = directory/"publish.json"
+            temporary.write_bytes(data)
+            temporary.replace(destination)
+    return destination

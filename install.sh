@@ -173,7 +173,7 @@ fi
 # The minimum is not a constant here: it is the newest `rust-version`
 # the workspaces below declare in their tools/<name>/Cargo.toml, the
 # same field cargo enforces, so this check and cargo cannot disagree.
-RUST_WORKSPACES='grib1_bridge rustwx arwen-tui zarr_bridge rw_wps region_global_dealias nextgen_hydrofabric nextgen_forcing nextgen_verify'
+RUST_WORKSPACES='grib1_bridge rustwx arwen-tui zarr_bridge rw_wps region_global_dealias nextgen_hydrofabric nextgen_forcing nextgen_verify hydro_world hydro_world_params nextgen_reservoir_prepare hydro_world_init ocean_prepare rw-bathy nextgen_output'
 rust_minimum() {
     for ws in $RUST_WORKSPACES; do
         [ -f "tools/$ws/Cargo.toml" ] || continue
@@ -544,6 +544,11 @@ else
     say "staging the externalized Thompson tables (downloads only what"
     say "is absent -- ~243 MiB from a checkout; SHA-256 verified)"
     .venv/bin/gpuwm fetch-tables
+    # The default mixed-layer ocean's 12 WOA18 MLD months (~85 MB), staged
+    # now so no forecast reads NCEI at start.  Not fatal here: a forecast
+    # still fetches its month on a miss, and doctor names the gap.
+    say "staging the WOA18 ocean mixed-layer climatology (~85 MB)"
+    .venv/bin/gpuwm fetch-tables --ocean --ocean-only || say "WOA18 ocean climatology not staged yet; re-run: gpuwm fetch-tables --ocean"
 fi
 
 # ------------------------------------------------------- offline Rust build
@@ -556,6 +561,13 @@ else
     say "building the vendored render engine in tools/rustwx (offline,"
     say "locked; the long pole of install -- skip with --no-render)"
     ( cd tools/rustwx && cargo build --release --locked --offline )
+    # The sounding renderer draws on the GPU through the system Vulkan loader
+    # (libvulkan1) and falls back to its CPU rasteriser without it; headless
+    # server images often leave the loader out, so name it here.
+    if [ "$(uname -s)" = Linux ] && ! { ldconfig -p 2>/dev/null || /sbin/ldconfig -p 2>/dev/null; } | grep -q "libvulkan.so.1"; then
+        say "no Vulkan loader (libvulkan.so.1): gpuwm soundings will draw on the CPU;"
+        say "for GPU rendering: sudo apt-get install -y libvulkan1 (dnf: vulkan-loader)"
+    fi
 fi
 say "building the terminal workspace in tools/arwen-tui (offline, locked)"
 ( cd tools/arwen-tui && cargo build --release --locked --offline )
@@ -568,7 +580,9 @@ say "building the mapped-source decode engine in tools/rw_wps (offline, locked)"
 ( cd tools/rw_wps && cargo build --release --locked --offline )
 say "building the velocity dealiasing library (offline, locked)"
 ( cd tools/region_global_dealias && cargo build --release --locked --offline )
-for workspace in nextgen_hydrofabric nextgen_forcing nextgen_verify; do
+# nextgen_output (librw_nextgen_output) writes a default-on hydro forecast's history, restart and
+# products; its crates.io dependencies resolve to the vendored rustwx sources.
+for workspace in nextgen_hydrofabric nextgen_forcing nextgen_verify hydro_world hydro_world_params nextgen_reservoir_prepare hydro_world_init ocean_prepare rw-bathy nextgen_output; do
     # These workspaces include locked registry dependencies not all vendored
     # with rustwx. Populate Cargo's cache before the offline build.
     say "fetching locked NextGen dependencies in tools/$workspace"

@@ -99,6 +99,25 @@ pub fn ensure_dir(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
 
+    fn fixture_root(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("{name}_{}", process::id()))
+    }
+
+    fn assert_quarantined<T: DeserializeOwned>(root: &Path, path: &Path) {
+        let loaded = load_bincode::<T>(path).unwrap();
+        assert!(loaded.is_none());
+        assert!(!path.exists());
+        let quarantined = fs::read_dir(root)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            quarantined
+                .iter()
+                .any(|entry| entry.file_name().to_string_lossy().contains("corrupt"))
+        );
+    }
+
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
     struct Fixture {
         name: String,
@@ -141,8 +160,7 @@ mod tests {
 
     #[test]
     fn bincode_round_trip_works() {
-        let root =
-            std::env::temp_dir().join(format!("rustwx_products_cache_{}", std::process::id()));
+        let root = fixture_root("rustwx_products_cache");
         let path = root.join("fixture.bin");
         let fixture = Fixture {
             name: "demo".into(),
@@ -158,10 +176,7 @@ mod tests {
 
     #[test]
     fn versioned_bincode_payload_records_attestation_metadata() {
-        let root = std::env::temp_dir().join(format!(
-            "rustwx_products_cache_attestation_{}",
-            std::process::id()
-        ));
+        let root = fixture_root("rustwx_products_cache_attestation");
         let path = root.join("fixture.bin");
         let fixture = Fixture {
             name: "attested".into(),
@@ -182,10 +197,7 @@ mod tests {
 
     #[test]
     fn legacy_bincode_payload_still_loads() {
-        let root = std::env::temp_dir().join(format!(
-            "rustwx_products_cache_legacy_{}",
-            std::process::id()
-        ));
+        let root = fixture_root("rustwx_products_cache_legacy");
         let path = root.join("fixture.bin");
         let fixture = Fixture {
             name: "legacy".into(),
@@ -202,10 +214,7 @@ mod tests {
 
     #[test]
     fn tampered_versioned_payload_is_quarantined_and_treated_as_cache_miss() {
-        let root = std::env::temp_dir().join(format!(
-            "rustwx_products_cache_tampered_{}",
-            std::process::id()
-        ));
+        let root = fixture_root("rustwx_products_cache_tampered");
         let path = root.join("fixture.bin");
         let fixture = Fixture {
             name: "tampered".into(),
@@ -223,54 +232,26 @@ mod tests {
         .unwrap();
         fs::write(&path, bytes).unwrap();
 
-        let loaded = load_bincode::<Fixture>(&path).unwrap();
-        assert!(loaded.is_none());
-        assert!(!path.exists());
-        let quarantined = fs::read_dir(&root)
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
-        assert!(
-            quarantined
-                .iter()
-                .any(|entry| entry.file_name().to_string_lossy().contains("corrupt"))
-        );
+        assert_quarantined::<Fixture>(&root, &path);
 
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn corrupt_bincode_payload_is_quarantined_and_treated_as_cache_miss() {
-        let root = std::env::temp_dir().join(format!(
-            "rustwx_products_cache_corrupt_{}",
-            std::process::id()
-        ));
+        let root = fixture_root("rustwx_products_cache_corrupt");
         let path = root.join("fixture.bin");
 
         fs::create_dir_all(&root).unwrap();
         fs::write(&path, b"not-bincode").unwrap();
-        let loaded = load_bincode::<Fixture>(&path).unwrap();
-        assert!(loaded.is_none());
-        assert!(!path.exists());
-        let quarantined = fs::read_dir(&root)
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
-        assert!(
-            quarantined
-                .iter()
-                .any(|entry| entry.file_name().to_string_lossy().contains("corrupt"))
-        );
+        assert_quarantined::<Fixture>(&root, &path);
 
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn incompatible_inner_payload_is_quarantined_and_treated_as_cache_miss() {
-        let root = std::env::temp_dir().join(format!(
-            "rustwx_products_cache_incompatible_{}",
-            std::process::id()
-        ));
+        let root = fixture_root("rustwx_products_cache_incompatible");
         let path = root.join("fixture.bin");
         let legacy = LegacyProjectionPayload {
             name: "legacy".into(),
@@ -292,18 +273,7 @@ mod tests {
         .unwrap();
         fs::write(&path, bytes).unwrap();
 
-        let loaded = load_bincode::<ProjectionPayload>(&path).unwrap();
-        assert!(loaded.is_none());
-        assert!(!path.exists());
-        let quarantined = fs::read_dir(&root)
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
-        assert!(
-            quarantined
-                .iter()
-                .any(|entry| entry.file_name().to_string_lossy().contains("corrupt"))
-        );
+        assert_quarantined::<ProjectionPayload>(&root, &path);
 
         let _ = fs::remove_dir_all(root);
     }

@@ -10,6 +10,7 @@ import contextlib
 import os
 from pathlib import Path
 import tempfile
+import time
 
 DEFAULT_MAX_CONNECTIONS = 30
 MAX_CONNECTIONS_ENV = "GPUWM_FETCH_MAX_CONNECTIONS"
@@ -79,20 +80,127 @@ def _usable_slot_directory(directory):
         own.mkdir(parents=True, exist_ok=True)
         return own
 
-@contextlib.contextmanager
-def lease(count=1):
-    """Acquire a bundle atomically, releasing partial bundles before waiting."""
-    from gpuwm import fetch_pool
-    cap = max_connections()
-    if not 1 <= count <= cap:
-        raise ValueError(f"{count} connections exceed the box fetch cap {cap}")
+#: Seconds a waiter stays quiet before it says what it is waiting on, then how often it repeats.
+WAIT_NOTICE_AFTER_S = 5.0
+WAIT_NOTICE_EVERY_S = 60.0
+#: How long a waiter may find no free slot at all before it refuses (and names the holders).
+SLOT_WAIT_ENV = "GPUWM_FETCH_SLOT_WAIT_S"
+DEFAULT_SLOT_WAIT_S = 1800.0
+#: One process sizing its own pool leaves cap // RESERVE_FRACTION slots for the other gpuwm processes on
+#: the box, so a newcomer finds slots even while this process's slowest transfer runs.
+RESERVE_FRACTION = 5
+
+
+def _slot_directory() -> Path:
     # TMPDIR often differs between concurrent jobs. Unix processes must
     # still contend for the same box slots.
     shared_temp = Path(tempfile.gettempdir()) if os.name == "nt" else Path("/tmp")
     directory = Path(os.environ.get(DIRECTORY_ENV) or
                      (shared_temp / "gpuwm-fetch-connections"))
-    directory = _usable_slot_directory(directory)
+    return _usable_slot_directory(directory)
+
+
+def _slot_wait_limit() -> float:
+    raw = os.environ.get(SLOT_WAIT_ENV)
+    if raw is None:
+        return DEFAULT_SLOT_WAIT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        value = -1.0
+    if not value > 0:
+        raise ValueError(f"{SLOT_WAIT_ENV}={raw!r} must be a positive number of seconds; "
+                         "an invalid limit cannot bound the wait for a fetch connection slot")
+    return value
+
+
+def free_slots() -> int:
+    """How many of the box's slots no process holds right now (a probe; each lock is let go at once)."""
+    directory = _slot_directory()
+    free = 0
+    for index in range(max_connections()):
+        handle = _open_slot(directory / f"slot-{index}")
+        try:
+            if _try_lock(handle):
+                free += 1
+        finally:
+            handle.close()
+    return free
+
+
+def process_share() -> int:
+    """The slots one process sizes its file pool and chunk streams from.
+
+    Sized from the slots free now, less a fifth of the box cap left for the other gpuwm processes on the
+    box.  Sizing from the whole cap let one ``gpuwm fetch`` take all 30 slots for the life of its slowest
+    transfer (V56, 2026-10-20: three 10-socket AWS files at ~35 KB/s held them 19-28 min) while every
+    other gpuwm process on the box waited.  At least 1.
+    """
+    cap = max_connections()
+    return max(1, min(free_slots(), cap) - cap // RESERVE_FRACTION)
+
+
+def slot_holders(directory: Path | None = None) -> list[str]:
+    """``pid holds N (cmdline)`` for every process holding a slot, from /proc/locks (empty where there is none)."""
+    directory = _slot_directory() if directory is None else directory
+    keys = set()
+    try:
+        for index in range(max_connections()):
+            info = (directory / f"slot-{index}").stat()
+            keys.add((os.major(info.st_dev), os.minor(info.st_dev), info.st_ino))
+        lines = Path("/proc/locks").read_text().splitlines()
+    except (OSError, AttributeError, ValueError):
+        return []
+    counts: dict[str, int] = {}
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 6 or fields[1] == "->":
+            continue
+        try:
+            major, minor, inode = fields[5].split(":")
+            key = (int(major, 16), int(minor, 16), int(inode))
+        except ValueError:
+            continue
+        if key in keys:
+            counts[fields[4]] = counts.get(fields[4], 0) + 1
+    holders = []
+    for pid, held in sorted(counts.items(), key=lambda item: -item[1]):
+        try:
+            command = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace").strip()
+        except OSError:
+            command = "?"
+        if len(command) > 200:
+            command = command[:197] + "..."
+        holders.append(f"pid {pid} holds {held} ({command})")
+    return holders
+
+
+def _say(text: str) -> None:
+    import sys
+    print(f"gpuwm fetch: {text}", file=sys.stderr, flush=True)
+
+
+@contextlib.contextmanager
+def lease(count=1, *, minimum=1):
+    """Hold between ``minimum`` and ``count`` box slots; yields how many were granted.
+
+    The grant is whatever is free, up to ``count`` and at least ``minimum``, so a waiter no longer sits
+    behind a bundle sized against the whole box cap while slots are free.  A waiter that finds fewer than
+    ``minimum`` free says so on stderr after a few seconds, naming the processes that hold the slots, and
+    refuses after ``GPUWM_FETCH_SLOT_WAIT_S`` (default 1800 s) instead of hanging silently (V56
+    2026-10-20: ``gpuwm setup --with-geog`` sat with no output for over 10 minutes behind another gpuwm
+    process's slots).
+    """
+    from gpuwm import fetch_pool
+    cap = max_connections()
+    if not 1 <= count <= cap:
+        raise ValueError(f"{count} connections exceed the box fetch cap {cap}")
+    minimum = max(1, min(int(minimum), count))
+    directory = _slot_directory()
+    limit = _slot_wait_limit()
     handles = []
+    began = time.monotonic()
+    next_notice = began + WAIT_NOTICE_AFTER_S
     try:
         while True:
             fetch_pool.raise_if_stopped()
@@ -104,13 +212,28 @@ def lease(count=1):
                         break
                 else:
                     handle.close()
-            if len(handles) == count:
+            if len(handles) >= minimum:
                 break
             for handle in handles:
                 handle.close()
             handles.clear()
+            now = time.monotonic()
+            if now - began >= limit:
+                holders = slot_holders(directory) or ["holders unknown (no /proc/locks)"]
+                raise RuntimeError(
+                    f"REFUSED: no fetch connection slot came free in {limit:.0f} s ({minimum} of {cap} "
+                    f"needed in {directory}); held by: {'; '.join(holders)}. Wait for those transfers, stop "
+                    f"them, or raise {SLOT_WAIT_ENV} / {MAX_CONNECTIONS_ENV}")
+            if now >= next_notice:
+                holders = slot_holders(directory) or ["holders unknown (no /proc/locks)"]
+                _say(f"waiting {now - began:.0f} s for {minimum} of {cap} box fetch connection slots "
+                     f"({directory}); held by: {'; '.join(holders)}; refusing after {limit:.0f} s")
+                next_notice = now + WAIT_NOTICE_EVERY_S
             fetch_pool.sleep_unless_stopped(0.05)
-        yield
+        waited = time.monotonic() - began
+        if waited >= WAIT_NOTICE_AFTER_S:
+            _say(f"got {len(handles)} fetch connection slot(s) after {waited:.0f} s")
+        yield len(handles)
     finally:
         for handle in handles:
             handle.close()

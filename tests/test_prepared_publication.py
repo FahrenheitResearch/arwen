@@ -126,17 +126,10 @@ def test_manifest_pin_refuses_missing_invalid_or_conflicting_identity(publicatio
         publication.manifest_pin(explicit, event)
 
 
-@pytest.mark.parametrize("second_pin", [PIN, OTHER_PIN])
+@pytest.mark.parametrize("second_pin", [PIN, OTHER_PIN, "not-a-sha"])
 def test_duplicate_release_markers_are_ambiguous_even_with_explicit_pin(publication, second_pin):
     event = event_with_pin()
     event["release"]["body"] += f"<!-- arwen-publication-sha256: {second_pin} -->"
-    with pytest.raises(publication.PublicationError):
-        publication.manifest_pin(PIN, event)
-
-
-def test_a_malformed_second_release_marker_is_not_ignored(publication):
-    event = event_with_pin()
-    event["release"]["body"] += "<!-- arwen-publication-sha256: not-a-sha -->"
     with pytest.raises(publication.PublicationError):
         publication.manifest_pin(PIN, event)
 
@@ -160,30 +153,22 @@ def test_manifest_refuses_another_schema_commit_repository_or_tag(publication, m
         load(publication, manifest)
 
 
-@pytest.mark.parametrize("missing", [
-    f"gpuwm-{VERSION}-py3-none-manylinux_2_28_x86_64.whl",
-    f"gpuwm-{VERSION}-py3-none-win_amd64.whl",
-    f"gpuwm_data-{VERSION}.tar.gz",
+@pytest.mark.parametrize("section,key,missing", [
+    ("pypi", "artifacts", f"gpuwm-{VERSION}-py3-none-manylinux_2_28_x86_64.whl"),
+    ("pypi", "artifacts", f"gpuwm-{VERSION}-py3-none-win_amd64.whl"),
+    ("pypi", "artifacts", f"gpuwm_data-{VERSION}.tar.gz"),
+    ("github", "assets", f"gpuwm-bridges-{TAG}-linux-x86_64.zip"),
+    ("github", "assets", f"gpuwm-bridges-{TAG}-win-x86_64.zip"),
+    ("github", "assets", "bridge-bundle-manifest.json"),
 ])
-def test_manifest_refuses_incomplete_pypi_set(publication, manifest, missing):
-    manifest["pypi"]["artifacts"] = [item for item in manifest["pypi"]["artifacts"] if item["filename"] != missing]
+def test_manifest_refuses_incomplete_asset_set(publication, manifest, section, key, missing):
+    manifest[section][key] = [item for item in manifest[section][key] if item["filename"] != missing]
     with pytest.raises(publication.PublicationError):
         load(publication, manifest)
 
 
 def test_manifest_refuses_same_count_but_wrong_distribution_version(publication, manifest):
     manifest["pypi"]["artifacts"][0] = row("gpuwm-9.8.8-py3-none-any.whl")
-    with pytest.raises(publication.PublicationError):
-        load(publication, manifest)
-
-
-@pytest.mark.parametrize("missing", [
-    f"gpuwm-bridges-{TAG}-linux-x86_64.zip",
-    f"gpuwm-bridges-{TAG}-win-x86_64.zip",
-    "bridge-bundle-manifest.json",
-])
-def test_manifest_refuses_missing_native_asset_contract(publication, manifest, missing):
-    manifest["github"]["assets"] = [item for item in manifest["github"]["assets"] if item["filename"] != missing]
     with pytest.raises(publication.PublicationError):
         load(publication, manifest)
 
@@ -576,9 +561,25 @@ def test_a_wheel_carrying_an_on_demand_artifact_is_refused(publication, tmp_path
 def test_the_on_demand_set_is_read_from_the_tagged_declaration(publication):
     from gpuwm import bridge_assets
     repo = Path(__file__).resolve().parents[1]
+    # The last five are the default-on hydro door's provider tools, declared on
+    # demand by e81d769e735 (2.9.3 improve-1, default-on hydro never attached).
     assert publication.on_demand_artifacts(repo) == {"rw_igra2", "rw_amv", "rw_ndbc", "rw_gnssro", "rw_wis2", "rw_prepbufr", "rw_madis",
                                                     "rw_radar_feeds", "rw_mrms", "rw_stage4", "rw_asos", "rw_goes",
-                                                    "rw_opera", "rw_soundings", "rw_nextgen_verify"} == {
+                                                    "rw_opera", "rw_soundings", "rw_nextgen_verify",
+                                                    "rw_hydro_world", "rw_hydro_params", "rw_hydrofabric",
+                                                    "nextgen-reservoir-prepare", "rw_hydro_init",
+                                                    # 2.9.4 capability lanes, declared on demand: ocean
+                                                    # preparation (cap-waves-couple), ocean SST verification
+                                                    # (cap-slab-ocean), ice observation binding (cap-fzra),
+                                                    # storm-surge bathymetry (cap-surge).
+                                                    "rw_ocean", "rw_ocean_verify", "rw_ice_verify",
+                                                    "rw_bathy",
+                                                    # 2.9.4 (PyPI per-file limit): verification and
+                                                    # post-run doors no forecast reaches.
+                                                    "rw_hail", "rw_airnow", "rw_scoreboard",
+                                                    "rw_tc_fields", "rw_fire_indices",
+                                                    # Post-2.9.4 native Rust hydro output.
+                                                    "rw_nextgen_output"} == {
         a.name for a in bridge_assets.on_demand_artifacts()}
     assert {"rw_simradar", "rw_mlexport", "rw_globe_pack"} <= {a.name for a in bridge_assets.wheel_artifacts()}
 

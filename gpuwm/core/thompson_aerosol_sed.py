@@ -337,14 +337,6 @@ def launch_aa_final_phase_cleanup(
          DTYPE(dt), np.int32(size)))
 
 
-def _column_launch(name: str, nz: int, ny: int, nx: int, arguments) -> None:
-    suffix = "64" if nz <= _SHALLOW_KMAX else "256"
-    ncol = ny * nx
-    blocks = (ncol + _COLUMN_TPB - 1) // _COLUMN_TPB
-    aerosol_kernel(SED_MODULE, f"{name}_{suffix}")(
-        (blocks,), (_COLUMN_TPB,), arguments)
-
-
 def launch_aa_rain_sedimentation_accumulate(
         qr1d, nr1d, qrten, nrten, temperature, pressure, qv, dz,
         rainnc, rainncv, dt: float, *, reference_density,

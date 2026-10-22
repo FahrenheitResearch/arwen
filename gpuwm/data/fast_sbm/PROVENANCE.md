@@ -25,7 +25,7 @@ archive into this directory, never through an editor or a Windows copy tool
 (the P3 table in `gpuwm/data/p3/` picked up CR bytes that way). Every member
 is LF text with no CR byte. `SBM_input_33/MANIFEST.sha256` lists the digests
 in `sha256sum -c` form; the authority the loader checks is `TABLE_PINS` in
-`gpuwm/core/fast_sbm/tables.py`, and `tests/test_fast_sbm_tables.py` holds
+`tools/fast_sbm_host/tables.py`, and `tests/test_fast_sbm_tables.py` holds
 the two equal.
 
 ## Packaged files

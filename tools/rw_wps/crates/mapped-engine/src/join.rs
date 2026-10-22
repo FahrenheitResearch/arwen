@@ -59,9 +59,10 @@ pub const TERRAIN_TIME_ALIGNMENTS: [&str; 2] = ["valid_time_exact", "cycle_invar
 
 /// The DECLARED clocks a cross-source binding can run on
 /// (`mapped_composition._BOUND_TIME_ALIGNMENTS`).
-pub const BOUND_TIME_ALIGNMENTS: [&str; 3] = [
+pub const BOUND_TIME_ALIGNMENTS: [&str; 4] = [
     "cycle_invariant_broadcast",
     "source_cycle_analysis_broadcast",
+    "source_cycle_analysis_select_broadcast",
     "valid_time_exact",
 ];
 
@@ -424,6 +425,7 @@ pub fn plan_terrain(
     primary: &PrimaryHeader,
     terrain: &DecodedCollection,
     time_alignment: &str,
+    grid_alignment: &str,
 ) -> Result<(TerrainPlan, Value)> {
     if !TERRAIN_TIME_ALIGNMENTS.contains(&time_alignment) {
         let allowed: Vec<&str> = {
@@ -454,17 +456,12 @@ pub fn plan_terrain(
             python_list_repr(&names)
         )));
     }
-    let latitude_indices = exact_subset_indices(
-        &terrain.latitude,
-        primary.latitude,
-        "latitude",
-        false,
+    let allow_strided = grid_alignment == "exact_coordinate_strided_subset";
+    let latitude_indices = exact_subset_indices_with_stride(
+        &terrain.latitude, primary.latitude, "latitude", false, allow_strided,
     )?;
-    let longitude_indices = exact_subset_indices(
-        &terrain.longitude,
-        primary.longitude,
-        "longitude",
-        true,
+    let longitude_indices = exact_subset_indices_with_stride(
+        &terrain.longitude, primary.longitude, "longitude", true, allow_strided,
     )?;
     // `sorted(terrain.direct.items(), key=(valid_time, str(member)))`.
     // The map is already keyed `(valid_time, member, field)` and the
@@ -586,10 +583,10 @@ pub fn plan_terrain(
             longitude_indices[longitude_indices.len() - 1]
         ]),
     );
-    receipt.insert("latitude_sha256".into(), json!(axis_digest(&primary.latitude)));
+    receipt.insert("latitude_sha256".into(), json!(axis_digest(primary.latitude)));
     receipt.insert(
         "longitude_sha256".into(),
-        json!(axis_digest(&primary.longitude)),
+        json!(axis_digest(primary.longitude)),
     );
     receipt.insert(
         "terrain_full_sha256".into(),
@@ -661,6 +658,24 @@ fn binding_subset_indices(
     binding_name: &str,
     grid_alignment: &str,
 ) -> Result<(Vec<usize>, Vec<usize>)> {
+    if grid_alignment == "nearest_coordinate" {
+        // Explicit nearest-cell sampling for categorical surface analyses.
+        // Longitude is cyclic; ties resolve to the first published cell.
+        let nearest = |source: &[f64], target: &[f64], cyclic: bool| -> Result<Vec<usize>> {
+            if source.is_empty() || source.iter().chain(target).any(|v| !v.is_finite()) {
+                return Err(frame_invalid("nearest-coordinate binding requires finite nonempty axes"));
+            }
+            target.iter().map(|v| {
+                let distance = |x: f64| {
+                    let d = (x-v).abs(); if cyclic { let d=d.rem_euclid(360.0); d.min(360.0-d) } else { d }
+                };
+                source.iter().enumerate().min_by(|a,b| distance(*a.1).total_cmp(&distance(*b.1)))
+                    .map(|(i,_)| i).ok_or_else(|| frame_invalid("empty donor axis"))
+            }).collect()
+        };
+        return Ok((nearest(&donor.latitude, primary.latitude, false)?,
+                   nearest(&donor.longitude, primary.longitude, true)?));
+    }
     let allow_strided = grid_alignment == "exact_coordinate_strided_subset";
     let wrap = |error: crate::refusal::Refusal| -> crate::refusal::Refusal {
         frame_invalid(format!(
@@ -882,6 +897,15 @@ pub fn plan_bound_fields(
                 }
                 None
             }
+            "source_cycle_analysis_select_broadcast" => {
+                if primary_cycles.len() != 1 { return Err(mixed_cycles("source-cycle analysis selection", &primary_cycles)); }
+                let entry = supplied.get(&primary_cycles[0]).ok_or_else(|| frame_invalid(
+                    format!("binding {quoted} lacks the primary cycle's exact analysis")))?;
+                if entry.0.source_cycle != primary_cycles[0] {
+                    return Err(frame_invalid("selected surface donor is a forecast rather than a cycle analysis"));
+                }
+                Some(*entry)
+            }
             "source_cycle_analysis_broadcast" => {
                 if primary_cycles.len() != 1 {
                     return Err(mixed_cycles(
@@ -937,7 +961,11 @@ pub fn plan_bound_fields(
         };
         let mut hashed = false;
         for key in &keys {
-            let (value, entry) = match supplied.get(&key.0) {
+            let exact = if alignment == "source_cycle_analysis_select_broadcast" {
+                // Never consume a future analysis from a multi-time object.
+                None
+            } else { supplied.get(&key.0) };
+            let (value, entry) = match exact {
                 Some(entry) => {
                     matched_times.insert(key.0);
                     *entry
@@ -999,7 +1027,9 @@ pub fn plan_bound_fields(
         "source_id": binding.source_id,
         "fields": fields,
         "grid_alignment": binding.grid_alignment,
-        "coordinate_match": if binding.grid_alignment == "exact_coordinate_strided_subset" {
+        "coordinate_match": if binding.grid_alignment == "nearest_coordinate" {
+            "nearest_published_cell"
+        } else if binding.grid_alignment == "exact_coordinate_strided_subset" {
             "exact_equivalent_regular_strided_subset"
         } else { "exact_equivalent_contiguous_subset" },
         "longitude_equivalence": "modulo_360_exact",
@@ -1208,6 +1238,7 @@ mod tests {
             grid_fingerprint: "fixture".into(),
             hybrid_a: vec![],
             hybrid_b: vec![],
+            original_pressure_hpa: None,
         }
     }
 
@@ -1294,7 +1325,7 @@ mod tests {
                 source_cycles: &cycles,
                 direct_names: &names,
             };
-            let (plan, receipt) = plan_terrain(&header, &terrain, "valid_time_exact").unwrap();
+            let (plan, receipt) = plan_terrain(&header, &terrain, "valid_time_exact", "exact_coordinate_subset").unwrap();
             for row in 0..2 {
                 for (column, index) in indices.iter().enumerate() {
                     assert_eq!(plan.values[[row, column]], (row * 1440 + index) as f64);
@@ -1345,7 +1376,7 @@ mod tests {
                 .collect();
             let terrain = collection(&[10.0, 11.0], &[0.0, 1.0, 2.0], records);
             let alignment = if one_record { "cycle_invariant_broadcast" } else { "valid_time_exact" };
-            let (plan, _receipt) = plan_terrain(&header, &terrain, alignment).unwrap();
+            let (plan, _receipt) = plan_terrain(&header, &terrain, alignment, "exact_coordinate_subset").unwrap();
             assert_eq!(plan.values.iter().copied().collect::<Vec<f64>>(), vec![1.0, 2.0, 4.0, 5.0]);
             for entry in plan.entries.values() {
                 assert_eq!(entry.missing_count, 0);
@@ -1362,7 +1393,7 @@ mod tests {
             &[0.0, 1.0, 2.0],
             vec![field(time, EXTERNAL_FIELD, inside.clone()), field(later, EXTERNAL_FIELD, inside)],
         );
-        let (plan, _receipt) = plan_terrain(&header, &terrain, "valid_time_exact").unwrap();
+        let (plan, _receipt) = plan_terrain(&header, &terrain, "valid_time_exact", "exact_coordinate_subset").unwrap();
         assert!(plan.entries.values().all(|entry| entry.missing_count == 1));
         // A static that changes beside a stable missing cell still refuses,
         // and so does a cell that turns missing.
@@ -1377,7 +1408,7 @@ mod tests {
                 &[0.0, 1.0, 2.0],
                 vec![field(time, EXTERNAL_FIELD, values.clone()), field(later, EXTERNAL_FIELD, moved)],
             );
-            let refusal = plan_terrain(&header, &terrain, "valid_time_exact").err().unwrap();
+            let refusal = plan_terrain(&header, &terrain, "valid_time_exact", "exact_coordinate_subset").err().unwrap();
             assert!(refusal.message.contains("changes across supplied valid times"), "{refusal}");
         }
     }
@@ -1395,6 +1426,38 @@ mod tests {
             time_alignment: alignment.into(),
             vertical_merge: None,
         }
+    }
+
+    #[test]
+    fn cycle_analysis_selection_never_borrows_a_future_surface_analysis() {
+        let cycle = at("2019-02-01 00:00:00");
+        let first = at("2019-02-01 03:00:00");
+        let future = at("2019-02-01 06:00:00");
+        let cycles = BTreeMap::from([((first, None), cycle), ((future, None), cycle)]);
+        let names = BTreeSet::from(["surface_pressure".to_owned()]);
+        let header = PrimaryHeader {
+            latitude: &[10.0, 11.0], longitude: &[0.0, 1.0],
+            vertical_values: &[], source_cycles: &cycles, direct_names: &names,
+        };
+        let current = grid(2, 2);
+        let later = current.mapv(|v| v + 100.0);
+        let donor = collection(&[10.0, 11.0], &[0.0, 1.0], vec![
+            field(cycle, "land_fraction", current.clone()),
+            field(future, "land_fraction", later.clone()),
+        ]);
+        let rule = binding("source_cycle_analysis_select_broadcast");
+        let (plan, _) = plan_bound_fields(&header, &donor, &rule).unwrap();
+        for valid in [first, future] {
+            let mut slice = collection(&[10.0, 11.0], &[0.0, 1.0], vec![]);
+            apply_bound_fields(&plan, &donor, &mut slice, &(valid, None)).unwrap();
+            assert_eq!(slice.direct[&(valid, None, "land_fraction".to_owned())].values, current);
+        }
+        let missing = collection(&[10.0, 11.0], &[0.0, 1.0], vec![field(future, "land_fraction", later)]);
+        assert!(plan_bound_fields(&header, &missing, &rule).is_err());
+        let mut forecast = field(cycle, "land_fraction", current);
+        forecast.source_cycle = cycle - chrono::Duration::hours(6);
+        let wrong_cycle = collection(&[10.0, 11.0], &[0.0, 1.0], vec![forecast]);
+        assert!(plan_bound_fields(&header, &wrong_cycle, &rule).is_err());
     }
 
     #[test]
@@ -1510,6 +1573,7 @@ mod projected_registration_tests {
             latitude: vec![0.0, 0.03, 0.06], longitude: vec![0.0, 0.03, 0.06, 0.09],
             vertical_values: vec![], direct: BTreeMap::new(), source_cycles: BTreeMap::new(),
             grid_fingerprint: "fixture".into(), hybrid_a: vec![], hybrid_b: vec![],
+            original_pressure_hpa: None,
         };
         register_projected_subset(&primary, &donor, &mut collection).unwrap();
         assert_eq!(exact_subset_indices(&collection.latitude, &[0.0, 0.03], "y", false).unwrap(), vec![1, 2]);

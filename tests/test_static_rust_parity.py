@@ -225,14 +225,6 @@ class TestLane2BuildParity:
         assert observed_coverage == expected_coverage, (
             "full-build source coverage differs from the independent reference")
 
-    def test_build_static_is_faster_than_python(self, geog_root):
-        """The Prove lane owns the real measurement on real domains;
-        this scaffold just pins that a timing hook EXISTS: the build
-        must be reachable twice (Python, Rust) on one process so the
-        comparison is apples to apples."""
-        bridge = _bridge_or_fail()
-        assert bridge.unavailable_reason() is None
-
 
 #: The lane-3 golden fixtures (real Copernicus DEM windows + the
 #: recorded tolerance caps) committed with the crate.

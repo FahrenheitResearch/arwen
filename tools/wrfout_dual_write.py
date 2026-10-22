@@ -53,13 +53,6 @@ if str(_REPO_ROOT) not in sys.path:
 
 from gpuwm.io.wrfout import WrfoutWriter  # noqa: E402
 
-#: Dimensions the writer owns; everything else in a source file is
-#: carried by its variables and re-derived from their shapes.
-_WRITER_DIMS = ("Time", "DateStrLen", "west_east", "south_north",
-                "bottom_top", "west_east_stag", "south_north_stag",
-                "bottom_top_stag", "soil_layers_stag")
-
-
 def _raw(variable):
     variable.set_auto_maskandscale(False)
     if hasattr(variable, "set_auto_chartostring"):

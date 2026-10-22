@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 import os
 from pathlib import Path
 
@@ -355,6 +356,109 @@ def test_a_supplement_of_one_primary_role_per_lead_follows_the_batch(tmp_path):
         "prslev.f000.grib2", "2dfld.f000.grib2"]
     assert [path.name for path in supplements["surface"]] == [
         "2dfld.f000.grib2"]
+
+
+@pytest.mark.parametrize("decoded", [1, 3])
+def test_a_complete_posted_window_is_ready_for_independent_builds(tmp_path, decoded):
+    from gpuwm.mapped_direct import _PostedMappedSource
+
+    source = object.__new__(_PostedMappedSource)
+    # __init__ is bypassed, so give the source the lock its constructor makes
+    # (1e39a57c05c serializes posted batch advancement across readers).
+    source._decode_lock = threading.RLock()
+    source.leads = (0, 1, 2)
+    source._next = decoded
+    source.posted = boundary_stream.PostedLeads(
+        tmp_path, source="test-source", cycle="2026-10-18T12")
+    for lead in source.leads:
+        (tmp_path / boundary_stream.posted_lead_marker_name(lead)).write_text(
+            json.dumps({"schema": boundary_stream.POSTED_LEAD_SCHEMA,
+                        "source": "test-source", "cycle": "2026-10-18T12",
+                        "lead": lead}))
+    advanced = []
+    source._decode_batch = lambda start, end: advanced.append((start, end))
+    source.markers = {0: {}}
+    source._read_marker = lambda lead, marker: source.markers.update({lead: marker})
+    source.posted.wait = lambda lead: source.posted.marker(lead) or pytest.fail(
+        f"ready lead {lead} disappeared")
+    assert source.prepare_independent_times()
+    # Every marker is read before workers start; nothing is decoded yet, so
+    # the first boundary time waits for one batch, not the whole window.
+    assert set(source.leads[decoded:]) <= set(source.markers)
+    assert advanced == []
+    # Workers' frame lookups decode the rest without changing segment bindings.
+    markers = dict(source.markers)
+    source.through(2)
+    source.through(1)
+    assert source.markers == markers
+    assert source.decoded_count == len(source.leads)
+    assert advanced == ([(1, 2)] if decoded == 1 else [])
+
+
+def _posted_source(tmp_path, leads, decoded):
+    from gpuwm.mapped_direct import _PostedMappedSource
+
+    source = object.__new__(_PostedMappedSource)
+    source._decode_lock = threading.RLock()
+    source.leads = tuple(leads)
+    source._next = decoded
+    source.posted = boundary_stream.PostedLeads(
+        tmp_path, source="test-source", cycle="2026-10-18T12")
+    for lead in source.leads:
+        (tmp_path / boundary_stream.posted_lead_marker_name(lead)).write_text(
+            json.dumps({"schema": boundary_stream.POSTED_LEAD_SCHEMA,
+                        "source": "test-source", "cycle": "2026-10-18T12",
+                        "lead": lead}))
+    advanced = []
+    source._decode_batch = lambda start, end: advanced.append((start, end))
+    source.markers = {}
+    source._read_marker = lambda lead, marker: source.markers.update({lead: marker})
+    source.posted.wait = lambda lead: source.posted.marker(lead)
+    return source, advanced
+
+
+def test_a_long_posted_window_is_decoded_a_bounded_batch_at_a_time(tmp_path):
+    from gpuwm.mapped_direct import POSTED_BATCH_LEADS
+
+    # A 48 h window whose every lead posted before the decode started (V59/V60
+    # 2026-10-21): one lookup must not compose the whole window.
+    source, advanced = _posted_source(tmp_path, range(49), decoded=2)
+    source.through(2)
+    assert advanced == [(2, 2 + POSTED_BATCH_LEADS - 1)]
+    source.through(20)
+    assert [end - start + 1 for start, end in advanced] == [POSTED_BATCH_LEADS] * 4
+    assert advanced[-1][1] >= 20 and source.decoded_count == advanced[-1][1] + 1
+    # The seal still reaches every lead, a batch at a time.
+    source.through(48)
+    assert source.decoded_count == 49 and advanced[-1][1] == 48
+
+
+def test_the_first_batch_and_a_prefetch_decode_exactly_what_they_name(tmp_path):
+    source, advanced = _posted_source(tmp_path, range(49), decoded=0)
+    # The start time and the forcing time after it, for the first step.
+    source.through(0, until=1)
+    # The inland-water daily mean's 24 h window, in one batch.
+    source.prefetch_through(23)
+    assert advanced == [(0, 1), (2, 23)]
+
+
+def test_a_missing_posted_lead_keeps_builds_ordered_without_waiting(tmp_path):
+    from gpuwm.mapped_direct import _PostedMappedSource
+
+    source = object.__new__(_PostedMappedSource)
+    source.leads, source._next = (0, 1, 2), 1
+    source.posted = boundary_stream.PostedLeads(
+        tmp_path, source="test-source", cycle="2026-10-18T12")
+    source.through = lambda index: pytest.fail("pending window was decoded")
+    source.posted.wait = lambda lead: pytest.fail("readiness check blocked")
+    assert not source.prepare_independent_times()
+    # Existing marker validation still refuses another cycle before admission.
+    (tmp_path / boundary_stream.posted_lead_marker_name(1)).write_text(
+        json.dumps({"schema": boundary_stream.POSTED_LEAD_SCHEMA,
+                    "source": "test-source", "cycle": "2026-10-17T12",
+                    "lead": 1}))
+    with pytest.raises(boundary_stream.BoundaryProducerFailed, match="not test-source"):
+        source.prepare_independent_times()
 
 
 # ---------------------------------------------------------------------------

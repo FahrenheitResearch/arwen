@@ -56,6 +56,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
@@ -1173,6 +1174,57 @@ def fetch_file(url: str, path: Path, *, urlopen=None,
 
 
 # ---------------------------------------------------------------------------
+# Whole-tile sets (terrain)
+# ---------------------------------------------------------------------------
+
+#: Tiles one terrain fetch downloads at once.  A public tile host serves
+#: one stream at about 8-10 MB/s to a rented box, and Copernicus GLO-30
+#: over a 1 km CONUS footprint is about 1,000 published tiles (40 GB): one
+#: stream at a time took over an hour, and the 1 km preparation kit grew a
+#: parallel prefill script to get around it.  Each tile has its own cache
+#: entry, lock and staging file (:mod:`gpuwm.fetch_guard`), so concurrent
+#: tiles never share a partial, and the result keeps the enumeration
+#: order, so receipts and the mosaic read tiles in the same order as one
+#: stream would.
+#: Raised from 16 to 32 on 2026-10-21: one 1 km corridor over the
+#: contiguous US (~1,000 GLO-30 tiles) still left every core and the card
+#: waiting on the transfer (a rented box).
+TILE_FETCH_WORKERS = 32
+
+
+def _fetch_tile_set(tiles, url_for, path_for, *, urlopen=None
+                    ) -> tuple[tuple[FetchedFile, ...], tuple[str, ...]]:
+    """Fetch ``tiles`` (``url_for(tile)`` into ``path_for(tile)``),
+    :data:`TILE_FETCH_WORKERS` at a time; return ``(fetched, absent)`` in
+    tile order.  The first failure (other than an unpublished tile) is
+    raised after the tiles already being fetched finish; queued tiles are
+    not started."""
+    order = list(tiles)
+
+    def one(tile):
+        try:
+            return fetch_file(url_for(tile), path_for(tile), urlopen=urlopen)
+        except SourceAbsent:
+            return None
+
+    workers = max(1, min(int(TILE_FETCH_WORKERS), len(order)))
+    if workers == 1:
+        results = [one(tile) for tile in order]
+    else:
+        with ThreadPoolExecutor(workers, thread_name_prefix="tile-fetch") as pool:
+            futures = [pool.submit(one, tile) for tile in order]
+            try:
+                results = [future.result() for future in futures]
+            except BaseException:
+                for future in futures:
+                    future.cancel()
+                raise
+    fetched = tuple(item for item in results if item is not None)
+    absent = tuple(tile for tile, item in zip(order, results) if item is None)
+    return fetched, absent
+
+
+# ---------------------------------------------------------------------------
 # USGS 3DEP terrain tiles
 # ---------------------------------------------------------------------------
 
@@ -1211,17 +1263,9 @@ def fetch_three_dep_tiles(bbox: FootprintBBox, cache_root: Path, *,
     named in the receipt.  ``fetched`` is empty when no tile is staged.
     """
     cache = Path(cache_root) / "usgs3dep_13as"
-    fetched: list[FetchedFile] = []
-    absent: list[str] = []
-    for tile in three_dep_tile_ids(bbox):
-        url = THREE_DEP_TILE_URL.format(tile=tile)
-        try:
-            fetched.append(
-                fetch_file(url, cache / f"USGS_13_{tile}.tif",
-                           urlopen=urlopen))
-        except SourceAbsent:
-            absent.append(tile)
-    return tuple(fetched), tuple(absent)
+    return _fetch_tile_set(
+        three_dep_tile_ids(bbox), lambda tile: THREE_DEP_TILE_URL.format(tile=tile),
+        lambda tile: cache / f"USGS_13_{tile}.tif", urlopen=urlopen)
 
 
 # ---------------------------------------------------------------------------
@@ -1297,17 +1341,9 @@ def fetch_srtm_gl1_tiles(bbox: FootprintBBox, cache_root: Path, *,
     either, so absence is handed back rather than being read as terrain.
     """
     cache = Path(cache_root) / "srtm_gl1"
-    fetched: list[FetchedFile] = []
-    absent: list[str] = []
-    tiles = srtm_tile_ids(bbox)
-    for tile in tiles:
-        url = SRTM_GL1_TILE_URL.format(tile=tile)
-        try:
-            fetched.append(fetch_file(url, cache / f"{tile}.tif",
-                                      urlopen=urlopen))
-        except SourceAbsent:
-            absent.append(tile)
-    return tuple(fetched), tuple(absent)
+    return _fetch_tile_set(
+        srtm_tile_ids(bbox), lambda tile: SRTM_GL1_TILE_URL.format(tile=tile),
+        lambda tile: cache / f"{tile}.tif", urlopen=urlopen)
 
 
 def fetch_copernicus_dem_tiles(bbox: FootprintBBox, cache_root: Path, *,
@@ -1324,18 +1360,11 @@ def fetch_copernicus_dem_tiles(bbox: FootprintBBox, cache_root: Path, *,
     or land.  ``fetched`` is empty when every tile is absent.
     """
     cache = Path(cache_root) / "copernicus_dem_glo30"
-    fetched: list[FetchedFile] = []
-    absent: list[str] = []
-    tiles = copernicus_dem_tile_ids(bbox)
-    for tile in tiles:
-        url = COPERNICUS_DEM_TILE_URL.format(tile=tile)
-        try:
-            fetched.append(fetch_file(
-                url, cache / f"Copernicus_DSM_COG_10_{tile}_DEM.tif",
-                urlopen=urlopen))
-        except SourceAbsent:
-            absent.append(tile)
-    return tuple(fetched), tuple(absent)
+    return _fetch_tile_set(
+        copernicus_dem_tile_ids(bbox),
+        lambda tile: COPERNICUS_DEM_TILE_URL.format(tile=tile),
+        lambda tile: cache / f"Copernicus_DSM_COG_10_{tile}_DEM.tif",
+        urlopen=urlopen)
 
 
 #: Second way out of :func:`_require_cut_frame_window`, valid for both

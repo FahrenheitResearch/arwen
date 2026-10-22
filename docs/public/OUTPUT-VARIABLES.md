@@ -259,3 +259,9 @@ the whole valid set printed, because there is no other place to read it:
 history variable.  Did you mean QCLOUD?  The valid set is: ACRUNOFF,
 ALBOLD, ... ZTOP_PLUME.
 ```
+
+Hail diameter diagnostics: `HAIL_MAXK1`, `HAIL_MAX2D`, `HAIL_MAXK1_RUN` and
+`HAIL_MAX2D_RUN` are in metres; `HAILCAST_DIAM_MAX`, `HAILCAST_DIAM_MEAN`,
+`HAILCAST_DIAM_STD`, `HAILCAST_RUNMAX` and `HAILCAST_DHAIL1` through
+`HAILCAST_DHAIL5` are in millimetres. See [maximum hail diameter](HAIL-DIAMETER.md)
+for the PSD criterion, supported distributions, history windows and verification.

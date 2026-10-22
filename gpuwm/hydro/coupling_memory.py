@@ -100,6 +100,25 @@ def exchange_memory(*, settings, options, context, components):
         parent_allocation_policy="reserve both optional parent buffers; borrowed carriers unpriced")
 
 
+
+def accumulated_exchange_memory(*, settings, options, context, components):
+    """The Noah/RUC exchange: the routed exchange plus its per-call accumulator buffers.
+
+    Two previous accumulators (checkpointed model state), two step depths and
+    one zero carrier, each one parent cell plane.
+    """
+    base = exchange_memory(settings=settings, options=options, context=context,
+                           components=components)
+    if len(context.parent_shape) < 2 or min(context.parent_shape) <= 0:
+        return replace(base, gaps=base.gaps + ("parent grid shape unavailable; accumulator buffers are unpriced",))
+    plane = tuple(context.parent_shape[-2:])
+    extra = (ArrayMemory("previous_sfcrunoff", plane, "float32", checkpointed=True),
+             ArrayMemory("previous_udrunoff", plane, "float32", checkpointed=True),
+             ArrayMemory("workspace/surface_step", plane, "float32"),
+             ArrayMemory("workspace/subsurface_step", plane, "float32"),
+             ArrayMemory("workspace/zero", plane, "float32"))
+    return replace(base, arrays=base.arrays + extra)
+
 def history_memory(*, settings, options, context, components):
     bindings, arrays = _Bindings(components, context), []
     steps, cadence = options["capacity_steps"], options.get("cadence_steps", 1)

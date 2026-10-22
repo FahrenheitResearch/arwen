@@ -9,7 +9,6 @@ Bookkeeping logs remain separately retained with their original reports.
 import argparse
 import json
 import os
-import re
 from pathlib import Path
 import sys
 

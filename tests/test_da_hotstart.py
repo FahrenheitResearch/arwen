@@ -49,6 +49,13 @@ def _grids(state, *, z_obs, sim, mask=True):
             np.full(shape, sim, np.float32))
 
 
+def _nudge(state, cfg, *, z_obs, sim, mask=True):
+    """Uniform observation setup shared by the scalar-input cases."""
+    observed, valid, simulated = _grids(state, z_obs=z_obs, sim=sim, mask=mask)
+    return hotstart.hotstart_increments(
+        state, observed, valid, cfg, simulated_dbz=simulated)
+
+
 # --------------------------------------------------------------------------
 # configuration
 # --------------------------------------------------------------------------
@@ -148,10 +155,7 @@ def test_the_tent_ramp_peaks_mid_layer():
 def test_a_forecast_that_already_matches_gets_bitwise_zero_increments():
     """The whole scheme must be a no-op on a good forecast."""
     state = _state()
-    z_obs, mask, sim = _grids(state, z_obs=45.0, sim=45.0)
-    result = hotstart.hotstart_increments(state, z_obs, mask,
-                                          HotStartConfig(),
-                                          simulated_dbz=sim)
+    result = _nudge(state, HotStartConfig(), z_obs=45.0, sim=45.0)
     for name, increment in result.increments.items():
         np.testing.assert_array_equal(
             increment, np.zeros_like(increment),
@@ -163,9 +167,7 @@ def test_a_forecast_that_already_matches_gets_bitwise_zero_increments():
 def test_a_deficit_below_the_threshold_is_still_a_no_op():
     state = _state()
     cfg = HotStartConfig(deficit_threshold_db=5.0)
-    z_obs, mask, sim = _grids(state, z_obs=45.0, sim=41.0)
-    result = hotstart.hotstart_increments(state, z_obs, mask, cfg,
-                                          simulated_dbz=sim)
+    result = _nudge(state, cfg, z_obs=45.0, sim=41.0)
     np.testing.assert_array_equal(result.increments["thp"],
                                   np.zeros_like(result.increments["thp"]))
 
@@ -174,20 +176,15 @@ def test_an_echo_below_the_detection_threshold_is_a_no_op():
     """A 10 dBZ observation is not an echo worth building a storm for,
     even though the model has nothing there at all."""
     state = _state()
-    z_obs, mask, sim = _grids(state, z_obs=10.0, sim=-35.0)
-    result = hotstart.hotstart_increments(state, z_obs, mask,
-                                          HotStartConfig(echo_threshold_dbz=15.0),
-                                          simulated_dbz=sim)
+    result = _nudge(
+        state, HotStartConfig(echo_threshold_dbz=15.0), z_obs=10.0, sim=-35.0)
     np.testing.assert_array_equal(result.increments["thp"],
                                   np.zeros_like(result.increments["thp"]))
 
 
 def test_a_fully_masked_volume_produces_nothing():
     state = _state()
-    z_obs, mask, sim = _grids(state, z_obs=60.0, sim=-35.0, mask=False)
-    result = hotstart.hotstart_increments(state, z_obs, mask,
-                                          HotStartConfig(),
-                                          simulated_dbz=sim)
+    result = _nudge(state, HotStartConfig(), z_obs=60.0, sim=-35.0, mask=False)
     np.testing.assert_array_equal(result.increments["thp"],
                                   np.zeros_like(result.increments["thp"]))
     np.testing.assert_array_equal(result.increments["qv"],
@@ -217,10 +214,7 @@ def test_the_mask_is_honoured_cell_by_cell():
 
 def test_an_observed_echo_the_model_lacks_gets_warmed_and_moistened():
     state = _state()
-    z_obs, mask, sim = _grids(state, z_obs=50.0, sim=-35.0)
-    result = hotstart.hotstart_increments(state, z_obs, mask,
-                                          HotStartConfig(),
-                                          simulated_dbz=sim)
+    result = _nudge(state, HotStartConfig(), z_obs=50.0, sim=-35.0)
     d_theta = result.increments["thp"]
     d_qv = result.increments["qv"]
     assert np.max(d_theta) > 0.0
@@ -234,9 +228,7 @@ def test_the_increment_lives_only_inside_the_warm_layer():
     """Nothing reaches the surface layer or the upper troposphere."""
     state = _state(nz=12, ny=1, nx=1, top_m=18000.0)
     cfg = HotStartConfig(warm_base_height_m=2000.0, warm_top_height_m=8000.0)
-    z_obs, mask, sim = _grids(state, z_obs=55.0, sim=-35.0)
-    result = hotstart.hotstart_increments(state, z_obs, mask, cfg,
-                                          simulated_dbz=sim)
+    result = _nudge(state, cfg, z_obs=55.0, sim=-35.0)
     d_theta = result.increments["thp"][:, 0, 0]
 
     z_full = np.asarray(state.phb) / np.float32(c.G)
@@ -282,9 +274,7 @@ def test_the_theta_increment_equals_theta_per_db_times_deficit_at_the_peak():
 def test_moisture_moves_toward_the_configured_rh_target():
     state = _state(qv=1.0e-3)
     cfg = HotStartConfig(rh_target=0.90, max_qv_increment_kg_kg=1.0e-1)
-    z_obs, mask, sim = _grids(state, z_obs=55.0, sim=-35.0)
-    result = hotstart.hotstart_increments(state, z_obs, mask, cfg,
-                                          simulated_dbz=sim)
+    result = _nudge(state, cfg, z_obs=55.0, sim=-35.0)
     d_qv = result.increments["qv"]
 
     temperature = hotstart._diagnose_temperature(state)
@@ -393,9 +383,7 @@ def test_default_mixed_phase_does_not_create_ice_supersaturation():
     """
     state = _state(temperature=253.15, pressure=6.0e4, qv=1.0e-4)
     cfg = HotStartConfig(rh_target=0.95, max_qv_increment_kg_kg=1.0e-1)
-    z_obs, mask, sim = _grids(state, z_obs=55.0, sim=-35.0)
-    result = hotstart.hotstart_increments(state, z_obs, mask, cfg,
-                                          simulated_dbz=sim)
+    result = _nudge(state, cfg, z_obs=55.0, sim=-35.0)
     qv_post = state.qv + result.increments["qv"]
 
     temperature = hotstart._diagnose_temperature(state)
@@ -413,18 +401,14 @@ def test_default_mixed_phase_does_not_create_ice_supersaturation():
 def test_provenance_records_the_saturation_phase():
     state = _state(temperature=253.15, qv=1.0e-4)
     cfg = HotStartConfig(saturation_phase="ice")
-    z_obs, mask, sim = _grids(state, z_obs=55.0, sim=-35.0)
-    result = hotstart.hotstart_increments(state, z_obs, mask, cfg,
-                                          simulated_dbz=sim)
+    result = _nudge(state, cfg, z_obs=55.0, sim=-35.0)
     assert result.provenance["config"]["saturation_phase"] == "ice"
 
 
 def test_moisture_adjustment_can_be_switched_off():
     state = _state(qv=1.0e-3)
     cfg = HotStartConfig(adjust_moisture=False)
-    z_obs, mask, sim = _grids(state, z_obs=55.0, sim=-35.0)
-    result = hotstart.hotstart_increments(state, z_obs, mask, cfg,
-                                          simulated_dbz=sim)
+    result = _nudge(state, cfg, z_obs=55.0, sim=-35.0)
     np.testing.assert_array_equal(result.increments["qv"],
                                   np.zeros_like(result.increments["qv"]))
     assert np.max(result.increments["thp"]) > 0.0
@@ -437,9 +421,7 @@ def test_an_already_moist_column_gets_no_moisture_increment():
     qsat = hotstart.saturation_mixing_ratio(temperature, state.p)
     state.qv = (0.99 * qsat).astype(np.float32)
     cfg = HotStartConfig(rh_target=0.80)
-    z_obs, mask, sim = _grids(state, z_obs=55.0, sim=-35.0)
-    result = hotstart.hotstart_increments(state, z_obs, mask, cfg,
-                                          simulated_dbz=sim)
+    result = _nudge(state, cfg, z_obs=55.0, sim=-35.0)
     np.testing.assert_array_equal(result.increments["qv"],
                                   np.zeros_like(result.increments["qv"]))
 
@@ -454,9 +436,7 @@ def test_an_already_moist_column_gets_no_moisture_increment():
 def test_increment_bounds_hold_against_absurd_observations(z_obs_value):
     state = _state()
     cfg = HotStartConfig()
-    z_obs, mask, sim = _grids(state, z_obs=z_obs_value, sim=-35.0)
-    result = hotstart.hotstart_increments(state, z_obs, mask, cfg,
-                                          simulated_dbz=sim)
+    result = _nudge(state, cfg, z_obs=z_obs_value, sim=-35.0)
     d_theta = result.increments["thp"]
     d_qv = result.increments["qv"]
     assert np.all(np.isfinite(d_theta)), "a bad ob must not poison the state"
@@ -470,10 +450,7 @@ def test_increment_bounds_hold_against_absurd_observations(z_obs_value):
 def test_a_nan_observation_produces_no_increment():
     """Every gate is a comparison, and NaN compares False."""
     state = _state()
-    z_obs, mask, sim = _grids(state, z_obs=float("nan"), sim=-35.0)
-    result = hotstart.hotstart_increments(state, z_obs, mask,
-                                          HotStartConfig(),
-                                          simulated_dbz=sim)
+    result = _nudge(state, HotStartConfig(), z_obs=float("nan"), sim=-35.0)
     np.testing.assert_array_equal(result.increments["thp"],
                                   np.zeros_like(result.increments["thp"]))
     np.testing.assert_array_equal(result.increments["qv"],
@@ -484,10 +461,7 @@ def test_a_nan_simulated_reflectivity_produces_no_increment():
     """Morrison signals an invalid number moment with a non-finite dBZ;
     that must suppress the nudge, not trigger it."""
     state = _state()
-    z_obs, mask, sim = _grids(state, z_obs=55.0, sim=float("nan"))
-    result = hotstart.hotstart_increments(state, z_obs, mask,
-                                          HotStartConfig(),
-                                          simulated_dbz=sim)
+    result = _nudge(state, HotStartConfig(), z_obs=55.0, sim=float("nan"))
     np.testing.assert_array_equal(result.increments["thp"],
                                   np.zeros_like(result.increments["thp"]))
 
@@ -496,9 +470,7 @@ def test_the_moisture_increment_can_never_drive_vapour_negative():
     state = _state(qv=1.0e-8)
     cfg = HotStartConfig(clear_air_enabled=True,
                          max_qv_decrement_kg_kg=1.0)
-    z_obs, mask, sim = _grids(state, z_obs=-30.0, sim=60.0)
-    result = hotstart.hotstart_increments(state, z_obs, mask, cfg,
-                                          simulated_dbz=sim)
+    result = _nudge(state, cfg, z_obs=-30.0, sim=60.0)
     assert np.all(state.qv + result.increments["qv"] >= 0.0)
 
 
@@ -506,9 +478,7 @@ def test_an_enormous_configured_sensitivity_is_still_clamped():
     state = _state()
     cfg = HotStartConfig(theta_per_db=1.0e6, max_theta_increment_k=2.0,
                          max_qv_increment_kg_kg=1.0e-3)
-    z_obs, mask, sim = _grids(state, z_obs=55.0, sim=-35.0)
-    result = hotstart.hotstart_increments(state, z_obs, mask, cfg,
-                                          simulated_dbz=sim)
+    result = _nudge(state, cfg, z_obs=55.0, sim=-35.0)
     assert np.max(result.increments["thp"]) == pytest.approx(2.0, rel=1e-6)
     assert np.max(result.increments["qv"]) <= 1.0e-3
 
@@ -662,9 +632,7 @@ def test_the_deficit_is_formed_from_the_capped_observation(z_obs_value):
     cfg = HotStartConfig(warm_base_height_m=1500.0, warm_top_height_m=7500.0,
                          theta_per_db=0.02, max_theta_increment_k=100.0,
                          max_insertion_dbz=55.0)
-    z_obs, mask, sim = _grids(state, z_obs=z_obs_value, sim=10.0)
-    result = hotstart.hotstart_increments(state, z_obs, mask, cfg,
-                                          simulated_dbz=sim)
+    result = _nudge(state, cfg, z_obs=z_obs_value, sim=10.0)
     # Ramp peak: shaping factor exactly one, so the increment is
     # theta_per_db * (capped deficit) and nothing else.
     assert float(result.increments["thp"][1, 0, 0]) == pytest.approx(
@@ -678,9 +646,7 @@ def test_below_the_cap_the_observation_is_untouched():
     state = _state(nz=3, ny=1, nx=1, top_m=9000.0)
     cfg = HotStartConfig(warm_base_height_m=1500.0, warm_top_height_m=7500.0,
                          theta_per_db=0.02, max_theta_increment_k=100.0)
-    z_obs, mask, sim = _grids(state, z_obs=50.0, sim=10.0)
-    result = hotstart.hotstart_increments(state, z_obs, mask, cfg,
-                                          simulated_dbz=sim)
+    result = _nudge(state, cfg, z_obs=50.0, sim=10.0)
     assert float(result.increments["thp"][1, 0, 0]) == pytest.approx(
         0.02 * 40.0, rel=1e-5)
     assert result.provenance["capped_obs_cells"] == 0
@@ -692,9 +658,7 @@ def test_the_cap_is_configurable_and_the_value_used_is_recorded():
     cfg = HotStartConfig(warm_base_height_m=1500.0, warm_top_height_m=7500.0,
                          theta_per_db=0.02, max_theta_increment_k=100.0,
                          max_insertion_dbz=45.0)
-    z_obs, mask, sim = _grids(state, z_obs=70.0, sim=10.0)
-    result = hotstart.hotstart_increments(state, z_obs, mask, cfg,
-                                          simulated_dbz=sim)
+    result = _nudge(state, cfg, z_obs=70.0, sim=10.0)
     assert float(result.increments["thp"][1, 0, 0]) == pytest.approx(
         0.02 * (45.0 - 10.0), rel=1e-5)
     assert result.provenance["insertion_cap_dbz"] == 45.0
@@ -711,9 +675,7 @@ def test_an_infinite_observation_is_bounded_by_the_cap_not_by_the_ceiling():
     state = _state(nz=3, ny=1, nx=1, top_m=9000.0)
     cfg = HotStartConfig(warm_base_height_m=1500.0, warm_top_height_m=7500.0,
                          theta_per_db=0.02, max_theta_increment_k=100.0)
-    z_obs, mask, sim = _grids(state, z_obs=float("inf"), sim=10.0)
-    result = hotstart.hotstart_increments(state, z_obs, mask, cfg,
-                                          simulated_dbz=sim)
+    result = _nudge(state, cfg, z_obs=float("inf"), sim=10.0)
     d_theta = result.increments["thp"]
     assert np.all(np.isfinite(d_theta))
     assert float(d_theta[1, 0, 0]) == pytest.approx(0.02 * 45.0, rel=1e-5)
@@ -728,10 +690,7 @@ def test_the_cap_does_not_turn_a_missing_observation_into_an_echo():
     inverse of the NaN contract.
     """
     state = _state()
-    z_obs, mask, sim = _grids(state, z_obs=float("nan"), sim=-35.0)
-    result = hotstart.hotstart_increments(state, z_obs, mask,
-                                          HotStartConfig(),
-                                          simulated_dbz=sim)
+    result = _nudge(state, HotStartConfig(), z_obs=float("nan"), sim=-35.0)
     np.testing.assert_array_equal(result.increments["thp"],
                                   np.zeros_like(result.increments["thp"]))
     assert result.provenance["capped_obs_cells"] == 0
@@ -756,10 +715,7 @@ def test_spurious_model_echo_is_left_alone_by_default():
     """Model says 55 dBZ, radar says clear -- and the default does
     nothing about it."""
     state = _state()
-    z_obs, mask, sim = _grids(state, z_obs=-30.0, sim=55.0)
-    result = hotstart.hotstart_increments(state, z_obs, mask,
-                                          HotStartConfig(),
-                                          simulated_dbz=sim)
+    result = _nudge(state, HotStartConfig(), z_obs=-30.0, sim=55.0)
     np.testing.assert_array_equal(result.increments["thp"],
                                   np.zeros_like(result.increments["thp"]))
     np.testing.assert_array_equal(result.increments["qv"],
@@ -771,9 +727,7 @@ def test_spurious_model_echo_is_left_alone_by_default():
 def test_the_clear_air_branch_cools_and_dries_when_switched_on():
     state = _state(qv=1.0e-2)
     cfg = HotStartConfig(clear_air_enabled=True)
-    z_obs, mask, sim = _grids(state, z_obs=-30.0, sim=55.0)
-    result = hotstart.hotstart_increments(state, z_obs, mask, cfg,
-                                          simulated_dbz=sim)
+    result = _nudge(state, cfg, z_obs=-30.0, sim=55.0)
     d_theta = result.increments["thp"]
     d_qv = result.increments["qv"]
     assert np.min(d_theta) < 0.0
@@ -804,9 +758,7 @@ def test_enabling_clear_air_does_not_disturb_the_warm_branch():
 def test_the_provenance_records_the_thresholds_counts_and_totals():
     state = _state(nz=6, ny=2, nx=2)
     cfg = HotStartConfig(echo_threshold_dbz=20.0, deficit_threshold_db=7.0)
-    z_obs, mask, sim = _grids(state, z_obs=50.0, sim=0.0)
-    result = hotstart.hotstart_increments(state, z_obs, mask, cfg,
-                                          simulated_dbz=sim)
+    result = _nudge(state, cfg, z_obs=50.0, sim=0.0)
     p = result.provenance
 
     assert p["schema"] == hotstart.PROVENANCE_SCHEMA
@@ -828,10 +780,7 @@ def test_the_provenance_is_json_serialisable():
     import json
 
     state = _state()
-    z_obs, mask, sim = _grids(state, z_obs=50.0, sim=0.0)
-    result = hotstart.hotstart_increments(state, z_obs, mask,
-                                          HotStartConfig(),
-                                          simulated_dbz=sim)
+    result = _nudge(state, HotStartConfig(), z_obs=50.0, sim=0.0)
     round_tripped = json.loads(json.dumps(result.provenance))
     assert round_tripped["schema"] == hotstart.PROVENANCE_SCHEMA
 
@@ -882,10 +831,7 @@ def test_the_operator_never_mutates_the_state():
 
 def test_the_increment_keys_name_state_fields():
     state = _state()
-    z_obs, mask, sim = _grids(state, z_obs=55.0, sim=-35.0)
-    result = hotstart.hotstart_increments(state, z_obs, mask,
-                                          HotStartConfig(),
-                                          simulated_dbz=sim)
+    result = _nudge(state, HotStartConfig(), z_obs=55.0, sim=-35.0)
     assert set(result.increments) == {"thp", "qv"}
     for name, increment in result.increments.items():
         assert increment.shape == getattr(state, name).shape

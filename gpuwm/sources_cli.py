@@ -15,7 +15,7 @@ half of the same mistake (ship-only-what-users-can-reach), so the
 command in the sentence is the command that now exists.  It is a VIEW,
 not a second source of truth: every fact printed here is copied out of
 the document :func:`gpuwm.runplan.source_inventory` builds, which reads
-``gpuwm.source_adapters._ADAPTERS`` and nothing else.  ``--json``
+``gpuwm.source_adapters._ADAPTERS`` and the chemistry source registry.  ``--json``
 re-emits that document byte for byte, so the human and machine
 spellings cannot drift.
 
@@ -70,7 +70,7 @@ def _cell(value: Any) -> str:
 
 def _rows_by_id(document: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
     return {str(row.get("source_id")): row
-            for row in document.get("sources", ())
+            for row in (*document.get("sources", ()), *document.get("composition_sources", ()))
             if row.get("source_id")}
 
 
@@ -101,7 +101,7 @@ def _resolve(document: Mapping[str, Any], wanted: str) -> Mapping[str, Any]:
 
 
 def _format_listing(document: Mapping[str, Any]) -> str:
-    rows = list(document.get("sources", ()))
+    rows = [*document.get("sources", ()), *document.get("composition_sources", ())]
     cells = [[_cell(_walk(row, path)) for _heading, path in _COLUMNS]
              for row in rows]
     headings = [heading for heading, _path in _COLUMNS]
@@ -124,11 +124,15 @@ def _format_listing(document: Mapping[str, Any]) -> str:
         f"gpuwm {document.get('gpuwm_version')})",
         _render(headings),
     ]
+    if document.get("composition_sources"):
+        lines.append(f"plus {len(document['composition_sources'])} composition supplements (event proof is separate)")
     lines.extend(_render(line) for line in cells)
     for label, key in (("readiness", "readiness_rule"),
                        ("certification", "certification_rule")):
         if document.get(key):
             lines.append(f"{label}: {document[key]}")
+    if document.get("composition_error"):
+        lines.append(f"composition registry error: {document['composition_error']}")
     if document.get("error"):
         # A query mode reports; it does not raise.  The envelope's own
         # error is printed rather than swallowed, because a short list

@@ -232,7 +232,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 import os
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, Mapping
 
 import numpy as np
 
@@ -253,7 +253,6 @@ __all__ = [
     "plan_row_slabs",
     "real74_geography",
     "rebuilt_grid",
-    "slab_iter",
     "stream_real_into_store",
     "window_grid",
     "window_rows",
@@ -955,9 +954,3 @@ def device_high_water(fn, *args, **kwargs) -> tuple[Any, int]:
     out = fn(*args, **kwargs)
     peak = int(pool.total_bytes())
     return out, peak - before
-
-
-def slab_iter(cfg, rows_per_slab: int, *,
-              y_halo: int = SLAB_Y_HALO) -> Iterator[RowSlab]:
-    """``plan_row_slabs`` on a config, for callers that own only a cfg."""
-    return iter(plan_row_slabs(int(cfg.ny), rows_per_slab, y_halo=y_halo))

@@ -559,10 +559,7 @@ pub fn decode_collection(
     files: &[String],
     progress: &mut dyn FnMut(Value),
 ) -> Result<DecodedCollection> {
-    match decode_collection_or_unmatched(mapping, files, progress)? {
-        Ok(collection) => Ok(collection),
-        Err(refusal) => Err(refusal),
-    }
+    decode_collection_or_unmatched(mapping, files, progress)?
 }
 
 /// [`decode_collection`], with a GRIB2 decode that matched no record at
@@ -788,18 +785,7 @@ fn inventory_one_object(
     source: &str,
     invariant_fields: &std::collections::BTreeSet<String>,
 ) -> Result<ObjectInventory> {
-    let raw = std::fs::read(source)
-        .map_err(|error| missing_input(format!("cannot read {source}: {error}")))?;
-    let payload = crate::codec::decoded_payload(raw, source)?;
-    validate_grib2_envelopes(&payload, source)?;
-    let file = grib_core::grib2::Grib2File::from_bytes(&payload).map_err(|error| {
-        crate::refusal::decode_failed(format!("GRIB2 parse failed for {source}: {error}"))
-    })?;
-    if file.messages.is_empty() {
-        return Err(crate::refusal::decode_failed(format!(
-            "GRIB2 input {source} contains no parsed fields"
-        )));
-    }
+    let file = parse_grib2_object(source, true)?;
     let mut identities = grib2_identities(&file.messages);
     let aliased = crate::grib::alias_identities(
         &crate::grib::record_aliases(mapping)?,
@@ -940,7 +926,7 @@ enum StreamKind {
         declaration: crate::model::GridDeclaration,
         plan: Vec<ObjectPlan>,
         parsed: BTreeMap<String, grib_core::grib2::Grib2File>,
-        first: Option<DecodedCollection>,
+        first: Box<Option<DecodedCollection>>,
     },
     /// Every other declared format: decoded whole once, then carved by
     /// valid time.  The carve MOVES each valid time's arrays out of the
@@ -1066,7 +1052,7 @@ impl<'a> DecodeStream<'a> {
                 declaration,
                 plan,
                 parsed: BTreeMap::new(),
-                first: None,
+                first: Box::new(None),
             },
             keys,
             summary: crate::frames::SeriesSummary {
@@ -1115,7 +1101,7 @@ impl<'a> DecodeStream<'a> {
             .map(|(_time, _member, name)| name.clone())
             .collect();
         if let StreamKind::Sliced { first: slot, .. } = &mut stream.kind {
-            *slot = Some(first);
+            **slot = Some(first);
         }
         Ok(stream)
     }
@@ -1168,18 +1154,32 @@ impl<'a> DecodeStream<'a> {
     ///
     /// A field is decoded over the window only when the requester
     /// granted it, it is a direct vertical/y/x field of a regular
-    /// latitude/longitude grid, and nothing reads it beside a full-grid
-    /// field ([`decode_window_candidates`]).  Anything else, a projected
-    /// grid included, keeps the per-frame request and the full decode.
+    /// latitude/longitude grid or of the declared Lambert grid, and nothing
+    /// reads it beside a full-grid field ([`decode_window_candidates`]).
+    /// Anything else keeps the per-frame request and the full decode.
+    ///
+    /// A Lambert record is unpacked whole on its worker and cropped at
+    /// once (`grib::grib2_record`), so the values are the full decode's.
+    /// Named breakage this prevents: a 241x241 3 km domain on the HRRR
+    /// native grid (1799x1059, 50 levels) priced 26.65 GB for one source
+    /// time, because every atmospheric field was decoded and held over the
+    /// whole CONUS grid before the per-frame window cropped it; a 5 GiB
+    /// decode budget refused it and a 32 GiB host could not hold two.
     fn request_decode_window(&mut self, keep_whole: &std::collections::BTreeSet<String>) -> Result<()> {
         let mapping = self.mapping;
+        // Mixed-grid union changes source index space. A rectangle from
+        // the first record is not a rectangle on every published grid.
+        // Decode these records in their own coordinates, normalize them
+        // in assembly, then let the writer request its canonical crop.
+        if mapping.doc.get("coordinates")
+            .and_then(|n| n.get("horizontal")).and_then(|n| n.get("normalization"))
+            .and_then(|n| n.as_str()) == Some("coarsest_exact_subset") {
+            return Ok(());
+        }
         let first_key = self.keys[0].clone();
         let StreamKind::Sliced { declaration, plan, parsed, .. } = &mut self.kind else {
             return Ok(());
         };
-        if declaration.is_lambert() {
-            return Ok(());
-        }
         let Some(object) = plan.iter().find(|object| {
             object.by_key.get(&first_key).is_some_and(|wanted| !wanted.is_empty())
         }) else {
@@ -1187,12 +1187,25 @@ impl<'a> DecodeStream<'a> {
         };
         let index = object.by_key[&first_key][0];
         if !parsed.contains_key(&object.source) {
-            parsed.insert(object.source.clone(), parse_grib2_object(&object.source)?);
+            parsed.insert(object.source.clone(), parse_grib2_object(&object.source, false)?);
         }
         let file = &parsed[&object.source];
         let message = &file.messages[index];
-        let Ok(axes) = crate::grib::regular_latlon_axes(message) else {
-            return Ok(());
+        // A projected grid's canonical axes and grid document come from
+        // its declaration, checked against Section 3 here, exactly as the
+        // frame header states them after the decode (`frames::source_grid`).
+        let (latitude, longitude) = if declaration.is_lambert() {
+            let Some(axes) =
+                crate::grib::declared_lambert_axes(message, index, declaration, &object.source)
+            else {
+                return Ok(());
+            };
+            axes
+        } else {
+            let Ok(axes) = crate::grib::regular_latlon_axes(message) else {
+                return Ok(());
+            };
+            (axes.latitude, axes.longitude)
         };
         let (candidates, watch) = decode_window_candidates(mapping, keep_whole)?;
         let mut inventory: Vec<String> = Vec::new();
@@ -1204,10 +1217,10 @@ impl<'a> DecodeStream<'a> {
         if candidates.is_empty() {
             return Ok(());
         }
-        let grid = crate::frames::regular_latlon_grid(&axes.latitude, &axes.longitude);
+        let grid = crate::frames::source_grid(declaration, &latitude, &longitude);
         let Some(window) = crate::window::request_for_source(
-            &axes.latitude,
-            &axes.longitude,
+            &latitude,
+            &longitude,
             &grid,
             &inventory,
             0,
@@ -1216,7 +1229,7 @@ impl<'a> DecodeStream<'a> {
         else {
             return Ok(());
         };
-        if window.rows == [0, axes.latitude.len()] && window.columns == [0, axes.longitude.len()] {
+        if window.rows == [0, latitude.len()] && window.columns == [0, longitude.len()] {
             return Err(crate::refusal::frame_invalid(
                 "an atmospheric window that covers the whole source must use full mode",
             ));
@@ -1261,7 +1274,7 @@ impl<'a> DecodeStream<'a> {
     /// whole-object format, which keeps no separate first slice.
     pub fn first_slice(&self) -> Option<&DecodedCollection> {
         match &self.kind {
-            StreamKind::Sliced { first, .. } => first.as_ref(),
+            StreamKind::Sliced { first, .. } => first.as_ref().as_ref(),
             StreamKind::Whole { .. } => None,
         }
     }
@@ -1349,7 +1362,7 @@ impl<'a> DecodeStream<'a> {
             return Vec::new();
         };
         let whole = self.decode_window.as_ref().filter(|_| !self.completion_watch.is_empty());
-        let mut sizes: Vec<u64> = first.as_ref().map_or_else(Vec::new, |collection| {
+        let mut sizes: Vec<u64> = first.as_ref().as_ref().map_or_else(Vec::new, |collection| {
             collection
                 .direct
                 .iter()
@@ -1487,7 +1500,8 @@ impl<'a> DecodeStream<'a> {
             }
             start = end;
         }
-        let collection = assemble_grib(mapping, &records)?;
+        let collection = crate::assemble::assemble_grib_within(
+            mapping, &records, decode_window.map(|window| (window.rows, window.columns)))?;
         drop(records);
         Ok(collection)
     }
@@ -1531,13 +1545,11 @@ impl<'a> DecodeStream<'a> {
                     crate::frames::naive_isoformat(key.0)
                 ))
             })?;
-        if let StreamKind::Sliced { first, .. } = &mut self.kind {
-            if position == 0 {
-                if let Some(collection) = first.take() {
+        if let StreamKind::Sliced { first, .. } = &mut self.kind
+            && position == 0
+                && let Some(collection) = first.take() {
                     return Ok(collection);
                 }
-            }
-        }
         let next = self.keys.get(position + 1).cloned();
         let collection = self.decode_slice(key, next.as_ref())?;
         self.require_one_series(&collection)?;
@@ -1634,15 +1646,15 @@ impl<'a> DecodeStream<'a> {
                         let needed_again = next
                             .map(|next| object.by_key.contains_key(next)).unwrap_or(false)
                             || !object.invariant.is_empty();
-                        if needed_again {
-                            if let Some(file) = file {
+                        if needed_again
+                            && let Some(file) = file {
                                 parsed.insert(object.source.clone(), file);
                             }
-                        }
                     }
                     start = end;
                 }
-                assemble_grib(mapping, &records)
+                crate::assemble::assemble_grib_within(
+                    mapping, &records, decode_window.map(|window| (window.rows, window.columns)))
             }
         }
     }
@@ -1682,14 +1694,18 @@ fn decode_stream_object(
     }
     let file = match cached {
         Some(file) => file,
-        None => parse_grib2_object(&object.source)?,
+        None => parse_grib2_object(&object.source, false)?,
     };
     let windowed = match decode_window {
         Some(_) => windowed_records(mapping, &file, &wanted, aliases, decode_fields)?,
         None => std::collections::BTreeSet::new(),
     };
+    let ladder = match decode_window {
+        Some(_) => ladder_records(mapping, &file, &wanted, aliases, decode_fields)?,
+        None => std::collections::BTreeSet::new(),
+    };
     let record_window = decode_window.map(|window| crate::grib::RecordWindow {
-        rows: window.rows, columns: window.columns, records: &windowed,
+        rows: window.rows, columns: window.columns, records: &windowed, ladder: &ladder,
     });
     let mut decoded = crate::grib::grib2_records_within(
         &file, &object.source, &wanted, declaration, record_window.as_ref())?;
@@ -1697,14 +1713,24 @@ fn decode_stream_object(
     Ok((Some(file), decoded))
 }
 
-/// Read, stage and parse one GRIB2 object.
-fn parse_grib2_object(source: &str) -> Result<grib_core::grib2::Grib2File> {
+/// Read, stage and parse one GRIB2 object. Inventory checks its envelopes
+/// and nonempty message set; streamed decodes have already inventoried it.
+fn parse_grib2_object(source: &str, inventory: bool) -> Result<grib_core::grib2::Grib2File> {
     let raw = std::fs::read(source)
         .map_err(|error| missing_input(format!("cannot read {source}: {error}")))?;
     let payload = crate::codec::decoded_payload(raw, source)?;
-    grib_core::grib2::Grib2File::from_bytes(&payload).map_err(|error| {
+    if inventory {
+        validate_grib2_envelopes(&payload, source)?;
+    }
+    let file = grib_core::grib2::Grib2File::from_bytes(&payload).map_err(|error| {
         crate::refusal::decode_failed(format!("GRIB2 parse failed for {source}: {error}"))
-    })
+    })?;
+    if inventory && file.messages.is_empty() {
+        return Err(crate::refusal::decode_failed(format!(
+            "GRIB2 input {source} contains no parsed fields"
+        )));
+    }
+    Ok(file)
 }
 
 /// The fields a granted window may decode over itself alone, and the
@@ -1717,8 +1743,9 @@ fn parse_grib2_object(source: &str) -> Result<grib_core::grib2::Grib2File> {
 /// * no derivation reads it (a derivation's other operands keep the
 ///   full grid, so its operands must too);
 /// * it is not `air_pressure`, whose whole plane gives the per-level
-///   pressures the frame publishes (`original_pressure_hpa`).  Named
-///   breakage: a direct pressure field decoded over the window was
+///   pressures the frame publishes (`original_pressure_hpa`), unless that
+///   ladder survives the window ([`pressure_ladder_survives_window`]).
+///   Named breakage: a direct pressure field decoded over the window was
 ///   published without that ladder, and the reader could not open the
 ///   frameset (ICON-D2 publishes air_pressure directly);
 /// * it is not in `keep_whole`, what the caller reads whole itself;
@@ -1741,7 +1768,9 @@ pub fn decode_window_candidates(
 ) -> Result<(std::collections::BTreeSet<String>, std::collections::BTreeSet<String>)> {
     let fields = mapping.fields()?;
     let mut whole: std::collections::BTreeSet<String> = keep_whole.clone();
-    whole.insert("air_pressure".to_owned());
+    if !pressure_ladder_survives_window(mapping, &fields)? {
+        whole.insert("air_pressure".to_owned());
+    }
     for field in &fields {
         let Some(derivation) = field.derivation() else { continue };
         let operation = mapping.derivation(derivation).ok_or_else(|| {
@@ -1787,6 +1816,55 @@ pub fn decode_window_candidates(
         }
     }
     Ok((candidates, watch))
+}
+
+/// Whether `air_pressure` may be decoded over the window and still state
+/// the whole-plane ladder the frame publishes: a direct field of a
+/// projected grid, whose every record is unpacked whole on its worker so
+/// its plane is medianed before the crop (`grib::RecordWindow::ladder`),
+/// read by at most one selector and with no selector or unit scale or
+/// offset, under the reject policy, so its canonical values are the
+/// decoded ones and the median of the raw plane is the median the full
+/// decode states.  A regular-grid window decode never unpacks the whole
+/// plane, so there the field stays whole.
+///
+/// Named breakage: held whole, the 50-level HRRR native pressure was
+/// about 2.3 GB of the 5.36 GB a 241x241 3 km domain priced for one
+/// source time, so a 5 GiB decode budget still refused the preparation
+/// after every other atmospheric field had been windowed.
+fn pressure_ladder_survives_window(
+    mapping: &Mapping,
+    fields: &[crate::model::FieldSpec<'_>],
+) -> Result<bool> {
+    if !mapping.grid_declaration()?.is_lambert() {
+        return Ok(false);
+    }
+    let Some(field) = fields.iter().find(|field| field.name == "air_pressure") else {
+        return Ok(false);
+    };
+    let selectors = field.selectors();
+    Ok(field.derivation().is_none()
+        && selectors.len() <= 1
+        && selectors.iter().all(|selector| selector.field("scale").is_none())
+        && field.unit_scale() == 1.0
+        && field.unit_offset() == 0.0
+        && field.missing_kind()? == "reject")
+}
+
+/// The windowed records of one object that answer `air_pressure`: each is
+/// medianed over its whole plane as it is decoded (`grib::RecordWindow`).
+fn ladder_records(
+    mapping: &Mapping,
+    file: &grib_core::grib2::Grib2File,
+    wanted: &[usize],
+    aliases: &[crate::grib::RecordAlias],
+    decode_fields: &std::collections::BTreeSet<String>,
+) -> Result<std::collections::BTreeSet<usize>> {
+    if !decode_fields.contains("air_pressure") {
+        return Ok(std::collections::BTreeSet::new());
+    }
+    let pressure = std::collections::BTreeSet::from(["air_pressure".to_owned()]);
+    windowed_records(mapping, file, wanted, aliases, &pressure)
 }
 
 /// The wanted records of one object that answer ONLY fields decoded over
@@ -1874,6 +1952,7 @@ fn carve(collection: &mut DecodedCollection, key: &crate::assemble::TimeKey) -> 
         // header reads the ladder off the collection it materializes.
         hybrid_a: collection.hybrid_a.clone(),
         hybrid_b: collection.hybrid_b.clone(),
+        original_pressure_hpa: None,
     }
 }
 
@@ -1951,20 +2030,7 @@ fn decode_one_object(
         Vec<usize>,
         Vec<crate::grib::RecordAlias>,
     )> {
-        let raw = std::fs::read(source)
-            .map_err(|error| missing_input(format!("cannot read {source}: {error}")))?;
-        // Acquisition codec staging: the compressed object is what the
-        // caller hashed, the decompressed twin is what the parser reads.
-        let payload = crate::codec::decoded_payload(raw, source)?;
-        validate_grib2_envelopes(&payload, source)?;
-        let file = grib_core::grib2::Grib2File::from_bytes(&payload).map_err(|error| {
-            crate::refusal::decode_failed(format!("GRIB2 parse failed for {source}: {error}"))
-        })?;
-        if file.messages.is_empty() {
-            return Err(crate::refusal::decode_failed(format!(
-                "GRIB2 input {source} contains no parsed fields"
-            )));
-        }
+        let file = parse_grib2_object(source, true)?;
         let aliases = crate::grib::record_aliases(mapping)?;
         let mut identities = grib2_identities(&file.messages);
         crate::grib::alias_identities(&aliases, &mut identities);
@@ -2451,6 +2517,31 @@ mod tests {
 
     fn names(items: &[&str]) -> std::collections::BTreeSet<String> {
         items.iter().map(|item| (*item).to_owned()).collect()
+    }
+
+    #[test]
+    fn a_projected_native_pressure_is_decoded_over_the_window_with_its_ladder() {
+        let none = std::collections::BTreeSet::new();
+        // HRRR native publishes pressure directly on its Lambert grid: each
+        // plane is unpacked whole and medianed before its crop, so the
+        // field is decoded over the window like the other operands.
+        let hrrr = packaged_mapping("rw-wps-hrrr-native-grib2.mapping.json", |_| {});
+        let (candidates, watch) = decode_window_candidates(&hrrr, &none).unwrap();
+        for name in ["air_pressure", "air_temperature", "eastward_wind", "northward_wind",
+                     "specific_humidity", "geopotential_height"] {
+            assert!(candidates.contains(name), "{name} is not a window candidate");
+        }
+        assert!(watch.is_empty(), "a model-level frame completes nothing");
+        // A scaled pressure would not median to the full decode's ladder.
+        let scaled = packaged_mapping("rw-wps-hrrr-native-grib2.mapping.json", |document| {
+            document["fields"]["air_pressure"]["units"]["scale"] = serde_json::json!(100.0);
+        });
+        let (candidates, _) = decode_window_candidates(&scaled, &none).unwrap();
+        assert!(!candidates.contains("air_pressure") && candidates.contains("air_temperature"));
+        // What the caller reads whole stays whole.
+        let kept = names(&["air_pressure"]);
+        let (candidates, _) = decode_window_candidates(&hrrr, &kept).unwrap();
+        assert!(!candidates.contains("air_pressure"));
     }
 
     #[test]

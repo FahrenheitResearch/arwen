@@ -1148,21 +1148,6 @@ pub fn merge_highres_overrides(
 // Terrain override build (`build_terrain_override` compute)
 // ---------------------------------------------------------------------------
 
-/// Area-average one terrain raster onto the halo-extended grid, check
-/// coverage, run `smooth_passes` of lane 2's WPS smoother, and crop.
-/// `smooth_passes == 0` skips the smoother entirely (the parity
-/// harness pins the bare warp this way; production passes 1).
-pub fn build_terrain_grid(
-    spec: &GridSpec,
-    terrain: &Raster,
-    halo: usize,
-    smooth_passes: usize,
-) -> Result<Grid2> {
-    let extended = extended_spec(spec, halo);
-    let warped = resample_continuous(terrain, &extended, Resampling::Average)?;
-    finish_terrain_grid(spec, warped, halo, smooth_passes)
-}
-
 /// Production terrain build with bounded source decode windows.
 pub fn build_terrain_bound(
     spec: &GridSpec,

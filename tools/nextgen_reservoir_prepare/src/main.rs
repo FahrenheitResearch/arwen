@@ -25,18 +25,31 @@ fn i64s(bytes: &[u8]) -> Vec<i64> { bytes.chunks_exact(8).map(|x|i64::from_le_by
 fn f64s(bytes: &[u8]) -> Vec<f64> { bytes.chunks_exact(8).map(|x|f64::from_le_bytes(x.try_into().unwrap())).collect() }
 fn floats(values: &[f32]) -> Vec<u8> { values.iter().flat_map(|x|x.to_le_bytes()).collect() }
 fn doubles(values: &[f64]) -> Vec<u8> { values.iter().flat_map(|x|x.to_le_bytes()).collect() }
+/// The commit this binary was built from; the release pin step reads it from the bytes.
+const SOURCE_REV_STAMP: &str = concat!("GPUWM_BRIDGE_SOURCE_REV=", env!("GPUWM_BRIDGE_SOURCE_REV"));
+
+fn usage() -> ! {
+    eprintln!("usage: nextgen-reservoir-prepare NATIVE_MANIFEST NEW_OUTPUT TIME_ORIGIN
+       nextgen-reservoir-prepare --fabric FABRIC_MANIFEST INITIAL_STATE_JSON NEW_OUTPUT");
+    std::process::exit(2);
+}
+
 fn main() {
+    std::hint::black_box(SOURCE_REV_STAMP);
     let started = Instant::now();
     let args: Vec<_> = env::args().collect();
+    // A wrong argument count prints the usage and exits 2, never a panic (exit 101): the release natives qualification
+    // and `gpuwm doctor` probe every bridge with `--version` and refuse a panic as "corrupt or built for another
+    // platform" (a release natives build of 05c018fe0c stopped on it).
     if args.get(1).map(String::as_str) == Some("--fabric") {
-        assert_eq!(args.len(), 5, "usage: nextgen-reservoir-prepare --fabric FABRIC_MANIFEST INITIAL_STATE_JSON NEW_OUTPUT");
+        if args.len() != 5 { usage(); }
         if let Err(error) = fabric::run(Path::new(&args[2]), Path::new(&args[3]), Path::new(&args[4])) {
             eprintln!("reservoir fabric preparation: {error}");
             std::process::exit(1);
         }
         return;
     }
-    assert_eq!(args.len(), 4, "usage: nextgen-reservoir-prepare NATIVE_MANIFEST NEW_OUTPUT TIME_ORIGIN");
+    if args.len() != 4 { usage(); }
     let manifest_path = PathBuf::from(&args[1]);
     let input_bytes = fs::read(&manifest_path).expect("native manifest");
     let source: Value = serde_json::from_slice(&input_bytes).expect("native manifest JSON");

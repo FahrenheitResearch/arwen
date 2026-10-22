@@ -1,0 +1,8 @@
+{
+  "schema": "gpuwm-cross-source-provenance-v1",
+  "source": "NOAA PSL NCEP-NCAR Reanalysis 1 surface_gauss/icec.sfc.gauss.YYYY.nc",
+  "field": "sea_ice_fraction",
+  "time_policy": "exact primary cycle analysis selected from annual file; frozen during forecast; nearest published Gaussian cell",
+  "license": "NOAA public domain",
+  "license_url": "https://psl.noaa.gov/disclaimer/"
+}

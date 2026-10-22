@@ -107,3 +107,56 @@ class EnsembleHistoryLedger:
             if self.records:
                 self._write()
             return self.inventory()
+
+    def retire_consumed(self, manifest, products, *, workers=4):
+        """Commit consumer proofs before removing this ledger's own raw files."""
+        from concurrent.futures import ThreadPoolExecutor
+        from datetime import datetime, timezone
+        from gpuwm.ensemble.restart_roster import resolve_file
+
+        def digest(path):
+            with path.open('rb') as stream:
+                return hashlib.file_digest(stream, 'sha256').hexdigest()
+        manifest = Path(manifest).resolve()
+        manifest.relative_to(self.root)
+        manifest_sha256 = digest(manifest)
+        if not products:
+            raise ValueError('raw retirement requires durable product artifacts')
+        for product in products:
+            path = resolve_file(self.root, product['path'])
+            if path.stat().st_size != product['bytes'] or digest(path) != product['sha256']:
+                raise RuntimeError('raw consumer product changed before history retirement')
+        with self._lock:
+            records = self.inventory()
+            def verify(record):
+                path = resolve_file(self.root, record['path'])
+                if path.stat().st_size != record['bytes'] or digest(path) != record['sha256']:
+                    raise RuntimeError('raw history changed before cyclone consumer retirement')
+                return record
+            # Validate all writer identities before deleting any file.
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                records = list(pool.map(verify, records))
+            self.retirements.mkdir(exist_ok=True)
+            deleted = []
+            for record in records:
+                token = hashlib.sha256(record['path'].encode()).hexdigest()
+                path = self.retirements/f'{token}.json'
+                receipt = dict(schema=self.RETIREMENT,
+                    **{k: record[k] for k in ('path', 'sha256', 'bytes')},
+                    retired_at=datetime.now(timezone.utc).isoformat(),
+                    product_manifest_sha256=manifest_sha256,
+                    product_manifest=manifest.relative_to(self.root).as_posix(), products=products)
+                temporary = path.with_suffix('.json.pending')
+                with temporary.open('w') as stream:
+                    json.dump(receipt, stream, indent=2, sort_keys=True)
+                    stream.write('\n'); stream.flush(); os.fsync(stream.fileno())
+                temporary.replace(path)
+                directory_fd = os.open(self.retirements, os.O_RDONLY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+                (self.root/record['path']).unlink()
+                deleted.append(dict(path=record['path'], bytes=record['bytes']))
+            self.validate_retirements()
+            return deleted

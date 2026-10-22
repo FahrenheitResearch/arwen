@@ -1,0 +1,15 @@
+{
+  "schema": "gpuwm-hydro-land-rosters.v1",
+  "about": "Which 1-degree cells hold land, from the tiled sources' own published tile lists, so hydro acquisition asks only for tiles over land (gpuwm.hydro.acquire). A cell missing from its roster is sea: the tile is never requested and is listed in its directory's ABSENT.txt, the list rw_hydro_world and rw_hydro_params read to tell sea from a missing download. A new tiled source is a row here. Breakage it prevents: a mostly-ocean hurricane domain (Milton, 23 x 17 degrees) asked 1,001 tile URLs, most of them open sea answering 404.",
+  "rosters": {
+    "copernicus-glo90": {"url": "https://copernicus-dem-90m.s3.amazonaws.com/tileList.txt",
+                         "name_pattern": "Copernicus_DSM_COG_30_{ns}{lat2}_00_{ew}{lon3}_00_DEM"},
+    "copernicus-glo30": {"url": "https://copernicus-dem-30m.s3.amazonaws.com/tileList.txt",
+                         "name_pattern": "Copernicus_DSM_COG_10_{ns}{lat2}_00_{ew}{lon3}_00_DEM"}
+  },
+  "sources": [
+    {"url_prefix": "https://copernicus-dem-90m.s3.amazonaws.com/", "roster": "copernicus-glo90", "tile_degrees": 1},
+    {"url_prefix": "https://copernicus-dem-30m.s3.amazonaws.com/", "roster": "copernicus-glo30", "tile_degrees": 1},
+    {"url_prefix": "https://esa-worldcover.s3.eu-central-1.amazonaws.com/", "roster": "copernicus-glo90", "tile_degrees": 3}
+  ]
+}

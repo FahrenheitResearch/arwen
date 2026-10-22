@@ -398,7 +398,6 @@ def advance_ls_reinit(sign, initial, current, dx, dy, dt_s, rk_coeff,
                       *, method=4, threshold=None, bdy_eno1=10, halo=1,
                       domain=None, tiles=None):
     """One original WRF reinitialization PDE stage."""
-    cp = _cupy()
     current = _field(current)
     sign,initial = _field(sign,current.shape),_field(initial,current.shape)
     b = _bounds(current.shape,halo,domain)

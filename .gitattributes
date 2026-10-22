@@ -76,7 +76,6 @@ evidence/upstream/** -text
 tools/noahmp_wrf461_oracle/*.sh text eol=lf
 
 # Preserve upstream checksum bytes, including shell scripts in the UI mirror.
-tools/arwen-ui-vendor/crates-io/** -text -whitespace
 
 # Cargo verifies the original registry bytes, including upstream script endings.
 # Preserve upstream formatting in the newly vendored Zarr dependency closure.
@@ -125,12 +124,6 @@ tools/wrf_whole_model_parity/receipts/summary.txt -whitespace
 # Byte-unmodified WRF lake oracle sources retain upstream trailing blanks.
 # Their SHA-256 values are bound in gpuwm/data/lake/oracle/manifest.json.
 tools/lake_wrf461_oracle/upstream/** -whitespace
-
-# YSU's topo_wind arm (lane/282-terrain-drag), byte-pinned by
-# tests/test_kernel_source_freeze_per_module.py PINNED_HEADERS and graded with
-# ysu.cu by tests/test_terrain_drag_wrf471_parity.py: the 2.8.2 cut battery's
-# `git diff --check` refused its trailing blank line, which the pins record.
-gpuwm/core/kernels/ysu_topo.cuh -whitespace
 
 # The operational HRRR namelists kept verbatim as importer fixtures: their
 # trailing blanks are the published files' own bytes and several are pinned
@@ -182,7 +175,7 @@ tests/fixtures/wrf461_door/namelist.input -whitespace
 # Digest-bound observation fixtures use the same transport bytes after git am on every OS.
 tests/fixtures/obs_scorecard/*.csv text eol=lf
 # Verbatim WRF sources and tables whose digests are pinned: FAST_SBM's v4.8.0 module
-# (gpuwm/core/fast_sbm and docs/fast_sbm_numerical_contract.md bind it), two SBM_input_33
+# (gpuwm/core/kernels/fast_sbm* and docs/fast_sbm_numerical_contract.md bind it), two SBM_input_33
 # tables (SBM_input_33/MANIFEST.sha256 and packed-manifest.json bind them), and the v4.4
 # Thompson module the generation oracle reads (build.sh and gpuwm/thompson_generations.py
 # bind it). Their blanks are WRF's own bytes; the 2.8.9 cut's export whitespace check refused them.

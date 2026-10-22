@@ -60,6 +60,10 @@ from instrument_wrf_rates import (  # noqa: E402
 )
 import port_rates  # noqa: E402
 
+from tools.thompson_aerosol_column_oracle.column_state import (
+    ColumnState as OracleColumnState,
+)
+
 f32 = np.float32
 
 SPECIES = ("qv", "qc", "qr", "qi", "qs", "qg", "ni", "nr", "nc",
@@ -280,62 +284,11 @@ def read_checkpoints(run_dir, ncol, nz):
 # The port, on the host.
 # ---------------------------------------------------------------------------
 
-class ColumnState:
-    """The mp=28 ``DomainState`` surface over ``(nz, 1, ncol)`` arrays.
-
-    The scratch protocol is gpuwm/core/state.py's (shape and dtype pinned
-    per slot); the attribute set is the one
-    tests/test_thompson_aerosol_adapter.py's ``_ColumnState`` drives the
-    adapter with.  The whole potential temperature sits in ``thp`` over a
-    zero ``thb`` and the whole geopotential in ``php`` over a zero ``phb``,
-    so the adapter's own sums reproduce the arrays WRF was given bit for
-    bit.
-    """
+class ColumnState(OracleColumnState):
+    """The host DomainState; adapter writes never alias the input columns."""
 
     def __init__(self, inp, mp=28):
-        ncol, nz = inp["p"].shape
-
-        def vol(a):
-            # Always a COPY: for a single column ``a.T`` is already
-            # contiguous and ascontiguousarray would hand back a view, so
-            # the adapter's in-place writes would reach the caller's inputs.
-            return np.array(a.T.reshape(a.shape[1], 1, ncol), dtype=f32,
-                            order="C", copy=True)
-
-        self.p = vol(inp["p"])
-        self.thb = np.zeros((nz,), f32)
-        self.thp = vol(inp["th"])
-        self.phb = np.zeros((nz + 1,), f32)
-        self.php = vol(inp["geop"])
-        self.w = vol(inp["w"])
-        for s in SPECIES_BY_MP[mp]:
-            setattr(self, s, vol(inp[s]))
-        self.effc = np.zeros((nz, 1, ncol), f32)
-        self.effi = np.zeros((nz, 1, ncol), f32)
-        self.effs = np.zeros((nz, 1, ncol), f32)
-        if mp == 28:
-            self.nwfa2d = np.array(inp["nwfa2d"].reshape(1, ncol),
-                                   dtype=f32, copy=True)
-            self.nifa2d = np.array(inp["nifa2d"].reshape(1, ncol),
-                                   dtype=f32, copy=True)
-        self.h_diabatic = np.zeros((nz, 1, ncol), f32)
-        self.physics = SimpleNamespace(refl_10cm=None, state=self)
-        self._scratch = {}
-
-    def scratch(self, shape, slot, dtype=None):
-        shape = tuple(shape)
-        want = np.dtype(f32 if dtype is None else dtype)
-        value = self._scratch.get(slot)
-        if value is None:
-            value = np.zeros(shape, dtype=want)
-            self._scratch[slot] = value
-        elif value.shape != shape or value.dtype != want:
-            raise ValueError(f"scratch slot {slot!r} reused with a new "
-                             f"shape or dtype")
-        return value
-
-    def existing_scratch(self, slot):
-        return self._scratch.get(slot)
+        super().__init__(inp, np, SPECIES_BY_MP[mp], copy_inputs=True)
 
 
 def _cols(a):

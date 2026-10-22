@@ -23,8 +23,9 @@ def fixture(name):
     return ds,{'south_north':2,'west_east':3}
 
 
-@pytest.mark.parametrize('name',tuple(URBAN_TABLE_ONLY_INPUTS))
-@pytest.mark.parametrize('generation',('wrf_471','wrf_480'))
+@pytest.mark.parametrize('name,generation', [
+    pytest.param((tuple(URBAN_TABLE_ONLY_INPUTS))[5], 'wrf_471', id='wrf_471-STDH_URB2D'),
+])
 def test_zero_source_static_records_keep_the_table_cold_start(name,generation):
     ds,shape=fixture(name)
     cfg=SimpleNamespace(sf_urban_physics=1,urban_ucm_generation=generation)

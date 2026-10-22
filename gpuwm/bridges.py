@@ -55,6 +55,7 @@ from pathlib import Path
 import re
 import shutil
 import sys
+import threading
 
 #: Bridge executable -> the environment variable that names a prebuilt
 #: copy.  The same variables drive the sealed-runtime decoder binding in
@@ -114,6 +115,11 @@ BRIDGE_OPTIONAL_ABI_MARKERS = {
 }
 
 BRIDGE_ABI_MARKERS = {
+    "rw_ice_verify": b"gpuwm-ice-observation-binding.v1",
+    "rw_fire_indices": b"GPUWM_FIRE_INDICES_V1",
+    "rw_ocean": b"gpuwm.ocean.prepared/v1",
+    "rw_bathy": b"gpuwm-rw-bathy-v1",
+    "rw_ocean_verify": b"gpuwm-ocean-sst-verify-v1\tdaily-mean\tndbc-WTMP\tgreat-circle\tpaired-change",
     "rw_tc_fields": b"gpuwm.tc-fields.v1 inspect extract tempest table-units masked-quarter-degree",
     "nextgen_hydrofabric": b"arwen_hydrofabric_read_into",
     "arwen_nextgen_forcing": b"arwen_forcing_read_packet",
@@ -122,7 +128,7 @@ BRIDGE_ABI_MARKERS = {
     "rw_globe_pack": b"gpuwm-rw-globe-pack-v1",
     "rw_ensbatch": (
         b"gpuwm-ensemble-diagnostic-reduce.v1\tf32-words\tf64-two-pass\t"
-        b"member-order\tsha256"),
+        b"member-order\tsha256\tmember-weights-v1"),
     "rw_verify": b"gpuwm.verify-visuals.request.v1",
     "rw_scorecard": b"gpuwm.obs-scorecard.manifest.v1",
     "rw_compare": b"gpuwm.reference-input.v1",
@@ -145,8 +151,12 @@ BRIDGE_ABI_MARKERS = {
     # "Hectopascal(hPa)") refused every request before the first chunk,
     # and a 30 s whole-request timeout cut every 80 MB chunk off on a slow
     # link.  A build older than both still carried the schema literal and
-    # passed; this literal arrived with the later of the two fixes.
-    "rw_zarr": b"http transfer failed after ",
+    # passed; that literal ("http transfer failed after ") arrived with the
+    # later of the two fixes.  The marker now is the deep-soil temperature
+    # producer's receipt schema: fetch-geog builds the default
+    # soiltemp_era5_1deg with `rw_zarr soiltemp-climatology`, which an
+    # older build answers with its usage line.
+    "rw_zarr": b"arwen.geog-soiltemp-climatology.v1",
     "arwen-tui": b"Usage: arwen-tui [--config FILE] [--python EXECUTABLE]",
     "grib1_bridge": b"usage: grib1_bridge INPUT.grb OUTPUT_DIR",
     "gfs_grib2_bridge": (
@@ -521,7 +531,7 @@ def rustwx_build_hint() -> str:
 #: ``CARGO_BUILD_HINT`` is the one-liner that builds every bridge, run
 #: from a source checkout's own root, spelled when it is read
 #: (:func:`lazy_build_hints`).  ``--offline`` works because the crate
-#: vendors its dependencies (``tools/grib1_bridge/vendor/crates-io``
+#: vendors its dependencies (``tools/rustwx/vendor/crates-io``
 #: plus that workspace's ``.cargo/config.toml``): no network, no
 #: registry.
 __getattr__ = lazy_build_hints(__name__, CARGO_BUILD_HINT=CRATE_RELATIVE)
@@ -797,9 +807,18 @@ def sources_present(crate_relative: str = CRATE_RELATIVE) -> bool:
     the caller is actually going to name: this used to answer for
     ``tools/grib1_bridge`` whatever it was asked, so a tree carrying one
     crate and not the other got a ``cd`` into the missing one.
+
+    The crate's own ``Cargo.toml`` is the evidence, not the folder: a wheel
+    ships package data under some crate folders (tools/hydro_world/data and
+    tools/hydro_world_params/data, read by the default-on hydro door), so on a
+    pip install those folders exist with no sources in them.  Breakage it
+    prevents (2.9.4 R11 from the packet's Linux wheel, 2026-10-22): the doctor
+    took the data folder for a checkout, withheld the on-demand row of
+    rw_hydro_world and rw_hydro_params and told a pip user to run
+    ``cd site-packages/tools/hydro_world && cargo build``.
     """
 
-    return (_package_parent() / Path(crate_relative)).is_dir()
+    return (_package_parent() / Path(crate_relative) / "Cargo.toml").is_file()
 
 
 def install_aware_build_hint(one_liner: str,
@@ -1638,33 +1657,109 @@ def _dep_info_inputs(binary: Path) -> tuple[Path, ...] | None:
             continue
         if "target" in relative.parts:
             continue
+        if ".git" in relative.parts:
+            # The build scripts' rerun-if-changed on HEAD, packed-refs and
+            # the branch ref (tools/grib1_bridge/build.rs and the rustwx
+            # crates': they keep the revision stamp fresh in an incremental
+            # target).  Cargo writes those into this record, and they move
+            # on EVERY commit: a Python-only commit made the CPU library
+            # "older than its sources" and `gpuwm go` refused until 15
+            # workspaces were rebuilt (V60, 2026-10-21).  Git metadata is
+            # not a source the bytes are compiled from.
+            continue
         if not path.is_file():
             return None
         inputs.append(path)
     return tuple(inputs) or None
 
 
+#: How long the content comparison may take before the file-time verdict
+#: stands (a git that hangs must not hang a run).
+_CONTENT_CHECK_TIMEOUT_S = 30.0
+
+
+def _inputs_match_stamped_revision(binary: Path, roots: tuple[Path, ...]) -> bool:
+    """True when every input under ``roots`` has the content it had at the
+    revision stamped into ``binary``.
+
+    The build scripts stamp ``GPUWM_BRIDGE_SOURCE_REV`` only from a tree
+    whose workspace has no tracked modifications, so the stamp names the
+    exact source content the bytes were compiled from; ``git diff --quiet
+    <stamp> -- <inputs>`` compares that content (git's content hashes)
+    with the files as they are now.  File times alone condemned a build
+    whose sources were byte-identical: a checkout, a revert or a rebase
+    rewrites a file's time without changing a byte of it.  False whenever
+    it cannot answer (no single stamp, no git, the revision not in this
+    repository, a timeout): the file-time verdict then stands.
+    """
+
+    import subprocess
+
+    try:
+        from gpuwm import bridge_assets
+
+        revisions = set(bridge_assets.embedded_source_revisions(binary.read_bytes()))
+    except Exception:                                # noqa: BLE001
+        return False
+    if len(revisions) != 1:
+        return False
+    revision = revisions.pop()
+    root = _package_parent().resolve()
+    paths = []
+    for item in roots:
+        try:
+            relative = Path(item).resolve().relative_to(root)
+        except (OSError, ValueError):
+            return False
+        paths.append(relative.as_posix())
+    if not paths:
+        return False
+    try:
+        # git diff does not see untracked files, so an input git does not
+        # track leaves the file-time verdict standing.
+        untracked = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "--others", "--exclude-standard",
+             "--", *paths],
+            capture_output=True, timeout=_CONTENT_CHECK_TIMEOUT_S, check=False)
+        if untracked.returncode != 0 or untracked.stdout.strip():
+            return False
+        answer = subprocess.run(
+            ["git", "-C", str(root), "diff", "--quiet", revision, "--", *paths],
+            capture_output=True, timeout=_CONTENT_CHECK_TIMEOUT_S, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return answer.returncode == 0
+
+
 class CheckoutBuildStatus:
     """One checkout-built artifact, measured against its own sources."""
 
     __slots__ = ("artifact", "binary", "workspace", "built_at",
-                 "newest_source", "newest_at")
+                 "newest_source", "newest_at", "roots", "_content_current")
 
     def __init__(self, artifact: str, binary: Path, workspace: Path,
                  built_at: float, newest_source: Path | None,
-                 newest_at: float):
+                 newest_at: float, roots: tuple[Path, ...] = ()):
         self.artifact = artifact
         self.binary = binary
         self.workspace = workspace
         self.built_at = built_at
         self.newest_source = newest_source
         self.newest_at = newest_at
+        self.roots = tuple(roots)
+        self._content_current: bool | None = None
 
     @property
     def current(self) -> bool:
-        """Cargo's own question: is every input older than the output?"""
+        """Is every input older than the output, or, where a file time
+        says otherwise, unchanged in content since the stamped revision?"""
 
-        return self.newest_source is None or self.newest_at <= self.built_at
+        if self.newest_source is None or self.newest_at <= self.built_at:
+            return True
+        if self._content_current is None:
+            self._content_current = _inputs_match_stamped_revision(
+                self.binary, self.roots)
+        return self._content_current
 
     def built_from(self) -> str:
         """The revision stamped into the bytes, in words.
@@ -1800,7 +1895,7 @@ def checkout_build_status(path: Path) -> CheckoutBuildStatus | None:
             roots = (workspace,)
     newest_source, newest_at = _newest_build_input(roots)
     return CheckoutBuildStatus(artifact, binary, workspace, built_at,
-                               newest_source, newest_at)
+                               newest_source, newest_at, roots)
 
 
 def require_current_checkout_build(path: Path) -> Path:
@@ -2294,6 +2389,11 @@ def on_demand_fetch_offered(artifact: str | None,
 #: text when it did not work.  One attempt per artifact per run, so a box
 #: with no route to the release assets does not re-dial for every resolve.
 _ON_DEMAND_ATTEMPTS: dict[str, str | None] = {}
+# Held across the whole fetch: concurrent callers (a scoring pool's threads)
+# used to all pass the "already tried" check before the first finished, so
+# each warned and dialled the bundle again (rw_mrms warned 12 times in hex
+# scoring).  Waiters see the first caller's result instead.
+_ON_DEMAND_LOCK = threading.Lock()
 
 
 def on_demand_failure(artifact: str) -> str | None:
@@ -2318,10 +2418,20 @@ def fetch_on_demand(artifact: str) -> bool:
     what happened.
     """
 
-    if _INSPECTION_ONLY or artifact in _ON_DEMAND_ATTEMPTS:
+    if _INSPECTION_ONLY:
         return False
-    if not on_demand_fetch_offered(artifact):
-        return False
+    with _ON_DEMAND_LOCK:
+        if artifact in _ON_DEMAND_ATTEMPTS:
+            # Tried already in this process: True when that attempt staged
+            # it (a waiter re-reads the ladder), False when it failed and
+            # on_demand_failure() holds the reason.
+            return _ON_DEMAND_ATTEMPTS[artifact] is None
+        if not on_demand_fetch_offered(artifact):
+            return False
+        return _fetch_on_demand_locked(artifact)
+
+
+def _fetch_on_demand_locked(artifact: str) -> bool:
     from gpuwm import bridge_assets
     from gpuwm.bridge_partial import fetch_partial
     from gpuwm.explain import warn

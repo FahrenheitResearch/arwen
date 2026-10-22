@@ -24,6 +24,7 @@ import uuid
 from gpuwm.ensemble.physical_fields import validate_field_contract
 from gpuwm.ensemble.physical_store import NativePhysicalStore, digest_file
 from gpuwm.ensemble.recipes import RECIPE_KINDS, RecipeMember, SourceRecipe, SourceTrajectory
+from gpuwm.ensemble.physical_fields import canonical_json as _canonical
 
 HEAD_SCHEMA = "gpuwm-ensemble-posted-physical-head.v1"
 FRAME_SCHEMA = "gpuwm-ensemble-posted-physical-frame.v1"
@@ -36,10 +37,6 @@ INPUT_BINDING_SCHEMA = "gpuwm-ensemble-posted-physical-input.v1"
 SOURCE_SEAL_SCHEMA = "gpuwm-ensemble-posted-source-seal.v1"
 PROVIDER_SEAL_SCHEMA = "gpuwm-ensemble-posted-provider-seal.v1"
 SOURCE_AUTHORITY_KEY = "posted_physical_source_authority"
-
-
-def _canonical(value):
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 def _digest(value):

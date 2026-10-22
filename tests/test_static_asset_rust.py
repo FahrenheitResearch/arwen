@@ -208,8 +208,11 @@ def test_native_unpack_refuses_unsafe_members(tmp_path, kind, name):
 def test_geography_scope_uses_selected_reader(tmp_path, monkeypatch):
     # Pure selector test complements the real CLI selection on sealed input configs.
     from gpuwm.geog_assets import datasets_required_by, parse_datasets
-    assert "soilgrids" not in parse_datasets("wrf")
+    # The default soil categories live in soilgrids (2026-10-21), so the
+    # WRF door reads it too; the mesh-only land use stays out of "wrf".
+    assert "soilgrids" in parse_datasets("wrf")
     assert "soilgrids" in datasets_required_by("mesh")
+    assert "landuse_30s" not in parse_datasets("wrf")
 
 
 def test_table_rows_keep_raw_pins():
@@ -230,12 +233,14 @@ def test_table_rows_keep_raw_pins():
             assert not any("huggingface.co" in row["url"] for row in rows[:-1])
 
 
-def test_selected_tree_uses_wrf_inventory_without_mesh_soil():
+def test_selected_tree_uses_wrf_inventory_without_mesh_land_use():
     from gpuwm.geog_assets import geography_for_run, datasets_required_by
     plan = geography_for_run(Path(__file__).parent / "fixtures/static_asset_configs/selected-tree.toml")
     assert tuple(plan["datasets"]) == datasets_required_by("wrf")
     assert plan["static_sources"] == []
-    assert plan["archive_bytes"] == 1294439865
+    # The WRF pins' download bill: the eight tarballs plus the ERA5 read
+    # that builds the deep-soil temperature.
+    assert plan["archive_bytes"] == 2613939673
 
 
 def test_selected_source_uses_its_identical_legend_metadata():

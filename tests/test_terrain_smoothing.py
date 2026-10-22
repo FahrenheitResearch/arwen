@@ -268,7 +268,7 @@ def synthetic_geog(tmp_path):
     root=tmp_path/'GEOG';root.mkdir()
     selection=build.GeogSelection.fallback(root)
     for field in build._DEFAULT_GEOG_DIRS:
-        directory=selection.path(field);directory.mkdir(exist_ok=True)
+        directory=selection.path(field);directory.mkdir(parents=True,exist_ok=True)
         categorical=field in ('landuse','soil_top','soil_bottom')
         nz=12 if field in ('greenfrac','lai','albedo') else 1
         kv=_write_index(directory,dx=10,dy=10,known_lat=-85,known_lon=-175,tile_x=6,tile_y=6,

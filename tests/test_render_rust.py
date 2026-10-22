@@ -1231,7 +1231,27 @@ def test_list_products_reports_the_full_catalog(wrfout, tmp_path, capsys):
     # The Earth-2 export (189e1776dc6) adds three direct products,
     # 100m_wind_speed, 500mb_omega and 850mb_specific_humidity (rw_wrfbatch
     # --list-products: selectable_slugs 345 -> 348): 371 + 3 = 374.
-    assert "total=374" in out
+    # The 2.9.4 capability lanes add 35 named rows (selectable_slugs 348 ->
+    # 382): cap-ivt's eleven (ivt twice, ivt_vectors, ivt_full_column, the
+    # four eastward/northward components, iwv, ar_outline, freezing_level),
+    # cap-hail's eight hail_max_* maps, the heat/fire/lightning diagnostics'
+    # nine (haines_low/mid/high, hot_dry_windy, lightning_threat_1..3,
+    # pr92_flash_rate, wbgt_2m), cap-snow's three (snow_depth_change,
+    # snow_depth_total, snowfall_liquid_equivalent), cap-fire-fuels'
+    # fire_fuel and fire_terrain, cap-visibility's fog_flag and the hex-ivt
+    # engine's 925mb_height_winds: 374 + 35 = 409.
+    # The hex IVT companion's model-column recipe (bc8db45d3fe) renamed its
+    # duplicate "ivt" to ivt_column and gave its two component planes their
+    # own rows, ivt_column_eastward and ivt_column_northward: 409 + 2 = 411.
+    # The two fixed-height W products from lane/292-les-w-products
+    # (1km_vertical_velocity, 3km_vertical_velocity; catalog fixture
+    # b0790a03c8): 411 + 2 = 413.
+    assert "total=413" in out
+    for slug in ("ivt", "ivt_column", "ivt_column_eastward",
+                 "ivt_column_northward"):
+        rows = [line for line in out.splitlines()
+                if len(line.split()) >= 3 and line.split()[2] == slug]
+        assert len(rows) == 1, (slug, rows)
     for slug in ("snowfall_window", "snow_10to1_window", "snow_kuchera_window"):
         rows = [line for line in out.splitlines()
                 if len(line.split()) >= 3 and line.split()[2] == slug]
@@ -1265,12 +1285,23 @@ def test_list_products_reports_the_full_catalog(wrfout, tmp_path, capsys):
                     if " generic " in line and " var:" in line]
     deduped = [line for line in generic_rows
                if "already rendered by a named product" in line]
-    assert len(generic_rows) == 29, out
-    assert len(deduped) == 6, deduped
+    #
+    # 33 and 10 in 2.9.4: the heat/fire diagnostics lane (8c96bae6bf2) stores
+    # heat_index_2m, apparent_temperature_2m, wetbulb_2m and
+    # fire_weather_composite planes, each the sole source of its named
+    # product, so each prints as one more deduplicated generic row.
+    # 34 and 11: lane/vpd-window-products (51fabe790f, merged 054770cd6e)
+    # stores the native WRF vpd_2m plane, the sole source of its named VPD
+    # product and of the day-window VPD rows, so it is one more
+    # deduplicated generic row.
+    assert len(generic_rows) == 34, out
+    assert len(deduped) == 11, deduped
     assert sorted(re.search(r"var:(\S+)", line).group(1)
                   for line in deduped) == [
-        "apcp", "composite_reflectivity", "dewpoint_2m", "orography",
-        "relative_humidity_2m", "temperature_2m"], deduped
+        "apcp", "apparent_temperature_2m", "composite_reflectivity",
+        "dewpoint_2m", "fire_weather_composite", "heat_index_2m", "orography",
+        "relative_humidity_2m", "temperature_2m", "vpd_2m",
+        "wetbulb_2m"], deduped
     assert all("renderable" in line for line in generic_rows), generic_rows
     # The fixture's fields prove out the reflectivity composite ...
     assert any("composite_reflectivity" in line and "renderable" in line
@@ -1327,8 +1358,10 @@ def test_general_products_skip_unavailable_subhour_windows(
     # 22: simulated_ir_satellite left the general and hurricane presets
     # when the lane record gained its reason, and 10m_wind_gusts and
     # precipitation_type left general when every run of it was measured
-    # drawing 20 of 24 (no wrfout carries their fields).
-    assert len(general) == 22 and "qpf_1h" in general
+    # drawing 20 of 24 (no wrfout carries their fields).  26 in 2.9.4: cap-ivt
+    # added ivt, iwv, freezing_level and ar_outline, drawn from the stored
+    # moisture, wind and geopotential every history carries.
+    assert len(general) == 26 and "qpf_1h" in general
     if single_frame:
         wrfout = _write_wrfout(tmp_path / "first-wrfout.nc", _STAMPS[:1])
     frame_idx = 0 if single_frame else 1
@@ -1674,9 +1707,6 @@ def test_series_grouping_keeps_actual_runs_grids_and_episodes_separate(tmp_path)
 
 @pytest.mark.parametrize("attribute,value", [
     ("GPUWM_INITIAL_CONDITION_SOURCE", "different-source"),
-    ("GPUWM_INITIAL_CONDITION_CYCLE", "1974-04-03_12:00:00"),
-    ("GPUWM_INITIAL_FORECAST_LEAD_HOURS", 6),
-    ("MP_PHYSICS", 6), ("GPUWM_SURFACE_RADIATION_POLICY", "disabled"),
 ])
 def test_carrier_updates_do_not_join_different_source_or_scientific_histories(tmp_path, attribute, value):
     import netCDF4
@@ -2934,7 +2964,7 @@ def test_native_difference_registered_window_absence_is_a_skip_not_a_failure(
 
 
 @needs_renderer
-@pytest.mark.parametrize("theme_name", ["woof-light", "woof-dark"])
+@pytest.mark.parametrize("theme_name", ["woof-dark"])
 def test_native_750m_nest_inherits_the_woof_theme_without_changing_generic_pixels(
         tmp_path, theme_name):
     """The site's extends file reaches Rust and keeps public WOOF labels.

@@ -95,7 +95,7 @@ impl Parser<'_> {
         while self
             .s
             .get(self.i)
-            .map_or(false, |c| matches!(c, b' ' | b'\n' | b'\r' | b'\t'))
+            .is_some_and(|c| matches!(c, b' ' | b'\n' | b'\r' | b'\t'))
         {
             self.i += 1
         }
@@ -234,7 +234,7 @@ impl Parser<'_> {
                 match self.s.get(self.i) {
                     Some(b'0') => self.i += 1,
                     Some(b'1'..=b'9') => {
-                        while self.s.get(self.i).map_or(false, u8::is_ascii_digit) {
+                        while self.s.get(self.i).is_some_and(u8::is_ascii_digit) {
                             self.i += 1
                         }
                     }
@@ -243,7 +243,7 @@ impl Parser<'_> {
                 if self.s.get(self.i) == Some(&b'.') {
                     self.i += 1;
                     let start = self.i;
-                    while self.s.get(self.i).map_or(false, u8::is_ascii_digit) {
+                    while self.s.get(self.i).is_some_and(u8::is_ascii_digit) {
                         self.i += 1
                     }
                     if start == self.i {
@@ -256,7 +256,7 @@ impl Parser<'_> {
                         self.i += 1
                     }
                     let start = self.i;
-                    while self.s.get(self.i).map_or(false, u8::is_ascii_digit) {
+                    while self.s.get(self.i).is_some_and(u8::is_ascii_digit) {
                         self.i += 1
                     }
                     if start == self.i {

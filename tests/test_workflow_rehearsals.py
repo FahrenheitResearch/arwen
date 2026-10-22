@@ -19,9 +19,13 @@ def clone_workflows(tmp_path):
 
 def test_every_workflow_job_has_a_rehearsal_and_every_contract_file_exists():
     rows = routes.census()
-    assert len(rows) == 15
+    assert len(rows) == 17
     assert {row["workflow"] for row in rows} == {"ci.yml", "publish.yml"}
     assert all((ROOT / path).is_file() for path in routes.CONTRACT_FILES)
+    by_job = {(row["workflow"], row["job"]): row for row in rows}
+    assert by_job["publish.yml", "controller"]["routes"] == ["R"]
+    assert by_job["publish.yml", "test"]["routes"] == ["P"]
+    assert by_job["ci.yml", "publication_contracts"]["routes"] == ["R"]
 
 
 def test_new_job_and_new_workflow_cannot_bypass_rehearsal(tmp_path):

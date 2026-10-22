@@ -63,6 +63,12 @@ _LEGACY_HRRR_SOIL = frozenset({"SOILT", "SOILW"})
 _MET_OPTIONAL = frozenset({
     "SST", "XICE", "SEAICE", "SNOW", "SNOW_EC", "SNOWH",
     "VEGFRA",
+    # The source's own PBL height (HRRR wrfnat HPBL), when it publishes
+    # one: the initial physics state is seeded from it.
+    "PBLH",
+    # The source's low/middle/high cloud cover (HRRR wrfnat LCDC/MCDC/HCDC,
+    # percent): the initial CLDFRA's cover.
+    "LCDC", "MCDC", "HCDC",
 })
 _CANONICAL_SURFACE_REQUIRED = frozenset({
     "TSK", "TSLB", "SMOIS", "SH2O", "TMN", "SEAICE", "XLAND",
@@ -71,9 +77,6 @@ _CANONICAL_SURFACE_REQUIRED = frozenset({
 
 
 def _creation_utc(directory):
-    if os.environ.get("GPUWM_BENCH_CHECKPOINT_TOKEN"):
-        from tools.bench.checkpoint_stamps import prepared_created
-        return prepared_created(directory)
     return datetime.now(timezone.utc).isoformat()
 
 
@@ -86,24 +89,27 @@ class PreparedCacheCorruptError(ValueError):
 
 
 class PreparedCacheResourceLimitError(OSError):
-    """Opening a prepared cache exhausted process or system file handles."""
+    """Opening a prepared cache exhausted file handles or mapping resources."""
 
 
 def _raise_if_resource_limit(error: BaseException, *, context: str) -> None:
-    """Preserve descriptor exhaustion instead of reporting damaged data."""
+    """Preserve resource exhaustion instead of reporting damaged data."""
     if isinstance(error, PreparedCacheResourceLimitError):
         raise error
     if not isinstance(error, OSError) or error.errno not in {
-            errno.EMFILE, errno.ENFILE}:
+            errno.EMFILE, errno.ENFILE, errno.ENOMEM}:
         return
-    if error.errno == errno.EMFILE:
-        reason = "process open-file resource limit (EMFILE)"
+    if error.errno == errno.ENOMEM:
+        reason = "memory or virtual-memory mapping resource limit (ENOMEM)"
+        remedy = ("release unused mappings; inspect available memory, address-space "
+                  "limits and Linux vm.max_map_count")
     else:
-        reason = "system open-file resource limit (ENFILE)"
-    remedy = ("check ulimit -n and raise the process open-file limit, or "
-              "close unused file descriptors before retrying")
-    if error.errno == errno.ENFILE:
-        remedy += "; also free system file handles or raise the system open-file limit"
+        reason = ("process open-file resource limit (EMFILE)" if error.errno == errno.EMFILE
+                  else "system open-file resource limit (ENFILE)")
+        remedy = ("check ulimit -n and raise the process open-file limit, or "
+                  "close unused file descriptors before retrying")
+        if error.errno == errno.ENFILE:
+            remedy += "; also free system file handles or raise the system open-file limit"
     raise PreparedCacheResourceLimitError(
         error.errno, f"{context}: {reason}; {remedy}",
         error.filename) from error
@@ -242,6 +248,20 @@ def prepared_domain_config_identity(domain_config) -> dict[str, object]:
 #: the flag existed was prepared with, so "absent" and "default"
 #: describe the same prepared state provably rather than plausibly.
 DEFAULT_TOLERANT_IDENTITY_FIELDS = frozenset({
+    # 2.9.4 capability fields (lake state, mixed-layer ocean, sea-ice parameters; seaice_prognostic itself is
+    # PREPARATION_INERT_RUN_FIELDS).  Each is read by the
+    # forecast, not by the preparation that wrote an older tree, and its default is what such a tree was
+    # run with; a non-default value is refused against an older header, which re-prepares (the safe side).
+    "run.lake_state_accept_licence", "run.lake_state_path", "run.lake_state_source",
+    "run.ocean_analysis", "run.ocean_analysis_source", "run.ocean_config", "run.ocean_levels",
+    "run.ocean_mld_climatology", "run.ocean_s", "run.ocean_t", "run.ocean_z", "run.omdt",
+    "run.seaice_initial_thickness", "run.seaice_new_ice_thickness", "run.seaice_ocean_heat_flux",
+    # The operational HRRR output controls (2.9.4): interval precipitation
+    # buckets and the fork's gsd_diagnostics maxima (the history cadence
+    # change is a non-trajectory field).  Off (their defaults) is exactly
+    # what every older tree was prepared and run with; a stated value
+    # against an older header re-prepares (the safe side).
+    "run.prec_acc_dt", "run.prec_acc_dt1", "run.gsd_diagnostics", "run.reset_interval1",
     # G3 controls are absent from older trees; only their declared defaults tolerate absence.
     "run.maxiens",
     "run.maxens",
@@ -368,6 +388,11 @@ DEFAULT_TOLERANT_IDENTITY_FIELDS = frozenset({
     # is absent-tolerant at its default 0. A stated 1 still binds: soil
     # preparation preserves the fraction and builds its ice column.
     "run.opt_thcnd", "run.fractional_seaice",
+    # real.exe's seaice_threshold rule is absent-tolerant at its default
+    # 100 K, which converts no water cell. A stated value still binds: soil
+    # preparation turns open water colder than it into sea ice
+    # (gpuwm/ingest/soil.py preprocess_noah_soil).
+    "run.seaice_threshold",
     # Noah-MP (ab60dc8ab):
     "run.dveg", "run.opt_crs", "run.opt_btr", "run.opt_run", "run.opt_sfc",
     "run.opt_frz", "run.opt_inf", "run.opt_rad", "run.opt_alb",
@@ -648,6 +673,7 @@ NON_TRAJECTORY_IDENTITY_FIELDS = frozenset({
     "tiles",
     "run.run_seconds",
     "run.output_interval_s",
+    "run.history_interval2_s", "run.history_interval_change_s",
     "run.restart_interval_s",
     "history_interval_s",
     # WRF's history_begin / history_end: when the forecast writes, like
@@ -739,6 +765,20 @@ SFIRE_PREPARATION_INERT_RUN_FIELDS = frozenset({
 RETIRED_INACTIVE_IDENTITY_FIELDS = {"run.fire_moisture_namelist": ""}
 
 PREPARATION_INERT_RUN_FIELDS = SFIRE_PREPARATION_INERT_RUN_FIELDS | frozenset({
+    # The per-run smoke-off sentence (gpuwm/smoke_execution.py): launch
+    # metadata for the receipts; chem_sets carries the physics it
+    # describes, so one prepared bundle serves either value.  It rides the
+    # HRRR route as a forecast-TOML field (hrrr_route_inputs): a run whose
+    # card could not hold the smoke envelope was refused at emission for it,
+    # and its native tree authority did not reload (a 4090 host and a rented box, 2026-10-21).
+    "run.smoke_off_reason",
+    # Eclipse attenuation is evaluated at forecast UTC; preparation never reads it.
+    "run.ra_sw_eclipse",
+    # The zero-layer sea ice model (gpuwm/ocean/seaice) is seeded by the
+    # forecast's initialize_physics from the restored surface state; nothing
+    # under gpuwm/ingest names it, so one prepared bundle serves either value.
+    # It stays in the restart identity (checkpoint_identity.SEAICE_RUN_KEYS).
+    "run.seaice_prognostic",
     # Stability policy is read only when the forecast advances: epssm by
     # core/acoustic.py and forecast-door acoustic_adaptation.py, and the
     # sixth-order selectors by core/dycore.py. initialize_real constructs
@@ -894,6 +934,10 @@ PREPARATION_INERT_RUN_FIELDS = SFIRE_PREPARATION_INERT_RUN_FIELDS | frozenset({
     "run.dust_alpha", "run.dust_gamma", "run.dust_smtune", "run.dust_ustune",
     "run.mynn_chem_vertmx", "run.fire_emission_mode",
     "run.plume_fire_properties", "run.aerosol_mp_coupling",
+    # simple_dir_fdb: read by the radiation factory (transported smoke into
+    # the aer_opt = 3 shortwave), by nothing that builds a prepared array.
+    "run.simple_dir_fdb", "run.enh_vermix", "run.flam_part",
+    "run.aer_drydep_opt",
     # THE SASE CLOSURE'S SELECTORS, out of the tolerant table above for
     # the same reason as the adaptive targets: they have to be forgiven at
     # any value.  No WRF namelist spells them, so an HRRR hierarchy
@@ -1186,6 +1230,19 @@ def compare_prepared_domain_config(cached, live, *, not_in_use=None
                 continue
             if key not in live_node:
                 if path in RETIRED_INACTIVE_IDENTITY_FIELDS and cached_node[key] == RETIRED_INACTIVE_IDENTITY_FIELDS[path]:
+                    continue
+                # The mirror of the absent-in-cache rule above: a tolerable
+                # field the CACHE states at its not-in-use value and the
+                # live document omits (an identity that drops a default)
+                # describes the same prepared state.  A nested HRRR-recipe
+                # tree prepared from the namelists states the 2.9.4 sea-ice
+                # parameters at their defaults while the config's identity
+                # omits them, and the tree forecast refused its own fresh
+                # preparation (box D, 2026-10-21 21:16Z).
+                if (path in DEFAULT_TOLERANT_IDENTITY_FIELDS
+                        and path in not_in_use
+                        and cached_node[key] == not_in_use[path]):
+                    tolerated.append(path)
                     continue
                 differing.append(path)
                 continue
@@ -1546,6 +1603,54 @@ def read_manifest_array(directory, key: str, spec) -> np.ndarray:
     return array
 
 
+def verify_manifest_arrays(read, keys, specs) -> None:
+    """Read and hash-check every array in ``keys``, across the host's cores.
+
+    Each array is checked exactly as :func:`read_manifest_array` checks it,
+    on a thread pool whose bytes in flight are bounded, and the failure
+    raised is the one the sorted serial walk would raise first.  Breakage
+    this prevents: the end-of-run verify read and hashed a full HRRR cache
+    one array at a time on one thread while the forecast's cards waited
+    (V59, 8 x RTX 5090, 2026-10-21: finalize 6.7 min on one core).
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    keys = sorted(keys)
+    if len(keys) <= 1:
+        for key in keys:
+            read(key)
+        return
+    workers = max(1, min(len(keys), (os.cpu_count() or 1), 32))
+    budget = max(1 << 30, int(os.environ.get(
+        "GPUWM_VERIFY_INFLIGHT_BYTES", 8 << 30)))
+    errors: dict[str, BaseException] = {}
+    with ThreadPoolExecutor(max_workers=workers,
+                            thread_name_prefix="cache-verify") as pool:
+        pending = []
+        inflight = 0
+
+        def settle(item):
+            key, future, size = item
+            try:
+                future.result()
+            except BaseException as error:  # noqa: BLE001 - re-raised below
+                errors[key] = error
+            return size
+
+        for key in keys:
+            size = int(specs[key].get("nbytes", 0) or 0)
+            while pending and inflight + size > budget:
+                inflight -= settle(pending.pop(0))
+            pending.append((key, pool.submit(
+                lambda key=key: (read(key), None)[1]), size))
+            inflight += size
+        for item in pending:
+            settle(item)
+    for key in keys:
+        if key in errors:
+            raise errors[key]
+
+
 class PreparedCacheReader:
     """Validated cache manifest with checked, one-array-at-a-time reads."""
 
@@ -1674,8 +1779,7 @@ class PreparedCacheReader:
         return read_manifest_array(self.path, key, spec)
 
     def verify_all(self) -> dict[str, object]:
-        for key in sorted(self.arrays):
-            self.read_array(key)
+        verify_manifest_arrays(self.read_array, self.arrays, self.arrays)
         return {
             "schema": PREPARED_CACHE_SCHEMA,
             "status": "PASS",
@@ -1757,8 +1861,7 @@ class PreparedHeadReader:
         return read_manifest_array(self.path, key, spec)
 
     def verify_all(self) -> dict[str, object]:
-        for key in sorted(self.arrays):
-            self.read_array(key)
+        verify_manifest_arrays(self.read_array, self.arrays, self.arrays)
         return {
             "schema": PREPARED_CACHE_SCHEMA,
             "status": "HEAD_PASS",

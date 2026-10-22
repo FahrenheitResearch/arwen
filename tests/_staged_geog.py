@@ -17,12 +17,36 @@ from pathlib import Path
 def staged_geog_tree(geog: Path) -> Path:
     """Stage the stand-in AT ``geog`` (the WPS_GEOG root itself)."""
 
-    from gpuwm.geog_assets import geog_datasets
+    from gpuwm.geog_assets import GEOG_ARCHIVES
 
     geog = Path(geog)
-    for name in geog_datasets():
-        (geog / name).mkdir(parents=True, exist_ok=True)
-        (geog / name / "index").write_text("", encoding="utf-8")
+    # A container archive (soilgrids) carries its index in each child, which
+    # is where the builder and doctor look (the default soil categories are
+    # soilgrids/texture_top and texture_bot).
+    for archive in GEOG_ARCHIVES:
+        for child in archive.index_subdirs or ("",):
+            (geog / archive.dataset / child).mkdir(parents=True, exist_ok=True)
+            (geog / archive.dataset / child / "index").write_text(
+                "", encoding="utf-8")
+    return geog
+
+
+def staged_wrf_geog_tree(geog: Path) -> Path:
+    """Stage exactly the directories the WRF static builder's default opens.
+
+    By directory, as the builder and doctor read them
+    (``gpuwm.geog_assets.WRF_DEFAULT_GEOG_DIRS``): the default soil
+    categories are two children of the soilgrids container.  For tests that
+    then remove one dataset to make the tree incomplete.
+    """
+
+    from gpuwm.geog_assets import WRF_DEFAULT_GEOG_DIRS
+
+    geog = Path(geog)
+    for directory in WRF_DEFAULT_GEOG_DIRS:
+        (geog / directory).mkdir(parents=True, exist_ok=True)
+        (geog / directory / "index").write_text(
+            "type = continuous\n", encoding="utf-8")
     return geog
 
 

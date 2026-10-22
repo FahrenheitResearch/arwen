@@ -9,9 +9,20 @@ import pytest
 from gpuwm.ensemble.optional_routing import activation_receipt, member_settings
 from gpuwm.hydro import cost, door, forecast_products, runtime
 from gpuwm.hydro.config import configure
+from gpuwm.static import rust_bridge
 
 ROOT = Path(__file__).resolve().parents[1]
 CONUS = ROOT / "configs" / "conus3km.toml"
+
+#: The door reads a real domain's parent grid through the native static-fields
+#: reader. Breakage (2.9.4 cut, science stage, native-free host tree): four door
+#: tests on configs/conus3km.toml failed "parent grid unreadable" instead of
+#: skipping where that library is not built; Stage 1 runs them with the natives.
+_STATIC_BRIDGE_UNAVAILABLE = rust_bridge.unavailable_reason()
+needs_static_bridge = pytest.mark.skipif(
+    _STATIC_BRIDGE_UNAVAILABLE is not None,
+    reason=("the native static-fields bridge is not built, so the door cannot read "
+            f"the domain's parent grid here: {_STATIC_BRIDGE_UNAVAILABLE}"))
 
 
 @pytest.fixture(autouse=True)
@@ -48,7 +59,8 @@ def prepared_table(tmp_path, *, coverage=((-99.0, 29.0, -96.0, 32.0),), licence=
 
 
 def conus_copy(tmp_path, lsm):
-    text = CONUS.read_text().replace("sf_surface_physics = 2", f"sf_surface_physics = {lsm}")
+    soil = chr(10) + "num_soil_layers = 9" if lsm == 3 else ""  # RUC has no default soil geometry
+    text = CONUS.read_text().replace("sf_surface_physics = 2", f"sf_surface_physics = {lsm}{soil}")
     path = tmp_path / f"conus-lsm{lsm}.toml"
     path.write_text(text)
     return path
@@ -56,7 +68,9 @@ def conus_copy(tmp_path, lsm):
 
 # -- decision table -----------------------------------------------------------
 
-def test_fabric_present_turns_hydro_on_with_bound_realization(tmp_path):
+def test_fabric_present_turns_hydro_on_with_bound_realization(tmp_path, monkeypatch):
+    monkeypatch.delenv(door.ENV_CACHE, raising=False)
+    monkeypatch.setenv("GPUWM_CASE_DATA_ROOT", str(tmp_path / "case-data"))
     table, manifest = prepared_table(tmp_path)
     decision = door.decide(settings={}, requested=None, table=table, geometry=box_geometry())
     assert decision["enabled"] is True and decision["reason"] == "fabric_covered"
@@ -71,25 +85,133 @@ def test_fabric_present_turns_hydro_on_with_bound_realization(tmp_path):
     assert "door" not in settings  # never inside the sealed realization identity
 
 
-def test_fabric_absent_default_conus_suite_names_provider_gap(tmp_path):
-    decision = door.decide(settings={}, requested=None, config_path=CONUS)
-    assert decision["enabled"] is False
-    assert decision["reason"] == "no_covering_fabric"
-    assert decision["footprint"]["parent_lsm"] == 2
-    assert decision["candidates"]
-    assert all(row["gap"] for row in decision["gaps"])
+def test_start_up_state_lands_under_the_data_root_never_beside_the_config(tmp_path, monkeypatch):
+    """2.9.4 defect: the gfs_12km quickstart wrote ~1.5 GB of hydro start-up
+    state into a checkout's configs/.gpuwm-hydro. The fabric, its warm water
+    state and hydro-door.toml go under the user data root and are reused there."""
+    monkeypatch.delenv(door.ENV_CACHE, raising=False)
+    data_root = tmp_path / "case-data"
+    monkeypatch.setenv("GPUWM_CASE_DATA_ROOT", str(data_root))
+    configs = tmp_path / "checkout" / "configs"
+    configs.mkdir(parents=True)
+    config = configs / "gfs_12km.toml"
+    config.write_text("# quickstart\n")
+    before = sorted(p.relative_to(configs) for p in configs.rglob("*"))
+    table, _ = prepared_table(tmp_path)
+    decision = door.decide(settings={}, requested=None, table=table, geometry=box_geometry())
+    _, path, _ = door.materialize(decision, config_path=config)
+    assert sorted(p.relative_to(configs) for p in configs.rglob("*")) == before
+    assert not (configs / ".gpuwm-hydro").exists()
+    assert door.cache_root(config) == data_root / door.CACHE_DIRNAME
+    assert path.is_file() and path.is_relative_to(data_root / door.CACHE_DIRNAME)
+    other = tmp_path / "elsewhere" / "copy.toml"
+    other.parent.mkdir()
+    other.write_text("# quickstart\n")
+    _, again, _ = door.materialize(decision, config_path=other)
+    assert again == path  # keyed by the request, so any configuration reuses it
+
+
+def _tools_present(row):
+    return []
+
+
+def _tools_missing(row):
+    return ["builder executable rw_hydro_world not found (set GPUWM_RW_HYDRO_WORLD or build tools/hydro_world)"]
+
+
+@needs_static_bridge
+@pytest.mark.parametrize("lsm,realization", [(2, "parent-noah-routed"), (3, "parent-ruc-routed"),
+                                             (4, "parent-noahmp-routed")])
+def test_conus_default_suites_attach_through_the_global_provider(tmp_path, lsm, realization):
+    """2.9.3 improve-1: hydro_activation was off with no_covering_fabric on a fully covered
+    CONUS domain for every default suite (Noah 2 and RUC 3 were outside the row's
+    parent_lsm [4]). With the provider tools present, the global row covers it and
+    picks the realization for the parent LSM."""
+    decision = door.decide(settings={}, requested=None, config_path=conus_copy(tmp_path, lsm),
+                           probe_row=_tools_present)
+    assert decision["enabled"] is True and decision["reason"] == "fabric_covered"
+    assert decision["footprint"]["parent_lsm"] == lsm
+    assert decision["provider"] == "hydro-world-global"
+    assert decision["realization"] == realization
+    rows = {c["id"]: c for c in decision["candidates"]}
+    assert rows["hydro-world-global"]["verdict"] == "available"
+    assert rows["conus-nhdplus-v21"]["verdict"] == "rejected"
+    # Its inputs' licences are verified at the source; it waits on its recipe and realization.
+    assert "data licence" not in json.dumps(rows["conus-nhdplus-v21"]["reasons"])
+    assert "no admitted coupled realization" in json.dumps(rows["conus-nhdplus-v21"]["reasons"])
+
+
+def _hrrr_v4_geometry(lsm=3):
+    """The HRRR v4 parent grid (the 1799 x 1059 native mass grid, which reaches
+    into Canada and Mexico), sampled on the door's own lattice."""
+    import numpy as np
+    from gpuwm.ingest.hrrr import hrrr_source_grid
+    from gpuwm.ingest.hrrr_target import HRRR_SOURCE_NX, HRRR_SOURCE_NY
+    grid = hrrr_source_grid()
+    x, y = np.meshgrid(np.linspace(1.0, HRRR_SOURCE_NX, door.LATTICE),
+                       np.linspace(1.0, HRRR_SOURCE_NY, door.LATTICE))
+    lat, lon = grid.ij_to_latlon(x.ravel(), y.ravel())
+    return door.geometry_from_points(np.asarray(lat, float).tolist(), np.asarray(lon, float).tolist(),
+                                     center_lon=float(grid.cen_lon), parent_lsm=lsm, grid_key="h" * 64)
+
+
+def test_hrrr_v4_grid_gets_a_covering_fabric_by_default():
+    """V59 (2.9.4 live run): the headline HRRR CONUS grid ran with hydro off,
+    no_covering_fabric. The CONUS NHDPlus row covers only part of the HRRR grid
+    and needs all of it; the global builder row covers the whole grid, so with its
+    tools present the door turns hydro on through it. The NHDPlus row's licence is
+    verified (public domain at the source), so no gap says "licence pending"."""
+    decision = door.decide(settings={}, requested=None, geometry=_hrrr_v4_geometry(),
+                           probe_row=_tools_present)
+    rows = {c["id"]: c for c in decision["candidates"]}
+    assert 0.7 < rows["conus-nhdplus-v21"]["covered_fraction"] < 1.0
+    assert rows["hydro-world-global"]["covered_fraction"] == 1.0
+    assert decision["enabled"] is True and decision["reason"] == "fabric_covered"
+    assert decision["provider"] == "hydro-world-global"
+    assert decision["realization"] == "parent-ruc-routed"
+    shipped = {row["id"]: row for row in json.loads(door.TABLE.read_text())["providers"]}
+    licence = shipped["conus-nhdplus-v21"]["data_licence"]
+    assert licence["status"] == "verified"
+    assert "NHDPlusV2_metadata.htm" in licence["reason"] and "Use_Constraints: None" in licence["reason"]
+    line = door.launch_line(decision)
+    assert line.startswith("go: hydro -- on: fabric hydro-world-global, covering 1.000 of the parent grid")
+
+
+def test_launch_line_states_the_reason_when_off():
+    decision = door.decide(settings={}, requested=None, geometry=_hrrr_v4_geometry(),
+                           probe_row=_tools_missing)
+    line = door.launch_line(decision)
+    assert line.startswith("go: hydro -- off (no_covering_fabric): ")
+    assert "[hydro-world-global] builder executable rw_hydro_world not found" in line
+    assert door.launch_line(door.decide(settings={}, requested="off")) == "go: hydro -- off (cli_off)"
 
 
 def test_fabric_absent_noahmp_conus_names_every_provider_gap(tmp_path):
-    decision = door.decide(settings={}, requested=None, config_path=conus_copy(tmp_path, 4))
+    decision = door.decide(settings={}, requested=None, config_path=conus_copy(tmp_path, 4),
+                           probe_row=_tools_missing)
     assert decision["enabled"] is False and decision["reason"] == "no_covering_fabric"
     rows = {c["id"]: c for c in decision["candidates"]}
     assert rows["conus-nhdplus-v21"]["covered_fraction"] == 1.0
     assert rows["hydro-world-global"]["covered_fraction"] == 1.0
     text = json.dumps(decision["gaps"])
-    assert "data licence pending" in text and "no admitted coupled realization" in text
+    assert "data licence pending" not in text and "no admitted coupled realization" in text
     assert "rw_hydro_world" in text
     assert {gap["owner"] for gap in decision["gaps"]} == {"astra-c-hydro-data", "hydro-world-fabric"}
+
+
+def test_global_tile_root_is_acquired_not_a_gap(monkeypatch, tmp_path):
+    """A fresh install has no source tiles; the global row fetches them at preparation
+    (gpuwm.hydro.acquire), so a missing default root is not a rejection."""
+    shipped = json.loads(door.TABLE.read_text())
+    row = next(r for r in shipped["providers"] if r["id"] == "hydro-world-global")
+    need = row["builder"]["paths"][0]
+    assert need["default"] and need["acquire"] == "gpuwm.hydro.acquire:acquire"
+    monkeypatch.setenv(need["env"], str(tmp_path / "not-yet-fetched"))
+    monkeypatch.setattr(door, "_executable", lambda spec: tmp_path / spec["filename"])
+    monkeypatch.setattr(door.subprocess, "run", lambda argv, **kw: SimpleNamespace(
+        returncode=0, stdout="usage: build | admit", stderr=""))
+    reasons = door.probe(row)
+    assert not any("not available" in reason for reason in reasons), reasons
 
 
 def test_partial_cover_falls_through_to_next_row(tmp_path):
@@ -207,7 +329,8 @@ def test_go_scope_off_is_off_for_every_member(tmp_path, monkeypatch):
     assert all(r["door"]["reason"] == "cli_off" for r in receipts)
 
 
-def test_runner_without_launcher_decides_once_and_receipts_the_gap(tmp_path):
+def test_runner_without_launcher_decides_once_and_receipts_the_gap(tmp_path, monkeypatch):
+    monkeypatch.setattr(door, "probe", _tools_missing)
     inputs = _launch_args(conus_copy(tmp_path, 4))
 
     @runtime.forecast_scope
@@ -226,6 +349,10 @@ def test_builder_row_builds_once_then_reuses(tmp_path, monkeypatch):
         "status": "verified", "name": "CC BY 4.0", "reason": "", "attribution": "x"},
         realization="lower-colorado-hyfeatures")
     row.pop("preparation", None)  # Exercise the generic builder, without physical provider stages.
+    # Without the acquisition hook and default root: the source root is the env variable alone.
+    row["builder"] = dict(row["builder"], paths=[
+        {k: v for k, v in need.items() if k != "acquire"} | {"default": None}
+        for need in row["builder"]["paths"]])
     fake = tmp_path / "rw_hydro_world"
     fake.write_text("#!/bin/sh\necho 'usage: rw_hydro_world build | admit'\n")
     fake.chmod(0o755)
@@ -354,6 +481,7 @@ def test_successful_renderer_does_not_hide_missing_gauge_binding(tmp_path, monke
     history_dir.mkdir(parents=True)
     request = history_dir / "renderer-request.json"
     request.write_text(json.dumps({"node_ids": ["5"]}))
+    (tmp_path / "renderer-receipt.json").write_text(json.dumps({"outputs": []}))
     writer = SimpleNamespace(finish=lambda *args, **kwargs:
                              {"output_directory": str(history_dir.parent)})
     monkeypatch.setattr(output, "prepare", lambda **kwargs: writer)
@@ -363,9 +491,12 @@ def test_successful_renderer_does_not_hide_missing_gauge_binding(tmp_path, monke
         physics, {"settings_bindings": {"fabric_manifest": str(tmp_path / "manifest.json")}},
         outdir=tmp_path / "forecast", dx_m=5000.0,
         renderer_runner=lambda path: tmp_path / "renderer-receipt.json")
-    assert block["status"] == "partial"
-    assert block["products"][0]["status"] == "partial"
+    # Gauges are optional: every owed product was rendered, so the run published;
+    # the missing gauge binding stays named in the receipt and on stderr.
+    assert block["status"] == "rendered"
+    assert block["products"][0]["status"] == "rendered"
     assert "no gauges.json" in block["products"][0]["gauge_gap"]
+    assert "no gauge matched" in block["products"][0]["note"]
     assert "no gauges.json" in capsys.readouterr().err
 
 
@@ -377,5 +508,261 @@ def test_shipped_global_provider_uses_dem_resolution_auto():
     provider = next(row for row in table["providers"] if row["id"] == "hydro-world-global")
     assert provider["builder"]["source_table"]["row"] == "auto"
     assert provider["realization"] == "parent-noahmp-routed"
-    assert provider["parent_lsm"] == [4]
+    assert provider["realization_by_parent_lsm"] == {
+        "2": "parent-noah-routed", "3": "parent-ruc-routed", "4": "parent-noahmp-routed"}
+    assert provider["parent_lsm"] == [2, 3, 4]
     assert provider["preparation"]["initial_source"] == "era5-arco"
+
+
+def test_default_run_keeps_the_forecast_when_fabric_preparation_fails(tmp_path, monkeypatch):
+    """Default-on: a covering fabric whose preparation fails turns hydro off for this run
+    with the failure named; bare --hydro refuses instead."""
+    table, _ = prepared_table(tmp_path)
+    monkeypatch.setattr(door, "domain_geometry", lambda path: box_geometry())
+    monkeypatch.setattr(door, "materialize", lambda decision, **kw: (_ for _ in ()).throw(
+        RuntimeError("hydro provider parameters: boom")))
+    settings, path, decision = door.resolve_launch({}, requested=None, config_path=tmp_path / "e.toml",
+                                                   table=table)
+    assert path is None and settings["enabled"] is False
+    assert decision["reason"] == "fabric_preparation_failed" and "boom" in decision["gaps"][0]["gap"]
+    with pytest.raises(door.HydroDoorRefusal, match="boom"):
+        door.resolve_launch({}, requested="", config_path=tmp_path / "e.toml", table=table)
+
+
+@needs_static_bridge
+def test_adaptive_parent_clock_picks_an_interval_free_realization(tmp_path):
+    """The product default clock is adaptive with bldt = 0, so the LSM interval moves every
+    step. Noah and RUC (accumulated runoff) follow it; the Noah-MP per-step exchange is a
+    named gap instead of a forecast that stops at its first LSM call."""
+    for lsm, enabled in ((2, True), (4, False)):
+        path = conus_copy(tmp_path, lsm)
+        path.write_text(path.read_text().replace(
+            f"sf_surface_physics = {lsm}", f"sf_surface_physics = {lsm}" + chr(10)
+            + "use_adaptive_time_step = true", 1))
+        decision = door.decide(settings={}, requested=None, config_path=path, probe_row=_tools_present)
+        assert decision["enabled"] is enabled, decision.get("gaps")
+        if not enabled:
+            assert "needs a fixed parent LSM interval" in json.dumps(decision["gaps"])
+
+
+def test_driver_follows_a_variable_lsm_interval_on_stage_clocks():
+    from gpuwm.hydro.driver import ResidentHydroDriver, Stage
+
+    class Fake:
+        def __init__(self):
+            self.arrays, self.restart_identity, self.calls = {}, {}, []
+
+        def launch(self, dt, *, stream=None):
+            self.calls.append(dt)
+
+    every, routed = Fake(), Fake()
+    driver = ResidentHydroDriver(device_id=0, interval_seconds=15.0, identity={}, after=(
+        Stage("routing", routed, routed.launch, cadence_steps=20, interval_seconds=300.0),))
+    driver.allow_variable_interval()
+    for dt in [15.0] * 10 + [18.0] * 10 + [24.0] * 30:  # 150 + 180 + 720 = 1050 s
+        driver.before_lsm()
+        driver.advance(dt)
+    assert routed.calls == [300.0] * 3 and driver.elapsed_seconds == 1050.0
+    fixed = ResidentHydroDriver(device_id=0, interval_seconds=15.0, identity={}, after=(
+        Stage("exchange", every, every.launch),))
+    with pytest.raises(ValueError, match="need a fixed one: exchange"):
+        fixed.allow_variable_interval()
+
+
+def test_an_ensemble_builds_its_fabric_only_after_admission(tmp_path, monkeypatch):
+    """go_scope binds admission_pending for an ensemble launch; the fabric is built by
+    rebind_launch(args, admitted=True) once the members' disk and card admission passed."""
+    from gpuwm.hydro import runtime
+    config = tmp_path / "e.toml"
+    config.write_text("[experiment]\nname='e'\n")
+    built = []
+    monkeypatch.setattr(runtime, "_launch_settings", lambda requested, cfg, **kw: (
+        built.append(kw) or ({"enabled": True}, None,
+                             {"schema": door.SCHEMA, "enabled": True, "reason": "fabric_covered", "gaps": []})))
+    seen = {}
+
+    @runtime.go_scope
+    def launch(args):
+        seen["entry"] = door.inherited_decision()["reason"]
+        seen["built_before"] = list(built)
+        runtime.rebind_launch(args, admitted=True)
+        seen["after"] = door.inherited_decision()["reason"]
+        return 0
+
+    args = SimpleNamespace(config=config, hydro=None, command="ensemble", members=4,
+                           recipe="wofs", dry_run=False, readiness=False)
+    assert launch(args) == 0
+    assert seen == {"entry": runtime.ADMISSION_PENDING, "built_before": [], "after": "fabric_covered"}
+    assert built and not built[0].get("plan_only")
+
+
+@pytest.mark.parametrize("map_present", [False, True])
+def test_required_network_map_is_independent_of_optional_gauges(tmp_path, monkeypatch, map_present):
+    from gpuwm.hydro import output
+    history_dir = tmp_path / "written" / "history"
+    history_dir.mkdir(parents=True)
+    (history_dir / "renderer-request.json").write_text(json.dumps({
+        "node_ids": ["5"], "frames": [{"valid_time": "2026-10-21T13:00:00Z"}]}))
+    map_path = tmp_path / "d01-12km" / "streamflow_map" / "2026-10-21" / "map.png"
+    map_path.parent.mkdir(parents=True)
+    if map_present:
+        map_path.write_bytes(b"rendered map fixture")
+    renderer_receipt = tmp_path / "renderer.json"
+    renderer_receipt.write_text(json.dumps({"outputs": [str(map_path)]}))
+    monkeypatch.setattr(output, "prepare", lambda **kwargs: SimpleNamespace(
+        finish=lambda *args, **kw: {"output_directory": str(history_dir.parent)}))
+    physics = SimpleNamespace(hydro=SimpleNamespace(
+        components={"history": object.__new__(output.History)}))
+    block = forecast_products.publish(physics, {}, outdir=tmp_path / "forecast", dx_m=12000.,
+        renderer_runner=lambda path: renderer_receipt)
+    # Gauges are optional; a missing owed map is what makes the run partial.
+    assert block["status"] == ("rendered" if map_present else "partial")
+    assert block["products"][0]["gauge_gap"]  # Gauge absence stays visible.
+    assert block["required_streamflow_complete"] is map_present
+
+
+
+
+def test_output_library_uses_packaged_bridge_ladder(tmp_path, monkeypatch):
+    from gpuwm import bridges, bridge_assets
+    from gpuwm.hydro import output
+    library = tmp_path / "librw_nextgen_output.so"
+    library.write_bytes(b"library fixture")
+    calls = []
+    monkeypatch.setattr(bridges, "artifact_candidates", lambda env, name, **kw:
+        calls.append((env, name, kw)) or [library])
+    assert output._library_path() == library
+    assert calls[0][0] == "GPUWM_NEXTGEN_OUTPUT_LIBRARY"
+    artifact = next(a for a in bridge_assets.BUNDLED_ARTIFACTS if a.name == "rw_nextgen_output")
+    assert artifact.crate == "tools/nextgen_output" and artifact.on_demand
+    assert bridge_assets.LIBRARY_ABI[artifact.name] == ("rw_nextgen_output_abi_version", 1)
+
+
+def test_output_library_first_use_fetches_the_roster_artifact(tmp_path, monkeypatch):
+    from gpuwm import bridges
+    from gpuwm.hydro import output
+    monkeypatch.delenv("GPUWM_NEXTGEN_OUTPUT_LIBRARY", raising=False)
+    library = tmp_path / "librw_nextgen_output.so"
+    monkeypatch.setattr(bridges, "artifact_candidates", lambda *args, **kw: [library])
+    fetched = []
+    def stage(artifact):
+        # The public fetch API takes a roster name, not a platform filename.
+        assert bridges.fetched_on_demand(artifact)
+        fetched.append(artifact)
+        library.write_bytes(b"downloaded library fixture")
+        return True
+    monkeypatch.setattr(bridges, "fetch_on_demand", stage)
+    assert output._library_path() == library
+    assert fetched == ["rw_nextgen_output"]
+
+
+def _beside_door(tmp_path, monkeypatch, release):
+    """A covered domain whose fabric build waits on ``release`` (a slow first-run build)."""
+    import threading
+    table, manifest = prepared_table(tmp_path)
+    monkeypatch.setenv(door.ENV_TABLE, str(table))
+    monkeypatch.setattr(door, "TABLE", Path(tmp_path / "only-extra.json"))
+    shipped = json.loads(table.read_text())
+    (tmp_path / "only-extra.json").write_text(json.dumps({**shipped, "providers": []}))
+    monkeypatch.setattr(door, "domain_geometry", lambda path: box_geometry())
+    monkeypatch.setenv(door.ENV_CACHE, str(tmp_path / "cache"))
+    real, started = door.materialize, threading.Event()
+
+    def slow(decision, **kw):
+        started.set()
+        assert release.wait(30), "the launch never released the build"
+        return real(decision, **kw)
+    monkeypatch.setattr(door, "materialize", slow)
+    experiment = tmp_path / "experiment.toml"
+    experiment.write_text("")
+    return _launch_args(experiment), manifest, started
+
+
+def test_go_builds_the_covering_fabric_beside_the_fetch_not_ahead_of_it(tmp_path, monkeypatch):
+    """R15 D9 (first run on a bare install): the fabric build (273 s) ran ahead of the fetch, so the
+    chained root stage came ready 366 s after launch against its 300 s bound. The launch now
+    runs while the fabric builds; the go memory gate does not wait for it; the first reader
+    of the answer (the forecast) waits and gets exactly the synchronous door's settings."""
+    import threading
+    from gpuwm.hydro.memory import forecast_plan
+    release = threading.Event()
+    args, manifest, started = _beside_door(tmp_path, monkeypatch, release)
+    seen = {}
+
+    @runtime.go_scope(beside=True)
+    def launch(args):
+        assert started.wait(30)
+        # The fetch and the preparation run here while the fabric builds.
+        seen["pending"] = runtime.beside_pending()
+        seen["decision"] = door.inherited_decision()
+        seen["line"] = door.launch_line(door.inherited_decision())
+        seen["env_settings"] = os.environ.get(runtime.ENV_SETTINGS)
+        seen["gate"] = forecast_plan(object())  # the gate prices nothing yet, and does not wait
+        seen["still_pending"] = runtime.beside_pending()
+        release.set()
+        # The forecast: the first reader joins and binds the final answer.
+        settings = runtime.current_settings()
+        return (settings, os.environ[runtime.ENV_SETTINGS], door.inherited_decision(),
+                activation_receipt(member_settings(SimpleNamespace(experiment_config=None))))
+    settings, env_path, decision, receipt = launch(args)
+    assert seen["pending"] and seen["still_pending"] and seen["gate"] is None
+    assert seen["decision"]["reason"] == "fabric_covered" and seen["decision"]["build"]["pending"]
+    assert "preparing beside the fetch" in seen["line"]
+    assert seen["env_settings"] is None  # no runner can start on a half-made answer
+    assert settings["enabled"] is True and settings["realization"] == "lower-colorado-hyfeatures"
+    assert Path(env_path).name == "hydro-door.toml"
+    assert decision["build"]["beside"] is True and decision["build"]["seconds"] >= 0.0
+    assert decision["build"]["waited_seconds"] >= 0.0
+    assert receipt["enabled"] is True and receipt["door"]["build"]["beside"] is True
+    assert not runtime.beside_pending()
+    assert door.ENV_DECISION not in os.environ and runtime.ENV_SETTINGS not in os.environ
+
+
+def test_prepare_only_launch_still_completes_the_fabric_and_a_failed_launch_does_not_wait(
+        tmp_path, monkeypatch):
+    """A launch whose forecast never reads the answer (--prepare-only) leaves the domain's
+    fabric complete before it returns; a launch that raises returns at once."""
+    import threading
+    release = threading.Event()
+    args, _, started = _beside_door(tmp_path, monkeypatch, release)
+
+    @runtime.go_scope(beside=True)
+    def prepare_only(args):
+        assert started.wait(30)
+        release.set()
+        return 0
+    assert prepare_only(args) == 0
+    assert not runtime.beside_pending()
+    assert list((tmp_path / "cache").rglob("hydro-door.toml"))
+
+    stuck = threading.Event()
+    (tmp_path / "second").mkdir()
+    args, _, started = _beside_door(tmp_path / "second", monkeypatch, stuck)
+
+    @runtime.go_scope(beside=True)
+    def fails(args):
+        assert started.wait(30)
+        raise RuntimeError("fetch failed")
+    with pytest.raises(RuntimeError, match="fetch failed"):
+        fails(args)
+    assert not runtime.beside_pending()
+    stuck.set()
+
+
+def test_plain_go_scope_and_explicit_hydro_still_decide_before_the_launch(tmp_path, monkeypatch):
+    """Only the default-on `gpuwm go` door builds beside: bare --hydro keeps refusing before
+    the fetch, and every other launcher (standby, run) binds the final answer on entry."""
+    import threading
+    release = threading.Event()
+    release.set()
+    args, _, _ = _beside_door(tmp_path, monkeypatch, release)
+
+    @runtime.go_scope
+    def plain(args):
+        return runtime.beside_pending(), runtime.current_settings()["enabled"]
+    assert plain(args) == (False, True)
+
+    @runtime.go_scope(beside=True)
+    def explicit(args):
+        return runtime.beside_pending()
+    assert explicit(_launch_args(args.config, hydro="")) is False

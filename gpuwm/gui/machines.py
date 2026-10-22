@@ -34,7 +34,6 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -49,7 +48,8 @@ import threading
 import time
 from typing import Any, Iterable
 
-from .files import NAME_RE, long_path, read_json, write_json
+from .files import utc_now as _utc
+from .files import NAME_RE, long_path
 
 CONFIG_ENV = "GPUWM_MACHINES_FILE"
 LOCAL = "this-computer"
@@ -92,10 +92,6 @@ class MachineError(Exception):
         self.fix = fix
         self.status = status
         self.missing = tuple(missing)
-
-
-def _utc() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def local_version() -> str:

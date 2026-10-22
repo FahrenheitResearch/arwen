@@ -29,9 +29,12 @@ from gpuwm.vertical_adaptation import (
     vertical_coordinate_receipt as _vertical_coordinate_receipt,
 )
 from gpuwm.era5_direct import (
+    _announce_adaptation,
     _canonical_surface,
     _load_static,
+    _sha256,
     _static_from_geog,
+    _survey_static_catalog,
     _write_geometry_receipt,
     _write_static_cache,
 )
@@ -149,13 +152,11 @@ PREPARE_PHASES = (
     "write_prepared_cache", "direct_wrf_export", "publish",
 )
 PROOF_SCHEMA = "gpuwm-gfs-direct-wrf-proof-v3"
-LEGACY_PROOF_SCHEMA = "gpuwm-gfs-direct-wrf-proof-v2"
 #: The multi-domain product.  v2 adds the front-door physics receipt the
 #: v3 single-domain proof already carried; v1 documents written by 1.1.0
 #: and earlier stay independently verifiable and are never promoted to
 #: v2 by inference, exactly as the direct proof's v2 is not.
 HIERARCHY_PROOF_SCHEMA = "gpuwm-gfs-native-hierarchy-proof-v2"
-LEGACY_HIERARCHY_PROOF_SCHEMA = "gpuwm-gfs-native-hierarchy-proof-v1"
 #: The isobaric ladder every GFS subset carries, and the floor this
 #: front door requires -- not the ceiling.  A case whose model top sits
 #: above 100 hPa is fetched with the ladder EXTENDED UPWARD
@@ -220,14 +221,6 @@ _IMPLEMENTATION_PATHS = (
 #: The GFS adapter's name in every water-temperature refusal and
 #: receipt.
 _WATER_ROUTE = "the GFS direct route"
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(8 * 1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _implementation_sha256() -> dict[str, str]:
@@ -297,13 +290,12 @@ def _git_source_identity() -> dict[str, object]:
     def run(*arguments: str) -> str:
         completed = subprocess.run(
             ["git", "-C", str(root), *arguments], check=True,
-            text=True, capture_output=True)
+            text=True, capture_output=True, timeout=10)
         return completed.stdout.strip()
 
-    # An installed wheel is neither a git checkout nor a sealed runtime:
-    # record the identity as accurately unavailable instead of refusing to
-    # run (the input manifest, decoder digest, and implementation hashes
-    # above still bind the run's provenance).
+    # A wheel's version/build hash come from package metadata. A tree id
+    # and working-tree cleanliness cannot be inferred from that stamp;
+    # the input manifest, decoder and implementation hashes still bind it.
     unavailable = {
         "available": False,
         "commit": None,
@@ -312,21 +304,25 @@ def _git_source_identity() -> dict[str, object]:
         "identity_source": "unavailable-installed-runtime",
     }
     try:
-        top_level = Path(run("rev-parse", "--show-toplevel")).resolve()
-    except (OSError, subprocess.CalledProcessError):
-        return unavailable
-    if top_level != root.resolve():
-        # site-packages inside some unrelated repository: that
-        # repository's history is NOT this code's provenance.
-        return unavailable
-    return {
-        "available": True,
-        "commit": run("rev-parse", "HEAD"),
-        "tree": run("rev-parse", "HEAD^{tree}"),
-        "tracked_worktree_clean": not bool(
-            run("status", "--porcelain", "--untracked-files=no")),
-        "identity_source": "git",
-    }
+        if (root / ".git").exists():
+            top_level = Path(run("rev-parse", "--show-toplevel")).resolve()
+            if top_level == root.resolve():
+                return {
+                    "available": True,
+                    "commit": run("rev-parse", "HEAD"),
+                    "tree": run("rev-parse", "HEAD^{tree}"),
+                    "tracked_worktree_clean": not bool(
+                        run("status", "--porcelain", "--untracked-files=no")),
+                    "identity_source": "git",
+                }
+    except (OSError, subprocess.SubprocessError):
+        pass
+    from gpuwm.build_provenance import package_build_identity
+    identity = package_build_identity()
+    unavailable.update(commit=identity["commit"], package_provenance=identity)
+    if identity["commit"] != "unknown":
+        unavailable.update(available=True, identity_source=identity["identity_source"])
+    return unavailable
 
 
 def _geometry_contract(grid, cfg) -> dict[str, object]:
@@ -1850,40 +1846,6 @@ def front_door_physics_selection(
     return selection
 
 
-def _announce_adaptation(sentence: str) -> None:
-    """Say, once, that the run is not on the configured vertical coordinate."""
-
-    warn(sentence,
-         "WRF v4.6.1 dyn_em/nest_init_utils.F:1158-1182 calls a column "
-         "the coordinate cannot order fatal and names reducing etac as "
-         "the remedy, and a column it only just orders keeps one layer "
-         "too thin to integrate, which a lower etac thickens; the etac is "
-         "derived here from the terrain this run can actually touch and "
-         "applied, so the prepared inputs, their receipt and the forecast "
-         "all carry the same coordinate.  p_top is untouched.")
-
-
-def _survey_static_catalog(exp, wps_namelist, geog_root, static_highres=None):
-    """The WPS_GEOG catalog the terrain survey needs, or None.
-
-    A single-domain run surveys only the root terrain the caller already
-    holds, and a prebuilt static cache with no geography is exactly that
-    case; a tree needs the catalog and already refuses without a geog
-    root one screen above.
-    """
-
-    if geog_root is None or len(exp.domains) < 2:
-        return None
-    from gpuwm.hrrr_native_static import verified_static_catalog
-    from gpuwm.static.terrain_smoothing import selection_carrier_kwargs
-
-    catalog, _ = verified_static_catalog(
-        Path(wps_namelist), Path(geog_root),
-        [domain.grid_id for domain in exp.domains],
-        **selection_carrier_kwargs(static_highres))
-    return catalog
-
-
 @preprocess_math_call
 def prepare_gfs_wrf(
     *,
@@ -2331,9 +2293,11 @@ def prepare_gfs_wrf(
             prefix="gpuwm-gfs-bridge-", dir=Path(output_root).parent,
             ignore_cleanup_errors=True) as temporary:
         decoded = Path(temporary) / "decoded"
-        target_longitudes = tuple(
-            pair[1] for pair in (grid.latlon_mass(), grid.latlon_u(),
-                                 grid.latlon_v()))
+        target_coordinates = tuple(
+            pair for target in grids
+            for pair in (target.latlon_mass(), target.latlon_u(), target.latlon_v()))
+        target_longitudes = tuple(pair[1] for pair in target_coordinates)
+        target_latitudes = tuple(pair[0] for pair in target_coordinates)
         bridge_environment = {
             **os.environ, "GPUWM_GFS_SNOW_CONVENTION": case_policy["gfs_snow_convention"]}
         if preprocess_workers is not None:
@@ -2348,7 +2312,8 @@ def prepare_gfs_wrf(
                                              for level in expected_levels_hpa)),
                 environment=bridge_environment,
                 orient=lambda snapshot: orient_global_source_longitudes(
-                    snapshot, *target_longitudes))
+                    snapshot, *target_longitudes,
+                    target_latitudes=target_latitudes))
         bridge_command = [
             str(Path(bridge)), "--series", str(Path(series)), str(decoded),
             cycle_time.strftime("%Y-%m-%d %H:%M:%S")]
@@ -2417,7 +2382,8 @@ def prepare_gfs_wrf(
             decoded_snapshots = _map_snapshots(
                 decoded_snapshots,
                 lambda snapshot: orient_global_source_longitudes(
-                    snapshot, *target_longitudes))
+                    snapshot, *target_longitudes,
+                    target_latitudes=target_latitudes))
         # From here on the run sees only the window that starts at the
         # experiment's lead.  Each snapshot still carries the SOURCE
         # valid time the bridge decoded (cycle + its own lead), which is
@@ -2796,7 +2762,8 @@ def prepare_gfs_wrf(
         native_source_identity = {**native_source_identity,
                                   "lake_ice": lake_ice_receipt}
         from gpuwm.core.landuse import (
-            ruc_fractional_seaice as _ruc_fractional_seaice)
+            ruc_fractional_seaice as _ruc_fractional_seaice,
+            seaice_threshold_of as _seaice_threshold_of)
         soil = preprocess_land_surface_soil(
             soil_fields,
             # real.exe's adjust_for_seaice_pre/post keep the fraction under
@@ -2804,6 +2771,7 @@ def prepare_gfs_wrf(
             # otherwise (module_soil_pre.F:216-219, :337-343, :392-393 of the HRRR
             # v4.1.21 fork).
             fractional_seaice=_ruc_fractional_seaice(cfg),
+            seaice_threshold=_seaice_threshold_of(cfg),
             sf_surface_physics=int(cfg.sf_surface_physics),
             num_soil_layers=int(cfg.num_soil_layers),
             soil_type=door_reconciled_soil_category(

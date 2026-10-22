@@ -1,6 +1,6 @@
 """A stage process dies with the process that launched it.
 
-THE BREAKAGE (box B, 2026-10-07): a stopped ``gpuwm go`` -- its mutex
+THE BREAKAGE (a rented box, 2026-10-07): a stopped ``gpuwm go`` -- its mutex
 wrapper and the ``gpuwm.cli go`` process killed by pid -- left its
 ``gpuwm.forecast_supervisor`` child alive.  The child was reparented to
 init and held 63.9 GB on a card for 43 minutes with no owner file,

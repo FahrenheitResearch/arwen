@@ -29,7 +29,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
 thiserror = "2.0"
-wrf-core = { git = "https://github.com/FahrenheitResearch/wrf-rust.git", rev = "9874474d9566a7536a90f457a48be30caa5f973a", package = "wrf-core", default-features = false, features = ["pure-rust-reader"] }
+wrf-core = { git = "https://github.com/FahrenheitResearch/wrf-rust.git", rev = "93bd2ca670c13fec35bcfc27a58108e6fd71c627", package = "wrf-core", default-features = false, features = ["pure-rust-reader"] }
 zip = { version = "8.6", default-features = false, features = ["deflate"] }
 
 [patch.crates-io]

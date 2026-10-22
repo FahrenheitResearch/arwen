@@ -46,47 +46,13 @@ from gpuwm.runtime import _detach_retired_children
 from test_nest_relocation_staging import (_cpu_tree, _footprint_statics,
                                           _initializer)
 
+from test_nest_spawn import BASE
+from test_relocation_runner import _clock
+
 
 # ---------------------------------------------------------------------------
 # Config fixtures: one-shot spawn vs a DECLARED lifecycle
 # ---------------------------------------------------------------------------
-
-BASE = """\
-[experiment]
-name = "synth"
-start_time = 1974-04-03T12:00:00
-run_seconds = 3600.0
-restart_interval_s = 0.0
-
-[shared]
-nz = 8
-ztop = 12000.0
-
-[[domain]]
-grid_id = 1
-parent_id = 0
-i_parent_start = 1
-j_parent_start = 1
-parent_grid_ratio = 1
-parent_time_step_ratio = 1
-nx = 100
-ny = 80
-time_step = 60
-dx = 12000.0
-history_interval_s = 3600.0
-
-[[domain]]
-grid_id = 2
-parent_id = 1
-i_parent_start = 40
-j_parent_start = 30
-parent_grid_ratio = 3
-parent_time_step_ratio = 3
-e_we = 61
-e_sn = 61
-history_interval_s = 900.0
-{d02}
-"""
 
 # The uh follower these tests hang on d02 is admitted against the
 # WATCHED domain, which is its PARENT d01, and d01 stashes at
@@ -383,20 +349,6 @@ def _slotted_provider(moves, slot):
     provider = ManualMoveProvider(tuple(moves))
     provider.uh_slot = slot
     return provider
-
-
-def _clock(ticks):
-    """A stub domain clock, carrying the spec a real one always has.
-
-    ``spec.start_ticks`` is the domain's activation epoch, which
-    ``refresh_model_time`` publishes onto the state beside the model
-    time; 0 is "this domain started with the run", which is what these
-    followers are.
-    """
-    return SimpleNamespace(ticks=int(ticks), tick_den=1,
-                           elapsed_seconds=float(ticks),
-                           spec=SimpleNamespace(start_ticks=0,
-                                                step_ticks=60))
 
 
 def _collection_model(parent, children):

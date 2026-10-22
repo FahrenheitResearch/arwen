@@ -22,7 +22,8 @@
         "plumerise.freitas",
         "emission.fire",
         "mixing.vertmx",
-        "wetdep.ls"
+        "wetdep.ls",
+        "optics.gocart"
       ],
       "emissions": [
         {
@@ -34,6 +35,18 @@
         }
       ],
       "boundary": [
+        {
+          "source": "rap-native-smoke",
+          "fields": [
+            "MASSDEN"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_m3_to_ug_kg_dry",
+          "frames": "boundary",
+          "provenance": "Operational HRRR v4.1.21 smoke lateral boundaries: RAP awp130bgrb MASSDEN through real.exe (exhrrr_makebc.sh, hrrr_vtable, registry.smoke smoke_gc). Edge values only (frames boundary), so with both sources enabled the start state is HRRR's own smoke (hrrr-native-smoke, below) and the edges are RAP's, as operational HRRR."
+        },
         {
           "source": "hrrr-native-smoke",
           "fields": [
@@ -50,8 +63,28 @@
       "settling": null,
       "wetdep_ls_alpha": 0.5,
       "aging": null,
-      "optics": null,
+      "optics": {
+        "wrfchem_component": "organic_carbon",
+        "wrf_order": 1000,
+        "size_treatment": "modal",
+        "target": 4,
+        "conversion": "ug_kg",
+        "mass_multiplier": 1.0,
+        "aitken_fraction": 0.25,
+        "hygroscopic": true,
+        "secondary_target": null,
+        "secondary_multiplier": null,
+        "merra_type": 6,
+        "merra_bin": 1,
+        "merra_radius_um": 0.55,
+        "merra_mass_scale": 1e-09,
+        "from": "Bulk fire PM2.5 is represented as hydrophilic organic particulate matter using WRF-Chem module_optical_averaging.F:3928-4016 size modes and the MERRA organic aerosol table. Unit mass multiplier: this tracer is particulate mass already, not organic carbon. Unresolved soot and brown-carbon composition is not inferred; use resolved GOCART carbon rows when composition is required."
+      },
       "mp_coupling": null,
+      "radiation": {
+        "shortwave": "hrrr_smoke_aod",
+        "provenance": "HRRR v4.1.21 WRFV3.9 fork: smoke/module_add_emiss_burn.F:186-194 forms aod3d_smoke = 1e-6 * (4.0 + 0.5 m2/g) * smoke (ug/kg) * 1/ALT (dry density, smoke/chem_driver.F:200) * dz8w; phys/module_radiation_driver.F:979-984 adds MIN(3, aod3d_smoke) to the aer_opt = 3 layer AOD when chem_opt = 18 and simple_dir_fdb = 1. Read only with the run's simple_dir_fdb = 1."
+      },
       "exclusive_group": "rave-3km-pm25:smoke",
       "provenance": "WRF Registry/registry.chem:2120 (state smoke in the tracer array, package tracer_smoke tracer_opt==1 at :4177); units ug kg-1 per dry air as HRRR-Smoke carries it (UPP inverts MASSDEN from it). floor = WRF epsilc 1.E-16. default_inflow 0: with no boundary source enabled no smoke enters, and the run receipt says smoke from outside the domain is absent (DESIGN 5.1). wetdep_ls_alpha 0.5 is GSL's wetdep_ls_alpha default (gsl-ccpp-physics/physics/smoke_dust/rrfs_smoke_config.F90:40), a data choice. Dry deposition joins the row ({scheme: gocart_aerosol} with the process drydep.gocart) when the aq-gocart lane's module is in the build."
     }

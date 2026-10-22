@@ -456,6 +456,15 @@ def test_the_host_column_cost_is_still_flat_after_the_conversion() -> None:
     makes flatness a measurement rather than an assertion is the control.
     """
     costs = _ms_per_column(_land_surface_call)
+    # Scheduler noise on a loaded host only ever ADDS time, so a further
+    # best-of round can only lower a point toward its true cost; a real loss
+    # of flatness survives every round.  (2.9.4 passes e3aa36d0 and 35a19528:
+    # 40-slot Stage-1 hosts read 1.60-1.65 here while the unloaded file read
+    # flat.)
+    for _round in range(3):
+        if max(costs) / min(costs) < 1.5:
+            break
+        costs = [min(a, b) for a, b in zip(costs, _ms_per_column(_land_surface_call))]
     spread = max(costs) / min(costs)
     report = ", ".join(f"{n}: {c:.3f}" for n, c in zip(_COST_COUNTS, costs))
     assert spread < 1.5, (

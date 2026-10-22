@@ -1331,7 +1331,6 @@ tests/test_urban_water_balance_gpu.py
 tests/test_wsm3_remap_conservation.py
 tests/test_wsm5.py
 tests/test_wsm6r_wrf461_column_exact.py
-tests/test_wsm7_integration.py
 tests/test_wsm7_remap_budget.py
 tests/test_wsm_family_frame_pricing.py
 tests/test_ysu_generation_batch_gpu.py

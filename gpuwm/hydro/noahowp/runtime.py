@@ -200,22 +200,3 @@ class PreparedNoahOWP:
         self._kernel(self._grid, self._block, self._args, stream=stream)
 
     advance = launch
-
-    def export_bmi_outputs(self, *, stream=None):
-        """Enqueue native get_value conversions and return stable device views.
-
-        The caller chooses the diagnostic/output boundary and synchronizes
-        there if reading on the host. No conversion allocates or synchronizes.
-        """
-        self._bmi_kernel(self._grid, self._block, self._bmi_args, stream=stream)
-        return self._bmi_outputs
-
-
-def prepare_noahowp_slab(device_fields=None, *, slabs=None, **options):
-    return PreparedNoahOWP(device_fields, slabs=slabs, **options)
-
-
-def evaluate_noahowp_slab(device_fields=None, *, slabs=None, **options):
-    component = prepare_noahowp_slab(device_fields, slabs=slabs, **options)
-    component.launch(None)
-    return component

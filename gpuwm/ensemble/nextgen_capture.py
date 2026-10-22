@@ -41,7 +41,8 @@ class NextGenCollector:
                  channel_depth_sink=None):
         self.original = original
         self.nextgen_points = ReachAccumulator(member_ids, options=options,
-            array_module=array_module, depth_sink=depth_sink)
+            array_module=array_module, depth_sink=depth_sink,
+            member_weights=getattr(original, "member_weights", None))
         self.resident_inventory = ResidentInventory()
         self.channel_depth_sink = channel_depth_sink
         from gpuwm.ensemble.nextgen_depth import ChannelDepthArchive
@@ -115,9 +116,12 @@ class NextGenCollector:
     def finish_run(self):
         with self._capture_lock:
             self.nextgen_points.require_complete()
-            return (list(self.original.finish_run())
-                + self.nextgen_points.finish(Path(self.root) / "nextgen")
+            atmosphere = self.original.finish_run()
+            hydro = (self.nextgen_points.finish(Path(self.root) / "nextgen")
                 + self.channel_depth_archive.finish(self.nextgen_points.frames))
+            if isinstance(atmosphere, Mapping):
+                return {**atmosphere, "nextgen": hydro}
+            return list(atmosphere) + hydro
 
     def save_resume(self, *args, **kwargs):
         from gpuwm.ensemble.restart_roster import atomic_json, relative_file

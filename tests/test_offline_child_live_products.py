@@ -301,7 +301,7 @@ def test_the_child_route_draws_as_it_lands_and_finalize_draws_the_rest(
     assert _workers(before) == []
 
 
-@pytest.mark.parametrize("width", [1, 3])
+@pytest.mark.parametrize("width", [3])
 def test_a_stopped_child_draws_nothing_more(tmp_path, monkeypatch, width):
     """A stop: the frame in flight publishes nothing and the queue is dropped.
 

@@ -7,9 +7,6 @@ checkpoint is then written by the engine; no checkpoint validation is bypassed.
 from __future__ import annotations
 
 import dataclasses
-import datetime as dt
-import hashlib
-import json
 from pathlib import Path
 from collections.abc import Mapping
 
@@ -92,72 +89,3 @@ def merge_boundary(old_run, later_run, destination):
         import shutil
         shutil.rmtree(destination)
         raise
-
-
-def extend_checkpoint(old_run, new_run, checkpoint, destination):
-    """Restore under the original identity, validate the full parsed prefix, then rebind."""
-    from gpuwm.wrfinput_door import resolve_wrfinput_run
-    from gpuwm.wrfinput_forecast import prepare_wrf_run, WrfInitialization
-    from gpuwm.prepared_domain_tree_forecast import run_prepared_tree, tree_restart_identity_components, _with_terrain_acoustics
-    from gpuwm.ingest.lateral_bc import attach_lateral_boundaries
-    from gpuwm.io.restart import read_restart_header, write_tree_restart
-    destination = Path(destination)
-    destination.mkdir(parents=True, exist_ok=False)
-    old_resolved = resolve_wrfinput_run(Path(old_run))
-    new_resolved = resolve_wrfinput_run(Path(new_run))
-    old = prepare_wrf_run(old_resolved, destination / "old-input", run_seconds=old_resolved.coverage.coverage_seconds)
-    new = prepare_wrf_run(new_resolved, destination / "new-input", run_seconds=new_resolved.coverage.coverage_seconds)
-    new = _with_terrain_acoustics(new)
-    if len(old.domains) != 1 or len(new.domains) != 1:
-        raise ValueError("forcing renewal currently requires a single domain")
-    if len(new.boundaries.intervals) <= len(old.boundaries.intervals):
-        raise ValueError("no new forcing intervals")
-    for f in dataclasses.fields(old.boundaries):
-        if f.name != "intervals":
-            require_equal(getattr(old.boundaries, f.name), getattr(new.boundaries, f.name), f"boundaries.{f.name}")
-    for i, interval in enumerate(old.boundaries.intervals):
-        require_equal(interval, new.boundaries.intervals[i], f"converted_interval[{i}]")
-    captured = {}
-    def bootstrap(**kw):
-        captured.update(kw)
-        return dict(status="PASS", ensemble_bootstrap_only=True)
-    (destination / "restored").mkdir()
-    run_prepared_tree(old, output_directory=destination / "restored", io_mode="none", restart=Path(checkpoint),
-                      initialization=WrfInitialization(old), ensemble_bootstrap=bootstrap)
-    model = captured["model"]
-    components = model._experiment_fingerprint_components
-    future = tree_restart_identity_components(new, components["runtime_source_identity"], WrfInitialization(new))
-    for name in components:
-        if name != "preparation_receipt_sha256":
-            require_equal(components[name], future[name], f"identity.{name}")
-    state = model.root.state
-    elapsed = state.elapsed_seconds
-    attach_lateral_boundaries(state, new.boundaries)
-    state.elapsed_seconds = elapsed
-    model._experiment_fingerprint_components = future
-    model.experiment_fingerprint = hashlib.sha256(json.dumps(future, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
-    header = read_restart_header(checkpoint)
-    valid = old.experiment.start_time + dt.timedelta(seconds=float(header["elapsed_seconds"]))
-    result = write_tree_restart(destination / "checkpoint", model, valid,
-                                run_trackers_by_grid_id={int(header["grid_id"]): header.get("run_trackers")})
-    # Rebinding forcing must leave every carried prognostic, scratch array, physics state and clock untouched.
-    new_header = read_restart_header(result)
-    allowed = {"created", "checkpoint_set_id", "experiment_fingerprint", "experiment_fingerprint_components",
-               "setup_fingerprint", "config"}
-    require_equal(set(header), set(new_header), "header keys")
-    for name in header:
-        if name not in allowed:
-            require_equal(header[name], new_header[name], f"header.{name}")
-    require_equal({k: v for k, v in header["config"].items() if k != "run_seconds"},
-                  {k: v for k, v in new_header["config"].items() if k != "run_seconds"}, "config")
-    equal_arrays = 0
-    with np.load(checkpoint, allow_pickle=False) as a, np.load(result, allow_pickle=False) as b:
-        require_equal(set(a.files), set(b.files), "checkpoint array names")
-        for name in a.files:
-            if name == "__gpuwm_restart_header__":
-                continue
-            require_equal(a[name], b[name], f"checkpoint.{name}")
-            equal_arrays += 1
-    return dict(checkpoint=str(result), old_intervals=len(old.boundaries.intervals), new_intervals=len(new.boundaries.intervals),
-                valid=valid.isoformat(), equal_state_arrays=equal_arrays,
-                original_identity=components, extended_identity=future)

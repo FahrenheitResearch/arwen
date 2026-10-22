@@ -108,12 +108,12 @@ def test_the_imported_operational_hrrr_namelist_prepares_on_this_route(
     assert "'modis_15s+modis_fpar+modis_lai+30s'" in wps
     (tmp_path / "namelist.wps").write_text(wps, encoding="utf-8")
     # Since 2026-10-12 the namelist's HRRR-Smoke chemistry is no longer
-    # imported to run with none (tests/operational_namelist_edits.py).  With
-    # the smoke mapped (its four uncarried settings changed), the import is a
-    # chemistry configuration, and THIS route cannot carry one: the pair it
-    # emits has no &chem group, so it refuses by name rather than prepare a
-    # tree its own namelists would read without the smoke.
-    from operational_namelist_edits import importable, without_smoke
+    # imported to run with none, and since 2026-10-21 NOAA's file imports
+    # with every smoke setting it carries.  The route's pair now writes the
+    # &chem group (gpuwm.hrrr_route_inputs._chem_namelist_rows), so the
+    # preparation it drives takes the smoke start and edge state; until
+    # then the route refused the import by name.
+    from operational_namelist_edits import without_smoke
     source = (OPERATIONAL / "hrrr_wrf.nl").read_text(encoding="utf-8")
     land = "num_land_cat                        = 21,"
     assert land in source
@@ -121,7 +121,7 @@ def test_the_imported_operational_hrrr_namelist_prepares_on_this_route(
         land, "num_land_cat                        = 20,")
     smoke = tmp_path / "smoke"
     smoke.mkdir()
-    (smoke / "hrrr_wrf.nl").write_text(importable(source), encoding="utf-8")
+    (smoke / "hrrr_wrf.nl").write_text(source, encoding="utf-8")
     smoke_text, _ = import_namelists(tmp_path / "namelist.wps",
                                      smoke / "hrrr_wrf.nl", name="d04")
     smoke_config = smoke / "d04.toml"
@@ -129,9 +129,12 @@ def test_the_imported_operational_hrrr_namelist_prepares_on_this_route(
     smoke_exp = build_experiment(tomllib.loads(smoke_text),
                                  source=str(smoke_config))
     assert smoke_exp.root.run.chem_sets == "smoke"
-    with pytest.raises(HrrrRouteInputError, match="chem_sets: config 'smoke'"):
-        write_hrrr_route_inputs(smoke_config, smoke_exp, wps_text=wps,
-                                writer=_write)
+    assert smoke_exp.root.run.simple_dir_fdb == 1
+    write_hrrr_route_inputs(smoke_config, smoke_exp, wps_text=wps,
+                            writer=_write)
+    emitted = route_input_paths(smoke_config)["namelist_input"].read_text(
+        encoding="utf-8")
+    assert "&chem" in emitted and "simple_dir_fdb" in emitted
     # The route's acceptance row is the meteorology: chemistry off.
     (tmp_path / "hrrr_wrf.nl").write_text(without_smoke(source),
                                           encoding="utf-8")

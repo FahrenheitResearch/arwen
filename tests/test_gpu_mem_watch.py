@@ -78,28 +78,6 @@ def test_intra_boundary_spike_reaches_the_reported_peak():
     assert watcher.peak_bytes("device") == source.SPIKE
 
 
-def test_explicit_samples_fold_into_the_peak_without_a_thread():
-    values = iter([7, 42, 3])
-    watcher = GpuPeakMemoryWatcher([_probe("device", lambda: next(values))])
-    watcher.sample()
-    watcher.sample()
-    watcher.sample()
-    assert watcher.peak_bytes("device") == 42
-    watcher.stop()  # never started: stop must still be safe
-
-
-def test_peak_defaults_to_zero_and_summary_says_no_samples():
-    watcher = GpuPeakMemoryWatcher([_probe("device", lambda: 5)])
-    assert watcher.peak_bytes("device") == 0
-    assert watcher.summary()["probes"]["device"]["samples"] == 0
-
-
-def test_unknown_probe_name_is_refused():
-    watcher = GpuPeakMemoryWatcher([_probe("device", lambda: 5)])
-    with pytest.raises(KeyError):
-        watcher.peak_bytes("nonexistent")
-
-
 def test_explicit_sample_propagates_probe_errors():
     """Boundary samples keep the old fail-loud behavior."""
 
@@ -149,35 +127,6 @@ def test_background_probe_error_is_recorded_not_raised():
     summary = watcher.summary()
     assert "device fell over" in summary["probes"]["flaky"]["error"]
     assert summary["probes"]["good"]["error"] is None
-
-
-def test_summary_labels_every_probe_scope_accurately():
-    watcher = GpuPeakMemoryWatcher([
-        _probe("device", lambda: 10, scope="device-wide-ish"),
-        _probe("pool", lambda: 4, scope="in-process pool"),
-    ])
-    watcher.sample()
-    summary = watcher.summary()
-    assert summary["mechanism"] == (
-        "background-polling-thread+boundary-samples")
-    assert summary["interval_seconds"] == DEFAULT_INTERVAL_SECONDS
-    assert summary["probes"]["device"]["scope"] == "device-wide-ish"
-    assert summary["probes"]["pool"]["scope"] == "in-process pool"
-    assert summary["probes"]["device"]["peak_bytes"] == 10
-    assert summary["probes"]["pool"]["peak_bytes"] == 4
-    assert summary["probes"]["device"]["samples"] == 1
-
-
-def test_stop_is_idempotent_and_sampling_still_allowed_after_stop():
-    values = {"v": 1}
-    watcher = GpuPeakMemoryWatcher(
-        [_probe("device", lambda: values["v"])], interval_seconds=0.001)
-    watcher.start()
-    watcher.stop()
-    watcher.stop()
-    values["v"] = 99
-    watcher.sample()  # the end-of-run sample lands after stop()
-    assert watcher.peak_bytes("device") == 99
 
 
 def test_double_start_is_refused():

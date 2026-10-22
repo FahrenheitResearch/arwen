@@ -88,6 +88,11 @@ def test_off_does_not_read_count_or_change_checkpoint_identity():
     # So is the ocean mixed layer's quartet (2.9.1) when off.
     for name in ("sf_ocean_physics", "oml_hml0", "oml_gamma", "oml_relaxation_time"):
         before.pop(name)
+    # lane/cap-slab-ocean's 3-D PWP controls drop with the ocean off too.
+    for name in ("ocean_levels", "ocean_analysis", "ocean_analysis_source",
+                 "ocean_mld_climatology", "omdt", "ocean_z", "ocean_t",
+                 "ocean_s"):
+        before.pop(name)
     # The Noah-MP snow-aging selector (2.9.0) is read only by
     # sf_surface_physics = 4; this Noah run's comparison drops it.
     before.pop("noahmp_snow_age")

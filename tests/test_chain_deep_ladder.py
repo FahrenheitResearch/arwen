@@ -261,7 +261,8 @@ def version_identity_bound(monkeypatch):
                         lambda prov=None: None)
 
 
-@pytest.mark.parametrize("nests", [4, 5, 6])
+# Four is the first failing depth; six also crosses the second boundary.
+@pytest.mark.parametrize("nests", [4, 6])
 def test_the_chain_door_emits_at_four_five_and_six_nests(
         tmp_path, capsys, nests, version_identity_bound):
     """``--chain`` with four or more nests used to be an ``IndexError``.

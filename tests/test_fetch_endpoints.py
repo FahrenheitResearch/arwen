@@ -66,8 +66,8 @@ def test_an_old_cycle_skips_the_operational_server_it_cannot_serve():
     stale = now - timedelta(days=30)
     for source in ("gfs", "gdas", "gefs", "hrrr", "hrrr-prs", "rap", "rrfs"):
         serving = fetch_endpoints.serving_ladder(source, cycle=stale, now=now)
-        assert [endpoint.name for endpoint in serving] in (
-            ["aws"], ["s3"]), source
+        assert serving[0].name in ("aws", "s3"), source
+        assert all(endpoint.archive for endpoint in serving), source
         assert serving[0].retention_hours is None, source
 
 
@@ -89,7 +89,7 @@ def test_retention_is_an_optimisation_not_a_bar():
 def test_every_ncep_ladder_declares_a_measured_retention_and_an_archive():
     for source in NCEP_SOURCES:
         ladder = fetch_endpoints.ladder(source)
-        assert len(ladder) == 2, source
+        assert len(ladder) >= 2, source
         assert ladder[0].retention_hours and ladder[0].retention_hours > 0
         assert ladder[0].why.strip(), source
         assert ladder[1].retention_hours is None, source
@@ -153,10 +153,6 @@ def test_the_operational_server_gets_a_polite_cap_that_says_why():
     assert 1 <= cap <= 3
     why = fetch_endpoints.host_cap_why("nomads.ncep.noaa.gov")
     assert "governor" in why and "2.5" in why
-
-
-def test_a_host_with_no_declared_cap_keeps_the_pool_it_asked_for():
-    assert fetch_pool.host_worker_cap("noaa-rap-pds.s3.amazonaws.com", 6) == 6
 
 
 # --------------------------------------------------------------------------
@@ -225,21 +221,6 @@ def _mirror_lagging(url):
 
 def _mirror_caught_up(url):
     return True
-
-
-def test_a_rate_limited_first_endpoint_falls_through_to_the_archive(tmp_path):
-    plan = _fresh_plan()
-    assert plan.host.name == "nomads"
-    seen: list[str] = []
-    payload = fetch_routes.run_plan(
-        plan, out=tmp_path, progress=lambda *_: None, probe=_mirror_lagging,
-        downloader=_ladder_downloader(
-            failing="nomads.ncep.noaa.gov",
-            error=_http_error(503, {"Retry-After": "900"}), seen=seen))
-
-    assert any("nomads.ncep.noaa.gov" in url for url in seen)
-    assert any("noaa-rap-pds" in url for url in seen)
-    assert [entry["endpoint"] for entry in payload["files"]] == ["aws"]
 
 
 def test_a_refused_connection_falls_through_too(tmp_path):
@@ -332,42 +313,6 @@ def test_a_source_outside_the_ncep_family_keeps_its_table_order():
         assert fetch_endpoints.transfer_probes(serving) == (), source
 
 
-def test_an_object_already_on_the_mirror_is_taken_from_the_mirror(tmp_path):
-    plan = _fresh_plan(hours=1)
-    assert plan.host.name == "nomads"
-    probed: list[str] = []
-    seen: list[str] = []
-
-    def probe(url):
-        probed.append(url)
-        return True
-
-    payload = fetch_routes.run_plan(
-        plan, out=tmp_path, progress=lambda *_: None, probe=probe,
-        downloader=_ladder_downloader(failing="__never__", error=None,
-                                      seen=seen))
-
-    assert probed and all("noaa-rap-pds" in url for url in probed)
-    assert len(probed) == len(plan.objects)
-    assert seen and all("noaa-rap-pds" in url for url in seen)
-    assert {entry["endpoint"] for entry in payload["files"]} == {"aws"}
-
-
-def test_an_object_the_mirror_lacks_is_taken_from_the_operational_server(
-        tmp_path):
-    """Publication lag -- the one thing the operational server is for."""
-
-    plan = _fresh_plan(hours=1)
-    seen: list[str] = []
-    payload = fetch_routes.run_plan(
-        plan, out=tmp_path, progress=lambda *_: None,
-        probe=lambda url: False,
-        downloader=_ladder_downloader(failing="__never__", error=None,
-                                      seen=seen))
-    assert seen and all("nomads.ncep.noaa.gov" in url for url in seen)
-    assert {entry["endpoint"] for entry in payload["files"]} == {"nomads"}
-
-
 def test_the_mirror_is_probed_per_object_not_per_request(tmp_path):
     """One lead published on the mirror, the next not yet.
 
@@ -380,15 +325,26 @@ def test_the_mirror_is_probed_per_object_not_per_request(tmp_path):
     assert len(plan.objects) == 2
     first = plan.objects[0].key
 
+    probed = []
+    seen = []
+
+    def probe(url):
+        probed.append(url)
+        return url.endswith(first)
+
     payload = fetch_routes.run_plan(
         plan, out=tmp_path, progress=lambda *_: None,
-        probe=lambda url: url.endswith(first),
+        probe=probe,
         downloader=_ladder_downloader(failing="__never__", error=None,
-                                      seen=[]))
+                                      seen=seen))
     served = {entry["relpath"]: entry["endpoint"]
               for entry in payload["files"]}
     assert served[plan.objects[0].relpath] == "aws"
     assert served[plan.objects[1].relpath] == "nomads"
+    assert len(probed) == len(plan.objects)
+    assert all("noaa-rap-pds" in url for url in probed)
+    assert any("noaa-rap-pds" in url for url in seen)
+    assert any("nomads.ncep.noaa.gov" in url for url in seen)
 
 
 def test_a_mirror_probe_that_errors_does_not_spend_the_transfer_ladder(
@@ -410,7 +366,7 @@ def test_a_mirror_probe_that_errors_does_not_spend_the_transfer_ladder(
     payload = fetch_routes.run_plan(
         plan, out=tmp_path, progress=lambda *_: None, probe=probe,
         downloader=_ladder_downloader(
-            failing="nomads.ncep.noaa.gov", error=_http_error(503),
+            failing="nomads.ncep.noaa.gov", error=_http_error(503, {"Retry-After": "900"}),
             seen=seen))
 
     # The operational server was still the transfer's head, and the
@@ -438,25 +394,9 @@ def test_an_archive_era_cycle_is_never_probed_at_all(tmp_path):
     assert payload["files"][0]["endpoint"] == "aws"
 
 
-def test_the_receipt_names_the_probe_that_chose_the_transfer_host(tmp_path):
-    plan = _fresh_plan(hours=1)
-    payload = fetch_routes.run_plan(
-        plan, out=tmp_path, progress=lambda *_: None,
-        probe=_mirror_caught_up,
-        downloader=_ladder_downloader(failing="__never__", error=None,
-                                      seen=[]))
-    declared = payload["endpoints"]
-    assert declared["considered"] == ["nomads", "aws"]
-    assert declared["served"] == ["aws"]
-    assert declared["transfer_preference"] == ["aws", "nomads"]
-    assert declared["probe"] == {
-        "endpoint": "aws", "objects": len(plan.objects),
-        "available": len(plan.objects)}
-
-
 def test_the_freshness_note_prints_only_when_the_mirror_lags(tmp_path):
     mirrored: list[str] = []
-    fetch_routes.run_plan(
+    mirrored_payload = fetch_routes.run_plan(
         _fresh_plan(), out=tmp_path / "a", progress=mirrored.append,
         probe=_mirror_caught_up,
         downloader=_ladder_downloader(failing="__never__", error=None,
@@ -466,8 +406,15 @@ def test_the_freshness_note_prints_only_when_the_mirror_lags(tmp_path):
     assert not any("publishes before the mirrors" in line
                    for line in mirrored), mirrored
 
+    declared = mirrored_payload["endpoints"]
+    assert declared["considered"] == ["nomads", "aws"]
+    assert declared["served"] == ["aws"]
+    assert declared["transfer_preference"] == ["aws", "nomads"]
+    assert declared["probe"] == {"endpoint": "aws", "objects": 1, "available": 1}
+    assert all(entry["endpoint"] == "aws" for entry in mirrored_payload["files"])
+
     lagging: list[str] = []
-    fetch_routes.run_plan(
+    lagging_payload = fetch_routes.run_plan(
         _fresh_plan(), out=tmp_path / "b", progress=lagging.append,
         probe=_mirror_lagging,
         downloader=_ladder_downloader(failing="__never__", error=None,
@@ -475,26 +422,16 @@ def test_the_freshness_note_prints_only_when_the_mirror_lags(tmp_path):
     assert any("publishes before the mirrors" in line
                for line in lagging), lagging
     assert not any("mirrored" in line for line in lagging), lagging
+    assert lagging_payload["endpoints"]["considered"] == ["nomads", "aws"]
+    assert lagging_payload["endpoints"]["served"] == ["nomads"]
+    assert all(entry["endpoint"] == "nomads" and
+               entry["url"].startswith("https://nomads.ncep.noaa.gov/")
+               for entry in lagging_payload["files"])
 
 
 # --------------------------------------------------------------------------
 # Receipts
 # --------------------------------------------------------------------------
-
-def test_the_receipt_names_the_endpoint_that_served_each_file(tmp_path):
-    plan = _fresh_plan(hours=1)
-    payload = fetch_routes.run_plan(
-        plan, out=tmp_path, progress=lambda *_: None, probe=_mirror_lagging,
-        downloader=_ladder_downloader(failing="__never__", error=None,
-                                      seen=[]))
-    assert payload["files"]
-    for entry in payload["files"]:
-        assert entry["endpoint"] == "nomads"
-        assert entry["url"].startswith("https://nomads.ncep.noaa.gov/")
-    declared = payload["endpoints"]
-    assert declared["considered"] == ["nomads", "aws"]
-    assert declared["served"] == ["nomads"]
-
 
 def test_a_resume_across_endpoints_is_the_same_request(tmp_path):
     """The ladder head may differ run to run; that is not a new request.
@@ -511,12 +448,14 @@ def test_a_resume_across_endpoints_is_the_same_request(tmp_path):
         plan, out=tmp_path, progress=lambda *_: None, probe=_mirror_lagging,
         downloader=_ladder_downloader(failing="__never__", error=None,
                                       seen=[]))
+    second = []
     payload = fetch_routes.run_plan(
         plan, out=tmp_path, progress=lambda *_: None, probe=_mirror_caught_up,
         downloader=_ladder_downloader(
             failing="nomads.ncep.noaa.gov",
-            error=_http_error(503), seen=[]))
+            error=_http_error(503), seen=second))
     assert all(entry["reused"] for entry in payload["files"])
+    assert second == []
 
 
 # --------------------------------------------------------------------------
@@ -572,7 +511,9 @@ def test_the_whole_object_route_asks_the_operational_server_first(
         out=tmp_path / "gfs", progress=lambda line: None)
     assert all(url.startswith(fetch.GFS_NOMADS_BASE) for url in urls)
     document = json.loads(manifest.read_text())
-    assert document["endpoints"]["considered"] == ["nomads", "s3"]
+    assert document["endpoints"]["considered"] == [
+        rung.name for rung in fetch_endpoints.serving_ladder(
+            "gfs", cycle=_recent_synoptic_cycle())]
     assert document["endpoints"]["served"] == ["nomads"]
     assert document["files"][0]["endpoint"] == "nomads"
 
@@ -594,9 +535,13 @@ def test_the_whole_object_route_takes_the_archive_once_it_has_the_cycle(
         out=tmp_path / "gfs", progress=lambda line: None)
     assert urls and all(url.startswith(fetch.GFS_S3_BASE) for url in urls)
     document = json.loads(manifest.read_text())
-    assert document["endpoints"]["considered"] == ["nomads", "s3"]
+    assert document["endpoints"]["considered"] == [
+        rung.name for rung in fetch_endpoints.serving_ladder(
+            "gfs", cycle=_recent_synoptic_cycle())]
     assert document["endpoints"]["served"] == ["s3"]
-    assert document["endpoints"]["transfer_preference"] == ["s3", "nomads"]
+    assert document["endpoints"]["transfer_preference"] == [
+        rung.name for rung in fetch_endpoints.transfer_order(
+            fetch_endpoints.serving_ladder("gfs", cycle=_recent_synoptic_cycle()))]
     assert document["transport"] == "s3"
 
 

@@ -1,0 +1,29 @@
+{
+  "schema": "gpuwm-sfire-albers-crs-v1",
+  "crs": {
+    "EPSG:5070": {
+      "lat_1": 29.5,
+      "lat_2": 45.5,
+      "lat_0": 23.0,
+      "lon_0": -96.0,
+      "false_easting": 0.0,
+      "false_northing": 0.0
+    },
+    "EPSG:3338": {
+      "lat_1": 55.0,
+      "lat_2": 65.0,
+      "lat_0": 50.0,
+      "lon_0": -154.0,
+      "false_easting": 0.0,
+      "false_northing": 0.0
+    },
+    "ESRI:102007": {
+      "lat_1": 8.0,
+      "lat_2": 18.0,
+      "lat_0": 13.0,
+      "lon_0": -157.0,
+      "false_easting": 0.0,
+      "false_northing": 0.0
+    }
+  }
+}

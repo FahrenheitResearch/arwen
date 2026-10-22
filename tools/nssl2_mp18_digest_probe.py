@@ -84,10 +84,16 @@ def _seeded_fields(nz: int, ny: int, nx: int):
     return fields, environment
 
 
-def run_probe(steps: int = 3, nz: int = 40, ny: int = 4, nx: int = 4):
+_OUTPUT_PRECIPITATION = (
+    "rainnc", "rainncv", "snownc", "snowncv",
+    "graupelnc", "graupelncv", "hailnc", "hailncv", "sr",
+)
+
+
+def _run_one(mode, fields, environment, steps: int):
+    """Advance one variant on given inputs; return host outputs and inputs."""
     import cupy as cp
 
-    import gpuwm
     from gpuwm.core.nssl2_driver_support import NSSL2DriverWorkspace
     from gpuwm.core.nssl2_fused_gs import launch_fused_gs
     from gpuwm.core.nssl2_nucond import launch_nucond
@@ -98,27 +104,25 @@ def run_probe(steps: int = 3, nz: int = 40, ny: int = 4, nx: int = 4):
         run_nssl2_production_step,
     )
 
-    print(f"gpuwm.__file__ = {gpuwm.__file__}")
-
-    fields, env = _seeded_fields(nz, ny, nx)
+    inputs = {name: value.copy() for name, value in fields.items()}
     device = {name: cp.asarray(value) for name, value in fields.items()}
-    theta = cp.asarray(env["theta"])
-    rho = cp.asarray(env["rho"])
-    pressure = cp.asarray(env["pressure"])
-    exner = cp.asarray(env["exner"])
-    w = cp.asarray(env["w"])
-    dz = cp.asarray(env["dz"])
+    shape = fields["qv"].shape
+    nz, ny, nx = shape
+    theta = cp.asarray(environment["theta"])
+    rho = cp.asarray(environment["rho"])
+    pressure = cp.asarray(environment["pressure"])
+    exner = cp.asarray(environment["exner"])
+    w = cp.asarray(environment["w"])
+    dz = cp.asarray(environment["dz"])
     dt = 4.0
 
-    shape = (nz, ny, nx)
     registry = NSSL2RegistryFields(**device)
     precipitation = NSSL2PrecipitationFields(**{
         name: cp.zeros((ny, nx), dtype=cp.float32)
-        for name in ("rainnc", "rainncv", "snownc", "snowncv",
-                     "graupelnc", "graupelncv", "hailnc", "hailncv", "sr")
+        for name in _OUTPUT_PRECIPITATION
     })
 
-    temperature_k = cp.asarray(env["temperature"])
+    temperature_k = cp.asarray(environment["temperature"])
     ss_scratch = cp.empty(shape, dtype=cp.float32)
     fused_temperature = cp.empty(shape, dtype=cp.float32)
     primary_ice = cp.empty(shape, dtype=cp.float32)
@@ -126,7 +130,8 @@ def run_probe(steps: int = 3, nz: int = 40, ny: int = 4, nx: int = 4):
     def fused_gs(workspace: NSSL2DriverWorkspace) -> None:
         launch_fused_gs(
             workspace, theta, rho, pressure, exner, w,
-            fused_temperature, primary_ice, dz, dt)
+            fused_temperature, primary_ice, dz, dt,
+            hail_on=mode.hail)
 
     def nucond_qvexcess(workspace: NSSL2DriverWorkspace) -> None:
         launch_nucond(
@@ -137,7 +142,9 @@ def run_probe(steps: int = 3, nz: int = 40, ny: int = 4, nx: int = 4):
             workspace.field("qnr"), workspace.field("qni"),
             workspace.field("qns"), workspace.field("qnn"),
             dt, supersaturation_scratch=ss_scratch,
-            concentration_space=True, validate_values=False,
+            concentration_space=True,
+            predicted_ccn=mode.predicted_ccn,
+            validate_values=False,
             frozen=tuple(workspace.field(name) for name in (
                 "qg", "qh", "qng", "qnh", "qvolg", "qvolh")))
 
@@ -165,20 +172,32 @@ def run_probe(steps: int = 3, nz: int = 40, ny: int = 4, nx: int = 4):
             radiation_due=True,
             re_cloud_m=re_cloud, re_ice_m=re_ice, re_snow_m=re_snow,
             validate_values=False,
+            mode=mode,
         )
 
-    digests = {}
     outputs = dict(device)
     outputs["theta"] = theta
     outputs["refl_10cm"] = refl
     outputs["re_cloud"] = re_cloud
     outputs["re_ice"] = re_ice
     outputs["re_snow"] = re_snow
-    for name in ("rainnc", "rainncv", "snownc", "snowncv", "graupelnc",
-                 "graupelncv", "hailnc", "hailncv", "sr"):
+    for name in _OUTPUT_PRECIPITATION:
         outputs[name] = getattr(precipitation, name)
+    return ({name: cp.asnumpy(value) for name, value in outputs.items()},
+            inputs)
+
+
+def run_probe(steps: int = 3, nz: int = 40, ny: int = 4, nx: int = 4):
+    import gpuwm
+    from gpuwm.core.nssl2_contract import DEFAULT_MODE
+
+    print(f"gpuwm.__file__ = {gpuwm.__file__}")
+
+    fields, environment = _seeded_fields(nz, ny, nx)
+    outputs, _ = _run_one(DEFAULT_MODE, fields, environment, steps)
+    digests = {}
     for name in sorted(outputs):
-        host = cp.asnumpy(outputs[name])
+        host = outputs[name]
         if not np.all(np.isfinite(host)):
             raise RuntimeError(f"non-finite values in {name}")
         digests[name] = hashlib.sha256(host.tobytes()).hexdigest()

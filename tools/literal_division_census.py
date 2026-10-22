@@ -176,6 +176,9 @@ def production_units(root) -> list[Unit]:
         remaining = K._extra_header_text(name, kdir)
         parts = []
         from gpuwm.wrf_exact import ENABLED
+        if not ENABLED and name == "nssl2":
+            # Inline math aliases are loader text rather than a header file.
+            return [("<nssl2 default math>", remaining)]
         while remaining:
             matches = [(p.name, p.read_text(encoding="utf-8"))
                        for p in sorted(p for p in kdir.iterdir() if p.is_file())]
@@ -436,7 +439,14 @@ def _plain_division_on(line_text: str) -> bool:
     return "/" in code
 
 
-def rewrite_sites(unit: Unit, arch: str = "compute_120") -> dict:
+def _flush_counts(unit: Unit, arch: str, flush: str):
+    """The per-line quotient and immediate counts of ``unit`` compiled
+    for ``arch`` under one flush mode (``-ftz=false`` or ``-ftz=true``)."""
+    base = tuple(unit.options) + ("-lineinfo", f"-arch={arch}")
+    return _line_counts(compile_ptx(unit.source, base + (flush,)))
+
+
+def rewrite_sites(unit: Unit, arch: str = "compute_120", counts=None) -> dict:
     """Source lines whose float division ``arch`` compiles under
     ``-ftz=true`` as a multiply by an immediate where the same architecture
     under ``-ftz=false`` keeps a ``div.rn``: the line loses an IEEE quotient
@@ -453,9 +463,13 @@ def rewrite_sites(unit: Unit, arch: str = "compute_120") -> dict:
     if unflushed_route(unit.options):
         return {"unit": unit.key, "arch": arch, "rewritten_sites": [],
                 "unflushed_route": True}
-    base = tuple(unit.options) + ("-lineinfo", f"-arch={arch}")
-    before = _line_counts(compile_ptx(unit.source, base + ("-ftz=false",)))
-    after = _line_counts(compile_ptx(unit.source, base + ("-ftz=true",)))
+    if counts is None:
+        before = _flush_counts(unit, arch, "-ftz=false")
+        after = _flush_counts(unit, arch, "-ftz=true")
+    else:
+        # The two compiles were run elsewhere (census_tree's workers):
+        # (-ftz=false counts, -ftz=true counts) of this unit under arch.
+        before, after = counts
     source_lines = unit.source.splitlines()
     sites = []
     for key in sorted(set(before) | set(after)):
@@ -484,6 +498,117 @@ def rewrite_sites(unit: Unit, arch: str = "compute_120") -> dict:
 
 def census(root, units=None) -> list[dict]:
     return [census_unit(u) for u in (units or production_units(root))]
+
+
+#: The two whole-tree passes :func:`census_tree` can run, by name.
+_PASSES = ("immediate", "rewrites")
+
+#: Per worker process: the units of the tree it was started for, so each
+#: unit's source crosses the process boundary once (as an index), not once
+#: per call.
+_WORKER_UNITS: dict[str, list[Unit]] = {}
+
+
+def _worker_init(root: str) -> None:
+    # The worker is a fresh interpreter (spawn): put the tree under test on
+    # its path so ``gpuwm`` and ``tools`` resolve to that tree, assemble its
+    # units once, and initialise NVRTC once here rather than on the first
+    # compile of every unit.
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from cupy.cuda import nvrtc
+    nvrtc.getVersion()
+    _WORKER_UNITS[root] = production_units(root)
+
+
+def _worker_compile(job: tuple[str, int, str, str | None]):
+    """One NVRTC compile: the immediate census of a unit (``flush`` None)
+    or the line counts of a unit under one flush mode of the rewrite pass.
+    ``None`` for a unit NVRTC refuses alone: a fragment compiled through
+    another unit (p3 via p3_device) or an --ftz=false RRTMG source; the
+    census covers the fragments through their real units and the callers
+    count only the units that compiled."""
+    root, index, arch, flush = job
+    units = _WORKER_UNITS.get(root)
+    if units is None:
+        _worker_init(root)
+        units = _WORKER_UNITS[root]
+    try:
+        if flush is None:
+            return census_unit(units[index], arch)
+        return _flush_counts(units[index], arch, flush)
+    except Exception:
+        return None
+
+
+def census_tree(root, pass_name: str = "immediate", arch: str | None = None,
+                workers: int | None = None) -> list[tuple[str, dict | None]]:
+    """Run one census pass over every production unit of the tree at
+    ``root``, compiling concurrently, one NVRTC per worker.
+
+    Returns ``[(unit.key, row)]`` in :func:`production_units` order, with
+    ``None`` for a unit NVRTC refused alone, so the result is the serial
+    loop's (``census_unit`` or ``rewrite_sites`` per unit), whatever the
+    number of workers.  The pass is ``"immediate"`` (:func:`census_unit`,
+    compute_89) or ``"rewrites"`` (:func:`rewrite_sites`, compute_120); the
+    flags each unit compiles with are the same as in the serial loop, since
+    the same functions compile it.  The rewrite pass's two compiles of a
+    unit (one per flush mode) are separate tasks, so the longest unit
+    bounds the wall by one compile, not two; the comparison runs here.
+
+    Each worker is a fresh interpreter (the spawn start method): NVRTC
+    holds process-wide state that a forked child inherits half-built, and
+    CuPy's NVRTC binding in a forked worker can block on it.  ``workers``
+    defaults to one per core, capped at the number of tasks and at 32 (one
+    compile takes one core; more lanes than cores only add memory).  The
+    largest sources are submitted first, so the slowest compiles start at
+    once instead of after the queue has drained around them.
+    """
+    import os
+    from concurrent.futures import ProcessPoolExecutor
+    from multiprocessing import get_context
+
+    if pass_name not in _PASSES:
+        raise ValueError(f"pass must be one of {_PASSES}, not {pass_name!r}")
+    arch = arch or ("compute_120" if pass_name == "rewrites"
+                    else "compute_89")
+    root = str(Path(root).resolve())
+    units = production_units(root)
+    rows: list = [None] * len(units)
+    jobs: list[tuple[str, int, str, str | None]] = []
+    for index, unit in enumerate(units):
+        if pass_name == "immediate":
+            if unflushed_route(unit.options):
+                rows[index] = census_unit(unit, arch)   # no compile
+            else:
+                jobs.append((root, index, arch, None))
+        elif unflushed_route(unit.options):
+            rows[index] = rewrite_sites(unit, arch)      # no compile
+        else:
+            jobs.append((root, index, arch, "-ftz=false"))
+            jobs.append((root, index, arch, "-ftz=true"))
+    jobs.sort(key=lambda job: -len(units[job[1]].source))
+    if workers is None:
+        cores = getattr(os, "process_cpu_count", os.cpu_count)() or 1
+        workers = max(1, min(len(jobs), cores, 32))
+    results = {}
+    if jobs:
+        with ProcessPoolExecutor(max_workers=workers,
+                                 mp_context=get_context("spawn"),
+                                 initializer=_worker_init,
+                                 initargs=(root,)) as pool:
+            for job, result in zip(jobs, pool.map(_worker_compile, jobs)):
+                results[job[1:]] = result
+    for index, unit in enumerate(units):
+        if pass_name == "immediate":
+            if (index, arch, None) in results:
+                rows[index] = results[(index, arch, None)]
+        elif (index, arch, "-ftz=false") in results:
+            before = results[(index, arch, "-ftz=false")]
+            after = results[(index, arch, "-ftz=true")]
+            if before is not None and after is not None:
+                rows[index] = rewrite_sites(unit, arch, counts=(before, after))
+    return [(unit.key, row) for unit, row in zip(units, rows)]
 
 
 def main(argv=None) -> int:

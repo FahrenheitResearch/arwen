@@ -1,0 +1,18 @@
+[package]
+name = "posted_forecast_reader"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+grib-core = { path = "../grib1_bridge/vendor/grib-core", default-features = false, features = ["jpeg2000"] }
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+
+[profile.release]
+strip = "debuginfo"

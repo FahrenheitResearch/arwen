@@ -6,11 +6,9 @@ filter, MPI log routing, the fork's extra diagnostics -- each read whole,
 inert when off, a declared divergence the report prints when on -- and the
 fork's HRRR-Smoke chemistry (chem_opt = 18).  Since 2026-10-12 (the owner's
 ruling) chemistry is never imported to run with none: the smoke maps onto
-WOOF's ``smoke`` set, and the four smoke settings WOOF does not carry
-(smoke dry deposition, the fork's enhanced smoke mixing, its flaming
-fraction, and the smoke's direct radiative feedback) are refused by name,
-all four in one refusal, beside its HAILCAST request (refused by name: the
-package does not run on this line).  Its cycle-state switch (cycling = .true.) is run,
+WOOF's ``smoke`` set, and since 2026-10-21 the fork's four smoke settings
+(smoke dry deposition 111, the enhanced smoke mixing, the flaming fraction
+and the smoke's direct radiative feedback) are carried as run fields. Its HAILCAST request is translated to the GPU package.  Its cycle-state switch (cycling = .true.) is run,
 so it reaches [shared] cycling.
 """
 from __future__ import annotations
@@ -53,19 +51,21 @@ def _input(tmp_path: Path, edit=None) -> Path:
     return path
 
 
-def test_unmodified_operational_namelist_refuses_exactly_the_uncarried_smoke(
+def test_unmodified_operational_namelist_imports_every_smoke_setting(
         tmp_path):
-    assert hashlib.sha256(OPERATIONAL.read_bytes()).hexdigest() \
-        == OPERATIONAL_SHA256
-    with pytest.raises(NamelistRefusal) as caught:
-        import_namelists(_wps(tmp_path), OPERATIONAL)
-    message = str(caught.value)
-    assert "refuses 5 setting(s)" in message
-    for key in ("aer_drydep_opt", "enh_vermix", "flam_part",
-                "simple_dir_fdb"):
-        assert f"&chem {key} = " in message, key
-    assert "&physics hailcast_opt = " in message
-    assert "shortwave would not be reduced under smoke" in message
+    """NOAA's own file, untouched: the four fork smoke settings that were
+    refused until 2026-10-21 are carried (simple_dir_fdb: the smoke AOD in
+    the aer_opt = 3 shortwave; enh_vermix; flam_part; aer_drydep_opt =
+    111), each a RunConfig field the forecast reads."""
+    assert hashlib.sha256(OPERATIONAL.read_bytes()).hexdigest()         == OPERATIONAL_SHA256
+    text, _report = import_namelists(_wps(tmp_path), OPERATIONAL)
+    shared = tomllib.loads(text)["shared"]
+    assert shared["chem_sets"] == "smoke"
+    assert shared["chem_sources"] == "rave-3km,rap-native-smoke,hrrr-native-smoke"
+    assert shared["simple_dir_fdb"] == 1
+    assert shared["enh_vermix"] is True
+    assert shared["flam_part"] == 0.75
+    assert shared["aer_drydep_opt"] == 111
 
 
 def test_operational_namelist_imports_with_its_smoke_mapped(tmp_path):
@@ -81,7 +81,8 @@ def test_operational_namelist_imports_with_its_smoke_mapped(tmp_path):
     # own smoke as start and boundary state, with the namelist's washout
     # and hourly plume.
     assert shared["chem_sets"] == "smoke"
-    assert shared["chem_sources"] == "rave-3km,hrrr-native-smoke"
+    # have_bcs_chem: RAP's smoke at the edges, HRRR's own as the start.
+    assert shared["chem_sources"] == "rave-3km,rap-native-smoke,hrrr-native-smoke"
     assert shared["wetscav_onoff"] == -1
     assert shared["plumerisefire_frq"] == 60
     divergences = {s.key: s for s in report.substitutions if s.reason}
@@ -95,11 +96,18 @@ def test_operational_namelist_imports_with_its_smoke_mapped(tmp_path):
     assert "cycling" not in {s.key for s in report.substitutions}
     assert ("time_control", "cycling") not in {
         (d.section, d.key) for d in report.dropped}
-    for key in ("gsd_diagnostics",
-                "prec_acc_dt", "prec_acc_dt1",
-                "interp_type", "lagrange_order", "rebalance",
-                "seaice_threshold"):
+    for key in ("interp_type", "lagrange_order", "rebalance"):
         assert key in divergences, key
+    # The fork's output controls are carried, not substituted (2.9.4):
+    # interval precipitation buckets and the gsd_diagnostics maxima.
+    assert (shared["gsd_diagnostics"], shared["prec_acc_dt"],
+            shared["prec_acc_dt1"]) == (1, 60.0, 15.0)
+    for key in ("gsd_diagnostics", "prec_acc_dt", "prec_acc_dt1"):
+        assert key not in divergences, key
+    # real.exe's open-water-to-ice threshold is carried, not substituted
+    # (RunConfig.seaice_threshold, gpuwm/ingest/soil.py).
+    assert shared["seaice_threshold"] == 271.4
+    assert "seaice_threshold" not in divergences
     # ra_sw_eclipse = 1 is exact here, not a divergence: WRF's eclipse table
     # has no eclipse on 2018-08-26, so WRF computes zero obscuration at
     # every call (tests/test_namelist_door_rule.py refuses a run that has
@@ -115,7 +123,6 @@ def test_operational_namelist_imports_with_its_smoke_mapped(tmp_path):
                          ("logging", "stderr_logging"),
                          ("chem", "phot_opt"),
                          ("chem", "simple_dir_fdb"),
-                         ("time_control", "history_interval2"),
                          ("time_control", "diag_int"),
                          ("physics", "co2tf"),
                          ("dynamics", "tke_mix6_off")):
@@ -154,12 +161,16 @@ def test_chemistry_off_is_inert(tmp_path):
     assert "chem_opt = 0" in dropped[("chem", "biomass_burn_opt")]
 
 
-def test_history_cadence_switch_inside_the_run_is_declared(tmp_path):
+def test_history_cadence_switch_inside_the_run_is_carried(tmp_path):
+    """history_interval2 / history_interval_change run as the fork runs
+    them (2.9.4): 15 min history, hourly after the change."""
     path = _input(tmp_path, lambda t: t.replace(
         "history_interval_change             = 1080,",
         "history_interval_change             = 120,"))
-    _, report = import_namelists(_wps(tmp_path), path)
-    assert "history_interval2" in {s.key for s in report.substitutions}
+    text, report = import_namelists(_wps(tmp_path), path)
+    assert "history_interval2" not in {s.key for s in report.substitutions}
+    assert "history_interval2_s = 3600.0" in text
+    assert "history_interval_change_s = 7200.0" in text
 
 
 def test_requested_fog_settling_still_refuses_under_mp28(tmp_path):

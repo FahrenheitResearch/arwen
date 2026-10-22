@@ -11,21 +11,8 @@ use serde_json::{Value, json};
 use wx_core::grib2::writer::{Grib2Writer, MessageBuilder, PackingMethod, StatisticalInterval};
 use wx_core::grib2::{GridDefinition, ProductDefinition};
 
-struct Scratch(PathBuf);
-
-impl Scratch {
-    fn new(tag: &str) -> Self {
-        let root = std::env::temp_dir().join(format!("rw-sw-compare-{tag}-{}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
-        Self(root)
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+mod support;
+use support::Scratch;
 
 fn reference_message(parameter: u8, level: u8, hour: u32, value: f64) -> MessageBuilder {
     let grid = GridDefinition {
@@ -132,7 +119,7 @@ fn compare_product(
 #[test]
 fn native_sw_sheet_reads_both_dswrf_aliases_without_averages_or_wrong_leads() {
     for alias in [7, 192] {
-        let scratch = Scratch::new(&format!("alias-{alias}"));
+        let scratch = Scratch::new("rw-sw-compare", &format!("alias-{alias}"));
         let frame = stored_plane_fixture::write_regular_shortwave_frame(&scratch.0, 3600, 535.0);
         let reference = scratch.0.join("hrrr.t00z.wrfsfcf01.grib2");
         write_reference(&reference, alias, true);
@@ -191,7 +178,7 @@ fn native_sw_sheet_reads_both_dswrf_aliases_without_averages_or_wrong_leads() {
 
 #[test]
 fn native_sw_sheet_refuses_average_without_instantaneous_surface_flux() {
-    let scratch = Scratch::new("average-only");
+    let scratch = Scratch::new("rw-sw-compare", "average-only");
     let frame = stored_plane_fixture::write_regular_shortwave_frame(&scratch.0, 3600, 535.0);
     let reference = scratch.0.join("hrrr.t00z.wrfsfcf01.grib2");
     write_reference(&reference, 7, false);
@@ -229,7 +216,7 @@ fn native_catalog_exposes_sw_product() {
 fn existing_temperature_sheet_is_byte_identical_to_staging() {
     let baseline =
         PathBuf::from(std::env::var_os("RW_SW_COMPARE_BASELINE").expect("staging executable"));
-    let scratch = Scratch::new("old-temperature");
+    let scratch = Scratch::new("rw-sw-compare", "old-temperature");
     let frame = stored_plane_fixture::write_regular_shortwave_frame(&scratch.0, 3600, 535.0);
     let reference = scratch.0.join("hrrr.t00z.wrfsfcf01.grib2");
     let temperature = reference_message(0, 103, 1, 295.0).product(ProductDefinition {

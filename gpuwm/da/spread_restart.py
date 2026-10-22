@@ -18,6 +18,7 @@ import uuid
 
 import numpy as np
 
+from gpuwm.da.member_wave import sha256 as _file_sha
 from gpuwm.da.spread_repair import (
     AdaptiveInflationState, SpreadRepairController, SCHEMA as STATE_SCHEMA)
 
@@ -31,14 +32,6 @@ class SpreadRestartError(ValueError):
 def _digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True,
         separators=(",", ":"), allow_nan=False).encode("utf-8")).hexdigest()
-
-
-def _file_sha(path):
-    result = hashlib.sha256()
-    with Path(path).open("rb") as stream:
-        for block in iter(lambda: stream.read(8 * 1024 * 1024), b""):
-            result.update(block)
-    return result.hexdigest()
 
 
 def _utc(value):

@@ -30,13 +30,6 @@ def backend_name(value: Any) -> str:
     return "cupy" if is_cupy_array(value) else "numpy"
 
 
-def asnumpy(value: Any) -> np.ndarray:
-    if is_cupy_array(value):
-        import cupy as cp
-        return cp.asnumpy(value)
-    return np.asarray(value)
-
-
 def scalar(value: Any) -> float:
     """Move one scalar to the host without copying its parent array."""
     if is_cupy_array(value):
@@ -51,5 +44,5 @@ def synchronize(value: Any) -> None:
         cp.cuda.get_current_stream().synchronize()
 
 
-__all__ = ["asnumpy", "backend_name", "is_cupy_array", "namespace", "scalar",
+__all__ = ["backend_name", "is_cupy_array", "namespace", "scalar",
            "synchronize"]

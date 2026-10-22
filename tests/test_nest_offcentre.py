@@ -283,87 +283,8 @@ def test_registration_guard_refuses_stencil_overrun_per_side():
         _register(ratio, centred, PARENT - span + 1, "m", "bdy")
 
 
-# --- coupler-level fixtures (the test_nest_coupler.py pattern, with the
-# --- placement as a parameter and a 24-cell parent so a 10-cell child can
-# --- sit at genuinely asymmetric legal extremes) -------------------------
-
-def _run_cfg(nx, ny, *, nested, grid_id):
-    from gpuwm.config import RunConfig
-
-    return RunConfig(nx=nx, ny=ny, nz=2, dx=1000.0, dy=1000.0,
-                     ztop=10000.0, dt=3.0, run_seconds=9.0,
-                     nested=nested, specified=not nested,
-                     grid_id=grid_id, spec_bdy_width=5, spec_zone=1,
-                     relax_zone=4)
-
-
-def _clock(grid_id, parent_id, *, step_ticks, dt, advanced=False):
-    from gpuwm.core.clock import DomainClock, DomainTicks
-
-    spec = DomainTicks(
-        grid_id=grid_id, parent_id=parent_id, parent_time_step_ratio=3,
-        step_ticks=step_ticks, dt_fp32=np.float32(dt),
-        history_ticks=100, restart_ticks=None, radt_ticks=None,
-        stepra=None, cudt_ticks=None, stepcu=None, bldt_ticks=None,
-        stepbl=None)
-    clock = DomainClock(spec, tick_den=1, run_ticks=1000)
-    if advanced:
-        clock.advance()
-    return clock
-
-
-class _State:
-    def __init__(self, run):
-        nz, ny, nx = run.nz, run.ny, run.nx
-        self.mub2d = (np.arange(ny * nx, dtype=np.float32)
-                      .reshape(ny, nx) / 9 + 5)
-        self.mup = np.full((ny, nx), np.float32(0.25))
-        self.u = np.full((nz, ny, nx + 1), np.float32(2.0))
-        self.v = np.full((nz, ny + 1, nx), np.float32(-1.5))
-        self.w = np.full((nz + 1, ny, nx), np.float32(0.75))
-        self.thp = np.full((nz, ny, nx), np.float32(1.25))
-        self.php = np.full((nz + 1, ny, nx), np.float32(3.0))
-        self.thb = np.array([300.0, 302.0], dtype=np.float32)
-        self.c1h = np.array([0.8, 0.6], dtype=np.float32)
-        self.c2h = np.array([1.0, 2.0], dtype=np.float32)
-        self.c1f = np.array([1.0, 0.7, 0.4], dtype=np.float32)
-        self.c2f = np.array([0.0, 1.5, 3.0], dtype=np.float32)
-        self.msft = np.full((ny, nx), np.float32(1.25))
-        self.msfu = np.full((ny, nx + 1), np.float32(1.5))
-        self.msfv = np.full((ny + 1, nx), np.float32(1.75))
-        self.qv = np.full((nz, ny, nx), np.float32(0.01))
-        self.has_msf = True
-        self._scratch = {}
-        self.lateral_boundaries = None
-
-    def scratch(self, shape, slot, dtype=None):
-        dtype = np.dtype(np.float32 if dtype is None else dtype)
-        shape = tuple(shape)
-        if slot not in self._scratch:
-            self._scratch[slot] = np.zeros(shape, dtype=dtype)
-        result = self._scratch[slot]
-        assert result.shape == shape and result.dtype == dtype
-        return result
-
-
-class _DeviceState:
-    def __init__(self, host, cp):
-        self._cp = cp
-        self._scratch = {}
-        for name, value in vars(host).items():
-            if name == "_scratch":
-                continue
-            setattr(self, name, cp.asarray(value) if isinstance(
-                value, np.ndarray) else value)
-
-    def scratch(self, shape, slot, dtype=None):
-        dtype = self._cp.dtype(self._cp.float32 if dtype is None else dtype)
-        shape = tuple(shape)
-        if slot not in self._scratch:
-            self._scratch[slot] = self._cp.zeros(shape, dtype=dtype)
-        result = self._scratch[slot]
-        assert result.shape == shape and result.dtype == dtype
-        return result
+# Reuse the coupler fixtures with a larger parent and qv-only inventory.
+from test_nest_coupler import _DeviceState, _State, _nodes
 
 
 #: A 10-parent-cell child in a 24-cell parent: the SINT guard admits
@@ -377,21 +298,9 @@ _COUPLER_PLACEMENTS = {
 
 
 def _coupler_nodes(ipos, jpos):
-    prun = _run_cfg(24, 24, nested=False, grid_id=1)
-    crun = _run_cfg(30, 30, nested=True, grid_id=2)
-    pcfg = SimpleNamespace(grid_id=1, parent_id=0, parent_grid_ratio=1,
-                           i_parent_start=1, j_parent_start=1, run=prun)
-    ccfg = SimpleNamespace(grid_id=2, parent_id=1, parent_grid_ratio=3,
-                           i_parent_start=ipos, j_parent_start=jpos,
-                           run=crun)
-    parent = SimpleNamespace(
-        cfg=pcfg, state=_State(prun),
-        clock=_clock(1, 0, step_ticks=3, dt=9.0, advanced=True))
-    child_clock = _clock(2, 1, step_ticks=1, dt=3.0)
-    child_clock.prepare_step()
-    child = SimpleNamespace(cfg=ccfg, state=_State(crun), parent=parent,
-                            clock=child_clock)
-    return parent, child
+    return _nodes(
+        parent_shape=(24, 24), child_start=(ipos, jpos),
+        state_factory=lambda run: _State(run, moisture_fields=("qv",)))
 
 
 def test_coupler_registration_manifest_holds_at_offcentre_placements():

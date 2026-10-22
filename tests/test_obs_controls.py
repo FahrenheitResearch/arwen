@@ -13,8 +13,6 @@ remembered to run is not a qualification.
 
 from __future__ import annotations
 
-import warnings
-
 import numpy as np
 import pytest
 
@@ -24,15 +22,8 @@ from gpuwm.verify.obs.stations import StationPosition, shuffle_positions
 
 from test_obs_battery import (
     CENTER_LAT, CENTER_LON, INIT, LEADS, MemoryArm, _reflectivity_obs,
-    _registration, _station_fixture,
+    _quiet_stub_warnings, _registration, _station_fixture,
 )
-
-
-@pytest.fixture(autouse=True)
-def _quiet_stub_warnings():
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", stubs.ObsStubWarning)
-        yield
 
 
 # --------------------------------------------------------------------------

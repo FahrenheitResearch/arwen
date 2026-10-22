@@ -157,11 +157,6 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _canonical(value) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"),
-                      ensure_ascii=True, allow_nan=False).encode("utf-8")
-
-
 def config_declares_follow_source(exp) -> bool:
     """Does this experiment move a nest during the run?
 
@@ -177,12 +172,49 @@ def config_declares_follow_source(exp) -> bool:
     Bounds-only ``[relocation]`` (enabled, but naming neither a follow
     source nor an explicit itinerary) is not a moving nest: it
     constrains where a nest may sit, and the nest stays put.
+
+    THE SUBJECT COMES FROM THE SAME READ, through
+    :func:`declared_follow_subjects`, so no door has to reconstruct
+    which table said so.
     """
-    relocation = exp.relocation
-    return bool((relocation.enabled
-                 and (relocation.follow is not None or relocation.moves))
-                or any(getattr(dc, "follow", None) is not None
-                       for dc in getattr(exp, "domains", ())))
+    subjects = declared_follow_subjects(exp)
+    return bool(subjects["follower_grid_ids"]
+                or subjects["relocation_declares_follow"])
+
+
+def declared_follow_subjects(exp) -> dict[str, object]:
+    """WHICH tables declare this experiment's moving nest, and on which grids.
+
+    The predicate and its subject are one read, because a refusal that
+    names a table the configuration does not carry sends its reader to
+    edit a file they have not got, and a way out that withdraws one of
+    two live declarations clears nothing while the other stands.
+
+    NOT the mover set.  :func:`moving_grid_ids` answers a different
+    question -- which grids MOVE, which includes a ``[relocation]``
+    mover's containment ancestor, a grid that declares nothing at all --
+    and a sentence built from it stated as fact that a domain carried a
+    ``[[domain]].follow`` it had never had.
+
+    ``follower_grid_ids`` are the grids whose ``[[domain]].follow`` is
+    present, ascending.  ``relocation_declares_follow`` is whether the
+    ``[relocation]`` table names a follow source or an itinerary, and
+    ``relocation_grid_id`` is the grid it moves when it does (``None``
+    when the table leaves it unset, which the corridor derivations
+    already treat as naming no mover).
+    """
+    followers = tuple(sorted(
+        int(dc.grid_id) for dc in getattr(exp, "domains", ())
+        if getattr(dc, "follow", None) is not None))
+    relocation = getattr(exp, "relocation", None)
+    declares = bool(relocation is not None
+                    and getattr(relocation, "enabled", False)
+                    and (getattr(relocation, "follow", None) is not None
+                         or getattr(relocation, "moves", ())))
+    grid_id = getattr(relocation, "grid_id", None) if declares else None
+    return {"follower_grid_ids": followers,
+            "relocation_declares_follow": declares,
+            "relocation_grid_id": None if grid_id is None else int(grid_id)}
 
 
 # ---------------------------------------------------------------------------
@@ -862,11 +894,15 @@ def build_child_statics_corridor(*, child_dc, parent_run, reference_grid,
         # (the full per-tile inventories would swell the preparation
         # document without adding a verifiable byte).
         "source_coverage": {
-            name: {
-                "required_cells": report["required_cells"],
-                "coverage_fraction": report["coverage_fraction"],
-                "required_tile_count": report["required_tile_count"],
-            }
+            # A dataset an off-grid static recipe substituted reports its
+            # substitution, not a tile census (static/build.py
+            # _with_off_grid_recipe); its row carries what it has.  The
+            # corridor of a 1 km nest under the HRRR native static source
+            # stopped here on KeyError 'required_cells' (a rented box, 18:44Z).
+            name: {key: report[key] for key in
+                   ("required_cells", "coverage_fraction", "required_tile_count")
+                   if key in report} or {key: report[key] for key in sorted(report)
+                                         if isinstance(report[key], (str, int, float, bool))}
             for name, report in sorted(coverage.items())
         },
     }
@@ -963,7 +999,21 @@ def emit_statics_corridor_set(*, exp, grids, static_catalog, directory,
             child = exp.domains[index_by_id[grid_id]]
             parent_run = exp.domains[index_by_id[int(child.parent_id)]].run
             plan = planned_corridor(exp, child)
-            yield build_child_statics_corridor(
+            # Several dormant storm slots of one shape on one parent reach
+            # the same whole frame on the same lattice, so their corridors
+            # are the same ground: built once, sealed per slot.  Only the
+            # last such build is held (the generator stays one-at-a-time).
+            key = _shared_ground_key(child, plan, grids[index_by_id[grid_id]])
+            if key is not None and shared[0] is not None and shared[0][0] == key:
+                first = shared[0][1]
+                yield CorridorBuild(
+                    grid_id=int(child.grid_id), fields=first.fields,
+                    entry={**first.entry, **plan.geometry,
+                           "reach": json.loads(json.dumps(plan.reach, allow_nan=False)),
+                           "shared_ground_with": f"d{int(first.grid_id):02d}"})
+                continue
+            shared[0] = None
+            build = build_child_statics_corridor(
                 child_dc=child, parent_run=parent_run,
                 reference_grid=grids[index_by_id[grid_id]],
                 static_catalog=static_catalog,
@@ -971,7 +1021,29 @@ def emit_statics_corridor_set(*, exp, grids, static_catalog, directory,
                 reach=plan.reach,
                 **({} if static_highres is None
                    else {"static_highres": static_highres}))
+            if key is not None:
+                shared[0] = (key, build)
+            yield build
+    shared: list = [None]
     return write_statics_corridor_set(Path(directory), builds())
+
+
+def _shared_ground_key(child, plan, reference_grid):
+    """Identity of a whole-frame corridor's ground, or None (not shareable)."""
+    if not plan.reach.get("whole_frame"):
+        return None
+    # The corridor grid is the reference grid translated onto the frame
+    # (origin_translation_child_cells), an exact whole-cell shift, so two
+    # slots of one shape on one parent lattice share it whatever their
+    # placeholder placement.
+    del reference_grid
+    geometry = plan.geometry
+    return (int(child.parent_id), int(child.parent_grid_ratio),
+            int(child.run.nx), int(child.run.ny),
+            int(geometry["corridor_nx"]), int(geometry["corridor_ny"]),
+            tuple(plan.window), repr(sorted(plan.frame_kwargs.items())),
+            repr(child.run.sf_lake_physics), repr(getattr(child.run, "use_lakedepth", None)),
+            repr(getattr(child.run, "chem_sets", ())))
 
 
 def _write_deterministic_npz(path: Path,
@@ -1569,6 +1641,7 @@ __all__ = [
     "STATICS_CORRIDOR_RECEIPT", "STATICS_CORRIDOR_SCHEMA",
     "STATICS_CORRIDOR_SET_SCHEMA", "build_child_statics_corridor",
     "config_declares_follow_source", "corridor_cost",
+    "declared_follow_subjects",
     "ancestor_chain", "corridor_frame_kwargs",
     "corridor_footprint_statics_builder", "corridor_geometry",
     "corridor_reach", "corridor_summary_line", "geometry_window",

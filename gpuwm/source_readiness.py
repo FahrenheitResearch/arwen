@@ -168,12 +168,6 @@ def _route_groups(plan) -> dict[int, list]:
     return groups
 
 
-def group_lead(plan, obj) -> int:
-    """The lead ``obj`` is fetched and published with (see :func:`_route_groups`)."""
-
-    return obj.lead if obj.lead in plan.leads else plan.leads[0]
-
-
 def _idx_suffix(plan, role: str) -> str | None:
     for row in plan.files:
         if row.role == role:
@@ -216,7 +210,7 @@ def lead_urls(window: Window, lead: int, endpoint: str, *,
         return tuple(urls)
     urls = list(fetch.cycle_probe_urls(window.source, window.cycle, lead,
                                        transport=endpoint))
-    if with_index:
+    if with_index and fetch_endpoints.endpoint_named(window.source, endpoint).idx_available:
         urls += [url + ".idx" for url in list(urls)]
     return tuple(urls)
 
@@ -331,7 +325,12 @@ def lead_answer(window: Window, lead: int, *, probe=None,
     first_probe = _first_probe_for(probe)
     answers = []
     for rung in _ladder(window, now=now):
-        urls = lead_urls(window, lead, rung.name, objects=objects)
+        try:
+            urls = lead_urls(window, lead, rung.name, objects=objects)
+        except ValueError:
+            # A declared date/lead hole is absent, never a positive probe.
+            answers.append((False, None, rung.name))
+            continue
         found, url = _ask(urls, probe, first_probe)
         answers.append((found, url, rung.name))
         if found is True:
@@ -666,12 +665,14 @@ def readiness(source: str, cycle: datetime | str, hours: int, *,
     probeable = fetch.cycle_is_probeable(source) and posting.waited
     needs = start_needs(window, late_after_minutes=late_after_minutes,
                         nest_start_leads=nest_start_leads)
-    if not as_posted and window.final_lead not in (need.lead for need in needs):
-        expected, late = _due(source, window.cycle, window.final_lead,
-                              late_after_minutes, provider)
-        needs += (Need(role="whole_cycle", source=source,
-                       lead=window.final_lead, expected_at=expected,
-                       late_at=late),)
+    if not as_posted:
+        # Every requested boundary matters, including interior archive holes.
+        for lead in window.leads:
+            if lead not in (need.lead for need in needs):
+                expected, late = _due(source, window.cycle, lead,
+                                     late_after_minutes, provider)
+                needs += (Need(role="whole_cycle", source=source,
+                               lead=lead, expected_at=expected, late_at=late),)
     stamps = [need.expected_at for need in needs if need.expected_at is not None]
     ready_at = max(stamps) if stamps else None
     document["expected_ready_at"] = rows.instant(ready_at)
@@ -860,7 +861,7 @@ def print_document(document: Mapping[str, object], stream=None) -> None:
 __all__ = [
     "ASK_AHEAD", "NOT_HEARD", "NOT_POSTED", "NOT_YET_EXIT", "Need", "POSTED",
     "READINESS_SCHEMA", "READY_EXIT", "REFUSED_EXIT", "ReadinessRefusal",
-    "Window", "donor_answer", "group_lead", "lead_answer", "lead_urls",
+    "Window", "donor_answer", "lead_answer", "lead_urls",
     "need_answer", "parse_instant", "print_document", "readiness",
     "resolve_startable_cycle", "resolve_window", "retention_refusal",
     "start_needs", "startable_by_schedule",

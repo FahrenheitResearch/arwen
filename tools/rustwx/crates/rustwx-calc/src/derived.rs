@@ -38,40 +38,6 @@ pub struct EhiLayerOutputs {
     pub ehi_03km: Vec<f64>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-struct SurfaceThermoState {
-    dewpoint_2m_c: Vec<f64>,
-    relative_humidity_2m_pct: Vec<f64>,
-    theta_e_2m_k: Vec<f64>,
-    wetbulb_2m_c: Vec<f64>,
-    dewpoint_depression_2m_c: Vec<f64>,
-    vpd_2m_hpa: Vec<f64>,
-    fire_weather_composite: Vec<f64>,
-    heat_index_2m_c: Vec<f64>,
-    wind_chill_2m_c: Vec<f64>,
-    apparent_temperature_2m_c: Vec<f64>,
-}
-
-pub fn compute_surface_thermo(
-    grid: GridShape,
-    surface: SurfaceInputs<'_>,
-) -> Result<SurfaceThermoOutputs, CalcError> {
-    let state = compute_surface_thermo_state(grid, surface)?;
-
-    Ok(SurfaceThermoOutputs {
-        dewpoint_2m_c: state.dewpoint_2m_c,
-        relative_humidity_2m_pct: state.relative_humidity_2m_pct,
-        theta_e_2m_k: state.theta_e_2m_k,
-        wetbulb_2m_c: state.wetbulb_2m_c,
-        dewpoint_depression_2m_c: state.dewpoint_depression_2m_c,
-        vpd_2m_hpa: state.vpd_2m_hpa,
-        fire_weather_composite: state.fire_weather_composite,
-        apparent_temperature_2m_c: state.apparent_temperature_2m_c,
-        heat_index_2m_c: state.heat_index_2m_c,
-        wind_chill_2m_c: state.wind_chill_2m_c,
-    })
-}
-
 pub fn compute_2m_dewpoint(
     grid: GridShape,
     surface: SurfaceInputs<'_>,
@@ -128,6 +94,34 @@ pub fn compute_relative_humidity_from_pressure_temperature_and_mixing_ratio(
         .collect())
 }
 
+/// VPD in hPa, using the same dewpoint and saturation calculation as
+/// `compute_surface_thermo`, without requiring wind or other surface indices.
+pub fn compute_vpd_from_pressure_temperature_and_mixing_ratio(
+    pressure_hpa: &[f64],
+    temperature_c: &[f64],
+    mixing_ratio_kgkg: &[f64],
+) -> Result<Vec<f64>, CalcError> {
+    let n = pressure_hpa.len();
+    validate_len("temperature_c", temperature_c.len(), n)?;
+    validate_len("mixing_ratio_kgkg", mixing_ratio_kgkg.len(), n)?;
+    Ok((0..n)
+        .into_par_iter()
+        .map(|i| {
+            // f64::max would otherwise turn a missing input into zero deficit.
+            if !pressure_hpa[i].is_finite()
+                || !temperature_c[i].is_finite()
+                || !mixing_ratio_kgkg[i].is_finite()
+            {
+                return f64::NAN;
+            }
+            vapor_pressure_deficit_hpa(
+                temperature_c[i],
+                dewpoint_from_mixing_ratio(pressure_hpa[i], mixing_ratio_kgkg[i]),
+            )
+        })
+        .collect())
+}
+
 pub fn compute_theta_e_from_pressure_temperature_and_mixing_ratio(
     pressure_hpa: &[f64],
     temperature_c: &[f64],
@@ -170,7 +164,7 @@ pub fn compute_2m_apparent_temperature(
     grid: GridShape,
     surface: SurfaceInputs<'_>,
 ) -> Result<Vec<f64>, CalcError> {
-    Ok(compute_surface_thermo_state(grid, surface)?.apparent_temperature_2m_c)
+    Ok(compute_surface_thermo(grid, surface)?.apparent_temperature_2m_c)
 }
 
 pub fn compute_temperature_advection(
@@ -583,10 +577,10 @@ struct SurfaceThermoPoint {
     apparent_temperature_c: f64,
 }
 
-fn compute_surface_thermo_state(
+pub fn compute_surface_thermo(
     grid: GridShape,
     surface: SurfaceInputs<'_>,
-) -> Result<SurfaceThermoState, CalcError> {
+) -> Result<SurfaceThermoOutputs, CalcError> {
     validate_surface_inputs(grid, surface)?;
 
     let points: Vec<SurfaceThermoPoint> = (0..grid.len())
@@ -636,7 +630,7 @@ fn compute_surface_thermo_state(
     let unzip = |field: fn(&SurfaceThermoPoint) -> f64| -> Vec<f64> {
         points.par_iter().map(field).collect()
     };
-    Ok(SurfaceThermoState {
+    Ok(SurfaceThermoOutputs {
         dewpoint_2m_c: unzip(|p| p.dewpoint_c),
         relative_humidity_2m_pct: unzip(|p| p.relative_humidity_pct),
         theta_e_2m_k: unzip(|p| p.theta_e_k),

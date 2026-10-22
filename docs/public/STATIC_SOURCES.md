@@ -31,7 +31,25 @@ centre when its row declares field sampling. Its offset must remain
 constant at all four corners, and every sampled point must remain inside
 the source extent. The receipt records the fractional offset and each
 field's method. File coordinates are checked on the original source lattice
-before sampling. At other spacings, the existing WPS geography builder runs.
+before sampling. At other spacings, the WPS geography builder runs with
+the datasets the row names in `off_grid_geog_data_res`, in place of WPS's
+default inventory, wherever the namelist's `geog_data_res` is `default`. For
+`hrrr-conus-v4` that is `bnu_soil_30s+modis_lai`: HRRR's BNU soil texture and
+30 arc-second MODIS leaf area. HRRR's analysed soil moisture is made on BNU
+texture; built on WPS's default STATSGO texture, a 1 km domain disagreed with
+HRRR's soil category on 63% of land cells, read the soil 0.05 wetter in RUC
+moisture availability, and forecast cold and moist 2 m air. The coverage
+report records `static_source_recipe`. The two soil datasets and
+`lai_modis_30s` are not in the WRF door's mandatory nine; a missing one is
+refused with its fetch:
+
+```console
+gpuwm fetch-geog --datasets bnu_soiltype_top,bnu_soiltype_bot,lai_modis_30s --source ncar --root GEOG_ROOT
+```
+
+A namelist naming its own `geog_data_res` keeps it. The recipe leaves land
+use on WPS's default 30 arc-second MODIS dataset; a namelist that wants the
+15 arc-second set names `modis_15s` itself.
 
 The full selection copies land use and soil fractions and categories,
 terrain and slope category, monthly green fraction, LAI and albedo,

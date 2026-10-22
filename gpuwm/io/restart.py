@@ -136,7 +136,6 @@ from gpuwm.core.adaptive_clock import ADAPTIVE_DERIVED_RUN_FIELDS
 from gpuwm.core.model import (ADAPTIVE_POLICY_RUN_FIELDS,
                               ADAPTIVE_TIMESTEP_RUN_FIELDS)
 from gpuwm.core.uh_diag import (
-    TRACKER_WINDOW_SLOTS as _TRACKER_WINDOW_SLOTS,
     UH_FOLLOW_WINDOW_PREFIX as _UH_FOLLOW_WINDOW_PREFIX,
     is_tracker_window_slot as _is_tracker_window_slot)
 from gpuwm.core.nssl2_contract import (
@@ -263,7 +262,7 @@ _HEADER_KEY = "__gpuwm_restart_header__"
 #: the resuming run (forecast length / output & restart cadence).  Every
 #: other field must match exactly or the restore fails.
 CONFIG_RUN_LENGTH_FIELDS = frozenset({
-    "run_seconds", "output_interval_s", "restart_interval_s"})
+    "run_seconds", "output_interval_s", "history_interval2_s", "history_interval_change_s", "restart_interval_s"})
 
 # Output-only diagnostic toggles are restart-boundary-adjustable exactly
 # like the run-length fields: ``CONFIG_DIAGNOSTIC_FIELDS``, imported above
@@ -409,6 +408,7 @@ PHYSICS_ASSET_PATHS = {
     "noahmp_genparm": Path("data/noahmp/GENPARM.TBL"),
     "kf_lutab": Path("data/kf_lutab/kf_lutab.npz"),
     "satmedmf_manifest": Path("data/satmedmf/manifest.json"),
+    "eclipse_besselian": Path("data/wrf_radiation/eclipse_besselian_elements.dat"),
 }
 
 
@@ -655,7 +655,13 @@ STATE_INFRA_ATTRS = frozenset({
 #: accumulators (the kernels update them in place and the driver aliases them)
 #: and the KF driver persistence
 #: (NCA timers, PRATEC/RAINCV, stored per-column rates, RAINC).
+from gpuwm.core.hail import PERSISTENT as HAIL_PERSISTENT
+
+from gpuwm.core.output_diagnostics import PERSISTENT as OUTPUT_PERSISTENT
+
 SERIALIZED_SCRATCH_SLOTS = frozenset({
+    *OUTPUT_PERSISTENT,
+    *HAIL_PERSISTENT,
     "ltng_ic_flashcount", "ltng_cg_flashcount",
     "ltng_ic_flashrate", "ltng_cg_flashrate", "ltng_ltngacttime",
     "ltng_iccg_in_num", "ltng_iccg_in_den", "ltng_calendar",
@@ -799,6 +805,9 @@ RESTART_ONLY_DRIVER_SLOTS = frozenset({
 #: rebuilds are EXACT names only â€” a future accumulator slot under those
 #: prefixes must be classified explicitly instead of silently dropping.
 REBUILT_SCRATCH_SLOTS = frozenset({
+    "output_zero", "gsd_zero", "gsd_uh_use", "gsd_pressure_w", "gsd_temperature", "gsd_density", "gsd_wind10", "gsd_wind80",
+    "hail_zero", "hail_temperature", "hail_height", "hail_density",
+    "hail_new_mask", "hail_new_duration",
     # Lin overwrites geometry and thermodynamics before each column call.
     "lin_theta", "lin_rho", "lin_pii", "lin_z", "lin_dz", "lin_z8w",
     "diff1_theta_work",
@@ -1096,6 +1105,8 @@ DRIVER_REBUILT_ATTRS = frozenset({
     # attaches to the resumed parent. Scientific hydro state is checkpointed
     # separately; carrying timing events across processes is invalid.
     "hydro_cost",
+    # Run-local source provenance; scientific lake fields are serialized.
+    "lake_initialization_receipt",
     # User aerosol diagnostics are views of arrays serialized in fields.
     "aerosol2d",
     "_wrf_rthraten_coupled",
@@ -1117,6 +1128,9 @@ DRIVER_REBUILT_ATTRS = frozenset({
     # checkpoint's values.  Unclassified, it ended every slope_rad run's
     # forecast at the final state digest (first real run of the port).
     "topo_shortwave",
+    # Rebuilt geometry/kernel; all held undimmed arrays alias fields/*,
+    # including the initialized marker used to preserve radiation cadence.
+    "eclipse",
     # WRF's topo_wind / gwd_opt (gpuwm.core.terrain_drag): initialize_physics
     # rebuilds it from the resumed RunConfig and the prepared statics; it
     # holds only static coefficients and statistics, never a value a step
@@ -1268,6 +1282,13 @@ DRIVER_REBUILT_ATTRS = frozenset({
     "_cu_expiry_pending",
     "cu_rates", "_sr_roundoff_upper", "_sr_roundoff_max_ulps",
     "_wsm6_minor_loops",
+    # The one-step flag a mid-run driver rebuild (a spawn or a move) sets so
+    # the rebuilt driver calls radiation on its first step
+    # (gpuwm.runtime.rebuild_child_driver_from_land_state); the physics step
+    # clears it.  Rebuilt absent: a resumed driver takes the radiation
+    # carriers the checkpoint restores, and an unclassified attribute here
+    # stopped every checkpoint of a moving-nest run (2.9.4 R5, Milton).
+    "force_radiation_next_step",
 })
 
 #: Scheme-callable state classification.  The walk covers DIRECT array
@@ -2122,25 +2143,22 @@ def _rrtmgp_workspace_identity(workspace) -> dict:
 
 
 def _asset_sha256(path) -> str:
-    """Digest the actual packaged bytes consumed by an active scheme."""
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as stream:
-        while True:
-            chunk = stream.read(1024 * 1024)
-            if not chunk:
-                break
-            digest.update(chunk)
-    return digest.hexdigest()
+    """Digest the actual packaged bytes consumed by an active scheme.
+
+    Once per process for an unchanged file (gpuwm.file_digest): every
+    checkpoint asks again, and a replaced asset is still hashed again."""
+    from gpuwm.file_digest import sha256_file
+    return sha256_file(Path(path), block_bytes=1024 * 1024)
 
 
 def _active_asset_identity(cfg, driver) -> dict[str, dict]:
     roles = []
+    if getattr(driver, "eclipse", None) is not None:
+        roles.append("eclipse_besselian")
     # Asset-only callers historically omit inactive physics selectors.
     if int(getattr(cfg, "bl_pbl_physics", 0)) == 901:
         roles.append("satmedmf_manifest")
     radiation = None if driver is None else driver.radiation_callable
-    radiation_class = (None if radiation is None
-                       else _callable_class_name(radiation))
     from gpuwm.core.radiation_composition import modern_radiation_adapters
     if 4 in radiation_scheme_ids(cfg) and modern_radiation_adapters(radiation):
         roles.extend(("rrtmgp_gas_lw", "rrtmgp_gas_sw",
@@ -2574,7 +2592,7 @@ def _packed_parameters_identity(params, *, label: str,
 #: bytes it always had.  Either way the digest cannot tell two values of
 #: the switch apart, which is all the restart walk needs.
 _DIGEST_DROPPED_DIAGNOSTIC_FIELDS = frozenset(
-    {"nwp_diagnostics", "tke_budget", "sase_flux_diag", "surface_energy_diag",
+    {"hailcast_opt", "haildt", "nwp_diagnostics", "tke_budget", "sase_flux_diag", "surface_energy_diag",
      # Correct mode WB1: output-only and on by default from 2.9.0, so it is
      # dropped rather than held at a default no earlier digest carried.
      "thompson_cloud_surface_booking"})
@@ -2674,6 +2692,27 @@ def _drop_default_radiation_port_keys(values: dict) -> None:
     from gpuwm.config import drop_inactive_radiation_port_keys
     drop_inactive_radiation_port_keys(values)
 
+    # Default-on eclipse is implicit in old non-eclipse headers. A live
+    # shadow additionally binds its algorithm, table and held field inventory.
+    # Explicit zero remains serialized, so switching it changes identity.
+    if values.get("ra_sw_eclipse", 1) == 1:
+        values.pop("ra_sw_eclipse", None)
+    # seaice_threshold is read only by the initial surface (real.exe's
+    # adjust_for_seaice rule), never by a resumed forecast; at the Registry
+    # default 100 K it converts nothing, so older headers that predate it
+    # hold the same model.  A stated threshold stays serialized.
+    if float(values.get("seaice_threshold", 100.0)) == 100.0:
+        values.pop("seaice_threshold", None)
+    from gpuwm.checkpoint_identity import drop_default_output_controls
+    drop_default_output_controls(values)
+
+
+from gpuwm.checkpoint_identity import (  # noqa: E402
+    CAMPAIGN_IMPLICIT_RUN_KEYS as _CAMPAIGN_IMPLICIT_RUN_KEYS,
+    SEAICE_RUN_KEYS as _SEAICE_RUN_KEYS,
+    drop_capability_campaign_keys as _drop_capability_campaign_keys,
+    seaice_read as _seaice_read)
+
 
 def _drop_default_off_run_keys(values: dict) -> None:
     """Drop every default-off RunConfig key that older headers omit.
@@ -2741,6 +2780,11 @@ def _drop_default_off_run_keys(values: dict) -> None:
         values.pop("use_lakedepth", None)
         values.pop("lakedepth_default", None)
         values.pop("lake_min_elev", None)
+    # The 2.9.4 capabilities campaign's keys, omitted while they reach
+    # nothing so every earlier header resumes under a default run (named
+    # breakage: a 2.8.7 checkpoint refused with "lake_state_path: absent
+    # from the restart file").  _require_config_match applies the same rule.
+    _drop_capability_campaign_keys(values)
     # adaptive_nest_lattice (9a2f3fa63): off is the original root clock.
     if not values.get("adaptive_nest_lattice", False):
         values.pop("adaptive_nest_lattice", None)
@@ -2897,10 +2941,25 @@ def _drop_inert_chem_block(values: dict) -> None:
     key.
     """
     if values.get("chem_sets"):
+        # The HRRR v4.1.21 smoke fork's controls, appended to the block by
+        # c363fd55ff (simple_dir_fdb) and fc1e2df360: at their defaults they
+        # are absent from a chem run's echo too, so every chem checkpoint
+        # written before them keeps its configuration digest (named
+        # breakage: the 2.8.7 sfire_smoke header's configuration_sha256,
+        # tests/test_restart_287_header.py).  _require_config_match reads
+        # an absent chem key at its default; a stated value binds.
+        for key, default in CHEM_FORK_RUN_DEFAULTS.items():
+            if values.get(key, default) == default:
+                values.pop(key, None)
         return
     from gpuwm.config import CHEM_RUN_FIELDS
     for key in CHEM_RUN_FIELDS:
         values.pop(key, None)
+
+
+#: The smoke fork's chem keys at the value every earlier chem run held.
+CHEM_FORK_RUN_DEFAULTS = {"simple_dir_fdb": 0, "enh_vermix": False,
+                          "flam_part": -1.0, "aer_drydep_opt": 0}
 
 
 def _drop_inert_fire_block(values: dict) -> None:
@@ -3320,6 +3379,8 @@ def physics_algorithm_identities(cfg) -> dict:
         ocean = ocean_option(cfg.sf_ocean_physics)
         algorithms["surface_ocean"] = (ocean["algorithm_identity"] + ":" +
             hashlib.sha256(json.dumps(ocean, sort_keys=True).encode()).hexdigest())
+    if cfg.sf_surface_physics and getattr(cfg, "seaice_prognostic", False):
+        algorithms["seaice"] = "zero-layer-snow-fractional-stefan-v1"
     mixing = dycore_mixing_identity(cfg)
     if mixing is not None:
         # Only when the dycore mixes (km_opt 2-4, an active km_opt = 1, or
@@ -3503,6 +3564,10 @@ def physics_setup_identity(state, cfg) -> dict:
         "cumulus": cumulus,
         "assets": _active_asset_identity(cfg, driver),
     }
+    if getattr(driver, "eclipse", None) is not None:
+        from gpuwm.eclipse_windows import _CUDA
+        identity["eclipse"] = {"policy": "wrf461-besselian-current-utc-per-step-v1",
+                               "kernel_sha256": hashlib.sha256(_CUDA.encode()).hexdigest()}
     urban = getattr(driver, "urban", None)
     if urban is not None and (getattr(cfg, "urban_ucm_generation", "wrf_471") == "wrf_480" or getattr(cfg, "urban_table_dir", "")):
         from gpuwm.core.urban_ucm import pack_params
@@ -3861,6 +3926,9 @@ def _driver_manifest(driver) -> dict[str, object]:
             raise RestartManifestError(
                 f"driver.microphysics.{comp} is populated but has no canonical "
                 f"scratch slot for mp_physics={driver.mp_physics}")
+    if "_pwp_status" in driver.fields:
+        from gpuwm.ocean.mixed_layer import check
+        check(driver.fields)
     for name in sorted(driver.fields):
         manifest[f"fields/{name}"] = driver.fields[name]
     # The in-place fields restore relies on SFClayResult aliasing the
@@ -3901,9 +3969,7 @@ def _driver_manifest(driver) -> dict[str, object]:
     w0avg = getattr(driver.cumulus_callable, "w0avg", None)
     if w0avg is not None:
         manifest["cumulus/w0avg"] = w0avg
-    o33d_grid = getattr(driver, "o3rad", None)
-    if o33d_grid is None:
-        o33d_grid = getattr(driver.radiation_callable, "_o33d_grid", None)
+    o33d_grid = radiation_o33d_carrier(driver)
     if o33d_grid is not None:
         # Legacy-RRTMG root o33d field (WRF's restart-carried O3RAD
         # analogue): serialized so child-domain ozone routing resumes
@@ -4001,6 +4067,33 @@ def _validate_fire_payload(stored, header, driver):
             raise RestartMismatchError("restart SFIRE continuation metadata is malformed") from exc
 
 
+def radiation_o33d_carrier(driver):
+    """The array a manifest records as ``radiation/o33d_grid``, without a copy.
+
+    ``PhysicsDriver.o3rad`` when a tree owns one; otherwise the legacy
+    adapter's retained field, taken on the device through ``o33d_device()``
+    when the adapter keeps it there.  Reading the ``_o33d_grid`` property
+    instead materializes a host copy of the whole field.  Named breakage
+    (box G, 2026-10-05, 1 km HRRR physics): every streamed sweep's
+    inventory runs this manifest on the forecast's main thread and then
+    drops the slot as restart-only, so each radiation period paid a full
+    device-to-host copy for nothing, and under host memory pressure one of
+    those copies held step 551 for 27 s with both cards idle.  A restart
+    writer converts the device array exactly as it converts every state
+    field (``_host``), so the bytes written are unchanged.
+    """
+    carrier = getattr(driver, "o3rad", None)
+    if carrier is not None:
+        return carrier
+    adapter = driver.radiation_callable
+    on_device = getattr(adapter, "o33d_device", None)
+    if callable(on_device):
+        carrier = on_device()
+        if carrier is not None:
+            return carrier
+    return getattr(adapter, "_o33d_grid", None)
+
+
 def root_external_lbc_clock_identity(state, cfg) -> str | None:
     """The root external-LBC clock semantic active on this state.
 
@@ -4051,7 +4144,8 @@ def prepare_restart(path, state, cfg, *, run_trackers=None,
                     tree_header: dict | None = None,
                     extra_scratch_slots=(),
                     sealed_forcing_extension: bool = False,
-                    preserved_forcing_prefix: bool = False):
+                    preserved_forcing_prefix: bool = False,
+                    staging=None):
     """Snapshot what :func:`write_restart` would write; publish it later.
 
     Every validation, the header and the host copy of every array happen
@@ -4064,6 +4158,12 @@ def prepare_restart(path, state, cfg, *, run_trackers=None,
     array is copied too, so a later step cannot change what is written.
     The file is the one :func:`write_restart` writes, byte for byte, apart
     from the ``created`` stamp both writers take from the wall clock.
+
+    ``staging`` (a :class:`gpuwm.io.checkpoint_staging.StagedSnapshot`)
+    takes the device arrays' host copies asynchronously, into pinned
+    memory, on the model's stream; the returned callable waits for those
+    copies before it writes a byte.  Without it every array is copied
+    synchronously here, as before.
     """
     with perf_timing.stage("io.restart.prepare_restart"):
         path, payload = _restart_payload(
@@ -4072,8 +4172,26 @@ def prepare_restart(path, state, cfg, *, run_trackers=None,
             extra_scratch_slots=extra_scratch_slots,
             sealed_forcing_extension=sealed_forcing_extension,
             preserved_forcing_prefix=preserved_forcing_prefix,
-            owned=True)
-    return lambda: _publish_restart_payload(path, payload)
+            owned=True, staging=staging)
+    if staging is None:
+        return lambda: _publish_restart_payload(path, payload)
+    held = [payload]
+
+    def publish():
+        try:
+            staging.wait()
+            return _publish_restart_payload(path, held[0])
+        finally:
+            # The pinned slab goes back to the pool for the next checkpoint.
+            held.clear()
+            staging.release()
+
+    def release():
+        held.clear()
+        staging.release()
+
+    publish.release = release
+    return publish
 
 
 def _write_restart(path, state, cfg, *, run_trackers=None,
@@ -4101,7 +4219,7 @@ def _restart_payload(path, state, cfg, *, run_trackers=None,
                      extra_scratch_slots=(),
                      sealed_forcing_extension: bool = False,
                      preserved_forcing_prefix: bool = False,
-                     owned: bool = False):
+                     owned: bool = False, staging=None):
     if cfg.diff_opt == 1:
         from gpuwm.core.dycore import initialize_coordinate_reference
         initialize_coordinate_reference(state, cfg)
@@ -4163,21 +4281,20 @@ def _restart_payload(path, state, cfg, *, run_trackers=None,
     arrays = {}
     array_manifest = {}
     to_host = _owned_host if owned else _host
+    if staging is not None:
+        # Same keys, same order, same host arrays; the device ones are
+        # copied asynchronously into pinned memory (checkpoint_staging).
+        staged = staging.stage(manifest, _owned_host)
     for key in sorted(manifest):
-        host = to_host(manifest[key])
+        host = staged[key] if staging is not None else to_host(manifest[key])
         arrays[key] = host
         array_manifest[key] = {"shape": list(host.shape),
                                "dtype": str(host.dtype)}
     config_echo = configuration_echo(cfg)
-    repeat_stamps = None
-    if os.environ.get("GPUWM_BENCH_CHECKPOINT_TOKEN") is not None:
-        from tools.bench.checkpoint_stamps import stamps
-        repeat_stamps = stamps(path, state.elapsed_seconds)
     header = {
         "format_version": RESTART_FORMAT_VERSION,
         "case": cfg.case,
-        "created": (datetime.now(timezone.utc).isoformat() if repeat_stamps is None
-                    else repeat_stamps[0]),
+        "created": datetime.now(timezone.utc).isoformat(),
         # The producer's own identity, so a checkpoint separated from its
         # logs can still say which build wrote it.  ``gpuwm.__version__``
         # comes from installed distribution metadata, so this is the release
@@ -4321,6 +4438,47 @@ def _chem_run_fields() -> frozenset:
     return frozenset(CHEM_RUN_FIELDS)
 
 
+# These historical omission values deliberately do not follow moving defaults:
+# a header without a selector must keep the arithmetic it wrote.
+_RESTART_ABSENT_RUN_DEFAULTS = {
+    'adaptive_nest_lattice': False,
+    'zadvect_implicit': 0,
+    'zadvect_implicit_variant': 'wrf_471',
+    'rrtmg_smoke_manifest': '',
+    'bl_mynn_version': 'wrf_461',
+    'bl_mynn_cloud_tendency_form': 'wrf_461',
+    'bl_mynn_gsd41_unsquared_qtke': False,
+    'ruc_soilprop': 'wrf_45',
+    'rrtmg_cloud_optics_form': 'wrf_461',
+    'rrtmg_aer3_type_source': 'rural',
+    'thompson_version': 'wrf_461',
+    'thompson_table_dir': None,
+    'thompson_fork_snow_fall': 'blend',
+    'mynn_sfclay_variant': 'wrf_461',
+    'urban_ucm_generation': 'wrf_471',
+    'urban_table_dir': '',
+    'use_rap_aero_icbc': False,
+    'ruc_snow': 'wrf_461',
+    'ruc_2m_diagnostic': 'flux',
+    'ruc_qvg_cold_start': 'wrf',
+    'ruc_irrigation': 'wrf_461',
+    'scalar_adv_opt': 1,
+    'scalar_pblmix': 0,
+    'tempo_ml_for_bl_nc': False,
+    'tempo_surface_emission_before': False,
+    'bl_mynn_mixaerosols': 0,
+    'bl_mynn_mixnumcon': 0,
+    'terrain_clock': 'measured',
+    'spp_conv': 0,
+    'spp_pbl': 0,
+    'fractional_seaice': 0,
+    'swint_opt': 0,
+    'aer_opt': 0,
+    'alb_sol': 0,
+    'w_crit_cfl': 1.0,
+}
+
+
 def _require_config_match(stored_config: dict, cfg, path) -> None:
     CHEM_RUN_FIELDS = _chem_run_fields()
     stored_config = _mosaic_checkpoint_config(stored_config)
@@ -4410,8 +4568,15 @@ def _require_config_match(stored_config: dict, cfg, path) -> None:
             continue
         if key in CONFIG_DIAGNOSTIC_FIELDS:
             continue
+        if key in _SEAICE_RUN_KEYS and not _seaice_read(stored_config)                 and not _seaice_read(live_config):
+            # Neither side runs prognostic sea ice: the keys reach nothing.
+            continue
         stored = stored_config.get(key, absent)
         live = live_config.get(key, absent)
+        if key in _CAMPAIGN_IMPLICIT_RUN_KEYS:
+            default = _CAMPAIGN_IMPLICIT_RUN_KEYS[key]
+            stored = default if stored is absent else stored
+            live = default if live is absent else live
         if key == "noahmp_snow_age":
             if stored_config.get("sf_surface_physics", 0) != 4 and \
                     live_config.get("sf_surface_physics", 0) != 4:
@@ -4436,35 +4601,15 @@ def _require_config_match(stored_config: dict, cfg, path) -> None:
             # Checkpoints from before the coordinate selector existed used
             # exactly the metric operator with full-field scalar mixing.
             stored = 2 if key == "diff_opt" else True
-        if key == "adaptive_nest_lattice":
-            # Older checkpoints used the original clock. A flipped mode
-            # must refuse because it changes the integration trajectory.
-            stored = False if stored is absent else stored
-            live = False if live is absent else live
-        if key == "zadvect_implicit":
-            # Older checkpoints advected explicitly; a flip is refused,
-            # because it changes the integration trajectory.
-            stored = 0 if stored is absent else stored
-            live = 0 if live is absent else live
-        if key == "zadvect_implicit_variant":
-            # Changing the split or solve mass changes the trajectory.
-            stored = "wrf_471" if stored is absent else stored
-            live = "wrf_471" if live is absent else live
+        if key in _RESTART_ABSENT_RUN_DEFAULTS:
+            default = _RESTART_ABSENT_RUN_DEFAULTS[key]
+            stored = default if stored is absent else stored
+            live = default if live is absent else live
         if key == "urban_water_balance":
             if int(live_config.get("sf_urban_physics", 0) or 0) != 1:
                 continue
             stored = "wrf_471" if stored is absent else stored
             live = "wrf_480" if live is absent else live
-        if key == "rrtmg_smoke_manifest":
-            # Old checkpoints had no prescribed smoke. An enabled path and
-            # its separately compared source identity change the trajectory.
-            stored = "" if stored is absent else stored
-            live = "" if live is absent else live
-        if key == "bl_mynn_version":
-            # Omitted at wrf_461; a flip between generations changes the
-            # boundary-layer trajectory and is refused below.
-            stored = "wrf_461" if stored is absent else stored
-            live = "wrf_461" if live is absent else live
         if key == "ysu_version":
             # Changing the entrainment cap or arithmetic changes the PBL
             # trajectory. A header without a selector is always legacy.
@@ -4472,64 +4617,12 @@ def _require_config_match(stored_config: dict, cfg, path) -> None:
                 continue
             stored = "wrf_461" if stored is absent else stored
             live = "wrf_461" if live is absent else live
-        if key == "bl_mynn_cloud_tendency_form":
-            stored = "wrf_461" if stored is absent else stored
-            live = "wrf_461" if live is absent else live
-        if key == "bl_mynn_gsd41_unsquared_qtke":
-            stored = False if stored is absent else stored
-            live = False if live is absent else live
-        if key == "ruc_soilprop":
-            # A header omits the default, so a checkpoint with no RUC
-            # column resumes unchanged; a flip between the two names is
-            # refused below.  A RUC checkpoint written before the selector
-            # ran the v4.6.1 form and is refused by its land-surface
-            # algorithm identity (gpuwm/checkpoint_identity.py), by name.
-            stored = "wrf_45" if stored is absent else stored
-            live = "wrf_45" if live is absent else live
-        if key == "rrtmg_cloud_optics_form":
-            # Earlier checkpoints ran the WRF v4.6.1 cloud wrapper.
-            stored = "wrf_461" if stored is absent else stored
-            live = "wrf_461" if live is absent else live
-        if key == "rrtmg_aer3_type_source":
-            # Earlier checkpoints ran rural type 1; a flip changes the
-            # shortwave over water and is refused below.
-            stored = "rural" if stored is absent else stored
-            live = "rural" if live is absent else live
         if key == "solar_generation":
             stored = "wrf_461" if stored is absent else stored
             live = "wrf_480" if live is absent else live
-        if key == "thompson_version":
-            # A header omits the default, which every checkpoint written
-            # before the selector ran; a flip between the two generations
-            # is refused below, because they evolve graupel, snow and ice
-            # differently from the same state.
-            stored = "wrf_461" if stored is absent else stored
-            live = "wrf_461" if live is absent else live
-        if key == "thompson_table_dir":
-            # An unset directory is omitted from the header. Treat its
-            # absence as the same neutral value; explicit paths still bind.
-            stored = None if stored is absent else stored
-            live = None if live is absent else live
-        if key == "thompson_fork_snow_fall":
-            # Omitted at its default, which every earlier header ran.
-            stored = "blend" if stored is absent else stored
-            live = "blend" if live is absent else live
-        if key == "mynn_sfclay_variant":
-            # A header omits the default, which is what every checkpoint
-            # written before the selector ran; a flip between the two
-            # generations changes u*, z/L and the fluxes, so it is refused
-            # below.
-            stored = "wrf_461" if stored is absent else stored
-            live = "wrf_461" if live is absent else live
-        if key == "urban_ucm_generation":
-            stored = "wrf_471" if stored is absent else stored
-            live = "wrf_471" if live is absent else live
         if key in ("urban_treeoption", "urban_ttscheme", "urban_fvg"):
             stored = -1 if stored is absent else stored
             live = -1 if live is absent else live
-        if key == "urban_table_dir":
-            stored = "" if stored is absent else stored
-            live = "" if live is absent else live
         if key in ADVECTION_ORDER_RUN_DEFAULTS:
             # Older checkpoints ran the vert_order 3 ladder and the flux5
             # horizontal momentum stencil; a moved order is refused below,
@@ -4537,44 +4630,6 @@ def _require_config_match(stored_config: dict, cfg, path) -> None:
             default = ADVECTION_ORDER_RUN_DEFAULTS[key]
             stored = default if stored is absent else stored
             live = default if live is absent else live
-        if key == "use_rap_aero_icbc":
-            # Off is omitted by configuration_echo and is what every earlier
-            # checkpoint ran; an analyzed aerosol start still binds.
-            stored = False if stored is absent else stored
-            live = False if live is absent else live
-        if key == "ruc_snow":
-            # Generic headers omit wrf_461. Earlier lane headers omitted
-            # wrf_45; the v6 land-surface identity prevents their continuation
-            # before live forecast arrays are restored. Explicit flips refuse below.
-            stored = "wrf_461" if stored is absent else stored
-            live = "wrf_461" if live is absent else live
-        if key == "ruc_2m_diagnostic":
-            # A header omits the default (the only form earlier builds
-            # wrote); a flip between the two names is refused below.
-            stored = "flux" if stored is absent else stored
-            live = "flux" if live is absent else live
-        if key == "ruc_qvg_cold_start":
-            # Read only on a cold start, so a resumed run never reads it;
-            # a header omits the default and a flip between the two names
-            # is refused below like every other run setting.
-            stored = "wrf" if stored is absent else stored
-            live = "wrf" if live is absent else live
-        if key == "ruc_irrigation":
-            # Generic headers omit wrf_461. Earlier lane omissions mean
-            # wrf_45, so the v6 identity refuses their continuation before
-            # live forecast arrays are restored.
-            stored = "wrf_461" if stored is absent else stored
-            live = "wrf_461" if live is absent else live
-        if key == "scalar_adv_opt":
-            # The only implemented scalar operator was PD before the
-            # independent selector existed. Omission therefore means 1.
-            stored = 1 if stored is absent else stored
-            live = 1 if live is absent else live
-        if key == "scalar_pblmix":
-            # Off is omitted by configuration_echo. Old checkpoints also
-            # had no post-PBL scalar diffusion. An enabled value still binds.
-            stored = 0 if stored is absent else stored
-            live = 0 if live is absent else live
         if key in _CORRECTION_KEYS:
             # Correct-mode keys: False is omitted by configuration_echo and
             # is the matched arithmetic every earlier checkpoint ran (absent
@@ -4587,39 +4642,6 @@ def _require_config_match(stored_config: dict, cfg, path) -> None:
                 continue
             stored = False if stored is absent else stored
             live = False if live is absent else live
-        if key in ("tempo_ml_for_bl_nc", "tempo_surface_emission_before"):
-            # Off is omitted by configuration_echo and is what every older
-            # checkpoint ran; an enabled arm still binds.
-            stored = False if stored is absent else stored
-            live = False if live is absent else live
-        if key in ("bl_mynn_mixaerosols", "bl_mynn_mixnumcon"):
-            # Off is omitted by configuration_echo and is what every older
-            # checkpoint mixed (nothing beyond bl_mynn_mixscalars). An
-            # enabled key still binds.
-            stored = 0 if stored is absent else stored
-            live = 0 if live is absent else live
-        if key == "terrain_clock":
-            # "measured" is omitted by configuration_echo: the launch-time
-            # derivation every older checkpoint ran under.  "pinned" and
-            # "local_face" (the default from 2.8.8) bind, so a checkpoint
-            # written under "measured" continues only under "measured".
-            stored = "measured" if stored is absent else stored
-            live = "measured" if live is absent else live
-        if key in ("spp_conv", "spp_pbl"):
-            # Builds before the SPP consumer port had both disabled.
-            # An enabled consumer still differs and is refused below.
-            stored = 0 if stored is absent else stored
-            live = 0 if live is absent else live
-        if key in ("fractional_seaice", "swint_opt", "aer_opt", "alb_sol"):
-            # Earlier checkpoints ran the 0.5 ice threshold, held
-            # shortwave and zero aerosol. Enabled options still bind.
-            stored = 0 if stored is absent else stored
-            live = 0 if live is absent else live
-        if key == "w_crit_cfl":
-            # Older checkpoints measured w_damp from Courant 1.0; a moved
-            # value is refused, because it changes the trajectory.
-            stored = 1.0 if stored is absent else stored
-            live = 1.0 if live is absent else live
         if key in TERRAIN_DRAG_RUN_DEFAULTS:
             # Absent is the default (_drop_inert_terrain_drag); a moved
             # topo_wind/gwd_opt still refuses below.
@@ -4776,6 +4798,7 @@ _ALGORITHM_SELECTORS = {
     "radiation_sw": ("ra_sw_physics",),
     "cumulus": ("cu_physics",),
     "urban": ("sf_urban_physics",),
+    "seaice": ("seaice_prognostic",),
     "dycore_mixing": ("km_opt", "diff_6th_opt"),
     "upper_damping": ("damp_opt",),
 }
@@ -6269,7 +6292,13 @@ class PendingTreeCheckpoint:
 
     def abandon(self) -> None:
         """Release the borrowed store without writing anything."""
-        self._members = []
+        members, self._members = self._members, []
+        for _gid, member in members:
+            # A member whose host copies are still in flight into a pinned
+            # slab waits for them before the slab can go back to the pool.
+            release = getattr(member, "release", None)
+            if callable(release):
+                release()
         self._released.set()
 
 
@@ -6447,9 +6476,6 @@ def write_tree_restart(directory, model, valid_time: datetime, *,
                 path=directory / f"d{int(node.cfg.grid_id):02d}",
                 elapsed=sealed_elapsed)
     checkpoint_set_id = uuid.uuid4().hex
-    if os.environ.get("GPUWM_BENCH_CHECKPOINT_TOKEN") is not None:
-        from tools.bench.checkpoint_stamps import stamps
-        checkpoint_set_id = stamps(directory, (ticks, tick_den, sorted(ids)))[1]
     published: list[Path] = []
     members: list = []
     lenders: list = []
@@ -6568,11 +6594,13 @@ def write_tree_restart(directory, model, valid_time: datetime, *,
                     else:
                         deferrable = False
                 else:
+                    from gpuwm.io.checkpoint_staging import StagedSnapshot
                     members.append((gid, prepare_restart(
                         path, node.state, node.cfg.run,
                         run_trackers=trackers.get(gid), tree_header=tree_header,
                         extra_scratch_slots=window_slots_by_gid.get(gid, ()),
-                        sealed_forcing_extension=sealed_forcing_extension)))
+                        sealed_forcing_extension=sealed_forcing_extension,
+                        staging=StagedSnapshot())))
                 continue
             if streamed is not None and not sealed_forcing_extension:
                 # Publish the canonical store, without refreshing a full GPU
@@ -6599,6 +6627,12 @@ def write_tree_restart(directory, model, valid_time: datetime, *,
                 path.unlink(missing_ok=True)
             except OSError:
                 pass
+        # Snapshotted members with host copies still in flight wait for
+        # them before their pinned memory can be reused.
+        for _gid, member in members:
+            release = getattr(member, "release", None)
+            if callable(release):
+                release()
         raise
     root_id = int(model.root.cfg.grid_id)
     if defer_publish:
@@ -7837,13 +7871,19 @@ def _apply_validated_restart(validated: _ValidatedRestart,
         host = stored.get(f"acoustic/{name}")
         if target is None or host is None:
             continue
-        _check_array(host, target, f"acoustic/{name}")
         target[...] = asarray(host)
     stored_scratch = set()
     for key, host in stored.items():
         if key.startswith("scratch/"):
             slot = key[len("scratch/"):]
             stored_scratch.add(slot)
+            if slot in OUTPUT_PERSISTENT and state.existing_scratch(slot) is None:
+                print(f"note: checkpoint carries inactive output bucket {slot!r}; dropped")
+                continue
+            if slot in HAIL_PERSISTENT and state.existing_scratch(slot) is None:
+                print(f"note: checkpoint {validated.path.name} carries {slot!r}; "
+                      "hail diagnostics are off, so the accumulator is dropped")
+                continue
             if (slot == "up_heli_max" or _is_tracker_window_slot(slot)) \
                     and state.existing_scratch(slot) is None:
                 # The eagerly allocated diagnostic accumulator and the
@@ -7929,6 +7969,8 @@ def restore_restart(path, state, cfg, *, preserved_forcing_prefix=False) -> Rest
 
 def _restore_driver(stored, header, state, driver, elapsed, asarray,
                     format_version: int) -> None:
+    # _validate_driver_payload and _validate_member_namespaces have checked
+    # every member before _apply_validated_restart mutates any model state.
     from gpuwm.core.microphysics import MicrophysicsDiagnostics
     from gpuwm.core.physics import PhysicsTendencies
 
@@ -7943,14 +7985,8 @@ def _restore_driver(stored, header, state, driver, elapsed, asarray,
     stored_fields = {key[len("fields/"):]: value
                      for key, value in stored.items()
                      if key.startswith("fields/")}
-    if set(stored_fields) != set(driver.fields):
-        raise RestartMismatchError(
-            "restart surface-field inventory does not match the resuming "
-            f"driver (missing {sorted(set(driver.fields) - set(stored_fields))}, "
-            f"extra {sorted(set(stored_fields) - set(driver.fields))})")
     for name, host in stored_fields.items():
         target = driver.fields[name]
-        _check_array(host, target, f"fields/{name}")
         target[...] = asarray(host)
     lake = getattr(driver, "lake", None)
     if lake is not None:
@@ -7958,15 +7994,9 @@ def _restore_driver(stored, header, state, driver, elapsed, asarray,
 
     for name in ("rthratenlw", "rthratensw"):
         key = f"driver/{name}"
-        if key not in stored:
-            raise RestartMismatchError(f"restart is missing {key}")
         target = getattr(driver, name)
-        _check_array(stored[key], target, key)
         target[...] = asarray(stored[key])
     key = "driver/pending_rainbl"
-    if key not in stored:
-        raise RestartMismatchError(f"restart is missing {key}")
-    _check_array(stored[key], driver._pending_rainbl, key)
     driver._pending_rainbl[...] = asarray(stored[key])
 
     # The checkpoint-only carriers.  Tolerant in BOTH directions, and
@@ -7980,7 +8010,6 @@ def _restore_driver(stored, header, state, driver, elapsed, asarray,
         host = stored.get(f"diag/{name}")
         if target is None or host is None:
             continue
-        _check_array(host, target, f"diag/{name}")
         target[...] = asarray(host)
 
     # Preserve the constructor's carrier identities for tile buffers and
@@ -8029,11 +8058,6 @@ def _restore_driver(stored, header, state, driver, elapsed, asarray,
                 components[comp] = getattr(live_tendency, comp)
             else:
                 components[comp] = None
-        missing = [comp for comp in TENDENCY_REQUIRED_COMPONENTS
-                   if components[comp] is None]
-        if missing:
-            raise RestartMismatchError(
-                f"restart tendency {tend_name} is missing {missing}")
         setattr(driver, tend_name, PhysicsTendencies(**components))
     config = header["config"]
     reuse_pbl = bool(config.get("bl_pbl_physics")
@@ -8058,12 +8082,6 @@ def _restore_driver(stored, header, state, driver, elapsed, asarray,
                 key = f"driver/microphysics/{comp}"
                 if key in stored:
                     components[comp] = asarray(stored[key])
-            missing = [comp for comp in MICROPHYSICS_REQUIRED_COMPONENTS
-                       if components[comp] is None]
-            if missing:
-                raise RestartMismatchError(
-                    f"v2 restart microphysics diagnostics are missing "
-                    f"{missing}")
             driver.microphysics = MicrophysicsDiagnostics(**components)
     else:
         for comp, slot in slot_map.items():
@@ -8071,36 +8089,13 @@ def _restore_driver(stored, header, state, driver, elapsed, asarray,
             legacy_key = f"driver/microphysics/{comp}"
             scratch_host = stored.get(scratch_key)
             legacy_host = stored.get(legacy_key)
-            if format_version == RESTART_FORMAT_VERSION:
-                if legacy_host is not None:
-                    raise RestartMismatchError(
-                        f"v{RESTART_FORMAT_VERSION} restart unexpectedly "
-                        f"contains removed member {legacy_key}")
-                if scratch_host is None:
-                    raise RestartMismatchError(
-                        f"v{RESTART_FORMAT_VERSION} restart is missing "
-                        f"canonical microphysics member {scratch_key}")
-            elif scratch_host is not None and legacy_host is not None:
-                legacy_target = state.scratch(legacy_host.shape, slot)
-                _check_array(legacy_host, legacy_target, legacy_key)
-                if scratch_host.tobytes() != legacy_host.tobytes():
-                    raise RestartMismatchError(
-                        f"v2 restart's duplicate microphysics members "
-                        f"{scratch_key} and {legacy_key} differ byte-for-byte; "
-                        "they cannot be rebuilt as one alias without changing "
-                        "the trajectory")
             source = scratch_host if scratch_host is not None else legacy_host
             if source is None:
-                if comp in MICROPHYSICS_REQUIRED_COMPONENTS:
-                    raise RestartMismatchError(
-                        f"v2 restart microphysics diagnostics are missing "
-                        f"both {scratch_key} and {legacy_key}")
                 # An old pre-first-call optional can legitimately be absent;
                 # the new canonical scratch slot is already zero-filled.
                 target = state.scratch(state.mup.shape, slot)
             else:
                 target = state.scratch(source.shape, slot, dtype=source.dtype)
-                _check_array(source, target, scratch_key)
                 if scratch_host is None:
                     target[...] = asarray(source)
             components[comp] = target
@@ -8122,10 +8117,6 @@ def _restore_driver(stored, header, state, driver, elapsed, asarray,
 
     if "cumulus/w0avg" in stored:
         adapter = driver.cumulus_callable
-        if adapter is None or not hasattr(adapter, "w0avg"):
-            raise RestartMismatchError(
-                "restart carries cumulus W0AVG but the resuming driver has "
-                "no trigger-history cumulus adapter")
         restored_w0avg = asarray(stored["cumulus/w0avg"])
         if (adapter.w0avg is not None
                 and adapter.w0avg.shape == restored_w0avg.shape

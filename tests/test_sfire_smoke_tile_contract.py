@@ -23,6 +23,20 @@ def test_native_global_shapes_do_not_expand_with_domain_extent():
         assert manifest[name].dtype == values[name].dtype
 
 
+def test_the_pwp_status_word_is_a_domain_carrier_not_a_refused_field():
+    # sf_ocean_physics = 2 adds fields/_pwp_status, shape (1,); a store-direct
+    # or streamed forecast refused its start over it (V59 run 2a, 2026-10-21).
+    from tilestream.global_inventory import global_keys
+    from tilestream.hoststore import manifest_from_arrays
+    assert global_keys(('fields/_pwp_status', 'fields/tsk')) == ('fields/_pwp_status',)
+    values = {'state/thp': np.empty((16, 12, 17), np.float32),
+              'fields/tsk': np.empty((12, 17), np.float32),
+              'fields/_pwp_status': np.zeros(1, np.int32)}
+    manifest = {entry.name: entry for entry in manifest_from_arrays(values, 16, 12, 17)}
+    assert manifest['fields/_pwp_status'].shape(59, 640, 360) == (1,)
+    assert manifest['fields/_pwp_status'].dtype == np.dtype(np.int32)
+
+
 def test_output_and_rk_operands_rebuild_but_native_source_clocks_persist():
     from tilestream.physics_inventory import is_checkpointed
     from tilestream.sfire_smoke import OLD_MU_KEY

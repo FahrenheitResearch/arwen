@@ -43,7 +43,6 @@ leaf at max_ulp 0 and bitwise identity against
 from __future__ import annotations
 
 import math
-from typing import Sequence
 
 import numpy as np
 

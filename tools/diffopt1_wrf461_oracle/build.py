@@ -151,15 +151,16 @@ def periodic_top_slope_control(bodies: bytes) -> bytes:
     return (text[:start] + "".join(out) + text[end:]).encode()
 
 
-def build(wrf: Path, output: Path, flags: str = "strict", control: str | None = None) -> Path:
+def _build(wrf, output, *, routines, extra_routines, config_source, pipeline,
+           compiler_flags, flags, control, receipt_fields):
     wrf, out = wrf.resolve(), output.resolve()
     out.mkdir(parents=True, exist_ok=True)
     for relative, pin in SOURCE_PINS.items():
         if sha256(wrf / relative) != pin:
             raise ValueError(f"{relative} is not the pinned WRF v{WRF_RELEASE} source")
-    bodies, spans = extract_routines(wrf / "dyn_em/module_diffusion_em.F", DIFFUSION_ROUTINES)
+    bodies, spans = extract_routines(wrf / "dyn_em/module_diffusion_em.F", routines)
     extra_spans = {}
-    for relative, names in EXTRA_ROUTINES.items():
+    for relative, names in extra_routines.items():
         more, more_spans = extract_routines(wrf / relative, names)
         bodies += b"\n" + more
         extra_spans[relative] = more_spans
@@ -172,13 +173,12 @@ def build(wrf: Path, output: Path, flags: str = "strict", control: str | None = 
         b"module module_diffusion_em\nuse module_oracle_config\nuse module_model_constants\n"
         b"implicit none\nINTEGER, PARAMETER :: bdyzone = 4\ncontains\n" + bodies
         + b"\nend module module_diffusion_em\n")
-    (out / "oracle_config.F90").write_text(CONFIG_SOURCE, encoding="utf-8", newline="\n")
-    pipeline = Path(__file__).with_name("pipeline.F90")
+    (out / "oracle_config.F90").write_text(config_source, encoding="utf-8", newline="\n")
     commands = []
     for src, obj in ((out / "oracle_config.F90", "oracle_config.o"),
                      (wrf / "share/module_model_constants.F", "constants.o"),
                      (generated, "routines.o"), (pipeline.resolve(), "pipeline.o")):
-        command = ["gfortran", *FLAGS[flags], "-c", str(src), "-o", obj]
+        command = ["gfortran", *compiler_flags[flags], "-c", str(src), "-o", obj]
         commands.append(command)
         subprocess.run(command, cwd=out, check=True)
     command = ["gfortran", "-shared", "oracle_config.o", "constants.o", "routines.o",
@@ -190,8 +190,7 @@ def build(wrf: Path, output: Path, flags: str = "strict", control: str | None = 
             if arg.startswith("/"):
                 command[i] = Path(arg).name
     receipt = {
-        "schema": "diffopt1-wrf461-oracle-build-v1", "wrf_release": WRF_RELEASE,
-        "wrf_commit": WRF_COMMIT, "flags": flags, "control": control, "source_sha256": SOURCE_PINS,
+        **receipt_fields,
         "compiler": subprocess.check_output(["gfortran", "--version"], text=True).splitlines()[0],
         "commands": commands, "routines": spans, "extra_routines": extra_spans,
         "pipeline_sha256": sha256(pipeline), "config_sha256": sha256(out / "oracle_config.F90"),
@@ -199,6 +198,15 @@ def build(wrf: Path, output: Path, flags: str = "strict", control: str | None = 
     (out / "build-receipt.json").write_text(json.dumps(receipt, indent=2) + "\n",
                                             encoding="utf-8", newline="\n")
     return out / "oracle.so"
+
+
+def build(wrf: Path, output: Path, flags: str = "strict", control: str | None = None) -> Path:
+    return _build(wrf, output, routines=DIFFUSION_ROUTINES, extra_routines=EXTRA_ROUTINES,
+                  config_source=CONFIG_SOURCE, pipeline=Path(__file__).with_name("pipeline.F90"),
+                  compiler_flags=FLAGS, flags=flags, control=control,
+                  receipt_fields={"schema": "diffopt1-wrf461-oracle-build-v1",
+                                  "wrf_release": WRF_RELEASE, "wrf_commit": WRF_COMMIT,
+                                  "flags": flags, "control": control, "source_sha256": SOURCE_PINS})
 
 
 if __name__ == "__main__":

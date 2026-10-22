@@ -40,6 +40,10 @@ for _p in (str(ROOT), str(HERE)):
 
 import oracle_io as io  # noqa: E402
 
+from tools.thompson_aerosol_column_oracle.column_state import (
+    ColumnState as OracleColumnState,
+)
+
 f32 = np.float32
 
 STAGE_LAUNCHERS = (
@@ -55,55 +59,12 @@ STAGE_LAUNCHERS = (
 )
 
 
-class ColumnState:
-    """The mp=28 ``DomainState`` surface over ``(nz, 1, ncol)`` device
-    arrays (the attribute set and scratch protocol of
-    tools/thompson_real_column_parity/real_column_parity.py's host
-    ``ColumnState``)."""
+class ColumnState(OracleColumnState):
+    """The mp=28 DomainState surface over (nz, 1, ncol) device arrays."""
 
     def __init__(self, cols, cp):
-        ncol, nz = cols["p"].shape
         self._cp = cp
-
-        def vol(a):
-            a = np.asarray(a, f32)
-            return cp.asarray(np.ascontiguousarray(
-                a.T.reshape(a.shape[1], 1, ncol)))
-
-        self.p = vol(cols["p"])
-        self.thb = cp.zeros((nz,), f32)
-        self.thp = vol(cols["th"])
-        self.phb = cp.zeros((nz + 1,), f32)
-        self.php = vol(cols["geop"])
-        self.w = vol(cols["w"])
-        for s in io.SPECIES:
-            setattr(self, s, vol(cols[s]))
-        self.effc = cp.zeros((nz, 1, ncol), f32)
-        self.effi = cp.zeros((nz, 1, ncol), f32)
-        self.effs = cp.zeros((nz, 1, ncol), f32)
-        self.nwfa2d = cp.asarray(np.asarray(cols["nwfa2d"], f32)
-                                 .reshape(1, ncol))
-        self.nifa2d = cp.asarray(np.asarray(cols["nifa2d"], f32)
-                                 .reshape(1, ncol))
-        self.h_diabatic = cp.zeros((nz, 1, ncol), f32)
-        self.physics = SimpleNamespace(refl_10cm=None, state=self)
-        self._scratch = {}
-
-    def scratch(self, shape, slot, dtype=None):
-        cp = self._cp
-        shape = tuple(shape)
-        want = np.dtype(f32 if dtype is None else dtype)
-        value = self._scratch.get(slot)
-        if value is None:
-            value = cp.zeros(shape, dtype=want)
-            self._scratch[slot] = value
-        elif value.shape != shape or value.dtype != want:
-            raise ValueError(f"scratch slot {slot!r} reused with a new "
-                             "shape or dtype")
-        return value
-
-    def existing_scratch(self, slot):
-        return self._scratch.get(slot)
+        super().__init__(cols, cp, io.SPECIES)
 
 
 def cols2d(a):

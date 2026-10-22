@@ -92,11 +92,6 @@ def interpolate_sounding(values, coordinates, target):
     return result
 
 
-def calculate_p_top(raw, ztop):
-    sounding = prepare_sounding(raw, dry=True)
-    return interpolate_sounding(sounding["p_moist"], sounding["height"], ztop)
-
-
 def initialize_atmosphere(cfg, terrain, vertical, sounding, *, native_use_theta_m=1):
     """Native dry base, moist hydrostatics, wind and thermal perturbation.
 

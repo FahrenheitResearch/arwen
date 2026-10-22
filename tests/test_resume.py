@@ -78,7 +78,7 @@ def _tree(outdir, instant: str, set_id: str, domains=(1, 2, 3), *,
     return paths
 
 
-def test_discovery_groups_sets_and_sorts_newest_first(tmp_path):
+def test_discovery_groups_sets_and_sorts_newest_first(tmp_path, monkeypatch):
     _single(tmp_path, "1974-04-03_13_00_00")
     _tree(tmp_path, "1974-04-03_15_00_00", "abc123")
     _single(tmp_path, "1974-04-03_14_00_00")
@@ -92,6 +92,11 @@ def test_discovery_groups_sets_and_sorts_newest_first(tmp_path):
     assert sorted(tree.members) == [1, 2, 3]
     assert tree.handle.name == "gpuwmrst_d01_1974-04-03_15_00_00__abc123.npz"
     assert sets[1].set_id is None and sorted(sets[1].members) == [1]
+
+    from gpuwm.resume import KEEP_CHECKPOINTS_ENV, retire_superseded_checkpoints
+    monkeypatch.setenv(KEEP_CHECKPOINTS_ENV, "3")
+    assert retire_superseded_checkpoints(tmp_path) == []
+    assert len(discover_checkpoint_sets(tmp_path)) == 3
 
 
 def test_latest_takes_the_newest_valid_set(tmp_path):

@@ -884,7 +884,8 @@ def prepare_era5_wrf(
     # Noah-geometry schemes, so their soil state is unchanged by the LSM
     # dispatch seam.
     from gpuwm.core.landuse import (
-        ruc_fractional_seaice as _ruc_fractional_seaice)
+        ruc_fractional_seaice as _ruc_fractional_seaice,
+        seaice_threshold_of as _seaice_threshold_of)
     soil = preprocess_land_surface_soil(
         initial_met.fields,
         # real.exe's adjust_for_seaice_pre/post keep the fraction under
@@ -892,6 +893,7 @@ def prepare_era5_wrf(
         # otherwise (module_soil_pre.F:216-219, :337-343, :392-393 of the HRRR
         # v4.1.21 fork).
         fractional_seaice=_ruc_fractional_seaice(cfg),
+        seaice_threshold=_seaice_threshold_of(cfg),
         sf_surface_physics=int(cfg.sf_surface_physics),
         # Resolved, not defaulted: see gpuwm/ingest/hrrr_physics.py for the
         # failure this closes.  Inert at every geometry but RUC's six.

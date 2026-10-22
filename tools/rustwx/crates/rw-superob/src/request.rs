@@ -127,7 +127,6 @@ impl<'a> Arrays<'a> {
         Ok(item)
     }
 
-    reader!(f32s, f32, DTYPE_F32);
     reader!(f64s, f64, DTYPE_F64);
     reader!(u8s, u8, DTYPE_U8);
     reader!(i64s, i64, DTYPE_I64);

@@ -98,10 +98,59 @@ def default_profiles() -> tuple[str, ...]:
     return tuple(seen)
 
 
-def _theta(z):
-    """Potential temperature of a stably stratified troposphere (N = 0.01/s)."""
+#: The synthetic column's temperature profile: (base height m, lapse rate
+#: K/m) from a 300 K surface, a 6.5 K/km troposphere to a 210 K tropopause,
+#: then the standard atmosphere's isothermal and warming stratosphere and
+#: an isothermal layer above 47 km.  Every layer of every model top a run
+#: can ask for stays inside the radiation tables' temperature range
+#: (RRTMG and RRTMGP refuse a layer below 160 K).
+_SURFACE_T_K = 300.0
+_TROPOPAUSE_T_K = 210.0
+_LAPSE_LAYERS = ((0.0, 0.0065),
+                 ((_SURFACE_T_K - _TROPOPAUSE_T_K) / 0.0065, 0.0),
+                 (20000.0, -0.0010),
+                 (32000.0, -0.0028),
+                 (47000.0, 0.0))
 
-    return 300.0 * np.exp(1.0e-4 * np.asarray(z, dtype=np.float64) / 9.81)
+
+def _temperature(z):
+    """Temperature (K) of the synthetic column at height ``z`` (m)."""
+
+    z = np.asarray(z, dtype=np.float64)
+    temperature = np.full(z.shape, _SURFACE_T_K)
+    base_t = _SURFACE_T_K
+    for index, (base, lapse) in enumerate(_LAPSE_LAYERS):
+        top = (_LAPSE_LAYERS[index + 1][0] if index + 1 < len(_LAPSE_LAYERS)
+               else np.inf)
+        inside = z >= base
+        temperature = np.where(inside, base_t - lapse * (np.minimum(z, top) - base),
+                               temperature)
+        if np.isfinite(top):
+            base_t -= lapse * (top - base)
+    return temperature
+
+
+def _theta(z):
+    """Potential temperature of the synthetic column (K, referenced to P0).
+
+    Built from :func:`_temperature`: theta = T exp(int_0^z g / (cp T) dz'),
+    the hydrostatic Exner relation for a 1000 hPa surface, so the column's
+    layer temperatures are the profile's whatever the run's model top.
+    Breakage (2.9.4 landing, V58 2026-10-20): the earlier constant
+    N = 0.01/s theta profile cooled without limit aloft, so the column of
+    an Earth-2 FCN3 nest (ztop 20 km, p_top 50 hPa) had a 159.2 K top
+    layer, below RRTMG's 160 K floor, and the pre-warm failed.
+    """
+
+    from gpuwm.core import constants as c
+
+    z = np.asarray(z, dtype=np.float64)
+    top = float(np.max(z, initial=0.0))
+    fine = np.append(np.arange(0.0, top, 10.0), top)
+    integrand = c.G / (c.CP * _temperature(fine))
+    exponent = np.concatenate(([0.0], np.cumsum(
+        0.5 * (integrand[1:] + integrand[:-1]) * np.diff(fine))))
+    return _temperature(z) * np.exp(np.interp(z, fine, exponent))
 
 
 def _vapour(z):
@@ -205,11 +254,64 @@ def _bind_profile_plan(profile: str, levels: int) -> bool:
         return False
 
 
+def forecast_column_config(run):
+    """The synthetic column under a real run's own configuration.
+
+    Every option of ``run`` is kept -- the physics selections and their
+    generation/variant selectors (``thompson_version``, ``bl_mynn_version``,
+    ``diff_6th_form``, ``upper_wind_limiter_form`` ...), the vertical levels
+    and the numerics -- because those are what choose a kernel's source.
+    Only the extents, the clock and what the flat moist builder needs
+    change: a 16 x 16 flat column, two steps, no lateral forcing to read.
+    The column is open on both axes, not periodic: a real run's specified
+    or nested boundaries need lateral forcing the column does not have, and
+    the periodic path is refused by the updraft-helicity diagnostic every
+    HRRR-shape run carries (nwp_diagnostics = 1; core/uh_diag.py transcribes
+    only WRF's non-periodic cal_helicity bounds).  Breakage (2.9.4 landing,
+    V58 2026-10-20): the periodic column failed after compiling everything
+    else, and the forecast's step 1 compiled 51 s cold with the card idle.
+
+    A SPECIFIED (or nested) run warms on a specified column, forced by its
+    own initial state (:func:`run_column`), wide enough for the run's
+    boundary width.  That is the boundary geometry its step launches, and
+    the one zadvect_implicit = 1 accepts: the open column was refused
+    ("zadvect_implicit = 1 with radiative open boundaries is not wired")
+    on the packaged hrrr_v4_gsd41 recipe (2026-10-21), so its
+    implicit-advection, MYNN and Thompson-fork variants compiled in step 1.
+    """
+
+    from dataclasses import replace
+
+    from gpuwm.config import validate_run_config
+
+    dt = float(run.dt)
+    common = dict(terrain_opt=0, run_seconds=dt * _STEPS, clock_dt=dt,
+                  output_interval_s=dt * _STEPS, open_x=False, open_y=False,
+                  nested=False)
+    if bool(getattr(run, "specified", False) or getattr(run, "nested", False)):
+        extent = max(_NX, 2 * int(run.spec_bdy_width) + 4)
+        return validate_run_config(replace(
+            run, nx=extent, ny=extent, specified=True, **common))
+    return validate_run_config(replace(
+        run, nx=_NX, ny=_NY, **{**common, "open_x": True, "open_y": True},
+        specified=False))
+
+
 def _run_profile(profile: str, levels: int) -> str:
     """Build the synthetic domain with ``profile``'s physics; step it.
 
     Returns the sentence :func:`synthetic_downward_longwave` gave for the
     downward longwave the column ran on.
+    """
+
+    return run_column(_profile_config(profile, levels))
+
+
+def run_column(cfg, *, reflectivity: bool = False) -> str:
+    """Build the synthetic domain under ``cfg``; step it twice.
+
+    ``reflectivity`` also asks the second step for the 10 cm reflectivity
+    a history write takes, as a forecast's output steps do.
     """
 
     import cupy as cp
@@ -219,26 +321,115 @@ def _run_profile(profile: str, levels: int) -> str:
     from gpuwm.core.moist import init_moist_balanced
     from gpuwm.core.physics import initialize_physics
 
-    cfg = _profile_config(profile, levels)
     coord = make_vertical_coord(cfg.nz, hybrid_opt=cfg.hybrid_opt,
                                 etac=cfg.etac)
     base = make_base_state(coord, _theta, p_surf=cfg.p_surf, ztop=cfg.ztop)
     state = init_moist_balanced(cfg, coord, base, _vapour)
     grid = (cfg.ny, cfg.nx)
     glw, longwave = synthetic_downward_longwave(cfg)
-    driver = initialize_physics(
-        state, cfg, radiation_start_time=_VALID_TIME,
-        radiation_latitude=np.full(grid, _LATITUDE),
-        radiation_longitude=np.full(grid, _LONGITUDE),
-        noahmp_start_time=_VALID_TIME,
-        noahmp_latitude=np.full(grid, _LATITUDE),
-        noahmp_longitude=np.full(grid, _LONGITUDE),
-        **({} if glw is None else {"glw": glw}))
+    from gpuwm.hydro.runtime import settings_scope
+    # The synthetic column has no forecast parent grid, so the run's coupled hydro (inherited through
+    # GPUWM_NEXTGEN_SETTINGS by the prewarm child) cannot bind to it. Breakage (2.9.4 R11, ERA5 door with hydro
+    # on, 2026-10-22): "kernel pre-warm failed: forecast:column ValueError: parent runoff exchange needs the
+    # actual forecast ProjectedGrid", so none of the run's column kernels were warmed before its first step.
+    with settings_scope({"enabled": False, "activation_reason": "synthetic_warm_column"}):
+        driver = initialize_physics(
+            state, cfg, radiation_start_time=_VALID_TIME,
+            radiation_latitude=np.full(grid, _LATITUDE),
+            radiation_longitude=np.full(grid, _LONGITUDE),
+            noahmp_start_time=_VALID_TIME,
+            noahmp_latitude=np.full(grid, _LATITUDE),
+            noahmp_longitude=np.full(grid, _LONGITUDE),
+            **_synthetic_mosaic_fractions(cfg, grid),
+            **_synthetic_orographic_static(cfg, grid),
+            **({} if glw is None else {"glw": glw}))
     _seed_monthly_leaf_area(driver, cfg, grid)
-    for _ in range(_STEPS):
-        step(state, cfg)
+    if cfg.specified:
+        _attach_constant_boundaries(state, cfg)
+    for index in range(_STEPS):
+        step(state, cfg, refl_10cm_due=reflectivity and index == _STEPS - 1)
     cp.cuda.runtime.deviceSynchronize()
     return longwave
+
+
+#: The synthetic column's dominant categories: initialize_physics's own
+#: ivgtyp / isltyp defaults.
+_SYNTHETIC_IVGTYP = 10
+_SYNTHETIC_ISLTYP = 6
+
+
+def _synthetic_mosaic_fractions(cfg, grid) -> dict:
+    """LANDUSEF / SOILCTOP for a RUC mosaic suite: all of each cell in its
+    dominant category, one row per RUC table category.
+
+    A real road reads them from the static fields; the column has none, and
+    initialize_physics refuses a mosaic run without them ("RUC mosaic needs
+    LANDUSEF category fractions"), which left the packaged hrrr_v4_gsd41
+    recipe's (mosaic_lu = mosaic_soil = 1) forecast column unwarmed
+    (2026-10-21).  The category count is a kernel argument, not a compile
+    option, so the values do not change what compiles.
+    """
+
+    if int(cfg.sf_surface_physics) != 3 or not (cfg.mosaic_lu or cfg.mosaic_soil):
+        return {}
+    from gpuwm.core.ruc import load_ruc_parameters
+
+    bundle = load_ruc_parameters()
+    out = {}
+    for switch, name, rows, dominant in (
+            (cfg.mosaic_lu, "landusef",
+             len(bundle.vegetation_for("MODIFIED_IGBP_MODIS_NOAH").rows), _SYNTHETIC_IVGTYP),
+            (cfg.mosaic_soil, "soilctop", len(bundle.soil.rows), _SYNTHETIC_ISLTYP)):
+        if switch:
+            fractions = np.zeros((rows, *grid), dtype=np.float32)
+            fractions[dominant - 1] = 1.0
+            out[name] = fractions
+    return out
+
+
+#: The synthetic column's sub-grid orographic statistics (m for VAR*, a
+#: fraction or ratio for the rest): finite, nonzero, flat-column scale.
+_SYNTHETIC_OROGRAPHY_VALUE = {"VAR": 50.0, "VARLS": 50.0, "VARSS": 20.0, "VAR_SSO": 50.0}
+
+
+def _synthetic_orographic_static(cfg, grid) -> dict:
+    """The static field set topo_wind / gwd_opt read, for the flat column.
+
+    A real road hands initialize_physics its prepared static fields; the
+    column has none, and the terrain drag refuses without them ("this
+    initialization route hands the physics no static field set"), which left
+    the packaged hrrr_v4_gsd41 recipe's (gwd_opt = 3) forecast column
+    unwarmed (2026-10-21).  The values only need to be finite: the
+    kernels the drag compiles do not depend on them.
+    """
+
+    topo_wind = int(getattr(cfg, "topo_wind", 0) or 0)
+    gwd_opt = int(getattr(cfg, "gwd_opt", 0) or 0)
+    if not (topo_wind or gwd_opt):
+        return {}
+    from gpuwm.static.orographic import required_static_fields
+
+    static = {"HGT_M": np.zeros(grid, dtype=np.float32)}
+    for name in required_static_fields(topo_wind, gwd_opt):
+        static[name] = np.full(grid, _SYNTHETIC_OROGRAPHY_VALUE.get(name, 0.1), dtype=np.float32)
+    return {"terrain_drag_static": static}
+
+
+def _attach_constant_boundaries(state, cfg) -> None:
+    """Specified forcing that holds the column's own initial state.
+
+    Two equal frames, so the boundary tendencies are zero: the
+    relaxation and spec_bdy_final kernels run as a specified run's do,
+    on values the column already holds.
+    """
+
+    from gpuwm.ingest.lateral_bc import StateBoundaryFrames, attach_lateral_boundaries
+
+    frames = StateBoundaryFrames(spec_bdy_width=cfg.spec_bdy_width,
+                                 spec_zone=cfg.spec_zone, relax_zone=cfg.relax_zone)
+    frames.add_state(state, index=0)
+    frames.add_state(state, index=1)
+    attach_lateral_boundaries(state, frames.build((0.0, float(cfg.run_seconds))))
 
 
 #: The synthetic column's monthly leaf area (m2 m-2), the same in every

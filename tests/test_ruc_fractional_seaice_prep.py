@@ -154,8 +154,11 @@ def test_every_preparation_road_hands_the_soil_ingest_the_switch():
                     and getattr(node.func, "id", getattr(node.func, "attr", None))
                     == "preprocess_land_surface_soil"):
                 keys = {k.arg for k in node.keywords}
+                # and real.exe's seaice_threshold, or the HRRR recipe's
+                # 271.4 K open-water-to-ice rule silently does not run there
                 calls.append((path.relative_to(ROOT).as_posix(), node.lineno,
-                              "fractional_seaice" in keys))
+                              {"fractional_seaice",
+                               "seaice_threshold"} <= keys))
     assert len(calls) >= 10, calls
     missing = [c for c in calls if not c[2]]
     assert not missing, missing

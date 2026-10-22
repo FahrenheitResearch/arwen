@@ -15,20 +15,8 @@ from pathlib import Path
 
 import numpy as np
 
-
-def load_dump(directory: Path) -> dict[str, np.ndarray]:
-    raw = (directory / "data.bin").read_bytes()
-    as_f4 = np.frombuffer(raw, "<f4")
-    as_i4 = np.frombuffer(raw, "<i4")
-    out: dict[str, np.ndarray] = {}
-    for line in (directory / "manifest.txt").read_text().splitlines():
-        name, kind, ndim, d1, d2, d3, d4, offset = line.split()
-        shape = tuple(int(d) for d in (d1, d2, d3, d4))[:int(ndim)]
-        count = int(np.prod(shape))
-        start = int(offset)
-        words = as_f4 if kind == "f4" else as_i4
-        out[name] = words[start:start + count].reshape(shape, order="F").copy()
-    return out
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from tools.urban_wrf471_oracle.bem_dump_to_npz import load_dump
 
 
 def main(out_dir: str, dest_dir: str) -> None:

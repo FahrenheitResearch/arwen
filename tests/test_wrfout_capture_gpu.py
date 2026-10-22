@@ -162,3 +162,52 @@ def test_next_capture_releases_downloaded_queued_snapshot(monkeypatch, tmp_path)
         with netCDF4.Dataset(tmp_path / f"capture-{index}") as dataset:
             dataset.set_auto_mask(False)
             assert np.asarray(dataset.variables["T"][0]).tobytes() == expected.tobytes()
+
+
+@requires_gpu
+@pytest.mark.gpu
+def test_frame_past_the_snapshot_budget_is_copied_straight_to_host(monkeypatch, tmp_path):
+    """A field the device has no room to snapshot goes straight to host.
+
+    Breakage this prevents: full-CONUS HRRR resident on one 96 GB card ran
+    every step and died at its first history frame in the snapshot loop
+    ("Out of memory allocating 68,585,472 bytes (allocated so far:
+    99,013,528,576 bytes)").  With no budget every field takes the direct
+    copy, the frame is byte-identical, and the live arrays can change the
+    moment submit returns.
+    """
+    import cupy as cp
+    import gpuwm.io.wrfout as wrfout
+
+    original = np.arange(48, dtype=np.float32).reshape(2, 4, 6)
+    producer = cp.cuda.Stream(non_blocking=True)
+    with producer:
+        base = cp.asarray(original)
+        strided = base[:, :, ::2]
+        mu = cp.arange(12, dtype=cp.float32).reshape(4, 3)
+        fields = {"T": strided, "THM": strided, "MU": mu}
+        expected = {name: cp.asnumpy(value) for name, value in fields.items()}
+        monkeypatch.setattr(wrfout, "_device_state_frame", lambda *a, **k: fields)
+        monkeypatch.setattr(wrfout, "_history_snapshot_budget", lambda: 0)
+        writer = wrfout.AsyncDomainWrfoutWriter(
+            nx=3, ny=4, nz=2, dx=1, dy=1, title="direct", global_attrs={})
+        path = tmp_path / "direct"
+        snapshots = []
+        array = cp.array
+
+        def counted(*args, **kwargs):
+            snapshots.append(args)
+            return array(*args, **kwargs)
+
+        monkeypatch.setattr(cp, "array", counted)
+        try:
+            writer.submit(path, datetime(2026, 10, 18), None)
+            base.fill(900)
+            mu.fill(901)
+        finally:
+            writer.close()
+    assert not snapshots, "a field was snapshotted on the device past the budget"
+    with netCDF4.Dataset(path) as dataset:
+        dataset.set_auto_mask(False)
+        for name, value in expected.items():
+            assert np.asarray(dataset.variables[name][0]).tobytes() == value.tobytes(), name

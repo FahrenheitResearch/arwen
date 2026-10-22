@@ -220,16 +220,6 @@ class Sweep:
     def radial_count(self) -> int:
         return int(self.azimuth_deg.size)
 
-    @property
-    def nyquist_by_radial_valid(self) -> np.ndarray | None:
-        """Which radials carry a usable Nyquist, or None when none were packed."""
-
-        if self.nyquist_velocity_ms_by_radial is None:
-            return None
-        values = np.asarray(self.nyquist_velocity_ms_by_radial,
-                            dtype=np.float64)
-        return np.isfinite(values) & (values > 0.0)
-
 
 @dataclass(frozen=True)
 class RadarVolume:

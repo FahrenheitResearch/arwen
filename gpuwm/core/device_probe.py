@@ -23,6 +23,49 @@ import json
 import sys
 
 
+def pool_lease_budget_bytes(device: int = 0) -> int | None:
+    """This process's per-card pool-v3 reservation, never another owner's.
+
+    The helper exports GPU_MUTEX_CARDS (physical indices in CUDA order),
+    and records the budget in OWNER-N.json. Match a live ancestor's PID
+    AND birth tick, just as the helper does, to avoid stale/reused PIDs.
+    Exclusive leases have no declared budget and keep measured sizing.
+    """
+    import os
+    from pathlib import Path
+
+    cards = os.environ.get("GPU_MUTEX_CARDS", "").split(",")
+    if device < 0 or device >= len(cards) or not cards[device].isdigit():
+        return None
+    try:
+        ledger = json.loads((Path(os.environ.get("GPU_MUTEX_DIR", "/opt/gpu-mutex"))
+                             / f"OWNER-{cards[device]}.json").read_text())
+        if ledger.get("schema") != "gpu-mutex.owner.v1":
+            return None
+        pid = os.getpid()
+        while pid > 1:
+            fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+            for owner in ledger["owners"]:
+                budget = owner.get("budget_bytes")
+                if (owner.get("pid") == pid and owner.get("birth") == fields[19]
+                        and owner.get("mode") == "pool"
+                        and type(budget) is int and budget > 0):
+                    return budget
+            pid = int(fields[1])
+    except (OSError, ValueError, KeyError, IndexError, TypeError):
+        pass
+    return None
+
+
+def sizing_free_memory(free_bytes: int, *, device: int = 0) -> tuple[int, str | None]:
+    """Sizing availability under a lease, keeping telemetry itself intact."""
+    budget = pool_lease_budget_bytes(device)
+    if budget is None:
+        return int(free_bytes), None
+    return budget, (f"sizing against the pool lease budget {budget / 2**20:g} MiB, "
+                    f"not the card's {free_bytes / 2**30:.2f} GiB free")
+
+
 def cuda_device_identity(device: int) -> dict | None:
     """A physical card identity independent of CUDA visibility ordering.
 

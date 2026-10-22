@@ -84,6 +84,13 @@ The identities and formulas below come from
 
 <!-- END GENERATED earth2-grib2 -->
 
+The 24-hour ArWen proof exported 25 frames, decoded all 50 GRIB2 files and
+passed 30 point comparisons against source arithmetic. Source omega at
+500 hPa reached -42.12 Pa s-1. At +12 and +24 hours, aligned land-cell
+100 m / 10 m median speed ratios were 1.44 and 1.71, using 10 m speeds
+of at least 1 m s-1. These checks establish agreement with source carriers;
+they do not validate physical magnitudes against observations.
+
 ## Examples
 
 The four diagnostics below were run together on the five-frame hex sample,

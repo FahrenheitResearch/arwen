@@ -19,31 +19,8 @@ use netcdf_writer::{AttrValue, NcFormat, NcType, NcWriter, Schema, VarData};
 
 const NZ: usize = 4;
 
-struct Scratch(PathBuf);
-
-impl Scratch {
-    fn new(tag: &str) -> Self {
-        // Parallel tests read one clock tick on the 2.8.6 windows-2025 runner and collided on this name; the counter keeps each call distinct.
-        static NEXT_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "rw-global-latlon-{tag}-{}-{nonce}-{}",
-            std::process::id(),
-            NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-        ));
-        std::fs::create_dir_all(&path).unwrap();
-        Self(path)
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+mod support;
+use support::Scratch;
 
 /// A regular lat/lon axis pair: cell centres, south to north and west to east.
 struct Axes {
@@ -350,7 +327,7 @@ fn fill_pixels(png: &Path, tag: &str) -> (image::RgbaImage, Vec<(u32, u32)>) {
 
 #[test]
 fn a_longitude_periodic_precipitation_field_draws_no_date_line_seam() {
-    let scratch = Scratch::new("seam");
+    let scratch = Scratch::new("rw-global-latlon", "seam");
     let axes = Axes::globe(1.0);
     // A U of rain: a band astride the date line from 60 S to 60 N, joined
     // across the whole globe by a zonal band near 52 N.  In the grid's
@@ -419,7 +396,7 @@ fn a_longitude_periodic_precipitation_field_draws_no_date_line_seam() {
 
 #[test]
 fn a_regional_crop_fills_both_halves_of_the_pressure_and_precipitation_pair() {
-    let scratch = Scratch::new("crop");
+    let scratch = Scratch::new("rw-global-latlon", "crop");
     // A North America window cut from a 2 degree global ring, as a bbox
     // export writes it.
     let axes = Axes::window(2.0, 10.0, 75.0, -170.0, -50.0);

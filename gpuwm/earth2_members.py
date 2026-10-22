@@ -253,6 +253,9 @@ def acquire_batch(*, model, cycle, hours, area, out, members, batch_size=None,
             model_package=row.get("weights", {}).get("uri"),
             loader_preparations=row.get("loader_preparations", []),
             model_calls=row.get("model_calls", []))
+        if not weights_package and (row.get("weights") or {}).get("host") == "huggingface":
+            from gpuwm.hf_fetch import fetch as fetch_weights
+            request["package_root"] = fetch_weights(key)["package_root"]
         Path(request["weight_cache"]).mkdir(parents=True, exist_ok=True)
         request_path = out / "earth2-request.json"
         _json(request_path, request)

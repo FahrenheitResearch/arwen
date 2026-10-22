@@ -16,6 +16,8 @@ use crate::model::FieldSpec;
 use crate::node::Node;
 use crate::refusal::{frame_invalid, mapping_invalid, Result};
 
+type DerivedField = (ArrayD<f64>, Vec<String>, Vec<String>);
+
 /// WRF `module_model_constants` Teten/Bolton saturation constants.
 const SVP1: f64 = 0.6112;
 const SVP2: f64 = 17.67;
@@ -81,7 +83,7 @@ pub fn complete_geopotential_height(
     operands: &impl CanonicalFields,
     name: &str,
     units: &str,
-) -> Result<Option<(ArrayD<f64>, Vec<String>, Vec<String>)>> {
+) -> Result<Option<DerivedField>> {
     let mut resolved: Vec<&CanonicalField> = Vec::with_capacity(HYPSOMETRIC_OPERANDS.len());
     for (operand, unit) in HYPSOMETRIC_OPERANDS {
         let Some(field) = operands.get_field(operand) else {
@@ -669,7 +671,7 @@ pub fn evaluate_derivation(
     field: &FieldSpec<'_>,
     name: &str,
     vertical: &Node,
-) -> Result<Option<(ArrayD<f64>, Vec<String>, Vec<String>)>> {
+) -> Result<Option<DerivedField>> {
     let kind = operation
         .get("operation")
         .and_then(Node::as_str)
@@ -832,7 +834,7 @@ pub fn evaluate_derivation(
                 return Err(mapping_invalid(format!("{name} declares invalid gravity")));
             }
             let values: Vec<f64> = array::contiguous(&geopotential.values)
-                .into_iter()
+                .iter()
                 .map(|value| value / gravity)
                 .collect();
             (
@@ -1683,6 +1685,7 @@ mod tests {
             grid_fingerprint: "fixture-grid".to_owned(),
             hybrid_a: Vec::new(),
             hybrid_b: Vec::new(),
+            original_pressure_hpa: None,
         };
         let mut available = std::collections::BTreeMap::new();
         let mut slp = constant_field("air_pressure_at_mean_sea_level", &["y", "x"], &[1, 2], 101_300.0);
@@ -1813,6 +1816,7 @@ mod tests {
             grid_fingerprint: "fixture-grid".to_owned(),
             hybrid_a: A_HALF.to_vec(),
             hybrid_b: B_HALF.to_vec(),
+            original_pressure_hpa: None,
         }
     }
 

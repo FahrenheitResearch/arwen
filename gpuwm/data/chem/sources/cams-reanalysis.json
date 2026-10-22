@@ -1,0 +1,273 @@
+{
+  "schema": "gpuwm.chem.source.v1",
+  "name": "cams-reanalysis",
+  "kind": "boundary",
+  "description": "CAMS EAC4 native 60-model-level composition with matching humidity and surface pressure, imported as published NetCDF files for research.",
+  "route": null,
+  "credential": null,
+  "format": "netcdf",
+  "grid": {
+    "kind": "regular_latlon",
+    "spacing_deg": 0.75,
+    "decode": {
+      "latitude": "latitude",
+      "longitude": "longitude",
+      "time": "valid_time",
+      "level": "model_level"
+    }
+  },
+  "vertical": {
+    "kind": "hybrid_sigma_pressure",
+    "surface_pressure_variable": "surface_pressure",
+    "humidity_variable": "specific_humidity",
+    "half_level_a_pa": [
+      0.0,
+      20.0,
+      38.425343,
+      63.647804,
+      95.636963,
+      134.483307,
+      180.584351,
+      234.779053,
+      298.495789,
+      373.971924,
+      464.618134,
+      575.651001,
+      713.218079,
+      883.660522,
+      1094.834717,
+      1356.474609,
+      1680.640259,
+      2082.273926,
+      2579.888672,
+      3196.421631,
+      3960.291504,
+      4906.708496,
+      6018.019531,
+      7306.631348,
+      8765.053711,
+      10376.126953,
+      12077.446289,
+      13775.325195,
+      15379.805664,
+      16819.474609,
+      18045.183594,
+      19027.695313,
+      19755.109375,
+      20222.205078,
+      20429.863281,
+      20384.480469,
+      20097.402344,
+      19584.330078,
+      18864.75,
+      17961.357422,
+      16899.46875,
+      15706.447266,
+      14411.124023,
+      13043.21875,
+      11632.758789,
+      10209.500977,
+      8802.356445,
+      7438.803223,
+      6144.314941,
+      4941.77832,
+      3850.91333,
+      2887.696533,
+      2063.779785,
+      1385.912598,
+      855.361755,
+      467.333588,
+      210.39389,
+      65.889244,
+      7.367743,
+      0.0,
+      0.0
+    ],
+    "half_level_b": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      7.6e-05,
+      0.000461,
+      0.001815,
+      0.005081,
+      0.011143,
+      0.020678,
+      0.034121,
+      0.05169,
+      0.073534,
+      0.099675,
+      0.130023,
+      0.164384,
+      0.202476,
+      0.243933,
+      0.288323,
+      0.335155,
+      0.383892,
+      0.433963,
+      0.484772,
+      0.53571,
+      0.586168,
+      0.635547,
+      0.683269,
+      0.728786,
+      0.771597,
+      0.811253,
+      0.847375,
+      0.879657,
+      0.907884,
+      0.93194,
+      0.951822,
+      0.967645,
+      0.979663,
+      0.98827,
+      0.994019,
+      0.99763,
+      1.0
+    ],
+    "coefficient_source": "https://confluence.ecmwf.int/spaces/UDOC/pages/108117131/L60+model+level+definitions"
+  },
+  "acquisition": {
+    "kind": "published_files",
+    "dataset": "cams-global-reanalysis-eac4",
+    "dataset_page": "https://ads.atmosphere.copernicus.eu/datasets/cams-global-reanalysis-eac4",
+    "licence_url": "https://creativecommons.org/licenses/by/4.0/",
+    "access": "A Copernicus ADS key is required to download native-level EAC4 files from ADS; import already-downloaded files (CC-BY-4.0, attribution required). Initialization never reads credentials.",
+    "required_credential": "Copernicus ADS key"
+  },
+  "variables": {
+    "ozone": {
+      "netcdf_name": "go3",
+      "group": "composition",
+      "units": "kg kg**-1",
+      "basis": "moist_air"
+    },
+    "nitrogen_dioxide": {
+      "netcdf_name": "no2",
+      "group": "composition",
+      "units": "kg kg**-1",
+      "basis": "moist_air"
+    },
+    "carbon_monoxide": {
+      "netcdf_name": "co",
+      "group": "composition",
+      "units": "kg kg**-1",
+      "basis": "moist_air"
+    },
+    "sulphur_dioxide": {
+      "netcdf_name": "so2",
+      "group": "composition",
+      "units": "kg kg**-1",
+      "basis": "moist_air"
+    },
+    "sea_salt_0p03_0p5um": {
+      "netcdf_name": "aermr01",
+      "group": "composition",
+      "units": "kg kg**-1",
+      "basis": "moist_air"
+    },
+    "sea_salt_0p5_5um": {
+      "netcdf_name": "aermr02",
+      "group": "composition",
+      "units": "kg kg**-1",
+      "basis": "moist_air"
+    },
+    "sea_salt_5_20um": {
+      "netcdf_name": "aermr03",
+      "group": "composition",
+      "units": "kg kg**-1",
+      "basis": "moist_air"
+    },
+    "dust_0p03_0p55um": {
+      "netcdf_name": "aermr04",
+      "group": "composition",
+      "units": "kg kg**-1",
+      "basis": "moist_air"
+    },
+    "dust_0p55_0p9um": {
+      "netcdf_name": "aermr05",
+      "group": "composition",
+      "units": "kg kg**-1",
+      "basis": "moist_air"
+    },
+    "dust_0p9_20um": {
+      "netcdf_name": "aermr06",
+      "group": "composition",
+      "units": "kg kg**-1",
+      "basis": "moist_air"
+    },
+    "organic_matter_hydrophilic": {
+      "netcdf_name": "aermr07",
+      "group": "composition",
+      "units": "kg kg**-1",
+      "basis": "moist_air"
+    },
+    "organic_matter_hydrophobic": {
+      "netcdf_name": "aermr08",
+      "group": "composition",
+      "units": "kg kg**-1",
+      "basis": "moist_air"
+    },
+    "black_carbon_hydrophilic": {
+      "netcdf_name": "aermr09",
+      "group": "composition",
+      "units": "kg kg**-1",
+      "basis": "moist_air"
+    },
+    "black_carbon_hydrophobic": {
+      "netcdf_name": "aermr10",
+      "group": "composition",
+      "units": "kg kg**-1",
+      "basis": "moist_air"
+    },
+    "sulphate": {
+      "netcdf_name": "aermr11",
+      "group": "composition",
+      "units": "kg kg**-1",
+      "basis": "moist_air"
+    },
+    "specific_humidity": {
+      "netcdf_name": "q",
+      "group": "composition",
+      "units": "kg kg**-1",
+      "basis": "moist_air"
+    },
+    "surface_pressure": {
+      "netcdf_name": "sp",
+      "group": "surface",
+      "units": "Pa",
+      "basis": "moist_air"
+    }
+  },
+  "time": {
+    "cadence_s": 10800,
+    "latency_s": 7776000,
+    "persistence": null,
+    "interpolation": "linear"
+  },
+  "remap": "bilinear",
+  "licence": "CC-BY-4.0 (Licence to use Copernicus Products)",
+  "attribution": "Generated using Copernicus Atmosphere Monitoring Service information {year}. Neither the European Commission nor ECMWF is responsible for any use that may be made of the Copernicus information or data it contains.",
+  "provenance": "ADS CAMS EAC4 catalogue https://ads.atmosphere.copernicus.eu/datasets/cams-global-reanalysis-eac4 : 0.75 degree global reanalysis, 3-hourly native 60-level aerosol and humidity. Half-level coefficients from https://confluence.ecmwf.int/spaces/UDOC/pages/108117131/L60+model+level+definitions; full pressure is the arithmetic mean of adjacent A+B*PS half levels, computed by the existing Rust remap. NetCDF short names, dimensions and units are checked at import. Licence checked at source on 2026-10-20; CC-BY is research-only under the project policy."
+}

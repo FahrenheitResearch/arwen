@@ -35,7 +35,6 @@ def begin(period,cs):
   else:physical.update({1:(period+1)*54,2:(period+1)*54})
   native.append(period)
  live['split']=split
- def not_used():pass
 def step(gid,dom):
  if not live['native'] or live['split']:physical[gid]=dom.ticks+dom.step_ticks
  if gid==1 and dom.ticks in (21600,43200,64800):

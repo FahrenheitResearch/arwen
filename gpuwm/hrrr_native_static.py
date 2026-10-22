@@ -112,9 +112,12 @@ def verify_geog_source_evidence(receipt: dict[str, object]) -> None:
             ci0, cj0 = math.floor(window[0]), math.floor(window[1])
             cni = math.ceil(window[0] + target.nx - 1) - ci0 + 1
             cnj = math.ceil(window[1] + target.ny - 1) - cj0 + 1
+            methods = {name: row.sampling_map[value] for name, value in fields.items()}
             expected_sampling = {
                 "mode": "fractional-same-spacing",
-                "methods": {name: row.sampling_map[value] for name, value in fields.items()},
+                "methods": methods,
+                **({"mask": row.sampling_mask}
+                   if "bilinear-masked" in methods.values() else {}),
                 "source_coordinate_window": {"i0": ci0, "j0": cj0, "ni": cni, "nj": cnj},
             }
             if applied.get("sampling") != expected_sampling:

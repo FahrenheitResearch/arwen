@@ -51,7 +51,7 @@ def _no_numpy_huge_page_advice() -> None:
 
     numpy calls ``madvise(MADV_HUGEPAGE)`` on every large array it
     allocates.  On a host whose transparent-huge-page defrag is
-    ``madvise`` (box E: ``always defer defer+madvise [madvise] never``),
+    ``madvise`` (a rented box: ``always defer defer+madvise [madvise] never``),
     each such allocation then compacts memory synchronously; with most of
     a 723 GB host in page cache the compaction mostly fails and retries.
     Measured there on the 9 km CONUS DA controller: 14,770 s of kernel
@@ -95,7 +95,7 @@ def _die_with_launcher() -> None:
     launcher set :data:`gpuwm.parent_death.PARENT_ENV` for this process.
     THE BREAKAGE: a ``gpuwm go`` killed by pid left its forecast
     supervisor alive, reparented to init, holding 63.9 GB on a card for
-    43 minutes (box B, 2026-10-07).  See :mod:`gpuwm.parent_death`.
+    43 minutes (a rented box, 2026-10-07).  See :mod:`gpuwm.parent_death`.
     """
 
     import os

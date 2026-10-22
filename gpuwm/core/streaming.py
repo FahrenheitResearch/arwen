@@ -1952,8 +1952,9 @@ class StreamedDomain:
                  geography=None, boundaries=None, template=None,
                  inventory_fn=None):
         if getattr(getattr(run, "cfg", None), "chem_sets", ""):
-            from tilestream.sfire_smoke import accepts
-            if not accepts(run.cfg):
+            from tilestream.sfire_smoke import accepts, ranked_accepts
+            allowed = ranked_accepts if getattr(run, "ranked", False) else accepts
+            if not allowed(run.cfg):
                 raise StreamingRefused(
                     "tiled chemistry requires whole-domain accounting for its post-step "
                     "operators; only the source-only bulk SFIRE profile has that owner")
@@ -2164,11 +2165,23 @@ class StreamedDomain:
         if smoke_ledger is not None:
             self._run.drain()
             smoke_ledger.begin(self.store)
+        domain_driver = getattr(state, "physics", None)
+        physics_control = PhysicsStepControl.from_driver(domain_driver)
+        if (physics_control is not None
+                and getattr(domain_driver, "force_radiation_next_step", False)):
+            # A driver rebuilt mid-run (a spawn or a move, dac9ff9417) calls
+            # radiation on its first step. The tile buffers never see the
+            # domain driver's one-step flag, so the whole sweep takes it as
+            # a radiation-due override and the flag clears here, as the
+            # resident physics step clears it.
+            physics_control = PhysicsStepControl(tuple(
+                (name, True if name == "radiation_due_override" else value)
+                for name, value in physics_control.values))
+            domain_driver.force_radiation_next_step = False
         with self.allocation_scope():
             self._run.sweep(
                 1, step_kwargs=step_kwargs, report=self.report, live_config=cfg,
-                physics_control=PhysicsStepControl.from_driver(
-                    getattr(state, "physics", None)))
+                physics_control=physics_control)
         if smoke_ledger is not None:
             self._run.drain()
             smoke_ledger.end(self.store)
@@ -2249,8 +2262,12 @@ class StreamedDomain:
                 plan = _output.frame_plan(
                     self._state, extra_available=planning.keys())
             elif self._template is not None:
+                # Resident ranks retain the live producer, while the prepared
+                # template predates the first radiation call and its native
+                # direct/diffuse output flag. Measure against a live rank.
+                template = self.template_state if self._ranked_road() else self._template
                 plan = _output.store_frame_plan(
-                    self._template, planning, self._run.cfg,
+                    template, planning, self._run.cfg,
                     extra_available=planning.keys())
             else:
                 raise StreamingRefused(
@@ -2772,7 +2789,8 @@ class StreamedDomain:
             spotting_owner.synchronize()
         if self.scalars is not None:
             self._run.reseed_clock(self.scalars)
-        if getattr(self, '_smoke_ledger', None) is not None:
+        if (getattr(self, '_smoke_ledger', None) is not None
+                or getattr(self._run, 'smoke_ledger', None) is not None):
             from tilestream.sfire_smoke import refresh_history
             refresh_history(self)
         return info
@@ -2811,6 +2829,23 @@ class StreamedDomain:
                 "call counts of nothing -- attach(scalars=None) is the "
                 "gate's CARRY NOTHING control and must not be digested as a "
                 "forecast")
+        arrays, scalars = self.canonical_digest_inputs()
+        return canonical_store_digest(arrays, scalars, clock,
+                                      scope=scope, before_hash=before_hash)
+
+    def canonical_digest_inputs(self):
+        """``(arrays, scalars)`` that :meth:`canonical_digest` hashes, as host
+        arrays, taken now.  For a caller that hands the cards back before it
+        hashes: everything the digest reads is in these two values."""
+        from gpuwm.state_digest import _canonical_extra_manifest
+
+        if self.scalars is None:
+            raise StreamingRefused(
+                "this streamed domain carries no scalars, so its canonical "
+                "digest would be stamped with an elapsed time and physics "
+                "call counts of nothing -- attach(scalars=None) is the "
+                "gate's CARRY NOTHING control and must not be digested as a "
+                "forecast")
         arrays = dict(self._run.canonical_store()
                       if getattr(self, "ranked", False) else self.store)
         if self._state is not None:
@@ -2822,8 +2857,8 @@ class StreamedDomain:
                 # Joined carriers and rank-derived forcing weights already
                 # name their live owner; a facade cannot overwrite them.
                 arrays.setdefault(name, value)
-        return canonical_store_digest(arrays, self.scalars, clock,
-                                      scope=scope, before_hash=before_hash)
+        return arrays, {key: (dict(value) if isinstance(value, dict) else value)
+                        for key, value in self.scalars.items()}
 
     def add_store_guard(self, guard) -> None:
         """Hand the run a callable to wait on before it writes the store.
@@ -2961,11 +2996,6 @@ class StreamedDomain:
             return live
         return {k: live[k] for k in names if k in live}
 
-    @staticmethod
-    def _window_slices(shape, window) -> tuple:
-        """One slice rule for every consumer; see :func:`window_slices`."""
-        return window_slices(shape, window)
-
     def sync_to_state(self, names=None, *, window=None) -> int:
         """Copy the store onto the attached state.  Returns arrays copied.
 
@@ -2986,7 +3016,7 @@ class StreamedDomain:
             src = store.get(key)
             if src is None or getattr(dev, "shape", None) is None:
                 continue
-            sl = self._window_slices(dev.shape, window)
+            sl = window_slices(dev.shape, window)
             with _array_device_scope(dev):
                 dev[sl] = cp.asarray(src[sl])
             copied += 1
@@ -3019,7 +3049,7 @@ class StreamedDomain:
             dst = store.get(key)
             if dst is None:
                 continue
-            sl = self._window_slices(dev.shape, window)
+            sl = window_slices(dev.shape, window)
             with _array_device_scope(dev):
                 dst[sl] = cp.asnumpy(dev[sl])
             copied += 1
@@ -3114,9 +3144,12 @@ class StreamedDomain:
 #: it is what the history writer emits, and a streamed run whose wrfout
 #: carried the frozen t=0 accumulator would be wrong in a file rather than
 #: in a decision, which is worse.
+from gpuwm.core.output_diagnostics import PERSISTENT as OUTPUT_PERSISTENT
+from gpuwm.core.hail import HISTORY as HAIL_HISTORY
+
 TRACKER_PLANE_CARRIERS: tuple[str, ...] = (
     "scratch/up_heli_max", "scratch/uh_follow_window",
-    "scratch/uh_spawn_window")
+    "scratch/uh_spawn_window") + tuple("scratch/" + slot for slot in (*HAIL_HISTORY, *OUTPUT_PERSISTENT))
 
 
 def _array_device_scope(*arrays):
@@ -4789,12 +4822,6 @@ def attach(state, cfg, decision: StreamingDecision, *, tile_state_factory,
     return streamed
 
 
-def _is_periodic(cfg) -> bool:
-    from tilestream.autoplan import is_periodic
-
-    return bool(is_periodic(cfg))
-
-
 # ---------------------------------------------------------------------------
 # the builder every production route was missing
 # ---------------------------------------------------------------------------
@@ -4876,6 +4903,11 @@ def _twin_rrtmg_legacy(scheme, cls, lat, lon):
         # Rank construction uses neutral geography before the gather replaces
         # it. The deferred provider validates the live adapter grid at use.
         smoke_options["smoke_provider"] = smoke_provider.deferred_rebind(lat, lon)
+    transported = getattr(scheme, "_transported_smoke", None)
+    if transported is not None:
+        # simple_dir_fdb = 1: the NAME of the state attribute the shortwave
+        # reads; each buffer's state carries its own tile of that tracer.
+        smoke_options["transported_smoke"] = transported
     return cls(scheme.start_time, lat, lon,
                p_top=scheme.p_top,
                column_chunk=scheme.column_chunk,
@@ -4978,7 +5010,7 @@ _TWIN_RECIPES = {
                               "p_top", "column_chunk", "ozone_parent",
                               "ozone_routing", "o3input", "longwave",
                               "shortwave", "aer_opt", "trace_gas_overrides", "smoke_provider",
-                              "aer3_type_source"}),
+                              "aer3_type_source", "transported_smoke"}),
         # WRF's radiation call counter; the domain's adapter has stepped
         # when a buffer is built mid-run, a fresh twin has not, and that
         # difference is not dropped policy.
@@ -5400,7 +5432,7 @@ def prepared_tile_state_factory(state, cfg, *, tables0=None, seed: int = 4242,
         extra = _surface_tile_initialization_inputs(driver, tile_cfg)
         # No land-surface cold start over the poison: every carrier it
         # would write is gathered from the store before the buffer serves
-        # a tile.  Measured on the 2-card HRRR crop (499x567, box S, 2026-
+        # a tile.  Measured on the 2-card HRRR crop (499x567, a rented box, 2026-
         # 10-06): the ranked road spent its whole 18 s between the second
         # admission pass and "[devices] ON" in ruclsminit's host column
         # loop, one rank after the other; on the full HRRR lattice that is

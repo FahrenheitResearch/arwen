@@ -290,6 +290,7 @@ class PreparedEnsembleSession:
             experiment = self.stochastic_provider.configure_experiment(experiment)
         self._require_member_inputs(experiment)
         started = time.perf_counter()
+        started_monotonic = time.monotonic()
         out = Path(output_directory or self.output_directory)
         out.mkdir(parents=True, exist_ok=True)
         if self.request.recipe == "wofs":
@@ -403,9 +404,15 @@ class PreparedEnsembleSession:
                 previous = {row.get("member_id", row.get("member")): row for row in metadata}
                 metadata = tuple({**previous.get(member, {}), **self.request.provenance[member],
                                   "member_id": member} for member in self.member_order)
+            if self.request.trajectories and any("weight" in row for row in self.request.trajectories):
+                previous = {row["member_id"]: row for row in metadata}
+                metadata = tuple({**previous.get(member, {}), "member_id": member,
+                    "weight": self.request.trajectories[position]["weight"],
+                    "stratum": self.request.trajectories[position].get("stratum")}
+                    for position, member in enumerate(self.member_order))
             self.collector = HeadlineDiagnosticCollector(out, members=self.request.members,
                 renderer=renderer, start_time=exp.start_time,
-                thresholds=self.request.thresholds,
+                thresholds=self.request.thresholds, comparison=self.request.comparison,
                 keep_member_files=self.request.keep_member_files,
                 member_order=self.member_order,
                 member_metadata=metadata,
@@ -1108,6 +1115,7 @@ class PreparedEnsembleSession:
                 completed_records = [{"packing": batch.receipt(), "result": result}
                                      for batch, result in results]
             publish_member_provenance()
+            products_started = time.monotonic()
             products = self.collector.finish_run()
             self.collector.require_complete()
             if self.source_execution is not None:
@@ -1138,6 +1146,12 @@ class PreparedEnsembleSession:
                 from gpuwm.soundings import render_run
                 manifest["products"]["soundings"] = str(render_run(
                     out, points=self.request.sounding_points, out=out / "render"))
+            if self.request.cyclone_products is not None:
+                from gpuwm.ensemble.cyclone_products import render_roster
+                products["cyclone"] = render_roster(out, self.request.trajectories,
+                    self.request.cyclone_products, member_order=self.member_order,
+                    history_ledger=self.collector.history_ledger)
+            manifest["timing_seconds"] = self._timing_seconds(started_monotonic, products_started)
             _atomic_json(out / "ensemble-run.json", manifest)
             self.last_manifest = manifest
             self.last_output_directory = out
@@ -1203,6 +1217,23 @@ class PreparedEnsembleSession:
                         _atomic_json(out / "ensemble-run.json", manifest)
                         error.add_note(note)
             raise
+
+    def _timing_seconds(self, started, products_started):
+        """Where this run's wall went, as stage_timing.timing_coverage reads it.
+
+        A door that fetched and prepared the members hands its own clocks
+        (``door_stage_clock``), so ``total`` is the door's whole wall and the
+        forecast is timed from the door's forecast stage; without one, the
+        session's own forecast and products.
+        """
+        now = time.monotonic()
+        clock = getattr(self, "door_stage_clock", None)
+        if clock is None:
+            return {"forecast": products_started - started,
+                    "products": now - products_started, "total": now - started}
+        return {"plan": clock["plan"], "fetch": clock["fetch"], "prepare": clock["prepare"],
+                "forecast": products_started - clock["forecast_started"],
+                "products": now - products_started, "total": now - clock["started"]}
 
     def completed_products(self):
         """Verify durable aggregate manifests before a door closes rendering."""
@@ -1360,9 +1391,6 @@ class PreparedEnsembleSession:
         if authority is not None:
             self._stochastic_authorities[id(bound)] = authority
         return bound
-
-    def _provide_configured_input(self, **kwargs):
-        return self._configured_member_inputs(self.input_provider(**kwargs))
 
     def run_experiment(self, runner, experiment, case_data, output_directory, **runner_options):
         """Reuse native source preparation around the original runtime door."""

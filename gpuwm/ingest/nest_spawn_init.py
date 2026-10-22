@@ -292,7 +292,8 @@ def spawn_land_state_from_parent(child_dc, parent_node, *, static_fields,
 
 
 def _adopt_own_terrain(initialized: ChildInitResult, child_dc,
-                       static_fields, *, blend_width: int) -> dict[str, object]:
+                       static_fields, *, blend_width: int,
+                       vertical=None) -> dict[str, object]:
     """Swap the parent-SINT ground for the own-grid statics, WRF-order.
 
     Runs the real-path adjustment sequence on the parent_only_init
@@ -303,7 +304,20 @@ def _adopt_own_terrain(initialized: ChildInitResult, child_dc,
 
     state = initialized.state
     cfg = child_dc.run
-    coord = initialized.coord
+    # The experiment's ONE shared coordinate when the route hands it over,
+    # exactly the coordinate a relocation re-derives this nest's base state
+    # on (gpuwm.ingest.relocation_init: _shared_vertical_coord).  The SINT
+    # product's own coord is the parent's copy; on a prepared tree it carries
+    # the preparation's arithmetic, and a spawned nest born on it could not
+    # follow its storm: the first move's donor alignment refused pb/alb/thb/
+    # phb on the overlap (a rented box, 2026-10-21 18:16Z).
+    if vertical is not None and not getattr(vertical, "eta_levels", None):
+        vertical = None          # no shared ladder declared: the SINT coord stands
+    if vertical is not None:
+        from gpuwm.ingest.nest_init import _shared_vertical_coord
+        coord = _shared_vertical_coord(vertical, int(child_dc.run.nz))
+    else:
+        coord = initialized.coord
     if not cfg.terrain_opt:
         raise SpawnInitRefusal(
             "own-grid statics adoption requires terrain_opt != 0: a "
@@ -344,8 +358,9 @@ def _adopt_own_terrain(initialized: ChildInitResult, child_dc,
     # child's own terrain -- exactly what real.exe supplies on the
     # declared-child path.
     fine_base = _make_real_base(
-        coord, fine_terrain, float(state.p_top), float(cfg.base_temp),
-        int(cfg.hypsometric_opt))
+        coord, fine_terrain,
+        float(state.p_top if vertical is None else vertical.p_top),
+        float(cfg.base_temp), int(cfg.hypsometric_opt))
     state.ht[...] = _as_like(fine_terrain, state.ht)
     state.mub2d[...] = _as_like(fine_base.mub, state.mub2d)
     # Through the setter, so the child's EOS reads the float64 base layer
@@ -537,7 +552,8 @@ def spawn_child_from_parent(child_dc, parent_node, *,
                             array_module=None, on_child_built=None,
                             state_digest=None,
                             trigger_receipt=None,
-                            device_free_bytes=None) -> dict[str, object]:
+                            device_free_bytes=None,
+                            vertical=None) -> dict[str, object]:
     """Materialize one fired nest from the LIVE parent, and account for it.
 
     ``child_dc`` carries the FIRED placement
@@ -602,7 +618,8 @@ def spawn_child_from_parent(child_dc, parent_node, *,
                        if isinstance(static_fields, dict) else None)
     if fields is not None:
         adoption = _adopt_own_terrain(
-            initialized, child_dc, fields, blend_width=blend_width)
+            initialized, child_dc, fields, blend_width=blend_width,
+            vertical=vertical)
         # The RK time-t copies were seeded from the parent-frame state
         # inside parent_only_init; the adoption changed thp/mup, so the
         # seeds are taken again (WRF start_domain's post-condition, the

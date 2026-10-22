@@ -396,10 +396,7 @@ def launch_kf(u, v, temperature, qv, pressure, rho, exner, dz, w0avg, *,
     if len(shape) != 3:
         raise ValueError(f"temperature must have shape (nz,ny,nx), got {shape}")
     nz, ny, nx = shape
-    minimum, maximum = VERTICAL_LEVEL_BOUNDS
-    if nz < minimum or nz > maximum:
-        raise ValueError(
-            f"KF requires {minimum} <= nz <= {maximum}, got {nz}")
+    kernel_capacity(nz)
     for name, array in columns.items():
         if (not isinstance(array, cp.ndarray) or array.shape != shape
                 or array.dtype != DTYPE or not array.flags.c_contiguous):
@@ -436,7 +433,6 @@ def launch_kf(u, v, temperature, qv, pressure, rho, exner, dz, w0avg, *,
         cloud = (dummy, dummy, dummy, dummy)
     table = load_kf_table()
     device_table = _device_table()
-    kernel_capacity(nz)          # the refusal, on the same path as the launch
     kernel = _kf_function("kf_column")
     ncol = ny * nx
     # The column arrays live in a global workspace sized to the threads in

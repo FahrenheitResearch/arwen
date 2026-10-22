@@ -45,7 +45,7 @@ class CadenceTests(unittest.TestCase):
                 advance=advance)
             rows.append(dict(name=name, factory="gpuwm._cadence_protocol:prepare",
                              options=dict(name=name), parallelism="CUDA protocol recorder: 1 thread"))
-        settings = dict(interval_seconds=3600, stages=rows)
+        settings = dict(interval_seconds=3600, numerics="fast", stages=rows)
         if schedule:
             settings["after_schedule"] = [
                 dict(stages=["producer", "transfer"], interval_seconds=3600, repeat=1),
@@ -143,6 +143,54 @@ class CadenceTests(unittest.TestCase):
         self.assertNotIn("after_schedule", legacy.restart_identity)
         self.assertEqual([s.name for s in legacy.after_stages], list(parts))
 
+
+    def build_coupled(self, bldt):
+        """A coupled parent prepared at a 60 s LSM interval (route rows: cadence 300/60 = 5)
+        that the forecast runs at BLDT."""
+        trace, cursor = cp.zeros(64, cp.uint64), cp.zeros(1, cp.uint64)
+        components, rows = {}, []
+        for tag, (name, period) in enumerate((("producer", bldt), ("route", 300)), 1):
+            count, elapsed = cp.zeros(1, cp.uint64), cp.zeros(1, cp.uint64)
+            args = (trace, cursor, count, elapsed, np.uint64(tag), np.uint64(period))
+
+            def advance(dt, *, stream=None, expected=period, arguments=args):
+                if dt != expected:
+                    raise ValueError("instrumentation component period differs")
+                self.kernel((1,), (1,), arguments, stream=stream)
+
+            components[name] = SimpleNamespace(
+                arrays=dict(trace=trace, cursor=cursor, count=count, elapsed=elapsed),
+                restart_identity=dict(instrumentation=name), advance=advance)
+            row = dict(name=name, factory="gpuwm._cadence_protocol:prepare", options=dict(name=name))
+            if name == "route":
+                row.update(cadence_steps=5, interval_seconds=300)
+            rows.append(row)
+        settings = dict(interval_seconds=60, numerics="fast", stages=rows)
+        factory = SimpleNamespace(prepare=lambda *, options, **unused: components[options["name"]])
+        with patch.dict(sys.modules, {"gpuwm._cadence_protocol": factory}):
+            driver = prepare(settings=settings, state=None, physics=SimpleNamespace(bldt_seconds=bldt),
+                             device_id=cp.cuda.runtime.getDevice(), mode="coupled")
+        return driver, components
+
+    def test_a_lowered_root_step_keeps_the_routing_period(self):
+        """go lowered the root step below the prepared one (terrain clock CFL bound), so bldt
+        is 30 s, not the prepared 60 s: the routing cadence is counted in the actual LSM calls
+        (10, not 5) and the forecast keeps hydro. A step that does not divide the period runs
+        routing on its own 300 s clock. Breakage it prevents (2.9.4 WOOF readiness g3/u6,
+        2026-10-22): attach died with 'stage interval must span its whole number of parent
+        LSM calls' and the forecast failed; 2.8.7 finished that run."""
+        stream = cp.cuda.Stream(non_blocking=True)
+        with stream:
+            for bldt, routes in ((30, 2), (45, 3)):
+                driver, parts = self.build_coupled(bldt)
+                self.assertEqual(driver.variable_interval, bldt == 45)
+                for _ in range(20):
+                    driver.before_lsm(stream=stream)
+                    driver.advance(stream=stream)
+                stream.synchronize()
+                self.assertEqual(int(parts["producer"].arrays["count"].get()[0]), 20)
+                self.assertEqual(int(parts["route"].arrays["count"].get()[0]), routes)
+                self.assertEqual(int(parts["route"].arrays["elapsed"].get()[0]), 300 * routes)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

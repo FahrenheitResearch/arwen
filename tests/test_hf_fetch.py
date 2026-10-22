@@ -96,10 +96,62 @@ def test_dataset_url_and_environment_alias(monkeypatch):
     from gpuwm import earth2_run
     record = {"path": "nested/data.parquet", "size": 2, "sha256": None}
     monkeypatch.setattr(earth2_run, "model_table", lambda: {"models": {
-        "generic": {"weights": {"host": "huggingface", "repository": "org/weather",
+        "generic": {"licence_class": "permissive", "weights": {"host": "huggingface", "repository": "org/weather",
                     "revision": "b" * 40, "files": [record], "repo_type": "dataset"}}}})
     assert hf.target_for("generic") == hf.Target("org/weather", "b" * 40, (record,), "dataset")
     monkeypatch.delenv("HF_TOKEN", raising=False)
     monkeypatch.setenv("HUGGING_FACE_HUB_TOKEN", "unit-test-only")
     transport = hf._Transport("org/weather", 2)
     assert transport.token == "unit-test-only"
+
+
+def test_restricted_row_refuses_without_accept_licence(monkeypatch, tmp_path, capsys):
+    """`gpuwm hf-fetch pangu` downloaded 2.36 GB of CC BY-NC-SA weights with rc 0."""
+    from gpuwm import cli
+    fetched = []
+    monkeypatch.setattr(hf, "_fetch_locked", lambda target, *a: fetched.append(target) or {"repo": target.repository})
+    assert cli.main(["hf-fetch", "pangu", "--cache", str(tmp_path)]) == 2
+    assert "--accept-licence 'CC BY-NC-SA 4.0'" in capsys.readouterr().err
+    with pytest.raises(ValueError, match=r"--accept-licence 'CC BY-NC-SA 4.0'"):
+        hf.fetch("pangu", cache_root=tmp_path)
+    assert not fetched
+    assert cli.main(["hf-fetch", "pangu", "--cache", str(tmp_path), "--accept-licence", "CC BY-NC-SA 4.0"]) == 0
+    assert len(fetched) == 1
+
+
+def test_gated_repo_refuses_at_exit_2_and_leaves_no_part_files(monkeypatch, tmp_path, capsys):
+    # HF serves gated-repo metadata and its README anonymously; only the
+    # gated files answer 401. The refusal must come before any download.
+    readme = b"# card\n"
+    metadata = {"sha": "c" * 40, "gated": "manual", "private": False, "siblings": [
+        {"rfilename": "README.md", "size": len(readme),
+         "blobId": hashlib.sha1(b"blob %d\0" % len(readme) + readme).hexdigest()},
+        {"rfilename": "sub/model.safetensors", "size": 4, "lfs": {"sha256": "d" * 64}}]}
+    resolves = []
+
+    class Opener:
+        def open(self, request, timeout):
+            if "/api/" in request.full_url:
+                return Response(json.dumps(metadata).encode())
+            resolves.append(request.full_url)
+            if request.full_url.endswith("/README.md"):
+                return Response(readme, 206, {"Content-Range": f"bytes 0-{len(readme) - 1}/{len(readme)}"})
+            raise HTTPError(request.full_url, 401, "Unauthorized", {}, io.BytesIO())
+
+    monkeypatch.setattr(hf, "build_opener", lambda *a: Opener())
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
+    import argparse
+    args = argparse.Namespace(target="hf://org/gated", cache=str(tmp_path), connections=None)
+    assert hf.cli(args) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("gpuwm hf-fetch: org/gated is gated or private") and "Traceback" not in err
+    assert resolves == []
+    assert not list(tmp_path.rglob("*.part")) and not (tmp_path / "org").exists()
+    # A token without access refuses on the first gated file: partials this
+    # call created are removed, not kept for a resume that cannot happen.
+    monkeypatch.setenv("HF_TOKEN", "unit-test-only")
+    assert hf.cli(args) == 2
+    assert "the environment token has no access" in capsys.readouterr().err
+    assert resolves
+    assert not list(tmp_path.rglob("*.part")) and not (tmp_path / "org").exists()

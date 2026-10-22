@@ -27,3 +27,12 @@ def conditional_step(plan,module):
  cls.compute=namespace['compute']
  try:yield
  finally:cls.compute=old
+
+class CadenceScope:
+ def __init__(self,plan,metadata,gid):self.plan=plan;self.metadata=metadata;self.gid=gid
+ @contextmanager
+ def when(self,**flags):
+  assert flags=={'require':RADIATION_FLAG}
+  before_records=self.metadata.ledger.records
+  with self.plan.when(**flags):yield
+  self.metadata.radiation_records[self.gid]=self.metadata.ledger.records-before_records

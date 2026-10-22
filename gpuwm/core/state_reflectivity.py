@@ -139,7 +139,7 @@ def _thompson_graupel_number(state, temperature, pressure, *,
         # the fork's intercept is inverting a different model than it
         # integrates.  Measured on the Iowa 2024-05-21 18Z f01 crop: the
         # two intercepts on one state differ by 1..5 dBZ in the 30..50 dBZ
-        # band (box S, WOOF-FIX-PROGRAM-2026-10-06/dbz/REPORT.md).
+        # band (a rented box, WOOF-FIX-PROGRAM-2026-10-06/dbz/REPORT.md).
         from gpuwm.core.thompson_aerosol_launch import (   # noqa: PLC0415
             thompson_version_scope)
         from gpuwm.core.thompson_aerosol_state import (    # noqa: PLC0415

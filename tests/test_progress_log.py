@@ -78,33 +78,7 @@ def test_step_line_is_parseable_by_a_wrf_shaped_regex():
     assert match.group(1) == "2026-08-15_00:00:12"
     assert int(match.group(2)) == 2
     assert float(match.group(3)) == pytest.approx(0.06382, abs=1e-5)
-
-
-def test_step_line_carries_the_step_index_wrf_does_not_print():
-    """The one field WRF omits and the user's script asked for."""
-
-    line = format_step_line(domain=1, step=41, valid_time=START,
-                            wall_seconds=0.5)
     assert line.endswith("step 41")
-    # ... and it is appended AFTER the WRF sentence, so the prefix match
-    # a WRF parser makes is unaffected.
-    assert WRF_MAIN.match(line)
-
-
-def test_output_line_names_the_file_wrf_style():
-    line = format_output_line(domain=1, path=Path("/runs/x/wrfout_d01_x"),
-                              wall_seconds=0.25)
-    match = WRF_WRITE.match(line)
-    assert match, line
-    assert match.group(1) == "wrfout_d01_x"
-    assert int(match.group(2)) == 1
-
-
-def test_restart_line_says_restart():
-    line = format_restart_line(domain=1, path=Path("/runs/x/restart_d01"),
-                               wall_seconds=1.5)
-    assert WRF_WRITE.match(line), line
-    assert "restart" in line
 
 
 def test_domain_and_run_lines_are_tagged_and_greppable():
@@ -130,22 +104,6 @@ def test_model_time_refuses_a_sub_second_valid_time():
 # ---------------------------------------------------------------------------
 # One line per model time step
 # ---------------------------------------------------------------------------
-
-
-def test_a_line_per_step_per_domain(tmp_path):
-    log, text = make_log(tmp_path)
-    for step in (1, 2, 3):
-        log.domain_step(grid_id=1, step_count=step,
-                        model_seconds=float(step * 60),
-                        step_wall_seconds=0.01 * step)
-    log.close(status="SUCCESS")
-
-    lines = [line for line in text.getvalue().splitlines()
-             if WRF_MAIN.match(line)]
-    assert len(lines) == 3
-    assert [int(WRF_MAIN.match(line).group(2)) for line in lines] == [1, 1, 1]
-    assert [WRF_MAIN.match(line).group(1) for line in lines] == [
-        "2026-08-15_00:01:00", "2026-08-15_00:02:00", "2026-08-15_00:03:00"]
 
 
 def test_nests_get_their_own_lines_with_their_own_step_index(tmp_path):
@@ -186,22 +144,6 @@ def test_step_records_carry_the_four_required_fields(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_domain_start_is_explicit_and_emitted_once(tmp_path):
-    log, text = make_log(tmp_path)
-    for step in (1, 2):
-        log.domain_step(grid_id=2, step_count=step,
-                        model_seconds=float(step), step_wall_seconds=0.1)
-    log.close(status="SUCCESS")
-    records = read_step_log(tmp_path / STEP_LOG_FILENAME)
-    starts = [r for r in records if r["event"] == "domain_start"]
-    ends = [r for r in records if r["event"] == "domain_end"]
-    assert [r["domain"] for r in starts] == [2]
-    assert [r["domain"] for r in ends] == [2]
-    assert ends[0]["steps"] == 2
-    assert "domain start" in text.getvalue()
-    assert "domain end" in text.getvalue()
-
-
 def test_output_written_is_an_event_not_an_inference(tmp_path):
     log, text = make_log(tmp_path)
     frame = tmp_path / "wrfout_d01_2026-08-15_00_00_00"
@@ -214,7 +156,9 @@ def test_output_written_is_an_event_not_an_inference(tmp_path):
     assert record["domain"] == 1
     assert record["size_bytes"] == 128
     assert Path(record["path"]) == frame.resolve()
-    assert WRF_WRITE.search(text.getvalue())
+    match = WRF_WRITE.search(text.getvalue())
+    assert match and match.group(1) == frame.name
+    assert int(match.group(2)) == 1
 
 
 def test_restart_written_is_an_event(tmp_path):
@@ -227,6 +171,7 @@ def test_restart_written_is_an_event(tmp_path):
                   if r["event"] == "restart_written")
     assert record["size_bytes"] == 9
     assert "restart" in text.getvalue()
+    assert WRF_WRITE.search(text.getvalue())
 
 
 def test_run_end_states_the_outcome(tmp_path):
@@ -287,6 +232,7 @@ def test_frame_marker_lands_only_after_the_frame_is_readable(tmp_path):
     assert payload["size_bytes"] == 64
     assert payload["domain"] == 1
     assert payload["valid_time"] == "2026-08-15_00:00:00"
+    assert not list((tmp_path / FRAME_MARKER_DIRNAME).glob("*.tmp.*"))
 
 
 def test_frame_marker_does_not_pollute_a_wrfout_glob(tmp_path):
@@ -304,17 +250,6 @@ def test_frame_marker_does_not_pollute_a_wrfout_glob(tmp_path):
     log.close(status="SUCCESS")
     assert sorted(p.name for p in tmp_path.glob("wrfout_d01_*")) == [
         "wrfout_d01_2026-08-15_00_00_00"]
-
-
-def test_frame_marker_leaves_no_temporary_behind(tmp_path):
-    log, _ = make_log(tmp_path)
-    frame = tmp_path / "wrfout_d01_2026-08-15_00_00_00"
-    frame.write_bytes(b"z")
-    log.output_committed(domain=1, valid_time=START, path=frame)
-    log.close(status="SUCCESS")
-    leftovers = [p.name for p in (tmp_path / FRAME_MARKER_DIRNAME).iterdir()
-                 if ".tmp." in p.name]
-    assert leftovers == []
 
 
 def test_a_marker_for_a_missing_frame_is_refused_not_faked(tmp_path):
@@ -390,37 +325,6 @@ def test_the_marker_names_a_frame_the_real_writer_really_published(tmp_path):
 # ---------------------------------------------------------------------------
 # The two streams must agree
 # ---------------------------------------------------------------------------
-
-
-def test_text_and_jsonl_agree_event_for_event(tmp_path):
-    log, text = make_log(tmp_path)
-    frame = tmp_path / "wrfout_d01_2026-08-15_00_01_00"
-    frame.write_bytes(b"q")
-    log.domain_step(grid_id=1, step_count=1, model_seconds=60.0,
-                    step_wall_seconds=0.4)
-    log.output_committed(domain=1, valid_time=START + timedelta(seconds=60),
-                         path=frame)
-    log.domain_step(grid_id=1, step_count=2, model_seconds=120.0,
-                    step_wall_seconds=0.4)
-    log.close(status="SUCCESS")
-
-    lines = [line for line in text.getvalue().splitlines() if line.strip()]
-    records = read_step_log(tmp_path / STEP_LOG_FILENAME)
-    assert len(lines) == len(records)
-    for line, record in zip(lines, records):
-        assert line == record["text"]
-
-
-def test_the_jsonl_sequence_is_dense_and_monotonic(tmp_path):
-    log, _ = make_log(tmp_path)
-    for step in range(1, 6):
-        log.domain_step(grid_id=1, step_count=step,
-                        model_seconds=float(step), step_wall_seconds=0.01)
-    log.close(status="SUCCESS")
-    records = read_step_log(tmp_path / STEP_LOG_FILENAME)
-    assert [r["sequence"] for r in records] == list(
-        range(1, len(records) + 1))
-    assert all(r["schema"] == STEP_LOG_SCHEMA for r in records)
 
 
 def test_a_reordered_stream_is_refused_rather_than_read(tmp_path):
@@ -916,8 +820,15 @@ def test_the_real_executor_produces_wrf_lines_a_script_can_read(
                if r["event"] == "step"]
     assert len(records) == 20
     assert [r["text"] for r in records] == [m.string for m in timing]
+    assert records[0]["text"].endswith("step 1")
+    assert records[2]["text"].endswith("step 2")
     # Both domains were announced, and both were closed.
     tags = read_step_log(tmp_path / STEP_LOG_FILENAME)
+    assert [r["text"] for r in tags] == [
+        line for line in text.getvalue().splitlines() if line.strip()]
+    assert [r["sequence"] for r in tags] == list(range(1, len(tags) + 1))
+    assert all(r["schema"] == STEP_LOG_SCHEMA for r in tags)
+    assert "domain start" in text.getvalue() and "domain end" in text.getvalue()
     assert sorted(r["domain"] for r in tags
                   if r["event"] == "domain_start") == [1, 2]
     assert sorted(r["steps"] for r in tags
@@ -1494,15 +1405,6 @@ def test_a_run_with_no_nests_emits_exactly_what_it_emitted_before(tmp_path):
         "missing; without it there is nothing to be inert against")
     assert nest_free_stream(tmp_path) == NEST_FREE_GOLDEN.read_text(
         encoding="utf-8")
-
-
-def test_the_nest_free_stream_carries_no_word_of_the_new_vocabulary(tmp_path):
-    """The same claim, said the other way, so a failure reads plainly."""
-
-    nest_free_stream(tmp_path)
-    text = (tmp_path / STEP_LOG_FILENAME).read_text(encoding="utf-8")
-    for tag in NEST_EVENTS:
-        assert tag not in text, tag
 
 
 # ---------------------------------------------------------------------------

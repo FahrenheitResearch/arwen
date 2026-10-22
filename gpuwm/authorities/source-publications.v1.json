@@ -1,0 +1,23 @@
+{
+  "schema": "gpuwm-source-publications-v1",
+  "sources": {
+    "gefs": [
+      {
+        "valid_until": "2018-07-27T00:00:00",
+        "source": "gefs-v11-flat"
+      },
+      {
+        "valid_until": "2020-09-23T12:00:00",
+        "source": "gefs-v11"
+      }
+    ],
+    "gefs-reforecast": [
+      {
+        "weekdays": [
+          2
+        ],
+        "source": "gefs-reforecast-weekly"
+      }
+    ]
+  }
+}

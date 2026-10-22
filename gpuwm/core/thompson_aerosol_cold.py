@@ -53,6 +53,7 @@ from gpuwm.core.thompson_aerosol_launch import aerosol_kernel
 from gpuwm.core.thompson_aerosol_launch import (
     COLD_MODULE,
     launch_grid,
+    add_optional_fields,
     validate_fields,
     validate_fp64_fortran_table,
 )
@@ -202,30 +203,11 @@ def launch_aa_cold_network(
     }
     if qcten is not None:
         fields["qcten"] = qcten
-    rain_ice = {"qrten": qrten, "nrten": nrten, "qiten": qiten,
-                "niten": niten}
-    given = [name for name, value in rain_ice.items() if value is not None]
-    if given and len(given) != 4:
-        raise ValueError("qrten, nrten, qiten and niten are given together "
-                         f"or not at all (got {given})")
-    if given:
-        # WRF's rain and ice accumulators: qr/nr/qi/ni are then the
-        # read-only entry state and the :3033-3055 / :3070-3091 balances run
-        # in tendency form (thompson_aerosol_cold.cu).
-        fields.update(rain_ice)
-    if (qvten is None) != (tten is None):
-        raise ValueError("qvten and tten are given together or not at all")
-    if qvten is not None:
-        fields["qvten"] = qvten
-        fields["tten"] = tten
-    frozen = {"qsten": qsten, "qgten": qgten, "ngten": ngten}
-    frozen_given = [name for name, value in frozen.items()
-                    if value is not None]
-    if frozen_given and len(frozen_given) != 3:
-        raise ValueError("qsten, qgten and ngten are given together or not "
-                         f"at all (got {frozen_given})")
-    if frozen_given:
-        fields.update(frozen)
+    # With rain and ice accumulators, qr/nr/qi/ni remain read-only.
+    add_optional_fields(fields, qrten=qrten, nrten=nrten,
+                        qiten=qiten, niten=niten)
+    add_optional_fields(fields, qvten=qvten, tten=tten)
+    add_optional_fields(fields, qsten=qsten, qgten=qgten, ngten=ngten)
     shape, size = validate_fields(fields)
     del shape
 

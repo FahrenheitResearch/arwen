@@ -115,7 +115,7 @@ def test_sfclay_atanf_table_is_mynns_word_for_word():
     sfc = table(KERNELS / "sfclay.cu", "SFC_ATANF_TAB")
     assert len(sfc) == 19
     assert sfc == table(KERNELS / "mynn_pbl.cu", "MYNN_ATANF_TAB")
-    assert sfc == table(KERNELS / "mynn_dmp_sibling.cu", "MYNN_ATANF_TAB")
+    assert sfc == table(KERNELS / "mynn_surface_libm.cuh", "MYNN_ATANF_TAB")
 
 
 def test_sfclay_unit_uses_no_cuda_libm_and_no_contraction():

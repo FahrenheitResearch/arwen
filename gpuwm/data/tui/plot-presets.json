@@ -6,7 +6,7 @@
     {
       "id": "general",
       "label": "General",
-      "description": "22 everyday surface, precipitation, cloud, upper-air and storm-environment plots.",
+      "description": "26 everyday surface, precipitation, cloud, upper-air and storm-environment plots.",
       "products": [
         "composite_reflectivity",
         "1km_reflectivity",
@@ -29,7 +29,11 @@
         "sbcin",
         "bulk_shear_0_6km",
         "srh_0_1km",
-        "uh_2to5km"
+        "uh_2to5km",
+        "ivt",
+        "iwv",
+        "freezing_level",
+        "ar_outline"
       ]
     },
     {
@@ -37,6 +41,10 @@
       "label": "Tornado / severe",
       "description": "Storm structure and severe-weather environment; these diagnostics do not predict individual tornadoes.",
       "products": [
+        "lightning_threat_1",
+        "lightning_threat_2",
+        "lightning_threat_3",
+        "pr92_flash_rate",
         "composite_reflectivity",
         "1km_reflectivity",
         "composite_reflectivity_uh",
@@ -160,6 +168,10 @@
       "label": "Fire weather",
       "description": "Atmospheric dryness, wind and precipitation; these are weather plots, not wildfire ignition, fuel or fire-spread modelling.",
       "products": [
+        "hot_dry_windy",
+        "haines_low",
+        "haines_mid",
+        "haines_high",
         "2m_relative_humidity_10m_winds",
         "10m_wind_1h_max",
         "2m_temperature",
@@ -175,6 +187,10 @@
       "label": "Heat / cold",
       "description": "Temperature, moisture and daily range; daily plots need a full 24 h window.",
       "products": [
+        "heat_index_2m",
+        "apparent_temperature_2m",
+        "wetbulb_2m",
+        "wbgt_2m",
         "2m_temperature",
         "2m_dewpoint",
         "2m_relative_humidity",

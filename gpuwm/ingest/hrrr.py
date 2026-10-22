@@ -167,16 +167,19 @@ def _read_gate(root: Path) -> dict[str, str]:
             raise ValueError(f"duplicate gate.txt key {key!r}")
         values[key] = value
     from .native_extras import gate_extra_fields
-    from .native_supplements import gate_optional_hybrid_fields
+    from .native_supplements import (gate_optional_hybrid_fields,
+                                     gate_optional_surface_fields)
 
     # 561 records, plus 50 for each optional hybrid field the decoder
-    # declared (the analyzed aerosol number pair) and 50 for each native
-    # extra record a caller requested (--extras).
+    # declared (the analyzed aerosol number pair), 50 for each native
+    # extra record a caller requested (--extras) and one for each optional
+    # surface field (the cycle's PBL height).
     optional_hybrid = gate_optional_hybrid_fields(values)
     required = {
         "status": "PASS",
         "atmosphere_selected_per_time": str(
-            561 + 50 * (len(optional_hybrid) + len(gate_extra_fields(values)))),
+            561 + 50 * (len(optional_hybrid) + len(gate_extra_fields(values)))
+            + len(gate_optional_surface_fields(values))),
         "hybrid_levels": "50",
         "soil_selected_per_time": "18",
         "window_shape": None,
@@ -357,6 +360,12 @@ def _load_verified_hrrr_native_window(
     for name in _ATMOSPHERE_2D:
         fields[name] = _map_f32(
             atmosphere_dir / f"{name}.f32le", (ny, nx))
+    from .native_supplements import gate_optional_surface_fields
+    for name in gate_optional_surface_fields(gate):
+        payload = atmosphere_dir / f"{name}.f32le"
+        if manifest_entries is not None and payload.relative_to(root) not in manifest_entries:
+            raise ValueError(f"optional surface payload is not bound by the bridge manifest: {payload}")
+        fields[name] = _map_f32(payload, (ny, nx))
     from .native_supplements import (gate_optional_hybrid_fields,
                                      gate_supplement_fields,
                                      gate_withheld_optional_hybrid_fields)
@@ -1927,6 +1936,17 @@ def interpolate_hrrr_to_lambert(
         out["PMSL"] = mass_plan.apply(source["PMSL"], method="parabolic")
     if "VEGFRA" in source:
         out["VEGFRA"] = mass_plan.apply(source["VEGFRA"], method="bilinear")
+    # The PBL height the HRRR cycle carried into its analysis: the initial
+    # physics state seeds PBLH from it, as HRRR's own cycled wrfinput does
+    # (gpuwm.ingest.hrrr_physics._seeded_initial_pblh).  Bilinear keeps it
+    # non-negative and inside the source's range.
+    if "PBLH" in source:
+        out["PBLH"] = mass_plan.apply(source["PBLH"], method="bilinear")
+    # The cycle's low/middle/high cloud cover (%): the initial CLDFRA's
+    # cover (gpuwm.ingest.hrrr_physics._seed_initial_cldfra).
+    for name in ("LCDC", "MCDC", "HCDC"):
+        if name in source:
+            out[name] = mass_plan.apply(source[name], method="bilinear")
     for name in ("QC", "QI", "QR", "QS", "QG"):
         out[name] = mass_plan.apply(source[name], method="bilinear")
     aerosol_mapping_counts = {}

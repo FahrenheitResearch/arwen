@@ -1,0 +1,4 @@
+gfortran: GNU Fortran (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+glibc: ldd (Ubuntu GLIBC 2.43-2ubuntu2.4) 2.43
+host: Linux 7.0.0-31-generic x86_64
+cases: 15800:36 15800:20 192:20

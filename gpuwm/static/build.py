@@ -63,20 +63,28 @@ HALO = 3
 GCELL_RATIO = 4.0
 
 
-# ``default`` is the exact Phase-3 dataset inventory.  Keeping it in one
-# immutable table makes the legacy ``build_static(grid, geog_root)`` call
-# byte-inert while allowing experiment configurations to resolve WPS
-# ``geog_data_res`` selectors explicitly.
+# ``default`` is the dataset inventory every configuration without a
+# ``geog_data_res`` selector builds from.  It carries only permissively
+# licensed sources (Drew, 2026-10-14: no default path into data whose
+# licence limits sale or use; 2026-10-21: the WPS_GEOG soil sources that
+# are not permissive are held out of the default geog set).  So soil
+# categories are the SoilGrids250m-derived NCAR tiles (CC BY 4.0) that
+# WPS 4.4+ selects with ``soilgrids``, not WPS's FAO-based
+# ``soiltype_*_30s`` default, and deep-soil temperature is the ERA5
+# climatology ``gpuwm fetch-geog`` builds (Licence to Use Copernicus
+# Products), not ISLSCP-I's ``soiltemp_1deg``; both replacements share the
+# replaced datasets' categories, units and tile layout.  WPS's own
+# datasets stay selectable by name: ``30s`` (soil) and ``islscp_soiltemp``.
 _DEFAULT_GEOG_DIRS = {
     "terrain": "topo_gmted2010_30s",
     "landuse": "modis_landuse_20class_30s_with_lakes",
-    "soil_top": "soiltype_top_30s",
-    "soil_bottom": "soiltype_bot_30s",
+    "soil_top": "soilgrids/texture_top",
+    "soil_bottom": "soilgrids/texture_bot",
     "greenfrac": "greenfrac_fpar_modis",
     "lai": "lai_modis_10m",
     "albedo": "albedo_modis",
     "snow_albedo": "maxsnowalb_modis",
-    "soil_temperature": "soiltemp_1deg",
+    "soil_temperature": "soiltemp_era5_1deg",
 }
 # The raw inventory of the full static builder. A published source that
 # serves it all needs no resampling from the WPS datasets. TMN is derived
@@ -98,7 +106,7 @@ _FIVE_MINUTE_GEOG_DIRS = {
     "lai": "lai_modis_10m",
     "albedo": "albedo_modis",
     "snow_albedo": "maxsnowalb_modis",
-    "soil_temperature": "soiltemp_1deg",
+    "soil_temperature": "soiltemp_era5_1deg",
 }
 # WPS 4.6 GEOGRID.TBL.ARW names the bare ``30s`` selector for SOILCTOP
 # and SOILCBOT. Other mandatory fields have no bare ``30s`` entry and
@@ -112,6 +120,14 @@ _THIRTY_SECOND_GEOG_DIRS = {
 _GEOG_TOKEN_DIRECTORIES = {
     "default": _DEFAULT_GEOG_DIRS,
     "30s": _THIRTY_SECOND_GEOG_DIRS,
+    # WPS 4.4+ GEOGRID.TBL.ARW SOILCTOP/SOILCBOT: rel_path soilgrids ->
+    # soilgrids/texture_top|texture_bot, the default here since 2026-10-21.
+    "soilgrids": {
+        "soil_top": "soilgrids/texture_top",
+        "soil_bottom": "soilgrids/texture_bot",
+    },
+    # WPS's own deep-soil temperature (ISLSCP-I, licence unclear), by name.
+    "islscp_soiltemp": {"soil_temperature": "soiltemp_1deg"},
     # WPS 4.6 GEOGRID.TBL.ARW's alternative 16-category soil inventory.
     # The scalar categorical tiles use the common Rust category sampler.
     "bnu_soil_30s": {
@@ -147,6 +163,36 @@ _LANDUSE_CATEGORY_COUNTS = {
 }
 
 
+def _held_out_geog_dirs() -> dict[str, str]:
+    """GEOG directories a token can select whose licence is held out of
+    the default geography, with the source's terms (gpuwm.geog_assets)."""
+    from gpuwm.geog_assets import FAO_DSMW_HOLD, ISLSCP_SOILTEMP_HOLD
+    return {"soiltype_top_30s": FAO_DSMW_HOLD,
+            "soiltype_bot_30s": FAO_DSMW_HOLD,
+            "soiltype_top_5m": FAO_DSMW_HOLD,
+            "soiltype_bot_5m": FAO_DSMW_HOLD,
+            "soiltemp_1deg": ISLSCP_SOILTEMP_HOLD}
+
+
+_HELD_OUT_NAMED: set[str] = set()
+
+
+def _name_held_out_selection(directories) -> None:
+    """Say once per process which held-out datasets a selection reads.
+
+    Selecting one is an explicit opt-in (a ``geog_data_res`` token); the
+    line names the licence it opts into, so the choice is never silent.
+    """
+    import sys
+    held = _held_out_geog_dirs()
+    for directory in directories:
+        if directory in held and directory not in _HELD_OUT_NAMED:
+            _HELD_OUT_NAMED.add(directory)
+            print(f"geography: {directory} is held out of the default "
+                  f"geography and read here only because geog_data_res "
+                  f"names it -- {held[directory]}", file=sys.stderr)
+
+
 def geog_landuse_dataset(tokens) -> str:
     """The GEOG land-use directory one ``geog_data_res`` value selects.
 
@@ -176,17 +222,23 @@ class GeogSelection:
     ``resolution_tokens`` preserves the ordered ``geog_data_res`` value
     declared by the WPS namelist path in :class:`CaseDataConfig`.  Dataset
     paths are always relative directories beneath that config's GEOG root.
-    The recognized set is ``default``, ``30s``, ``bnu_soil_30s``, ``5m``,
-    ``modis_lai``, ``modis_15s`` and ``modis_fpar``.  ``modis_15s`` selects
+    The recognized set is ``default``, ``30s``, ``soilgrids``,
+    ``bnu_soil_30s``, ``islscp_soiltemp``, ``5m``, ``modis_lai``,
+    ``modis_15s`` and ``modis_fpar``.  ``soilgrids`` selects the
+    SoilGrids250m soil categories ``default`` already reads;
+    ``islscp_soiltemp`` selects WPS's ISLSCP-I deep-soil temperature,
+    whose licence is unclear and which no default reads.  ``modis_15s`` selects
     the 15 arc-second MODIS land use (no lake class) and ``modis_fpar``
     the MODIS FPAR greenness fraction, as WPS 4.6 GEOGRID.TBL.ARW does.
-    ``30s`` selects the 30 arc-second soil datasets and falls through to
-    WPS's default dataset for fields with no ``30s`` table entry.
+    ``30s`` selects WPS's FAO-UNESCO/STATSGO 30 arc-second soil datasets
+    (held out of the default for their licence, which the build names when
+    they are read) and falls through to the default dataset for fields with
+    no ``30s`` table entry.
     ``bnu_soil_30s`` selects WPS's alternative top and bottom 30
     arc-second soil-category tiles, leaving every other field unchanged. ``5m``
     selects NCAR's complete global low-resolution mandatory inventory;
     ``modis_lai`` is the available higher-resolution LAI override; and
-    ``default`` selects the established Phase-3 inventory.  A land-cover
+    ``default`` selects the permissively licensed default inventory.  A land-cover
     token of :data:`gpuwm.static.highres_fetch.LANDCOVER_SOURCES`
     (``cglc_modis_lcz``) is recognized too, and admitted only where the
     case's ``[static.highres]`` block builds that collection
@@ -304,6 +356,7 @@ class GeogSelection:
                  if field in token_directories[token]),
                 fallback,
             )
+        _name_held_out_selection(directories.values())
         return cls(root=Path(geog_root), resolution_tokens=normalized,
                    **directories)
 
@@ -741,16 +794,6 @@ def _wps32_for(grid):
 # origin in the same coordinates.  All return float64 arrays shaped like
 # ``xi`` with NaN where the option does not apply (fall through).
 # ---------------------------------------------------------------------------
-
-def _corner_indices(vals, xi, yi, x0, y0):
-    fx = np.asarray(xi, dtype=np.float64) - x0
-    fy = np.asarray(yi, dtype=np.float64) - y0
-    ny, nx = vals.shape
-    ok = (fx >= 0.0) & (fx <= nx - 1.0) & (fy >= 0.0) & (fy <= ny - 1.0)
-    i0 = np.clip(np.floor(fx).astype(np.int64), 0, nx - 2)
-    j0 = np.clip(np.floor(fy).astype(np.int64), 0, ny - 2)
-    return fx, fy, i0, j0, ok
-
 
 def four_pt(vals, xi, yi, x0=1, y0=1):
     """Bilinear on the 4 surrounding pixels; NaN if any is missing."""
@@ -1617,10 +1660,14 @@ def build_static(
         source = None if selection is None else selection.static_source
         served: frozenset[str] = frozenset()
         if source is not None:
-            from .external_source import sampling_window, served_names
+            from .external_source import (off_grid_tokens, sampling_window,
+                                          served_names)
             if sampling_window(source.row, grid) is not None:
                 served = served_names(source)
             else:
+                selection = _with_off_grid_recipe(
+                    selection, off_grid_tokens(source, grid), grid,
+                    source_coverage_report)
                 source = None
         complete_source = source is not None and _BASE_STATIC_FIELDS <= served
         fields = ({} if complete_source else _build_static_routed(
@@ -1652,6 +1699,61 @@ def build_static(
         timing_report["seconds"] = time.perf_counter() - started
         timing_report["cells"] = int(grid.e_we) * int(grid.e_sn)
     return fields
+
+
+def _with_off_grid_recipe(selection: GeogSelection, tokens: str | None, grid,
+                          report: MutableMapping[str, object] | None
+                          ) -> GeogSelection:
+    """``selection`` rebuilt with a static source's off-grid tokens.
+
+    A configuration that names a published static file (``[static]
+    source``) on a grid the file does not describe used to build WPS's
+    default inventory there.  The file's row may name the WPS tokens that
+    rebuild its own datasets (:func:`gpuwm.static.external_source.
+    off_grid_tokens`); this takes them, but only where the namelist chose
+    nothing itself (``geog_data_res = 'default'``): a namelist naming its
+    own datasets keeps them.  The breakage this prevents (1 km
+    HRRR-physics runs scored cold and moist against stations,
+    2026-10-05): HRRR's analysed soil moisture, made on HRRR's BNU soil
+    texture, was integrated on WPS's STATSGO texture, which disagrees with
+    it on 63% of land cells and read 0.05 wetter in RUC's moisture
+    availability.
+    """
+    if tokens is None or selection.resolution_tokens != ("default",):
+        return selection
+    from dataclasses import replace
+    resolved = GeogSelection.from_tokens(selection.root, tokens)
+    changed = {field: getattr(resolved, field) for field in _DEFAULT_GEOG_DIRS
+               if getattr(resolved, field) != getattr(selection, field)}
+    missing = sorted(directory for directory in set(changed.values())
+                     if not (selection.root / directory / "index").is_file())
+    source_id = selection.static_source.id
+    if missing:
+        raise FileNotFoundError(
+            f"[static] source {source_id!r} does not describe this "
+            f"{grid.dx:g} m grid, so its statics are rebuilt from WPS_GEOG "
+            f"with the source's own datasets ({tokens}), and "
+            f"{', '.join(missing)} is not staged under {selection.root}.  "
+            "Building WPS's default soil texture instead would integrate the "
+            "source's analysed soil moisture on a texture it was not made on "
+            "(the cause of the 1 km cold, moist station bias).  Run: gpuwm "
+            f"fetch-geog --datasets {','.join(missing)} --source ncar --root "
+            f"{selection.root}")
+    if report is not None:
+        report["static_source_recipe"] = {
+            "id": source_id, "status": "OFF_GRID_RECIPE",
+            "geog_data_res": "+".join(resolved.resolution_tokens),
+            "fields": dict(sorted(changed.items())),
+            "reason": f"grid spacing {grid.dx:g} m is not the source's",
+        }
+    print(f"static source {source_id}: this {grid.dx:g} m grid is not a "
+          f"sub-window of the source, so its statics are built from WPS_GEOG "
+          f"with the source's own datasets (geog_data_res {tokens}: "
+          + ", ".join(f"{field}={directory}" for field, directory
+                      in sorted(changed.items())) + ")", flush=True)
+    return replace(selection, resolution_tokens=resolved.resolution_tokens,
+                   **{field: getattr(resolved, field)
+                      for field in _DEFAULT_GEOG_DIRS})
 
 
 def _build_static_routed(
@@ -1693,6 +1795,22 @@ def _build_static_routed(
             f"geog_root {root}")
     handle = grid._rust_sampling_handle(bridge)
     paths = {role: selection.path(role) for role in _DEFAULT_GEOG_DIRS}
+    # Name what is missing and the command that stages it.  Breakage it
+    # prevents (2.9.4 R6 sweep, RTX 5070 Ti, 2026-10-22): the default soil set
+    # moved to soilgrids + soiltemp_era5_1deg on 2026-10-21, and a WPS_GEOG
+    # tree staged before that (every existing install) failed deep in the
+    # bridge with "WPS GEOG index .../soilgrids/texture_top/index is
+    # unreadable: No such file or directory", naming no remedy.
+    missing = sorted({Path(path).relative_to(root).parts[0]
+                      for path in paths.values()
+                      if not (Path(path) / "index").is_file()
+                      and Path(path).is_relative_to(root)})
+    if missing:
+        raise FileNotFoundError(
+            f"WPS_GEOG at {root} does not hold {', '.join(missing)}, which "
+            f"this domain's geography ({'+'.join(selection.resolution_tokens)}) "
+            "reads.  Run: gpuwm fetch-geog --datasets "
+            f"{','.join(missing)} --root {root}")
     try:
         if selection.terrain_smoothing.is_default:
             fieldset = bridge.build_fields(handle, paths, int(halo))

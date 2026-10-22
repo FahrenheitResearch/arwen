@@ -64,678 +64,345 @@ def _pop_fork_dycore_defaults(actual: dict) -> bool:
 
 
 def test_new_fields_are_reviewed_defaults_appended_last():
-    """New fields remain appended, preserving positional construction."""
+    """Phase-5 Task 1: preserve positional construction and reviewed defaults.
+
+    Retains A158/A165 append order, the 2.8.8 terrain-clock correction,
+    the 2.9.0 correct-mode defaults and the 2.9.1 ocean/WB5 additions.
+    Literal default rows use equality or singleton identity as before.
+    """
     from gpuwm.config import CHEM_RUN_FIELDS, FIRE_RUN_FIELDS
     names = [f.name for f in dataclasses.fields(RunConfig)]
+    # Appended last after the campaign, keyword-only and off by default:
+    # sea ice's real.exe threshold (4c82704f8f, Registry default 100 K
+    # converts nothing) and the HRRR v4 output controls (lane/hrrr-v4-output:
+    # e55b68accb, bd4a1c2090, f80ac46aeb).
+    for name, default in (("smoke_off_reason", ""),
+                          ("history_interval_change_s", 0.0),
+                          ("history_interval2_s", 0.0),
+                          ("reset_interval1", 60),
+                          ("gsd_diagnostics", 0),
+                          ("prec_acc_dt1", 0.0),
+                          ("prec_acc_dt", 0.0),
+                          ("seaice_threshold", 100.0)):
+        assert names.pop() == name
+        assert RunConfig.__dataclass_fields__[name].default == default, name
+        assert RunConfig.__dataclass_fields__[name].kw_only, name
+    # The capabilities campaign (2.9.4), appended keyword-only in merge
+    # order.  lane/cap-lake: the table-driven lake-state analysis, "auto"
+    # source and no licensed file.
+    for name, default in (("lake_state_accept_licence", ""),
+                          ("lake_state_path", ""),
+                          ("lake_state_source", "auto")):
+        assert names.pop() == name
+        assert RunConfig.__dataclass_fields__[name].default == default, name
+        assert RunConfig.__dataclass_fields__[name].kw_only, name
+    assert names.pop() == "ra_sw_eclipse"
+    assert RunConfig.__dataclass_fields__["ra_sw_eclipse"].default == 1
+    # lane/cap-seaice (prognostic sea ice, default on), lane/cap-hail
+    # (HAILCAST at its -1 auto selector) and lane/cap-waves-couple (the
+    # table-driven ocean door, no config file by default).
+    for name, default in (("seaice_ocean_heat_flux", 2.0),
+                          ("seaice_new_ice_thickness", 0.5),
+                          ("seaice_initial_thickness", 1.0),
+                          ("seaice_prognostic", True),
+                          ("haildt", 60.0), ("hailcast_opt", -1),
+                          ("ocean_config", "")):
+        assert names.pop() == name
+        assert RunConfig.__dataclass_fields__[name].default == default, name
+        assert RunConfig.__dataclass_fields__[name].kw_only, name
+    # lane/cap-slab-ocean: WRF's 3-D PWP ocean controls sit keyword-only
+    # beside sf_ocean_physics (they are read only under sf_ocean_physics =
+    # 2), so positional construction is unchanged.
+    pwp = ["ocean_levels", "ocean_analysis", "ocean_analysis_source",
+           "ocean_mld_climatology", "omdt", "ocean_z", "ocean_t", "ocean_s"]
+    at = names.index("sf_ocean_physics") + 1
+    assert names[at:at + len(pwp)] == pwp
+    for name in pwp:
+        assert RunConfig.__dataclass_fields__[name].kw_only, name
+    del names[at:at + len(pwp)]
     from gpuwm.config import G3_RUN_DEFAULTS
     assert [name for name in names if name in G3_RUN_DEFAULTS] == list(G3_RUN_DEFAULTS)
     for name, default in G3_RUN_DEFAULTS.items():
         field = RunConfig.__dataclass_fields__[name]
         assert field.kw_only and field.default == default
-    # The New SAS knobs (cu_physics = 96) sit keyword-only right after G3's
-    # block at WRF's Registry defaults, ahead of the chem and fire blocks
-    # (which the chem and checkpoint-echo pins keep last); read only by
-    # cu_physics = 96, which no frozen configuration selects, and dropped
-    # from every identity outside it.
-    sas = ["nsas_dx_factor", "sas_pgcon"]
+    sas = ['nsas_dx_factor', 'sas_pgcon']
     last_g3 = names.index(list(G3_RUN_DEFAULTS)[-1])
     assert names[last_g3 + 1:last_g3 + 3] == sas
-    assert RunConfig.__dataclass_fields__["nsas_dx_factor"].default == 0
-    assert RunConfig.__dataclass_fields__["sas_pgcon"].default == 0.55
     for field in sas:
         assert RunConfig.__dataclass_fields__[field].kw_only, field
-    names = [name for name in names
-             if name not in G3_RUN_DEFAULTS and name not in sas]
-    # The fire block is appended keyword-only after every other field.
+    names = [name for name in names if name not in G3_RUN_DEFAULTS and name not in sas]
     assert names[-len(FIRE_RUN_FIELDS):] == list(FIRE_RUN_FIELDS)
     for field in FIRE_RUN_FIELDS:
         assert RunConfig.__dataclass_fields__[field].kw_only, field
     names = names[:-len(FIRE_RUN_FIELDS)]
     assert names[-len(CHEM_RUN_FIELDS):] == list(CHEM_RUN_FIELDS)
     names = names[:-len(CHEM_RUN_FIELDS)]
-    # Correct-mode keys (gpuwm/correct_mode.py), appended last ahead of the
-    # chem block.  From 2.9.0 correct mode is the default (declared default
-    # correction): each key defaults on, off in a strict WRF process, which
-    # forces exact.
     from gpuwm import correct_mode
-    # WRF's ocean mixed layer (2.9.1), appended after the correct-mode keys,
-    # off by default: every earlier configuration resolves as before.
-    assert names[-4:] == ["sf_ocean_physics", "oml_hml0", "oml_gamma",
-                          "oml_relaxation_time"]
-    assert RunConfig.__dataclass_fields__["sf_ocean_physics"].default == 0
+    assert names[-4:] == ['sf_ocean_physics', 'oml_hml0', 'oml_gamma', 'oml_relaxation_time']
     names = names[:-4]
-    assert names.pop() == "wsm7_conservative_surface"
-    assert names.pop() == "wsm5_conservative_surface"
-    assert names.pop() == "wsm3_conservative_surface"
-    assert names.pop() == "thompson_cloud_surface_booking"
-    assert names.pop() == "wdm6_conservative_surface"
-    assert names.pop() == "ntiedtke_dry_mass_coupling"
-    assert names.pop() == "wsm6_conservative_surface"
-    for field in ("ntiedtke_dry_mass_coupling", "wsm6_conservative_surface",
-                  "wdm6_conservative_surface", "thompson_cloud_surface_booking",
-                  "wsm3_conservative_surface", "wsm5_conservative_surface",
-                  "wsm7_conservative_surface"):
-        assert (RunConfig.__dataclass_fields__[field].default
-                is correct_mode.CORRECT_KEYS_DEFAULT)
+    assert names.pop() == 'wsm7_conservative_surface'
+    assert names.pop() == 'wsm5_conservative_surface'
+    assert names.pop() == 'wsm3_conservative_surface'
+    assert names.pop() == 'thompson_cloud_surface_booking'
+    assert names.pop() == 'wdm6_conservative_surface'
+    assert names.pop() == 'ntiedtke_dry_mass_coupling'
+    assert names.pop() == 'wsm6_conservative_surface'
+    for field in ('ntiedtke_dry_mass_coupling', 'wsm6_conservative_surface',
+     'wdm6_conservative_surface', 'thompson_cloud_surface_booking',
+     'wsm3_conservative_surface', 'wsm5_conservative_surface',
+     'wsm7_conservative_surface'):
+        assert RunConfig.__dataclass_fields__[field].default is correct_mode.CORRECT_KEYS_DEFAULT
         assert correct_mode.CORRECT_KEYS_DEFAULT is (not correct_mode.STRICT)
-    # The WRF lightning package, appended off (golden/ports-rad): off reads
-    # none of these, and every earlier configuration runs without them.
     from gpuwm.lightning_contract import LIGHTNING_DEFAULTS
-    lightning = ("lightning_option", "lightning_dt", "lightning_start_seconds",
-                 "flashrate_factor", "iccg_method", "iccg_prescribed_num",
-                 "iccg_prescribed_den", "cellcount_method", "cldtop_adjustment",
-                 "do_radar_ref")
+    lightning = ('lightning_option', 'lightning_dt', 'lightning_start_seconds', 'flashrate_factor',
+     'iccg_method', 'iccg_prescribed_num', 'iccg_prescribed_den', 'cellcount_method',
+     'cldtop_adjustment', 'do_radar_ref')
     assert names[-len(lightning):] == list(lightning)
     for name in lightning:
         assert RunConfig.__dataclass_fields__[name].default == LIGHTNING_DEFAULTS[name]
     names = names[:-len(lightning)]
-    # The aer_opt = 2 user-aerosol controls, appended at WRF's Registry
-    # defaults; read only under aer_opt = 2.
     from gpuwm.config import AER_OPT2_RUN_KEYS
     assert names[-len(AER_OPT2_RUN_KEYS):] == list(AER_OPT2_RUN_KEYS)
     names = names[:-len(AER_OPT2_RUN_KEYS)]
-    # 2.9.0 (golden/wrf-fixes), appended after thompson_table_dir and ahead
-    # of the chem block: the four WRF 4.7/4.8 upstream-fix selectors, each at
-    # its corrected default (fixed means default), then the urban canopy
-    # controls at the WRF 4.7.1 canopy, then WRF's scalar advection selector.
-    for name, default in reversed((
-            ("scalar_adv_opt", 1), ("urban_ucm_generation", "wrf_471"),
-            ("urban_treeoption", -1), ("urban_ttscheme", -1),
-            ("urban_fvg", -1.0), ("urban_table_dir", ""),
-            ("solar_generation", "wrf_480"), ("ysu_version", "wrf_480"),
-            ("noahmp_snow_age", "wrf_470"),
-            ("urban_water_balance", "wrf_480"))):
+    for name, default in reversed((('scalar_adv_opt', 1), ('urban_ucm_generation', 'wrf_471'),
+     ('urban_treeoption', -1), ('urban_ttscheme', -1), ('urban_fvg', -1.0),
+     ('urban_table_dir', ''), ('solar_generation', 'wrf_480'),
+     ('ysu_version', 'wrf_480'), ('noahmp_snow_age', 'wrf_470'),
+     ('urban_water_balance', 'wrf_480'))):
         assert names.pop() == name
         assert RunConfig.__dataclass_fields__[name].default == default, name
         assert not RunConfig.__dataclass_fields__[name].kw_only, name
-    # The Thompson generation's table directory, appended at None: every
-    # earlier configuration reads the tables it read.
-    assert names.pop() == "thompson_table_dir"
-    assert RunConfig.__dataclass_fields__["thompson_table_dir"].default is None
-    # TEMPO's optional coupling arms, appended off.
-    assert names.pop() == "tempo_surface_emission_before"
-    assert RunConfig.__dataclass_fields__["tempo_surface_emission_before"].default is False
-    assert names.pop() == "tempo_ml_for_bl_nc"
-    assert RunConfig.__dataclass_fields__["tempo_ml_for_bl_nc"].default is False
-    # MYNN-EDMF's split number-species mixing keys, appended at 0: every
-    # earlier configuration mixes exactly what it mixed before.
-    assert names.pop() == "bl_mynn_mixnumcon"
-    assert RunConfig.__dataclass_fields__["bl_mynn_mixnumcon"].default == 0
-    assert names.pop() == "bl_mynn_mixaerosols"
-    assert RunConfig.__dataclass_fields__["bl_mynn_mixaerosols"].default == 0
-    # The aer_opt=3 aerosol type source, appended at rural (the HRRR
-    # fork's type 1): every earlier configuration runs the same optics.
-    assert names.pop() == "rrtmg_aer3_type_source"
-    assert RunConfig.__dataclass_fields__["rrtmg_aer3_type_source"].default == "rural"
-    # WRF's &time_control cycling (the gsd_41 MYNN cycled start).
-    assert names.pop() == "cycling"
-    assert RunConfig.__dataclass_fields__["cycling"].default is False
-    # Output-only surface energy carriers, appended after the smoke
-    # manifest: off writes the history it always wrote.
-    assert names.pop() == "surface_energy_diag"
-    assert RunConfig.__dataclass_fields__["surface_energy_diag"].default is False
-    assert names.pop() == "rrtmg_smoke_manifest"
-    assert RunConfig.__dataclass_fields__["rrtmg_smoke_manifest"].default == ""
-    # Lane-only radiation selectors follow the complete staged prefix.
-    assert names.pop() == "rrtmg_cloud_optics_form"
-    assert RunConfig.__dataclass_fields__["rrtmg_cloud_optics_form"].default == "wrf_461"
-    # The Thompson generation and the fork's snow fall, appended at the
-    # WRF v4.6.1 generation and the blend: every earlier configuration
-    # runs exactly what it ran (tests/test_thompson_wrf39.py).
-    assert names.pop() == "thompson_fork_snow_fall"
-    assert names.pop() == "thompson_version"
-    assert RunConfig.__dataclass_fields__["thompson_version"].default \
-        == "wrf_461"
-    assert RunConfig.__dataclass_fields__[
-        "thompson_fork_snow_fall"].default == "blend"
-    # The merged radiation options follow every staged field.
-    assert names[-3:] == ["swint_opt", "aer_opt", "alb_sol"]
+    assert names.pop() == 'thompson_table_dir'
+    assert names.pop() == 'tempo_surface_emission_before'
+    assert names.pop() == 'tempo_ml_for_bl_nc'
+    assert names.pop() == 'bl_mynn_mixnumcon'
+    assert names.pop() == 'bl_mynn_mixaerosols'
+    assert names.pop() == 'rrtmg_aer3_type_source'
+    assert names.pop() == 'cycling'
+    assert names.pop() == 'surface_energy_diag'
+    assert names.pop() == 'rrtmg_smoke_manifest'
+    assert names.pop() == 'rrtmg_cloud_optics_form'
+    assert names.pop() == 'thompson_fork_snow_fall'
+    assert names.pop() == 'thompson_version'
+    assert names[-3:] == ['swint_opt', 'aer_opt', 'alb_sol']
     for key in names[-3:]:
         assert RunConfig.__dataclass_fields__[key].default == 0
     names = names[:-3]
-    # The MYNN generation selector and its gsd_41 TKE option, appended at
-    # wrf_461 / False: every earlier configuration runs the same MYNN.
-    assert names.pop() == "bl_mynn_cloud_tendency_form"
-    assert RunConfig.__dataclass_fields__["bl_mynn_cloud_tendency_form"].default == "wrf_461"
-    assert names.pop() == "bl_mynn_gsd41_unsquared_qtke"
-    assert RunConfig.__dataclass_fields__["bl_mynn_gsd41_unsquared_qtke"].default is False
-    assert names.pop() == "bl_mynn_version"
-    assert RunConfig.__dataclass_fields__["bl_mynn_version"].default == "wrf_461"
-
-    # The RUC snow lineage preserves the WRF v4.6.1 form.  HRRR doors
-    # select the WRF v4.0-4.5 form explicitly (CHANGELOG).
-    assert names.pop() == "ruc_snow"
-    assert RunConfig.__dataclass_fields__["ruc_snow"].default == "wrf_461"
-    # The RUC 2 m diagnostic, appended at public WRF's flux form: every
-    # earlier configuration is unchanged by it.
-    assert names.pop() == "ruc_2m_diagnostic"
-    assert RunConfig.__dataclass_fields__["ruc_2m_diagnostic"].default == "flux"
-    # The RUC QVG cold start, appended at public WRF's form: every earlier
-    # configuration is unchanged by it.
-    assert names.pop() == "ruc_qvg_cold_start"
-    assert RunConfig.__dataclass_fields__["ruc_qvg_cold_start"].default == "wrf"
-    # The RUC irrigation rule preserves the WRF v4.6.1 relaxation.
-    # HRRR doors select the WRF v4.0-4.5 floor explicitly.
-    assert names.pop() == "ruc_irrigation"
-    assert RunConfig.__dataclass_fields__["ruc_irrigation"].default == "wrf_461"
-    # WRF's &dynamics advection orders, appended at their WRF 3/3/5
-    # defaults: every earlier configuration runs the same vertical ladder
-    # (vert_order 3) and the same flux5 horizontal momentum stencil.
-    assert names[-3:] == ["v_sca_adv_order", "v_mom_adv_order", "h_mom_adv_order"]
-    assert RunConfig.__dataclass_fields__["v_sca_adv_order"].default == 3
-    assert RunConfig.__dataclass_fields__["v_mom_adv_order"].default == 3
-    assert RunConfig.__dataclass_fields__["h_mom_adv_order"].default == 5
+    assert names.pop() == 'bl_mynn_cloud_tendency_form'
+    assert names.pop() == 'bl_mynn_gsd41_unsquared_qtke'
+    assert names.pop() == 'bl_mynn_version'
+    assert names.pop() == 'ruc_snow'
+    assert names.pop() == 'ruc_2m_diagnostic'
+    assert names.pop() == 'ruc_qvg_cold_start'
+    assert names.pop() == 'ruc_irrigation'
+    assert names[-3:] == ['v_sca_adv_order', 'v_mom_adv_order', 'h_mom_adv_order']
     names = names[:-3]
-    # Export choices belong to the run plan, outside forecast settings.
-    assert not {"grib2", "grib2_out", "verify_visuals"} & set(names)
-    assert names.pop() == "upper_wind_limiter_form"
-    assert RunConfig.__dataclass_fields__["upper_wind_limiter_form"].default == "wrf_461"
-    # The sixth-order filter's source form with the NOAA WRFV3.9 fork's
-    # second factor, and WRF's mp_zero_out trio, appended at WRF v4.6.1
-    # and off: every earlier configuration is unchanged
-    # (tests/test_diff6_fork_form.py).
-    assert names[-5:] == ["diff_6th_form", "diff_6th_factor2", "mp_zero_out",
-                          "mp_zero_out_thresh", "mp_zero_out_all"]
+    assert not {'grib2', 'grib2_out', 'verify_visuals'} & set(names)
+    assert names.pop() == 'upper_wind_limiter_form'
+    assert names[-5:] == ['diff_6th_form', 'diff_6th_factor2', 'mp_zero_out', 'mp_zero_out_thresh', 'mp_zero_out_all']
     fields = RunConfig.__dataclass_fields__
-    assert fields["diff_6th_form"].default == "wrf_461"
-    assert fields["diff_6th_factor2"].default is None
-    assert (fields["mp_zero_out"].default, fields["mp_zero_out_all"].default,
-            fields["mp_zero_out_thresh"].default) == (0, 0, 1.0e-8)
+    assert (fields['mp_zero_out'].default, fields['mp_zero_out_all'].default, fields['mp_zero_out_thresh'].default) == (0, 0, 1e-08)
     names = names[:-5]
-    # The terrain-clock mode (lane/286-fixed-step-grid), appended last.
-    # "measured" is the derivation every configuration before the field
-    # ran under (restart_identity_payload and the checkpoint echo drop it
-    # at that value).  DECLARED DEFAULT CORRECTION, 2.8.8: the default is
-    # "local_face", which reads every terrain face and is never worse
-    # than "measured" (gpuwm/terrain_clock_local.py; the domain-wide
-    # reading halved NCAR's published CONUS steps, 72 s to 36 s and 15 s
-    # to 7.5 s).  It binds in the echo and the restart identity.
-    assert names[-1] == "terrain_clock"
-    assert RunConfig.__dataclass_fields__["terrain_clock"].default \
-        == "local_face"
+    assert names[-1] == 'terrain_clock'
     names = names[:-1]
-    # The MYNN surface-layer generation, appended at WRF v4.6.1's form,
-    # which every earlier build ran: no configuration changes answers.
-    assert names.pop() == "mynn_sfclay_variant"
-    assert RunConfig.__dataclass_fields__["mynn_sfclay_variant"].default == "wrf_461"
-    # APPENDED LAST: ``fractional_seaice``, WRF's &physics switch between
-    # its two sea-ice thresholds (module_surface_driver.F:1365-1368), after
-    # ``ruc_soilprop``.  Default 0 keeps the 0.5 threshold every RUC run was
-    # pinned to, read by the RUC seam only, so every golden entry resolves
-    # to what it ran before plus the one key at 0.
-    assert names.pop() == "fractional_seaice"
-    assert RunConfig.__dataclass_fields__["fractional_seaice"].default == 0
-    # The RUC SOILPROP lineage, appended at its WRF v4.0-4.5 form: a
-    # non-RUC case never reads it, every RUC configuration changes answers
-    # (CHANGELOG).
-    assert names.pop() == "ruc_soilprop"
-    assert RunConfig.__dataclass_fields__["ruc_soilprop"].default == "wrf_45"
-    # The WRF SPP consumer switches, appended off: an enabled value needs a
-    # member-owned pattern, so every earlier configuration is unchanged.
-    assert names[-2:] == ["spp_conv", "spp_pbl"]
-    assert RunConfig.__dataclass_fields__["spp_conv"].default == 0
-    assert RunConfig.__dataclass_fields__["spp_pbl"].default == 0
+    assert names.pop() == 'mynn_sfclay_variant'
+    assert names.pop() == 'fractional_seaice'
+    assert names.pop() == 'ruc_soilprop'
+    assert names[-2:] == ['spp_conv', 'spp_pbl']
     names = names[:-2]
-    assert names[-4:] == ["sf_lake_physics", "use_lakedepth", "lakedepth_default", "lake_min_elev"]
-    assert RunConfig.__dataclass_fields__["sf_lake_physics"].default == 0
-    assert RunConfig.__dataclass_fields__["use_lakedepth"].default == 1
-    assert RunConfig.__dataclass_fields__["lakedepth_default"].default == 50.0
-    assert RunConfig.__dataclass_fields__["lake_min_elev"].default == 5.0
+    assert names[-4:] == ['sf_lake_physics', 'use_lakedepth', 'lakedepth_default', 'lake_min_elev']
     names = names[:-4]
-    assert names.pop() == "use_rap_aero_icbc"
-    assert RunConfig.__dataclass_fields__["use_rap_aero_icbc"].default is False
-    # Appended without shifting positional construction; off preserves old runs.
-    assert names.pop() == "scalar_pblmix"
-    assert RunConfig.__dataclass_fields__["scalar_pblmix"].default == 0
-    # The numerical-generation selector preserves the existing WRF 4.7.1
-    # operator at its default and appends without moving any old argument.
-    assert names[-1] == "zadvect_implicit_variant"
-    assert RunConfig.__dataclass_fields__[
-        "zadvect_implicit_variant"].default == "wrf_471"
+    assert names.pop() == 'use_rap_aero_icbc'
+    assert names.pop() == 'scalar_pblmix'
+    assert names[-1] == 'zadvect_implicit_variant'
     names = names[:-1]
-    # The drag selectors follow the integrated diffusion and mosaic fields.
-    # Removing their zero defaults leaves the existing positional sequence.
-    assert names[-2:] == ["topo_wind", "gwd_opt"]
-    assert RunConfig.__dataclass_fields__["topo_wind"].default == 0
-    assert RunConfig.__dataclass_fields__["gwd_opt"].default == 0
+    assert names[-2:] == ['topo_wind', 'gwd_opt']
     names = names[:-2]
-    assert names[-2:] == ["diff_opt", "mix_full_fields"]
-    assert RunConfig.__dataclass_fields__["diff_opt"].default == 2
-    assert RunConfig.__dataclass_fields__["mix_full_fields"].default is True
+    assert names[-2:] == ['diff_opt', 'mix_full_fields']
     names = names[:-2]
-    # RE-BASELINED AGAIN (lane/281-mosaic-town, merged after A165 below):
-    # THREE fields, ``sf_surface_mosaic`` and ``mosaic_cat``,
-    # WRF's Noah mosaic land-use pair (Registry.EM_COMMON:2536-2537), and
-    # ``mosaic_urban_canopy``, where mosaic runs the urban canopy, appended
-    # after ``w_crit_cfl`` and last.  ``sf_surface_mosaic`` defaults to WRF's 0
-    # (no tiles), ``mosaic_cat`` is read only when mosaic is on, and the
-    # canopy rule defaults to WRF's ("dominant") and is read only with
-    # mosaic and urban option 1, so every golden entry resolves to what it
-    # ran before plus the three keys at their defaults, which the golden
-    # snapshot carries.
     mosaic_names = names[-3:]
-    assert mosaic_names == ["sf_surface_mosaic", "mosaic_cat",
-                            "mosaic_urban_canopy"]
-    assert RunConfig.__dataclass_fields__["sf_surface_mosaic"].default == 0
-    assert RunConfig.__dataclass_fields__["mosaic_cat"].default == 3
-    assert RunConfig.__dataclass_fields__["mosaic_urban_canopy"].default == "dominant"
+    assert mosaic_names == ['sf_surface_mosaic', 'mosaic_cat', 'mosaic_urban_canopy']
     names = names[:-3]
-    # APPENDED (A165): ``w_crit_cfl``, WRF's w_damp reference Courant
-    # number, last (after zadvect_implicit, so every positional index
-    # stands), default 1.0 (WRF's Registry value, the w_damp every golden
-    # entry runs), so the window below is exactly what it held before it.
-    assert names[-1] == "w_crit_cfl"
-    assert RunConfig.__dataclass_fields__["w_crit_cfl"].default == 1.0
+    assert names[-1] == 'w_crit_cfl'
     names = names[:-1]
-    # APPENDED (A158): ``zadvect_implicit``, WRF's implicit-explicit
-    # vertical advection, last (after the urban and topographic-radiation
-    # fields, so their positional indices stand), default 0 (explicit,
-    # every golden entry's behaviour), so the window below is exactly what
-    # it held before it.
-    assert names[-1] == "zadvect_implicit"
-    assert RunConfig.__dataclass_fields__["zadvect_implicit"].default == 0
+    assert names[-1] == 'zadvect_implicit'
     names = names[:-1]
-    # RE-BASELINED AGAIN (lane/281-namelist-gaps, merged after the urban
-    # fields below): THREE fields, WRF's &physics slope_rad, topo_shading
-    # and shadlen, appended after ``num_urban_hi`` and last.  Their
-    # defaults (0, 0, 25000.) are WRF's Registry values and turn nothing
-    # on, and gpuwm.core.model.restart_identity_payload drops all three
-    # while slope_rad is 0, so no experiment fingerprint moves.
-    assert names[-3:] == ["slope_rad", "topo_shading", "shadlen"]
-    assert RunConfig.__dataclass_fields__["slope_rad"].default == 0
-    assert RunConfig.__dataclass_fields__["topo_shading"].default == 0
-    assert RunConfig.__dataclass_fields__["shadlen"].default == 25000.0
+    assert names[-3:] == ['slope_rad', 'topo_shading', 'shadlen']
     names = names[:-3]
-    # RE-BASELINED (lane/wif-climatology + lane/wif-default): 95 -> 97.
-    # TWO fields were appended, ``wif_climatology_path`` and
-    # ``mp28_aerosol_source``, and the second of them is last, which is the
-    # property this test exists to hold.  Reconstructing the old assertion
-    # from the new: names[-97:-2] is exactly the list this window held
-    # before.
-    # RE-BASELINED AGAIN (lane/p3-cuda-port, commit 2258c85e3): 97 -> 98.
-    # ONE field was appended, ``p3_backend``, and it is last.  Same
-    # reconstruction rule: names[-98:-1] is exactly the window this
-    # assertion held before the P3 CUDA port.
-    # RE-BASELINED AGAIN (lane/release-reds-266): 98 -> 99.  ONE field,
-    # ``ntiedtke_tiedtke_closure``, and it is last.  d0c23dad0 (2.6.4)
-    # declared it between ``isftcflx`` and ``iz0tlnd`` -- inside this
-    # window, which is exactly what this assertion caught -- and the field
-    # moved to the end of RunConfig on this lane with no hash or trajectory
-    # moving (the field's own note in gpuwm/config.py says why that holds).
-    # Same reconstruction rule: names[-99:-1] is exactly the window this
-    # assertion held before the New Tiedtke port.
-    # RE-BASELINED AGAIN (lane/adaptive-timestep): 99 -> 111.  TWELVE
-    # fields were appended in one block, WRF's adaptive-time-step namelist
-    # surface, and the last of them is last.  Same reconstruction rule:
-    # names[-111:-12] is exactly the window this assertion held before the
-    # adaptive clock.
-    # RE-BASELINED AGAIN (lane/per-domain-vertical): 111 -> 112.  ONE
-    # field, ``eta_levels``, the offline child's own eta ladder, and it is
-    # last.  It was declared between ``etac`` and ``moist`` on that lane --
-    # positional index 22 of 172, shifting 150 fields -- which is exactly
-    # what this assertion exists to catch, and it moved to the end of
-    # RunConfig here, the same correction ``ntiedtke_tiedtke_closure`` took
-    # in 2.6.4.  Same reconstruction rule: names[-112:-1] is exactly the
-    # window this assertion held before per-domain ladders.
-    # RE-BASELINED AGAIN: 112 -> 114.  TWO fields, ``relax_timescale_s``
-    # and ``relax_w``, the downscaled child's lateral-boundary pair,
-    # appended after ``eta_levels`` and last.  Both default to WRF's own treatment (0.0 = the Davies time
-    # scale is 10 of the domain's steps; False = w is not relaxed and the
-    # specified rows copy the first interior row), so every frozen
-    # configuration below resolves to what it ran before.  Same
-    # reconstruction rule: names[-114:-2] is exactly the window this
-    # assertion held before them.
-    # RE-BASELINED AGAIN: 114 -> 115.  ONE field, ``min_time_step_sound``,
-    # the adaptive clock's floor under its derived acoustic substep count,
-    # appended after ``relax_w`` and last.  Its default 0 leaves WRF's
-    # derived count, and nothing reads it under a fixed clock, which is
-    # every golden entry below, so each resolves to what it ran before
-    # plus the one key at 0.  It is one of
-    # gpuwm.core.model.ADAPTIVE_TIMESTEP_RUN_FIELDS, so it moves no
-    # experiment fingerprint.  Same reconstruction rule: names[-115:-1] is
-    # exactly the window this assertion held before it.
-    # RE-BASELINED AGAIN (integrate/2.8): 115 -> 116.  ONE field,
-    # ``adaptive_nest_lattice``, appended after ``min_time_step_sound``.
-    # RE-BASELINED AGAIN (lane/urban-infra, forward-merged onto
-    # integrate/2.8): 116 -> 119.  THREE fields, WRF's urban selector and
-    # its two companions (``sf_urban_physics``, ``use_wudapt_lcz``,
-    # ``num_urban_hi``), appended after ``adaptive_nest_lattice`` and last,
-    # so the mainline field keeps the positional index 2.8 gave it.
-    # Defaults are WRF's (0, 0, 15), at which no urban code is reached, so
-    # every frozen configuration below resolves to what it ran before plus
-    # the three keys.  Same reconstruction rule: names[-119:-3] is exactly
-    # the window this assertion held before them.
-    assert names[-3:] == ["sf_urban_physics", "use_wudapt_lcz",
-                          "num_urban_hi"]
-    assert RunConfig.__dataclass_fields__["sf_urban_physics"].default == 0
-    assert RunConfig.__dataclass_fields__["use_wudapt_lcz"].default == 0
-    assert RunConfig.__dataclass_fields__["num_urban_hi"].default == 15
-    # The golden snapshot predates adaptive_nest_lattice, which the two
-    # identity tests below pop before comparing.
-    every_name = (set(names) - {"adaptive_nest_lattice"}) | set(mosaic_names)
+    assert names[-3:] == ['sf_urban_physics', 'use_wudapt_lcz', 'num_urban_hi']
+    every_name = set(names) - {'adaptive_nest_lattice'} | set(mosaic_names)
     names = names[:-3]
-    assert names[-1] == "adaptive_nest_lattice"
-    assert RunConfig.__dataclass_fields__["adaptive_nest_lattice"].default is False
+    assert names[-1] == 'adaptive_nest_lattice'
     names = names[:-1]
-    assert names[-1] == "min_time_step_sound"
-    assert RunConfig.__dataclass_fields__["min_time_step_sound"].default == 0
+    assert names[-1] == 'min_time_step_sound'
     names = names[:-1]
-    assert names[-2:] == ["relax_timescale_s", "relax_w"]
-    assert RunConfig.__dataclass_fields__["relax_timescale_s"].default == 0.0
-    assert RunConfig.__dataclass_fields__["relax_w"].default is False
-    assert names[-3] == "eta_levels"
+    assert names[-2:] == ['relax_timescale_s', 'relax_w']
+    assert names[-3] == 'eta_levels'
     assert names[-114:-3] == [
-        "nested", "grid_id", "top_lid", "moist_cq", "morr_rimed_ice",
-        "wsm6_hail_opt", "ra_lw_physics", "ra_sw_physics", "icloud",
-        "swrad_scat", "wrf_rrtmg_compatibility", "num_soil_layers",
-        "ra_rrtmg_variant",
-        "nest_microphysics_transition", "isftcflx", "iz0tlnd",
-        "usemonalb", "rdlai2d", "opt_thcnd",
-        "bl_mynn_closure", "bl_mynn_cloudpdf", "bl_mynn_mixlength",
-        "bl_mynn_edmf", "bl_mynn_edmf_mom", "bl_mynn_edmf_tke",
-        "bl_mynn_mixscalars", "bl_mynn_cloudmix", "bl_mynn_mixqt",
-        "bl_mynn_output", "bl_mynn_tkeadvect", "icloud_bl",
-        "dveg", "opt_crs", "opt_btr", "opt_run", "opt_sfc", "opt_frz",
-        "opt_inf", "opt_rad", "opt_alb", "opt_snf", "opt_tbot", "opt_stc",
-        "opt_gla", "opt_rsf", "opt_soil", "opt_pedo", "opt_crop", "opt_irr",
-        "opt_irrm", "opt_infdv", "opt_tdrn", "soiltstep", "noahmp_output",
-        "noahmp_acc_dt",
-        "mosaic_lu", "mosaic_soil", "flag_sm_adj", "spp_lsm",
-        "nwp_diagnostics", "isfflx", "o3input", "use_mp_re",
-        "seaice_albedo_default", "rdmaxalb",
-        # km_opt=3 LES closure knobs (change record: appended with the 3-D
-        # Smagorinsky port; WRF Registry defaults, frozen paths unchanged).
-        "mix_isotropic", "mix_upper_bound", "tke_heat_flux",
-        "tke_drag_coefficient", "c_k",
-        # km_opt=2 lateral-boundary/bound_tke arm and the report-only
-        # per-step TKE budget toggle (change record: appended with the
-        # prognostic-TKE restart + boundary work; WRF Registry default
-        # tke_upper_bound = 1000., budget off).
-        "tke_upper_bound", "tke_budget",
-        # Aerosol-aware Thompson (mp_physics=28) aerosol-source selectors
-        # (change record: appended with the mp=28 merge onto this line).
-        "aer_init_opt", "wif_input_opt",
-        # The SASE closure's three knobs, appended last exactly as this
-        # discipline requires.  Each is fail-closed on its NON-default
-        # value only, so every configuration that predates them resolves
-        # unchanged -- which is what the golden below re-checks.
-        "sase_flux_diag", "sase_moist_n2", "sase_stable_dissipation",
-        "sase_additive_dissipation",
-        # The horizontal-mixing pair, appended on the same terms.  Both
-        # default to the value the tree already ran: hmix_k_diag = False
-        # publishes nothing, and an EMPTY acknowledgement is the state
-        # every existing configuration is in, so the km_opt gate refuses
-        # exactly what it refused before.
-        "hmix_k_diag", "km_opt_zero_acknowledgement",
-        # The LES-nest inflow seeding keys (change record: appended with
-        # the P3 generator, INFLOW-GENERATOR-ACCEPTANCE-V2).  All four
-        # default to the mechanism-off state every existing
-        # configuration is in -- inflow_perturbation = False executes
-        # nothing -- so every pre-change TOML and constructor resolves
-        # unchanged, which the goldens below re-check with the four
-        # reviewed defaults added.
-        "inflow_perturbation", "inflow_perturbation_seed",
-        "inflow_perturbation_amplitude_scale", "inflow_perturbation_faces",
-        # WRF's own &dynamics moist_mix6_off, appended on the same terms.
-        # Its default is WRF's Registry default (.false.,
-        # Registry.EM_COMMON:2889), it is read only where diff_6th_opt > 0,
-        # and at False the diff6 row set is the one the frozen trajectories
-        # ran -- so it cannot move any of them.  It is divergence-ledger
-        # entry L4 (gpuwm/physics_mode.py).
-        "moist_mix6_off",
-        # The Grell-family keys, appended last: read only where
-        # cu_physics = 3, which no frozen configuration selects, and
-        # both defaults are WRF's own (Registry.EM_COMMON:2544,2546).
-        "clos_choice", "ishallow",
-        # The NSSL variant selectors: one WRF scheme, four
-        # flags on top of it (Registry.EM_COMMON:2420-2425).
-        "nssl_2moment_on", "nssl_hail_on", "nssl_ccn_on",
-        "nssl_density_on", "nssl_3moment",
-        # The WDM6 pair, appended after them at the 1.9 assembly.  Both defaults are WRF's own
-        # (hail_opt = 0, Registry.EM_COMMON:2665; ccn_conc = 1.0e8,
-        # :2664) and both are read only where mp_physics = 16, which no
-        # frozen configuration selects.  They are additionally dropped
-        # from the restart identity of every run that is not WDM6
-        # (gpuwm.core.model.restart_identity_payload), so appending them
-        # moves neither a trajectory nor a fingerprint.
-        "wdm6_hail_opt", "wdm6_ccn_conc",
-        # The surface-radiation carrier policy, appended last.  A LABEL on
-        # a guard rather than a physics knob: the default "required" is the
-        # behaviour every frozen trajectory already had once the contract
-        # is in place -- carriers those runs consume all have producers --
-        # and the only other value is the declared escape, which a frozen
-        # case does not select.  It moves no trajectory and it is not a WRF
-        # namelist key, because WRF has no carrier provenance to declare.
-        "surface_radiation_policy",
-        # The mp=28 WIF climatology dataset path (change record: appended
-        # with the lane/wif-climatology commit onto this line).  The empty
-        # default runs not one new instruction, and
-        # validate_aerosol_source_options refuses a set path whose
-        # selectors (aer_init_opt=1 + wif_input_opt=1) do not consume it,
-        # so no frozen trajectory can move.
-        "wif_climatology_path",
-        # Which mp=28 aerosol initial state the run wants (change record:
-        # appended with the lane/wif-default commit onto this line).  At
-        # "auto" a real-data mp=28 run resolves WRF's monthly WIF
-        # climatology and announces the synthetic fallback by name when it
-        # cannot; every frozen case here is idealized or has no dataset, so
-        # each resolves to the same synthetic profile it always did.
-        "mp28_aerosol_source",
-        # Which P3 implementation integrates the column (change record:
-        # appended with the P3 CUDA port, commit 2258c85e3 on
-        # lane/p3-cuda-port).  The default "cuda" is the device arm that
-        # port makes the shipping path, and it is read only where
-        # mp_physics = 50, which NO frozen configuration selects -- every
-        # golden entry below is mp_physics 0, 1 or 10 -- so appending it
-        # moves no frozen trajectory.  It is additionally dropped from the
-        # restart identity of every run that is not P3
-        # (gpuwm.core.model.SCHEME_SCOPED_RUN_FIELDS[50]) and
-        # validate_run_config refuses a non-default value off-scheme, so
-        # it moves no fingerprint either: both frozen anchors in
-        # tests/test_water_overlay.py hash exactly as they did before this
-        # field existed, with no re-pin.
-        "p3_backend",
-        # The New Tiedtke closure selector (change record: declared by
-        # d0c23dad0 with the cu_physics = 16 port, appended last on
-        # lane/release-reds-266).  Read only where cu_physics = 16, which
-        # NO frozen configuration selects -- every golden entry below is
-        # cu_physics 0 or 1 -- and its False default leaves every cu16
-        # result bit-identical, so it moves no frozen trajectory.  It is
-        # NOT scheme-scoped in the restart identity
-        # (gpuwm.core.model.SCHEME_SCOPED_RUN_FIELDS is keyed by
-        # mp_physics and has no cumulus row), so unlike p3_backend it DOES
-        # move the fingerprint anchors in tests/test_water_overlay.py,
-        # which re-pin for it with the attribution measured there.
-        "ntiedtke_tiedtke_closure",
-        # WRF's adaptive time step, appended as one block (change record:
-        # lane/adaptive-timestep, docs/ADAPTIVE-TIMESTEP.md).  Every
-        # default is WRF's own Registry default
-        # (Registry.EM_COMMON:2269-2281), and the block is inert at them
-        # for a reason stronger than "the default value": with
-        # use_adaptive_time_step False the controller never runs, so the
-        # other eleven are read by nothing at all and cannot move a
-        # frozen trajectory.  They are additionally dropped from the
-        # restart identity of every run that leaves the flag off
-        # (gpuwm.core.model.ADAPTIVE_TIMESTEP_RUN_FIELDS,
-        # restart_identity_payload), so unlike ntiedtke_tiedtke_closure
-        # the block moves no experiment fingerprint and
-        # tests/test_water_overlay.py needs no re-pin for it.
-        "use_adaptive_time_step", "step_to_output_time",
-        "adaptation_domain", "target_cfl", "target_hcfl",
-        "max_step_increase_pct",
-        "starting_time_step", "starting_time_step_den",
-        "max_time_step", "max_time_step_den",
-        "min_time_step", "min_time_step_den",
+        'nested', 'grid_id', 'top_lid', 'moist_cq',
+        'morr_rimed_ice', 'wsm6_hail_opt', 'ra_lw_physics', 'ra_sw_physics',
+        'icloud', 'swrad_scat', 'wrf_rrtmg_compatibility', 'num_soil_layers',
+        'ra_rrtmg_variant', 'nest_microphysics_transition', 'isftcflx', 'iz0tlnd',
+        'usemonalb', 'rdlai2d', 'opt_thcnd', 'bl_mynn_closure',
+        'bl_mynn_cloudpdf', 'bl_mynn_mixlength', 'bl_mynn_edmf', 'bl_mynn_edmf_mom',
+        'bl_mynn_edmf_tke', 'bl_mynn_mixscalars', 'bl_mynn_cloudmix', 'bl_mynn_mixqt',
+        'bl_mynn_output', 'bl_mynn_tkeadvect', 'icloud_bl', 'dveg',
+        'opt_crs', 'opt_btr', 'opt_run', 'opt_sfc',
+        'opt_frz', 'opt_inf', 'opt_rad', 'opt_alb',
+        'opt_snf', 'opt_tbot', 'opt_stc', 'opt_gla',
+        'opt_rsf', 'opt_soil', 'opt_pedo', 'opt_crop',
+        'opt_irr', 'opt_irrm', 'opt_infdv', 'opt_tdrn',
+        'soiltstep', 'noahmp_output', 'noahmp_acc_dt', 'mosaic_lu',
+        'mosaic_soil', 'flag_sm_adj', 'spp_lsm', 'nwp_diagnostics',
+        'isfflx', 'o3input', 'use_mp_re', 'seaice_albedo_default',
+        'rdmaxalb', 'mix_isotropic', 'mix_upper_bound', 'tke_heat_flux',
+        'tke_drag_coefficient', 'c_k', 'tke_upper_bound', 'tke_budget',
+        'aer_init_opt', 'wif_input_opt', 'sase_flux_diag', 'sase_moist_n2',
+        'sase_stable_dissipation', 'sase_additive_dissipation', 'hmix_k_diag', 'km_opt_zero_acknowledgement',
+        'inflow_perturbation', 'inflow_perturbation_seed', 'inflow_perturbation_amplitude_scale', 'inflow_perturbation_faces',
+        'moist_mix6_off', 'clos_choice', 'ishallow', 'nssl_2moment_on',
+        'nssl_hail_on', 'nssl_ccn_on', 'nssl_density_on', 'nssl_3moment',
+        'wdm6_hail_opt', 'wdm6_ccn_conc', 'surface_radiation_policy', 'wif_climatology_path',
+        'mp28_aerosol_source', 'p3_backend', 'ntiedtke_tiedtke_closure', 'use_adaptive_time_step',
+        'step_to_output_time', 'adaptation_domain', 'target_cfl', 'target_hcfl',
+        'max_step_increase_pct', 'starting_time_step', 'starting_time_step_den', 'max_time_step',
+        'max_time_step_den', 'min_time_step', 'min_time_step_den',
     ]
-    assert RunConfig.__dataclass_fields__[
-        "ntiedtke_tiedtke_closure"].default is False
-    # The adaptive block's defaults, asserted here for the same reason
-    # every default above is: each is the value that makes the field inert
-    # for every frozen configuration, and each is WRF's own.  -1 is WRF's
-    # encoding of "unset" for the three step limits, which start_em.F
-    # substitutes a grid-spacing value for; 0 on a _den companion means
-    # "the numerator is whole seconds", not a zero denominator.
-    for name, default in (
-            ("use_adaptive_time_step", False), ("step_to_output_time", True),
-            ("adaptation_domain", 1), ("target_cfl", 1.2),
-            ("target_hcfl", 0.84), ("max_step_increase_pct", 5),
-            ("starting_time_step", -1), ("starting_time_step_den", 0),
-            ("max_time_step", -1), ("max_time_step_den", 0),
-            ("min_time_step", -1), ("min_time_step_den", 0)):
+    for name, default in (('use_adaptive_time_step', False), ('step_to_output_time', True),
+     ('adaptation_domain', 1), ('target_cfl', 1.2), ('target_hcfl', 0.84),
+     ('max_step_increase_pct', 5), ('starting_time_step', -1),
+     ('starting_time_step_den', 0), ('max_time_step', -1), ('max_time_step_den', 0),
+     ('min_time_step', -1), ('min_time_step_den', 0)):
         assert RunConfig.__dataclass_fields__[name].default == default, name
-    # Aerosol-aware Thompson (mp_physics=28) aerosol-source selectors,
-    # appended last.  Both defaults are WRF's own Registry defaults
-    # (Registry/Registry.EM_COMMON:2656 and
-    # Registry/registry.new3d_wif:17), and both are the ONLY value
-    # gpuwm.config.validate_aerosol_source_options admits -- so they cannot
-    # move any trajectory, frozen or otherwise: there is no second value to
-    # move it to.  They exist so that a request for WRF's climo/first-guess
-    # aerosol IC/BC or its WIF metgrid stream is refused BY NAME rather than
-    # being unrepresentable and therefore silently ignored.  Matching WRF's
-    # defaults is essential for a second reason: the prepared-forecast
-    # runner compares physics_compat._SINGLE_DOMAIN_RUNTIME_SWITCHES rows
-    # for exact equality, and a nonzero default would change every shipped
-    # profile.
-    assert RunConfig.__dataclass_fields__["aer_init_opt"].default == 0
-    assert RunConfig.__dataclass_fields__["wif_input_opt"].default == 0
-
-    # WIF climatology dataset path: the empty default is "resolve it, and
-    # say so if you cannot", which is what makes the field inert for every
-    # frozen case here -- none of them ships a dataset.
-    assert RunConfig.__dataclass_fields__[
-        "wif_climatology_path"].default == ""
-    # And the selector's default, asserted for the same reason the pair
-    # above is: "auto" is the value that reproduces the pre-lane behaviour
-    # whenever no dataset resolves, so a silent change to it would move
-    # every mp=28 real-data trajectory while this file stayed green.
-    assert RunConfig.__dataclass_fields__[
-        "mp28_aerosol_source"].default == "auto"
-    # The P3 implementation selector.  "cuda" is asserted here for the
-    # same reason every default above is: it is the value that makes the
-    # field inert for every frozen configuration (none selects
-    # mp_physics=50), AND it is the value the off-scheme refusal in
-    # validate_run_config pins every non-P3 run to -- so a silent change
-    # to it would both move mp=50 trajectories and make that refusal
-    # reject configurations it is supposed to admit, while this file
-    # stayed green.  The admitted set is checked beside it so a fourth
-    # arm cannot appear without a byte-comparison first
-    # (gpuwm.config.P3_BACKENDS, evidence/p3-cuda-20260829).
     from gpuwm.config import P3_BACKENDS
-    assert RunConfig.__dataclass_fields__["p3_backend"].default == "cuda"
-    assert P3_BACKENDS == ("cuda", "fused", "reference")
-
-    assert RunConfig.__dataclass_fields__["hmix_k_diag"].default is False
-    # WRF v4.6.1 Registry.EM_COMMON:2889 declares moist_mix6_off .false.,
-    # and matching WRF's default is what makes the field inert: the moist
-    # array keeps its 6th-order filter exactly as every frozen trajectory
-    # ran it.
-    assert RunConfig.__dataclass_fields__["moist_mix6_off"].default is False
-    assert RunConfig.__dataclass_fields__[
-        "km_opt_zero_acknowledgement"].default == ""
-    # Grell-family keys, WRF v4.6.1 Registry defaults
-    # (Registry.EM_COMMON:2544,2546).  Both are read only where
-    # cu_physics=3, which no frozen configuration selects, so appending
-    # them cannot move a frozen trajectory; validate_run_config refuses
-    # nonzero values without the scheme.
-    assert RunConfig.__dataclass_fields__["clos_choice"].default == 0
-    assert RunConfig.__dataclass_fields__["ishallow"].default == 0
-    # The carrier policy defaults to the strict value, not the escape:
-    # a run that says nothing gets the guard, and a run that wants
-    # pre-1.9 behaviour has to type the word.
-    assert RunConfig.__dataclass_fields__[
-        "surface_radiation_policy"].default == "required"
-    # Noah option selectors. Each default reproduces the value the launcher
-    # previously pinned, so exposing them cannot move a frozen trajectory.
-    assert RunConfig.__dataclass_fields__["usemonalb"].default is False
-    assert RunConfig.__dataclass_fields__["rdlai2d"].default is False
-    assert RunConfig.__dataclass_fields__["opt_thcnd"].default == 1
-    assert RunConfig.__dataclass_fields__["nested"].default is False
-    assert RunConfig.__dataclass_fields__["grid_id"].default == 1
-    # The rigid-lid stability policy is independent of moisture loading.
-    # CQ follows WRF whenever a vapor state exists; dry states bypass it.
-    assert RunConfig.__dataclass_fields__["top_lid"].default is True
-    assert RunConfig.__dataclass_fields__["moist_cq"].default is True
-    # Morrison's scalar Registry default is hail; explicit 0 retains the
-    # graupel branch (Registry.EM_COMMON:2663-2666).
-    assert RunConfig.__dataclass_fields__["morr_rimed_ice"].default == 1
-    # WSM6 uses a distinct switch and the opposite WRF default: graupel.
-    assert RunConfig.__dataclass_fields__["wsm6_hail_opt"].default == 0
-    assert RunConfig.__dataclass_fields__[
-        "nest_microphysics_transition"].default == "same-scheme-only"
-    assert RunConfig.__dataclass_fields__["ra_lw_physics"].default == -1
-    assert RunConfig.__dataclass_fields__["ra_sw_physics"].default == -1
-    assert RunConfig.__dataclass_fields__["icloud"].default == 1
-    assert RunConfig.__dataclass_fields__["swrad_scat"].default == 1.0
-    assert RunConfig.__dataclass_fields__["wrf_rrtmg_compatibility"].default \
-        == "none"
-    assert RunConfig.__dataclass_fields__["num_soil_layers"].default == 4
-    # 4/4 stays on the modern RTE+RRTMGP adapter unless the exact
-    # legacy-RRTMG port is selected explicitly (which fails closed until
-    # its compute kernels land).
-    assert RunConfig.__dataclass_fields__["ra_rrtmg_variant"].default \
-        == "rte-rrtmgp"
-    # nwp_diagnostics: WRF's own Registry default is 0 (off), and at 0 the
-    # dycore epilogue never launches the UP_HELI_MAX kernel, so every frozen
-    # trajectory is unchanged.  At 1 the diagnostic is trajectory-inert by
-    # test (tests/test_uh_lifecycle.py).
-    assert RunConfig.__dataclass_fields__["nwp_diagnostics"].default == 0
-    assert RunConfig.__dataclass_fields__["isfflx"].default == 1
-    # km_opt=3 knobs: WRF Registry defaults (mix_isotropic 0, upper bound
-    # 0.1, prescribed fluxes 0), consumed only under km_opt=3 or the
-    # PBL-off isfflx=0/2 paths, so frozen trajectories cannot move.
-    assert RunConfig.__dataclass_fields__["mix_isotropic"].default == 0
-    assert RunConfig.__dataclass_fields__["mix_upper_bound"].default == 0.1
-    assert RunConfig.__dataclass_fields__["tke_heat_flux"].default == 0.0
-    assert RunConfig.__dataclass_fields__[
-        "tke_drag_coefficient"].default == 0.0
-    assert RunConfig.__dataclass_fields__["c_k"].default == 0.15
-    assert RunConfig.__dataclass_fields__["o3input"].default == 2
-    assert RunConfig.__dataclass_fields__["use_mp_re"].default == 1
-    assert RunConfig.__dataclass_fields__[
-        "seaice_albedo_default"].default == 0.65
-    assert RunConfig.__dataclass_fields__["rdmaxalb"].default is True
-    # MM5 surface-layer options.  Both WRF Registry defaults are 0, and both
-    # are inert at 0: the surface-layer kernel's isftcflx/iz0tlnd branches
-    # are skipped entirely, so every frozen trajectory is unchanged.
-    assert RunConfig.__dataclass_fields__["isftcflx"].default == 0
-    assert RunConfig.__dataclass_fields__["iz0tlnd"].default == 0
-    # MYNN PBL option identity.  Every default is the single value the ported
-    # solver was validated at, and none of them is read unless
-    # bl_pbl_physics=5, which no frozen configuration selects -- so exposing
-    # them cannot move a frozen trajectory.  validate_run_config refuses any
-    # other value, so these are pins rather than choices.
+    assert P3_BACKENDS == ('cuda', 'fused', 'reference')
     from gpuwm.config import MYNN_PBL_OPTION_IDENTITY
     for name, admitted in MYNN_PBL_OPTION_IDENTITY.items():
         default = RunConfig.__dataclass_fields__[name].default
         assert default == admitted and type(default) is type(admitted), name
-    # Noah-MP option identity, on almost the same terms: every default is
-    # the single admitted value, and none is read unless
-    # sf_surface_physics=4, which no frozen configuration selects --
-    # real74_d01 is Noah (2).  validate_run_config refuses any other value
-    # except on the three rows in NOAHMP_OPTIONS_WITHOUT_CONSUMER, which
-    # reach no gpuwm code at any value and are admitted with one warning
-    # (tests/test_noahmp_no_consumer_knobs.py).  Either way the DEFAULT is
-    # the pin, which is what freezes the trajectory here.
     from gpuwm.config import NOAHMP_OPTION_IDENTITY
     for name, admitted in NOAHMP_OPTION_IDENTITY.items():
         default = RunConfig.__dataclass_fields__[name].default
         assert default == admitted and type(default) is type(admitted), name
-    # RUC option identity, on exactly the same terms again.  All four defaults
-    # are 0, validate_run_config refuses any other value, and none is read
-    # unless sf_surface_physics=3 -- which no frozen configuration selects, so
-    # appending them cannot move a frozen trajectory.  Unlike the MYNN and
-    # Noah-MP blocks these are also WRF's own Registry defaults
-    # (Registry.EM_COMMON:2535-2537 and Registry/registry.stoch:241), so a
-    # namelist import of a stock ARW run lands on them without adjustment.
     from gpuwm.config import RUC_OPTION_IDENTITY
     for name, admitted in RUC_OPTION_IDENTITY.items():
         default = RunConfig.__dataclass_fields__[name].default
         assert default == admitted and type(default) is type(admitted), name
     for entry in GOLDEN.values():
-        assert entry["sf_surface_physics"] not in (3, 4)
-    # the golden snapshot carries exactly the current field set
+        assert entry['sf_surface_physics'] not in (3, 4)
     for key, entry in GOLDEN.items():
         assert set(entry) == every_name, key
+    # equal defaults, independent of the implementation defaults.
+    for name, expected in (
+            ('nsas_dx_factor', 0),
+            ('sas_pgcon', 0.55),
+            ('sf_ocean_physics', 0),
+            ('bl_mynn_mixnumcon', 0),
+            ('bl_mynn_mixaerosols', 0),
+            ('rrtmg_aer3_type_source', 'rural'),
+            ('rrtmg_smoke_manifest', ''),
+            ('rrtmg_cloud_optics_form', 'wrf_461'),
+            ('thompson_version', 'wrf_461'),
+            ('thompson_fork_snow_fall', 'blend'),
+            ('bl_mynn_cloud_tendency_form', 'wrf_461'),
+            ('bl_mynn_version', 'wrf_461'),
+            ('ruc_snow', 'wrf_461'),
+            ('ruc_2m_diagnostic', 'flux'),
+            ('ruc_qvg_cold_start', 'wrf'),
+            ('ruc_irrigation', 'wrf_461'),
+            ('v_sca_adv_order', 3),
+            ('v_mom_adv_order', 3),
+            ('h_mom_adv_order', 5),
+            ('upper_wind_limiter_form', 'wrf_461'),
+            ('diff_6th_form', 'wrf_461'),
+            ('terrain_clock', 'local_face'),
+            ('mynn_sfclay_variant', 'wrf_461'),
+            ('fractional_seaice', 0),
+            ('ruc_soilprop', 'wrf_45'),
+            ('spp_conv', 0),
+            ('spp_pbl', 0),
+            ('sf_lake_physics', 0),
+            ('use_lakedepth', 1),
+            ('lakedepth_default', 50.0),
+            ('lake_min_elev', 5.0),
+            ('scalar_pblmix', 0),
+            ('zadvect_implicit_variant', 'wrf_471'),
+            ('topo_wind', 0),
+            ('gwd_opt', 0),
+            ('diff_opt', 2),
+            ('sf_surface_mosaic', 0),
+            ('mosaic_cat', 3),
+            ('mosaic_urban_canopy', 'dominant'),
+            ('w_crit_cfl', 1.0),
+            ('zadvect_implicit', 0),
+            ('slope_rad', 0),
+            ('topo_shading', 0),
+            ('shadlen', 25000.0),
+            ('sf_urban_physics', 0),
+            ('use_wudapt_lcz', 0),
+            ('num_urban_hi', 15),
+            ('min_time_step_sound', 0),
+            ('relax_timescale_s', 0.0),
+            ('aer_init_opt', 0),
+            ('wif_input_opt', 0),
+            ('wif_climatology_path', ''),
+            ('mp28_aerosol_source', 'auto'),
+            ('p3_backend', 'cuda'),
+            ('km_opt_zero_acknowledgement', ''),
+            ('clos_choice', 0),
+            ('ishallow', 0),
+            ('surface_radiation_policy', 'required'),
+            ('opt_thcnd', 1),
+            ('grid_id', 1),
+            ('morr_rimed_ice', 1),
+            ('wsm6_hail_opt', 0),
+            ('nest_microphysics_transition', 'same-scheme-only'),
+            ('ra_lw_physics', -1),
+            ('ra_sw_physics', -1),
+            ('icloud', 1),
+            ('swrad_scat', 1.0),
+            ('wrf_rrtmg_compatibility', 'none'),
+            ('num_soil_layers', 4),
+            ('ra_rrtmg_variant', 'rte-rrtmgp'),
+            ('nwp_diagnostics', 0),
+            ('isfflx', 1),
+            ('mix_isotropic', 0),
+            ('mix_upper_bound', 0.1),
+            ('tke_heat_flux', 0.0),
+            ('tke_drag_coefficient', 0.0),
+            ('c_k', 0.15),
+            ('o3input', 2),
+            ('use_mp_re', 1),
+            ('seaice_albedo_default', 0.65),
+            ('isftcflx', 0),
+            ('iz0tlnd', 0),
+    ):
+        assert RunConfig.__dataclass_fields__[name].default == expected, name
+
+    # singleton defaults, independent of the implementation defaults.
+    for name, expected in (
+            ('thompson_table_dir', None),
+            ('tempo_surface_emission_before', False),
+            ('tempo_ml_for_bl_nc', False),
+            ('cycling', False),
+            ('surface_energy_diag', False),
+            ('bl_mynn_gsd41_unsquared_qtke', False),
+            ('diff_6th_factor2', None),
+            ('use_rap_aero_icbc', False),
+            ('mix_full_fields', True),
+            ('adaptive_nest_lattice', False),
+            ('relax_w', False),
+            ('ntiedtke_tiedtke_closure', False),
+            ('hmix_k_diag', False),
+            ('moist_mix6_off', False),
+            ('usemonalb', False),
+            ('rdlai2d', False),
+            ('nested', False),
+            ('top_lid', True),
+            ('moist_cq', True),
+            ('rdmaxalb', True),
+    ):
+        assert RunConfig.__dataclass_fields__[name].default is expected, name
 
 
 
@@ -786,11 +453,122 @@ def _pop_radiation_port_defaults(actual: dict) -> bool:
                     for name in ocean))
 
 
+def _pop_capability_campaign_defaults(actual: dict) -> bool:
+    """The 2.9.4 capabilities campaign's keys, appended after the golden was
+    captured, popped at their defaults: lane/cap-slab-ocean (3-D PWP ocean,
+    read only under sf_ocean_physics = 2), lane/cap-waves-couple (ocean door),
+    lane/cap-hail (HAILCAST), lane/cap-seaice (prognostic sea ice) and
+    lane/cap-lake (lake-state analysis)."""
+    expected = {
+        "ocean_levels": 30, "ocean_analysis": "",
+        "ocean_analysis_source": "rtofs", "ocean_mld_climatology": "woa18",
+        "omdt": 1.0, "ocean_z": (), "ocean_t": (), "ocean_s": (),
+        "ocean_config": "", "hailcast_opt": -1, "haildt": 60.0,
+        "seaice_prognostic": True, "seaice_initial_thickness": 1.0,
+        "seaice_new_ice_thickness": 0.5, "seaice_ocean_heat_flux": 2.0,
+        "lake_state_source": "auto", "lake_state_path": "",
+        "lake_state_accept_licence": "",
+    }
+    return all(actual.pop(name) == value for name, value in expected.items())
+
+
 def _pop_topo_radiation_defaults(actual: dict) -> bool:
     """WRF's slope_rad/topo_shading/shadlen, appended after the golden was
     captured, popped at their defaults the way adaptive_nest_lattice is."""
     return (actual.pop("slope_rad") == 0 and actual.pop("topo_shading") == 0
             and actual.pop("shadlen") == 25000.0)
+
+
+def _check_frozen_defaults(actual):
+    """Check and remove reviewed additions for both frozen-config doors."""
+    assert actual.pop("ra_sw_eclipse") == 1
+    assert _pop_capability_campaign_defaults(actual)
+    # Appended after the campaign at values that change no earlier run:
+    # 4c82704f8f's seaice_threshold (100 K converts nothing) and the HRRR v4
+    # output controls, off (lane/hrrr-v4-output).
+    for field, value in (("seaice_threshold", 100.0), ("prec_acc_dt", 0.0),
+                         ("prec_acc_dt1", 0.0), ("gsd_diagnostics", 0),
+                         ("reset_interval1", 60), ("history_interval2_s", 0.0),
+                         ("history_interval_change_s", 0.0),
+                         ("smoke_off_reason", "")):
+        assert actual.pop(field) == value, field
+    for field,value in (("urban_ucm_generation","wrf_471"),("urban_treeoption",-1),
+                        ("urban_ttscheme",-1),("urban_fvg",-1.),("urban_table_dir","")):
+        assert actual.pop(field) == value
+    from gpuwm.config import CHEM_RUN_FIELDS, FIRE_RUN_FIELDS
+    for field in CHEM_RUN_FIELDS + FIRE_RUN_FIELDS:
+        assert actual.pop(field) == RunConfig.__dataclass_fields__[field].default
+    # WRF 4.7/4.8 upstream fixes, default-on (declared default changes).
+    assert actual.pop("solar_generation") == "wrf_480"
+    assert actual.pop("ysu_version") == "wrf_480"
+    assert actual.pop("noahmp_snow_age") == "wrf_470"
+    assert actual.pop("urban_water_balance") == "wrf_480"
+    assert actual.pop("nsas_dx_factor") == 0
+    assert actual.pop("sas_pgcon") == 0.55
+    assert actual.pop("surface_energy_diag") is False
+    # Declared default correction, 2.9.0: correct mode is the default.
+    from gpuwm.correct_mode import CORRECT_KEYS_DEFAULT
+    assert actual.pop("wsm6_conservative_surface") is CORRECT_KEYS_DEFAULT
+    assert actual.pop("ntiedtke_dry_mass_coupling") is CORRECT_KEYS_DEFAULT
+    assert actual.pop("wdm6_conservative_surface") is CORRECT_KEYS_DEFAULT
+    assert actual.pop("thompson_cloud_surface_booking") is CORRECT_KEYS_DEFAULT
+    # 2.9.1: WB5's keys for WSM3, WSM5 and WSM7, same default.
+    assert actual.pop("wsm3_conservative_surface") is CORRECT_KEYS_DEFAULT
+    assert actual.pop("wsm5_conservative_surface") is CORRECT_KEYS_DEFAULT
+    assert actual.pop("wsm7_conservative_surface") is CORRECT_KEYS_DEFAULT
+    # Declared default correction, 2.8.8 (test above).
+    assert actual.pop("terrain_clock") == "local_face"
+    assert actual.pop("use_rap_aero_icbc") is False
+    assert actual.pop("diff_opt") == 2
+    assert actual.pop("scalar_pblmix") == 0
+    assert actual.pop("mix_full_fields") is True
+    assert actual.pop("adaptive_nest_lattice") is False
+    assert actual.pop("zadvect_implicit") == 0
+    assert actual.pop("w_crit_cfl") == 1.0
+    assert actual.pop("topo_wind") == 0 and actual.pop("gwd_opt") == 0
+    assert actual.pop("zadvect_implicit_variant") == "wrf_471"
+    assert actual.pop("sf_lake_physics") == 0
+    assert actual.pop("use_lakedepth") == 1
+    assert actual.pop("lakedepth_default") == 50.0
+    assert actual.pop("lake_min_elev") == 5.0
+    assert actual.pop("spp_conv") == 0 and actual.pop("spp_pbl") == 0
+    assert actual.pop("swint_opt") == 0 and actual.pop("aer_opt") == 0
+    assert actual.pop("rrtmg_cloud_optics_form") == "wrf_461"
+    assert actual.pop("rrtmg_aer3_type_source") == "rural"
+    assert actual.pop("bl_mynn_mixaerosols") == 0
+    assert actual.pop("bl_mynn_mixnumcon") == 0
+    assert actual.pop("tempo_ml_for_bl_nc") is False
+    assert actual.pop("tempo_surface_emission_before") is False
+    assert actual.pop("thompson_table_dir") is None
+    assert actual.pop("rrtmg_smoke_manifest") == ""
+    assert actual.pop("cycling") is False
+    assert actual.pop("alb_sol") == 0
+    # The RUC SOILPROP lineage changed its default: a non-RUC case
+    # never reads it; a RUC case changes answers (CHANGELOG).
+    assert actual.pop("ruc_soilprop") == "wrf_45"
+    # The Thompson generation, appended at the v4.6.1 default.
+    assert actual.pop("thompson_version") == "wrf_461"
+    assert actual.pop("thompson_fork_snow_fall") == "blend"
+    assert actual.pop("bl_mynn_version") == "wrf_461"
+    assert actual.pop("bl_mynn_gsd41_unsquared_qtke") is False
+    assert actual.pop("bl_mynn_cloud_tendency_form") == "wrf_461"
+    # The MYNN surface-layer generation, at the form every build ran.
+    assert actual.pop("mynn_sfclay_variant") == "wrf_461"
+    assert actual.pop("fractional_seaice") == 0
+    # The WRF v4.6.1 filter form and no zero-out pass, as before.
+    from gpuwm.config import G3_RUN_DEFAULTS
+    assert {k: actual.pop(k) for k in G3_RUN_DEFAULTS} == G3_RUN_DEFAULTS
+    assert _pop_fork_dycore_defaults(actual)
+    # Generic RUC preserves irrigation and snow from WRF v4.6.1.
+    assert actual.pop("ruc_irrigation") == "wrf_461"
+    assert actual.pop("ruc_qvg_cold_start") == "wrf"
+    assert actual.pop("ruc_2m_diagnostic") == "flux"
+    assert actual.pop("ruc_snow") == "wrf_461"
+    assert actual.pop("v_sca_adv_order") == 3
+    assert actual.pop("v_mom_adv_order") == 3
+    assert actual.pop("h_mom_adv_order") == 5
+    assert _pop_topo_radiation_defaults(actual)
+    assert _pop_radiation_port_defaults(actual)
 
 
 def test_every_existing_legacy_toml_resolves_identically():
@@ -807,83 +585,7 @@ def test_every_existing_legacy_toml_resolves_identically():
             "tests/data/config_freeze_golden.json consciously.")
         cfg = load_config(path)
         actual = dataclasses.asdict(cfg)
-        for field,value in (("urban_ucm_generation","wrf_471"),("urban_treeoption",-1),
-                            ("urban_ttscheme",-1),("urban_fvg",-1.),("urban_table_dir","")):
-            assert actual.pop(field) == value
-        from gpuwm.config import CHEM_RUN_FIELDS, FIRE_RUN_FIELDS
-        for field in CHEM_RUN_FIELDS + FIRE_RUN_FIELDS:
-            assert actual.pop(field) == RunConfig.__dataclass_fields__[field].default
-        # WRF 4.7/4.8 upstream fixes, default-on (declared default changes).
-        assert actual.pop("solar_generation") == "wrf_480"
-        assert actual.pop("ysu_version") == "wrf_480"
-        assert actual.pop("noahmp_snow_age") == "wrf_470"
-        assert actual.pop("urban_water_balance") == "wrf_480"
-        assert actual.pop("nsas_dx_factor") == 0
-        assert actual.pop("sas_pgcon") == 0.55
-        assert actual.pop("surface_energy_diag") is False
-        # Declared default correction, 2.9.0: correct mode is the default.
-        from gpuwm.correct_mode import CORRECT_KEYS_DEFAULT
-        assert actual.pop("wsm6_conservative_surface") is CORRECT_KEYS_DEFAULT
-        assert actual.pop("ntiedtke_dry_mass_coupling") is CORRECT_KEYS_DEFAULT
-        assert actual.pop("wdm6_conservative_surface") is CORRECT_KEYS_DEFAULT
-        assert actual.pop("thompson_cloud_surface_booking") is CORRECT_KEYS_DEFAULT
-        # 2.9.1: WB5's keys for WSM3, WSM5 and WSM7, same default.
-        assert actual.pop("wsm3_conservative_surface") is CORRECT_KEYS_DEFAULT
-        assert actual.pop("wsm5_conservative_surface") is CORRECT_KEYS_DEFAULT
-        assert actual.pop("wsm7_conservative_surface") is CORRECT_KEYS_DEFAULT
-        # Declared default correction, 2.8.8 (test above).
-        assert actual.pop("terrain_clock") == "local_face"
-        assert actual.pop("use_rap_aero_icbc") is False
-        assert actual.pop("diff_opt") == 2
-        assert actual.pop("scalar_pblmix") == 0
-        assert actual.pop("mix_full_fields") is True
-        assert actual.pop("adaptive_nest_lattice") is False
-        assert actual.pop("zadvect_implicit") == 0
-        assert actual.pop("w_crit_cfl") == 1.0
-        assert actual.pop("topo_wind") == 0 and actual.pop("gwd_opt") == 0
-        assert actual.pop("zadvect_implicit_variant") == "wrf_471"
-        assert actual.pop("sf_lake_physics") == 0
-        assert actual.pop("use_lakedepth") == 1
-        assert actual.pop("lakedepth_default") == 50.0
-        assert actual.pop("lake_min_elev") == 5.0
-        assert actual.pop("spp_conv") == 0 and actual.pop("spp_pbl") == 0
-        assert actual.pop("swint_opt") == 0 and actual.pop("aer_opt") == 0
-        assert actual.pop("rrtmg_cloud_optics_form") == "wrf_461"
-        assert actual.pop("rrtmg_aer3_type_source") == "rural"
-        assert actual.pop("bl_mynn_mixaerosols") == 0
-        assert actual.pop("bl_mynn_mixnumcon") == 0
-        assert actual.pop("tempo_ml_for_bl_nc") is False
-        assert actual.pop("tempo_surface_emission_before") is False
-        assert actual.pop("thompson_table_dir") is None
-        assert actual.pop("rrtmg_smoke_manifest") == ""
-        assert actual.pop("cycling") is False
-        assert actual.pop("alb_sol") == 0
-        # The RUC SOILPROP lineage changed its default: a non-RUC case
-        # never reads it; a RUC case changes answers (CHANGELOG).
-        assert actual.pop("ruc_soilprop") == "wrf_45"
-        # The Thompson generation, appended at the v4.6.1 default.
-        assert actual.pop("thompson_version") == "wrf_461"
-        assert actual.pop("thompson_fork_snow_fall") == "blend"
-        assert actual.pop("bl_mynn_version") == "wrf_461"
-        assert actual.pop("bl_mynn_gsd41_unsquared_qtke") is False
-        assert actual.pop("bl_mynn_cloud_tendency_form") == "wrf_461"
-        # The MYNN surface-layer generation, at the form every build ran.
-        assert actual.pop("mynn_sfclay_variant") == "wrf_461"
-        assert actual.pop("fractional_seaice") == 0
-        # The WRF v4.6.1 filter form and no zero-out pass, as before.
-        from gpuwm.config import G3_RUN_DEFAULTS
-        assert {k: actual.pop(k) for k in G3_RUN_DEFAULTS} == G3_RUN_DEFAULTS
-        assert _pop_fork_dycore_defaults(actual)
-        # Generic RUC preserves irrigation and snow from WRF v4.6.1.
-        assert actual.pop("ruc_irrigation") == "wrf_461"
-        assert actual.pop("ruc_qvg_cold_start") == "wrf"
-        assert actual.pop("ruc_2m_diagnostic") == "flux"
-        assert actual.pop("ruc_snow") == "wrf_461"
-        assert actual.pop("v_sca_adv_order") == 3
-        assert actual.pop("v_mom_adv_order") == 3
-        assert actual.pop("h_mom_adv_order") == 5
-        assert _pop_topo_radiation_defaults(actual)
-        assert _pop_radiation_port_defaults(actual)
+        _check_frozen_defaults(actual)
         # These legacy files omit CQ. Its default-on defect fix is the
         # only approved change from the recorded field dictionary.
         assert actual == dict(GOLDEN[key], moist_cq=True), key
@@ -898,83 +600,7 @@ def test_frozen_case_constructed_configs_resolve_identically():
         cfg = ctor()
         assert key in GOLDEN, key
         actual = dataclasses.asdict(cfg)
-        for field,value in (("urban_ucm_generation","wrf_471"),("urban_treeoption",-1),
-                            ("urban_ttscheme",-1),("urban_fvg",-1.),("urban_table_dir","")):
-            assert actual.pop(field) == value
-        from gpuwm.config import CHEM_RUN_FIELDS, FIRE_RUN_FIELDS
-        for field in CHEM_RUN_FIELDS + FIRE_RUN_FIELDS:
-            assert actual.pop(field) == RunConfig.__dataclass_fields__[field].default
-        # WRF 4.7/4.8 upstream fixes, default-on (declared default changes).
-        assert actual.pop("solar_generation") == "wrf_480"
-        assert actual.pop("ysu_version") == "wrf_480"
-        assert actual.pop("noahmp_snow_age") == "wrf_470"
-        assert actual.pop("urban_water_balance") == "wrf_480"
-        assert actual.pop("nsas_dx_factor") == 0
-        assert actual.pop("sas_pgcon") == 0.55
-        assert actual.pop("surface_energy_diag") is False
-        # Declared default correction, 2.9.0: correct mode is the default.
-        from gpuwm.correct_mode import CORRECT_KEYS_DEFAULT
-        assert actual.pop("wsm6_conservative_surface") is CORRECT_KEYS_DEFAULT
-        assert actual.pop("ntiedtke_dry_mass_coupling") is CORRECT_KEYS_DEFAULT
-        assert actual.pop("wdm6_conservative_surface") is CORRECT_KEYS_DEFAULT
-        assert actual.pop("thompson_cloud_surface_booking") is CORRECT_KEYS_DEFAULT
-        # 2.9.1: WB5's keys for WSM3, WSM5 and WSM7, same default.
-        assert actual.pop("wsm3_conservative_surface") is CORRECT_KEYS_DEFAULT
-        assert actual.pop("wsm5_conservative_surface") is CORRECT_KEYS_DEFAULT
-        assert actual.pop("wsm7_conservative_surface") is CORRECT_KEYS_DEFAULT
-        # Declared default correction, 2.8.8 (test above).
-        assert actual.pop("terrain_clock") == "local_face"
-        assert actual.pop("use_rap_aero_icbc") is False
-        assert actual.pop("diff_opt") == 2
-        assert actual.pop("scalar_pblmix") == 0
-        assert actual.pop("mix_full_fields") is True
-        assert actual.pop("adaptive_nest_lattice") is False
-        assert actual.pop("zadvect_implicit") == 0
-        assert actual.pop("w_crit_cfl") == 1.0
-        assert actual.pop("topo_wind") == 0 and actual.pop("gwd_opt") == 0
-        assert actual.pop("zadvect_implicit_variant") == "wrf_471"
-        assert actual.pop("sf_lake_physics") == 0
-        assert actual.pop("use_lakedepth") == 1
-        assert actual.pop("lakedepth_default") == 50.0
-        assert actual.pop("lake_min_elev") == 5.0
-        assert actual.pop("spp_conv") == 0 and actual.pop("spp_pbl") == 0
-        assert actual.pop("swint_opt") == 0 and actual.pop("aer_opt") == 0
-        assert actual.pop("rrtmg_cloud_optics_form") == "wrf_461"
-        assert actual.pop("rrtmg_aer3_type_source") == "rural"
-        assert actual.pop("bl_mynn_mixaerosols") == 0
-        assert actual.pop("bl_mynn_mixnumcon") == 0
-        assert actual.pop("tempo_ml_for_bl_nc") is False
-        assert actual.pop("tempo_surface_emission_before") is False
-        assert actual.pop("thompson_table_dir") is None
-        assert actual.pop("rrtmg_smoke_manifest") == ""
-        assert actual.pop("cycling") is False
-        assert actual.pop("alb_sol") == 0
-        # The RUC SOILPROP lineage changed its default: a non-RUC case
-        # never reads it; a RUC case changes answers (CHANGELOG).
-        assert actual.pop("ruc_soilprop") == "wrf_45"
-        # The Thompson generation, appended at the v4.6.1 default.
-        assert actual.pop("thompson_version") == "wrf_461"
-        assert actual.pop("thompson_fork_snow_fall") == "blend"
-        assert actual.pop("bl_mynn_version") == "wrf_461"
-        assert actual.pop("bl_mynn_gsd41_unsquared_qtke") is False
-        assert actual.pop("bl_mynn_cloud_tendency_form") == "wrf_461"
-        # The MYNN surface-layer generation, at the form every build ran.
-        assert actual.pop("mynn_sfclay_variant") == "wrf_461"
-        assert actual.pop("fractional_seaice") == 0
-        # The WRF v4.6.1 filter form and no zero-out pass, as before.
-        from gpuwm.config import G3_RUN_DEFAULTS
-        assert {k: actual.pop(k) for k in G3_RUN_DEFAULTS} == G3_RUN_DEFAULTS
-        assert _pop_fork_dycore_defaults(actual)
-        # Generic RUC preserves irrigation and snow from WRF v4.6.1.
-        assert actual.pop("ruc_irrigation") == "wrf_461"
-        assert actual.pop("ruc_qvg_cold_start") == "wrf"
-        assert actual.pop("ruc_2m_diagnostic") == "flux"
-        assert actual.pop("ruc_snow") == "wrf_461"
-        assert actual.pop("v_sca_adv_order") == 3
-        assert actual.pop("v_mom_adv_order") == 3
-        assert actual.pop("h_mom_adv_order") == 5
-        assert _pop_topo_radiation_defaults(actual)
-        assert _pop_radiation_port_defaults(actual)
+        _check_frozen_defaults(actual)
         # The constructors omit CQ too. Dry cases remain numerically
         # unchanged because their qv=None bypass does no CQ work.
         assert actual == dict(GOLDEN[key], moist_cq=True), key

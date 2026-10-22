@@ -515,3 +515,8 @@ def test_shifted_record_evaluator_has_no_unverified_default_bypass(tmp_path):
         real74_n5b.evaluate_record_pair(
             tmp_path / "production.json", tmp_path / "shrink.json",
             evaluator_manifest_path=tmp_path / "evaluator.json")
+
+
+def test_default_plan_path_without_git_or_checkout(tmp_path, monkeypatch):
+    monkeypatch.setattr(real74_d02, 'REPOSITORY_ROOT', tmp_path)
+    assert real74_n5b.default_plan_path() == tmp_path / 'out' / 'rungs' / 'N5B-plan.json'

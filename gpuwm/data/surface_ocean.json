@@ -1,5 +1,12 @@
 {
   "schema": "gpuwm-surface-ocean-v1",
+  "multiday_default": {
+    "minimum_run_seconds": 172800,
+    "option": 2,
+    "requires_surface_fluxes": true,
+    "initialization_fallback": "woa18",
+    "qualification": "mixed_layer/QUALIFICATION.md"
+  },
   "options": {
     "1": {
       "name": "omlscheme",
@@ -37,6 +44,41 @@
         "cwater": "phys/module_sf_oml.F:72",
         "stbolt": "share/module_model_constants.F:84"
       }
+    },
+    "2": {
+      "name": "pwp3dscheme",
+      "module": "ocean.mixed_layer",
+      "state_fields": [
+        "om_tmp",
+        "om_s",
+        "om_u",
+        "om_v",
+        "om_depth",
+        "om_density",
+        "om_tini",
+        "om_sini",
+        "om_ml"
+      ],
+      "input_fields": [
+        "OM_TMP",
+        "OM_S",
+        "OM_U",
+        "OM_V",
+        "OM_DEPTH",
+        "OM_TINI",
+        "OM_SINI"
+      ],
+      "call_slot": "after_lsm_before_lake",
+      "cadence": "bldt",
+      "algorithm_identity": "pwp3d-wrf461-finite-radiation-real-stir-masked-coast-symmetric-corners-v1",
+      "constants": {
+        "rhowater": 1024.0,
+        "cwater": 4183.3,
+        "stbolt": 5.67051e-08
+      },
+      "namelist_defaults": {},
+      "source": "WRF v4.6.1 phys/module_sf_3dpwp.F",
+      "fallback": "NOAA WOA18 2005-2017 monthly potential-density MLD (0.125 kg m-3 from 10 m)"
     }
   }
 }

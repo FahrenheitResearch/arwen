@@ -404,25 +404,6 @@ fn json_escape(s: &str) -> String {
     out
 }
 
-/// The refined cells of every overlay, concatenated, for sizing a window
-/// that covers all of them.
-pub fn refined_footprint(overlays: &[&CompositeSource]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
-    let mut lat = Vec::new();
-    let mut lon = Vec::new();
-    let mut spacing = Vec::new();
-    for overlay in overlays {
-        for (cell, refined) in overlay.refined.iter().enumerate() {
-            if !refined {
-                continue;
-            }
-            lat.push(overlay.latitude_degrees[cell]);
-            lon.push(overlay.longitude_degrees[cell]);
-            spacing.push(overlay.spacing_metres[cell]);
-        }
-    }
-    (lat, lon, spacing)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

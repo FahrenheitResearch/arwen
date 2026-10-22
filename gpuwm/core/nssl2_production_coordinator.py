@@ -165,21 +165,25 @@ def _validated_hooks(hooks: NSSL2ProductionHooks):
     fused_gs = _require_callback("fused_gs", hooks.fused_gs)
     finish = _require_callback("moist_physics_finish", hooks.moist_physics_finish)
 
+    return fused_gs, _condensation_hooks(hooks, _require_callback), finish
+
+
+def _condensation_hooks(hooks, require_callback, *, hook_label="hooks"):
     if hooks.nucond_qvexcess is not None:
         if hooks.nucond is not None or hooks.qv_excess is not None:
             raise NSSL2ProductionConfigurationError(
                 "configure either nucond_qvexcess or separate nucond and "
-                "qv_excess hooks, not both"
+                f"qv_excess {hook_label}, not both"
             )
         condensation_hooks = (
-            _require_callback("nucond_qvexcess", hooks.nucond_qvexcess),
+            require_callback("nucond_qvexcess", hooks.nucond_qvexcess),
         )
     else:
         condensation_hooks = (
-            _require_callback("nucond", hooks.nucond),
-            _require_callback("qv_excess", hooks.qv_excess),
+            require_callback("nucond", hooks.nucond),
+            require_callback("qv_excess", hooks.qv_excess),
         )
-    return fused_gs, condensation_hooks, finish
+    return condensation_hooks
 
 
 def _validate_due_configuration(

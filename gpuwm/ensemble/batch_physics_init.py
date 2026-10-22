@@ -518,7 +518,7 @@ def initialize_wrfinput_member_physics(batch, restored, *, start_time, landuse=N
                                       available_bytes, column_chunk=None,
                                       constant_glw_wm2=None, fractional_seaice=False,
                                       cam_ozone=None, trace_gas_overrides=None,
-                                      array_module=None):
+                                      array_module=None, hydro_parent_geometry=None):
     """Use the ordinary WRF-input initializer once, then pack its bootstrap.
 
     This is for a common initial/surface source before member perturbations.
@@ -541,7 +541,8 @@ def initialize_wrfinput_member_physics(batch, restored, *, start_time, landuse=N
         radiation=radiation, radiation_start_time=start_time,
         radiation_latitude=restored.raw["XLAT"], radiation_longitude=restored.raw["XLONG"],
         landuse=landuse, constant_glw_wm2=constant_glw_wm2,
-        fractional_seaice=fractional_seaice, cam_ozone=cam_ozone)
+        fractional_seaice=fractional_seaice, cam_ozone=cam_ozone,
+        hydro_parent_geometry=hydro_parent_geometry)
     if bootstrap is None:
         # The single-run door now runs every-scheme-off; the member banks
         # are built from a driver, so the ensemble keeps the refusal

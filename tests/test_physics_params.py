@@ -185,7 +185,8 @@ def _load_ruc():
 
 
 def _cu(module: str) -> str:
-    return (kernel_loader._KDIR / f"{module}.cu").read_text(encoding="utf-8")
+    source = "mynn_pbl" if module == "mynn_dmp_sibling" else module
+    return (kernel_loader._KDIR / f"{source}.cu").read_text(encoding="utf-8")
 
 
 def _build(text: str):
@@ -323,7 +324,7 @@ def test_an_active_set_rewrites_exactly_its_literals():
     assert "SL_EXP(-0.4f * 0.1f * sqrtf(restar))" in surface
     # Everything else in the unit is byte-for-byte the file.
     assert len(surface) == len(_cu("mynn_surface")) - len("0.085f") + len("0.1f")
-    other = _cu("ysu")
+    other = _cu("ysu_default")
     assert pp.edit_kernel_source("ysu", other) is other
 
 

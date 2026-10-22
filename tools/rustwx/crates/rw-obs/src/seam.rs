@@ -46,10 +46,12 @@ pub const UNITS_MM: &str = "mm";
 pub fn seam_bounds(quantity: &str) -> Option<(f64, f64)> {
     match quantity {
         "temperature_2m" | "dewpoint_2m" => Some((150.0, 350.0)),
+        "visibility" => Some((0.0, 90000.0)),
         "wind_speed_10m" => Some((0.0, 150.0)),
         "mslp" => Some((80000.0, 115000.0)),
         QUANTITY_COMPOSITE_REFLECTIVITY => Some((-40.0, 100.0)),
         QUANTITY_PRECIPITATION_ACCUMULATION => Some((0.0, 2000.0)),
+        "maximum_estimated_hail_size" => Some((0.0, 1000.0)),
         _ => None,
     }
 }

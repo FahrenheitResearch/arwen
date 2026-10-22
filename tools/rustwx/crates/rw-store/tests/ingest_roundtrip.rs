@@ -127,6 +127,17 @@ fn volume_input<'a>(levels: &[u16], planes: &'a [Vec<f32>]) -> PressureVolumeInp
     }
 }
 
+// Shared identity and clock wiring for the synthetic ingest fixture.
+fn write_test_hour(
+    root: &Path,
+    hour: u16,
+    fields: &[(&str, &SelectedField2D)],
+    volumes: &[PressureVolumeInput<'_>],
+    written_unix: u64,
+) -> Result<rw_store::ingest::WrittenHour, RwStoreError> {
+    write_hour_from_fields(root, MODEL, RUN, hour, fields, volumes, BUILD, written_unix)
+}
+
 fn run_dir(store_root: &Path) -> PathBuf {
     store_root.join(MODEL).join(RUN)
 }
@@ -157,14 +168,11 @@ fn hour_write_and_read_back_round_trips() {
     let planes: Vec<Vec<f32>> = VLEVELS.iter().map(|&level| vol_plane(level)).collect();
     let volume = volume_input(&VLEVELS, &planes);
 
-    let written = write_hour_from_fields(
+    let written = write_test_hour(
         &store_root,
-        MODEL,
-        RUN,
         6,
         &[("temp_2m", &temp), ("dewpoint_2m", &dewpoint)],
         &[volume],
-        BUILD,
         WRITTEN_UNIX,
     )
     .unwrap();
@@ -283,31 +291,13 @@ fn second_hour_reuses_grid_file() {
     let store_root = dir.join("store");
     let temp = temp_field();
 
-    write_hour_from_fields(
-        &store_root,
-        MODEL,
-        RUN,
-        6,
-        &[("temp_2m", &temp)],
-        &[],
-        BUILD,
-        WRITTEN_UNIX,
-    )
-    .unwrap();
+    write_test_hour(&store_root, 6, &[("temp_2m", &temp)], &[], WRITTEN_UNIX)
+        .unwrap();
     let grid_path = run_dir(&store_root).join("grid.rwg");
     let grid_bytes_first = fs::read(&grid_path).unwrap();
 
-    write_hour_from_fields(
-        &store_root,
-        MODEL,
-        RUN,
-        12,
-        &[("temp_2m", &temp)],
-        &[],
-        BUILD,
-        WRITTEN_UNIX + 600,
-    )
-    .unwrap();
+    write_test_hour(&store_root, 12, &[("temp_2m", &temp)], &[], WRITTEN_UNIX + 600)
+        .unwrap();
     let grid_bytes_second = fs::read(&grid_path).unwrap();
     assert_eq!(
         grid_bytes_first, grid_bytes_second,
@@ -342,33 +332,15 @@ fn mismatched_grid_rejected() {
     let store_root = dir.join("store");
     let temp = temp_field();
 
-    write_hour_from_fields(
-        &store_root,
-        MODEL,
-        RUN,
-        6,
-        &[("temp_2m", &temp)],
-        &[],
-        BUILD,
-        WRITTEN_UNIX,
-    )
-    .unwrap();
+    write_test_hour(&store_root, 6, &[("temp_2m", &temp)], &[], WRITTEN_UNIX)
+        .unwrap();
 
     // Second hour arrives on a 70 x 60 grid -> rejected, naming both dims.
     let narrow_grid = grid_with_dims(70, 60);
     let narrow_values = vec![1.5f32; 70 * 60];
     let narrow = SelectedField2D::new(temp_selector(), "K", narrow_grid, narrow_values).unwrap();
-    let err = write_hour_from_fields(
-        &store_root,
-        MODEL,
-        RUN,
-        12,
-        &[("temp_2m", &narrow)],
-        &[],
-        BUILD,
-        WRITTEN_UNIX + 600,
-    )
-    .unwrap_err();
+    let err = write_test_hour(&store_root, 12, &[("temp_2m", &narrow)], &[], WRITTEN_UNIX + 600)
+        .unwrap_err();
     assert!(
         matches!(err, RwStoreError::Meta(_)),
         "expected Meta error for grid dims mismatch, got {err:?}"
@@ -384,17 +356,8 @@ fn mismatched_grid_rejected() {
     shifted_grid.lon_deg[123] += 0.25;
     let shifted_values = vec![2.5f32; NX * NY];
     let shifted = SelectedField2D::new(temp_selector(), "K", shifted_grid, shifted_values).unwrap();
-    let err = write_hour_from_fields(
-        &store_root,
-        MODEL,
-        RUN,
-        12,
-        &[("temp_2m", &shifted)],
-        &[],
-        BUILD,
-        WRITTEN_UNIX + 600,
-    )
-    .unwrap_err();
+    let err = write_test_hour(&store_root, 12, &[("temp_2m", &shifted)], &[], WRITTEN_UNIX + 600)
+        .unwrap_err();
     assert!(
         matches!(err, RwStoreError::Meta(_)),
         "expected Meta error for grid coordinate mismatch, got {err:?}"
@@ -437,14 +400,11 @@ fn second_field_on_different_coords_rejected() {
     )
     .unwrap();
 
-    let err = write_hour_from_fields(
+    let err = write_test_hour(
         &store_root,
-        MODEL,
-        RUN,
         6,
         &[("temp_2m", &temp), ("dewpoint_2m", &dewpoint)],
         &[],
-        BUILD,
         WRITTEN_UNIX,
     )
     .unwrap_err();
@@ -477,17 +437,8 @@ fn volume_levels_sorted_and_deduped() {
     let planes: Vec<Vec<f32>> = shuffled.iter().map(|&level| vol_plane(level)).collect();
     let volume = volume_input(&shuffled, &planes);
 
-    let written = write_hour_from_fields(
-        &store_root,
-        MODEL,
-        RUN,
-        6,
-        &[("temp_2m", &temp)],
-        &[volume],
-        BUILD,
-        WRITTEN_UNIX,
-    )
-    .unwrap();
+    let written = write_test_hour(&store_root, 6, &[("temp_2m", &temp)], &[volume], WRITTEN_UNIX)
+        .unwrap();
 
     let reader = HourReader::open(&written.path).unwrap();
     let var = reader
@@ -517,17 +468,8 @@ fn volume_levels_sorted_and_deduped() {
     let dup_levels: [u16; 5] = [1000, 850, 850, 500, 300];
     let dup_planes: Vec<Vec<f32>> = dup_levels.iter().map(|&level| vol_plane(level)).collect();
     let dup_volume = volume_input(&dup_levels, &dup_planes);
-    let err = write_hour_from_fields(
-        &store_root,
-        MODEL,
-        RUN,
-        9,
-        &[("temp_2m", &temp)],
-        &[dup_volume],
-        BUILD,
-        WRITTEN_UNIX,
-    )
-    .unwrap_err();
+    let err = write_test_hour(&store_root, 9, &[("temp_2m", &temp)], &[dup_volume], WRITTEN_UNIX)
+        .unwrap_err();
     assert!(
         matches!(err, RwStoreError::Format(_)),
         "expected Format error for duplicate level, got {err:?}"
@@ -552,17 +494,8 @@ fn no_2d_fields_errors() {
     let planes: Vec<Vec<f32>> = VLEVELS.iter().map(|&level| vol_plane(level)).collect();
     let volume = volume_input(&VLEVELS, &planes);
 
-    let err = write_hour_from_fields(
-        &store_root,
-        MODEL,
-        RUN,
-        6,
-        &[],
-        &[volume],
-        BUILD,
-        WRITTEN_UNIX,
-    )
-    .unwrap_err();
+    let err = write_test_hour(&store_root, 6, &[], &[volume], WRITTEN_UNIX)
+        .unwrap_err();
     assert!(
         matches!(err, RwStoreError::Format(_)),
         "expected Format error for volumes-only input, got {err:?}"
@@ -821,17 +754,8 @@ fn exact_time_hours_use_ordinal_slots_and_preserve_second_resolution() {
     assert!(error.to_string().contains("increase strictly"), "{error}");
     assert!(!run_dir(&store_root).join("f002.rws").exists());
 
-    let error = write_hour_from_fields(
-        &store_root,
-        MODEL,
-        RUN,
-        3,
-        &[("temp_2m", &temp)],
-        &[],
-        BUILD,
-        WRITTEN_UNIX,
-    )
-    .unwrap_err();
+    let error = write_test_hour(&store_root, 3, &[("temp_2m", &temp)], &[], WRITTEN_UNIX)
+        .unwrap_err();
     assert!(error.to_string().contains("cannot be opened"), "{error}");
     assert!(!run_dir(&store_root).join("f003.rws").exists());
 
@@ -921,17 +845,8 @@ fn read_field_2d_rejects_mismatched_grid_file() {
     let store_b = dir.join("store-b");
     let temp = temp_field();
 
-    write_hour_from_fields(
-        &store_a,
-        MODEL,
-        RUN,
-        6,
-        &[("temp_2m", &temp)],
-        &[],
-        BUILD,
-        WRITTEN_UNIX,
-    )
-    .unwrap();
+    write_test_hour(&store_a, 6, &[("temp_2m", &temp)], &[], WRITTEN_UNIX)
+        .unwrap();
 
     // A second store with shifted coordinates -> different grid hash.
     let mut shifted_grid = regular_grid();
@@ -940,17 +855,8 @@ fn read_field_2d_rejects_mismatched_grid_file() {
     }
     let shifted =
         SelectedField2D::new(temp_selector(), "K", shifted_grid, temp.values.clone()).unwrap();
-    write_hour_from_fields(
-        &store_b,
-        MODEL,
-        RUN,
-        6,
-        &[("temp_2m", &shifted)],
-        &[],
-        BUILD,
-        WRITTEN_UNIX,
-    )
-    .unwrap();
+    write_test_hour(&store_b, 6, &[("temp_2m", &shifted)], &[], WRITTEN_UNIX)
+        .unwrap();
 
     let reader = HourReader::open(&run_dir(&store_a).join("f006.rws")).unwrap();
     let wrong_grid = GridFile::open(&run_dir(&store_b).join("grid.rwg")).unwrap();

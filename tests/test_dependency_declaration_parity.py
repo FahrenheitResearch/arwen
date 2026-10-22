@@ -56,7 +56,7 @@ Two of the include entries are DATA anchors that carry no import surface --
 neither can grow Python without somebody deciding it should.
 
 ``tests/`` is scanned too, but only to justify the ``[dev]`` extra: the test
-suite is the only consumer ``pytest`` and ``psutil`` have.
+suite is the only consumer ``pytest`` has.
 """
 
 from __future__ import annotations
@@ -65,6 +65,7 @@ import ast
 import re
 import sys
 import tomllib
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
@@ -406,12 +407,6 @@ _EXTRA_GATED: dict[str, tuple[tuple[str, ...], str]] = {
         "but nothing outside those files imports them, and only `pytest` "
         "collects them. Shipping them at all is the tiles lane's call.",
     ),
-    "psutil": (
-        ("dev",),
-        "tests/test_prepare_hrrr_wrf.py's decoder fixture walks its own "
-        "process ancestry on Windows to find the cmd.exe shim Popen "
-        "returned. Test-only, Windows-only.",
-    ),
 }
 
 #: Extras that carry no requirements of their own and exist only so an
@@ -471,11 +466,6 @@ _SYS_PATH_SIBLING_SITES: dict[str, str] = {
         "so it is a checkout-only script by construction. Terrain lane's "
         "file; handed off rather than changed here."
     ),
-    "tilestream/render_case.py": (
-        "inserts <repo>/tools -- which in an install is "
-        "<site-packages>/tools -- and imports da_nowcast_render at module "
-        "level and again inside _draw_lines. Tiles lane's file."
-    ),
 }
 
 _REQUIREMENT_NAME = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
@@ -516,18 +506,18 @@ def _shipped_sources(config: dict) -> list[Path]:
     return files
 
 
+@lru_cache(maxsize=None)
 def _top_level_imports(path: Path):
-    """``(module, lineno)`` for every absolute import in one file."""
-
+    """Immutable import census, shared by the checks in each worker."""
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    imports = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            for alias in node.names:
-                yield alias.name.split(".")[0], node.lineno
-        elif isinstance(node, ast.ImportFrom):
-            if node.level or not node.module:   # relative: first-party
-                continue
-            yield node.module.split(".")[0], node.lineno
+            imports.extend((alias.name.split(".")[0], node.lineno)
+                           for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
+            imports.append((node.module.split(".")[0], node.lineno))
+    return tuple(imports)
 
 
 #: Shipped tools that reach a module of the TEST TREE by bare name after

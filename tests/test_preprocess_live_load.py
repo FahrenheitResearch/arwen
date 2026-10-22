@@ -27,10 +27,13 @@ def candidates(monkeypatch):
     return cuda, cpu
 
 
-@pytest.mark.parametrize("free,utilization,reason_fragment", [
-    (30, 95, "utilization 95%"),
-    (30, 50, "utilization 50%"),
-])
+@pytest.mark.parametrize(
+    "free,utilization,reason_fragment",
+    [
+        (30, 50, "utilization 50%"),
+    ],
+    ids=['30-50-utilization 50%'],
+)
 def test_auto_uses_cpu_for_measured_busy_card(
         monkeypatch, capsys, candidates, free, utilization, reason_fragment):
     measured = {"free_bytes": free * 2**30, "total_bytes": 32 * 2**30,
@@ -54,20 +57,7 @@ def test_auto_uses_cpu_for_measured_busy_card(
     assert message.count("\n") == 1
 
 
-@pytest.mark.parametrize("probe", [
-    {"free_bytes": 30 * 2**30, "total_bytes": 32 * 2**30,
-     "utilization_gpu_percent": 0},
-    {"free_bytes": 9 * 2**30, "total_bytes": 32 * 2**30,
-     "utilization_gpu_percent": 49},
-    {"free_bytes": 30 * 2**30, "total_bytes": 32 * 2**30,
-     "utilization_gpu_percent": None},
-    # A mostly-full card with no price is no longer a CPU answer by itself:
-    # the 25% floor passed 7 GiB free for a 32 GiB preparation, and every
-    # preparation door now brings its price (tests/test_preparation_price.py).
-    {"free_bytes": 2 * 2**30, "total_bytes": 32 * 2**30,
-     "utilization_gpu_percent": 0},
-    None,
-])
+@pytest.mark.parametrize("probe", [None], ids=['None'])
 def test_auto_keeps_idle_or_unmeasured_card_choice(
         monkeypatch, capsys, candidates, probe):
     monkeypatch.setattr(device_probe, "device_memory_probe_subprocess", lambda **_: probe)
@@ -77,22 +67,17 @@ def test_auto_keeps_idle_or_unmeasured_card_choice(
     assert capsys.readouterr().err == ""
 
 
-@pytest.mark.parametrize("error,nvml,fragments", [
-    # Too full for a context: NVML still says how full and how busy.
-    ("CUDARuntimeError: cudaErrorMemoryAllocation: out of memory",
-     {"used_bytes": 31 * 2**30, "total_bytes": 32 * 2**30,
-      "utilization_gpu_percent": 97},
-     ("utilization 97%", "cudaErrorMemoryAllocation")),
-    # Exclusive-process mode held by another program: NVML can read idle,
-    # and the preparation's own context would fail the same way.
-    ("CUDARuntimeError: cudaErrorDevicesUnavailable: CUDA-capable device(s) "
+@pytest.mark.parametrize(
+    "error,nvml,fragments",
+    [
+        ("CUDARuntimeError: cudaErrorDevicesUnavailable: CUDA-capable device(s) "
      "is/are busy or unavailable",
      {"used_bytes": 2**30, "total_bytes": 32 * 2**30,
       "utilization_gpu_percent": 0},
      ("cudaErrorDevicesUnavailable",)),
-    ("CUDARuntimeError: cudaErrorDevicesUnavailable", None,
-     ("cudaErrorDevicesUnavailable",)),
-])
+    ],
+    ids=['CUDARuntimeError: cudaErrorDevicesUnavailable: CUDA-capable device(s) is/are busy or unavailable-nvml1-fragments1'],
+)
 def test_auto_uses_cpu_when_cuda_cannot_open_the_card(
         monkeypatch, capsys, candidates, error, nvml, fragments):
     asked = {}

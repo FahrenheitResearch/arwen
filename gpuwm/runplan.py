@@ -235,6 +235,7 @@ def source_behind_fields(details: Mapping[str, Any]) -> dict[str, Any]:
 #: tags under this door's stream, so its codes are as open as
 #: :data:`EVENT_TAGS` itself.
 WARNING_CODES = {
+    "local_publish_failed": "rendered pictures could not be committed to the local static web root",
     "chain_stage_failed":
         "one stage of a chained run failed; the chain's own reader is "
         "told which stage before the run's terminal event",
@@ -535,12 +536,6 @@ def intent_drivability() -> dict[str, dict[str, Any]]:
     from gpuwm.source_drivability import intent_drivability as shared_drivability
     return shared_drivability()
 
-
-def _intent_sources_for(route: str) -> frozenset[str]:
-    """The source ids whose intent the named route drives, derived live."""
-
-    return frozenset(source for source, verdict in intent_drivability()
-                     .items() if route in verdict["routes"])
 
 #: ``gpuwm run``'s own documented default output directory.  A plan that
 #: omits ``output_root`` lands where the command it wraps would have.
@@ -1007,7 +1002,6 @@ def _build_intent(intent: object, *, route: str,
 
     source = intent.get("source", "era5")
     _refuse_undrivable_intent_source(str(source), route=route)
-    from gpuwm import fetch_routes
     from gpuwm.fetch import validate_fetch_hints
     intent = _keyless_era5_default(intent, str(source))
     selection = {key: intent[key] for key in
@@ -1211,6 +1205,7 @@ _RUN_OPTION_DEFAULTS: dict[str, Any] = {
     "verify_visuals": True,
     "grib2": False,
     "data_dir": None,
+    "initial_inputs": None,
     "geog_root": None,
     "physics_profile": None,
     "supplement": [],
@@ -1221,6 +1216,8 @@ _RUN_OPTION_DEFAULTS: dict[str, Any] = {
     # writes configs rather than pictures -- there is no --render-products
     # flag for it to mirror.
     "render_products": None,
+    "publish_root": None,
+    "publish_cmd": None,
     # `gpuwm render --section`'s own value: the line every `xsec:` term
     # of `render_products` is cut along, carried to every render the run
     # draws.  A file is made absolute against the plan's directory.
@@ -1310,6 +1307,10 @@ def _run_option(key: str, value: object, base: Path) -> Any:
             raise PlanError(f"{label} must be a whole number of checkpoint "
                             "sets, 0 to keep every one")
         return value
+    if key == "publish_root":
+        return None if value is None else str(_absolute(_nonempty_string(value, label), base, label))
+    if key == "publish_cmd":
+        return None if value is None else _nonempty_string(value, label)
     if key == "render_products":
         return None if value is None else _nonempty_string(value, label)
     if key == "render_section":
@@ -1365,7 +1366,7 @@ def _run_option(key: str, value: object, base: Path) -> Any:
             raise PlanError(f"{label} = {value!r} is not a host `gpuwm fetch "
                             f"--transport` takes; it takes one of {list(FETCH_TRANSPORTS)}")
         return value
-    if key in ("restart", "data_dir", "geog_root", "prepared_root", "wps_namelist"):
+    if key in ("restart", "data_dir", "geog_root", "prepared_root", "wps_namelist", "initial_inputs"):
         return None if value is None else str(_absolute(value, base, label))
     raise PlanError(f"{label} is not a run option this build understands")
 
@@ -1575,18 +1576,32 @@ def follow_statics_decision(exp, *, chain: str, source: str | None = None) -> di
         delivery = preparation_statics(chain, source=source)["delivery"]
     except ValueError as error:
         raise PlanError(str(error)) from None
-    from gpuwm.static.corridor import moving_grid_ids
-    cohort = any(getattr(dc, "follow", None) is not None for dc in exp.domains)
+    from gpuwm.static.corridor import declared_follow_subjects, moving_grid_ids
+
+    # THE DECLARATIONS, not the movers.  `moving_grid_ids` answers which
+    # grids move -- per-domain followers, the [relocation] mover AND its
+    # containment ancestor -- and a refusal built from it told the reader
+    # to delete a follow table from a domain that carries none.
+    subjects = declared_follow_subjects(exp)
+    followers = list(subjects["follower_grid_ids"])
+    cohort = bool(followers)
     grid_ids = sorted(moving_grid_ids(exp))
     grid_id = grid_ids[0] if cohort else int(exp.relocation.grid_id)
     return {
-        **({"follower_grid_ids": grid_ids} if cohort else {}),
+        **({"follower_grid_ids": followers} if cohort else {}),
         "chain": chain,
         "delivery": delivery,
         "relocation_grid_id": grid_id,
         "statics_corridor": delivery in {"statics_corridor", "retained_corridor"},
+        # The subject of the refusal is every table the CONFIG declares a
+        # follow source in, so the withdrawal it names withdraws all of
+        # them: either one left standing keeps the predicate True and
+        # brings the same refusal back word for word.
         "refusal": (None if delivery is not None
-                    else _follow_unsupported_refusal(chain, grid_id, source=source)),
+                    else _follow_unsupported_refusal(
+                        chain, follower_grid_ids=followers,
+                        relocation_grid_id=subjects["relocation_grid_id"],
+                        source=source)),
     }
 
 
@@ -1611,28 +1626,113 @@ _CORRIDOR_RESOLUTION_NOTE = {
 }
 
 
-def _follow_unsupported_refusal(chain: str, grid_id: int, *, source: str | None = None) -> str:
-    """Why this chain cannot run a moving nest, and what will."""
+def _follow_unsupported_refusal(chain: str, *, follower_grid_ids=(),
+                                relocation_grid_id: int | None = None,
+                                source: str | None = None) -> str:
+    """Why this chain cannot run a moving nest, and what will.
 
+    THE SUBJECT IS READ FROM THE DECLARATIONS, through
+    :func:`~gpuwm.static.corridor.declared_follow_subjects`, and never
+    from the mover set.  A per-domain follower lives in
+    ``[[domain]].follow``, and the configuration that declares one may
+    carry no ``[relocation]`` table at all; naming that table sent the
+    reader to edit something their file has not got, and a sentence
+    built from the movers additionally named a follow table on the
+    containment ancestor, which declares nothing.
+
+    THE WAY OUT WITHDRAWS EVERY DECLARATION IT NAMES.  Both tables can
+    be live at once, and
+    :func:`~gpuwm.static.corridor.config_declares_follow_source` stays
+    True while either remains, so a way out that retired one of two
+    cleared nothing and the refusal came back word for word.
+
+    ``follower_grid_ids`` are the grids whose ``[[domain]].follow`` the
+    config declares; ``relocation_grid_id`` is the grid a declared
+    ``[relocation]`` follow source moves, ``None`` when the config
+    declares none.
+    """
+    from gpuwm.core.nest_lifecycle import FOLLOWER_TABLE
     from gpuwm.source_cli import preparation_statics
 
     try:
         detail = preparation_statics(chain, source=source)["reason"]
     except ValueError:
         detail = "its preparation seals no child-resolution statics corridor and it holds no geography source at run time"
+    ids = tuple(int(gid) for gid in follower_grid_ids)
+    if not ids and relocation_grid_id is None:
+        raise ValueError(
+            "name the table this config declares its follow source in: "
+            "with neither a [[domain]].follow grid nor a [relocation] "
+            "grid there is no subject, and the sentence would describe a "
+            "table the reader cannot be told to edit")
+    where = " and ".join(f"d{gid:02d}" for gid in ids)
+    one = len(ids) == 1
+    delete_follow = (
+        f"delete the follow table from {where}, which leaves "
+        f"{'that nest' if one else 'those nests'} where this config places "
+        f"{'it' if one else 'them'} and needs no corridor")
+    drop_relocation = (
+        "drop the follow source for a bounds-only [relocation], which "
+        "does not move the nest and needs neither")
+    if ids and relocation_grid_id is not None:
+        # BOTH tables live.  Naming one of them would state as fact that
+        # the other is not there, and withdrawing one would clear
+        # nothing.
+        declares = (f"a {FOLLOWER_TABLE} on {where} AND a [relocation] "
+                    f"follow source on d{relocation_grid_id:02d}")
+        predicate = "same pair of follow declarations"
+        withdraw = (f"or withdraw BOTH declarations -- {delete_follow}, and "
+                    f"{drop_relocation} -- because either one left standing "
+                    "keeps this config a moving nest and brings this refusal "
+                    "back word for word")
+    elif ids:
+        declares = f"a {FOLLOWER_TABLE} on {where}"
+        predicate = "same follow declaration"
+        withdraw = (f"or {delete_follow} (a bounds-only [relocation] may "
+                    "stand in its place, but on its own it clears nothing "
+                    f"while any {FOLLOWER_TABLE} remains)")
+    else:
+        declares = f"a [relocation] follow source on d{relocation_grid_id:02d}"
+        predicate = "same [relocation] predicate"
+        withdraw = f"or {drop_relocation}"
     return (
-        f"this plan's config declares a [relocation] follow source on "
-        f"d{grid_id:02d}, and the {chain!r} chain cannot supply the "
-        f"statics a moving nest needs: {detail} -- so it is refused "
-        "here instead, before the fetch.\n"
+        f"this plan's config declares {declares}, and the {chain!r} chain "
+        f"cannot supply the statics a moving nest needs: {detail} -- so it "
+        "is refused here instead, before the fetch.\n"
         "  remedy: run this config on a prepared chain that seals a "
         "corridor; run-plan composes --statics-corridor for "
-        "itself, from this same [relocation] predicate; or run it on "
+        f"itself, from this {predicate}; or run it on "
         "the `experiment` route with a "
         "[case_data] block, which holds the geography source and "
-        "rebuilds each footprint's statics at move time; or drop the "
-        "follow source for a bounds-only [relocation], which does not "
-        "move the nest and needs neither.")
+        f"rebuilds each footprint's statics at move time; {withdraw}.")
+
+
+def follow_unsupported_refusal(chain: str, follower_grid_ids, *,
+                               source: str | None = None) -> str:
+    """The sentence the run door WILL raise, for an authoring door to quote.
+
+    An authoring door that emits a following nest on a chain sealing no
+    corridor has to say what the launch will say.  It asks for the
+    sentence here rather than writing a second one: the paraphrase that
+    used to stand in its place drifted from the refusal it paraphrased,
+    and offered a way out that this door's own configuration shape
+    cannot take.  ``follower_grid_ids`` are the grids whose
+    ``[[domain]].follow`` the authored configuration declares.
+
+    PER-DOMAIN FOLLOWERS ONLY, which is the shape every authoring door
+    in this package emits: a configuration that also carries a live
+    ``[relocation]`` follow source is a file someone has since edited,
+    and the run door reads its subjects off that file through
+    :func:`follow_statics_decision` rather than off this quote.
+    """
+    ids = tuple(int(gid) for gid in follower_grid_ids)
+    if not ids:
+        raise ValueError(
+            "name the grid ids whose [[domain]].follow the configuration "
+            "declares: an empty list would describe a [relocation] table "
+            "that configuration does not carry")
+    return _follow_unsupported_refusal(chain, follower_grid_ids=ids,
+                                       source=source)
 
 
 # ---------------------------------------------------------------------------
@@ -2403,6 +2503,13 @@ class RunObserver:
         if stage == self._stage:
             return
         self.finish_stage()
+        if stage == "forecast":
+            # A hydro fabric preparing beside this launch's fetch and
+            # preparation (gpuwm.hydro.runtime._Beside) is bound before any
+            # forecast runner starts; nothing pending, nothing waits.
+            hydro = sys.modules.get("gpuwm.hydro.runtime")
+            if hydro is not None:
+                hydro.join_beside()
         end_admission(self._timeline)
         if self._timeline_idle:
             self._timeline.emit("post.orchestration", "end")
@@ -2806,6 +2913,8 @@ class RunObserver:
 
         elapsed = round(time.perf_counter() - self._accepted_wall, 6)
         self._first_products_seconds = elapsed
+        if self._live_products is not None:
+            self._live_products.publish_first(receipt)
         self._events.emit(
             "first_products_ready",
             domain=receipt["domain"], valid_time=receipt["valid_time"],
@@ -2814,6 +2923,10 @@ class RunObserver:
             render_seconds=receipt["render_seconds"],
             seconds_from_plan_accepted=elapsed,
             complete=receipt.get("complete", True))
+
+    def frame_submitted(self, *, domain: int, valid_time) -> None:
+        if self._live_products is not None:
+            self._live_products.frame_submitted(domain=domain, valid_time=valid_time)
 
     def output_committed(self, *, domain: int, valid_time, path) -> None:
         """One wrfout is durable on disk.  Raised from the writer.
@@ -3280,6 +3393,15 @@ def resolve_plan(plan: RunPlan, *, generate_into: Path | None = None,
         from dataclasses import replace
         from gpuwm.core.devices import override_device_count
         exp = replace(exp, devices=override_device_count(exp.devices, plan.run_options["devices"]))
+    # Before any stage runs: a multi-card split on an interpreter whose lock
+    # is on steps its ranks one at a time (gpuwm.free_threading).
+    from gpuwm.free_threading import refuse_multi_card_under_gil
+    try:
+        door = " ".join(str(plan.source).split()[:2])
+        refuse_multi_card_under_gil(
+            exp.devices.count, door if door.startswith("gpuwm ") else "gpuwm run-plan")
+    except ValueError as error:
+        raise PlanError(str(error)) from error
     source = config_source
     inputs = [] if data is None else declared_inputs(data)
     resolutions.extend(_schema_default_resolutions(raw))
@@ -3355,7 +3477,6 @@ def resolve_plan(plan: RunPlan, *, generate_into: Path | None = None,
                     "scope": "fetch", "key": "member",
                     "value": {"id": member, "token": token},
                     "basis": "route_default" if requested is None else "declared"})
-    local_verdict = drivability_for((raw.get("fetch") or {}).get("source"))
     from gpuwm.source_drivability import local_input_requested
     if chain == "prepared:staged" and local_input_requested(raw.get("fetch") or {}):
         from gpuwm.local_preparation import review_local_inputs
@@ -3727,7 +3848,9 @@ def _planned_download(plan: RunPlan, raw: Mapping[str, Any], data, *,
         except (OSError, ValueError):
             return request, root / "downloads", False
     try:
-        arguments = declared_forcing_fetch(raw, data, base_dir=base_dir)
+        arguments = declared_forcing_fetch(
+            raw, data, base_dir=base_dir,
+            cache_root=run_dir if run_dir is not None else plan.run_dir)
     except PlanError:
         # The run refuses these inputs itself, before its fetch; the table
         # still says what would be downloaded.
@@ -4087,6 +4210,9 @@ def _execute_experiment_route(plan: RunPlan, *, exp, data, config_path,
     if products is not None and str(products).strip().lower() != "none":
         render_plan = {"run": plan.run_dir, "wrfout_dir": plan.run_dir,
                        "render": plan.run_dir / "png", "render_products": products,
+                       "publish_root": plan.run_options.get("publish_root") or plan.run_dir / "www",
+                       "publish_cmd": plan.run_options.get("publish_cmd"),
+                       "hydro": plan.run_options.get("hydro") or "auto",
                        "render_section": plan.run_options.get("render_section"),
                        **({"restart": plan.run_options["restart"]}
                           if plan.run_options.get("restart") is not None else {})}
@@ -4376,6 +4502,9 @@ class _GoObserver:
         if hook is not None:
             hook(phase, work_bytes=work_bytes)
 
+    def frame_submitted(self, **fields) -> None:
+        self._observer.frame_submitted(**fields)
+
     def output_committed(self, **fields) -> None:
         self._observer.output_committed(**fields)
 
@@ -4402,7 +4531,8 @@ class _GoObserver:
         self._observer.failed()
 
 
-def _pinned_fetch_hints(plan: RunPlan, hints: Mapping[str, Any]) -> dict[str, Any]:
+def _pinned_fetch_hints(plan: RunPlan, hints: Mapping[str, Any], *,
+                        pin_cycle: bool = True) -> dict[str, Any]:
     """The config's ``[fetch]`` hints with ``run_options.transport`` over them.
 
     The run option is ``gpuwm go --transport`` and wins over the table the
@@ -4426,6 +4556,8 @@ def _pinned_fetch_hints(plan: RunPlan, hints: Mapping[str, Any]) -> dict[str, An
     # executed with one runs a config re-timed to it (:func:`plan_at_cycle`),
     # and a query mode asks about the same window without writing one.
     for key in ("as_posted", "late_after_minutes", "cycle"):
+        if key == "cycle" and not pin_cycle:
+            continue
         value = plan.run_options.get(key)
         if value is not None:
             merged[key] = value
@@ -4445,6 +4577,8 @@ def _fetch_arguments_from_hints(hints: Mapping[str, Any],
     accepts exactly what `gpuwm fetch` accepts and refuses the rest.
     """
 
+    from gpuwm.initial_source import boundary_fetch_request
+    hints = boundary_fetch_request(hints)
     arguments: list[str] = []
     for key in sorted(hints):
         if key == "out":
@@ -4500,7 +4634,8 @@ def _config_for_declared_fetch(plan: RunPlan, resolution: Mapping[str, Any],
 
 
 def declared_forcing_fetch(payload: Mapping[str, Any], data, *,
-                           base_dir: Path | None) -> list[str] | None:
+                           base_dir: Path | None,
+                           cache_root: Path | None = None) -> list[str] | None:
     """Acquire missing declared forcing through the config's own fetch recipe.
 
     ``base_dir`` is the configuration's folder, which a relative
@@ -4508,6 +4643,17 @@ def declared_forcing_fetch(payload: Mapping[str, Any], data, *,
     caller can fall back to the working directory by omission; ``None``
     is for a payload whose out the caller has already made absolute, and
     a relative out with ``None`` is refused rather than guessed.
+
+    ``cache_root`` is the run's output root.  When the declared forcing
+    is not on disk, a run that has one downloads it into that root's
+    managed cache (``<root>/downloads/<request key>``, the folder the GFS
+    and HRRR routes use) rather than into ``[fetch].out`` beside the
+    configuration, and the run binds its forcing there
+    (:func:`rebind_fetched_forcing`).  The breakage it prevents: an ERA5
+    ``gpuwm go CONFIG --outdir DIR`` wrote its 34 MB download into the
+    configuration's folder and nothing under DIR, so a read-only or shared
+    configuration folder failed or was written into.  Forcing already on
+    disk at the declared path is used where it is.
     """
     if data is None:
         return None
@@ -4555,6 +4701,12 @@ def declared_forcing_fetch(payload: Mapping[str, Any], data, *,
                f"names {[str(path) for path in data.forcing]}.")
             + " Re-author the configuration with `gpuwm domain` to bind both "
               "to the same file.")
+    if cache_root is not None and not all(path.is_file() for path in data.forcing):
+        from gpuwm.go_cli import GoRefusal, managed_download_dir
+        try:
+            out = managed_download_dir(Path(cache_root), dict(hints)).resolve()
+        except GoRefusal as error:
+            raise PlanError(str(error)) from None
     arguments = _fetch_arguments_from_hints(hints, out=out)
     from gpuwm.cli import _join_negative_coordinates
     arguments = _join_negative_coordinates(arguments)
@@ -4562,6 +4714,37 @@ def declared_forcing_fetch(payload: Mapping[str, Any], data, *,
         arguments.append("--retrieve")
     _validate_fetch_arguments(arguments)
     return arguments
+
+
+def rebind_fetched_forcing(data, fetch_arguments: Sequence[str] | None):
+    """``data`` with missing declared forcing bound to where this run's fetch puts it.
+
+    :func:`declared_forcing_fetch` downloads missing forcing into the run's
+    own cache (``--out`` of ``fetch_arguments``), under the same file name
+    the configuration declares.  Returns ``(data, resolution)``; the
+    resolution is ``None`` when nothing was rebound (forcing on disk where
+    declared, several forcing files, or a fetch publishing to the declared
+    folder itself).
+    """
+
+    if data is None or not fetch_arguments or len(data.forcing) != 1:
+        return data, None
+    declared = Path(data.forcing[0])
+    arguments = [str(value) for value in fetch_arguments]
+    if declared.is_file() or "--out" not in arguments:
+        return data, None
+    index = arguments.index("--out")
+    if index + 1 >= len(arguments):
+        return data, None
+    target = (Path(arguments[index + 1]) / declared.name).resolve()
+    from gpuwm.case_data import same_case_data_path
+    if same_case_data_path(declared, target):
+        return data, None
+    return dataclasses.replace(data, forcing=(target,)), {
+        "scope": "case_data", "key": "forcing", "value": [str(target)],
+        "basis": "run output root download cache",
+        "note": f"the declared forcing {str(declared)!r} is not on disk, so this "
+                "run downloads it under its own output root and reads it there"}
 
 
 def _prepare_stage(root: Path, *, arguments: Sequence[Any],
@@ -4981,6 +5164,12 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
         observer.finish_stage(fetch={"arguments": beside.arguments,
                                      "as_posted": True,
                                      "posting": str(posting)})
+    # The chem sources (HRRR-Smoke's analysed and boundary smoke, the fire
+    # emissions) before preparation, as the staged chain does: preparation
+    # never downloads, so the packaged HRRR recipe on this chain stopped at
+    # its chem initial state with ChemSourceUnavailable 'hrrr-native-smoke'
+    # (a rented box, 2026-10-21 06Z).
+    _staged_chem_fetch(exp, observer)
 
     # -- prepare -------------------------------------------------------
     observer.enter_stage("prepare", phase="prepare")
@@ -5068,6 +5257,9 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
             # reported as still does not.
             statics_corridor=config_declares_follow_source(exp),
             acknowledgements=tuple(exp.acknowledgements),
+            lifecycle_config=(config_path if any(
+                getattr(dc, name, None) is not None for dc in exp.domains
+                for name in ("spawn", "follow", "retire", "rearm")) else None),
             observe_stage=observe_stage)
 
     if len(exp.domains) == 1 and not prepare_only:
@@ -5639,6 +5831,7 @@ def _hrrr_hierarchy_stage(*, prep_root: Path, inputs: Mapping[str, Path],
                           observer: RunObserver,
                           statics_corridor: bool = False,
                           acknowledgements: Sequence[str] = (),
+                          lifecycle_config: Path | None = None,
                           observe_stage: bool = True) -> Path:
     """Build d02..dNN from the sealed root preparation.
 
@@ -5717,6 +5910,11 @@ def _hrrr_hierarchy_stage(*, prep_root: Path, inputs: Mapping[str, Path],
     # the fetch and the root preparation.
     for acknowledgement in acknowledgements:
         command += ["--ack", str(acknowledgement)]
+    if lifecycle_config is not None:
+        # The namelists cannot spell spawn/follow/retire/rearm, so the
+        # stage takes them from the config: a dormant storm slot's
+        # corridor must reach the whole parent, and a follower's its reach.
+        command += ["--lifecycle-config", str(lifecycle_config)]
     # Only when nonzero.  This stage raises on a negative lead, and
     # raises again if a lead is passed beside the deprecated
     # --valid-time; passing a bare 0 is legal but says nothing, and the
@@ -5833,10 +6031,42 @@ def _chain_render_plan(plan: RunPlan, *, forecast_dir: Path,
     """
 
     return {"run": forecast_dir, "render": forecast_dir.parent / "png",
+            "publish_root": plan.run_options.get("publish_root") or forecast_dir.parent / "www",
+            "publish_cmd": plan.run_options.get("publish_cmd"),
+            "hydro": plan.run_options.get("hydro") or "auto",
             "render_products": plan.run_options.get("render_products"),
             "render_section": plan.run_options.get("render_section"),
+            # The data source the run started from, as go's own plan
+            # carries it: the finalize render draws the run beside that
+            # source's model when the comparison engine knows it
+            # (go_cli._reference_compare_stage).  Without it a staged
+            # chain -- the route `gpuwm go` takes for HRRR -- drew no
+            # comparison sheets at all.
+            **({"source": source}
+               if (source := _plan_fetch_source(plan)) is not None else {}),
             **({"restart": plan.run_options["restart"]}
                if plan.run_options.get("restart") is not None else {})}
+
+
+def _plan_fetch_source(plan: RunPlan) -> str | None:
+    """The config's ``[fetch] source``, or None when the plan names none.
+
+    An intent plan has no config bytes until the wizard has generated
+    them, and an unreadable config has already been refused by the
+    road that ran it; neither has a source to give here.
+    """
+
+    # A plan stand-in that carries only run options (the early render's
+    # callers and their fixtures) has no config to read a source from.
+    config_bytes = getattr(plan, "config_bytes", None)
+    if config_bytes is None:
+        return None
+    try:
+        raw = tomllib.load(io.BytesIO(config_bytes()))
+    except (PlanError, OSError, tomllib.TOMLDecodeError):
+        return None
+    source = (raw.get("fetch") or {}).get("source")
+    return str(source) if source else None
 
 
 def _chain_render(plan: RunPlan, *, forecast_dir: Path, run_dir: Path,
@@ -5958,7 +6188,8 @@ _POSTED_POLL_SECONDS = 0.2
 _POSTED_WAIT_SAY_SECONDS = 5.0
 
 
-def _staged_beside_refusal(hints: Mapping[str, Any], exp) -> str | None:
+def _staged_beside_refusal(hints: Mapping[str, Any], exp, *,
+                           separate_initial: bool = False) -> str | None:
     """Why the staged chain fetches this window whole before preparing, or ``None``.
 
     ``None``: the fetch runs beside the preparation, which starts on the
@@ -5973,11 +6204,22 @@ def _staged_beside_refusal(hints: Mapping[str, Any], exp) -> str | None:
     * a domain tree: the as-posted mapped preparation prepares one domain,
       because every child binds the input manifest at the tree's head;
     * an ensemble member: its member is verified over every input file
-      before the preparation (:func:`gpuwm.forcing_member.verify_handoff`).
+      before the preparation (:func:`gpuwm.forcing_member.verify_handoff`);
+    * a separate initial analysis (``--initial-inputs`` or the recipe's
+      ``[fetch] initial_source``): the mapped preparation checks it against
+      the complete forcing window before the start (``mapped_direct``).
     """
 
     if hints.get("as_posted") is False:
         return "the run asked for the whole cycle"
+    if separate_initial:
+        # Named breakage (2.9.4, HRRR recipe from NOAA's HRRR f00 + RAP
+        # boundaries): the default as-posted fetch either dropped the
+        # separate analysis (the run started from RAP's 13 km state: 2.4x
+        # the cloud water, f01 surface shortwave -23 W/m2 against NOAA) or,
+        # once the analysis reached the preparation, was refused there.
+        return ("its separate initial analysis is checked against the "
+                "complete forcing window before the start")
     from gpuwm.source_cli import as_posted_refusal
 
     refusal = as_posted_refusal(str(hints.get("source")))
@@ -6285,9 +6527,60 @@ def _settle_posted_fetch(fetch: _PostedFetch, stopped: BaseException, *,
         raise failed from None
 
 
+def _staged_chem_fetch(exp, observer) -> None:
+    """Fetch the experiment's data-store chem sources over its own box and window."""
+    import subprocess
+    import sys
+
+    # The chem table read directly (go_cli is the GPU front door, which the
+    # standalone preparation package does not stage): the enabled sources a
+    # data store serves, as go_cli.chem_data_store_sources selects them.
+    from datetime import timedelta
+
+    from gpuwm.chem_table import chem_names, load_sets
+    run = exp.domains[0].run
+    sets = chem_names(getattr(run, "chem_sets", None))
+    if not sets:
+        return
+    names = chem_names(getattr(run, "chem_sources", None), "chem_sources")
+    table = load_sets(sets, names)
+    from gpuwm.data_store_fetch import is_listed_emission
+    # RAVE (a published-listing emission source) rides the same fetch, as
+    # go_cli.chem_data_store_sources selects it: the staged chain dropped it,
+    # so the HRRR recipe's fire hours were first fetched at the forecast's
+    # first fire step (a rented box, 2026-10-21 18:47Z, "chem fetch: rap-native-
+    # smoke, hrrr-native-smoke").
+    sources = tuple(name for name in names
+                    if name in table.sources
+                    and ((table.sources[name].acquisition is not None
+                          and table.sources[name].acquisition.get("kind") != "published_files")
+                         or is_listed_emission(table.sources[name])))
+    if not sources:
+        return
+    from gpuwm.static.projection import grids_from_projection_config
+    lat, lon = grids_from_projection_config(exp)[0].latlon_mass()
+    margin = 0.5
+    area = ",".join(f"{value:.3f}" for value in (
+        float(lat.min()) - margin, float(lon.min()) - margin,
+        float(lat.max()) + margin, float(lon.max()) + margin))
+    start = exp.start_time.isoformat()
+    end = (exp.start_time + timedelta(seconds=float(exp.run_seconds))).isoformat()
+    command = [sys.executable, "-m", "gpuwm.data_store_fetch", "fetch"]
+    for name in sources:
+        command.extend(("--source", name))
+    command.extend(("--area", area, "--start", start, "--end", end))
+    print(f"chem fetch: {', '.join(sources)} over {area}", flush=True)
+    completed = subprocess.run(command, capture_output=True, text=True)
+    if completed.returncode != 0:
+        raise PlanError(
+            f"the chem fetch for {', '.join(sources)} failed (exit "
+            f"{completed.returncode}): {completed.stderr.strip()[-2000:]}")
+
+
 def _staged_chain(plan: RunPlan, *, config_path: Path, exp,
                   observer: RunObserver, run_dir: Path,
-                  prepare_only: bool = False, reviewed_inputs=None) -> Mapping[str, Any]:
+                  prepare_only: bool = False, reviewed_inputs=None,
+                  defer_initial: bool = False) -> Mapping[str, Any]:
     """The staged route for a packaged mapped source: fetch, prep, sim.
 
     The documented per-stage chain for every packaged
@@ -6319,7 +6612,9 @@ def _staged_chain(plan: RunPlan, *, config_path: Path, exp,
     # The [fetch] table plus the model top the config's ladder needs, when
     # the source's registry row says its fetch has to be asked for it, and
     # the host run_options.transport pins over the table's.
-    hints = _pinned_fetch_hints(plan, config_fetch_request(raw))
+    # Execution already retimed the config. Reapplying its nominal cycle
+    # here would erase the boundary source's resolved cycle offset.
+    hints = _pinned_fetch_hints(plan, config_fetch_request(raw), pin_cycle=False)
     intent = plan.config_intent or {}
     data_dir = Path(plan.run_options.get("data_dir")
                     or intent.get("data_dir") or managed_download_dir(run_dir, hints))
@@ -6350,9 +6645,28 @@ def _staged_chain(plan: RunPlan, *, config_path: Path, exp,
     #: found) whole first.
     beside = posting = posted_handoff = posting_relay = None
 
+    # The analysis uses the same acquisition and handoff as every mapped
+    # source. An explicit inventory wins over the recipe's automatic fetch.
+    from gpuwm.initial_source import initial_fetch_request, initial_inputs_from_fetch
+    initial_inputs = plan.run_options.get("initial_inputs")
+    initial_hints = initial_fetch_request(raw.get("fetch", {}))
+    if initial_inputs is None and initial_hints is not None and not defer_initial:
+        initial_hints = _pinned_fetch_hints(plan, initial_hints, pin_cycle=False)
+        # An analysis is one complete object set, never a streaming window.
+        initial_hints["as_posted"] = False
+        initial_hints.pop("late_after_minutes", None)
+        initial_dir = managed_download_dir(run_dir, initial_hints)
+        observer.enter_stage("fetch", phase="initial-fetch")
+        initial_report = _run_fetch(
+            _fetch_arguments_from_hints(initial_hints, out=initial_dir), run_dir,
+            events=getattr(observer, "events", None))
+        initial_inputs = initial_inputs_from_fetch(
+            initial_hints["source"], initial_dir,
+            run_dir / "chain" / "initial-inputs.json")
+        observer.finish_stage(fetch=initial_report, initial_inputs=str(initial_inputs))
+
     # -- fetch ---------------------------------------------------------
     observer.enter_stage("fetch", phase="fetch")
-    verdict = drivability_for(hints.get("source"))
     local_snapshot = None
     from gpuwm.source_drivability import local_input_requested
     if local_input_requested(hints):
@@ -6406,7 +6720,8 @@ def _staged_chain(plan: RunPlan, *, config_path: Path, exp,
         from gpuwm.filesystem_paths import io_path
         data_dir = io_path(data_dir)
         fetch_arguments = _fetch_arguments_from_hints(hints, out=data_dir)
-        if _staged_beside_refusal(hints, exp) is None:
+        if _staged_beside_refusal(hints, exp,
+                                  separate_initial=initial_inputs is not None) is None:
             # AS POSTED (DESIGN A136 2.5): the fetch runs beside the
             # preparation, which starts on the window's start needs and
             # waits for each later lead's marker; its seal writes the input
@@ -6467,6 +6782,12 @@ def _staged_chain(plan: RunPlan, *, config_path: Path, exp,
                 fetch_arguments, run_dir,
                 events=getattr(observer, "events", None), posting_relay=True)
         handoff_path = data_dir / fetch_routes.PREP_ARGUMENTS_NAME
+    # The data-store chem sources (HRRR-Smoke's analysed and boundary smoke)
+    # are fetched here as the prepared:go chain fetches them (go_cli
+    # chem_fetch_command): preparation never downloads, so the HRRR recipe
+    # on this staged chain stopped at "Initialize root forcing states" with
+    # ChemSourceUnavailable 'hrrr-native-smoke' (a rented box, 2026-10-21 16:32Z).
+    _staged_chem_fetch(exp, observer)
     # Sample at the first complete callback's exception, before run_chained
     # waits for a failed forecast's preparation to seal. A later fetch
     # timeout during that hold cannot become the run's primary failure.
@@ -6525,6 +6846,8 @@ def _staged_chain(plan: RunPlan, *, config_path: Path, exp,
                 run_dir / "chain" / "inputs.json")
         arguments += [token for binding in supplements
                       for token in ("--supplement", binding)]
+        if initial_inputs is not None:
+            arguments += ["--initial-inputs", str(initial_inputs)]
         arguments += [
             # The four paths the handoff declares are the caller's.
             "--wps-namelist", str(namelist),
@@ -7041,6 +7364,8 @@ def _execute_prepared_route(plan: RunPlan, *, exp, data, config_path,
     # to `gpuwm go` for it is a separate decision about that command's
     # surface, and this front door does not get to make it.
     args.render_products = plan.run_options.get("render_products")
+    args.publish_root = plan.run_options.get("publish_root")
+    args.publish_cmd = plan.run_options.get("publish_cmd")
     # The line the section products are cut along, stamped the same way;
     # `gpuwm go --section` is the typed spelling of the same value.
     args.render_section = plan.run_options.get("render_section")
@@ -7111,7 +7436,11 @@ ROUTES: dict[str, Route] = {
                 "this process (what `gpuwm run CONFIG` executes)",
         run_options=frozenset(_RUN_OPTION_DEFAULTS)
         - {"data_dir", "physics_profile", "prepared_root", "wps_namelist", "supplement",
-           "transport", "as_posted", "late_after_minutes", "cycle", "forecast_tiles"},
+           "transport", "as_posted", "late_after_minutes", "cycle", "forecast_tiles",
+           # The staged chain's separately fetched analysis; this route reads
+           # its [case_data] inputs only, so a plan naming one is refused
+           # rather than silently ignored.
+           "initial_inputs"},
         execute=_execute_experiment_route),
 }
 
@@ -7178,6 +7507,8 @@ def manifest_physics(plan: RunPlan, *,
             from gpuwm.physics_registry import registry_sha256
 
             document = experiment_physics(plan.config_bytes().decode("utf-8"))
+            from gpuwm.smoke_receipts import config_receipt
+            document.update(config_receipt(plan.config_bytes().decode("utf-8")))
             document["stated_by"] = f"the {plan.config_kind} configuration's own switches"
             document["physics_registry_sha256"] = registry_sha256()
             return document
@@ -7322,6 +7653,17 @@ def write_manifest(plan: RunPlan, *, run_dir: Path, events_path: Path,
         "physics": manifest_physics(plan),
     }
     path = run_dir / MANIFEST_FILENAME
+    if plan.config_kind in ("path", "inline"):
+        from gpuwm.smoke_receipts import config_receipt
+        try:
+            config_text = plan.config_bytes().decode("utf-8")
+        except PlanError:
+            # An absent configuration is the road's to class, inside its event
+            # boundary, as a plan defect (tests/test_runplan.py, the execution
+            # road); the manifest records no smoke receipt for a file it lacks.
+            config_text = None
+        if config_text is not None:
+            document.update(config_receipt(config_text))
     atomic_write_json(path, document)
     return path
 
@@ -7565,10 +7907,13 @@ def execute_plan(plan: RunPlan, *, events: EventStream) -> int:
         if fetch_arguments is None:
             fetch_arguments = declared_forcing_fetch(
                 _config_for_declared_fetch(plan, resolution, run_dir), data,
-                base_dir=None)
+                base_dir=None, cache_root=run_dir)
             if fetch_arguments is not None:
                 cycle_resolutions.append({"scope": "fetch", "key": "args",
                     "value": fetch_arguments, "basis": "configuration.fetch"})
+        data, rebound = rebind_fetched_forcing(data, fetch_arguments)
+        if rebound is not None:
+            cycle_resolutions.append(rebound)
         for warning in resolution["warnings"]:
             events.emit("warning", code="library_warning",
                         message=warning["action"], detail=warning["why"])
@@ -7987,8 +8332,14 @@ def plan_at_cycle(plan: RunPlan, destination: Path) -> RunPlan:
     resolutions: list[dict[str, Any]] = []
     concrete = str(cycle)
     if concrete == "latest":
+        clock_hints = config_fetch_request(document)
+        if hints.get("initial_source"):
+            # The forecast clock follows its initial analysis, even when
+            # the lateral source has newer cycles available.
+            clock_hints = {"source": hints["initial_source"], "cycle": "latest",
+                           "hours": 0, "as_posted": False}
         arguments = _fetch_arguments_from_hints(
-            _pinned_fetch_hints(plan, config_fetch_request(document)),
+            _pinned_fetch_hints(plan, clock_hints),
             out=Path("latest"))
         arguments, resolutions, _warnings = resolve_fetch_cycle(arguments)
         concrete = _parse_fetch_arguments(arguments).cycle
@@ -9378,6 +9729,12 @@ def source_inventory() -> dict[str, Any]:
                 "source_id": getattr(adapter, "source_id", None),
                 "error": f"{type(error).__name__}: {error}",
             })
+    try:
+        from gpuwm.composition_source import inventory_rows
+        document["composition_sources"] = inventory_rows()
+    except Exception as error:
+        document["composition_sources"] = []
+        document["composition_error"] = f"{type(error).__name__}: {error}"
     document["sources"] = rows
     return json.loads(json.dumps(document, default=_jsonable))
 
@@ -9841,6 +10198,7 @@ __all__ = [
     "declared_inputs", "disk_admission_refusal", "domain_size_floor",
     "missing_inputs_refusal",
     "estimate_plan", "execute_plan", "follow_statics_decision",
+    "follow_unsupported_refusal",
     "generate_intent_config", "physics_profile_menu", "render_catalog",
     "local_run_catalog", "plan_render_catalog", "LOCAL_RUN_CATALOG_BASIS",
     "source_inventory",

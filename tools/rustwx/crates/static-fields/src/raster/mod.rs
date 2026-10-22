@@ -103,6 +103,20 @@ impl Crs {
     /// else is refused by name rather than misread.
     pub fn parse_override(text: &str) -> Result<Crs> {
         let trimmed = text.trim();
+        let table: serde_json::Value = serde_json::from_str(include_str!("../../../../../../gpuwm/authorities/sfire-albers-crs.v1.json")).expect("embedded Albers CRS table");
+        if let Some(row)=table["crs"].get(trimmed.to_uppercase()) {
+            let n=|key:&str|row[key].as_f64().expect("Albers parameter");
+            return Ok(Crs::AlbersConusNad83 {lat_1:n("lat_1"),lat_2:n("lat_2"),lat_0:n("lat_0"),lon_0:n("lon_0"),false_easting:n("false_easting"),false_northing:n("false_northing")});
+        }
+        if trimmed.split_whitespace().any(|v|v=="+proj=aea") && trimmed.split_whitespace().any(|v|v=="+datum=NAD83") {
+            let n=|key:&str,default:Option<f64>|->Result<f64> {
+                let prefix=format!("+{key}=");
+                let value=trimmed.split_whitespace().find_map(|v|v.strip_prefix(&prefix));
+                let number=match value {Some(v)=>v.parse::<f64>().ok(),None=>default};
+                number.filter(|v|v.is_finite()).ok_or_else(||StaticError::Invalid(format!("Albers override needs finite {key}")))
+            };
+            return Ok(Crs::AlbersConusNad83 {lat_1:n("lat_1",None)?,lat_2:n("lat_2",None)?,lat_0:n("lat_0",None)?,lon_0:n("lon_0",None)?,false_easting:n("x_0",Some(0.))?,false_northing:n("y_0",Some(0.))?});
+        }
         if trimmed == "igh"
             || (trimmed.contains("+proj=igh")
                 && trimmed.contains("+datum=WGS84"))

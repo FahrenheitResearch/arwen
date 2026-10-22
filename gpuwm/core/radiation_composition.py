@@ -6,6 +6,30 @@ selections execute only each selected spectrum and merge its own carriers.
 from __future__ import annotations
 
 
+def transported_smoke_attr(cfg):
+    """The state attribute of the transported chem row the legacy RRTMG
+    shortwave reads as smoke, or None.
+
+    Only ``simple_dir_fdb = 1`` (the HRRR v4 fork's direct smoke feedback)
+    asks for it; the row is the one whose ``radiation.shortwave`` is
+    the chem table's smoke layer-AOD coupling
+    (gpuwm.chem_table.SpeciesRow.feeds_shortwave_aod, the smoke set's row).  Every run without the switch
+    builds the adapter it always did.  validate_chem_config has already
+    refused zero or several such rows and every double count.
+    """
+    if not int(getattr(cfg, "simple_dir_fdb", 0) or 0):
+        return None
+    from gpuwm.chem_table import load
+    table = load(cfg)
+    rows = [] if table is None else [
+        row for row in table.transported if row.feeds_shortwave_aod]
+    if len(rows) != 1:
+        raise ValueError(
+            "simple_dir_fdb=1 needs exactly one transported chem row feeding "
+            f"the shortwave as smoke; found {[r.name for r in rows]}")
+    return rows[0].state_attr
+
+
 def radiation_adapters(adapter):
     """Yield distinct leaf adapters in execution order."""
     seen = set()
@@ -146,11 +170,8 @@ class ComposedRadiation:
             rthratensw=sw.rthratensw if sw is not None else zero,
             swdown=swdown, glw=lw.glw if lw is not None else fields["glw"],
             gsw=gsw, coszen=coszen, olr=lw.olr if lw is not None else None,
-            # The interpolation fits the scheme's direct beam. Preserve
-            # the original off-mode result while carrying SWDDIR through
-            # compositions with independently selected spectra when on.
-            swddir=(getattr(sw, "swddir", None) if sw is not None
-                    and int(getattr(cfg, "swint_opt", 0)) == 1 else None),
+            # History consumes the native beam even without interpolation.
+            swddir=getattr(sw, "swddir", None) if sw is not None else None,
             swddif=getattr(sw, "swddif", None) if sw is not None else None,
             aod5503d=getattr(sw,"aod5503d",None),
             aerosol2d=getattr(sw,"aerosol2d",None),
@@ -323,6 +344,14 @@ def make_radiation(cfg, start_time, latitude_deg, longitude_deg, *,
                 provider.require_vertical(cfg.eta_levels, cfg.hybrid_opt, cfg.etac, cfg.p_top)
                 provider.require_coverage(cfg.run_seconds)
                 smoke_options["smoke_provider"] = provider
+            transported = transported_smoke_attr(cfg) if shortwave else None
+            if transported is not None:
+                if manifest:
+                    raise ValueError(
+                        "rrtmg_smoke_manifest with simple_dir_fdb=1: the "
+                        "shortwave would count the plume twice (a prescribed "
+                        "profile and the forecast's own smoke); drop one")
+                smoke_options["transported_smoke"] = transported
             return RRTMGLegacyRadiation(*args, p_top=p_top, o3input=cfg.o3input,
                 ozone_parent=ozone_parent, ozone_routing=ozone_routing,
                 longwave=longwave, shortwave=shortwave,
@@ -398,8 +427,7 @@ class ColumnTableRadiation:
         from gpuwm.core.kernels import get_kernel_int_defines
         from gpuwm.core.radiation_tables import radiation_table_words
         from gpuwm.core.physics import RadiationResult
-        from gpuwm.core.rrtmg_legacy import (legacy_cloud_fraction_flags,
-            legacy_scheme_has_req, radconst, calc_coszen)
+        from gpuwm.core.rrtmg_legacy import legacy_cloud_fraction_flags, radconst, calc_coszen
         from gpuwm.core.rrtmgp import cal_cldfra1
         from gpuwm.core.swint import calendar_scalars
         nz, ny, nx = atmosphere['pressure'].shape

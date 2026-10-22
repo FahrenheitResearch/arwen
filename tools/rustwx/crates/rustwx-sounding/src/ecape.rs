@@ -118,10 +118,6 @@ impl ExternalEcapeSummary {
         Ok(())
     }
 
-    pub fn value_for(&self, parcel: ParcelFlavor) -> Option<&ExternalEcapeValue> {
-        self.values.iter().find(|value| value.parcel == parcel)
-    }
-
     pub fn ordered_values(&self) -> Vec<&ExternalEcapeValue> {
         let mut values: Vec<_> = self.values.iter().collect();
         values.sort_by_key(|value| value.parcel.sort_key());

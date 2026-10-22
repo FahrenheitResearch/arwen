@@ -12,6 +12,8 @@ use super::datatype::{self, Datatype};
 /// Parsed attribute message.
 #[derive(Debug, Clone)]
 pub struct AttributeMessage {
+    /// Tracked HDF5 creation order, when available.
+    pub creation_order: Option<u64>,
     /// Attribute name.
     pub name: String,
     /// Datatype of the attribute value.
@@ -89,6 +91,7 @@ fn parse_v1(cursor: &mut Cursor<'_>, offset_size: u8, length_size: u8) -> Result
     };
 
     Ok(AttributeMessage {
+        creation_order: None,
         name,
         datatype: dt_msg.datatype,
         dataspace: ds_msg,
@@ -120,6 +123,7 @@ fn parse_v2(cursor: &mut Cursor<'_>, offset_size: u8, length_size: u8) -> Result
     };
 
     Ok(AttributeMessage {
+        creation_order: None,
         name,
         datatype: dt_msg.datatype,
         dataspace: ds_msg,
@@ -158,6 +162,7 @@ fn parse_v3(cursor: &mut Cursor<'_>, offset_size: u8, length_size: u8) -> Result
     };
 
     Ok(AttributeMessage {
+        creation_order: None,
         name,
         datatype: dt_msg.datatype,
         dataspace: ds_msg,

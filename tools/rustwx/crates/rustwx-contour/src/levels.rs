@@ -84,19 +84,7 @@ impl LevelBin {
         lower_ok && upper_ok
     }
 
-    pub fn lower_value(self) -> Option<f64> {
-        match self.lower {
-            LevelBound::Finite(value) => Some(value),
-            LevelBound::NegInfinity | LevelBound::PosInfinity => None,
-        }
-    }
 
-    pub fn upper_value(self) -> Option<f64> {
-        match self.upper {
-            LevelBound::Finite(value) => Some(value),
-            LevelBound::NegInfinity | LevelBound::PosInfinity => None,
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -161,10 +149,6 @@ impl LevelBins {
 
     pub fn thresholds(&self) -> &[f64] {
         &self.thresholds
-    }
-
-    pub fn extend_mode(&self) -> ExtendMode {
-        self.extend
     }
 
     pub fn bins(&self) -> &[LevelBin] {

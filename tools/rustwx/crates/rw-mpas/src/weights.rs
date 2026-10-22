@@ -439,8 +439,10 @@ pub fn read_mesh_cell_spacing(path: &Path) -> MpasResult<MeshSpacing> {
 pub(crate) fn unit_vector(lat_deg: f64, lon_deg: f64) -> [f64; 3] {
     let lat = lat_deg * RAD;
     let lon = lon_deg * RAD;
-    let cos_lat = lat.cos();
-    [cos_lat * lon.cos(), cos_lat * lon.sin(), lat.sin()]
+    // The vendored `libm`, not the platform C library: see the note at the
+    // top of window.rs. The nearest-cell index map is built from these.
+    let cos_lat = libm::cos(lat);
+    [cos_lat * libm::cos(lon), cos_lat * libm::sin(lon), libm::sin(lat)]
 }
 
 // ---------------------------------------------------------------------------
@@ -830,7 +832,7 @@ pub fn build_weights(
             let (idx, chord_squared) = tree.nearest(target);
             // Chord to great-circle, on the mesh's physical radius.
             let chord = chord_squared.sqrt();
-            let great_circle = 2.0 * (chord / 2.0).clamp(0.0, 1.0).asin() * MPAS_EARTH_RADIUS_M / 1000.0;
+            let great_circle = 2.0 * libm::asin((chord / 2.0).clamp(0.0, 1.0)) * MPAS_EARTH_RADIUS_M / 1000.0;
             (idx as i32, great_circle as f32)
         })
         .unzip();

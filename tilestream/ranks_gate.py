@@ -36,12 +36,14 @@ def config(nx=128, ny=104, nz=20, rung="lean"):
     return replace(multigpu.forced_config(nx, ny, nz), **values)
 
 
-def fixture(cfg, *, wind=0.0):
+def fixture(cfg, *, wind=0.0, prepare=None):
     import cupy as cp
     from gpuwm.ingest.lateral_bc import build_state_lateral_boundaries, attach_lateral_boundaries
     geo = harness.make_geography(cfg, terrain=True, periodic_faces=False)
     state, _ = harness.make_physics_state(cfg, 4242, geography=geo)
     other, _ = harness.make_physics_state(cfg, 4243, geography=geo)
+    if prepare is not None and hasattr(prepare, "boundary"):
+        prepare.boundary(state, other, cfg)
     if wind:
         from gpuwm.core.diagnostics import update_diagnostics
         for source in (state, other):
@@ -52,6 +54,10 @@ def fixture(cfg, *, wind=0.0):
     del other
     attach_lateral_boundaries(state, bnd)
     streaming.prime_lazy_carriers(state, cfg)
+    if prepare is not None:
+        prepare(state, cfg)
+    if prepare is not None and hasattr(prepare, "store_bundle"):
+        return state, prepare.store_bundle(state, cfg, bnd, geo)
     take = streaming.streamed_store_inventory()
     initial = {k: cp.asnumpy(a) for k, a in take(state).items()}
     store = {k: gather.pinned_empty(a.shape, a.dtype) for k, a in initial.items()}
@@ -109,7 +115,8 @@ def make_ranked(bundle, cfg, decision, options, clock, mode, *, short=False):
 
 
 def integrate(cfg, grid=(1, 2), mode="sequential", nsteps=12, devices=None,
-              control=None, timing=False, wind=None, change_live=True):
+              control=None, timing=False, wind=None, change_live=True,
+              prepare=None, restart_path=None, ledger_tolerance=None):
     import cupy as cp
     from gpuwm.core import dycore
     from gpuwm.state_digest import canonical_state_digest, canonical_store_digest
@@ -120,7 +127,7 @@ def integrate(cfg, grid=(1, 2), mode="sequential", nsteps=12, devices=None,
     # Build the resident reference and prepared template on the first
     # requested card, so a gate confined to another card never uses card 0.
     cp.cuda.Device(cards[0]).use()
-    state, bundle = fixture(cfg, wind=(25.0 if control is not None else 0.0) if wind is None else wind)
+    state, bundle = fixture(cfg, wind=(25.0 if control is not None else 0.0) if wind is None else wind, prepare=prepare)
     from gpuwm.ingest.lateral_bc import bind_lateral_boundary_clock
     resident_clock = _clock(cfg)
     ranked_clock = _clock(cfg)
@@ -140,6 +147,10 @@ def integrate(cfg, grid=(1, 2), mode="sequential", nsteps=12, devices=None,
     streamed = make_ranked(bundle, cfg, decision, options, ranked_clock, mode,
                            short=control == "short")
     run = streamed.tiled_run
+    if prepare is not None:
+        for tile, subcfg, dev in zip(run.tiles, run.sub_cfgs, run.devices):
+            with cp.cuda.Device(dev):
+                prepare(tile, subcfg)
     original_exchange = run.exchange_events
     if control == "no_exchange":
         run.exchange_events = lambda: None
@@ -176,6 +187,23 @@ def integrate(cfg, grid=(1, 2), mode="sequential", nsteps=12, devices=None,
                 streamed(None, live)
             resident_clock.advance()
             ranked_clock.advance()
+            if restart_path is not None and index + 1 == nsteps // 2:
+                saved = streamed.write_restart(restart_path, live).path
+                run.close()
+                # A production restore constructs its owner from fresh analysis
+                # vectors, then loads the checkpoint. Do not inherit the flag
+                # from the just-drained store and hide an owner initialization bug.
+                if ledger_tolerance is not None:
+                    for key, value in bundle.store.items():
+                        if key.startswith("state/chemdiag_ledger_"):
+                            value[...] = 0
+                streamed = make_ranked(bundle, live, decision, options, ranked_clock, mode)
+                run = streamed.tiled_run
+                streamed.restore_restart(saved, live)
+                if prepare is not None:
+                    for tile, subcfg, dev in zip(run.tiles, run.sub_cfgs, run.devices):
+                        with cp.cuda.Device(dev):
+                            prepare(tile, subcfg)
             if control is not None:
                 # Inspect without feeding the joined host frame back to ranks.
                 # Otherwise a digest read itself repairs a missing exchange.
@@ -190,6 +218,30 @@ def integrate(cfg, grid=(1, 2), mode="sequential", nsteps=12, devices=None,
         got = run.store
         ref = {k: cp.asnumpy(a) for k, a in streaming.streamed_store_inventory()(state).items()}
         differing = [key for key in ref if ref[key].tobytes() != got[key].tobytes()]
+        ledger_errors = {}
+        ledger_atol = 1e-12
+        state_differing = list(differing)
+        if ledger_tolerance is not None:
+            # Process buckets subtract successive domain masses. Bound the
+            # cancellation error by that mass, not by a nearly zero bucket.
+            mass_scale = max((float(np.max(np.abs(a))) for k, a in ref.items()
+                if k in ("state/chemdiag_ledger_initial", "state/chemdiag_ledger_current")), default=1.)
+            ledger_atol = max(ledger_atol, mass_scale * np.finfo(np.float64).eps * 64 * nsteps)
+            for key in ref:
+                if key.startswith("state/chemdiag_ledger_"):
+                    np.testing.assert_allclose(got[key], ref[key], rtol=ledger_tolerance, atol=ledger_atol, err_msg=key)
+                    ledger_errors[key] = float(np.max(np.abs(got[key] - ref[key])))
+                    if key in state_differing:
+                        state_differing.remove(key)
+        history_differing = None
+        if prepare is not None:
+            from gpuwm.io.wrfout import _device_state_frame
+            native = _device_state_frame(state)
+            joined = streamed.history_fields().materialize()
+            history_differing = [key for key in native
+                if cp.asnumpy(native[key]).tobytes() != np.asarray(joined[key]).tobytes()]
+            if history_differing:
+                raise AssertionError(f"ranked history differs: {history_differing}")
         scalars = physics.carrier_scalars(state)
         scalar_equal = scalars == bundle.scalars
         ref_digest = canonical_state_digest(state, resident_clock)
@@ -213,12 +265,18 @@ def integrate(cfg, grid=(1, 2), mode="sequential", nsteps=12, devices=None,
             "bl_pbl_physics", "sf_sfclay_physics", "sf_surface_physics", "ra_physics",
             "ra_rrtmg_variant", "num_soil_layers", "radt_minutes")},
             health_equal=health_equal, grid=grid, mode=mode, control=control, completed_steps=completed_steps, differing=differing,
+            state_differing=state_differing, ledger_errors=ledger_errors, ledger_tolerance=ledger_tolerance,
+            ledger_absolute_tolerance=ledger_atol,
+            history_differing=history_differing, restart_roundtrip=restart_path is not None,
             scalar_equal=scalar_equal, resident_digest=ref_digest["sha256"], ranked_digest=got_digest["sha256"],
             resident_inventory=ref_digest["inventory_sha256"], ranked_inventory=got_digest["inventory_sha256"],
             resident_fires=scalars.get("call_counts"), ranked_fires=bundle.scalars.get("call_counts"),
             devices=run.devices_report(), timings=times)
+        if prepare is not None and hasattr(prepare, "verify"):
+            result["smoke_processes"] = prepare.verify(state, streamed)
         print(json.dumps(result, default=str), flush=True)
-        equal = not differing and scalar_equal and ref_digest == got_digest
+        equal = (not state_differing and scalar_equal
+                 and (ledger_tolerance is not None or ref_digest == got_digest))
         if control is None and health_equal is False:
             raise AssertionError("rank-ordered stability fold differs from resident health")
         if control is None and not equal:
@@ -635,14 +693,18 @@ def transport_timing(devices=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("what", nargs="?", default=os.environ.get("RANKS_WHAT", "gate"), choices=("gate", "controls", "bench", "transport", "quick", "loop", "wrong-card"))
+    parser.add_argument("what", nargs="?", default=os.environ.get("RANKS_WHAT", "gate"), choices=("gate", "controls", "bench", "transport", "quick", "loop", "wrong-card", "smoke"))
     parser.add_argument("--devices", type=int, action="append")
     parser.add_argument("--rung", choices=("lean", "mynn"))
     parser.add_argument("--step-mode", choices=("threads", "sequential"))
     parser.add_argument("--grid", choices=("1x1", "1x2", "2x1", "2x2"))
     args = parser.parse_args(argv)
     try:
-        if args.what == "quick":
+        if args.what == "smoke":
+            from tilestream.ranks_smoke_gate import run
+            run(devices=args.devices, mode=args.step_mode or "threads",
+                grid=(1, 2) if args.grid is None else tuple(map(int, args.grid.split("x"))))
+        elif args.what == "quick":
             integrate(config(rung=args.rung or "lean"), nsteps=2, devices=args.devices,
                       mode=args.step_mode or "sequential")
         elif args.what == "gate":

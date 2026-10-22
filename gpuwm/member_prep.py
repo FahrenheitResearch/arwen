@@ -37,7 +37,6 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -50,6 +49,7 @@ from gpuwm.member_grammar import (MemberGrammar, MemberIdentity,
 from gpuwm.source_authorities import (packaged_member_grammar,
                                       packaged_member_grammar_ids,
                                       packaged_member_grammar_sha256)
+from gpuwm.ensemble.physical_fields import sha256_of_file as _sha256_file
 
 RECEIPT_SCHEMA = "gpuwm-ensemble-member-preparation-receipt-v1"
 RECEIPT_NAME = "member-receipt.json"
@@ -429,14 +429,6 @@ def verify_member_file(
     return verify_member_rows(
         grammar, member, rows, source_label=str(source),
         source_path=Path(source))
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _resolve_grammar(

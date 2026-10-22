@@ -1579,7 +1579,8 @@ def test_the_receipt_names_the_eigensolver_that_produced_it(analysis):
     assert filt["max_jacobi_sweeps"] == 0
 
 
-def test_rtpp_is_available_and_differs_from_rtps(hydro_world, hydro_grid):
+def test_rtpp_is_available_and_differs_from_rtps(
+        hydro_world, hydro_grid, hydro_analysis):
     """Both relaxations run; at the same alpha they are not the same.
 
     The ensemble MEAN increment is relaxation-independent -- neither
@@ -1596,9 +1597,7 @@ def test_rtpp_is_available_and_differs_from_rtps(hydro_world, hydro_grid):
         reflectivity_provider=hydro_world.provider)
     assert prov["relaxation"] == "rtpp"
     assert prov["filter"]["relaxation"] == "rtpp"
-    rtps, _ = assimilate_radar_grid(
-        checkpoints, hydro_world.obs_path, hydro_grid, _hydro_config(),
-        reflectivity_provider=hydro_world.provider)
+    rtps, _ = hydro_analysis
     mean_rtpp = np.mean([rtpp[i]["thp"] for i in sorted(rtpp)], axis=0)
     mean_rtps = np.mean([rtps[i]["thp"] for i in sorted(rtps)], axis=0)
     assert np.allclose(mean_rtpp, mean_rtps, atol=1e-10)

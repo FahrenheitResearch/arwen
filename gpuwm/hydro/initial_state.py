@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import threading
 import time
 
 TABLE = Path(__file__).resolve().parent.parent / "data" / "hydro" / "init-state-sources.v1.json"
@@ -62,11 +63,13 @@ def _rw_hydro_init() -> Path:
     override = os.environ.get(INIT_ENV)
     if override:
         return Path(override)
-    root = Path(__file__).resolve().parent.parent.parent
-    for candidate in (root / "tools/hydro_world_init/target/release/rw_hydro_init",
-                      root / "libexec/bridges/rw_hydro_init"):
-        if candidate.is_file():
-            return candidate
+    # The bridge ladder (checkout build, wheel libexec, staged bundle), then
+    # the on-demand stage a wheel install uses (gpuwm.bridge_assets).
+    from .door import _executable
+    found = _executable({"env": INIT_ENV, "filename": "rw_hydro_init",
+                         "crate": "tools/hydro_world_init"})
+    if found is not None:
+        return found
     raise FileNotFoundError(f"rw_hydro_init is not built; set {INIT_ENV} or build tools/hydro_world_init")
 
 
@@ -253,6 +256,257 @@ def fetch(row: dict, *, area, state_times, forcing_times, out: Path,
     return receipt
 
 
+#: The live analysis row a forecast past the reanalysis's last hour takes its
+#: soil water from where it covers the domain (coordinator decision, 2026-10-21).
+LIVE_ROW = "nwm-analysis-assim-conus"
+
+
+#: Each store's last coverage answer (``rw_zarr coverage``), kept so the
+#: receipt can say which spin-up hours were finalized and which preliminary.
+_COVERAGE: dict[str, dict] = {}
+
+
+def source_last_time(row: dict) -> datetime | None:
+    """The last whole hour the row's store serves (``rw_zarr coverage``).
+
+    None when the row has no Zarr store or the store cannot be asked; the
+    plan is then the one this module always made, and a fetch past the end
+    fails with rw_zarr's own refusal.
+    """
+    access = row.get("access", {})
+    if access.get("reader") != "rw_zarr" or not access.get("store"):
+        return None
+    try:
+        proc = subprocess.run([os.fspath(_rw_zarr()), "coverage", access["store"]],
+                              capture_output=True, text=True, timeout=180)
+        if proc.returncode != 0:
+            return None
+        coverage = json.loads(proc.stdout)
+        stop = parse_time(coverage["accepted_stop"])
+    except Exception:  # noqa: BLE001 - an unanswered question keeps the old plan
+        return None
+    _COVERAGE[access["store"]] = coverage
+    return stop.replace(minute=0, second=0, microsecond=0)
+
+
+def _download(url: str, path: Path) -> dict:
+    """Opaque bytes to a file (decoding stays in Rust); size and SHA-256."""
+    import urllib.request
+    part = path.with_name(path.name + ".part")
+    digest, size = hashlib.sha256(), 0
+    with urllib.request.urlopen(url, timeout=120) as response, part.open("wb") as stream:
+        for block in iter(lambda: response.read(1 << 20), b""):
+            digest.update(block)
+            size += len(block)
+            stream.write(block)
+    part.replace(path)
+    return {"url": url, "size_bytes": size, "sha256": digest.hexdigest()}
+
+
+def live_soil(*, fabric, moment: datetime, area, out: Path, table: dict, progress=print):
+    """Soil water at the forecast start from the live analysis row, mapped onto
+    the catchments it covers (the others NaN). Returns (state_dir, receipt), or
+    raises naming why this domain or time has none.
+    """
+    row = admit(table, LIVE_ROW)
+    access = row["access"]
+    west, south, east, north = access["domain_bbox_west_south_east_north"]
+    a_south, a_west, a_north, a_east = area
+    if a_east < west or a_west > east or a_north < south or a_south > north:
+        raise LookupError(f"{LIVE_ROW} covers {west}..{east} E, {south}..{north} N; this domain "
+                          f"({a_west:.2f}..{a_east:.2f} E, {a_south:.2f}..{a_north:.2f} N) lies outside it")
+    hour = moment.replace(minute=0, second=0, microsecond=0)
+    age_days = (datetime.now(timezone.utc) - hour).total_seconds() / 86400.0
+    if age_days > access["retention_days"]:
+        raise LookupError(f"{LIVE_ROW} keeps {access['retention_days']} days; "
+                          f"{hour:%Y-%m-%dT%H}Z is {age_days:.1f} days old")
+    url = access["url_template"].format(yyyymmdd=hour.strftime("%Y%m%d"), hh=hour.strftime("%H"))
+    out = Path(out)
+    out.mkdir(parents=True, exist_ok=True)
+    land = out / "land.nc"
+    started = time.perf_counter()
+    fetched = _download(url, land)
+    fetched["seconds"] = time.perf_counter() - started
+    progress(f"hydro init: live analysis {url} ({fetched['size_bytes'] / 1e6:.0f} MB, {fetched['seconds']:.1f} s)")
+    weights = run_stage("weights", {"fabric": os.fspath(fabric), "grid_file": os.fspath(land),
+                                    "row": LIVE_ROW, "table": os.fspath(TABLE),
+                                    "output": os.fspath(out / "weights")}, out / "weights-stage")
+    state = run_stage("state", {"table": os.fspath(TABLE), "row": LIVE_ROW, "fabric": os.fspath(fabric),
+                                "weights": os.fspath(out / "weights"), "source_file": os.fspath(land),
+                                "valid_time": hour.strftime(ISO), "partial_coverage": True,
+                                "output": os.fspath(out / "state")}, out / "state-stage")
+    counts = state.get("counts", {})
+    if counts.get("catchments_not_covered_by_source") == counts.get("catchments"):
+        raise LookupError(f"{LIVE_ROW} covers none of this fabric's catchments")
+    return out / "state", {"row": LIVE_ROW, "valid_time": hour.strftime(ISO), "fetch": fetched,
+                           "weights": weights, "state": state}
+
+
+def _days_root():
+    """The forcing-day cache: beside the fabric cache, shared by every domain and start."""
+    from .door import cache_root
+    return cache_root() / "forcing-days"
+
+
+def _split_days(times):
+    """(whole UTC days {day: 24 hourly times}, the remaining edge times)."""
+    by_day = {}
+    for stamp in times:
+        by_day.setdefault(stamp[:10], []).append(stamp)
+    full = {day: stamps for day, stamps in by_day.items() if len(stamps) == 24}
+    edge = [stamp for stamp in times if stamp[:10] not in full]
+    return full, edge
+
+
+def forcing_days(row, area, days, root, *, workers=None, progress=print):
+    """One extract per whole UTC day, kept in ``root`` and shared by every
+    start on the same area, store and variables; missing days are fetched in
+    parallel (one rw_zarr process each, every process reading its fields
+    concurrently). Returns (files in time order, receipt)."""
+    if not days:
+        return [], {"days": 0}
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    started = time.perf_counter()
+    plan = []
+    for day in sorted(days):
+        request = _zarr_request(row, _forcing_variables(row), days[day], area)
+        key = hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()[:24]
+        plan.append((day, request, root / f"{day}-{key}.nc"))
+    missing = [item for item in plan if not (item[2].is_file() and item[2].stat().st_size > 0)]
+    exe = _rw_zarr() if missing else None
+
+    def run(item):
+        day, request, path = item
+        part = path.with_name(f"{path.name}.part.{os.getpid()}.{threading.get_ident()}")
+        req = path.with_name(path.name + ".request.json")
+        req.write_text(json.dumps(request, indent=1), encoding="utf-8")
+        proc = subprocess.run([os.fspath(exe), "extract", os.fspath(req), os.fspath(part)],
+                              capture_output=True, text=True)
+        if proc.returncode != 0:
+            part.unlink(missing_ok=True)
+            raise RuntimeError(f"rw_zarr day {day} failed: {proc.stderr[-2000:]}")
+        os.replace(part, path)
+
+    if missing:
+        workers = workers or min(len(missing), max(1, os.cpu_count() or 8))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            list(pool.map(run, missing))
+    receipt = {"days": len(plan), "fetched_days": len(missing), "reused_days": len(plan) - len(missing),
+               "cache": os.fspath(root), "seconds": time.perf_counter() - started,
+               "parallelism": f"{min(len(missing), os.cpu_count() or 8) if missing else 0} rw_zarr processes"}
+    progress(f"hydro init: spin-up forcing days {receipt['reused_days']} reused, {receipt['fetched_days']} "
+             f"fetched in {receipt['seconds']:.1f} s ({root})")
+    return [os.fspath(item[2]) for item in plan], receipt
+
+
+#: How many times a spin-up whose source has a hole no fill source can close
+#: is moved earlier (ending before the hole, starting earlier by as much, so
+#: it keeps its whole length) before the preparation fails by name.
+MAX_HOLD_BACKS = 6
+
+
+def _fill_days_root(name):
+    """Fill-source day files: beside the forcing-day cache, shared by every domain."""
+    return _days_root().parent / "fill-days" / name
+
+
+def fill_gaps(row, files, variables, out, *, progress=print):
+    """Close the holes of the fetched source files from the row's next source.
+
+    rw_hydro_init forcing-gaps lists every (file, record, variable) holding a
+    non-finite value; the row's ``gap_fill`` source's day files for those UTC
+    days are downloaded in parallel (opaque bytes, cached and shared); and
+    rw_hydro_init forcing-fill writes a patched copy of each holed file.
+    Returns ({file: patched copy}, receipt, [times still missing]).
+    """
+    out = Path(out)
+    found = run_stage("forcing-gaps", {"files": [os.fspath(f) for f in files], "variables": list(variables)},
+                      out / "gaps-stage").get("gaps", [])
+    if not found:
+        return {}, {"gaps": 0}, []
+    fill = row.get("gap_fill")
+    need = sorted({(gap["time"][:10], var) for gap in found for var in gap["variables"]})
+    paths, failed = {}, {}
+    if fill:
+        root = _fill_days_root(fill["name"])
+        root.mkdir(parents=True, exist_ok=True)
+
+        def get(item):
+            day, var = item
+            path = root / f"{day}-{var}.nc"
+            if path.is_file() and path.stat().st_size > 0:
+                return item, path, None
+            url = fill["url_template"].format(yyyy=day[:4], mm=day[5:7], dd=day[8:10], variable=var)
+            try:
+                _download(url, path)
+            except Exception as error:  # noqa: BLE001 - the hole stays and is named
+                return item, None, f"{url}: {type(error).__name__}: {error}"
+            return item, path, None
+
+        started = time.perf_counter()
+        with ThreadPoolExecutor(max_workers=min(len(need), 16)) as pool:
+            for item, path, error in pool.map(get, need):
+                if path is None:
+                    failed[item] = error
+                else:
+                    paths[item] = path
+        progress(f"hydro init: {len(found)} source record(s) hold NaN; {len(paths)} {fill['name']} day file(s) "
+                 f"ready, {len(failed)} unavailable ({time.perf_counter() - started:.1f} s, parallel downloads)")
+    by_file = {}
+    for gap in found:
+        by_file.setdefault(gap["file"], []).append(gap)
+    fills, missing = [], set()
+    for index, (file, gaps) in enumerate(sorted(by_file.items())):
+        records = []
+        for gap in gaps:
+            sources = [{"variable": var, "path": os.fspath(paths[(gap["time"][:10], var)])}
+                       for var in gap["variables"] if (gap["time"][:10], var) in paths]
+            missing.update(gap["time"] for var in gap["variables"] if (gap["time"][:10], var) not in paths)
+            if sources:
+                records.append({"time": gap["time"], "sources": sources})
+        if records:
+            fills.append({"file": file, "records": records,
+                          "output": os.fspath(out / f"{index:04d}-{Path(file).stem}-filled.nc")})
+    replaced, patched = {}, []
+    if fills:
+        out.mkdir(parents=True, exist_ok=True)
+        done = run_stage("forcing-fill", {"fills": fills}, out / "fill-stage")
+        for item in done.get("files", []):
+            replaced[item["file"]] = item["output"]
+            patched.extend(item.get("patched", []))
+            missing.update(rec["time"] for rec in item.get("still_missing", []))
+    receipt = {"gaps": len(found), "fill_source": fill["name"] if fill else None,
+               "first_gap": min(g["time"] for g in found), "last_gap": max(g["time"] for g in found),
+               "records_patched": len({(p["time"], p["variable"]) for p in patched}),
+               "patched_times": sorted({p["time"] for p in patched}),
+               "unavailable": {f"{day} {var}": error for (day, var), error in failed.items()},
+               "still_missing": sorted(missing)}
+    return replaced, receipt, sorted(missing)
+
+
+def spinup_segments(start, end, *, source, finalized, patched_times, fill_name):
+    """The spin-up's forcing hours (stamps start+1 h .. end) as runs of one source each."""
+    patched = set(patched_times)
+    runs, hour = [], start + timedelta(hours=1)
+    while hour <= end:
+        stamp = hour.strftime(ISO)
+        if stamp in patched:
+            label = f"{fill_name} (filled: the {source} store served NaN)"
+        elif finalized is None:
+            label = source
+        elif hour <= finalized:
+            label = f"{source} finalized reanalysis"
+        else:
+            label = f"{source} preliminary (ERA5T)"
+        if runs and runs[-1]["source"] == label:
+            runs[-1]["last"], runs[-1]["hours"] = stamp, runs[-1]["hours"] + 1
+        else:
+            runs.append({"first": stamp, "last": stamp, "hours": 1, "source": label})
+        hour += timedelta(hours=1)
+    return runs
+
+
 def run_stage(command: str, request: dict, workdir: Path) -> dict:
     """One rw_hydro_init stage from a request file; returns its JSON receipt."""
     workdir.mkdir(parents=True, exist_ok=True)
@@ -308,28 +562,87 @@ def _prepare(*, fabric, date, out, source, spinup_days, area, params,
     With spinup_days N the source state at DATE - N days is mapped onto the
     catchments and CFE runs N days of the source's own forcing to DATE.
     """
+    import sys
     table = load_table()
     row = admit(table, source)
     t = parse_time(date)
-    start = t - timedelta(days=spinup_days)
+    # A forecast past the reanalysis's last hour (every live and real-time
+    # run: ERA5 lags about six days) spins up to that hour and is carried to
+    # the forecast start; where the live analysis covers the domain, its soil
+    # water replaces the carried soil at the start. Hindcasts inside the
+    # record keep the spin-up to the forecast start itself. Breakage it
+    # prevents: every live run's hydro preparation failed on the ERA5 fetch
+    # ("outside the coverage this store declares") and the forecast ran with
+    # hydro off (fabric_preparation_failed).
+    last = source_last_time(row) if spinup_days else None
+    t_source = last if (last is not None and t > last) else t
     out = Path(out)
     if area is None:
         area = run_stage("bbox", {"fabric": os.fspath(fabric), "pad_degrees": 0.5}, out / "bbox")["area_south_west_north_east"]
-    state_times = sorted({start.strftime(ISO), t.strftime(ISO)})
-    forcing_times = hours(start + timedelta(hours=1), spinup_days * 24) if spinup_days else []
-    jobs = _fetch_jobs(row, area, state_times, forcing_times)
     if fetch_dir is None:
         # Source cache belongs to the requested address, independent of fresh
         # result directories. Existing pre-cache-layout extractions still work.
+        first_start = t_source - timedelta(days=spinup_days)
+        first_times = hours(first_start + timedelta(hours=1), spinup_days * 24) if spinup_days else []
+        first_jobs = _fetch_jobs(row, area, sorted({first_start.strftime(ISO), t_source.strftime(ISO)}),
+                                 _split_days(first_times)[1])
         legacy = requested_out / "source"
-        if not requested_out.is_symlink() and _matching_fetch(legacy, jobs) is not None:
+        if not requested_out.is_symlink() and _matching_fetch(legacy, first_jobs) is not None:
             fetch_dir = legacy
         else:
             fetch_dir = requested_out.with_name(requested_out.name + "-source")
-    fetch_dir, fetched = _shared_fetch(fetch_dir, row, jobs=jobs, area=area,
-                                      state_times=state_times, forcing_times=forcing_times,
-                                      progress=progress)
-    state_nc = os.fspath(fetch_dir / "state.nc")
+    variables = [name for name, _ in _forcing_variables(row) + _state_variables(row)]
+    # Records the source serves as NaN are filled from the row's next source
+    # (fill_gaps). A hole nothing fills moves the whole window earlier: the
+    # spin-up ends before it, starts earlier by as much (it keeps all its
+    # hours) and is carried to the start, and says so. Breakage it prevents
+    # (2.9.4 WOOF readiness, 2026-10-22): ERA5T days the store served as NaN
+    # made the spin-up give up on starts inside the record (hydro off, after
+    # up to 12 min of preparation) and run 1,992 of 2,160 h on carried ones.
+    held_back = []
+    for attempt in range(MAX_HOLD_BACKS + 1):
+        start = t_source - timedelta(days=spinup_days)
+        state_times = sorted({start.strftime(ISO), t_source.strftime(ISO)})
+        forcing_times = hours(start + timedelta(hours=1), spinup_days * 24) if spinup_days else []
+        # Whole UTC days of spin-up forcing come from a cache shared by every start
+        # on this area (forcing_days); only the partial edge days are this
+        # request's own. Breakage it prevents: every start re-fetched all 8,666
+        # ERA5 chunks (about 300 s on the HRRR recipe, a 4090 host), because the 24 h
+        # slices began at each start's own hour and never matched a cached one.
+        full_days, edge_times = _split_days(forcing_times)
+        jobs = _fetch_jobs(row, area, state_times, edge_times)
+        selected, fetched = _shared_fetch(fetch_dir, row, jobs=jobs, area=area,
+                                          state_times=state_times, forcing_times=edge_times,
+                                          progress=progress)
+        day_files, day_receipt = (forcing_days(row, area, full_days, _days_root(), progress=progress)
+                                  if full_days else ([], {"days": 0}))
+        state_nc = os.fspath(selected / "state.nc")
+        files = sorted(os.fspath(p) for p in selected.glob("forcing-*.nc")) + day_files
+        if not spinup_days:
+            replaced, filled = {}, {"gaps": 0}
+            break
+        replaced, filled, missing = fill_gaps(row, [state_nc] + files, variables,
+                                              out / "gap-fill" / f"window-{attempt}", progress=progress)
+        if not missing:
+            break
+        moved_to = parse_time(missing[0]) - timedelta(hours=1)
+        held_back.append({"window_end": t_source.strftime(ISO), "unfilled_from": missing[0],
+                          "unfilled_records": len(missing), "moved_end_to": moved_to.strftime(ISO),
+                          "unavailable": filled.get("unavailable", {})})
+        message = (f"hydro init: {source} has {len(missing)} record(s) from {missing[0]} that no fill source "
+                   f"closes; the {spinup_days * 24} h spin-up moves earlier to end {moved_to.strftime(ISO)} "
+                   f"(it keeps its whole length) and is carried to the forecast start {date}")
+        progress(message)
+        print(message, file=sys.stderr)
+        t_source = moved_to
+    else:
+        raise RuntimeError(f"hydro init: the {source} spin-up still has unfilled records after moving "
+                           f"{MAX_HOLD_BACKS} times earlier: {held_back}")
+    carry = t_source < t
+    fetch_dir = selected
+    state_nc = replaced.get(state_nc, state_nc)
+    files = [replaced.get(f, f) for f in files]
+
     weights = run_stage("weights", {"fabric": os.fspath(fabric), "grid_file": state_nc,
                                     "row": source, "table": os.fspath(TABLE),
                                     "output": os.fspath(out / "weights")}, out / "weights-stage")
@@ -340,24 +653,79 @@ def _prepare(*, fabric, date, out, source, spinup_days, area, params,
                                 "output": os.fspath(out / "state")}, out / "state-stage")
     result = {"schema": "arwen.hydro-world.init-run.v1", "fabric": os.fspath(fabric), "date": date,
               "requested_output_directory": os.fspath(requested_out), "output_directory": os.fspath(out),
-              "source": source, "spinup_days": spinup_days, "fetch": fetched, "weights": weights, "state": state}
+              "source": source, "spinup_days": spinup_days, "fetch": fetched, "forcing_days": day_receipt,
+              "gap_fill": filled, "weights": weights, "state": state}
     if spinup_days:
         # Reanalysis state at the forecast start itself (Noah-OWP soil, snow),
         # beside the spun-up CFE storages.
         result["state_at_date"] = run_stage("state", {"table": os.fspath(TABLE), "row": source, "fabric": os.fspath(fabric),
                                                       "weights": os.fspath(out / "weights"), "source_file": state_nc,
-                                                      "valid_time": t.strftime(ISO), "params": os.fspath(params) if params else None,
+                                                      "valid_time": t_source.strftime(ISO), "params": os.fspath(params) if params else None,
                                                       "output": os.fspath(out / "state-at-date")}, out / "state-at-date-stage")
-        files = sorted(os.fspath(p) for p in fetch_dir.glob("forcing-*.nc"))
-        result["spinup"] = run_stage("spinup", {"table": os.fspath(TABLE), "row": source, "fabric": os.fspath(fabric),
-                                                 "weights": os.fspath(out / "weights"),
-                                                 "initial_state": os.fspath(out / "state"),
-                                                 "land_file": state_nc,
-                                                 "forcing_files": files, "start": state_at, "hours": spinup_days * 24,
-                                                 "params": os.fspath(params) if params else None,
-                                                 "trace": list(trace),
-                                                 "retain_runoff_replay": True,
-                                                 "output": os.fspath(out / "spinup")}, out / "spinup-stage")
+        spin = {"table": os.fspath(TABLE), "row": source, "fabric": os.fspath(fabric),
+                "weights": os.fspath(out / "weights"),
+                "initial_state": os.fspath(out / "state"),
+                "land_file": state_nc,
+                "forcing_files": files, "start": state_at, "hours": spinup_days * 24,
+                "params": os.fspath(params) if params else None,
+                "trace": list(trace),
+                "retain_runoff_replay": True,
+                "output": os.fspath(out / "spinup")}
+        coverage = _COVERAGE.get(row.get("access", {}).get("store")) or {}
+        finalized = (parse_time(coverage["finalized_stop"][:14] + "00:00Z")
+                     if coverage.get("finalized_stop") else None)
+        segments = spinup_segments(start, t_source, source=source, finalized=finalized,
+                                   patched_times=filled.get("patched_times", ()),
+                                   fill_name=(row.get("gap_fill") or {}).get("name"))
+        initial_water = {"method": "reanalysis_spinup", "source": source, "spinup_end": t_source.strftime(ISO),
+                         "spinup_hours": {"requested": spinup_days * 24, "ran": spinup_days * 24},
+                         "segments": segments}
+        if held_back:
+            initial_water["held_back"] = held_back
+        if carry:
+            gap = (t - t_source).total_seconds() / 3600.0
+            spin["carry_to"] = date
+            spin["carry_reason"] = (
+                f"{source} serves through {t_source.strftime(ISO)}; the forecast starts {gap:.0f} h later"
+                if not held_back else
+                f"{source} has records no fill source closes from {held_back[-1]['unfilled_from']}; the spin-up "
+                f"ends {t_source.strftime(ISO)} and the forecast starts {gap:.0f} h later")
+            try:
+                live_dir, live = live_soil(fabric=fabric, moment=t, area=area, out=out / "live",
+                                           table=table, progress=progress)
+                spin["soil_override"] = os.fspath(live_dir)
+                initial_water.update(method="live_analysis_soil_over_carried_spinup", live=live, carried_hours=gap)
+                progress(f"hydro init: soil water from {LIVE_ROW} at {live['valid_time']}; groundwater and "
+                         f"channels from the {source} spin-up to {t_source.strftime(ISO)}, carried {gap:.0f} h")
+                carried_label = f"carried: spun-up groundwater and channels held, soil water from {LIVE_ROW}"
+            except Exception as error:  # noqa: BLE001 - the named fallback keeps hydro on
+                initial_water.update(method="era5_carry_over", fallback=True, carried_hours=gap,
+                                     live_analysis_unavailable=f"{type(error).__name__}: {error}")
+                message = (f"hydro init: FALLBACK era5_carry_over -- no live analysis for this run "
+                           f"({type(error).__name__}: {error}); the {source} spin-up to "
+                           f"{t_source.strftime(ISO)} is held {gap:.0f} h to the forecast start {date}")
+                progress(message)
+                print(message, file=sys.stderr)
+                carried_label = "carried: the spun-up state held to the forecast start (no forcing)"
+            segments.append({"first": (t_source + timedelta(hours=1)).strftime(ISO), "last": date,
+                             "hours": int(round(gap)), "source": carried_label})
+        progress("hydro init: spin-up segments: " + "; ".join(
+            f"{seg['first']}..{seg['last']} {seg['hours']} h {seg['source']}" for seg in segments))
+        result["spinup"] = run_stage("spinup", spin, out / "spinup-stage")
+        carried = result["spinup"].get("carry_over") if isinstance(result["spinup"], dict) else None
+        if carried:
+            # The spin-up's own account: a preliminary stream can end its
+            # complete days before the store's declared stop.
+            initial_water.update(spinup_end=carried["spinup_end"], carried_hours=carried["hours"],
+                                 spinup_truncated=carried.get("spinup_truncated"))
+            truncated = carried.get("spinup_truncated")
+            if truncated:
+                initial_water["spinup_hours"]["ran"] = truncated.get("ran_hours")
+                message = (f"hydro init: SHORT spin-up -- ran {truncated.get('ran_hours')} of "
+                           f"{truncated.get('requested_hours')} h: {truncated.get('reason')}")
+                progress(message)
+                print(message, file=sys.stderr)
+        result["initial_water"] = initial_water
     (out / "init-run.json").write_text(json.dumps(result, indent=1), encoding="utf-8")
     return result
 

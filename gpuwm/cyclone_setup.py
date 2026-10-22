@@ -54,6 +54,8 @@ ROOT_DIMS = (200, 160)
 CHILD_DIMS = (160, 160)
 ROOT_DX_M = 12000.0
 RATIO = 4
+#: The grid this door's one following nest is, in every file it emits.
+FOLLOWER_GRID_ID = 2
 
 
 def _default_profile(forcing_source: str, nest_km: float = 3.) -> str | None:
@@ -310,7 +312,8 @@ def configuration_text(*, cycle: str, point: tuple[float, float], hours: int = 6
     # into the file that carries it: a configuration whose following nest
     # its source's chain cannot feed says so where it is read, instead of
     # leaving that sentence to the launch.
-    moving = moving_nest_note(forcing_source)
+    moving = moving_nest_note(forcing_source,
+                              follower_grid_ids=(FOLLOWER_GRID_ID,), point=point)
     # The heading says which question the sentence answers.  A row that
     # reaches no launch chain is not answering about the nest at all, and
     # heading it as if it were would point the reader at the wrong knob.
@@ -1675,7 +1678,8 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
         # Asked of the same table the run door resolves against, so this
         # document and the launch cannot disagree about whether the nest
         # this setup authors can be integrated on the selected chain.
-        "follow_statics": moving_nest_note(forcing_source),
+        "follow_statics": moving_nest_note(
+            forcing_source, follower_grid_ids=(FOLLOWER_GRID_ID,), point=point),
         "profile": _default_profile(forcing_source, nest_km),
         "streaming": _streaming_entry(phases, tiles, budget),
         "memory": {"peak_envelope_bytes": phases.peak_envelope_bytes, "budget_bytes": budget,
@@ -1728,6 +1732,12 @@ def _cancelled(error) -> bool:
 
 
 def main(args) -> int:
+    from gpuwm.earth2_licensing import licence_scope, accepted_licences
+    with licence_scope((*accepted_licences(), *(getattr(args, "accept_licence", ()) or ()))):
+        return _main(args)
+
+
+def _main(args) -> int:
     try:
         with contextlib.redirect_stdout(sys.stderr):
             forcing_source = getattr(args, "source", None) or DEFAULT_SOURCE
@@ -1771,18 +1781,25 @@ def main(args) -> int:
                 tracks_path = getattr(args, "tracks", None)
                 storm = getattr(args, "storm", None)
                 track_selection = None
-                if getattr(args, "search_area", None) is not None and tracks_path is None:
-                    raise ValueError("track-file-required: --search-area requires --tracks")
-                if storm is not None and tracks_path is None:
-                    raise ValueError("track-file-required: --storm requires --tracks")
+                acquired_observations = False
+                if tracks_path is None and (storm is not None or getattr(args, "search_area", None) is not None):
+                    if args.point is not None or getattr(args, "advisory_position", None) or getattr(args, "seed_fields", None):
+                        raise ValueError("track-position-conflict: name/area selection is mutually exclusive with point/advisory/seed fields")
+                    from gpuwm.cyclone_tracks import acquire_tracks
+                    storm = storm or "auto"
+                    acquired_observations = True
+                    tracks_path = acquire_tracks(storm=storm,
+                        start=moment + timedelta(hours=start_hour),
+                        source=getattr(args, "track_source", "auto"),
+                        cache=getattr(args, "track_cache", None))
                 if tracks_path is not None:
                     if not storm:
                         raise ValueError("track-storm-required: --tracks requires --storm auto or TRACK_ID")
                     if args.point is not None or getattr(args, "advisory_position", None) or getattr(args, "seed_fields", None):
-                        raise ValueError("track-position-conflict: --tracks is mutually exclusive with --point, --advisory-position and --seed-fields")
+                        raise ValueError("track-position-conflict: --storm is mutually exclusive with --point, --advisory-position and --seed-fields")
                     from gpuwm.cyclone_tracks import select_track
                     from gpuwm.cyclone_sources import source_options
-                    track_selection = select_track(tracks_path, storm=storm, member=member,
+                    track_selection = select_track(tracks_path, storm=storm, member=None if acquired_observations else member,
                         source=forcing_source, start=moment + timedelta(hours=start_hour), hours=args.hours,
                         search_area=getattr(args, "search_area", None))
                     # A trajectory identity need not be an atmospheric member token.
@@ -1790,7 +1807,8 @@ def main(args) -> int:
                     mid = track_selection["lineage"]["member_id"]
                     row = next(r for r in source_options() if r["source"] == forcing_source)
                     provenance_source = track_selection["lineage"]["member"].get("source")
-                    member = mid if provenance_source == forcing_source and mid in row["members"] else None
+                    if not acquired_observations:
+                        member = mid if provenance_source == forcing_source and mid in row["members"] else None
                 seed_path = getattr(args, "seed_fields", None)
                 fields = (load_seed_fields(seed_path, source=forcing_source,
                                            cycle=args.cycle, member=member)
@@ -1924,8 +1942,9 @@ def main(args) -> int:
 
 def register_cli(subparsers):
     from gpuwm.cli_numbers import positive_float
-    from gpuwm.domain_wizard import CARD_VRAM_GIB
     parser = subparsers.add_parser("cyclone-setup", help="select a cyclone on any planable source's chosen cycle and lead and author a 12/3 km following nest")
+    from gpuwm.earth2_licensing import add_licence_argument
+    add_licence_argument(parser)
     # NO `choices=`, deliberately, and for the same reason the domain
     # wizard's --source carries none: the admissible set is the registry
     # intersected with the fetch routes, it grows by a table row, and an
@@ -1944,6 +1963,9 @@ def register_cli(subparsers):
     parser.add_argument("--latest-map", action="store_true")
     parser.add_argument("--cycle", default="latest")
     parser.add_argument("--point")
+    parser.add_argument("--track-source", choices=("auto", "nhc", "hurdat2", "ibtracs", "jtwc"), default="auto",
+                        help="observed best-track archive used when no --tracks file is supplied")
+    parser.add_argument("--track-cache", type=Path, help="cache for automatic best-track acquisition")
     parser.add_argument("--tracks", type=Path, metavar="FILE", help="track JSON or CSV guidance for selection and placement only")
     parser.add_argument("--storm", metavar="auto|ID|NAME", help="strongest eligible system at the cycle, or a track id, ATCF id or storm name")
     from gpuwm.cyclone_search import parse_area

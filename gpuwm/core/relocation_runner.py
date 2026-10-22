@@ -68,6 +68,7 @@ from gpuwm.core.nest_relocation import (RelocationRefusal, RelocationSegment,
                                         mark_fingerprint_across_move,
                                         relocate_child)
 from gpuwm.progress_log import centre_latlon, model_step_log
+from gpuwm.core.storm_tracking import TRACKER_OPTIONAL_STATE_KEYS
 
 #: Versioned label for the runner's own receipt rows.
 from gpuwm.core.uh_diag import (UH_FOLLOW_WINDOW_SLOT,
@@ -391,7 +392,8 @@ class RelocationRunner:
             "moves_executed": int(self.moves_executed),
             "last_proposal_t": timers.get("last_proposal_t"),
             "last_move_t": timers.get("last_move_t"),
-            **({"motion_fix": timers["motion_fix"]} if "motion_fix" in timers else {}),
+            **{key: timers[key] for key in TRACKER_OPTIONAL_STATE_KEYS
+               if key in timers},
         }
 
     def restore_state(self, entry) -> None:
@@ -413,7 +415,8 @@ class RelocationRunner:
                 "a follower restart entry must be a mapping, got "
                 f"{type(entry).__name__}")
         unknown = sorted(set(entry) - set(RUNNER_STATE_KEYS)
-                         - set(RUNNER_WRITER_KEYS) - {"motion_fix"})
+                         - set(RUNNER_WRITER_KEYS)
+                         - set(TRACKER_OPTIONAL_STATE_KEYS))
         if unknown:
             raise RelocationRefusal(
                 f"a follower restart entry carries key(s) {unknown} this "
@@ -447,8 +450,9 @@ class RelocationRunner:
 
         timers = {"last_proposal_t": entry["last_proposal_t"],
                   "last_move_t": entry["last_move_t"]}
-        if "motion_fix" in entry:
-            timers["motion_fix"] = entry["motion_fix"]
+        for key in TRACKER_OPTIONAL_STATE_KEYS:
+            if key in entry:
+                timers[key] = entry[key]
         provider_restore = getattr(self.provider, "restore_state", None)
         if provider_restore is None:
             held = sorted(key for key, value in timers.items()
@@ -1213,6 +1217,16 @@ class RelocationRunner:
         period_ticks = int(model.schedule.period_ticks)
         mover_due = ticks != 0 and ticks % (
             period_ticks * self.cadence_periods) == 0
+        if mover_due:
+            # A nest SPAWNED at this boundary was just centred on its storm
+            # by its trigger and has not stepped: it waits for its next
+            # cadence.  Moving it here re-derived a state that had never
+            # been integrated, and the moved spawned nest went non-finite
+            # within eight steps (a rented box, 19:23Z, HRRR storm nest d03).
+            mover = (getattr(model, "nodes_by_grid_id", None) or {}).get(
+                int(self.config.grid_id))
+            if mover is not None and getattr(mover, "_born_at_ticks", None) == ticks:
+                mover_due = False
         containment_due = (
             self.containment_cadence_periods is not None
             and ticks != 0

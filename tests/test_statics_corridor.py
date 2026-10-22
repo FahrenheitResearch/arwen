@@ -21,6 +21,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+
+from gpuwm.static.build import _DEFAULT_GEOG_DIRS
 import pytest
 
 import gpuwm.static.corridor as corridor_module
@@ -127,7 +129,7 @@ def _synthetic_wps_geog(root: Path, *, regional_size=750) -> Path:
     _write_tiles(root / "modis_landuse_20class_30s_with_lakes", landuse, kv)
 
     # soils: coarse global categorical 1..16
-    for name in ("soiltype_top_30s", "soiltype_bot_30s"):
+    for name in (_DEFAULT_GEOG_DIRS["soil_top"], _DEFAULT_GEOG_DIRS["soil_bottom"]):
         kv, nxg, nyg = _coarse_global(kv_extra=dict(
             type="categorical", category_min=1, category_max=16,
             wordsize=1, tile_z=1))
@@ -141,7 +143,7 @@ def _synthetic_wps_geog(root: Path, *, regional_size=750) -> Path:
         ("lai_modis_10m", 12, 0.1, 60),
         ("albedo_modis", 12, 1.0, 30),
         ("maxsnowalb_modis", 1, 1.0, 80),
-        ("soiltemp_1deg", 1, 1.0, 300),
+        (_DEFAULT_GEOG_DIRS["soil_temperature"], 1, 1.0, 300),
     )
     for name, nz, scale, span in monthly:
         kv, nxg, nyg = _coarse_global(nz=nz, kv_extra=dict(

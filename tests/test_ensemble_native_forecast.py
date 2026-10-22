@@ -72,8 +72,13 @@ class _Health:
     status_mask: int = 0
 
 
-@pytest.mark.parametrize("begin,end,expected", [(0, None, (0, 24, 48)), (12, 36, (12, 36)), (0, 24, (0, 24))])
-@pytest.mark.parametrize("observe_counters", [False, True])
+# Keep every history window with counters, plus the counter-free executor path.
+@pytest.mark.parametrize("observe_counters,begin,end,expected", [
+    pytest.param(False, 0, None, (0, 24, 48), id="False-0-None-expected0"),
+    pytest.param(True, 0, None, (0, 24, 48), id="True-0-None-expected0"),
+    pytest.param(True, 12, 36, (12, 36), id="True-12-36-expected1"),
+    pytest.param(True, 0, 24, (0, 24), id="True-0-24-expected2"),
+])
 def test_executor_uses_original_history_window_and_advances_each_clock_once(monkeypatch, begin, end, expected, observe_counters):
     import gpuwm.ensemble.native_forecast as module
     spec = DomainTicks(1, 0, 1, 12, np.float32(12), 24, None, None, None,

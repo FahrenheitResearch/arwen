@@ -134,7 +134,10 @@ def _surface(cp, value, ncol, name):
 
 def _prep(sw, kw):
     import cupy as cp
+    # Deferral is an adapter-side option, not an argument of the NumPy
+    # oracle whose signature the rest of ``kw`` binds against.
     kw = dict(kw)
+    defer = bool(kw.pop("defer_subcolumns", False))
     radii_units = kw.pop("radii_units", "meters")
     if radii_units not in ("meters", "microns"):
         raise ValueError("radii_units must be meters or microns")
@@ -231,18 +234,47 @@ def _prep(sw, kw):
     if generate is None:
         generate = (rrtmg_mcica.gpu_generate_sw_subcolumns if sw else
                     rrtmg_mcica.gpu_generate_lw_subcolumns)
-    bands = _bands(sw, ncol, nl)
-    mc = generate(1, ncol, nl, icld,
-                  rrtmg_mcica.SW_PERMUTESEED if sw else rrtmg_mcica.LW_PERMUTESEED,
-                  0, out["play"], cloud["cldfrac"], cloud["ciwpth"], cloud["clwpth"],
-                  cloud["cswpth"], cloud["rei"], cloud["rel"], cloud["res"], *bands,
-                  out["hgt"], int(k["idcor"]), juldat, surf["xlat"],
-                  layout="column")
     mc_keys = ("cldfmcl", "taucmcl", "ciwpmcl", "clwpmcl", "cswpmcl",
                "reicmcl", "relqmcl", "resnmcl")
     if sw:
         mc_keys += ("ssacmcl", "asmcmcl", "fsfcmcl")
-    out.update((name, mc[name]) for name in mc_keys)
+    hgt = out["hgt"]
+    idcor = int(k["idcor"])
+    seed = rrtmg_mcica.SW_PERMUTESEED if sw else rrtmg_mcica.LW_PERMUTESEED
+    ngpt = rrtmg_mcica.NGPTSW if sw else rrtmg_mcica.NGPTLW
+    # Deferred windows of the real device generator share one states pass
+    # over the whole batch (each column's stream depends on its own play
+    # only), instead of a one-thread-per-column launch per window.
+    base = getattr(generate, "func", generate)
+    span_states = (rrtmg_mcica.gpu_subcolumn_states(
+        ncol, nl, ngpt, seed, out["play"])
+        if defer and icld == rrtmg_mcica.MCICA_DEVICE_ICLD
+        and base in rrtmg_mcica.DEVICE_GENERATORS else None)
+
+    def subcolumns(w0, w1):
+        """The McICA slabs of prep columns [w0, w1).  Each column's
+        kissvec stream depends only on that column's own play profile and
+        the permute seed (rrtmg_mcica's chunking contract), so a window
+        holds the same bits as the same columns of a whole-batch call."""
+        rows = slice(int(w0), int(w1))
+        nw = int(w1) - int(w0)
+        extra = {} if span_states is None else {"states": span_states[rows]}
+        mc = generate(1, nw, nl, icld, seed, 0, out["play"][rows],
+                      cloud["cldfrac"][rows], cloud["ciwpth"][rows],
+                      cloud["clwpth"][rows], cloud["cswpth"][rows],
+                      cloud["rei"][rows], cloud["rel"][rows],
+                      cloud["res"][rows], *_bands(sw, nw, nl), hgt[rows],
+                      idcor, juldat, surf["xlat"][rows], layout="column",
+                      **extra)
+        return {name: mc[name] for name in mc_keys}
+
+    if defer:
+        # The adapter generates the slabs one engine window at a time, so
+        # this prep can span many engine chunks without holding
+        # (column, layer, g-point) slabs for all of them at once.
+        out["mcica_window"] = subcolumns
+    else:
+        out.update(subcolumns(0, ncol))
     side = "sw" if sw else "lw"
     out.update({"inflg"+side: inflg, "iceflg"+side: iceflg, "liqflg"+side: 1})
     if sw:
@@ -268,10 +300,16 @@ def _prep(sw, kw):
 
 
 def lwrad_prep_batch_device(**kw):
-    """LW prep with unchanged keys and five (column, layer, g-point) slabs."""
+    """LW prep with unchanged keys and five (column, layer, g-point) slabs.
+
+    ``defer_subcolumns=True`` returns, in place of the McICA slabs, a
+    callable ``mcica_window(w0, w1)`` that builds the slabs of prep
+    columns [w0, w1) on demand (same bits as the eager slabs' rows)."""
     return _prep(False, kw)
 
 
 def swrad_prep_batch_device(**kw):
-    """SW day batch prep, same keywords and return keys as the NumPy oracle."""
+    """SW day batch prep, same keywords and return keys as the NumPy oracle.
+
+    ``defer_subcolumns=True``: see :func:`lwrad_prep_batch_device`."""
     return _prep(True, kw)

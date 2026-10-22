@@ -397,9 +397,12 @@ def _run(command: list[str], *, what: str,
         raise ValueError(f"box fetch cap {cap} cannot bound this older Rust bridge's {idle} idle sockets plus an active socket; rebuild rw_fetch for idle-free transfers or use the Python transport")
     requested = int(settings.get(STREAMS_ENV, 16))
     streams = max(1, min(requested, cap - idle))
-    settings[STREAMS_ENV] = str(streams)
     settings["GPUWM_FETCH_NO_IDLE_CONNECTIONS"] = "1"
-    with fetch_connections.lease(streams + idle):
+    # The grant can be smaller than the request when other gpuwm processes on the box hold slots; the
+    # bridge opens exactly the granted active sockets (it used to wait, silently, for the full request).
+    with fetch_connections.lease(streams + idle, minimum=idle + 1) as granted:
+        streams = granted - idle
+        settings[STREAMS_ENV] = str(streams)
         record = _run_process(command, what=what, out=out, env=settings,
                               on_progress=on_progress)
     # The native object door reports its selected width after inspecting

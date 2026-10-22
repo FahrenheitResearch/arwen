@@ -61,7 +61,7 @@ _LINUX = sys.platform.startswith("linux") and os.path.isdir("/proc/self/task")
 
 # ---------------------------------------------------------------------------------------------- CPU clock
 def _stat(pid):
-    """(ppid, own+reaped-children ticks, comm) of one pid, or None when it is gone."""
+    """(ppid, own+reaped-children ticks, comm, own ticks) of one pid, or None when it is gone."""
     try:
         with open(f"/proc/{pid}/stat", "rb") as handle:
             raw = handle.read().decode("utf-8", "replace")
@@ -70,7 +70,8 @@ def _stat(pid):
     close = raw.rfind(")")
     fields = raw[close + 2:].split()
     # fields[0] is state (stat field 3); utime..cstime are stat fields 14..17
-    return int(fields[1]), sum(int(x) for x in fields[11:15]), raw[raw.find("(") + 1:close]
+    return (int(fields[1]), sum(int(x) for x in fields[11:15]), raw[raw.find("(") + 1:close],
+            int(fields[11]) + int(fields[12]))
 
 
 def _children(pid):
@@ -100,13 +101,16 @@ def tree_pids(root=None):
     return seen
 
 
-def tree_ticks(root=None):
-    """{pid: (ticks, comm)} for the tree under root (Linux)."""
+def tree_ticks(root=None, own=None):
+    """{pid: (ticks, comm)} for the tree under root (Linux); ``own`` (a dict) also receives each pid's own
+    utime+stime, without its reaped children."""
     out = {}
     for pid in tree_pids(root):
         row = _stat(pid)
         if row is not None:
             out[pid] = (row[1], row[2])
+            if own is not None:
+                own[str(pid)] = row[3]
     return out
 
 
@@ -348,14 +352,15 @@ def watch(command, *, interval=1.0, **limits):
     try:
         while True:
             now = time.monotonic()
-            table = tree_ticks(proc.pid)
+            own = {}
+            table = tree_ticks(proc.pid, own)
             for pid, (t, comm) in table.items():
                 if pid not in names:
                     names[pid] = _signature(pid, comm)
             total = sum(t for t, _ in table.values())
             # a pid that left between ticks was reaped by its parent, whose cutime now holds it
             ticks.append({"t": round(now - started, 3), "mono": now, "total": total,
-                          "per": {str(p): t for p, (t, _) in table.items()},
+                          "per": {str(p): t for p, (t, _) in table.items()}, "own": own,
                           "on_card": holds_card(table, on_card) if cards.active else False})
             if proc.poll() is not None:
                 break
@@ -381,8 +386,15 @@ def analyse(ticks, names, cards, *, interval, ncpu, **limits):
             busy = 0.0          # the card is busy, but not with this tree: it excuses nothing
         top = sorted(((b["per"].get(p, 0) - a["per"].get(p, b["per"].get(p, 0)), p) for p in b["per"]),
                      reverse=True)[:1]
+        # The busiest single process's own CPU (no reaped children): one thread pinned near a core, or the
+        # tree's CPU spread over many processes that each mostly wait. Ticks without "own" (older samples)
+        # carry None and are judged on the tree's cores alone.
+        own_a, own_b = a.get("own"), b.get("own")
+        busiest = (max((own_b[p] - own_a.get(p, own_b[p]) for p in own_b), default=0) / _TICK / dt
+                   if own_a is not None and own_b is not None else None)
         series.append({"t0": a["t"], "t1": b["t"], "mono0": a["mono"], "mono1": b["mono"],
                        "cores": round(cores, 2), "card_busy": busy,
+                       "busiest": round(busiest, 2) if busiest is not None else None,
                        "top": names.get(int(top[0][1])) if top and top[0][0] > 0 else None})
     windows, run = [], []
 
@@ -397,6 +409,13 @@ def analyse(ticks, names, cards, *, interval, ncpu, **limits):
             if s["top"]:
                 tops[s["top"]] = tops.get(s["top"], 0) + 1
         rec = stage_record(wall, round(cpu, 3), round(sum(busy) / len(busy), 3) if busy else None, **limits)
+        peaks = [s["busiest"] for s in run if s.get("busiest") is not None]
+        if rec["verdict"] == "single-core" and len(peaks) == len(run) and \
+                sum(peaks) / len(peaks) < limits.get("min_cores", MIN_CORES):
+            # About one core in total, but no process ran even MIN_CORES of one: many processes each waiting
+            # (24 rw_zarr day extracts at ~0.05 core each on network reads, the hydro spin-up forcing fetch,
+            # 2.9.4 R11 2026-10-22). No thread is the bottleneck, so more threads would not help: a wait.
+            rec = {**rec, "verdict": "waiting", "busiest_process_cores": round(sum(peaks) / len(peaks), 2)}
         if rec["verdict"] in ("single-core", "waiting"):
             busiest = sorted(tops, key=lambda k: -tops[k])[:3]
             windows.append({**rec, "t0": run[0]["t0"], "t1": run[-1]["t1"], "mono0": run[0]["mono0"],

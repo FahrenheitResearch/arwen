@@ -38,6 +38,9 @@ _ENCODING = "utf-8"
 # This table must stay a literal name -> filenames mapping.  Do not give it
 # filesystem probing, globbing, or any implicit fallback.
 _EXTRA_HEADERS: dict[str, tuple[str, ...]] = {
+    "gsd_helicity": ("gsd_helicity_helpers.cuh",),
+    "gsd_diagnostics": ("glibc_flt32.cuh", "glibc_flt32_extra.cuh", "glibc_flt64.cuh", "gsd_hail_bins.cuh"),
+    "hail": ("hailcast_support.cuh", "hailcast_wrf.cuh"),
     "thompson_column": ("glibc_flt32.cuh", "glibc_flt64.cuh",
                         "thompson_aerosol_libm.cuh", "thompson_column_support.cuh", "thompson_column_radar.cuh",
                         "thompson_column_generated.cuh"),
@@ -171,8 +174,8 @@ _EXTRA_HEADERS: dict[str, tuple[str, ...]] = {
     # topo_wind arm (ysu_column_topo): glibc powf for the paj TKE profile
     # and the Beljaars convective velocity, as bl_ysu.F90 evaluates them,
     # and the arm's own pieces (get_pblh, the 10 m blend), kept out of
-    # ysu.cu so its cited line numbers stand.
-    "ysu": ("glibc_flt32.cuh", "ysu_topo.cuh"),
+    # ysu_default.cu so its cited line numbers stand.
+    "ysu": ("glibc_flt32.cuh", "ysu_topo_default.cuh"),
     # Shin-Hong takes glibc's powf/expf (gfk_pow/gfk_exp) since
     # lane/parity-pbl-libm, graded by tests/test_shinhong_wrf461_parity.py.
     "shinhong": ("glibc_flt32.cuh",),
@@ -324,8 +327,6 @@ def _extra_header_text(name: str, kernel_dir: Path = _KDIR) -> str:
         headers = {'rrtmgp_gas': (), 'rrtmgp_rte': ('rrtmgp_planck_common_default.cuh', 'rrtmgp_planck_staged_default.cuh'), 'rrtmgp_cloud': ()}[name]
     if not ENABLED and name == "gf":
         headers = ('glibc_flt32.cuh',)
-    if not ENABLED and name == "ysu":
-        headers = ("glibc_flt32.cuh", "ysu_topo_default.cuh")
     if not ENABLED and name in ('nssl2_nucond', 'nssl2', 'nssl2_fused_gs', 'nssl2_driver_support', 'nssl2_diagnostics'):
         headers = ()
     if DIAGNOSTICS_ENABLED and name == "diagnostics":
@@ -334,6 +335,8 @@ def _extra_header_text(name: str, kernel_dir: Path = _KDIR) -> str:
                    for header in headers)
     if not ENABLED and name == "smag2d":
         text = _smag2d_default_gfk_exp(text)
+    if not ENABLED and name == "nssl2":
+        text += "#define gfk_pow powf\n#define gfk_exp expf\n#define gfk_log logf\n"
     return text
 
 
@@ -376,23 +379,26 @@ def _smag2d_default_gfk_exp(text: str) -> str:
 #: Units whose strict (GPUWM_WRF_EXACT=1) source is ``<name>.cu`` and whose
 #: default source is ``<name>_default.cu``: the exact chain rewrote these for
 #: WRF's scalar arithmetic, and a default process keeps the 2.9.1 unit (for
-#: ysu, 2.9.1's ysu.cu, the default wrf_461 generation's kernel).
+#: ysu, the default wrf_461 generation's retained kernel).
 _DEFAULT_SOURCE_MODULES = frozenset({
-    "rrtmgp_gas", "rrtmgp_rte", "rrtmgp_cloud", "ysu", "nssl2_nucond",
-    "nssl2", "nssl2_fused_gs", "nssl2_driver_support", "nssl2_diagnostics"})
+    "rrtmgp_gas", "rrtmgp_rte", "ysu", "nssl2_nucond",
+    "nssl2_fused_gs", "nssl2_driver_support", "nssl2_diagnostics"})
 
 
 def _unit_text(name: str, kernel_dir: Path = _KDIR) -> str:
     """Read a CUDA unit and apply only the active set's registered literals."""
     from gpuwm.physics_params import edit_kernel_source
     from gpuwm.wrf_exact import ENABLED
-    unit_path = Path(kernel_dir) / f"{name}.cu"
-    if not ENABLED and name in _DEFAULT_SOURCE_MODULES:
+    source_name = "mynn_pbl" if name == "mynn_dmp_sibling" else name
+    unit_path = Path(kernel_dir) / f"{source_name}.cu"
+    if name == "ysu" or (not ENABLED and name in _DEFAULT_SOURCE_MODULES):
         default_path = Path(kernel_dir) / f"{name}_default.cu"
         if default_path.is_file():
             unit_path = default_path
     source = edit_kernel_source(
         name, unit_path.read_text(encoding=_ENCODING))
+    if name == "mynn_dmp_sibling":
+        source = "#define MYNN_EXPORT_PLUME_EDGE 1\n" + source
     if name == "noah":
         from gpuwm.wrf_exact import ENABLED
         if ENABLED:
@@ -444,7 +450,7 @@ def module_source(name: str, *, kernel_dir: Path = _KDIR) -> str:
 #: contraction; with it a default column read hfx 802 and noahres 606208 ULP
 #: from WRF 4.6.1 and failed the WRF 4.7.1 urban hand-over oracle
 #: (tests/test_noah_wrf461_parity.py, tests/test_urban_noah_hook_wrf471_parity.py).
-_NO_FMAD_MODULES = frozenset({"lake", "g3", "ysu", "shinhong", "mynn_pbl",
+_NO_FMAD_MODULES = frozenset({"hail", "lake", "g3", "ysu", "shinhong", "mynn_pbl",
                               "mynn_dmp_sibling", "wsm6", "kessler", "myjpbl",
                               "milbrandt2", "milbrandt2_zet", "wdm6",
                               "wdm6_refl", "wsm3", "wsm6r", "noah"})

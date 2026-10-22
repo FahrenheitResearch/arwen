@@ -94,13 +94,6 @@ def test_the_science_core_pin_matches_what_is_installed():
     assert hasattr(core, "getvar") and hasattr(core, "WrfFile")
 
 
-@requires_wrf_rust
-def test_the_pin_here_is_the_same_pin_the_tree_already_carries():
-    from tools.flagship.products import PINNED_WRF_RUST_VERSION
-
-    assert model_source.PINNED_WRF_RUST_VERSION == PINNED_WRF_RUST_VERSION
-
-
 def test_the_window_accepts_a_newer_core_and_still_refuses_an_older_one():
     """The pin is a WINDOW, not an equality.
 

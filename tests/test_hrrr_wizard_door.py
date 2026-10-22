@@ -25,6 +25,10 @@ copy cannot be added without failing a test.
 from __future__ import annotations
 
 import re
+import contextlib
+import io
+from functools import lru_cache
+import shutil
 
 import pytest
 
@@ -34,16 +38,33 @@ from gpuwm.cli import main as cli_main
 _DIGEST = "0" * 64
 
 
-def _emit(tmp_path, capsys, name: str, ladder: str) -> tuple[str, str]:
-    """``(config path, the wizard's printed closing block)``, for real."""
-    out = tmp_path / f"{name}.toml"
-    assert cli_main([
-        "domain", "--point=35.3,-97.5", "--card", "24gb",
-        "--ladder", ladder, "--source", "hrrr",
-        "--cycle", "2026-07-29T18", "--hours", "6",
-        "--out", str(out)]) == 0
-    printed = capsys.readouterr().out
-    return str(out), printed
+@pytest.fixture(scope="module")
+def wizard_templates(tmp_path_factory):
+    root = tmp_path_factory.mktemp("hrrr-wizard-templates")
+    @lru_cache(maxsize=None)
+    def template(ladder):
+        work = root / ladder
+        work.mkdir()
+        out = work / "hrrr.toml"
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
+            assert cli_main([
+                "domain", "--point=35.3,-97.5", "--card", "24gb",
+                "--ladder", ladder, "--source", "hrrr",
+                "--cycle", "2026-07-29T18", "--hours", "6",
+                "--out", str(out)]) == 0
+        return out, printed.getvalue()
+    return template
+
+
+@pytest.fixture
+def wizard_case(tmp_path, wizard_templates):
+    def emit(name, ladder):
+        template, printed = wizard_templates(ladder)
+        work = tmp_path / name
+        shutil.copytree(template.parent, work)
+        return str(work / template.name), printed.replace(str(template.parent), str(work))
+    return emit
 
 
 def _commands(printed: str, front_door: str) -> list[list[str]]:
@@ -79,22 +100,15 @@ _INTERNALS = (
 
 
 @pytest.mark.parametrize("ladder", ("12", "12-3"))
-def test_the_hrrr_wizard_prints_the_shipped_route(tmp_path, capsys, ladder):
+def test_the_hrrr_wizard_prints_the_shipped_route(wizard_case, ladder):
     """Both arms: the two stage commands, and none of the machinery."""
-    _config, printed = _emit(tmp_path, capsys, "hrrr", ladder)
+    _config, printed = wizard_case("hrrr", ladder)
     assert "gpuwm go " in printed
     assert "sha256" not in printed
     for internal in _INTERNALS:
         assert internal not in printed, (
             f"the closing block still hands the reader `{internal}`, which "
             "is what `gpuwm prep`/`gpuwm sim` spawn for them")
-
-
-@pytest.mark.parametrize("ladder", ("12", "12-3"))
-def test_no_printed_digest_placeholder_survives_the_forecast_stage(
-        tmp_path, capsys, ladder):
-    """`gpuwm sim` reads the digests off the bundle; nobody types them."""
-    _config, printed = _emit(tmp_path, capsys, "hrrr", ladder)
     sim = [line for line in printed.splitlines() if "gpuwm go " in line]
     assert sim, printed
     for line in sim:
@@ -105,14 +119,14 @@ def test_no_printed_digest_placeholder_survives_the_forecast_stage(
 
 @pytest.mark.parametrize("ladder", ("12", "12-3"))
 def test_every_printed_prep_line_is_one_the_real_front_door_accepts(
-        tmp_path, capsys, ladder, monkeypatch):
+        wizard_case, capsys, ladder):
     """Verified against the artifact: each line, through `gpuwm prep`.
 
     ``--dry-run`` composes and prints the internal command without
     running it, so this asserts the printed flags are flags this door
     takes AND that the program behind them is the one the route needs.
     """
-    _config, printed = _emit(tmp_path, capsys, "hrrr", ladder)
+    _config, printed = wizard_case("hrrr", ladder)
     from gpuwm.experiment import load_experiment
     # The optional manual recipe still uses the same staged doors as go.
     printed = domain_wizard.hrrr_route_commands(
@@ -128,7 +142,7 @@ def test_every_printed_prep_line_is_one_the_real_front_door_accepts(
         assert expected in composed, composed
 
 
-def test_the_printed_corridor_flag_reaches_the_hierarchy(tmp_path, capsys):
+def test_the_printed_corridor_flag_reaches_the_hierarchy(tmp_path, capsys, wizard_case):
     """A moving nest's corridor must survive the door it is typed at.
 
     ``--statics-corridor`` seals child-resolution statics, and the tree
@@ -139,7 +153,7 @@ def test_the_printed_corridor_flag_reaches_the_hierarchy(tmp_path, capsys):
     from gpuwm.experiment import load_experiment
     from gpuwm.static.corridor import config_declares_follow_source
 
-    config, printed = _emit(tmp_path, capsys, "hrrr-follow", "12-3")
+    config, printed = wizard_case("hrrr-follow", "12-3")
     dt = float(load_experiment(config).root.run.dt)
     text = (open(config, encoding="utf-8").read()
             + "\n[relocation]\nenabled = true\ngrid_id = 2\n\n"

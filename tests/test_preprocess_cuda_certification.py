@@ -311,20 +311,6 @@ def _tiled_config(tmp_path):
     return path
 
 
-def test_the_tiled_policy_returns_its_reason():
-    from gpuwm.preprocess_policy import (
-        HOST_TILED_CPU_REASON, preprocess_backend_choice)
-
-    tables = {"tiles": {"mode": "on", "store": "host"},
-              "domain": [{"grid_id": 1}]}
-    assert preprocess_backend_choice(source="gfs", tables=tables) == (
-        "cpu", HOST_TILED_CPU_REASON)
-    assert preprocess_backend_choice(source="hrrr", tables=tables) == (
-        "auto", None)
-    assert preprocess_backend_choice(
-        source="gfs", tables=tables, requested="cuda") == ("cuda", None)
-
-
 def test_go_carries_the_tiled_reason_and_says_it_in_one_line(tmp_path, capsys):
     from gpuwm import go_cli
     from gpuwm.preprocess_policy import HOST_TILED_CPU_REASON

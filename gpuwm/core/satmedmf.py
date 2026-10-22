@@ -10,7 +10,6 @@ from gpuwm.core.device_cache import cuda_cache
 from gpuwm.core.kernels import load_module
 
 _INPUTS=("u","v","t","q","swh","hlw","prsi","prsl","prslk","phii","phil","sfc")
-_TABLE_MANIFEST=Path(__file__).resolve().parents[1]/"data/satmedmf/manifest.json"
 WORKSPACE_BUDGET_BYTES=512*1024*1024
 
 def _table_manifest():

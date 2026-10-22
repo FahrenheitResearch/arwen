@@ -48,7 +48,7 @@ pub fn array_sha256(shape: &[usize], values: &[f64]) -> String {
     // and floating-point arithmetic must not change an array's identity.
     let mut bytes = [0u8; 8192];
     for values in values.chunks(bytes.len() / 8) {
-        for (slot, value) in bytes.chunks_exact_mut(8).zip(values) {
+        for (slot, value) in bytes.as_chunks_mut::<8>().0.iter_mut().zip(values) {
             slot.copy_from_slice(&value.to_le_bytes());
         }
         digest.update(&bytes[..values.len() * 8]);

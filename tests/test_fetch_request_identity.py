@@ -300,57 +300,6 @@ def test_a_named_hrrr_cycle_with_wait_for_waits_instead_of_refusing(
         "f000.json", "f001.json", "f002.json"]
 
 
-def test_a_complete_gfs_folder_is_reused_when_no_provider_answers(
-        tmp_path, monkeypatch, capsys, offline_index):
-    downloads: list[str] = []
-    monkeypatch.setattr(gfs_transport, "_download",
-                        _dated_gfs_download(downloads))
-    out = tmp_path / "gfs"
-    fetch.fetch_gfs(cycle=datetime(2026, 1, 31, 6), hours=(0, 3),
-                    area=fetch.parse_area(AREA), out=out,
-                    progress=lambda line: None)
-    before = _files(out)
-
-    def unreachable(*args, **kwargs):
-        raise AssertionError("a complete folder asked the provider for bytes")
-
-    monkeypatch.setattr(gfs_transport, "_download", unreachable)
-    monkeypatch.setattr(fetch, "_head_ok", lambda url: False)
-    _with_probe(monkeypatch, "require_published_cycle", lambda url: False)
-    rc = cli.main(["fetch", "--source", "gfs", "--cycle", "2026-01-31T06",
-                   "--hours", "3", "--area", AREA, "--out", str(out)])
-    captured = capsys.readouterr()
-    assert rc == 0, captured.err
-    assert "already in" in captured.out
-    payload = {name: body for name, body in _files(out).items()
-               if name.endswith(".grib2")}
-    assert payload == {name: body for name, body in before.items()
-                       if name.endswith(".grib2")}
-    assert _manifest(out)["mode"] == "nomads-cgi-subset"
-
-
-def test_a_complete_hrrr_folder_is_reused_when_no_provider_answers(
-        tmp_path, monkeypatch, capsys, python_engine):
-    downloads: list[str] = []
-    monkeypatch.setattr(hrrr_transport, "_download_product",
-                        _dated_hrrr_product(downloads))
-    out = tmp_path / "hrrr"
-    fetch.fetch_hrrr(cycle=datetime(2026, 1, 31, 6), hours=(0, 1),
-                     area=None, out=out, progress=lambda line: None)
-    downloads.clear()
-    monkeypatch.setattr(fetch, "_head_ok", lambda url: False)
-    _with_probe(monkeypatch, "require_published_cycle", lambda url: False)
-    rc = cli.main(["fetch", "--source", "hrrr", "--cycle", "2026-01-31T06",
-                   "--hours", "1", "--out", str(out)])
-    captured = capsys.readouterr()
-    assert rc == 0, captured.err
-    assert downloads == []
-    assert "already in" in captured.out
-    assert _manifest(out)["forecast_hours"] == [0, 1]
-    assert {entry["transport"] for entry in _manifest(out)["files"]
-            if entry["role"] in ("atmosphere", "soil")} == {"s3"}
-
-
 def test_a_partial_folder_still_asks_whether_the_cycle_is_published(
         tmp_path, monkeypatch, capsys, python_engine):
     """Only a COMPLETE folder skips the question; a missing hour asks it."""
@@ -698,26 +647,29 @@ def test_latest_hrrr_wait_for_with_transport_auto_waits_on_both_hosts(
     assert handed[0][1] in ("nomads", "s3") and handed[0][2] is False
 
 
+@pytest.mark.parametrize("pinned, option", [("s3", []), ("nomads", ["--transport", "auto"])], ids=["default", "auto"])
 def test_a_complete_hrrr_folder_with_transport_auto_keeps_its_host(
-        tmp_path, monkeypatch, capsys, python_engine):
+        tmp_path, monkeypatch, capsys, python_engine, pinned, option):
     downloads: list[str] = []
     monkeypatch.setattr(hrrr_transport, "_download_product",
                         _dated_hrrr_product(downloads))
     out = tmp_path / "hrrr"
     fetch.fetch_hrrr(cycle=datetime(2026, 1, 31, 6), hours=(0, 1),
-                     area=None, out=out, transport="nomads",
+                     area=None, out=out, transport=pinned,
                      progress=lambda line: None)
     downloads.clear()
     monkeypatch.setattr(fetch, "_head_ok", lambda url: False)
     _with_probe(monkeypatch, "require_published_cycle", lambda url: False)
     rc = cli.main(["fetch", "--source", "hrrr", "--cycle", "2026-01-31T06",
-                   "--hours", "1", "--transport", "auto",
+                   "--hours", "1", *option,
                    "--out", str(out)])
     captured = capsys.readouterr()
     assert rc == 0, captured.err
     assert downloads == []
     assert {entry["transport"] for entry in _manifest(out)["files"]
-            if entry["role"] in ("atmosphere", "soil")} == {"nomads"}
+            if entry["role"] in ("atmosphere", "soil")} == {pinned}
+    assert "already in" in captured.out
+    assert _manifest(out)["forecast_hours"] == [0, 1]
 
 
 def test_run_plan_resolves_latest_with_transport_auto(tmp_path, monkeypatch):
@@ -825,6 +777,7 @@ def test_a_complete_recent_gfs_folder_is_reused_without_asking_anyone(
         if name.endswith(".grib2")}
     assert _manifest(out)["record_bars"][0]["expected"] == \
         fetch.GFS_SUBSET_RECORD_COUNT
+    assert _manifest(out)["mode"] == "nomads-cgi-subset"
 
 
 def test_a_fullfile_rerun_reads_no_index_and_keeps_the_serving_host(

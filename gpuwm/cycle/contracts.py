@@ -19,8 +19,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from fractions import Fraction
 
-CONTRACTS_VERSION = "gpuwm-cycle.contracts/v1"
-
 CLOCK_SCHEMA = "gpuwm-cycle.clock/v1"
 ANCHOR_SCHEMA = "gpuwm-cycle.anchor/v1"
 LEDGER_SCHEMA = "gpuwm-cycle.ledger/v1"
@@ -51,8 +49,6 @@ TICK_HZ = 1000
 #: ``replay``
 #:     The LOUD STUB.  No dycore integrated anything.
 PARENT_KINDS = ("mpas-cuda", "mpas-cuda-frames", "arwen", "replay")
-
-ANALYSIS_STATES = ("APPLIED", "SKIPPED_NO_OBS", "REJECTED", "NULL_ARM")
 
 HALT_REASONS = ("ANALYSIS_REJECTED", "ANALYSIS_NOT_INGESTED",
                 "PARENT_DIVERGED", "STALE_ANALYSIS_BUDGET_EXHAUSTED",

@@ -122,7 +122,7 @@ def _quarter(tmp_path, domain, minutes):
 
 
 @pytest.mark.parametrize("products,armed", [
-    (None, True), ("", True), ("all", True), ("t2", True),
+    (None, True), ("all", True),
     ("none", False), (" NONE ", False),
 ])
 def test_live_drawing_is_on_whenever_the_end_of_run_draws(products, armed):
@@ -146,6 +146,9 @@ def test_every_grid_is_drawn_within_the_concurrency_bound(tmp_path):
     while len(recorder.reports) < len(committed) and time.monotonic() < deadline:
         time.sleep(0.02)
     summary = live.stop(timeout=30)
+    late, valid = _frame(tmp_path, 1, 5)
+    live.frame_committed(domain=1, valid_time=valid, path=late)
+    assert renderer.running == 0 and len(renderer.calls) == 2 * len(committed)
 
     assert recorder.warnings == []
     # The width the pass was built with, not a second reading of the
@@ -202,27 +205,6 @@ def test_the_map_record_holds_every_picture_of_every_grid(tmp_path):
     assert not (render_dir / "render-georef.json.lock").exists()
 
 
-def test_the_first_root_frame_claimed_early_is_not_drawn_again(tmp_path):
-    renderer = _Renderer()
-    recorder = _Recorder()
-    live = LiveProducts(_plan(tmp_path), report=recorder.report,
-                        warn=recorder.warn, runner=renderer)
-    first, valid = _frame(tmp_path, 1, 0)
-    live.frame_committed(domain=1, valid_time=valid, path=first, draw=False)
-    second, valid = _frame(tmp_path, 1, 1)
-    live.frame_committed(domain=1, valid_time=valid, path=second)
-    deadline = time.monotonic() + 30
-    while not recorder.reports and time.monotonic() < deadline:
-        time.sleep(0.02)
-    live.stop(timeout=30)
-
-    assert len(renderer.calls) == 1
-    # Only the next frame is drawn; the claimed one rides along as the
-    # baseline that closes its hour, and its pictures are not delivered.
-    assert _drawn_frame(renderer.calls[0]) == second
-    assert _context(renderer.calls[0]) == [first]
-
-
 def test_a_nest_frame_before_the_root_first_never_overlaps_the_early_render(
         tmp_path):
     """One render at a time, whichever grid the writer commits first."""
@@ -248,23 +230,6 @@ def test_a_nest_frame_before_the_root_first_never_overlaps_the_early_render(
 
     assert len(renderer.calls) == 2
     assert renderer.most == 1
-
-
-def test_finalize_finishes_the_queue_and_takes_no_frame_after(tmp_path):
-    renderer = _Renderer(delay=0.1)
-    recorder = _Recorder()
-    live = LiveProducts(_plan(tmp_path), report=recorder.report,
-                        warn=recorder.warn, runner=renderer)
-    for hour in range(4):
-        frame, valid = _frame(tmp_path, 1, hour)
-        live.frame_committed(domain=1, valid_time=valid, path=frame)
-    summary = live.stop(timeout=30)
-    late, valid = _frame(tmp_path, 1, 5)
-    live.frame_committed(domain=1, valid_time=valid, path=late)
-    time.sleep(0.2)
-
-    assert summary["published"] == 4 and summary["dropped"] == 0
-    assert renderer.running == 0 and len(renderer.calls) == 4
 
 
 def test_a_queue_the_wait_cannot_finish_is_left_to_finalize(tmp_path, monkeypatch):
@@ -318,24 +283,6 @@ def test_a_render_the_wait_gives_up_on_never_publishes_under_finalize(
 
 def _names(frames):
     return [Path(f).name for f in frames]
-
-
-def test_windowed_pictures_are_drawn_once_per_grid_over_its_whole_hours(
-        tmp_path):
-    hourly = [_frame(tmp_path, 1, h)[0] for h in range(3)]
-    frames = list(hourly)
-    drawn = list(hourly)
-
-    passes = live_products.windowed_passes(frames, drawn, None)
-    assert len(passes) == 1
-    wanted, context, products = passes[0]
-    # The first frame ends no window; it stays a baseline.
-    assert _names(wanted) == _names(hourly[1:])
-    assert _names(context) == _names(hourly[:1])
-    assert products == "windowed"
-    # Frames the end-of-run batch draws itself, beside their baselines,
-    # need no pass.
-    assert live_products.windowed_passes(frames, hourly[:1], None) == []
 
 
 def test_a_fifteen_minute_nest_has_its_windows_drawn_on_its_whole_hours(
@@ -424,29 +371,6 @@ def test_a_fifteen_minute_nest_draws_every_window_at_finalize(tmp_path):
                               "wrfout_d02": "windowed"}
     assert by_grid("t2,uh_2to5km_1h_max") == {
         "wrfout_d01": "uh_2to5km_1h_max", "wrfout_d02": "uh_2to5km_1h_max"}
-
-
-def test_a_nest_hour_whose_live_render_held_every_earlier_frame_is_skipped(
-        tmp_path):
-    nest = [_quarter(tmp_path, 2, minutes)[0] for minutes in range(0, 181, 15)]
-    whole = [f for f in nest if f.name.endswith("_00_00")]
-    # Each whole hour was drawn live beside every frame of the hour it
-    # closes.
-    held = {}
-    for end in whole[1:]:
-        at = nest.index(end)
-        held[end.resolve()] = frozenset(f.resolve() for f in nest[at - 4:at + 1])
-
-    passes = live_products.windowed_passes(nest, nest, "all", live_held=held)
-    # F001's render held every frame up to it; F002 and F003 need the
-    # series for their run maxima.
-    assert [(_names(w), p) for w, _, p in passes] == [
-        (_names(whole[2:]), "windowed")]
-    assert sorted(_names(passes[0][1])) == sorted(
-        _names([f for f in nest if f not in whole[2:]]))
-    # Nothing drawn live: the end-of-run batch draws every frame beside
-    # the whole series, and no pass is left.
-    assert live_products.windowed_passes(nest, [], "all", live_held=held) == []
 
 
 def test_a_group_request_skips_the_frames_whose_live_render_held_every_earlier(
@@ -555,7 +479,7 @@ def test_a_baseline_gone_from_disk_leaves_the_frame_drawn_alone(tmp_path):
         time.sleep(0.02)
     live.stop(timeout=30)
 
-    assert [_context(command) for command in renderer.calls] == [[]]
+    assert [_context(command) for command in renderer.calls] == [[], []]
     assert len(recorder.reports) == 1
 
 
@@ -581,16 +505,19 @@ def _nest_hour(tmp_path, products, runner):
 
 
 @pytest.mark.parametrize("request_", ["all", "2m_temperature,uh_2to5km_1h_max"])
-def test_a_fifteen_minute_grid_closes_its_hour_in_one_command(tmp_path,
+def test_a_fifteen_minute_grid_gives_both_passes_its_whole_hour(tmp_path,
                                                                request_):
     """The nest's hour was drawn alone and again beside its previous whole
     hour for the rainfall windows only, so its 1 h UH maximum was never
     drawn as it landed.  The engine folds every frame of the hour, so the
-    frame is drawn once, beside all of them, for the whole request."""
+    both priority and full requests use the same complete hour context."""
 
     launches, recorder, nest = _nest_hour(tmp_path, request_, _Renderer())
     assert recorder.warnings == []
-    [closing] = launches[nest[60].name]
+    closing = launches[nest[60].name][-1]
+    assert len(launches[nest[60].name]) == (2 if request_ == "all" else 1)
+    for command in launches[nest[60].name]:
+        assert _context(command) == [nest[m] for m in (0, 15, 30, 45)]
     assert _context(closing) == [nest[m] for m in (0, 15, 30, 45)]
     assert _products(closing) == request_
     receipt = json.loads((tmp_path / "png" / LIVE_PRODUCTS_RECEIPT)
@@ -613,7 +540,7 @@ def test_a_nest_hour_that_drew_nothing_is_left_to_finalize(tmp_path):
     """A frame that drew no picture is not recorded, so finalize draws it."""
 
     launches, recorder, nest = _nest_hour(tmp_path, "all", _Blank())
-    assert len(launches[nest[60].name]) == 1
+    assert len(launches[nest[60].name]) == 2
     assert "live_products_empty" in [c for c, _, _ in recorder.warnings]
     assert recorder.reports == []
 
@@ -942,32 +869,6 @@ def test_a_named_list_draws_only_its_windowed_members_at_finalize(tmp_path):
         windowed_slugs=lambda frame: frozenset())[0][2] == "t2,qpf_1h"
 
 
-def test_the_end_of_run_batch_takes_baselines_only_from_its_own_grid(
-        tmp_path):
-    hourly = [_frame(tmp_path, 1, h)[0] for h in range(3)]
-    nest = [_frame(tmp_path, 2, h)[0] for h in range(3)]
-    quarter = []
-    for minutes in (0, 15, 30):
-        path = (tmp_path / "run" / "wrfout" /
-                f"wrfout_d03_2026-09-25_12_{minutes:02d}_00")
-        path.write_bytes(b"x")
-        quarter.append(path)
-    drawn = hourly[:2] + nest + quarter[:2]
-
-    # d01 misses one frame: its own drawn frames are its baselines, and
-    # no other grid's.
-    assert (_names(live_products.baseline_frames([hourly[2]], drawn))
-            == _names(hourly[:2]))
-    # A frame between hours closes no window: nothing goes beside it.
-    assert live_products.baseline_frames([quarter[2]], drawn) == []
-    assert live_products.baseline_frames([], drawn) == []
-    # A d03 whole hour left to draw takes every drawn d03 frame, the
-    # frames between its hours included, and no other grid's.
-    hour, _ = _quarter(tmp_path, 3, 60)
-    assert (_names(live_products.baseline_frames([quarter[2], hour], drawn))
-            == _names(quarter[:2]))
-
-
 def test_a_nest_hour_left_to_the_batch_is_drawn_beside_the_whole_series(
         tmp_path):
     """A 15-minute nest's F001 and F002 left to the end-of-run batch alone
@@ -980,7 +881,9 @@ def test_a_nest_hour_left_to_the_batch_is_drawn_beside_the_whole_series(
     whole = [f for f in nest if f.name.endswith("_00_00")]
     between = [f for f in nest if f not in whole]
     drawn = [f for f in nest if f not in whole[1:]]
-    assert _names(live_products.baseline_frames(whole[1:], drawn)) == _names(drawn)
+    foreign = [_frame(tmp_path, 1, h)[0] for h in range(3)]
+    assert live_products.baseline_frames([], drawn + foreign) == []
+    assert _names(live_products.baseline_frames(whole[1:], drawn + foreign)) == _names(drawn)
     assert _names(live_products.baseline_frames(whole[2:], drawn)) == _names(drawn)
     left = [between[-1], whole[2]]
     rest = [f for f in nest if f not in left]

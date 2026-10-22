@@ -128,13 +128,15 @@ def test_different_member_grids_are_explicitly_unavailable_without_forecast_refu
     request = FieldProducts("wind10", "m s-1", (25,))
     collector = HeadlineDiagnosticCollector(tmp_path, members=2, renderer="rw_wrfbatch",
         start_time=datetime(2026, 10, 2), requests=(request,), array_module=np)
+    collector.member_weights = (.25, .75)
     coords = np.zeros((3, 5), np.float32)
     valid = "2026-10-02_00:00:00"
     entries = {}
     for member in (0, 1):
         domain = f"d01-grid-{member}"
         spool = NativeDiagnosticSpool(tmp_path, members=2, requests=(request,), latitude=coords + member,
-            longitude=coords, renderer="rw_wrfbatch", domain=domain)
+            longitude=coords, renderer="rw_wrfbatch", domain=domain,
+            member_metadata=[{"member_id": 0, "weight": .25}, {"member_id": 1, "weight": .75}])
         spool.frames[valid] = {"valid_time": valid, "domain": domain, "status": "pending",
             "members_received": [member], "members_expected": 2, "packs": [], "products": [], "maps": []}
         collector.spools[(domain, str(member))] = spool
@@ -145,6 +147,14 @@ def test_different_member_grids_are_explicitly_unavailable_without_forecast_refu
     assert receipt["pending_rosters"] == []
     assert len(receipt["unavailable_products"]) == 2
     assert all("coordinates differ" in row["reason"] for row in receipt["unavailable_products"])
+
+    for spool in collector.spools.values():
+        frame = spool.frames[valid]
+        assert frame['product_availability']
+        assert all(row['status'] == 'unavailable' and 'coordinates differ' in row['reason']
+                   for row in frame['product_availability'])
+        saved = json.loads((tmp_path/spool.domain/'ensemble-manifest.json').read_text())
+        assert saved['frames'][0]['member_weights'][0]['normalized_weight'] == 1.
 
 
 def test_compound_fire_configuration_keeps_units_and_all_allocations(tmp_path):
@@ -282,3 +292,65 @@ def test_private_worker_coordinates_leave_the_tree_and_published_ones_stay(tmp_p
             assert not path.exists() and spool.coordinate_file is None
             assert {"path": coordinate["path"], "bytes": coordinate["bytes"]} in manifest["deleted_scratch"]
             assert not list((root / ".ensemble-diagnostics").rglob("*.nc"))
+
+
+def test_moving_rain_rebases_comparisons_records_moves_and_keeps_forecast_total(tmp_path):
+    """V55 reset: shifted rain and a return visit are different index spaces."""
+    from datetime import datetime
+    import hashlib
+    start = datetime(2024, 9, 24, 12)
+    options = dict(members=1, renderer="rw_wrfbatch", start_time=start,
+                   requests=(FieldProducts("rain_total", "mm", (1,)),), array_module=np)
+    owner = HeadlineDiagnosticCollector(tmp_path, **options)
+    latitude, longitude = np.indices((2, 4), dtype=np.float32)
+
+    def record(collector, offset, tick, rain):
+        geometry = hashlib.sha256(latitude.tobytes() + (longitude + offset).tobytes()).hexdigest()
+        key = collector._placement_key(2, 0, 0, geometry, advance=True)
+        return key, collector._record_rain(key, tick, rain)
+
+    zero = np.zeros((2, 4), np.float32)
+    key, _ = record(owner, 0, 0, zero)
+    before = np.array([[1, 30, 5, 2], [3, 40, 6, 4]], np.float32)
+    record(owner, 0, 900_000_000, before)
+    # Shift one cell west in index space; the new eastern strip carries
+    # the parent's 8 mm. The overlapping physical cells keep their rain.
+    moved = np.concatenate((before[:, 1:], np.full((2, 1), 8, np.float32)), axis=1)
+    assert np.min(moved - before) == -34
+    moved_key, history = record(owner, 1, 1800_000_000, moved)
+    assert moved_key != key
+    assert owner.rain_initial_ticks[moved_key] == 0
+    np.testing.assert_array_equal(history["initial"], zero)
+    np.testing.assert_array_equal(history[1800_000_000] - history["initial"], moved)
+    assert 900_000_000 not in history  # No cross-placement rolling endpoint.
+    assert history[1800_000_000].tobytes() == moved.tobytes()
+    with pytest.raises(ValueError, match="cumulative precipitation reset"):
+        record(owner, 1, 2700_000_000, moved - np.float32(.01))
+    record(owner, 2, 2700_000_000, before)
+    returned_key, history = record(owner, 0, 3600_000_000, moved)
+    assert returned_key != key and returned_key[-1] == 3
+    assert owner.receipt()["rain_relocations"][-1]["placement_sequence"] == 3
+    rows = owner.receipt()["rain_relocations"]
+    assert [row["ticks_us"] for row in rows] == [1800_000_000, 2700_000_000, 3600_000_000]
+    assert all(row["grid_id"] == 2 and row["reason"] and row["rolling_qpf"] for row in rows)
+    # The tiny observed negative residue is admissible, with words retained.
+    fixed = (1, 0, 0, "fixed")
+    owner._record_rain(fixed, 0, zero)
+    residue = zero.copy()
+    residue[0, 0] = -2.0 ** -32
+    owner._record_rain(fixed, 1, residue)
+    with pytest.raises(ValueError, match="cumulative precipitation reset"):
+        owner._record_rain(fixed, 2, zero - np.float32(.001))
+    # Placement sequencing and the audit survive a fresh collector process.
+    owner.save_resume()
+    owner.product_consumer.close()
+    resumed = HeadlineDiagnosticCollector(tmp_path, resume=True, **options)
+    resumed.restore_resume()
+    try:
+        assert resumed.receipt()["rain_relocations"] == rows
+        resumed_key, _ = record(resumed, 0, 4500_000_000, moved + 1)
+        assert resumed_key == returned_key
+        record(resumed, 1, 5400_000_000, before)
+        assert resumed.receipt()["rain_relocations"][-1]["placement_sequence"] == 4
+    finally:
+        resumed.product_consumer.close()

@@ -493,6 +493,58 @@ def test_adapter_chunking_is_bitwise_invisible(env, baseline):
 
 
 @gpu_gate
+@pytest.mark.parametrize("span,chunk", [(16, 8), (12, 5), (1, 3)])
+def test_adapter_spans_and_windows_are_bitwise_invisible(env, baseline,
+                                                         monkeypatch, span,
+                                                         chunk):
+    """Prep spans of several engine-chunk windows (and spans narrower
+    than one window) give the whole-batch bits: the glue, the prep kernel
+    and the McICA stream are per column, so neither the span nor the
+    window boundary may show in any output."""
+    from gpuwm.core import rrtmg_legacy as leg
+    monkeypatch.setattr(leg, "ADAPTER_SPAN_COLUMNS", span)
+    assert leg.adapter_span(chunk, env.ncol) == min(
+        env.ncol, chunk * max(1, span // chunk))
+    spanned = leg.RRTMGLegacyRadiation(
+        START, env.lat.reshape(env.ny, env.nx),
+        env.lon.reshape(env.ny, env.nx), p_top=env.p_top,
+        column_chunk=chunk)
+    for _ in range(DUAL_RUNS):
+        got = _host_result(_call(spanned, env))
+        for name in ("rthratenlw", "rthratensw", "swdown", "glw", "olr"):
+            bits_equal(f"span{span}/chunk{chunk}/{name}", got[name],
+                       baseline[name])
+
+
+@gpu_gate
+@pytest.mark.parametrize("chunk", [None, 7])
+def test_inline_march_equals_the_staged_march(env, baseline, monkeypatch,
+                                              chunk):
+    """rlw_rtrn_march_inline (taut, odcld and efclfrac formed in the
+    thread) against the staged taut + prol + coalesced march it replaced,
+    on the same adapter call: every published field uint32-identical, and
+    the default route equals the module-scoped baseline."""
+    import functools
+    from gpuwm.core import rrtmg_lw as lwm
+    from gpuwm.core import rrtmg_legacy as leg
+    names = ("rthratenlw", "rthratensw", "swdown", "glw", "olr")
+    fresh = leg.RRTMGLegacyRadiation(
+        START, env.lat.reshape(env.ny, env.nx),
+        env.lon.reshape(env.ny, env.nx), p_top=env.p_top,
+        column_chunk=chunk)
+    inline = _host_result(_call(fresh, env))
+    staged_engine = functools.partial(lwm.gpu_rrtmg_lw_batched_device,
+                                      _march="staged")
+    monkeypatch.setattr(lwm, "gpu_rrtmg_lw_batched_device", staged_engine)
+    for _ in range(DUAL_RUNS):
+        staged = _host_result(_call(fresh, env))
+        for name in names:
+            bits_equal(f"inline-vs-staged/{name}", inline[name], staged[name])
+            bits_equal(f"inline-vs-baseline/{name}", inline[name],
+                       baseline[name])
+
+
+@gpu_gate
 def test_olr_is_the_toa_upward_longwave_and_is_physical(adapter, baseline):
     """The published OLR is a real outgoing flux, not a plumbing artifact.
 

@@ -40,11 +40,6 @@ from gpuwm.cycle.contracts import (CycleRefusal, HALT_REASONS, LEDGER_SCHEMA,
 
 LEDGER_NAME = "cycle_ledger.jsonl"
 
-#: Records the fold in :meth:`CycleLedger.state` understands.  An event
-#: outside this set is carried in the log and ignored by the fold -- the
-#: ledger is a record of what happened, not only of what it can score.
-_FOLDED_EVENTS = ("cycle-completed", "analysis", "child", "halt")
-
 
 class CycleLedger:
     """Append-only JSONL of cycle transitions, with a settled reader."""

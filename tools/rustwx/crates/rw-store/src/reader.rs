@@ -46,7 +46,7 @@ const MAX_CHUNK_COMP_OVERHEAD: u64 = 1024 * 1024;
 /// from requesting an enormous zstd history window.
 const MAX_CHUNK_WINDOW_LOG: u32 = 23;
 
-fn try_zeroed_bytes(len: usize, what: &str) -> RwResult<Vec<u8>> {
+pub(crate) fn try_zeroed_bytes(len: usize, what: &str) -> RwResult<Vec<u8>> {
     let mut bytes = Vec::new();
     bytes.try_reserve_exact(len).map_err(|err| {
         RwStoreError::Format(format!("cannot allocate {len} bytes for {what}: {err}"))

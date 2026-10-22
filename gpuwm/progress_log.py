@@ -1445,6 +1445,16 @@ class LandingFanout:
     def __bool__(self) -> bool:
         return bool(self._sinks)
 
+    def frame_submitted(self, **event) -> None:
+        for sink in self._sinks:
+            owner = getattr(sink, "__self__", None)
+            callback = getattr(owner, "frame_submitted", None)
+            if callback is not None:
+                try:
+                    callback(**event)
+                except Exception:
+                    pass
+
     def output_committed(self, **event) -> None:
         for sink in self._sinks:
             try:

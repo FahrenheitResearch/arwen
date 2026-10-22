@@ -134,8 +134,71 @@ _PRE_CQ_DEFAULT_FINGERPRINT = (
 #: e13fa45c0 / 59f7e280f made moist_cq default-on.  The bound run identity
 #: now carries True; setting only that value back recovers the old anchor.
 #: The test below proves this move independently of all older ledger rows.
-_ANCHOR_FINGERPRINT = (
+_PRE_CAPABILITY_KEYS_FINGERPRINT = (
     "8724f01da9aa498927c560d9d2a83084b61f3ec5ad6fbd4c014c63f4ca845287")
+
+#: The anchor while the 2.9.4 capabilities campaign's RunConfig keys
+#: (CAPABILITY_CAMPAIGN_RUN_KEYS) were bound unscoped at their defaults, on
+#: the lane/cap-base tip before the lanes' document rules merged.  Kept as
+#: the record of that move; nothing produces it any more.
+_CAMPAIGN_KEYS_BOUND_FINGERPRINT = (
+    "415c6ad0e3e28cdc5247f031c4b65818e44415c873dfd2e6cae8084529cc0d10")
+
+#: The anchor on the merged campaign tree.  The public experiment document
+#: (gpuwm.experiment, which restart_identity_payload reads) now drops every
+#: campaign key that reaches nothing: hailcast_opt and haildt at their
+#: defaults, ocean_config and the three lake_state_* keys at their defaults
+#: (gpuwm.checkpoint_identity.drop_capability_campaign_keys), the four
+#: seaice_* keys where no land surface runs sea ice, ra_sw_eclipse at its
+#: default-on 1, and lane/cap-slab-ocean's PWP controls (SLAB_OCEAN_RUN_KEYS
+#: below) at their defaults while the ocean is off.  So a default run keeps
+#: the 2.9.3 bytes and the anchor is the pre-campaign anchor again; the
+#: test below proves the keys are absent and that an active value binds.
+_ANCHOR_FINGERPRINT = _PRE_CAPABILITY_KEYS_FINGERPRINT
+
+#: lane/cap-slab-ocean's PWP controls, absent while sf_ocean_physics = 0.
+SLAB_OCEAN_RUN_KEYS = ("ocean_levels", "ocean_analysis",
+                       "ocean_analysis_source", "ocean_mld_climatology",
+                       "omdt", "ocean_z", "ocean_t", "ocean_s")
+
+#: RunConfig keys the capabilities campaign added to the run identity, by
+#: the lane commit that added each.  None changes this scaffold's numbers at
+#: its default (no hail diagnostic output, no lake/ocean analysis file, no
+#: eclipse in the window, no sea ice on the ideal case).
+CAPABILITY_CAMPAIGN_RUN_KEYS = {
+    "hailcast_opt": "97e9a3ca061 lane/cap-hail",
+    "haildt": "97e9a3ca061 lane/cap-hail",
+    "lake_state_source": "f9eb12244a9 lane/cap-lake",
+    "lake_state_path": "f9eb12244a9 lane/cap-lake",
+    "lake_state_accept_licence": "f9eb12244a9 lane/cap-lake",
+    "ocean_config": "8cd59d74c15 lane/cap-waves-couple",
+    "ra_sw_eclipse": "d4ce97c6bbc lane/cap-eclipse",
+    "seaice_prognostic": "7047f0c9bd7 lane/cap-seaice",
+    "seaice_initial_thickness": "7047f0c9bd7 lane/cap-seaice",
+    "seaice_new_ice_thickness": "7047f0c9bd7 lane/cap-seaice",
+    "seaice_ocean_heat_flux": "7047f0c9bd7 lane/cap-seaice",
+}
+
+
+def without_the_capability_campaign_keys(monkeypatch, exp):
+    """Drop the campaign's keys from the identity payload, at their defaults.
+
+    The same mechanism as ``_without_the_tiedtke_key``: widen
+    RESTART_TOLERATED_RUN_FIELDS for the test, so the writer itself produces
+    the payload every fingerprint carried before the keys existed.  Each key
+    must be at its RunConfig default here, so a value move is not hidden.
+    """
+    import gpuwm.core.model as model
+    from gpuwm.config import RunConfig
+
+    fields = RunConfig.__dataclass_fields__
+    for domain in exp.domains:
+        for key in CAPABILITY_CAMPAIGN_RUN_KEYS:
+            assert getattr(domain.run, key) == fields[key].default, key
+    assert not set(CAPABILITY_CAMPAIGN_RUN_KEYS) & set(
+        model.RESTART_TOLERATED_RUN_FIELDS)
+    monkeypatch.setattr(model, "RESTART_TOLERATED_RUN_FIELDS", (
+        *model.RESTART_TOLERATED_RUN_FIELDS, *CAPABILITY_CAMPAIGN_RUN_KEYS))
 
 
 def _stability_anchor_catalog():
@@ -178,8 +241,9 @@ def test_no_overlay_keeps_the_experiment_fingerprint(monkeypatch):
     ExperimentConfig, so the restart identity payload does not see it.
     The hash below therefore moves only when something else that IS bound
     to run identity changes: the SASE flip, the unscoped 2.6.4 cumulus
-    key and the moist_cq default flip named above, each attributed by
-    reconstruction below.
+    key and the moist_cq default flip, each attributed by reconstruction
+    below; the capabilities campaign keys named above leave it at their
+    defaults.
     """
     from gpuwm.core.model import experiment_fingerprint
     from gpuwm.verify.cases.nest_ideal_r1_moist import load_scaffold
@@ -229,6 +293,37 @@ def _before_the_moist_cq_default_flip(exp):
     return historical
 
 
+def test_the_capability_campaign_keys_leave_the_anchor_at_their_defaults(
+        monkeypatch):
+    from dataclasses import replace
+    from gpuwm.core.model import (experiment_fingerprint,
+                                  restart_identity_payload)
+    from gpuwm.verify.cases.nest_ideal_r1_moist import load_scaffold
+
+    exp = _under_the_anchor_clock(load_scaffold())
+    _without_the_later_eta_key(monkeypatch, exp)
+    assert experiment_fingerprint(
+        exp, _stability_anchor_catalog()) == _ANCHOR_FINGERPRINT
+    assert _ANCHOR_FINGERPRINT != _CAMPAIGN_KEYS_BOUND_FINGERPRINT
+    # The named keys are absent from the identity the writer produces.
+    named = set(CAPABILITY_CAMPAIGN_RUN_KEYS) | set(SLAB_OCEAN_RUN_KEYS)
+    for domain in restart_identity_payload(exp)["domains"]:
+        assert not named & set(domain["run"]), named & set(domain["run"])
+    # Tolerating them as well changes nothing: they were the only move.
+    without_the_capability_campaign_keys(monkeypatch, exp)
+    assert experiment_fingerprint(
+        exp, _stability_anchor_catalog()) == _PRE_CAPABILITY_KEYS_FINGERPRINT
+    monkeypatch.undo()
+    # An active value still binds the identity.
+    for key, value in (("ra_sw_eclipse", 0), ("ocean_config", "ocean.toml"),
+                       ("hailcast_opt", 1)):
+        active = replace(exp, domains=tuple(
+            replace(domain, run=replace(domain.run, **{key: value}))
+            for domain in exp.domains))
+        assert experiment_fingerprint(
+            active, _stability_anchor_catalog()) != _ANCHOR_FINGERPRINT, key
+
+
 def test_the_anchor_moved_for_the_moist_cq_default_flip_and_nothing_else(
         monkeypatch):
     from gpuwm.core.model import experiment_fingerprint
@@ -236,10 +331,11 @@ def test_the_anchor_moved_for_the_moist_cq_default_flip_and_nothing_else(
 
     exp = _under_the_anchor_clock(load_scaffold())
     _without_the_later_eta_key(monkeypatch, exp)
+    without_the_capability_campaign_keys(monkeypatch, exp)
     historical = _before_the_moist_cq_default_flip(exp)
     assert experiment_fingerprint(
-        exp, _stability_anchor_catalog()) == _ANCHOR_FINGERPRINT
-    assert _ANCHOR_FINGERPRINT != _PRE_CQ_DEFAULT_FINGERPRINT
+        exp, _stability_anchor_catalog()) == _PRE_CAPABILITY_KEYS_FINGERPRINT
+    assert _PRE_CAPABILITY_KEYS_FINGERPRINT != _PRE_CQ_DEFAULT_FINGERPRINT
     assert experiment_fingerprint(
         historical, _stability_anchor_catalog()) == _PRE_CQ_DEFAULT_FINGERPRINT
 
@@ -294,6 +390,7 @@ def test_the_anchor_moved_for_the_unscoped_cumulus_key_and_nothing_else(
     assert all(
         domain.run.ntiedtke_tiedtke_closure is False for domain in exp.domains)
     _without_the_later_eta_key(monkeypatch, exp)
+    without_the_capability_campaign_keys(monkeypatch, exp)
     _without_the_tiedtke_key(monkeypatch)
     assert experiment_fingerprint(
         exp, _stability_anchor_catalog()) == _PRE_TIEDTKE_KEY_FINGERPRINT
@@ -325,6 +422,7 @@ def test_the_anchor_moved_for_the_sase_default_flip_and_nothing_else(
             domain.run, sase_additive_dissipation=False))
         for domain in exp.domains))
     _without_the_later_eta_key(monkeypatch, exp)
+    without_the_capability_campaign_keys(monkeypatch, exp)
     _without_the_tiedtke_key(monkeypatch)
     assert experiment_fingerprint(
         pre_flip, _stability_anchor_catalog()) == _PRE_SASE_FLIP_FINGERPRINT

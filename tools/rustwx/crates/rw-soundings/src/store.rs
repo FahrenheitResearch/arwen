@@ -1,6 +1,4 @@
-//! rw-store access: catalogue (cycles / members / leads), grid location, and
-//! raw sounding columns (point = bilinear, box = area mean over a common
-//! finite mask per level, the bowecho `box_sounding.rs` method).
+//! rw-store point columns and ensemble column statistics.
 //!
 //! Two store conventions are read:
 //! * `native` (native profile writer): `pressure_native` hPa, `height_native` m,
@@ -13,42 +11,11 @@
 //!
 //! The public batch adapter supplies a plain-run inventory with physical valid times.
 
-use std::collections::{BTreeMap, HashMap};
-use std::num::NonZeroUsize;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
-
-use lru::LruCache;
-use rw_store::grid::{GridFile, GridLocator};
 use rw_store::reader::HourReader;
 
 pub type Res<T> = Result<T, String>;
 
-#[derive(Clone, Debug, serde::Serialize)]
-pub struct LeadEntry {
-    pub lead_min: u32,
-    #[serde(skip)]
-    pub path: PathBuf,
-}
-
-/// cycle -> member -> lead_min -> file
-pub type Catalog = BTreeMap<String, BTreeMap<String, BTreeMap<u32, PathBuf>>>;
-
-pub struct GridInfo {
-    pub grid: GridFile,
-    pub locator: GridLocator,
-    /// west, south, east, north
-    pub bbox: [f64; 4],
-}
-
-pub struct Store {
-    pub root: PathBuf,
-    pub model: String,
-    catalog: Mutex<Option<(Instant, Arc<Catalog>)>>,
-    readers: Mutex<LruCache<PathBuf, Arc<HourReader>>>,
-    grids: Mutex<HashMap<PathBuf, Arc<GridInfo>>>,
-}
+pub struct Store;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -136,89 +103,6 @@ fn sfc_convert(i: usize, v: f64, units: &str) -> f64 {
 }
 
 impl Store {
-    pub fn label(&self, _cycle: &str) -> String {
-        self.model.clone()
-    }
-
-    pub fn new(root: PathBuf, model: String) -> Self {
-        Store {
-            root,
-            model,
-            catalog: Mutex::new(None),
-            readers: Mutex::new(LruCache::new(NonZeroUsize::new(512).unwrap())),
-            grids: Mutex::new(HashMap::new()),
-        }
-    }
-
-    /// Rescanned at most every 5 s (the data lane appends cycles live).
-    pub fn catalog(&self) -> Arc<Catalog> {
-        let mut g = self.catalog.lock().unwrap();
-        if let Some((t, c)) = g.as_ref()
-            && (self.model == "forecast" || t.elapsed() < Duration::from_secs(5))
-        {
-            return c.clone();
-        }
-        let c = Arc::new(self.scan());
-        *g = Some((Instant::now(), c.clone()));
-        c
-    }
-
-    fn scan(&self) -> Catalog {
-        Catalog::new()
-    }
-
-    pub fn with_catalog(root: PathBuf, catalog: Catalog) -> Self {
-        let store = Self::new(root, "forecast".into());
-        *store.catalog.lock().unwrap() = Some((Instant::now(), Arc::new(catalog)));
-        store
-    }
-
-    pub fn reader(&self, path: &Path) -> Res<Arc<HourReader>> {
-        if let Some(r) = self.readers.lock().unwrap().get(path) {
-            return Ok(r.clone());
-        }
-        let r =
-            Arc::new(HourReader::open(path).map_err(|e| format!("open {}: {e}", path.display()))?);
-        self.readers
-            .lock()
-            .unwrap()
-            .put(path.to_path_buf(), r.clone());
-        Ok(r)
-    }
-
-    pub fn grid_for(&self, hour_path: &Path) -> Res<Arc<GridInfo>> {
-        let gpath = hour_path
-            .parent()
-            .ok_or("hour path has no run dir")?
-            .join("grid.rwg");
-        if let Some(g) = self.grids.lock().unwrap().get(&gpath) {
-            return Ok(g.clone());
-        }
-        let grid = GridFile::open(&gpath).map_err(|e| format!("open {}: {e}", gpath.display()))?;
-        let locator = GridLocator::build(&grid);
-        let mut bbox = [
-            f64::INFINITY,
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            f64::NEG_INFINITY,
-        ];
-        for (la, lo) in grid.lat.iter().zip(&grid.lon) {
-            if la.is_finite() && lo.is_finite() {
-                bbox[0] = bbox[0].min(*lo as f64);
-                bbox[1] = bbox[1].min(*la as f64);
-                bbox[2] = bbox[2].max(*lo as f64);
-                bbox[3] = bbox[3].max(*la as f64);
-            }
-        }
-        let info = Arc::new(GridInfo {
-            grid,
-            locator,
-            bbox,
-        });
-        self.grids.lock().unwrap().insert(gpath, info.clone());
-        Ok(info)
-    }
-
     pub fn convention(reader: &HourReader) -> Res<Convention> {
         if native_name(reader, 0).is_some() {
             Ok(Convention::Native)
@@ -358,159 +242,6 @@ impl Store {
         }
     }
 
-    /// Area-mean column over the selected cells (`(ix, iy)`): every primitive
-    /// is averaged over one common finite-cell mask per level, then handed to
-    /// the ordinary sounding path (bowecho `box_sounding.rs` method).
-    pub fn box_column(reader: &HourReader, cells: &[(usize, usize)]) -> Res<RawColumn> {
-        if cells.is_empty() {
-            return Err("box contains no model grid cells".into());
-        }
-        let conv = Self::convention(reader)?;
-        let names: Vec<&str> = match conv {
-            Convention::Native => {
-                let mut v = vec![];
-                for i in 0..7 {
-                    match native_name(reader, i) {
-                        Some((n, _)) => v.push(n),
-                        None if i == 6 => {}
-                        None => return Err(format!("missing native volume {:?}", NATIVE_NAMES[i])),
-                    }
-                }
-                v
-            }
-            Convention::Iso => {
-                let moist = if reader.variable("dewpoint_iso").is_some() {
-                    "dewpoint_iso"
-                } else {
-                    "rh_iso"
-                };
-                vec!["height_iso", "temperature_iso", moist, "u_iso", "v_iso"]
-            }
-        };
-        let mut mats: Vec<Vec<Vec<f32>>> = Vec::new();
-        for name in &names {
-            let nl = reader.variable(name).unwrap().levels_hpa.len();
-            let mut m = vec![vec![f32::NAN; cells.len()]; nl];
-            for (ci, (ix, iy)) in cells.iter().enumerate() {
-                let values = reader
-                    .read_column_3d(name, *ix, *iy)
-                    .map_err(|e| e.to_string())?;
-                for (k, value) in values.into_iter().enumerate() {
-                    m[k][ci] = value;
-                }
-            }
-            mats.push(m);
-        }
-        let nl = mats.first().map(|m| m.len()).unwrap_or(0);
-        let mut means = vec![vec![f64::NAN; nl]; names.len()];
-        for k in 0..nl {
-            let mut sums = vec![0.0f64; names.len()];
-            let mut count = 0usize;
-            for ci in 0..cells.len() {
-                if mats.iter().all(|m| m[k][ci].is_finite()) {
-                    count += 1;
-                    for (vi, m) in mats.iter().enumerate() {
-                        sums[vi] += m[k][ci] as f64;
-                    }
-                }
-            }
-            if count > 0 {
-                for vi in 0..names.len() {
-                    means[vi][k] = sums[vi] / count as f64;
-                }
-            }
-        }
-        // surface: mean over cells with every anchor finite
-        let mut sfc_vals = vec![vec![f64::NAN; cells.len()]; 6];
-        for (i, row) in sfc_vals.iter_mut().enumerate() {
-            if let Some((n, units)) = Self::sfc_name(reader, i) {
-                for (ci, (ix, iy)) in cells.iter().enumerate() {
-                    row[ci] = sfc_convert(
-                        i,
-                        reader
-                            .read_window_2d(n, *ix, *iy, ix + 1, iy + 1)
-                            .map(|w| w.values[0])
-                            .map_err(|e| format!("read {n}: {e}"))? as f64,
-                        &units,
-                    );
-                }
-            }
-        }
-        let mut s = [0.0f64; 6];
-        let mut c = 0usize;
-        for ci in 0..cells.len() {
-            if (0..6).all(|i| sfc_vals[i][ci].is_finite()) {
-                c += 1;
-                for i in 0..6 {
-                    s[i] += sfc_vals[i][ci];
-                }
-            }
-        }
-        let s: Vec<f64> = s
-            .iter()
-            .map(|x| if c > 0 { x / c as f64 } else { f64::NAN })
-            .collect();
-        let sfc = Sfc {
-            psfc_hpa: s[0],
-            orog_m: s[1],
-            t2_c: s[2],
-            td2_c: s[3],
-            u10: s[4],
-            v10: s[5],
-        };
-        let k2c = |v: &Vec<f64>| v.iter().map(|x| x - 273.15).collect::<Vec<_>>();
-        match conv {
-            Convention::Native => {
-                let cv = |i: usize| -> Vec<f64> {
-                    let u = native_name(reader, i).map(|x| x.1).unwrap_or_default();
-                    means[i].iter().map(|x| native_convert(i, *x, &u)).collect()
-                };
-                Ok(RawColumn {
-                    p: cv(0),
-                    z: cv(1),
-                    t: cv(2),
-                    td: cv(3),
-                    u: cv(4),
-                    v: cv(5),
-                    omega: if names.len() > 6 {
-                        cv(6)
-                    } else {
-                        vec![f64::NAN; nl]
-                    },
-                    sfc,
-                })
-            }
-            Convention::Iso => {
-                let levels = reader.variable("height_iso").unwrap().levels_hpa.clone();
-                let units = |n: &str| {
-                    reader
-                        .variable(n)
-                        .map(|v| v.units.clone())
-                        .unwrap_or_default()
-                };
-                let tc = |n: &str, v: &Vec<f64>| if units(n) == "K" { k2c(v) } else { v.clone() };
-                let t = tc("temperature_iso", &means[1]);
-                let td = if names[2] == "dewpoint_iso" {
-                    tc("dewpoint_iso", &means[2])
-                } else {
-                    t.iter()
-                        .zip(&means[2])
-                        .map(|(t, rh)| dewpoint_c_from_rh(*t, *rh))
-                        .collect()
-                };
-                Ok(RawColumn {
-                    p: levels.iter().take(nl).map(|l| *l as f64).collect(),
-                    z: means[0].clone(),
-                    t,
-                    td,
-                    u: means[3].clone(),
-                    v: means[4].clone(),
-                    omega: vec![f64::NAN; nl],
-                    sfc,
-                })
-            }
-        }
-    }
 }
 
 /// Same Bolton-style inversion rw-ui uses for RH-only stores.
@@ -519,51 +250,6 @@ pub fn dewpoint_c_from_rh(temperature_c: f64, rh_percent: f64) -> f64 {
     let (a, b) = (17.67, 243.5);
     let gamma = (a * temperature_c) / (b + temperature_c) + rh.ln();
     (b * gamma) / (a - gamma)
-}
-
-/// Cells of the grid inside a lon/lat polygon (ray casting). A bbox is a
-/// 4-corner polygon.
-pub fn select_cells(grid: &GridFile, poly: &[(f64, f64)]) -> Vec<(usize, usize)> {
-    let (mut w, mut s, mut e, mut n) = (
-        f64::INFINITY,
-        f64::INFINITY,
-        f64::NEG_INFINITY,
-        f64::NEG_INFINITY,
-    );
-    for (x, y) in poly {
-        w = w.min(*x);
-        e = e.max(*x);
-        s = s.min(*y);
-        n = n.max(*y);
-    }
-    let inside = |x: f64, y: f64| {
-        if x < w || x > e || y < s || y > n {
-            return false;
-        }
-        let mut c = false;
-        let m = poly.len();
-        let mut j = m - 1;
-        for i in 0..m {
-            let (xi, yi) = poly[i];
-            let (xj, yj) = poly[j];
-            if ((yi > y) != (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi) {
-                c = !c;
-            }
-            j = i;
-        }
-        c
-    };
-    let mut out = Vec::new();
-    for iy in 0..grid.ny {
-        for ix in 0..grid.nx {
-            let i = iy * grid.nx + ix;
-            let (la, lo) = (grid.lat[i] as f64, grid.lon[i] as f64);
-            if la.is_finite() && lo.is_finite() && inside(lo, la) {
-                out.push((ix, iy));
-            }
-        }
-    }
-    out
 }
 
 /// Mean of several member columns, level by level, over one common finite
@@ -647,72 +333,6 @@ pub fn percentile(vals: &mut Vec<f64>, q: f64) -> f64 {
     let lo = pos.floor() as usize;
     let hi = pos.ceil() as usize;
     vals[lo] + (vals[hi] - vals[lo]) * (pos - lo as f64)
-}
-
-/// Member envelope per level: mean pressure, and lo/median/hi percentiles of
-/// T and Td across members.
-#[derive(Clone, Debug, Default, serde::Serialize)]
-pub struct Envelope {
-    pub q_lo: f64,
-    pub q_hi: f64,
-    pub p: Vec<f64>,
-    pub z: Vec<f64>,
-    pub t_lo: Vec<f64>,
-    pub t_med: Vec<f64>,
-    pub t_hi: Vec<f64>,
-    pub td_lo: Vec<f64>,
-    pub td_med: Vec<f64>,
-    pub td_hi: Vec<f64>,
-    pub wspd_lo_kt: Vec<f64>,
-    pub wspd_hi_kt: Vec<f64>,
-}
-
-pub fn envelope(cols: &[RawColumn], q_lo: f64, q_hi: f64) -> Envelope {
-    let nl = cols.iter().map(|c| c.levels()).min().unwrap_or(0);
-    let mut e = Envelope {
-        q_lo,
-        q_hi,
-        ..Default::default()
-    };
-    for k in 0..nl {
-        let mut p: Vec<f64> = cols
-            .iter()
-            .map(|c| c.p[k])
-            .filter(|x| x.is_finite())
-            .collect();
-        let pm = if p.is_empty() {
-            f64::NAN
-        } else {
-            p.iter().sum::<f64>() / p.len() as f64
-        };
-        p.clear();
-        let mut z: Vec<f64> = cols
-            .iter()
-            .map(|c| c.z[k])
-            .filter(|x| x.is_finite())
-            .collect();
-        let zm = if z.is_empty() {
-            f64::NAN
-        } else {
-            z.iter().sum::<f64>() / z.len() as f64
-        };
-        z.clear();
-        let get = |f: &dyn Fn(&RawColumn) -> f64| cols.iter().map(f).collect::<Vec<f64>>();
-        let t = get(&|c| c.t[k]);
-        let td = get(&|c| c.td[k]);
-        let ws = get(&|c| c.u[k].hypot(c.v[k]) * 1.943_844_5);
-        e.p.push(pm);
-        e.z.push(zm);
-        e.t_lo.push(percentile(&mut t.clone(), q_lo));
-        e.t_med.push(percentile(&mut t.clone(), 50.0));
-        e.t_hi.push(percentile(&mut t.clone(), q_hi));
-        e.td_lo.push(percentile(&mut td.clone(), q_lo));
-        e.td_med.push(percentile(&mut td.clone(), 50.0));
-        e.td_hi.push(percentile(&mut td.clone(), q_hi));
-        e.wspd_lo_kt.push(percentile(&mut ws.clone(), q_lo));
-        e.wspd_hi_kt.push(percentile(&mut ws.clone(), q_hi));
-    }
-    e
 }
 
 /// p10/p25/p50/p75/p90 per level across members, for T, Td and wind speed.

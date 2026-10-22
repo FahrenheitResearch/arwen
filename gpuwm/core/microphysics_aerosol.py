@@ -234,28 +234,6 @@ AEROSOL_SCRATCH_SLOTS = (
     "mp_thompson_aero_condensation_rate",
 )
 
-#: The operational WRF 3.9 fork's working set (thompson_version =
-#: "wrf_39_noaa").  Its rain and ice keep the in-place apply, so it carries
-#: no rain or ice accumulator, and the phase cleanup's melt credit needs the
-#: entry ice number held because the sources write ``state.ni`` in place.
-WRF39_AEROSOL_SCRATCH_SLOTS = (
-    "mp_thompson_aero_ncten",
-    "mp_thompson_aero_nwfaten",
-    "mp_thompson_aero_nifaten",
-    "mp_thompson_aero_entry_density",
-    "mp_thompson_aero_tau1_density",
-    "mp_thompson_aero_nwfa_work_m3",
-    "mp_thompson_aero_qcten",
-    "mp_thompson_aero_ni_entry",
-    "mp_thompson_aero_condensation_rate",
-)
-
-
-def aerosol_scratch_slots(thompson_version: str = "wrf_461") -> tuple:
-    """The mp=28 aerosol working set the adapter draws for a generation."""
-    return (WRF39_AEROSOL_SCRATCH_SLOTS
-            if thompson_version == "wrf_39_noaa" else AEROSOL_SCRATCH_SLOTS)
-
 #: The fused source networks diagnose their integer entry flags inline.
 #: Keep the exported inventory empty for consumers that classify dtypes.
 AEROSOL_INT_SCRATCH_SLOTS = ()
@@ -1183,8 +1161,11 @@ def thompson_aerosol_init_fill(state: DomainState, cfg: RunConfig) -> dict:
     # itself C-contiguous and needs no copy.
     hgt = z8w[:nz]
 
-    fill_ccn = aerosol_profile_needs_fill(state.nwfa)
-    fill_in = aerosol_profile_needs_fill(state.nifa)
+    # The sealed forcing inventory records presence independently of values:
+    # an analyzed zero remains data, including a source mass-to-number zero.
+    supplied = set(getattr(state, "_external_scalar_boundary_fields", ()))
+    fill_ccn = "nwfa" not in supplied and aerosol_profile_needs_fill(state.nwfa)
+    fill_in = "nifa" not in supplied and aerosol_profile_needs_fill(state.nifa)
     if fill_ccn or fill_in:
         launch_aerosol_init_profile(
             hgt, state.nwfa, state.nifa, state.nwfa2d,

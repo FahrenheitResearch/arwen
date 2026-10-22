@@ -21,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -69,12 +70,45 @@ _TOP_LEVEL_EXCLUDES = {
     # every standalone-package test with it.  A preprocessing wheel lays out
     # no domain.
     "region_recipe.py",
+    # The warm-standby and race doors (2.9.4, `gpuwm standby` / `gpuwm
+    # race`): a standby process holds a prepared forecast warm and starts
+    # it the moment a source cycle posts; race drives standby (or `gpuwm
+    # go`) against the operational product.  Their importers are gpuwm.cli
+    # (excluded above), race_cli -> race -> standby_cli -> standby /
+    # standby_runtime -> boundary_prestage, and the forecast runner
+    # prepared_single_domain_forecast (not staged).  standby_cli reaches
+    # gpuwm.region_recipe (excluded above), so staging it refused this
+    # builder's unresolved-import scan and every standalone-package test
+    # with it.  A preprocessing wheel holds no forecast warm and races
+    # nothing.
+    "race.py", "race_cli.py", "standby.py", "standby_cli.py",
+    "standby_runtime.py", "boundary_prestage.py",
+    # `gpuwm go --storm-nests` / [storm_nests] (2.9.4): authoring of dormant
+    # storm-following nest slots, priced by the planner through the domain
+    # wizard and gpuwm.core.preflight, both absent here; its only importer is
+    # go_cli.py (excluded below).  The forecast's nest-lives summary lives in
+    # gpuwm/nest_lives.py, which stages.  A preprocessing wheel authors no
+    # nests.
+    "storm_nests.py",
     # `gpuwm go` drives tools/prepared_single_domain_forecast.py through
     # the GPU forecast.  Its imports happen to resolve against what RW-WPS
     # stages, so the scan would not have caught it -- but the runner it
     # exists to call is not in this wheel, so shipping it would offer a
     # command that cannot run.
     "go_cli.py",
+    # Launch-time smoke capacity decisions rebuild forecast companion setups.
+    # Preparation shares only the CPU receipt helpers in smoke_receipts.py.
+    "smoke_execution.py",
+    # Hub-height wind products (cap-hubwind, 2.9.4): a render door that
+    # reaches gpuwm.render (excluded below); its importers are render.py,
+    # go_cli.py and cli.py, all excluded.  A preprocessing wheel renders
+    # no forecast products.
+    "hubwind.py",
+    # The in-run tropical-cyclone tracker (cap-storm-tracks, 2.9.4): it binds
+    # to a forecast's output through gpuwm.go_cli and the ensemble runtime
+    # context (gpuwm.runtime); its only importer is go_cli.py, excluded
+    # above.  A preprocessing wheel tracks no running storm.
+    "tc_accumulator.py",
     # Input-cycle checks belong to go_cli/runplan, both excluded here.
     # Their checkpoint verification imports the forecast-only io.restart;
     # no standalone preparation door imports this module.
@@ -259,6 +293,28 @@ _TOP_LEVEL_EXCLUDES = {
     # Staged, its import of the excluded executor refused this builder's
     # own unresolved-import scan and with it the whole wheel staging.
     "leg_server.py",
+    # The warm per-card leg executor (sweep 5, gpuwm/leg_executor.py) is
+    # the same kind of process: started as its own worker, it runs each
+    # leg through the excluded gpuwm.wrfinput_forecast's main.  No module
+    # imports it.  Staged, its wrfinput_forecast import refused this
+    # builder's unresolved-import scan and every standalone-package test.
+    # Its companion gpuwm/checkpoint_schedule.py (`--checkpoint-at`
+    # instants and a worker's restart request) is imported only by the
+    # forecast runners wrfinput_forecast and prepared_domain_tree_forecast,
+    # both excluded.  A preprocessing wheel runs no leg and writes no
+    # checkpoint.
+    "leg_executor.py", "checkpoint_schedule.py",
+    # The physics-tuning campaign (sweep 5, gpuwm/tuning*.py): it prepares
+    # member forecasts through gpuwm.go_cli and gpuwm.stage_cli, runs each
+    # member through gpuwm.prepared_domain_tree_forecast in a
+    # `python -m gpuwm.tuning_member` child, then collects, scores and
+    # reports.  Only the tuning modules import one another; staged,
+    # tuning_member's runner import refused this builder's
+    # unresolved-import scan and every standalone-package test.  A
+    # preprocessing wheel runs no tuning members.
+    "tuning.py", "tuning_collect.py", "tuning_member.py",
+    "tuning_observations.py", "tuning_prepare.py", "tuning_report.py",
+    "tuning_retention.py", "tuning_update.py",
     # The kernel pre-warm (2.9.2, gpuwm/kernel_prewarm.py) compiles a run's
     # CUDA kernel set beside the fetch; its importers are the forecast
     # runners (wrfinput_forecast, prepared_*_forecast) and warm_kernels,
@@ -266,6 +322,13 @@ _TOP_LEVEL_EXCLUDES = {
     # gpuwm.io.restart (refused below).  A preprocessing wheel compiles no
     # kernels.
     "kernel_prewarm.py",
+    # The capability lanes' forecast/product doors (2.9.4): hub-height wind
+    # maps are a render product (lane/cap-hubwind; importers gpuwm.render,
+    # gpuwm.go_cli, gpuwm.cli) and the tropical-cyclone accumulator is a
+    # `gpuwm go` request loader (lane/cap-cyclone-go; importer gpuwm.go_cli).
+    # Both reach excluded doors; a preprocessing wheel renders and runs
+    # nothing.
+    "hubwind.py", "tc_accumulator.py",
     # mp_tend_radar's live attach (2.9.1): the dycore and the device kernel
     # on running domains; preparation reads the tendency in
     # gpuwm/ingest/wrfinput_radar.py, which stays staged.
@@ -317,6 +380,9 @@ _TOP_LEVEL_EXCLUDES = {
     "era5_preparation.py",
     "local_da.py", "local_da_fetch.py", "local_da_observations.py",
     "local_da_runtime.py", "cyclone_seed.py", "cyclone_sources.py",
+    # This CLI-only trajectory selector launches cyclone forecasts through
+    # the excluded wizard/setup doors; standalone preprocessing never calls it.
+    "tc_strata.py",
     # The Earth-2 job door runs tracking, forecasts and rendering. Fetch
     # and the model inventory remain in earth2_run for input acquisition.
     "earth2_door.py", "earth2_job.py", "earth2_diagnostics.py",
@@ -808,6 +874,14 @@ _WRFRST_LIVE_OVERLAY = ("apply_warm_start_physics and apply_warm_start_clock "
                         "state; preparation only reads and checks the file")
 
 _OPTIONAL_STAGED_IMPORTS = {
+    ("gpuwm/ocean/seaice/__init__.py", "gpuwm.core.physics"):
+        "capture_precipitation reads the live microphysics snow ratio inside a "
+        "forecast step; preparation stages the module only for its OUTPUT "
+        "history table, which gpuwm.io.wrf_output_schema reads at import",
+    ("gpuwm/eclipse_windows.py", "gpuwm.core.physics"):
+        "EclipseRadiation.apply couples the dimmed shortwave heating into a live "
+        "forecast step; preparation reads only the pinned Besselian windows "
+        "(eclipses_during) to record the ra_sw_eclipse namelist decision",
     ("gpuwm/earth2_fetch_cache.py", "gpuwm.domain_wizard"):
         "check_domain_coverage sizes a forecast domain in earth2_job; "
         "standalone preparation only receives completed input artifacts",
@@ -857,10 +931,6 @@ _OPTIONAL_STAGED_IMPORTS = {
     ("gpuwm/ingest/wrfrst.py", "gpuwm.core.refl"):
         "the restart-instant REFL_10CM frame, inside apply_warm_start_clock; "
         + _WRFRST_LIVE_OVERLAY,
-    ("gpuwm/ingest/prepared_cache.py", "tools.bench.checkpoint_stamps"):
-        "benchmark harness only, behind GPUWM_BENCH_CHECKPOINT_TOKEN, which "
-        "fixes the prepared-cache creation stamp for repeat-identity arms; an "
-        "ordinary preparation stamps the current time",
     ("gpuwm/ingest/lateral_bc.py", "gpuwm.core.dycore"):
         "WRF_MUTS_SLOT inside _wrf_final_muts_arg, called only by the CUDA "
         "_launch_finalize_field forecast boundary finalizer in strict mode; "
@@ -1265,6 +1335,24 @@ _OPTIONAL_STAGED_IMPORTS = {
         "missing it",
     ("gpuwm/ingest/hrrr_physics.py", "gpuwm.core.physics"):
         "forecast-only physics setup after the public --prepare-only return",
+    # 399b3c5abe seeds the f00 cloud fraction with the radiation's own
+    # cal_cldfra / legacy cloud-fraction flags, in the same function as the
+    # gpuwm.core.physics._prepare_atmosphere import directly above, so it is
+    # the same forecast-only branch.  Followed, the closure staged
+    # gpuwm.core.rrtmgp, whose RadiationResult import reaches the forbidden
+    # gpuwm.core.physics and refused the whole staging.
+    ("gpuwm/ingest/hrrr_physics.py", "gpuwm.core.rrtmgp"):
+        "forecast-only f00 cloud-fraction seeding beside the "
+        "gpuwm.core.physics import of the same function",
+    ("gpuwm/ingest/hrrr_physics.py", "gpuwm.core.rrtmg_legacy"):
+        "forecast-only f00 cloud-fraction seeding beside the "
+        "gpuwm.core.physics import of the same function",
+    # 8c8de91ad6 (restored in 2.9.4): the mapped route asks the standby
+    # door for a prestaged boundary handle; the standalone package has no
+    # standby door, and mapped_direct takes the ImportError as "none".
+    ("gpuwm/mapped_direct.py", "gpuwm.boundary_prestage"):
+        "standby's prestaged boundary handle; absent in the preparation "
+        "package, where mapped_direct reads it as no prestage",
     ("gpuwm/source_availability.py", "gpuwm.domain_wizard"):
         "availability() prices the download a run of a given length makes with "
         "the wizard's fetch_window; it answers the web page's calendar and the "
@@ -1938,6 +2026,16 @@ def _stage_rw_wps_python_project(destination: Path) -> dict[str, object]:
     # forecast allocation, including in the preparation-only package.
     _copy_source(REPO / "gpuwm" / "data" / "surface_ocean.json",
                  package / "data" / "surface_ocean.json")
+    # The ocean product rows (2.9.4 ocean lanes): gpuwm.io.wrf_output_schema
+    # merges them into the history vocabulary at import, so reading any
+    # config with an [output] block reads this file.
+    _copy_source(REPO / "gpuwm" / "ocean" / "rows.json",
+                 package / "ocean" / "rows.json")
+    # The lake state and lake ice source tables (cap-lake, 2.9.4):
+    # gpuwm.config.validate_run_config reads the lake-state rows on every
+    # run config, and gpuwm.ingest.lake_ice reads the ice rows at preparation.
+    for source in sorted((REPO / "gpuwm" / "data" / "surface_obs").glob("*.toml")):
+        _copy_source(source, package / "data" / "surface_obs" / source.name)
     # The chem table (gpuwm.chem_table, staged with the top-level modules):
     # its schema, rows, sets, sources and diagnostics, which a chem
     # preparation loads by name.  Not the oracle fixtures, which only the
@@ -2052,6 +2150,35 @@ def _cargo_release_environment(
     return environment
 
 
+def _stage_decoder_cargo_registry(destination: Path) -> None:
+    """Copy the standalone decoder's locked registry closure for its build."""
+    registry = REPO / "tools/rustwx/vendor/crates-io"
+    lock = tomllib.loads((REPO / "tools/grib1_bridge/Cargo.lock").read_text())
+    selected = {}
+    for package in lock["package"]:
+        if not package.get("source", "").startswith("registry+"):
+            continue
+        source = registry / f"{package['name']}-{package['version']}"
+        if not source.is_dir():
+            source = registry / package["name"]
+        metadata = tomllib.loads((source / "Cargo.toml").read_text())["package"]
+        checksum = json.loads((source / ".cargo-checksum.json").read_text())["package"]
+        if ((metadata["name"], metadata["version"]) != (package["name"], package["version"])
+                or checksum != package["checksum"]):
+            raise ValueError(f"{source}: registry identity or checksum differs from the decoder lock")
+        selected[source.relative_to(REPO).as_posix()] = source.name
+    # Copy tracked members only: an ignored target or cache must not become
+    # part of a standalone build merely because it exists in the checkout.
+    for relative in sorted(_tracked_source_paths(REPO)):
+        parent = Path(relative).parts[:5]
+        name = selected.get("/".join(parent))
+        if name is not None:
+            source = REPO / relative
+            target = destination / name / Path(relative).relative_to("/".join(parent))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+
+
 def build_release(args: argparse.Namespace) -> dict[str, object]:
     if platform.system() != "Linux" or platform.machine() not in {
         "x86_64", "AMD64",
@@ -2108,6 +2235,8 @@ def build_release(args: argparse.Namespace) -> dict[str, object]:
             target_dir=cargo_target,
             source_date_epoch=source_date_epoch,
         )
+        decoder_registry = temporary / "decoder-registry"
+        _stage_decoder_cargo_registry(decoder_registry)
         # One build per workspace the bundle's declaration names, into
         # one target directory, which is the shape the release bridge
         # builder already uses.  Reading the workspaces off the table
@@ -2121,7 +2250,7 @@ def build_release(args: argparse.Namespace) -> dict[str, object]:
                 raise FileNotFoundError(
                     f"the standalone bundle declares bridges from "
                     f"{workspace} and this checkout has no {manifest}")
-            _run([
+            command = [
                 "cargo",
                 "build",
                 "--manifest-path",
@@ -2129,7 +2258,11 @@ def build_release(args: argparse.Namespace) -> dict[str, object]:
                 "--release",
                 "--locked",
                 "--offline",
-            ], cwd=manifest.parent, env=environment)
+            ]
+            if workspace == "tools/grib1_bridge":
+                command += ["--config", "source.vendored-sources.directory="
+                            + json.dumps(str(decoder_registry))]
+            _run(command, cwd=manifest.parent, env=environment)
         native = cargo_target / "release"
         distribution_args = argparse.Namespace(
             wheel=wheels[0],

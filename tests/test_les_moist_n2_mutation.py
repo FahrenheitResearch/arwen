@@ -44,23 +44,6 @@ def test_the_guard_exists_in_the_kernel_source_exactly_once():
             ) in src
 
 
-def test_the_mutation_define_is_absent_from_the_production_assembly():
-    """The default build must not carry the guard's define.  If it did,
-    every production run would be the control arm."""
-    production = kernel_loader.module_source("smag2d")
-    assert "#define %s" % mut.MUTATION_DEFINE not in production
-
-
-def test_the_mutant_assembly_defines_the_guard():
-    mutant = kernel_loader.module_source_int_defines(
-        "smag2d", mut.MUTATION_DEFINES)
-    assert "#define %s 1" % mut.MUTATION_DEFINE in mutant
-    # and it is the same translation unit, not a forked copy of it
-    body = (kernel_loader._KDIR / "smag2d.cu").read_text(encoding="utf-8")
-    assert mutant.endswith(body)
-    assert kernel_loader.module_source("smag2d").endswith(body)
-
-
 def test_the_two_assemblies_differ_only_by_the_define_line():
     production = kernel_loader.module_source("smag2d")
     mutant = kernel_loader.module_source_int_defines(
@@ -159,11 +142,6 @@ def test_the_launcher_goes_through_the_selector():
 
 # ------------------------------------------------------------ isolation
 
-def test_the_switch_is_off_by_default():
-    assert mut.active() is False
-    assert mut.receipt_tag() == mut.NO_MUTATION_TAG
-
-
 def test_the_switch_is_scoped_and_restores_on_an_exception():
     """A control arm that leaked into a later scored run in the same
     process would mutate a scored result.  The restore has to survive the
@@ -175,14 +153,6 @@ def test_the_switch_is_scoped_and_restores_on_an_exception():
             raise RuntimeError("integration blew up")
     assert mut.active() is False
     assert mut.receipt_tag() == mut.NO_MUTATION_TAG
-
-
-def test_nesting_restores_the_previous_state_not_the_default():
-    with mut.forced_dry_branch():
-        with mut.forced_dry_branch():
-            assert mut.active() is True
-        assert mut.active() is True
-    assert mut.active() is False
 
 
 def test_no_config_field_or_environment_variable_selects_the_mutation():

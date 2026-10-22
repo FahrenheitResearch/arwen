@@ -49,7 +49,7 @@ fn identity(bytes: &[u8]) -> Result<Identity> {
         && p.level_type == 1
         && p.level_value == 0
         && len >= 96
-        && (len - 56) % 40 == 0
+        && (len - 56).is_multiple_of(40)
         && len >= 56 + 4 * pds[55] as usize;
     let known_layout = matches!((pds[40], len), (1, 52) | (36, 56)) || local17;
     if !known_layout
@@ -62,7 +62,7 @@ fn identity(bytes: &[u8]) -> Result<Identity> {
     {
         return Err("Expected ERA5 EDA member 0..9, enda stream, analysis/forecast; means/spreads and unknown identity are refused".into());
     }
-    let base = NaiveDate::from_ymd_opt(p.year() as i32, p.month as u32, p.day as u32)
+    let base = NaiveDate::from_ymd_opt(p.year(), p.month as u32, p.day as u32)
         .and_then(|d| d.and_hms_opt(p.hour as u32, p.minute as u32, 0))
         .ok_or("Invalid ERA5 reference UTC")?;
     let unit = match p.time_unit {
@@ -298,7 +298,7 @@ mod tests {
     // byte preservation. Their encoded T2 values are not lake science data.
     fn table_field(table: u8, parameter: u8) -> Vec<u8> {
         let mut data = REAL.to_vec();
-        for message in data.chunks_exact_mut(130) {
+        for message in data.as_chunks_mut::<130>().0 {
             message[8 + 3] = table;
             message[8 + 8] = parameter;
         }

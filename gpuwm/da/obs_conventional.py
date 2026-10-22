@@ -68,7 +68,7 @@ import json
 import math
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -80,7 +80,6 @@ SCHEMA = "gpuwm-da.conventional-observations.v1"
 TYPE_TABLE_SCHEMA = "gpuwm-da.conventional-obs-types.v1"
 DEFAULT_TYPE_TABLE = (Path(__file__).resolve().parents[1] / "data" / "da"
                       / "conventional-obs-types.v1.json")
-TABLE_SCHEMAS = ("gpuwm-obs.table.v2", "gpuwm-obs.table.v1")
 TABLE_HEADER_V1 = ("source", "station_id", "latitude_deg", "longitude_deg",
                    "elevation_m", "level_pa", "valid_time", "variable",
                    "value", "error")
@@ -91,14 +90,6 @@ OPERATOR_VARIABLES = {
                        "dewpoint_k"),
     "surface": ("temperature_k", "wind_u_m_s", "wind_v_m_s", "dewpoint_k"),
 }
-#: The member surface diagnostics each surface variable reads.
-SURFACE_DIAGNOSTICS = {
-    "temperature_k": ("t2",),
-    "dewpoint_k": ("q2", "psfc"),
-    "wind_u_m_s": ("u10", "v10"),
-    "wind_v_m_s": ("u10", "v10"),
-}
-
 _RD, _CP, _P0 = 287.0, 7.0 * 287.0 / 2.0, 1.0e5
 _EPS = 0.622
 
@@ -709,9 +700,3 @@ def conventional_batches(rows: Rows, table: TypeTable, *, states, thb,
         "superob": "mean per gridpoint per batch (value, H(x), error)",
     }
     return batches, provenance
-
-
-def window_times(analysis_time: datetime, table: TypeTable):
-    """The ``(start, end]`` valid-time window of one analysis."""
-    return (analysis_time - timedelta(seconds=table.window_before_seconds),
-            analysis_time + timedelta(seconds=table.window_after_seconds))

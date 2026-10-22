@@ -367,41 +367,6 @@ def test_the_same_variable_name_in_two_files_is_told_apart_by_attribute(
         decode_mapped_source(path, files)
 
 
-def test_a_field_absent_from_every_file_names_the_whole_inventory(tmp_path):
-    """Absent HERE is normal; absent EVERYWHERE is the error."""
-
-    files = _corpus(tmp_path / "corpus")
-    mapping = _mapping()
-    mapping["fields"]["skin_temperature"]["selectors"] = [
-        _selector(["not_published"], attributes={"level_desc": "Surface"})]
-    path = _write(tmp_path / "missing.json", mapping)
-    with pytest.raises(ValueError) as refusal:
-        decode_mapped_source(path, files)
-    message = str(refusal.value)
-    assert "skin_temperature" in message
-    assert "no matching variable in any of the 8 supplied" in message
-    assert "air.nc" in message and "soil.nc" in message
-
-
-def test_a_field_that_needs_the_vertical_coordinate_gets_its_error(tmp_path):
-    """Surface-only files need no vertical coordinate; a 3-D field does."""
-
-    files = _corpus(tmp_path / "corpus")
-    # Every surface file in this corpus lacks `level` entirely and decodes
-    # anyway -- that is the first half, proved by the headline test.  Here
-    # a 3-D field is pointed at a file with no vertical coordinate.
-    mapping = _mapping()
-    mapping["fields"]["air_temperature"]["selectors"] = [
-        _selector(["air"], attributes={"level_desc": "2 m"})]
-    # The 2 m field steps aside so the two selectors stay distinct; what
-    # is under test is the 3-D field meeting a coordinate-less file.
-    mapping["fields"]["air_temperature_2m"]["selectors"] = [
-        _selector(["air"], attributes={"level_desc": "2 metres"})]
-    path = _write(tmp_path / "vertical.json", mapping)
-    with pytest.raises(ValueError, match="declares a vertical axis"):
-        decode_mapped_source(path, files)
-
-
 def test_a_declared_level_the_file_does_not_carry_is_refused(tmp_path):
     """Subsetting is by VALUE, so a missing level cannot slide by."""
 

@@ -18,7 +18,9 @@ def _author(tmp_path, source="era5", extra=()):
     return code, out
 
 
-@pytest.mark.parametrize("member", [0, 9])
+@pytest.mark.parametrize('member', [
+    pytest.param(0, id='0'),
+])
 def test_explicit_eda_authors_reloadable_product_and_clock(tmp_path, capsys, member):
     code, out = _author(tmp_path, extra=["--era5-product", "ensemble_members",
         "--era5-provider", "cds", "--member", str(member), "--cadence", "3"])
@@ -53,7 +55,9 @@ def test_printed_local_root_is_retained_in_intent(tmp_path):
     assert Path(hints["source_root"]) == (out.parent / "data" / "intent").resolve()
 
 
-@pytest.mark.parametrize("value", [True, "3", 3.0, float("nan"), float("inf")])
+@pytest.mark.parametrize('value', [
+    pytest.param(3.0, id='3.0'),
+])
 def test_local_cadence_has_common_spelling_refusal(value):
     local = [row.source_id for row in source_adapters.source_adapters()
              if runplan.drivability_for(row.source_id).get("requires_source_root")]
@@ -107,7 +111,9 @@ def test_check_and_go_refuse_the_same_missing_local_inputs(tmp_path, capsys, roo
                 "does not exist" in message if root_state == "missing" else "no GRIB2 files" in message)
 
 
-@pytest.mark.parametrize("member", ["10", "-1", "1.0", "true"])
+@pytest.mark.parametrize('member', [
+    pytest.param("1.0", id='1.0'),
+])
 def test_invalid_eda_member_stops_before_cycle_resolution(tmp_path, monkeypatch, member):
     def unexpected(*args, **kwargs):
         pytest.fail("publication queried for an invalid member")

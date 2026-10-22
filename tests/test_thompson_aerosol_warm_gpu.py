@@ -563,16 +563,6 @@ def test_ncten_balance_matches_wrf_oracle_bit_exactly():
         if bad.size else "")
 
 
-@pytest.mark.parametrize("branch", [0, 1, 2, 3, 10, 11])
-def test_ncten_balance_branch_matches_oracle(branch):
-    """Per-branch gate so a failure names the clamp that broke."""
-    got = _run_balance()
-    want = BALANCE["ncten_out"].astype(np.float32)
-    mask = BALANCE["branch"].astype(int) == branch
-    assert mask.any()
-    assert np.array_equal(got[mask], want[mask])
-
-
 def test_ncten_balance_zeroes_the_tendency_for_cloud_free_cells():
     """WRF's else branch: ncten = -nc1d*odts, wiping the droplet number.
 

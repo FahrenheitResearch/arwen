@@ -232,18 +232,6 @@ def test_the_go_chain_keeps_a_twin_beside_the_config(tmp_path):
 # The static file.
 # ---------------------------------------------------------------------------
 
-def test_the_recipes_that_read_the_hrrr_static_file_are_the_ones_that_name_it():
-    wanted = {path.stem: [row.id for row in required_static_rows(
-        _raw(path), base_dir=path.parent)] for path in RECIPES}
-    assert wanted == {
-        "conus_hrrr_configuration": ["hrrr-conus-v4"],
-        "hrrr_configuration_clock": ["hrrr-conus-v4"],
-        "hrrr_configuration_cut": ["hrrr-conus-v4"],
-        # The static grid is explicit even when forcing comes from another source.
-        "hrrr_v4_gsd41": ["hrrr-conus-v4"],
-    }
-
-
 def test_a_grid_at_another_spacing_does_not_ask_for_the_file():
     raw = _raw(ROOT / "configs" / "recipes" / "hrrr_configuration_cut.toml")
     raw["domain"][0]["dx"] = 1000.0

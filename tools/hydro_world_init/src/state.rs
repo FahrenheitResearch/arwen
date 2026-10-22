@@ -24,6 +24,13 @@ pub struct LandWeights {
 /// (land fraction >= 0.5, growing square rings in index space, up to 12
 /// cells) when the footprint has no land.
 pub fn land_weights(w: &Weights, land: Option<&[f64]>) -> Result<LandWeights> {
+    land_weights_cover(w, land, false)
+}
+
+/// `partial`: a regional source (the NWM CONUS analysis) leaves catchments
+/// outside its domain with no cell, or no land cell near; those get an empty
+/// row (their state is NaN, "not covered") instead of an error.
+pub fn land_weights_cover(w: &Weights, land: Option<&[f64]>, partial: bool) -> Result<LandWeights> {
     let nx = w.grid.nx();
     let ny = w.grid.ny();
     let c = w.catchment_ids.len();
@@ -32,6 +39,9 @@ pub fn land_weights(w: &Weights, land: Option<&[f64]>) -> Result<LandWeights> {
         .map(|k| {
             let (a, b) = (w.offsets[k] as usize, w.offsets[k + 1] as usize);
             let idx: Vec<usize> = w.indices[a..b].iter().map(|i| *i as usize).collect();
+            if partial && (idx.is_empty() || w.coverage_fraction[k] < PARTIAL_MIN_COVERAGE) {
+                return Ok((Vec::new(), Vec::new(), false));
+            }
             let Some(land) = land else {
                 return Ok((idx, w.weights[a..b].to_vec(), false));
             };
@@ -64,6 +74,9 @@ pub fn land_weights(w: &Weights, land: Option<&[f64]>) -> Result<LandWeights> {
                     let n = found.len() as f64;
                     return Ok((found.clone(), vec![1.0 / n; found.len()], true));
                 }
+            }
+            if partial {
+                return Ok((Vec::new(), Vec::new(), false));
             }
             Err(format!("{}: no land cell within 12 cells", w.catchment_ids[k]).into())
         })
@@ -174,7 +187,17 @@ fn class_of(code: f64, tr: &Transfer) -> (Option<&crate::table::SoilClass>, bool
     }
 }
 
+/// A catchment a regional source covers less than half of keeps no state
+/// from it (partial mode): its value would describe someone else's land.
+pub const PARTIAL_MIN_COVERAGE: f64 = 0.5;
+
 pub fn map_state(table: &Table, row: &Row, src: &Source, record: usize, w: &Weights, params: &[Params]) -> Result<Mapped> {
+    map_state_cover(table, row, src, record, w, params, false)
+}
+
+/// `partial`: catchments the source does not cover get an all-NaN state and
+/// are counted, instead of failing the whole map (see land_weights_cover).
+pub fn map_state_cover(table: &Table, row: &Row, src: &Source, record: usize, w: &Weights, params: &[Params], partial: bool) -> Result<Mapped> {
     let st = &row.state;
     let land = match &st.land_fraction {
         Some(v) if v.get("variable").is_some() => Some(ncread::field(src, v["variable"].as_str().unwrap(), record)?),
@@ -184,7 +207,7 @@ pub fn map_state(table: &Table, row: &Row, src: &Source, record: usize, w: &Weig
         }
         _ => None,
     };
-    let lw = land_weights(w, land.as_deref())?;
+    let lw = land_weights_cover(w, land.as_deref(), partial)?;
     let transfer = crate::table::classes(table, row)?;
     let method = row.soil_moisture_transfer.as_ref().map(|t| t.method.as_str()).unwrap_or("volumetric");
     let classes = match &st.soil_class {
@@ -264,6 +287,16 @@ pub fn map_state(table: &Table, row: &Row, src: &Source, record: usize, w: &Weig
         .map(|k| {
             let p = &params[k];
             let id = &w.catchment_ids[k];
+            if partial && (lw.offsets[k] == lw.offsets[k + 1] || lw.mean(k, &cell_layers[0]).is_none()) {
+                let nan = vec![f64::NAN; tgt.len() - 1];
+                return Ok((CatchmentState {
+                    soil_moisture_source: vec![f64::NAN; cell_layers.len()],
+                    soil_temperature_source: vec![f64::NAN; temp_layers.len()],
+                    smc: nan.clone(), sh2o: nan.clone(), sice: nan.clone(), stc: nan,
+                    swe_m: f64::NAN, snow_depth_m: f64::NAN, snow_temperature_k: f64::NAN,
+                    cfe_soil_storage: f64::NAN, cfe_gw_storage: f64::NAN, soil_class: None,
+                }, false, false));
+            }
             let mut src_v = Vec::new();
             for f in &cell_layers {
                 src_v.push(lw.mean(k, f).ok_or_else(|| format!("{id}: soil layer all missing"))?);
@@ -358,10 +391,12 @@ pub fn map_state(table: &Table, row: &Row, src: &Source, record: usize, w: &Weig
         states.push(s);
     }
     let fb = lw.fallback.iter().filter(|x| **x).count();
+    let not_covered = states.iter().filter(|s| !s.cfe_soil_storage.is_finite()).count();
     Ok(Mapped {
         states,
         counts: serde_json::json!({
             "catchments": lw.catchments(),
+            "catchments_not_covered_by_source": if partial { serde_json::json!(not_covered) } else { serde_json::Value::Null },
             "catchments_without_land_in_footprint_using_nearest_land": fb,
             "land_cells_with_unknown_soil_class_using_fallback": fallback_cells,
             "catchments_with_target_layers_below_source_extended": extended,

@@ -133,14 +133,6 @@ def test_scheduler_killed_at_every_phase(tmp_path, phase):
     assert all(e["suite_hash"] == fixture["suite_hash"] for e in runner.ledger.settle() if e.get("cycle"))
 
 
-@pytest.mark.parametrize("history,expected", [({}, "retry"), ({"retries": 3}, "checkpoint"),
-    ({"retries": 3, "checkpoint_tried": True}, "degrade"),
-    ({"retries": 3, "checkpoint_tried": True, "degrade_index": 0}, "halt")])
-def test_crash_ladder(history, expected):
-    assert next_action(dict(resume_argv=["door"], degrade=[{"argv": ["door"]}]),
-                       {"exit_code": 1}, history, now=1, cutoff=10)["action"] == expected
-
-
 def test_full_ladder_executes_each_door(tmp_path):
     fixture = plan(tmp_path, code=1)
     row = fixture["rows"][0]
@@ -200,11 +192,6 @@ def test_source_deadline_and_fallback():
     assert next_action(row, {"exit_code": 75, "readiness": True}, {}, now=9, cutoff=10)["action"] == "wait"
     assert next_action(row, {"exit_code": 75, "readiness": True}, {}, now=10, cutoff=10)["source_index"] == 1
     assert next_action(row, {"exit_code": 75}, {"source_index": 1}, now=10, cutoff=10)["reason"] == "source_behind"
-
-
-def test_da_failure_public_analysis():
-    result = next_action({"kind": "da"}, {"exit_code": 1}, {}, now=0, cutoff=2)
-    assert result == {"action": "skip", "reason": "da_failed", "initialization": "public_analysis"}
 
 
 def test_da_door_failure_releases_public_forecast(tmp_path):

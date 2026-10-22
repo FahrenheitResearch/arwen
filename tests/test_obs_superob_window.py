@@ -46,7 +46,7 @@ from gpuwm.obs.superob import (
 )
 from gpuwm.obs.sweeps import Moment, RadarSite, RadarVolume, Sweep
 from gpuwm.obs.target_grid import TargetGrid
-from gpuwm.static.lambert import LambertGrid
+from test_obs_radar_grid import _grid as _analytic_grid
 
 REF_LAT, REF_LON = 35.3331, -97.2778
 #: A domain several times wider than the range authority below, which is
@@ -61,11 +61,7 @@ RANGE_KM = 40.0
 
 
 def _grid() -> TargetGrid:
-    projection = LambertGrid(
-        ref_lat=REF_LAT, ref_lon=REF_LON, truelat1=33.0, truelat2=37.0,
-        stand_lon=REF_LON, dx=DX_M, dy=DX_M, e_we=NX + 1, e_sn=NY + 1)
-    return TargetGrid.from_projection(
-        projection, z_w=np.linspace(0.0, 8000.0, NZ + 1), name="analytic")
+    return _analytic_grid(nx=NX, ny=NY, dx=DX_M, nz=NZ, top_m=8000.0)
 
 
 def _params() -> SuperobParams:
@@ -198,10 +194,12 @@ def test_windowed_merge_is_bitwise_identical_to_the_dense_merge(monkeypatch):
     grid = _grid()
     params = _params()
 
-    windowed = merge_contributions(_contributions(grid, params), grid,
-                                   params=params)
-    shapes = {c.site_id: c.z_count.shape
-              for c in _contributions(grid, params)}
+    contributions = _contributions(grid, params)
+    windowed = merge_contributions(contributions, grid, params=params)
+    shapes = {c.site_id: c.z_count.shape for c in contributions}
+    assert windowed.z_mask.sum() > 0
+    assert windowed.vr_mask.sum() > 0
+    assert windowed.vr_obs.shape[0] == len(PLACED)
 
     monkeypatch.setattr(superob_mod, "horizontal_window", _full_domain_window)
     dense = merge_contributions(_contributions(grid, params), grid,
@@ -235,17 +233,6 @@ def test_windowed_merge_is_bitwise_identical_to_the_dense_merge(monkeypatch):
     # Non-vacuity for the velocity half: the windowed planes really are
     # smaller than the dense ones.
     assert windowed.vr_obs.shape[2] < dense.vr_obs.shape[2]
-
-
-def test_the_fixture_actually_produces_observations():
-    """The bitwise test would also pass if both merges produced nothing."""
-    grid = _grid()
-    params = _params()
-    merged = merge_contributions(_contributions(grid, params), grid,
-                                 params=params)
-    assert merged.z_mask.sum() > 0
-    assert merged.vr_mask.sum() > 0
-    assert merged.vr_obs.shape[0] == len(PLACED)
 
 
 def test_windowing_loses_no_gates(monkeypatch):

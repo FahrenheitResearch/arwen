@@ -422,8 +422,9 @@ def test_a_theta_li_revival_that_leaves_kpbl_at_one_is_extinguished():
     assert np.asarray(out["exch_h"]).max() == pytest.approx(0.01, abs=1e-9)
 
 
-def test_the_kernel_spells_wrfs_two_pblflg_rules_like_the_mirror():
-    """The two branch structures the tests above measure, in ``ysu.cu``.
+@pytest.mark.parametrize("module", ("ysu", "ysu_480"))
+def test_the_kernel_spells_wrfs_two_pblflg_rules_like_the_mirror(module):
+    """The two branch structures the tests above measure, in each live unit.
 
     ``test_ysu_kernel_matches_float64_mirror`` is the numerical statement
     that the CUDA column and ``np_ysu_column`` are one transcription, and it
@@ -433,10 +434,9 @@ def test_the_kernel_spells_wrfs_two_pblflg_rules_like_the_mirror():
     They decide whether a column is convective at all, so they are asserted
     here as well, textually, where the assertion runs everywhere.
     """
-    import pathlib
+    from gpuwm.core.kernels import _unit_text
 
-    source = (pathlib.Path(__file__).resolve().parents[1] / "gpuwm" / "core"
-              / "kernels" / "ysu.cu").read_text("utf-8")
+    source = _unit_text(module)
     code = [line.strip() for line in source.splitlines()]
     code = [line for line in code if line and not line.startswith("//")]
 

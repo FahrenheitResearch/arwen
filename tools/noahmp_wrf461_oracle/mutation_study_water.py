@@ -46,6 +46,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+if __name__ == "__main__" and not __package__:
+    from mutation_study_driver import _run_mutants
+else:
+    from tools.noahmp_wrf461_oracle.mutation_study_driver import _run_mutants
+
 REPO = Path(__file__).resolve().parent.parent.parent
 SOURCE = REPO / "gpuwm" / "core" / "noahmp_water.py"
 TEST = REPO / "tests" / "test_noahmp_water.py"
@@ -348,46 +353,7 @@ def main(argv):
     if not run_tests(args.quick):
         raise SystemExit("the unmutated port already fails; fix that first")
 
-    survivors = []
-    total = 0
-    try:
-        for label, statement in ARG_MUTANTS:
-            name = f"arg/{label}"
-            if args.filter and args.filter not in name:
-                continue
-            total += 1
-            write_source(build_arg_mutant(original, statement))
-            if run_tests(args.quick):
-                survivors.append(name)
-                print(f"SURVIVED  {name}")
-            else:
-                print(f"killed    {name}")
-
-        for label, needle, replacement in STRUCT_MUTANTS:
-            name = f"struct/{label}"
-            if args.filter and args.filter not in name:
-                continue
-            total += 1
-            write_source(build_struct_mutant(original, needle, replacement))
-            if run_tests(args.quick):
-                survivors.append(name)
-                print(f"SURVIVED  {name}")
-            else:
-                print(f"killed    {name}")
-
-        for site in constant_sites(original):
-            name = f"const/line{site[0]}/{site[3]!r}"
-            if args.filter and args.filter not in name:
-                continue
-            total += 1
-            write_source(build_const_mutant(original, site))
-            if run_tests(args.quick):
-                survivors.append(name)
-                print(f"SURVIVED  {name}")
-            else:
-                print(f"killed    {name}")
-    finally:
-        write_source(original)
+    survivors, total = _run_mutants(globals(), original, args)
 
     print(f"\n{total - len(survivors)} of {total} mutants killed")
     unexpected = [s for s in survivors if s not in EXPECTED_SURVIVORS]

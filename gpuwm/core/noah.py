@@ -80,11 +80,7 @@ _TPB = 64          # threads per block (one thread per land column)
 def _tokens(line: str) -> list[str]:
     """Fortran list-directed items of one record: comma/space separated,
     quoted strings kept whole."""
-    out = []
-    for m in re.finditer(r"'[^']*'|[^,\s]+", line):
-        tok = m.group(0)
-        out.append(tok)
-    return out
+    return [match.group(0) for match in re.finditer(r"'[^']*'|[^,\s]+", line)]
 
 
 @dataclass
@@ -145,6 +141,17 @@ class NoahTables:
     lvcoef: float = 0.0
 
 
+def _parse_table_columns(lines, cats, names, table):
+    cols = {n: np.zeros(cats) for n in names}
+    for _ in range(cats):
+        toks = _tokens(next(lines))
+        lc = int(float(toks[0])) - 1
+        for n, tok in zip(names, toks[1:1 + len(names)]):
+            cols[n][lc] = float(tok)
+    for n in names:
+        setattr(table, n, cols[n])
+
+
 def _parse_vegparm(text: str, mminlu: str, t: NoahTables) -> None:
     lines = iter(text.splitlines())
     next(lines)                                     # header line
@@ -165,14 +172,7 @@ def _parse_vegparm(text: str, mminlu: str, t: NoahTables) -> None:
     names = ("shdtbl nrotbl rstbl rgltbl hstbl snuptbl maxalb laimintbl "
              "laimaxtbl emissmintbl emissmaxtbl albedomintbl albedomaxtbl "
              "z0mintbl z0maxtbl ztopvtbl zbotvtbl").split()
-    cols = {n: np.zeros(lucats) for n in names}
-    for _ in range(lucats):
-        toks = _tokens(next(lines))
-        lc = int(float(toks[0])) - 1
-        for n, tok in zip(names, toks[1:1 + len(names)]):
-            cols[n][lc] = float(tok)
-    for n in names:
-        setattr(t, n, cols[n])
+    _parse_table_columns(lines, lucats, names, t)
     # scalar block: label line then value line, in the READ order
     def val():
         next(lines)
@@ -200,14 +200,7 @@ def _parse_soilparm(text: str, mminsl: str, t: NoahTables) -> None:
             next(lines)
     t.sltype, t.slcats = sltype, cats
     names = "bb drysmc f11 maxsmc refsmc satpsi satdk satdw wltsmc qtz".split()
-    cols = {n: np.zeros(cats) for n in names}
-    for _ in range(cats):
-        toks = _tokens(next(lines))
-        lc = int(float(toks[0])) - 1
-        for n, tok in zip(names, toks[1:1 + len(names)]):
-            cols[n][lc] = float(tok)
-    for n in names:
-        setattr(t, n, cols[n])
+    _parse_table_columns(lines, cats, names, t)
 
 
 def _parse_genparm(text: str, t: NoahTables) -> None:

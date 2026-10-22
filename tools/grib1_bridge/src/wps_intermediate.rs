@@ -262,7 +262,7 @@ pub fn read_all(path: &Path) -> Result<(Vec<RecordMeta>, Vec<f32>), ReadError> {
             return Err(ReadError::DataLengthMismatch);
         }
         // Row-major, x fastest -- the writer's own order, so no transpose.
-        data.extend(payload.chunks_exact(4).map(be_f32));
+        data.extend(payload.as_chunks::<4>().0.iter().map(|b| be_f32(b)));
         metas.push(RecordMeta {
             field,
             xlvl,

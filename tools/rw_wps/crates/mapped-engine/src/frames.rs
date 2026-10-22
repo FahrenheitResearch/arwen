@@ -582,19 +582,17 @@ fn validate_frame_axes(collection: &DecodedCollection, fields: &[CanonicalField]
                 field.name
             )));
         }
-        if let Some(levels) = shape.get("half_level") {
-            if *levels != collection.vertical_values.len() + 1 {
+        if let Some(levels) = shape.get("half_level")
+            && *levels != collection.vertical_values.len() + 1 {
                 return Err(frame_invalid(format!("{} does not bound the vertical coordinate", field.name)));
             }
-        }
-        if let Some(levels) = shape.get("vertical") {
-            if *levels != collection.vertical_values.len() {
+        if let Some(levels) = shape.get("vertical")
+            && *levels != collection.vertical_values.len() {
                 return Err(frame_invalid(format!(
                     "{} does not share the vertical coordinate",
                     field.name
                 )));
             }
-        }
     }
     Ok(())
 }
@@ -708,15 +706,40 @@ fn frame_header(
         }).collect()
     });
     let declaration = mapping.grid_declaration()?;
-    let grid = if declaration.family == GRID_FAMILY_LAMBERT {
+    let grid = source_grid(&declaration, &collection.latitude, &collection.longitude);
+    let policies = mapping
+        .target()?
+        .field("initialization_policies")
+        .map(crate::node::Node::to_value)
+        .unwrap_or_else(|| Value::Object(Map::new()));
+    Ok(json!({
+        "source_id": mapping.name()?,
+        "source_cycle": utc_isoformat(source_cycle),
+        "grid": grid,
+        "vertical_coordinates": Value::Object(vertical_coordinates),
+        "fields": field_descriptors,
+        "initialization_policies": policies,
+        "schema": SOURCE_FRAME_SCHEMA,
+    }))
+}
+
+/// The frame header's grid document for the declared source grid over the
+/// canonical axes: the same document whether it is written into a frame or
+/// sent ahead of the decode with an atmospheric window request.
+pub fn source_grid(
+    declaration: &crate::model::GridDeclaration,
+    latitude: &[f64],
+    longitude: &[f64],
+) -> Value {
+    if declaration.family == GRID_FAMILY_LAMBERT {
         let parameters = declaration
             .parameters
             .as_ref()
             .expect("lambert declarations carry parameters");
         let mut grid = json!({
             "projection": GRID_FAMILY_LAMBERT,
-            "nx": collection.longitude.len(),
-            "ny": collection.latitude.len(),
+            "nx": longitude.len(),
+            "ny": latitude.len(),
             "earth_shape": format!("grib_shape_of_earth:{}", parameters.shape_of_earth),
             "scan_order": "+x,+y",
             // Grid-relative sources were rotated to the earth basis at decode
@@ -744,22 +767,8 @@ fn frame_header(
         }
         grid
     } else {
-        regular_latlon_grid(&collection.latitude, &collection.longitude)
-    };
-    let policies = mapping
-        .target()?
-        .field("initialization_policies")
-        .map(crate::node::Node::to_value)
-        .unwrap_or_else(|| Value::Object(Map::new()));
-    Ok(json!({
-        "source_id": mapping.name()?,
-        "source_cycle": utc_isoformat(source_cycle),
-        "grid": grid,
-        "vertical_coordinates": Value::Object(vertical_coordinates),
-        "fields": field_descriptors,
-        "initialization_policies": policies,
-        "schema": SOURCE_FRAME_SCHEMA,
-    }))
+        regular_latlon_grid(latitude, longitude)
+    }
 }
 
 /// The frame header's grid document for a regular latitude/longitude
@@ -1521,8 +1530,8 @@ fn field_work(
         return Err(frame_invalid(format!(
             "required mapped field {} is not finite at {valid_time}", field.name)));
     }
-    if let Some(soil_count) = soil_count {
-        if ["soil_temperature", "volumetric_soil_moisture"].contains(&field.name.as_str()) {
+    if let Some(soil_count) = soil_count
+        && ["soil_temperature", "volumetric_soil_moisture"].contains(&field.name.as_str()) {
             let axis = field.axes.iter().position(|axis| axis == "soil")
                 .ok_or_else(|| frame_invalid(format!("{} has no soil axis", field.name)))?;
             let observed = field.values.shape()[axis] as i64;
@@ -1531,7 +1540,6 @@ fn field_work(
                     "{} has {observed} layers, target declares {soil_count}", field.name)));
             }
         }
-    }
     // A field the decode produced over the granted window alone: its y/x
     // are the window's and every value it has was checked above, so it
     // is published as decoded.
@@ -1554,6 +1562,13 @@ fn field_work(
     let shape = retained.map_or_else(|| field.values.shape().to_vec(),
         |w| w.shape(field.values.shape()[0]).to_vec());
     let mut pressure_levels = None;
+    if decoded.is_some() && field.name == "air_pressure" {
+        // Its whole planes were medianed as they were unpacked
+        // (`assemble::DecodedCollection::original_pressure_hpa`).
+        pressure_levels = Some(fields.collection.original_pressure_hpa.clone().ok_or_else(|| {
+            frame_invalid("air_pressure was decoded over the atmospheric window                            without its whole-plane pressure ladder")
+        })?);
+    }
     let values: Vec<f64> = if let Some(w) = retained.filter(|_| decoded.is_none()) {
         if field.name == "air_pressure" {
             pressure_levels = Some(crate::window::pressure_levels(
@@ -1660,15 +1675,14 @@ fn prepare_frame(plan: &FramePlan, planned: PlannedFrame<'_>,
         match work {
             Ok(work) => {
                 descriptors.push(work.descriptor);
-                if header["vertical_coordinates"].get("soil").is_none() {
-                    if let Some(levels) = work.soil_levels {
+                if header["vertical_coordinates"].get("soil").is_none()
+                    && let Some(levels) = work.soil_levels {
                         header["vertical_coordinates"]["soil"] = json!({
                             "coordinate": "soil_depth", "level_count": levels,
                             "level_values": Vec::<f64>::new(), "a_coefficients": Vec::<f64>::new(),
                             "b_coefficients": Vec::<f64>::new(), "positive": "down", "units": "index",
                         });
                     }
-                }
                 if work.pressure_levels.is_some() {
                     pressure_levels = work.pressure_levels;
                 }
@@ -1766,8 +1780,8 @@ impl Committer<'_> {
                 frame.index, &self.series.grid_fingerprint)?
         } else { None };
         self.windowed |= window.is_some();
-        if frame.index == 0 {
-            if let Some(values) = frame.fields.planned_values(window.as_ref())? {
+        if frame.index == 0
+            && let Some(values) = frame.fields.planned_values(window.as_ref())? {
                 let frame_bytes = values.saturating_mul(8);
                 let needed = frame_bytes.saturating_mul(self.count as u64);
                 self.planned = Some(needed);
@@ -1783,7 +1797,6 @@ impl Committer<'_> {
                         self.count, bytes_and_gib(frame_bytes))));
                 }
             }
-        }
         self.inventories.insert(frame.names.clone());
         Ok(window)
     }
@@ -1939,11 +1952,10 @@ impl StreamWriter {
     }
 
     fn submit(&mut self, fields: Vec<Vec<f64>>) {
-        if let Some(jobs) = &self.jobs {
-            if jobs.send(fields).is_ok() {
+        if let Some(jobs) = &self.jobs
+            && jobs.send(fields).is_ok() {
                 self.pending += 1;
             }
-        }
     }
 
     fn drain(&mut self) -> std::result::Result<(), (std::io::Error, u64)> {
@@ -2476,7 +2488,7 @@ mod tests {
         let collection = DecodedCollection { latitude: vec![1., 2.], longitude: vec![3., 4.],
             vertical_values: vec![100000.], direct: BTreeMap::from([((valid_time, None, "source".to_owned()), direct)]),
             source_cycles: BTreeMap::from([((valid_time, None), valid_time)]),
-            grid_fingerprint: "grid".to_owned(), hybrid_a: Vec::new(), hybrid_b: Vec::new() };
+            grid_fingerprint: "grid".to_owned(), hybrid_a: Vec::new(), hybrid_b: Vec::new(), original_pressure_hpa: None };
         let plan = FramePlan { keys: vec![(valid_time, None)],
             declared_names: if self_seed { vec!["source".to_owned()] }
                 else { ["source", "middle", "output"].map(str::to_owned).to_vec() },
@@ -2611,7 +2623,7 @@ mod tests {
             vertical_values: vec![100000.], direct: BTreeMap::from([
                 column("soil_temperature", 9, 280.0), column("soil_water_column", 8, 50.0)]),
             source_cycles: BTreeMap::from([((valid_time, None), valid_time)]),
-            grid_fingerprint: "grid".to_owned(), hybrid_a: Vec::new(), hybrid_b: Vec::new() };
+            grid_fingerprint: "grid".to_owned(), hybrid_a: Vec::new(), hybrid_b: Vec::new(), original_pressure_hpa: None };
         let plan = FramePlan { keys: vec![(valid_time, None)],
             declared_names: ["soil_temperature", "soil_water_column", "soil_water_column_volumetric",
                 "volumetric_soil_moisture"].map(str::to_owned).to_vec(),
@@ -2801,10 +2813,12 @@ mod tests {
         (result, pulled)
     }
 
+    type PositionedGolden = (Mapping, SeriesSummary, BTreeMap<String, String>,
+                             Vec<std::sync::Mutex<Option<DecodedCollection>>>);
+
     /// The golden, carved into one collection per valid time, handed out
     /// by position to a many-lane writer.
-    fn golden_by_position() -> (Mapping, SeriesSummary, BTreeMap<String, String>,
-                                Vec<std::sync::Mutex<Option<DecodedCollection>>>) {
+    fn golden_by_position() -> PositionedGolden {
         let (mapping, collection, inputs) = netcdf_golden();
         let series = SeriesSummary { source_cycles: collection.source_cycles.clone(),
             grid_fingerprint: collection.grid_fingerprint.clone(), lead_batch: false };

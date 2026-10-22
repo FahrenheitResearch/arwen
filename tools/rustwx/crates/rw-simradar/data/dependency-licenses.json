@@ -5,11 +5,11 @@
     {
       "name": "wrf-core",
       "version": "0.1.0",
-      "directory": "tools/rustwx/vendor/bowecho-git/wrf-core",
+      "directory": "tools/rustwx/vendor/crates-io/wrf-core",
       "license": "MIT",
       "grants": [],
-      "declaration_source": "https://github.com/FahrenheitResearch/wrf-rust/blob/9874474d9566a7536a90f457a48be30caa5f973a/pyproject.toml",
-      "declaration_sha256": "ceb4bde650118600e3ce20cbfd44d40c6187c8f1416901cec0cc7a1b1cb5f063",
+      "declaration_source": "https://github.com/FahrenheitResearch/wrf-rust/blob/93bd2ca670c13fec35bcfc27a58108e6fd71c627/pyproject.toml",
+      "declaration_sha256": "2bca3beeff5dd5e1de387a13f37ac28753feae20d34d092cef25ea362d351b2d",
       "note": "The exact upstream source declares MIT in pyproject.toml and contains no standalone grant file. This is the same first-party wrf-core grant recorded by the root NOTICE. Cargo metadata is retained unchanged."
     },
     {

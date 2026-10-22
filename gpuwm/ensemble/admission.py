@@ -268,7 +268,13 @@ def ordinary_memory_model_from_estimate(estimate, *, inventory_id="ordinary-pref
     totals.update(shared_tables=int(estimate.k_tables_bytes),
                   shared_physics_tables=int(getattr(estimate, "physics_tables_bytes", 0)),
                   column_workspace=int(estimate.workspace_bytes),
-                  step_transients=int(estimate.transient_peak_bytes))
+                  step_transients=int(estimate.transient_peak_bytes),
+                  # preflight adds it to resident_bytes, so it is in the subtotal; its
+                  # transient already rides transient_peak_bytes.  Without this row every
+                  # hydro-covered ensemble was refused as "unclassified" (2.9.4 rolling
+                  # test, WoFS from HRRR over Oklahoma, fold fe99a1680d).
+                  hydro_resident=int((getattr(estimate, "hydro_memory", None) or {})
+                                     .get("resident_bytes", 0)))
     subtotal = sum(totals.values())
     if subtotal != int(estimate.subtotal_bytes):
         raise ValueError("ordinary preflight inventory has an unclassified memory category")

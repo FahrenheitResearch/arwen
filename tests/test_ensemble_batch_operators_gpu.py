@@ -270,10 +270,10 @@ def test_advection_words_equal_independent_scalar_launches(
     profiles = {name: cp.asarray(value) for name, value in profile_host.items()}
     reference_profiles = {name: cp.asarray(value) for name, value in profile_host.items()}
     dx, dy = 950.0, 1300.0
-    batch = getattr(operators, "prepare_flux_div_" + field_kind)(
+    batch = operators.prepare_flux_div(
         fields["field"], fields["ru"], fields["rv"], fields["rw"], tend,
         profiles["spacing"], profiles["fnm"], profiles["fnp"], profiles["msf"],
-        dx=dx, dy=dy, open_x=open_x, open_y=open_y,
+        dx=dx, dy=dy, stagger=stagger, open_x=open_x, open_y=open_y,
         has_msf=has_msf, spec=specified, vorder=vorder)
     nlev, nys, nxs = target_shape
     grid = ((nxs + 127) // 128, nys, nlev)
@@ -332,9 +332,9 @@ def test_advection_launch_has_all_member_backings_and_shared_zero_strides(
     fnm = cp.full(nz, 0.5, cp.float32)
     fnp = cp.full(nz, 0.5, cp.float32)
     msf = cp.ones(shape[1:], cp.float32)
-    getattr(operators, "prepare_flux_div_" + field_kind)(
+    operators.prepare_flux_div(
         field, ru, rv, rw, tend, spacing, fnm, fnp, msf,
-        dx=1000.0, dy=1000.0)()
+        dx=1000.0, dy=1000.0, stagger=stagger)()
     assert len(observed) == 1
     spec, count, args, kwargs = observed[0]
     assert spec.entry == entry and count == members

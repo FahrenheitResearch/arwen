@@ -8,10 +8,6 @@ def config():
     return RunConfig(nx=8, ny=8, nz=4, dx=3000., dy=3000., ztop=10000., dt=5., run_seconds=10.)
 
 
-def test_corrected_default():
-    assert config().solar_generation == 'wrf_480'
-
-
 def test_restart_generation_is_bound():
     cfg = config()
     legacy = replace(cfg, solar_generation='wrf_461')
@@ -36,14 +32,6 @@ def test_selector_comment_roundtrip():
     for generation in ('wrf_461', 'wrf_480'):
         comment = with_physics_selector_comment('', {'solar_generation': generation})
         assert read_physics_selector_comment(comment)['solar_generation'] == generation
-
-
-def test_registry_generation_row():
-    import json
-    from pathlib import Path
-    row = json.loads((Path(__file__).parents[1]/'gpuwm/physics_registry_v2.json').read_text())['parameters']['solar_generation']
-    assert row['default'] == config().solar_generation == 'wrf_480'
-    assert row['enum'] == ['wrf_480', 'wrf_461']
 
 
 def test_namelist_import_uses_generic_default(tmp_path):

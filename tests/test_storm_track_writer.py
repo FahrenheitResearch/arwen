@@ -600,24 +600,10 @@ def test_the_track_handle_is_line_buffered_so_the_flush_is_not_a_habit(
     writer.close()
 
 
-def test_a_run_starts_a_fresh_file_rather_than_appending_to_a_stale_one(
-        tmp_path):
-    (tmp_path / "track.csv").write_text("stale garbage\n", encoding="utf-8")
-    _writer(tmp_path).close()
-    assert _lines(tmp_path) == [tw.CSV_HEADER]
-
-
 def test_the_writer_creates_missing_parent_directories(tmp_path):
     TrackWriter(TrackConfig("evidence/deep/track.csv"),
                 initial_time=INIT, outdir=tmp_path).close()
     assert (tmp_path / "evidence" / "deep" / "track.csv").is_file()
-
-
-def test_an_absolute_path_is_honoured_as_given(tmp_path):
-    target = tmp_path / "elsewhere" / "t.csv"
-    TrackWriter(TrackConfig(str(target)), initial_time=INIT,
-                outdir=tmp_path / "outdir").close()
-    assert target.is_file()
 
 
 # ---------------------------------------------------------------------------

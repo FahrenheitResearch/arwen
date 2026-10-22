@@ -383,6 +383,46 @@ pub fn altimeter_inhg_to_station_pa(altimeter_in_hg: f64, elevation_m: f64) -> f
     (altimeter_in_hg * INHG_TO_PA) * (1.0 - 0.0065 * elevation_m / 288.15).powf(5.255877)
 }
 
+/// Re-hash a neutral table against its stream-specific record, keeping the receipt layout.
+pub fn verify(
+    file: Option<&Path>, record_path: Option<&Path>,
+    table_schema: &str, verify_schema: &'static str,
+) -> Result<String, Box<dyn Error>> {
+    let file = file.ok_or_else(|| err("--file is required"))?;
+    let record_path = record_path.ok_or_else(|| err("--record is required"))?;
+    let record: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(record_path)
+            .map_err(|e| err(format!("cannot read {}: {e}", record_path.display())))?,
+    )
+    .map_err(|e| err(format!("{} is not JSON: {e}", record_path.display())))?;
+    if record.get("schema").and_then(|s| s.as_str()) != Some(table_schema) {
+        return Err(err(format!("{} does not declare {table_schema}", record_path.display())));
+    }
+    let bytes = std::fs::read(file).map_err(|e| err(format!("cannot read {}: {e}", file.display())))?;
+    let actual = hex_sha256(&bytes);
+    let stated = record.get("sha256").and_then(|s| s.as_str()).unwrap_or("").to_string();
+    #[derive(serde::Serialize)]
+    struct Record {
+        schema: &'static str,
+        status: &'static str,
+        path: String,
+        stated_sha256: String,
+        actual_sha256: String,
+    }
+    let ok = actual == stated;
+    let text = format!(
+        "{}\n",
+        serde_json::to_string_pretty(&Record {
+            schema: verify_schema,
+            status: if ok { "VERIFIED" } else { "MISMATCH" },
+            path: crate::absolute_uri(file),
+            stated_sha256: stated,
+            actual_sha256: actual,
+        })?
+    );
+    if ok { Ok(text) } else { Err(err(format!("table digest mismatch:\n{text}"))) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

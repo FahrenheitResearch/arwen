@@ -370,7 +370,12 @@ def plan(source: str, *, init: datetime, now: datetime, run_seconds: float,
             # Table routes may need f000 invariants. Acquire the declared
             # prefix, separately from the integration window, until their
             # handoff can address invariant-only dependency closures.
-            fetch_leads = _leads(adapter, route, candidate, 0, end, cadence) if route else leads
+            # The prefix opens at the route's first published lead: a
+            # retrospective row with no f000 (the GEFSv12 reforecast,
+            # first_lead = 3, lane/cap-gefs-archive) has no invariant frame
+            # before it, and asking for f000 refused every window.
+            fetch_leads = (_leads(adapter, route, candidate, route.first_lead, end, cadence)
+                           if route else leads)
             basis = "declared publication timing; not a payload completeness probe"
             if probe is not None:
                 from gpuwm.fetch import probe_cycle_window

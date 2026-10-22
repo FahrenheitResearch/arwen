@@ -157,32 +157,23 @@ def test_common_static_writer_rejects_nonfinite_and_overwrite(tmp_path):
         write_native_static_cache(path, {"HGT_M": np.array([2.0])})
 
 
-def test_hrrr_static_receipt_is_converted_to_common_wrf_contract(tmp_path):
-    target = HrrrTargetDomain(
+def _target():
+    """Shared domain for static-receipt conversion and mutation controls."""
+    return HrrrTargetDomain(
         name="tiny-contract-fixture", map_proj="lambert",
         nx=14, ny=13, nz=9, dx_m=3000.0, dy_m=3000.0,
         ref_lat=35.0, ref_lon=-97.0, truelat1=30.0,
         truelat2=60.0, stand_lon=-97.0, time_step_seconds=15)
+
+
+def test_hrrr_static_receipt_is_converted_to_common_wrf_contract(tmp_path):
+    target = _target()
     grid = target.grid()
     cfg = SimpleNamespace(
         nx=target.nx, ny=target.ny, nz=target.nz,
         dx=target.dx_m, dy=target.dy_m)
-    static_path = tmp_path / "native-static.npz"
-    np.savez(static_path, HGT_M=np.zeros((target.ny, target.nx)))
-    digest = hashlib.sha256(static_path.read_bytes()).hexdigest()
-    rich_path = tmp_path / "hrrr-static.json"
-    rich_path.write_text(json.dumps({
-        "schema": "gpuwm-native-hrrr-static-v2",
-        "status": "PASS",
-        "target_domain": target.to_payload(),
-        "target_domain_sha256": target.identity_sha256(),
-        "geometry": native_geometry_contract(grid, cfg),
-        "cache": {
-            "path": static_path.name,
-            "bytes": static_path.stat().st_size,
-            "sha256": digest,
-        },
-    }))
+    static_path, rich_path, spec = _sealed_hrrr_static(
+        tmp_path, target, native_geometry_contract(grid, cfg))
     common_path = tmp_path / "native-geometry.json"
 
     with pytest.raises(ValueError, match="target identity mismatch"):
@@ -199,33 +190,14 @@ def test_hrrr_static_receipt_is_converted_to_common_wrf_contract(tmp_path):
 
 
 def test_hrrr_static_conversion_round_trips_with_explicit_target(tmp_path):
-    target = HrrrTargetDomain(
-        name="tiny-contract-fixture", map_proj="lambert",
-        nx=14, ny=13, nz=9, dx_m=3000.0, dy_m=3000.0,
-        ref_lat=35.0, ref_lon=-97.0, truelat1=30.0,
-        truelat2=60.0, stand_lon=-97.0, time_step_seconds=15)
+    target = _target()
     grid = target.grid()
     cfg = SimpleNamespace(
         nx=target.nx, ny=target.ny, nz=target.nz,
         dx=target.dx_m, dy=target.dy_m)
-    static_path = tmp_path / "native-static.npz"
-    np.savez(static_path, HGT_M=np.zeros((target.ny, target.nx)))
+    static_path, rich_path, spec = _sealed_hrrr_static(
+        tmp_path, target, native_geometry_contract(grid, cfg))
     digest = hashlib.sha256(static_path.read_bytes()).hexdigest()
-    rich_path = tmp_path / "hrrr-static.json"
-    rich_path.write_text(json.dumps({
-        "schema": "gpuwm-native-hrrr-static-v2",
-        "status": "PASS",
-        "target_domain": target.to_payload(),
-        "target_domain_sha256": target.identity_sha256(),
-        "geometry": native_geometry_contract(grid, cfg),
-        "cache": {
-            "path": static_path.name,
-            "bytes": static_path.stat().st_size,
-            "sha256": digest,
-        },
-    }))
-    spec = tmp_path / "domain.json"
-    spec.write_text(json.dumps(target.to_payload()))
     common_path = tmp_path / "native-geometry.json"
 
     written = write_hrrr_native_geometry_receipt(
@@ -273,11 +245,7 @@ def test_hrrr_static_builder_geometry_is_accepted_by_its_own_verifier(tmp_path):
     could build, with no user-side workaround.
     """
 
-    target = HrrrTargetDomain(
-        name="tiny-contract-fixture", map_proj="lambert",
-        nx=14, ny=13, nz=9, dx_m=3000.0, dy_m=3000.0,
-        ref_lat=35.0, ref_lon=-97.0, truelat1=30.0,
-        truelat2=60.0, stand_lon=-97.0, time_step_seconds=15)
+    target = _target()
     geometry = native_static_geometry(target)
     assert geometry["map_proj"] == "lambert"
 
@@ -298,11 +266,7 @@ def test_hrrr_static_builder_geometry_is_accepted_by_its_own_verifier(tmp_path):
 def test_hrrr_geometry_receipt_still_refuses_a_key_short_document(tmp_path):
     """The equality guard stays strict; the fix was on the producer's side."""
 
-    target = HrrrTargetDomain(
-        name="tiny-contract-fixture", map_proj="lambert",
-        nx=14, ny=13, nz=9, dx_m=3000.0, dy_m=3000.0,
-        ref_lat=35.0, ref_lon=-97.0, truelat1=30.0,
-        truelat2=60.0, stand_lon=-97.0, time_step_seconds=15)
+    target = _target()
     geometry = native_static_geometry(target)
     v100_shape = {k: v for k, v in geometry.items() if k != "map_proj"}
 
@@ -432,11 +396,7 @@ diff_6th_factor = 0.12
 ))
 def test_hrrr_static_conversion_rejects_mutated_evidence(
         tmp_path, mutation, message):
-    target = HrrrTargetDomain(
-        name="tiny-contract-fixture", map_proj="lambert",
-        nx=14, ny=13, nz=9, dx_m=3000.0, dy_m=3000.0,
-        ref_lat=35.0, ref_lon=-97.0, truelat1=30.0,
-        truelat2=60.0, stand_lon=-97.0, time_step_seconds=15)
+    target = _target()
     grid = target.grid()
     cfg = SimpleNamespace(
         nx=target.nx, ny=target.ny, nz=target.nz,

@@ -55,6 +55,14 @@ path = "src/bin/hex_points.rs"
 name = "rw_compare"
 path = "src/launcher.rs"
 
+# A reference model's native-level state written into a run's wrfout
+# shape, so wrf-rust's own diagnostics run on both sides of a comparison
+# (the post-processor half of a WOOF-vs-HRRR difference removed).
+[[bin]]
+name = "rw_native_wrfout"
+path = "src/bin/native_wrfout.rs"
+
+
 [[bin]]
 name = "rw_verify"
 path = "src/launcher.rs"
@@ -73,6 +81,7 @@ name = "rw_nowcast_frames"
 path = "src/launcher.rs"
 
 [dependencies]
+static-fields = { path = "../static-fields" }
 rw-mlexport = { path = "../rw-mlexport" }
 netcdf-writer = { path = "../netcdf-writer" }
 rw-scoreboard = { path = "../rw-scoreboard" }
@@ -88,6 +97,7 @@ sha2 = "0.10"
 thiserror = { workspace = true }
 wrf-core = { git = "https://github.com/FahrenheitResearch/wrf-rust.git", rev = "93bd2ca670c13fec35bcfc27a58108e6fd71c627", package = "wrf-core", default-features = false, features = ["pure-rust-reader"] }
 rustwx-core = { path = "../rustwx-core" }
+rustwx-calc = { path = "../rustwx-calc" }
 # The GRIB2 selector extraction and the indexed public-bucket fetch
 # `rw_compare` reads its reference model's own messages with.  Already in
 # this crate's graph through rustwx-products; named here because the
@@ -128,7 +138,6 @@ path = "src/bin/points.rs"
 # record file.
 [dev-dependencies]
 netcdf-writer = { path = "../netcdf-writer" }
-static-fields = { path = "../static-fields" }
 rw-store = { path = "../rw-store" }
 
 [[bin]]

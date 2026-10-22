@@ -548,7 +548,10 @@ def _package_directories() -> dict[str, Path]:
             for table in ("dependencies", "dev-dependencies", "build-dependencies"):
                 for spec in manifest.get(table, {}).values():
                     if isinstance(spec, dict) and "path" in spec:
-                        candidates.append((root / spec["path"]).resolve())
+                        # Lexical, never resolved: the CI routes link tools/<workspace> to a key-stable native source
+                        # cache outside the checkout, and a resolved path then left REPOSITORY_ROOT (2.9.4 pass
+                        # 4173d549 R7b route B: ValueError 'not in the subpath of /work/src').
+                        candidates.append(Path(os.path.normpath(root / spec["path"])))
         for directory in candidates:
             toml = directory / "Cargo.toml"
             if toml.is_file():
@@ -745,3 +748,392 @@ def test_the_platform_api_scan_reads_files_items_blocks_and_statements(tmp_path)
                                    "main", "launcher", "plain")]
     assert _unguarded_os_api_sites(tmp_path, names) == [
         "t/bare.rs:2", "t/wrong.rs:3", "t/after.rs:3", "t/plain.rs:1"]
+
+
+@pytest.mark.skipif(os.name != 'posix', reason='packages of one workspace overlap on POSIX only (per-row '
+                    'clones); off POSIX they run one at a time')
+def test_package_gates_overlap_without_losing_contracts_or_manifest_order(tmp_path, monkeypatch):
+    """The old package loop cannot reach this barrier with idle host cores."""
+    import threading
+    runner = _runner()
+    entries = [runner.Entry("cpu", "workspace", name, 1, (), ())
+               for name in ("first", "red", "under-ran")]
+    from types import SimpleNamespace
+    monkeypatch.setattr(runner.subprocess, "run", lambda *a, **kw: SimpleNamespace(stdout="host: test-host\n"))
+    barrier = threading.Barrier(3, timeout=5)
+    def run(entry, **kwargs):
+        barrier.wait()
+        return runner.Outcome(entry, int(entry.package != "under-ran"),
+                              int(entry.package == "red"), 0, 1,
+                              int(entry.package == "red"), 0, entry.package)
+    monkeypatch.setattr(runner, "run_entry", run)
+    outcomes = list(runner.run_entries(entries, target_dir=tmp_path, cargo="cargo",
+                                       log_dir=tmp_path, workers=3))
+    assert [o.entry for o in outcomes] == entries
+    assert [o.verdict for o in outcomes] == ["PASSED", "FAILED", "UNDER-RAN"]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="executable fake Cargo uses a POSIX shebang")
+def test_cargo_selected_integration_binaries_overlap_and_keep_failure(tmp_path, monkeypatch):
+    """Cargo normally waits for each single-core integration binary in turn."""
+    runner = _runner()
+    workspace = tmp_path / 'workspace'; workspace.mkdir()
+    (workspace / '.cargo').mkdir()
+    (workspace / '.cargo/config.toml').write_text('')
+    (workspace / 'Cargo.toml').write_text('')
+    program = tmp_path / 'binary.py'
+    program.write_text("""import pathlib, sys, time
+root=pathlib.Path(sys.argv[1]); index=int(sys.argv[2])
+(root / str(index)).write_text('ready')
+end=time.monotonic()+5
+while not (root / str(1-index)).exists():
+    assert time.monotonic()<end, 'integration binaries serialized'
+    time.sleep(.01)
+print('test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured;')
+raise SystemExit(7 if index else 0)
+""")
+    cargo = tmp_path / 'cargo'
+    cargo.write_text(f"""#!{sys.executable}
+import pathlib, subprocess, sys, tomllib
+if sys.argv[1:] == ['-vV']:
+    print('host: fake-host'); raise SystemExit(0)
+assert sys.argv[1] == 'test', 'release cargo wrappers dispatch on the test subcommand'
+command=tomllib.loads(pathlib.Path(sys.argv[sys.argv.index('--config')+1]).read_text())['target']['fake-host']['runner']
+for index in range(2):
+    subprocess.run(command+[{sys.executable!r}, {str(program)!r}, {str(tmp_path)!r}, str(index)], check=True)
+""")
+    cargo.chmod(0o755)
+    monkeypatch.setattr(runner, 'REPOSITORY_ROOT', tmp_path)
+    entry = runner.Entry('cpu', 'workspace', 'test-package', 2, (), ())
+    outcome, = runner.run_entries([entry], target_dir=tmp_path/'target',
+        cargo=str(cargo), log_dir=tmp_path/'logs', workers=2)
+    assert outcome.passed == 2
+    assert outcome.returncode == 7
+    assert outcome.verdict == 'FAILED'
+
+
+def test_test_runner_connection_burst_does_not_lose_clients(tmp_path):
+    """A backlog of one dropped a runner handshake and hung the release gate."""
+    code = r"""
+import importlib.util, os, sys, threading, time
+from concurrent.futures import ThreadPoolExecutor
+from multiprocessing.connection import Client
+spec=importlib.util.spec_from_file_location('gate_burst',sys.argv[1])
+m=importlib.util.module_from_spec(spec);sys.modules[spec.name]=m;spec.loader.exec_module(m)
+class BurstPool(m.BinaryPool):
+    def serve(self):
+        time.sleep(.2)
+        super().serve()
+pool=BurstPool('test-host',24)
+barrier=threading.Barrier(24)
+def submit(index):
+    barrier.wait()
+    with Client(pool.listener.address,authkey=pool.key) as client:
+        client.send((str(index),[sys.executable,'-c','pass'],os.getcwd(),dict(os.environ)))
+        assert client.recv() is True
+with ThreadPoolExecutor(max_workers=24) as clients:
+    list(clients.map(submit, range(24)))
+for index in range(24):
+    assert pool.collect(str(index))[0][1].returncode == 0
+pool.close()
+"""
+    completed = subprocess.run([sys.executable,'-c',code,str(RUNNER)],cwd=tmp_path,
+                               capture_output=True,text=True,timeout=15)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def test_gpu_shard_does_not_overlap_a_single_admitted_card(tmp_path, monkeypatch):
+    """The CPU optimization must not submit two GPU entries to one card."""
+    import threading, time
+    runner = _runner()
+    lease = threading.Lock()
+    def run(entry, **kwargs):
+        assert lease.acquire(blocking=False), 'concurrent GPU entry exceeded its card lease'
+        try:
+            time.sleep(.01)
+            return runner.Outcome(entry, 1, 0, 0, 1, 0, 0, '')
+        finally:
+            lease.release()
+    monkeypatch.setattr(runner, 'run_entry', run)
+    entries=[runner.Entry('gpu','workspace',name,1,(),()) for name in ('first','second')]
+    outcomes=list(runner.run_entries(entries,target_dir=tmp_path,cargo='unused',log_dir=tmp_path,workers=2))
+    assert all(o.verdict=='PASSED' for o in outcomes)
+
+
+def test_windows_runner_toml_roundtrips_paths_spaces_quotes_and_long_label(tmp_path):
+    runner = _runner()
+    command = [r'C:\Program Files\Python "test"\python.exe',
+               r'C:\rar295\checkout with spaces\tools\battery\run_cargo_gates.py',
+               '--gate-test-runner', '127.0.0.1', '65433',
+               'static-fields --lib --test geotiff_envelope --test geotiff_malformed --test highres_parity --test seam_probe "label"']
+    document = runner.runner_toml('x86_64-pc-windows-msvc', command)
+    assert tomllib.loads(document)['target']['x86_64-pc-windows-msvc']['runner'] == command
+    pool = runner.BinaryPool('x86_64-pc-windows-msvc', 1)
+    try:
+        flag, path = pool.configuration(command[-1])
+        assert flag == '--config'
+        parsed = tomllib.loads(Path(path).read_text())
+        assert parsed['target']['x86_64-pc-windows-msvc']['runner'][-1] == command[-1]
+    finally:
+        pool.close()
+
+
+@pytest.mark.skipif(os.name != 'posix', reason='packages of one workspace overlap on POSIX only (per-row '
+                    'clones); off POSIX they run one at a time')
+def test_two_rows_of_one_package_never_overlap_but_other_packages_do(tmp_path, monkeypatch):
+    import threading, time
+    from types import SimpleNamespace
+    runner = _runner()
+    monkeypatch.setattr(runner.subprocess, 'run', lambda *a, **kw: SimpleNamespace(stdout='host: test-host\n'))
+    entries = [runner.Entry('cpu', 'workspace', 'rw-mpas', 1, (), ()),
+               runner.Entry('cpu', 'workspace', 'rw-mpas', 1, (), ('--test','radar_history_contract')),
+               runner.Entry('cpu', 'workspace', 'other-package', 1, (), ())]
+    barrier = threading.Barrier(2, timeout=5)
+    active = set();guard = threading.Lock();order=[]
+    def run(entry, **kwargs):
+        with guard:
+            assert entry.package not in active, 'overlapping package rows race on test fixture files'
+            active.add(entry.package);order.append(entry)
+        try:
+            if not entry.args:barrier.wait()
+            time.sleep(.02)  # includes completion of the row's queued test binaries
+            return runner.Outcome(entry, 1, 0, 0, 1, 0, 0, '')
+        finally:
+            with guard:active.remove(entry.package)
+    monkeypatch.setattr(runner, 'run_entry', run)
+    results=list(runner.run_entries(entries,target_dir=tmp_path,cargo='cargo',log_dir=tmp_path,workers=3))
+    assert [o.entry for o in results] == entries
+    assert order.index(entries[0]) < order.index(entries[1])
+
+
+def test_overlapping_rows_of_different_workspaces_never_share_a_target_folder(tmp_path, monkeypatch):
+    """2.9.4 pass 4b R8 (2026-10-21 02:38Z): one CARGO_TARGET_DIR for every workspace let rw-zarr and
+    mapped-engine rebuild deps/librayon-<hash>.rlib while grib1_bridge's doctests compiled against it
+    ("can't find crate for rayon"). Overlapping rows get one folder per workspace; serial shards keep one."""
+    from types import SimpleNamespace
+    runner = _runner()
+    seen = []
+    def invoke(argv, **kwargs):
+        seen.append((kwargs['cwd'], kwargs['env']['CARGO_TARGET_DIR']))
+        return SimpleNamespace(returncode=0, stdout='test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured;\n')
+    monkeypatch.setattr(runner.subprocess, 'run', invoke)
+    entries = [e for e in _entries() if e.shard == runner.BATTERY_SHARD]
+    pool = SimpleNamespace(key=b'k', configuration=lambda label: [], collect=lambda label: [])
+    for entry in entries:
+        runner.run_entry(entry, target_dir=tmp_path / 'target', cargo='cargo', binary_pool=pool)
+    folders = {}
+    for cwd, folder in seen:
+        folders.setdefault(folder, set()).add(cwd)
+        assert Path(folder).parent == tmp_path / 'target' / 'ws'
+    assert all(len(cwds) == 1 for cwds in folders.values()), 'two workspaces share one overlapping target folder'
+    assert len(folders) == len({cwd for cwd, _ in seen}) > 1
+    seen.clear()
+    runner.run_entry(entries[0], target_dir=tmp_path / 'target', cargo='cargo')
+    assert seen == [(REPOSITORY_ROOT / entries[0].workspace, str(tmp_path / 'target'))]
+
+
+@pytest.mark.skipif(os.name != 'posix', reason='per-row clones are POSIX only (cp -al); Windows runs a '
+                    "workspace's rows one at a time")
+def test_parallel_rows_of_one_workspace_each_run_on_a_private_link_clone(tmp_path, monkeypatch):
+    """Many cores (V58, 64; lane/cap-base 2026-10-21): rows of ONE workspace with different package selections
+    rebuilt each other's units in the shared workspace folder under a running rustdoc (rw-wrfbatch: "can't find
+    crate for rw_nexrad"). Every row compiles first, then runs on its own hard-link clone (POSIX and Windows), so
+    a row that replaces a unit never changes the file another row reads."""
+    runner = _runner()
+    workspace = tmp_path / 'workspace'; workspace.mkdir()
+    (workspace / '.cargo').mkdir()
+    (workspace / '.cargo/config.toml').write_text('')
+    (workspace / 'Cargo.toml').write_text('')
+    seen = {}
+    lock = __import__('threading').Lock()
+    barrier = __import__('threading').Barrier(2, timeout=10)
+
+    def cargo_run(argv, cwd=None, env=None, **kwargs):
+        from types import SimpleNamespace
+        target = Path(env['CARGO_TARGET_DIR'])
+        unit = target / 'debug' / 'deps' / 'libshared.rlib'
+        if '--no-run' in argv:
+            unit.parent.mkdir(parents=True, exist_ok=True)
+            with lock:
+                if not unit.exists():
+                    unit.write_text('built once')
+            return SimpleNamespace(returncode=0, stdout='')
+        package = argv[argv.index('-p') + 1]
+        barrier.wait()  # both rows run at the same time
+        before = unit.read_text()
+        if package == 'b':  # this row's selection rebuilds the shared unit: rustc replaces the file
+            unit.unlink()
+            unit.write_text('rebuilt by b')
+        barrier.wait()
+        with lock:
+            seen[package] = (str(target), before, unit.read_text())
+        return SimpleNamespace(returncode=0, stdout='test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured;\n')
+
+    monkeypatch.setattr(runner, 'REPOSITORY_ROOT', tmp_path)
+    monkeypatch.setattr(runner, 'BinaryPool', lambda host, workers: __import__('types').SimpleNamespace(
+        key=b'k', configuration=lambda label: [], collect=lambda label: [], close=lambda: None))
+    real_run = runner.subprocess.run
+
+    def dispatch(argv, **kw):
+        # Only cargo is faked: the POSIX clone runs the real `cp -al` (the first version of this test handed it
+        # to the cargo fake, which read env=None: TypeError on Linux, 2.9.4 folded pass R5 on a Linux host).
+        if argv[0] != 'cargo':
+            return real_run(argv, **kw)
+        if argv[1:] == ['-vV']:
+            return __import__('types').SimpleNamespace(returncode=0, stdout='host: fake-host\n')
+        return cargo_run(argv, **kw)
+
+    monkeypatch.setattr(runner.subprocess, 'run', dispatch)
+    entries = [runner.Entry('cpu', 'workspace', package, 1, (), ()) for package in ('a', 'b')]
+    outcomes = list(runner.run_entries(entries, target_dir=tmp_path / 'target', cargo='cargo',
+                                       log_dir=tmp_path / 'logs', workers=2))
+    assert [o.verdict for o in outcomes] == ['PASSED', 'PASSED']
+    shared = runner.workspace_target_dir(tmp_path / 'target', entries[0])
+    assert seen['a'][0] != seen['b'][0] and str(shared) not in (seen['a'][0], seen['b'][0])
+    assert seen['a'][1:] == ('built once', 'built once'), "a's unit changed under it"
+    assert seen['b'][1:] == ('built once', 'rebuilt by b')
+    assert (shared / 'debug' / 'deps' / 'libshared.rlib').read_text() == 'built once'
+    assert not list(shared.parent.glob('*--row--*')), 'row clones are removed after their run'
+
+
+def test_each_workspace_is_built_once_before_its_rows_fingerprint_and_run(tmp_path, monkeypatch):
+    """2.9.4 R8 on the desktop (2026-10-21): 59 rows each ran their own `cargo test --no-run` at once on one
+    workspace folder with CARGO_BUILD_JOBS=4; cargo's build-directory lock serialised them into one 4-job build
+    ("Blocking waiting for file lock on build directory" in every row) and the leg took 2,016-2,130 s with a warm
+    target.  The CPU shard now builds each workspace ONCE at the prebuild jobs (a short burst, below normal priority
+    on Windows), then fingerprints every row's exact selection, and only then runs the rows."""
+    from types import SimpleNamespace
+    runner = _runner()
+    for workspace in ('ws-a', 'ws-b'):
+        (tmp_path / workspace / '.cargo').mkdir(parents=True)
+        (tmp_path / workspace / '.cargo/config.toml').write_text('')
+        (tmp_path / workspace / 'Cargo.toml').write_text('')
+    calls = []
+
+    def cargo_run(argv, cwd=None, env=None, **kwargs):
+        if argv[1:] == ['-vV']:
+            return SimpleNamespace(returncode=0, stdout='host: fake-host\n')
+        calls.append((list(argv), Path(cwd).name, env['CARGO_BUILD_JOBS'], env['CARGO_TARGET_DIR'],
+                      kwargs.get('creationflags', 0)))
+        return SimpleNamespace(returncode=0, stdout='   Compiling x v0.1.0\ntest result: ok. 1 passed; 0 failed; '
+                                                   '0 ignored; 0 measured;\n')
+
+    monkeypatch.setenv('CARGO_BUILD_JOBS', '4')
+    monkeypatch.delenv('ARWEN_CARGO_PREBUILD_JOBS', raising=False)
+    monkeypatch.setattr(runner, 'REPOSITORY_ROOT', tmp_path)
+    monkeypatch.setattr(runner, 'BinaryPool', lambda host, workers: SimpleNamespace(
+        key=b'k', configuration=lambda label: [], collect=lambda label: [], close=lambda: None))
+    monkeypatch.setattr(runner.subprocess, 'run', cargo_run)
+    entries = [runner.Entry('cpu', 'ws-a', 'a', 1, (), ()),
+               runner.Entry('cpu', 'ws-a', 'b', 1, (), ('--lib',)),
+               runner.Entry('cpu', 'ws-a', 'b', 1, (), ('--test', 'goldens', '--', 'one_case', '--exact')),
+               runner.Entry('cpu', 'ws-b', 'c', 1, ('KEY=value',), ())]
+    outcomes = list(runner.run_entries(entries, target_dir=tmp_path / 'target', cargo='cargo',
+                                       log_dir=tmp_path / 'logs', workers=4, prebuild_jobs=7))
+    assert [o.verdict for o in outcomes] == ['PASSED'] * 4
+    builds = [c for c in calls if '--no-run' in c[0]]
+    runs = [c for c in calls if '--no-run' not in c[0]]
+    assert calls[:len(builds)] == builds, 'a row ran before every workspace was built and every row fingerprinted'
+    assert [(c[0][1:], c[1]) for c in builds] == [
+        (['test', '--no-run', '--locked', '--offline', '-p', 'a'], 'ws-a'),               # ws-a built once...
+        (['test', '--no-run', '--locked', '--offline', '-p', 'b', '--lib', '--test', 'goldens'], 'ws-a'),
+        (['test', '--no-run', '--locked', '--offline', '-p', 'a'], 'ws-a'),               # ...then each row's own
+        (['test', '--no-run', '--locked', '--offline', '-p', 'b', '--lib'], 'ws-a'),      # selection fingerprints
+        (['test', '--no-run', '--locked', '--offline', '-p', 'b', '--test', 'goldens'], 'ws-a'),
+        (['test', '--no-run', '--locked', '--offline', '-p', 'c'], 'ws-b'),
+        (['test', '--no-run', '--locked', '--offline', '-p', 'c'], 'ws-b')]
+    assert {c[2] for c in builds} == {'7'}, 'the one-time build runs at the prebuild jobs, not the rows\' 4'
+    assert {c[2] for c in runs} == {'4'} and len(runs) == 4
+    assert all(c[3] == str(runner.workspace_target_dir(tmp_path / 'target', entries[0])) for c in builds[:5])
+    if sys.platform == 'win32':
+        assert {c[4] for c in builds} == {subprocess.BELOW_NORMAL_PRIORITY_CLASS}
+    assert sorted(p.name for p in (tmp_path / 'logs' / 'prebuild').iterdir()) == ['ws-a.log', 'ws-b.log']
+    assert (tmp_path / 'logs' / 'prebuild' / 'ws-a.log').read_text().count('$ cargo test --no-run') == 5
+
+
+def test_the_manifest_prebuilds_as_one_whole_call_per_workspace_plus_target_unions() -> None:
+    runner = _runner()
+    calls = runner.prebuild_calls([e for e in _entries() if e.shard == runner.BATTERY_SHARD])
+    by_workspace: dict[str, list] = {}
+    for workspace, arguments, env in calls:
+        by_workspace.setdefault(workspace, []).append((arguments, env))
+    assert list(by_workspace) == _workspaces()[:len(by_workspace)]
+    rustwx = by_workspace['tools/rustwx']
+    whole = rustwx[0][0]
+    assert whole[:4] == ['test', '--no-run', '--locked', '--offline'] and '--lib' not in whole and '--test' not in whole
+    assert whole.count('-p') >= 30 and 'rw-mpas' in whole and 'rw-sat' not in whole and 'static-fields' not in whole
+    assert (['test', '--no-run', '--locked', '--offline', '-p', 'rw-sat', '--lib'], ()) in rustwx
+    union = next(a for a, _ in rustwx if a[5] == 'static-fields')
+    assert union[6:8] == ['--lib', '--test'] and union.count('--test') == 6 and '--' not in union
+    assert len(rustwx) == 3
+    assert by_workspace['tools/arwen-tui'] == [(['test', '--no-run', '--locked', '--offline', '-p', 'arwen-tui'],
+                                                ('GPUWM_TUI_TEST_PYTHON=@python',))]
+
+
+def test_prebuild_jobs_come_from_the_driver_before_the_rows_jobs(monkeypatch) -> None:
+    runner = _runner()
+    monkeypatch.setenv('CARGO_BUILD_JOBS', '4')
+    monkeypatch.setenv('ARWEN_CARGO_PREBUILD_JOBS', '28')
+    assert runner.prebuild_jobs_default() == 28
+    monkeypatch.delenv('ARWEN_CARGO_PREBUILD_JOBS')
+    assert runner.prebuild_jobs_default() == 4
+    monkeypatch.delenv('CARGO_BUILD_JOBS')
+    assert runner.prebuild_jobs_default() == runner.available_cores()
+def test_a_doctest_runs_in_place_and_a_binary_that_cannot_start_fails_only_its_row(tmp_path, monkeypatch):
+    """2.9.4 fold pass R7b route A (2026-10-21): the runner hook queued rustdoc's doctest binary to the pool and
+    returned; rustdoc deleted its temp folder, the pool met FileNotFoundError and the whole gate run ended."""
+    import subprocess as sp
+    runner = _runner()
+    doctest = tmp_path / 'rustdoctest7SDHLp' / 'rust_out'
+    doctest.parent.mkdir()
+    assert runner.is_doctest([str(doctest)]) and not runner.is_doctest([str(tmp_path / 'deps' / 'x-123')])
+    seen = []
+    monkeypatch.setattr(runner.subprocess, 'run', lambda argv, **kw: seen.append(argv) or sp.CompletedProcess(argv, 3))
+    monkeypatch.delenv('ARWEN_CARGO_GATE_KEY', raising=False)  # no pool connection is made for a doctest
+    assert runner.test_runner(['127.0.0.1', '1', 'row', str(doctest), '--test-threads=1']) == 3
+    assert seen == [[str(doctest), '--test-threads=1']]
+    from concurrent.futures import Future
+    gone = Future()
+    gone.set_exception(FileNotFoundError(2, 'No such file or directory', str(doctest)))
+    pool = runner.BinaryPool.__new__(runner.BinaryPool)
+    pool.pending = {'row': [([str(doctest)], gone)]}
+    (argv, result), = pool.collect('row')
+    assert result.returncode == 127 and 'could not run' in result.stdout
+
+
+def test_off_posix_rows_of_one_workspace_run_one_at_a_time_without_clones(tmp_path, monkeypatch):
+    """2.9.4 pass ec5dbbdb R8 (desktop, 2026-10-21): on NTFS hard-link clones rw-wrfbatch's lib failed E0308
+    'multiple different versions of crate serde_json' beside the fire-indices row (float_roundtrip)."""
+    import threading
+    runner = _runner()
+    monkeypatch.setattr(runner, 'POSIX', False)  # not os.name: on Linux that breaks every pathlib.Path()
+    workspace = tmp_path / 'workspace'
+    (workspace / '.cargo').mkdir(parents=True)
+    (workspace / '.cargo/config.toml').write_text('')
+    (workspace / 'Cargo.toml').write_text('')
+    (tmp_path / 'target' / 'ws' / 'workspace').mkdir(parents=True)
+    live, peak, targets, lock = [0], [0], [], threading.Lock()
+
+    def fake_run(argv, **kw):
+        if argv[1:] == ['-vV']:
+            return __import__('types').SimpleNamespace(returncode=0, stdout='host: fake-host\n')
+        with lock:
+            live[0] += 1
+            peak[0] = max(peak[0], live[0])
+            targets.append((kw.get('env') or {}).get('CARGO_TARGET_DIR'))
+        __import__('time').sleep(0.05)
+        with lock:
+            live[0] -= 1
+        return __import__('types').SimpleNamespace(returncode=0, stdout='test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured;\n')
+
+    monkeypatch.setattr(runner, 'REPOSITORY_ROOT', tmp_path)
+    monkeypatch.setattr(runner.subprocess, 'run', fake_run)
+    monkeypatch.setattr(runner, 'prebuild_workspaces', lambda *a, **k: None)
+    monkeypatch.setattr(runner, 'BinaryPool', lambda host, workers: __import__('types').SimpleNamespace(
+        key=b'k', configuration=lambda label: [], collect=lambda label: [], close=lambda: None))
+    entries = [runner.Entry('cpu', 'workspace', package, 1, (), ()) for package in ('rw-wrfbatch', 'rw-fire-indices')]
+    outcomes = list(runner.run_entries(entries, target_dir=tmp_path / 'target', cargo='cargo',
+                                       log_dir=tmp_path / 'logs', workers=4))
+    assert [o.verdict for o in outcomes] == ['PASSED', 'PASSED']
+    assert peak[0] == 1, 'rows of one workspace overlapped'
+    assert not any('--row--' in str(t) for t in targets) and not list((tmp_path / 'target' / 'ws').glob('*--row--*'))

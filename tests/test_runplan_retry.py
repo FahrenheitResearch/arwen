@@ -622,7 +622,7 @@ def test_the_chain_reruns_into_the_same_run_directory_without_refusing(
     def fake_fetch(arguments, run_dir, **_kwargs):
         out = Path(arguments[arguments.index("--out") + 1])
         out.mkdir(parents=True, exist_ok=True)
-        (out / "SHA256SUMS").write_text("digest  a.grib2\n",
+        (out / "SHA256SUMS").write_text("0" * 64 + "  a.grib2\n",
                                         encoding="utf-8")
         _record_fetch_request(arguments, out)
         fetches.append(list(arguments))
@@ -685,7 +685,7 @@ def _chain_that_fails_at_the_forecast(tmp_path, monkeypatch):
     def fake_fetch(arguments, run_dir, **_kwargs):
         out = Path(arguments[arguments.index("--out") + 1])
         out.mkdir(parents=True, exist_ok=True)
-        (out / "SHA256SUMS").write_text("digest  a.grib2\n",
+        (out / "SHA256SUMS").write_text("0" * 64 + "  a.grib2\n",
                                         encoding="utf-8")
         _record_fetch_request(arguments, out)
         fetches.append(list(arguments))

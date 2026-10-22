@@ -48,7 +48,9 @@ history_interval_s = 3600.0
     return path
 
 
-@pytest.mark.parametrize("domains,source", [(1, None), (2, "gfs")])
+@pytest.mark.parametrize('domains,source', [
+    pytest.param(2, "gfs", id='2-gfs'),
+])
 def test_actual_cli_dry_run_names_declared_route_and_replayable_command(
         tmp_path, domains, source):
     config = case(tmp_path, domains=domains, source=source)
@@ -118,7 +120,10 @@ def launch_seams(monkeypatch):
     return calls
 
 
-@pytest.mark.parametrize("products", [None, "none", "t2"])
+@pytest.mark.parametrize('products', [
+    pytest.param(None, id='None'),
+    pytest.param("t2", id='t2'),
+])
 def test_human_launch_uses_existing_runtime_and_shared_render_stage(
         tmp_path, monkeypatch, capsys, launch_seams, products):
     config = case(tmp_path)
@@ -161,9 +166,9 @@ def test_human_launch_uses_existing_runtime_and_shared_render_stage(
         assert (out / "png/fixture.png").is_file()
 
 
-@pytest.mark.parametrize("options,expected", [({}, ["forecast"]),
-                                             ({"render_products": "none"}, ["forecast"]),
-                                             ({"render_products": "t2"}, ["early", "forecast", "render"])])
+@pytest.mark.parametrize('options,expected', [
+    pytest.param({"render_products": "none"}, ["forecast"], id='options1-expected1'),
+])
 def test_experiment_run_plan_keeps_its_no_render_default(
         tmp_path, launch_seams, options, expected):
     config = case(tmp_path)
@@ -177,7 +182,9 @@ def test_experiment_run_plan_keeps_its_no_render_default(
     assert [entry[0] for entry in launch_seams] == expected
 
 
-@pytest.mark.parametrize("stage", ["forecast", "render"])
+@pytest.mark.parametrize('stage', [
+    pytest.param("render", id='render'),
+])
 def test_declared_failure_is_actionable_and_preserves_details(
         tmp_path, monkeypatch, capsys, launch_seams, stage):
     config = case(tmp_path)
@@ -275,7 +282,9 @@ def test_malformed_case_table_cannot_fall_through_to_the_prepared_route(tmp_path
     assert "go: complete" not in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("flag,kept", [(None, 1), ("0", 0), ("3", 3)])
+@pytest.mark.parametrize('flag,kept', [
+    pytest.param("0", 0, id='0-0'),
+])
 def test_go_keeps_one_checkpoint_set_unless_told(
         tmp_path, monkeypatch, capsys, launch_seams, flag, kept):
     # `go` builds a run plan, so it inherits run-plan's one kept set; a

@@ -238,23 +238,6 @@ pub fn load_default_conus_features() -> Vec<LonLatLine> {
         .clone()
 }
 
-/// Load filled basemap polygons (ocean → land → lakes, bottom to top) from
-/// the checked-in Natural Earth assets, colored for the requested style.
-/// Prefers the repo's 10m set, falls back to 110m, then cartopy cache.
-///
-/// - `Filled`: beige land + pale-blue ocean (weathermodels.com look).
-/// - `White`: white land + white ocean (NWS look — political lines carry the
-///   composition instead of fill color).
-/// Back-compat no-arg entry point. Defaults to `BasemapStyle::Filled`, which
-/// is what existing product/CLI callers expect.
-pub fn load_styled_conus_polygons() -> Vec<StyledLonLatPolygonLayer> {
-    load_styled_conus_polygons_for(BasemapStyle::Filled)
-}
-
-pub fn load_styled_basemap_polygons() -> Vec<StyledLonLatPolygonLayer> {
-    load_styled_conus_polygons()
-}
-
 pub fn load_styled_conus_polygons_for(style: BasemapStyle) -> Vec<StyledLonLatPolygonLayer> {
     static FILLED: OnceLock<Vec<StyledLonLatPolygonLayer>> = OnceLock::new();
     static WHITE: OnceLock<Vec<StyledLonLatPolygonLayer>> = OnceLock::new();
@@ -355,16 +338,6 @@ fn build_conus_polygons(style: BasemapStyle) -> Vec<StyledLonLatPolygonLayer> {
     }
 
     Vec::new()
-}
-
-/// Back-compat no-arg entry point. Defaults to `BasemapStyle::Filled`, which
-/// is what existing product/CLI callers expect.
-pub fn load_styled_conus_features() -> Vec<StyledLonLatLayer> {
-    load_styled_conus_features_for(BasemapStyle::Filled)
-}
-
-pub fn load_styled_basemap_features() -> Vec<StyledLonLatLayer> {
-    load_styled_conus_features()
 }
 
 pub fn load_styled_conus_features_for(style: BasemapStyle) -> Vec<StyledLonLatLayer> {

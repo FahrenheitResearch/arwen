@@ -193,7 +193,8 @@ Each names the breakage it prevents:
 - a run with nests (named gap G7);
 - a `wrfout`-form analysis on a cold start;
 - a restart before the analysis time;
-- a cold start whose analysis time is not the boundary's first record (named gap G8b);
+- a cold start whose analysis time falls outside the boundary's first interval (a start inside
+  that interval is rebased onto its own instant, `gpuwm.da.analysis_boundary`);
 - an increment of a field the run's physics does not carry;
 - a stale or changed derived file, or a resume that asks for another IAU configuration than the
   leg it continues.

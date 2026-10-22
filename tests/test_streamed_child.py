@@ -85,7 +85,7 @@ class _State:
         return result
 
 
-def _nodes():
+def _nodes(state_factory=_State):
     prun = _run(16, 16, nested=False, grid_id=1)
     crun = _run(30, 30, nested=True, grid_id=2)
     pcfg = SimpleNamespace(grid_id=1, parent_id=0, parent_grid_ratio=1,
@@ -93,11 +93,11 @@ def _nodes():
     ccfg = SimpleNamespace(grid_id=2, parent_id=1, parent_grid_ratio=3,
                            i_parent_start=4, j_parent_start=4, run=crun)
     parent = SimpleNamespace(
-        cfg=pcfg, state=_State(prun), parent=None,
+        cfg=pcfg, state=state_factory(prun), parent=None,
         clock=_clock(1, 0, step_ticks=3, dt=9.0, advanced=True))
     child_clock = _clock(2, 1, step_ticks=1, dt=3.0)
     child_clock.prepare_step()
-    child = SimpleNamespace(cfg=ccfg, state=_State(crun), parent=parent,
+    child = SimpleNamespace(cfg=ccfg, state=state_factory(crun), parent=parent,
                             clock=child_clock)
     return parent, child
 

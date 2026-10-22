@@ -27,6 +27,8 @@ def test_fire_history_preserves_native_dimensions_words_and_metadata(tmp_path):
               "FMEP": np.ones((2, ny, nx), np.float32),
               "LFN_HIST": fine + 4,
               "LFN_TIME": np.array([-125.5], np.float32)}
+    from gpuwm.fire_inputs import canopy_fields
+    fields.update({name: np.full(fine.shape, np.float32(0.2), np.float32) for name in canopy_fields()})
     path = tmp_path / "wrfout_fire.nc"
     writer = WrfoutWriter(path, nx=nx, ny=ny, nz=nz, dx=90, dy=120,
                          field_schema=fields, engine="rust")
@@ -73,6 +75,8 @@ def test_fire_history_planner_prices_native_refinement_and_fixed_class_extents()
                     dx=90.0, dy=120.0, ztop=8000.0, dt=0.25, run_seconds=0.0,
                     moist=True, fire_fuel_read=0, fmoist_run=True, fire_fmc_read=0)
     shapes = produced_history_shapes(cfg)
+    from gpuwm.fire_inputs import canopy_fields
+    assert all(shapes[name] == (36, 64) for name in canopy_fields())
     assert shapes["FIRE_AREA"] == (36, 64)
     assert shapes["UF"] == (36, 64) and shapes["VF"] == (36, 64)
     assert shapes["UAH"] == (12, 17) and shapes["VAH"] == (13, 16)

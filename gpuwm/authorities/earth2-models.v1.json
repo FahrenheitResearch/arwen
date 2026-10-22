@@ -32,7 +32,7 @@
         "commands": [
           "uv venv --python 3.12 ENV",
           "uv pip install --python ENV/bin/python torch==2.10.0 --index-url https://download.pytorch.org/whl/cu128",
-          "uv pip install --python ENV/bin/python setuptools wheel packaging ninja",
+          "uv pip install --python ENV/bin/python setuptools setuptools-scm wheel packaging ninja",
           "uv pip install --python ENV/bin/python 'earth2studio[{extra}]==0.19.0' --no-build-isolation"
         ],
         "build_environment": {
@@ -53,7 +53,7 @@
         "commands": [
           "uv venv --python 3.12 ENV",
           "uv pip install --python ENV/bin/python torch==2.14.1 --index-url https://download.pytorch.org/whl/cu130",
-          "uv pip install --python ENV/bin/python setuptools wheel packaging ninja",
+          "uv pip install --python ENV/bin/python setuptools setuptools-scm wheel packaging ninja",
           "uv pip install --python ENV/bin/python 'earth2studio[{extra}]==0.19.0' --no-build-isolation"
         ],
         "build_environment": {
@@ -232,7 +232,7 @@
           "snow_water_equivalent"
         ],
         "why": "these models publish no land surface, orography, land mask, SST, sea ice, snow or 2 m humidity; the analysis they were initialized from supplies it, as the AI-GFS row borrows the same state from GDAS",
-        "grid_alignment": "exact_coordinate_strided_subset"
+        "grid_alignment": "bilinear_mask_aware_nearest"
       },
       "donor": "era5-arco",
       "boundary_interval_seconds": 3600
@@ -279,7 +279,7 @@
           "snow_water_equivalent"
         ],
         "why": "these models publish no land surface, orography, land mask, SST, sea ice, snow or 2 m humidity; the analysis they were initialized from supplies it, as the AI-GFS row borrows the same state from GDAS",
-        "grid_alignment": "exact_coordinate_strided_subset"
+        "grid_alignment": "bilinear_mask_aware_nearest"
       },
       "level_selection": {
         "z": [
@@ -399,7 +399,7 @@
           "snow_water_equivalent"
         ],
         "why": "these models publish no land surface, orography, land mask, SST, sea ice, snow or 2 m humidity; the analysis they were initialized from supplies it, as the AI-GFS row borrows the same state from GDAS",
-        "grid_alignment": "exact_coordinate_strided_subset"
+        "grid_alignment": "bilinear_mask_aware_nearest"
       },
       "donor": "gfs",
       "boundary_interval_seconds": 3600
@@ -454,7 +454,7 @@
           "snow_water_equivalent"
         ],
         "why": "these models publish no land surface, orography, land mask, SST, sea ice, snow or 2 m humidity; the analysis they were initialized from supplies it, as the AI-GFS row borrows the same state from GDAS",
-        "grid_alignment": "exact_coordinate_strided_subset"
+        "grid_alignment": "bilinear_mask_aware_nearest"
       },
       "donor": "ifs",
       "boundary_interval_seconds": 3600
@@ -501,7 +501,7 @@
           "snow_water_equivalent"
         ],
         "why": "these models publish no land surface, orography, land mask, SST, sea ice, snow or 2 m humidity; the analysis they were initialized from supplies it, as the AI-GFS row borrows the same state from GDAS",
-        "grid_alignment": "exact_coordinate_strided_subset"
+        "grid_alignment": "bilinear_mask_aware_nearest"
       },
       "level_selection": {
         "z": [
@@ -613,7 +613,7 @@
           "snow_water_equivalent"
         ],
         "why": "these models publish no land surface, orography, land mask, SST, sea ice, snow or 2 m humidity; the analysis they were initialized from supplies it, as the AI-GFS row borrows the same state from GDAS",
-        "grid_alignment": "exact_coordinate_strided_subset"
+        "grid_alignment": "bilinear_mask_aware_nearest"
       },
       "level_selection": {
         "z": [
@@ -733,7 +733,7 @@
           "snow_water_equivalent"
         ],
         "why": "these models publish no land surface, orography, land mask, SST, sea ice, snow or 2 m humidity; the analysis they were initialized from supplies it, as the AI-GFS row borrows the same state from GDAS",
-        "grid_alignment": "exact_coordinate_strided_subset"
+        "grid_alignment": "bilinear_mask_aware_nearest"
       },
       "donor": "era5-arco",
       "humidity_derivation": "specific_humidity_from_rh",
@@ -789,7 +789,7 @@
           "snow_water_equivalent"
         ],
         "why": "these models publish no land surface, orography, land mask, SST, sea ice, snow or 2 m humidity; the analysis they were initialized from supplies it, as the AI-GFS row borrows the same state from GDAS",
-        "grid_alignment": "exact_coordinate_strided_subset"
+        "grid_alignment": "bilinear_mask_aware_nearest"
       },
       "donor": "gfs",
       "humidity_derivation": "specific_humidity_from_rh",
@@ -845,7 +845,7 @@
           "snow_water_equivalent"
         ],
         "why": "these models publish no land surface, orography, land mask, SST, sea ice, snow or 2 m humidity; the analysis they were initialized from supplies it, as the AI-GFS row borrows the same state from GDAS",
-        "grid_alignment": "exact_coordinate_strided_subset"
+        "grid_alignment": "bilinear_mask_aware_nearest"
       },
       "donor": "ifs",
       "humidity_derivation": "specific_humidity_from_rh",
@@ -2570,25 +2570,33 @@
         "match": {
           "earth2studio_class": "AIFS"
         },
-        "donor": "ifs"
+        "donor": {
+          "forecast": "ifs"
+        }
       },
       {
         "match": {
           "earth2studio_class": "AIFS2"
         },
-        "donor": "ifs"
+        "donor": {
+          "forecast": "ifs"
+        }
       },
       {
         "match": {
           "earth2studio_class": "AIFSENS"
         },
-        "donor": "ifs"
+        "donor": {
+          "forecast": "ifs"
+        }
       },
       {
         "match": {
           "earth2studio_class": "AIFS2ENS"
         },
-        "donor": "ifs"
+        "donor": {
+          "forecast": "ifs"
+        }
       }
     ]
   },
@@ -2761,8 +2769,15 @@
           "basis": "Conservative allowance for sequential per-member forward in Earth2Studio 0.19.0; capacity estimate, not a measured batch peak. Validate actual peak in runner receipt."
         }
       },
-      "min_vram_gib": 30.0,
-      "vram_note": "FCN3 inference needs a 32 GB card or larger. Measured single allocation 20.37 GiB refused on a 15.47 GiB RTX 5070 Ti (node4-artifacts/forecast-cuda-recovery/source/earth2-runner.log:97, forecast-cuda-recovery.json). Producer measured about 29 GiB peak on RTX 5090; 30 GiB free is the measured-capacity admission floor including margin, not a nominal 32 GiB requirement."
+      "min_vram_gib": 17.0,
+      "vram_note": "FCN3 inference needs 17 GiB of free GPU memory (a 24 GB card or larger) on the pinned stack (earth2studio 0.19.0, torch-harmonics 0.8.1 a632ca7, torch 2.14.1 cu13). Measured on an RTX PRO 6000 96 GB, 2026-10-21, gpuwm fetch --source earth2-fcn3 --cycle 2024-10-08T00 --hours 24, one member, batch_size 1, under a 30,000 MiB card lease: card memory peak 16,552 MiB (process-tree nvidia-smi sampler), torch max_memory_allocated 13.969 GiB, max_memory_reserved 15.512 GiB (earth2-run.json). 17 GiB is that measured peak rounded up. The earlier 59 GiB floor (60,212 MiB card peak, 49.3 GiB allocated) measured the runner's DISCO band patch not applying to torch-harmonics 0.8.1, so its whole expanded convolution input and the einsum's permuted copy were resident at once; gpuwm/earth2_runner.py now contracts that layout one channel slice and latitude band at a time.",
+      "ai_cost": {
+        "card": "rtx-pro-6000-96gb",
+        "minutes": 0.3812166666666667,
+        "receipt_sha256": "ff5dc88688bc23ead8a66cd7244e08c74bd33f147dadf284b4433d50a1ac3f47",
+        "basis": "Measured model load plus synchronized inference for one member, 6 forecast hours; flat per-model display estimate, not scaled by requested horizon. Excludes initial-data fetch and output tail.",
+        "receipt": "SOL-POOL-20261019/astra-e2c-releases-woof-e2image/code/proof/v55/proof-summary.json"
+      }
     },
     "sfno": {
       "name": "SFNO",
@@ -2880,7 +2895,8 @@
             "noise_amplitude": 0.001
           }
         }
-      }
+      },
+      "ai_cost": "unmeasured"
     },
     "pangu": {
       "name": "Pangu6",
@@ -3006,7 +3022,7 @@
           }
         }
       },
-      "licence_note": "the published Pangu weights are non-commercial; the row reads files, it does not ship weights"
+      "ai_cost": "unmeasured"
     },
     "aurora": {
       "name": "Aurora",
@@ -3119,7 +3135,8 @@
             "noise_amplitude": 0.001
           }
         }
-      }
+      },
+      "ai_cost": "unmeasured"
     },
     "fengwu": {
       "name": "FengWu",
@@ -3231,7 +3248,8 @@
             "noise_amplitude": 0.001
           }
         }
-      }
+      },
+      "ai_cost": "unmeasured"
     },
     "aifs": {
       "name": "AIFS",
@@ -3398,7 +3416,7 @@
           }
         }
       },
-      "note": "ECMWF's own published AIFS forecast is the separate aifs row (GRIB2 open data)"
+      "ai_cost": "unmeasured"
     },
     "fuxi": {
       "name": "FuXi",
@@ -3511,7 +3529,8 @@
             "noise_amplitude": 0.001
           }
         }
-      }
+      },
+      "ai_cost": "unmeasured"
     },
     "fcn": {
       "name": "FCN",
@@ -3570,7 +3589,8 @@
       "licence_class": "unresolved",
       "profile": null,
       "contract_source": "earth2studio/models/px/fcn.py (0.19.0)",
-      "needs": "Generic donor vertical splice for sparse variables and levels plus RH-to-q at available levels; explicit immutable weight licence grant. Native VARIABLES include surface winds and t2m but only sparse t/z/u/v/r aloft, not a complete pressure column."
+      "needs": "Generic donor vertical splice for sparse variables and levels plus RH-to-q at available levels; explicit immutable weight licence grant. Native VARIABLES include surface winds and t2m but only sparse t/z/u/v/r aloft, not a complete pressure column.",
+      "ai_cost": "unmeasured"
     },
     "stormcast": {
       "name": "StormCast",
@@ -3734,7 +3754,8 @@
         "refc"
       ],
       "stochastic": true,
-      "contract_source": "earth2studio/models/px/stormcast.py (0.19.0)"
+      "contract_source": "earth2studio/models/px/stormcast.py (0.19.0)",
+      "ai_cost": "unmeasured"
     },
     "corrdiff": {
       "name": "CorrDiff (km-scale diffusion downscaling)",
@@ -3742,7 +3763,8 @@
       "earth2studio_class": "CorrDiffTaiwan",
       "earth2studio_extra": "corrdiff",
       "profile": null,
-      "needs": "a diagnostic downscaler that writes surface fields only (2 m temperature, 10 m wind, radar reflectivity) on a regional grid; it carries no 3-D state, so it can verify an ArWen run but cannot initialize one"
+      "needs": "a diagnostic downscaler that writes surface fields only (2 m temperature, 10 m wind, radar reflectivity) on a regional grid; it carries no 3-D state, so it can verify an ArWen run but cannot initialize one",
+      "ai_cost": "unmeasured"
     },
     "dlwp": {
       "name": "DLWP",
@@ -3781,13 +3803,24 @@
       "licence_class": "unresolved",
       "profile": null,
       "contract_source": "earth2studio/models/px/dlwp.py (0.19.0)",
-      "needs": "Generic donor vertical splice: only z500/z1000/t850/t2m/u10m/v10m/tcwv are predicted; the donor must supply the remaining wind, humidity, temperature and geopotential columns. Confirm checkpoint licence."
+      "needs": "Generic donor vertical splice: only z500/z1000/t850/t2m/u10m/v10m/tcwv are predicted; the donor must supply the remaining wind, humidity, temperature and geopotential columns. Confirm checkpoint licence.",
+      "ai_cost": "unmeasured"
     },
     "atlas": {
+      "name": "Atlas CRPS, selected member",
       "aliases": [
         "atlascrps"
       ],
-      "channel_lexicon": "earth2studio.lexicon.ARCO_ERA5Lexicon (pressure/surface names and units); model-wrapper auxiliary variables as listed",
+      "earth2studio_class": "AtlasCRPS",
+      "earth2studio_extra": "atlas",
+      "kind": "prognostic",
+      "step_hours": 6,
+      "input_history_steps": 2,
+      "input_history_hours": [
+        -6,
+        0
+      ],
+      "grid": "0.25-degree global 721x1440",
       "channels": [
         "u10m",
         "v10m",
@@ -3865,58 +3898,65 @@
         "sst",
         "tp06"
       ],
-      "contract_source": "earth2studio/models/px/atlas_crps.py (0.19.0)",
-      "earth2studio_class": "AtlasCRPS",
-      "earth2studio_extra": "atlas",
-      "grid": "0.25-degree global 721x1440",
-      "input_history_hours": [
-        -6,
-        0
-      ],
-      "input_history_steps": 2,
-      "kind": "prognostic",
+      "channel_lexicon": "earth2studio.lexicon.ARCO_ERA5Lexicon (pressure/surface names and units); model-wrapper auxiliary variables as listed",
+      "weights": {
+        "host": "huggingface",
+        "repository": "nvidia/atlas-era5",
+        "revision": "893a38550aa313c97c41382a5003d209d60a840b",
+        "revision_kind": "git_commit",
+        "metadata_url": "https://huggingface.co/api/models/nvidia/atlas-era5/revision/893a38550aa313c97c41382a5003d209d60a840b",
+        "gated": false,
+        "account_needed": false,
+        "licence": "NVIDIA Open Model License",
+        "uri": "hf://nvidia/atlas-era5@893a38550aa313c97c41382a5003d209d60a840b"
+      },
       "licence_class": "permissive",
+      "profile": "earth2-pl13-q-netcdf-v1",
+      "contract_source": "earth2studio/models/px/atlas_crps.py (0.19.0)",
       "member": {
         "index": 0,
-        "rollout": "iterator_preserves_latent_and_rng_state",
-        "seed": 0
+        "seed": 0,
+        "rollout": "iterator_preserves_latent_and_rng_state"
       },
       "members": {
-        "batch_size": 1,
-        "first_seed": 333,
         "kind": "native_ensemble",
+        "population": 1000,
+        "first_seed": 333,
+        "batch_size": 1,
         "native_rng": {
           "generator": "torch"
         },
         "perturbation": {
           "class": "Zero",
           "parameters": {}
-        },
-        "population": 1000
+        }
       },
-      "name": "Atlas CRPS, selected member",
-      "profile": "earth2-pl13-q-netcdf-v1",
       "runtime_env": {
         "TORCH_ALLOW_TF32_CUBLAS_OVERRIDE": "1"
       },
-      "step_hours": 6,
-      "weights": {
-        "account_needed": false,
-        "gated": false,
-        "host": "huggingface",
-        "licence": "NVIDIA Open Model License",
-        "metadata_url": "https://huggingface.co/api/models/nvidia/atlas-era5/revision/893a38550aa313c97c41382a5003d209d60a840b",
-        "repository": "nvidia/atlas-era5",
-        "revision": "893a38550aa313c97c41382a5003d209d60a840b",
-        "revision_kind": "git_commit",
-        "uri": "hf://nvidia/atlas-era5@893a38550aa313c97c41382a5003d209d60a840b"
+      "ai_cost": {
+        "card": "rtx-5090-32gb",
+        "minutes": 0.9169166666666667,
+        "receipt_sha256": "73ff70efe55aa9fdcb62e9a0320d500ea4ecd2bbb3ff281e41301faf118aa740",
+        "basis": "Measured load plus legacy run_seconds workflow (includes I/O) for 24 forecast hours; flat per-model display estimate, not scaled by requested horizon. Loading may include checkpoint acquisition.",
+        "receipt": "SOL-POOL-20261019/astra-e2c-ingest-rows/evidence/proof-outputs/atlas/earth2-run.json"
       }
     },
     "atlas-si": {
+      "name": "Atlas stochastic interpolant",
       "aliases": [
         "atlas-stochastic-interpolant"
       ],
-      "channel_lexicon": "earth2studio.lexicon.ARCO_ERA5Lexicon (pressure/surface names and units); model-wrapper auxiliary variables as listed",
+      "earth2studio_class": "Atlas",
+      "earth2studio_extra": "atlas",
+      "kind": "prognostic",
+      "step_hours": 6,
+      "input_history_steps": 2,
+      "input_history_hours": [
+        -6,
+        0
+      ],
+      "grid": "0.25-degree global 721x1440",
       "channels": [
         "u10m",
         "v10m",
@@ -3994,43 +4034,34 @@
         "sst",
         "tp06"
       ],
-      "contract_source": "earth2studio/models/px/atlas.py (0.19.0)",
-      "earth2studio_class": "Atlas",
-      "earth2studio_extra": "atlas",
-      "grid": "0.25-degree global 721x1440",
-      "input_history_hours": [
-        -6,
-        0
-      ],
-      "input_history_steps": 2,
-      "kind": "prognostic",
+      "channel_lexicon": "earth2studio.lexicon.ARCO_ERA5Lexicon (pressure/surface names and units); model-wrapper auxiliary variables as listed",
+      "weights": {
+        "host": "huggingface",
+        "repository": "nvidia/atlas-era5",
+        "revision": "893a38550aa313c97c41382a5003d209d60a840b",
+        "revision_kind": "git_commit",
+        "metadata_url": "https://huggingface.co/api/models/nvidia/atlas-era5/revision/893a38550aa313c97c41382a5003d209d60a840b",
+        "gated": false,
+        "account_needed": false,
+        "licence": "NVIDIA Open Model License",
+        "uri": "hf://nvidia/atlas-era5@893a38550aa313c97c41382a5003d209d60a840b"
+      },
       "licence_class": "permissive",
+      "profile": "earth2-pl13-q-netcdf-v1",
+      "contract_source": "earth2studio/models/px/atlas.py (0.19.0)",
       "members": {
-        "batch_size": 1,
-        "first_seed": 333,
         "kind": "perturbation",
+        "population": 1000,
+        "first_seed": 333,
+        "batch_size": 1,
         "perturbation": {
           "class": "SphericalGaussian",
           "parameters": {
             "noise_amplitude": 0.001
           }
-        },
-        "population": 1000
+        }
       },
-      "name": "Atlas stochastic interpolant",
-      "profile": "earth2-pl13-q-netcdf-v1",
-      "step_hours": 6,
-      "weights": {
-        "account_needed": false,
-        "gated": false,
-        "host": "huggingface",
-        "licence": "NVIDIA Open Model License",
-        "metadata_url": "https://huggingface.co/api/models/nvidia/atlas-era5/revision/893a38550aa313c97c41382a5003d209d60a840b",
-        "repository": "nvidia/atlas-era5",
-        "revision": "893a38550aa313c97c41382a5003d209d60a840b",
-        "revision_kind": "git_commit",
-        "uri": "hf://nvidia/atlas-era5@893a38550aa313c97c41382a5003d209d60a840b"
-      }
+      "ai_cost": "unmeasured"
     },
     "aifs2": {
       "name": "AIFS2",
@@ -4198,17 +4229,18 @@
       "contract_source": "earth2studio/models/px/aifs2.py (0.19.0)",
       "donor_policy": "ifs",
       "members": {
-        "batch_size": 1,
-        "first_seed": 333,
         "kind": "perturbation",
+        "population": 1000,
+        "first_seed": 333,
+        "batch_size": 1,
         "perturbation": {
           "class": "SphericalGaussian",
           "parameters": {
             "noise_amplitude": 0.001
           }
-        },
-        "population": 1000
-      }
+        }
+      },
+      "ai_cost": "unmeasured"
     },
     "aifs-ens": {
       "name": "AIFSENS",
@@ -4390,7 +4422,8 @@
       "runtime_env": {
         "ANEMOI_INFERENCE_NUM_CHUNKS": "16"
       },
-      "stochastic": true
+      "stochastic": true,
+      "ai_cost": "unmeasured"
     },
     "aifs2-ens": {
       "name": "AIFS2ENS",
@@ -4563,118 +4596,140 @@
       },
       "donor_policy": "ifs",
       "members": {
-        "batch_size": 1,
-        "first_seed": 333,
         "kind": "native_ensemble",
+        "population": 1000,
+        "first_seed": 333,
+        "batch_size": 1,
         "native_rng": {
           "seed_attribute": "seed"
         },
         "perturbation": {
           "class": "Zero",
           "parameters": {}
-        },
-        "population": 1000
-      }
+        }
+      },
+      "ai_cost": "unmeasured"
     },
     "aurora15": {
+      "name": "Aurora1p5",
       "aliases": [],
-      "channel_lexicon": "earth2studio.lexicon.ARCO_ERA5Lexicon (pressure/surface names and units); model-wrapper auxiliary variables as listed",
-      "channels": [
-        "z1000",
-        "z925",
-        "z850",
-        "z700",
-        "z600",
-        "z500",
-        "z400",
-        "z300",
-        "z250",
-        "z200",
-        "z150",
-        "z100",
-        "z50",
-        "q1000",
-        "q925",
-        "q850",
-        "q700",
-        "q600",
-        "q500",
-        "q400",
-        "q300",
-        "q250",
-        "q200",
-        "q150",
-        "q100",
-        "q50",
-        "t1000",
-        "t925",
-        "t850",
-        "t700",
-        "t600",
-        "t500",
-        "t400",
-        "t300",
-        "t250",
-        "t200",
-        "t150",
-        "t100",
-        "t50",
-        "u1000",
-        "u925",
-        "u850",
-        "u700",
-        "u600",
-        "u500",
-        "u400",
-        "u300",
-        "u250",
-        "u200",
-        "u150",
-        "u100",
-        "u50",
-        "v1000",
-        "v925",
-        "v850",
-        "v700",
-        "v600",
-        "v500",
-        "v400",
-        "v300",
-        "v250",
-        "v200",
-        "v150",
-        "v100",
-        "v50",
-        "msl",
-        "u10m",
-        "v10m",
-        "t2m",
-        "d2m",
-        "tcwv",
-        "tcc",
-        "u100m",
-        "v100m",
-        "sp",
-        "lcc",
-        "mcc",
-        "hcc",
-        "skt",
-        "stl1",
-        "swvl1",
-        "sic",
-        "sd",
-        "i10fg",
-        "blh",
-        "uvb1h",
-        "ssrd1h",
-        "ttr1h",
-        "tp1h",
-        "sf1h"
-      ],
-      "contract_source": "earth2studio/models/px/aurora1p5.py (0.19.0)",
       "earth2studio_class": "Aurora1p5",
       "earth2studio_extra": "aurora",
+      "kind": "prognostic",
+      "step_hours": 1,
+      "input_history_steps": 2,
+      "input_history_hours": [
+        -6,
+        0
+      ],
       "grid": "0.25-degree global 720x1440, latitude 90 to -89.75",
+      "channels": [
+        "z1000",
+        "z925",
+        "z850",
+        "z700",
+        "z600",
+        "z500",
+        "z400",
+        "z300",
+        "z250",
+        "z200",
+        "z150",
+        "z100",
+        "z50",
+        "q1000",
+        "q925",
+        "q850",
+        "q700",
+        "q600",
+        "q500",
+        "q400",
+        "q300",
+        "q250",
+        "q200",
+        "q150",
+        "q100",
+        "q50",
+        "t1000",
+        "t925",
+        "t850",
+        "t700",
+        "t600",
+        "t500",
+        "t400",
+        "t300",
+        "t250",
+        "t200",
+        "t150",
+        "t100",
+        "t50",
+        "u1000",
+        "u925",
+        "u850",
+        "u700",
+        "u600",
+        "u500",
+        "u400",
+        "u300",
+        "u250",
+        "u200",
+        "u150",
+        "u100",
+        "u50",
+        "v1000",
+        "v925",
+        "v850",
+        "v700",
+        "v600",
+        "v500",
+        "v400",
+        "v300",
+        "v250",
+        "v200",
+        "v150",
+        "v100",
+        "v50",
+        "msl",
+        "u10m",
+        "v10m",
+        "t2m",
+        "d2m",
+        "tcwv",
+        "tcc",
+        "u100m",
+        "v100m",
+        "sp",
+        "lcc",
+        "mcc",
+        "hcc",
+        "skt",
+        "stl1",
+        "swvl1",
+        "sic",
+        "sd",
+        "i10fg",
+        "blh",
+        "uvb1h",
+        "ssrd1h",
+        "ttr1h",
+        "tp1h",
+        "sf1h"
+      ],
+      "channel_lexicon": "earth2studio.lexicon.ARCO_ERA5Lexicon (pressure/surface names and units); model-wrapper auxiliary variables as listed",
+      "weights": {
+        "host": "huggingface",
+        "repository": "microsoft/aurora",
+        "revision": "c171214768997594e1a3fc6b8d9bbb489e9d21ab",
+        "revision_kind": "git_commit",
+        "metadata_url": "https://huggingface.co/api/models/microsoft/aurora/revision/c171214768997594e1a3fc6b8d9bbb489e9d21ab",
+        "gated": false,
+        "account_needed": false,
+        "licence": "MIT",
+        "uri": "hf://microsoft/aurora@c171214768997594e1a3fc6b8d9bbb489e9d21ab"
+      },
+      "licence_class": "permissive",
+      "profile": "earth2-pl13-q-netcdf-v1",
+      "contract_source": "earth2studio/models/px/aurora1p5.py (0.19.0)",
       "input_channels": [
         "z1000",
         "z925",
@@ -4760,44 +4815,34 @@
         "sic",
         "sd"
       ],
-      "input_history_hours": [
-        -6,
-        0
-      ],
-      "input_history_steps": 2,
-      "kind": "prognostic",
-      "licence_class": "permissive",
+      "note": "Two states six hours apart even when output cadence is hourly; iterator maintains the six-hour autoregressive state.",
       "members": {
-        "batch_size": 1,
-        "first_seed": 333,
         "kind": "perturbation",
+        "population": 1000,
+        "first_seed": 333,
+        "batch_size": 1,
         "perturbation": {
           "class": "SphericalGaussian",
           "parameters": {
             "noise_amplitude": 0.001
           }
-        },
-        "population": 1000
+        }
       },
-      "name": "Aurora1p5",
-      "note": "Two states six hours apart even when output cadence is hourly; iterator maintains the six-hour autoregressive state.",
-      "profile": "earth2-pl13-q-netcdf-v1",
-      "step_hours": 1,
-      "weights": {
-        "account_needed": false,
-        "gated": false,
-        "host": "huggingface",
-        "licence": "MIT",
-        "metadata_url": "https://huggingface.co/api/models/microsoft/aurora/revision/c171214768997594e1a3fc6b8d9bbb489e9d21ab",
-        "repository": "microsoft/aurora",
-        "revision": "c171214768997594e1a3fc6b8d9bbb489e9d21ab",
-        "revision_kind": "git_commit",
-        "uri": "hf://microsoft/aurora@c171214768997594e1a3fc6b8d9bbb489e9d21ab"
-      }
+      "ai_cost": "unmeasured"
     },
     "aurora15-6h": {
+      "name": "Aurora1p5_6h",
       "aliases": [],
-      "channel_lexicon": "earth2studio.lexicon.ARCO_ERA5Lexicon (pressure/surface names and units); model-wrapper auxiliary variables as listed",
+      "earth2studio_class": "Aurora1p5_6h",
+      "earth2studio_extra": "aurora",
+      "kind": "prognostic",
+      "step_hours": 6,
+      "input_history_steps": 2,
+      "input_history_hours": [
+        -6,
+        0
+      ],
+      "grid": "0.25-degree global 720x1440, latitude 90 to -89.75",
       "channels": [
         "z1000",
         "z925",
@@ -4890,10 +4935,21 @@
         "tp1h",
         "sf1h"
       ],
+      "channel_lexicon": "earth2studio.lexicon.ARCO_ERA5Lexicon (pressure/surface names and units); model-wrapper auxiliary variables as listed",
+      "weights": {
+        "host": "huggingface",
+        "repository": "microsoft/aurora",
+        "revision": "c171214768997594e1a3fc6b8d9bbb489e9d21ab",
+        "revision_kind": "git_commit",
+        "metadata_url": "https://huggingface.co/api/models/microsoft/aurora/revision/c171214768997594e1a3fc6b8d9bbb489e9d21ab",
+        "gated": false,
+        "account_needed": false,
+        "licence": "MIT",
+        "uri": "hf://microsoft/aurora@c171214768997594e1a3fc6b8d9bbb489e9d21ab"
+      },
+      "licence_class": "permissive",
+      "profile": "earth2-pl13-q-netcdf-v1",
       "contract_source": "earth2studio/models/px/aurora1p5.py (0.19.0)",
-      "earth2studio_class": "Aurora1p5_6h",
-      "earth2studio_extra": "aurora",
-      "grid": "0.25-degree global 720x1440, latitude 90 to -89.75",
       "input_channels": [
         "z1000",
         "z925",
@@ -4979,269 +5035,34 @@
         "sic",
         "sd"
       ],
-      "input_history_hours": [
-        -6,
-        0
-      ],
-      "input_history_steps": 2,
-      "kind": "prognostic",
-      "licence_class": "permissive",
+      "note": "Two states six hours apart even when output cadence is hourly; iterator maintains the six-hour autoregressive state.",
       "members": {
-        "batch_size": 1,
-        "first_seed": 333,
         "kind": "perturbation",
+        "population": 1000,
+        "first_seed": 333,
+        "batch_size": 1,
         "perturbation": {
           "class": "SphericalGaussian",
           "parameters": {
             "noise_amplitude": 0.001
           }
-        },
-        "population": 1000
+        }
       },
-      "name": "Aurora1p5_6h",
-      "note": "Two states six hours apart even when output cadence is hourly; iterator maintains the six-hour autoregressive state.",
-      "profile": "earth2-pl13-q-netcdf-v1",
-      "step_hours": 6,
-      "weights": {
-        "account_needed": false,
-        "gated": false,
-        "host": "huggingface",
-        "licence": "MIT",
-        "metadata_url": "https://huggingface.co/api/models/microsoft/aurora/revision/c171214768997594e1a3fc6b8d9bbb489e9d21ab",
-        "repository": "microsoft/aurora",
-        "revision": "c171214768997594e1a3fc6b8d9bbb489e9d21ab",
-        "revision_kind": "git_commit",
-        "uri": "hf://microsoft/aurora@c171214768997594e1a3fc6b8d9bbb489e9d21ab"
-      }
+      "ai_cost": "unmeasured"
     },
     "aurora15-ensemble": {
+      "name": "Aurora1p5Ensemble",
       "aliases": [],
-      "channel_lexicon": "earth2studio.lexicon.ARCO_ERA5Lexicon (pressure/surface names and units); model-wrapper auxiliary variables as listed",
-      "channels": [
-        "z1000",
-        "z925",
-        "z850",
-        "z700",
-        "z600",
-        "z500",
-        "z400",
-        "z300",
-        "z250",
-        "z200",
-        "z150",
-        "z100",
-        "z50",
-        "q1000",
-        "q925",
-        "q850",
-        "q700",
-        "q600",
-        "q500",
-        "q400",
-        "q300",
-        "q250",
-        "q200",
-        "q150",
-        "q100",
-        "q50",
-        "t1000",
-        "t925",
-        "t850",
-        "t700",
-        "t600",
-        "t500",
-        "t400",
-        "t300",
-        "t250",
-        "t200",
-        "t150",
-        "t100",
-        "t50",
-        "u1000",
-        "u925",
-        "u850",
-        "u700",
-        "u600",
-        "u500",
-        "u400",
-        "u300",
-        "u250",
-        "u200",
-        "u150",
-        "u100",
-        "u50",
-        "v1000",
-        "v925",
-        "v850",
-        "v700",
-        "v600",
-        "v500",
-        "v400",
-        "v300",
-        "v250",
-        "v200",
-        "v150",
-        "v100",
-        "v50",
-        "msl",
-        "u10m",
-        "v10m",
-        "t2m",
-        "d2m",
-        "tcwv",
-        "tcc",
-        "u100m",
-        "v100m",
-        "sp",
-        "lcc",
-        "mcc",
-        "hcc",
-        "skt",
-        "stl1",
-        "swvl1",
-        "sic",
-        "sd",
-        "i10fg",
-        "blh",
-        "uvb1h",
-        "ssrd1h",
-        "ttr1h",
-        "tp1h",
-        "sf1h"
-      ],
-      "contract_source": "earth2studio/models/px/aurora1p5.py (0.19.0)",
       "earth2studio_class": "Aurora1p5Ensemble",
       "earth2studio_extra": "aurora",
-      "grid": "0.25-degree global 720x1440, latitude 90 to -89.75",
-      "input_channels": [
-        "z1000",
-        "z925",
-        "z850",
-        "z700",
-        "z600",
-        "z500",
-        "z400",
-        "z300",
-        "z250",
-        "z200",
-        "z150",
-        "z100",
-        "z50",
-        "q1000",
-        "q925",
-        "q850",
-        "q700",
-        "q600",
-        "q500",
-        "q400",
-        "q300",
-        "q250",
-        "q200",
-        "q150",
-        "q100",
-        "q50",
-        "t1000",
-        "t925",
-        "t850",
-        "t700",
-        "t600",
-        "t500",
-        "t400",
-        "t300",
-        "t250",
-        "t200",
-        "t150",
-        "t100",
-        "t50",
-        "u1000",
-        "u925",
-        "u850",
-        "u700",
-        "u600",
-        "u500",
-        "u400",
-        "u300",
-        "u250",
-        "u200",
-        "u150",
-        "u100",
-        "u50",
-        "v1000",
-        "v925",
-        "v850",
-        "v700",
-        "v600",
-        "v500",
-        "v400",
-        "v300",
-        "v250",
-        "v200",
-        "v150",
-        "v100",
-        "v50",
-        "msl",
-        "u10m",
-        "v10m",
-        "t2m",
-        "d2m",
-        "tcwv",
-        "tcc",
-        "u100m",
-        "v100m",
-        "sp",
-        "lcc",
-        "mcc",
-        "hcc",
-        "skt",
-        "stl1",
-        "swvl1",
-        "sic",
-        "sd"
-      ],
+      "kind": "prognostic",
+      "step_hours": 1,
+      "input_history_steps": 2,
       "input_history_hours": [
         -6,
         0
       ],
-      "input_history_steps": 2,
-      "kind": "prognostic",
-      "licence_class": "permissive",
-      "member": {
-        "index": 0,
-        "rollout": "iterator_preserves_rng_state",
-        "seed": 0
-      },
-      "members": {
-        "batch_size": 1,
-        "first_seed": 333,
-        "kind": "native_ensemble",
-        "native_rng": {
-          "seed_attribute": "seed"
-        },
-        "perturbation": {
-          "class": "Zero",
-          "parameters": {}
-        },
-        "population": 1000
-      },
-      "name": "Aurora1p5Ensemble",
-      "note": "Two states six hours apart even when output cadence is hourly; iterator maintains the six-hour autoregressive state.",
-      "profile": "earth2-pl13-q-netcdf-v1",
-      "step_hours": 1,
-      "weights": {
-        "account_needed": false,
-        "gated": false,
-        "host": "huggingface",
-        "licence": "MIT",
-        "metadata_url": "https://huggingface.co/api/models/microsoft/aurora/revision/c171214768997594e1a3fc6b8d9bbb489e9d21ab",
-        "repository": "microsoft/aurora",
-        "revision": "c171214768997594e1a3fc6b8d9bbb489e9d21ab",
-        "revision_kind": "git_commit",
-        "uri": "hf://microsoft/aurora@c171214768997594e1a3fc6b8d9bbb489e9d21ab"
-      }
-    },
-    "aurora15-ensemble-6h": {
-      "aliases": [],
-      "channel_lexicon": "earth2studio.lexicon.ARCO_ERA5Lexicon (pressure/surface names and units); model-wrapper auxiliary variables as listed",
+      "grid": "0.25-degree global 720x1440, latitude 90 to -89.75",
       "channels": [
         "z1000",
         "z925",
@@ -5334,10 +5155,21 @@
         "tp1h",
         "sf1h"
       ],
+      "channel_lexicon": "earth2studio.lexicon.ARCO_ERA5Lexicon (pressure/surface names and units); model-wrapper auxiliary variables as listed",
+      "weights": {
+        "host": "huggingface",
+        "repository": "microsoft/aurora",
+        "revision": "c171214768997594e1a3fc6b8d9bbb489e9d21ab",
+        "revision_kind": "git_commit",
+        "metadata_url": "https://huggingface.co/api/models/microsoft/aurora/revision/c171214768997594e1a3fc6b8d9bbb489e9d21ab",
+        "gated": false,
+        "account_needed": false,
+        "licence": "MIT",
+        "uri": "hf://microsoft/aurora@c171214768997594e1a3fc6b8d9bbb489e9d21ab"
+      },
+      "licence_class": "permissive",
+      "profile": "earth2-pl13-q-netcdf-v1",
       "contract_source": "earth2studio/models/px/aurora1p5.py (0.19.0)",
-      "earth2studio_class": "Aurora1p5Ensemble_6h",
-      "earth2studio_extra": "aurora",
-      "grid": "0.25-degree global 720x1440, latitude 90 to -89.75",
       "input_channels": [
         "z1000",
         "z925",
@@ -5423,50 +5255,266 @@
         "sic",
         "sd"
       ],
-      "input_history_hours": [
-        -6,
-        0
-      ],
-      "input_history_steps": 2,
-      "kind": "prognostic",
-      "licence_class": "permissive",
+      "note": "Two states six hours apart even when output cadence is hourly; iterator maintains the six-hour autoregressive state.",
       "member": {
         "index": 0,
-        "rollout": "iterator_preserves_rng_state",
-        "seed": 0
+        "seed": 0,
+        "rollout": "iterator_preserves_rng_state"
       },
       "members": {
-        "batch_size": 1,
-        "first_seed": 333,
         "kind": "native_ensemble",
+        "population": 1000,
+        "first_seed": 333,
+        "batch_size": 1,
         "native_rng": {
           "seed_attribute": "seed"
         },
         "perturbation": {
           "class": "Zero",
           "parameters": {}
-        },
-        "population": 1000
+        }
       },
+      "ai_cost": "unmeasured"
+    },
+    "aurora15-ensemble-6h": {
       "name": "Aurora1p5Ensemble_6h",
-      "note": "Two states six hours apart even when output cadence is hourly; iterator maintains the six-hour autoregressive state.",
-      "profile": "earth2-pl13-q-netcdf-v1",
+      "aliases": [],
+      "earth2studio_class": "Aurora1p5Ensemble_6h",
+      "earth2studio_extra": "aurora",
+      "kind": "prognostic",
       "step_hours": 6,
+      "input_history_steps": 2,
+      "input_history_hours": [
+        -6,
+        0
+      ],
+      "grid": "0.25-degree global 720x1440, latitude 90 to -89.75",
+      "channels": [
+        "z1000",
+        "z925",
+        "z850",
+        "z700",
+        "z600",
+        "z500",
+        "z400",
+        "z300",
+        "z250",
+        "z200",
+        "z150",
+        "z100",
+        "z50",
+        "q1000",
+        "q925",
+        "q850",
+        "q700",
+        "q600",
+        "q500",
+        "q400",
+        "q300",
+        "q250",
+        "q200",
+        "q150",
+        "q100",
+        "q50",
+        "t1000",
+        "t925",
+        "t850",
+        "t700",
+        "t600",
+        "t500",
+        "t400",
+        "t300",
+        "t250",
+        "t200",
+        "t150",
+        "t100",
+        "t50",
+        "u1000",
+        "u925",
+        "u850",
+        "u700",
+        "u600",
+        "u500",
+        "u400",
+        "u300",
+        "u250",
+        "u200",
+        "u150",
+        "u100",
+        "u50",
+        "v1000",
+        "v925",
+        "v850",
+        "v700",
+        "v600",
+        "v500",
+        "v400",
+        "v300",
+        "v250",
+        "v200",
+        "v150",
+        "v100",
+        "v50",
+        "msl",
+        "u10m",
+        "v10m",
+        "t2m",
+        "d2m",
+        "tcwv",
+        "tcc",
+        "u100m",
+        "v100m",
+        "sp",
+        "lcc",
+        "mcc",
+        "hcc",
+        "skt",
+        "stl1",
+        "swvl1",
+        "sic",
+        "sd",
+        "i10fg",
+        "blh",
+        "uvb1h",
+        "ssrd1h",
+        "ttr1h",
+        "tp1h",
+        "sf1h"
+      ],
+      "channel_lexicon": "earth2studio.lexicon.ARCO_ERA5Lexicon (pressure/surface names and units); model-wrapper auxiliary variables as listed",
       "weights": {
-        "account_needed": false,
-        "gated": false,
         "host": "huggingface",
-        "licence": "MIT",
-        "metadata_url": "https://huggingface.co/api/models/microsoft/aurora/revision/c171214768997594e1a3fc6b8d9bbb489e9d21ab",
         "repository": "microsoft/aurora",
         "revision": "c171214768997594e1a3fc6b8d9bbb489e9d21ab",
         "revision_kind": "git_commit",
+        "metadata_url": "https://huggingface.co/api/models/microsoft/aurora/revision/c171214768997594e1a3fc6b8d9bbb489e9d21ab",
+        "gated": false,
+        "account_needed": false,
+        "licence": "MIT",
         "uri": "hf://microsoft/aurora@c171214768997594e1a3fc6b8d9bbb489e9d21ab"
-      }
+      },
+      "licence_class": "permissive",
+      "profile": "earth2-pl13-q-netcdf-v1",
+      "contract_source": "earth2studio/models/px/aurora1p5.py (0.19.0)",
+      "input_channels": [
+        "z1000",
+        "z925",
+        "z850",
+        "z700",
+        "z600",
+        "z500",
+        "z400",
+        "z300",
+        "z250",
+        "z200",
+        "z150",
+        "z100",
+        "z50",
+        "q1000",
+        "q925",
+        "q850",
+        "q700",
+        "q600",
+        "q500",
+        "q400",
+        "q300",
+        "q250",
+        "q200",
+        "q150",
+        "q100",
+        "q50",
+        "t1000",
+        "t925",
+        "t850",
+        "t700",
+        "t600",
+        "t500",
+        "t400",
+        "t300",
+        "t250",
+        "t200",
+        "t150",
+        "t100",
+        "t50",
+        "u1000",
+        "u925",
+        "u850",
+        "u700",
+        "u600",
+        "u500",
+        "u400",
+        "u300",
+        "u250",
+        "u200",
+        "u150",
+        "u100",
+        "u50",
+        "v1000",
+        "v925",
+        "v850",
+        "v700",
+        "v600",
+        "v500",
+        "v400",
+        "v300",
+        "v250",
+        "v200",
+        "v150",
+        "v100",
+        "v50",
+        "msl",
+        "u10m",
+        "v10m",
+        "t2m",
+        "d2m",
+        "tcwv",
+        "tcc",
+        "u100m",
+        "v100m",
+        "sp",
+        "lcc",
+        "mcc",
+        "hcc",
+        "skt",
+        "stl1",
+        "swvl1",
+        "sic",
+        "sd"
+      ],
+      "note": "Two states six hours apart even when output cadence is hourly; iterator maintains the six-hour autoregressive state.",
+      "member": {
+        "index": 0,
+        "seed": 0,
+        "rollout": "iterator_preserves_rng_state"
+      },
+      "members": {
+        "kind": "native_ensemble",
+        "population": 1000,
+        "first_seed": 333,
+        "batch_size": 1,
+        "native_rng": {
+          "seed_attribute": "seed"
+        },
+        "perturbation": {
+          "class": "Zero",
+          "parameters": {}
+        }
+      },
+      "ai_cost": "unmeasured"
     },
     "gencast-mini": {
+      "name": "GenCastMini",
       "aliases": [],
-      "channel_lexicon": "earth2studio.lexicon.WB2Lexicon",
+      "earth2studio_class": "GenCastMini",
+      "earth2studio_extra": "gencast",
+      "kind": "prognostic",
+      "step_hours": 12,
+      "input_history_steps": 2,
+      "input_history_hours": [
+        -12,
+        0
+      ],
+      "grid": "1-degree global 181x360",
       "channels": [
         "t2m",
         "msl",
@@ -5553,10 +5601,20 @@
         "q925",
         "q1000"
       ],
+      "channel_lexicon": "earth2studio.lexicon.WB2Lexicon",
+      "weights": {
+        "host": "google-cloud-storage",
+        "repository": "dm_graphcast/gencast/params/GenCast 1p0deg Mini <2019.npz",
+        "revision": "1733326322411726",
+        "revision_kind": "object_generation",
+        "metadata_url": "https://storage.googleapis.com/storage/v1/b/dm_graphcast/o/gencast%2Fparams%2FGenCast%201p0deg%20Mini%20%3C2019.npz",
+        "gated": false,
+        "account_needed": false,
+        "licence": "CC BY 4.0"
+      },
+      "licence_class": "permissive",
+      "profile": "earth2-pl13-q-netcdf-v1",
       "contract_source": "earth2studio/models/px/gencast_mini.py (0.19.0)",
-      "earth2studio_class": "GenCastMini",
-      "earth2studio_extra": "gencast",
-      "grid": "1-degree global 181x360",
       "input_channels": [
         "t2m",
         "msl",
@@ -5642,43 +5700,34 @@
         "q925",
         "q1000"
       ],
-      "input_history_hours": [
-        -12,
-        0
-      ],
-      "input_history_steps": 2,
-      "kind": "prognostic",
-      "licence_class": "permissive",
       "members": {
-        "batch_size": 1,
-        "first_seed": 333,
         "kind": "native_ensemble",
+        "population": 1000,
+        "first_seed": 333,
+        "batch_size": 1,
         "native_rng": {
           "seed_attribute": "seed"
         },
         "perturbation": {
           "class": "Zero",
           "parameters": {}
-        },
-        "population": 1000
+        }
       },
-      "name": "GenCastMini",
-      "profile": "earth2-pl13-q-netcdf-v1",
-      "step_hours": 12,
-      "weights": {
-        "account_needed": false,
-        "gated": false,
-        "host": "google-cloud-storage",
-        "licence": "CC BY 4.0",
-        "metadata_url": "https://storage.googleapis.com/storage/v1/b/dm_graphcast/o/gencast%2Fparams%2FGenCast%201p0deg%20Mini%20%3C2019.npz",
-        "repository": "dm_graphcast/gencast/params/GenCast 1p0deg Mini <2019.npz",
-        "revision": "1733326322411726",
-        "revision_kind": "object_generation"
-      }
+      "ai_cost": "unmeasured"
     },
     "weathernext2": {
+      "name": "WeatherNext2Cyclones",
       "aliases": [],
-      "channel_lexicon": "earth2studio.lexicon.WB2Lexicon",
+      "earth2studio_class": "WeatherNext2Cyclones",
+      "earth2studio_extra": "weathernext2",
+      "kind": "prognostic",
+      "step_hours": 6,
+      "input_history_steps": 2,
+      "input_history_hours": [
+        -6,
+        0
+      ],
+      "grid": "0.25-degree global 721x1440",
       "channels": [
         "t2m",
         "msl",
@@ -5765,10 +5814,20 @@
         "q925",
         "q1000"
       ],
+      "channel_lexicon": "earth2studio.lexicon.WB2Lexicon",
+      "weights": {
+        "host": "google-cloud-storage",
+        "repository": "dm_graphcast/weathernext2/params/WeatherNextCyclones_<2025_model1.npz",
+        "revision": "1786019804033797",
+        "revision_kind": "object_generation",
+        "metadata_url": "https://storage.googleapis.com/storage/v1/b/dm_graphcast/o/weathernext2%2Fparams%2FWeatherNextCyclones_%3C2025_model1.npz",
+        "gated": false,
+        "account_needed": false,
+        "licence": "CC BY 4.0"
+      },
+      "licence_class": "permissive",
+      "profile": "earth2-pl13-q-netcdf-v1",
       "contract_source": "earth2studio/models/px/weathernext2_cyclones.py (0.19.0)",
-      "earth2studio_class": "WeatherNext2Cyclones",
-      "earth2studio_extra": "weathernext2",
-      "grid": "0.25-degree global 721x1440",
       "input_channels": [
         "t2m",
         "msl",
@@ -5854,13 +5913,6 @@
         "q925",
         "q1000"
       ],
-      "input_history_hours": [
-        -6,
-        0
-      ],
-      "input_history_steps": 2,
-      "kind": "prognostic",
-      "licence_class": "permissive",
       "load_model_kwargs": {
         "checkpoint_member": 1
       },
@@ -5869,35 +5921,33 @@
         "seed": 0
       },
       "members": {
-        "batch_size": 1,
-        "first_seed": 333,
         "kind": "native_ensemble",
+        "population": 1000,
+        "first_seed": 333,
+        "batch_size": 1,
         "native_rng": {
           "seed_method": "set_rng"
         },
         "perturbation": {
           "class": "Zero",
           "parameters": {}
-        },
-        "population": 1000
+        }
       },
-      "name": "WeatherNext2Cyclones",
-      "profile": "earth2-pl13-q-netcdf-v1",
-      "step_hours": 6,
-      "weights": {
-        "account_needed": false,
-        "gated": false,
-        "host": "google-cloud-storage",
-        "licence": "CC BY 4.0",
-        "metadata_url": "https://storage.googleapis.com/storage/v1/b/dm_graphcast/o/weathernext2%2Fparams%2FWeatherNextCyclones_%3C2025_model1.npz",
-        "repository": "dm_graphcast/weathernext2/params/WeatherNextCyclones_<2025_model1.npz",
-        "revision": "1786019804033797",
-        "revision_kind": "object_generation"
-      }
+      "ai_cost": "unmeasured"
     },
     "weathernext2-mini": {
+      "name": "WeatherNext2CyclonesMini",
       "aliases": [],
-      "channel_lexicon": "earth2studio.lexicon.WB2Lexicon",
+      "earth2studio_class": "WeatherNext2CyclonesMini",
+      "earth2studio_extra": "weathernext2",
+      "kind": "prognostic",
+      "step_hours": 6,
+      "input_history_steps": 2,
+      "input_history_hours": [
+        -6,
+        0
+      ],
+      "grid": "1-degree global 181x360",
       "channels": [
         "t2m",
         "msl",
@@ -5984,10 +6034,20 @@
         "q925",
         "q1000"
       ],
+      "channel_lexicon": "earth2studio.lexicon.WB2Lexicon",
+      "weights": {
+        "host": "google-cloud-storage",
+        "repository": "dm_graphcast/weathernext2/params/WeatherNextCyclones_Mini_<2024.npz",
+        "revision": "1786019805013231",
+        "revision_kind": "object_generation",
+        "metadata_url": "https://storage.googleapis.com/storage/v1/b/dm_graphcast/o/weathernext2%2Fparams%2FWeatherNextCyclones_Mini_%3C2024.npz",
+        "gated": false,
+        "account_needed": false,
+        "licence": "CC BY 4.0"
+      },
+      "licence_class": "permissive",
+      "profile": "earth2-pl13-q-netcdf-v1",
       "contract_source": "earth2studio/models/px/weathernext2_cyclones.py (0.19.0)",
-      "earth2studio_class": "WeatherNext2CyclonesMini",
-      "earth2studio_extra": "weathernext2",
-      "grid": "1-degree global 181x360",
       "input_channels": [
         "t2m",
         "msl",
@@ -6073,44 +6133,25 @@
         "q925",
         "q1000"
       ],
-      "input_history_hours": [
-        -6,
-        0
-      ],
-      "input_history_steps": 2,
-      "kind": "prognostic",
-      "licence_class": "permissive",
       "load_model_kwargs": {},
       "member": {
         "index": 0,
         "seed": 0
       },
       "members": {
-        "batch_size": 1,
-        "first_seed": 333,
         "kind": "native_ensemble",
+        "population": 1000,
+        "first_seed": 333,
+        "batch_size": 1,
         "native_rng": {
           "seed_method": "set_rng"
         },
         "perturbation": {
           "class": "Zero",
           "parameters": {}
-        },
-        "population": 1000
+        }
       },
-      "name": "WeatherNext2CyclonesMini",
-      "profile": "earth2-pl13-q-netcdf-v1",
-      "step_hours": 6,
-      "weights": {
-        "account_needed": false,
-        "gated": false,
-        "host": "google-cloud-storage",
-        "licence": "CC BY 4.0",
-        "metadata_url": "https://storage.googleapis.com/storage/v1/b/dm_graphcast/o/weathernext2%2Fparams%2FWeatherNextCyclones_Mini_%3C2024.npz",
-        "repository": "dm_graphcast/weathernext2/params/WeatherNextCyclones_Mini_<2024.npz",
-        "revision": "1786019805013231",
-        "revision_kind": "object_generation"
-      }
+      "ai_cost": "unmeasured"
     },
     "dlesym": {
       "name": "DLESyMLatLon",
@@ -6154,7 +6195,8 @@
       "licence_class": "permissive",
       "profile": null,
       "contract_source": "earth2studio/models/px/dlesym.py (0.19.0)",
-      "needs": "Sparse diagnostic atmosphere (z250/z500/z1000/t850/t2m/tcwv/tau300-700/ws10m) plus sst cannot supply a full pressure column. Generic donor vertical splice plus thickness and wind-speed decomposition policy; ocean -48/0 h and atmosphere -18/-12/-6/0 h history have separate masks."
+      "needs": "Sparse diagnostic atmosphere (z250/z500/z1000/t850/t2m/tcwv/tau300-700/ws10m) plus sst cannot supply a full pressure column. Generic donor vertical splice plus thickness and wind-speed decomposition policy; ocean -48/0 h and atmosphere -18/-12/-6/0 h history have separate masks.",
+      "ai_cost": "unmeasured"
     },
     "ace2": {
       "name": "ACE2ERA5",
@@ -6184,11 +6226,22 @@
       "licence_class": "permissive",
       "profile": null,
       "contract_source": "earth2studio/models/px/ace2.py (0.19.0)",
-      "needs": "Layer-mean moist thermodynamics and hybrid coefficients must be mapped conservatively, total water partitioned explicitly, and forcing source (SST, ice, solar, CO2) supplied throughout rollout; not table work over current pressure-level mapping operations."
+      "needs": "Layer-mean moist thermodynamics and hybrid coefficients must be mapped conservatively, total water partitioned explicitly, and forcing source (SST, ice, solar, CO2) supplied throughout rollout; not table work over current pressure-level mapping operations.",
+      "ai_cost": "unmeasured"
     },
     "ucast": {
+      "name": "UCast",
       "aliases": [],
-      "channel_lexicon": "earth2studio.lexicon.WB2Lexicon; generated calendar forcings and lsm/z statics are internal",
+      "earth2studio_class": "UCast",
+      "earth2studio_extra": "ucast",
+      "kind": "prognostic",
+      "step_hours": 12,
+      "input_history_steps": 2,
+      "input_history_hours": [
+        -12,
+        0
+      ],
+      "grid": "1.5-degree global 121x240",
       "channels": [
         "msl",
         "u10m",
@@ -6274,49 +6327,56 @@
         "w925",
         "w1000"
       ],
-      "contract_source": "earth2studio/models/px/ucast.py (0.19.0)",
-      "earth2studio_class": "UCast",
-      "earth2studio_extra": "ucast",
-      "grid": "1.5-degree global 121x240",
-      "input_history_hours": [
-        -12,
-        0
-      ],
-      "input_history_steps": 2,
-      "kind": "prognostic",
+      "channel_lexicon": "earth2studio.lexicon.WB2Lexicon; generated calendar forcings and lsm/z statics are internal",
+      "weights": {
+        "host": "huggingface",
+        "repository": "salv47/u-cast",
+        "revision": "775f2974b52b5beb8945ac3c60212ca25e0a13f5",
+        "revision_kind": "git_commit",
+        "metadata_url": "https://huggingface.co/api/models/salv47/u-cast/revision/775f2974b52b5beb8945ac3c60212ca25e0a13f5",
+        "gated": false,
+        "account_needed": false,
+        "licence": "Apache-2.0",
+        "uri": "hf://salv47/u-cast@775f2974b52b5beb8945ac3c60212ca25e0a13f5"
+      },
       "licence_class": "permissive",
+      "profile": "earth2-pl13-q-netcdf-v1",
+      "contract_source": "earth2studio/models/px/ucast.py (0.19.0)",
       "members": {
-        "batch_size": 1,
-        "first_seed": 333,
         "kind": "perturbation",
+        "population": 1000,
+        "first_seed": 333,
+        "batch_size": 1,
         "perturbation": {
           "class": "SphericalGaussian",
           "parameters": {
             "noise_amplitude": 0.001
           }
-        },
-        "population": 1000
+        }
       },
-      "name": "UCast",
-      "profile": "earth2-pl13-q-netcdf-v1",
-      "step_hours": 12,
-      "weights": {
-        "account_needed": false,
-        "gated": false,
-        "host": "huggingface",
-        "licence": "Apache-2.0",
-        "metadata_url": "https://huggingface.co/api/models/salv47/u-cast/revision/775f2974b52b5beb8945ac3c60212ca25e0a13f5",
-        "repository": "salv47/u-cast",
-        "revision": "775f2974b52b5beb8945ac3c60212ca25e0a13f5",
-        "revision_kind": "git_commit",
-        "uri": "hf://salv47/u-cast@775f2974b52b5beb8945ac3c60212ca25e0a13f5"
+      "ai_cost": {
+        "card": "rtx-5090-32gb",
+        "minutes": 5.802700000000001,
+        "receipt_sha256": "c64929780a2175be343046c2378ee008052dad892ce14c6ea3bcc869a1a297cd",
+        "basis": "Measured load plus legacy run_seconds workflow (includes I/O) for 12 forecast hours; flat per-model display estimate, not scaled by requested horizon. Loading may include checkpoint acquisition.",
+        "receipt": "SOL-POOL-20261019/astra-e2c-ingest-surfacefill/code/evidence/earth2-run.json"
       }
     },
     "graphcast-operational": {
+      "name": "GraphCastOperational",
       "aliases": [
         "graphcast"
       ],
-      "channel_lexicon": "earth2studio.lexicon.ARCO_ERA5Lexicon (pressure/surface names and units); model-wrapper auxiliary variables as listed",
+      "earth2studio_class": "GraphCastOperational",
+      "earth2studio_extra": "graphcast_operational",
+      "kind": "prognostic",
+      "step_hours": 6,
+      "input_history_steps": 2,
+      "input_history_hours": [
+        -6,
+        0
+      ],
+      "grid": "0.25-degree global 721x1440",
       "channels": [
         "t2m",
         "msl",
@@ -6402,47 +6462,48 @@
         "q1000",
         "tp06"
       ],
-      "contract_source": "earth2studio/models/px/graphcast_operational.py (0.19.0)",
-      "earth2studio_class": "GraphCastOperational",
-      "earth2studio_extra": "graphcast_operational",
-      "grid": "0.25-degree global 721x1440",
-      "input_history_hours": [
-        -6,
-        0
-      ],
-      "input_history_steps": 2,
-      "kind": "prognostic",
+      "channel_lexicon": "earth2studio.lexicon.ARCO_ERA5Lexicon (pressure/surface names and units); model-wrapper auxiliary variables as listed",
+      "weights": {
+        "host": "google-cloud-storage",
+        "repository": "dm_graphcast/graphcast/params/GraphCast_operational - ERA5-HRES 1979-2021 - resolution 0.25 - pressure levels 13 - mesh 2to6 - precipitation output only.npz",
+        "revision": "1733324890219244",
+        "revision_kind": "object_generation",
+        "metadata_url": "https://storage.googleapis.com/storage/v1/b/dm_graphcast/o/graphcast%2Fparams%2FGraphCast_operational%20-%20ERA5-HRES%201979-2021%20-%20resolution%200.25%20-%20pressure%20levels%2013%20-%20mesh%202to6%20-%20precipitation%20output%20only.npz",
+        "gated": false,
+        "account_needed": false,
+        "licence": "CC BY-NC-SA 4.0"
+      },
       "licence_class": "research_only",
+      "profile": "earth2-pl13-q-netcdf-v1",
+      "contract_source": "earth2studio/models/px/graphcast_operational.py (0.19.0)",
       "licence_note": "Held research_only by the integration task ruling. Current upstream README announces CC BY 4.0 relicense on 2026-08-06; no relaxation applied in this lane.",
       "members": {
-        "batch_size": 1,
-        "first_seed": 333,
         "kind": "perturbation",
+        "population": 1000,
+        "first_seed": 333,
+        "batch_size": 1,
         "perturbation": {
           "class": "SphericalGaussian",
           "parameters": {
             "noise_amplitude": 0.001
           }
-        },
-        "population": 1000
+        }
       },
-      "name": "GraphCastOperational",
-      "profile": "earth2-pl13-q-netcdf-v1",
-      "step_hours": 6,
-      "weights": {
-        "account_needed": false,
-        "gated": false,
-        "host": "google-cloud-storage",
-        "licence": "CC BY-NC-SA 4.0",
-        "metadata_url": "https://storage.googleapis.com/storage/v1/b/dm_graphcast/o/graphcast%2Fparams%2FGraphCast_operational%20-%20ERA5-HRES%201979-2021%20-%20resolution%200.25%20-%20pressure%20levels%2013%20-%20mesh%202to6%20-%20precipitation%20output%20only.npz",
-        "repository": "dm_graphcast/graphcast/params/GraphCast_operational - ERA5-HRES 1979-2021 - resolution 0.25 - pressure levels 13 - mesh 2to6 - precipitation output only.npz",
-        "revision": "1733324890219244",
-        "revision_kind": "object_generation"
-      }
+      "ai_cost": "unmeasured"
     },
     "graphcast-small": {
+      "name": "GraphCastSmall",
       "aliases": [],
-      "channel_lexicon": "earth2studio.lexicon.ARCO_ERA5Lexicon (pressure/surface names and units); model-wrapper auxiliary variables as listed",
+      "earth2studio_class": "GraphCastSmall",
+      "earth2studio_extra": "graphcast_small",
+      "kind": "prognostic",
+      "step_hours": 6,
+      "input_history_steps": 2,
+      "input_history_hours": [
+        -6,
+        0
+      ],
+      "grid": "1-degree global 181x360",
       "channels": [
         "t2m",
         "msl",
@@ -6528,43 +6589,34 @@
         "q925",
         "q1000"
       ],
-      "contract_source": "earth2studio/models/px/graphcast_small.py (0.19.0)",
-      "earth2studio_class": "GraphCastSmall",
-      "earth2studio_extra": "graphcast_small",
-      "grid": "1-degree global 181x360",
-      "input_history_hours": [
-        -6,
-        0
-      ],
-      "input_history_steps": 2,
-      "kind": "prognostic",
+      "channel_lexicon": "earth2studio.lexicon.ARCO_ERA5Lexicon (pressure/surface names and units); model-wrapper auxiliary variables as listed",
+      "weights": {
+        "host": "google-cloud-storage",
+        "repository": "dm_graphcast/graphcast/params/GraphCast_small - ERA5 1979-2015 - resolution 1.0 - pressure levels 13 - mesh 2to5 - precipitation input and output.npz",
+        "revision": "1733324890687768",
+        "revision_kind": "object_generation",
+        "metadata_url": "https://storage.googleapis.com/storage/v1/b/dm_graphcast/o/graphcast%2Fparams%2FGraphCast_small%20-%20ERA5%201979-2015%20-%20resolution%201.0%20-%20pressure%20levels%2013%20-%20mesh%202to5%20-%20precipitation%20input%20and%20output.npz",
+        "gated": false,
+        "account_needed": false,
+        "licence": "CC BY-NC-SA 4.0"
+      },
       "licence_class": "research_only",
+      "profile": "earth2-pl13-q-netcdf-v1",
+      "contract_source": "earth2studio/models/px/graphcast_small.py (0.19.0)",
       "licence_note": "Held research_only by the integration task ruling. Current upstream README announces CC BY 4.0 relicense on 2026-08-06; no relaxation applied in this lane.",
       "members": {
-        "batch_size": 1,
-        "first_seed": 333,
         "kind": "perturbation",
+        "population": 1000,
+        "first_seed": 333,
+        "batch_size": 1,
         "perturbation": {
           "class": "SphericalGaussian",
           "parameters": {
             "noise_amplitude": 0.001
           }
-        },
-        "population": 1000
+        }
       },
-      "name": "GraphCastSmall",
-      "profile": "earth2-pl13-q-netcdf-v1",
-      "step_hours": 6,
-      "weights": {
-        "account_needed": false,
-        "gated": false,
-        "host": "google-cloud-storage",
-        "licence": "CC BY-NC-SA 4.0",
-        "metadata_url": "https://storage.googleapis.com/storage/v1/b/dm_graphcast/o/graphcast%2Fparams%2FGraphCast_small%20-%20ERA5%201979-2015%20-%20resolution%201.0%20-%20pressure%20levels%2013%20-%20mesh%202to5%20-%20precipitation%20input%20and%20output.npz",
-        "repository": "dm_graphcast/graphcast/params/GraphCast_small - ERA5 1979-2015 - resolution 1.0 - pressure levels 13 - mesh 2to5 - precipitation input and output.npz",
-        "revision": "1733324890687768",
-        "revision_kind": "object_generation"
-      }
+      "ai_cost": "unmeasured"
     },
     "interpmodafno": {
       "name": "InterpModAFNO",
@@ -6671,7 +6723,8 @@
       "needs": "Cadence wrapper requires an explicit base prognostic model and six-hour endpoint trajectory; this row is not a standalone prognostic source.",
       "base_step_hours": 6,
       "output_step_hours": 1,
-      "base_model_parameter": "px_model"
+      "base_model_parameter": "px_model",
+      "ai_cost": "unmeasured"
     },
     "fuxi-s2s": {
       "name": "FuXiS2S",
@@ -6779,7 +6832,8 @@
       "licence_class": "research_only",
       "profile": null,
       "contract_source": "earth2studio/models/px/fuxi_s2s.py (0.19.0)",
-      "needs": "Daily-mean states need an explicit daily-mean to instantaneous initialization and boundary policy, plus the wrapper forcing and time semantics; a six-hour pressure-profile label cannot make daily means instantaneous."
+      "needs": "Daily-mean states need an explicit daily-mean to instantaneous initialization and boundary policy, plus the wrapper forcing and time semantics; a six-hour pressure-profile label cannot make daily means instantaneous.",
+      "ai_cost": "unmeasured"
     },
     "stormcast-conus": {
       "name": "StormCastCONUS",
@@ -6943,13 +6997,21 @@
         "refc"
       ],
       "stochastic": true,
-      "contract_source": "earth2studio/models/px/stormcastconus.py (0.19.0)"
+      "contract_source": "earth2studio/models/px/stormcastconus.py (0.19.0)",
+      "ai_cost": {
+        "card": "rtx-5090-32gb",
+        "minutes": 3.3921833333333336,
+        "receipt_sha256": "02fe42c0730a85da211eb865d7c81d83c7e92cd15cee1ef50a9da55d1736df08",
+        "basis": "Measured model load plus synchronized inference for one member, 6 forecast hours; flat per-model display estimate, not scaled by requested horizon. Excludes initial-data fetch and output tail.",
+        "receipt": "astra-e2c-ingest-stormcast/evidence/completed-fetch-earth2-run.json"
+      }
     },
     "atlas-crps": {
       "aliases": [],
       "earth2studio_class": "AtlasCRPS",
-      "earth2studio_extra": "atlascrps",
+      "earth2studio_extra": "atlas",
       "grid": "0.25-degree global 721x1440 after Earth2Studio regrid",
+      "licence_class": "permissive",
       "members": {
         "batch_size": 1,
         "first_seed": 333,
@@ -6965,13 +7027,22 @@
       },
       "name": "Atlas CRPS",
       "profile": "earth2-pl13-q-netcdf-v1",
+      "runtime_env": {
+        "TORCH_ALLOW_TF32_CUBLAS_OVERRIDE": "1"
+      },
       "step_hours": 6,
       "weights": {
         "account_needed": false,
+        "gated": false,
         "host": "huggingface",
-        "licence": "NVIDIA Open Model Licence",
-        "repository": "nvidia/atlas-crps"
-      }
+        "licence": "NVIDIA Open Model License",
+        "metadata_url": "https://huggingface.co/api/models/nvidia/atlas-era5/revision/893a38550aa313c97c41382a5003d209d60a840b",
+        "repository": "nvidia/atlas-era5",
+        "revision": "893a38550aa313c97c41382a5003d209d60a840b",
+        "revision_kind": "git_commit",
+        "uri": "hf://nvidia/atlas-era5@893a38550aa313c97c41382a5003d209d60a840b"
+      },
+      "ai_cost": "unmeasured"
     },
     "derived-ws10m": {
       "aliases": [
@@ -7013,7 +7084,8 @@
         "repository": null,
         "required": false
       },
-      "licence_source": "https://github.com/NVIDIA/earth2studio/blob/main/earth2studio/models/dx/derived.py"
+      "licence_source": "https://github.com/NVIDIA/earth2studio/blob/main/earth2studio/models/dx/derived.py",
+      "ai_cost": "unmeasured"
     },
     "windgust": {
       "aliases": [
@@ -7062,7 +7134,8 @@
         "uri": "ngc://models/nvidia/earth-2/afno_dx_wg-v1-era5@v0.1.0"
       },
       "licence_class": "restricted",
-      "note": "Public NGC weights use NVIDIA Community Model License, not the NVIDIA Open Model License. Refused by default; explicit acceptance must name the exact licence via the existing --accept-licence flag. Production restrictions remain applicable."
+      "note": "Public NGC weights use NVIDIA Community Model License, not the NVIDIA Open Model License. Refused by default; explicit acceptance must name the exact licence via the existing --accept-licence flag. Production restrictions remain applicable.",
+      "ai_cost": "unmeasured"
     }
   },
   "consumers": {

@@ -156,6 +156,13 @@ impl ClassicFile {
         }
     }
 
+    /// Read exact NC_CHAR bytes without UTF-8 decoding or NUL trimming.
+    pub fn read_variable_char_bytes(&self, name: &str) -> Result<Vec<u8>> {
+        let var = self.find_variable(name)?;
+        if var.dtype != NcType::Char { return Err(Error::TypeMismatch { expected:"Char".into(), actual:format!("{:?}",var.dtype) }); }
+        Ok(self.read_typed_variable::<u8>(var, self.data.as_slice())?.iter().copied().collect())
+    }
+
     /// Read a char variable as a String (or Vec<String> for multi-dimensional).
     pub fn read_variable_as_string(&self, name: &str) -> Result<String> {
         let mut strings = self.read_variable_as_strings(name)?;

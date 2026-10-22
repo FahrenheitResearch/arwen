@@ -17,13 +17,10 @@ from collections.abc import Mapping
 
 from gpuwm.ensemble.physical_store import digest_file
 from gpuwm.ensemble.recipes import SourceRecipe, SourceTrajectory, build_recipe
+from gpuwm.ensemble.physical_fields import canonical_json as _canonical
 
 POLICY_SCHEMA = "gpuwm-ensemble-source-policy.v1"
 SELECTION_SCHEMA = "gpuwm-ensemble-source-selection.v1"
-
-
-def _canonical(value):
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 def _digest(value):

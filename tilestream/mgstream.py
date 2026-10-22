@@ -62,8 +62,8 @@ The accurate cure for a memory-constrained multi-GPU box is not to parallelise
 the ring but to give each GPU its OWN sub-domain store with its own halo band
 and its own private ring, and to refresh those bands between steps -- i.e. to
 put :mod:`tilestream.multigpu`'s decomposition in host RAM instead of VRAM.
-Then every ring dependency is local to one GPU.  That design is sketched in
-``subdomain_plan`` and is NOT implemented here; what is implemented is the
+Then every ring dependency is local to one GPU.  That design is NOT
+implemented here; what is implemented is the
 shared-store case, because that is the one that answers the bandwidth
 question, and the bandwidth question is what decides whether any of this is
 worth doing.
@@ -185,23 +185,6 @@ def partition_tiles(ntiles: int, nworkers: int, mode: str = "block"):
         order = list(range(ntiles))
         return order, [k % nworkers for k in range(ntiles)]
     raise ValueError(f"partition must be 'block' or 'stripe', got {mode!r}")
-
-
-def subdomain_plan(cfg, nsub: int, halo: int | None = None) -> dict:
-    """Sizing for the NOT-IMPLEMENTED per-GPU sub-domain store design.
-
-    Kept as arithmetic rather than prose so the trade-off can be checked:
-    each sub-domain carries its own ``halo`` band on both sides, so the
-    redundant compute is ``2*halo/T`` and the exchange traffic per step is two
-    bands per seam.  Returned for the report; nothing here runs it.
-    """
-    h = int(_harness.halo_radius(cfg) if halo is None else halo)
-    t = cfg.nx // nsub
-    return {
-        "nsub": nsub, "halo": h, "slab_nx": t, "array_nx": t + 2 * h,
-        "compute_redundancy": (t + 2 * h) / t,
-        "seam_cells_per_step": 2 * nsub * h * cfg.ny * cfg.nz,
-    }
 
 
 # --------------------------------------------------------------------------

@@ -47,21 +47,6 @@ struct Worker {
     active: Option<u64>,
     failed: bool,
 }
-fn drain(mut stream: impl Read + Send + 'static) -> JoinHandle<Vec<u8>> {
-    std::thread::spawn(move || {
-        let mut output = Vec::new();
-        let mut block = [0; 8192];
-        while let Ok(n) = stream.read(&mut block) {
-            if n == 0 {
-                break;
-            }
-            if output.len() < 16 * 1024 * 1024 {
-                output.extend_from_slice(&block[..n]);
-            }
-        }
-        output
-    })
-}
 impl Worker {
     fn spawn(python: &Path, cwd: &Path) -> Result<Self, String> {
         let mut command = Command::new(python);
@@ -103,7 +88,7 @@ impl Worker {
                 }
             }
         });
-        let err = Some(drain(child.stderr.take().unwrap()));
+        let err = Some(crate::calendar::drain(child.stderr.take().unwrap(), 16 * 1024 * 1024));
         Ok(Self {
             child,
             input,
@@ -1040,13 +1025,7 @@ mod tests {
                             .iter()
                             .any(|hit| matches!(hit.action, Hit::CaseItem(i) if i==index)));
                     }
-                    let screen = terminal
-                        .backend()
-                        .buffer()
-                        .content
-                        .iter()
-                        .map(|c| c.symbol())
-                        .collect::<String>();
+                    let screen = crate::tests::buffer_text(terminal.backend().buffer(), Rect::new(0, 0, width, height), "");
                     assert!(screen.contains("tail-forecast.toml"));
                 }
             }

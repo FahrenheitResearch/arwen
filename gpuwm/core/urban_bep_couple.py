@@ -73,8 +73,6 @@ def launch_bep_couple(*, lsm: int, frc_urb2d, dz8w, rho, u_phy, v_phy, glw,
     nx)``), ``bep_out`` :data:`BEP_OUTPUTS`, ``fields`` :data:`FIELD_INOUT`
     and ``diag`` :data:`URBAN_DIAG`, all ``(ny, nx)``.
     """
-    import cupy as cp
-
     from gpuwm.core.kernels import get_kernel
 
     if lsm not in (_LSM_NOAH, _LSM_NOAHMP):

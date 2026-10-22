@@ -56,28 +56,20 @@ def test_no_runtime_override_preserves_the_existing_plan(tmp_path, monkeypatch):
     assert "runtime_run_overrides" not in original.preflight_arguments
 
 
-@pytest.mark.parametrize("overrides", [{"nx": 99}, {"num_soil_layers": 6}, {"unknown": 1}])
-def test_runtime_mapping_rejects_preparation_inputs_and_unknown_fields(tmp_path, monkeypatch, overrides):
+@pytest.mark.parametrize("overrides,message", [
+    ({"nx": 99}, "changes a preparation input or is unknown"),
+    ({"num_soil_layers": 6}, "changes a preparation input or is unknown"),
+    ({"unknown": 1}, "changes a preparation input or is unknown"),
+    ({"ruc_qvg_cold_start": "unknown"}, "ruc_qvg_cold_start"),
+    ({"rdlai2d": "true"}, "declared type"),
+    ({"usemonalb": 1}, "declared type"),
+    ({"diff_6th_factor2": float("nan")}, "declared type"),
+    ({"mynn_sfclay_variant": 1}, "declared type"),
+])
+def test_runtime_mapping_rejects_invalid_overrides(tmp_path, monkeypatch, overrides, message):
     fixture = _prepared_fixture(tmp_path, "era5", physics_profile=runner.RUC_PHYSICS_PROFILE)
     _bind_synthetic_preflight_geometry(monkeypatch, hierarchy=False)
-    with pytest.raises(ValueError, match="changes a preparation input or is unknown"):
-        _preflight(fixture, overrides)
-
-
-def test_runtime_mapping_rejects_invalid_physics_values(tmp_path, monkeypatch):
-    fixture = _prepared_fixture(tmp_path, "era5", physics_profile=runner.RUC_PHYSICS_PROFILE)
-    _bind_synthetic_preflight_geometry(monkeypatch, hierarchy=False)
-    with pytest.raises(ValueError, match="ruc_qvg_cold_start"):
-        _preflight(fixture, {"ruc_qvg_cold_start": "unknown"})
-
-
-@pytest.mark.parametrize("overrides", [
-    {"rdlai2d": "true"}, {"usemonalb": 1},
-    {"diff_6th_factor2": float("nan")}, {"mynn_sfclay_variant": 1}])
-def test_runtime_mapping_rejects_untyped_or_nonfinite_values(tmp_path, monkeypatch, overrides):
-    fixture = _prepared_fixture(tmp_path, "era5", physics_profile=runner.RUC_PHYSICS_PROFILE)
-    _bind_synthetic_preflight_geometry(monkeypatch, hierarchy=False)
-    with pytest.raises(ValueError, match="declared type"):
+    with pytest.raises(ValueError, match=message):
         _preflight(fixture, overrides)
 
 

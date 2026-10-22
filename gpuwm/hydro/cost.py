@@ -19,10 +19,6 @@ SCHEMA = "gpuwm-hydro-cost.v1"
 DEFECT = "hydro-cost-over-budget"
 
 
-class HydroCostDefect(RuntimeError):
-    """Hydro took more than its budget of the atmosphere step (named defect)."""
-
-
 class HydroCostMeter:
     def __init__(self, *, ring=256, events=None, elapsed=None):
         if events is None or elapsed is None:

@@ -2102,7 +2102,11 @@ def test_a_pinned_adaptive_domain_takes_no_ceiling():
                              _wind(70.0, crest=4500.0))
     assert pinned.ceiling is None and pinned.division == 1
     assert pinned.advice[2] == measured.ceiling
-    assert "an adaptive step capped at" in pinned.pinned_sentence()
+    line = pinned.pinned_sentence()
+    assert "an adaptive step capped at" in line
+    # It runs its adaptive clock, not a fixed 12 s step (okc3-hrrr, 2.9.3).
+    assert "runs its adaptive clock as configured, starting at 12 s" in line
+    assert "12 s steps on" not in line
 
 
 def test_the_pinned_receipt_carries_the_clock_and_the_advice():

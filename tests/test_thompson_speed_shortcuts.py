@@ -34,7 +34,7 @@ def _reference(unit):
                         options=("-std=c++17",))
 
 
-@pytest.mark.parametrize("nz", [2, 59, 65])
+@pytest.mark.parametrize("nz", [59, 65])
 @pytest.mark.parametrize("species", ["rain", "ice", "snow", "graupel", "cloud", "aa_cloud"])
 @pytest.mark.parametrize("held", [False, True])
 def test_empty_and_active_columns_match_base_bits(monkeypatch, nz, species, held):

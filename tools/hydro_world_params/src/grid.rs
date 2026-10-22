@@ -11,7 +11,7 @@ use crate::tiff::{sample_f32, GeoTiff};
 use crate::Result;
 use rayon::prelude::*;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU16, Ordering};
 
 /// authalic sphere radius of WGS84 (m): cell areas on this sphere equal the
 /// ellipsoidal areas to well under 0.5 % at mid latitudes
@@ -147,6 +147,101 @@ impl SoilLayer {
     }
 }
 
+/// The WPS_GEOG `soilgrids/soilcomp` field (WRF's SoilGrids-derived soil
+/// composition for Noah-MP opt_soil: z 1-4 sand, 5-8 clay in percent, over the
+/// Noah layers 0-10, 10-40, 40-100 and 100-200 cm; 1-byte words, scale and
+/// missing value from its `index`) over `bbox` padded by 0.25 degree, as soil
+/// layers sand/silt/clay/soc on one grid. Silt is 100 - sand - clay; organic
+/// carbon is not in the field (0), so the organic class does not arise.
+/// Returns the soil source row these layers stand for, with those depths.
+pub fn load_geog_soilcomp(row: &SoilSource, dir: &str, bbox: [f64; 4]) -> Result<(SoilSource, HashMap<String, SoilLayer>)> {
+    let index = std::fs::read_to_string(format!("{dir}/index")).map_err(|e| format!("{dir}/index: {e}"))?;
+    let key = |k: &str| -> Option<f64> {
+        index.lines().find_map(|l| l.trim().strip_prefix(k).and_then(|r| r.trim_start().strip_prefix('='))
+            .and_then(|v| v.trim().trim_matches('"').parse::<f64>().ok()))
+    };
+    let need = |k: &str| key(k).ok_or_else(|| format!("{dir}/index lacks {k}"));
+    let (dx, dy) = (need("dx")?, need("dy")?);
+    let (known_x, known_y, known_lat, known_lon) = (need("known_x")?, need("known_y")?, need("known_lat")?, need("known_lon")?);
+    let (tx, ty, tz) = (need("tile_x")? as usize, need("tile_y")? as usize, need("tile_z")? as usize);
+    let bdr = key("tile_bdr").unwrap_or(0.0) as usize;
+    let scale = key("scale_factor").unwrap_or(1.0);
+    let missing = key("missing_value").unwrap_or(f64::NAN);
+    if need("wordsize")? != 1.0 || tz != 8 {
+        return Err(format!("{dir}: expected 1-byte words and 8 layers (sand 1-4, clay 5-8)").into());
+    }
+    let [west, south, east, north] = bbox;
+    if west > east {
+        return Err("WPS_GEOG soil across the dateline: split the parameter domain".into());
+    }
+    let pad = 0.25;
+    // 1-based global column/row (row 1 is the southernmost).
+    let col = |lon: f64| ((lon - known_lon) / dx + known_x).round() as i64;
+    let row_of = |lat: f64| ((lat - known_lat) / dy + known_y).round() as i64;
+    let (i0, i1) = (col(west - pad).max(1), col(east + pad));
+    let (j0, j1) = (row_of(south - pad).max(1), row_of(north + pad));
+    let (w, h) = ((i1 - i0 + 1) as usize, (j1 - j0 + 1) as usize);
+    let (bx, by) = (tx + 2 * bdr, ty + 2 * bdr);
+    // layers[z][r * w + c], r = 0 at the north edge
+    let mut layers = vec![vec![f32::NAN; w * h]; tz];
+    let tiles: Vec<(i64, i64)> = (((j0 - 1) / ty as i64)..=((j1 - 1) / ty as i64))
+        .flat_map(|tr| (((i0 - 1) / tx as i64)..=((i1 - 1) / tx as i64)).map(move |tc| (tr, tc)))
+        .collect();
+    let parts: Vec<Result<Vec<(usize, usize, Vec<u8>)>>> = tiles.par_iter().map(|&(tr, tc)| {
+        let (x0, y0) = (tc * tx as i64 + 1, tr * ty as i64 + 1);
+        let name = format!("{dir}/{:05}-{:05}.{:05}-{:05}", x0, x0 + tx as i64 - 1, y0, y0 + ty as i64 - 1);
+        let bytes = match std::fs::read(&name) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+            Err(e) => return Err(format!("{name}: {e}").into()),
+        };
+        if bytes.len() != bx * by * tz {
+            return Err(format!("{name}: {} bytes, expected {}", bytes.len(), bx * by * tz).into());
+        }
+        let mut out = vec![];
+        for j in y0.max(j0)..=(y0 + ty as i64 - 1).min(j1) {
+            let r = (j1 - j) as usize;
+            for z in 0..tz {
+                let yy = (j - y0) as usize + bdr;
+                let start = z * bx * by + yy * bx;
+                let (c0, c1) = (x0.max(i0), (x0 + tx as i64 - 1).min(i1));
+                let row: Vec<u8> = (c0..=c1).map(|i| bytes[start + (i - x0) as usize + bdr]).collect();
+                out.push((z, r * w + (c0 - i0) as usize, row));
+            }
+        }
+        Ok(out)
+    }).collect();
+    for part in parts {
+        for (z, at, row) in part? {
+            for (k, b) in row.into_iter().enumerate() {
+                layers[z][at + k] = if b as f64 == missing { f32::NAN } else { (b as f64 * scale) as f32 };
+            }
+        }
+    }
+    let labels = ["0-10cm", "10-40cm", "40-100cm", "100-200cm"];
+    let ox = known_lon + (i0 as f64 - known_x) * dx - dx / 2.0;
+    let oy = known_lat + (j1 as f64 - known_y) * dy + dy / 2.0;
+    let mut out = HashMap::new();
+    for (k, label) in labels.iter().enumerate() {
+        let sand = &layers[k];
+        let clay = &layers[k + 4];
+        let silt: Vec<f32> = sand.iter().zip(clay).map(|(s, c)| if s.is_finite() && c.is_finite() { (100.0 - s - c).max(0.0) } else { f32::NAN }).collect();
+        let soc: Vec<f32> = sand.iter().map(|s| if s.is_finite() { 0.0 } else { f32::NAN }).collect();
+        for (prop, v) in [("sand", sand.clone()), ("clay", clay.clone()), ("silt", silt), ("soc", soc)] {
+            out.insert(format!("{prop}/{label}"), SoilLayer { ox, oy, dx, dy, w, h, v });
+        }
+    }
+    let mut src = row.clone();
+    src.dataset = format!("WPS_GEOG soilgrids/soilcomp at {dir} (SoilGrids-derived, standing in for {})", row.dataset);
+    src.depth_labels = labels.iter().map(|s| s.to_string()).collect();
+    src.depths_cm = vec![[0.0, 10.0], [10.0, 40.0], [40.0, 100.0], [100.0, 200.0]];
+    src.sand = "sand".into();
+    src.silt = "silt".into();
+    src.clay = "clay".into();
+    src.organic_carbon = "soc".into();
+    Ok((src, out))
+}
+
 /// Load every (property, depth) layer the soil source row lists for a domain.
 /// Returns map "prop/depth_label" -> layer, all on one common soil grid.
 pub fn load_soil(src: &SoilSource, dir: &str, prefix: &str) -> Result<(HashMap<String, SoilLayer>, Vec<String>)> {
@@ -194,10 +289,12 @@ pub fn load_soil(src: &SoilSource, dir: &str, prefix: &str) -> Result<(HashMap<S
 
 /// Land-cover class counts per analysis cell: `counts[cell * nclass + k]` is the
 /// number of land-cover pixels of class k whose centre falls in the cell
-/// (WorldCover: 100 pixels of 10 m per 3 arc-second cell). Tiles and their
-/// blocks decode in parallel; cells on block edges are shared, so the counts
-/// are atomic.
-pub fn accumulate_land_cover(g: &Grid, src: &LandCoverSource, dir: &str) -> Result<(Vec<u8>, Vec<String>, Vec<String>)> {
+/// (WorldCover: 100 pixels of 10 m per 3 arc-second cell, 2,500 per 15
+/// arc-second cell of a coarsened continental fabric). 16-bit counts hold up
+/// to 65,535 pixels per cell (WorldCover down to 47 cells per degree). Tiles
+/// and their blocks decode in parallel; cells on block edges are shared, so
+/// the counts are atomic.
+pub fn accumulate_land_cover(g: &Grid, src: &LandCoverSource, dir: &str) -> Result<(Vec<u16>, Vec<String>, Vec<String>)> {
     let nclass = src.classes.len();
     let code_to_k: HashMap<u32, usize> = src.classes.iter().enumerate().map(|(k, c)| (c.code, k)).collect();
     let mut lut = [u8::MAX; 256];
@@ -207,9 +304,9 @@ pub fn accumulate_land_cover(g: &Grid, src: &LandCoverSource, dir: &str) -> Resu
         }
     }
     let n = g.n() * nclass;
-    let mut counts = vec![0u8; n];
-    // SAFETY: AtomicU8 has the same size, alignment and bit validity as u8.
-    let atomics: &[AtomicU8] = unsafe { std::slice::from_raw_parts(counts.as_mut_ptr() as *const AtomicU8, n) };
+    let mut counts = vec![0u16; n];
+    // SAFETY: AtomicU16 has the same size, alignment and bit validity as u16.
+    let atomics: &[AtomicU16] = unsafe { std::slice::from_raw_parts(counts.as_mut_ptr() as *const AtomicU16, n) };
     let step = src.tile_degrees as i32;
     let south = g.north - g.ny as f64 * g.res();
     let east = g.west + g.nx as f64 * g.res();
@@ -229,6 +326,12 @@ pub fn accumulate_land_cover(g: &Grid, src: &LandCoverSource, dir: &str) -> Resu
             }
             let t = GeoTiff::open(&path)?;
             let cpd = g.cells_per_degree as f64;
+            // Breakage this prevents: a 16-bit count wrapping on cells holding
+            // more than 65,535 land-cover pixels.
+            let per_cell = (g.res() / t.dx).ceil() * (g.res() / t.dy).ceil();
+            if per_cell > u16::MAX as f64 {
+                return Err(format!("{path}: {per_cell} land-cover pixels per {}-cells-per-degree cell overflow the 16-bit counts", g.cells_per_degree).into());
+            }
             (0..t.n_blocks()).into_par_iter().try_for_each(|b| -> Result<()> {
                 let d = t.decode_block(b)?;
                 let (x0, y0, w, h, row_len) = t.block_rect(b);

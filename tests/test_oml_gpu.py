@@ -12,7 +12,8 @@ def make_state(cp, *, ocean=1, hml0=50.):
     from gpuwm.core.physics import initialize_physics
     cfg=RunConfig(nx=8,ny=6,nz=16,dx=10000.,dy=10000.,ztop=12000.,dt=5.,run_seconds=80.,
                   time_step_sound=4,moist=True,mp_physics=0,sf_sfclay_physics=1,
-                  sf_surface_physics=0,bl_pbl_physics=0,sf_ocean_physics=ocean,oml_hml0=hml0,bldt=0.5)
+                  sf_surface_physics=0,bl_pbl_physics=0,sf_ocean_physics=ocean,oml_hml0=hml0,bldt=0.5,
+                  ocean_mld_climatology='configured_uniform_mld')
     coord=make_vertical_coord(cfg.nz)
     base=make_base_state(coord,lambda z:298.+0.004*np.asarray(z),p_surf=cfg.p_surf,ztop=cfg.ztop)
     state=init_moist_balanced(cfg,coord,base,lambda z:0.015*np.exp(-np.asarray(z)/2400.))

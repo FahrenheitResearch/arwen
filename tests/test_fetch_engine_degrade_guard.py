@@ -74,6 +74,7 @@ def test_the_warning_reaches_stderr_as_one_line(monkeypatch, capsys):
 def test_an_unusable_backbone_degrades_loudly_too(monkeypatch, tmp_path):
     stale = tmp_path / "rw_fetch"
     stale.write_bytes(b"")
+    assert rustwx_fetch._idle_capable(str(stale), ()) is False
     monkeypatch.setattr(rustwx_fetch, "find_fetch_bin", lambda: stale)
     monkeypatch.setattr(rustwx_fetch, "probe_fetch_bin",
                         lambda path: (False, "different fetch-record ABI"))
@@ -82,6 +83,9 @@ def test_an_unusable_backbone_degrades_loudly_too(monkeypatch, tmp_path):
     assert len(said) == 1
     assert "16x tax" in said[0]["action"]
     assert "unusable" in said[0]["action"]
+    progress = []
+    assert fetch.resolve_fetch_engine("auto", progress=progress.append) == ("python", None)
+    assert progress and "unusable" in progress[0]
 
 
 def test_asking_for_python_is_not_a_degrade_and_says_nothing(monkeypatch):
@@ -91,6 +95,7 @@ def test_asking_for_python_is_not_a_degrade_and_says_nothing(monkeypatch):
     monkeypatch.setattr(rustwx_fetch, "find_fetch_bin", explode)
     choice, said = _records(monkeypatch, requested="python")
     assert choice.selection == "python-requested"
+    assert fetch.resolve_fetch_engine("python") == ("python", None)
     assert not choice.degraded
     assert said == []
 
@@ -100,8 +105,8 @@ def test_asking_for_rust_still_refuses_rather_than_degrades(monkeypatch):
     said: list[dict] = []
     explain.add_warning_observer(said.append)
     try:
-        with pytest.raises(ValueError, match="cargo build"):
-            fetch.select_fetch_engine("rust")
+        with pytest.raises(ValueError, match="cargo build --release --locked --offline"):
+            fetch.resolve_fetch_engine("rust")
     finally:
         explain.remove_warning_observer(said.append)
     assert said == []

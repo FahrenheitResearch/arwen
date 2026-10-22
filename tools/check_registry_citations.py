@@ -175,7 +175,8 @@ AMBIGUOUS: dict[str, str] = {}
 #: bless a drifted citation as correct, which is the failure this table exists
 #: to prevent.
 RESOLVED: dict[str, tuple[str, str]] = {
-    "kernels/ysu.cu:437": ("gpuwm/core/kernels/ysu.cu", "kpbl < nz"),
+    # lane/opus-ptx-stencils (merge 779bad3acc) moved the guard from :437 to :482; anchor unchanged.
+    "kernels/ysu_480.cu:482": ("gpuwm/core/kernels/ysu_480.cu", "kpbl < nz"),
     "module_ra_sw.F:193-203": ("gpuwm/data/wrf_radiation/module_ra_sw.F", "QI1D(K)=QC1D(K)"),
     # YSU: the guard that skips the top-down block where WRF would read
     # thlix(i,k+2) one past an array declared kts:kte.  The anchor is the
@@ -271,10 +272,13 @@ RESOLVED: dict[str, tuple[str, str]] = {
     # down; on the combined 2.9.0 line they sat at :1425 and :1519, and
     # after the 2.9.1 exact-chain intake at :1431 and :1525.
     # Anchors unchanged.)
-    "gpuwm/core/dycore.py:1431": (
+    # (lane/hrrr-v4-output-fold 514f72e8be, RK descriptors passed as by-value
+    # host arrays, moved both two lines down, to :1433 and :1527.  Anchors
+    # unchanged.)
+    "gpuwm/core/dycore.py:1433": (
         "gpuwm/core/dycore.py",
         "WRF v4.6.1 km_opt=2:"),
-    "gpuwm/core/dycore.py:1525": (
+    "gpuwm/core/dycore.py:1527": (
         "gpuwm/core/dycore.py",
         "WRF v4.6.1 km_opt=3:"),
 }

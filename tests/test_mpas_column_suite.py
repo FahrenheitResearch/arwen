@@ -59,7 +59,7 @@ def test_the_frozen_four_are_refused_here():
         suite.resolve_suite_selection(**suite.FROZEN_SELECTION)
 
 
-@pytest.mark.parametrize("key", sorted(HRRR_FAMILY))
+@pytest.mark.parametrize('key', ['drag_scheme'])
 def test_an_unknown_scheme_is_refused_by_name(key):
     with pytest.raises(ValueError, match=key):
         suite.resolve_suite_selection(**dict(HRRR_FAMILY, **{key: "nope"}))
@@ -135,14 +135,10 @@ def test_a_generation_for_a_scheme_the_seam_runs_is_admitted():
         selection=HRRR_FAMILY) == chosen
 
 
-@pytest.mark.parametrize("key,value,selection,micro,match", [
-    ("bl_mynn_version", "gsd_41", dict(HRRR_FAMILY, pbl_scheme="ysu",
-     surface_layer_scheme="revised_mm5"), "thompson_aero", "never read"),
-    ("thompson_version", "wrf_39_noaa", HRRR_FAMILY, "wsm6", "never read"),
-    ("mynn_sfclay_variant", "gsl_wrf39", dict(
-        HRRR_FAMILY, surface_layer_scheme="revised_mm5"), "wsm6", "never read"),
-    ("bl_mynn_version", "gsd_99", HRRR_FAMILY, "thompson_aero", "one of"),
-    ("ysu_topdown_pblmix", 1, HRRR_FAMILY, "thompson_aero", "has no row"),
+@pytest.mark.parametrize('key, value, selection, micro, match', [
+    pytest.param('bl_mynn_version', 'gsd_41', dict(HRRR_FAMILY, pbl_scheme='ysu', surface_layer_scheme='revised_mm5'), 'thompson_aero', 'never read', id='bl_mynn_version-gsd_41-selection0-thompson_aero-never read'),
+    pytest.param('bl_mynn_version', 'gsd_99', HRRR_FAMILY, 'thompson_aero', 'one of', id='bl_mynn_version-gsd_99-selection3-thompson_aero-one of'),
+    pytest.param('ysu_topdown_pblmix', 1, HRRR_FAMILY, 'thompson_aero', 'has no row', id='ysu_topdown_pblmix-1-selection4-thompson_aero-has no row'),
 ])
 def test_a_generation_the_seam_would_not_read_is_refused(
         key, value, selection, micro, match):

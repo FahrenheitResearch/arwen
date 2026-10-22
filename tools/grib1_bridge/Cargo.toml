@@ -17,9 +17,12 @@ chrono = { version = "0.4", default-features = false }
 # turns "decode this record" into a refusal about packing rather than
 # about meteorology.  The implementation is grib-core's own
 # (BowEcho-ratified) optional openjp2 backend, through the same vendored
-# openjp2 the renderer workspace already builds; png_codec stays off
-# because no consumed product uses Template 5.41.
-grib-core = { path = "vendor/grib-core", default-features = false, features = ["jpeg2000"] }
+# openjp2 the renderer workspace already builds.  png_codec (DRT 5.41) is
+# ON too: MRMS packs its QPE and reflectivity products with it, and
+# grib2_dump refused every MRMS record with "PNG decoding not available".
+# The png crate and its deflate stack are vendored from the renderer
+# workspace's own copies (same versions).
+grib-core = { path = "vendor/grib-core", default-features = false, features = ["jpeg2000", "png_codec"] }
 # A pure Rust port of musl's libm, for the portable transcendentals in
 # src/portable_math.rs: the same bits on every CPU and C library.
 libm = "0.2.16"

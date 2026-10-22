@@ -52,7 +52,7 @@ pub unsafe extern "C" fn gpuwm_host_moist_pressure_f64(
                     let load = qbar * cq;
                     let a = *((c1f as *const f64).add(k + 1));
                     let b = *((c2f as *const f64).add(k + 1));
-                    perturbation = perturbation - (a * mup + load * (a * mass + b))
+                    perturbation -= (a * mup + load * (a * mass + b))
                         / cq / *((rdn as *const f64).add(k + 1));
                     let value = *((base_pressure as *const f64).add(offset)) + perturbation;
                     *((target as *mut f64).add(offset)) = value;
@@ -225,10 +225,9 @@ pub unsafe extern "C" fn gpuwm_host_geopotential(
         let snapshot = snapshot as usize;
         let residual = residual as usize;
         crate::parallel::run_ranges(ranges.len(), count, |begin, end| {
-            for slot in begin..end {
+            for (slot, &(start, stop)) in ranges.iter().enumerate().take(end).skip(begin) {
                 let mut smallest = f64::INFINITY;
                 let mut unusual = false;
-                let (start, stop) = ranges[slot];
                 for column in start..stop {
                     let mut previous_height = 0.0;
                     for k in 0..levels {
@@ -298,7 +297,7 @@ pub unsafe extern "C" fn gpuwm_host_deepest_level_f32(
                         let value = read(level * columns + column);
                         // Negated on purpose: a NaN takes the column, and
                         // an equal value leaves the first level in place.
-                        if !(value <= greatest) {
+                        if !matches!(value.partial_cmp(&greatest), Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)) {
                             greatest = value;
                             deepest = level;
                             if value.is_nan() { break; }

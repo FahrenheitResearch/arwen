@@ -189,7 +189,15 @@ def _config_rows(path: Path, nxy: int) -> list[Row]:
     for label, run in domains:
         row_id = f"config:{rel}#{label}"
         try:
-            cfg = dataclasses.replace(run, nx=nxy, ny=nxy, **OPEN_FLAT)
+            # A prepared fire static (fire_static) is a bundle bound to the full-size grid's fire mesh and is
+            # made by `gpuwm fire-static` / `gpuwm fire-ignition` before a forecast; the shrunk grid cannot read
+            # it, so the row steps SFIRE on the coupler's own constant fuel (fire_fuel_cat) over the flat
+            # atmosphere terrain, like every other static the builder declares. Breakage (2.9.4 R11 step-1
+            # smoke, 2026-10-22): configs/fire-observations/camp2018.toml names fire-static-ignited.npz, a
+            # product its docs prepare, and the row died at build with "I/O failure: No such file or directory".
+            shrink = {**OPEN_FLAT, **({"fire_static": "", "fire_topo_from_atm": 1, "fire_fuel_read": 0}
+                                      if getattr(run, "fire_static", "") else {})}
+            cfg = dataclasses.replace(run, nx=nxy, ny=nxy, **shrink)
         except BaseException as exc:  # noqa: BLE001
             rows.append(Row(row_id, "config", [row_id], phase="shrink",
                             error=_error_line(exc),

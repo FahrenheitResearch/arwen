@@ -327,8 +327,8 @@ pub fn validate_namelist_support_report(report: &NamelistSupportReport) -> Resul
             )));
         }
     }
-    if let Some(vertical) = &report.vertical {
-        if vertical.e_vert != vertical.mass_levels + 1
+    if let Some(vertical) = &report.vertical
+        && (vertical.e_vert != vertical.mass_levels + 1
             || vertical.eta_levels.len() != vertical.e_vert
             || vertical.eta_levels.first() != Some(&1.0)
             || vertical.eta_levels.last() != Some(&0.0)
@@ -337,13 +337,12 @@ pub fn validate_namelist_support_report(report: &NamelistSupportReport) -> Resul
                 .windows(2)
                 .all(|pair| pair[0].is_finite() && pair[0] > pair[1])
             || !vertical.p_top_requested_pa.is_finite()
-            || vertical.p_top_requested_pa <= 0.0
+            || vertical.p_top_requested_pa <= 0.0)
         {
             return Err(RwWpsError::Engine(
                 "invalid explicit vertical grid in namelist support report".to_owned(),
             ));
         }
-    }
     if passed
         && report.required_state.stock_wrf_export.domains.len() != report.geometry.domain_count
     {

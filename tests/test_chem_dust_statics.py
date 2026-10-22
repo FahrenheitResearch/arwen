@@ -23,13 +23,23 @@ def test_dust_pins_and_default_scope():
     assert geog.datasets_required_by("chem-dust") == DUST
     assert geog.parse_datasets("chem-dust") == DUST
     from gpuwm.domain_wizard import GEOG_DATASETS
-    assert geog.datasets_required_by("wrf") == tuple(GEOG_DATASETS)
+    # The builder's nine directories, owned by eight pins (the two default
+    # soil-category directories are children of the soilgrids archive).
+    wrf_pins = geog.archive_names_for_paths(GEOG_DATASETS)
+    assert set(geog.datasets_required_by("wrf")) == wrf_pins
     assert len(GEOG_DATASETS) == 9
     assert set(geog.parse_datasets("default")) == (
-        set(GEOG_DATASETS) | {"soilgrids", "lake_depth",
+        wrf_pins | {"soilgrids", "lake_depth",
                               "bnu_soiltype_top", "bnu_soiltype_bot",
                               # the mesh door's native static land use (2.9.0)
-                              "modis_landuse_20class_30s", "landuse_30s"})
+                              "modis_landuse_20class_30s", "landuse_30s",
+                              # the packaged HRRR recipe's gwd_opt 3 terrain drag,
+                              # fetched by default since 959e1f06016
+                              # (lane/improve-47-geog-orogwd3)
+                              "orogwd3_10m",
+                              # the orographic drag statistics a default
+                              # WOOF Global run reads (ddc882f020)
+                              "orogwd_10m", "varsso_10m"})
     assert set(geog.parse_datasets("default")).isdisjoint(DUST)
     for name in DUST:
         pin = geog.archive_for(name)

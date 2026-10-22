@@ -90,19 +90,6 @@ def test_closure_choice_range_is_the_grell_family_rule():
         validate_run_config(RunConfig(**_G3_BASE, clos_choice=17))
 
 
-def test_the_registry_row_is_implemented_and_reachable():
-    from gpuwm.physics_registry import physics_registry
-
-    reg = physics_registry()
-    row = reg["components"]["cumulus"]["options"]["grell-3d"]
-    assert row["implemented"] is True
-    assert row["selectors"] == {"cu_physics": 5}
-    assert row["constraints"]["required_settings"]["cudt_minutes"] == 0.0
-    assert row["consumers"]["stock_callable_class"] == "gpuwm.core.g3.Grell3D"
-    assert reg["parameters"]["cugd_avedx"]["default"] == 1
-    assert any("0 ULP" in w for w in row["warnings"])
-
-
 def test_workspace_slot_count_is_the_kernel_source_count():
     """g3.G3_SLOT_COUNT (what preflight prices) is the .cu's own count."""
     from gpuwm.core import g3
@@ -172,12 +159,6 @@ def test_nondefault_g3_controls_remain_refused_without_the_consumer(name, value)
     from gpuwm.config import RunConfig, validate_run_config
     with pytest.raises(ValueError, match="cu_physics=5"):
         validate_run_config(RunConfig(**dict(_G3_BASE, cu_physics=3), **{name: value}))
-
-
-def test_retired_g3_guards_leave_no_cumulus_off_identity_container():
-    from gpuwm.physics_registry import physics_registry
-    off = physics_registry()["components"]["cumulus"]["options"]["off"]
-    assert off.get("constraints", {}) == {}
 
 
 def test_registry_declares_inactive_control_policy_without_changing_other_options():

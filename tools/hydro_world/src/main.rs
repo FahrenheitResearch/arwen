@@ -3,7 +3,11 @@ use serde_json::json;
 use std::path::PathBuf;
 use std::time::Instant;
 
+/// The commit this binary was built from; the release pin step reads it from the bytes.
+const SOURCE_REV_STAMP: &str = concat!("GPUWM_BRIDGE_SOURCE_REV=", env!("GPUWM_BRIDGE_SOURCE_REV"));
+
 fn main() {
+    std::hint::black_box(SOURCE_REV_STAMP);
     if let Err(e) = run() {
         eprintln!("rw_hydro_world: {e}");
         std::process::exit(1)

@@ -8,7 +8,6 @@ BIN_SPECIES = tuple(f"{group}i{i:02d}" for group,count in BIN_GROUPS for i in ra
 MASS_SPECIES = ("qv","qc","qr","qi","qs","qg")
 NUMBER_SPECIES = ("nn","nc","nr","ni","ns","ng")
 EXTRA_SPECIES = MASS_SPECIES[3:] + BIN_SPECIES + NUMBER_SPECIES
-OLD_STATE_SPECIES = ("th_old","qv_old")
 FLAG_FIELDS = ("hail", "rainnc_own_column", "rainnc_bottom_outflow",
                "nucleation_water_sink", "dtcond_carry", "breakup_retry_cap",
                "cloud_base_first_level", "fall_speed_own_bin",

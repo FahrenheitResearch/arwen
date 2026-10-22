@@ -49,7 +49,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     // loop did.
     let batch = rayon::current_num_threads().max(1) * 2;
     for chunk in indices.chunks(batch) {
-        let decoded: Vec<Result<(String, Vec<u8>, String), String>> = chunk
+        type DumpedField = Result<(String, Vec<u8>, String), String>;
+        let decoded: Vec<DumpedField> = chunk
             .par_iter()
             .map(|&index| dump_field(&file, index))
             .collect();

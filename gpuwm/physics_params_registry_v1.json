@@ -51,8 +51,7 @@
       "host_mirror": null,
       "sites": [
         {"module": "mynn_pbl", "anchor": "MYNN_MUL(3.5f, mynn_min2(MYNN_MUL(zwk, rmo), 1.0f))));\n        } else {\n            els = MYNN_MUL(MYNN_MUL(0.4f, zwk), mynn_powf(MYNN_SUB(1.0f,\n                MYNN_MUL(MYNN_MUL(5.0f, zwk), rmo)), 0.2f));\n        }\n        real weight = MYNN_ADD(", "literal": "3.5f", "count": 1},
-        {"module": "mynn_dmp_sibling", "anchor": "MYNN_MUL(3.5f, mynn_min2(MYNN_MUL(zwk, rmo), 1.0f))));", "literal": "3.5f", "count": 1},
-        {"module": "mynn_dmp_sibling", "anchor": "/ (1.0f + 3.5f * fminf(zwk * rmo[column], 1.0f));", "literal": "3.5f", "count": 1}
+        {"module": "mynn_dmp_sibling", "anchor": "MYNN_MUL(3.5f, mynn_min2(MYNN_MUL(zwk, rmo), 1.0f))));\n        } else {\n            els = MYNN_MUL(MYNN_MUL(0.4f, zwk), mynn_powf(MYNN_SUB(1.0f,\n                MYNN_MUL(MYNN_MUL(5.0f, zwk), rmo)), 0.2f));\n        }\n        real weight = MYNN_ADD(", "literal": "3.5f", "count": 1}
       ]
     },
     {
@@ -69,8 +68,7 @@
       "host_mirror": null,
       "sites": [
         {"module": "mynn_pbl", "anchor": "elt = mynn_min2(mynn_max2(MYNN_DIV(MYNN_MUL(0.23f, elt), vsc_sum), 8.0f),", "literal": "0.23f", "count": 1},
-        {"module": "mynn_dmp_sibling", "anchor": "elt = mynn_min2(mynn_max2(MYNN_DIV(MYNN_MUL(0.23f, elt), vsc_sum), 8.0f),", "literal": "0.23f", "count": 1},
-        {"module": "mynn_dmp_sibling", "anchor": "elt = fminf(fmaxf(0.23f * elt / vsc_sum, 8.0f), 400.0f);", "literal": "0.23f", "count": 1}
+        {"module": "mynn_dmp_sibling", "anchor": "elt = mynn_min2(mynn_max2(MYNN_DIV(MYNN_MUL(0.23f, elt), vsc_sum), 8.0f),", "literal": "0.23f", "count": 1}
       ]
     },
     {

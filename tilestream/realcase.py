@@ -676,10 +676,12 @@ def prepare_low_water(config_path: str, *, verbose=print):
         target_lon=lon, route=WATER_ROUTE_LOW_WATER,
         workers=host_step_workers(backend))
     from gpuwm.core.landuse import (
-        ruc_fractional_seaice as _ruc_fractional_seaice)
+        ruc_fractional_seaice as _ruc_fractional_seaice,
+        seaice_threshold_of as _seaice_threshold_of)
     soil = preprocess_land_surface_soil(
         soil_fields, sf_surface_physics=int(cfg.sf_surface_physics),
         fractional_seaice=_ruc_fractional_seaice(cfg),
+        seaice_threshold=_seaice_threshold_of(cfg),
         soil_type=reconciled_soil_type,
         deep_soil_temperature=static["TMN"],
         landmask=static["LANDMASK"], terrain=None, source_orography=None,
@@ -713,6 +715,7 @@ def prepare_low_water(config_path: str, *, verbose=print):
         # As gpuwm/runtime.py: the sea-ice branch and usemonalb's monthly
         # ALBBCK follow the configuration; off, the call is unchanged.
         fractional_seaice=ruc_fractional_seaice(cfg),
+        sea_ice_cells=getattr(soil, "sea_ice_cells", None),
         **usemonalb_landuse_inputs(cfg, static, start_time))
     from gpuwm.ingest.ruc_mosaic import ruc_mosaic_physics_inputs
     from gpuwm.ingest.lake_physics import lake_physics_inputs
@@ -1087,10 +1090,12 @@ def prepare_slabbed(config_path: str, *, rows_per_slab: int = 64,
         target_lon=lon, route=WATER_ROUTE_SLABBED,
         workers=host_step_workers(backend))
     from gpuwm.core.landuse import (
-        ruc_fractional_seaice as _ruc_fractional_seaice)
+        ruc_fractional_seaice as _ruc_fractional_seaice,
+        seaice_threshold_of as _seaice_threshold_of)
     soil = preprocess_land_surface_soil(
         soil_fields, sf_surface_physics=int(cfg.sf_surface_physics),
         fractional_seaice=_ruc_fractional_seaice(cfg),
+        seaice_threshold=_seaice_threshold_of(cfg),
         soil_type=reconciled_soil_type,
         deep_soil_temperature=static["TMN"],
         landmask=static["LANDMASK"], terrain=None, source_orography=None,
@@ -1124,6 +1129,7 @@ def prepare_slabbed(config_path: str, *, rows_per_slab: int = 64,
         # As gpuwm/runtime.py: the sea-ice branch and usemonalb's monthly
         # ALBBCK follow the configuration; off, the call is unchanged.
         fractional_seaice=ruc_fractional_seaice(cfg),
+        sea_ice_cells=getattr(soil, "sea_ice_cells", None),
         **usemonalb_landuse_inputs(cfg, static, start_time))
     from gpuwm.ingest.ruc_mosaic import ruc_mosaic_physics_inputs
     from gpuwm.ingest.lake_physics import lake_physics_inputs

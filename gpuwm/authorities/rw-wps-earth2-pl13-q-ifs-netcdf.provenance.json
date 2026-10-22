@@ -54,7 +54,7 @@
         "snow_water_equivalent"
       ],
       "clock": "source_cycle_analysis_broadcast: donor analysis at the AI initialization, frozen at every lead",
-      "grid_alignment": "exact_coordinate_strided_subset",
+      "grid_alignment": "bilinear_mask_aware_nearest",
       "surface_temperature_policy": "published donor SST"
     }
   },

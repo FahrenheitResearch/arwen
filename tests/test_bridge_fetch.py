@@ -127,18 +127,6 @@ def _install_pins(monkeypatch, bundle: bridge_assets.BundlePin,
 # Staging semantics, with synthetic artifacts
 # ---------------------------------------------------------------------------
 
-def test_stage_from_bundle_verifies_then_installs(tmp_path):
-    archive, bundle = _synthetic_bundle(tmp_path)
-    dest = tmp_path / "dest"
-
-    installed = bridge_assets.stage_from_bundle(
-        archive, bundle, dest, progress=lambda _line: None)
-
-    assert [p.name for p in installed] == ["alpha.bin", "beta.bin"]
-    for pin in bundle.binaries:
-        assert bridge_assets.matches_pin(dest / pin.filename, pin)
-
-
 def test_staging_returns_the_assets_it_staged_as_well_as_the_binaries(
         tmp_path):
     """`stage_from_bundle` returns binaries AND map assets, and says so.
@@ -731,7 +719,12 @@ def test_artifact_filenames_agree_with_the_resolvers_on_this_host():
                  "rw_projected_intermediate": (
                      "rw_projected_intermediate.dll" if os.name == "nt" else
                      "librw_projected_intermediate.dylib" if sys.platform == "darwin" else
-                     "librw_projected_intermediate.so")}
+                     "librw_projected_intermediate.so"),
+                 # gpuwm.hydro.output._library_path spells it this way.
+                 "rw_nextgen_output": (
+                     "rw_nextgen_output.dll" if os.name == "nt" else
+                     "librw_nextgen_output.dylib" if sys.platform == "darwin" else
+                     "librw_nextgen_output.so")}
     for artifact in bridge_assets.BUNDLED_ARTIFACTS:
         produced = bridge_assets.artifact_filename(artifact, host)
         if artifact.kind == "library":
@@ -811,6 +804,10 @@ def test_ensemble_bundle_contract_matches_the_default_cpu_reducer():
     assert artifact.env_var == "GPUWM_ENSEMBLE_RENDERER"
     assert bridges.BRIDGE_ABI_MARKERS[artifact.name] == (
         rustwx.CPU_ENSEMBLE_REDUCTION_ABI.encode("ascii"))
+    # The thin launcher must reject the same old reducer as staging does.
+    contracts = Path("tools/rustwx/crates/rw-wrfbatch/src/cli_contracts.rs").read_text()
+    marker = rustwx.CPU_ENSEMBLE_REDUCTION_ABI.replace("\t", r"\t")
+    assert f'pub const ENSBATCH_STATIC: &str = "{marker}";' in contracts
     assert bridge_assets.artifact_filename(artifact, "linux-x86_64") == "rw_ensbatch"
     assert bridge_assets.artifact_filename(artifact, "win-x86_64") == "rw_ensbatch.exe"
 

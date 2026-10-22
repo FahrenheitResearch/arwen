@@ -43,7 +43,9 @@ import numpy as np
 # behaviour we want for gpuwm itself; the sibling probe is an explicit,
 # path-qualified import rather than an ambient one.
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent))
-from nssl2_mp18_digest_probe import _seeded_fields  # noqa: E402
+from nssl2_mp18_digest_probe import (  # noqa: E402
+    _OUTPUT_PRECIPITATION as _OUTPUT_PRECIPITATION, _run_one, _seeded_fields,
+)
 
 
 #: (label, selector kwargs) for every mode with a ported numerical path.
@@ -56,10 +58,6 @@ PROBE_MODES = (
     ("mp22-no-hail-no-ccn", {"nssl_hail_on": 0, "nssl_ccn_on": 0}),
 )
 
-_OUTPUT_PRECIPITATION = (
-    "rainnc", "rainncv", "snownc", "snowncv",
-    "graupelnc", "graupelncv", "hailnc", "hailncv", "sr",
-)
 
 _REGISTRY_ORDER = (
     "qv", "qc", "qr", "qi", "qs", "qg", "qh",
@@ -126,102 +124,6 @@ REGIMES = (
     ("riming-updraft", riming_updraft),
 )
 
-
-def _run_one(mode, fields, environment, steps: int):
-    """Advance one variant on given inputs; return host outputs and inputs."""
-    import cupy as cp
-
-    from gpuwm.core.nssl2_driver_support import NSSL2DriverWorkspace
-    from gpuwm.core.nssl2_fused_gs import launch_fused_gs
-    from gpuwm.core.nssl2_nucond import launch_nucond
-    from gpuwm.core.nssl2_production_coordinator import (
-        NSSL2PrecipitationFields,
-        NSSL2ProductionHooks,
-        NSSL2RegistryFields,
-        run_nssl2_production_step,
-    )
-
-    inputs = {name: value.copy() for name, value in fields.items()}
-    device = {name: cp.asarray(value) for name, value in fields.items()}
-    shape = fields["qv"].shape
-    nz, ny, nx = shape
-    theta = cp.asarray(environment["theta"])
-    rho = cp.asarray(environment["rho"])
-    pressure = cp.asarray(environment["pressure"])
-    exner = cp.asarray(environment["exner"])
-    w = cp.asarray(environment["w"])
-    dz = cp.asarray(environment["dz"])
-    dt = 4.0
-
-    registry = NSSL2RegistryFields(**device)
-    precipitation = NSSL2PrecipitationFields(**{
-        name: cp.zeros((ny, nx), dtype=cp.float32)
-        for name in _OUTPUT_PRECIPITATION
-    })
-
-    temperature_k = cp.asarray(environment["temperature"])
-    ss_scratch = cp.empty(shape, dtype=cp.float32)
-    fused_temperature = cp.empty(shape, dtype=cp.float32)
-    primary_ice = cp.empty(shape, dtype=cp.float32)
-
-    def fused_gs(workspace: NSSL2DriverWorkspace) -> None:
-        launch_fused_gs(
-            workspace, theta, rho, pressure, exner, w,
-            fused_temperature, primary_ice, dz, dt,
-            hail_on=mode.hail)
-
-    def nucond_qvexcess(workspace: NSSL2DriverWorkspace) -> None:
-        launch_nucond(
-            theta, rho, pressure, exner, w,
-            workspace.field("qv"), workspace.field("qc"),
-            workspace.field("qr"), workspace.field("qi"),
-            workspace.field("qs"), workspace.field("qndrop"),
-            workspace.field("qnr"), workspace.field("qni"),
-            workspace.field("qns"), workspace.field("qnn"),
-            dt, supersaturation_scratch=ss_scratch,
-            concentration_space=True,
-            predicted_ccn=mode.predicted_ccn,
-            validate_values=False,
-            frozen=tuple(workspace.field(name) for name in (
-                "qg", "qh", "qng", "qnh", "qvolg", "qvolh")))
-
-    def finish(_workspace) -> None:
-        pass
-
-    hooks = NSSL2ProductionHooks(
-        fused_gs=fused_gs,
-        nucond_qvexcess=nucond_qvexcess,
-        moist_physics_finish=finish,
-    )
-
-    refl = cp.zeros(shape, dtype=cp.float32)
-    re_cloud = cp.zeros(shape, dtype=cp.float32)
-    re_ice = cp.zeros(shape, dtype=cp.float32)
-    re_snow = cp.zeros(shape, dtype=cp.float32)
-    for step_index in range(steps):
-        cp.multiply(theta, exner, out=temperature_k)
-        run_nssl2_production_step(
-            rho, dz, registry, precipitation, hooks, dt,
-            first_step=(step_index == 0),
-            output_due=True,
-            temperature_k=temperature_k,
-            refl_10cm=refl,
-            radiation_due=True,
-            re_cloud_m=re_cloud, re_ice_m=re_ice, re_snow_m=re_snow,
-            validate_values=False,
-            mode=mode,
-        )
-
-    outputs = dict(device)
-    outputs["theta"] = theta
-    outputs["refl_10cm"] = refl
-    outputs["re_cloud"] = re_cloud
-    outputs["re_ice"] = re_ice
-    outputs["re_snow"] = re_snow
-    for name in _OUTPUT_PRECIPITATION:
-        outputs[name] = getattr(precipitation, name)
-    return ({name: cp.asnumpy(value) for name, value in outputs.items()},
-            inputs)
 
 
 def run_probe(steps: int = 3, nz: int = 40, ny: int = 4, nx: int = 4):

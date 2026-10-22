@@ -184,7 +184,7 @@ pub unsafe extern "C" fn gpuwm_cold_start_numbers_f32(
         if input.aerosol_length != 0 && input.aerosol.is_null()
             || input.landmask_length != 0 && input.landmask.is_null()
             || seed_volume.is_null() != seed_mask.is_null() { return ERR_NULL; }
-        if input.landmask_length != 0 && input.length % input.landmask_length != 0 { return ERR_DIMENSION; }
+        if input.landmask_length != 0 && !input.length.is_multiple_of(input.landmask_length) { return ERR_DIMENSION; }
         let constants = std::slice::from_raw_parts(input.constants, 28);
         let retab = std::slice::from_raw_parts(input.ice_radii, 95);
         let ratios = std::slice::from_raw_parts(input.droplet_ratio, 15);
@@ -199,9 +199,8 @@ pub unsafe extern "C" fn gpuwm_cold_start_numbers_f32(
         let mask_address = seed_mask as usize;
         crate::parallel::run_ranges(ranges.len(), widths, |begin, end| {
             let input = unsafe { &*(input_address as *const Inputs) };
-            for slot in begin..end {
+            for (slot, &(start, stop)) in ranges.iter().enumerate().take(end).skip(begin) {
                 let mut local = Summary::default();
-                let (start, stop) = ranges[slot];
                 for cell in start..stop {
                     let mass = unsafe { *input.mass.add(cell) };
                     let old = unsafe { *input.number.add(cell) };
@@ -233,8 +232,8 @@ pub unsafe extern "C" fn gpuwm_cold_start_numbers_f32(
                                 let aerosol_volume = aerosol * rho;
                                 if aerosol_volume.is_nan() { local.invalid_aerosol += 1; }
                                 if aerosol_volume <= 0.0 && input.landmask_length == 0 { local.needs_land += 1; }
-                                let xland = if input.landmask_length == 0 { 1.0 }
-                                    else if unsafe { *input.landmask.add(cell % input.landmask_length) } >= 0.5 { 1.0 } else { 2.0 };
+                                let xland = if input.landmask_length == 0
+                                    || unsafe { *input.landmask.add(cell % input.landmask_length) } >= 0.5 { 1.0 } else { 2.0 };
                                 cloud_seed(volume_mass, aerosol_volume, xland, constants, ratios)
                             }
                         };

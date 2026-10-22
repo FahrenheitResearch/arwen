@@ -528,3 +528,171 @@ def test_sw_column_layout_bits(path):
             if previous is not None:
                 np.testing.assert_array_equal(got[name].view(np.uint32), previous[name].view(np.uint32))
         previous = got
+
+
+# ---------------------------------------------------------------------------
+# Fused column-layout path (rmcw_subcol_states + rmcw_walk_fill_column):
+# the forecast adapter's layout.  It never stores the raw CDF slab or the
+# mask; it re-derives every draw from a recorded per-subcolumn stream
+# state.  Gated against the NumPy port (and so, transitively, the WRF
+# Fortran fixtures), against the staged column trio it replaced, and at
+# several chunk widths.
+# ---------------------------------------------------------------------------
+
+def _column_view(out):
+    """NumPy/gpoint (ngpt, ncol, nlay) slabs as the column layout."""
+    return {k: (np.ascontiguousarray(v.transpose(1, 2, 0)) if v.ndim == 3
+                else v) for k, v in out.items()}
+
+
+@gpu_gate
+@pytest.mark.parametrize("path", FIXTURES, ids=lambda p: p.stem)
+def test_gpu_fused_column_matches_wrf_fixtures(path):
+    data = _load(path)
+    side, kwargs = _fixture_kwargs(data)
+    if int(data["icld"]) != 2:
+        pytest.skip("the device path carries icld=2 only")
+    want = _column_view(_run(data)[1])
+    names = SW_OUTPUTS if side == "sw" else LW_OUTPUTS
+    for run in range(DUAL_RUNS):
+        fused = _to_host(_gpu_call(side, dict(kwargs, layout="column")))
+        staged = _to_host(_gpu_call(side, dict(kwargs, layout="column",
+                                               fused=False)))
+        _assert_bitwise(fused, want, f"{path.stem}/fused/run{run}")
+        _assert_bitwise(staged, want, f"{path.stem}/staged/run{run}")
+        for name in names:
+            ref = data[f"out_{name}"]
+            if ref.ndim == 3:
+                ref = np.ascontiguousarray(ref.transpose(1, 2, 0))
+            assert np.array_equal(ref.view(np.int32),
+                                  fused[name].view(np.int32)), \
+                f"{path.stem}/{name}/run{run}: fused != WRF Fortran"
+
+
+@gpu_gate
+@pytest.mark.parametrize("side", ["lw", "sw"])
+@pytest.mark.parametrize("ncol,chunk", [(1, None), (7, 3), (333, None),
+                                        (4096, 1000), (4096, None)])
+def test_gpu_fused_column_wide_decks(side, ncol, chunk):
+    """Fused column == NumPy bitwise on the wide synthetic decks, at
+    ragged and whole chunk widths, dual-run."""
+    _need_vram(_call_vram_bytes(side, ncol, _WIDE_NLAY,
+                                M.MCICA_DEVICE_COLUMN_CHUNK))
+    kwargs = _synthetic_kwargs(side, ncol, _WIDE_NLAY,
+                               seed=_DECK_SEED + ncol)
+    want = _column_view(_numpy_run(side, kwargs))
+    for run in range(DUAL_RUNS):
+        got = _to_host(_gpu_call(side, dict(kwargs, layout="column",
+                                            ncol_chunk=chunk)))
+        _assert_bitwise(got, want, f"{side}/ncol{ncol}/chunk{chunk}/run{run}")
+    del got
+    cp.get_default_memory_pool().free_all_blocks()
+
+
+@gpu_gate
+@pytest.mark.parametrize("side", ["lw", "sw"])
+def test_gpu_fused_column_equals_staged_column_device_inputs(side):
+    """The adapter's call shape: cupy inputs, column layout, a window of a
+    larger batch (row views).  Fused == staged bitwise."""
+    ncol, nlay = 3000, 62
+    _need_vram(3 * _call_vram_bytes(side, ncol, nlay, ncol))
+    kwargs = _synthetic_kwargs(side, ncol, nlay, seed=_DECK_SEED + 7)
+    dev = {k: (cp.asarray(v) if isinstance(v, np.ndarray) and v.ndim >= 2
+               else v) for k, v in kwargs.items()}
+    w0, w1 = 1000, 2536
+    window = {k: (v[w0:w1] if isinstance(v, cp.ndarray) and v.ndim == 2
+                  else (v[:, w0:w1] if isinstance(v, cp.ndarray) else v))
+              for k, v in dev.items()}
+    window["ncol"] = w1 - w0
+    for k, v in list(window.items()):
+        if isinstance(v, cp.ndarray) and v.ndim == 3:
+            window[k] = cp.ascontiguousarray(v)
+    whole = _gpu_call(side, dict(dev, layout="column", fused=False))
+    for run in range(DUAL_RUNS):
+        fused = _gpu_call(side, dict(window, layout="column"))
+        for k, v in fused.items():
+            ref = whole[k][w0:w1]
+            assert bool(cp.array_equal(v.view(cp.uint32),
+                                       ref.view(cp.uint32))), (
+                f"{side}/{k}: fused window != staged whole (run {run})")
+        del fused
+    del whole
+    cp.get_default_memory_pool().free_all_blocks()
+
+
+@gpu_gate
+@pytest.mark.parametrize("chunk", [4096, 1024])
+def test_gpu_fused_column_vram_estimate_accuracy(chunk):
+    """mcica_device_vram_bytes(layout='column') prices the fused path's
+    chunk transient: the call estimate bounds the measured peak from
+    above and stays within 2x of it."""
+    ncol, nlay = 4096, _WIDE_NLAY
+    ngpt = M.NGPTLW
+    estimate = (_call_vram_bytes("lw", ncol, nlay, chunk)
+                - M.mcica_device_vram_bytes(min(chunk, ncol), nlay, ngpt)
+                + M.mcica_device_vram_bytes(min(chunk, ncol), nlay, ngpt,
+                                            layout="column"))
+    _need_vram(estimate)
+    kwargs = _synthetic_kwargs("lw", ncol, nlay, seed=_DECK_SEED + ncol)
+    kwargs.update(ncol_chunk=chunk, layout="column")
+    pool = cp.get_default_memory_pool()
+    M.mcica_gpu_preflight()
+    for run in range(DUAL_RUNS):
+        pool.free_all_blocks()
+        base = pool.used_bytes()
+        peak = [0]
+
+        def probe(col0, nc, peak=peak):
+            peak[0] = max(peak[0], pool.used_bytes())
+
+        out = M.gpu_generate_lw_subcolumns(
+            **dict(kwargs, _stage_probe=probe))
+        measured = peak[0] - base
+        print(f"fused chunk={chunk}: measured {measured / 2**20:.3f} MiB, "
+              f"estimate {estimate / 2**20:.3f} MiB")
+        assert estimate >= measured >= 0.5 * estimate, (
+            f"chunk={chunk} run={run}: measured {measured} vs "
+            f"estimate {estimate}")
+        del out
+    pool.free_all_blocks()
+
+
+def test_fused_route_refuses_the_gpoint_layout():
+    kwargs = _minimal_lw_kwargs()
+    with pytest.raises(ValueError, match="column layout only"):
+        M.gpu_generate_lw_subcolumns(**kwargs, fused=True)
+
+
+@gpu_gate
+@pytest.mark.parametrize("side", ["lw", "sw"])
+def test_gpu_span_states_windows_equal_the_numpy_port(side):
+    """Stream states computed once over a batch (gpu_subcolumn_states) and
+    fed to the fused generator window by window as row slices give the
+    NumPy port's subcolumns for every window, dual-run."""
+    ncol, nlay = 2600, 62
+    _need_vram(3 * _call_vram_bytes(side, ncol, nlay, ncol))
+    kwargs = _synthetic_kwargs(side, ncol, nlay, seed=_DECK_SEED + 11)
+    want = _column_view(_numpy_run(side, kwargs))
+    ngpt = M.NGPTSW if side == "sw" else M.NGPTLW
+    play_d = cp.asarray(kwargs["play"])
+    for run in range(DUAL_RUNS):
+        states = M.gpu_subcolumn_states(ncol, nlay, ngpt,
+                                        kwargs["permuteseed"], play_d)
+        for w0, w1 in ((0, 1000), (1000, 1001), (1001, 2600)):
+            win = dict(kwargs, ncol=w1 - w0)
+            for k, v in kwargs.items():
+                if isinstance(v, np.ndarray) and v.ndim == 2:
+                    win[k] = v[w0:w1]
+                elif isinstance(v, np.ndarray) and v.ndim == 3:
+                    win[k] = np.ascontiguousarray(v[:, w0:w1])
+            got = _to_host(_gpu_call(side, dict(win, layout="column",
+                                                states=states[w0:w1])))
+            ref = {k: (v[w0:w1]) for k, v in want.items()}
+            _assert_bitwise(got, ref, f"{side}/states/{w0}-{w1}/run{run}")
+
+
+def test_states_refuse_the_staged_route():
+    kwargs = _minimal_lw_kwargs()
+    with pytest.raises(ValueError, match="fused route only"):
+        M.gpu_generate_lw_subcolumns(**kwargs, layout="column", fused=False,
+                                     states=object())

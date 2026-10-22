@@ -50,6 +50,24 @@ def controls(parent):
     return matrix, pins
 
 
+#: Lines an imported namelist gained after these parents were pinned, each
+#: from a capability lane that added a default-on key the importer always
+#: states: d4ce97c6bbc (GPU eclipse shortwave, RunConfig ra_sw_eclipse = 1)
+#: and 97e9a3ca061 (GPU HAILCAST diagnostic, hailcast_opt = -1 automatic,
+#: haildt = 60 s).  Each must appear exactly once; nothing else may move.
+IMPORT_CAPABILITY_LINES = (
+    "ra_sw_eclipse = 1\n", "hailcast_opt = -1\n", "haildt = 60.0\n",
+)
+
+
+def without_import_capability_lines(candidate):
+    lines = candidate.splitlines(keepends=True)
+    for line in IMPORT_CAPABILITY_LINES:
+        assert lines.count(line) == 1, line
+        lines.remove(line)
+    return "".join(lines)
+
+
 def assert_old_bytes(parent, pins, key, candidate):
     expected = pins["cases"][key]
     path = Path(expected["file"])
@@ -64,6 +82,7 @@ def assert_old_bytes(parent, pins, key, candidate):
         # 2026-10-12 door rule changed: the retired ISHMAEL header row and
         # the omitted lid, now WRF's open top.
         old = without_retired_line(old)
+        candidate = without_import_capability_lines(candidate)
     assert without_wrf_clock_lines(candidate).encode("utf-8") == old
 
 

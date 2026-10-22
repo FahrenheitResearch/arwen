@@ -1,0 +1,1776 @@
+{
+  "schema": "gpuwm-system-suites-v1",
+  "system": "rrfs-v1",
+  "label": "RRFS v1 (NOAA Rapid Refresh Forecast System, FV3 limited area, operational from 2026-11-03 12 UTC)",
+  "outward_name": "RRFS-like",
+  "match_level": "in-kind",
+  "match_level_meaning": "Same scheme families as WOOF ports of WRF releases, same grid spacing, levels, cadence and inputs where public; the dycore, the step and the physics coupling never match and are declared below. Not 'RRFS on GPUs' and not 'matches RRFS'.",
+  "pins": {
+    "workflow": "https://github.com/NOAA-EMC/rrfs-workflow/tree/e4a100b3c9796b9d175fc32800097c928cd56e9a (tag v1.0.25b)",
+    "model": "https://github.com/ufs-community/ufs-weather-model/tree/d150b9a33a12ea8a783dc845a0d036e1f6f9d733 (production/RRFS.v1)",
+    "fv3atm": "https://github.com/NOAA-EMC/fv3atm/tree/957189f834c3b519c6d3f9445e486f8d4613da9e",
+    "physics": "https://github.com/ufs-community/ccpp-physics/tree/edd85a55502179611fdb7b902f0639c305cd1c3b",
+    "post": "UPP 8393f42 (rrfs-workflow sorc/Externals.cfg:25)",
+    "analysis": "GSI db90edf (rrfs-workflow sorc/Externals.cfg:35)"
+  },
+  "declared_differences": [
+    {
+      "id": "dycore",
+      "source": "FV3 limited area, D-grid, Lagrangian vertical with remapping (det/input.nml:97-108, :130)",
+      "here": "ARW, C-grid, Eulerian vertical, Runge-Kutta with acoustic substeps",
+      "status": "never matches"
+    },
+    {
+      "id": "step",
+      "source": "36 s physics and model step (exrrfs_forecast.sh:722; set_rrfs_config_general.sh:418)",
+      "here": "15 s start under the adaptive clock on the CONUS grid",
+      "status": "never matches"
+    },
+    {
+      "id": "coupling",
+      "source": "one physics call per step, schemes applied in sequence with the state updated between them, a two-pass surface loop (suite_RRFS_sas.xml lines 41, 60)",
+      "here": "ARW tendencies carried through the Runge-Kutta stages, microphysics as an end-of-step adjustment, one surface pass",
+      "status": "never matches"
+    },
+    {
+      "id": "grid-type",
+      "source": "Extended Schmidt Gnomonic, one regional tile (set_predef_grid_params.sh:854-864)",
+      "here": "Lambert (CONUS) or polar stereographic (North America) on the projection plane",
+      "status": "never matches"
+    },
+    {
+      "id": "upper-damping",
+      "source": "Rayleigh friction above 20 hPa, tau 5 (det/input.nml:134, :139)",
+      "here": "damp_opt 3 implicit damping layer",
+      "status": "never matches in form"
+    },
+    {
+      "id": "model-top",
+      "source": "about 2.1 hPa, 65 layers (VCOORD_FILE global_hyblev_fcst_rrfsL65.txt, config_defaults.sh:1754; that file is not in NOAA's public fix bucket, so the exact top is not checked)",
+      "here": "15 hPa until package B1 (stratospheric base state) lands",
+      "status": "pending B1"
+    },
+    {
+      "id": "boundary-file-form",
+      "source": "GFS native-level netCDF hourly to f102",
+      "here": "GFS 0.25 degree pressure-level GRIB2 hourly (public native files stop at f012)",
+      "status": "never matches from public data"
+    },
+    {
+      "id": "conus-edge",
+      "source": "the CONUS region is the interior of the North American run",
+      "here": "the CONUS tier has its own lateral boundary at the CONUS edge (arm R narrows this by taking RRFS's own forecast as boundaries)",
+      "status": "declared"
+    },
+    {
+      "id": "conus-start-arm-gs",
+      "source": "RRFS's CONUS forecast starts from its own cycled analysis",
+      "here": "the arm GS profile starts from a GFS 6 h forecast (f006 of the 6 h older cycle); arms G and R start from RRFS's posted analysis",
+      "status": "declared"
+    },
+    {
+      "id": "gsl-drag-generation",
+      "source": "CCPP GSL drag suite at ccpp-physics edd85a55 (physics/GWD/drag_suite.F90): turbulent form drag coefficient 0.2214 (:1367), no small-scale taper (ss_taper = 1, :626-627), varmax_fd 500 (:438), e-folding height fixed at 1500 m (:1362), semi-implicit in the 36 s step (:1371-1372)",
+      "here": "WRF v4.7.1 module_bl_gwdo_gsl as ported, held to WRF at 0 ULP: coefficient 0.0759 (TOFD_coeff), small-scale taper from 0 at 1 km to 1 at 12 km, varmax_fd 160, e-folding height min(max(2 varss, PBL height), 1500 m), explicit in the step. On the 64 oracle columns at 3 km and 36 s the largest form-drag tendency is 6.4 times WOOF's and the column form stress 3.7 to 10.4 times, median 4.2; coefficient and taper alone give 4.0 (tools/ccpp_column_oracle/receipts). Not a port defect: a later generation of the scheme",
+      "status": "declared"
+    }
+  ],
+  "suites": {
+    "rrfs-sas-deterministic": {
+      "source_suite": "RRFS_sas",
+      "source_ref": "fv3atm 957189f ccpp/suites/suite_RRFS_sas.xml; rrfs-workflow e4a100b parm/config/det/input.nml",
+      "used_by": [
+        "deterministic"
+      ],
+      "runnable": true,
+      "components": {
+        "microphysics": {
+          "option": "thompson-aerosol-mp28",
+          "source": "mp_thompson, imp_physics 8, ltaerosol (input.nml:219, :253)",
+          "relation": "in kind: WRF v4.6.1 port; CCPP release audit is package C7a"
+        },
+        "pbl": {
+          "option": "mynn",
+          "source": "mynnedmf_wrapper, bl_mynn_edmf 1, bl_mynn_edmf_mom 1 (input.nml:160-161, :178)",
+          "relation": "in kind: WRF v4.6.1 port; CCPP MYNN v4.5 audit is package C7a"
+        },
+        "surface_layer": {
+          "option": "mynn",
+          "source": "mynnsfc_wrapper, do_mynnsfclay (input.nml:179)",
+          "relation": "in kind: WRF v4.6.1 port; the CCPP release is 82 percent larger and is a port, package C7b"
+        },
+        "land_surface": {
+          "option": "ruc-lsm",
+          "source": "lsm_ruc, lsm 3, 9 soil levels, mosaic land use and soil (input.nml:250, :252, :258-259)",
+          "relation": "in kind: WRF port; CCPP release audit is package C7a"
+        },
+        "cumulus": {
+          "option": "off",
+          "source": "samfdeepcnv, imfdeepcnv 2, progsigma (input.nml:217, :268)",
+          "relation": "declared missing: runs with no deep convection scheme, never a substitute scheme; package C1"
+        },
+        "radiation": {
+          "option": "rte-rrtmgp",
+          "source": "rrtmg_sw and rrtmg_lw every 900 s (input.nml:199-200)",
+          "relation": "in kind: WRF's legacy RRTMG arm (ra_rrtmg_variant rrtmg_legacy); NCEP's own RRTMG adaptation is package C8 (default: declare)"
+        },
+        "turbulence": {
+          "option": "smagorinsky-2d",
+          "source": "FV3 has no horizontal turbulence closure in this sense",
+          "relation": "ARW's own horizontal diffusion; part of the dycore difference"
+        }
+      },
+      "settings": {
+        "mp_physics": 28,
+        "aer_init_opt": 1,
+        "wif_input_opt": 1,
+        "use_rap_aero_icbc": false,
+        "bl_pbl_physics": 5,
+        "bl_mynn_edmf": 1,
+        "bl_mynn_edmf_mom": 1,
+        "bl_mynn_mixlength": 1,
+        "bl_mynn_tkeadvect": false,
+        "icloud_bl": 1,
+        "scalar_pblmix": 1,
+        "sf_sfclay_physics": 5,
+        "sf_surface_physics": 3,
+        "num_soil_layers": 9,
+        "mosaic_lu": 1,
+        "mosaic_soil": 1,
+        "sf_lake_physics": 1,
+        "gwd_opt": 3,
+        "topo_wind": 0,
+        "ra_lw_physics": 4,
+        "ra_sw_physics": 4,
+        "ra_rrtmg_variant": "rrtmg_legacy",
+        "wrf_rrtmg_compatibility": "wrf-rrtmg-4-4-legacy-v1",
+        "radt": 15.0,
+        "cu_physics": 0,
+        "km_opt": 4
+      },
+      "parameter_sources": {
+        "bl_mynn_mixlength": "CCPP default 1 (GFS_typedefs per the capability map, section 1.3); HRRR runs 2",
+        "sf_lake_physics": "CLM lake, lkm 1, iopt_lake 2 (input.nml:226, :247); CCPP audit C7a",
+        "gwd_opt": "GSL drag suite, gwd_opt 3 (input.nml:203); cdmbgwd 3.5, 1.0 (:164) mapping onto WRF's constants unread; CCPP audit C7a",
+        "radt": "fhswr = fhlwr = 900 s (input.nml:199-200)",
+        "aer_init_opt": "Thompson aerosol-aware with the monthly aerosol climatology (iccn 2, input.nml:212); WOOF's ported climatology pair",
+        "scalar_pblmix": "MYNN mixes the aerosol number scalars; RRFS's bl_mynn_mixscalars is the CCPP default"
+      },
+      "declared_missing": [
+        {
+          "part": "deep-convection",
+          "source_scheme": "samfdeepcnv + progsigma_calc + cnvc90, sigmab tracer",
+          "source_ref": "det/input.nml:217, :268; det/field_table line 67",
+          "runs_as": "no deep convection scheme (cu_physics 0)",
+          "package": "C1"
+        },
+        {
+          "part": "smoke-and-dust",
+          "source_scheme": "rrfs_smoke_wrapper + rrfs_smoke_postpbl (FENGSHA dust, coarse PM, RAVE fires, plume rise, direct radiative feedback)",
+          "source_ref": "det/input.nml:272, :157-158; det/field_table lines 72-82",
+          "runs_as": "no smoke, dust or coarse PM tracers",
+          "package": "C9, C11"
+        },
+        {
+          "part": "ozone-and-water-vapour-photochemistry",
+          "source_scheme": "transported o3mr tracer from GFS handed to radiation; h2ophys",
+          "source_ref": "det/input.nml:204, :262; det/field_table line 48; suite_RRFS_sas.xml line 61",
+          "runs_as": "CAM ozone climatology inside radiation (o3input 2); no h2ophys",
+          "package": "C4"
+        },
+        {
+          "part": "hail-diagnostic",
+          "source_scheme": "HAILCAST (FV3 fv_diagnostics_nml do_hailcast)",
+          "source_ref": "det/input.nml:148",
+          "runs_as": "not produced",
+          "package": "C10"
+        },
+        {
+          "part": "lightning-threat",
+          "source_scheme": "lightning threat indices (lightning_threat)",
+          "source_ref": "det/input.nml:246",
+          "runs_as": "not produced",
+          "package": "C10"
+        },
+        {
+          "part": "hourly-maxima",
+          "source_scheme": "maximum_hourly_diagnostics",
+          "source_ref": "suite_RRFS_sas.xml (maximum_hourly_diagnostics)",
+          "runs_as": "not produced, except the hourly updraft helicity maximum the engine carries under nwp_diagnostics 1",
+          "package": "C10"
+        }
+      ],
+      "declared_refused": [
+        {
+          "setting": "bl_mynn_tkeadvect",
+          "source_value": true,
+          "engine_value": false,
+          "source_ref": "det/input.nml:162",
+          "refusal_site": "gpuwm/core/mynn_pbl.py:3742-3743; gpuwm/core/mynn_pbl_gpu.py:1686-1687; gpuwm/ingest/wrfinput.py:898-900",
+          "package": "C2"
+        },
+        {
+          "setting": "mix_chem",
+          "source_value": true,
+          "engine_value": false,
+          "source_ref": "det/input.nml:257",
+          "refusal_site": "gpuwm/core/mynn_pbl.py:3417-3418, :3750-3751",
+          "package": "C11"
+        },
+        {
+          "setting": "isncovr_opt",
+          "source_value": 3,
+          "engine_value": 2,
+          "source_ref": "det/input.nml:235",
+          "refusal_site": "gpuwm/core/ruc.py:3601 (RUC_SNOW_COVER_OPTION pinned at 2)",
+          "package": "C3"
+        },
+        {
+          "setting": "iovr",
+          "source_value": 3,
+          "engine_value": "1, maximum-random (the engine's cldovrlp 2)",
+          "source_ref": "det/input.nml:233",
+          "refusal_site": "gpuwm/namelist_import.py:3698-3700",
+          "package": "C5"
+        },
+        {
+          "setting": "iaer",
+          "source_value": 1011,
+          "engine_value": "0, no radiation aerosol (the engine's aer_opt 0)",
+          "source_ref": "det/input.nml:207",
+          "refusal_site": "gpuwm/namelist_import.py:3707-3708",
+          "package": "C6"
+        }
+      ],
+      "source_settings": {
+        "file": "rrfs-workflow e4a100b parm/config/det/input.nml",
+        "set": {
+          "do_hailcast": true,
+          "bl_mynn_tkeadvect": true,
+          "h2o_phys": true,
+          "iaer": 1011,
+          "iovr": 3,
+          "isncovr_opt": 3,
+          "lightning_threat": true,
+          "mix_chem": true,
+          "oz_phys_2015": true,
+          "rrfs_sd": true
+        },
+        "lines": {
+          "do_hailcast": 148,
+          "bl_mynn_tkeadvect": 162,
+          "h2o_phys": 204,
+          "iaer": 207,
+          "iovr": 233,
+          "isncovr_opt": 235,
+          "lightning_threat": 246,
+          "mix_chem": 257,
+          "oz_phys_2015": 262,
+          "rrfs_sd": 272
+        }
+      },
+      "source_schemes": [
+        "GFS_time_vary_pre",
+        "GFS_rrtmg_setup",
+        "GFS_rad_time_vary",
+        "GFS_phys_time_vary",
+        "GFS_suite_interstitial_rad_reset",
+        "sgscloud_radpre",
+        "GFS_rrtmg_pre",
+        "GFS_radiation_surface",
+        "rad_sw_pre",
+        "rrtmg_sw",
+        "rrtmg_sw_post",
+        "rrtmg_lw",
+        "sgscloud_radpost",
+        "rrtmg_lw_post",
+        "GFS_rrtmg_post",
+        "GFS_suite_interstitial_phys_reset",
+        "GFS_suite_stateout_reset",
+        "get_prs_fv3",
+        "GFS_suite_interstitial_1",
+        "GFS_surface_generic_pre",
+        "GFS_surface_composites_pre",
+        "dcyc2t3",
+        "GFS_surface_composites_inter",
+        "GFS_suite_interstitial_2",
+        "mynnsfc_wrapper",
+        "GFS_surface_loop_control_part1",
+        "lsm_ruc",
+        "clm_lake",
+        "GFS_surface_loop_control_part2",
+        "GFS_surface_composites_post",
+        "sfc_diag",
+        "sfc_diag_post",
+        "GFS_surface_generic_post",
+        "rrfs_smoke_wrapper",
+        "mynnedmf_wrapper",
+        "rrfs_smoke_postpbl",
+        "GFS_GWD_generic_pre",
+        "drag_suite",
+        "GFS_GWD_generic_post",
+        "GFS_suite_stateout_update",
+        "h2ophys",
+        "get_phi_fv3",
+        "GFS_suite_interstitial_3",
+        "GFS_DCNV_generic_pre",
+        "samfdeepcnv",
+        "GFS_DCNV_generic_post",
+        "GFS_suite_interstitial_4",
+        "cnvc90",
+        "GFS_MP_generic_pre",
+        "mp_thompson_pre",
+        "mp_thompson",
+        "mp_thompson_post",
+        "GFS_MP_generic_post",
+        "maximum_hourly_diagnostics",
+        "GFS_physics_post",
+        "GFS_stochastics"
+      ]
+    },
+    "rrfs-sas-enkf-members": {
+      "source_suite": "RRFS_sas",
+      "source_ref": "fv3atm 957189f ccpp/suites/suite_RRFS_sas.xml; rrfs-workflow e4a100b parm/config/enkf/input.nml",
+      "used_by": [
+        "enkf-members"
+      ],
+      "runnable": true,
+      "derives_from": "rrfs-sas-deterministic",
+      "settings_override": {},
+      "notes": "The EnKF member forecasts run the deterministic suite file with smoke off (rrfs_sd false, enkf/input.nml:272); every other physics setting equals det/input.nml.",
+      "declared_missing_remove": [
+        "smoke-and-dust"
+      ],
+      "source_settings": {
+        "file": "rrfs-workflow e4a100b parm/config/enkf/input.nml",
+        "set": {
+          "do_hailcast": true,
+          "bl_mynn_tkeadvect": true,
+          "h2o_phys": true,
+          "iaer": 1011,
+          "iovr": 3,
+          "isncovr_opt": 3,
+          "lightning_threat": true,
+          "mix_chem": true,
+          "oz_phys_2015": true,
+          "rrfs_sd": false
+        },
+        "lines": {
+          "do_hailcast": 148,
+          "bl_mynn_tkeadvect": 162,
+          "h2o_phys": 204,
+          "iaer": 207,
+          "iovr": 233,
+          "isncovr_opt": 235,
+          "lightning_threat": 246,
+          "mix_chem": 257,
+          "oz_phys_2015": 262,
+          "rrfs_sd": 272
+        }
+      },
+      "source_schemes": [
+        "GFS_time_vary_pre",
+        "GFS_rrtmg_setup",
+        "GFS_rad_time_vary",
+        "GFS_phys_time_vary",
+        "GFS_suite_interstitial_rad_reset",
+        "sgscloud_radpre",
+        "GFS_rrtmg_pre",
+        "GFS_radiation_surface",
+        "rad_sw_pre",
+        "rrtmg_sw",
+        "rrtmg_sw_post",
+        "rrtmg_lw",
+        "sgscloud_radpost",
+        "rrtmg_lw_post",
+        "GFS_rrtmg_post",
+        "GFS_suite_interstitial_phys_reset",
+        "GFS_suite_stateout_reset",
+        "get_prs_fv3",
+        "GFS_suite_interstitial_1",
+        "GFS_surface_generic_pre",
+        "GFS_surface_composites_pre",
+        "dcyc2t3",
+        "GFS_surface_composites_inter",
+        "GFS_suite_interstitial_2",
+        "mynnsfc_wrapper",
+        "GFS_surface_loop_control_part1",
+        "lsm_ruc",
+        "clm_lake",
+        "GFS_surface_loop_control_part2",
+        "GFS_surface_composites_post",
+        "sfc_diag",
+        "sfc_diag_post",
+        "GFS_surface_generic_post",
+        "rrfs_smoke_wrapper",
+        "mynnedmf_wrapper",
+        "rrfs_smoke_postpbl",
+        "GFS_GWD_generic_pre",
+        "drag_suite",
+        "GFS_GWD_generic_post",
+        "GFS_suite_stateout_update",
+        "h2ophys",
+        "get_phi_fv3",
+        "GFS_suite_interstitial_3",
+        "GFS_DCNV_generic_pre",
+        "samfdeepcnv",
+        "GFS_DCNV_generic_post",
+        "GFS_suite_interstitial_4",
+        "cnvc90",
+        "GFS_MP_generic_pre",
+        "mp_thompson_pre",
+        "mp_thompson",
+        "mp_thompson_post",
+        "GFS_MP_generic_post",
+        "maximum_hourly_diagnostics",
+        "GFS_physics_post",
+        "GFS_stochastics"
+      ]
+    },
+    "rrfs-sas-nogwd-fire-weather": {
+      "source_suite": "RRFS_sas_nogwd",
+      "source_ref": "fv3atm 957189f ccpp/suites/suite_RRFS_sas_nogwd.xml; rrfs-workflow e4a100b parm/config/firewx/input.nml:13, :175, :183",
+      "used_by": [
+        "fire-weather-nest"
+      ],
+      "runnable": true,
+      "derives_from": "rrfs-sas-deterministic",
+      "settings_override": {
+        "gwd_opt": 0,
+        "sf_lake_physics": 0
+      },
+      "notes": "The deterministic suite without drag_suite (gwd_opt 0), with no lake model (lkm default 0), smoke off (rrfs_sd false, firewx/input.nml:244) and no HAILCAST (do_hailcast unset, default false); mix_chem is unset (default false). The engine already refuses terrain drag on a child nest, which is this suite's own setting. The nest itself waits on package F1 and the reproduced gpuwm check defect on nested trees.",
+      "declared_missing_remove": [
+        "smoke-and-dust",
+        "hail-diagnostic"
+      ],
+      "declared_refused_remove": [
+        "mix_chem"
+      ],
+      "source_settings": {
+        "file": "rrfs-workflow e4a100b parm/config/firewx/input.nml",
+        "set": {
+          "bl_mynn_tkeadvect": true,
+          "h2o_phys": true,
+          "iaer": 1011,
+          "iovr": 3,
+          "isncovr_opt": 3,
+          "lightning_threat": true,
+          "oz_phys_2015": true,
+          "rrfs_sd": false
+        },
+        "lines": {
+          "bl_mynn_tkeadvect": 154,
+          "h2o_phys": 184,
+          "iaer": 186,
+          "iovr": 211,
+          "isncovr_opt": 213,
+          "lightning_threat": 224,
+          "oz_phys_2015": 236,
+          "rrfs_sd": 244
+        }
+      },
+      "source_schemes": [
+        "GFS_time_vary_pre",
+        "GFS_rrtmg_setup",
+        "GFS_rad_time_vary",
+        "GFS_phys_time_vary",
+        "GFS_suite_interstitial_rad_reset",
+        "sgscloud_radpre",
+        "GFS_rrtmg_pre",
+        "GFS_radiation_surface",
+        "rad_sw_pre",
+        "rrtmg_sw",
+        "rrtmg_sw_post",
+        "rrtmg_lw",
+        "sgscloud_radpost",
+        "rrtmg_lw_post",
+        "GFS_rrtmg_post",
+        "GFS_suite_interstitial_phys_reset",
+        "GFS_suite_stateout_reset",
+        "get_prs_fv3",
+        "GFS_suite_interstitial_1",
+        "GFS_surface_generic_pre",
+        "GFS_surface_composites_pre",
+        "dcyc2t3",
+        "GFS_surface_composites_inter",
+        "GFS_suite_interstitial_2",
+        "mynnsfc_wrapper",
+        "GFS_surface_loop_control_part1",
+        "lsm_ruc",
+        "clm_lake",
+        "GFS_surface_loop_control_part2",
+        "GFS_surface_composites_post",
+        "sfc_diag",
+        "sfc_diag_post",
+        "GFS_surface_generic_post",
+        "rrfs_smoke_wrapper",
+        "mynnedmf_wrapper",
+        "rrfs_smoke_postpbl",
+        "GFS_suite_stateout_update",
+        "h2ophys",
+        "get_phi_fv3",
+        "GFS_suite_interstitial_3",
+        "GFS_DCNV_generic_pre",
+        "samfdeepcnv",
+        "GFS_DCNV_generic_post",
+        "GFS_suite_interstitial_4",
+        "cnvc90",
+        "GFS_MP_generic_pre",
+        "mp_thompson_pre",
+        "mp_thompson",
+        "mp_thompson_post",
+        "GFS_MP_generic_post",
+        "maximum_hourly_diagnostics",
+        "GFS_physics_post",
+        "GFS_stochastics"
+      ]
+    },
+    "rrfs-ensemble-member-1": {
+      "source_suite": "RRFSens_phy1",
+      "source_ref": "rrfs-workflow e4a100b parm/config/ensf/input.nml_restart_stoch_ensphy1; fv3atm suite_RRFSens_phy1.xml",
+      "used_by": [
+        "ensemble-member-1"
+      ],
+      "runnable": false,
+      "not_runnable_because": "the GFS TKE-EDMF boundary layer and the GFS surface layer are absent (package G1); running MYNN in their place would be a silent substitution",
+      "components": {
+        "microphysics": {
+          "option": "thompson-aerosol-mp28",
+          "source": "Thompson, imp_physics 8",
+          "relation": "in kind"
+        },
+        "pbl": {
+          "option": null,
+          "source": "satmedmfvdifq, isatmedmf 1",
+          "relation": "declared missing; package G1"
+        },
+        "surface_layer": {
+          "option": null,
+          "source": "sfc_diff, sfc_ocean",
+          "relation": "declared missing; package G1"
+        },
+        "cumulus": {
+          "option": "grell-freitas",
+          "source": "Grell-Freitas deep and shallow, imfdeepcnv 3",
+          "relation": "in kind: WRF v4.6.1 Grell-Freitas; the CCPP release is a port, package C7c"
+        },
+        "land_surface": {
+          "option": "ruc-lsm",
+          "source": "lsm_ruc",
+          "relation": "in kind"
+        },
+        "radiation": {
+          "option": "rte-rrtmgp",
+          "source": "RRTMG every 900 s",
+          "relation": "in kind (legacy arm)"
+        }
+      },
+      "declared_missing": [
+        {
+          "part": "pbl",
+          "source_scheme": "satmedmfvdifq (GFS TKE-EDMF)",
+          "runs_as": "not runnable",
+          "package": "G1"
+        },
+        {
+          "part": "surface-layer",
+          "source_scheme": "sfc_diff, sfc_ocean",
+          "runs_as": "not runnable",
+          "package": "G1"
+        },
+        {
+          "part": "stochastic-physics",
+          "source_scheme": "SPP (mp, rad, gwd, cu_deep) and land perturbations",
+          "runs_as": "refused until calibrated against observations",
+          "package": "G6",
+          "refusal_site": "CHANGELOG.md:15 (every random perturbation is refused at the doors until calibrated)"
+        },
+        {
+          "part": "ozone-and-water-vapour-photochemistry",
+          "source_scheme": "transported o3mr tracer from GFS handed to radiation; h2ophys",
+          "source_ref": "input.nml_restart_stoch_ensphy1:196, :258; suite_RRFSens_phy1.xml (h2ophys)",
+          "runs_as": "CAM ozone climatology inside radiation (o3input 2); no h2ophys",
+          "package": "C4"
+        },
+        {
+          "part": "hail-diagnostic",
+          "source_scheme": "HAILCAST (FV3 fv_diagnostics_nml do_hailcast)",
+          "source_ref": "input.nml_restart_stoch_ensphy1:148",
+          "runs_as": "not produced",
+          "package": "C10"
+        },
+        {
+          "part": "lightning-threat",
+          "source_scheme": "lightning threat indices (lightning_threat)",
+          "source_ref": "input.nml_restart_stoch_ensphy1:239",
+          "runs_as": "not produced",
+          "package": "C10"
+        },
+        {
+          "part": "hourly-maxima",
+          "source_scheme": "maximum_hourly_diagnostics",
+          "source_ref": "suite_RRFSens_phy1.xml (maximum_hourly_diagnostics)",
+          "runs_as": "not produced, except the hourly updraft helicity maximum the engine carries under nwp_diagnostics 1",
+          "package": "C10"
+        }
+      ],
+      "declared_refused": [
+        {
+          "setting": "isncovr_opt",
+          "source_value": 3,
+          "engine_value": 2,
+          "source_ref": "input.nml_restart_stoch_ensphy1:228",
+          "refusal_site": "gpuwm/core/ruc.py:3601 (RUC_SNOW_COVER_OPTION pinned at 2)",
+          "package": "C3"
+        },
+        {
+          "setting": "iovr",
+          "source_value": 3,
+          "engine_value": "1, maximum-random (the engine's cldovrlp 2)",
+          "source_ref": "input.nml_restart_stoch_ensphy1:225",
+          "refusal_site": "gpuwm/namelist_import.py:3698-3700",
+          "package": "C5"
+        },
+        {
+          "setting": "iaer",
+          "source_value": 1011,
+          "engine_value": "0, no radiation aerosol (the engine's aer_opt 0)",
+          "source_ref": "input.nml_restart_stoch_ensphy1:199",
+          "refusal_site": "gpuwm/namelist_import.py:3707-3708",
+          "package": "C6"
+        }
+      ],
+      "source_settings": {
+        "file": "rrfs-workflow e4a100b parm/config/ensf/input.nml_restart_stoch_ensphy1",
+        "set": {
+          "do_hailcast": true,
+          "do_spp": true,
+          "h2o_phys": true,
+          "iaer": 1011,
+          "iovr": 3,
+          "isncovr_opt": 3,
+          "lightning_threat": true,
+          "lndp_type": 2,
+          "oz_phys_2015": true
+        },
+        "lines": {
+          "do_hailcast": 148,
+          "do_spp": 176,
+          "h2o_phys": 196,
+          "iaer": 199,
+          "iovr": 225,
+          "isncovr_opt": 228,
+          "lightning_threat": 239,
+          "lndp_type": 242,
+          "oz_phys_2015": 258
+        }
+      },
+      "source_schemes": [
+        "GFS_time_vary_pre",
+        "GFS_rrtmg_setup",
+        "GFS_rad_time_vary",
+        "GFS_phys_time_vary",
+        "GFS_suite_interstitial_rad_reset",
+        "sgscloud_radpre",
+        "GFS_rrtmg_pre",
+        "GFS_radiation_surface",
+        "rad_sw_pre",
+        "rrtmg_sw",
+        "rrtmg_sw_post",
+        "rrtmg_lw",
+        "sgscloud_radpost",
+        "rrtmg_lw_post",
+        "GFS_rrtmg_post",
+        "GFS_suite_interstitial_phys_reset",
+        "GFS_suite_stateout_reset",
+        "get_prs_fv3",
+        "GFS_suite_interstitial_1",
+        "GFS_surface_generic_pre",
+        "GFS_surface_composites_pre",
+        "dcyc2t3",
+        "GFS_surface_composites_inter",
+        "GFS_suite_interstitial_2",
+        "sfc_diff",
+        "GFS_surface_loop_control_part1",
+        "sfc_ocean",
+        "lsm_ruc",
+        "clm_lake",
+        "GFS_surface_loop_control_part2",
+        "GFS_surface_composites_post",
+        "sfc_diag",
+        "sfc_diag_post",
+        "GFS_surface_generic_post",
+        "GFS_PBL_generic_pre",
+        "satmedmfvdifq",
+        "GFS_PBL_generic_post",
+        "GFS_GWD_generic_pre",
+        "drag_suite",
+        "GFS_GWD_generic_post",
+        "GFS_suite_stateout_update",
+        "h2ophys",
+        "get_phi_fv3",
+        "GFS_suite_interstitial_3",
+        "GFS_DCNV_generic_pre",
+        "cu_gf_driver_pre",
+        "cu_gf_driver",
+        "GFS_DCNV_generic_post",
+        "GFS_suite_interstitial_4",
+        "cnvc90",
+        "GFS_MP_generic_pre",
+        "mp_thompson_pre",
+        "mp_thompson",
+        "mp_thompson_post",
+        "GFS_MP_generic_post",
+        "cu_gf_driver_post",
+        "maximum_hourly_diagnostics",
+        "GFS_physics_post",
+        "GFS_stochastics"
+      ]
+    },
+    "rrfs-ensemble-member-2": {
+      "source_suite": "RRFSens_phy2",
+      "source_ref": "rrfs-workflow e4a100b parm/config/ensf/input.nml_restart_stoch_ensphy2; fv3atm suite_RRFSens_phy2.xml",
+      "used_by": [
+        "ensemble-member-2"
+      ],
+      "runnable": true,
+      "derives_from": "rrfs-sas-deterministic",
+      "settings_override": {},
+      "notes": "The deterministic suite without smoke (rrfs_sd and mix_chem unset, both default false), with SPP and land perturbations; h2ophys, the ozone tracer, HAILCAST, lightning threat and the hourly maxima are on, as in the deterministic run.",
+      "declared_missing_remove": [
+        "smoke-and-dust"
+      ],
+      "declared_missing_add": [
+        {
+          "part": "stochastic-physics",
+          "source_scheme": "SPP (pbl, sfc, mp, rad, gwd) and land perturbations",
+          "runs_as": "refused until calibrated against observations",
+          "package": "G6",
+          "refusal_site": "CHANGELOG.md:15 (every random perturbation is refused at the doors until calibrated)"
+        }
+      ],
+      "declared_refused_remove": [
+        "mix_chem"
+      ],
+      "source_settings": {
+        "file": "rrfs-workflow e4a100b parm/config/ensf/input.nml_restart_stoch_ensphy2",
+        "set": {
+          "do_hailcast": true,
+          "bl_mynn_tkeadvect": true,
+          "do_spp": true,
+          "h2o_phys": true,
+          "iaer": 1011,
+          "iovr": 3,
+          "isncovr_opt": 3,
+          "lightning_threat": true,
+          "lndp_type": 2,
+          "oz_phys_2015": true
+        },
+        "lines": {
+          "do_hailcast": 148,
+          "bl_mynn_tkeadvect": 159,
+          "do_spp": 179,
+          "h2o_phys": 198,
+          "iaer": 201,
+          "iovr": 227,
+          "isncovr_opt": 229,
+          "lightning_threat": 240,
+          "lndp_type": 243,
+          "oz_phys_2015": 259
+        }
+      },
+      "source_schemes": [
+        "GFS_time_vary_pre",
+        "GFS_rrtmg_setup",
+        "GFS_rad_time_vary",
+        "GFS_phys_time_vary",
+        "GFS_suite_interstitial_rad_reset",
+        "sgscloud_radpre",
+        "GFS_rrtmg_pre",
+        "GFS_radiation_surface",
+        "rad_sw_pre",
+        "rrtmg_sw",
+        "rrtmg_sw_post",
+        "rrtmg_lw",
+        "sgscloud_radpost",
+        "rrtmg_lw_post",
+        "GFS_rrtmg_post",
+        "GFS_suite_interstitial_phys_reset",
+        "GFS_suite_stateout_reset",
+        "get_prs_fv3",
+        "GFS_suite_interstitial_1",
+        "GFS_surface_generic_pre",
+        "GFS_surface_composites_pre",
+        "dcyc2t3",
+        "GFS_surface_composites_inter",
+        "GFS_suite_interstitial_2",
+        "mynnsfc_wrapper",
+        "GFS_surface_loop_control_part1",
+        "lsm_ruc",
+        "clm_lake",
+        "GFS_surface_loop_control_part2",
+        "GFS_surface_composites_post",
+        "sfc_diag",
+        "sfc_diag_post",
+        "GFS_surface_generic_post",
+        "mynnedmf_wrapper",
+        "GFS_GWD_generic_pre",
+        "drag_suite",
+        "GFS_GWD_generic_post",
+        "GFS_suite_stateout_update",
+        "h2ophys",
+        "get_phi_fv3",
+        "GFS_suite_interstitial_3",
+        "GFS_DCNV_generic_pre",
+        "samfdeepcnv",
+        "GFS_DCNV_generic_post",
+        "GFS_suite_interstitial_4",
+        "cnvc90",
+        "GFS_MP_generic_pre",
+        "mp_thompson_pre",
+        "mp_thompson",
+        "mp_thompson_post",
+        "GFS_MP_generic_post",
+        "maximum_hourly_diagnostics",
+        "GFS_physics_post",
+        "GFS_stochastics"
+      ]
+    },
+    "rrfs-ensemble-member-3": {
+      "source_suite": "RRFSens_phy3",
+      "source_ref": "rrfs-workflow e4a100b parm/config/ensf/input.nml_restart_stoch_ensphy3; fv3atm suite_RRFSens_phy3.xml",
+      "used_by": [
+        "ensemble-member-3"
+      ],
+      "runnable": false,
+      "not_runnable_because": "the per-member NSSL constants (alphah 2.32, alphar 0.83, cccn 5.5e8, ehw0, ehlw0) have no row the importer accepts (package G2); running WRF's defaults in their place would be a silent substitution",
+      "components": {
+        "microphysics": {
+          "option": "nssl2-mp18",
+          "source": "NSSL 2-moment with hail and CCN, imp_physics 17",
+          "relation": "in kind: WRF v4.6.1 mp 18; per-member constants missing, package G2"
+        },
+        "pbl": {
+          "option": "mynn",
+          "source": "MYNN-EDMF",
+          "relation": "in kind"
+        },
+        "surface_layer": {
+          "option": "mynn",
+          "source": "MYNN",
+          "relation": "in kind"
+        },
+        "cumulus": {
+          "option": "grell-freitas",
+          "source": "Grell-Freitas deep only",
+          "relation": "in kind; CCPP release port C7c"
+        },
+        "land_surface": {
+          "option": "ruc-lsm",
+          "source": "lsm_ruc",
+          "relation": "in kind"
+        },
+        "radiation": {
+          "option": "rte-rrtmgp",
+          "source": "RRTMG every 900 s",
+          "relation": "in kind (legacy arm)"
+        }
+      },
+      "declared_missing": [
+        {
+          "part": "microphysics-member-constants",
+          "source_scheme": "nssl_alphah, nssl_alphar, nssl_cccn, nssl_ehw0, nssl_ehlw0",
+          "runs_as": "not runnable",
+          "package": "G2"
+        },
+        {
+          "part": "stochastic-physics",
+          "source_scheme": "SPP (pbl, sfc, rad, gwd) and land perturbations",
+          "runs_as": "refused until calibrated against observations",
+          "package": "G6",
+          "refusal_site": "CHANGELOG.md:15 (every random perturbation is refused at the doors until calibrated)"
+        },
+        {
+          "part": "ozone-and-water-vapour-photochemistry",
+          "source_scheme": "transported o3mr tracer from GFS handed to radiation; h2ophys",
+          "source_ref": "input.nml_restart_stoch_ensphy3:198, :267; suite_RRFSens_phy3.xml (h2ophys)",
+          "runs_as": "CAM ozone climatology inside radiation (o3input 2); no h2ophys",
+          "package": "C4"
+        },
+        {
+          "part": "hail-diagnostic",
+          "source_scheme": "HAILCAST (FV3 fv_diagnostics_nml do_hailcast)",
+          "source_ref": "input.nml_restart_stoch_ensphy3:148",
+          "runs_as": "not produced",
+          "package": "C10"
+        },
+        {
+          "part": "lightning-threat",
+          "source_scheme": "lightning threat indices (lightning_threat)",
+          "source_ref": "input.nml_restart_stoch_ensphy3:240",
+          "runs_as": "not produced",
+          "package": "C10"
+        },
+        {
+          "part": "hourly-maxima",
+          "source_scheme": "maximum_hourly_diagnostics",
+          "source_ref": "suite_RRFSens_phy3.xml (maximum_hourly_diagnostics)",
+          "runs_as": "not produced, except the hourly updraft helicity maximum the engine carries under nwp_diagnostics 1",
+          "package": "C10"
+        }
+      ],
+      "declared_refused": [
+        {
+          "setting": "bl_mynn_tkeadvect",
+          "source_value": true,
+          "engine_value": false,
+          "source_ref": "input.nml_restart_stoch_ensphy3:158",
+          "refusal_site": "gpuwm/core/mynn_pbl.py:3742-3743; gpuwm/core/mynn_pbl_gpu.py:1686-1687; gpuwm/ingest/wrfinput.py:898-900",
+          "package": "C2"
+        },
+        {
+          "setting": "isncovr_opt",
+          "source_value": 3,
+          "engine_value": 2,
+          "source_ref": "input.nml_restart_stoch_ensphy3:229",
+          "refusal_site": "gpuwm/core/ruc.py:3601 (RUC_SNOW_COVER_OPTION pinned at 2)",
+          "package": "C3"
+        },
+        {
+          "setting": "iovr",
+          "source_value": 3,
+          "engine_value": "1, maximum-random (the engine's cldovrlp 2)",
+          "source_ref": "input.nml_restart_stoch_ensphy3:227",
+          "refusal_site": "gpuwm/namelist_import.py:3698-3700",
+          "package": "C5"
+        },
+        {
+          "setting": "iaer",
+          "source_value": 1011,
+          "engine_value": "0, no radiation aerosol (the engine's aer_opt 0)",
+          "source_ref": "input.nml_restart_stoch_ensphy3:201",
+          "refusal_site": "gpuwm/namelist_import.py:3707-3708",
+          "package": "C6"
+        }
+      ],
+      "source_settings": {
+        "file": "rrfs-workflow e4a100b parm/config/ensf/input.nml_restart_stoch_ensphy3",
+        "set": {
+          "do_hailcast": true,
+          "bl_mynn_tkeadvect": true,
+          "do_spp": true,
+          "h2o_phys": true,
+          "iaer": 1011,
+          "iovr": 3,
+          "isncovr_opt": 3,
+          "lightning_threat": true,
+          "lndp_type": 2,
+          "nssl_alphah": 2.32,
+          "oz_phys_2015": true
+        },
+        "lines": {
+          "do_hailcast": 148,
+          "bl_mynn_tkeadvect": 158,
+          "do_spp": 178,
+          "h2o_phys": 198,
+          "iaer": 201,
+          "iovr": 227,
+          "isncovr_opt": 229,
+          "lightning_threat": 240,
+          "lndp_type": 243,
+          "nssl_alphah": 258,
+          "oz_phys_2015": 267
+        }
+      },
+      "source_schemes": [
+        "GFS_time_vary_pre",
+        "GFS_rrtmg_setup",
+        "GFS_rad_time_vary",
+        "GFS_phys_time_vary",
+        "GFS_suite_interstitial_rad_reset",
+        "sgscloud_radpre",
+        "GFS_rrtmg_pre",
+        "GFS_radiation_surface",
+        "rad_sw_pre",
+        "rrtmg_sw",
+        "rrtmg_sw_post",
+        "rrtmg_lw",
+        "sgscloud_radpost",
+        "rrtmg_lw_post",
+        "GFS_rrtmg_post",
+        "GFS_suite_interstitial_phys_reset",
+        "GFS_suite_stateout_reset",
+        "get_prs_fv3",
+        "GFS_suite_interstitial_1",
+        "GFS_surface_generic_pre",
+        "GFS_surface_composites_pre",
+        "dcyc2t3",
+        "GFS_surface_composites_inter",
+        "GFS_suite_interstitial_2",
+        "mynnsfc_wrapper",
+        "GFS_surface_loop_control_part1",
+        "lsm_ruc",
+        "clm_lake",
+        "GFS_surface_loop_control_part2",
+        "GFS_surface_composites_post",
+        "sfc_diag",
+        "sfc_diag_post",
+        "GFS_surface_generic_post",
+        "mynnedmf_wrapper",
+        "GFS_GWD_generic_pre",
+        "drag_suite",
+        "GFS_GWD_generic_post",
+        "GFS_suite_stateout_update",
+        "h2ophys",
+        "get_phi_fv3",
+        "GFS_suite_interstitial_3",
+        "GFS_DCNV_generic_pre",
+        "cu_gf_driver_pre",
+        "cu_gf_driver",
+        "GFS_DCNV_generic_post",
+        "GFS_suite_interstitial_4",
+        "cnvc90",
+        "GFS_MP_generic_pre",
+        "mp_nssl",
+        "GFS_MP_generic_post",
+        "cu_gf_driver_post",
+        "maximum_hourly_diagnostics",
+        "GFS_physics_post",
+        "GFS_stochastics"
+      ]
+    },
+    "rrfs-ensemble-member-4": {
+      "source_suite": "RRFSens_phy4",
+      "source_ref": "rrfs-workflow e4a100b parm/config/ensf/input.nml_restart_stoch_ensphy4; fv3atm suite_RRFSens_phy4.xml",
+      "used_by": [
+        "ensemble-member-4"
+      ],
+      "runnable": false,
+      "not_runnable_because": "the GFS TKE-EDMF boundary layer and surface layer (G1) and the per-member NSSL constants (G2) are absent",
+      "components": {
+        "microphysics": {
+          "option": "nssl2-mp18",
+          "source": "NSSL 2-moment, imp_physics 17",
+          "relation": "in kind; constants G2"
+        },
+        "pbl": {
+          "option": null,
+          "source": "satmedmfvdifq",
+          "relation": "declared missing; package G1"
+        },
+        "surface_layer": {
+          "option": null,
+          "source": "sfc_diff, sfc_ocean",
+          "relation": "declared missing; package G1"
+        },
+        "cumulus": {
+          "option": "grell-freitas",
+          "source": "Grell-Freitas deep and shallow",
+          "relation": "in kind; CCPP release port C7c"
+        },
+        "land_surface": {
+          "option": "ruc-lsm",
+          "source": "lsm_ruc",
+          "relation": "in kind"
+        },
+        "radiation": {
+          "option": "rte-rrtmgp",
+          "source": "RRTMG every 900 s",
+          "relation": "in kind (legacy arm)"
+        }
+      },
+      "declared_missing": [
+        {
+          "part": "pbl",
+          "source_scheme": "satmedmfvdifq",
+          "runs_as": "not runnable",
+          "package": "G1"
+        },
+        {
+          "part": "surface-layer",
+          "source_scheme": "sfc_diff, sfc_ocean",
+          "runs_as": "not runnable",
+          "package": "G1"
+        },
+        {
+          "part": "microphysics-member-constants",
+          "source_scheme": "nssl per-member constants",
+          "runs_as": "not runnable",
+          "package": "G2"
+        },
+        {
+          "part": "stochastic-physics",
+          "source_scheme": "SPP (rad, gwd) and land perturbations",
+          "runs_as": "refused until calibrated against observations",
+          "package": "G6",
+          "refusal_site": "CHANGELOG.md:15 (every random perturbation is refused at the doors until calibrated)"
+        },
+        {
+          "part": "ozone-and-water-vapour-photochemistry",
+          "source_scheme": "transported o3mr tracer from GFS handed to radiation; h2ophys",
+          "source_ref": "input.nml_restart_stoch_ensphy4:196, :266; suite_RRFSens_phy4.xml (h2ophys)",
+          "runs_as": "CAM ozone climatology inside radiation (o3input 2); no h2ophys",
+          "package": "C4"
+        },
+        {
+          "part": "hail-diagnostic",
+          "source_scheme": "HAILCAST (FV3 fv_diagnostics_nml do_hailcast)",
+          "source_ref": "input.nml_restart_stoch_ensphy4:148",
+          "runs_as": "not produced",
+          "package": "C10"
+        },
+        {
+          "part": "lightning-threat",
+          "source_scheme": "lightning threat indices (lightning_threat)",
+          "source_ref": "input.nml_restart_stoch_ensphy4:239",
+          "runs_as": "not produced",
+          "package": "C10"
+        },
+        {
+          "part": "hourly-maxima",
+          "source_scheme": "maximum_hourly_diagnostics",
+          "source_ref": "suite_RRFSens_phy4.xml (maximum_hourly_diagnostics)",
+          "runs_as": "not produced, except the hourly updraft helicity maximum the engine carries under nwp_diagnostics 1",
+          "package": "C10"
+        }
+      ],
+      "declared_refused": [
+        {
+          "setting": "isncovr_opt",
+          "source_value": 3,
+          "engine_value": 2,
+          "source_ref": "input.nml_restart_stoch_ensphy4:228",
+          "refusal_site": "gpuwm/core/ruc.py:3601 (RUC_SNOW_COVER_OPTION pinned at 2)",
+          "package": "C3"
+        },
+        {
+          "setting": "iovr",
+          "source_value": 3,
+          "engine_value": "1, maximum-random (the engine's cldovrlp 2)",
+          "source_ref": "input.nml_restart_stoch_ensphy4:225",
+          "refusal_site": "gpuwm/namelist_import.py:3698-3700",
+          "package": "C5"
+        },
+        {
+          "setting": "iaer",
+          "source_value": 1011,
+          "engine_value": "0, no radiation aerosol (the engine's aer_opt 0)",
+          "source_ref": "input.nml_restart_stoch_ensphy4:199",
+          "refusal_site": "gpuwm/namelist_import.py:3707-3708",
+          "package": "C6"
+        }
+      ],
+      "source_settings": {
+        "file": "rrfs-workflow e4a100b parm/config/ensf/input.nml_restart_stoch_ensphy4",
+        "set": {
+          "do_hailcast": true,
+          "do_spp": true,
+          "h2o_phys": true,
+          "iaer": 1011,
+          "iovr": 3,
+          "isncovr_opt": 3,
+          "lightning_threat": true,
+          "lndp_type": 2,
+          "nssl_alphah": 0.95,
+          "oz_phys_2015": true
+        },
+        "lines": {
+          "do_hailcast": 148,
+          "do_spp": 176,
+          "h2o_phys": 196,
+          "iaer": 199,
+          "iovr": 225,
+          "isncovr_opt": 228,
+          "lightning_threat": 239,
+          "lndp_type": 242,
+          "nssl_alphah": 257,
+          "oz_phys_2015": 266
+        }
+      },
+      "source_schemes": [
+        "GFS_time_vary_pre",
+        "GFS_rrtmg_setup",
+        "GFS_rad_time_vary",
+        "GFS_phys_time_vary",
+        "GFS_suite_interstitial_rad_reset",
+        "sgscloud_radpre",
+        "GFS_rrtmg_pre",
+        "GFS_radiation_surface",
+        "rad_sw_pre",
+        "rrtmg_sw",
+        "rrtmg_sw_post",
+        "rrtmg_lw",
+        "sgscloud_radpost",
+        "rrtmg_lw_post",
+        "GFS_rrtmg_post",
+        "GFS_suite_interstitial_phys_reset",
+        "GFS_suite_stateout_reset",
+        "get_prs_fv3",
+        "GFS_suite_interstitial_1",
+        "GFS_surface_generic_pre",
+        "GFS_surface_composites_pre",
+        "dcyc2t3",
+        "GFS_surface_composites_inter",
+        "GFS_suite_interstitial_2",
+        "sfc_diff",
+        "GFS_surface_loop_control_part1",
+        "sfc_ocean",
+        "lsm_ruc",
+        "clm_lake",
+        "GFS_surface_loop_control_part2",
+        "GFS_surface_composites_post",
+        "sfc_diag",
+        "sfc_diag_post",
+        "GFS_surface_generic_post",
+        "GFS_PBL_generic_pre",
+        "satmedmfvdifq",
+        "GFS_PBL_generic_post",
+        "GFS_GWD_generic_pre",
+        "drag_suite",
+        "GFS_GWD_generic_post",
+        "GFS_suite_stateout_update",
+        "h2ophys",
+        "get_phi_fv3",
+        "GFS_suite_interstitial_3",
+        "GFS_DCNV_generic_pre",
+        "cu_gf_driver_pre",
+        "cu_gf_driver",
+        "GFS_DCNV_generic_post",
+        "GFS_suite_interstitial_4",
+        "cnvc90",
+        "GFS_MP_generic_pre",
+        "mp_nssl",
+        "GFS_MP_generic_post",
+        "cu_gf_driver_post",
+        "maximum_hourly_diagnostics",
+        "GFS_physics_post",
+        "GFS_stochastics"
+      ]
+    },
+    "rrfs-ensemble-member-5": {
+      "source_suite": "RRFSens_phy5",
+      "source_ref": "rrfs-workflow e4a100b parm/config/ensf/input.nml_restart_stoch_ensphy5; fv3atm suite_RRFSens_phy5.xml",
+      "used_by": [
+        "ensemble-member-5"
+      ],
+      "runnable": false,
+      "not_runnable_because": "the per-member NSSL constants are absent (package G2)",
+      "components": {
+        "microphysics": {
+          "option": "nssl2-mp18",
+          "source": "NSSL 2-moment, imp_physics 17",
+          "relation": "in kind; constants G2"
+        },
+        "pbl": {
+          "option": "mynn",
+          "source": "MYNN-EDMF",
+          "relation": "in kind"
+        },
+        "surface_layer": {
+          "option": "mynn",
+          "source": "MYNN",
+          "relation": "in kind"
+        },
+        "cumulus": {
+          "option": "off",
+          "source": "samfdeepcnv + progsigma",
+          "relation": "declared missing; package C1"
+        },
+        "land_surface": {
+          "option": "ruc-lsm",
+          "source": "lsm_ruc",
+          "relation": "in kind"
+        },
+        "radiation": {
+          "option": "rte-rrtmgp",
+          "source": "RRTMG every 900 s",
+          "relation": "in kind (legacy arm)"
+        }
+      },
+      "declared_missing": [
+        {
+          "part": "deep-convection",
+          "source_scheme": "samfdeepcnv + progsigma",
+          "runs_as": "no deep convection scheme",
+          "package": "C1"
+        },
+        {
+          "part": "microphysics-member-constants",
+          "source_scheme": "nssl per-member constants",
+          "runs_as": "not runnable",
+          "package": "G2"
+        },
+        {
+          "part": "stochastic-physics",
+          "source_scheme": "SPP (pbl, sfc, rad, gwd) and land perturbations",
+          "runs_as": "refused until calibrated against observations",
+          "package": "G6",
+          "refusal_site": "CHANGELOG.md:15 (every random perturbation is refused at the doors until calibrated)"
+        },
+        {
+          "part": "ozone-and-water-vapour-photochemistry",
+          "source_scheme": "transported o3mr tracer from GFS handed to radiation; h2ophys",
+          "source_ref": "input.nml_restart_stoch_ensphy5:198, :267; suite_RRFSens_phy5.xml (h2ophys)",
+          "runs_as": "CAM ozone climatology inside radiation (o3input 2); no h2ophys",
+          "package": "C4"
+        },
+        {
+          "part": "hail-diagnostic",
+          "source_scheme": "HAILCAST (FV3 fv_diagnostics_nml do_hailcast)",
+          "source_ref": "input.nml_restart_stoch_ensphy5:148",
+          "runs_as": "not produced",
+          "package": "C10"
+        },
+        {
+          "part": "lightning-threat",
+          "source_scheme": "lightning threat indices (lightning_threat)",
+          "source_ref": "input.nml_restart_stoch_ensphy5:240",
+          "runs_as": "not produced",
+          "package": "C10"
+        },
+        {
+          "part": "hourly-maxima",
+          "source_scheme": "maximum_hourly_diagnostics",
+          "source_ref": "suite_RRFSens_phy5.xml (maximum_hourly_diagnostics)",
+          "runs_as": "not produced, except the hourly updraft helicity maximum the engine carries under nwp_diagnostics 1",
+          "package": "C10"
+        }
+      ],
+      "declared_refused": [
+        {
+          "setting": "bl_mynn_tkeadvect",
+          "source_value": true,
+          "engine_value": false,
+          "source_ref": "input.nml_restart_stoch_ensphy5:159",
+          "refusal_site": "gpuwm/core/mynn_pbl.py:3742-3743; gpuwm/core/mynn_pbl_gpu.py:1686-1687; gpuwm/ingest/wrfinput.py:898-900",
+          "package": "C2"
+        },
+        {
+          "setting": "isncovr_opt",
+          "source_value": 3,
+          "engine_value": 2,
+          "source_ref": "input.nml_restart_stoch_ensphy5:229",
+          "refusal_site": "gpuwm/core/ruc.py:3601 (RUC_SNOW_COVER_OPTION pinned at 2)",
+          "package": "C3"
+        },
+        {
+          "setting": "iovr",
+          "source_value": 3,
+          "engine_value": "1, maximum-random (the engine's cldovrlp 2)",
+          "source_ref": "input.nml_restart_stoch_ensphy5:227",
+          "refusal_site": "gpuwm/namelist_import.py:3698-3700",
+          "package": "C5"
+        },
+        {
+          "setting": "iaer",
+          "source_value": 1011,
+          "engine_value": "0, no radiation aerosol (the engine's aer_opt 0)",
+          "source_ref": "input.nml_restart_stoch_ensphy5:201",
+          "refusal_site": "gpuwm/namelist_import.py:3707-3708",
+          "package": "C6"
+        }
+      ],
+      "source_settings": {
+        "file": "rrfs-workflow e4a100b parm/config/ensf/input.nml_restart_stoch_ensphy5",
+        "set": {
+          "do_hailcast": true,
+          "bl_mynn_tkeadvect": true,
+          "do_spp": true,
+          "h2o_phys": true,
+          "iaer": 1011,
+          "iovr": 3,
+          "isncovr_opt": 3,
+          "lightning_threat": true,
+          "lndp_type": 2,
+          "nssl_alphah": 1.39,
+          "oz_phys_2015": true
+        },
+        "lines": {
+          "do_hailcast": 148,
+          "bl_mynn_tkeadvect": 159,
+          "do_spp": 179,
+          "h2o_phys": 198,
+          "iaer": 201,
+          "iovr": 227,
+          "isncovr_opt": 229,
+          "lightning_threat": 240,
+          "lndp_type": 243,
+          "nssl_alphah": 258,
+          "oz_phys_2015": 267
+        }
+      },
+      "source_schemes": [
+        "GFS_time_vary_pre",
+        "GFS_rrtmg_setup",
+        "GFS_rad_time_vary",
+        "GFS_phys_time_vary",
+        "GFS_suite_interstitial_rad_reset",
+        "sgscloud_radpre",
+        "GFS_rrtmg_pre",
+        "GFS_radiation_surface",
+        "rad_sw_pre",
+        "rrtmg_sw",
+        "rrtmg_sw_post",
+        "rrtmg_lw",
+        "sgscloud_radpost",
+        "rrtmg_lw_post",
+        "GFS_rrtmg_post",
+        "GFS_suite_interstitial_phys_reset",
+        "GFS_suite_stateout_reset",
+        "get_prs_fv3",
+        "GFS_suite_interstitial_1",
+        "GFS_surface_generic_pre",
+        "GFS_surface_composites_pre",
+        "dcyc2t3",
+        "GFS_surface_composites_inter",
+        "GFS_suite_interstitial_2",
+        "mynnsfc_wrapper",
+        "GFS_surface_loop_control_part1",
+        "lsm_ruc",
+        "clm_lake",
+        "GFS_surface_loop_control_part2",
+        "GFS_surface_composites_post",
+        "sfc_diag",
+        "sfc_diag_post",
+        "GFS_surface_generic_post",
+        "mynnedmf_wrapper",
+        "GFS_GWD_generic_pre",
+        "drag_suite",
+        "GFS_GWD_generic_post",
+        "GFS_suite_stateout_update",
+        "h2ophys",
+        "get_phi_fv3",
+        "GFS_suite_interstitial_3",
+        "GFS_DCNV_generic_pre",
+        "samfdeepcnv",
+        "GFS_DCNV_generic_post",
+        "GFS_suite_interstitial_4",
+        "cnvc90",
+        "GFS_MP_generic_pre",
+        "mp_nssl",
+        "GFS_MP_generic_post",
+        "maximum_hourly_diagnostics",
+        "GFS_physics_post",
+        "GFS_stochastics"
+      ]
+    }
+  },
+  "source_rules": {
+    "meaning": "Every source setting or scheme of the imitated system that the engine cannot honour, and the declared row it obliges. A suite's source_settings record what its own namelist sets, with line numbers; an unset key takes the default below. A rule holds for a suite when the suite's own suite file runs the named scheme, or when its effective value of the named setting is not one the engine honours. A holding rule needs its declared row, and every declared row needs a holding rule.",
+    "defaults": {
+      "rrfs_sd": {
+        "value": false,
+        "ref": "fv3atm 957189f ccpp/data/GFS_typedefs.F90:3654"
+      },
+      "mix_chem": {
+        "value": false,
+        "ref": "fv3atm 957189f ccpp/data/GFS_typedefs.F90:4263"
+      },
+      "bl_mynn_tkeadvect": {
+        "value": false,
+        "ref": "fv3atm 957189f ccpp/data/GFS_typedefs.F90:4016"
+      },
+      "h2o_phys": {
+        "value": false,
+        "ref": "fv3atm 957189f ccpp/data/GFS_typedefs.F90:3973"
+      },
+      "oz_phys_2015": {
+        "value": true,
+        "ref": "fv3atm 957189f ccpp/data/GFS_typedefs.F90:4273"
+      },
+      "do_hailcast": {
+        "value": false,
+        "ref": "GFDL_atmos_cubed_sphere bf6b68e (the fv3atm 957189f pin) tools/module_diag_hailcast.F90:25"
+      },
+      "lightning_threat": {
+        "value": false,
+        "ref": "fv3atm 957189f ccpp/data/GFS_typedefs.F90:4269"
+      },
+      "iovr": {
+        "value": 1,
+        "ref": "fv3atm 957189f ccpp/data/GFS_typedefs.F90:3711"
+      },
+      "iaer": {
+        "value": 1,
+        "ref": "fv3atm 957189f ccpp/data/GFS_typedefs.F90:3685"
+      },
+      "isncovr_opt": {
+        "value": 1,
+        "ref": "fv3atm 957189f ccpp/data/GFS_typedefs.F90:3915"
+      },
+      "do_spp": {
+        "value": false,
+        "ref": "fv3atm 957189f ccpp/data/GFS_typedefs.F90:4229"
+      },
+      "lndp_type": {
+        "value": 0,
+        "ref": "fv3atm 957189f ccpp/data/GFS_typedefs.F90:4219"
+      },
+      "nssl_alphah": {
+        "value": null,
+        "ref": "set only by the NSSL members; it stands for the five per-member NSSL constants (nssl_alphah, nssl_alphar, nssl_cccn, nssl_ehw0, nssl_ehlw0)"
+      }
+    },
+    "rules": [
+      {
+        "when_scheme": "samfdeepcnv",
+        "declares_missing": "deep-convection"
+      },
+      {
+        "when_setting": "rrfs_sd",
+        "engine_honours": [
+          false
+        ],
+        "declares_missing": "smoke-and-dust"
+      },
+      {
+        "when_setting": "h2o_phys",
+        "engine_honours": [
+          false
+        ],
+        "declares_missing": "ozone-and-water-vapour-photochemistry"
+      },
+      {
+        "when_setting": "oz_phys_2015",
+        "engine_honours": [
+          false
+        ],
+        "declares_missing": "ozone-and-water-vapour-photochemistry"
+      },
+      {
+        "when_scheme": "h2ophys",
+        "declares_missing": "ozone-and-water-vapour-photochemistry"
+      },
+      {
+        "when_setting": "do_hailcast",
+        "engine_honours": [
+          false
+        ],
+        "declares_missing": "hail-diagnostic"
+      },
+      {
+        "when_setting": "lightning_threat",
+        "engine_honours": [
+          false
+        ],
+        "declares_missing": "lightning-threat"
+      },
+      {
+        "when_scheme": "maximum_hourly_diagnostics",
+        "declares_missing": "hourly-maxima"
+      },
+      {
+        "when_setting": "do_spp",
+        "engine_honours": [
+          false
+        ],
+        "declares_missing": "stochastic-physics"
+      },
+      {
+        "when_setting": "lndp_type",
+        "engine_honours": [
+          0
+        ],
+        "declares_missing": "stochastic-physics"
+      },
+      {
+        "when_scheme": "satmedmfvdifq",
+        "declares_missing": "pbl"
+      },
+      {
+        "when_scheme": "sfc_diff",
+        "declares_missing": "surface-layer"
+      },
+      {
+        "when_setting": "nssl_alphah",
+        "engine_honours": [
+          null
+        ],
+        "declares_missing": "microphysics-member-constants"
+      },
+      {
+        "when_setting": "mix_chem",
+        "engine_honours": [
+          false
+        ],
+        "declares_refused": "mix_chem"
+      },
+      {
+        "when_setting": "bl_mynn_tkeadvect",
+        "engine_honours": [
+          false
+        ],
+        "declares_refused": "bl_mynn_tkeadvect"
+      },
+      {
+        "when_setting": "isncovr_opt",
+        "engine_honours": [
+          2
+        ],
+        "declares_refused": "isncovr_opt"
+      },
+      {
+        "when_setting": "iovr",
+        "engine_honours": [
+          1
+        ],
+        "declares_refused": "iovr"
+      },
+      {
+        "when_setting": "iaer",
+        "engine_honours": [
+          0
+        ],
+        "declares_refused": "iaer"
+      }
+    ]
+  },
+  "domains": {
+    "conus-product-grid-65": {
+      "tier": "C",
+      "describes": "RRFS's CONUS product grid (Lambert 1799 x 1059 at 3 km, 38.5 N, 97.5 W; exrrfs_prdgen.sh:429), which is the HRRR CONUS grid octet for octet",
+      "projection": {
+        "map_proj": "lambert",
+        "ref_lat": 38.5,
+        "ref_lon": -97.5,
+        "truelat1": 38.5,
+        "truelat2": 38.5,
+        "stand_lon": -97.5
+      },
+      "mass_points": [
+        1797,
+        1057
+      ],
+      "target_mass_points": [
+        1799,
+        1059
+      ],
+      "target_waits_on": "the exact-grid identity ingest route (freeze lane 01); today one row is trimmed on every side, same centre",
+      "dx_m": 3000.0,
+      "levels": 65,
+      "p_top_pa": 1500.0,
+      "p_top_target_pa": 212.637,
+      "p_top_target_waits_on": "package B1 (stratospheric base state and the 65-level ladder from the public regression table)",
+      "p_top_target_status": "ESTIMATE: RRFS names VCOORD_FILE global_hyblev_fcst_rrfsL65.txt (config_defaults.sh:1754), which is not in NOAA's public fix bucket; the value is unchecked against that file"
+    },
+    "north-america-grid-k-65": {
+      "tier": "N",
+      "describes": "a polar stereographic 3 km grid true at 45 N, standard longitude 120 W, that covers all four RRFS regional product grids and stops 4.5 rows short of the pole",
+      "projection": {
+        "map_proj": "polar",
+        "ref_lat": 51.74,
+        "ref_lon": -113.03,
+        "truelat1": 45.0,
+        "truelat2": 45.0,
+        "stand_lon": -120.0
+      },
+      "mass_points": [
+        4440,
+        2488
+      ],
+      "dx_m": 3000.0,
+      "levels": 65,
+      "p_top_pa": 1500.0,
+      "runs_waits_on": "cross-host exchange (freeze lane 13): nothing North American fits one 8-card host; preparation needs about 0.5 TB of host RAM"
+    }
+  },
+  "cycles": {
+    "deterministic": {
+      "lengths_h": {
+        "00": 84,
+        "06": 84,
+        "12": 84,
+        "18": 84
+      },
+      "other_hours_h": 18,
+      "source_ref": "rrfs_nco_prod.def:309, :6745; exrrfs_forecast.sh:530-562"
+    },
+    "ensemble": {
+      "lengths_h": {
+        "00": 60,
+        "06": 60,
+        "12": 60,
+        "18": 60
+      },
+      "other_hours_h": 0,
+      "members": 5,
+      "source_ref": "rrfs_nco_prod.def:3531"
+    },
+    "fire-weather-nest": {
+      "lengths_h": {
+        "00": 36,
+        "06": 36,
+        "12": 36,
+        "18": 36
+      },
+      "other_hours_h": 0,
+      "source_ref": "rrfs_nco_prod.def:6432"
+    },
+    "public_start_hours": [
+      "00",
+      "06",
+      "12",
+      "18"
+    ],
+    "public_start_hours_note": "MEASURED 2026-10-03 on noaa-rrfs-ops-pds and NOMADS rrfs/v1.0: the hourly prslev and 2dfld CONUS pair (85 files each, f000 to f084) is posted only for the 00/06/12/18 UTC cycles; the other cycles post only the sub-hourly 2dfld set (18 files). So a CONUS run started from RRFS's posted analysis can start only at those four hours."
+  },
+  "boundary_arms": {
+    "G": {
+      "meaning": "GFS hourly boundaries, as RRFS's own North American run takes them, applied at the CONUS edge",
+      "forcing_source": "gfs",
+      "initial_source": "rrfs",
+      "initial_from": "RRFS's posted f000 analysis pair (prslev + 2dfld) through prep --initial-inputs",
+      "forcing_cycle_offset_h": 6,
+      "prepared_route": "mapped hourly GFS pressure-level forcing with a separately declared RRFS analysis through prep --initial-inputs; configs/rrfs_v1_like/SCORING.md states the complete paired analysis inventory and commands",
+      "measured_cut": "128 x 96 x 65, one forecast hour from the 2026-10-03 12 UTC analysis, GFS 06 UTC f006/f007 boundaries, preparation on CPU and forecast through the prepared go door",
+      "profile_waits_on": "[fetch] names one source, so a bare GS profile remains a GFS start. Arm G uses the explicitly bound prepared route, not a relabelled bare GS profile."
+    },
+    "GS": {
+      "meaning": "GFS start and GFS hourly boundaries at the CONUS edge: the start is the 6 h forecast of the 6 h older GFS cycle, the cycle RRFS's own boundaries come from. The start is a declared difference from arm G, which starts from RRFS's analysis.",
+      "forcing_source": "gfs",
+      "initial_source": "gfs",
+      "initial_from": "the forcing source's f006 (forecast_start_hour 6), not an analysis",
+      "forcing_cycle_offset_h": 6
+    },
+    "R": {
+      "meaning": "RRFS's own posted forecast as the boundaries (and the start)",
+      "forcing_source": "rrfs",
+      "initial_source": "rrfs",
+      "initial_from": "RRFS's posted f000 analysis pair"
+    },
+    "GC": {
+      "meaning": "GFS cold start and GFS hourly boundaries, the only public road for a North American start (no public 3 km North American RRFS state exists)",
+      "forcing_source": "gfs",
+      "initial_source": "gfs",
+      "initial_from": "GFS analysis or the 3 h forecast, as RRFS cold-starts its spin-up",
+      "forcing_cycle_offset_h": 0
+    }
+  },
+  "profiles": [
+    {
+      "config": "configs/rrfs_v1_like/conus_tier_c_arm_gs.toml",
+      "suite": "rrfs-sas-deterministic",
+      "domain": "conus-product-grid-65",
+      "arm": "GS",
+      "stream": "deterministic",
+      "length_h": 18
+    },
+    {
+      "config": "configs/rrfs_v1_like/conus_tier_c_arm_r.toml",
+      "suite": "rrfs-sas-deterministic",
+      "domain": "conus-product-grid-65",
+      "arm": "R",
+      "stream": "deterministic",
+      "length_h": 18
+    },
+    {
+      "config": "configs/rrfs_v1_like/north_america_grid_k.toml",
+      "suite": "rrfs-sas-deterministic",
+      "domain": "north-america-grid-k-65",
+      "arm": "GC",
+      "stream": "deterministic",
+      "length_h": 84
+    }
+  ]
+}

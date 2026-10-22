@@ -1398,8 +1398,15 @@ def _history_identity_attribute(name: str) -> bool:
              "MAP_PROJ", "TRUELAT1", "TRUELAT2", "STAND_LON", "CEN_LAT",
              "CEN_LON", "MOAD_CEN_LAT", "POLE_LAT", "POLE_LON", "HYBRID_OPT", "ETAC",
              "DT", "TITLE"}
+    # A running ledger (GPUWM_CHEM_LEDGER: the smoke budget, rewritten at
+    # every history write) is per-frame state like the carrier ledger, not
+    # identity.  Counted as identity it made every frame of a smoke run its
+    # own series, so a windowed product never had a second whole-hour frame
+    # to fold: the default HRRR v4 recipe's go render exited 1 on its
+    # windowed pass ("'windowed' names no product these frames can draw").
     return (name in names or name.endswith("_PHYSICS")
-            or name.startswith("GPUWM_") and not name.startswith("GPUWM_CARRIER_"))
+            or name.startswith("GPUWM_") and not name.startswith("GPUWM_CARRIER_")
+            and not name.endswith("_LEDGER"))
 
 
 #: What one moving nest's history frames differ by and nothing else: where
@@ -2787,6 +2794,29 @@ def inactive_domain_skips(skipped) -> bool:
                                 for _product, detail in skipped)
 
 
+#: How the engine opens the reason of a product the input can never draw,
+#: as opposed to one it lacks a field or a frame for (``rusty-weather``
+#: ``windowed_store::NOT_APPLICABLE_PREFIX``): ``qpf_1h`` on a grid whose
+#: history is written every 3 h.
+NOT_APPLICABLE_SKIP = "not-applicable: "
+
+
+def not_applicable_skips(skipped) -> bool:
+    """Whether every skip is a product that does not apply to these inputs.
+
+    WHAT BREAKAGE THIS PREVENTS (gate law): the finalize stage's windowed
+    pass over a 3-hourly nest asked for ``qpf_1h`` alone, the engine
+    declared it not applicable, nothing was drawn, the render exited 1 and
+    ``gpuwm go`` printed ``FAILED render`` on a run whose every picture
+    was in place.  Such a pass succeeds empty, as an inactive fire domain
+    does; a skip for a missing field or a gap still exits 1.
+    """
+    return bool(skipped) and all(
+        detail.startswith("inactive-fire-domain: IFIRE=0 ")
+        or NOT_APPLICABLE_SKIP in detail
+        for _product, detail in skipped)
+
+
 def skip_notice(skipped: list[tuple[str, str]],
                 wrote_any: bool = True, drawn=None,
                 sources=()) -> str | None:
@@ -2851,6 +2881,9 @@ def skip_notice(skipped: list[tuple[str, str]],
     why = "; ".join(f"{name}: {first_reason[name]}" for name in names)
     if inactive_domain_skips(skipped):
         verdict = "The domains declare no active fire model; this is a successful skip"
+    elif not wrote_any and not_applicable_skips(skipped):
+        verdict = ("These products do not apply to these inputs; this is a "
+                   "successful skip")
     elif wrote_any:
         verdict = ("That is not a failure and does not change the "
                    "exit code")
@@ -3460,6 +3493,14 @@ def render_main(args: argparse.Namespace) -> int:
     if refusal is not None:
         print(f"render: {refusal}", file=sys.stderr)
         return 2
+    try:
+        from gpuwm.hubwind import render as render_hubwind
+        hubwind_result = render_hubwind(args)
+        if hubwind_result is not None:
+            return hubwind_result
+    except (ValueError, OSError, RuntimeError) as error:
+        print(f"render: {error}", file=sys.stderr)
+        return 2
     comparisons = [name for name in ("pair", "compare", "diff")
                    if getattr(args, name, None)]
     if len(comparisons) > 1:
@@ -3746,7 +3787,7 @@ def render_main(args: argparse.Namespace) -> int:
         code = grib2_export.invoke(grib2_exe, request_for(args.wrfout, args.grib2_out))
         if code:
             return code
-    return 0 if not failures and (written or inactive_domain_skips(door_skips + skipped)) else 1
+    return 0 if not failures and (written or not_applicable_skips(door_skips + skipped)) else 1
 
 
 def _section_size(value: str) -> tuple[int, int]:
@@ -3838,6 +3879,8 @@ def register_cli(subparsers) -> None:
              "probes as runnable, and REFUSES otherwise rather than "
              "drawing weather fields with matplotlib -- 'matplotlib' "
              "asks for that workaround by name and announces itself")
+    parser.add_argument("--hubwind-config", type=Path, default=None, metavar="JSON|TOML",
+                        help="hub heights, turbine, exceedance and ramp settings; JSON options or [hubwind] TOML")
     parser.add_argument(
         "--products", default="all", metavar="LIST",
         help="comma-separated products: "

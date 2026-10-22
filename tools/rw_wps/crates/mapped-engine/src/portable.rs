@@ -90,7 +90,7 @@ pub fn libm_dependent_fields(mapping: &crate::model::Mapping) -> BTreeSet<String
 /// The file name of a path, on either platform's separator.
 fn file_name(spelling: &str) -> &str {
     spelling
-        .rsplit(|character| character == '/' || character == '\\')
+        .rsplit(['/', '\\'])
         .next()
         .unwrap_or(spelling)
 }
@@ -136,7 +136,7 @@ pub fn portable_frame_header(
         .collect();
     // Longest first: a directory that is a prefix of another input's path
     // must not shadow the longer match.
-    spellings.sort_by(|left, right| right.0.len().cmp(&left.0.len()));
+    spellings.sort_by_key(|left| std::cmp::Reverse(left.0.len()));
 
     let mut masked = mask_input_paths(header, &spellings);
     if let Some(fields) = masked.get_mut("fields").and_then(Value::as_array_mut) {
@@ -154,14 +154,13 @@ pub fn portable_frame_header(
                 .get("source_field")
                 .and_then(Value::as_str)
                 .is_some_and(|source| source.starts_with(COMPLETED_FIELD_REFERENCE_PREFIX));
-            if libm_dependent.contains(&name) || completed {
-                if let Some(object) = descriptor.as_object_mut() {
+            if (libm_dependent.contains(&name) || completed)
+                && let Some(object) = descriptor.as_object_mut() {
                     object.insert(
                         "data_reference".to_owned(),
                         Value::String(format!("libm:{name}")),
                     );
                 }
-            }
         }
     }
     if let Some(object) = masked.as_object_mut() {

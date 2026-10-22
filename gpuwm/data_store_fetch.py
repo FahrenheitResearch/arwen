@@ -75,6 +75,9 @@ class AcquisitionPlan:
         args += (['--area='+area_text] if area_text.startswith('-') else ['--area', area_text])
         args += ['--start', self.start, '--end', self.end, '--now', self.now,
                  '--variables-json', canonical(self.selections)]
+        licences = {r.acquisition.get('research_only_licence') for r in self.requests} - {None}
+        if len(licences) == 1:
+            args += ['--licence', next(iter(licences))]
         if cache_root is not None:
             args += ['--cache-root', str(cache_root)]
         # Single quotes also preserve JSON arguments in PowerShell.
@@ -103,6 +106,8 @@ def _validate_acquisition(data):
     if not isinstance(data['variables'], Mapping) or not isinstance(data['grid'], Mapping):
         raise ValueError(f"{data['name']}: variables and grid must be objects")
     a = data['acquisition']
+    if a.get('kind') == 'published_files':
+        raise ValueError(f"{data['name']}: import published files with python -m gpuwm.composition_source --source {data['name']} --files GROUP=FILE...; a queued data-store request cannot describe these files")
     for key in ('api_url', 'site', 'dataset', 'dataset_page', 'cycle_hours',
                 'cadence_s', 'horizon_h', 'latency_s', 'margin_cells', 'keys', 'requests'):
         if key not in a:
@@ -368,6 +373,9 @@ def _verified(request, root):
     receipt = root / (request.sha256+'.json')
     try:
         prior = json.loads(receipt.read_text(encoding='utf-8'))
+        required = request.acquisition.get('research_only_licence')
+        if required and prior.get('accepted_licence') != required:
+            return None
         if (prior['request_sha256'] == request.sha256 and prior['request'] == thaw(request.request)
                 and prior['dataset'] == request.dataset and target.stat().st_size == prior['bytes'] > 0
                 and _hash(target) == prior['file_sha256']):
@@ -395,7 +403,7 @@ def cached_files(plan, *, cache_root=None):
 
 
 def fetch(plan, *, cache_root=None, progress=print, client_factory=None, files=None,
-          files_note=None):
+          files_note=None, licence=None):
     """Publish fetched or user-supplied opaque bytes into the request-hash cache.
 
     files is a mapping from request sha256 to a local file, or a sequence in
@@ -409,6 +417,13 @@ def fetch(plan, *, cache_root=None, progress=print, client_factory=None, files=N
     if set(supplied) - {r.sha256 for r in plan.requests}:
         raise ValueError('User files name an unknown request sha256')
     root.mkdir(parents=True, exist_ok=True)
+    for request in plan.requests:
+        required = request.acquisition.get('research_only_licence')
+        if required and licence != required and _verified(request, root) is None:
+            raise DataStoreLicenceNotAccepted(
+                f"{request.dataset} is research-only under {required}; "
+                f"explicit opt-in requires --licence {required}. Terms: "
+                f"{request.acquisition.get('licence_url', request.acquisition['dataset_page'])}")
     # Public declarations only. No private profile is read until submission.
     credentials = load_credentials() if any(r.sources[0].credential for r in plan.requests
         if r.sha256 not in supplied and _verified(r, root) is None) else {}
@@ -470,7 +485,7 @@ def fetch(plan, *, cache_root=None, progress=print, client_factory=None, files=N
             record = dict(request_sha256=r.sha256, request=thaw(r.request), dataset=r.dataset,
                 file_sha256=_hash(part), bytes=part.stat().st_size, started_utc=started,
                 completed_utc=datetime.now(timezone.utc).isoformat(),
-                sources=_source_receipts(r))
+                accepted_licence=licence, sources=_source_receipts(r))
             # Where the bytes came from, said in the receipt every reader of
             # the cache sees: the data store, or a file a person supplied (a
             # download made elsewhere, or a test fixture) with their note.
@@ -495,6 +510,71 @@ def fetch(plan, *, cache_root=None, progress=print, client_factory=None, files=N
     return FetchResult(*(tuple(item[i] for item in results) for i in range(3)))
 
 
+def is_listed_emission(row) -> bool:
+    """A published-listing emission source (RAVE): hourly files named by the
+    publisher's monthly index, fetched by :mod:`gpuwm.chem_source_netcdf`,
+    not by a data-store request."""
+    return (getattr(row, "acquisition", None) is None
+            and isinstance(getattr(row, "grid", None), Mapping)
+            and isinstance(row.grid.get("listing"), Mapping))
+
+
+def fetch_listed_emission(row, *, start, end, cache=None, progress=print):
+    """Download every posted hour a run from ``start`` to ``end`` can read.
+
+    The fire process's default timing reads the trailing 24 h of posted
+    hours ending ``latency_s`` before the start (gpuwm.core.chem_fire
+    trailing_window); an observed-hours run reads the hours through the
+    end.  Both are covered: every posted hour from 23 h before the newest
+    hour available at the start through ``end``.  An hour the publisher
+    never posted is a gap, as the fire process treats it; a window with no
+    posted hour at all is refused by name here, at the front door, rather
+    than at the forecast's first fire step after a whole preparation.
+    """
+    from datetime import datetime, timedelta, timezone
+    from gpuwm import chem_source_netcdf
+    from gpuwm.chem_emission_frames import source_cache_dir
+
+    def utc(text):
+        value = datetime.fromisoformat(str(text).replace("Z", "+00:00"))
+        return (value if value.tzinfo else value.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+
+    latency = float((row.time or {}).get("latency_s", 0.0) or 0.0)
+    newest = (utc(start) - timedelta(seconds=latency)).replace(minute=0, second=0, microsecond=0)
+    first = newest - timedelta(hours=23)
+    last = utc(end).replace(minute=0, second=0, microsecond=0)
+    cache = Path(cache) if cache is not None else source_cache_dir(row.name)
+    months, month = [], first.replace(day=1, hour=0)
+    while month <= last:
+        months.append(month)
+        month = (month + timedelta(days=32)).replace(day=1)
+    posted = {}
+    for month in months:
+        _url, entries = chem_source_netcdf.listing(row, month, cache)
+        posted.update(entries)
+    wanted = sorted(hour for hour in posted if first <= hour <= last)
+    trailing = [hour for hour in wanted if hour <= newest]
+    if not trailing:
+        # Said, not refused: the forecast's fire process carries the same
+        # finding (gpuwm.core.chem_fire, "fire emissions absent") and runs
+        # the smoke already in the air with no new fire smoke.
+        import sys
+        print(f"warning: {row.name}: the publisher lists no hour between "
+              f"{first.isoformat()} and {newest.isoformat()} (the trailing 24 h a "
+              f"fire run started at {utc(start).isoformat()} reads); its archive "
+              f"({row.grid['listing'].get('url')}) does not reach this date, so "
+              "this run emits no new fire smoke (HRRR's own smoke and RAP's edge "
+              "smoke still run)", file=sys.stderr, flush=True)
+    files = []
+    for hour in wanted:
+        path, _receipt = chem_source_netcdf.fetch_hour(row, hour, cache)
+        files.append(path)
+    if files:
+        progress(f"emission: {row.name} {len(files)} posted hour(s) "
+                 f"{wanted[0].isoformat()}..{wanted[-1].isoformat()}")
+    return files
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('command', choices=('plan', 'fetch', 'import'))
@@ -507,10 +587,23 @@ def main(argv=None):
     parser.add_argument('--variables-json', help='JSON mapping of source names to selected fields')
     parser.add_argument('--file', action='append', default=[],
                         help='import: GROUP=PATH, a file you hold for one request group of the plan')
+    parser.add_argument('--licence', help='explicit research opt-in naming the source licence')
     parser.add_argument('--note', help='import: why these bytes are in the cache (recorded in the receipt)')
     args = parser.parse_args(argv)
     try:
         rows = chem_table.catalog().sources
+        listed = [name for name in args.source if is_listed_emission(rows[name])]
+        emission_files = []
+        if listed and args.command != 'fetch':
+            raise ValueError(f"{', '.join(listed)}: a published-listing emission source "
+                             "is fetched by hour ('fetch'); it has no data-store plan or import")
+        for name in listed:
+            emission_files.extend(str(p) for p in fetch_listed_emission(
+                rows[name], start=args.start, end=args.end))
+        args.source = [name for name in args.source if name not in listed]
+        if not args.source:
+            print(json.dumps({'files': emission_files, 'reused': []}))
+            return 0
         plan = resolve_acquisition([rows[name] for name in args.source], area=args.area,
             start=args.start, end=args.end, now=args.now,
             variables=json.loads(args.variables_json) if args.variables_json else args.variable)
@@ -531,11 +624,12 @@ def main(argv=None):
                                  f'unknown {unknown}, missing {missing}')
             result = fetch(plan, cache_root=args.cache_root,
                            files={groups[g]: p for g, p in by_group.items()},
-                           files_note=args.note or '')
+                           files_note=args.note or '', licence=args.licence)
             print(json.dumps({'files': [str(p) for p in result.files], 'reused': result.reused}))
         else:
-            result = fetch(plan, cache_root=args.cache_root)
-            print(json.dumps({'files': [str(p) for p in result.files], 'reused': result.reused}))
+            result = fetch(plan, cache_root=args.cache_root, licence=args.licence)
+            print(json.dumps({'files': emission_files + [str(p) for p in result.files],
+                              'reused': result.reused}))
         return 0
     except (ValueError, KeyError, OSError) as error:
         print(f'{type(error).__name__}: {cds_credentials.redact(error)}')

@@ -250,3 +250,16 @@ ff78c810464721df6b779e11c23c9ccae303ce2f25519cbc4ecffd6e60d6e70e *vendor/netcrus
 c8950d584b271804ac580a4448ee641d842b6e3cdb1e18c9795f05d0a572d473 *vendor/netcrust/vendor/hdf5-reader/tests/corruption.rs
 8e4cb7be54880027df02e455e96197e38fba54c9c05309fca07ebf443a3f09c4 *vendor/netcrust/vendor/hdf5-reader/tests/integration.rs
 a68e27c0b4034bea360b872bb4fd9c7bbe821be8eaac90b392297a565d8a2e70 *vendor/netcrust/vendor/hdf5-reader/tests/proptest_tests.rs
+
+## Shared offline registry (wave 3)
+
+The private `vendor/crates-io` registry is folded into
+`../rustwx/vendor/crates-io`. Cargo.lock is byte-for-byte unchanged. Add new
+crates through the scratch-vendoring procedure in `tools/rustwx/VENDOR.md`,
+never by regenerating an existing registry directory.
+
+The retired `vendor/netcrust` facade keeps its Cargo.toml and `src/lib.rs`
+re-export of the shared reader. Its unused nested readers, inspect binary
+and real-file test are removed; the active reader remains under
+`tools/rustwx/vendor/netcrust`. Historical donor hashes above describe the
+original snapshot and are retained as provenance, not current file paths.

@@ -83,6 +83,7 @@ from gpuwm.physics_registry import (
 )
 
 REGISTRY = physics_registry()
+REGISTRY_SHA256 = registry_sha256(REGISTRY)
 COMPONENTS: tuple[str, ...] = tuple(sorted(REGISTRY["components"]))
 
 #: Deterministic sample: a failure names its tuple and reproduces.
@@ -244,7 +245,7 @@ def plan_for(route_id: str, route: dict, source_id: str,
     plan: dict = {
         "schema": PLAN_SCHEMA,
         "plan_id": "physics-combination-matrix-v1",
-        "registry_sha256": registry_sha256(REGISTRY),
+        "registry_sha256": REGISTRY_SHA256,
         "context": {"source_id": source_id, "runner_id": route_id,
                     "topology_id": route["topology_ids"][0]},
         "domains": [domain("d01", True)] + ([domain("d02", False)] if nested else []),

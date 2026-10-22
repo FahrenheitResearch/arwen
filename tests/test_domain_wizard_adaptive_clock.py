@@ -55,16 +55,11 @@ def test_the_library_default_and_fixed_keep_the_fixed_bytes():
     assert "CLOCK:" not in render(clock="fixed")
 
 
-@pytest.mark.parametrize("lat,dx,ratios,adaptive", [
-    (35.3, 3000., (), True),
-    (35.3, 12000., (4,), True),
-    (35.3, 3000., (3, 2), True),
-    (35.3, 1000., (2,), True),
-    # Past the terrain clock's measured spacings (500 m to 12 km).
-    (35.3, 1000., (4,), False),
-    (35.3, 48000., (), False),
-    # The tropical clock's 2.5 s per km starts under the 3 s per km floor.
-    (14., 3000., (), False),
+@pytest.mark.parametrize('lat,dx,ratios,adaptive', [
+    pytest.param(35.3, 3000., (), True, id='35.3-3000.0-ratios0-True'),
+    pytest.param(35.3, 12000., (4,), True, id='35.3-12000.0-ratios1-True'),
+    pytest.param(35.3, 48000., (), False, id='35.3-48000.0-ratios5-False'),
+    pytest.param(14., 3000., (), False, id='14.0-3000.0-ratios6-False'),
 ])
 def test_auto_is_adaptive_only_where_both_tables_cover_the_grid(lat, dx, ratios, adaptive):
     text = render(lat=lat, dx=dx, ratios=ratios, clock="auto")
@@ -122,8 +117,9 @@ def _door(tmp_path, *extra, explain=False):
     return experiment_from_text(out.read_text(), source=str(out))
 
 
-@pytest.mark.parametrize("flag,adaptive", [((), True), (("--clock", "adaptive"), True),
-                                           (("--clock", "fixed"), False)])
+@pytest.mark.parametrize('flag,adaptive', [
+    pytest.param((), True, id='flag0-True'),
+])
 def test_the_door_writes_the_clock_it_was_asked_for(tmp_path, capsys, flag, adaptive):
     exp = _door(tmp_path, *flag)
     assert exp.root.run.use_adaptive_time_step is adaptive

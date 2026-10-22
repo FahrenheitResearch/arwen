@@ -556,7 +556,7 @@ def test_each_run_route_hands_its_capsule_fragment_back_on_the_summary():
                       and part.func.id == "_emit_front_door_capsule"
                       for part in ast.walk(node))]
     assert {owner.name for owner in owners} == {
-        "run_experiment", "_run_built_experiment"}
+        "_run_experiment", "_run_built_experiment"}
     for owner in owners:
         assert "moisture_floor_receipts=" in ast.unparse(owner), (
             f"{owner.name} writes a front-door capsule and returns a "

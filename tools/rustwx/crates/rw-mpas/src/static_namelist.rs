@@ -96,7 +96,10 @@ impl StaticNamelist {
         for (name,slot,default) in [
             ("config_topo_data","topo-data","GMTED2010"),
             ("config_landuse_data","landuse-data","MODIFIED_IGBP_MODIS_NOAH"),
-            ("config_soilcat_data","soilcat-data","STATSGO"),
+            // MPAS-A's registry default is STATSGO (FAO-UNESCO outside CONUS,
+            // not permissive); an unset key takes the permissive SoilGrids
+            // tiles, and STATSGO is read only when the namelist names it.
+            ("config_soilcat_data","soilcat-data","SOILGRIDS"),
             ("config_vegfrac_data","vegfrac-data","MODIS"),
             ("config_albedo_data","albedo-data","MODIS"),
             ("config_maxsnowalbedo_data","maxsnowalbedo-data","MODIS"),

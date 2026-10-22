@@ -52,7 +52,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, Tuple
 
-from gpuwm.core.noahmp_libm import (F32_PACK, F32_UNPACK, atanf, expf, f32,
+from gpuwm.core.noahmp_libm import (F32_PACK, F32_UNPACK, atanf, expf,
                                     logf, powf, sqrtf)
 
 __all__ = [

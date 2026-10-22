@@ -3832,6 +3832,11 @@ void mynn_dmp_mf_columns(
     real* __restrict__ s_awv_o_raw, real* __restrict__ maxwidth_o,
     int* __restrict__ ktop_o, real* __restrict__ ztop_o,
     real* __restrict__ maxmf_o, real* __restrict__ plume_scratch_raw,
+#ifdef MYNN_EXPORT_PLUME_EDGE
+    real* __restrict__ up_a_pre_o, real* __restrict__ psig_w_o, // MF-EXPORT
+    int* __restrict__ plume_active_o, // MF-EXPORT
+    real* __restrict__ limiter_adjustment_o, // MF-EXPORT
+#endif
     real* __restrict__ work_scratch_raw, int nz, int ncol
 #if defined(MYNN_GSD41)
     , const real* __restrict__ sgm_gsd41_raw
@@ -3952,6 +3957,11 @@ void mynn_dmp_mf_columns(
         }
     }
     real nup2 = (real)nup;
+#ifdef MYNN_EXPORT_PLUME_EDGE
+    real* up_a_pre = up_a_pre_o + (size_t)column * (size_t)(nz + 1) * nup; // MF-EXPORT
+    plume_active_o[column] = 0; // MF-EXPORT
+    limiter_adjustment_o[column] = 1.0f; // MF-EXPORT
+#endif
 
     // ---- module_bl_mynn.F:5939-5965 resolved-motion taper -----------------
     real maxw = 0.0f, cloud_base = 9000.0f;
@@ -3984,6 +3994,9 @@ void mynn_dmp_mf_columns(
     real psig_w = mynn_max2(0.0f, MYNN_SUB(1.0f, maxw));
 #endif
     psig_w = mynn_min2(psig_w, psig_shcu);
+#ifdef MYNN_EXPORT_PLUME_EDGE
+    psig_w_o[column] = psig_w; // MF-EXPORT
+#endif
     real fltv2 = fltv;
     if (psig_w == 0.0f && fltv > 0.0f) fltv2 = MYNN_MUL(-1.0f, fltv);
 
@@ -4319,6 +4332,11 @@ void mynn_dmp_mf_columns(
         nup2 = 0.0f;
     }
 
+#ifdef MYNN_EXPORT_PLUME_EDGE
+    for (int k = 0; k <= nz; ++k) // MF-EXPORT
+        for (int i = 0; i < nup; ++i) // MF-EXPORT
+            up_a_pre[(size_t)k * nup + i] = up_a[(size_t)i * (nz + 1) + k]; // MF-EXPORT
+#endif
     if (ktop > nz - 1) ktop = nz - 1;
     ztop = ktop == 0 ? 0.0f : zw[zbase + ktop - 1];
 
@@ -4411,6 +4429,10 @@ void mynn_dmp_mf_columns(
                 }
         }
 
+#ifdef MYNN_EXPORT_PLUME_EDGE
+        limiter_adjustment_o[column] = adjustment; // MF-EXPORT
+        plume_active_o[column] = 1; // MF-EXPORT
+#endif
         // ---- module_bl_mynn.F:6504-6524 plume means -------------------
         for (int k = 0; k < nz - 1; ++k) {
 #if defined(MYNN_GSD41)

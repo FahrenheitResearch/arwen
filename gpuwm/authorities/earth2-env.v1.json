@@ -1,0 +1,60 @@
+{
+  "schema": "gpuwm.earth2-env.v1",
+  "purpose": "The managed environment the Earth2Studio doors (tc-tracks, earth2-diagnose, earth2) run their runners in, and the TempestExtremes executables tc-tracks --backend tempestextremes calls. Built by `gpuwm setup --with-earth2`, or on first use by a door that needs it. The earth2studio version and the per-CUDA install commands are runtime.pinned_version and runtime.install_recipes of earth2-models.v1.json; this table adds only what the managed build needs beyond them.",
+  "location": {
+    "environment": "GPUWM_EARTH2_ENV",
+    "default": "XDG_DATA_HOME/gpuwm/earth2-env (XDG_DATA_HOME defaults to ~/.local/share)",
+    "interpreter_override": "GPUWM_EARTH2_PYTHON names an interpreter to use as is; the managed environment is then neither used nor changed",
+    "first_use_fetch": "GPUWM_EARTH2_FETCH=0 stops a door from building the managed environment on first use; it then refuses with the remedy instead"
+  },
+  "default_extras": ["fcn3", "cyclone", "windgust-afno", "precip-afno"],
+  "extra_modules": {
+    "": ["earth2studio", "torch"],
+    "cyclone": ["cupy", "cucim", "skimage"],
+    "windgust-afno": ["physicsnemo"],
+    "precip-afno": ["physicsnemo"],
+    "fcn3": ["torch_harmonics", "makani", "moviepy"]
+  },
+  "extra_substitutes": {
+    "cu12": {
+      "cyclone": ["scikit-image>=0.25.2", "cupy-cuda12x", "cucim-cu12>=25.4.0"],
+      "fcn3": ["torch-harmonics @ git+https://github.com/NVIDIA/torch-harmonics.git@a632ca748a12bd9f74dbc1e00653317810991f74", "makani @ git+https://github.com/NVIDIA/makani.git@b38fcb2799d7dbc146fa60459f3f9823394a8bf1", "ruamel.yaml>=0.18.14", "scipy>=1.10.0", "moviepy"],
+      "reason": "earth2studio 0.19.0's [cyclone] extra names the CUDA 13 wheels (cupy-cuda13x, cucim-cu13), which do not load on a CUDA 12 driver; on cu12 the same packages are installed for that major. fcn3: see cu13"
+    },
+    "cu13": {
+      "fcn3": ["torch-harmonics @ git+https://github.com/NVIDIA/torch-harmonics.git@a632ca748a12bd9f74dbc1e00653317810991f74", "makani @ git+https://github.com/NVIDIA/makani.git@b38fcb2799d7dbc146fa60459f3f9823394a8bf1", "ruamel.yaml>=0.18.14", "scipy>=1.10.0", "moviepy"],
+      "reason": "earth2studio 0.19.0's [fcn3] extra names makani, which is not on PyPI (earth2studio's own [tool.uv.sources] takes makani and torch-harmonics from these git revisions), so a wheel install of earth2studio[fcn3] cannot resolve it and the managed environment had no torch_harmonics or makani: every FCN3 run there died at model import (2.9.4 landing, V58 2026-10-20). The same packages are installed from earth2studio 0.19.0's pinned revisions; torch-harmonics is BSD-3-Clause, makani Apache-2.0, built with --no-build-isolation as the recipe installs earth2studio"
+    }
+  },
+  "recipe_by_driver_major": {
+    "13": "cu13",
+    "12": "cu12",
+    "override": "GPUWM_EARTH2_RECIPE names a runtime.install_recipes key"
+  },
+  "uv_bootstrap": {
+    "package": "uv==0.13.1",
+    "licence": "Apache-2.0 OR MIT",
+    "note": "Used from PATH when present; otherwise installed with this interpreter's pip into <env>/.uv"
+  },
+  "tempestextremes": {
+    "conda_spec": "tempest-extremes=2.4.2=nompi_*",
+    "channel": "conda-forge",
+    "licence": "BSD-2-Clause",
+    "licence_source": "https://github.com/ClimateGlobalChange/tempestextremes/blob/master/LICENSE",
+    "executables": ["DetectNodes", "StitchNodes"],
+    "micromamba": {
+      "version": "2.9.0-0",
+      "licence": "BSD-3-Clause",
+      "assets": {
+        "linux-64": {
+          "url": "https://github.com/mamba-org/micromamba-releases/releases/download/2.9.0-0/micromamba-linux-64",
+          "sha256": "366cd9cd8be14df1ab8ed50352a82111082a36686b2d389fdb79a92c3fafb3e3"
+        },
+        "linux-aarch64": {
+          "url": "https://github.com/mamba-org/micromamba-releases/releases/download/2.9.0-0/micromamba-linux-aarch64",
+          "sha256": "9f93b974adcb4d166996af969b6cd371287d1a3e52733704727884d9b74cb7a7"
+        }
+      }
+    }
+  }
+}

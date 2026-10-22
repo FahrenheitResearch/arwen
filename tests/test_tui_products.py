@@ -26,8 +26,9 @@ def test_presets_use_supported_catalog_selectors_and_stored_snow_fields():
     # no wrfout carries a gust or a precipitation category.  cloud_cover
     # (a total cloud fraction no wrfout carries) became cloud_cover_levels,
     # the layer panel the same history does draw.  A preset that promises
-    # a product the lane can never draw is drift.
-    assert len(document["presets"][0]["products"]) == 22
+    # a product the lane can never draw is drift.  26 in 2.9.4: cap-ivt added
+    # ivt, iwv, freezing_level and ar_outline, which every history can draw.
+    assert len(document["presets"][0]["products"]) == 26
     root = Path(__file__).resolve().parents[1]
     inventory = json.loads((root / "tools/rustwx/crates/rustwx-products/tests/fixtures/"
                            "product_catalog_inventory_v1.json").read_text())
@@ -85,7 +86,7 @@ def test_reading_presets_imports_no_forecast_or_gpu_runtime():
     code = """
 import sys
 from gpuwm.tui_products import presets
-assert len(presets()['presets'][0]['products']) == 22
+assert len(presets()['presets'][0]['products']) == 26
 assert 'cupy' not in sys.modules
 assert 'gpuwm.runplan' not in sys.modules
 assert 'gpuwm.prepared_single_domain_forecast' not in sys.modules
@@ -144,6 +145,8 @@ def test_the_catalog_document_carries_the_statement_and_its_basis(monkeypatch):
     # The curated list still round-trips byte-identical: narrowing it
     # would hide the finding rather than report it.
     assert document["presets"] == tui_products.presets()
+    assert set(document["preset_availability"]) == {
+        row["id"] for row in tui_products.presets()["presets"]}
 
 
 def test_the_picker_does_not_price_a_preset_against_a_fileless_plan(monkeypatch):

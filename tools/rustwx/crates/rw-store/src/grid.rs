@@ -64,14 +64,7 @@ struct GridLayout {
     file_end: usize,
 }
 
-fn try_zeroed_bytes(len: usize, what: &str) -> RwResult<Vec<u8>> {
-    let mut bytes = Vec::new();
-    bytes.try_reserve_exact(len).map_err(|err| {
-        RwStoreError::Format(format!("cannot allocate {len} bytes for {what}: {err}"))
-    })?;
-    bytes.resize(len, 0);
-    Ok(bytes)
-}
+use crate::reader::try_zeroed_bytes;
 
 /// Validate every header-declared section against both the actual file and
 /// the format ceilings before allocating a file-sized buffer.

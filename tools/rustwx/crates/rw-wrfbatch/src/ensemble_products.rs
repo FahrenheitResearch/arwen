@@ -42,7 +42,7 @@ fn s2s_scale(field: &str, kind: &str) -> Option<rustwx_render::ColorScale> {
     let base = field.strip_suffix("_anomaly").unwrap_or(field);
     let (low, high, delta, spread) = match base {
         "temperature2" => (240.0, 320.0, 10.0, 10.0),
-        "precipitation_rate" => (0.0, 30.0, 10.0, 10.0),
+        "precipitation_rate" | "freezing_rain_rate" => (0.0, 10.0, 5.0, 5.0),
         "z500" => (4500.0, 6200.0, 300.0, 150.0),
         "mslp" => (960.0, 1040.0, 20.0, 15.0),
         _ => return None,
@@ -61,12 +61,38 @@ fn s2s_scale(field: &str, kind: &str) -> Option<rustwx_render::ColorScale> {
     Some(scale)
 }
 
+
+fn is_ice(field: &str) -> bool {
+    matches!(field, "ice_accretion" | "ice_accretion_horizontal")
+}
+fn ice_scale() -> rustwx_render::ColorScale {
+    use rustwx_render::{ColorScale, DiscreteColorScale, ExtendMode, Color};
+    ColorScale::Discrete(DiscreteColorScale {
+        levels: vec![0.01, 0.05, 0.10, 0.25, 0.50, 0.75, 1.0, 1.5, 2.0],
+        colors: [[220,240,255],[150,210,245],[80,165,220],[45,105,180],
+                 [95,60,170],[155,45,155],[210,45,115],[250,90,75]]
+            .iter().map(|c| Color::rgba(c[0],c[1],c[2],255)).collect(),
+        extend: ExtendMode::Max, mask_below: Some(0.01),
+    })
+}
+fn threshold_display(field: &str, threshold: f64, units: &str) -> (String, String) {
+    if is_ice(field) { return (format!("{:.2}", threshold / 25.4), "in".into()); }
+    if field == "temperature2_below_freezing" {
+        return (format!("{:.2}", if (threshold - 273.15).abs() < 0.0001 { 0.0 } else { threshold - 273.15 }), "C".into());
+    }
+    (format!("{}", threshold as f32), units.into())
+}
+
 fn field_title(field: &str) -> &str {
     match field {
         "qpf_1h" => "1 h precipitation", "qpf_3h" => "3 h precipitation",
         "qpf_6h" => "6 h precipitation", "rain_total" => "forecast precipitation",
         "wind10" => "10 m wind speed", "gust" => "wind gust",
-        "temperature2" => "2 m temperature", "dewpoint2" => "2 m dewpoint",
+        "temperature2" | "temperature2_below_freezing" => "2 m temperature",
+        "freezing_rain_rate" => "saved-frame freezing-rain rate",
+        "freezing_rain_total" => "saved-frame freezing-rain liquid",
+        "ice_accretion" => "saved-frame FRAM radial ice",
+        "ice_accretion_horizontal" => "saved-frame FRAM horizontal ice", "dewpoint2" => "2 m dewpoint",
         "refl" => "composite reflectivity", "uh" => "2-5 km updraft helicity",
         "humidity2" => "2 m relative humidity",
         "z500" => "500 hPa geopotential height", "mslp" => "mean sea level pressure",
@@ -80,7 +106,7 @@ fn field_title(field: &str) -> &str {
 
 fn field_recipe(field: &str) -> &str {
     match field {
-        "temperature2" => "2m_temperature", "dewpoint2" => "2m_dewpoint",
+        "temperature2" | "temperature2_below_freezing" => "2m_temperature", "dewpoint2" => "2m_dewpoint",
         "humidity2" => "2m_relative_humidity", "wind10" => "10m_wind_speed_and_direction",
         "gust" => "10m_wind_gusts", "rain_total" => "total_qpf",
         "refl" => "composite_reflectivity", "uh" => "uh_2to5km", other => other,
@@ -91,12 +117,12 @@ fn field_style(field: &str, units: &str) -> Option<rustwx_products::viewer::Stor
     use rustwx_core::{CanonicalField as F, FieldSelector as S};
     let selector = match field {
         "refl" => S::entire_atmosphere(F::CompositeReflectivity),
-        "temperature2" => S::height_agl(F::Temperature, 2),
+        "temperature2" | "temperature2_below_freezing" => S::height_agl(F::Temperature, 2),
         "dewpoint2" => S::height_agl(F::Dewpoint, 2),
         "humidity2" => S::height_agl(F::RelativeHumidity, 2),
         "wind10" => S::height_agl(F::WindSpeed, 10),
         "gust" => S::height_agl(F::WindGust, 10),
-        "rain_total" | "qpf_1h" | "qpf_3h" | "qpf_6h" => S::surface(F::TotalPrecipitation),
+        "rain_total" | "freezing_rain_total" | "qpf_1h" | "qpf_3h" | "qpf_6h" => S::surface(F::TotalPrecipitation),
         "uh" => S::height_layer_agl(F::UpdraftHelicity, 2000, 5000),
         _ => return rustwx_products::viewer::operational_style_for_store_variable(
             field, &serde_json::json!({"derived": field_recipe(field)}), units, rustwx_core::ModelId::WrfGdex),
@@ -172,6 +198,11 @@ fn validate_probability(values: &[f32], counts: &[f32], members: usize) -> Resul
 /// The subtitle row of a full-size ensemble map: the roster and the valid
 /// time on the left, the source label on the right.
 fn roster_subtitles(members: usize, valid: &str, source: &str) -> (String, String) {
+    // One plane is a deterministic field (a single run or an observation),
+    // not an ensemble of one: no roster to name.
+    if members == 1 {
+        return (format!("valid {valid}"), format!("source: {source}"));
+    }
     (format!("{} | valid {valid}", roster_words(members)), format!("source: {source}"))
 }
 
@@ -239,9 +270,12 @@ fn plane(out: &Path, domain: &str, valid: &str, subtitles: (String, String),
         render_density: RenderDensity::default(),
         subtitle_left: subtitles.0, subtitle_center: None,
         subtitle_right: subtitles.1, width, height,
-        contours, colorbar, overlays: None, annotations: None, out_path: target,
+        contours, colorbar, overlays: MAP_OVERLAYS.get(), annotations: None, out_path: target,
     })
 }
+
+/// The `--overlays` of this process's one `--ensemble-products` call.
+static MAP_OVERLAYS: std::sync::OnceLock<crate::annotate::MapOverlays> = std::sync::OnceLock::new();
 
 fn typed_shape(file: &File, name: &str, dims: &[&str], shape: &[usize]) -> Result<(), String> {
     let variable = file.variable(name).ok_or_else(|| format!("missing variable {name}"))?;
@@ -307,8 +341,11 @@ pub fn render(path: &Path, out: &Path, fields: &[String], domain: &str,
         for kind in ["mean", "spread", "min", "max", "pmm"] {
             if !products.iter().any(|p| p == kind) || file.variable(&format!("{field}_{kind}")).is_none() { continue; }
             let mut values = shaped(&file, &format!("{field}_{kind}"), &[ny, nx])?;
-            let s2s = if is_s2s { s2s_scale(&field, kind) } else { None };
-            let (scale, display_units) = if let Some(scale) = s2s {
+            let s2s = if is_s2s || field == "freezing_rain_rate" { s2s_scale(&field, kind) } else { None };
+            let (scale, display_units) = if is_ice(&field) {
+                values.iter_mut().for_each(|v| *v /= 25.4);
+                (if kind == "spread" { scales::spread_scale(0.5) } else { ice_scale() }, "in".into())
+            } else if let Some(scale) = s2s {
                 (scale, units.clone())
             } else if kind == "spread" {
                 let upper = if units == "1" { 1.0 } else { match field.as_str() { "temperature2" | "dewpoint2" => 15.0,
@@ -323,7 +360,13 @@ pub fn render(path: &Path, out: &Path, fields: &[String], domain: &str,
             };
             let slug = format!("ens_{kind}_{}", safe_component(&field, "field"));
             let target = plane(out, domain, &valid, roster_subtitles(members, &valid, source), &latitude, &longitude,
-                ny, nx, slug, format!("Ensemble {kind} {} ({display_units})", field_title(&field)),
+                ny, nx, slug,
+                if members == 1 && kind == "mean" {
+                    // The plain product title for one deterministic plane.
+                    format!("{} ({display_units})", field_title(&field))
+                } else {
+                    format!("Ensemble {kind} {} ({display_units})", field_title(&field))
+                },
                 values, display_units, scale, vec![], true, width, height)?;
             println!("RENDERED\t{}", target.display()); written.push(target);
         }
@@ -340,7 +383,12 @@ pub fn render(path: &Path, out: &Path, fields: &[String], domain: &str,
                 let slug = format!("ens_postage_{}_page_{}", safe_component(&field, "field"), first / 16 + 1);
                 for member in first..end {
                     let mut member_values = values[member * ny * nx..(member + 1) * ny * nx].to_vec();
-                    let (scale, display_units) = if let Some(ref style) = style {
+                    let (scale, display_units) = if is_ice(&field) {
+                        member_values.iter_mut().for_each(|v| *v /= 25.4);
+                        (ice_scale(), "in".into())
+                    } else if let Some(scale) = s2s_scale(&field, "mean") {
+                        (scale, units.clone())
+                    } else if let Some(ref style) = style {
                         member_values.iter_mut().for_each(|v| *v = style.convert.apply(*v));
                         (style.scale.clone(), style.display_units.clone())
                     } else { (if units == "1" { scales::probability_scale() } else { scales::spread_scale(100.0) }, units.clone()) };
@@ -385,6 +433,7 @@ pub fn render(path: &Path, out: &Path, fields: &[String], domain: &str,
             // The producer stores float32 thresholds. Its shortest round-trip
             // spelling is both exact and readable on a product title.
             let threshold_label = format!("{}", threshold as f32);
+            let (display_threshold, threshold_units) = threshold_display(&field, threshold, &units);
             for contour_product in ["paintball", "spaghetti"] {
             if products.iter().any(|p| p == contour_product) && file.variable(&format!("{field}_paintball")).is_some() {
                 let paint_name = format!("{field}_paintball");
@@ -401,7 +450,7 @@ pub fn render(path: &Path, out: &Path, fields: &[String], domain: &str,
                 }).collect();
                 let slug = format!("ens_{contour_product}_{}_{}_{}", safe_component(&field, "field"), comparison, safe_component(&threshold_label, "threshold"));
                 let target = plane(out, domain, &valid, roster_subtitles(members, &valid, source), &latitude, &longitude, ny, nx, slug,
-                    format!("{contour_product} {} {relation} {threshold_label} {units}", field_title(&field)),
+                    format!("{contour_product} {} {relation} {display_threshold} {threshold_units}", field_title(&field)),
                     vec![f32::NAN; ny * nx], units.clone(), scales::spread_scale(1.0), contours, false, width, height)?;
                 println!("RENDERED\t{}", target.display()); written.push(target);
             }
@@ -416,7 +465,7 @@ pub fn render(path: &Path, out: &Path, fields: &[String], domain: &str,
             let target = render_panel(PanelRequest {
                 lat_deg: &latitude, lon_deg: &longitude, projection: None, ny, nx,
                 values: probabilities[index * ny * nx..(index + 1) * ny * nx].to_vec(),
-                product_slug: slug, title: format!("P({} {relation} {threshold_label} {units})", field_title(&field)),
+                product_slug: slug, title: format!("P({} {relation} {display_threshold} {threshold_units})", field_title(&field)),
                 display_units: "fraction".into(), scale: scales::probability_scale(), cbar_tick_step: Some(0.1),
                 legend: LegendControls { density: LevelDensity::default(), mode: LegendMode::Stepped },
                 render_density: RenderDensity::default(),
@@ -465,6 +514,13 @@ impl RenderOptions {
                 "--domain" => domain = value.clone(), "--source-label" => source = value.clone(),
                 "--width" => width = value.parse().map_err(|_| "invalid --width")?,
                 "--height" => height = value.parse().map_err(|_| "invalid --height")?,
+                // Geographic lines, labels and rings drawn over every map this
+                // call paints (the same schema as rw_wrfbatch --overlays): a
+                // nest's box and name over its parent, a track, a site.
+                "--overlays" => {
+                    let loaded = crate::annotate::MapOverlays::load(std::path::Path::new(value))?;
+                    let _ = MAP_OVERLAYS.set(loaded);
+                }
                 other => return Err(format!("unknown ensemble product option {other}")),
             }
             i += 2;
@@ -538,7 +594,8 @@ mod tests {
         let (left, right) = roster_subtitles(20, valid, "ArWen");
         assert_eq!(left, "20 members | valid 2026-10-02_18:00:00");
         assert_eq!(right, "source: ArWen");
-        assert_eq!(roster_subtitles(1, valid, "ArWen").0, "1 member | valid 2026-10-02_18:00:00");
+        // One plane is a deterministic field, not an ensemble of one.
+        assert_eq!(roster_subtitles(1, valid, "ArWen").0, "valid 2026-10-02_18:00:00");
     }
     /// A stamp row that holds `room` characters and cuts, with the map
     /// renderer's own say-once advisory, anything longer.

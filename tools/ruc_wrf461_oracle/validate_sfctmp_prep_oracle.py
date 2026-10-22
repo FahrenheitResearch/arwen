@@ -34,7 +34,11 @@ import sys
 
 import numpy as np
 
-from gpuwm.core.fp32_ulp import monotone_fp32_key
+if __package__:
+    from .validate_qsn_oracle import _report as _report_metrics
+else:
+    from validate_qsn_oracle import _report as _report_metrics
+
 from gpuwm.core.ruc import (
     RUC_SNOW_PREP_COLUMN_INPUTS,
     RUC_SNOW_PREP_COLUMN_OUTPUTS,
@@ -99,30 +103,8 @@ OUTPUTS = (
 )
 
 
-#: Monotonic integer ordering of float32 bits; +0 and -0 collapse.  Shared
-#: rather than re-derived: see gpuwm/core/fp32_ulp.py.
-_ordinal = monotone_fp32_key
-
-
 def _report(name: str, actual: np.ndarray, expected: np.ndarray) -> int:
-    difference = np.abs(actual.astype(np.float64) - expected.astype(np.float64))
-    denominator = np.abs(expected.astype(np.float64))
-    relative = np.zeros_like(difference)
-    np.divide(difference, denominator, out=relative, where=denominator > 0.0)
-    ulp = np.abs(_ordinal(actual) - _ordinal(expected))
-    signed_zero = int(
-        np.count_nonzero(
-            (actual == 0.0)
-            & (expected == 0.0)
-            & (np.signbit(actual) != np.signbit(expected))
-        )
-    )
-    print(
-        f"  {name:<17s} max_abs={float(np.max(difference)):.6e} "
-        f"max_rel={float(np.max(relative)):.6e} "
-        f"max_ulp={int(np.max(ulp))} signed_zero_mismatch={signed_zero}"
-    )
-    return int(np.max(ulp)) + signed_zero
+    return _report_metrics(name, actual, expected, width=17)
 
 
 def _load(path: str) -> dict[str, np.ndarray]:

@@ -119,7 +119,16 @@ pub struct ContourOverlay {
 }
 
 #[derive(Clone, Debug)]
+pub struct DirectionProjection {
+    pub projection: crate::georeference::ResolvedProjection,
+    pub extent: MapExtent,
+    pub lat_lon: Vec<(f32, f32)>,
+}
+
+#[derive(Clone, Debug)]
 pub struct BarbOverlay {
+    pub direction_projection: Option<std::sync::Arc<DirectionProjection>>,
+    pub direction_arrows: bool,
     pub u: Vec<f32>,
     pub v: Vec<f32>,
     pub ny: usize,

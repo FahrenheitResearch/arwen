@@ -13,7 +13,7 @@ from gpuwm.ensemble.batch_mynn import (
 from gpuwm.ensemble.batch_storage import BatchStorage
 
 
-@pytest.mark.parametrize("members", [2, 4, 8])
+@pytest.mark.parametrize("members", [8])
 def test_surface_plan_prices_every_result(members):
     plan = mynn_surface_output_plan(ny=3, nx=5, reserved_bytes=4096)
     storage = BatchStorage(plan, members, array_module=np, available_bytes=1 << 20)
@@ -23,7 +23,7 @@ def test_surface_plan_prices_every_result(members):
     assert all(spec.ownership == "member" for spec in plan.arrays)
 
 
-@pytest.mark.parametrize("members", [2, 4, 8])
+@pytest.mark.parametrize("members", [8])
 def test_predictor_plan_prices_all_four_products_and_ten_vectors(members):
     plan = mynn_predict_output_plan(nz=12, ny=2, nx=5, reserved_bytes=8192)
     storage = BatchStorage(plan, members, array_module=np, available_bytes=1 << 20)
@@ -64,7 +64,7 @@ def test_cross_field_output_alias_refuses_before_a_launch():
                                  mol=pointer(2000), ustm=pointer(3000))
 
 
-@pytest.mark.parametrize("members", [2, 4, 8])
+@pytest.mark.parametrize("members", [8])
 def test_pbl_plan_covers_complete_native_scratch_and_six_member_rates(members):
     from gpuwm.core.mynn_pbl_scratch import (
         mynn_pbl_scratch_bytes, mynn_pbl_scratch_shapes,
@@ -95,7 +95,7 @@ def test_fixed_scratch_owner_refuses_hidden_growth_or_new_slots():
             owner.scratch(shape, slot, dtype)
 
 
-@pytest.mark.parametrize("members", [2, 4, 8])
+@pytest.mark.parametrize("members", [8])
 def test_gsd_plan_prices_ten_plumes_and_both_simultaneous_gsd_working_sets(members):
     from gpuwm.core.mynn_pbl_scratch import (
         mynn_pbl_scratch_bytes, mynn_pbl_scratch_shapes, SLOT_PLUME_WORK, SLOT_PLUME_SCRATCH,

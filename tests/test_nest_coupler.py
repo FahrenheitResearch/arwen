@@ -44,7 +44,8 @@ def _clock(grid_id, parent_id, *, step_ticks, dt, advanced=False):
 
 
 class _State:
-    def __init__(self, run):
+    def __init__(self, run, *, moisture_fields=(
+            "qv", "qc", "qr", "qi", "qs", "qg", "nr", "ni", "ns", "ng")):
         nz, ny, nx = run.nz, run.ny, run.nx
         self.mub2d = np.arange(ny * nx, dtype=np.float32).reshape(ny, nx) / 9 + 5
         self.mup = np.full((ny, nx), np.float32(0.25))
@@ -61,9 +62,7 @@ class _State:
         self.msft = np.full((ny, nx), np.float32(1.25))
         self.msfu = np.full((ny, nx + 1), np.float32(1.5))
         self.msfv = np.full((ny + 1, nx), np.float32(1.75))
-        for index, name in enumerate(
-                ("qv", "qc", "qr", "qi", "qs", "qg",
-                 "nr", "ni", "ns", "ng"), start=1):
+        for index, name in enumerate(moisture_fields, start=1):
             setattr(self, name, np.full(
                 (nz, ny, nx), np.float32(index / 100.0)))
         self.has_msf = True
@@ -100,21 +99,22 @@ class _DeviceState:
         return result
 
 
-def _nodes():
-    prun = _run(16, 16, nested=False, grid_id=1)
+def _nodes(*, parent_shape=(16, 16), child_start=(4, 4), state_factory=_State):
+    prun = _run(*parent_shape, nested=False, grid_id=1)
     # Large enough that the child RK arena backing covers the full parent;
     # the production chain has the same refinement relation.
     crun = _run(30, 30, nested=True, grid_id=2)
     pcfg = SimpleNamespace(grid_id=1, parent_id=0, parent_grid_ratio=1,
                            i_parent_start=1, j_parent_start=1, run=prun)
     ccfg = SimpleNamespace(grid_id=2, parent_id=1, parent_grid_ratio=3,
-                           i_parent_start=4, j_parent_start=4, run=crun)
+                           i_parent_start=child_start[0], j_parent_start=child_start[1],
+                           run=crun)
     parent = SimpleNamespace(
-        cfg=pcfg, state=_State(prun),
+        cfg=pcfg, state=state_factory(prun),
         clock=_clock(1, 0, step_ticks=3, dt=9.0, advanced=True))
     child_clock = _clock(2, 1, step_ticks=1, dt=3.0)
     child_clock.prepare_step()
-    child = SimpleNamespace(cfg=ccfg, state=_State(crun), parent=parent,
+    child = SimpleNamespace(cfg=ccfg, state=state_factory(crun), parent=parent,
                             clock=child_clock)
     return parent, child
 

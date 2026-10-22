@@ -1,33 +1,9 @@
 //! Exact domain/time and immutable bundle contract around the original WRF engine.
 mod stored_plane_fixture;
 use rw_wrfbatch::process_request::{ProcessRequest, REQUEST_SCHEMA, process, sha256_file};
-use std::path::PathBuf;
 
-struct Scratch(PathBuf);
-// Tests in this file run on parallel threads of one process; two of them read the same clock
-// tick on the 2.8.6 public Windows runner, shared one directory, and one's Drop removed it under
-// the other. The counter makes every scratch root distinct.
-static NEXT_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-impl Scratch {
-    fn new() -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "arwen-full-wrf-request-{}-{}-{}",
-            std::process::id(),
-            NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        Self(root)
-    }
-}
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+mod support;
+use support::Scratch;
 fn request(scratch: &Scratch) -> ProcessRequest {
     let original = stored_plane_fixture::write_rain_frame(&scratch.0, 900, 2.);
     let sha = sha256_file(&original).unwrap();
@@ -49,7 +25,7 @@ fn request(scratch: &Scratch) -> ProcessRequest {
 }
 #[test]
 fn immutable_subhour_request_retains_native_planes_profiles_and_verified_cache() {
-    let scratch = Scratch::new();
+    let scratch = Scratch::new("arwen-full-wrf-request", "");
     let request = request(&scratch);
     let result = process(&request, |_| {}).unwrap();
     assert!(!result.cache_hit);
@@ -98,7 +74,7 @@ fn immutable_subhour_request_retains_native_planes_profiles_and_verified_cache()
 }
 #[test]
 fn wrong_source_hash_domain_time_and_lead_are_refused_before_store_publication() {
-    let scratch = Scratch::new();
+    let scratch = Scratch::new("arwen-full-wrf-request", "");
     let request = request(&scratch);
     for wrong in 0..4 {
         let mut changed = request.clone();
@@ -116,7 +92,7 @@ fn wrong_source_hash_domain_time_and_lead_are_refused_before_store_publication()
 #[test]
 fn viewer_profile_preserves_exact_time_and_selected_science_without_volume_storage() {
     use rw_wrfbatch::process_request::{VIEWER_REQUEST_SCHEMA, VIEWER_RESULT_SCHEMA};
-    let scratch = Scratch::new();
+    let scratch = Scratch::new("arwen-full-wrf-request", "");
     let mut request = request(&scratch);
     let full = process(&request, |_| {}).unwrap();
     request.schema = VIEWER_REQUEST_SCHEMA.into();
@@ -188,7 +164,7 @@ fn viewer_profile_preserves_exact_time_and_selected_science_without_volume_stora
 #[test]
 fn viewer_stored_field_selection_is_drawn_from_the_stored_plane() {
     use rw_wrfbatch::process_request::VIEWER_REQUEST_SCHEMA;
-    let scratch = Scratch::new();
+    let scratch = Scratch::new("arwen-full-wrf-request", "");
     let mut request = request(&scratch);
     let full = process(&request, |_| {}).unwrap();
     request.schema = VIEWER_REQUEST_SCHEMA.into();
@@ -251,7 +227,7 @@ fn viewer_stored_field_selection_is_drawn_from_the_stored_plane() {
 #[test]
 fn viewer_request_requires_explicit_version_and_does_not_override_the_full_profile() {
     use rw_wrfbatch::process_request::VIEWER_REQUEST_SCHEMA;
-    let scratch = Scratch::new();
+    let scratch = Scratch::new("arwen-full-wrf-request", "");
     let mut request = request(&scratch);
     request.profile = Some("viewer-2d-v1".into());
     assert!(process(&request, |_| {}).is_err());

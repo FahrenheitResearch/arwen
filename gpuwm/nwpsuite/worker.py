@@ -12,7 +12,16 @@ import time
 from gpuwm import proc_identity
 from gpuwm.cycle.ledger import write_receipt_atomically
 from gpuwm.mcp.gpulock import _os_lock
+from .prepare import _sha256
 from .retention import receipt_bytes, prune
+
+
+def _stop_child(child, identity):
+    proc_identity.signal_process(identity, signal.SIGTERM, tree=True)
+    try:
+        child.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc_identity.signal_process(identity, signal.SIGKILL, tree=True)
 
 
 def main(path):
@@ -53,11 +62,7 @@ def main(path):
                 pruned = []
                 while child_process.poll() is None:
                     if stopping:
-                        proc_identity.signal_process(child_identity, signal.SIGTERM, tree=True)
-                        try:
-                            child_process.wait(timeout=5)
-                        except subprocess.TimeoutExpired:
-                            proc_identity.signal_process(child_identity, signal.SIGKILL, tree=True)
+                        _stop_child(child_process, child_identity)
                         break
                     budget = intent.get("receipt_budget_bytes")
                     if budget:
@@ -73,11 +78,7 @@ def main(path):
                             global_over = report["cap_unmet"]
                         if size > budget or global_over:
                             exceeded = size
-                            proc_identity.signal_process(child_identity, signal.SIGTERM, tree=True)
-                            try:
-                                child_process.wait(timeout=5)
-                            except subprocess.TimeoutExpired:
-                                proc_identity.signal_process(child_identity, signal.SIGKILL, tree=True)
+                            _stop_child(child_process, child_identity)
                             break
                     try:
                         child_process.wait(timeout=.25)
@@ -105,12 +106,7 @@ def main(path):
         for receipt in receipts:
             target = Path(receipt)
             if target.is_file():
-                import hashlib
-                digest = hashlib.sha256()
-                with target.open("rb") as handle:
-                    for block in iter(lambda: handle.read(1048576), b""):
-                        digest.update(block)
-                result["receipts"].append({"path": str(target), "sha256": digest.hexdigest()})
+                result["receipts"].append({"path": str(target), "sha256": _sha256(target)})
             elif result["exit_code"] == 0:
                 result.update(exit_code=1, error_class="receipt_missing", message=str(target))
         if result["exit_code"] == 0 and intent.get("score_files"):

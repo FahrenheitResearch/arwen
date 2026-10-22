@@ -336,6 +336,52 @@ def run_tests(quick: bool) -> bool:
     return proc.returncode == 0
 
 
+def _run_mutants(study, original, args, *, flush=False):
+    survivors = []
+    total = 0
+    try:
+        for label, *mutation in study["ARG_MUTANTS"]:
+            name = f"arg/{label}"
+            if args.filter and args.filter not in name:
+                continue
+            total += 1
+            study["write_source"](study["build_arg_mutant"](original, *mutation))
+            if study["run_tests"](args.quick):
+                survivors.append(name)
+                print(f"SURVIVED  {name}", flush=flush)
+            else:
+                print(f"killed    {name}", flush=flush)
+
+        for label, needle, replacement in study["STRUCT_MUTANTS"]:
+            name = f"struct/{label}"
+            if args.filter and args.filter not in name:
+                continue
+            total += 1
+            study["write_source"](study["build_struct_mutant"](
+                original, needle, replacement))
+            if study["run_tests"](args.quick):
+                survivors.append(name)
+                print(f"SURVIVED  {name}", flush=flush)
+            else:
+                print(f"killed    {name}", flush=flush)
+
+        for site in study["constant_sites"](original):
+            name = f"const/line{site[0]}/{site[3]!r}"
+            if args.filter and args.filter not in name:
+                continue
+            total += 1
+            study["write_source"](study["build_const_mutant"](original, site))
+            if study["run_tests"](args.quick):
+                survivors.append(name)
+                print(f"SURVIVED  {name}", flush=flush)
+            else:
+                print(f"killed    {name}", flush=flush)
+    finally:
+        study["write_source"](original)
+
+    return survivors, total
+
+
 def main(argv):
     ap = argparse.ArgumentParser()
     ap.add_argument("--quick", action="store_true")
@@ -346,47 +392,7 @@ def main(argv):
     if not run_tests(args.quick):
         raise SystemExit("the unmutated port already fails; fix that first")
 
-    survivors = []
-    total = 0
-    try:
-        for label, anchor, statement in ARG_MUTANTS:
-            name = f"arg/{label}"
-            if args.filter and args.filter not in name:
-                continue
-            total += 1
-            write_source(build_arg_mutant(original, anchor, statement))
-            if run_tests(args.quick):
-                survivors.append(name)
-                print(f"SURVIVED  {name}")
-            else:
-                print(f"killed    {name}")
-
-        for label, needle, replacement in STRUCT_MUTANTS:
-            name = f"struct/{label}"
-            if args.filter and args.filter not in name:
-                continue
-            total += 1
-            write_source(build_struct_mutant(original, needle,
-                                              replacement))
-            if run_tests(args.quick):
-                survivors.append(name)
-                print(f"SURVIVED  {name}")
-            else:
-                print(f"killed    {name}")
-
-        for site in constant_sites(original):
-            name = f"const/line{site[0]}/{site[3]!r}"
-            if args.filter and args.filter not in name:
-                continue
-            total += 1
-            write_source(build_const_mutant(original, site))
-            if run_tests(args.quick):
-                survivors.append(name)
-                print(f"SURVIVED  {name}")
-            else:
-                print(f"killed    {name}")
-    finally:
-        write_source(original)
+    survivors, total = _run_mutants(globals(), original, args)
 
     print(f"\n{total - len(survivors)} of {total} mutants killed")
     unexpected = [s for s in survivors if s not in EXPECTED_SURVIVORS]

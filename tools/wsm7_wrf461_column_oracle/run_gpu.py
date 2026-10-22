@@ -43,6 +43,12 @@ import sys
 
 import numpy as np
 
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from tools.wsm6_wrf461_column_oracle.common import (
+    _header, micron, _ordered, ulp, digest, read_wrf as _read_wrf, read_columns as _read_columns, accumulate)
+
 LEVEL_IN = ("th", "qv", "qc", "qr", "qi", "qs", "qg", "qh",
             "den", "pii", "p", "dz")
 SURFACE_IN = ("rain", "snow", "graupel", "hail")
@@ -62,30 +68,12 @@ def tag_of(stem: str, dt: float, nsteps: int) -> str:
 
 
 def read_columns(path: Path):
-    with open(path, "rb") as fh:
-        ncol, nz = (int(v) for v in np.fromfile(fh, "<i4", 2))
-        level = {n: np.fromfile(fh, "<f4", nz * ncol).reshape(nz, ncol) for n in LEVEL_IN}
-        surf = {n: np.fromfile(fh, "<f4", ncol) for n in SURFACE_IN}
-    return ncol, nz, level, surf
-
-
-def micron(re_metres):
-    return (np.asarray(re_metres, np.float32) * np.float32(1.0e6)).astype(np.float32)
+    return _read_columns(path, LEVEL_IN,
+                         SURFACE_IN)
 
 
 def read_wrf(path: Path):
-    """run_wsm7_columns.F90's output, effective radii already in microns."""
-    with open(path, "rb") as fh:
-        ncol, nz, nsteps = (int(v) for v in np.fromfile(fh, "<i4", 3))
-        dt = float(np.fromfile(fh, "<f4", 1)[0])
-        steps = []
-        for _ in range(nsteps):
-            lv = {n: np.fromfile(fh, "<f4", nz * ncol).reshape(nz, ncol) for n in LEVEL_OUT}
-            for n in ("re_cloud", "re_ice", "re_snow"):
-                lv[n] = micron(lv[n])
-            sf = {n: np.fromfile(fh, "<f4", ncol) for n in SURFACE_OUT}
-            steps.append((lv, sf))
-    return dict(ncol=ncol, nz=nz, nsteps=nsteps, dt=dt, steps=steps)
+    return _read_wrf(path, LEVEL_OUT, SURFACE_OUT)
 
 
 def run_gpu(columns: Path, dt: float, nsteps: int):
@@ -136,19 +124,6 @@ def run_gpu(columns: Path, dt: float, nsteps: int):
     return steps
 
 
-def _ordered(a):
-    bits = np.asarray(a, np.float32).view(np.int32).astype(np.int64)
-    return np.where(bits < 0, -(bits & 0x7FFFFFFF), bits)
-
-
-def ulp(a, b):
-    return np.abs(_ordered(a) - _ordered(b))
-
-
-def digest(a) -> str:
-    return hashlib.sha256(np.ascontiguousarray(a, "<f4").tobytes()).hexdigest()
-
-
 def _pairs(a_step, b_step):
     (al, as_), (bl, bs) = a_step, b_step
     out = {n: (al[n], bl[n]) for n in LEVEL_OUT}
@@ -157,33 +132,7 @@ def _pairs(a_step, b_step):
 
 
 def _accumulate(fields, istep, pairs, regimes, keep=None):
-    for n, (w, g) in pairs.items():
-        w = np.asarray(w, np.float32)
-        g = np.asarray(g, np.float32)
-        names = [r["name"] for r in regimes]
-        if keep is not None:
-            w, g = w[:, keep], g[:, keep]
-            names = [names[i] for i in np.nonzero(keep)[0]]
-        diff_bits = w.view(np.uint32) != g.view(np.uint32)
-        u = np.where(np.isnan(w) & np.isnan(g), 0, ulp(w, g))
-        gap = np.abs(w.astype(np.float64) - g.astype(np.float64))
-        gap = np.where(np.isnan(gap), 0.0, gap)
-        row = fields.setdefault(n, {"words": 0, "bit_mismatch": 0, "max_ulp": 0,
-                                    "max_abs": 0.0, "worst": None, "columns": {},
-                                    "first_step_with_a_mismatch": None})
-        row["words"] += int(w.size)
-        row["bit_mismatch"] += int(diff_bits.sum())
-        row["max_abs"] = max(row["max_abs"], float(gap.max()) if gap.size else 0.0)
-        if diff_bits.any() and row["first_step_with_a_mismatch"] is None:
-            row["first_step_with_a_mismatch"] = istep + 1
-        for i in np.nonzero(diff_bits.any(axis=0))[0]:
-            row["columns"][names[i]] = row["columns"].get(names[i], 0) + int(diff_bits[:, i].sum())
-        m = int(u.max()) if u.size else 0
-        if diff_bits.any() and (row["worst"] is None or m > row["max_ulp"]):
-            k, i = np.unravel_index(int(np.argmax(u)), u.shape)
-            row["max_ulp"] = max(row["max_ulp"], m)
-            row["worst"] = {"step": istep + 1, "level": int(k), "column": names[i],
-                            "a": float(w[k, i]), "b": float(g[k, i])}
+    return accumulate(fields, istep, pairs, [r["name"] for r in regimes], keep)
 
 
 def grade(a, b_steps, regimes):
@@ -191,17 +140,6 @@ def grade(a, b_steps, regimes):
     for istep, (sa, sb) in enumerate(zip(a["steps"], b_steps)):
         _accumulate(fields, istep, _pairs(sa, sb), regimes)
     return fields
-
-
-def _header():
-    import cupy as cp
-    import gpuwm.wrf_exact as wrf_exact
-
-    name = cp.cuda.runtime.getDeviceProperties(0)["name"]
-    return {"strict_build": bool(wrf_exact.ENABLED),
-            "device": name.decode() if isinstance(name, bytes) else str(name),
-            "nvrtc": ".".join(map(str, cp.cuda.nvrtc.getVersion())),
-            "cupy": cp.__version__}
 
 
 def _summary(fields):

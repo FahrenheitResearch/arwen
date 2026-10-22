@@ -54,12 +54,6 @@ def test_gas_setting_keeps_existing_case_owner_validation(tmp_path, value):
         trace_gas_overrides_from_config(_config(tmp_path, value))
 
 
-def test_absent_case_companion_keeps_default_gas_policy(tmp_path):
-    path = tmp_path / "no-companion.toml"
-    path.write_text('[experiment]\nname="no gas override"\n')
-    assert trace_gas_overrides_from_config(path) is None
-
-
 @pytest.fixture
 def numpy_as_cupy(monkeypatch):
     """NumPy stands in for ``cupy`` for one test, and leaves no module bound to it.

@@ -188,6 +188,35 @@ def _forcing_valid_times(snapshots) -> tuple:
     return tuple(snapshot.valid_time for snapshot in snapshots)
 
 
+def _posted_window_leads(posted_source, times) -> tuple:
+    """The posted leads of the run's own forcing window, in its order.
+
+    The fetch can schedule more leads than the run reads: ``[fetch] hours``
+    is forcing coverage, and the packaged HRRR recipe fetches 3 h for a 2 h
+    run.  ``_within_run_window`` keeps only the window's times, so the
+    boundary schedule has one interval per pair of those times.  Naming
+    every scheduled lead in the as-posted head refused the run at "an
+    as-posted head names 4 forcing leads for 2 boundary intervals" (full
+    CONUS HRRR from HRRR f00 + RAP f03-f06, 2026-10-21).  The
+    head binds exactly the window's leads; a later scheduled lead is not
+    forcing for this run.
+    """
+
+    valid = tuple(posted_source.valid_times)
+    try:
+        positions = [valid.index(value) for value in times]
+    except ValueError:
+        raise ValueError(
+            f"the run's forcing times {[str(value) for value in times]} are "
+            f"not all scheduled leads of the as-posted fetch "
+            f"({[str(value) for value in valid]})") from None
+    if positions != list(range(positions[0], positions[0] + len(positions))):
+        raise ValueError(
+            "the run's forcing times are not consecutive scheduled leads of "
+            "the as-posted fetch")
+    return tuple(posted_source.leads[index] for index in positions)
+
+
 def _within_run_window(snapshots, start, run_seconds):
     """Keep the run's forcing window through its final bracketing time.
 
@@ -706,6 +735,12 @@ def _naive_time(value):
     return moment
 
 
+#: The most leads one as-posted batch decodes when its caller names no bound
+#: (:meth:`_PostedMappedSource.through`): six hourly leads is one decode
+#: child per six forcing hours, decoded ahead of the builds that read them.
+POSTED_BATCH_LEADS = 6
+
+
 class _PostedMappedSource:
     """A composed source decoded lead batch by lead batch as its leads post.
 
@@ -809,7 +844,8 @@ class _PostedMappedSource:
         self._next = 0
         self._scratch = self.output_root.parent / (
             f".posted-{uuid.uuid4().hex[:8]}")
-        self.frames = PostedFrames(self.valid_times, self._locate)
+        self.frames = PostedFrames(self.valid_times, self._locate,
+                                   prefetch=self.prefetch_through)
 
     # -- reading ---------------------------------------------------------
 
@@ -886,11 +922,41 @@ class _PostedMappedSource:
             raise ValueError(
                 f"the as-posted preparation's inputs {missing} are neither "
                 "planned by the route nor present")
-        self.through(0)
+        # The first batch is what the first step needs: the start time and
+        # the forcing time after it.  Every later lead is decoded when it is
+        # asked for (prefetch_through), or beside the forecast by the
+        # remaining-forcing stage (prepare_independent_times).
+        self.through(0, until=min(1, len(self.leads) - 1))
         return self.batches[0]
 
-    def through(self, position: int) -> None:
-        """Decode every lead through ``leads[position]``, waiting as they post."""
+    def prefetch_through(self, position: int) -> None:
+        """Decode every lead through ``leads[position]`` in one batch, and no further.
+
+        For a reader about to ask for several times at once (the inland
+        water's daily-mean 2 m air temperature reads the first 24 h): one
+        batch through the last of them, where reads arriving side by side
+        would each extend the batch to every posted lead.
+        """
+
+        self.through(int(position), until=int(position))
+
+    def through(self, position: int, *, until: int | None = None) -> None:
+        """Decode every lead through ``leads[position]``, waiting as they post.
+
+        A batch also takes later leads already posted: up to
+        ``leads[until]`` when ``until`` is given, otherwise at most
+        :data:`POSTED_BATCH_LEADS` leads in all, so a window that posted
+        long ago is still decoded a few leads at a time, ahead of the
+        forcing times that read them.
+
+        Named breakages the bound prevents (V59/V60, 2026-10-21): with every
+        posted lead in one batch, the start state's inland-water mean asked
+        for f013 and the root stage composed all 36 boundary frames of a
+        48 h RAP window before the first step, which needs two; and once
+        those leads moved after the head, the remaining-forcing stage
+        composed all of them in one budgeted child before its first
+        boundary time, so the forecast waited ~24 min with every card idle.
+        """
 
         with self._decode_lock:
             while self._next <= position:
@@ -898,7 +964,10 @@ class _PostedMappedSource:
                 if lead not in self.markers:
                     self._read_marker(lead, self.posted.wait(lead))
                 end = self._next
-                while end + 1 < len(self.leads):
+                last = (max(int(until), position) if until is not None
+                        else self._next + POSTED_BATCH_LEADS - 1)
+                last = min(last, len(self.leads) - 1)
+                while end + 1 <= last:
                     later = self.leads[end + 1]
                     record = self.posted.marker(later)
                     if record is None:
@@ -907,6 +976,28 @@ class _PostedMappedSource:
                     end += 1
                 self._decode_batch(self._next, end)
                 self._next = end + 1
+
+    def prepare_independent_times(self) -> bool:
+        """Whether an already posted window may build its times in parallel.
+
+        A live window stays ordered while any lead still needs a wait.
+        Otherwise every lead's marker is read here, on the caller's thread,
+        before workers are priced, so the segment markers are fixed; the
+        leads themselves are decoded by the builds that read them, a
+        bounded batch at a time under the decode lock (:meth:`through`),
+        so the first boundary time is ready after one batch rather than
+        after the whole window.  Snapshot packing still uses the
+        preparation's snapshot_lock.
+        """
+
+        records = {lead: self.posted.marker(lead) for lead in self.leads[self._next:]}
+        if any(record is None for record in records.values()):
+            return False
+        with self._decode_lock:
+            for lead, record in records.items():
+                if lead not in self.markers:
+                    self._read_marker(lead, record)
+        return True
 
     def _needs_first_lead(self, leads) -> bool:
         """Whether a batch without the window's first lead decodes it again.
@@ -1496,6 +1587,14 @@ def prepare_mapped_wrf(
     if stock_wrf_export not in STOCK_WRF_EXPORT_MODES:
         raise ValueError(f"stock_wrf_export must be one of {STOCK_WRF_EXPORT_MODES}")
     started = time.perf_counter()
+    try:
+        from gpuwm.boundary_prestage import current_boundary_prestage
+    except ImportError:
+        # The standalone preparation package carries no standby door, so no
+        # prestage can be current there (tools/build_rw_wps_release.py).
+        boundary_prestage = None
+    else:
+        boundary_prestage = current_boundary_prestage()
     composition = Path(composition).resolve()
     mapping = Path(mapping).resolve()
     primary = tuple(Path(path).resolve() for path in primary_files)
@@ -1730,21 +1829,38 @@ def prepare_mapped_wrf(
     water_overlay, water_overlay_binding = load_bound_water_overlay(
         None if case_data is None else case_data.water_temperature_overlay)
     from gpuwm.experiment import (
-        deferred_initial_perturbation, refuse_unrouted_spawn,
+        deferred_initial_perturbation, dormant_domain_ids,
     )
-    refuse_unrouted_spawn(exp, "mapped-adapter prepared-cache")
+    # A dormant (spawn-declared) nest is prepared at its declared placeholder
+    # like any t = 0 child -- that prices it and gives the prepared tree its
+    # bundle -- and the corridor reaches the whole parent frame for it
+    # (gpuwm.static.corridor.corridor_reach), which is the ground the
+    # prepared tree route crops a newborn from.  A single-domain bundle has
+    # no tree route to spawn on, so a dormant slot there still refuses.
+    if dormant_domain_ids(exp) and len(exp.domains) < 2:
+        from gpuwm.experiment import refuse_unrouted_spawn
+        refuse_unrouted_spawn(exp, "mapped-adapter single-domain prepared-cache")
     initial_perturbation = deferred_initial_perturbation(
         exp, "mapped-adapter prepared-cache")
     hierarchy = len(exp.domains) > 1
     initial_request = None
-    if initial_inputs is not None:
+    if initial_inputs is not None or boundary_prestage is not None:
         # The independent start must be applied to every child before a tree
         # can use it. Refuse a tree here instead of silently starting children
         # from the boundary product while their parent uses the analysis.
-        if hierarchy or as_posted is not None:
+        if hierarchy:
             raise ValueError("separate initial inputs currently require a complete "
                              "single-domain forcing window; a tree needs the "
                              "analysis propagated into each child's initial state")
+        if as_posted is not None:
+            # Named breakage (2.9.4 rolling, HRRR recipe with --initial-inputs on
+            # the rap-native route): this refusal used to name a tree that was
+            # not there.  The as-posted head binds forcing leads as they post,
+            # so the window the separate start is checked against is not whole.
+            raise ValueError("separate initial inputs need the complete forcing window "
+                             "before the start, and this run fetches its forcing as it "
+                             "posts; run with --whole-cycle to fetch the whole window "
+                             "first")
         if physical_input_store is not None or physical_input_provider is not None:
             # A physical member store replaces every knot's interpolated
             # state, the start included, so the separate analysis would be
@@ -1753,7 +1869,11 @@ def prepare_mapped_wrf(
                              "physical member input; the member store already "
                              "carries the initial state")
         from gpuwm.initial_source import read_initial_inputs
-        initial_request = read_initial_inputs(initial_inputs)
+        initial_request = (boundary_prestage if boundary_prestage is not None
+                           else read_initial_inputs(initial_inputs))
+        if boundary_prestage is not None and physical_output_store is not None:
+            raise ValueError("resident boundary prestage cannot capture a physical "
+                             "member store while suspending its initial analysis")
     # A domain tree is published through staging deeper than its
     # output root; refused here, the first point this door knows it
     # prepares a tree, before any source is decoded.  A single-domain
@@ -1849,7 +1969,7 @@ def prepare_mapped_wrf(
 
     posted_source = None
     early_initial = None
-    if initial_request is not None:
+    if initial_request is not None and boundary_prestage is None:
         early_initial = _EarlyInitialDecode(
             initial_request, output_parent=output_root.parent, grids=grids,
             valid_time=exp.start_time, workers=preprocess_workers,
@@ -2350,12 +2470,36 @@ def prepare_mapped_wrf(
                 initial_met = None
                 del initial_result
                 release_backend_memory(preprocess)
+                if boundary_prestage is not None:
+                    from gpuwm.ingest.preparation_workers import forcing_time_workers
+                    prestage_workers = forcing_time_workers(
+                        len(snapshots) - 1,
+                        cpu_workers=worker_policy.get("effective_workers"),
+                        backend=str(preprocess_receipt["backend"]),
+                        selection=preprocess_receipt.get("selection"))
+                    worker_policy["forcing_time_workers"] = prestage_workers
+                    boundary_prestage.receipt["stages"].extend([
+                        {"name": "decode_and_compose", "wall_seconds": decode_seconds,
+                         "parallelism": "Rust worker pool"},
+                        {"name": "static", "wall_seconds": static_seconds,
+                         "parallelism": str(preprocess_receipt["backend"])},
+                    ])
+                    initial_request = boundary_prestage.prepare_independent(
+                        forcing=forcing, times=times, build=build_forcing_time,
+                        release=lambda: release_backend_memory(preprocess),
+                        workers=prestage_workers["workers"], output_root=output_root)
                 try:
+                    analysis_started = time.perf_counter()
                     with (early_initial.analysis() if early_initial is not None
                           else decode_initial_analysis(
                             initial_request, output_parent=output_root.parent,
                             grids=grids, valid_time=exp.start_time,
                             workers=preprocess_workers, decoders=decoders)) as analysis:
+                        if boundary_prestage is not None:
+                            boundary_prestage.receipt["stages"].append({
+                                "name": "initial_analysis_decode",
+                                "wall_seconds": time.perf_counter() - analysis_started,
+                                "parallelism": "Rust worker pool"})
                         _require_source_top(
                             exp, cfg, _source_top_pressure_pa(
                                 (analysis.snapshot,), mapping_contract=analysis.mapping),
@@ -2379,6 +2523,9 @@ def prepare_mapped_wrf(
                         # boundary source's atmosphere at the start time.
                         forcing.replace_start_state(
                             initial_result.state, index=0)
+                        if boundary_prestage is not None:
+                            boundary_prestage.complete(forcing, times)
+                            boundary_prestage.receipt["forcing_stage_timings"] = forcing_timings
                         initial_soil_contract = analysis.soil_layer_contract
                         initial_soil_mesh = soil_mesh_plan_from_case(
                             analysis.snapshot, grid, experiment_config)
@@ -2413,7 +2560,8 @@ def prepare_mapped_wrf(
         # SCT_DOM let a land column carry the water soil category into RUC
         # (ENG-009).
         from gpuwm.core.landuse import (
-            ruc_fractional_seaice as _ruc_fractional_seaice)
+            ruc_fractional_seaice as _ruc_fractional_seaice,
+            seaice_threshold_of as _seaice_threshold_of)
         soil = preprocess_land_surface_soil(
             initial_met.fields,
             # real.exe's adjust_for_seaice_pre/post keep the fraction under
@@ -2421,6 +2569,7 @@ def prepare_mapped_wrf(
             # otherwise (module_soil_pre.F:216-219, :337-343, :392-393 of the HRRR
             # v4.1.21 fork).
             fractional_seaice=_ruc_fractional_seaice(cfg),
+            seaice_threshold=_seaice_threshold_of(cfg),
             sf_surface_physics=int(cfg.sf_surface_physics),
             # Resolved, not defaulted: see gpuwm/ingest/hrrr_physics.py.
             num_soil_layers=soil_layer_count(cfg),
@@ -2918,7 +3067,7 @@ def prepare_mapped_wrf(
                 "input_plan": posted_plan["plan"],
                 # The markers of every lead the head's own decode read.
                 "start_markers": dict(posted_source.markers),
-                "forcing_leads": posted_source.leads,
+                "forcing_leads": _posted_window_leads(posted_source, times),
                 "seal_authored_proof_keys": _AS_POSTED_SEAL_KEYS,
                 "manifest_path": "source-evidence/input-manifest.json",
                 "lead_role_prefix": "",
@@ -2957,8 +3106,7 @@ def prepare_mapped_wrf(
                 as_posted=as_posted_head,
             )
             if posted_source is not None:
-                # From here on the build of forcing time k waits for lead
-                # k (the heartbeat says waiting_for_source), and each
+                # A missing lead keeps its build waiting_for_source; each
                 # segment binds the markers of the leads it spans.
                 posted_source.posted.writer = writer
                 writer.bind_posted_leads(posted_source.markers)
@@ -2978,24 +3126,31 @@ def prepare_mapped_wrf(
             boundaries_started = time.perf_counter()
             from gpuwm.ensemble.posted_preparation import current_posted_preparation
             from gpuwm.ingest.preparation_workers import forcing_time_workers
-            # Side by side only where a time's build reads and writes nothing
-            # but its own arrays: a physical store or a posted source is
-            # written or waited on in time order, so those stay serial.
+            # Physical stores and member replacement still need time order.
+            # A posted window with no missing lead is independent too: finish
+            # its decode before workers start, so no build advances batches or
+            # changes the markers the ordered segment writer binds.
             independent_times = (physical_input is None and physical_output is None
-                                 and posted_source is None
                                  and current_posted_preparation() is None)
+            if independent_times and posted_source is not None:
+                independent_times = posted_source.prepare_independent_times()
             forcing_workers = forcing_time_workers(
                 len(snapshots) - 1,
                 cpu_workers=worker_policy.get("effective_workers"),
                 backend=str(preprocess_receipt["backend"]),
                 selection=preprocess_receipt.get("selection"),
-            ) if independent_times else {"workers": 1, "basis": "ordered physical or posted source"}
+            ) if independent_times else {"workers": 1, "basis": "ordered physical source or pending posted lead"}
             worker_policy["forcing_time_workers"] = forcing_workers
-            writer.stream_forcing_times(
-                count=len(snapshots), build_forcing_time=build_forcing_time,
-                forcing=forcing, times=times,
-                release=lambda: release_backend_memory(preprocess),
-                workers=forcing_workers["workers"])
+            if boundary_prestage is not None:
+                writer.write_intervals(boundary_prestage.boundaries.intervals)
+                forcing.release(0)
+                forcing.release(1)
+            else:
+                writer.stream_forcing_times(
+                    count=len(snapshots), build_forcing_time=build_forcing_time,
+                    forcing=forcing, times=times,
+                    release=lambda: release_backend_memory(preprocess),
+                    workers=forcing_workers["workers"])
         initialize_seconds += time.perf_counter() - boundaries_started
         forcing_timings.sort(key=lambda entry: entry["forcing_index"])
         posted_proof = {}
@@ -3092,6 +3247,8 @@ def prepare_mapped_wrf(
             _canonical(proof).encode("utf-8")
         ).hexdigest()
         writer.publish(proof)
+        if boundary_prestage is not None:
+            boundary_prestage.cache_content_sha256 = cache_receipt["content_sha256"]
         if physical_output is not None:
             physical_output.seal()
         # The composed frame stream is spent: every valid time has been
@@ -3297,7 +3454,7 @@ def _prepare_chained_mapped_tree(c) -> dict[str, object]:
             as_posted_head = {
                 "input_plan": c.posted_plan["plan"],
                 "start_markers": dict(posted.markers),
-                "forcing_leads": posted.leads,
+                "forcing_leads": _posted_window_leads(posted, c.times),
                 "seal_authored_proof_keys": _AS_POSTED_SEAL_KEYS,
                 "manifest_path": "source-evidence/input-manifest.json",
                 "lead_role_prefix": "",

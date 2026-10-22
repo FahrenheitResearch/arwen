@@ -3,7 +3,7 @@ import hashlib
 import json
 from pathlib import Path
 
-SOURCE_EXTENSION_SHA = "a809c201c83e7bc0e8b9fd5ada495ed1998d74c60a5ceb83c9f67910c8e86449"
+SOURCE_EXTENSION_SHA = '4fa0115ba708eb5495d248ff29e73dd7799563f7378f5ca49ac60fd26ffed7da'
 DIFFUSION_CACHE_EXTENSION_SHA = "2d0a03fbffcec53d12d692c524e3fed01611677a08f677c2ff76f39214549c79"
 
 PROOF_SHAS = {
@@ -93,6 +93,21 @@ def _source_extension(root, name, before, after, schema=None):
     assert transition is not None, name
     assert transition["before"] == before, name
     assert transition["after"] == after, name
+    if name == "gpuwm/core/kernels/__init__.py" and "loader_slimming_replay" in measured:
+        seal = measured["loader_slimming_replay"]
+        assert seal["receipt"] == "slimming-loader-source-replay.json"
+        path = extension.parent / seal["receipt"]
+        assert _sha(path) == seal["sha256"], "slimming loader replay seal"
+        replay = json.loads(path.read_text())
+        assert replay["schema"] == "measured-slimming-loader-source-replay-v1"
+        assert replay["source"] == name and replay["after"] == after
+        assert replay["base"] == "89107bdeb2d0b74e4fd42c79a1cb72d1af67ac74"
+        assert replay["measurements"] == measured["measurements"]
+        assert replay["numerics"] == "strict"
+        assert replay["generator"] == "tools/assembled_legacy_replay.py"
+        assert replay["recorder"] == "tools/battery/loader_source_receipt.py"
+        for role in ("generator", "recorder"):
+            assert replay[role + "_sha256"] == _sha(Path(root) / replay[role])
 
 
 def _sources(root, proof):

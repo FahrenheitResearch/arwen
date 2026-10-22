@@ -48,9 +48,33 @@ _ROOT = Path(__file__).resolve().parents[1]
 #: version-blind.
 # The three hydro workspaces build the bundled NextGen artifacts in the same offline release build
 # (2.9.3: the cut's manylinux container refused nextgen_forcing, "no matching package named `csv`").
-_WORKSPACES = ("tools/grib1_bridge", "tools/rustwx", "tools/rw_wps",
-               "tools/arwen-launchpad", "tools/arwen-tui", "tools/zarr_bridge",
-               "tools/nextgen_forcing", "tools/nextgen_hydrofabric", "tools/nextgen_verify")
+_LISTED = ("tools/grib1_bridge", "tools/rustwx", "tools/rw_wps",
+           "tools/arwen-launchpad", "tools/arwen-tui", "tools/zarr_bridge",
+           "tools/nextgen_forcing", "tools/nextgen_hydrofabric", "tools/nextgen_verify",
+           "tools/cfe_replay", "tools/hydro_world", "tools/hydro_world_params",
+           "tools/nextgen_cfe_prepare", "tools/nextgen_replay",
+           "tools/noahowp-init", "tools/sfire_coupled_ideal/rust",
+           # 2.9.4 ocean lanes: rw_ocean (cap-waves-couple) and rw_bathy (cap-surge).
+           "tools/ocean_prepare", "tools/rw-bathy")
+
+
+
+def _bridge_workspaces() -> tuple[str, ...]:
+    """Every locked cargo workspace the release build compiles, read from gpuwm/bridge_assets.py.
+
+    Breakage it prevents (2.9.4 pass 3 native-windows, 2026-10-21 01:39Z): tools/hydro_world_init joined the bridge
+    bundle without a .cargo/config.toml, so the offline Windows release build resolved against crates.io and failed
+    ("no matching package named `cudarc`"); this hand-written list never named it. Deriving the list from the bundle
+    makes a new bridge workspace covered the day it ships.
+    """
+    text = (_ROOT / "gpuwm" / "bridge_assets.py").read_text(encoding="utf-8")
+    found = sorted(set(re.findall(r"tools/[A-Za-z0-9_-]+", text)))
+    return tuple(name for name in found if (_ROOT / name / "Cargo.lock").is_file()
+                 and _PACKAGE_SOURCE.search((_ROOT / name / "Cargo.lock").read_text(encoding="utf-8")))
+
+
+_PACKAGE_SOURCE = re.compile(r'^source = "(?P<source>[^"]+)"', re.M)
+_WORKSPACES = tuple(sorted(set(_LISTED) | set(_bridge_workspaces())))
 
 _PACKAGE_NAME = re.compile(r'^name = "(?P<name>[^"]+)"', re.M)
 _PACKAGE_VERSION = re.compile(r'^version = "(?P<version>[^"]+)"', re.M)
@@ -114,11 +138,15 @@ def test_every_locked_dependency_is_vendored(relative: str) -> None:
     workspace = _ROOT / relative
     replacement = (workspace / ".cargo" / "config.toml").read_text(
         encoding="utf-8")
-    assert 'replace-with = "vendored-sources"' in replacement
     import tomllib
     sources = tomllib.loads(replacement)["source"]
-    registry = (workspace / sources["vendored-sources"]["directory"]).resolve()
-    assert registry.is_relative_to(_ROOT.resolve()), "vendored sources must ship in the tree"
+    # Lexical, not resolve(): the guard is that the configured directory does not climb out of the tree.
+    # Resolving followed a symlinked workspace (the R7b runner emulation links every tools/<workspace>
+    # to a snapshot outside the clone) and failed every workspace on a tree that ships its registry
+    # (2.9.4 rolling pass 7c12bbf2, route B: "vendored sources must ship in the tree").
+    import os
+    registry = Path(os.path.normpath(workspace / sources[sources["crates-io"]["replace-with"]]["directory"]))
+    assert registry.is_relative_to(_ROOT), "vendored sources must ship in the tree"
     assert registry.is_dir()
     locked = _locked_external_packages(workspace)
     assert locked, f"{relative} locks no external dependency"
@@ -132,8 +160,8 @@ def test_every_locked_dependency_is_vendored(relative: str) -> None:
     assert not unresolvable, (
         f"{relative}/vendor/crates-io cannot serve {sorted(unresolvable)}, "
         "so `cargo build --locked --offline` resolves nothing there; "
-        "regenerate it with `cargo vendor --locked vendor/crates-io` and "
-        "record the change in VENDOR.md")
+        "add the missing crates using the scratch-vendoring instructions in "
+        "tools/rustwx/VENDOR.md; never overwrite the shared registry")
 
 
 def test_the_vendored_registry_check_can_fail(tmp_path: Path) -> None:
@@ -206,6 +234,7 @@ def test_shared_ui_vendor_contains_every_checksummed_file() -> None:
     import tomllib
 
     mirror = _ROOT / "tools" / "arwen-ui-vendor"
+    registry = _ROOT / "tools/rustwx/vendor/crates-io"
     manifest = json.loads((mirror / "manifest.json").read_text(encoding="utf-8"))
     expected = {}
     for workspace in ("arwen-launchpad", "arwen-tui"):
@@ -223,7 +252,9 @@ def test_shared_ui_vendor_contains_every_checksummed_file() -> None:
     for (name, version), checksum in expected.items():
         metadata = recorded[name, version]
         assert metadata["package_sha256"] == checksum
-        package = mirror / "crates-io" / f"{name}-{version}"
+        package = registry / f"{name}-{version}"
+        if not package.is_dir():
+            package = registry / name
         _assert_vendored_files(package, checksum)
         actual = tomllib.loads((package / "Cargo.toml").read_text(
             encoding="utf-8"))["package"]
@@ -245,7 +276,10 @@ def test_zarr_vendor_contains_every_checksummed_file_and_locked_grant():
     for (name, version), checksum in locked.items():
         metadata = recorded[name, version]
         assert metadata["package_sha256"] == checksum
-        package = workspace / "vendor/crates-io" / f"{name}-{version}"
+        registry = _ROOT / "tools/rustwx/vendor/crates-io"
+        package = registry / f"{name}-{version}"
+        if not package.is_dir():
+            package = registry / name
         _assert_vendored_files(package, checksum)
         actual = tomllib.loads((package / "Cargo.toml").read_text(encoding="utf-8"))["package"]
         assert actual.get("license") == metadata["license"]
@@ -353,6 +387,9 @@ def test_zarr_notice_inventory_orders_versions_without_losing_lock_authority(tmp
             json.dumps({"package": checksum, "files": {}}), encoding="utf-8")
         blocks.append(f'[[package]]\nname = "example"\nversion = "{version}"\n'
                       f'source = "registry+https://example.invalid"\nchecksum = "{checksum}"\n')
+    (workspace / ".cargo").mkdir()
+    (workspace / ".cargo/config.toml").write_text(
+        '[source.vendored-sources]\ndirectory = "vendor/crates-io"\n', encoding="utf-8")
     monkeypatch.setattr(notice, "WORKSPACE", workspace)
     lock = workspace / "Cargo.lock"
     lock.write_text("\n".join(blocks), encoding="utf-8")

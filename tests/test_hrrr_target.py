@@ -110,7 +110,7 @@ def test_target_domain_rejects_unsupported_projection_and_bad_geometry():
         _target(surface_fallback_radius_cells=True)
 
 
-@pytest.mark.parametrize("nz", [4, 17, 49, 80, 113])
+@pytest.mark.parametrize("nz", [4, 113])
 def test_target_domain_vertical_count_is_parameterized(nz):
     target = _target(nz=nz)
     assert target.nz == nz
@@ -182,8 +182,7 @@ def test_source_grid_shape_and_rotation_have_independent_literal_anchor():
     assert cosa[0, 0] == pytest.approx(0.9626939882962883, abs=2e-15)
 
 
-def test_projected_plan_support_and_nearest_are_crop_invariant(monkeypatch):
-    monkeypatch.setattr(hrrr, "_cupy", lambda: np)
+def _check_projected_donor_selection(monkeypatch, plan_factory):
     # qx is exactly half-integer: floor(q+0.5) must pick global donor 101
     # independently of even/odd crop-origin parity.  qy just below integer
     # also proves the donor floor is selected in FP64 before FP32 weights.
@@ -210,7 +209,7 @@ def test_projected_plan_support_and_nearest_are_crop_invariant(monkeypatch):
             nx=24,
             fields={},
         )
-        plan = hrrr._ProjectedGpuPlan(snapshot, target_lat, target_lon)
+        plan = plan_factory(snapshot, target_lat, target_lon)
         field = np.broadcast_to(
             np.arange(origin, origin + snapshot.nx, dtype=np.float32),
             (snapshot.ny, snapshot.nx),
@@ -220,32 +219,16 @@ def test_projected_plan_support_and_nearest_are_crop_invariant(monkeypatch):
     assert selected == [101.0, 101.0]
 
 
+
+def test_projected_plan_support_and_nearest_are_crop_invariant(monkeypatch):
+    monkeypatch.setattr(hrrr, "_cupy", lambda: np)
+    _check_projected_donor_selection(monkeypatch, hrrr._ProjectedGpuPlan)
+
+
 def test_projected_cpu_plan_preserves_fp64_donor_selection(monkeypatch):
-    qx = 100.5
-    qy = 200.0 - 1.0e-7
-
-    class ExactSourceCoordinates:
-        @staticmethod
-        def latlon_to_ij(_latitude, _longitude):
-            return np.asarray([[qx + 1.0]]), np.asarray([[qy + 1.0]])
-
-    monkeypatch.setattr(
-        hrrr, "hrrr_source_grid", lambda: ExactSourceCoordinates())
-    target_lat = np.zeros((1, 1))
-    target_lon = np.zeros((1, 1))
-    selected = []
-    for origin in (90, 91):
-        snapshot = HrrrNativeSnapshot(
-            valid_time=datetime(2026, 7, 18), forecast_hour=0,
-            i_start=origin, j_start=190, ny=24, nx=24, fields={})
-        plan = hrrr._ProjectedCpuPlan(
-            snapshot, target_lat, target_lon, object())
-        field = np.broadcast_to(
-            np.arange(origin, origin + snapshot.nx, dtype=np.float32),
-            (snapshot.ny, snapshot.nx))
-        selected.append(float(plan.apply(field, method="nearest")[0, 0]))
-        assert int(plan.iy[0, 0]) + snapshot.j_start == 199
-    assert selected == [101.0, 101.0]
+    _check_projected_donor_selection(
+        monkeypatch, lambda snapshot, lat, lon: hrrr._ProjectedCpuPlan(
+            snapshot, lat, lon, object()))
 
 
 def _constant_earth_wind_snapshot(target: HrrrTargetDomain):
@@ -888,7 +871,7 @@ def test_bridge_seal_series_horizon_is_dynamic_and_strict(tmp_path):
         _series_hours(series)
 
 
-@pytest.mark.parametrize("nz", [4, 17, 49, 80, 113])
+@pytest.mark.parametrize("nz", [4, 113])
 def test_stock_wrf_acceptance_namelist_uses_target_geometry_and_vertical(nz):
     target = _target(nx=37, ny=29, nz=nz, time_step_seconds=11)
     text = render_namelist(

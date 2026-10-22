@@ -1,0 +1,133 @@
+#!/bin/sh
+# forward-only-hooks: prepare-commit-msg
+#
+# reset, rebase, amend or force-push, because history is the only
+# recovery net when many agents work in parallel worktrees.  Origin
+# (2026-10-20): two agents chained `git commit --amend` seconds after a
+# commit.
+#
+# Git calls this as: prepare-commit-msg <msgfile> [<source> [<sha>]]
+#   source: message (-m/-F), template, merge, squash, or commit
+#           (-c/-C/--amend; for --amend the third argument is "HEAD").
+# `--amend -m x` arrives as source "message" with no sha, so the
+# arguments alone cannot tell an amend from a new commit.  The hook
+# therefore reads the command line of the git process that called it
+# (Linux: /proc; Windows: the process table; elsewhere: ps).  When no
+# command line is readable it falls back on the arguments and on the
+# author date git exports (an amend re-uses HEAD's).
+#
+# Ordinary commits, merges, cherry-picks, reverts, squash messages and
+# `git commit -c/-C <sha>` pass untouched.  A hook that was here before
+# install runs afterwards as prepare-commit-msg.local.
+
+MSG='amend is banned here (forward commits only); make a new commit'
+source=$2
+sha=$3
+
+chain() {
+    if [ -x "$0.local" ]; then
+        exec "$0.local" "$@"
+    fi
+    exit 0
+}
+
+refuse() {
+    echo "$MSG" >&2
+    [ -n "$1" ] && echo "($1)" >&2
+    exit 1
+}
+
+# Read an argv one argument per line on stdin (first line = the git
+# executable) the way git's option parser would, and print "amend" or
+# "plain".  --amend may be abbreviated to any prefix down to --am.
+argv_verdict() {
+    awk '
+        NR == 1 { next }
+        skip { skip = 0; next }
+        $0 == "--" { exit }
+        $0 ~ /^--(am|ame|amen|amend)$/ { found = 1; exit }
+        $0 ~ /^--(message|file|reuse-message|reedit-message|author|date|fixup|squash|cleanup|template|trailer|git-dir|work-tree|namespace)$/ { skip = 1; next }
+        $0 == "-c" || $0 == "-C" { skip = 1; next }
+        $0 ~ /^-[A-Za-z]+$/ && $0 ~ /[mFcCt]$/ { skip = 1; next }
+        END { print (found ? "amend" : "plain") }
+    '
+}
+
+# Print the argv (one per line) of the nearest git ancestor, or nothing.
+git_ancestor_argv() {
+    if [ -r "/proc/$$/winpid" ]; then
+        # Git for Windows: the hook's sh is an MSYS process whose parent
+        # (git.exe) is a native Windows process MSYS cannot see.
+        w=$(cat "/proc/$$/winpid" 2>/dev/null)
+        [ -n "$w" ] || return 0
+        command -v powershell.exe >/dev/null 2>&1 || return 0
+        FWD_WINPID=$w powershell.exe -NoProfile -NonInteractive -Command '
+            $i = [int]$env:FWD_WINPID
+            for ($k = 0; $k -lt 8; $k++) {
+                $p = Get-CimInstance Win32_Process -Filter "ProcessId=$i" -ErrorAction SilentlyContinue
+                if (-not $p) { break }
+                if ($p.Name -ieq "git.exe" -and $p.CommandLine) {
+                    foreach ($m in [regex]::Matches($p.CommandLine, "(?:[^\s`"]+|`"(?:\\.|[^`"\\])*`")+")) {
+                        ($m.Value -replace "`"", "") -replace "[\r\n]", " "
+                    }
+                    break
+                }
+                $i = $p.ParentProcessId
+            }' 2>/dev/null | tr -d '\r'
+        return 0
+    fi
+    pid=$PPID
+    k=0
+    while [ "$k" -lt 8 ] && [ -n "$pid" ] && [ "$pid" -gt 1 ] 2>/dev/null; do
+        if [ -r "/proc/$pid/cmdline" ]; then
+            argv=$(tr '\n\000' ' \n' < "/proc/$pid/cmdline")
+            next=$(awk '/^PPid:/ { print $2 }' "/proc/$pid/status" 2>/dev/null)
+        else
+            argv=$(ps -o args= -p "$pid" 2>/dev/null | tr ' ' '\n')
+            next=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+        fi
+        exe=$(printf '%s\n' "$argv" | sed -n 1p)
+        base=${exe##*/}
+        base=${base%.exe}
+        if [ "$base" = git ]; then
+            printf '%s\n' "$argv"
+            return 0
+        fi
+        pid=$next
+        k=$((k + 1))
+    done
+    return 0
+}
+
+case "$source" in
+    commit|message) ;;
+    *) chain "$@" ;;   # template, merge, squash, none: never an amend
+esac
+
+argv=$(git_ancestor_argv)
+if [ -n "$argv" ]; then
+    case "$(printf '%s\n' "$argv" | argv_verdict)" in
+        amend) refuse ;;
+        *) chain "$@" ;;
+    esac
+fi
+
+# No readable command line: decide from what git handed over.
+head_sha=$(git rev-parse -q --verify HEAD 2>/dev/null)
+if [ "$source" = commit ] && [ -n "$head_sha" ]; then
+    named=$(git rev-parse -q --verify "${sha:-HEAD}^{commit}" 2>/dev/null)
+    if [ "$named" = "$head_sha" ]; then
+        refuse "to re-use HEAD's message in a new commit: git log -1 --format=%B > m.txt && git commit -F m.txt"
+    fi
+fi
+if [ "$source" = message ] && [ -n "$head_sha" ] && [ -n "$GIT_AUTHOR_DATE" ]; then
+    head_date=$(git log -1 --format='@%at %z' HEAD 2>/dev/null)
+    head_epoch=$(git log -1 --format='%at' HEAD 2>/dev/null)
+    now=$(date +%s)
+    # A new commit made in the same second as HEAD shares its date too,
+    # so only an older re-used date is taken as an amend.
+    if [ "$GIT_AUTHOR_DATE" = "$head_date" ] && [ $((now - head_epoch)) -gt 2 ]; then
+        refuse "the author date is HEAD's, which only --amend re-uses"
+    fi
+fi
+chain "$@"

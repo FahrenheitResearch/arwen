@@ -237,3 +237,43 @@ def test_the_skip_note_takes_off_only_a_prefix_that_is_an_input():
     storeless = "a vertical section is cut along a LINE: add --section"
     assert _skip_reason(storeless, sources) == storeless
     assert _skip_reason("   ", sources) == "no reason given"
+
+
+def test_a_snowfall_window_missing_its_history_is_a_named_skip():
+    """A snowfall window whose history lost a frame is a skip naming it.
+
+    A host removed earlier history frames to save disk; the windows that
+    needed them left the pictures with nothing in the summary saying which
+    frame they needed.  The engine's note (``push`` in ``snowfall.rs``) is
+    the reason, and it names the missing record's valid time.
+    """
+    root = Path(__file__).resolve().parents[1] / "tools" / "rustwx"
+    snowfall = (root / "crates" / "rw-wrfbatch" / "src"
+                / "snowfall.rs").read_text(encoding="utf-8")
+    assert 'format!("{slug} unavailable: {e}")' in snowfall
+    for slug in rustwx.SNOWFALL_WINDOW_SLUGS:
+        assert f'("{slug}", CanonicalField::' in snowfall
+    note = ("snow_kuchera_window unavailable: exact snowfall baseline frame "
+            "missing (no history record valid at 2026-10-20_21:00:00); "
+            "refusing an understated window total")
+    assert rustwx.import_note_skip(note, [Path("f")]) == (
+        "snow_kuchera_window", f"f: {note}")
+    assert rustwx.import_note_skip(
+        "not_a_snow_product unavailable: x", [Path("f")]) is None
+
+
+def test_a_pass_whose_only_skips_do_not_apply_succeeds_empty():
+    """qpf_1h on a 3-hourly nest is not applicable, not a failed render."""
+    from gpuwm.render import not_applicable_skips, skip_notice
+
+    na = ("wrfout_d02: F072: not-applicable: this grid's history is written "
+          "every 3 h, so F071 that window F071-F072 needs is never stored; "
+          "the product does not apply to this history")
+    gap = ("wrfout_d02: missing stored hour(s) F071 (window F071-F072 ...; "
+           "gaps are never skipped)")
+    assert not_applicable_skips([("qpf_1h", na)])
+    assert "successful skip" in skip_notice([("qpf_1h", na)], wrote_any=False)
+    assert not not_applicable_skips([])
+    assert not not_applicable_skips([("qpf_1h", na), ("qpf_6h", gap)])
+    assert "exit code is nonzero" in skip_notice([("qpf_1h", gap)],
+                                                 wrote_any=False)

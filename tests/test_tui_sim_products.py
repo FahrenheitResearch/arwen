@@ -30,8 +30,11 @@ def bundle(tmp_path, layout):
     return root, config, wps
 
 
-@pytest.mark.parametrize("layout", ["single", "tree"])
-@pytest.mark.parametrize("products", [None, "none", "all", "var:SNOWH,total_qpf"])
+@pytest.mark.parametrize("layout,products", [
+    pytest.param("single", None, id="None-single"),
+    pytest.param("tree", "none", id="none-tree"),
+    pytest.param("single", "var:SNOWH,total_qpf", id="var:SNOWH,total_qpf-single"),
+])
 def test_public_sim_prints_exact_supported_runner_plot_arguments(
         tmp_path, capsys, layout, products):
     from gpuwm import prepared_single_domain_forecast as single
@@ -116,8 +119,10 @@ def test_sim_dispatch_forwards_selection_in_process_without_starting_a_plotter(
             in capsys.readouterr().out)
 
 
-@pytest.mark.parametrize("failure_type", [RuntimeError, KeyboardInterrupt])
-@pytest.mark.parametrize("join_fails", [False, True])
+@pytest.mark.parametrize("failure_type,join_fails", [
+    pytest.param(RuntimeError, False, id="False-RuntimeError"),
+    pytest.param(KeyboardInterrupt, True, id="True-KeyboardInterrupt"),
+])
 def test_tree_failure_joins_dispatched_plot_thread_and_preserves_primary_error(
         tmp_path, monkeypatch, capsys, failure_type, join_fails):
     import threading

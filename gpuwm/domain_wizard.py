@@ -459,13 +459,9 @@ def vram_reserve_gib(vram_gib: float) -> float:
 #: are oracle-gated against the pinned WRF v4.6.1 module_llxy.F
 #: (tests/test_projection_oracle.py).
 MERCATOR_MAX_LAT, LAMBERT_MAX_LAT = 25.0, 60.0
-#: Cells of clearance between the domain footprint and the projection
-#: pole; a domain containing (or touching) the pole is refused -- the
-#: lat-lon source interpolation and static-tile windowing are not
-#: pole-capable (genuine limit, not a projection-math one).  The number
-#: and the measurement that reads it live beside the projection math
-#: (:mod:`gpuwm.static.projection`), because plan review refuses the
-#: same footprint and the two answers have to be one answer.
+#: Clearance from the Lambert projection pole, shared with plan review.
+#: Polar stereographic supports a cap containing its hemisphere's pole;
+#: its forcing and static windows retain periodic longitude donors.
 _POLE_CLEARANCE_CELLS = POLE_CLEARANCE_CELLS
 
 #: Cells of pole clearance the point FIT sizes to, as distinct from the
@@ -930,12 +926,9 @@ DEFAULT_RESTART_INTERVAL_S = 3600.0
 _MIN_SCALE, _MAX_SCALE = 0.55, 64.0
 
 #: The nine WPS_GEOG dataset directories the static builder opens (the
-#: ``default`` geog_data_res selector; gpuwm/static/build.py).
-GEOG_DATASETS = (
-    "topo_gmted2010_30s", "modis_landuse_20class_30s_with_lakes",
-    "soiltype_top_30s", "soiltype_bot_30s", "greenfrac_fpar_modis",
-    "lai_modis_10m", "albedo_modis", "maxsnowalb_modis", "soiltemp_1deg",
-)
+#: ``default`` geog_data_res selector; gpuwm/static/build.py), relative to
+#: the geog root -- one list, kept by gpuwm.geog_assets.
+from gpuwm.geog_assets import WRF_DEFAULT_GEOG_DIRS as GEOG_DATASETS  # noqa: E402
 
 #: Certified 49-mass-level vertical coordinate (50 full eta levels) --
 #: the reference configuration's ladder.  Eta is normalized, so one
@@ -1756,12 +1749,6 @@ def _parse_point(raw: str) -> tuple[float, float]:
     if not -90.0 <= lat <= 90.0:
         raise ValueError(
             f"--point latitude {lat:g} must lie within [-90, 90]")
-    if abs(lat) == 90.0:
-        raise ValueError(
-            f"--point latitude {lat:g} is the pole itself; a domain "
-            "containing the pole is unsupported (lat-lon source "
-            "interpolation and static-tile windowing are not "
-            "pole-capable) -- move --point off the pole")
     if not -180.0 <= lon <= 180.0:
         if -360.0 <= lon <= 360.0:
             # float(): _wrap180 is array code (np.where) and returns a 0-d
@@ -1835,11 +1822,6 @@ def _geojson_position(value, label: str,
     if not -90.0 <= lat <= 90.0:
         raise ValueError(
             f"--polygon {label} latitude {lat:g} must lie within [-90, 90]")
-    if abs(lat) == 90.0:
-        raise ValueError(
-            f"--polygon {label} reaches the pole itself; a domain containing "
-            "a pole is unsupported (lat-lon source interpolation and "
-            "static-tile windowing are not pole-capable)")
     if not -180.0 <= lon <= 180.0:
         if not -360.0 <= lon <= 360.0:
             raise ValueError(
@@ -3246,29 +3228,10 @@ def _footprint_contains_pole(projection: dict, nx: int, ny: int,
                              root_dx_m: float = ROOT_DX_M,
                              margin_cells: float = _POLE_CLEARANCE_CELLS
                              ) -> bool:
-    """Does this root contain (or come within ``margin_cells`` of) the
-    projection pole?
+    """Measure the projection pole in the root plane.
 
-    The predicate behind :func:`_pole_clearance_refusal`, split out
-    because two other callers need to ASK it without refusing.
-
-    A pole-containing footprint spans every longitude, so it also trips
-    the 180-degree servable-crop bound, and the crop bound's remedy
-    ("size a narrower domain") is the wrong instruction for a domain
-    whose problem is the singularity inside it.
-
-    The point fit asks it too, with a wider margin
-    (``_FIT_POLE_CLEARANCE_CELLS``), so that the SIZE it chooses stays
-    inside the projection's usable envelope instead of growing past it
-    and being refused afterwards.
-
-    The geometry itself is
-    :func:`gpuwm.static.projection.footprint_contains_pole`, shared with
-    plan review: a hand-authored root that encloses a pole is refused
-    when the experiment loads, and a door measuring the footprint
-    differently from the loader is how a configuration passes review and
-    dies at the door that prepares it.  This wrapper only supplies the
-    door's root-spacing default.
+    The same geometry bounds Lambert fitting and identifies a polar cap
+    whose forcing box must include every meridian and the pole latitude.
     """
 
     return footprint_contains_pole(projection, nx, ny, root_dx_m,
@@ -3297,7 +3260,9 @@ def point_request_bound(projection: dict, nx: int, ny: int,
       minimum layout contains it.
 
     * a maximum extent, ``max_extent_km`` (``--point-extent-km``,
-      default :data:`POINT_FIT_MAX_EXTENT_KM`).  A point carries no
+      default :data:`POINT_FIT_MAX_EXTENT_KM`), checked on the longer
+      root axis: the root keeps the 5:4 shape of :func:`_dims_for_scale`,
+      so the shorter (y) axis comes out at 0.8 of it.  A point carries no
       extent at all, so "as much ground as this card can hold" is an
       answer to a question nobody asked; with streaming on it is not
       even bounded by the card.
@@ -3340,23 +3305,37 @@ def point_request_bound(projection: dict, nx: int, ny: int,
                 f"{float(max_extent_km):.0f} km a point request "
                 "is sized to (raise --point-extent-km, or draw the area "
                 "to ask for more ground)")
-    if _footprint_contains_pole(projection, nx, ny, root_dx_m,
-                                _FIT_POLE_CLEARANCE_CELLS):
+    if projection["map_proj"] != "polar" and _footprint_contains_pole(
+            projection, nx, ny, root_dx_m, _FIT_POLE_CLEARANCE_CELLS):
         pole = "north" if projection["truelat1"] >= 0.0 else "south"
         return (POINT_FIT_PROJECTION_SCOPE,
                 f"a {nx} x {ny} root at {dx_km:g} km reaches the "
-                f"{pole} pole, where lat-lon source interpolation "
-                "and static-tile windowing are not pole-capable")
+                f"{pole} pole, where Lambert longitude is singular; "
+                "use --projection polar for a pole-enclosing domain")
     # Asked after the pole: a footprint around the pole also winds a
     # full turn, and the pole is the accurate name for that one.
     span_deg = footprint_longitude_span(projection, nx, ny, root_dx_m)
-    if span_deg >= 360.0:
+    if projection["map_proj"] != "polar" and span_deg >= 360.0:
         return (POINT_FIT_BAND_SCOPE,
                 f"a {nx} x {ny} root at {dx_km:g} km runs "
                 f"{span_deg:.0f} degrees of longitude, more than once "
                 "around the globe, so its grid would hold the same "
                 "ground twice and integrate the two copies apart")
     return None
+
+
+def _shorter_axis_note(nx: int, ny: int, dx_km: float) -> str:
+    """The extent of the shorter root axis, for a non-square root.
+
+    The extent a point note quotes is the LONGER axis (the one
+    ``--point-extent-km`` bounds); a 5:4 root's other axis is 0.8 of it,
+    and a note quoting one number for a non-square root read as if both
+    axes had it."""
+
+    if nx == ny:
+        return ""
+    return (f" on the longer axis, {min(nx, ny) * dx_km:.0f} km on the "
+            "shorter")
 
 
 def point_fit_cap_note(scope: str, dims, root_dx_m: float = ROOT_DX_M,
@@ -3389,26 +3368,27 @@ def point_fit_cap_note(scope: str, dims, root_dx_m: float = ROOT_DX_M,
     nx, ny = dims[0]
     dx_km = float(root_dx_m) / 1000.0
     extent_km = max(nx, ny) * dx_km
+    axes = _shorter_axis_note(nx, ny, dx_km)
     if scope == POINT_FIT_EXTENT_SCOPE:
         return (f"point request: extent capped at {extent_km:.0f} km "
-                f"({nx}x{ny} at {dx_km:g} km), memory allows more; raise "
+                f"({nx}x{ny} at {dx_km:g} km){axes}, memory allows more; raise "
                 f"--point-extent-km or draw the ground you want with "
                 f"--polygon for a larger domain")
     if scope == POINT_FIT_PROJECTION_SCOPE:
         return (f"point request: extent capped at {extent_km:.0f} km "
-                f"({nx}x{ny} at {dx_km:g} km) to stay clear of the "
+                f"({nx}x{ny} at {dx_km:g} km){axes} to stay clear of the "
                 f"projection pole, memory allows more; move --point "
                 f"equatorward for a larger domain")
     if scope == POINT_FIT_BAND_SCOPE:
         return (f"point request: extent capped at {extent_km:.0f} km "
-                f"({nx}x{ny} at {dx_km:g} km) so the root runs less than "
+                f"({nx}x{ny} at {dx_km:g} km){axes} so the root runs less than "
                 f"once around the globe, memory allows more; this is the "
                 f"widest root a point can take")
     if scope == POINT_FIT_FLOOR_SCOPE:
         asked = ("the requested extent" if point_extent_km is None
                  else f"--point-extent-km {float(point_extent_km):g}")
         return (f"point request: root extent {extent_km:.0f} km "
-                f"({nx}x{ny} at {dx_km:g} km) is the smallest root this "
+                f"({nx}x{ny} at {dx_km:g} km){axes} is the smallest root this "
                 f"ladder hosts, larger than {asked}; a finer root "
                 f"spacing gives a smaller root")
     raise ValueError(f"not a point-request bound: {scope!r}")
@@ -3422,30 +3402,21 @@ def point_extent_note(dims, root_dx_m: float = ROOT_DX_M,
     nx, ny = dims[0]
     dx_km = float(root_dx_m) / 1000.0
     return (f"point request: extent {max(nx, ny) * dx_km:.0f} km "
-            f"({nx}x{ny} at {dx_km:g} km), inside --point-extent-km "
+            f"({nx}x{ny} at {dx_km:g} km)"
+            f"{_shorter_axis_note(nx, ny, dx_km)}, inside --point-extent-km "
             f"{float(point_extent_km):.0f}")
 
 
 def _pole_clearance_refusal(projection: dict, nx: int, ny: int,
                             root_dx_m: float = ROOT_DX_M,
                             target_option: str = "--point") -> None:
-    """Refuse a root footprint that contains (or nearly touches) the
-    projection pole -- a genuine pipeline limit (lat-lon source
-    interpolation and static windowing are not pole-capable), not a
-    projection-math one.  Mercator never reaches a pole.
+    """Keep Lambert roots clear of their singular projection pole.
 
-    The remedy it names changed with 2.7.3, because the old one stopped
-    being one.  It used to offer "choose a smaller layout (--vram-gib /
-    a shallower --ladder)", which was true while an unbounded point fit
-    could grow a mid-latitude request into the pole: a smaller card then
-    did clear it.  The fit now shrinks off the projection's polar
-    envelope by itself (:func:`point_request_bound`), so every request
-    that still reaches here has already been sized to the smallest
-    layout its ladder has, and a smaller card cannot make it smaller --
-    it can only refuse it for a different reason.  A drawn footprint was
-    never shrinkable at all.  So the sentence names the one thing that
-    moves: the centre, or the drawing.
+    A polar stereographic root is regular through its hemisphere's pole
+    and uses periodic source and static donors. Mercator cannot reach it.
     """
+    if projection["map_proj"] == "polar":
+        return
     if _footprint_contains_pole(projection, nx, ny, root_dx_m):
         pole_lat = 90.0 if projection["truelat1"] >= 0.0 else -90.0
         drawn = target_option == "--polygon"
@@ -3458,9 +3429,9 @@ def _pole_clearance_refusal(projection: dict, nx: int, ny: int,
         raise ValueError(
             f"the fitted root domain ({nx} x {ny} mass points at "
             f"{float(root_dx_m) / 1000:g} km) contains or touches the "
-            f"{'north' if pole_lat > 0 else 'south'} pole; lat-lon "
-            "source interpolation and static-tile windowing are not "
-            f"pole-capable -- move {target_option} away from the pole; "
+            f"{'north' if pole_lat > 0 else 'south'} pole on Lambert; "
+            "its longitude is singular there. Use --projection polar "
+            f"or move {target_option} away from the pole; "
             f"{remedy}")
 
 
@@ -3573,16 +3544,20 @@ def _fetch_area(projection: dict, nx: int, ny: int,
     lat_c, lon_c = _root_grid(projection, nx, ny, root_dx_m).latlon_c()
     center = float(projection["ref_lon"])
     lon_u, span = _margined_longitude_span(lon_c, center, margin_deg)
-    full_longitude = span > 180.0 and allow_full_longitude
+    contains_pole = (projection["map_proj"] == "polar"
+                     and _footprint_contains_pole(
+                         projection, nx, ny, root_dx_m, 0.0))
+    full_longitude = (contains_pole or span > 180.0) and allow_full_longitude
     if span > 180.0 and not full_longitude:
         raise ValueError(
             f"the root domain's forcing footprint spans {span:.1f} "
             "degrees of longitude; boxes wider than 180 degrees cannot "
             "be served as a single source crop -- shrink the "
             f"configuration or move {target_option} equatorward")
-    # Pole-clear, not pole-touching: the box a user is handed must not
-    # name the singularity the pipeline refuses (see POLE_CLEARANCE_DEG).
-    pole_clear = max_fetch_abs_lat(root_dx_m)
+    # A polar cap includes the pole row. Lambert keeps its established
+    # clearance from the singular longitude at the cone tip.
+    pole_clear = (90.0 if projection["map_proj"] == "polar"
+                  else max_fetch_abs_lat(root_dx_m))
     lat_s = max(-pole_clear, float(lat_c.min()) - margin_deg)
     lat_n = min(pole_clear, float(lat_c.max()) + margin_deg)
     if notes is not None:
@@ -3593,8 +3568,12 @@ def _fetch_area(projection: dict, nx: int, ny: int,
                 notes.append(
                     f"the suggested forcing box's {edge} edge was clamped "
                     f"from {raw:.2f} to {clamped:.2f} to stay "
-                    f"{pole_clearance_deg(root_dx_m):.2f} deg clear of "
-                    "the pole")
+                    f"the {pole_clear:g}-degree latitude limit")
+    if contains_pole:
+        if projection["truelat1"] >= 0.0:
+            lat_n = 90.0
+        else:
+            lat_s = -90.0
     lon_w = float(_wrap180(float(lon_u.min()) - margin_deg))
     lon_e = float(_wrap180(float(lon_u.max()) + margin_deg))
     if lon_e == -180.0:
@@ -3660,12 +3639,15 @@ def fetch_area_hint(projection: dict, nx: int, ny: int, *, source: str,
 
     from gpuwm.fetch import AREA_HINT_DECIMALS, source_coverage_envelope
 
+    coverage = source_coverage_envelope(source)
     area = _fetch_area(
         projection, nx, ny, margin_deg=_fetch_margin_deg(source),
         notes=notes, root_dx_m=root_dx_m, target_option=target_option,
-        coverage=source_coverage_envelope(source),
+        coverage=coverage,
         coverage_label=source.upper(), coverage_notes=coverage_notes,
-        allow_full_longitude=str(source).strip().lower() == "gfs")
+        allow_full_longitude=(str(source).strip().lower() == "gfs"
+                              or (projection["map_proj"] == "polar"
+                                  and coverage is None)))
     return ",".join(f"{value:.{AREA_HINT_DECIMALS}f}" for value in area)
 
 
@@ -4780,9 +4762,10 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
     so a shallower ladder offered as a way out of a memory refusal is
     priced with the suite it would run rather than this ladder's.
 
-    ``point_extent_km`` is the largest root extent per axis the point
-    request is sized to (``--point-extent-km``); see
-    :func:`point_request_bound`.
+    ``point_extent_km`` is the largest root extent the point request is
+    sized to (``--point-extent-km``), on the longer root axis (x); the
+    root keeps the 5:4 shape of :func:`_dims_for_scale`, so y is 0.8 of
+    it.  See :func:`point_request_bound`.
 
     ``device_profile`` is the CARD the non-pool terms are priced against
     -- the one this machine MEASURED when no ``--card``/``--vram-gib``
@@ -4823,6 +4806,11 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
     high-latitude cyclone request into the projection pole on a large card
     while the bisecting search shrank away from it -- the same door
     answering the same question two ways.
+
+    ``candidate_builder(dims)`` optionally supplies a complete, already
+    validated experiment from an editable template. It replaces canned
+    rendering BEFORE every price call; no profile substitution is attempted.
+    Template-owned boundary/stencil requirements travel with the geometry.
 
     Takes FREE VRAM, not a budget: the reserve is a property of the
     candidate experiment (see :func:`sizing_budget_bytes`), so it cannot
@@ -5432,16 +5420,16 @@ def _buffer_cells(grid, footprint: PolygonFootprint,
     latitude_reach = math.degrees(buffer_m / EARTH_RADIUS_M)
     south = footprint.south - latitude_reach
     north = footprint.north + latitude_reach
-    if south <= -90.0 or north >= 90.0:
+    if grid.map_proj != "polar" and (south <= -90.0 or north >= 90.0):
         edge = "south" if south <= -90.0 else "north"
         raise ValueError(
             f"--buffer-km {buffer_km:g} on this footprint reaches the "
-            f"{edge} pole; lat-lon source interpolation and static-tile "
-            "windowing are not pole-capable")
+            f"{edge} pole on Lambert; use --projection polar "
+            "for a buffered domain enclosing a pole")
     # These projections are conformal and their scale depends on latitude.
     # Taking the maximum over the whole buffered latitude range makes a
     # ground-distance buffer no smaller in projected grid cells.
-    scale = _maximum_map_factor(grid, south, north)
+    scale = _maximum_map_factor(grid, max(-90.0, south), min(90.0, north))
     return buffer_m * scale / float(grid.dx)
 
 
@@ -6024,9 +6012,11 @@ def cumulus_gray_zone_headline(chain_km, cu_physics_by_domain
 
 
 def _print_geog_help() -> None:
-    print("  static geography: gpuwm reads a locally staged NCAR WPS_GEOG "
-          "tree; `gpuwm fetch-geog` downloads and stages it (~1.3 GB "
-          "compressed, ~16 GB unpacked, resumable).  The geog_root "
+    from gpuwm.geog_assets import datasets_required_by, size_phrase
+    print("  static geography: gpuwm reads a locally staged WPS_GEOG "
+          "tree; `gpuwm fetch-geog` downloads and stages it ("
+          + size_phrase(datasets_required_by("wrf"))
+          + " for the WRF door, resumable).  The geog_root "
           "directory must contain these dataset directories:")
     print("    " + ", ".join(GEOG_DATASETS))
 
@@ -6340,8 +6330,14 @@ def resolve_sizing_budget(card: str | None, vram_gib: float | None, *,
         if not math.isfinite(capacity) or capacity <= 0:
             raise ValueError(f"--vram-gib {capacity:g} is not a size: "
                              "pass a finite positive card capacity in GiB")
-        return SizingBudget(capacity, int(card_assumed_free_gib(capacity) * GIB),
-                            None, None)
+        from gpuwm.core.device_probe import pool_lease_budget_bytes
+        free = int(card_assumed_free_gib(capacity) * GIB)
+        lease = pool_lease_budget_bytes()
+        note = None
+        if lease is not None:
+            free = min(free, lease)
+            note = f"domain: sizing against the pool lease budget {lease / 2**20:g} MiB"
+        return SizingBudget(capacity, free, None, note)
     words = _capacity_words(tuple(declare))
     probe = device_memory_probe_subprocess()
     total = probe.get("total_bytes") if isinstance(probe, dict) else None
@@ -6355,6 +6351,8 @@ def resolve_sizing_budget(card: str | None, vram_gib: float | None, *,
                 + (f" or declare {words['slash']} to size for another machine."
                    if declare else "."))
         measured = total / GIB
+        from gpuwm.core.device_probe import sizing_free_memory
+        free, lease_note = sizing_free_memory(free)
         # The SAME probe answer, used WHOLE.  Reading the capacity out of
         # it and dropping the shader census beside it is exactly how a
         # measured 68-SM card came to be priced on a 170-SM profile.
@@ -6371,7 +6369,7 @@ def resolve_sizing_budget(card: str | None, vram_gib: float | None, *,
             f"domain: {lead} the "
             f"measured local card ({card_words}{measured:g} GiB total, "
             f"{free / GIB:.2f} GiB available)"
-            f"{tail}{basis}"), measured=True)
+            f"{tail}{basis}" + (f"; {lease_note}" if lease_note else "")), measured=True)
     reason = (device_memory_probe_reason()
               or "the local card could not be measured")
     # The whole reason, not a word in it: a probe that failed on a CuPy
@@ -6569,8 +6567,18 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None,
     if getattr(args, "recipe", None):
         from gpuwm.region_recipe import domain_recipe_main
         return domain_recipe_main(args)
+    if getattr(args, "smoke", False):
+        # Breakage it prevents: the plain wizard composes no HRRR-Smoke set,
+        # so the flag would be read by nothing.
+        raise ValueError("--smoke requires --recipe; it turns HRRR-Smoke on in the emitted recipe")
     if getattr(args, "region", None) or getattr(args, "spacing_km", None):
         raise ValueError("--region and --spacing-km require --recipe; otherwise the requested recipe settings would be lost")
+    if getattr(args, "point", None) is None and getattr(args, "polygon", None) is None:
+        raise ValueError("one of --point LAT,LON or --polygon GEOJSON is required "
+                         "(or --recipe ID, optionally with --region/--polygon and "
+                         "--spacing-km); without a target there is no domain to fit")
+    from gpuwm.source_adapters import source_for_cycle
+    args.source = source_for_cycle(args.source, getattr(args, "cycle", None))
     args.source = resolve_source(args.source,
                                  cadence_h=getattr(args, "cadence", None))
     _keyless_default_source(args)
@@ -7544,9 +7552,9 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None,
                  "validity'.")
     for note in area_notes:
         warn(note,
-             why="lat-lon source interpolation and static-tile windowing "
-                 "are not pole-capable, so a box touching the pole is "
-                 "not a box the pipeline can honour.")
+             why="forcing must cover the complete projected footprint and "
+                 "its interpolation donors, including every longitude "
+                 "when a polar stereographic grid encloses a pole.")
     for note in coverage_notes:
         # Advisory, never a refusal: the DOMAIN was already bounded by
         # source coverage during fitting, so only the margined bbox --
@@ -7781,26 +7789,42 @@ def register_cli(subparsers) -> None:
             if flag not in parser._option_string_actions:
                 parser.add_argument(flag, type={"string": str, "integer": int,
                     "number": float}[kind], default=None, help=description)
-    target = parser.add_mutually_exclusive_group(required=True)
+    # Not required at parse time: --recipe takes --region or --polygon
+    # (or neither, for its row's own declared region), never --point, and
+    # region_recipe.domain_recipe_main names exactly what is missing.  An
+    # argparse-required group refused a bare --recipe with "one of the
+    # arguments --region --point --polygon is required" before that check
+    # could speak.  domain_main checks the target for the plain wizard.
+    target = parser.add_mutually_exclusive_group(required=False)
     target.add_argument("--region", metavar="ID|GEOJSON",
-                        help="recipe region row id or local polygon GeoJSON")
+                        help="with --recipe: region row id (e.g. US) or local "
+                             "polygon GeoJSON the recipe is laid out on; "
+                             "requires --spacing-km")
     parser.add_argument("--recipe", metavar="ID|TOML",
-                        help="complete recipe from the packaged table or a local TOML")
+                        help="complete recipe from the packaged table or a local "
+                             "TOML, laid out on --region (or --polygon) at "
+                             "--spacing-km; a packaged row given neither uses "
+                             "its declared default region and spacing "
+                             "(hrrr_v4_gsd41: US at 3 km), stated in the "
+                             "output and the receipt")
+    from gpuwm.smoke_execution import SMOKE_FLAG_HELP
+    parser.add_argument("--smoke", action="store_true", default=False,
+                        help="with --recipe: " + SMOKE_FLAG_HELP)
     parser.add_argument("--region-table", type=Path, default=None,
                         help="region JSON table override; adding a region requires data only")
     parser.add_argument("--recipe-table", type=Path, default=None,
                         help="recipe registry override; new recipes and aerosol policies are data")
     parser.add_argument("--spacing-km", type=positive_float, default=None,
-                        help="recipe grid spacing in kilometres")
+                        help="with --recipe: grid spacing in kilometres; "
+                             "required whenever --region or --polygon is given "
+                             "with --recipe")
     target.add_argument("--point", metavar="LAT,LON",
                         help="domain center in decimal degrees. |lat| 90 "
                              "is refused. A point carries no extent, so "
                              "the fit chooses one: the largest layout "
                              "the budget affords, capped at "
                              "--point-extent-km per axis, "
-                             "kept clear of the projection pole, "
-                             "where lat-lon source interpolation and "
-                             "static-tile windowing do not work, and "
+                             "kept within the projection envelope, and "
                              "kept to less than one trip around the "
                              "globe in longitude. These "
                              "caps SHRINK the domain rather than refuse "
@@ -7819,7 +7843,9 @@ def register_cli(subparsers) -> None:
     parser.add_argument(
         "--point-extent-km", type=point_extent_argument,
         default=POINT_FIT_MAX_EXTENT_KM, metavar="KM",
-        help="largest root extent per axis a --point request is sized to "
+        help="largest root extent a --point request is sized to, on the "
+             "longer root axis (x); the root keeps the ladder's 5:4 shape, "
+             "so y is 0.8 of it "
              f"(default {POINT_FIT_MAX_EXTENT_KM:.0f}).  The projection "
              "pole, one trip around the globe, the source's coverage and "
              "the card still bound the fit; an extent below the smallest "

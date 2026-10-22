@@ -168,70 +168,9 @@ def test_pud_and_pvd_are_never_written():
 
 
 # ===========================================================================
-# The kernel, graded against the SAME oracle rows as the mirror
+# Kernel frame contract. Output words are graded in the assembled pipeline
+# by test_ntiedtke_pipeline_boundaries.py on these same WRF capture rows.
 # ===========================================================================
-
-@pytest.fixture(scope="module")
-def cuda_cuddrafn():
-    cp = pytest.importorskip("cupy")
-    from gpuwm.core.ntiedtke import NtLaunchGeometry, NtStages
-
-    keys = _KEYS
-    ncol, n1 = len(keys), NT_NZ + 2
-
-    def pack(name, sfc=None):
-        a = np.zeros((n1, ncol), dtype=np.float32)
-        for c, k in enumerate(keys):
-            a[1:1 + NT_NZ, c] = _COLS[k][name]
-            if sfc:
-                a[1 + NT_NZ, c] = _COLS[k][sfc]
-        return cp.asarray(a)
-
-    ro = {n: pack(n) for n in ("ptenh", "pqenh", "pgeo", "pgeoh", "pmfu")}
-    # The six class-1 slots, seeded from the entry capture.
-    io_ = {n: pack(n) for n in ("ptd", "pqd", "pmfd", "pmfds", "pmfdq",
-                                "pdmfdp")}
-    d_rate = cp.zeros((n1, ncol), dtype=np.float32)
-    d_prfl = cp.asarray(np.array([float(_COLS[k]["prfl"]) for k in keys],
-                                 dtype=np.float32))
-    d_ldd = cp.asarray(np.array([int(_COLS[k]["lddraf"]) for k in keys],
-                                dtype=np.int32))
-
-    stages = NtStages(NtLaunchGeometry(ncol=ncol, nz=NT_NZ))
-    stages.launch("ntiedtke_cuddrafn", (
-        d_ldd, ro["ptenh"], ro["pqenh"], ro["pgeo"], ro["pgeoh"],
-        pack("paph", sfc="paph_sfc"), ro["pmfu"],
-        io_["ptd"], io_["pqd"], io_["pmfd"], io_["pmfds"], io_["pmfdq"],
-        io_["pdmfdp"], d_rate, d_prfl,
-        np.int32(ncol), np.int32(NT_NZ),
-        np.float32(1004.5), np.float32(287.0), np.float32(461.6),
-        np.float32(2.5e6), np.float32(3.50e5), np.float32(9.81)))
-    cp.cuda.Stream.null.synchronize()
-    stages.check_geometry()
-    out = {n: cp.asnumpy(v)[1:1 + NT_NZ, :] for n, v in io_.items()}
-    out["pmfdde_rate"] = cp.asnumpy(d_rate)[1:1 + NT_NZ, :]
-    return keys, out, cp.asnumpy(d_prfl)
-
-
-@pytest.mark.parametrize("field", tuple(_OUT_MAP))
-def test_kernel_level_outputs_are_bitwise(cuda_cuddrafn, field):
-    """Graded against WRF, never against the mirror."""
-    keys, got, _ = cuda_cuddrafn
-    bad = []
-    for c, key in enumerate(keys):
-        g, e = got[field][:, c], _EXP[key][field]
-        d = np.nonzero(g.view(np.uint32) != e.view(np.uint32))[0]
-        if d.size:
-            bad.append((key, d.tolist()[:4], g[d[0]], e[d[0]]))
-    assert not bad, f"{field}: {bad[:3]}"
-
-
-def test_kernel_prfl_is_bitwise(cuda_cuddrafn):
-    keys, _, prfl = cuda_cuddrafn
-    for c, key in enumerate(keys):
-        g, e = np.float32(prfl[c]), _EXP[key]["prfl"]
-        assert g.view(np.uint32) == e.view(np.uint32), f"prfl {key}"
-
 
 def test_kernel_holds_no_local_frame():
     pytest.importorskip("cupy")

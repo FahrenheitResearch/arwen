@@ -193,36 +193,6 @@ def clamp(dt: Fraction, min_dt: Fraction | None,
     return dt
 
 
-def nest_dt_from_parent(parent_dt: Fraction, own_dt: Fraction,
-                        *, adapt_using_child: bool) -> tuple[Fraction, int]:
-    """A nest's dt, rounded to divide the parent's evenly (:225-250).
-
-    ``adapt_step_using_child = .FALSE.`` -- the nest yields:
-    ``num_small_steps = CEILING(parent%dt / dt)`` and the nest takes
-    ``parent_dt / num_small_steps``.  Returns ``(nest_dt, num_small_steps)``.
-
-    ``.TRUE.`` -- the child dictates and the PARENT is overwritten to
-    ``child_dt * num_small_steps`` with ``num_small_steps = FLOOR(...)``,
-    floored at 1.  The caller owns that write; this returns the child's own
-    dt unchanged with the step count it implies.
-
-    Note upstream computes the ratio from ``grid%parents(1)%ptr%dt``, the
-    REAL(4) dt, not the rational interval.  This takes exact rationals: the
-    two can only disagree when the REAL(4) round trip moves the CEILING
-    across an integer, which requires the ratio to sit within one REAL(4)
-    ulp of a whole number -- and there the exact answer is the defensible
-    one.  Recorded as a deliberate divergence, not an oversight.
-    """
-    if own_dt <= 0:
-        raise ValueError(f"nest dt must be positive, got {own_dt}")
-    ratio = parent_dt / own_dt
-    if not adapt_using_child:
-        num_small_steps = -((-ratio.numerator) // ratio.denominator)  # CEILING
-        return parent_dt / num_small_steps, num_small_steps
-    num_small_steps = max(1, ratio.numerator // ratio.denominator)    # FLOOR
-    return own_dt, num_small_steps
-
-
 # ---------------------------------------------------------------------------
 # The controller: adapt_timestep's sequence, composed from the pieces above.
 #

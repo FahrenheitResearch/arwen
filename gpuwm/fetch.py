@@ -198,6 +198,7 @@ HRRR_TRANSPORTS = ("auto", "nomads", "s3")
 #: table teaches the front door its host without a code edit.
 FETCH_TRANSPORTS = tuple(sorted(
     set(HRRR_TRANSPORTS)
+    | {row["transport"] for row in fetch_endpoints.archive_document()["layouts"]}
     | {host.name
        for source_id in fetch_routes.route_ids()
        for host in fetch_routes.route_for(source_id).hosts}))
@@ -1495,9 +1496,40 @@ def _hrrr_transport_base(transport: str) -> str:
         f"unknown HRRR transport {transport!r}; expected 'nomads' or 's3'")
 
 
+#: The HRRR file each rw_fetch product name stands for.
+HRRR_PRODUCT_FILES = {"nat": "wrfnat", "prs": "wrfprs", "sfc": "wrfsfc"}
+
+
+def hrrr_lead_products() -> tuple[str, ...]:
+    """Every HRRR file one lead's fetch reads, so all its probe must ask.
+
+    ``wrfnat`` (atmosphere) and ``wrfprs`` (soil), plus the file of each
+    runtime surface field the hrrr adapter declares (VEGFRA is cut from
+    ``wrfsfc``).  The breakage this prevents: NOAA posts a lead's
+    ``wrfsfc`` up to ~10 min after its ``wrfnat``/``wrfprs`` (07Z f07 on
+    2026-10-20: wrfprs 08:03:26, wrfsfc 08:13:00), so a probe of the pair
+    alone called the lead posted and the VEGFRA transfer was refused with
+    "the GRIB object is not present at this source", failing the run.
+    """
+
+    from gpuwm.source_adapters import get_source_adapter
+
+    extra = tuple(HRRR_PRODUCT_FILES[row[1]] for row in
+                  get_source_adapter("hrrr").runtime_surface_fields)
+    return tuple(dict.fromkeys(("wrfnat", "wrfprs", *extra)))
+
+
+def hrrr_lead_urls(cycle: datetime, hour: int,
+                   transport: str = "s3") -> tuple[str, ...]:
+    """The URLs of :func:`hrrr_lead_products` for one lead on one host."""
+
+    return tuple(hrrr_object_url(cycle, hour, product, transport=transport)
+                 for product in hrrr_lead_products())
+
+
 def hrrr_object_url(cycle: datetime, hour: int, product: str,
                     transport: str = "s3") -> str:
-    if product not in ("wrfnat", "wrfprs"):
+    if product not in HRRR_PRODUCT_FILES.values():
         raise ValueError(f"unknown HRRR product {product!r}")
     return (f"{_hrrr_transport_base(transport)}/hrrr.{cycle:%Y%m%d}/conus/"
             f"hrrr.t{cycle:%H}z.{product}f{hour:02d}.grib2")
@@ -1603,10 +1635,7 @@ def cycle_probe_urls(source: str, cycle: datetime, last_hour: int,
         if transport is None:
             transport = fetch_endpoints.serving_ladder(
                 source, cycle=cycle)[0].name
-        return (hrrr_object_url(cycle, last_hour, "wrfnat",
-                                transport=transport),
-                hrrr_object_url(cycle, last_hour, "wrfprs",
-                                transport=transport))
+        return hrrr_lead_urls(cycle, last_hour, transport=transport)
     if cycle_is_probeable(source):
         return _route_probe_urls(source, cycle, last_hour, transport,
                                  cadence=cadence, start_hour=start_hour, member=member)
@@ -2363,7 +2392,8 @@ def resolve_hrrr_transport(cycle: datetime, requested: str, *,
 
     Without ``required_leads`` this keeps the historical final-hour
     selection. Native as-posted transfers supply their complete prefix:
-    every wrfnat, wrfprs and index must be available on one endpoint,
+    every wrfnat, wrfprs, runtime surface file and index must be available
+    on one endpoint,
     because a later mirrored lead can arrive before an earlier soil pair.
     An endpoint that said one of them is missing (404 or 410) is never
     taken.  When none holds the whole prefix but one could not be heard
@@ -2418,7 +2448,7 @@ def resolve_hrrr_transport(cycle: datetime, requested: str, *,
                      "none is missing; its transfer's own checks decide")
             return unheard[0]
         raise _HrrrPrefixNotPosted(
-            f"every HRRR endpoint said a wrfnat, wrfprs or index of "
+            f"every HRRR endpoint said a {', '.join(hrrr_lead_products())} or index of "
             f"f{leads[0]:03d}..f{leads[-1]:03d} is missing; a final lead "
             "alone cannot authorize downloading a missing intermediate object")
     if requested == "s3":
@@ -2433,10 +2463,7 @@ def resolve_hrrr_transport(cycle: datetime, requested: str, *,
         now = datetime.now(timezone.utc).replace(tzinfo=None)
     age_hours = fetch_endpoints.cycle_age_hours(cycle, now)
     if requested == "nomads":
-        urls = (hrrr_object_url(cycle, last_hour, "wrfnat",
-                                transport="nomads"),
-                hrrr_object_url(cycle, last_hour, "wrfprs",
-                                transport="nomads"))
+        urls = hrrr_lead_urls(cycle, last_hour, transport="nomads")
         if all(probe(url) for url in urls):
             return "nomads"
         detail = (
@@ -2453,12 +2480,11 @@ def resolve_hrrr_transport(cycle: datetime, requested: str, *,
     ladder = fetch_endpoints.serving_ladder("hrrr", cycle=cycle, now=now)
 
     def window_urls(name: str) -> tuple[str, ...]:
-        return (hrrr_object_url(cycle, last_hour, "wrfnat", transport=name),
-                hrrr_object_url(cycle, last_hour, "wrfprs", transport=name))
+        return hrrr_lead_urls(cycle, last_hour, transport=name)
 
     # The throughput rung first: an hour the archive already mirrors has
-    # nothing left to gain from the slower host.  Both final-hour
-    # objects must answer, because a fetch needs the pair.
+    # nothing left to gain from the slower host.  Every final-hour
+    # object must answer, because a fetch needs them all.
     for endpoint in fetch_endpoints.transfer_probes(ladder):
         if all(probe(url) for url in window_urls(endpoint.name)):
             progress(
@@ -3406,7 +3432,12 @@ def gfs_live_index(cycle: datetime, *, progress=print, opener=None,
     whose own record count is checked anyway.
     """
 
-    url = f"{gfs_object_url(cycle, 0, source)}.idx"
+    try:
+        url = f"{gfs_object_url(cycle, 0, source)}.idx"
+    except ValueError as error:
+        progress(f"fetch {source}: no index layout for this cycle ({error}); "
+                 "the declared pressure ladder stands in; Rust validates the fields")
+        return None
     request = Request(url, headers={"User-Agent": _USER_AGENT})
     try:
         with (opener or paced_urlopen)(request, timeout=120) as response:
@@ -4011,10 +4042,11 @@ def _rw_fetch_gfs_fullfile(*, binary: Path, cycle: datetime, hour: int,
 
     from gpuwm import rustwx_fetch
 
+    endpoint = fetch_endpoints.endpoint_named(source, transport)
     record = rustwx_fetch.run_fetch(
         binary, model=source, date=f"{cycle:%Y%m%d}", cycle=cycle.hour,
-        hours=(hour,), product=RW_FETCH_GFS_PRODUCT,
-        source=RW_FETCH_SOURCES[transport],
+        hours=(hour,), product=endpoint.product,
+        source=endpoint.rust_source,
         mode="full-file", out=out, cache_dir=cache_dir, streams=streams,
         on_progress=None if byte_relay is None else byte_relay())
     if len(record["files"]) != 1:
@@ -4022,7 +4054,13 @@ def _rw_fetch_gfs_fullfile(*, binary: Path, cycle: datetime, hour: int,
             f"rw_fetch returned {len(record['files'])} files for one "
             "forecast hour")
     entry = record["files"][0]
-    _remember_stream_facts(out / entry["name"], entry)
+    canonical = f"{GFS_CONTAINER_PREFIX[source]}.t{cycle:%H}z.pgrb2.0p25.f{hour:03d}"
+    if entry["name"] != canonical:
+        _rename_stream_payload(out / entry["name"], out / canonical, entry)
+        entry = {**entry, "name": canonical, "path": str(out / canonical),
+                 "publication": _publication(_stat_identity(out / canonical))}
+    else:
+        _remember_stream_facts(out / entry["name"], entry)
     progress(f"fetch {source} f{hour:03d}: {entry['name']} "
              f"{entry['bytes']:,} B in {entry['wall_seconds']:.1f} s "
              f"({entry['source']}, {entry['mode']} -- "
@@ -4179,12 +4217,14 @@ def _fetch_gfs_fullfile_locked(*, cycle: datetime, hours: tuple[int, ...],
             hours=tuple(int(item["forecast_hour"]) for item in files),
             area=area, files=entries)
         payload["notes"] = (
-            "whole pgrb2.0p25 objects (north-to-south DRT 5.3 grids, "
-            "certified in gfs_grib2_bridge with its scan-order flip and "
-            "the SOILW missing-value matched pair); no area crop is "
-            "involved.  Both endpoints publish the same key with the "
-            "same bytes, so per-file endpoints may differ across a "
-            "fall-through without weakening any digest bar")
+            "Whole archive GRIB2 objects; no area crop. The endpoint layout "
+            "declares the product resolution. Rust verifies the GRIB envelope "
+            "and the ingest bridge validates the grid and required fields.")
+        payload["archive_products"] = {
+            name: {"product": fetch_endpoints.endpoint_named(source, name).product,
+                   "layouts": list(fetch_endpoints.endpoint_named(source, name).layouts)}
+            for name in sorted({str(item["endpoint"]) for item in files
+                                if item.get("endpoint")})}
         payload["engine"] = engine
         payload["engine_selection"] = _engine_selection(
             engine, engine_selection)
@@ -4311,9 +4351,9 @@ def _fetch_gfs_fullfile_locked(*, cycle: datetime, hours: tuple[int, ...],
                 endpoint_name = prior.get("endpoint")
                 census = "its receipt recorded"
             else:
-                idx_records = _gfs_index_record_count(
+                idx_records = (_gfs_index_record_count(
                     url + ".idx", progress=progress,
-                    label=f"{source} f{hour:03d}")
+                    label=f"{source} f{hour:03d}") if rungs[0].idx_available else None)
                 # Nothing records which host served a file the receipt
                 # never admitted, and naming the ladder head would be a
                 # claim.
@@ -4328,9 +4368,9 @@ def _fetch_gfs_fullfile_locked(*, cycle: datetime, hours: tuple[int, ...],
             progress(f"fetch {source} f{hour:03d}: {name} exists, "
                      f"{path.stat().st_size:,} B verified -- skipped")
         else:
-            idx_records = _gfs_index_record_count(
+            idx_records = (_gfs_index_record_count(
                 url + ".idx", progress=progress,
-                label=f"{source} f{hour:03d}")
+                label=f"{source} f{hour:03d}") if rungs[0].idx_available else None)
             started = time.perf_counter()
 
             def move(endpoint: fetch_endpoints.Endpoint) -> None:
@@ -7218,6 +7258,7 @@ def fetch_main(args) -> int:
 
 
 def _fetch_main(args) -> int:
+    args.source = source_adapters.source_for_cycle(args.source, getattr(args, "cycle", None))
     source = args.source
     if fetch_endpoints.policy_uses_aws(source):
         args.transport = fetch_endpoints.policy_transport(source)
@@ -7310,7 +7351,9 @@ def _fetch_main(args) -> int:
                 "pgrb2.0p25 objects from the S3 archive).  .idx record "
                 "subsetting of the raw objects is not a certified GFS "
                 "route.")
-        gfs_fullfile = gfs_named_mode == "full-file"
+        gfs_fullfile = gfs_named_mode == "full-file" or (
+            args.transport not in (None, "auto")
+            and bool(fetch_endpoints.endpoint_named(source, args.transport).layouts))
         if not gfs_fullfile:
             cgi_extras = sorted(
                 flag for flag, value in (
@@ -7738,7 +7781,7 @@ def _fetch_main(args) -> int:
                     # cycle, and the sentence naming a host that could not
                     # be heard (GS-05). Its answer does not make the window
                     # whole: a posted final lead does not prove the
-                    # intervening wrfnat/wrfprs pairs have reached this
+                    # intervening atmosphere, soil and runtime files reached this
                     # host, so each lead is checked before it joins the
                     # downloaded prefix.
                     if not fetch_endpoints.policy_uses_aws(source):
@@ -8042,6 +8085,12 @@ FETCH_HINT_ROWS = key_rows(
            "box-wide connection cap for engine fetches; default 30, or GPUWM_FETCH_MAX_CONNECTIONS"),
     KeyRow("source", "string", None,
            "the source to acquire, a registry id or alias", required=True),
+    KeyRow("initial_source", "string", None,
+           "separate mapped analysis source at the forecast start; go fetches its analysis"),
+    KeyRow("boundary_cycle_offset_hours", "integer", 0,
+           "boundary cycle offset from the nominal forecast cycle"),
+    KeyRow("boundary_lead_offset_hours", "integer", 0,
+           "boundary start lead offset; cancels the boundary cycle offset"),
     KeyRow("cycle", "string", None,
            "the forcing cycle, YYYY-MM-DDTHH or 'latest'; absent means "
            "any cycle the source publishes"),
@@ -8067,6 +8116,8 @@ FETCH_HINT_ROWS = key_rows(
            "ERA5 only: 'cds' (Copernicus, keyed) or 'arco' (public store)"),
     KeyRow("era5_product", "string", "reanalysis",
            "ERA5 only: 'reanalysis' or 'ensemble_members'"),
+    KeyRow("reuse_fetch", "string", None,
+           "a completed generated fetch root to verify and reuse when it covers this request"),
     KeyRow("member", ("string", "integer"), None,
            "the ensemble member to fetch; absent is the route's control"),
     KeyRow("retrieve", "boolean", False,
@@ -8126,14 +8177,14 @@ def transport_refusal(source: str, transport: object) -> str | None:
         return (f"transport: {name} has no host to choose between, so there "
                 "is nothing to pin. what to do: remove transport.")
     if name in GFS_CONTAINER_SOURCES:
-        if fetch_endpoints.policy_uses_aws(name):
-            fetch_endpoints.endpoint_named(name, transport)
+        try:
+            endpoint = fetch_endpoints.endpoint_named(name, transport)
+        except ValueError as error:
+            return str(error)
+        if endpoint.layouts or fetch_endpoints.policy_uses_aws(name):
             return None
-        return (f"transport pins the host of whole {name} archive objects, "
-                f"which only `gpuwm fetch --source {name} --mode full-file` "
-                "downloads; a [fetch] table fetches the NOMADS grib-filter "
-                "crop, which has exactly one transport, and `gpuwm fetch` "
-                "refuses --transport for it. what to do: remove transport.")
+        return ("transport pins whole archive objects; choose an archive "
+                "host declared in the source table or remove transport.")
     if name == "hrrr":
         if transport not in HRRR_TRANSPORTS:
             return (f"unknown HRRR transport {transport!r}; expected one of "
@@ -8203,6 +8254,8 @@ def validate_fetch_hints(table: dict, *, source: str) -> None:
     unknown = sorted(set(table) - FETCH_HINT_KEYS)
     if unknown:
         raise ValueError(f"unknown key(s) {unknown} in {prefix}; known keys: {sorted(FETCH_HINT_KEYS)}")
+    from gpuwm.initial_source import boundary_fetch_request
+    table = boundary_fetch_request(table)
     # Common spellings precede every source, product and local-input branch.
     for key, minimum in (("hours", 0), ("forecast_start_hour", 0), ("cadence", 1)):
         value = table.get(key)
@@ -8362,12 +8415,18 @@ def validate_fetch_hints(table: dict, *, source: str) -> None:
             # deliberately left to acquisition, when a real cycle is selected.
             cycles = ((cycle,) if cycle is not None else
                       fetch_routes.planning_cycles(route))
+            # A table that names no start opens at the route's first
+            # published lead: the GEFSv12 reforecast (first_lead = 3,
+            # lane/cap-gefs-archive) publishes no f000, so checking f000
+            # refused every bare [fetch] source of it.
+            route_start = (start if "forecast_start_hour" in table
+                           else max(start or 0, route.first_lead))
             errors = []
             for candidate in cycles:
                 try:
                     fetch_routes.resolve_cycle(route, candidate)
                     fetch_routes.resolve_leads(route, candidate, 0 if hours is None else hours,
-                                               cadence=cadence, start_hour=start)
+                                               cadence=cadence, start_hour=route_start)
                     break
                 except ValueError as error:
                     errors.append(error)
@@ -8438,6 +8497,8 @@ def register_cli(subparsers) -> None:
              "source with public bytes; native GDAS uses its mapped preparation "
              "profile; retrieve ERA5 from the public ARCO store without a key, "
              "or from Copernicus CDS with configured credentials")
+    parser.add_argument("--reuse-fetch", default=None, metavar="DIR",
+        help="reuse a verified completed generated fetch covering this request before loading its model")
     parser.add_argument("--model", default=None, metavar="MODEL",
         help="--source earth2: which NVIDIA Earth-2 model to run through "
              "earth2studio (fcn3, sfno, pangu, aurora, fengwu, graphcast, aifs: "
@@ -8447,6 +8508,10 @@ def register_cli(subparsers) -> None:
     parser.add_argument("--earth2-batch-root", help="shared generated-member batch folder")
     parser.add_argument("--earth2-batch-size", type=int, help="members per admitted GPU sub-batch")
     parser.add_argument("--earth2-weights-package", help="local pinned Earth2Studio weight package")
+    parser.add_argument("--prepare-only", action="store_true",
+        help="Earth-2 sources: run only the CPU stage (weights, CPU model construction, initial "
+             "conditions, donor) with no GPU, so it can run outside a card lease; the same "
+             "command with a card then generates from it. Implied when CUDA devices are hidden")
     parser.add_argument("--retrieve", action="store_true",
         help="ERA5: download and validate with the selected provider (default CDS); otherwise write a CDS retrieval template")
     parser.add_argument("--era5-provider", choices=("cds", "arco"), default=None,
@@ -8785,7 +8850,8 @@ __all__ = [
     "fetch_gfs_fullfile",
     "fetch_hrrr", "fetch_main", "gfs_forecast_hours", "gfs_object_url",
     "gfs_suggested_fetch_margin_deg",
-    "hrrr_forecast_hours", "hrrr_object_url", "parse_area", "parse_cycle",
+    "hrrr_forecast_hours", "hrrr_lead_products", "hrrr_lead_urls",
+    "hrrr_object_url", "parse_area", "parse_cycle",
     "read_grib1_records", "register_cli", "resolve_fetch_engine",
     "select_fetch_engine", "resolve_hrrr_transport",
     "cycle_probe_urls", "objects_published",

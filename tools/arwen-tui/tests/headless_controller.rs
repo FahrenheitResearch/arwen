@@ -72,10 +72,11 @@ fn workspace_peer(path: &Path) {
     assert_eq!(status["session_id"], handoff["session_id"]);
     assert_eq!(status["target"]["kind"], "local");
     write_json(&cwd.join("observed-handoff.json"), handoff.clone());
-    match env::var("ARWEN_TEST_PEER_MODE").unwrap().as_str() {
+    let mode = env::var("ARWEN_TEST_PEER_MODE").unwrap();
+    match mode.as_str() {
         "idle" | "local-da-opt-in" | "slow-probe" => return,
         "failed" => std::process::exit(7),
-        "worker" => {},
+        "worker" | "completed" => {},
         "downscale" => { downscale_peer(&handoff, &cwd); return; },
         other => panic!("unknown peer mode {other}"),
     }
@@ -89,6 +90,17 @@ fn workspace_peer(path: &Path) {
         "plan_sha256":digest(&plan), "config_sha256":digest(&config), "target":{"kind":"local"}}));
     write_json(&cwd.join("launch-response.json"), launched);
     await_file(&cwd.join("worker-started.json"));
+    if mode == "completed" {
+        fs::write(cwd.join("finish-worker"), "").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while document(status_path)["job"]["state"] != "completed" {
+            assert!(Instant::now() < deadline, "completed job was not published");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // Observe a fresh native-progress heartbeat after the terminal receipt.
+        std::thread::sleep(Duration::from_millis(600));
+        assert_eq!(document(status_path)["job"]["state"], "completed");
+    }
     fs::write(cwd.join("workspace-closing"), "").unwrap();
 }
 
@@ -217,7 +229,7 @@ fn main() {
     let modes: &[&str] = if args.iter().any(|arg| arg == "--local-da-opt-in-only") {
         &["idle", "local-da-opt-in"]
     } else {
-        &["idle", "local-da-opt-in", "worker", "downscale", "failed", "missing", "snapshot", "missing-python", "malformed-probe", "slow-probe", "hung-probe"]
+        &["idle", "local-da-opt-in", "worker", "completed", "downscale", "failed", "missing", "snapshot", "missing-python", "malformed-probe", "slow-probe", "hung-probe"]
     };
     for &mode in modes {
         let root = scratch(mode);
@@ -262,7 +274,7 @@ fn main() {
         }
         let status = process.wait();
         let stderr = fs::read_to_string(root.join("controller.stderr.log")).unwrap();
-        assert_eq!(status.success(), matches!(mode, "idle" | "local-da-opt-in" | "worker" | "downscale" | "slow-probe"), "{mode}: {stderr}");
+        assert_eq!(status.success(), matches!(mode, "idle" | "local-da-opt-in" | "worker" | "completed" | "downscale" | "slow-probe"), "{mode}: {stderr}");
         assert!(!stderr.contains("interactive terminal"), "headless mode reached terminal initialization");
         if mode == "missing" { assert!(stderr.contains("Visual workspace is not installed"), "{stderr}"); }
         if mode == "snapshot" { assert!(stderr.contains("read-only snapshot"), "{stderr}"); }
@@ -285,7 +297,7 @@ fn main() {
             }
             #[cfg(unix)] unsafe { assert_ne!(libc::kill(pid as i32, 0), 0, "timed-out version process was not reaped"); }
         }
-        if matches!(mode, "idle" | "local-da-opt-in" | "worker" | "downscale" | "failed" | "slow-probe") {
+        if matches!(mode, "idle" | "local-da-opt-in" | "worker" | "completed" | "downscale" | "failed" | "slow-probe") {
             let handoff = document(&root.join("observed-handoff.json"));
             assert_eq!(handoff["experimental_features"]["local_da"], mode == "local-da-opt-in");
             let status = document(Path::new(handoff["status_path"].as_str().unwrap()));
@@ -300,9 +312,9 @@ fn main() {
                 assert!(stderr.contains(escaped.trim_matches('"')), "{stderr}");
             }
         }
-        if matches!(mode, "worker" | "downscale") {
+        if matches!(mode, "worker" | "completed" | "downscale") {
             assert!(root.join("worker-completed").is_file());
-            let response = document(&root.join(if mode == "worker" { "launch-response.json" } else { "downscale-response.json" }));
+            let response = document(&root.join(if mode == "downscale" { "downscale-response.json" } else { "launch-response.json" }));
             let job = PathBuf::from(response["job_dir"].as_str().unwrap());
             let result = document(&job.join("result.json"));
             assert_eq!(result["status"], "completed");
@@ -310,7 +322,7 @@ fn main() {
             // The plan job keeps the ordinary receipts, and its launcher
             // recorded the same downscale command the response described.
             let launcher = document(&job.join("job.json"));
-            assert_eq!(launcher["action"], if mode == "worker" { "run-plan" } else { "downscale" });
+            assert_eq!(launcher["action"], if mode == "downscale" { "downscale" } else { "run-plan" });
             assert!(job.join("process.json").is_file());
         }
         println!("PASS headless controller {mode}: {}", root.display());

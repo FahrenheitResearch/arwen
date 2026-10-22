@@ -244,3 +244,22 @@ def test_native_verification_preserves_resource_limit(cache, monkeypatch,
     monkeypatch.setattr(prepared_writer, operation, fail)
     _assert_resource_failure(
         lambda: prepared_store._CachePayload(reader, log=lambda _: None), error)
+
+
+def test_native_mapping_exhaustion_is_resource_failure_not_corruption(cache, monkeypatch):
+    from gpuwm.ingest import prepared_mmap
+    directory, _spec = cache
+    reader = prepared_cache.PreparedCacheReader(directory, expected_identity={})
+    error = OSError(errno.ENOMEM, "Cannot allocate memory")
+
+    def fail(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(prepared_mmap, "map_npy_readonly", fail)
+    with pytest.raises(prepared_cache.PreparedCacheResourceLimitError) as caught:
+        prepared_store._CachePayload(reader, log=lambda _: None)
+    assert caught.value.errno == errno.ENOMEM
+    assert caught.value.__cause__ is error
+    assert "vm.max_map_count" in str(caught.value)
+    assert "mapping resource limit" in str(caught.value)
+    assert not isinstance(caught.value, prepared_cache.PreparedCacheCorruptError)

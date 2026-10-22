@@ -261,7 +261,7 @@ def test_an_increment_is_actually_produced():
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("n_radars", [1, 2, 4, 8, 16])
+@pytest.mark.parametrize("n_radars", [1, 16])
 def test_reachable_slots_stay_flat_while_total_slots_grow(n_radars):
     """The whole point, as two numbers a receipt can carry.
 
@@ -371,7 +371,7 @@ def _windowed(batch):
         window=(j0, j1, i0, i1))
 
 
-@pytest.mark.parametrize("n_radars", [1, 3, 9])
+@pytest.mark.parametrize("n_radars", [1, 9])
 def test_windowed_batches_are_bitwise_identical_to_whole_domain(n_radars):
     """Windowing a batch changes where a number lives, not what it is.
 

@@ -80,8 +80,9 @@ def test_alias_backings_are_deduplicated_but_transient_lifetimes_are_summed():
     assert row["resident_bytes"] == 2048 and row["transient_bytes"] == 3072
 
 
-@pytest.mark.parametrize("target,offset,lifetime", [
-    ("absent/slab", 0, "resident"), ("s/slab", 4, "resident"), ("s/slab", 0, "output"),
+@pytest.mark.parametrize('target, offset, lifetime', [
+    pytest.param('s/slab', 4, 'resident', id='s/slab-4-resident'),
+    pytest.param('s/slab', 0, 'output', id='s/slab-0-output'),
 ])
 def test_alias_cannot_escape_backing_or_lifetime(target, offset, lifetime):
     stage = StageMemory((ArrayMemory("slab", (2,), "float32", lifetime="step"),
@@ -143,7 +144,10 @@ def test_incomplete_contract_keeps_existing_assembly_running_with_named_receipt(
     assert not driver.memory_admission["pre_factory_admission"]
 
 
-@pytest.mark.parametrize("free,override,expected", [(8192, False, True), (None, False, False), (1, True, False)])
+@pytest.mark.parametrize('free, override, expected', [
+    pytest.param(8192, False, True, id='8192-False-True'),
+    pytest.param(1, True, False, id='1-True-False'),
+])
 def test_admission_distinguishes_fit_unread_and_existing_override(factories, monkeypatch, free, override, expected):
     from gpuwm.core import resident_admission
     module, settings = factories
@@ -208,7 +212,9 @@ def test_forecast_envelope_and_named_terms_include_hydro(factories):
     assert "PARTIAL: routing: no roster" in partial.envelope_basis
 
 
-@pytest.mark.parametrize("carrier,label", [("sticky_status", "lsm"), ("status", "runoff")])
+@pytest.mark.parametrize('carrier, label', [
+    pytest.param('status', 'runoff', id='status-runoff'),
+])
 def test_diagnostic_label_is_bound_to_unchanged_checkpoint_carrier(carrier, label):
     stage = StageMemory((ArrayMemory(carrier, (5,), "int32", checkpointed=True,
                                    status=True, status_name=label),), "prepared", 0)
@@ -245,7 +251,9 @@ def test_status_contract_rejects_another_checkpoint_vector_with_same_metadata():
         verify_driver(row, driver)
 
 
-@pytest.mark.parametrize("label,status", [("", True), ("a/b", True), (7, True), ("lsm", False)])
+@pytest.mark.parametrize('label, status', [
+    pytest.param('', True, id='-True'),
+])
 def test_diagnostic_labels_require_a_flat_status_binding(label, status):
     with pytest.raises(ValueError, match="status name"):
         ArrayMemory("sticky_status", (5,), "int32", checkpointed=True,

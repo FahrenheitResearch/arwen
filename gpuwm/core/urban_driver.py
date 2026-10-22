@@ -8,10 +8,9 @@ arm as a post-LSM kernel, which is equivalent PROVIDED the land-surface
 scheme hands over the rural values it computed and nobody re-derives them.
 :class:`UrbanCoupler` is that handover and the two call points:
 
-1. the LSM runner calls :meth:`UrbanCoupler.noah_kernel_args` (Noah) or
-   :meth:`UrbanCoupler.noahmp_vegtype_remap` (Noah-MP) to get the urban
-   inputs of its own solve (NATURAL vegetation on urban columns, the rural
-   skin temperature);
+1. the Noah runner calls :meth:`UrbanCoupler.noah_kernel_args` to get the
+   urban inputs of its own solve (NATURAL vegetation on urban columns,
+   the rural skin temperature);
 2. :meth:`UrbanCoupler.after_lsm` -- before the runner zeroes ``rainbl``,
    because the UCM and BEM read RAINBL -- snapshots the rural values into
    ``UrbanState.rural`` and calls the model module's ``after_lsm``;
@@ -144,7 +143,6 @@ class UrbanCoupler:
         self.start_time = start_time
         self.latitude_deg = np.asarray(latitude_deg, dtype=np.float32)
         self.longitude_deg = np.asarray(longitude_deg, dtype=np.float32)
-        self.solar_updates = 0
 
     # -- solar ------------------------------------------------------------
     def update_solar(self, elapsed_seconds: float, radt_seconds: float) -> None:
@@ -166,7 +164,6 @@ class UrbanCoupler:
         solar.julyr = host.julyr
         solar.solcon = host.solcon
         solar.model_time = host.model_time
-        self.solar_updates += 1
 
     def split_shortwave(self, fields: dict, *, ht) -> None:
         """The radiation driver's direct/diffuse split for a shortwave
@@ -218,11 +215,6 @@ class UrbanCoupler:
             "rural_q1": rural["q1"], "rural_q2k": rural["q2k"],
             "rural_zlvl": rural["zlvl"],
         }
-
-    def noahmp_vegtype_remap(self) -> dict:
-        """noahmpdrv.F:916-925 under ``sf_urban_physics > 0``."""
-        return {"option": self.state.option,
-                "natural": int(self.state.categories.natural)}
 
     def _snapshot_rural(self, fields: dict) -> None:
         rural = self.state.rural

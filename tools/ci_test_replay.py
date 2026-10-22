@@ -121,13 +121,16 @@ def main() -> int:
     parser.add_argument("--workdir", type=Path)
     parser.add_argument("--keep", action="store_true", help="receipts are always retained")
     parser.add_argument("--python", default=sys.executable)
+    parser.add_argument("--release-proof")
+    parser.add_argument("--release-version")
+    parser.add_argument("--publication-commit")
     parser.add_argument("--rustup-home")
     parser.add_argument("--cargo-home")
     parser.add_argument("--pip-cache")
     args = parser.parse_args()
     work = args.workdir or Path(tempfile.mkdtemp(prefix="gpuwm-ci-replay-"))
     options = ["--tree", str(args.tree), "--work", str(work), "--python", args.python]
-    for name in ("rustup_home", "cargo_home", "pip_cache"):
+    for name in ("rustup_home", "cargo_home", "pip_cache", "release_proof", "release_version", "publication_commit"):
         value = getattr(args, name)
         if value:
             options.extend(["--" + name.replace("_", "-"), value])

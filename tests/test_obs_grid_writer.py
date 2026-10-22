@@ -35,11 +35,11 @@ from gpuwm.obs.grid_product import (OBS_GRID_WRITER_ENV,
                                     open_obs_grid_product,
                                     resolve_obs_grid_engine)
 from gpuwm.obs.radar_grid import read_radar_grid, write_radar_grid
-from gpuwm.obs.sweeps import Moment, RadarSite, RadarVolume, Sweep
 from gpuwm.obs.superob import (SuperobParams, merge_contributions,
                                superob_volume)
 from gpuwm.obs.target_grid import TargetGrid
-from gpuwm.static.lambert import LambertGrid
+
+from test_obs_radar_grid import _grid as _analytic_grid, _volume as _analytic_volume
 
 netCDF4 = pytest.importorskip("netCDF4")
 
@@ -52,63 +52,20 @@ def _require_writer() -> None:
         pytest.skip(f"the Rust NetCDF writer is not built here: {reason}")
 
 
-def _grid(nx: int = 21, ny: int = 21, dx: float = 2000.0) -> TargetGrid:
-    projection = LambertGrid(
-        ref_lat=35.3331, ref_lon=-97.2778, truelat1=33.0, truelat2=37.0,
-        stand_lon=-97.2778, dx=dx, dy=dx, e_we=nx + 1, e_sn=ny + 1)
-    return TargetGrid.from_projection(
-        projection, z_w=np.linspace(0.0, 10000.0, NZ + 1), name="analytic")
+def _grid() -> TargetGrid:
+    return _analytic_grid(nx=21, ny=21, nz=NZ)
 
 
-def _volume(grid: TargetGrid, *, site_id: str = "KTLX") -> RadarVolume:
-    centre_j, centre_i = grid.ny // 2, grid.nx // 2
-    azimuth = np.array([90.0, 135.0], dtype=np.float32)
-    gates = 40
-    reflectivity = np.linspace(5.0, 55.0, gates, dtype=np.float32)
-    velocity = np.linspace(-20.0, 20.0, gates, dtype=np.float32)
-    moments = {
-        "REF": Moment("REF", "dBZ", gates, 2125.0, 250.0,
-                      np.tile(reflectivity[None, :], (azimuth.size, 1))),
-        "VEL": Moment("VEL", "m/s", gates, 2125.0, 250.0,
-                      np.tile(velocity[None, :], (azimuth.size, 1))),
-    }
-    sweep = Sweep(
-        sweep_index=0, elevation_number=1, elevation_angle_deg=0.5,
-        nyquist_velocity_ms=32.0, start_status=3, end_status=2,
-        cut_sector=0, complete=True, azimuth_deg=azimuth,
-        elevation_deg=np.full(azimuth.size, 0.5, dtype=np.float32),
-        moments=moments)
-    return RadarVolume(
-        site=RadarSite(id=site_id, name="synthetic",
-                       lat_deg=float(grid.lat[centre_j, centre_i]),
-                       lon_deg=float(grid.lon[centre_j, centre_i]),
-                       alt_m=0.0, source="test"),
-        valid_time="2026-07-28T20:03:16Z", station_id=site_id,
-        volume_file=f"{site_id}20260728_200316_V06",
-        volume_sha256="0" * 64, volume_bytes=8102058,
-        pack_path=Path("synthetic.rdrpack"), pack_sha256="1" * 64,
-        params={"moments": ["REF", "VEL"], "max_range_km": 250.0},
-        framing={"magic": "AR2V0006", "block_count": 1},
-        sweeps=(sweep,))
-
-
-def _observations(grid: TargetGrid):
-    params = SuperobParams()
-    contribution = superob_volume(_volume(grid), grid, params=params)
-    return merge_contributions([contribution], grid, params=params,
-                               z_reduce="max"), params
+def _volume(grid: TargetGrid, *, site_id: str = "KTLX"):
+    return _analytic_volume(
+        grid, site_id=site_id, azimuths=(90.0, 135.0),
+        reflectivity=np.linspace(5.0, 55.0, 40, dtype=np.float32),
+        velocity=np.linspace(-20.0, 20.0, 40, dtype=np.float32))
 
 
 def _write_radar(path: Path, grid: TargetGrid, engine: str | None,
                  monkeypatch) -> dict:
-    if engine is None:
-        monkeypatch.delenv(OBS_GRID_WRITER_ENV, raising=False)
-    else:
-        monkeypatch.setenv(OBS_GRID_WRITER_ENV, engine)
-    observations, params = _observations(grid)
-    return write_radar_grid(path, observations, grid,
-                            valid_time="2026-07-28T20:03:16Z", params=params,
-                            overwrite=True)
+    return _write_multi(path, grid, engine, monkeypatch, count=1)
 
 
 def _cwp(grid: TargetGrid) -> GriddedCwp:
@@ -461,10 +418,10 @@ def _multi_radar(grid: TargetGrid, count: int):
     """
 
     params = SuperobParams()
-    contributions = [
-        superob_volume(_volume(grid, site_id=f"K{chr(65 + i)}{chr(65 + i)}X"),
-                       grid, params=params)
-        for i in range(count)]
+    sites = ["KTLX"] if count == 1 else [f"K{chr(65 + i)}{chr(65 + i)}X"
+                                        for i in range(count)]
+    contributions = [superob_volume(_volume(grid, site_id=site), grid, params=params)
+                     for site in sites]
     return merge_contributions(contributions, grid, params=params,
                                z_reduce="max"), params
 

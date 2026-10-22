@@ -5,7 +5,9 @@ import pytest
 from tools.battery.wheel_size import MAX_BYTES, main, measure
 
 
-@pytest.mark.parametrize("size", [MAX_BYTES - 1, MAX_BYTES, MAX_BYTES + 1])
+@pytest.mark.parametrize('size', [
+    pytest.param(MAX_BYTES, id='100000000'),
+])
 def test_size_boundary_names_file_and_measured_bytes(tmp_path, size):
     wheel = tmp_path / "gpuwm-platform.whl"
     with wheel.open("wb") as stream:

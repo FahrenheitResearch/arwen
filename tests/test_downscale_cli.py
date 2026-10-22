@@ -389,29 +389,7 @@ def test_runner_namespace_threads_the_acceptance_provenance(
         return {"result": "PASS"}
 
     monkeypatch.setattr(offline_child_run, "run", fake_run)
-    start = datetime(1974, 4, 3, 12)
-    for index in range(3):
-        _history(tmp_path / f"wrfout_d03_1974-04-03_{12 + index:02d}_00_00",
-                 start + timedelta(hours=index), ny=18, nx=20)
-    namelist = tmp_path / "namelist.input"
-    namelist.write_text("&physics\n mp_physics = 8,\n/\n", encoding="utf-8")
-    child_toml = tmp_path / "child.toml"
-    parent = {"nx": 20, "ny": 18, "dx": 1000.0, "dy": 1000.0}
-    merged = _derive_child_run_config(
-        _PARENT_CONFIG, parent=parent, ratio=1, child_nx=12, child_ny=10,
-        run_seconds=600.0, output_interval_s=300.0)
-    child_toml.write_text(_render_child_toml(merged), encoding="utf-8")
-    assert cli_main([
-        "downscale", str(tmp_path), "--parent-domain", "3",
-        "--parent-namelist", str(namelist),
-        "--child-config", str(child_toml), "--ratio", "1",
-        "--i-parent-start", "4", "--j-parent-start", "4",
-        # The fixture archive's coordinates are no real projection and no
-        # WPS_GEOG tree is staged: a child of it runs on its parent's
-        # terrain, the route this door test is about.
-        "--parent-terrain",
-        "--accept-parent-cadence",
-        "--out", str(tmp_path / "child-run")]) == 0
+    assert cli_main(_child_door(tmp_path)) == 0
     capsys.readouterr()
     namespace = captured["namespace"]
     assert namespace.accepted_parent_cadence is True
@@ -1727,30 +1705,8 @@ def _downscale_with_receipts(tmp_path, monkeypatch, *, extra=(),
     monkeypatch.setattr(go_cli, "_render_stage", fake_render_stage)
     monkeypatch.setattr(offline_child_run, "_run", fake_child)
 
-    start = datetime(1974, 4, 3, 12)
-    for index in range(3):
-        _history(tmp_path / f"wrfout_d03_1974-04-03_{12 + index:02d}_00_00",
-                 start + timedelta(hours=index), ny=18, nx=20)
-    namelist = tmp_path / "namelist.input"
-    namelist.write_text("&physics\n mp_physics = 8,\n/\n", encoding="utf-8")
-    child_toml = tmp_path / "child.toml"
-    merged = _derive_child_run_config(
-        _PARENT_CONFIG,
-        parent={"nx": 20, "ny": 18, "dx": 1000.0, "dy": 1000.0},
-        ratio=1, child_nx=12, child_ny=10,
-        run_seconds=600.0, output_interval_s=300.0)
-    child_toml.write_text(_render_child_toml(merged), encoding="utf-8")
     out = tmp_path / "child-run"
-    code = cli_main([
-        "downscale", str(tmp_path), "--parent-domain", "3",
-        "--parent-namelist", str(namelist),
-        "--child-config", str(child_toml), "--ratio", "1",
-        "--i-parent-start", "4", "--j-parent-start", "4",
-        # The fixture archive's coordinates are no real projection and no
-        # WPS_GEOG tree is staged: a child of it runs on its parent's
-        # terrain, the route this door test is about.
-        "--parent-terrain",
-        "--accept-parent-cadence", "--out", str(out), *extra])
+    code = cli_main(_child_door(tmp_path) + list(extra))
     events = [
         _json.loads(line) for line
         in (out / "events.jsonl").read_text(encoding="utf-8").splitlines()
@@ -1822,29 +1778,7 @@ def test_the_door_hands_the_runner_the_spec_it_resolved(
         return {"result": "PASS"}
 
     monkeypatch.setattr(offline_child_run, "run", fake_run)
-    start = datetime(1974, 4, 3, 12)
-    for index in range(3):
-        _history(tmp_path / f"wrfout_d03_1974-04-03_{12 + index:02d}_00_00",
-                 start + timedelta(hours=index), ny=18, nx=20)
-    namelist = tmp_path / "namelist.input"
-    namelist.write_text("&physics\n mp_physics = 8,\n/\n", encoding="utf-8")
-    child_toml = tmp_path / "child.toml"
-    merged = _derive_child_run_config(
-        _PARENT_CONFIG,
-        parent={"nx": 20, "ny": 18, "dx": 1000.0, "dy": 1000.0},
-        ratio=1, child_nx=12, child_ny=10,
-        run_seconds=600.0, output_interval_s=300.0)
-    child_toml.write_text(_render_child_toml(merged), encoding="utf-8")
-    door = [
-        "downscale", str(tmp_path), "--parent-domain", "3",
-        "--parent-namelist", str(namelist),
-        "--child-config", str(child_toml), "--ratio", "1",
-        "--i-parent-start", "4", "--j-parent-start", "4",
-        # The fixture archive's coordinates are no real projection and no
-        # WPS_GEOG tree is staged: a child of it runs on its parent's
-        # terrain, the route this door test is about.
-        "--parent-terrain",
-        "--accept-parent-cadence"]
+    door = _child_door(tmp_path)[:-2]
     assert cli_main(door + ["--out", str(tmp_path / "a")]) == 0
     assert captured["namespace"].render_products == "all"
     assert cli_main(door + ["--out", str(tmp_path / "b"),

@@ -759,7 +759,24 @@ class SpawnRunner:
                 born_t=self.birth_times.get(gid, t))
             lifecycle_rows.append(row)
             if row.get("retire"):
+                # Why it stopped, beside the watch's own decision: quiet at
+                # the parent's edge clearance means the storm left the domain.
+                trigger = getattr(self._retirement[gid].config, "trigger", None)
+                row["stop_reason"] = (
+                    "time" if trigger == "time" else
+                    "left-domain" if _touches_parent_edge(node) else "decayed")
                 retired_roots.append(gid)
+        from gpuwm.core.nest_lifecycle import merged_retirements
+        merging = {gid: (model.node(gid).cfg,
+                          getattr(self._retirement.get(gid), "config", None))
+                   for gid in sorted(self.spawned)
+                   if gid in model.nodes_by_grid_id
+                   and gid not in retired_roots
+                   and model.node(gid).parent is not None}
+        for row in (merged_retirements(merging, birth_times=self.birth_times, t=t)
+                    if len(merging) > 1 else ()):
+            lifecycle_rows.append(row)
+            retired_roots.append(int(row["grid_id"]))
 
         retired_grid_ids: set[int] = set()
         for gid in retired_roots:
@@ -874,7 +891,8 @@ class SpawnRunner:
                     model, "_dycore_state_workspace", None),
                 array_module=self.array_module,
                 on_child_built=self.on_child_built,
-                trigger_receipt=event.receipt)
+                trigger_receipt=event.receipt,
+                vertical=getattr(self.experiment, "vertical", None))
             self._child_results[gid] = receipt["child_result"]
             self.spawned[gid] = candidate[gid]
             self.retired.discard(gid)
@@ -1007,3 +1025,24 @@ class SpawnRunner:
 
 __all__ = ["HELD_RECEIPTS_KEPT", "RECEIPTS_SUFFIX", "SPAWN_RUNNER_CONTRACT",
            "SPAWN_STATE_KEYS", "SpawnRunner", "SpawnRunnerRefusal"]
+
+
+def _touches_parent_edge(node, *, slack_cells: int = 2) -> bool:
+    """Is this nest's footprint against its parent's admissible edge?
+
+    The placement rule keeps ``spec_bdy_width + blend_width`` parent rows
+    clear (gpuwm.experiment.validate_spawn_placement); a follower clamped
+    there with a quiet footprint lost its storm to the domain edge.
+    """
+    parent = getattr(node, "parent", None)
+    cfg = getattr(node, "cfg", None)
+    if parent is None or cfg is None:
+        return False
+    prun = parent.cfg.run
+    clear = int(getattr(prun, "spec_bdy_width", 5)) + 5 + int(slack_cells)
+    ratio = int(cfg.parent_grid_ratio)
+    i0, j0 = int(cfg.i_parent_start), int(cfg.j_parent_start)
+    i1 = i0 + int(cfg.run.nx) // ratio
+    j1 = j0 + int(cfg.run.ny) // ratio
+    return (i0 <= clear or j0 <= clear
+            or i1 >= int(prun.nx) - clear or j1 >= int(prun.ny) - clear)

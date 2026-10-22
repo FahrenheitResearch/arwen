@@ -1,52 +1,4 @@
-"""Validate the original single-member acquisition contract for cache reuse."""
-import json
-import os
-from pathlib import Path
-import subprocess
-
-
-def default_identity(row, version):
-    """Inspect installed defaults without loading weights or initializing CUDA."""
-    from gpuwm.earth2_run import earth2_python
-    script = '''import inspect,json,hashlib
-from types import SimpleNamespace
-from pathlib import Path
-from importlib.metadata import version
-import earth2studio.models.px as px
-row=json.loads(__import__('sys').argv[1])
-cls=getattr(px,row['earth2studio_class'])
-method=inspect.unwrap(cls.load_default_package)
-class Package:
- def __init__(self,root,**kwargs):self.root=root
- @staticmethod
- def default_cache(*args):return 'metadata-only-no-io'
-method.__globals__['Package']=Package
-package=cls.load_default_package()
-seed=inspect.signature(cls).parameters.get('seed')
-source=Path(inspect.getfile(cls))
-import torch
-print(json.dumps(dict(package=package.root,seed=seed.default if seed else None,cuda_initialized=torch.cuda.is_initialized(),
- earth2studio=version('earth2studio'),class_source=str(source),
- class_source_sha256=hashlib.sha256(source.read_bytes()).hexdigest())))
-'''
-    environment = dict(os.environ, CUDA_VISIBLE_DEVICES='', PYTHONDONTWRITEBYTECODE='1',
-                       HF_HUB_DISABLE_IMPLICIT_TOKEN='1')
-    try:
-        probe = subprocess.run([earth2_python(), '-c', script, json.dumps(row)], env=environment,
-                               text=True, capture_output=True, timeout=120)
-    except subprocess.TimeoutExpired as error:
-        raise ValueError('legacy fetch default identity check exceeded 120 seconds') from error
-    if probe.returncode:
-        raise ValueError('legacy fetch default identity could not be checked: ' + probe.stderr[-2000:])
-    identity = json.loads(probe.stdout.strip().splitlines()[-1])
-    if identity['cuda_initialized'] or identity['earth2studio'] != version or identity['package'] != row['weights']['uri']:
-        raise ValueError('legacy fetch runtime version or public weight revision differs')
-    policy = row.get('members')
-    if policy and (policy['kind'] != 'native_noise' or
-                   identity['seed'] != policy['first_seed'] or
-                   policy.get('perturbation', {}).get('class') != 'Zero'):
-        raise ValueError('legacy fetch does not prove the requested member policy')
-    return identity
+"""Validate legacy acquisition bytes without inventing producer provenance."""
 
 
 def verify(spec, receipt, request, *, allow_regional=False):
@@ -56,22 +8,32 @@ def verify(spec, receipt, request, *, allow_regional=False):
     _, row = resolve_model(spec['model'])
     table = model_table()
     ic = table['runtime']['initial_condition_sources'][spec['ic_source']]
-    old = receipt['model_row']
-    for key in ('earth2studio_class', 'profile', 'step_hours'):
-        if old.get(key) != row.get(key):
-            raise ValueError(f'legacy fetch {key} differs')
-    if request['model_class'] != row['earth2studio_class'] or request['ic_class'] != ic['earth2studio_class']:
-        raise ValueError('legacy fetch model or IC class differs')
-    if request['steps'] * row['step_hours'] != receipt['hours']:
-        raise ValueError('legacy fetch request horizon differs from receipt')
-    if receipt['runner']['earth2studio'] != table['runtime']['pinned_version']:
-        raise ValueError('legacy fetch runtime version differs')
-    for key in ('loader_kwargs', 'load_model_kwargs', 'ic_kwargs', 'model_calls', 'loader_preparations', 'runtime_env'):
-        if row.get(key):
-            raise ValueError(f'legacy fetch cannot prove nondefault {key}')
-    if ic.get('kwargs'):
-        raise ValueError('legacy fetch cannot prove nondefault IC arguments')
-    identity = default_identity(row, table['runtime']['pinned_version'])
+    old = receipt.get('model_row', {})
+    checked = {}
+    unknown = []
+
+    def available(label, source, key, expected):
+        if key not in source:
+            unknown.append(label)
+        elif source[key] != expected:
+            raise ValueError(f'legacy fetch {label} differs')
+        else:
+            checked[label] = source[key]
+
+    for key in ('earth2studio_class', 'profile', 'step_hours', 'members'):
+        available(key, old, key, row.get(key))
+    weights = old.get('weights', {})
+    available('weight_uri', weights, 'uri', row.get('weights', {}).get('uri'))
+    available('model_class', request, 'model_class', row['earth2studio_class'])
+    available('ic_class', request, 'ic_class', ic['earth2studio_class'])
+    available('initial_condition_source', receipt, 'initial_condition_source', spec['ic_source'])
+    available('earth2studio', receipt.get('runner', {}), 'earth2studio', table['runtime']['pinned_version'])
+    if 'steps' in request:
+        if request['steps'] * row['step_hours'] != receipt['hours']:
+            raise ValueError('legacy fetch request horizon differs from receipt')
+        checked['steps'] = request['steps']
+    else:
+        unknown.append('steps')
     metadata = inventory(receipt['forecast'])
     variables = metadata['variables']
     times = variables['time']
@@ -103,7 +65,13 @@ def verify(spec, receipt, request, *, allow_regional=False):
         actual = [min(lat) - .25, west - .25, max(lat) + .25, east + .25]
         if not covers_area(actual, request['area']):
             raise ValueError('legacy fetch native coordinates do not cover its declared area')
-    return dict(runtime_defaults=identity, native_inventory_schema=metadata.get('schema'),
+    return dict(native_inventory_schema=metadata.get('schema'),
                 checked_leads_hours=expected, member=0,
-                model_row_comparison='class, profile, cadence, pinned package and default native seed',
+                checked_producer_fields=checked,
+                unknown_producer_fields=unknown,
+                producer_weights=weights.get('uri', 'unknown'),
+                recorded_weight_metadata=weights,
+                producer_member_policy=old.get('members', 'unknown'),
+                provenance_basis='recorded fields only; installed defaults are not producer evidence',
+                model_row_comparison='available fields checked; absent fields unknown',
                 original_model_row=old)

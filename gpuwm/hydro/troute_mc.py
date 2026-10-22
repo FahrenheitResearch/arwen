@@ -15,7 +15,6 @@ NATIVE_INITIALIZATION_PATCH_SHA256 = "f1de712df75eb18936e907bdfb61f9403c78e7e64f
 INPUT_COLUMNS = ("dt", "qup", "quc", "qdp", "ql", "dx", "bw", "tw", "twcc",
                  "n", "ncc", "cs", "s0", "velp", "depthp")
 OUTPUT_COLUMNS = ("qdc", "velc", "depthc", "ck", "cn", "X")
-PARAMETER_COLUMNS = ("dx", "bw", "tw", "twcc", "n", "ncc", "cs", "s0")
 
 
 @dataclass(frozen=True)

@@ -20,16 +20,11 @@ from gpuwm.core.kernels import get_kernel, get_kernel_int_defines
 from gpuwm.core.mynn_surface import (
     ISFTCFLX_DEFINED,
     MYNN_SFCLAY_DEFAULT,
+    _INPUT_NAMES as MYNN_SURFACE_INPUTS,
     mynn_sfclay_variant_form,
 )
 from gpuwm.core.state import DTYPE
 
-
-MYNN_SURFACE_INPUTS = (
-    "u1", "v1", "t1", "qv1", "p1", "rho1", "dz1",
-    "u2", "v2", "dz2", "psfc", "tsk", "pblh", "mavail",
-    "hfx", "qfx", "znt", "qsfc", "ust", "xland", "snowh",
-)
 
 from gpuwm.core.physics_inventory import MYNN_SURFACE_OUTPUTS  # noqa: F401  (one home; re-exported here)
 
@@ -215,6 +210,7 @@ def launch_mynn_surface_layer(
     spp_pbl: int = 0,
     pattern_spp_pbl=None,
     variant: str = MYNN_SFCLAY_DEFAULT,
+    ocean_z0=None,
 ) -> None:
     """Launch the MYNN surface kernel into preallocated outputs."""
 
@@ -235,6 +231,14 @@ def launch_mynn_surface_layer(
                 "launch_mynn_surface_layer requires same-shape contiguous "
                 "float32 surface arrays"
             )
+    ocean_args = ()
+    defines = MYNN_SFCLAY_DEFINES[variant]
+    if ocean_z0 is not None:
+        if ocean_z0.shape != shape or ocean_z0.dtype != DTYPE or not ocean_z0.flags.c_contiguous:
+            raise ValueError("wave roughness requires contiguous FP32 on the surface grid")
+        ocean_args = (ocean_z0,)
+        defines += (("OCEAN_WAVE_ROUGHNESS", 1),)
+        if stochastic:defines += (("OCEAN_SPP_SURFACE", 1),)
     n = int(np.prod(shape))
     blocks = (n + _TPB - 1) // _TPB
     if stochastic:
@@ -248,14 +252,17 @@ def launch_mynn_surface_layer(
             raise ValueError("MYNN surface SPP pattern must be finite")
         from gpuwm.core.spp_kernel_sources import load_spp_module
         kernel = load_spp_module(
-            "mynn_surface", defines=MYNN_SFCLAY_DEFINES[variant],
+            "mynn_surface", defines=defines,
         ).get_function("mynn_surface_column")
+    elif ocean_z0 is not None:
+        from gpuwm.core.kernels import get_kernel_int_defines
+        kernel = get_kernel_int_defines("mynn_surface", "mynn_surface_column", defines, (1, 1, n))
     else:
         kernel = mynn_surface_kernel(variant, (1, 1, n))
     kernel(
         (blocks,),
         (_TPB,),
-        arrays + (
+        arrays + ocean_args + (
             DTYPE(dx), np.int32(itimestep), np.int32(isfflx),
             np.int32(isftcflx), np.int32(n),
         ) + ((pattern_spp_pbl,) if stochastic else ()),

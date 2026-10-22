@@ -27,7 +27,7 @@
         "geopotential_height",
         "specific_humidity"
       ],
-      "grid_alignment": "exact_coordinate_strided_subset",
+      "grid_alignment": "bilinear_mask_aware_nearest",
       "time_alignment": "source_cycle_analysis_broadcast",
       "vertical_merge": {
         "method": "cosine_pressure_distance_log_anomaly",

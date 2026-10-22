@@ -44,7 +44,7 @@ RANDOM_SELECTORS = frozenset({
 #: either one marks the table as that overlay.
 OVERLAY_MARKERS = frozenset({"base_config", "n_members"})
 OVERLAY_COMMAND = "python -m tools.ensemble_forecast run --ensemble-config FILE"
-TABLE_KEYS = ("members, keep_member_files, sounding_points, thresholds, recipe, trajectories and "
+TABLE_KEYS = ("members, keep_member_files, sounding_points, thresholds, comparison (ge/gt/le/lt or a field table), recipe, trajectories and "
               "member_variants (named member-roster land/surface arms), or "
               "perturbation (kind = 'surface-state', soil_moisture_scale, sst_offset_k), "
               "with optional max_ordinary_members_per_device concurrency cap")

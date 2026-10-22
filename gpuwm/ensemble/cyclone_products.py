@@ -135,3 +135,170 @@ def render(root, receipt, request):
     result['intensity_chart'] = str(intensity_chart(root/'maps',
         experiment_label=request['experiment_label']))
     return result
+
+
+def roster_product_request(trajectories, request_path=None):
+    """Use the cyclone door for selected rosters and its explicit JSON flag."""
+    selected = any('stratum' in row and row.get('tracks') for row in trajectories)
+    if not selected and request_path is None:
+        return None
+    table = Path(__file__).parents[1]/'authorities'/'tc-track-strata.v1.json'
+    request = dict(json.loads(table.read_text())['products'])
+    if request_path is not None:
+        path = Path(request_path).resolve()
+        supplied = json.loads(path.read_text())
+        if not isinstance(supplied, dict):
+            raise ValueError('--cyclone-products needs a JSON object')
+        request.update(supplied)
+        if request.get('best_track'):
+            request['best_track'] = str((path.parent/request['best_track']).resolve())
+    if not trajectories:
+        raise ValueError('recipe cyclone products need source trajectories to label member histories')
+    if type(request['workers']) is not int or request['workers'] < 1:
+        raise ValueError('cyclone product workers must be a positive integer')
+    if not request.get('best_track'):
+        paths = {row['tracks'] for row in trajectories if row.get('tracks')}
+        if len(paths) == 1:
+            path = Path(next(iter(paths))).resolve()
+            if json.loads(path.read_text()).get('best_track'):
+                request['best_track'] = str(path)
+    return request
+
+
+def _remove_owned_tree(root):
+    """Remove only this invocation's staging and retain its byte inventory."""
+    deleted = []
+    for path in sorted(Path(root).rglob('*'), key=lambda p: len(p.parts), reverse=True):
+        if path.is_symlink() or path.is_file():
+            deleted.append(dict(path=str(path), bytes=path.lstat().st_size))
+            path.unlink()
+        elif path.is_dir():
+            path.rmdir()
+    Path(root).rmdir()
+    return deleted
+
+
+def render_roster(root, trajectories, request, *, member_order, history_ledger):
+    """Render each ordinary member grid, then track the completed ArWen parents.
+
+    Runs before the session seals its PASS/restart receipts. Histories survive
+    failures; successful maps and tracks retire them through the writer ledger.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    import os
+    import sys
+    import tempfile
+    import time
+    from gpuwm import rustwx, tc_tracks
+    from gpuwm.ensemble.member_weights import roster_weights, weight_receipt
+
+    root = Path(root).resolve()
+    directory = root/'cyclone'
+    directory.mkdir(parents=True, exist_ok=True)
+    if len(trajectories) != len(member_order):
+        raise ValueError('cyclone products need one trajectory per completed member')
+    metadata = [dict(row, member_id=i) for i, row in zip(member_order, trajectories)]
+    weights = roster_weights(member_order, metadata)
+    renderer = rustwx.find_renderer()
+    if renderer is None:
+        raise RuntimeError('member cyclone maps require the ordinary rw_wrfbatch renderer')
+    records = history_ledger.validate_retirements()
+    groups = {}
+    by_member = {}
+    for row in records:
+        if row['retirement_state'] == 'retired':
+            raise RuntimeError('cyclone products require histories before raw retirement')
+        groups.setdefault((row['member_id'], row['domain']), []).append(row)
+        by_member.setdefault(row['member_id'], []).append(row)
+    if set(by_member) != set(member_order):
+        raise RuntimeError('cyclone products are missing a completed member history roster')
+    workers = min(request['workers'], len(groups))
+    started = time.monotonic()
+    stages = []
+    scratch = Path(tempfile.mkdtemp(prefix='.roster-products-', dir=directory))
+    receipt = dict(schema='gpuwm.ensemble-cyclone-products.v1', status='running', request=request,
+        **weight_receipt(member_order, weights), stages=stages,
+        grid_policy='each member parent and moving-nest frame uses its own coordinates; mismatched-grid ensemble aggregates are unavailable')
+    try:
+        begin = time.monotonic()
+        def member_maps(item):
+            (member, domain), rows = item
+            rows.sort(key=lambda row: row['valid_time'])
+            label = f'member-{member:04d}/{domain}'
+            store = scratch/f'maps-{member:04d}-{domain}'
+            maps, failed, skipped = rustwx.run_renderer_series(renderer,
+                [root/row['path'] for row in rows], store_root=store,
+                out_dir=directory/'members'/label, products=','.join(request['member_maps']),
+                frames='all', source_label=f'{label} weight={metadata[member_order.index(member)].get("weight", 1/len(member_order)):.12g}',
+                threads=1)
+            if failed or skipped or not maps:
+                raise RuntimeError(f'{label}: member maps incomplete: failures={failed}, skipped={skipped}')
+            return dict(member_id=member, domain=domain, products=request['member_maps'],
+                frames=len(rows), maps=[str(Path(p).resolve().relative_to(root)) for p in maps],
+                **weight_receipt(member_order, weights, [member]))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            receipt['member_products'] = list(pool.map(member_maps, sorted(groups.items())))
+        stages.append(dict(stage='per-member-parent-and-nest-maps', seconds=time.monotonic()-begin,
+            parallelism=f'{workers} native processes x 1 Rust thread'))
+        begin = time.monotonic()
+        def export_member(item):
+            member, trajectory = item
+            parent = [row for row in by_member[member] if row['domain'] == request['tracking_domain']]
+            if not parent:
+                raise RuntimeError(f'member {member}: no {request["tracking_domain"]} histories for tracks')
+            # Pass the exact writer inventory, never another member's folder.
+            work = scratch/f'tracks-{member:04d}'
+            work.mkdir()
+            export = work/'ml-export'
+            command = [sys.executable, '-m', 'gpuwm', 'ml-export',
+                *[str(root/row['path']) for row in sorted(parent, key=lambda row: row['valid_time'])],
+                '--out', str(export), *tc_tracks.history_export_arguments(request['tracking_domain'], 1)]
+            with (directory/f'ml-export-{member:04d}.log').open('w') as log:
+                subprocess.run(command, check=True, text=True, stdout=log, stderr=subprocess.STDOUT,
+                    env=dict(os.environ, RAYON_NUM_THREADS='1'))
+            stores = sorted(export.glob('*.zarr'))
+            if len(stores) != 1:
+                raise RuntimeError(f'member {member}: ml-export did not produce one parent store')
+            return dict(member_id=trajectory.get('track_member_id', str(member)), family='arwen', source='arwen',
+                init=trajectory['cycle'], file=str(stores[0]), vocabulary=tc_tracks.history_export_vocabulary(),
+                weight=trajectory.get('weight', 1/len(member_order)), ancestry=dict(trajectory, ensemble_member_id=member))
+        with ThreadPoolExecutor(max_workers=min(workers, len(member_order))) as pool:
+            members = list(pool.map(export_member, zip(member_order, trajectories)))
+        stages.append(dict(stage='member-history-export', seconds=time.monotonic()-begin,
+            parallelism=f'{min(workers,len(member_order))} native processes x 1 Rust thread'))
+        manifest = directory/'tc-manifest.json'
+        tc_tracks.dump(manifest, dict(schema=tc_tracks.MANIFEST, members=members))
+        command = [sys.executable, '-m', 'gpuwm', 'tc-tracks', '--manifest', str(manifest),
+            '--backend', request['backend'], '--workers', str(request['workers']), '--render', '--out', str(directory/'tracks')]
+        if request.get('best_track'):
+            command += ['--best-track', request['best_track']]
+        if request.get('storm_id'):
+            command += ['--storm-id', request['storm_id']]
+        begin = time.monotonic()
+        with (directory/'tc-tracks.log').open('w') as log:
+            subprocess.run(command, check=True, text=True, stdout=log, stderr=subprocess.STDOUT)
+        stages.append(dict(stage='tc-tracks-door-and-weighted-plume', seconds=time.monotonic()-begin,
+            parallelism=f'{request["workers"]} track workers; see tracks/receipt.json', command=command))
+        track_file = directory/'tracks'/'tracks.json'
+        plume = sorted((directory/'tracks').glob('d01/tc-track-plume/*/track-plume.png'))
+        if not track_file.is_file() or not plume:
+            raise RuntimeError('tc-tracks completed without tracks.json and the weighted plume')
+        receipt.update(status='complete', tracks=str(track_file.relative_to(root)),
+            plumes=[str(p.relative_to(root)) for p in plume], total_seconds=time.monotonic()-started)
+        artifacts = [root/p for row in receipt['member_products'] for p in row['maps']]
+        artifacts += [track_file, directory/'tracks'/'receipt.json', *plume]
+        receipt['artifacts'] = [dict(path=str(p.relative_to(root)), bytes=p.stat().st_size,
+            sha256=tc_tracks.sha(p)) for p in artifacts]
+        tc_tracks.dump(directory/'receipt.json', receipt)
+        begin = time.monotonic()
+        manifest_product = dict(path=str((directory/'receipt.json').relative_to(root)),
+            bytes=(directory/'receipt.json').stat().st_size, sha256=tc_tracks.sha(directory/'receipt.json'))
+        receipt['retired_histories'] = history_ledger.retire_consumed(directory/'receipt.json', [manifest_product], workers=request['workers'])
+        stages.append(dict(stage='verify-and-retire-member-histories', seconds=time.monotonic()-begin,
+            parallelism=f'{request["workers"]} writer-identity hash workers'))
+        tc_tracks.dump(directory/'retirement.json', dict(retired_histories=receipt['retired_histories'], stage=stages[-1]))
+        return dict(receipt=str((directory/'receipt.json').relative_to(root)), **receipt)
+    finally:
+        # The success receipt and track input hashes replace prepared fields.
+        deleted = _remove_owned_tree(scratch)
+        tc_tracks.dump(directory/'deleted-staging.json', deleted)

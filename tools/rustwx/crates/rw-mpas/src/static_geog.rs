@@ -511,12 +511,6 @@ impl GeogDataset {
             self.index.dy as f32, self.index.dx as f32, tile.xs, tile.ys, i, j, factor)
     }
 
-    pub fn source_xy_to_latlon(&self, x: f64, y: f64) -> (f64, f64) {
-        let lat = self.index.known_lat + (y - self.index.known_y) * self.index.dy;
-        let lon = self.index.known_lon + (x - self.index.known_x) * self.index.dx;
-        (lat.to_radians(), wrap_lon_deg(lon).to_radians())
-    }
-
     pub fn latlon_rad_to_source_xy(&self, lat: f64, lon: f64) -> (f64, f64) {
         let lat_deg = lat.to_degrees();
         let lon_deg = lon.to_degrees();
@@ -691,19 +685,6 @@ impl GeogDataset {
         }
         Ok(out)
     }
-
-    #[inline]
-    pub fn raw_to_value(&self, raw: i64) -> Option<f64> {
-        if self.index.missing_value == Some(raw) {
-            None
-        } else {
-            Some(raw as f64 * self.index.scale_factor)
-        }
-    }
-}
-
-fn wrap_lon_deg(lon: f64) -> f64 {
-    (lon + 180.0).rem_euclid(360.0) - 180.0
 }
 
 /// Synthetic WPS_GEOG trees for tests.

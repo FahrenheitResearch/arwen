@@ -16,7 +16,6 @@ outer acceptance remains the sole authority that advances
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 from numbers import Integral
 from typing import Protocol
 
@@ -37,13 +36,14 @@ from gpuwm.core.nssl2_contract import (
     require_ported_nssl2_mode,
     resolve_nssl2_mode_for_config,
 )
-from gpuwm.core.nssl2_driver_support import NSSL2DriverWorkspace
+from gpuwm.core.nssl2_driver_support import NSSL2DriverWorkspace, _step32
 from gpuwm.core.nssl2_production_coordinator import (
     NSSL2PrecipitationFields,
     NSSL2ProductionConfigurationError,
     NSSL2ProductionHooks,
     NSSL2RegistryFields,
     run_nssl2_production_step,
+    _condensation_hooks,
 )
 from gpuwm.core.refl import refl_10cm_is_stashed, stash_refl_10cm
 from gpuwm.core.state import DTYPE, DomainState
@@ -127,19 +127,8 @@ def _validated_hooks(hooks: NSSL2RuntimeHooks):
     if not isinstance(hooks, NSSL2RuntimeHooks):
         raise TypeError("hooks must be NSSL2RuntimeHooks")
     fused_gs = _require_callback("fused_gs", hooks.fused_gs)
-    if hooks.nucond_qvexcess is not None:
-        if hooks.nucond is not None or hooks.qv_excess is not None:
-            raise NSSL2ProductionConfigurationError(
-                "configure either nucond_qvexcess or separate nucond and "
-                "qv_excess runtime hooks, not both")
-        condensation = (
-            _require_callback("nucond_qvexcess", hooks.nucond_qvexcess),)
-    else:
-        condensation = (
-            _require_callback("nucond", hooks.nucond),
-            _require_callback("qv_excess", hooks.qv_excess),
-        )
-    return fused_gs, condensation
+    return fused_gs, _condensation_hooks(
+        hooks, _require_callback, hook_label="runtime hooks")
 
 
 def pin_absent_nssl2_fields(
@@ -179,19 +168,6 @@ def pin_absent_nssl2_fields(
 def _require_bool(name: str, value) -> None:
     if not isinstance(value, bool):
         raise TypeError(f"{name} must be bool")
-
-
-def _step32(dt_s: float) -> np.float32:
-    try:
-        step = float(dt_s)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("dt_s must be a positive finite scalar") from exc
-    if not math.isfinite(step) or step <= 0.0:
-        raise ValueError("dt_s must be a positive finite scalar")
-    converted = np.float32(step)
-    if not np.isfinite(converted) or converted <= 0.0:
-        raise ValueError("dt_s must be representable as positive float32")
-    return converted
 
 
 def _validated_binding(binding, state, hooks, step):
@@ -473,19 +449,13 @@ def apply_nssl2_production(
                 state, validate_values=validate_values)
         moist_physics_finish(state, cfg, fields.theta, step)
 
-    if len(wrapped_condensation) == 1:
-        coordinator_hooks = NSSL2ProductionHooks(
-            fused_gs=wrap_stage(fused_gs),
-            nucond_qvexcess=wrapped_condensation[0],
-            moist_physics_finish=finish,
-        )
-    else:
-        coordinator_hooks = NSSL2ProductionHooks(
-            fused_gs=wrap_stage(fused_gs),
-            nucond=wrapped_condensation[0],
-            qv_excess=wrapped_condensation[1],
-            moist_physics_finish=finish,
-        )
+    condensation_names = (("nucond_qvexcess",) if len(wrapped_condensation) == 1
+                          else ("nucond", "qv_excess"))
+    coordinator_hooks = NSSL2ProductionHooks(
+        fused_gs=wrap_stage(fused_gs),
+        moist_physics_finish=finish,
+        **dict(zip(condensation_names, wrapped_condensation)),
+    )
 
     save_pre_mp_theta(state)
     coordinator_kwargs = dict(

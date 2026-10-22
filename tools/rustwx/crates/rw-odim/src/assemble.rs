@@ -493,13 +493,6 @@ mod tests {
     }
 
     #[test]
-    fn one_cut_is_one_cut() {
-        let left = sweep(0.5, None, vec![0.0, 1.0, 2.0]);
-        let right = sweep(0.5, None, vec![0.0, 1.0, 2.0]);
-        assert!(same_cut(&left, &right));
-    }
-
-    #[test]
     fn a_different_start_time_is_a_different_pass() {
         let when = DateTime::from_timestamp(1_760_000_000, 0).map(|t| t.to_utc());
         let later = DateTime::from_timestamp(1_760_000_060, 0).map(|t| t.to_utc());

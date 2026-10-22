@@ -22,23 +22,7 @@ receipt={'purpose':__doc__,'pid':os.getpid(),'numerics':a.numerics,'binding':bin
 for name in ('gpuwm/core/dycore.py','gpuwm/core/physics.py','gpuwm/core/noahmp_column_slab.py','gpuwm/core/noahmp_flux_slab.py','gpuwm/core/kernels/noahmp_vegeflux.cu','gpuwm/native_step/recorder.c','gpuwm/native_step/__init__.py','tools/native_step/host_annotations.py','tools/native_step/whole_health_annotations.py','tools/native_step/probe_whole_period.py','gpuwm/core/model.py','gpuwm/core/clock.py','gpuwm/core/health_ledger.py','gpuwm/core/nest.py','gpuwm/ingest/lateral_bc.py','receipts/libawstep-health.so'):
  receipt['source'][name]=hashlib.sha256((ROOT/name).read_bytes()).hexdigest()
 
-def inventory(value):
- seen=set();arrays={}
- def visit(value,label):
-  if id(value) in seen:return
-  seen.add(id(value))
-  if isinstance(value,cp.ndarray):
-   key=(value.data.ptr,value.shape,value.strides,value.dtype.str)
-   arrays.setdefault(key,{'label':label,'array':value});return
-  if isinstance(value,Mapping):
-   for name,item in value.items():visit(item,label+'.'+str(name))
-  elif isinstance(value,(list,tuple)):
-   for i,item in enumerate(value):visit(item,label+f'[{i}]')
-  elif isinstance(value,types.FunctionType) and value.__closure__:
-   for name,cell in zip(value.__code__.co_freevars,value.__closure__):visit(cell.cell_contents,label+'.closure.'+name)
-  elif type(value).__module__.startswith('gpuwm.') and hasattr(value,'__dict__'):
-   for name,item in vars(value).items():visit(item,label+'.'+name)
- visit(value,'callbacks');return arrays
+from whole_inventory import callback_inventory as inventory
 
 original_schedule=clock.execute_schedule
 

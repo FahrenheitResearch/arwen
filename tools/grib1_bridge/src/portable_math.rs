@@ -194,14 +194,14 @@ unsafe fn unary<T: Copy + Send + Sync>(
 /// operand broadcast over the other).
 unsafe fn binary<T: Copy + Send + Sync>(
     function: fn(T, T) -> T,
-    left: *const T,
-    left_length: usize,
-    right: *const T,
-    right_length: usize,
+    left: (*const T, usize),
+    right: (*const T, usize),
     output: *mut T,
     length: usize,
     workers: usize,
 ) {
+    let (left, left_length) = left;
+    let (right, right_length) = right;
     let left = left as usize;
     let right = right as usize;
     let output = output as usize;
@@ -326,7 +326,7 @@ pub unsafe extern "C" fn gpuwm_portable_binary_f64(
         if workers == 0 || !operand_ok(left_length, length) || !operand_ok(right_length, length) {
             return ERR_DIMENSION;
         }
-        binary(function, left, left_length, right, right_length, output, length, workers);
+        binary(function, (left, left_length), (right, right_length), output, length, workers);
         OK
     }))
     .unwrap_or(ERR_PANIC)
@@ -360,7 +360,7 @@ pub unsafe extern "C" fn gpuwm_portable_binary_f32(
         if workers == 0 || !operand_ok(left_length, length) || !operand_ok(right_length, length) {
             return ERR_DIMENSION;
         }
-        binary(function, left, left_length, right, right_length, output, length, workers);
+        binary(function, (left, left_length), (right, right_length), output, length, workers);
         OK
     }))
     .unwrap_or(ERR_PANIC)
@@ -400,7 +400,7 @@ pub unsafe extern "C" fn gpuwm_host_binary_f64(
         if workers == 0 || !operand_ok(left_length, length) || !operand_ok(right_length, length) {
             return ERR_DIMENSION;
         }
-        binary(function, left, left_length, right, right_length, output, length, workers);
+        binary(function, (left, left_length), (right, right_length), output, length, workers);
         OK
     })).unwrap_or(ERR_PANIC)
 }

@@ -37,7 +37,7 @@ from gpuwm.obs.sweeps import (SWEEPS_SCHEMA_CENSOR, SWEEPS_SCHEMA_ODIM, Censor,
 
 
 def _write_pack(path: Path, schema: str, *,
-                products: dict[str, list[int]]) -> Path:
+                products: dict[str, list[int]], measured=-10.0, unit="dBZ") -> Path:
     """One sweep, one radial, ``products`` mapping moment name to censor codes.
 
     The only hand-built pack in this file. It exists to put codes in the plane
@@ -64,9 +64,9 @@ def _write_pack(path: Path, schema: str, *,
         censor = np.array([codes], dtype=np.uint8)
         # Only a MEASURED gate carries a number; every censored code is NaN,
         # which is what the real writer does.
-        data = np.where(censor == Censor.MEASURED, -10.0, np.nan).astype("<f4")
+        data = np.where(censor == Censor.MEASURED, measured, np.nan).astype("<f4")
         moments.append({
-            "product": product, "unit": "dBZ", "gate_count": len(codes),
+            "product": product, "unit": unit, "gate_count": len(codes),
             "first_gate_range_m": 125.0, "gate_size_m": 250.0,
             "array": push(f"v{index}", data),
             "censor_array": push(f"c{index}", censor)})

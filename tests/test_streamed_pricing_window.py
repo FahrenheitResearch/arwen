@@ -476,7 +476,6 @@ _DRY = """
     ("icon-eu", _THOMPSON_MYNN_NOAH, 572, 524, 250, 1),
     # The measured anchor physics of the prepared model, on GFS.
     ("gfs", _MORRISON_KF_YSU, 628, 462, 200, 2),
-    ("gfs", _MORRISON_KF_YSU, 900, 900, 250, 2),
     # Legacy RRTMG: not itemized, priced on the measured "full" rung with
     # its reserved 2.74 GiB radiation transient.
     ("hrrr", _WSM6_LEGACY_RRTMG, 800, 800, 200, 2),

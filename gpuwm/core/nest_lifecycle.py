@@ -36,6 +36,9 @@ RETIRE_KEYS = frozenset({
     "trigger", "threshold", "sustained_s", "min_lifetime_s", "at_s",
     # PRESSURE ONLY: which surface the decay is measured on.
     "level_hpa",
+    # Storm merger: retire the YOUNGER of two live sibling nests whose
+    # footprints overlap by at least this fraction of the smaller one.
+    "merge_overlap",
 })
 REARM_KEYS = frozenset({"max_firings", "cooldown_s"})
 DOMAIN_FOLLOW_EXTRA_KEYS = frozenset({
@@ -70,8 +73,20 @@ class RetireConfig:
     #: and ``[relocation.follow]``: absent is 850 hPa, ``0`` is the
     #: sea-level form, and the two threshold bands are disjoint.
     level_hpa: "float | tuple[float, ...] | None" = None
+    #: Two nests riding one storm after a merger: at a leg boundary where
+    #: two live siblings' footprints overlap by at least this fraction of
+    #: the smaller footprint, the younger one retires ("merged").  Absent
+    #: is off, so a config that never names it behaves as it always has.
+    merge_overlap: float | None = None
 
     def __post_init__(self) -> None:
+        if self.merge_overlap is not None:
+            value = self.merge_overlap
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(float(value))
+                    or not 0.0 < float(value) <= 1.0):
+                raise ValueError(
+                    f"retire merge_overlap must be a fraction in (0, 1], got {value!r}")
         if self.trigger not in RETIRE_TRIGGERS:
             raise ValueError(
                 f"retire trigger must be one of {RETIRE_TRIGGERS}, got "
@@ -121,6 +136,8 @@ class RetireConfig:
             out["threshold"] = float(self.threshold)
         if self.at_s is not None:
             out["at_s"] = float(self.at_s)
+        if self.merge_overlap is not None:
+            out["merge_overlap"] = float(self.merge_overlap)
         if self.trigger == "pressure":
             out.update(pressure_surface_json(
                 self.level_hpa,
@@ -524,3 +541,65 @@ def validate_follow_tracks(domains, relocation, source):
             dc = replace(dc, follow=replace(follow, tracker=policy.follow))
         resolved.append(dc)
     return resolved
+
+
+def footprint_overlap_fraction(first, second) -> float:
+    """Overlap of two nest footprints on one parent, over the SMALLER one.
+
+    Footprints are parent-cell rectangles (:class:`gpuwm.core.storm_tracking
+    .NestFootprint`); nests on different parents never overlap.
+    """
+    from gpuwm.core.storm_tracking import NestFootprint
+
+    a, b = NestFootprint.coerce(first), NestFootprint.coerce(second)
+    if a.parent_id is not None and b.parent_id is not None and int(a.parent_id) != int(b.parent_id):
+        return 0.0
+
+    def extent(fp):
+        r = int(fp.parent_grid_ratio)
+        i0, j0 = int(fp.i_parent_start), int(fp.j_parent_start)
+        return i0, j0, i0 + (int(fp.child_nx) / r), j0 + (int(fp.child_ny) / r)
+
+    ai0, aj0, ai1, aj1 = extent(a)
+    bi0, bj0, bi1, bj1 = extent(b)
+    wi = max(0.0, min(ai1, bi1) - max(ai0, bi0))
+    wj = max(0.0, min(aj1, bj1) - max(aj0, bj0))
+    smaller = min((ai1 - ai0) * (aj1 - aj0), (bi1 - bi0) * (bj1 - bj0))
+    return 0.0 if smaller <= 0.0 else float(wi * wj / smaller)
+
+
+def merged_retirements(live, *, birth_times, t: float) -> list[dict]:
+    """The merger rows for one boundary: ``live`` maps grid_id -> (cfg, retire).
+
+    For every pair of live siblings where either declares ``merge_overlap``
+    and the footprints overlap by at least the smaller declared fraction,
+    the younger nest (later birth; the higher grid id on a tie) retires.
+    Each nest retires at most once and a retired one claims no partner.
+    """
+    rows: list[dict] = []
+    gone: set[int] = set()
+    ids = sorted(int(g) for g in live)
+    for x in ids:
+        for y in ids:
+            if y <= x or x in gone or y in gone:
+                continue
+            cx, rx = live[x]
+            cy, ry = live[y]
+            # The runner holds RetirementWatch objects; the fraction is on their config.
+            rx, ry = (getattr(r, "config", r) for r in (rx, ry))
+            fractions = [float(r.merge_overlap) for r in (rx, ry)
+                         if r is not None and r.merge_overlap is not None]
+            if not fractions or int(cx.parent_id) != int(cy.parent_id):
+                continue
+            overlap = footprint_overlap_fraction(cx, cy)
+            if overlap < min(fractions):
+                continue
+            bx, by = float(birth_times.get(x, t)), float(birth_times.get(y, t))
+            younger, kept = (y, x) if (by > bx or (by == bx and y > x)) else (x, y)
+            gone.add(younger)
+            rows.append({"contract": RETIRE_CONTRACT, "grid_id": younger,
+                         "t": float(t), "decision": "retire",
+                         "stop_reason": "merged", "retire": True, "merged_into": kept,
+                         "overlap_fraction": overlap,
+                         "merge_overlap": min(fractions)})
+    return rows

@@ -1,0 +1,32 @@
+{
+  "schema": "gpuwm.cyclone-track-sources.v1",
+  "nhc": {
+    "index_url": "https://ftp.nhc.noaa.gov/atcf/index/storm_list.txt",
+    "archive_url": "https://ftp.nhc.noaa.gov/atcf/archive/{year}/b{id}.dat.gz",
+    "active_url": "https://ftp.nhc.noaa.gov/atcf/btk/b{id}.dat",
+    "licence": "US government public domain",
+    "terms_url": "https://www.weather.gov/disclaimer"
+  },
+  "hurdat2": {
+    "index_url": "https://www.nhc.noaa.gov/data/",
+    "licence": "US government public domain",
+    "terms_url": "https://www.weather.gov/disclaimer"
+  },
+  "ibtracs": {
+    "url": "https://www.ncei.noaa.gov/data/international-best-track-archive-for-climate-stewardship-ibtracs/v04r01/access/csv/ibtracs.ALL.list.v04r01.csv",
+    "licence": "NOAA public data; cite IBTrACS v4.01, DOI 10.25921/82ty-9e16",
+    "terms_url": "https://www.ncei.noaa.gov/access/metadata/landing-page/bin/iso?id=gov.noaa.ncdc:C01552",
+    "citation": "International Best Track Archive for Climate Stewardship Project, Version 4.01. NOAA NCEI. https://doi.org/10.25921/82ty-9e16",
+    "intensity": "USA agency columns only; no silent blending of wind averaging periods"
+  },
+  "jtwc": {
+    "route": "NOAA NCEI IBTrACS USA_AGENCY=jtwc_* best tracks",
+    "original_archive_url": "https://www.metoc.navy.mil/jtwc/products/best-tracks/",
+    "licence": "US government JTWC best tracks distributed by NOAA NCEI; IBTrACS citation and use constraints apply",
+    "terms_url": "https://www.ncei.noaa.gov/access/metadata/landing-page/bin/iso?id=gov.noaa.ncdc:C01552",
+    "position_columns": [
+      "USA_LAT",
+      "USA_LON"
+    ]
+  }
+}

@@ -40,7 +40,6 @@ use crate::runtime::{
 };
 use crate::severe::{build_planned_input_fetches, build_shared_timing_for_pair};
 use crate::shared_context::{
-    TitleProvenance,
     WeatherPanelField, build_weather_map_request, model_time_subtitle, source_subtitle,
     static_chrome_scale, static_supersample_factor, static_supersample_sharpen,
 };
@@ -215,35 +214,6 @@ struct NativeDerivedField {
 }
 
 impl DerivedBatchRequest {
-    pub(crate) fn from_hrrr(request: &HrrrDerivedBatchRequest) -> Self {
-        Self {
-            model: ModelId::Hrrr,
-            date_yyyymmdd: request.date_yyyymmdd.clone(),
-            cycle_override_utc: request.cycle_override_utc,
-            forecast_hour: request.forecast_hour,
-            source: request.source,
-            domain: request.domain.clone(),
-            out_dir: request.out_dir.clone(),
-            cache_root: request.cache_root.clone(),
-            use_cache: request.use_cache,
-            recipe_slugs: request.recipe_slugs.clone(),
-            surface_product_override: None,
-            pressure_product_override: None,
-            source_mode: request.source_mode,
-            allow_large_heavy_domain: request.allow_large_heavy_domain,
-            contour_mode: request.contour_mode,
-            native_fill_level_multiplier: request.native_fill_level_multiplier,
-            output_width: request.output_width,
-            output_height: request.output_height,
-            png_compression: request.png_compression,
-            place_label_overlay: request.place_label_overlay.clone(),
-            output_suffix: None,
-            subtitle_left_override: None,
-            subtitle_right_override: None,
-            title_provenance: TitleProvenance::default(),
-        }
-    }
-
     fn png_write_options(&self) -> PngWriteOptions {
         PngWriteOptions {
             compression: self.png_compression,
@@ -557,14 +527,6 @@ fn cropped_decode_cache_path(
     );
     path.set_file_name(format!("{suffix}.bin"));
     path
-}
-
-pub fn run_hrrr_derived_batch(
-    request: &HrrrDerivedBatchRequest,
-) -> Result<HrrrDerivedBatchReport, Box<dyn std::error::Error>> {
-    Ok(into_hrrr_report(run_derived_batch(
-        &DerivedBatchRequest::from_hrrr(request),
-    )?))
 }
 
 fn run_derived_batch_from_loaded_bundles(
@@ -1543,39 +1505,6 @@ fn computed_from_native_values(
         }
     }
     Ok(computed)
-}
-
-/// Build a single derived render artifact for an HRRR live-preview
-/// surface. Takes the planner-decoded generic surface/pressure types so
-/// callers can reuse a `LoadedBundleSet` rather than re-decoding HRRR
-/// natively. Reroutes through the same generic compute kernel as the
-/// batched derived lane.
-pub fn build_hrrr_live_derived_artifact(
-    recipe_slug: &str,
-    surface: &GenericSurfaceFields,
-    pressure: &GenericPressureFields,
-    grid: &rustwx_core::LatLonGrid,
-    projected: &ProjectedMap,
-    domain_bounds: (f64, f64, f64, f64),
-    date_yyyymmdd: &str,
-    cycle_utc: u8,
-    forecast_hour: u16,
-    source: SourceId,
-) -> Result<HrrrDerivedLiveArtifact, Box<dyn std::error::Error>> {
-    build_hrrr_live_derived_artifact_with_render_mode(
-        recipe_slug,
-        surface,
-        pressure,
-        grid,
-        projected,
-        domain_bounds,
-        date_yyyymmdd,
-        cycle_utc,
-        forecast_hour,
-        source,
-        NativeContourRenderMode::Automatic,
-        1,
-    )
 }
 
 pub fn build_hrrr_live_derived_artifact_with_render_mode(
@@ -2597,13 +2526,6 @@ fn native_contour_product_config(recipe: DerivedRecipe) -> Option<NativeContourP
     }
 }
 
-pub fn native_contour_line_levels_for_recipe_slug(
-    recipe_slug: &str,
-) -> Result<Option<Vec<f64>>, String> {
-    let recipe = DerivedRecipe::parse(recipe_slug)?;
-    Ok(native_contour_product_config(recipe).map(|config| config.line_levels.to_vec()))
-}
-
 fn maybe_apply_native_contour_fill_for_mode(
     recipe: DerivedRecipe,
     request: &mut MapRenderRequest,
@@ -3117,6 +3039,7 @@ fn surface_wind_barb_layer(
     let stride_x = ((visible_nx as f64 / 30.0).round() as usize).clamp(3, 128);
     let stride_y = ((visible_ny as f64 / 18.0).round() as usize).clamp(3, 96);
     WindBarbLayer {
+        direction_arrows: false,
         u: u_kt.to_vec(),
         v: v_kt.to_vec(),
         stride_x,

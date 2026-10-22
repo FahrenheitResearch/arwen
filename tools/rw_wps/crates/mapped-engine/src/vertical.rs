@@ -258,7 +258,7 @@ impl VerticalMerge {
         let atmospheric_values = donor_p.len() * cells * self.fields.len();
         let binding_donor_fraction = (donor_fraction * atmospheric_values as f64 + surface_values as f64)
             / (atmospheric_values + surface_values) as f64;
-        for (_, rule) in &self.fields {
+        for rule in self.fields.values() {
             if !self.fields.contains_key(&rule.primary_field) {
                 slice.direct.remove(&(key.0, key.1.clone(), rule.primary_field.clone()));
             }
@@ -387,7 +387,7 @@ mod tests {
             value("specific_humidity",4,vec![0.001;8])];
         let mut slice = DecodedCollection {latitude:vec![0.],longitude:vec![0.,0.03],
             vertical_values:vec![1.,3.],direct:primary.into_iter().map(|v| ((time,None,v.name.clone()),v)).collect(),
-            source_cycles:BTreeMap::from([(key.clone(),time)]),grid_fingerprint:"test".into(),hybrid_a:Vec::new(),hybrid_b:Vec::new()};
+            source_cycles:BTreeMap::from([(key.clone(),time)]),grid_fingerprint:"test".into(),hybrid_a:Vec::new(),hybrid_b:Vec::new(),original_pressure_hpa:None};
         let receipt = merge.apply(&mut slice, &donor, &[1.,2.,3.,4.], &key, "test").unwrap();
         let t = &slice.direct[&(time,None,"air_temperature".into())].values;
         assert_eq!(t.as_slice().unwrap(), &[300.,305.,280.,285.,270.,275.,220.,225.]);

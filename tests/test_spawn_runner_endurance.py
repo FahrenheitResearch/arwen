@@ -32,17 +32,7 @@ from gpuwm.core.nest_spawn import SpawnConfig
 from gpuwm.core.spawn_runner import (SPAWN_RUNNER_CONTRACT, HELD_RECEIPTS_KEPT,
                                      SpawnRunner)
 from test_nest_spawn_init import _experiment, _live_parent
-from test_spawn_runner import LEG, _leg, _walk
-
-
-@pytest.fixture()
-def case():
-    exp = _experiment()
-    parent, grids = _live_parent(exp)
-    dormant = replace(exp.domains[1],
-                      spawn=SpawnConfig(trigger="time", at_s=LEG))
-    return {"exp": replace(exp, domains=(exp.domains[0], dormant)),
-            "parent": parent, "grids": grids}
+from test_spawn_runner import LEG, _leg, _walk, case
 
 
 def _held_runner(case, monkeypatch, tmp_path, name="spawn_receipts.jsonl"):

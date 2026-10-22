@@ -33,6 +33,7 @@ pub mod ncdf;
 pub mod node;
 pub mod portable;
 pub mod refusal;
+pub mod regrid;
 pub mod space;
 pub mod threads;
 pub mod window;
@@ -83,3 +84,5 @@ mod tests {
             .ends_with(grib_core::grib2::DECODE_TEMPLATES));
     }
 }
+
+pub mod lead_index;

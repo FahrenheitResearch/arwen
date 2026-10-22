@@ -285,18 +285,14 @@ def validate_ranked_physics(cfg):
     """Refuse physics whose full-domain state the rank factory cannot build."""
     grid = int(getattr(cfg, "grid_id", 0))
     chem_sets = getattr(cfg, "chem_sets", "")
-    # The coupled-fire bulk smoke profiles keep their ledger on one global
-    # owner across resident ranks (tilestream.global_inventory; the SFIRE
-    # port's ranked fire and smoke tests check full state, history and disk
-    # against the resident run), so only the AQ sets are refused here.
-    from gpuwm.chem_table import chem_names
-    fire_smoke_only = bool(chem_sets) and set(chem_names(chem_sets)) <= {
-        "sfire_smoke", "sfire_smoke_mixed"}
+    # Only profiles with a tested domain ledger owner can run on ranks.
+    from tilestream.sfire_smoke import ranked_accepts
+    fire_smoke_only = bool(chem_sets) and ranked_accepts(cfg)
     if chem_sets and not fire_smoke_only:
         raise DevicesRefused(
             f"[devices] grid_id = {grid} enables chem_sets: chemistry carries "
             "per-domain (species,) ledger vectors and reduces mass over the "
-            "complete domain. Resident slabs have no shared chemistry ledger "
+            "complete domain. These chemistry profiles have no qualified rank ledger "
             "owner, so halo copies would duplicate mass accounting and the "
             "gather would slice those vectors as grid fields. Run this grid "
             "resident by leaving it out of [devices] domains.")

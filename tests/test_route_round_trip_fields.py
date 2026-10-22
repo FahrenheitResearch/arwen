@@ -79,6 +79,7 @@ DRIFTED = {
     "ruc_qvg_cold_start": {"ruc_qvg_cold_start": "wrf"},
     "ruc_2m_diagnostic": {"ruc_2m_diagnostic": "flux"},
     "fractional_seaice": {"fractional_seaice": 1},
+    "seaice_threshold": {"seaice_threshold": 271.4},
     "diff_6th_form": {"diff_6th_form": "wrf_461", "diff_6th_factor2": None},
     "upper_wind_limiter_form": {"upper_wind_limiter_form": "wrf_461"},
     "mp_zero_out": {"mp_zero_out": 0},
@@ -99,9 +100,10 @@ def test_a_toml_value_the_recipe_fills_differently_reaches_the_route(
         for key in settings:
             assert getattr(replayed.run, key) == getattr(domain.run, key), key
     # The fill these values defeat is real: without them the route reads
-    # the recipe's value (fractional_seaice has no fill, only a row).
+    # the recipe's value (fractional_seaice and seaice_threshold have no
+    # fill, only a row).
     recipe = recipe_physics_defaults("hrrr")
-    if field != "fractional_seaice":
+    if field not in ("fractional_seaice", "seaice_threshold"):
         assert recipe[field] != settings[field]
 
 
@@ -677,3 +679,12 @@ def test_a_root_topo_wind_reaches_both_halves(tmp_path):
     assert native["topo_wind"] == stock["topo_wind"] == [1, 0, 0, 0]
     assert [domain.run.topo_wind for domain in _replay(paths).domains] \
         == [1, 0, 0, 0]
+
+
+def test_history_switch_round_trips(tmp_path):
+    exp, paths = _emit(tmp_path, "history-switch",
+                       history_interval2_s=7200.,
+                       history_interval_change_s=10800.)
+    replay = _replay(paths)
+    assert replay.root.run.history_interval2_s == 7200.
+    assert replay.root.run.history_interval_change_s == 10800.

@@ -115,7 +115,7 @@ def query_cards(uuids=None):
     ``uuids`` None takes the cards CUDA_VISIBLE_DEVICES names, when it
     names them by UUID, and every card on the box otherwise.  The breakage
     this prevents: a cycle granted two cards of a shared eight-card box
-    (box S, 2026-10-06 18:13Z and 18:20Z) priced its packed members
+    (a rented box, 2026-10-06 18:13Z and 18:20Z) priced its packed members
     against the TIGHTEST of all eight, a card another tenant held at
     27.7 GiB, and refused itself twice ("one packed member (12.7 GiB
     priced) does not fit the tightest card (0.9 GiB after the reserve)")
@@ -413,7 +413,7 @@ def _require_mps():
     pipe = os.environ.get("CUDA_MPS_PIPE_DIRECTORY")
     if not pipe or not Path(pipe).is_dir():
         raise MemberWaveFailed("four DA members per card require an active owned MPS controller")
-    subprocess.run(["nvidia-cuda-mps-control"], input="get_server_list\n", text=True,
+    subprocess.run(["nvidia-cuda-mps-control"], input="get_server_list\n", encoding="utf-8",  # text-pipe-ok: one command, LF only
                    capture_output=True, check=True, timeout=10)
 
 
@@ -603,7 +603,7 @@ class ServerJob:
 class CardServer:
     """One long-lived member worker per card for a whole packed run.
 
-    Breakage it removes: on box E's 9 km CONUS run every member was a new
+    Breakage it removes: on a rented box's 9 km CONUS run every member was a new
     process that imported the engine, opened a CUDA context, loaded its
     kernels and re-read and re-hashed the whole 4 GB prepared cache before
     its first step, about 40 s of host work around 25 s of stepping, with

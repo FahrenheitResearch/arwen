@@ -52,7 +52,14 @@ def publication_files(root: pathlib.Path = ROOT) -> list[str]:
     spec = importlib.util.spec_from_file_location("stage1_publication_parser", ROOT / "tools/ci_test_replay.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    _marker, files = module.parse_test_job((root / ".github/workflows/publish.yml").read_text(encoding="utf-8"))
+    # Tag-time smoke is deliberately narrower. Keep R5 and the CI CPU lanes
+    # on the full contract list, including carried-packet and native-input
+    # guards that are not in stage1_files.txt.
+    import yaml
+    ci = yaml.safe_load((root / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
+    nightly = ci["jobs"]["publication_contracts"]
+    script = "\n".join(step.get("run", "") for step in nightly["steps"])
+    _marker, files = module.parse_test_job(script)
     return files
 
 

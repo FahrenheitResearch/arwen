@@ -16,6 +16,14 @@ fn main() {
         .map(|r| !r.stdout.is_empty())
         .unwrap_or(false);
     println!("cargo:rustc-env=HYDRO_WORLD_REV={rev}{}", if dirty { "+dirty" } else { "" });
+    // The release pin step reads GPUWM_BRIDGE_SOURCE_REV=<commit> from every bundled binary.
+    println!("cargo:rerun-if-env-changed=GPUWM_BRIDGE_SOURCE_REV");
+    let stamp = std::env::var("GPUWM_BRIDGE_SOURCE_REV")
+        .ok()
+        .or_else(|| (!dirty).then(|| rev.clone()))
+        .filter(|s| s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+        .unwrap_or_else(|| "unknown".into());
+    println!("cargo:rustc-env=GPUWM_BRIDGE_SOURCE_REV={stamp}");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src");
     // HEAD of a worktree only names the branch; the branch ref (or packed-refs)

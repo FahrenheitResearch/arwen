@@ -14,11 +14,11 @@ or no-op default, and importing this module does not unlock ``mp_physics=18``.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-import math
 
 import numpy as np
 
 from gpuwm.core.nssl2_driver_support import (
+    _step32,
     NSSL2_DRIVER_IGNORED_ACCUMULATOR_SCRATCH,
     NSSL2_DRIVER_STATE_SCRATCH,
     NSSL2_DRIVER_SURFACE_EXPORT_SCRATCH,
@@ -43,19 +43,6 @@ from gpuwm.core.state import DTYPE
 
 
 NSSL2_NUCOND_SCRATCH = "nssl2_nucond_ss"
-
-
-def _step32(dt_s: float) -> np.float32:
-    try:
-        step = float(dt_s)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("dt_s must be a positive finite scalar") from exc
-    if not math.isfinite(step) or step <= 0.0:
-        raise ValueError("dt_s must be a positive finite scalar")
-    converted = np.float32(step)
-    if not np.isfinite(converted) or converted <= 0.0:
-        raise ValueError("dt_s must be representable as positive float32")
-    return converted
 
 
 def _validate_scratch(
@@ -219,30 +206,22 @@ class NSSL2ProductionBinding:
             raise NSSL2ProductionConfigurationError(
                 "NSSL production binding requires DomainState scratch registry")
         expected = {
-            NSSL2_DRIVER_STATE_SCRATCH: self.workspace.state,
-            NSSL2_DRIVER_SURFACE_EXPORT_SCRATCH:
-                self.workspace.category_surface_export,
-            NSSL2_DRIVER_IGNORED_ACCUMULATOR_SCRATCH:
-                self.workspace.ignored_accumulator,
-            "nssl2_fused_temperature": self.fused_gs.temperature_k,
-            "nssl2_primary_ice_target":
-                self.fused_gs.primary_ice_target_m3,
-            NSSL2_NUCOND_SCRATCH: self.nucond_scratch,
+            NSSL2_DRIVER_STATE_SCRATCH: (self.workspace.state, (16, *self.shape)),
+            NSSL2_DRIVER_SURFACE_EXPORT_SCRATCH: (
+                self.workspace.category_surface_export, (5, *self.shape[1:])),
+            NSSL2_DRIVER_IGNORED_ACCUMULATOR_SCRATCH: (
+                self.workspace.ignored_accumulator, self.shape[1:]),
+            "nssl2_fused_temperature": (self.fused_gs.temperature_k, self.shape),
+            "nssl2_primary_ice_target": (
+                self.fused_gs.primary_ice_target_m3, self.shape),
+            NSSL2_NUCOND_SCRATCH: (self.nucond_scratch, self.shape),
         }
-        shapes = {
-            NSSL2_DRIVER_STATE_SCRATCH: (16, *self.shape),
-            NSSL2_DRIVER_SURFACE_EXPORT_SCRATCH: (5, *self.shape[1:]),
-            NSSL2_DRIVER_IGNORED_ACCUMULATOR_SCRATCH: self.shape[1:],
-            "nssl2_fused_temperature": self.shape,
-            "nssl2_primary_ice_target": self.shape,
-            NSSL2_NUCOND_SCRATCH: self.shape,
-        }
-        for name, value in expected.items():
+        for name, (value, shape) in expected.items():
             if pool.get(name) is not value:
                 raise NSSL2ProductionConfigurationError(
                     f"NSSL production binding scratch {name} lost its "
                     "canonical DomainState identity")
-            _validate_scratch(value, shapes[name], name)
+            _validate_scratch(value, shape, name)
 
     def with_step(self, dt_s: float, /) -> "NSSL2ProductionBinding":
         """This binding at another model step, sharing every buffer.

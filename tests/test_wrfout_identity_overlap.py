@@ -463,3 +463,38 @@ def test_writer_failure_shows_the_cause_and_its_remedy(tmp_path, monkeypatch):
     assert "changed" in str(error.value) and "injected" in str(error.value)
     assert error.value.remedy == output_identity.OutputChangedError.remedy
     assert runplan._remedy(error.value) == output_identity.OutputChangedError.remedy
+
+
+def test_staging_reuse_does_not_wait_for_native_finish(tmp_path, monkeypatch):
+    """A streamed next step may overwrite its store while history fsync waits."""
+    finishing, release, consumed = Event(), Event(), Event()
+    close = WrfoutWriter.close
+
+    def delayed(tape):
+        finishing.set()
+        assert release.wait(10)
+        return close(tape)
+
+    monkeypatch.setattr(WrfoutWriter, "close", delayed)
+    writer = _manual_async_writer(Event())
+    owner = np.full((1, 1, 1), 272., np.float32)
+    path = tmp_path / "frame"
+    landed = []
+    writer.landing_observer = lambda **event: landed.append(event)
+    _queue_cpu_ticket(writer, path, fields={"T": owner}, pinned_refs=(owner,))
+    waiter = None
+    try:
+        assert finishing.wait(5)
+        waiter = Thread(target=lambda: (writer.drain_staging(), consumed.set()))
+        waiter.start()
+        assert consumed.wait(2), "native finish/fsync still holds the streamed store"
+        assert not path.exists() and not landed
+        owner[:] = 999.
+    finally:
+        release.set()
+        if waiter is not None:
+            waiter.join(5)
+        writer.close()
+    assert len(landed) == 1
+    with netCDF4.Dataset(path) as dataset:
+        assert float(dataset['T'][0, 0, 0, 0]) == 272.

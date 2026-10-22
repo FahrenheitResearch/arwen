@@ -30,7 +30,6 @@ import json
 
 from gpuwm.mapped_composition import load_composition
 from gpuwm.mapped_source import load_mapping
-from gpuwm.physics_registry import physics_registry
 from gpuwm.source_adapters import (AdapterStatus, get_source_adapter,
                                    packaged_profile_sources)
 from gpuwm.source_authorities import (packaged_authorities,
@@ -159,14 +158,6 @@ def test_the_gdas_provenance_names_the_analysis_route_accurately():
     # certifies is the field-complete f000..f009 set, said out loud.
     assert "forecast" in policy.lower()
     assert "anl" in policy.lower()
-
-
-def test_the_physics_registry_routes_gdas_through_the_prepared_runner():
-    payload = physics_registry()
-    route = payload["runner_routes"]["tools.prepared_single_domain_forecast"]
-    assert "gdas" in route["source_ids"]
-    assert route["source_template_ids"]["gdas"] \
-        == route["source_template_ids"]["hrrr-prs"]
 
 
 def test_the_prepared_runner_tables_carry_the_gdas_rows():

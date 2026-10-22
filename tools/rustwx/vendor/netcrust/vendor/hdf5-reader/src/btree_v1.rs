@@ -147,10 +147,19 @@ fn parse_raw_data_key(
     let chunk_size = cursor.read_u32_le()?;
     let filter_mask = cursor.read_u32_le()?;
 
+    // The chunk offsets in a raw-data key are 64-bit whatever the file's
+    // size of offsets is (HDF5 format spec, version-1 B-tree, node type 1).
+    // Reading them at `offset_size` is the same thing only for the usual
+    // 8-byte-offset file; in a file written with 4-byte offsets every key
+    // is then 4 * (ndims + 1) bytes short, the child address is read from
+    // inside the key, and the "chunk" handed to the filter pipeline is
+    // whatever lies at that address (SMHI's ODIM volumes failed as
+    // "corrupt deflate stream").
+    let _ = offset_size;
     let num_offsets = nd as usize + 1;
     let mut offsets = Vec::with_capacity(num_offsets);
     for _ in 0..num_offsets {
-        offsets.push(cursor.read_offset(offset_size)?);
+        offsets.push(cursor.read_u64_le()?);
     }
 
     Ok(BTreeV1Key::RawData {
@@ -325,7 +334,7 @@ fn collect_recursive_storage(
             8 + (usize::try_from(ndims).map_err(|_| {
                 Error::InvalidData("B-tree v1 ndims exceeds platform usize capacity".into())
             })? + 1)
-                * usize::from(context.offset_size)
+                * 8
         }
         _ => {
             return Err(Error::InvalidData(format!(
@@ -439,7 +448,7 @@ mod tests {
             buf.extend_from_slice(&cs.to_le_bytes());
             buf.extend_from_slice(&fm.to_le_bytes());
             for &o in offs {
-                push_offset(&mut buf, o, offset_size);
+                buf.extend_from_slice(&o.to_le_bytes());
             }
             if i < children.len() {
                 push_offset(&mut buf, children[i], offset_size);
@@ -500,6 +509,32 @@ mod tests {
         }
         assert_eq!(node.children[0], 0x1000);
         assert_eq!(node.children[1], 0x2000);
+    }
+
+    #[test]
+    fn test_rawdata_key_offsets_are_64_bit_in_a_4_byte_offset_file() {
+        let undef4 = 0xFFFF_FFFFu64;
+        let data = build_rawdata_node(
+            0,
+            1,
+            undef4,
+            undef4,
+            &[(18952, 0, vec![0, 0, 0]), (0, 0, vec![360, 0, 0])],
+            &[532_808],
+            4,
+        );
+        // header 8 + 2 siblings of 4, two keys of 8 + 3 * 8, one 4-byte child
+        assert_eq!(data.len(), 16 + 2 * 32 + 4);
+        let mut cursor = Cursor::new(&data);
+        let node = BTreeV1Node::parse(&mut cursor, 4, 4, Some(2)).unwrap();
+        assert_eq!(node.children, vec![532_808]);
+        match &node.keys[1] {
+            BTreeV1Key::RawData { offsets, .. } => assert_eq!(offsets, &[360, 0, 0]),
+            _ => panic!("expected RawData key"),
+        }
+        let leaves = collect_btree_v1_leaves(&data, 0, 4, 4, Some(2), &[360, 480], None).unwrap();
+        assert_eq!(leaves.len(), 1);
+        assert_eq!(leaves[0].1, 532_808);
     }
 
     #[test]

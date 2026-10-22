@@ -1,7 +1,7 @@
 """A/B the observation-sparse device LETKF against another analysis route.
 
-Builds a real-shape synthetic analysis (the generator of the profiling
-lane's ``tools.da_analysis_bench``, carried here so this tool stands alone:
+Builds a real-shape synthetic analysis with the profiling generator from
+``tools.da_analysis_bench`` (at the real case’s shape:
 241 x 241 x 49, 32 members, 14 fields, windowed radial-velocity batches,
 whole-grid reflectivity and clear air, surface batches) and solves it with
 ``cuda-obs-sparse`` twice (run-to-run bytes) and with one reference route,
@@ -21,82 +21,10 @@ from pathlib import Path
 import numpy as np
 
 
-FIELDS = ("thp", "qv", "u", "v", "qs", "qg", "qc", "nc", "qr", "nr", "qi",
-          "ni", "nwfa", "nifa")
-
-
-def build_case(*, members, shape, radars, seed=7, dx=3000.0,
-               vr_fraction=0.03, z_fraction=0.03, z0_fraction=0.04,
-               surface_points=400, radar_range_m=230e3,
-               horizontal_m=12000.0, vertical_m=6000.0,
-               sfc_horizontal_m=12000.0, sfc_vertical_m=3000.0,
-               fields=FIELDS, geodesic=True, centre=(31.0, -89.0)):
-    from gpuwm.da.letkf import GridGeometry, GriddedObs, Localization
-
-    rng = np.random.default_rng(seed)
-    nz, ny, nx = shape
-    # Terrain-following heights: a stretched column plus a gentle ridge.
-    eta = np.linspace(0.0, 1.0, nz)
-    column = 20.0 + 19000.0 * eta ** 1.5
-    jj, ii = np.mgrid[0:ny, 0:nx]
-    terrain = 300.0 * np.exp(-(((jj - ny / 3) / (ny / 6)) ** 2
-                               + ((ii - nx / 2) / (nx / 5)) ** 2))
-    heights = column[:, None, None] + terrain[None] * (1.0 - eta)[:, None, None]
-    lat = lon = None
-    if geodesic:
-        # A plain lat/lon mesh at the case's spacing and centre, so the
-        # localisation takes the geodesic branch a projected domain takes.
-        lat = centre[0] + (jj - (ny - 1) / 2) * dx / 111195.0
-        lon = centre[1] + (ii - (nx - 1) / 2) * dx / (
-            111195.0 * np.cos(np.radians(lat)))
-    grid = GridGeometry(dx_m=dx, dy_m=dx, heights_m=heights,
-                        lat_deg=lat, lon_deg=lon)
-
-    prior = {}
-    for index, name in enumerate(fields):
-        base = rng.standard_normal((1, nz, ny, nx)) * (1 + index)
-        prior[name] = base + 0.3 * rng.standard_normal((members, nz, ny, nx))
-    probe = prior["u"]
-
-    loc = Localization(horizontal_m=horizontal_m, vertical_m=vertical_m)
-    batches = []
-    radius = int(radar_range_m / dx)
-    centres = [(int(ny * (0.15 + 0.7 * rng.random())),
-                int(nx * (0.15 + 0.7 * rng.random()))) for _ in range(radars)]
-    for number, (cj, ci) in enumerate(centres):
-        j0, j1 = max(0, cj - radius), min(ny - 1, cj + radius)
-        i0, i1 = max(0, ci - radius), min(nx - 1, ci + radius)
-        wj, wi = np.mgrid[j0:j1 + 1, i0:i1 + 1]
-        disc = (wj - cj) ** 2 + (wi - ci) ** 2 <= radius ** 2
-        mask = (rng.random((nz, j1 - j0 + 1, i1 - i0 + 1)) < vr_fraction) \
-            & disc[None]
-        sim = probe[:, :, j0:j1 + 1, i0:i1 + 1] * 2.0
-        values = sim.mean(axis=0) + rng.standard_normal(mask.shape)
-        batches.append(GriddedObs(
-            name=f"vr_{number}", values=values, errors=np.full(mask.shape, 2.0),
-            simulated=sim, mask=mask, localization=loc,
-            window=(j0, j1, i0, i1)))
-    for name, fraction in (("reflectivity", z_fraction),
-                           ("clear_air", z0_fraction)):
-        mask = rng.random(shape) < fraction
-        sim = prior.get("qr", probe) * 3.0
-        values = sim.mean(axis=0) + rng.standard_normal(shape)
-        batches.append(GriddedObs(name=name, values=values,
-                                  errors=np.full(shape, 5.0),
-                                  simulated=sim, mask=mask, localization=loc))
-    sloc = Localization(horizontal_m=sfc_horizontal_m, vertical_m=sfc_vertical_m)
-    for name, field in (("sfc_t2", "thp"), ("sfc_u10", "u"), ("sfc_v10", "v"),
-                        ("sfc_td", "qv")):
-        mask = np.zeros(shape, bool)
-        flat = rng.choice(ny * nx, size=min(surface_points, ny * nx // 4),
-                          replace=False)
-        mask[0].reshape(-1)[flat] = True
-        sim = prior.get(field, probe).copy()
-        values = sim.mean(axis=0) + rng.standard_normal(shape)
-        batches.append(GriddedObs(name=name, values=values,
-                                  errors=np.full(shape, 2.0), simulated=sim,
-                                  mask=mask, localization=sloc))
-    return prior, batches, grid, loc
+try:
+    from tools.da_analysis_bench import FIELDS, build_case
+except ImportError:                     # python tools/da_letkf_device_ab.py
+    from da_analysis_bench import FIELDS, build_case
 
 
 def _solve(route, prior, batches, grid, config):

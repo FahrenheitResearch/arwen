@@ -14,29 +14,12 @@ import numpy as np
 from gpuwm.core import dycore
 from gpuwm.prepared_domain_tree_forecast import main as run
 from gpuwm.native_step import Plan
-from host_annotations import annotate
+from host_annotations import annotate,inventory,host_inventory
 from time_slots import Frame,frame_for,capture_slots,bind_slots
 class Complete(BaseException):pass
 receipt={'purpose':__doc__,'pid':os.getpid(),'numerics':a.numerics,'binding':binding,'cases':[], 'source':{},'completed_forecast':False}
 for name in ('gpuwm/core/dycore.py','gpuwm/core/physics.py','gpuwm/core/noahmp_column_slab.py','gpuwm/core/noahmp_flux_slab.py','gpuwm/core/kernels/noahmp_vegeflux.cu','gpuwm/native_step/recorder.c','gpuwm/native_step/__init__.py','tools/native_step/host_annotations.py','tools/native_step/probe_time_advance.py','tools/native_step/time_slots.py','gpuwm/ingest/lateral_bc.py'):
  receipt['source'][name]=hashlib.sha256((ROOT/name).read_bytes()).hexdigest()
-
-def inventory(state):
- seen=set();arrays={}
- def visit(value,label):
-  if id(value) in seen:return
-  seen.add(id(value))
-  if isinstance(value,cp.ndarray):
-   key=(value.data.ptr,value.shape,value.strides,value.dtype.str)
-   arrays.setdefault(key,{'label':label,'array':value});return
-  if isinstance(value,dict):
-   for name,item in value.items():visit(item,label+'.'+str(name))
-  elif isinstance(value,(list,tuple)):
-   for i,item in enumerate(value):visit(item,label+f'[{i}]')
-  elif type(value).__module__.startswith('gpuwm.') and hasattr(value,'__dict__'):
-   for name,item in vars(value).items():visit(item,label+'.'+name)
- visit(state,'state')
- return arrays
 
 def snapshot(arrays):
  return {key:entry['array'].copy() for key,entry in arrays.items()}
@@ -53,22 +36,6 @@ def compare(arrays,reference):
   details.append({'name':entry['label'],'shape':list(got.shape),'dtype':got.dtype.str,'words':got.size,'different_words':n,'expected_sha256':hashlib.sha256(want.tobytes()).hexdigest(),'actual_sha256':hashlib.sha256(got.tobytes()).hexdigest()})
  return {'words':total,'different_words':changed,'arrays':details}
 original=dycore.step;counts={};plans={};finished=set()
-
-def host_inventory(state):
- seen=set();values={}
- def visit(value,label):
-  if isinstance(value,(bool,int,float,str,type(None))):
-   values[label]=value;return
-  if id(value) in seen:return
-  seen.add(id(value))
-  if isinstance(value,(cp.ndarray,np.ndarray)):return
-  if isinstance(value,dict):
-   for k,v in value.items():visit(v,label+'.'+str(k))
-  elif isinstance(value,(list,tuple)):
-   for i,v in enumerate(value):visit(v,label+f'[{i}]')
-  elif type(value).__module__.startswith('gpuwm.') and hasattr(value,'__dict__'):
-   for k,v in vars(value).items():visit(v,label+'.'+k)
- visit(state,'state');return values
 
 def step(state,cfg,**kwargs):
  key=(cfg.nx,cfg.ny,cfg.nz);counts[key]=counts.get(key,0)+1

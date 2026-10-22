@@ -562,3 +562,31 @@ def test_new_forecast_says_how_big_a_too_big_hrrr_draft_is(tmp_path, monkeypatch
     assert memory["fits"] is False and memory["budget_gib"] == 6.75 and 365 < memory["need_gib"] < 390, memory
     assert body["message"] == (f"Too big for the 8 GB card: this grid needs about {memory['need_gib']:.1f} GiB "
                                "and 6.8 GiB is usable."), body
+
+
+@pytest.mark.parametrize("failure,status", [
+    ("timeout", 502), ("missing", 404), ("path", 400),
+])
+def test_fit_page_preserves_runner_failure_contract(tmp_path, monkeypatch, failure, status):
+    """Exercise the farm failures directly instead of relying on worker timing."""
+    import subprocess
+    from gpuwm.gui.api import PathRefused
+
+    runner = Runner(tmp_path / "jobs")
+    api = Api(tmp_path / "runs", runner=runner, token="t" * 43, port=0,
+              version="test", bind="127.0.0.1")
+
+    def fail(*args, **kwargs):
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(args[0], timeout=10)
+        if failure == "missing":
+            raise FileNotFoundError(2, "missing engine", "engine-python")
+        raise PathRefused("invalid path")
+
+    monkeypatch.setattr("gpuwm.gui.jobs.subprocess.run", fail)
+    monkeypatch.setattr(api, "_get", lambda *_args: api._cached("failure", ["engine-python"], 1))
+    try:
+        reply = api.handle("GET", "/api/failure", {}, b"")
+        assert reply.status == status and reply.body["ok"] is False
+    finally:
+        api.close()

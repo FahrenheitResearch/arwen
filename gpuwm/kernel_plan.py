@@ -86,6 +86,7 @@ POOL_PREFIX = "kernel-plan"
 _MARK = "__gpuwm_kernel_plan__"
 
 _lock = threading.Lock()
+_install_lock = threading.Lock()
 _flight: dict[str, concurrent.futures.Future] = {}
 _requested: dict[str, dict[str, Any]] = {}
 _state: dict[str, Any] = {"installed": False, "plan": None, "tag": None, "tag_text": None,
@@ -378,6 +379,17 @@ def _copy(result):
 def install(plan_dir: str | Path | None = None, tag_text: str | None = None) -> bool:
     """Wrap the NVRTC funnel (once per process) and bind this run's plan file."""
 
+    # Concurrent members must not reread another installer's funnel as the
+    # original compiler after installing the pack bridge. A nested funnel
+    # waits on its own flight forever, holding the caller's factory lock;
+    # static ahead() workers likewise wait on the future they just created.
+    # Keep this separate from _lock: compilation never takes this lock, and
+    # bridge/metadata setup must not hold the flight-table lock.
+    with _install_lock:
+        return _install(plan_dir, tag_text)
+
+
+def _install(plan_dir: str | Path | None, tag_text: str | None) -> bool:
     if _state["installed"]:
         return True
     if not enabled():
@@ -388,7 +400,8 @@ def install(plan_dir: str | Path | None = None, tag_text: str | None = None) -> 
         return False  # the other package's copy already owns the funnel
     directory = plan_dir or os.environ.get(DIRECTORY_ENVIRONMENT)
     if directory is None:
-        directory = Path.home() / ".cache" / "gpuwm" / "kernel-plans"
+        from gpuwm.kernel_warm_pack import cache_root
+        directory = cache_root() / "plans"
     text = default_tag_text() if tag_text is None else str(tag_text)
     try:
         identity = compiler_identity()
@@ -399,8 +412,8 @@ def install(plan_dir: str | Path | None = None, tag_text: str | None = None) -> 
         import cupy
         from gpuwm import kernel_aot
 
-        from gpuwm.kernel_warm_pack import install_metadata
-        _state["compiler_metadata"] = install_metadata(compiler, directory, identity)
+        from gpuwm.kernel_warm_pack import install_metadata, cache_root
+        _state["compiler_metadata"] = install_metadata(compiler, cache_root(), identity)
         kernel_aot.install(cupy)
         # The pack's final-NVRTC bridge/recorder must sit inside this funnel:
         # static capture exits below before it can load or compile anything.
@@ -415,6 +428,7 @@ def install(plan_dir: str | Path | None = None, tag_text: str | None = None) -> 
 
     def funnel(source, options=(), arch=None, filename="kern.cu", name_expressions=None,
                log_stream=None, cache_in_memory=False, jitify=None, method=None):
+        route_filename = filename
         def call():
             return original(source, options, arch, filename, name_expressions, log_stream,
                             cache_in_memory, jitify, method)
@@ -422,7 +436,10 @@ def install(plan_dir: str | Path | None = None, tag_text: str | None = None) -> 
         capturing = _capturing()
         if getattr(compiler, "__name__", None) == "cupy.cuda.compiler":
             from gpuwm.kernel_aot import effective_options
+            from gpuwm.kernel_warm_pack import program_name
             options = effective_options(options)
+            if isinstance(source, str):
+                filename = program_name(source, filename)
         if log_stream is not None or jitify or not isinstance(source, str):
             if capturing:
                 raise _Captured()
@@ -446,7 +463,7 @@ def install(plan_dir: str | Path | None = None, tag_text: str | None = None) -> 
             _count("warm_image_hits")
             return cached_image
         try:
-            entry = _entry_of(filename, cache_in_memory)
+            entry = _entry_of(route_filename, cache_in_memory)
             target = _device_arch() if arguments["arch"] == "device" else arguments["arch"]
         except Exception:
             entry = None
@@ -479,8 +496,14 @@ def install(plan_dir: str | Path | None = None, tag_text: str | None = None) -> 
             _count("served")
             return _copy(result)
         started = time.perf_counter()
+        process_compile = (_state.get("compiler_pool") is not None
+                           and _state.get("closer") is None and arguments.get("method") is None)
         try:
-            result = call()
+            if process_compile:
+                target = _device_arch() if arguments["arch"] == "device" else arguments["arch"]
+                result = _submit_and_wait(arguments, target, _state["replay"])
+            else:
+                result = call()
         except BaseException as error:
             with _lock:
                 _flight.pop(key, None)
@@ -491,8 +514,9 @@ def install(plan_dir: str | Path | None = None, tag_text: str | None = None) -> 
         if images is not None:
             images.put(arguments, result)
         with _lock:
-            _count("inline_compiles")
-            _count("inline_seconds", seconds)
+            prefix = "dynamic_pool" if process_compile else "inline"
+            _count(prefix + "_compiles")
+            _count(prefix + "_seconds", seconds)
             if key in _requested:
                 _requested[key]["seconds"] = round(seconds, 3)
         return _copy(result)
@@ -544,8 +568,8 @@ def _warm_images():
     with _lock:
         images = _state.get("warm_images")
         if images is None:
-            from gpuwm.kernel_warm_pack import WarmImages
-            images = WarmImages(_state["root"], _state["identity"], _state["tag_text"], _device_arch())
+            from gpuwm.kernel_warm_pack import WarmImages, cache_root
+            images = WarmImages(cache_root(), _state["identity"], _state["tag_text"], _device_arch())
             _state["warm_images"] = images
         return images
 

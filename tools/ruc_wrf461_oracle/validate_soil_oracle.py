@@ -13,20 +13,28 @@ import numpy as np
 CASES = ("warm_forest_rain", "dry_grass", "frozen_crop_rain", "humid_bare_dew")
 
 
-def main(path: str) -> None:
+def _load_profiles(
+    path: str, expected_cases: tuple[str, ...], *,
+    shape: tuple[int, int] = (4, 9), excluded: tuple[str, ...] = ("case", "k"),
+) -> dict[str, np.ndarray]:
     with Path(path).open(newline="", encoding="ascii") as stream:
         rows = list(csv.DictReader(stream))
-    if len(rows) != 36:
-        raise SystemExit(f"expected 36 rows, got {len(rows)}")
+    expected_rows = shape[0] * shape[1]
+    if len(rows) != expected_rows:
+        raise SystemExit(f"expected {expected_rows} rows, got {len(rows)}")
     cases = tuple(dict.fromkeys(row["case"] for row in rows))
-    if cases != CASES:
+    if cases != expected_cases:
         raise SystemExit(f"unexpected case inventory {cases!r}")
-    numeric = tuple(key for key in rows[0] if key not in ("case", "k"))
-    values = {
+    numeric = tuple(key for key in rows[0] if key not in excluded)
+    return {
         name: np.asarray([float(row[name]) for row in rows], dtype=np.float32)
-        .reshape(4, 9)
+        .reshape(shape)
         for name in numeric
     }
+
+
+def main(path: str) -> None:
+    values = _load_profiles(path, CASES)
     if not all(np.all(np.isfinite(field)) for field in values.values()):
         raise SystemExit("RUC soil oracle contains non-finite output")
     if not np.array_equal(values["nroot"][:, 0], [8.0, 6.0, 6.0, 6.0]):

@@ -1,0 +1,88 @@
+#!/bin/sh
+# forward-only-hooks: reference-transaction
+#
+# Refuses moving a local branch anywhere but forward: `git reset` (soft,
+# mixed or hard) to an earlier or unrelated commit, `git branch -f`,
+# `git checkout -B` / `switch -C` over an existing branch, `update-ref`,
+# and a force push or force fetch landing on refs/heads/* in this
+# amend or force-push.  Git has no pre-reset hook; this is the only
+# place a reset can be stopped.
+#
+# Git runs this hook with one argument (prepared, committed or aborted)
+# and one line per ref on stdin: <old-value> <new-value> <ref-name>.
+# Only the "prepared" stage can stop anything (a non-zero exit there
+# aborts the whole transaction); at "committed" the refs have already
+# moved and git ignores the exit status, so the check runs at
+# "prepared".
+#
+# A refs/heads/* update is refused unless its old value is an ancestor
+# of its new value.  That passes commits, merges, cherry-picks, reverts
+# and fast-forwards, and refuses backward moves (reset to HEAD~1) and
+# sideways ones (reset to another line, amend, rebase).  New branches,
+# deletions, renames, HEAD itself (detached HEAD moves, checkout),
+# remote-tracking refs, tags, stash, notes and bisect pass.
+# A hook that was here before install runs afterwards as
+# reference-transaction.local, with the same stdin.
+
+state=$1
+input=$(cat)
+
+# `git reset --hard/--mixed/--merge/--keep`, `checkout -B` and `switch -C`
+# rewrite the index (and the working tree) BEFORE they move the branch,
+# so refusing the ref update alone would leave the checkout rewound to
+# the refused commit under an unchanged HEAD, and the next `commit -a`
+# would quietly undo work.  When the refused ref is this worktree's
+# branch and the index already holds the refused commit's tree, put the
+# checkout back: first as a checkout would (two-tree switch, keeping
+# local changes; this is what restores --hard, --merge, --keep, -B), and
+# if git refuses that because the working tree was never touched
+# (--mixed), the index alone.
+put_back() {
+    old=$1 new=$2 ref=$3
+    [ "$(git rev-parse --is-inside-work-tree 2>/dev/null)" = true ] || return 0
+    [ "$(git symbolic-ref -q HEAD 2>/dev/null)" = "$ref" ] || return 0
+    [ "$(git write-tree 2>/dev/null)" = "$(git rev-parse -q --verify "$new^{tree}")" ] || return 0
+    if git read-tree -m -u "$new" "$old" 2>/dev/null || git read-tree "$old" 2>/dev/null; then
+        git update-index -q --refresh >/dev/null 2>&1
+        echo "git had already rewound the index/working tree to $new; they are put back at $old (HEAD), local changes kept." >&2
+    else
+        echo "git had already rewound the index/working tree to $new and they could not be put back automatically; HEAD is still $old. Run: git reset --hard HEAD (after --hard) or git reset HEAD (after --mixed)." >&2
+    fi
+}
+
+if [ "$state" = prepared ]; then
+    bad=0
+    while read -r old new ref; do
+        case "$ref" in refs/heads/*) ;; *) continue ;; esac
+        case "$old$new" in *ref:*) continue ;; esac        # symref update
+        case "$new" in *[!0]*) ;; *) continue ;; esac      # deletion
+        case "$old" in
+            *[!0]*) ;;
+            *)  # Not verified by the caller (branch -f, update-ref, first
+                # commit): the ref is locked but still reads its old value.
+                old=$(git rev-parse -q --verify "$ref^{commit}" 2>/dev/null)
+                [ -n "$old" ] || continue                  # new branch
+                ;;
+        esac
+        [ "$old" = "$new" ] && continue
+        if ! git merge-base --is-ancestor "$old" "$new" 2>/dev/null; then
+            if git merge-base --is-ancestor "$new" "$old" 2>/dev/null; then
+                how="back to an earlier commit"
+            else
+                how="sideways off its line"
+            fi
+            echo "reset is banned here (forward commits only); $ref would move $how ($old -> $new). Make a new commit instead (git revert, or a forward commit)." >&2
+            bad=1
+            put_back "$old" "$new" "$ref"
+        fi
+    done <<INPUT
+$input
+INPUT
+    [ "$bad" = 0 ] || exit 1
+fi
+
+if [ -x "$0.local" ]; then
+    printf '%s\n' "$input" | "$0.local" "$@"
+    exit $?
+fi
+exit 0

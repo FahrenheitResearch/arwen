@@ -1,0 +1,10 @@
+{
+  "forcing": "../data/forcing.nc",
+  "bathymetry": "../data/bathymetry-halo.nc",
+  "output": "../run",
+  "input_licenses": ["CC-BY-4.0", "NOAA-public-domain"],
+  "research_data_licenses": ["CC-BY-4.0"],
+  "dt_seconds": 60,
+  "output_seconds": 3600,
+  "spectral": {"frequencies":36,"directions":36,"first_hz":0.035,"ratio":1.1}
+}

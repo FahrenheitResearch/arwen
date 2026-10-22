@@ -6,8 +6,6 @@ runs twice and requires bitwise-identical results (dual-run discipline for
 this machine's GPU).
 """
 
-from pathlib import Path
-
 import numpy as np
 import pytest
 
@@ -19,28 +17,10 @@ try:
 except Exception:                                     # pragma: no cover
     pytest.skip("no CUDA device", allow_module_level=True)
 
-FIXDIR = Path(__file__).resolve().parents[1] / "tools" / "rrtmg_wrf461_oracle" / "sw_fixtures"
+from test_rrtmg_sw_oracle import (
+    FIXDIR, _FIX_FILES, assert_bits, fixtures, tables)
 
-_tables = None
-_fix = None
 _cuda = None
-
-
-def tables():
-    global _tables
-    if _tables is None:
-        _tables = sw.tables_from_dump(dict(np.load(FIXDIR / "sw_tables.npz")))
-    return _tables
-
-
-def fixtures():
-    global _fix
-    if _fix is None:
-        _fix = {}
-        for name in _FIX_FILES:
-            f = np.load(FIXDIR / name)
-            _fix.update({k: f[k] for k in f.files})
-    return _fix
 
 
 def cuda():
@@ -48,9 +28,6 @@ def cuda():
     if _cuda is None:
         _cuda = sw.CudaSW(tables())
     return _cuda
-
-
-_FIX_FILES = ("fixtures_real.npz", "fixtures_synth.npz", "fixtures_tall.npz")
 
 
 def _day_cases():
@@ -63,23 +40,6 @@ def _day_cases():
 
 
 DAY_CASES = _day_cases()
-
-
-def assert_bits(name, got, want):
-    got = np.asarray(got, dtype=np.float32)
-    want = np.asarray(want, dtype=np.float32)
-    assert got.shape == want.shape, f"{name}: shape {got.shape} vs {want.shape}"
-    gb = got.view(np.uint32)
-    wb = want.view(np.uint32)
-    if np.array_equal(gb, wb):
-        return
-    diff = gb.astype(np.int64) - wb.astype(np.int64)
-    bad = np.nonzero(diff.reshape(-1))[0]
-    i = bad[0]
-    raise AssertionError(
-        f"{name}: {bad.size}/{got.size} words differ; max |ulp| = "
-        f"{np.abs(diff).max()}; first at flat index {i}: "
-        f"got {got.reshape(-1)[i]!r} want {want.reshape(-1)[i]!r}")
 
 
 @pytest.mark.parametrize("case", DAY_CASES)
@@ -409,12 +369,12 @@ def test_batched_vram_estimate(tall):
                 f"estimate {estimate}")
 
 
-def test_batched_scratch_allocates_once_and_zeroes_only_the_named_slots():
+def test_batched_scratch_allocates_once_per_call_and_releases_named_slots():
     """The workspace hoist on the card: one allocation per slot for a
-    whole multi-chunk call, none on the next call at the same chunk, and
+    whole multi-chunk call, released before the next call, and
     the bytes memset per call are exactly the read-before-write slots
     sw_batched_memset_bytes prices (wkl per chunk, abort flag per call).
-    Bit identity across the reuse is test_batched_vs_percolumn's job."""
+    Bit identity across calls is test_batched_vs_percolumn's job."""
     groups = _deck_groups()
     cs = max(groups.values(), key=len)
     nlay = _flag_key(cs[0])[5]
@@ -425,25 +385,29 @@ def test_batched_scratch_allocates_once_and_zeroes_only_the_named_slots():
     nchunks = -(-len(cs) // chunk)
     assert nchunks >= 3, "the deck must give a multi-chunk call"
     scratch = c.scratch
-    allocs0, zeroed0 = scratch.allocations, scratch.zeroed_bytes
-    _run_batched(cs, ins, chunk=chunk)
-    held = set(scratch.slots())
     expect = {k for k, cls, _ in sw.SW_SCRATCH_SLOTS if cls != "zeros"}
     iceflg = _flag_key(cs[0])[2]
     if iceflg == 5:
         expect -= {"cswpmc0", "resnmc0"}   # real snow uploads instead
-    assert held == expect, (held ^ expect)
-    assert scratch.allocations - allocs0 == len(held), (
-        "one allocation per slot for the whole call, not per chunk")
-    zeroed = scratch.zeroed_bytes - zeroed0
     priced = sw.sw_batched_memset_bytes(len(cs), nlay, chunk)
-    # The two clean-sky slabs are zeroed outside the scratch.
-    assert zeroed == priced - 2 * len(cs) * (nlay + 1) * 4
-    assert zeroed == 4 + len(cs) * nlay * sw.MXMOL * 4
-    # Second call at the same chunk: the slots are reused, nothing new.
-    allocs1 = scratch.allocations
-    _run_batched(cs, ins, chunk=chunk)
-    assert scratch.allocations == allocs1
+    for _ in range(DUAL_RUNS):
+        allocs0, zeroed0 = scratch.allocations, scratch.zeroed_bytes
+        held = set()
+
+        def probe(stage):
+            held.update(scratch.slots())
+
+        _run_batched(cs, ins, chunk=chunk, probe=probe)
+        assert held == expect, (held ^ expect)
+        assert scratch.allocations - allocs0 == len(held), (
+            "one allocation per slot for the whole call, not per chunk")
+        zeroed = scratch.zeroed_bytes - zeroed0
+        # The two clean-sky slabs are zeroed outside the scratch.
+        assert zeroed == priced - 2 * len(cs) * (nlay + 1) * 4
+        assert zeroed == 4 + len(cs) * nlay * sw.MXMOL * 4
+        assert not scratch.slots()
+        assert scratch.held_bytes() == 0
+    # Explicit release remains safe after the call's automatic release.
     c.release_scratch()
     assert scratch.held_bytes() == 0
 
@@ -561,18 +525,16 @@ def test_batched_night_handling():
 def test_batched_zero_aerosol_precondition():
     """Audit item 1 at the batched entry: aer_opt values whose aerosol
     the device composition does not form are rejected, never silently
-    run at zero aerosol.  aer_opt = 1 and 2 refuse outright; aer_opt = 3
-    (lane 286-aer-swint) runs only with the caller's per-band optics and
+    run at zero aerosol.  aer_opt = 1, 2 and 3
+    run only with the caller's per-band optics and
     refuses without them -- its optics path is held to the NumPy
     composition by tests/test_rrtmg_aerosol_optics.py."""
     groups = _deck_groups()
     cs = min(groups.values(), key=len)
     ins = _group_inputs(cs)
-    for bad in (1, 2):
-        with pytest.raises(NotImplementedError, match="aer_opt"):
+    for bad in (1, 2, 3):
+        with pytest.raises(ValueError, match=f"aer_opt={bad} needs"):
             _run_batched(cs, ins, aer_opt=bad)
-    with pytest.raises(ValueError, match="aer_opt=3 needs"):
-        _run_batched(cs, ins, aer_opt=3)
 
 
 def test_batched_wide_determinism():

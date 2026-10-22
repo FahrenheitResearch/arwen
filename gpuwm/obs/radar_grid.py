@@ -87,7 +87,7 @@ import numpy as np
 from gpuwm.obs.superob import (CLEAR_AIR_SOURCE, CLEAR_AIR_SOURCE_CENSOR,
                               CLEAR_AIR_SOURCES, GriddedObservations,
                               MIN_BEAM_COHERENCE, SuperobParams)
-from gpuwm.obs.target_grid import GridMismatchError, TargetGrid
+from gpuwm.obs.target_grid import GridMismatchError, TargetGrid, _array_sha256
 
 #: The original contract: velocity stored as whole-domain planes, one per
 #: radar.  Still READ, always, and that is not politeness -- receipts
@@ -202,17 +202,6 @@ CLEAR_AIR_VARIABLES: dict[str, tuple[tuple[str, ...], str, str | None]] = {
     "z0_count": (_PLANE, "int32", "count"),
     "z0_err": (_PLANE, "float32", "dBZ"),
 }
-
-#: How the clear-air observations in a file were established, re-exported
-#: from :mod:`gpuwm.obs.superob` where the two regimes are defined and
-#: documented.  Written as a file attribute so a consumer can tell what it
-#: is trusting: :data:`CLEAR_AIR_SOURCE` is the measurement-only regime, and
-#: :data:`CLEAR_AIR_SOURCE_CENSOR` is the one that additionally reads the
-#: Message-31 "below threshold" code the decoder now preserves.  A consumer
-#: that does not recognise the value it finds must refuse the file rather
-#: than assume either.
-__all_clear_air__ = (CLEAR_AIR_SOURCE, CLEAR_AIR_SOURCE_CENSOR,
-                     CLEAR_AIR_SOURCES)
 
 #: v2's table.  Every reflectivity and coordinate entry is v1's, unchanged
 #: -- the diff is exactly the velocity dimension tuple and the four window
@@ -1307,22 +1296,8 @@ def _count_var(dataset, name, dims, values, description):
 
 
 def _digest(array, dtype) -> str:
-    """Digest an array with its dtype and shape, C-ordered.
-
-    Same construction as :func:`gpuwm.obs.target_grid._array_sha256`, but
-    at the dtype the file actually stores rather than always float64: the
-    point here is to hash what is *on disk*, so that a reader can recompute
-    it without the writer's inputs.
-    """
-
-    contiguous = np.ascontiguousarray(np.asarray(array), dtype=dtype)
-    hasher = hashlib.sha256()
-    hasher.update(contiguous.dtype.str.encode("ascii"))
-    hasher.update(b";")
-    hasher.update(json.dumps(list(contiguous.shape)).encode("ascii"))
-    hasher.update(b";")
-    hasher.update(contiguous.tobytes(order="C"))
-    return hasher.hexdigest()
+    """Digest at the dtype on disk so readers can recompute the identity."""
+    return _array_sha256(np.asarray(array), dtype=dtype)
 
 
 def _coordinate_digests(grid: TargetGrid) -> dict:

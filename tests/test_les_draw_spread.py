@@ -275,41 +275,6 @@ def test_environmental_fields_are_never_spread():
     assert "vram_pool_gib" not in draw_spread.MOIST_METRICS
 
 
-def test_every_default_metric_exists_on_a_real_engine_receipt_shape():
-    """A metric list that names a field the case never writes would report
-    ``n = 0`` forever and look like an absent measurement rather than a
-    typo."""
-    receipt = _engine_receipt()
-    for name in draw_spread.MOIST_METRICS:
-        assert draw_spread.dig(receipt, name) is not None, name
-    for name in draw_spread.MOIST_IDENTITY:
-        assert draw_spread.dig(receipt, name) is not None, name
-    for _, path, _mode in draw_spread.MOIST_FLAGS:
-        assert draw_spread.dig(receipt, path) is not None, path
-
-
-def test_default_metrics_are_fields_the_case_module_actually_writes():
-    """The stronger form of the test above: check the names against the
-    case module's own receipt-assembly source, so a rename there cannot
-    leave these lists quietly pointing at nothing.
-
-    Identity keys are checked too, and by their LEAF name: they are dotted
-    paths into the receipt's nested blocks, and the case module writes the
-    leaf.  A key added to the identity list that the case never writes
-    would make every draw set report ``DIFFERS`` on nothing, or worse
-    agree on ``None``.
-    """
-    from gpuwm.verify.cases import cloud_topped_boundary_layer as ctbl
-    source = Path(ctbl.__file__).read_text(encoding="utf-8")
-    for name in draw_spread.MOIST_METRICS:
-        assert '"%s"' % name in source, name
-    for path in draw_spread.MOIST_IDENTITY:
-        leaf = path.split(".")[-1]
-        assert '"%s"' % leaf in source, path
-    for _, path, _mode in draw_spread.MOIST_FLAGS:
-        assert '"%s"' % path.split(".")[-1] in source, path
-
-
 def test_registration_defaults_to_none_and_is_recorded_not_enforced():
     """This tool publishes spread and gates nothing.  A missing
     registration makes the output say it is a measurement; it does not

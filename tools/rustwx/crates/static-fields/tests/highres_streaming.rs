@@ -485,3 +485,78 @@ fn default_bound_continuous_parallel_path_matches_dense_masked_scaled_source() {
         bits(&expected.data, &actual.data);
     }
 }
+
+#[test]
+fn parallel_tile_rows_write_the_serial_file_byte_for_byte() {
+    // Origin: the 1 km CONUS GLO-30 mosaic read and deflated on one thread
+    // for about an hour.  Rows on several threads must change no byte.
+    let tmp = Scratch::new("parallel-rows");
+    let (ny, nx) = (7 * 256 - 41, 3 * 256 + 17);
+    let transform = [1.0, 0.0, 0.0, 0.0, -1.0, ny as f64];
+    let value = |c: usize, r: usize| -> f64 {
+        if (c * 7 + r * 13) % 97 == 0 {
+            f64::NAN
+        } else {
+            ((c * 31 + r * 17) % 4093) as f64 * 0.5
+        }
+    };
+    let window = |c0: usize, r0: usize, w: usize, h: usize| -> Vec<f64> {
+        (0..h)
+            .flat_map(|j| (0..w).map(move |i| (j, i)))
+            .map(|(j, i)| value(c0 + i, r0 + j))
+            .collect()
+    };
+    let serial = tmp.file("serial.tif");
+    geotiff::write_band1_tiles(
+        &serial,
+        ny,
+        nx,
+        &transform,
+        &Crs::Geographic,
+        geotiff::SampleType::F32,
+        Some(-9999.0),
+        |c, r, w, h| Ok(window(c, r, w, h)),
+    )
+    .unwrap();
+    for workers in [1, 3, 8] {
+        let parallel = tmp.file(&format!("parallel-{workers}.tif"));
+        let inits = std::sync::atomic::AtomicUsize::new(0);
+        geotiff::write_band1_tiles_parallel(
+            &parallel,
+            ny,
+            nx,
+            &transform,
+            &Crs::Geographic,
+            geotiff::SampleType::F32,
+            Some(-9999.0),
+            workers,
+            || inits.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            |_, c, r, w, h| Ok(window(c, r, w, h)),
+        )
+        .unwrap();
+        // One fresh state per tile row.
+        assert_eq!(inits.into_inner(), 7);
+        assert_eq!(std::fs::read(&serial).unwrap(), std::fs::read(&parallel).unwrap());
+    }
+    let failing = tmp.file("failing.tif");
+    let error = geotiff::write_band1_tiles_parallel(
+        &failing,
+        ny,
+        nx,
+        &transform,
+        &Crs::Geographic,
+        geotiff::SampleType::F32,
+        None,
+        4,
+        || (),
+        |_, c, r, w, h| {
+            if r >= 2 * 256 {
+                Err(static_fields::StaticError::Invalid(format!("row {r}")))
+            } else {
+                Ok(window(c, r, w, h))
+            }
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.to_string(), "row 512");
+}

@@ -248,7 +248,8 @@ impl Group {
         }
 
         if !found_symbol_table {
-            // New-style group: use compact links from header messages
+            // Link messages may have moved during header growth.
+            if links.iter().all(|l|l.creation_order.is_some()) {links.sort_by_key(|l|l.creation_order);}
             self.resolve_link_targets(&links, link_depth, &mut children);
 
             // Dense-link storage can coexist with compact links, so merge both.
@@ -494,7 +495,7 @@ impl Group {
 
         let btree_header = btree_v2::BTreeV2Header::parse_at_storage(
             self.context.storage.as_ref(),
-            link_info.btree_name_index_address,
+            link_info.btree_creation_order_address.unwrap_or(link_info.btree_name_index_address),
             self.offset_size(),
             self.length_size(),
         )?;

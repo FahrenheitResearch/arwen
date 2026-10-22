@@ -10,11 +10,14 @@ entered the snow branch it was designed to exercise.
 
 from __future__ import annotations
 
-import csv
-from pathlib import Path
 import sys
 
 import numpy as np
+
+if __package__:
+    from .validate_soil_oracle import _load_profiles
+else:
+    from validate_soil_oracle import _load_profiles
 
 
 CASES = (
@@ -29,23 +32,7 @@ NCASE = len(CASES)
 NZS = 9
 
 
-def main(path: str) -> None:
-    with Path(path).open(newline="", encoding="ascii") as stream:
-        rows = list(csv.DictReader(stream))
-    if len(rows) != NCASE * NZS:
-        raise SystemExit(f"expected {NCASE * NZS} rows, got {len(rows)}")
-    cases = tuple(dict.fromkeys(row["case"] for row in rows))
-    if cases != CASES:
-        raise SystemExit(f"unexpected case inventory {cases!r}")
-    numeric = tuple(key for key in rows[0] if key != "case")
-    values = {
-        name: np.asarray([float(row[name]) for row in rows], dtype=np.float32)
-        .reshape(NCASE, NZS)
-        for name in numeric
-    }
-    if not all(np.all(np.isfinite(field)) for field in values.values()):
-        raise SystemExit("RUC snowtemp oracle contains non-finite output")
-
+def _shared_bounds(values: dict[str, np.ndarray], ncase: int) -> dict[str, np.ndarray]:
     col = {name: field[:, 0] for name, field in values.items()}
 
     # --- physical bounds -------------------------------------------------
@@ -74,8 +61,17 @@ def main(path: str) -> None:
     if not np.allclose(col["snweprint"], col["snwe_after"], rtol=1e-6, atol=1e-12):
         raise SystemExit("snweprint does not mirror the updated snwe")
     if not all(np.any(values["tso_after"][n] != values["tso_before"][n])
-               for n in range(NCASE)):
+               for n in range(ncase)):
         raise SystemExit("snowtemp failed to evolve every temperature profile")
+    return col
+
+
+def main(path: str) -> None:
+    values = _load_profiles(path, CASES, shape=(NCASE, NZS), excluded=("case",))
+    if not all(np.all(np.isfinite(field)) for field in values.values()):
+        raise SystemExit("RUC snowtemp oracle contains non-finite output")
+
+    col = _shared_bounds(values, NCASE)
 
     # --- each regime took its intended branch ----------------------------
     if not np.array_equal(col["ilnb_after"], [1.0, 2.0, 2.0, 1.0, 1.0, 1.0]):

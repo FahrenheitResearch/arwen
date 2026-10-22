@@ -393,3 +393,26 @@ def test_preflight_coverage_pairs_a_projected_source_through_its_plane():
     # Untransformed, the same domain reads far off the west edge: that
     # is the comparison this pairing removes.
     assert float(np.min(target_lon)) < coverage.longitude_min
+
+
+def test_a_tree_rooted_on_hrrrs_own_grid_takes_the_identity_route():
+    """The HRRR recipe's root IS the 1799 x 1059 source lattice (WPS's
+    sphere against the GRIB header's, drifting to 0.35 cell at the far
+    corner); with a child inside it, the tree used to be refused: "lacks the
+    complete parabolic donor halo for d01 mass" (box D 2026-10-21), while the
+    single-domain route prepared the same root.  The root now copies its own
+    cells; the child still proves its interpolation halo."""
+    snapshot = _projected_snapshot(same_grid_pairing="identity")
+    root = LambertGrid(ref_lat=38.5, ref_lon=-97.5, truelat1=38.5,
+                       truelat2=38.5, stand_lon=-97.5, dx=3000.0, dy=3000.0,
+                       e_we=1800, e_sn=1060)
+    child = root.nest(900, 500, 3, 121, 109)
+    receipt = _spatial_coverage_receipt(
+        (snapshot,), (root, child), _experiment(2), "declared")
+    assert receipt["status"] == "PASS"
+    assert receipt["domains"]["d01"]["pairing"] == "identity"
+    assert "parabolic_donor_x" in receipt["domains"]["d02"]["staggerings"]["mass"]
+    # Without the identity declaration the same root is still refused.
+    with pytest.raises(ValueError, match="outside the source grid|parabolic donor halo"):
+        _spatial_coverage_receipt((_projected_snapshot(),), (root, child),
+                                  _experiment(2), "declared")

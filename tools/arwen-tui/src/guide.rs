@@ -242,7 +242,7 @@ impl Guide {
             return Some(format!("Selected profile: {}. Target capacity: {}. Creation checks the full configuration and required study area before writing it.",
                 self.questions[4].value, if self.questions[5].value.trim().is_empty() { "measure this computer".into() } else { format!("{} GiB (declared estimate)", self.questions[5].value) }));
         }
-        if self.kind != Kind::New || !matches!(self.step, 1 | 2 | 3 | 4) { return None; }
+        if self.kind != Kind::New || !matches!(self.step, 1..=4) { return None; }
         let mut spacing = self.questions[3].value.trim().parse::<f64>().ok()?;
         if !spacing.is_finite() || spacing <= 0.0 { return None; }
         let mut chain = vec![format!("d01 {spacing} km")];
@@ -668,19 +668,8 @@ mod tests {
         )));
         let mut terminal = Terminal::new(TestBackend::new(65, 20)).unwrap();
         terminal.draw(|frame| crate::draw(frame, &mut app)).unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        let mut screen = String::new();
-        for row in 0..20u16 {
-            for column in 0..65u16 {
-                // Panel borders and decoration are drawn between the wrapped
-                // rows of the pane; only the text itself is being read here.
-                for symbol in buffer[(column, row)].symbol().chars() {
-                    screen.push(if symbol.is_ascii() { symbol } else { ' ' });
-                }
-            }
-            screen.push(' ');
-        }
-        // Wrapping and cell padding are layout, not content: compare the words.
+        let screen: String = crate::tests::buffer_text(terminal.backend().buffer(), ratatui::layout::Rect::new(0, 0, 65, 20), " ")
+            .chars().map(|symbol| if symbol.is_ascii() { symbol } else { ' ' }).collect();
         screen.split_whitespace().collect::<Vec<_>>().join(" ")
     }
 

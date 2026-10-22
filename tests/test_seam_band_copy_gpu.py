@@ -55,6 +55,12 @@ def test_batched_pack_and_unpack_move_the_same_bytes(axis):
 
     ref = cp.asarray(rng.integers(0, 255, nbytes, dtype=np.uint8))
     got = ref.copy()
+    # The uploads and the copy above run on the legacy default stream, which a
+    # non-blocking stream does not wait for: without this the reference copies
+    # below could read src before its upload landed, or have ref/got
+    # overwritten by the late upload/copy afterwards (seen as a red on
+    # RTX 5090 and RTX PRO 6000, either axis, at random).
+    cp.cuda.Device().synchronize()
     for b in bands:
         rt.memcpy2DAsync(int(ref.data.ptr) + b.buf_off, b.width,
                          int(src[b.name].data.ptr) + b.src_off, b.src_pitch,
@@ -69,6 +75,7 @@ def test_batched_pack_and_unpack_move_the_same_bytes(axis):
 
     dst_ref = {n: cp.asarray(rng.integers(0, 2**31, size=s).astype(d)) for n, (s, d) in shapes.items()}
     dst_got = {n: a.copy() for n, a in dst_ref.items()}
+    cp.cuda.Device().synchronize()  # same default-stream ordering as above
     for b in bands:
         rt.memcpy2DAsync(int(dst_ref[b.name].data.ptr) + b.dst_off, b.dst_pitch,
                          int(ref.data.ptr) + b.buf_off, b.width,

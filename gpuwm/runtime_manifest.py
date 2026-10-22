@@ -62,16 +62,6 @@ MANIFEST_ENV = "GPUWM_NATIVE_DISTRIBUTION_MANIFEST"
 #: :func:`gpuwm.native_wrf_distribution.distribution_contract` writes.
 KNOWN_BACKENDS = ("cpu", "cuda")
 
-#: The identity paths :func:`provenance` can report, in the order it
-#: tries them.
-IDENTITY_SOURCES = (
-    "gpuwm-native-distribution-manifest",
-    "git",
-    "installed-editable-source",
-    "installed-source-content",
-    "installed-wheel-record",
-)
-
 #: Distributions that may publish the ``gpuwm`` package.  ``rw-wps`` is
 #: the preprocessing-only wheel; it ships the same package directory
 #: under a different distribution name, so the identity lookup has to
@@ -846,7 +836,7 @@ def provenance(root: Path, *,
 
 
 __all__ = [
-    "IDENTITY_SOURCES", "IdentityError", "KNOWN_BACKENDS", "MANIFEST_ENV",
+    "IdentityError", "KNOWN_BACKENDS", "MANIFEST_ENV",
     "ManifestError", "RUNTIME_SCHEMA", "git_checkout_root",
     "child_python_env", "installed_distribution", "load_manifest", "manifest_defects",
     "manifest_from_environment", "provenance", "serving_import_root",

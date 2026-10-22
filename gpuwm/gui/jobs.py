@@ -44,6 +44,7 @@ from typing import Any
 
 from gpuwm import proc_identity
 
+from .files import utc_now as _utc
 from .files import read_json, utc_text, write_json
 from .runs import COMMANDS_LOG, JOB, MANIFEST, STOP, job_alive, job_of, manifest_alive
 
@@ -183,10 +184,6 @@ def plain_log(text: str, root: Path | None = None) -> str:
         argv = [arg[1:-1] if len(arg) >= 2 and arg[0] == arg[-1] == '"' else arg for arg in argv]
         lines.append(plain_command(argv, root))
     return "\n".join(lines)
-
-
-def _utc() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 #: A job id as the job manager names one (``job-YYYYmmdd-HHMMSS-hex``); a lock naming anything else is not looked up.

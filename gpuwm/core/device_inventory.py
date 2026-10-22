@@ -465,6 +465,23 @@ def chem_state_array_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
     return shapes
 
 
+def chem_process_memory_shapes(cfg):
+    """Additional live process buffers, in float32 words, including peaks."""
+    if not getattr(cfg, "chem_sets", ""):
+        return {}, {}
+    from gpuwm.chem_table import load
+    from gpuwm.core.chem_context import chem_processes
+    table = load(cfg)
+    held, transient = {}, {}
+    for key, module in chem_processes(table):
+        price = getattr(module, "memory_shapes", None)
+        if price is not None:
+            keep, work = price(cfg, len(module.rows(table)))
+            held.update({"chem/" + key + "/" + name: shape for name, shape in keep.items()})
+            transient.update({"chem/" + key + "/" + name: shape for name, shape in work.items()})
+    return held, transient
+
+
 #: d01 external-LBC field inventory (state boundaries built by
 #: build_state_lateral_boundaries: u/v/theta/phi/mu + selected scalars) with
 #: each field's (levels, ny-extent, nx-extent) source dims.

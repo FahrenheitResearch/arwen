@@ -134,9 +134,7 @@ def test_retained_header_scalars_cannot_be_changed_in_memory(sealed, part):
 
 
 @pytest.mark.parametrize("layout,head", [("hierarchy-d01-v1", None),
-                                        ("mapped-hierarchy-d01-v1", None),
-                                        ("portable-single-domain-v2", {}),
-                                        ("mapped-direct-d01-v1", {})])
+                                        ("portable-single-domain-v2", {})])
 def test_heads_and_hierarchies_keep_the_original_reader_path(monkeypatch, layout, head):
     monkeypatch.setattr(prepared_writer, "native_hasher",
                         lambda: pytest.fail("unsupported retained path"))

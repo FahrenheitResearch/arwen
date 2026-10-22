@@ -238,7 +238,7 @@ SUPPORTED_SOURCES = frozenset({"gfs", "era5", "hrrr"} | _MAPPED_SOURCES)
 #: ``null`` from the shared argument record and rebuilt the ensemble
 #: identity with profile ``"None"`` while the controller's said
 #: ``"experiment-config"``; every member leg was refused ("worker ensemble
-#: identity differs from the public prepared binding", box S 2026-10-06
+#: identity differs from the public prepared binding", a rented box 2026-10-06
 #: 18:51Z) and the cycle never ran a forecast.
 EXPERIMENT_CONFIG_PROFILE = "experiment-config"
 
@@ -1600,6 +1600,7 @@ def _history_output_schedule(
         *, start_time: datetime, run_seconds: float, cadence_seconds: float,
         domain_id: int = 1, after_seconds: float | None = None,
         begin_seconds: float = 0.0, end_seconds: float | None = None,
+        interval2_seconds: float = 0.0, change_seconds: float = 0.0,
 ) -> tuple[tuple[float, datetime, str], ...]:
     """Resolve exact model-relative offsets, valid times, and WRF filenames.
 
@@ -1621,6 +1622,8 @@ def _history_output_schedule(
                 and begin + index * cadence > Fraction(float(end_seconds))):
             break
         offset_seconds = float(begin + index * cadence)
+        if interval2_seconds and offset_seconds > change_seconds:
+            break
         valid_time = start_time + timedelta(seconds=offset_seconds)
         if valid_time.microsecond != 0:
             raise ValueError(
@@ -1632,6 +1635,13 @@ def _history_output_schedule(
             valid_time.strftime(
                 f"wrfout_d{int(domain_id):02d}_%Y-%m-%d_%H_%M_%S"),
         ))
+    if interval2_seconds and run_seconds > change_seconds:
+        second = _history_output_schedule(
+            start_time=start_time, run_seconds=run_seconds,
+            cadence_seconds=interval2_seconds, domain_id=domain_id,
+            begin_seconds=change_seconds + interval2_seconds,
+            end_seconds=end_seconds) if change_seconds + interval2_seconds <= run_seconds else ()
+        records.extend(row for row in second if row[0] >= begin_seconds)
     names = [record[2] for record in records]
     if len(names) != len(set(names)):
         raise ValueError("history cadence produces duplicate WRF filenames")
@@ -1735,7 +1745,9 @@ def _validate_hash_bound_history_cadence(
     schedule = _history_output_schedule(
         start_time=exp.start_time, run_seconds=exp.run_seconds,
         cadence_seconds=experiment_cadence,
-        begin_seconds=begin_s, end_seconds=end_s)
+        begin_seconds=begin_s, end_seconds=end_s,
+        interval2_seconds=exp.root.run.history_interval2_s,
+        change_seconds=exp.root.run.history_interval_change_s)
     periods = len(schedule) - 1
     first = schedule[0][1]
     last_offset, last_scheduled, _name = schedule[-1]
@@ -2474,8 +2486,13 @@ def materialize_named_source_authorities(
     # staged is refused here, in one sentence naming the table and
     # `gpuwm fetch-tables`, rather than eight minutes and two paid
     # stages later at the top of the GPU run.
-    if any(int(domain.run.mp_physics) == THOMPSON_MP_PHYSICS
-           for domain in exp.domains):
+    selected_mp = {int(domain.run.mp_physics) for domain in exp.domains}
+    if 28 in selected_mp:
+        from gpuwm.core.thompson_aerosol_contract import AEROSOL_TABLE_ASSETS
+
+        require_thompson_tables(
+            assets=(*THOMPSON_CLASSIC_TABLE_ASSETS, *AEROSOL_TABLE_ASSETS))
+    elif THOMPSON_MP_PHYSICS in selected_mp:
         require_thompson_tables(assets=THOMPSON_CLASSIC_TABLE_ASSETS)
     output_directory = claim_output_directory(
         output_directory, flag="--output-directory")
@@ -2567,7 +2584,7 @@ def _resolved_wrf_direct_contract_sha256(mp_physics: int) -> str:
         _physics_contract_bundle(_load_contract(), int(mp_physics)))
 
 
-def _chem_ledger_receipt(state):
+def _chem_ledger_receipt(state, *, store=None):
     """One domain's chem mass ledger for the receipt; None when chem is off.
 
     Read only when the state carries chem, so a chem-off run imports
@@ -2577,7 +2594,7 @@ def _chem_ledger_receipt(state):
         return None
     from gpuwm.core.chem_driver import chem_ledger_receipt
 
-    return _strict_json(chem_ledger_receipt(state))
+    return _strict_json(chem_ledger_receipt(state, store=store))
 
 
 def _strict_json(value):
@@ -4625,7 +4642,7 @@ def _apply_run_length(exp, run_seconds: float):
     experiment's ``run_seconds``, and then DROPPED with a warning that
     "the experiment value is authoritative": a door asked for 4200 s of
     a 12 h preparation integrated the whole 12 h (13 minutes of two
-    rented cards for a byte comparison that two minutes settle, box S,
+    rented cards for a byte comparison that two minutes settle, a rented box,
     2026-10-06).  Nothing the preparation binds depends on the length:
     a prepared cache is an initial state plus the boundary tables for
     the times it decoded, which is why ``run.run_seconds`` sits in
@@ -5372,7 +5389,9 @@ def _validate_packaged_mapped_evidence(
                 "grid_alignment": terrain_binding.get("grid_alignment"),
                 "time_alignment": terrain_binding.get("time_alignment"),
                 "coordinate_match": (
-                    "exact_equivalent_regular_strided_subset"
+                    "bilinear_mask_aware_nearest"
+                    if terrain_binding.get("grid_alignment") == "bilinear_mask_aware_nearest"
+                    else "exact_equivalent_regular_strided_subset"
                     if terrain_binding.get("grid_alignment") == "exact_coordinate_strided_subset"
                     else "exact_equivalent_contiguous_subset"
                 ),
@@ -7642,6 +7661,8 @@ def preflight_prepared_forecast(
     if devices is not None:
         from gpuwm.core.devices import override_device_count
         exp = replace(exp, devices=override_device_count(exp.devices, devices))
+    from gpuwm.free_threading import refuse_multi_card_under_gil
+    refuse_multi_card_under_gil(exp.devices.count, "prepared forecast")
     from gpuwm.simulated_radar_config import apply_execution_options
     exp = apply_execution_options(exp, simulated_radar)
     from gpuwm.da import forecast_heating
@@ -7748,9 +7769,15 @@ def _seal_streamed_inputs(inputs: PreparedForecastInputs, *,
 
 def _verify_inputs_unchanged(inputs: PreparedForecastInputs) -> None:
     _verify_thompson_runtime_environment(inputs.physics_receipt)
-    current = {
-        name: _sha256(path) for name, path in inputs.authority_paths.items()
-    }
+    # Each authority file hashed on its own core (one SHA-256 stream per
+    # file); the same digests the serial walk took.
+    from concurrent.futures import ThreadPoolExecutor
+
+    items = list(inputs.authority_paths.items())
+    with ThreadPoolExecutor(max_workers=max(1, min(len(items) or 1, 16)),
+                            thread_name_prefix="verify-authority") as pool:
+        current = dict(zip((name for name, _ in items),
+                           pool.map(lambda item: _sha256(item[1]), items)))
     if current != dict(inputs.file_sha256):
         raise RuntimeError("prepared forecast inputs changed during execution")
     verified = PreparedCacheReader(
@@ -7896,7 +7923,11 @@ class _LandingObservers:
 
     def frame_submitted(self, **event) -> None:
         """The per-step log's latency anchor (StepLog.frame_submitted)."""
-        if self._on_submit is not None:
+        from gpuwm.progress_log import LandingFanout
+        LandingFanout(*self._sinks).frame_submitted(**event)
+        if (self._on_submit is not None and
+                getattr(self._on_submit, "__self__", None) not in
+                [getattr(sink, "__self__", None) for sink in self._sinks]):
             try:
                 self._on_submit(**event)
             except Exception:  # noqa: BLE001 - telemetry never fails a run
@@ -7938,7 +7969,9 @@ class _LandingObservers:
 # store-direct road is taken when the priced resident state does not fit,
 # which is precisely the case the resident road cannot serve at all.
 
-#: MEASURED bytes per column at nz = 49 on this route
+#: MEASURED bytes per column at nz = 49 on the lighter reference configuration,
+#: not a bound for every physics configuration. Keep this measurement as a
+#: floor; the configuration-aware preflight inventory below can raise it.
 #: (the streamed-ceiling measurement record, section 2): a bare
 #: ``DomainState`` costs 11 276.5 B/column, and the prepared case -- the same
 #: state plus everything ``initialize_prepared_physics`` puts on the card
@@ -8086,6 +8119,9 @@ def _stream_init_pricing(state_bytes: int, free_bytes: int, total_bytes: int,
                          *, columns: int | None = None,
                          nz: int | None = None,
                          streamed_bytes: int | None = None,
+                         cfg=None, resident_estimate=None,
+                         forcing_intervals: int | None = None,
+                         boundary_species=(),
                          ) -> dict[str, object]:
     """Price the resident road against the card, with no device work at all.
 
@@ -8093,8 +8129,8 @@ def _stream_init_pricing(state_bytes: int, free_bytes: int, total_bytes: int,
     no GPU: everything below is arithmetic over a handful of integers, and
     :func:`_free_device_bytes` is the only part that needs a card.
 
-    TWO ESTIMATES, AND THE LARGER WINS, because they bound different things
-    and each is blind where the other sees.
+    The largest of the manifest, measured reference and configuration-aware
+    resident inventories wins, because each sees costs the others miss.
 
     ``manifest`` -- the cache's own ``state/*`` bytes times the physics
     headroom -- is the only term that knows what THIS cache holds, so a
@@ -8107,17 +8143,24 @@ def _stream_init_pricing(state_bytes: int, free_bytes: int, total_bytes: int,
     then die inside ``initialize_physics``.
 
     ``measured`` -- ``_MEASURED_PREPARED_BYTES_PER_COLUMN`` over this domain's
-    columns, scaled by ``nz`` -- is the only term that knows what the ROUTE
-    costs: the state plus everything ``initialize_prepared_physics`` builds
-    beside it.  It is a whole-route measurement rather than a model, and it
+    columns, scaled by ``nz`` -- records the lighter reference configuration's
+    state plus everything ``initialize_prepared_physics`` built beside it.
+    It is a measurement, and it
     predicts the refusal it was checked against to 0.4%: 15.41 GiB priced
     against 15.35 GiB at the out-of-memory throw.
 
-    ``max`` rather than a sum: they overlap almost entirely -- both are
+    ``configuration`` -- preflight's state, physics and lateral boundary
+    tables for this cfg. The 1799 x 1059 x 50 HRRR recipe OOM on 2026-10-21
+    showed the lighter reference measurement underpricing these holdings.
+    Reuse the door's resident estimate when available, otherwise the same
+    preflight domain estimator. Do not add its workspace/step-transient
+    envelope: the streamed term already prices the tiles and radiation.
+
+    ``max`` rather than a sum: these estimates overlap -- all are
     dominated by the same prognostics -- so adding them would double-count the
     state and refuse domains that fit.  ``columns``/``nz`` absent leaves the
-    manifest term alone, which is the pre-existing rule; every caller in this
-    module supplies them.
+    manifest term alone when no configuration is supplied. The forecast door
+    supplies both the extents and the configuration.
     """
 
     manifest_priced = int(round(float(state_bytes)
@@ -8129,8 +8172,33 @@ def _stream_init_pricing(state_bytes: int, free_bytes: int, total_bytes: int,
             * float(nz) / float(_MEASURED_BYTES_PER_COLUMN_NZ)))
     priced = (manifest_priced if measured_priced is None
               else max(manifest_priced, measured_priced))
+    priced_from = ("manifest" if measured_priced is None
+                   or manifest_priced >= measured_priced
+                   else "measured-per-column")
+    configuration_terms = None
+    if resident_estimate is not None or cfg is not None:
+        if resident_estimate is not None:
+            domains = resident_estimate.domains
+        else:
+            from gpuwm.core import preflight
+            from gpuwm.experiment import experiment_from_run_config
+
+            domain = experiment_from_run_config(cfg, datetime(2000, 1, 1)).root
+            domains = (preflight.estimate_domain(
+                domain, n_lbc_intervals=preflight.lbc_intervals(
+                    cfg.run_seconds, preflight.DEFAULT_FORCING_INTERVAL_SECONDS,
+                    retained_intervals=forcing_intervals),
+                boundary_species=boundary_species),)
+        configuration_terms = {
+            label: sum(int(domain.category_bytes(category)) for domain in domains)
+            for label, category in (("model state", "state"),
+                                    ("physics", "physics"),
+                                    ("lateral boundary tables", "lbc"))}
+        configuration_priced = sum(configuration_terms.values())
+        if configuration_priced > priced:
+            priced, priced_from = configuration_priced, "configuration"
     allowance = int(float(free_bytes) * _AUTO_RESIDENT_FIT_FRACTION)
-    # THE PEAK, not the state.  ``max`` was right for the two resident terms
+    # THE PEAK, not the state. ``max`` is right for the resident estimates
     # because they price the same bytes two ways; this is a SUM because the
     # tiles and the radiation transient are different bytes on the same card
     # at the same instant as the state.  ``None`` leaves the pre-existing
@@ -8141,9 +8209,10 @@ def _stream_init_pricing(state_bytes: int, free_bytes: int, total_bytes: int,
         "physics_headroom_factor": round(_PREPARED_RESIDENT_HEADROOM, 4),
         "manifest_priced_bytes": manifest_priced,
         "measured_priced_bytes": measured_priced,
-        "priced_from": ("manifest" if measured_priced is None
-                        or manifest_priced >= measured_priced
-                        else "measured-per-column"),
+        "configuration_resident_terms": configuration_terms,
+        "configuration_priced_bytes": (None if configuration_terms is None
+                                       else sum(configuration_terms.values())),
+        "priced_from": priced_from,
         "columns": None if not columns else int(columns),
         "nz": None if not nz else int(nz),
         "priced_resident_bytes": priced,
@@ -8564,6 +8633,48 @@ def _devices_step_observer(node, stepper, options, history, peaks, observer=None
     return observe
 
 
+def _root_setup_fingerprint_for(node, stream=None):
+    from gpuwm.prepared_domain_tree_forecast import _root_setup_fingerprint
+
+    return _root_setup_fingerprint(node, stream)
+
+
+def _release_forecast_cards(stepper) -> dict:
+    """Close a ranked run's slabs and free every card's pool; how much went.
+
+    Called once the last step's history is durable and every value the end
+    of the run reads from the cards has been taken.  The host store, the
+    receipts and the files are untouched; what goes is the device memory
+    the slabs and their staging held, so another job can admit on the
+    cards while this process hashes and verifies on the host.
+    """
+    import cupy as cp
+
+    run = getattr(stepper, "tiled_run", None)
+    devices = tuple(dict.fromkeys(
+        int(d) for d in (getattr(run, "devices", None) or ())))
+
+    def held():
+        total = 0
+        for dev in devices:
+            with cp.cuda.Device(dev):
+                total += int(cp.get_default_memory_pool().total_bytes())
+        return total
+
+    before = held()
+    started = time.perf_counter()
+    if run is not None and not getattr(run, "closed", True):
+        run.close()
+    for dev in devices:
+        with cp.cuda.Device(dev):
+            cp.cuda.Device(dev).synchronize()
+            cp.get_default_memory_pool().free_all_blocks()
+    after = held()
+    return {"cards": list(devices), "pool_bytes_before": before,
+            "pool_bytes_after": after, "freed_bytes": max(0, before - after),
+            "release_seconds": round(time.perf_counter() - started, 6)}
+
+
 def _devices_receipt(exp, stepper, decision, admission, history, peaks):
     """Carry the ranked run's own clock, transport and peak measurements."""
     run = stepper.tiled_run
@@ -8603,7 +8714,8 @@ def _devices_output_road(run):
 
 
 def _choose_stream_init_road(mode: str, *, decision, reader, cfg=None,
-                             device_memory=None) -> tuple[str, dict | None]:
+                             device_memory=None,
+                             resident_estimate=None) -> tuple[str, dict | None]:
     """Which road this forecast initializes on, and the numbers behind it.
 
     Returns ``("resident", None)`` -- today's road, with nothing at all
@@ -8638,12 +8750,17 @@ def _choose_stream_init_road(mode: str, *, decision, reader, cfg=None,
                 "domain that does not fit) or drop the flag.")
         return "resident", None
 
+    from gpuwm.boundary_fields import source_boundary_species
+
     pricing = _stream_init_pricing(
         _prepared_state_manifest_bytes(reader),
         *(device_memory if device_memory is not None
           else _free_device_bytes()),
         columns=(None if cfg is None else int(cfg.nx) * int(cfg.ny)),
         nz=(None if cfg is None else int(cfg.nz)),
+        cfg=cfg, resident_estimate=resident_estimate,
+        forcing_intervals=_retained_interval_count(reader),
+        boundary_species=source_boundary_species(_priced_boundary_source(reader, None)),
         # WHAT THE RESIDENT STATE WILL HAVE TO SHARE THE CARD WITH.  Priced
         # here rather than left to the fit fraction: see
         # ``_AUTO_RESIDENT_FIT_FRACTION`` for the 10 GiB card this omission
@@ -8658,12 +8775,25 @@ def _choose_stream_init_road(mode: str, *, decision, reader, cfg=None,
     # printed only the winning number would leave a reader unable to tell a
     # cache-driven price from a route-driven one, and the two are answers to
     # different questions.
-    if pricing["priced_from"] == "measured-per-column":
+    if pricing["priced_from"] == "configuration":
+        from gpuwm.core.resident_admission import terms_text
+
+        reference = pricing["measured_priced_bytes"]
+        reference_text = ("unpriced" if reference is None
+                          else f"{reference / _GIB:.2f} GiB")
+        priced_as = (
+            f"the prepared resident case prices at {priced:.2f} GiB "
+            f"(configuration-aware preflight inventory: "
+            f"{terms_text(pricing['configuration_resident_terms'])}; "
+            f"manifest estimate {pricing['manifest_priced_bytes'] / _GIB:.2f} GiB, "
+            f"measured reference {reference_text}) "
+            f"against {free:.2f} GiB free of {total:.2f} GiB on the card")
+    elif pricing["priced_from"] == "measured-per-column":
         priced_as = (
             f"the prepared resident case prices at {priced:.2f} GiB "
             f"({pricing['columns']} columns x {int(pricing['nz'])} levels at "
             f"{_MEASURED_PREPARED_BYTES_PER_COLUMN:.0f} B/column/"
-            f"{_MEASURED_BYTES_PER_COLUMN_NZ} levels MEASURED for this route, "
+            f"{_MEASURED_BYTES_PER_COLUMN_NZ} levels MEASURED on the reference configuration, "
             f"over {manifest:.2f} GiB of state/* in the cache manifest x "
             f"{_PREPARED_RESIDENT_HEADROOM:.2f} = "
             f"{pricing['manifest_priced_bytes'] / _GIB:.2f} GiB) against "
@@ -9234,6 +9364,12 @@ def _require_next_interval(intervals, elapsed: float, *, writers, exp) -> None:
     index = interval_index(intervals, float(elapsed))
     try:
         intervals[index]
+        # The next interval loads beside the model while this one is used,
+        # so the next boundary crossing finds it ready (a no-op until its
+        # marker is posted, and on a non-streamed sequence).
+        prefetch = getattr(intervals, "prefetch", None)
+        if prefetch is not None:
+            prefetch(index + 1)
     except SourceBehind as behind:
         try:
             writers.drain()
@@ -9337,6 +9473,8 @@ def run_prepared_forecast(
         kernel_cache_census=None, restart: Path | None = None,
         health_debug: bool = False,
         ensemble_bootstrap=None,
+        prewarmed_execution=None,
+        prestaged_boundaries=None,
 ) -> dict[str, object]:
     """Restore, integrate, and publish hash-bound source-neutral history.
 
@@ -9390,7 +9528,9 @@ def run_prepared_forecast(
             observer=observer, first_products=first_products, stream_init=stream_init,
             progress_options=progress_options, preflight_seconds=preflight_seconds,
             kernel_cache_census=kernel_cache_census, restart=restart,
-            health_debug=health_debug, ensemble_bootstrap=ensemble_bootstrap)
+            health_debug=health_debug, ensemble_bootstrap=ensemble_bootstrap,
+            **({"prestaged_boundaries": prestaged_boundaries}
+               if prestaged_boundaries is not None else {}))
 
     # The single-domain regional route compiles the configuration's whole
     # recorded kernel set on every core now, the same call the domain-tree
@@ -9399,7 +9539,13 @@ def run_prepared_forecast(
     # ~220 kernels on one core for 35.8 s with the card at 0 % and wrote no
     # plan for the next run (2026-10-17 04:52Z, v2 image).
     from gpuwm import kernel_prewarm as _kernel_prewarm
-    _kernel_prewarm.start_plan(inputs.experiment)
+    if prewarmed_execution is None:
+        _kernel_prewarm.start_plan(inputs.experiment)
+    else:
+        from gpuwm.standby_runtime import PreparedExecution
+        if not isinstance(prewarmed_execution, PreparedExecution):
+            raise TypeError("prewarmed execution must be a configuration-bound PreparedExecution")
+        prewarmed_execution.verify(inputs)
     from gpuwm.output_disk import require_output_space, renderer_products
 
     require_output_space(
@@ -9566,7 +9712,7 @@ def run_prepared_forecast(
                                     machine=admission_machine)
         init_road, init_receipt = _choose_stream_init_road(
             stream_init, decision=stream_decision, reader=inputs.cache_reader,
-            cfg=cfg, device_memory=(
+            cfg=cfg, resident_estimate=resident_estimate, device_memory=(
                 None if admission_machine is None or
                 not _stream_producer_reserve(stream_head, identity=admission_identity) else
                 (int(admission_machine.vram_bytes), _free_device_bytes()[1])))
@@ -9672,7 +9818,20 @@ def run_prepared_forecast(
             "head_decision": dict(stream_head.get("decision") or {}),
             "ready_at_start": boundary_source.intervals.ready_prefix(),
             "interval_count": len(boundary_source.intervals),
+            # The lateral intervals held on the card: a chained forecast
+            # streams them through one device slot (the resident admission
+            # above prices exactly 1).  R15 reads it: streamed boundaries are
+            # a default, and a run that held the whole schedule says so here.
+            "resident_forcing_slots": 1,
         }
+
+    if prestaged_boundaries is not None:
+        boundary_source = prestaged_boundaries.for_forecast(inputs)
+        if clock_guard is not None:
+            boundary_source.intervals.validate = clock_guard
+        if boundary_stream_receipt is not None:
+            boundary_stream_receipt["ready_at_start"] = len(boundary_source.intervals)
+            boundary_stream_receipt["prestage"] = prestaged_boundaries.receipt
 
     bundle = None
     if init_road == "store":
@@ -9703,7 +9862,12 @@ def run_prepared_forecast(
             reader=(inputs.cache_reader if (boundary_source is not None
                     or inputs.cache_payload is not None)
                     else None),
-            cache_payload=inputs.cache_payload,
+            # A prestaged boundary handle makes this a streamed head, which
+            # reads the cache through its reader: the retained payload is
+            # refused there (prepared_store: "a streamed head cannot reuse a
+            # sealed retained payload", standby --devices 8 on a rented box,
+            # 2026-10-21), so the store road drops it and reads from disk.
+            cache_payload=(None if boundary_source is not None else inputs.cache_payload),
             rows_per_slab=(None if loader_terms is None else loader_terms["loader_rows"]),
             retain_template_rows=(None if loader_terms is None else loader_terms["template_rows"]),
             column_chunk=exp.column_chunk,
@@ -9787,9 +9951,12 @@ def run_prepared_forecast(
         step_log.phase("initialize_physics", timing["initialize_physics"])
         domain_state = restored.initial_result.state
 
-    tick_clock = resolve_clock(
-        exp, lbc_interval_s=float(inputs.boundary_interval_seconds))
-    schedule = build_schedule(exp, tick_clock)
+    if prewarmed_execution is None:
+        tick_clock = resolve_clock(
+            exp, lbc_interval_s=float(inputs.boundary_interval_seconds))
+        schedule = build_schedule(exp, tick_clock)
+    else:
+        tick_clock, schedule = prewarmed_execution.clock, prewarmed_execution.schedule
     clocks = tick_clock.clocks()
     # ON THE STORE ROAD ``node.state`` IS THE SLAB-HEIGHT TEMPLATE, and this
     # is the least-invasive correct answer rather than a convenience.
@@ -10264,6 +10431,7 @@ def run_prepared_forecast(
         committed_step_observer = _devices_step_observer(
             node, steppers[int(node.cfg.grid_id)], exp.devices,
             devices_history, devices_peaks, committed_step_observer)
+    history_frames: list = []
     try:
         memory_watch.start()
         stall_watch.arm()
@@ -10271,6 +10439,7 @@ def run_prepared_forecast(
             if already_complete:
                 from gpuwm.prepared_domain_tree_forecast import _completed_execution_report
                 execution = _completed_execution_report(model)
+                stepping_ended = time.perf_counter()
             else:
                 execution = execute_experiment(
                     model, history_handler=history_handler,
@@ -10288,6 +10457,7 @@ def run_prepared_forecast(
                     # so a silenced run pays nothing per step.
                     step_observer=committed_step_observer,
                     experiment=exp)
+            stepping_ended = time.perf_counter()
             # The last checkpoint is durable, or its failure is raised,
             # before anything below reports the run.
             checkpoint_publisher.wait()
@@ -10299,6 +10469,15 @@ def run_prepared_forecast(
             writers.drain(before_domain=runtime._drain_progress(observer))
             timing["final_writer_drain"] = time.perf_counter() - drain_started
             wrfout_paths = writers.paths
+            history_frames = writers.frame_timings()
+            for row in history_frames:
+                print(f"history frame {row['path']}: stepping thread "
+                      f"{row.get('submit_s')} s; writer: queued "
+                      f"{row.get('queued_s')} s, copy+assemble "
+                      f"{row.get('copy_and_assemble_s')} s (D2H wait "
+                      f"{row.get('copy_wait_s')} s), write "
+                      f"{row.get('write_s')} s, durable after "
+                      f"{row.get('durable_after_s')} s", flush=True)
         timing["forecast_and_io_inclusive"] = (
             time.perf_counter() - forecast_started)
     except BaseException as error:
@@ -10352,7 +10531,9 @@ def run_prepared_forecast(
     output_schedule = _history_output_schedule(
         start_time=exp.start_time, run_seconds=exp.run_seconds,
         cadence_seconds=cadence_seconds, after_seconds=restored_seconds,
-        begin_seconds=begin_s, end_seconds=end_s)
+        begin_seconds=begin_s, end_seconds=end_s,
+        interval2_seconds=exp.root.run.history_interval2_s,
+        change_seconds=exp.root.run.history_interval_change_s)
     expected_frames = len(output_schedule)
     from gpuwm.ensemble.runtime_context import current_capture
     capture = current_capture()
@@ -10379,6 +10560,9 @@ def run_prepared_forecast(
     # the fix was not; this is the fix.  Zero and a getattr on a resident
     # run, so nothing changes for a forecast that configures no [tiles].
     runtime._finalizing_progress(observer, "final-health")
+    digest_thread = digest_box = None
+    early_fingerprint = early_devices_receipt = cards_released = None
+    final_chem_ledger = None
     if bundle is None:
         carriers_refreshed = streaming.refresh_streamed_state(
             steppers.get(int(node.cfg.grid_id)), node.state)
@@ -10402,6 +10586,8 @@ def run_prepared_forecast(
         # refuse on the first carrier's shape (domain against slab), which is
         # the right refusal and the wrong question.
         stepper = steppers[int(node.cfg.grid_id)]
+        final_chem_ledger = _chem_ledger_receipt(
+            stepper.template_state, store=stepper._planning_store())
         carriers_refreshed = 0
         # The last sweep's record, folded per tile out of the STORE and
         # bit-equal to what ``stability_report`` returns for the same domain
@@ -10452,12 +10638,61 @@ def run_prepared_forecast(
                 "here: the only state this road holds is the slab-height "
                 "template, and digesting it would publish a hash of one slab "
                 "of the analysis as the forecast's trajectory.")
-        started = time.perf_counter()
-        final_digest = digest_from_store(node.clock, scope="trajectory",
-            before_hash=runtime._digest_progress(observer, node.cfg.grid_id))
-        timing["canonical_final_state_digest"] = time.perf_counter() - started
+        capture_inputs = getattr(stepper, "canonical_digest_inputs", None)
+        if getattr(stepper, "ranked", False) and capture_inputs is not None:
+            # CARDS FIRST, HASHING AFTER.  Everything the end of the run still
+            # reads off the cards is taken now (the digest's arrays, the
+            # setup fingerprint, the devices receipt); then the ranks close
+            # and every card's pool is freed, and the digest, the seal and
+            # the input verify run on the host with the cards already free.
+            # Breakage this prevents: V59 (8 x RTX 5090, 2026-10-21) held all
+            # eight cards at 0 % for 6.7 min after its last step while one
+            # thread hashed.
+            digest_arrays, digest_scalars = capture_inputs()
+            early_fingerprint = (
+                _root_setup_fingerprint_for(node, stepper)
+                if boundary_source is not None else None)
+            if getattr(getattr(exp, "devices", None), "enabled", False):
+                early_devices_receipt = _devices_receipt(
+                    exp, stepper, streaming_decisions[int(node.cfg.grid_id)],
+                    devices_admission, devices_history, devices_peaks)
+            cards_released = _release_forecast_cards(stepper)
+            cards_released["after_last_step_seconds"] = round(
+                time.perf_counter() - stepping_ended, 6)
+            freed_gib = cards_released["freed_bytes"] / 2**30
+            print("cards released "
+                  f"{cards_released['after_last_step_seconds']:.1f} s after "
+                  f"the last step ({freed_gib:.2f} GiB freed); the digest "
+                  "and the input verify run on the host", flush=True)
+            from gpuwm.state_digest import canonical_store_digest
 
-    if boundary_source is not None:
+            digest_box = {}
+
+            def digest_on_host():
+                started = time.perf_counter()
+                try:
+                    digest_box["digest"] = canonical_store_digest(
+                        digest_arrays, digest_scalars, node.clock,
+                        scope="trajectory",
+                        before_hash=runtime._digest_progress(
+                            observer, node.cfg.grid_id))
+                except BaseException as error:  # noqa: BLE001 - joined below
+                    digest_box["error"] = error
+                digest_box["seconds"] = time.perf_counter() - started
+
+            # One SHA-256 stream is serial by definition (the digest's value
+            # is a single hash over every member), so it runs on its own
+            # core BESIDE the seal and the verify, which use the rest.
+            digest_thread = threading.Thread(
+                target=digest_on_host, name="final-digest", daemon=True)
+            digest_thread.start()
+        else:
+            started = time.perf_counter()
+            final_digest = digest_from_store(node.clock, scope="trajectory",
+                before_hash=runtime._digest_progress(observer, node.cfg.grid_id))
+            timing["canonical_final_state_digest"] = time.perf_counter() - started
+
+    if boundary_source is not None and prestaged_boundaries is None:
         # THE SEAL.  Every interval this run integrated was hash-checked as
         # it loaded; here the complete preparation is bound: the sealed
         # header against the head and every segment, the full preflight
@@ -10469,9 +10704,11 @@ def run_prepared_forecast(
         inputs = _seal_streamed_inputs(
             inputs, stream=boundary_source.intervals)
         recorded = inputs.cache_reader.metadata.get("setup_fingerprint")
-        if _root_setup_fingerprint(
-                node, steppers.get(int(node.cfg.grid_id))
-                if bundle is not None else None) != recorded:
+        fingerprint = (early_fingerprint if early_fingerprint is not None
+                       else _root_setup_fingerprint(
+                           node, steppers.get(int(node.cfg.grid_id))
+                           if bundle is not None else None))
+        if fingerprint != recorded:
             raise RuntimeError(
                 "the sealed prepared cache records a different setup "
                 "fingerprint than the streamed boundaries reproduce")
@@ -10492,6 +10729,12 @@ def run_prepared_forecast(
         work_bytes=inputs.cache_reader.payload_bytes + sum(
             path.stat().st_size for path in inputs.authority_paths.values()))
     _verify_inputs_unchanged(inputs)
+    if digest_thread is not None:
+        digest_thread.join()
+        if "error" in digest_box:
+            raise digest_box["error"]
+        final_digest = digest_box["digest"]
+        timing["canonical_final_state_digest"] = digest_box["seconds"]
     # The same gate, told what it is looking at.  The bare ``!=`` this
     # replaced could not tell an implementation that changed from a
     # ``git`` that failed to spawn or from a scratch file this very run
@@ -10513,10 +10756,19 @@ def run_prepared_forecast(
     timing["total"] = time.perf_counter() - total_started
     from gpuwm.correct_mode import run_receipt as _correct_mode_run_receipt
     from gpuwm.hydro.runtime import current_settings as _hydro_settings, activation_receipt
+    from gpuwm import numerics as _numerics
+    from gpuwm.free_threading import host_threads_report as _host_threads_report
+    from gpuwm.smoke_receipts import receipt as smoke_execution_receipt
     report = {
         "schema": REPORT_SCHEMA,
         "status": "PASS",
         "hydro_activation": activation_receipt(_hydro_settings()),
+        # The defaults this forecast actually ran with, read by the release
+        # gate's defaults-active leg (R15): fast numerics unless strict was
+        # asked for, and the interpreter lock off in the forecast process
+        # itself (an extension can turn it back on after start-up).
+        "numerics": _numerics.receipt(),
+        "host_threads": _host_threads_report(),
         "pool_trim": getattr(model, "_pool_trim_policy", None),
         "source": inputs.source,
         "prepared_layout": inputs.layout,
@@ -10570,6 +10822,10 @@ def run_prepared_forecast(
         "io_mode": "history",
         "history_interval_seconds": cadence_seconds,
         "timing_seconds": timing,
+        # One row per history frame: the stepping thread's wall inside the
+        # submit, and the writer thread's queue, copy, write and identity
+        # walls (PerDomainWrfoutWriters.frame_timings).
+        "history_frames": history_frames,
         "restart_contract": {
             "mode": "exact-sealed-setup",
             "restart_input": None if restart is None else str(Path(restart).resolve()),
@@ -10591,11 +10847,12 @@ def run_prepared_forecast(
             "limits": {"max_cfl": 10.0, "max_w_ms": 150.0},
         },
         "final_state_digest": final_digest,
+        **smoke_execution_receipt(cfg),
         # The chem mass ledger (gpuwm/core/chem_driver.py), present only on
-        # a chem run so every other receipt keeps its bytes.  A store-direct
-        # domain carries no chem: streaming refuses a chem configuration.
+        # a chem run so every other receipt keeps its bytes. Ranked vectors
+        # are captured from the global owner before releasing the cards.
         **({} if (chem_ledger := (_chem_ledger_receipt(node.state)
-                                  if bundle is None else None)) is None
+                                  if bundle is None else final_chem_ledger)) is None
            else {"chem_ledger": chem_ledger}),
         "physics": {
             **dict(inputs.physics_receipt),
@@ -10743,10 +11000,14 @@ def run_prepared_forecast(
         report["radar_heating"] = radar_heating_hook.receipt()
         radar_heating_hook.require_applied()
     if getattr(getattr(exp, "devices", None), "enabled", False):
-        report["devices"] = _devices_receipt(
-            exp, steppers[int(node.cfg.grid_id)],
-            streaming_decisions[int(node.cfg.grid_id)], devices_admission,
-            devices_history, devices_peaks)
+        report["devices"] = (
+            early_devices_receipt if early_devices_receipt is not None
+            else _devices_receipt(
+                exp, steppers[int(node.cfg.grid_id)],
+                streaming_decisions[int(node.cfg.grid_id)], devices_admission,
+                devices_history, devices_peaks))
+        if cards_released is not None:
+            report["devices"]["cards_released"] = cards_released
     elif streaming_report:
         report["tiles"] = streaming_report
     # WHICH INITIALIZATION ROAD RAN, and the numbers it was chosen on.
@@ -10829,6 +11090,11 @@ def run_prepared_forecast(
     if boundary_stream_receipt is not None:
         # Only on a head binding, so a sealed run's report is unchanged.
         report["input"]["boundary_stream"] = boundary_stream_receipt
+    if prestaged_boundaries is not None:
+        report["input"]["boundary_prestage"] = {
+            **prestaged_boundaries.receipt,
+            "boundary_read_seconds": dict(boundary_source.intervals.read_seconds),
+        }
     # Default-on hydro: per-step cost with parallelism named (5 percent budget)
     # and the products, both at the output boundary, after device sync.
     from gpuwm.hydro.cost import receipt as _hydro_cost_receipt
@@ -11108,6 +11374,8 @@ def build_parser() -> argparse.ArgumentParser:
               "one answer that cannot disagree with itself.  The first "
               "frame is the analysis at t = 0, durable before a single "
               "step is integrated"))
+    from gpuwm.product_publish import add_arguments as add_publish_arguments
+    add_publish_arguments(parser)
     parser.add_argument(
         "--render-dir", type=Path, default=None, metavar="DIR",
         help=("where --render-products publishes; defaults to "
@@ -11370,6 +11638,9 @@ def _route_owned_first_products(args, *, outdir: Path, observer,
     # place, which is what makes the early frame's bytes and the late
     # one's comparable at all.
     plan = {"run": outdir, "render": render_dir,
+            "publish_root": getattr(args, "publish_root", None) or render_dir.parent / "www",
+            "publish_cmd": getattr(args, "publish_cmd", None),
+            "hydro": getattr(args, "hydro", None) or "auto",
             "render_products": args.render_products,
             "restart": getattr(args, "restart", None),
             # The section line, which only a caller that names one sets
@@ -11384,7 +11655,7 @@ def _route_owned_first_products(args, *, outdir: Path, observer,
                           warn=warn)
 
 
-def main(argv=None, *, observer=None) -> int:
+def main(argv=None, *, observer=None, prestaged_boundaries=None) -> int:
     """The runner's command line.
 
     ``observer`` is forwarded to :func:`run_prepared_forecast` and is
@@ -11639,7 +11910,9 @@ def main(argv=None, *, observer=None) -> int:
                     progress_options=ProgressOptions.from_args(args),
                     preflight_seconds=preflight_seconds,
                     kernel_cache_census=kernel_cache_census,
-                    restart=restart, health_debug=args.health_debug)
+                    restart=restart, health_debug=args.health_debug,
+                    **({"prestaged_boundaries": prestaged_boundaries}
+                       if prestaged_boundaries is not None else {}))
 
         clock_changed = None
         try:

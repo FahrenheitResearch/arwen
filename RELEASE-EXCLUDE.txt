@@ -57,6 +57,8 @@ tools/sfire_coupled_ideal/geographic_units/receipts/**
 # nothing to a release reader.
 CLAUDE.md
 AGENTS.md
+final.md
+READY.txt
 NEXTGEN-BRIEF.md
 tools/native_nextgen_reference/**
 
@@ -139,27 +141,6 @@ gpu_tier.log
 gpu_retry.log
 gpu_failed_ids.txt
 
-# Ensemble-sweep node drivers.  These are the shell harness that runs the
-# ensemble-size ladder on the project's rented Linux nodes: they hard-code
-# that layout as defaults (a sweep root, a tree root and a geography root,
-# all under the node's root account), drive each other through status files
-# in the same home directory, and are unrunnable anywhere else.  Spelling
-# those defaults out here would put the very paths this file exists to keep
-# out of the release into the release.  The Python beside them is NOT
-# excluded --
-# score_free_forecast.py is the scorer of record for the published FSS
-# numbers, and decompose_skill.py, score_resolution.py and
-# summarize_sweep.py read committed composites -- so the analysis half of
-# the directory ships and only the machine-shaped driver half does not.
-tools/ens_sweep/build_obs.sh
-tools/ens_sweep/ceiling_probe.sh
-tools/ens_sweep/chain.sh
-tools/ens_sweep/chain2.sh
-tools/ens_sweep/pool_limit_probe.sh
-tools/ens_sweep/prepare_case.sh
-tools/ens_sweep/resolution_cost_probe.sh
-tools/ens_sweep/run_sweep.sh
-
 # Grell-Freitas dual-run byte-comparison harness.  A Windows Task Scheduler
 # job (task.xml) plus the PowerShell queue it launches, both written around
 # one box: the queue names an absolute worktree path and a local Downloads
@@ -212,9 +193,8 @@ tilestream/rescued-tools/**
 
 # Campaign runbook shells: each cds into a rented node's own case tree and
 # drives a measurement that needs that node's staged inputs, on the
-# tools/ens_sweep precedent above -- the analysis Python beside them is not
-# excluded and ships.
-tilestream/rrtmgp_runall.sh
+# same rule as other machine-specific campaign drivers; the analysis
+# Python beside them is not excluded and ships.
 tools/harvest_case_imagery.sh
 tools/les1m_costfinal.sh
 tools/les1m_queue.sh
@@ -276,7 +256,6 @@ tools/cycle_demo_b.py
 tools/cycle_demo_c.py
 tools/da_real_leg.py
 tools/da_real_series.py
-tools/ens_sweep/release_card.sh
 
 # A lane's proof directory: the receipts a defect fix is reported on --
 # the reproduction read off the sealed cut, the node's build and test
@@ -352,22 +331,20 @@ tree/**
 # The speed-lane benchmark harness merged for 2.8.9: sealed sprint-box case
 # pins, queue and lane-root wrappers, and identity tooling that names the
 # rented boxes it ran on. It measures the product; it is not the product.
-# The engine reaches it only behind GPUWM_BENCH_* variables. The three test
-# files below import it and are on no battery list.
+# Retained benchmark and qualification drivers remain private. The engine
+# has no bench imports; the native obs test uses gpuwm.obs.replay_target_grid.
 tools/bench/**
 # Internal speed2 shape receipts, site manifests and profiling adapters.
 tools/speed2_bench/**
-tests/test_obs_parallel_native.py
 tests/test_regional_packing_bench.py
 tests/test_timeline_qualification.py
 
 # The same speed lanes' global statics bake and image staging, merged for
 # 2.8.9 beside tools/bench and missed when that harness was dropped above.
-# qualify.py, warm_pair.py and stage_replay.py drive the sealed GL1 replay
-# through tools/bench on the rented boxes' benchmark roots and card queues,
-# unrunnable once tools/bench is out of the tree; check.py and qualify.py
-# import the hosted site worker's own modules, which this tree does not
-# carry; image_context.py, layers.toml and the README write and document
+# The sealed replay drivers qualify.py, warm_pair.py and stage_replay.py
+# were removed. The remaining check.py imports the hosted site worker's
+# own modules, which this tree does not carry; image_context.py, layers.toml
+# and the README write and document
 # that site image's settings, whose variable names carry the hosting
 # company's prefix.  Nothing in the tree imports or links any of it, and no
 # test reads it.  The row table it produced, gpuwm/authorities/
@@ -570,3 +547,10 @@ tools/nextgen_mass_launcher.patch
 tools/hf_drafts/**
 # Hugging Face drafts (cards, sample Space): the owner publishes them by hand; their sample lists name a lab machine.
 drafts/**
+
+# Box queue tooling (lane kit /opt/gpu-mutex/run.sh v2.8 and its tests): internal box infrastructure, versioned here
+# because the kit source is not under version control. Not part of the product.
+tools/gpu_mutex_kit/**
+# Internal replay orchestration: captured commands name the lab checkout.
+# The source-extension proof and its numerical measurements still ship.
+tests/data/assembled_legacy_proofs/loader-fold-source-replay.json

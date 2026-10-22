@@ -17,6 +17,7 @@ import numpy as np
 import pytest
 
 from gpuwm import cyclone_setup as tc
+from gpuwm import runplan
 from gpuwm import cyclone_sources as cs
 from gpuwm import domain_wizard as dw
 from gpuwm.core.nest_lifecycle import follower_label, validate_follow_tracks
@@ -26,6 +27,7 @@ from gpuwm.core.track_boundary import boundary_reason
 from gpuwm.cyclone_seed import seed_cyclone, source_inventory
 from gpuwm.starter_template import render_tables
 
+from cyclone_preset_fit import source_licence
 from cyclone_preset_fit import center, cycle_for, holds_the_preset_root
 
 POINT = (18., -65.)
@@ -389,9 +391,10 @@ def test_every_listed_source_says_how_its_chain_feeds_a_moving_nest():
 
 
 def _planned(source):
-    sizing = dw.SizingBudget(32., 30 * dw.GIB, None, "fixture")
-    return tc.plan_cyclone(cycle=cycle_for(source, CYCLE), point=POINT,
-                           sizing=sizing, forcing_source=source, tiles="off")
+    with source_licence(source):
+        sizing = dw.SizingBudget(32., 30 * dw.GIB, None, "fixture")
+        return tc.plan_cyclone(cycle=cycle_for(source, CYCLE), point=POINT,
+                               sizing=sizing, forcing_source=source, tiles="off")
 
 
 def _missing_corridor_source(monkeypatch):
@@ -418,8 +421,12 @@ def test_the_document_states_what_the_run_door_will_do_with_the_nest(monkeypatch
     source = _missing_corridor_source(monkeypatch)
     result = _planned(source)
     block = result["follow_statics"]
+    # `refusal` joins the block with the fix that made the note quote the
+    # run door instead of paraphrasing it: the sentence a machine reader
+    # gets is the one the launch raises, unwrapped.
     assert set(block) == {"source", "chain", "delivery", "launch_refusal",
-                          "integrates_moving_nest", "reason", "note"}
+                          "refusal", "integrates_moving_nest", "reason",
+                          "note"}
     assert block["integrates_moving_nest"] is False
     assert block["delivery"] is None
     assert block["reason"]
@@ -427,7 +434,9 @@ def test_the_document_states_what_the_run_door_will_do_with_the_nest(monkeypatch
     # is the set of sources that do carry a moving nest.
     assert "gpuwm go" in block["note"]
     assert "before any fetch" in block["note"]
-    for covering in cs.moving_nest_sources():
+    # The sources offered are the ones that carry a moving nest AND reach
+    # this centre; one that does not reach it is not a way on.
+    for covering in cs.moving_nest_sources(POINT):
         assert covering in block["note"]
     # And the file that will be read carries the same sentence.
     assert "Moving nest on this source's chain" in result["config_text"]
@@ -472,9 +481,10 @@ def _candidate_points() -> list[tuple[float, float]]:
 
 
 def _planned_at(source, point):
-    sizing = dw.SizingBudget(32., 30 * dw.GIB, None, "fixture")
-    return tc.plan_cyclone(cycle=cycle_for(source, CYCLE), point=point,
-                           sizing=sizing, forcing_source=source, tiles="off")
+    with source_licence(source):
+        sizing = dw.SizingBudget(32., 30 * dw.GIB, None, "fixture")
+        return tc.plan_cyclone(cycle=cycle_for(source, CYCLE), point=point,
+                               sizing=sizing, forcing_source=source, tiles="off")
 
 
 def _planned_anywhere(source):
@@ -579,7 +589,8 @@ def test_a_source_with_no_launch_route_says_that_and_not_a_statics_answer():
     if not rows:
         pytest.skip("every planable row reaches a launch chain in this registry")
     for source in rows:
-        block = cs.moving_nest_note(source)
+        block = cs.moving_nest_note(source,
+                                    follower_grid_ids=(tc.FOLLOWER_GRID_ID,))
         with pytest.raises(runplan.PlanError) as gate:
             runplan.prepared_chain_for_source(source)
         assert split(str(gate.value))[0] in block["note"]
@@ -593,6 +604,98 @@ def test_a_source_with_no_launch_route_says_that_and_not_a_statics_answer():
                 covering)["chain"] is not None
         # And the file that will be read says which question it answers.
         assert "Launch route for this source:" in _planned_anywhere(source)["config_text"]
+
+
+def test_the_way_out_the_note_names_is_the_one_its_config_can_take(monkeypatch):
+    """RED while the note sent the reader to a table their file has not.
+
+    The unsupported-chain note used to end "or run this configuration
+    with a bounds-only ``[relocation]``".  The configuration this door
+    emits declares its follower in ``[[domain]].follow`` and carries no
+    ``[relocation]`` table at all, and the run door's predicate stays True
+    while any ``[[domain]].follow`` remains -- so a reader who followed
+    that sentence to the letter met the same refusal, word for word.
+    (Carried from lane land/2.7.4-cyclone-any-model 84cc46fb21.)
+    """
+
+    from gpuwm.core.nest_lifecycle import FOLLOWER_TABLE
+    from gpuwm.static.corridor import config_declares_follow_source
+
+    result = _planned(_missing_corridor_source(monkeypatch))
+    block = result["follow_statics"]
+    assert block["launch_refusal"] is None
+    # The subject is the follower the file declares, not a table it has not.
+    assert FOLLOWER_TABLE in block["refusal"]
+    assert f"d{tc.FOLLOWER_GRID_ID:02d}" in block["refusal"]
+    assert "[relocation] follow source" not in block["refusal"]
+    # The document's note quotes the run door's sentence, reflowed onto
+    # the one line the note is, rather than paraphrasing it.
+    assert block["refusal"] == runplan.follow_unsupported_refusal(
+        block["chain"], (tc.FOLLOWER_GRID_ID,), source=block["source"])
+    assert " ".join(block["refusal"].split()) in block["note"]
+    assert "delete the follow table from d%02d" % tc.FOLLOWER_GRID_ID in block["refusal"]
+
+    raw = tomllib.loads(result["config_text"])
+    assert "relocation" not in raw, "the emitted file carries no [relocation]"
+    follower = next(row for row in raw["domain"]
+                    if row["grid_id"] == tc.FOLLOWER_GRID_ID)
+    # The predicate the run door asks: the way out the refusal names
+    # clears it, and the one the note used to offer does not.
+    domains = [SimpleNamespace(grid_id=row["grid_id"], follow=row.get("follow"))
+               for row in raw["domain"]]
+    bounds_only = SimpleNamespace(enabled=True, grid_id=tc.FOLLOWER_GRID_ID,
+                                  follow=None, moves=())
+    assert config_declares_follow_source(
+        SimpleNamespace(domains=domains, relocation=bounds_only))
+    del follower["follow"]
+    domains = [SimpleNamespace(grid_id=row["grid_id"], follow=row.get("follow"))
+               for row in raw["domain"]]
+    assert not config_declares_follow_source(
+        SimpleNamespace(domains=domains,
+                        relocation=SimpleNamespace(enabled=False, grid_id=None,
+                                                   follow=None, moves=())))
+
+
+def test_the_refusal_names_only_the_follow_tables_the_config_carries(monkeypatch):
+    """RED while the subject came from the MOVER set.
+
+    ``moving_grid_ids`` counts the ``[relocation]`` mover AND the
+    ``[relocation.containment]`` ancestor it slides inside, and that
+    ancestor declares nothing at all.  Read as the subject, it made the
+    refusal state as a fact that a domain carried a ``[[domain]].follow``
+    it has never had.  The declarations are read instead, and both live
+    tables are named where both are live.
+    (Carried from lane land/2.7.4-cyclone-any-model ca13dcdbd2.)
+    """
+
+    from gpuwm import source_cli
+    from gpuwm.core.nest_lifecycle import FOLLOWER_TABLE
+
+    monkeypatch.setattr(source_cli, "preparation_statics",
+                        lambda chain, source=None: {
+                            "delivery": None,
+                            "reason": "its preparation seals no corridor"})
+    tracker = object()
+    exp = SimpleNamespace(
+        domains=(SimpleNamespace(grid_id=1, parent_id=0, follow=None),
+                 SimpleNamespace(grid_id=2, parent_id=1, follow=tracker),
+                 SimpleNamespace(grid_id=3, parent_id=2, follow=None)),
+        relocation=SimpleNamespace(
+            enabled=True, grid_id=3, follow=tracker, moves=(),
+            containment=SimpleNamespace(grid_id=2)))
+    decision = runplan.follow_statics_decision(exp, chain="prepared:staged")
+    assert decision["follower_grid_ids"] == [2]
+    message = decision["refusal"]
+    # d03 carries no follow table, and is never said to.
+    assert f"{FOLLOWER_TABLE} on d02 and d03" not in message
+    assert "delete the follow table from d02 and d03" not in message
+    assert (f"{FOLLOWER_TABLE} on d02 AND a [relocation] follow source on d03"
+            in message)
+    # The withdrawal names both, because either one left standing keeps
+    # `config_declares_follow_source` True.
+    assert "withdraw BOTH declarations" in message
+    assert "delete the follow table from d02" in message
+    assert "drop the follow source for a bounds-only [relocation]" in message
 
 
 def test_the_limit_is_stated_once_on_the_human_channel(monkeypatch, capsys):
@@ -637,7 +740,8 @@ def test_every_source_states_its_moving_nest_answer_in_words():
     """
 
     for source in cs.source_ids():
-        note = cs.moving_nest_note(source)["note"]
+        note = cs.moving_nest_note(
+            source, follower_grid_ids=(tc.FOLLOWER_GRID_ID,))["note"]
         assert note and "None" not in note
         assert cs.source_adapter(source).display_title in note
 

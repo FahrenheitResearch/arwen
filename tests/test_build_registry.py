@@ -39,6 +39,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REGISTRY_PATH = REPO_ROOT / "gpuwm" / "physics_registry_v2.json"
 BUILDER_PATH = REPO_ROOT / "tools" / "build_registry.py"
+EXPORT_PATH = REPO_ROOT / "gpuwm" / "physics_consumer_export_v1.json"
 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -85,8 +86,23 @@ def test_importing_the_builder_writes_nothing() -> None:
         "write belongs to main(), not to module scope")
 
 
+@pytest.fixture(scope="session")
+def tracked_build(tmp_path_factory):
+    """One builder run from the tracked registry, shared by the tests that only read what it generates.
+
+    The registry and the consumer export come out of the same invocation, and each test rebuilt
+    it (two 65 s builds for one answer on the R5 Stage 1 leg, 2026-10-21).  Never over the tracked
+    files: the digests taken here are compared after the build by each test.
+    """
+
+    out = tmp_path_factory.mktemp("registry-build")
+    before = {path: _digest(path) for path in (REGISTRY_PATH, EXPORT_PATH)}
+    _run(str(BUILDER_PATH), "--out", str(out / "physics_registry_v2.json"))
+    return out, before
+
+
 def test_the_builder_reproduces_the_tracked_registry_byte_for_byte(
-    tmp_path: Path,
+    tracked_build,
 ) -> None:
     """The generator and the generated file must not be able to disagree.
 
@@ -94,11 +110,10 @@ def test_the_builder_reproduces_the_tracked_registry_byte_for_byte(
     disagreement is reported instead of applied.
     """
 
-    before = _digest(REGISTRY_PATH)
-    generated = tmp_path / "physics_registry_v2.json"
-    _run(str(BUILDER_PATH), "--out", str(generated))
+    out, before = tracked_build
+    generated = out / "physics_registry_v2.json"
 
-    assert _digest(REGISTRY_PATH) == before, (
+    assert _digest(REGISTRY_PATH) == before[REGISTRY_PATH], (
         "the builder wrote the tracked registry even though --out named "
         "another path")
     expected = REGISTRY_PATH.read_bytes()
@@ -135,19 +150,16 @@ def test_the_builder_retires_the_old_moisture_cq_disabled_rows(tmp_path):
 
 
 def test_the_builder_reproduces_the_consumer_export_byte_for_byte(
-    tmp_path: Path,
+    tracked_build,
 ) -> None:
     """The JSON the Rust crates read is generated beside the registry."""
 
-    export_path = REPO_ROOT / "gpuwm" / "physics_consumer_export_v1.json"
-    before = _digest(export_path)
-    generated = tmp_path / "physics_registry_v2.json"
-    _run(str(BUILDER_PATH), "--out", str(generated))
-    assert _digest(export_path) == before, (
+    out, before = tracked_build
+    assert _digest(EXPORT_PATH) == before[EXPORT_PATH], (
         "the builder wrote the tracked consumer export even though --out "
         "named another directory")
-    produced = tmp_path / "physics_consumer_export_v1.json"
-    assert produced.read_bytes() == export_path.read_bytes(), (
+    produced = out / "physics_consumer_export_v1.json"
+    assert produced.read_bytes() == EXPORT_PATH.read_bytes(), (
         "tools/build_registry.py no longer reproduces "
         "gpuwm/physics_consumer_export_v1.json; land the builder change and "
         "the export together")

@@ -9,7 +9,6 @@ import matplotlib.pyplot as plt
 W = Path("/work/meeting-perf-a13")
 price = json.load(open(W / "price22.json"))
 BUDGET = 30.86
-GIB = 2**30
 
 
 def nvml_peaks(run):

@@ -5,28 +5,8 @@ mod stored_plane_fixture;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-struct Scratch(PathBuf);
-
-impl Scratch {
-    fn new() -> Self {
-        // Parallel tests read one clock tick on the 2.8.6 windows-2025 runner and collided on this name; the counter keeps each call distinct.
-        static NEXT_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("rw-windowed-frames-{}-{nonce}-{}", std::process::id(), NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
-        std::fs::create_dir_all(&path).unwrap();
-        Self(path)
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+mod support;
+use support::Scratch;
 
 fn render(root: &Path, tag: &str, frames: &str, inputs: &[PathBuf]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_rw_wrfbatch"))
@@ -61,7 +41,7 @@ fn rendered(stdout: &str) -> Vec<PathBuf> {
 
 #[test]
 fn all_frames_and_selected_frame_use_their_actual_hour_with_baseline_context() {
-    let scratch = Scratch::new();
+    let scratch = Scratch::new("rw-windowed-frames", "");
     let inputs: Vec<PathBuf> = (0..=6)
         .map(|hour| {
             stored_plane_fixture::write_rain_frame(
@@ -124,7 +104,7 @@ fn subhourly_ordinal_slots_are_not_treated_as_forecast_hours() {
     // Frames every 15 minutes put the store on the exact-time axis: slot 4
     // is the frame at +1 h.  Its 1 h window is drawn as F001, never as
     // F004, and the frames between hours end no window and add no skip.
-    let scratch = Scratch::new();
+    let scratch = Scratch::new("rw-windowed-frames", "");
     let inputs: Vec<PathBuf> = (0..=4)
         .map(|slot| stored_plane_fixture::write_rain_frame(&scratch.0, slot * 900, slot as f32))
         .collect();

@@ -328,10 +328,6 @@ impl SphereSampler {
         self
     }
 
-    pub fn n_cells(&self) -> usize {
-        self.cell_xyz.len()
-    }
-
     pub fn n_edges(&self) -> usize {
         self.edge_xyz.len()
     }

@@ -298,6 +298,12 @@ PHYSICS_CHANGES_SINCE_280 = {
     "components.pbl.options.shinhong": (
         "Shin-Hong's restart algorithm identity v2 (2.8.8): no FMA "
         "contraction and WOOF's float32 pow/exp change its forecasts"),
+    **{f"components.pbl.options.{option}": (
+        "the pbl.scalar_diffusion_exchange consumer row (golden/exact "
+        "83a6116b2f): scalar_pblmix = 1 runs WRF's post-PBL diff4d after "
+        "this scheme, or is WRF's no-op for it, where the scheme was refused "
+        "before; scalar_pblmix = 0 forecasts are unchanged")
+       for option in ("myj", "sase", "off")},
     **{f"components.surface_layer.options.{option}": (
         "the surface layer's restart algorithm identity v2 (2.8.8): the "
         "sfclay, Eta and MYNN surface units compile without FMA contraction "
@@ -484,6 +490,10 @@ EXPECTED_280_REFUSALS: dict[tuple[str, str], list[str]] = {
           if row["switches"].get("bl_pbl_physics") == 1 else []),
         *(["registry physics of components.pbl.options.shinhong (changed)"]
           if row["switches"].get("bl_pbl_physics") == 11 else []),
+        # golden/exact 83a6116b2f: the scalar_diffusion_exchange consumer row.
+        *([f"registry physics of components.pbl.options.{pbl} (changed)"]
+          if (pbl := {0: "off", 2: "myj", 900: "sase"}.get(
+              row["switches"].get("bl_pbl_physics"))) else []),
         *([f"registry physics of components.surface_layer.options.{layer} "
            "(changed)"] if (layer := {
                1: "revised-mm5", 2: "eta-similarity", 5: "mynn",
@@ -1380,8 +1390,11 @@ def test_without_the_configuration_an_added_knob_is_named(monkeypatch):
     implemented since 2.8.0, including A179's registered IEVA knob,
     lane/282-namelist-tolerance's diff_opt and mix_full_fields, terrain
     drag, WRF's three advection orders, and the radiation-driver options
-    swint_opt, aer_opt, alb_sol and source cloud/smoke controls, and
-    WRF's cycling (the gsd_41 MYNN cycled start)."""
+    swint_opt, aer_opt, alb_sol and source cloud/smoke controls,
+    WRF's cycling (the gsd_41 MYNN cycled start), and the 2.9.4
+    capabilities campaign's registered parameters: lane/cap-hail's
+    HAILCAST selectors, lane/cap-slab-ocean's PWP controls and
+    lane/cap-seaice's prognostic sea ice."""
     row = next(row for row in _receipts_2492999cd()
                if row["profile"] == PROFILE)
     _added_knobs(monkeypatch)
@@ -1393,7 +1406,7 @@ def test_without_the_configuration_an_added_knob_is_named(monkeypatch):
         "registry physics of parameters.use_rap_aero_icbc (absent from the prepared registry)", *[
         f"registry physics of parameters.{knob} (absent from the prepared "
         "registry)"
-        for knob in ('aer_angexp_opt', 'aer_angexp_val', 'aer_aod550_opt', 'aer_aod550_val', 'aer_asy_opt', 'aer_asy_val', 'aer_auxinput15', 'aer_auxinput15_interval', 'aer_opt', 'aer_ssa_opt', 'aer_ssa_val', 'aer_type', 'alb_sol', 'bl_mynn_cloud_tendency_form', 'bl_mynn_gsd41_unsquared_qtke', 'bl_mynn_version', 'cellcount_method', 'cldtop_adjustment', 'cycling', 'diff_6th_factor2', 'diff_6th_form', 'diff_opt', 'do_radar_ref', 'flashrate_factor', 'fractional_seaice', 'gwd_opt', 'h_mom_adv_order', 'iccg_method', 'iccg_prescribed_den', 'iccg_prescribed_num', 'lake_min_elev', 'lakedepth_default', 'lightning_dt', 'lightning_option', 'lightning_start_seconds', 'mix_full_fields', 'mosaic_cat', 'mosaic_urban_canopy', 'mp_zero_out', 'mp_zero_out_all', 'mp_zero_out_thresh', 'noahmp_snow_age', 'oml_gamma', 'oml_hml0', 'oml_relaxation_time', 'rrtmg_aer3_type_source', 'rrtmg_cloud_optics_form', 'rrtmg_smoke_manifest', 'scalar_adv_opt', 'sf_lake_physics', 'sf_ocean_physics', 'sf_surface_mosaic', 'slope_rad', 'solar_generation', 'spp_conv', 'spp_pbl', 'swint_opt', 'thompson_fork_snow_fall', 'thompson_version', 'topo_shading', 'topo_wind', 'upper_wind_limiter_form', 'urban_table_dir', 'urban_water_balance', 'use_lakedepth', 'v_mom_adv_order', 'v_sca_adv_order', 'ysu_version', 'zadvect_implicit', 'zadvect_implicit_variant')])
+        for knob in ('aer_angexp_opt', 'aer_angexp_val', 'aer_aod550_opt', 'aer_aod550_val', 'aer_asy_opt', 'aer_asy_val', 'aer_auxinput15', 'aer_auxinput15_interval', 'aer_opt', 'aer_ssa_opt', 'aer_ssa_val', 'aer_type', 'alb_sol', 'bl_mynn_cloud_tendency_form', 'bl_mynn_gsd41_unsquared_qtke', 'bl_mynn_version', 'cellcount_method', 'cldtop_adjustment', 'cycling', 'diff_6th_factor2', 'diff_6th_form', 'diff_opt', 'do_radar_ref', 'flashrate_factor', 'fractional_seaice', 'gwd_opt', 'h_mom_adv_order', 'hailcast_opt', 'haildt', 'iccg_method', 'iccg_prescribed_den', 'iccg_prescribed_num', 'lake_min_elev', 'lakedepth_default', 'lightning_dt', 'lightning_option', 'lightning_start_seconds', 'mix_full_fields', 'mosaic_cat', 'mosaic_urban_canopy', 'mp_zero_out', 'mp_zero_out_all', 'mp_zero_out_thresh', 'noahmp_snow_age', 'ocean_analysis', 'ocean_analysis_source', 'ocean_levels', 'ocean_s', 'ocean_t', 'ocean_z', 'omdt', 'oml_gamma', 'oml_hml0', 'oml_relaxation_time', 'rrtmg_aer3_type_source', 'rrtmg_cloud_optics_form', 'rrtmg_smoke_manifest', 'scalar_adv_opt', 'seaice_initial_thickness', 'seaice_new_ice_thickness', 'seaice_ocean_heat_flux', 'seaice_prognostic', 'sf_lake_physics', 'sf_ocean_physics', 'sf_surface_mosaic', 'slope_rad', 'solar_generation', 'spp_conv', 'spp_pbl', 'swint_opt', 'thompson_fork_snow_fall', 'thompson_version', 'topo_shading', 'topo_wind', 'upper_wind_limiter_form', 'urban_table_dir', 'urban_water_balance', 'use_lakedepth', 'v_mom_adv_order', 'v_sca_adv_order', 'ysu_version', 'zadvect_implicit', 'zadvect_implicit_variant')])
 
 
 def test_a_new_receipt_resolves_to_its_own_parts():

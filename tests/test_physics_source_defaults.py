@@ -55,6 +55,9 @@ def test_unnamed_namelist_keeps_the_global_default(tmp_path):
     emitted_lines = text.splitlines(keepends=True)
     assert emitted_lines.count(scalar_line) == 1
     historical = "".join(line for line in emitted_lines if line != scalar_line)
+    # The pin also predates the capabilities campaign's three import lines.
+    from capability_campaign_import import without_campaign_import_lines
+    historical = without_campaign_import_lines(historical)
     # The namelist omits &dynamics top_lid: the pinned importer resolved the
     # rigid lid, this one reads WRF's open top (2026-10-12).  That one line
     # put back, the pinned hash holds.

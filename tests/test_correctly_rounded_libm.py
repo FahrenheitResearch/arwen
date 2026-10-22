@@ -88,21 +88,6 @@ def test_the_ladder_the_pin_is_built_from_is_reproduced_exactly():
     assert edges[-1].hex() == "0x1.5a2586cbcc658p+11"    # n = 99
 
 
-def test_the_helpers_are_not_merely_the_hosts_libm():
-    """At least one of the pinned points must be reachable only by this path.
-
-    On a host whose libm is correctly rounded everywhere in the table this is
-    vacuous -- but it is exactly the hosts where it is NOT vacuous that the
-    module exists for, and there the assertion is the whole story.  Stated as
-    a report rather than a gate so it cannot fail on a good libm.
-    """
-    disagreements = [x for x, _ in _EXP_CASES if math.exp(x) != exp_cr(x)]
-    disagreements += [x for x, _ in _LOG_CASES if math.log(x) != log_cr(x)]
-    print(f"\nhost libm disagrees with the correctly rounded result at "
-          f"{len(disagreements)} of {len(_EXP_CASES) + len(_LOG_CASES)} "
-          f"pinned points: {disagreements}")
-
-
 def test_against_an_independent_arbitrary_precision_reference():
     """The pinned table is not self-certifying; mpmath is the second opinion."""
     mp = pytest.importorskip("mpmath", reason="mpmath is not a dependency")

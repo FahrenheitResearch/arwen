@@ -36,7 +36,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-import numpy as np
 
 from gpuwm.certify.capsule import emit_run_capsule
 # The refusal half of a layered message.  A capsule records `str(exc)`
@@ -257,9 +256,13 @@ def replace_file_with_retry(source: str | Path,
 
 def atomic_write_json(path: str | Path, payload: dict[str, Any], *,
                       _before_replace: Callable[[Path], None] | None = None,
-                      _quarantine_on_permission_error: bool = False
-                      ) -> Path:
+                      _quarantine_on_permission_error: bool = False,
+                      durable: bool = True) -> Path:
     """Publish JSON through tmp + flush + fsync + ``os.replace``.
+
+    ``durable=False`` keeps the atomic replace (a reader sees the old record
+    or the new one, never a torn one) and skips both fsyncs.  It is for a
+    record the very next step replaces anyway: the per-step heartbeat.
 
     ``_before_replace`` is a deterministic kill/fault-injection seam for the
     CPU atomicity test.  Production callers never pass it.
@@ -272,7 +275,8 @@ def atomic_write_json(path: str | Path, payload: dict[str, Any], *,
     with temp.open("wb") as stream:
         stream.write(encoded)
         stream.flush()
-        os.fsync(stream.fileno())
+        if durable:
+            os.fsync(stream.fileno())
     if _before_replace is not None:
         _before_replace(temp)
     try:
@@ -284,7 +288,8 @@ def atomic_write_json(path: str | Path, payload: dict[str, Any], *,
         # because a reader held run-progress.json open for >0.50 s.
         quarantine_file(temp, reason="heartbeat-sharing-violation")
         return path
-    _fsync_directory(path.parent)
+    if durable:
+        _fsync_directory(path.parent)
     return path
 
 
@@ -460,9 +465,11 @@ def read_heartbeat(path: str | Path) -> Heartbeat:
     return Heartbeat.from_mapping(payload)
 
 
-def write_heartbeat(path: str | Path, heartbeat: Heartbeat) -> Path:
+def write_heartbeat(path: str | Path, heartbeat: Heartbeat, *,
+                    durable: bool = True) -> Path:
     return atomic_write_json(
-        path, heartbeat.as_dict(), _quarantine_on_permission_error=True)
+        path, heartbeat.as_dict(), _quarantine_on_permission_error=True,
+        durable=durable)
 
 
 class RollingStepWall:
@@ -606,11 +613,7 @@ def _byte_words(count: int | None) -> str:
 
 
 def config_digest(path: str | Path) -> str:
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return _hash_file(Path(path))
 
 
 def _hash_file(path: Path) -> str:
@@ -1787,7 +1790,15 @@ class RuntimeHeartbeat:
             self.model_elapsed_seconds, self.last_step, self.last_wrfout,
             self.last_checkpoint, work_bytes, wait,
             None if self.restart_record is None
-            else dict(self.restart_record)))
+            else dict(self.restart_record)),
+            # The per-step beat is liveness, replaced by the next step's: it
+            # is published atomically but not fsynced.  Breakage this
+            # prevents: two fsyncs (file and directory) on the stepping
+            # thread every step, 10-27 ms each on a box whose disk is busy
+            # with 16 GB history frames (V59, 8 x RTX 5090, 2026-10-21: the
+            # stepping thread sat in xlog_wait_on_iclog, the 26 ms per-step
+            # gap the step timer missed).  Every other status stays durable.
+            durable=status != "integrating")
 
     def __call__(self, *, model_elapsed_seconds: float, outer_step: int,
                  last_durable_wrfout: str | Path | None,
@@ -2363,10 +2374,6 @@ def priced_reservation_bytes(configuration, *, source=None,
     return value if value > 0 else None
 
 
-#: The name this function carried while only one door called it.
-_priced_reservation_bytes = priced_reservation_bytes
-
-
 def supervise_experiment(
         config_path: str | Path, outdir: str | Path, *,
         restart: str | Path | None = None, gpu_uuid: str | None = None,
@@ -2499,7 +2506,7 @@ def supervise_experiment(
             # The worker dies with this supervisor (gpuwm.parent_death):
             # a `gpuwm run` killed by pid must not leave its worker on the
             # card as an orphan, as a killed `gpuwm go` left its forecast
-            # holding 63.9 GB for 43 minutes on box B (2026-10-07).  The
+            # holding 63.9 GB for 43 minutes on a rented box (2026-10-07).  The
             # worker binds itself after exec; no preexec_fn (D-03).
             from gpuwm.parent_death import child_environment
 
@@ -2806,8 +2813,12 @@ def _success_receipts(outdir: Path, summary) -> dict[str, Any]:
     """
 
     floors = getattr(summary, "moisture_floor_receipts", None)
+    # The hydro decision/cost/products the run route stated, kept for the
+    # same reason (an ERA5 run's supervised capsule dropped them).
+    hydro = getattr(summary, "hydro_receipts", None)
     return {"run_progress": {"path": str((outdir / HEARTBEAT_NAME).resolve())},
-            **(dict(floors) if floors else {})}
+            **(dict(floors) if floors else {}),
+            **(dict(hydro) if hydro else {})}
 
 
 def _worker_main(args: argparse.Namespace) -> int:

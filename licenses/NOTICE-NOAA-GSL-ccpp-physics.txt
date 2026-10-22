@@ -33,3 +33,10 @@ trailing spaces normalised, words unchanged):
 
 The Apache License, Version 2.0 it names is also the licence ArWen is
 distributed under; its full text is the repository's LICENSE file.
+
+The CPU composition preparation implementation in
+ tools/grib1_bridge/src/aerosol_numbers.rs
+also transcribes get_niwfa at this same pinned commit and carries the same
+Apache-2.0 grant. Its arithmetic order is checked against the pinned GSL
+oracle in tests/test_chem_mp_coupling.py. Source licence rechecked 2026-10-20:
+https://raw.githubusercontent.com/NCAR/ccpp-physics/3e6660c6df54e95a0871e990c2294dd397ae3860/LICENSE

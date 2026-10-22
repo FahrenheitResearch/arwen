@@ -1,8 +1,8 @@
 use chrono::{DateTime, Utc};
 use std::error::Error;
-use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::boxed_error;
 use crate::geostationary::{SweepAngleAxis, scan_angles_to_lat_lon};
 use crate::goes::{GoesSatellite, parse_goes_abi_filename};
 use crate::netcdf::{
@@ -77,51 +77,6 @@ impl GoesAbiScene {
             }
         }
         (lat, lon)
-    }
-
-    pub fn approximate_lat_lon_bounds(
-        &self,
-        max_samples_per_axis: usize,
-    ) -> Option<(f64, f64, f64, f64)> {
-        let max_samples = max_samples_per_axis.max(2);
-        let x_step = (self.fixed_grid.nx / max_samples).max(1);
-        let y_step = (self.fixed_grid.ny / max_samples).max(1);
-        let mut west = f64::INFINITY;
-        let mut east = f64::NEG_INFINITY;
-        let mut south = f64::INFINITY;
-        let mut north = f64::NEG_INFINITY;
-        let mut seen = false;
-
-        let mut rows = (0..self.fixed_grid.ny).step_by(y_step).collect::<Vec<_>>();
-        if rows.last().copied() != Some(self.fixed_grid.ny.saturating_sub(1)) {
-            rows.push(self.fixed_grid.ny.saturating_sub(1));
-        }
-        let mut cols = (0..self.fixed_grid.nx).step_by(x_step).collect::<Vec<_>>();
-        if cols.last().copied() != Some(self.fixed_grid.nx.saturating_sub(1)) {
-            cols.push(self.fixed_grid.nx.saturating_sub(1));
-        }
-
-        for row in rows {
-            let y = self.fixed_grid.y_scan_rad[row];
-            for &col in &cols {
-                let x = self.fixed_grid.x_scan_rad[col];
-                let Some((lat, lon)) = self.projection.scan_angles_to_lat_lon(x, y) else {
-                    continue;
-                };
-                let lat = f64::from(lat);
-                let lon = f64::from(lon);
-                if !(lat.is_finite() && lon.is_finite()) {
-                    continue;
-                }
-                west = west.min(lon);
-                east = east.max(lon);
-                south = south.min(lat);
-                north = north.max(lat);
-                seen = true;
-            }
-        }
-
-        seen.then_some((west, east, south, north))
     }
 }
 
@@ -328,10 +283,6 @@ fn sector_from_product(product: &str) -> AbiSector {
     } else {
         AbiSector::Unknown(product.to_string())
     }
-}
-
-fn boxed_error(message: impl Into<String>) -> Box<dyn Error> {
-    Box::new(io::Error::new(io::ErrorKind::InvalidData, message.into()))
 }
 
 #[cfg(test)]

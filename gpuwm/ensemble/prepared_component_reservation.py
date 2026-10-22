@@ -9,7 +9,6 @@ from __future__ import annotations
 from dataclasses import dataclass, fields as dataclass_fields, is_dataclass
 from datetime import date, datetime
 from fractions import Fraction
-from operator import index
 from types import SimpleNamespace
 from collections.abc import Mapping
 import hashlib
@@ -21,15 +20,7 @@ import numpy as np
 from gpuwm.ensemble.batch_state import _exact_key, state_array_specs
 from gpuwm.ensemble.batch_storage import BatchArraySpec, BatchMemoryPlan
 from gpuwm.ensemble.prepared_route_wave import RouteWaveReservation
-
-
-def _positive(value, name):
-    if isinstance(value, (bool, np.bool_)):
-        raise TypeError(f"{name} must be an integer")
-    value = index(value)
-    if value < 1:
-        raise ValueError(f"{name} must be positive")
-    return value
+from gpuwm.ensemble.batch_storage import _positive_count as _positive
 
 
 def _identity(value):

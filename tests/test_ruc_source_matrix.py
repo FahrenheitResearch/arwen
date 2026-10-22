@@ -63,6 +63,12 @@ EXPECTED_POLICY = {
     "era5-l137": "layer_midpoint_samples",
     "gdas": "layer_midpoint_samples",
     "gefs": "layer_midpoint_samples",
+    # lane/cap-gefs-archive (6a3b8fd50bf): the indexed GEFS retrospective
+    # members carry the GFS Noah four-layer soil, the layer arm.
+    "gefs-reforecast": "layer_midpoint_samples",
+    "gefs-reforecast-weekly": "layer_midpoint_samples",
+    "gefs-v11": "layer_midpoint_samples",
+    "gefs-v11-flat": "layer_midpoint_samples",
     # 2.9.2: a gpuwm-hex run as an ArWen parent. Its history carries MPAS
     # Noah's four layers (0-10, 10-40, 40-100, 100-200 cm), the GFS ladder.
     "hex-global": "layer_midpoint_samples",

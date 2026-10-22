@@ -22,11 +22,11 @@ from pathlib import Path
 import subprocess
 
 from gpuwm.bridges import (RUSTWX_CRATE_RELATIVE, artifact_remedy,
-                           default_bridge_dir,
-                           legacy_bridge_candidates, lazy_build_hints,
+                           lazy_build_hints,
                            rustwx_build_hint,
                            accept_resolved, executable_name, launchable,
-                           packaged_bridge_dir, quiet_loader_errors)
+                           quiet_loader_errors)
+from gpuwm.rustwx import _candidates, crate_dir
 
 #: Environment variable naming a prebuilt static builder.
 STATIC_ENV = "GPUWM_RW_MPAS_STATIC"
@@ -86,8 +86,13 @@ REQUIRED_GEOG_DATASETS = (
     "topo_gmted2010_30s",
     "modis_landuse_20class_30s",
     "landuse_30s",
-    "soiltype_top_30s",
-    "soiltemp_1deg",
+    # Soil category and deep-soil temperature: the permissive defaults
+    # (2026-10-21), SoilGrids250m's texture_top (inside the soilgrids
+    # archive) and the ERA5 climatology fetch-geog builds.  MPAS-A's own
+    # STATSGO/FAO tiles and ISLSCP-I soiltemp_1deg are read only when
+    # named (--soilcat-data STATSGO, --soiltemp-data ISLSCP).
+    "texture_top",
+    "soiltemp_era5_1deg",
     "maxsnowalb_modis",
     "greenfrac_fpar_modis",
     "albedo_modis",
@@ -155,30 +160,10 @@ NATIVE_STREAM_OMITTED_FIELDS = ("defc_a", "defc_b", "lu_index", "soilcat_top")
 _PROBE_TIMEOUT_S = 20
 
 
-def crate_dir() -> Path:
-    """The vendored Rusty Weather workspace of a source checkout."""
-
-    return Path(__file__).resolve().parent.parent / "tools" / "rustwx"
-
-
 def static_candidates() -> tuple[Path, ...]:
     """Deterministic candidate paths for the builder, best first."""
 
-    filename = executable_name(STATIC_NAME)
-    candidates: list[Path] = []
-    override = os.environ.get(STATIC_ENV)
-    if override:
-        candidates.append(Path(override))
-    root = Path(__file__).resolve().parent.parent
-    candidates.extend((
-        crate_dir() / "target" / "release" / filename,
-        crate_dir() / "target" / "debug" / filename,
-        root / "libexec" / "bridges" / filename,
-        packaged_bridge_dir() / filename,
-        default_bridge_dir() / filename,
-        *legacy_bridge_candidates(filename),
-    ))
-    return tuple(candidates)
+    return _candidates(STATIC_ENV, STATIC_NAME)
 
 
 def find_static_bin() -> Path | None:

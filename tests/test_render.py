@@ -15,7 +15,6 @@ dimensions -- not that any pixel is pretty.
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
 
 pytest.importorskip(
@@ -27,33 +26,7 @@ from gpuwm.render import (DEFAULT_SOURCE_LABEL, domain_token, parse_products,
                           parse_timeidx, plot_context, resolution_token,
                           spacing_label)
 
-_NZ, _NY, _NX = 4, 12, 16
-_STAMPS = ("1974-04-03_18:00:00", "1974-04-03_19:00:00")
-
-
-def _frame(seed: int) -> dict:
-    rng = np.random.default_rng(seed)
-    lat = np.tile(np.linspace(38.0, 40.0, _NY)[:, None], (1, _NX))
-    lon = np.tile(np.linspace(-98.0, -95.0, _NX)[None, :], (_NY, 1))
-    return {
-        "T": np.zeros((_NZ, _NY, _NX), np.float32),
-        "MU": np.zeros((_NY, _NX), np.float32),
-        "REFL_10CM": rng.uniform(-20.0, 65.0,
-                                 (_NZ, _NY, _NX)).astype(np.float32),
-        "T2": rng.uniform(280.0, 300.0, (_NY, _NX)).astype(np.float32),
-        "U10": rng.uniform(-10.0, 10.0, (_NY, _NX)).astype(np.float32),
-        "V10": rng.uniform(-10.0, 10.0, (_NY, _NX)).astype(np.float32),
-        "RAINC": rng.uniform(0.0, 5.0, (_NY, _NX)).astype(np.float32),
-        "RAINNC": rng.uniform(0.0, 30.0, (_NY, _NX)).astype(np.float32),
-        # TOA outgoing longwave, the range a frame with cold cloud tops
-        # over a warm surface actually spans (W m-2).
-        "OLR": rng.uniform(90.0, 320.0, (_NY, _NX)).astype(np.float32),
-        "XLAT": lat.astype(np.float32),
-        "XLONG": lon.astype(np.float32),
-        "HGT": np.zeros((_NY, _NX), np.float32),
-        "SINALPHA": np.zeros((_NY, _NX), np.float32),
-        "COSALPHA": np.ones((_NY, _NX), np.float32),
-    }
+from test_render_layout import _NX, _NY, _NZ, _STAMPS, _frame
 
 
 @pytest.fixture(scope="module")
@@ -70,6 +43,22 @@ def wrfout(tmp_path_factory):
 def _png_shape(path):
     import matplotlib.image
     return matplotlib.image.imread(path).shape
+
+
+def _spy_wrf(monkeypatch, calls):
+    import gpuwm.render as render
+    import wrf as real_wrf
+
+    class SpyWrf:
+        def __getattr__(self, name):
+            return getattr(real_wrf, name)
+
+        @staticmethod
+        def getvar(wf, name, timeidx=None, **kwargs):
+            calls.append((name, kwargs.get("units")))
+            return real_wrf.getvar(wf, name, timeidx=timeidx, **kwargs)
+
+    monkeypatch.setattr(render, "_import_wrf", lambda: SpyWrf())
 
 
 def test_render_all_products_all_frames(wrfout, tmp_path):
@@ -396,7 +385,6 @@ def test_olr_draws_from_the_field_the_frame_carries(tmp_path, monkeypatch):
     allowed to derive -- and the panel is labeled in those units.
     """
     import gpuwm.render as render
-    import wrf as real_wrf
 
     path = tmp_path / "wrfout_d01_1974-04-03_18-00-00.nc"
     with WrfoutWriter(path, nx=_NX, ny=_NY, nz=_NZ,
@@ -405,16 +393,7 @@ def test_olr_draws_from_the_field_the_frame_carries(tmp_path, monkeypatch):
 
     calls: list[tuple[str, object]] = []
 
-    class SpyWrf:
-        def __getattr__(self, name):
-            return getattr(real_wrf, name)
-
-        @staticmethod
-        def getvar(wf, name, timeidx=None, **kwargs):
-            calls.append((name, kwargs.get("units")))
-            return real_wrf.getvar(wf, name, timeidx=timeidx, **kwargs)
-
-    monkeypatch.setattr(render, "_import_wrf", lambda: SpyWrf())
+    _spy_wrf(monkeypatch, calls)
     out = tmp_path / "png"
     rc = cli.main(["render", "--engine", "matplotlib", str(path),
                    "--products", "olr", "--out", str(out)])
@@ -497,7 +476,6 @@ def test_wind10_fallback_is_native_units_via_getvar(tmp_path, monkeypatch):
     the model's native m/s -- every retrieval through wrf.getvar with no
     unit arguments and no local conversion factor."""
     import gpuwm.render as render
-    import wrf as real_wrf
 
     path = tmp_path / "wrfout_d01_1974-04-03_18-00-00.nc"
     fields = _frame(seed=11)
@@ -509,16 +487,7 @@ def test_wind10_fallback_is_native_units_via_getvar(tmp_path, monkeypatch):
 
     calls: list[tuple[str, object]] = []
 
-    class SpyWrf:
-        def __getattr__(self, name):
-            return getattr(real_wrf, name)
-
-        @staticmethod
-        def getvar(wf, name, timeidx=None, **kwargs):
-            calls.append((name, kwargs.get("units")))
-            return real_wrf.getvar(wf, name, timeidx=timeidx, **kwargs)
-
-    monkeypatch.setattr(render, "_import_wrf", lambda: SpyWrf())
+    _spy_wrf(monkeypatch, calls)
     out = tmp_path / "png"
     rc = cli.main(["render", "--engine", "matplotlib", str(path), "--products", "wind10",
                    "--out", str(out)])
@@ -637,11 +606,32 @@ def test_sources_present_answers_about_the_crate_it_is_asked_about(
 
     monkeypatch.setattr(bridges, "_package_parent", lambda: tmp_path)
     (tmp_path / "tools" / "grib1_bridge").mkdir(parents=True)
+    (tmp_path / "tools" / "grib1_bridge" / "Cargo.toml").write_text("[package]\n")
 
     assert bridges.sources_present("tools/grib1_bridge") is True
     assert bridges.sources_present("tools/rustwx") is False
     # The default is unchanged for every existing caller.
     assert bridges.sources_present() is True
+
+
+def test_sources_present_is_false_for_a_crate_folder_holding_only_package_data(
+        monkeypatch, tmp_path):
+    """A pip install carries tools/hydro_world/data (package data), not the crate.
+
+    Breakage (2.9.4 R11, the packet's Linux wheel): the doctor took that data
+    folder for a checkout, so rw_hydro_world and rw_hydro_params lost their
+    on-demand row and got a `cargo build` remedy inside site-packages.
+    """
+    from gpuwm import bridges
+
+    monkeypatch.setattr(bridges, "_package_parent", lambda: tmp_path)
+    data = tmp_path / "tools" / "hydro_world" / "data"
+    data.mkdir(parents=True)
+    (data / "sources.v1.json").write_text("{}")
+
+    assert bridges.sources_present("tools/hydro_world") is False
+    (tmp_path / "tools" / "hydro_world" / "Cargo.toml").write_text("[package]\n")
+    assert bridges.sources_present("tools/hydro_world") is True
 
 
 # ---------------------------------------------------------------------------

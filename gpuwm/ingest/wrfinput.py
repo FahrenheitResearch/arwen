@@ -255,6 +255,7 @@ MYNN_CYCLED_WRFINPUT = frozenset({"QC_BL", "CLDFRA_BL"})
 OPTIONAL_WRFINPUT = (
     "ICCG_IN_NUM", "ICCG_IN_DEN",
     "TML", "T0ML", "HML", "H0ML", "HUML", "HVML", "TMOML",
+    "OM_TMP", "OM_S", "OM_U", "OM_V", "OM_DEPTH", "OM_TINI", "OM_SINI",
     "H_DIABATIC", "RAINNC", "RAINC", "QNCLOUD", "SST", "CANWAT", "LAKEMASK",
     "QNWFA2D", "QNIFA2D",
     "MAPFAC_MX", "MAPFAC_MY", "MAPFAC_UX", "MAPFAC_UY", "MAPFAC_VX", "MAPFAC_VY",
@@ -289,6 +290,8 @@ _WRFINPUT_GEOMETRY_DIMENSIONS = frozenset({
 # resulting shape, so a truncated variable cannot borrow an unrelated
 # dimension of the same length.
 WRFINPUT_DIMENSIONS: dict[str, tuple[str, ...]] = {
+    **{name: ("ocean_levels", "south_north", "west_east") for name in (
+        "OM_TMP", "OM_S", "OM_U", "OM_V", "OM_DEPTH", "OM_TINI", "OM_SINI")},
     "ICCG_IN_NUM": _MASS_2D_DIMS, "ICCG_IN_DEN": _MASS_2D_DIMS,
     "RESM": (),
     "PC": _MASS_2D_DIMS,
@@ -441,8 +444,8 @@ IGNORED_WRFINPUT = frozenset({
     "LAT_UR_D", "LAT_UR_T", "LAT_UR_U", "LAT_UR_V", "LON_LL_D", "LON_LL_T",
     "LON_LL_U", "LON_LL_V", "LON_LR_D", "LON_LR_T", "LON_LR_U", "LON_LR_V",
     "LON_UL_D", "LON_UL_T", "LON_UL_U", "LON_UL_V", "LON_UR_D", "LON_UR_T",
-    "LON_UR_U", "LON_UR_V", "MF_VX_INV", "O3_GFS_DU",
-    "PC", "PCB", "P_HYD", "QV_BASE", "RDX", "RDY", "RESM",
+    "LON_UR_U", "LON_UR_V", "MF_VX_INV",
+    "PCB", "P_HYD", "QV_BASE", "RDX", "RDY",
     "SAVE_TOPO_FROM_REAL", "SHDAVG", "SMCREL", "SNOWC", "SOILCBOT",
     "SOILCTOP", "SR", "STEP_NUMBER", "THIS_IS_AN_IDEAL_RUN",
     "THM", "TOPOSLPX", "TOPOSLPY", "T_BASE",
@@ -1207,8 +1210,13 @@ def read_wrfinput(path: str | Path, *, require_complete: bool = True,
         carried = (MYNN_CYCLED_WRFINPUT
                    if cfg is not None and bool(getattr(cfg, "cycling", False))
                    else frozenset()) | OROGRAPHIC_WRFINPUT
+        # Stock records the history schema writes straight from wrfinput
+        # (grid constants, flags) are carried even where the model has no
+        # state for them: IGNORED_WRFINPUT only says nothing is restored.
+        carried |= frozenset(WRF_INPUT_HISTORY_ROWS)
         def unread(name):
-            return (name == "Times" or name in IGNORED_WRFINPUT
+            return (name == "Times"
+                    or (name in IGNORED_WRFINPUT and name not in carried)
                     or (name in ANALYSIS_PASSTHROUGH_WRFINPUT
                         and name not in carried)
                     or name in surface_dispositions)
@@ -1749,11 +1757,14 @@ def initialize_wrfinput_physics(state, restored, cfg, *, radiation=None,
                                radiation_start_time=None, radiation_latitude=None,
                                radiation_longitude=None, landuse=None,
                                constant_glw_wm2=None, cam_ozone=None,
-                               fractional_seaice=False):
+                               fractional_seaice=False, hydro_parent_geometry=None):
     """Initialize physics from the file's actual surface and land categories.
 
     ``fractional_seaice`` is the run namelist's (&physics, WRF default 0,
     not a wrfinput header); only the Noah mosaic tile door reads it.
+    ``hydro_parent_geometry`` is the run's ProjectedGrid, reconstituted from
+    the wrfinput's own projection attributes (gpuwm.wrfinput_door); the
+    coupled hydro exchange binds to it.
     """
     _validate_supplied_physics_fields(restored.raw, cfg, restored.global_attributes)
     from gpuwm.core.physics import physics_driver_required
@@ -1821,7 +1832,11 @@ def initialize_wrfinput_physics(state, restored, cfg, *, radiation=None,
         **({"frc_urb2d": raw["FRC_URB2D"]}
            if int(getattr(cfg, "sf_urban_physics", 0)) > 0
            and raw.get("FRC_URB2D") is not None else {}),
-        **({"cam_ozone": cam_ozone} if cam_ozone is not None else {}))
+        **({"cam_ozone": cam_ozone} if cam_ozone is not None else {}),
+        # Breakage it prevents: on any domain the global hydro row covers,
+        # `gpuwm run --wrfinput` exited 2 with "parent runoff exchange needs
+        # the actual forecast ProjectedGrid".
+        hydro_parent_geometry=hydro_parent_geometry)
     if (int(getattr(cfg, "sf_urban_physics", 0)) > 0
             and "utype_urb2d" in driver.fields):
         from gpuwm.ingest.wrfinput_surface_statics import (
@@ -1880,6 +1895,14 @@ def initialize_wrfinput_physics(state, restored, cfg, *, radiation=None,
         # A WRF restart is that later load: lsminit skips the partition
         # under restart (module_sf_noahdrv.F's .NOT.restart branch), and
         # the file's SH2O is the producing run's own.
+        # Native inputs already contain fractional SNOALB. WRF retains it
+        # when RDMAXALB is true, but otherwise replaces it from MAXALB.
+        if not cfg.rdmaxalb:
+            from gpuwm.core.noah import VEG_COLS
+            from gpuwm.static.rust_bridge import wrf_noah_snow_albedo
+            driver.fields["snoalb"][...] = cp.asarray(wrf_noah_snow_albedo(
+                driver.noah_params.veg[:, VEG_COLS.index("maxalb")],
+                raw.get("IVGTYP", raw["LU_INDEX"])), dtype=cp.float32)
         from gpuwm.core.noah import initialize_noah_liquid_water
         from gpuwm.core.physics import NOAH_LAYER_THICKNESS_M
         initialize_noah_liquid_water(driver.fields, driver.noah_params,
@@ -2491,7 +2514,19 @@ def read_wrfbdy(path: str | Path, *, run_seconds: float,
                 raise ValueError(
                     "single-record wrfbdy_d01 nextbdytime does not pin the "
                     f"requested {forcing_interval}-second forcing interval")
-        elif next_name in dataset.variables:
+        lead = None
+        if len(times) > 1:
+            # A first record covering less than the cadence: a cold start
+            # inside a boundary interval (gpuwm.da.analysis_boundary).
+            cadence, lead = lead_interval_seconds(
+                times, _decode_times(dataset.variables[next_name])
+                if next_name in dataset.variables else ())
+            if lead is not None and cadence != forcing_interval:
+                raise ValueError(
+                    f"{path} steps by {cadence} seconds after its first "
+                    f"record, not the requested {forcing_interval}-second "
+                    "forcing cadence")
+        if len(times) > 1 and next_name in dataset.variables:
             # WRF products encountered in the wild use either one metadata
             # record for the final endpoint or one next-time record per Times
             # record.  Accept only those two explicit encodings.
@@ -2499,6 +2534,8 @@ def read_wrfbdy(path: str | Path, *, run_seconds: float,
             expected_all = tuple(
                 value + timedelta(seconds=forcing_interval)
                 for value in times)
+            if lead is not None:
+                expected_all = (times[1],) + expected_all[1:]
             expected_final = (expected_all[-1],)
             if next_times not in (expected_all, expected_final):
                 raise ValueError(
@@ -2544,6 +2581,8 @@ def read_wrfbdy(path: str | Path, *, run_seconds: float,
         starts = [(time - origin).total_seconds() for time in times]
         forcing_intervals = [
             later - earlier for earlier, later in zip(starts, starts[1:])]
+        if lead is not None:
+            forcing_intervals = forcing_intervals[1:]
         if any(interval != forcing_interval
                for interval in forcing_intervals):
             observed = sorted({int(value) for value in forcing_intervals})
@@ -2798,6 +2837,9 @@ class BoundaryCoverage:
     forcing_interval_seconds: int
     spec_bdy_width: int
     coverage_seconds: float
+    #: The first record's own interval when it is shorter than the cadence
+    #: (:func:`lead_interval_seconds`), else ``None``.
+    lead_interval_seconds: int | None = None
 
     @property
     def start(self) -> datetime:
@@ -2806,6 +2848,51 @@ class BoundaryCoverage:
     @property
     def end(self) -> datetime:
         return self.times[0] + timedelta(seconds=self.coverage_seconds)
+
+
+def lead_interval_seconds(times, next_times) -> tuple[int, int | None]:
+    """``(cadence, lead)`` of a multi-record ``wrfbdy``'s ``Times``.
+
+    Every interval is the cadence, except that the FIRST record may cover
+    a shorter lead interval, ``lead`` (``None`` when it does not): the
+    file a cold start inside a boundary interval runs from
+    (:func:`gpuwm.da.analysis_boundary.rebase_first_record`), whose first
+    record was restamped to the start instant and ends where the
+    original interval ended, at the second record.  The cadence is the
+    step of the later records, or, with two records, the last record's
+    own ``nextbdytime`` interval; a lead is accepted only where that
+    metadata says so (record 0's ``nextbdytime`` is record 1, or only a
+    final one is written), because it is the file's own statement of
+    where each interval ends.  The breakage the uniform-cadence refusal
+    prevents is still refused: a file whose later intervals differ,
+    a first interval LONGER than the cadence, or a short one no
+    metadata declares.
+    """
+    steps = [int((later - earlier).total_seconds())
+             for earlier, later in zip(times, times[1:])]
+    later = sorted(set(steps[1:]))
+    if len(later) > 1:
+        raise ValueError(
+            "Times records do not step by one uniform forcing interval: "
+            f"{sorted(set(steps))} seconds")
+    if later:
+        cadence = later[0]
+    elif next_times:
+        cadence = int((next_times[-1] - times[-1]).total_seconds())
+    else:
+        cadence = steps[0]
+    if steps[0] == cadence:
+        return cadence, None
+    declared = bool(next_times) and (
+        (len(next_times) == len(times) and next_times[0] == times[1])
+        or len(next_times) == 1)
+    if not (0 < steps[0] < cadence) or not declared:
+        raise ValueError(
+            "Times records do not step by one uniform forcing interval: "
+            f"{sorted(set(steps))} seconds (a first record covering less "
+            "than the cadence is read as a start inside an interval only "
+            "when its nextbdytime declares it)")
+    return cadence, steps[0]
 
 
 def wrfbdy_coverage(path: str | Path) -> BoundaryCoverage:
@@ -2833,14 +2920,12 @@ def wrfbdy_coverage(path: str | Path) -> BoundaryCoverage:
         next_name = "md___nextbdytimee_x_t_d_o_m_a_i_n_m_e_t_a_data_"
         next_times = (_decode_times(dataset.variables[next_name])
                       if next_name in dataset.variables else ())
+    lead = None
     if len(times) > 1:
-        steps = {int((later - earlier).total_seconds())
-                 for earlier, later in zip(times, times[1:])}
-        if len(steps) != 1:
-            raise ConfigurationRefused(
-                f"{path} Times records do not step by one uniform forcing "
-                f"interval: {sorted(steps)} seconds")
-        interval = steps.pop()
+        try:
+            interval, lead = lead_interval_seconds(times, next_times)
+        except ValueError as error:
+            raise ConfigurationRefused(f"{path} {error}") from None
     elif next_times:
         # real.exe's standard single-interval product declares its own
         # cadence in the nextbdytime metadata, and that is the only place
@@ -2859,7 +2944,8 @@ def wrfbdy_coverage(path: str | Path) -> BoundaryCoverage:
         path=path, times=times, forcing_interval_seconds=interval,
         spec_bdy_width=width,
         coverage_seconds=float(
-            (times[-1] - times[0]).total_seconds() + interval))
+            (times[-1] - times[0]).total_seconds() + interval),
+        lead_interval_seconds=lead)
 
 
 def check_boundary_coverage(coverage: BoundaryCoverage,

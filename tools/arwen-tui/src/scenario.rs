@@ -662,7 +662,7 @@ impl Form {
                 Paragraph::new(title).style(theme::heading()),
                 Rect::new(inner.x, inner.y, inner.width, 1),
             );
-            let visible = available.saturating_sub(4).min(7).max(1) as usize;
+            let visible = available.saturating_sub(4).clamp(1, 7) as usize;
             let first = edit.selected.saturating_sub(visible - 1);
             for (row, index) in (first..7).take(visible).enumerate() {
                 let value = if edit.values[index].is_empty() {
@@ -1047,10 +1047,7 @@ mod tests {
                 .draw(|f| form.draw(f, Rect::new(0, 3, 65, 17)))
                 .unwrap();
             let buffer = terminal.backend().buffer();
-            let rendered = (4..19)
-                .map(|y| (1..64).map(|x| buffer[(x, y)].symbol()).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n");
+            let rendered = crate::tests::buffer_text(buffer, Rect::new(1, 4, 63, 15), "\n");
             let normalized = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
             assert!(
                 normalized.contains(help),
@@ -1065,9 +1062,7 @@ mod tests {
         assert!(form.notice.as_ref().unwrap().contains("greater than zero"));
         terminal.draw(|f| form.draw(f, f.area())).unwrap();
         let buffer = terminal.backend().buffer();
-        let rendered: String = (0..20)
-            .flat_map(|y| (0..65).map(move |x| buffer[(x, y)].symbol()))
-            .collect();
+        let rendered = crate::tests::buffer_text(buffer, Rect::new(0, 0, 65, 20), "");
         assert!(rendered.contains("must be greater than zero"));
     }
 
@@ -1149,9 +1144,7 @@ mod tests {
         terminal.draw(|f| form.draw(f, f.area())).unwrap();
         assert_eq!(form.offset + form.review_height, rows.len());
         let buffer = terminal.backend().buffer();
-        let rendered: String = (0..20)
-            .flat_map(|y| (0..65).map(move |x| buffer[(x, y)].symbol()))
-            .collect();
+        let rendered = crate::tests::buffer_text(buffer, Rect::new(0, 0, 65, 20), "");
         assert!(rendered.contains("Preserve relative humidity: false"));
         assert!(rendered.contains("Enter Apply to draft"));
     }
@@ -1240,9 +1233,7 @@ mod tests {
                 let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
                 terminal.draw(|f| form.draw(f, f.area())).unwrap();
                 let buffer = terminal.backend().buffer();
-                let rendered: String = (0..height)
-                    .flat_map(|y| (0..width).map(move |x| buffer[(x, y)].symbol()))
-                    .collect();
+                let rendered = crate::tests::buffer_text(buffer, Rect::new(0, 0, width, height), "");
                 assert!(rendered.contains(action), "{width}x{height}: {action}");
                 assert!(form
                     .hits

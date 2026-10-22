@@ -3,7 +3,8 @@
 The index is content keyed. GPUWM_EARTH2_FETCH_RECEIPTS may name additional
 read-only earth2-run.json files, separated by the platform path separator.
 Fetch-v2 seals member/lead files. The original single-member contract is
-accepted only after its installed defaults and native file inventory are checked.
+accepted after checking its recorded fields, byte hashes and native file inventory.
+Missing legacy producer provenance is explicitly unknown.
 """
 from datetime import datetime, timezone
 import hashlib
@@ -137,14 +138,26 @@ def _verify(spec, path, *, explicit_input=False):
               "initial_condition_source": spec["ic_source"], "members": [0],
               "forecast_start_hour": 0}
     if legacy:
-        checks = {key: checks[key] for key in ("model", "initial_condition_source")}
+        checks = {key: value for key, value in checks.items()
+                  if key == "model" or (key != "model_row" and key in receipt)}
     for key, value in checks.items():
         if receipt.get(key) != value:
             raise ValueError(f"fetch cache {key} differs")
     if receipt["hours"] < spec["hours"]:
         raise ValueError("fetch cache forecast is shorter than the requested window")
     request_path = path.parent / "earth2-request.json"
-    request = json.loads(request_path.read_text())
+    if request_path.is_file():
+        request = json.loads(request_path.read_text())
+    elif legacy:
+        request = {}
+    else:
+        raise ValueError("fetch request receipt is missing")
+    if "area" not in request:
+        if "area" not in receipt:
+            raise ValueError("fetch receipt area is unknown")
+        request["area"] = receipt["area"]
+    elif "area" in receipt and receipt["area"] != request["area"]:
+        raise ValueError("fetch receipt area differs from request")
     from gpuwm.cyclone_search import resolve_region
     region = resolve_region(spec["area"], automatic=spec["storm"] == "auto")
     if spec["storm"] == "auto" and spec["area"] is None and request["area"] is not None:
@@ -168,7 +181,7 @@ def _verify(spec, path, *, explicit_input=False):
         from gpuwm.earth2_legacy_cache import verify
         receipt["legacy_compatibility"] = verify(spec, receipt, request,
                                                 allow_regional=explicit_input or area is not None)
-        artifacts = {str(request_path): _hash(request_path)}
+        artifacts = {str(request_path): _hash(request_path)} if request_path.is_file() else {}
         for artifact in (receipt["forecast"], receipt["analysis"]):
             artifacts[str(artifact)] = _hash(artifact)
         return receipt, None, artifacts

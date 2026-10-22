@@ -167,6 +167,24 @@ def test_preflight_envelope_carries_whole_ordinary_inventory_once():
         ordinary_memory_model_from_estimate(estimate)
 
 
+def test_coupled_hydro_resident_state_is_an_inventoried_envelope_component():
+    # 2.9.4 rolling test (a 16 GB card): a 4-member WoFS from HRRR over Oklahoma attached default-on hydro and was
+    # refused "ordinary preflight inventory has an unclassified memory category": preflight's subtotal
+    # carries hydro_memory["resident_bytes"] and the inventory did not.
+    class Domain:
+        items = tuple(SimpleNamespace(category=category) for category in ("state", "physics"))
+        def category_bytes(self, category):
+            return {"state": 100, "physics": 60}.get(category, 0)
+    estimate = SimpleNamespace(domains=(Domain(),), dycore_state_saved_bytes=0,
+        scratch_arena_saved_bytes=0, k_tables_bytes=0, workspace_bytes=0,
+        transient_peak_bytes=30, subtotal_bytes=100 + 60 + 30 + 17, peak_envelope_bytes=400,
+        hydro_memory={"resident_bytes": 17, "transient_bytes": 5},
+        envelope_basis="ordinary envelope with coupled hydro")
+    model = ordinary_memory_model_from_estimate(estimate)
+    assert model.inventory(1)["category_bytes"]["hydro_resident"] == 17
+    assert model.required_bytes(1) == 400
+
+
 def test_future_preflight_memory_category_is_inherited_without_suite_specific_code():
     from gpuwm.core.preflight import DomainMemoryEstimate, MemoryItem
     domain = DomainMemoryEstimate(1, (MemoryItem("field", "new_physics_bank", (10,), 4),))

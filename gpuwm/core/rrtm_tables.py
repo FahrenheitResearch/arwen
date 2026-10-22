@@ -197,10 +197,6 @@ class RRTMLongwaveTables:
     def nspb(self) -> np.ndarray:
         return self.statics["NSPB"]
 
-    def band_offset(self, band: int) -> int:
-        """Zero-based first g-point of ``band`` in the 140-point vector."""
-        return 0 if band == 1 else int(self.ngs[band - 2])
-
 
 def _group_spans(band: int, ngc: np.ndarray, ngs: np.ndarray,
                  ngn: np.ndarray) -> tuple[tuple[int, int], ...]:

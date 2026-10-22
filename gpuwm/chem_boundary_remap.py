@@ -142,19 +142,23 @@ def _require(backend, method: str):
     return call
 
 
-def boundary_rows(table, source_name: str, available=None) -> tuple:
+def boundary_rows(table, source_name: str, available=None, frame=None) -> tuple:
     """Active rows whose FIRST available boundary entry is ``source_name``.
 
     The first entry of a row's ``boundary`` list whose source is available
     wins (DESIGN 1.2); a row whose earlier entry names another available
     source is not this source's to fill.  ``available`` is the run's enabled
     sources (``cfg.chem_sources``); by default every source the table
-    references.
+    references.  ``frame`` (``"initial"`` for the start state,
+    ``"boundary"`` for a later forcing time, None for either) skips an
+    entry whose ``frames`` names the other role: operational HRRR starts
+    from its own cycled smoke and takes RAP's at its edges.
     """
     available = set(table.sources if available is None else available)
     rows = []
     for row in table.rows:
-        entries = [b for b in row.boundary if b["source"] in available]
+        entries = [b for b in row.boundary if b["source"] in available
+                   and (frame is None or b.get("frames", "all") in ("all", frame))]
         if entries and entries[0]["source"] == source_name:
             rows.append(row)
     return tuple(rows)
@@ -395,6 +399,13 @@ def _grid_of(fields: Iterable[object]):
     return lat, lon, coords
 
 
+#: How far past a Lambert source's outer row (in cells) a target point may
+#: sit and still be that row's own point: the static file's float32
+#: latitude/longitude alone moves a corner by up to ~1.5e-4 cell (0.5 m), so
+#: one hundredth of a cell (30 m on HRRR's grid) is round-off, not territory.
+_EDGE_ROUNDOFF_CELLS = 1.0e-2
+
+
 def _horizontal_plan(backend, source_row, fields, lat_axis, lon_axis, target):
     """One bilinear plan from the source grid to the target mass points.
 
@@ -436,16 +447,55 @@ def _horizontal_plan(backend, source_row, fields, lat_axis, lon_axis, target):
     x, y = grid.latlon_to_ij(target_lat, target_lon)
     x = np.asarray(x, dtype=np.float64) - 1.0
     y = np.asarray(y, dtype=np.float64) - 1.0
+    # A target that IS the source grid (the HRRR recipe on HRRR's own
+    # 1799 x 1059 lattice) lands its outer rows on the source's outer rows
+    # up to round-off (the projection, and the static file's float32
+    # latitude/longitude), a hair past the edge.
+    # Those points are the edge points themselves, so they are snapped onto
+    # it; anything farther out is still refused.  Breakage this prevents:
+    # the full-grid HRRR smoke run refused its start state, "source
+    # 'hrrr-native-smoke': the domain reaches outside its 1799 x 1059 grid".
+    # The identity route.  A target with the source's own shape whose every
+    # point projects within half a cell of its own lattice position IS the
+    # source grid: HRRR integrates on WPS's 6370 km sphere and its GRIB
+    # header declares 6371229 m, so the two descriptions of one lattice
+    # drift apart with distance from the south-west corner (measured 0.35
+    # cell at the north-east corner; gpuwm.ingest.hrrr.
+    # IDENTITY_SNAP_LIMIT_CELLS, the met route's same rule).  Every point
+    # then copies its own source cell, index for index, as the met fields
+    # of the same run do.  Breakage this prevents: the full-grid HRRR smoke
+    # run refused its start state, "the domain reaches outside its 1799 x
+    # 1059 grid (target x 0..1798.35, y 0..1058.2)".
+    # The same holds for an index-aligned window of the lattice (an event
+    # crop of HRRR's grid): its points are the source's own cells i0.., j0..
+    if x.ndim == 2 and x.size:
+        from gpuwm.ingest.hrrr import IDENTITY_SNAP_LIMIT_CELLS
+        ty, tx = x.shape
+        i0, j0 = int(np.rint(x[0, 0])), int(np.rint(y[0, 0]))
+        if 0 <= i0 and 0 <= j0 and i0 + tx <= nx and j0 + ty <= ny:
+            lattice_y, lattice_x = np.meshgrid(
+                np.arange(j0, j0 + ty, dtype=np.float64),
+                np.arange(i0, i0 + tx, dtype=np.float64), indexing="ij")
+            if (np.abs(x - lattice_x).max() < IDENTITY_SNAP_LIMIT_CELLS
+                    and np.abs(y - lattice_y).max() < IDENTITY_SNAP_LIMIT_CELLS):
+                x, y = lattice_x, lattice_y
+    edge = _EDGE_ROUNDOFF_CELLS
+    x = np.where((x < 0.0) & (x >= -edge), 0.0, x)
+    y = np.where((y < 0.0) & (y >= -edge), 0.0, y)
+    x = np.where((x > nx - 1) & (x <= nx - 1 + edge), float(nx - 1), x)
+    y = np.where((y > ny - 1) & (y <= ny - 1 + edge), float(ny - 1), y)
     if x.min() < 0 or y.min() < 0 or x.max() > nx - 1 or y.max() > ny - 1:
         raise BoundaryRemapError(
             f"source {source_row.name!r}: the domain reaches outside its "
-            f"{nx} x {ny} grid; values there would be invented")
+            f"{nx} x {ny} grid (target x {x.min():.6g}..{x.max():.6g}, y "
+            f"{y.min():.6g}..{y.max():.6g} in 0-based source cells); values "
+            "there would be invented")
     return backend.indexed_plan((ny, nx), y, x)
 
 
 def boundary_fields_for_grid(table, source_row, frames: SourceFrames,
                              target: TargetGrid, valid_time: datetime, *,
-                             backend=None, available=None
+                             backend=None, available=None, frame=None
                              ) -> tuple[dict[str, np.ndarray], dict]:
     """``{species: (nz, ny, nx) float32}`` of every row this source fills.
 
@@ -469,7 +519,7 @@ def boundary_fields_for_grid(table, source_row, frames: SourceFrames,
         raise BoundaryRemapError(
             f"source {source_row.name!r}: a pressure_field source must name its "
             "pressure_variable, or its levels could not be placed in the vertical")
-    rows = boundary_rows(table, source_row.name, available)
+    rows = boundary_rows(table, source_row.name, available, frame)
     if not rows:
         return {}, {"source": source_row.name, "rows": []}
     variables = _needed_variables(source_row, rows)

@@ -24,7 +24,18 @@ ON_DEMAND = {"rw_simradar", "rw_mlexport", "rw_globe_pack"}
 STREAM_DOORS = {"rw_igra2", "rw_amv", "rw_ndbc", "rw_gnssro", "rw_wis2", "rw_prepbufr", "rw_madis",
                 "rw_radar_feeds",
                 # 2.9.3 (PyPI per-file limit): the five front doors, the sounding renderer, the gauge verifier.
-                "rw_mrms", "rw_stage4", "rw_asos", "rw_goes", "rw_opera", "rw_soundings", "rw_nextgen_verify"}
+                "rw_mrms", "rw_stage4", "rw_asos", "rw_goes", "rw_opera", "rw_soundings", "rw_nextgen_verify",
+                # 2.9.3 improve-1: the default-on hydro door's five provider tools.
+                "rw_hydro_world", "rw_hydro_params", "rw_hydrofabric", "nextgen-reservoir-prepare", "rw_hydro_init",
+                # 2.9.4 capability lanes: ocean preparation (cap-waves-couple), ocean SST
+                # verification (cap-slab-ocean), ice observation binding (cap-fzra).
+                "rw_ocean", "rw_ocean_verify", "rw_ice_verify",
+                # cap-surge: storm-surge bathymetry ingest and products.
+                "rw_bathy",
+                # 2.9.4 (PyPI per-file limit): verification and post-run doors no forecast reaches.
+                "rw_hail", "rw_airnow", "rw_scoreboard", "rw_tc_fields", "rw_fire_indices",
+                # Post-2.9.4: native Rust coupled hydro output, fetched on first use.
+                "rw_nextgen_output"}
 PLATFORMS = ("linux-x86_64", "win-x86_64")
 REVISION = "a" * 40
 FETCH = "gpuwm fetch-bridges"

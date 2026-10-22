@@ -1,0 +1,61 @@
+[
+  {
+    "quantity": "ivt_eastward_full_column",
+    "variables": [
+      "viwve"
+    ],
+    "source_variables": [
+      "vertical_integral_of_eastward_water_vapour_flux"
+    ],
+    "parameters": [
+      "162071"
+    ],
+    "units": "kg m-1 s-1",
+    "operation": "identity"
+  },
+  {
+    "quantity": "ivt_northward_full_column",
+    "variables": [
+      "viwvn"
+    ],
+    "source_variables": [
+      "vertical_integral_of_northward_water_vapour_flux"
+    ],
+    "parameters": [
+      "162072"
+    ],
+    "units": "kg m-1 s-1",
+    "operation": "identity"
+  },
+  {
+    "quantity": "ivt_full_column",
+    "variables": [
+      "viwve",
+      "viwvn"
+    ],
+    "source_variables": [
+      "vertical_integral_of_eastward_water_vapour_flux",
+      "vertical_integral_of_northward_water_vapour_flux"
+    ],
+    "parameters": [
+      "162071",
+      "162072"
+    ],
+    "units": "kg m-1 s-1",
+    "operation": "magnitude"
+  },
+  {
+    "quantity": "integrated_water_vapour",
+    "variables": [
+      "era5_tcwv"
+    ],
+    "source_variables": [
+      "total_column_water_vapour"
+    ],
+    "parameters": [
+      "137"
+    ],
+    "units": "kg m-2",
+    "operation": "identity"
+  }
+]

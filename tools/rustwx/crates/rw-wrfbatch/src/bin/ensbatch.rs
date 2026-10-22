@@ -21,7 +21,7 @@
 //! ```text
 //! rw_ensbatch --store-root DIR --out-dir DIR
 //!             (--manifest FILE.json | --member N=WRFOUT_OR_MEMBER_DIR ...)
-//!             [--field refl|uh|precip|t2|wspd10]
+//!             [--field refl|uh|precip|t2|wspd10|visibility|fog_prob]
 //!             [--products mean,spread,prob,pmm,paintball]
 //!             [--threshold V] [--neighborhood-km V] [--frames all|N]
 //!             [--nan-policy mask|refuse] [--pmm-tie-rule flat-index|average]
@@ -73,6 +73,8 @@ struct FieldSpec {
 
 fn field_specs() -> Vec<FieldSpec> {
     vec![
+        FieldSpec {name:"visibility",title:"visibility",units:"m",unit_slug:"m",default_threshold:1000.0},
+        FieldSpec {name:"fog_prob",title:"visibility",units:"m",unit_slug:"m",default_threshold:1000.0},
         FieldSpec {
             name: "refl",
             title: "composite reflectivity",
@@ -116,15 +118,17 @@ fn field_specs() -> Vec<FieldSpec> {
             title: "snowfall over the window (land model)",
             units: "mm",
             unit_slug: "mm",
-            default_threshold: 152.4,
+            default_threshold: 25.4,
         },
         FieldSpec {
             name: "snow10_win",
             title: "10:1 snowfall over the window",
             units: "mm",
             unit_slug: "mm",
-            default_threshold: 152.4,
+            default_threshold: 25.4,
         },
+        FieldSpec { name: "snowkuchera_win", title: "Kuchera snowfall over the saved-frame window", units: "mm", unit_slug: "mm", default_threshold: 25.4 },
+        FieldSpec { name: "snow_depth", title: "standing snow depth", units: "mm", unit_slug: "mm", default_threshold: 25.4 },
         // 10 m gust (UPP method, importer) and the snow-level guide (ft MSL).
         FieldSpec {
             name: "gust",
@@ -151,6 +155,7 @@ fn field_specs() -> Vec<FieldSpec> {
 /// deterministic panel wears.
 fn field_selector(field: &str) -> Option<FieldSelector> {
     match field {
+        "visibility" | "fog_prob" => Some(FieldSelector::surface(CanonicalField::Visibility)),
         "refl" => Some(FieldSelector::entire_atmosphere(
             CanonicalField::CompositeReflectivity,
         )),
@@ -165,6 +170,8 @@ fn field_selector(field: &str) -> Option<FieldSelector> {
         "gust" => Some(FieldSelector::height_agl(CanonicalField::WindGust, 10)),
         "snowfall_win" => Some(FieldSelector::surface(CanonicalField::ModelSnowfall)),
         "snow10_win" => Some(FieldSelector::surface(CanonicalField::Snowfall10to1)),
+        "snowkuchera_win" => Some(FieldSelector::surface(CanonicalField::SnowfallKuchera)),
+        "snow_depth" => Some(FieldSelector::surface(CanonicalField::SnowDepth)),
         _ => None,
     }
 }
@@ -201,7 +208,7 @@ struct Args {
 
 fn usage() -> &'static str {
     "usage: rw_ensbatch --store-root DIR --out-dir DIR \
-(--manifest FILE.json | --member N=WRFOUT_OR_MEMBER_DIR ...) [--field refl|uh|precip|t2|wspd10] \
+(--manifest FILE.json | --member N=WRFOUT_OR_MEMBER_DIR ...) [--field refl|uh|precip|t2|wspd10|visibility|fog_prob] \
 [--products mean,spread,prob,pmm,paintball] [--threshold V] [--neighborhood-km V] \
 [--frames all|N] [--nan-policy mask|refuse] [--pmm-tie-rule flat-index|average] \
 [--accept-status LIST] [--domain dNN] [--width N] [--height N] [--source-label TEXT] \
@@ -697,12 +704,15 @@ pub(crate) fn main() -> ExitCode {
                 // copy of it spelled one field's threshold in different
                 // units from the engine that drew it.
                 println!(
-                    "FIELD\t{}\t{}\t{}\tdefault_threshold={}\tunit_slug={}",
+                    "FIELD\t{}\t{}\t{}\tdefault_threshold={}\tunit_slug={}\tdefault_thresholds={}",
                     spec.name,
                     spec.title,
                     spec.units,
                     spec.default_threshold,
-                    spec.unit_slug
+                    spec.unit_slug,
+                    if matches!(spec.name, "snowfall_win" | "snow10_win" | "snowkuchera_win" | "snow_depth") {
+                        rustwx_calc::snow::EXCEEDANCE_MM.iter().map(|v|v.to_string()).collect::<Vec<_>>().join(",")
+                    } else { spec.default_threshold.to_string() }
                 );
             }
             println!("PRODUCTS\tmean\tspread\tprob\tpmm\tpaintball");
@@ -930,9 +940,14 @@ fn run(args: Args) -> Result<(), String> {
     for product in &args.products {
         jobs.push((product.clone(), threshold));
         if product == "prob" {
-            for extra in &args.thresholds {
-                jobs.push((product.clone(), *extra));
+            if matches!(spec.name,"visibility"|"fog_prob") && args.threshold.is_none() && args.thresholds.is_empty() {
+                jobs.push((product.clone(),400.0));
             }
+            let defaults: Vec<f64> = if args.threshold.is_none() && args.thresholds.is_empty()
+                && matches!(args.field.as_str(), "snowfall_win" | "snow10_win" | "snowkuchera_win" | "snow_depth") {
+                rustwx_calc::snow::EXCEEDANCE_MM[1..].to_vec()
+            } else { args.thresholds.clone() };
+            for extra in defaults { jobs.push((product.clone(), extra)); }
         }
     }
     for (product, threshold) in &jobs {
@@ -1034,9 +1049,11 @@ fn render_product(
             )
         }
         "prob" => {
-            let probability =
-                exceedance_probability(stack, threshold, radius_cells, args.nan_policy)
-                    .map_err(|e| e.to_string())?;
+            let below=matches!(spec.name,"visibility"|"fog_prob");
+            let probability = if below {
+                rustwx_ensemble::below_threshold_probability(stack,threshold,radius_cells,args.nan_policy)
+            } else {exceedance_probability(stack,threshold,radius_cells,args.nan_policy)}
+                .map_err(|e|e.to_string())?;
             let neighborhood = if radius_cells > 0.0 {
                 format!(" within {:.0} km", args.neighborhood_km)
             } else {
@@ -1045,16 +1062,16 @@ fn render_product(
             (
                 to_f32(&probability),
                 format!(
-                    "Chance of {} > {}{neighborhood} ({members} members)",
-                    spec.title, threshold_label(spec, threshold)
+                    "Chance of {} {} {}{neighborhood} ({members} members)",
+                    spec.title, if below {"<"} else {">"}, threshold_label(spec, threshold)
                 ),
                 "fraction".to_string(),
                 scales::probability_scale(),
                 coverage_line(coverage, args, members),
                 Vec::new(),
                 format!(
-                    "ens_prob_{}_p{}{}{}",
-                    spec.name,
+                    "ens_prob_{}_p{}{}{}{}",
+                    spec.name, if below {"lt"} else {""},
                     format!("{threshold}").replace(['.', '-'], "_"),
                     spec.unit_slug,
                     radius_token(radius_cells, args.neighborhood_km)
@@ -1128,8 +1145,8 @@ fn render_product(
             (
                 vec![f32::NAN; stack.points()],
                 format!(
-                    "Paintball {} > {} ({members} members)",
-                    spec.title, threshold_label(spec, threshold)
+                    "Paintball {} {} {} ({members} members)",
+                    spec.title, if matches!(spec.name,"visibility"|"fog_prob"){"<"}else{">"}, threshold_label(spec, threshold)
                 ),
                 spec.units.to_string(),
                 scales::spread_scale(1.0),

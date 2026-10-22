@@ -83,10 +83,14 @@ CODE_SUFFIXES = frozenset({
 WHEEL_DATA_SUBTREES = ("gpuwm/", "gpuwm-data/gpuwm_data/", "configs/")
 
 #: The other package-data declarations, as tree patterns: the tools package's
-#: ``release/*.json``, tilestream's one table and the seam document the
-#: ``docs`` namespace package carries.
-WHEEL_DATA_PATTERNS = ("tools/release/*.json", "tilestream/output-scaling.json",
-                       "docs/mpas-seam.md")
+#: ``release/*.json``, the default-on hydro door's three source tables
+#: (declared by e81d769e735, 2.9.3 improve-1), tilestream's one table and the
+#: seam document the ``docs`` namespace package carries.
+WHEEL_DATA_PATTERNS = ("tools/release/*.json",
+                       "tools/hydro_world/data/sources.v1.json",
+                       "tools/hydro_world/data/recipes.v1.json",
+                       "tools/hydro_world_params/data/params.v1.json",
+                       "tilestream/output-scaling.json", "docs/mpas-seam.md")
 
 #: Tree subtrees whose code a wheel carries: the packages the root
 #: pyproject's ``packages.find`` includes recursively (``gpuwm.*``,

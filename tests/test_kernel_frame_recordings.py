@@ -158,6 +158,10 @@ def test_every_kernel_source_has_a_row_or_is_declared_unmeasurable():
     # compiled and priced under <module>'s own name.
     sources = {path.stem for path in KERNEL_DIR.glob("*.cu")}
     sources -= {f"{module}_default" for module in _DEFAULT_SOURCE_MODULES}
+    # These remain priced logical modules. The first two resolve retained
+    # files in kernels._unit_text; rrtmg_lw._lw_coalesced_source generates
+    # the third inside the same measured composed longwave translation unit.
+    sources |= {"ysu", "mynn_dmp_sibling", "rrtmg_lw_chain_coalesced"}
     priced = (set(pf.KERNEL_MAX_LOCAL_SIZE_BYTES)
               | set(pf.UNMEASURED_KERNEL_MODULES))
     assert sources - priced == set(), sorted(sources - priced)

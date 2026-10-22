@@ -13,6 +13,11 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import threading
+
+# netCDF4's HDF5 build is not thread-safe; the ensemble door prepares members on threads of one
+# process, and concurrent opens failed with "NetCDF: Can't open HDF5 attribute".
+_HDF5_LOCK = threading.Lock()
 
 TABLE = Path(__file__).with_name("authorities") / "earth2-models.v1.json"
 PYTHON_ENV = "GPUWM_EARTH2_PYTHON"
@@ -192,17 +197,16 @@ def require_inference_vram(model_id, row):
 
 def earth2_python() -> str:
     """Require the table's version, before any model or donor download."""
+    # GPUWM_EARTH2_PYTHON, then the managed environment `gpuwm setup --with-earth2` builds, then
+    # this interpreter (gpuwm.earth2_env). Model extras that need source builds are not built here.
+    from gpuwm import earth2_env
     runtime = model_table()["runtime"]
-    candidate = os.environ.get(PYTHON_ENV) or sys.executable
-    try:
-        probe = subprocess.run([candidate, "-c", "from importlib.metadata import version; "
-                                "print(version('earth2studio'))"], capture_output=True, text=True)
-    except OSError:
-        probe = None
-    if probe is not None and probe.returncode == 0 and probe.stdout.strip() == runtime["pinned_version"]:
-        return candidate
-    raise ValueError(f"{candidate} needs earth2studio=={runtime['pinned_version']}. "
-                     f"Use runtime.install_recipes in {TABLE}; set {PYTHON_ENV} to that venv's python")
+    found, notes = earth2_env.find_python(exact=True)
+    if found:
+        return found
+    raise ValueError(f"no interpreter has earth2studio=={runtime['pinned_version']} ({'; '.join(notes)}). "
+                     f"Run `{earth2_env.SETUP_COMMAND}`, or use runtime.install_recipes in {TABLE} and "
+                     f"set {PYTHON_ENV} to that venv's python")
 
 
 def members_from_flag(member) -> list[int]:
@@ -228,14 +232,28 @@ def _donor(*, table, row, cycle, area, out, force):
     workers = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 1)
     os.environ.setdefault("GPUWM_RW_ZARR_WORKERS", str(workers))
     analysis = out / "analysis"
-    south, west, north, east = area or (-90, -180, 90, 179.75)
+    # The default donor is the whole globe: a full 360-degree band.  Named
+    # breakage: the old default east edge 179.75 gave a 359.75-degree span,
+    # which fetch.parse_area reads as the antimeridian complement, so the
+    # donor came back as a 0.25-degree strip (179.5..180.25) and the storm
+    # nest prep refused it as cross-grid against the 0..359.75 FCN3 grid.
+    south, west, north, east = area or (-90, -180, 90, 180)
     # The public reader accepts signed longitudes, while E2S crops in 0..360.
-    signed = lambda value: (float(value) + 180) % 360 - 180
+    # A full band stays -180..180 (span 360, never swapped); otherwise the
+    # west edge wraps into [-180, 180) and the east edge into (-180, 180],
+    # so an east edge on the antimeridian stays +180 instead of folding
+    # onto the west edge.
+    from gpuwm.fetch import _wrap_lon, _wrap_lon_east
+    if float(east) - float(west) >= 360.0:
+        signed_west, signed_east = -180.0, 180.0
+    else:
+        signed_west, signed_east = _wrap_lon(float(west)), _wrap_lon_east(float(east))
+    signed_area = f"{south},{signed_west},{north},{signed_east}"
     recipe = table["runtime"]["donor_acquisition"][selected["provider"]]
     if recipe["kind"] == "arco":
         from gpuwm.era5_arco import retrieve_era5_arco
         retrieve_era5_arco(cycle=cycle, hours=0,
-                       area=f"{south},{signed(west)},{north},{signed(east)}",
+                       area=signed_area,
                        out=analysis, cadence=6, force=force)
         path = analysis / recipe["output"]
     else:
@@ -244,7 +262,7 @@ def _donor(*, table, row, cycle, area, out, force):
         tokens = [sys.executable, "-m", "gpuwm", "fetch", "--source", recipe["source"],
                   "--cycle", cycle.strftime("%Y-%m-%dT%H"), "--hours", "0", "--out", str(analysis)]
         if recipe.get("area"):
-            tokens += ["--area", f"{south},{signed(west)},{north},{signed(east)}"]
+            tokens += ["--area", signed_area]
         tokens += recipe.get("arguments", [])
         if force:
             tokens.append("--force-refetch")
@@ -362,13 +380,117 @@ def producer_attributes(mapping):
     return attributes
 
 
+def reuse_completed(*, root, out, model_id, row, cycle, hours, crop,
+                    ic_source, members, forecast_start_hour):
+    """Verify recorded bytes, then publish handoffs without a model runtime.
+
+    The original receipt and payloads stay in the shared root. A different
+    output directory receives only a receipt and the requested input lists.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import timezone
+
+    root = Path(root).expanduser().resolve()
+    path = root / RECEIPT
+    if not path.is_file():
+        return None
+    started = time.perf_counter()
+    saved = json.loads(path.read_text())
+    def utc(value):
+        value = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return (value.replace(tzinfo=timezone.utc) if value.tzinfo is None
+                else value.astimezone(timezone.utc))
+    if (saved.get("schema") != "gpuwm-earth2-fetch-v2"
+            or saved.get("model") != model_id or saved.get("source") != f"earth2-{model_id}"
+            or saved.get("model_row") != row
+            or saved.get("model_table_sha256") != hashlib.sha256(TABLE.read_bytes()).hexdigest()
+            or saved.get("initial_condition_source") != ic_source
+            or utc(saved["cycle"]) != utc(cycle.isoformat())
+            or not set(members).issubset(saved.get("members", []))):
+        return None
+    first = saved["forecast_start_hour"]
+    last = first + saved["hours"]
+    if first > forecast_start_hour or last < forecast_start_hour + hours:
+        return None
+    # v2 initially stored the padded crop only in the runner request.
+    request_path = root / "earth2-request.json"
+    if "area" in saved:
+        available = saved["area"]
+    elif request_path.is_file():
+        available = json.loads(request_path.read_text())["area"]
+    else:
+        return None  # unknown coverage is not evidence of a matching area
+    if available is not None and (crop is None or not (
+            available[0] <= crop[0] <= crop[2] <= available[2]
+            and available[1] <= crop[1] <= crop[3] <= available[3])):
+        return None
+    same_root = root == out
+    start = first if same_root else forecast_start_hour
+    end = last if same_root else forecast_start_hour + hours
+    files = [item for item in saved["runner"]["files"]
+             if item["member"] in members and start <= item["lead_hours"] <= end]
+    expected = set(range(start, end + 1, int(row["step_hours"])))
+    for member in members:
+        leads = [item["lead_hours"] for item in files if item["member"] == member]
+        if set(leads) != expected or len(leads) != len(expected):
+            raise ValueError(f"Completed fetch has missing or duplicate frames for member {member}")
+
+    def verify(item):
+        frame = Path(item["path"])
+        if "bytes" in item and frame.stat().st_size != item["bytes"]:
+            raise ValueError(f"Completed fetch size differs: {frame}")
+        with frame.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        if digest != item["sha256"]:
+            raise ValueError(f"Completed fetch hash differs: {frame}")
+
+    # Donor receipts seal their analysis, which also supplies the supplements.
+    donor = saved["donor"]
+    analysis = donor.get("analysis")
+    if not analysis or not donor.get("sha256"):
+        return None  # a donor without a recorded digest cannot be reused
+    if any(Path(p).resolve() != Path(analysis).resolve()
+           for p in donor["supplements"].values()):
+        return None
+    with ThreadPoolExecutor(max_workers=min(4, len(files) + 1)) as pool:
+        list(pool.map(verify, [*files, {"path": analysis, "sha256": donor["sha256"]}]))
+    # Keep the same native member/seed checks as preparation's handoff verifier.
+    from netCDF4 import Dataset
+    for item in files:
+        with _HDF5_LOCK, Dataset(item["path"]) as frame:
+            if (int(frame.getncattr("earth2_member")) != item["member"] or
+                    int(frame.getncattr("earth2_generation_seed")) != item.get("seed", saved["runner"]["seed"])):
+                raise ValueError("Completed fetch native member/seed differs: " + item["path"])
+    receipt = dict(saved, members=members, hours=end-start, forecast_start_hour=start,
+                   area=available, forecast=[item["path"] for item in files],
+                   runner=dict(saved["runner"], members=members, files=files),
+                   reuse={"root": str(root), "receipt_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                          "verified_files": len(files), "verified_donor": analysis,
+                          "seconds": time.perf_counter()-started,
+                          "parallelism": "up to four hash threads; serial HDF5 metadata"})
+    out.mkdir(parents=True, exist_ok=True)
+    if not same_root:
+        (out / RECEIPT).write_text(json.dumps(receipt, indent=2) + "\n")
+        (out / "fetch-manifest.json").write_text(json.dumps(receipt, indent=2) + "\n")
+    publish_handoffs(receipt, out)
+    return receipt
+
+
 def run_model(*, model: str | None, cycle: datetime, hours: int, area, out: Path,
               ic_source: str | None = None, force: bool = False, member=None,
-              forecast_start_hour: int = 0, cadence=None) -> dict:
+              forecast_start_hour: int = 0, cadence=None, prepare_only: bool = False,
+              reuse_fetch=None) -> dict:
+    """Generate forcing, or run its whole CPU stage before a card is admitted.
+
+    prepare_only touches no GPU and replaces no forecast file. It fetches and
+    audits the weights, stages declared loader inputs, constructs the model on
+    the CPU into the constructed-model cache, fetches the initial conditions
+    into this run's data cache and acquires the donor. The generating run then
+    reuses all of it, so its card lease covers the inference, not the ~16 min
+    of CPU model construction (FCN3 on G12, 2026-10-20: 970 s of a 1025 s
+    lease). The inference VRAM check stays on the generating path only.
+    """
     from gpuwm.local_gpu import NO_LOCAL_GPU_ENV, no_local_gpu
-    if no_local_gpu():
-        raise ValueError(f"{NO_LOCAL_GPU_ENV} is set; Earth2 generation cannot open the local GPU. "
-                         "Run generation in an admitted GPU environment with this switch unset")
     model_id, row = resolve_model(model)
     table = model_table()
     runtime = table["runtime"]
@@ -387,10 +509,7 @@ def run_model(*, model: str | None, cycle: datetime, hours: int, area, out: Path
     ic = runtime["initial_condition_sources"].get(ic_source)
     if ic is None:
         raise ValueError(f"initial-condition source {ic_source!r} is absent from the runtime table")
-    memory_admission = require_inference_vram(model_id, row)
-    python = earth2_python()
     out = Path(out).resolve()
-    out.mkdir(parents=True, exist_ok=True)
     crop = None
     if area is not None:
         south, west, north, east = (float(value) for value in area)
@@ -398,11 +517,26 @@ def run_model(*, model: str | None, cycle: datetime, hours: int, area, out: Path
                 min(90., north + .5), (east + .5) % 360]
         if crop[1] > crop[3]:
             raise ValueError("the selected crop crosses 0 degrees; split it into two areas")
+    # Reuse a sealed local or external fetch before inference admission;
+    # an already complete forecast needs no GPU or CPU model construction.
+    if not force:
+        for root in dict.fromkeys([out, *([] if reuse_fetch is None else [Path(reuse_fetch)])]):
+            reused = reuse_completed(root=root, out=out, model_id=model_id, row=row,
+                                     cycle=cycle, hours=hours, crop=crop, ic_source=ic_source,
+                                     members=members, forecast_start_hour=forecast_start_hour)
+            if reused is not None:
+                return reused
+    if not prepare_only and no_local_gpu():
+        raise ValueError(f"{NO_LOCAL_GPU_ENV} is set; Earth2 generation cannot open the local GPU. "
+                         "Run generation in an admitted GPU environment with this switch unset")
+    memory_admission = None if prepare_only else require_inference_vram(model_id, row)
+    python = earth2_python()
+    out.mkdir(parents=True, exist_ok=True)
     forecast = out / f"earth2-{model_id}-{cycle:%Y%m%dT%H}.nc"
     existing = list(out.glob(forecast.stem + "-m*-f*.nc"))
-    if existing and not force:
+    if existing and not force and not prepare_only:
         raise ValueError(f"{out} already holds forecast frames; use another --out or --force-refetch")
-    if force:
+    if force and not prepare_only:
         for path in existing:
             path.unlink()
     cache_policy = runtime["weight_cache"]
@@ -434,24 +568,37 @@ def run_model(*, model: str | None, cycle: datetime, hours: int, area, out: Path
     if (row.get("weights") or {}).get("host") == "huggingface":
         from gpuwm.hf_fetch import fetch as fetch_weights
         request["package_root"] = fetch_weights(model_id)["package_root"]
-    request_path = out / "earth2-request.json"
+    request_path = out / ("earth2-loader-request.json" if prepare_only else "earth2-request.json")
     request_path.write_text(json.dumps(request, indent=2) + "\n", encoding="utf-8")
     started = time.perf_counter()
-    log = out / "earth2-runner.log"
-    print(f"fetch: generating {model_id} members {members}; log {log}", flush=True)
+    log = out / ("earth2-loader-preparation.log" if prepare_only else "earth2-runner.log")
+    operation = "staging the CPU stage (no GPU) of" if prepare_only else "generating"
+    print(f"fetch: {operation} {model_id} members {members}; log {log}", flush=True)
     runner = Path(__file__).with_name("earth2_runner.py")
     with log.open("w", encoding="utf-8") as stream:
-        completed = subprocess.run([python, str(runner), str(request_path)], stdout=stream, stderr=subprocess.STDOUT)
+        completed = subprocess.run([python, str(runner),
+                                   *(["--prepare-loader-inputs"] if prepare_only else []),
+                                   str(request_path)], stdout=stream, stderr=subprocess.STDOUT)
     if completed.returncode:
         raise RuntimeError(f"Earth2 runtime exited {completed.returncode}; see {log}")
     report = json.loads(log.read_text(encoding="utf-8").strip().splitlines()[-1])
+    if prepare_only:
+        donor_start = time.perf_counter()
+        donor = _donor(table=table, row=row, cycle=cycle, area=crop, out=out, force=force)
+        report["donor"] = donor
+        report["stages"] = report.get("stages", []) + [
+            {"stage": "donor", "seconds": round(time.perf_counter() - donor_start, 3),
+             "parallelism": donor.get("parallelism", "native threads / network; see donor receipt")}]
+        report["wall_seconds"] = round(time.perf_counter() - started, 3)
+        (out / "earth2-loader-preparation.json").write_text(json.dumps(report, indent=2) + "\n")
+        return report
     donor_start = time.perf_counter()
     donor = _donor(table=table, row=row, cycle=cycle, area=crop, out=out, force=force)
     receipt = {"schema": "gpuwm-earth2-fetch-v2", "source": f"earth2-{model_id}",
                "model": model_id, "model_row": row,
                "model_table_sha256": hashlib.sha256(TABLE.read_bytes()).hexdigest(),
                "initial_condition_source": ic_source, "cycle": cycle.isoformat(),
-               "hours": hours, "forecast_start_hour": forecast_start_hour,
+               "hours": hours, "forecast_start_hour": forecast_start_hour, "area": crop,
                "members": members, "forecast": [item["path"] for item in report["files"]],
                "analysis": donor.get("analysis"), "donor": donor, "profile": donor["profile"],
                "runner": report, "stages": report["stages"] + [
@@ -482,11 +629,26 @@ def fetch(args) -> int:
         return 0
     source = str(args.source)
     model = getattr(args, "model", None) or get_source_adapter(source).model_key
-
-    run_model(model=model, cycle=parse_cycle(args.cycle, "era5"), hours=int(args.hours), area=area,
-              out=Path(args.out), force=bool(args.force_refetch), member=getattr(args, "member", None),
-              forecast_start_hour=getattr(args, "forecast_start_hour", None) or 0,
-              cadence=getattr(args, "cadence", None))
+    # With no card in reach (CUDA hidden, or the local-device opt-out) the
+    # door runs the CPU stage instead of refusing, so it can run outside a
+    # card lease; the same command under a lease then generates from it.
+    from gpuwm.local_gpu import NO_LOCAL_GPU_ENV, no_local_gpu
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    hidden = visible is not None and visible.strip() in ("", "-1")
+    prepare_only = bool(getattr(args, "prepare_only", False)) or hidden or no_local_gpu()
+    report = run_model(model=model, cycle=parse_cycle(args.cycle, "era5"), hours=int(args.hours), area=area,
+                       out=Path(args.out), force=bool(args.force_refetch), member=getattr(args, "member", None),
+                       forecast_start_hour=getattr(args, "forecast_start_hour", None) or 0,
+                       cadence=getattr(args, "cadence", None), prepare_only=prepare_only,
+                       reuse_fetch=getattr(args, "reuse_fetch", None))
+    if prepare_only:
+        why = ("--prepare-only" if getattr(args, "prepare_only", False) else
+               "CUDA devices are hidden" if hidden else f"{NO_LOCAL_GPU_ENV} is set")
+        stages = ", ".join(f"{item['stage']} {item['seconds']:g} s" for item in report.get("stages", []))
+        print(f"fetch: {source}: CPU stage done in {report['wall_seconds']:g} s with no GPU ({why}): {stages}. "
+              f"Receipt {Path(args.out).resolve() / 'earth2-loader-preparation.json'}. "
+              "No forecast was generated; run the same command with a card admitted to generate it "
+              "from this staged state", flush=True)
     return 0
 
 
@@ -595,12 +757,13 @@ def verify_handoff(hints, handoff, *, out):
     listing = Path(arguments[arguments.index("--input-list") + 1]).resolve(strict=True)
     fetched = json.loads((listing.parent / RECEIPT).read_text())
     if (fetched["source"] != source or
-            parse_cycle(fetched["cycle"], "era5") != parse_cycle(hints["cycle"], "era5")):
+            parse_cycle(datetime.fromisoformat(str(fetched["cycle"])).strftime("%Y-%m-%dT%H"), "era5")
+            != parse_cycle(hints["cycle"], "era5")):
         raise MemberIdentityRefusal("Generated receipt source/cycle differs from the request")
     expected = [item for item in fetched["runner"]["files"]
                 if item["member"] == member and item["lead_hours"] >= fetched["forecast_start_hour"]]
     paths = [str(Path(line).resolve(strict=True)) for line in listing.read_text().splitlines() if line.strip()]
-    if not paths or paths != [item["path"] for item in expected] or len(set(paths)) != len(paths):
+    if not paths or paths != [str(Path(item["path"]).resolve()) for item in expected] or len(set(paths)) != len(paths):
         raise MemberIdentityRefusal("Generated input-list differs from the member's recorded trajectory")
     def check(item):
         with Path(item["path"]).open("rb") as stream:
@@ -613,7 +776,7 @@ def verify_handoff(hints, handoff, *, out):
     # safe; the full-file reads and hashes use independent thread workers.
     from netCDF4 import Dataset
     for item in expected:
-        with Dataset(item["path"]) as frame:
+        with _HDF5_LOCK, Dataset(item["path"]) as frame:
             if (int(frame.getncattr("earth2_member")) != member or
                     int(frame.getncattr("earth2_generation_seed")) != item.get("seed", fetched["runner"]["seed"])):
                 raise MemberIdentityRefusal("Generated frame's member attribute differs: " + item["path"])

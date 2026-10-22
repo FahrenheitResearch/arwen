@@ -300,12 +300,17 @@ def _bridge_manifest_extension(*, predecessor: Path, suffix: Path,
     suffix_gate = dict(row.split("\t", 1) for row in
                        (suffix / "gate.txt").read_text().splitlines() if row)
     suffix_fields = gate_supplement_fields(suffix_gate)
+    # The cycle's PBL height (HPBL) is one more atmosphere payload when the
+    # wrfnat publishes it (hrrr_grib2_bridge OPTIONAL_SURFACE_SPECS).
+    from gpuwm.ingest.native_supplements import gate_optional_surface_fields
+    suffix_surface_fields = gate_optional_surface_fields(suffix_gate)
     suffix_soil_fields = gate_soil_surface_fields(suffix_gate)
     optional_soil_count = len(suffix_soil_fields)
     if suffix_fields and ("supplement-inventory.tsv" not in old_entries
                           or "supplement-inventory.tsv" not in suffix_entries):
         raise ValueError("supplement selection receipt is not bound by predecessor/suffix manifests")
-    if atmosphere_count != 22 + len(suffix_fields) or soil_count != 2 + optional_soil_count:
+    if (atmosphere_count != 22 + len(suffix_fields) + len(suffix_surface_fields)
+            or soil_count != 2 + optional_soil_count):
         raise ValueError(
             "suffix bridge lacks its declared atmosphere/supplement and soil fields")
     if set(retained) & set(appended):
@@ -1717,8 +1722,17 @@ def _require_microphysics_tables(profile: str) -> None:
 
     switches = (single_domain_runtime_switches(profile)
                 if isinstance(profile, str) else vars(profile))
-    if int(switches["mp_physics"]) == THOMPSON_MP_PHYSICS:
+    mp_physics = int(switches["mp_physics"])
+    if mp_physics == THOMPSON_MP_PHYSICS:
         require_thompson_tables(assets=CLASSIC_TABLE_ASSETS)
+    elif mp_physics == 28:
+        # mp=28 reads the classic set plus CCN_ACTIVATE.BIN from the same
+        # root; staged here (first use) before the forcing download, not
+        # refused at root preparation after it.
+        from gpuwm.core.thompson_aerosol_contract import AEROSOL_TABLE_ASSETS
+
+        require_thompson_tables(
+            assets=(*CLASSIC_TABLE_ASSETS, *AEROSOL_TABLE_ASSETS))
 
 
 def main(argv: list[str] | None = None) -> int:

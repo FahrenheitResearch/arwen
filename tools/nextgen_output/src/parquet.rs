@@ -22,7 +22,7 @@ use parquet::{
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     path::Path,
     sync::Arc,
     time::Instant,
@@ -238,7 +238,7 @@ pub fn write(plan: &Plan, payload: &[u8], ids: &[i64], width: usize) -> Result<s
         }
         group.close()?;
         writer.close()?;
-        File::open(&partial)?.sync_all()?;
+        std::fs::OpenOptions::new().write(true).open(&partial)?.sync_all()?;
         fs::hard_link(&partial, &path)?;
         Ok(
             serde_json::json!({"operation":"troute-parquet","path":path,"rows":rows,

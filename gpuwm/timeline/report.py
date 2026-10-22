@@ -10,7 +10,7 @@ import gzip
 import json
 import math
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 

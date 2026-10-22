@@ -5,8 +5,15 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import sys
 
 import numpy as np
+
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from tools.wsm6_wrf461_column_oracle.common import (
+    micron, _ordered, ulp, digest, accumulate, read_columns as _read_columns)
 
 LEVEL_IN = ("th", "qv", "qc", "qr", "qi", "qs", "den", "pii", "p", "dz")
 SURFACE_IN = ("rain", "snow")
@@ -30,16 +37,7 @@ def tag_of(set_name: str, dt: str, nsteps: int) -> str:
 
 
 def read_set(path: Path):
-    with open(path, "rb") as fh:
-        ncol, nz = (int(v) for v in np.fromfile(fh, "<i4", 2))
-        level = {n: np.fromfile(fh, "<f4", nz * ncol).reshape(nz, ncol) for n in LEVEL_IN}
-        surf = {n: np.fromfile(fh, "<f4", ncol) for n in SURFACE_IN}
-    return ncol, nz, level, surf
-
-
-def micron(re_metres):
-    """WRF's radius word through gpuwm's one float32 multiply into microns."""
-    return (np.asarray(re_metres, np.float32) * np.float32(1.0e6)).astype(np.float32)
+    return _read_columns(path, LEVEL_IN, SURFACE_IN)
 
 
 def read_wrf(path: Path):
@@ -73,55 +71,11 @@ def read_probe(path: Path):
     return out
 
 
-def _ordered(a):
-    bits = np.asarray(a, np.float32).view(np.int32).astype(np.int64)
-    return np.where(bits < 0, -(bits & 0x7FFFFFFF), bits)
-
-
-def ulp(a, b):
-    return np.abs(_ordered(a) - _ordered(b))
-
-
-def digest(a) -> str:
-    return hashlib.sha256(np.ascontiguousarray(a, "<f4").tobytes()).hexdigest()
-
-
 def pairs(a_step, b_step):
     (al, as_), (bl, bs) = a_step, b_step
     out = {n: (al[n], bl[n]) for n in LEVEL_OUT}
     out.update({n: (as_[n][None, :], bs[n][None, :]) for n in SURFACE_OUT})
     return out
-
-
-def accumulate(fields, istep, step_pairs, names, keep=None):
-    """Word comparison of one step into ``fields`` (bits, ULP, columns)."""
-    for n, (w, g) in step_pairs.items():
-        w = np.asarray(w, np.float32)
-        g = np.asarray(g, np.float32)
-        cols = list(names)
-        if keep is not None:
-            w, g = w[:, keep], g[:, keep]
-            cols = [names[i] for i in np.nonzero(keep)[0]]
-        diff_bits = w.view(np.uint32) != g.view(np.uint32)
-        u = np.where(np.isnan(w) & np.isnan(g), 0, ulp(w, g))
-        gap = np.abs(w.astype(np.float64) - g.astype(np.float64))
-        gap = np.where(np.isnan(gap), 0.0, gap)
-        row = fields.setdefault(n, {"words": 0, "bit_mismatch": 0, "max_ulp": 0,
-                                    "max_abs": 0.0, "worst": None, "columns": {},
-                                    "first_step_with_a_mismatch": None})
-        row["words"] += int(w.size)
-        row["bit_mismatch"] += int(diff_bits.sum())
-        row["max_abs"] = max(row["max_abs"], float(gap.max()) if gap.size else 0.0)
-        if diff_bits.any() and row["first_step_with_a_mismatch"] is None:
-            row["first_step_with_a_mismatch"] = istep + 1
-        for i in np.nonzero(diff_bits.any(axis=0))[0]:
-            row["columns"][cols[i]] = row["columns"].get(cols[i], 0) + int(diff_bits[:, i].sum())
-        m = int(u.max()) if u.size else 0
-        if diff_bits.any() and (row["worst"] is None or m > row["max_ulp"]):
-            k, i = np.unravel_index(int(np.argmax(u)), u.shape)
-            row["max_ulp"] = max(row["max_ulp"], m)
-            row["worst"] = {"step": istep + 1, "level": int(k), "column": cols[i],
-                            "a": float(w[k, i]), "b": float(g[k, i])}
 
 
 def compare_runs(a, b, names, keep=None):

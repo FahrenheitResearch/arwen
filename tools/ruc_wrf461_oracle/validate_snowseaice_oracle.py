@@ -11,11 +11,14 @@ exercise.
 
 from __future__ import annotations
 
-import csv
-from pathlib import Path
 import sys
 
 import numpy as np
+
+if __package__:
+    from .validate_soil_oracle import _load_profiles
+else:
+    from validate_soil_oracle import _load_profiles
 
 
 CASES = (
@@ -31,19 +34,7 @@ TICE_MAX = 271.4
 
 
 def main(path: str) -> None:
-    with Path(path).open(newline="", encoding="ascii") as stream:
-        rows = list(csv.DictReader(stream))
-    if len(rows) != NCASE * NZS:
-        raise SystemExit(f"expected {NCASE * NZS} rows, got {len(rows)}")
-    cases = tuple(dict.fromkeys(row["case"] for row in rows))
-    if cases != CASES:
-        raise SystemExit(f"unexpected case inventory {cases!r}")
-    numeric = tuple(key for key in rows[0] if key != "case")
-    values = {
-        name: np.asarray([float(row[name]) for row in rows], dtype=np.float32)
-        .reshape(NCASE, NZS)
-        for name in numeric
-    }
+    values = _load_profiles(path, CASES, shape=(NCASE, NZS), excluded=("case",))
     if not all(np.all(np.isfinite(field)) for field in values.values()):
         raise SystemExit("RUC snowseaice oracle contains non-finite output")
 

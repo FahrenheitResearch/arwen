@@ -30,11 +30,7 @@ impl FillTopology {
         self.bins.bins().get(index)
     }
 
-    pub fn polygons_for_bin(&self, index: usize) -> impl Iterator<Item = &BandPolygon> {
-        self.polygons
-            .iter()
-            .filter(move |polygon| polygon.bin_index == index)
-    }
+
 }
 
 #[derive(Clone, Debug, PartialEq)]

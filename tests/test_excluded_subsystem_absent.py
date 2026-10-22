@@ -106,7 +106,7 @@ CLEAN_BASE = _history_base()
 #: vendored crates (2026-09-08) carry an OpenSSL provider source whose
 #: FILENAME is a Tier-2 word, like the `rand` module above.
 VENDOR = ("tools/rustwx/vendor/", "tools/rw_wps/vendor/",
-          "tools/arwen-ui-vendor/crates-io/", "tools/zarr_bridge/vendor/")
+          "tools/zarr_bridge/vendor/")
 
 #: The release exclusion manifest, read so this gate's idea of "what a
 #: public release carries" cannot drift from the builder's.
@@ -511,6 +511,8 @@ def test_no_tracked_source_contains_the_excluded_subsystem():
         if b"\0" in raw[:8192]:
             continue  # a binary asset; a byte pattern there is not source
         text = raw.decode("utf-8", "replace")
+        if _tier1_match(_radar_writer_masked(name, text)) is None:
+            continue
         for lineno, line in enumerate(text.splitlines(), 1):
             token = _tier1_match(_radar_writer_masked(name, line))
             if token is not None:

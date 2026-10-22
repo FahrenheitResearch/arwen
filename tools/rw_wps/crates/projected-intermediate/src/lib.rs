@@ -236,7 +236,7 @@ struct Plan<'a> {
 impl Plan<'_> {
     fn apply(&self, source: &[f32], method: &str) -> Result<Vec<f32>, String> {
         let nsource = self.ny * self.nx;
-        if source.is_empty() || source.len() % nsource != 0 { return Err("source field does not match the window".into()); }
+        if source.is_empty() || !source.len().is_multiple_of(nsource) { return Err("source field does not match the window".into()); }
         let nlead = source.len() / nsource;
         let n = self.iy.len();
         let mut out = vec![0.0; nlead * n];
@@ -299,7 +299,7 @@ impl Plan<'_> {
 fn read_field(path: &Path, length: usize) -> Result<Vec<f32>, String> {
     let bytes = fs::read(path).map_err(|e| format!("{}: {e}",path.display()))?;
     if bytes.len() != length.checked_mul(4).ok_or("field size overflow")? { return Err(format!("{} has {} bytes, expected {}",path.display(),bytes.len(),length*4)); }
-    Ok(bytes.chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect())
+    Ok(bytes.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect())
 }
 fn get<'a>(fields: &'a BTreeMap<String, Vec<f32>>, name: &str) -> Result<&'a [f32], String> {
     fields.get(name).map(|v| v.as_slice()).ok_or_else(|| format!("missing source field {name}"))
@@ -316,7 +316,7 @@ fn admit(fields: &BTreeMap<String,Vec<f32>>, rule: &Admission, n: usize) -> Resu
     let land = get(fields,&rule.land)?;
     let ice = get(fields,&rule.ice)?;
     for i in 0..n {
-        if land[i] < 0.5 && !(ice[i] >= 0.5) && temperature.iter().skip(i).step_by(n).any(|x| *x<170.0 || *x>400.0) {
+        if land[i] < 0.5 && !matches!(ice[i].partial_cmp(&0.5), Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)) && temperature.iter().skip(i).step_by(n).any(|x| *x<170.0 || *x>400.0) {
             return Err("source soil temperature is outside 170..400 K on open water; this is a broken soil record, not a land or ice column".into());
         }
     }
@@ -422,7 +422,7 @@ fn run(job: &Job, plan:&Plan<'_>) -> Result<(),String> {
             }
         }
     }
-    drop(emit); out.flush().map_err(|e|e.to_string())?; drop(out);
+    out.flush().map_err(|e|e.to_string())?; drop(out);
     let (records,points) = wps_intermediate::inventory(&partial).map_err(|e|e.to_string())?;
     if records != counts.values().sum::<usize>() || points!=records*n { return Err("Rust MET writer and reader disagree".into()); }
     // Hash through a bounded buffer; no second full MET image in RAM.
@@ -480,6 +480,20 @@ pub unsafe extern "C" fn gpuwm_projected_intermediate_v1(job:*const u8, job_len:
     1
 }
 
+/// Release-bundle handshake for the file-backed projected MET entry.
+#[unsafe(no_mangle)]
+pub extern "C" fn gpuwm_projected_intermediate_abi_version() -> u32 { 1 }
+
+/// The release-source stamp, `GPUWM_BRIDGE_SOURCE_REV=<40-hex commit>`
+/// (`build.rs` injects it). Exported so the cdylib keeps the literal the
+/// release cut reads out of the bytes.
+#[unsafe(no_mangle)]
+pub extern "C" fn gpuwm_projected_intermediate_source_revision() -> *const u8 {
+    static SOURCE_REV_STAMP: &str = concat!(
+        "GPUWM_BRIDGE_SOURCE_REV=", env!("GPUWM_BRIDGE_SOURCE_REV"), "\0");
+    SOURCE_REV_STAMP.as_ptr()
+}
+
 #[cfg(test)]
 mod tests {
     //! Contract tests of this crate. They need no engine library: the
@@ -489,7 +503,8 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    static CALLS: Mutex<Vec<(usize, usize, usize, usize, i32, usize)>> = Mutex::new(Vec::new());
+    type RecordedCall = (usize, usize, usize, usize, i32, usize);
+    static CALLS: Mutex<Vec<RecordedCall>> = Mutex::new(Vec::new());
 
     /// Records its arguments and writes 100 plus the bilinear value, so an
     /// interior parabolic point shows the engine's answer was kept.
@@ -636,17 +651,4 @@ mod tests {
         let stamp=unsafe {std::ffi::CStr::from_ptr(gpuwm_projected_intermediate_source_revision().cast())};
         assert!(stamp.to_str().unwrap().starts_with("GPUWM_BRIDGE_SOURCE_REV="));
     }
-}
-/// Release-bundle handshake for the file-backed projected MET entry.
-#[unsafe(no_mangle)]
-pub extern "C" fn gpuwm_projected_intermediate_abi_version() -> u32 { 1 }
-
-/// The release-source stamp, `GPUWM_BRIDGE_SOURCE_REV=<40-hex commit>`
-/// (`build.rs` injects it). Exported so the cdylib keeps the literal the
-/// release cut reads out of the bytes.
-#[unsafe(no_mangle)]
-pub extern "C" fn gpuwm_projected_intermediate_source_revision() -> *const u8 {
-    static SOURCE_REV_STAMP: &str = concat!(
-        "GPUWM_BRIDGE_SOURCE_REV=", env!("GPUWM_BRIDGE_SOURCE_REV"), "\0");
-    SOURCE_REV_STAMP.as_ptr()
 }

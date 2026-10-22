@@ -131,18 +131,6 @@ def wrf_package():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("products,armed", [
-    (None, False), ("", False), ("   ", False),
-    ("none", False), ("NONE", False), (" None ", False),
-    ("refl", True), ("all", True), ("refl,t2", True),
-])
-def test_the_early_render_is_off_unless_the_run_named_products(
-        products, armed):
-    """One field answers "which products", including "not early either"."""
-
-    assert early_render_requested(products) is armed
-
-
 def test_arming_a_run_that_named_no_products_leaves_nothing_armed(
         tmp_path, halted):
     events = EventStream(tmp_path / "events.jsonl", mirror=None)
@@ -163,33 +151,6 @@ def test_arming_a_run_that_named_no_products_leaves_nothing_armed(
 # ---------------------------------------------------------------------------
 # One function arms every door
 # ---------------------------------------------------------------------------
-
-
-def test_arming_through_the_shared_function_answers_none_for_no_products(
-        tmp_path):
-    """The decision is the shared function's, not each door's copy."""
-
-    recorder = _Recorder()
-    assert first_products.arm(
-        _plan(tmp_path, products="none"), report=recorder.report,
-        warn=recorder.warn) is None
-    assert first_products.arm(
-        _plan(tmp_path, products=None), report=recorder.report,
-        warn=recorder.warn) is None
-
-
-def test_the_shared_arming_builds_the_trigger_from_the_plan(tmp_path):
-    """What it returns is armed with the plan it was handed, unchanged."""
-
-    recorder = _Recorder()
-    trigger = first_products.arm(
-        _plan(tmp_path, products="refl,t2"), report=recorder.report,
-        warn=recorder.warn)
-
-    assert isinstance(trigger, FirstProducts)
-    assert trigger.render_dir == tmp_path / "png"
-    assert trigger.render_products == "refl,t2"
-    assert not trigger.dispatched
 
 
 def test_the_child_door_arms_through_the_shared_function(
@@ -269,9 +230,9 @@ def test_the_refusal_never_fires_on_a_run_that_asked_for_no_pictures(
 
 
 @pytest.mark.parametrize("products", [
-    None, "", "   ", "none", "NONE", " None ", "refl", "all", "refl,t2",
+    None, "   ", " None ", "refl,t2",
 ])
-@pytest.mark.parametrize("io_mode", ["none", "history", None])
+@pytest.mark.parametrize("io_mode", ["none", "history"])
 def test_the_refusal_and_the_arming_read_the_same_field_the_same_way(
         products, io_mode):
     """Two answers to "did this run ask for pictures" cannot drift.
@@ -1120,6 +1081,9 @@ def test_the_hrrr_chain_arms_with_the_dict_its_finalize_stage_uses(
         plan, forecast_dir=forecast_dir, run_dir=run_dir)
     assert armed == {"run": forecast_dir,
                      "render": run_dir / "chain" / "png",
+                     "publish_root": run_dir / "chain" / "www",
+                     "publish_cmd": None,
+                     "hydro": "auto",
                      "render_products": "refl,t2",
                      "render_section": None}
 

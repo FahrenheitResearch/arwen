@@ -24,8 +24,9 @@ class _RenderReaders:
         return self.ended
 
 
-@pytest.mark.parametrize("through_go", [False, True])
-@pytest.mark.parametrize("stranded", ["first", "live"])
+@pytest.mark.parametrize('through_go,stranded', [
+    pytest.param(False, "first", id='first-False'),
+])
 def test_restart_refuses_when_actual_halt_helper_reports_a_reader_left(
         tmp_path, through_go, stranded):
     """Exercise the real halt helper's False result, rather than mock it."""

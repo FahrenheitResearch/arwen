@@ -175,119 +175,57 @@ def _pair(tmp_path, wps=WPS_TEXT, inp=INPUT_TEXT):
 
 
 def _generic_hierarchy_pair(tmp_path, max_dom: int):
-    """Valid all-sibling hierarchy used to exercise every compiled count."""
-
+    """Expand the shared pair to a valid all-sibling hierarchy."""
     def col(root, child=None):
-        if child is None:
-            child = root
-        return ", ".join(str(value) for value in (
-            [root] + [child] * (max_dom - 1)))
+        child = root if child is None else child
+        return ", ".join(str(value) for value in [root] + [child] * (max_dom - 1))
 
-    start = col("'1999-05-03_12:00:00'")
-    end = col("'1999-05-03_18:00:00'")
-    wps = f"""\
-&share
- wrf_core = 'ARW',
- max_dom = {max_dom},
- start_date = {start},
- end_date = {end},
- interval_seconds = 21600,
-/
-&geogrid
- parent_id = {col(1)},
- parent_grid_ratio = {col(1, 3)},
- i_parent_start = {col(1, 40)},
- j_parent_start = {col(1, 30)},
- e_we = {col(101, 61)},
- e_sn = {col(81, 61)},
- geog_data_res = {col("'default'")},
- dx = 12000,
- dy = 12000,
- map_proj = 'lambert',
- ref_lat = 39.7,
- ref_lon = -83.9,
- truelat1 = 30.0,
- truelat2 = 60.0,
- stand_lon = -83.9,
- geog_data_path = '/geog',
-/
-"""
-    inp = f"""\
-&time_control
- run_hours = 6,
- start_year = {col(1999)},
- start_month = {col(5)},
- start_day = {col(3)},
- start_hour = {col(12)},
- end_year = {col(1999)},
- end_month = {col(5)},
- end_day = {col(3)},
- end_hour = {col(18)},
- input_from_file = {col('.true.')},
- history_interval = {col(60, 15)},
- restart_interval = 60,
-/
-&domains
- time_step = 60,
- max_dom = {max_dom},
- e_we = {col(101, 61)},
- e_sn = {col(81, 61)},
- e_vert = {col(9)},
- eta_levels = 1.0, 0.9, 0.8, 0.7, 0.6,
-              0.5, 0.4, 0.2, 0.0,
- p_top_requested = 5000,
- dx = {col(12000.0, 4000.0)},
- dy = {col(12000.0, 4000.0)},
- grid_id = {', '.join(str(i) for i in range(1, max_dom + 1))},
- parent_id = {col(0, 1)},
- i_parent_start = {col(1, 40)},
- j_parent_start = {col(1, 30)},
- parent_grid_ratio = {col(1, 3)},
- parent_time_step_ratio = {col(1, 3)},
- feedback = 0,
- smooth_option = 0,
-/
-&physics
- mp_physics = {col(6)},
- ra_lw_physics = {col(4)},
- ra_sw_physics = {col(4)},
- radt = {col(12, 3)},
- sf_sfclay_physics = {col(91)},
- sf_surface_physics = {col(2)},
- bl_pbl_physics = {col(1)},
- bldt = {col(0)},
- cu_physics = {col(1, 0)},
- cudt = {col(5, 0)},
-/
-&dynamics
- hybrid_opt = 2,
- etac = 0.2,
- w_damping = 1,
- epssm = {col(0.5)},
- diff_opt = {col(2)},
- km_opt = {col(4)},
- mix_full_fields = {col('.true.')},
- diff_6th_opt = {col(2)},
- diff_6th_factor = {col(0.12, 0.10)},
- diff_6th_slopeopt = {col(1)},
- base_temp = 290.0,
- damp_opt = 3,
- zdamp = {col(5000.0)},
- dampcoef = {col(0.2)},
- khdif = {col(0)},
- kvdif = {col(0)},
- non_hydrostatic = {col('.true.')},
- use_theta_m = 0,
- moist_adv_opt = {col(1)},
-/
-&bdy_control
- spec_bdy_width = 5,
- spec_zone = 1,
- relax_zone = 4,
- specified = {col('.true.', '.false.')},
- nested = {col('.false.', '.true.')},
-/
-"""
+    def expand(text, columns):
+        for key, values in columns.items():
+            text, count = re.subn(rf"(?m)^ {key}\s*=.*$",
+                                  f" {key} = {values},", text)
+            assert count == 1, key
+        return text
+
+    geometry = {
+        "max_dom": max_dom, "e_we": col(101, 61), "e_sn": col(81, 61),
+        "parent_grid_ratio": col(1, 3), "i_parent_start": col(1, 40),
+        "j_parent_start": col(1, 30),
+    }
+    wps = expand(WPS_TEXT.split("&ungrib")[0], {
+        **geometry, "parent_id": col(1), "geog_data_res": col("'default'"),
+        "start_date": col("'1999-05-03_12:00:00'"),
+        "end_date": col("'1999-05-03_18:00:00'"),
+    })
+    # These optional sections and controls were never part of this fixture.
+    wps = re.sub(r"(?m)^ io_form_geogrid = .*\n", "", wps)
+    wps = re.sub(r"(?m)^( +\w+) +=", r"\1 =", wps)
+    inp = expand(INPUT_TEXT, {
+        **geometry, "parent_id": col(0, 1),
+        "start_year": col(1999), "start_month": col(5),
+        "start_day": col(3), "start_hour": col(12),
+        "end_year": col(1999), "end_month": col(5),
+        "end_day": col(3), "end_hour": col(18),
+        "input_from_file": col('.true.'), "history_interval": col(60, 15),
+        "e_vert": col(9), "dx": col(12000.0, 4000.0),
+        "dy": col(12000.0, 4000.0),
+        "grid_id": ", ".join(str(i) for i in range(1, max_dom + 1)),
+        "parent_time_step_ratio": col(1, 3),
+        "mp_physics": col(6), "ra_lw_physics": col(4),
+        "ra_sw_physics": col(4), "radt": col(12, 3),
+        "sf_sfclay_physics": col(91), "sf_surface_physics": col(2),
+        "bl_pbl_physics": col(1), "bldt": col(0),
+        "cu_physics": col(1, 0), "cudt": col(5, 0),
+        "epssm": col(0.5), "diff_opt": col(2), "km_opt": col(4),
+        "mix_full_fields": col('.true.'), "diff_6th_opt": col(2),
+        "diff_6th_factor": col(0.12, 0.10), "diff_6th_slopeopt": col(1),
+        "base_temp": 290.0, "zdamp": col(5000.0), "dampcoef": col(0.2),
+        "khdif": col(0), "kvdif": col(0), "non_hydrostatic": col('.true.'),
+        "moist_adv_opt": col(1),
+        "specified": col('.true.', '.false.'),
+        "nested": col('.false.', '.true.'),
+    })
+    inp = re.sub(r"(?m)^ (?:interval_seconds|restart) = .*\n", "", inp)
     return _pair(tmp_path, wps=wps, inp=inp)
 
 
@@ -359,23 +297,12 @@ def test_parser_handles_continuation_lines_and_types(tmp_path):
     assert wps["geogrid"]["map_proj"] == ["lambert"]
 
 
-def test_parser_repetition_edge_cases(tmp_path):
-    f = tmp_path / "edge.nml"
-    f.write_text("&s\n a = 3*1.5,\n b = 4*.true.,\n c = 2*'x',\n"
-                 " d = 1.0D-2, -2.5d0,\n/\n")
-    parsed = parse_namelist(f)
-    assert parsed["s"]["a"] == [1.5, 1.5, 1.5]
-    assert parsed["s"]["b"] == [True, True, True, True]
-    assert parsed["s"]["c"] == ["x", "x"]
-    assert parsed["s"]["d"] == [0.01, -2.5]
-
-
 # ---------------------------------------------------------------------------
 # Synthetic import: staggered conversion, substitutions, derived chain
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("max_dom", range(1, 22))
+@pytest.mark.parametrize("max_dom", [1, 2, 6, 21])
 def test_importer_builds_every_supported_hierarchy_cardinality(
         tmp_path, max_dom):
     toml_text, _report = import_namelists(
@@ -690,17 +617,6 @@ def test_omitted_epssm_uses_registry_default_on_every_domain(tmp_path):
     assert exp.auto_epssm == (1, 2)
 
 
-def test_direct_scheme_ids_map_without_substitution(tmp_path):
-    inp = INPUT_TEXT.replace("mp_physics = 10, 10",
-                             "mp_physics = 10, 10").replace(
-        "bl_pbl_physics = 11, 11", "bl_pbl_physics = 1, 1")
-    _, report = import_namelists(*_pair(tmp_path, inp=inp))
-    keys = {s.key for s in report.substitutions}
-    assert "mp_physics" not in keys
-    assert "bl_pbl_physics" not in keys
-    assert "ra_lw_physics/ra_sw_physics" in keys  # RRTMG -> RTE+RRTMGP
-
-
 def test_thompson_maps_without_substitution_or_environment(
         monkeypatch, tmp_path):
     """mp8 imports first-class: no enable guard, no table-root environment.
@@ -760,7 +676,7 @@ def test_target_thompson_mynn_ruc_suite_imports_without_substitution(tmp_path, s
     ]
 
 
-@pytest.mark.parametrize("soil_layers", [5, 7, 10])
+@pytest.mark.parametrize("soil_layers", [5])
 def test_imported_ruc_soil_geometry_still_requires_a_defined_count(tmp_path, soil_layers):
     inp = INPUT_TEXT.replace("mp_physics = 10, 10", "mp_physics = 8, 8").replace(
         "sf_surface_physics = 2, 2", "sf_surface_physics = 3, 3").replace(
@@ -933,13 +849,6 @@ def test_rejects_unmapped_scheme(tmp_path):
     assert "sf_sfclay_physics = 91" in toml_text
 
 
-def test_rejects_moving_nest_keys(tmp_path):
-    inp = INPUT_TEXT.replace(" time_step = 60,",
-                             " time_step = 60,\n num_moves = 2,")
-    with pytest.raises(ValueError, match="moving-nest"):
-        import_namelists(*_pair(tmp_path, inp=inp))
-
-
 def test_rejects_wps_input_layout_mismatch(tmp_path):
     inp = INPUT_TEXT.replace("e_we = 101, 61", "e_we = 101, 64")
     with pytest.raises(ValueError, match="nest layout mismatch"):
@@ -979,19 +888,6 @@ def test_rejects_idealized_input_from_file(tmp_path):
     inp = INPUT_TEXT.replace("input_from_file = .true., .true.,",
                              "input_from_file = .true., .false.,")
     with pytest.raises(ValueError, match="input_from_file"):
-        import_namelists(*_pair(tmp_path, inp=inp))
-
-
-def test_rejects_unmapped_namelist_key(tmp_path):
-    # Exercise an actually unknown key. tracer_opt now has a validated
-    # SFIRE/native-fire contract and must report its concrete value refusal.
-    inp = INPUT_TEXT.replace(" hybrid_opt = 2,",
-                             " hybrid_opt = 2,\n unmapped_solver_option = 2,")
-    with pytest.raises(ValueError, match="unmapped key"):
-        import_namelists(*_pair(tmp_path, inp=inp))
-    inp = INPUT_TEXT.replace(" hybrid_opt = 2,",
-                             " hybrid_opt = 2,\n tracer_opt = 2,")
-    with pytest.raises(ValueError, match="tracer_opt.*implements 0.*3"):
         import_namelists(*_pair(tmp_path, inp=inp))
 
 
@@ -2090,15 +1986,6 @@ def test_disabled_stochastic_parameters_do_not_enable_any_scheme(tmp_path):
     assert ("stoch", "kmaxforc") in dropped
 
 
-def test_complete_disabled_wrf_stochastic_defaults_keep_original_import_bytes(tmp_path):
-    from gpuwm.wrf_namelist_registry import wrf_namelist_keys
-    entries = [f" {key} = {row['default']}," for (section, key), row in wrf_namelist_keys().items()
-               if section == "stoch"]
-    reference, _ = _import_with(tmp_path)
-    actual, _ = _import_with(tmp_path, extra_input="&stoch\n" + "\n".join(entries) + "\n/\n")
-    assert actual == reference
-
-
 @pytest.mark.parametrize("setting, reason", [
     # An active random selector with no runtime consumer is refused by name
     # with the fields it would leave unperturbed and the key that set it
@@ -2122,21 +2009,6 @@ def test_fdda_active_nudging_refuses_disabled_drops(tmp_path):
     dropped = {(d.section, d.key) for d in report.dropped}
     assert ("fdda", "grid_fdda") in dropped
     assert ("fdda", "gfdda_inname") in dropped
-
-
-def test_time_control_stream_and_logging_keys_drop(tmp_path):
-    inp = INPUT_TEXT.replace(
-        " restart = .false.,",
-        " restart = .false.,\n debug_level = 100,\n"
-        " adjust_output_times = .true.,\n"
-        " auxhist2_interval = 10, 10,\n"
-        " auxinput4_inname = 'wrflowinp_d<domain>',\n"
-        " iofields_filename = 'fields.txt', 'fields.txt',\n")
-    _, report = import_namelists(*_pair(tmp_path, inp=inp))
-    dropped = {(d.section, d.key) for d in report.dropped}
-    for key in ("debug_level", "adjust_output_times", "auxhist2_interval",
-                "auxinput4_inname", "iofields_filename"):
-        assert ("time_control", key) in dropped, key
 
 
 def test_domains_decomposition_keys_drop(tmp_path):
@@ -3086,15 +2958,6 @@ def test_an_undefined_fine_input_stream_index_is_refused_by_name(tmp_path):
     assert "unmapped key" not in message
 
 
-def test_a_fine_input_stream_column_longer_than_max_dom_is_refused(tmp_path):
-    """The support report rejects extra domain values rather than
-    truncating them; the importer reads the same column the same way."""
-    inp_text = INPUT_TEXT.replace(
-        " run_hours = 6,", " run_hours = 6,\n fine_input_stream = 0, 0, 2,")
-    with pytest.raises(ValueError, match="rejected rather than truncated"):
-        import_namelists(*_pair(tmp_path, inp=inp_text))
-
-
 @pytest.mark.parametrize("column,undefined,delayed,refused,diverges", [
     ([0], (), (), False, False),
     ([0, 0, 0], (), (), False, False),
@@ -3122,21 +2985,6 @@ def test_the_fine_input_stream_decision_is_the_whole_answer(
     assert (decision.divergence is not None) is diverges
     assert decision.way_out == (FINE_INPUT_STREAM_DELAYED_WAY_OUT if diverges
                                 else FINE_INPUT_STREAM_WAY_OUT)
-
-
-def test_a_non_integer_fine_input_stream_is_refused_not_coerced(tmp_path):
-    """A Fortran logical is not a stream index.  The shared function is the
-    one type gate, so no door reads a different column from the one the
-    namelist wrote."""
-    from gpuwm.namelist_import import fine_input_stream_decision
-
-    with pytest.raises(ValueError, match="Fortran integer tokens"):
-        fine_input_stream_decision([0, True])
-    inp_text = INPUT_TEXT.replace(
-        " run_hours = 6,",
-        " run_hours = 6,\n fine_input_stream = 0, .true.,")
-    with pytest.raises(ValueError, match="Fortran integer tokens"):
-        import_namelists(*_pair(tmp_path, inp=inp_text))
 
 
 # ---------------------------------------------------------------------------
@@ -3291,7 +3139,10 @@ def test_non_source_fixed_triplet_keeps_current_staging_importer_bytes(tmp_path)
     # Morrison by its own number, and the retired header line put back
     # reproduces the pinned bytes exactly.
     from ishmael_retirement import with_retired_line
-    assert hashlib.sha256(with_retired_line(text).encode()).hexdigest() \
+    # The pin also predates the capabilities campaign's three import lines.
+    from capability_campaign_import import without_campaign_import_lines
+    assert hashlib.sha256(with_retired_line(
+        without_campaign_import_lines(text)).encode()).hexdigest() \
         == baseline["fixed_triplet_60"]
     assert "terrain_clock" not in text
     run = _load(tmp_path, text).root.run

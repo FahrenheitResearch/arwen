@@ -49,7 +49,8 @@ impl Manager {
     /// receipts exist; every other directory still goes through the saved
     /// launcher/process/native receipt validation.
     pub fn begin(&mut self, request: companion::Request, parent: &Session, nodes: &remote::Store,
-        python: &Path, output: &Path, cwd: &Path, live: Option<&Value>) -> Result<Option<Completion>, String> {
+        paths: (&Path, &Path, &Path), live: Option<&Value>) -> Result<Option<Completion>, String> {
+        let (python, output, cwd) = paths;
         self.local_roots.insert(output.to_owned());
         self.local_roots.insert(cwd.join("arwen-runs"));
         if self.pending.len() >= MAX_VIEWERS { return Err("Run browsing requests are already in progress. Retry when they finish.".into()); }
@@ -493,7 +494,7 @@ impl Binding {
 
 struct ArtifactPending { request: companion::Request, transport: remote::Request }
 enum Source {
-    Remote { node: remote::Node, binding: Binding },
+    Remote { node: Box<remote::Node>, binding: Binding },
     /// `identity` binds once the saved receipts validate; until then the
     /// viewer may only mirror the controller's own status for its owned job.
     Local { directory: PathBuf, identity: Option<Value> },
@@ -529,7 +530,7 @@ fn remote_status(status: &Value, target: &Target) -> Value {
 
 impl Viewer {
     fn remote(client: Client, node: remote::Node, target: Target, status: Value, binding: Binding, initial_index: &Value) -> Result<Self, String> {
-        let mut viewer = Self::create(client, target, Source::Remote { node, binding }, status)?;
+        let mut viewer = Self::create(client, target, Source::Remote { node: Box::new(node), binding }, status)?;
         let mut index = initial_index.clone(); index["schema"] = json!("arwen.remote-artifact-index.v1"); index["target"] = viewer.target.value();
         let _ = viewer.session.save_artifacts("initial-index", &index)?;
         viewer.publish(true)?;
@@ -889,10 +890,10 @@ mod tests {
         let parent=Session::create(&output).unwrap();let mut store=remote::Store::default();let selected=node("selected-ssh");
         store.active=Some(selected.id.clone());store.nodes.push(selected.clone());
         let mut manager=Manager::default();
-        let browse=manager.begin(request(Action::BrowseRuns,Target::Local),&parent,&store,&test_python(),&output,&root,None).unwrap().unwrap();
+        let browse=manager.begin(request(Action::BrowseRuns,Target::Local), &parent, &store, (&test_python(), &output, &root), None).unwrap().unwrap();
         assert_eq!(browse.details["jobs"].as_array().unwrap().len(),1,"{}",browse.details);
         assert_eq!(browse.details["jobs"][0]["name"],"Saved fixture");assert_eq!(browse.details["jobs"][0]["run_seconds"],3600.0);
-        let opened=manager.begin(request(Action::OpenRun(job.to_string_lossy().into_owned()),Target::Local),&parent,&store,&test_python(),&output,&root,None).unwrap().unwrap();
+        let opened=manager.begin(request(Action::OpenRun(job.to_string_lossy().into_owned()),Target::Local), &parent, &store, (&test_python(), &output, &root), None).unwrap().unwrap();
         assert_eq!(opened.details["handoff"]["read_only"],true);assert_ne!(opened.details["handoff"]["session_id"],parent.id);
         assert_eq!(store.active.as_deref(),Some(selected.id.as_str()));
         let viewer=&mut manager.viewers[0];
@@ -918,14 +919,14 @@ mod tests {
         let output=root.join("chosen-output");fs::create_dir_all(&output).unwrap();
         let parent=Session::create(&output).unwrap();let store=remote::Store::default();
         let mut unaware=Manager::default();
-        let browse=unaware.begin(request(Action::BrowseRuns,Target::Local),&parent,&store,&test_python(),&output,&root,None).unwrap().unwrap();
+        let browse=unaware.begin(request(Action::BrowseRuns,Target::Local), &parent, &store, (&test_python(), &output, &root), None).unwrap().unwrap();
         assert_eq!(browse.details["jobs"].as_array().unwrap().len(),0,"{}",browse.details);
-        match unaware.begin(request(Action::OpenRun(job.to_string_lossy().into_owned()),Target::Local),&parent,&store,&test_python(),&output,&root,None){Err(error)=>assert!(error.contains("outside the known run stores"),"{error}"),Ok(_)=>panic!("a folder nobody named must stay unknown")}
+        match unaware.begin(request(Action::OpenRun(job.to_string_lossy().into_owned()),Target::Local), &parent, &store, (&test_python(), &output, &root), None){Err(error)=>assert!(error.contains("outside the known run stores"),"{error}"),Ok(_)=>panic!("a folder nobody named must stay unknown")}
         let mut manager=Manager::default();manager.add_local_root(previous.clone());
-        let browse=manager.begin(request(Action::BrowseRuns,Target::Local),&parent,&store,&test_python(),&output,&root,None).unwrap().unwrap();
+        let browse=manager.begin(request(Action::BrowseRuns,Target::Local), &parent, &store, (&test_python(), &output, &root), None).unwrap().unwrap();
         assert_eq!(browse.details["jobs"].as_array().unwrap().len(),1,"{}",browse.details);
         assert_eq!(browse.details["jobs"][0]["name"],"Saved fixture");
-        let opened=manager.begin(request(Action::OpenRun(job.to_string_lossy().into_owned()),Target::Local),&parent,&store,&test_python(),&output,&root,None).unwrap().unwrap();
+        let opened=manager.begin(request(Action::OpenRun(job.to_string_lossy().into_owned()),Target::Local), &parent, &store, (&test_python(), &output, &root), None).unwrap().unwrap();
         assert_eq!(opened.details["handoff"]["read_only"],true);
         let viewer=&mut manager.viewers[0];viewer.begin(&request(Action::CloseRun(viewer.job_id().into()),Target::Local)).unwrap();manager.poll(None);
         drop(parent);let _=fs::remove_dir_all(root);
@@ -943,7 +944,7 @@ mod tests {
             names.sort();names
         };
         for _ in 0..3{
-            manager.begin(request(Action::OpenRun(job.to_string_lossy().into_owned()),Target::Local),&parent,&store,&test_python(),&output,&root,None).unwrap().unwrap();
+            manager.begin(request(Action::OpenRun(job.to_string_lossy().into_owned()),Target::Local), &parent, &store, (&test_python(), &output, &root), None).unwrap().unwrap();
             assert_eq!(sessions().len(),2,"an open viewer publishes its own session beside the controller's");
             let viewer=&mut manager.viewers[0];
             viewer.begin(&request(Action::CloseRun(viewer.job_id().into()),Target::Local)).unwrap();
@@ -963,7 +964,7 @@ mod tests {
     fn a_closed_viewer_takes_its_own_downloaded_frames_and_keeps_the_output_root_caches(){
         let root=directory("viewer-caches");let(output,job)=local_fixture(&root);
         let parent=Session::create(&output).unwrap();let store=remote::Store::default();let mut manager=Manager::default();
-        manager.begin(request(Action::OpenRun(job.to_string_lossy().into_owned()),Target::Local),&parent,&store,&test_python(),&output,&root,None).unwrap().unwrap();
+        manager.begin(request(Action::OpenRun(job.to_string_lossy().into_owned()),Target::Local), &parent, &store, (&test_python(), &output, &root), None).unwrap().unwrap();
         let session=manager.viewers[0].session.directory.clone();
         // The shape a remote viewer fills: raw objects and their leases under
         // its own session, converted frames beside them, shared caches outside.
@@ -996,7 +997,7 @@ mod tests {
         assert!(rows[0]["error"].as_str().unwrap().contains("does not match its original launch command"),"{}",rows[0]);
         assert!(rows[0]["created_at"].as_str().unwrap().ends_with('Z'));
         let parent=Session::create(&output).unwrap();let store=remote::Store::default();let mut manager=Manager::default();
-        let opened=manager.begin(request(Action::OpenRun(job.to_string_lossy().into_owned()),Target::Local),&parent,&store,&test_python(),&output,&root,None);
+        let opened=manager.begin(request(Action::OpenRun(job.to_string_lossy().into_owned()),Target::Local), &parent, &store, (&test_python(), &output, &root), None);
         assert!(opened.err().expect("an unverifiable saved job is refused with its reason").contains("does not match its original launch command"));
         // The worker's unprefixed cwd spelling is the same directory, not a mismatch.
         process["cwd"]=json!(root.to_string_lossy().strip_prefix(r"\\?\").unwrap_or(&root.to_string_lossy()));write(&job.join("process.json"),&process);
@@ -1014,7 +1015,7 @@ mod tests {
         assert_eq!(rows.len(),1);assert_eq!(rows[0]["state"],"starting");assert_eq!(rows[0]["job_id"],json!(job));assert!(rows[0]["error"].is_null());
         let rows=local_jobs(&BTreeSet::from([output.clone()]),None);assert_eq!(rows[0]["state"],"unverified","another controller's or no live status never vouches for the directory");
         let parent=Session::create(&output).unwrap();let store=remote::Store::default();let mut manager=Manager::default();
-        let opened=manager.begin(request(Action::OpenRun(job.to_string_lossy().into_owned()),Target::Local),&parent,&store,&test_python(),&output,&root,Some(&live)).unwrap().unwrap();
+        let opened=manager.begin(request(Action::OpenRun(job.to_string_lossy().into_owned()),Target::Local), &parent, &store, (&test_python(), &output, &root), Some(&live)).unwrap().unwrap();
         assert_eq!(opened.details["handoff"]["read_only"],true);
         let viewer=&mut manager.viewers[0];assert!(matches!(&viewer.source,Source::Local{identity:None,..}));
         assert_eq!(companion::read_json(&viewer.session.directory.join("status.json"),128*1024).unwrap()["job"]["state"],"starting");

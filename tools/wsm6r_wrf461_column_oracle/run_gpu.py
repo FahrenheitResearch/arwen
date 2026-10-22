@@ -45,6 +45,12 @@ import sys
 
 import numpy as np
 
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from tools.wsm6_wrf461_column_oracle.common import (
+    _header, micron, _ordered, ulp, read_wrf as _read_wrf, read_columns as _read_columns)
+
 LEVEL_OUT = ("th", "qv", "qc", "qi", "qr", "qs", "qg", "t",
              "re_cloud", "re_ice", "re_snow")
 RADII = ("re_cloud", "re_ice", "re_snow")
@@ -64,31 +70,12 @@ def minor_loops(dt: float) -> int:
 
 
 def read_columns(path: Path):
-    with open(path, "rb") as fh:
-        ncol, nz = (int(v) for v in np.fromfile(fh, "<i4", 2))
-        names = ("th", "qv", "qc", "qr", "qi", "qs", "qg", "den", "pii", "p", "dz")
-        level = {n: np.fromfile(fh, "<f4", nz * ncol).reshape(nz, ncol) for n in names}
-        surf = {"rain": np.fromfile(fh, "<f4", ncol)}
-    return ncol, nz, level, surf
-
-
-def micron(re_metres):
-    """WRF's metre radius as gpuwm's micron word: one float32 multiply."""
-    return (np.asarray(re_metres, np.float32) * np.float32(1.0e6)).astype(np.float32)
+    return _read_columns(path, ("th", "qv", "qc", "qr", "qi", "qs", "qg", "den", "pii", "p", "dz"),
+                         ("rain",))
 
 
 def read_wrf(path: Path):
-    with open(path, "rb") as fh:
-        ncol, nz, nsteps = (int(v) for v in np.fromfile(fh, "<i4", 3))
-        dt = float(np.fromfile(fh, "<f4", 1)[0])
-        steps = []
-        for _ in range(nsteps):
-            lv = {n: np.fromfile(fh, "<f4", nz * ncol).reshape(nz, ncol) for n in LEVEL_OUT}
-            for n in RADII:
-                lv[n] = micron(lv[n])
-            sf = {n: np.fromfile(fh, "<f4", ncol) for n in SURFACE_OUT}
-            steps.append((lv, sf))
-    return dict(ncol=ncol, nz=nz, nsteps=nsteps, dt=dt, steps=steps)
+    return _read_wrf(path, LEVEL_OUT, SURFACE_OUT)
 
 
 def run_gpu(columns: Path, dt: float, nsteps: int):
@@ -122,15 +109,6 @@ def run_gpu(columns: Path, dt: float, nsteps: int):
         sf = {"rain": rain.get().reshape(ncol), "rainncv": rainncv.get().reshape(ncol)}
         steps.append((lv, sf))
     return steps
-
-
-def _ordered(a):
-    bits = np.asarray(a, np.float32).view(np.int32).astype(np.int64)
-    return np.where(bits < 0, -(bits & 0x7FFFFFFF), bits)
-
-
-def ulp(a, b):
-    return np.abs(_ordered(a) - _ordered(b))
 
 
 def digest(a, *, canonical_nan=False) -> str:
@@ -231,17 +209,6 @@ def grade(wrf, gpu, regimes, dt, rain0):
             "violations": sum(c["violations"] for c in checks),
             "negative": sum(c["negative"] for c in checks)}
     return out
-
-
-def _header():
-    import cupy as cp
-    import gpuwm.wrf_exact as wrf_exact
-
-    name = cp.cuda.runtime.getDeviceProperties(0)["name"]
-    return {"strict_build": bool(wrf_exact.ENABLED),
-            "device": name.decode() if isinstance(name, bytes) else str(name),
-            "nvrtc": ".".join(map(str, cp.cuda.nvrtc.getVersion())),
-            "cupy": cp.__version__}
 
 
 def _bad(result) -> int:

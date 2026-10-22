@@ -329,3 +329,23 @@ def test_native_root_receipt_says_a_defaulted_source_was_set_aside(tmp_path, mon
         stand_lon=-97.5, dx_m=1000.0, dy_m=1000.0)
     assert selection.static_source.id == "hrrr-conus-v4"
     assert "static_source_fallback" not in receipt
+
+
+def test_hrrr_wizard_ladder_12_3_emits_no_declared_source_off_its_cone(tmp_path):
+    """Breakage it prevents: ``gpuwm domain --source hrrr --ladder 12-3``
+    wrote ``[static] source = "hrrr-conus-v4"`` on the generic cone, so the
+    3 km nest (the row's spacing, another cone) was refused by name in
+    ``go`` instead of taking the defaulted WPS_GEOG fallback."""
+    import tomllib
+    from gpuwm.cli import main as cli_main
+    out = tmp_path / "okc.toml"
+    rc = cli_main(["domain", "--point", "36.5,-97.5", "--source", "hrrr",
+                  "--cycle", "2024-05-06T18", "--hours", "6",
+                  "--ladder", "12-3", "--vram-gib", "96",
+                  "--out", str(out)])
+    assert rc in (0, None)
+    raw = tomllib.loads(out.read_text(encoding="utf-8"))
+    assert raw["projection"]["truelat1"] != 38.5
+    assert "source" not in raw.get("static", {})
+    from gpuwm.static.source_defaults import with_source_static_defaults
+    assert with_source_static_defaults(raw, "hrrr") is raw

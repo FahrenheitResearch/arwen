@@ -38,7 +38,6 @@ two, and the forecast then starts in its turn.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import os
 from pathlib import Path
 import shutil
@@ -48,6 +47,7 @@ import time
 from typing import Any, Callable
 
 from . import runs
+from .files import utc_now as _utc
 from .files import SERVER_DIR, read_json, write_json
 from .jobs import runtime_install
 from .machines import LOCAL
@@ -80,10 +80,6 @@ DEFAULT_OWNER_TAG = "gpuwm-gui"
 OWNER_BOUND_MIN = 720
 #: A remote queued forecast asks its machine to wait this long for the card, so a race at the start is a wait.
 REMOTE_WAIT_MIN = 30
-
-
-def _utc() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def started_in(rundir: Path) -> bool:

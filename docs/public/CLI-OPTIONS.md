@@ -393,7 +393,7 @@ Takes no options of its own.
 | `--max-forecast-only-cycles` | consecutive cycles allowed with no analysis before the run halts STALE_ANALYSIS_BUDGET_EXHAUSTED (default 3): forecast-only is legitimate, forecast-only forever is a run that stopped being a DA cycle |
 | `--min-separation-km` | two children are never planted on one storm (default 40.0). A request inside this radius of an assigned child is REFUSED by name, never silently dropped |
 | `--no-resume` | start again at cycle 1 |
-| `--parent-dt-seconds` | parent model step; must be a whole number of milliseconds (default 120.0) |
+| `--parent-dt-seconds` | parent model step; must be a whole number of milliseconds and divide --cycle-seconds (default: 120 s when it divides the cycle, else the largest step that divides both 120 s and the cycle, e.g. 60 s for a 15-minute cycle) |
 | `--parent-dx-m` | the parent's grid spacing in metres. Required with a placement provider: the child/parent refinement ratio is derived from it and a guessed spacing silently changes every placement |
 | `--parent-geo-file PATH` | XLAT/XLONG for the parent's mass grid: a radar-grid NetCDF or an npz carrying both. Defaults to the first --placement-obs-file, whose grid IS the target model grid by contract |
 | `--parent-kind {mpas-cuda,mpas-cuda-frames,arwen,replay}` | which engine advances the parent |
@@ -418,6 +418,7 @@ Takes no options of its own.
 | option | what it does |
 |---|---|
 | `--accept-fit FIT_ID` | save only the exact reviewed proposal identified by fitting.fit_id |
+| `--accept-licence LICENCE` | explicitly accept a model row's exact restricted/unresolved weight licence; repeat for multiple licences |
 | `--advisory-position LAT,LON` | advisory center; bounds the field search and is the last fallback |
 | `--card` | a tier (12gb/16gb/24gb/32gb), a size ('10gb') or a model with a recorded size ('RTX 3080') |
 | `--cycle` | _(the parser declares no help text for this option)_ |
@@ -445,6 +446,8 @@ Takes no options of its own.
 | `--storm auto\|ID\|NAME` | strongest eligible system at the cycle, or a track id, ATCF id or storm name |
 | `--target-host-memory-json` | _(the parser declares no help text for this option)_ |
 | `--tiles {off,auto,on}` | _(the parser declares no help text for this option)_ |
+| `--track-cache` | cache for automatic best-track acquisition |
+| `--track-source {auto,nhc,hurdat2,ibtracs,jtwc}` | observed best-track archive used when no --tracks file is supplied |
 | `--tracks FILE` | track JSON or CSV guidance for selection and placement only |
 | `--vram-gib` | _(the parser declares no help text for this option)_ |
 
@@ -455,7 +458,7 @@ Takes no options of its own.
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--json` | emit the checks as JSON |
 | `--since VERSION` | print what changed for an existing user between VERSION and this install (the results that move on a bare configuration, and the checkpoints and namelists that stop loading), then exit 0 without running the estate checks. The same note is printed once, automatically, on the first doctor run after an upgrade |
-| `--source {20crv3,20crv3-cf,aifs,aigefs,aigfs,aorc,earth2,earth2-ace2,earth2-aifs,earth2-aifs-ens,earth2-aifs2,earth2-aifs2-ens,earth2-atlas,earth2-atlas-crps,earth2-atlas-si,earth2-aurora,earth2-aurora15,earth2-aurora15-6h,earth2-aurora15-ensemble,earth2-aurora15-ensemble-6h,earth2-corrdiff,earth2-derived-ws10m,earth2-dlesym,earth2-dlwp,earth2-fcn,earth2-fcn3,earth2-fengwu,earth2-fuxi,earth2-fuxi-s2s,earth2-gencast-mini,earth2-graphcast-operational,earth2-graphcast-small,earth2-interpmodafno,earth2-pangu,earth2-sfno,earth2-stormcast,earth2-stormcast-conus,earth2-ucast,earth2-weathernext2,earth2-weathernext2-mini,earth2-windgust,ecmwf-ens,ecmwf-open-data,era5,era5-l137,era5-land,gdas,gefs,gem-gdps,gfs,hex-global,hgefs,hiresw,href,hrrr,hrrr-ak,hrrr-native,hrrr-prs,icon-d2,icon-eu,icon-global,mapped,nam,nbm,ngen-csv,nwm-retrospective-forcing,rap,rap-native,refs,rrfs,rrfs-a,rrfs-ens,rrfs-firewx,rrfs-public,rtma,sref,urma,wrf}` | report only this data route's own resolution (repeatable) alongside the shared estate: what its preparation will decode with, and the byte transport its fetch will use. The choices are the source registry -- the same list `gpuwm fetch` and `gpuwm prep` take. Omitted, every route this build knows is reported |
+| `--source {20crv3,20crv3-cf,aifs,aigefs,aigfs,aorc,earth2,earth2-ace2,earth2-aifs,earth2-aifs-ens,earth2-aifs2,earth2-aifs2-ens,earth2-atlas,earth2-atlas-crps,earth2-atlas-si,earth2-aurora,earth2-aurora15,earth2-aurora15-6h,earth2-aurora15-ensemble,earth2-aurora15-ensemble-6h,earth2-corrdiff,earth2-derived-ws10m,earth2-dlesym,earth2-dlwp,earth2-fcn,earth2-fcn3,earth2-fengwu,earth2-fuxi,earth2-fuxi-s2s,earth2-gencast-mini,earth2-graphcast-operational,earth2-graphcast-small,earth2-interpmodafno,earth2-pangu,earth2-sfno,earth2-stormcast,earth2-stormcast-conus,earth2-ucast,earth2-weathernext2,earth2-weathernext2-mini,earth2-windgust,ecmwf-ens,ecmwf-open-data,era5,era5-l137,era5-land,gdas,gefs,gefs-reforecast,gefs-reforecast-land,gefs-reforecast-weekly,gefs-v11,gefs-v11-flat,gem-gdps,gfs,hex-global,hgefs,hiresw,href,hrrr,hrrr-ak,hrrr-native,hrrr-prs,icon-d2,icon-eu,icon-global,mapped,nam,nbm,ncep-r1-seaice,ngen-csv,nwm-retrospective-forcing,rap,rap-native,refs,rrfs,rrfs-a,rrfs-ens,rrfs-firewx,rrfs-public,rtma,sref,urma,wrf}` | report only this data route's own resolution (repeatable) alongside the shared estate: what its preparation will decode with, and the byte transport its fetch will use. The choices are the source registry -- the same list `gpuwm fetch` and `gpuwm prep` take. Omitted, every route this build knows is reported |
 
 ## `gpuwm domain`
 
@@ -496,18 +499,19 @@ Takes no options of its own.
 | `--out TOML` | emitted experiment TOML path |
 | `--physics-choices JSON` | schemes to run in place of the suite's own, family by family, as the physics composer picks them: '{"microphysics": "thompson-mp8", "pbl": "myj", "surface_layer": "eta-similarity"}'. Checked by the engine the way `gpuwm physics-catalog --check` checks them and written into the config the way `--into` writes them, on every size the fit tries, so the card is priced for the schemes that run. The suite (--physics-profile, or the default at the finest grid) is the base the choices change; no suite is asserted, so a mix no named suite matches runs as written |
 | `--physics-profile {morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1,nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-wrf-comparison-candidate-v1,nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-wrf-comparison-candidate-v1,thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1,thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1,thompson-mp8-shinhong-mm5-noah-rrtmg-legacy-v1,p3-mp50-ysu-mm5-noah-rrtmg-legacy-v1,wsm6-mynn-mynn-noah-rte-rrtmgp-implemented-unverified-v1,wsm6-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1,thompson-mp8-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1,thompson-mp8-ysu-mm5-noah-dudhia-daytime-v1,wsm6-ysu-mm5-noah-no-radiation-v1,wsm6-mynn-mynn-noah-no-radiation-implemented-unverified-v1,wsm6-ysu-mm5-ruc-no-radiation-implemented-unverified-v1,wsm6-mynn-mynn-ruc-no-radiation-implemented-unverified-v1,thompson-mp8-mynn-mynn-ruc-dudhia-implemented-unverified-v1,kessler-mp1-ysu-mm5-noah-dudhia-v1,thompson-mp8-mynn-mynn-ruc-monthly-rrtmg-legacy-v1,thompson-mp8-mynn-mynn-ruc-monthly-solar-rrtmg-legacy-v1,thompson-mp28-mynn-gsd41-mynn-ruc-rrtmg-legacy-v1,wsm6-ysu-mm5-noahmp-no-radiation-expert-only-v1,wsm6-mynn-mynn-noahmp-no-radiation-expert-only-v1,wsm6-mynn-mynn-noahmp-rte-rrtmgp-expert-only-v1,20crv3-wsm6-ysu-mm5-noah-kf-rte-rrtmgp-implemented-unverified-v1,lin-mp2-ysu-mm5-noah-rrtmg-legacy-implemented-unverified-v1,wsm6-ysu-mm5-noah-nsas-rrtmg-legacy-v1,ccpp-tke-edmf-thompson-mm5-noah-gf-rte-v1,milbrandt2mom-mp9-ysu-mm5-noah-ntiedtke-rrtmg-legacy-v1,wdm6-mp16-ysu-mm5-noah-grell-freitas-rte-rrtmgp-v1,thompson-aerosol-mp28-myj-eta-noah-rte-rrtmgp-v1,wsm6-sase-revised-mm5-noah-closure-supplied-v1,wsm6-pbl-off-mm5-noah-tke-1-5-order-v1,wsm6-pbl-off-mm5-noah-smagorinsky-3d-v1,wsm6-pbl-off-mm5-noah-constant-k-v1}` | shipped physics suite to emit; taken verbatim from the registry the prepared-forecast runner validates against, so the emitted config passes its guard as written. Read the resolved radiation selectors: a suite with shortwave ON and longwave OFF is a daytime-only experiment; selecting it for a window that includes local night is REFUSED unless you declare it yourself with --ack. NOT every profile runs on every route: --source gem-gdps cannot prepare wsm6-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1 or thompson-mp8-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1 or wsm6-ysu-mm5-ruc-no-radiation-implemented-unverified-v1 or wsm6-mynn-mynn-ruc-no-radiation-implemented-unverified-v1 or thompson-mp8-mynn-mynn-ruc-dudhia-implemented-unverified-v1 or thompson-mp8-mynn-mynn-ruc-monthly-rrtmg-legacy-v1 or thompson-mp8-mynn-mynn-ruc-monthly-solar-rrtmg-legacy-v1 or thompson-mp28-mynn-gsd41-mynn-ruc-rrtmg-legacy-v1 -- the wizard refuses those pairings and names the missing component rather than emitting a config the front door would reject. (--source era5, the default source, binds morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1; a run whose finest grid is under 1 km binds thompson-mp8-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1 instead, on every source whose route admits it; every source has its own computed default and its own admissible set -- `gpuwm run-plan --physics-profiles` prints the whole table) |
-| `--point LAT,LON` | domain center in decimal degrees. \|lat\| 90 is refused. A point carries no extent, so the fit chooses one: the largest layout the budget affords, capped at --point-extent-km per axis, kept clear of the projection pole, where lat-lon source interpolation and static-tile windowing do not work, and kept to less than one trip around the globe in longitude. These caps SHRINK the domain rather than refuse it, and the plan summary states which one bound; the pole refusal is left for a center so close to one that even the smallest layout contains it. Draw a --polygon to ask for more ground than the cap. The projection is auto-selected from \|lat\| (<25 Mercator, 25-60 Lambert conformal, >60 polar stereographic) unless --projection is set. Negative (southern/western) values work in both forms: --point -33.87,151.21 and --point=-33.87,151.21 |
-| `--point-extent-km KM` | largest root extent per axis a --point request is sized to (default 6000). The projection pole, one trip around the globe, the source's coverage and the card still bound the fit; an extent below the smallest root the ladder hosts gets that root. The plan summary states the extent used |
+| `--point LAT,LON` | domain center in decimal degrees. \|lat\| 90 is refused. A point carries no extent, so the fit chooses one: the largest layout the budget affords, capped at --point-extent-km per axis, kept within the projection envelope, and kept to less than one trip around the globe in longitude. These caps SHRINK the domain rather than refuse it, and the plan summary states which one bound; the pole refusal is left for a center so close to one that even the smallest layout contains it. Draw a --polygon to ask for more ground than the cap. The projection is auto-selected from \|lat\| (<25 Mercator, 25-60 Lambert conformal, >60 polar stereographic) unless --projection is set. Negative (southern/western) values work in both forms: --point -33.87,151.21 and --point=-33.87,151.21 |
+| `--point-extent-km KM` | largest root extent a --point request is sized to, on the longer root axis (x); the root keeps the ladder's 5:4 shape, so y is 0.8 of it (default 6000). The projection pole, one trip around the globe, the source's coverage and the card still bound the fit; an extent below the smallest root the ladder hosts gets that root. The plan summary states the extent used |
 | `--polygon GEOJSON` | local GeoJSON Polygon, MultiPolygon, Feature, or FeatureCollection; the minimum antimeridian-aware bounds supply the center and every emitted level is fitted around the geometry |
 | `--projection {auto,lambert,mercator,polar}` | map projection override (default: auto by center latitude; all three are oracle-gated against WRF v4.6.1 module_llxy) |
-| `--recipe ID\|TOML` | complete recipe from the packaged table or a local TOML |
+| `--recipe ID\|TOML` | complete recipe from the packaged table or a local TOML, laid out on --region (or --polygon) at --spacing-km; a packaged row given neither uses its declared default region and spacing (hrrr_v4_gsd41: US at 3 km), stated in the output and the receipt |
 | `--recipe-table` | recipe registry override; new recipes and aerosol policies are data |
-| `--region ID\|GEOJSON` | recipe region row id or local polygon GeoJSON |
+| `--region ID\|GEOJSON` | with --recipe: region row id (e.g. US) or local polygon GeoJSON the recipe is laid out on; requires --spacing-km |
 | `--region-table` | region JSON table override; adding a region requires data only |
 | `--root-dx KM` | custom root grid spacing in km [0.05, 200]; use with --chain instead of --ladder |
 | `--sf-surface-mosaic {0,1}` | Noah land-use tiles on every grid (WRF sf_surface_mosaic) |
-| `--source SOURCE` | forcing source: any registered source id or alias -- hrrr, hrrr-prs, gem-gdps, icon-global, icon-eu, icon-d2, gfs, gdas, gefs, aigfs, aigefs, ecmwf-open-data, ecmwf-ens, aifs, earth2, rap-native, hrrr-native, rap, rrfs, era5, era5-l137, 20crv3, 20crv3-cf, earth2-fcn3, earth2-sfno, earth2-pangu, earth2-aurora, earth2-fengwu, earth2-aifs, earth2-fuxi, earth2-stormcast, earth2-atlas, earth2-atlas-si, earth2-aifs2, earth2-aifs-ens, earth2-aifs2-ens, earth2-aurora15, earth2-aurora15-6h, earth2-aurora15-ensemble, earth2-aurora15-ensemble-6h, earth2-gencast-mini, earth2-weathernext2, earth2-weathernext2-mini, earth2-ucast, earth2-graphcast-operational, earth2-graphcast-small, earth2-stormcast-conus, earth2-atlas-crps today, plus hex-global, mapped with --cadence naming the spacing of the history files it will be handed (`gpuwm prep --list-sources` lists the whole registry). It sets the boundary cadence written into the companion namelist.wps, bounds the domain by the source's own grid where that grid is regional, and (era5) declares [case_data]. A source `gpuwm fetch` cannot download still emits the same geometry: one whose registry row declares a local input contract gets a [fetch] table (source, cycle, hours and its staging source_root) with the staging step named beside it, and any other has the acquisition step named in place of the table |
-| `--spacing-km` | recipe grid spacing in kilometres |
+| `--smoke` | with --recipe: turn on HRRR-Smoke (transported smoke, its radiative feedback, RAVE fires); in 2.9.4 it costs about 11x per step on full CONUS (measured on 8x RTX 5090) |
+| `--source SOURCE` | forcing source: any registered source id or alias -- hrrr, hrrr-prs, gem-gdps, icon-global, icon-eu, icon-d2, gfs, gdas, gefs-v11-flat, gefs-reforecast, gefs-reforecast-weekly, gefs-v11, gefs, aigfs, aigefs, ecmwf-open-data, ecmwf-ens, aifs, earth2, rap-native, hrrr-native, rap, rrfs, era5, era5-l137, 20crv3, 20crv3-cf, earth2-fcn3, earth2-sfno, earth2-pangu, earth2-aurora, earth2-fengwu, earth2-aifs, earth2-fuxi, earth2-stormcast, earth2-atlas, earth2-atlas-si, earth2-aifs2, earth2-aifs-ens, earth2-aifs2-ens, earth2-aurora15, earth2-aurora15-6h, earth2-aurora15-ensemble, earth2-aurora15-ensemble-6h, earth2-gencast-mini, earth2-weathernext2, earth2-weathernext2-mini, earth2-ucast, earth2-graphcast-operational, earth2-graphcast-small, earth2-stormcast-conus, earth2-atlas-crps today, plus hex-global, mapped with --cadence naming the spacing of the history files it will be handed (`gpuwm prep --list-sources` lists the whole registry). It sets the boundary cadence written into the companion namelist.wps, bounds the domain by the source's own grid where that grid is regional, and (era5) declares [case_data]. A source `gpuwm fetch` cannot download still emits the same geometry: one whose registry row declares a local input contract gets a [fetch] table (source, cycle, hours and its staging source_root) with the staging step named beside it, and any other has the acquisition step named in place of the table |
+| `--spacing-km` | with --recipe: grid spacing in kilometres; required whenever --region or --polygon is given with --recipe |
 | `--target-host-memory-json` | selected target host-memory snapshot for an explicit --card or --vram-gib budget; no local RAM sizing |
 | `--terrain-smoothing SPEC` | WPS terrain smoothing per domain, in domain order, the last repeating: none, 1-2-1, smth-desmth or smth-desmth_special, each with an optional :PASSES (e.g. none or smth-desmth_special,none); default: WPS's one smth-desmth_special pass |
 | `--terrain-smoothing-precision {float64,wps-float32}` | arithmetic of every domain whose terrain smoother is WPS's default smth-desmth_special x1: wps-float32 reproduces geogrid.exe's HGT_M exactly; default float64, ArWen's own smoother. Every other smoother always runs WPS's float32 |
@@ -530,7 +534,7 @@ Takes no options of its own.
 | `--hours` | explicit new duration; otherwise preserve template |
 | `--out` | new ordinary TOML path |
 | `--point` | center LAT,LON; fit largest centered layout |
-| `--point-extent-km KM` | largest root extent per axis a --point fit is sized to (default 6000); the projection pole, one trip around the globe, the source's coverage and the card still bound it, and an extent below the template's smallest root gets that root |
+| `--point-extent-km KM` | largest root extent a --point fit is sized to, on the longer root axis (x); the root keeps its 5:4 shape, so y is 0.8 of it (default 6000); the projection pole, one trip around the globe, the source's coverage and the card still bound it, and an extent below the template's smallest root gets that root |
 | `--polygon` | GeoJSON area; preserve its entire footprint |
 | `--root-dx KM` | explicit root cell spacing in km; scale the domain tree's spacing while preserving physics, vertical levels and clocks |
 | `--source` | input source, required only without [fetch].source |
@@ -623,11 +627,12 @@ Takes no options of its own.
 | `--card` | planning card name or capacity, passed to domain/cyclone-setup |
 | `--cycle` | explicit initialization in UTC, YYYY-MM-DDTHH |
 | `--diagnose` | diagnostic table rows: derived-ws10m, windgust |
-| `--dry-run` | write canonical JobSpec without fetching or running |
+| `--dry-run` | check the job against every refusal the real run applies and write its canonical JobSpec, without fetching or running |
 | `--earth2-input` | reuse a completed fetch directory after checking model, cycle, horizon, coverage and artifact hashes; auto placement searches a regional input's area |
 | `--ensemble` | _(the parser declares no help text for this option)_ |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--export {earth2}` | _(the parser declares no help text for this option)_ |
+| `--geog-root DIR` | geography tree the regional or nest preparation reads (default: the staged WPS_GEOG tree); a dry run checks the named tree |
 | `--hours` | _(the parser declares no help text for this option)_ |
 | `--ic-source` | initial conditions: era5, gfs, hrrr |
 | `--mix` | parent sources and counts, e.g. source:18,source:18 |
@@ -667,16 +672,16 @@ Takes no options of its own.
 | `--dpi N` | PNG resolution (default 150) |
 | `--engine {auto,rust,matplotlib}` | which renderer draws the panels (default auto). The render law puts weather fields on the Rust renderer; 'auto' uses rw_ensbatch when this checkout has built it and falls back to matplotlib with the reason named, 'rust' refuses rather than substituting, and 'matplotlib' selects the fallback outright |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
-| `--field LIST` | comma-separated product fields: refl, uh, precip, t2, wspd10, or 'all' (default refl; 'refl,uh' is the severe-convective pair) |
+| `--field LIST` | comma-separated product fields: visibility, fog_prob, refl, uh, precip, t2, wspd10, or 'all' (default refl; 'refl,uh' is the severe-convective pair) |
 | `--make-fixture DIR` | write a synthetic ensemble (members + manifest) to DIR and exit, for exercising the suite without a real ensemble |
 | `--members N` | --make-fixture member count (default 5) |
 | `--nan-policy {mask,refuse}` | what to do with a non-finite member value -- NaN or +/-Inf (default mask): 'mask' excludes it from every reduction at that point, shrinks the denominator with it, and stamps the resulting coverage on the panel; 'refuse' fails the whole product naming the members |
-| `--neighborhood-km LIST` | comma-separated neighborhood radii in km for the probability product (default 0 = point probability). Each member is reduced to its maximum within the radius before the ensemble fraction is taken |
+| `--neighborhood-km LIST` | comma-separated neighborhood radii in km for the probability product (default 0 = point probability). Each member uses its maximum (minimum for visibility) within the radius before the ensemble fraction is taken |
 | `--out DIR` | output directory for the PNGs (default out/enprod) |
 | `--pmm-tie-rule {flat-index,average}` | how the probability-matched mean resolves equal means (default flat-index): 'flat-index' is Ebert's algorithm exactly and paints a deterministic but meaningless row-major gradient across a plateau; 'average' gives every point in a tie the group's mean intensity and gives up the exact pooled distribution |
 | `--products LIST` | comma-separated products: mean, spread, prob, paintball, pmm, or 'all' (default) |
 | `--source-label TEXT` | model/provenance label stamped on every plot (default WOOF) |
-| `--threshold LIST` | comma-separated exceedance thresholds in the field's own units; default is the field's own (refl 40 dBZ, uh 75 m2 s-2). Every threshold gets its own probability and paintball plot |
+| `--threshold LIST` | comma-separated thresholds in the field's own units; default is the field's own (refl 40 dBZ, uh 75 m2 s-2; visibility strictly below 1000 and 400 m). Every threshold gets its own probability and paintball plot |
 | `--timeidx N\|all` | index into the valid times every member shares, or 'all' (default) |
 
 ## `gpuwm ensemble`
@@ -695,7 +700,7 @@ Takes no options of its own.
 | `--cards all\|0,1` | cards for checkpoint branches: all visible cards or visible ordinals |
 | `--center` | regional domain center LAT,LON |
 | `--cycle YYYY-MM-DDTHH\|latest` | download routes only: run the config at this cycle; wins over the config's [fetch] cycle the way --transport does. The config is re-timed (start time, delayed nests, namelists) into <outdir>/cycles/<cycle>/; latest is resolved once, under the run's posting rule (as posted: the newest cycle whose start needs are posted) |
-| `--cyclone-products JSON` | common Earth grid, every-step wind swath, cyclone track and verification product request |
+| `--cyclone-products JSON` | JSON common_grid and optional grid_id/products; ordinary go accumulates max-wind, gust, min-pressure and track at every committed step |
 | `--data-dir DIR` | download routes only: use this existing download instead of the automatically managed request cache |
 | `--devices N` | resident slab count; replaces [devices] count |
 | `--dry-run` | validate the route and show how to launch it; fetch and run nothing |
@@ -718,6 +723,7 @@ Takes no options of its own.
 | `--max-lag-hours` | oldest lagged cycle (0 disables lags) |
 | `--member ID` | select one generated source trajectory; fetch accepts member lists |
 | `--members N` | make an N-member ensemble with aggregate products |
+| `--nest-at LAT,LON[@TIME]` | spawn a storm-following nest at this point (at TIME, an ISO time or seconds into the run; default the first step); repeatable |
 | `--no-memory-gate` | skip the before-launch memory check that refuses a configuration whose binding phase cannot fit this card's free VRAM, and the forecast runner's own check of the same envelope; a model state too big to build at all is still refused |
 | `--no-probe` | with --readiness: compute the schedule from the source table only and ask no host |
 | `--no-surface-fill` | disable fill soil/SST perturbations |
@@ -727,6 +733,8 @@ Takes no options of its own.
 | `--prepare-only` | fetch and stream prepared inputs without starting a forecast |
 | `--prepared-root DIR` | run this existing prepared bundle without fetch or preparation; add --restart to continue its checkpoint |
 | `--products LIST` | which products the render stage draws: a comma-separated list of catalog slugs, 'all' (the default -- the renderer's whole catalog), or 'none' to stop after the forecast. The same spelling `gpuwm render --products` takes |
+| `--publish-cmd COMMAND` | optional delivery command; manifest JSON on stdin, no shell (default: off) |
+| `--publish-root DIR` | local static web root (default: run output/www) |
 | `--readiness` | print gpuwm.readiness.v1 for the config's fetch window on stdout and run nothing: exit 0 ready, 75 not yet, 2 refused |
 | `--readiness-fold` | _(accepted, but not listed by --help)_ |
 | `--recipe {wofs,time-lagged,multi-model,surface-state,member-roster}` | take each ensemble member from a real source trajectory: time-lagged runs earlier cycles of the config's own source over the same window, multi-model runs the trajectories --trajectories lists, surface-state runs seeded soil moisture scales and SST offsets from [ensemble.perturbation], member-roster runs named land and fixed surface arms from [ensemble.member_variants] |
@@ -735,14 +743,16 @@ Takes no options of its own.
 | `--resume-ensemble RUN` | retry unfinished checkpoint branches in RUN; preserve completed members and failed attempts |
 | `--run-stamp {on,off}` | put this run's forecast files, pictures and diagnostics in its own timestamped folder under --outdir (default on): --outdir/run-<YYYYMMDD>-<HHMMSS>Z_i<YYYYMMDD><HHMM>Z/ (launch instant UTC, then the model initialisation time; the _i part is omitted when the run's init time cannot be read). Successive runs of one configuration then never overwrite or interleave each other. 'off' writes straight into --outdir, which is what releases up to 2.4.1 did; it is kept only for a consumer still written against that and is a workaround, not a supported alternative |
 | `--section lat,lon,lat,lon\|FILE.json` | the line the vertical-section products (xsec:<fill>[/<overlay>...] in --products) are cut along, the same value `gpuwm render --section` takes; a JSON file gives {start, end} or a {points, extend_km} polyline. Spell a line that starts with a minus sign as --section=-33.9,151.2,-34.1,151.3. An xsec: product with no line is refused before anything is fetched |
-| `--source SOURCE[:N],...` | create a 3 km WoFS-shape ensemble domain; mixed family counts sum to --members; eligible registry ids: hrrr, hrrr-prs, gem-gdps, icon-global, icon-eu, icon-d2, gfs, gdas, gefs, aigfs, aigefs, ecmwf-open-data, ecmwf-ens, aifs, earth2, earth2-fcn3, earth2-sfno, earth2-pangu, earth2-aurora, earth2-fengwu, earth2-aifs, earth2-fuxi, earth2-stormcast, earth2-atlas, earth2-atlas-si, earth2-aifs2, earth2-aifs-ens, earth2-aifs2-ens, earth2-aurora15, earth2-aurora15-6h, earth2-aurora15-ensemble, earth2-aurora15-ensemble-6h, earth2-gencast-mini, earth2-weathernext2, earth2-weathernext2-mini, earth2-ucast, earth2-graphcast-operational, earth2-graphcast-small, earth2-stormcast-conus, earth2-atlas-crps, rap-native, hrrr-native, rap, rrfs, era5, era5-l137, 20crv3, 20crv3-cf |
+| `--smoke` | turn on HRRR-Smoke (transported smoke, its radiative feedback, RAVE fires); in 2.9.4 it costs about 11x per step on full CONUS (measured on 8x RTX 5090) |
+| `--source SOURCE[:N],...` | create a 3 km WoFS-shape ensemble domain; mixed family counts sum to --members; eligible registry ids: hrrr, hrrr-prs, gem-gdps, icon-global, icon-eu, icon-d2, gfs, gdas, gefs-v11-flat, gefs-reforecast, gefs-reforecast-weekly, gefs-v11, gefs, aigfs, aigefs, ecmwf-open-data, ecmwf-ens, aifs, earth2, earth2-fcn3, earth2-sfno, earth2-pangu, earth2-aurora, earth2-fengwu, earth2-aifs, earth2-fuxi, earth2-stormcast, earth2-atlas, earth2-atlas-si, earth2-aifs2, earth2-aifs-ens, earth2-aifs2-ens, earth2-aurora15, earth2-aurora15-6h, earth2-aurora15-ensemble, earth2-aurora15-ensemble-6h, earth2-gencast-mini, earth2-weathernext2, earth2-weathernext2-mini, earth2-ucast, earth2-graphcast-operational, earth2-graphcast-small, earth2-stormcast-conus, earth2-atlas-crps, rap-native, hrrr-native, rap, rrfs, era5, era5-l137, 20crv3, 20crv3-cf |
 | `--stage-only STAGE` | _(accepted, but not listed by --help)_ |
 | `--static-cache-key` | _(accepted, but not listed by --help)_ |
 | `--static-cache-root` | _(accepted, but not listed by --help)_ |
+| `--storm-nests N\|auto\|off` | storm-following fine nests that spawn on their own: N dormant slots (or 'auto', priced from the card's free memory) watch the parent's 2-5 km updraft helicity, each nest follows its storm and stops when it decays, merges or leaves the domain. Overrides the config's [storm_nests] slots; 'off' removes the automatic slots (docs/storm-nests.md) |
 | `--supplement ROLE=PATH` | explicit preparation donor; repeat for multiple files. HRRR accepts PMSL=GRIB inside --data-dir and binds its bytes in the preparation source manifest |
 | `--tiles {off,auto,on}` | [tiles] mode for this launch's forecast: 'auto' streams a domain the card cannot hold through host memory, 'on' always streams, 'off' runs resident. A prepared bundle (--prepared-root, --restart) takes it as an execution control, never into its hash-bound config; a fetching launch runs a copy of the config with the mode re-stated, as --cycle does |
 | `--trajectories FILE` | the multi-model member list: a JSON or TOML file of {source, cycle[, member]} entries, one per member (selects --recipe multi-model) |
-| `--transport {auto,aws,dwd,ecmwf,google,msc,nomads,s3}` | download routes only: pin the fetch stage to one host of the source's endpoint ladder, the value `gpuwm fetch --transport` takes; wins over the config's [fetch] transport, and the plan says which it used |
+| `--transport {auto,aws,dwd,ecmwf,gdex,google,msc,ncei-0p5,ncei-1p0,nomads,s3}` | download routes only: pin the fetch stage to one host of the source's endpoint ladder, the value `gpuwm fetch --transport` takes; wins over the config's [fetch] transport, and the plan says which it used |
 | `--warm-kernels` | _(accepted, but not listed by --help)_ |
 | `--whole-cycle` | download routes only: the fetch stage waits for the whole cycle (the old rule) instead of taking each lead as it posts; wins over the config's [fetch] as_posted |
 | `--wind-amplitude` | fill uniform U/V amplitude in m/s; 0 disables it |
@@ -863,14 +873,16 @@ Takes no options of its own.
 | `--out DIR` | output directory (created; complete files are skipped on re-run) |
 | `--p-top-pa PA` | gfs/gdas only: the model top (Pa) the fetched atmosphere must reach. The pressure ladder is extended upward along whatever the live inventory publishes until a level sits at or above it, so --p-top-pa 5000 fetches the 70 and 50 hPa levels the certified 100 hPa ladder stops short of. Omitted, the certified 21-level ladder is fetched exactly as before (a 10000 Pa source top). gpuwm go, run-plan and the desktop pass the config's own [shared].p_top when the certified ladder stops below it. A top the product cannot serve refuses and names the deepest it can |
 | `--point LAT,LON` | center point; requires --radius-km |
+| `--prepare-only` | Earth-2 sources: run only the CPU stage (weights, CPU model construction, initial conditions, donor) with no GPU, so it can run outside a card lease; the same command with a card then generates from it. Implied when CUDA devices are hidden |
 | `--radius-km KM` | half-width of the box around --point |
 | `--readiness` | print gpuwm.readiness.v1 for this window on stdout and fetch nothing: exit 0 ready (or nothing to probe), 75 not yet (with expected_ready_at and retry_after_seconds), 2 refused (the window can never start) |
 | `--retrieve` | ERA5: download and validate with the selected provider (default CDS); otherwise write a CDS retrieval template |
+| `--reuse-fetch DIR` | reuse a verified completed generated fetch covering this request before loading its model |
 | `--runtime-surface FIELDS` | comma-separated runtime surface fields (e.g. VEGFRA) the start must read from this cycle itself. A field the source table declares but this list omits starts from its recorded fallback when the cycle publishes no record for it; a listed field the cycle does not publish is refused by name |
-| `--source MODEL` | public data source: 20crv3-cf, aifs, aigefs, aigfs, earth2, earth2-ace2, earth2-aifs, earth2-aifs-ens, earth2-aifs2, earth2-aifs2-ens, earth2-atlas, earth2-atlas-crps, earth2-atlas-si, earth2-aurora, earth2-aurora15, earth2-aurora15-6h, earth2-aurora15-ensemble, earth2-aurora15-ensemble-6h, earth2-corrdiff, earth2-derived-ws10m, earth2-dlesym, earth2-dlwp, earth2-fcn, earth2-fcn3, earth2-fengwu, earth2-fuxi, earth2-fuxi-s2s, earth2-gencast-mini, earth2-graphcast-operational, earth2-graphcast-small, earth2-interpmodafno, earth2-pangu, earth2-sfno, earth2-stormcast, earth2-stormcast-conus, earth2-ucast, earth2-weathernext2, earth2-weathernext2-mini, earth2-windgust, ecmwf-ens, ecmwf-open-data, era5, gdas, gefs, gem-gdps, gfs, hrrr, hrrr-native, hrrr-prs, icon-d2, icon-eu, icon-global, rap, rap-native, rrfs, rrfs-ens. Registry aliases work too (gdps, ifs, hrrr-wrfprs). A registered source with no public bytes -- the 20CRv3 every-member archive, the generic 'mapped' adapter -- refuses by name and points at `gpuwm prep --source-root` |
+| `--source MODEL` | public data source: 20crv3-cf, aifs, aigefs, aigfs, earth2, earth2-ace2, earth2-aifs, earth2-aifs-ens, earth2-aifs2, earth2-aifs2-ens, earth2-atlas, earth2-atlas-crps, earth2-atlas-si, earth2-aurora, earth2-aurora15, earth2-aurora15-6h, earth2-aurora15-ensemble, earth2-aurora15-ensemble-6h, earth2-corrdiff, earth2-derived-ws10m, earth2-dlesym, earth2-dlwp, earth2-fcn, earth2-fcn3, earth2-fengwu, earth2-fuxi, earth2-fuxi-s2s, earth2-gencast-mini, earth2-graphcast-operational, earth2-graphcast-small, earth2-interpmodafno, earth2-pangu, earth2-sfno, earth2-stormcast, earth2-stormcast-conus, earth2-ucast, earth2-weathernext2, earth2-weathernext2-mini, earth2-windgust, ecmwf-ens, ecmwf-open-data, era5, gdas, gefs, gefs-reforecast, gefs-reforecast-land, gefs-reforecast-weekly, gefs-v11, gefs-v11-flat, gem-gdps, gfs, hrrr, hrrr-native, hrrr-prs, icon-d2, icon-eu, icon-global, ncep-r1-seaice, rap, rap-native, rrfs, rrfs-ens. Registry aliases work too (gdps, ifs, hrrr-wrfprs). A registered source with no public bytes -- the 20CRv3 every-member archive, the generic 'mapped' adapter -- refuses by name and points at `gpuwm prep --source-root` |
 | `--static-input NPZ` | optional prebuilt static cache (with --static-receipt); omit when the front door builds statics from --geog-root |
 | `--static-receipt JSON` | receipt for --static-input |
-| `--transport {auto,aws,dwd,ecmwf,google,msc,nomads,s3}` | pin one rung of the source's endpoint ladder. Every NCEP source declares an ORDERED ladder -- the operational server (nomads.ncep.noaa.gov) while it still holds the cycle, the AWS archive behind it -- and the default walks it. Retention decides which rungs are asked: a cycle older than the operational window goes straight to the archive. Throughput decides which one serves: each requested object is HEADed on the archive first and taken there when the archive already has it, because the operational server's head start is spent once both hosts have the same bytes; an object the archive has not caught up with comes from the operational server. A refusal, a 403/503 or a Retry-After moves to the next rung either way. Where a source's ladder carries both hosts they serve byte-identical objects under identical keys, so the choice never changes the data, except for AI-GEFS: NOMADS marks each member with ensemble type 6 where the AWS copy of the same member says 3, the AWS surface files carry an extra surface pressure record, and the AWS pressure-level files are repacked copies whose heights sit within 0.08 gpm of the NOMADS ones. Preparation reads AI-GEFS from either host the same way and derives surface pressure itself on both. Naming a host here is a decision: it skips the probe, disables fall-through, and refuses in that host's own words. A host a source does not carry refuses and lists the ones it does, because for some products the second copy is a DIFFERENT product (see `gpuwm fetch --source aigfs`) |
+| `--transport {auto,aws,dwd,ecmwf,gdex,google,msc,ncei-0p5,ncei-1p0,nomads,s3}` | pin one rung of the source's endpoint ladder. Every NCEP source declares an ORDERED ladder -- the operational server (nomads.ncep.noaa.gov) while it still holds the cycle, the AWS archive behind it -- and the default walks it. Retention decides which rungs are asked: a cycle older than the operational window goes straight to the archive. Throughput decides which one serves: each requested object is HEADed on the archive first and taken there when the archive already has it, because the operational server's head start is spent once both hosts have the same bytes; an object the archive has not caught up with comes from the operational server. A refusal, a 403/503 or a Retry-After moves to the next rung either way. Where a source's ladder carries both hosts they serve byte-identical objects under identical keys, so the choice never changes the data, except for AI-GEFS: NOMADS marks each member with ensemble type 6 where the AWS copy of the same member says 3, the AWS surface files carry an extra surface pressure record, and the AWS pressure-level files are repacked copies whose heights sit within 0.08 gpm of the NOMADS ones. Preparation reads AI-GEFS from either host the same way and derives surface pressure itself on both. Naming a host here is a decision: it skips the probe, disables fall-through, and refuses in that host's own words. A host a source does not carry refuses and lists the ones it does, because for some products the second copy is a DIFFERENT product (see `gpuwm fetch --source aigfs`) |
 | `--validate GRIB` | era5 only: validate user-supplied GRIB1 file(s) against what gpuwm ingest expects instead of fetching |
 | `--wait-for` | the same as --as-posted, for every source |
 | `--wait-timeout-minutes MIN` | a cap on the whole window, for every source: exit 75 if the window is not all in by then, keeping the fetched prefix |
@@ -897,7 +909,7 @@ Takes no options of its own.
 | `--allow-upstream-drift` | legacy spelling; refused by the native production route because unpinned geography changes prepared fields under the same dataset version |
 | `--bundle` | fetch NCAR's single geog_high_res_mandatory.tar.gz (2.6 GiB) instead of the per-dataset tarballs and extract the requested datasets from it (fallback; NCAR only) |
 | `--config FILE` | resolve only the geography this experiment's domains read; includes selected published static sources |
-| `--datasets default\|all\|CONSUMER\|NAME,NAME` | which datasets to stage (default keeps the WRF and mesh set; chem-dust opts into the three upstream dust datasets; all selects every pin). A consumer name stands for one door's whole set: 'wrf' is the 9 the WRF static builder opens, 'mesh' is what gpuwm mesh needs for the static half of its pair. Use '--datasets wrf' to skip the ~14 GiB Noah-MP soil archive that only gpuwm mesh reads |
+| `--datasets default\|all\|CONSUMER\|NAME,NAME` | which datasets to stage (default keeps the WRF and mesh set; chem-dust opts into the three upstream dust datasets; all selects every pin). A consumer name stands for one door's whole set: 'wrf' is the 8 the WRF static builder opens, 'mesh' is what gpuwm mesh needs for the static half of its pair. Use '--datasets wrf' to skip the ~1.7 GiB of land-use pins that only gpuwm mesh reads |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--keep-archives` | keep the verified tarballs under <root>/.fetch-geog after extraction (default: remove each one after its datasets validate) |
 | `--list` | print the dataset/size/source table and per-dataset staged state, then exit without touching the network (--explain does the same and adds which door needs each dataset and its URL) |
@@ -911,6 +923,9 @@ Takes no options of its own.
 |---|---|
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--from DIR` | stage from a local directory instead of downloading (offline installs); verification is identical |
+| `--ocean` | also stage the 12 NOAA WOA18 monthly mixed-layer-depth files (about 85 MB) the default mixed-layer ocean initializes from, SHA-256 verified, into the cache forecasts read (GPUWM_OCEAN_CACHE, else <case data root>/ocean), so no forecast fetches them from NCEI at start |
+| `--ocean-only` | stage only the ocean climatology and leave the coefficient tables alone |
+| `--ocean-root DIR` | stage the ocean climatology into DIR (same meaning as GPUWM_OCEAN_CACHE) |
 | `--thompson-fork` | also stage the pinned WRF 3.9 fork Thompson coefficient set (thompson_version = "wrf_39_noaa", the HRRR configurations' tables; 330 MiB) into ~/.gpuwm/tables/thompson-wrf39-noaa: from --from DIR, packaged fork data, an explicitly selected mirror, or the release assets, SHA-256-verified against the packaged pins before install. Runs that select the fork acquire it automatically |
 | `--thompson-fork-only` | stage only the fork coefficient set and leave classic tables alone |
 | `--thompson-fork-root DIR` | stage fork tables into DIR instead of the selected fork cache |
@@ -934,6 +949,18 @@ Takes no options of its own.
 | `--restart` | restore the byte-exact fire and atmosphere checkpoint |
 | `--run-seconds` | _(the parser declares no help text for this option)_ |
 | `--sounding` | native input_sounding (default: input directory) |
+
+## `gpuwm fire-ignition`
+
+| argument | what it does |
+|---|---|
+| `request` | _(the parser declares no help text for this option)_ |
+
+| option | what it does |
+|---|---|
+| `--domain` | _(the parser declares no help text for this option)_ |
+| `--experiment` | _(the parser declares no help text for this option)_ |
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 
 ## `gpuwm fire-static`
 
@@ -967,7 +994,7 @@ Takes no options of its own.
 | `--cards all\|0,1` | cards for checkpoint branches: all visible cards or visible ordinals |
 | `--center` | regional domain center LAT,LON |
 | `--cycle YYYY-MM-DDTHH\|latest` | download routes only: run the config at this cycle; wins over the config's [fetch] cycle the way --transport does. The config is re-timed (start time, delayed nests, namelists) into <outdir>/cycles/<cycle>/; latest is resolved once, under the run's posting rule (as posted: the newest cycle whose start needs are posted) |
-| `--cyclone-products JSON` | common Earth grid, every-step wind swath, cyclone track and verification product request |
+| `--cyclone-products JSON` | JSON common_grid and optional grid_id/products; ordinary go accumulates max-wind, gust, min-pressure and track at every committed step |
 | `--data-dir DIR` | download routes only: use this existing download instead of the automatically managed request cache |
 | `--devices N` | resident slab count; replaces [devices] count |
 | `--dry-run` | validate the route and show how to launch it; fetch and run nothing |
@@ -990,6 +1017,7 @@ Takes no options of its own.
 | `--max-lag-hours` | oldest lagged cycle (0 disables lags) |
 | `--member ID` | select one generated source trajectory; fetch accepts member lists |
 | `--members N` | make an N-member ensemble with aggregate products |
+| `--nest-at LAT,LON[@TIME]` | spawn a storm-following nest at this point (at TIME, an ISO time or seconds into the run; default the first step); repeatable |
 | `--no-memory-gate` | skip the before-launch memory check that refuses a configuration whose binding phase cannot fit this card's free VRAM, and the forecast runner's own check of the same envelope; a model state too big to build at all is still refused |
 | `--no-probe` | with --readiness: compute the schedule from the source table only and ask no host |
 | `--no-surface-fill` | disable fill soil/SST perturbations |
@@ -999,6 +1027,8 @@ Takes no options of its own.
 | `--prepare-only` | fetch and stream prepared inputs without starting a forecast |
 | `--prepared-root DIR` | run this existing prepared bundle without fetch or preparation; add --restart to continue its checkpoint |
 | `--products LIST` | which products the render stage draws: a comma-separated list of catalog slugs, 'all' (the default -- the renderer's whole catalog), or 'none' to stop after the forecast. The same spelling `gpuwm render --products` takes |
+| `--publish-cmd COMMAND` | optional delivery command; manifest JSON on stdin, no shell (default: off) |
+| `--publish-root DIR` | local static web root (default: run output/www) |
 | `--readiness` | print gpuwm.readiness.v1 for the config's fetch window on stdout and run nothing: exit 0 ready, 75 not yet, 2 refused |
 | `--readiness-fold` | _(accepted, but not listed by --help)_ |
 | `--recipe {wofs,time-lagged,multi-model,surface-state,member-roster}` | take each ensemble member from a real source trajectory: time-lagged runs earlier cycles of the config's own source over the same window, multi-model runs the trajectories --trajectories lists, surface-state runs seeded soil moisture scales and SST offsets from [ensemble.perturbation], member-roster runs named land and fixed surface arms from [ensemble.member_variants] |
@@ -1007,14 +1037,16 @@ Takes no options of its own.
 | `--resume-ensemble RUN` | retry unfinished checkpoint branches in RUN; preserve completed members and failed attempts |
 | `--run-stamp {on,off}` | put this run's forecast files, pictures and diagnostics in its own timestamped folder under --outdir (default on): --outdir/run-<YYYYMMDD>-<HHMMSS>Z_i<YYYYMMDD><HHMM>Z/ (launch instant UTC, then the model initialisation time; the _i part is omitted when the run's init time cannot be read). Successive runs of one configuration then never overwrite or interleave each other. 'off' writes straight into --outdir, which is what releases up to 2.4.1 did; it is kept only for a consumer still written against that and is a workaround, not a supported alternative |
 | `--section lat,lon,lat,lon\|FILE.json` | the line the vertical-section products (xsec:<fill>[/<overlay>...] in --products) are cut along, the same value `gpuwm render --section` takes; a JSON file gives {start, end} or a {points, extend_km} polyline. Spell a line that starts with a minus sign as --section=-33.9,151.2,-34.1,151.3. An xsec: product with no line is refused before anything is fetched |
-| `--source SOURCE[:N],...` | create a 3 km WoFS-shape ensemble domain; mixed family counts sum to --members; eligible registry ids: hrrr, hrrr-prs, gem-gdps, icon-global, icon-eu, icon-d2, gfs, gdas, gefs, aigfs, aigefs, ecmwf-open-data, ecmwf-ens, aifs, earth2, earth2-fcn3, earth2-sfno, earth2-pangu, earth2-aurora, earth2-fengwu, earth2-aifs, earth2-fuxi, earth2-stormcast, earth2-atlas, earth2-atlas-si, earth2-aifs2, earth2-aifs-ens, earth2-aifs2-ens, earth2-aurora15, earth2-aurora15-6h, earth2-aurora15-ensemble, earth2-aurora15-ensemble-6h, earth2-gencast-mini, earth2-weathernext2, earth2-weathernext2-mini, earth2-ucast, earth2-graphcast-operational, earth2-graphcast-small, earth2-stormcast-conus, earth2-atlas-crps, rap-native, hrrr-native, rap, rrfs, era5, era5-l137, 20crv3, 20crv3-cf |
+| `--smoke` | turn on HRRR-Smoke (transported smoke, its radiative feedback, RAVE fires); in 2.9.4 it costs about 11x per step on full CONUS (measured on 8x RTX 5090) |
+| `--source SOURCE[:N],...` | create a 3 km WoFS-shape ensemble domain; mixed family counts sum to --members; eligible registry ids: hrrr, hrrr-prs, gem-gdps, icon-global, icon-eu, icon-d2, gfs, gdas, gefs-v11-flat, gefs-reforecast, gefs-reforecast-weekly, gefs-v11, gefs, aigfs, aigefs, ecmwf-open-data, ecmwf-ens, aifs, earth2, earth2-fcn3, earth2-sfno, earth2-pangu, earth2-aurora, earth2-fengwu, earth2-aifs, earth2-fuxi, earth2-stormcast, earth2-atlas, earth2-atlas-si, earth2-aifs2, earth2-aifs-ens, earth2-aifs2-ens, earth2-aurora15, earth2-aurora15-6h, earth2-aurora15-ensemble, earth2-aurora15-ensemble-6h, earth2-gencast-mini, earth2-weathernext2, earth2-weathernext2-mini, earth2-ucast, earth2-graphcast-operational, earth2-graphcast-small, earth2-stormcast-conus, earth2-atlas-crps, rap-native, hrrr-native, rap, rrfs, era5, era5-l137, 20crv3, 20crv3-cf |
 | `--stage-only STAGE` | _(accepted, but not listed by --help)_ |
 | `--static-cache-key` | _(accepted, but not listed by --help)_ |
 | `--static-cache-root` | _(accepted, but not listed by --help)_ |
+| `--storm-nests N\|auto\|off` | storm-following fine nests that spawn on their own: N dormant slots (or 'auto', priced from the card's free memory) watch the parent's 2-5 km updraft helicity, each nest follows its storm and stops when it decays, merges or leaves the domain. Overrides the config's [storm_nests] slots; 'off' removes the automatic slots (docs/storm-nests.md) |
 | `--supplement ROLE=PATH` | explicit preparation donor; repeat for multiple files. HRRR accepts PMSL=GRIB inside --data-dir and binds its bytes in the preparation source manifest |
 | `--tiles {off,auto,on}` | [tiles] mode for this launch's forecast: 'auto' streams a domain the card cannot hold through host memory, 'on' always streams, 'off' runs resident. A prepared bundle (--prepared-root, --restart) takes it as an execution control, never into its hash-bound config; a fetching launch runs a copy of the config with the mode re-stated, as --cycle does |
 | `--trajectories FILE` | the multi-model member list: a JSON or TOML file of {source, cycle[, member]} entries, one per member (selects --recipe multi-model) |
-| `--transport {auto,aws,dwd,ecmwf,google,msc,nomads,s3}` | download routes only: pin the fetch stage to one host of the source's endpoint ladder, the value `gpuwm fetch --transport` takes; wins over the config's [fetch] transport, and the plan says which it used |
+| `--transport {auto,aws,dwd,ecmwf,gdex,google,msc,ncei-0p5,ncei-1p0,nomads,s3}` | download routes only: pin the fetch stage to one host of the source's endpoint ladder, the value `gpuwm fetch --transport` takes; wins over the config's [fetch] transport, and the plan says which it used |
 | `--warm-kernels` | _(accepted, but not listed by --help)_ |
 | `--whole-cycle` | download routes only: the fetch stage waits for the whole cycle (the old rule) instead of taking each lead as it posts; wins over the config's [fetch] as_posted |
 | `--wind-amplitude` | fill uniform U/V amplitude in m/s; 0 disables it |
@@ -1042,9 +1074,34 @@ Takes no options of its own.
 
 | option | what it does |
 |---|---|
+| `--accept-licence LICENCE` | explicitly accept a model row's exact restricted/unresolved weight licence; repeat for multiple licences |
 | `--cache` | cache root (default GPUWM_HF_CACHE or ~/.cache/gpuwm/hf) |
 | `--connections` | parallel HTTP connections, 1..30 (default 30) |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+
+## `gpuwm hubwind`
+
+| option | what it does |
+|---|---|
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+
+## `gpuwm hubwind catalog`
+
+Takes no options of its own.
+
+## `gpuwm hubwind fetch-observations`
+
+| option | what it does |
+|---|---|
+| `--date` | UTC YYYY-MM-DD |
+| `--network {noaa_bao_100m,noaa_bao_300m}` | _(the parser declares no help text for this option)_ |
+| `--out` | _(the parser declares no help text for this option)_ |
+
+## `gpuwm hubwind products`
+
+| option | what it does |
+|---|---|
+| `--request` | _(the parser declares no help text for this option)_ |
 
 ## `gpuwm hydro`
 
@@ -1280,6 +1337,34 @@ Takes no options of its own.
 |---|---|
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--output NPZ` | initialized-state NPZ output |
+
+## `gpuwm kernels`
+
+| option | what it does |
+|---|---|
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+
+## `gpuwm kernels pack`
+
+| argument | what it does |
+|---|---|
+| `output` | _(the parser declares no help text for this option)_ |
+
+| option | what it does |
+|---|---|
+| `--arch` | SM filter, e.g. sm_120 or sm_89; repeatable |
+| `--cache` | override GPUWM_KERNEL_CACHE |
+
+## `gpuwm kernels seed`
+
+| argument | what it does |
+|---|---|
+| `pack` | _(the parser declares no help text for this option)_ |
+
+| option | what it does |
+|---|---|
+| `--cache` | override GPUWM_KERNEL_CACHE |
+| `--sha256` | expected SHA256; defaults to PACK.sha256 |
 
 ## `gpuwm local-da`
 
@@ -1518,6 +1603,14 @@ Takes no options of its own.
 
 Takes no options of its own.
 
+## `gpuwm obs hail`
+
+| argument | what it does |
+|---|---|
+| `ARGS ...` | arguments passed to the instrument's binary unchanged, --help included; gpuwm's own flags must come before the instrument name |
+
+Takes no options of its own.
+
 ## `gpuwm obs mrms`
 
 | argument | what it does |
@@ -1700,6 +1793,62 @@ Takes no options of its own.
 |---|---|
 | `--dir` | the directory `fetch` wrote the streams under |
 
+## `gpuwm ocean`
+
+| option | what it does |
+|---|---|
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+
+## `gpuwm ocean extract`
+
+| argument | what it does |
+|---|---|
+| `request` | _(the parser declares no help text for this option)_ |
+
+Takes no options of its own.
+
+## `gpuwm ocean prepare`
+
+| argument | what it does |
+|---|---|
+| `request` | _(the parser declares no help text for this option)_ |
+
+Takes no options of its own.
+
+## `gpuwm ocean prove-forcing`
+
+| argument | what it does |
+|---|---|
+| `config` | _(the parser declares no help text for this option)_ |
+
+| option | what it does |
+|---|---|
+| `--forcing` | _(the parser declares no help text for this option)_ |
+| `--outdir` | _(the parser declares no help text for this option)_ |
+| `--render` | _(the parser declares no help text for this option)_ |
+| `--research-data-licence` | explicit opt-in to the named non-default data licence |
+
+## `gpuwm ocean render`
+
+| argument | what it does |
+|---|---|
+| `request` | _(the parser declares no help text for this option)_ |
+
+Takes no options of its own.
+
+## `gpuwm ocean run`
+
+| argument | what it does |
+|---|---|
+| `config` | _(the parser declares no help text for this option)_ |
+
+| option | what it does |
+|---|---|
+| `--forcing` | _(the parser declares no help text for this option)_ |
+| `--outdir` | _(the parser declares no help text for this option)_ |
+| `--render` | _(the parser declares no help text for this option)_ |
+| `--research-data-licence` | explicit opt-in to the named non-default data licence |
+
 ## `gpuwm physics-catalog`
 
 | option | what it does |
@@ -1729,7 +1878,7 @@ Takes no options of its own.
 | `--composition` | strict gpuwm-mapped-composition-v2 product join contract |
 | `--contributing-mapping ROLE=PATH` | cross-source composition: a contributing source's own mapping document under the mapping_role its field_sources binding declares; bytes must hash to the composition's pinned SHA-256 |
 | `--cpu-preprocess-bridge` | _(the parser declares no help text for this option)_ |
-| `--cycle` | GFS cycle in YYYY-MM-DD_HH:MM:SS form |
+| `--cycle` | GFS cycle, YYYY-MM-DDTHH or YYYY-MM-DD_HH:MM:SS |
 | `--descriptor` | explicit rw-wps.descriptor.v1 science contract; requires --author-mapping and, for GRIB, --vtable |
 | `--domain-source-orography DNN=PATH` | ERA5 hierarchy source-orography binding; repeat once for every domain (d01..dNN). All bindings use --source-orography-variable |
 | `--domain-spec` | strict gpuwm-hrrr-target-domain-v1 Lambert root-domain JSON; nested layouts come from --wps-namelist/--namelist-input |
@@ -1789,7 +1938,7 @@ Takes no options of its own.
 | `--stock-wrf-export {optional,required,off}` | mapped preparation's WRF file product: optional by default, required with early configuration admission, or off |
 | `--stock-wrf-namelist-input` | unchanged-stock-WRF namelist matching the native hierarchy except for the certified longwave selection and the stock-only ghg_input and do_radar_ref keys; both declare use_theta_m = 0, the dry theta the exported files hold |
 | `--supplement ROLE=PATH` | composition supplement binding; repeat roles for multiple files |
-| `--valid-time` | initial UTC time in WRF form YYYY-MM-DD_HH:MM:SS. On --source hrrr this is the CYCLE; model time zero is cycle + --forecast-start-hour and is derived for every stage |
+| `--valid-time` | initial UTC time, YYYY-MM-DDTHH or WRF form YYYY-MM-DD_HH:MM:SS. On --source hrrr this is the CYCLE; model time zero is cycle + --forecast-start-hour and is derived for every stage |
 | `--validate-hrrr-domain PATH` | validate a strict HRRR target domain and its complete native interpolation window |
 | `--validate-physics-plan PATH` | validate and resolve a gpuwm-physics-plan-v2 JSON document |
 | `--vtable` | ERA5 GRIB1 Vtable |
@@ -1877,6 +2026,40 @@ Takes no options of its own.
 | `name` | _(the parser declares no help text for this option)_ |
 
 Takes no options of its own.
+
+## `gpuwm race`
+
+| argument | what it does |
+|---|---|
+| `recipe` | recipe ID or registry alias |
+
+| option | what it does |
+|---|---|
+| `--box-label` | label for the measured box in a dry prediction |
+| `--cycle` | HHZ (today UTC) or YYYY-MM-DDTHH |
+| `--data-dir` | existing downloaded input cache |
+| `--devices` | _(the parser declares no help text for this option)_ |
+| `--dry` | predict from observed posting times; no forecast |
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+| `--hours` | forecast horizon (default 48; use 1 for the live door test) |
+| `--hydro auto\|on\|off\|SETTINGS.toml` | preserve the forecast default, explicitly enable/disable hydro, or select settings |
+| `--initial-inputs` | separate analysis manifest for the go fallback |
+| `--launch-delay` | seconds from analysis LastModified to launch (default 0) |
+| `--launch-to-first-step` | seconds from launch to the first completed step |
+| `--measurement-note` | measurement workload or prediction assumption, preserved in receipt |
+| `--object-endpoint` | S3-compatible listing URL (supports a local HTTP test store) |
+| `--outdir` | parent for a fresh receipt/run directory |
+| `--poll-seconds` | source listing interval, at least 20 seconds (two sources; default 30) |
+| `--posting-times` | timing study JSON; default fetch cycle's live S3 listing |
+| `--products` | products defining online, passed to forecast |
+| `--publish-lag` | seconds from hour close to products online |
+| `--publish-receipt` | explicit hourly publish receipt |
+| `--publish-root` | local web root; default RUN/www |
+| `--receipt` | JSON with prediction_inputs (or top-level timing keys) |
+| `--seconds-per-hour` | measured steady wall seconds per forecast hour, including output workload |
+| `--smoke` | turn on HRRR-Smoke (transported smoke, its radiative feedback, RAVE fires); in 2.9.4 it costs about 11x per step on full CONUS (measured on 8x RTX 5090) |
+| `--tiles {auto,off,on}` | _(the parser declares no help text for this option)_ |
+| `--watch-timeout` | observation budget in seconds; never kills forecast |
 
 ## `gpuwm remote`
 
@@ -2180,7 +2363,7 @@ Takes no options of its own.
 | `--bounds W,E,S,N` | CF geographic extent in degrees, e.g. --bounds=-125,-66,24,50 |
 | `--cf FILE.nc` | render a native CF diagnostic grid with file source provenance |
 | `--cf-table FILE.json` | CF variable product table (default: packaged production rows) |
-| `--compare REFERENCE[,REFERENCE...]` | draw each frame beside ordered native references (for example hrrr,mrms or hrrr,rrfs,mrms), on one grid and colour scale. Forecast references share the valid time; observation panels label their actual observation time. The native --list-products catalogue lists references and supported products. WRFOUT may be frames or a run folder |
+| `--compare REFERENCE[,REFERENCE...]` | draw each frame beside ordered native references (for example hrrr,mrms or hrrr,rrfs,mrms), on one grid and colour scale. Forecast references share the valid time; observation panels label their actual observation time. The native --list-products catalogue lists references and supported products. WRFOUT may be frames or a run folder. The map rasters are filled on a CUDA card: the first one CUDA_VISIBLE_DEVICES exposes (CUDA's device 0 when it is unset; the run names the card it uses). RUSTWX_RASTER_DEVICE=cpu fills them on the CPU |
 | `--compare-cache DIR` | where fetched reference subsets are kept between renders (default ~/.gpuwm/cache/compare-reference) |
 | `--compare-cycle YYYYMMDDHH` | compare against THIS reference cycle instead of the run's own start time |
 | `--compare-difference {auto,on,off}` | run-minus-reference panels: 'auto' (default) draws continuous differences with one reference and only field panels with a reference list; 'on' adds a difference for each reference whose units have a difference ladder; 'off' never |
@@ -2200,6 +2383,7 @@ Takes no options of its own.
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--grib2-out DIR` | also export every input frame as native surface and pressure-level GRIB2 |
 | `--heavy` | rust engine: also compute the heavy ECAPE product family at import (SBECAPE/SBNCAPE/SBECIN, ECAPE SCP/EHI/...; adds substantial per-frame import time) |
+| `--hubwind-config JSON\|TOML` | hub heights, turbine, exceedance and ramp settings; JSON options or [hubwind] TOML |
 | `--inputs-from FILE` | _(accepted, but not listed by --help)_ |
 | `--isotherms L,L,...[@H]` | rust engine: the isotherms (C) drawn on every section, with an optional highlighted one after '@' (e.g. 0,-5,-10,-15,-20@-10); default 0,-10,-20,-30,-40 |
 | `--layout {nested,flat}` | how the PNGs are arranged inside this render's run folder: 'nested' (default) files each picture at <run folder>/<domain>/<product>/<valid-day>/<file>.png (domain as d02-3km / d05-111m / native_grid, valid-day as YYYY-MM-DD), so a run's thousands of frames are separated by nest, by chart and by day and a script can predict a path without globbing; 'flat' writes every picture directly into the run folder, which is what releases up to 2.4.1 did and is kept only for consumers still written against it (with --run-stamp off it is the v2.4.1 tree exactly) |
@@ -2333,11 +2517,13 @@ Takes no options of its own.
 | `--analysis BUNDLE` | WRF inputs: start from an analysis bundle (wrf-analysis-bundle/1, docs/analysis-bundle-wrf.md): a directory or its manifest.json. Every file is checked by SHA-256, and a grid, vertical coordinate or static field other than the run's is refused by name. The analysis (or, with --iau on, its background) becomes the run's wrfinput; with --restart or --restart-from it is added at the restart instant |
 | `--analysis-work DIR` | with --analysis: where the door writes what it derives (the run directory, the background, the rebased boundary, the plan); default <outdir>.analysis-work/<manifest digest> |
 | `--benchmark` | WRF inputs: time the forecast as a benchmark. Draws no products and runs no post-run verification, then prints the read, init, first step, steps and write times WRF's rsl.out reports, and the process total (also OUTDIR/benchmark-timing.json) |
+| `--checkpoint-at TIMES` | WRF inputs: write only these scheduled checkpoints, as comma-separated WRF valid times (2022-06-13_22:00:00) or `end`; each must be a restart_interval instant of the run. Absent writes every scheduled checkpoint |
 | `--directory-input-hash {inventory,content}` | how declared directory inputs (the static geography tree) are bound to this run's identity: 'inventory' (default) uses relative path, size, and mtime; 'content' reads every file and uses its SHA-256. Use 'content' when two runs being compared for byte identity stage their geography separately, and when an mtime-preserving change to that tree must not go unnoticed (docs/public/DETERMINISM.md). Also settable as GPUWM_DIRECTORY_INPUT_HASH. |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--family-weights ai=0.5,physics=0.5` | family probability masses, must sum to 1; defaults to member shares |
 | `--gpu-uuid GPU-UUID` | physical GPU UUID to lock (required on multi-GPU hosts) |
 | `--health-debug` | enable debug phase health attribution hooks |
+| `--hydro off\|SETTINGS.toml` | hydro is on wherever a hydrofabric covers the domain; off disables it, a TOML file selects settings (as on gpuwm go) |
 | `--iau {on,off}` | with --analysis: 'on' starts from the background and forces the increment over the IAU window inside every RK stage; 'off' inserts the analysis at the start. Default: on when the bundle carries increment.nc, off otherwise |
 | `--iau-boundary {background,analysis}` | with --analysis and IAU on a cold start: what the lateral boundary's first record is the coupling of. 'background' (the default, measured the smaller rim disturbance) keeps the boundary of the state the run starts from; 'analysis' rebases it onto the analysis and leaves the whole boundary zone to it |
 | `--iau-fields {all,dynamics}` | with --analysis and IAU: 'all' (the default) forces every field the increment carries; 'dynamics' forces winds, theta, vapour and geopotential and puts the hydrometeors in at the window start |
@@ -2402,7 +2588,8 @@ Takes no options of its own.
 |---|---|
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--from DIR` | stage the bridge and table artifacts from a local directory instead of downloading (offline installs); verification is identical. Does not apply to --with-geog, which has its own --source |
-| `--with-geog` | also stage the WPS_GEOG static geography (~2.2 GB compressed, ~35 GB unpacked); the size is printed before anything downloads |
+| `--with-earth2` | also build the managed Earth2Studio environment (torch, earth2studio with the fcn3, cyclone and diagnostic extras) and the TempestExtremes tools that gpuwm tc-tracks and gpuwm earth2-diagnose run; several GB of wheels, built at GPUWM_EARTH2_ENV (default ~/.local/share/gpuwm/earth2-env) |
+| `--with-geog` | also stage the WPS_GEOG static geography (~2.7 GB compressed, ~34 GB unpacked); the size is printed before anything downloads |
 
 ## `gpuwm sim`
 
@@ -2451,6 +2638,36 @@ Takes no options of its own.
 | `--outdir` | run root receiving radar/manifest.json |
 | `--sites` | auto or comma-separated radar IDs |
 | `--timing {history,scan}` | history scans each saved snapshot; scan lets rays use neighboring history times (overrides the --config table; default history) |
+
+## `gpuwm solar`
+
+| option | what it does |
+|---|---|
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+
+## `gpuwm solar catalog`
+
+Takes no options of its own.
+
+## `gpuwm solar fetch-observations`
+
+| option | what it does |
+|---|---|
+| `--date` | _(the parser declares no help text for this option)_ |
+| `--directory` | _(the parser declares no help text for this option)_ |
+| `--network {surfrad,solrad}` | _(the parser declares no help text for this option)_ |
+| `--out` | _(the parser declares no help text for this option)_ |
+| `--prefix` | _(the parser declares no help text for this option)_ |
+
+## `gpuwm solar products`
+
+| option | what it does |
+|---|---|
+| `--out` | _(the parser declares no help text for this option)_ |
+| `--products` | comma-separated solar slugs; default all |
+| `--request` | _(the parser declares no help text for this option)_ |
+| `--systems` | _(the parser declares no help text for this option)_ |
+| `--wrfout` | _(the parser declares no help text for this option)_ |
 
 ## `gpuwm soundings`
 
@@ -2648,6 +2865,27 @@ Takes no options of its own.
 | `--staged DIR` | the directory holding this course's already-staged input bytes. Required to run a course: the clock starts here, so the download must have happened before the door is called |
 | `--verify CAPSULE` | verify one capsule's seal and evidence and print its record line, instead of running anything |
 
+## `gpuwm standby`
+
+| option | what it does |
+|---|---|
+| `--cycle` | _(the parser declares no help text for this option)_ |
+| `--data-dir` | _(the parser declares no help text for this option)_ |
+| `--devices` | _(the parser declares no help text for this option)_ |
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+| `--fetch-workers` | _(the parser declares no help text for this option)_ |
+| `--geog-root` | _(the parser declares no help text for this option)_ |
+| `--hours` | _(the parser declares no help text for this option)_ |
+| `--hydro auto\|off\|SETTINGS` | _(the parser declares no help text for this option)_ |
+| `--outdir` | _(the parser declares no help text for this option)_ |
+| `--poll-s` | _(the parser declares no help text for this option)_ |
+| `--products, --render-products` | _(the parser declares no help text for this option)_ |
+| `--publish-root` | _(the parser declares no help text for this option)_ |
+| `--recipe` | _(the parser declares no help text for this option)_ |
+| `--smoke` | turn on HRRR-Smoke (transported smoke, its radiative feedback, RAVE fires); in 2.9.4 it costs about 11x per step on full CONUS (measured on 8x RTX 5090) |
+| `--tiles {auto,on,off}` | _(the parser declares no help text for this option)_ |
+| `--wait-timeout-s` | _(the parser declares no help text for this option)_ |
+
 ## `gpuwm static`
 
 | argument | what it does |
@@ -2658,6 +2896,20 @@ Takes no options of its own.
 |---|---|
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--output NPZ` | static-field NPZ output |
+
+## `gpuwm storm-detect`
+
+| option | what it does |
+|---|---|
+| `--basin` | basin id in the threshold table |
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+| `--manifest` | _(the parser declares no help text for this option)_ |
+| `--out` | _(the parser declares no help text for this option)_ |
+| `--reference` | _(the parser declares no help text for this option)_ |
+| `--reference-license` | explicit research opt-in for the reference data licence |
+| `--render` | _(the parser declares no help text for this option)_ |
+| `--rows` | _(the parser declares no help text for this option)_ |
+| `--workers` | _(the parser declares no help text for this option)_ |
 
 ## `gpuwm storm-diagnostics`
 
@@ -2804,6 +3056,28 @@ Takes no options of its own.
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--json` | _(the parser declares no help text for this option)_ |
 
+## `gpuwm tc-strata`
+
+| option | what it does |
+|---|---|
+| `--author-nests` | Author each selected member through cyclone-setup placement and pricing |
+| `--best-track` | _(the parser declares no help text for this option)_ |
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+| `--hours` | _(the parser declares no help text for this option)_ |
+| `--max-strata` | _(the parser declares no help text for this option)_ |
+| `--member-map` | JSON mapping tracking member IDs to explicit source member tokens |
+| `--out` | _(the parser declares no help text for this option)_ |
+| `--render` | _(the parser declares no help text for this option)_ |
+| `--rules` | _(the parser declares no help text for this option)_ |
+| `--seed` | _(the parser declares no help text for this option)_ |
+| `--select` | _(the parser declares no help text for this option)_ |
+| `--start` | _(the parser declares no help text for this option)_ |
+| `--storm {auto}` | _(the parser declares no help text for this option)_ |
+| `--storm-id` | _(the parser declares no help text for this option)_ |
+| `--target` | LAT,LON,UTC initial fix; exact common valid time, no extrapolation |
+| `--tracks` | _(the parser declares no help text for this option)_ |
+| `--workers` | _(the parser declares no help text for this option)_ |
+
 ## `gpuwm tc-tracks`
 
 | option | what it does |
@@ -2811,11 +3085,16 @@ Takes no options of its own.
 | `--backend {wuduan,vitart,tempestextremes}` | _(the parser declares no help text for this option)_ |
 | `--best-track` | _(the parser declares no help text for this option)_ |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+| `--hex-init` | MPAS initialization supplying static fields absent from history |
+| `--hex-window` | rw_mpas_convert window, default global 0.25 degree |
 | `--input` | _(the parser declares no help text for this option)_ |
 | `--manifest` | _(the parser declares no help text for this option)_ |
+| `--mesh` | mesh/static file for native MPAS hex --input history |
 | `--out` | _(the parser declares no help text for this option)_ |
 | `--render` | Draw the plume with rw_wrfbatch |
 | `--storm-id` | _(the parser declares no help text for this option)_ |
+| `--track-cache` | _(the parser declares no help text for this option)_ |
+| `--track-source {auto,nhc,hurdat2,ibtracs,jtwc}` | _(the parser declares no help text for this option)_ |
 | `--workers` | _(the parser declares no help text for this option)_ |
 
 ## `gpuwm timeline`
@@ -3101,6 +3380,8 @@ Takes no options of its own.
 | `--progress-format {text,jsonl,off}` | how this run reports its progress. `text` (the default) prints one WRF-shaped `Timing for main:` line per model time step per domain on stdout and ALSO writes the machine stream to OUTDIR/progress.jsonl; `jsonl` writes only that stream, leaving stdout free of sentences; `off` disables per-step reporting entirely |
 | `--progress-output PATH` | where the machine stream is written; defaults to OUTDIR/progress.jsonl. Append-only JSONL at gpuwm.step-log/v3 (gpuwm.step-log/v4 when the run carries an adaptive time step, which adds `dt` to every step record), one record per printed line, with a dense `sequence` so a consumer can detect a lost line. `-` sends the records to stdout instead of to a file, which with --progress-format jsonl is a pure record pipe |
 | `--proof-sha256` | sha256 of the sealed preparation's proof.json; with --prepared-content-sha256, binds a finished preparation |
+| `--publish-cmd COMMAND` | optional delivery command; manifest JSON on stdin, no shell (default: off) |
+| `--publish-root DIR` | local static web root (default: run output/www) |
 | `--radar-heating-table JSON` | [radar_heating] as JSON: radar latent heating windows for the first active_minutes of the run, without editing a prepared configuration |
 | `--render-dir DIR` | where --render-products publishes; defaults to OUTDIR/png. Ignored without --render-products |
 | `--render-products SPEC` | `gpuwm render --products`' own spec -- a comma-separated product list, or `all`, or `none` -- for every frame this run commits, each drawn on a worker thread as it lands while the forecast is still integrating, one render at a time. Absent is off, and off is the default: there is deliberately no second switch, so "which products" has one answer that cannot disagree with itself. The first frame is the analysis at t = 0, durable before a single step is integrated |
@@ -3109,7 +3390,7 @@ Takes no options of its own.
 | `--run-seconds` | forecast length the model integrates; defaults to the hash-bound experiment's run_seconds when omitted. A shorter length runs the first part of the prepared forecast from the same prepared state; a length past the prepared boundary forcing refuses naming the last prepared lead |
 | `--show-capabilities` | print this runner's capability JSON and exit; it must be the only argument |
 | `--simulated-radar-table JSON` | [simulated_radar] options as JSON; overrides output options without editing a prepared configuration |
-| `--source {20crv3,20crv3-cf,aifs,aigefs,aigfs,earth2,earth2-aifs,earth2-aifs-ens,earth2-aifs2,earth2-aifs2-ens,earth2-atlas,earth2-atlas-crps,earth2-atlas-si,earth2-aurora,earth2-aurora15,earth2-aurora15-6h,earth2-aurora15-ensemble,earth2-aurora15-ensemble-6h,earth2-fcn3,earth2-fengwu,earth2-fuxi,earth2-gencast-mini,earth2-graphcast-operational,earth2-graphcast-small,earth2-pangu,earth2-sfno,earth2-stormcast,earth2-stormcast-conus,earth2-ucast,earth2-weathernext2,earth2-weathernext2-mini,ecmwf-ens,ecmwf-open-data,era5,era5-l137,gdas,gefs,gem-gdps,gfs,hex-global,hrrr,hrrr-native,hrrr-prs,icon-d2,icon-eu,icon-global,mapped,rap,rap-native,rrfs}` | _(the parser declares no help text for this option)_ |
+| `--source {20crv3,20crv3-cf,aifs,aigefs,aigfs,earth2,earth2-aifs,earth2-aifs-ens,earth2-aifs2,earth2-aifs2-ens,earth2-atlas,earth2-atlas-crps,earth2-atlas-si,earth2-aurora,earth2-aurora15,earth2-aurora15-6h,earth2-aurora15-ensemble,earth2-aurora15-ensemble-6h,earth2-fcn3,earth2-fengwu,earth2-fuxi,earth2-gencast-mini,earth2-graphcast-operational,earth2-graphcast-small,earth2-pangu,earth2-sfno,earth2-stormcast,earth2-stormcast-conus,earth2-ucast,earth2-weathernext2,earth2-weathernext2-mini,ecmwf-ens,ecmwf-open-data,era5,era5-l137,gdas,gefs,gefs-reforecast,gefs-reforecast-weekly,gefs-v11,gefs-v11-flat,gem-gdps,gfs,hex-global,hrrr,hrrr-native,hrrr-prs,icon-d2,icon-eu,icon-global,mapped,rap,rap-native,rrfs}` | _(the parser declares no help text for this option)_ |
 | `--source-manifest-sha256` | sha256 of the preparation's portable source manifest; required, except with --prepared-head-sha256 naming an as-posted head, which binds its input plan instead (its seal writes the manifest, held to that plan) |
 | `--stream-init {auto,resident,store}` | which road a STREAMED forecast builds its domain on. `resident` restores the prepared cache into one full-domain DomainState, attaches physics to it and lets the streaming seam copy it into the pinned host store -- the road with the parity proof, and the one that caps the domain at the size of the CARD rather than of the machine (MEASURED at nz = 49: the prepared case costs about 15 780 B/column, so 1024x1024 is refused on a 16 GB card while the streamed forecast it would have fed needs about 6 GiB). `store` fills the same store one ROW SLAB at a time and never allocates a domain-shaped device array, so the ceiling is the machine's pinned RAM. `auto`, the default, prices the resident state from the cache's own state/* manifest times the measured physics headroom and takes the resident road wherever it fits inside 0.80 of the card's free memory. Meaningful only when the run streams: with [tiles] off the resident state IS the domain and this flag changes nothing |
 | `--tiles JSON` | the [tiles] table this forecast integrates under, as a JSON object with the keys gpuwm.core.streaming.StreamingOptions takes (mode/tile_nx/tile_ny/nbuffers/halo/store/write_mode/pipeline/vram_budget_bytes/host_budget_bytes). For the caller whose hash-bound experiment cannot carry one: the native HRRR chain hands this runner the authority its preparer BUILT, which has no [tiles] table, so a user's block had nowhere to ride. Validated by the same StreamingOptions.from_mapping the config front door uses, and binds no identity -- omitted, the hash-bound experiment's own table (usually none) runs |
@@ -3124,7 +3405,7 @@ Takes no options of its own.
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--output-directory` | _(the parser declares no help text for this option)_ |
 | `--physics-profile` | shipped suite to materialize into the experiment; omitted, the base config's own physics is published unchanged and its WRF-verification status is reported |
-| `--source {20crv3,20crv3-cf,aifs,aigefs,aigfs,earth2,earth2-aifs,earth2-aifs-ens,earth2-aifs2,earth2-aifs2-ens,earth2-atlas,earth2-atlas-crps,earth2-atlas-si,earth2-aurora,earth2-aurora15,earth2-aurora15-6h,earth2-aurora15-ensemble,earth2-aurora15-ensemble-6h,earth2-fcn3,earth2-fengwu,earth2-fuxi,earth2-gencast-mini,earth2-graphcast-operational,earth2-graphcast-small,earth2-pangu,earth2-sfno,earth2-stormcast,earth2-stormcast-conus,earth2-ucast,earth2-weathernext2,earth2-weathernext2-mini,ecmwf-ens,ecmwf-open-data,era5,era5-l137,gdas,gefs,gem-gdps,gfs,hex-global,hrrr,hrrr-native,hrrr-prs,icon-d2,icon-eu,icon-global,mapped,rap,rap-native,rrfs}` | _(the parser declares no help text for this option)_ |
+| `--source {20crv3,20crv3-cf,aifs,aigefs,aigfs,earth2,earth2-aifs,earth2-aifs-ens,earth2-aifs2,earth2-aifs2-ens,earth2-atlas,earth2-atlas-crps,earth2-atlas-si,earth2-aurora,earth2-aurora15,earth2-aurora15-6h,earth2-aurora15-ensemble,earth2-aurora15-ensemble-6h,earth2-fcn3,earth2-fengwu,earth2-fuxi,earth2-gencast-mini,earth2-graphcast-operational,earth2-graphcast-small,earth2-pangu,earth2-sfno,earth2-stormcast,earth2-stormcast-conus,earth2-ucast,earth2-weathernext2,earth2-weathernext2-mini,ecmwf-ens,ecmwf-open-data,era5,era5-l137,gdas,gefs,gefs-reforecast,gefs-reforecast-weekly,gefs-v11,gefs-v11-flat,gem-gdps,gfs,hex-global,hrrr,hrrr-native,hrrr-prs,icon-d2,icon-eu,icon-global,mapped,rap,rap-native,rrfs}` | _(the parser declares no help text for this option)_ |
 
 ## `gpuwm-prepared-tree-forecast`
 
@@ -3149,6 +3430,8 @@ Takes no options of its own.
 | `--progress-every N` | report every Nth model step (default 1, WRF's own cadence). The first and last step of every domain are always reported, and this thins ONLY `step` records -- output, restart and domain events are never thinned |
 | `--progress-format {text,jsonl,off}` | how this run reports its progress. `text` (the default) prints one WRF-shaped `Timing for main:` line per model time step per domain on stdout and ALSO writes the machine stream to OUTDIR/progress.jsonl; `jsonl` writes only that stream, leaving stdout free of sentences; `off` disables per-step reporting entirely |
 | `--progress-output PATH` | where the machine stream is written; defaults to OUTDIR/progress.jsonl. Append-only JSONL at gpuwm.step-log/v3 (gpuwm.step-log/v4 when the run carries an adaptive time step, which adds `dt` to every step record), one record per printed line, with a dense `sequence` so a consumer can detect a lost line. `-` sends the records to stdout instead of to a file, which with --progress-format jsonl is a pure record pipe |
+| `--publish-cmd COMMAND` | optional delivery command; manifest JSON on stdin, no shell (default: off) |
+| `--publish-root DIR` | local static web root (default: run output/www) |
 | `--render-dir DIR` | picture directory (default OUTDIR/png); ignored without --render-products |
 | `--render-products SPEC` | plot selectors for every committed frame of every grid, each drawn as it lands, 'all', or 'none'; omitted means no rendering |
 | `--render-section lat,lon,lat,lon\|FILE.json` | the line every xsec: product is cut along, `gpuwm render --section`'s own value; ignored without --render-products |
@@ -3197,7 +3480,7 @@ Takes no options of its own.
 | `--composition` | strict gpuwm-mapped-composition-v2 product join contract |
 | `--contributing-mapping ROLE=PATH` | cross-source composition: a contributing source's own mapping document under the mapping_role its field_sources binding declares; bytes must hash to the composition's pinned SHA-256 |
 | `--cpu-preprocess-bridge` | _(the parser declares no help text for this option)_ |
-| `--cycle` | GFS cycle in YYYY-MM-DD_HH:MM:SS form |
+| `--cycle` | GFS cycle, YYYY-MM-DDTHH or YYYY-MM-DD_HH:MM:SS |
 | `--descriptor` | explicit rw-wps.descriptor.v1 science contract; requires --author-mapping and, for GRIB, --vtable |
 | `--domain-source-orography DNN=PATH` | ERA5 hierarchy source-orography binding; repeat once for every domain (d01..dNN). All bindings use --source-orography-variable |
 | `--domain-spec` | strict gpuwm-hrrr-target-domain-v1 Lambert root-domain JSON; nested layouts come from --wps-namelist/--namelist-input |
@@ -3257,7 +3540,7 @@ Takes no options of its own.
 | `--stock-wrf-export {optional,required,off}` | mapped preparation's WRF file product: optional by default, required with early configuration admission, or off |
 | `--stock-wrf-namelist-input` | unchanged-stock-WRF namelist matching the native hierarchy except for the certified longwave selection and the stock-only ghg_input and do_radar_ref keys; both declare use_theta_m = 0, the dry theta the exported files hold |
 | `--supplement ROLE=PATH` | composition supplement binding; repeat roles for multiple files |
-| `--valid-time` | initial UTC time in WRF form YYYY-MM-DD_HH:MM:SS. On --source hrrr this is the CYCLE; model time zero is cycle + --forecast-start-hour and is derived for every stage |
+| `--valid-time` | initial UTC time, YYYY-MM-DDTHH or WRF form YYYY-MM-DD_HH:MM:SS. On --source hrrr this is the CYCLE; model time zero is cycle + --forecast-start-hour and is derived for every stage |
 | `--validate-hrrr-domain PATH` | validate a strict HRRR target domain and its complete native interpolation window |
 | `--validate-physics-plan PATH` | validate and resolve a gpuwm-physics-plan-v2 JSON document |
 | `--version` | show program's version number and exit |

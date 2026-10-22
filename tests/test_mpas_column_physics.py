@@ -20,12 +20,6 @@ import mpas_column_physics_cases as cases
 NZ, NCOL = cases.NZ, 8
 START = datetime.datetime(2021, 6, 1, 18, 0)
 
-#: Turbulence closures are the ARW dycore's horizontal mixing.  They are in
-#: the registry menu, and the engine pairs each with a PBL setting of its
-#: own; the column seam runs no dycore, so they are not swept here.
-_DYCORE_COMPONENTS = ("turbulence",)
-
-
 def _kwargs(physics, **overrides):
     plan = suite.column_physics_plan(physics)
     kwargs = dict(
@@ -57,9 +51,32 @@ def test_the_menu_is_the_registry():
         assert set(row["options"]) == selectable, component
 
 
-@pytest.mark.parametrize("name", sorted(
-    name for name in cases.selections()
-    if name.split(".")[0] not in _DYCORE_COMPONENTS))
+@pytest.mark.parametrize('name', [
+    'cumulus.grell-3d',
+    'cumulus.grell-freitas',
+    'cumulus.new-sas',
+    'cumulus.new-tiedtke',
+    'microphysics.fast-sbm-mp30',
+    'microphysics.ferrier-aligo-mp5',
+    'microphysics.kessler-mp1',
+    'microphysics.lin-mp2',
+    'microphysics.milbrandt2mom-mp9',
+    'microphysics.morrison-mp10',
+    'microphysics.nssl2-mp18',
+    'microphysics.off',
+    'microphysics.thompson-mp8',
+    'microphysics.wdm6-mp16',
+    'microphysics.wsm3-mp3',
+    'microphysics.wsm5-mp4',
+    'microphysics.wsm6r-mp106',
+    'microphysics.wsm7-mp24',
+    'pbl.ccpp-tke-edmf',
+    'pbl.sase',
+    'pbl.shinhong',
+    'pbl.uw',
+    'radiation.wrf-rrtm-dudhia',
+    'urban.bep',
+])
 def test_every_registry_option_plans(name):
     plan = suite.column_physics_plan(cases.selections()[name])
     assert plan.species[:3] == ("qv", "qc", "qr")

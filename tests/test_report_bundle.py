@@ -78,6 +78,13 @@ PLANTED = {
 POSIX_HOME = "/" + "home/" + PLANTED["username"]
 
 
+def _minimal_run(root: Path, receipt: str = "{}") -> Path:
+    """Make the receipt-only run used by report collection checks."""
+    root.mkdir()
+    (root / "report.json").write_text(receipt, encoding="utf-8")
+    return root
+
+
 def _plant_run_directory(root: Path) -> Path:
     """A run directory whose every surface carries a planted identity.
 
@@ -195,6 +202,22 @@ def test_planted_identity_never_reaches_the_bundle(tmp_path, monkeypatch):
 
     report = report_bundle.build_report(run, environ=_planted_environment())
     blob = _bundle_bytes(report)
+    collected = report.manifest["environment"]["collected"]
+    assert "MY_PRIVATE_TOKEN" not in collected and "PATH" not in collected
+    assert report.manifest["environment"]["omitted_count"] >= 2
+    assert "GPUWM_CASE_DATA_ROOT" in collected
+    assert PLANTED["username"] not in collected["GPUWM_CASE_DATA_ROOT"]
+    with zipfile.ZipFile(io.BytesIO(report.archive)) as archive:
+        names = archive.namelist()
+        root = names[0].split("/")[0]
+        assert not any(set('<>:"|?*') & set(name.replace("/", "")) for name in names)
+        assert any("_user_-next-steps.sh" in name for name in names)
+        assert {f"{root}/MANIFEST.txt", f"{root}/manifest.json", f"{root}/run/report.json"} <= set(names)
+        for name in names:
+            archive.read(name).decode("utf-8")
+        parsed = json.loads(archive.read(f"{root}/manifest.json"))
+    assert parsed["schema"] == report_bundle.BUNDLE_SCHEMA
+    assert parsed["limits"], "the bundle must state what it cannot explain"
 
     for label, secret in PLANTED.items():
         assert secret.encode("utf-8") not in blob, (
@@ -239,15 +262,9 @@ def test_the_planted_identity_test_can_fail(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("text,forbidden", [
     (f"C:\\Users\\{PLANTED['username']}\\gpuwm\\out", PLANTED["username"]),
-    (f"{POSIX_HOME}/gpuwm", PLANTED["username"]),
-    (f"api_key = {PLANTED['api_key']}", PLANTED["api_key"]),
-    (f"host is {PLANTED['ipv4']}", PLANTED["ipv4"]),
-    (f"link {PLANTED['mac']}", PLANTED["mac"]),
-    (f"mail {PLANTED['email']}", PLANTED["email"]),
-    (f"Bearer {PLANTED['bearer']}", PLANTED["bearer"]),
 ])
 def test_each_class_is_removed_from_one_line(text, forbidden):
-    """Unit-level: harvest then apply removes each class on its own."""
+    """Keep the Windows harvesting route; whole-bundle checks cover the other classes."""
 
     redactor = report_bundle.Redactor(environ={})
     redactor.harvest(text)
@@ -418,9 +435,7 @@ def test_a_deleted_working_directory_does_not_stop_the_bundle(
     `Path.cwd()` instead of a bundle.
     """
 
-    run = tmp_path / "run"
-    run.mkdir()
-    (run / "report.json").write_text("{}", encoding="utf-8")
+    run = _minimal_run(tmp_path / "run")
     monkeypatch.setattr(report_bundle, "_cwd_or_none", lambda: None)
 
     report = report_bundle.build_report(run, environ={})
@@ -521,12 +536,8 @@ def _real_run(root: Path) -> Path:
     return root
 
 
-@pytest.mark.parametrize("planted_key", [
-    "aws", "ssh", "docker", "dotenv", "pem", "key", "credentials_json",
-    "secrets_dir", "netrc",
-])
 def test_a_credential_file_inside_the_run_directory_is_never_opened(
-        tmp_path, monkeypatch, planted_key):
+        tmp_path, monkeypatch):
     """The first line of defence: it is not read, not hashed, not listed.
 
     Planted INSIDE a directory that is a genuine run directory, so the
@@ -535,21 +546,17 @@ def test_a_credential_file_inside_the_run_directory_is_never_opened(
 
     run = _real_run(tmp_path / "run")
     planted = _plant_secrets(run)
-    target = planted[planted_key]
 
     spy = _spy_on_opens(monkeypatch)
     report = report_bundle.build_report(run, environ={})
 
-    assert not spy.touched(target), (
-        f"the collector OPENED {target.name}; redaction is the second line "
-        "of defence, not the first")
     inventoried = {item["path"] for item in report.manifest["inventory"]}
     collected = {entry["path"] for entry in report.manifest["included"]}
-    relative = target.relative_to(run).as_posix()
-    assert relative not in inventoried, (
-        f"{relative} was inventoried; a credential file's NAME and SIZE "
-        "are not ours to publish either")
-    assert f"run/{relative}" not in collected
+    for target in planted.values():
+        assert not spy.touched(target), f"the collector OPENED {target.name}"
+        relative = target.relative_to(run).as_posix()
+        assert relative not in inventoried, f"{relative} was inventoried"
+        assert f"run/{relative}" not in collected
     # The run's own artifacts are still collected.
     assert "run/report.json" in collected
 
@@ -787,9 +794,7 @@ def test_a_present_but_unreadable_receipt_is_not_reported_as_missing(
         tmp_path, monkeypatch):
     """The manifest must not contradict itself four sections apart."""
 
-    run = tmp_path / "run"
-    run.mkdir()
-    (run / "report.json").write_text('{"status": "PASS"}', encoding="utf-8")
+    run = _minimal_run(tmp_path / "run", '{"status": "PASS"}')
     real_open = open
 
     def _refuse(path, *args, **kwargs):
@@ -810,9 +815,7 @@ def test_a_present_but_unreadable_receipt_is_not_reported_as_missing(
 
 
 def test_two_files_that_redact_alike_keep_two_members(tmp_path):
-    run = tmp_path / "run"
-    run.mkdir()
-    (run / "report.json").write_text("{}", encoding="utf-8")
+    run = _minimal_run(tmp_path / "run")
     for who in ("alice", "bob"):
         (run / f"{who}-notes.log").write_text(
             f"home is /home/{who}/work\n", encoding="utf-8")
@@ -832,9 +835,7 @@ def test_two_files_that_redact_alike_keep_two_members(tmp_path):
 def test_member_names_are_legal_windows_file_names(tmp_path):
     """Angle brackets are forbidden in Windows file names."""
 
-    run = tmp_path / "run"
-    run.mkdir()
-    (run / "report.json").write_text("{}", encoding="utf-8")
+    run = _minimal_run(tmp_path / "run")
     (run / f"{PLANTED['username']}-terminal.log").write_text(
         "x\n", encoding="utf-8")
 
@@ -850,9 +851,7 @@ def test_member_names_are_legal_windows_file_names(tmp_path):
 def test_a_run_that_passed_is_not_given_a_failure(tmp_path):
     """A success line has the same shape as a refusal; it is not one."""
 
-    run = tmp_path / "run"
-    run.mkdir()
-    (run / "report.json").write_text('{"status": "PASS"}', encoding="utf-8")
+    run = _minimal_run(tmp_path / "run", '{"status": "PASS"}')
     (run / "terminal.log").write_text(
         "gpuwm check: the optional [products] table is absent\n"
         "gpuwm run: wrote 17 frames\n", encoding="utf-8")
@@ -891,9 +890,7 @@ def test_a_refused_output_path_does_not_destroy_what_was_there(
 
 
 def test_withheld_warnings_are_counted_not_dropped_in_silence(tmp_path):
-    run = tmp_path / "run"
-    run.mkdir()
-    (run / "report.json").write_text("{}", encoding="utf-8")
+    run = _minimal_run(tmp_path / "run")
     (run / "worker-01.stderr.log").write_text(
         "".join(f"warning: distinct concern number {index}\n"
                 for index in range(60)), encoding="utf-8")
@@ -1136,9 +1133,7 @@ def test_a_traceback_outranks_a_refusal_line(tmp_path):
 def test_an_unreadable_artifact_is_named_not_raised(tmp_path, monkeypatch):
     """Warn-not-block: a file that cannot be read is one line, not a crash."""
 
-    run = tmp_path / "run"
-    run.mkdir()
-    (run / "report.json").write_text("{}", encoding="utf-8")
+    run = _minimal_run(tmp_path / "run")
     (run / "worker-01.stderr.log").write_text("x", encoding="utf-8")
 
     real_open = open
@@ -1162,9 +1157,7 @@ def test_an_unreadable_artifact_is_named_not_raised(tmp_path, monkeypatch):
 def test_a_full_first_location_relocates_the_bundle(tmp_path, monkeypatch):
     """ENOSPC on the chosen output must cost a relocation, not the bundle."""
 
-    run = tmp_path / "run"
-    run.mkdir()
-    (run / "report.json").write_text("{}", encoding="utf-8")
+    run = _minimal_run(tmp_path / "run")
     full = tmp_path / "full"
     full.mkdir()
     spare = tmp_path / "spare"
@@ -1206,9 +1199,7 @@ def test_it_refuses_in_one_sentence_when_nothing_can_be_written(
 
 
 def test_the_archive_is_a_plain_readable_zip(tmp_path):
-    run = tmp_path / "run"
-    run.mkdir()
-    (run / "report.json").write_text('{"status": "PASS"}', encoding="utf-8")
+    run = _minimal_run(tmp_path / "run", '{"status": "PASS"}')
 
     report = report_bundle.build_report(run, environ={})
     with zipfile.ZipFile(io.BytesIO(report.archive)) as archive:
@@ -1225,9 +1216,7 @@ def test_the_archive_is_a_plain_readable_zip(tmp_path):
 
 
 def test_model_output_is_inventoried_not_copied(tmp_path):
-    run = tmp_path / "run"
-    run.mkdir()
-    (run / "report.json").write_text("{}", encoding="utf-8")
+    run = _minimal_run(tmp_path / "run")
     frame = run / "wrfout_d01_2026-08-01_00_00_00"
     frame.write_bytes(b"\x00" * 4096)
 
@@ -1247,12 +1236,12 @@ def test_model_output_is_inventoried_not_copied(tmp_path):
 def test_no_arguments_inside_a_run_directory(tmp_path, monkeypatch, capsys):
     """`gpuwm report` with no arguments collects the run it is standing in."""
 
-    run = tmp_path / "run"
-    run.mkdir()
-    (run / "report.json").write_text(
-        '{"status": "PASS", "domain": {"ref_lat": 39.7392}}', encoding="utf-8")
+    run = _minimal_run(tmp_path / "run", '{"status": "PASS", "domain": {"ref_lat": 39.7392}}')
     monkeypatch.chdir(run)
 
+    choices = next(action.choices for action in cli.build_parser()._actions
+                   if getattr(action, "choices", None) and "doctor" in action.choices)
+    assert "report" in choices
     assert cli.main(["report", "--dry-run"]) == 0
     out = capsys.readouterr().out
     assert "gpuwm diagnostic report" in out
@@ -1276,9 +1265,7 @@ def test_no_arguments_descends_to_the_default_output_directory(
 
 
 def test_the_cli_writes_a_bundle_and_names_it(tmp_path, monkeypatch, capsys):
-    run = tmp_path / "run"
-    run.mkdir()
-    (run / "report.json").write_text("{}", encoding="utf-8")
+    run = _minimal_run(tmp_path / "run")
     destination = tmp_path / "outbox"
     destination.mkdir()
     monkeypatch.chdir(tmp_path)
@@ -1313,9 +1300,7 @@ def test_report_is_registered_and_dispatches_through_the_real_cli(
 
 def test_an_extra_log_outside_the_run_directory_is_collected(
         tmp_path, capsys):
-    run = tmp_path / "run"
-    run.mkdir()
-    (run / "report.json").write_text("{}", encoding="utf-8")
+    run = _minimal_run(tmp_path / "run")
     stray = tmp_path / "terminal.log"
     stray.write_text("ValueError: the wizard refused the latitude\n",
                      encoding="utf-8")

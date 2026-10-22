@@ -1,6 +1,6 @@
 """Reflectivity echo conditioning: a common echo floor and outlier tempering.
 
-The breakage this prevents, named (CONUS DA first light, box E, 9 km,
+The breakage this prevents, named (CONUS DA first light, a rented box, 9 km,
 2026-10-01 19Z analysis, 32 members, mp=28):
 
 * The superob writer keeps every return of -15 dBZ or more as a

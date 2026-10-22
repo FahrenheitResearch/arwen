@@ -7,6 +7,9 @@ use chrono::{DateTime, Duration, NaiveDateTime, Timelike, Utc};
 use grib_core::grib2::{Grib2File, Grib2Message, flip_rows, grid_latlon, unpack_message};
 use serde::Deserialize;
 use rayon::prelude::*;
+#[path = "comparison_rasters.rs"]
+mod rasters;
+pub use rasters::RasterBinding;
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct ObservationSpec {
@@ -43,6 +46,10 @@ pub struct ObservationProduct {
     pub unobserved_values: Vec<f64>,
     pub time: TimePolicy,
     pub accumulation_seconds: Option<u32>,
+    #[serde(default)]
+    pub raster: Option<RasterBinding>,
+    #[serde(default)]
+    pub url_template: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -332,6 +339,9 @@ pub fn load(
                 spec.label
             )
         })?;
+    if product.raster.is_some() {
+        return rasters::load(spec, product, target, directory, cache, explicit_file, offline);
+    }
     let mut local = Vec::new();
     if let Some(directory) = directory {
         local_files(directory, 6, &mut local)?;

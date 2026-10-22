@@ -87,7 +87,6 @@ SH_C1 = F(0.0)          # c1_shal
 SH_G = F(9.81)
 SH_CP = F(1004.0)
 SH_XLV = F(2.5e6)
-SH_RV = F(461.0)
 SH_C0 = F(0.001)        # c0_shal
 SH_FLUXTUNE = F(1.5)
 
@@ -105,7 +104,6 @@ def cup_gf_sh_column(
     """
     nz = int(np.asarray(t).shape[0])
     ktf = nz
-    kte = nz
 
     def lift(x):
         out = _a(nz)
@@ -480,7 +478,6 @@ def cup_gf_sh_column(
     dellaq = _a(nz)
     if ierr == 0:
         for k in range(k22, ktop + 1):
-            entup = up_massentro[k]
             detup = up_massdetro[k]
             dp = F(F(100.0) * F(po_cup[k] - po_cup[k + 1]))
             dellah[k] = F(

@@ -53,16 +53,11 @@ def test_derived_tables_are_wrfs_bit_for_bit(build):
     assert int(d["ikr_spon_break"][0]) == int(der["ikr_spon_break"])
 
 
-def test_own_bin_efficiencies_match_the_float64_reference():
-    """D10 corrected: the host build's ECOALMASSM with each bin's own fall
-    speed against the float64 host reference's (gpuwm.core.fast_sbm)."""
-    from gpuwm.core.fast_sbm import derived as D
-    from gpuwm.core.fast_sbm import tables as T
-    from gpuwm.core.fast_sbm.constants import FsbmBehavior
-    ref = D.build_derived(T.load_tables("float64"), 12.0, behavior=FsbmBehavior.corrected())
+def test_own_bin_efficiencies_match_the_packed_tables():
+    """D10 corrected: each bin uses its own fall speed; compare the pinned pack."""
     mine = RP.host_for("o64", H.flags_corrected()).derived()["ecoal_own"]
-    want = np.asarray(ref.ecoalmassm, dtype=np.float64).ravel(order="F")
-    assert np.allclose(mine, want, rtol=1e-12, atol=0.0)
+    with np.load(H.REPO_ROOT / "gpuwm/data/fast_sbm/tables-float64.npz") as packed:
+        assert np.array_equal(mine, packed["ecoal_own"])
     wrf = RP.host_for("o64", H.flags_wrf()).derived()["ecoal_wrf"]
     assert int(np.sum(mine != wrf)) > 200
 

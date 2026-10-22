@@ -36,7 +36,7 @@ def test_shipped_full_configuration_selects_the_fork_explicitly():
     from gpuwm.experiment import load_experiment
     path = Path(__file__).resolve().parents[1] / "configs/recipes/hrrr_v4_gsd41.toml"
     exp = load_experiment(path)
-    assert (exp.root.run.nx, exp.root.run.ny, exp.root.run.nz) == (1797, 1057, 50)
+    assert (exp.root.run.nx, exp.root.run.ny, exp.root.run.nz) == (1799, 1059, 50)
     assert exp.root.run.bl_mynn_version == "gsd_41"
     assert exp.root.run.bl_mynn_mixlength == 2
     assert exp.root.run.min_time_step == exp.root.run.max_time_step == 20
@@ -122,6 +122,10 @@ def test_named_import_emitted_bytes_select_the_pbl_source(
     # at 0, and the importer now emits the value wrf.exe runs.  The
     # historical capture predates that resolution.
     carried_rows += ['scalar_pblmix = 1\n']
+    # The capabilities campaign's eclipse and HAILCAST import lines
+    # (tests/capability_campaign_import.py).
+    from capability_campaign_import import CAMPAIGN_IMPORT_LINES
+    carried_rows += list(CAMPAIGN_IMPORT_LINES)
     for carried in carried_rows:
         assert previous.count(carried) == 1
         previous = previous.replace(carried, "")

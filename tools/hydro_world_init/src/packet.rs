@@ -65,14 +65,17 @@ pub fn params_for(fabric: &hydro_world::contract::Fabric, ids: &[String], row_fi
     if let Some(m) = fabric.model_attributes.as_ref().filter(|m| m.len() == ids.len()) {
         let by_id: std::collections::BTreeMap<&str, &hydro_world::contract::ModelAttributes> =
             m.iter().filter_map(|r| r.divide_id.as_deref().map(|d| (d, r))).collect();
-        let mut ps = Vec::new();
-        let mut inis = Vec::new();
-        for id in ids {
-            let r = by_id.get(id.as_str()).ok_or_else(|| format!("{id}: no model_attributes row"))?;
-            let ini = cfe_ini(r, init)?;
-            ps.push(cfe::parse_ini(&ini)?);
-            inis.push(ini);
-        }
+        // One INI per catchment, built and parsed on all cores, in id order.
+
+        let pairs = ids
+            .par_iter()
+            .map(|id| -> Result<(Params, String)> {
+                let r = by_id.get(id.as_str()).ok_or_else(|| format!("{id}: no model_attributes row"))?;
+                let ini = cfe_ini(r, init)?;
+                Ok((cfe::parse_ini(&ini)?, ini))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let (ps, inis): (Vec<Params>, Vec<String>) = pairs.into_iter().unzip();
         return Ok((ps, inis, json!({"source": "fabric model_attributes", "gw_storage_cold_start": init.gw_storage})));
     }
     let path = row_file.ok_or("fabric has no model_attributes; pass a CFE parameter row file (params)")?;

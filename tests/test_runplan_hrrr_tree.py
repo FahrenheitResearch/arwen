@@ -40,6 +40,13 @@ _HRRR_TREE = {"point": "35.2,-97.4", "source": "hrrr", "ladder": "12-3",
               "cycle": "2024-05-03T12", "hours": 6, "vram_gib": 24}
 
 
+#: A fetched-source receipt in the real fetch's shape.  Since abf04433ed8
+#: (parallel cache reuse) the chain snapshots it (launch_supplements.
+#: hrrr_source_manifest) right after the fetch, so a placeholder byte is a
+#: malformed manifest that stops the chain before the preparation stage.
+_FETCHED_SUMS = "0" * 64 + "  hrrr.t12z.wrfprsf00.grib2\n"
+
+
 def _plan(tmp_path, **intent):
     geog = tmp_path / "GEOG"
     geog.mkdir(exist_ok=True)
@@ -111,7 +118,7 @@ def _drive(tmp_path, monkeypatch, follow=False, **intent):
     def fake_fetch(arguments, run_dir, **_kwargs):
         out = Path(arguments[arguments.index("--out") + 1])
         out.mkdir(parents=True, exist_ok=True)
-        (out / "SHA256SUMS").write_text("x", encoding="utf-8")
+        (out / "SHA256SUMS").write_text(_FETCHED_SUMS, encoding="utf-8")
         staged.append(("fetch", [str(a) for a in arguments]))
         return {}
 
@@ -142,37 +149,19 @@ def _stage(staged, label):
 # ---------------------------------------------------------------------------
 
 
-def test_a_nested_hrrr_plan_is_no_longer_refused(tmp_path, monkeypatch):
-    """The refusal this replaces named the chain it could not drive."""
-
-    staged, captured, _, _ = _drive(tmp_path, monkeypatch)
+def test_a_nested_hrrr_plan_is_no_longer_refused(chain_cases):
+    """The formerly refused nested chain, with every stage contract checked."""
+    staged, captured, tree_root, config = chain_cases["still"][1]
     assert [name for name, _ in staged] == ["fetch", "prepare", "hierarchy"]
     assert captured["argv"]
-
-
-def test_the_four_stages_run_in_the_documented_order(tmp_path, monkeypatch):
-    staged, captured, _, _ = _drive(tmp_path, monkeypatch)
 
     assert _stage(staged, "prepare")[2] == "tools.prepare_hrrr_wrf"
     assert _stage(staged, "hierarchy")[2] == "gpuwm.hrrr_hierarchy_direct"
     # rw-wps is not on this path at all.
     assert not any("source_cli" in " ".join(cmd) for _, cmd in staged)
-
-
-def test_the_root_preparation_passes_the_wps_namelist(tmp_path, monkeypatch):
-    """The wizard's printed chain omits it; the bundle needs it."""
-
-    staged, _, _, _ = _drive(tmp_path, monkeypatch)
     prepare = _stage(staged, "prepare")
     assert "--wps-namelist" in prepare
     assert Path(prepare[prepare.index("--wps-namelist") + 1]).is_file()
-
-
-def test_the_hierarchy_stage_passes_all_nine_required_flags(tmp_path,
-                                                            monkeypatch):
-    """Composed for this tool, not shared with its neighbours."""
-
-    staged, _, _, _ = _drive(tmp_path, monkeypatch)
     hierarchy = _stage(staged, "hierarchy")
     for flag in ("--root-preparation", "--root-domain-spec",
                  "--wps-namelist", "--namelist-input",
@@ -184,10 +173,33 @@ def test_the_hierarchy_stage_passes_all_nine_required_flags(tmp_path,
     # The flag rw-wps REJECTS must appear here and nowhere else, which
     # is the whole reason these two argv are not built by one helper.
     assert "--stock-wrf-namelist-input" not in _stage(staged, "prepare")
+    hierarchy = _stage(staged, "hierarchy")
+    manifest = Path(hierarchy[hierarchy.index("--source-manifest") + 1])
+    assert hierarchy[hierarchy.index("--source-manifest-sha256") + 1] == \
+        hashlib.sha256(manifest.read_bytes()).hexdigest()
+    assert _stage(staged, "fetch")[
+        _stage(staged, "fetch").index("--cycle") + 1] == "2024-05-03T12"
+    for label in ("prepare", "hierarchy"):
+        command = _stage(staged, label)
+        assert command[command.index("--cycle") + 1] == "2024-05-03_12:00:00"
+    assert "--forecast-start-hour" not in _stage(staged, "hierarchy")
+    # And --valid-time, whose combination with a lead the tool refuses,
+    # is never composed here at all.
+    assert "--valid-time" not in _stage(staged, "hierarchy")
+    argv = captured["argv"]
+
+    assert Path(argv[argv.index("--prepared-root") + 1]) == tree_root
+    assert argv[argv.index("--preparation-receipt-sha256") + 1] == \
+        hashlib.sha256((tree_root / "receipt.json").read_bytes()).hexdigest()
+    assert argv[argv.index("--experiment-config-sha256") + 1] == \
+        hashlib.sha256(config.read_bytes()).hexdigest()
+    # The single-domain binding has no place here.
+    assert "--proof-sha256" not in argv
+    assert "--prepared-content-sha256" not in argv
 
 
 def test_the_hierarchy_stage_carries_the_configs_acknowledgements(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, chain_cases):
     """The namelists this stage imports cannot spell a governance
     declaration, so the config's acknowledgements ride as --ack.  Without
     them a shortwave-only tree (every PBL-off LES suite among them) was
@@ -203,18 +215,8 @@ def test_the_hierarchy_stage_carries_the_configs_acknowledgements(
     parsed = _parser().parse_args(hierarchy[3:])
     assert parsed.ack == ["constant-downward-longwave-v1"]
 
-    (tmp_path / "plain").mkdir()
-    staged, *_rest = _drive(tmp_path / "plain", monkeypatch)
+    staged, *_rest = chain_cases["still"][1]
     assert "--ack" not in _stage(staged, "hierarchy")
-
-
-def test_the_source_manifest_digest_is_of_the_file_the_fetch_wrote(
-        tmp_path, monkeypatch):
-    staged, _, _, _ = _drive(tmp_path, monkeypatch)
-    hierarchy = _stage(staged, "hierarchy")
-    manifest = Path(hierarchy[hierarchy.index("--source-manifest") + 1])
-    assert hierarchy[hierarchy.index("--source-manifest-sha256") + 1] == \
-        hashlib.sha256(manifest.read_bytes()).hexdigest()
 
 
 @pytest.mark.parametrize("live", [True, False])
@@ -261,36 +263,13 @@ def test_a_posted_hierarchy_binds_the_root_plan_or_its_completed_document(
     assert manifest.exists() is (not live)
 
 
-def test_the_cycle_is_spelled_the_way_each_tool_takes_it(tmp_path,
-                                                         monkeypatch):
-    """[fetch] carries YYYY-MM-DDTHH; both native tools take the stamp."""
-
-    staged, _, _, _ = _drive(tmp_path, monkeypatch)
-    assert _stage(staged, "fetch")[
-        _stage(staged, "fetch").index("--cycle") + 1] == "2024-05-03T12"
-    for label in ("prepare", "hierarchy"):
-        command = _stage(staged, label)
-        assert command[command.index("--cycle") + 1] == "2024-05-03_12:00:00"
-
-
-def test_a_zero_lead_is_left_off_rather_than_passed_as_zero(tmp_path,
-                                                            monkeypatch):
-    """The stage raises on a negative lead and on lead-with-valid-time."""
-
-    staged, _, _, _ = _drive(tmp_path, monkeypatch)
-    assert "--forecast-start-hour" not in _stage(staged, "hierarchy")
-    # And --valid-time, whose combination with a lead the tool refuses,
-    # is never composed here at all.
-    assert "--valid-time" not in _stage(staged, "hierarchy")
-
-
 # ---------------------------------------------------------------------------
 # The moving nest: the tenth flag, and where it goes
 # ---------------------------------------------------------------------------
 
 
 def test_a_follow_config_puts_the_corridor_flag_on_the_hierarchy_stage(
-        tmp_path, monkeypatch):
+        chain_cases):
     """The stage that builds the children is the stage that seals.
 
     On the GFS chain the corridor flag rides rw-wps.  There is no rw-wps
@@ -298,8 +277,7 @@ def test_a_follow_config_puts_the_corridor_flag_on_the_hierarchy_stage(
     geometry and would refuse the flag.  So it belongs to the hierarchy
     stage, which holds --geog-root and the child domains.
     """
-    staged, _captured, _tree, _config = _drive(
-        tmp_path, monkeypatch, follow=True)
+    staged, _captured, _tree, _config = chain_cases["follow"][1]
 
     hierarchy = _stage(staged, "hierarchy")
     assert "--statics-corridor" in hierarchy
@@ -313,25 +291,22 @@ def test_a_follow_config_puts_the_corridor_flag_on_the_hierarchy_stage(
 
 
 def test_a_still_nested_hrrr_plan_composes_exactly_what_it_always_did(
-        tmp_path, monkeypatch):
+        chain_cases):
     """Token for token, the two arms differ by one flag and nothing else.
 
     A corridor that leaked into an ordinary nested HRRR run would change
     what every existing plan prepares.
     """
-    (tmp_path / "a").mkdir()
-    (tmp_path / "b").mkdir()
-    still, _c, _t, _cfg = _drive(tmp_path / "a", monkeypatch)
-    follow, _c2, _t2, _cfg2 = _drive(tmp_path / "b", monkeypatch,
-                                     follow=True)
+    still_root, (still, *_rest) = chain_cases["still"]
+    follow_root, (follow, *_rest) = chain_cases["follow"]
 
     def _shape(entries, root):
         return {name: [token.replace(str(root), "<ROOT>")
                        .replace("\\", "/") for token in command]
                 for name, command in entries}
 
-    still_shape = _shape(still, tmp_path / "a")
-    follow_shape = _shape(follow, tmp_path / "b")
+    still_shape = _shape(still, still_root)
+    follow_shape = _shape(follow, follow_root)
     assert set(still_shape) == set(follow_shape)
     for stage in ("fetch", "prepare"):
         assert still_shape[stage] == follow_shape[stage], stage
@@ -341,7 +316,7 @@ def test_a_still_nested_hrrr_plan_composes_exactly_what_it_always_did(
 
 
 def test_the_flag_the_chain_composes_is_the_one_the_stage_accepts(
-        tmp_path, monkeypatch):
+        chain_cases):
     """Composed argv, parsed by the real tool's own parser.
 
     A flag spelled correctly here and differently there is exactly the
@@ -351,27 +326,11 @@ def test_the_flag_the_chain_composes_is_the_one_the_stage_accepts(
     """
     from gpuwm.hrrr_hierarchy_direct import _parser
 
-    staged, _captured, _tree, _config = _drive(
-        tmp_path, monkeypatch, follow=True)
+    staged, _captured, _tree, _config = chain_cases["follow"][1]
     hierarchy = _stage(staged, "hierarchy")
     # Drop `python -m gpuwm.hrrr_hierarchy_direct`; parse the rest.
     parsed = _parser().parse_args(hierarchy[3:])
     assert parsed.statics_corridor == "all"
-
-
-def test_the_relay_binds_the_hierarchy_receipt_off_its_bytes(tmp_path,
-                                                             monkeypatch):
-    staged, captured, tree_root, config = _drive(tmp_path, monkeypatch)
-    argv = captured["argv"]
-
-    assert Path(argv[argv.index("--prepared-root") + 1]) == tree_root
-    assert argv[argv.index("--preparation-receipt-sha256") + 1] == \
-        hashlib.sha256((tree_root / "receipt.json").read_bytes()).hexdigest()
-    assert argv[argv.index("--experiment-config-sha256") + 1] == \
-        hashlib.sha256(config.read_bytes()).hexdigest()
-    # The single-domain binding has no place here.
-    assert "--proof-sha256" not in argv
-    assert "--prepared-content-sha256" not in argv
 
 
 def test_the_document_resolver_finds_receipt_json_by_schema(tmp_path):
@@ -440,7 +399,7 @@ def test_a_single_domain_hrrr_plan_still_takes_the_direct_bundle(
     def fake_fetch(arguments, run_dir, **_kwargs):
         out = Path(arguments[arguments.index("--out") + 1])
         out.mkdir(parents=True, exist_ok=True)
-        (out / "SHA256SUMS").write_text("x", encoding="utf-8")
+        (out / "SHA256SUMS").write_text(_FETCHED_SUMS, encoding="utf-8")
         return {}
 
     monkeypatch.setattr(runplan_module, "_run_fetch", fake_fetch)
@@ -541,3 +500,20 @@ def test_the_summary_still_prefers_a_real_status_report(tmp_path):
     assert summary["nan_free"] is True
     assert summary["completed_seconds"] == 21600.0
     assert summary["status_basis"] == "the runner's own report"
+
+
+@pytest.fixture(scope="module")
+def chain_cases(tmp_path_factory):
+    """Capture each distinct route once per worker, only when requested."""
+    root = tmp_path_factory.mktemp("hrrr-chain-cases")
+
+    class Cases(dict):
+        def __missing__(self, name):
+            work = root / name
+            work.mkdir()
+            with pytest.MonkeyPatch.context() as patch:
+                result = (work, _drive(work, patch, follow=name == "follow"))
+            self[name] = result
+            return result
+
+    return Cases()

@@ -404,6 +404,9 @@ def test_up_heli_max_has_no_trajectory_or_restart_reader():
     }
     assert hits == {
         "gpuwm/core/uh_diag.py",      # owner: update/reset/mirror
+        "gpuwm/core/gsd_diagnostics.py",  # independent GSD history window
+        "gpuwm/ensemble/mass_launcher.py",  # diagnostic download only
+        "gpuwm/ensemble/batch_product_output.py",  # output field assembly only
         # The WRF warm start's closed-world carrier census names the slot as
         # REBUILT, never restored: WRF's UP_HELI_MAX running maximum starts a
         # new window at the restart instant, as after every history write.
@@ -479,6 +482,9 @@ def test_up_heli_max_has_no_trajectory_or_restart_reader():
     # the slot at all; in dycore/runtime specifically, only the two entry
     # points may appear (no direct slot access).
     sanctioned_scratch = {"gpuwm/core/uh_diag.py", "gpuwm/core/state.py",
+                          "gpuwm/core/gsd_diagnostics.py",
+                          "gpuwm/ensemble/mass_launcher.py",
+                          "gpuwm/ensemble/batch_product_output.py",
                           "gpuwm/io/history_layout.py", "gpuwm/io/restart.py",
                           # Sanctioned for the indirect-acquisition rule
                           # below: live_scratch/domain_scratch ARE the

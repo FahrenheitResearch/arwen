@@ -41,11 +41,12 @@ manifest ``gpuwm/data/wrf_radiation/rrtmg_coeffs_oracle_manifest.json``.
 from __future__ import annotations
 
 from functools import lru_cache
-import hashlib
 from pathlib import Path
 import struct
 
 import numpy as np
+
+from gpuwm.ingest.backend_contract import _sha256
 
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "wrf_radiation"
@@ -64,8 +65,6 @@ RRTMG_COEFFS_LW_DUMP_SHA256 = \
 RRTMG_COEFFS_SW_DUMP_SHA256 = \
     "913059dc76a784d29c0be8b5a970f4f5c509a0ab27d2a15bbfeb2bb9fca9f9f7"
 
-LW_NBANDS = 16
-SW_NBANDS = 14
 _MG = 16
 
 # ---------------------------------------------------------------------------
@@ -235,14 +234,6 @@ def _reduce(raw: np.ndarray, name: str, band_index: int,
         groups.append(acc)
     out = np.stack(groups, axis=-1)
     return np.moveaxis(out, -1, axis)
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _read_fortran_record(stream, label: str, record_number: int) -> bytes:

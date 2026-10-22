@@ -202,11 +202,6 @@ impl IngestProfile {
         }
     }
 
-    /// Whether one volume field is stored under this profile.
-    pub fn includes_volume_field(&self, field: CanonicalField) -> bool {
-        self.volumes.iter().any(|choice| choice.field() == field)
-    }
-
     /// Whether the ingest needs the pressure ("prs") product file at all:
     /// volumes, the prs-sourced 2D planes, or either compute stage (their
     /// thermo decode reads the raw prs bytes).

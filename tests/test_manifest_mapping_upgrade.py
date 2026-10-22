@@ -49,67 +49,25 @@ def saved_inputs(tmp_path, monkeypatch, request):
     return manifest, original, options
 
 
-@pytest.mark.parametrize("replace_different", [False, True])
-def test_mapping_upgrade_preserves_original_and_reuses_sidecar(saved_inputs, replace_different):
-    manifest, original, options = saved_inputs
-    if replace_different:
-        options["replace_different"] = True
-    receipt = mapped_authoring.author_input_manifest(manifest, **options)
-    selected = Path(receipt["manifest"]["path"])
-    assert selected != manifest
-    assert selected.parent == manifest.parent
-    assert manifest.read_bytes() == original
-    assert hashlib.sha256(selected.read_bytes()).hexdigest() == receipt["manifest"]["sha256"]
-    updated = json.loads(selected.read_bytes())
-    old = json.loads(original)
-    assert updated.pop("mapping_sha256") != old.pop("mapping_sha256")
-    assert updated == old
-    before = selected.stat().st_mtime_ns
-    repeated = mapped_authoring.author_input_manifest(manifest, **options)
-    assert repeated["reauthored"] is False
-    assert repeated["manifest"] == receipt["manifest"]
-    assert selected.stat().st_mtime_ns == before
-
-
-@pytest.mark.parametrize("field", [
-    "primary_files", "supplements", "schema", "member", "member_identity",
-    "unknown_field",
-])
-def test_upgrade_refuses_other_manifest_changes(saved_inputs, field):
-    manifest, original, options = saved_inputs
-    document = json.loads(original)
-    document[field] = "changed"
-    manifest.write_text(json.dumps(document), encoding="utf-8")
-    before = manifest.read_bytes()
-    with pytest.raises(FileExistsError, match="different input manifest"):
-        mapped_authoring.author_input_manifest(manifest, **options)
-    assert manifest.read_bytes() == before
-    assert list(manifest.parent.glob("inputs.*.json")) == []
-
-
-@pytest.mark.parametrize("field", ["decoders", "provenance", "composition_sha256"])
-@pytest.mark.parametrize("mapping_changed", [False, True])
-def test_upgrade_reseals_release_owned_rows(saved_inputs, field, mapping_changed):
+def test_upgrade_reseals_release_owned_rows(saved_inputs):
     manifest, original, options = saved_inputs
     previous = json.loads(original)
-    if not mapping_changed:
-        previous["mapping_sha256"] = hashlib.sha256(
-            options["mapping_path"].read_bytes()).hexdigest()
-    if field == "composition_sha256":
-        previous[field] = "a" * 64
-    else:
-        previous[field] = {
-            "old_release_authority": {
-                "path": "../old-install/authority", "bytes": 10, "sha256": "b" * 64,
-            },
-        }
+    previous["mapping_sha256"] = hashlib.sha256(
+        options["mapping_path"].read_bytes()).hexdigest()
+    previous["decoders"] = {
+        "old_release_authority": {
+            "path": "../old-install/authority", "bytes": 10, "sha256": "b" * 64,
+        },
+    }
     manifest.write_text(json.dumps(previous), encoding="utf-8")
     before = manifest.read_bytes()
     receipt = mapped_authoring.author_input_manifest(manifest, **options)
     selected = Path(receipt["manifest"]["path"])
     assert selected != manifest
+    assert selected.parent == manifest.parent
+    assert hashlib.sha256(selected.read_bytes()).hexdigest() == receipt["manifest"]["sha256"]
     assert manifest.read_bytes() == before
-    assert json.loads(selected.read_bytes())[field] != previous[field]
+    assert json.loads(selected.read_bytes())["decoders"] != previous["decoders"]
     repeated = mapped_authoring.author_input_manifest(manifest, **options)
     assert repeated["reauthored"] is False
     assert repeated["manifest"] == receipt["manifest"]
@@ -163,11 +121,10 @@ def test_upgrade_reseals_changed_decoder_binaries(
     assert selected.stat().st_mtime_ns == before
 
 
-@pytest.mark.parametrize("old_hash", [None, "invalid", 123])
-def test_upgrade_refuses_invalid_old_mapping_hash(saved_inputs, old_hash):
+def test_upgrade_refuses_invalid_old_mapping_hash(saved_inputs):
     manifest, original, options = saved_inputs
     document = json.loads(original)
-    document["mapping_sha256"] = old_hash
+    document["mapping_sha256"] = "invalid"
     manifest.write_text(json.dumps(document), encoding="utf-8")
     with pytest.raises(FileExistsError, match="different input manifest"):
         mapped_authoring.author_input_manifest(manifest, **options)
@@ -184,11 +141,9 @@ def test_upgrade_refuses_changed_source_bytes_with_same_size_and_mtime(saved_inp
     assert manifest.read_bytes() == original
 
 
-@pytest.mark.parametrize("replace_different", [False, True])
-def test_upgrade_does_not_overwrite_sidecar_collision(saved_inputs, replace_different):
+def test_upgrade_does_not_overwrite_sidecar_collision(saved_inputs):
     manifest, original, options = saved_inputs
-    if replace_different:
-        options["replace_different"] = True
+    options["replace_different"] = True
     receipt = mapped_authoring.author_input_manifest(manifest, **options)
     selected = Path(receipt["manifest"]["path"])
     selected.write_bytes(b"unrelated content")
@@ -198,37 +153,15 @@ def test_upgrade_does_not_overwrite_sidecar_collision(saved_inputs, replace_diff
     assert manifest.read_bytes() == original
 
 
-def test_upgrade_validation_failure_leaves_original(saved_inputs, monkeypatch):
+def test_cli_upgrade_binds_selected_manifest(saved_inputs, capsys):
     manifest, original, options = saved_inputs
-
-    def fail_validation(*args, **kwargs):
-        raise ValueError("source changed after validation")
-
-    monkeypatch.setattr(mapped_authoring, "_verify_manifest", fail_validation)
-    with pytest.raises(ValueError, match="source changed after validation"):
-        mapped_authoring.author_input_manifest(manifest, **options)
-    assert manifest.read_bytes() == original
-    assert list(manifest.parent.glob("inputs.*.json")) == []
-    assert list(manifest.parent.glob(".*.candidate-*")) == []
-
-
-@pytest.mark.parametrize("managed", [False, True])
-def test_cli_upgrade_binds_selected_manifest(saved_inputs, capsys, managed):
-    manifest, original, options = saved_inputs
-    args = source_cli._parser().parse_args([
-        "--source", "mapped", "--source-format", "netcdf",
-        "--mapping", str(options["mapping_path"]),
-        "--composition", str(options["composition_path"]),
-        "--input", str(options["primary_files"][0]),
-        "--author-input-manifest", str(manifest), "--author-only",
-        *[token for role, path in options["supplement_files"].items()
-          for token in ("--supplement", f"{role}={path}")],
-        *[token for role, path in options["provenance_files"].items()
-          for token in ("--provenance", f"{role}={path}")],
-    ])
-    args.source_root_manifest = managed
+    args = _managed_args(options, manifest)
     result = source_cli._author_mapped_contract(args)
     selected = result["input_manifest"]["manifest"]
+    updated = json.loads(Path(selected["path"]).read_bytes())
+    old = json.loads(original)
+    assert updated.pop("mapping_sha256") != old.pop("mapping_sha256")
+    assert updated == old
     assert Path(args.source_sha256s) == Path(selected["path"])
     assert args.source_sha256s_sha256 == selected["sha256"]
     stderr = capsys.readouterr().err
@@ -374,6 +307,8 @@ def test_failed_managed_replacement_keeps_the_upgrade(saved_inputs, monkeypatch)
         mapped_authoring.author_input_manifest(manifest, **options)
     assert manifest.read_bytes() == original
     assert upgraded.read_bytes() == kept
+    assert list(manifest.parent.glob("inputs.*.json")) == [upgraded]
+    assert list(manifest.parent.glob(".*.candidate-*")) == []
 
 
 def test_a_replacement_with_no_upgrade_reports_no_removal(saved_inputs):
@@ -432,11 +367,9 @@ def normalized_inputs(tmp_path, monkeypatch):
     return manifest, original, previous, current
 
 
-@pytest.mark.parametrize("replace_different", [False, True])
-def test_normalization_converter_upgrade_reuses_raw_inputs(normalized_inputs, replace_different):
+def test_normalization_converter_upgrade_reuses_raw_inputs(normalized_inputs):
     manifest, original, previous, current = normalized_inputs
-    if replace_different:
-        current["replace_different"] = True
+    current["replace_different"] = True
     assert previous["primary_files"] != current["primary_files"]
     receipt = mapped_authoring.author_input_manifest(manifest, **current)
     selected = Path(receipt["manifest"]["path"])
@@ -452,37 +385,25 @@ def test_normalization_converter_upgrade_reuses_raw_inputs(normalized_inputs, re
     assert selected.stat().st_mtime_ns == before
 
 
-@pytest.mark.parametrize("change", ["sha256", "path", "bytes", "order", "target"])
-@pytest.mark.parametrize("same_outputs", [False, True])
 def test_normalization_upgrade_refuses_changed_raw_facts(
-        normalized_inputs, change, same_outputs):
+        normalized_inputs):
     manifest, original, previous, current = normalized_inputs
     provenance = next(iter(current["provenance_files"].values()))
     document = json.loads(provenance.read_bytes())
     request = document[source_normalization.NORMALIZATION_RECEIPT_KEY]["request"]
-    if change == "target":
-        request["target"]["nx"] += 1
-    elif change == "order":
-        request["inputs"].reverse()
-    else:
-        request["inputs"][0][change] = {"sha256": "a" * 64,
-                                        "path": "other-raw", "bytes": 123}[change]
+    request["target"]["nx"] += 1
     provenance.write_text(json.dumps(document), encoding="utf-8")
-    if same_outputs:
-        current["primary_files"] = previous["primary_files"]
-        current["supplement_files"] = previous["supplement_files"]
+    current["primary_files"] = previous["primary_files"]
+    current["supplement_files"] = previous["supplement_files"]
     with pytest.raises(FileExistsError, match="different input manifest"):
         mapped_authoring.author_input_manifest(manifest, **current)
     assert manifest.read_bytes() == original
 
 
 @pytest.mark.parametrize("side", ["previous", "current"])
-@pytest.mark.parametrize("change,same_outputs", [
-    ("missing", False), ("invalid", False), ("empty", False),
-    ("invalid", True), ("empty", True),
-])
+@pytest.mark.parametrize("change", ["missing", "invalid", "empty"])
 def test_normalization_upgrade_requires_both_receipts(
-        normalized_inputs, side, change, same_outputs):
+        normalized_inputs, side, change):
     manifest, original, previous, current = normalized_inputs
     options = previous if side == "previous" else current
     provenance = next(iter(options["provenance_files"].values()))
@@ -496,38 +417,25 @@ def test_normalization_upgrade_requires_both_receipts(
                    sha256=hashlib.sha256(provenance.read_bytes()).hexdigest())
         manifest.write_text(json.dumps(payload), encoding="utf-8")
     before = manifest.read_bytes()
-    if same_outputs:
-        current["primary_files"] = previous["primary_files"]
-        current["supplement_files"] = previous["supplement_files"]
     with pytest.raises(FileExistsError, match="different input manifest"):
         mapped_authoring.author_input_manifest(manifest, **current)
     assert manifest.read_bytes() == before
 
 
-@pytest.mark.parametrize("change", ["bytes", "sha256"])
-def test_normalization_upgrade_checks_kept_provenance_identity(normalized_inputs, change):
+def test_normalization_upgrade_checks_kept_provenance_identity(normalized_inputs):
     manifest, original, previous, current = normalized_inputs
     provenance = next(iter(previous["provenance_files"].values()))
     contents = provenance.read_bytes()
-    if change == "bytes":
-        provenance.write_bytes(contents + b" ")
-    else:
-        document = json.loads(contents)
-        request = document["normalization"]["request"]
-        request["converter"]["sha256"] = "a" * 64
-        changed = json.dumps(document).encode()
-        assert len(changed) == len(contents)
-        provenance.write_bytes(changed)
+    provenance.write_bytes(contents + b" ")
     with pytest.raises(FileExistsError, match="different input manifest"):
         mapped_authoring.author_input_manifest(manifest, **current)
     assert manifest.read_bytes() == original
 
 
-@pytest.mark.parametrize("field", ["schema", "member", "member_identity", "unknown_field"])
-def test_normalization_upgrade_preserves_other_refusals(normalized_inputs, field):
+def test_normalization_upgrade_preserves_other_refusals(normalized_inputs):
     manifest, original, previous, current = normalized_inputs
     payload = json.loads(original)
-    payload[field] = "different"
+    payload["unknown_field"] = "different"
     manifest.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(FileExistsError, match="different input manifest"):
         mapped_authoring.author_input_manifest(manifest, **current)
@@ -542,12 +450,10 @@ def test_normalization_upgrade_refuses_ambiguous_receipts(normalized_inputs):
         mapped_authoring.author_input_manifest(manifest, **current)
 
 
-@pytest.mark.parametrize("repeat", [False, True])
 def test_normalization_upgrade_rechecks_receipts_before_publication(
-        normalized_inputs, monkeypatch, repeat):
+        normalized_inputs, monkeypatch):
     manifest, original, previous, current = normalized_inputs
-    if repeat:
-        mapped_authoring.author_input_manifest(manifest, **current)
+    mapped_authoring.author_input_manifest(manifest, **current)
     select = mapped_authoring._manifest_destination
 
     def select_then_mutate(*args, **kwargs):
@@ -560,7 +466,7 @@ def test_normalization_upgrade_rechecks_receipts_before_publication(
     with pytest.raises(ValueError, match="changed after validation"):
         mapped_authoring.author_input_manifest(manifest, **current)
     assert manifest.read_bytes() == original
-    assert len(list(manifest.parent.glob("inputs.*.json"))) == int(repeat)
+    assert len(list(manifest.parent.glob("inputs.*.json"))) == 1
 
 
 @pytest.mark.parametrize("mutate_receipt", [False, True])

@@ -138,6 +138,7 @@ class FireCoupler:
         from gpuwm.sfire_coordinates import fire_coordinate_mode
         coordinate_mode = fire_coordinate_mode(static)
         bundle = static.get("_METADATA")
+        self.source_provenance = (bundle or {}).get("source_provenance", {})
         if bundle is not None:
             if (bundle.get("sr_x") != self.sr_x or bundle.get("sr_y") != self.sr_y
                     or tuple(bundle.get("fine_shape", ())) != self.fine_shape):
@@ -183,6 +184,20 @@ class FireCoupler:
         _launch("sfire_set_nfuel", cat.size, (cat, zsf, np.int32(cat.size),
                                             np.int32(cfg.fire_fuel_read), np.int32(cfg.fire_fuel_cat)))
         lines, geographic = ignition_lines(cfg)
+        options = fire_options(cfg)
+        observed = static.get("_OBSERVED_INITIALIZATION") if bundle is None else bundle.get("observed_initialization")
+        admitted = observed is not None and observed.get("admission") == "public_fire_observations_v1"
+        if admitted:
+            from dataclasses import replace
+            # Admission is explicit in the input artifact. It must not silently
+            # load a real perimeter while leaving its assimilation switched off.
+            if not cfg.moist or cfg.fire_atm_feedback <= 0 or cfg.fmoist_only:
+                raise ValueError("Admitted real fire needs moist atmosphere, positive fire_atm_feedback and fmoist_only=false for heat/moisture coupling")
+            from gpuwm.core.sfire_core import IgnitionLine
+            start = float(observed["model_elapsed_seconds"])
+            lines = (IgnitionLine(0., 0., 0., 0., start, start, 0., 0.01),)
+            geographic = False
+            options = replace(options, fire_is_real_perim=True)
         coord_x, coord_y = fine("FXLONG"), fine("FXLAT")
         unit_x = unit_y = 1.0
         if geographic:
@@ -196,13 +211,26 @@ class FireCoupler:
         else:
             coord_x = coord_y = None
         self.grid = FireState.from_static(cat, zsf, gx, gy, dx, dy, halo=1, tiles=fire_tiles,
-            options=fire_options(cfg), table=table, ignitions=lines, time_start=state.elapsed_seconds,
+            options=options, table=table, ignitions=lines, time_start=state.elapsed_seconds,
             coord_xf=coord_x, coord_yf=coord_y, unit_x=unit_x, unit_y=unit_y,
             fmc_g=fine("FMC_G"), lfn_hist=fine("LFN_HIST"), historical_tign=fine("HISTORICAL_TIGN"),
             # Registry fire_sfire allocates these input/history fields even
             # when their evolution and interpolation switches are off.
             moisture_state=MoistureState.zeros(self.coarse_shape, table, class_count=cfg.nfmc,
                                                require_active=cfg.fmoist_run or cfg.fmoist_interp))
+        from gpuwm.fire_inputs import canopy_fields
+        canopy_contract = canopy_fields()
+        present_canopy = set(canopy_contract).intersection(static)
+        if present_canopy and present_canopy != set(canopy_contract):
+            raise ValueError("SFIRE canopy inputs require the complete cover/height/base-height/bulk-density set")
+        for name in sorted(present_canopy):
+            value = fine(name)
+            row = canopy_contract[name]
+            if not bool(cp.all(cp.isfinite(value) & (value >= row["minimum"]) & (value <= row["maximum"]))):
+                raise ValueError(f"SFIRE {name} must be finite within {row['minimum']}..{row['maximum']} {row['units']}")
+            self.grid.data[name.lower()] = value
+        if present_canopy:
+            self.geometry["canopy_fields"] = {name: canopy_contract[name]["units"] for name in sorted(present_canopy)}
         self.geometry["fire_tiles"] = [list(tile) for tile in self.grid.tiles]
         if self.grid.moisture is not None:
             for name, expected in self.grid.moisture.arrays().items():
@@ -243,7 +271,7 @@ class FireCoupler:
         statics["lfn_time"] = hashlib.sha256(cp.asnumpy(self.data["lfn_time"]).tobytes()).hexdigest()
         for name in ("fxlat", "fxlong"):
             statics[name] = hashlib.sha256(cp.asnumpy(self.data[name]).tobytes()).hexdigest()
-        for name in ("lfn_hist", "historical_tign"):
+        for name in ("lfn_hist", "historical_tign", *(name.lower() for name in canopy_fields())):
             if name in self.grid.data:
                 statics[name] = hashlib.sha256(cp.asnumpy(self.grid.data[name]).tobytes()).hexdigest()
         if self.grid.moisture is not None:
@@ -261,6 +289,9 @@ class FireCoupler:
             self._setup["moisture_surface_source"] = "no-exchange near-ground atmospheric proxy"
         if bundle is not None:
             self._setup["static_grid_spec"] = bundle["grid_spec"]
+        if admitted:
+            self._setup["observed_initialization"] = observed
+            self._setup["pyroconvection_enabled"] = True
         if self.spotting is not None:
             self._setup["spotting"] = self.spotting.metadata()["options"]
 
@@ -286,6 +317,12 @@ class FireCoupler:
 
     def _advance_once(self, state, cfg, atmosphere, time_seconds, dt, surface, *, feedback=True, report=True):
         import cupy as cp
+        observed = self._setup.get("observed_initialization")
+        if (observed is not None and not self.grid.perimeter_applied
+                and float(time_seconds) >= float(observed["model_elapsed_seconds"]) + float(dt)):
+            # Check after restart restoration and compute-buffer clock gather.
+            # Construction must remain possible for an older valid restart.
+            raise ValueError("Fresh fire initialization is older than the atmospheric clock; restore its coupled restart instead")
         def classes(values):
             return cp.stack([self.interpolate(value) for value in values])
         if self.grid.options.fmoist_only:
@@ -344,8 +381,14 @@ class FireCoupler:
     def output_attributes(self):
         attrs = dict(FIRE_COORDINATE_MODE=self.geometry["coordinate_mode"],
                      IFIRE=2, SR_X=self.sr_x, SR_Y=self.sr_y)
+        if "observed_initialization" in self._setup:
+            attrs["FIRE_OBSERVATION_RECEIPT"] = json.dumps(self._setup["observed_initialization"], sort_keys=True)
+            attrs["FIRE_PYROCONVECTION_ENABLED"] = 1
+            attrs["FIRE_COUPLING_MEANING"] = "sensible heat and water vapor feedback enabled; pyroCb occurrence is not implied"
         if "moisture_surface_source" in self._setup:
             attrs["FIRE_MOISTURE_SURFACE_SOURCE"] = self._setup["moisture_surface_source"]
+        if self.source_provenance:
+            attrs["FIRE_INPUT_PROVENANCE_JSON"] = json.dumps(self.source_provenance, sort_keys=True)
         return attrs
 
     def arrays(self):
@@ -411,6 +454,20 @@ class FireCoupler:
         if "lfn_hist" in self.grid.data:
             fine_names["LFN_HIST"] = "lfn_hist"
         result = {name: self.grid.data[key][self.grid.interior] for name, key in fine_names.items()}
+        from gpuwm.fire_inputs import canopy_fields
+        # The history plan (sfire_history_shapes) declares the four canopy
+        # planes for every SFIRE run, so a run without admitted canopy
+        # inputs writes them as zero cover/height/base/density (no canopy
+        # structure admitted) instead of declaring planes it never produces.
+        for name in canopy_fields():
+            if name.lower() in self.grid.data:
+                result[name] = self.grid.data[name.lower()][self.grid.interior]
+            else:
+                absent = self.__dict__.setdefault("_absent_canopy_planes", {})
+                if name not in absent:
+                    import cupy as cp
+                    absent[name] = cp.zeros(self.fine_shape, cp.float32)
+                result[name] = absent[name]
         result.update({name: self.data[name.lower()] for name in SFIRE_COARSE_FIELD_NAMES})
         result["LFN_TIME"] = self.data["lfn_time"]
         result.update({name.upper(): self.data[name][self.grid.interior] for name in ("fz0", "fxlat", "fxlong")})

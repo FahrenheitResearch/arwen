@@ -54,7 +54,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
 import mpas_cycle_bridge
 from mpas_cycle_bridge.portbind import PORT_PACKAGES, PORT_SRC_RELDIR

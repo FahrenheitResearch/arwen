@@ -386,6 +386,49 @@ fn netcdf_matches_the_python_engine() {
     );
 }
 
+fn streamed_case(
+    name: &str,
+    directory: &Path,
+    prefix: &str,
+    suffix: &str,
+    limit: Option<usize>,
+) -> Option<(mapped_engine::model::Mapping, Vec<String>)> {
+    let golden_path = goldens().join(format!("{name}.json"));
+    let golden: Value = serde_json::from_slice(
+        &std::fs::read(&golden_path).expect("golden is committed beside this test"),
+    )
+    .expect("golden is JSON");
+    let files = inputs(directory, prefix, suffix, limit);
+    let expected: Vec<&str> = golden["input_names"]
+        .as_array()
+        .expect("golden names its inputs")
+        .iter()
+        .map(|value| value.as_str().expect("input names are strings"))
+        .collect();
+    let observed: Vec<String> = files
+        .iter()
+        .map(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_owned()
+        })
+        .collect();
+    if observed != expected {
+        println!(
+            "SKIP {name}: the staged inputs are not present at {}",
+            directory.display()
+        );
+        return None;
+    }
+    let mapping_path =
+        repository().join(golden["mapping"].as_str().expect("golden names its mapping"));
+    let mapping = mapped_engine::model::Mapping::load(&mapping_path.display().to_string())
+        .expect("the golden names a mapping the engine loads");
+    let names: Vec<String> = files.iter().map(|file| file.display().to_string()).collect();
+    Some((mapping, names))
+}
+
 /// The two decodes of the same bytes must write the SAME frameset.
 ///
 /// The engine decodes a valid time, writes it and drops it before it
@@ -409,39 +452,9 @@ fn compare_streamed_against_whole(
     suffix: &str,
     limit: Option<usize>,
 ) {
-    let golden_path = goldens().join(format!("{name}.json"));
-    let golden: Value = serde_json::from_slice(
-        &std::fs::read(&golden_path).expect("golden is committed beside this test"),
-    )
-    .expect("golden is JSON");
-    let files = inputs(&directory, prefix, suffix, limit);
-    let expected: Vec<&str> = golden["input_names"]
-        .as_array()
-        .expect("golden names its inputs")
-        .iter()
-        .map(|value| value.as_str().expect("input names are strings"))
-        .collect();
-    let observed: Vec<String> = files
-        .iter()
-        .map(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or_default()
-                .to_owned()
-        })
-        .collect();
-    if observed != expected {
-        println!(
-            "SKIP {name}: the staged inputs are not present at {}",
-            directory.display()
-        );
+    let Some((mapping, names)) = streamed_case(name, &directory, prefix, suffix, limit) else {
         return;
-    }
-    let mapping_path =
-        repository().join(golden["mapping"].as_str().expect("golden names its mapping"));
-    let mapping = mapped_engine::model::Mapping::load(&mapping_path.display().to_string())
-        .expect("the golden names a mapping the engine loads");
-    let names: Vec<String> = files.iter().map(|file| file.display().to_string()).collect();
+    };
     let digests = mapped_engine::engine::input_digests(&names).expect("inputs hash");
 
     let scratch = std::env::temp_dir().join(format!("gpuwm-mapped-engine-stream-{name}-{}", std::process::id()));
@@ -529,39 +542,9 @@ fn compare_streamed_collections(
     suffix: &str,
     limit: Option<usize>,
 ) {
-    let golden_path = goldens().join(format!("{name}.json"));
-    let golden: Value = serde_json::from_slice(
-        &std::fs::read(&golden_path).expect("golden is committed beside this test"),
-    )
-    .expect("golden is JSON");
-    let files = inputs(&directory, prefix, suffix, limit);
-    let expected: Vec<&str> = golden["input_names"]
-        .as_array()
-        .expect("golden names its inputs")
-        .iter()
-        .map(|value| value.as_str().expect("input names are strings"))
-        .collect();
-    let observed: Vec<String> = files
-        .iter()
-        .map(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or_default()
-                .to_owned()
-        })
-        .collect();
-    if observed != expected {
-        println!(
-            "SKIP {name}: the staged inputs are not present at {}",
-            directory.display()
-        );
+    let Some((mapping, names)) = streamed_case(name, &directory, prefix, suffix, limit) else {
         return;
-    }
-    let mapping_path =
-        repository().join(golden["mapping"].as_str().expect("golden names its mapping"));
-    let mapping = mapped_engine::model::Mapping::load(&mapping_path.display().to_string())
-        .expect("the golden names a mapping the engine loads");
-    let names: Vec<String> = files.iter().map(|file| file.display().to_string()).collect();
+    };
 
     let whole = mapped_engine::engine::decode_collection(&mapping, &names, &mut |_| {})
         .unwrap_or_else(|refusal| panic!("{name}: whole decode refused: {refusal}"));

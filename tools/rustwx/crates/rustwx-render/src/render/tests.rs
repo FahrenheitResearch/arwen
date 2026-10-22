@@ -303,6 +303,8 @@ fn supersample_scaling_expands_overlay_dimensions() {
         major_width: Some(3),
     }];
     opts.barbs = vec![BarbOverlay {
+        direction_projection: None,
+        direction_arrows: false,
         u: vec![10.0, 10.0, 10.0, 10.0],
         v: vec![0.0, 0.0, 0.0, 0.0],
         ny: 2,
@@ -1389,6 +1391,8 @@ fn render_to_png_suppresses_barbs_when_overlay_data_is_nan() {
     let mut opts = sample_projected_opts();
     opts.title = None;
     opts.barbs = vec![BarbOverlay {
+        direction_projection: None,
+        direction_arrows: false,
         u: vec![f32::NAN; 4],
         v: vec![f32::NAN; 4],
         ny: 2,
@@ -2241,5 +2245,138 @@ fn a_planned_frame_fills_its_map_and_keeps_its_chrome_inside_the_canvas() {
                 assert!(is_canvas(bar.x.saturating_sub(2), mid) && is_canvas(bar.right() + 2, mid));
             }
         }
+    }
+}
+
+#[test]
+fn transport_arrows_follow_projection_aspect_and_seam() {
+    use crate::georeference::ResolvedProjection;
+    use crate::overlay::DirectionProjection;
+    let projection = DirectionProjection {
+        projection: ResolvedProjection::Geographic { central_meridian_deg: 0.0 },
+        extent: MapExtent { x_min: -180.0, x_max: 180.0, y_min: -90.0, y_max: 90.0 },
+        lat_lon: vec![(60.0, 179.99998)],
+    };
+    let (east, north) = projected_transport_direction(Some(&projection), 0, 1.0, 0.0, 1440, 720).unwrap();
+    assert!(east > 0.0 && north.abs() < 1e-10);
+    let (_, meridional) = projected_transport_direction(Some(&projection), 0, 0.0, 1.0, 1440, 720).unwrap();
+    assert!((east / meridional - 2.0).abs() < 1e-6);
+    let projection = DirectionProjection {
+        projection: ResolvedProjection::LambertConformal {
+            standard_parallel_1_deg: 30.0, standard_parallel_2_deg: 60.0,
+            central_meridian_deg: -100.0, reference_latitude_deg: 40.0 },
+        extent: projection.extent,
+        lat_lon: vec![(40.0, -120.0), (40.0, -80.0)],
+    };
+    let west = projected_transport_direction(Some(&projection), 0, 1.0, 0.0, 1000, 1000).unwrap();
+    let east = projected_transport_direction(Some(&projection), 1, 1.0, 0.0, 1000, 1000).unwrap();
+    assert!(west.0 > 0.0 && east.0 > 0.0);
+    assert!(west.1 < 0.0 && east.1 > 0.0);
+}
+
+/// A smooth height-like field, `levels` lines across the grid, on a grid
+/// whose cells are well under a pixel at the given map size.
+fn dense_contour_overlay(nx: usize, ny: usize) -> ContourOverlay {
+    let mut data = Vec::with_capacity(nx * ny);
+    for j in 0..ny {
+        for i in 0..nx {
+            let x = i as f64 / (nx - 1) as f64;
+            let y = j as f64 / (ny - 1) as f64;
+            data.push(540.0 + 60.0 * x + 12.0 * (3.0 * y).sin());
+        }
+    }
+    ContourOverlay {
+        data,
+        ny,
+        nx,
+        levels: (0..10).map(|index| 546.0 + 6.0 * index as f64).collect(),
+        color: Rgba::BLACK,
+        width: 1,
+        labels: true,
+        show_extrema: false,
+        pattern: crate::request::ContourLinePattern::Solid,
+        major_every: None,
+        major_width: None,
+    }
+}
+
+#[test]
+fn contour_labels_draw_on_a_grid_whose_cells_are_under_a_pixel() {
+    // A 3 km CONUS grid (1799 x 1059) on a ~1000 px map: every marching
+    // squares segment is about half a pixel.  The fixed two-pixel floor
+    // rejected all of them and no label was ever placed.
+    let mut layout = contour_test_layout();
+    layout.map_w = 1000;
+    layout.map_h = 600;
+    let overlay = dense_contour_overlay(1799, 1059);
+    let mut img = RgbaImage::from_pixel(1000, 600, Rgba::WHITE.to_image_rgba());
+    let mut placer = ContourLabelPlacer::default();
+    draw_contours_bucketed(&mut img, &layout, &overlay, None, None, &mut placer, 1);
+    let mut labelled: Vec<String> = placer.labels.iter().map(|label| label.text.clone()).collect();
+    labelled.sort();
+    labelled.dedup();
+    assert!(
+        labelled.len() >= 8,
+        "expected most of the 10 levels labelled, got {labelled:?}"
+    );
+    if let Some(folder) = std::env::var_os("RUSTWX_CONTOUR_LABEL_EVIDENCE") {
+        let folder = std::path::PathBuf::from(folder);
+        std::fs::create_dir_all(&folder).unwrap();
+        placer.draw(&mut img);
+        img.save(folder.join("dense-grid-contour-labels.png")).unwrap();
+    }
+}
+
+#[test]
+fn the_label_segment_floor_is_unchanged_on_coarse_grids() {
+    assert_eq!(contour_label_min_segment_px(4.0), 2.0);
+    assert_eq!(contour_label_min_segment_px(40.0), 2.0);
+    assert_eq!(contour_label_min_segment_px(f64::INFINITY), 2.0);
+    assert_eq!(contour_label_min_segment_px(0.0), 2.0);
+    assert!((contour_label_min_segment_px(0.6) - 0.3).abs() < 1.0e-12);
+}
+
+#[test]
+fn a_label_crossing_the_domain_clip_is_not_placed() {
+    let mut layout = contour_test_layout();
+    layout.map_x = 10;
+    layout.map_y = 10;
+    layout.map_w = 200;
+    layout.map_h = 200;
+    // The drawn domain is the local square 20..180.
+    let mut mask = RgbaImage::new(200, 200);
+    for y in 20..180 {
+        for x in 20..180 {
+            mask.put_pixel(x, y, Rgba::WHITE.to_image_rgba());
+        }
+    }
+    let inside = LabelRect { min_x: 60, max_x: 90, min_y: 60, max_y: 72 };
+    let across_left = LabelRect { min_x: 25, max_x: 55, min_y: 60, max_y: 72 };
+    let across_bottom = LabelRect { min_x: 60, max_x: 90, min_y: 182, max_y: 194 };
+    assert!(label_rect_inside_clip_mask(&layout, inside, 2, Some(&mask)));
+    assert!(!label_rect_inside_clip_mask(&layout, across_left, 2, Some(&mask)));
+    assert!(!label_rect_inside_clip_mask(&layout, across_bottom, 2, Some(&mask)));
+    assert!(label_rect_inside_clip_mask(&layout, across_left, 2, None));
+}
+
+#[test]
+fn masked_dense_contours_keep_every_label_inside_the_domain() {
+    let mut layout = contour_test_layout();
+    layout.map_w = 800;
+    layout.map_h = 500;
+    let overlay = dense_contour_overlay(1400, 900);
+    let mut mask = RgbaImage::new(800, 500);
+    for y in 40..460 {
+        for x in 40..760 {
+            mask.put_pixel(x, y, Rgba::WHITE.to_image_rgba());
+        }
+    }
+    let mut img = RgbaImage::from_pixel(800, 500, Rgba::WHITE.to_image_rgba());
+    let mut placer = ContourLabelPlacer::default();
+    draw_contours_bucketed(&mut img, &layout, &overlay, None, Some(&mask), &mut placer, 1);
+    assert!(!placer.labels.is_empty());
+    for label in &placer.labels {
+        assert!(label.x >= 40 && label.y >= 40, "label {} at {},{}", label.text, label.x, label.y);
+        assert!(label.x < 760 && label.y < 460);
     }
 }

@@ -973,16 +973,6 @@ fn polygon_contains_wound(ring: &[V3], left_is_region: bool, p: V3) -> bool {
     if left_is_region { total > pi } else { total < -pi }
 }
 
-/// How wide the ramp from a region's spacing out to the background is.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Transition {
-    /// Half-width in kilometres.
-    Km(f64),
-    /// Half-width counted in cells of the REGION's own spacing.
-    Cells(f64),
-}
-
 /// One refinement region.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Region {
@@ -1022,12 +1012,6 @@ pub struct MeshSpec {
     #[serde(default)]
     pub name: Option<String>,
 }
-
-/// The production transition width, for reference in a receipt: the published
-/// variable-resolution mesh ramps from 90% to 10% of its density over 81 cells.
-/// A spec asking for fewer is steeper than anything NCAR publishes, and the
-/// receipt says so with the number rather than refusing a legitimate request.
-pub const PUBLISHED_RAMP_CELLS: f64 = 81.0;
 
 /// Whether a probe set covered every locus where a field varies.
 ///

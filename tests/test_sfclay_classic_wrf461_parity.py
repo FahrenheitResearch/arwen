@@ -128,7 +128,7 @@ def test_classic_atanf_words_are_the_mynn_units_words():
         return [int(w, 16) for w in re.findall(r"0x([0-9A-Fa-f]+)u", body)]
 
     ours = words(kernels / "sfclay_classic.cuh", "SFC_CLASSIC_ATANF_TAB")
-    theirs = words(kernels / "mynn_dmp_sibling.cu", "MYNN_ATANF_TAB")
+    theirs = words(kernels / "mynn_surface_libm.cuh", "MYNN_ATANF_TAB")
     assert len(ours) == 19 and ours == theirs
 
 

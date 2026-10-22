@@ -20,6 +20,8 @@ from types import MappingProxyType
 import uuid
 
 import numpy as np
+from gpuwm.ensemble.physical_fields import sha256_of_file as _sha
+from gpuwm.ensemble.physical_fields import canonical_json as _canonical
 
 
 HEAD_SCHEMA = "gpuwm-ensemble-posted-member-head.v1"
@@ -30,16 +32,8 @@ BINDING_KEY = "ensemble_posted_member_input"
 _CURRENT = ContextVar("gpuwm_posted_member_preparation", default=None)
 
 
-def _canonical(value):
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
-
-
 def _digest(value):
     return hashlib.sha256(_canonical(value).encode()).hexdigest()
-
-
-def _sha(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
 def _frozen(value):

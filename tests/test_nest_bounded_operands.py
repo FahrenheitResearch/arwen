@@ -344,6 +344,9 @@ def test_canonical_digest_keeps_joined_carriers_and_adds_live_coupler_slots(monk
                                        "nest_qv_btxs": live_table})
     owner = SimpleNamespace(ranked=True, _state=facade, scalars={},
                             _run=SimpleNamespace(canonical_store=lambda: joined))
+    # canonical_digest reads its inputs through canonical_digest_inputs
+    # (725e222f3c, cards released before the end-of-run hashing).
+    owner.canonical_digest_inputs = lambda: StreamedDomain.canonical_digest_inputs(owner)
     monkeypatch.setattr(state_digest, "canonical_store_digest",
                         lambda arrays, *a, **kw: arrays)
     actual = StreamedDomain.canonical_digest(owner, None)

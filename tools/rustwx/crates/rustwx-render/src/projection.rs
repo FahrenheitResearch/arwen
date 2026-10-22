@@ -753,24 +753,6 @@ impl ProjectionProjector {
 }
 
 impl MapExtent {
-    pub fn from_wrf(
-        proj: &LambertConformal,
-        cen_lat: f64,
-        cen_lon: f64,
-        nx: usize,
-        ny: usize,
-        dx: f64,
-        dy: f64,
-    ) -> Self {
-        let (xc, yc) = proj.project(cen_lat, cen_lon);
-        Self {
-            x_min: xc - dx * (nx as f64 - 1.0) / 2.0,
-            x_max: xc + dx * (nx as f64 - 1.0) / 2.0,
-            y_min: yc - dy * (ny as f64 - 1.0) / 2.0,
-            y_max: yc + dy * (ny as f64 - 1.0) / 2.0,
-        }
-    }
-
     pub fn from_bounds(x_min: f64, x_max: f64, y_min: f64, y_max: f64, target_ratio: f64) -> Self {
         let data_width = x_max - x_min;
         let data_height = y_max - y_min;

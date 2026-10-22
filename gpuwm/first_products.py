@@ -227,6 +227,11 @@ class FrameHook:
 
         return None
 
+    def frame_submitted(self, **event: Any) -> None:
+        callback = getattr(self._trigger, "frame_submitted", None)
+        if callback is not None:
+            callback(**event)
+
     def output_committed(self, **event: Any) -> None:
         """One durable frame: hand it to the render, and get out of the way."""
 
@@ -397,9 +402,30 @@ def _own_group_options() -> dict[str, Any]:
     return {"start_new_session": True}
 
 
+def _lower_priority(pid: int, increment: int) -> None:
+    """Make process ``pid`` ``increment`` steps nicer than this one (POSIX).
+
+    Linux keeps a niceness per thread and every thread a process starts
+    inherits its creator's, so a render made nicer as it starts carries
+    that to ``rw_wrfbatch`` and to every renderer worker thread.  Nothing
+    on Windows (the renderer lowers its own import thread there) and
+    nothing when the host refuses: priority is a courtesy, never a reason
+    to fail a render.
+    """
+
+    if os.name != "posix" or increment <= 0:
+        return
+    try:
+        target = min(19, os.getpriority(os.PRIO_PROCESS, 0) + int(increment))
+        os.setpriority(os.PRIO_PROCESS, pid, target)
+    except (AttributeError, OSError):
+        pass
+
+
 def _run_render(command: Sequence[str], *,
                 own_group: bool = False,
-                env_overrides: Mapping[str, str] | None = None
+                env_overrides: Mapping[str, str] | None = None,
+                nice: int = 0
                 ) -> subprocess.CompletedProcess:
     """Spawn the render exactly as the finalize stage spawns it.
 
@@ -409,6 +435,9 @@ def _run_render(command: Sequence[str], *,
 
     What :func:`subprocess.run` does, with the process recorded against
     the calling thread while it runs, so :func:`end_render` can end it.
+
+    ``nice`` makes the render that many steps nicer than the caller
+    (:func:`_lower_priority`), for a render that runs beside the forecast.
 
     ``own_group`` starts the render in a process group of its own, for a
     host that stops it itself.  THE BREAKAGE: the
@@ -435,6 +464,9 @@ def _run_render(command: Sequence[str], *,
         list(command), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, errors="replace", cwd=str(_stage_cwd()),
         env=environment, **(_own_group_options() if own_group else {}))
+    # Before the render has started anything: its interpreter is still
+    # loading, so the renderer it launches inherits the lower priority.
+    _lower_priority(process.pid, nice)
     setattr(process, _OWN_GROUP_ATTRIBUTE, bool(own_group))
     ident = threading.get_ident()
     with _RUNNING_LOCK:
@@ -873,6 +905,8 @@ class FirstProducts:
         from gpuwm.restart_render import history_before_restart, hour_before
         from gpuwm.rustwx import COMMAND_LINE_BUDGET
 
+        from gpuwm.product_publish import utc_now
+        render_start = utc_now()
         started = time.perf_counter()
         render_dir = self.render_dir
         # A picture with no coastlines is still a picture, so the render
@@ -916,6 +950,7 @@ class FirstProducts:
                     inputs_file=scratch / "restart-render-inputs.json")
             completed = (self._runner(command, own_group=True)
                          if self._own_group else self._runner(command))
+            render_end = utc_now()
             if self._abandoned:
                 # Halted while it drew: the halt ended this render, and
                 # nothing it left is published.
@@ -1031,6 +1066,8 @@ class FirstProducts:
                     # a number it can use.  So the receipt carries the
                     # absolute instant and every consumer subtracts its
                     # own launch from it.
+                    "render_start": render_start,
+                    "render_end": render_end,
                     "published_unix_ms": published_unix_ms,
                     "frame": str(frame),
                     "domain": int(domain),

@@ -12,6 +12,7 @@ every assertion here compares BYTES at 1, 3 and 64 workers.
 from __future__ import annotations
 
 import ast
+from functools import lru_cache
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -315,29 +316,33 @@ def test_the_sealed_distribution_runs_the_water_blends():
     assert result["worker_counts"] == [1, 3]
 
 
-def test_nothing_at_run_time_imports_the_water_blend_oracle():
-    """The NumPy code is a test oracle, never a silent runtime fallback."""
-    offenders = []
+@lru_cache(maxsize=1)
+def _runtime_oracle_importers():
+    tokens = ("water_blend_oracle", "hrrr_stencil_oracle")
+    offenders = {token: [] for token in tokens}
     for base in ("gpuwm", "tilestream", "tools"):
-        root = ROOT / base
-        if not root.exists():
-            continue
-        for path in sorted(root.rglob("*.py")):
+        for path in sorted((ROOT / base).rglob("*.py")):
             relative = path.relative_to(ROOT).as_posix()
             if relative.startswith("gpuwm/verify/"):
                 continue
             text = path.read_text(encoding="utf-8", errors="replace")
-            if "water_blend_oracle" not in text:
+            if not any(token in text for token in tokens):
                 continue
             for node in ast.walk(ast.parse(text)):
                 names = []
                 if isinstance(node, ast.Import):
                     names = [alias.name for alias in node.names]
                 elif isinstance(node, ast.ImportFrom):
-                    names = [node.module or ""] + [
-                        alias.name for alias in node.names]
-                if any("water_blend_oracle" in name for name in names):
-                    offenders.append(relative)
+                    names = [node.module or ""] + [alias.name for alias in node.names]
+                for token in tokens:
+                    if any(token in name for name in names):
+                        offenders[token].append(relative)
+    return offenders
+
+
+def test_nothing_at_run_time_imports_the_water_blend_oracle():
+    """The NumPy code is a test oracle, never a silent runtime fallback."""
+    offenders = _runtime_oracle_importers()["water_blend_oracle"]
     assert offenders == []
     horiz = (ROOT / "gpuwm" / "ingest" / "horiz.py").read_text(
         encoding="utf-8")

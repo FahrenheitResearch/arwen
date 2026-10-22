@@ -111,35 +111,6 @@ def _emit(tmp_path: Path, source: str, *extra: str,
 # The door: every registered runnable source plans.
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("source", wizard_planable_source_ids())
-def test_every_registered_source_plans_a_runnable_config(tmp_path, source):
-    rc, out = _emit(tmp_path / source, source)
-    assert rc == 0, f"{source} did not plan"
-    assert out.is_file()
-    config = tomllib.loads(out.read_text(encoding="utf-8"))
-    assert config["experiment"]["run_seconds"] == 21600.0
-    # HRRR writes its route inputs instead of the bare companion namelist;
-    # both spellings put a namelist.wps beside the config.
-    namelists = sorted(out.parent.glob("*.namelist.wps"))
-    assert namelists, f"{source} emitted no namelist.wps"
-    declared = int(source_forcing_interval_seconds(source))
-    text = namelists[0].read_text(encoding="utf-8")
-    assert f"interval_seconds = {declared},", (
-        f"{source}: namelist.wps must carry the registry's cadence")
-    assert f" interval_seconds = {declared},\n" in text
-
-
-@pytest.mark.parametrize("source", wizard_planable_source_ids())
-def test_emitted_config_reloads_through_the_real_loader(tmp_path, source):
-    from gpuwm.domain_wizard import experiment_from_text
-
-    rc, out = _emit(tmp_path / source, source)
-    assert rc == 0
-    exp = experiment_from_text(out.read_text(encoding="utf-8"),
-                              source=str(out))
-    assert exp.run_seconds == 21600.0
-
-
 def _sources_with_public_bytes() -> frozenset[str]:
     """Every source `gpuwm fetch` can download, read from the AUTHORITY.
 
@@ -219,34 +190,6 @@ def _refused_source_ids() -> frozenset[str]:
         (Path(registry.__file__).with_name("authorities") / ROUTE_TABLE_NAME)
         .read_text(encoding="utf-8"))
     return frozenset(table["refusals"])
-
-
-@pytest.mark.parametrize("source", wizard_planable_source_ids())
-def test_fetch_table_is_emitted_exactly_where_the_fetch_door_reaches(
-        tmp_path, source):
-    """A ``[fetch]`` table is a claim about where this source's bytes come from.
-
-    Emitting one for a source neither `gpuwm fetch` nor the local-input
-    contract serves produces a config that is refused at every later
-    load; omitting one for a source that IS served loses the acquisition
-    hint.  A source with a composed local runner keeps the metadata that
-    names which staged bytes, and review still requires its own input
-    root on top of it.  Both halves are decided against the packaged
-    authorities, never against the emitting seam, never against the
-    run-plan verdict the emission is being checked against, and never
-    against a list written here.
-    """
-
-    rc, out = _emit(tmp_path / source, source)
-    assert rc == 0
-    text = out.read_text(encoding="utf-8")
-    config = tomllib.loads(text)
-    expected = (source in _sources_with_public_bytes()
-                or source in _local_input_source_ids())
-    assert ("fetch" in config) is expected, source
-    if not expected:
-        # And the gap is stated in the file, not merely left blank.
-        assert "NO [fetch] TABLE" in text
 
 
 def _planable_sources_with_public_bytes() -> list[str]:
@@ -405,6 +348,24 @@ def test_printed_chain_parses_with_matching_acquisition(
     rc, out = _emit(tmp_path / "command paths", source, "--explain")
     assert rc == 0
     printed = capsys.readouterr().out
+    # The complete chain owns the config checks formerly repeated by three
+    # per-source emissions and a regional in-window emission.
+    from gpuwm.domain_wizard import experiment_from_text
+
+    assert out.is_file()
+    text = out.read_text(encoding="utf-8")
+    config = tomllib.loads(text)
+    assert config["experiment"]["run_seconds"] == 21600.0
+    assert experiment_from_text(text, source=str(out)).run_seconds == 21600.0
+    namelists = sorted(out.parent.glob("*.namelist.wps"))
+    assert namelists, f"{source} emitted no namelist.wps"
+    declared = int(source_forcing_interval_seconds(source))
+    assert f" interval_seconds = {declared},\n" in namelists[0].read_text(encoding="utf-8")
+    expected_fetch = (source in _sources_with_public_bytes()
+                      or source in _local_input_source_ids())
+    assert ("fetch" in config) is expected_fetch, source
+    if not expected_fetch:
+        assert "NO [fetch] TABLE" in text
     for argv in _printed_fetch_arguments(printed):
         with pytest.raises(RemoteAcquisitionReached):
             cli_main(argv)
@@ -418,7 +379,6 @@ def test_printed_chain_parses_with_matching_acquisition(
             argv = shlex.split(line[3:], comments=True)
             assert argv[0] == "gpuwm"
             commands[argv[1]] = build_parser().parse_args(argv[1:])
-    config = tomllib.loads(out.read_text(encoding="utf-8"))
     fetch = commands["fetch"]
     assert fetch.source == config["fetch"]["source"]
     row = get_source_adapter(source).model_row or {}
@@ -524,13 +484,6 @@ def test_hand_written_fetch_table_validates_for_every_routed_source(source):
 def _regional_sources() -> tuple[str, ...]:
     return tuple(s for s in wizard_planable_source_ids()
                  if source_coverage_window(s) is not None)
-
-
-@pytest.mark.parametrize("source", _regional_sources())
-def test_regional_source_plans_inside_its_own_window(tmp_path, source):
-    rc, out = _emit(tmp_path / source, source)
-    assert rc == 0
-    assert out.is_file()
 
 
 @pytest.mark.parametrize("source", _regional_sources())

@@ -6,7 +6,7 @@
 //! workaround, never the default).
 
 use super::{
-    bytes, clear_error, drop_grid, guard, register_grid, set_error, utf8,
+    clear_error, drop_grid, guard, register_grid, set_error, utf8,
     with_grid, ERR, OK,
 };
 use crate::corridor;
@@ -343,12 +343,4 @@ pub unsafe extern "C" fn gpuwm_static_grid_identity_probes(
             }
         }
     })
-}
-
-/// Keep `bytes` referenced for the lanes that will need raw-byte config
-/// crossings on this file's calls (silences no-op warnings without
-/// removing the helper from the seam surface).
-#[allow(dead_code)]
-fn _reserved(ptr: *const u8, len: usize) -> usize {
-    unsafe { bytes(ptr, len) }.map_or(0, <[u8]>::len)
 }

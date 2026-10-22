@@ -243,11 +243,20 @@ def _parent_checkpoint(tmp_path, monkeypatch, producer, choice, *, resumed=False
 
 
 @requires_netcdf_bridge
-@pytest.mark.parametrize("producer", ["resident", "streamed"])
-@pytest.mark.parametrize("choice", [
-    "omitted", "auto", "explicit-low", "explicit-safe", "legacy",
+# Each serializer sees every label spelling. Alternate terrain footprints so
+# the shared downscale path keeps both outcomes without a Cartesian sweep.
+@pytest.mark.parametrize("producer,choice,footprint", [
+    ("resident", "omitted", "steep"),
+    ("resident", "auto", "flat"),
+    ("resident", "explicit-low", "steep"),
+    ("resident", "explicit-safe", "steep"),
+    ("resident", "legacy", "flat"),
+    ("streamed", "omitted", "flat"),
+    ("streamed", "auto", "steep"),
+    ("streamed", "explicit-low", "flat"),
+    ("streamed", "explicit-safe", "flat"),
+    ("streamed", "legacy", "steep"),
 ])
-@pytest.mark.parametrize("footprint", ["steep", "flat"])
 def test_fixed_parent_checkpoint_to_downscale_keeps_the_acoustic_choice(
         tmp_path, monkeypatch, capsys, producer, choice, footprint):
     _assert_downscale_inheritance(

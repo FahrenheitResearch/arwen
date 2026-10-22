@@ -378,13 +378,6 @@ impl ProjectedMapBuildOptions {
         self
     }
 
-    pub fn with_basemap_style(mut self, style: BasemapStyle) -> Self {
-        let mut basemap = self.basemap.unwrap_or_default();
-        basemap.style = style;
-        self.basemap = Some(basemap);
-        self
-    }
-
     pub fn with_basemap_detail(mut self, detail: BasemapDetail) -> Self {
         let mut basemap = self.basemap.unwrap_or_default();
         basemap.detail = detail;

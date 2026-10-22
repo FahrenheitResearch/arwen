@@ -30,7 +30,9 @@ def test_lake_exports_are_visible_to_the_cuda_frame_census():
     # production frame inventory and admits domains with zero priced frames.
     source=(ROOT / "gpuwm/core/kernels/lake.cu").read_text()
     assert set(re.findall(r'extern\s+"C"\s+__global__\s+void\s+(\w+)',source)) == {
-        "lake_init_columns","lake_step_columns"}
+        "lake_init_columns","lake_step_columns",
+        # f9eb12244a9 (cap-lake): table-driven lake analyses bound on the card.
+        "lake_bind_source_columns"}
 
 
 def test_lake_generator_reproduces_every_shipped_wrf_statement():

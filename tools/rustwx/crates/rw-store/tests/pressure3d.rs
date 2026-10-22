@@ -77,6 +77,21 @@ fn new_writer() -> HourWriter {
     )
 }
 
+fn mark_special_chunks(planes: &mut [Vec<f32>]) {
+    for plane in planes {
+        for y in 0..COL_Y {
+            for x in 0..COL_X {
+                plane[y * NX + x] = f32::NAN;
+            }
+        }
+        for y in COL_Y..2 * COL_Y {
+            for x in COL_X..2 * COL_X {
+                plane[y * NX + x] = 5.0;
+            }
+        }
+    }
+}
+
 fn write_volume(path: &Path, planes: &[Vec<f32>]) {
     let mut writer = new_writer();
     writer
@@ -428,18 +443,7 @@ fn empty_and_constant_3d_chunks() {
     let mut planes = analytic_planes();
     // Chunk (0,0): footprint rows 0..16 x cols 0..16 all-NaN at every level.
     // Chunk (1,1): rows 16..32 x cols 16..32 constant 5.0 at every level.
-    for plane in &mut planes {
-        for y in 0..COL_Y {
-            for x in 0..COL_X {
-                plane[y * NX + x] = f32::NAN;
-            }
-        }
-        for y in COL_Y..2 * COL_Y {
-            for x in COL_X..2 * COL_X {
-                plane[y * NX + x] = 5.0;
-            }
-        }
-    }
+    mark_special_chunks(&mut planes);
     write_volume(&path, &planes);
 
     // Raw index inspection: EMPTY and CONSTANT chunks carry no payload.
@@ -518,22 +522,7 @@ fn write_volume_for_full3d(path: &Path) {
         })
         .collect();
 
-    // Chunk (0,0): footprint rows 0..16 x cols 0..16 -> all NaN (EMPTY).
-    for plane in &mut planes {
-        for y in 0..COL_Y {
-            for x in 0..COL_X {
-                plane[y * NX + x] = f32::NAN;
-            }
-        }
-    }
-    // Chunk (1,1): rows 16..32 x cols 16..32 -> constant 5.0 (CONSTANT).
-    for plane in &mut planes {
-        for y in COL_Y..2 * COL_Y {
-            for x in COL_X..2 * COL_X {
-                plane[y * NX + x] = 5.0;
-            }
-        }
-    }
+    mark_special_chunks(&mut planes);
 
     let surface: Vec<f32> = (0..NY)
         .flat_map(|y| (0..NX).map(move |x| 2.0 * x as f32 + 3.0 * y as f32))

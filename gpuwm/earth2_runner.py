@@ -16,6 +16,7 @@ Prints one JSON line: load and run seconds, peak GPU memory, output path.
 from __future__ import annotations
 
 from collections import OrderedDict
+from contextlib import contextmanager, ExitStack
 import json
 import sys
 import time
@@ -132,49 +133,321 @@ def member_perturbation(model, policy, seeds):
     return apply
 
 
-def _band_contracted_disco():
-    """Fit torch-harmonics' DISCO convolution on cards its fast kernel skips.
+# Bytes of one expanded DISCO slice (batch x channels x kernel x lat x lon,
+# float32). Breakage it prevents: the whole expansion is ~20 GiB at 0.25
+# degrees and FCN3 did not fit a 32 GB card beside the model (2.9.4
+# follow-up, V58 2026-10-21).
+DISCO_CHUNK_BYTES = 2 * 2**30
 
-    torch-harmonics 0.9 ships its k-packed DISCO kernel for SM 9.0 and
-    10.0 only; elsewhere (SM 12.0: RTX 5090, RTX PRO 6000) the fallback
-    materialises a permuted copy of the expanded input for one einsum,
-    about 20 GiB at 0.25 degrees, which does not fit a 32 GiB card beside
-    the model.  Contracting one latitude band at a time computes the same
-    sums without that copy.  A no-op when torch-harmonics is absent.
+
+def _band_rows(rows):
+    return max(1, rows // 96)
+
+
+def _distribution_version(name):
+    """The installed version of distribution ``name``, or None when it is absent."""
+    from importlib.metadata import PackageNotFoundError, version as installed
+    for spelling in (name, name.replace("-", "_")):
+        try:
+            return installed(spelling)
+        except PackageNotFoundError:
+            continue
+    return None
+
+
+def _band_contracted_disco(capability=None):
+    """Fit torch-harmonics' DISCO convolution on a 32 GB card.
+
+    The DISCO forward expands its input to (batch, channels, kernel, lat, lon)
+    and contracts that with the weights in one einsum; the einsum's matmul
+    first materialises a permuted copy of the whole expanded tensor (about
+    20 GiB at 0.25 degrees), and the transpose convolution does the same on
+    its way in.  Contracting one latitude band at a time computes the same
+    sums without that copy.  Two layouts exist:
+
+    * torch-harmonics 0.9 (``disco.optimized``): its k-packed kernel skips
+      the copy on SM 9.0 and 10.0 only, so the runner patches it elsewhere
+      (SM 12.0: RTX 5090, RTX PRO 6000).
+    * torch-harmonics 0.8.1 (the a632ca7 revision earth2studio 0.19.0 pins
+      and the managed environment installs): ``DiscreteContinuousConvS2``
+      and ``DiscreteContinuousConvTransposeS2`` contract in their own
+      ``forward`` on every card, so both are patched.
+
+    Breakage it prevents (2.9.4 follow-up, V58 2026-10-21): on the 0.8.1
+    stack the 0.9 patch found no ``disco.optimized`` module and returned
+    without patching, FCN3 peaked at 60,212 MiB (49.3 GiB allocated) and
+    every 32 GB card was refused. Returns the patched layout, or ``False``
+    when torch-harmonics is absent or has neither layout.
     """
     try:
         import torch
-        from torch_harmonics.disco.optimized import disco_optimized as disco
     except Exception:
         return False
+    try:
+        from torch_harmonics.disco.optimized import disco_optimized as disco
+    except Exception:
+        disco = None
+    if disco is not None:
+        if capability is not None and tuple(capability) in ((9, 0), (10, 0)):
+            return False
 
-    def forward(ctx, inp, weight, roff_idx, ker_idx, row_idx, col_idx, vals,
-                split_roff_idx, split_nnz_off, split_ker_idx, split_row_idx,
-                split_col_idx, split_vals, kernel_size, nlat_out, nlon_out,
-                groups, groupsize, split_row_offsets=(), split_nnz_offsets=()):
-        itype = inp.dtype
-        expanded = disco.disco_kernels.forward.default(
-            inp.contiguous(), roff_idx, ker_idx, row_idx, col_idx,
-            vals.to(disco._compute_dtype(itype)), kernel_size, nlat_out, nlon_out,
-        ).to(itype)
-        batch, channels, kernel, rows, columns = expanded.shape
-        expanded = expanded.reshape(batch, groups, groupsize, kernel, rows, columns)
-        weight = weight.to(itype)
-        out = torch.empty((batch, groups, weight.shape[1], rows, columns),
-                          dtype=itype, device=expanded.device)
-        band = max(1, rows // 96)
-        for row in range(0, rows, band):
-            out[..., row:row + band, :] = torch.einsum(
-                "bgckxy,gock->bgoxy", expanded[..., row:row + band, :], weight)
-        return out.reshape(batch, groups * weight.shape[1], rows, columns)
+        def forward(ctx, inp, weight, roff_idx, ker_idx, row_idx, col_idx, vals,
+                    split_roff_idx, split_nnz_off, split_ker_idx, split_row_idx,
+                    split_col_idx, split_vals, kernel_size, nlat_out, nlon_out,
+                    groups, groupsize, split_row_offsets=(), split_nnz_offsets=()):
+            itype = inp.dtype
+            expanded = disco.disco_kernels.forward.default(
+                inp.contiguous(), roff_idx, ker_idx, row_idx, col_idx,
+                vals.to(disco._compute_dtype(itype)), kernel_size, nlat_out, nlon_out,
+            ).to(itype)
+            batch, channels, kernel, rows, columns = expanded.shape
+            expanded = expanded.reshape(batch, groups, groupsize, kernel, rows, columns)
+            weight = weight.to(itype)
+            out = torch.empty((batch, groups, weight.shape[1], rows, columns),
+                              dtype=itype, device=expanded.device)
+            band = _band_rows(rows)
+            for row in range(0, rows, band):
+                out[..., row:row + band, :] = torch.einsum(
+                    "bgckxy,gock->bgoxy", expanded[..., row:row + band, :], weight)
+            return out.reshape(batch, groups * weight.shape[1], rows, columns)
 
-    disco._DiscoSaveXConvFn.forward = staticmethod(forward)
-    return True
+        disco._DiscoSaveXConvFn.forward = staticmethod(forward)
+        return "torch-harmonics 0.9 disco.optimized"
+    try:
+        from torch_harmonics.disco import convolution
+    except Exception:
+        return False
+    conv = getattr(convolution, "DiscreteContinuousConvS2", None)
+    transpose = getattr(convolution, "DiscreteContinuousConvTransposeS2", None)
+    if conv is None or transpose is None or not hasattr(convolution, "_disco_s2_contraction_torch"):
+        return False
+
+    def contract(self, x):
+        if self.optimized_kernel:
+            return convolution._disco_s2_contraction_optimized(
+                x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx,
+                self.psi_vals, self.kernel_size, self.nlat_out, self.nlon_out)
+        return convolution._disco_s2_contraction_torch(x, self.psi.to(x.device), self.nlon_out)
+
+    def contract_transpose(self, x):
+        if self.optimized_kernel:
+            return convolution._disco_s2_transpose_contraction_optimized(
+                x, self.psi_roff_idx, self.psi_ker_idx, self.psi_row_idx, self.psi_col_idx,
+                self.psi_vals, self.kernel_size, self.nlat_out, self.nlon_out)
+        return convolution._disco_s2_transpose_contraction_torch(x, self.psi_st.to(x.device), self.nlon_out)
+
+    def chunks(count, per_item_bytes):
+        # Slices of `count` items whose expanded tensors stay near CHUNK_BYTES.
+        step = max(1, min(count, DISCO_CHUNK_BYTES // max(1, per_item_bytes)))
+        return [slice(start, min(count, start + step)) for start in range(0, count, step)]
+
+    def conv_forward(self, x):
+        # out[b, g, o] = sum over (c, k) of expanded[b, g, c, k] * w[g, o, c, k].
+        # The expansion is linear per input channel, so it runs a slice of
+        # channels (or of groups) at a time and accumulates: the expanded
+        # tensor never exists whole.
+        batch, channels, rows_in, columns_in = x.shape
+        weight = self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])
+        kernel = weight.shape[3]
+        rows, columns = self.nlat_out, self.nlon_out
+        out = torch.zeros((batch, self.groups, weight.shape[1], rows, columns),
+                          dtype=torch.result_type(x, weight), device=x.device)
+        band = _band_rows(rows)
+        per_channel = batch * kernel * rows * columns * 4
+        grouped = self.groups > 1
+        x = x.reshape(batch, self.groups, self.groupsize, rows_in, columns_in)
+        for part in chunks(self.groups if grouped else self.groupsize,
+                           per_channel * (self.groupsize if grouped else 1)):
+            piece = x[:, part] if grouped else x[:, :, part]
+            groups = piece.shape[1]
+            expanded = contract(self, piece.reshape(batch, -1, rows_in, columns_in))
+            expanded = expanded.reshape(batch, groups, -1, kernel, rows, columns)
+            w = weight[part] if grouped else weight[:, :, part]
+            target = out[:, part] if grouped else out
+            for row in range(0, rows, band):
+                target[..., row:row + band, :] += torch.einsum(
+                    "bgckxy,gock->bgoxy", expanded[..., row:row + band, :], w)
+            del expanded
+        out = out.reshape(batch, -1, rows, columns)
+        if self.bias is not None:
+            out = out + self.bias.reshape(1, -1, 1, 1)
+        return out
+
+    def transpose_forward(self, x):
+        # expanded[b, g, o, k] = sum over c of x[b, g, c] * w[g, o, c, k], then
+        # the transpose contraction maps each (g, o) channel independently, so
+        # both run a slice of output channels (or groups) at a time.
+        batch, channels, rows, columns = x.shape
+        x = x.reshape(batch, self.groups, self.groupsize, rows, columns)
+        weight = self.weight.reshape(self.groups, -1, self.weight.shape[1], self.weight.shape[2])
+        kernel = weight.shape[3]
+        grouped = self.groups > 1
+        band = _band_rows(rows)
+        per_channel = batch * kernel * rows * columns * 4
+        parts = []
+        for part in chunks(self.groups if grouped else weight.shape[1],
+                           per_channel * (weight.shape[1] if grouped else 1)):
+            piece = x[:, part] if grouped else x
+            w = weight[part] if grouped else weight[:, part]
+            expanded = torch.empty((batch, w.shape[0], w.shape[1], kernel, rows, columns),
+                                   dtype=torch.result_type(x, weight), device=x.device)
+            for row in range(0, rows, band):
+                expanded[..., row:row + band, :] = torch.einsum(
+                    "bgcxy,gock->bgokxy", piece[..., row:row + band, :], w)
+            parts.append(contract_transpose(self, expanded.reshape(batch, -1, kernel, rows, columns)))
+            del expanded
+        if grouped:
+            out = torch.cat(parts, dim=1)
+        else:
+            out = torch.cat([p.reshape(batch, 1, -1, *p.shape[-2:]) for p in parts], dim=2)
+        out = out.reshape(batch, -1, *out.shape[-2:])
+        if self.bias is not None:
+            out = out + self.bias.reshape(1, -1, 1, 1)
+        return out
+
+    conv.forward = conv_forward
+    transpose.forward = transpose_forward
+    return "torch-harmonics 0.8 DiscreteContinuousConv(Transpose)S2.forward"
+
+
+def _cgroup_cpu_quota():
+    """CPUs the container's CFS quota grants (cgroup v2 cpu.max or v1), else None.
+
+    Mirrors gpuwm.ingest.preparation_workers.cgroup_cpu_count; this runner
+    imports no gpuwm module, so the reader is repeated here.
+    """
+    from pathlib import Path
+    root = Path("/sys/fs/cgroup")
+    try:
+        membership = Path("/proc/self/cgroup").read_text()
+    except OSError:
+        return None
+    groups = [(root, True)]
+    for line in membership.splitlines():
+        parts = line.split(":", 2)
+        if len(parts) != 3:
+            continue
+        _, controllers, relative = parts
+        relative = relative.strip().strip("/")
+        chain = [Path(*relative.split("/")[:depth]) for depth in range(1, len(relative.split("/")) + 1)] if relative else []
+        if not controllers:
+            groups.extend((root / path, True) for path in chain)
+        elif "cpu" in controllers.split(","):
+            for controller in (controllers, "cpu", "cpu,cpuacct"):
+                groups.extend((root / controller / path, False) for path in [Path()] + chain)
+    limits = []
+    for group, v2 in groups:
+        try:
+            if v2:
+                quota, period = (group / "cpu.max").read_text().split()
+            else:
+                quota = (group / "cpu.cfs_quota_us").read_text().strip()
+                period = (group / "cpu.cfs_period_us").read_text().strip()
+        except (OSError, ValueError):
+            continue
+        if quota in ("max", "-1") or int(period) <= 0:
+            continue
+        limits.append(max(1, int(int(quota) // int(period))))
+    return min(limits) if limits else None
 
 
 def _cpu_count():
+    """Threads this process may really use: affinity capped by the cgroup CPU quota.
+
+    Breakage it prevents: affinity alone reported 48 inside a container whose
+    quota is smaller, so OpenMP/Torch pools were oversized and CFS throttled
+    them (FCN3 model_load on G12, 2026-10-20).
+    """
     import os
-    return len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 1)
+    affinity = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 1)
+    quota = _cgroup_cpu_quota() if sys.platform.startswith("linux") else None
+    return max(1, min(affinity, quota or affinity))
+
+
+# Torch CPU threads while a model is constructed. Construction is a stream of
+# small tensor ops: a big OpenMP pool only spins. Measured FCN3 load_model on
+# G12 (48 cores, shared), 2026-10-20: 8 threads 26-33 s idle or loaded; 48
+# threads 41 s idle and 1,551 s (or never, killed at 900 s) under load.
+BUILD_THREADS = 8
+
+
+def _progress(begin, message):
+    """One flushed progress line; earth2_run.py sends stderr to earth2-runner.log.
+
+    Breakage it prevents: a 52+ minute FCN3 construction on an oversubscribed
+    box (2026-10-20) left earth2-runner.log empty, so nobody could tell a slow
+    stage from a hung one.
+    """
+    print(f"earth2 runner: +{time.perf_counter() - begin:.1f}s {message}", file=sys.stderr, flush=True)
+
+
+def _disco_precompute_on_gpu():
+    """Compute torch-harmonics' DISCO filter basis on the card, not the CPU.
+
+    DiscreteContinuousConvS2 precomputes its sparse filter tensor in its
+    constructor with CPU tensors: an O(kernel x nlat x nnz) loop that took
+    20-40 min of 48 CPU threads for FCN3 on a shared host while the leased
+    card sat at 0 % (G12, 2026-10-20). The same function runs under a CUDA
+    default device and hands back CPU tensors, so the constructor and its
+    psi preprocessing run unchanged. Measured on FCN3 (G12, 2026-10-20):
+    build 15.4 s against 23.8 s on 8 CPU threads; every index buffer is
+    identical and psi values differ from the CPU basis by at most 2 float32
+    ulp (GPU libm), i.e. fast numerics. A no-op when torch-harmonics is
+    absent or no card is visible.
+    """
+    try:
+        import torch
+        import importlib
+        convolution = importlib.import_module("torch_harmonics.disco.convolution")
+    except Exception:
+        return False
+    if not torch.cuda.is_available():
+        return False
+    original = convolution._precompute_convolution_tensor_s2
+    if getattr(original, "_gpuwm_on_gpu", False):
+        return True
+
+    def moved(value, device):
+        if isinstance(value, (tuple, list)):
+            return type(value)(moved(item, device) for item in value)
+        return value.to(device) if hasattr(value, "to") else value
+
+    def on_cpu(grid):
+        # torch-harmonics memoises its quadrature grids (lru_cache) and shares
+        # them with resampling and the SHT. Build them on the CPU, as before,
+        # and hand the basis a CUDA copy, so the cache never holds a CUDA
+        # tensor. Breakage it prevents: torch_harmonics.resample got the
+        # cached CUDA longitudes and failed in searchsorted (G12, 2026-10-20).
+        def shim(*args, **kwargs):
+            with torch.device("cpu"):
+                result = grid(*args, **kwargs)
+            return moved(result, "cuda")
+        return shim
+
+    def precompute(*args, **kwargs):
+        grids = {name: getattr(convolution, name) for name in ("precompute_latitudes", "precompute_longitudes")
+                 if hasattr(convolution, name)}
+        try:
+            for name, grid in grids.items():
+                setattr(convolution, name, on_cpu(grid))
+            with torch.device("cuda"):
+                result = original(*args, **kwargs)
+        finally:
+            for name, grid in grids.items():
+                setattr(convolution, name, grid)
+        return moved(tuple(result), "cpu")
+
+    precompute._gpuwm_on_gpu = True
+    for name in ("torch_harmonics.disco.convolution",
+                 "torch_harmonics.distributed.distributed_convolution",
+                 "torch_harmonics.attention.attention"):
+        try:
+            module = importlib.import_module(name)
+        except Exception:
+            continue
+        if getattr(module, "_precompute_convolution_tensor_s2", None) is original:
+            module._precompute_convolution_tensor_s2 = precompute
+    return True
 
 
 def _sha256(path):
@@ -188,35 +461,199 @@ def _sha256(path):
             "sha256": digest.hexdigest()}
 
 
+def _package(request, model_class):
+    """The weight package the row's loader opens, local root first."""
+    local_root = request.get("package_root") or request.get("weights_package")
+    if local_root:
+        from earth2studio.models.auto import Package
+        return Package(str(local_root), cache=False)
+    package = model_class.load_default_package()
+    if request.get("model_package"):
+        from earth2studio.models.auto import Package
+        package = Package(request["model_package"], cache_options=package.cache_options)
+    return package
+
+
+def constructed_identity(request, loader_inputs, kwargs):
+    """Everything a CPU-constructed model depends on: class, weights, loader
+    arguments and inputs, and every installed distribution's version."""
+    import hashlib
+    from importlib.metadata import distributions
+    installed = sorted({(item.metadata["Name"] or "").lower(): item.version
+                        for item in distributions()}.items())
+    identity = dict(schema=1, model_class=request["model_class"],
+                    package=str(request.get("package_root") or request.get("weights_package")
+                                or request.get("model_package") or "default"),
+                    expected_weights=request.get("expected_weights"), loader_kwargs=kwargs,
+                    loader_inputs=[item["sha256"] for item in loader_inputs],
+                    python=sys.version, distributions=installed)
+    return hashlib.sha256(json.dumps(identity, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _constructed_paths(request, key):
+    from pathlib import Path
+    root = Path(request["weight_cache"]) / "constructed"
+    stem = f"{request['model_class']}-{key[:24]}"
+    return root, root / (stem + ".pt"), root / (stem + ".json")
+
+
+def _constructed_manifest(request, key):
+    """The cache manifest, only while every recorded weight file is unchanged."""
+    import os
+    _, model_path, manifest_path = _constructed_paths(request, key)
+    try:
+        manifest = json.loads(manifest_path.read_text())
+        if manifest["key"] != key or os.stat(model_path).st_size != manifest["bytes"]:
+            return None
+        for asset in manifest["assets"]:
+            status = os.stat(asset["path"])
+            if status.st_size != asset["bytes"] or status.st_mtime_ns != asset["mtime_ns"]:
+                return None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return manifest
+
+
+def load_constructed(request, key, audit):
+    """A model the CPU stage built, or None. Its weight files are re-hashed by
+    the audit beside the run and must equal the bytes it was built from."""
+    manifest = _constructed_manifest(request, key)
+    if manifest is None:
+        return None, None
+    import torch
+    _, model_path, _ = _constructed_paths(request, key)
+    model = torch.load(model_path, map_location="cpu", weights_only=False)
+    audit.adopt(manifest["assets"])
+    return model, dict(path=str(model_path), bytes=manifest["bytes"], cache_hit=True)
+
+
+def build_constructed(request, loader_inputs, kwargs, workers):
+    """CPU-construct the model once per identity and keep it for the GPU run."""
+    import fcntl
+    import os
+    import torch
+    key = constructed_identity(request, loader_inputs, kwargs)
+    root, model_path, manifest_path = _constructed_paths(request, key)
+    root.mkdir(parents=True, exist_ok=True)
+    with (root / (model_path.stem + ".lock")).open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        manifest = _constructed_manifest(request, key)
+        if manifest is not None:
+            return dict(path=str(model_path), bytes=manifest["bytes"], cache_hit=True,
+                        input_coords=manifest["input_coords"], weights=manifest["assets"])
+        import earth2studio.models.px as px
+        model_class = getattr(px, request["model_class"])
+        audit = PackageAudit(request["weight_cache"], workers, request.get("expected_weights"))
+        try:
+            model = model_class.load_model(_package(request, model_class), **kwargs)
+        finally:
+            assets = audit.finish()
+        for asset in assets:
+            asset["mtime_ns"] = os.stat(asset["path"]).st_mtime_ns
+        coords = model.input_coords()
+        input_coords = dict(variable=[str(value) for value in coords["variable"]],
+                            lead_time_ns=[int(value) for value in
+                                          coords["lead_time"].astype("timedelta64[ns]").astype("int64")])
+        temporary = model_path.with_suffix(".pt.new")
+        torch.save(model, temporary)
+        temporary.replace(model_path)
+        manifest = dict(key=key, bytes=model_path.stat().st_size, assets=assets,
+                        input_coords=input_coords, model_class=request["model_class"])
+        temporary = manifest_path.with_suffix(".json.new")
+        temporary.write_text(json.dumps(manifest, indent=2) + "\n")
+        temporary.replace(manifest_path)
+        return dict(path=str(model_path), bytes=manifest["bytes"], cache_hit=False,
+                    input_coords=input_coords, weights=assets)
+
+
+def prefetch_initial_conditions(request, input_coords, workers):
+    """Pull the rollout's initial state into this run's data cache on the CPU."""
+    import numpy as np
+    import torch
+    import earth2studio.data as data
+    from earth2studio.data import fetch_data
+    torch.set_num_threads(workers)
+    source = getattr(data, request["ic_class"])(**request.get("ic_kwargs", {}))
+    fetch_data(source=source, time=np.array([np.datetime64(request["init"])]),
+               variable=np.array(input_coords["variable"]),
+               lead_time=np.array(input_coords["lead_time_ns"], dtype="timedelta64[ns]"),
+               device=torch.device("cpu"))
+    return dict(source=type(source).__name__, init=request["init"], cache=request["data_cache"],
+                variables=len(input_coords["variable"]))
+
+
+@contextmanager
+def loader_cache_lock(request):
+    """Protect fixed loader filenames only for rows that actually write them."""
+    preparations = request.get("loader_preparations", ())
+    if not preparations:
+        yield
+        return
+    import fcntl
+    from pathlib import Path
+    from earth2studio.models.auto import Package
+    roots = sorted({Path(Package.default_cache(item["cache_subdir"])).resolve()
+                    for item in preparations})
+    with ExitStack() as stack:
+        for root in roots:
+            root.mkdir(parents=True, exist_ok=True)
+            lock = stack.enter_context((root / ".gpuwm-loader-inputs.lock").open("a"))
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
 def prepare_loader_inputs(request):
     """Materialize row-declared initial-state assets for unparameterized loaders.
 
     The caller holds the cache lock through model construction, so two cycles
     cannot replace a loader's fixed cache filename underneath each other.
     """
+    import hashlib
     from pathlib import Path
-    import numpy as np
-    import torch
-    import earth2studio.data as data
-    from earth2studio.data import fetch_data
-    from earth2studio.models.auto import Package
     receipts = []
     for preparation in request.get("loader_preparations", ()):
         begin = time.perf_counter()
+        from earth2studio.models.auto import Package
         root = Path(Package.default_cache(preparation["cache_subdir"])).resolve()
         path = (root / preparation["filename"]).resolve()
         if path.parent != root or preparation["format"] != "torch":
             raise ValueError("loader preparation needs a direct cache filename and torch format")
         root.mkdir(parents=True, exist_ok=True)
-        source = getattr(data, preparation.get("data_class", request["ic_class"]))(
-            **preparation.get("data_kwargs", request.get("ic_kwargs", {})))
         clock = request["init"] if preparation["time"] == "$init" else preparation["time"]
+        source_class = preparation.get("data_class", request["ic_class"])
+        source_kwargs = preparation.get("data_kwargs", request.get("ic_kwargs", {}))
+        identity = dict(preparation=preparation, cycle=clock, data_class=source_class,
+                        data_kwargs=source_kwargs, pinned_version=request["pinned_version"])
+        signature = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+        manifest = path.with_suffix(path.suffix + ".gpuwm.json")
+        try:
+            saved = json.loads(manifest.read_text())
+            asset = _sha256(path)
+            cache_hit = saved["signature"] == signature and saved["sha256"] == asset["sha256"]
+        except (OSError, ValueError, KeyError, TypeError):
+            cache_hit = False
+        if cache_hit:
+            receipts.append(dict(asset, source=source_class, cycle=clock,
+                                 variables=preparation["variables"], cache_hit=True,
+                                 seconds=round(time.perf_counter() - begin, 3),
+                                 parallelism="1 thread, cache verification"))
+            continue
+        import numpy as np
+        import torch
+        import earth2studio.data as data
+        from earth2studio.data import fetch_data
+        torch.set_num_threads(_cpu_count())
+        source = getattr(data, source_class)(**source_kwargs)
         tensor, _ = fetch_data(source=source, time=np.array([np.datetime64(clock)]),
                                variable=preparation["variables"], device=torch.device("cpu"))
         temporary = path.with_suffix(path.suffix + ".new")
         torch.save(tensor.squeeze(), temporary)
         temporary.replace(path)
-        receipts.append(dict(_sha256(path), source=type(source).__name__, cycle=clock,
+        asset = _sha256(path)
+        temporary_manifest = manifest.with_suffix(manifest.suffix + ".new")
+        temporary_manifest.write_text(json.dumps(dict(signature=signature, **asset)) + "\n")
+        temporary_manifest.replace(manifest)
+        receipts.append(dict(asset, source=type(source).__name__, cycle=clock, cache_hit=False,
                              variables=preparation["variables"], seconds=round(time.perf_counter() - begin, 3),
                              parallelism=f"{_cpu_count()} threads / network"))
     return receipts
@@ -237,6 +674,7 @@ class PackageAudit:
         self.executor = ThreadPoolExecutor(max_workers=workers)
         self.assets = {}
         self.pending = {}
+        self.recorded = {}
         self.expected = expected or {}
         self.original_init = Package.__init__
         self.original_open = Package.open
@@ -293,11 +731,22 @@ class PackageAudit:
         Package.__init__ = init
         Package.open = opened
 
+    def adopt(self, assets):
+        """Audit the files a cached constructed model was built from."""
+        for asset in assets:
+            key = (asset["root"], asset["asset"])
+            self.assets[key] = {name: asset[name] for name in ("root", "asset", "revision")}
+            self.recorded[key] = asset["sha256"]
+            self.pending[key] = self.executor.submit(_sha256, asset["path"])
+
     def finish(self):
         from earth2studio.models.auto import Package
         try:
             assets = [dict(self.assets[key], **future.result())
                       for key, future in self.pending.items()]
+            for (key, recorded), asset in zip(((key, self.recorded.get(key)) for key in self.pending), assets):
+                if recorded is not None and asset["sha256"] != recorded:
+                    raise ValueError(f"Weight bytes changed after the constructed model was built: {asset['asset']}")
             for expected in self.expected.get("files", ()):
                 name = expected.get("path", expected.get("name"))
                 matching = [asset for asset in assets if asset["asset"] == name]
@@ -445,10 +894,11 @@ def main(argv) -> int:
     spec = spec_from_file_location("_gpuwm_local_gpu", Path(__file__).with_name("local_gpu.py"))
     local_gpu = module_from_spec(spec)
     spec.loader.exec_module(local_gpu)
-    if local_gpu.no_local_gpu():
+    prepare_only = len(argv) == 3 and argv[1] == "--prepare-loader-inputs"
+    if not prepare_only and local_gpu.no_local_gpu():
         raise ValueError(f"{local_gpu.NO_LOCAL_GPU_ENV} is set; Earth2 generation cannot open the local GPU")
     from importlib.metadata import version
-    request = json.loads(Path(argv[1]).read_text(encoding="utf-8"))
+    request = json.loads(Path(argv[2] if prepare_only else argv[1]).read_text(encoding="utf-8"))
     if version("earth2studio") != request["pinned_version"]:
         raise ValueError("Earth2Studio version differs from the pinned runtime table")
     # Configure allocation before importing Torch or initializing CUDA.
@@ -460,6 +910,41 @@ def main(argv) -> int:
     os.environ["EARTH2STUDIO_MODEL_CACHE"] = request["weight_cache"]
     os.environ["EARTH2STUDIO_CACHE"] = request["data_cache"]
     os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
+    if prepare_only:
+        # The CPU stage, run before GPU admission with every device hidden:
+        # loader inputs, CPU model construction into the constructed-model
+        # cache, and the initial conditions into this run's data cache.
+        os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+        started = time.perf_counter()
+        stages = []
+
+        def staged(name, begin, parallelism):
+            stages.append({"stage": name, "started_unix": time.time() - (time.perf_counter() - begin),
+                           "seconds": round(time.perf_counter() - begin, 3), "parallelism": parallelism})
+        constructed = initial = None
+        with loader_cache_lock(request):
+            begin = time.perf_counter()
+            loader_inputs = prepare_loader_inputs(request)
+            staged("loader_input_prepare", begin, f"{workers} CPU threads / network")
+            if request.get("model_class"):
+                seed = int(request.get("seed", 0))
+                kwargs = {key: seed if value == "$seed" else value
+                          for key, value in request.get("loader_kwargs", {}).items()}
+                begin = time.perf_counter()
+                constructed = build_constructed(request, loader_inputs, kwargs, workers)
+                staged("model_construct_cpu", begin, f"{workers} CPU threads"
+                       + (", constructed-model cache" if constructed["cache_hit"] else ""))
+        if constructed is not None:
+            begin = time.perf_counter()
+            initial = prefetch_initial_conditions(request, constructed["input_coords"], workers)
+            staged("initial_conditions", begin, f"{workers} CPU threads / network")
+        print(json.dumps({"schema": "gpuwm-earth2-loader-preparation-v2",
+                          "loader_inputs": loader_inputs, "stages": stages,
+                          "constructed_model": constructed, "initial_conditions": initial,
+                          "seconds": round(time.perf_counter() - started, 3),
+                          "parallelism": f"{workers} CPU threads / network",
+                          "model_constructed": constructed is not None, "gpu_used": False}), flush=True)
+        return 0
     import numpy as np
     import torch
     import earth2studio.data as data
@@ -469,47 +954,71 @@ def main(argv) -> int:
 
     if not torch.cuda.is_available():
         raise RuntimeError("Earth2 generation requires a GPU; no CUDA device was admitted")
+    clock = time.perf_counter()
     torch.set_num_threads(workers)
+    build_threads = min(workers, BUILD_THREADS)
+    disco_on_gpu = _disco_precompute_on_gpu()
+    # A log line never fails a run: stand-in torch modules (tests) carry no
+    # version or device name.
+    device_name = getattr(torch.cuda, "get_device_name", lambda index: "cuda")(0)
+    _progress(clock, f"torch {getattr(torch, '__version__', 'unknown')} on {device_name}; {workers} host threads")
     seed = int(request["seed"])
     torch.manual_seed(seed)
     np.random.seed(seed % 2**32)
     torch.cuda.manual_seed_all(seed)
-    patched = False
-    major, minor = torch.cuda.get_device_capability(0)
-    if (major, minor) not in ((9, 0), (10, 0)):
-        patched = _band_contracted_disco()
+    # torch-harmonics 0.9's k-packed kernel already skips the copy on SM 9.0
+    # and 10.0; every other card, and the 0.8.1 layout on any card, is banded.
+    capability = tuple(torch.cuda.get_device_capability(0))
+    patched = _band_contracted_disco(capability)
     audit = PackageAudit(request["weight_cache"], workers, request.get("expected_weights"))
     started = time.perf_counter()
     stages = []
-    def stage(name, begin, parallelism):
-        stages.append({"stage": name, "started_unix": time.time() - (time.perf_counter() - begin),
-                       "seconds": round(time.perf_counter() - begin, 3), "parallelism": parallelism})
+    def stage(name, begin, parallelism, parent=None):
+        record = {"stage": name, "started_unix": time.time() - (time.perf_counter() - begin),
+                  "seconds": round(time.perf_counter() - begin, 3), "parallelism": parallelism}
+        if parent:
+            record["parent_stage"] = parent
+        stages.append(record)
     io = None
     try:
         model_class = getattr(px, request["model_class"])
-        local_root = request.get("package_root") or request.get("weights_package")
-        if local_root:
-            from earth2studio.models.auto import Package
-            package = Package(str(local_root), cache=False)
-        else:
-            package = model_class.load_default_package()
-            if request.get("model_package"):
-                from earth2studio.models.auto import Package
-                package = Package(request["model_package"], cache_options=package.cache_options)
         kwargs = {key: seed if value == "$seed" else value
                   for key, value in request.get("loader_kwargs", {}).items()}
-        import fcntl
-        with open(Path(request["weight_cache"]) / "loader-inputs.lock", "a") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+        waiting = time.perf_counter()
+        with loader_cache_lock(request):
+            stage("loader_lock_wait", waiting, "1 CPU thread, cache lock", "model_load")
+            preparing = time.perf_counter()
             loader_inputs = prepare_loader_inputs(request)
-            model = model_class.load_model(package, **kwargs)
+            stage("loader_input_prepare", preparing, f"{workers} CPU threads / network", "model_load")
+            constructing = time.perf_counter()
+            # The CPU stage (fetch --prepare-only) built this model already
+            # when its identity matches; otherwise construct it here.
+            model, constructed = load_constructed(
+                request, constructed_identity(request, loader_inputs, kwargs), audit)
+            if model is not None:
+                stage("model_construct_cached", constructing,
+                      f"{workers} CPU threads, constructed-model cache", "model_load")
+                _progress(clock, f"constructed model loaded from cache in {time.perf_counter() - constructing:.1f}s")
+            else:
+                _progress(clock, f"constructing {request['model_class']} ({build_threads} host threads"
+                                 + (", GPU basis" if disco_on_gpu else "") + ")")
+                torch.set_num_threads(build_threads)
+                try:
+                    model = model_class.load_model(_package(request, model_class), **kwargs)
+                finally:
+                    torch.set_num_threads(workers)
+                constructed = dict(cache_hit=False)
+                stage("model_construct", constructing, f"{workers} CPU threads", "model_load")
+                _progress(clock, f"constructed in {time.perf_counter() - constructing:.1f}s")
         for call in request.get("model_calls", []):
             kwargs = {key: seed if value == "$seed" else value
                       for key, value in call.get("kwargs", {}).items()}
             getattr(model, call["method"])(**kwargs)
         model = model.to(torch.device("cuda"))
         loaded = time.perf_counter()
-        stage("model_load", started, f"{workers} threads / network")
+        stage("model_load", started, f"{build_threads} threads" + (" + GPU basis" if disco_on_gpu else "")
+              + " / network")
+        _progress(clock, f"model on cuda; model_load {loaded - started:.1f}s")
         source = getattr(data, request["ic_class"])(**request.get("ic_kwargs", {}))
         output_coords = OrderedDict()
         area = request.get("area")
@@ -547,8 +1056,11 @@ def main(argv) -> int:
             finally:
                 timings["initial_data_seconds"] += time.perf_counter() - begin
                 timings["initial_data_calls"] += 1
+                _progress(clock, f"initial data fetch {timings['initial_data_calls']}: "
+                                 f"{time.perf_counter() - begin:.1f}s")
         run.fetch_data = timed_fetch
         original_iterator = model.create_iterator
+        steps_done = [0]
         def timed_iterator(*args, **kwargs):
             iterator = original_iterator(*args, **kwargs)
             while True:
@@ -560,6 +1072,8 @@ def main(argv) -> int:
                     return
                 torch.cuda.synchronize()
                 timings["inference_seconds"] += time.perf_counter() - begin
+                steps_done[0] += 1
+                _progress(clock, f"rollout step {steps_done[0]}: {time.perf_counter() - begin:.2f}s")
                 yield value
         model.create_iterator = timed_iterator
         policy = request.get("member_policy")
@@ -578,9 +1092,11 @@ def main(argv) -> int:
                      output_coords=output_coords, device=torch.device("cuda"))
         ran = time.perf_counter()
         stage("initial_conditions_and_rollout", loaded, "GPU / " + str(workers) + " threads")
+        _progress(clock, "rollout done; closing writers")
         closing, io = io, None
         files = closing.close()
         stage("staging_tail", ran, f"{workers} processes")
+        _progress(clock, f"writers closed: {len(files)} files")
     finally:
         primary_error = sys.exc_info()[1]
         cleanup_errors = []
@@ -603,11 +1119,19 @@ def main(argv) -> int:
     finished = time.perf_counter()
     print(json.dumps({
         "schema": "gpuwm-earth2-run-v2", "stages": stages,
+        "package_root": request.get("package_root") or request.get("weights_package"),
+        "steps": int(request["steps"]),
+        "output": request["output"],
         "load_seconds": round(loaded - started, 3),
         "run_seconds": round(finished - loaded, 3),
         "peak_gpu_gib": round(torch.cuda.max_memory_allocated() / 2**30, 3),
         "peak_reserved_gpu_gib": round(torch.cuda.max_memory_reserved() / 2**30, 3),
         "band_contracted_disco": patched,
+        # What the patch decision depended on, so a receipt tells a correct
+        # False (torch-harmonics 0.9 on SM 9.0/10.0) from a silent no-op (the
+        # 0.8.1 stack that found no layout and peaked at 60 GB, 2026-10-21).
+        "compute_capability": ".".join(str(part) for part in capability),
+        "torch_harmonics": _distribution_version("torch-harmonics"),
         "earth2studio": version("earth2studio"), "torch": torch.__version__,
         "members": request["members"], "seed": seed, "seeds": request.get("seeds"),
         "seed_scope": ("per-member replay seeds via row native RNG or perturbation protocol" if policy
@@ -615,7 +1139,7 @@ def main(argv) -> int:
         "workflow_calls": 1,
         "batch_size": batch_size, "batch_memory": batch_memory, "files": files,
         **{key: round(value, 3) for key, value in timings.items()},
-        "loader_inputs": loader_inputs,
+        "loader_inputs": loader_inputs, "constructed_model": constructed,
         "weight_cache": request["weight_cache"], "weights": assets,
     }), flush=True)
     return 0

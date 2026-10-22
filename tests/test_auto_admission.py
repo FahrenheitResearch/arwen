@@ -381,7 +381,12 @@ def test_tree_public_dispatch_preserves_cold_machine_and_domain_options(tmp_path
     exp = replace(exp, domains=(exp.root, child))
     machine = ap.Machine(24 * GIB, 256 * GIB)
     model = SimpleNamespace(_input_catalog=object())
-    data, result = object(), object()
+    # run_experiment writes report.json from the summary since 384a7aa6c9a
+    # (lane/improve-2-era5-hydro-receipt), so the stub carries the summary
+    # fields that report reads, as RealCaseRunSummary and ExperimentRunSummary do.
+    data = object()
+    result = SimpleNamespace(completed_seconds=float(exp.run_seconds), wrfout_paths=(),
+                             nan_free=True, hydro_receipts=None)
     events = []
     monkeypatch.setattr(ap.Machine, "detect", lambda **kw: events.append("cold") or machine)
     def build(value, companion):
@@ -400,3 +405,6 @@ def test_tree_public_dispatch_preserves_cold_machine_and_domain_options(tmp_path
     monkeypatch.setattr(runtime, "_run_built_experiment", execute)
     assert runtime.run_experiment(exp, data, tmp_path / "tree") is result
     assert events == ["cold", "build", "execute"]
+    import json
+    report = json.loads((tmp_path / "tree" / "report.json").read_text())
+    assert report["status"] == "PASS" and report["domain_count"] == 2

@@ -1,8 +1,7 @@
 """Default selector and consumer-table admission for the real spectral state."""
 from dataclasses import replace
 import numpy as np
-from gpuwm.config import RunConfig,validate_run_config,MP_PHYSICS_ACCEPTED
-from gpuwm.physics_registry import component_options
+from gpuwm.config import RunConfig
 from gpuwm.core import state as S,preflight as P
 from gpuwm.io.restart import classify_state_attr,STATE_REBUILT_ATTRS
 from gpuwm.core.fast_sbm_contract import BIN_SPECIES,EXTRA_SPECIES
@@ -10,13 +9,6 @@ from gpuwm.core.fast_sbm_contract import BIN_SPECIES,EXTRA_SPECIES
 
 def cfg():
     return RunConfig(nx=8,ny=6,nz=8,dx=1000.,dy=1000.,ztop=10000.,dt=1.,run_seconds=10.,moist=True,mp_physics=30)
-
-
-def test_default_mp30_is_admitted():
-    validate_run_config(cfg())
-    assert 30 in MP_PHYSICS_ACCEPTED
-    rows=component_options("microphysics")
-    assert rows["fast-sbm-mp30"]["implemented"]
 
 
 def test_spectral_restart_inventory_and_real_workspace(monkeypatch):

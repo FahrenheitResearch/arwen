@@ -272,9 +272,6 @@ fn compute<T:Real>(r:&Request)->Result<Fields<T>,String> {
     Ok(Fields {deriv_two:deriv,gradient_x:gx,gradient_y:gy,adv_cells:adv,
         adv_coefs:coef,adv_coefs_3rd:third,n_adv_cells:counts,cells_for_edge:ids})
 }
-/// MPAS v8.4.2 core_init_atmosphere/mpas_atm_advection.F:21-923.
-/// Direct RKIND entry for the static builder, sharing the replayed protocol body.
-pub fn native_fields(r:&Request)->Result<Fields<f32>,String> {compute::<f32>(r)}
 fn process<T:Real>(r:&Request,out:&mut impl Write)->Result<(),String> {
     let f=compute::<T>(r)?;
     for v in [&f.deriv_two,&f.gradient_x,&f.gradient_y] {for &x in v {x.encode(out)?;}}

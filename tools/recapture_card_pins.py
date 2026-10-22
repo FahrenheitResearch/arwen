@@ -41,7 +41,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests"))
 sys.path.insert(0, str(ROOT))
 
-from tools.recapture_phase2_pin import readings  # noqa: E402
+from tools.recapture_phase2_pin import _nvrtc, readings  # noqa: E402
 
 
 def _load_test_module(name: str):
@@ -139,21 +139,6 @@ def _card() -> dict:
             "cuda_runtime": cp.cuda.runtime.runtimeGetVersion(),
             **_nvrtc(),
             "commit": _query(["git", "-C", str(ROOT), "rev-parse", "HEAD"])}
-
-
-def _nvrtc() -> dict:
-    """The NVRTC build that compiles this process's kernels, the key the
-    per-compiler pin rows use (gpuwm.certify.compile_platform): a pin is a
-    property of the compiled image, so the capture records the compiler
-    beside the card."""
-    try:
-        from gpuwm.certify.compile_platform import compile_platform_fingerprint
-        fingerprint = compile_platform_fingerprint()
-    except Exception as error:  # a tree without the fingerprint module
-        return {"nvrtc": f"unresolved ({type(error).__name__})"}
-    return {"nvrtc": fingerprint["nvrtc_build"],
-            "nvrtc_build_id": fingerprint["nvrtc_build_id"],
-            "nvrtc_library_sha256": fingerprint["nvrtc_library_sha256"]}
 
 
 def main() -> int:

@@ -387,13 +387,5 @@ fn executable_reads_wrf_and_scores_large_finite_errors() {
     assert!(
         String::from_utf8_lossy(&rejected.stderr).contains("newer than the WOOF initialization")
     );
-    for entry in fs::read_dir(&root).unwrap() {
-        let entry = entry.unwrap();
-        eprintln!(
-            "deleted_test_fixture {} {} bytes",
-            entry.file_name().to_string_lossy(),
-            entry.metadata().unwrap().len()
-        );
-    }
-    fs::remove_dir_all(root).unwrap();
+    clean(&root);
 }

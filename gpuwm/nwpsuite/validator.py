@@ -5,7 +5,6 @@ from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
-import re
 import tomllib
 
 from .registry import DATA, Registries, SuiteRefusal, read_json

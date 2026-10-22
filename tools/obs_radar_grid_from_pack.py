@@ -44,9 +44,10 @@ sites, times, packs and grids are arguments.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
+
+from gpuwm.obs.obspack import sha256_of as _sha256
 
 # The engine selector is defined once, by the production spine, and
 # imported here rather than restated: "same flag, same defaults and same
@@ -55,14 +56,6 @@ from pathlib import Path
 # claim stops being true.
 from tools.obs_radar_grid_build import (add_dealias_engine_arguments,
                                         dealias_params_from_args)
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as handle:
-        for block in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def build_parser() -> argparse.ArgumentParser:

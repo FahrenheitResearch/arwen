@@ -18,6 +18,16 @@
 
 use std::f64::consts::PI;
 
+// Every transcendental on the window path goes through the vendored `libm`
+// (pure IEEE arithmetic, `force-soft-floats`), never `f64::cos`/`powf`/`atan`.
+// Those call the platform C library, and the Windows UCRT returns different
+// last bits for the same argument depending on its build and on the CPU it
+// dispatches for: the same rw-mpas test binary gave a different focus-window
+// digest on an AMD Ryzen 9 9950X3D (UCRT 10.0.26100) and on an Intel Xeon
+// 8488C (UCRT 10.0.20348), first in `pow`, then `atan2` and `atan`. With
+// `libm` the coordinates are the same bits on every x86-64 CPU and OS.
+use libm::{acos, asin, atan, atan2, cos, log10, pow, sin, tan};
+
 use crate::error::{MpasError, MpasResult};
 
 #[cfg(test)]
@@ -610,7 +620,7 @@ impl Window {
         // horizon and never inside, whatever the cone maps it to.
         let half_lat_deg = 0.5 * height_m / (RAD * WRF_EARTH_RADIUS_M);
         let half_lon_deg =
-            0.5 * width_m / (RAD * WRF_EARTH_RADIUS_M * (centre_lat * RAD).cos().max(1.0e-6));
+            0.5 * width_m / (RAD * WRF_EARTH_RADIUS_M * cos(centre_lat * RAD).max(1.0e-6));
         let probe = LambertProjection::set_lc(
             truelat1, truelat2, centre_lon, 1.0, centre_lat, centre_lon, 0.0, 0.0,
         );
@@ -1021,15 +1031,15 @@ impl Window {
             )));
         }
         let up = [mean[0] / norm, mean[1] / norm, mean[2] / norm];
-        let centre_lat = up[2].clamp(-1.0, 1.0).asin() * DEG;
-        let centre_lon = up[1].atan2(up[0]) * DEG;
+        let centre_lat = asin(up[2].clamp(-1.0, 1.0)) * DEG;
+        let centre_lon = atan2(up[1], up[0]) * DEG;
 
         // --- the horizon guard --------------------------------------------
         let mut max_angle_rad = 0.0f64;
         for &i in selected {
             let v = unit_vector(latitude_degrees[i], longitude_degrees[i]);
             let dot = (v[0] * up[0] + v[1] * up[1] + v[2] * up[2]).clamp(-1.0, 1.0);
-            max_angle_rad = max_angle_rad.max(dot.acos());
+            max_angle_rad = max_angle_rad.max(acos(dot));
         }
         if max_angle_rad > MESH_FOCUS_MAX_ANGULAR_RADIUS_RAD {
             return Err(MpasError::Refusal(format!(
@@ -1393,7 +1403,7 @@ pub fn finer_round_spacing(spacing_m: f64) -> f64 {
     if !spacing_m.is_finite() || spacing_m <= 0.0 {
         return spacing_m;
     }
-    let step = 10f64.powf(spacing_m.log10().floor() - 2.0);
+    let step = pow(10.0, log10(spacing_m).floor() - 2.0);
     // The hair keeps an exact 15,000 from flooring to 14,900 through a
     // division that lands one ulp under 150.
     let rounded = ((spacing_m / step) * (1.0 + 1.0e-12)).floor() * step;
@@ -1404,8 +1414,8 @@ pub fn finer_round_spacing(spacing_m: f64) -> f64 {
 fn unit_vector(lat_degrees: f64, lon_degrees: f64) -> [f64; 3] {
     let lat = lat_degrees * RAD;
     let lon = lon_degrees * RAD;
-    let cos_lat = lat.cos();
-    [cos_lat * lon.cos(), cos_lat * lon.sin(), lat.sin()]
+    let cos_lat = cos(lat);
+    [cos_lat * cos(lon), cos_lat * sin(lon), sin(lat)]
 }
 
 /// A centre as a reader says it out loud: `17.312N 53.897W`.
@@ -1464,12 +1474,12 @@ pub struct LambertProjection {
 
 fn lambert_cone(truelat1: f64, truelat2: f64) -> f64 {
     if (truelat1 - truelat2).abs() > 0.1 {
-        let numerator = (truelat1 * RAD).cos().log10() - (truelat2 * RAD).cos().log10();
-        let denominator = ((45.0 - truelat1.abs() / 2.0) * RAD).tan().log10()
-            - ((45.0 - truelat2.abs() / 2.0) * RAD).tan().log10();
+        let numerator = log10(cos(truelat1 * RAD)) - log10(cos(truelat2 * RAD));
+        let denominator = log10(tan((45.0 - truelat1.abs() / 2.0) * RAD))
+            - log10(tan((45.0 - truelat2.abs() / 2.0) * RAD));
         numerator / denominator
     } else {
-        (truelat1.abs() * RAD).sin()
+        sin(truelat1.abs() * RAD)
     }
 }
 
@@ -1496,14 +1506,16 @@ impl LambertProjection {
         if delta_lon < -180.0 {
             delta_lon += 360.0;
         }
-        let ctl1r = (truelat1 * RAD).cos();
+        let ctl1r = cos(truelat1 * RAD);
         let rsw = rebydx * ctl1r / cone
-            * (((90.0 * hemi - known_lat) * RAD / 2.0).tan()
-                / ((90.0 * hemi - truelat1) * RAD / 2.0).tan())
-            .powf(cone);
+            * pow(
+                tan((90.0 * hemi - known_lat) * RAD / 2.0)
+                    / tan((90.0 * hemi - truelat1) * RAD / 2.0),
+                cone,
+            );
         let arg = cone * (delta_lon * RAD);
-        let polei = hemi * known_i - hemi * rsw * arg.sin();
-        let polej = hemi * known_j + rsw * arg.cos();
+        let polei = hemi * known_i - hemi * rsw * sin(arg);
+        let polej = hemi * known_j + rsw * cos(arg);
         LambertProjection {
             cone,
             hemi,
@@ -1535,14 +1547,16 @@ impl LambertProjection {
         if delta_lon < -180.0 {
             delta_lon += 360.0;
         }
-        let ctl1r = (self.truelat1 * RAD).cos();
+        let ctl1r = cos(self.truelat1 * RAD);
         let rm = self.rebydx * ctl1r / self.cone
-            * (((90.0 * hemi - latitude) * RAD / 2.0).tan()
-                / ((90.0 * hemi - self.truelat1) * RAD / 2.0).tan())
-            .powf(self.cone);
+            * pow(
+                tan((90.0 * hemi - latitude) * RAD / 2.0)
+                    / tan((90.0 * hemi - self.truelat1) * RAD / 2.0),
+                self.cone,
+            );
         let arg = self.cone * (delta_lon * RAD);
-        let i = self.polei + hemi * rm * arg.sin();
-        let j = self.polej - rm * arg.cos();
+        let i = self.polei + hemi * rm * sin(arg);
+        let j = self.polej - rm * cos(arg);
         (hemi * i, hemi * j)
     }
 
@@ -1557,13 +1571,12 @@ impl LambertProjection {
         let yy = self.polej - jnew;
         let radius_squared = xx * xx + yy * yy;
         let radius = radius_squared.sqrt() / self.rebydx;
-        let mut longitude = self.stand_lon + DEG * (hemi * xx).atan2(yy) / self.cone;
+        let mut longitude = self.stand_lon + DEG * atan2(hemi * xx, yy) / self.cone;
         longitude = (longitude + 360.0).rem_euclid(360.0);
         let chi = if (chi1 - chi2).abs() < 1.0e-12 {
-            2.0 * ((radius / chi1.tan()).powf(1.0 / self.cone) * (chi1 * 0.5).tan()).atan()
+            2.0 * atan(pow(radius / tan(chi1), 1.0 / self.cone) * tan(chi1 * 0.5))
         } else {
-            2.0 * ((radius * self.cone / chi1.sin()).powf(1.0 / self.cone) * (chi1 * 0.5).tan())
-                .atan()
+            2.0 * atan(pow(radius * self.cone / sin(chi1), 1.0 / self.cone) * tan(chi1 * 0.5))
         };
         let mut latitude = (90.0 - chi * DEG) * hemi;
         if radius_squared == 0.0 {
@@ -1654,65 +1667,29 @@ mod tests {
         crate::weights::hex(&hash.finalize())
     }
 
-    /// The platform key a coordinate digest belongs to.
+    /// The `focus` window's coordinate digest: ONE value, on every platform.
     ///
-    /// A digest over `f64` bytes belongs to the C library that produced them,
-    /// not to this source. `f64::atan` and `f64::powf` compile to the
-    /// platform's libm, IEEE-754 does not require either to be correctly
-    /// rounded, and the two implementations this program runs on disagree —
-    /// so the key is the (OS, C environment) pair, which is what selects the
-    /// libm.
-    fn libm_platform_key() -> String {
-        let c_env = if cfg!(target_env = "msvc") {
-            "msvc"
-        } else if cfg!(target_env = "gnu") {
-            "gnu"
-        } else if cfg!(target_env = "musl") {
-            "musl"
-        } else {
-            "unknown-c-env"
-        };
-        format!("{}-{c_env}", std::env::consts::OS)
-    }
-
-    /// The `focus` window's coordinate digest, PER PLATFORM — measured, not
-    /// assumed.
+    /// History (#373, then 2026-10-21). Until 2026-10-21 the Lambert path
+    /// called `f64::atan`, `f64::powf` and friends, which go to the platform C
+    /// library, so this pin was a per-platform table: a `linux-gnu` row
+    /// (glibc 2.43, `551a1ff1...`) and a `windows-msvc` row (`34e3521f...`,
+    /// measured on an AMD desktop). The `windows-msvc` row was not even a
+    /// platform constant: the SAME test binary gave a different digest on an
+    /// Intel Xeon 8488C under Windows Server 2022 (UCRT 10.0.20348) than on
+    /// the AMD Ryzen 9 9950X3D desktop (UCRT 10.0.26100), with `pow` the
+    /// first call to disagree and `atan2`/`atan` after it. A Windows user's
+    /// window coordinates depended on their CPU and Windows build.
     ///
-    /// MEASURED 2026-08-27 (#373), same source, same optimisation level, and
-    /// the compiler EXCLUDED as a cause by direct control: rustc 1.94.0 and
-    /// rustc 1.97.0 on the SAME Linux box produce the same digest, `-C
-    /// opt-level=0` and `-O` on the same Windows box produce the same digest,
-    /// and a dependency-free reproduction of `set_lc`/`ijll` reproduces BOTH
-    /// rows exactly. What differs is the library call:
-    ///
-    /// * every value feeding `powf` is bit-identical across the two boxes
-    ///   (0 of 36,000 differ), so nothing upstream of the library call moved;
-    /// * `powf` returns a different `f64` for 32 of those 36,000 arguments;
-    /// * `atan` returns a different `f64` for 1,820 of 36,000 arguments;
-    /// * 1,684 of the 36,000 latitudes therefore differ, by at most 4 ULP —
-    ///   a largest absolute disagreement of 1.42e-14 degrees, which is
-    ///   **1.6 nanometres** on the ground.
-    ///
-    /// `global` needs no such table: its coordinates come from `axis()`,
-    /// which is `first + k * step` and calls no transcendental at all. That
-    /// is why it is one value everywhere, and it is asserted as one below.
-    ///
-    /// ADDING A ROW IS ADDITIVE. A new platform gets its own row measured on
-    /// that platform; no existing row is ever edited to make a box agree,
-    /// because an edited row silently retires the evidence it was minted for.
-    const FROZEN_FOCUS_COORDINATE_DIGESTS: &[(&str, &str)] = &[
-        (
-            // Windows 11, MSVC CRT. rustc 1.94.0, `cargo test -p rw-mpas`.
-            "windows-msvc",
-            "34e3521f9778c1a7f0ce283f6ba1ae24453d5c9a16ce0d12c221bb56765e08bc",
-        ),
-        (
-            // weather-node-2, Ubuntu, glibc 2.43. Reproduced under rustc
-            // 1.97.0 and rustc 1.94.0, and by the standalone probe.
-            "linux-gnu",
-            "551a1ff12abd2af6ec611432f3a795369b4fa4a80b46bee08dee0c286c9715b2",
-        ),
-    ];
+    /// The path now calls the vendored `libm` (pure IEEE arithmetic,
+    /// `force-soft-floats`), so the bytes belong to this source and nothing
+    /// else, and the old rows were retired rather than kept: no build can
+    /// produce them any more. This value was derived with the portable path
+    /// and measured identical on Windows/AMD, Windows/Intel and Linux. The
+    /// recorded `weights_sha256` values are taken over the window spec and
+    /// the nearest-cell INDEX map, not over these bytes, and the coordinates
+    /// moved by at most a few ULP (nanometres), so they stand.
+    const FROZEN_FOCUS_COORDINATE_DIGEST: &str =
+        "193deaf48c4b858ccbd78c2742936cab49988ac3f914d4475ee28441de493638";
 
     /// The `focus` grid's corner and centre coordinates, in degrees, to a
     /// tolerance that no libm can reach and no real spec change can hide in.
@@ -1740,12 +1717,10 @@ mod tests {
     /// filename stays the same. This pins the spec string the digest hashes
     /// AND the coordinates the index map is built from.
     ///
-    /// #373: the `focus` half of that pin is PER PLATFORM and now says so.
-    /// See `FROZEN_FOCUS_COORDINATE_DIGESTS` for the measurement. The spec
-    /// strings, the shape and the geometry gate are portable and are still
-    /// asserted identically everywhere — those are what actually catch a
-    /// moved corner. The exact digest is what catches a moved BIT, and a bit
-    /// belongs to a libm.
+    /// The geometry gate catches a moved corner; the exact digest catches a
+    /// moved BIT. Both are one value on every platform, because the Lambert
+    /// path calls the vendored `libm` and no platform C library (see
+    /// `FROZEN_FOCUS_COORDINATE_DIGEST`).
     #[test]
     fn the_two_fixed_windows_are_frozen() {
         let focus = Window::named("focus").unwrap();
@@ -1784,37 +1759,17 @@ mod tests {
             );
         }
 
-        // The exact half, per platform.
-        let key = libm_platform_key();
-        let digest = coordinate_digest(&focus);
-        match FROZEN_FOCUS_COORDINATE_DIGESTS.iter().find(|(k, _)| *k == key) {
-            Some((_, want)) => assert_eq!(
-                &digest,
-                want,
-                "the focus window's coordinate digest MOVED on a platform that has a \
-                 measured row ({key}). The geometry gate above passed, so the grid is \
-                 where it was to within 0.11 mm and this is a change of BITS, not of \
-                 position. Either the Lambert transcription changed, or this box's libm \
-                 is not the one the {key} row was measured on. Do NOT edit the row to \
-                 make this pass: every `weights_sha256` recorded against the {key} row \
-                 was taken over these exact bytes, and editing the row retires that \
-                 evidence without saying so. Measure which of `powf`/`atan` moved first."
-            ),
-            None => panic!(
-                "no measured coordinate-digest row for platform {key}, so this box \
-                 cannot claim the focus window's byte anchor. This is NOT a failure of \
-                 the code: the geometry gate above PASSED, so the grid is correct to \
-                 within 0.11 mm. What is missing is a measurement. `f64::atan` and \
-                 `f64::powf` compile to the platform's libm, neither is required to be \
-                 correctly rounded, and the two libms already measured here disagree \
-                 for 1,820 and 32 of 36,000 arguments respectively. The remedy is to \
-                 ADD a row to FROZEN_FOCUS_COORDINATE_DIGESTS reading \
-                 (\"{key}\", \"{digest}\") -- additive, never editing an existing row -- \
-                 and to record in the receipt which OS, C library and libm version \
-                 produced it. Refusing here rather than passing is deliberate: an \
-                 unmeasured platform has no anchor, and a silent pass would read as one."
-            ),
-        }
+        // The exact half: the same bytes on every CPU and OS.
+        assert_eq!(
+            coordinate_digest(&focus),
+            FROZEN_FOCUS_COORDINATE_DIGEST,
+            "the focus window's coordinate digest MOVED. The Lambert path calls only \
+             IEEE arithmetic and the vendored `libm`, so this is the same on every \
+             platform by construction: a move is a change to the Lambert transcription, \
+             to the window spec, or to the `libm` version, not a property of this box. \
+             If the geometry gate above passed, the grid is where it was to within \
+             0.11 mm and only BITS changed; find the change before touching the pin."
+        );
 
         let global = Window::named("global").unwrap();
         assert_eq!(
@@ -1895,22 +1850,16 @@ mod tests {
             FROZEN_FOCUS_GEOMETRY.len(),
             "the geometry gate did NOT see a one-metre nudge at every pinned point. \
              Its tolerance {FOCUS_GEOMETRY_TOLERANCE_DEG:.0e} degrees is too loose to \
-             catch the breakage the frozen window exists to prevent, and the \
-             per-platform digest table is then the only thing holding that grid in \
-             place -- which leaves an unmeasured platform with no gate at all."
+             catch the breakage the frozen window exists to prevent, and the exact \
+             digest is then the only thing holding that grid in place."
         );
     }
 
-    /// The measurement behind the per-platform `focus` row, kept executable.
-    ///
-    /// #373 asked whether a frozen digest that disagrees across two boxes is
-    /// the compiler or the C library. This holds the answer that settled it:
-    /// the `global` window, whose coordinates call no libm function at all,
-    /// must digest identically on every platform. If this ever fails while the
-    /// `focus` row also fails, the cause is NOT the libm and the per-platform
-    /// table above is the wrong explanation -- look at `axis()` or at the
-    /// spec. Keeping both in one file is the point: one is the treatment, the
-    /// other is the control.
+    /// The control #373 used to show the old per-platform `focus` rows were
+    /// the C library and not the compiler: the `global` window's coordinates
+    /// call no transcendental at all, so they must digest identically on
+    /// every platform. Kept now that `focus` is portable too, because it pins
+    /// WHY `global` is: exact `first + k * step` arithmetic.
     #[test]
     fn the_transcendental_free_window_needs_no_platform_row() {
         let global = Window::named("global").unwrap();

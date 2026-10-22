@@ -19,93 +19,38 @@ module scope), so a test placed there would never run in the CPU gate.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import numpy as np
 import pytest
 
-from gpuwm.config import RunConfig
 from gpuwm.core import nest as nest_mod
 from gpuwm.core import streaming
-from gpuwm.core.clock import DomainClock, DomainTicks
 from gpuwm.core.microphysics_transition import (
     MP8_TO_MP18_POLICY, MicrophysicsTransitionContract)
 from gpuwm.core.nest import NestCoupler
+from test_streamed_child import (
+    _State as _CouplingState, _clock, _nodes as _coupling_nodes,
+    _publish, _run,
+)
 
 
-def _run(nx, ny, *, nested, grid_id):
-    return RunConfig(nx=nx, ny=ny, nz=2, dx=1000.0, dy=1000.0,
-                     ztop=10000.0, dt=3.0, run_seconds=9.0,
-                     nested=nested, specified=not nested, grid_id=grid_id,
-                     spec_bdy_width=5, spec_zone=1, relax_zone=4)
-
-
-def _clock(grid_id, parent_id, *, step_ticks, dt, advanced=False):
-    spec = DomainTicks(
-        grid_id=grid_id, parent_id=parent_id, parent_time_step_ratio=3,
-        step_ticks=step_ticks, dt_fp32=np.float32(dt), history_ticks=100,
-        restart_ticks=None, radt_ticks=None, stepra=None, cudt_ticks=None,
-        stepcu=None, bldt_ticks=None, stepbl=None)
-    clock = DomainClock(spec, tick_den=1, run_ticks=1000)
-    if advanced:
-        clock.advance()
-    return clock
-
-
-class _State:
-    """A plain-numpy stand-in carrying what the edge arm touches."""
+class _State(_CouplingState):
+    """The transition fixture adds species and uses uniform dry mass."""
 
     def __init__(self, run):
+        super().__init__(run)
         nz, ny, nx = run.nz, run.ny, run.nx
         self.mub2d = np.full((ny, nx), np.float32(5.0))
-        self.mup = np.full((ny, nx), np.float32(0.25))
-        self.u = np.full((nz, ny, nx + 1), np.float32(2.0))
-        self.v = np.full((nz, ny + 1, nx), np.float32(-1.5))
-        self.w = np.full((nz + 1, ny, nx), np.float32(0.75))
-        self.thp = np.full((nz, ny, nx), np.float32(1.25))
-        self.php = np.full((nz + 1, ny, nx), np.float32(3.0))
-        self.thb = np.array([300.0, 302.0], dtype=np.float32)
-        self.c1h = np.array([0.8, 0.6], dtype=np.float32)
-        self.c2h = np.array([1.0, 2.0], dtype=np.float32)
-        self.c1f = np.array([1.0, 0.7, 0.4], dtype=np.float32)
-        self.c2f = np.array([0.0, 1.5, 3.0], dtype=np.float32)
-        self.msft = np.full((ny, nx), np.float32(1.25))
-        self.msfu = np.full((ny, nx + 1), np.float32(1.5))
-        self.msfv = np.full((ny + 1, nx), np.float32(1.75))
         self.p = np.full((nz, ny, nx), np.float32(9.0e4))
         self.alt = np.full((nz, ny, nx), np.float32(0.9))
         for index, name in enumerate(
                 ("qv", "qc", "qr", "qi", "qs", "qg"), start=1):
             setattr(self, name, np.full(
                 (nz, ny, nx), np.float32(index / 100.0)))
-        self.has_msf = True
-        self._scratch = {}
-        self.lateral_boundaries = None
-
-    def scratch(self, shape, slot, dtype=None):
-        dtype = np.dtype(np.float32 if dtype is None else dtype)
-        shape = tuple(shape)
-        if slot not in self._scratch:
-            self._scratch[slot] = np.zeros(shape, dtype=dtype)
-        result = self._scratch[slot]
-        assert result.shape == shape and result.dtype == dtype
-        return result
 
 
 def _nodes():
-    prun = _run(16, 16, nested=False, grid_id=1)
-    crun = _run(30, 30, nested=True, grid_id=2)
-    pcfg = SimpleNamespace(grid_id=1, parent_id=0, parent_grid_ratio=1,
-                           i_parent_start=1, j_parent_start=1, run=prun)
-    ccfg = SimpleNamespace(grid_id=2, parent_id=1, parent_grid_ratio=3,
-                           i_parent_start=4, j_parent_start=4, run=crun)
-    parent = SimpleNamespace(
-        cfg=pcfg, state=_State(prun),
-        clock=_clock(1, 0, step_ticks=3, dt=9.0, advanced=True))
-    child_clock = _clock(2, 1, step_ticks=1, dt=3.0)
-    child_clock.prepare_step()
-    child = SimpleNamespace(cfg=ccfg, state=_State(crun), parent=parent,
-                            clock=child_clock)
+    parent, child = _coupling_nodes(_State)
+    del parent.parent
     return parent, child
 
 
@@ -115,12 +60,6 @@ def _mixed_coupler(child):
         source_mp_physics=8, target_mp_physics=18,
         policy_id=MP8_TO_MP18_POLICY, mixed=True)
     return coupler
-
-
-def _publish(state, arrays):
-    """Bind a store the way ``streaming.attach`` does, keyed by member name."""
-    setattr(state, streaming._STORE_ATTR,
-            {f"state/{name}": value for name, value in arrays.items()})
 
 
 def _record_launcher(monkeypatch):

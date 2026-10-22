@@ -116,29 +116,14 @@ options
 
 fn main() -> ExitCode {
     let _ = std::hint::black_box(GPUWM_BRIDGE_SOURCE_REV_STAMP);
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    match run(&args) {
-        Ok(output) => {
-            print!("{output}");
-            ExitCode::SUCCESS
-        }
-        Err(error) => {
-            eprintln!("rw_wis2: {error}");
-            ExitCode::FAILURE
-        }
-    }
+    rw_obs::cli::main("rw_wis2", run)
 }
 
 fn run(args: &[String]) -> Result<String, Box<dyn Error>> {
-    let Some(first) = args.first() else {
-        return Ok(USAGE.to_string());
-    };
-    match first.as_str() {
-        "--help" | "-h" | "help" => return Ok(USAGE.to_string()),
-        "--version" | "-V" => return Ok(format!("rw_wis2 {VERSION}\n")),
-        "--abi" => return Ok(format!("{ABI_MARKER}\n")),
-        _ => {}
+    if let Some(output) = rw_obs::cli::information(args, "rw_wis2", VERSION, USAGE, ABI_MARKER) {
+        return Ok(output);
     }
+    let first = &args[0];
     let options = Options::parse(&args[1..])?;
     match first.as_str() {
         "subscribe" => cmd_subscribe(&options),
@@ -169,10 +154,7 @@ impl Options {
         let mut index = 0;
         while index < args.len() {
             let flag = args[index].as_str();
-            let mut value = || -> Result<String, Box<dyn Error>> {
-                index += 1;
-                args.get(index).cloned().ok_or_else(|| err(format!("{flag} needs a value")))
-            };
+            let mut value = || rw_obs::cli::value(args, &mut index, flag);
             match flag {
                 "--broker" => options.broker = Some(value()?),
                 "--topics" => {

@@ -1,0 +1,19 @@
+SCM host: NCAR/ccpp-scm d939f51fe8875192015fd0a0cfcf3c503cbb69e2 (7.0.0).
+Physics: edd85a55502179611fdb7b902f0639c305cd1c3b, tracked sources byte-unmodified.
+Framework: b945b07f18f69a1abec99b54f9e92c23f6103d8d, the atmospheric host's own pin.
+Host simulator hooks: da75531bf90a799e4c0dcb988cc591d82bd024de, host support only.
+MPICH 4.2.3, bacio 2.4.1, sp 2.5.0, w3emc 2.12.0, gfortran 15.2.
+Single physics group: drag_suite. The executable builds; a full SCM trajectory was not run.
+Host compatibility: remove the unavailable thrd_cnt assignment, register MPI_Comm,
+select the column suite, add funcphys to the dependency table, alias the bacio
+target and link MPI::MPI_Fortran. No numerical physics source is changed.
+
+623779fccb08607061ebff3de52f65fa43fb95297684e2330525cc0a9446c9a9  scm
+4811071fb963c4c0bf29efe8efafb8d3ada53cf42775864c42fb07e1acd635e1  libccpp_physics.a
+21f0dd7a16b01c1e1918f3674974c83a6691204127c81273b05d9b241efc87b3  run_drag_suite_scm_linked
+
+The r8 comparison links the SCM-built physics archive (its -O2 build).
+The r4 comparison uses the standalone -O0 build. Both run the same saved
+64-column, 40-level input artifact and declared IMX/DELTIM cases.
+Undefined nonzero-over-zero relative differences are JSON null. Absolute
+differences and column counts remain reported.

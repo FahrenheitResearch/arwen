@@ -74,6 +74,19 @@ def _by_col(rows, fields, nk):
     return out
 
 
+def _by_col_with_int(rows, fields, int_field):
+    """Group level arrays, preserving the captured integer classification."""
+    out = _by_col(rows, fields, NT_NZ)
+    for r in rows:
+        key = (int(r["case"]), float(r["dx"]))
+        k = int(r["k"]) - 1
+        if k >= NT_NZ:
+            continue
+        out[key].setdefault(int_field, np.zeros(NT_NZ, dtype=np.int32))
+        out[key][int_field][k] = int(r[int_field])
+    return out
+
+
 #: WRF-order inputs the prep was driven with.  p8w and w carry nz+1 entries;
 #: everything else is a half-level array and its (nz+1)th row is padding that
 #: run_nt_prep.F90 writes as zero and nothing may read.
@@ -159,16 +172,8 @@ def conv_expected():
 
 
 def cuinin_expected():
-    rows = load_csv("nt-cuinin-levels.csv")
-    out = _by_col(rows, _CUININ, NT_NZ)
-    for r in rows:
-        key = (int(r["case"]), float(r["dx"]))
-        k = int(r["k"]) - 1
-        if k >= NT_NZ:
-            continue
-        out[key].setdefault("klab", np.zeros(NT_NZ, dtype=np.int32))
-        out[key]["klab"][k] = int(r["klab"])
-    return out
+    return _by_col_with_int(load_csv("nt-cuinin-levels.csv"),
+                            _CUININ, "klab")
 
 
 def cuinin_surface():
@@ -186,16 +191,8 @@ _CUTYPEN = ("cutu", "cuqu", "culu")
 
 
 def cutypen_expected():
-    rows = load_csv("nt-cutypen-levels.csv")
-    out = _by_col(rows, _CUTYPEN, NT_NZ)
-    for r in rows:
-        key = (int(r["case"]), float(r["dx"]))
-        k = int(r["k"]) - 1
-        if k >= NT_NZ:
-            continue
-        out[key].setdefault("culab", np.zeros(NT_NZ, dtype=np.int32))
-        out[key]["culab"][k] = int(r["culab"])
-    return out
+    return _by_col_with_int(load_csv("nt-cutypen-levels.csv"),
+                            _CUTYPEN, "culab")
 
 
 def cutypen_surface():
@@ -218,16 +215,8 @@ _MIDLEVEL = ("ptu", "pqu", "plu", "pmfu", "pmfus", "pmfuq", "pmful",
 
 
 def midlevel_expected():
-    rows = load_csv("nt-midlevel-levels.csv")
-    out = _by_col(rows, _MIDLEVEL, NT_NZ)
-    for r in rows:
-        key = (int(r["case"]), float(r["dx"]))
-        k = int(r["k"]) - 1
-        if k >= NT_NZ:
-            continue
-        out[key].setdefault("klab", np.zeros(NT_NZ, dtype=np.int32))
-        out[key]["klab"][k] = int(r["klab"])
-    return out
+    return _by_col_with_int(load_csv("nt-midlevel-levels.csv"),
+                            _MIDLEVEL, "klab")
 
 
 def midlevel_surface():

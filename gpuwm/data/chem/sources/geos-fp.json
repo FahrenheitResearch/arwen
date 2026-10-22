@@ -1,0 +1,167 @@
+{
+  "schema": "gpuwm.chem.source.v1",
+  "name": "geos-fp",
+  "kind": "boundary",
+  "route": null,
+  "credential": null,
+  "format": "netcdf",
+  "description": "NASA GEOS-FP native-level primary aerosol IC/BC, with matched asm_Nv QV. Nitrate, ammonium and brown carbon, when present in the source, are not represented by these transported GOCART primary species.",
+  "grid": {
+    "kind": "regular_latlon",
+    "spacing_deg": 0.25,
+    "decode": {
+      "latitude": "lat",
+      "longitude": "lon",
+      "time": "time",
+      "level": "lev"
+    },
+    "global": true
+  },
+  "vertical": {
+    "kind": "pressure_field",
+    "pressure_variable": "pressure",
+    "surface_pressure_variable": "surface_pressure",
+    "humidity_variable": "specific_humidity",
+    "pressure_from_thickness": {
+      "thickness": "layer_pressure_thickness",
+      "surface": "surface_pressure",
+      "output": "pressure",
+      "order": "top_down",
+      "top_pressure_pa": 1.0,
+      "expected_layers": 72
+    }
+  },
+  "acquisition": {
+    "kind": "published_files",
+    "dataset": "GEOS-FP inst3_3d_aer_Nv+inst3_3d_asm_Nv",
+    "dataset_page": "https://gmao.gsfc.nasa.gov/gmao-products/geos-fp/",
+    "files": {
+      "aerosol": "GEOS.fp.asm.inst3_3d_aer_Nv.YYYYMMDD_HHMM.V01.nc4",
+      "meteorology": "GEOS.fp.asm.inst3_3d_asm_Nv.YYYYMMDD_HHMM.V01.nc4"
+    },
+    "access": "Public NASA NCCS datashare https://portal.nccs.nasa.gov/datashare/gmao/geos-fp/das/; import matched existing files.",
+    "licence_url": "https://earthdata.nasa.gov/engage/open-data-services-software-policies/data-use-guidance"
+  },
+  "variables": {
+    "sulf": {
+      "netcdf_name": "SO4",
+      "group": "aerosol",
+      "units": "kg kg-1",
+      "basis": "moist_air"
+    },
+    "bc1": {
+      "netcdf_name": "BCPHOBIC",
+      "group": "aerosol",
+      "units": "kg kg-1",
+      "basis": "moist_air"
+    },
+    "bc2": {
+      "netcdf_name": "BCPHILIC",
+      "group": "aerosol",
+      "units": "kg kg-1",
+      "basis": "moist_air"
+    },
+    "oc1": {
+      "netcdf_name": "OCPHOBIC",
+      "group": "aerosol",
+      "units": "kg kg-1",
+      "basis": "moist_air"
+    },
+    "oc2": {
+      "netcdf_name": "OCPHILIC",
+      "group": "aerosol",
+      "units": "kg kg-1",
+      "basis": "moist_air"
+    },
+    "dust_1": {
+      "netcdf_name": "DU001",
+      "group": "aerosol",
+      "units": "kg kg-1",
+      "basis": "moist_air"
+    },
+    "dust_2": {
+      "netcdf_name": "DU002",
+      "group": "aerosol",
+      "units": "kg kg-1",
+      "basis": "moist_air"
+    },
+    "dust_3": {
+      "netcdf_name": "DU003",
+      "group": "aerosol",
+      "units": "kg kg-1",
+      "basis": "moist_air"
+    },
+    "dust_4": {
+      "netcdf_name": "DU004",
+      "group": "aerosol",
+      "units": "kg kg-1",
+      "basis": "moist_air"
+    },
+    "dust_5": {
+      "netcdf_name": "DU005",
+      "group": "aerosol",
+      "units": "kg kg-1",
+      "basis": "moist_air"
+    },
+    "seas_1": {
+      "netcdf_name": "SS001",
+      "group": "aerosol",
+      "units": "kg kg-1",
+      "basis": "moist_air"
+    },
+    "seas_2": {
+      "netcdf_name": "SS002",
+      "group": "aerosol",
+      "units": "kg kg-1",
+      "basis": "moist_air"
+    },
+    "seas_3": {
+      "netcdf_name": "SS003",
+      "group": "aerosol",
+      "units": "kg kg-1",
+      "basis": "moist_air"
+    },
+    "seas_4": {
+      "netcdf_name": "SS004",
+      "group": "aerosol",
+      "units": "kg kg-1",
+      "basis": "moist_air"
+    },
+    "seas_5": {
+      "netcdf_name": "SS005",
+      "group": "aerosol",
+      "units": "kg kg-1",
+      "basis": "moist_air"
+    },
+    "specific_humidity": {
+      "netcdf_name": "QV",
+      "group": "meteorology",
+      "units": "kg kg-1",
+      "basis": "moist_air"
+    },
+    "surface_pressure": {
+      "netcdf_name": "PS",
+      "group": "aerosol",
+      "units": "Pa"
+    },
+    "layer_pressure_thickness": {
+      "netcdf_name": "DELP",
+      "group": "aerosol",
+      "units": "Pa"
+    },
+    "pressure": {
+      "group": "derived",
+      "units": "Pa"
+    }
+  },
+  "time": {
+    "cadence_s": 10800,
+    "latency_s": 86400,
+    "persistence": null,
+    "interpolation": "linear"
+  },
+  "remap": "bilinear",
+  "licence": "NASA Earthdata CC0 default for unrestricted NASA mission data",
+  "attribution": "NASA Global Modeling and Assimilation Office GEOS-FP. Collow et al. (2023), GMAO Office Note 22 v1.1.",
+  "provenance": "NASA GMAO Office Note 22 v1.1 https://gmao.gsfc.nasa.gov/pubs/docs/Collow1489.pdf sections 2.1, 2.2, 2.5.1 document the common GEOS/MERRA-2 primary aerosol bins and organic matter mass convention. Published inst3_3d_aer_Nv and asm_Nv files must have identical native grid, levels and times; no clean-air or time extrapolation is invented. Additional nitrate/ammonium/brown-carbon mass is outside this row and its primary-aerosol AOD interpretation. Native pressure follows NASA GMAO Office Note 4 v1.2 section 4.2 (https://gmao.gsfc.nasa.gov/pubs/docs/Lucchesi1203.pdf): sum DELP from PTOP=0.01 hPa, not by subtracting independently stored PS. Surface closure differences are recorded, not used to shift upper-level pressure."
+}

@@ -24,6 +24,8 @@ from pathlib import Path
 
 #: The worker's marks, written beside the run's outputs.
 MARKS_NAME = "benchmark-marks.json"
+#: The door parent's start and worker-spawn instants, handed to the worker.
+DOOR_MARKS_ENV = "GPUWM_BENCHMARK_DOOR_MARKS"
 #: The summary, as printed, in machine form.
 SUMMARY_NAME = "benchmark-timing.json"
 SCHEMA = "gpuwm.benchmark-timing.v1"
@@ -57,11 +59,25 @@ def process_start_unix() -> float:
         return time.time()
 
 
+def door_marks(marks, *, spawn: float) -> str:
+    """The door parent's marks as the worker receives them (JSON)."""
+    return json.dumps({"door_start": marks.values["worker_start"],
+                       "door_read_start": marks.values.get("read_start"),
+                       "door_spawn": float(spawn)})
+
+
 class Marks:
     """The worker's marks around the input read, in Unix seconds."""
 
     def __init__(self):
         self.values: dict = {"worker_start": process_start_unix()}
+        door = os.environ.get(DOOR_MARKS_ENV)
+        if door:
+            try:
+                self.values.update({k: float(v) for k, v in json.loads(door).items()
+                                    if v is not None})
+            except (ValueError, TypeError, AttributeError):
+                pass
 
     def mark(self, name: str) -> None:
         self.values[name] = time.time()
@@ -138,6 +154,23 @@ def summarize(outdir, *, process_start: float, process_end: float | None = None,
     phases["finish"] = process_end - t_end
     phases["forecast"] = t_end - read_start
     phases["total"] = process_end - process_start
+    # Where "startup" and "read" went, when the marks say: the door process
+    # (its imports, plan review and card lease), the worker's interpreter
+    # and imports, the worker's own plan review, and the input read proper.
+    split = {}
+    door_start, door_spawn = marks.get("door_start"), marks.get("door_spawn")
+    worker_start = marks.get("worker_start")
+    prepare_start = marks.get("prepare_start")
+    if door_start is not None and door_spawn is not None:
+        split["door"] = door_spawn - door_start
+        if worker_start is not None:
+            split["worker_spawn"] = worker_start - door_spawn
+    if worker_start is not None and marks.get("read_start") is not None:
+        split["worker_imports"] = float(marks["read_start"]) - worker_start
+    if prepare_start is not None:
+        split["worker_plan_review"] = prepare_start - read_start
+        split["input_read"] = read_end - prepare_start
+    split["init_to_first_step"] = (t_first - first_wall) - read_end
     restart = start.get("restart") or {}
     domain_end = next((r for r in records if r.get("event") == "domain_end"
                        and int(r.get("domain", -1)) == root), {})
@@ -157,6 +190,7 @@ def summarize(outdir, *, process_start: float, process_end: float | None = None,
         "status": end.get("status"),
         "excluded": ["render", "observation verification"],
         "kernel_prewarm": marks.get("kernel_prewarm"),
+        "startup_split_seconds": {k: round(float(v), 3) for k, v in split.items()},
     }
 
 
@@ -181,6 +215,10 @@ def format_summary(summary: dict) -> str:
         f"  total       {p['total']:9.2f} s   process start to end "
         f"(read to forecast end {p['forecast']:.2f} s)",
     ]
+    split = summary.get("startup_split_seconds") or {}
+    if split:
+        lines.append("  before the first step: " + ", ".join(
+            f"{name.replace('_', ' ')} {value:.2f} s" for name, value in split.items()))
     return "\n".join(lines)
 
 

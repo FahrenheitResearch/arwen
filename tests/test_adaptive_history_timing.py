@@ -17,7 +17,7 @@ from gpuwm.core.adaptive_timestep import real_time_fp32
 from gpuwm.core.clock import build_schedule, execute_schedule, resolve_clock
 from gpuwm.experiment import build_experiment
 from gpuwm.namelist_import import import_namelists
-from tests.test_namelist_import import INPUT_TEXT, _pair
+from test_namelist_import import INPUT_TEXT, _pair
 from test_clock import _chain_experiment
 
 

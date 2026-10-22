@@ -1,0 +1,4 @@
+[
+ {"id":"surfrad","url":"https://gml.noaa.gov/aftp/data/radiation/surfrad/{directory}/{year}/{prefix}{yy}{doy}.dat","header_lines":2,"year":0,"doy":1,"month":2,"day":3,"hour":4,"minute":5,"zenith":7,"ghi":8,"ghi_qc":9,"dni":12,"dni_qc":13,"dhi":14,"dhi_qc":15,"good_qc":0,"missing_below":-900.0,"cadence_seconds":60,"tolerance_seconds":90,"terms":"https://gml.noaa.gov/about/disclaimer.html"},
+ {"id":"solrad","url":"https://gml.noaa.gov/aftp/data/radiation/solrad/{prefix}/{year}/{prefix}{yy}{doy}.dat","header_lines":2,"year":0,"doy":1,"month":2,"day":3,"hour":4,"minute":5,"zenith":7,"ghi":8,"ghi_qc":9,"dni":10,"dni_qc":11,"dhi":12,"dhi_qc":13,"good_qc":0,"missing_below":-900.0,"cadence_seconds":60,"tolerance_seconds":90,"terms":"https://gml.noaa.gov/about/disclaimer.html"}
+]

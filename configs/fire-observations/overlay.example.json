@@ -1,0 +1,13 @@
+{
+  "source": {
+    "path": "captured-perimeters.geojson",
+    "sha256": "REPLACE_WITH_CAPTURED_SOURCE_SHA256",
+    "source_url": "https://data-nifc.opendata.arcgis.com/",
+    "license": "Public Domain",
+    "id_property": "poly_IRWINID",
+    "time_property": "poly_PolygonDateTime"
+  },
+  "incident_id": "00000000-0000-0000-0000-000000000001",
+  "observed_utc_epoch_ms": 1704088800000,
+  "grid_spec": "REPLACE_WITH_THE_IGNITION_RECEIPT_GRID_SPEC_OBJECT"
+}

@@ -44,6 +44,10 @@ fn emit(value: serde_json::Value) {
 
 fn run() -> Result<(), Refusal> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
+    if arguments.first().map(String::as_str) == Some("index-ranges") {
+        emit(mapped_engine::lead_index::run(&arguments[1..])?);
+        return Ok(());
+    }
     if arguments.first().map(String::as_str) == Some("wps") {
         emit(mapped_engine::wps::run(&arguments[1..])?);
         return Ok(());
@@ -104,6 +108,8 @@ fn run() -> Result<(), Refusal> {
 fn main() -> ExitCode {
     let _ = std::hint::black_box(GPUWM_BRIDGE_SOURCE_REV_STAMP);
     let _ = std::hint::black_box(ABI_CONTRACT);
+    // Before the first thread exists: glibc sizes its arena table as threads arrive.
+    mapped_engine::threads::limit_allocator_arenas();
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(refusal) => {

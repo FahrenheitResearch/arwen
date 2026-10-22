@@ -221,7 +221,7 @@ pub fn write(plan: &Plan, payload: &[u8]) -> Result<serde_json::Value> {
             plan.output_directory.join(".module-fields.json.pending"),
             plan.output_directory.join("module-fields.json"),
         )?;
-        fs::File::open(&plan.output_directory)?.sync_all()?;
+        crate::sync_directory(&plan.output_directory)?;
         Ok(
             serde_json::json!({"operation":"module-series-write","schema":"arwen.module-field-series.v1",
             "rows":rows,"fields":plan.fields.len(),"features":plan.feature_ids.len(),"frames":plan.frames,

@@ -113,7 +113,9 @@ def _prepare_bookkeeping(state, pairs, *, zero=False):
     rows[:len(pairs)] = [(src.data.ptr, dst.data.ptr, dst.size)
                         for src, dst in pairs]
     # A by-value parameter avoids device metadata allocation and upload.
-    table = rows.reshape(-1).view(np.dtype(('V', rows.nbytes)))[0]
+    # Keep a size-one ndarray: CuPy 14 bounds scalar arguments to its
+    # small CScalar buffer, while ndarray arguments use the full host bytes.
+    table = rows.reshape(-1).view(np.dtype(('V', rows.nbytes)))
     kernel = get_kernel('rk_bookkeeping',
                         'rk_zero_words' if zero else 'rk_copy_words')
     grid = (max(1, (max(dst.size for _, dst in pairs) + 4 * _TPB - 1)
@@ -3439,6 +3441,7 @@ def _prepare_emdiv_filter_launch(state: DomainState, cfg: RunConfig,
     def launch() -> None:
         kernel(grid, block, args)
 
+    launch.args = args          # what a joined u/v substep binds by name
     return launch
 
 
@@ -4539,6 +4542,9 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
     if wrf_mixing_package_active(cfg) and not _wrf_reuse_diagnostics(state):
         update_diagnostics(state, cfg.hypsometric_opt,
                            muts=_wrf_muts(state))
+    if cfg.gsd_diagnostics:
+        from gpuwm.core.gsd_diagnostics import update_helicity
+        update_helicity(state, cfg, history_due=refl_10cm_due)
     prepare_fixed_tendencies(state, cfg, physics_tendencies)
     fixed_scalars = fixed_scalar_tendencies(state, cfg)
     if WRF_EXACT:
@@ -4642,8 +4648,6 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
                 # the previous stage's final column-mass tendency so emdiv
                 # acts on 6 of 7 acoustic iterations, not 4 of 7.
                 mudf[...] = 0
-        launch_acoustic_substep = prepare_acoustic_substep_launch(
-            state, cfg, dtau, acoustic_coefficients, mudf=mudf)
         # WRF sumflux (module_small_step_em.F:1473, called every acoustic
         # iteration, solve_em.F:1561): accumulate the small-timestep
         # time-averaged mass fluxes ru_m/rv_m/ww_m -- "needed for
@@ -4664,18 +4668,29 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
             ru_m = state.scratch((nzs, nys, nxs + 1), "rk_ru_m")
             rv_m = state.scratch((nzs, nys + 1, nxs), "rk_rv_m")
             ww_m = state.scratch((nzs + 1, nys, nxs), "rk_ww_m")
+        # The joined substep launches (gpuwm/core/acoustic_fusion.py) submit
+        # the emdiv increment and the sumflux zero/accumulation themselves
+        # where they cover this configuration; ``absorbs`` names which.
+        launch_acoustic_substep = prepare_acoustic_substep_launch(
+            state, cfg, dtau, acoustic_coefficients, mudf=mudf,
+            emdiv_args=launch_emdiv_filter.args if emdiv else None,
+            sumflux=(ru_m, rv_m, ww_m) if scalars else None)
+        absorbed = getattr(launch_acoustic_substep, "absorbs", frozenset())
+        separate_sumflux = scalars and "sumflux" not in absorbed
+        if separate_sumflux:
             _sumflux_launch(                          # sumflux iteration==1
                 "zero_sumflux", (ru_m, rv_m, ww_m))
             launch_sumflux_accumulation = _prepare_sumflux_launch(
                 "accumulate_sumflux", (ru_m, rv_m, ww_m),
                 (state.u_pp, state.v_pp, state.ww_pp))
+        separate_emdiv = emdiv and "emdiv" not in absorbed
         for i in range(nsub):
-            if emdiv:
+            if separate_emdiv:
                 launch_emdiv_filter()                 # previous substep's
                                                       # mudf (zero only on
                                                       # step's 1st substep)
             launch_acoustic_substep(first=(i == 0))
-            if scalars:                               # WRF sumflux: post-
+            if separate_sumflux:                      # WRF sumflux: post-
                 launch_sumflux_accumulation()
             if mass_flux_observer is not None and istage == 2:
                 mass_flux_observer(
@@ -4812,6 +4827,13 @@ def _step_epilogue(state: DomainState, cfg: RunConfig,
         update_diagnostics(state, cfg.hypsometric_opt)  # after the RK loop)
     if cfg.lightning_option:
         update_lightning(state, cfg, history_reflectivity_due=refl_10cm_due)
+    from gpuwm.core.gsd_diagnostics import reset_interval, update as update_gsd
+    reset_interval(state, cfg)
+    from gpuwm.core.hail import update as update_hail
+    update_hail(state, cfg)
+    update_gsd(state, cfg, history_due=refl_10cm_due)
+    from gpuwm.core.output_diagnostics import update_precipitation
+    update_precipitation(state, cfg)
 
 
 def _wrf_step_epilogue(state: DomainState, cfg: RunConfig,
@@ -4856,6 +4878,13 @@ def _wrf_step_epilogue(state: DomainState, cfg: RunConfig,
     # field): the same place in the step as the default epilogue.
     if cfg.lightning_option:
         update_lightning(state, cfg, history_reflectivity_due=refl_10cm_due)
+    from gpuwm.core.gsd_diagnostics import reset_interval, update as update_gsd
+    reset_interval(state, cfg)
+    from gpuwm.core.hail import update as update_hail
+    update_hail(state, cfg)
+    update_gsd(state, cfg, history_due=refl_10cm_due)
+    from gpuwm.core.output_diagnostics import update_precipitation
+    update_precipitation(state, cfg)
 
 
 def _wrf_reuse_diagnostics(state: DomainState) -> bool:

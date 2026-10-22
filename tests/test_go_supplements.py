@@ -151,3 +151,29 @@ def test_run_plan_resolves_donors_relative_to_the_plan(tmp_path):
     raw["run_options"]["supplement"] = "PMSL=source/donor.grib2"
     with pytest.raises(runplan.PlanError, match="must be a list"):
         runplan.build_plan(raw, source="invalid donor plan", base_dir=tmp_path, sha256="0" * 64)
+
+
+def test_plain_preparation_keeps_complete_manifest_when_shared_fetch_republishes_prefix(tmp_path):
+    from tools.hrrr_pipeline import verify_source_tree
+    data = tmp_path / "downloads"
+    data.mkdir()
+    first, second = data / "first.grib2", data / "second.grib2"
+    first.write_bytes(b"verified first forcing payload")
+    second.write_bytes(b"verified second forcing payload")
+    fetched = data / "SHA256SUMS"
+    first_line = f"{_digest(first)}  {first.name}\n"
+    fetched.write_text(first_line + f"{_digest(second)}  {second.name}\n")
+    snapshot = hrrr_source_manifest([], source_root=data, fetched_manifest=fetched,
+                                    output=tmp_path / "member" / "source-checksums")
+    bound = _digest(snapshot)
+    # The next member's resume publishes its first completed lead. The
+    # first member must still verify the complete bound forcing window.
+    fetched.write_text(first_line)
+    series = tmp_path / "series.tsv"
+    series.write_text(f"0\t{first}\t{first}\n1\t{second}\t{second}\n")
+    verify_source_tree(source_root=data, manifest=snapshot,
+                       expected_manifest_sha256=bound, series=series, workers=2)
+    second.write_bytes(b"changed source payload")
+    with pytest.raises(ValueError, match="payload hash mismatch"):
+        verify_source_tree(source_root=data, manifest=snapshot,
+                           expected_manifest_sha256=bound, series=series, workers=2)

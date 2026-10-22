@@ -6,7 +6,6 @@ remain owned by their existing doors.
 """
 from __future__ import annotations
 
-import argparse
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -211,12 +210,15 @@ def register_cli(subparsers):
     parser.add_argument("--mix", help="parent sources and counts, e.g. source:18,source:18")
     parser.add_argument("--diagnose", action="append", help="diagnostic table rows: " + ", ".join(sorted(diagnostic_rows(table))))
     parser.add_argument("--export", action="append", choices=("earth2",))
-    parser.add_argument("--dry-run", action="store_true", help="write canonical JobSpec without fetching or running")
+    parser.add_argument("--dry-run", action="store_true", help="check the job against every refusal the real run applies and write its canonical JobSpec, without fetching or running")
     parser.add_argument("--spec-out", type=Path)
     parser.add_argument("--spec", type=Path)
     parser.add_argument("--earth2-input", type=Path,
                         help="reuse a completed fetch directory after checking model, cycle, horizon, coverage and artifact hashes; auto placement searches a regional input's area")
     parser.add_argument("--out", type=Path, default=Path("earth2-output"))
+    from gpuwm.geog_assets import add_geog_root_argument
+    add_geog_root_argument(parser, help="geography tree the regional or nest preparation reads "
+                           "(default: the staged WPS_GEOG tree); a dry run checks the named tree")
     parser.set_defaults(func=main)
 
 
@@ -230,6 +232,21 @@ def main(args):
             spec = load_spec(args.spec)
         else:
             spec = build_spec(**options)
+        if args.dry_run:
+            # A dry run answers "would this job run?": it applies the same refusals as the real run
+            # (licence per --diagnose row, runtime refusals, account-gated weights, nest needs storm,
+            # required modules and binaries, the ensemble mix, the regional --area requirement), so a
+            # clean dry run is not followed by a refused real run. These checks do no I/O beyond lookups.
+            from gpuwm.earth2_job import _preflight
+            _preflight(spec)
+            geog_root = getattr(args, "geog_root", None)
+            if geog_root is not None:
+                # The tree the real run's prep reads, refused the way `gpuwm go` refuses it.
+                from gpuwm.go_cli import geography_refusal
+                refusal = geography_refusal(Path(geog_root).expanduser().resolve())
+                if refusal:
+                    raise ValueError(refusal)
+                print(f"earth2: geography {Path(geog_root).expanduser().resolve()}", file=sys.stderr)
         document = canonical_json(spec)
         if args.spec_out:
             args.spec_out.parent.mkdir(parents=True, exist_ok=True)
@@ -238,7 +255,8 @@ def main(args):
             print(document, end="")
             return 0
         from gpuwm.earth2_job import run_job
-        return run_job(spec, args.out, earth2_input=getattr(args, "earth2_input", None))
+        return run_job(spec, args.out, earth2_input=getattr(args, "earth2_input", None),
+                       geog_root=getattr(args, "geog_root", None))
     except (ValueError, TypeError, KeyError, OSError, RuntimeError) as error:
         print(f"earth2: {error}", file=sys.stderr)
         return 2

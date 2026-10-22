@@ -18,12 +18,17 @@ from pathlib import Path
 from typing import Any
 
 from gpuwm.mcp.doors import (ArwenRefusal, TREE_ROOT, as_posted_support,
-                             door_json, run_door)
+                             door_json, engine_argv as _engine_prefix, run_door)
 from gpuwm.mcp.jobs import MAX_EVENT_BYTES, JobManager
 
 
 def _clean_args(extra_args: list[str] | None) -> list[str]:
     return [str(a) for a in (extra_args or [])]
+
+
+def _optional_args(*options: tuple[str, Any]) -> list[str]:
+    return [arg for flag, value in options if value is not None
+            for arg in (flag, str(value))]
 
 
 def as_posted_flags(door: str, as_posted: bool | None) -> tuple[list[str], bool]:
@@ -164,24 +169,17 @@ def register(server: Any, manager: JobManager) -> list[str]:
         args = ["domain", "--out", out_toml]
         if point:
             args += [f"--point={point}"]
-        if polygon_geojson:
-            args += ["--polygon", polygon_geojson]
-        if card:
-            args += ["--card", card]
-        if vram_gib is not None:
-            args += ["--vram-gib", str(vram_gib)]
-        if hours is not None:
-            args += ["--hours", str(hours)]
-        if source:
-            args += ["--source", source]
-        if cycle:
-            args += ["--cycle", cycle]
-        if ladder:
-            args += ["--ladder", ladder]
-        if physics_profile:
-            args += ["--physics-profile", physics_profile]
-        if name:
-            args += ["--name", name]
+        args += _optional_args(
+            ('--polygon', polygon_geojson or None),
+            ('--card', card or None),
+            ('--vram-gib', vram_gib),
+            ('--hours', hours),
+            ('--source', source or None),
+            ('--cycle', cycle or None),
+            ('--ladder', ladder or None),
+            ('--physics-profile', physics_profile or None),
+            ('--name', name or None),
+        )
         for ack in acks or []:
             args += ["--ack", ack]
         args += _clean_args(extra_args)
@@ -209,12 +207,11 @@ def register(server: Any, manager: JobManager) -> list[str]:
         """
 
         args = ["check", config, "--json"]
-        if budget_gib is not None:
-            args += ["--budget-gib", str(budget_gib)]
-        if vram_gib is not None:
-            args += ["--vram-gib", str(vram_gib)]
-        if column_chunk is not None:
-            args += ["--column-chunk", str(column_chunk)]
+        args += _optional_args(
+            ('--budget-gib', budget_gib),
+            ('--vram-gib', vram_gib),
+            ('--column-chunk', column_chunk),
+        )
         report, exit_code = door_json(args, timeout_s=timeout_s)
         return {"exit_code": exit_code, "fits": exit_code == 0,
                 "report": report}
@@ -336,18 +333,18 @@ def register(server: Any, manager: JobManager) -> list[str]:
 
         posting, streams = as_posted_flags("fetch", as_posted)
         args = ["fetch", "--source", source, "--out", out_dir, *posting]
-        if cycle:
-            args += ["--cycle", cycle]
-        if hours is not None:
-            args += ["--hours", str(hours)]
+        args += _optional_args(
+            ('--cycle', cycle or None),
+            ('--hours', hours),
+        )
         if area:
             args += [f"--area={area}"]
         if point:
             args += [f"--point={point}"]
-        if radius_km is not None:
-            args += ["--radius-km", str(radius_km)]
-        if forecast_start_hour is not None:
-            args += ["--forecast-start-hour", str(forecast_start_hour)]
+        args += _optional_args(
+            ('--radius-km', radius_km),
+            ('--forecast-start-hour', forecast_start_hour),
+        )
         args += _clean_args(extra_args)
         launched = manager.launch(
             "fetch", [*_engine_prefix(), *args], cwd=TREE_ROOT, gpu=False,
@@ -378,22 +375,19 @@ def register(server: Any, manager: JobManager) -> list[str]:
         """
 
         args = ["prep", "--output-root", output_root]
-        if source:
-            args += ["--source", source]
-        if wps_namelist:
-            args += ["--wps-namelist", wps_namelist]
-        if namelist_input:
-            args += ["--namelist-input", namelist_input]
-        if experiment_config:
-            args += ["--experiment-config", experiment_config]
-        if geog_root:
-            args += ["--geog-root", geog_root]
+        args += _optional_args(
+            ('--source', source or None),
+            ('--wps-namelist', wps_namelist or None),
+            ('--namelist-input', namelist_input or None),
+            ('--experiment-config', experiment_config or None),
+            ('--geog-root', geog_root or None),
+        )
         for path in inputs or []:
             args += ["--input", path]
-        if valid_time:
-            args += ["--valid-time", valid_time]
-        if preprocess_backend:
-            args += ["--preprocess-backend", preprocess_backend]
+        args += _optional_args(
+            ('--valid-time', valid_time or None),
+            ('--preprocess-backend', preprocess_backend or None),
+        )
         args += _clean_args(extra_args)
         gpu = preprocess_backend != "cpu"
         return manager.launch(
@@ -437,12 +431,11 @@ def register(server: Any, manager: JobManager) -> list[str]:
         if mode == "go":
             posting, streams = as_posted_flags("go", as_posted)
             args = ["go", config, *posting]
-            if outdir:
-                args += ["--outdir", outdir]
-            if data_dir:
-                args += ["--data-dir", data_dir]
-            if products:
-                args += ["--products", products]
+            args += _optional_args(
+                ('--outdir', outdir or None),
+                ('--data-dir', data_dir or None),
+                ('--products', products or None),
+            )
             if dry_run:
                 args += ["--dry-run"]
         else:
@@ -498,12 +491,11 @@ def register(server: Any, manager: JobManager) -> list[str]:
                 "was given, so there is nothing to draw.")
         args = ["render", *[str(p) for p in (wrfout or [])],
                 "--out", out_dir]
-        if products:
-            args += ["--products", products]
-        if engine:
-            args += ["--engine", engine]
-        if timeidx:
-            args += ["--timeidx", str(timeidx)]
+        args += _optional_args(
+            ('--products', products or None),
+            ('--engine', engine or None),
+            ('--timeidx', timeidx or None),
+        )
         if pair:
             if len(pair) != 2:
                 raise ArwenRefusal(
@@ -552,12 +544,11 @@ def register(server: Any, manager: JobManager) -> list[str]:
             raise ArwenRefusal(str(error)) from error
         args = ["cells", "analyze", *[str(p) for p in wrfout],
                 "--out", out_dir]
-        if profile:
-            args += ["--profile", profile]
-        if ladder:
-            args += ["--ladder", ladder]
-        if titan:
-            args += ["--titan", titan]
+        args += _optional_args(
+            ('--profile', profile or None),
+            ('--ladder', ladder or None),
+            ('--titan', titan or None),
+        )
         args += _clean_args(extra_args)
         return manager.launch(
             "cells", [*_engine_prefix(), *args], cwd=TREE_ROOT, gpu=False,
@@ -653,10 +644,3 @@ def register(server: Any, manager: JobManager) -> list[str]:
         return manager.list()
 
     return names
-
-
-def _engine_prefix() -> list[str]:
-    """The subprocess argv prefix for a job running this tree's CLI."""
-
-    import sys
-    return [sys.executable, "-m", "gpuwm.cli"]

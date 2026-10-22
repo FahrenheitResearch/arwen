@@ -1,0 +1,8 @@
+#!/bin/sh
+# forward-only-hooks: pre-rebase
+#
+# "Forward commits only": no reset, rebase, amend or force-push.
+# Bring another line in with a merge or a cherry-pick instead.
+
+echo 'rebase is banned here (forward commits only); make a new commit (merge or cherry-pick forward instead)' >&2
+exit 1

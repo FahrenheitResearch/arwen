@@ -113,6 +113,18 @@ def test_history_clocks_and_member_map_provenance(tmp_path):
     assert roster["members"][0]["family_origin"] == "member-map"
 
 
+def test_run_directory_ignores_hidden_resume_manifest_copies(tmp_path):
+    domain = tmp_path / "d01"
+    domain.mkdir()
+    document = {"member_order": [1], "member_metadata": [{"member_id": 1}],
+                "member_files": [{"member_id": 1, "path": "wrfout_d01_2022-06-13_23_00_00"}]}
+    (domain / "ensemble-manifest.json").write_text(json.dumps(document))
+    hidden = tmp_path / ".ensemble-resume" / "generations" / "old" / "d01"
+    hidden.mkdir(parents=True)
+    (hidden / "ensemble-manifest.json").write_text(json.dumps(document))
+    assert _input_frames(tmp_path) == _input_frames(domain / "ensemble-manifest.json")
+
+
 def _hybrid_retained_manifest(tmp_path):
     """Receipt control only: no NetCDF weather data or forecast is generated."""
     import hashlib

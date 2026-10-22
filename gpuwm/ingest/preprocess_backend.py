@@ -34,6 +34,8 @@ from types import MappingProxyType
 
 import numpy as np
 
+from gpuwm.ingest.backend_contract import _sha256
+
 from gpuwm.ingest.memory_refusal import InitializationMemoryRefused
 from gpuwm.ingest.cpu_backend import (
     CPU_BACKEND_ABI,
@@ -130,14 +132,6 @@ _COMMON_IMPLEMENTATION_SOURCES = (
     "gpuwm/ingest/water_temperature.py",
     "gpuwm/ingest/vert.py",
 )
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(8 * 1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _implementation_tree(backend: str) -> dict[str, object]:

@@ -52,3 +52,54 @@ def test_canonical_spec_and_unknown_names(tmp_path, monkeypatch):
     assert added["hours"] == 9
     assert build_spec(model="fcn3", cycle="2024-09-24T12", hours=1)["hours"] == 1
     assert build_spec(model="fcn3", cycle="2024-09-24T12", diagnose="windgust")["diagnose"] == ["windgust"]
+
+
+def test_dry_run_applies_the_real_runs_refusals(tmp_path, capsys):
+    # Defect: --dry-run returned 0 for jobs the real run refuses (a restricted --diagnose row without
+    # --accept-licence, and a regional job with neither --area nor --nest).
+    from gpuwm import cli
+    licence = "NVIDIA Community Model License"
+    base = ["earth2", "--model", "fcn3", "--ic-source", "gfs", "--cycle", "2024-10-08T00", "--hours", "24",
+            "--dry-run", "--spec-out", str(tmp_path / "s.json"), "--out", str(tmp_path / "o")]
+    assert cli.main([*base, "--diagnose", "windgust"]) == 2
+    assert "--accept-licence" in capsys.readouterr().err
+    assert not (tmp_path / "s.json").exists()
+    assert cli.main([*base, "--diagnose", "windgust", "--accept-licence", licence]) == 2
+    assert "needs --area" in capsys.readouterr().err
+    assert cli.main([*base, "--diagnose", "windgust", "--accept-licence", licence, "--area", "30,-100,40,-85"]) == 0
+    assert json.loads((tmp_path / "s.json").read_text())["diagnose"] == ["windgust"]
+
+
+def test_dry_run_honours_geog_root(tmp_path, capsys, monkeypatch):
+    # Defect (2.9.4 landing, V58 2026-10-20): `gpuwm earth2` had no --geog-root, so an Earth-2
+    # nest's preparation could only read the default tree. The door now takes the shared option
+    # (gpuwm.geog_assets.add_geog_root_argument, the one `gpuwm go` uses) and a dry run checks it.
+    from gpuwm import cli, go_cli
+    base = ["earth2", "--model", "fcn3", "--ic-source", "gfs", "--cycle", "2024-10-08T00", "--hours", "24",
+            "--area", "30,-100,40,-85", "--dry-run", "--out", str(tmp_path / "o")]
+    empty = tmp_path / "no-geography"
+    empty.mkdir()
+    assert cli.main([*base, "--geog-root", str(empty)]) == 2
+    assert str(empty) in capsys.readouterr().err
+    seen = []
+    monkeypatch.setattr(go_cli, "geography_refusal", lambda root, **_: seen.append(root))
+    staged = tmp_path / "WPS_GEOG"
+    staged.mkdir()
+    assert cli.main([*base, "--geog-root", str(staged)]) == 0
+    assert seen == [staged.resolve()]
+    assert f"earth2: geography {staged.resolve()}" in capsys.readouterr().err
+
+
+def test_earth2_and_go_share_the_geog_root_option():
+    import argparse
+
+    from gpuwm import earth2_door, go_cli
+    parsers = {}
+    for name, module in (("earth2", earth2_door), ("go", go_cli)):
+        sub = argparse.ArgumentParser().add_subparsers()
+        module.register_cli(sub)
+        parsers[name] = sub.choices[name]
+    for parser in parsers.values():
+        action = next(a for a in parser._actions if "--geog-root" in a.option_strings)
+        assert action.metavar == "DIR" and action.default is None
+        assert action.type is not None and action.type("x").name == "x"

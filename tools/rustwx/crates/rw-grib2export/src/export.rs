@@ -534,25 +534,13 @@ fn compute(path: &Path, req: &Request, devices: &mut Devices, meta: &FrameMeta) 
     let d = group_d::compute(path, st, &frame.state, gpu, device_for_groups).map_err(fail)?;
     #[cfg(not(any(windows, target_os = "linux")))]
     let d = group_d::compute(path, st, &frame.state, device_for_groups).map_err(fail)?;
-    let mut group_d_sources = Value::Null;
-    match d {
-        Some(d) => {
-            devices_used.insert("d", d.device);
-            group_d_sources = json!({"cloud_fraction": d.cloud_fraction_source, "aerosol": d.aerosol_source, "simulated_ir": d.ir_source});
-            for (k, p) in d.planes {
-                surface.insert(k, p);
-            }
-            for (k, why) in d.omitted {
-                omitted.push((k.into(), why));
-            }
-        }
-        None => {
-            for r in catalog::ROWS {
-                if let Source::D(_) = r.source {
-                    omitted.push((r.id.into(), group_d::PENDING.into()));
-                }
-            }
-        }
+    devices_used.insert("d", d.device);
+    let group_d_sources = json!({"cloud_fraction": d.cloud_fraction_source, "aerosol": d.aerosol_source, "simulated_ir": d.ir_source});
+    for (k, p) in d.planes {
+        surface.insert(k, p);
+    }
+    for (k, why) in d.omitted {
+        omitted.push((k.into(), why));
     }
     timings.insert("group_d", t.elapsed().as_secs_f64());
 

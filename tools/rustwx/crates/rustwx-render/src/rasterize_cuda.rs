@@ -23,9 +23,24 @@ struct Renderer {
     robinson: CudaFunction,
 }
 impl Renderer {
+    /// Opens the device `RUSTWX_RASTER_DEVICE=<n>` names, else visible
+    /// device 0 (the first card CUDA_VISIBLE_DEVICES exposes), and says
+    /// which card the fills run on. `RUSTWX_RASTER_DEVICE=cpu` never gets here.
     fn open() -> Result<Self, String> {
         if !unsafe { cudarc::driver::sys::is_culib_present() } { return Err("no CUDA driver".into()); }
-        let ctx = CudaContext::new(0).map_err(|e| e.to_string())?;
+        let ordinal = match std::env::var("RUSTWX_RASTER_DEVICE") {
+            Ok(value) if !value.trim().is_empty() => value.trim().parse::<usize>().map_err(|_| {
+                let message = format!("RUSTWX_RASTER_DEVICE={value:?} is neither cpu nor a CUDA device number");
+                eprintln!("Rust renderer: {message}; raster fills run on the CPU");
+                message
+            })?,
+            _ => 0,
+        };
+        let ctx = CudaContext::new(ordinal).map_err(|e| e.to_string())?;
+        let visible = std::env::var("CUDA_VISIBLE_DEVICES").unwrap_or_else(|_| "unset".into());
+        eprintln!("Rust renderer: raster fills on CUDA device {ordinal} ({}, CUDA_VISIBLE_DEVICES={visible}); \
+                   RUSTWX_RASTER_DEVICE=cpu keeps them on the CPU",
+                  ctx.name().unwrap_or_else(|_| "unnamed".into()));
         let (least, _) = cudarc::driver::result::stream::get_priority_range().map_err(|e| e.to_string())?;
         let stream = ctx.new_stream_with_priority(least).map_err(|e| e.to_string())?;
         let module = ctx.load_module(Ptx::from_src(include_str!("rasterize_structured.ptx"))).map_err(|e| e.to_string())?;

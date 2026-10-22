@@ -260,7 +260,7 @@ fn batch_width(workers: usize, largest_points: usize) -> usize {
 fn write_values(writer: &mut impl Write, values: &[f64]) -> std::io::Result<()> {
     let mut bytes = [0u8; 8192];
     for chunk in values.chunks(bytes.len() / 8) {
-        for (value, output) in chunk.iter().zip(bytes.chunks_exact_mut(8)) {
+        for (value, output) in chunk.iter().zip(bytes.as_chunks_mut::<8>().0.iter_mut()) {
             output.copy_from_slice(&value.to_le_bytes());
         }
         writer.write_all(&bytes[..chunk.len() * 8])?;

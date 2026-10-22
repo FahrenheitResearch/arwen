@@ -38,6 +38,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import json
+import re
 import threading
 import time
 from pathlib import Path
@@ -55,6 +56,26 @@ MARKER_SCHEMA = "gpuwm.posted-lead.v1"
 #: The exit code of a fetch whose source fell behind its budget
 #: (DESIGN A136 3.6); run-plan and go use the same code.
 SOURCE_BEHIND_EXIT = 75
+
+
+#: rw_fetch's refusal of an object its host does not hold (rw-fetch
+#: plan.rs ``decide``): the object is not posted there, not a fault.
+OBJECT_ABSENT_REASON = "the GRIB object is not present at this source"
+
+
+def object_not_posted(error: BaseException) -> bool:
+    """Whether a transfer failed only because an object is not up yet.
+
+    The breakage this catches: a lead whose posted check did not ask one
+    of the objects its transfer reads (HRRR's ``wrfsfc``, posted up to
+    ~10 min after ``wrfnat``/``wrfprs``) failed the whole run at once on
+    rw_fetch's absent-object refusal instead of being waited for.
+    """
+
+    from gpuwm.rustwx_fetch import RwFetchError
+
+    return (isinstance(error, RwFetchError)
+            and OBJECT_ABSENT_REASON in str(error.reason))
 
 
 class SourceBehind(RuntimeError):
@@ -171,7 +192,6 @@ class PostingLoop:
         self.now = now if now is not None else (lambda: now_utc())
         self.sleep = sleep
         self.progress = progress
-        self.late_after_override = late_after_minutes
         self.row = rows.posting(window.source, window.provider)
         self.poll = float(self.row.poll_seconds or 30.0)
         self.budget = rows.late_after_minutes(
@@ -737,23 +757,35 @@ class PostingLoop:
 
         leads = [int(lead) for lead in leads]
         now = self.now()
+        absent = object_not_posted(error)
         with self._lock:
             unheard = next((lead for lead in leads if lead in self._tried), None)
             answer = (self._tried[unheard] if unheard is not None
+                      else readiness.NOT_POSTED if absent
                       else "failed_verification")
         named = unheard if unheard is not None else leads[0]
+        # rw_fetch names the failed forecast hour. A prefix can contain
+        # later hours with later budgets; they must not extend this one's.
+        if absent:
+            match = re.search(r"\bf(\d+):", str(error.reason))
+            if match is not None and int(match[1]) in leads:
+                named = int(match[1])
         for lead in leads:
             with self._lock:
-                said = self._tried.get(lead, "failed_verification")
+                said = self._tried.get(
+                    lead, readiness.NOT_POSTED if absent
+                    else "failed_verification")
             self._answered(lead, None, said)
         if self.deadline is not None and now >= self.deadline:
             self._stop(named, answer, cap=True, error=error)
         lates = [readiness.parse_instant(self._rows[lead].get("late_at"))
-                 for lead in leads]
+                 for lead in ([named] if absent else leads)]
         if all(late is not None and now >= late for late in lates):
             self._stop(named, answer, error=error)
         said = ("could not be heard, and its transfer did not succeed"
-                if unheard is not None else "did not verify")
+                if unheard is not None
+                else "is not fully posted yet" if absent
+                else "did not verify")
         self.progress(f"{self.label}: f{named:03d} {said} ({error}); "
                       f"asking again in {self.poll:g} s")
         self._pause(self._bounded(timedelta(seconds=self.poll), now))
@@ -898,8 +930,8 @@ def fetch_route_as_posted(loop: PostingLoop, run: Callable[..., dict]) -> dict:
 #: What a legacy transport raises when a file did not arrive or verify:
 #: a refusal in its own words (ValueError, RuntimeError) or the network's
 #: (OSError).  Under the loop it is asked again only for a lead whose host
-#: could not be heard; a lead a host said it holds keeps the transport's
-#: own retries and refusal, as the one-shot fetch does.
+#: could not be heard or whose transfer reports an absent object; other
+#: failures keep the transport's own retries and refusal.
 LEGACY_TRANSFER_FAULTS = (ValueError, RuntimeError, OSError)
 
 
@@ -948,7 +980,12 @@ def _legacy_prefixes(loop: PostingLoop,
         try:
             manifest_path = fetch_prefix(tuple(leads[:through + 1]))
         except LEGACY_TRANSFER_FAULTS as error:
-            if not loop.tried_unheard(batch):
+            # A host that refused an object as absent has not posted it
+            # yet: wait for it until the lead's late time (then exit 75),
+            # as for a lead whose host could not be heard.  Let wait_again
+            # enforce the deadline even if the transfer crossed it.
+            if not (loop.tried_unheard(batch)
+                    or object_not_posted(error)):
                 raise
             loop.wait_again(batch, error)
             continue
@@ -959,7 +996,8 @@ def _legacy_prefixes(loop: PostingLoop,
     return Path(manifest_path)
 
 
-__all__ = ["LEGACY_TRANSFER_FAULTS", "MARKER_SCHEMA", "PostingLoop",
+__all__ = ["LEGACY_TRANSFER_FAULTS", "MARKER_SCHEMA", "OBJECT_ABSENT_REASON",
+           "PostingLoop", "object_not_posted",
            "SOURCE_BEHIND_EXIT",
            "SourceBehind", "composed_objects", "fetch_legacy_as_posted",
            "fetch_route_as_posted", "legacy_objects", "marker_files",

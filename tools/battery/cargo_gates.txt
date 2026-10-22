@@ -85,7 +85,7 @@
 # OFFLINE ONLY
 #   Every invocation is `cargo test --locked --offline`.  Both workspaces
 #   vendor their dependencies (tools/rustwx/vendor/crates-io,
-#   tools/grib1_bridge/vendor/crates-io) with a .cargo/config.toml that
+#   shared by all sixteen consumer workspaces) with a .cargo/config.toml that
 #   replaces the crates.io source, so a green leg proves the vendored
 #   closure is complete.  Dropping --offline would let a leg pass on a
 #   box with a warm registry cache and fail on the release box, which is
@@ -326,10 +326,9 @@ cpu  tools/rustwx  rw-simradar  31
 # history frame to a picture -- `rw_mpas_convert` gathers an unstructured
 # mesh onto a structured render window and writes the wrfout-shaped
 # classic netCDF frame the pinned renderer opens, and `rw_mpas_init`
-# builds the mesh side.  It replaced tools/mpas_render_bridge's Python,
-# which stays only as the reference the parity record
-# (evidence/rw-mpas-converter-parity.json: 127 of 127 PNGs
-# byte-identical) is about, so this crate is the only thing between a
+# builds the mesh side.  Its parity with the retired Python reference bridge
+# is recorded in evidence/rw-mpas-converter-parity.json: 127 of 127 PNGs
+# byte-identical.  This crate is the only thing between a
 # wrong resample weight and an MPAS product plot that is plausible and
 # in the wrong place -- a mesh-to-grid gather that picks the wrong cell
 # does not crash, it draws the storm somewhere else.  Floor was its
@@ -590,7 +589,8 @@ cpu  tools/rw_wps  projected-intermediate  8
 # and actual worker process groups/Windows Job Objects. @python is the battery
 # interpreter path, resolved as one environment value without shell expansion.
 # Cold Windows/Linux: 7 visual + 2 geography builder; 14 terminal + 4 worker controls.
-cpu  tools/arwen-launchpad  arwen-launchpad  9
+# slimtest-s10 2026-10-20: floor lowered from 9 to 8 (1 duplicate tests removed; llvm-cov regions not lower)
+cpu  tools/arwen-launchpad  arwen-launchpad  8
 cpu  tools/arwen-tui  arwen-tui  18  GPUWM_TUI_TEST_PYTHON=@python
 
 # The regular-grid Zarr reader ships with the bundle. The real CLI reads a
@@ -598,3 +598,7 @@ cpu  tools/arwen-tui  arwen-tui  18  GPUWM_TUI_TEST_PYTHON=@python
 # time/level selection and decoded record bytes; units and no-clobber controls
 # prevent a plausible mislabeled field or overwritten output from passing.
 cpu  tools/zarr_bridge  rw-zarr  3
+
+# Fire danger (cap-fire-indices, 2026-10-20): FWI, KBDI and NFDRS 2016 with carried state,
+# rw_fire_indices. Unit tests plus tests/restart.rs (state carried across a restart).
+cpu  tools/rustwx  fire-indices  9

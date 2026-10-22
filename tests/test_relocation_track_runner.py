@@ -28,6 +28,8 @@ from test_nest_relocation_staging import (_cpu_tree, _footprint_statics,
 
 import datetime as dt
 
+from test_relocation_runner import _clock, _model, _logged
+
 INIT = dt.datetime(2025, 10, 24, 12)
 
 
@@ -41,28 +43,6 @@ class _Grid:
     def ij_to_latlon(self, x, y):
         return (self.lat0 + (y - 1.0) * self.step,
                 self.lon0 + (x - 1.0) * self.step)
-
-
-def _clock(ticks):
-    # ``spec`` carries the domain's activation epoch: the state publisher
-    # derives ``domain_start_offset`` from ``spec.start_ticks``
-    # (gpuwm/core/state.py), so a fake clock without it cannot cross a
-    # period boundary.  Both domains here start with the run.
-    return SimpleNamespace(ticks=int(ticks), tick_den=1,
-                           elapsed_seconds=float(ticks),
-                           spec=SimpleNamespace(start_ticks=0,
-                                                step_ticks=60))
-
-
-def _model(parent, child):
-    nodes = {int(parent.cfg.grid_id): parent, int(child.cfg.grid_id): child}
-    model = SimpleNamespace(
-        root=parent,
-        schedule=SimpleNamespace(period_ticks=60,
-                                 clock=SimpleNamespace(tick_den=1)),
-        experiment_fingerprint="f" * 64)
-    model.node = lambda gid: nodes[gid]
-    return model
 
 
 def _dress(parent, child):
@@ -514,18 +494,6 @@ def test_a_position_only_track_steers_nothing_either(tmp_path):
 # instant the row is written.  A map tailing progress.jsonl can then draw
 # the track without also tailing (and parsing the declared header of) a
 # second file.
-
-
-def _logged(model, tmp_path):
-    from datetime import datetime
-
-    from gpuwm.progress_log import StepLog, publish_step_log
-
-    log = StepLog(start_time=datetime(2026, 8, 15, 0, 0, 0),
-                  run_seconds=3600.0,
-                  jsonl_path=tmp_path / "progress.jsonl")
-    publish_step_log(model, log)
-    return log
 
 
 def _fixes(tmp_path, log):

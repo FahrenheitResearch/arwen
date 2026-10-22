@@ -10,7 +10,8 @@ use rw_mpas::convert::{
 };
 use rw_mpas::remap::{read_mesh_topology, ProductRemap};
 use rw_mpas::history::{
-    assert_mesh_agrees, read_history_on_mesh, read_init_fields, MpasFrame, Timestamp,
+    assert_mesh_agrees, read_history_on_mesh_with_field_set, read_init_fields, MpasFrame,
+    Timestamp,
 };
 use rw_mpas::sha256_file;
 use rw_mpas::weights::{
@@ -328,6 +329,7 @@ fn load_source(
     window: &Window,
     window_name: &str,
     is_base: bool,
+    field_set: &str,
 ) -> Result<LoadedSource, String> {
     if entry.history.is_empty() {
         return Err(format!(
@@ -357,7 +359,8 @@ fn load_source(
     let mut frames = Vec::with_capacity(entry.history.len());
     for history in &entry.history {
         let frame =
-            read_history_on_mesh(history, None, None, None, Some(&mesh)).map_err(|e| e.to_string())?;
+            read_history_on_mesh_with_field_set(history, None, None, None, Some(&mesh), field_set)
+                .map_err(|e| e.to_string())?;
         assert_mesh_agrees(&frame, &mesh, 1.0e-4).map_err(|e| e.to_string())?;
         frames.push(frame);
     }
@@ -442,10 +445,10 @@ fn run_compose(args: Args, spec_path: &Path) -> Result<(), String> {
         window.description()
     );
 
-    let base = load_source(&spec.base, &window, &args.window, true)?;
+    let base = load_source(&spec.base, &window, &args.window, true, &args.field_set)?;
     let mut overlays = Vec::with_capacity(spec.overlays.len());
     for entry in &spec.overlays {
-        overlays.push(load_source(entry, &window, &args.window, false)?);
+        overlays.push(load_source(entry, &window, &args.window, false, &args.field_set)?);
     }
     // --compose-base-only builds the SAME window from the same overlays and
     // then converts the base alone. It exists so the composite can be
@@ -836,8 +839,15 @@ fn run() -> Result<(), String> {
         .transpose().map_err(|e|e.to_string())?;
     let convert_one = |history: &PathBuf| -> Result<(Vec<String>, String), String> {
         let mut lines: Vec<String> = Vec::new();
-        let frame = read_history_on_mesh(history, init_fields.as_ref(), None, None, Some(&mesh))
-            .map_err(|e| e.to_string())?;
+        let frame = read_history_on_mesh_with_field_set(
+            history,
+            init_fields.as_ref(),
+            None,
+            None,
+            Some(&mesh),
+            &args.field_set,
+        )
+        .map_err(|e| e.to_string())?;
         let (dlat, dlon) =
             assert_mesh_agrees(&frame, &mesh, 1.0e-4).map_err(|e| e.to_string())?;
         // A split-stream history (RRFS-MPAS) took its centres from --mesh and

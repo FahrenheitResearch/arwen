@@ -645,15 +645,6 @@ def _environ() -> dict:
     return env
 
 
-def _collected_count(stdout: str) -> int:
-    """Parse pytest's collection summary without depending on exit status."""
-    for line in reversed(stdout.splitlines()):
-        line = line.strip()
-        if "test" in line and ("collected" in line or "selected" in line):
-            for token in line.replace("/", " ").split():
-                if token.isdigit():
-                    return int(token)
-    return 0
 # --------------------------------------------------------------------------
 # the second property: cupy ABSENT, and the marker one indirection out
 # --------------------------------------------------------------------------

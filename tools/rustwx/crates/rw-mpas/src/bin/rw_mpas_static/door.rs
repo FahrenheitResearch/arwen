@@ -135,7 +135,10 @@ fn usage() -> String {
          --supersample-30s N  native terrain, soil, vegetation and texture factor\n\
          --topo-data GTOPO30|GMTED2010\n\
          --landuse-data USGS|MODIFIED_IGBP_MODIS_NOAH|MODIFIED_IGBP_MODIS_NOAH_15s\n\
-         --soilcat-data STATSGO|BNU\n\
+         --soilcat-data SOILGRIDS|STATSGO|BNU  default SOILGRIDS; STATSGO is FAO-UNESCO\n\
+        \x20                 outside CONUS, not permissive, read only when named\n\
+         --soiltemp-data ERA5|ISLSCP  default ERA5; ISLSCP-I soiltemp_1deg has an\n\
+        \x20                 unclear licence, read only when named\n\
          --vegfrac-data MODIS|NCEP  --albedo-data MODIS|NCEP\n\
          --maxsnowalbedo-data MODIS|NCEP\n\
          --no-gwd        build the static stage separately from GWD\n\
@@ -464,7 +467,7 @@ pub fn run(argv: Vec<std::ffi::OsString>) -> ExitCode {
         // label independently of the geoindex's lowercased character data.
         cfg.stages.landuse_label=Some("MODIFIED_IGBP_MODIS_NOAH".into());
     }
-    for flag in ["topo-data","landuse-data","soilcat-data","vegfrac-data","albedo-data","maxsnowalbedo-data"] {
+    for flag in ["topo-data","landuse-data","soilcat-data","soiltemp-data","vegfrac-data","albedo-data","maxsnowalbedo-data"] {
         if let Some(choice)=value(&argv,&format!("--{flag}")) {
             if let Err(e)=rw_mpas::static_builder::select_static_source(&mut cfg,&geog,flag,&choice) {
                 eprintln!("{e}"); return ExitCode::from(2);

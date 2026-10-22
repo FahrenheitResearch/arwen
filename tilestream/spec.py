@@ -142,7 +142,7 @@ With ``periodic_y=True`` the same case is bit-exact at N = 1, 3 and 8.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Iterator, Sequence
+from typing import Iterable, Sequence
 
 #: The horizontal variants, and their staggering as ``(extra_y, extra_x)``
 #: points relative to the mass grid.  ``"phi"`` is an alias of ``"w"``.
@@ -724,19 +724,9 @@ def plan_efficiency(specs: Sequence[TileSpec]) -> dict[str, float]:
     }
 
 
-def iter_tiles(nx: int, ny: int, tile_nx: int, tile_ny: int,
-               halo: int = DEFAULT_HALO,
-               periodic: bool = True, *,
-               periodic_x: bool | None = None,
-               periodic_y: bool | None = None) -> Iterator[TileSpec]:
-    """Streaming form of :func:`plan_tiles`."""
-    yield from plan_tiles(nx, ny, tile_nx, tile_ny, halo, periodic,
-                          periodic_x=periodic_x, periodic_y=periodic_y)
-
-
 __all__ = [
     "DEFAULT_HALO", "VARIANTS", "VARIANT_STAGGER",
     "Segment", "TileSpec", "Transfer",
-    "coverage_counts", "full_shape", "iter_tiles", "plan_efficiency",
+    "coverage_counts", "full_shape", "plan_efficiency",
     "plan_tiles", "stagger", "tile_shape", "validate_plan",
 ]

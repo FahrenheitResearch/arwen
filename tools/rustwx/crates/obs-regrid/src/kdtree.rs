@@ -88,10 +88,6 @@ impl KdTree {
         tree
     }
 
-    pub fn len(&self) -> usize {
-        self.points.len()
-    }
-
     pub fn is_empty(&self) -> bool {
         self.points.is_empty()
     }

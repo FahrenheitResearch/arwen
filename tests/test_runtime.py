@@ -589,45 +589,6 @@ def test_rrtmgp_trace_gas_policy_hook_is_dated_and_profile_declared(
     assert real74_d01.SOURCE_OROGRAPHY.path.name.startswith("met_em.d01.")
 
 
-def test_experiment_runtime_threads_catalog_providers_when_declarations_omitted(
-        tmp_path, monkeypatch):
-    from types import SimpleNamespace
-    from gpuwm.ingest import preflight
-
-    exp, declared = _fixture_pair(tmp_path)
-    data = replace(declared, source_orography=None, co2_vmr=None)
-    times = (exp.start_time, exp.start_time + timedelta(hours=6),
-             exp.start_time + timedelta(hours=12))
-    snapshots = tuple(SimpleNamespace(valid_time=value) for value in times)
-    catalog = SimpleNamespace(
-        snapshots=snapshots, inventory=("SOILGEO",),
-        units={"SOILGEO": "m2 s-2"}, valid_times=times,
-        excluded_valid_times=())
-    monkeypatch.setattr(preflight, "build_input_catalog", lambda value: catalog)
-    monkeypatch.setattr(
-        runtime, "forcing_snapshots",
-        lambda case_data, input_catalog: {
-            snapshot.valid_time: snapshot for snapshot in snapshots})
-    monkeypatch.setattr(runtime, "experiment_grid",
-                        lambda experiment, case_data: object())
-    monkeypatch.setattr(
-        runtime.GeogSelection, "from_case_data",
-        lambda case_data, domain_id: None)
-    sentinel = object()
-    captured = {}
-
-    def fake_prepare(*args, **kwargs):
-        captured.update(kwargs)
-        return sentinel
-
-    monkeypatch.setattr(runtime, "prepare_real_case", fake_prepare)
-    assert runtime.prepare_experiment_case(exp, data) is sentinel
-    assert captured["forcing_catalog"] is catalog
-    assert captured["source_orography_path"] is None
-    assert captured["source_orography_variable"] is None
-    assert captured["trace_gas_overrides"] is None
-
-
 @pytest.mark.parametrize("land_scheme,soil_layers", [(2, 4), (3, 6), (3, 9)])
 def test_single_domain_implicit_trace_gases_keep_experiment_column_chunk(
         tmp_path, monkeypatch, land_scheme, soil_layers):

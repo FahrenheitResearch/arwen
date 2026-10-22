@@ -20,10 +20,6 @@ impl VolumeShape {
         Ok(Self { grid, nz })
     }
 
-    pub fn len2d(self) -> usize {
-        self.grid.len()
-    }
-
     pub fn len3d(self) -> usize {
         self.grid.len() * self.nz
     }

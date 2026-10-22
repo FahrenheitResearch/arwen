@@ -6,7 +6,6 @@ from pathlib import Path
 import time
 
 from gpuwm.cycle.ledger import write_receipt_atomically
-from .retention import duration
 from .run import SuiteRunner, stamp, utc
 
 

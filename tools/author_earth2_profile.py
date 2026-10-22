@@ -21,7 +21,6 @@ import sys
 ROOT = Path(__file__).resolve().parents[1] / "gpuwm" / "authorities"
 TABLE = ROOT / "earth2-models.v1.json"
 DONOR_NAME = "ecmwf-era5-arco-netcdf-analysis-donor"
-DONOR_FILE = "rw-wps-era5-arco-netcdf-donor.mapping.json"
 GRAVITY_INVERSE = 0.1019716212977928  # 1 / 9.80665, the ERA5/GRIB tables' factor
 
 #: ERA5 ARCO soil layers (cm) as `gpuwm fetch --source era5 --era5-provider
@@ -368,7 +367,7 @@ def composition(donor_sha256, fields):
                 "data_role": "physical_analysis_surface_data",
                 "provenance_role": "physical_analysis_surface_provenance",
                 "fields": list(fields),
-                "grid_alignment": "exact_coordinate_subset",
+                "grid_alignment": "bilinear_mask_aware_nearest",
                 "time_alignment": "source_cycle_analysis_broadcast",
             },
         },

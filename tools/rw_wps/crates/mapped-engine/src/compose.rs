@@ -46,8 +46,8 @@ pub const EXTERNAL_FIELD: &str = "terrain_height";
 /// `mapped_composition._SOIL_PAIR`.
 pub const SOIL_PAIR: [&str; 2] = ["soil_temperature", "volumetric_soil_moisture"];
 /// `mapped_composition._BOUND_GRID_ALIGNMENTS`.
-pub const BOUND_GRID_ALIGNMENTS: [&str; 2] = [
-    "exact_coordinate_subset", "exact_coordinate_strided_subset",
+pub const BOUND_GRID_ALIGNMENTS: [&str; 4] = [
+    "exact_coordinate_subset", "exact_coordinate_strided_subset", "nearest_coordinate", crate::regrid::ALIGNMENT,
 ];
 
 const COMPOSITION_KEYS: [&str; 6] = [
@@ -90,6 +90,7 @@ const BINDING_KEYS: [&str; 9] = [
 /// `composition.supplements.terrain_height`.
 #[derive(Debug, Clone)]
 pub struct TerrainSupplement {
+    pub grid_alignment: String,
     pub data_role: String,
     pub provenance_role: String,
     pub time_alignment: String,
@@ -314,9 +315,9 @@ fn validate_terrain_supplement(value: &Node, mapping: &Mapping) -> Result<Terrai
             "terrain selector authority must be mapping_field_exact",
         ));
     }
-    if value.get("grid_alignment").and_then(Node::as_str) != Some("exact_coordinate_subset") {
+    if !matches!(value.get("grid_alignment").and_then(Node::as_str), Some("exact_coordinate_subset" | "exact_coordinate_strided_subset")) {
         return Err(mapping_invalid(
-            "terrain grid alignment must be exact_coordinate_subset",
+            "terrain grid alignment must be exact_coordinate_subset or exact_coordinate_strided_subset",
         ));
     }
     let time_alignment = value
@@ -361,6 +362,7 @@ fn validate_terrain_supplement(value: &Node, mapping: &Mapping) -> Result<Terrai
         ));
     }
     Ok(TerrainSupplement {
+        grid_alignment: value.get("grid_alignment").and_then(Node::as_str).unwrap().to_owned(),
         data_role: value
             .get("data_role")
             .and_then(Node::as_str)
@@ -421,8 +423,7 @@ fn validate_field_sources(
             let mut allowed = BOUND_GRID_ALIGNMENTS.to_vec();
             allowed.sort_unstable();
             return Err(mapping_invalid(format!(
-                "{label}.grid_alignment must be one of {}: a cross-grid \
-                 contribution has no landed regrid capability",
+                "{label}.grid_alignment must be one of {}",
                 python_list_repr(&allowed)
             )));
         }
@@ -672,6 +673,7 @@ pub fn derive_absent_terrain(
         grid_fingerprint: first.grid_fingerprint.clone(),
         hybrid_a: Vec::new(),
         hybrid_b: Vec::new(),
+        original_pressure_hpa: None,
     };
     let receipt = json!({
         "operation": kind,
@@ -938,21 +940,20 @@ pub fn without_fields(mapping: &Mapping, names: &BTreeSet<String>) -> Result<Map
         .ok_or_else(|| mapping_invalid("mapping.fields must be an object"))?
         .object_filtered(|key, _| !names.contains(key));
     let mut doc = mapping.doc.with_entry("fields", fields);
-    if let Some(target) = mapping.doc.get("target").filter(|node| node.is_object()) {
-        if let Some(required) = target.get("required_fields").filter(|node| node.is_array()) {
+    if let Some(target) = mapping.doc.get("target").filter(|node| node.is_object())
+        && let Some(required) = target.get("required_fields").filter(|node| node.is_array()) {
             let kept: Vec<Node> = required
                 .items()
                 .iter()
                 .filter(|item| {
                     item.get("name")
                         .and_then(Node::as_str)
-                        .map_or(true, |name| !names.contains(name))
+                        .is_none_or(|name| !names.contains(name))
                 })
                 .cloned()
                 .collect();
             doc = doc.with_entry("target", target.with_entry("required_fields", Node::Array(kept)));
         }
-    }
     Ok(Mapping {
         doc,
         sha256: mapping.sha256.clone(),
@@ -1016,6 +1017,7 @@ pub fn bind_manifest_member(
         grid_fingerprint: collection.grid_fingerprint,
         hybrid_a: collection.hybrid_a,
         hybrid_b: collection.hybrid_b,
+        original_pressure_hpa: collection.original_pressure_hpa,
     })
 }
 
@@ -1147,15 +1149,14 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
     // valid time's columns beside its full-grid surface fields, so the
     // fields it names are never decoded over the atmospheric window.
     let mut keep_whole: BTreeSet<String> = BTreeSet::new();
-    if composition.terrain.is_some() {
-        if let Some(operation) = mapping.field(EXTERNAL_FIELD).ok().and_then(|field| field.when_absent()) {
+    if composition.terrain.is_some()
+        && let Some(operation) = mapping.field(EXTERNAL_FIELD).ok().and_then(|field| field.when_absent()) {
             for label in WHEN_ABSENT_FIELDS {
                 if let Some(name) = operation.get(label).and_then(Node::as_str) {
                     keep_whole.insert(name.to_owned());
                 }
             }
         }
-    }
     let mut stream = crate::engine::DecodeStream::open_within(
         &partitioned, &primary, progress, invocation.atmospheric_window, &keep_whole)?;
     let aliased = stream.aliased().clone();
@@ -1206,6 +1207,7 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
             },
             &supplement,
             &terrain.time_alignment,
+            &terrain.grid_alignment,
         )?;
         if let (Some(derived), Some(object)) = (derived, receipt.as_object_mut()) {
             // Recorded only when terrain was derived, so every receipt of
@@ -1289,7 +1291,12 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
         };
         let mut donor_collection = complete_donor_fields(&donor_partition, donor_collection, &binding.fields)?;
         crate::join::register_projected_subset(&mapping, &donor, &mut donor_collection)?;
-        let (plan, receipt) = crate::join::plan_bound_fields(
+        let (donor_collection, regrid) = if binding.grid_alignment == crate::regrid::ALIGNMENT {
+            let (donor, receipt) = crate::regrid::align(donor_collection, stream.latitude(), stream.longitude())?;
+            progress(json!({"event": "horizontal_regrid", "binding": binding.name, "regrid": receipt}));
+            (donor, Some(receipt))
+        } else { (donor_collection, None) };
+        let (plan, mut receipt) = crate::join::plan_bound_fields(
             &crate::join::PrimaryHeader {
                 latitude: stream.latitude(),
                 longitude: stream.longitude(),
@@ -1300,6 +1307,13 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
             &donor_collection,
             binding,
         )?;
+        if let Some(regrid) = regrid {
+            receipt["coordinate_match"] = json!(crate::regrid::ALIGNMENT);
+            receipt["donor_shape"] = regrid["source_shape"].clone();
+            receipt["horizontal_regrid"] = regrid;
+            receipt.as_object_mut().unwrap().remove("latitude_index_range");
+            receipt.as_object_mut().unwrap().remove("longitude_index_range");
+        }
         borrowed.push((plan, donor_collection));
         composed_names.extend(binding.fields.iter().cloned());
         let provenance_path = &provenance[&binding.provenance_role];
@@ -1854,6 +1868,7 @@ mod tests {
             direct,
             source_cycles,
             grid_fingerprint: "fixture-grid".to_owned(),
+            original_pressure_hpa: None,
             hybrid_a: Vec::new(),
             hybrid_b: Vec::new(),
         }

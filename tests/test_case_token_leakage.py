@@ -82,15 +82,20 @@ def _new_against_real_baseline(root: Path) -> list[Violation]:
 # --------------------------------------------------------------------------
 
 
+@pytest.fixture(scope="module")
+def repository_occurrences():
+    return scan_root(REPO_ROOT)
+
+
 def test_the_baseline_loads():
     """A baseline nobody can parse suppresses nothing; say so out loud."""
     assert BASELINE_ERROR is None, BASELINE_ERROR
     assert BASELINE, "the baseline parsed to nothing"
 
 
-def test_no_new_case_token_in_a_generic_position():
+def test_no_new_case_token_in_a_generic_position(repository_occurrences):
     """THE gate.  Anything not named in the baseline fails the build."""
-    new, suppressed = partition(scan_root(REPO_ROOT))
+    new, suppressed = partition(repository_occurrences)
     assert new == [], "\n".join(f"{v}\n  key: {v.key}" for v in new)
     assert suppressed, "the scan found nothing at all -- did the zones move?"
 
@@ -112,9 +117,9 @@ def test_carried_debt_does_not_grow():
     assert any("/templates/" in key for key in debt), debt
 
 
-def test_the_baseline_names_no_occurrence_that_has_gone():
+def test_the_baseline_names_no_occurrence_that_has_gone(repository_occurrences):
     """A stale entry is dead suppression: retire it when the code is fixed."""
-    live = {v.key for v in scan_root(REPO_ROOT)}
+    live = {v.key for v in repository_occurrences}
     # Entries for paths that do not exist in this repository belong to another
     # root the tool can also be pointed at; only judge what is here.
     stale = sorted(

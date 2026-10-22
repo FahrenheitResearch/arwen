@@ -51,32 +51,24 @@ const REDUCTION_BUFFER: usize = 8192;
 /// it saves.
 const PARALLEL_BLOCK_FLOOR: usize = 8;
 
-/// One buffer's worth of the reference's pairwise tree, in double precision.
+/// One buffer's worth of the reference's pairwise tree, in the caller's precision.
 ///
 /// Under 8 elements it is a plain running total; up to one block it keeps
 /// eight accumulators and combines them as a balanced tree; above that it
 /// splits at the largest multiple of 8 not past the midpoint and recurses.
-fn tree_sum_by<F>(start: usize, n: usize, value: &F) -> f64
+fn tree_sum_by<F, N>(start: usize, n: usize, value: &F) -> N
 where
-    F: Fn(usize) -> f64,
+    F: Fn(usize) -> N,
+    N: Copy + Default + std::ops::Add<Output = N> + std::ops::AddAssign,
 {
     if n < 8 {
-        let mut total = 0.0f64;
+        let mut total = N::default();
         for offset in 0..n {
             total += value(start + offset);
         }
         total
     } else if n <= PAIRWISE_BLOCK {
-        let mut acc = [
-            value(start),
-            value(start + 1),
-            value(start + 2),
-            value(start + 3),
-            value(start + 4),
-            value(start + 5),
-            value(start + 6),
-            value(start + 7),
-        ];
+        let mut acc: [N; 8] = std::array::from_fn(|i| value(start + i));
         let whole = n - (n % 8);
         let mut i = 8usize;
         while i < whole {
@@ -165,49 +157,9 @@ pub fn pairwise_sum_with_buffer(values: &[f64], buffer: usize) -> f64 {
 /// buffer length is a count of elements, not of bytes, so it is the same
 /// 8192 here as in double precision -- measured, not assumed.
 pub fn accumulation_sum_f32(values: &[f64]) -> f32 {
-    fn tree(values: &[f64]) -> f32 {
-        let n = values.len();
-        if n < 8 {
-            let mut total = 0.0f32;
-            for &value in values {
-                total += value as f32;
-            }
-            total
-        } else if n <= PAIRWISE_BLOCK {
-            let mut acc = [
-                values[0] as f32,
-                values[1] as f32,
-                values[2] as f32,
-                values[3] as f32,
-                values[4] as f32,
-                values[5] as f32,
-                values[6] as f32,
-                values[7] as f32,
-            ];
-            let whole = n - (n % 8);
-            let mut i = 8usize;
-            while i < whole {
-                for (k, slot) in acc.iter_mut().enumerate() {
-                    *slot += values[i + k] as f32;
-                }
-                i += 8;
-            }
-            let mut total =
-                ((acc[0] + acc[1]) + (acc[2] + acc[3])) + ((acc[4] + acc[5]) + (acc[6] + acc[7]));
-            while i < n {
-                total += values[i] as f32;
-                i += 1;
-            }
-            total
-        } else {
-            let mut half = n / 2;
-            half -= half % 8;
-            tree(&values[..half]) + tree(&values[half..])
-        }
-    }
     let mut total = 0.0f32;
     for block in values.chunks(REDUCTION_BUFFER) {
-        total += tree(block);
+        total += tree_sum_by(0, block.len(), &|index| block[index] as f32);
     }
     total
 }

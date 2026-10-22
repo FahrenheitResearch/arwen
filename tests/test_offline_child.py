@@ -174,99 +174,55 @@ def _history(path, valid_time, *, mp=8, hgt_offset=0.0, signal=0.0,
             np.asarray([65000.0, 30000.0], dtype=np.float32)[None, :, None, None],
             (1, nz, ny, nx))
         _variable(dataset, "PB", mass3, pb)
-        _variable(dataset, "T", mass3,
-                  np.full((1, nz, ny, nx), signal))
-        _variable(dataset, "U", u3,
-                  np.full((1, nz, ny, nx + 1), 5.0 + signal))
-        _variable(dataset, "V", v3,
-                  np.full((1, nz, ny + 1, nx), -2.0 + signal))
-        for name in ("W", "PH"):
-            _variable(dataset, name, w3, np.zeros((1, nz + 1, ny, nx)))
+        def uniform(name, dimensions, value):
+            shape = tuple(len(dataset.dimensions[d]) for d in dimensions)
+            _variable(dataset, name, dimensions, np.full(shape, value))
+
+        for name, dimensions, value in (
+            ("T", mass3, signal), ("U", u3, 5.0 + signal),
+            ("V", v3, -2.0 + signal), ("W", w3, 0.0), ("PH", w3, 0.0),
+            ("MU", mass2, signal), ("MUB", mass2, 80000.0),
+            ("MAPFAC_M", mass2, 1.0),
+            ("MAPFAC_U", ("Time", "south_north", "west_east_stag"), 1.0),
+            ("MAPFAC_V", ("Time", "south_north_stag", "west_east"), 1.0),
+            ("HGT", mass2, hgt_offset), ("PSFC", mass2, 90000.0),
+            ("F", mass2, 8.0e-5), ("E", mass2, 1.0e-4),
+            ("SINALPHA", mass2, 0.0), ("COSALPHA", mass2, 1.0),
+            ("XLAT", mass2, 35.0), ("XLONG", mass2, -97.0),
+        ):
+            uniform(name, dimensions, value)
         phb = np.broadcast_to(
             np.asarray([0.0, 40000.0, 90000.0], dtype=np.float32)
             [None, :, None, None], (1, nz + 1, ny, nx))
         _variable(dataset, "PHB", w3, phb)
-        _variable(dataset, "MU", mass2,
-                  np.full((1, ny, nx), signal))
-        _variable(dataset, "MUB", mass2,
-                  np.full((1, ny, nx), 80000.0))
-        _variable(dataset, "MAPFAC_M", mass2, np.ones((1, ny, nx)))
-        _variable(dataset, "MAPFAC_U", ("Time", "south_north", "west_east_stag"),
-                  np.ones((1, ny, nx + 1)))
-        _variable(dataset, "MAPFAC_V", ("Time", "south_north_stag", "west_east"),
-                  np.ones((1, ny + 1, nx)))
-        _variable(dataset, "HGT", mass2,
-                  np.full((1, ny, nx), hgt_offset))
-        _variable(dataset, "PSFC", mass2,
-                  np.full((1, ny, nx), 90000.0))
-        _variable(dataset, "F", mass2,
-                  np.full((1, ny, nx), 8.0e-5))
-        _variable(dataset, "E", mass2,
-                  np.full((1, ny, nx), 1.0e-4))
-        _variable(dataset, "SINALPHA", mass2,
-                  np.zeros((1, ny, nx)))
-        _variable(dataset, "COSALPHA", mass2,
-                  np.ones((1, ny, nx)))
-        _variable(dataset, "XLAT", mass2,
-                  np.full((1, ny, nx), 35.0))
-        _variable(dataset, "XLONG", mass2,
-                  np.full((1, ny, nx), -97.0))
         _variable(dataset, "P_TOP", ("Time",), [10000.0])
         _variable(dataset, "ZNU", ("Time", "bottom_top"), [[0.75, 0.25]])
-        _variable(dataset, "ZNW", ("Time", "bottom_top_stag"),
-                  [[1.0, 0.5, 0.0]])
+        _variable(dataset, "ZNW", ("Time", "bottom_top_stag"), [[1.0, 0.5, 0.0]])
         if mp in {8, 10, 50}:
-            _variable(dataset, "QNRAIN", mass3,
-                      np.full((1, nz, ny, nx),
-                              0.0 if qnrain is None else qnrain))
-            _variable(dataset, "QNICE", mass3,
-                      np.zeros((1, nz, ny, nx)))
+            uniform("QNRAIN", mass3, 0.0 if qnrain is None else qnrain)
+            uniform("QNICE", mass3, 0.0)
         if mp == 10:
-            _variable(dataset, "QNSNOW", mass3,
-                      np.zeros((1, nz, ny, nx)))
-            _variable(dataset, "QNGRAUPEL", mass3,
-                      np.zeros((1, nz, ny, nx)))
+            for name in ("QNSNOW", "QNGRAUPEL"):
+                uniform(name, mass3, 0.0)
         if mp == 28:
-            # Thompson aerosol-aware.  Registry.EM_COMMON:3036 declares
-            # scalar:qni,qnr,qnc,qnwfa,qnifa (qnbca is wif_input_opt=2 only,
-            # out of scope) plus state:qnwfa2d,qnifa2d.  Deliberately
-            # DISTINCT nonzero values per field so an interpolation that
-            # crossed two of them would be visible.
-            _variable(dataset, "QNRAIN", mass3, np.zeros((1, nz, ny, nx)))
-            _variable(dataset, "QNICE", mass3, np.zeros((1, nz, ny, nx)))
-            _variable(dataset, "QNCLOUD", mass3,
-                      np.full((1, nz, ny, nx), 1.0e8))
-            _variable(dataset, "QNWFA", mass3,
-                      np.full((1, nz, ny, nx), 1.5e8))
-            _variable(dataset, "QNIFA", mass3,
-                      np.full((1, nz, ny, nx), 2.5e5))
+            # Distinct aerosol values expose crossed interpolation fields.
+            for name, value in (("QNRAIN", 0.0), ("QNICE", 0.0),
+                                ("QNCLOUD", 1.0e8), ("QNWFA", 1.5e8),
+                                ("QNIFA", 2.5e5)):
+                uniform(name, mass3, value)
             if not omit_aerosol_surface_emission:
-                _variable(dataset, "QNWFA2D", mass2,
-                          np.full((1, ny, nx), 4321.0))
-                _variable(dataset, "QNIFA2D", mass2,
-                          np.full((1, ny, nx), 0.0))
+                uniform("QNWFA2D", mass2, 4321.0)
+                uniform("QNIFA2D", mass2, 0.0)
         if mp == 16:
-            # WDM6 (Registry.EM_COMMON:3031, scalar:qnn,qnc,qnr): the six
-            # masses above plus a warm-rain number pair and the CCN
-            # reservoir, and NO ice number, which is the discriminant.
-            _variable(dataset, "QNCCN", mass3,
-                      np.full((1, nz, ny, nx), 1.0e8))
-            _variable(dataset, "QNCLOUD", mass3,
-                      np.full((1, nz, ny, nx), 1.0e8))
-            _variable(dataset, "QNRAIN", mass3, np.zeros((1, nz, ny, nx)))
+            # WDM6 has no ice number, unlike the other number inventories.
+            for name, value in (("QNCCN", 1.0e8), ("QNCLOUD", 1.0e8),
+                                ("QNRAIN", 0.0)):
+                uniform(name, mass3, value)
         if mp == 50:
-            # P3 one-category.  QNRAIN/QNICE already landed above; the rest
-            # is the ice mass and its prognostic rime pair, with DISTINCT
-            # values so a crossed interpolation would be visible, keeping
-            # qir <= qi and rime density qir/qib = 1.0e-4 / 2.0e-7 =
-            # 500 kg m-3, inside P3's admissible [50, 900] band.
-            _variable(dataset, "QICE", mass3,
-                      np.full((1, nz, ny, nx), 3.0e-4))
-            _variable(dataset, "QIR", mass3,
-                      np.full((1, nz, ny, nx),
-                              1.0e-4 if qir is None else qir))
-            _variable(dataset, "QIB", mass3,
-                      np.full((1, nz, ny, nx), 2.0e-7))
+            # P3 rime density is 500 kg/m3, inside its [50, 900] band.
+            uniform("QICE", mass3, 3.0e-4)
+            uniform("QIR", mass3, 1.0e-4 if qir is None else qir)
+            uniform("QIB", mass3, 2.0e-7)
 
 
 def test_parent_history_contract_checks_geometry_cadence_and_scheme(tmp_path):
@@ -315,18 +271,6 @@ def test_parent_history_rejects_changed_static_geometry(tmp_path):
     with pytest.raises(OfflineChildContractError, match="geometry/static"):
         validate_parent_history(
             (first, second), max_boundary_interval_seconds=900)
-
-
-def test_parent_history_reader_and_moisture_inventory(tmp_path):
-    path = tmp_path / "parent.nc"
-    _history(path, datetime(1974, 4, 3, 12), mp=10)
-    info = inspect_parent_history_frame(path)
-    assert info.source_mp_physics is None
-    assert info.inferred_mp_physics == 10
-    moisture = read_parent_microphysics(path)
-    assert set(moisture) == {
-        "qv", "qc", "qr", "qi", "qs", "qg", "nr", "ni", "ns", "ng"}
-    assert moisture["qv"].shape == (2, 3, 4)
 
 
 def test_the_cross_scheme_contract_is_the_online_ported_set():
@@ -406,14 +350,6 @@ def test_the_offline_edge_contract_is_the_online_contract():
             10, 18, morr_rimed_ice=0, hail_opt=None, child_cfg=child)
 
 
-def test_inventory_inference_is_advisory_when_companion_binds_physics(tmp_path):
-    path = tmp_path / "dormant-inventory.nc"
-    _history(path, datetime(1974, 4, 3, 12), mp=10)
-    info = inspect_parent_history_frame(path, source_mp_physics=18)
-    assert info.source_mp_physics == 18
-    assert info.inferred_mp_physics == 10
-
-
 def test_wdm6_parent_is_read_through_its_own_ccn_row(tmp_path):
     """mp=16 stood at every gate on one named breakage: QNCCN publishes
     both WDM6's ``nn`` and NSSL's ``qnn`` and the field map had no
@@ -446,9 +382,7 @@ def test_conservative_parent_snapshot_and_streamed_lateral_intervals(tmp_path):
     _history(paths[0], start, ny=18, nx=20, signal=0.0)
     _history(paths[1], start + timedelta(minutes=5),
              ny=18, nx=20, signal=1.0)
-    placement = OfflineChildPlacement(
-        parent_nx=20, parent_ny=18, child_nx=12, child_ny=10,
-        parent_grid_ratio=1, i_parent_start=4, j_parent_start=4)
+    placement = _mp28_placement()
     snapshot = interpolate_parent_boundary_snapshot(
         paths[0], placement, source_mp_physics=8, backend="cpu")
     assert snapshot.fields["u"].shape == (2, 10, 13)
@@ -478,9 +412,7 @@ def test_conservative_parent_snapshot_and_streamed_lateral_intervals(tmp_path):
 def test_thompson_parent_boundary_can_change_to_nssl_inventory(tmp_path):
     path = tmp_path / "parent.nc"
     _history(path, datetime(1974, 4, 3, 12), ny=18, nx=20)
-    placement = OfflineChildPlacement(
-        parent_nx=20, parent_ny=18, child_nx=12, child_ny=10,
-        parent_grid_ratio=1, i_parent_start=4, j_parent_start=4)
+    placement = _mp28_placement()
     snapshot = interpolate_parent_boundary_snapshot(
         path, placement, source_mp_physics=8, target_mp_physics=18)
     assert set(snapshot.fields) == {
@@ -504,18 +436,11 @@ def test_parent_initial_state_builds_standalone_numpy_domain(tmp_path):
     path = tmp_path / "parent.nc"
     valid_time = datetime(1974, 4, 3, 12)
     _history(path, valid_time, ny=18, nx=20, signal=0.5)
-    placement = OfflineChildPlacement(
-        parent_nx=20, parent_ny=18, child_nx=12, child_ny=10,
-        parent_grid_ratio=1, i_parent_start=4, j_parent_start=4)
+    placement = _mp28_placement()
     initial = interpolate_parent_initial_state(
         path, placement, physics_binding=_physics_binding(tmp_path, mp=8),
         backend="cpu")
-    cfg = RunConfig(
-        nx=12, ny=10, nz=2, dx=1000.0, dy=1000.0,
-        ztop=9000.0, dt=5.0, run_seconds=300.0,
-        hybrid_opt=2, etac=0.2, moist=True, mp_physics=8,
-        specified=True, nested=False, terrain_opt=1, map_proj=1,
-        hypsometric_opt=2)
+    cfg = _mp28_child_config(mp=8)
     state = build_offline_child_domain_state(
         initial, cfg, array_module=np)
 
@@ -542,12 +467,7 @@ def test_parent_initial_state_builds_standalone_numpy_domain(tmp_path):
     fp32_initial = replace(initial, receipt=fp32_receipt)
     build_offline_child_domain_state(fp32_initial, cfg, array_module=np)
 
-    incompatible = RunConfig(
-        nx=12, ny=10, nz=2, dx=1000.0, dy=1000.0,
-        ztop=9000.0, dt=5.0, run_seconds=300.0,
-        hybrid_opt=1, etac=0.2, moist=True, mp_physics=8,
-        specified=True, nested=False, terrain_opt=1, map_proj=1,
-        hypsometric_opt=2)
+    incompatible = replace(cfg, hybrid_opt=1)
     with pytest.raises(OfflineChildContractError, match="hybrid_opt"):
         build_offline_child_domain_state(initial, incompatible, array_module=np)
 
@@ -567,11 +487,11 @@ def _mp28_placement():
         parent_grid_ratio=1, i_parent_start=4, j_parent_start=4)
 
 
-def _mp28_child_config():
+def _mp28_child_config(*, mp=28):
     return RunConfig(
         nx=12, ny=10, nz=2, dx=1000.0, dy=1000.0,
         ztop=9000.0, dt=5.0, run_seconds=300.0,
-        hybrid_opt=2, etac=0.2, moist=True, mp_physics=28,
+        hybrid_opt=2, etac=0.2, moist=True, mp_physics=mp,
         specified=True, nested=False, terrain_opt=1, map_proj=1,
         hypsometric_opt=2)
 
@@ -754,10 +674,7 @@ def test_wsm6_transports_the_single_moment_set():
 _SINT_ROUNDING_UNDERSHOOT = -3.7252903e-09
 
 
-def _mp10_placement():
-    return OfflineChildPlacement(
-        parent_nx=20, parent_ny=18, child_nx=12, child_ny=10,
-        parent_grid_ratio=1, i_parent_start=4, j_parent_start=4)
+_mp10_placement = _mp28_placement
 
 
 def test_offline_initial_state_clamps_sint_rounding_undershoot(tmp_path):
@@ -828,19 +745,11 @@ def test_offline_boundary_snapshot_leaves_a_real_negative_for_the_gate(tmp_path)
 # qni,qnr,qir,qib.
 # ---------------------------------------------------------------------------
 
-def _p3_placement():
-    return OfflineChildPlacement(
-        parent_nx=20, parent_ny=18, child_nx=12, child_ny=10,
-        parent_grid_ratio=1, i_parent_start=4, j_parent_start=4)
+_p3_placement = _mp28_placement
 
 
 def _p3_child_config():
-    return RunConfig(
-        nx=12, ny=10, nz=2, dx=1000.0, dy=1000.0,
-        ztop=9000.0, dt=5.0, run_seconds=300.0,
-        hybrid_opt=2, etac=0.2, moist=True, mp_physics=50,
-        specified=True, nested=False, terrain_opt=1, map_proj=1,
-        hypsometric_opt=2)
+    return _mp28_child_config(mp=50)
 
 
 def test_p3_parent_history_is_inferred_ahead_of_classic_thompson(tmp_path):

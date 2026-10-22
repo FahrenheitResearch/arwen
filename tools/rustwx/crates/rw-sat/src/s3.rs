@@ -10,7 +10,6 @@
 //! GETs for objects, TLS through rustls + rustls-rustcrypto (pure Rust).
 
 use std::error::Error;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -18,6 +17,7 @@ use chrono::{DateTime, Datelike, Timelike, Utc};
 
 use rw_store::atomic::atomic_write_bytes;
 
+use crate::boxed_error;
 use crate::goes::{GoesSatellite, parse_goes_abi_filename};
 
 /// One listed S3 object.
@@ -465,10 +465,6 @@ pub fn build_agent() -> ureq::Agent {
         )
         .build()
         .new_agent()
-}
-
-fn boxed_error(message: impl Into<String>) -> Box<dyn Error> {
-    Box::new(io::Error::new(io::ErrorKind::InvalidData, message.into()))
 }
 
 #[cfg(test)]

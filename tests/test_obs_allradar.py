@@ -45,18 +45,9 @@ from gpuwm.obs.allradar import (
 from gpuwm.obs.sweeps import Moment, RadarSite, RadarVolume, Sweep
 from gpuwm.obs.superob import SuperobParams, superob_volume
 from gpuwm.obs.target_grid import TargetGrid
-from gpuwm.static.lambert import LambertGrid
+from test_obs_radar_grid import _grid
 
 REF_LAT, REF_LON = 35.3331, -97.2778
-
-
-def _grid(nx: int = 41, ny: int = 41, dx: float = 2000.0, nz: int = 10,
-          top_m: float = 10000.0) -> TargetGrid:
-    projection = LambertGrid(
-        ref_lat=REF_LAT, ref_lon=REF_LON, truelat1=33.0, truelat2=37.0,
-        stand_lon=REF_LON, dx=dx, dy=dx, e_we=nx + 1, e_sn=ny + 1)
-    return TargetGrid.from_projection(
-        projection, z_w=np.linspace(0.0, top_m, nz + 1), name="analytic")
 
 
 def _volume_at(grid: TargetGrid, *, site_id: str, j: int, i: int,

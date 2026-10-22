@@ -39,6 +39,7 @@ from typing import Mapping
 import numpy as np
 
 from gpuwm.core.urban_bem_layout import METADATA
+from gpuwm.core.urban_state import BEP_SPEC, BEM_SPEC
 
 # module_sf_bep_bem.F:22-53, the BEP_BEM module parameters.
 NDM = 2
@@ -60,26 +61,7 @@ DIMENSIONS = MappingProxyType({
 
 #: The option-3 arrays (Registry.EM_COMMON), in infra's row convention:
 #: layers 0 = 2-D, a string names an ``urban_map_*`` size or ``ndm``.
-STATE_SPEC = MappingProxyType({
-    "tsk_rural_bep": ("f4", 0),
-    "trb_urb4d": ("f4", "zrd"), "tw1_urb4d": ("f4", "zwd"),
-    "tw2_urb4d": ("f4", "zwd"), "tgb_urb4d": ("f4", "gd"),
-    "sfw1_urb3d": ("f4", "zd"), "sfw2_urb3d": ("f4", "zd"),
-    "sfr_urb3d": ("f4", "zdf"), "sfg_urb3d": ("f4", "ndm"),
-    "tlev_urb3d": ("f4", "bd"), "qlev_urb3d": ("f4", "bd"),
-    "tw1lev_urb3d": ("f4", "wd"), "tw2lev_urb3d": ("f4", "wd"),
-    "tglev_urb3d": ("f4", "gbd"), "tflev_urb3d": ("f4", "fbd"),
-    **{name: ("f4", 0) for name in (
-        "sf_ac_urb3d", "lf_ac_urb3d", "cm_ac_urb3d", "sfvent_urb3d",
-        "lfvent_urb3d", "ep_pv_urb3d", "qgr_urb3d", "tgr_urb3d",
-        "draingr_urb3d")},
-    "sfwin1_urb3d": ("f4", "wd"), "sfwin2_urb3d": ("f4", "wd"),
-    "t_pv_urb3d": ("f4", "zdf"), "trv_urb4d": ("f4", "zgrd"),
-    "qr_urb4d": ("f4", "zgrd"), "drain_urb4d": ("f4", "zdf"),
-    "sfrv_urb3d": ("f4", "zdf"), "lfrv_urb3d": ("f4", "zdf"),
-    "dgr_urb3d": ("f4", "zdf"), "lfr_urb3d": ("f4", "zdf"),
-    "dg_urb3d": ("f4", "ndm"), "lfg_urb3d": ("f4", "ndm"),
-})
+STATE_SPEC = MappingProxyType({**BEP_SPEC, **BEM_SPEC})
 
 # ---------------------------------------------------------------------------
 # the generated layouts

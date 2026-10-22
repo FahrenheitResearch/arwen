@@ -45,8 +45,8 @@ use std::process::ExitCode;
 use chrono::{DateTime, Duration, NaiveDate, TimeZone, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 
-use rw_nexrad::s3::{parse_http_date, parse_time};
-use rw_obs::net::agent;
+use rw_nexrad::s3::parse_time;
+use rw_obs::net::{agent, get_with_last_modified};
 use rw_obs::seam::seam_time;
 use rw_obs::table::{
     wind_components, RowProvenance, TableRow, TableWriter, ERROR_DEWPOINT_BUOY_K,
@@ -110,29 +110,14 @@ verify options
 
 fn main() -> ExitCode {
     let _ = std::hint::black_box(GPUWM_BRIDGE_SOURCE_REV_STAMP);
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    match run(&args) {
-        Ok(output) => {
-            print!("{output}");
-            ExitCode::SUCCESS
-        }
-        Err(error) => {
-            eprintln!("rw_ndbc: {error}");
-            ExitCode::FAILURE
-        }
-    }
+    rw_obs::cli::main("rw_ndbc", run)
 }
 
 fn run(args: &[String]) -> Result<String, Box<dyn Error>> {
-    let Some(first) = args.first() else {
-        return Ok(USAGE.to_string());
-    };
-    match first.as_str() {
-        "--help" | "-h" | "help" => return Ok(USAGE.to_string()),
-        "--version" | "-V" => return Ok(format!("rw_ndbc {VERSION}\n")),
-        "--abi" => return Ok(format!("{ABI_MARKER}\n")),
-        _ => {}
+    if let Some(output) = rw_obs::cli::information(args, "rw_ndbc", VERSION, USAGE, ABI_MARKER) {
+        return Ok(output);
     }
+    let first = &args[0];
     let options = Options::parse(&args[1..])?;
     match first.as_str() {
         "fetch" => cmd_fetch(&options),
@@ -164,12 +149,7 @@ impl Options {
         let mut index = 0;
         while index < args.len() {
             let flag = args[index].as_str();
-            let mut value = || -> Result<String, Box<dyn Error>> {
-                index += 1;
-                args.get(index)
-                    .cloned()
-                    .ok_or_else(|| err(format!("{flag} needs a value")))
-            };
+            let mut value = || rw_obs::cli::value(args, &mut index, flag);
             match flag {
                 "--archive" => options.archive = Some(value()?),
                 "--out" => options.out = Some(PathBuf::from(value()?)),
@@ -221,12 +201,7 @@ impl Options {
     }
 
     fn window(&self) -> Result<(DateTime<Utc>, DateTime<Utc>), Box<dyn Error>> {
-        let start = parse_time(self.start.as_deref().ok_or_else(|| err("--start is required"))?)?;
-        let end = parse_time(self.end.as_deref().ok_or_else(|| err("--end is required"))?)?;
-        if end < start {
-            return Err(err(format!("--end {} precedes --start {}", seam_time(end), seam_time(start))));
-        }
-        Ok((start, end))
+        rw_obs::cli::window(self.start.as_deref(), self.end.as_deref())
     }
 }
 
@@ -259,31 +234,7 @@ struct FetchRecord {
     wall_s: f64,
 }
 
-fn get_with_last_modified(
-    client: &ureq::Agent,
-    url: &str,
-) -> Result<(Vec<u8>, Option<DateTime<Utc>>), Box<dyn Error>> {
-    let mut response = client.get(url).call().map_err(|e| err(format!("GET {url} failed: {e}")))?;
-    let status = response.status().as_u16();
-    if !(200..300).contains(&status) {
-        return Err(err(format!("GET {url} answered HTTP {status}")));
-    }
-    let last_modified = response
-        .headers()
-        .get("last-modified")
-        .and_then(|v| v.to_str().ok())
-        .and_then(parse_http_date);
-    let bytes = response
-        .body_mut()
-        .with_config()
-        .limit(rw_obs::net::MAX_RESPONSE_BYTES)
-        .read_to_vec()
-        .map_err(|e| err(format!("reading {url} failed: {e}")))?;
-    if bytes.is_empty() {
-        return Err(err(format!("{url} answered with an empty body")));
-    }
-    Ok((bytes, last_modified))
-}
+
 
 fn fetch_one(client: &ureq::Agent, url: &str, path: &Path) -> Result<FetchedFile, Box<dyn Error>> {
     let t = std::time::Instant::now();
@@ -852,38 +803,9 @@ fn cmd_table(options: &Options) -> Result<String, Box<dyn Error>> {
 }
 
 fn cmd_verify(options: &Options) -> Result<String, Box<dyn Error>> {
-    let file = options.file.as_deref().ok_or_else(|| err("--file is required"))?;
-    let record_path = options.record.as_deref().ok_or_else(|| err("--record is required"))?;
-    let record: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(record_path).map_err(|e| err(format!("cannot read {}: {e}", record_path.display())))?,
+    rw_obs::table::verify(
+        options.file.as_deref(), options.record.as_deref(), TABLE_RECORD_SCHEMA, VERIFY_SCHEMA,
     )
-    .map_err(|e| err(format!("{} is not JSON: {e}", record_path.display())))?;
-    if record.get("schema").and_then(|s| s.as_str()) != Some(TABLE_RECORD_SCHEMA) {
-        return Err(err(format!("{} does not declare {TABLE_RECORD_SCHEMA}", record_path.display())));
-    }
-    let bytes = std::fs::read(file).map_err(|e| err(format!("cannot read {}: {e}", file.display())))?;
-    let actual = hex_sha256(&bytes);
-    let stated = record.get("sha256").and_then(|s| s.as_str()).unwrap_or("").to_string();
-    #[derive(Serialize)]
-    struct Record {
-        schema: &'static str,
-        status: &'static str,
-        path: String,
-        stated_sha256: String,
-        actual_sha256: String,
-    }
-    let ok = actual == stated;
-    let text = format!(
-        "{}\n",
-        serde_json::to_string_pretty(&Record {
-            schema: VERIFY_SCHEMA,
-            status: if ok { "VERIFIED" } else { "MISMATCH" },
-            path: rw_obs::absolute_uri(file),
-            stated_sha256: stated,
-            actual_sha256: actual,
-        })?
-    );
-    if ok { Ok(text) } else { Err(err(format!("table digest mismatch:\n{text}"))) }
 }
 
 #[cfg(test)]

@@ -26,6 +26,8 @@ pub fn first_surface_level(product: &grib_core::grib2::ProductDefinition) -> f64
 
 /// Decode the encoded regular axis without a host-language transform.
 /// The increment remains authoritative, including equal cyclic endpoints.
+/// # Safety
+/// `output` points to `count` aligned, writable f64 elements until return.
 #[no_mangle]
 pub unsafe extern "C" fn gpuwm_grib2_axis_f64(
     first: f64, last: f64, increment: f64, count: usize,
@@ -79,7 +81,7 @@ fn object(items: Vec<(&str, Value)>) -> Value {
     Value::Object(items.into_iter().map(|(k, v)| (k.into(), v)).collect())
 }
 fn optional(n: Option<u16>) -> Value {
-    n.map_or(Value::Null, |n| num(n))
+    n.map_or(Value::Null, num)
 }
 fn nums(n: &[f64]) -> Value {
     Value::Array(n.iter().copied().map(num).collect())
@@ -169,12 +171,12 @@ impl Selector {
             && self.level_type == p.level_type
             && self
                 .constituent
-                .map_or(true, |v| p.constituent_type == Some(v))
-            && self.aerosol.map_or(true, |v| p.aerosol_type == Some(v))
+                .is_none_or(|v| p.constituent_type == Some(v))
+            && self.aerosol.is_none_or(|v| p.aerosol_type == Some(v))
             && self
                 .levels
                 .as_ref()
-                .map_or(true, |l| l.contains(&first_surface_level(p)))
+                .is_none_or(|l| l.contains(&first_surface_level(p)))
     }
 }
 struct Identity {
@@ -728,8 +730,8 @@ mod tests {
         assert_eq!(rows[1].get("pdt").unwrap(), &num(0u16));
         let data = fs::read(out.join(rows[0].get("file").unwrap().string().unwrap())).unwrap();
         let f: Vec<_> = data
-            .chunks_exact(4)
-            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+            .as_chunks::<4>().0.iter()
+            .map(|b| f32::from_le_bytes(*b))
             .collect();
         assert_eq!(f, vec![30., 31., 32., 33., 10., 11., 12., 13.]);
         assert_eq!(
@@ -984,8 +986,8 @@ mod tests {
         assert_eq!(grid.get("scan_mode").unwrap(), &num(64u8));
         let data = fs::read(out.join(row.get("file").unwrap().string().unwrap())).unwrap();
         let f: Vec<_> = data
-            .chunks_exact(4)
-            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+            .as_chunks::<4>().0.iter()
+            .map(|b| f32::from_le_bytes(*b))
             .collect();
         assert_eq!(f, vec![1., 2., 3., 4., 5., 6., 7., 8.]);
     }

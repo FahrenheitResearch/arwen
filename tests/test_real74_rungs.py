@@ -499,7 +499,7 @@ def test_updraft_percentiles_reject_partially_nonfinite_candidate(monkeypatch):
     assert "non-finite" in evidence["error"]
 
 
-def _score_f27_fss20(monkeypatch, tmp_path, *, domain, value):
+def _statistical_frames(monkeypatch, tmp_path):
     candidate, reference = tmp_path / "candidate", tmp_path / "reference"
     candidate.write_bytes(b"candidate")
     reference.write_bytes(b"reference")
@@ -513,6 +513,11 @@ def _score_f27_fss20(monkeypatch, tmp_path, *, domain, value):
     }
     monkeypatch.setattr(
         real74_d02.weather_metrics, "wrf_diagnostics", lambda _path: diagnostics)
+    return candidate, reference
+
+
+def _score_f27_fss20(monkeypatch, tmp_path, *, domain, value):
+    candidate, reference = _statistical_frames(monkeypatch, tmp_path)
     monkeypatch.setattr(
         real74_d02, "_composite_reflectivity",
         lambda _path: np.full((12, 12), 50.0))
@@ -625,19 +630,7 @@ def test_f24_degenerate_fss_rows_are_held_and_never_read_as_passes(
     not reach ``passed: true``.  With every leg held nothing was scored at
     all, so the compound row cannot pass either.
     """
-    candidate, reference = tmp_path / "candidate", tmp_path / "reference"
-    candidate.write_bytes(b"candidate")
-    reference.write_bytes(b"reference")
-    base = np.arange(144, dtype=np.float64).reshape(12, 12)
-    diagnostics = {
-        "mslp": base,
-        "levels": {
-            500: {"temperature": base},
-            850: {"temperature": base},
-        },
-    }
-    monkeypatch.setattr(
-        real74_d02.weather_metrics, "wrf_diagnostics", lambda _path: diagnostics)
+    candidate, reference = _statistical_frames(monkeypatch, tmp_path)
     monkeypatch.setattr(
         real74_d02, "_composite_reflectivity",
         lambda path: np.full(
@@ -676,19 +669,7 @@ def test_f24_candidate_without_convection_fails_a_convective_reference(
     everywhere.  Degeneracy is now one-sided -- only a reference without
     events can make a row meteorologically meaningless.
     """
-    candidate, reference = tmp_path / "candidate", tmp_path / "reference"
-    candidate.write_bytes(b"candidate")
-    reference.write_bytes(b"reference")
-    base = np.arange(144, dtype=np.float64).reshape(12, 12)
-    diagnostics = {
-        "mslp": base,
-        "levels": {
-            500: {"temperature": base},
-            850: {"temperature": base},
-        },
-    }
-    monkeypatch.setattr(
-        real74_d02.weather_metrics, "wrf_diagnostics", lambda _path: diagnostics)
+    candidate, reference = _statistical_frames(monkeypatch, tmp_path)
     monkeypatch.setattr(
         real74_d02, "_composite_reflectivity",
         lambda path: np.full(
@@ -711,19 +692,7 @@ def test_f24_candidate_without_convection_fails_a_convective_reference(
 
 
 def test_f24_identically_empty_fss_keeps_registered_value(monkeypatch, tmp_path):
-    candidate, reference = tmp_path / "candidate", tmp_path / "reference"
-    candidate.write_bytes(b"candidate")
-    reference.write_bytes(b"reference")
-    base = np.arange(144, dtype=np.float64).reshape(12, 12)
-    diagnostics = {
-        "mslp": base,
-        "levels": {
-            500: {"temperature": base},
-            850: {"temperature": base},
-        },
-    }
-    monkeypatch.setattr(
-        real74_d02.weather_metrics, "wrf_diagnostics", lambda _path: diagnostics)
+    candidate, reference = _statistical_frames(monkeypatch, tmp_path)
     monkeypatch.setattr(
         real74_d02, "_composite_reflectivity",
         lambda _path: np.zeros((12, 12), dtype=np.float64))
@@ -743,19 +712,7 @@ def test_f24_identically_empty_fss_keeps_registered_value(monkeypatch, tmp_path)
 
 
 def test_f24_degenerate_formula_failure_records_null_fss(monkeypatch, tmp_path):
-    candidate, reference = tmp_path / "candidate", tmp_path / "reference"
-    candidate.write_bytes(b"candidate")
-    reference.write_bytes(b"reference")
-    base = np.arange(144, dtype=np.float64).reshape(12, 12)
-    diagnostics = {
-        "mslp": base,
-        "levels": {
-            500: {"temperature": base},
-            850: {"temperature": base},
-        },
-    }
-    monkeypatch.setattr(
-        real74_d02.weather_metrics, "wrf_diagnostics", lambda _path: diagnostics)
+    candidate, reference = _statistical_frames(monkeypatch, tmp_path)
     monkeypatch.setattr(
         real74_d02, "_composite_reflectivity",
         lambda _path: np.zeros((12, 12), dtype=np.float64))
@@ -776,19 +733,7 @@ def test_f24_degenerate_formula_failure_records_null_fss(monkeypatch, tmp_path):
 
 
 def test_f24_empty_fss_interior_fails_loudly(monkeypatch, tmp_path):
-    candidate, reference = tmp_path / "candidate", tmp_path / "reference"
-    candidate.write_bytes(b"candidate")
-    reference.write_bytes(b"reference")
-    base = np.arange(144, dtype=np.float64).reshape(12, 12)
-    diagnostics = {
-        "mslp": base,
-        "levels": {
-            500: {"temperature": base},
-            850: {"temperature": base},
-        },
-    }
-    monkeypatch.setattr(
-        real74_d02.weather_metrics, "wrf_diagnostics", lambda _path: diagnostics)
+    candidate, reference = _statistical_frames(monkeypatch, tmp_path)
     monkeypatch.setattr(
         real74_d02, "_composite_reflectivity",
         lambda _path: np.empty((0, 0), dtype=np.float64))

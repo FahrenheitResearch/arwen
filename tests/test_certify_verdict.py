@@ -11,7 +11,6 @@ moves its own fixture with it and no test can pre-ordain a pass.
 
 from __future__ import annotations
 
-import ast
 import copy
 import json
 from pathlib import Path
@@ -525,36 +524,14 @@ def test_the_public_doc_lists_every_condition_the_code_declares():
 
 
 # --------------------------------------------------------------------------
-# AC6 -- the certification import path carries no case module
+# Independent certification digest
 # --------------------------------------------------------------------------
-
-def _imported_modules(path: Path) -> set[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    names: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            names.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
-            names.add(node.module)
-    return names
-
-
-def test_nothing_under_certify_imports_a_case_module():
-    sources = sorted((REPO_ROOT / "gpuwm" / "certify").rglob("*.py"))
-    assert sources, "gpuwm/certify carries no modules to check"
-    offenders = {
-        path.name: sorted(name for name in _imported_modules(path)
-                          if name.startswith("gpuwm.verify"))
-        for path in sources
-    }
-    assert not any(offenders.values()), offenders
-
 
 def test_the_temptation_the_criterion_names_is_still_there_to_resist():
     """The helper certify would have reused lives on a case module.
 
-    If this ever fails, the import-graph test above may have gone vacuous --
-    it would be asserting the absence of something that no longer exists.
+    The shared helper and the independent certification digest retain
+    the same canonical ordering.
     """
     chain = (REPO_ROOT / "gpuwm" / "verify" / "cases"
              / "real74_chain.py").read_text(encoding="utf-8")

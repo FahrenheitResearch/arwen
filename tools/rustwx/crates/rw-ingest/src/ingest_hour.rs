@@ -2514,9 +2514,11 @@ mod tests {
         // Pinned inventory counts (2026-06 full HRRR plan): 42 of the 65
         // planned 2D planes carry production styling; the 22 fallbacks are
         // the exact set asserted above.  (43/22, not 42/23: `orography`
-        // moved across when the terrain product was added.)
+        // moved across when the terrain product was added; 43/25 since
+        // `925mb_height_winds` added the 925 hPa height and u/v planes,
+        // which are contour/barb inputs like the other isobaric levels.)
         assert_eq!(mapped.len(), 43, "mapped 2D plane count");
-        assert_eq!(fallback.len(), 22, "fallback 2D plane count");
+        assert_eq!(fallback.len(), 25, "fallback 2D plane count");
 
         // Derived + heavy store grids resolve through their slug markers.
         for slug in store_derived_recipe_slugs()

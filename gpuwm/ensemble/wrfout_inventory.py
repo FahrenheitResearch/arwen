@@ -37,9 +37,9 @@ run produced from a file of the same size in the same place.
 
 from __future__ import annotations
 
-import hashlib
 import re
 from pathlib import Path, PureWindowsPath
+from gpuwm.ensemble.physical_fields import sha256_of_file as file_sha256
 
 #: Versioned label recorded in every inventory entry.
 WRFOUT_INVENTORY_CONTRACT = "gpuwm-ensemble-wrfout-inventory.v1"
@@ -63,30 +63,6 @@ _DOMAIN_PATTERN = re.compile(r"\Ad[0-9]{2}\Z")
 
 #: Manifest key the inventory is recorded under, per member.
 WRFOUT_INVENTORY_KEY = "wrfout_inventory"
-
-#: Read size for the content hash.  1 MiB: large enough that the syscall
-#: count is irrelevant beside the disk, small enough that a 4 GB history
-#: file is never resident.
-_HASH_CHUNK_BYTES = 1 << 20
-
-
-def file_sha256(path: str | Path) -> str:
-    """SHA-256 of a file's bytes, read in chunks.
-
-    Streamed rather than ``read()``: a wrfout is routinely larger than
-    the memory a render host has spare, and a provenance helper that can
-    exhaust it is a provenance helper nobody leaves enabled.
-    """
-
-    digest = hashlib.sha256()
-    with open(path, "rb") as stream:
-        while True:
-            chunk = stream.read(_HASH_CHUNK_BYTES)
-            if not chunk:
-                break
-            digest.update(chunk)
-    return digest.hexdigest()
-
 
 def canonical_relative_path(path: str | Path,
                             member_dir: str | Path) -> str:

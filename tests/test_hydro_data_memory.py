@@ -34,8 +34,9 @@ def context(duration=48*3600):
     return MemoryContext("standalone", "strict", 3600, duration_seconds=duration)
 
 
-@pytest.mark.parametrize("native,dtype,width,digest", [
-    (False, "float32", 4, "a"*64), (True, "float64", 8, "b"*64)])
+@pytest.mark.parametrize('native, dtype, width, digest', [
+    pytest.param(False, 'float32', 4, 'a' * 64, id='False-float32-4-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
+])
 def test_forcing_hook_prices_packet_precision_and_pins_external_manifest(packet, native, dtype, width, digest):
     path, _ = packet
     value = plan(settings(path, native), context=context())

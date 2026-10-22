@@ -203,7 +203,10 @@ def test_a_written_record_reads_back_with_its_digests_and_kept_arrays(tmp_path):
     assert back.raw_steps == (1,)
     assert np.array_equal(back.raw(1)["U"], frames[1]["U"])
     assert back.raw(2) is None
-    assert compare_runs(back, record).matched
+    result = compare_runs(back, record)
+    assert result.matched and result.first_step is None
+    assert result.steps_compared == (0, 1, 2, 3)
+    assert result.summary() == "match"
 
 
 def test_frames_every_two_steps_map_to_even_steps(tmp_path):

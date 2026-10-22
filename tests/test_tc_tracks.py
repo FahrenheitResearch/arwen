@@ -124,3 +124,24 @@ def test_verification_does_not_replace_missing_storm_with_other_basin():
     assert result['common_valid_times'][0]['track_id'] is None
     assert result['common_valid_times'][0]['centre_distance_km'] is None
     assert track['fixes'] == [foreign]
+
+
+def test_history_export_vocabulary_is_shared_with_roster_products():
+    from gpuwm.tc_tracks import history_export_arguments
+    args = history_export_arguments('d07', 4)
+    assert args[:2] == ['--domains', 'd07']
+    assert args[args.index('--threads')+1] == '4'
+    assert 'mean_sea_level_pressure' in args[args.index('--variables')+1].split(',')
+
+
+@pytest.mark.parametrize('hours,minimum,provisional', [(6, 21600, True), (24, 86400, False), (72, 86400, False)])
+def test_tempest_short_forecast_requires_full_available_record(hours, minimum, provisional):
+    from datetime import timedelta
+    start = tc.utc('2024-09-24T12:00:00Z')
+    frames = [dict(valid=start.isoformat()), dict(valid=(start + timedelta(hours=hours)).isoformat())]
+    config = json.loads(tc.TABLE.read_text())['backends']['tempestextremes']
+    duration = tc.tempest_duration(frames, config)
+    assert duration['effective_minimum_seconds'] == minimum
+    assert duration['configured_minimum_seconds'] == 86400
+    assert duration['provisional'] is provisional
+    assert '--mintime' not in config['stitch']

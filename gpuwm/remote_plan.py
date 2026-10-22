@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import base64
 import copy
-import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -17,6 +16,8 @@ import secrets
 import stat
 import time
 import tomllib
+
+from gpuwm.remote_artifacts import _encoded, _sha
 
 BUNDLE_SCHEMA = "gpuwm.remote.plan-bundle.v1"
 BLOB_BUNDLE_SCHEMA = "gpuwm.remote.plan-bundle.v2"
@@ -29,15 +30,6 @@ MAX_SINGLE_BYTES = 48 * 1024
 MAX_MANIFEST_BYTES = 120 * 1024
 ID = re.compile(r"[a-f0-9]{32}\Z")
 SHA = re.compile(r"[a-f0-9]{64}\Z")
-
-
-def _sha(payload):
-    return hashlib.sha256(payload).hexdigest()
-
-
-def _encoded(value):
-    return json.dumps(value, sort_keys=True, ensure_ascii=False, allow_nan=False,
-                      separators=(",", ":")).encode("utf-8")
 
 
 def _remote_path(value, label):

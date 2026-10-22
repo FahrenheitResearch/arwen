@@ -6,7 +6,7 @@ The backend composes the existing preparation, member and analysis paths.
 from __future__ import annotations
 
 from dataclasses import asdict, replace
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta, timezone
 import contextlib
 import hashlib
 import json
@@ -19,6 +19,7 @@ import sys
 import time
 import numpy as np
 
+from gpuwm.da.member_wave import sha256 as _sha
 from gpuwm.local_da import SCHEMA, PlanError, canonical, digest, utc
 
 
@@ -58,14 +59,6 @@ def _analysis_time(backend, index):
     if origin is not None:
         return origin + timedelta(seconds=(index + 1) * backend.plan['selected']['cadence_seconds'])
     return backend.analysis_times[index]
-
-
-def _sha(path):
-    h = hashlib.sha256()
-    with Path(path).open('rb') as handle:
-        for block in iter(lambda: handle.read(1 << 20), b''):
-            h.update(block)
-    return h.hexdigest()
 
 
 def read_plan(path):
@@ -461,7 +454,6 @@ class PreparedBackend:
         # when real columns have been prepared, before the first forecast.
 
     def prepare(self):
-        from gpuwm import go_cli
         from gpuwm.regional_preparation import MissingPreparationManifest
         try:
             if 'background' in self.plan:

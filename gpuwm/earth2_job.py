@@ -71,11 +71,7 @@ def _command(stage, command, root, receipt):
     _write(root / "receipt.json", receipt)
     print(f"earth2 {stage}: {shlex.join(record['command'])}", flush=True)
     start = time.monotonic()
-    try:
-        import psutil
-    except ImportError:
-        psutil = None
-        record["resource_monitor"] = "unavailable: install psutil for process CPU accounting"
+    import psutil
     with log.open("w", encoding="utf-8") as stream:
         environment = dict(os.environ)
         environment.setdefault("GPUWM_KERNEL_PLAN_DIR", str(root / "kernel-plans"))
@@ -89,23 +85,22 @@ def _command(stage, command, root, receipt):
                 pass
             now = time.monotonic()
             pids = {process.pid}
-            if psutil:
+            try:
+                children = [psutil.Process(process.pid), *psutil.Process(process.pid).children(recursive=True)]
+            except psutil.Error:
+                children = []
+            for child in children:
+                pids.add(child.pid)
                 try:
-                    children = [psutil.Process(process.pid), *psutil.Process(process.pid).children(recursive=True)]
+                    key = (child.pid, child.create_time())
+                    sample = child.cpu_times()
+                    cpu = sample.user + sample.system
+                    old = seen.get(key)
+                    seen[key] = (now, cpu)
+                    percent = 100 * (cpu - old[1]) / (now - old[0]) if old else 0
+                    stalls[key] = (stalls.get(key, 0) + now - previous) if 85 <= percent <= 115 else 0
                 except psutil.Error:
-                    children = []
-                for child in children:
-                    pids.add(child.pid)
-                    try:
-                        key = (child.pid, child.create_time())
-                        sample = child.cpu_times()
-                        cpu = sample.user + sample.system
-                        old = seen.get(key)
-                        seen[key] = (now, cpu)
-                        percent = 100 * (cpu - old[1]) / (now - old[0]) if old else 0
-                        stalls[key] = (stalls.get(key, 0) + now - previous) if 85 <= percent <= 115 else 0
-                    except psutil.Error:
-                        continue
+                    continue
             memory, util = _gpu_sample(pids)
             if memory is not None:
                 record["peak_vram_mib"] = max(record["peak_vram_mib"] or 0, memory)
@@ -170,16 +165,17 @@ def _preflight(spec):
         raise ValueError("a regional forecast needs --area, or --storm with --nest")
 
 
-def run_job(spec, out, *, earth2_input=None):
+def run_job(spec, out, *, earth2_input=None, geog_root=None):
     root = Path(out).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     if (root / "receipt.json").exists():
         raise ValueError(f"{root} already holds a job receipt; choose a new --out directory")
     spec_path = root / "job-spec.json"
     spec_path.write_text(canonical_json(spec), encoding="utf-8")
-    revision = subprocess.run(["git", "-C", str(Path(__file__).resolve().parents[1]), "rev-parse", "HEAD"], capture_output=True, text=True)
+    from gpuwm.build_provenance import package_build_identity
+    identity = package_build_identity()
     receipt = dict(schema="woof-earth2-receipt-v1", spec=spec,
-                   code_revision=revision.stdout.strip() if revision.returncode == 0 else None,
+                   code_revision=identity["commit"], package_provenance=identity,
                    spec_sha256=hashlib.sha256(spec_path.read_bytes()).hexdigest(), status="running", stages=[],
                    wall_times_seconds={key: None for key in ("fetch", "model", "prep", "sim", "render")},
                    peak_vram_mib=None, products={})
@@ -199,13 +195,16 @@ def run_job(spec, out, *, earth2_input=None):
         cycle_token = datetime.fromisoformat(spec["cycle"].replace("Z", "+00:00")).strftime("%Y-%m-%dT%H")
         history_interval = str(min(21600, spec["hours"] * 3600))
         hardware_args = ["--card", spec["card"]] if "card" in spec else []
+        # --geog-root names the tree every preparation of this job reads (domain, prep, ensemble).
+        geog_args = ([] if geog_root is None
+                     else ["--geog-root", str(Path(geog_root).expanduser().resolve())])
         if spec["nest_km"] is None:
             south, west, north, east = spec["area"]
             polygon = root / "area.geojson"
             _write(polygon, dict(type="Polygon", coordinates=[[[west, south], [east, south], [east, north], [west, north], [west, south]]]))
             _command("setup", [*cli, "domain", "--source", source, "--cycle", cycle_token,
                 "--hours", str(spec["hours"]), "--polygon", polygon, "--root-dx", "3", "--nz", "49",
-                "--history-interval", history_interval, *hardware_args, "--out", config], root, receipt)
+                "--history-interval", history_interval, *hardware_args, *geog_args, "--out", config], root, receipt)
             planned = tomllib.loads(config.read_text())
             area = planned.get("fetch", {}).get("area")
             if area:
@@ -262,7 +261,9 @@ def run_job(spec, out, *, earth2_input=None):
             else:
                 track_input = ["--input", forecasts]
             _command("track", [*cli, "tc-tracks", *track_input, "--out", root / "tracks", "--workers", "4"], root, receipt)
-            search_area = receipt["storm_search"]["area"]
+            # Only explicit job bounds override the selector's configured polygon.
+            # The acquisition envelope is not itself the basin boundary.
+            search_area = spec["area"]
             search_args = (["--search-area=" + ",".join(str(v) for v in search_area)]
                            if search_area is not None else [])
             _command("setup", [*cli, "cyclone-setup", "--source", source, "--cycle", cycle_token,
@@ -280,7 +281,7 @@ def run_job(spec, out, *, earth2_input=None):
                              for r in spec["ensemble"]["mix"])
             with config.open("a") as stream:
                 stream.write('\n[ensemble]\nrecipe = "wofs"\nmembers = ' + str(spec["ensemble"]["members"]) + '\nsources = [' + rows + ']\n')
-            _command("sim", [*cli, "ensemble", config, "--outdir", root / "ensemble"], root, receipt)
+            _command("sim", [*cli, "ensemble", config, "--outdir", root / "ensemble", *geog_args], root, receipt)
             history = root / "ensemble"
         else:
             prepared = root / "prepared"
@@ -301,8 +302,11 @@ def run_job(spec, out, *, earth2_input=None):
                 if fetched.get("profile") != get_source_adapter(source).packaged_profile:
                     raise ValueError("acquisition donor profile differs from source registry and supplies no bound prep handoff")
             from gpuwm.geog_assets import default_geog_root
+            geography = (Path(geog_root).expanduser().resolve() if geog_root is not None
+                         else default_geog_root())
+            receipt["geog_root"] = str(geography)
             prep.extend(["--experiment-config", config, "--wps-namelist", wps, "--output-root", prepared,
-                         "--geog-root", default_geog_root(),
+                         "--geog-root", geography,
                          "--preprocess-backend", "cuda", "--preprocess-workers", "4"])
             if spec["nest_km"] is not None:
                 prep.append("--statics-corridor")

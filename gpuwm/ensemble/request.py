@@ -29,6 +29,8 @@ class EnsembleRequest:
     max_ordinary_members_per_device: int | None = None
     hydro: dict | None = None
     sounding_points: tuple = ()
+    cyclone_products: dict | None = None
+    comparison: dict | str | None = None
 
     def __post_init__(self):
         if self.hydro is not None:
@@ -69,7 +71,9 @@ class EnsembleRequest:
         object.__setattr__(self, "members", members)
         if not isinstance(self.keep_member_files, bool):
             raise ValueError("keep_member_files must be true or false")
-        if self.sounding_points:
+        if self.cyclone_products is not None and not isinstance(self.cyclone_products, dict):
+            raise ValueError("cyclone_products must be a product request object")
+        if self.sounding_points or self.cyclone_products is not None:
             object.__setattr__(self, "keep_member_files", True)
         if not isinstance(self.retain_member_diagnostics, bool):
             raise ValueError("retain_member_diagnostics must be true or false")
@@ -78,7 +82,9 @@ class EnsembleRequest:
             raise ValueError("ensemble base_seed must be a nonnegative integer")
         thresholds = dict(self.thresholds)
         # The reduction contract validates finite FP32 thresholds and units.
-        requests, _ = default_product_requests(DEFAULT_THRESHOLDS, thresholds=thresholds)
+        requests, _ = default_product_requests(DEFAULT_THRESHOLDS, thresholds=thresholds, comparison=self.comparison)
+        if isinstance(self.comparison, dict):
+            object.__setattr__(self, "comparison", dict(self.comparison))
         object.__setattr__(self, "thresholds", {
             request.field: list(request.thresholds) for request in requests
             if request.field in thresholds})
@@ -94,6 +100,9 @@ class EnsembleRequest:
         if not isinstance(self.member_variants, (tuple, list)):
             raise ValueError("member_variants must be a list of named member records")
         variants = tuple(self.member_variants)
+        # Distinct source trajectories do not need artificial physics changes.
+        if not variants and self.recipe == "member-roster" and len(trajectories) == members:
+            variants = tuple({"name": f"trajectory-{i:03d}"} for i in range(members))
         if variants and self.recipe is None:
             object.__setattr__(self, "recipe", "member-roster")
         if variants or self.recipe in ("member-roster", "wofs") and not family_specs:
@@ -103,7 +112,7 @@ class EnsembleRequest:
                 raise ValueError("member-roster records each member's fixed surface controls; "
                                  "remove the shared ensemble perturbation to prevent two competing surface states")
             from gpuwm.ensemble.member_variants import normalize_member_variants
-            variants = normalize_member_variants(variants, members, ladder=self.recipe == "wofs")
+            variants = normalize_member_variants(variants, members, ladder=self.recipe == "wofs" or bool(trajectories))
         object.__setattr__(self, "member_variants", variants)
         if self.recipe is not None:
             from gpuwm.ensemble.recipe_door import RECIPES
@@ -120,15 +129,26 @@ class EnsembleRequest:
                 raise ValueError('ensemble trajectories belong to recipe = "multi-model" or "member-roster"')
             for item in trajectories:
                 if (not isinstance(item, dict) or not {"source", "cycle"} <= item.keys()
-                        or set(item) - {"source", "cycle", "member", "model", "parent_receipt"}):
+                        or set(item) - {"source", "cycle", "member", "model", "parent_receipt", "weight", "stratum", "track_member_id", "tracks", "track_id", "configuration", "configuration_sha256", "fetch_root"}):
                     raise ValueError("each ensemble trajectory needs a source and a cycle "
                                      "(and a member where its source has members)")
+                if "fetch_root" in item and (not isinstance(item["fetch_root"], str) or not item["fetch_root"].strip()):
+                    raise ValueError("trajectory fetch_root must name a completed fetch directory")
             if len(trajectories) < members:
                 raise ValueError(f"multi-model lists {len(trajectories)} trajectories, but {members} members "
                                  "were requested; repeating a trajectory would fabricate ensemble size")
             if self.recipe == "member-roster" and len(trajectories) != members:
                 raise ValueError("member-roster needs one trajectory for each named arm; "
                                  "extra trajectories would leave source-to-arm ownership ambiguous")
+            weighted = [item for item in trajectories if "weight" in item]
+            if weighted:
+                import math
+                if len(weighted) != len(trajectories) or any(
+                        isinstance(item["weight"], bool) or not isinstance(item["weight"], (int, float))
+                        or not math.isfinite(item["weight"]) or item["weight"] <= 0 for item in weighted):
+                    raise ValueError("supply finite positive weights for every trajectory")
+                if not math.isclose(math.fsum(item["weight"] for item in weighted), 1., abs_tol=1e-12):
+                    raise ValueError("trajectory weights must sum to one")
         elif self.recipe == "multi-model":
             raise ValueError("a multi-model ensemble needs its trajectory list: "
                              "--trajectories FILE or [ensemble] trajectories")
@@ -215,11 +235,13 @@ class EnsembleRequest:
         return cls(**value)
 
     def receipt(self):
-        return {**({"sounding_points": list(self.sounding_points)} if self.sounding_points else {}),
+        return {**({"cyclone_products": dict(self.cyclone_products)} if self.cyclone_products is not None else {}),
+                **({"sounding_points": list(self.sounding_points)} if self.sounding_points else {}),
                 "members": self.members, "keep_member_files": self.keep_member_files,
                 "retain_member_diagnostics": self.retain_member_diagnostics,
                 "stochastic": self.stochastic,
                 "thresholds": self.thresholds, "sources": list(self.sources),
+                **({"comparison": self.comparison} if self.comparison is not None else {}),
                 "perturbation": self.perturbation, "base_seed": self.base_seed,
                 "member_device_ids": (None if self.member_device_ids is None
                                       else list(self.member_device_ids)),

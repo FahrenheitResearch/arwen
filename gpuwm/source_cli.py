@@ -35,8 +35,7 @@ from gpuwm.mapped_engine_bridge import (
     MAPPED_ROUTE_SUBCOMMAND as _MAPPED_ROUTE_SUBCOMMAND,
     resolve_engine as _resolve_mapped_engine,
 )
-from gpuwm.mapped_source import (_load_json_document, _mapped_engine_choice,
-                                 read_input_list)
+from gpuwm.mapped_source import _mapped_engine_choice, read_input_list
 from gpuwm.hrrr_forecast import hrrr_source_window
 
 
@@ -71,6 +70,24 @@ def reads_as_a_sentence(detail: str) -> bool:
     return " " in head
 _SUPPORT_MATRIX = Path(__file__).with_name("native_wrf_support_v1.json")
 _HRRR_DOMAIN_VALIDATION_SCHEMA = "gpuwm-hrrr-domain-validation-v1"
+
+
+#: The console scripts that enter at :func:`main` (pyproject.toml).
+_CONSOLE_SCRIPTS = frozenset({"rw-wps", "gpuwm-wrf-init"})
+
+
+def _wrf_stamp(text: str) -> str:
+    """Accept ``YYYY-MM-DDTHH`` (every other door's cycle form) beside the
+    WRF ``YYYY-MM-DD_HH:MM:SS`` stamp, and hand on the WRF stamp.
+
+    Anything else passes through unchanged so the run checks below name
+    the flag and the accepted forms.
+    """
+
+    try:
+        return f"{datetime.strptime(text, '%Y-%m-%dT%H'):%Y-%m-%d_%H:%M:%S}"
+    except ValueError:
+        return text
 
 
 def _parser(*, prog: str = "gpuwm-wrf-init", add_help: bool = True,
@@ -398,7 +415,9 @@ def _parser(*, prog: str = "gpuwm-wrf-init", add_help: bool = True,
     )
     parser.add_argument(
         "--valid-time",
-        help="initial UTC time in WRF form YYYY-MM-DD_HH:MM:SS.  On "
+        type=_wrf_stamp,
+        help="initial UTC time, YYYY-MM-DDTHH or WRF form "
+             "YYYY-MM-DD_HH:MM:SS.  On "
              "--source hrrr this is the CYCLE; model time zero is cycle + "
              "--forecast-start-hour and is derived for every stage",
     )
@@ -496,7 +515,8 @@ def _parser(*, prog: str = "gpuwm-wrf-init", add_help: bool = True,
         type=Path,
         help="tab-separated HOUR and GFS GRIB2 path inventory",
     )
-    gfs.add_argument("--cycle", help="GFS cycle in YYYY-MM-DD_HH:MM:SS form")
+    gfs.add_argument("--cycle", type=_wrf_stamp,
+                     help="GFS cycle, YYYY-MM-DDTHH or YYYY-MM-DD_HH:MM:SS")
     gfs.add_argument(
         "--as-posted",
         type=Path,
@@ -843,7 +863,7 @@ def _required_hrrr_args(args: argparse.Namespace) -> list[str]:
             try:
                 parsed = datetime.strptime(args.valid_time, "%Y-%m-%d_%H:%M:%S")
             except ValueError:
-                errors.append("--valid-time must use YYYY-MM-DD_HH:MM:SS")
+                errors.append("--valid-time must use YYYY-MM-DDTHH or YYYY-MM-DD_HH:MM:SS")
             else:
                 if parsed.minute != 0 or parsed.second != 0:
                     errors.append("--valid-time must be an exact hourly HRRR cycle")
@@ -933,7 +953,7 @@ def _required_hrrr_args(args: argparse.Namespace) -> list[str]:
         try:
             parsed = datetime.strptime(args.valid_time, "%Y-%m-%d_%H:%M:%S")
         except ValueError:
-            errors.append("--valid-time must use YYYY-MM-DD_HH:MM:SS")
+            errors.append("--valid-time must use YYYY-MM-DDTHH or YYYY-MM-DD_HH:MM:SS")
         else:
             if parsed.minute != 0 or parsed.second != 0:
                 errors.append("--valid-time must be an exact hourly HRRR cycle")
@@ -1250,7 +1270,7 @@ def _required_gfs_args(args: argparse.Namespace) -> list[str]:
         try:
             parsed = datetime.strptime(args.cycle, "%Y-%m-%d_%H:%M:%S")
         except ValueError:
-            errors.append("--cycle must use YYYY-MM-DD_HH:MM:SS")
+            errors.append("--cycle must use YYYY-MM-DDTHH or YYYY-MM-DD_HH:MM:SS")
         else:
             if (
                 parsed.minute != 0
@@ -1888,19 +1908,7 @@ def _hrrr_command(args: argparse.Namespace) -> list[str]:
             command.extend(("--ack", str(acknowledgement)))
         if args.cpu_preprocess_bridge is not None:
             command.extend(("--cpu-preprocess-bridge", str(args.cpu_preprocess_bridge)))
-        if args.statics_corridor is not None:
-            # Forwarded, not dropped.  The hierarchy takes this flag
-            # (``--statics-corridor [GRID_IDS]``) and it is what seals
-            # child-resolution statics for a moving nest; the front door
-            # accepted it, composed a command without it, and exited 0,
-            # so a corridor-declaring tree prepared through `gpuwm prep`
-            # reached the tree runner with no corridor set and was
-            # refused there -- one stage after the flag that would have
-            # prevented it was typed.
-            if args.statics_corridor == "all":
-                command.append("--statics-corridor")
-            else:
-                command.extend(("--statics-corridor", args.statics_corridor))
+        _append_statics_corridor_option(command, args)
         return command
 
     tools = Path(__file__).resolve().parent.parent / "tools"
@@ -1946,13 +1954,7 @@ def _hrrr_command(args: argparse.Namespace) -> list[str]:
         command.extend(("--wps-namelist", str(args.wps_namelist)))
     if args.prepare_workers is not None:
         command.extend(("--prepare-workers", str(args.prepare_workers)))
-    if args.preprocess_backend is not None:
-        command.extend(("--preprocess-backend", args.preprocess_backend))
-    if args.preprocess_workers is not None:
-        command.extend(("--preprocess-workers", str(args.preprocess_workers)))
-    if args.cpu_preprocess_bridge is not None:
-        command.extend((
-            "--cpu-preprocess-bridge", str(args.cpu_preprocess_bridge)))
+    _append_preprocess_options(command, args)
     if args.sealed_prepared_cache:
         command.append("--sealed-prepared-cache")
     if args.extend_root_preparation is not None:
@@ -2007,15 +2009,7 @@ def _era5_command(args: argparse.Namespace) -> list[str]:
         command.extend(("--domain-source-orography", binding))
     if args.hierarchy_workers is not None:
         command.extend(("--hierarchy-workers", str(args.hierarchy_workers)))
-    if args.statics_corridor is not None:
-        # Forwarded in the caller's own spelling, for the reason the GFS
-        # and mapped builders carry: re-expanding a bare flag here would
-        # let this door and `run-plan --estimate` resolve one argv to two
-        # different corridor sets.
-        if args.statics_corridor == "all":
-            command.append("--statics-corridor")
-        else:
-            command.extend(("--statics-corridor", args.statics_corridor))
+    _append_statics_corridor_option(command, args)
     return command
 
 
@@ -2059,11 +2053,7 @@ def _gfs_command(args: argparse.Namespace) -> list[str]:
         command.extend(("--physics-profile", args.physics_profile))
     if args.no_stock_wrf_export:
         command.append("--no-stock-wrf-export")
-    if args.statics_corridor is not None:
-        if args.statics_corridor == "all":
-            command.append("--statics-corridor")
-        else:
-            command.extend(("--statics-corridor", args.statics_corridor))
+    _append_statics_corridor_option(command, args)
     if args.static_input is not None:
         command.extend(("--static-input", str(args.static_input)))
         command.extend(("--static-receipt", str(args.static_receipt)))
@@ -2124,10 +2114,7 @@ def _twentycr_command(args: argparse.Namespace) -> list[str]:
         command.extend(("--grib2-dump", str(args.grib2_dump)))
     if args.mapped_engine is not None:
         command.extend(("--mapped-engine", args.mapped_engine))
-    if args.statics_corridor is not None:
-        command.append("--statics-corridor")
-        if args.statics_corridor != "all":
-            command.append(args.statics_corridor)
+    _append_statics_corridor_option(command, args)
     _append_preprocess_options(command, args)
     if args.hierarchy_workers is not None:
         command.extend(("--hierarchy-workers", str(args.hierarchy_workers)))
@@ -2220,16 +2207,7 @@ def _mapped_command(args: argparse.Namespace) -> list[str]:
                 str(args.hierarchy_workers),
             )
         )
-    if args.statics_corridor is not None:
-        # Forwarded in the caller's own spelling -- bare for every child,
-        # the id list otherwise -- because the corridor SET is what the
-        # forecast runner checks the mover against, and re-expanding a
-        # bare flag here would let this door and `run-plan --estimate`
-        # resolve the same argv to two different sets.
-        if args.statics_corridor == "all":
-            command.append("--statics-corridor")
-        else:
-            command.extend(("--statics-corridor", args.statics_corridor))
+    _append_statics_corridor_option(command, args)
     # The one thing the generic runner cannot know: which registered
     # source id this preparation is FOR.  It is what the prepared
     # forecast binds to, so without it the mapped route could finish and
@@ -2239,6 +2217,17 @@ def _mapped_command(args: argparse.Namespace) -> list[str]:
     # one value --proof-sha256 never accepts.
     command.extend(("--prepared-forecast-source", str(args.source)))
     return command
+
+
+def _append_statics_corridor_option(command: list[str], args: argparse.Namespace):
+    # Forward the caller's spelling: bare means every child, otherwise keep
+    # the id list. Dropping this flag left moving nests without sealed child
+    # statics; expanding a bare flag here could disagree with run-plan.
+    if args.statics_corridor is not None:
+        if args.statics_corridor == "all":
+            command.append("--statics-corridor")
+        else:
+            command.extend(("--statics-corridor", args.statics_corridor))
 
 
 def _append_preprocess_options(command: list[str], args: argparse.Namespace):
@@ -2521,7 +2510,12 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as error:
         print(str(error), file=sys.stderr)
         return EXIT_CONFIG
-    parser = _parser()
+    # The console script the reader typed names itself in usage and
+    # errors: `rw-wps` and `gpuwm-wrf-init` share this entry point, and a
+    # hardcoded prog made `rw-wps --help` print "usage: gpuwm-wrf-init".
+    invoked = Path(sys.argv[0]).stem if sys.argv and sys.argv[0] else ""
+    parser = (_parser(prog=invoked) if invoked in _CONSOLE_SCRIPTS
+              else _parser())
     with licence_scope(_values(tokens, "--accept-licence")):
         return dispatch(parser.parse_args(tokens), parser=parser)
 
@@ -3645,7 +3639,35 @@ _ADAPTER_OUTPUT = command_output.ADAPTER_OUTPUT
 redirect_adapter_output = command_output.redirect_adapter_output
 
 
+from contextvars import ContextVar as _ContextVar
+from contextlib import contextmanager as _contextmanager
+
+_IN_PROCESS_ADAPTERS = _ContextVar("source_adapters_in_process", default=False)
+
+
+@_contextmanager
+def in_process_adapters():
+    """Retain a hosting standby's resident preparation objects and context.
+
+    The ordinary CLI keeps its subprocess isolation. A resident host instead
+    executes the same composed module/argv on its preparation thread.
+    """
+    token = _IN_PROCESS_ADAPTERS.set(True)
+    try:
+        yield
+    finally:
+        _IN_PROCESS_ADAPTERS.reset(token)
+
+
 def _run_adapter_command(command):
+    if _IN_PROCESS_ADAPTERS.get():
+        import importlib
+        from types import SimpleNamespace
+        if len(command) < 3 or command[1] != "-m" or not command[2].startswith("gpuwm."):
+            raise ValueError("resident preparation requires a packaged Python adapter; "
+                             "a child process would discard its resident boundary handle")
+        module = importlib.import_module(command[2])
+        return SimpleNamespace(returncode=module.main(command[3:]))
     if "--preprocess-workers" in command:
         from gpuwm.ingest.preparation_workers import worker_environment
         requested = int(command[command.index("--preprocess-workers") + 1])

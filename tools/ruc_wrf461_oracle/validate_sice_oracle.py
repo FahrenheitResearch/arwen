@@ -9,13 +9,17 @@ so the script fails on any nonzero ULP.
 
 from __future__ import annotations
 
-import csv
-from pathlib import Path
 import sys
 
 import numpy as np
 
-from gpuwm.core.fp32_ulp import monotone_fp32_key
+if __package__:
+    from .validate_qsn_oracle import _report as _report_metrics
+    from .validate_soil_oracle import _load_profiles
+else:
+    from validate_qsn_oracle import _report as _report_metrics
+    from validate_soil_oracle import _load_profiles
+
 from gpuwm.core.ruc import RUC_SEA_ICE_COLUMN_INPUTS, ruc_sea_ice_step
 
 
@@ -39,50 +43,13 @@ COLUMN_OUTPUTS = (
 )
 
 
-#: Monotonic integer ordering of float32 bits; +0 and -0 collapse.  Shared
-#: rather than re-derived: see gpuwm/core/fp32_ulp.py.
-_ordinal = monotone_fp32_key
-
-
 def _report(name: str, actual: np.ndarray, expected: np.ndarray) -> int:
-    difference = np.abs(
-        actual.astype(np.float64) - expected.astype(np.float64)
-    )
-    denominator = np.abs(expected.astype(np.float64))
-    relative = np.zeros_like(difference)
-    np.divide(difference, denominator, out=relative, where=denominator > 0.0)
-    ulp = np.abs(_ordinal(actual) - _ordinal(expected))
-    signed_zero = int(
-        np.count_nonzero(
-            (actual == 0.0)
-            & (expected == 0.0)
-            & (np.signbit(actual) != np.signbit(expected))
-        )
-    )
-    print(
-        f"  {name:<10s} max_abs={float(np.max(difference)):.6e} "
-        f"max_rel={float(np.max(relative)):.6e} "
-        f"max_ulp={int(np.max(ulp))} signed_zero_mismatch={signed_zero}"
-    )
-    return int(np.max(ulp)) + signed_zero
+    return _report_metrics(name, actual, expected, width=10)
 
 
 def main(path: str) -> None:
-    with Path(path).open(newline="", encoding="ascii") as stream:
-        rows = list(csv.DictReader(stream))
-    if len(rows) != NCASE * NZS:
-        raise SystemExit(f"expected {NCASE * NZS} rows, got {len(rows)}")
-    cases = tuple(dict.fromkeys(row["case"] for row in rows))
-    if cases != CASES:
-        raise SystemExit(f"unexpected case inventory {cases!r}")
-
-    numeric = tuple(key for key in rows[0] if key != "case")
-    field = {
-        name: np.asarray([float(row[name]) for row in rows], dtype=np.float32)
-        .reshape(NCASE, NZS)
-        .T
-        for name in numeric
-    }
+    values = _load_profiles(path, CASES, shape=(NCASE, NZS), excluded=("case",))
+    field = {name: value.T for name, value in values.items()}
     if not all(np.all(np.isfinite(value)) for value in field.values()):
         raise SystemExit("RUC sice oracle contains non-finite output")
 

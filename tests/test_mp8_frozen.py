@@ -1026,8 +1026,9 @@ FROZEN_MODULE_DIGESTS = {
         # 9d6b1bcc.
         # Review: fork CASE(1) and its buoyancy flux now follow the fork.
         # The stock preprocessed source is unchanged, checked by the sibling test.
-        '176d00a656786395753cd254921fe74968448c8daafc7c7f254b97c484338cda',
-        '01614cc90a77c120aa7a2ae92679ca85a24979e4b19f23629c5da83463109983'),
+        # Wave3: export arm folded from sibling; default tokens unchanged.
+        '88d6909612543927aee364c6f0cbd905eabd808da2a9fe3f94b57c9fab743b49',
+        '1f5e6f64a206f602e4281d0d38bc8295b897a13050826f62d487ff5f0e61d871'),
     'mynn_surface': (
         # Re-pinned for A146 (a98f2482e): every float division by a compile-time
         # constant is spelled __fdiv_rn, because NVRTC compiles x / C as a
@@ -1038,8 +1039,13 @@ FROZEN_MODULE_DIGESTS = {
         # The selectable GSL surface variant and explicit table rounding
         # coexist. The ordinary table retains the native Blackwell operation
         # order; the selected variant keeps its own stability solver.
-        'b8b5b9b544dced5ce44acb27a29cfc882b1a008ecd9c5e04b1b4b3ec50dd1220',
-        '2c93b3baab586c642dbb988c866be65215a0e07f1d9d0f9087f3669cffa22e6e'),
+        # RE-PINNED by lane/cap-waves-couple (8cd59d74c15): over water the
+        # wave-age momentum roughness replaces z0 before exchange, compiled
+        # in only under OCEAN_WAVE_ROUGHNESS (gpuwm/core/mynn_sfclay.py
+        # defines it only with a coupled wave model); without it the
+        # preprocessed unit is the previous one.  Previously b8b5b9b5/2c93b3ba.
+        'f1a1b6c98704fa00ad35f4a3c81183f706509adf42bfba9022b2a882c395126a',
+        '5b294157fb4224d0aa2ce11ce4856dafeb9e9f0a0e8145694dd6e0c48acfe64f'),
     'nest': (
         # Re-pinned for a combined four-side boundary launch. The original
         # single-side entry point and SINT expression tree remain unchanged.
@@ -1261,6 +1267,9 @@ FROZEN_MODULE_DIGESTS = {
     'noahmp_water': (
         '7946fb6612767fac098ec92a0dbb1d0e4cc768657b1cb81b297344cd39aa54f3',
         '46808ddb98445be32c5c8ab0a04527b919446081c33f7ef51c8b7a0ebed5b42a'),
+    # Wave 3 folds the default twin using math aliases; original default
+    # and strict arithmetic bytes remain independently pinned in
+    # test_exact_chain_default_sources.py. Assembled text changes only.
     'nssl2': (
         # RE-PINNED by the WRF-parity qxmin(lh) repair (NSSLA-01).  The Bigg
         # rain-freezing gate used the graupel minimum mixing ratio 1.e-7 set
@@ -1293,7 +1302,7 @@ FROZEN_MODULE_DIGESTS = {
         # constant c1sw, a C math function divisor the first pass
         # missed.
         '1952dfec0483c0002d5addb45e1ff3f10a54c8c42450efe8acfb124e7b2dbe9d',
-        '588d4ab74a57935ca1a7bab9abb195ab05150e67fbb753e7b360c50de4eb78e8'),
+        'f3f7f268018488f5cd076793c264ba36321743391ad6edcc87c494bc5fcd07fa'),
     'nssl2_diagnostics': (
         'aea3a5b1157ca95b69c8df077680e27058b752d5e707f2134f408d0aa7f42bd2',
         '331b4a9734959260ab515216e24ee7100eac18d8e6d646b1e0e8bf21c0c23374'),
@@ -1516,6 +1525,13 @@ FROZEN_MODULE_DIGESTS = {
         '104c3157451dc878e3f9d751db1cf01a4368b1a2892825678370c5159a787ff6',
         '56f315a0258d902c69f99abacbe5e53005f50ce478725c146647d3df26c71522'),
     'rrtmg_mcica_wrf': (
+        # Re-frozen for 6fe6e9a6d7 (lane/opus-radiation-fusion via sweep/all-294:
+        # fused McICA column kernels rmcw_subcol_states/rmcw_walk_fill_column,
+        # the same RMCW_* operations in the same order).  Reading, 2.9.4 fold
+        # d61095cd3e on an RTX 5090: tests/test_rrtmg_mcica.py,
+        # test_rrtmg_mcica_overlap_boundary.py and test_rrtmg_lw_batched_layout.py
+        # 102 passed (bitwise against the certified NumPy port), and the R6
+        # identity arms judge the whole forecast.
         # Re-pinned for rmcw_fill_outputs_column (lane/speed-rrtmg-legacy,
         # the longwave McICA slabs written straight into the batched
         # engine's (column, layer, g-point) layout): an appended kernel,
@@ -1525,8 +1541,8 @@ FROZEN_MODULE_DIGESTS = {
         # prep decks) and tests/test_rrtmg_mcica.py green, and six
         # captured product-suite radiation calls uint32-identical to the
         # d6929cb8d forecast.  Not an mp=8 translation unit.
-        '80cd32a2feee70f1d0fe2db3eaf02386de4d970bfc9dc8e22d71fafbab5564b6',
-        '5a744048e817344ac573b98c2cc63644efdb03845abd07feb8c122fb41332b39'),
+        '321f3ff02dcef9108017c4b2510f85479135e9fa601d36b8601253e974e6b11e',
+        '5d0e7356e7bef98a6d7200ce7ac8d3204e3756761211343dacb9791eb459c488'),
     'rrtmg_sw': (
         # f7c2aadea removes an unused macro; host launch coverage now
         # includes every layer. Measured d8ef9d086: 156 CUDA controls
@@ -2111,7 +2127,9 @@ FROZEN_MODULE_DIGESTS = {
         # KPBL/PBLH exact, and the 23-column maxima did not move.  No other
         # statement changed; every column with any nonzero flux compiles from
         # the same statements as before.
-        'a475314b6e83bbc9dc08785b24b528f873819f6eb8207630f0d12e7a3f398385',
+        # Slimming: the recorder follows the retained ysu_default.cu file.
+        # slimming-loader-source-replay.json proves identical compiler text.
+        'f56e3ec7646a111d07c5447383ae136b2959b5f4545441a598b51be16ccdc768',
         # ysu_default.cu names a test host instead of a lab host since 2.9.1 (comment only).
         '6261061b62ef15ca30cf3746baf9177cdc1a0eafc2544937f41c674e0fd5a932'),
 }
@@ -2287,6 +2305,27 @@ SCRATCH_SLOT_REGISTRY_MP8 = {
     'pd_fyl': (4, 7, 8),
     'pd_fzc': (5, 6, 8),
     'pd_fzl': (5, 6, 8),
+    'hail_density': (4, 6, 8),
+    'hail_height': (4, 6, 8),
+    'hail_max2d': (6, 8),
+    'hail_max2d_run': (6, 8),
+    'hail_maxk1': (6, 8),
+    'hail_maxk1_run': (6, 8),
+    'hail_new_duration': (6, 8),
+    'hail_new_mask': (6, 8),
+    'hail_temperature': (4, 6, 8),
+    'hail_zero': (4, 6, 8),
+    'hailcast_dhail1': (6, 8),
+    'hailcast_dhail2': (6, 8),
+    'hailcast_dhail3': (6, 8),
+    'hailcast_dhail4': (6, 8),
+    'hailcast_dhail5': (6, 8),
+    'hailcast_diam_max': (6, 8),
+    'hailcast_diam_mean': (6, 8),
+    'hailcast_diam_std': (6, 8),
+    'hailcast_runmax': (6, 8),
+    'hailcast_wdur': (6, 8),
+    'hailcast_wup_mask': (6, 8),
     'physics_validation_status': (1,),
     'refl_10cm': (4, 6, 8),
     'refl_t': (4, 6, 8),
@@ -2319,8 +2358,12 @@ STATE_ARRAY_SHAPES_DIGEST = (
 # f00b1b1748fba27988bdedfde16ed05f3559a5e0bbd33cad474d7bef35d41949.
 # Re-pinned for the scanner's 12 KiB geometry slot. Every physics slot
 # and alias retains its previous shape; the scanner never writes state.
+# RE-PINNED for lane/cap-hail (97e9a3ca061): the default-on hail and HAILCAST
+# diagnostics (hailcast_opt = -1, automatic) add 21 slots of their own
+# (gpuwm/core/hail.py scratch_shapes), named hail_* / hailcast_*.  None aliases
+# a Thompson buffer; every existing slot keeps its shape.  Was 9cd991b5.
 SCRATCH_SLOT_REGISTRY_DIGEST = (
-    '9cd991b5ed8d3c05232de382ec2ecc3b2ecc42667fe3c53783c858c214345bf8')
+    'e1d103fdd69bed32117386bbf6b56910834f17798fa76b95fa0ffe59c566c0b2')
 ORACLE_FIXTURE_COUNT = 92
 #: RE-PINNED with the corrected oracle, not with an edit.  The Thompson
 #: oracle lane found that five committed fixtures were the output of a
@@ -3128,6 +3171,17 @@ def test_loader_hook_is_inert_for_every_frozen_module(r1):
 
     # New port headers have measured composed-source pins.
     _EXPECTED_HEADERS.update({'fer_hires': ('glibc_flt32.cuh',)})
+    # lane/cap-hail (97e9a3ca061): WRF's HAILCAST support and column headers,
+    # prepended to the hail unit only, pinned in kernel_source_pins.json.
+    _EXPECTED_HEADERS.update({'hail': ('hailcast_support.cuh', 'hailcast_wrf.cuh')})
+    # GSD output diagnostics (f80ac46aeb, 328ce7233b): raw sources and the
+    # helper-only helicity header are pinned in kernel_source_pins.json.
+    # uh_diag.cu remains its own frozen translation unit, never a header.
+    _EXPECTED_HEADERS.update({
+        'gsd_diagnostics': ('glibc_flt32.cuh', 'glibc_flt32_extra.cuh',
+                            'glibc_flt64.cuh', 'gsd_hail_bins.cuh'),
+        'gsd_helicity': ('gsd_helicity_helpers.cuh',),
+    })
 
     # The header grant stays a CLOSED literal: the loader's own allow-list
     # must equal the historical mapping plus the selected literal grant,

@@ -46,4 +46,10 @@ cd tools/rustwx
 cargo build --offline --locked --release -p rw-soundings
 ```
 
-The command prefers a high-performance wgpu-compatible GPU. A software Vulkan adapter can also render on machines without a supported display GPU. Both dark (default) and light themes use contrasting diagnostic headers and map outlines.
+The command renders on a high-performance GPU through Vulkan (Metal or DX12 on macOS and Windows), then GL, and otherwise on its built-in CPU rasteriser, so a headless server with no graphics stack still draws every picture. On Linux, GPU rendering needs the Vulkan loader, which some server and cloud images leave out:
+
+```sh
+sudo apt-get install -y libvulkan1     # Debian/Ubuntu; dnf install vulkan-loader on RHEL/Fedora
+```
+
+`gpuwm doctor` names the device the renderer will use (`rw_soundings --probe-device` prints the same line). `GPUWM_SOUNDINGS_RENDERER=cpu` forces the CPU rasteriser and `GPUWM_SOUNDINGS_RENDERER=gpu` refuses to run without a GPU device. Both dark (default) and light themes use contrasting diagnostic headers and map outlines.

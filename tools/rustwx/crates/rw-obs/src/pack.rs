@@ -259,6 +259,134 @@ pub fn payload_digest(payload: &[u8]) -> String {
     hex_sha256(payload)
 }
 
+/// Geometry-pack metadata, parameterized by the instrument's grid description.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeoPackMeta<G> {
+    pub schema: String,
+    pub status: String,
+    pub source_product: String,
+    pub grid: G,
+    pub arrays: BTreeMap<String, ArrayEntry>,
+    pub payload_bytes: usize,
+    pub content_sha256: String,
+}
+
+/// Write latitude/longitude arrays and the front door's geometry receipt.
+pub fn write_geometry<G: Serialize>(
+    out: &Path,
+    grid: &G,
+    shape: Vec<usize>,
+    latitude: &[f64],
+    longitude: &[f64],
+    source_product: &str,
+    record_schema: &'static str,
+) -> Result<String, Box<dyn Error>> {
+    let mut builder = PayloadBuilder::new();
+    builder.push_f64("latitude", latitude, shape.clone());
+    builder.push_f64("longitude", longitude, shape);
+    let (payload, arrays) = builder.finish();
+    let meta = GeoPackMeta {
+        schema: GEO_SCHEMA.to_string(),
+        status: "READY".to_string(),
+        source_product: source_product.to_string(),
+        grid,
+        arrays,
+        payload_bytes: payload.len(),
+        content_sha256: payload_digest(&payload),
+    };
+    let bytes = write_pack(out, &meta, &payload)?;
+
+    #[derive(Serialize)]
+    struct GridRecord<'a, G> {
+        schema: &'static str,
+        status: &'static str,
+        pack_path: String,
+        pack_schema: &'a str,
+        pack_bytes: usize,
+        payload_bytes: usize,
+        content_sha256: &'a str,
+        grid: &'a G,
+    }
+
+    let record = GridRecord {
+        schema: record_schema,
+        status: "READY",
+        pack_path: out.to_string_lossy().to_string(),
+        pack_schema: &meta.schema,
+        pack_bytes: bytes,
+        payload_bytes: meta.payload_bytes,
+        content_sha256: &meta.content_sha256,
+        grid,
+    };
+    Ok(format!("{}\n", serde_json::to_string_pretty(&record)?))
+}
+
+/// Verify a pack after deserializing its instrument's complete metadata type.
+pub fn verify_pack<G: DeserializeOwned, H: DeserializeOwned>(
+    path: &Path,
+    record_schema: &'static str,
+    grid_arrays: impl FnOnce(G) -> BTreeMap<String, ArrayEntry>,
+    geo_arrays: impl FnOnce(H) -> BTreeMap<String, ArrayEntry>,
+) -> Result<String, Box<dyn Error>> {
+    let bytes =
+        std::fs::read(path).map_err(|e| err(format!("cannot read {}: {e}", path.display())))?;
+    // The metadata shape is not known before the schema is read, so the
+    // header is decoded into the permissive form first and the schema
+    // decides which typed reading has to succeed.
+    let (value, payload): (serde_json::Value, Vec<u8>) = decode_pack(&bytes)?;
+    let schema = value
+        .get("schema")
+        .and_then(|s| s.as_str())
+        .ok_or_else(|| err("observation pack metadata carries no schema"))?
+        .to_string();
+    let digest = payload_digest(&payload);
+    let declared = value
+        .get("content_sha256")
+        .and_then(|s| s.as_str())
+        .ok_or_else(|| err("observation pack metadata carries no content_sha256"))?;
+    if digest != declared {
+        return Err(err(format!(
+            "observation pack payload digest mismatch: metadata says {declared}, bytes hash \
+             to {digest}"
+        )));
+    }
+    let arrays = match schema.as_str() {
+        GRID_SCHEMA => grid_arrays(serde_json::from_value(value)?),
+        GEO_SCHEMA => geo_arrays(serde_json::from_value(value)?),
+        other => {
+            return Err(err(format!(
+                "pack declares schema {other:?}; this bin writes {GRID_SCHEMA:?} and \
+                 {GEO_SCHEMA:?}"
+            )))
+        }
+    };
+    validate_arrays(&arrays, payload.len())?;
+
+    #[derive(Serialize)]
+    struct VerifyRecord {
+        schema: &'static str,
+        status: &'static str,
+        path: String,
+        pack_schema: String,
+        bytes: usize,
+        payload_bytes: usize,
+        content_sha256: String,
+        arrays: usize,
+    }
+
+    let record = VerifyRecord {
+        schema: record_schema,
+        status: "PASS",
+        path: path.to_string_lossy().to_string(),
+        pack_schema: schema,
+        bytes: bytes.len(),
+        payload_bytes: payload.len(),
+        content_sha256: digest,
+        arrays: arrays.len(),
+    };
+    Ok(format!("{}\n", serde_json::to_string_pretty(&record)?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

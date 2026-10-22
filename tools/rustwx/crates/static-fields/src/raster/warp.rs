@@ -282,6 +282,10 @@ fn paint_mosaic(
     ))
 }
 
+/// Threads that read and encode a streamed terrain mosaic
+/// ([`mosaic_tiffs`]), one output tile row each.
+pub const MOSAIC_WORKERS: usize = 8;
+
 /// Mosaic directly from source TIFF windows into deterministic output tiles.
 /// Source payloads, mosaic pixels and compressed output are never held whole.
 #[allow(clippy::too_many_arguments)]
@@ -356,12 +360,15 @@ pub fn mosaic_tiffs(
         -ry,
         oy - row0 as f64 * ry,
     ];
-    let mut holes = 0usize;
-    // At most eight open source files and 64 MiB of decoded block cache,
-    // regardless of the number of terrain tiles in a domain.
-    let mut readers: std::collections::VecDeque<(usize, TiffReader)> =
-        std::collections::VecDeque::new();
-    geotiff::write_band1_tiles(
+    let holes = std::sync::atomic::AtomicUsize::new(0);
+    // Output tile rows are read and encoded on MOSAIC_WORKERS threads
+    // (fewer when the rayon pool is smaller); the file is the same bytes as
+    // one thread writes.  Each row keeps at most eight open source files
+    // and 64 MiB of decoded block cache, so the whole mosaic holds at most
+    // 8 x MOSAIC_WORKERS readers and their caches plus MOSAIC_WORKERS rows
+    // of encoded tiles, regardless of the number of terrain tiles.
+    let workers = MOSAIC_WORKERS.min(rayon::current_num_threads()).max(1);
+    geotiff::write_band1_tiles_parallel(
         out_path,
         ny,
         nx,
@@ -369,7 +376,9 @@ pub fn mosaic_tiffs(
         &crs,
         geotiff::SampleType::F32,
         output_nodata,
-        |out_col, out_row, w, h| {
+        workers,
+        std::collections::VecDeque::<(usize, TiffReader)>::new,
+        |readers, out_col, out_row, w, h| {
             let mut out = vec![f64::NAN; w * h];
             let x0 = ox + ((col0 + out_col as i64) as f64 + 0.5) * rx;
             let x1 = ox + ((col0 + (out_col + w - 1) as i64) as f64 + 0.5) * rx;
@@ -451,7 +460,7 @@ pub fn mosaic_tiffs(
                     *value = f64::NAN;
                 }
                 if value.is_nan() {
-                    holes += 1;
+                    holes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     if let Some(fill) = fill {
                         *value = fill as f32 as f64;
                     }
@@ -462,7 +471,7 @@ pub fn mosaic_tiffs(
             Ok(out)
         },
     )?;
-    Ok((ny, nx, holes, first_nodata))
+    Ok((ny, nx, holes.into_inner(), first_nodata))
 }
 
 // ---------------------------------------------------------------------------

@@ -25,6 +25,12 @@ def accepts(cfg):
             and not table.enabled_sources)
 
 
+def ranked_accepts(cfg):
+    """Column-local transported smoke, with an interior ledger on each rank."""
+    from gpuwm.chem_table import chem_names
+    return accepts(cfg) or chem_names(cfg.chem_sets) == ("smoke",)
+
+
 def transport_fields(state):
     """Rebuilt time-t operands, carried for accounting after the sweep."""
     if state.chem is None:
@@ -125,3 +131,64 @@ class GlobalSmokeLedger:
         # Checkpoint/history readers access these mapped vectors on the host.
         cp.cuda.get_current_stream().synchronize()
         self._before = None
+
+
+class RankedSmokeLedger:
+    """Fold interior process deltas on one GPU into the persisted domain ledger.
+
+    Only species-sized vectors cross cards. No tracer field visits the host
+    between steps. Each rank reduces float64 cell masses in its own row tree;
+    the owner adds ranks in plan order. The different reduction grouping can
+    change float64 ledger low bits, never the transported float32 state.
+    """
+    def __init__(self, run):
+        import cupy as cp
+        from tilestream import gather
+        self.run = run
+        self.names = (*LEDGER_TOTALS, *LEDGER_BUCKETS)
+        self.buffers = []
+        self.events = []
+        self.views = []
+        n = len(run.tiles[0].chem.transported)
+        for tile, window, dev in zip(run.tiles, run.specs, run.devices):
+            with cp.cuda.Device(dev):
+                tile.chem.externally_managed_ledger = True
+                transfer, = window.scatter("mass")
+                y, x = transfer.tile_y, transfer.tile_x
+                tile.chem.ledger_window = (y.start, y.stop, x.start, x.stop)
+                self.buffers.append(gather.pinned_empty((len(self.names), n), "float64"))
+                self.events.append(cp.cuda.Event(disable_timing=True))
+        with cp.cuda.Device(run.devices[0]):
+            from tilestream.sfire_spotting import mapped_host_array
+            self.views = [mapped_host_array(a) for a in self.buffers]
+            self.vectors = GlobalSmokeLedger._vectors(run._home)
+            self.stream = cp.cuda.Stream(non_blocking=True)
+
+    def end(self):
+        import cupy as cp
+        run = self.run
+        for tile, dev, stream, buffer, event in zip(
+                run.tiles, run.devices, run.compute_streams, self.buffers, self.events):
+            with cp.cuda.Device(dev), stream:
+                for i, name in enumerate(self.names):
+                    getattr(tile, ledger_attr(name)).get(out=buffer[i], stream=stream, blocking=False)
+                event.record(stream)
+        with cp.cuda.Device(run.devices[0]), self.stream:
+            for event in self.events:
+                self.stream.wait_event(event)
+            before = sum((view[self.names.index("initial")] for view in self.views))
+            after = sum((view[self.names.index("current")] for view in self.views))
+            # Check the persisted flag on the owner GPU each step. A checkpoint
+            # can replace these mapped vectors after this owner was constructed.
+            fresh = self.vectors["started"] == 0
+            for name in ("initial", "current"):
+                self.vectors[name][...] = cp.where(fresh, before, self.vectors[name])
+            self.vectors["started"][...] = 1
+            self.vectors["transport"][...] += before - self.vectors["current"]
+            for name in LEDGER_BUCKETS:
+                for view in self.views:
+                    self.vectors[name][...] += view[self.names.index(name)]
+            self.vectors["current"][...] = after
+        # Domain vectors are mapped host storage, read by checkpoint/history.
+        # This also fences reuse of the tiny per-rank delta buffers.
+        self.stream.synchronize()

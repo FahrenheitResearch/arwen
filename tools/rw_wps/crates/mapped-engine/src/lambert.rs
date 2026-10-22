@@ -88,6 +88,8 @@ pub struct LambertGrid {
 
 impl LambertGrid {
     /// `ProjectedGrid.__init__` + `LambertGrid._setup`.
+    // Keep the WPS reference projection's numeric inputs in their audited order.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         ref_lat: f64,
         ref_lon: f64,
@@ -183,20 +185,32 @@ impl LambertGrid {
 /// Source-grid `(SINALPHA, COSALPHA)` over a declared Lambert grid, row
 /// major in (y, x) — `mapped_source._declared_grid_rotation`.
 pub fn declared_grid_rotation(parameters: &crate::model::LambertParameters) -> (Vec<f64>, Vec<f64>) {
+    declared_grid_rotation_within(
+        parameters, [0, parameters.ny as usize], [0, parameters.nx as usize])
+}
+
+/// [`declared_grid_rotation`] over rows `rows` and columns `columns` of the
+/// declared grid alone: the same per-cell arithmetic, so each value is the
+/// whole grid's value at that cell (a record decoded over an atmospheric
+/// window is rotated with these).
+pub fn declared_grid_rotation_within(
+    parameters: &crate::model::LambertParameters,
+    rows: [usize; 2],
+    columns: [usize; 2],
+) -> (Vec<f64>, Vec<f64>) {
     let grid = LambertGrid::from_declaration(parameters);
-    let nx = parameters.nx as usize;
-    let ny = parameters.ny as usize;
     // Each cell is its own projection inverse, so the rows run on every
     // core and are joined in row order: the same arithmetic per cell, the
     // same values.  Named breakage: one thread inverted all 1.9 million
     // cells of the 3 km CONUS grid for every decoded object, about 0.3 s
     // each with the pool idle.
-    let rows: Vec<(Vec<f64>, Vec<f64>)> = crate::threads::install(|| {
+    let out: Vec<(Vec<f64>, Vec<f64>)> = crate::threads::install(|| {
         use rayon::prelude::*;
-        (0..ny).into_par_iter().map(|row| {
-            let mut sina = Vec::with_capacity(nx);
-            let mut cosa = Vec::with_capacity(nx);
-            for column in 0..nx {
+        (rows[0]..rows[1]).into_par_iter().map(|row| {
+            let width = columns[1].saturating_sub(columns[0]);
+            let mut sina = Vec::with_capacity(width);
+            let mut cosa = Vec::with_capacity(width);
+            for column in columns[0]..columns[1] {
                 let (_latitude, longitude) =
                     grid.ij_to_latlon((column + 1) as f64,
                         row as f64 * parameters.dy_m / parameters.dx_m + 1.0);
@@ -213,9 +227,10 @@ pub fn declared_grid_rotation(parameters: &crate::model::LambertParameters) -> (
             (sina, cosa)
         }).collect()
     });
-    let mut sina = Vec::with_capacity(nx * ny);
-    let mut cosa = Vec::with_capacity(nx * ny);
-    for (row_sina, row_cosa) in rows {
+    let cells = rows[1].saturating_sub(rows[0]) * columns[1].saturating_sub(columns[0]);
+    let mut sina = Vec::with_capacity(cells);
+    let mut cosa = Vec::with_capacity(cells);
+    for (row_sina, row_cosa) in out {
         sina.extend_from_slice(&row_sina);
         cosa.extend_from_slice(&row_cosa);
     }
@@ -318,6 +333,26 @@ mod tests {
         let (sina, cosa) = declared_grid_rotation(&awips_212_style());
         for (sine, cosine) in sina.iter().zip(cosa.iter()) {
             assert!((sine * sine + cosine * cosine - 1.0).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn a_window_rotation_is_the_whole_rotation_at_those_cells_bit_for_bit() {
+        // Winds decoded over an atmospheric window are rotated with these;
+        // the published values must be the whole decode's, cropped.
+        let parameters = awips_212_style();
+        let nx = parameters.nx as usize;
+        let (sina, cosa) = declared_grid_rotation(&parameters);
+        let (rows, columns) = ([3, 17], [5, 29]);
+        let (wsin, wcos) = declared_grid_rotation_within(&parameters, rows, columns);
+        assert_eq!(wsin.len(), (rows[1] - rows[0]) * (columns[1] - columns[0]));
+        let mut position = 0;
+        for row in rows[0]..rows[1] {
+            for column in columns[0]..columns[1] {
+                assert_eq!(wsin[position].to_bits(), sina[row * nx + column].to_bits());
+                assert_eq!(wcos[position].to_bits(), cosa[row * nx + column].to_bits());
+                position += 1;
+            }
         }
     }
 }

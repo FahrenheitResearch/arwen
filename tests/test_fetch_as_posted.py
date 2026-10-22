@@ -208,6 +208,56 @@ def markers(out: Path) -> list[dict]:
             for path in sorted((out / "posting").glob("f[0-9][0-9][0-9].json"))]
 
 
+@pytest.mark.parametrize("outcome", ["posts", "stays_absent", "crosses_deadline"])
+@pytest.mark.parametrize("failed_lead", [0, 1])
+def test_legacy_absent_object_waits_then_posts_or_exits_75(
+        tmp_path, monkeypatch, outcome, failed_lead):
+    """A positive HEAD cannot turn a missing runtime object into a fatal
+    transfer, including when that transfer itself crosses late_at."""
+    from gpuwm.rustwx_fetch import RwFetchError
+
+    window = readiness.resolve_window("hrrr", CYCLE, 1)
+    late = rows.expected_at("hrrr", CYCLE, failed_lead) + timedelta(minutes=1)
+    clock = Clock(late - timedelta(seconds=1))
+    lines = []
+    loop = fetch_as_posted.PostingLoop(
+        window, tmp_path, late_after_minutes=1, probe=lambda url: True,
+        now=clock.now, sleep=clock.sleep, progress=lines.append)
+    # Keep the virtual clock and the real loop on one thread.
+    monkeypatch.setattr(loop, "watch", lambda: None)
+    attempts = []
+
+    def transfer(leads):
+        attempts.append(clock.now())
+        if len(attempts) == 1 or outcome == "stays_absent":
+            if outcome == "crosses_deadline":
+                clock.sleep(2)
+            raise RwFetchError(
+                "fetch", f"f{failed_lead:03d}: no source served this object -- aws: "
+                "the GRIB object is not present at this source", returncode=1)
+        path = tmp_path / "fetch-manifest.json"
+        path.write_text(json.dumps({"files": []}), encoding="utf-8")
+        return path
+
+    if outcome == "posts":
+        fetch_as_posted.fetch_legacy_as_posted(loop, transfer)
+        assert len(attempts) == 2
+        assert [item["lead"] for item in markers(tmp_path)] == [0, 1]
+    else:
+        with pytest.raises(fetch_as_posted.SourceBehind) as caught:
+            fetch_as_posted.fetch_legacy_as_posted(loop, transfer)
+        assert caught.value.exit_code == 75
+        assert caught.value.record["last_answer"] == readiness.NOT_POSTED
+        assert caught.value.record["lead"] == failed_lead
+        assert caught.value.record["late_at"] == rows.instant(late)
+        assert "has not posted by" in str(caught.value)
+        assert clock.now() >= late
+        assert len(attempts) == (1 if outcome == "crosses_deadline" else 2)
+        assert markers(tmp_path) == []
+    if outcome != "crosses_deadline":
+        assert any("is not fully posted yet" in line for line in lines)
+
+
 def test_markers_land_in_lead_order_as_each_lead_posts(replay, tmp_path):
     server, clock = replay(on_schedule)
     out = tmp_path / "gefs"
@@ -407,17 +457,6 @@ def test_a_verification_failure_is_fetched_again(replay, tmp_path):
     assert item["sha256"] == hashlib.sha256(payload(key[1:])).hexdigest()
 
 
-def test_side_by_side_backlog_keeps_markers_in_lead_order(replay, tmp_path):
-    # Every lead already posted (a late launch): moved side by side under
-    # the host caps, the markers still in lead order.
-    server, clock = replay(lambda lead, clock: clock.now() - timedelta(hours=1))
-    out = tmp_path / "gefs"
-    args = fetch_args(out)
-    args.fetch_workers = 4
-    assert fetch.fetch_main(args) == 0
-    assert [marker["lead"] for marker in markers(out)] == [0, 3, 6, 9, 12]
-
-
 def test_a_late_launch_marks_every_lead_up_when_first_asked(replay, tmp_path):
     """Through the fetch door: a window whose final lead had posted before
     the fetch began moves with no per-lead ask, and every lead says it was
@@ -426,12 +465,15 @@ def test_a_late_launch_marks_every_lead_up_when_first_asked(replay, tmp_path):
 
     server, clock = replay(lambda lead, clock: clock.now() - timedelta(hours=1))
     out = tmp_path / "gefs"
-    assert fetch.fetch_main(fetch_args(out)) == 0
+    args = fetch_args(out)
+    args.fetch_workers = 4
+    assert fetch.fetch_main(args) == 0
     assert [marker["posted_when_first_asked"] for marker in markers(out)] == [
         True] * 5
     schedule = json.loads((out / "posting" / "schedule.json").read_text())
     assert [row["posted_when_first_asked"] for row in schedule["leads"]] == [
         True] * 5
+    assert [marker["lead"] for marker in markers(out)] == [0, 3, 6, 9, 12]
 
 
 def comparable(manifest: dict) -> dict:
@@ -966,7 +1008,8 @@ def test_a_native_hrrr_host_that_refuses_index_head_still_fetches_as_posted(
     assert [lead for lead, _ in runtime_calls] == [0, 1]
     assert extraction_calls == [vegetation_selector] * 2
     assert [path for method, path, _ in host.requests
-            if method == "GET" and ".wrfsfcf" in path] == [
+            if method == "GET" and ".wrfsfcf" in path
+            and path.endswith(".grib2")] == [
         url.removeprefix(host.base) for _, url in runtime_calls]
     soils = [entry for entry in manifest["files"] if entry.get("role") == "soil"]
     assert len(soils) == 2

@@ -176,17 +176,30 @@ impl Device {
 /// `--row auto`: the first rule of the table's `auto` list whose limits the
 /// box meets (e.g. GLO-30 for small boxes, GLO-90 otherwise).
 pub fn resolve_row(table: &source::SourceTable, row: &str, b: &BBox) -> Result<String> {
+    resolve(table, row, b).map(|(r, _)| r)
+}
+
+/// The row and the integer factor its grid is coarsened by over this box
+/// (1: the row's own grid). A rule with `coarsen` keeps its row past
+/// `max_cells` on the coarsened grid; a named row coarsens only as far as the
+/// cell index needs. Either way no box is refused for its size.
+pub fn resolve(table: &source::SourceTable, row: &str, b: &BBox) -> Result<(String, u32)> {
+    let base = |id: &str| table.rows.iter().find(|r| r.id == id).and_then(|r| r.build.as_ref()).and_then(|s| s.grid_arcsec);
     if row != "auto" {
-        return Ok(row.to_string());
+        return Ok((row.to_string(), base(row).map_or(1, |res| grid::coarsening(b, res, None))));
     }
     for rule in &table.auto {
-        let r = table.rows.iter().find(|r| r.id == rule.row).ok_or_else(|| format!("auto rule names unknown row {}", rule.row))?;
-        let cells = match r.build.as_ref().and_then(|s| s.grid_arcsec) {
-            Some(res) => Grid::for_box(b, res).map(|g| g.len()).unwrap_or(usize::MAX),
-            None => 0,
+        table.rows.iter().find(|r| r.id == rule.row).ok_or_else(|| format!("auto rule names unknown row {}", rule.row))?;
+        let Some(res) = base(&rule.row) else {
+            return Ok((rule.row.clone(), 1));
         };
+        let (ny, nx) = Grid::dims(b, res);
+        let cells = ny.checked_mul(nx).unwrap_or(usize::MAX);
         if rule.max_cells.is_none_or(|m| cells <= m) {
-            return Ok(rule.row.clone());
+            return Ok((rule.row.clone(), grid::coarsening(b, res, None)));
+        }
+        if rule.coarsen {
+            return Ok((rule.row.clone(), grid::coarsening(b, res, rule.max_cells)));
         }
     }
     Err("--row auto: no rule of the source table's auto list fits this box".into())
@@ -203,10 +216,11 @@ pub fn build(o: &Options) -> Result<Built> {
     let mut rc = Receipt::default();
     let table_bytes = std::fs::read(&o.sources)?;
     let table = source::load(o.sources.to_str().ok_or("sources path")?)?;
-    let row_id = resolve_row(&table, &o.row, &o.bbox)?;
+    let (row_id, coarsen) = resolve(&table, &o.row, &o.bbox)?;
     let row = table.rows.iter().find(|r| r.id == row_id).ok_or_else(|| format!("no source row {row_id}"))?;
     source::admit_with(row, &o.accept)?;
     let spec = row.build.clone().ok_or_else(|| format!("source row {} has no build spec (its recipe lives in its owner's tool)", row.id))?;
+    rc.count("grid_coarsening", coarsen);
     let data_dir = o.sources.parent().unwrap_or(Path::new("."));
     let recipes = load_recipes(&data_dir.join(&spec.recipes))?;
     rc.count("source_row", &row.id);
@@ -215,8 +229,8 @@ pub fn build(o: &Options) -> Result<Built> {
     }
     rc.count("bbox", o.bbox);
     let hydro = match spec.method.as_str() {
-        "dem-d8" => dem_hydro(row, &spec, &o.bbox, &o.data_root, o.device, o.parent_grid.as_ref(), &mut rc)?,
-        "vector-basins" => crate::vector::vector_hydro(row, &spec, &o.bbox, &o.data_root, &mut rc)?,
+        "dem-d8" => dem_hydro(row, &spec, &o.bbox, &o.data_root, coarsen, o.device, o.parent_grid.as_ref(), &mut rc)?,
+        "vector-basins" => crate::vector::vector_hydro(row, &spec, &o.bbox, &o.data_root, coarsen, &mut rc)?,
         m => return Err(format!("build method {m} is not dem-d8 or vector-basins").into()),
     };
     let params = match &o.params {
@@ -232,11 +246,16 @@ pub fn build(o: &Options) -> Result<Built> {
 }
 
 pub fn load_tiles(row: &SourceRow, b: &BBox, root: &Path) -> Result<(HashMap<(i32, i32), tiff::Raster>, Vec<String>)> {
+    load_tile_list(row, root, &b.tiles())
+}
+
+/// Decode the named 1-degree DEM tiles on all threads; tiles listed in the
+/// tile directory's ABSENT.txt (open sea) come back in the second list.
+pub fn load_tile_list(row: &SourceRow, root: &Path, tiles: &[(i32, i32)]) -> Result<(HashMap<(i32, i32), tiff::Raster>, Vec<String>)> {
     let dem = row.inputs.get("dem").ok_or("row has no dem input")?;
     let pat = dem.local.as_deref().ok_or("dem input has no local tile pattern")?;
     let absent_file = root.join(Path::new(pat).parent().unwrap_or(Path::new(""))).join("ABSENT.txt");
     let absent: HashSet<String> = std::fs::read_to_string(&absent_file).map(|s| s.lines().map(|l| l.trim().to_string()).collect()).unwrap_or_default();
-    let tiles = b.tiles();
     let decoded: Vec<Result<Option<((i32, i32), tiff::Raster)>>> = tiles
         .par_iter()
         .map(|&(la, lo)| {
@@ -329,15 +348,70 @@ pub fn load_lakes(row: &SourceRow, spec: &BuildSpec, b: &BBox, root: &Path) -> R
 }
 
 /// Stage 1 and the sea mask: the working grid, the DEM on it, and the sea.
-pub fn prepare_dem(row: &SourceRow, spec: &BuildSpec, b: &BBox, root: &Path, rc: &mut Receipt) -> Result<(Grid, Vec<f32>, Vec<bool>)> {
-    let res = spec.grid_arcsec.ok_or("dem-d8 needs grid_arcsec")?;
-    let g = Grid::for_box(b, res)?;
+/// The DEM on the working grid: the row's own grid (`coarsen` 1, tiles
+/// mosaicked exactly) or that grid coarsened by `coarsen`, each cell the
+/// block mean of the row's own grid (grid::aggregate). The coarsened path
+/// streams 1-degree tile rows north to south, so host memory holds the
+/// tiles of at most the tile rows one band of coarse rows touches.
+pub fn dem_on_grid(row: &SourceRow, b: &BBox, root: &Path, res: f64, coarsen: u32, sea_value: Option<f32>, rc: &mut Receipt) -> Result<(Grid, Vec<f32>, Vec<bool>)> {
+    let g = Grid::for_box(b, res * coarsen as f64)?;
     rc.count("grid", g);
-    let (tiles, absent) = rc.time("1 read DEM tiles", &threads(), || load_tiles(row, b, root))?;
-    rc.count("dem_tiles_read", tiles.len());
-    rc.count("dem_tiles_absent_sea", absent);
-    let (z, missing) = rc.time("1 mosaic DEM onto grid", &threads(), || grid::mosaic(&g, &tiles))?;
-    drop(tiles);
+    if coarsen <= 1 {
+        let (tiles, absent) = rc.time("1 read DEM tiles", &threads(), || load_tiles(row, b, root))?;
+        rc.count("dem_tiles_read", tiles.len());
+        rc.count("dem_tiles_absent_sea", absent);
+        let (z, missing) = rc.time("1 mosaic DEM onto grid", &threads(), || grid::mosaic(&g, &tiles))?;
+        return Ok((g, z, missing));
+    }
+    rc.count("grid_coarsening_note", format!("working grid {}\" = {coarsen} x the row's {res}\" grid; each cell is the block mean of the {coarsen} x {coarsen} row-grid cells it holds", res * coarsen as f64));
+    let box_tiles = b.tiles();
+    let (la_min, la_max) = box_tiles.iter().fold((i32::MAX, i32::MIN), |(a, z), t| (a.min(t.0), z.max(t.0)));
+    let lat_tile = |lat: f64| ((lat - 1e-9).floor() as i32).clamp(la_min, la_max);
+    let span = |r: usize| {
+        let v: Vec<i32> = grid::block_lats(&g, coarsen, res, r).map(lat_tile).collect();
+        (*v.iter().min().unwrap(), *v.iter().max().unwrap())
+    };
+    let mut z = vec![0f32; g.len()];
+    let mut missing = vec![false; g.len()];
+    let (mut read, mut absent_all, mut peak_tiles) = (0usize, Vec::new(), 0usize);
+    let mut tiles: HashMap<(i32, i32), tiff::Raster> = HashMap::new();
+    let mut loaded_rows: HashSet<i32> = HashSet::new();
+    rc.time("1 read DEM tiles + block-mean onto the coarsened grid (tile rows streamed north to south)", &threads(), || -> Result<()> {
+        let mut r0 = 0;
+        while r0 < g.ny {
+            // One band: the coarse rows whose northernmost tile row is the same.
+            let (_, top) = span(r0);
+            let mut r1 = r0 + 1;
+            let mut bottom = span(r0).0;
+            while r1 < g.ny && span(r1).1 == top {
+                bottom = bottom.min(span(r1).0);
+                r1 += 1;
+            }
+            tiles.retain(|k, _| k.0 <= top);
+            loaded_rows.retain(|&la| la <= top);
+            let want: Vec<(i32, i32)> = box_tiles.iter().copied().filter(|t| t.0 >= bottom && t.0 <= top && !loaded_rows.contains(&t.0)).collect();
+            if !want.is_empty() {
+                let (m, absent) = load_tile_list(row, root, &want)?;
+                read += m.len();
+                absent_all.extend(absent);
+                tiles.extend(m);
+                loaded_rows.extend(want.iter().map(|t| t.0));
+            }
+            peak_tiles = peak_tiles.max(tiles.len());
+            grid::aggregate(&g, coarsen, res, &tiles, b, sea_value, r0..r1, &mut z[r0 * g.nx..r1 * g.nx], &mut missing[r0 * g.nx..r1 * g.nx])?;
+            r0 = r1;
+        }
+        Ok(())
+    })?;
+    rc.count("dem_tiles_read", read);
+    rc.count("dem_tiles_absent_sea", absent_all);
+    rc.count("dem_tiles_resident_peak", peak_tiles);
+    Ok((g, z, missing))
+}
+
+pub fn prepare_dem(row: &SourceRow, spec: &BuildSpec, b: &BBox, root: &Path, coarsen: u32, rc: &mut Receipt) -> Result<(Grid, Vec<f32>, Vec<bool>)> {
+    let res = spec.grid_arcsec.ok_or("dem-d8 needs grid_arcsec")?;
+    let (g, z, missing) = dem_on_grid(row, b, root, res, coarsen, spec.sea_value, rc)?;
     let sea = rc.time("2 sea mask", "1 thread (breadth-first flood from sea seeds; seeds found on all threads)", || flow::sea_mask(&g, &z, &missing, spec.sea_value));
     drop(missing);
     rc.count("sea_cells", sea.par_iter().filter(|s| **s).count());
@@ -405,12 +479,12 @@ pub fn per_cell_passes(g: &Grid, z: &[f32], sea: &[bool], spec: &BuildSpec, devi
 #[cfg(feature = "cuda")]
 pub fn compare_passes(o: &Options) -> Result<Value> {
     let table = source::load(o.sources.to_str().ok_or("sources path")?)?;
-    let row_id = resolve_row(&table, &o.row, &o.bbox)?;
+    let (row_id, coarsen) = resolve(&table, &o.row, &o.bbox)?;
     let row = table.rows.iter().find(|r| r.id == row_id).ok_or_else(|| format!("no source row {row_id}"))?;
     source::admit_with(row, &o.accept)?;
     let spec = row.build.clone().ok_or("row has no build spec")?;
     let mut prep = Receipt::default();
-    let (g, z, sea) = prepare_dem(row, &spec, &o.bbox, &o.data_root, &mut prep)?;
+    let (g, z, sea) = prepare_dem(row, &spec, &o.bbox, &o.data_root, coarsen, &mut prep)?;
     let mut cpu = Receipt::default();
     let tc = Instant::now();
     let (cf, cd, ca) = cpu_passes(&g, &z, &sea, &spec, &mut cpu)?;
@@ -447,9 +521,10 @@ pub fn compare_passes(o: &Options) -> Result<Value> {
     }))
 }
 
-fn dem_hydro(row: &SourceRow, spec: &BuildSpec, b: &BBox, root: &Path, device: Device, parent: Option<&crate::parent_grid::ParentGrid>, rc: &mut Receipt) -> Result<Hydro> {
+#[allow(clippy::too_many_arguments)]
+fn dem_hydro(row: &SourceRow, spec: &BuildSpec, b: &BBox, root: &Path, coarsen: u32, device: Device, parent: Option<&crate::parent_grid::ParentGrid>, rc: &mut Receipt) -> Result<Hydro> {
     let thr_km2 = spec.stream_threshold_km2.ok_or("dem-d8 needs stream_threshold_km2")?;
-    let (g, z, mut sea) = prepare_dem(row, spec, b, root, rc)?;
+    let (g, z, mut sea) = prepare_dem(row, spec, b, root, coarsen, rc)?;
     if let Some(parent) = parent {
         let excluded = rc.time("1 actual parent-grid domain mask", &threads(), || parent.mask(&g, &mut sea))?;
         rc.count("parent_grid", parent);

@@ -32,7 +32,6 @@ MOSAIC_TILE_FIELDS: tuple[str, ...] = tuple((
 MOSAIC_TILE_FIELDS = tuple(n + "_mosaic" for n in MOSAIC_TILE_FIELDS)
 MOSAIC_SOIL_FIELDS: tuple[str, ...] = ("tslb_mosaic", "smois_mosaic", "sh2o_mosaic")
 MOSAIC_CATEGORY_FIELDS: dict[str, str] = {"mosaic_cat_index": "int32", "landusef2": "float32"}
-DEFAULT_MOSAIC_CAT = 3
 MOSAIC_URBAN_TILE_FIELDS = tuple(n + "_urb2d_mosaic" for n in
     "tr tb tg tc qc uc ts ts_rul sh lh g rn".split())
 MOSAIC_URBAN_TILE_FIELDS = tuple("ts_rul2d_mosaic" if n == "ts_rul_urb2d_mosaic" else n
@@ -486,7 +485,7 @@ def launch_noah_mosaic(dev: dict, params, dt: float, dzs, *, mosaic_cat: int,
         function = _mosaic_kernel()
     else:
         from .urban_ucm import (
-            _checked, _pointer_table, _state_arrays, _packed, _device_params,
+            _checked, _pointer_table, _state_arrays, _device_params,
             _status_word, _jmonth, _raise_on, water_balance_params)
         for n, (shape, dtype) in mosaic_array_shapes(mosaic_cat, ny, nx, urban=True).items():
             _checked(dev[n], shape, n, getattr(cp, dtype))

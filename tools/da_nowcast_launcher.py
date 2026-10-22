@@ -390,17 +390,6 @@ def wizard_cmd(*, polygon: Path, out_toml: Path, dx_km: float,
     return argv
 
 
-def detected_vram_gib() -> float | None:
-    """This machine's card, if there is one; the wizard's own probe."""
-
-    try:
-        from gpuwm.domain_interactive import detected_vram_gib as probe
-
-        return probe()
-    except Exception:                       # no card, no driver, no CuPy
-        return None
-
-
 def fit_box(box: dict, *, dx_km: float, profile: str, hours: int,
             vram_gib: float | None, work_dir: Path) -> dict:
     """Ask the wizard what grid this box makes, and whether it fits.

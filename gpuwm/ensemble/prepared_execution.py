@@ -41,6 +41,8 @@ def member_device_ids_for_request(inputs, request, *, visible_count, current_dev
     if int(getattr(spatial, "count", 1)) > 1:
         from gpuwm.core.devices import validate_device_count
         validate_device_count(spatial, visible_count)
+        from gpuwm.free_threading import refuse_multi_card_under_gil
+        refuse_multi_card_under_gil(spatial.count, "gpuwm ensemble")
         # One member owns the entire original graph. Another member may not
         # start on a card that is already serving its sibling spatial rank.
         graph = spatial.device_ids()

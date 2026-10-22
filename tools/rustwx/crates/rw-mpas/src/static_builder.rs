@@ -95,10 +95,8 @@ fn static_topology_words<'a>(raw: &'a [i32], stride: usize, counts: &[usize], na
 ///   model wants a FRACTION, so honouring the archive alone hands the
 ///   radiation scheme a snow albedo of 84, which is not an albedo at all.
 ///
-/// They are constants rather than branches so the next field's conversion is a
-/// value and not a code path.
-pub const GREENFRAC_MODEL_SCALE: f32 = 100.0;
-/// See [`GREENFRAC_MODEL_SCALE`].
+/// Green fractions retain their raw percent convention through `MeanPolicy::Green`;
+/// snow albedo uses the model-side scale below.
 pub const SNOALB_MODEL_SCALE: f32 = 0.01;
 
 #[derive(Debug, Clone)]
@@ -199,14 +197,23 @@ pub const NOMINAL_DX_CROSS_CHECK_RELATIVE: f64 = 1e-3;
 /// door's completeness check looks for, so the three cannot drift apart.
 /// WHERE under the root a directory sits is [`GEOG_CONTAINER_TABLE`]'s
 /// business, resolved by [`resolve_geog_dataset_dir`].
+///
+/// The soil category and deep-soil temperature rows are the permissive
+/// sources (Drew, 2026-10-14: no default path into data whose licence limits
+/// sale or use; 2026-10-21: non-permissive WPS_GEOG soil sources are held out
+/// of the default set): SoilGrids250m's `texture_top` (CC BY 4.0, the same 16
+/// categories as STATSGO/FAO) and the ERA5 climatology `gpuwm fetch-geog`
+/// builds in `soiltemp_1deg`'s exact layout. MPAS-A's own STATSGO/FAO tiles
+/// and ISLSCP-I `soiltemp_1deg` are rows of [`MPAS_STATIC_SOURCE_TABLE`],
+/// read only when named.
 pub const GEOG_DATASET_TABLE: [(&str, &str); 12] = [
     ("terrain", "topo_gmted2010_30s"),
     ("landuse", "modis_landuse_20class_30s_with_lakes"),
-    ("soilcat", "soiltype_top_30s"),
+    ("soilcat", "texture_top"),
     ("greenfrac", "greenfrac_fpar_modis"),
     ("albedo", "albedo_modis"),
     ("snow_albedo", "maxsnowalb_modis"),
-    ("soil_temperature", "soiltemp_1deg"),
+    ("soil_temperature", "soiltemp_era5_1deg"),
     ("soilcomp", "soilcomp"),
     ("soilcl1", "texture_layer1"),
     ("soilcl2", "texture_layer2"),
@@ -223,8 +230,11 @@ pub const MPAS_STATIC_SOURCE_TABLE: &[(&str,&str,&str)] = &[
     ("landuse-data","USGS","landuse_30s"),
     ("landuse-data","MODIFIED_IGBP_MODIS_NOAH","modis_landuse_20class_30s"),
     ("landuse-data","MODIFIED_IGBP_MODIS_NOAH_15s","modis_landuse_20class_15s"),
+    ("soilcat-data","SOILGRIDS","texture_top"),
     ("soilcat-data","STATSGO","soiltype_top_30s"),
     ("soilcat-data","BNU","bnu_soiltype_top"),
+    ("soiltemp-data","ERA5","soiltemp_era5_1deg"),
+    ("soiltemp-data","ISLSCP","soiltemp_1deg"),
     ("vegfrac-data","MODIS","greenfrac_fpar_modis"),
     ("vegfrac-data","NCEP","greenfrac"),
     ("albedo-data","MODIS","albedo_modis"),
@@ -233,11 +243,32 @@ pub const MPAS_STATIC_SOURCE_TABLE: &[(&str,&str,&str)] = &[
     ("maxsnowalbedo-data","NCEP","maxsnowalb"),
 ];
 
+/// The terms of a dataset the default geography holds out, quoted from its
+/// own documentation (gpuwm/geog_assets.py carries the same lines), or None.
+pub fn held_out_terms(dataset: &str) -> Option<&'static str> {
+    match dataset {
+        "soiltype_top_30s" | "soiltype_bot_30s" => Some(
+            "FAO-UNESCO Digital Soil Map of the World outside CONUS: \"(C) FAO/UNESCO, 1995 All \
+             rights reserved worldwide\", \"The user shall not reproduce for the benefit of third \
+             parties the data\" (DSMW notes v3.6, https://swat.tamu.edu/media/116411/notes.txt): \
+             not permissive"),
+        "soiltemp_1deg" => Some(
+            "ISLSCP-I 1987-88 ECMWF annual-mean temperature; CEDA's record states Permitted Use \
+             \"Unstated\" (https://catalogue.ceda.ac.uk/uuid/b9c3effaab9fe9a2206b58af500f157d): \
+             licence unclear"),
+        _ => None,
+    }
+}
+
 /// MPAS: mpas_init_atm_static.F:369-447,488-1198 (dataset selection).
 pub fn select_static_source(cfg: &mut StaticBuildConfig, root: &Path, slot: &str, choice: &str) -> MpasResult<()> {
     let dataset=MPAS_STATIC_SOURCE_TABLE.iter().find(|(s,c,_)| *s==slot && *c==choice)
         .ok_or_else(|| MpasError::Refusal(format!("unsupported MPAS static {slot}={choice}")))?.2;
     let path=resolve_geog_dataset_dir(root,dataset);
+    if let Some(terms)=held_out_terms(dataset) {
+        eprintln!("geography: {dataset} ({slot} {choice}) is held out of the default geography \
+                   and read here only because it was named -- {terms}");
+    }
     match slot {
         "topo-data" => cfg.geog.terrain=path,
         "landuse-data" => {
@@ -245,6 +276,7 @@ pub fn select_static_source(cfg: &mut StaticBuildConfig, root: &Path, slot: &str
             cfg.stages.landuse_label=Some(if choice=="USGS" { "USGS" } else { "MODIFIED_IGBP_MODIS_NOAH" }.into());
         },
         "soilcat-data" => cfg.geog.soilcat=path,
+        "soiltemp-data" => cfg.geog.soil_temperature=path,
         "vegfrac-data" => { cfg.geog.greenfrac=path; cfg.stages.vegetation_ncep=choice=="NCEP"; },
         "albedo-data" => { cfg.geog.albedo=path; cfg.stages.albedo_ncep=choice=="NCEP"; },
         "maxsnowalbedo-data" => { cfg.geog.snow_albedo=path; cfg.stages.snow_ncep=choice=="NCEP"; },
@@ -1842,14 +1874,10 @@ fn categorical_with(
     Ok((out, cmin, cmax, ds))
 }
 
-// Kept in the receipt ABI. MPAS uses field-specific fixed fills and never
-// propagates a cell mean across neighboring cells.
-fn take_spread_rounds() -> usize { 0 }
-
 thread_local! {
     /// How many cells the last continuous or categorical pass seeded from the
     /// pixel under their centre because no tile pixel reached them.  Read and
-    /// cleared by the receipt on the building thread, like `take_spread_rounds`.
+    /// cleared by the receipt on the building thread.
     static CENTRE_SEEDED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
@@ -2308,30 +2336,6 @@ fn dataset_footprint(path: &Path, factor: usize, planes_held: usize) -> MpasResu
     })
 }
 
-/// The sampling rate each CATEGORICAL dataset gets for one mesh.
-///
-/// Derived once and used in two places -- the memory the admission gate plans
-/// against and the passes that spend it -- because a factor computed twice is
-/// two things to keep equal, and the one that would drift is the one the
-/// budget was granted for.
-#[derive(Debug, Clone, Copy)]
-struct CategoricalFactors {
-    landuse: usize,
-    soilcat: usize,
-    soilcl: [usize; 4],
-}
-
-/// MPAS: mpas_init_atm_static.F:404-447,1199-1250.
-fn categorical_factors(_mesh: &Mesh, cfg: &StaticBuildConfig) -> MpasResult<CategoricalFactors> {
-    validate_supersample(cfg.supersample_landuse)?;
-    validate_supersample(cfg.supersample_30s)?;
-    Ok(CategoricalFactors {
-        landuse: cfg.supersample_landuse,
-        soilcat: cfg.supersample_30s,
-        soilcl: [cfg.supersample_30s; 4],
-    })
-}
-
 /// The resident, per-worker and cache terms the admission gate plans against.
 fn build_footprint(mesh: &Mesh, cfg: &StaticBuildConfig) -> MpasResult<(u64, u64, u64, u64)> {
     let resident = ((mesh.n_cells * (12 + 8 + 4) * 8)
@@ -2346,19 +2350,20 @@ fn build_footprint(mesh: &Mesh, cfg: &StaticBuildConfig) -> MpasResult<(u64, u64
     let soilcomp_planes = if cfg.stages.noahmp { GeogDataset::open(&g.soilcomp)?.index.nz() } else { 8 };
     // MPAS uses exactly the configured sampling factor. Plan the same maps
     // the passes build, including their supersampling square.
-    let cat = categorical_factors(mesh, cfg)?;
+    validate_supersample(cfg.supersample_landuse)?;
+    validate_supersample(cfg.supersample_30s)?;
     let specs: [(&PathBuf, usize, usize); 11] = [
         (&g.terrain, cfg.supersample_30s, 1),
-        (&g.landuse, cat.landuse, 1),
-        (&g.soilcat, cat.soilcat, 1),
+        (&g.landuse, cfg.supersample_landuse, 1),
+        (&g.soilcat, cfg.supersample_30s, 1),
         (&g.greenfrac, cfg.supersample_30s, 1),
         (&g.albedo, cfg.supersample, 1),
         (&g.snow_albedo, cfg.supersample, 1),
         (&g.soilcomp, cfg.supersample_30s, soilcomp_planes),
-        (&g.soilcl1, cat.soilcl[0], 1),
-        (&g.soilcl2, cat.soilcl[1], 1),
-        (&g.soilcl3, cat.soilcl[2], 1),
-        (&g.soilcl4, cat.soilcl[3], 1),
+        (&g.soilcl1, cfg.supersample_30s, 1),
+        (&g.soilcl2, cfg.supersample_30s, 1),
+        (&g.soilcl3, cfg.supersample_30s, 1),
+        (&g.soilcl4, cfg.supersample_30s, 1),
     ];
 
     let mut per_worker = 0u64;
@@ -2518,7 +2523,7 @@ struct GeographyFields {
     landmask: Vec<i32>,
     ivgtyp: Vec<i32>,
     isltyp: Vec<i32>,
-    /// `[cell][month]`, in PERCENT. See [`GREENFRAC_MODEL_SCALE`].
+    /// `[cell][month]`, in PERCENT.
     greenfrac: Vec<f32>,
     /// `[cell][month]`, in percent, as the archive delivers it.
     albedo12m: Vec<f32>,
@@ -3295,19 +3300,15 @@ pub fn build_static_reporting(
         vec![],
     );
 
-    // The sampling rate every CATEGORICAL source needs for THIS mesh, derived
-    // from the mesh's own smallest cell.  Same function the admission gate
-    // planned the memory with, so the pass cannot spend more than was granted.
-    let cat_factors = categorical_factors(&mesh, &cfg)?;
+    validate_supersample(cfg.supersample_landuse)?;
+    validate_supersample(cfg.supersample_30s)?;
 
     let mut datasets = Vec::new();
     let mut time_field = |field: &str, path: &Path, factor: usize, f: &mut dyn FnMut() -> MpasResult<(u64, u64)>| -> MpasResult<()> {
         let started = Instant::now();
         memory.event(field, Some(path), "before dataset", None, None, None, vec![]);
-        take_spread_rounds();
         take_centre_seeded();
         let (plane_bytes, dest_bytes) = f()?;
-        let spread_rounds = take_spread_rounds();
         let centre_seeded_cells = take_centre_seeded();
         memory.event(
             field,
@@ -3336,7 +3337,7 @@ pub fn build_static_reporting(
             supersample: factor,
             destination_bytes: dest_bytes,
             elapsed_seconds: elapsed,
-            spread_rounds,
+            spread_rounds: 0,
             centre_seeded_cells,
         });
         Ok(())
@@ -3354,9 +3355,9 @@ pub fn build_static_reporting(
 
     let mut ivgtyp = Vec::new();
     let mut landuse_ds_opt = None;
-    time_field("landuse", &cfg.geog.landuse, cat_factors.landuse, &mut || {
+    time_field("landuse", &cfg.geog.landuse, cfg.supersample_landuse, &mut || {
         let (v, _, _, ds) =
-            categorical_with(&ctx, &cfg.geog.landuse, cat_factors.landuse, cfg.stages.native_init)?;
+            categorical_with(&ctx, &cfg.geog.landuse, cfg.supersample_landuse, cfg.stages.native_init)?;
         ivgtyp = v;
         let pb = ds.plane_bytes();
         landuse_ds_opt = Some(ds);
@@ -3367,8 +3368,8 @@ pub fn build_static_reporting(
     let isice_lu = landuse_ds.index.isice.unwrap_or(15) as i32;
     let mut iswater_soil = 14;
     let mut isltyp = Vec::new();
-    time_field("soilcat_top", &cfg.geog.soilcat, cat_factors.soilcat, &mut || {
-        let (v, _, _, ds) = categorical(&ctx, &cfg.geog.soilcat, cat_factors.soilcat)?;
+    time_field("soilcat_top", &cfg.geog.soilcat, cfg.supersample_30s, &mut || {
+        let (v, _, _, ds) = categorical(&ctx, &cfg.geog.soilcat, cfg.supersample_30s)?;
         isltyp = v;
         iswater_soil = ds.index.isoilwater.unwrap_or(14) as i32;
         Ok((ds.plane_bytes(), (isltyp.len() * 4) as u64))
@@ -3451,8 +3452,8 @@ pub fn build_static_reporting(
     for idx in 0..4 {
         if !cfg.stages.noahmp { break; }
         let field = format!("soilcl{}", idx + 1);
-        time_field(&field, paths[idx], cat_factors.soilcl[idx], &mut || {
-            let (v, _, _, ds) = categorical(&ctx, paths[idx], cat_factors.soilcl[idx])?;
+        time_field(&field, paths[idx], cfg.supersample_30s, &mut || {
+            let (v, _, _, ds) = categorical(&ctx, paths[idx], cfg.supersample_30s)?;
             soilcls[idx] = v;
             Ok((ds.plane_bytes(), (soilcls[idx].len() * 4) as u64))
         })?;
@@ -3833,10 +3834,8 @@ pub fn build_terrain_reporting(
         workers: plan.workers, pool: pool.as_ref(), cache: &cache,
     };
     let started = Instant::now();
-    take_spread_rounds();
     take_centre_seeded();
     let (terrain, dataset) = continuous_mean(&ctx, &cfg.geog.terrain, cfg.supersample_30s, None, MeanPolicy::Terrain)?;
-    let spread_rounds = take_spread_rounds();
     let centre_seeded_cells = take_centre_seeded();
     if dataset.index.nz() != 1 {
         return Err(MpasError::Refusal("terrain source must have one plane".to_string()));
@@ -3860,7 +3859,7 @@ pub fn build_terrain_reporting(
             field: "ter".to_string(), path: cfg.geog.terrain.display().to_string(),
             tiles: dataset.tiles.len(), source_plane_bytes: dataset.plane_bytes(),
             supersample: cfg.supersample, destination_bytes: (terrain.len() * 4) as u64,
-            elapsed_seconds: elapsed, spread_rounds, centre_seeded_cells,
+            elapsed_seconds: elapsed, spread_rounds: 0, centre_seeded_cells,
         }],
         parallel: plan,
         variables: ["ter", "areaCell", "dvEdge", "dcEdge", "deriv_two", "areaTriangle", "kiteAreasOnVertex", "weightsOnEdge", "nominalMinDc", "latCell", "lonCell", "xCell", "yCell", "zCell", "latEdge", "lonEdge", "xEdge", "yEdge", "zEdge", "latVertex", "lonVertex", "xVertex", "yVertex", "zVertex"].iter().map(|s| s.to_string()).collect(),
@@ -3881,8 +3880,8 @@ mod tests {
     fn one_refusal_names_every_missing_native_dataset() {
         let root = std::env::temp_dir().join(format!("rw-mpas-wrf-only-geog-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        for dir in ["topo_gmted2010_30s","modis_landuse_20class_30s_with_lakes","soiltype_top_30s",
-                    "greenfrac_fpar_modis","albedo_modis","maxsnowalb_modis","soiltemp_1deg",
+        for dir in ["topo_gmted2010_30s","modis_landuse_20class_30s_with_lakes","soilgrids/texture_top",
+                    "greenfrac_fpar_modis","albedo_modis","maxsnowalb_modis","soiltemp_era5_1deg",
                     "soilgrids/soilcomp","soilgrids/texture_layer1","soilgrids/texture_layer2",
                     "soilgrids/texture_layer3","soilgrids/texture_layer4"] {
             std::fs::create_dir_all(root.join(dir)).unwrap();
@@ -4025,6 +4024,8 @@ mod tests {
         assert_eq!(
             paths.missing(),
             vec![
+                // The default soil category (2026-10-21) is a container child too.
+                "texture_top".to_string(),
                 "soilcomp".to_string(),
                 "texture_layer1".to_string(),
                 "texture_layer2".to_string(),

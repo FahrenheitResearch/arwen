@@ -16,41 +16,16 @@ that decode in Python and then assert the restatement agrees with itself.
 from __future__ import annotations
 
 import functools
-import hashlib
-import json
-import struct
 import subprocess
 
 import numpy as np
 import pytest
 
 from gpuwm.obs import frontdoor, obspack, opera, sources
+from test_obs_battery_ingest import build_pack
 
 
 # --------------------------------------------------------------- fixtures
-
-def build_pack(meta: dict, arrays: dict[str, np.ndarray]) -> bytes:
-    """Assemble a GPWMOBS1 pack the way the Rust writer does."""
-
-    payload = b""
-    index = {}
-    for key, array in arrays.items():
-        dtype = "<u1" if array.dtype == np.uint8 else "<f8"
-        data = array.astype(np.dtype(dtype)).tobytes(order="C")
-        index[key] = {"dtype": dtype, "shape": list(array.shape),
-                      "offset": len(payload), "bytes": len(data)}
-        payload += data
-    meta = dict(meta)
-    meta["arrays"] = index
-    meta["payload_bytes"] = len(payload)
-    meta["content_sha256"] = hashlib.sha256(payload).hexdigest()
-    blob = json.dumps(meta).encode()
-    header = (obspack.PACK_MAGIC
-              + struct.pack("<II", obspack.PACK_VERSION, len(blob))
-              + struct.pack("<Q", len(payload)))
-    header += b"\0" * (obspack.PACK_HEADER_BYTES - len(header))
-    return header + blob + payload
-
 
 def opera_grid_pack(valid_time="2026-08-12T19:30:00", *, values=None,
                     observed_fraction=None) -> bytes:

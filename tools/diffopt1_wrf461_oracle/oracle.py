@@ -23,8 +23,14 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import sys
 
 import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from tools.smag2d_wrf461_oracle.oracle import (  # noqa: E402
+    _col as _col, _core as _core, _pad as _pad, _pad2 as _pad2,
+)
 
 F32 = np.float32
 H = 5          # Fortran halo: memory -4..n+5, interior 1..n at python offset 5
@@ -124,33 +130,6 @@ def make_cases(args):
 
 
 # ---------------------------------------------------------------- WRF side
-
-def _pad(field, nx, ny, nz):
-    """Engine (k, j, i) interior into WRF (i, k, j) memory with zero halos."""
-    f = np.asarray(field, F32)
-    out = np.zeros((nx + 2 * H, nz + 1, ny + 2 * H), F32, order="F")
-    kk, jj, ii = f.shape
-    out[H:H + ii, :kk, H:H + jj] = f.transpose(2, 0, 1)
-    return out
-
-
-def _pad2(field, nx, ny):
-    f = np.asarray(field, F32)
-    out = np.zeros((nx + 2 * H, ny + 2 * H), F32, order="F")
-    out[H:H + f.shape[1], H:H + f.shape[0]] = f.T
-    return out
-
-
-def _core(a, nx, ny, nz, sx=0, sy=0, sz=0):
-    return np.ascontiguousarray(a[H:H + nx + sx, :nz + sz, H:H + ny + sy].transpose(1, 2, 0))
-
-
-def _col(v, nz):
-    out = np.zeros(nz + 1, F32)
-    v = np.asarray(v, F32)
-    out[:v.size] = v
-    return out
-
 
 OUT3 = ("z", "rdz", "rdzw", "zx", "zy", "div", "d11", "d22", "d33", "d12", "d13", "d23",
         "kmh", "kmv", "khh", "khv", "bn2", "tu", "tv", "tw", "tth", "ttke")

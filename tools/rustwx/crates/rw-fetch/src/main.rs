@@ -27,6 +27,7 @@ mod stream;
 mod assets;
 mod bz2par;
 mod objects;
+mod cyclone;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -70,6 +71,7 @@ usage: rw_fetch <fetch|probe|latest> [OPTIONS]
        rw_fetch unpack-audit --input ARCHIVE --output NEW_DIR --datasets NAME,NAME
        rw_fetch decode --input FILE --output NEW_FILE --codec <zstd|bz2|gz>
        rw_fetch <inventory|objects> --request JSON   (public-object NDJSON)
+       rw_fetch <cyclone-tracks|cyclone-score> --request JSON
        rw_fetch --version | --help | --abi
 
   fetch    download a model-run window and print a fetch record
@@ -199,6 +201,18 @@ fn failure_text(failure: &Failure) -> String {
 fn main() -> ExitCode {
     let _ = std::hint::black_box(GPUWM_BRIDGE_SOURCE_REV_STAMP);
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|x| x == "cyclone-score") {
+        return match cyclone::score(&args) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(reason) => {eprintln!("rw_fetch cyclone-score: {reason}"); ExitCode::from(EXIT_REFUSED)}
+        };
+    }
+    if args.first().is_some_and(|x| x == "cyclone-tracks") {
+        return match cyclone::run(&args) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(reason) => {eprintln!("rw_fetch cyclone-tracks: {reason}"); ExitCode::from(EXIT_REFUSED)}
+        };
+    }
     if matches!(args.first().map(String::as_str), Some("inventory" | "objects")) {
         return match objects::run(&args) {
             Ok(()) => ExitCode::SUCCESS,

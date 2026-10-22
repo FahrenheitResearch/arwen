@@ -12,7 +12,8 @@
 extern "C" __global__ void chem_row_mass(
     const unsigned long long* fields, const float* mub2d, const float* mup,
     const float* c1h, const float* c2h, const float* dnw, const float* msft,
-    int has_msf, int nz, int ny, int nx, double* partial)
+    int has_msf, int nz, int ny, int nx,
+    int j0, int j1, int i0, int i1, double* partial)
 {
     __shared__ double sh[LEDGER_THREADS];
     const int row = blockIdx.x;
@@ -25,7 +26,7 @@ extern "C" __global__ void chem_row_mass(
     const size_t plane = (size_t)j * nx;
     const size_t base = ((size_t)k * ny + j) * nx;
     double acc = 0.0;
-    for (int i = threadIdx.x; i < nx; i += LEDGER_THREADS) {
+    for (int i = i0 + threadIdx.x; j >= j0 && j < j1 && i < i1; i += LEDGER_THREADS) {
         double w = c1 * ((double)mub2d[plane + i] + (double)mup[plane + i])
                    + c2;
         if (has_msf) {

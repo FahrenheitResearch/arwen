@@ -565,10 +565,7 @@ def _pair_array(value, shape, name: str, out=None):
         return out
     if array.flags.f_contiguous:
         return array
-    if out is None:
-        return cp.asfortranarray(array)
-    out[...] = array
-    return out
+    return cp.asfortranarray(array)
 
 
 def launch_mynn_level2_pairs(
@@ -1034,51 +1031,6 @@ _TENDENCIES_LAYER_SCRATCH = (
 )
 
 
-def _tendency_flag_identity_cuda(
-    flag_qc: bool,
-    flag_qi: bool,
-    flag_qs: bool,
-    flag_qnc: bool,
-    flag_qni: bool,
-    flag_qnwfa: bool,
-    flag_qnifa: bool,
-    flag_qnbca: bool,
-    flag_ozone: bool,
-    bl_mynn_mixscalars: int = 0,
-) -> None:
-    """Device-side twin of :func:`gpuwm.core.mynn_pbl._tendency_flag_identity`."""
-
-    if flag_qc is not True or flag_qi is not True:
-        raise ValueError("MYNN tendency lane requires FLAG_QC and FLAG_QI")
-    if type(flag_qs) is not bool:
-        raise TypeError("MYNN tendency lane requires FLAG_QS boolean")
-    # W4 mixscalars GPU admission (this wave; CPU twin admitted the same
-    # combo): with bl_mynn_mixscalars=1 the five qn-family flags are
-    # REQUIRED true — the anchored fixture family pins exactly that combo,
-    # and a false flag names a column the solve would read and the
-    # state does not allocate.
-    qn_flags = (
-        ("FLAG_QNC", flag_qnc), ("FLAG_QNI", flag_qni),
-        ("FLAG_QNWFA", flag_qnwfa), ("FLAG_QNIFA", flag_qnifa),
-        ("FLAG_QNBCA", flag_qnbca),
-    )
-    if bl_mynn_mixscalars == 1:
-        for name, flag in qn_flags:
-            if flag is not True:
-                raise ValueError(
-                    f"MYNN bl_mynn_mixscalars=1 mixes all five qn "
-                    f"columns and {name} says its column is absent. "
-                    "Select mp_physics=28, which carries the family, or "
-                    "bl_mynn_mixscalars=0."
-                )
-    else:
-        for name, flag in qn_flags:
-            if flag is not False:
-                raise ValueError(f"MYNN tendency lane requires {name} false")
-    if flag_ozone is not False:
-        raise ValueError("MYNN tendency lane requires FLAG_OZONE false")
-
-
 #: The MYNN generations the column solver carries, by source
 #: (RunConfig.bl_mynn_version).  ``wrf_461`` compiles mynn_pbl.cu as
 #: written; ``gsd_41`` compiles the same file with MYNN_GSD41 defined, which
@@ -1246,7 +1198,7 @@ def mynn_tendencies_nomf_cuda(
             "bl_mynn_mixscalars=1 has nothing to mix here. Run the "
             "mass-flux lane (bl_mynn_edmf=1) or set "
             "bl_mynn_mixscalars=0.")
-    _tendency_flag_identity_cuda(
+    _tendency_flag_identity(
         flag_qc, flag_qi, flag_qs, flag_qnc, flag_qni,
         flag_qnwfa, flag_qnifa, flag_qnbca, flag_ozone,
     )
@@ -1320,7 +1272,7 @@ def mynn_tendencies_default_cuda(
         raise ValueError(
             "MYNN tendency lane requires bl_mynn_mixscalars in {0,1}"
         )
-    _tendency_flag_identity_cuda(
+    _tendency_flag_identity(
         flag_qc, flag_qi, flag_qs, flag_qnc, flag_qni,
         flag_qnwfa, flag_qnifa, flag_qnbca, flag_ozone,
         bl_mynn_mixscalars,
@@ -1638,11 +1590,9 @@ def mynn_dmp_mf_cuda(
         )
         return result
 
-    # bl_mynn_mixscalars == 1: the SIBLING unit (kernels/
-    # mynn_dmp_sibling.cu) — a normalized-diff-proven byte copy of the
-    # frozen kernel whose only additions export the four plume-edge terms
-    # the flux kernel needs.  Local imports so the mixscalars=0 lane
-    # never loads either module.
+    # The logical sibling compiles mynn_pbl.cu with MYNN_EXPORT_PLUME_EDGE.
+    # Keep its loader name: it has its own FTZ policy and registered literals.
+    # Local imports keep scalar-mixing modules off the default path.
     import dataclasses
 
     from gpuwm.core.mynn_pbl import MYNN_DMP_MF_QN_COLUMN_INPUTS

@@ -25,6 +25,8 @@ from gpuwm.experiment import (active_experiment, dormant_domain_ids,
                               refuse_unrouted_spawn,
                               validate_spawn_placement)
 
+from test_storm_tracking import StubState, _bump
+
 # ---------------------------------------------------------------------------
 # Shared fixtures
 # ---------------------------------------------------------------------------
@@ -82,26 +84,6 @@ def _write(tmp_path, d02="", text=None):
     path.write_text(textwrap.dedent(text if text is not None
                                     else BASE.format(d02=d02)))
     return path
-
-
-class StubState:
-    """LOUD stub of the one surface the watch reads: named scratch planes."""
-
-    def __init__(self, **planes):
-        self._planes = {k: np.asarray(v) for k, v in planes.items()}
-
-    def existing_scratch(self, slot):
-        return self._planes.get(slot)
-
-    def __getattr__(self, name):
-        raise AttributeError(
-            f"StubState exposes only existing_scratch(); {name!r} was read")
-
-
-def _bump(cj, ci, amp, sigma=2.0, shape=(PARENT_NY, PARENT_NX)):
-    jj, ii = np.mgrid[0:shape[0], 0:shape[1]]
-    return amp * np.exp(-(((ii - ci) ** 2 + (jj - cj) ** 2)
-                          / (2.0 * sigma ** 2)))
 
 
 def _state(uh=None):

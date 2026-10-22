@@ -36,6 +36,7 @@ pub mod fp32metrics;
 pub mod geog;
 pub mod schema;
 
+#[cfg(test)]
 use crate::mesh::geom::EARTH_RADIUS_M;
 
 /// Fields written as a bitwise +0 PLACEHOLDER, not as values.
@@ -60,9 +61,6 @@ pub const ZERO_PLACEHOLDER_FIELDS: [&str; 4] = [
     "localVerticalUnitVectors",
     "cellTangentPlane",
 ];
-
-/// The earth radius a static is written on unless a caller says otherwise.
-pub const DEFAULT_SPHERE_RADIUS: f64 = EARTH_RADIUS_M;
 
 #[cfg(test)]
 mod tests {

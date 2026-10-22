@@ -2409,20 +2409,6 @@ class VortexFix:
             return None
         return signal_extremum(self.found, self.field_used)
 
-    @property
-    def level_spread_cells(self) -> float | None:
-        """Greatest distance between any two per-level centres.
-
-        The tilt, in one number.  A deep-layer mean is the right thing to
-        steer on, and it is also the number that hides a sheared storm --
-        so the spread rides alongside it and lands on every receipt.
-        """
-        if len(self.levels) < 2:
-            return None
-        return max(
-            math.hypot(a.ci - b.ci, a.cj - b.cj)
-            for a in self.levels for b in self.levels)
-
 
 # ---------------------------------------------------------------------------
 # The tracker (the plan provider)
@@ -2430,6 +2416,116 @@ class VortexFix:
 
 #: The two cooldown anchors, as a checkpoint's follower entry names them.
 TRACKER_STATE_KEYS = ("last_proposal_t", "last_move_t")
+#: The tracker's optional restart keys: the MSLP motion fix, and the two
+#: halves of the parking rule (when the storm-identity test last started
+#: failing, and the park itself once the track has ended).
+TRACKER_OPTIONAL_STATE_KEYS = ("motion_fix", "lost_since", "parked")
+
+# ---------------------------------------------------------------------------
+# Storm identity (MSLP-minimum following) and parking
+# ---------------------------------------------------------------------------
+#
+# THE BREAKAGE THIS CLOSES (WOOF 1.1 readiness g4, GFS Isaias, 12 km parent
+# with a 3 km following nest): an MSLP-minimum follower took the lowest cell
+# of its search box as "the centre" under an absolute 1100 hPa ceiling that
+# every cell clears.  After the storm left the parent (the track writer ended
+# at 2026-10-12_08:45) the nest made 60+ more moves on no storm -- pinned on
+# the parent's east edge, then to Iowa and back to Pennsylvania along
+# search-box-edge minima -- so the d02 maps from about f040 showed farmland.
+#
+# The rules, in order, for pressure_center = "minimum":
+#   1. The track writer's end (the tracked minimum reached the PARENT's own
+#      boundary) parks the nest for the rest of the run, for every tracked
+#      field: the mover never follows a fix the track itself has ended on.
+#   2. A minimum is a storm centre only if it is a closed low: not on an
+#      interior edge of the search box (the field continues past it, so it is
+#      a slope's lowest cell) and at least IDENTITY_MIN_DEFICIT_HPA below the
+#      mean MSLP on a ring IDENTITY_RING_KM out.  Measured on GFS 0.25 deg
+#      MSLP for this storm (2026-10-11 06Z, f003-f039): the storm's own
+#      centre is 2.32-4.42 hPa below its 200 km ring at every lead; the
+#      lowest cell of a 480 km box with no storm in it is -0.18-+0.98 hPa,
+#      except where the box edge is beside a real low just outside it.
+#   3. Continuity: a minimum farther from the last accepted fix than the
+#      storm can travel (IDENTITY_MAX_SPEED_M_S, the GFDL vortex tracker's
+#      60 kt maxspeed_tc, plus the follow radius for the centre's own
+#      jitter) is not taken while a closed low remains within that reach,
+#      unless it is deeper than that low by IDENTITY_MIN_DEFICIT_HPA (the
+#      deeper centre has taken over, as a coastal redevelopment does).  On
+#      the readiness run the argmin flipped between two centres 100 km apart
+#      every 15 min (10-11 10:45-12:30), and the nest followed each flip.
+#   4. A follower with no centre passing 2-3 for IDENTITY_LOST_AFTER_S parks
+#      and its track ends: a storm that has had no closed low for three
+#      hours is gone, and the next closed low in the box is another system.
+
+#: Ring-mean MSLP minus the centre that makes a minimum a closed low (hPa).
+IDENTITY_MIN_DEFICIT_HPA = 1.5
+#: Radius of that ring (km).
+IDENTITY_RING_KM = 200.0
+#: Fastest storm translation the continuity rule allows (m/s; 60 kt).
+IDENTITY_MAX_SPEED_M_S = 30.87
+#: Seconds without an identified centre after which the follower parks.
+IDENTITY_LOST_AFTER_S = 10800.0
+
+
+def ring_deficit_hpa(plane, ci: float, cj: float,
+                     ring_cells: float) -> float | None:
+    """Mean of ``plane`` on a one-cell ring ``ring_cells`` out, minus the centre.
+
+    ``None`` when less than half of the ring lies on finite cells of the
+    plane (a centre near the parent's edge), which cannot be judged here --
+    the parent-boundary rule owns that case.
+    """
+    values = np.asarray(plane)
+    ny, nx = values.shape[-2], values.shape[-1]
+    j_c, i_c = int(round(cj)), int(round(ci))
+    if not (0 <= j_c < ny and 0 <= i_c < nx):
+        return None
+    centre = float(values[j_c, i_c])
+    if not math.isfinite(centre):
+        return None
+    reach = int(math.ceil(ring_cells + 1))
+    jj, ii = np.mgrid[-reach:reach + 1, -reach:reach + 1]
+    on_ring = np.abs(np.hypot(ii, jj) - float(ring_cells)) <= 0.5
+    expected = int(np.count_nonzero(on_ring))
+    rj, ri = jj[on_ring] + j_c, ii[on_ring] + i_c
+    inside = (rj >= 0) & (rj < ny) & (ri >= 0) & (ri < nx)
+    ring = values[rj[inside], ri[inside]]
+    ring = ring[np.isfinite(ring)]
+    if expected == 0 or ring.size * 2 < expected:
+        return None
+    return float(ring.mean()) - centre
+
+
+def _descend(values, box, ci: float, cj: float) -> tuple[int, int] | None:
+    """Steepest descent from (ci, cj) to a local minimum inside ``box``."""
+    j0, j1 = int(box[0].start), int(box[0].stop)
+    i0, i1 = int(box[1].start), int(box[1].stop)
+    i, j = int(round(ci)), int(round(cj))
+    if not (j0 <= j < j1 and i0 <= i < i1) or not np.isfinite(values[j, i]):
+        return None
+    for _ in range((j1 - j0) * (i1 - i0)):
+        best = (float(values[j, i]), i, j)
+        for dj in (-1, 0, 1):
+            for di in (-1, 0, 1):
+                jn, in_ = j + dj, i + di
+                if j0 <= jn < j1 and i0 <= in_ < i1:
+                    value = float(values[jn, in_])
+                    if math.isfinite(value) and value < best[0]:
+                        best = (value, in_, jn)
+        if (best[1], best[2]) == (i, j):
+            return i, j
+        i, j = best[1], best[2]
+    return i, j
+
+
+def on_interior_box_edge(ci: int, cj: int, box: tuple[slice, slice],
+                         shape: tuple[int, int]) -> bool:
+    """Whether a cell lies on a search-box edge that is not the parent's edge."""
+    ny, nx = int(shape[-2]), int(shape[-1])
+    j0, j1 = int(box[0].start), int(box[0].stop)
+    i0, i1 = int(box[1].start), int(box[1].stop)
+    return ((cj in (j0, j1 - 1) and cj not in (0, ny - 1))
+            or (ci in (i0, i1 - 1) and ci not in (0, nx - 1)))
 
 
 def _timer(value, what: str) -> float | None:
@@ -2465,6 +2561,10 @@ class StormTracker:
         self._last_proposal_t: float | None = None
         self._last_move_t: float | None = None
         self._motion_fix = None
+        #: Model time the storm-identity test started failing (None while
+        #: it passes), and the park once the track has ended (rules 1, 4).
+        self._lost_since: float | None = None
+        self._parked: dict | None = None
         self.move_interval_seconds = None
         #: The most recent :meth:`locate` answer, so a consumer that runs
         #: at the SAME boundary as the mover (the track writer, at its
@@ -2501,6 +2601,10 @@ class StormTracker:
         """
         return {**({"motion_fix": self._motion_fix}
                    if self.config.field == "pressure" and self.config.level_hpa is None else {}),
+                **({"lost_since": _timer(self._lost_since, "lost_since")}
+                   if self._lost_since is not None else {}),
+                **({"parked": dict(self._parked)}
+                   if self._parked is not None else {}),
                 "last_proposal_t": _timer(self._last_proposal_t,
                                           "last_proposal_t"),
                 "last_move_t": _timer(self._last_move_t, "last_move_t")}
@@ -2520,7 +2624,8 @@ class StormTracker:
             raise TrackerRefusal(
                 "a tracker restart block must be a mapping, got "
                 f"{type(block).__name__}")
-        unknown = sorted(set(block) - set(TRACKER_STATE_KEYS) - {"motion_fix"})
+        unknown = sorted(set(block) - set(TRACKER_STATE_KEYS)
+                         - set(TRACKER_OPTIONAL_STATE_KEYS))
         missing = sorted(set(TRACKER_STATE_KEYS) - set(block))
         if unknown or missing:
             raise TrackerRefusal(
@@ -2538,6 +2643,12 @@ class StormTracker:
                                for v in motion) or motion[0] < 0):
                 raise TrackerRefusal("motion_fix must be [model_seconds, parent_i, parent_j]")
             motion = list(map(float, motion))
+        parked = block.get("parked")
+        if parked is not None and (not isinstance(parked, dict)
+                                   or not isinstance(parked.get("reason"), str)):
+            raise TrackerRefusal("parked must be a mapping with its reason")
+        self._lost_since = _timer(block.get("lost_since"), "lost_since")
+        self._parked = None if parked is None else dict(parked)
         self._motion_fix = motion
         self._last_proposal_t = proposal
         self._last_move_t = move
@@ -2660,6 +2771,87 @@ class StormTracker:
             evidence["refinement"]["refine_levels_declined"] = fine_declined
         return refined
 
+    def _storm_identity(self, plane, box, found, fp, t: float,
+                        radius_km: float):
+        """Rules 2-3: is this MSLP minimum the storm?  ``(found | None, record)``.
+
+        Reads the last accepted fix (``_motion_fix``) and changes nothing,
+        so :meth:`locate` stays stateless.  ``record`` goes on the receipt
+        whatever the answer, with each candidate's deficit, so a hold says
+        how close the call was.
+        """
+        values = np.asarray(plane)
+        if fp.parent_dx_m is None or not fp.parent_dx_m > 0:
+            return found, {"applied": False,
+                           "reason": "the footprint carries no parent dx"}
+        dx_m = float(fp.parent_dx_m)
+        ring_cells = IDENTITY_RING_KM * 1000.0 / dx_m
+
+        def judge(ci: int, cj: int) -> dict:
+            deficit = ring_deficit_hpa(values, ci, cj, ring_cells)
+            edge = on_interior_box_edge(ci, cj, box, values.shape)
+            return {"ci": int(ci), "cj": int(cj),
+                    "mslp_hpa": round(float(values[cj, ci]), 3),
+                    "deficit_hpa": (None if deficit is None
+                                    else round(deficit, 3)),
+                    "on_search_box_edge": bool(edge),
+                    "closed": bool(not edge and (
+                        deficit is None
+                        or deficit >= IDENTITY_MIN_DEFICIT_HPA))}
+
+        def accept(candidate: dict) -> dict:
+            return {"ci": float(candidate["ci"]), "cj": float(candidate["cj"]),
+                    "cells": 1, "max_value": -float(candidate["mslp_hpa"]),
+                    "converged": True, "iterations": 1}
+
+        lowest = judge(int(round(found["ci"])), int(round(found["cj"])))
+        record = {"min_deficit_hpa": IDENTITY_MIN_DEFICIT_HPA,
+                  "ring_km": IDENTITY_RING_KM, "lowest": lowest}
+        ny, nx = values.shape[-2], values.shape[-1]
+        if lowest["ci"] in (0, nx - 1) or lowest["cj"] in (0, ny - 1):
+            # On the parent's own edge: rule 1 (the track writer's
+            # boundary test) decides whether the storm has left.
+            record["decision"] = "parent-edge"
+            return found, record
+        anchor = self._motion_fix
+        reach = None
+        if anchor is not None and t > float(anchor[0]):
+            reach = ((IDENTITY_MAX_SPEED_M_S * (t - float(anchor[0]))
+                      + float(radius_km) * 1000.0) / dx_m)
+            record["reach_parent_cells"] = round(reach, 3)
+            record["last_fix_parent_ij"] = [round(float(anchor[1]), 3),
+                                            round(float(anchor[2]), 3)]
+        far = (reach is not None and math.hypot(
+            lowest["ci"] - float(anchor[1]),
+            lowest["cj"] - float(anchor[2])) > reach)
+        if not far:
+            if lowest["closed"]:
+                record["decision"] = "lowest"
+                return accept(lowest), record
+            record["decision"] = "no-closed-low"
+            return None, record
+        # The lowest cell is beyond the storm's reach: the low the last fix
+        # sits in -- reached by steepest descent from it, so a far low's
+        # flank inside the reach is never mistaken for it -- is the storm
+        # while it is still a closed low within reach.
+        near = None
+        cell = _descend(values, box, float(anchor[1]), float(anchor[2]))
+        if cell is not None and math.hypot(
+                cell[0] - float(anchor[1]),
+                cell[1] - float(anchor[2])) <= reach:
+            near = judge(*cell)
+            record["nearest"] = near
+        if near is not None and near["closed"] and not (
+                lowest["closed"] and lowest["mslp_hpa"]
+                <= near["mslp_hpa"] - IDENTITY_MIN_DEFICIT_HPA):
+            record["decision"] = "continuity"
+            return accept(near), record
+        if lowest["closed"]:
+            record["decision"] = "redeveloped"
+            return accept(lowest), record
+        record["decision"] = "no-closed-low"
+        return None, record
+
     def locate(self, parent_state, nest_footprint, t,
                refinement=None) -> "VortexFix":
         """WHERE the storm is, with no opinion about moving anything.
@@ -2706,7 +2898,17 @@ class StormTracker:
         radius_cells = radius_in_cells(cfg.radius_km, fp.parent_dx_m)
         found, level_fixes, level_declined = centre_over_levels(
             planes, cfg, box, radius_cells)
-        if found is None and cfg.fallback_level_hpa is not None:
+        identity = None
+        if (found is not None and cfg.field == "pressure"
+                and cfg.level_hpa is None and cfg.pressure_center == "minimum"):
+            # Rules 2-3 of the storm-identity block above.  A minimum that
+            # fails them is a slope or another system, not a missing MSLP
+            # field, so the 850 hPa fallback is not consulted: it exists for
+            # a plane with no qualifying minimum at all.
+            found, identity = self._storm_identity(
+                plane, box, found, fp, float(t), cfg.radius_km)
+        if (found is None and cfg.fallback_level_hpa is not None
+                and identity is None):
             primary_failure = "no qualifying MSLP minimum"
             cfg = replace(cfg, level_hpa=cfg.fallback_level_hpa,
                           threshold=cfg.fallback_deficit_m, pressure_center="centroid",
@@ -2746,6 +2948,8 @@ class StormTracker:
         if primary_failure is not None:
             evidence["primary_failure"] = primary_failure
             evidence["fallback_level_hpa"] = list(cfg.level_hpa)
+        if identity is not None:
+            evidence["storm_identity"] = identity
         if cfg.field == "attribute":
             evidence.update(attribute_metadata(cfg))
             evidence["signal"] = f"{cfg.attribute} {cfg.reduction} ({evidence['threshold_units']})"
@@ -2893,13 +3097,48 @@ class StormTracker:
         it.  ``None`` -- and a config without ``refine_grid_id`` -- is
         the single-stage tracker, unchanged.
         """
+        if self._parked is not None:
+            # Rule 1/4: the track has ended, and the nest stays where it is
+            # for the rest of the run.  Nothing is located: the answer
+            # cannot move anything.
+            self._receipt({"decision": "parked", "t": float(t),
+                           **{f"parked_{k}": v
+                              for k, v in self._parked.items()}})
+            return None
         fix = self.locate(parent_state, nest_footprint, t,
                           refinement=refinement)
         fp, cfg = fix.footprint, self.config
         evidence = fix.evidence
+        ended = evidence.get("track_end_reason")
+        if ended:
+            # Rule 1: the fix the track writer ends on is never followed.
+            self._parked = {"t": float(t), "reason": str(ended)}
+            self._receipt({"decision": "parked:track-ended", **evidence})
+            return None
+        identity_mode = (cfg.field == "pressure" and cfg.level_hpa is None
+                         and cfg.pressure_center == "minimum")
         if fix.found is None:
+            if identity_mode:
+                if self._lost_since is None:
+                    self._lost_since = float(t)
+                lost_for = float(t) - self._lost_since
+                evidence["lost_for_seconds"] = lost_for
+                if lost_for >= IDENTITY_LOST_AFTER_S:
+                    # Rule 4.  The reason rides the fix the track writer
+                    # renders next, so the file ends where the nest parks.
+                    reason = (
+                        f"no MSLP minimum passed the storm-identity test "
+                        f"(a closed low {IDENTITY_MIN_DEFICIT_HPA:g} hPa "
+                        f"below its {IDENTITY_RING_KM:g} km ring, within "
+                        f"reach of the last fix) for {lost_for:.0f} s")
+                    self._parked = {"t": float(t), "reason": reason}
+                    evidence["track_end_reason"] = reason
+                    self._receipt({"decision": "parked:storm-lost",
+                                   **evidence})
+                    return None
             self._receipt({"decision": "no-signal", **evidence})
             return None
+        self._lost_since = None
         motion_limit = int(cfg.max_shift_cells)
         if cfg.field == "pressure" and cfg.level_hpa is None:
             ci, cj = fix.center_parent_ij

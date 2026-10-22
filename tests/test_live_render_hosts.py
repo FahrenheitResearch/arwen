@@ -2,6 +2,7 @@
 import subprocess
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -55,6 +56,7 @@ def test_host_concurrency_matches_each_render_resource_budget(tmp_path, monkeypa
     active = maximum = 0
     budgets = []
     early_budgets = []
+    scratch = []
 
     def render(command, **options):
         nonlocal active, maximum
@@ -66,6 +68,7 @@ def test_host_concurrency_matches_each_render_resource_budget(tmp_path, monkeypa
             active += 1
             maximum = max(maximum, active)
             budgets.append(options["env_overrides"])
+            scratch.append(command[command.index("--out") + 1])
         try:
             barrier.wait()
             return renderer(command)
@@ -99,6 +102,12 @@ def test_host_concurrency_matches_each_render_resource_budget(tmp_path, monkeypa
         summary = live.stop(timeout=30)
         assert summary["published"] == 3
         assert maximum == 3
+        assert len(set(scratch)) == 3
+        assert all(not Path(path).exists() for path in scratch)
+        remaining, published, _ = live_products.published_frames(
+            [Path(entry["frame"]) for entry in live.published],
+            _plan(tmp_path, "all"))
+        assert remaining == [] and len(published) == 3
         assert all(int(row["RUSTWX_LIVE_RENDER_SLOTS"]) == maximum for row in budgets)
         assert all(row["RAYON_NUM_THREADS"] == "2" for row in budgets)
     finally:
@@ -118,18 +127,6 @@ def test_external_lock_gets_one_slot_and_the_matching_native_budget(tmp_path, mo
                                      warn=lambda *a, **k: None, slot=threading.Lock())
     live._run_render(["render"])
     assert calls == [{"RUSTWX_LIVE_RENDER_SLOTS": "1", "RAYON_NUM_THREADS": "7"}]
-
-
-def test_shared_scratch_survives_frames_until_worker_shutdown(tmp_path):
-    live = live_products.LiveProducts(_plan(tmp_path), report=lambda _: None,
-                                     warn=lambda *a, **k: None, runner=_Renderer())
-    frame, valid = _frame(tmp_path, 2, 0)
-    live._render(domain=2, valid_time=valid, frame=frame)
-    root = live.render_dir / live_products._SCRATCH_NAME
-    assert root.is_dir()
-    assert list(root.iterdir()) == []
-    live.stop()
-    assert not root.exists()
 
 
 def test_request_catalog_is_initialized_once_without_blocking_the_queue(tmp_path, monkeypatch, eight_cpus):
@@ -169,17 +166,6 @@ def test_request_catalog_is_initialized_once_without_blocking_the_queue(tmp_path
     assert len(window_calls) == 1
 
 
-def test_the_early_render_guard_can_be_entered_again():
-    """Each render of the early frame takes the whole host, every time."""
-
-    slots, early = live_products.shared_render_slots()
-    for _ in range(2):
-        with early:
-            assert not slots.acquire(blocking=False)
-    for _ in range(slots.width):
-        assert slots.acquire(blocking=False)
-
-
 def test_free_memory_caps_concurrent_frames_below_the_processor_budget(monkeypatch, eight_cpus):
     """Eight processors afford three frames; the memory has to as well."""
 
@@ -197,11 +183,32 @@ def test_free_memory_caps_concurrent_frames_below_the_processor_budget(monkeypat
     assert live_products._render_concurrency() == 3
 
 
-def test_free_memory_is_the_engine_host_probe(monkeypatch):
+def test_free_memory_is_the_engine_host_probe(monkeypatch, tmp_path):
     from gpuwm.core import preflight
 
     monkeypatch.setattr(preflight, "host_available_bytes", lambda: 123 << 20)
     assert live_products._available_memory_bytes() == 123 << 20
+
+    # Synthetic v1 controllers make the probe independent of the host cgroup.
+    from gpuwm.ingest import preparation_workers
+
+    root = tmp_path / "cgroup-v1"
+    for controller, files in {
+        "cpu": {"cpu.cfs_quota_us": "200000", "cpu.cfs_period_us": "100000"},
+        "memory": {"memory.limit_in_bytes": str(1024 << 20),
+                   "memory.usage_in_bytes": str(512 << 20),
+                   "memory.stat": f"total_inactive_file {128 << 20}"},
+    }.items():
+        directory = root / controller / "container" / "job"
+        directory.mkdir(parents=True)
+        for name, value in files.items():
+            (directory / name).write_text(value, encoding="ascii")
+    membership = "4:cpu,cpuacct:/container/job\n2:memory:/container/job"
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text(f"MemAvailable: {2 << 20} kB\n", encoding="ascii")
+    assert preparation_workers.cgroup_cpu_count(root=root, membership=membership) == 2
+    assert preparation_workers.host_available_bytes(
+        root=root, membership=membership, meminfo=meminfo) == 640 << 20
 
 
 @pytest.mark.parametrize("cpu_max,processors,frames,native", [

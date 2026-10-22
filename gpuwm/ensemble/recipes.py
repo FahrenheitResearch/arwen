@@ -34,8 +34,9 @@ class SourceTrajectory:
     member: str | None = None
 
     def __post_init__(self):
-        from gpuwm.source_adapters import get_source_adapter, canonical_source_token
+        from gpuwm.source_adapters import get_source_adapter, canonical_source_token, source_for_cycle
         from gpuwm.forcing_member import member_contract
+        object.__setattr__(self, "source", source_for_cycle(self.source, self.cycle))
         adapter = get_source_adapter(self.source)
         if not adapter.runnable:
             raise ValueError(f"{adapter.source_id} has no complete initialization route: {adapter.composition_requirement}")
@@ -50,6 +51,16 @@ class SourceTrajectory:
             from importlib import import_module
             selected = import_module(adapter.selection_owner).validate_member(self.member, cycle=self.cycle)
             object.__setattr__(self, "member", str(selected))
+        elif adapter.acquisition_owner:
+            from importlib import import_module
+            validate = getattr(import_module(adapter.acquisition_owner), "validate_member", None)
+            if validate is not None:
+                selected = validate(adapter.source_id, self.member)
+                if len(selected) != 1:
+                    raise ValueError("one source trajectory needs exactly one source member")
+                object.__setattr__(self, "member", str(selected[0]))
+            elif self.member is not None:
+                raise ValueError(f"{adapter.source_id} has no verified member grammar")
         elif self.member is not None:
             raise ValueError(f"{adapter.source_id} has no verified member grammar")
 
@@ -229,6 +240,7 @@ class SourceRecipe:
     calibration: str = "not calibrated"
     perturbation: dict | None = None
     member_variants: tuple = ()
+    selection_roster: tuple = ()
 
     def describe(self) -> dict:
         document = asdict(self)
@@ -281,7 +293,8 @@ class SourceRecipe:
 
 
 def ensemble_population(source: str, cycle: datetime, *, perturbed_only=False) -> tuple[SourceTrajectory, ...]:
-    from gpuwm.source_adapters import get_source_adapter
+    from gpuwm.source_adapters import get_source_adapter, source_for_cycle
+    source = source_for_cycle(source, cycle)
     from gpuwm.source_authorities import packaged_member_grammar
     from gpuwm.member_grammar import load_member_grammar
     adapter = get_source_adapter(source)
@@ -353,7 +366,7 @@ def build_recipe(*, source: str, cycle: datetime, start: datetime, end: datetime
         from gpuwm.ensemble.member_variants import normalize_member_variants
         if perturbation is not None:
             raise ValueError("member-roster uses each member's own surface controls; omit shared perturbation")
-        variants = normalize_member_variants(member_variants, count, ladder=kind == "wofs")
+        variants = normalize_member_variants(member_variants, count, ladder=kind == "wofs" or bool(trajectories))
         if trajectories and len(trajectories) != count:
             raise ValueError("member-roster needs one trajectory for each named arm; "
                              "extra or missing trajectories would bind the wrong source to an arm")

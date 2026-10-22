@@ -48,24 +48,22 @@ def _identity(out,a,r):
 
 
 @pytest.mark.parametrize('case',CASES)
-@pytest.mark.parametrize('tiled',(False,True))
-def test_cpu_oracle(case,tiled):
+def test_cpu_oracle(case):
     a=CASES[case]
     for r in range(2):
         args,kw=_inputs(a,r)
-        if tiled:args,kw=_tile(args,kw)
+        args,kw=_tile(args,kw)
         _identity(vertmx_reference(*args,**kw),a,r)
 
 
 @pytest.mark.gpu
 @pytest.mark.parametrize('case',CASES)
-@pytest.mark.parametrize('tiled',(False,True))
-def test_gpu_oracle(case,tiled):
+def test_gpu_oracle(case):
     import cupy as cp
     a=CASES[case]
     for r in range(2):
         args,kw=_inputs(a,r)
-        if tiled:args,kw=_tile(args,kw)
+        args,kw=_tile(args,kw)
         device=[cp.asarray(v) for v in args[:-1]]+[args[-1]]
         kw={k:(tuple(cp.asarray(x) for x in v) if isinstance(v,tuple) else
                cp.asarray(v) if isinstance(v,np.ndarray) else v) for k,v in kw.items()}

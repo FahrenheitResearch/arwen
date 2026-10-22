@@ -868,6 +868,7 @@ def test_separate_analysis_starts_the_boundary_from_itself_and_uses_donor_aeroso
     args, calls, expected = _install_prepare_fakes(
         monkeypatch, tmp_path, domain_count=1, backend="cpu")
     expected.exp.root.run.use_rap_aero_icbc = True
+    expected.mets[0].fields.update(QNWFA=None, QNIFA=None)
     args["initial_inputs"] = tmp_path / "initial.json"
     monkeypatch.setattr(initial_source, "read_initial_inputs", lambda _: {})
     donor_result = SimpleNamespace(state=_State())

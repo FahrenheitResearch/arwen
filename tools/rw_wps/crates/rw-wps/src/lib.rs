@@ -2173,7 +2173,7 @@ fn validate_mapped_output_contract(
     }
     let accepted = match target.boundary_interval_seconds.map(u64::from) {
         Some(spacing) if target.accept_boundary_interval_multiples && spacing > 0 => {
-            boundary_interval_seconds > 0 && boundary_interval_seconds % spacing == 0
+            boundary_interval_seconds > 0 && boundary_interval_seconds.is_multiple_of(spacing)
         }
         declared => declared == Some(boundary_interval_seconds),
     };
@@ -2937,7 +2937,9 @@ fn resolve_executable(engine: &OsStr) -> Result<PathBuf, RwWpsError> {
     let search_path = std::env::var_os("PATH").ok_or_else(|| {
         RwWpsError::Config("PATH is unset, so the engine executable cannot be bound".to_owned())
     })?;
-    let mut names = vec![requested.clone()];
+    let names = vec![requested.clone()];
+    #[cfg(windows)]
+    let mut names = names;
     #[cfg(windows)]
     if requested.extension().is_none() {
         let extensions =
@@ -3629,14 +3631,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let composition = root.join("composition.json");
         write_composition(&composition, "grib2", "terrain", "terrain_provenance");
-        let supplements = vec![RolePathBinding {
-            role: "terrain".to_owned(),
-            path: PathBuf::from("terrain.grib2"),
-        }];
-        let provenance = vec![RolePathBinding {
-            role: "terrain_provenance".to_owned(),
-            path: PathBuf::from("terrain.md"),
-        }];
+        let (supplements, provenance) = terrain_bindings("terrain.grib2");
         let grib2_mapping = composition_mapping(SourceFormat::Grib2);
         validate_composition_bindings(&composition, &grib2_mapping, &supplements, &provenance)
             .unwrap();
@@ -3669,14 +3664,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let composition = root.join("composition.json");
         write_composition(&composition, "grib2", "terrain", "terrain_provenance");
-        let supplements = vec![RolePathBinding {
-            role: "terrain".to_owned(),
-            path: PathBuf::from("terrain.grib2"),
-        }];
-        let provenance = vec![RolePathBinding {
-            role: "terrain_provenance".to_owned(),
-            path: PathBuf::from("terrain.md"),
-        }];
+        let (supplements, provenance) = terrain_bindings("terrain.grib2");
         let mapping = composition_mapping(SourceFormat::Grib2);
         validate_composition_bindings(&composition, &mapping, &supplements, &provenance).unwrap();
 
@@ -3714,14 +3702,7 @@ mod tests {
         let root = temp_root("composition-soil-adversarial");
         fs::create_dir_all(&root).unwrap();
         let composition = root.join("composition.json");
-        let supplements = vec![RolePathBinding {
-            role: "terrain".to_owned(),
-            path: PathBuf::from("terrain.grib2"),
-        }];
-        let provenance = vec![RolePathBinding {
-            role: "terrain_provenance".to_owned(),
-            path: PathBuf::from("terrain.md"),
-        }];
+        let (supplements, provenance) = terrain_bindings("terrain.grib2");
         let mapping = composition_mapping(SourceFormat::Grib2);
 
         let reject = |edit: &dyn Fn(&mut serde_json::Value), expected: &str| {
@@ -3781,14 +3762,7 @@ mod tests {
         let root = temp_root("composition-soil-selector-order");
         fs::create_dir_all(&root).unwrap();
         let composition = root.join("composition.json");
-        let supplements = vec![RolePathBinding {
-            role: "terrain".to_owned(),
-            path: PathBuf::from("terrain.source"),
-        }];
-        let provenance = vec![RolePathBinding {
-            role: "terrain_provenance".to_owned(),
-            path: PathBuf::from("terrain.md"),
-        }];
+        let (supplements, provenance) = terrain_bindings("terrain.source");
         for (format, format_name) in [
             (SourceFormat::Grib1, "grib1"),
             (SourceFormat::Grib2, "grib2"),
@@ -3820,14 +3794,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let composition = root.join("composition.json");
         write_composition(&composition, "grib2", "terrain", "terrain_provenance");
-        let supplements = vec![RolePathBinding {
-            role: "terrain".to_owned(),
-            path: PathBuf::from("terrain.grib2"),
-        }];
-        let provenance = vec![RolePathBinding {
-            role: "terrain_provenance".to_owned(),
-            path: PathBuf::from("terrain.md"),
-        }];
+        let (supplements, provenance) = terrain_bindings("terrain.grib2");
         let mut mapping = composition_mapping(SourceFormat::Grib2);
         mapping
             .fields
@@ -3876,14 +3843,7 @@ mod tests {
             }
         });
         fs::write(&composition, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
-        let supplements = vec![RolePathBinding {
-            role: "terrain".to_owned(),
-            path: PathBuf::from("terrain.nc"),
-        }];
-        let provenance = vec![RolePathBinding {
-            role: "terrain_provenance".to_owned(),
-            path: PathBuf::from("terrain.md"),
-        }];
+        let (supplements, provenance) = terrain_bindings("terrain.nc");
         validate_composition_bindings(
             &composition,
             &composition_mapping(SourceFormat::Netcdf),
@@ -4306,6 +4266,19 @@ mod tests {
                 .contains("duplicate wrfinput")
         );
         fs::remove_dir_all(root).unwrap();
+    }
+
+    fn terrain_bindings(data_path: &str) -> (Vec<RolePathBinding>, Vec<RolePathBinding>) {
+        (
+            vec![RolePathBinding {
+                role: "terrain".to_owned(),
+                path: PathBuf::from(data_path),
+            }],
+            vec![RolePathBinding {
+                role: "terrain_provenance".to_owned(),
+                path: PathBuf::from("terrain.md"),
+            }],
+        )
     }
 
     fn composition_mapping(format: SourceFormat) -> mapping::NativeMapping {

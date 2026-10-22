@@ -13,12 +13,14 @@ import sys
 import tempfile
 import numpy as np
 from gpuwm.certify.kernel_manifest import record_module
+from gpuwm.ensemble.member_weights import roster_weights, weight_receipt, unequal_weights
 
 from gpuwm.ensemble.batch_products import (FieldProducts, prepare_product_frame,
                                            write_product_frame, product_memory_plan,
                                            PRODUCT_CONTRACT, default_product_requests,
                                            DEFAULT_THRESHOLDS, ThresholdCondition,
                                            PreparedCompoundField, compound_memory_plan)
+from gpuwm.ensemble.physical_fields import sha256_of_file as _sha
 
 REQUESTS = (FieldProducts("rain_total", "mm", (1.0, 5.0)),
             FieldProducts("wind10", "m s-1", (10.0, 15.0)),
@@ -48,14 +50,6 @@ extern "C" __global__ void ensemble_surface_products(
 '''
 
 
-def _sha(path):
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as file:
-        for chunk in iter(lambda: file.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 class PreparedEnsembleOutput:
     """All per-frame diagnostic storage is allocated before stepping.
 
@@ -68,7 +62,7 @@ class PreparedEnsembleOutput:
 
     def __init__(self, *, u10, v10, temperature2, rainnc, latitude, longitude,
                  members, available_bytes, rainc=None, rainsh=None,
-                 requests=REQUESTS, array_module=None):
+                 requests=REQUESTS, array_module=None, member_weights=None):
         if array_module is None:
             import cupy as array_module
         self.xp = array_module
@@ -95,7 +89,7 @@ class PreparedEnsembleOutput:
         self.products = prepare_product_frame(
             dict(wind10=self.wind, rain_total=self.rain, temperature2=temperature2),
             requests, available_bytes=available_bytes - diagnostic_bytes,
-            array_module=array_module)
+            array_module=array_module, member_weights=member_weights)
         self.initialized = False
         self.frames = []
 
@@ -155,7 +149,7 @@ class PreparedEnsembleOutput:
                 "frames": frames}
 
 
-def replay_memory_plan_for_shape(requests, shape, *, members, tile_rows=32):
+def replay_memory_plan_for_shape(requests, shape, *, members, tile_rows=32, member_weights=None):
     """Price complete-roster replay without files, a spool or a CUDA context."""
     from dataclasses import replace
     from gpuwm.ensemble.batch_storage import BatchArraySpec, BatchMemoryPlan
@@ -167,7 +161,7 @@ def replay_memory_plan_for_shape(requests, shape, *, members, tile_rows=32):
     plans = []
     for request in requests:
         tile_request = replace(request, postage_stamp=False)
-        plan = product_memory_plan((tile_request,), {request.field: (rows, shape[1])}, members=members)
+        plan = product_memory_plan((tile_request,), {request.field: (rows, shape[1])}, members=members, member_weights=member_weights)
         plans.append(BatchMemoryPlan((BatchArraySpec(f"{request.field}:replay", (rows, shape[1]), "member"),)
                                      + plan.arrays, reserved_bytes=0))
     if not plans:
@@ -199,6 +193,7 @@ class NativeDiagnosticSpool:
         self.member_order = _member_order(self.members, member_order)
         self.member_positions = {member: position for position, member in enumerate(self.member_order)}
         self.member_metadata = tuple(member_metadata)
+        self.member_weights = roster_weights(self.member_order, self.member_metadata)
         self.gpu_replay = bool(gpu_replay)
         self.requests = tuple(requests)
         self.latitude, self.longitude = np.asarray(latitude), np.asarray(longitude)
@@ -287,16 +282,20 @@ class NativeDiagnosticSpool:
         frames = []
         for frame in self.frames.values():
             row = {k: v for k, v in frame.items() if k != "packs"}
+            row.update(weight_receipt(self.member_order, self.member_weights, frame["members_received"]))
             if frame["status"] == "pending":
                 row["diagnostic_files"] = [{"path": self._relative(pack["path"]),
                     "member_ids": list(pack["member_ids"]),
                     **{key: pack[key] for key in ("sha256", "bytes") if key in pack}}
                     for pack in frame["packs"]]
             frames.append(row)
+        from gpuwm.ensemble.ice_accretion import CONTRACT as ICE_CONTRACT, FIELDS as ICE_FIELDS
         record = {"schema": self.CONTRACT, "members_requested": self.members,
+                  **weight_receipt(self.member_order, self.member_weights),
+                  "gridded_aggregate_policy": "unavailable when member coordinates differ; member products retain native coordinates",
                   "member_order": list(self.member_order),
                   "member_metadata": list(self.member_metadata),
-                  "probability_denominator": self.members, "spread_ddof": 1,
+                  "probability_denominator": ("sum of present roster masses" if unequal_weights(self.member_weights) else self.members), "spread_ddof": 1,
                   "nonfinite_policy": "mask aggregate; retain finite_count",
                   "keep_member_files": self.keep_member_files,
                   "member_files": list(self.member_files),
@@ -305,6 +304,8 @@ class NativeDiagnosticSpool:
                   "unavailable_products": list(self.unavailable_products),
                   "frames": frames,
                   "deleted_scratch": list(self.deleted)}
+        if any(r.field in (*ICE_FIELDS, "freezing_rain_rate") for r in self.requests):
+            record["ice_accretion_sampling"] = ICE_CONTRACT
         if self.coordinate_file is not None and self._publish_coordinates:
             record["coordinates_file"] = self.coordinate_file
         temporary = self.manifest_path.with_suffix(".json.pending")
@@ -368,7 +369,15 @@ class NativeDiagnosticSpool:
             "packs": [], "products": [], "maps": [], "available_fields": sorted(fields),
             "unavailable_fields": sorted(unavailable)})
         if frame["available_fields"] != sorted(fields) or frame["unavailable_fields"] != sorted(unavailable):
-            raise ValueError("member packs have different diagnostic availability at the same output clock")
+            # Products are drawn only from fields every member of this frame supplied.
+            common = sorted(set(frame["available_fields"]) & set(fields))
+            dropped = sorted(set(frame["available_fields"]) - set(common))
+            frame["available_fields"] = common
+            frame["unavailable_fields"] = sorted(names - set(common))
+            if dropped:
+                frame.setdefault("availability_reductions", []).append(
+                    {"members": list(ids), "dropped": dropped,
+                     "reason": "a member lacked these diagnostics at this clock (for example a moving nest's new placement)"})
         if frame["status"] != "pending" or set(ids) & set(frame["members_received"]):
             raise ValueError("diagnostic member/time was already submitted; a duplicate would bias ensemble products")
         slug = hashlib.sha256(valid.encode("utf-8")).hexdigest()[:24]
@@ -454,7 +463,7 @@ class NativeDiagnosticSpool:
     def replay_memory_plan(self):
         """Exact maximum replay tile plus GPU outputs; host caches are separate."""
         return replay_memory_plan_for_shape(self.requests, self.shape,
-                                            members=self.members, tile_rows=self.tile_rows)
+                                            members=self.members, tile_rows=self.tile_rows, member_weights=self.member_weights)
 
     def retire_private_coordinates(self):
         """Remove the worker-only coordinate input once no hour can replay.
@@ -489,7 +498,13 @@ class NativeDiagnosticSpool:
             frame = self.frames[str(valid_time)]
             if frame["status"] == "complete":
                 return
-            frame.update(status=status, reason=str(reason), products=[], maps=[])
+            frame.update(status=status, reason=str(reason), products=[], maps=[],
+                product_availability=[dict(field=r.field, product=kind, status=status, reason=str(reason))
+                    for r in self.requests for kind in ("mean", "spread", "min", "max", "finite_count",
+                        *(("probability",) if r.thresholds else ()),
+                        *(("pmm",) if r.field in ("refl", "rain_total") else ()),
+                        *(("paintball",) if r.paintball else ()),
+                        *(("spaghetti",) if r.spaghetti else ()))])
             self._manifest()
             for pack in frame["packs"]:
                 path = pack["path"]
@@ -553,13 +568,14 @@ class NativeDiagnosticSpool:
             outputs, retired = rustwx.reduce_ensemble_diagnostics(self.renderer,
                 packs=frame["packs"], member_order=self.member_order, shape=self.shape,
                 valid_time=valid, requests=requests, inventory=plan.inventory(self.members),
-                scratch_directory=frame["packs"][0]["path"].parent)
+                scratch_directory=frame["packs"][0]["path"].parent,
+                **({"member_weights": self.member_weights} if self.member_weights is not None else {}))
             self.deleted.extend({"path": self._relative(row["path"]), "bytes": row["bytes"]}
                                 for row in retired)
         reduction_seconds = time.perf_counter() - started
         metadata = {r.field: SimpleNamespace(shape=(self.members,) + self.shape) for r in requests}
         product = SimpleNamespace(calls=1, _xp=np, fields=metadata, requests=requests,
-            members=self.members, outputs=outputs)
+            members=self.members, outputs=outputs, member_order=self.member_order, member_weights=self.member_weights)
         token = valid.replace(":", "-").replace("/", "-").replace("\\", "-")
         directory = self.root / self.domain / "ensemble" / "products"
         directory.mkdir(parents=True, exist_ok=True)
@@ -571,6 +587,10 @@ class NativeDiagnosticSpool:
         public = SimpleNamespace(**vars(product))
         public.requests = tuple(replace(r, postage_stamp=False) for r in requests)
         event_attrs = {}
+        from gpuwm.ensemble.ice_accretion import CONTRACT as ICE_CONTRACT, FIELDS as ICE_FIELDS
+        if any(r.field in (*ICE_FIELDS, "freezing_rain_rate") for r in requests):
+            event_attrs["ice_accretion_sampling"] = json.dumps({**ICE_CONTRACT,
+                "intervals_hours": frame.get("ice_sampling_intervals_hours", [])}, sort_keys=True)
         if self.member_order != tuple(range(self.members)) or self.member_metadata:
             event_attrs.update(ensemble_member_order=json.dumps(self.member_order),
                               ensemble_member_metadata=json.dumps(self.member_metadata, sort_keys=True))
@@ -595,6 +615,11 @@ class NativeDiagnosticSpool:
         frame.update(status="complete", products=[self._relative(path)], maps=[self._relative(p) for p in maps],
             reduction_seconds=reduction_seconds, write_seconds=write_seconds,
             render_seconds=time.perf_counter() - started, renderer_transcript=transcript,
+            weighting=weight_receipt(self.member_order, self.member_weights, frame["members_received"]),
+            product_availability=[dict(field=r.field, product=kind, status="complete",
+                **weight_receipt(self.member_order, self.member_weights, frame["members_received"]))
+                for r in requests for kind in ("mean", "spread", "min", "max", "probability", "pmm", "paintball", "spaghetti")
+                if f"{r.field}:{kind}" in outputs],
             replay_backend="cuda_reference" if self.gpu_replay else "rust_cpu",
             gpu_replay_required_bytes=self.replay_memory_plan().required_bytes(self.members) if self.gpu_replay else 0,
             host_product_payload_bytes=sum(a.nbytes for a in outputs.values()),
@@ -710,7 +735,8 @@ class NativeDiagnosticSpool:
             values = xp.empty((self.members, rows, nx), dtype=np.float32)
             tile_request = replace(request, postage_stamp=False)
             tile = prepare_product_frame({request.field: values}, (tile_request,),
-                available_bytes=available_bytes - ((values.nbytes + 511) // 512) * 512, array_module=xp)
+                available_bytes=available_bytes - ((values.nbytes + 511) // 512) * 512, array_module=xp,
+                member_weights=self.member_weights)
             # One typed read per field/pack avoids launching a decoder for
             # every row tile. This cache is at most one complete 2-D field
             # when postage is disabled; with postage it reuses its ledgered
@@ -728,7 +754,9 @@ class NativeDiagnosticSpool:
                 from gpuwm.ensemble.batch_products import probability_matched_mean
                 stack = xp.asarray(member_cache)
                 outputs[f"{request.field}:pmm"][:] = xp.asnumpy(probability_matched_mean(
-                    stack, xp.mean(stack, axis=0), xp))
+                    stack, (xp.mean(stack, axis=0) if self.member_weights is None or len(set(self.member_weights)) == 1 else
+                        xp.sum(stack.astype(xp.float64) * xp.asarray([w/max(self.member_weights) for w in self.member_weights], dtype=xp.float64)[:,None,None], axis=0) / sum(w/max(self.member_weights) for w in self.member_weights)),
+                    xp, self.member_weights))
             step = rows - 1 if request.spaghetti else rows
             for start in range(0, ny, step):
                 count = min(rows, ny - start)
@@ -762,7 +790,7 @@ extern "C" __global__ void ensemble_headline_diagnostics(
     float total = __fadd_rn(rainnc[cell], has_rainc ? rainc[cell] : 0.0f);
     total = __fadd_rn(total, has_rainsh ? rainsh[cell] : 0.0f);
     cumulative[cell] = total;
-    rain[cell] = subtract_initial ? __fsub_rn(total, initial[cell]) : total;
+    rain[cell] = fmaxf(0.0f, subtract_initial ? __fsub_rn(total, initial[cell]) : total);
     if (has_humidity) {
         // The surface equations are the production Rust import's f64 DAG.
         // CUDA log/exp are library calls, not transcribed libm source.
@@ -792,7 +820,7 @@ extern "C" __global__ void ensemble_headline_diagnostics(
 extern "C" __global__ void ensemble_headline_rain_difference(
     const float *current, const float *earlier, float *result, unsigned long long cells) {
     unsigned long long cell = (unsigned long long)blockIdx.x * blockDim.x + threadIdx.x;
-    if (cell < cells) result[cell] = __fsub_rn(current[cell], earlier[cell]);
+    if (cell < cells) result[cell] = fmaxf(0.0f, __fsub_rn(current[cell], earlier[cell]));
 }
 extern "C" __global__ void ensemble_headline_composite(
     const float *volume, float *result, unsigned long long cells, int levels,
@@ -814,8 +842,11 @@ def headline_diagnostic_memory_plan(shape, *, refl_levels=0, host_inputs=False):
     from gpuwm.ensemble.batch_storage import BatchArraySpec, BatchMemoryPlan
     shape = tuple(shape)
     fields = ("wind10", "cumulative", "rain_total", "dewpoint2", "humidity2",
-              "refl", "initial", "earlier", "qpf_1h", "qpf_3h", "qpf_6h")
+              "refl", "initial", "earlier", "qpf_1h", "qpf_3h", "qpf_6h", "visibility", "fog_flag")
     specs = [BatchArraySpec(f"headline:{name}", shape, "shared") for name in fields]
+    from gpuwm.ensemble.visibility import INPUT_NAMES
+    specs.extend(BatchArraySpec(f"headline:visibility:{name}", (3,) + shape, "shared")
+                 for name in INPUT_NAMES)
     if host_inputs:
         specs.extend(BatchArraySpec(f"headline:input:{name}", shape, "shared")
                      for name in ("U10", "V10", "T2", "Q2", "PSFC", "RAINNC", "RAINC", "RAINSH"))
@@ -833,7 +864,7 @@ class HeadlineDiagnosticCollector:
     """
 
     def __init__(self, root, *, members, renderer, start_time, requests=None,
-                 thresholds=None, keep_member_files=False, available_bytes=None,
+                 thresholds=None, comparison=None, keep_member_files=False, available_bytes=None,
                  tile_rows=32, render_products=("mean", "spread", "min", "max", "prob", "paintball", "postage", "pmm", "spaghetti"),
                  events=None, array_module=None, member_order=None, member_metadata=(),
                  retain_member_diagnostics=False, defer_replay=False, gpu_replay=False, resume=False):
@@ -842,6 +873,7 @@ class HeadlineDiagnosticCollector:
         self.xp, self.root, self.members = array_module, Path(root), index(members)
         self.member_order = _member_order(self.members, member_order)
         self.member_metadata = tuple(member_metadata)
+        self.member_weights = roster_weights(self.member_order, self.member_metadata)
         self.member_archive = None
         self.renderer, self.start_time = Path(renderer), start_time
         # NumPy is the explicit host-only planning facade. Real collectors
@@ -855,7 +887,7 @@ class HeadlineDiagnosticCollector:
                 member_order=self.member_order, member_metadata=self.member_metadata, start_time=start_time,
                 **({"resume": True} if resume else {}))
         self.requests = tuple(requests) if requests is not None else default_product_requests(
-            DEFAULT_THRESHOLDS, thresholds=thresholds)[0]
+            DEFAULT_THRESHOLDS, thresholds=thresholds, comparison=comparison)[0]
         self.events = {str(name): tuple(conditions) for name, conditions in (events or {}).items()}
         for name, conditions in self.events.items():
             if not conditions or any(not isinstance(c, ThresholdCondition) for c in conditions):
@@ -870,7 +902,10 @@ class HeadlineDiagnosticCollector:
         self.tile_rows = tile_rows
         self.render_products = tuple(render_products)
         self.spools, self.workspaces, self.rain_history, self.cohorts = {}, {}, {}, {}
+        from gpuwm.ensemble.ice_accretion import SavedFrameIce
+        self.ice = SavedFrameIce(self.xp)
         self.rain_initial_ticks = {}
+        self.rain_relocations = []
         self.output_ticks = set()
         self.member_files = []
         self._lock = threading.RLock()
@@ -943,6 +978,27 @@ class HeadlineDiagnosticCollector:
             raise ValueError("ensemble diagnostic clock precedes the forecast start")
         return tick
 
+    def _placement_key(self, grid, episode, member, geometry, *, advance):
+        """Rain-counter key for one uninterrupted footprint placement of a grid.
+
+        A following nest that returns to an earlier footprint is a new placement:
+        its cells were re-initialised on entry, so counters cannot be compared
+        with the earlier visit. A grid that never moves keeps its plain key.
+        """
+        placements = self.__dict__.setdefault("_placements", {})
+        base = (grid, episode, member)
+        last = placements.get(base)
+        if last is None:
+            sequence = 0
+        elif last[0] == geometry:
+            sequence = last[1]
+        else:
+            sequence = last[1] + 1
+        if advance:
+            placements[base] = (geometry, sequence)
+        key = (grid, episode, member, geometry)
+        return key if sequence == 0 else key + (sequence,)
+
     def _record_rain(self, key, tick, cumulative):
         """Record exact member words; repeated observation of a tick is allowed."""
         history = self.rain_history.setdefault(key, {})
@@ -961,17 +1017,45 @@ class HeadlineDiagnosticCollector:
             latest = max(numeric_ticks)
             if tick < latest:
                 raise ValueError("member precipitation counter snapshots must advance in ordinary clock order")
-            if np.any(cumulative < history[latest]):
-                delta = cumulative - history[latest]
+            # A reset is a decrease on the order of the accumulated rain. Float
+            # rounding residue (one cell at -2^-32 mm after 0.0 refused a real
+            # member on 2026-10-19) sits far below this floor.
+            delta = cumulative - history[latest]
+            floor = 1e-6 + 4 * np.spacing(np.maximum(np.abs(cumulative), np.abs(history[latest])))
+            if np.any(delta < -floor):
                 point = np.unravel_index(int(np.argmin(delta)), delta.shape)
                 raise ValueError("member cumulative precipitation reset; QPF would be invalid: "
                     f"member/grid={key[:3]}, ticks={latest}->{tick}, "
-                    f"cells={int(np.count_nonzero(delta < 0))}, min_change_mm={float(delta[point])}, "
+                    f"cells={int(np.count_nonzero(delta < -floor))}, min_change_mm={float(delta[point])}, "
                     f"at={point}, previous_mm={float(history[latest][point])}, "
                     f"current_mm={float(cumulative[point])}")
         if "initial" not in history:
             history["initial"] = cumulative.copy()
             self.rain_initial_ticks[key] = tick
+            if len(key) > 4:
+                previous = next((old for old in reversed(self.rain_history)
+                    if old != key and old[:3] == key[:3] and self.rain_history[old]), None)
+                # The ordinary relocation preparer carries overlap accumulators
+                # and seeds new ground from the parent (physics_continuation).
+                # A proven zero forecast origin is coordinate independent. Keep
+                # it: subtracting the first moved frame would erase prior rain.
+                # Nonzero origins need a remap; never invent their new values.
+                origin = next((old for old in self.rain_history
+                    if old != key and old[:3] == key[:3]
+                    and self.rain_initial_ticks.get(old) == 0
+                    and np.all(self.rain_history[old]["initial"] == 0)), None)
+                if origin is not None:
+                    history["initial"] = np.zeros_like(cumulative)
+                    self.rain_initial_ticks[key] = 0
+                self.rain_relocations.append({
+                    "grid_id": key[0], "episode": key[1], "member_id": key[2],
+                    "ticks_us": tick, "placement_sequence": key[4],
+                    "previous_geometry": None if previous is None else previous[3],
+                    "geometry": key[3],
+                    "reason": "grid coordinates changed; reset comparison and rolling-window endpoints to avoid comparing different ground by index",
+                    "rain_total": ("preserved forecast-zero origin; engine carries overlap and parent-seeded strips"
+                        if origin is not None else "unavailable: nonzero or missing forecast origin needs remapping"),
+                    "rolling_qpf": "unavailable across relocation; requires both endpoints in this uninterrupted placement"})
         history[tick] = cumulative
         for earlier in numeric_ticks:
             if earlier < tick - 6 * 3_600_000_000:
@@ -1020,7 +1104,7 @@ class HeadlineDiagnosticCollector:
                  np.uint64(cells), np.int32(0), np.int32(0), np.int32("RAINC" in resident),
                  np.int32("RAINSH" in resident), np.int32(0)))
             geometry = hashlib.sha256(latitude.tobytes() + longitude.tobytes()).hexdigest()
-            key = (index(grid_id), index(episode), index(member_id), geometry)
+            key = self._placement_key(index(grid_id), index(episode), index(member_id), geometry, advance=True)
             self._record_rain(key, self._tick(valid_time), xp.asnumpy(get("cumulative")))
             return True
 
@@ -1033,7 +1117,7 @@ class HeadlineDiagnosticCollector:
             if latitude.ndim != 2 or longitude.shape != latitude.shape:
                 raise ValueError("rain counter coordinates need matching two-dimensional grids")
             geometry = hashlib.sha256(latitude.tobytes() + longitude.tobytes()).hexdigest()
-            key = (index(grid_id), index(episode), index(member_id), geometry)
+            key = self._placement_key(index(grid_id), index(episode), index(member_id), geometry, advance=False)
             return self._tick(valid_time) in self.rain_history.get(key, {})
 
     @property
@@ -1051,6 +1135,8 @@ class HeadlineDiagnosticCollector:
         from gpuwm.ensemble.batch_storage import BatchArraySpec, BatchMemoryPlan
         plan = headline_diagnostic_memory_plan(shape, refl_levels=refl_levels, host_inputs=host_inputs)
         specs = list(plan.arrays)
+        from gpuwm.ensemble.ice_accretion import memory_plan as ice_memory_plan
+        specs.extend(ice_memory_plan(shape).arrays)
         for name, conditions in self.events.items():
             event_plan = compound_memory_plan(shape, conditions)
             for spec in event_plan.arrays:
@@ -1059,6 +1145,7 @@ class HeadlineDiagnosticCollector:
 
     def receipt(self):
         """Domain manifests and explicit product coverage for the run manifest."""
+        from gpuwm.ensemble.ice_accretion import CONTRACT as ICE_CONTRACT
         with self._lock:
             domains = []
             pending = []
@@ -1069,13 +1156,17 @@ class HeadlineDiagnosticCollector:
                 for frame in spool.frames.values():
                     row = {"domain": spool.domain, "valid_time": frame["valid_time"],
                         "status": frame["status"], "members_received": frame["members_received"],
-                        "members_expected": self.members, "reason": frame.get("reason")}
+                        "members_expected": self.members, "reason": frame.get("reason"),
+                        "product_availability": frame.get("product_availability", []),
+                        **weight_receipt(self.member_order, self.member_weights, frame["members_received"])}
                     if frame["status"] in ("pending", "incomplete"):
                         pending.append(row)
                     elif frame["status"] == "unavailable":
                         unavailable.append(row)
             return {"schema": NativeDiagnosticSpool.CONTRACT, "members_requested": self.members,
                 "member_order": list(self.member_order), "member_metadata": list(self.member_metadata),
+                **weight_receipt(self.member_order, self.member_weights),
+                "gridded_aggregate_policy": "unavailable when member coordinates differ; member products retain native coordinates",
                 "native_product_consumer": self.product_consumer.receipt(),
                 "deferred_replay": self.defer_replay,
                 "history_identity_ledger": (self.history_ledger.path.relative_to(self.root.resolve()).as_posix()
@@ -1089,6 +1180,12 @@ class HeadlineDiagnosticCollector:
                 "aggregate_only": not self.keep_member_files,
                 "rain_history_host_bytes": sum(int(array.nbytes) for history in self.rain_history.values() for array in history.values()),
                 "rain_history_device_bytes": 0,
+                "rain_relocations": list(self.rain_relocations),
+                "ice_accretion_sampling": {**ICE_CONTRACT, "intervals_hours": sorted(self.ice.intervals)},
+                "ice_history_host_bytes": sum(int(array.nbytes)
+                    for history in self.ice.history.values() for name, array in history.items() if name != "tick"),
+                "ice_diagnostic_buffers": [{"device": key[0], "shape": key[1],
+                    "required_bytes": storage.plan.required_bytes(1)} for key, storage in self.ice.workspaces.items()],
                 "rain_initial_ticks": [{"grid_id": key[0], "episode": key[1], "member_id": key[2],
                     "geometry": key[3], "ticks_us": tick} for key, tick in self.rain_initial_ticks.items()],
                 "compound_event_buffers": [{"device": key[0], "shape": key[1], "event": key[2],
@@ -1224,6 +1321,11 @@ class HeadlineDiagnosticCollector:
                 from gpuwm.io.wrfout import _driver_refreshes_psfc
                 if _driver_refreshes_psfc(state):
                     fields["PSFC"] = physics.fields["psfc"]
+        if streamed is None:
+            for source, target in (("qr", "QRAIN"), ("qs", "QSNOW"), ("qg", "QGRAUP")):
+                value = getattr(state, source, None)
+                if value is not None:
+                    fields[target] = value
         fields = {str(name).upper(): value for name, value in fields.items()}
         if streamed is None:
             existing_scratch = getattr(state, "existing_scratch", None)
@@ -1246,7 +1348,7 @@ class HeadlineDiagnosticCollector:
             # cannot be painted on the earlier frame's static mesh.
             domain += "-grid-" + geometry[:12]
             key = (domain, geometry)
-        rain_key = (index(grid_id), index(episode), index(member_id), geometry)
+        rain_key = self._placement_key(index(grid_id), index(episode), index(member_id), geometry, advance=True)
         tick = self._tick(valid_time)
         if (rain_key, tick) in self._resume_output_ticks:
             return None
@@ -1279,7 +1381,7 @@ class HeadlineDiagnosticCollector:
                 if array.shape != latitude.shape:
                     raise ValueError(f"{name} has a different surface grid than ordinary output metadata")
                 resident[name] = xp.ascontiguousarray(array)
-        rain_key = (index(grid_id), index(episode), index(member_id), geometry)
+        rain_key = self._placement_key(index(grid_id), index(episode), index(member_id), geometry, advance=True)
         history = self.rain_history.setdefault(rain_key, {})
         tick = self._tick(valid_time)
         output_key = (rain_key, tick)
@@ -1299,18 +1401,25 @@ class HeadlineDiagnosticCollector:
              np.uint64(cells), np.int32(has_wind), np.int32(has_humidity),
              np.int32("RAINC" in resident), np.int32("RAINSH" in resident), np.int32(bool(history))))
         diagnosed = {}
+        if any(request.field == "visibility" for request in self.requests):
+            from gpuwm.ensemble.visibility import diagnose as diagnose_visibility
+            if diagnose_visibility(state=state, fields=fields, streamed=streamed is not None,
+                    visibility=get("visibility"), fog_flag=get("fog_flag"), workspace=buffers,
+                    array_module=xp):
+                diagnosed["visibility"] = get("visibility")
         if has_wind:
             diagnosed["wind10"] = get("wind10")
         if "T2" in resident:
             diagnosed["temperature2"] = resident["T2"]
+            diagnosed["temperature2_below_freezing"] = resident["T2"]
         if has_humidity:
             diagnosed.update(dewpoint2=get("dewpoint2"), humidity2=get("humidity2"))
         if has_rain:
             cumulative = xp.asnumpy(get("cumulative"))
-            if not history:
-                xp.copyto(get("initial"), get("cumulative"))
-                get("rain_total").fill(0)
             history = self._record_rain(rain_key, tick, cumulative)
+            get("initial").set(history["initial"])
+            difference(((cells + 255) // 256,), (256,),
+                       (get("cumulative"), get("initial"), get("rain_total"), np.uint64(cells)))
             if self.rain_initial_ticks[rain_key] == 0:
                 diagnosed["rain_total"] = get("rain_total")
             for name, hours in (("qpf_1h", 1), ("qpf_3h", 3), ("qpf_6h", 6)):
@@ -1335,6 +1444,10 @@ class HeadlineDiagnosticCollector:
                     difference(((cells + 255) // 256,), (256,),
                                (get("cumulative"), get("earlier"), get(name), np.uint64(cells)))
                     diagnosed[name] = get(name)
+        if has_rain:
+            diagnosed.update(self.ice.submit(rain_key, tick, fields, get("cumulative")))
+        else:
+            self.ice.invalidate(rain_key)
         if self.member_archive is not None:
             archive_fields = {name: resident[name] for name in ("T2", "U10", "V10") if name in resident}
             if "rain_total" in diagnosed:
@@ -1377,6 +1490,14 @@ class HeadlineDiagnosticCollector:
         supplied = {name: array[None] for name, array in diagnosed.items() if name in requested}
         complete = spool.submit(supplied, member_ids=(member_id,), valid_time=valid,
                                 unavailable_fields=requested - set(supplied), array_module=xp)
+        if any(name in supplied for name in ("ice_accretion", "freezing_rain_total")):
+            with spool._lock:
+                frame = spool.frames[valid]
+                used = set(frame.get("ice_sampling_intervals_hours", []))
+                if self.ice.last_interval is not None:
+                    used.add(self.ice.last_interval)
+                frame["ice_sampling_intervals_hours"] = sorted(used)
+                spool._manifest_locked()
         self.output_ticks.add(output_key)
         for event in self._events.values():
             event.fields = {}

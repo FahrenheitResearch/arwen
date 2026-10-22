@@ -1,0 +1,8 @@
+{
+  "schema": "gpuwm-cross-source-provenance-v1",
+  "source": "NOAA GEFSv12 retrospective landsfc.pgrb2.0p50",
+  "field": "land_fraction",
+  "time_policy": "time invariant producer static; original 2008 reference time retained",
+  "license": "NOAA public domain",
+  "license_url": "https://registry.opendata.aws/noaa-gefs-reforecast/"
+}

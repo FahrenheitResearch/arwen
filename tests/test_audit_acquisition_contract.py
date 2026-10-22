@@ -96,12 +96,21 @@ def test_hint_source_catalog_is_not_empty():
 
 
 @pytest.mark.parametrize("source", fetch._fetch_hint_sources())
-@pytest.mark.parametrize("key,value", _BAD_WINDOW_SPELLINGS)
-def test_all_hint_sources_reject_invalid_window_spellings(source, key, value):
-    table = {"source": source, key: value}
-    with pytest.raises(ValueError) as refusal:
-        fetch.validate_fetch_hints(table, source="window.toml")
-    assert key in str(refusal.value), refusal.value
+def test_all_hint_sources_reject_invalid_window_spellings(source):
+    # Keep the entire matrix, but collect each source once. Report every
+    # offending scalar so one bad spelling cannot hide the rest.
+    failures = []
+    for key, value in _BAD_WINDOW_SPELLINGS:
+        try:
+            fetch.validate_fetch_hints(
+                {"source": source, key: value}, source="window.toml")
+        except Exception as refusal:
+            if not isinstance(refusal, ValueError) or key not in str(refusal):
+                failures.append((key, repr(value), type(refusal).__name__,
+                                 str(refusal)))
+        else:
+            failures.append((key, repr(value), "accepted"))
+    assert not failures, f"{source}: {failures}"
 
 
 @pytest.mark.parametrize("key,value", _BAD_WINDOW_SPELLINGS)

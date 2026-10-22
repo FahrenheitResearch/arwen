@@ -23,12 +23,18 @@ def sha(payload):
 
 def inventory():
     lock = (WORKSPACE / "Cargo.lock").read_bytes()
+    sources = tomllib.loads((WORKSPACE / ".cargo/config.toml").read_text())["source"]
+    registry = WORKSPACE / sources["vendored-sources"]["directory"]
     packages = []
     for item in tomllib.loads(lock.decode())["package"]:
         if "source" not in item:
             continue
-        directory = WORKSPACE / "vendor/crates-io" / (item["name"] + "-" + item["version"])
+        directory = registry / (item["name"] + "-" + item["version"])
+        if not directory.is_dir():
+            directory = registry / item["name"]
         package = tomllib.loads((directory / "Cargo.toml").read_text(encoding="utf-8"))["package"]
+        if (package["name"], package["version"]) != (item["name"], item["version"]):
+            raise ValueError(f"{directory.name}: package identity differs from the lock")
         record = json.loads((directory / ".cargo-checksum.json").read_text())
         if record["package"] != item["checksum"]:
             raise ValueError(f"{directory.name}: registry checksum differs from the lock")
@@ -36,7 +42,7 @@ def inventory():
                          "license": package.get("license"), "license_file": package.get("license-file")})
     packages.sort(key=lambda item: (item["name"], item["version"]))
     return {"schema": "arwen.zarr-vendor.v1", "lock_sha256": sha(lock),
-            "command": "cd tools/zarr_bridge && cargo vendor --locked --offline --versioned-dirs vendor/crates-io",
+            "command": "python tools/update_zarr_license_notice.py (shared registry maintenance: tools/rustwx/VENDOR.md)",
             "packages": packages}
 
 
@@ -86,7 +92,7 @@ def render(packages, counts):
         files = sorted((path for path in directory.rglob("*") if path.is_file()
                         and path.name.upper().startswith(PREFIXES)
                         and "target" not in path.relative_to(directory).parts
-                        and ("vendor" not in path.relative_to(directory).parts or directory.is_relative_to(WORKSPACE / "vendor"))),
+                        and ("vendor" not in path.relative_to(directory).parts or directory.is_relative_to(ROOT / "tools/rustwx/vendor/crates-io"))),
                        key=notice_order)
         for supplement in supplements:
             if package["name"] in supplement["packages"]:

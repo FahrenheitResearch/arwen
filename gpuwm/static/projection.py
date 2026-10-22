@@ -868,11 +868,10 @@ def projection_class(map_proj: str) -> type[ProjectedGrid]:
     return classes[key]
 
 
-#: Cells of clearance between a root domain's footprint and the
-#: projection pole.  A footprint that contains (or touches within this
-#: margin) the pole is refused: lat-lon source interpolation and
-#: static-tile windowing are not pole-capable, which is a property of
-#: the pipeline rather than of any one projection.
+#: Clearance from the Lambert cone tip, where longitude is singular.
+#: Polar stereographic is regular through its hemisphere's pole; the
+#: forcing and static windows keep periodic and reflected pole donors.
+#: The geometric predicate below also identifies those valid polar caps.
 POLE_CLEARANCE_CELLS = 2.0
 
 

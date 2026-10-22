@@ -42,9 +42,9 @@
 //!   the `*_with_rule` entry points.
 
 use std::error::Error;
-use std::io;
 use std::path::Path;
 
+use crate::boxed_error;
 use crate::abi::{GoesAbiField, read_goes_abi_field, read_goes_abi_field_window};
 use crate::s3::Sector;
 
@@ -353,10 +353,6 @@ pub fn gate_by_dqf(
         }
     }
     Ok(report)
-}
-
-fn boxed_error(message: impl Into<String>) -> Box<dyn Error> {
-    Box::new(io::Error::new(io::ErrorKind::InvalidData, message.into()))
 }
 
 #[cfg(test)]

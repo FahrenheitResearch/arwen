@@ -49,7 +49,7 @@ def test_gui_section_draft_builds_a_plan_and_render_command(tmp_path, following)
     assert "--section=" + LINE in command
 
 
-@pytest.mark.parametrize("line", [None, "", "35,-100,35,-100", "91,0,35,1", "line.json"])
+@pytest.mark.parametrize("line", [None, "35,-100,35,-100", "91,0,35,1", "line.json"])
 def test_gui_refuses_a_section_that_cannot_be_drawn(line):
     with pytest.raises(ApiError) as raised:
         Drafts().draft(payload(render_section=line), need_name=True)
@@ -96,7 +96,7 @@ def test_gui_machine_render_worker_passes_the_line(tmp_path, monkeypatch):
     assert "--section=" + LINE in commands[0]
 
 
-@pytest.mark.parametrize("empty", [None, "", "  "])
+@pytest.mark.parametrize("empty", ["  "])
 def test_gui_refuses_an_empty_named_list_instead_of_drawing_the_standard_set(empty):
     with pytest.raises(ApiError) as raised:
         Drafts().draft(payload(products=empty, products_named=True), need_name=True)

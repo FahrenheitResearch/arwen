@@ -39,14 +39,11 @@ pub use layout_plan::{
 };
 pub use rasterize::{cuda_rasterize_stats, print_cuda_rasterize_stats_if_enabled};
 
-/// Compatibility hook for upstream phase reporting. For the timers collected
-/// by this renderer, use RUSTWX_TRACE_RENDER_TIMING in a separate diagnostic run.
-pub fn print_cuda_rasterize_phase_timing_if_enabled() {}
 pub use features::{
     BasemapDetail, BasemapStyle, StyledLonLatLayer, StyledLonLatPolygonLayer,
-    checked_in_natural_earth_110m_root, load_styled_basemap_features,
-    load_styled_basemap_features_for, load_styled_basemap_features_for_detail,
-    load_styled_basemap_polygons, load_styled_basemap_polygons_for, load_styled_conus_features_for,
+    checked_in_natural_earth_110m_root, load_styled_basemap_features_for,
+    load_styled_basemap_features_for_detail,
+    load_styled_basemap_polygons_for, load_styled_conus_features_for,
     load_styled_conus_polygons_for,
 };
 pub use image::RgbaImage;
@@ -70,7 +67,6 @@ pub use render::{
     PngCompressionMode, PngWriteOptions, RenderImageTiming, RenderPngTiming,
     map_frame_aspect_ratio, map_frame_aspect_ratio_for_mode,
     map_frame_aspect_ratio_for_mode_with_chrome_scale,
-    map_frame_aspect_ratio_for_mode_with_domain_frame,
     map_frame_aspect_ratio_for_mode_with_domain_frame_and_chrome_scale, render_to_image_profile,
     render_to_png_profile as profile_render_to_png,
 };
@@ -1202,9 +1198,21 @@ fn with_render_state_profile_with_style<T>(
         let contour_prep_ms = contour_start.elapsed().as_millis();
 
         let barb_start = Instant::now();
+        let direction_projection = request.resolved_projection.zip(projected_domain)
+            .filter(|_| request.wind_barbs.iter().any(|layer| layer.direction_arrows))
+            .map(|(projection, domain)| {
+            std::sync::Arc::new(crate::overlay::DirectionProjection {
+                projection,
+                extent: MapExtent { x_min: domain.extent.x_min, x_max: domain.extent.x_max,
+                    y_min: domain.extent.y_min, y_max: domain.extent.y_max },
+                lat_lon: request.field.grid.lat_deg.iter().copied().zip(request.field.grid.lon_deg.iter().copied()).collect(),
+            })
+        });
         let mut barbs = Vec::with_capacity(request.wind_barbs.len());
         for layer in &request.wind_barbs {
             barbs.push(BarbOverlay {
+                direction_projection: if layer.direction_arrows { direction_projection.clone() } else { None },
+                direction_arrows: layer.direction_arrows,
                 u: layer.u.clone(),
                 v: layer.v.clone(),
                 ny: shape.ny,

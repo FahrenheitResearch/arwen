@@ -1,18 +1,11 @@
-use crate::direct::build_projected_map_with_projection;
 use crate::gridded::{
     PreparedHeavyVolume, PressureFields, SharedTiming, SurfaceFields, prepare_heavy_volume,
-    prepare_heavy_volume_timed, resolve_thermo_pair_run,
 };
-use crate::heavy::{
-    HeavyComputeTiming, HeavyRenderedArtifact, crop_and_guard_heavy_domain,
-    heavy_map_target_aspect_ratio, render_heavy_map_group,
-};
+use crate::heavy::{HeavyComputeTiming, HeavyRenderedArtifact};
 use crate::planner::{BundleFetchKey, ExecutionPlan, ExecutionPlanBuilder, PlannedBundle};
 use crate::publication::{PublishedFetchIdentity, fetch_identity_from_cached_result_with_aliases};
-use crate::runtime::{
-    BundleLoaderConfig, FetchedBundleBytes, LoadedBundleSet, load_execution_plan,
-};
-use crate::shared_context::{DomainSpec, WeatherPanelField, model_time_subtitle, source_subtitle};
+use crate::runtime::{FetchedBundleBytes, LoadedBundleSet};
+use crate::shared_context::{DomainSpec, WeatherPanelField};
 use rustwx_calc::{
     EcapeVolumeInputs, SupportedSevereFields, SurfaceInputs,
     compute_supported_severe_fields_hemispheric,
@@ -21,9 +14,7 @@ use rustwx_core::{BundleRequirement, CanonicalBundleDescriptor, ModelId, SourceI
 use rustwx_models::{LatestRun, default_bundle_product};
 use rustwx_render::WeatherProduct;
 use serde::{Deserialize, Serialize};
-use std::fs;
 use std::path::PathBuf;
-use std::time::Instant;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SevereBatchRequest {
@@ -57,154 +48,6 @@ pub struct SevereBatchReport {
     pub compute_ms: u128,
     pub render_ms: u128,
     pub total_ms: u128,
-}
-
-pub fn run_severe_batch(
-    request: &SevereBatchRequest,
-) -> Result<SevereBatchReport, Box<dyn std::error::Error>> {
-    fs::create_dir_all(&request.out_dir)?;
-    if request.use_cache {
-        fs::create_dir_all(&request.cache_root)?;
-    }
-
-    let total_start = Instant::now();
-    let latest = resolve_thermo_pair_run(
-        request.model,
-        &request.date_yyyymmdd,
-        request.cycle_override_utc,
-        request.forecast_hour,
-        request.source,
-        request.surface_product_override.as_deref(),
-        request.pressure_product_override.as_deref(),
-    )?;
-    let plan = build_severe_execution_plan(
-        &latest,
-        request.forecast_hour,
-        request.surface_product_override.as_deref(),
-        request.pressure_product_override.as_deref(),
-    );
-    let loaded = load_execution_plan(
-        plan,
-        &BundleLoaderConfig {
-            cache_root: request.cache_root.clone(),
-            use_cache: request.use_cache,
-        },
-    )?;
-
-    let (surface_planned, surface_decode, pressure_planned, pressure_decode) = loaded
-        .require_surface_pressure_pair()
-        .map_err(|err| format!("severe surface/pressure pair unavailable: {err}"))?;
-    let full_surface = &surface_decode.value;
-    let full_pressure = &pressure_decode.value;
-    let owned_full_grid = full_surface.core_grid()?;
-    let project_start = Instant::now();
-    let full_projected = build_projected_map_with_projection(
-        &owned_full_grid.lat_deg,
-        &owned_full_grid.lon_deg,
-        full_surface.projection.as_ref(),
-        request.domain.bounds,
-        heavy_map_target_aspect_ratio(),
-    )?;
-
-    // Crop surface+pressure to the requested domain BEFORE parcel-ascent
-    // compute. Without this severe_batch runs CAPE on every CONUS cell
-    // (~1.8M for HRRR) even when the user only wants a 300×300 midwest
-    // panel — 20× wasted work. run_hrrr_batch_from_loaded already does
-    // this; the per-model severe_batch needs the same shortcut.
-    let heavy_domain = crop_and_guard_heavy_domain(
-        full_surface,
-        full_pressure,
-        &full_projected,
-        &request.domain,
-        2,
-        request.allow_large_heavy_domain,
-    )?;
-    let (surface, pressure, grid) =
-        heavy_domain.bind(full_surface, full_pressure, &owned_full_grid);
-
-    let projected = if heavy_domain.cropped.is_some() {
-        build_projected_map_with_projection(
-            &grid.lat_deg,
-            &grid.lon_deg,
-            surface.projection.as_ref(),
-            request.domain.bounds,
-            heavy_map_target_aspect_ratio(),
-        )?
-    } else {
-        full_projected
-    };
-    let project_ms = project_start.elapsed().as_millis();
-
-    let compute_start = Instant::now();
-    let (prepared, prep_timing) = prepare_heavy_volume_timed(surface, pressure, false)?;
-    let severe_fields_start = Instant::now();
-    let fields = compute_severe_panel_fields_with_prepared_volume(surface, pressure, &prepared)?;
-    let severe_fields_ms = severe_fields_start.elapsed().as_millis();
-    let compute_ms = compute_start.elapsed().as_millis();
-
-    let model_slug = request.model.as_str().replace('-', "_");
-    let subtitle_left = model_time_subtitle(
-        request.model,
-        &request.date_yyyymmdd,
-        loaded.latest.cycle.hour_utc,
-        request.forecast_hour,
-    );
-    let source_label = source_subtitle(loaded.latest.source);
-    let (outputs, render_ms) = render_heavy_map_group(
-        &request.out_dir,
-        &model_slug,
-        &request.date_yyyymmdd,
-        loaded.latest.cycle.hour_utc,
-        request.forecast_hour,
-        &request.domain.slug,
-        "severe",
-        &grid,
-        &projected,
-        &fields,
-        &subtitle_left,
-        |field| match field.artifact_slug() {
-            "stp_fixed" => Some(format!("{source_label} | fixed-layer composite")),
-            "scp_mu_0_3km_0_6km_proxy" => Some(format!(
-                "{source_label} | proxy: MUCAPE + 0-3 km SRH + 0-6 km shear"
-            )),
-            "ehi_0_1km" => Some(format!("{source_label} | proxy: SBCAPE + 0-1 km SRH")),
-            _ => Some(source_label.clone()),
-        },
-    )?;
-    let shared_timing = build_shared_timing_for_pair(&loaded, surface_planned, pressure_planned)?;
-    let input_fetches = build_planned_input_fetches(&loaded);
-    let total_ms = total_start.elapsed().as_millis();
-    let heavy_timing = HeavyComputeTiming {
-        full_cells: heavy_domain.stats.full_cells,
-        cropped_cells: heavy_domain.stats.cropped_cells,
-        pressure_levels: heavy_domain.stats.pressure_levels,
-        crop_kind: heavy_domain.stats.crop_kind,
-        crop_ms: heavy_domain.crop_ms,
-        prepare_height_agl_ms: prep_timing.prepare_height_agl_ms,
-        broadcast_pressure_ms: prep_timing.broadcast_pressure_ms,
-        pressure_3d_bytes: prep_timing.pressure_3d_bytes,
-        ecape_triplet_ms: 0,
-        severe_fields_ms,
-        render_ms,
-        total_ms,
-    };
-
-    Ok(SevereBatchReport {
-        model: request.model,
-        date_yyyymmdd: request.date_yyyymmdd.clone(),
-        cycle_utc: loaded.latest.cycle.hour_utc,
-        forecast_hour: request.forecast_hour,
-        source: loaded.latest.source,
-        domain: request.domain.clone(),
-        outputs,
-        input_fetches,
-        shared_timing,
-        heavy_timing,
-        project_ms,
-        compute_ms,
-        render_ms,
-        total_ms,
-    })
 }
 
 /// Build the typed execution plan for a severe-panel run: surface +

@@ -17,6 +17,8 @@ import sys
 import threading
 import time
 
+from gpuwm.remote_artifact_cache import _hash as _file_sha
+
 SCHEMA = "gpuwm.remote-artifacts.v1"
 OUTPUT_SET_SCHEMA = "arwen.committed-output-set.v1"
 INDEX_SCHEMA = "gpuwm.remote-artifact-index.v1"
@@ -94,14 +96,6 @@ def _raw(path, maximum):
 def _stamp(path):
     value = path.stat()
     return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns
-
-
-def _file_sha(path):
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while block := stream.read(1024 * 1024):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _authority(path, payload, *, sequence=None):

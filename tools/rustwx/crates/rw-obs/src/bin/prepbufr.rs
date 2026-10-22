@@ -130,29 +130,14 @@ verify options
 
 fn main() -> ExitCode {
     let _ = std::hint::black_box(GPUWM_BRIDGE_SOURCE_REV_STAMP);
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    match run(&args) {
-        Ok(output) => {
-            print!("{output}");
-            ExitCode::SUCCESS
-        }
-        Err(error) => {
-            eprintln!("rw_prepbufr: {error}");
-            ExitCode::FAILURE
-        }
-    }
+    rw_obs::cli::main("rw_prepbufr", run)
 }
 
 fn run(args: &[String]) -> Result<String, Box<dyn Error>> {
-    let Some(first) = args.first() else {
-        return Ok(USAGE.to_string());
-    };
-    match first.as_str() {
-        "--help" | "-h" | "help" => return Ok(USAGE.to_string()),
-        "--version" | "-V" => return Ok(format!("rw_prepbufr {VERSION}\n")),
-        "--abi" => return Ok(format!("{ABI_MARKER}\n")),
-        _ => {}
+    if let Some(output) = rw_obs::cli::information(args, "rw_prepbufr", VERSION, USAGE, ABI_MARKER) {
+        return Ok(output);
     }
+    let first = &args[0];
     let options = Options::parse(&args[1..])?;
     match first.as_str() {
         "fetch" => cmd_fetch(&options),
@@ -184,10 +169,7 @@ impl Options {
         let mut index = 0;
         while index < args.len() {
             let flag = args[index].as_str();
-            let mut value = || -> Result<String, Box<dyn Error>> {
-                index += 1;
-                args.get(index).cloned().ok_or_else(|| err(format!("{flag} needs a value")))
-            };
+            let mut value = || rw_obs::cli::value(args, &mut index, flag);
             match flag {
                 "--cycle" => options.cycle = Some(value()?),
                 "--out" => options.out = Some(PathBuf::from(value()?)),
@@ -609,42 +591,9 @@ fn cmd_table(options: &Options) -> Result<String, Box<dyn Error>> {
 // ---------------------------------------------------------------- verify
 
 fn cmd_verify(options: &Options) -> Result<String, Box<dyn Error>> {
-    let file = options.file.as_deref().ok_or_else(|| err("--file is required"))?;
-    let record_path = options.record.as_deref().ok_or_else(|| err("--record is required"))?;
-    let record: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(record_path).map_err(|e| err(format!("cannot read {}: {e}", record_path.display())))?,
+    rw_obs::table::verify(
+        options.file.as_deref(), options.record.as_deref(), TABLE_RECORD_SCHEMA, VERIFY_SCHEMA,
     )
-    .map_err(|e| err(format!("{} is not JSON: {e}", record_path.display())))?;
-    if record.get("schema").and_then(|s| s.as_str()) != Some(TABLE_RECORD_SCHEMA) {
-        return Err(err(format!("{} does not declare {TABLE_RECORD_SCHEMA}", record_path.display())));
-    }
-    let bytes = std::fs::read(file).map_err(|e| err(format!("cannot read {}: {e}", file.display())))?;
-    let actual = hex_sha256(&bytes);
-    let stated = record.get("sha256").and_then(|s| s.as_str()).unwrap_or("").to_string();
-    #[derive(Serialize)]
-    struct Record {
-        schema: &'static str,
-        status: &'static str,
-        path: String,
-        stated_sha256: String,
-        actual_sha256: String,
-    }
-    let ok = actual == stated;
-    let text = format!(
-        "{}\n",
-        serde_json::to_string_pretty(&Record {
-            schema: VERIFY_SCHEMA,
-            status: if ok { "VERIFIED" } else { "MISMATCH" },
-            path: rw_obs::absolute_uri(file),
-            stated_sha256: stated,
-            actual_sha256: actual,
-        })?
-    );
-    if ok {
-        Ok(text)
-    } else {
-        Err(err(format!("table digest mismatch:\n{text}")))
-    }
 }
 
 #[cfg(test)]

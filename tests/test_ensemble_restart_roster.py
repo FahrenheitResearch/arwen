@@ -569,3 +569,81 @@ def test_checkpointed_members_share_card_without_losing_durable_roster(tmp_path,
     assert sorted(report["members_completed"]) == [0, 1, 2]
     roster = json.loads((tmp_path / restart_roster.ROSTER).read_text())
     assert [row["status"] for row in roster["members"]] == ["completed"] * 3
+
+
+# The collector opens the Rust NetCDF writer when it is built; a native-free
+# run (the cut's science stage) skips it, as it does the real-collector case above.
+@requires_netcdf_writer_bridge
+@pytest.mark.parametrize("return_tick", [1, 2])
+def test_moving_nest_resume_keeps_current_rain_placement(tmp_path, return_tick):
+    import numpy as np
+    from gpuwm.ensemble.batch_products import FieldProducts
+    from gpuwm.ensemble.batch_product_output import HeadlineDiagnosticCollector
+    options = dict(members=1, renderer="rw_wrfbatch", start_time=datetime(2024, 1, 1),
+        requests=(FieldProducts("rain_total", "mm", (1,)),), array_module=np)
+    original = HeadlineDiagnosticCollector(tmp_path, **options)
+    # Return to the first footprint after a move: its new counters start over.
+    for tick, geometry, rain in ((0, "a", 10), (1, "b", 5), (return_tick, "a", 0)):
+        key = original._placement_key(2, 0, 0, geometry, advance=True)
+        original._record_rain(key, tick, np.full((2, 2), rain, np.float32))
+    original.save_resume()
+    restored = HeadlineDiagnosticCollector(tmp_path, resume=True, **options)
+    restored.restore_resume()
+    resumed_key = restored._placement_key(2, 0, 0, "a", advance=True)
+    assert resumed_key == key
+    restored._record_rain(resumed_key, 3, np.ones((2, 2), np.float32))
+    next_key = restored._placement_key(2, 0, 0, "b", advance=True)
+    assert next_key[-1] == 3
+    restored._record_rain(next_key, 4, np.zeros((2, 2), np.float32))
+
+
+def test_resume_reuses_only_exact_prepared_bindings(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    from gpuwm import stage_cli, prepared_single_domain_forecast
+    from gpuwm.ensemble import door, recipe_door
+
+    rows = [dict(member_id=member, prepared_root=str(tmp_path / bank),
+                 experiment_config=str(tmp_path / config), wps_namelist=wps)
+            for member, bank, config, wps in (
+                (0, "bank-a", "a.toml", None),
+                (1, "bank-a", "a.toml", None),
+                (2, "bank-b", "b.toml", "b.wps"),
+                (3, "bank-b", "b.toml", "b.wps"),
+                (4, "bank-b", "different.toml", "b.wps"),
+                (5, "bank-b", "b.toml", "different.wps"))]
+    restart_roster.atomic_json(tmp_path / restart_roster.INPUTS, {"members": rows})
+    restart_roster.atomic_json(tmp_path / restart_roster.IDENTITIES,
+                              {"member_order": list(range(len(rows)))})
+    monkeypatch.setattr(restart_roster, "verify_roster", lambda *a, **kw: None)
+    monkeypatch.setattr(stage_cli, "resolve_bundle", lambda root: {"layout": "single"})
+    monkeypatch.setattr(stage_cli, "sim_command", lambda *a, **kw: ["python", "-m", "runner"])
+    opened, captured = [], {}
+
+    def load(shared, row):
+        opened.append(row["member_id"])
+        return object()
+
+    @contextmanager
+    def scope(*a, **kw):
+        captured.update(kw)
+        yield
+
+    def run(*a, **kw):
+        shared = object()
+        provider = captured["input_provider"]
+        # A later member can request the first bank before member zero.
+        values = {m: provider(shared_inputs=shared, member_id=m)
+                  for m in (1, 0, 2, 3, 4, 5)}
+        assert values[0] is values[1] is shared
+        assert values[2] is values[3]
+        assert len({values[m] for m in (0, 2, 4, 5)}) == 4
+        for m in range(len(rows)):
+            assert provider(shared_inputs=shared, member_id=m) is values[m]
+        return 0
+
+    monkeypatch.setattr(recipe_door, "member_inputs", load)
+    monkeypatch.setattr(door, "production_run_scope", scope)
+    monkeypatch.setattr(prepared_single_domain_forecast, "main", run)
+    args = SimpleNamespace(restart_roster=tmp_path / restart_roster.ROSTER, outdir=tmp_path)
+    assert restart_roster.resume_prepared_roster(args, object()) == 0
+    assert opened == [2, 4, 5]

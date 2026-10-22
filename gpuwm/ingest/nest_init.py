@@ -1220,21 +1220,6 @@ def start_child_input_preparations(
         preprocess_backend=preprocess_backend, cpu_bridge=cpu_bridge)
 
 
-def prepare_child_inputs_parallel(
-        exp, catalog,
-        source_orography: SourceOrographyDeclaration | None = None,
-        *, workers: int = 8, preprocess_backend: str | object = "cpu",
-        cpu_bridge: Path | str | None = None,
-) -> tuple[PreparedChildInput, ...]:
-    """Blocking convenience wrapper around child-input preparation."""
-
-    with start_child_input_preparations(
-            exp, catalog, source_orography, workers=workers,
-            preprocess_backend=preprocess_backend,
-            cpu_bridge=cpu_bridge) as pending:
-        return pending.result()
-
-
 def _assert_prepared_grid_matches_parent(
         prepared: PreparedChildInput, parent_node: DomainNode) -> None:
     expected = _child_grid(prepared.domain, parent_node)
@@ -1360,7 +1345,8 @@ def finalize_prepared_child(
     from gpuwm.config import soil_layer_count
 
     from gpuwm.core.landuse import (
-        ruc_fractional_seaice as _ruc_fractional_seaice)
+        ruc_fractional_seaice as _ruc_fractional_seaice,
+        seaice_threshold_of as _seaice_threshold_of)
     soil = preprocess_land_surface_soil(
         horizontal.fields, sf_surface_physics=int(cfg.sf_surface_physics),
         # real.exe's adjust_for_seaice_pre/post keep the fraction under
@@ -1368,6 +1354,7 @@ def finalize_prepared_child(
         # otherwise (module_soil_pre.F:216-219, :337-343, :392-393 of the HRRR
         # v4.1.21 fork).
         fractional_seaice=_ruc_fractional_seaice(cfg),
+        seaice_threshold=_seaice_threshold_of(cfg),
         num_soil_layers=soil_layer_count(cfg),
         soil_type=child_soil_type,
         deep_soil_temperature=static_fields["TMN"],
@@ -2270,7 +2257,7 @@ __all__ = [
     "compare_n1_static", "finalize_prepared_child",
     "finalize_prepared_child_chain", "initialize_child",
     "initialize_child_chain_parallel", "parent_only_init",
-    "prepare_child_input", "prepare_child_inputs_parallel",
+    "prepare_child_input",
     "seed_rk_time_t_copies",
     "start_child_input_preparations", "write_n1_static_npz",
 ]

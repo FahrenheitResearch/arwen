@@ -27,6 +27,7 @@ from typing import Mapping, Sequence
 from gpuwm.verify import spectral
 from gpuwm.verify import spectral_compare
 from gpuwm.verify import spectral_io
+from gpuwm.verify.spectral import _canonical_hash as canonical_hash
 
 SOURCE_SCHEMA = "gpuwm.spectral-comparison-source/v1"
 REGISTRATION_SCHEMA = "gpuwm.spectral-comparison-registration/v1"
@@ -135,13 +136,6 @@ def policy_parameters(parameters: Mapping[str, object]) -> dict[str, object]:
                 pair[key] = os.path.basename(str(pair[key]).replace("\\", "/"))
     portable["path_policy"] = "basenames only; see policy_parameters"
     return portable
-
-
-def canonical_hash(value: object) -> str:
-    payload = json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
-        allow_nan=False).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
 
 
 def write_json_atomic(path: str | Path, payload: Mapping[str, object]) -> Path:
@@ -306,48 +300,27 @@ def _normalise_field(record: Mapping[str, object], *, index: int) -> dict[str, o
         "kind": kind,
         "units": None if record.get("units") is None else str(record["units"]),
     }
-    if kind == "scalar":
-        left = _field_side(
-            record, "left", variable_key="variable", default_destagger="none",
+    components = ("",) if kind == "scalar" else ("_u", "_v")
+    sources = {
+        f"{side}{component}": _field_side(
+            record, side,
+            variable_key=f"{component[1:]}_variable" if component else "variable",
+            default_destagger="none" if kind == "scalar" else "auto",
             reduction=reduction, level_index=level_index)
-        reference = _field_side(
-            record, "reference", variable_key="variable",
-            default_destagger="none", reduction=reduction,
-            level_index=level_index)
+        for side in ("left", "reference")
+        for component in components
+    }
+    for component in components:
+        left = sources[f"left{component}"]
+        reference = sources[f"reference{component}"]
         if left["variable"] is None and reference["variable"] is not None:
             left["variable"] = reference["variable"]
         if reference["variable"] is None and left["variable"] is not None:
             reference["variable"] = left["variable"]
-        result["left"] = left
-        result["reference"] = reference
-    else:
-        left_u = _field_side(
-            record, "left", variable_key="u_variable", default_destagger="auto",
-            reduction=reduction, level_index=level_index)
-        left_v = _field_side(
-            record, "left", variable_key="v_variable", default_destagger="auto",
-            reduction=reduction, level_index=level_index)
-        reference_u = _field_side(
-            record, "reference", variable_key="u_variable",
-            default_destagger="auto", reduction=reduction,
-            level_index=level_index)
-        reference_v = _field_side(
-            record, "reference", variable_key="v_variable",
-            default_destagger="auto", reduction=reduction,
-            level_index=level_index)
-        for lhs, rhs in ((left_u, reference_u), (left_v, reference_v)):
-            if lhs["variable"] is None and rhs["variable"] is not None:
-                lhs["variable"] = rhs["variable"]
-            if rhs["variable"] is None and lhs["variable"] is not None:
-                rhs["variable"] = lhs["variable"]
-        if any(item["variable"] is None
-               for item in (left_u, left_v, reference_u, reference_v)):
-            raise ValueError(
-                f"vector field {name!r} needs U and V variable names")
-        result.update({
-            "left_u": left_u, "left_v": left_v,
-            "reference_u": reference_u, "reference_v": reference_v,
-        })
+    if kind == "vector" and any(
+            item["variable"] is None for item in sources.values()):
+        raise ValueError(f"vector field {name!r} needs U and V variable names")
+    result.update(sources)
     return result
 
 
@@ -567,41 +540,21 @@ def _comparison_records(registration: Mapping[str, object]
                 files[path] = spectral_io.file_identity(path)
         for field in params["fields"]:
             if field["kind"] == "scalar":
-                left, left_meta, left_source = _load_one(
-                    pair, field["left"], "left")
-                reference, reference_meta, reference_source = _load_one(
-                    pair, field["reference"], "reference")
-                result = spectral_compare.compare_scalar(
-                    left, reference, dx_m=float(pair["dx_m"]),
-                    dy_m=float(pair["dy_m"]), bands=bands, crop_cells=crop)
-                sources = {
-                    "left": {"request": left_source, "resolved": left_meta},
-                    "reference": {
-                        "request": reference_source, "resolved": reference_meta},
-                }
+                keys = ("left", "reference")
+                compare = spectral_compare.compare_scalar
             else:
-                left_u, left_u_meta, left_u_source = _load_one(
-                    pair, field["left_u"], "left")
-                left_v, left_v_meta, left_v_source = _load_one(
-                    pair, field["left_v"], "left")
-                ref_u, ref_u_meta, ref_u_source = _load_one(
-                    pair, field["reference_u"], "reference")
-                ref_v, ref_v_meta, ref_v_source = _load_one(
-                    pair, field["reference_v"], "reference")
-                result = spectral_compare.compare_vector(
-                    left_u, left_v, ref_u, ref_v,
-                    dx_m=float(pair["dx_m"]), dy_m=float(pair["dy_m"]),
-                    bands=bands, crop_cells=crop)
-                sources = {
-                    "left_u": {"request": left_u_source,
-                               "resolved": left_u_meta},
-                    "left_v": {"request": left_v_source,
-                               "resolved": left_v_meta},
-                    "reference_u": {"request": ref_u_source,
-                                    "resolved": ref_u_meta},
-                    "reference_v": {"request": ref_v_source,
-                                    "resolved": ref_v_meta},
-                }
+                keys = ("left_u", "left_v", "reference_u", "reference_v")
+                compare = spectral_compare.compare_vector
+            operands = []
+            sources = {}
+            for key in keys:
+                plane, metadata, source = _load_one(
+                    pair, field[key], key.split("_", 1)[0])
+                operands.append(plane)
+                sources[key] = {"request": source, "resolved": metadata}
+            result = compare(
+                *operands, dx_m=float(pair["dx_m"]), dy_m=float(pair["dy_m"]),
+                bands=bands, crop_cells=crop)
             comparisons.append({
                 "pair": pair["name"],
                 "domain": pair.get("domain"),

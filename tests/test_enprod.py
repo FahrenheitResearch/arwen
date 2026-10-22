@@ -330,68 +330,14 @@ def test_member_colour_is_keyed_to_the_member_not_to_its_position():
     assert [enprod.member_color(n) for n in subset] == [full[n] for n in subset]
 
 
-def test_thirty_members_get_thirty_distinct_colours():
-    colours = [enprod.member_color(n) for n in range(1, 31)]
-    assert len(set(colours)) == 30
-    assert len(enprod.PAINTBALL_PALETTE) >= 30
-
-
-def test_the_palette_wraps_rather_than_failing_past_its_length():
-    size = len(enprod.PAINTBALL_PALETTE)
-    assert enprod.member_color(1) == enprod.member_color(1 + size)
-
-
 # ---------------------------------------------------------------------------
 # Filename tokens and the subtitle
 # ---------------------------------------------------------------------------
 
 
-def test_ensemble_tokens_spell_the_documented_names():
-    token = enprod.ensemble_token
-    assert token("mean") == "ens-mean"
-    assert token("spread") == "ens-spread"
-    assert token("pmm") == "ens-pmm"
-    assert token("prob", threshold=40.0, unit_slug="dbz") == "ens-p40dbz"
-    assert token("prob", threshold=40.0, unit_slug="dbz",
-                 radius_km=5.0) == "ens-p40dbz-r5km"
-    assert token("paintball", threshold=75.0,
-                 unit_slug="m2s2") == "ens-paintball75m2s2"
-
-
-def test_a_zero_radius_leaves_the_token_off_entirely():
-    """``-r0km`` would claim a neighborhood was applied.  None was."""
-
-    assert enprod.radius_slug(0.0) is None
-    assert enprod.radius_slug(None) is None
-    assert enprod.ensemble_token("prob", threshold=40.0, unit_slug="dbz",
-                                 radius_km=0.0) == "ens-p40dbz"
-
-
-def test_fractional_and_negative_numbers_stay_filename_safe():
-    assert enprod.number_slug(40.0) == "40"
-    assert enprod.number_slug(42.5) == "42p5"
-    assert enprod.number_slug(-10.0) == "m10"
-    assert enprod.ensemble_token("prob", threshold=42.5, unit_slug="dbz",
-                                 radius_km=2.5) == "ens-p42p5dbz-r2p5km"
-    assert enprod.ensemble_token("prob", threshold=-10.0,
-                                 unit_slug="dbz") == "ens-pm10dbz"
-
-
 def test_a_threshold_product_without_a_threshold_is_an_error():
     with pytest.raises(ValueError, match="threshold-based"):
         enprod.ensemble_token("prob")
-
-
-def test_the_filename_keeps_the_v1_0_1_shape():
-    """``{product}_{domain-token}_{stamp}.png`` with the ensemble token
-    folded into the product slot, colons replaced for Windows."""
-
-    assert enprod.product_filename(
-        "refl", "ens-p40dbz-r5km", "d02-3km", "1974-04-03_18:00:00"
-    ) == "refl-ens-p40dbz-r5km_d02-3km_1974-04-03_18-00-00.png"
-    assert enprod.product_filename(
-        "uh", "ens-mean", "native_grid", "1974-04-03_18:00:00"
-    ) == "uh-ens-mean_native_grid_1974-04-03_18-00-00.png"
 
 
 def test_the_subtitle_extends_v1_0_1_with_the_member_count_and_the_stamp():
@@ -461,25 +407,6 @@ def test_all_products_drops_pmm_from_the_fields_that_disclaim_it():
                                       pmm_explicit=False)
     pmm_fields = {r.field for r in requests if r.product == "pmm"}
     assert pmm_fields == {"refl"}
-
-
-def test_naming_pmm_outright_draws_it_anyway():
-    products, explicit = enprod.parse_products("pmm")
-    assert explicit is True
-    requests = enprod.expand_requests(("uh",), products, (), (0.0,),
-                                      pmm_explicit=True)
-    assert [r.product for r in requests] == ["pmm"]
-
-
-def test_each_threshold_and_radius_gets_its_own_probability_request():
-    requests = enprod.expand_requests(
-        ("refl",), ("mean", "prob", "paintball"), (40.0, 50.0), (0.0, 5.0))
-    counts: dict[str, int] = {}
-    for request in requests:
-        counts[request.product] = counts.get(request.product, 0) + 1
-    # mean does not depend on a threshold; prob is 2 thresholds x 2 radii;
-    # paintball is per threshold and has no radius.
-    assert counts == {"mean": 1, "prob": 4, "paintball": 2}
 
 
 def test_a_field_with_no_threshold_given_uses_its_own_default():

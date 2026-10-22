@@ -681,24 +681,10 @@ def test_the_da_lane_hook_refuses_to_run_without_a_grid():
         hook(state, 1, dict(_PERTURB_OPTIONS))
 
 
-@pytest.fixture()
-def stubbed_runtime(monkeypatch, tmp_path):
-    """``run_member`` with everything but the seam replaced.
-
-    The dycore, the ingest, and the I/O are stubbed; the perturbation
-    resolution, the grid-spacing supply, the post-condition refresh, and
-    the manifest detail are the shipped code.  That is the point -- the
-    seam sits between preparation and integration and can be tested
-    without either.
-    """
-
+def _patch_member_runtime(monkeypatch, integrate, state):
     from gpuwm import case_data, runtime
-    from gpuwm.core.diagnostics import update_diagnostics
     from gpuwm.ingest import preflight
     from gpuwm.io import wrfout as wrfout_io
-
-    state = numpy_pseudo_state()
-    update_diagnostics(state, 1)
 
     run = types.SimpleNamespace(dx=3000.0, dy=3000.0, hypsometric_opt=1)
     dc = types.SimpleNamespace(run=run, history_interval_s=60.0, grid_id=1)
@@ -708,13 +694,6 @@ def stubbed_runtime(monkeypatch, tmp_path):
     data = types.SimpleNamespace(output_title="t", output_domain=1)
     prepared = types.SimpleNamespace(
         initial_result=types.SimpleNamespace(state=state))
-
-    def integrate(outdir, prep, **kwargs):
-        # A member the engine did not watch move is a refusal, so the
-        # stub has to actually advance the state it was handed.
-        prep.initial_result.state.thp[...] += np.float32(0.25)
-        return types.SimpleNamespace(completed_seconds=120.0,
-                                     wrfout_paths=[])
 
     monkeypatch.setattr(case_data, "load_experiment_case",
                         lambda path: (exp, data))
@@ -728,6 +707,32 @@ def stubbed_runtime(monkeypatch, tmp_path):
     monkeypatch.setattr(runtime, "prepare_experiment_case",
                         lambda e, d, **kw: prepared)
     monkeypatch.setattr(runtime, "integrate_prepared_case", integrate)
+
+
+@pytest.fixture()
+def stubbed_runtime(monkeypatch, tmp_path):
+    """``run_member`` with everything but the seam replaced.
+
+    The dycore, the ingest, and the I/O are stubbed; the perturbation
+    resolution, the grid-spacing supply, the post-condition refresh, and
+    the manifest detail are the shipped code.  That is the point -- the
+    seam sits between preparation and integration and can be tested
+    without either.
+    """
+
+    from gpuwm.core.diagnostics import update_diagnostics
+
+    state = numpy_pseudo_state()
+    update_diagnostics(state, 1)
+
+    def integrate(outdir, prep, **kwargs):
+        # A member the engine did not watch move is a refusal, so the
+        # stub has to actually advance the state it was handed.
+        prep.initial_result.state.thp[...] += np.float32(0.25)
+        return types.SimpleNamespace(completed_seconds=120.0,
+                                     wrfout_paths=[])
+
+    _patch_member_runtime(monkeypatch, integrate, state)
     return state, tmp_path
 
 
@@ -787,37 +792,14 @@ def _stub_runtime(monkeypatch, integrate, *, state=None):
     concludes from an integrator that did not do what it said.
     """
 
-    from gpuwm import case_data, runtime
     from gpuwm.core.diagnostics import update_diagnostics
-    from gpuwm.ingest import preflight
-    from gpuwm.io import wrfout as wrfout_io
 
     if state is None:
         state = numpy_pseudo_state()
         update_diagnostics(state, 1)
     state.elapsed_seconds = 0.0
 
-    run = types.SimpleNamespace(dx=3000.0, dy=3000.0, hypsometric_opt=1)
-    dc = types.SimpleNamespace(run=run, history_interval_s=60.0, grid_id=1)
-    exp = types.SimpleNamespace(domains=[dc], run_seconds=120.0,
-                                start_time=None, restart_interval_s=60.0,
-                                domain=lambda gid: dc, auto_epssm=())
-    data = types.SimpleNamespace(output_title="t", output_domain=1)
-    prepared = types.SimpleNamespace(
-        initial_result=types.SimpleNamespace(state=state))
-
-    monkeypatch.setattr(case_data, "load_experiment_case",
-                        lambda path: (exp, data))
-    monkeypatch.setattr(preflight, "build_input_catalog", lambda d: {})
-    monkeypatch.setattr(wrfout_io, "quarantine_orphan_wrfouts",
-                        lambda outdir: None)
-    monkeypatch.setattr(runtime, "single_domain", lambda e: dc)
-    monkeypatch.setattr(runtime, "forcing_snapshots", lambda d, cat: {})
-    monkeypatch.setattr(runtime, "forcing_schedule",
-                        lambda e, d, snaps: None)
-    monkeypatch.setattr(runtime, "prepare_experiment_case",
-                        lambda e, d, **kw: prepared)
-    monkeypatch.setattr(runtime, "integrate_prepared_case", integrate)
+    _patch_member_runtime(monkeypatch, integrate, state)
     return state
 
 

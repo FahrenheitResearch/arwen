@@ -598,13 +598,3 @@ __all__ = [
     "stock_wrf_physics_inventory",
     "supported_stock_wrf_mp_physics",
 ]
-
-# Independent radiation package, WRF 4.6.1 Registry.EM_COMMON:1733-1737,3241.
-# These restart/auxinput fields are independent of the microphysics package.
-USER_AEROSOL_RUNTIME_FIELDS = (
-    RuntimeStateField("aod5503d", "AOD5503D"),
-    RuntimeStateField("aod5502d", "AOD5502D", dimensions=WRFINPUT_2D_DIMS),
-    RuntimeStateField("angexp2d", "ANGEXP2D", dimensions=WRFINPUT_2D_DIMS),
-    RuntimeStateField("aerssa2d", "AERSSA2D", dimensions=WRFINPUT_2D_DIMS),
-    RuntimeStateField("aerasy2d", "AERASY2D", dimensions=WRFINPUT_2D_DIMS),
-)

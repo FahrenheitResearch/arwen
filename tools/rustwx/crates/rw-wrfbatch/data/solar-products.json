@@ -1,0 +1,14 @@
+[
+ {"slug":"solar_ghi","quantity":"ghi","units":"W/m2","maximum":1200.0,"minimum":0.0},
+ {"slug":"solar_dni","quantity":"dni","units":"W/m2","maximum":1200.0,"minimum":0.0},
+ {"slug":"solar_dhi","quantity":"dhi","units":"W/m2","maximum":600.0,"minimum":0.0},
+ {"slug":"solar_clear_sky_ghi","quantity":"clear","units":"W/m2","maximum":1200.0,"minimum":0.0},
+ {"slug":"solar_clear_sky_index","quantity":"index","units":"1","maximum":1.5,"minimum":0.0},
+ {"slug":"solar_poa_{system}","quantity":"poa","units":"W/m2","maximum":1400.0,"minimum":0.0},
+ {"slug":"solar_pv_dc_{system}","quantity":"dc","units":"MW","maximum":1.0,"minimum":0.0},
+ {"slug":"solar_pv_ac_{system}","quantity":"ac","units":"MW","maximum":1.0,"minimum":0.0},
+ {"slug":"solar_ramp_{system}","quantity":"ramp","units":"MW/min","maximum":0.05,"minimum":-0.05},
+ {"slug":"solar_ramp_event_{system}","quantity":"event","units":"1","maximum":1.0,"minimum":0.0},
+ {"slug":"solar_daily_ghi","quantity":"daily_ghi","units":"kWh/m2","maximum":10.0,"minimum":0.0},
+ {"slug":"solar_daily_energy_{system}","quantity":"daily_ac","units":"MWh","maximum":10.0,"minimum":0.0}
+]

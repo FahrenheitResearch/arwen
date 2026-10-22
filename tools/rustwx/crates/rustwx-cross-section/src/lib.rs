@@ -79,7 +79,7 @@ pub use render::{
     render_scalar_section, render_scalar_section_profile,
 };
 pub use request::{
-    CrossSectionRequest, HorizontalInterpolation, SamplingStrategy, SectionLayout, VerticalWindow,
+    CrossSectionRequest, SamplingStrategy, SectionLayout,
 };
 pub use style::{
     ALL_CROSS_SECTION_PRODUCTS, CrossSectionProduct, CrossSectionProductGroup, CrossSectionStyle,

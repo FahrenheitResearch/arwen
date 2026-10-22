@@ -15,6 +15,123 @@ from gpuwm.source_authorities import (
 )
 
 
+def test_recipe_analysis_clock_and_lagged_boundary_window():
+    from datetime import datetime
+    import tomllib
+    from gpuwm.fetch import validate_fetch_hints
+    from gpuwm.fetch_routes import resolve_request
+    from gpuwm.go_cli import config_fetch_request, checked_config_fetch_cycle
+    from gpuwm.initial_source import initial_fetch_request
+    root = Path(__file__).resolve().parents[1]
+    raw = tomllib.loads((root / "gpuwm/data/recipes/hrrr_v4_gsd41.toml").read_text())
+    raw["fetch"].update(cycle="2026-10-21T00", hours=48)
+    validate_fetch_hints(raw["fetch"], source="recipe")
+    boundary = config_fetch_request(raw)
+    assert boundary["cycle"] == "2026-10-20T21"
+    assert boundary["forecast_start_hour"] == 3
+    assert boundary["hours"] == 48
+    checked_config_fetch_cycle(raw["fetch"], start_time=datetime(2026, 10, 21))
+    request = resolve_request(boundary["source"], cycle=datetime(2026, 10, 20, 21),
+                              hours=48, cadence=1, start_hour=3)
+    assert tuple(request.leads) == tuple(range(3, 52))
+    initial = initial_fetch_request(raw["fetch"])
+    assert initial == {"source": "hrrr-native", "cycle": "2026-10-21T00",
+                       "hours": 0, "as_posted": False}
+    raw["fetch"]["initial_source"] = "rap-native"
+    assert initial_fetch_request(raw["fetch"])["source"] == "rap-native"
+
+
+@pytest.mark.parametrize("hour, boundary, start", [
+    ("00", "2026-10-20T21", 3), ("03", "2026-10-21T03", 0),
+    ("05", "2026-10-21T03", 2), ("18", "2026-10-21T15", 3)])
+def test_boundary_lag_is_only_as_long_as_the_window_needs(hour, boundary, start):
+    """A 48 h recipe run takes the nominal RAP cycle when it reaches f048 and
+    the previous extended cycle only where needed. Breakage this prevents: a
+    fixed -3 h lag sent 03/09/15/21Z runs to a cycle that ends at f021."""
+    import tomllib
+    from gpuwm.go_cli import config_fetch_request
+    root = Path(__file__).resolve().parents[1]
+    raw = tomllib.loads((root / "gpuwm/data/recipes/hrrr_v4_gsd41.toml").read_text())
+    raw["fetch"].update(cycle=f"2026-10-21T{hour}", hours=48)
+    request = config_fetch_request(raw)
+    assert (request["cycle"], request["forecast_start_hour"]) == (boundary, start)
+
+
+def test_latest_cycle_follows_initial_source_for_both_doors(tmp_path, monkeypatch):
+    from datetime import datetime
+    from types import SimpleNamespace
+    import tomllib
+    from gpuwm import fetch, go_cli, runplan
+    source = Path(__file__).resolve().parents[1] / "gpuwm/data/recipes/hrrr_v4_gsd41.toml"
+    config = tmp_path / "recipe.toml"
+    config.write_bytes(source.read_bytes())
+    raw = tomllib.loads(config.read_text())
+    seen = []
+
+    def latest(source_id, last_hour, **options):
+        seen.append((source_id, last_hour))
+        return datetime(2026, 10, 21)
+
+    monkeypatch.setattr(fetch, "resolve_latest_cycle", latest)
+    args = SimpleNamespace(outdir=tmp_path / "go", transport=None, whole_cycle=False)
+    _, moved = go_cli._at_flag_cycle(args, config, raw, "latest")
+    assert moved["fetch"]["cycle"] == "2026-10-21T00"
+    plan = runplan.build_plan({"schema": runplan.PLAN_SCHEMA, "name": "clock",
+        "route": "prepared", "config": {"path": str(config)},
+        "output_root": str(tmp_path / "run"), "run_options": {"cycle": "latest"}},
+        source="test", base_dir=tmp_path, sha256="0" * 64)
+    moved_plan = runplan.plan_at_cycle(plan, tmp_path / "plan")
+    assert moved_plan.run_options["cycle"] == "2026-10-21T00"
+    assert seen == [("hrrr-native", 0), ("hrrr-native", 0)]
+
+
+@pytest.mark.parametrize("changes", [
+    {"boundary_cycle_offset_hours": -2},
+    {"boundary_lead_offset_hours": -3},
+    {"boundary_cycle_offset_hours": True},
+    {"initial_source": "missing-source"},
+])
+def test_invalid_initial_pairing_refuses_before_acquisition(changes):
+    from gpuwm.initial_source import boundary_fetch_request
+    table = dict(source="rap-native", cycle="2026-10-21T00",
+                 boundary_cycle_offset_hours=-3, boundary_lead_offset_hours=3)
+    with pytest.raises(ValueError):
+        boundary_fetch_request(table | changes)
+
+
+def test_acquired_analysis_uses_all_table_declared_land_supplements(tmp_path):
+    from gpuwm.fetch_routes import PREP_ARGUMENTS_NAME, PREP_ARGUMENTS_SCHEMA
+    from gpuwm.initial_source import initial_inputs_from_fetch
+    paths = [tmp_path / name for name in ("native.grib2", "soil.grib2", "vegetation.grib2")]
+    for path in paths:
+        path.write_bytes(b"GRIB fixture")
+    listing = tmp_path / "inputs.txt"
+    listing.write_text(str(paths[0]) + "\n")
+    (tmp_path / PREP_ARGUMENTS_NAME).write_text(json.dumps({
+        "schema": PREP_ARGUMENTS_SCHEMA, "source": "hrrr-native",
+        "argv": ["--source", "hrrr-native", "--input-list", str(listing),
+                 "--supplement", f"soil_surface_data={paths[1]}",
+                 "--supplement", f"vegetation_surface_data={paths[2]}"]}))
+    result = initial_inputs_from_fetch("hrrr-native", tmp_path, tmp_path / "ic.json")
+    request = read_initial_inputs(result)
+    assert request["primary"] == (paths[0],)
+    assert request["supplements"] == {"soil_surface_data": (paths[1],),
+                                      "vegetation_surface_data": (paths[2],)}
+
+
+@pytest.mark.parametrize("fields,enabled,uses_boundary", [
+    ({"QNWFA": None, "QNIFA": None}, True, False),
+    ({}, True, True), ({"QNWFA": None}, True, True), ({}, False, False),
+])
+def test_initial_aerosol_pair_has_priority_over_boundary(fields, enabled, uses_boundary):
+    from types import SimpleNamespace
+    from gpuwm.initial_source import initial_aerosol_donor
+    donor = SimpleNamespace(fields={"QNWFA": None, "QNIFA": None})
+    actual = initial_aerosol_donor(SimpleNamespace(fields=fields), donor,
+                                    SimpleNamespace(use_rap_aero_icbc=enabled))
+    assert actual is (donor if uses_boundary else None)
+
+
 def _request(tmp_path, **changes):
     (tmp_path / "analysis.grib2").write_bytes(b"test input")
     request = {"schema": REQUEST_SCHEMA, "source": "hrrr-prs",

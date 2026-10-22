@@ -317,10 +317,18 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
     # (rw_soundings and the NextGen tools are new), so the five observation front doors served by
     # gpuwm.obs.frontdoor (rw_mrms, rw_stage4, rw_asos, rw_goes, rw_opera), the sounding window renderer
     # and the NextGen gauge verifier are on demand: pinned in the bundle, staged on first use.
+    # 2.9.4: the Linux wheel measured 100,878,471 bytes (the cut's wheel-size pre-gate; rw_hail and
+    # rw_fire_indices are new, rw_wrfbatch grew), so five verification and post-run doors no forecast
+    # reaches are on demand too: rw_hail and rw_airnow (gpuwm.obs.frontdoor), rw_scoreboard
+    # (gpuwm scoreboard), rw_tc_fields (gpuwm tc-tracks) and rw_fire_indices (gpuwm.fire_danger_state).
     BundledArtifact(
         "nextgen_hydrofabric", "library", "tools/nextgen_hydrofabric",
         "GPUWM_HYDROFABRIC_LIBRARY",
         "NextGen prepared numeric payload transport into caller-owned memory"),
+    BundledArtifact(
+        "rw_nextgen_output", "library", "tools/nextgen_output",
+        "GPUWM_NEXTGEN_OUTPUT_LIBRARY", "coupled hydro history and restart publication",
+        on_demand=True),
     BundledArtifact(
         "arwen_nextgen_forcing", "library", "tools/nextgen_forcing",
         "GPUWM_NEXTGEN_FORCING_BRIDGE",
@@ -328,6 +336,39 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
     BundledArtifact(
         "rw_nextgen_verify", "executable", "tools/nextgen_verify",
         "GPUWM_NEXTGEN_VERIFY", "NextGen streamflow observation verification",
+        on_demand=True),
+    # 2.9.3 (improve-1, default-on hydro never attached): the default hydro door builds
+    # the covering fabric, its parameters, its reservoirs and its initial water with
+    # these five provider tools, which no install could find (gpuwm.hydro.door probe:
+    # "builder executable rw_hydro_world not found"). On demand, staged by the door's
+    # first preparation, so the wheel stays under PyPI's per-file limit.
+    BundledArtifact(
+        "rw_hydro_world", "executable", "tools/hydro_world",
+        "GPUWM_RW_HYDRO_WORLD", "hydro fabric builder (default-on hydro door)",
+        on_demand=True),
+    BundledArtifact(
+        "rw_hydro_params", "executable", "tools/hydro_world_params",
+        "GPUWM_RW_HYDRO_PARAMS", "hydro catchment parameters (default-on hydro door)",
+        on_demand=True),
+    BundledArtifact(
+        "rw_hydrofabric", "executable", "tools/nextgen_hydrofabric",
+        "GPUWM_RW_HYDROFABRIC", "hydro routing and reservoir preparation (default-on hydro door)",
+        on_demand=True),
+    BundledArtifact(
+        "nextgen-reservoir-prepare", "executable", "tools/nextgen_reservoir_prepare",
+        "GPUWM_NEXTGEN_RESERVOIR_PREPARE", "hydro reservoir preparation (default-on hydro door)",
+        on_demand=True),
+    BundledArtifact(
+        "rw_hydro_init", "executable", "tools/hydro_world_init",
+        "GPUWM_RW_HYDRO_INIT", "hydro initial water state (default-on hydro door)",
+        on_demand=True),
+    BundledArtifact(
+        "rw_ocean", "executable", "tools/ocean_prepare",
+        "GPUWM_RW_OCEAN", "Ocean bathymetry and atmospheric forcing preparation",
+        on_demand=True),
+    BundledArtifact(
+        "rw_bathy", "executable", "tools/rw-bathy",
+        "GPUWM_RW_BATHY", "storm-surge bathymetry ingest and products (gpuwm.ocean.surge)",
         on_demand=True),
     BundledArtifact(
         "grib1_bridge", "executable", bridges.CRATE_RELATIVE,
@@ -418,9 +459,18 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
         "ASOS/METAR surface observations (gpuwm obs asos)",
         on_demand=True),
     BundledArtifact(
+        "rw_ice_verify", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_ICE_VERIFY", "freezing-rain and ice observation binding",
+        on_demand=True),
+    BundledArtifact(
+        "rw_hail", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_RW_HAIL", "MRMS MESH and SPC hail size verification",
+        on_demand=True),
+    BundledArtifact(
         "rw_airnow", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_AIRNOW",
-        "AirNow hourly air-quality observations"),
+        "AirNow hourly air-quality observations",
+        on_demand=True),
     BundledArtifact(
         "rw_goes", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_GOES",
@@ -710,7 +760,8 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
         "machine-learning dataset export (gpuwm ml-export)"),
     BundledArtifact(
         "rw_tc_fields", "executable", bridges.RUSTWX_CRATE_RELATIVE,
-        "GPUWM_RW_TC_FIELDS", "completed-output cyclone field mapping (gpuwm tc-tracks)"),
+        "GPUWM_RW_TC_FIELDS", "completed-output cyclone field mapping (gpuwm tc-tracks)",
+        on_demand=True),
     # The sounding window renderer (the website sounding window drawn from
     # plain run output).  Environment variable spelled to match
     # gpuwm.soundings.ENV; the doctor line resolves through that module.
@@ -720,7 +771,8 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
         on_demand=True),
     BundledArtifact(
         "rw_scoreboard", "executable", bridges.RUSTWX_CRATE_RELATIVE,
-        "GPUWM_RW_SCOREBOARD", "incremental forecast verification (gpuwm scoreboard)"),
+        "GPUWM_RW_SCOREBOARD", "incremental forecast verification (gpuwm scoreboard)",
+        on_demand=True),
     BundledArtifact(
         "arwen-tui", "executable", "tools/arwen-tui",
         "GPUWM_TUI_BIN", "the Rust terminal workspace (gpuwm tui)"),
@@ -745,6 +797,10 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
     BundledArtifact(
         "rw_ndbc", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_NDBC", "NDBC buoys and ships (gpuwm obs streams fetch --stream ndbc)",
+        on_demand=True),
+    BundledArtifact(
+        "rw_ocean_verify", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_RW_OCEAN_VERIFY", "ocean SST verification (gpuwm.ocean.mixed_layer.verify)",
         on_demand=True),
     BundledArtifact(
         "rw_gnssro", "executable", bridges.RUSTWX_CRATE_RELATIVE,
@@ -779,6 +835,10 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
         "GPUWM_RW_RADAR_FEEDS",
         "national radar-volume feed listings (gpuwm obs radar-feeds)",
         on_demand=True),
+    BundledArtifact(
+        "rw_fire_indices", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_FIRE_INDICES", "stateful Canadian FWI and KBDI (gpuwm.fire_danger_state)",
+        on_demand=True),
 )
 
 
@@ -797,6 +857,7 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
 #: read, so a third library cannot be added to `BUNDLED_ARTIFACTS` and
 #: quietly inherit some other library's handshake.
 LIBRARY_ABI: dict[str, tuple[str, int]] = {
+    "rw_nextgen_output": ("rw_nextgen_output_abi_version", 1),
     "nextgen_hydrofabric": ("arwen_hydrofabric_abi_version", 1),
     "arwen_nextgen_forcing": ("arwen_forcing_abi_version", 1),
     "gpuwm_preprocess_cpu": ("gpuwm_preprocess_cpu_abi_version", 1),
@@ -1269,7 +1330,8 @@ def verify_source_revision(payload: bytes, *, expected: str,
 NATIVE_BUILD_INPUTS: dict[str, tuple[str, ...]] = {
     "tools/nextgen_hydrofabric": ("tools/nextgen_hydrofabric",),
     "tools/nextgen_verify": ("tools/nextgen_verify",),
-    "tools/grib1_bridge": ("tools/grib1_bridge", "tools/preparation_resources.rs"),
+    "tools/grib1_bridge": ("tools/grib1_bridge", "tools/preparation_resources.rs",
+                           "tools/rustwx/vendor/crates-io"),
     "tools/rustwx": ("tools/rustwx", "tools/grib1_bridge/vendor/grib-core",
                      "tools/preparation_resources.rs",
                      # static-fields' SFIRE debug controls include the
@@ -1287,11 +1349,25 @@ NATIVE_BUILD_INPUTS: dict[str, tuple[str, ...]] = {
                      # rw-wrfbatch's build.rs embeds the engine version it
                      # reads from the root pyproject.toml (0c1fc01f9), so a
                      # version bump must rebuild every crate that reaches it.
-                     "pyproject.toml"),
+                     "pyproject.toml",
+                     # 2.9.4 capabilities campaign include_str! tables:
+                     # lane/cap-hubwind's hub-height products, observations,
+                     # TKE sources and turbine power curves (rw-wrfbatch,
+                     # rustwx-calc), the WPS archive layouts (rustwx-models
+                     # archives.rs) and the SFIRE input-field and Albers CRS
+                     # authorities (static-fields landfire.rs, raster).
+                     "gpuwm/data/hubwind_observations.json",
+                     "gpuwm/data/hubwind_products.json",
+                     "gpuwm/data/hubwind_tke_sources.json",
+                     "gpuwm/data/turbine_power_curves.json",
+                     "gpuwm/authorities/rw-wps-archive-layouts.v1.json",
+                     "gpuwm/authorities/sfire-albers-crs.v1.json",
+                     "gpuwm/authorities/sfire-input-fields.v1.json"),
     # The shared NetCDF reader (netcrust and its HDF5 reader) lives under
     # tools/rustwx/vendor since the array-ceiling work; rw_wps and the Zarr
     # bridge build against it by path.
-    "tools/rw_wps": ("tools/rw_wps", "tools/grib1_bridge/vendor/grib-core",
+    "tools/rw_wps": ("tools/rw_wps", "tools/rustwx/vendor/crates-io",
+                     "tools/grib1_bridge/vendor/grib-core",
                      "tools/preparation_resources.rs",
                      # projected-intermediate compiles grib1_bridge's WPS
                      # intermediate writer in by #[path] (2.9.1).
@@ -1305,14 +1381,23 @@ NATIVE_BUILD_INPUTS: dict[str, tuple[str, ...]] = {
                      "gpuwm/authorities/rw-wps-hrrr-native-grib2.mapping.json",
                      "gpuwm/data/ruc/oracle/soil_ingest.csv",
                      "gpuwm/data/thompson/oracle-aero/aero-init-profile-column.csv",
+                     "gpuwm/data/hubwind_observations.json",
+                     "gpuwm/data/hubwind_products.json",
+                     "gpuwm/data/hubwind_tke_sources.json",
+                     "gpuwm/data/turbine_power_curves.json",
+                     "gpuwm/authorities/rw-wps-archive-layouts.v1.json",
+                     "gpuwm/authorities/sfire-albers-crs.v1.json",
+                     "gpuwm/authorities/sfire-input-fields.v1.json",
                      "pyproject.toml"),
     "tools/region_global_dealias": ("tools/region_global_dealias",),
     "tools/arwen-tui": (
-        "tools/arwen-tui", "tools/arwen-ui-vendor", "gpuwm/tui_worker.py",
+        "tools/arwen-tui", "tools/arwen-ui-vendor",
+        "tools/rustwx/vendor/crates-io", "gpuwm/tui_worker.py",
         "gpuwm/data/tui", "configs/gfs_12km_quickstart.toml",
         "configs/nest_lifecycle_20240521_4km.toml"),
     "tools/zarr_bridge": (
-        "tools/zarr_bridge", "tools/rustwx/crates/netcdf-writer",
+        "tools/zarr_bridge", "tools/rustwx/vendor/crates-io",
+        "tools/rustwx/crates/netcdf-writer",
         "tools/rw_wps", "tools/grib1_bridge/vendor/grib-core",
         "tools/grib1_bridge/src/wps_intermediate.rs",
         "tools/preparation_resources.rs",
@@ -1323,6 +1408,13 @@ NATIVE_BUILD_INPUTS: dict[str, tuple[str, ...]] = {
         "gpuwm/authorities/rw-wps-hrrr-native-grib2.mapping.json",
         "gpuwm/data/ruc/oracle/soil_ingest.csv",
         "gpuwm/data/thompson/oracle-aero/aero-init-profile-column.csv",
+        "gpuwm/data/hubwind_observations.json",
+        "gpuwm/data/hubwind_products.json",
+        "gpuwm/data/hubwind_tke_sources.json",
+        "gpuwm/data/turbine_power_curves.json",
+        "gpuwm/authorities/rw-wps-archive-layouts.v1.json",
+        "gpuwm/authorities/sfire-albers-crs.v1.json",
+        "gpuwm/authorities/sfire-input-fields.v1.json",
         "pyproject.toml"),
 }
 
@@ -1336,6 +1428,26 @@ for _hydro_crate in ("tools/nextgen_forcing", "tools/nextgen_verify"):
 
 # Gauge discovery and matching also compile the worldwide fabric reader.
 NATIVE_BUILD_INPUTS["tools/nextgen_verify"] += ("tools/hydro_world",)
+
+# The default-on hydro door's provider tools (2.9.3 improve-1).
+NATIVE_BUILD_INPUTS["tools/hydro_world"] = ("tools/hydro_world",)
+NATIVE_BUILD_INPUTS["tools/nextgen_output"] = (
+    "tools/nextgen_output", *NATIVE_BUILD_INPUTS["tools/rustwx"])
+NATIVE_BUILD_INPUTS["tools/hydro_world_params"] = ("tools/hydro_world_params", "tools/hydro_world")
+NATIVE_BUILD_INPUTS["tools/nextgen_reservoir_prepare"] = ("tools/nextgen_reservoir_prepare",)
+# The initial-state tool reads NetCDF through the shared reader, so it keeps the
+# renderer workspace's closure, as the forcing and gauge tools do.
+NATIVE_BUILD_INPUTS["tools/hydro_world_init"] = (
+    "tools/hydro_world_init", "tools/hydro_world", *NATIVE_BUILD_INPUTS["tools/rustwx"])
+
+# The 2.9.4 ocean preparation (lane/cap-slab-ocean, rw_ocean) and bathymetry
+# (rw_bathy) tools build against the renderer workspace's shared NetCDF
+# reader, static-fields and the NetCDF writer by path, so they keep that
+# workspace's closure, as the hydro tools do.
+NATIVE_BUILD_INPUTS["tools/ocean_prepare"] = (
+    "tools/ocean_prepare", *NATIVE_BUILD_INPUTS["tools/rustwx"])
+NATIVE_BUILD_INPUTS["tools/rw-bathy"] = (
+    "tools/rw-bathy", *NATIVE_BUILD_INPUTS["tools/rustwx"])
 
 
 #: Paths inside a crate root that its build never reads: packed into the

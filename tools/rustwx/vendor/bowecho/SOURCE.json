@@ -29,18 +29,18 @@
     {
       "path": "Cargo.lock",
       "bytes": 68347,
-      "sha256": "b50927e925b1a7f5c01f6be85a9f77a9829673adaa9d25cc8458499e2f9675ca",
+      "sha256": "83afd418575e5bdf1a8e834f3fedede67b6cb47c40c678b3348b74908f9a2218",
       "origin": "vendoring",
       "upstream_sha256": "2e870bff0f3ec7b4ef9828ac51c46daea1e230823d2e2afebef7ec04f2803a1d",
-      "change": "Standalone workspace and lockfile."
+      "change": "Standalone workspace and lockfile; wrf-core resolves to the renderer's wrf-rust revision 93bd2ca670c13fec35bcfc27a58108e6fd71c627, the one vendored wrf-core copy."
     },
     {
       "path": "Cargo.toml",
       "bytes": 1563,
-      "sha256": "6d9bcb44d684bb42a647e27c9451cbc5b6fe1b2d0fd86a04aadcf8c44662dda5",
+      "sha256": "52281d34a316ee1b1c7567bc83266f3cd768335436b6c74340df4313f2c7939d",
       "origin": "vendoring",
       "upstream_sha256": "8208d3bd6463a4d9490a115cb4badf5de7cb51bd8794e390ac8a1df53791a73f",
-      "change": "Standalone workspace and lockfile."
+      "change": "Standalone workspace and lockfile; wrf-core resolves to the renderer's wrf-rust revision 93bd2ca670c13fec35bcfc27a58108e6fd71c627, the one vendored wrf-core copy."
     },
     {
       "path": "LICENSE-APACHE",

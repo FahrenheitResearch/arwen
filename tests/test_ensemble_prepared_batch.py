@@ -90,7 +90,11 @@ def test_native_snapshot_rebuilds_only_registered_boundary_mirrors_without_chang
                           lbc_weights_member=np.ones((8, 8), np.float32))
     before = {name: value.tobytes() for name, value in state._scratch.items()}
     snapshot = prepared_host_from_node(node)
-    assert set(snapshot.scratch) == {"lbc_weights_member"}
+    # Exactly the two registered boundary mirrors leave the snapshot; every
+    # other scratch slot rides it.  Since lane/cap-hail (97e9a3ca061) a
+    # convection-allowing node also carries the HAILCAST diagnostic slots.
+    assert set(snapshot.scratch) == set(before) - {"lbc_forcing_tables", "lbc_evaluated_tables"}
+    assert "lbc_weights_member" in snapshot.scratch
     assert {name: value.tobytes() for name, value in state._scratch.items()} == before
     assert state.lateral_boundaries is boundary_authority and state._lateral_boundary_device is ordinary_owner
     ordinary_owner.scratch_slots.remove("lbc_evaluated_tables")

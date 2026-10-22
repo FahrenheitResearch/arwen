@@ -430,6 +430,10 @@ def test_default_authority_and_fingerprint_base_golden(name, authority, fingerpr
         domain, run=replace(domain.run, terrain_clock="measured"))
         for domain in old_sun.domains))
     catalog = SimpleNamespace(run_provenance={})
+    # The 2.9.4 capabilities campaign's RunConfig keys, each at its default,
+    # are the only later identity move (named per lane in test_water_overlay).
+    from test_water_overlay import without_the_capability_campaign_keys
+    without_the_capability_campaign_keys(monkeypatch, exp)
     assert experiment_fingerprint(exp, catalog) != experiment_fingerprint(old_sun, catalog)
     assert experiment_fingerprint(old_sun, catalog) != experiment_fingerprint(historical, catalog)
     assert experiment_fingerprint(historical, catalog) == fingerprint

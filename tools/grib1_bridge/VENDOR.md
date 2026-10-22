@@ -73,3 +73,11 @@ G02156), which is published gzip-compressed, and streams it through
 `adler2 2.0.1` (0BSD OR MIT OR Apache-2.0) are copied unchanged, with their
 Cargo checksums and licences, from the same versions already vendored in
 `rw_wps`. Its optional SIMD checksum is not enabled.
+
+## Shared offline registry (wave 3)
+
+Registry dependencies now resolve from `../rustwx/vendor/crates-io`.
+The private duplicate registry is removed without changing Cargo.lock.
+Existing canonical sources and licence texts are retained. Follow the
+scratch-vendoring instructions for all consumers in `tools/rustwx/VENDOR.md`
+when adding dependencies; never regenerate the shared registry in place.

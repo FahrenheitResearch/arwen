@@ -357,6 +357,40 @@ def test_the_wrf_verdict_ignores_the_soil_archive_the_wrf_builder_never_opens(
     assert cli.main(["doctor", "--json"]) == 0
 
 
+def test_the_mesh_remedy_quotes_the_size_of_what_is_absent(
+        tmp_path, monkeypatch):
+    """A WRF-only tree with gpuwm-hex installed: the remedy's size is true.
+
+    The reported state (2.9.4 + gpuwm-hex 0.4.2, `gpuwm fetch-geog
+    --datasets wrf`): doctor names the two land-use archives the native
+    MPAS static reads and the WRF set does not stage.  Its remedy quoted
+    "~13 GB unpacked" -- the soil archive the tree already carries --
+    for a ~0.05 GB fetch.
+    """
+
+    from gpuwm import geog_assets, rustwx_static
+
+    geog = _stage_geog_as_fetch_geog_does(tmp_path / "WPS_GEOG",
+                                          geog_assets.GEOG_CONSUMER_WRF)
+    monkeypatch.delenv("GPUWM_RW_MPAS_STATIC", raising=False)
+    monkeypatch.setattr(doctor, "find_spec",
+                        lambda name: object() if name == "hexcore" else None)
+    monkeypatch.setattr(rustwx_static, "find_static_bin",
+                        lambda: tmp_path / "rw_mpas_static")
+    row = {check.name: check for check in doctor._geog_tree_checks(geog)}[
+        "WPS_GEOG (MPAS static)"]
+    absent = rustwx_static.missing_geog_datasets(geog)
+    mesh_only = [archive.dataset for archive in geog_assets.GEOG_ARCHIVES
+                 if archive.required_by == (geog_assets.GEOG_CONSUMER_MESH,)]
+    assert absent == mesh_only
+    assert row.brief == f"{len(mesh_only)} dataset(s) short of an MPAS static"
+    assert row.blocking
+    carriers = tuple(rustwx_static.fetchable_for(absent))
+    assert geog_assets.size_phrase(carriers) in row.remedy
+    assert "13 GB" not in row.remedy
+    assert row.action == "gpuwm fetch-geog"
+
+
 @pytest.mark.parametrize("mpas_request", ["hexcore", "override"])
 def test_the_mesh_verdict_blocks_when_that_door_is_requested(
         tmp_path, monkeypatch, mpas_request):
@@ -464,8 +498,8 @@ def test_the_mesh_row_goes_quiet_on_the_tree_fetch_geog_actually_stages(
         _stage_geog_as_fetch_geog_does(geog, consumer)
     # The soil group sits under its container and nowhere else.  Only the
     # containers a consumer requires are staged here: 2.9.0's optional GSL
-    # terrain-drag container (orogwd3_10m, required by no consumer and not
-    # fetched by default) is not part of what this row checks.
+    # terrain-drag container (orogwd3_10m, required by no consumer) is not
+    # part of what this row checks.
     containers = [a for a in geog_assets.GEOG_ARCHIVES if a.index_subdirs
                   and set(a.required_by) & set(geog_assets.GEOG_CONSUMERS)]
     assert containers, "the pin table carries a container archive"
@@ -855,7 +889,17 @@ def test_a_bridge_that_predates_the_contract_is_missing_not_ok(
                      "rw_soundings",
                      # Hydro consumers resolve from their own workspaces.
                      "nextgen_hydrofabric", "arwen_nextgen_forcing",
-                     "rw_nextgen_verify"}
+                     "rw_nextgen_verify",
+                     # 2.9.4 capability lanes, each resolved through its own
+                     # door's ladder: rw_ice_verify (gpuwm.ensemble.ice_accretion,
+                     # cap-fzra), rw_fire_indices (gpuwm.fire_danger_state,
+                     # cap-fire-indices), rw_ocean (gpuwm.ocean.door, its own
+                     # tools/ocean_prepare workspace, cap-waves-couple) and
+                     # rw_ocean_verify (gpuwm.ocean.mixed_layer.verify,
+                     # cap-slab-ocean) and rw_bathy (gpuwm.ocean.surge.driver,
+                     # its own tools/rw-bathy workspace, cap-surge).
+                     "rw_ice_verify", "rw_fire_indices", "rw_ocean", "rw_ocean_verify",
+                     "rw_bathy"}
 
 
 def test_the_decoder_door_gates_the_contract_for_every_caller(
@@ -1721,6 +1765,14 @@ def _force_every_gap(monkeypatch, tmp_path, *, windows, shape, mode,
     from gpuwm.core import noah as noah_core
     from gpuwm.core import thompson_contract
     from gpuwm.ingest import cpu_backend
+    # Modules that bind load_tables / validate_table_assets by name at import
+    # are imported BEFORE the patches below: imported first during this test
+    # (doctor imports them lazily), they kept the raising stand-ins for the
+    # rest of the worker, and test_wrfinput_surface_native failed on
+    # "qr_acr_qg_V4.dat is not where it should be" (2.9.4 pass 723a0719).
+    import gpuwm.core.landuse  # noqa: F401
+    import gpuwm.tempo_assets  # noqa: F401
+    import gpuwm.thompson_fork_build  # noqa: F401
 
     _set_staging(monkeypatch, tmp_path, available=staging)
 
@@ -2269,6 +2321,7 @@ def _wheel_shaped_install(monkeypatch, tmp_path):
     monkeypatch.setattr(bridges, "crate_dir", lambda: tmp_path / "no-crate")
     monkeypatch.setattr(bridges, "_package_parent", lambda: site_packages)
     monkeypatch.setattr(bridges, "default_bridge_dir", lambda: staged)
+    monkeypatch.setattr(bridges, "legacy_bridge_dir", lambda: tmp_path / "no-legacy-bridges")
     monkeypatch.setattr(bridges, "packaged_bridge_dir", lambda: packaged)
     # Redirect the rung frontdoor resolves too, now that the import
     # above has pinned the real function as the restore target.
@@ -2386,13 +2439,32 @@ def test_the_default_estate_carries_every_route(monkeypatch):
     assert "hrrr-prs route" in one
 
 
-def test_the_provenance_check_reports_the_path_a_run_will_take():
+def test_the_provenance_check_reports_the_path_a_run_will_take(monkeypatch):
     check = doctor._install_identity_check()
     assert check.status == "verified"
     assert any(source in check.detail
                for source in ("git", "installed-wheel-record",
                               "installed-source-content",
                               "gpuwm-native-distribution-manifest"))
+
+    # A busy checkout must retain its identity when git status times out,
+    # without claiming that an unchecked working tree is clean.
+    from gpuwm import provenance
+    root = Path(__file__).resolve().parents[1]
+    expected = provenance.git_dir_identity(root)
+    run = provenance.subprocess.run
+
+    def timeout_status(command, **kwargs):
+        if "status" in command:
+            raise provenance.subprocess.TimeoutExpired(command, kwargs["timeout"])
+        return run(command, **kwargs)
+
+    monkeypatch.setattr(provenance.subprocess, "run", timeout_status)
+    identity = provenance.git_identity(root)
+    assert identity["commit_full"] == expected["commit_full"]
+    assert identity["branch"] == expected["branch"]
+    assert identity["dirty"] is None
+    assert "git status timed out" in identity["dirty_unknown_reason"]
 
 
 def test_the_provenance_check_is_a_blocking_gap_when_nothing_can_answer(

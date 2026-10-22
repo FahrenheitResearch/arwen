@@ -75,11 +75,11 @@ outputs, and capture a separate device timeline to check step launch counts.
 
 ## Automatic warm images and compiler metadata
 
-The ordinary compile plan now retains successful cubins in its own
-`images/<binding digest>/index.json`. The binding includes the full loaded
-NVRTC library digest, CuPy package/cache identity, shape/options/numerics tag,
-and target SM. Each request includes exact source, filename, ordered final
-options and symbol aliases. Blobs and index rows carry digests. First use
+The ordinary compile plan retains successful cubins under
+`GPUWM_KERNEL_CACHE/images/<binding digest>/index.json`. The binding includes
+the full loaded NVRTC library digest, CuPy package/cache identity and target
+SM. Each request includes the source digest, compiler program name, ordered
+final options, header contents and symbol aliases; run tags do not partition images. Blobs and index rows carry digests. First use
 uses the existing parallel compiler; background image writes retain its
 actual results. Missing or corrupt entries warn and use that same compiler.
 Concurrent publishers merge index entries under a process lock.
@@ -108,14 +108,76 @@ compilation of those missing requests. Their successful results populate the
 index. The missing-image fallback must not be counted as a zero-NVRTC warm
 run. Both caches contribute to ordinary warm startup.
 
-External-header invalidation: automatic images bind literal headers and nested
-literal includes by actual file digest. Macro-selected includes, conditional
-header discovery and forced includes cannot be bound by this parser, so they
-warn and use the ordinary compiler/cache route. The existing shipped-pack
-format has no external-header binding and declines such requests. This is
-artifact admission, not a numerical capability switch. Ordinary CuPy cache
-invalidation for arbitrary changing external headers is not qualified here.
-The measured AC warm load uses one conditional-header fallback but still
-performs zero NVRTC work with its ordinary caches intact. The earlier AC
-empty-CuPy-cache 59-image result predates this safety guard and is not a claim
-for the final candidate's complete image-only coverage.
+External-header invalidation: automatic images now bind complete explicit
+include trees by relative filename and file digest, covering macro-selected
+and conditional includes. Forced includes and dependencies outside those
+trees still warn and use ordinary compilation. The older shipped AOT format
+has no external-header binding and declines such requests. Historical AC
+measurements above predate this persistent-image change; they do not establish
+the new format's complete forecast coverage.
+
+## Persistent images and box provisioning
+
+`GPUWM_KERNEL_CACHE` selects the stable cache root (default
+`$XDG_CACHE_HOME/gpuwm/kernels`, or `~/.cache/gpuwm/kernels`). Images are shared
+across run tags, cycles and shapes. A request retains its source digest,
+ordered final compiler options/defines, symbol names, compiler identity and SM.
+Dimensions embedded in the source or compiler defines still distinguish images.
+The NVRTC library digest and version distinguish compiler builds; cubins need
+no driver-version key because no driver JIT produced them. PTX/linking routes
+keep their existing compiler path.
+
+CuPy's generated program filename originally included installation paths through
+its cache hash. The compile funnel now gives NVRTC a source-derived basename,
+so the actual compiler input agrees across installations. Explicit program names
+are preserved. Include roots are represented by ordered content snapshots, with
+relative filenames, including extensionless C++ headers. This covers guarded
+inlined includes, conditional discovery and CCCL/Thrust macro dispatch. Header
+roots are immutable during a compiler session, as are its loaded libraries;
+restart a process after changing an installed toolkit/header tree. External
+computed dependencies that escape those roots fall back with a warning.
+
+To prepare a box kit, warm the intended configuration on each compiler/SM pair,
+then export its actual images:
+
+```sh
+gpuwm kernels pack /work/kit/kernels-sm120.tar.gz --arch sm_120
+# On an Ada box with the intended compiler:
+gpuwm kernels pack /work/kit/kernels-sm89.tar.gz --arch sm_89
+```
+
+Copy each archive **and its `.sha256` file** with the private box kit. During
+bring-up, after installing the pinned compiler environment, run:
+
+```sh
+gpuwm kernels seed /work/kit/kernels-sm120.tar.gz
+# Or pass a separately retained expected hash:
+gpuwm kernels seed /work/kit/kernels-sm89.tar.gz --sha256 EXPECTED_SHA256
+```
+
+Pack/seed need no GPU. A pack may contain multiple SMs; `--arch` is repeatable
+and omitting it exports every recorded SM. Seeding verifies the archive,
+manifest, binding, row and image digests before publishing any entry, then merges
+with existing local images under the publisher's process lock. A compiler/SM
+mismatch cannot satisfy a runtime request. Damaged runtime images warn and
+recompile; damaged packs are refused explicitly, leaving ordinary compilation
+available. Compiler metadata is packed too, avoiding empty NVRTC probes on a
+new box. `GPUWM_KERNEL_PLAN_DIR` can still relocate replay plans independently;
+it no longer partitions images or compiler metadata.
+
+The parallel pre-warm inventory includes selected physics generations and both
+the declared domain and synthetic-column addressing shapes. Independent CuPy
+validator reductions warm concurrently at the column's vertical, surface and
+volume sizes. An automatic tile layout can introduce additional addressing
+shapes; its actual first run must populate those entries before exporting a
+pack qualified for that layout.
+
+Pre-warm publishes completed images before returning its receipt. The receipt
+reports image hits, misses, stored, invalid and unbound counts, plus distinct
+unbound reasons. A real-size forecast is still needed to demonstrate that the
+pre-warm inventory covers every shape-dependent first-step kernel.
+
+The kit can call `tools/kernels/seed-box.sh /work/kit/kernels-*.tar.gz`
+after installing its pinned environment. `GPUWM_PYTHON` selects that environment's
+interpreter; seeding does not acquire a card. Include both sm_120 and sm_89 packs
+when the same kit serves Blackwell RTX and Ada boxes.

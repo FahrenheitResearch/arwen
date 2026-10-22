@@ -118,6 +118,8 @@ fn reduce_large(xi: u32) -> (f64, i32) {
 }
 
 #[inline(always)]
+// Preserve IEEE invalid-operation arithmetic and its NaN result.
+#[allow(clippy::eq_op)]
 fn sincos(y: f32, cosine: i32) -> f32 {
     let x = y as f64;
     let top = abstop12(y);

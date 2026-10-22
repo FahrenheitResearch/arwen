@@ -1,7 +1,7 @@
 //! Loopback-only visual client for the existing ArWen command engine.
 //! An actor owns every process handle; no OS handle crosses server threads.
 #[path = "../../arwen-tui/src/job.rs"]
-mod job;
+pub mod job;
 use axum::{
     extract::{DefaultBodyLimit, State},
     http::{HeaderMap, StatusCode},
@@ -78,7 +78,7 @@ fn result_directory(command: &[String], log: &str) -> Option<PathBuf> {
     let explicit = log
         .lines()
         .filter_map(|line| line.strip_prefix("Output: "))
-        .last()
+        .next_back()
         .map(PathBuf::from);
     explicit
         .or_else(|| {
@@ -704,26 +704,19 @@ mod tests {
     use super::*;
     #[test]
     fn patch_keeps_comments_unknown_choices_and_other_domains() {
-        let original="# owner comment\n[shared]\nmp_physics = 8 # chosen\nfuture_option = 'keep'\n[[domain]]\nnx = 64\n[[domain]]\nnx = 32\n";
+        let original="# owner comment\n[shared]\nmp_physics = 8 # chosen\nfuture_option = 'keep'\no3input=0\nprivate_choice=901\n[[domain]]\nnx = 64\n[[domain]]\nnx = 32\n";
         let got = patch_document(
             original,
-            &json!([{"path":"shared/mp_physics","value":50},{"path":"domain/0/nx","value":96}]),
+            &json!([{"path":"shared/mp_physics","value":50},{"path":"domain/0/nx","value":96},{"path":"shared/new_option","value":8}]),
         )
         .unwrap();
         assert!(got.contains("# owner comment"));
         assert!(got.contains("mp_physics = 50 # chosen"));
         assert!(got.contains("future_option = 'keep'"));
         assert!(got.contains("nx = 32"));
-    }
-    #[test]
-    fn inactive_and_arbitrary_toml_values_survive_patch() {
-        let got = patch_document(
-            "[shared]\no3input=0\nprivate_choice=901\n",
-            &json!([{"path":"shared/mp_physics","value":8}]),
-        )
-        .unwrap();
         assert!(got.contains("private_choice=901"));
         assert!(got.contains("o3input=0"));
+        assert!(got.contains("new_option = 8"));
     }
     #[test]
     fn save_refuses_external_change_and_keeps_original() {

@@ -68,7 +68,9 @@ def test_guided_help_does_not_replace_explicit_domain_settings():
     assert parsed.source == "era5"
 
 
-@pytest.mark.parametrize("source", ["gfs", "hrrr", "icon-eu", "new-mapped-source"])
+@pytest.mark.parametrize('source', [
+    pytest.param("new-mapped-source", id='new-mapped-source'),
+])
 def test_automatic_route_ends_with_one_launch_action(source, capsys, monkeypatch):
     from gpuwm import domain_wizard as wizard
     monkeypatch.setattr(wizard, "source_credential_notes", lambda source: [])

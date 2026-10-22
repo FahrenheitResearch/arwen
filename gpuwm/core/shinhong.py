@@ -31,6 +31,7 @@ import cupy as cp
 
 from gpuwm.core.kernels import get_kernel
 from gpuwm.core.state import DTYPE
+from gpuwm.core.ysu import _launch_output_validation
 from gpuwm.physics_vertical_contract import (
     outside_vertical_bounds, refuse_vertical_levels)
 
@@ -226,45 +227,11 @@ def invalid_shinhong_outputs(
     inputs, and the kernel reproduces it; this validator exists so the
     driver can say so instead of silently advancing corrupted state.
     """
-    if tuple(out) != _SHINHONG_OUTPUTS:
-        raise ValueError(
-            "native Shin-Hong validation requires outputs in launcher order "
-            f"{_SHINHONG_OUTPUTS}, got {tuple(out)}")
-    if (not isinstance(status, cp.ndarray) or status.shape != (1,)
-            or status.dtype != cp.uint32 or not status.flags.c_contiguous):
-        raise ValueError(
-            "Shin-Hong validation status must be a C-contiguous uint32 "
-            "device array with shape (1,)")
-
-    shape_3d = out["du"].shape
-    shape_2d = out["hpbl"].shape
-    if len(shape_3d) != 3 or len(shape_2d) != 2:
-        raise ValueError("native Shin-Hong outputs must retain 3-D/2-D shapes")
-    for name in _SHINHONG_3D_FLOAT_OUTPUTS:
-        value = out[name]
-        if (not isinstance(value, cp.ndarray) or value.shape != shape_3d
-                or value.dtype != DTYPE or not value.flags.c_contiguous):
-            raise ValueError(
-                f"native Shin-Hong output {name} must be C-contiguous "
-                f"float32 with shape {shape_3d}")
-    for name in _SHINHONG_2D_FLOAT_OUTPUTS:
-        value = out[name]
-        if (not isinstance(value, cp.ndarray) or value.shape != shape_2d
-                or value.dtype != DTYPE or not value.flags.c_contiguous):
-            raise ValueError(
-                f"native Shin-Hong output {name} must be C-contiguous "
-                f"float32 with shape {shape_2d}")
-
-    status.fill(cp.uint32(0))
-    count_3d = out["du"].size
-    count_2d = out["hpbl"].size
-    blocks = (max(count_3d, count_2d) + _VALIDATE_TPB - 1) // _VALIDATE_TPB
-    kernel = get_kernel("shinhong_validation", "shinhong_validate_outputs")
-    kernel(
-        (blocks,), (_VALIDATE_TPB,),
-        tuple(out[name] for name in _SHINHONG_3D_FLOAT_OUTPUTS)
-        + tuple(out[name] for name in _SHINHONG_2D_FLOAT_OUTPUTS)
-        + (status, np.int64(count_3d), np.int64(count_2d)))
+    _launch_output_validation(
+        out, status, scheme="Shin-Hong", names=_SHINHONG_OUTPUTS,
+        level_names=_SHINHONG_3D_FLOAT_OUTPUTS,
+        surface_names=_SHINHONG_2D_FLOAT_OUTPUTS,
+        tpb=_VALIDATE_TPB, load_kernel=get_kernel)
     invalid = int(status[0].item())
     return tuple(name for bit, name in enumerate(_SHINHONG_OUTPUTS)
                  if invalid & (1 << bit))

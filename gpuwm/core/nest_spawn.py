@@ -135,6 +135,9 @@ SPAWN_KEYS = frozenset({
     # which surface the vortex is looked for on, and how far from its
     # extremum the centroid may draw.
     "level_hpa", "radius_km",
+    # How often a FIELD watch looks (s): the spawn-leg length.  Absent keeps
+    # the leg on the tree's relocation cadence or root history interval.
+    "cadence_s",
 })
 
 _LOG = logging.getLogger("gpuwm.nest_spawn")
@@ -179,8 +182,20 @@ class SpawnConfig:
     #: it stays ``None`` for the maximum triggers, which take their
     #: centroid from a footprint-sized window and are bounded that way.
     radius_km: float | None = None
+    #: How often a field watch looks, in seconds of model time; the spawn
+    #: walk's leg length is the shortest declared one (it must be a whole
+    #: number of root steps, which the walk's schedule builder enforces).
+    cadence_s: float | None = None
 
     def __post_init__(self) -> None:
+        if self.cadence_s is not None:
+            if self.trigger == "time":
+                raise ValueError(
+                    "spawn trigger = 'time' refuses cadence_s: the manual "
+                    "trigger fires at at_s and watches no field")
+            if not math.isfinite(float(self.cadence_s)) or float(self.cadence_s) <= 0.0:
+                raise ValueError(
+                    f"spawn cadence_s must be finite and > 0, got {self.cadence_s!r}")
         if self.trigger not in SPAWN_TRIGGERS:
             raise ValueError(
                 f"spawn trigger must be one of {SPAWN_TRIGGERS}, got "
@@ -292,6 +307,8 @@ class SpawnConfig:
                 self.level_hpa,
                 defaulted=bool(getattr(self, "_level_defaulted", False))))
             out["radius_km"] = float(self.radius_km)
+        if self.cadence_s is not None:
+            out["cadence_s"] = float(self.cadence_s)
         return out
 
 
@@ -332,7 +349,8 @@ def build_spawn_config(table: dict, source: str, *,
             f"trigger in {label} of {source} must be a string, got "
             f"{trigger!r}")
     kwargs: dict[str, object] = {"trigger": trigger}
-    for key in ("threshold", "earliest_s", "latest_s", "at_s", "radius_km"):
+    for key in ("threshold", "earliest_s", "latest_s", "at_s", "radius_km",
+                "cadence_s"):
         if key in table:
             kwargs[key] = float(_require_number(table, key, source, label))
     if "level_hpa" in table:

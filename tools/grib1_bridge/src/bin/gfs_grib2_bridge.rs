@@ -650,21 +650,11 @@ fn validate_common(
         )
         .into());
     }
-    // Two packings are certified here, one per publisher form.  The
-    // NOMADS grib-filter `subregion` crop re-encodes to DRT 5.0 (simple
-    // packing), which is what the original proof corpus was built from.
-    // The raw noaa-gfs-bdp-pds S3 objects -- the full-file route -- are
-    // DRT 5.3 (complex packing + second-order spatial differencing),
-    // and their admission has its own real-product proof: a committed
-    // matched pair of the same SOILW field from the same cycle, where
-    // the bitmap-carried missing cells land in identical positions and
-    // every present cell decodes to the identical f64 bit pattern
-    // through both packings
-    // (`the_raw_53_bitmap_decode_matches_the_nomads_crop_cell_for_cell`).
-    // The proof covers exactly the envelope NCEP publishes -- general
-    // group splitting, NO embedded missing-value management (the bitmap
-    // carries the mask), second-order differencing -- so everything
-    // outside that envelope still refuses by name.
+    // Simple packing and complex packing with second-order differencing.
+    // Historical GFS also declares embedded primary/secondary missing codes.
+    // The shared decoder excludes those cells from the differencing chain;
+    // scan_normalized carries their mask alongside the Section-6 bitmap.
+    // Required atmospheric fields still reject every missing cell.
     match message.data_rep.template {
         0 => {}
         3 => {
@@ -676,11 +666,10 @@ fn validate_common(
                 )
                 .into());
             }
-            if message.data_rep.missing_value_management != 0 {
+            if message.data_rep.missing_value_management > 2 {
                 return Err(format!(
                     "unsupported GFS complex-packing missing-value management {} \
-                     (only 0 is certified: GFS missing cells travel in the \
-                     bitmap, never as embedded substitutes)",
+                     (reserved Code Table 5.5 value; cannot identify missing codes)",
                     message.data_rep.missing_value_management
                 )
                 .into());
@@ -724,7 +713,8 @@ fn validate_common(
     // drops Section 6's bitmap when every cell of the crop is defined, so
     // an all-land crop carries these fields with no bitmap at all; the
     // old equality check refused that valid crop.  Missing cells still
-    // need an explicit bitmap: emit_values refuses any NaN outside one.
+    // need an explicit bitmap or declared embedded code. The decode mask
+    // combines both; emit_values still refuses missing required fields.
     if message.bitmap.is_some() && !allow_missing {
         return Err(format!(
             "GFS missing-value policy mismatch: bitmap={} expected={allow_missing}",
@@ -767,8 +757,8 @@ fn validate_common(
         || !grid.lon2.is_finite()
         || !grid.dx.is_finite()
         || !grid.dy.is_finite()
-        || !same_level(grid.dx, 0.25)
-        || !same_level(grid.dy, 0.25)
+        || ![0.25, 0.5, 1.0].iter().any(|dx| same_level(grid.dx, *dx))
+        || !same_level(grid.dy, grid.dx)
         || !same_level(grid.lat2, latitude_span)
         || !same_level(grid.lon2, grid.lon1 + (grid.nx - 1) as f64 * grid.dx)
     {
@@ -818,6 +808,8 @@ fn flip_mask_rows(mask: &mut [bool], nx: usize, ny: usize) {
     }
 }
 
+type ScannedValues = (Vec<f64>, Option<Vec<bool>>);
+
 /// Decode one message into this bridge's canonical south-to-north
 /// row-major order, with its missing-value mask in the same order.
 ///
@@ -828,11 +820,24 @@ fn flip_mask_rows(mask: &mut [bool], nx: usize, ny: usize) {
 /// missing cells to the wrong rows.
 fn scan_normalized(
     message: &Grib2Message,
-) -> Result<(Vec<f64>, Option<Vec<bool>>), Box<dyn Error>> {
+) -> Result<ScannedValues, Box<dyn Error>> {
     let nx = message.grid.nx as usize;
     let ny = message.grid.ny as usize;
     let mut values = unpack_message(message)?;
     let mut present = message.bitmap.clone();
+    if message.data_rep.template == 3
+        && matches!(message.data_rep.missing_value_management, 1 | 2)
+    {
+        // unpack_message creates NaN only for a declared missing code or
+        // bitmap cell. Do this before the row flip so both masks move together.
+        let mask = present.get_or_insert_with(|| vec![true; values.len()]);
+        if mask.len() != values.len() {
+            return Err("embedded missing mask length differs from decoded grid".into());
+        }
+        for (cell, value) in mask.iter_mut().zip(&values) {
+            if value.is_nan() { *cell = false; }
+        }
+    }
     if message.grid.scan_mode == NORTH_TO_SOUTH_SCAN {
         if values.len() != nx * ny {
             return Err(format!(
@@ -1115,6 +1120,7 @@ fn inventory(
     })
 }
 
+#[cfg(test)]
 fn parse_series(path: &Path) -> Result<Vec<SeriesInput>, Box<dyn Error>> {
     parse_series_rows(path, false)
 }
@@ -1335,6 +1341,7 @@ fn emit_values<W: Write>(
     emit_values_with_surface_support(values, present, spec, quantum, false, writer)
 }
 
+#[cfg(test)]
 fn emit_values_with_surface_support<W: Write>(
     values: &[f64],
     present: Option<&[bool]>,
@@ -2456,7 +2463,7 @@ mod tests {
         for (position, value) in values.iter().enumerate() {
             assert_eq!(
                 mask[position],
-                (*value as usize) % 3 == 0,
+                (*value as usize).is_multiple_of(3),
                 "mask and values disagree at {position}"
             );
         }
@@ -2502,6 +2509,32 @@ mod tests {
     }
 
     #[test]
+    fn historical_embedded_missing_soil_keeps_its_mask_and_required_fields_refuse() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/gfs-archive/soil-embedded-missing-2017091812.grib2");
+        let bytes = fs::read(path).unwrap();
+        assert_eq!(hex_sha256(&bytes),
+            "5cc4fc37e3ecfca0a51690ff0f88d2dc831ac0a738e1ad8dbd27794f29626169");
+        let file = Grib2File::from_bytes(&bytes).unwrap();
+        let message = &file.messages[0];
+        assert_eq!(message.data_rep.missing_value_management, 1);
+        assert!(message.bitmap.is_none());
+        validate_common(message, "2017-09-18 12:00:00", 0, 81, true).unwrap();
+        let (values, present) = scan_normalized(message).unwrap();
+        let mask = present.unwrap();
+        assert_eq!(values.len(), 1_038_240);
+        assert_eq!(mask.iter().filter(|cell| !**cell).count(), 687_174);
+        assert!(values.iter().zip(&mask).all(|(value, present)| value.is_finite() == *present));
+        let summary = emit_values(&values, Some(&mask), SOIL_SPECS[0], 0.0,
+                                  &mut Vec::new()).unwrap();
+        assert_eq!((summary.finite, summary.missing), (351_066, 687_174));
+        let mut required = SOIL_SPECS[0];
+        required.allow_missing = false;
+        assert!(emit_values(&values, Some(&mask), required, 0.0, &mut Vec::new()).is_err());
+        assert!(emit_values(&values, None, SOIL_SPECS[0], 0.0, &mut Vec::new()).is_err());
+    }
+
+    #[test]
     fn all_missing_ocean_record_preserves_full_grid_and_row_window_missing_values() {
         let message = all_missing_ocean_fixture();
         assert_eq!(message.grid.num_data_points, 43584);
@@ -2544,7 +2577,7 @@ mod tests {
         assert_eq!((summary.finite, summary.missing), (0, 43584));
         assert!(summary.minimum.is_nan() && summary.maximum.is_nan());
         assert_eq!(bytes.len(), 4 * 43584);
-        assert!(bytes.chunks_exact(4).all(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()).is_nan()));
+        assert!(bytes.as_chunks::<4>().0.iter().all(|chunk| f32::from_le_bytes(*chunk).is_nan()));
         assert!(emit_values_with_surface_support(&values, present.as_deref(), PRESSURE_SPECS[0], 0.0, true, &mut Vec::new()).is_err());
         let mut incorrect = present.unwrap(); incorrect[0] = true;
         assert!(emit_values_with_surface_support(&values, Some(&incorrect), SOIL_SPECS[0], 0.0, true, &mut Vec::new()).is_err());
@@ -3210,7 +3243,7 @@ mod tests {
 
         // DRT 5.3 is admitted only inside the envelope NCEP publishes
         // and the committed matched pairs prove: general group
-        // splitting, no embedded missing-value management, second-order
+        // splitting, declared missing-value modes, second-order
         // spatial differencing.  Each departure refuses by name, and
         // plain complex packing (5.2) has no proof corpus at all.
         let raw_s3_form = |message: &mut Grib2Message| {
@@ -3237,12 +3270,13 @@ mod tests {
         let mut embedded_missing = valid_message(0);
         raw_s3_form(&mut embedded_missing);
         embedded_missing.data_rep.missing_value_management = 1;
-        assert!(
-            validate_common(&embedded_missing, "2026-07-20 00:00:00", 0, 81, false)
-                .unwrap_err()
-                .to_string()
-                .contains("missing-value management 1")
-        );
+        for mode in [1, 2] {
+            embedded_missing.data_rep.missing_value_management = mode;
+            validate_common(&embedded_missing, "2026-07-20 00:00:00", 0, 81, false).unwrap();
+        }
+        embedded_missing.data_rep.missing_value_management = 3;
+        assert!(validate_common(&embedded_missing, "2026-07-20 00:00:00", 0, 81, false)
+                .unwrap_err().to_string().contains("missing-value management 3"));
 
         let mut foreign_splitting = valid_message(0);
         raw_s3_form(&mut foreign_splitting);
@@ -3538,8 +3572,8 @@ mod tests {
         // The emitted value is the bound itself, not the excursion.
         assert_eq!(summary.maximum, 1.0);
         let emitted: Vec<f32> = sink
-            .chunks_exact(4)
-            .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
+            .as_chunks::<4>().0.iter()
+            .map(|bytes| f32::from_le_bytes(*bytes))
             .collect();
         assert_eq!(emitted, vec![0.0f32, 0.25, 1.0, 1.0]);
     }

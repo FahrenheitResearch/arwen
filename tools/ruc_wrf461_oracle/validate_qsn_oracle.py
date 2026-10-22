@@ -27,7 +27,7 @@ CASES = ("clamp_low", "node_low", "interior", "node_high", "clamp_high")
 _ordinal = monotone_fp32_key
 
 
-def _report(name: str, actual: np.ndarray, expected: np.ndarray) -> int:
+def _report(name: str, actual: np.ndarray, expected: np.ndarray, width: int = 12) -> int:
     difference = np.abs(
         actual.astype(np.float64) - expected.astype(np.float64)
     )
@@ -43,7 +43,7 @@ def _report(name: str, actual: np.ndarray, expected: np.ndarray) -> int:
         )
     )
     print(
-        f"  {name:<12s} max_abs={float(np.max(difference)):.6e} "
+        f"  {name:<{width}s} max_abs={float(np.max(difference)):.6e} "
         f"max_rel={float(np.max(relative)):.6e} "
         f"max_ulp={int(np.max(ulp))} signed_zero_mismatch={signed_zero}"
     )

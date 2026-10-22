@@ -1,0 +1,16 @@
+{
+  "schema": "gpuwm-fire-ignition-v1",
+  "incident_id": "75e64db8-9b75-4a68-bedd-67cc62658e38",
+  "model_start_utc_epoch_ms": 1541700000000,
+  "initialization_utc_epoch_ms": 1541700000000,
+  "assumed_burn_age_seconds": 900,
+  "incident": {
+    "route": "wfigs-incidents"
+  },
+  "perimeters": {
+    "route": "nifc-geomac-2018"
+  },
+  "static_bundle": "fire-static.npz",
+  "output": "fire-static-ignited.npz",
+  "output_directory": "admission"
+}

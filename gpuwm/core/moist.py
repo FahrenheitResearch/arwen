@@ -468,14 +468,56 @@ def _pd_fold_sources(state: DomainState, cfg: RunConfig, name: str,
         return q0
     nz, ny, nx = q0.shape
     q0_eff = state.scratch((nz, ny, nx), "moist_pd_q0")
+    sources = tuple(source for source in (fixed_tendency, physics, lbc_held)
+                    if source is not None)
+    if _pd_fold_joinable(q0, chm0, sources):
+        # One pass for ``q0_eff = q0; q0_eff += dt*S/chm0`` per source:
+        # the same FP32 multiply, divide and add per element, in order.
+        _pd_fold_kernel(len(sources))(q0, *sources, chm0,
+                                      np.float32(dt_eff), q0_eff)
+        return q0_eff
     q0_eff[...] = q0
-    if fixed_tendency is not None:
-        q0_eff += dt_eff * fixed_tendency / chm0
-    if physics is not None:
-        q0_eff += dt_eff * physics / chm0
-    if lbc_held is not None:
-        q0_eff += dt_eff * lbc_held / chm0
+    for source in sources:
+        q0_eff += dt_eff * source / chm0
     return q0_eff
+
+
+def _pd_fold_joinable(q0, chm0, sources) -> bool:
+    """The joined fold's element order needs float32 device operands of q0's
+    shape.
+
+    The separate expression promotes by NumPy rules; with any other dtype, a
+    broadcast operand, or host arrays (a CPU mirror that swaps this module's
+    ``cp`` for NumPy, tests/test_pd_advection.py) it keeps the separate
+    ufuncs.
+    """
+    arrays = (q0, chm0) + tuple(sources)
+    return all(isinstance(array, _DEVICE_ARRAY) and array.dtype == np.float32
+               and array.shape == q0.shape for array in arrays)
+
+
+#: CuPy's array type as imported, not whatever ``cp`` names at call time.
+_DEVICE_ARRAY = cp.ndarray
+
+
+@lru_cache(maxsize=None)
+def _pd_fold_kernel(count: int):
+    """``q = q0``, then ``q = q + ((dt*S)/chm0)`` for each of ``count`` sources.
+
+    CuPy compiles this exactly as it compiles its multiply, true_divide and
+    add ufuncs (its own options, flush-to-zero appended); the ``_rn``
+    intrinsics keep each product, quotient and sum its own rounded FP32
+    operation, as the three separate ufunc launches did, so no multiply-add
+    contraction forms across them.
+    """
+    names = [f"s{index}" for index in range(count)]
+    body = "float q = q0;\n" + "".join(
+        f"q = __fadd_rn(q, __fdiv_rn(__fmul_rn(dt, {name}), chm0));\n"
+        for name in names) + "out = q;"
+    return cp.ElementwiseKernel(
+        "float32 q0, " + "".join(f"float32 {name}, " for name in names)
+        + "float32 chm0, float32 dt", "float32 out", body,
+        f"gpuwm_pd_fold_sources_{count}")
 
 
 def _exclude_specified_ring_advection(tend, spec_zone: int) -> None:

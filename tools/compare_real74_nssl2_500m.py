@@ -15,7 +15,6 @@ import argparse
 import csv
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-import hashlib
 import io
 import json
 import math
@@ -35,6 +34,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
+from gpuwm.verify.n5s_common import sha256_file, stable_hash  # noqa: E402
 from gpuwm.verify.n5s_metrics import fss_distance  # noqa: E402
 
 
@@ -189,21 +189,6 @@ _CANONICAL_UNITS = {
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def sha256_file(path: Path, *, block_bytes: int = 8 * 1024 * 1024) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while block := stream.read(block_bytes):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def stable_hash(value: object) -> str:
-    encoded = json.dumps(
-        value, sort_keys=True, separators=(",", ":"), allow_nan=False,
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
 
 
 def atomic_text(path: Path, value: str) -> None:

@@ -50,6 +50,14 @@ command-line bins and their 9.8 MB test fixtures.
 
 ## Deliberate divergences from the source tree
 
+- Slim campaign (2026-10-20): `static-fields` drops the unused private
+  `capi::{grid,highres}::_reserved` placeholders and their byte-helper imports,
+  `ProjectionKind::wrf_code`, `ProjectedGrid::state`, and the uncalled
+  in-memory `highres::build_terrain_grid` wrapper. The bounded terrain path stays.
+- Slim campaign (2026-10-20): `rusty-weather` folds the duplicate
+  `StoreFieldSource::derived_grid` reader into its existing `generic_grid`;
+  both read the same stored plane with `read_grid_2d`.
+
 `vendor/netcrust` also carries a local NetCDF reader 0.3.0 snapshot from
 the checked-in registry mirror. Its manifest restores the original sibling
 HDF5 path, so external facade consumers keep the corrected fractal-heap
@@ -934,8 +942,8 @@ both orientations, with and without titles and timestamps, at three sizes.
     tree as-is if he wants it there.
 17. `crates/rw-mpas` is new (not in the source workspace): the MPAS mesh
     and history-to-wrfout render bridge, a Rust port of the two Python
-    tools the MPAS lane had been converting frames with
-    (`mpas_resample_weights.py` and `mpas_history_to_wrfout.py`).  It
+    reference tools retired after the parity proof recorded in
+    `evidence/rw-mpas-converter-parity.json`.  It
     reads through `netcrust` and writes through
     `rw_store::netcdf_classic`, so the whole path is pure Rust with no
     HDF5 write binding, no Python and no SciPy.  Its own nearest-cell
@@ -962,24 +970,101 @@ both orientations, with and without titles and timestamps, at three sizes.
 
 ## vendor/crates-io
 
-`cargo vendor --locked vendor/crates-io` output: every crates.io and
-git dependency in `Cargo.lock`, checked in so a clean clone builds with
-`--offline` (source replacement in `.cargo/config.toml`).  The three
-git dependencies (wrf-core from wrf-rust, ecape-rs, metrust-py) are all
-FahrenheitResearch -- the project's own -- repositories pinned to the exact
-revisions the campaign renderer used; wrf-core rev `93bd2ca6` is the
-same pure-Rust wrfout reader lineage as the pip `wrf-rust` package the
-matplotlib engine uses.
+This is the one checked-in registry for all 16 offline consumer workspaces:
 
-Do not edit anything under `vendor/crates-io` -- each crate carries a
-`.cargo-checksums.json` that cargo validates at build time.
+- `tools/rustwx`
+- `tools/grib1_bridge`
+- `tools/rw_wps`
+- `tools/zarr_bridge`
+- `tools/arwen-tui`
+- `tools/arwen-launchpad`
+- `tools/cfe_replay`
+- `tools/hydro_world`
+- `tools/hydro_world_params`
+- `tools/nextgen_cfe_prepare`
+- `tools/nextgen_forcing`
+- `tools/nextgen_hydrofabric`
+- `tools/nextgen_replay`
+- `tools/nextgen_verify`
+- `tools/noahowp-init`
+- `tools/sfire_coupled_ideal/rust`
 
-Recorded reader correction for ML exports (2026-10-01): `wrf-core/src/file.rs`
-keeps the existing T-volume dimension probe and falls back to other mass
-volumes, then the XLAT plane for surface-only history selections. The
-vendored checksum records these bytes. Surface-only and unavailable-volume
-export fixtures exercise the fallback; histories carrying T keep the same
-dimension path.
+Build from each workspace directory with `cargo build --release --locked
+--offline`; Cargo discovers that workspace's source replacement from the
+working directory. Existing bare crate directory names are retained; newly
+added versions use `<name>-<version>` so another version cannot collide.
+All consumer Cargo.lock files are unchanged by the registry fold.
+
+Never run `cargo vendor` into this directory, including from rustwx alone:
+it would discard dependencies the other consumers need and overwrite local
+corrections with pristine registry bytes. Add dependencies by vendoring to
+an empty scratch directory with `--versioned-dirs` and synchronizing every
+consumer manifest, from the repository root:
+
+```sh
+scratch=$(mktemp -d)
+cargo vendor --locked --versioned-dirs \
+  --manifest-path tools/rustwx/Cargo.toml \
+  --sync tools/grib1_bridge/Cargo.toml \
+  --sync tools/rw_wps/Cargo.toml \
+  --sync tools/zarr_bridge/Cargo.toml \
+  --sync tools/arwen-tui/Cargo.toml \
+  --sync tools/arwen-launchpad/Cargo.toml \
+  --sync tools/cfe_replay/Cargo.toml \
+  --sync tools/hydro_world/Cargo.toml \
+  --sync tools/hydro_world_params/Cargo.toml \
+  --sync tools/nextgen_cfe_prepare/Cargo.toml \
+  --sync tools/nextgen_forcing/Cargo.toml \
+  --sync tools/nextgen_hydrofabric/Cargo.toml \
+  --sync tools/nextgen_replay/Cargo.toml \
+  --sync tools/nextgen_verify/Cargo.toml \
+  --sync tools/noahowp-init/Cargo.toml \
+  --sync tools/sfire_coupled_ideal/rust/Cargo.toml "$scratch/crates-io"
+```
+
+Copy only name/version pairs absent from this shared registry, verifying
+the `.cargo-checksum.json` package hash against every consuming lock.
+Never overwrite or rename an existing directory. A scratch vendoring
+failure is not permission to regenerate the shared tree. wrf-core has one
+locked git revision, `93bd2ca6`, vendored here and shared by the renderer
+crates and the simulated-radar crates (the separate `9874474` copy in
+`vendor/bowecho-git` was folded onto it on 2026-10-21).
+
+Refresh the per-consumer inventories and retained notices with
+`python tools/update_tui_license_notice.py` followed by
+`python tools/update_zarr_license_notice.py`. The interface manifest stays
+in `tools/arwen-ui-vendor/manifest.json`, and the Zarr manifest stays in
+`tools/zarr_bridge/vendor-manifest.json`; both describe their locks' subsets
+of this registry. Preserve every copied licence and notice file.
+
+Existing locally corrected sources are retained, including their updated
+Cargo per-file checksums:
+
+- `wrf-core/src/diag/vorticity.rs` (2026-10-21): `avo` is wrf-python's
+  DCOMPUTEABSVORT (staggered winds over their map factors, centred
+  differences clamped at the edge, times the mass map factor squared, plus
+  F), in s^-1.  The upstream body passed (v, u) to
+  `met::dynamics::vorticity(u, v)` and returned du/dx - dv/dy, which is zero
+  for solid rotation: every closed low vanished from the vorticity maps
+  (500 hPa correlation with HRRR's ABSV at the same analysis 0.23, now
+  0.81; 300 hPa 0.47 -> 0.96).  `pvo` keeps its own formula with the
+  argument order corrected.  Test: crates/rw-wrfbatch/tests/avo_rotation.rs.
+  A target directory built before this change keeps the old object: Cargo
+  does not fingerprint vendored sources, so run
+  `cargo clean --release -p wrf-core` once.
+- `wrf-core/src/file.rs`: the ML-export reader keeps its T-volume dimension
+  probe and falls back to other mass volumes, then XLAT for surface-only
+  selections. Histories carrying T keep the same dimension path.
+- `netcdf-reader-0.3.0/src/classic/data.rs` and `variable.rs`: the classic
+  single-record-variable stride correction used by the coupled fire tool.
+- `log-0.4.34/src/kv/value.rs`: a test-only IP scrub changes four expected
+  strings from a private-range address to `192.0.2.100` (two with `:12345`). The
+  test inputs and production implementation are unchanged. The original
+  Zarr/UI copies and this copy carry the same package hash,
+  `f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6`.
+  The coordinator explicitly authorized this test-only tree difference
+  when folding those copies; all other resolved crate content trees stay
+  identical to their consumers' pre-fold copies.
 
 ## crates/static-fields lane-3 decode dependencies (2026-08-17)
 
@@ -1335,11 +1420,16 @@ pinned to version 0.1.3 at `c206a2495c36341caa2a62ff7be3025320dbb028`.
 Their `SOURCE.json` records source hashes and the packaging-only removal of
 test dependencies. All formats use their shared FM301 model.
 
-The simulation's `wrf-core` is pinned to
-`9874474d9566a7536a90f457a48be30caa5f973a`. `vendor/bowecho-git` is a separate
-Cargo replacement source because the renderer uses a different commit with
-the same package version. Its manifest spells the upstream workspace's 2021
-edition explicitly; its Rust sources are unchanged. Existing renderer
+The simulation's `wrf-core` is pinned to the renderer's revision,
+`93bd2ca670c13fec35bcfc27a58108e6fd71c627`, the one vendored copy at
+`vendor/crates-io/wrf-core`. It was folded off the older side-branch revision
+`9874474d9566a7536a90f457a48be30caa5f973a` (formerly a separate
+`vendor/bowecho-git` replacement source) on 2026-10-21. Two consequences for
+the radar door: a wrfout without `T` now opens through the reader's mass-volume
+/ XLAT dimension fallback and is refused by the radar input contract instead
+of at file open, and computed `dbz` follows wrf-rust v0.2.38's wrf-python
+CALCDBZ branching (RD = 287.0, an all-zero QSNOW takes the no-snow path,
+QRAIN required). Existing renderer
 dependencies and vendor files are retained. Added registry packages use
 versioned directory names under `vendor/crates-io`. The locked workspace
 resolves offline. The additional binary grants are inventoried in
@@ -1549,7 +1639,7 @@ The exact 181x360 real frame uses one 0.116671 ms kernel launch on the 5090,
 occupancy. CUDA startup makes the cold one-image process slower overall;
 this GPU candidate remains held, independent of the committed projection fix.
 
-Per-file SHA-256 delta (before this lane → candidate, first 16 hex):
+Per-file SHA-256 delta (before this lane â†’ candidate, first 16 hex):
 
 | File | Before | After |
 |---|---|---|
@@ -1700,3 +1790,122 @@ libc 0.2.191, log 0.4.34, miniz_oxide 0.9.1, mio 1.2.4, num-integer 0.1.47, pkg-
 portable-atomic 1.15.0, rustls 0.23.46, rustls-webpki 0.103.15, serde_json 1.0.154, smallvec 1.16.3, syn 3.0.9,
 thiserror 2.0.21, thiserror-impl 2.0.21, twox-hash 2.1.5, unicode-ident 1.0.27, want 0.3.2, zerocopy 0.8.63,
 zerocopy-derive 0.8.63, zeroize 1.9.1. The rustwx workspace's own lock is unchanged.
+
+## Shared IVT transport arrows (2026-10-20)
+
+The generic direction-arrow renderer and its projection/aspect/seam test are
+seeded unchanged from the sibling capability commit
+`d51c1f5c1ddd87964fe98b701be38310411ff318` (lane/hexcap-hex-ivt-engine).
+The regional IVT product selects these arrows by its canonical flux components.
+This reuses the MIT-licensed rustwx renderer (`tools/rustwx/LICENSE`) without
+introducing another vector convention or any dependency.
+
+## Hex transport products (2026-10-20)
+
+The canonical catalog adds model-column integrated vapour transport magnitude,
+eastward and northward components, with a fixed kg m-1 s-1 scale and an explicit
+`ivt_vectors` direction-arrow recipe. `rw-wrfbatch/src/ivt.rs` computes these
+planes from native vertical pressure, vapour mixing ratio and earth-relative
+winds. The import records uncomputable columns as missing, and shares one
+integration among the three planes. Pressure-level product admission adds 925
+hPa to the existing height/wind route. No external implementation is copied.
+
+`WindBarbLayer.direction_arrows` defaults false when deserializing old requests.
+The IVT recipe keeps flux units, uses arrowheads instead of knot pennants, and
+projects physical east/north displacements through the resolved map projection
+and actual pixel aspect. Other recipes retain their existing wind glyphs.
+Analytic IVT tests cover units, specific humidity, cancellation and invalid
+columns. Renderer tests cover projection direction, aspect and longitude seams.
+## Fixed-height geometric vertical velocity (2026-10-17)
+
+The renderer owns two new public recipes, `1km_vertical_velocity` and
+`3km_vertical_velocity`. `rustwx-core`'s existing `GeometricVerticalVelocity`
+(upward positive, not pressure velocity) is the field; `rustwx-models` binds the
+recipes to AGL selectors, and `rustwx-products` supplies their common fixed
+signed m/s scale. The WRF importer reads the pinned wrf-core's destaggered
+W and geometric AGL heights and linearly interpolates adjacent mass levels,
+without extrapolating missing brackets. No third-party source changes.
+The public binary fixture checks analytic W over varying terrain, both
+signs, missing inputs and the actual PNG artifacts.
+
+## hdf5-reader pads version-1/2 compound member names from the name, not the buffer (2026-10-12, da/ingest)
+
+`vendor/netcrust/vendor/hdf5-reader/src/messages/datatype.rs::parse_compound`
+padded each member name of a version-1 or version-2 compound datatype by
+aligning the cursor's absolute position to eight bytes.  The HDF5 format
+pads the name, null terminator included, to a multiple of eight bytes
+counted from the start of the name.  The two are the same only when the
+datatype message begins on an 8-byte boundary of the buffer the cursor
+walks.  In a version-2 object header it often does not, and every member
+after the first was then read from the wrong offset.
+
+What this fixes: a GAMIC radar volume keeps its per-ray angles and times
+in a compound table, `/scanN/ray_header`.  Its header failed to parse as
+`UnsupportedDatatypeClass(13)`, the object was then classified as a group,
+and the table could not be opened as a dataset at all
+(`dataset not found: ray_header`).  With the fix `rw_radar decode` reads
+the 360-row table of `2014-08-10--182000.ppi.mvol` and its ray azimuths
+match h5py's.  Held by
+`messages::datatype::tests::test_parse_compound_v1_name_padding_is_relative_to_the_name`,
+which starts a version-1 compound three bytes into the buffer.
+
+A compound that begins on an 8-byte boundary parses exactly as before, so
+NetCDF-4 and ODIM reads through this crate are unchanged.
+
+    Per-file SHA-256 delta (first 16 hex), cd336e62d -> this line:
+
+        vendor/netcrust/vendor/hdf5-reader/src/messages/datatype.rs     d22ecabb1829c870 -> 89f1ea10b2c6078d
+
+## hdf5-reader reads version-1 B-tree chunk offsets as 64-bit in every file (2026-10-12, da/ingest)
+
+`vendor/netcrust/vendor/hdf5-reader/src/btree_v1.rs` read the chunk
+offsets of a raw-data (node type 1) key at the file's size of offsets, in
+`parse_raw_data_key` and in the node-length sum of the storage walk.  The
+HDF5 format fixes those offsets at 64 bits whatever the superblock's size
+of offsets is; only the child addresses and sibling pointers follow it.
+For the usual 8-byte-offset file the two readings are the same.  For a
+file written with 4-byte offsets each key came out `4 * (ndims + 1)`
+bytes short, the child address was read from inside the key, and the
+bytes handed to the filter pipeline were not the chunk.
+
+What this fixes: SMHI's ODIM volumes (`radar_<site>_qcvol_*.h5`,
+superblock version 0 with 4-byte offsets and lengths) failed on the first
+dataset as `DEFLATE decompression failed: corrupt deflate stream`, for all
+12 Swedish radars, in `rw_odim` and `rw_radar` alike.  The chunk itself
+inflates (flate2 on bytes 532808..551760 of
+`radar_vara_qcvol_202610121935.h5`, sha256 8cdf3279...ad6c5d6, gives the
+345,600 bytes h5py reports); the reader had been handed address 0.  With
+the fix the volume decodes to 10 sweeps with reflectivity and radial
+velocity.  Held by
+`btree_v1::tests::test_rawdata_key_offsets_are_64_bit_in_a_4_byte_offset_file`.
+
+An 8-byte-offset file parses exactly as before.  The crate's own unit
+tests need dev-dependencies this vendor tree does not carry; they were
+run in a scratch copy with the dev-dependency tables removed (183 passed,
+both new tests among them).
+
+    Per-file SHA-256 delta (first 16 hex), cd336e62d -> this line:
+
+        vendor/netcrust/vendor/hdf5-reader/src/btree_v1.rs     c8a4e99dd7630f94 -> f80f52aa93b06f2f
+
+## Hydro typed snapshot readback (2026-10-21)
+
+The netcdf-reader classic header reader retains every declared NC_CHAR byte,
+including trailing NULs. The NC4 attribute reader likewise retains the raw
+fixed-string bytes; NC_STRING decoding is unchanged. This preserves hydro's
+code_version NUL rather than rewriting its type/length on replay.
+The public read_variable_char_bytes path exposes exact NC_CHAR payloads in
+classic and HDF5 fixed-width-one datasets; hdf5-reader read_raw_bytes is public
+for that path. No UTF-8 decoding or padding trimming is applied to NC_CHAR data.
+Covered by tools/nextgen_output/tests/netcdf.rs on Windows and Linux.
+
+HDF5 object-header attribute creation orders and compact/dense group link orders
+are now retained by the reader. Dense creation-order indexes take precedence
+when present. netCDF-C can move attributes into dense storage after defining
+variables, so hash/storage order did not preserve the original NetCDF schema.
+The checked-in pre-port netCDF-C hydro history fixture tests exact ordered
+headers, typed attributes (including a one-byte NUL), NC_STRING and payloads.
+
+Dataset variable-length string reads parse each global heap once and decode
+reach labels with Rayon, avoiding quadratic reparsing of a collection per label.
+A 65,540-distinct-label hydro test spans multiple global heap collections.

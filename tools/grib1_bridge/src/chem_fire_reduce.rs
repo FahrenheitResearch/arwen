@@ -9,6 +9,10 @@ use std::slice;
 
 /// Arrays use (hour, cell); output is (5, cell): mass, FRP, age, HWP, rain.
 /// The caller proves each pointer's length and never aliases output with input.
+/// # Safety
+/// All pointers are aligned and valid for their declared array shapes above:
+/// mass/frp `(nh,nc)`, ages `(nh)`, hwp/rain `(np,nc)`, output `(5,nc)`.
+/// Inputs are initialized; output is writable and does not overlap any input.
 #[no_mangle]
 pub unsafe extern "C" fn gpuwm_fire_daily(
     nc: usize, nh: usize, np: usize, mass: *const f32, frp: *const f32,
@@ -26,7 +30,7 @@ pub unsafe extern "C" fn gpuwm_fire_daily(
     let output = slice::from_raw_parts_mut(output, 5 * nc);
     for c in 0..nc {
         let (mut m, mut f, mut count, mut age) = (0.0_f64, 0.0_f64, 0_usize, 0.0_f32);
-        for h in 0..nh {
+        for (h, &hour_age) in ages.iter().enumerate() {
             let x = h * nc + c;
             if frp[x] > 0.0 {
                 if !mass[x].is_finite() || !frp[x].is_finite() || mass[x] < 0.0 {
@@ -35,7 +39,7 @@ pub unsafe extern "C" fn gpuwm_fire_daily(
                 m += mass[x] as f64;
                 f += frp[x] as f64;
                 if mass[x] != 0.0 { count += 1; }
-                age = ages[h]; // Hour order is oldest first: last fire wins.
+                age = hour_age; // Hour order is oldest first: last fire wins.
             }
         }
         let denom = if count < 2 { 2.0 } else { count as f64 };

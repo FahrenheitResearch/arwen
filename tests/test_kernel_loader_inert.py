@@ -134,7 +134,7 @@ _EXPECTED_HEADERS = {
     # YSU's topo_wind arm (ysu_column_topo) takes glibc's powf; the default
     # entry points compile to byte-identical PTX with the header present
     # (tests/test_mp8_frozen.py, the ysu re-pin).
-    "ysu": ("glibc_flt32.cuh", "ysu_topo.cuh"),
+    "ysu": ("glibc_flt32.cuh", "ysu_topo_default.cuh"),
     # WRF 4.8 YSU generation (ysu_version = "wrf_480"), its own unit.
     "ysu_480": ("glibc_flt32.cuh", "ysu_480_topo.cuh"),
     # Shin-Hong takes glibc's powf/expf since lane/parity-pbl-libm; its WRF
@@ -213,7 +213,8 @@ _EXPECTED_HEADERS = {
 
 
 def _module_names() -> list[str]:
-    names = sorted(path.stem for path in _KDIR.glob("*.cu"))
+    names = sorted({path.stem for path in _KDIR.glob("*.cu")}
+                   | {"ysu", "mynn_dmp_sibling"})
     assert names, "no CUDA translation units found"
     assert "thompson" in names
     return names
@@ -258,6 +259,9 @@ def test_lake_compile_options_do_not_change_existing_modules(monkeypatch, strict
     expected["lightning"] = ("-std=c++17", "--ftz=false", "--fmad=false")
     # WRF's ocean mixed layer (2.9.1) compiles as the column-exact ports do.
     expected["oml"] = ("-std=c++17", "--fmad=false", "--ftz=false")
+    # WRF's HAILCAST diagnostics (lane/cap-hail 97e9a3ca061) compile without
+    # FMA, like the other column-exact WRF ports.
+    expected["hail"] = ("-std=c++17", "--fmad=false")
     names = _module_names()
     assert set(expected) <= set(names), sorted(set(expected) - set(names))
     for name in names:
@@ -290,12 +294,26 @@ def _pre_hook_source(name: str) -> str:
     and agree with each other while both being wrong.
     """
     return (kernel_loader._preamble() + _strict_header_text(name)
-            + (_KDIR / f"{name}.cu").read_text(encoding="utf-8"))
+            + _unit_file_text(name))
+
+
+def _unit_file_text(name: str) -> str:
+    """The unit's own text, written out literally like the rest of this test.
+
+    Slimming wave 3 (lane 13) folded mynn_dmp_sibling.cu into mynn_pbl.cu's
+    MYNN_EXPORT_PLUME_EDGE build, so that logical module has no .cu of its
+    own: its text is the one #define line followed by mynn_pbl.cu, byte for
+    byte.
+    """
+    if name == "mynn_dmp_sibling":
+        return ("#define MYNN_EXPORT_PLUME_EDGE 1\n"
+                + (_KDIR / "mynn_pbl.cu").read_text(encoding="utf-8"))
+    return (_KDIR / f"{name}.cu").read_text(encoding="utf-8")
 
 
 def _pre_hook_source_int_defines(name: str, prefix: str) -> str:
     return (kernel_loader._preamble() + _strict_header_text(name) + prefix + "\n"
-            + (_KDIR / f"{name}.cu").read_text(encoding="utf-8"))
+            + _unit_file_text(name))
 
 
 @pytest.mark.parametrize("name", _module_names())
@@ -356,7 +374,8 @@ def test_allow_listed_headers_exist_and_translation_units_are_explicit():
             assert path.suffix == ".cuh" or (module, header) in (
                 ("noah_init", "noah.cu"), ("pd_vertical_sl", "pd_advection.cu"),
                 ("urban_ucm480", "urban_ucm.cu"),
-                ("lin_refl", "refl.cu")), (
+                ("lin_refl", "refl.cu"),
+                ("gsd_helicity", "uh_diag.cu")), (
                 "only the explicitly reused initialization and scalar units may supply a .cu header")
 
 

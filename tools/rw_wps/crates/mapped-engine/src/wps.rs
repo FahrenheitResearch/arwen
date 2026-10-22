@@ -172,8 +172,8 @@ fn read_field(stream: &Path, f: &Field) -> Result<Vec<f64>> {
     let mut bytes = vec![0; f.length as usize];
     file.read_exact(&mut bytes).map_err(io_error)?;
     let values: Vec<f64> = bytes
-        .chunks_exact(8)
-        .map(|b| f64::from_le_bytes(b.try_into().unwrap()))
+        .as_chunks::<8>().0.iter()
+        .map(|b| f64::from_le_bytes(*b))
         .collect();
     if digest::array_sha256(&f.shape, &values) != f.sha256 {
         return Err(frame_invalid(format!("{} digest differs", f.name)));
@@ -184,11 +184,11 @@ fn read_field(stream: &Path, f: &Field) -> Result<Vec<f64>> {
 /// `wps --frameset DIR --composition JSON --contract JSON --valid-time ISO --out MET`.
 /// Global coverage is mandatory: the target reader wraps longitude periodically.
 pub fn run(arguments: &[String]) -> Result<Value> {
-    if arguments.len() % 2 != 0 {
+    if !arguments.len().is_multiple_of(2) {
         return Err(usage("wps takes --frameset DIR --composition JSON --contract JSON --valid-time ISO --out MET"));
     }
     let mut args = BTreeMap::new();
-    for pair in arguments.chunks_exact(2) {
+    for pair in arguments.as_chunks::<2>().0 {
         if ![
             "--frameset",
             "--composition",
@@ -302,7 +302,7 @@ pub fn run(arguments: &[String]) -> Result<Value> {
                     .as_f64()
                     .ok_or_else(|| frame_invalid("invalid soil bound"))?
                     * 100.;
-                if !v.is_finite() || v < 0. || v > 999. || (v - v.round()).abs() > 1.0e-6 {
+                if !v.is_finite() || !(0. ..=999.).contains(&v) || (v - v.round()).abs() > 1.0e-6 {
                     return Err(frame_invalid(
                         "WPS soil bounds require whole centimetres in 0..999",
                     ));

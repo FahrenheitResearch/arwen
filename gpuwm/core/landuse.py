@@ -285,7 +285,7 @@ def _reconcile_landmask_soil_category(
 
 def _derive_categories(raw_lu, soil, xice, *, shape, iswater, islake, isice,
                        isoilwater, isoilice, fractional_seaice,
-                       soil_temperature, sst):
+                       soil_temperature, sst, sea_ice_cells=None):
     """IVGTYP/ISLTYP/land as real.exe leaves them, reconciliation included.
 
     THE one rulebook.  Both :func:`initialize_landuse` (what the physics
@@ -306,13 +306,27 @@ def _derive_categories(raw_lu, soil, xice, *, shape, iswater, islake, isice,
     ivgtyp = np.where(lake, int(iswater), ivgtyp).astype(np.int32)
     threshold = np.float32(0.02 if fractional_seaice else 0.5)
     seaice = xice >= threshold
-    ivgtyp = np.where(seaice, int(isice), ivgtyp).astype(np.int32)
+    # adjust_for_seaice_post gives the ice category and soil class 16 to
+    # every cell it converted, including a seaice_threshold cell (water
+    # colder than the threshold) whose XICE stays below the threshold under
+    # fractional sea ice; the soil ingest carries that decision as
+    # ``sea_ice_cells``.  ``seaice`` stays the XICE test: landuse_init's
+    # ice albedo/emissivity blend (module_physics_init.F:1633) reads XICE,
+    # so such a cell takes the ice category's own table row unblended.
+    category_ice = seaice
+    if sea_ice_cells is not None:
+        cells = np.asarray(sea_ice_cells, dtype=bool)
+        if cells.shape != shape:
+            raise ValueError(
+                f"sea_ice_cells must have shape {shape}, got {cells.shape}")
+        category_ice = seaice | cells
+    ivgtyp = np.where(category_ice, int(isice), ivgtyp).astype(np.int32)
     land = ivgtyp != int(iswater)
     soil = soil_category_matched_to_land(soil, land, isoilwater=isoilwater)
     # share/module_soil_pre.F:adjust_for_seaice_post assigns category 16
     # before physics_init.  The associated SMOIS/SH2O/TSLB rewrite remains
     # intentionally out of scope here.
-    soil = np.where(seaice, int(isoilice), soil).astype(np.int32)
+    soil = np.where(category_ice, int(isoilice), soil).astype(np.int32)
     land = _reconcile_landmask_soil_category(
         ivgtyp, soil, land, iswater=iswater, isoilwater=isoilwater,
         soil_temperature=soil_temperature, sst=sst, shape=shape)
@@ -323,7 +337,7 @@ def reconciled_soil_category(
         lu_index, *, soil_type, xice, iswater: int, islake: int, isice: int,
         isoilwater: int = 14, isoilice: int = 16,
         fractional_seaice: bool = False,
-        soil_temperature=None, sst=None):
+        soil_temperature=None, sst=None, sea_ice_cells=None):
     """ISLTYP as the physics driver will see it, for the soil ingest.
 
     WRF builds the soil column in real.exe and only derives SH2O later, in
@@ -361,7 +375,8 @@ def reconciled_soil_category(
         raw_lu, soil, xice, shape=shape, iswater=iswater, islake=islake,
         isice=isice, isoilwater=isoilwater, isoilice=isoilice,
         fractional_seaice=fractional_seaice,
-        soil_temperature=soil_temperature, sst=sst)
+        soil_temperature=soil_temperature, sst=sst,
+        sea_ice_cells=_host_input(sea_ice_cells))
     return soil
 
 
@@ -444,6 +459,34 @@ def ruc_fractional_seaice(cfg) -> bool:
     return int(getattr(cfg, "fractional_seaice", 0)) == 1
 
 
+def seaice_threshold_of(cfg) -> float:
+    """``RunConfig.seaice_threshold`` (WRF ``&physics seaice_threshold``):
+    the input skin temperature below which real.exe turns open water into
+    sea ice.  An object without the field answers WRF's 100 K default,
+    which converts nothing."""
+    return float(getattr(cfg, "seaice_threshold", 100.0))
+
+
+def prepared_sea_ice_cells(surface_fields, met_fields, static_landmask):
+    """The sea-ice cells a prepared surface was built with.
+
+    A prepared cache persists the solved surface but not its sea-ice mask.
+    The soil ingest made a cell LANDMASK 1 that its decision surface called
+    water only by converting it to sea ice; the decision surface is the
+    static LANDMASK on the static-landmask routes and the source LANDSEA on
+    the others.  A cell that is water on BOTH and land in the solved
+    surface is therefore sea ice on either route, whether the XICE test or
+    ``seaice_threshold`` made it so.  (A coastline cell where the two
+    disagree is left to the XICE test, as before this mask existed.)
+    """
+    surface_land = np.asarray(_host_input(surface_fields["LANDMASK"])) >= 0.5
+    water = np.asarray(_host_input(static_landmask)) < 0.5
+    landsea = met_fields.get("LANDSEA") if met_fields is not None else None
+    if landsea is not None:
+        water = water & (np.asarray(_host_input(landsea)) < 0.5)
+    return surface_land & water
+
+
 def usemonalb_landuse_inputs(cfg, static, valid_time) -> dict:
     """The ``initialize_landuse`` keywords a static catalogue supplies.
 
@@ -480,7 +523,7 @@ def initialize_landuse(
         isoilice: int = 16,
         fractional_seaice: bool = False,
         urban_legend: bool = False,
-        soil_temperature=None, sst=None,
+        soil_temperature=None, sst=None, sea_ice_cells=None,
         tbl_dir: Path | None = None,
         usemonalb: bool = False, albbck_monthly=None,
         snoalb=None) -> LanduseInitialization:
@@ -529,7 +572,8 @@ def initialize_landuse(
         raw_lu, soil, xice, shape=shape, iswater=iswater, islake=islake,
         isice=isice, isoilwater=isoilwater, isoilice=isoilice,
         fractional_seaice=fractional_seaice,
-        soil_temperature=soil_temperature, sst=sst)
+        soil_temperature=soil_temperature, sst=sst,
+        sea_ice_cells=_host_input(sea_ice_cells))
 
     if np.any(ivgtyp < 1) or np.any(ivgtyp > table.lucats):
         bad = int(ivgtyp[(ivgtyp < 1) | (ivgtyp > table.lucats)][0])
@@ -637,5 +681,6 @@ __all__ = ["LANDUSE_COLUMNS", "LanduseInitialization", "LanduseTable",
            "prescribed_monthly_field", "surface_leaf_area",
            "surface_snow_albedo",
            "reconciled_soil_category", "ruc_fractional_seaice",
+           "prepared_sea_ice_cells", "seaice_threshold_of",
            "soil_category_matched_to_land",
            "usemonalb_landuse_inputs"]

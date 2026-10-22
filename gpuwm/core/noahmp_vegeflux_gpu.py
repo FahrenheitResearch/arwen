@@ -256,7 +256,7 @@ class VegeFluxBatchPending(RuntimeError):
 
 
 class VegeFluxBatch:
-    """Capture VEGE_FLUX calls, execute them once, then replay their results.
+    """Capture VEGE_FLUX calls for the oracle fixture collector.
 
     The runtime no longer uses this.  It paused a column by *restarting* it,
     which meant every host statement before VEGE_FLUX ran twice;
@@ -269,35 +269,11 @@ class VegeFluxBatch:
 
     def __init__(self):
         self.calls: list[tuple[tuple, dict]] = []
-        self.results: list[VegeFluxState] = []
-        self._replay_index = 0
 
     def capture(self, *args, **kwargs):
         index = len(self.calls)
         self.calls.append((args, kwargs))
         raise VegeFluxBatchPending(index)
-
-    def evaluate(self) -> None:
-        self.results = evaluate_vege_flux_calls(self.calls)
-        if len(self.results) != len(self.calls):
-            raise RuntimeError(
-                f"VEGE_FLUX batch returned {len(self.results)} results for "
-                f"{len(self.calls)} calls")
-
-    def replay(self, *args, **kwargs):
-        del args, kwargs
-        if self._replay_index >= len(self.results):
-            raise RuntimeError("VEGE_FLUX replay consumed beyond its batch")
-        result = self.results[self._replay_index]
-        self._replay_index += 1
-        return result
-
-    def assert_fully_replayed(self) -> None:
-        if self._replay_index != len(self.results):
-            raise RuntimeError(
-                f"VEGE_FLUX replay consumed {self._replay_index} of "
-                f"{len(self.results)} results")
-
 
 __all__ = [
     "VegeFluxBatch",

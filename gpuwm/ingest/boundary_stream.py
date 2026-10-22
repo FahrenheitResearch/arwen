@@ -1561,12 +1561,11 @@ def run_chained(*, prepared_root, prepare: Callable[[], object],
 
     A producer that fails reaches the waiting forecast through
     ``failed.json`` and, in this process, through the worker thread
-    having ended.  A forecast that fails leaves the producer running to
-    its seal and waits for it, so a retry reuses the complete preparation
-    instead of building every forcing time again; while it waits, the
-    run's heartbeat says ``waiting:preparation`` through ``observer``'s
-    ``waiting``/``waited`` hooks (:func:`_hold_for_seal`).  A stop asks the
-    producer to stop (``stop.json``), waits for it to exit and re-raises:
+    having ended.  A forecast that fails is said at once and stops its
+    producer (:func:`_stop_for_failed_forecast`), so the run ends with the
+    forecast's error instead of after every later forcing time is built.
+    A stop asks the producer to stop (``stop.json``), waits for it to exit
+    and re-raises:
     ``KeyboardInterrupt``, ``SystemExit``, and every exception
     :func:`gpuwm.runplan._is_interrupt` reads as the user's stop, which
     is how a Ctrl-C reaches this thread from ``gpuwm go``
@@ -1625,11 +1624,7 @@ def run_chained(*, prepared_root, prepare: Callable[[], object],
             result = forecast(str(head["head_sha256"]))
         except BaseException as error:
             if isinstance(error, Exception) and not _is_stop(error):
-                if worker.is_alive():
-                    _say("prepare: the forecast failed; the preparation "
-                         "continues to its seal so a retry reuses it")
-                    _hold_for_seal(root, worker, observer)
-                worker.join()
+                _stop_for_failed_forecast(root, worker, error)
                 raise
             request_stop(root, f"the forecast ended: "
                                f"{type(error).__name__}: {error}")
@@ -1645,47 +1640,29 @@ def run_chained(*, prepared_root, prepare: Callable[[], object],
                 del _LOCAL_PRODUCERS[key]
 
 
-def _hold_for_seal(root, worker: threading.Thread, observer, *,
-                   report_seconds: float = WAIT_REPORT_SECONDS) -> None:
-    """Wait for this run's preparation after its forecast failed, said so.
+def _stop_for_failed_forecast(root, worker: threading.Thread,
+                              error: BaseException) -> None:
+    """Say a failed forecast at once, stop its producer, and let it raise.
 
-    The run reports the forecast's failure only once the preparation has
-    ended.  Until then the heartbeat says ``waiting:preparation``,
-    refreshed every ``report_seconds`` while the producer is alive, then
-    ``waited`` hands back the status the wait interrupted.  A producer in
-    another process that has gone silent past its limit stops the
-    refresh, so a watchdog still ends a hold on a hung producer by the
-    ``waiting:preparation`` bound.  The breakage this prevents: through
-    the hold the heartbeat kept the failed forecast's last phase with
-    nothing said, so a reader saw a stalled forecast and a supervisor
-    timing that phase stopped the run, and with it the preparation the
-    retry would reuse.
+    The failure is said the moment the forecast raises, the producer is
+    asked to stop (``stop.json``) and is waited for, so the run ends with
+    the forecast's own error, its cards released, instead of building every
+    later forcing time first.
+
+    Named breakage: a forecast that failed 25 s after its preflight (V59
+    run 2a and V60 r1b/r1d, 2026-10-21, a store refusal) left its producer
+    building all 48 remaining boundary times for 19-24 min while the run
+    said waiting:preparation with every card idle, and only then raised;
+    the wait read as a streaming regression.  A retry rebuilds the stopped
+    preparation's later times, which is minutes; hiding a failure is not.
     """
 
-    waiting = getattr(observer, "waiting", None)
-    waited = getattr(observer, "waited", None)
-    if not callable(waiting):
-        return
-    since = _utc_now()
-    said = False
-    try:
-        while worker.is_alive():
-            beat = _read_json(stream_dir(root) / PRODUCER_NAME)
-            age = None if _same_process(beat) else _heartbeat_age(beat)
-            if age is None or age <= _silence_limit(beat):
-                try:
-                    waiting("preparation", since_utc=since, lead=None,
-                            expected_at=None, late_at=None)
-                except Exception:  # noqa: BLE001 - the forecast's failure is the one reported
-                    return
-                said = True
-            worker.join(report_seconds)
-    finally:
-        if said and callable(waited):
-            try:
-                waited()
-            except Exception:  # noqa: BLE001 - as above
-                pass
+    _say(f"prepare: the forecast failed ({type(error).__name__}: {error}); "
+         "stopping the preparation")
+    if worker.is_alive():
+        request_stop(root, f"the forecast failed: "
+                           f"{type(error).__name__}: {error}")
+    worker.join()
 
 
 def _is_stop(error: BaseException) -> bool:
@@ -3447,10 +3424,6 @@ class SeamWaits:
             self._open = None
             self._hook("waited")
 
-    @property
-    def open_record(self) -> dict | None:
-        return None if self._open is None else dict(self._open)
-
     # -- records ---------------------------------------------------------
 
     def _report(self, waiting: Mapping[str, object]) -> None:
@@ -3706,6 +3679,8 @@ class StreamedIntervals(Sequence):
             physical_boundary.validate_head(physical, lbc["schedule"])
             self._physical_seen[0] = physical["initial_receipt"]
         self._lock = threading.RLock()
+        #: Intervals loading on a background thread: index -> (box, done).
+        self._prefetching: dict[int, tuple[dict, threading.Event]] = {}
         #: One entry per wait the run actually took: (index, seconds).
         self.waits: list[tuple[int, float]] = []
 
@@ -3726,10 +3701,60 @@ class StreamedIntervals(Sequence):
             cached = self._loaded.get(k)
             if cached is not None:
                 return cached
+            pending = getattr(self, "_prefetching", {}).get(k)
+        if pending is not None:
+            # Loaded (read, hash-checked, validated) on the prefetch thread;
+            # a failure there is this call's failure, raised here.
+            box, done = pending
+            done.wait()
+            with self._lock:
+                self._prefetching.pop(k, None)
+                if "error" in box:
+                    raise box["error"]
+                return self._loaded.setdefault(k, box["interval"])
+        with self._lock:
+            cached = self._loaded.get(k)
+            if cached is not None:
+                return cached
             marker = self.require(k)
             interval = self._load(k, marker)
             self._loaded[k] = interval
             return interval
+
+    def prefetch(self, index: int) -> bool:
+        """Load interval ``index`` on a background thread if it is posted.
+
+        The same load ``self[index]`` performs (marker, arrays read and
+        hash-checked, layout and clock validated), started early so the
+        stepping thread finds it done.  Only an interval whose marker is
+        already posted, and one at a time; ``self[index]`` joins it and
+        raises its failure.  Breakage this prevents: every hourly interval
+        was read, hashed, copied and validated on the stepping thread at
+        the hour boundary, a stall of every card at every forecast hour
+        (V59, 8 x RTX 5090, 2026-10-21).  Returns whether a load started.
+        """
+        k = int(index)
+        if not 0 <= k < len(self):
+            return False
+        with self._lock:
+            if (k in self._loaded or self._prefetching
+                    or not self.is_ready(k)):
+                return False
+            box: dict = {}
+            done = threading.Event()
+            self._prefetching[k] = (box, done)
+
+        def load():
+            try:
+                box["interval"] = self._load(k, self.require(k))
+            except BaseException as error:  # noqa: BLE001 - raised by self[k]
+                box["error"] = error
+            finally:
+                done.set()
+
+        threading.Thread(target=load, name=f"lbc-prefetch-{k}",
+                         daemon=True).start()
+        return True
 
     def __iter__(self):
         for k in range(len(self)):

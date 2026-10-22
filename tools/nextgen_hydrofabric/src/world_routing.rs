@@ -737,7 +737,14 @@ pub fn prepare(config_path: &Path) -> Result<Value> {
             || data.chunks_exact(8).any(|b| { let x = f64::from_le_bytes(b.try_into().unwrap()); !x.is_finite() || x < 0.0 }) {
             return Err("invalid runoff replay depth or extent".into());
         }
-        fs::write(out.join("runoff-replay.f64"), &data)?;
+        // The verified spin-up payload, hard-linked (a second copy was 509 MB per
+        // forecast start on the 10 x 6 degree Oklahoma WoFS box); a copy only
+        // where the filesystem cannot link.
+        let src = c.initial_state_dir.join(field["file"].as_str().ok_or("replay file")?);
+        let dst = out.join("runoff-replay.f64");
+        if fs::hard_link(&src, &dst).is_err() {
+            fs::write(&dst, &data)?;
+        }
         let mut declaration = replay.clone();
         declaration["payload"] = json!({"path": "runoff-replay.f64", "sha256": field["sha256"],
             "bytes": data.len(), "shape": field["shape"], "dtype": "<f8"});

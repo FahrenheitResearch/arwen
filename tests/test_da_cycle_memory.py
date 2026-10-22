@@ -104,6 +104,7 @@ def _drive(monkeypatch, tmp_path, *, free_bytes=1 << 50, members=2,
     def alive() -> list:
         return [kind for kind, ref in owners if ref() is not None]
 
+    imports_before_fake = set(sys.modules)
     if fake_device:
         monkeypatch.setitem(sys.modules, "cupy", _fake_cupy())
     monkeypatch.setattr(psdf, "preflight_prepared_forecast",
@@ -224,8 +225,23 @@ def _drive(monkeypatch, tmp_path, *, free_bytes=1 << 50, members=2,
         "--history-interval-seconds", "900", "--members", str(members),
         "--free-legs", str(legs), "--leg-seconds", "60",
         "--out", str(out), *extra_argv])
-    events.append(("cycle-exit", driver.main()))
-    return events, out / "cycle-report.json"
+    try:
+        events.append(("cycle-exit", driver.main()))
+        return events, out / "cycle-report.json"
+    finally:
+        if fake_device:
+            # Lazy driver imports can retain the fake as their global cp
+            # after monkeypatch restores sys.modules["cupy"]. Remove those
+            # imports and their parent bindings, including on refusal.
+            for name in sorted(set(sys.modules) - imports_before_fake,
+                               reverse=True):
+                if not name.startswith(("gpuwm.", "tools.")):
+                    continue
+                module = sys.modules.pop(name)
+                package, _, attribute = name.rpartition(".")
+                parent = sys.modules.get(package)
+                if getattr(parent, attribute, None) is module:
+                    delattr(parent, attribute)
 
 
 def test_each_trajectory_is_released_before_the_next_is_wired(monkeypatch,

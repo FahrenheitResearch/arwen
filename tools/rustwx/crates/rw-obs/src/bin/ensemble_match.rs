@@ -18,9 +18,12 @@ use wrf_core::{getvar, ComputeOpts, WrfFile};
 mod diagnostics;
 #[path = "ensemble_match/reflectivity.rs"]
 mod reflectivity;
+#[path = "ensemble_match/visibility.rs"]
+mod visibility;
 
 const QUANTITIES: &[(&str, &str, &str)] = &[
     ("temperature_2m", "K", "t2"),
+    ("visibility", "m", "visibility"),
     ("wind_speed_10m", "m s-1", "wspd10"),
     ("precipitation_accumulation", "mm", ""),
     ("composite_reflectivity", "dBZ", "REFL_10CM column maximum / refc"),
@@ -35,9 +38,11 @@ pub static GPUWM_BRIDGE_SOURCE_REV_STAMP: &str =
 struct Prepare {
     grid: PathBuf,
     surface: PathBuf,
-    precipitation_geometry: PathBuf,
+    #[serde(default)]
+    precipitation_geometry: Option<PathBuf>,
     /// observation-to-model for a fine observation grid, model-to-observation
     /// when observations have a coarser native support than the model.
+    #[serde(default)]
     precipitation_direction: String,
     interior_rim_m: f64,
     boundary_rows: usize,
@@ -161,7 +166,7 @@ struct Plan {
     schema: String,
     grid: Reference,
     surface: Reference,
-    precipitation_geometry: Reference,
+    precipitation_geometry: Option<Reference>,
     nx: usize,
     ny: usize,
     grid_geometry_sha256: String,
@@ -169,7 +174,7 @@ struct Plan {
     grid_interior: Vec<bool>,
     precipitation_target_mask: Vec<bool>,
     stations: Vec<StationPosition>,
-    remap: Remap,
+    remap: Option<Remap>,
     precipitation_direction: String,
     parameters: Value,
 }
@@ -356,67 +361,72 @@ fn prepare(request: &Prepare) -> Result<Plan> {
             pos
         })
         .collect::<Vec<_>>();
-    let (observed, obs_lat, obs_lon, obs_shape) = geo(&request.precipitation_geometry)?;
-    let model_shape = (file.ny, file.nx);
-    let native_plan = match request.precipitation_direction.as_str() {
-        "observation-to-model" => build_plan(
-            Method::CellAverage,
-            &obs_lat,
-            &obs_lon,
-            obs_shape,
-            &latitude,
-            &longitude,
-            model_shape,
-            request.max_regrid_distance_m,
-        )?,
-        "model-to-observation" => build_plan(
-            Method::CellAverage,
-            &latitude,
-            &longitude,
-            model_shape,
-            &obs_lat,
-            &obs_lon,
-            obs_shape,
-            request.max_regrid_distance_m,
-        )?,
-        _ => {
-            return Err(err(
-                "precipitation direction must be observation-to-model or model-to-observation",
-            ))
-        }
-    };
-    let target_mask = if request.precipitation_direction == "observation-to-model" {
-        interior
-            .iter()
-            .zip(&native_plan.reachable)
-            .map(|(a, b)| *a && *b)
-            .collect()
-    } else {
-        let mut mask = native_plan.reachable.clone();
-        for (index, &target) in native_plan.source_index.iter().enumerate() {
-            if target >= 0 && !interior[index] {
-                mask[target as usize] = false;
+    let (geometry_reference, geometry_digest, target_mask, remap) = if let Some(path) = &request.precipitation_geometry {
+        let (observed, obs_lat, obs_lon, obs_shape) = geo(path)?;
+        let model_shape = (file.ny, file.nx);
+        let native_plan = match request.precipitation_direction.as_str() {
+            "observation-to-model" => build_plan(
+                Method::CellAverage,
+                &obs_lat,
+                &obs_lon,
+                obs_shape,
+                &latitude,
+                &longitude,
+                model_shape,
+                request.max_regrid_distance_m,
+            )?,
+            "model-to-observation" => build_plan(
+                Method::CellAverage,
+                &latitude,
+                &longitude,
+                model_shape,
+                &obs_lat,
+                &obs_lon,
+                obs_shape,
+                request.max_regrid_distance_m,
+            )?,
+            _ => {
+                return Err(err(
+                    "precipitation direction must be observation-to-model or model-to-observation",
+                ))
             }
-        }
-        mask
-    };
-    let remap = Remap {
-        source_index: native_plan.source_index,
-        reachable: native_plan.reachable,
-        source_shape: native_plan.source_shape,
-        destination_shape: native_plan.destination_shape,
-        max_distance_m: native_plan.max_distance_m,
-        max_used_distance_m: native_plan.max_used_distance_m,
+        };
+        let target_mask = if request.precipitation_direction == "observation-to-model" {
+            interior
+                .iter()
+                .zip(&native_plan.reachable)
+                .map(|(a, b)| *a && *b)
+                .collect()
+        } else {
+            let mut mask = native_plan.reachable.clone();
+            for (index, &target) in native_plan.source_index.iter().enumerate() {
+                if target >= 0 && !interior[index] {
+                    mask[target as usize] = false;
+                }
+            }
+            mask
+        };
+        let remap = Remap {
+            source_index: native_plan.source_index,
+            reachable: native_plan.reachable,
+            source_shape: native_plan.source_shape,
+            destination_shape: native_plan.destination_shape,
+            max_distance_m: native_plan.max_distance_m,
+            max_used_distance_m: native_plan.max_used_distance_m,
+        };
+        (Some(reference(path)?), observed.content_sha256, target_mask, Some(remap))
+    } else {
+        (None, String::new(), Vec::new(), None)
     };
     Ok(Plan {
         schema: PLAN_SCHEMA.into(),
         grid: reference(&request.grid)?,
         surface: reference(&request.surface)?,
-        precipitation_geometry: reference(&request.precipitation_geometry)?,
+        precipitation_geometry: geometry_reference,
         nx: file.nx,
         ny: file.ny,
         grid_geometry_sha256: geometry_hash(&latitude, &longitude),
-        precipitation_geometry_sha256: observed.content_sha256,
+        precipitation_geometry_sha256: geometry_digest,
         grid_interior: interior,
         precipitation_target_mask: target_mask,
         stations,
@@ -563,7 +573,9 @@ fn matching_with_archive(
     }
     check_reference(&plan.grid)?;
     check_reference(&plan.surface)?;
-    check_reference(&plan.precipitation_geometry)?;
+    if let Some(geometry) = &plan.precipitation_geometry {
+        check_reference(geometry)?;
+    }
     if request.members.is_empty() {
         return Err(err("matching needs at least one member"));
     }
@@ -591,6 +603,9 @@ fn matching_with_archive(
     let mut observation_times = Vec::new();
     let mut precipitation_start = None;
     if is_precip {
+        if plan.precipitation_geometry.is_none() || plan.remap.is_none() {
+            return Err(err("precipitation matching requires a plan with precipitation geometry"));
+        }
         let path = request
             .precipitation_observation
             .as_ref()
@@ -605,7 +620,7 @@ fn matching_with_archive(
         precipitation_start = Some(meta.accumulation_start.clone());
         observation_receipts.push(serde_json::to_value(reference(path)?)?);
         let (values, valid) = if plan.precipitation_direction == "observation-to-model" {
-            remap(&plan.remap, &frame.values, &frame.valid)?
+            remap(plan.remap.as_ref().ok_or_else(|| err("missing precipitation remap"))?, &frame.values, &frame.valid)?
         } else {
             (frame.values, frame.valid)
         };
@@ -639,7 +654,7 @@ fn matching_with_archive(
             observation_mask.push(
                 value.is_some_and(|x| x.is_finite())
                     && report.is_some_and(|r| {
-                        !r.flags.iter().any(|flag| flag.contains(&request.quantity))
+                        !r.flags.iter().any(|flag| flag.contains(&request.quantity) && !(request.quantity == "visibility" && flag == "metar_visibility_ge_10sm"))
                     }),
             );
             observation_times.push(json!({"station_id":pos.station_id,"observation_time":report.map(|r|&r.observation_time)}));
@@ -675,6 +690,8 @@ fn matching_with_archive(
                     json!({"member_id":member.id,"accumulation_start_frame":reference(initial)?}),
                 );
                 accumulation(&rain_total(&file)?, &rain_total(&first)?)?
+            } else if request.quantity == "visibility" {
+                visibility::field(&file)?
             } else {
                 let output = getvar(&file, diagnostic, Some(0), &ComputeOpts::default())?;
                 let core_units = if diagnostic == "wspd10" { "m/s" } else { units };
@@ -690,7 +707,7 @@ fn matching_with_archive(
         check_seam(&request.quantity, &raw_values)?;
         let values = if is_precip {
             let values = if plan.precipitation_direction == "model-to-observation" {
-                remap(&plan.remap, &raw_values, &plan.grid_interior)?.0
+                remap(plan.remap.as_ref().ok_or_else(|| err("missing precipitation remap"))?, &raw_values, &plan.grid_interior)?.0
             } else {
                 raw_values
             };
@@ -706,6 +723,7 @@ fn matching_with_archive(
                 .map(|pos| bilinear(&raw_values, plan.nx, plan.ny, pos.x, pos.y))
                 .collect::<Result<Vec<_>>>()?
         };
+        let values = if request.quantity == "visibility" {values.into_iter().map(|v|if v.is_finite(){v.min(16093.44)}else{v}).collect::<Vec<_>>()}else{values};
         if values.len() != sample_ids.len() {
             return Err(err("member matched sample count differs"));
         }
@@ -747,7 +765,9 @@ fn matching_with_archive(
     writer.flush()?;
     Ok(
         json!({"schema":"gpuwm.ensemble-match-receipt.v1","plan":{"path":request.plan,"sha256":hex_sha256(&plan_bytes)},
-        "quantity":request.quantity,"units":units,"valid_time":end,"accumulation_start":precipitation_start,"member_ids":request.members.iter().map(|m|&m.id).collect::<Vec<_>>(),
+        "quantity":request.quantity,"units":units,
+        "visibility_scores":if request.quantity=="visibility"{visibility::scores(&observed,&observation_mask,&columns)}else{Value::Null},
+        "visibility_semantics":if request.quantity=="visibility"{json!({"model_and_observation_cap_m":16093.44,"metar_cap":"right censored at 10 statute miles","events":"strictly visibility < 1000 m and < 400 m","fog_flag":"low visibility, obscurant not identified","interpolation":"bilinear model visibility at frozen station coordinates"})}else{Value::Null},"valid_time":end,"accumulation_start":precipitation_start,"member_ids":request.members.iter().map(|m|&m.id).collect::<Vec<_>>(),
         "forecast_field_reader":if archive.is_some(){diagnostics::CONTRACT}else{"wrf-core one-frame history"},
         "samples":sample_ids.len(),"observed_samples":observation_mask.iter().filter(|x|**x).count(),"source_receipts":source_receipts,"observation_receipts":observation_receipts,
         "observation_times":observation_times,"matched":reference(out)?,"parameters":plan.parameters}),
@@ -1135,7 +1155,7 @@ mod tests {
         let plan = prepare(&Prepare {
             grid: initial.clone(),
             surface: surface_path,
-            precipitation_geometry: geometry,
+            precipitation_geometry: Some(geometry),
             precipitation_direction: "observation-to-model".into(),
             interior_rim_m: 0.0,
             boundary_rows: 0,
@@ -1151,6 +1171,15 @@ mod tests {
                 .count(),
             64
         );
+        let surface_only = prepare(&Prepare {
+            grid: initial.clone(), surface: plan.surface.path.clone(),
+            precipitation_geometry: None, precipitation_direction: String::new(),
+            interior_rim_m: 0.0, boundary_rows: 0, elevation_tolerance_m: 100.0,
+            max_regrid_distance_m: 1.0,
+        }).unwrap();
+        assert!(surface_only.precipitation_geometry.is_none());
+        assert!(surface_only.remap.is_none());
+        assert_eq!(surface_only.stations.len(), plan.stations.len());
         let plan_path = root.join("plan.json");
         std::fs::write(&plan_path, serde_json::to_vec(&plan).unwrap()).unwrap();
         let members = vec![
@@ -1180,6 +1209,10 @@ mod tests {
         assert_eq!(row[2], "300");
         assert!((row[3].parse::<f64>().unwrap() - 299.25).abs() < 0.001);
         assert!((row[4].parse::<f64>().unwrap() - 301.25).abs() < 0.001);
+        let full_plan_bytes = std::fs::read(&request.plan).unwrap();
+        std::fs::write(&request.plan, serde_json::to_vec(&surface_only).unwrap()).unwrap();
+        matching(&request, &out).unwrap();
+        std::fs::write(&request.plan, full_plan_bytes).unwrap();
         request.quantity = "wind_speed_10m".into();
         matching(&request, &out).unwrap();
         assert!(std::fs::read_to_string(&out)

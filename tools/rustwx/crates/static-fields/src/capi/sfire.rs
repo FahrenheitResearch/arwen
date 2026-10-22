@@ -20,12 +20,20 @@ struct CoverageRequest {
     #[serde(default="geographic_crs")]
     source_crs:String,
     #[serde(default)]
-    pixel_edge_offset:f64,
+    pixel_edge_offset:PixelOffset,
 }
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum PixelOffset {Scalar(f64),Axes([f64;2])}
+impl Default for PixelOffset {fn default()->Self {Self::Scalar(0.)}}
+impl PixelOffset {fn axes(self)->[f64;2] {match self {Self::Scalar(v)=>[v;2],Self::Axes(v)=>v}}}
 fn geographic_crs() -> String {"EPSG:4326".into()}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn gpuwm_static_sfire_v1() -> u32 {1}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn gpuwm_static_sfire_canopy_v1() -> u32 {1}
 
 /// Parse native formatted initializer inputs into a metadata-bound fieldset.
 /// # Safety
@@ -175,7 +183,7 @@ pub unsafe extern "C" fn gpuwm_static_sfire_coverage_bounds(json:*const u8,len:u
         if out.is_null() {return set_error("SFIRE coverage output is null");}
         let Some(text)=(unsafe{utf8(json,len)}) else {return set_error("SFIRE coverage request is not UTF-8");};
         let request:CoverageRequest=match serde_json::from_str(text) {Ok(r)=>r,Err(e)=>return set_error(e.to_string())};
-        match sfire::projected_coverage_bounds(request.bounds,request.resolution,&request.source_crs,request.pixel_edge_offset) {
+        match sfire::projected_coverage_bounds_offsets(request.bounds,request.resolution,&request.source_crs,request.pixel_edge_offset.axes()) {
             Err(e)=>set_error(e.to_string()),
             Ok(bounds)=>{unsafe{std::ptr::copy_nonoverlapping(bounds.as_ptr(),out,4)};OK}
         }
@@ -210,6 +218,29 @@ pub unsafe extern "C" fn gpuwm_static_sfire_build(json:*const u8,len:usize,out:*
         match sfire::build(&request) {
             Err(e)=>set_error(e.to_string()),
             Ok(fields)=>{unsafe{*out=register_fieldset(fields)};OK}
+        }
+    })
+}
+
+/// Decode public observations and optionally bind them to fuel/terrain.
+/// # Safety
+/// JSON is readable UTF-8; out points to a writable fieldset handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gpuwm_static_fire_ignition(json:*const u8,len:usize,out:*mut u64)->i32 {
+    guard(ERR,|| {
+        clear_error();
+        if out.is_null() {return set_error("Fire ignition output handle is null");}
+        let Some(text)=(unsafe{utf8(json,len)}) else {return set_error("Fire ignition request is not UTF-8");};
+        let request:crate::fire_ignition::IgnitionRequest=match serde_json::from_str(text) {
+            Ok(r)=>r,Err(e)=>return set_error(e.to_string())
+        };
+        match crate::fire_ignition::prepare(&request) {
+            Err(e)=>set_error(e.to_string()),
+            Ok((fields,metadata))=>{
+                let handle=register_fieldset(fields);
+                bundle_metadata().lock().unwrap().insert(handle,metadata.to_string());
+                unsafe{*out=handle};OK
+            }
         }
     })
 }

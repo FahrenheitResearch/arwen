@@ -85,10 +85,12 @@ def test_domain_without_staged_geography_creates_config_and_names_next_step(tmp_
     assert config.is_file()
     assert not (tmp_path / "case-data" / "WPS_GEOG").exists()
     assert printed.count(f"gpuwm fetch-geog --config {config}") == 1
-    from gpuwm.geog_assets import geography_for_run
+    from gpuwm.geog_assets import archive_for, geography_for_run
 
     for dataset in geography_for_run(config)["datasets"]:
-        assert printed.count(f"{dataset}/index") == 1
+        for child in archive_for(dataset).index_subdirs or ("",):
+            path = f"{dataset}/{child}/index" if child else f"{dataset}/index"
+            assert printed.count(path) == 1, path
     assert "next step" in printed
     assert "gpuwm check FAILED" not in printed
     assert "gpuwm check: PASS (rc 0)" not in printed

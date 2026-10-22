@@ -754,25 +754,16 @@ def _install_scripted_supervisor(monkeypatch, tmp_path, scripts, *,
     return config, checkpoint, processes
 
 
-def test_supervise_monitor_accepts_normal_complete_exit(monkeypatch, tmp_path):
+def test_supervise_masks_worker_to_the_selected_physical_uuid(
+        monkeypatch, tmp_path):
     config, _, processes = _install_scripted_supervisor(
         monkeypatch, tmp_path, [[
             {"status": "integrating", "step": 1},
             {"status": "complete", "step": 2, "exit": 0},
         ]])
     result = supervise_experiment(config, tmp_path / "out", poll_seconds=0.05)
-    assert result.attempts == 1
-    assert result.heartbeat.status == "complete"
+    assert result.attempts == 1 and result.heartbeat.status == "complete"
     assert len(processes) == 1
-
-
-def test_supervise_masks_worker_to_the_selected_physical_uuid(
-        monkeypatch, tmp_path):
-    config, _, processes = _install_scripted_supervisor(
-        monkeypatch, tmp_path, [[
-            {"status": "complete", "step": 1, "exit": 0},
-        ]])
-    supervise_experiment(config, tmp_path / "out", poll_seconds=0.05)
     assert processes[0].env["CUDA_VISIBLE_DEVICES"] == "GPU-test"
 
 

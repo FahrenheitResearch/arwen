@@ -181,7 +181,7 @@ def initialize_lake(
         fields, *, latitude, lake_depth=None, lake_depth_flag=None,
         use_lakedepth=LAKE_DEFAULT_USE_DEPTH,
         lakedepth_default=LAKE_DEFAULT_DEPTH, iswater=17,
-        xice_threshold: float = 0.5) -> LakeModel:
+        xice_threshold: float = 0.5, initial_state=None) -> LakeModel:
     """Run WRF lakeini for the explicit mask and retain restart storage.
 
     WRF defaults to using the bathymetry field. A missing bathymetry dataset
@@ -293,6 +293,20 @@ def initialize_lake(
              cp.float32(lakedepth_default), cp.float32(threshold), owner.errors),
             owner._arena)
         owner.check_errors()
+        if initial_state:
+            from gpuwm.ingest.lake_state import FIELDS
+            supplied = cp.full((len(FIELDS), n), cp.nan, cp.float32)
+            for row, name in enumerate(FIELDS):
+                if name in initial_state:
+                    value = cp.asarray(initial_state[name], cp.float32)
+                    if value.shape != shape:
+                        raise ValueError(f"lake initial {name} must match the surface grid")
+                    supplied[row] = value.reshape(-1)[indices]
+            equivalent_ice = supplied[4] * supplied[5]
+            if bool(cp.any(cp.isfinite(equivalent_ice) & (equivalent_ice > owner.static[0])).item()):
+                raise ValueError("lake source equivalent ice thickness exceeds model bathymetry; binding would discard ice volume")
+            get_kernel("lake", "lake_bind_source_columns")(
+                ((n+127)//128,), (128,), (n, supplied, owner.columns, owner.static))
         fields["lake_columns"].reshape(LAKE_STATE_WORDS, -1)[:, indices] = owner.columns
         fields["lake_static"].reshape(LAKE_STATIC_WORDS, -1)[:, indices] = owner.static
         # WRF lakeini:5040-5046 converts frozen masked lake points from the

@@ -70,6 +70,8 @@ def test_interrupt_reaps_the_owned_native_child(monkeypatch,tmp_path):
 
 
 def test_aggregate_resolves_ensemble_sibling_and_member_maps_keep_ordinary_binary(tmp_path, monkeypatch):
+    # GPUWM_RW_ENSBATCH outranks GPUWM_ENSEMBLE_RENDERER (gpuwm/rustwx.py override_name); a battery natives env.sh exports it.
+    monkeypatch.delenv("GPUWM_RW_ENSBATCH", raising=False)
     monkeypatch.delenv("GPUWM_ENSEMBLE_RENDERER", raising=False)
     ordinary = tmp_path / rustwx.executable_name("rw_wrfbatch")
     ensemble = tmp_path / rustwx.executable_name("rw_ensbatch")
@@ -82,13 +84,29 @@ def test_aggregate_resolves_ensemble_sibling_and_member_maps_keep_ordinary_binar
 
 
 def test_missing_explicit_ensemble_binary_never_falls_through(tmp_path, monkeypatch):
+    # GPUWM_RW_ENSBATCH outranks GPUWM_ENSEMBLE_RENDERER (gpuwm/rustwx.py override_name); a battery natives env.sh exports it.
+    monkeypatch.delenv("GPUWM_RW_ENSBATCH", raising=False)
     selected = tmp_path / "absent-ensemble-binary"
     monkeypatch.setenv("GPUWM_ENSEMBLE_RENDERER", str(selected))
     with pytest.raises(FileNotFoundError, match="GPUWM_ENSEMBLE_RENDERER names a missing file"):
         rustwx.find_ensemble_product_renderer(tmp_path / "rw_wrfbatch")
 
 
+def test_rw_ensbatch_environment_override(tmp_path, monkeypatch):
+    selected = tmp_path / 'rw_ensbatch'
+    selected.write_bytes(b'native-ensemble-binary-fixture')
+    monkeypatch.setenv('GPUWM_RW_ENSBATCH', str(selected))
+    monkeypatch.setenv('GPUWM_ENSEMBLE_RENDERER', str(tmp_path / 'old'))
+    monkeypatch.setattr(rustwx.bridges, 'accept_resolved', lambda path: path)
+    assert rustwx.find_ensemble_product_renderer() == selected.resolve()
+    selected.unlink()
+    with pytest.raises(FileNotFoundError, match='GPUWM_RW_ENSBATCH names a missing file'):
+        rustwx.find_ensemble_product_renderer()
+
+
 def test_native_aggregate_probe_and_render_both_use_ensemble_binary(tmp_path, monkeypatch):
+    # GPUWM_RW_ENSBATCH outranks GPUWM_ENSEMBLE_RENDERER (gpuwm/rustwx.py override_name); a battery natives env.sh exports it.
+    monkeypatch.delenv("GPUWM_RW_ENSBATCH", raising=False)
     monkeypatch.delenv("GPUWM_ENSEMBLE_RENDERER", raising=False)
     selected = tmp_path / rustwx.executable_name("rw_ensbatch")
     selected.write_bytes(b"native-ensemble-binary-fixture")
@@ -107,6 +125,9 @@ def test_native_aggregate_probe_and_render_both_use_ensemble_binary(tmp_path, mo
             return f"RENDERED\t{image}\n", ""
         def poll(self):
             return self.returncode
+    # The plot stamp asks git for the executing version when any bridge override is exported (a battery natives
+    # env.sh exports ~70); that lookup is not a renderer call, so the spy below sees only the renderer.
+    monkeypatch.setattr(rustwx, "product_source_label", lambda: "WOOF test")
     monkeypatch.setattr(rustwx.subprocess, "run", probe)
     monkeypatch.setattr(rustwx.subprocess, "Popen", Child)
     rustwx.run_ensemble_product_renderer(tmp_path / "rw_wrfbatch", tmp_path / "aggregate.nc", out_dir=tmp_path)
@@ -128,6 +149,7 @@ def test_cpu_reducer_transport_retains_words_and_checks_committed_hash(tmp_path,
         assert command[1] == "--ensemble-diagnostic-reduce"
         declaration = json.loads(Path(command[2]).read_text())
         assert declaration["member_order"] == [19, 3]
+        assert declaration["member_weights"] == [.25, .75]
         assert declaration["fields"][0]["threshold_bits"] == [1092616192]
         assert kwargs["env"]["CUDA_VISIBLE_DEVICES"] == ""
         directory = Path(command[4])
@@ -146,7 +168,7 @@ def test_cpu_reducer_transport_retains_words_and_checks_committed_hash(tmp_path,
                 "sha256": "0" * 64 if failure == "hash" else hashlib.sha256(array.tobytes()).hexdigest()})
         return SimpleNamespace(returncode=0, stderr="", stdout=json.dumps({
             "schema": "gpuwm-ensemble-diagnostic-reduce.v1", "members": 2,
-            "shape": [2, 2], "buffers": buffers}))
+            "shape": [2, 2], "member_weights": [.25, .75], "buffers": buffers}))
     monkeypatch.setattr(rustwx.subprocess, "run", native)
     if failure == "revision":
         read = np.fromfile
@@ -158,7 +180,7 @@ def test_cpu_reducer_transport_retains_words_and_checks_committed_hash(tmp_path,
         monkeypatch.setattr(np, "fromfile", changed)
     def replay():
         return rustwx.reduce_ensemble_diagnostics(Path("rw_ensbatch"), packs=(),
-            member_order=(19, 3), shape=(2, 2), valid_time="2026-10-04_00:00:00",
+            member_order=(19, 3), member_weights=(.25, .75), shape=(2, 2), valid_time="2026-10-04_00:00:00",
             requests=(request,), inventory=inventory, scratch_directory=tmp_path)
     if failure:
         with pytest.raises(RuntimeError, match="committed SHA-256" if failure == "hash" else "changed while"):

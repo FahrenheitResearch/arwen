@@ -39,7 +39,8 @@ def _binding(monkeypatch):
 
 
 def _source(module):
-    return (KDIR / f"{module}.cu").read_text(encoding="utf-8")
+    source = "mynn_pbl" if module == "mynn_dmp_sibling" else module
+    return (KDIR / f"{source}.cu").read_text(encoding="utf-8")
 
 
 def _expected_source(row, module, source, value):
@@ -69,14 +70,14 @@ def test_each_single_parameter_changes_only_its_registered_literal_spans(name):
     pp.declare(pset, source="isolation")
     row = pp.registry()[name]
     changed_modules = set()
-    for path in sorted(KDIR.glob("*.cu")):
-        source = path.read_text(encoding="utf-8")
-        expected, positions = _expected_source(row, path.stem, source,
+    for module in sorted({p.stem for p in KDIR.glob("*.cu")} | {"mynn_dmp_sibling"}):
+        source = _source(module)
+        expected, positions = _expected_source(row, module, source,
                                                 pset.value(name))
-        actual = pp.edit_kernel_source(path.stem, source)
-        assert actual == expected, (name, path.stem)
+        actual = pp.edit_kernel_source(module, source)
+        assert actual == expected, (name, module)
         if positions:
-            changed_modules.add(path.stem)
+            changed_modules.add(module)
             assert actual != source
         else:
             assert actual is source
@@ -239,15 +240,10 @@ def test_length_parameter_reaches_case1_and_preserves_controls(monkeypatch, name
     results = []
     for unit in _compile_pair(cp, name, module):
         def function(_, symbol, shape=(), *, selected=unit):
-            kernel = selected.get_function(symbol)
-            if module == "mynn_pbl":
-                return kernel
-
-            def launch(grid, block, args):
-                # The sibling exposes fixed CASE(1), before the main unit's
-                # mixing-length selector was appended to its launch ABI.
-                return kernel(grid, block, args[:-3] + args[-2:])
-            return launch
+            # Both logical modules now share the main unit's helper ABI.
+            # The sibling is dispatched only for its DMP plume exports;
+            # this isolation check compiles its shared helper directly.
+            return selected.get_function(symbol)
 
         monkeypatch.setattr(mynn_pbl_gpu, "get_kernel", function)
         options = (1, 2) if module == "mynn_pbl" else (1,)

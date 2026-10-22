@@ -148,7 +148,7 @@ def test_warm_static_compiles_ahead_then_loads_each_module_for_its_disk_entry(mo
     order = []
     monkeypatch.setattr(kernel_plan, "install", lambda tag_text=None: order.append("install") or True)
     monkeypatch.setattr(kernel_plan, "start", lambda: order.append("start") or {})
-    monkeypatch.setattr(kernel_plan, "close", lambda: order.append("close"))
+    monkeypatch.setattr(kernel_plan, "close", lambda *, wait=False: order.append("close"))
     monkeypatch.setattr(kernel_plan, "receipt", lambda: {"r": 1})
     monkeypatch.setattr(kernel_prewarm, "plan_tag", lambda experiment: "tag")
     monkeypatch.setattr(kernel_prewarm, "submit_static", lambda experiment: order.append("static") or 2)
@@ -156,7 +156,8 @@ def test_warm_static_compiles_ahead_then_loads_each_module_for_its_disk_entry(mo
             ("b", lambda name: (_ for _ in ()).throw(ValueError("refused")), ("b",))]
     monkeypatch.setattr(kernel_prewarm, "static_jobs", lambda experiment: jobs)
     receipt = kernel_prewarm.warm_static(object())
-    assert order == ["install", "start", "static", "close", ("load", "a")]
+    # e5882ef29f: the compiler pool stays open until the loads finish.
+    assert order == ["install", "start", "static", ("load", "a"), "close"]
     assert receipt["modules"] == 2 and receipt["loaded"] == 1
     assert receipt["errors"] == {"b": "ValueError: refused"} and receipt["plan"] == {"r": 1}
     assert threading.current_thread() is threading.main_thread()
@@ -245,7 +246,7 @@ def test_static_jobs_cover_the_moving_tree_forecast_compile_events():
     from gpuwm.config import RunConfig
 
     run = RunConfig(nx=50, ny=50, dx=12000, dy=12000, ztop=20000, dt=60,
-                    run_seconds=120, nz=49, mp_physics=10, cu_physics=1, bl_pbl_physics=1,
+                    run_seconds=120, nz=49, moist=True, mp_physics=10, cu_physics=1, bl_pbl_physics=1,
                     sf_sfclay_physics=91, sf_surface_physics=2, ra_physics=0,
                     ra_lw_physics=4, ra_sw_physics=4, ra_rrtmg_variant="rte-rrtmgp",
                     diff_6th_opt=2, km_opt=4, nwp_diagnostics=1, ysu_version="wrf_480")

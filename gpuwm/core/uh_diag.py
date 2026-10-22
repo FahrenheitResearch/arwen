@@ -81,9 +81,6 @@ UH_LAYER_TOP_M = np.float32(5000.0)
 
 #: The serialized accumulator slot (restart-carried, wrfout-emitted).
 UP_HELI_MAX_SLOT = "up_heli_max"
-#: Per-step work planes, rebuilt every launch (never serialized).
-UH_WORK_COLUMN_SLOT = "uh_diag_col"
-UH_WORK_USE_SLOT = "uh_diag_use"
 
 #: HOW FAR THE DIAGNOSTIC REACHES HORIZONTALLY, in mass cells, and why a
 #: streamed run has to widen its halo by exactly this much.
@@ -433,7 +430,15 @@ def update_up_heli_max(state, cfg) -> None:
             f"got nx={nx} ny={ny} nz={nz}")
     # Literal slot names: the preflight completeness scanner classifies
     # every scratch(...) call site statically.
-    up_heli_max = state.scratch((ny, nx), "up_heli_max")
+    windows = _tracker_windows(state)
+    if cfg.gsd_diagnostics:
+        # GSD owns the published start-of-step diagnostic. Keep tracker
+        # consumers on their existing completed-step sample and cadence.
+        if not windows:
+            return
+        up_heli_max, windows = windows[0], windows[1:]
+    else:
+        up_heli_max = state.scratch((ny, nx), "up_heli_max")
     uh = state.scratch((ny, nx), "uh_diag_col")
     use = state.scratch((ny, nx), "uh_diag_use")
     # WRF grid%rdx/rdy: 1/dx in FP32 (map factors are separate operands).
@@ -456,7 +461,7 @@ def update_up_heli_max(state, cfg) -> None:
         uh[...] = uh_np
         use[...] = use_np.astype(np.float32)
         apply_uh_smoother_max_np(uh_np, use_np, up_heli_max)
-        for window in _tracker_windows(state):
+        for window in windows:
             apply_uh_smoother_max_np(uh_np, use_np, window)
         return
 
@@ -466,7 +471,7 @@ def update_up_heli_max(state, cfg) -> None:
         state.dn, state.dnw, state.fnm, state.fnp,
         state.cf1, state.cf2, state.cf3, rdx, rdy,
         uh, use, up_heli_max)
-    for window in _tracker_windows(state):
+    for window in windows:
         device_fold_window(uh, use, window)
 
 
@@ -559,7 +564,11 @@ def reset_up_heli_max(state) -> None:
     """Zero the accumulator after its history frame is written (the WRF
     history-interval reset, module_diag_nwp.F:246-269, moved to the write
     itself -- ratified divergence 1 in the module docstring)."""
-    _zero_domain_slot(state, UP_HELI_MAX_SLOT)
+    existing = getattr(state, "existing_scratch", lambda slot: None)
+    if existing("gsd_step_count") is None:
+        _zero_domain_slot(state, UP_HELI_MAX_SLOT)
+    from gpuwm.core.hail import reset_window
+    reset_window(state)
 
 
 def _zero_domain_slot(state, slot: str) -> None:

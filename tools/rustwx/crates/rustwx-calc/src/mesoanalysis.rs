@@ -9,7 +9,6 @@ use crate::ecape::validate_len;
 use crate::error::CalcError;
 
 const EARTH_RADIUS_KM: f64 = 6371.0;
-const KTS_TO_MS: f64 = 0.514_444;
 const EPSILON: f64 = 0.622;
 const MAX_MSLP_INCREMENT_HPA: f64 = 40.0;
 
@@ -90,11 +89,6 @@ impl MesoObservation {
         self
     }
 
-    pub fn with_timestamp(mut self, timestamp: impl Into<String>) -> Self {
-        self.timestamp = Some(timestamp.into());
-        self
-    }
-
     pub fn with_temperature_c(mut self, value: f64) -> Self {
         self.temperature_c = Some(value);
         self
@@ -116,10 +110,6 @@ impl MesoObservation {
         self
     }
 
-    pub fn with_wind_kts(self, direction_deg: f64, speed_kts: f64) -> Self {
-        self.with_wind(direction_deg, speed_kts * KTS_TO_MS)
-    }
-
     pub fn with_quality_weight(mut self, quality_weight: f64) -> Self {
         self.quality_weight = quality_weight;
         self
@@ -127,21 +117,6 @@ impl MesoObservation {
 
     pub fn with_temperature_error_c(mut self, value: f64) -> Self {
         self.temperature_error_c = Some(value);
-        self
-    }
-
-    pub fn with_dewpoint_error_c(mut self, value: f64) -> Self {
-        self.dewpoint_error_c = Some(value);
-        self
-    }
-
-    pub fn with_wind_error_ms(mut self, value: f64) -> Self {
-        self.wind_error_ms = Some(value);
-        self
-    }
-
-    pub fn with_mean_sea_level_pressure_error_hpa(mut self, value: f64) -> Self {
-        self.mean_sea_level_pressure_error_hpa = Some(value);
         self
     }
 }

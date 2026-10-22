@@ -740,6 +740,8 @@ def test_the_release_ships_six_libraries_with_different_abi_symbols() -> None:
     the fifth is the observation remap, which joined when
     `gpuwm.verify.obs.regrid` flipped off scipy by default. The sixth is
     the shared isobaric reader used by pressure-level products and exports.
+    The coupled hydro output library (rw_nextgen_output) joined at 2.9.4,
+    when its NetCDF moved onto the project's Rust writer.
     """
 
     artifacts = _library_artifacts()
@@ -747,7 +749,7 @@ def test_the_release_ships_six_libraries_with_different_abi_symbols() -> None:
         "gpuwm_preprocess_cpu", "region_global_dealias", "netcdf_writer",
         "static_fields", "obs_regrid", "obs_score", "rw_isobaric",
         "rw_superob", "rw_tempo", "rw_projected_intermediate",
-        "nextgen_hydrofabric", "arwen_nextgen_forcing"}
+        "nextgen_hydrofabric", "arwen_nextgen_forcing", "rw_nextgen_output"}
     symbols = {bridge_assets.library_abi_for(a.name)[0] for a in artifacts}
     assert symbols == {"gpuwm_preprocess_cpu_abi_version", "bw_abi_version",
                        "gpuwm_ncwrite_abi_version",
@@ -757,7 +759,8 @@ def test_the_release_ships_six_libraries_with_different_abi_symbols() -> None:
                        "gpuwm_superob_abi_version",
                        "gpuwm_tempo_abi_version",
                        "gpuwm_projected_intermediate_abi_version",
-                       "arwen_hydrofabric_abi_version", "arwen_forcing_abi_version"}
+                       "arwen_hydrofabric_abi_version", "arwen_forcing_abi_version",
+                       "rw_nextgen_output_abi_version"}
 
 
 @pytest.mark.parametrize("platform", bridge_assets.SUPPORTED_PLATFORMS)

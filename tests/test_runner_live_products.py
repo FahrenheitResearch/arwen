@@ -96,7 +96,8 @@ def test_a_runner_with_no_host_draws_every_frame_as_it_lands(
     receipt = renders.wait(timeout=60.0)
 
     assert receipt is not None and receipt["frame"] == str(frames[0])
-    assert sorted(renderer.frames) == sorted(frame.name for frame in frames)
+    assert sorted(renderer.frames) == sorted(
+        [frames[0].name] + [frame.name for frame in frames[1:] for _ in range(2)])
     record = live_products.read_receipt(tmp_path / "out" / "png")
     assert sorted(Path(entry["frame"]).name for entry in record["frames"]) == \
         sorted(frame.name for frame in frames[1:])

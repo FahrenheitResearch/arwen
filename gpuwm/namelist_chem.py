@@ -38,6 +38,8 @@ import json
 from functools import lru_cache
 from pathlib import Path
 
+from gpuwm.namelist_contract import _registry_value
+
 REGISTRY_TABLE = (Path(__file__).resolve().parent / "data" / "wrf_namelist"
                   / "registry_chem_v4.7.1.json")
 
@@ -128,6 +130,17 @@ FORK_KEYS = {
 }
 
 
+#: The operational fork's keys carried 1:1 onto RunConfig fields of the same
+#: name (gpuwm/config.py), with the Python type the field holds:
+#: simple_dir_fdb (smoke AOD in the aer_opt = 3 shortwave), enh_vermix
+#: (mixing over burning columns, gpuwm/core/chem_vertmx.py) and flam_part
+#: (the plume's flaming fraction, gpuwm/core/chem_plumerise.py).  The
+#: fork's aer_drydep_opt = 111 (smoke deposition velocity) is carried the
+#: same way; every other aer_drydep_opt keeps the stock switch handling.
+FORK_CARRIED_KEYS = {"simple_dir_fdb": int, "enh_vermix": bool,
+                     "flam_part": float}
+
+
 #: The other way through every refusal of a chemistry companion key.
 CHEM_OFF_WAY_OUT = ("  (Or set chem_opt = 0 to import the meteorology "
                     "without chemistry.)")
@@ -159,12 +172,6 @@ class ChemImport:
 def registry_keys() -> dict[str, dict]:
     table = json.loads(REGISTRY_TABLE.read_text(encoding="utf-8"))
     return {row["key"]: row for row in table["keys"]}
-
-
-def _registry_value(row: dict):
-    from gpuwm.namelist_contract import _registry_value as value
-
-    return value(row)
 
 
 def _equal(value, default) -> bool:
@@ -241,9 +248,7 @@ def import_chem_section(entries: dict, *, max_dom: int, fork: bool,
 
     registry = registry_keys()
     shared: dict[str, object] = {}
-    switches = {key: (entries[key] if isinstance(entries[key], list)
-                      else [entries[key]])[0]
-                for key in entries}
+    switches = {key: column(key)[0][0] for key in entries}
     for key in sorted(entries):
         if key == "chem_opt":
             continue
@@ -296,6 +301,13 @@ def import_chem_section(entries: dict, *, max_dom: int, fork: bool,
                      f"read only when {switch} != {off}, and {switch} is "
                      f"{off} here: inert")
                 continue
+        if (key == "aer_drydep_opt" and fork
+                and all(v == 111 for v in active)):
+            # The fork's smoke deposition velocity (smoke/dry_dep_driver.F
+            # :244-256): RunConfig.aer_drydep_opt = 111, gpuwm/core/
+            # chem_vertmx.py.
+            shared[key] = 111
+            continue
         if key in UNCARRIED_PROCESS_SWITCHES:
             # Decided on the switch, never on the Registry default: several
             # defaults are 1 (process ON), so "at the default" is a request.
@@ -326,6 +338,32 @@ def import_chem_section(entries: dict, *, max_dom: int, fork: bool,
                  + ": the value would not be honoured.  Next: set it to "
                  + ("1." if runs else "0 to run without it.")
                  + CHEM_OFF_WAY_OUT))
+        carried_fork = FORK_CARRIED_KEYS.get(key)
+        # At the off value (0 / .false.) the fork key keeps its exact drop
+        # below, so an import that turns it off writes nothing new.
+        if fork and (carried_fork is not None
+                     and not all(v is False or (v == 0 and key != "flam_part")
+                                 for v in active)):
+            if len(set(map(repr, active))) != 1:
+                raise error("chem", key, values,
+                            "WOOF carries one value for the whole tree; "
+                            f"this namelist gives {active} on its domains")
+            value = active[0]
+            kind = carried_fork
+            if kind is bool:
+                if not isinstance(value, bool):
+                    raise error("chem", key, values, "must be a Fortran logical")
+            elif kind is int:
+                if isinstance(value, bool) or not isinstance(value, int):
+                    raise error("chem", key, values, "must be an integer")
+            else:
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise error("chem", key, values, "must be a number")
+                value = float(value)
+            # Carried as RunConfig fields of the same name, each read by the
+            # forecast and checked by validate_chem_config.
+            shared[key] = value
+            continue
         if key in FORK_KEYS and key not in registry:
             if not fork:
                 raise error("chem", key, values,
@@ -379,10 +417,7 @@ SOURCE_KEYS = {
 def _set_rows_with_sources(chem_set: str) -> list[str]:
     """Source names the set's rows take start and boundary values from,
     or [] when any row has none (then the request cannot be met)."""
-    from gpuwm.chem_table import catalog
-
-    rows = [catalog().species[name]
-            for name in catalog().set_members(chem_set)]
+    rows = _set_rows(chem_set)
     if not rows or any(not row.boundary for row in rows):
         return []
     return sorted({entry["source"] for row in rows for entry in row.boundary})
@@ -406,7 +441,7 @@ def _sources_for(chem_set: str, switches: dict) -> tuple[str, ...]:
     from gpuwm.chem_table import catalog
 
     table = catalog()
-    rows = [table.species[name] for name in table.set_members(chem_set)]
+    rows = _set_rows(chem_set)
     chosen: list[str] = []
 
     def add(name):
@@ -436,7 +471,6 @@ def _registry_default(key: str):
 
 
 def _fork_key(key, values, active, *, drop, fix, error) -> None:
-    value = active[0]
     if key == "debug_chem":
         drop("chem", key, values, "chemistry debug printing; WOOF writes its "
                                   "own run log")
@@ -446,10 +480,11 @@ def _fork_key(key, values, active, *, drop, fix, error) -> None:
             drop("chem", key, values, f"{FORK_KEYS[key]} is off: exact")
             return
         raise error("chem", key, values,
-                    f"{FORK_KEYS[key]} requested; WOOF's smoke carries no "
-                    "optics into radiation or cloud microphysics, so "
-                    "shortwave would not be reduced under smoke (the chem "
-                    "law refuses aer_ra_feedback the same way).  Next: set "
+                    f"{FORK_KEYS[key]} requested; the fork's empirical "
+                    "simple feedback is not the prognostic chemistry optics "
+                    "route. Radiation feedback is aer_ra_feedback=1 with "
+                    "optics.gocart rows; indirect cloud feedback uses its "
+                    "separate aerosol_mp_coupling route. Next: set "
                     f"{key} = 0." + CHEM_OFF_WAY_OUT)
     if key == "plumerise_flag":
         if all(v == 2 for v in active):
@@ -487,4 +522,3 @@ def _fork_key(key, values, active, *, drop, fix, error) -> None:
                     "plume rise has no such control, so the value would not "
                     "be honoured.  Next: remove flam_part."
                     + CHEM_OFF_WAY_OUT)
-    raise error("chem", key, values, "not classified")  # pragma: no cover

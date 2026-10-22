@@ -384,6 +384,7 @@ pub fn compute_windowed_products(
     let exact_axis = manifest.is_exact_time_axis();
     let run_frames = manifest_window_frames(&manifest)?;
     let last_hour = last_window_hour(&run_frames);
+    let cadence = history_cadence(&run_frames);
     // The frames this pass may read, in slot (= lead) order; the anchor is
     // the last of them.
     let frames: Vec<WindowFrame> = run_frames
@@ -458,6 +459,10 @@ pub fn compute_windowed_products(
                 continue;
             }
         };
+        if let Some(reason) = off_cadence_reason(&spec, cadence, exact_axis) {
+            blockers.push((slug.clone(), reason));
+            continue;
+        }
         let slots = if exact_axis {
             exact_window_slots(&spec, &frames)
         } else {
@@ -805,6 +810,92 @@ fn exact_window_slots(
         previous = frame.lead_seconds;
     }
     Ok((inside.iter().map(|frame| frame.slot).collect(), gaps))
+}
+
+/// The opening of a blocker that is not a gap but a product this history
+/// can never draw.  The render reads a pass whose only skips carry it as a
+/// successful skip (`gpuwm.render.NOT_APPLICABLE_SKIP`).
+pub const NOT_APPLICABLE_PREFIX: &str = "not-applicable: ";
+
+/// A history written on a regular interval of two or more whole hours, as
+/// `(interval seconds, phase seconds)`, or `None` (an hourly or finer grid,
+/// an interval that is not whole hours, a single frame, or frames on no
+/// common interval).
+///
+/// The interval is the smallest spacing between stored frames; every other
+/// spacing must be a whole number of it (a missing frame on that interval is
+/// a gap, and stays one).
+fn history_cadence(frames: &[WindowFrame]) -> Option<(u64, u64)> {
+    let mut leads: Vec<u64> = frames.iter().map(|frame| frame.lead_seconds).collect();
+    leads.sort_unstable();
+    leads.dedup();
+    let steps: Vec<u64> = leads.windows(2).map(|pair| pair[1] - pair[0]).collect();
+    let interval = *steps.iter().min()?;
+    if interval <= SECONDS_PER_HOUR
+        || interval % SECONDS_PER_HOUR != 0
+        || steps.iter().any(|step| step % interval != 0)
+    {
+        return None;
+    }
+    Some((interval, leads[0] % interval))
+}
+
+/// The blocker for a window that needs a whole hour this history never
+/// writes.
+///
+/// WHAT BREAKAGE THIS PREVENTS (gate law): a 3 km nest that keeps 3-hourly
+/// history (d02 history 10800 s under a 1-hourly 12 km parent) was asked for
+/// `qpf_1h` by the finalize stage's windowed pass; every window F(h-1)-Fh
+/// needs a frame the history never writes, so the pass drew nothing, exited
+/// 1 and `gpuwm go` printed `FAILED render` on a run whose every picture was
+/// in place.  Such a window is not a gap in the history: it does not apply
+/// to it, and says so with [`NOT_APPLICABLE_PREFIX`].  A window whose hours
+/// all fall on the history's interval (`qpf_3h`, `qpf_6h` on that nest) is
+/// planned as before, and a frame missing on the interval stays a gap.
+fn off_cadence_reason(
+    spec: &ProductSpec,
+    cadence: Option<(u64, u64)>,
+    exact_axis: bool,
+) -> Option<String> {
+    let (interval, phase) = cadence?;
+    let needed: Vec<u16> = if exact_axis && folds_interval_maxima(spec.source) {
+        // On the exact-time axis an interval maximum needs the frame its
+        // window ends on and the one at its start (none for a window that
+        // starts with the run), not one on every whole hour between
+        // (`exact_window_slots`).
+        let start = spec.hours.first().and_then(|first| first.checked_sub(1));
+        start
+            .filter(|&start| start > 0)
+            .into_iter()
+            .chain(spec.hours.last().copied())
+            .collect()
+    } else {
+        spec.hours.clone()
+    };
+    let never: Vec<u16> = needed
+        .iter()
+        .copied()
+        .filter(|&hour| (u64::from(hour) * SECONDS_PER_HOUR) % interval != phase)
+        .collect();
+    if never.is_empty() {
+        return None;
+    }
+    let first = needed.first().copied().unwrap_or_default();
+    let last = needed.last().copied().unwrap_or_default();
+    Some(format!(
+        "{NOT_APPLICABLE_PREFIX}this grid's history is written every {}, so F{} that window \
+         F{first:03}-F{last:03} needs is never stored; the product does not apply to this history",
+        if interval % SECONDS_PER_HOUR == 0 {
+            format!("{} h", interval / SECONDS_PER_HOUR)
+        } else {
+            duration_label(interval)
+        },
+        never
+            .iter()
+            .map(|hour| format!("{hour:03}"))
+            .collect::<Vec<_>>()
+            .join(", F"),
+    ))
 }
 
 fn duration_label(seconds: u64) -> String {
@@ -3199,6 +3290,35 @@ mod tests {
             );
         }
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_three_hourly_history_does_not_apply_hourly_windows_and_keeps_its_gaps() {
+        // A nest keeping 3-hourly history: qpf_1h needs F005, which this
+        // history never writes, so it is not applicable rather than a gap;
+        // qpf_6h falls on the interval and is drawn.
+        let dir = test_dir("wrfout-qpf-3hourly");
+        let run = "20260608_00z";
+        for hour in [0u16, 3, 6] {
+            write_wrfout_apcp_hour(&dir, run, hour, apcp_run_accum_plane(hour));
+        }
+        let outcome = compute(&dir, run, &[0, 3, 6], &["qpf_1h", "qpf_6h"]);
+        let reason = blocker_reason(&outcome, "qpf_1h");
+        assert!(reason.starts_with(NOT_APPLICABLE_PREFIX), "{reason}");
+        assert!(reason.contains("every 3 h") && reason.contains("F005"), "{reason}");
+        assert_eq!(grid_named(&outcome, "qpf_6h").hours_used, vec![0, 6]);
+        let _ = fs::remove_dir_all(&dir);
+
+        // A frame missing ON the interval is a gap and stays one.
+        let dir = test_dir("wrfout-qpf-3hourly-gap");
+        for hour in [0u16, 3, 9, 12] {
+            write_wrfout_apcp_hour(&dir, run, hour, apcp_run_accum_plane(hour));
+        }
+        let outcome = compute(&dir, run, &[0, 3, 9, 12], &["qpf_6h"]);
+        let reason = blocker_reason(&outcome, "qpf_6h");
+        assert!(!reason.starts_with(NOT_APPLICABLE_PREFIX), "{reason}");
+        assert!(reason.contains("F006") && reason.contains("never skipped"), "{reason}");
         let _ = fs::remove_dir_all(&dir);
     }
 

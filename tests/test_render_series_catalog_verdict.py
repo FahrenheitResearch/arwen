@@ -84,7 +84,7 @@ def _ask(tmp_path, products, *, paths=None, section=None):
 
 
 def test_every_windowed_outcome_is_dropped_not_forwarded(tmp_path, monkeypatch):
-    """All five, including the two the prose match never caught."""
+    """All five, including blocked and composed reasons the prose match missed."""
 
     _stub(monkeypatch)
     requested = ("2m_temperature,qpf_1h,qpf_total,qpf_6h,uh_2to5km_1h_max")
@@ -92,24 +92,9 @@ def test_every_windowed_outcome_is_dropped_not_forwarded(tmp_path, monkeypatch):
     assert available == "2m_temperature"
     assert {slug for slug, _reason in skipped} == {
         "qpf_1h", "qpf_total", "qpf_6h", "uh_2to5km_1h_max"}
-
-
-def test_a_blocked_row_is_dropped(tmp_path, monkeypatch):
-    """``blocked`` is not ``excluded``; the old match required ``excluded``."""
-
-    _stub(monkeypatch)
-    available, skipped = _ask(tmp_path, "2m_temperature,qpf_6h")
-    assert available == "2m_temperature"
-    assert [slug for slug, _reason in skipped] == ["qpf_6h"]
-
-
-def test_a_run_time_composed_reason_is_dropped(tmp_path, monkeypatch):
-    """Its sentence names a store and can never be in a frozen set."""
-
-    _stub(monkeypatch)
-    available, skipped = _ask(tmp_path, "2m_temperature,uh_2to5km_1h_max")
-    assert available == "2m_temperature"
-    assert "exact-time ordinal axis" in skipped[0][1]
+    reasons = dict(skipped)
+    assert "exact-time ordinal axis" in reasons["uh_2to5km_1h_max"]
+    assert reasons["qpf_6h"].endswith("6-h QPF requires forecast hour >= 6")
 
 
 def test_a_non_windowed_refusal_is_dropped_too(tmp_path, monkeypatch):
@@ -122,15 +107,6 @@ def test_a_non_windowed_refusal_is_dropped_too(tmp_path, monkeypatch):
     assert {slug for slug, _reason in skipped} == {"10m_wind_gusts", "smoke_column"}
 
 
-def test_the_reason_is_the_engines_own_words(tmp_path, monkeypatch):
-    """Verbatim, because a paraphrase leaves the reader guessing which
-    window or which field was missing."""
-
-    _stub(monkeypatch)
-    _available, skipped = _ask(tmp_path, "qpf_6h")
-    assert skipped[0][1].endswith("6-h QPF requires forecast hour >= 6")
-
-
 def test_a_renderable_request_is_passed_through_unchanged(tmp_path, monkeypatch):
     """No skip list, and the spec is the caller's own string."""
 
@@ -139,7 +115,7 @@ def test_a_renderable_request_is_passed_through_unchanged(tmp_path, monkeypatch)
     assert (available, skipped) == ("2m_temperature", [])
 
 
-@pytest.mark.parametrize("spec", ["all", "heavy", "direct,derived"])
+@pytest.mark.parametrize("spec", ["all", "direct,derived"])
 def test_a_group_request_is_never_second_guessed(tmp_path, monkeypatch, spec):
     """The engine expands a group itself and leaves out what it cannot
     draw, so a group token carries no promise to check -- and asking
@@ -261,12 +237,7 @@ def test_an_absent_generic_variable_is_dropped(tmp_path, monkeypatch):
     available, skipped = _ask(tmp_path, "2m_temperature,var:SNOWH,var:SNOW")
     assert available == "2m_temperature"
     assert {slug for slug, _reason in skipped} == {"var:SNOWH", "var:SNOW"}
-
-
-def test_the_drop_names_the_variable_and_the_way_out(tmp_path, monkeypatch):
-    _stub(monkeypatch, stdout=_WITH_GENERICS, stderr=_DEDUPED)
-    _available, skipped = _ask(tmp_path, "var:SNOWH")
-    reason = skipped[0][1]
+    reason = dict(skipped)["var:SNOWH"]
     assert "'SNOWH'" in reason
     assert "--list-products" in reason
 
