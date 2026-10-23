@@ -2,7 +2,9 @@
 
 The source notice is adjacent to pwp.cu. Explicit repairs include finite
 absorption at zero radiation, real-valued unequal-layer stirring, masked
-land/lake stencils, and symmetric corners. This is not a bitwise WRF claim.
+land/lake stencils, symmetric corners, and zero-gradient inflow through the
+column floor (WRF's floor difference is downwind for upwelling and runs away).
+This is not a bitwise WRF claim.
 """
 from pathlib import Path
 import warnings

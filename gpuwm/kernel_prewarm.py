@@ -220,8 +220,13 @@ def _source_bytes(name: str) -> int:
     return total
 
 
-def static_jobs(experiment) -> list[tuple[str, object, tuple]]:
+def static_jobs(experiment, *, columns: bool = False, hydro: bool = False) -> list[tuple[str, object, tuple]]:
     """(label, loader factory, arguments) for every module :func:`static_modules` names.
+
+    ``columns``: the synthetic forecast columns (:func:`warm_forecast_columns`)
+    also run in this process, so their own radiation layer count is compiled
+    here too.  ``hydro``: the coupled hydro's routing units too
+    (:func:`hydro_jobs`).
 
     Each factory is the loader's own uncached body (``__wrapped__``: the
     process-wide ``cuda_cache`` lock it holds would let only one capture run
@@ -259,12 +264,25 @@ def static_jobs(experiment) -> list[tuple[str, object, tuple]]:
         p_top = getattr(getattr(experiment, "vertical", None), "p_top", 0.0)
         upper = rrtmgp_above_model_layer_counts(p_top)
         tiers = {int(dc.run.nz) + extra for dc in experiment.domains for extra in upper}
+        if columns:
+            # The column's top is its own sounding's at ztop, not the run's
+            # p_top, so its LW/SW layer count differs. Breakage (2.9.4 R11,
+            # 2026-10-22): that RTE variant (63 layers against the run's 62)
+            # compiled alone inside the column, 5.7 s on one core on an
+            # sm_120 card (7 s on the 5090) after every other compile had
+            # finished: the pre-warm's single-core tail.
+            from gpuwm.warm_kernels import column_p_top
+            for cfg in forecast_columns(experiment):
+                tiers.update(int(cfg.nz) + extra
+                             for extra in rrtmgp_above_model_layer_counts(column_p_top(cfg)))
         for nlay in sorted(tiers):
             defines = (("RRTMGP_MAX_LAYERS", nlay),)
             jobs.append((f"rrtmgp_rte[RRTMGP_MAX_LAYERS={nlay}]",
                          kernels.load_module_int_defines.__wrapped__, ("rrtmgp_rte", defines)))
     jobs.extend(_inline_jobs(modules))
     jobs.extend(_variant_jobs(experiment, modules))
+    if hydro:
+        jobs.extend(hydro_jobs())
     return sorted(jobs, key=lambda job: (
         job[0].split("[")[0] != "sfclay", -_source_bytes(job[0].split("[")[0]), job[0]))
 
@@ -279,6 +297,7 @@ def _variant_jobs(experiment, modules):
     from gpuwm.core import kernels
     from gpuwm.core.kernel_shape import FUNCTIONS, shape_defines
     from gpuwm.core.thompson_aerosol_launch import AEROSOL_KERNEL_MODULES, WRF39_DEFINES
+    from gpuwm.ingest.lateral_bc import relaxation_shapes
     from gpuwm.core.mynn_sfclay import MYNN_SFCLAY_DEFINES
 
     jobs, seen = [], set()
@@ -298,9 +317,16 @@ def _variant_jobs(experiment, modules):
             tiers = [defines] if defines else []
             if name in FUNCTIONS and all(hasattr(run, dim) for dim in ("nz", "ny", "nx")):
                 nz, ny, nx = (int(getattr(run, dim)) for dim in ("nz", "ny", "nx"))
-                shape = ((1, 1, ny * nx) if name == "mynn_surface" else
-                         (nz, 1, ny * nx) if name.startswith("mynn_") else (nz, ny, nx))
-                tiers.append(defines + shape_defines(name, FUNCTIONS[name][0], shape))
+                shapes = ([(1, 1, ny * nx)] if name == "mynn_surface" else
+                          [(nz, 1, ny * nx)] if name.startswith("mynn_") else
+                          # Breakage (fix/hydro-attach-replay, 2026-10-22):
+                          # only the mass shape was named, so the staggered
+                          # u/v/w/mu relaxations compiled one after another
+                          # inside step 1 (4 x 0.5 s on one core, 3 km 60x48).
+                          list(relaxation_shapes(nz, ny, nx)) if name == "lbc_state" else
+                          [(nz, ny, nx)])
+                tiers.extend(defines + shape_defines(name, FUNCTIONS[name][0], shape)
+                             for shape in shapes)
             for tier in tiers:
                 if (name, tier) in seen:
                     continue
@@ -309,6 +335,21 @@ def _variant_jobs(experiment, modules):
                           else kernels.load_module_int_defines)
                 label = name + "[" + ",".join(f"{key}={value}" for key, value in tier) + "]"
                 jobs.append((label, loader.__wrapped__, (name, tier)))
+    if "acoustic" in modules:
+        from hashlib import sha256
+
+        from gpuwm.core import acoustic_fusion
+
+        for run in runs:
+            try:
+                units = joined_prewarm_units(run)
+            except Exception:  # noqa: BLE001 - the forecast compiles what this cannot name
+                units = ()
+            for unit in units:
+                label = "acoustic+joined[" + sha256(unit.encode()).hexdigest()[:16] + "]"
+                if label not in seen:
+                    seen.add(label)
+                    jobs.append((label, acoustic_fusion._module.__wrapped__, (unit,)))
     return jobs
 
 
@@ -397,6 +438,73 @@ def _inline_jobs(modules):
     return jobs
 
 
+def joined_prewarm_units(cfg) -> tuple[str, ...]:
+    """The joined substep units a forecast of ``cfg`` can compile, for the
+    kernel pre-warm (gpuwm.kernel_prewarm).
+
+    The unit's text depends on the map factors (``state.has_msf``, not
+    known before the grid is built, so both), on whether the specified
+    frame joins (decided here exactly as gpuwm.core.acoustic._prepare_joined does) and
+    on the sumflux join. Breakage (fix/hydro-attach-replay, 2026-10-22,
+    cold ERA5 go 3 km 60x48): the synthetic column has no specified frame,
+    so the real domain's unit compiled alone inside step 1. It lives here, not in
+    gpuwm/core/acoustic.py, whose bytes the smallstep oracle contract pins.
+    """
+    from gpuwm.core import acoustic_fusion as fusion
+    from gpuwm.core.acoustic import _fusion_enabled, _frame_takes_table_w, _mass_w_boundary_zone
+
+    nz = int(cfg.nz)
+    if not _fusion_enabled(nz):
+        return ()
+    specified_frame = bool(getattr(cfg, "specified", False)) and not _frame_takes_table_w(cfg)
+    frame = (specified_frame and fusion.JOIN_COLUMN_FRAME
+             and int(cfg.spec_zone) == _mass_w_boundary_zone(cfg))
+    source, options = fusion.acoustic_source(), fusion._audit_options()
+    units = []
+    for mapped in (True, False):
+        for sumflux in ((False, True) if fusion.JOIN_COLUMN_SUMFLUX else (False,)):
+            try:
+                units.append(fusion.joined_unit(source, mapped, frame, sumflux, options)[0])
+            except fusion.FusionUnsupported:
+                continue  # that configuration runs the separate kernels
+    return tuple(units)
+
+
+def hydro_wanted() -> bool:
+    """Whether this launch may attach the coupled hydro: always, unless the
+    launch turned it off (``--hydro off`` binds ``GPUWM_NEXTGEN_ENABLED=0``
+    before any child starts).  Hydro is default-on and the covering fabric
+    is still preparing when the pre-warm starts, so a run whose domain no
+    fabric covers compiles these few small units for nothing."""
+
+    return os.environ.get("GPUWM_NEXTGEN_ENABLED") != "0"
+
+
+def hydro_jobs() -> list[tuple[str, object, tuple]]:
+    """The coupled hydro's routing units, through their own loaders.
+
+    Breakage (fix/hydro-attach-replay, 2026-10-22, cold ERA5 go 3 km on an
+    RTX 5070 Ti): hydro attach compiled the catchment exchange, runoff
+    routing, reservoir, MC routing and spin-up replay modules one after
+    another on the forecast's one thread after the hydro wait, before step
+    1.  Each loader here is the one attach calls, with the process's own
+    numerics, so attach reads their images from disk.
+    """
+
+    import cupy as cp
+
+    from gpuwm.hydro import reservoirs, routed_init, runoff, troute_mc
+    from gpuwm.hydro.noahowp import coupling
+    from gpuwm.numerics import is_strict
+
+    strict, device = is_strict(), cp.cuda.runtime.getDevice()
+    return [("hydro:troute-mc", troute_mc._module.__wrapped__, (device, strict)),
+            ("hydro:routed-replay", routed_init._module.__wrapped__, (device, strict)),
+            ("hydro:reservoirs", reservoirs.compile_unit, (strict,)),
+            ("hydro:runoff-routing", runoff.compile_unit, (strict,)),
+            ("hydro:catchment-exchange", coupling.compile_unit, (strict,))]
+
+
 #: Plan tags whose static jobs this process already submitted: once per
 #: configuration (a warm-kernels worker rebinds a tag per profile).
 _static_started: set[str] = set()
@@ -418,7 +526,7 @@ def single_domain_experiment(run, *, grid_id: int = 1):
         run_seconds=float(getattr(run, "run_seconds", 0.0) or 0.0))
 
 
-def submit_static(experiment) -> int:
+def submit_static(experiment, *, columns: bool = False, hydro: bool = False) -> int:
     """Submit the static plan's captures to the plan pool; the number submitted.
 
     Once per plan tag in a process (the pool compiles into one process-wide
@@ -433,7 +541,7 @@ def submit_static(experiment) -> int:
         return 0
     _static_started.add(tag)
     try:
-        jobs = static_jobs(experiment)
+        jobs = static_jobs(experiment, columns=columns, hydro=hydro)
     except Exception:  # noqa: BLE001 - the recorded plan still runs
         return 0
     for _label, factory, arguments in jobs:
@@ -464,11 +572,14 @@ def forecast_columns(experiment) -> list:
     return configs
 
 
-def warm_forecast_columns(experiment, *, wait_s: float = FORECAST_TABLE_WAIT_S) -> int:
+def warm_forecast_columns(experiment, *, wait_s: float = FORECAST_TABLE_WAIT_S,
+                          reductions: bool = True) -> int:
     """Step each domain's synthetic column twice; the number stepped.
 
     A physics table not on disk yet (``gpuwm go`` stages them in its own
     fetch, after this child starts) is waited for, up to ``wait_s``.
+    ``reductions`` False: the column's generated reductions are warmed by
+    the caller (:func:`warm_column_reductions`, beside this).
     """
 
     import cupy as cp
@@ -478,7 +589,8 @@ def warm_forecast_columns(experiment, *, wait_s: float = FORECAST_TABLE_WAIT_S) 
     deadline = time.monotonic() + float(wait_s)
     with cp.cuda.Device(0), cp.cuda.Stream(non_blocking=True):
         for cfg in forecast_columns(experiment):
-            _warm_column_reductions(cfg)
+            if reductions:
+                _warm_column_reductions(cfg)
             while True:
                 try:
                     run_column(cfg, reflectivity=True)
@@ -489,6 +601,22 @@ def warm_forecast_columns(experiment, *, wait_s: float = FORECAST_TABLE_WAIT_S) 
                     time.sleep(2.0)
             stepped += 1
     return stepped
+
+
+def warm_column_reductions(experiment) -> int:
+    """Warm every forecast column's generated reductions; the number of columns.
+
+    They need no static module and no physics table, so they run from the
+    pre-warm's first second beside the static compile (:func:`warm_static`).
+    """
+
+    import cupy as cp
+
+    columns = forecast_columns(experiment)
+    with cp.cuda.Device(0):
+        for cfg in columns:
+            _warm_column_reductions(cfg)
+    return len(columns)
 
 
 def _warm_column_reductions(cfg):
@@ -526,7 +654,7 @@ def _warm_column_reductions(cfg):
         list(pool.map(warm, jobs))
 
 
-def warm_static(experiment, *, say=None, preparation=False, forecast=False) -> dict:
+def warm_static(experiment, *, say=None, preparation=False, forecast=False, hydro=False) -> dict:
     """Compile and CACHE ON DISK every module of the static plan, on every core.
 
     For a process that exists only to warm a kernel cache (the ``gpuwm go``
@@ -541,9 +669,24 @@ def warm_static(experiment, *, say=None, preparation=False, forecast=False) -> d
     snapshots in independent threads. The dedicated ``main`` enables this
     by default; callers warming only forecast profiles retain their scope.
     ``forecast`` also steps the run's own configuration on a synthetic
-    column (:func:`warm_forecast_columns`) after the selected static variants
-    load. Its independent generated reductions run concurrently; first-use
-    compiler requests keep using the CPU process pool throughout this phase.
+    column (:func:`warm_forecast_columns`) as soon as the static captures are
+    submitted, beside their compiles, and its independent generated
+    reductions (:func:`warm_column_reductions`) on a thread beside that;
+    first-use compiler requests keep using the CPU process pool throughout.
+    The column's own variants (the radiation layer count of its top) are in
+    the static plan (``static_jobs(columns=True)``).
+
+    THE SINGLE-CORE TAIL (2.9.4 R11, 2026-10-22).  The column used to start
+    only after every static module had loaded.  Stepping it is a chain of
+    first uses, each compiling one generated or variant kernel at a time, so
+    14-19 s of compiles ran one after another on one core after the
+    parallel pool had drained (three spawn workers at 1.09 cores for 14 s
+    on the 5090, its 63-layer RTE variant alone 7 s).  The first-use
+    compiles already go to the CPU process pool (no foreground compile
+    steals a capture's job onto the main core), so the chain now runs
+    under the static compile's own longest unit instead of after it.  A
+    physics table go has not staged yet sends the column back behind the
+    static loads, where it waits for the table as before.
     """
 
     from gpuwm import kernel_plan
@@ -568,9 +711,25 @@ def warm_static(experiment, *, say=None, preparation=False, forecast=False) -> d
                                        thread_name_prefix="preparation-prewarm")
         prep_jobs = {label: prep_pool.submit(warm_preparation_job, options)
                      for label, options in jobs}
-    receipt["modules"] = submit_static(experiment)
-    jobs_in_order = static_jobs(experiment)
+    receipt["modules"] = submit_static(experiment, columns=forecast, hydro=hydro)
+    jobs_in_order = static_jobs(experiment, columns=forecast, hydro=hydro)
     receipt["static_jobs"] = len(jobs_in_order)
+    reductions_pool = reductions_job = None
+    column_deferred = False
+    if forecast:
+        reductions_pool = ThreadPoolExecutor(1, thread_name_prefix="column-reductions-driver")
+        reductions_job = reductions_pool.submit(warm_column_reductions, experiment)
+        column_started = time.perf_counter()
+        try:
+            receipt["forecast_columns"] = warm_forecast_columns(experiment, wait_s=0.0, reductions=False)
+        except FileNotFoundError:
+            column_deferred = True  # a physics table not staged yet: after the static loads
+        except Exception as error:  # noqa: BLE001 - the forecast owns refusals
+            receipt["errors"]["forecast:column"] = f"{type(error).__name__}: {error}"
+        if say is not None and not column_deferred:
+            say(f"kernel-prewarm: forecast:column "
+                f"{'failed' if 'forecast:column' in receipt['errors'] else 'cached'} "
+                f"({time.perf_counter() - column_started:.1f} s, beside the static compile)")
     for label, factory, arguments in jobs_in_order:
         started = time.perf_counter()
         try:
@@ -591,19 +750,22 @@ def warm_static(experiment, *, say=None, preparation=False, forecast=False) -> d
             if say is not None:
                 say(f"kernel-prewarm: {label} {'failed' if label in receipt['errors'] else 'cached'}")
         prep_pool.shutdown(wait=True)
-    if forecast:
-        # All selected translation units are now available. Starting this
-        # execution before their captures registered let foreground first
-        # use steal the expensive compile from the parallel plan.
+    if column_deferred:
         column_started = time.perf_counter()
         try:
-            receipt["forecast_columns"] = warm_forecast_columns(experiment)
+            receipt["forecast_columns"] = warm_forecast_columns(experiment, reductions=False)
         except Exception as error:  # noqa: BLE001 - the forecast owns refusals
             receipt["errors"]["forecast:column"] = f"{type(error).__name__}: {error}"
         if say is not None:
             say(f"kernel-prewarm: forecast:column "
                 f"{'failed' if 'forecast:column' in receipt['errors'] else 'cached'} "
-                f"(waited {time.perf_counter() - column_started:.1f} s after the static loads)")
+                f"(waited {time.perf_counter() - column_started:.1f} s for a physics table after the static loads)")
+    if reductions_pool is not None:
+        try:
+            reductions_job.result()
+        except Exception as error:  # noqa: BLE001 - the forecast owns refusals
+            receipt["errors"]["forecast:column-reductions"] = f"{type(error).__name__}: {error}"
+        reductions_pool.shutdown(wait=True)
     # Dynamic array factories also use the process compiler: closing it after
     # static capture forced CuPy's first encounters back onto the main core.
     kernel_plan.close(wait=True)
@@ -659,7 +821,7 @@ def main(argv=None) -> int:
         return 0
     experiment = load_experiment(args.config)
     receipt = warm_static(experiment, say=lambda line: print(line, flush=True),
-                          preparation=True, forecast=True)
+                          preparation=True, forecast=True, hydro=hydro_wanted())
     print(json.dumps(receipt, sort_keys=True, default=str))
     return 1 if receipt["errors"] else 0
 
@@ -693,7 +855,7 @@ def start_plan(experiment) -> dict | None:
             return None
         record = kernel_plan.start()
         if record is not None:
-            submitted = submit_static(experiment)
+            submitted = submit_static(experiment, hydro=hydro_wanted())
             if submitted:
                 record["static_jobs"] = submitted
         kernel_plan.close()
@@ -730,7 +892,7 @@ def start_for(experiment) -> Prewarm | None:
 
 
 __all__ = ["DIFFUSION_ROUTE_MODULES", "ENV", "FORECAST_TABLE_WAIT_S", "STATIC_TIERS", "Prewarm",
-           "first_step_ready", "forecast_columns", "main", "modules_for", "plan_tag", "warm_forecast_columns",
+           "first_step_ready", "forecast_columns", "hydro_jobs", "hydro_wanted", "main", "modules_for", "plan_tag", "warm_column_reductions", "warm_forecast_columns",
            "single_domain_experiment", "start_for", "start_plan", "static_jobs", "static_modules",
            "submit_static", "warm_static"]
 

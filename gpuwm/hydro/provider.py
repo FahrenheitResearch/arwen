@@ -11,6 +11,7 @@ import json
 import os
 import shutil
 from pathlib import Path
+import threading
 import time
 
 
@@ -65,13 +66,79 @@ def preparation_identity(row):
     return identity
 
 
-def prepare(*, row, footprint, out, config, runner, sources=None, static_ready=False):
+class WaterPrefetch:
+    """The initial-water source fetch running beside the fabric's own
+    source downloads and build (:func:`start_water_prefetch`)."""
+
+    def __init__(self, *, row, footprint, out, area):
+        from .initial_state import prefetch
+        policy = row['preparation']
+        self.area = area
+        self.result = self.error = None
+        self.started = time.perf_counter()
+        self.finished = None
+
+        def fetch():
+            try:
+                self.result = prefetch(date=footprint['time_origin'], out=Path(out) / 'initial',
+                                       area=area, source=policy['initial_source'],
+                                       spinup_days=policy['spinup_days'], progress=lambda _line: None)
+            except Exception as error:  # noqa: BLE001 - the preparation fetches again and names it
+                self.error = f"{type(error).__name__}: {error}"
+            finally:
+                self.finished = time.perf_counter()
+
+        self.thread = threading.Thread(target=fetch, name='hydro-water-prefetch', daemon=True)
+        self.thread.start()
+
+    def join(self):
+        """Wait for the fetch; the stage record of what it did."""
+        waited = time.perf_counter()
+        self.thread.join()
+        record = {'stage': 'initial-water-prefetch', 'seconds': self.finished - self.started,
+                  'joined_after_seconds': waited - self.started,
+                  'waited_seconds': time.perf_counter() - waited,
+                  'area_south_west_north_east': list(self.area)}
+        if self.error is not None:
+            record['error'] = self.error
+        elif self.result is not None:
+            record['forcing_days'] = self.result.get('forcing_days')
+        return record
+
+
+def start_water_prefetch(row, footprint, out):
+    """Start fetching the initial-water source for ``footprint`` now, before
+    the fabric exists; None when the row prepares no spun-up water or the
+    footprint has no box.
+
+    Breakage it prevents (2.9.4 R11, 2026-10-22): on a first run in a new
+    region `gpuwm go` waited about 5 minutes before step 1, because the 89 ERA5
+    forcing days (107-165 s of network extraction) were fetched only after the
+    fabric's own sources (45-160 s) were downloaded and the fabric built. The
+    fetch reads the footprint's area (initial_state.footprint_area), not the
+    fabric, so both now download at once.
+    """
+    from .initial_state import footprint_area
+    policy = row.get('preparation') or {}
+    if not policy.get('initial_source') or not policy.get('spinup_days') or 'time_origin' not in footprint:
+        return None
+    area = footprint_area(footprint)
+    if area is None:
+        return None
+    return WaterPrefetch(row=row, footprint=footprint, out=out, area=area)
+
+
+def prepare(*, row, footprint, out, config, runner, sources=None, static_ready=False,
+            water_prefetch=None):
     """Return the final warm-routing manifest, not an intermediate fabric path.
 
     ``sources`` binds the recipe template's tokens (gpuwm.hydro.acquire).
     ``static_ready``: the fabric and its parameters were linked in from this
     domain's time-independent cache (gpuwm.hydro.door), so only the
     time-dependent stages run.
+    ``water_prefetch``: the initial-water source fetch already running beside
+    this preparation (:func:`start_water_prefetch`), joined before the water
+    stage reads it.
     """
     from gpuwm.hydrofabric import prepare as prepare_fabric
     from .initial_state import prepare as prepare_water
@@ -98,7 +165,8 @@ def prepare(*, row, footprint, out, config, runner, sources=None, static_ready=F
         gauges = stamp.get('gauges')
         stages.append({'stage': 'parameters', 'seconds': 0.0, 'reused_from': stamp['static_dir']})
         return _prepare_after_parameters(row=row, footprint=footprint, out=out, config=config,
-                                         run=run, stages=stages, gauges=gauges, source_recipe=source_recipe)
+                                         run=run, stages=stages, gauges=gauges, source_recipe=source_recipe,
+                                         water_prefetch=water_prefetch)
     if not source_recipe.is_file():
         raise FileNotFoundError(f"hydro parameter source recipe missing: {source_recipe}; "
                                 'same-network soil/land-cover source bindings are required')
@@ -136,14 +204,16 @@ def prepare(*, row, footprint, out, config, runner, sources=None, static_ready=F
     run('parameters', [_tool(policy['parameters']), 'derive', request])
     _write(out / 'static-gauges.json', {'gauges': gauges})
     return _prepare_after_parameters(row=row, footprint=footprint, out=out, config=config,
-                                     run=run, stages=stages, gauges=gauges, source_recipe=source_recipe)
+                                     run=run, stages=stages, gauges=gauges, source_recipe=source_recipe,
+                                     water_prefetch=water_prefetch)
 
 
-def _prepare_after_parameters(*, row, footprint, out, config, run, stages, gauges, source_recipe):
+def _prepare_after_parameters(*, row, footprint, out, config, run, stages, gauges, source_recipe,
+                              water_prefetch=None):
     """Projected fabric, initial water, reservoirs and routing: the stages a
     forecast's start time changes."""
     from gpuwm.hydrofabric import prepare as prepare_fabric
-    from .initial_state import prepare as prepare_water
+    from .initial_state import footprint_area, prepare as prepare_water
     policy = row['preparation']
     config = dict(config, geopackage=str(out / 'parameterized.gpkg'))
     fabric_request = _write(out / 'fabric-request.json', config)
@@ -154,9 +224,17 @@ def _prepare_after_parameters(*, row, footprint, out, config, run, stages, gauge
     manifest = (Path(fabric['manifest']) if fabric.get('manifest') else
                 Path(fabric['output']) / 'manifest.json')
     origin = footprint['time_origin']
+    if water_prefetch is not None:
+        # Two writers of one forcing-day cache would download the same days twice.
+        stages.append(water_prefetch.join())
+        _write(out / 'provider-stages.json', stages)
     start = time.perf_counter()
+    # Every preparation of a domain reads its source over the footprint's area
+    # (what the prefetch fetched) when that holds the fabric, so a later start
+    # on the same domain reuses the same cached forcing days.
     warm = prepare_water(fabric=config['geopackage'], date=origin, out=out / 'initial',
-                         source=policy['initial_source'], spinup_days=policy['spinup_days'])
+                         source=policy['initial_source'], spinup_days=policy['spinup_days'],
+                         area_hint=footprint_area(footprint))
     stages.append({'stage': 'initial-water', 'seconds': time.perf_counter()-start,
                    'source': policy['initial_source'], 'receipt': warm})
     _write(out / 'provider-stages.json', stages)

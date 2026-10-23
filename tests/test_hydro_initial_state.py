@@ -365,3 +365,62 @@ def test_a_hole_nothing_fills_moves_the_whole_spinup_earlier_and_says_so(tmp_pat
     assert water["spinup_end"] == "2026-10-09T23:00:00Z" and water["spinup_hours"]["ran"] == 96
     assert water["held_back"][0]["unfilled_from"] == "2026-10-10T00:00:00Z"
     assert water["segments"][-1]["source"].startswith("carried") and water["segments"][-1]["hours"] == 49
+
+
+def _bbox_stage(extraction, monkeypatch, box):
+    def stage(command, request, workdir):
+        extraction.stages.append((command, request))
+        return {"area_south_west_north_east": list(box)} if command == "bbox" else {}
+    monkeypatch.setattr(s, "run_stage", stage)
+
+
+def test_the_footprint_prefetch_is_exactly_what_the_preparation_reads(tmp_path, monkeypatch, extraction):
+    """2.9.4 R11 (2026-10-22): a first run on a new region fetched its 89 ERA5 forcing days
+    only after the fabric's own sources were downloaded and the fabric built. The fetch
+    now starts from the footprint's area beside them; the preparation that follows reads
+    those very files and extracts nothing more."""
+    footprint = {"south": 35.55, "west": -87.81, "north": 36.84, "east": -85.79}
+    hint = s.footprint_area(footprint)
+    assert hint == [35.55 - 0.75, -87.81 - 0.75, 36.84 + 0.75, -85.79 + 0.75]
+    # The fabric's own box: the footprint plus the bbox stage's 0.5 degree pad.
+    _bbox_stage(extraction, monkeypatch, [35.05, -88.31, 37.34, -85.29])
+    out = tmp_path / "initial"
+    fetched = s.prefetch(date="2023-01-04T00:00:00Z", out=out, area=hint, spinup_days=3,
+                         progress=lambda _: None)
+    assert fetched["forcing_days"]["fetched_days"] == 2
+    prefetched = len(extraction.calls)
+    assert prefetched == 2 + 2  # state + edge hours, and the two whole days
+    result = s.prepare(fabric=tmp_path / "fabric.gpkg", date="2023-01-04T00:00:00Z", out=out,
+                       spinup_days=3, area_hint=hint, progress=lambda _: None)
+    assert len(extraction.calls) == prefetched
+    assert {tuple(call["area"]) for call in extraction.calls} == {tuple(hint)}
+    assert result["source_area"] == {"area_south_west_north_east": hint, "from": "footprint"}
+    assert result["forcing_days"]["reused_days"] == 2 and result["forcing_days"]["fetched_days"] == 0
+
+
+def test_a_fabric_reaching_past_the_footprint_area_reads_its_own_box(tmp_path, monkeypatch, extraction):
+    hint = s.footprint_area({"south": 35.0, "west": -88.0, "north": 36.0, "east": -86.0})
+    box = [34.0, -88.5, 36.5, -85.5]  # a catchment drawn a degree south of the footprint
+    _bbox_stage(extraction, monkeypatch, box)
+    result = s.prepare(fabric=tmp_path / "fabric.gpkg", date="2023-01-04T00:00:00Z", out=tmp_path / "w",
+                       spinup_days=2, area_hint=hint, progress=lambda _: None)
+    assert result["source_area"] == {"area_south_west_north_east": box, "from": "fabric box"}
+    assert {tuple(call["area"]) for call in extraction.calls} == {tuple(box)}
+
+
+def test_state_and_forcing_days_are_fetched_at_the_same_time(tmp_path, monkeypatch, extraction):
+    """The whole forcing days no longer wait for the state and edge extraction (11-14 s of
+    every first run's preparation): both are in flight together."""
+    import threading
+    both = threading.Barrier(2, timeout=10)
+    inner = s.subprocess.run
+
+    def extract(argv, **kwargs):
+        if "forcing-days" in argv[3] or Path(argv[3]).name == "state.nc":
+            both.wait()  # the state extraction and the day extraction must meet here
+        return inner(argv, **kwargs)
+    monkeypatch.setattr(s.subprocess, "run", extract)
+    monkeypatch.setattr(s, "source_last_time", lambda row: None)
+    s.prepare(fabric=tmp_path / "fabric.gpkg", date="2023-01-03T00:00:00Z", out=tmp_path / "w",
+              spinup_days=2, area=[38, -123, 39, -122], progress=lambda _: None)
+    assert not both.broken

@@ -7199,8 +7199,10 @@ def _add_go_arguments(parser) -> None:
                         help="an experiment TOML from gpuwm domain; its source and "
                              "domain tree choose the preparation route")
     parser.add_argument("--hydro", nargs="?", const="", default=None,
-                        metavar="off|SETTINGS.toml", help="hydro defaults on with prepared settings; "
-                        "use off to disable it or a TOML file to select settings")
+                        type=lambda value: "" if value == "on" else value,
+                        metavar="on|off|SETTINGS.toml", help="hydro is opt-in: --hydro on couples NextGen hydro "
+                        "wherever a hydrofabric covers the domain; a TOML file selects settings; without it the "
+                        "forecast has no hydro")
     from gpuwm.source_adapters import ensemble_source_ids
     from gpuwm.ensemble.wofs_recipe import source_spec_argument
     parser.add_argument("--source", type=source_spec_argument, default=None, metavar="SOURCE[:N],...",

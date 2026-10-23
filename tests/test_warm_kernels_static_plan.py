@@ -31,7 +31,7 @@ def _plan_with_pool(monkeypatch, tag="t"):
 def test_submit_static_submits_one_capture_per_module_once_per_tag(monkeypatch):
     submitted = _plan_with_pool(monkeypatch, tag="one")
     jobs = [("noah", "factory-a", ("noah",)), ("smag2d[GPUWM_SMAG_INDEX32=1]", "factory-b", ("smag2d", ()))]
-    monkeypatch.setattr(kernel_prewarm, "static_jobs", lambda experiment: jobs)
+    monkeypatch.setattr(kernel_prewarm, "static_jobs", lambda experiment, **kwargs: jobs)
     assert kernel_prewarm.submit_static(object()) == 2
     assert [(job, args) for job, args in submitted] == [
         (kernel_plan.ahead, ("factory-a", "noah")), (kernel_plan.ahead, ("factory-b", "smag2d", ()))]
@@ -43,7 +43,7 @@ def test_submit_static_submits_one_capture_per_module_once_per_tag(monkeypatch):
 def test_submit_static_needs_an_open_pool(monkeypatch):
     _plan_with_pool(monkeypatch)
     kernel_plan._state["pool"] = None
-    monkeypatch.setattr(kernel_prewarm, "static_jobs", lambda experiment: [("x", "f", ("x",))])
+    monkeypatch.setattr(kernel_prewarm, "static_jobs", lambda experiment, **kwargs: [("x", "f", ("x",))])
     assert kernel_prewarm.submit_static(object()) == 0
 
 
@@ -73,7 +73,7 @@ def test_each_profile_binds_its_own_plan_and_submits_its_static_jobs(monkeypatch
     monkeypatch.setattr(kernel_plan, "close", lambda: calls.append(("close",)))
     monkeypatch.setattr(warm_kernels, "_profile_config", lambda profile, levels: SimpleNamespace(profile=profile))
     monkeypatch.setattr(kernel_prewarm, "single_domain_experiment", lambda run: ("exp", run.profile))
-    monkeypatch.setattr(kernel_prewarm, "submit_static", lambda experiment: calls.append(("static", experiment)) or 3)
+    monkeypatch.setattr(kernel_prewarm, "submit_static", lambda experiment, **kwargs: calls.append(("static", experiment)) or 3)
     assert warm_kernels._bind_profile_plan("p1", 40)
     assert warm_kernels._bind_profile_plan("p2", 40)
     assert calls == [("install", "warm-kernels p1 levels=40"), ("start",), ("static", ("exp", "p1")), ("close",),
@@ -151,10 +151,10 @@ def test_warm_static_compiles_ahead_then_loads_each_module_for_its_disk_entry(mo
     monkeypatch.setattr(kernel_plan, "close", lambda *, wait=False: order.append("close"))
     monkeypatch.setattr(kernel_plan, "receipt", lambda: {"r": 1})
     monkeypatch.setattr(kernel_prewarm, "plan_tag", lambda experiment: "tag")
-    monkeypatch.setattr(kernel_prewarm, "submit_static", lambda experiment: order.append("static") or 2)
+    monkeypatch.setattr(kernel_prewarm, "submit_static", lambda experiment, **kwargs: order.append("static") or 2)
     jobs = [("a", lambda name: order.append(("load", name)), ("a",)),
             ("b", lambda name: (_ for _ in ()).throw(ValueError("refused")), ("b",))]
-    monkeypatch.setattr(kernel_prewarm, "static_jobs", lambda experiment: jobs)
+    monkeypatch.setattr(kernel_prewarm, "static_jobs", lambda experiment, **kwargs: jobs)
     receipt = kernel_prewarm.warm_static(object())
     # e5882ef29f: the compiler pool stays open until the loads finish.
     assert order == ["install", "start", "static", ("load", "a"), "close"]

@@ -307,6 +307,24 @@ def _run_profile(profile: str, levels: int) -> str:
     return run_column(_profile_config(profile, levels))
 
 
+def column_p_top(cfg) -> float:
+    """The model-top pressure (Pa) :func:`run_column` builds for ``cfg``, on the host.
+
+    The synthetic column takes its top from its own sounding at ``cfg.ztop``,
+    not from the run's declared ``p_top``, so its radiation compiles the RTE
+    for its own above-model layer count (``gpuwm.core.rrtmgp.
+    rrtmgp_above_model_layer_counts``).  The static plan reads this to compile
+    that variant beside the others (gpuwm.kernel_prewarm.static_jobs).
+    The state carries it as float32, as here.
+    """
+
+    from gpuwm.core.grid import make_base_state, make_vertical_coord
+
+    coord = make_vertical_coord(cfg.nz, hybrid_opt=cfg.hybrid_opt, etac=cfg.etac)
+    base = make_base_state(coord, _theta, p_surf=cfg.p_surf, ztop=cfg.ztop)
+    return float(np.float32(base.p_top))
+
+
 def run_column(cfg, *, reflectivity: bool = False) -> str:
     """Build the synthetic domain under ``cfg``; step it twice.
 

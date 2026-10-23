@@ -22,7 +22,7 @@ The default web root is the race run's `www/`. Publishing only makes local
 files and their manifest readable; it does not start a server or upload them.
 `--publish-root DIR` selects another local root. The publisher's five priority
 products define `online_at`; its receipt lists them. `--hydro auto` preserves
-the forecast's default hydro decision; `--hydro off` is an explicit opt-out.
+the forecast's default (no hydro: hydro is opt-in); `--hydro off` is an explicit opt-out.
 `--hydro SETTINGS.toml` selects prepared settings, and `--hydro on` explicitly
 enables the normal hydro door. These choices work with both standby and go.
 

@@ -65,7 +65,15 @@ __device__ float transport(const float *a,const float *z,const float *w,
  int ix=u>=0.f?-1:1,iy=v>=0.f?-nx:nx;
  if(land[i+ix]>1.5f)tendency-=fabsf(u)*(a[q]-a[q+ix])*rdx*mx[i];
  if(land[i+iy]>1.5f)tendency-=fabsf(v)*(a[q]-a[q+iy])*rdy*my[i];
- if(k>0){int km=q-n,kp=k==L-1?q:q+n;tendency+=0.5f*(w[q-n]+w[q])*(a[km]-a[kp])/(z[km]-z[kp]);}
+ // w > 0 is upward (divergence integrated from the surface). The column has no
+ // water below its floor, so water rising through the floor carries the bottom
+ // layer's own properties (zero-gradient inflow) and adds nothing there. WRF's
+ // one-sided k-1 difference at the floor is downwind for upwelling and grows any
+ // bottom gradient at rate w/dz without bound; convective mixing then carried that
+ // runaway (246-308 K bottom water) to the surface on the SF Bay 250 m nest
+ // (HRRR 2026-10-21T12, RRTMGP refused TSK at +41.85 h).
+ if(k>0){int km=q-n,kp=k==L-1?q:q+n;float wv=0.5f*(w[q-n]+w[q]);
+  if(k<L-1||wv<0.f)tendency+=wv*(a[km]-a[kp])/(z[km]-z[kp]);}
  return tendency;
 }
 extern "C" __global__ void pwp_transport(

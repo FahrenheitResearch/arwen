@@ -1077,8 +1077,8 @@ def test_a_failing_stage_replays_its_output_and_stops(
     # headline run had hydro off and only the receipt said so).
     lines = printed.splitlines()
     memory = next(i for i, line in enumerate(lines) if line.startswith("go: memory -- "))
-    assert lines[memory + 1].startswith("go: hydro -- off (no_covering_fabric): "), lines[memory + 1]
-    assert "[hydro-world-global]" in lines[memory + 1]
+    # Hydro is opt-in (2.9.4 hotfix): a run that did not ask says so in the same block.
+    assert lines[memory + 1].startswith("go: hydro -- off (default_off)"), lines[memory + 1]
     assert f"FAILED  {failing_label}" in printed
     # Verbatim, without --explain, because this is the reason.
     assert "line one of the real diagnosis" in printed

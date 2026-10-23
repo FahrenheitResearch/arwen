@@ -386,7 +386,21 @@ class MuskingumCunge:
         self.arrays = arrays
         self.restart_identity["reservoir_hooks"] = identities
         self._sequence = sequence
+        self._hooks = {level: tuple(bound) for level, bound in hooks.items() if bound}
         self.profile_stages = tuple(profiles)
+
+    def replay_schedule(self):
+        """One routing step's dependency stages, in launch order, for the
+        whole-replay kernel: ("mc", begin, end) is one level of ordered_nodes,
+        ("hook", hook) one reservoir hook bound after that level. Thin-level
+        packing only groups launches; each level stays its own stage here.
+        """
+        stages = []
+        for level, (a, b) in enumerate(zip(self._level_edges, self._level_edges[1:])):
+            if a != b:
+                stages.append(("mc", a, b))
+            stages.extend(("hook", hook) for hook in self._hooks.get(level, ()))
+        return stages
 
     def launch(self, dt_seconds, *, stream=None):
         """Enqueue prepared levels and reservoir hooks without host data work."""
@@ -443,6 +457,7 @@ class ReservoirLevel:
         if node_indices.size != n:
             raise ValueError("reservoir node mapping must cover all reservoir rows")
         self.subset = reservoirs.subset(rows, selection_sha256=selection_sha256)
+        self.reservoirs, self.rows, self.node_indices = reservoirs, rows, node_indices
         self.dt_seconds = router.dt_seconds
         self.arrays = {"reservoir/"+key: value for key, value in reservoirs.arrays.items()}
         self.arrays.update({f"reservoir_selection/{selection_sha256}": rows,

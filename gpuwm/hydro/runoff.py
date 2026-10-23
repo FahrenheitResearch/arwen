@@ -11,6 +11,17 @@ from pathlib import Path
 from types import MappingProxyType
 
 
+def compile_unit(strict):
+    """Load this unit's module; also the kernel pre-warm's capture
+    (gpuwm.kernel_prewarm hydro jobs), so both name one source and option set."""
+    from gpuwm.core.ieee_module import compile_module
+    flags = ["--std=c++17", "--ftz=false"]
+    if strict:
+        flags += ["--fmad=false", "--prec-div=true", "--prec-sqrt=true"]
+    return compile_module(Path(__file__).with_suffix(".cu").read_text(), flags,
+                          "nextgen.runoff.routing")
+
+
 class PreparedRunoffRouting:
     """One ordered gather per receiver; no floating-point atomic reductions.
 
@@ -32,7 +43,6 @@ class PreparedRunoffRouting:
                  period_seconds, area_units, identity, routing_period_seconds=None):
         import cupy as cp
         import numpy as np
-        from gpuwm.core.ieee_module import compile_module
         from gpuwm.numerics import is_strict
 
         if type(node_count) is not int or not 0 < node_count < 2147483647:
@@ -86,11 +96,7 @@ class PreparedRunoffRouting:
             inputs=identity), allow_nan=False))
         self.restart_identity["routing_period_seconds"] = float(routing_period)
         self.restart_identity["temporal_reduction"] = "sum producer volumes; divide by routing period"
-        flags = ["--std=c++17", "--ftz=false"]
-        if is_strict():
-            flags += ["--fmad=false", "--prec-div=true", "--prec-sqrt=true"]
-        self._module = compile_module(Path(__file__).with_suffix(".cu").read_text(), flags,
-                                      "nextgen.runoff.routing")
+        self._module = compile_unit(is_strict())
         self.kernel = self._module.get_function("route_depth_f32" if depth.dtype == cp.float32 else "route_depth_f64")
         self._args = (depth, area, offsets, indices, *outputs.values(), np.int32(n),
                       np.int32(node_count), np.float64(1e6 if area_units == "km2" else 1),

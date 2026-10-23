@@ -252,3 +252,42 @@ def test_the_woa18_profile_stops_its_lapse_rate_at_sea_water_freezing():
     assert t[:, 0].min() == np.float32(271.25)          # clamped at freezing
     assert abs(float(t[-1, 1]) - (300.0 - 0.14 * 140.0)) < 1e-3   # warm column: lapse rate as before
     assert (t[:, 2] == np.float32(270.0)).all()        # already below freezing: holds its SST
+
+
+def _floor_tendency(cp, sign):
+    """Temperature tendency of one interior column under a uniform divergent (sign=1) or convergent (-1) current."""
+    from gpuwm.ocean.mixed_layer import kernels
+    levels, ny, nx = 4, 8, 8
+    n = nx*ny
+    shape = (levels, ny, nx)
+    z = cp.broadcast_to(cp.asarray([5., 10., 15., 20.], cp.float32)[:, None, None], shape).copy()
+    t = cp.broadcast_to(cp.asarray([290., 289., 288., 287.], cp.float32)[:, None, None], shape).copy()
+    s = cp.full(shape, 35., cp.float32)
+    u = cp.broadcast_to(sign*0.05*(cp.arange(nx, dtype=cp.float32)-3.5)[None, None, :], shape).copy()
+    v = cp.zeros(shape, cp.float32)
+    land = cp.full((ny, nx), 2., cp.float32)
+    ones = cp.ones((ny, nx), cp.float32)
+    w, p = cp.zeros(shape, cp.float32), cp.zeros(shape, cp.float32)
+    tend = cp.zeros((4, *shape), cp.float32)
+    module = kernels(levels)
+    rd = np.float32(1/250.)
+    module.get_function('pwp_geometry')(((n+127)//128,), (128,),
+        (t, s, u, v, z, t, s, land, ones, ones, w, p, rd, rd, np.int32(nx), np.int32(ny)))
+    module.get_function('pwp_transport')(((n*levels+127)//128,), (128,),
+        (t, s, u, v, z, w, p, land, ones, ones, tend, rd, rd, np.int32(nx), np.int32(ny), np.int32(1)))
+    return cp.asnumpy(w[:, 4, 4]), cp.asnumpy(tend[0, :, 4, 4])
+
+
+@requires_gpu
+@pytest.mark.gpu
+def test_upwelling_through_the_floor_does_not_cool_the_bottom_layer_without_bound():
+    # SF Bay 250 m nest (HRRR 2026-10-21T12): WRF's one-sided floor difference is downwind for
+    # upwelling, so bottom water ran away to 246-308 K and convection carried it to TSK.
+    import cupy as cp
+    w, tend = _floor_tendency(cp, 1.)
+    assert w[-1] > 0                      # divergent surface current: water rises through the floor
+    assert tend[-1] == 0.                 # it carries the bottom layer's own temperature
+    assert tend[-2] < 0.                  # interior upwelling still cools (centred, unchanged)
+    w, tend = _floor_tendency(cp, -1.)
+    assert w[-1] < 0                      # convergence: water sinks onto the floor from above
+    assert tend[-1] > 0.                  # upwind from the warmer layer above, as before

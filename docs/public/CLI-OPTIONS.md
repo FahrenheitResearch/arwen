@@ -713,7 +713,7 @@ Takes no options of its own.
 | `--grib2` | write native surface and pressure-level GRIB2 as each frame lands, then <run>/grib2-grib2.zip |
 | `--history-interval SECONDS` | history frame interval when creating a generated-source domain |
 | `--hours` | forecast duration when creating a domain (default 3 h) |
-| `--hydro off\|SETTINGS.toml` | hydro defaults on with prepared settings; use off to disable it or a TOML file to select settings |
+| `--hydro on\|off\|SETTINGS.toml` | hydro is opt-in: --hydro on couples NextGen hydro wherever a hydrofabric covers the domain; a TOML file selects settings; without it the forecast has no hydro |
 | `--init` | initial UTC analysis/cycle, YYYY-MM-DDTHH |
 | `--initial-inputs JSON` | a separate packaged analysis for the initial state (gpuwm prep --initial-inputs); the fetched source still supplies every lateral boundary, and the forecast starts at the preparation head while the later boundary times are built |
 | `--keep-checkpoints N` | how many complete checkpoint sets the run keeps in its folder (default 1, enough to resume); 0 keeps every hourly set, which a later branch or downscale from an earlier checkpoint needs |
@@ -1007,7 +1007,7 @@ Takes no options of its own.
 | `--grib2` | write native surface and pressure-level GRIB2 as each frame lands, then <run>/grib2-grib2.zip |
 | `--history-interval SECONDS` | history frame interval when creating a generated-source domain |
 | `--hours` | forecast duration when creating a domain (default 3 h) |
-| `--hydro off\|SETTINGS.toml` | hydro defaults on with prepared settings; use off to disable it or a TOML file to select settings |
+| `--hydro on\|off\|SETTINGS.toml` | hydro is opt-in: --hydro on couples NextGen hydro wherever a hydrofabric covers the domain; a TOML file selects settings; without it the forecast has no hydro |
 | `--init` | initial UTC analysis/cycle, YYYY-MM-DDTHH |
 | `--initial-inputs JSON` | a separate packaged analysis for the initial state (gpuwm prep --initial-inputs); the fetched source still supplies every lateral boundary, and the forecast starts at the preparation head while the later boundary times are built |
 | `--keep-checkpoints N` | how many complete checkpoint sets the run keeps in its folder (default 1, enough to resume); 0 keeps every hourly set, which a later branch or downscale from an earlier checkpoint needs |
@@ -2042,7 +2042,7 @@ Takes no options of its own.
 | `--dry` | predict from observed posting times; no forecast |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--hours` | forecast horizon (default 48; use 1 for the live door test) |
-| `--hydro auto\|on\|off\|SETTINGS.toml` | preserve the forecast default, explicitly enable/disable hydro, or select settings |
+| `--hydro auto\|on\|off\|SETTINGS.toml` | hydro is opt-in: auto keeps the forecast default (off), on enables it, or select settings |
 | `--initial-inputs` | separate analysis manifest for the go fallback |
 | `--launch-delay` | seconds from analysis LastModified to launch (default 0) |
 | `--launch-to-first-step` | seconds from launch to the first completed step |
@@ -2523,7 +2523,7 @@ Takes no options of its own.
 | `--family-weights ai=0.5,physics=0.5` | family probability masses, must sum to 1; defaults to member shares |
 | `--gpu-uuid GPU-UUID` | physical GPU UUID to lock (required on multi-GPU hosts) |
 | `--health-debug` | enable debug phase health attribution hooks |
-| `--hydro off\|SETTINGS.toml` | hydro is on wherever a hydrofabric covers the domain; off disables it, a TOML file selects settings (as on gpuwm go) |
+| `--hydro on\|off\|SETTINGS.toml` | hydro is opt-in: on couples it wherever a hydrofabric covers the domain, a TOML file selects settings (as on gpuwm go); without it the run has no hydro |
 | `--iau {on,off}` | with --analysis: 'on' starts from the background and forces the increment over the IAU window inside every RK stage; 'off' inserts the analysis at the start. Default: on when the bundle carries increment.nc, off otherwise |
 | `--iau-boundary {background,analysis}` | with --analysis and IAU on a cold start: what the lateral boundary's first record is the coupling of. 'background' (the default, measured the smaller rim disturbance) keeps the boundary of the state the run starts from; 'analysis' rebases it onto the analysis and leaves the whole boundary zone to it |
 | `--iau-fields {all,dynamics}` | with --analysis and IAU: 'all' (the default) forces every field the increment carries; 'dynamics' forces winds, theta, vapour and geopotential and puts the hydrometeors in at the window start |

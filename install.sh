@@ -16,7 +16,9 @@
 #      at least the newest `rust-version` tools/*/Cargo.toml declares:
 #      an older rustc under rustup gets that toolchain added beside it
 #      (same consent) and used for this install via RUSTUP_TOOLCHAIN;
-#      an older rustc without rustup stops with the version it needs;
+#      an older rustc without rustup (a distribution's Rust) gets rustup
+#      installed in ~/.cargo with that version as its default (same
+#      consent; system Rust and PATH unchanged), or stops naming it;
 #   3. creates .venv if absent on free-threaded CPython 3.14t (see
 #      "Interpreter" below), installs the checkout's gpuwm-data
 #      companion, then installs -e '.[gpu-cuNN,render]' into it,
@@ -226,10 +228,59 @@ the workspaces need and consent to install it was not given; re-run with \
 '${RUSTC_HAVE:-nothing}' under RUSTUP_TOOLCHAIN=$RUST_MIN"
         say "building with rustc $RUSTC_HAVE (RUSTUP_TOOLCHAIN=$RUST_MIN, this install only)"
     else
-        fail "rustc ${RUSTC_HAVE:-(none)} is older than Rust $RUST_MIN, the \
-minimum the workspaces in tools/ declare, and there is no rustup to add it; \
-install Rust $RUST_MIN or newer (https://rustup.rs, or a newer distribution \
-package) and re-run"
+        # THE BREAKAGE THIS PREVENTS: a distribution's Rust older than the
+        # minimum, with no rustup beside it (Ubuntu's apt rustc, or a
+        # source-built 1.93.1), stopped the published 2.9.4 install.sh dead
+        # after the clone, even with --yes, while the same script installs
+        # rustup with that consent when cargo is missing altogether
+        # ~/.cargo with the minimum as its default; the system Rust and the
+        # shell profile are left as they are.
+        say "rustc ${RUSTC_HAVE:-(none)} ($(command -v rustc 2>/dev/null || echo 'not on PATH')) is older"
+        say "than Rust $RUST_MIN, the newest rust-version in tools/*/Cargo.toml, and"
+        say "no rustup manages it; rustup can install $RUST_MIN in ~/.cargo beside it."
+        RUSTUP_YES="$YES"
+        if [ "$RUSTUP_YES" != 1 ]; then
+            if [ -r /dev/tty ]; then
+                printf 'install: install rustup with Rust %s in ~/.cargo now (system Rust and PATH unchanged)? [y/N] ' "$RUST_MIN"
+                read -r answer < /dev/tty || answer=""
+                case "$answer" in
+                    y|Y|yes|YES) RUSTUP_YES=1 ;;
+                esac
+            fi
+        fi
+        if [ "$RUSTUP_YES" != 1 ]; then
+            fail "rustc ${RUSTC_HAVE:-(none)} is older than Rust $RUST_MIN, the \
+minimum the workspaces in tools/ declare, and consent to install rustup was \
+not given; re-run with --yes (or GPUWM_INSTALL_YES=1), or install Rust \
+$RUST_MIN or newer (https://rustup.rs, or a newer distribution package) and \
+re-run"
+        fi
+        command -v curl >/dev/null 2>&1 || fail "curl is required to fetch rustup"
+        # Fetched to a file first: piped straight into sh, a failed download
+        # runs an empty script that exits 0.
+        RUSTUP_SCRIPT=$(mktemp "${TMPDIR:-/tmp}/gpuwm-rustup-init.XXXXXX") \
+            || fail "no temporary file for the rustup installer could be made"
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o "$RUSTUP_SCRIPT" \
+            || { rm -f "$RUSTUP_SCRIPT"; fail "the rustup installer could not be downloaded from https://sh.rustup.rs"; }
+        say "installing rustup with Rust $RUST_MIN (minimal profile, PATH left unmodified)"
+        # RUSTUP_INIT_SKIP_PATH_CHECK: rustup-init otherwise stops to ask
+        # about the Rust already on PATH, the very one being worked around.
+        env RUSTUP_INIT_SKIP_PATH_CHECK=yes sh "$RUSTUP_SCRIPT" -y --no-modify-path \
+            --profile minimal --default-toolchain "$RUST_MIN" \
+            || { rm -f "$RUSTUP_SCRIPT"; fail "the rustup installer failed (see its output above)"; }
+        rm -f "$RUSTUP_SCRIPT"
+        PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+        command -v rustup >/dev/null 2>&1 \
+            || fail "rustup finished but is not in ${CARGO_HOME:-$HOME/.cargo}/bin"
+        RUSTUP_TOOLCHAIN="$RUST_MIN"
+        export RUSTUP_TOOLCHAIN
+        RUST_PINNED=1
+        RUSTC_HAVE="$(rustc_version || true)"
+        version_ok "${RUSTC_HAVE:-0}" "$RUST_MIN" \
+            || fail "rustup installed Rust $RUST_MIN but rustc reports \
+'${RUSTC_HAVE:-nothing}' under RUSTUP_TOOLCHAIN=$RUST_MIN"
+        say "building with rustc $RUSTC_HAVE from ${CARGO_HOME:-$HOME/.cargo}/bin (this install only;"
+        say "add it to PATH for hand-run cargo builds: export PATH=\"${CARGO_HOME:-\$HOME/.cargo}/bin:\$PATH\")"
     fi
 fi
 

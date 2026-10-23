@@ -306,6 +306,11 @@ def decide(*, settings, requested, config_path=None, table=None, geometry=None,
                 "fabric": "explicit settings", "gaps": []}
     if settings.get("activation_reason") == "configuration_off":
         return {**base, "enabled": False, "reason": "configuration_off", "gaps": []}
+    if requested is None and not settings.get("enabled"):
+        # Hydro is opt-in (Drew, 2026-10-22: a first forecast in a new region downloaded 4.6 GB of hydro inputs and
+        # spent minutes single-core on the spin-up): a bare run has no hydro; `--hydro on` (or a [hydro] table with
+        # enabled = true) turns it on.
+        return {**base, "enabled": False, "reason": "default_off", "gaps": []}
     providers = load_providers(table)
     base["table_sha256"] = providers["table_sha256"]
     if geometry is None:
@@ -459,6 +464,13 @@ def materialize(decision, *, config_path, runner=subprocess.run, prepare=None):
             build["reused"] = False
         else:
             out.mkdir(parents=True, exist_ok=True)
+            # The initial-water source (the spin-up's ERA5 forcing days) reads
+            # the footprint's area only: it downloads beside the fabric's own
+            # sources and build instead of after them (provider.start_water_prefetch).
+            water_prefetch = None
+            if row.get("preparation"):
+                from .provider import start_water_prefetch
+                water_prefetch = start_water_prefetch(row, footprint, out)
             exe = _executable(row["builder"]["executable"])
             table = row["builder"].get("source_table") or {}
             sources = None
@@ -498,7 +510,8 @@ def materialize(decision, *, config_path, runner=subprocess.run, prepare=None):
             if row.get("preparation"):
                 from .provider import prepare as prepare_provider
                 prepared = prepare_provider(row=row, footprint=footprint, out=out,
-                                            config=config, runner=runner, sources=sources)
+                                            config=config, runner=runner, sources=sources,
+                                            water_prefetch=water_prefetch)
             else:
                 if prepare is None:
                     from gpuwm.hydrofabric import prepare

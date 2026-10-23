@@ -156,7 +156,7 @@ bundle carries, and the gate below judges each one it finds built:
 | `tools/nextgen_hydrofabric` | hydro payload transport and source preparation |
 | `tools/nextgen_forcing` | external hydro forcing preparation |
 | `tools/nextgen_verify` | gauge verification |
-| `tools/hydro_world` | `rw_hydro_world`, the default-on hydro door's fabric builder |
+| `tools/hydro_world` | `rw_hydro_world`, the hydro door's fabric builder (`--hydro on`) |
 | `tools/hydro_world_params` | `rw_hydro_params`, hydro catchment parameters |
 | `tools/nextgen_reservoir_prepare` | `nextgen-reservoir-prepare`, hydro reservoirs |
 | `tools/hydro_world_init` | `rw_hydro_init`, hydro initial water state |

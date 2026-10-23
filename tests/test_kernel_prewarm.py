@@ -15,6 +15,8 @@ import sys
 import types
 from types import SimpleNamespace
 
+import pytest
+
 from gpuwm import kernel_prewarm
 
 
@@ -325,18 +327,20 @@ def test_hrrr_recipe_prewarm_receipt_says_first_step_ready(monkeypatch):
             compiled.append(label)
         return factory
 
-    def stubbed_jobs(experiment):
+    def stubbed_jobs(experiment, **kwargs):
         return [(label, stubbed(label, _loader_route_exists(factory, args)), args)
-                for label, factory, args in real_jobs(experiment)]
+                for label, factory, args in real_jobs(experiment, **kwargs)]
 
     monkeypatch.setattr(kernel_prewarm, "static_jobs", stubbed_jobs)
-    monkeypatch.setattr(kernel_prewarm, "submit_static", lambda experiment: len(stubbed_jobs(experiment)))
+    monkeypatch.setattr(kernel_prewarm, "submit_static",
+                        lambda experiment, **kwargs: len(stubbed_jobs(experiment, **kwargs)))
     monkeypatch.setattr(kernel_plan, "install", lambda **kwargs: True)
     monkeypatch.setattr(kernel_plan, "start", lambda: {})
     monkeypatch.setattr(kernel_plan, "close", lambda **kwargs: None)
     monkeypatch.setattr(kernel_plan, "receipt", lambda: {"stub": True})
     monkeypatch.setattr(preparation_prewarm, "warm_preparation_job", lambda options: None)
-    monkeypatch.setattr(kernel_prewarm, "warm_forecast_columns", lambda experiment: 1)
+    monkeypatch.setattr(kernel_prewarm, "warm_forecast_columns", lambda experiment, **kwargs: 1)
+    monkeypatch.setattr(kernel_prewarm, "warm_column_reductions", lambda experiment: 1)
 
     receipt = kernel_prewarm.warm_static(_hrrr_recipe_experiment(), preparation=True, forecast=True)
     assert receipt["errors"] == {}
@@ -378,3 +382,117 @@ def test_hrrr_recipe_column_carries_mosaic_fractions_and_orographic_statics():
     plain = dataclasses.replace(cfg, mosaic_lu=0, mosaic_soil=0, gwd_opt=0, topo_wind=0)
     assert warm_kernels._synthetic_mosaic_fractions(plain, grid) == {}
     assert warm_kernels._synthetic_orographic_static(plain, grid) == {}
+
+
+def test_the_columns_own_radiation_layer_count_is_in_the_static_plan(monkeypatch):
+    # 2.9.4 R11 (2026-10-22): the synthetic column takes its top from its own sounding at ztop, so its
+    # RTE compiled for 63 layers against the run's 62 (p_top 50 hPa, nz 49): that one variant compiled
+    # alone inside the column, 5.7 s on one core on sm_120 (7 s on the 5090), the pre-warm's single-core tail.
+    from gpuwm import warm_kernels
+    from gpuwm.core.rrtmgp import rrtmgp_above_model_layer_counts
+
+    experiment = _hrrr_recipe_experiment()
+    real_modules = kernel_prewarm.static_modules
+    monkeypatch.setattr(kernel_prewarm, "static_modules", lambda e: (*real_modules(e), "rrtmgp_rte"))
+
+    def tiers(columns):
+        return {args[1][0][1] for label, _factory, args in kernel_prewarm.static_jobs(experiment, columns=columns)
+                if label.startswith("rrtmgp_rte[RRTMGP_MAX_LAYERS=")}
+
+    column = {int(cfg.nz) + extra for cfg in kernel_prewarm.forecast_columns(experiment)
+              for extra in rrtmgp_above_model_layer_counts(warm_kernels.column_p_top(cfg))}
+    assert column <= tiers(True)
+    assert tiers(False) <= tiers(True)
+    # The column's top is its sounding's at ztop (float32 on the state), not the run's declared p_top.
+    cfg = kernel_prewarm.forecast_columns(experiment)[0]
+    assert 0.0 < warm_kernels.column_p_top(cfg) < 20000.0
+
+
+def test_the_forecast_column_runs_beside_the_static_compile_not_after_it(monkeypatch):
+    # 2.9.4 R11: the column ran only after every static module had loaded, so its chain of first-use
+    # compiles (one kernel at a time) ran on one core after the parallel pool drained (14 s at 1.09 cores).
+    import threading
+
+    from gpuwm import kernel_plan
+
+    events = []
+    lock = threading.Lock()
+
+    def note(event):
+        with lock:
+            events.append(event)
+
+    def job(label):
+        return (label, lambda *args: note("load " + label), ())
+
+    monkeypatch.setattr(kernel_plan, "install", lambda **kwargs: True)
+    monkeypatch.setattr(kernel_plan, "start", lambda: {})
+    monkeypatch.setattr(kernel_plan, "close", lambda **kwargs: None)
+    monkeypatch.setattr(kernel_plan, "save", lambda: None)
+    monkeypatch.setattr(kernel_plan, "receipt", lambda: {"stub": True})
+    monkeypatch.setattr(kernel_prewarm, "plan_tag", lambda experiment: "tag")
+    monkeypatch.setattr(kernel_prewarm, "static_jobs", lambda experiment, **kwargs: [job("a"), job("b")])
+    monkeypatch.setattr(kernel_prewarm, "submit_static",
+                        lambda experiment, **kwargs: note(f"submit columns={kwargs.get('columns')}") or 2)
+    monkeypatch.setattr(kernel_prewarm, "warm_column_reductions", lambda experiment: note("reductions") or 1)
+    tables = {"staged": True}
+
+    def column(experiment, *, wait_s=kernel_prewarm.FORECAST_TABLE_WAIT_S, reductions=True):
+        assert reductions is False
+        note(f"column wait={wait_s}")
+        if not tables["staged"]:
+            tables["staged"] = True
+            raise FileNotFoundError("THOMPSON tables not staged yet")
+        return 1
+    monkeypatch.setattr(kernel_prewarm, "warm_forecast_columns", column)
+
+    receipt = kernel_prewarm.warm_static(SimpleNamespace(domains=()), forecast=True)
+    assert receipt["errors"] == {} and receipt["forecast_columns"] == 1 and receipt["first_step_ready"]
+    assert events.index("submit columns=True") < events.index("column wait=0.0") < events.index("load a")
+    assert "reductions" in events
+
+    # A physics table go has not staged yet sends the column behind the static loads, full wait.
+    events.clear()
+    tables["staged"] = False
+    receipt = kernel_prewarm.warm_static(SimpleNamespace(domains=()), forecast=True)
+    assert receipt["errors"] == {} and receipt["forecast_columns"] == 1
+    order = [e for e in events if e != "reductions"]
+    assert order == ["submit columns=True", "column wait=0.0", "load a", "load b",
+                     f"column wait={kernel_prewarm.FORECAST_TABLE_WAIT_S}"]
+
+
+@pytest.mark.gpu
+def test_the_real_domains_staggered_relaxations_and_joined_substep_are_in_the_static_plan():
+    # fix/hydro-attach-replay (2026-10-22, cold ERA5 go 3 km 60x48 on a 5070 Ti): step 1 compiled four
+    # state-relaxation shapes (u, v, w/phi, mu: 0.5 s each) and the domain's joined acoustic unit (0.4 s)
+    # one after another on one core; the plan named only the mass shape and the column has no specified frame.
+    from gpuwm.kernel_prewarm import joined_prewarm_units
+    from gpuwm.ingest.lateral_bc import relaxation_shapes
+
+    experiment = _hrrr_recipe_experiment()
+    jobs = kernel_prewarm.static_jobs(experiment)
+    labels = {label for label, _factory, _args in jobs}
+    run = experiment.domains[0].run
+    for nz, ny, nx in relaxation_shapes(run.nz, run.ny, run.nx):
+        assert f"lbc_state[GPUWM_SHAPE_NZ={nz},GPUWM_SHAPE_NY={ny},GPUWM_SHAPE_NX={nx}]" in labels
+    units = joined_prewarm_units(run)
+    assert units
+    joined = {args[0] for label, _factory, args in jobs if label.startswith("acoustic+joined[")}
+    assert set(units) <= joined
+
+
+def test_hydro_routing_units_are_in_the_static_plan_unless_hydro_is_off(monkeypatch):
+    # fix/hydro-attach-replay (2026-10-22): hydro attach compiled its routing units on the forecast's one
+    # thread after the hydro wait.
+    __import__("pytest").importorskip("cupy")
+    hydro = {"hydro:troute-mc", "hydro:routed-replay", "hydro:reservoirs", "hydro:runoff-routing",
+             "hydro:catchment-exchange"}
+    monkeypatch.setattr(kernel_prewarm, "static_modules", lambda experiment: ())
+    monkeypatch.setattr(kernel_prewarm, "_inline_jobs", lambda modules: [])
+    labels = lambda **kw: {label for label, _f, _a in kernel_prewarm.static_jobs(_experiment(), **kw)}
+    assert hydro <= labels(hydro=True)
+    assert not hydro & labels()
+    monkeypatch.delenv("GPUWM_NEXTGEN_ENABLED", raising=False)
+    assert kernel_prewarm.hydro_wanted()
+    monkeypatch.setenv("GPUWM_NEXTGEN_ENABLED", "0")
+    assert not kernel_prewarm.hydro_wanted()

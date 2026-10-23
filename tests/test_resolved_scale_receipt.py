@@ -86,7 +86,10 @@ def test_published_items_still_carry_the_authorized_prose():
     receipt = _public()
     assert receipt["figure_variant_authorized"] == "pinned"
 
-    assert "[scale note](https://github.com/FahrenheitResearch/arwen/blob/v2.9.4/docs/public/RESOLVED-SCALE.md)" in (REPO_ROOT / "README.md").read_text()
+    # The README links the scale note at this release's own tag (bump_version moves it every release).
+    version = (REPO_ROOT / "gpuwm-data/gpuwm_data/VERSION").read_text().strip()
+    assert (f"[scale note](https://github.com/FahrenheitResearch/arwen/blob/v{version}/docs/public/RESOLVED-SCALE.md)"
+            in (REPO_ROOT / "README.md").read_text())
     readme = find_item(REPO_ROOT / SCALE_PAGE, "- **Resolved scale.**")
     assert readme["item_count"] == 1
     for token in README_ITEM_SUBSTRINGS + README_PINNED_FIGURE_SUBSTRINGS:

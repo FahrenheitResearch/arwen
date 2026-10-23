@@ -114,6 +114,8 @@ def _launch_settings(requested, config, *, plan_only=False, prepared_launch=Fals
     prepared on a thread beside the launch's fetch and preparation, and the
     bound answer is provisional until :func:`join_beside` (see _Beside).
     """
+    if requested == "on":
+        requested = ""
     path = config if requested in (None, "", "off") else requested
     if requested not in (None, "", "off") and not Path(path).is_file():
         raise ValueError(f"hydro settings file does not exist: {path}")
@@ -132,7 +134,9 @@ def _launch_settings(requested, config, *, plan_only=False, prepared_launch=Fals
     # covers the parent grid (CONUS recipe, then the global builder) or
     # record the named gap. Explicit settings and --hydro off pass through.
     decided = {}
-    if beside and not plan_only and requested is None:
+    # `--hydro on` ("") builds beside too: hydro is opt-in from 2.9.4.1, so the requested launch is the one that
+    # builds; a domain no fabric covers still refuses on entry (resolve_launch below), before the fetch.
+    if beside and not plan_only and requested in (None, ""):
         decision = _door.decide(settings=settings, requested=requested, config_path=config)
         if decision["reason"] == "fabric_covered":
             return _Beside.start(settings, path, decision, requested=requested, config=config,
@@ -441,9 +445,8 @@ def run_scope(requested, config=None):
     if requested is None:
         yield None
         return
-    if requested == "":
-        raise ValueError("gpuwm run --hydro takes off or a settings TOML; the run door "
-                         "already turns hydro on wherever a fabric covers the domain")
+    if requested == "on":
+        requested = ""
     settings, path, decision = _launch_settings(requested, config)
     saved = {name: os.environ.get(name) for name in (_door.ENV_DECISION, ENV_SETTINGS, ENV_ENABLED)}
     token = None

@@ -90,11 +90,9 @@ def test_missing_or_disabled_configuration_has_explicit_receipt(tmp_path, text):
         return activation_receipt(runtime.current_settings())
     receipt = json.loads(json.dumps(launch(args)))
     assert receipt["enabled"] is False
-    # With no prepared configuration the default-on door decides; these test
-    # files have no parent grid, so its named gap is the missing geometry.
-    assert receipt["reason"] == ("no_domain_geometry")
+    # Hydro is opt-in (2.9.4 hotfix): a [hydro] table without enabled = true is a run that did not ask.
+    assert receipt["door"]["reason"] == "default_off"
     assert "coverage" in receipt["scope"]
-    assert receipt["door"]["gaps"][0]["owner"] == "hydro-world-door"
 
 
 def test_prepared_forecast_entry_defaults_on_without_go_launcher(tmp_path):

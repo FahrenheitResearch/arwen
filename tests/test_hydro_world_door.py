@@ -72,7 +72,7 @@ def test_fabric_present_turns_hydro_on_with_bound_realization(tmp_path, monkeypa
     monkeypatch.delenv(door.ENV_CACHE, raising=False)
     monkeypatch.setenv("GPUWM_CASE_DATA_ROOT", str(tmp_path / "case-data"))
     table, manifest = prepared_table(tmp_path)
-    decision = door.decide(settings={}, requested=None, table=table, geometry=box_geometry())
+    decision = door.decide(settings={}, requested="", table=table, geometry=box_geometry())
     assert decision["enabled"] is True and decision["reason"] == "fabric_covered"
     assert decision["provider"] == "test-prepared"
     assert decision["candidates"][0]["covered_fraction"] == 1.0
@@ -98,7 +98,7 @@ def test_start_up_state_lands_under_the_data_root_never_beside_the_config(tmp_pa
     config.write_text("# quickstart\n")
     before = sorted(p.relative_to(configs) for p in configs.rglob("*"))
     table, _ = prepared_table(tmp_path)
-    decision = door.decide(settings={}, requested=None, table=table, geometry=box_geometry())
+    decision = door.decide(settings={}, requested="", table=table, geometry=box_geometry())
     _, path, _ = door.materialize(decision, config_path=config)
     assert sorted(p.relative_to(configs) for p in configs.rglob("*")) == before
     assert not (configs / ".gpuwm-hydro").exists()
@@ -127,7 +127,7 @@ def test_conus_default_suites_attach_through_the_global_provider(tmp_path, lsm, 
     CONUS domain for every default suite (Noah 2 and RUC 3 were outside the row's
     parent_lsm [4]). With the provider tools present, the global row covers it and
     picks the realization for the parent LSM."""
-    decision = door.decide(settings={}, requested=None, config_path=conus_copy(tmp_path, lsm),
+    decision = door.decide(settings={}, requested="", config_path=conus_copy(tmp_path, lsm),
                            probe_row=_tools_present)
     assert decision["enabled"] is True and decision["reason"] == "fabric_covered"
     assert decision["footprint"]["parent_lsm"] == lsm
@@ -161,7 +161,7 @@ def test_hrrr_v4_grid_gets_a_covering_fabric_by_default():
     and needs all of it; the global builder row covers the whole grid, so with its
     tools present the door turns hydro on through it. The NHDPlus row's licence is
     verified (public domain at the source), so no gap says "licence pending"."""
-    decision = door.decide(settings={}, requested=None, geometry=_hrrr_v4_geometry(),
+    decision = door.decide(settings={}, requested="", geometry=_hrrr_v4_geometry(),
                            probe_row=_tools_present)
     rows = {c["id"]: c for c in decision["candidates"]}
     assert 0.7 < rows["conus-nhdplus-v21"]["covered_fraction"] < 1.0
@@ -178,7 +178,7 @@ def test_hrrr_v4_grid_gets_a_covering_fabric_by_default():
 
 
 def test_launch_line_states_the_reason_when_off():
-    decision = door.decide(settings={}, requested=None, geometry=_hrrr_v4_geometry(),
+    decision = door.decide(settings={}, requested="", geometry=_hrrr_v4_geometry(),
                            probe_row=_tools_missing)
     line = door.launch_line(decision)
     assert line.startswith("go: hydro -- off (no_covering_fabric): ")
@@ -187,7 +187,7 @@ def test_launch_line_states_the_reason_when_off():
 
 
 def test_fabric_absent_noahmp_conus_names_every_provider_gap(tmp_path):
-    decision = door.decide(settings={}, requested=None, config_path=conus_copy(tmp_path, 4),
+    decision = door.decide(settings={}, requested="", config_path=conus_copy(tmp_path, 4),
                            probe_row=_tools_missing)
     assert decision["enabled"] is False and decision["reason"] == "no_covering_fabric"
     rows = {c["id"]: c for c in decision["candidates"]}
@@ -219,7 +219,7 @@ def test_partial_cover_falls_through_to_next_row(tmp_path):
     rows = json.loads(table.read_text())
     rows["providers"][0]["min_covered_fraction"] = 1.0
     table.write_text(json.dumps(rows))
-    decision = door.decide(settings={}, requested=None, table=table, geometry=box_geometry())
+    decision = door.decide(settings={}, requested="", table=table, geometry=box_geometry())
     assert decision["enabled"] is False
     assert decision["candidates"][0]["covered_fraction"] == 0.6
     assert "covers 0.600" in decision["candidates"][0]["reasons"][0]
@@ -231,7 +231,7 @@ def test_unverified_licence_or_missing_realization_never_turns_on(tmp_path):
                            ({"realization": None}, "no admitted coupled realization"),
                            ({"realization": "no-such-row"}, "unknown realization")):
         table, _ = prepared_table(tmp_path, **kwargs)
-        decision = door.decide(settings={}, requested=None, table=table, geometry=box_geometry())
+        decision = door.decide(settings={}, requested="", table=table, geometry=box_geometry())
         assert decision["enabled"] is False
         assert needle in json.dumps(decision["candidates"][0]["reasons"])
 
@@ -241,7 +241,7 @@ def test_dateline_domain_is_covered_by_dateline_row(tmp_path):
     geometry = box_geometry(south=-18, north=-12, west=175.0, east=185.0, center=180.0)
     geometry["points"] = [(lat, door._wrap180(lon)) for lat, lon in geometry["points"]]
     assert geometry["crosses_dateline"] is True
-    decision = door.decide(settings={}, requested=None, table=table, geometry=geometry)
+    decision = door.decide(settings={}, requested="", table=table, geometry=geometry)
     assert decision["enabled"] is True
 
 
@@ -270,7 +270,7 @@ def test_bare_hydro_flag_without_fabric_refuses_with_gaps(tmp_path):
 def test_unreadable_domain_is_a_named_gap(tmp_path):
     path = tmp_path / "empty.toml"
     path.write_text("")
-    decision = door.decide(settings={}, requested=None, config_path=path)
+    decision = door.decide(settings={}, requested="", config_path=path)
     assert decision["reason"] == "no_domain_geometry"
     assert str(path) in decision["gaps"][0]["gap"]
 
@@ -291,7 +291,7 @@ def test_go_scope_receipt_carries_door_decision_and_member_state(tmp_path, monke
     monkeypatch.setenv(door.ENV_CACHE, str(tmp_path / "cache"))
     experiment = tmp_path / "experiment.toml"
     experiment.write_text("")
-    args = _launch_args(experiment)
+    args = _launch_args(experiment, hydro="on")
 
     @runtime.go_scope
     def launch(args):
@@ -337,9 +337,9 @@ def test_runner_without_launcher_decides_once_and_receipts_the_gap(tmp_path, mon
     def forecast(inputs):
         return activation_receipt(runtime.current_settings())
     receipt = forecast(inputs)
+    # Hydro is opt-in (2.9.4.1): a runner with no launcher and no request decides once, off, without probing.
     assert receipt["enabled"] is False
-    assert receipt["reason"] == "no_covering_fabric"
-    assert receipt["door"]["gaps"]
+    assert receipt["door"]["reason"] == "default_off"
     assert door.ENV_DECISION not in os.environ
 
 
@@ -515,8 +515,8 @@ def test_shipped_global_provider_uses_dem_resolution_auto():
 
 
 def test_default_run_keeps_the_forecast_when_fabric_preparation_fails(tmp_path, monkeypatch):
-    """Default-on: a covering fabric whose preparation fails turns hydro off for this run
-    with the failure named; bare --hydro refuses instead."""
+    """Hydro is opt-in (2.9.4.1): a run without --hydro never prepares a fabric, so a failing
+    preparation cannot touch it; --hydro on refuses with the failure named."""
     table, _ = prepared_table(tmp_path)
     monkeypatch.setattr(door, "domain_geometry", lambda path: box_geometry())
     monkeypatch.setattr(door, "materialize", lambda decision, **kw: (_ for _ in ()).throw(
@@ -524,7 +524,7 @@ def test_default_run_keeps_the_forecast_when_fabric_preparation_fails(tmp_path, 
     settings, path, decision = door.resolve_launch({}, requested=None, config_path=tmp_path / "e.toml",
                                                    table=table)
     assert path is None and settings["enabled"] is False
-    assert decision["reason"] == "fabric_preparation_failed" and "boom" in decision["gaps"][0]["gap"]
+    assert decision["reason"] == "default_off"
     with pytest.raises(door.HydroDoorRefusal, match="boom"):
         door.resolve_launch({}, requested="", config_path=tmp_path / "e.toml", table=table)
 
@@ -539,7 +539,7 @@ def test_adaptive_parent_clock_picks_an_interval_free_realization(tmp_path):
         path.write_text(path.read_text().replace(
             f"sf_surface_physics = {lsm}", f"sf_surface_physics = {lsm}" + chr(10)
             + "use_adaptive_time_step = true", 1))
-        decision = door.decide(settings={}, requested=None, config_path=path, probe_row=_tools_present)
+        decision = door.decide(settings={}, requested="", config_path=path, probe_row=_tools_present)
         assert decision["enabled"] is enabled, decision.get("gaps")
         if not enabled:
             assert "needs a fixed parent LSM interval" in json.dumps(decision["gaps"])
@@ -675,7 +675,7 @@ def _beside_door(tmp_path, monkeypatch, release):
     monkeypatch.setattr(door, "materialize", slow)
     experiment = tmp_path / "experiment.toml"
     experiment.write_text("")
-    return _launch_args(experiment), manifest, started
+    return _launch_args(experiment, hydro="on"), manifest, started
 
 
 def test_go_builds_the_covering_fabric_beside_the_fetch_not_ahead_of_it(tmp_path, monkeypatch):
@@ -765,4 +765,4 @@ def test_plain_go_scope_and_explicit_hydro_still_decide_before_the_launch(tmp_pa
     @runtime.go_scope(beside=True)
     def explicit(args):
         return runtime.beside_pending()
-    assert explicit(_launch_args(args.config, hydro="")) is False
+    assert explicit(_launch_args(args.config, hydro="off")) is False

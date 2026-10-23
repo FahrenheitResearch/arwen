@@ -327,8 +327,10 @@ def test_go_cycle_hydro_door_decides_from_the_retimed_config(tmp_path, monkeypat
 
     monkeypatch.setattr(go_cli, "_go_prepared_main", launch)
     monkeypatch.setattr(go_cli, "_registered_launch", lambda args, **kwargs: launch(args))
-    args = cli.build_parser().parse_args(["go", str(source), "--cycle", "2013-06-01T00"])
-    assert go_cli.go_main(args) == 0
-    assert read == [(seen["config"], NEW_CYCLE)]
-    assert seen["decision"]["reason"] == "no_domain_geometry"
-    assert str(seen["config"]) in seen["decision"]["gaps"][0]["gap"]
+    # Hydro is opt-in (2.9.4 hotfix): the door reads the domain only when the run asks for hydro.
+    args = cli.build_parser().parse_args(["go", str(source), "--cycle", "2013-06-01T00", "--hydro", "on"])
+    try:
+        go_cli.go_main(args)
+    except door.HydroDoorRefusal:
+        pass
+    assert [start for _path, start in read] == [NEW_CYCLE]

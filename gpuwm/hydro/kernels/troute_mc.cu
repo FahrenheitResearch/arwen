@@ -130,19 +130,31 @@ extern "C" __global__ void troute_mc_publish(int count,const float *state,float 
         channel_output[2*channel_count+i]=state[3*node+2];
     }
 }
-// Both launch paths call the same per-node arithmetic and upstream order.
-__device__ void troute_mc_node(int i,float dt,int short_ts,
+// Channel-state loads. Plain for the per-step kernels; the whole-replay
+// kernel (routed_replay.cu) reads state other SMs published this launch and
+// passes an L2 (ld.cg) load. Loads only: the arithmetic is the same either way.
+struct McLoad { __device__ __forceinline__ float operator()(const float *p) const { return *p; } };
+// Every launch path calls the same per-node arithmetic and upstream order.
+template <class Load>
+__device__ __forceinline__ void troute_mc_node_with(const Load &load,int i,float dt,int short_ts,
     const int *offsets,const int *upstream,const float *parameters,
     const float *lateral,const float *boundary_previous,const float *boundary_current,
     const float *previous,float *state,float *diagnostics) {
     float qup=boundary_previous[i],quc=short_ts ? boundary_previous[i] : boundary_current[i];
     for(int k=offsets[i];k<offsets[i+1];++k) {
-        int u=upstream[k]; qup+=previous[3*u]; quc+=short_ts ? previous[3*u] : state[3*u];
+        int u=upstream[k]; qup+=load(previous+3*u); quc+=short_ts ? load(previous+3*u) : load(state+3*u);
     }
     const float *p=parameters+8*i;
-    float v[15]={dt,qup,quc,previous[3*i],lateral[i],p[0],p[1],p[2],p[3],p[4],p[5],p[6],p[7],previous[3*i+1],previous[3*i+2]};
+    float v[15]={dt,qup,quc,load(previous+3*i),lateral[i],p[0],p[1],p[2],p[3],p[4],p[5],p[6],p[7],load(previous+3*i+1),load(previous+3*i+2)};
     float out[6]; mc_solve(v,out);
     for(int k=0;k<3;++k) { state[3*i+k]=out[k]; diagnostics[3*i+k]=out[3+k]; }
+}
+__device__ void troute_mc_node(int i,float dt,int short_ts,
+    const int *offsets,const int *upstream,const float *parameters,
+    const float *lateral,const float *boundary_previous,const float *boundary_current,
+    const float *previous,float *state,float *diagnostics) {
+    troute_mc_node_with(McLoad(),i,dt,short_ts,offsets,upstream,parameters,lateral,
+        boundary_previous,boundary_current,previous,state,diagnostics);
 }
 extern "C" __global__ void troute_mc_level(int start,int count,float dt,int short_ts,
     const int *nodes,const int *offsets,const int *upstream,const float *parameters,
@@ -189,6 +201,21 @@ extern "C" __global__ void troute_mc_reservoir_gather(int count,int short_ts,
 }
 // Connected parent runoff already uses the collapsed routing-node axis.
 // Feed each lake's own catchment discharge to the native lateral inlet once.
+// One reservoir row; the kernel below and the whole-replay kernel
+// (routed_replay.cu) share it.
+template <class Load>
+__device__ __forceinline__ void troute_mc_reservoir_gather_routed_row(const Load &load,int r,int short_ts,
+    const int *node_indices,const int *offsets,const int *upstream,
+    const float *boundary_previous,const float *boundary_current,
+    const float *previous,const float *state,const float *routing_lateral,
+    float *previous_inflow,float *inflow,float *lateral) {
+    int node=node_indices[r];
+    float q=short_ts ? boundary_previous[node] : boundary_current[node];
+    for(int k=offsets[node];k<offsets[node+1];++k) {
+        int u=upstream[k]; q+=short_ts ? load(previous+3*u) : load(state+3*u);
+    }
+    previous_inflow[r]=q; inflow[r]=q; lateral[r]=routing_lateral[node];
+}
 extern "C" __global__ void troute_mc_reservoir_gather_routed(int count,int short_ts,
     const int *rows,const int *node_indices,const int *offsets,const int *upstream,
     const float *boundary_previous,const float *boundary_current,
@@ -196,19 +223,20 @@ extern "C" __global__ void troute_mc_reservoir_gather_routed(int count,int short
     float *previous_inflow,float *inflow,float *lateral) {
     int j=blockDim.x*blockIdx.x+threadIdx.x;
     if(j>=count) return;
-    int r=rows[j],node=node_indices[r];
-    float q=short_ts ? boundary_previous[node] : boundary_current[node];
-    for(int k=offsets[node];k<offsets[node+1];++k) {
-        int u=upstream[k]; q+=short_ts ? previous[3*u] : state[3*u];
-    }
-    previous_inflow[r]=q; inflow[r]=q; lateral[r]=routing_lateral[node];
+    troute_mc_reservoir_gather_routed_row(McLoad(),rows[j],short_ts,node_indices,offsets,upstream,
+        boundary_previous,boundary_current,previous,state,routing_lateral,
+        previous_inflow,inflow,lateral);
+}
+__device__ __forceinline__ void troute_mc_reservoir_scatter_row(int r,
+    const int *node_indices,const double *release,const float *height,float *state) {
+    int node=node_indices[r];
+    state[3*node]=(float)release[r];
+    state[3*node+1]=0.0f; state[3*node+2]=height[r];
 }
 extern "C" __global__ void troute_mc_reservoir_scatter(int count,
     const int *rows,const int *node_indices,const double *release,
     const float *height,float *state) {
     int j=blockDim.x*blockIdx.x+threadIdx.x;
     if(j>=count) return;
-    int r=rows[j],node=node_indices[r];
-    state[3*node]=(float)release[r];
-    state[3*node+1]=0.0f; state[3*node+2]=height[r];
+    troute_mc_reservoir_scatter_row(rows[j],node_indices,release,height,state);
 }

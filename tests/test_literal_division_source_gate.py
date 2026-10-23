@@ -75,7 +75,7 @@ def test_nextgen_reservoir_divisions_use_non_ftz():
     from gpuwm.core import ieee_module
     source = (REPO_ROOT / "gpuwm/hydro/reservoirs.py").read_text()
     loader = next(node for node in ast.parse(source).body
-                  if isinstance(node, ast.FunctionDef) and node.name == "_module")
+                  if isinstance(node, ast.FunctionDef) and node.name == "compile_unit")
     block = ast.get_source_segment(source, loader)
     assert 'compile_module(kernel_source(strict), tuple(options), "nextgen_reservoirs")' in block
     assert 'options = ["--std=c++17", "--ftz=false"]' in block

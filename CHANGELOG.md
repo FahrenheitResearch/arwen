@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.9.5 (2026-10-23)
+
+A hotfix of 2.9.4.
+
+Changed:
+- Coupled hydro is opt-in: a run has no hydro unless it asks with `--hydro on` (or a `[hydro]` table with `enabled = true`).
+
+Fixed:
+- `install.sh` installs rustup with the required Rust when the system Rust is older than 1.94.
+- The mixed-layer ocean: water rising through the bottom of the column carries the bottom layer's own properties, so coastal sea surface temperatures no longer drift.
+- Hydro start-up: the spin-up replay runs on the GPU in one launch instead of thousands of host steps, its ERA5 source downloads beside the fabric build, and the kernel pre-warm compiles the hydro units and the forecast's own variants ahead of the first step.
+
 ## 2.9.4 (2026-10-21)
 
 New:

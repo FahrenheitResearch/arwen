@@ -15,7 +15,7 @@ def register_cli(subparsers):
     parser.add_argument("--outdir", type=Path, default=Path("race-runs"), help="parent for a fresh receipt/run directory")
     parser.add_argument("--tiles", choices=("auto", "off", "on"), default="auto")
     parser.add_argument("--hydro", default="auto", metavar="auto|on|off|SETTINGS.toml",
-                        help="preserve the forecast default, explicitly enable/disable hydro, or select settings")
+                        help="hydro is opt-in: auto keeps the forecast default (off), on enables it, or select settings")
     from gpuwm.smoke_execution import SMOKE_FLAG_HELP
     parser.add_argument("--smoke", action="store_true", default=False, help=SMOKE_FLAG_HELP)
     parser.add_argument("--products", default="all", help="products defining online, passed to forecast")

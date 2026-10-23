@@ -103,12 +103,19 @@ def _module(strict, device):
     strict = _resolve_strict(strict)
     key = (device, strict)
     if key not in _MODULES:
-        from gpuwm.core.ieee_module import compile_module
-        options = ["--std=c++17", "--ftz=false"]
-        if strict:
-            options += ["--fmad=false", "--prec-div=true", "--prec-sqrt=true"]
-        _MODULES[key] = compile_module(kernel_source(strict), tuple(options), "nextgen_reservoirs")
+        _MODULES[key] = compile_unit(strict)
     return _MODULES[key]
+
+
+def compile_unit(strict):
+    """Load the reservoir module uncached; also the kernel pre-warm's capture
+    (gpuwm.kernel_prewarm hydro jobs), so both name one source and option set."""
+    from gpuwm.core.ieee_module import compile_module
+    strict = _resolve_strict(strict)
+    options = ["--std=c++17", "--ftz=false"]
+    if strict:
+        options += ["--fmad=false", "--prec-div=true", "--prec-sqrt=true"]
+    return compile_module(kernel_source(strict), tuple(options), "nextgen_reservoirs")
 
 
 class Reservoirs:

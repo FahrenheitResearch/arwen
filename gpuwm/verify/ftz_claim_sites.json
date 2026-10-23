@@ -107,7 +107,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 166,
+      "line": 191,
       "kind": "prose",
       "anchor": "- **Default output changes for most configurations, from the WRF exact chain's scheme corrections.** Noah takes the C library's float32 words for its exponentials and powers, handles subnormal snow and runs `SFLX_GLACIAL` on land ice; the cloud fraction `cal_cldfra1` takes WRF's float32 `expf`/`powf`, and every radiation output follows it; Grell-Freitas, the MM5 surface layer, Shin-Hong, terrain drag, topographic radiation, Morrison, the lake model, New Tiedtke's first step, `swint`, the UW boundary layer's calm guard and chemistry's sulfur follow their WRF 4.6.1 transcriptions. A 2.9.0 checkpoint is refused by name and the run restarts from its initial time.",
       "anchor_sha256": "724c82615abdaa8df022dbc4484a0db2a3233c44a4b188da56b35071b06a83e1",
@@ -118,7 +118,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 258,
+      "line": 283,
       "kind": "prose",
       "anchor": "- Eight schemes in everyday use now match WRF v4.6.1 word for word, and each is checked against WRF's own Fortran in every release battery: Kain-Fritsch (`cu_physics = 1`, the cumulus of the wizard's default 12 km root), WSM6 (`mp_physics = 6`), Kessler (1), Dudhia shortwave (`ra_sw_physics = 1`), RRTM longwave (`ra_lw_physics = 1`), the MYJ boundary layer (`bl_pbl_physics = 2`), Milbrandt-Yau (`mp_physics = 9`) and WDM6 (16). None had been compared with WRF in a release, and each missed it (Kain-Fritsch matched none of 1,793 convecting columns; WSM6 had 297,198 of 1,351,090 words wrong; Kessler's rain was transcribed as `qr = prod`). Under the strict build every output word matches on every committed column; the default build matches except where it flushes subnormal float32 values to zero. **Every run that selects one of these schemes changes**, the default 12 km root included. A checkpoint written with the old Kain-Fritsch or WDM6 is refused on resume; restart such a run from its start. Two places leave WRF on purpose, where WRF's own arithmetic breaks: the Kain-Fritsch rain flux stays non-negative (below), and Kessler caps the saturation vapour pressure at 0.99 p, as WRF's Morrison and Ferrier do. Whole-model identity with WRF is not claimed.",
       "anchor_sha256": "37195a54f4055395e76740f44b6a42b20401113152f63b9590d5bf8404cfa1f8",
@@ -129,7 +129,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 265,
+      "line": 290,
       "kind": "prose",
       "anchor": "- Ensemble members using a surface recipe compile. NVRTC refused their kernels with \"--ftz defined more than once\", because CuPy adds its own flag beside the engine's; the kernels now compile directly with the engine's three flags, `--fmad=false` and `--ftz=false` unchanged.",
       "anchor_sha256": "0f82d7e9fba32f5b081e08a2bc5619d3ccd0efadd1585fd5e993dbb04f721553",
@@ -140,7 +140,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 298,
+      "line": 323,
       "kind": "prose",
       "anchor": "- The strict build's YSU check grades subnormal tendencies as WRF's own words; it had asserted the default build's flush, so every strict battery failed it.",
       "anchor_sha256": "a973223f5279d093a97c6826da582ee1cf28536f542a2e6784e0af00c15bf4d1",
@@ -151,7 +151,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 382,
+      "line": 407,
       "kind": "prose",
       "anchor": "- The MYNN (`sf_sfclay_physics = 5`), revised MM5 (1), classic MM5 (91) and Eta (2) surface layers, and the HRRR MYNN's moisture variance, compute in the default build as in the strict one: no fused multiply-add contraction and no flushing of tiny (subnormal) values to zero. On column sets built to reach those values the default build had differed from WRF v4.6.1 in up to 17,832 words per scheme; it now differs in none, and the strict build is unchanged word for word. Answers change slightly for runs with these surface layers.",
       "anchor_sha256": "29c7615a6d43b8e858a31a0d5e8b751e9a18c2dd059ed43051d4b698057f126b",
@@ -162,7 +162,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 3545,
+      "line": 3570,
       "kind": "prose",
       "anchor": "1e-20 sentinel itself, subnormal operands, NaN donors and overflowing",
       "anchor_sha256": "df033327abd8d87b5c75c7aba9e952c97dca515ac1171af97cd1c5eeb9164b9a",
@@ -173,7 +173,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 3550,
+      "line": 3575,
       "kind": "prose",
       "anchor": "which flushes subnormal operands; the projected entry uses the host",
       "anchor_sha256": "e3787394d238ab20ac55a8587e014fbbc6d303f32bb51a36b5790cd953b2bf54",
@@ -184,7 +184,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 3553,
+      "line": 3578,
       "kind": "prose",
       "anchor": "point. They differ only when an operand is subnormal or infinite and",
       "anchor_sha256": "7733565a4cc90371b7e5a0fcaa86dc9992c235506c80b7adb7b0d2e7042bfcff",
@@ -195,7 +195,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 3565,
+      "line": 3590,
       "kind": "prose",
       "anchor": "a subnormal countermeasure that emulated every FP32 operation through",
       "anchor_sha256": "85ed9c0b321942ac6708c466a97265b881d38894d01e35d643993fb1993dcf85",
@@ -206,7 +206,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 3566,
+      "line": 3591,
       "kind": "prose",
       "anchor": "FP64: decode a possibly subnormal operand from its bits, do the work in",
       "anchor_sha256": "14dfde0e1ed0c25bc246cdb49f012050e53ceea0e0e25f71f142329ff67ed8ed",
@@ -217,7 +217,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 3569,
+      "line": 3594,
       "kind": "prose",
       "anchor": "`sub.rn.f32` and `mul.rn.f32` written as inline PTX without the `.ftz`",
       "anchor_sha256": "b970d9e3b51fbb988c89325a44c9abc97cf299dfc3b3ad89eadb35990d82d0ca",
@@ -228,7 +228,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 3581,
+      "line": 3606,
       "kind": "prose",
       "anchor": "how often it sees or makes a subnormal, and whether the PTX and FP64",
       "anchor_sha256": "0991b5df9dfe9ce6c5914e7d1474d902aea0bc53b97c9c5c160e7ebd1cf39e60",
@@ -239,7 +239,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 3584,
+      "line": 3609,
       "kind": "prose",
       "anchor": "subnormal operand, 1,659,113 producing a subnormal result, and zero",
       "anchor_sha256": "50e90e32245a5af722f01f71a1689aac0704b2de0cc03d44367bd2cd7a9ea258",
@@ -250,7 +250,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 3585,
+      "line": 3610,
       "kind": "prose",
       "anchor": "mismatches between the two arms. The subnormals are real and they are",
       "anchor_sha256": "842948825d6fea956e6c40a776b10c65e7dd63adb5dea70450e3b9d67b6d9e7a",
@@ -261,7 +261,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 3593,
+      "line": 3618,
       "kind": "prose",
       "anchor": "operand classes, an exhaustive sweep of the low-order subnormal range,",
       "anchor_sha256": "69ab17c770b5d52b7ffa3d353fd0a308ad08c4239ec79d1b7c856ac88c0cb778",
@@ -272,7 +272,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 3594,
+      "line": 3619,
       "kind": "prose",
       "anchor": "a mantissa sweep that lands products on subnormal rounding ties, and a",
       "anchor_sha256": "6318a752c383867b3ee11478c2b9c7bb88d0a75fa71e3561f3a6fe84e39e975d",
@@ -283,7 +283,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 3652,
+      "line": 3677,
       "kind": "prose",
       "anchor": "subnormals. `tools/ftz_receipt` measures that each of the six",
       "anchor_sha256": "5136f4e516381bf5655ae906aef6a53d3ab92f52b6e814fb4bef404cba119fec",
@@ -294,7 +294,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 3654,
+      "line": 3679,
       "kind": "prose",
       "anchor": "`-ftz=true`, and that inline PTX without `.ftz` does not. The module",
       "anchor_sha256": "0edad2fe7c7f560883d32d9d4677add844431625d1dc78451088c63edbbce0ac",
@@ -305,7 +305,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 3660,
+      "line": 3685,
       "kind": "prose",
       "anchor": "instructions as PTX makes the subnormal contract a property of the",
       "anchor_sha256": "aa6b7fbbce8527a171f30d9ad9e52b697428a89a3080c32c587f3f4d45af8f02",
@@ -316,7 +316,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 5939,
+      "line": 5964,
       "kind": "prose",
       "anchor": "where FP32 subnormals are flushed in each of the six mechanisms the",
       "anchor_sha256": "960a8ffb3f9a06cdd308819aa0ad7db2d4a4d6702d9a1edc2444d043ed14db22",
@@ -327,7 +327,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 5941,
+      "line": 5966,
       "kind": "prose",
       "anchor": "whose cube is subnormal and flushes to zero, turning a quotient into",
       "anchor_sha256": "d16d72f334e8d30903c3d85abea785c1573abd77b9da707e1a4a5721f5997048",
@@ -338,7 +338,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 6199,
+      "line": 6224,
       "kind": "prose",
       "anchor": "FP32 subnormal flushing on sm_120 was described as a hardware property no",
       "anchor_sha256": "9845ca444fc2d1b5f5725fdb68f0b92434646fa1c15e917f719b3d7da391d204",
@@ -349,7 +349,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 6201,
+      "line": 6226,
       "kind": "prose",
       "anchor": "the same source built without an appended `-ftz=true` keeps full IEEE",
       "anchor_sha256": "2e9db2d996710d5597910bd049935b00c288546c51893027e4da7cb352f1b818",
@@ -360,7 +360,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 6202,
+      "line": 6227,
       "kind": "prose",
       "anchor": "subnormals on the same card. The CPU reference binary was described as an Intel",
       "anchor_sha256": "af90298485911dcdd5f05cf5efa704c8500e4a6f04ac8f3be6cd3da1092f68e1",
@@ -371,7 +371,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 7304,
+      "line": 7329,
       "kind": "prose",
       "anchor": "functions, FP32 subnormal flushing), what each compared surface covers",
       "anchor_sha256": "2e3226a8e81d2f609a854e0ef0205ff199a9b03595eeb01dd045446a32e6cb6b",
@@ -8500,18 +8500,7 @@
     },
     {
       "file": "gpuwm/hydro/noahowp/coupling.py",
-      "line": 58,
-      "kind": "prose",
-      "anchor": "options = [\"--std=c++17\", \"--ftz=false\"]",
-      "anchor_sha256": "bbf4e5e476faad881f3731f7c67c8974ec28d331b961e414449234fa35128435",
-      "route": null,
-      "mechanism": null,
-      "asserted_token": null,
-      "attribution": "unattributed"
-    },
-    {
-      "file": "gpuwm/hydro/noahowp/coupling.py",
-      "line": 159,
+      "line": 13,
       "kind": "prose",
       "anchor": "options = [\"--std=c++17\", \"--ftz=false\"]",
       "anchor_sha256": "bbf4e5e476faad881f3731f7c67c8974ec28d331b961e414449234fa35128435",
@@ -8544,7 +8533,7 @@
     },
     {
       "file": "gpuwm/hydro/reservoirs.py",
-      "line": 107,
+      "line": 115,
       "kind": "prose",
       "anchor": "options = [\"--std=c++17\", \"--ftz=false\"]",
       "anchor_sha256": "bbf4e5e476faad881f3731f7c67c8974ec28d331b961e414449234fa35128435",
@@ -8555,10 +8544,10 @@
     },
     {
       "file": "gpuwm/hydro/routed_init.py",
-      "line": 48,
+      "line": 62,
       "kind": "prose",
-      "anchor": "flags = ['--std=c++17', '--ftz=false']",
-      "anchor_sha256": "418febd1d43fc9b9f3e26df3d1f22171f11dad25c551be014a03d8b9b73d44f7",
+      "anchor": "options = (\"--std=c++17\", \"--ftz=false\", \"--prec-div=true\", \"--prec-sqrt=true\")",
+      "anchor_sha256": "28f55d2cbd9e60c813b46d167e8192ddc95d7ed5d5fdec4c81fe64510045b576",
       "route": null,
       "mechanism": null,
       "asserted_token": null,
@@ -8566,7 +8555,7 @@
     },
     {
       "file": "gpuwm/hydro/runoff.py",
-      "line": 89,
+      "line": 18,
       "kind": "prose",
       "anchor": "flags = [\"--std=c++17\", \"--ftz=false\"]",
       "anchor_sha256": "bc1244090e8ca2053dbdf554af99e93aa7d0b9b10d004025d3a2fd8bb9f5dbc5",
@@ -21424,6 +21413,17 @@
       "attribution": "unattributed"
     },
     {
+      "file": "tests/test_hydro_routed_replay_cuda.py",
+      "line": 145,
+      "kind": "prose",
+      "anchor": "flags = [\"--std=c++17\", \"--ftz=false\"]",
+      "anchor_sha256": "bc1244090e8ca2053dbdf554af99e93aa7d0b9b10d004025d3a2fd8bb9f5dbc5",
+      "route": null,
+      "mechanism": null,
+      "asserted_token": null,
+      "attribution": "unattributed"
+    },
+    {
       "file": "tests/test_kernel_aot_raw.py",
       "line": 43,
       "kind": "prose",
@@ -30643,7 +30643,7 @@
     },
     {
       "file": "tools/battery/list_census.json",
-      "line": 2541,
+      "line": 2548,
       "kind": "prose",
       "anchor": "\"tests/test_ftz_route_inventory.py\": 8,",
       "anchor_sha256": "cfb237107baa84410b8190d4f7e3850de64662b520871ae493be81a1cfc932ed",
@@ -30654,7 +30654,7 @@
     },
     {
       "file": "tools/battery/list_census.json",
-      "line": 2542,
+      "line": 2549,
       "kind": "prose",
       "anchor": "\"tests/test_ftz_claim_consistency.py\": 18,",
       "anchor_sha256": "1fe47ed9fb7bdf435e636bc98234552157c2bf06965c466b5dcd3f71a5a30214",
@@ -30665,7 +30665,7 @@
     },
     {
       "file": "tools/battery/list_census.json",
-      "line": 2543,
+      "line": 2550,
       "kind": "prose",
       "anchor": "\"tests/test_ftz_render.py\": 29,",
       "anchor_sha256": "ae2462a82a3c7281a60c30cea7f3b20db068021596afe3fd00987cd07ce3fd0a",

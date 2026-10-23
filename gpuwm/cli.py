@@ -475,9 +475,9 @@ def _register_run_parser(sub):
     run.add_argument("--wrfinput", type=Path, metavar="DIR",
                      help="WRF real.exe directory containing wrfinput_d0*, "
                           "wrfbdy_d01 and producing namelist.input (instead of CONFIG)")
-    run.add_argument("--hydro", default=None, metavar="off|SETTINGS.toml",
-                     help="hydro is on wherever a hydrofabric covers the domain; "
-                          "off disables it, a TOML file selects settings (as on gpuwm go)")
+    run.add_argument("--hydro", default=None, metavar="on|off|SETTINGS.toml",
+                     help="hydro is opt-in: on couples it wherever a hydrofabric covers the domain, "
+                          "a TOML file selects settings (as on gpuwm go); without it the run has no hydro")
     run.add_argument("--restart-from", type=Path, default=None, metavar="WRFRST",
                      help="continue a WRF run from its restart file (wrfrst_d01_<time>, any "
                           "suffix): the state, physics and clock are the file's, and the "

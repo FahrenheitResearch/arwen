@@ -264,6 +264,9 @@ LIVE_ROW = "nwm-analysis-assim-conus"
 #: Each store's last coverage answer (``rw_zarr coverage``), kept so the
 #: receipt can say which spin-up hours were finalized and which preliminary.
 _COVERAGE: dict[str, dict] = {}
+#: (monotonic seconds, last whole hour) per store, reused for COVERAGE_REUSE_S.
+_COVERAGE_ASKED: dict[str, tuple[float, datetime]] = {}
+COVERAGE_REUSE_S = 600.0
 
 
 def source_last_time(row: dict) -> datetime | None:
@@ -276,6 +279,12 @@ def source_last_time(row: dict) -> datetime | None:
     access = row.get("access", {})
     if access.get("reader") != "rw_zarr" or not access.get("store"):
         return None
+    # The source prefetch (prefetch) and the preparation it feeds ask the same
+    # store within seconds of each other: one answer per store per process for
+    # a few minutes, not a second rw_zarr coverage round trip.
+    asked = _COVERAGE_ASKED.get(access["store"])
+    if asked is not None and time.monotonic() - asked[0] < COVERAGE_REUSE_S:
+        return asked[1]
     try:
         proc = subprocess.run([os.fspath(_rw_zarr()), "coverage", access["store"]],
                               capture_output=True, text=True, timeout=180)
@@ -286,7 +295,9 @@ def source_last_time(row: dict) -> datetime | None:
     except Exception:  # noqa: BLE001 - an unanswered question keeps the old plan
         return None
     _COVERAGE[access["store"]] = coverage
-    return stop.replace(minute=0, second=0, microsecond=0)
+    last = stop.replace(minute=0, second=0, microsecond=0)
+    _COVERAGE_ASKED[access["store"]] = (time.monotonic(), last)
+    return last
 
 
 def _download(url: str, path: Path) -> dict:
@@ -507,6 +518,95 @@ def spinup_segments(start, end, *, source, finalized, patched_times, fill_name):
     return runs
 
 
+def _fetch_window(row, area, state_times, forcing_times, fetch_dir, *, progress=print):
+    """The state snapshots plus edge hours (this request's own) and the whole
+    forcing days (the shared day cache), fetched AT THE SAME TIME.
+
+    Breakage it prevents (2.9.4 R11, 2026-10-22): the 89 forcing days waited
+    for the state and edge extraction to finish (11-14 s of a first run's
+    hydro preparation) although the two read different records of the store
+    into different files. Returns (fetch dir, fetch receipt, day files, day receipt).
+    """
+    full_days, edge_times = _split_days(forcing_times)
+    jobs = _fetch_jobs(row, area, state_times, edge_times)
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="hydro-forcing-days") as pool:
+        days = (pool.submit(forcing_days, row, area, full_days, _days_root(), progress=progress)
+                if full_days else None)
+        selected, fetched = _shared_fetch(fetch_dir, row, jobs=jobs, area=area,
+                                          state_times=state_times, forcing_times=edge_times,
+                                          progress=progress)
+        day_files, day_receipt = days.result() if days is not None else ([], {"days": 0})
+    return selected, fetched, day_files, day_receipt
+
+
+def _area_contains(outer, inner) -> bool:
+    """Whether the [south, west, north, east] box ``outer`` holds ``inner``."""
+    return (outer[0] <= inner[0] and outer[1] <= inner[1]
+            and outer[2] >= inner[2] and outer[3] >= inner[3])
+
+
+#: How far the source area a launch derives from its domain footprint reaches
+#: past it: the fabric's own box pad (``bbox`` stage, 0.5 degree) plus a
+#: quarter degree (one ERA5 cell) for catchments drawn a little past the footprint.
+FOOTPRINT_AREA_PAD_DEGREES = 0.75
+
+
+def footprint_area(footprint, pad=FOOTPRINT_AREA_PAD_DEGREES):
+    """The [south, west, north, east] source area for a fabric over ``footprint``.
+
+    Known before the fabric exists, so the source fetch can start beside the
+    fabric's own source downloads and build (:func:`prefetch`); the
+    preparation then uses it whenever it holds the built fabric's box
+    (:func:`prepare` ``area_hint``). None when the footprint has no box.
+    """
+    try:
+        south, west = float(footprint["south"]), float(footprint["west"])
+        north, east = float(footprint["north"]), float(footprint["east"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not (south < north and west < east):
+        return None
+    return [south - pad, west - pad, north + pad, east + pad]
+
+
+def _source_window(row, date, spinup_days):
+    """(forecast start, last spin-up hour) for ``date``: the store's last hour
+    when the forecast lies past it, as :func:`_prepare` plans it."""
+    t = parse_time(date)
+    last = source_last_time(row) if spinup_days else None
+    return t, (last if (last is not None and t > last) else t)
+
+
+def _fetch_dir_for(requested_out):
+    return Path(requested_out).absolute().with_name(Path(requested_out).name + "-source")
+
+
+def prefetch(*, date: str, out: Path, area, source: str = "era5-arco", spinup_days: int = 0,
+             progress=print) -> dict:
+    """Fetch the source a later :func:`prepare` with the same ``out``, ``date``
+    and area will read: the state snapshots, the edge hours and the whole
+    forcing days, into the same caches, so that preparation reuses them.
+
+    For a launch whose fabric is still being built: the fetch does not read
+    the fabric, only the area (:func:`footprint_area`). Breakage it prevents
+    (2.9.4 R11, 2026-10-22): a first run on a new region spent 107-165 s
+    extracting 89 ERA5 forcing days only after the fabric's own source
+    downloads and build (45-160 s) had finished, all of it before step 1.
+    A hole the store serves as NaN is left to :func:`prepare` (it fills it or
+    moves the window). Returns the fetch receipts.
+    """
+    row = admit(load_table(), source)
+    _, t_source = _source_window(row, date, spinup_days)
+    start = t_source - timedelta(days=spinup_days)
+    state_times = sorted({start.strftime(ISO), t_source.strftime(ISO)})
+    forcing_times = hours(start + timedelta(hours=1), spinup_days * 24) if spinup_days else []
+    started = time.perf_counter()
+    selected, fetched, _files, days = _fetch_window(
+        row, list(area), state_times, forcing_times, _fetch_dir_for(out), progress=progress)
+    return {"fetch_dir": os.fspath(selected), "fetch": fetched, "forcing_days": days,
+            "area_south_west_north_east": list(area), "seconds": time.perf_counter() - started}
+
+
 def run_stage(command: str, request: dict, workdir: Path) -> dict:
     """One rw_hydro_init stage from a request file; returns its JSON receipt."""
     workdir.mkdir(parents=True, exist_ok=True)
@@ -521,8 +621,15 @@ def run_stage(command: str, request: dict, workdir: Path) -> dict:
 
 def prepare(*, fabric: Path, date: str, out: Path, source: str = "era5-arco",
             spinup_days: int = 0, area=None, params: Path | None = None,
-            fetch_dir: Path | None = None, trace=(), progress=print) -> dict:
-    """Prepare fresh results, preserving previous runs and reusing source data."""
+            fetch_dir: Path | None = None, trace=(), progress=print, area_hint=None) -> dict:
+    """Prepare fresh results, preserving previous runs and reusing source data.
+
+    ``area_hint``: the source area a launch derived from its footprint
+    (:func:`footprint_area`) and may already have fetched (:func:`prefetch`).
+    With no ``area``, it is used whenever it holds the fabric's own box, so
+    every preparation of one domain reads the same source files; otherwise the
+    fabric's box is used, as without a hint.
+    """
     from gpuwm.output_claim import acquire_output
     from .output import _select_output_directory
 
@@ -552,11 +659,11 @@ def prepare(*, fabric: Path, date: str, out: Path, source: str = "era5-arco",
         return _prepare(fabric=fabric, date=date, out=claim.path, source=source,
                         spinup_days=spinup_days, area=area, params=params,
                         fetch_dir=fetch_dir, trace=trace, progress=progress,
-                        requested_out=requested)
+                        requested_out=requested, area_hint=area_hint)
 
 
 def _prepare(*, fabric, date, out, source, spinup_days, area, params,
-             fetch_dir, trace, progress, requested_out):
+             fetch_dir, trace, progress, requested_out, area_hint=None):
     """Initial state for every catchment of FABRIC at DATE, optionally spun up.
 
     With spinup_days N the source state at DATE - N days is mapped onto the
@@ -565,7 +672,6 @@ def _prepare(*, fabric, date, out, source, spinup_days, area, params,
     import sys
     table = load_table()
     row = admit(table, source)
-    t = parse_time(date)
     # A forecast past the reanalysis's last hour (every live and real-time
     # run: ERA5 lags about six days) spins up to that hour and is carried to
     # the forecast start; where the live analysis covers the domain, its soil
@@ -574,11 +680,18 @@ def _prepare(*, fabric, date, out, source, spinup_days, area, params,
     # prevents: every live run's hydro preparation failed on the ERA5 fetch
     # ("outside the coverage this store declares") and the forecast ran with
     # hydro off (fabric_preparation_failed).
-    last = source_last_time(row) if spinup_days else None
-    t_source = last if (last is not None and t > last) else t
+    t, t_source = _source_window(row, date, spinup_days)
     out = Path(out)
+    area_source = "given"
     if area is None:
-        area = run_stage("bbox", {"fabric": os.fspath(fabric), "pad_degrees": 0.5}, out / "bbox")["area_south_west_north_east"]
+        box = run_stage("bbox", {"fabric": os.fspath(fabric), "pad_degrees": 0.5}, out / "bbox")["area_south_west_north_east"]
+        if area_hint is not None and _area_contains(area_hint, box):
+            area, area_source = list(area_hint), "footprint"
+        else:
+            area, area_source = box, "fabric box"
+            if area_hint is not None:
+                progress(f"hydro init: the fabric's box {box} reaches past the footprint area "
+                         f"{list(area_hint)}; the source is read over the fabric's box")
     if fetch_dir is None:
         # Source cache belongs to the requested address, independent of fresh
         # result directories. Existing pre-cache-layout extractions still work.
@@ -609,13 +722,8 @@ def _prepare(*, fabric, date, out, source, spinup_days, area, params,
         # request's own. Breakage it prevents: every start re-fetched all 8,666
         # ERA5 chunks (about 300 s on the HRRR recipe, a 4090 host), because the 24 h
         # slices began at each start's own hour and never matched a cached one.
-        full_days, edge_times = _split_days(forcing_times)
-        jobs = _fetch_jobs(row, area, state_times, edge_times)
-        selected, fetched = _shared_fetch(fetch_dir, row, jobs=jobs, area=area,
-                                          state_times=state_times, forcing_times=edge_times,
-                                          progress=progress)
-        day_files, day_receipt = (forcing_days(row, area, full_days, _days_root(), progress=progress)
-                                  if full_days else ([], {"days": 0}))
+        selected, fetched, day_files, day_receipt = _fetch_window(
+            row, area, state_times, forcing_times, fetch_dir, progress=progress)
         state_nc = os.fspath(selected / "state.nc")
         files = sorted(os.fspath(p) for p in selected.glob("forcing-*.nc")) + day_files
         if not spinup_days:
@@ -654,7 +762,8 @@ def _prepare(*, fabric, date, out, source, spinup_days, area, params,
     result = {"schema": "arwen.hydro-world.init-run.v1", "fabric": os.fspath(fabric), "date": date,
               "requested_output_directory": os.fspath(requested_out), "output_directory": os.fspath(out),
               "source": source, "spinup_days": spinup_days, "fetch": fetched, "forcing_days": day_receipt,
-              "gap_fill": filled, "weights": weights, "state": state}
+              "gap_fill": filled, "weights": weights, "state": state,
+              "source_area": {"area_south_west_north_east": list(area), "from": area_source}}
     if spinup_days:
         # Reanalysis state at the forecast start itself (Noah-OWP soil, snow),
         # beside the spun-up CFE storages.

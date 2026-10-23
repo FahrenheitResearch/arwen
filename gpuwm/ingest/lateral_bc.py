@@ -1138,6 +1138,16 @@ def _apply_legacy_held_interior(tendency, held, msft, active_width, *,
         tendency[interior] += held[interior]
 
 
+def relaxation_shapes(nz, ny, nx):
+    """The tendency shapes the state relaxation launches for a domain whose
+    mass grid is (nz, ny, nx): mass and scalars, u (x-staggered), v
+    (y-staggered), w and phi (z-staggered) and mu (one level). The kernel
+    is shape-specialized (gpuwm.core.kernel_shape), so each is its own
+    image; the kernel pre-warm compiles all of them (gpuwm.kernel_prewarm).
+    """
+    return ((nz, ny, nx), (nz, ny, nx + 1), (nz, ny + 1, nx), (nz + 1, ny, nx), (1, ny, nx))
+
+
 def _launch_state_relaxation(state, field_name, tendency, boundary, *,
                              dtbc, dt, spec_zone, relax_zone, spec_exp,
                              apply_relax, weights, clear_specified, add_held,

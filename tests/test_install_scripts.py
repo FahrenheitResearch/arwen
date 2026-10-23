@@ -130,7 +130,22 @@ if kind == 'uv':
         (home / 'installed').touch()
     else:
         raise AssertionError(args)
-if kind == 'curl':
+if kind == 'curl' and 'https://sh.rustup.rs' in args:
+    # rustup-init, fetched to a file the installer then runs with sh: it puts
+    # a rustup proxy in ~/.cargo/bin and installs its --default-toolchain.
+    if os.environ.get('GPUWM_INSTALL_TEST_FAIL') == 'rustup-download':
+        sys.exit(6)
+    target = pathlib.Path(args[args.index('-o') + 1])
+    target.write_text('"$GPUWM_INSTALL_TEST_PYTHON" "$GPUWM_INSTALL_TEST_BACKEND" rustup-init "$@" || exit $?\n'
+                      '[ "$RUSTUP_INIT_SKIP_PATH_CHECK" = yes ] || exit 9\n'
+                      'want=; while [ $# -gt 0 ]; do [ "$1" = --default-toolchain ] && want="$2"; shift; done\n'
+                      '[ -n "$want" ] || exit 8\n'
+                      'mkdir -p "$HOME/.cargo/bin" "$GPUWM_INSTALL_TEST_RUSTUPHOME"\n'
+                      "printf '#!/bin/sh\\nexec \"$GPUWM_INSTALL_TEST_PYTHON\" "
+                      "\"$GPUWM_INSTALL_TEST_BACKEND\" rustup \"$@\"\\n' > \"$HOME/.cargo/bin/rustup\"\n"
+                      'chmod 755 "$HOME/.cargo/bin/rustup"\n'
+                      ': > "$GPUWM_INSTALL_TEST_RUSTUPHOME/$want"\n')
+elif kind == 'curl':
     # The uv installer, fetched to a file the installer then runs with sh.
     assert 'https://astral.sh/uv/install.sh' in args, args
     if os.environ.get('GPUWM_INSTALL_TEST_FAIL') == 'uv-download':
@@ -269,7 +284,10 @@ def _run(tmp_path, platform, *, no_render=False, failure='', companion_gate=True
     log = tmp_path / 'commands.jsonl'
     env = dict(os.environ)
     for key in ('GPUWM_INSTALL_CUDA', 'GPUWM_INSTALL_NO_RENDER', 'GPUWM_INSTALL_YES',
-                'GPUWM_INSTALL_NO_FETCH_TABLES', 'GPUWM_PYTHON', 'RUSTUP_TOOLCHAIN'):
+                'GPUWM_INSTALL_NO_FETCH_TABLES', 'GPUWM_PYTHON', 'RUSTUP_TOOLCHAIN',
+                # The runner's own Rust homes (a release gate host may export CARGO_HOME): install.sh
+                # honours them, so a fixture that expects ~/.cargo under its fake HOME must not inherit them.
+                'CARGO_HOME', 'RUSTUP_HOME'):
         env.pop(key, None)
     env.update({
         'GPUWM_REPO_URL': 'https://example.invalid/local-source-fixture',
@@ -1064,13 +1082,46 @@ def test_a_failed_toolchain_install_stops_the_install(tmp_path, platform):
 
 
 @pytest.mark.parametrize('platform', ['posix', 'powershell'])
-def test_an_old_rustc_without_rustup_stops_and_names_the_version(tmp_path, platform):
-    """A distribution's rustc with no rustup beside it: a remedy naming the
-    version, before the .venv, instead of cargo's refusal after it."""
+def test_an_old_rustc_without_rustup_or_consent_stops_and_names_the_version(tmp_path, platform):
+    """A distribution's rustc with no rustup beside it and no consent: a
+    remedy naming the version, before the .venv, instead of cargo's refusal
+    after it."""
     _, wanted = _declared_minimum()
-    done, rows = _run(tmp_path, platform, rustc='1.93.1', fresh=True)
+    done, rows = _run(tmp_path, platform, rustc='1.93.1', fresh=True, yes=False)
     assert done.returncode != 0
     said = ' '.join((done.stdout + done.stderr).split())
     assert f'install Rust {wanted} or newer' in said, said[-600:]
     assert 'rustc 1.93.1' in said
-    assert not [row for row in rows if row['kind'] in ('cargo', 'python', 'py314t', 'py3')]
+    assert not [row for row in rows if row['kind'] in ('cargo', 'python', 'py314t', 'py3', 'curl', 'rustup-init')]
+
+
+def test_an_old_distribution_rustc_with_consent_gets_rustup_and_the_declared_minimum(tmp_path):
+    """THE MEASURED DEFECT: the published 2.9.4 install.sh run with --yes on
+    a host with a source-built rustc 1.93.1 in /usr/bin and no rustup cloned, then
+    stopped with "there is no rustup to add it", while the same consent
+    installs rustup when cargo is missing.  With consent it now installs
+    rustup in ~/.cargo with the minimum as its default, before the .venv,
+    and builds every workspace on it."""
+    _, wanted = _declared_minimum()
+    done, rows = _run(tmp_path, 'posix', rustc='1.93.1', fresh=True)
+    assert done.returncode == 0, done.stdout + done.stderr
+    fetched = [row['args'] for row in rows if row['kind'] == 'curl' and 'https://sh.rustup.rs' in row['args']]
+    assert len(fetched) == 1, fetched
+    init = [row['args'] for row in rows if row['kind'] == 'rustup-init']
+    assert len(init) == 1 and init[0][init[0].index('--default-toolchain') + 1] == wanted, init
+    assert '--no-modify-path' in init[0]
+    cargo = [row for row in rows if row['kind'] == 'cargo']
+    assert sum(row['args'][0] == 'build' for row in cargo) == len(_required_workspaces())
+    assert all(row['rustup_toolchain'] == wanted for row in cargo)
+    home_cargo = str(tmp_path / 'home' / '.cargo' / 'bin')
+    assert all(row['path'].split(os.pathsep)[0] == home_cargo for row in cargo), cargo[0]['path']
+    order = [row['kind'] for row in rows]
+    assert order.index('rustup-init') < min(order.index(k) for k in ('py3', 'py314t', 'uv', 'python') if k in order)
+    assert 'there is no rustup to add it' not in done.stdout + done.stderr
+
+
+def test_a_failed_rustup_download_for_an_old_distribution_rustc_stops_the_install(tmp_path):
+    done, rows = _run(tmp_path, 'posix', rustc='1.93.1', fresh=True, failure='rustup-download')
+    assert done.returncode != 0
+    assert 'https://sh.rustup.rs' in done.stderr
+    assert not [row for row in rows if row['kind'] in ('cargo', 'python', 'py314t', 'py3', 'rustup-init')]

@@ -5,6 +5,17 @@ from pathlib import Path
 from types import MappingProxyType
 
 
+def compile_unit(strict, key="nextgen.noahowp.catchment_exchange"):
+    """Load coupling.cu (catchment exchange and the parent accumulator share
+    one source and option set, so one image); also the kernel pre-warm's
+    capture (gpuwm.kernel_prewarm hydro jobs)."""
+    from gpuwm.core.ieee_module import compile_module
+    options = ["--std=c++17", "--ftz=false"]
+    if strict:
+        options += ["--fmad=false", "--prec-div=true", "--prec-sqrt=true"]
+    return compile_module(Path(__file__).with_name("coupling.cu").read_text(), options, key)
+
+
 class PreparedCatchmentExchange:
     """Resident CSR exchange, one CUDA thread per catchment, stable pointers.
 
@@ -23,7 +34,6 @@ class PreparedCatchmentExchange:
         import math
         import cupy as cp
         import numpy as np
-        from gpuwm.core.ieee_module import compile_module
 
         if numerics not in {"fast", "strict"}:
             raise ValueError("numerics must be fast or strict")
@@ -55,11 +65,7 @@ class PreparedCatchmentExchange:
         outputs["status"] = cp.zeros(n, cp.int32)
         sticky_status = cp.zeros(n, cp.int32)
         runoff_depth = cp.empty(n, cp.float32)
-        options = ["--std=c++17", "--ftz=false"]
-        if numerics == "strict":
-            options += ["--fmad=false", "--prec-div=true", "--prec-sqrt=true"]
-        module = compile_module(Path(__file__).with_name("coupling.cu").read_text(),
-                                options, "nextgen.noahowp.catchment_exchange")
+        module = compile_unit(numerics == "strict")
         self._kernel = module.get_function("catchment_exchange_routed")
         self._grid, self._block = ((n + 127) // 128,), (128,)
         self._args = (np.int32(n), np.int32(cells), np.int64(indices.size), np.float32(dt_seconds),
@@ -140,7 +146,6 @@ class PreparedAccumulatedExchange(PreparedCatchmentExchange):
     def __init__(self, *, surface_total, subsurface_total, qfx, smois, sh2o, **kwargs):
         import cupy as cp
         import numpy as np
-        from gpuwm.core.ieee_module import compile_module
 
         for name, array in (("sfcrunoff", surface_total), ("udrunoff", subsurface_total), ("qfx", qfx)):
             if str(array.dtype) != "float32" or not array.flags.c_contiguous:
@@ -156,11 +161,8 @@ class PreparedAccumulatedExchange(PreparedCatchmentExchange):
         super().__init__(runsrf=surface_step, runsub=subsurface_step, soldrain=zero,
                          sfcheadrt=zero, smois=smois, sh2o=sh2o, ecan=qfx, etran=zero,
                          edir=zero, **kwargs)
-        options = ["--std=c++17", "--ftz=false"]
-        if self.restart_identity["numerics"] == "strict":
-            options += ["--fmad=false", "--prec-div=true", "--prec-sqrt=true"]
-        module = compile_module(Path(__file__).with_name("coupling.cu").read_text(),
-                                options, "nextgen.parent.accumulator_step")
+        module = compile_unit(self.restart_identity["numerics"] == "strict",
+                              "nextgen.parent.accumulator_step")
         self._step_kernel = module.get_function("parent_accumulator_step")
         cells = surface_total.size
         self._step_grid, self._step_block = ((cells + 255) // 256,), (256,)
