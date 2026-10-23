@@ -1304,12 +1304,33 @@ def render_series_rust(paths, *, products: str, timeidx: int | None,
         if wanted_times is not None:
             selected = []
             for png in written:
-                if _engine_output_time(png.name) in wanted_times:
-                    delivered = outdir / png.name
-                    os.replace(render_layout.fs_path(png),
-                               render_layout.fs_path(delivered))
-                    selected.append(delivered)
-                    drawn_at[delivered] = png
+                moment = render_layout.engine_output_time(png.name)
+                if moment is None:
+                    # Which frame drew it is unknowable from its name, so
+                    # it cannot be told from a discarded baseline; it is
+                    # named and left undelivered, never the end of a run
+                    # whose frames are already drawn.
+                    print(f"render: warning: not delivered, the frame time "
+                          f"cannot be read from the file name: {png}",
+                          file=sys.stderr)
+                    skipped.append((png.stem, "frame time not readable from "
+                                    "the file name; picture not delivered"))
+                    continue
+                if moment not in wanted_times:
+                    continue
+                # A native SFIRE panel is drawn already filed under
+                # <domain>/<product>/<valid-day>/; it keeps that path.
+                try:
+                    relative = png.relative_to(engine_out)
+                except ValueError:
+                    relative = Path(png.name)
+                delivered = outdir / relative
+                os.makedirs(render_layout.fs_path(delivered.parent),
+                            exist_ok=True)
+                os.replace(render_layout.fs_path(png),
+                           render_layout.fs_path(delivered))
+                selected.append(delivered)
+                drawn_at[delivered] = png
             written = selected
     written = render_georef.file_pictures(
         outdir, written,
@@ -1370,18 +1391,6 @@ def _wanted_slots(series, wanted_times, *, each: bool = False) -> list[str] | No
     if len(wanted) != 1 or len(stamps) < 2:
         return None
     return [str(stamps.index(wanted[0]))]
-
-
-def _engine_output_time(name: str) -> datetime.datetime:
-    """Read the renderer's filename clock; no weather diagnostic is computed."""
-    exact = re.search(r"_valid_(\d{8}_\d{6})z_lead_", name)
-    if exact:
-        return datetime.datetime.strptime(exact.group(1), "%Y%m%d_%H%M%S")
-    clock = re.search(r"_(\d{8})_(\d{1,2})z_f(\d{3,})(?:_|\.)", name)
-    if clock:
-        return (datetime.datetime.strptime(clock.group(1), "%Y%m%d")
-                + datetime.timedelta(hours=int(clock.group(2)) + int(clock.group(3))))
-    raise ValueError(f"Cannot identify the rendered frame time in {name!r}")
 
 
 def _history_identity_attribute(name: str) -> bool:
@@ -1944,7 +1953,7 @@ def _place_engine_output(png: Path, outdir: Path, domain: str,
         native_parts = ()
     if len(native_parts) == 4:
         native_domain, native_product, native_day, native_name = native_parts
-        native_stamp = re.fullmatch(r"([a-z][a-z0-9_]+)_([0-9]{8}T[0-9]{6})\.png", native_name)
+        native_stamp = render_layout.NATIVE_PANEL.fullmatch(native_name)
         if (re.fullmatch(r"d[0-9]+(?:-[0-9]+(?:\.[0-9]+)?[mk]+)?|native_grid", native_domain)
                 and native_stamp and native_product == native_stamp.group(1)
                 and native_day == native_stamp.group(2)[:8]):

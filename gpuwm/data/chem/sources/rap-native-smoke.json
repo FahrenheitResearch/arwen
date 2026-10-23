@@ -167,7 +167,15 @@
         "density": "pressure_over_temperature",
         "gas_constant_j_kg_k": 287.04,
         "provenance": "UPP 1296eebb295251d0fe1cc697f47058c62d887977 MDLFLD.f:2442; params.F:57; no humidity factor"
-      }
+      },
+      "units_epochs": [
+        {
+          "until_cycle": "2021-12-21T14:00:00Z",
+          "units": "ug m-3",
+          "scale": 1e-9,
+          "provenance": "NOAA RAP awp130bgrb f00 MASSDEN (0/20/0, level 105, same kg m-3 label) read by .idx byte range: rap.20211221 t13z hybrid level 1 median 7.8e-03, max 6.2e+00 (ug m-3); t14z median 8.0e-12, max 5.4e-09 (kg m-3). HRRR wrfnat switches at the same cycle."
+        }
+      ]
     },
     "PRES": {
       "group": "hybrid_level",

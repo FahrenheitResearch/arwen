@@ -67,7 +67,7 @@
     }
   },
   "variables": {
-    "MASSDEN": {"group": "hybrid_level", "request": "MASSDEN", "selector": {"discipline": 0, "category": 20, "parameter": 0, "product_template": 0, "level_type": 105}, "units": "kg m-3", "conversion_parameters": {"density": "pressure_over_temperature", "gas_constant_j_kg_k": 287.04, "provenance": "UPP 1296eebb295251d0fe1cc697f47058c62d887977 MDLFLD.f:2442; params.F:57; no humidity factor"}},
+    "MASSDEN": {"group": "hybrid_level", "request": "MASSDEN", "selector": {"discipline": 0, "category": 20, "parameter": 0, "product_template": 0, "level_type": 105}, "units": "kg m-3", "conversion_parameters": {"density": "pressure_over_temperature", "gas_constant_j_kg_k": 287.04, "provenance": "UPP 1296eebb295251d0fe1cc697f47058c62d887977 MDLFLD.f:2442; params.F:57; no humidity factor"}, "units_epochs": [{"until_cycle": "2021-12-21T14:00:00Z", "units": "ug m-3", "scale": 1e-9, "provenance": "NOAA HRRR wrfnat f00 MASSDEN (0/20/0, level 105, same kg m-3 label) read by .idx byte range: hrrr.20211221 t13z hybrid level 1 median 9.2e-03, max 2.6e+01 (ug m-3); t14z median 9.6e-12, max 2.3e-08 (kg m-3). RAP awp130bgrb switches at the same cycle."}]},
     "PRES": {"group": "hybrid_level", "request": "PRES", "selector": {"discipline": 0, "category": 3, "parameter": 0, "level_type": 105}, "units": "Pa"},
     "TMP": {"group": "hybrid_level", "request": "TMP", "selector": {"discipline": 0, "category": 0, "parameter": 0, "level_type": 105}, "units": "K"},
     "PSFC": {"group": "surface", "request": "PRES", "selector": {"discipline": 0, "category": 3, "parameter": 0, "level_type": 1}, "units": "Pa"}

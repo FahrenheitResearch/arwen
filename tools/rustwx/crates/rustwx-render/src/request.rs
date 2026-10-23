@@ -879,6 +879,11 @@ pub struct MapRenderRequest {
     #[serde(default)]
     pub wind_streamlines: Vec<WindStreamlineLayer>,
     pub semantics: Option<ProductSemantics>,
+    /// The note the map carries when the field has no value the colour
+    /// scale draws (for example "No 0 C level: ..."). `None` uses the
+    /// renderer's generic note. See `render::empty_map_note`.
+    #[serde(default)]
+    pub empty_note: Option<String>,
 }
 
 const fn default_supersample_factor() -> u32 {
@@ -927,6 +932,7 @@ impl MapRenderRequest {
             wind_barbs: Vec::new(),
             wind_streamlines: Vec::new(),
             semantics: None,
+            empty_note: None,
         }
     }
 

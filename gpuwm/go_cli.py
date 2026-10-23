@@ -595,9 +595,6 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
 
     try:
         experiment = load_experiment(config)
-        if len(experiment.domains) == 1:
-            from gpuwm.experiment import refuse_unrouted_perturbation
-            refuse_unrouted_perturbation(experiment, "single-domain prepared forecast")
         profile = identify_single_domain_profile(experiment.root.run)
     except Exception as error:  # a config that will not load is the finding
         raise GoRefusal(f"{config} does not load as an experiment: "
@@ -5021,7 +5018,8 @@ def _registered_launch(args, *, config: Path, payload: dict,
                 # process compiles the same static plan on every core itself
                 # (kernel_prewarm.start_plan, first thing in
                 # run_prepared_forecast), beside that restore.
-                if (getattr(plan, "run_options", None) or {}).get("prepared_root"):
+                if ((getattr(plan, "run_options", None) or {}).get("prepared_root")
+                        and not _hydro_fabric_pending()):
                     _kernel_prewarm_status(
                         prewarm_plan, "not started",
                         why="existing prepared root: the forecast compiles its kernel plan "
@@ -5556,6 +5554,23 @@ def _kernel_prewarm_status(plan, status, reason=None, **attrs):
                       attrs={"status": status, "reason": reason, **attrs})
 
 
+def _hydro_fabric_pending() -> bool:
+    """True while this launch's covering hydro fabric still builds beside it.
+
+    A launch from an existing prepared root has no fetch or preparation, but
+    its forecast still cannot start until that fabric binds (the forecast
+    stage joins it before spawning the runner), so the kernel pre-warm child
+    compiles in that wait. Breakage it prevents: a WOOF bundle start
+    (Oklahoma City, 2026-10-23) waited 64 s for the fabric, then spent 39 s
+    constructing kernels the pre-warm could have compiled during the wait.
+    """
+    try:
+        from gpuwm.hydro.runtime import beside_pending
+        return bool(beside_pending())
+    except Exception:  # noqa: BLE001 - no hydro package, no wait to fill
+        return False
+
+
 def _join_kernel_prewarm(plan: dict) -> None:
     """Wait (bounded) for the spawned kernel pre-warm of this run, then forget it."""
 
@@ -5636,7 +5651,7 @@ class SpeedHooks:
             # a separate context's imports and static loads. Both prepared
             # runners call start_plan before restore, retaining the full
             # all-core static + recorded warm-up in the forecast process.
-            if getattr(args, "prepared_root", None) is not None:
+            if getattr(args, "prepared_root", None) is not None and not _hydro_fabric_pending():
                 _kernel_prewarm_status(
                     plan, "forecast-owned",
                     "prepared inputs; static and recorded kernels warm during restore")

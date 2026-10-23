@@ -476,11 +476,18 @@
       ],
       "publication_lag": [
         {
-          "cycle_hours": null,
-          "hours": 1.5,
-          "per_lead_hours": 0.01,
+          "cycle_hours": [0, 12],
+          "hours": 1.35,
+          "per_lead_hours": 0.0063,
           "late_hours": 1.0,
-          "measured": "Conservative scheduling estimate from the corresponding operational cycle; first-visibility measurements for this product remain pending."
+          "measured": "2026-10-23 posting watch (NOMADS directory listing times of each object, 2026-10-22 00Z to 2026-10-23 08Z, 33 cycles): awp130bgrb f000 at + 1 h 21 min to 1 h 24 min, f021 at + 1 h 29 min to 1 h 32 min"
+        },
+        {
+          "cycle_hours": null,
+          "hours": 0.75,
+          "per_lead_hours": 0.0065,
+          "late_hours": 1.0,
+          "measured": "2026-10-23 posting watch (NOMADS directory listing times of each object, 2026-10-22 00Z to 2026-10-23 08Z, 33 cycles): awp130bgrb f000 at + 45 min to 52 min, f018 at + 52 min to 58 min, f051 (03/09/15/21Z) at + 1 h 06 min to 1 h 09 min"
         }
       ],
       "posting": {
@@ -598,11 +605,26 @@
       ],
       "publication_lag": [
         {
-          "cycle_hours": null,
-          "hours": 1.5,
-          "per_lead_hours": 0.01,
+          "cycle_hours": [0, 6, 12, 18],
+          "from_lead": 19,
+          "hours": 0.86,
+          "per_lead_hours": 0.0183,
           "late_hours": 1.0,
-          "measured": "Conservative scheduling estimate from the corresponding operational cycle; first-visibility measurements for this product remain pending."
+          "measured": "2026-10-23 posting watch (NOMADS directory listing times of each object, 2026-10-22 00Z to 2026-10-23 08Z, 33 cycles): wrfnat f019 at + 1 h 13 min to 1 h 14 min, f048 at + 1 h 45 min to 1 h 46 min"
+        },
+        {
+          "cycle_hours": [0, 6, 12, 18],
+          "hours": 0.83,
+          "per_lead_hours": 0.0203,
+          "late_hours": 1.0,
+          "measured": "2026-10-23 posting watch (NOMADS directory listing times of each object, 2026-10-22 00Z to 2026-10-23 08Z, 33 cycles): wrfnat f000 at + 50 min to 51 min, f018 at + 1 h 12 min to 1 h 13 min"
+        },
+        {
+          "cycle_hours": null,
+          "hours": 0.78,
+          "per_lead_hours": 0.0306,
+          "late_hours": 1.0,
+          "measured": "2026-10-23 posting watch (NOMADS directory listing times of each object, 2026-10-22 00Z to 2026-10-23 08Z, 33 cycles): wrfnat f000 at + 47 min to 53 min, f018 at + 1 h 20 min to 1 h 27 min"
         }
       ],
       "posting": {

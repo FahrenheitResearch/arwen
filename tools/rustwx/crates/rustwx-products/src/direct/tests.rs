@@ -1673,7 +1673,9 @@ fn categorical_precip_scale_masks_false_flags() {
     let ColorScale::Discrete(discrete) = scale else {
         panic!("expected discrete categorical scale");
     };
-    assert_eq!(discrete.levels, vec![0.0, 0.5, 1.0]);
+    // Re-recorded 2026-10-22 (fix/render-legends): one band per code (0, 1)
+    // for the category legend; false flags stay masked.
+    assert_eq!(discrete.levels, vec![-0.5, 0.5, 1.5]);
     assert_eq!(discrete.extend, ExtendMode::Neither);
     assert_eq!(discrete.mask_below, Some(0.5));
 }

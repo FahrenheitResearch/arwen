@@ -752,10 +752,11 @@ _BUBBLE = ("\n[[perturbation.bubbles]]\ncenter_lat = 35.3\n"
 def test_a_tree_carries_a_warm_bubble_through_the_authority_stage(tmp_path):
     """Stage 1 of `gpuwm go` publishes a tree's bubble for the tree runner.
 
-    GFS preparation defers [perturbation] to the prepared domain-tree
-    runner, which applies it to its restored states; only the
-    single-domain runner cannot.  Stage 1 refused the block on every
-    config, so `gpuwm go` ran no bubble on any tree.
+    GFS preparation defers [perturbation] to the prepared runner, which
+    applies it to its restored states.  Stage 1 refused the block on every
+    config, so `gpuwm go` ran no bubble on any tree.  Since
+    fix/single-domain-perturbation (9b04a0e9d5) the single-domain runner
+    applies it too, so a single domain carries it through as well.
     """
     from gpuwm.prepared_single_domain_forecast import (
         _render_materialized_experiment)
@@ -767,11 +768,12 @@ def test_a_tree_carries_a_warm_bubble_through_the_authority_stage(tmp_path):
     assert exp.perturbation.bubbles[0].amplitude_k == 3.0
     assert "[[perturbation.bubbles]]" in rendered
     single = _emit(tmp_path, "single")
-    with pytest.raises(ValueError,
-                       match=r"prepared single-domain forecast"):
-        _render_materialized_experiment(
-            single.read_text(encoding="utf-8") + _BUBBLE, source="gfs",
-            profile=None)
+    rendered, exp, _receipt = _render_materialized_experiment(
+        single.read_text(encoding="utf-8") + _BUBBLE, source="gfs",
+        profile=None)
+    assert len(exp.domains) == 1
+    assert exp.perturbation.bubbles[0].amplitude_k == 3.0
+    assert "[[perturbation.bubbles]]" in rendered
 
 
 def test_the_forecast_stage_matches_what_the_front_door_prints(tmp_path,

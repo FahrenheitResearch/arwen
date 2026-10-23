@@ -1255,7 +1255,7 @@ fn with_render_state_profile_with_style<T>(
             colorbar: request.colorbar,
             // Product preparation has already converted this field. Its
             // own units describe the displayed values and legend scale.
-            colorbar_units: Some(request.field.units.clone()),
+            colorbar_units: legend_units_label(&request.field.units),
             title: request.title.clone().or(default_title),
             subtitle_left: request.subtitle_left.clone(),
             subtitle_center: request.subtitle_center.clone(),
@@ -1310,6 +1310,7 @@ fn with_render_state_profile_with_style<T>(
             barbs,
             streamlines,
             presentation,
+            empty_note: request.empty_note.clone(),
         };
 
         let state_timing = RenderStateTiming {
@@ -1358,6 +1359,23 @@ pub fn build_colormap(scale: &ColorScale, options: ColormapBuildOptions) -> Leve
 /// reproduce the production colorbar's numbers exactly.
 pub fn colorbar_ticks(cmap: &LeveledColormap, cbar_tick_step: Option<f64>) -> Vec<f64> {
     crate::render::legend_ticks(cmap, cbar_tick_step)
+}
+
+/// The unit label a colour bar carries for a field stored in `units`, or
+/// `None` for a dimensionless field.
+///
+/// WHAT BREAKAGE THIS PREVENTS (gate law): a dimensionless field (a flag, an
+/// index such as Haines, a 0/1 category) stores its units as `1` or `0/1`,
+/// and the bar printed that above itself, where it read as a tick value (R10
+/// look, 2.9.4). The title already names such a quantity; a bare number is
+/// not a unit.
+pub fn legend_units_label(units: &str) -> Option<String> {
+    let trimmed = units.trim();
+    let dimensionless = matches!(
+        trimmed.to_ascii_lowercase().as_str(),
+        "" | "1" | "0/1" | "-" | "none" | "dimensionless" | "unitless" | "(dimensionless)"
+    );
+    (!dimensionless).then(|| units.to_string())
 }
 
 const OVERLAY_ONLY_FILL_VALUE: f64 = 0.5;

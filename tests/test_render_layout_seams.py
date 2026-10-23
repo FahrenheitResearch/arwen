@@ -79,22 +79,23 @@ def test_engine_output_time_answers_none_rather_than_raising(name):
     assert render_layout.engine_output_time(name) is None
 
 
-def test_engine_output_time_agrees_with_the_render_door():
-    """Two readers of one clock, for as long as both exist."""
+@pytest.mark.parametrize("product", [
+    "fire_fuel", "fire_terrain", "fire_perimeter", "fire_ros",
+    "fire_heat_flux"])
+def test_engine_output_time_reads_a_native_sfire_panel(product):
+    """The series-with-context redraw read the clock off every picture and
+    died on ``fire_fuel_20190808T200000.png`` after a finished forecast."""
+    assert render_layout.engine_output_time(
+        f"{product}_20190808T200000.png"
+    ) == datetime.datetime(2019, 8, 8, 20, 0, 0)
+
+
+def test_the_render_door_reads_the_one_total_clock():
+    """The render door's own raising reader is gone; an unreadable name
+    is ``None`` to the one reader both use."""
     from gpuwm import render
 
-    readable = [
-        "arwen_wrf_20260820_0z_f000_d01-12km_2m_temperature.png",
-        "arwen_wrf_20260820_18z_f006_d02-3km_composite_reflectivity.png",
-        "arwen_wrf_20260820_0z_f1000_d01-12km_2m_temperature.png",
-        "arwen_wrf_20260820_0z_f006_d01-12km_2m_temperature"
-        "_valid_20260820_061500z_lead_006h15m00s.png",
-    ]
-    for name in readable:
-        assert render_layout.engine_output_time(name) == \
-            render._engine_output_time(name), name
-    with pytest.raises(ValueError):
-        render._engine_output_time("panel.png")
+    assert not hasattr(render, "_engine_output_time")
     assert render_layout.engine_output_time("panel.png") is None
 
 

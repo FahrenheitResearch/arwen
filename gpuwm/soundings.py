@@ -17,6 +17,23 @@ ABI = "gpuwm-soundings.v1 plain-run png json html"
 ENV = "GPUWM_SOUNDINGS"
 #: auto (GPU, else the CPU rasteriser), gpu (refuse without one) or cpu.
 RENDERER_ENV = "GPUWM_SOUNDINGS_RENDERER"
+#: Window settings a caller sets for every sounding a run draws, as a JSON object (e.g. {"brand": "WOOF Regional",
+#: "init": "2026-10-22T00:00Z"}): how a host that launches `gpuwm ensemble` labels the soundings the ensemble cuts.
+#: A setting passed to render_run (or --setting) wins over the same key here.
+SETTINGS_ENV = "GPUWM_SOUNDINGS_SETTINGS"
+
+
+def env_settings() -> dict:
+    text = os.environ.get(SETTINGS_ENV, "").strip()
+    if not text:
+        return {}
+    try:
+        value = json.loads(text)
+    except ValueError as e:
+        raise ValueError(f"{SETTINGS_ENV} is not a JSON object: {e}") from None
+    if not isinstance(value, dict):
+        raise ValueError(f"{SETTINGS_ENV} must be a JSON object of window settings")
+    return {str(k): str(v) for k, v in value.items()}
 
 
 def find_binary() -> Path | None:
@@ -182,7 +199,8 @@ def render_run(run, *, points, out=None, modes=("mean", "all"), domain=None,
         modes = tuple(dict.fromkeys((*modes, *(row["member"] for row in listing if row["member"] in available))))
     request = {"sources": inventory(Path(run), domain=domain), "points": resolved,
                "out": str(output.resolve()), "modes": list(modes),
-               "interval_minutes": interval_minutes, "settings": settings or {}, "threads": threads}
+               "interval_minutes": interval_minutes, "settings": {**env_settings(), **(settings or {})},
+               "threads": threads}
     # Request files are orchestration scratch, not retained machine-specific public metadata.
     with tempfile.TemporaryDirectory(prefix="gpuwm-soundings-") as temporary:
         path = Path(temporary) / "request.json"
@@ -203,24 +221,73 @@ def render_run(run, *, points, out=None, modes=("mean", "all"), domain=None,
     return output / "soundings-manifest.json"
 
 
+COLUMNS_ABI = "columns-v1"
+
+
+def write_columns(run, out, *, domain=None, threads=None, tile=16, every_minutes=0):
+    """The run's any-point column store (``gpuwm-columns.v1``): every column of every domain at each history time,
+    one file per domain and time under ``out/<domain>/<YYYYMMDDTHHMMSSZ>.wcol``, chunked so one sounding anywhere is
+    one small read. ``every_minutes`` keeps only valid times on that cadence (0 keeps every time). Returns the
+    renderer's ``COLUMNS <path> bytes=<n> ms=<t>`` rows as dicts."""
+    exe = binary()
+    abi = subprocess.run([str(exe), "--abi"], capture_output=True, text=True, timeout=30).stdout
+    if COLUMNS_ABI not in abi:
+        raise RuntimeError(f"{exe} cannot write a column store (--abi: {abi.strip()!r}); rebuild rw-soundings")
+    sources = inventory(Path(run), domain=domain)
+    if every_minutes:
+        def keep(row):
+            m = re.search(r"(\d{4}-\d{2}-\d{2})_(\d{2})[_:](\d{2})[_:](\d{2})", Path(row["path"]).name)
+            return m is None or (int(m[2]) * 60 + int(m[3])) % every_minutes == 0
+        sources = [row for row in sources if keep(row)]
+    out = Path(out)
+    out.mkdir(parents=True, exist_ok=True)
+    request = {"sources": sources, "out": str(out.resolve()), "tile": tile,
+               **({"threads": threads} if threads else {})}
+    with tempfile.TemporaryDirectory(prefix="gpuwm-columns-") as temporary:
+        path = Path(temporary) / "request.json"
+        path.write_text(json.dumps(request), encoding="utf-8")
+        result = subprocess.run([str(exe), "--columns", str(path)], capture_output=True, text=True)
+    if result.returncode:
+        raise RuntimeError("column store not written: " + (_cause(result.stderr) or f"exit {result.returncode}"))
+    rows = []
+    for line in result.stdout.splitlines():
+        if line.startswith("COLUMNS "):
+            path_text, *fields = line[len("COLUMNS "):].rsplit(" ", 2)
+            row = {"path": path_text}
+            row.update({k: float(v) for k, v in (f.split("=", 1) for f in fields)})
+            rows.append(row)
+    return rows
+
+
 def register_cli(sub):
     parser = sub.add_parser("soundings", help="Draw the website-style sounding window from a run folder")
     parser.add_argument("run", type=Path, help="single run, ensemble member folder, wrfout, or rw-store folder")
-    parser.add_argument("--point", "--station", action="append", required=True,
+    parser.add_argument("--point", "--station", action="append",
                         help="LAT,LON, NAME=LAT,LON or an ID in --stations; repeat for multiple points")
     parser.add_argument("--stations", type=Path, help='JSON station catalogue: {"ID": [lat, lon]}')
     parser.add_argument("--out", type=Path, help="render root (default RUN/render)")
     parser.add_argument("--domain", help="domain identifier to select")
     parser.add_argument("--mode", action="append", help="mean, all (members + P10-P90), or member directory ID; repeat (default mean and all)")
     parser.add_argument("--interval-minutes", type=int, default=60, help="profile cadence from first available valid time (default hourly)")
-    parser.add_argument("--threads", type=int, default=4)
-    parser.add_argument("--setting", action="append", default=[], metavar="KEY=VALUE", help="website window setting, e.g. theme=light, parcel=ml")
+    parser.add_argument("--threads", type=int, default=None, help="CPU workers (default 4 for pictures, every core for --columns)")
+    parser.add_argument("--setting", action="append", default=[], metavar="KEY=VALUE", help="website window setting, e.g. theme=light, parcel=ml, brand=..., init=2026-10-22T00:00Z (the lead's start)")
+    parser.add_argument("--columns", type=Path, metavar="DIR",
+                        help="write the run's any-point column store into DIR instead of pictures (no --point needed)")
+    parser.add_argument("--every-minutes", type=int, default=0, help="with --columns: only valid times on this cadence")
     parser.set_defaults(func=cli_main)
 
 
 def cli_main(args):
+    if args.columns is not None:
+        rows = write_columns(args.run, args.columns, domain=args.domain, threads=args.threads,
+                             every_minutes=args.every_minutes)
+        total = sum(r.get("bytes", 0) for r in rows)
+        print(f"Column store: {len(rows)} files, {total / 1e6:.1f} MB in {args.columns}")
+        return 0
+    if not args.point:
+        raise ValueError("--point is required (or --columns DIR to write the column store)")
     stations = {} if args.stations is None else {k.upper(): v for k, v in json.loads(args.stations.read_text()).items()}
-    if args.interval_minutes <= 0 or args.threads <= 0:
+    if args.interval_minutes <= 0 or (args.threads is not None and args.threads <= 0):
         raise ValueError("interval-minutes and threads must be positive")
     settings = {}
     for value in args.setting:
@@ -230,7 +297,7 @@ def cli_main(args):
         settings[key] = val
     manifest = render_run(args.run, points=[point(p, stations) for p in args.point],
                           out=args.out, modes=args.mode or ("mean", "all"), domain=args.domain,
-                          interval_minutes=args.interval_minutes, settings=settings, threads=args.threads)
+                          interval_minutes=args.interval_minutes, settings=settings, threads=args.threads or 4)
     print(f"Soundings: {manifest}")
     return 0
 

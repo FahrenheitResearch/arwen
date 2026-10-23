@@ -1,4 +1,5 @@
 """Native-level boundary conversion, declarations and shared remapping."""
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 import numpy as np
@@ -133,12 +134,22 @@ def test_source_conversion_precedes_convex_mapping(bridge):
     source = {"MASSDEN": raw, "PRES": np.array([[[100000, 50000], [80000, 60000]]], np.float32), "TT": np.full_like(raw, 280)}
     plan = backend.indexed_plan((2, 2), np.array([[0.5]]), np.array([[0.5]]))
     row = SimpleNamespace(name="arbitrary_tracer", boundary=({"source": "declared_source", "fields": ("MASSDEN",), "weights": (1,), "conversion": "kg_m3_to_ug_kg_dry"},))
-    result = map_boundary_rows(source, (row,), SimpleNamespace(name="declared_source", variables=SOURCE.variables), plan, cpu_bridge=bridge)[row.name]
+    declared = SimpleNamespace(name="declared_source", variables=SOURCE.variables)
+    result = map_boundary_rows(source, (row,), declared, plan, cycle=datetime(2025, 1, 8, 12, tzinfo=timezone.utc), cpu_bridge=bridge)[row.name]
     expected = plan.apply(mass_density_inverse(raw, source["PRES"], source["TT"]), method="bilinear")
     np.testing.assert_array_equal(result, expected)
     assert np.min(result) >= 0
     zeros = plan.apply(np.zeros_like(raw), method="bilinear")
     assert np.count_nonzero(zeros) == 0
+    # Before 2021-12-21 14Z NOAA wrote the same field in ug m-3 under the
+    # kg m-3 label: those bytes are 1e9 larger and read back to the same smoke.
+    old = dict(source, MASSDEN=(raw * np.float32(1e9)).astype(np.float32))
+    early = map_boundary_rows(old, (row,), declared, plan, cycle=datetime(2021, 7, 28, 12), cpu_bridge=bridge)[row.name]
+    np.testing.assert_allclose(early, expected, rtol=1e-6)
+    # Without a cycle the units cannot be known: refused by name.
+    from gpuwm.chem_conversions import UnitsEpochError
+    with pytest.raises(UnitsEpochError, match="carries no file cycle"):
+        map_boundary_rows(source, (row,), declared, plan, cpu_bridge=bridge)
 
 
 def test_synthetic_column_uses_hydrometeor_vertical_operator(bridge):

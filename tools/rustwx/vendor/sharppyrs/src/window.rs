@@ -934,11 +934,13 @@ impl Widget for SoundingView<'_> {
         );
         let brand_h = 16.0f32;
         if let Some(brand) = &self.brand {
+            // The model's name and start (e.g. "WOOF Hex · Global 120 km · Init GFS 22 Oct 2026 00Z"): bold so it
+            // reads as the picture's identity, not a footnote.
             painter.text(
-                egui::pos2(ur.max.x - 4.0, ur.min.y + 2.0),
+                egui::pos2(ur.max.x - 4.0, ur.min.y + 1.0),
                 Align2::RIGHT_TOP,
                 brand,
-                self.style.regular_font(11.0),
+                self.style.bold_font(13.0),
                 self.style.fg_color,
             );
         }

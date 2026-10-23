@@ -54,6 +54,21 @@ from typing import Callable, Mapping
 import numpy as np
 
 
+#: True inside a forcing-time build that runs beside others
+#: (:meth:`PreparedTreeWriter.stream_forcing_times` with workers > 1).
+_CONCURRENT_FORCING_BUILD = contextvars.ContextVar("concurrent_forcing_build", default=False)
+
+
+def concurrent_forcing_build() -> bool:
+    """Whether this forcing-time build runs beside others on the writer's pool.
+
+    Alone, a route's build reads its source through a shared one-deep cache;
+    beside others it packs its own copy (gpuwm.mapped_direct), so the packs
+    run side by side too instead of one at a time under a lock.
+    """
+    return _CONCURRENT_FORCING_BUILD.get()
+
+
 STREAM_DIRNAME = "boundary-stream"
 HEAD_NAME = "head.json"
 SEGMENTS_DIRNAME = "segments"
@@ -2581,6 +2596,7 @@ class PreparedTreeWriter:
                     # A fresh copy per task: the preparation's math scope,
                     # setup owners and posted context are context variables.
                     context = contextvars.copy_context()
+                    context.run(_CONCURRENT_FORCING_BUILD.set, True)
                     pending[following] = pool.submit(context.run, timed, following)
                     following += 1
 

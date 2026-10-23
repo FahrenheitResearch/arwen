@@ -382,7 +382,7 @@ pub(crate) fn draw_plan_colorbar(
         if !frac.is_finite() || !(-1e-9..=1.0 + 1e-9).contains(&frac) {
             continue;
         }
-        let frac = frac.clamp(0.0, 1.0);
+        let frac = crate::render::legend_tick_position(cmap, *value, lo, range).clamp(0.0, 1.0);
         let label = compact_label(&signed_label(label), *value, plan.bar_label_span, size);
         let label_w = text::text_width_px(&label, size, false) as i32;
         match side {

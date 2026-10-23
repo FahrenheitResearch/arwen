@@ -2886,6 +2886,24 @@ def preparation_statics(chain: str, *, source: str | None = None) -> dict[str, s
 def dispatch(args: argparse.Namespace, *,
              parser: argparse.ArgumentParser,
              program: str = "rw-wps") -> int:
+    """Run the preprocessing stage inside its input-digest scope.
+
+    Inside it a file the fetch or this preparation already hashed is not
+    read again on the critical path, and the full re-reads of the inputs run
+    beside the work across the cores; the prepared cache waits for them
+    before it seals, and so does the end of this call
+    (:mod:`gpuwm.authority_digests`).
+    """
+
+    from gpuwm import authority_digests
+
+    with authority_digests.deferred_checks():
+        return _dispatch(args, parser=parser, program=program)
+
+
+def _dispatch(args: argparse.Namespace, *,
+              parser: argparse.ArgumentParser,
+              program: str = "rw-wps") -> int:
     """Run the preprocessing stage from an already-parsed namespace.
 
     Split out of :func:`main` so the stage has ONE body behind TWO front

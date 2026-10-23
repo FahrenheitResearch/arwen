@@ -15,6 +15,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from copy import deepcopy
 import hashlib
+import contextlib
 import json
 import math
 import os
@@ -378,7 +379,51 @@ def _fill(template, values):
     return [str(part).format(**values) for part in template]
 
 
+@contextlib.contextmanager
+def _build_lock(path):
+    """Hold an exclusive lock on ``path`` across processes (created when absent)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a+b") as handle:
+        try:
+            import fcntl
+        except ImportError:
+            fcntl = None
+        if fcntl is not None:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            return
+        import msvcrt
+        handle.seek(0)
+        while True:
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                break
+            except OSError:  # LK_LOCK gives up after 10 s; a fabric build holds it for minutes
+                continue
+        try:
+            yield
+        finally:
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+
+
 def materialize(decision, *, config_path, runner=subprocess.run, prepare=None):
+    """Build (or reuse) the covering fabric, one builder per provider at a time.
+
+    Breakage it prevents: a fabric built ahead of its launch (``gpuwm hydro
+    ahead``, the WOOF box while it waits for a prepared bundle) and the
+    launch's own build beside its fetch would write one cache entry at once.
+    The second builder waits here and then reuses what the first one built.
+    """
+    row = decision["_row"]
+    with _build_lock(cache_root(config_path) / row["id"] / ".materialize.lock"):
+        return _materialize(decision, config_path=config_path, runner=runner, prepare=prepare)
+
+
+def _materialize(decision, *, config_path, runner=subprocess.run, prepare=None):
     """Build (or reuse) the covering fabric and return the composed settings.
 
     The returned settings select the provider's realization with the prepared

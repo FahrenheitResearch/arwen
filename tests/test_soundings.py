@@ -70,3 +70,15 @@ def test_public_sounding_member_listing_and_legend_keep_family_and_model(tmp_pat
     data = json.loads((output / "all.json").read_text())
     assert data["members"][0]["provenance"] == records[0]
     assert json.loads((output / "soundings-manifest.json").read_text())["member_listing"] == listing
+
+
+def test_host_labels_every_sounding_through_the_settings_env(monkeypatch):
+    """A host that launches `gpuwm ensemble` (WOOF) names its soundings top right with GPUWM_SOUNDINGS_SETTINGS."""
+    from gpuwm import soundings
+    monkeypatch.setenv(soundings.SETTINGS_ENV, '{"brand": "WOOF Regional", "init": "2026-10-23T12:00Z"}')
+    assert soundings.env_settings() == {"brand": "WOOF Regional", "init": "2026-10-23T12:00Z"}
+    monkeypatch.setenv(soundings.SETTINGS_ENV, "brand=WOOF")
+    with pytest.raises(ValueError, match="JSON object"):
+        soundings.env_settings()
+    monkeypatch.delenv(soundings.SETTINGS_ENV)
+    assert soundings.env_settings() == {}

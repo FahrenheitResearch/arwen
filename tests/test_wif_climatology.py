@@ -439,3 +439,44 @@ def test_default_config_takes_the_climatology_when_it_resolves():
     assert (cfg.aer_init_opt, cfg.wif_input_opt) == (0, 0)
     assert cfg.mp28_aerosol_source == "auto"
     validate_aerosol_source_options(cfg)
+
+
+def test_the_receipt_statement_names_no_working_or_home_directory(tmp_path):
+    """THE BREAKAGE: the namelist import wrote the search's absolute cwd and
+    home paths into the WRF-input door's preparation receipt, so a
+    ``--restart`` launched from another directory hashed a different receipt
+    and was refused as "written for a different run" (5 km radar DA,
+    2026-10-23).  The statement the receipt binds is the same from any
+    directory; the run's own warning keeps the paths."""
+    import shutil
+
+    from gpuwm.ingest.wif_climatology import (
+        WIF_CLIMATOLOGY_FILE, portable_wif_statement, resolve_wif_climatology)
+
+    def resolve(where, home):
+        where.mkdir(parents=True, exist_ok=True)
+        return resolve_wif_climatology(
+            cwd=where, env={"GPUWM_WIF_DATA_ROOT": str(home)})
+
+    a = resolve(tmp_path / "a", tmp_path / "home-a")
+    b = resolve(tmp_path / "b", tmp_path / "home-b")
+    assert not a.resolved and not b.resolved
+    assert a.fallback_reason != b.fallback_reason
+    assert str(tmp_path / "a") in a.fallback_reason
+    assert portable_wif_statement(a) == portable_wif_statement(b)
+    assert str(tmp_path) not in portable_wif_statement(a)
+
+    # Found in the working directory: the same bytes state the same
+    # sentence from either directory, other bytes do not.
+    source, _ = _synthetic_dat(tmp_path)
+    for where in ("a", "b"):
+        shutil.copyfile(source, tmp_path / where / WIF_CLIMATOLOGY_FILE)
+    a = resolve(tmp_path / "a", tmp_path / "home-a")
+    b = resolve(tmp_path / "b", tmp_path / "home-b")
+    assert a.resolved and b.resolved and a.path != b.path
+    assert portable_wif_statement(a) == portable_wif_statement(b)
+    assert str(tmp_path) not in portable_wif_statement(a)
+    with open(tmp_path / "b" / WIF_CLIMATOLOGY_FILE, "ab") as extra:
+        extra.write(b"\0")
+    b = resolve(tmp_path / "b", tmp_path / "home-b")
+    assert portable_wif_statement(a) != portable_wif_statement(b)

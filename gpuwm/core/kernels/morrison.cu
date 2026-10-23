@@ -1501,6 +1501,27 @@ extern "C" __global__ void mo_process(
 // speeds: every operation in that chain is monotone, so the maximum over
 // categories of the per-category maxima is WRF's NSTEP exactly.
 // ---------------------------------------------------------------------
+// A level whose fall split-steps are exact identities.  Its speeds are +0
+// (bit pattern 0), its moment densities DUMI/DUMR... are finite with the
+// sign bit clear, DZQ and RHO are positive, and its number tendency is not
+// -0.  Every split step then computes FALOUTM = +0 * DUMI = +0, FALTNDM =
+// (+0 - +0)/DZQ = +0 and adds or subtracts +0 to the tendencies (the
+// process stage wrote the QxSTEN planes +0; QNxTEN is not -0) and to
+// DUMI, which leaves every word unchanged, and the flux into the level
+// below is +0.  So the levels above the highest non-identity level KTOP
+// are skipped word for word, and a category whose every level is such a
+// level (KTOP = -1) exports +0 to the surface sums, as WRF's loop does.
+__device__ __forceinline__ bool mo_still_level(float um, float un, float dm,
+                                               float dn, float nten,
+                                               float dz, float rho)
+{
+    return __float_as_uint(um) == 0u && __float_as_uint(un) == 0u
+        && __float_as_uint(dm) < 0x7f800000u
+        && __float_as_uint(dn) < 0x7f800000u
+        && __float_as_uint(nten) != 0x80000000u
+        && dz > 0.0f && rho > 0.0f;
+}
+
 template <int KMAX>
 __device__ __forceinline__ void mo_sediment_impl(
     const float* __restrict__ pressure, const float* __restrict__ dz,
@@ -1545,6 +1566,7 @@ __device__ __forceinline__ void mo_sediment_impl(
 
     float dm[KMAX], dn[KMAX], fm[KMAX], fn[KMAX];
     int nstep = 1;
+    int ktop = -1;     // highest level that is not a still level
     if (sediments) {
         for (int k = nz - 1; k >= 0; --k) {
             const float rho = rho_in[AT(k)];
@@ -1561,8 +1583,21 @@ __device__ __forceinline__ void mo_sediment_impl(
             if (cat == 0) dnum = qnum[AT(k)];   // iinum = 1 (:3372-3374)
             dnum = FMAXK(dnum, 0.0f);
             float um = 0.0f, un = 0.0f;
-            const float dum = gfk_pow(FDIV(MO_RHOSU, rho), 0.54f);
-            if (dmass >= MO_QSMALL) {
+            // DUM is read by rain, snow and graupel only; (RHOSU/RHO)**0.35
+            // by ice (its AIN and its limit are the same libm call).  With
+            // no mass UM = UN = +0 and the limits are MIN(+0, x) = +0 for
+            // every x >= +0, which a positive RHO guarantees; only a
+            // non-positive or NaN RHO can make a limit NaN, so those
+            // levels still evaluate it.
+            const bool massive = dmass >= MO_QSMALL;
+            const bool limited = massive || !(rho > 0.0f);
+            float dum = 0.0f;
+            if ((cat == 1 || cat == 3 || cat == 4) && limited)
+                dum = gfk_pow(FDIV(MO_RHOSU, rho), 0.54f);
+            float rhofaci = 0.0f;
+            if (cat == 2 && limited)
+                rhofaci = gfk_pow(FDIV(MO_RHOSU, rho), 0.35f);
+            if (massive) {
                 if (cat == 0) {
                     // :3404-3416, :3439-3441
                     const float t3d = WP(MO_T3D, k);
@@ -1598,8 +1633,7 @@ __device__ __forceinline__ void mo_sediment_impl(
                                           FDIV(1.0f, MO_DI));
                     dlami = FMAX(dlami, MO_LAMMINI);
                     dlami = FMIN(dlami, MO_LAMMAXI);
-                    const float ain = gfk_pow(FDIV(MO_RHOSU, rho), 0.35f)
-                        * MO_AI;
+                    const float ain = rhofaci * MO_AI;
                     un = FDIV(ain * MO_CONS27, gfk_pow(dlami, MO_BI));
                     um = FDIV(ain * MO_CONS28, gfk_pow(dlami, MO_BI));
                 } else if (cat == 3) {
@@ -1621,12 +1655,13 @@ __device__ __forceinline__ void mo_sediment_impl(
                 }
             }
             // :3482-3492 fall-speed limits (cloud has none).
-            if (cat == 1) {
+            if (!limited) {
+            } else if (cat == 1) {
                 um = FMIN(um, dum * 9.1f);
                 un = FMIN(un, dum * 9.1f);
             } else if (cat == 2) {
-                um = FMIN(um, gfk_pow(FDIV(MO_RHOSU, rho), 0.35f) * 1.2f);
-                un = FMIN(un, gfk_pow(FDIV(MO_RHOSU, rho), 0.35f) * 1.2f);
+                um = FMIN(um, rhofaci * 1.2f);
+                un = FMIN(un, rhofaci * 1.2f);
             } else if (cat == 3) {
                 um = FMIN(um, dum * 1.2f);
                 un = FMIN(un, dum * 1.2f);
@@ -1648,6 +1683,9 @@ __device__ __forceinline__ void mo_sediment_impl(
             // :3547-3556
             dm[k] = mo_mul(dmass, rho);
             dn[k] = mo_mul(dnum, rho);
+            if (ktop < 0 && !mo_still_level(um, un, dm[k], dn[k], WP(nten, k),
+                                            dz[AT(k)], rho))
+                ktop = k;
         }
     }
     s_nstep[cat][lane] = nstep;
@@ -1666,13 +1704,17 @@ __device__ __forceinline__ void mo_sediment_impl(
     for (int step = 1; step <= block_steps; ++step) {
         const bool on = sediments && step <= nsteps;
         float fall_kts = 0.0f;
-        if (on) {
-            // :3577-3610 top level.
+        if (on && ktop >= 0) {
+            // Still levels above KTOP are identities (mo_still_level): the
+            // walk starts at KTOP with the +0 flux they pass down.
             int k = nz - 1;
-            float fom = mo_mul(fm[k], dm[k]);
-            float fon = mo_mul(fn[k], dn[k]);
-            float faltndm = mo_div(fom, dz[AT(k)]);
-            float faltndn = mo_div(fon, dz[AT(k)]);
+            float fom = 0.0f, fon = 0.0f, faltndm, faltndn;
+            if (ktop == nz - 1) {
+            // :3577-3610 top level.
+            fom = mo_mul(fm[k], dm[k]);
+            fon = mo_mul(fn[k], dn[k]);
+            faltndm = mo_div(fom, dz[AT(k)]);
+            faltndn = mo_div(fon, dz[AT(k)]);
             const float rhot = rho_in[AT(k)];
             WP(msten, k) = mo_sub(WP(msten, k),
                                   mo_div(mo_div(faltndm, fnstep), rhot));
@@ -1681,8 +1723,12 @@ __device__ __forceinline__ void mo_sediment_impl(
             dm[k] = mo_sub(dm[k], mo_div(mo_mul(faltndm, dt), fnstep));
             dn[k] = mo_sub(dn[k], mo_div(mo_mul(faltndn, dt), fnstep));
             fall_kts = fom;
+            k = nz - 2;
+            } else {
+                k = ktop;
+            }
             // :3612-3646
-            for (k = nz - 2; k >= 0; --k) {
+            for (; k >= 0; --k) {
                 const float fm_k = mo_mul(fm[k], dm[k]);
                 const float fn_k = mo_mul(fn[k], dn[k]);
                 faltndm = mo_div(mo_sub(fom, fm_k), dz[AT(k)]);

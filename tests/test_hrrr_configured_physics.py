@@ -712,22 +712,25 @@ def test_a_native_root_of_a_perturbed_tree_prepares_and_records_the_deferral(
     assert deferred == deferred_initial_perturbation(
         exp, "any route", announce=False)
     assert deferred["config"] == exp.perturbation.receipt()
-    assert "deferred to prepared-tree forecast initialization" in (
+    assert "deferred to prepared forecast initialization" in (
         capsys.readouterr().err)
     assert root_perturbation_deferral(None) is None
 
 
-def test_a_native_single_domain_perturbation_is_refused_before_the_decode(tmp_path):
-    """The prepared single-domain runner applies no bubble, so the root
-    preparer refuses the block by name where it first reads the
-    configuration, instead of publishing a bundle its forecast refuses."""
+def test_a_native_single_domain_perturbation_is_deferred_to_its_runner(tmp_path):
+    """The prepared single-domain runner applies the bubbles to its restored
+    state (fix/single-domain-perturbation), so the root preparer defers the
+    block, naming that runner, instead of refusing it."""
+    from gpuwm.hrrr_configuration import root_perturbation_deferral
+
     exp, target, config = _perturbed_config(tmp_path, tree=False)
-    with pytest.raises(ValueError, match=(
-            r"single-domain native HRRR root preparation route does not "
-            r"apply \[perturbation\]")):
-        resolve_root_experiment(target=target, vertical=exp.vertical,
-            namelist_input=tmp_path / "namelist.input", start_time=exp.start_time,
-            run_seconds=exp.run_seconds, experiment_config=config)
+    actual, _raw = resolve_root_experiment(target=target, vertical=exp.vertical,
+        namelist_input=tmp_path / "namelist.input", start_time=exp.start_time,
+        run_seconds=exp.run_seconds, experiment_config=config)
+    assert actual.perturbation == exp.perturbation
+    deferred = root_perturbation_deferral(config, announce=False)
+    assert deferred["application_route"] == (
+        "gpuwm.prepared_single_domain_forecast")
 
 
 @pytest.mark.parametrize("source", ["hrrr", "rap-native"])

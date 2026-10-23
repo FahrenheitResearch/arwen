@@ -287,11 +287,13 @@ def test_fresh_tree_defers_bubbles_preserves_arrays_and_binds_exact_config(
                                       scenario_state["boundaries"][index])
     assert config.read_bytes() == original_bytes
     assert scenario.read_bytes() == scenario_bytes
-    assert "deferred to prepared-tree forecast initialization" in capsys.readouterr().err
+    assert "deferred to prepared forecast initialization" in capsys.readouterr().err
     assert not (tmp_path / "forecast-not-started").exists()
 
 
-@pytest.mark.parametrize("domains,spawn", [(1, False), (2, True)])
+# A single-domain bubble is no longer refused here: the prepared
+# single-domain runner applies it (fix/single-domain-perturbation).
+@pytest.mark.parametrize("domains,spawn", [(2, True)])
 def test_unsupported_single_or_spawn_scenario_refuses_before_static_or_decode(
         tmp_path, monkeypatch, domains, spawn):
     config = _config(tmp_path, domains=domains)
@@ -332,39 +334,7 @@ def _admission_plan(tmp_path, config, *, route="prepared"):
     return path, load_plan(path)
 
 
-@pytest.mark.parametrize("door", ["check", "go", "run-plan", "stage-plan"])
-def test_public_single_prepared_scenario_refuses_before_resources_or_outputs(
-        tmp_path, monkeypatch, capsys, door):
-    from gpuwm.cli import main
-    from gpuwm import data_assets, go_cli
-
-    config = _with_bubble(_config(tmp_path, domains=1))
-    plan_path, _ = _admission_plan(tmp_path, config)
-    before = {p.relative_to(tmp_path): p.read_bytes()
-              for p in tmp_path.rglob("*") if p.is_file()}
-    monkeypatch.setattr(data_assets, "companion_root",
-                        lambda: pytest.fail("unsupported scenario reached resource checks"))
-    if door == "stage-plan":
-        with pytest.raises(go_cli.GoRefusal, match="single-domain prepared.*does not apply"):
-            go_cli.plan_from_config(config, outdir=tmp_path / "no-forecast-output")
-    else:
-        argv = {
-            "check": ["check", str(config), "--vram-gib", "32", "--budget-gib", "24"],
-            "go": ["go", str(config), "--dry-run", "--outdir", str(tmp_path / "no-forecast-output")],
-            "run-plan": ["run-plan", str(plan_path), "--resolve"],
-        }[door]
-        capsys.readouterr()
-        assert main(argv) == 2
-        captured = capsys.readouterr()
-        message = captured.out + captured.err
-        assert "single-domain prepared" in message and "does not apply [perturbation]" in message
-        assert "Traceback" not in message
-    assert not (tmp_path / "no-forecast-output").exists()
-    assert before == {p.relative_to(tmp_path): p.read_bytes()
-                      for p in tmp_path.rglob("*") if p.is_file()}
-
-
-@pytest.mark.parametrize("domains,bubble", [(1, False), (2, False), (2, True)])
+@pytest.mark.parametrize("domains,bubble", [(1, False), (1, True), (2, False), (2, True)])
 def test_public_prepared_scenario_admission_preserves_supported_controls(tmp_path, domains, bubble):
     from gpuwm.core.preflight import _load_experiment_any
     from gpuwm.go_cli import plan_from_config

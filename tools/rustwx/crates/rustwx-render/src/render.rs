@@ -73,6 +73,9 @@ pub struct RenderOpts {
     pub barbs: Vec<BarbOverlay>,
     pub streamlines: Vec<StreamlineOverlay>,
     pub presentation: RenderPresentation,
+    /// The product's own note for a map with nothing to draw; `None` uses
+    /// [`EMPTY_MAP_NOTE`]. See [`empty_map_note`].
+    pub empty_note: Option<String>,
 }
 
 /// The mesh layer as the renderer holds it: the cells and the resolved
@@ -238,6 +241,7 @@ impl Default for RenderOpts {
                 over_color: None,
                 mask_below: None,
                 categories: false,
+                equal_bands: false,
             },
             background: Rgba::WHITE,
             colorbar: true,
@@ -269,6 +273,7 @@ impl Default for RenderOpts {
             presentation: RenderPresentation::for_mode_from_env(
                 ProductVisualMode::FilledMeteorology,
             ),
+            empty_note: None,
         }
     }
 }
@@ -855,8 +860,25 @@ pub(crate) fn pick_ticks(levels: &[f64], step: Option<f64>) -> Vec<f64> {
 /// The values the colorbar labels: the category codes at band centres for a
 /// category colormap, otherwise [`pick_ticks`] over the legend levels.
 pub(crate) fn legend_ticks(cmap: &LeveledColormap, step: Option<f64>) -> Vec<f64> {
+    if cmap.equal_bands {
+        // A threshold bar labels its boundaries: a stepped tick between two
+        // boundaries would sit inside a band at a place that means nothing.
+        return cmap.legend_levels_for_display().to_vec();
+    }
     cmap.category_codes()
         .unwrap_or_else(|| pick_ticks(cmap.legend_levels_for_display(), step))
+}
+
+/// A tick's place on the colour bar (0..1): linear in value, as the bar has
+/// always placed ticks, except on an equal-band threshold bar, where it is
+/// the boundary's own place ([`LeveledColormap::legend_fraction`]).
+pub(crate) fn legend_tick_position(cmap: &LeveledColormap, tick: f64, lo: f64, range: f64) -> f64 {
+    if cmap.equal_bands {
+        if let Some(frac) = cmap.legend_fraction(tick) {
+            return frac;
+        }
+    }
+    (tick - lo) / range
 }
 
 pub(crate) fn colorbar_levels_for_ticks(cmap: &LeveledColormap) -> &[f64] {
@@ -996,10 +1018,30 @@ fn ellipsize_text_to_width_with_factor(
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn filter_tick_labels_to_fit(
     ticks: &[f64],
     lo: f64,
     range: f64,
+    cbar_x: u32,
+    cbar_w: u32,
+    label_left_bound: u32,
+    label_right_bound: u32,
+    img_w: u32,
+    text_scale: u32,
+) -> Vec<(f64, i32, String)> {
+    let fracs: Vec<f64> = ticks.iter().map(|tick| (tick - lo) / range).collect();
+    filter_tick_labels_at(
+        ticks, &fracs, cbar_x, cbar_w, label_left_bound, label_right_bound, img_w, text_scale,
+    )
+}
+
+/// [`filter_tick_labels_to_fit`] with each tick's place on the bar given
+/// (`fracs`, 0..1), so an equal-band threshold bar places its labels where
+/// its boundaries are drawn.
+fn filter_tick_labels_at(
+    ticks: &[f64],
+    fracs: &[f64],
     cbar_x: u32,
     cbar_w: u32,
     label_left_bound: u32,
@@ -1016,8 +1058,7 @@ fn filter_tick_labels_to_fit(
     let mut labels = Vec::with_capacity(ticks.len());
     let mut last_right = i32::MIN / 4;
 
-    for (tick_val, label) in ticks.iter().zip(text::format_tick_labels(ticks)) {
-        let frac = (tick_val - lo) / range;
+    for ((tick_val, label), frac) in ticks.iter().zip(text::format_tick_labels(ticks)).zip(fracs) {
         let px = cbar_x as f64 + frac * cbar_w as f64;
         let lw = text::text_width(&label, text_scale) as i32;
         if lw >= max_x.saturating_sub(min_x) {
@@ -1036,10 +1077,29 @@ fn filter_tick_labels_to_fit(
     labels
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn filter_vertical_tick_labels_to_fit(
     ticks: &[f64],
     lo: f64,
     range: f64,
+    cbar_y: u32,
+    cbar_h: u32,
+    label_top_bound: u32,
+    label_bottom_bound: u32,
+    img_h: u32,
+    text_scale: u32,
+) -> Vec<(f64, i32, String)> {
+    let fracs: Vec<f64> = ticks.iter().map(|tick| (tick - lo) / range).collect();
+    filter_vertical_tick_labels_at(
+        ticks, &fracs, cbar_y, cbar_h, label_top_bound, label_bottom_bound, img_h, text_scale,
+    )
+}
+
+/// [`filter_vertical_tick_labels_to_fit`] with each tick's place on the bar
+/// given (`fracs`, 0 at the bottom, 1 at the top).
+fn filter_vertical_tick_labels_at(
+    ticks: &[f64],
+    fracs: &[f64],
     cbar_y: u32,
     cbar_h: u32,
     label_top_bound: u32,
@@ -1056,8 +1116,7 @@ fn filter_vertical_tick_labels_to_fit(
     }
 
     let mut candidates = Vec::with_capacity(ticks.len());
-    for (tick_val, label) in ticks.iter().zip(text::format_tick_labels(ticks)) {
-        let frac = (tick_val - lo) / range;
+    for ((tick_val, label), &frac) in ticks.iter().zip(text::format_tick_labels(ticks)).zip(fracs) {
         if !frac.is_finite() {
             continue;
         }
@@ -2441,12 +2500,22 @@ fn draw_local_mask_outline(
     mask: &RgbaImage,
     color: Rgba,
     width: u32,
+    stroked_rect: Option<(LocalRect, u32)>,
 ) {
     let radius = width.saturating_sub(1).min(3) as i32;
     for local_y in 0..mask.height() {
         for local_x in 0..mask.width() {
             if mask.get_pixel(local_x, local_y).0[3] == 0 {
                 continue;
+            }
+            if let Some((rect, band)) = stroked_rect {
+                let near_edge = local_x.abs_diff(rect.min_x) <= band
+                    || local_x.abs_diff(rect.max_x) <= band
+                    || local_y.abs_diff(rect.min_y) <= band
+                    || local_y.abs_diff(rect.max_y) <= band;
+                if near_edge {
+                    continue;
+                }
             }
             let x = local_x as i32;
             let y = local_y as i32;
@@ -4749,14 +4818,14 @@ fn draw_variable_layers(
     let outside_frame_clear_start = Instant::now();
     if let Some(mask) = combined_clip_mask.as_ref() {
         clear_map_outside_local_mask(img, layout, mask, canvas_background);
-        draw_domain_clip_mask_outline(img, layout, mask, opts);
+        draw_domain_clip_mask_outline(img, layout, mask, opts, effective_domain_frame_rect);
     } else if let (Some(frame), Some(rect)) = (opts.domain_frame, effective_domain_frame_rect) {
         if frame.clear_outside {
             clear_map_outside_local_rect(img, layout, rect, canvas_background);
         }
     } else if let Some(mask) = projection_clip_mask.as_ref() {
         clear_map_outside_local_mask(img, layout, mask, canvas_background);
-        draw_domain_clip_mask_outline(img, layout, mask, opts);
+        draw_domain_clip_mask_outline(img, layout, mask, opts, effective_domain_frame_rect);
     }
     let outside_frame_clear_ms = outside_frame_clear_start.elapsed().as_millis();
 
@@ -4776,21 +4845,37 @@ fn draw_variable_layers(
     }
 }
 
+/// Outline the clip mask in the domain frame's style.
+///
+/// `frame_rect` is the rectangle the chrome strokes afterwards
+/// (`draw_frame_outlines`) when a non-raster domain frame is drawn; mask
+/// edge pixels inside that stroke's band are left to it.
+///
+/// WHAT BREAKAGE THIS PREVENTS (gate law): a native grid whose projected
+/// edge runs a pixel or two inside the frame rectangle got both strokes side
+/// by side, so the left frame edge read thicker from the top corner to about
+/// a third of the way down and then thinned where the two met (R10 look,
+/// 2.9.4). Where the data really stops short of the rectangle the mask
+/// outline still draws.
 fn draw_domain_clip_mask_outline(
     img: &mut RgbaImage,
     layout: &Layout,
     mask: &RgbaImage,
     opts: &RenderOpts,
+    frame_rect: Option<LocalRect>,
 ) {
     if let Some(frame) = opts.domain_frame {
         let frame_style = opts
             .presentation
             .domain_frame_style(frame.outline_color.into(), frame.outline_width);
         if frame_style.visible {
-            draw_local_mask_outline(img, layout, mask, frame_style.color, frame_style.width);
+            let stroked = frame_rect
+                .filter(|_| !matches!(frame.source, DomainFrameSource::RasterAlpha))
+                .map(|rect| (rect, frame_style.width.saturating_add(1)));
+            draw_local_mask_outline(img, layout, mask, frame_style.color, frame_style.width, stroked);
         }
     } else if let Some(frame) = opts.presentation.chrome.frame_color {
-        draw_local_mask_outline(img, layout, mask, frame, 1);
+        draw_local_mask_outline(img, layout, mask, frame, 1, None);
     }
 }
 
@@ -4994,8 +5079,10 @@ fn draw_chrome_and_colorbar(
                     let hi = levels[levels.len() - 1];
                     let range = hi - lo;
                     if range > 0.0 {
-                        let tick_positions: Vec<f64> =
-                            ticks.iter().map(|t| (t - lo) / range).collect();
+                        let tick_positions: Vec<f64> = ticks
+                            .iter()
+                            .map(|t| legend_tick_position(&opts.cmap, *t, lo, range))
+                            .collect();
                         colorbar::draw_colorbar_ticks(
                             img,
                             cbar_x,
@@ -5006,10 +5093,9 @@ fn draw_chrome_and_colorbar(
                         );
                         let tick_y = cbar_y.saturating_sub(layout.label_gap) as i32;
                         let label_color = opts.presentation.colorbar.label_color;
-                        for (_, lx, label) in filter_tick_labels_to_fit(
+                        for (_, lx, label) in filter_tick_labels_at(
                             &ticks,
-                            lo,
-                            range,
+                            &tick_positions,
                             cbar_x,
                             cbar_w,
                             cbar_x,
@@ -5046,8 +5132,10 @@ fn draw_chrome_and_colorbar(
                     let hi = levels[levels.len() - 1];
                     let range = hi - lo;
                     if range > 0.0 {
-                        let tick_positions: Vec<f64> =
-                            ticks.iter().map(|t| (t - lo) / range).collect();
+                        let tick_positions: Vec<f64> = ticks
+                            .iter()
+                            .map(|t| legend_tick_position(&opts.cmap, *t, lo, range))
+                            .collect();
                         colorbar::draw_vertical_colorbar_ticks(
                             img,
                             cbar_x,
@@ -5062,10 +5150,9 @@ fn draw_chrome_and_colorbar(
                             .saturating_add(cbar_w)
                             .saturating_add(6u32.saturating_mul(layout.text_scale.max(1)))
                             as i32;
-                        for (_, ly, label) in filter_vertical_tick_labels_to_fit(
+                        for (_, ly, label) in filter_vertical_tick_labels_at(
                             &ticks,
-                            lo,
-                            range,
+                            &tick_positions,
                             cbar_y,
                             layout.cbar_h,
                             cbar_y,
@@ -5505,7 +5592,111 @@ fn render_to_image_profile_inner(
     (img, timing)
 }
 
+/// The note a filled map carries when it has nothing to draw and the product
+/// gave no reason of its own.
+pub const EMPTY_MAP_NOTE: &str = "No values to plot";
+
+/// The note to draw on a filled map that has nothing to draw: no value of
+/// the field takes a visible colour on its scale, and no contour, barb,
+/// streamline or RGBA layer draws anything over it. `None` when anything is
+/// drawn, and for a map without a colour bar (overlay-only pictures are
+/// blank fills by design).
+///
+/// WHAT BREAKAGE THIS PREVENTS (gate law): a map with nothing to draw for a
+/// valid reason (no 0 C level in a cold column, the Haines layer below
+/// ground, an accumulation at F000) looked exactly like a failed render (R10
+/// look, 2.9.4).
+pub fn empty_map_note(data: &[f64], opts: &RenderOpts) -> Option<String> {
+    if !opts.colorbar
+        || opts.rgba_grid.is_some()
+        || !opts.contours.is_empty()
+        || !opts.barbs.is_empty()
+        || !opts.streamlines.is_empty()
+        || data.is_empty()
+    {
+        return None;
+    }
+    if data.iter().any(|value| opts.cmap.map(*value).a > 0) {
+        return None;
+    }
+    Some(
+        opts.empty_note
+            .clone()
+            .filter(|note| !note.trim().is_empty())
+            .unwrap_or_else(|| EMPTY_MAP_NOTE.to_string()),
+    )
+}
+
+/// Draw `note` centred on the map rectangle of a finished image, on a panel
+/// in the canvas colour with a hairline in the frame colour, so it reads as
+/// a statement about the map rather than as data.
+fn draw_empty_map_note(img: &mut RgbaImage, timing: &RenderImageTiming, note: &str, opts: &RenderOpts) {
+    let (map_x, map_y, map_w, map_h) = (timing.map_x, timing.map_y, timing.map_w, timing.map_h);
+    if map_w < 40 || map_h < 24 {
+        return;
+    }
+    // The face the rest of the chrome uses: Source Sans 3 on a fixed
+    // canvas, the planned chrome face otherwise.
+    let fixed = matches!(
+        crate::layout_plan::layout_mode(),
+        crate::layout_plan::LayoutMode::Fixed
+    );
+    let width_of = |size: f32| {
+        if fixed {
+            text::text_width_bold_with_factor(note, 1, size / 15.0)
+        } else {
+            text::text_width_px(note, size, true)
+        }
+    };
+    let mut size = (map_h as f32 / 28.0).clamp(10.0, 22.0);
+    let mut text_w = width_of(size);
+    while text_w + 2 * (size * 0.8) as u32 > map_w.saturating_sub(8) && size > 10.0 {
+        size -= 1.0;
+        text_w = width_of(size);
+    }
+    let pad = (size * 0.8).round() as u32;
+    let line_h = if fixed {
+        text::bold_line_height_with_factor(1, size / 15.0)
+    } else {
+        text::line_height_px(size, true)
+    };
+    let box_w = (text_w + 2 * pad).min(map_w.saturating_sub(4));
+    let box_h = line_h + pad;
+    let box_x = map_x + (map_w.saturating_sub(box_w)) / 2;
+    let box_y = map_y + (map_h.saturating_sub(box_h)) / 2;
+    let fill = opts.presentation.canvas_background;
+    let edge = opts.presentation.colorbar.frame_color;
+    for y in box_y..(box_y + box_h).min(img.height()) {
+        for x in box_x..(box_x + box_w).min(img.width()) {
+            let on_edge = y == box_y || x == box_x || y + 1 == box_y + box_h || x + 1 == box_x + box_w;
+            let color = if on_edge { edge } else { fill };
+            img.put_pixel(x, y, image::Rgba([color.r, color.g, color.b, 255]));
+        }
+    }
+    let text_x = (box_x + (box_w.saturating_sub(text_w)) / 2) as i32;
+    let text_y = (box_y as f32 + (box_h as f32 - line_h as f32) / 2.0).round() as i32;
+    let color = opts.presentation.chrome.title_color;
+    if fixed {
+        text::draw_text_bold_with_factor(img, note, text_x, text_y, color, 1, size / 15.0);
+    } else {
+        text::draw_text_px(img, note, text_x, text_y, color, size, true);
+    }
+}
+
 pub fn render_to_image_profile(
+    data: &[f64],
+    ny: usize,
+    nx: usize,
+    opts: &RenderOpts,
+) -> (RgbaImage, RenderImageTiming) {
+    let (mut image, timing) = render_to_image_profile_unnoted(data, ny, nx, opts);
+    if let Some(note) = empty_map_note(data, opts) {
+        draw_empty_map_note(&mut image, &timing, &note, opts);
+    }
+    (image, timing)
+}
+
+fn render_to_image_profile_unnoted(
     data: &[f64],
     ny: usize,
     nx: usize,

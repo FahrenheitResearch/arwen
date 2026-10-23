@@ -7,27 +7,120 @@ Windows receipt makes, because ``os.stat`` cannot name a change there.
 import ctypes
 import functools
 import os
+import struct
 import sys
 import threading
 
 
+#: Modification, attributes, close-after-write, deletion and movement.
+_INOTIFY_MASK = 0x2 | 0x4 | 0x8 | 0x400 | 0x800
+_IN_Q_OVERFLOW = 0x4000
+_EVENT = struct.Struct('iIII')
+
+
+class _Inotify:
+    """The one inotify instance of this process; every watch is a descriptor on it.
+
+    Breakage it prevents: an instance per watched file.  Linux allows 128
+    inotify instances per user (fs.inotify.max_user_instances), shared by
+    every process of that user, while a watch descriptor costs one of about
+    a million.  A fetch that published a few hundred stream files used them
+    all: the watches past the limit failed, so those files' fresh receipts
+    were re-read, and every other program of the same user (tail -F, an
+    editor, a file watcher) got EMFILE until the facts were evicted.
+    Measured on a shared host: 91 of 200 watches opened, then
+    inotify_init1 failed with errno 24.
+    """
+
+    def __init__(self):
+        self.pid = os.getpid()
+        self.lock = threading.Lock()
+        self.libc = ctypes.CDLL(None, use_errno=True)
+        self.fd = self.libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+        self.watchers = {}
+
+    def add(self, watch, path):
+        """The watch descriptor for ``path`` with ``watch`` registered on it, or -1."""
+        with self.lock:
+            if self.fd < 0:
+                return -1
+            # Events already queued belong to the watches made before this one.
+            self._drain()
+            wd = self.libc.inotify_add_watch(self.fd, os.fsencode(path), _INOTIFY_MASK)
+            if wd < 0:
+                return -1
+            self.watchers.setdefault(wd, set()).add(watch)
+            return wd
+
+    def changed(self, watch):
+        with self.lock:
+            self._drain()
+            return watch.changed
+
+    def remove(self, watch, wd):
+        with self.lock:
+            group = self.watchers.get(wd)
+            if group is None:
+                return
+            group.discard(watch)
+            if not group:
+                del self.watchers[wd]
+                self.libc.inotify_rm_watch(self.fd, wd)
+
+    def _drain(self):
+        while True:
+            try:
+                data = os.read(self.fd, 65536)
+            except BlockingIOError:
+                return
+            except OSError:
+                data = None
+            if not data:
+                # An unreadable queue cannot vouch for any file.
+                for group in self.watchers.values():
+                    for watch in group:
+                        watch.changed = True
+                return
+            offset = 0
+            while offset + _EVENT.size <= len(data):
+                wd, mask, _cookie, length = _EVENT.unpack_from(data, offset)
+                offset += _EVENT.size + length
+                if wd < 0 or mask & _IN_Q_OVERFLOW:
+                    groups = list(self.watchers.values())
+                else:
+                    groups = [self.watchers.get(wd, ())]
+                for group in groups:
+                    for watch in group:
+                        watch.changed = True
+
+
+_INOTIFY = None
+_INOTIFY_LOCK = threading.Lock()
+
+
+def _inotify():
+    global _INOTIFY
+    with _INOTIFY_LOCK:
+        if _INOTIFY is None or _INOTIFY.pid != os.getpid():
+            # A forked child shares its parent's queue; it opens its own.
+            _INOTIFY = _Inotify()
+        return _INOTIFY
+
+
 class FileChangeWatch:
     def __init__(self, path):
-        self.fd = -1
+        self.wd = -1
+        self.changed = False
         self.pid = os.getpid()
         self._oplock = None
+        self._inotify = None
         if os.name == 'nt':
             self._oplock = _ReadOplock(path)
             return
         if not sys.platform.startswith('linux'):
             return
-        libc = ctypes.CDLL(None, use_errno=True)
-        self.fd = libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
-        if self.fd < 0:
-            return
-        # Modification, attributes, close-after-write, deletion and movement.
-        if libc.inotify_add_watch(self.fd, os.fsencode(path), 0x2 | 0x4 | 0x8 | 0x400 | 0x800) < 0:
-            self.close()
+        self._inotify = _inotify()
+        self.wd = self._inotify.add(self, path)
 
     @property
     def holds_file(self):
@@ -38,26 +131,22 @@ class FileChangeWatch:
         if self._oplock is not None:
             return self._oplock.intact()
         if self.pid != os.getpid():
+            return False
+        if self.wd < 0:
+            return False
+        if self._inotify.changed(self):
             self.close()
             return False
-        if self.fd < 0:
-            return False
-        try:
-            changed = bool(os.read(self.fd, 4096))
-        except BlockingIOError:
-            return True
-        except OSError:
-            changed = True
-        if changed:
-            self.close()
-        return False
+        return True
 
     def close(self):
         if self._oplock is not None:
             self._oplock.close()
-        if self.fd >= 0:
-            os.close(self.fd)
-            self.fd = -1
+        if self.wd >= 0:
+            if self.pid == os.getpid():
+                # In a forked child the descriptor is the parent's: never remove it.
+                self._inotify.remove(self, self.wd)
+            self.wd = -1
 
     def __del__(self):
         try:

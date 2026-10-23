@@ -506,3 +506,28 @@ def test_hrrr_s_usual_delay_is_past_its_row_s_latest_posting():
                  for cycle in cycles)
     assert grid.usual_delay >= latest
     assert cycle_grid_for("hrrr").usual_delay == grid.usual_delay
+
+
+@pytest.mark.parametrize("source,cycle,lead,posted_minutes", [
+    # NOMADS listing times, 2026-10-23 (fix/go-posted-cycle-default).
+    ("rap-native", datetime(2026, 10, 23, 5), 0, 47),
+    ("rap-native", datetime(2026, 10, 23, 5), 18, 53),
+    ("rap-native", datetime(2026, 10, 23, 0), 0, 82),
+    ("rap-native", datetime(2026, 10, 22, 21), 51, 66),
+    ("hrrr-native", datetime(2026, 10, 23, 5), 0, 50),
+    ("hrrr-native", datetime(2026, 10, 23, 5), 18, 84),
+    ("hrrr-native", datetime(2026, 10, 23, 6), 18, 72),
+    ("hrrr-native", datetime(2026, 10, 23, 6), 48, 105),
+])
+def test_a_native_lead_is_asked_by_the_time_it_posted(
+        source, cycle, lead, posted_minutes):
+    """The breakage: the native rows were an unmeasured 1.5 h estimate, so a
+    default `gpuwm go` on a posted RAP cycle (f000 out at +47 min) did not
+    ask until +85 min and sat ~40 min.  A lead is asked from its row's time
+    minus ASK_AHEAD, so that line must not be after a posting seen."""
+
+    from gpuwm import source_readiness
+
+    ask_from = (source_posting.expected_at(source, cycle, lead)
+                - source_readiness.ASK_AHEAD)
+    assert ask_from <= cycle + timedelta(minutes=posted_minutes)

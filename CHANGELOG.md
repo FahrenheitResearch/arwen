@@ -1,5 +1,24 @@
 # Changelog
 
+## 2.9.6 (2026-10-23)
+
+New:
+- Soundings at any point after a run: `gpuwm soundings RUN --columns DIR` writes a column store of every column at each history time, and a sounding drawn from a stored column matches one drawn from the history file.
+- Soundings say what they show: the point, valid time, forecast hour and member at the top left, and the model and its start in bold at the top right (`title`, `brand` and `init` settings, or `GPUWM_SOUNDINGS_SETTINGS`). `rw_hex_points` takes `--brand`.
+- Single-domain runs apply `[perturbation]` warm bubbles.
+- `gpuwm hydro ahead CONFIG` builds a domain's hydro fabric before the launch that uses it.
+
+Fixed:
+- `gpuwm go` no longer waits about 35 minutes on a RAP or HRRR native cycle that has already posted.
+- HRRR and RAP smoke starts before 2021-12-21 14Z read MASSDEN in its real units (ug m-3).
+- Morrison microphysics (mp=10) steps about 11% faster, with identical output.
+- The end-of-run redraw of a fire (SFIRE) forecast no longer fails on the native fire panels, and those panels keep their folders.
+- A WRF-input `--restart` started from another directory is no longer refused as a different run.
+- Preparation has no single-core stages between fetch and forecast (a 48 h HRRR nest pair prepares in 95 s instead of 161 s), and a forecast from a prepared bundle pre-warms its kernels.
+- `rw_soundings` reads only the profile columns it needs (much faster, a quarter of the memory) and no longer hangs at exit.
+- A fetch that streams many files at once no longer uses up the account's file watchers (other programs then failed with "too many open files").
+- Maps: threshold colorbars (snowfall, liquid equivalent) give every band the same length with a tick at each boundary; a map with nothing to draw says why; rain, snow, freezing rain and ice pellet flags are drawn as two categories with crisp edges; dimensionless fields carry no unit label; the map frame is the same width on every side.
+
 ## 2.9.5 (2026-10-23)
 
 A hotfix of 2.9.4.

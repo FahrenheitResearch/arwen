@@ -1293,7 +1293,7 @@ def test_a_mapped_tree_defers_the_perturbation_block_the_gfs_tree_defers(
     assert all(operands.get("initial_perturbation") is None
                for operands in calls["initialize_operands"])
     assert "initial_perturbation" not in routed["source_identity"]
-    assert "deferred to prepared-tree forecast initialization" in (
+    assert "deferred to prepared forecast initialization" in (
         capsys.readouterr().err)
 
 
@@ -1305,22 +1305,19 @@ def test_a_mapped_tree_without_the_block_writes_the_proof_it_always_did(
     assert "initial_perturbation" not in proof
 
 
-def test_a_single_mapped_domain_still_refuses_the_perturbation_block(
+def test_a_single_mapped_domain_defers_the_perturbation_block(
         monkeypatch, tmp_path):
-    """The prepared single-domain runner applies no bubble, so a
-    single-domain preparation is refused by name before any work."""
+    """The prepared single-domain runner applies the bubbles to its restored
+    state (fix/single-domain-perturbation), so a single-domain preparation
+    is no longer refused: it prepares unperturbed arrays, and the runner
+    writes the treatment receipt when it applies them."""
     args, calls, expected = _install_prepare_fakes(
         monkeypatch, tmp_path, domain_count=1, backend="cpu")
     expected.exp.perturbation = _noise_bubble()
 
-    with pytest.raises(
-            ValueError,
-            match=r"single-domain mapped-adapter prepared-cache route does "
-                  r"not apply \[perturbation\]"):
-        mapped_direct.prepare_mapped_wrf(**args)
-    assert calls["build_static"] == 0
-    assert calls["interpolate"] == 0
-    assert not args["output_root"].exists()
+    proof = mapped_direct.prepare_mapped_wrf(**args)
+    assert proof is not None
+    assert args["output_root"].is_dir()
 
 
 def test_mapped_hierarchy_preserves_five_minute_offsets_end_to_end(

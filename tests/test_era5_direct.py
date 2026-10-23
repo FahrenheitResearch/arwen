@@ -417,12 +417,12 @@ def test_a_single_era5_domain_is_not_measured_as_a_tree(
 
 
 @pytest.mark.parametrize("domains", [1, 2])
-def test_an_era5_tree_defers_a_perturbation_block_a_single_domain_refuses(
+def test_an_era5_preparation_defers_a_perturbation_block_on_either_shape(
         tmp_path, monkeypatch, capsys, domains):
-    """The tree runner applies the bubbles whatever source prepared the
-    tree, so an ERA5 tree takes the block past the gate that used to
-    refuse it; a single domain, whose runner applies no bubble, is still
-    refused by name before any source is read."""
+    """The prepared runners apply the bubbles whatever source prepared the
+    bundle (the single-domain runner since fix/single-domain-perturbation),
+    so an ERA5 preparation of either shape takes the block past the gate
+    that used to refuse it."""
     import gpuwm.static.highres_production as highres
     from gpuwm.experiment import BubbleConfig, PerturbationConfig
 
@@ -445,17 +445,10 @@ def test_an_era5_tree_defers_a_perturbation_block_a_single_domain_refuses(
     monkeypatch.setattr(era5_direct, "validate_native_lambert_contract", reached)
     monkeypatch.setattr(era5_direct, "validate_native_lambert_contracts", reached)
 
-    if domains == 1:
-        with pytest.raises(
-                ValueError,
-                match=r"single-domain ERA5-direct prepared-cache route does "
-                      r"not apply \[perturbation\]"):
-            era5_direct.prepare_era5_wrf(**arguments)
-    else:
-        with pytest.raises(Reached):
-            era5_direct.prepare_era5_wrf(**arguments)
-        assert "deferred to prepared-tree forecast initialization" in (
-            capsys.readouterr().err)
+    with pytest.raises(Reached):
+        era5_direct.prepare_era5_wrf(**arguments)
+    assert "deferred to prepared forecast initialization" in (
+        capsys.readouterr().err)
     assert not arguments["output_root"].exists()
 
 

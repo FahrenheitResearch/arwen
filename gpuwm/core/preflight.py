@@ -11141,12 +11141,8 @@ def _load_experiment_any(path: Path) -> ExperimentConfig:
             # validated by their owners and split off, as every file
             # loader does.  Splitting only [fetch] stopped `gpuwm go` on
             # every such config that turned [static.highres] on.
-            fetch_table = raw.get("fetch")
             exp = build_experiment_from_config_tables(
                 raw, source=str(path), base_dir=Path(authority.base_dir))
-            if fetch_table is not None and len(exp.domains) == 1:
-                from gpuwm.experiment import refuse_unrouted_perturbation
-                refuse_unrouted_perturbation(exp, "single-domain prepared forecast")
             return exp
         exp, _case_data = load_experiment_case(path)
         return exp

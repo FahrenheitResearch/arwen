@@ -1194,7 +1194,7 @@ mod cuda_replay {
             colors: vec![Rgba::new(1,2,3), Rgba::new(10,20,30), Rgba::new(40,50,60),
                 Rgba::new(70,80,90), Rgba::new(100,110,120), Rgba::new(130,140,150)],
             legend_levels: vec![], legend_colors: vec![], under_color: Some(Rgba::new(4,5,6)),
-            over_color: Some(Rgba::new(250,251,252)), mask_below: Some(0.1), categories: false,
+            over_color: Some(Rgba::new(250,251,252)), mask_below: Some(0.1), categories: false, equal_bands: false,
         };
         let axes = RectilinearPixelAxes { x0: -9.25, y0: 780.75, dx: 18.875, dy: -14.75 };
         let mut total = 0;
@@ -1252,7 +1252,7 @@ mod inverse_cuda_replay {
         data[42]=f64::NAN; data[43]=f64::INFINITY;
         let cmap=LeveledColormap { levels:vec![-30.0,-10.0,0.0,10.0,30.0],
             colors:vec![Rgba::new(10,20,30),Rgba::new(40,50,60),Rgba::new(70,80,90),Rgba::new(100,110,120)],
-            legend_levels:vec![],legend_colors:vec![],under_color:None,over_color:None,mask_below:None,categories:false };
+            legend_levels:vec![],legend_colors:vec![],under_color:None,over_color:None,mask_below:None,categories:false,equal_bands:false };
         let projector=ProjectionProjector::Robinson(crate::projection::RobinsonProjection::new(30.0));
         let extent=MapExtent { x_min:-18000000.0,x_max:18000000.0,y_min:-9000000.0,y_max:9000000.0 };
         let mut bytes=0;

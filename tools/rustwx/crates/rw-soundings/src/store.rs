@@ -25,25 +25,49 @@ pub enum Convention {
 }
 
 /// Surface anchor (bridge units: hPa, m, C, m/s).
-#[derive(Clone, Copy, Debug, Default, serde::Serialize)]
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Sfc {
+    #[serde(deserialize_with = "nan_f64")]
     pub psfc_hpa: f64,
+    #[serde(deserialize_with = "nan_f64")]
     pub orog_m: f64,
+    #[serde(deserialize_with = "nan_f64")]
     pub t2_c: f64,
+    #[serde(deserialize_with = "nan_f64")]
     pub td2_c: f64,
+    #[serde(deserialize_with = "nan_f64")]
     pub u10: f64,
+    #[serde(deserialize_with = "nan_f64")]
     pub v10: f64,
 }
 
+/// JSON has no NaN: serde_json writes a missing value as null, and null reads back as NaN.
+fn nan_f64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
+    Ok(<Option<f64> as serde::Deserialize>::deserialize(d)?.unwrap_or(f64::NAN))
+}
+fn nan_vec<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<f64>, D::Error> {
+    Ok(<Vec<Option<f64>> as serde::Deserialize>::deserialize(d)?
+        .into_iter()
+        .map(|x| x.unwrap_or(f64::NAN))
+        .collect())
+}
+
 /// One raw column, lowest level first, bridge units (hPa, m MSL, C, m/s, Pa/s).
-#[derive(Clone, Debug, Default, serde::Serialize)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct RawColumn {
+    #[serde(deserialize_with = "nan_vec")]
     pub p: Vec<f64>,
+    #[serde(deserialize_with = "nan_vec")]
     pub z: Vec<f64>,
+    #[serde(deserialize_with = "nan_vec")]
     pub t: Vec<f64>,
+    #[serde(deserialize_with = "nan_vec")]
     pub td: Vec<f64>,
+    #[serde(deserialize_with = "nan_vec")]
     pub u: Vec<f64>,
+    #[serde(deserialize_with = "nan_vec")]
     pub v: Vec<f64>,
+    #[serde(deserialize_with = "nan_vec", default)]
     pub omega: Vec<f64>,
     pub sfc: Sfc,
 }

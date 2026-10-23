@@ -317,6 +317,23 @@ def _snapshot_authority(
 ) -> _AuthoritySnapshot:
     path = Path(path).resolve()
     path_before = path.stat()
+    if not retain_bytes:
+        # Inside a preparation's digest scope: a digest this preparation or
+        # its fetch already holds for these exact bytes, with the full
+        # re-read moved beside the work (gpuwm.authority_digests).
+        from gpuwm import authority_digests
+        held = authority_digests.known_digest(path, path_before)
+        if held is not None:
+            authority_digests.defer_verify(path, path_before, held[0], held[1])
+            return _AuthoritySnapshot(
+                path=path,
+                sha256=held[0],
+                size=int(path_before.st_size),
+                mtime_ns=int(path_before.st_mtime_ns),
+                device=int(path_before.st_dev),
+                inode=int(path_before.st_ino),
+                mode=int(path_before.st_mode),
+            )
     digest = hashlib.sha256()
     retained = bytearray() if retain_bytes else None
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) \
@@ -361,6 +378,8 @@ def _snapshot_authority(
     data = None if retained is None else bytes(retained)
     if data is not None and len(data) != after.st_size:
         raise ValueError(f"authority changed while reading: {path}")
+    from gpuwm import authority_digests
+    authority_digests.remember(path, path_after, digest.hexdigest())
     return _AuthoritySnapshot(
         path=path,
         sha256=digest.hexdigest(),
@@ -374,6 +393,12 @@ def _snapshot_authority(
 
 
 def _require_authority_snapshot(snapshot: _AuthoritySnapshot) -> None:
+    from gpuwm import authority_digests
+    if authority_digests.require_unchanged(
+            snapshot.path, sha256=snapshot.sha256, size=snapshot.size,
+            mtime_ns=snapshot.mtime_ns, device=snapshot.device,
+            inode=snapshot.inode, mode=snapshot.mode):
+        return
     current = _snapshot_authority(snapshot.path)
     if current.identity != snapshot.identity:
         raise ValueError(f"authority changed after validation: {snapshot.path}")

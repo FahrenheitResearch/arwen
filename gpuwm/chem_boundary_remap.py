@@ -493,15 +493,31 @@ def _horizontal_plan(backend, source_row, fields, lat_axis, lon_axis, target):
     return backend.indexed_plan((ny, nx), y, x)
 
 
+def _epoch_scale(source_row, key, cycle) -> float:
+    """The source variable's units-epoch factor for files of ``cycle``."""
+    from gpuwm.chem_conversions import UnitsEpochError, units_epoch_scale
+    try:
+        return units_epoch_scale(source_row.variables[key], cycle,
+                                 source=f"source {source_row.name!r}", variable=key)
+    except UnitsEpochError as error:
+        raise BoundaryRemapError(str(error)) from error
+
+
 def boundary_fields_for_grid(table, source_row, frames: SourceFrames,
                              target: TargetGrid, valid_time: datetime, *,
-                             backend=None, available=None, frame=None
+                             backend=None, available=None, frame=None,
+                             cycle=None
                              ) -> tuple[dict[str, np.ndarray], dict]:
     """``{species: (nz, ny, nx) float32}`` of every row this source fills.
 
     Returns the fields and a receipt naming the frames, weights and
     operators.  Raises :class:`BoundaryRemapError` for anything that cannot
     be done as the rows say.
+
+    ``cycle`` is the cycle of the files ``frames`` were decoded from
+    (:func:`gpuwm.chem_source_init.files_cycle`).  A source variable with
+    ``units_epochs`` rows is brought to its declared units by its epoch's
+    scale, folded into the row weights; read without a cycle it is refused.
     """
     backend = _backend(backend)
     combine = _require(backend, "weighted_combination")
@@ -555,6 +571,8 @@ def boundary_fields_for_grid(table, source_row, frames: SourceFrames,
             src = [_field(frame, key, moment, source_row.name)
                    for key in entry["fields"]]
             grid_fields.extend(src)
+            field_weights = [float(w) * _epoch_scale(source_row, key, cycle)
+                       for key, w in zip(entry["fields"], entry["weights"])]
             if entry["conversion"] == "kg_m3_to_ug_kg_dry":
                 # A mass density (HRRR-Smoke's MASSDEN): weighted on the
                 # source levels, then divided by each level's own density
@@ -570,8 +588,7 @@ def boundary_fields_for_grid(table, source_row, frames: SourceFrames,
                     raise BoundaryRemapError(
                         f"{row.name}: boundary terms use different density "
                         "conventions; one conversion cannot serve them")
-                combined = combine([_array(f) for f in src],
-                                   [float(w) for w in entry["weights"]],
+                combined = combine([_array(f) for f in src], field_weights,
                                    scale=1.0, humidity=None)
                 per_frame[row.name].append(convert_source(
                     "kg_m3_to_ug_kg_dry", combined,
@@ -585,7 +602,7 @@ def boundary_fields_for_grid(table, source_row, frames: SourceFrames,
                     f"{row.name}: a dry-air conversion needs the source's "
                     "humidity_variable, which the row does not declare")
             per_frame[row.name].append(combine(
-                [_array(f) for f in src], [float(w) for w in entry["weights"]],
+                [_array(f) for f in src], field_weights,
                 scale=scale, humidity=q if dry else None))
         if pressure_key:
             p_frames.append(_array(_field(frame, pressure_key, moment, source_row.name)))

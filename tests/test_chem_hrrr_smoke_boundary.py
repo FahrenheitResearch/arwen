@@ -192,10 +192,12 @@ def test_the_full_hrrr_grid_copies_its_own_cells_index_for_index():
     assert np.array_equal(seen["y"], j[:, 349:1450] - 1.0)
 
 
-def test_mass_density_becomes_mixing_ratio_on_the_models_levels():
+def _smoke_column(*, cycle, unit_factor=1.0, row=ROW):
     """A synthetic HRRR column end to end on the real Rust operators: smoke
     density rho*q with rho = P/(R T) on four hybrid levels numbered from the
-    ground, onto target pressures inside the source column."""
+    ground, onto target pressures inside the source column.  ``unit_factor``
+    is what the producer multiplied the kg m-3 density by (1e9 for the
+    ug m-3 bytes NOAA wrote before 2021-12-21 14Z)."""
     from gpuwm.chem_boundary_remap import SourceFrames, TargetGrid, boundary_fields_for_grid
     from gpuwm.chem_table import load_sets
     try:
@@ -211,14 +213,14 @@ def test_mass_density_becomes_mixing_ratio_on_the_models_levels():
     tmp = np.full((nz, ny, nx), 280.0, np.float32)
     q = np.float32(20.0)                                    # ug/kg
     rho = pres / (np.float32(287.04) * tmp)
-    massden = (q * 1e-9 * rho).astype(np.float32)
+    massden = (q * 1e-9 * rho * unit_factor).astype(np.float32)
     psfc = np.full((ny, nx), 100000.0, np.float32)
 
     def fld(values, levels):
         return SimpleNamespace(values=values, levels=levels, latitude=np.arange(ny, dtype=float),
                                longitude=np.arange(nx, dtype=float), coordinate_values=(),
                                projection=proj)
-    when = datetime(2025, 1, 8, 12, tzinfo=timezone.utc)
+    when = cycle or datetime(2025, 1, 8, 12, tzinfo=timezone.utc)
     levels = tuple(float(k) for k in range(1, nz + 1))
     frame = {"MASSDEN": fld(massden, levels), "PRES": fld(pres, levels), "TMP": fld(tmp, levels),
              "PSFC": fld(psfc[None], (0.0,))}
@@ -228,12 +230,72 @@ def test_mass_density_becomes_mixing_ratio_on_the_models_levels():
     target = TargetGrid(lat, lon, np.broadcast_to(
         np.array([90000.0, 80000.0, 60000.0], np.float32)[:, None, None], (3, 1, 2)).copy())
     table = load_sets(["smoke"], ["rave-3km", "hrrr-native-smoke"])
-    out, receipt = boundary_fields_for_grid(table, ROW, frames, target, when, backend=backend,
-                                            available=("rave-3km", "hrrr-native-smoke"))
+    return boundary_fields_for_grid(table, row, frames, target, when, backend=backend,
+                                    available=("rave-3km", "hrrr-native-smoke"), cycle=cycle)
+
+
+def test_mass_density_becomes_mixing_ratio_on_the_models_levels():
+    out, receipt = _smoke_column(cycle=datetime(2025, 1, 8, 12, tzinfo=timezone.utc))
     assert set(out) == {"smoke"}
     assert np.allclose(out["smoke"], 20.0, rtol=1e-4)
     assert "kg_m3_to_ug_kg_dry" in receipt["operators"]["convert_and_time"]
     assert "Lambert" in receipt["operators"]["horizontal"]
+
+
+def test_massden_before_the_units_epoch_is_read_as_ug_m3():
+    """NOAA HRRR wrfnat and RAP awp130bgrb wrote MASSDEN in ug m-3 through
+    the 2021-12-21 13Z cycle (same kg m-3 label), kg m-3 from 14Z.  A
+    2021-07-28 start read as kg m-3 began with 8e8 ug/kg smoke and failed
+    its initial health check (nwfa ~6e17)."""
+    out, _ = _smoke_column(cycle=datetime(2021, 7, 28, 12, tzinfo=timezone.utc), unit_factor=1e9)
+    assert np.allclose(out["smoke"], 20.0, rtol=1e-4)
+    last_old, _ = _smoke_column(cycle=datetime(2021, 12, 21, 13, tzinfo=timezone.utc), unit_factor=1e9)
+    first_new, _ = _smoke_column(cycle=datetime(2021, 12, 21, 14, tzinfo=timezone.utc))
+    assert np.allclose(last_old["smoke"], 20.0, rtol=1e-4)
+    assert np.allclose(first_new["smoke"], 20.0, rtol=1e-4)
+
+
+def test_a_cycle_after_the_epoch_is_read_bitwise_as_before():
+    """The epoch scale is 1.0 after 2021-12-21 14Z: the smoke field is
+    bitwise the field of the same row without any units_epochs row."""
+    import dataclasses
+    when = datetime(2023, 6, 7, 18, tzinfo=timezone.utc)
+    variables = dict(ROW.variables)
+    variables["MASSDEN"] = {k: v for k, v in variables["MASSDEN"].items() if k != "units_epochs"}
+    plain = dataclasses.replace(ROW, variables=variables)
+    with_epochs, _ = _smoke_column(cycle=when)
+    without, _ = _smoke_column(cycle=None, row=plain)
+    assert with_epochs["smoke"].tobytes() == without["smoke"].tobytes()
+
+
+def test_a_read_without_a_cycle_is_refused_by_name():
+    from gpuwm.chem_boundary_remap import BoundaryRemapError
+    with pytest.raises(BoundaryRemapError, match=r"MASSDEN: its units changed at cycle 2021-12-21T14:00:00Z.*carries no file cycle"):
+        _smoke_column(cycle=None)
+
+
+def test_the_files_cycle_comes_from_the_fetch_receipts(tmp_path):
+    import json
+    from gpuwm.chem_source_init import ChemSourceUnavailable, files_cycle
+    files = {}
+    for stem, cycle in (("a", "12:00"), ("b", "12:00")):
+        (tmp_path / f"{stem}.json").write_text(json.dumps({"dataset": "hrrr-wrfnat", "request": {
+            "date": "2021-07-28/2021-07-28", "time": [cycle], "leadtime_hour": ["0"]}}))
+        files[stem] = tmp_path / f"{stem}.grib2"
+    assert files_cycle(ROW, files) == datetime(2021, 7, 28, 12, tzinfo=timezone.utc)
+    (tmp_path / "b.json").write_text(json.dumps({"dataset": "hrrr-wrfnat", "request": {
+        "date": "2021-07-28/2021-07-28", "time": ["13:00"], "leadtime_hour": ["0"]}}))
+    with pytest.raises(ChemSourceUnavailable, match="cycles"):
+        files_cycle(ROW, files)
+    assert files_cycle(ROW, {"x": tmp_path / "none.grib2"}) is None
+
+
+def test_the_rap_row_carries_the_same_epoch():
+    from gpuwm.chem_conversions import units_epoch_scale
+    rap = catalog().sources["rap-native-smoke"].variables["MASSDEN"]
+    for row in (ROW.variables["MASSDEN"], rap):
+        assert units_epoch_scale(row, datetime(2021, 12, 21, 13, tzinfo=timezone.utc)) == 1e-9
+        assert units_epoch_scale(row, "2021-12-21T14:00:00Z") == 1.0
 
 
 def test_a_run_started_from_hrrr_takes_hrrr_smoke_without_naming_it():

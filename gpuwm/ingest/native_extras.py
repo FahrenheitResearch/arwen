@@ -30,14 +30,21 @@ def gate_extra_fields(gate):
     return names
 
 
-def map_boundary_rows(source_fields, rows, source_row, plan, *, cpu_bridge=None):
+def map_boundary_rows(source_fields, rows, source_row, plan, *, cycle=None, cpu_bridge=None):
     """Return row-keyed source tracers mapped bilinearly to the mass grid.
 
     Boundary row conversions run on native source levels using their own P
     and T before interpolation. Only available fields on this source are
     selected; absent rows are left to the ordered source resolver.
+
+    ``cycle`` is the source files' cycle.  A variable whose units changed
+    between cycles (its ``units_epochs`` rows) is first brought to its
+    declared units by that epoch's scale, folded into the row's weights;
+    such a variable read without a cycle is refused
+    (:func:`gpuwm.chem_conversions.units_epoch_scale`).
     """
-    from gpuwm.chem_conversions import convert_source, weighted_source_fields
+    from gpuwm.chem_conversions import (
+        convert_source, units_epoch_scale, weighted_source_fields)
     output = {}
     for row in rows:
         for boundary in row.boundary:
@@ -46,8 +53,12 @@ def map_boundary_rows(source_fields, rows, source_row, plan, *, cpu_bridge=None)
             names = boundary["fields"]
             if not all(name in source_fields for name in names):
                 continue
+            weights = [float(weight) * units_epoch_scale(
+                           source_row.variables[name], cycle,
+                           source=f"source {source_row.name!r}", variable=name)
+                       for name, weight in zip(names, boundary["weights"])]
             combined = weighted_source_fields(
-                (source_fields[name] for name in names), boundary["weights"],
+                (source_fields[name] for name in names), weights,
                 cpu_bridge=cpu_bridge)
             parameters = [source_row.variables[name].get("conversion_parameters") for name in names]
             if any(value != parameters[0] for value in parameters):

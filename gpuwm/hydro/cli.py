@@ -16,6 +16,10 @@ def register_cli(subparsers):
     run.add_argument("--outdir", required=True, type=Path)
     run.add_argument("--restart", type=Path)
     run.set_defaults(func=run_main)
+    ahead = commands.add_parser(
+        "ahead", help="build (or reuse) the covering fabric `gpuwm go CONFIG --hydro on` binds, before that launch")
+    ahead.add_argument("config", type=Path)
+    ahead.set_defaults(func=ahead_main)
     from gpuwm.hydro_demo import register_demo_cli
     register_demo_cli(commands, runner=run_prepared)
     from gpuwm.hydrofabric import register_cli as register_fabric
@@ -32,6 +36,28 @@ def register_cli(subparsers):
     register_forcing(commands)
     from .calibrate import register_cli as register_calibration
     register_calibration(commands)
+
+
+def ahead_main(args):
+    """Build the fabric ``gpuwm go CONFIG --hydro on`` would build, into the same cache.
+
+    The fabric cache is keyed by the domain and the preparation request
+    (gpuwm.hydro.door.materialize), so the launch that follows reuses this
+    build instead of making it. Breakage it prevents: a forecast from a
+    prepared bundle (WOOF prepare-ahead, Oklahoma City 2026-10-23) waited 64 s
+    for the fabric of a domain new to the box, with no fetch or preparation to
+    build it beside; the box can build it while it waits for the bundle.
+    Exit 0 when hydro is enabled, 1 when no fabric covers CONFIG.
+    """
+    import json
+    from .runtime import _launch_settings
+    started = time.perf_counter()
+    settings, _path, decision = _launch_settings("", args.config)
+    decision = {key: value for key, value in decision.items() if not key.startswith("_")}
+    print(json.dumps({"enabled": bool(settings.get("enabled")), "reason": decision.get("reason"),
+                      "build": decision.get("build"), "seconds": round(time.perf_counter() - started, 3)},
+                     default=str, sort_keys=True), flush=True)
+    return 0 if settings.get("enabled") else 1
 
 
 def run_main(args):

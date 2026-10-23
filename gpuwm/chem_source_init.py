@@ -48,7 +48,7 @@ from gpuwm.chem_boundary_remap import (
 
 __all__ = ["ChemSourceUnavailable", "chem_boundary_fields",
            "data_store_cache_root", "data_store_sources",
-           "fill_boundary_sources", "covering_files"]
+           "fill_boundary_sources", "covering_files", "files_cycle"]
 
 #: Environment variable naming the data-store cache (one authority:
 #: :data:`gpuwm.data_store_fetch.CACHE_ENV`).
@@ -245,6 +245,37 @@ def covering_files(source_row, variables: Iterable[str], valid_time, *,
         "run's window); initialization never downloads.")
 
 
+def files_cycle(source_row, files: dict[str, Path]) -> datetime | None:
+    """The one cycle (reference time) the fetch receipts of ``files`` record.
+
+    Each published file sits beside its receipt (same name, ``.json``),
+    whose request names the date and cycle it answers.  Returns None when no
+    file has a readable receipt (a composition NetCDF source, or files placed
+    by hand); a source variable whose units depend on the cycle then refuses
+    the read by name (:func:`gpuwm.chem_conversions.units_epoch_scale`).
+    Files of two different cycles are refused: their units could differ.
+    """
+    acq = source_row.acquisition or {}
+    keys = acq.get("keys")
+    if not keys or source_row.format == "netcdf":
+        return None
+    cycles = set()
+    for path in files.values():
+        try:
+            record = json.loads(Path(path).with_suffix(".json").read_text(encoding="utf-8"))
+            cycle, _ = _receipt_times(record["request"], keys)
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if cycle is not None:
+            cycles.add(cycle)
+    if len(cycles) > 1:
+        raise ChemSourceUnavailable(
+            f"chem source {source_row.name!r}: the covering files come from "
+            f"cycles {sorted(c.isoformat() for c in cycles)}; one frame must be "
+            "read from one cycle, whose units the source row names")
+    return next(iter(cycles), None)
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -367,9 +398,10 @@ def fill_boundary_sources(state, cfg, *, valid_time, latlon, pressure,
         files = covering_files(source_row, variables, valid_time,
                                cache_root=root, bounds=bounds)
         frames = _frames(source_row, files, variables, root)
+        cycle = files_cycle(source_row, files)
         fields, receipt = boundary_fields_for_grid(
             chem.table, source_row, frames, target, _utc(valid_time),
-            backend=backend, available=enabled, frame=frame)
+            backend=backend, available=enabled, frame=frame, cycle=cycle)
         for name, values in fields.items():
             destination = getattr(state, chem.table.row(name).state_attr)
             # NumPy 2 arrays carry .device too, so ask the type's module.
@@ -378,6 +410,7 @@ def fill_boundary_sources(state, cfg, *, valid_time, latlon, pressure,
                   else np)
             destination[...] = xp.asarray(values, dtype=np.float32)
         receipt["files"] = {group: str(p) for group, p in files.items()}
+        receipt["files_cycle"] = None if cycle is None else cycle.isoformat()
         receipts.append(receipt)
     from gpuwm.core.chem_mp_coupling import initialize_from_sources
     number_receipt = initialize_from_sources(state, cfg, receipts)

@@ -1035,7 +1035,7 @@ def prepare_era5_wrf(
                 # unchanged-WRF file set beside it is a companion, as on
                 # the GFS, mapped and HRRR tree routes.  Required, a
                 # state the WRF format cannot represent (a deferred
-                # [perturbation] bubble, which only the tree runner
+                # [perturbation] bubble, which the prepared runner
                 # applies) failed this preparation after every domain
                 # was built; optional, it is recorded as a REFUSED
                 # export manifest in the proof instead.

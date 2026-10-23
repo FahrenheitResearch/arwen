@@ -5057,7 +5057,8 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
         # ArWen and WRF runs were never comparable.
         from gpuwm.config import (MP28_AEROSOL_SOURCE_DEFAULT,
                                   MP28_AEROSOL_SYNTHETIC_FALLBACK)
-        from gpuwm.ingest.wif_climatology import resolve_wif_climatology
+        from gpuwm.ingest.wif_climatology import (portable_wif_statement,
+                                                  resolve_wif_climatology)
         # The printed line now reports a RESOLUTION, not a deviation.  It is
         # still printed unconditionally, for the same reason it always was:
         # which aerosol initial state a run used is the single fact that
@@ -5070,16 +5071,22 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
             _wif = resolve_wif_climatology()
         except Exception:      # an explicit override that does not exist
             _wif = None        # -- initialize_real raises on it by name
+        # Stated by CONTENT and by rule, never by this process's absolute
+        # paths: this report is bound into the WRF-input door's preparation
+        # receipt, and a cwd or home path in it made a --restart launched
+        # from another directory a "different run" (5 km radar DA,
+        # 2026-10-23).  The run's own warning and aerosol receipt keep the
+        # paths.
         if _wif is not None and _wif.resolved:
             defaults_applied.append(AppliedDefault(
                 key="mp28 aerosol initial state",
                 value="WRF monthly WIF aerosol climatology "
-                      f"({_wif.path})",
+                      f"({portable_wif_statement(_wif)})",
                 reason=MP28_AEROSOL_SOURCE_DEFAULT))
         else:
             reason = MP28_AEROSOL_SYNTHETIC_FALLBACK
             if _wif is not None and _wif.fallback_reason:
-                reason = reason + " " + str(_wif.fallback_reason)
+                reason = reason + " " + portable_wif_statement(_wif)
             # AND WHAT THE RUN DOOR WILL DO WITH IT -- but only when it
             # will.  This import writes a TOML and runs nothing, so it
             # does not refuse; if these namelists describe a domain with

@@ -94,7 +94,10 @@ ROUTE_TABLE_SHA256 = (
     # merged with the ecmwf-ens and rrfs-ens input-ensemble rows.
     # Moved by the capabilities landing: the ecmwf-ens historical-archive rows
     # merged over the gfs/gefs archive publication rows.
-    "12d26a7e89eb039381e5049b99d77d6cf3a4cffa25cfe7d55ee438f9561f6340"
+    # Moved by fix/go-posted-cycle-default: the rap-native and hrrr-native
+    # publication_lag rows are measured (they were an unmeasured 1.5 h
+    # estimate, so a default `gpuwm go` waited ~40 min for a posted cycle).
+    "13ff2bb4c79ab84f40fab639f4fc6e8f70a63d13ec3599319b9bfd68f2238d7b"
 )
 
 #: Sources whose acquisition predates the route table and keeps its own

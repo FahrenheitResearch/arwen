@@ -3369,9 +3369,6 @@ def resolve_plan(plan: RunPlan, *, generate_into: Path | None = None,
 
                     exp = experiment_from_text(
                         payload.decode("utf-8"), source=config_source)
-                    if plan.route == "prepared" and len(exp.domains) == 1:
-                        from gpuwm.experiment import refuse_unrouted_perturbation
-                        refuse_unrouted_perturbation(exp, "single-domain prepared forecast")
                     data = None
         except StreamingRefused as refusal:
             # build_experiment refuses [tiles] mode = 'on' over a nested

@@ -751,8 +751,8 @@ class PerturbationConfig:
     Absent block = ``ExperimentConfig.perturbation is None`` = zero
     behavior change, byte-identical prepared state (the
     inflow_perturbation OFF discipline).  Present, the block is either
-    honored on the experiment runtime path, deferred by a domain-tree
-    preparation to the tree runner that applies it
+    honored on the experiment runtime path, deferred by a preparation to
+    the prepared forecast runner that applies it, single-domain or tree
     (:func:`deferred_initial_perturbation`), or refused by name on
     routes that do not thread it (:func:`refuse_unrouted_perturbation`);
     it is never dropped.
@@ -868,7 +868,8 @@ def refuse_unrouted_perturbation(exp, route: str) -> None:
         "Initial-state theta bubbles are applied by the experiment "
         "runtime path (gpuwm run / gpuwm ingest, through "
         "gpuwm.ingest.real.initialize_real) and by the prepared "
-        "domain-tree forecast runner (applied to the restored states, "
+        "single-domain and domain-tree forecast runners (applied to the "
+        "restored states, gpuwm.prepared_single_domain_forecast and "
         "gpuwm.prepared_domain_tree_forecast)."))
 
 
@@ -885,36 +886,32 @@ def deferred_initial_perturbation(exp, route: str, *,
     """What a preparation does with the experiment's [perturbation] block.
 
     No preparation writes a bubble into the arrays it prepares.  The
-    prepared domain-tree forecast runner applies the configured bubbles
-    to the restored states at experiment start
-    (:mod:`gpuwm.prepared_domain_tree_forecast`), whatever source
-    prepared the tree, so a tree preparation keeps its initial and
-    boundary arrays unperturbed and returns this receipt for its proof.
-    Every source route calls this one function; none has its own path.
-
-    A single-domain preparation still refuses the block, by the route's
-    name (:func:`refuse_unrouted_perturbation`): the prepared
-    single-domain forecast runner applies no bubble, so the bundle would
-    run the unperturbed state under the bubbles' name.  An absent block
-    returns ``None`` on either shape and says nothing.
+    prepared forecast runners apply the configured bubbles to the
+    restored states at experiment start
+    (:mod:`gpuwm.prepared_domain_tree_forecast` for a tree,
+    :mod:`gpuwm.prepared_single_domain_forecast` for one domain),
+    whatever source prepared the bundle, so a preparation keeps its
+    initial and boundary arrays unperturbed and returns this receipt for
+    its proof.  Every source route calls this one function; none has its
+    own path.  An absent block returns ``None`` and says nothing.
 
     ``announce`` says the deferral once on stderr.  A stage that only
     needs the early refusal passes False, so a preparation that reads
     its configuration in two processes says it once.
     """
 
-    if len(exp.domains) < 2:
-        refuse_unrouted_perturbation(exp, f"single-domain {route}")
     perturbation = getattr(exp, "perturbation", None)
     if perturbation is None:
         return None
+    runner = ("gpuwm.prepared_domain_tree_forecast" if len(exp.domains) > 1
+              else "gpuwm.prepared_single_domain_forecast")
     if announce:
         warn(
-            "initial perturbation is deferred to prepared-tree forecast "
+            "initial perturbation is deferred to prepared forecast "
             "initialization",
             "Prepared initial and boundary arrays remain unperturbed, and "
             "the preparation receipt records the configured bubbles as "
-            "deferred. The domain-tree forecast runner applies them once to "
+            "deferred. The prepared forecast runner applies them once to "
             "the restored states at experiment start, never on restart or "
             "to a nest born later. Companion stock-WRF export cannot "
             "represent this deferred mutation.")
@@ -922,7 +919,7 @@ def deferred_initial_perturbation(exp, route: str, *,
         "schema": DEFERRED_PERTURBATION_SCHEMA,
         "status": "DEFERRED_TO_FORECAST_INITIALIZATION",
         "prepared_arrays": "unperturbed source initial and boundary states",
-        "application_route": "gpuwm.prepared_domain_tree_forecast",
+        "application_route": runner,
         "application_point": "restored states at experiment start time",
         "applied_on_restart": False,
         "applied_to_delayed_domains": False,

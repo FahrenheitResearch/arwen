@@ -101,8 +101,8 @@ struct RState {
     job: Option<Arc<Job>>,
 }
 
-/// Own the render workers until their GPU contexts have shut down. Detached
-/// workers raced NVIDIA's process teardown after the last PNG was written.
+/// Own the render workers until they have finished. Detached workers raced
+/// NVIDIA's process teardown after the last PNG was written.
 pub struct RenderPool {
     sender: Option<Sender<RenderRequest>>,
     workers: Vec<std::thread::JoinHandle<()>>,
@@ -182,6 +182,8 @@ fn select_device() -> Result<RenderDevice, String> {
         match create_render_state(backends) {
             Ok(state) => {
                 let info = state.adapter.get_info();
+                // Never vkDestroyDevice: see `render_thread` on queue close.
+                std::mem::forget(state);
                 return Ok(RenderDevice::Gpu {
                     backends,
                     adapter: format!("{} {:?} {:?}", info.name, info.backend, info.device_type),
@@ -338,7 +340,15 @@ fn render_thread(rx: Arc<std::sync::Mutex<Receiver<RenderRequest>>>) {
             let guard = rx.lock().unwrap_or_else(|e| e.into_inner());
             match guard.recv() {
                 Ok(r) => r,
-                Err(_) => return,
+                Err(_) => {
+                    // Every picture is written; leave the device contexts to process exit.
+                    // Breakage this prevents: NVIDIA's vkDestroyDevice (driver 610.43) at times
+                    // never returns while its helper thread spins one core at 100%, so
+                    // rw_soundings hung after its last PNG (3 of 25 runs on a busy RTX 5090;
+                    // seen as 2+ minutes at 101% of one core on a hex export).
+                    harnesses.drain().for_each(|(_, h)| std::mem::forget(h));
+                    return;
+                }
             }
         };
         let t0 = Instant::now();

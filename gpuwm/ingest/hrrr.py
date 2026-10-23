@@ -1982,8 +1982,12 @@ def interpolate_hrrr_to_lambert(
     for name in snapshot.extra_fields:
         out[name] = mass_plan.apply(source[name], method="bilinear")
     from .native_extras import map_boundary_rows
+    # The files' cycle picks the source's units epoch (HRRR wrfnat MASSDEN
+    # was ug m-3 before 2021-12-21 14Z under the same kg m-3 label).
     boundary_tracers = map_boundary_rows(
-        source, chem_rows, chem_source, mass_plan, cpu_bridge=cpu_bridge)
+        source, chem_rows, chem_source, mass_plan,
+        cycle=snapshot.valid_time - timedelta(hours=snapshot.forecast_hour),
+        cpu_bridge=cpu_bridge)
     # Do not derive/map RH here.  With FLAG_SH, real.exe diagnoses rh_gc from
     # the already horizontally mapped SPECHUMD, TT, and PRES.  initialize_real
     # mirrors that order; retaining a separately mapped 50-level RH field is

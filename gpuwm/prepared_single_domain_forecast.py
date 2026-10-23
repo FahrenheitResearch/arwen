@@ -711,8 +711,8 @@ MAPPED_PREPARATION_TELEMETRY_KEYS = frozenset({
 #: the soil moisture floor touched a column, with the same exact receipt
 #: bound in cache user metadata by CONDITIONAL_PREPARATION_RECEIPTS.
 #: ``initial_perturbation`` likewise: written
-#: only on a tree whose experiment carries a [perturbation] block, which
-#: the tree runner applies at start (gpuwm.experiment
+#: only when the experiment carries a [perturbation] block, which the
+#: prepared runner applies at start (gpuwm.experiment
 #: deferred_initial_perturbation).
 #: ``posting`` likewise: written only by a preparation made as its leads
 #: posted (DESIGN A136 2.4 item 6), the leads it waited for.
@@ -2306,16 +2306,7 @@ def _render_materialized_experiment(
     base_raw = tomllib.loads(base_text)
     base_exp = build_experiment(_experiment_tables(base_raw),
                                 source="base named-source experiment")
-    from gpuwm.experiment import (
-        refuse_unrouted_perturbation, refuse_unrouted_spawn,
-    )
-    if len(base_exp.domains) == 1:
-        # Only the single-domain runner cannot apply a bubble.  A tree
-        # goes to the prepared domain-tree runner, which applies it to
-        # its restored states, the same split `gpuwm go`'s own load,
-        # run-plan and the memory preflight make.
-        refuse_unrouted_perturbation(
-            base_exp, "prepared single-domain forecast")
+    from gpuwm.experiment import refuse_unrouted_spawn
     refuse_unrouted_spawn(base_exp, "prepared single-domain forecast")
     if profile is None:
         base_non_physics = _non_physics_descriptor_sha256(base_raw)
@@ -6995,11 +6986,9 @@ def preflight_prepared_forecast(
     # gpuwm.vertical_adaptation.adopt_prepared_vertical).
     source_exp, _prepared_vertical = adopt_prepared_vertical(
         source_exp, proof, announce=_announce_adopted_coordinate)
-    from gpuwm.experiment import (
-        refuse_unrouted_perturbation, refuse_unrouted_spawn,
-    )
-    refuse_unrouted_perturbation(
-        source_exp, "prepared single-domain forecast")
+    from gpuwm.experiment import refuse_unrouted_spawn
+    # [perturbation] is applied by run_prepared_forecast to the restored
+    # state; its refusal here was retired with that apply step.
     refuse_unrouted_spawn(source_exp, "prepared single-domain forecast")
     # NO streaming refusal here.  This route wires a streamed-domain builder
     # (streaming.builders_for_tree, below), so mode = 'on' is something it
@@ -9594,11 +9583,49 @@ def run_prepared_forecast(
     trace_gas_overrides = trace_gas_overrides_from_config(
         inputs.experiment_config, expected_sha256=inputs.file_sha256["experiment_config"])
 
+    cfg = exp.root.run
+    # Configured initial-state theta bubbles ([perturbation], PROVENANCE
+    # D12), applied as the prepared domain-tree runner applies them: the
+    # sealed cache stays the pure analysis, and the bubbles are added to
+    # the RESTORED state before initialize_prepared_physics rederives
+    # p/al/alt from the perturbed prognostics.  On the store road the
+    # restore runs slab by slab, so each slab gets its rows of the bubble.
+    # A resumed run applies nothing: the checkpoint trajectory carries the
+    # evolved bubble.  Containment and zero-cell refusals fire here,
+    # before any integration.
+    perturbation = None
+    perturbation_rows: list[dict] = []
+    if exp.perturbation is not None and restart is None:
+        from gpuwm.ingest.init_perturbation import (
+            build_initial_state_perturbation)
+        perturbation = build_initial_state_perturbation(
+            exp.perturbation, inputs.grid, grid_id=1,
+            require_containment=True, cfg=cfg)
+
+    def perturb_restored(result, slab_cfg, row_start):
+        from gpuwm.core.diagnostics import update_diagnostics
+        # The cache serializes p as the preparation left it, so the
+        # restored prognostics are diagnosed first; the bubble holds that
+        # state.p while it rebalances the geopotential.
+        update_diagnostics(result.state, slab_cfg.hypsometric_opt)
+        if row_start is None:
+            perturbation_rows.append(perturbation.apply_to_state(result.state))
+            return
+        window = copy.copy(perturbation)
+        rows = slice(int(row_start), int(row_start) + int(slab_cfg.ny))
+        window._placed = tuple(replace(
+            placed, horizontal_km=(None if placed.horizontal_km is None
+                                   else placed.horizontal_km[rows]))
+            for placed in perturbation._placed)
+        perturbation_rows.append(window.apply_to_state(
+            result.state, allow_empty=True))
+
     def initialize_cached_physics(*args, row_start=None, domain_rows=None, **kwargs):
+        if perturbation is not None:
+            perturb_restored(args[0], args[1], row_start)
         return initialize_prepared_physics(
             *args, **kwargs, p_top=exp.vertical.p_top, column_chunk=exp.column_chunk,
             trace_gas_overrides=trace_gas_overrides)
-    cfg = exp.root.run
     # Correct mode: a domain whose schemes carry a finding no correction
     # covers says so here, once, as well as in the receipt.
     from gpuwm.correct_mode import uncorrected_notice
@@ -9950,6 +9977,35 @@ def run_prepared_forecast(
         timing["initialize_physics"] = time.perf_counter() - started
         step_log.phase("initialize_physics", timing["initialize_physics"])
         domain_state = restored.initial_result.state
+
+    if exp.perturbation is not None:
+        # Treatment proof, before any integration: the accepted config
+        # echoed value for value plus what the restored domain received
+        # (summed over the store road's slabs).
+        receipts = [{
+            "resumed": True,
+            "note": "resumed from checkpoint; the initial perturbation was "
+                    "applied when the trajectory began and is not re-applied",
+        }]
+        if perturbation is not None:
+            receipt = dict(perturbation_rows[0])
+            receipt["bubbles"] = [dict(row) for row in receipt["bubbles"]]
+            for index, row in enumerate(receipt["bubbles"]):
+                row["cells_touched"] = sum(
+                    r["bubbles"][index]["cells_touched"]
+                    for r in perturbation_rows)
+                if row.get("applied") and row["cells_touched"] == 0:
+                    raise ValueError(
+                        f"perturbation.bubbles #{index + 1} touches zero "
+                        "cells in domain d01")
+                for key in ("max_theta_added_k", "max_qv_delta_kg_kg"):
+                    values = [r["bubbles"][index][key]
+                              for r in perturbation_rows
+                              if key in r["bubbles"][index]]
+                    if values:
+                        row[key] = max(values)
+            receipts = [receipt]
+        runtime._write_initial_perturbation_receipt(outdir, exp, receipts)
 
     if prewarmed_execution is None:
         tick_clock = resolve_clock(

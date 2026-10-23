@@ -405,12 +405,6 @@ pub fn operational_fill_scale_for_recipe_in(
         },
         RenderStyle::WeatherQpf => crate::qpf::qpf_inches_scale(),
         RenderStyle::WeatherSnowfall => crate::qpf::snowfall_inches_scale(),
-        RenderStyle::WeatherCategorical if filled_selector.field == CanonicalField::FogFlag => DiscreteColorScale {
-            levels: vec![-0.5, 0.5, 1.5],
-            colors: vec![Color::rgba(242, 242, 242, 255), Color::rgba(216, 34, 34, 255)],
-            extend: ExtendMode::Neither,
-            mask_below: None,
-        },
         RenderStyle::WeatherSnowDepthChange => {
             let mut scale = rustwx_render::difference::difference_scale(rustwx_render::difference::DifferenceTable::builtin(), 24.0);
             // Preserve sub-inch melt/settling without losing the storm-depth tails.
@@ -423,14 +417,22 @@ pub fn operational_fill_scale_for_recipe_in(
             extend: ExtendMode::Max,
             mask_below: Some(5.0),
         },
+        // Binary flags (fog flag, categorical rain/snow/freezing rain/ice
+        // pellets): one band per code, 0 and 1, drawn with the category
+        // legend (`direct_recipe_render_controls`). The old 0-1 ramp
+        // (levels 0, 0.5, 1) was densified like a continuous field, so the
+        // bar read 0.1 .. 0.9 and the map blended pink fringes at every
+        // 0/1 edge (R10 look, 2.9.4). The fog flag draws its 0 band; the
+        // categorical precipitation flags keep masking false flags, so the
+        // map shows only where the type is diagnosed.
         RenderStyle::WeatherCategorical => DiscreteColorScale {
-            levels: vec![0.0, 0.5, 1.0],
+            levels: vec![-0.5, 0.5, 1.5],
             colors: vec![
                 Color::rgba(242, 242, 242, 255),
                 Color::rgba(216, 34, 34, 255),
             ],
             extend: ExtendMode::Neither,
-            mask_below: Some(0.5),
+            mask_below: (filled_selector.field != CanonicalField::FogFlag).then_some(0.5),
         },
         // Aviation display range; larger values retain the final clear-air color.
         // The diagnostic itself remains uncapped by this 2 km display range.

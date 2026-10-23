@@ -35,6 +35,73 @@ def weighted_source_fields(fields, weights, *, cpu_bridge=None):
     return output
 
 
+class UnitsEpochError(ValueError):
+    """A source field's units depend on its cycle and the cycle is unknown or
+    the field's ``units_epochs`` rows are malformed."""
+
+
+def _cycle_utc(moment):
+    from datetime import datetime, timezone
+    if isinstance(moment, str):
+        moment = datetime.fromisoformat(moment.replace("Z", "+00:00"))
+    if not isinstance(moment, datetime):
+        raise UnitsEpochError(f"cycle {moment!r} is not a date and time")
+    if moment.tzinfo is None:
+        return moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc)
+
+
+def units_epoch_scale(spec, cycle, *, source="source", variable="field"):
+    """The factor that brings one source variable's bytes to its declared units.
+
+    ``spec`` is the source row's variable entry.  Its optional
+    ``units_epochs`` rows name cycle ranges (``from_cycle`` inclusive,
+    ``until_cycle`` exclusive, UTC) in which the producer wrote other units
+    under the same GRIB2 parameter, with the ``scale`` that converts them to
+    ``spec["units"]``.  Outside every epoch the factor is 1.0, so a field
+    whose cycle sits in the declared-units era is read unchanged.
+
+    ``cycle`` is the cycle (reference time) of the files the bytes came from.
+    A variable with epochs and no cycle is refused: its units cannot be
+    known.  Breakage this prevents: NOAA HRRR wrfnat and RAP awp130bgrb wrote
+    MASSDEN in ug m-3 through the 2021-12-21 13Z cycle and kg m-3 from 14Z,
+    both labelled kg m-3, so an earlier smoke start read as kg m-3 began
+    1e9 too large (8e8 ug/kg smoke, nwfa ~6e17, an initial health failure).
+    """
+    epochs = spec.get("units_epochs") or ()
+    if not epochs:
+        return 1.0
+    if cycle is None:
+        bounds = ", ".join(str(e.get("until_cycle") or e.get("from_cycle")) for e in epochs)
+        raise UnitsEpochError(
+            f"{source} {variable}: its units changed at cycle {bounds} (the source "
+            f"row's units_epochs), and this read carries no file cycle, so it cannot "
+            f"tell {spec.get('units')!r} bytes from {[e.get('units') for e in epochs]}; "
+            "refusing rather than risk a 1e9 unit error. Pass the cycle of the files "
+            "(the fetch receipt's, or the snapshot's valid time minus its lead).")
+    when = _cycle_utc(cycle)
+    matches = []
+    for epoch in epochs:
+        scale = epoch.get("scale")
+        if (not isinstance(scale, (int, float)) or not np.isfinite(scale) or scale <= 0
+                or not epoch.get("units") or not epoch.get("provenance")
+                or not (epoch.get("from_cycle") or epoch.get("until_cycle"))):
+            raise UnitsEpochError(
+                f"{source} {variable}: a units_epochs row needs units, a finite positive "
+                "scale, provenance and from_cycle and/or until_cycle; prevents applying "
+                "an undefined unit change")
+        lower = epoch.get("from_cycle")
+        upper = epoch.get("until_cycle")
+        if ((lower is None or when >= _cycle_utc(lower))
+                and (upper is None or when < _cycle_utc(upper))):
+            matches.append(float(scale))
+    if len(matches) > 1:
+        raise UnitsEpochError(
+            f"{source} {variable}: cycle {when.isoformat()} falls in more than one "
+            "units_epochs row; prevents an ambiguous unit change")
+    return matches[0] if matches else 1.0
+
+
 def convert_source(conversion, values, met, *, parameters=None, cpu_bridge=None):
     """Convert equal-shaped source-level FP32 arrays before any remapping.
 

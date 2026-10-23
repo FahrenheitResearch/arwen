@@ -165,6 +165,7 @@ def _shared_engine_composition(arguments, binding):
                 emit("prep.compose", "end", product="ensemble", attrs=attrs)
                 emit("prep.decode", "end", product="ensemble", attrs=attrs)
 
+from gpuwm.authority_digests import map_parallel
 from gpuwm.mapped_source import (
     MappedSourceFrame,
     NothingMatched,
@@ -1695,6 +1696,21 @@ class _RegularSnapshots(_ABCSequence):
             release(frame)
         return snapshot
 
+    def pack_uncached(self, position):
+        """The snapshot ``self[position]`` returns, packed without the one-deep cache.
+
+        For builds that run side by side (the forcing-time workers): each
+        call packs its own copy from the frames, whose field reads open their
+        own handles, so concurrent calls share no cache. Element for element
+        the snapshot indexing returns; the peak is one snapshot per caller.
+        """
+        value = int(position)
+        if value < 0:
+            value += len(self._order)
+        if not 0 <= value < len(self._order):
+            raise IndexError(position)
+        return self._pack(self._order[value])
+
     def __getitem__(self, position):
         if isinstance(position, slice):
             return _RegularSnapshots(
@@ -2226,8 +2242,7 @@ def _composed_bundle_from_frames(
             contract["soil_layers"], mapping=soil_donor_mapping,
         )
 
-    for snapshot in snapshots.values():
-        _require_authority_snapshot(snapshot)
+    map_parallel(_require_authority_snapshot, snapshots.values())
 
     if terrain_spec is not None:
         terrain_paths = tuple(supplements[str(terrain_spec["data_role"])])
@@ -2499,9 +2514,11 @@ def decode_composed_source(
         manifest_path: manifest_snapshot,
         **contributing_snapshots,
     }
-    for path in authorities:
-        if path not in snapshots:
-            snapshots[path] = _snapshot_authority(path)
+    # Every input file at once across the cores (gpuwm.authority_digests): the
+    # serial loop read ~22 GB of HRRR GRIB on one core before the decode.
+    missing = [path for path in dict.fromkeys(authorities) if path not in snapshots]
+    for path, snapshot in zip(missing, map_parallel(_snapshot_authority, missing)):
+        snapshots[path] = snapshot
     manifest_document = _verify_manifest(
         manifest_path, input_manifest_sha256,
         mapping_path=mapping_path, composition_path=composition_path,
@@ -2707,8 +2724,7 @@ def decode_composed_source(
         union, combined, mapping_sha256=before[str(mapping_path)],
         input_sha256=input_hashes, lead_batch=lead_batch,
     )
-    for snapshot in snapshots.values():
-        _require_authority_snapshot(snapshot)
+    map_parallel(_require_authority_snapshot, snapshots.values())
     if terrain_spec is not None:
         terrain_paths = supplements[terrain_data_role]
         terrain_provenance_path = provenance[terrain_provenance_role]

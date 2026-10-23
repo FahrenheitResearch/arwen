@@ -256,22 +256,24 @@ def test_a_tree_preparation_defers_the_block_in_one_source_neutral_receipt(
         "applied_to_delayed_domains": False,
         "config": exp.perturbation.receipt(),
     }
-    assert "deferred to prepared-tree forecast initialization" in (
+    assert "deferred to prepared forecast initialization" in (
         capsys.readouterr().err)
     assert deferred_initial_perturbation(
         exp, "another-route", announce=False) == receipt
     assert capsys.readouterr().err == ""
 
 
-def test_a_single_domain_preparation_still_refuses_the_block_by_name():
-    """The prepared single-domain runner applies no bubble."""
+def test_a_single_domain_preparation_defers_the_block_to_its_runner():
+    """The prepared single-domain runner applies the bubbles to its restored
+    state (fix/single-domain-perturbation), so a single-domain preparation
+    defers the block exactly as a tree does, naming that runner."""
     exp = build_experiment(
         _experiment_raw({"bubbles": [_bubble_entry()]}), source="probe.toml")
-    with pytest.raises(
-            ValueError,
-            match=r"single-domain probe-route route does not apply "
-                  r"\[perturbation\].*unperturbed state"):
-        deferred_initial_perturbation(exp, "probe-route")
+    receipt = deferred_initial_perturbation(exp, "probe-route", announce=False)
+    assert receipt["application_route"] == (
+        "gpuwm.prepared_single_domain_forecast")
+    assert receipt["status"] == "DEFERRED_TO_FORECAST_INITIALIZATION"
+    assert receipt["config"] == exp.perturbation.receipt()
 
 
 def test_a_deferral_receipt_gives_back_the_block_it_recorded():

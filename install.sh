@@ -233,6 +233,7 @@ the workspaces need and consent to install it was not given; re-run with \
         # source-built 1.93.1), stopped the published 2.9.4 install.sh dead
         # after the clone, even with --yes, while the same script installs
         # rustup with that consent when cargo is missing altogether
+        # (seen 2026-10-22).  With the same consent, rustup goes into
         # ~/.cargo with the minimum as its default; the system Rust and the
         # shell profile are left as they are.
         say "rustc ${RUSTC_HAVE:-(none)} ($(command -v rustc 2>/dev/null || echo 'not on PATH')) is older"

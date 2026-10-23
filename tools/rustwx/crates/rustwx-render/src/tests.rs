@@ -132,6 +132,7 @@ fn sample_canvas_request(product: &str, title: &str, colorbar: bool) -> MapRende
         wind_barbs: Vec::new(),
         wind_streamlines: Vec::new(),
         semantics: None,
+        empty_note: None,
     }
 }
 

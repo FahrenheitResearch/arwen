@@ -41,7 +41,9 @@ pub(crate) fn direct_recipe_render_controls(
     if filled_selector.field == CanonicalField::SmokeMassDensity {
         // Smoke aliases retain the sparse-signal legend and transparent scale.
         (None, None)
-    } else if filled_selector.field == CanonicalField::FogFlag {
+    } else if filled_selector.field == CanonicalField::FogFlag
+        || matches!(recipe.style, RenderStyle::WeatherCategorical)
+    {
         (Some(LegendMode::Categories), None)
     } else if matches!(recipe.style, RenderStyle::WeatherVisibility) {
         (Some(LegendMode::Thresholds), Some(200.0))
@@ -67,6 +69,42 @@ pub(crate) fn direct_recipe_render_controls(
         (Some(LegendMode::Stepped), Some(25.0))
     } else {
         (None, None)
+    }
+}
+
+/// The physical reason a recipe's map can hold nothing to draw, written on
+/// the map when it does (`rustwx_render::empty_map_note`); `None` leaves
+/// the renderer's generic note.
+pub(crate) fn empty_note_for_recipe(recipe: &PlotRecipe, selector: FieldSelector) -> Option<String> {
+    if let VerticalSelector::IsothermCelsius(celsius) = selector.vertical {
+        // The model top is always colder than any isotherm drawn here, so a
+        // missing level at or below 0 C means the whole column is colder.
+        return Some(if celsius <= 0 {
+            format!("No {celsius} C level: the whole column is colder than {celsius} C")
+        } else {
+            format!("No {celsius} C level in the column")
+        });
+    }
+    match selector.field {
+        CanonicalField::HainesLow => {
+            return Some("Haines low undefined: 950 hPa is below ground here".into());
+        }
+        CanonicalField::HainesMid => {
+            return Some("Haines mid undefined: 850 hPa is below ground here".into());
+        }
+        CanonicalField::HainesHigh => {
+            return Some("Haines high undefined: 700 hPa is below ground here".into());
+        }
+        CanonicalField::SnowfallLiquidEquivalent => {
+            return Some("No snowfall accumulated in this window".into());
+        }
+        _ => {}
+    }
+    match recipe.style {
+        RenderStyle::WeatherSnowfall => Some("No snowfall accumulated in this window".into()),
+        RenderStyle::WeatherQpf => Some("No precipitation accumulated in this window".into()),
+        RenderStyle::WeatherCategorical => Some("Not diagnosed anywhere at this time".into()),
+        _ => None,
     }
 }
 
@@ -134,6 +172,7 @@ pub(super) fn build_render_request(
         .overlay_only(overlay_only)
         .apply_to_request(&mut request);
     apply_direct_recipe_render_controls(recipe, filled.selector, &mut request);
+    request.empty_note = empty_note_for_recipe(recipe, filled.selector);
     request.title = Some(static_title_with_suffix(recipe.title));
     request.width = output_width;
     request.height = output_height;

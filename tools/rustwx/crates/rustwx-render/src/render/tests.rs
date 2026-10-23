@@ -67,6 +67,7 @@ fn sample_projected_opts() -> RenderOpts {
         barbs: Vec::new(),
         streamlines: Vec::new(),
         presentation: RenderPresentation::for_mode(ProductVisualMode::FilledMeteorology),
+        empty_note: None,
     }
 }
 
@@ -2378,5 +2379,44 @@ fn masked_dense_contours_keep_every_label_inside_the_domain() {
     for label in &placer.labels {
         assert!(label.x >= 40 && label.y >= 40, "label {} at {},{}", label.text, label.x, label.y);
         assert!(label.x < 760 && label.y < 460);
+    }
+}
+
+/// A filled map whose values all fall under the scale's mask (a cold column
+/// with no 0 C level, an accumulation at F000) carries a note; one drawn
+/// cell, or a map with no colour bar, does not.
+#[test]
+fn empty_filled_map_gets_a_note_and_a_drawn_one_does_not() {
+    let mut opts = sample_projected_opts();
+    opts.cmap = sample_masked_cmap();
+    opts.colorbar = true;
+    assert_eq!(empty_map_note(&[f64::NAN, 1.0, 5.0, 9.0], &opts).as_deref(), Some(EMPTY_MAP_NOTE));
+    opts.empty_note = Some("No 0 C level: the whole column is colder than 0 C".into());
+    assert_eq!(
+        empty_map_note(&[f64::NAN; 4], &opts).as_deref(),
+        Some("No 0 C level: the whole column is colder than 0 C")
+    );
+    assert_eq!(empty_map_note(&[f64::NAN, 1.0, 15.0, 9.0], &opts), None);
+    opts.colorbar = false;
+    assert_eq!(empty_map_note(&[f64::NAN; 4], &opts), None);
+    // The note is drawn inside the map rectangle.
+    opts.colorbar = true;
+    let (bare, _) = {
+        let mut drawn = opts.clone();
+        drawn.empty_note = None;
+        render_to_image_profile_unnoted(&[f64::NAN; 4], 2, 2, &drawn)
+    };
+    let (noted, _) = render_to_image_profile(&[f64::NAN; 4], 2, 2, &opts);
+    assert_ne!(bare.as_raw(), noted.as_raw());
+}
+
+/// Dimensionless units label nothing; real units are kept as given.
+#[test]
+fn dimensionless_units_carry_no_colorbar_label() {
+    for units in ["1", "0/1", " 1 ", "", "dimensionless", "-"] {
+        assert_eq!(crate::legend_units_label(units), None, "{units:?}");
+    }
+    for units in ["in", "m", "g kg-1", "%", "dBZ"] {
+        assert_eq!(crate::legend_units_label(units).as_deref(), Some(units));
     }
 }

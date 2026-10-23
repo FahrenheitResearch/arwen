@@ -2314,8 +2314,17 @@ def prepare_mapped_wrf(
             # hierarchy; an unchained hierarchy keeps the start time last.
             build_started = time.perf_counter()
             if source_override is None:
-                with snapshot_lock:
-                    source = snapshots[index]
+                from gpuwm.ingest.boundary_stream import concurrent_forcing_build
+                pack = getattr(snapshots, "pack_uncached", None)
+                if pack is not None and concurrent_forcing_build():
+                    # Beside other builds each packs its own copy, the same
+                    # snapshot the cached read returns. Named breakage: 17
+                    # forcing-time workers ran at ~3 cores, every one waiting
+                    # here for the next time's pack (Oklahoma City, 2026-10-23).
+                    source = pack(index)
+                else:
+                    with snapshot_lock:
+                        source = snapshots[index]
             else:
                 source = source_override
             timing = {"forcing_index": index, "valid_time": str(source.valid_time)}
@@ -2772,6 +2781,12 @@ def prepare_mapped_wrf(
                 initial_perturbation=initial_perturbation,
                 mapping_contract=mapping_contract,
                 posted_source=posted_source, posted_plan=posted_plan,
+                worker_policy=worker_policy,
+                # Physical stores need the later times in order, as on the
+                # single-domain route; anything else builds them side by side.
+                forcing_times_independent=(physical_input is None
+                                           and physical_output is None
+                                           and physical_output_store is None),
             )
             # The chained tree owns the start state from here and releases
             # it at its head; these names would keep it resident.
@@ -3154,6 +3169,10 @@ def prepare_mapped_wrf(
         initialize_seconds += time.perf_counter() - boundaries_started
         forcing_timings.sort(key=lambda entry: entry["forcing_index"])
         posted_proof = {}
+        # Every deferred full re-read of the inputs has matched before the
+        # cache seals (gpuwm.authority_digests): a changed input never seals.
+        from gpuwm import authority_digests
+        authority_digests.join()
         with prep_stage("prepared_cache", label="Seal prepared cache"):
             cache_started = time.perf_counter()
             if posted_source is None:
@@ -3533,15 +3552,41 @@ def _prepare_chained_mapped_tree(c) -> dict[str, object]:
                         label="Initialize remaining forcing states",
                         backend=backend, count=len(c.snapshots) - 1):
             boundaries_started = time.perf_counter()
+            # The later root times side by side, as the single-domain route
+            # builds them (forcing_time_workers; written in index order, so
+            # the bytes are the serial loop's). Named breakage: a domain tree
+            # built them one at a time -- the WOOF Oklahoma City nest pair
+            # spent 82-112 s here at about 3 of 32 cores (2026-10-23).
+            from gpuwm.ensemble.posted_preparation import current_posted_preparation
+            from gpuwm.ingest.preparation_workers import forcing_time_workers
+            independent_times = (c.forcing_times_independent
+                                 and current_posted_preparation() is None)
+            if independent_times and posted is not None:
+                independent_times = posted.prepare_independent_times()
+            forcing_workers = forcing_time_workers(
+                len(c.snapshots) - 1,
+                cpu_workers=c.worker_policy.get("effective_workers"),
+                backend=backend,
+                selection=c.preprocess_receipt.get("selection"),
+            ) if independent_times else {
+                "workers": 1, "basis": "ordered physical source or pending posted lead"}
+            c.worker_policy["forcing_time_workers"] = forcing_workers
+            print(f"preparation workers: forcing times {forcing_workers['workers']} "
+                  f"({forcing_workers.get('caps', forcing_workers['basis'])})", file=sys.stderr, flush=True)
             writer.stream_forcing_times(
                 count=len(c.snapshots),
                 build_forcing_time=c.build_forcing_time,
                 forcing=c.forcing, times=c.times,
-                release=lambda: release_backend_memory(c.preprocess))
+                release=lambda: release_backend_memory(c.preprocess),
+                workers=forcing_workers["workers"])
         initialize_seconds += time.perf_counter() - boundaries_started
         root_identity = binding.identity
         posted_proof = {}
         decode_seconds = c.decode_seconds
+        # Every deferred full re-read of the inputs has matched before the
+        # cache seals (gpuwm.authority_digests): a changed input never seals.
+        from gpuwm import authority_digests
+        authority_digests.join()
         with prep_stage("prepared_cache", label="Seal prepared cache"):
             if posted is None:
                 root_content_sha256 = str(writer.seal_cache()["content_sha256"])
@@ -3904,6 +3949,19 @@ def _next_command_lines(args, proof: Mapping[str, object]) -> list[str]:
 
 @owns_source_coverage_refusal
 def main(argv: Sequence[str] | None = None) -> int:
+    """The mapped preparation, inside its input-digest scope.
+
+    This process decodes the inputs the fetch recorded, so its snapshots
+    take those digests and the full re-reads run beside the decode
+    (:mod:`gpuwm.authority_digests`); the cache seals only after they match.
+    """
+    from gpuwm import authority_digests
+
+    with authority_digests.deferred_checks():
+        return _main(argv)
+
+
+def _main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
     if args.mapped_engine is not None:

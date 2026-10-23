@@ -1634,8 +1634,14 @@ def _author_manifest_payload(output_path: Path, *, mapping_path, composition_pat
             for role, snapshot in decoder_snapshots.items()
         },
     }
-    for path in set(authorities) - set(authority_snapshots):
-        authority_snapshots[path] = _snapshot_authority(path)
+    # Every input file at once across the cores; inside a preparation's digest
+    # scope a file the fetch recorded is not read here at all
+    # (gpuwm.authority_digests): this loop read ~22 GB on one core.
+    from gpuwm.authority_digests import map_parallel
+    missing = [path for path in dict.fromkeys(authorities)
+               if path not in authority_snapshots]
+    for path, snapshot in zip(missing, map_parallel(_snapshot_authority, missing)):
+        authority_snapshots[path] = snapshot
     fingerprints = {
         path: (snapshot.sha256, snapshot.size, snapshot.mtime_ns)
         for path, snapshot in authority_snapshots.items()
@@ -1714,11 +1720,11 @@ def _author_manifest_payload(output_path: Path, *, mapping_path, composition_pat
             _snapshots=authority_snapshots,
             _recheck_snapshots=False,
         )
-        for snapshot in authority_snapshots.values():
-            if isinstance(snapshot, _FileSnapshot):
-                _require_snapshot(snapshot)
-            else:
-                _require_authority_snapshot(snapshot)
+        map_parallel(
+            lambda snapshot: (_require_snapshot(snapshot)
+                              if isinstance(snapshot, _FileSnapshot)
+                              else _require_authority_snapshot(snapshot)),
+            authority_snapshots.values())
         for snapshot in normalization_snapshots:
             _require_snapshot(snapshot)
         if replacing:

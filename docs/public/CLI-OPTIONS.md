@@ -1109,6 +1109,14 @@ Takes no options of its own.
 |---|---|
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 
+## `gpuwm hydro ahead`
+
+| argument | what it does |
+|---|---|
+| `config` | _(the parser declares no help text for this option)_ |
+
+Takes no options of its own.
+
 ## `gpuwm hydro calibrate`
 
 | argument | what it does |
@@ -2677,15 +2685,17 @@ Takes no options of its own.
 
 | option | what it does |
 |---|---|
+| `--columns DIR` | write the run's any-point column store into DIR instead of pictures (no --point needed) |
 | `--domain` | domain identifier to select |
+| `--every-minutes` | with --columns: only valid times on this cadence |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--interval-minutes` | profile cadence from first available valid time (default hourly) |
 | `--mode` | mean, all (members + P10-P90), or member directory ID; repeat (default mean and all) |
 | `--out` | render root (default RUN/render) |
 | `--point, --station` | LAT,LON, NAME=LAT,LON or an ID in --stations; repeat for multiple points |
-| `--setting KEY=VALUE` | website window setting, e.g. theme=light, parcel=ml |
+| `--setting KEY=VALUE` | website window setting, e.g. theme=light, parcel=ml, brand=..., init=2026-10-22T00:00Z (the lead's start) |
 | `--stations` | JSON station catalogue: {"ID": [lat, lon]} |
-| `--threads` | _(the parser declares no help text for this option)_ |
+| `--threads` | CPU workers (default 4 for pictures, every core for --columns) |
 
 ## `gpuwm source-intermediate`
 

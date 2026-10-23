@@ -188,6 +188,17 @@ pub struct LeveledColormap {
     /// code, the fill and legend share one level and colour list, and the
     /// colorbar labels band centres (see [`Self::category_codes`]).
     pub categories: bool,
+    /// Built for [`LegendMode::Thresholds`]: every legend interval gets the
+    /// same length on the colour bar and each boundary is labelled, the way
+    /// precipitation and snowfall bars are drawn in operational practice
+    /// (WPC, Pivotal). See [`Self::legend_fraction`].
+    ///
+    /// WHAT BREAKAGE THIS PREVENTS (gate law): a threshold bar placed
+    /// linearly by value squeezes its low intervals into a few pixels. The
+    /// 0.01-15 in snowfall liquid-equivalent bar drew every band its map used
+    /// in the bottom ~40 px with no tick below 1 in, and the 0.1-60 in
+    /// snowfall bars did the same below 5 in (R10 look, 2.9.4).
+    pub equal_bands: bool,
 }
 
 impl LeveledColormap {
@@ -229,6 +240,7 @@ impl LeveledColormap {
             over_color,
             mask_below,
             categories: true,
+            equal_bands: false,
         }
     }
 
@@ -294,6 +306,7 @@ impl LeveledColormap {
         if matches!(options.legend.mode, LegendMode::Categories | LegendMode::Thresholds) {
             let mut cmap = Self::categories(palette, levels, extend, mask_below);
             cmap.categories = options.legend.mode == LegendMode::Categories;
+            cmap.equal_bands = options.legend.mode == LegendMode::Thresholds;
             return cmap;
         }
         let dense_levels = densify_levels_with_density(levels, options.render_density.fill);
@@ -313,6 +326,7 @@ impl LeveledColormap {
                 over_color: None,
                 mask_below,
                 categories: false,
+                equal_bands: false,
             };
         }
 
@@ -343,6 +357,7 @@ impl LeveledColormap {
             over_color,
             mask_below,
             categories: false,
+            equal_bands: false,
         }
     }
 
@@ -367,6 +382,58 @@ impl LeveledColormap {
         } else {
             &self.levels
         }
+    }
+
+    /// Where `value` sits along the colour bar: 0 at the lowest legend level,
+    /// 1 at the highest, clamped. Linear in value, except for an
+    /// [`Self::equal_bands`] colormap, where each legend interval takes the
+    /// same share of the bar and a value is placed linearly inside its own
+    /// interval. `None` when the legend range is degenerate.
+    pub fn legend_fraction(&self, value: f64) -> Option<f64> {
+        let levels = self.legend_levels_for_display();
+        let lo = *levels.first()?;
+        let hi = *levels.last()?;
+        if !(lo.is_finite() && hi.is_finite() && hi > lo) {
+            return None;
+        }
+        if !self.equal_bands || levels.len() < 3 {
+            return Some(((value - lo) / (hi - lo)).clamp(0.0, 1.0));
+        }
+        if value <= lo {
+            return Some(0.0);
+        }
+        if value >= hi {
+            return Some(1.0);
+        }
+        let last = levels.len() - 2;
+        let band = levels
+            .partition_point(|level| *level <= value)
+            .saturating_sub(1)
+            .min(last);
+        let (a, b) = (levels[band], levels[band + 1]);
+        let within = if b > a { ((value - a) / (b - a)).clamp(0.0, 1.0) } else { 0.0 };
+        Some((band as f64 + within) / (last + 1) as f64)
+    }
+
+    /// The legend value at fraction `rel` along the colour bar, the inverse
+    /// of [`Self::legend_fraction`]. `None` when the legend range is
+    /// degenerate.
+    pub fn legend_value_at(&self, rel: f64) -> Option<f64> {
+        let levels = self.legend_levels_for_display();
+        let lo = *levels.first()?;
+        let hi = *levels.last()?;
+        if !(lo.is_finite() && hi.is_finite() && hi > lo) {
+            return None;
+        }
+        let rel = rel.clamp(0.0, 1.0);
+        if !self.equal_bands || levels.len() < 3 {
+            return Some(lo + rel * (hi - lo));
+        }
+        let bands = levels.len() - 1;
+        let position = rel * bands as f64;
+        let band = (position.floor() as usize).min(bands - 1);
+        let within = position - band as f64;
+        Some(levels[band] + within * (levels[band + 1] - levels[band]))
     }
 
     pub fn legend_colors_for_display(&self) -> &[Rgba] {
@@ -544,5 +611,35 @@ mod tests {
         );
         assert_eq!(dense.levels, vec![0.0, 1.0, 2.0, 3.0, 4.0]);
         assert!(dense.colors.len() >= dense.levels.len() - 1);
+    }
+
+    /// The snowfall bar (0.1 .. 60 in): a threshold legend gives every band
+    /// the same share of the bar, so the 0.1-0.5 in band is as tall as the
+    /// 48-60 in band instead of 0.7 % of the bar.
+    #[test]
+    fn threshold_legend_gives_every_band_the_same_length() {
+        use super::{LegendControls, LegendMode};
+        let levels = vec![0.1, 0.5, 1., 2., 3., 4., 6., 8., 10., 12., 18., 24., 30., 36., 48., 60.];
+        let palette = vec![Rgba::new(0, 0, 0), Rgba::new(255, 255, 255)];
+        let options = ColormapBuildOptions {
+            legend: LegendControls { mode: LegendMode::Thresholds, ..LegendControls::default() },
+            ..ColormapBuildOptions::default()
+        };
+        let cmap = LeveledColormap::from_palette_with_options(
+            &palette, &levels, super::Extend::Max, Some(0.1), options);
+        assert!(cmap.equal_bands);
+        let bands = (levels.len() - 1) as f64;
+        for (i, level) in levels.iter().enumerate() {
+            let frac = cmap.legend_fraction(*level).unwrap();
+            assert!((frac - i as f64 / bands).abs() < 1e-12, "{level}: {frac}");
+            let back = cmap.legend_value_at(frac).unwrap();
+            assert!((back - level).abs() < 1e-9, "{level} -> {back}");
+        }
+        // Inside a band the place is linear in value.
+        assert!((cmap.legend_fraction(0.3).unwrap() - 0.5 / bands).abs() < 1e-12);
+        // A stepped legend keeps its linear-by-value placement.
+        let stepped = LeveledColormap::from_palette(&palette, &levels, super::Extend::Max, None);
+        assert!(!stepped.equal_bands);
+        assert!((stepped.legend_fraction(30.05).unwrap() - 0.5).abs() < 1e-9);
     }
 }

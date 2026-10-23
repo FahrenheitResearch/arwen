@@ -32,14 +32,18 @@ const USAGE: &str = "\
 usage: rw_hex_points --mesh FILE --init FILE --history FILE... --out-dir DIR
                      --points 'Name@LAT,LON;Name@LAT,LON'
                      [--simulation-start YYYY-MM-DD_HH:MM:SS] [--model-label NAME]
-                     [--grid-label TEXT] [--sounding-every-hours H] [--json FILE]
+                     [--grid-label TEXT] [--brand TEXT] [--sounding-every-hours H]
+                     [--json FILE]
 
 Writes, per point:
   <slug>/sounding_<slug>_<YYYYMMDD_HHMM>_f<LLL>.png   skew-T log-p at each
         frame whose lead is a multiple of --sounding-every-hours (default 6)
   <slug>/meteogram_<slug>_<YYYYMMDD_HH>.png            every frame, one chart
-and a JSON receipt with every value drawn.  A point off a limited-area mesh is
-refused by name rather than drawn from the boundary ring.";
+and a JSON receipt with every value drawn.  --brand puts the model's name and
+start in bold at the top right of every picture (e.g. 'WOOF Hex · Global
+120 km · Init GFS 22 Oct 2026 00Z'); without it the top right is empty.  A
+point off a limited-area mesh is refused by name rather than drawn from the
+boundary ring.";
 
 const ABI: &str = "gpuwm-rw-hex-points-v1\tPOINT\tSOUNDING\tMETEOGRAM\tFINISHED";
 
@@ -61,6 +65,7 @@ struct Args {
     simulation_start: Option<Timestamp>,
     model_label: String,
     grid_label: Option<String>,
+    brand: Option<String>,
     sounding_every_hours: f64,
     json: Option<PathBuf>,
 }
@@ -74,6 +79,7 @@ fn parse() -> Result<Args, String> {
     let mut simulation_start = None;
     let mut model_label = "hex".to_string();
     let mut grid_label = None;
+    let mut brand: Option<String> = None;
     let mut sounding_every_hours = 6.0;
     let mut json = None;
     let mut raw = std::env::args().skip(1).peekable();
@@ -89,6 +95,13 @@ fn parse() -> Result<Args, String> {
             }
             "--model-label" => model_label = value()?,
             "--grid-label" => grid_label = Some(value()?),
+            "--brand" => {
+                let text = value()?.split_whitespace().collect::<Vec<_>>().join(" ");
+                if text.chars().count() > 120 || text.chars().any(|ch| ch.is_control()) {
+                    return Err("--brand takes at most 120 printable characters".to_string());
+                }
+                brand = Some(text).filter(|t| !t.is_empty());
+            }
             "--sounding-every-hours" => {
                 sounding_every_hours = value()?
                     .parse()
@@ -116,6 +129,7 @@ fn parse() -> Result<Args, String> {
         simulation_start,
         model_label,
         grid_label,
+        brand,
         sounding_every_hours,
         json,
     };
@@ -609,6 +623,7 @@ fn draw_sounding(
     c: &Column,
     point: &PointSpec,
     headline: &str,
+    brand: Option<&str>,
     init: &Timestamp,
     valid: &Timestamp,
     lead_h: f64,
@@ -634,6 +649,7 @@ fn draw_sounding(
 
     // Header.
     draw_text_bold(&mut img, headline, 30, 20, INK, 4);
+    draw_brand(&mut img, brand, headline);
     let sub = format!(
         "Sounding at {} ({})",
         point.name,
@@ -924,10 +940,33 @@ fn padded(lo: f64, hi: f64, min_span: f64) -> (f64, f64) {
     ((lo / step).floor() * step, (hi / step).ceil() * step)
 }
 
-fn draw_meteogram(path: &Path, s: &Series, point: &PointSpec, headline: &str, init: &Timestamp) -> Result<(), String> {
+/// The model's name and start, bold and right-aligned at the top right (the
+/// picture's identity, as on the website sounding window).  It steps down in
+/// size before it would run into the headline; nothing is drawn without it.
+fn draw_brand(img: &mut RgbaImage, brand: Option<&str>, headline: &str) {
+    let Some(brand) = brand else { return };
+    let right = img.width() as i32 - 30;
+    let left_limit = 30 + text_width_bold(headline, 4) as i32 + 40;
+    let mut scale = 3;
+    while scale > 1 && right - (text_width_bold(brand, scale) as i32) < left_limit {
+        scale -= 1;
+    }
+    let x = right - text_width_bold(brand, scale) as i32;
+    draw_text_bold(img, brand, x, 26, INK, scale);
+}
+
+fn draw_meteogram(
+    path: &Path,
+    s: &Series,
+    point: &PointSpec,
+    headline: &str,
+    brand: Option<&str>,
+    init: &Timestamp,
+) -> Result<(), String> {
     let (w, h) = (1400u32, 1300u32);
     let mut img = white(w, h);
     draw_text_bold(&mut img, headline, 30, 20, INK, 4);
+    draw_brand(&mut img, brand, headline);
     draw_text(
         &mut img,
         &format!("Meteogram at {} ({})", point.name, latlon_text(point)),
@@ -1147,7 +1186,7 @@ fn run() -> Result<(), String> {
                     valid.minute,
                     lead_h.round() as i64
                 ));
-                draw_sounding(&file, c, p, &headline, &init, valid, lead_h, &idx)?;
+                draw_sounding(&file, c, p, &headline, args.brand.as_deref(), &init, valid, lead_h, &idx)?;
                 println!(
                     "SOUNDING\t{}\t{}\tf{:03}\tsbcape={:.0}\tsbcin={:.0}\tpw_mm={:.1}",
                     p.slug(),
@@ -1194,7 +1233,7 @@ fn run() -> Result<(), String> {
             init.day,
             init.hour
         ));
-        draw_meteogram(&file, &series[k], p, &headline, &init)?;
+        draw_meteogram(&file, &series[k], p, &headline, args.brand.as_deref(), &init)?;
         println!("METEOGRAM\t{}\t{}\tframes={}", p.slug(), file.display(), series[k].leads_h.len());
         let s = &series[k];
         let list = |v: &[f64]| v.iter().map(|x| json_num(*x)).collect::<Vec<_>>().join(", ");
@@ -1217,8 +1256,9 @@ fn run() -> Result<(), String> {
     }
     if let Some(path) = &args.json {
         let body = format!(
-            "{{\n  \"schema\": \"gpuwm-hex.points/v1\",\n  \"engine\": \"rw_hex_points (rust)\",\n  \"interpolation\": \"linear barycentric on the mesh Delaunay triangles (cellsOnVertex)\",\n  \"mslp\": \"NCEP Shuell reduction (as the GFS post computes PRMSL) from the lowest model level: a 6.5 K/km column below the terrain, its sea-level temperature adjusted only above 290.66 K\",\n  \"headline\": \"{}\",\n  \"init\": \"{}\",\n  \"linear\": {{\"contained\": {}, \"widened\": {}, \"clamped\": {}}},\n  \"soundings\": [\n    {}\n  ],\n  \"meteograms\": [\n    {}\n  ]\n}}\n",
+            "{{\n  \"schema\": \"gpuwm-hex.points/v1\",\n  \"engine\": \"rw_hex_points (rust)\",\n  \"interpolation\": \"linear barycentric on the mesh Delaunay triangles (cellsOnVertex)\",\n  \"mslp\": \"NCEP Shuell reduction (as the GFS post computes PRMSL) from the lowest model level: a 6.5 K/km column below the terrain, its sea-level temperature adjusted only above 290.66 K\",\n  \"headline\": \"{}\",\n  \"brand\": {},\n  \"init\": \"{}\",\n  \"linear\": {{\"contained\": {}, \"widened\": {}, \"clamped\": {}}},\n  \"soundings\": [\n    {}\n  ],\n  \"meteograms\": [\n    {}\n  ]\n}}\n",
             headline,
+            args.brand.as_ref().map_or("null".to_string(), |b| format!("\"{}\"", b.replace('\\', "\\\\").replace('"', "\\\""))),
             init.iso(),
             sampler.linear.contained,
             sampler.linear.widened,

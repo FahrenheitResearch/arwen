@@ -66,7 +66,7 @@ pub fn draw_colorbar(
     };
     if matches!(mode, LegendMode::Stepped | LegendMode::Categories | LegendMode::Thresholds) {
         for i in 1..n_intervals {
-            let Some(frac) = level_fraction(legend_levels, legend_levels[i]) else {
+            let Some(frac) = cmap.legend_fraction(legend_levels[i]) else {
                 continue;
             };
             let tick_x = x + (frac * width as f64).round() as u32;
@@ -147,7 +147,7 @@ pub fn draw_vertical_colorbar(
     };
     if matches!(mode, LegendMode::Stepped | LegendMode::Categories | LegendMode::Thresholds) {
         for i in 1..n_intervals {
-            let Some(frac) = level_fraction(legend_levels, legend_levels[i]) else {
+            let Some(frac) = cmap.legend_fraction(legend_levels[i]) else {
                 continue;
             };
             let tick_y = y + ((1.0 - frac) * height as f64).round() as u32;
@@ -215,7 +215,10 @@ pub fn legend_color_at_rel(cmap: &LeveledColormap, mode: LegendMode, rel: f64) -
     let legend_colors = cmap.legend_colors_for_display();
     match mode {
         LegendMode::Stepped | LegendMode::Categories | LegendMode::Thresholds => {
-            stepped_color_at_rel(legend_levels, legend_colors, rel)
+            match cmap.legend_value_at(rel) {
+                Some(value) => stepped_color_at_value(legend_levels, legend_colors, value),
+                None => Rgba::TRANSPARENT,
+            }
         }
         LegendMode::SmoothRamp if cmap.levels.len() > 1 && !cmap.colors.is_empty() => {
             smooth_color_at_rel(&cmap.levels, &cmap.colors, rel)
@@ -228,7 +231,7 @@ pub fn legend_color_at_rel(cmap: &LeveledColormap, mode: LegendMode, rel: f64) -
 /// level, 1 = highest), the same linear-by-value placement the production
 /// tick labels use. `None` when the legend level range is degenerate.
 pub fn legend_tick_rel(cmap: &LeveledColormap, value: f64) -> Option<f64> {
-    level_fraction(cmap.legend_levels_for_display(), value)
+    cmap.legend_fraction(value)
 }
 
 fn level_range(levels: &[f64]) -> Option<(f64, f64)> {
@@ -242,15 +245,7 @@ fn value_at_rel(levels: &[f64], rel: f64) -> Option<f64> {
     Some(lo + rel.clamp(0.0, 1.0) * (hi - lo))
 }
 
-fn level_fraction(levels: &[f64], level: f64) -> Option<f64> {
-    let (lo, hi) = level_range(levels)?;
-    Some(((level - lo) / (hi - lo)).clamp(0.0, 1.0))
-}
-
-fn stepped_color_at_rel(levels: &[f64], colors: &[Rgba], rel: f64) -> Rgba {
-    let Some(value) = value_at_rel(levels, rel) else {
-        return Rgba::TRANSPARENT;
-    };
+fn stepped_color_at_value(levels: &[f64], colors: &[Rgba], value: f64) -> Rgba {
     if colors.is_empty() || levels.len() < 2 {
         return Rgba::TRANSPARENT;
     }
@@ -406,6 +401,7 @@ mod tests {
             over_color: None,
             mask_below: None,
             categories: false,
+            equal_bands: false,
         };
         let mut img = RgbaImage::new(200, 8);
 
@@ -439,6 +435,7 @@ mod tests {
             over_color: None,
             mask_below: None,
             categories: false,
+            equal_bands: false,
         };
         let mut img = RgbaImage::new(12, 120);
 
