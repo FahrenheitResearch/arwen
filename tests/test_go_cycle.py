@@ -321,6 +321,10 @@ def test_go_cycle_hydro_door_decides_from_the_retimed_config(tmp_path, monkeypat
     seen = {}
 
     def launch(args, *, observer=None):
+        # The go door decides hydro once disk and card admission passed, inside
+        # _go_prepared_main (S8, hydro admission): this stand-in admits there too.
+        from gpuwm.hydro.runtime import rebind_launch
+        rebind_launch(args, admitted=True, beside=True)
         seen["decision"] = door.inherited_decision()
         seen["config"] = Path(args.config)
         return 0

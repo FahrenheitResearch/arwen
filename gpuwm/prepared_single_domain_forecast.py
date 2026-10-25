@@ -448,6 +448,12 @@ _VERIFIED_SOURCE_PHYSICS_PROFILES = {
         PHYSICS_PROFILE, THOMPSON_PHYSICS_PROFILE,
         MORRISON_PHYSICS_PROFILE, NSSL2_PHYSICS_PROFILE,
         NSSL2_LEGACY_RRTMG_PHYSICS_PROFILE),
+    # An RRFS ensemble member with its declared companion is the same
+    # packaged mapped route (reported metadata, not a gate).
+    "rrfs-ens": (
+        PHYSICS_PROFILE, THOMPSON_PHYSICS_PROFILE,
+        MORRISON_PHYSICS_PROFILE, NSSL2_PHYSICS_PROFILE,
+        NSSL2_LEGACY_RRTMG_PHYSICS_PROFILE),
 }
 
 #: The three EXPERT suites of the table above.  The registry declares them
@@ -7796,8 +7802,10 @@ def _consume_due_native_refl_10cm(state, ticks: int, consumer, *,
         if refl_10cm_stash_is_due(ticks,
                                   domain_start_ticks=domain_start_ticks):
             return consumer(state)
-        if domain_start_ticks == 0:
-            # A run's analysis frame writes WRF's initial array, not nothing.
+        from gpuwm.core.gsd_initial_reflectivity import enabled as gsd_initial_enabled
+        if domain_start_ticks == 0 or gsd_initial_enabled(
+                getattr(state.physics, "refl_config", None)):
+            # HRRR's helper also owns an activating domain's first frame.
             from gpuwm.core.refl import analysis_refl_10cm
             return analysis_refl_10cm(state, shape=shape)
     return None
@@ -9555,9 +9563,10 @@ def run_prepared_forecast(
         ExperimentState, ModelRuntimeStatus, execute_experiment,
     )
     from gpuwm.core.refl import consume_refl_10cm, domain_start_ticks_of
-    from gpuwm.core.uh_diag import reset_up_heli_max
     from gpuwm.ingest.hrrr_physics import initialize_prepared_physics
-    from gpuwm.runtime import declared_constant_glw
+    from gpuwm.runtime import (
+        declared_constant_glw, reset_history_windows_after_frame,
+    )
     from gpuwm.ingest.prepared_cache import restore_prepared_cache
     from gpuwm.io.wrfout import PerDomainWrfoutWriters
     from gpuwm.state_digest import canonical_state_digest
@@ -10092,12 +10101,14 @@ def run_prepared_forecast(
                  "; gated fields the store does not carry: "
                  + ", ".join(coverage["not_in_store"])), flush=True)
 
-    from gpuwm.ensemble.runtime_context import initialized_bootstrap_handoff, observe_current_counters
+    from gpuwm.ensemble.runtime_context import (initialized_bootstrap_handoff,
+        observe_current_counters, observe_initial_diagnostics)
     ensemble_report = initialized_bootstrap_handoff(
         ensemble_bootstrap, inputs=inputs, model=model, node=node,
         output_directory=outdir, observer=observer, step_log=step_log)
     if ensemble_report is not None:
         return ensemble_report
+    observe_initial_diagnostics(model)
     observe_current_counters(model, start_time=exp.start_time)
 
     history = []
@@ -10204,8 +10215,9 @@ def run_prepared_forecast(
         # Safe ordering is submit's, unchanged: its producer-stream
         # wait_event fences the side-stream D2H snapshot ahead of any
         # later default-stream mutation, so zeroing here cannot race the
-        # staged copy.
-        reset_up_heli_max(current.state)
+        # staged copy.  Only a FULL frame closes the window: a quick-look
+        # frame reports the running maximum and leaves it running.
+        reset_history_windows_after_frame(current, ticks)
         memory_watch.sample()
 
     def progress_callback(**event):

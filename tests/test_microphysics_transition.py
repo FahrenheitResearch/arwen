@@ -898,8 +898,10 @@ def _parent_planes_a_launcher_reads() -> set[str]:
         "launch_mp8_to_mp18_parent_field",
         "_validate_transition_arrays",
         "transition_source_field_shape",
+        "_carry_number_field",
     }
-    planes: set[str] = set()
+    # _carry_number_field reads the carried numbers by name.
+    planes: set[str] = set(transition._CARRIED_NUMBERS)
     for node in ast.walk(tree):
         if not (isinstance(node, ast.FunctionDef) and node.name in wanted):
             continue

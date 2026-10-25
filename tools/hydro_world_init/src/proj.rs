@@ -1,7 +1,5 @@
-//! Minimal PROJ binding: transform points between two CRS definitions.
-//! The same system libproj the engine's rw_hydrofabric uses, opened the same way: at run time on
-//! Linux (no libproj.so.25 DT_NEEDED, manylinux_2_28 policy, and no libproj needed to build) and on
-//! Windows (no proj.lib at build time, no PROJ DLL import); linked elsewhere. Network off.
+//! Static pinned PROJ with an embedded database. Network off.
+extern crate hydro_proj;
 use crate::Result;
 use std::ffi::{c_char, c_int, c_void, CString};
 
@@ -14,11 +12,9 @@ struct Coord {
     t: f64,
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
 mod api {
     use super::Coord;
     use std::ffi::{c_char, c_int, c_void};
-    #[link(name = "proj")]
     extern "C" {
         fn proj_context_create() -> *mut c_void;
         fn proj_context_destroy(c: *mut c_void);
@@ -48,107 +44,6 @@ mod api {
     };
     pub fn get() -> std::result::Result<&'static Api, String> {
         Ok(&API)
-    }
-}
-
-#[cfg(any(target_os = "linux", windows))]
-mod api {
-    use super::Coord;
-    use std::ffi::{c_char, c_int, c_void};
-    use std::sync::OnceLock;
-
-    #[cfg(target_os = "linux")]
-    mod sys {
-        use std::ffi::{c_char, c_int, c_void, CStr};
-        #[link(name = "dl")]
-        extern "C" {
-            fn dlopen(filename: *const c_char, flags: c_int) -> *mut c_void;
-            fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
-            fn dlerror() -> *const c_char;
-        }
-        const RTLD_NOW: c_int = 2;
-        pub unsafe fn open(name: &[u8]) -> *mut c_void {
-            dlopen(name.as_ptr().cast(), RTLD_NOW)
-        }
-        pub unsafe fn sym(handle: *mut c_void, name: *const c_char) -> *mut c_void {
-            dlsym(handle, name)
-        }
-        pub unsafe fn last_error() -> String {
-            let p = dlerror();
-            if p.is_null() {
-                String::new()
-            } else {
-                CStr::from_ptr(p).to_string_lossy().into_owned()
-            }
-        }
-        pub const SONAMES: &[&[u8]] = &[b"libproj.so.25\0", b"libproj.so\0"];
-        pub const INSTALL: &str = "install the system PROJ library (Ubuntu: libproj25, RHEL: proj)";
-    }
-    #[cfg(windows)]
-    mod sys {
-        use std::ffi::{c_char, c_void};
-        #[link(name = "kernel32")]
-        extern "system" {
-            fn LoadLibraryA(name: *const c_char) -> *mut c_void;
-            fn GetProcAddress(module: *mut c_void, name: *const c_char) -> *mut c_void;
-            fn GetLastError() -> u32;
-        }
-        pub unsafe fn open(name: &[u8]) -> *mut c_void {
-            LoadLibraryA(name.as_ptr().cast())
-        }
-        pub unsafe fn sym(handle: *mut c_void, name: *const c_char) -> *mut c_void {
-            GetProcAddress(handle, name)
-        }
-        pub unsafe fn last_error() -> String {
-            format!("Windows error {}", GetLastError())
-        }
-        pub const SONAMES: &[&[u8]] = &[
-            b"proj_9.dll\0", b"proj_9_9.dll\0", b"proj_9_8.dll\0", b"proj_9_7.dll\0", b"proj_9_6.dll\0",
-            b"proj_9_5.dll\0", b"proj_9_4.dll\0", b"proj_9_3.dll\0", b"proj_9_2.dll\0", b"proj_9_1.dll\0",
-            b"proj_9_0.dll\0", b"proj.dll\0",
-        ];
-        pub const INSTALL: &str = "install PROJ 9 (OSGeo4W, conda-forge proj or vcpkg) and put its bin directory on PATH";
-    }
-
-    pub struct Api {
-        pub proj_context_create: unsafe extern "C" fn() -> *mut c_void,
-        pub proj_context_destroy: unsafe extern "C" fn(*mut c_void),
-        pub proj_context_set_enable_network: unsafe extern "C" fn(*mut c_void, c_int) -> c_int,
-        pub proj_create_crs_to_crs: unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char, *mut c_void) -> *mut c_void,
-        pub proj_normalize_for_visualization: unsafe extern "C" fn(*mut c_void, *const c_void) -> *mut c_void,
-        pub proj_trans: unsafe extern "C" fn(*mut c_void, c_int, Coord) -> Coord,
-        pub proj_destroy: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
-    }
-
-    static API: OnceLock<std::result::Result<Api, String>> = OnceLock::new();
-
-    unsafe fn sym(handle: *mut c_void, name: &[u8]) -> std::result::Result<*mut c_void, String> {
-        let p = sys::sym(handle, name.as_ptr().cast());
-        if p.is_null() {
-            Err(format!("libproj has no {}: {}", String::from_utf8_lossy(&name[..name.len() - 1]), sys::last_error()))
-        } else {
-            Ok(p)
-        }
-    }
-
-    unsafe fn load() -> std::result::Result<Api, String> {
-        let handle = sys::SONAMES.iter().map(|name| sys::open(name)).find(|h| !h.is_null());
-        let Some(handle) = handle else {
-            return Err(format!("PROJ is not installed on this host: {}; {}", sys::last_error(), sys::INSTALL));
-        };
-        Ok(Api {
-            proj_context_create: std::mem::transmute(sym(handle, b"proj_context_create\0")?),
-            proj_context_destroy: std::mem::transmute(sym(handle, b"proj_context_destroy\0")?),
-            proj_context_set_enable_network: std::mem::transmute(sym(handle, b"proj_context_set_enable_network\0")?),
-            proj_create_crs_to_crs: std::mem::transmute(sym(handle, b"proj_create_crs_to_crs\0")?),
-            proj_normalize_for_visualization: std::mem::transmute(sym(handle, b"proj_normalize_for_visualization\0")?),
-            proj_trans: std::mem::transmute(sym(handle, b"proj_trans\0")?),
-            proj_destroy: std::mem::transmute(sym(handle, b"proj_destroy\0")?),
-        })
-    }
-
-    pub fn get() -> std::result::Result<&'static Api, String> {
-        API.get_or_init(|| unsafe { load() }).as_ref().map_err(Clone::clone)
     }
 }
 

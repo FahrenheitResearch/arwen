@@ -94,7 +94,9 @@ class PreparedCatchmentExchange:
         }
 
     def launch(self, dt_seconds, *, stream=None):
-        self._kernel(self._grid, self._block, self._args, stream=stream)
+        import numpy as np
+        args = self._args[:3] + (np.float32(dt_seconds),) + self._args[4:]
+        self._kernel(self._grid, self._block, args, stream=stream)
 
     advance = launch
 

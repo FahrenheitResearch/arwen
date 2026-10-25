@@ -24,18 +24,43 @@ class _Bindings:
     def __init__(self, components, context):
         self.components, self.context = components, context
         self.gaps, self.sources = [], {}
+        # A continental fabric can expose thousands of reservoir selections.
+        # Its ordered axes make the evidence large; decode its numerics once
+        # per immutable provider, rather than once for every borrowed array.
+        self._provider_numerics = {}
+
+    def evidence_references(self):
+        """Seal earlier stages without recursively embedding their rosters.
+
+        HydroMemoryPlan.inventory retains every stage's original evidence.
+        Copying those strings into every borrower repeatedly JSON-escapes a
+        continental roster, taking minutes on one host core at each admission.
+        References bind the exact same UTF-8 bytes to their earlier stage;
+        local providers without a named inventory entry remain inline.
+        """
+        result = {}
+        for name, evidence in self.sources.items():
+            raw = evidence.encode('utf-8')
+            result[name] = dict(stage=name, bytes=len(raw),
+                                sha256=hashlib.sha256(raw).hexdigest())
+            if name not in self.components:
+                result[name]['inline'] = evidence
+        return result
 
     def get(self, component, field, name, *, checkpointed=False):
         source = self.components.get(component)
         if source is None:
             self.gaps.append(f"{name}: provider {component} lacks prepared memory metadata")
             return None
-        self.sources[component] = source.evidence
-        try:
-            evidence = json.loads(source.evidence)
-            mode = evidence.get("context", {}).get("numerics")
-        except (ValueError, AttributeError, TypeError):
-            mode = None
+        if component not in self._provider_numerics:
+            self.sources[component] = source.evidence
+            try:
+                evidence = json.loads(source.evidence)
+                mode = evidence.get("context", {}).get("numerics")
+            except (ValueError, AttributeError, TypeError):
+                mode = None
+            self._provider_numerics[component] = mode
+        mode = self._provider_numerics[component]
         if mode is None:
             self.gaps.append(f"{name}: provider {component} has no declared numerics context")
         elif mode != self.context.numerics:
@@ -73,7 +98,7 @@ class _Bindings:
         source = root / "nextgen" / ("inundation.py" if kernel == "inundation" else "terrain.py")
         cuda = root / "core/kernels" / f"nextgen_{kernel}.cu"
         evidence = json.dumps(dict(schema="arwen.hydro.terrain-memory/v1",
-            context=asdict(context), options=options, providers=self.sources,
+            context=asdict(context), options=options, providers=self.evidence_references(),
             metadata_source_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             factory_source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
             kernel_source_sha256=hashlib.sha256(cuda.read_bytes()).hexdigest(), **pins), sort_keys=True)

@@ -735,11 +735,12 @@ class RunConfig:
     wif_climatology_path: str = ""
     # Which mp=28 aerosol initial state this run wants (change record:
     # appended with the lane/wif-default commit onto this line).  "auto",
-    # the default, resolves WRF's monthly WIF climatology and uses it, and
-    # falls back to thompson_init's synthetic profile ONLY when no dataset
-    # can be found -- announcing that by name in the run receipt
-    # (MP28_AEROSOL_SYNTHETIC_FALLBACK).  "climatology" refuses instead of
-    # falling back.  "synthetic" selects the fallback deliberately, which is
+    # the default, resolves WRF's monthly WIF climatology and uses it; when
+    # the machine has no copy it downloads the pinned one, and when that
+    # fails it refuses by name (acquire_wif_climatology).  It no longer
+    # falls back to thompson_init's synthetic profile with a warning (a real-data
+    # mp=28 run, 2026-10-23).  "climatology" is the same
+    # commitment, stated.  "synthetic" selects that profile deliberately, which is
     # what an idealized case or a reproduction of a pre-lane/wif-default run
     # wants.  Inert under every other mp_physics.
     mp28_aerosol_source: str = "auto"
@@ -1409,6 +1410,15 @@ class RunConfig:
     wsm3_conservative_surface: bool = _correct_mode.CORRECT_KEYS_DEFAULT
     wsm5_conservative_surface: bool = _correct_mode.CORRECT_KEYS_DEFAULT
     wsm7_conservative_surface: bool = _correct_mode.CORRECT_KEYS_DEFAULT
+    # HN1 (2.9.7): a hydrometeor mass handed over without its number
+    # (prep from another model, gpuwm downscale, the specified ring) gets
+    # the number its mass gives under the child scheme's relations, and the
+    # specified ring forces a number back with its mass
+    # (gpuwm/ingest/handover_numbers.py).  Off keeps real.exe's zeros and
+    # WRF's tendency-only scalar ring.
+    # Keyword-only, so the positional constructor is unchanged.
+    hydrometeor_handover_numbers: bool = _config_field(
+        default=_correct_mode.CORRECT_KEYS_DEFAULT, kw_only=True)
     # WRF's Pollard and three-dimensional PWP oceans. New PWP controls
     # are keyword-only so the existing positional constructor is stable.
     sf_ocean_physics: int = 0
@@ -1778,6 +1788,17 @@ class RunConfig:
 
     #: Per-run capacity decision, retained through preparation and receipts.
     smoke_off_reason: str = _config_field(default="", kw_only=True)
+    # HRRR v4 climate statistics (lane/hrrr-v4-clwrf 3aec2abd31), appended
+    # last and keyword-only so the positional constructor is unchanged.
+    # Registry.EM_COMMON:2084,2087-2088; windows in minutes.
+    output_diagnostics: int = _config_field(default=0, kw_only=True)
+    diag_int: int = _config_field(default=15, kw_only=True)
+    wind_int: int = _config_field(default=5, kw_only=True)
+    # Archive nest-integrated precipitation in a fixed frame across moves
+    # (tc/nest); False reproduces the historical parent-seeded diagnostic
+    # counters.  Appended last, keyword-only: it sat positionally after
+    # `nested` and shifted every later positional argument.
+    nest_accumulation_archive: bool = _config_field(default=True, kw_only=True)
 
 #: The ways a domain's clock meets the measured terrain rules
 #: (:attr:`RunConfig.terrain_clock`).
@@ -1812,7 +1833,8 @@ CORRECT_MODE_RESTART_BREAK_NOTICE = (
     "scheme reads to false explicitly (wsm6_conservative_surface, "
     "wdm6_conservative_surface, wsm3_conservative_surface, "
     "wsm5_conservative_surface, wsm7_conservative_surface, "
-    "ntiedtke_dry_mass_coupling); otherwise restart from t = 0.")
+    "ntiedtke_dry_mass_coupling, hydrometeor_handover_numbers); otherwise "
+    "restart from t = 0.")
 
 #: The same accuracy for the 2.8.9 WRF-folder default (D8): a fixed-step
 #: WRF namelist now imports with terrain_clock = "pinned", WRF's own
@@ -4016,8 +4038,34 @@ def validate_run_preparation(cfg) -> None:
     every domain of an experiment before anything is spent.
     """
 
+    acquire_run_preparation_assets(cfg)
     for sentence in run_preparation_preconditions(cfg):
         raise ConfigurationRefused(sentence)
+
+
+def acquire_run_preparation_assets(cfg) -> None:
+    """Download, at a door that commits to a forecast, what the floor needs.
+
+    Only the doors that BUILD a forecast call this (never ``gpuwm check``,
+    plan review or the namelist importer, which report about a machine).
+    When the WIF precondition is unmet only because the dataset is not on
+    this machine, it is staged under its pin first (the same acquisition
+    ``initialize_real`` performs); if that fails the precondition's own
+    sentence is the refusal.  Named breakage: an mp=28 run on a box without
+    the file must not depend on someone having run `gpuwm fetch-tables
+    --wif` by hand (2026-10-23).
+    """
+
+    if mp28_aerosol_lateral_forcing_precondition(cfg) is None:
+        return
+    from gpuwm.ingest.wif_climatology import (
+        MissingWifClimatologyDataset, acquire_wif_climatology)
+
+    try:
+        acquire_wif_climatology(
+            str(getattr(cfg, "wif_climatology_path", "") or "") or None)
+    except MissingWifClimatologyDataset:
+        return
 
 
 def experiment_preparation_refusals(experiment, *, pending_wif_domains=()) -> tuple[tuple[str, str], ...]:
@@ -4081,6 +4129,13 @@ def validate_experiment_preparation(experiment, *, pending_wif_domains=()) -> No
     # Only a fetch that owns WIF acquisition may name pending domains.
     # Every other precondition remains enforced; preparation itself and
     # initialization call this without a pending acquisition allowance.
+    # Every other domain acquires the dataset here, before the refusal is
+    # measured, so a missing download is fetched rather than refused.
+    for index, domain in enumerate(getattr(experiment, "domains", ()) or ()):
+        run = getattr(domain, "run", None)
+        if (run is not None
+                and getattr(domain, "grid_id", index + 1) not in pending_wif_domains):
+            acquire_run_preparation_assets(run)
     for label, sentence in experiment_preparation_refusals(
             experiment, pending_wif_domains=pending_wif_domains):
         raise ConfigurationRefused(f"{label}: {sentence}")
@@ -5924,6 +5979,8 @@ def _validate_adaptive_time_step(cfg: RunConfig) -> None:
             "time_step_sound//2 acoustic substeps of dt/time_step_sound, "
             "which only integrates to dt/2 for even counts.")
 
+    if not isinstance(cfg.nest_accumulation_archive, bool):
+        raise ConfigurationRefused('nest_accumulation_archive must be a boolean')
     if not isinstance(cfg.adaptive_nest_lattice, bool):
         raise ConfigurationRefused("adaptive_nest_lattice must be true or false")
     if cfg.adaptive_nest_lattice and not cfg.use_adaptive_time_step:
@@ -7643,6 +7700,11 @@ def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> R
             "no_mp_heating must be 0 (microphysics latent heating on, the "
             f"WRF default) or 1 (heating off), got {cfg.no_mp_heating}."
         )
+    if type(cfg.output_diagnostics) is not int or cfg.output_diagnostics not in (0, 1):
+        raise ValueError("output_diagnostics must be 0 or 1")
+    for key in ("diag_int", "wind_int"):
+        if type(getattr(cfg, key)) is not int or getattr(cfg, key) <= 0:
+            raise ValueError(f"{key} must be positive whole minutes")
     if cfg.gsd_diagnostics not in (0, 1):
         raise ValueError("gsd_diagnostics must be 0 or 1; research package 2 is not carried")
     if type(cfg.reset_interval1) is not int or cfg.reset_interval1 <= 0:

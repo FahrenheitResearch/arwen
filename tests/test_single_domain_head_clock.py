@@ -42,12 +42,15 @@ def test_a_set_aside_attempt_leaves_the_heartbeat_where_the_watchdog_reads_it(
         (outdir / supervisor.HEARTBEAT_NAME).write_text(f"beat {number}")
         tree._set_aside_streamed_attempt(outdir)
     assert sorted(entry.name for entry in outdir.iterdir()) == [
-        supervisor.HEARTBEAT_NAME, "streamed-attempt", "streamed-attempt-2"]
+        ".quarantine", supervisor.HEARTBEAT_NAME]
+    kept = outdir / ".quarantine"
+    assert sorted(entry.name for entry in kept.iterdir()) == [
+        "streamed-attempt", "streamed-attempt-2"]
     assert (outdir / supervisor.HEARTBEAT_NAME).read_text() == "beat 2"
     for name, number in (("streamed-attempt", "1"),
                          ("streamed-attempt-2", "2")):
-        assert (outdir / name / "wrfout" / "frame").read_text() == number
-        assert sorted(entry.name for entry in (outdir / name).iterdir()) \
+        assert (kept / name / "wrfout" / "frame").read_text() == number
+        assert sorted(entry.name for entry in (kept / name).iterdir()) \
             == ["progress.json", "wrfout"]
 
 
@@ -153,8 +156,8 @@ def test_a_moved_clock_runs_the_single_domain_forecast_again_on_the_seal(
     assert ("the sealed forecast runs from its start time" in err) == resumed
     assert observer.restarts and "terrain-derived clock" in observer.restarts[0]
     assert seals and seals[0][0] is head_inputs
-    assert "streamed-attempt" in seals[0][1]
-    attempt = outdir / "streamed-attempt"
+    assert seals[0][1] == [".quarantine"]
+    attempt = outdir / ".quarantine" / "streamed-attempt"
     assert (attempt / "wrfout" / "wrfout_d01").read_text() == "attempt"
     assert (outdir / "wrfout" / "wrfout_d01").read_text() == "sealed"
     assert f"kept in {attempt}" in err

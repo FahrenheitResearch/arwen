@@ -138,6 +138,12 @@ _TOP_LEVEL_EXCLUDES = {
     # stages, so the unresolved-import scan refused the whole staging.  A
     # preprocessing wheel runs no forecast whose frames it could draw.
     "live_products.py",
+    # The any-point column store (rw-store v2) a forecast writes as its frames
+    # land.  Its importers are runplan.py, offline_child_run.py and
+    # gpuwm/ensemble/batch_product_output.py, none staged here, and it reads
+    # resident frames through gpuwm.io.wrfout, which this wheel excludes, so
+    # staging it refused the whole build.  Preparation writes no frames.
+    "live_columns.py",
     # Forecast-history comparison calls the excluded render front door.
     # Staging it leaves an unresolved gpuwm.render import in a package
     # whose preparation commands do not create forecast history.
@@ -249,6 +255,14 @@ _TOP_LEVEL_EXCLUDES = {
     "offline_child_geography.py",
     "offline_child_run.py",
     "offline_child_smoke.py",
+    # Moving nest-downs (`gpuwm downscale --follow`, `--warm-from`): the
+    # moving child orchestrator, its warm start from a parent restart and the
+    # follow-target detector.  Their only importers are downscale.py and
+    # offline_child_run.py (excluded above), and they reach gpuwm.offline_child,
+    # gpuwm.io.restart and gpuwm.io.netcdf_serialization, none staged here.
+    "moving_downscale.py",
+    "offline_child_warm.py",
+    "setup_targets.py",
     # `gpuwm resume` locates a forecast checkpoint and hands it to the
     # supervisor's `run --restart` dispatch.  It reached this staging
     # only because it is a top-level module: nothing RW-WPS ships

@@ -49,6 +49,8 @@ struct Common {
     directory: PathBuf,
     shape: [usize; 2],
     samples: usize,
+    #[serde(default)]
+    full_coverage_wind: Option<String>,
 }
 #[derive(Deserialize)]
 struct Member {
@@ -701,7 +703,7 @@ fn run(path: &Path) -> Result<(), String> {
             if common(m, "latitude")? != lat || common(m, "longitude")? != lon {
                 return Err("members have different common Earth grids".into());
             }
-            common(m, "time_max_wind10")
+            common(m, m.common_wind.full_coverage_wind.as_deref().unwrap_or("time_max_wind10"))
         })
         .collect::<Result<_, String>>()?;
     let probability: Vec<f32> = (0..cells)
@@ -944,20 +946,28 @@ fn render_accumulator(path: &Path) -> Result<(), String> {
         ("max-wind", "time_max_wind10", "Every-step maximum 10 m wind", "m s-1", scales::spread_scale(80.)),
         ("gust", "time_max_gust", "Every-step maximum diagnostic gust (surface-layer similarity)", "m s-1", scales::spread_scale(80.)),
         ("min-pressure", "time_min_mslp", "Every-step minimum sea-level pressure", "hPa", scales::radial_velocity_scale(1050.)),
+        ("rain", "nest_sampled_rain", "Nest-integrated rain during sampled exposure (see exposure map)", "mm", scales::spread_scale(rain_display_limit(&a.request)?)),
+        ("rain", "nest_rain_exposure_hours", "Nest rain sampling exposure", "hours", scales::spread_scale(48.)),
     ] {
         if !products.iter().any(|p| p.as_str() == Some(product)) { continue; }
         let values = plane(name)?;
         if !values.iter().any(|v| v.is_finite()) {
-            return Err(format!("{name}: no Earth-grid cell covered at every step; choose a common_grid within the forecast footprint"));
+            return Err(format!("{name}: no finite sample on the requested Earth grid; choose a common_grid intersecting the forecast footprint"));
         }
         let mut scale = scale;
+        if name == "nest_rain_exposure_hours" {
+            // A fixed 48-hour legend hides partial coverage in shorter runs.
+            // Equal-duration complete members retain an equal scale.
+            scale = scales::spread_scale(exposure_scale_limit(&values));
+        }
         if product == "min-pressure" {
             scale = scales::spread_scale(120.);
             if let rustwx_render::ColorScale::Discrete(ref mut d) = scale {
                 d.levels.iter_mut().for_each(|v| *v += 930.);
             }
         }
-        draw(&r, product, format!("{}: {title}", r.experiment_label), &valid,
+        let output_name = if name == "nest_rain_exposure_hours" { "rain-exposure" } else { product };
+        draw(&r, output_name, format!("{}: {title}", r.experiment_label), &valid,
             &lat, &lon, shape, values, unit, scale, Some(&layers), true)?;
     }
     if products.iter().any(|p| p.as_str() == Some("track")) {
@@ -965,6 +975,36 @@ fn render_accumulator(path: &Path) -> Result<(), String> {
             &valid, &lat, &lon, shape, vec![f32::NAN;cells], "", scales::probability_scale(), Some(&layers), false)?;
     }
     Ok(())
+}
+
+fn exposure_scale_limit(values: &[f32]) -> f64 {
+    values.iter().copied().filter(|v| v.is_finite())
+        .fold(0.0_f32, f32::max).max(f32::EPSILON) as f64
+}
+
+// Supplemental strip views can resolve light rain without changing the field.
+// The default overview retains its existing ceiling; every legend names its limit.
+fn rain_display_limit(request: &serde_json::Value) -> Result<f64, String> {
+    match request.get("display_rain_max_mm") {
+        None => Ok(300.),
+        Some(value) => value.as_f64().filter(|v| v.is_finite() && *v > 0.)
+            .ok_or_else(|| "display_rain_max_mm must be a finite positive number".into()),
+    }
+}
+
+#[test]
+fn light_rain_strip_view_keeps_explicit_scale_and_default() {
+    assert_eq!(rain_display_limit(&serde_json::json!({})).unwrap(), 300.);
+    assert_eq!(rain_display_limit(&serde_json::json!({"display_rain_max_mm": 30.})).unwrap(), 30.);
+    for value in [serde_json::json!(0), serde_json::json!(-30), serde_json::json!("30")] {
+        assert!(rain_display_limit(&serde_json::json!({"display_rain_max_mm": value})).is_err());
+    }
+}
+
+#[test]
+fn six_hour_exposure_legend_resolves_partial_strips() {
+    assert_eq!(exposure_scale_limit(&[f32::NAN, 0.0, 0.0020833333, 3.0, 6.0]), 6.0);
+    assert_eq!(exposure_scale_limit(&[0.0, 12.0, 48.0]), 48.0);
 }
 
 pub fn try_cli(args: &[String]) -> Option<Result<(), String>> {

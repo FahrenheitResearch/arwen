@@ -8,7 +8,7 @@ use std::{path::{Path, PathBuf}, time::Instant, io::{BufWriter, Write}};
 use netcrust::File;
 use rayon::prelude::*;
 use rustwx_render::{ContourLayer, LegendControls, LegendMode, LevelDensity, RenderDensity, advisory};
-use crate::{panel::{PanelRequest, layout_path, render_panel, safe_component}, scales};
+use crate::{panel::{PanelRequest, layout_path, render_panel_with_rgba, safe_component}, scales};
 
 pub const ABI: &str = "gpuwm-rw-wrfbatch-resident-ensemble-v2\tCDF5\tmean\tspread\tmin\tmax\tprobability\tpaintball\tpostage\tfraction\ttyped-diagnostic\ts2s-window\tglobal-ensemble-projection\tRENDERED\tFAILED";
 const CONTRACT: &str = "gpuwm-resident-ensemble-products.v1";
@@ -260,10 +260,32 @@ fn plane(out: &Path, domain: &str, valid: &str, subtitles: (String, String),
          slug: String, title: String, values: Vec<f32>, units: String,
          scale: rustwx_render::ColorScale, contours: Vec<ContourLayer>,
          colorbar: bool, width: u32, height: u32) -> Result<PathBuf, String> {
+    plane_geo(out, domain, valid, subtitles, latitude, longitude, ny, nx, slug, title, values, units, scale,
+              contours, colorbar, width, height).map(|(path, _)| path)
+}
+
+/// One drawn map's lines on stdout: `RENDERED\t<path>`, then `GEOREF\t<path>\t<json>` with its map transform
+/// (one rustwx.render-georef/v1 panel), which the caller folds into the folder's `render-georef.json`.
+/// THE BREAKAGE THIS CLOSES: every ensemble product map (WOOF run_6a0d19f802e9bb6c: 2,016 of them) went out with
+/// no transform, so a click on it could not become a latitude and longitude and the site's soundings were off.
+fn said(target: &Path, geo: Option<&rustwx_render::PanelGeoReference>) {
+    println!("RENDERED\t{}", target.display());
+    if let Some(json) = geo.and_then(|g| serde_json::to_string(g).ok()) {
+        println!("GEOREF\t{}\t{json}", target.display());
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn plane_geo(out: &Path, domain: &str, valid: &str, subtitles: (String, String),
+         latitude: &[f32], longitude: &[f32], ny: usize, nx: usize,
+         slug: String, title: String, values: Vec<f32>, units: String,
+         scale: rustwx_render::ColorScale, contours: Vec<ContourLayer>,
+         colorbar: bool, width: u32, height: u32)
+         -> Result<(PathBuf, Option<rustwx_render::PanelGeoReference>), String> {
     let day = valid.get(..10).unwrap_or(valid);
     let target = layout_path(out, domain, &slug, day,
                             &format!("{slug}_{}", safe_component(valid, "valid")));
-    render_panel(PanelRequest {
+    render_panel_with_rgba(PanelRequest {
         lat_deg: latitude, lon_deg: longitude, projection: None, ny, nx, values,
         product_slug: slug, title, display_units: units, scale, cbar_tick_step: None,
         legend: LegendControls { density: LevelDensity::default(), mode: LegendMode::Stepped },
@@ -271,7 +293,7 @@ fn plane(out: &Path, domain: &str, valid: &str, subtitles: (String, String),
         subtitle_left: subtitles.0, subtitle_center: None,
         subtitle_right: subtitles.1, width, height,
         contours, colorbar, overlays: MAP_OVERLAYS.get(), annotations: None, out_path: target,
-    })
+    }, None)
 }
 
 /// The `--overlays` of this process's one `--ensemble-products` call.
@@ -359,7 +381,7 @@ pub fn render(path: &Path, out: &Path, fields: &[String], domain: &str,
                 (if units == "1" { scales::probability_scale() } else { scales::spread_scale(100.0) }, units.clone())
             };
             let slug = format!("ens_{kind}_{}", safe_component(&field, "field"));
-            let target = plane(out, domain, &valid, roster_subtitles(members, &valid, source), &latitude, &longitude,
+            let (target, geo) = plane_geo(out, domain, &valid, roster_subtitles(members, &valid, source), &latitude, &longitude,
                 ny, nx, slug,
                 if members == 1 && kind == "mean" {
                     // The plain product title for one deterministic plane.
@@ -368,7 +390,7 @@ pub fn render(path: &Path, out: &Path, fields: &[String], domain: &str,
                     format!("Ensemble {kind} {} ({display_units})", field_title(&field))
                 },
                 values, display_units, scale, vec![], true, width, height)?;
-            println!("RENDERED\t{}", target.display()); written.push(target);
+            said(&target, geo.as_ref()); written.push(target);
         }
         if products.iter().any(|p| p == "postage") && file.variable(&format!("{field}_members")).is_some() {
             let member_name = format!("{field}_members"); let member_dim = format!("{field}_member");
@@ -449,10 +471,10 @@ pub fn render(path: &Path, out: &Path, fields: &[String], domain: &str,
                     width: 2, labels: false, show_extrema: false, pattern: Default::default(), major_every: None, major_width: None,
                 }).collect();
                 let slug = format!("ens_{contour_product}_{}_{}_{}", safe_component(&field, "field"), comparison, safe_component(&threshold_label, "threshold"));
-                let target = plane(out, domain, &valid, roster_subtitles(members, &valid, source), &latitude, &longitude, ny, nx, slug,
+                let (target, geo) = plane_geo(out, domain, &valid, roster_subtitles(members, &valid, source), &latitude, &longitude, ny, nx, slug,
                     format!("{contour_product} {} {relation} {display_threshold} {threshold_units}", field_title(&field)),
                     vec![f32::NAN; ny * nx], units.clone(), scales::spread_scale(1.0), contours, false, width, height)?;
-                println!("RENDERED\t{}", target.display()); written.push(target);
+                said(&target, geo.as_ref()); written.push(target);
             }
             }
             if !products.iter().any(|p| p == "prob") { continue; }
@@ -462,7 +484,7 @@ pub fn render(path: &Path, out: &Path, fields: &[String], domain: &str,
             let target = layout_path(out, domain, &slug, day,
                                      &format!("{slug}_{}", safe_component(&valid, "valid")));
             let started = Instant::now();
-            let target = render_panel(PanelRequest {
+            let (target, geo) = render_panel_with_rgba(PanelRequest {
                 lat_deg: &latitude, lon_deg: &longitude, projection: None, ny, nx,
                 values: probabilities[index * ny * nx..(index + 1) * ny * nx].to_vec(),
                 product_slug: slug, title: format!("P({} {relation} {display_threshold} {threshold_units})", field_title(&field)),
@@ -472,8 +494,8 @@ pub fn render(path: &Path, out: &Path, fields: &[String], domain: &str,
                 subtitle_left: roster_subtitles(members, &valid, source).0, subtitle_center: None,
                 subtitle_right: roster_subtitles(members, &valid, source).1, width, height,
                 contours: Vec::new(), colorbar: true, overlays: None, annotations: None, out_path: target,
-            })?;
-            println!("RENDERED\t{}", target.display());
+            }, None)?;
+            said(&target, geo.as_ref());
             println!("ENSEMBLE_PLANE\t{field}\tthreshold={threshold}\tcomparison={comparison}\tmembers={members}\trender_ms={:.3}", started.elapsed().as_secs_f64() * 1000.0);
             written.push(target);
         }

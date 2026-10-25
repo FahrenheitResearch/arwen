@@ -95,7 +95,8 @@ def test_host_concurrency_matches_each_render_resource_budget(tmp_path, monkeypa
         root, valid = _frame(tmp_path, 1, 0)
         assert early.frame_committed(domain=1, valid_time=valid, path=root)
         assert early.wait(30) is not None
-        assert early_budgets == [{"RUSTWX_LIVE_RENDER_SLOTS": "1", "RAYON_NUM_THREADS": "7"}]
+        assert early_budgets == [{"RUSTWX_LIVE_RENDER_SLOTS": "1", "RUSTWX_LIVE_RENDER_DRAWING": "1",
+                                  "RAYON_NUM_THREADS": "7"}]
         for hour in range(3):
             frame, valid = _frame(tmp_path, 2, hour)
             live.frame_committed(domain=2, valid_time=valid, path=frame)
@@ -109,7 +110,10 @@ def test_host_concurrency_matches_each_render_resource_budget(tmp_path, monkeypa
             _plan(tmp_path, "all"))
         assert remaining == [] and len(published) == 3
         assert all(int(row["RUSTWX_LIVE_RENDER_SLOTS"]) == maximum for row in budgets)
-        assert all(row["RAYON_NUM_THREADS"] == "2" for row in budgets)
+        # The processors go to the frames drawing as each starts: the
+        # last of the three to start shares them three ways.
+        assert {row["RAYON_NUM_THREADS"] for row in budgets} <= {"7", "3", "2"}
+        assert "2" in {row["RAYON_NUM_THREADS"] for row in budgets}
     finally:
         live.halt()
         events.close()
@@ -126,7 +130,34 @@ def test_external_lock_gets_one_slot_and_the_matching_native_budget(tmp_path, mo
     live = live_products.LiveProducts(_plan(tmp_path), report=lambda _: None,
                                      warn=lambda *a, **k: None, slot=threading.Lock())
     live._run_render(["render"])
-    assert calls == [{"RUSTWX_LIVE_RENDER_SLOTS": "1", "RAYON_NUM_THREADS": "7"}]
+    assert calls == [{"RUSTWX_LIVE_RENDER_SLOTS": "1", "RUSTWX_LIVE_RENDER_DRAWING": "1", "RAYON_NUM_THREADS": "7"}]
+
+
+def test_a_lone_live_frame_draws_on_every_processor_but_the_forecasts(tmp_path, monkeypatch, eight_cpus):
+    """THE BREAKAGE: frames landing one at a time each drew on 7 // 3 = 2
+    threads of an eight-processor box (the planned width, not the frames
+    drawing), so the live render ran at about 130% CPU with five
+    processors idle (2.9.5, RTX PRO 4500, 2026-10-23)."""
+
+    calls = []
+
+    def render(command, **options):
+        calls.append(options["env_overrides"])
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(first_products, "_run_render", render)
+    live = live_products.LiveProducts(_plan(tmp_path), report=lambda _: None,
+                                     warn=lambda *a, **k: None)
+    assert live._concurrency == 3
+    live._active = 1
+    live._run_render(["render"])
+    live._active = 2
+    live._run_render(["render"])
+    # The renderer's product loop is told the same share
+    # (RUSTWX_LIVE_RENDER_DRAWING): divided by the three slots it drew a lone
+    # frame's products two at a time (2026-10-24).
+    assert calls == [{"RUSTWX_LIVE_RENDER_SLOTS": "3", "RUSTWX_LIVE_RENDER_DRAWING": "1", "RAYON_NUM_THREADS": "7"},
+                     {"RUSTWX_LIVE_RENDER_SLOTS": "3", "RUSTWX_LIVE_RENDER_DRAWING": "2", "RAYON_NUM_THREADS": "3"}]
 
 
 def test_request_catalog_is_initialized_once_without_blocking_the_queue(tmp_path, monkeypatch, eight_cpus):
@@ -232,7 +263,8 @@ def test_a_container_cpu_quota_bounds_the_processors_frames_are_budgeted_on(
     assert live_products._available_cpus() == processors
     assert live_products._render_concurrency() == frames
     live_products._run_render(["render"])
-    assert calls == [{"RUSTWX_LIVE_RENDER_SLOTS": str(frames), "RAYON_NUM_THREADS": native}]
+    assert calls == [{"RUSTWX_LIVE_RENDER_SLOTS": str(frames), "RUSTWX_LIVE_RENDER_DRAWING": str(frames),
+                      "RAYON_NUM_THREADS": native}]
 
 
 @pytest.mark.parametrize("membership,files,processors", [

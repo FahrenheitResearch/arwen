@@ -248,9 +248,11 @@ pub const METADATA_KEYS: &[&str] = &[
 pub struct Geometry(pub Vec<u8>);
 impl Serialize for Geometry {
     fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        const HEX: &[u8;16] = b"0123456789abcdef";
         let mut h = String::with_capacity(self.0.len() * 2);
-        for b in &self.0 {
-            h.push_str(&format!("{b:02x}"));
+        for &b in &self.0 {
+            h.push(HEX[(b >> 4) as usize] as char);
+            h.push(HEX[(b & 15) as usize] as char);
         }
         s.serialize_str(&h)
     }
@@ -261,12 +263,14 @@ impl<'de> Deserialize<'de> for Geometry {
         if h.len() % 2 != 0 {
             return Err(serde::de::Error::custom("odd hex geometry length"));
         }
-        (0..h.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&h[i..i + 2], 16))
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map(Geometry)
-            .map_err(serde::de::Error::custom)
+        let nibble = |b:u8| match b {
+            b'0'..=b'9' => Some(b-b'0'), b'a'..=b'f' => Some(b-b'a'+10),
+            b'A'..=b'F' => Some(b-b'A'+10), _ => None,
+        };
+        h.as_bytes().chunks_exact(2).map(|b|
+            Some((nibble(b[0])? << 4) | nibble(b[1])?))
+            .collect::<Option<Vec<_>>>().map(Geometry)
+            .ok_or_else(||serde::de::Error::custom("invalid hex geometry"))
     }
 }
 

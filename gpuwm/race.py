@@ -52,12 +52,14 @@ def cycle_time(value, now=None):
 
 
 def recipe_row(name, registry=REGISTRY):
-    for row in json.loads(Path(registry).read_text())["recipes"]:
-        if name in [row["id"], *row.get("aliases", [])]:
-            if "race" not in row:
-                raise ValueError(f"Recipe {row['id']} has no race object-clock row.")
-            return row
-    raise ValueError(f"Unknown recipe or alias: {name}")
+    from gpuwm.region_recipe import recipe_row as registry_row
+    try:
+        row = registry_row(name, registry)
+    except ValueError:
+        raise ValueError(f"Unknown recipe or alias: {name}") from None
+    if "race" not in row:
+        raise ValueError(f"Recipe {row['id']} has no race object-clock row.")
+    return row
 
 
 def object_names(row, cycle, hours):

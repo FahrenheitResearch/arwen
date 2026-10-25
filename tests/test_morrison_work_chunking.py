@@ -10,27 +10,35 @@ had held stopped fitting.  A forecast step therefore runs the scheme in
 ``work_chunk_columns(ncol)``-column calls (WRF's columns are independent;
 tests/test_morrison_regime_oracle.py grades the chunked calls against WRF
 word for word), and the WORK slot holds one call's columns: one volume
-plus at most NWORK * nz values.  CPU-only.
+plus at most NWORK * nz values -- or, on a domain small enough that NWORK
+volumes are under WORK_FLOOR_BYTES (128 MiB), the whole domain in one call:
+the chunks bought no memory there and cost the u2 user shape 21 launches of
+three kernels a step (WOOF 1.1 final canary, 1.24x its 2.8.7 twin).  CPU-only.
 """
 
 from __future__ import annotations
 
 from gpuwm.config import RunConfig
 from gpuwm.core.morrison_constants import (NWORK, SCRATCH_VOLUME_SLOTS,
-                                           SCRATCH_WORK_SLOT,
+                                           SCRATCH_WORK_SLOT, WORK_FLOOR_BYTES,
                                            work_chunk_columns,
                                            work_slot_shape)
+
+FLOOR_VALUES = WORK_FLOOR_BYTES // 4
 
 
 def test_forecast_chunking_keeps_work_at_one_volume():
     for nz, ncol in ((50, 106), (50, 1), (80, 1799 * 1059), (64, 21),
                      (64, 22), (32, 41 * 40)):
-        chunk = work_chunk_columns(ncol)
+        chunk = work_chunk_columns(ncol, nz)
         assert 1 <= chunk <= ncol
         assert -(-ncol // chunk) <= NWORK          # at most NWORK calls
         (size,) = work_slot_shape(nz, ncol)
         assert size == NWORK * nz * chunk
-        assert size < nz * ncol + NWORK * nz       # one volume, plus slack
+        # one volume plus slack, or the 128 MiB floor on a small domain
+        assert size < max(nz * ncol + NWORK * nz, FLOOR_VALUES + NWORK * nz)
+    # A domain past the floor keeps WRF-sized one-volume chunks.
+    assert work_chunk_columns(1799 * 1059, 80) == -(-(1799 * 1059) // NWORK)
 
 
 def test_preflight_prices_the_chunked_work_slot():
@@ -48,7 +56,8 @@ def test_preflight_prices_the_chunked_work_slot():
     morrison = [slots[name] for name in SCRATCH_VOLUME_SLOTS] + [
         slots[SCRATCH_WORK_SLOT], slots["refl_t"]]
     values = sum(_count(shape) for shape in morrison)
-    assert values <= 6 * volume + NWORK * cfg.nz
+    # (A small domain's WORK may take the whole domain, up to the floor.)
+    assert values <= 6 * volume + NWORK * cfg.nz + FLOOR_VALUES
 
 
 def _count(shape):

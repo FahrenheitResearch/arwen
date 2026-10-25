@@ -698,7 +698,7 @@ pub fn run(path: &Path) -> Result<(), String> {
         let data = terrain.as_ref().unwrap();
         let (lat, lon) = (&data.lat, &data.lon);
         let upper = match slug {
-            "streamflow_map" => values.par_iter().copied().filter(|v| v.is_finite()).reduce(|| 1., f32::max),
+            "streamflow_map" => 100_000.,
             "flood_probability" | "hand_flood_probability" | "inundation_extent" => 1.,
             "stream_order" => values
                 .par_iter()
@@ -715,7 +715,11 @@ pub fn run(path: &Path) -> Result<(), String> {
         } else {
             10
         };
-        let levels = if slug == "stream_order" {
+        let levels = if slug == "streamflow_map" {
+            // Stable physical thresholds reveal tributaries beside continental
+            // outlets; a per-frame linear maximum hid almost all inland flow.
+            vec![0., 0.1, 1., 10., 100., 300., 1_000., 3_000., 10_000., 30_000., 100_000.]
+        } else if slug == "stream_order" {
             (0..=bins).map(|i| i as f64 + 0.5).collect()
         } else if slug == "inundation_extent" {
             vec![-0.5, 0.5, 1.5]
@@ -751,7 +755,11 @@ pub fn run(path: &Path) -> Result<(), String> {
             nx: t.nx,
             values: values.to_vec(),
             product_slug: slug.into(),
-            title: format!("{title} ({units}); top color >= {upper}"),
+            title: if slug == "streamflow_map" {
+                format!("{title} ({units}); fixed discharge thresholds")
+            } else {
+                format!("{title} ({units}); top color >= {upper}")
+            },
             display_units: units.into(),
             scale,
             cbar_tick_step: if matches!(slug, "stream_order" | "inundation_extent") {
@@ -760,7 +768,9 @@ pub fn run(path: &Path) -> Result<(), String> {
                 None
             },
             legend: LegendControls {
-                mode: if matches!(slug, "stream_order" | "inundation_extent") {
+                mode: if slug == "streamflow_map" {
+                    LegendMode::Thresholds
+                } else if matches!(slug, "stream_order" | "inundation_extent") {
                     LegendMode::Categories
                 } else {
                     LegendMode::Stepped

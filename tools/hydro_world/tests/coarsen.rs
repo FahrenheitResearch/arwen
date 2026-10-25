@@ -13,6 +13,17 @@ fn table() -> source::SourceTable {
 }
 
 #[test]
+fn native_auxiliary_grid_uses_the_continental_budget() {
+    let t=table();
+    let b=BBox::parse("-136,17,-55,53").unwrap();
+    let (_,k)=hydro_world::build::resolve(&t,"conus-nhdplus-v21",&b).unwrap();
+    assert!(Grid::for_box(&b,3.0*k as f64).unwrap().len()<=250_000_000);
+    assert!(k>1);
+    let b=BBox::parse("-106,33,-105,34").unwrap();
+    assert_eq!(hydro_world::build::resolve(&t,"conus-nhdplus-v21",&b).unwrap().1,1);
+}
+
+#[test]
 fn continental_and_global_boxes_resolve_inside_the_budget() {
     let t = table();
     let budget = t.auto.iter().find(|r| r.coarsen).and_then(|r| r.max_cells).unwrap();

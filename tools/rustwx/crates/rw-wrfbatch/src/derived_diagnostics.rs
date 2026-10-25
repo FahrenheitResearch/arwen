@@ -120,9 +120,52 @@ pub(super) fn compute(
     if planned_fields(o).is_empty() {
         return;
     }
-    let cells = f.nx * f.ny;
+    // The groups below read the file and nothing another group wrote, so they
+    // run at once, each into its own part, and the parts join in the order the
+    // groups ran one after another: the hour holds the same fields in the same
+    // order. They run after the isobaric volumes released wrf-core's cache, so
+    // each rebuilds the 3-D fields it reads; one after another that was 1.4 s
+    // of a 2.25 km / 750 m HRRR nest frame's 5.3 s render at one core
+    // (2026-10-24).
+    let part = || WrfHourFields {
+        grid: out.grid.clone(),
+        projection: out.projection.clone(),
+        canonical: Vec::new(),
+        derived: Vec::new(),
+        volumes: Vec::new(),
+        notes: Vec::new(),
+    };
+    let mut parts: [WrfHourFields; 4] = std::array::from_fn(|_| part());
+    let columns = PRODUCTS[1..].iter().any(|r| selected(o, r.0));
+    {
+        let [surface, wbgt, column, pr92] = &mut parts;
+        let proj = &proj;
+        rayon::scope(|scope| {
+            scope.spawn(move |_| surface_group(surface, f, ti, g, proj.clone(), o));
+            scope.spawn(move |_| wbgt_group(wbgt, f, ti, g, proj.clone(), o));
+            if columns {
+                scope.spawn(move |_| column_group(column, f, ti, g, proj.clone(), o));
+                scope.spawn(move |_| pr92_group(pr92, f, ti, g, proj.clone(), o));
+            }
+        });
+    }
+    for part in parts {
+        out.canonical.extend(part.canonical);
+        out.derived.extend(part.derived);
+        out.notes.extend(part.notes);
+    }
+}
+
+/// Heat index, apparent temperature, wet bulb, fire-weather composite and VPD.
+fn surface_group(
+    out: &mut WrfHourFields,
+    f: &WrfFile,
+    ti: usize,
+    g: &LatLonGrid,
+    proj: Option<GridProjection>,
+    o: &WrfProcessOptions,
+) {
     let plane = [f.ny, f.nx];
-    let volume = [f.nz, f.ny, f.nx];
     // This separate surface group does not require microphysics or radiation.
     if SURFACE.iter().any(|name| *name != "vpd_2m" && selected(o, name)) {
         let surface = (|| -> Result<Vec<(&str, &str, Vec<f64>)>, String> {
@@ -182,6 +225,20 @@ pub(super) fn compute(
             Err(e) => out.notes.push(format!("vpd_2m unavailable: {e}")),
         }
     }
+}
+
+/// Wet-bulb globe temperature.
+fn wbgt_group(
+    out: &mut WrfHourFields,
+    f: &WrfFile,
+    ti: usize,
+    g: &LatLonGrid,
+    proj: Option<GridProjection>,
+    o: &WrfProcessOptions,
+) {
+    let cells = f.nx * f.ny;
+    let plane = [f.ny, f.nx];
+    let volume = [f.nz, f.ny, f.nx];
     if selected(o, "wbgt_2m") {
         let result = (|| -> Result<Vec<f64>, String> {
             let ps = read(f, ti, "PSFC", &plane, None)?;
@@ -198,8 +255,11 @@ pub(super) fn compute(
                 .timestamp();
             // SRDT stability uses the native 2-10 m temperature difference.
             // Linear interpolation in AGL height, with T2 as the 2 m endpoint.
-            let temp = read(f, ti, "temp", &volume, Some("K"))?;
-            let height = read(f, ti, "height_agl", &volume, Some("m"))?;
+            let (temp, height) = rayon::join(
+                || read(f, ti, "temp", &volume, Some("K")),
+                || read(f, ti, "height_agl", &volume, Some("m")),
+            );
+            let (temp, height) = (temp?, height?);
             Ok((0..cells)
                 .into_par_iter()
                 .map(|i| {
@@ -242,17 +302,37 @@ pub(super) fn compute(
             Err(e) => out.notes.push(format!("wbgt_2m unavailable: {e}")),
         }
     }
-    if !PRODUCTS[1..].iter().any(|r| selected(o, r.0)) {
-        return;
-    }
+}
+
+/// Haines, hot-dry-windy and the McCaul lightning threats, from one set of columns.
+fn column_group(
+    out: &mut WrfHourFields,
+    f: &WrfFile,
+    ti: usize,
+    g: &LatLonGrid,
+    proj: Option<GridProjection>,
+    o: &WrfProcessOptions,
+) {
+    let cells = f.nx * f.ny;
+    let plane = [f.ny, f.nx];
+    let volume = [f.nz, f.ny, f.nx];
     let result = (|| -> Result<(), String> {
-        let t = read(f, ti, "temp", &volume, Some("K"))?;
-        let p = read(f, ti, "pres", &volume, Some("Pa"))?;
-        let q = read(f, ti, "QVAPOR", &volume, None)?;
-        let h = read(f, ti, "height_agl", &volume, Some("m"))?;
-        let ph = read(f, ti, "PH", &[f.nz + 1, f.ny, f.nx], None)?;
-        let phb = read(f, ti, "PHB", &[f.nz + 1, f.ny, f.nx], None)?;
-        let terrain = read(f, ti, "HGT", &plane, None)?;
+        let staggered = [f.nz + 1, f.ny, f.nx];
+        let (((t, p), (q, h)), ((ph, phb), terrain)) = rayon::join(
+            || {
+                rayon::join(
+                    || rayon::join(|| read(f, ti, "temp", &volume, Some("K")), || read(f, ti, "pres", &volume, Some("Pa"))),
+                    || rayon::join(|| read(f, ti, "QVAPOR", &volume, None), || read(f, ti, "height_agl", &volume, Some("m"))),
+                )
+            },
+            || {
+                rayon::join(
+                    || rayon::join(|| read(f, ti, "PH", &staggered, None), || read(f, ti, "PHB", &staggered, None)),
+                    || read(f, ti, "HGT", &plane, None),
+                )
+            },
+        );
+        let (t, p, q, h, ph, phb, terrain) = (t?, p?, q?, h?, ph?, phb?, terrain?);
         let interfaces: Vec<f64> = ph
             .par_iter()
             .zip(&phb)
@@ -292,8 +372,11 @@ pub(super) fn compute(
                 let qs = read(f, ti, "Q2", &plane, None)?;
                 let us = read(f, ti, "U10", &plane, None)?;
                 let vs = read(f, ti, "V10", &plane, None)?;
-                let u = read(f, ti, "ua", &volume, Some("m s-1"))?;
-                let v = read(f, ti, "va", &volume, Some("m s-1"))?;
+                let (u, v) = rayon::join(
+                    || read(f, ti, "ua", &volume, Some("m s-1")),
+                    || read(f, ti, "va", &volume, Some("m s-1")),
+                );
+                let (u, v) = (u?, v?);
                 derived_heat::hot_dry_windy(c, &ps, &ts, &qs, &us, &vs, &u, &v)
             })();
             match hdw {
@@ -310,10 +393,11 @@ pub(super) fn compute(
         .any(|n| selected(o, n))
         {
             let ltg = (|| {
-                let w = read(f, ti, "wa", &volume, Some("m s-1"))?;
-                let qg = read(f, ti, "QGRAUP", &volume, None)?;
-                let qs = read(f, ti, "QSNOW", &volume, None)?;
-                let qi = read(f, ti, "QICE", &volume, None)?;
+                let ((w, qg), (qs, qi)) = rayon::join(
+                    || rayon::join(|| read(f, ti, "wa", &volume, Some("m s-1")), || read(f, ti, "QGRAUP", &volume, None)),
+                    || rayon::join(|| read(f, ti, "QSNOW", &volume, None), || read(f, ti, "QICE", &volume, None)),
+                );
+                let (w, qg, qs, qi) = (w?, qg?, qs?, qi?);
                 lightning_threat::mc_caul(c, &w, &qg, &qs, &qi)
             })();
             match ltg {
@@ -344,10 +428,26 @@ pub(super) fn compute(
             "native derived heat/fire/lightning unavailable: {e}"
         ));
     }
+}
+
+/// The Price and Rind (1992) flash rate.
+fn pr92_group(
+    out: &mut WrfHourFields,
+    f: &WrfFile,
+    ti: usize,
+    g: &LatLonGrid,
+    proj: Option<GridProjection>,
+    o: &WrfProcessOptions,
+) {
+    let cells = f.nx * f.ny;
+    let volume = [f.nz, f.ny, f.nx];
     if selected(o, "pr92_flash_rate") {
         let rate = (|| {
-            let w = read(f, ti, "wa", &volume, Some("m s-1"))?;
-            let r = read(f, ti, "dbz", &volume, Some("dBZ"))?;
+            let (w, r) = rayon::join(
+                || read(f, ti, "wa", &volume, Some("m s-1")),
+                || read(f, ti, "dbz", &volume, Some("dBZ")),
+            );
+            let (w, r) = (w?, r?);
             lightning_threat::pr92(&w, &r, f.nz, cells, 20.0)
         })();
         match rate {

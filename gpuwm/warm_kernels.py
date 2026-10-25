@@ -337,7 +337,6 @@ def run_column(cfg, *, reflectivity: bool = False) -> str:
     from gpuwm.core.dycore import step
     from gpuwm.core.grid import make_base_state, make_vertical_coord
     from gpuwm.core.moist import init_moist_balanced
-    from gpuwm.core.physics import initialize_physics
 
     coord = make_vertical_coord(cfg.nz, hybrid_opt=cfg.hybrid_opt,
                                 etac=cfg.etac)
@@ -345,22 +344,16 @@ def run_column(cfg, *, reflectivity: bool = False) -> str:
     state = init_moist_balanced(cfg, coord, base, _vapour)
     grid = (cfg.ny, cfg.nx)
     glw, longwave = synthetic_downward_longwave(cfg)
-    from gpuwm.hydro.runtime import settings_scope
-    # The synthetic column has no forecast parent grid, so the run's coupled hydro (inherited through
-    # GPUWM_NEXTGEN_SETTINGS by the prewarm child) cannot bind to it. Breakage (2.9.4 R11, ERA5 door with hydro
-    # on, 2026-10-22): "kernel pre-warm failed: forecast:column ValueError: parent runoff exchange needs the
-    # actual forecast ProjectedGrid", so none of the run's column kernels were warmed before its first step.
-    with settings_scope({"enabled": False, "activation_reason": "synthetic_warm_column"}):
-        driver = initialize_physics(
-            state, cfg, radiation_start_time=_VALID_TIME,
-            radiation_latitude=np.full(grid, _LATITUDE),
-            radiation_longitude=np.full(grid, _LONGITUDE),
-            noahmp_start_time=_VALID_TIME,
-            noahmp_latitude=np.full(grid, _LATITUDE),
-            noahmp_longitude=np.full(grid, _LONGITUDE),
-            **_synthetic_mosaic_fractions(cfg, grid),
-            **_synthetic_orographic_static(cfg, grid),
-            **({} if glw is None else {"glw": glw}))
+    driver = _initialize_column_physics(
+        state, cfg, radiation_start_time=_VALID_TIME,
+        radiation_latitude=np.full(grid, _LATITUDE),
+        radiation_longitude=np.full(grid, _LONGITUDE),
+        noahmp_start_time=_VALID_TIME,
+        noahmp_latitude=np.full(grid, _LATITUDE),
+        noahmp_longitude=np.full(grid, _LONGITUDE),
+        **_synthetic_mosaic_fractions(cfg, grid),
+        **_synthetic_orographic_static(cfg, grid),
+        **({} if glw is None else {"glw": glw}))
     _seed_monthly_leaf_area(driver, cfg, grid)
     if cfg.specified:
         _attach_constant_boundaries(state, cfg)
@@ -368,6 +361,24 @@ def run_column(cfg, *, reflectivity: bool = False) -> str:
         step(state, cfg, refl_10cm_due=reflectivity and index == _STEPS - 1)
     cp.cuda.runtime.deviceSynchronize()
     return longwave
+
+
+def _initialize_column_physics(*args, **kwargs):
+    """Compile-probe physics owns no geographical hydro network.
+
+    A forecast's inherited hydro settings describe its actual projected grid,
+    not this synthetic column. Constructing that network here failed the
+    default-on CONUS pre-warm with "needs the actual forecast ProjectedGrid"
+    (also 2.9.4 R11, ERA5 door with hydro on, 2026-10-22: no column kernel was
+    warmed before the first step).
+    The real forecast constructs and warms its coupled hydro on its own grid;
+    this local scope neither changes its settings nor constructs a second copy.
+    """
+    from gpuwm.core.physics import initialize_physics
+    from gpuwm.hydro.runtime import settings_scope
+
+    with settings_scope({"enabled": False, "activation_reason": "synthetic_kernel_probe"}):
+        return initialize_physics(*args, **kwargs)
 
 
 #: The synthetic column's dominant categories: initialize_physics's own

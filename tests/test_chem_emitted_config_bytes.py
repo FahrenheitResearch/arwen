@@ -74,6 +74,15 @@ def test_public_emitted_config_bytes_match_independent_staging(
         for domain in exp.domains))
     assert all(name not in domain["run"] for name in seaice
                for domain in experiment_config_document(exp)["domains"])
+    # Declared correct-mode key, 2.9.7 (HN1, hydrometeor_handover_numbers,
+    # F22): on by default and written where a selected microphysics reads
+    # it; the baseline predates it.  The pinned bytes are read with it off,
+    # which the document omits.
+    exp = replace(exp, domains=tuple(replace(
+        domain, run=replace(domain.run, hydrometeor_handover_numbers=False))
+        for domain in exp.domains))
+    assert all("hydrometeor_handover_numbers" not in domain["run"]
+               for domain in experiment_config_document(exp)["domains"])
     if inactive_nondefaults:
         exp = replace(exp, domains=tuple(replace(
             domain, run=replace(domain.run, chem_adv_opt=2, kemit=17,

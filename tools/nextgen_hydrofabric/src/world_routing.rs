@@ -17,12 +17,13 @@
 //! order to preserve, and the order is fixed by the IDs alone.
 use crate::{bundle::digest, collapse::collapse_graph, network::levels, Result};
 use rayon::prelude::*;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     fs,
+    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     time::Instant,
 };
@@ -33,17 +34,128 @@ fn suffix(v: &Value) -> Result<i64> {
         .and_then(|s| s.parse().ok())
         .ok_or_else(|| "invalid fabric numeric ID".into())
 }
+
+// Bounded catchment-major slabs preserve every f64 word and replay hour.
+#[cfg(test)]
+fn replay_slab(data:&[u8], catchments:usize, hours:usize, start:usize, count:usize) -> Vec<u8> {
+    let mut out=vec![0;catchments*count*8];
+    out.par_chunks_mut(count*8).enumerate().for_each(|(c,d)| {
+        d.copy_from_slice(&data[(c*hours+start)*8..(c*hours+start+count)*8]);
+    });
+    out
+}
 fn number(v: &Value) -> Option<i64> {
     v.as_i64()
         .or_else(|| v.as_f64().filter(|x| x.is_finite() && x.fract() == 0.).map(|x| x as i64))
         .or_else(|| v.as_str().and_then(|x| x.parse().ok()))
 }
+// Continental replay payloads are tens of GB. Independent file handles give
+// each Rayon worker its own offset; a cloned handle would share the cursor on
+// Unix and corrupt the read/write. The canonical SHA remains a byte-order SHA.
+const IO_BLOCK: usize = 16 * 1024 * 1024;
+fn read_parallel(path: &Path) -> Result<Vec<u8>> {
+    let size = usize::try_from(fs::metadata(path)?.len())?;
+    if size <= IO_BLOCK { return Ok(fs::read(path)?); }
+    let mut bytes = vec![0; size];
+    bytes.par_chunks_mut(IO_BLOCK).enumerate().try_for_each(|(i, row)| -> std::io::Result<()> {
+        let mut file = fs::File::open(path)?;
+        file.seek(SeekFrom::Start((i * IO_BLOCK) as u64))?;
+        file.read_exact(row)
+    })?;
+    Ok(bytes)
+}
 fn checked(path: &Path, sha: &str) -> Result<Vec<u8>> {
-    let b = fs::read(path)?;
+    let b = read_parallel(path)?;
     if format!("{:x}", Sha256::digest(&b)) != sha {
         return Err(format!("{}: SHA-256 differs from its manifest", path.display()).into());
     }
     Ok(b)
+}
+// Read a bounded catchment block once, then emit both the canonical matrix
+// and its chronological slabs from those same bytes. Loading the continental
+// matrix at once consumed 42 GB and was killed under ordinary shared-node load.
+/// Largest runoff replay kept as one file and read whole (1 GiB).
+const REPLAY_WHOLE_BYTES: u64 = 1 << 30;
+
+fn prepare_replay(source: &Path, field: &Value, out: &Path, catches: usize, hours: usize)
+    -> Result<(usize, Vec<Value>)>
+{
+    let bytes = catches.checked_mul(hours).and_then(|n| n.checked_mul(8))
+        .ok_or("runoff replay extent overflows usize")?;
+    if catches == 0 || hours == 0 || field["bytes"].as_u64() != Some(bytes as u64)
+        || fs::metadata(source)?.len() != bytes as u64 {
+        return Err("invalid runoff replay extent".into());
+    }
+    let canonical = out.join("runoff-replay.f64");
+    fs::File::create(&canonical)?.set_len(bytes as u64)?;
+    let parts: Vec<_> = (0..hours).step_by(24).map(|first| {
+        let count = (hours-first).min(24);
+        (first, count, format!("runoff-replay-{first:06}.f64"))
+    }).collect();
+    for (_, count, name) in &parts {
+        fs::File::create(out.join(name))?.set_len((catches*count*8) as u64)?;
+    }
+    const CATCHMENT_BLOCK: usize = 1024;
+    (0..catches.div_ceil(CATCHMENT_BLOCK)).into_par_iter().try_for_each(|block| -> Result<()> {
+        let first = block*CATCHMENT_BLOCK;
+        let count = (catches-first).min(CATCHMENT_BLOCK);
+        let mut data = vec![0;count*hours*8];
+        let mut file = fs::File::open(source)?;
+        file.seek(SeekFrom::Start((first*hours*8) as u64))?;
+        file.read_exact(&mut data)?;
+        if data.chunks_exact(8).any(|b| {
+            let x=f64::from_le_bytes(b.try_into().unwrap()); !x.is_finite() || x<0.
+        }) { return Err("invalid runoff replay depth".into()); }
+        let mut file = fs::OpenOptions::new().write(true).open(&canonical)?;
+        file.seek(SeekFrom::Start((first*hours*8) as u64))?;
+        file.write_all(&data)?;
+        for (hour, h, name) in &parts {
+            let mut slab=vec![0;count*h*8];
+            for k in 0..count {
+                slab[k*h*8..(k+1)*h*8].copy_from_slice(
+                    &data[(k*hours+hour)*8..(k*hours+hour+h)*8]);
+            }
+            let mut file=fs::OpenOptions::new().write(true).open(out.join(name))?;
+            file.seek(SeekFrom::Start((first*h*8) as u64))?;
+            file.write_all(&slab)?;
+        }
+        Ok(())
+    })?;
+    // Canonical SHA stays byte-ordered. It runs beside the parallel slab
+    // hashes; no full matrix or full slab is retained in resident memory.
+    let (sha, chunks)=rayon::join(|| digest(&canonical), || parts.par_iter().map(|(first,count,name)| {
+        Ok(json!({"path":name,"sha256":digest(&out.join(name))?,
+            "bytes":catches*count*8,"shape":[catches,count],"dtype":"<f8","first_hour":first}))
+    }).collect::<Result<Vec<_>>>());
+    if sha? != field["sha256"].as_str().ok_or("replay hash")? {
+        return Err("runoff replay SHA-256 differs from its manifest".into());
+    }
+    Ok((bytes,chunks?))
+}
+// Routing consumes joins and areas, not the millions of soil/vegetation
+// properties carried for other producers. Skip those while decoding, before
+// constructing a Value tree, preserving each consumed value without coercion.
+#[derive(Deserialize, Serialize)]
+struct RoutingAttributes {
+    flowpaths: Vec<FlowJoin>,
+    flowpath_attributes: Vec<LakeJoin>,
+    divides: Vec<AreaJoin>,
+    lakes: Vec<Value>,
+}
+#[derive(Deserialize, Serialize)]
+struct FlowJoin { #[serde(default)] id: Value, #[serde(default)] toid: Value }
+#[derive(Deserialize, Serialize)]
+struct LakeJoin {
+    #[serde(default)] id: Value,
+    #[serde(default, rename="rl_NHDWaterbodyComID")] waterbody: Value,
+}
+#[derive(Deserialize, Serialize)]
+struct AreaJoin {
+    #[serde(default)] divide_id: Value,
+    #[serde(default)] areasqkm: Value,
+}
+fn routing_attributes(bytes: &[u8]) -> Result<Value> {
+    Ok(serde_json::to_value(serde_json::from_slice::<RoutingAttributes>(bytes)?)?)
 }
 fn fabric_attributes(manifest_path: &Path) -> Result<(Value, Value, PathBuf)> {
     let fabric: Value = serde_json::from_slice(&fs::read(manifest_path)?)?;
@@ -52,7 +164,7 @@ fn fabric_attributes(manifest_path: &Path) -> Result<(Value, Value, PathBuf)> {
         &root.join("attributes.json"),
         fabric["auxiliary"]["attributes.json"]["sha256"].as_str().ok_or("attributes SHA")?,
     )?;
-    Ok((fabric, serde_json::from_slice(&a)?, root))
+    Ok((fabric, routing_attributes(&a)?, root))
 }
 
 /// Spun-up channel state: routing_state (n,3) f64 [Q m3/s, v m/s, h m] in the
@@ -580,6 +692,8 @@ pub fn prepare(config_path: &Path) -> Result<Value> {
             divide_area.get(id).copied().filter(|x| x.is_finite() && *x > 0.0).ok_or_else(|| format!("{id}: no positive areasqkm").into())
         })
         .collect::<Result<Vec<_>>>()?;
+    drop(divide_area);
+    drop(a);
     let lateral = vec![0f32; n];
     let mut identity = Sha256::new();
     identity.update(&config_bytes);
@@ -731,23 +845,35 @@ pub fn prepare(config_path: &Path) -> Result<Value> {
             || field["shape"] != json!([catchment_to_node.len(), replay["hours"].as_u64().unwrap()]) {
             return Err("routing replay needs catchment-major f64 hourly runoff depths".into());
         }
-        let data = checked(&c.initial_state_dir.join(field["file"].as_str().ok_or("replay file")?),
-                           field["sha256"].as_str().ok_or("replay hash")?)?;
-        if data.len() as u64 != field["bytes"].as_u64().unwrap_or(0)
-            || data.chunks_exact(8).any(|b| { let x = f64::from_le_bytes(b.try_into().unwrap()); !x.is_finite() || x < 0.0 }) {
-            return Err("invalid runoff replay depth or extent".into());
-        }
-        // The verified spin-up payload, hard-linked (a second copy was 509 MB per
-        // forecast start on the 10 x 6 degree Oklahoma WoFS box); a copy only
-        // where the filesystem cannot link.
+        let hours=replay["hours"].as_u64().unwrap() as usize;
         let src = c.initial_state_dir.join(field["file"].as_str().ok_or("replay file")?);
-        let dst = out.join("runoff-replay.f64");
-        if fs::hard_link(&src, &dst).is_err() {
-            fs::write(&dst, &data)?;
-        }
+        // A payload a bounded host read holds stays one canonical file, hard-linked
+        // (a second copy was 509 MB per forecast start on the 10 x 6 degree Oklahoma
+        // WoFS box; a copy only where the filesystem cannot link). A continental one
+        // is split into day chunks so neither preparation nor the card ever holds
+        // the whole catchment x hour matrix (lane/hydro-conus-route).
+        let (bytes, chunks) = if fs::metadata(&src)?.len() <= REPLAY_WHOLE_BYTES {
+            let data = checked(&src, field["sha256"].as_str().ok_or("replay hash")?)?;
+            if data.len() as u64 != field["bytes"].as_u64().unwrap_or(0)
+                || data.chunks_exact(8).any(|b| { let x = f64::from_le_bytes(b.try_into().unwrap()); !x.is_finite() || x < 0.0 }) {
+                return Err("invalid runoff replay depth or extent".into());
+            }
+            let dst = out.join("runoff-replay.f64");
+            if fs::hard_link(&src, &dst).is_err() {
+                fs::write(&dst, &data)?;
+            }
+            (data.len(), Vec::new())
+        } else {
+            prepare_replay(&src, field, &out, catchment_to_node.len(), hours)?
+        };
         let mut declaration = replay.clone();
         declaration["payload"] = json!({"path": "runoff-replay.f64", "sha256": field["sha256"],
-            "bytes": data.len(), "shape": field["shape"], "dtype": "<f8"});
+            "bytes": bytes, "shape": field["shape"], "dtype": "<f8"});
+        if !chunks.is_empty() {
+            declaration["chunks"]=json!(chunks);
+            declaration["preparation_buffer_bound_bytes"]=json!(
+                1024usize.min(catchment_to_node.len())*(hours+24usize.min(hours))*8*rayon::current_num_threads());
+        }
         declaration["spinup_manifest_sha256"] = json!(digest(&c.initial_state_dir.join("manifest.json"))?);
         manifest["routing"]["initial_replay"] = declaration;
     }
@@ -774,6 +900,87 @@ pub fn prepare(config_path: &Path) -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn continental_parallel_payload_reads_preserve_bytes_offsets_and_seal() {
+        let dir=std::env::temp_dir().join(format!("routing-parallel-io-{}",std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path=dir.join("payload.f64");
+        let data:Vec<u8>=(0..super::IO_BLOCK*2+137).map(|i|((i*13+i/257)%251) as u8).collect();
+        std::fs::write(&path,&data).unwrap();
+        assert_eq!(super::read_parallel(&path).unwrap(),data);
+        assert_eq!(std::fs::read(&path).unwrap(),data);
+        let sha=format!("{:x}",<sha2::Sha256 as sha2::Digest>::digest(&data));
+        assert_eq!(super::checked(&path,&sha).unwrap(),data);
+        assert!(super::checked(&path,&"0".repeat(64)).is_err());
+        // Rewriting a shorter payload must truncate the prior extent.
+        std::fs::write(&path,&data[..17]).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(),&data[..17]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+    #[test]
+    fn bounded_replay_preparation_preserves_every_word_axis_hash_and_rejects_bad_depths() {
+        let dir=std::env::temp_dir().join(format!("routing-bounded-replay-{}",std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source=dir.join("source.f64");
+        let (catches,hours)=(2051,49);
+        let mut data:Vec<u8>=(0..catches*hours).flat_map(|k| {
+            (if k==0 {-0.0f64} else {k as f64/7.}).to_le_bytes()
+        }).collect();
+        std::fs::write(&source,&data).unwrap();
+        let mut field=json!({"bytes":data.len(),"sha256":format!("{:x}",Sha256::digest(&data))});
+        let (size,chunks)=prepare_replay(&source,&field,&dir,catches,hours).unwrap();
+        assert_eq!(size,data.len());
+        assert_eq!(std::fs::read(dir.join("runoff-replay.f64")).unwrap(),data);
+        assert_eq!(chunks.len(),3);
+        for chunk in chunks {
+            let first=chunk["first_hour"].as_u64().unwrap() as usize;
+            let count=chunk["shape"][1].as_u64().unwrap() as usize;
+            let bytes=std::fs::read(dir.join(chunk["path"].as_str().unwrap())).unwrap();
+            assert_eq!(bytes,replay_slab(&data,catches,hours,first,count));
+            assert_eq!(chunk["sha256"],format!("{:x}",Sha256::digest(&bytes)));
+        }
+        field["sha256"]=json!("0".repeat(64));
+        assert!(prepare_replay(&source,&field,&dir,catches,hours).is_err());
+        for bad in [f64::NAN,-1.,f64::INFINITY] {
+            data[8..16].copy_from_slice(&bad.to_le_bytes());
+            std::fs::write(&source,&data).unwrap();
+            field["sha256"]=json!(format!("{:x}",Sha256::digest(&data)));
+            assert!(prepare_replay(&source,&field,&dir,catches,hours).is_err());
+        }
+        std::fs::write(&source,&data[..data.len()-1]).unwrap();
+        assert!(prepare_replay(&source,&field,&dir,catches,hours).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+    #[test]
+    fn continental_attribute_projection_preserves_routing_joins_and_float_words() {
+        let source=serde_json::json!({
+            "flowpaths":[{"id":"wb-1","toid":"wb-2","unused":[1,2,3]}],
+            "flowpath_attributes":[{"id":"wb-1","rl_NHDWaterbodyComID":"3, 7","soil":vec![0.1;8193]},
+                                   {"id":"wb-2","rl_NHDWaterbodyComID":7}],
+            "divides":[{"divide_id":"cat-1","areasqkm":1.2345678901234567,"unused":{"nested":[1,2]}}],
+            "lakes":[{"hl_link":7,"WeirE":-0.0,"other":"preserved"}],
+            "network":[{"not_used_by_routing":true}]
+        });
+        let got=super::routing_attributes(&serde_json::to_vec(&source).unwrap()).unwrap();
+        assert_eq!(got["flowpaths"][0],serde_json::json!({"id":"wb-1","toid":"wb-2"}));
+        for k in 0..2 { assert_eq!(got["flowpath_attributes"][k]["rl_NHDWaterbodyComID"],source["flowpath_attributes"][k]["rl_NHDWaterbodyComID"]); }
+        assert_eq!(got["divides"][0]["areasqkm"].as_f64().unwrap().to_bits(),source["divides"][0]["areasqkm"].as_f64().unwrap().to_bits());
+        assert_eq!(got["lakes"],source["lakes"]);
+        assert_eq!(got["lakes"][0]["WeirE"].as_f64().unwrap().to_bits(),(-0.0_f64).to_bits());
+        assert!(got.get("network").is_none());
+        assert!(got["flowpath_attributes"][0].get("soil").is_none());
+    }
+    #[test]
+    fn continental_replay_slabs_preserve_all_catchment_hour_words() {
+        let words:Vec<_>=(0..15).map(|i|(i as f64+0.25).to_le_bytes()).collect();
+        let data:Vec<_>=words.into_iter().flatten().collect();
+        let first=super::replay_slab(&data,3,5,0,3);
+        let last=super::replay_slab(&data,3,5,3,2);
+        for c in 0..3 {
+            let joined=[&first[c*24..(c+1)*24],&last[c*16..(c+1)*16]].concat();
+            assert_eq!(joined,&data[c*40..(c+1)*40]);
+        }
+    }
     use super::*;
     #[test]
     fn channel_source_binds_spinup_end_and_source_geopackage() {

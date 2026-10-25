@@ -32,8 +32,10 @@ import math
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from types import MappingProxyType
 from typing import Iterable, Mapping, Sequence
 
@@ -612,6 +614,39 @@ def _job(obj: InputObject, source: Path, destination: Path) -> str:
     return "\t".join(tokens) + "\n"
 
 
+def _stage_workers(count: int) -> int:
+    """Threads for COUNT independent per-object steps: the host's usable cores.
+
+    Named breakage (WOOF canary gate 2026-10-24, ICON 3-1-0.5 km): the stage
+    expanded, remapped and hashed ICON global's 234 objects one after another,
+    54 s on one core of sixteen while the card waited, inside the 2.9 min
+    preparation of the first-map path.  Every object is independent (its own
+    expanded twin, its own job, its own output file), so they run side by
+    side and each output is the same bytes the serial loop wrote.
+    """
+
+    try:
+        from gpuwm.ingest.preparation_workers import effective_workers
+        cores = effective_workers()
+    except Exception:  # the standalone preparation package
+        try:
+            cores = len(os.sched_getaffinity(0))
+        except (AttributeError, OSError):
+            cores = os.cpu_count() or 1
+    return max(1, min(int(count), int(cores)))
+
+
+def _parallel_map(function, items) -> list:
+    """``list(map(function, items))`` on the host's cores, in item order."""
+
+    items = list(items)
+    if len(items) < 2:
+        return [function(item) for item in items]
+    with ThreadPoolExecutor(max_workers=_stage_workers(len(items)),
+                            thread_name_prefix="normalize") as pool:
+        return list(pool.map(function, items))
+
+
 def _file_identity(path: Path) -> dict[str, object]:
     # Recheck basic identity around hashing.  A changed input is not a cache hit.
     first = path.stat()
@@ -664,7 +699,7 @@ def _check_cache(spec: NormalizationSpec, directory: Path, request: dict) -> dic
         if Path(name).name != name or "/" in name or "\\" in name:
             raise ValueError(
                 "normalization cache path escapes the output directory")
-        verify(directory / "fields" / name, row)
+    _parallel_map(lambda row: verify(directory / "fields" / row["name"], row), rows)
     plan = normalization.get("plan")
     if not isinstance(plan, dict):
         raise ValueError("normalization cache lacks its plan identity")
@@ -714,7 +749,7 @@ def normalize(spec: NormalizationSpec, objects: tuple[InputObject, ...],
     request = {"contract": spec.contract, "normalizer": spec.name,
                "source_cells": int(native["cells"]),
                "target": target.geometry(), "converter": _file_identity(bridge),
-               "inputs": [_file_identity(o.path) for o in objects],
+               "inputs": _parallel_map(lambda o: _file_identity(o.path), objects),
                "authorities": {role: _sha(Path(path))
                                for role, path in authorities.items()}}
     key = hashlib.sha256(_canonical(request)).hexdigest()
@@ -748,25 +783,37 @@ def normalize(spec: NormalizationSpec, objects: tuple[InputObject, ...],
         for path in coordinate_paths.values():
             path.unlink()
         target_path.unlink()
-        rows = []
-        for obj in objects:
-            if obj.field in geometry:
-                continue
-            unpacked = work / "current.grib2"
+        remapped = [obj for obj in objects if obj.field not in geometry]
+
+        def remap(indexed):
+            # One object: its own expanded twin and job list in its own
+            # folder, published to the same destination the serial loop
+            # used.  The converter writes each output from that object's
+            # bytes and the plan alone, so the order the objects run in
+            # changes no byte (_stage_workers).
+            index, obj = indexed
+            staging = work / f".object-{index:05d}"
+            staging.mkdir()
+            unpacked = staging / "current.grib2"
             _snapshot_expand(spec, obj.path, unpacked,
                              input_identities[_path_token(obj.path)])
             destination = work / "fields" / obj.output_name
-            jobs = work / "current.jobs"
+            jobs = staging / "current.jobs"
             jobs.write_text(_job(obj, unpacked, destination), encoding="utf-8")
             _run(spec, [str(bridge), "apply", str(plan_path), str(jobs)])
-            rows.append({"name": obj.output_name,
-                         "bytes": destination.stat().st_size,
-                         "sha256": _sha(destination)})
-            unpacked.unlink()
-            jobs.unlink()
+            row = {"name": obj.output_name,
+                   "bytes": destination.stat().st_size,
+                   "sha256": _sha(destination)}
+            shutil.rmtree(staging)
+            return row
+
+        rows = _parallel_map(remap, enumerate(remapped))
         # A raw input changing during native work invalidates the whole stage.
-        for expected in request["inputs"]:
-            if _file_identity(Path(expected["path"])) != expected:
+        changed = _parallel_map(
+            lambda expected: _file_identity(Path(expected["path"])) != expected,
+            request["inputs"])
+        for expected, moved in zip(request["inputs"], changed):
+            if moved:
                 raise ValueError(
                     f"input changed during normalization: {expected['path']}")
         if _file_identity(bridge) != request["converter"]:

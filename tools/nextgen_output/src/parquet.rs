@@ -114,18 +114,11 @@ pub fn write(plan: &Plan, payload: &[u8], ids: &[i64], width: usize) -> Result<s
         .ok_or("Parquet row count overflow")?;
     let origin = crate::series::parse_origin(&plan.origin)?;
     let start_us = origin.and_utc().timestamp_micros();
-    let period_us = plan
-        .interval_seconds
-        .checked_mul(plan.cadence_steps)
-        .and_then(|s| s.checked_mul(1_000_000))
-        .ok_or("Parquet time overflow")?;
     let times = (0..plan.frames)
         .map(|t| -> Result<i64> {
-            let offset = period_us
-                .checked_mul((t + 1).try_into()?)
-                .ok_or("Parquet time overflow")?;
+            let offset = (plan.time_seconds(t)? * 1e6).round() as i64;
             Ok(start_us
-                .checked_add(offset.try_into()?)
+                .checked_add(offset)
                 .ok_or("Parquet time overflow")?)
         })
         .collect::<Result<Vec<_>>>()?;

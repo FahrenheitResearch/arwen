@@ -76,6 +76,9 @@ pub struct BuildSpec {
     /// dem-d8: working grid resolution in arc-seconds (the DEM's own spacing).
     #[serde(default)]
     pub grid_arcsec: Option<f64>,
+    /// Bounded auxiliary sampling grid. Native vector geometry is never coarsened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grid_max_cells: Option<usize>,
     /// dem-d8: Priority-Flood tile edge in cells.
     #[serde(default)]
     pub fill_tile: Option<usize>,
@@ -121,10 +124,55 @@ pub struct Input {
     /// files that do not cover the box are skipped by their header extent.
     #[serde(default)]
     pub regions: Vec<String>,
+    /// Version-pinned partition archives. Their URLs and extracted layout are
+    /// data, including components whose content editions differ between VPUs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub archives: Vec<Archive>,
     /// Source column -> contract meaning (e.g. "HYRIV_ID": "reach id").
     #[serde(default)]
     pub columns: BTreeMap<String, String>,
     pub licence: Licence,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Archive {
+    pub region: String,
+    pub url: String,
+    pub archive: String,
+    pub extracted: String,
+    pub local: String,
+}
+
+/// Select published processing units by their geographic boundary extent.
+/// Extents are conservative: a box near a basin edge may fetch an extra VPU,
+/// never omit a VPU whose catchments intersect it. Geometry stays in Rust.
+pub fn regions(row: &SourceRow, root: &std::path::Path, b: &crate::grid::BBox) -> Result<Vec<String>> {
+    let inp = row.inputs.get("processing_units").ok_or("row has no processing_units input")?;
+    let path = root.join(inp.local.as_deref().ok_or("processing_units has no local path")?);
+    let dbf = crate::shp::Dbf::open(&path.with_extension("dbf"))?;
+    let col = |meaning: &str| inp.columns.iter().find(|(_, v)| v.as_str() == meaning)
+        .map(|(k, _)| k.as_str()).ok_or_else(|| format!("processing_units has no {meaning} column"));
+    let ids = dbf.strings(col("region")?)?;
+    let kinds = dbf.strings(col("kind")?)?;
+    let shapes = crate::shp::read_shapes(&path)?;
+    let allowed: HashSet<&str> = inp.regions.iter().map(String::as_str).collect();
+    let mut out = Vec::new();
+    for (i, shape) in shapes.iter().enumerate() {
+        if kinds[i] != "VPU" || !allowed.contains(ids[i].as_str()) { continue; }
+        if let crate::shp::Shape::Parts(rings) = shape {
+            let (mut w, mut s, mut e, mut n) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+            for &(x,y) in rings.iter().flatten() { w=w.min(x); s=s.min(y); e=e.max(x); n=n.max(y); }
+            if w <= b.east && e >= b.west && s <= b.north && n >= b.south {
+                // The enclosing rectangle alone overfetches adjacent VPUs.
+                // Clip only this small acquisition roster, never catchments.
+                let area:f64=rings.iter().map(|r|crate::geo::ring_area(&crate::vector::clip_ring(r,b))).sum();
+                if area.abs()>0.0 { out.push(ids[i].clone()); }
+            }
+        }
+    }
+    out.sort(); out.dedup();
+    Ok(out)
 }
 
 #[derive(Debug, Serialize, Deserialize)]

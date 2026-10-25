@@ -1133,7 +1133,8 @@ def execute_schedule(schedule: Schedule, *,
                      start_period: int = 0,
                      started_grid_ids=None,
                      committed_initial_history_grid_ids=(),
-                     on_period_steps=None
+                     on_period_steps=None,
+                     stop_ticks: int | None = None
                      ) -> ExecutionReport:
     """Walk the flat op table with integer-tick clocks (the hot loop).
 
@@ -1141,6 +1142,13 @@ def execute_schedule(schedule: Schedule, *,
     -- no Fraction, no float division, no float accumulation (AST-audited
     by tests/test_clock.py).  Handlers receive the acting grid_id and its
     live :class:`DomainClock` (plus the parent clock for FORCE/FEEDBACK):
+
+    ``stop_ticks`` returns after committing that complete synchronized
+    period, retaining the configured full-run calendar. A later invocation
+    resumes with the same clocks and its committed boundary histories marked
+    in ``committed_initial_history_grid_ids``. It never manufactures a final
+    period or rewrites the run's configured stop. A requested boundary that an
+    adaptive period would cross is refused before that period executes.
 
     - ``on_history(grid_id, ticks)`` fires before the next solve at that
       instant (med_before_solve_io position, module_integrate.F:375),
@@ -1213,6 +1221,14 @@ def execute_schedule(schedule: Schedule, *,
         clocks=clocks)
     period_ticks = schedule.period_ticks
     run_ticks = schedule.clock.run_ticks
+    if stop_ticks is not None:
+        if isinstance(stop_ticks, bool) or not isinstance(stop_ticks, int):
+            raise TypeError("stop_ticks must be an integer clock tick")
+        if not start_ticks < stop_ticks <= run_ticks:
+            raise ValueError("stop_ticks must follow the start and not exceed the configured stop")
+        if on_period_steps is None and stop_ticks % period_ticks:
+            raise ValueError("stop_ticks must be a complete period boundary")
+    target_ticks = run_ticks if stop_ticks is None else stop_ticks
     root_id = schedule.clock.root.grid_id
     restart_enabled = clocks[root_id].spec.restart_ticks is not None
     if started_grid_ids is None:
@@ -1277,6 +1293,8 @@ def execute_schedule(schedule: Schedule, *,
         periods = adaptive_periods(schedule, clocks, root_id,
                                    on_period_steps, start_period)
     for period, ops, boundary in periods:
+        if boundary > target_ticks:
+            raise ValueError("next complete period would cross stop_ticks")
         if on_period_begin is not None:
             on_period_begin(period, clocks)
         for op in ops:
@@ -1360,12 +1378,14 @@ def execute_schedule(schedule: Schedule, *,
                 on_restart(root.ticks)
         if on_period_commit is not None:
             on_period_commit(period, clocks)
+        if boundary == target_ticks:
+            break
 
     for gid, dom in clocks.items():
-        if dom.ticks != run_ticks:
+        if dom.ticks != target_ticks:
             raise RuntimeError(
                 f"run did not end on the stop boundary: grid_id={gid} at "
-                f"{dom.ticks} ticks, run_ticks {run_ticks}.")
+                f"{dom.ticks} ticks, target_ticks {target_ticks}.")
     return report
 
 

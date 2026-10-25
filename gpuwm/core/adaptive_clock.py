@@ -678,9 +678,26 @@ class AdaptiveClockDriver:
                 # `.not. grid%nested` (:321-322) -- a nest lands on its
                 # parent's boundary by dividing it, not by shortening
                 # itself.
+                to_alarm = self._to_next_alarm_anywhere(clocks)
                 dt, stepping = ctl.step_to_time(
-                    dt, self._to_next_alarm_anywhere(clocks),
-                    quantise=self._quantise_root)
+                    dt, to_alarm, quantise=self._quantise_root)
+                # A NESTED TREE PICKS THE TWO-STEP LANDING WITH THE LEAST
+                # WORK.  Upstream halves a remainder between one and two
+                # root steps.  On a tree each half is then divided into
+                # ceil(half / nest step) nest steps, so with d02 output
+                # every minute the 1 km nest took 552 steps an hour against
+                # 477 at hourly output: a 24 s root landing every 60 s as 24 + 18 + 18
+                # gives the nest 3 + 3 + 3 steps where 24 + 24 + 12 gives
+                # 3 + 3 + 2.  See _landing_split; a root with no nests, and
+                # any landing where halving is already the cheapest, keep
+                # upstream's halving exactly.
+                landing_full_step = False
+                if (stepping and lattice_proposals
+                        and unshortened_root_dt < to_alarm
+                        < 2 * unshortened_root_dt):
+                    dt, stepping = self._landing_split(
+                        unshortened_root_dt, to_alarm, dt, lattice_proposals)
+                    landing_full_step = not stepping
                 root_stepping = stepping
                 # THE RUN END IS A TIME TO LAND ON TOO.  The executor
                 # loops `while root.ticks < run_ticks` and takes whatever
@@ -716,7 +733,8 @@ class AdaptiveClockDriver:
                 # path. Selection never feeds back into controller memory.
                 if lattice_proposals:
                     dt = self._bounded_nest_step(dt, lattice_proposals)
-                if optimize_lattice and lattice_proposals and not root_stepping:
+                if (optimize_lattice and lattice_proposals and not root_stepping
+                        and not landing_full_step):
                     dt = self._nest_lattice_step(dt, lattice_proposals)
                 if root_stepping:
                     unshortened_root_dt = min(
@@ -1134,26 +1152,7 @@ class AdaptiveClockDriver:
                     candidates.add(candidate)
 
         def cost(dt):
-            steps = {root_gid: ticks_of(dt, self.tick_den)}
-            total = Fraction(0)
-            for gid in self.order:
-                if gid not in proposals:
-                    continue
-                node = self.model.node(gid)
-                if node.parent is not None:
-                    parent_gid = int(node.parent.cfg.grid_id)
-                    if parent_gid not in steps:
-                        continue
-                    steps[gid] = nest_ticks_from_parent(
-                        steps[parent_gid], ticks_of(proposals[gid], self.tick_den),
-                        subtree_lattice=self.subtree_lattice.get(gid, 1),
-                        max_substeps=MAX_NEST_SUBSTEP_FACTOR * max(1, int(
-                            getattr(node.cfg, "parent_time_step_ratio", 1) or 1)),
-                        grid_id=gid)
-                run = node.cfg.run
-                total += Fraction(int(run.nx) * int(run.ny) * int(run.nz),
-                                  steps[gid])
-            return total
+            return self._cell_step_rate(dt, proposals)
 
         best = proposal
         try:
@@ -1173,6 +1172,107 @@ class AdaptiveClockDriver:
         if best_cost is None:
             cost(proposal)
         return best
+
+    def _cell_step_rate(self, dt: Fraction,
+                        proposals: dict[int, Fraction]) -> Fraction:
+        """Cell-steps per tick of model time with a root step of ``dt``.
+
+        Each domain divides its parent's step exactly as the period will
+        (:func:`nest_ticks_from_parent`), so this is the work the tree
+        actually does. Exact rationals: the comparison is independent of
+        timing and summation order. Raises :class:`NestDivideRefusal` for a
+        root step the nests cannot divide.
+        """
+        root_gid = int(self.model.root.cfg.grid_id)
+        steps = {root_gid: ticks_of(dt, self.tick_den)}
+        total = Fraction(0)
+        for gid in self.order:
+            if gid not in proposals:
+                continue
+            node = self.model.node(gid)
+            if node.parent is not None:
+                parent_gid = int(node.parent.cfg.grid_id)
+                if parent_gid not in steps:
+                    continue
+                steps[gid] = nest_ticks_from_parent(
+                    steps[parent_gid], ticks_of(proposals[gid], self.tick_den),
+                    subtree_lattice=self.subtree_lattice.get(gid, 1),
+                    max_substeps=MAX_NEST_SUBSTEP_FACTOR * max(1, int(
+                        getattr(node.cfg, "parent_time_step_ratio", 1) or 1)),
+                    grid_id=gid)
+            run = node.cfg.run
+            total += Fraction(int(run.nx) * int(run.ny) * int(run.nz),
+                              steps[gid])
+        return total
+
+    def _landing_work(self, first: Fraction, to_alarm: Fraction,
+                      full: Fraction, proposals: dict[int, Fraction]):
+        """Cell-steps to reach the alarm when the root steps ``first`` now.
+
+        Replays what the driver will apply: each step floored to the root
+        lattice and bounded for the nests, every later step taking the
+        remainder. A remainder above ``full`` gives ``None``: that split is
+        not a two-step landing. The nests keep their current proposals, the
+        same assumption the period itself makes.
+        """
+        work = Fraction(0)
+        left = to_alarm
+        step = first
+        for _ in range(4):
+            if left <= 0:
+                return work
+            if step > full:
+                return None
+            applied = min(step, self._quantise_root(step))
+            applied = self._bounded_nest_step(applied, proposals)
+            work += self._cell_step_rate(applied, proposals) * ticks_of(
+                applied, self.tick_den)
+            left -= applied
+            step = left
+        return None if left > 0 else work
+
+    def _landing_split(self, full: Fraction, to_alarm: Fraction,
+                       halved: Fraction, proposals: dict[int, Fraction]
+                       ) -> tuple[Fraction, bool]:
+        """The root's first step of a two-step landing, and whether it is
+        shortened.
+
+        ``full`` is the root's sanctioned step and ``to_alarm`` lies between
+        one and two of it, so two steps reach the alarm whatever the split.
+        Upstream's split is two halves (``halved``, already floored to the
+        lattice). The candidates are that, the full step (the remainder
+        follows), and every multiple of a nest's proposal between
+        ``to_alarm - full`` and ``full``, which leaves that nest whole
+        steps. None raises any domain's step above its proposal: the root
+        never exceeds ``full`` and each nest divides its parent as always.
+        The least exact cell-step count wins; a tie keeps upstream's halves,
+        so a landing that halving already does cheapest moves no bit.
+        """
+        try:
+            best_work = self._landing_work(halved, to_alarm, full, proposals)
+        except NestDivideRefusal:
+            best_work = None
+        if best_work is None:
+            return halved, True
+        best = halved
+        candidates = {full}
+        root_gid = int(self.model.root.cfg.grid_id)
+        low = to_alarm - full
+        for gid, own in proposals.items():
+            if gid == root_gid or own <= 0:
+                continue
+            for multiple in range(1, int(full // own) + 1):
+                candidate = own * multiple
+                if low <= candidate <= full:
+                    candidates.add(candidate)
+        for candidate in sorted(candidates, reverse=True):
+            try:
+                work = self._landing_work(candidate, to_alarm, full, proposals)
+            except NestDivideRefusal:
+                continue
+            if work is not None and work < best_work:
+                best, best_work = candidate, work
+        return best, best < full
 
     def _quantise_root(self, dt: Fraction) -> Fraction:
         """Snap the root's step DOWN to a SMOOTH multiple of the lattice.

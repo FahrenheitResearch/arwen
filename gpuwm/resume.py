@@ -775,7 +775,218 @@ def offline_child_resume_refusal(child: OfflineChildRun) -> str:
         "(PowerShell), name the frames instead of the wrfout_d* above.")
 
 
-__all__ = ["LATEST", "CheckpointSet", "ExperimentResolution",
+PREPARED_SEARCH_DEPTH = 6
+RUN_RECEIPT_NAMES = ("report.json", "run-receipt.json")
+
+
+def _walk_directories(root: Path, max_depth: int, *, prune=None):
+    """Every directory at or under ``root``, symlinks never followed.
+
+    A symlinked directory is skipped rather than resolved: following one
+    would let a link inside the source job's output tree point anywhere
+    on the node, and every caller here is answering "what did THIS run
+    write", which a link does not answer.
+
+    ``prune`` is asked about each directory AFTER it is yielded.  When it
+    answers true the subtree below that directory is not walked, which is
+    how a container whose interior belongs to it -- a bundle root -- is
+    reported once instead of once per document inside it.
+    """
+    try:
+        base = root.resolve(strict=True)
+    except OSError:
+        return
+    if not base.is_dir():
+        return
+    frontier = [(base, 0)]
+    while frontier:
+        directory, depth = frontier.pop()
+        yield directory
+        if depth >= max_depth:
+            continue
+        if prune is not None and prune(directory):
+            continue
+        try:
+            entries = sorted(directory.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.is_symlink() or not entry.is_dir():
+                continue
+            if not entry.is_relative_to(base):
+                continue
+            frontier.append((entry, depth + 1))
+
+
+def discover_prepared_roots(outdir,
+                            *, max_depth: int = PREPARED_SEARCH_DEPTH
+                            ) -> list[Path]:
+    """Every prepared input bundle the run under ``outdir`` left behind.
+
+    A bundle root is a directory carrying one of
+    ``gpuwm.stage_cli.BUNDLE_DOCUMENTS`` -- the same document names the
+    forecast stage binds a bundle by, so this asks the tree what it is
+    rather than where it was expected to be.  That matters because the
+    alternative, a table of per-chain paths, is wrong the first time a
+    chain renames a directory, and it is wrong silently: the resume
+    refuses for a drifted path table and names the bundle as missing.
+
+    A bundle ROOT is what comes back, never every directory holding a
+    bundle document, and the walk is pruned at the first match to keep
+    that true.  A real prepared TREE bundle has an INTERIOR made of the
+    same file names: ``gpuwm/prepared_domain_tree_forecast.py`` requires
+    ``<root>/hierarchy-artifacts/receipt.json`` at :1129 and
+    ``<root>/hierarchy-artifacts/domains/dNN/receipt.json`` for every
+    grid at :1254.  Counting those as siblings of the root they belong
+    to turns one bundle into five and makes a sound resume look
+    ambiguous, so the subtree below a match is the bundle's own business
+    and is not walked.
+
+    The walk stays inside ``outdir``, never follows a symlink and stops
+    at ``max_depth``.  Returns sorted absolute paths; an empty list means
+    the run wrote no bundle, which is a real answer and not an error.
+    """
+    from gpuwm.stage_cli import BUNDLE_DOCUMENTS
+
+    def carries_bundle_document(directory: Path) -> bool:
+        return any((directory / name).is_file() for name in BUNDLE_DOCUMENTS)
+
+    return sorted(
+        directory
+        for directory in _walk_directories(Path(outdir), max_depth,
+                                           prune=carries_bundle_document)
+        if carries_bundle_document(directory))
+
+
+def select_prepared_root(outdir, checkpoint):
+    """Bind a discovered bundle by receipt, then checkpoint proximity."""
+    found = discover_prepared_roots(outdir)
+    if not found:
+        raise ValueError(
+            "resume has no prepared input bundle to bind: the source job's output tree "
+            "carries no bundle document; pass prepared_root naming the bundle this "
+            "resume should reuse")
+    if len(found) == 1:
+        return found[0], "the only prepared bundle in the source job's output tree"
+    named = set(declared_prepared_roots(outdir))
+    narrowed = [item for item in found if item in named]
+    if len(narrowed) == 1:
+        return narrowed[0], "the bundle the source job's own run receipt names"
+    return nearest_prepared_root(found, checkpoint), (
+        "the bundle nearest the checkpoint being resumed, because the source "
+        f"job left {len(found)} bundles and no receipt naming which one it ran; "
+        "pass prepared_root to bind a different one")
+
+
+def _resolved_parts(path) -> tuple[str, ...]:
+    """``path``'s parts with every symlinked component already followed.
+
+    ONE NAMESPACE, BOTH SIDES.  Comparing two paths component by
+    component only answers anything when both were spelled the same way,
+    and here they are not: :func:`discover_prepared_roots` returns
+    resolved paths (``_walk_directories`` resolves its base), while the
+    checkpoint arrives exactly as the source job recorded its outdir --
+    ``gpuwm/remote_worker.py`` :314 globs ``Path(old["outdir"])`` and
+    returns that unresolved path.  A job whose output tree is reached
+    through a link (a scratch mount, a per-job link) then shares NO
+    component with any bundle, every count is 0, and the comparison
+    silently degrades to the sorted-first bundle: the wrong scientific
+    input, bound while the review says it was chosen for nearness.  So
+    both sides are put in the resolved namespace before they are
+    compared.
+    """
+    candidate = Path(path)
+    try:
+        return candidate.resolve().parts
+    except OSError:
+        return candidate.parts
+
+
+def nearest_prepared_root(roots, checkpoint) -> Path:
+    """Of several bundles, the one the checkpoint was written closest to.
+
+    A forecast writes its restart beside the bundle it bound -- one
+    chain's ``run/`` sits next to that same chain's prepared root -- so
+    the deepest shared parent is a relation between two files THIS run
+    left on disk, not a guess about which chain wrote them.  Both sides
+    are compared resolved (:func:`_resolved_parts`), because a link
+    anywhere above them would otherwise make every bundle equally far
+    away.  Ties break on the sorted path so the answer is the same on
+    every node.
+
+    This is the answer when no run receipt names a bundle, which is the
+    ordinary state of the job resume exists for: the one that died.
+    """
+    target = _resolved_parts(checkpoint)
+
+    def shared_prefix(root: Path) -> int:
+        count = 0
+        for mine, theirs in zip(_resolved_parts(root), target):
+            if mine != theirs:
+                break
+            count += 1
+        return count
+
+    ordered = sorted(Path(root) for root in roots)
+    if not ordered:
+        raise ValueError("nearest_prepared_root needs at least one bundle")
+    return max(ordered, key=shared_prefix)
+
+
+def declared_prepared_roots(outdir,
+                            *, max_depth: int = PREPARED_SEARCH_DEPTH
+                            ) -> list[Path]:
+    """The prepared roots the run's own success receipts name, if any.
+
+    Used only to NARROW a choice between several discovered bundles: a
+    run that finished records ``input.prepared_root`` in its receipt,
+    and a run that died records nothing, so an empty list is the
+    ordinary case, is never a refusal on its own, and leaves the choice
+    to :func:`nearest_prepared_root`.
+
+    A recorded path that is RELATIVE is read against the receipt's own
+    directory, not against this process's working directory: the value
+    was written by a run on another node, and the only thing this
+    process knows about that run is where its documents are.  Resolving
+    it against the caller's cwd would name a bundle in an unrelated
+    tree, and because the narrowing keeps only names that are also in
+    the discovered set, that is a name nothing matches -- the receipt
+    silently stops narrowing.  Returned paths are resolved, in the same
+    namespace :func:`discover_prepared_roots` returns, so the two sets
+    can be intersected at all.
+    """
+    import json
+
+    found: list[Path] = []
+    for directory in _walk_directories(Path(outdir), max_depth):
+        for name in RUN_RECEIPT_NAMES:
+            receipt = directory / name
+            if not receipt.is_file():
+                continue
+            try:
+                document = json.loads(receipt.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(document, dict):
+                continue
+            declared = document.get("input")
+            if not isinstance(declared, dict):
+                continue
+            root = declared.get("prepared_root")
+            if isinstance(root, str) and root:
+                recorded = Path(root)
+                if not recorded.is_absolute():
+                    recorded = directory / recorded
+                try:
+                    found.append(recorded.resolve())
+                except OSError:
+                    continue
+    return sorted(set(found))
+
+
+__all__ = ["select_prepared_root", "PREPARED_SEARCH_DEPTH", "RUN_RECEIPT_NAMES",
+           "discover_prepared_roots", "declared_prepared_roots", "nearest_prepared_root",
+           "LATEST", "CheckpointSet", "ExperimentResolution",
            "OfflineChildRun", "RUN_RECORD_GLOB", "RUN_RECORD_NAMES",
            "ResumeResolution",
 

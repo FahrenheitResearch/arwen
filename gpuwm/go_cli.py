@@ -936,7 +936,7 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
     }
     if any(domain.run.chem_sets for domain in experiment.domains):
         plan["chem_data_store_sources"] = chem_data_store_sources(experiment)
-        plan["chem_window"] = chem_window(experiment)
+        plan["chem_window"] = chem_window(experiment, forcing_hours=plan["hours"])
     if getattr(getattr(experiment, "devices", None), "enabled", False) or devices is not None:
         from gpuwm.core.devices import describe_split
         options = experiment.devices
@@ -949,10 +949,17 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
 
 
 
-def chem_window(experiment) -> tuple[str, str]:
-    """The experiment's own start and end, ISO UTC, for the chem fetch."""
+def chem_window(experiment, *, forcing_hours: float = 0) -> tuple[str, str]:
+    """Cover the run and every prepared forcing endpoint with chemistry.
+
+    A one-hour run on three-hourly forcing prepares the +3 h boundary too.
+    Fetching chemistry only through +1 h left that boundary without smoke
+    and stopped preparation before initialization.  The forcing duration is
+    measured from the experiment start, including when it starts at a lead.
+    """
     from datetime import timedelta
-    end = experiment.start_time + timedelta(seconds=float(experiment.run_seconds))
+    seconds = max(float(experiment.run_seconds), float(forcing_hours) * 3600)
+    end = experiment.start_time + timedelta(seconds=seconds)
     return experiment.start_time.isoformat(), end.isoformat()
 
 
@@ -1578,6 +1585,9 @@ def _run_forecast(plan: dict, digests: dict, *, explain: bool,
     A caller that asks for the observer is asking to host the forecast,
     and run-plan does exactly that -- it IS the supervising process.
     """
+
+    from gpuwm.hydro.retention import pin_current
+    pin_current(plan["prepared"])
 
     # A host is an observer that says it hosts.  Every observer used to
     # mean "run the forecast in this process", which was fine while the
@@ -4952,6 +4962,10 @@ def _registered_launch(args, *, config: Path, payload: dict,
         gate = memory_gate({"config": config, "source": source,
                             "cadence": fetch.get("cadence")}, experiment=exp)
         print(f"go: memory -- {gate['verdict']}")
+        streamed = _streams_instead(args, gate, config, payload)
+        if streamed is not None:
+            return _registered_launch(args, config=streamed[0],
+                                      payload=streamed[1], plan_config=None)
         _print_hydro_decision()
         if gate["refuse"]:
             raise GoRefusal(memory_refusal_text(gate))
@@ -5276,6 +5290,58 @@ def _at_flag_tiles(args, config: Path, payload: dict) -> tuple[Path, dict]:
     return out, tomllib.loads(text)
 
 
+def _streams_instead(args, gate: dict, config: Path,
+                     payload: dict) -> tuple[Path, dict] | None:
+    """The config re-stated with [tiles] mode = 'auto', when only the card refused it.
+
+    Breakage this closes (X12): a bare ``gpuwm go`` of the 5 km CONUS HRRR
+    recipe (1080x636x50, GF, RAP 2025-03-14 12Z) on a 32 GB card was refused
+    before the fetch -- "the forecast needs 53.69 GiB peak envelope ...
+    EXCEEDS the 30.46 GiB card budget" -- while the same run with
+    ``--tiles auto`` is priced at 27.06 GiB streamed (two 258x360 tile
+    buffers, the domain in 10.81 GiB of pinned host RAM) and completes with
+    output identical to the resident run.  A config that never configured
+    [tiles] did not choose resident; it took the default, and the default
+    refused a run this door can run.  So when the resident forecast is the
+    ONLY thing that refused, the door takes the streamed road itself, says so,
+    and prices it again; a run that fits is never touched (no re-stated
+    config, no planner call), and a config or flag that names a mode keeps it.
+
+    ``None`` (keep the refusal) when the user chose a mode (``--tiles`` or a
+    [tiles] table anywhere), for a prepared bundle or a [devices] split, when
+    the host side refused (no tile moves host RAM), when the card could not be
+    read, or when the config has no [fetch] to re-state.
+    """
+
+    if gate.get("devices") is not None or not gate.get("refuse"):
+        return None
+    if getattr(args, "tiles", None) is not None or _prepared_launch(args):
+        return None
+    if getattr(args, "devices", None) is not None or payload.get("devices"):
+        return None
+    if gate.get("free_bytes") is None or gate.get("preparation_refusal") is not None:
+        return None
+    phases = gate.get("phases")
+    if phases is None or getattr(phases, "streamed_forecast", False):
+        return None
+    if "tiles" in payload or any(
+            isinstance(row, dict) and "tiles" in row
+            for row in payload.get("domain") or ()):
+        return None
+    if "case_data" in payload:
+        return None
+    fetch_table = payload.get("fetch")
+    if not isinstance(fetch_table, dict) or not {"source", "cycle"} <= fetch_table.keys():
+        return None
+    print(f"go: memory -- the resident forecast does not fit this card "
+          f"({phases.peak_envelope_bytes / 2**30:.2f} GiB against "
+          f"{int(gate['free_bytes']) / 2**30:.2f} GiB free) and this config "
+          "names no [tiles] mode, so it streams: [tiles] mode = 'auto' "
+          "(identical output; --tiles off restores the refusal)")
+    args.tiles = "auto"
+    return _at_flag_tiles(args, Path(config), payload)
+
+
 #: The execution request a ``--prepare-only`` launch leaves beside the
 #: bundle it prepared: the launch config's [tiles], which the preparation
 #: binds no identity to (``hrrr_configuration.resolve_root_experiment``
@@ -5287,6 +5353,8 @@ LAUNCH_TILES_NAME = "launch-tiles.json"
 
 def _record_launch_tiles(prepared_root: Path, exp, config: Path) -> None:
     """Carry an enabled launch [tiles] to the prepared bundle's forecast leg."""
+    from gpuwm.hydro.retention import pin_current
+    pin_current(prepared_root)
 
     tiles = getattr(exp, "tiles", None)
     if tiles is None or not tiles.enabled:
@@ -6305,6 +6373,14 @@ def _prepare_only_launch(args, *, config, payload, observer=None):
         return _go_prepared_main(args, observer=observer)
     if chain not in ("prepared:hrrr", "prepared:staged"):
         raise GoRefusal("--prepare-only requires a native prepared source route")
+    # This source-only route bypasses _registered_launch, so ask its same
+    # geography check before claiming output or starting any acquisition.
+    from gpuwm.geog_assets import config_geog_root
+    geog_root = (Path(args.geog_root) if args.geog_root is not None
+                 else config_geog_root(config))
+    geography = geography_refusal(geog_root, config=config)
+    if geography is not None:
+        raise GoRefusal(geography)
     # The run folder every other go route claims: --outdir (default
     # <config-stem>-go) is the case folder and the run gets its own
     # stamped run-... child unless --run-stamp off or --outdir names a
@@ -6325,7 +6401,7 @@ def _prepare_only_launch(args, *, config, payload, observer=None):
         print(f"Output: {output}")
         return 0
     output = run_stamp_module.resolve(case_root, init=fetch.get("cycle"),
-                                      enabled=stamp, create=True)
+                                      enabled=stamp, create=False)
     options = {key: str(Path(getattr(args, key)).resolve()) for key in
                ("data_dir", "geog_root", "initial_inputs") if getattr(args, key, None) is not None}
     if getattr(args, "transport", None) is not None:
@@ -6342,6 +6418,30 @@ def _prepare_only_launch(args, *, config, payload, observer=None):
            "run_options": options}
     plan = runplan.build_plan(raw, source="gpuwm go --prepare-only", base_dir=config.parent,
                              sha256=hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest())
+    # This route enters the producer directly, bypassing run-plan execution.
+    # Admit the same download, preparation and hydro before claiming its folder.
+    from gpuwm.hydro.runtime import rebind_launch
+    launch_exp = load_experiment(config)
+    refusal = runplan.disk_admission_refusal(
+        plan, launch_exp, raw=payload, data=None,
+        fetch_arguments=plan.fetch_arguments, run_dir=output,
+        hydro_config=config, hydro_args=args)
+    if refusal is not None:
+        raise GoRefusal(refusal)
+    rebind_launch(args, admitted=True)
+    # Claim the folder now, create-exclusive (run_stamp.allocate, which also
+    # moves latest-run.txt): the name above was only predicted for the
+    # admission. Release review 17 (2.9.7): a bare mkdir(exist_ok=True) here
+    # let two prepare-only launches of the same second share one folder and
+    # left latest-run.txt on the previous run.
+    claimed = run_stamp_module.resolve(case_root, init=fetch.get("cycle"),
+                                       enabled=stamp, create=True)
+    if claimed != output:
+        output = claimed
+        raw["output_root"] = str(output.resolve())
+        plan = runplan.build_plan(
+            raw, source="gpuwm go --prepare-only", base_dir=config.parent,
+            sha256=hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest())
     events = None
     if observer is None:
         class _SaidEvents(runplan.EventStream):
@@ -6363,7 +6463,6 @@ def _prepare_only_launch(args, *, config, payload, observer=None):
         events = _SaidEvents(output / "preparation-events.jsonl", mirror=None)
         observer = runplan.RunObserver(events)
     operation = runplan._hrrr_chain if chain == "prepared:hrrr" else runplan._staged_chain
-    launch_exp = load_experiment(config)
     try:
         result = operation(plan, config_path=config, exp=launch_exp,
                            observer=observer, run_dir=output, prepare_only=True)
@@ -6437,7 +6536,8 @@ def _disk_admission(plan: dict, args) -> None:
         # --data-dir named one: everything in a managed cache is this
         # request's download, a half-finished one included.
         download_keyed=getattr(args, "data_dir", None) is None,
-        prep_root=Path(plan["prepared"]), warn=_scratch_caution)
+        prep_root=Path(plan["prepared"]), warn=_scratch_caution,
+        hydro_config=config, hydro_args=args)
     if refusal is not None:
         raise GoRefusal(refusal)
 
@@ -6708,6 +6808,13 @@ def _go_prepared_main(args, *, observer=None) -> int:
                 and not _prepare_only_needs_no_card(args)):
             gate = memory_gate(plan)
             print(f"go: memory -- {gate['verdict']}")
+            import tomllib
+            streamed = _streams_instead(
+                args, gate, Path(plan["config"]),
+                tomllib.loads(Path(plan["config"]).read_text(encoding="utf-8")))
+            if streamed is not None:
+                return _go_prepared_main(
+                    args, observer=None if chain is not None else observer)
             _print_hydro_decision()
             if gate["refuse"]:
                 raise GoRefusal(memory_refusal_text(gate))
@@ -6750,6 +6857,13 @@ def _go_prepared_main(args, *, observer=None) -> int:
         # own observer) asked this before it started the chain.
         if chain is not None:
             _disk_admission(plan, args)
+
+        # Admitted: a covering fabric now prepares beside the fetch and the
+        # preparation below, not ahead of them (R15 D9: a 273 s fabric build
+        # ahead of the fetch put the chained root stage 66 s past its bound).
+        from gpuwm.hydro.runtime import rebind_launch
+        rebind_launch(args, admitted=True, beside=True)
+        _print_hydro_decision()
 
         hosted_relay = None
         # THE STAGE TIMINGS START LANDING ON DISK HERE, by default, for
@@ -7023,6 +7137,8 @@ def _go_prepared_main(args, *, observer=None) -> int:
             if chain is not None:
                 chain.finish(status="PREPARED", exit_code=0)
             authority = Path(plan["authority"])
+            from gpuwm.hydro.retention import pin_current
+            pin_current(plan["prepared"])
             print(json.dumps({"status": "PREPARED", "prepared_root": str(plan["prepared"]),
                               "experiment_config": str(authority / "experiment.toml")
                               if (authority / "experiment.toml").is_file() else None,
@@ -7272,6 +7388,14 @@ def _add_go_arguments(parser) -> None:
                         help="branch members from saved checkpoints in a parent-list JSON")
     parser.add_argument("--cards", default="all", metavar="all|0,1",
                         help="cards for checkpoint branches: all visible cards or visible ordinals")
+    parser.add_argument("--members-per-card", default="auto", metavar="auto|N",
+                        help="checkpoint branches run at once on each card, one process each "
+                             "(default auto: as many priced members as the card's free memory "
+                             "holds, up to 4)")
+    parser.add_argument("--member-sharing", default="auto", choices=("auto", "mps", "contexts"),
+                        help="how co-resident checkpoint branches share a card: a private MPS "
+                             "controller for this launch, or one CUDA context per member "
+                             "(default auto: MPS where the controller exists)")
     parser.add_argument("--branch-hours", type=float, default=1.,
                         help="forecast hours after each parent checkpoint (default 1)")
     parser.add_argument("--resume-ensemble", type=Path, default=None, metavar="RUN",

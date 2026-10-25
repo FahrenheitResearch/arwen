@@ -870,6 +870,11 @@ def test_the_tree_door_prices_the_tables_the_run_holds(tmp_path, monkeypatch):
     assert held - _envelope(exp, forcing_intervals=6) > 8 * GIB
     _stand_in_card(monkeypatch, held - 1)
     tree, inputs = _tree_door(monkeypatch, tmp_path, exp)
+    # The PRICE is what this test holds.  Since X12 an external door streams
+    # instead of refusing when only the card refused it resident
+    # (tests/test_external_door_streams.py); keep the refusal here so the
+    # priced envelope is read off it.
+    monkeypatch.setattr(tree, "_external_door_streams", lambda *a: None)
     with pytest.raises(MemoryError, match=REFUSAL) as refused:
         tree.run_prepared_tree(inputs, output_directory=tmp_path,
                                io_mode="none", initialization=initialization)
@@ -1001,6 +1006,9 @@ def test_the_wrf_input_doors_reach_their_admission_on_their_own_bundles(
         (tmp_path / f"{index}").mkdir()
         tree, inputs, initialization = _wrf_door(
             monkeypatch, tmp_path / f"{index}", exp, door, boundaries)
+        # One byte short is priced by the refusal; X12's streamed fallback
+        # for these doors is tests/test_external_door_streams.py.
+        monkeypatch.setattr(tree, "_external_door_streams", lambda *a: None)
         outdir = tmp_path / f"{index}" / "out"
         outdir.mkdir()
         if free < held:

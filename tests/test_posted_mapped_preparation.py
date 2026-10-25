@@ -285,6 +285,7 @@ def test_a_later_batch_decodes_the_first_lead_again_where_its_file_alone_carries
         posted.__dict__.update(
             fetch_root=root, leads=(0, 3, 6), markers={}, lead_of={},
             expected={}, role_of={}, parts_of={}, carried_any=False,
+            source_format="grib2",
             primary=primary, supplements={}, planned=set(primary))
         for lead, marker in markers.items():
             posted._read_marker(lead, marker)
@@ -343,7 +344,7 @@ def test_a_supplement_of_one_primary_role_per_lead_follows_the_batch(tmp_path):
     posted = object.__new__(_PostedMappedSource)
     posted.__dict__.update(
         fetch_root=root, leads=leads, markers={}, lead_of={}, expected={},
-        role_of={}, parts_of={}, carried_any=False,
+        role_of={}, parts_of={}, carried_any=False, source_format="grib2",
         primary=tuple(path for pair in zip(prslev, surface) for path in pair),
         supplements={"surface": tuple(surface)},
         planned={*prslev, *surface})
@@ -366,6 +367,8 @@ def test_a_complete_posted_window_is_ready_for_independent_builds(tmp_path, deco
     # __init__ is bypassed, so give the source the lock its constructor makes
     # (1e39a57c05c serializes posted batch advancement across readers).
     source._decode_lock = threading.RLock()
+    # ... and the decode format it records (1ff1dcd16e: a NetCDF source decodes one lead at a time).
+    source.source_format = "grib2"
     source.leads = (0, 1, 2)
     source._next = decoded
     source.posted = boundary_stream.PostedLeads(
@@ -400,6 +403,7 @@ def _posted_source(tmp_path, leads, decoded):
 
     source = object.__new__(_PostedMappedSource)
     source._decode_lock = threading.RLock()
+    source.source_format = "grib2"
     source.leads = tuple(leads)
     source._next = decoded
     source.posted = boundary_stream.PostedLeads(
@@ -661,6 +665,7 @@ def test_parallel_forcing_readers_decode_each_posted_batch_once():
     source = object.__new__(_PostedMappedSource)
     source._decode_lock = threading.RLock()
     source._next = 0
+    source.source_format = "grib2"
     source.leads = (0,)
     source.markers = {0: {}}
     source.posted = SimpleNamespace()

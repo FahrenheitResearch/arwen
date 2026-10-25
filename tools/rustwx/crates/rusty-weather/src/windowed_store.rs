@@ -459,6 +459,15 @@ pub fn compute_windowed_products(
                 continue;
             }
         };
+        let footprint_swath = matches!(product, HrrrWindowedProduct::Wind10mRunMax | HrrrWindowedProduct::QpfTotal)
+            && manifest.hours.get(&anchor_slot).and_then(|entry| HourReader::open(&run_dir.join(&entry.file)).ok())
+                .is_some_and(|reader| reader.variable("nest_sample_coverage").is_some());
+        if footprint_swath && product == HrrrWindowedProduct::QpfTotal {
+            // Nest totals include only integrated exposure. Keep departed
+            // ground, including return visits, without borrowing parent rain.
+            spec.reduce = Reduce::Max;
+            spec.hours = (1..=anchor_hour).collect();
+        }
         if let Some(reason) = off_cadence_reason(&spec, cadence, exact_axis) {
             blockers.push((slug.clone(), reason));
             continue;
@@ -475,7 +484,9 @@ pub fn compute_windowed_products(
                 if slots.len() > 1 && spec.reduce == Reduce::Direct {
                     spec.reduce = Reduce::Max;
                 }
-                accums.push(Accum::new(spec, slots).with_gaps(gaps));
+                let mut accum = Accum::new(spec, slots).with_gaps(gaps);
+                accum.footprint_swath = footprint_swath;
+                accums.push(accum);
             }
             Err(reason) => blockers.push((slug.clone(), reason)),
         }
@@ -588,7 +599,14 @@ pub fn compute_windowed_products(
                             // window is read at the whole-hour frames alone.
                             continue;
                         }
-                        accum.fold(&plane.values);
+                        if accum.footprint_swath {
+                            match read_grid_2d(&reader, &grid, "nest_sample_coverage") {
+                                Ok(mask) if mask.units == "1" => accum.fold_footprint(&plane.values, &mask.values),
+                                _ => {accum.failed = Some("moving-nest swath lacks its explicit footprint mask".into()); continue;}
+                            }
+                        } else {
+                            accum.fold(&plane.values);
+                        }
                         match plane.fidelity {
                             PlaneFidelity::Exact => {
                                 accum.exact_planes += 1;
@@ -1795,6 +1813,7 @@ struct Accum {
     interval_max_field: Option<&'static str>,
     exact_planes: usize,
     gaps: WindowGaps,
+    footprint_swath: bool,
 }
 
 enum AccumState {
@@ -1828,12 +1847,23 @@ impl Accum {
             interval_max_field: None,
             exact_planes: 0,
             gaps: WindowGaps::default(),
+            footprint_swath: false,
         }
     }
 
     fn with_gaps(mut self, gaps: WindowGaps) -> Self {
         self.gaps = gaps;
         self
+    }
+
+    fn fold_footprint(&mut self, values: &[f64], mask: &[f32]) {
+        if mask.len() != values.len() || mask.iter().any(|m| *m != 0. && *m != 1.) {
+            self.failed = Some("invalid moving-nest footprint mask".into());
+            return;
+        }
+        let sampled: Vec<_> = values.iter().zip(mask).map(|(v,m)|
+            if *m == 0. {f64::NEG_INFINITY} else {*v}).collect();
+        self.fold(&sampled);
     }
 
     fn fold(&mut self, values: &[f64]) {
@@ -1963,6 +1993,9 @@ impl Accum {
                 .map(|(max, min)| max - min)
                 .collect(),
         };
+        if self.footprint_swath {
+            for value in &mut values {if *value == f64::NEG_INFINITY {*value = f64::NAN;}}
+        }
         match self.spec.finish {
             Finish::None => {}
             Finish::MmToInches => {
@@ -2049,10 +2082,22 @@ impl Accum {
                 ));
             }
         }
+        if self.footprint_swath {
+            strategy.push_str("; union of explicitly sampled nest footprints; periods outside the nest are unobserved, never parent-filled");
+            if self.spec.product == HrrrWindowedProduct::QpfTotal {
+                strategy.push_str("; only history-sampled totals are available: rain between the last saved frame and departure can be absent from a departed strip; use committed-step cyclone rain for the full sampled exposure");
+            }
+        }
         Ok(WindowedGrid {
             slug: self.spec.product.slug().to_string(),
             units: self.spec.units.to_string(),
-            title: title.to_string(),
+            title: if self.footprint_swath {
+                if title == "10 m Wind Speed (largest hourly snapshot, no stored max)" {
+                    "10 m wind max (hourly samples; sampled nest exposure)".to_string()
+                } else if self.spec.product == HrrrWindowedProduct::QpfTotal {
+                    "Nest rain total (sampled nest exposure)".to_string()
+                } else { format!("{title} (sampled nest exposure)") }
+            } else { title.to_string() },
             values,
             hours_used: self.spec.hours,
             window_hours: self.spec.window_hours,
@@ -2073,6 +2118,20 @@ mod tests {
         DerivedFieldInput, write_hour_from_fields_with_derived,
         write_hour_from_fields_with_derived_exact,
     };
+
+    #[test]
+    fn moving_nest_max_retains_both_strips_but_not_missing_interior() {
+        let spec = plan_product(HrrrWindowedProduct::Wind10mRunMax, 2, QpfSource::NativeHourly).unwrap();
+        let mut a = Accum::new(spec, vec![1, 2]);
+        a.footprint_swath = true;
+        a.fold_footprint(&[25., 20., f64::NAN, f64::NAN, f64::NAN], &[1., 1., 0., 1., 0.]);
+        a.fold_footprint(&[f64::NAN, 30., 35., 40., f64::NAN], &[0., 1., 1., 1., 0.]);
+        let result = a.finish(false).unwrap();
+        assert_eq!(&result.values[..3], &[25.*MS_TO_KT, 30.*MS_TO_KT, 35.*MS_TO_KT]);
+        assert!(result.values[3].is_nan()); // Missing inside a footprint stays missing.
+        assert!(result.values[4].is_nan()); // Never visited is not a zero wind.
+        assert!(result.title.contains("sampled nest exposure"));
+    }
 
     const NX: usize = 2;
     const NY: usize = 2;

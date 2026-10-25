@@ -357,6 +357,8 @@ class _ChildProgress:
         #: Every frame after the analysis, drawn as it lands
         #: (:mod:`gpuwm.live_products`), armed beside the early render.
         self._live_products = None
+        #: The any-point column store, written as frames land (:mod:`gpuwm.live_columns`).
+        self._columns = None
         #: How far the forecast got, from the last progress sample that
         #: carried a step number.  ``None`` until the first one, which
         #: is the state a child refused before its first step is in --
@@ -654,10 +656,33 @@ class _ChildProgress:
         stops it itself (:func:`gpuwm.go_cli._render_stage`).
         """
 
+        columns, self._columns = self._columns, None
+        if columns is not None:
+            try:
+                s = columns.halt() if halt else columns.stop()
+                self.emit("columns_written", files=s["files"], bytes=s["bytes"], seconds=s["seconds"],
+                          failed=len(s["failed"]), out=s["out"])
+            except Exception as error:  # noqa: BLE001 - a store never fails the child
+                self.warn("columns_not_written", str(error))
         live = self._live_products
         if live is None:
             return None
         return live.halt() if halt else live.stop()
+
+    def _column_frame(self, fields) -> None:
+        """The child's any-point column store (rw-store v2), written beside its frames for every output hour."""
+        try:
+            if self._columns is None and self.outdir is not None:
+                from gpuwm.live_columns import LiveColumns, columns_enabled
+                if not columns_enabled():
+                    return
+                self._columns = LiveColumns(Path(self.outdir) / "columns", warn=self.warn)
+            if self._columns is not None:
+                self._columns.frame_committed(domain=int(fields["domain"]), valid_time=fields["valid_time"],
+                                              path=fields["path"])
+        except Exception as error:  # noqa: BLE001 - telemetry never fails
+            self.warn("columns_not_written", f"committed frame could not be queued: {error}",
+                      frame=str(fields.get("path")))
 
     def halt_renders(self) -> bool:
         """End every render this child started, for a stop.
@@ -782,6 +807,7 @@ class _ChildProgress:
         # it rather than the root of a hierarchy it does not have.
         self._root_domain = int(fields["domain"])
         self.emit("output_committed", **fields)
+        self._column_frame(fields)
         claimed = False
         if self._first_products is not None:
             claimed = bool(self._first_products.frame_committed(
@@ -2305,7 +2331,7 @@ def _output_fields(state, initial, refl_field=None,
 def _write_frame(path: Path, state, cfg, initial, valid_time,
                  projection_attrs: dict[str, object], placement,
                  refl_field=None, surface=None,
-                 history_selection=None) -> None:
+                 history_selection=None, simulation_start=None) -> None:
     from gpuwm.io.wrfout import WrfoutWriter
 
     attrs = dict(projection_attrs)
@@ -2335,8 +2361,12 @@ def _write_frame(path: Path, state, cfg, initial, valid_time,
         "HYBRID_OPT": np.int32(cfg.hybrid_opt),
         "ETAC": np.float32(cfg.etac),
         "START_DATE": initial.valid_time.strftime("%Y-%m-%d_%H:%M:%S"),
-        "SIMULATION_START_DATE": initial.valid_time.strftime(
-            "%Y-%m-%d_%H:%M:%S"),
+        # WRF's two facts: START_DATE is this file's own start, and
+        # SIMULATION_START_DATE the forecast's.  They differ on a segment of
+        # a moving step-down, which continues a forecast begun earlier (its
+        # maps are labelled from that start, as a restart's are).
+        "SIMULATION_START_DATE": (simulation_start or initial.valid_time
+                                  ).strftime("%Y-%m-%d_%H:%M:%S"),
         "GPUWM_OFFLINE_CHILD": np.int32(1),
     })
     frame = _output_fields(state, initial, refl_field=refl_field,
@@ -3444,6 +3474,23 @@ def _run(args: argparse.Namespace,
                                            or cfg.usemonalb
                                            or cfg.rdlai2d) else {}))
     ozone_routing = _child_ozone_routing(driver)
+    # A WARM START (gpuwm.offline_child_warm): an earlier child of this one,
+    # at a nearby placement, carries what it integrated over the ground both
+    # share.  Applied here -- after the cold-start child and its driver are
+    # whole, before the stepper fills any store -- so a moving step-down's
+    # segment continues the forecast instead of spinning up again.
+    warm_receipt = None
+    warm = getattr(args, "warm_start", None)
+    if warm is not None:
+        from gpuwm.offline_child_warm import WarmStartRefusal, apply_warm_start
+
+        try:
+            warm_receipt = apply_warm_start(
+                child, cfg, driver, checkpoint=warm["checkpoint"],
+                shift=warm["shift"], strip=warm.get("strip"))
+        except WarmStartRefusal as error:
+            raise OfflineChildContractError(str(error)) from error
+        _log("child_warm_start", **_jsonable(warm_receipt))
     cp.cuda.runtime.deviceSynchronize()
     # ``[tiles]``, wired exactly the way the prepared front doors wire it
     # (gpuwm.prepared_single_domain_forecast: decide ONCE, hand the decision
@@ -3495,7 +3542,8 @@ def _run(args: argparse.Namespace,
         path = outdir / wrfout_filename(valid, domain_id=cfg.grid_id)
         _write_frame(path, child, cfg, initial, valid,
                      projection_attrs, placement, refl_field=refl,
-                     surface=surface, history_selection=history_selection)
+                     surface=surface, history_selection=history_selection,
+                     simulation_start=getattr(args, "simulation_start", None))
         output_paths.append(path)
         # History-interval reset of the UP_HELI_MAX window (no-op unless
         # the child config enables nwp_diagnostics; the synchronous
@@ -3714,6 +3762,9 @@ def _run(args: argparse.Namespace,
         # to work out from parent_id whether a parent field was involved.
         # None means the child's radiation carries no ozone routing.
         "child_ozone_routing": ozone_routing,
+        # A segment of a moving step-down: the earlier child it continued
+        # and what was carried.  None for a cold start.
+        "warm_start": _jsonable(warm_receipt),
         "child_surface_source": (
             None if surface is None else dict(surface.receipt)),
         # WHICH TERRAIN the child ran on: its own static geography (the
@@ -3858,8 +3909,43 @@ def _parser() -> argparse.ArgumentParser:
                              "is an upper bound and the card's own "
                              "allocation then decides; a child state too big "
                              "to build at all is still refused")
+    parser.add_argument("--warm-from", type=Path, default=None,
+                        dest="warm_from", metavar="CHECKPOINT",
+                        help="carry this earlier child's state onto the "
+                             "ground it shares with this one "
+                             "(gpuwm.offline_child_warm); needs --warm-shift")
+    parser.add_argument("--warm-shift", default=None, dest="warm_shift",
+                        metavar="DI,DJ",
+                        help="this child's placement minus the earlier "
+                             "one's, in child cells")
+    parser.add_argument("--warm-strip", type=Path, default=None,
+                        dest="warm_strip", metavar="NPZ",
+                        help="accumulated precipitation for the freshly "
+                             "covered strip, per slot")
     parser.add_argument("--outdir", type=Path, required=True)
     return parser
+
+
+def warm_start_argument(warm_from, warm_shift, warm_strip=None):
+    """The runner's ``warm_start`` entry from the three flags, or None."""
+    if warm_from is None and warm_shift is None:
+        if warm_strip is not None:
+            raise OfflineChildContractError(
+                "--warm-strip belongs to a warm start: pass --warm-from and "
+                "--warm-shift with it")
+        return None
+    if warm_from is None or warm_shift is None:
+        raise OfflineChildContractError(
+            "a warm start needs both --warm-from CHECKPOINT and --warm-shift "
+            "DI,DJ (the move in child cells)")
+    from gpuwm.offline_child_warm import parse_warm_shift
+
+    try:
+        shift = parse_warm_shift(warm_shift)
+    except ValueError as error:
+        raise OfflineChildContractError(str(error)) from None
+    return {"checkpoint": Path(warm_from), "shift": shift,
+            "strip": None if warm_strip is None else Path(warm_strip)}
 
 
 def main(argv=None) -> int:
@@ -3868,6 +3954,8 @@ def main(argv=None) -> int:
         print(json.dumps(_CAPABILITIES, sort_keys=True))
         return 0
     args = _parser().parse_args(arguments)
+    args.warm_start = warm_start_argument(
+        args.warm_from, args.warm_shift, args.warm_strip)
     from gpuwm.core.resident_admission import memory_gate_override
 
     try:

@@ -105,7 +105,11 @@ its cell centres from --mesh, once the cell counts and the static fields both
 files carry (shdmin, shdmax) agree, and reads the fields it lacks from the
 diag file of the same time beside it (history.T.nc -> diag.T.nc).  The frame
 names both files (MPAS_CELL_CENTRES_*, MPAS_DIAG_*).  A history that carries
-its own centres, as MPAS-A writes it, is read exactly as before.
+its own centres, as MPAS-A writes it, keeps them; a mapped field it lacks is
+read from its diag file of the same time when one is beside it (MPAS-A writes
+refl10cm_max, which becomes REFC, only to its diagnostics stream), and the
+frame names that file (MPAS_DIAG_*).  A history that carries every field
+converts exactly as before.
 
 --jobs N (single-source only) converts N history frames at a time.  The
 default converts as many at once as there are frames, cores and host memory
@@ -899,6 +903,21 @@ fn run() -> Result<(), String> {
                         .join(", ")
                 )
             }
+        };
+        // A history with its own centres completed from its diag stream
+        // (MPAS-A's output stream carries no refl10cm_max): named in the
+        // receipt, and only for such a frame.
+        let split_json = match &frame.companion_diag {
+            None => split_json,
+            Some(diag) => format!(
+                "{split_json}, \"diag_stream\": {{\"diag\": \"{}\", \"diag_sha256\": {}, \"diag_fields\": [{}]}}",
+                json_escape(&diag.path.display().to_string()),
+                match &diag.sha256 {
+                    Some(d) => format!("\"{d}\""),
+                    None => "null".to_string(),
+                },
+                diag.fields.iter().map(|n| format!("\"{n}\"")).collect::<Vec<_>>().join(", ")
+            ),
         };
         let stamp = frame.valid_time.label().replace(':', "_");
         let destination = Path::new(&out_dir).join(format!("{}_{stamp}", args.prefix));

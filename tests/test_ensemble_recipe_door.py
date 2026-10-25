@@ -905,7 +905,11 @@ def test_named_roster_post_preparation_binds_every_input_before_real_session_con
         session = current_session()
         assert isinstance(session, production.PreparedEnsembleSession)
         assert callable(session.input_provider)
-        shared = SimpleNamespace(experiment=load_experiment(stages.prepared[0]["config"]),
+        # Member 0 is the base the runner preflighted.  stages.prepared is in
+        # worker completion order: under load member 6's worker records first,
+        # and its Noah config became the RUC members' shared inputs.
+        base = next(row for row in stages.prepared if row["member"] == 0)
+        shared = SimpleNamespace(experiment=load_experiment(base["config"]),
                                  authority={"prepared_root": "ordinary-base"})
         for member in range(8):
             inputs = session.input_provider(shared_inputs=shared, member_id=member, request=session.request)

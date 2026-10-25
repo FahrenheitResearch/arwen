@@ -424,7 +424,10 @@ def test_default_authority_and_fingerprint_base_golden(name, authority, fingerpr
     old_sun = replace(exp, domains=tuple(replace(
         domain, run=replace(domain.run, solar_generation="wrf_461",
                             ysu_version="wrf_461", noahmp_snow_age="wrf_461",
-                            urban_water_balance="wrf_471"))
+                            urban_water_balance="wrf_471",
+                            # 2.9.7: correct-mode HN1 (F22), read under the
+                            # default Thompson; the golden predates it.
+                            hydrometeor_handover_numbers=False))
         for domain in exp.domains))
     historical = replace(old_sun, domains=tuple(replace(
         domain, run=replace(domain.run, terrain_clock="measured"))

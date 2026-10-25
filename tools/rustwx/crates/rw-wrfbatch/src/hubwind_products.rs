@@ -113,10 +113,19 @@ struct Grid {
 fn err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
+/// A domain folder or receipt prefix: one path component, never `.`/`..`.
+///
+/// The render tree names a grid by its spacing (`d01-2.25km`, the
+/// `render.domain_token` / `native_domain_slug` spelling), so a dot inside
+/// the token is allowed. Every 2.25 km or 1.5 km grid was refused here
+/// with "invalid hubwind domain" and `gpuwm go --products all` exited 2
+/// at the end-of-run render (2.9.5, RTX PRO 4500/6000 boxes, 2026-10-23).
 fn token(s: &str) -> bool {
     !s.is_empty()
+        && !s.starts_with('.')
+        && !s.contains("..")
         && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
 }
 fn height_token(h: f64) -> String {
     format!("{h}m").replace('.', "p")
@@ -943,6 +952,13 @@ fn run(r: Request) -> Result<(), String> {
         field_output_seconds += field_stage.elapsed().as_secs_f64();
         let stage = Instant::now();
         if r.render_frames == "all" || *time == records.last().unwrap().0 {
+            // Every map of a frame is independent (its own plane, file and
+            // canvas), so they are drawn across the Rayon pool. Drawn one
+            // after another, the 19 default maps of each frame held the
+            // end-of-run render of a 2.25 km / 750 m nest on about one core
+            // of eight (2.9.5, RTX PRO 4500 box, 2026-10-23). The order of
+            // `maps` and `undrawn` is the serial order.
+            let mut jobs: Vec<(&Product, Vec<f32>, String, f64, String)> = vec![];
             for (i, plane) in planes.iter().enumerate() {
                 let suffix = height_token(plane.height_m);
                 for p in products.iter().filter(|p| selected(p) && p.kind == "frame") {
@@ -967,7 +983,7 @@ fn run(r: Request) -> Result<(), String> {
                     } else {
                         detail.clone()
                     };
-                    record(&mut maps, &mut undrawn, draw(&r, g, p, values, &suffix, *time, upper, &text)?);
+                    jobs.push((p, values, suffix.clone(), upper, text));
                 }
                 if let Some(p) = products.iter().find(|p| p.kind == "shear" && selected(p)) {
                     let next = planes
@@ -977,18 +993,24 @@ fn run(r: Request) -> Result<(), String> {
                         .min_by(|a, b| a.1.height_m.total_cmp(&b.1.height_m));
                     if let Some((j, other)) = next {
                         let values = calc::shear(&planes[i], &planes[j])?;
-                        record(&mut maps, &mut undrawn, draw(
-                            &r,
-                            g,
+                        jobs.push((
                             p,
                             values,
-                            &format!("{}-{}", suffix, height_token(other.height_m)),
-                            *time,
+                            format!("{}-{}", suffix, height_token(other.height_m)),
                             1.,
-                            "log speed ratio / log AGL height ratio",
-                        )?);
+                            "log speed ratio / log AGL height ratio".to_owned(),
+                        ));
                     }
                 }
+            }
+            let drawn = jobs
+                .into_par_iter()
+                .map(|(p, values, suffix, upper, text)| {
+                    draw(&r, g, p, values, &suffix, *time, upper, &text)
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            for one in drawn {
+                record(&mut maps, &mut undrawn, one);
             }
         }
         render_seconds += stage.elapsed().as_secs_f64();
@@ -1038,8 +1060,21 @@ fn run(r: Request) -> Result<(), String> {
     }
     let statistics_seconds = stage.elapsed().as_secs_f64();
     let stage = Instant::now();
-    for (h, s) in statistics.iter().enumerate() {
-        for p in products.iter().filter(|p| p.kind == "stat" && selected(p)) {
+    // The run statistics' maps (15 per height by default), across the pool
+    // like the frame maps, in the serial order.
+    let stat_jobs: Vec<(usize, &Vec<Stats>, &Product)> = statistics
+        .iter()
+        .enumerate()
+        .flat_map(|(h, s)| {
+            products
+                .iter()
+                .filter(|p| p.kind == "stat" && selected(p))
+                .map(move |p| (h, s, p))
+        })
+        .collect();
+    let drawn = stat_jobs
+        .into_par_iter()
+        .map(|(h, s, p)| {
             let duration = (times.last().unwrap() - times[0]) / 3600.;
             let upper = if p.upper > 0. {
                 p.upper
@@ -1048,7 +1083,7 @@ fn run(r: Request) -> Result<(), String> {
             } else {
                 duration
             };
-            record(&mut maps, &mut undrawn, draw(
+            draw(
                 &r,
                 g,
                 p,
@@ -1063,8 +1098,11 @@ fn run(r: Request) -> Result<(), String> {
                     r.options.ramp_window_seconds,
                     r.options.ramp_ms
                 ),
-            )?);
-        }
+            )
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    for one in drawn {
+        record(&mut maps, &mut undrawn, one);
     }
     render_seconds += stage.elapsed().as_secs_f64();
     let stage = Instant::now();
@@ -1356,6 +1394,16 @@ mod tests {
         let tke = 1.5 * unstable * unstable;
         assert!(((2. * tke / 3.).sqrt() - unstable).abs() < 1e-12);
         assert!(super::similarity_sigma_u(f64::NAN, 1500., -0.01, 100.).is_nan());
+    }
+
+    #[test]
+    fn domain_tokens_take_fractional_spacings_and_stay_one_component() {
+        for ok in ["d01-2.25km", "d02-750m", "d01-12km", "d01-2.25km-", "d03-1.5km"] {
+            assert!(token(ok), "{ok}");
+        }
+        for bad in ["", ".", "..", "../d01", "d01/x", ".hidden", "d01..km", "d01 km"] {
+            assert!(!token(bad), "{bad}");
+        }
     }
 
     #[test]

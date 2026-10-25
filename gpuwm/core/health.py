@@ -261,6 +261,13 @@ def gpu_integer_policy(name: str, dtype: Any) -> int | None:
     dtype = np.dtype(dtype)
     if dtype == np.dtype(np.float32):
         return 0
+    # Four lattice coordinates, generated on the host at relocation and never
+    # written by physics. nest_accumulation.advance validates the restored
+    # coordinates against the archive extents before consuming them. They
+    # are deliberately int64 for long tracks, not floating weather state.
+    if (dtype == np.dtype(np.int64)
+            and name == "nest.scratch.nest_accumulation/origin"):
+        return None
     if dtype == np.dtype(np.int32):
         if name in GPU_INTEGER_EXCLUSIONS:
             return None

@@ -77,6 +77,9 @@ class PreparedRealEnsemble:
         self.final_stability = None
 
     def step(self):
+        exchange = getattr(self, '_device_exchange', None)
+        if exchange is not None:
+            exchange.require_forecast_ready()
         clock = self.clock
         if clock.at_stop_time:
             raise ValueError('ensemble clock reached its declared stop time')
@@ -93,6 +96,17 @@ class PreparedRealEnsemble:
         clock.advance()
         self.batch.elapsed_seconds = clock.elapsed_seconds
         self.batch.clock['dtbc_fp32'] = clock.dtbc_fp32
+
+    def device_exchange(self, *, writable_fields):
+        """Borrow this retained batch between steps, keeping its prepared graph."""
+        from gpuwm.ensemble.device_exchange import cuda_exchange
+        exchange = getattr(self, '_device_exchange', None)
+        if exchange is None:
+            exchange = cuda_exchange(self.batch, writable_fields=writable_fields)
+            self._device_exchange = exchange
+        elif exchange.writable != frozenset(writable_fields):
+            raise ValueError('cannot change writable field ownership on a live exchange')
+        return exchange
 
     def receipt(self):
         import cupy as cp

@@ -403,7 +403,9 @@ def test_local_worker_never_attempts_unreachable_observation_sources(
     started = time.monotonic()
     state = visuals.score_available(root, requests=[hour_request], local_only=True,
                                    refresh=True, now="2026-01-01T04:00:00Z")
-    assert time.monotonic() - started < 1.0
+    # No source is attempted (the check that matters); the wall bound only catches a hang and holds
+    # under a loaded 20-way Stage 1 (it read 1.22 s against a 1.0 s bound there, 2.9.7 pass 4).
+    assert time.monotonic() - started < 10.0
     assert attempts == [] and reference_flags == [True]
     hour = next(iter(state["hours"].values()))
     assert hour["input_status"] == "ready"

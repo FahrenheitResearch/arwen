@@ -3,7 +3,7 @@ import hashlib
 import json
 from pathlib import Path
 
-SOURCE_EXTENSION_SHA = '4fa0115ba708eb5495d248ff29e73dd7799563f7378f5ca49ac60fd26ffed7da'
+SOURCE_EXTENSION_SHA = 'acfe924f5b9154bc32bd885064037a0df733918041551f8f252d0692da46ff79'
 DIFFUSION_CACHE_EXTENSION_SHA = "2d0a03fbffcec53d12d692c524e3fed01611677a08f677c2ff76f39214549c79"
 
 PROOF_SHAS = {
@@ -101,7 +101,11 @@ def _source_extension(root, name, before, after, schema=None):
         replay = json.loads(path.read_text())
         assert replay["schema"] == "measured-slimming-loader-source-replay-v1"
         assert replay["source"] == name and replay["after"] == after
-        assert replay["base"] == "89107bdeb2d0b74e4fd42c79a1cb72d1af67ac74"
+        # Re-measured for 2.9.7 (the S5 loader rows and the S2/S5 dycore
+        # hooks): base 2.9.6 (e5b0c7ff52), zero differing words in all three
+        # families, dycore.py re-earned as a moved source.  Previously
+        # 89107bdeb2 (the 2.9.4 slimming).
+        assert replay["base"] == "e5b0c7ff52b02bf12bd0909f93eb37569c7ac079"
         assert replay["measurements"] == measured["measurements"]
         assert replay["numerics"] == "strict"
         assert replay["generator"] == "tools/assembled_legacy_replay.py"

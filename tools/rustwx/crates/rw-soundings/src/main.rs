@@ -5,7 +5,7 @@ pub static GPUWM_BRIDGE_SOURCE_REV_STAMP: &str =
 fn main() {
     let _ = std::hint::black_box(GPUWM_BRIDGE_SOURCE_REV_STAMP);
     if std::env::args().any(|a| a == "--abi") {
-        println!("gpuwm-soundings.v1 plain-run png json html columns-v1 json-columns");
+        println!("gpuwm-soundings.v1 plain-run png json html columns-v1 json-columns rw-store-v2");
         return;
     }
     // One line naming the device renders would use (a real device is

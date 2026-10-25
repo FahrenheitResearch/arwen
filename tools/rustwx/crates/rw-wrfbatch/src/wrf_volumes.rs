@@ -31,7 +31,7 @@ use rustwx_core::checked_volume_elements;
 // The log-pressure column walk is shared with the ML exporter
 // (crates/rw-isobaric), so a chart and a training sample read off one
 // history file agree about where a pressure level is.
-use rw_isobaric::{InterfaceStencil, STANDARD_GRAVITY, bracket, isobaric_heights_into, lerp};
+use rw_isobaric::{InterfaceStencil, STANDARD_GRAVITY, bracket, isobaric_heights_block_into, lerp};
 use rayon::prelude::*;
 use rw_store::PressureVolumeInput;
 
@@ -411,15 +411,39 @@ fn fill_interface_heights(
         ));
     }
     let targets: Vec<f64> = levels.iter().map(|level| f64::from(*level)).collect();
-    isobaric_heights_into(
-        interface,
-        *per_metre,
-        pressure_hpa,
-        stencil,
-        cells,
-        &targets,
-        planes,
-    )
+    // Columns are independent: blocks of cells read at once, each into its
+    // own slice of every level plane, the same bits as one pass over the
+    // grid. One thread read every column of a frame here (1.8 s of a 2.25 km
+    // / 750 m HRRR nest frame's 5.3 s render at one core, 2026-10-24).
+    let mut blocks: Vec<Vec<&mut [f32]>> = (0..cells.div_ceil(INTERPOLATION_BLOCK_CELLS))
+        .map(|_| Vec::with_capacity(planes.len()))
+        .collect();
+    for plane in planes.iter_mut() {
+        if plane.len() != cells {
+            return Err(format!(
+                "isobaric height writes planes of {cells}; was given one of {}",
+                plane.len()
+            ));
+        }
+        for (block, slice) in blocks.iter_mut().zip(plane.chunks_mut(INTERPOLATION_BLOCK_CELLS)) {
+            block.push(slice);
+        }
+    }
+    blocks
+        .into_par_iter()
+        .enumerate()
+        .try_for_each(|(block_index, mut block)| {
+            isobaric_heights_block_into(
+                interface,
+                *per_metre,
+                pressure_hpa,
+                stencil,
+                cells,
+                &targets,
+                block_index * INTERPOLATION_BLOCK_CELLS,
+                &mut block,
+            )
+        })
 }
 
 /// Read WRF 3D fields for `timeidx` and interpolate them to the canonical

@@ -156,7 +156,9 @@ BRIDGE_ABI_MARKERS = {
     # producer's receipt schema: fetch-geog builds the default
     # soiltemp_era5_1deg with `rw_zarr soiltemp-climatology`, which an
     # older build answers with its usage line.
-    "rw_zarr": b"arwen.geog-soiltemp-climatology.v1",
+    # Older cached readers lack `coverage`, so live hydro requests ERA5 beyond
+    # the published boundary instead of carrying its spin-up to live NWM soil.
+    "rw_zarr": b"gpuwm.zarr-coverage.v1",
     "arwen-tui": b"Usage: arwen-tui [--config FILE] [--python EXECUTABLE]",
     "grib1_bridge": b"usage: grib1_bridge INPUT.grb OUTPUT_DIR",
     "gfs_grib2_bridge": (

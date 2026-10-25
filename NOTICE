@@ -1384,3 +1384,10 @@ normalized industry composites from NREL/turbine-models, revision
 e9e4ccc6a87f50c0c65d236154a2897e752c47c9, Copyright (c) 2020, Alliance for
 Sustainable Energy, LLC, under the BSD 3-Clause licence reproduced in
 licenses/turbine-models-BSD-3-Clause.txt.
+
+Hydro projection libraries
+-------------------------
+The hydro bridges include PROJ 9.7.1 and its embedded resource database under
+the MIT-style terms reproduced in licenses/HYDRO-PROJ-COPYING.txt. They also
+include the public-domain SQLite 3.46.1 amalgamation. Pinned source archives,
+checksums and build options are documented in tools/hydro_proj/README.md.

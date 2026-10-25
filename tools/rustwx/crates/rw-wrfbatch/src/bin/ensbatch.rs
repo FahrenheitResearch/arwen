@@ -39,7 +39,10 @@ use rustwx_ensemble::{
     MemberStack, NanPolicy, PmmTieRule, ensemble_mean, ensemble_spread, exceedance_probability,
     member_color, missingness_report, pmm_tie_report, probability_matched_mean,
 };
-use rustwx_render::{ContourLayer, LegendControls, LegendMode, LevelDensity, RenderDensity};
+use rustwx_render::{
+    Color, ColorScale, ContourLayer, DiscreteColorScale, ExtendMode, LegendControls, LegendMode,
+    LevelDensity, RenderDensity,
+};
 use rusty_weather::render_all::StoreFieldSource;
 use rw_wrfbatch::annotate::{MapOverlays, PanelAnnotations, parse_color};
 use rw_wrfbatch::panel::{PanelRequest, layout_path, render_panel, safe_component};
@@ -1005,9 +1008,15 @@ fn render_product(
     valid_day: &str,
 ) -> Result<Option<PathBuf>, String> {
     let members = stack.len();
+    // The paintball's bar is its member key: one category band per member
+    // number in that member's contour colour (see `paintball_member_key`).
     let legend = LegendControls {
         density: LevelDensity::default(),
-        mode: LegendMode::Stepped,
+        mode: if product == "paintball" {
+            LegendMode::Categories
+        } else {
+            LegendMode::Stepped
+        },
     };
 
     // The subtitle row has three slots and the renderer centres the middle
@@ -1148,17 +1157,21 @@ fn render_product(
                     "Paintball {} {} {} ({members} members)",
                     spec.title, if matches!(spec.name,"visibility"|"fog_prob"){"<"}else{">"}, threshold_label(spec, threshold)
                 ),
-                spec.units.to_string(),
-                scales::spread_scale(1.0),
-                // The roster goes on stdout (PAINTBALL_LEGEND), not into
-                // the subtitle: 30 member/colour pairs do not fit a
-                // subtitle slot and a truncated legend is a wrong legend.
-                format!("{members} members | contour at {threshold} {} | member colours on stdout", spec.units),
+                "member (contour colour)".to_string(),
+                // The member key is drawn ON the picture as the colour bar:
+                // one labelled band per member number in that member's
+                // contour colour.  Breakage this fixes (hex production
+                // check 2026-10-24): the key went to stdout only, so the
+                // published map had coloured contours and no way to read
+                // which member drew which.  The roster also stays on stdout
+                // (PAINTBALL_LEGEND) for the Python half.
+                paintball_member_key(stack.numbers()),
+                format!("{members} members | contour at {threshold} {}", spec.units),
                 contours,
                 format!("ens_paintball_{}", spec.name),
-                // A paintball fill is all-NaN by construction; a colourbar
-                // beside it invites reading a value off an empty scale.
-                false,
+                // The fill is all-NaN; the bar is the category member key,
+                // not a value scale.
+                true,
             )
         }
         other => return Err(format!("unknown product {other}")),
@@ -1198,6 +1211,33 @@ fn render_product(
         out_path,
     })?;
     Ok(Some(path))
+}
+
+/// The paintball member key as a category colour scale: one band per member
+/// number from the lowest to the highest in the stack, centred on the number
+/// (so the category bar labels each band with its member number), filled with
+/// that member's contour colour.  A number missing from the stack (a member
+/// that was not accepted) keeps its band, transparent, so every label still
+/// sits on its own member's colour.
+fn paintball_member_key(numbers: &[u32]) -> ColorScale {
+    let lo = numbers.iter().copied().min().unwrap_or(0);
+    let hi = numbers.iter().copied().max().unwrap_or(0);
+    let levels = (lo..=hi + 1).map(|code| f64::from(code) - 0.5).collect();
+    let colors = (lo..=hi)
+        .map(|code| {
+            if numbers.contains(&code) {
+                parse_color(member_color(code))
+            } else {
+                Color::TRANSPARENT
+            }
+        })
+        .collect();
+    ColorScale::Discrete(DiscreteColorScale {
+        levels,
+        colors,
+        extend: ExtendMode::Neither,
+        mask_below: None,
+    })
 }
 
 /// The left subtitle: the coverage stamp when anything was masked, and the
@@ -1492,6 +1532,20 @@ mod tests {
             .expect_err("a nest no member holds is not a roster");
         assert!(err.contains("d03"), "{err}");
         assert!(err.contains("d01"), "{err}");
+    }
+
+    #[test]
+    fn the_paintball_key_has_one_band_per_member_number_in_its_contour_colour() {
+        // Production check 2026-10-24: the member key went to stdout only.
+        let ColorScale::Discrete(key) = paintball_member_key(&[1, 2, 4]) else {
+            panic!("the member key is a discrete category scale");
+        };
+        assert_eq!(key.levels, vec![0.5, 1.5, 2.5, 3.5, 4.5]);
+        assert_eq!(key.colors.len(), 4);
+        assert_eq!(key.colors[0], parse_color(member_color(1)));
+        assert_eq!(key.colors[1], parse_color(member_color(2)));
+        assert_eq!(key.colors[2], Color::TRANSPARENT, "member 3 was not accepted");
+        assert_eq!(key.colors[3], parse_color(member_color(4)));
     }
 
     #[test]

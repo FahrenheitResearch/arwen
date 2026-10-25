@@ -1,9 +1,9 @@
 //! Location map panel: the sounding-point locator as a full inset panel
-//! (state-outline basemap + crosshair), replacing the "Psbl Haz. Type" box
+//! (world basemap + crosshair), replacing the "Psbl Haz. Type" box
 //! in the default window layout. Same drawing as the hodograph's corner
 //! inset, scaled up to its own cell with the inset-row title framing.
 
-use egui::{Align2, Color32, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, Vec2};
+use egui::{Align2, Color32, Painter, Pos2, Rect, Stroke, StrokeKind, Vec2};
 
 use crate::derived::DerivedParams;
 use crate::skewt::SkewTStyle;
@@ -32,12 +32,19 @@ fn map_extent(
             .max(required_lon * cos_lat / aspect.max(0.01));
     }
     let half_lon = half_lat * aspect / cos_lat;
-    (
-        lon - half_lon,
-        lat - half_lat,
-        lon + half_lon,
-        lat + half_lat,
-    )
+    // Over open ocean the default view can hold no outline at all; widen it
+    // until a coast or border is in frame (see `basemap::widen_until_outline`).
+    let ext = super::basemap::widen_until_outline(
+        super::basemap::Extent {
+            west: lon - half_lon,
+            south: lat - half_lat,
+            east: lon + half_lon,
+            north: lat + half_lat,
+        },
+        lon,
+        lat,
+    );
+    (ext.west, ext.south, ext.east, ext.north)
 }
 
 /// Draw the location panel into `rect`.
@@ -106,25 +113,17 @@ pub fn draw(painter: &Painter, rect: Rect, prof: &Profile, dv: &DerivedParams, s
         )
     };
 
-    let outline = Stroke::new(1.0, style.fg_color);
-    for seg in super::hodo_map_data::SEGMENTS {
-        let visible = seg.iter().any(|(slon, slat)| {
-            (*slon as f64) >= west - 6.0
-                && (*slon as f64) <= east + 6.0
-                && (*slat as f64) >= south - 6.0
-                && (*slat as f64) <= north + 6.0
-        });
-        if !visible {
-            continue;
-        }
-        let pts: Vec<Pos2> = seg
-            .iter()
-            .map(|(slon, slat)| map_point(*slon as f64, *slat as f64))
-            .collect();
-        if pts.len() >= 2 {
-            mp.add(Shape::line(pts, outline));
-        }
-    }
+    super::basemap::draw(
+        &mp,
+        super::basemap::Extent {
+            west,
+            south,
+            east,
+            north,
+        },
+        map_point,
+        Stroke::new(1.0, style.fg_color),
+    );
 
     // Area-mean footprint first, sounding point second. The translucent fill
     // keeps state outlines legible; the sampled bounds and center marker use
@@ -193,5 +192,29 @@ mod tests {
         let interior = Rect::from_min_size(Pos2::ZERO, Vec2::new(320.0, 200.0));
         let (_, south, _, north) = map_extent(interior, 35.0, -100.0, None);
         assert_eq!((south, north), (31.0, 39.0));
+    }
+
+    #[test]
+    fn a_point_outside_conus_gets_a_basemap_in_its_location_panel() {
+        // Production check 2026-10-24: 12N 102.3W (East Pacific) drew an
+        // empty inset. Paris keeps the 4-degree view and has outlines in
+        // it; the open-ocean point widens until the Mexican coast is in.
+        let interior = Rect::from_min_size(Pos2::ZERO, Vec2::new(320.0, 200.0));
+        let (w, s, e, n) = map_extent(interior, 48.8, 2.3, None);
+        assert_eq!((s, n), (44.8, 52.8));
+        assert!(super::super::basemap::has_outline_in(super::super::basemap::Extent {
+            west: w,
+            south: s,
+            east: e,
+            north: n,
+        }));
+        let (w, s, e, n) = map_extent(interior, 12.0, -102.3, None);
+        assert!(n - s > 8.0, "open ocean widens: {s}..{n}");
+        assert!(super::super::basemap::has_outline_in(super::super::basemap::Extent {
+            west: w,
+            south: s,
+            east: e,
+            north: n,
+        }));
     }
 }

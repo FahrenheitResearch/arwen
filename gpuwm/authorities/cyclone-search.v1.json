@@ -5,6 +5,7 @@
     "maximum_hours": 24,
     "maximum_displacement_km": 300,
     "maximum_fix_interval_hours": 6,
+    "maximum_missing_fixes": 1,
     "method": "constant-motion back projection; first detected pressure held, never described as measured cycle pressure"
   },
   "regions": {

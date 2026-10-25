@@ -227,7 +227,14 @@ def test_the_nest_prepares_and_its_receipt_names_the_island(capsys, monkeypatch)
     from gpuwm.ingest import hrrr as hrrr_ingest
     monkeypatch.setattr(hrrr_ingest, "_DISTANT_DONORS_ANNOUNCED", set())
     snapshot = _window_snapshot()
-    landmask = np.zeros((216, 222))
+    # Keep the actual mainland in this soil-donor fixture. Marking every
+    # other target as water also asks the independent coastal temperature
+    # mapper to find sea donors beneath inland mainland targets, beyond
+    # this archived decoded window. That request is correctly refused.
+    from gpuwm.ingest.cpu_backend import CpuPreprocessBackend
+    lat, lon = _nest_grid().latlon_mass()
+    plan = hrrr._ProjectedCpuPlan(snapshot, lat, lon, CpuPreprocessBackend())
+    landmask = plan.apply(snapshot.fields["LANDSEA"], method="nearest")
     for row, col in _ISLAND:
         landmask[row, col] = 1.0
     report: dict = {}

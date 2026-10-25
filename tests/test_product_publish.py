@@ -175,7 +175,8 @@ def test_final_render_takes_all_available_cores_after_stepping(tmp_path, monkeyp
         report=lambda row: None, warn=lambda *a, **k: None)
     live._closed, live._active = True, 1
     live._run_render(["renderer"])
-    assert calls[0]["env_overrides"] == {"RUSTWX_LIVE_RENDER_SLOTS": "1", "RAYON_NUM_THREADS": "16"}
+    assert calls[0]["env_overrides"] == {"RUSTWX_LIVE_RENDER_SLOTS": "1", "RUSTWX_LIVE_RENDER_DRAWING": "1",
+                                          "RAYON_NUM_THREADS": "16"}
     assert calls[0]["nice"] == 0
 
 

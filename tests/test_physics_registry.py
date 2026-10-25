@@ -2750,8 +2750,13 @@ def test_mp28_mixed_nest_edge_is_published_by_registry_and_runtime_alike():
             assert seeded["nifa"] == 5.0e3
         else:
             # Leaving mp=28 needs no closure: the aerosol numbers are
-            # dropped and the target's own moments come from target mass.
-            assert set(seeded) == {"nr", "ni"}
+            # dropped, and rain and ice numbers are carried (both schemes
+            # are inverse-exponential in rain and cloud ice).
+            assert set(seeded) == set()
+            carried = {row["target_field"] for row in contract.species_actions()
+                       if row["action"] == "mapped"
+                       and row["reason"] == "shared_exponential_number_moment"}
+            assert carried == {"nr", "ni"}
 
     # The same-scheme edge, which was always admitted, on both authorities.
     uniform = validate_physics_plan(_mp28_tree_plan())

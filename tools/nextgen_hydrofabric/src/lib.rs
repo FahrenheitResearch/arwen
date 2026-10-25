@@ -74,3 +74,12 @@ pub extern "C" fn arwen_hydrofabric_source_revision() -> *const std::ffi::c_char
     .as_ptr()
     .cast()
 }
+
+/// Doctor loads this exact cdylib and exercises its projection data path.
+#[no_mangle]
+pub extern "C" fn arwen_hydrofabric_proj_probe() -> i32 {
+    match std::panic::catch_unwind(weights::proj_probe) {
+        Ok(Ok(_)) => 0,
+        _ => 1,
+    }
+}

@@ -162,11 +162,21 @@ def load_state(source, valid_time, lat, lon, *, path='', accept_licence='', cach
         raise ValueError(f'lake source {row["id"]} requires lake_state_path to an acquired CF NetCDF file')
     cache = Path(cache or os.environ.get('GPUWM_LAKE_STATE_CACHE', str(Path.home()/'.gpuwm/cache/lake-state')))
     cache.mkdir(parents=True, exist_ok=True)
-    envelope = coordinate_coverage(lat, lon, row)
-    bounds = dict(south=max(row.get('south', -90.), envelope['south']-.04),
-                  north=min(row.get('north', 90.), envelope['north']+.04),
-                  west=max(row.get('west', -180.), envelope['west']-.04),
-                  east=min(row.get('east', 180.), envelope['east']+.04))
+    # THE REQUEST IS THE SOURCE'S WHOLE DECLARED EXTENT, not the targets'
+    # envelope.  Cropped to the targets, the same lake cell was sampled from
+    # a different grid window depending on which other cells were asked for
+    # in the same call, and the bilinear weights moved by a last-place bit:
+    # the resident 5 km CONUS run and its slab-built streamed twin
+    # disagreed by up to 3e-8 in 13 Great Lakes ice-fraction cells (X12).
+    # A row with no declared extent keeps the envelope crop.
+    if all(key in row for key in ('south', 'north', 'west', 'east')):
+        bounds = {key: row[key] for key in ('south', 'north', 'west', 'east')}
+    else:
+        envelope = coordinate_coverage(lat, lon, row)
+        bounds = dict(south=max(row.get('south', -90.), envelope['south']-.04),
+                      north=min(row.get('north', 90.), envelope['north']+.04),
+                      west=max(row.get('west', -180.), envelope['west']-.04),
+                      east=min(row.get('east', 180.), envelope['east']+.04))
     date = utc(valid_time).date().isoformat()
     fields = [f for f in row['field'] if f.get('start', '0000') <= date <= f.get('end', '9999')]
     def read(field):

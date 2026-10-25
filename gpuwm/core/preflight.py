@@ -2153,6 +2153,8 @@ def read_compile_platform() -> tuple[str, str] | None:
 KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     # Production loaders, RTX 3080 sm_86 / NVRTC 13.0.48, 2026-10-21.
     "output_diagnostics": 0, "gsd_diagnostics": 0, "gsd_helicity": 0,
+    "climate_diagnostics": 0,
+    "gsd_initial_reflectivity": 0,
     # WRF's ocean mixed layer, read at 0 B through the production loader
     # by the OML port lane (port289-1-ocean1-oml, tools/vram_reserve_probe.py).
     "oml": 0,
@@ -3773,8 +3775,13 @@ def domain_kernel_modules(dc: DomainConfig, *,
     if (float(getattr(dc.run, "prec_acc_dt", 0)) > 0
             or float(getattr(dc.run, "prec_acc_dt1", 0)) > 0):
         modules.add("output_diagnostics")
+    if int(getattr(dc.run, "output_diagnostics", 0)):
+        modules.add("climate_diagnostics")
     if int(getattr(dc.run, "gsd_diagnostics", 0)):
         modules.update(("gsd_diagnostics", "gsd_helicity"))
+    from gpuwm.core.gsd_initial_reflectivity import enabled as gsd_initial_enabled
+    if gsd_initial_enabled(dc.run):
+        modules.add("gsd_initial_reflectivity")
     if int(getattr(dc.run, "sf_lake_physics", 0)) == 1:
         modules.add("lake")
     if int(getattr(dc.run, "sf_ocean_physics", 0)) == 1:
@@ -4164,6 +4171,7 @@ def column_workspace_bytes(
             + ysu_column_workspace_bytes(exp, profile=profile)
             + shinhong_column_workspace_bytes(exp, profile=profile)
             + thompson_fork_column_workspace_bytes(exp, profile=profile)
+            + gsd_initial_reflectivity_workspace_bytes(exp, profile=profile)
             + ntiedtke_column_workspace_bytes(exp, profile=profile)
             + tiedtke_column_workspace_bytes(exp)
             + g3_column_workspace_bytes(exp, profile=profile)
@@ -4292,6 +4300,23 @@ def thompson_fork_column_workspace_bytes(
                                int(dc.run.nx) * int(dc.run.ny))
         worst = max(worst, workspace_bytes(int(dc.run.nz), threads))
     return int(worst)
+
+
+def gsd_initial_reflectivity_workspace_bytes(
+        exp: ExperimentConfig, *,
+        profile: DeviceLocalMemoryProfile | None = None) -> int:
+    """Bounded initial-history radar arena; prevents unpriced t=0 allocation.
+
+    Each enabled domain uses 87 * (nz + 1) bytes per thread in flight.
+    The same formula sizes the launcher's three device buffers.
+    Domains and host/store slabs are diagnosed sequentially.
+    """
+    from gpuwm.core.gsd_initial_reflectivity import enabled, tile_threads, workspace_bytes
+
+    profile = MEASURED_LOCAL_MEMORY_PROFILE if profile is None else profile
+    return max((workspace_bytes(int(dc.run.nz), tile_threads(
+                    profile.multiprocessor_count, int(dc.run.nx)*int(dc.run.ny)))
+                for dc in exp.domains if enabled(dc.run)), default=0)
 
 
 def uwpbl_column_workspace_bytes(
@@ -6523,7 +6548,7 @@ from gpuwm.core.hail import PERSISTENT as _HAIL_PERSISTENT
 from gpuwm.core.output_diagnostics import PERSISTENT as _OUTPUT_PERSISTENT
 
 SCRATCH_SLOT_LIFETIME_AUDIT = (
-    ScratchSlotLifetime(_OUTPUT_PERSISTENT + ("output_zero", "gsd_zero", "gsd_uh_use", "gsd_pressure_w", "gsd_temperature", "gsd_density", "gsd_wind10", "gsd_wind80"), "carrying",
+    ScratchSlotLifetime(_OUTPUT_PERSISTENT + ("cl_zero", "output_zero", "gsd_zero", "gsd_uh_use", "gsd_pressure_w", "gsd_temperature", "gsd_density", "gsd_wind10", "gsd_wind80"), "carrying",
         "gpuwm/core/output_diagnostics.py:update_precipitation",
         "Interval buckets survive history and checkpoint; absent inputs stay zero"),
     ScratchSlotLifetime(
@@ -13211,6 +13236,7 @@ def check_main(args) -> int:
         ysu_ws = ysu_column_workspace_bytes(exp, profile=profile)
         shinhong_ws = shinhong_column_workspace_bytes(exp, profile=profile)
         fork_ws = thompson_fork_column_workspace_bytes(exp, profile=profile)
+        initial_refl_ws = gsd_initial_reflectivity_workspace_bytes(exp, profile=profile)
         # Kept out of the f-string: a line break inside an f-string
         # expression is PEP 701 (Python 3.12+) syntax, and the supported
         # floor is 3.11 -- the 1.2.0 release workflow failed on exactly
@@ -13221,7 +13247,7 @@ def check_main(args) -> int:
         # to the per-card term (task 206).
         context_bytes = profile.cuda_context_bytes
         remeasured_bytes = (estimate.alloc_estimate_bytes + widest
-                            + gf_ws + kf_ws + ysu_ws + shinhong_ws + fork_ws
+                            + gf_ws + kf_ws + ysu_ws + shinhong_ws + fork_ws + initial_refl_ws
                             + context_bytes
                             + reserve.retention_residual_bytes)
         gf_ws_term = (f" + GF column workspace {_format_bytes(gf_ws)}"
@@ -13233,6 +13259,8 @@ def check_main(args) -> int:
         ysu_ws_term += (" + Shin-Hong column workspace "
                         f"{_format_bytes(shinhong_ws)}"
                         if shinhong_ws else "")
+        ysu_ws_term += (f" + initial GSD radar workspace {_format_bytes(initial_refl_ws)}"
+                       if initial_refl_ws else "")
         print(f"  NON-POOL: CUDA context "
               f"{_format_bytes(context_bytes)} + local-memory backing "
               f"store {_format_bytes(widest)} "
@@ -13959,6 +13987,7 @@ __all__ = [
     "column_workspace_bytes", "gf_column_workspace_bytes",
     "kf_column_workspace_bytes", "ysu_column_workspace_bytes",
     "shinhong_column_workspace_bytes", "thompson_fork_column_workspace_bytes",
+    "gsd_initial_reflectivity_workspace_bytes",
     "kernel_local_memory_bytes", "non_pool_device_bytes",
     "physics_kernel_modules", "refl_diagnostic_reachable",
     "LEVEL_SPECIALIZED_KERNEL_FRAMES", "LevelSpecializedFrame",

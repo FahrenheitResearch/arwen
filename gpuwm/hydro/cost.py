@@ -32,6 +32,7 @@ class HydroCostMeter:
         self._pending = deque()
         self._current = None
         self.calls = 0
+        self.boundary_flush_calls = 0
         self.sampled = 0
         self.unsampled = 0
         self.total_ms = 0.0
@@ -132,7 +133,11 @@ def receipt(physics, *, forecast_seconds, atmosphere_steps, budget=0.05, setting
         "hydro_ms_before_lsm_total": meter.before_ms,
         "hydro_ms_advance_total": meter.advance_ms,
         "hydro_ms_total": hydro_ms,
-        "lsm_calls": calls, "sampled_calls": sampled, "unsampled_calls": meter.unsampled,
+        "lsm_calls": calls - meter.boundary_flush_calls, "measured_hook_pairs": calls,
+        "boundary_flush_calls": meter.boundary_flush_calls,
+        "sampled_calls": sampled, "unsampled_calls": meter.unsampled,
+        "routing_clock": getattr(driver, 'routing_clock', None),
+        "parent_elapsed_seconds": driver.elapsed_seconds,
         "atmosphere_steps": int(atmosphere_steps),
         "forecast_wall_ms": forecast_ms,
         "interval_seconds": float(driver.interval_seconds),
@@ -142,7 +147,8 @@ def receipt(physics, *, forecast_seconds, atmosphere_steps, budget=0.05, setting
         "parallelism": [{"stage": stage.name, "parallelism": stage.parallelism,
                          "cadence_lsm_calls": getattr(stage, "cadence_steps", 1),
                          "interval_seconds": getattr(stage, "interval_seconds", None) or driver.interval_seconds,
-                         "launches": calls // getattr(stage, "cadence_steps", 1)}
+                         "launches": (driver.stage_launches[stage.name] if getattr(driver, 'routing_clock', None)
+                                      else calls // getattr(stage, "cadence_steps", 1))}
                         for stage in getattr(driver, "prepared_stages", ())],
         "host_per_lsm_call": "prebound launch sequence plus four CUDA event records; no device sync",
         "measurement": ("CUDA events around before_lsm and advance on the hydro stream "

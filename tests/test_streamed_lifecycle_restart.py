@@ -13,6 +13,10 @@ class Endpoint:
     validate_restart = StreamedDomain.validate_restart
     apply_restart = StreamedDomain.apply_restart
     impose_clock = StreamedDomain.impose_clock
+    # The nest accumulation archive rides the domain-level state (2.9.7):
+    # no store template here, so the attached node's own state.
+    _nest_archive_state = StreamedDomain._nest_archive_state
+    _template = None
 
     def publish(self, names):
         # The existing header publication only touches tracker planes.

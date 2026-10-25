@@ -650,13 +650,49 @@ impl SkewT<'_> {
         // The title lives in the band above the plot border (TITLE_TOP = 3 in
         // the original renderer); anchor to the band's bottom so it never
         // collides with the border at small widget sizes.
-        painter.text(
-            g.pt(g.lpad, g.tpad - 2.0),
-            Align2::LEFT_BOTTOM,
-            &self.title,
-            fonts.title.clone(),
-            st.fg_color,
-        );
+        // The whole title is laid out, never cut at the panel edge: it shrinks to the width the panel leaves
+        // (down to half size), and a title still too long breaks at the " · " nearest its middle onto a second line, both
+        // lines shrunk to fit the band above the plot. Origin: "Ensemble mean (36 me" cut off at the skew-T's right edge (2026-10-24).
+        let anchor = g.pt(g.lpad, g.tpad - 2.0);
+        let avail = (g.rect.max.x - anchor.x - 6.0).max(40.0);
+        let sized = |text: &str, scale: f32| {
+            let mut f = fonts.title.clone();
+            f.size *= scale;
+            painter.layout_no_wrap(text.to_string(), f, st.fg_color)
+        };
+        let full = sized(&self.title, 1.0);
+        let fit = (avail / full.size().x.max(1.0)).min(1.0);
+        if fit >= 0.5 || !self.title.contains(" · ") {
+            let galley = if fit < 1.0 { sized(&self.title, fit.max(0.35)) } else { full };
+            let h = galley.size().y;
+            painter.galley(egui::pos2(anchor.x, anchor.y - h), galley, st.fg_color);
+        } else {
+            let parts: Vec<&str> = self.title.split(" · ").collect();
+            let total = self.title.chars().count();
+            // The break nearest the middle of the text.
+            let mut best = 1;
+            let mut seen = 0usize;
+            let mut best_gap = usize::MAX;
+            for (i, part) in parts.iter().enumerate().take(parts.len() - 1) {
+                seen += part.chars().count() + 3;
+                let gap = seen.abs_diff(total / 2);
+                if gap < best_gap {
+                    best_gap = gap;
+                    best = i + 1;
+                }
+            }
+            let (a, b) = (parts[..best].join(" · "), parts[best..].join(" · "));
+            let (la, lb) = (sized(&a, 1.0), sized(&b, 1.0));
+            // Both lines inside the band above the plot: as wide as the panel allows, as tall as the band allows.
+            let band = (anchor.y - g.rect.min.y).max(8.0);
+            let scale = (avail / la.size().x.max(lb.size().x).max(1.0))
+                .min(band / (la.size().y + lb.size().y).max(1.0))
+                .min(0.7);
+            let (ga, gb) = (sized(&a, scale), sized(&b, scale));
+            let (ha, hb) = (ga.size().y, gb.size().y);
+            painter.galley(egui::pos2(anchor.x, anchor.y - hb - ha), ga, st.fg_color);
+            painter.galley(egui::pos2(anchor.x, anchor.y - hb), gb, st.fg_color);
+        }
         if let Some(brand) = &self.brand {
             painter.text(
                 g.pt(g.wid + g.rpad, g.tpad - 2.0),

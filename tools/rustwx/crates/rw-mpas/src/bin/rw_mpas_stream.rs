@@ -1,4 +1,4 @@
-//! Serial MPAS native streams, with raw primitive-word handoff to the driver.
+//! MPAS native streams, with raw primitive-word handoff to the driver.
 //!
 //! MPAS v8.4.2 src/core_atmosphere/Registry.xml:498-1349 defines membership;
 //! src/framework/mpas_io_streams.F:2430-3927 defines native file layout. Dimension order
@@ -231,28 +231,77 @@ fn prepare(v: &Variable, dims: &BTreeMap<String,usize>) -> Result<Vec<u64>> {
     if v.dimensions.iter().any(|d| d!="Time" && !unique.contains(d)) { return Err(format!("{}: missing input axis",v.name).into()); }
     let raw=fs::read(&v.filename)?;
     if raw.len()!=product(&v.shape)?.checked_mul(input_size).ok_or("input size overflow")? { return Err(format!("{}: raw handoff byte count mismatch",v.name).into()); }
-    let target=bytes_mut(&mut out,count*size);
-    for flat in 0..count {
-        let mut residual=flat; let mut coords=vec![0;out_shape.len()];
-        for axis in (0..coords.len()).rev() { coords[axis]=residual%out_shape[axis]; residual/=out_shape[axis]; }
-        let mut input_index=0;
-        for (d,n) in v.input_dimensions.iter().zip(&v.shape) {
-            input_index=input_index*n+coords[v.dimensions.iter().position(|a| a==d).ok_or("input axis absent")?];
-        }
-        let src=&raw[input_index*input_size..(input_index+1)*input_size]; let dest=&mut target[flat*size..(flat+1)*size];
-        if v.connectivity_offset!=0 {
-            if ![4,10].contains(&input_kind) || out_kind!=4 { return Err("connectivity requires signed int32/int64 input and int32 output".into()); }
-            let value=if input_kind==4 {i32::from_ne_bytes(src.try_into()?) as i64} else {i64::from_ne_bytes(src.try_into()?)};
-            let disk=i32::try_from(value.checked_add(v.connectivity_offset as i64).ok_or("connectivity overflow")?)?;
-            dest.copy_from_slice(&disk.to_ne_bytes());
-        } else if input_kind==out_kind { dest.copy_from_slice(src); }
-        else if input_kind==10 && out_kind==4 {dest.copy_from_slice(&i32::try_from(i64::from_ne_bytes(src.try_into()?))?.to_ne_bytes());}
-        else if input_kind==7 && out_kind==4 {dest.copy_from_slice(&(src[0] as i32).to_ne_bytes());}
-        else if input_kind==5 && out_kind==6 { dest.copy_from_slice(&(f32::from_ne_bytes(src.try_into()?) as f64).to_ne_bytes()); }
-        else if input_kind==6 && out_kind==5 { dest.copy_from_slice(&(f64::from_ne_bytes(src.try_into()?) as f32).to_ne_bytes()); }
-        else { return Err(format!("{}: unsupported primitive conversion",v.name).into()); }
+    if count==0 { return Ok(out); }
+    // The conversion is chosen once per variable, in the per-word order the
+    // serial loop tested it (connectivity first, then same kind, then widening).
+    let conv=if v.connectivity_offset!=0 {
+        if ![4,10].contains(&input_kind) || out_kind!=4 { return Err("connectivity requires signed int32/int64 input and int32 output".into()); }
+        Conv::Connectivity{wide:input_kind==10,offset:v.connectivity_offset as i64}
+    } else if input_kind==out_kind { Conv::Copy }
+    else if input_kind==10 && out_kind==4 { Conv::I64ToI32 }
+    else if input_kind==7 && out_kind==4 { Conv::U8ToI32 }
+    else if input_kind==5 && out_kind==6 { Conv::F32ToF64 }
+    else if input_kind==6 && out_kind==5 { Conv::F64ToF32 }
+    else { return Err(format!("{}: unsupported primitive conversion",v.name).into()); };
+    // Input word stride of every output axis; an output axis the input lacks
+    // (Time) repeats the input, as the serial loop's index ignored it.
+    let mut strides=vec![0usize;out_shape.len()];
+    for (axis,d) in v.dimensions.iter().enumerate() {
+        if let Some(pos)=v.input_dimensions.iter().position(|a| a==d) { strides[axis]=v.shape[pos+1..].iter().product(); }
     }
-    Ok(out)
+    let target=bytes_mut(&mut out,count*size);
+    permute(&raw,target,&out_shape,&strides,input_size,size,conv).map_err(|e| e.into()).map(|_| out)
+}
+
+// One word conversion, fixed per variable (MPAS v8.4.2 mpas_io_streams.F:3254-3927 primitive semantics).
+#[derive(Clone,Copy)]
+enum Conv { Copy, Connectivity{wide:bool,offset:i64}, I64ToI32, U8ToI32, F32ToF64, F64ToF32 }
+
+fn convert(conv: Conv, src: &[u8], dest: &mut [u8]) -> std::result::Result<(),String> {
+    match conv {
+        Conv::Copy => dest.copy_from_slice(src),
+        Conv::Connectivity{wide,offset} => {
+            let value=if wide {i64::from_ne_bytes(src.try_into().unwrap())} else {i32::from_ne_bytes(src.try_into().unwrap()) as i64};
+            let disk=i32::try_from(value.checked_add(offset).ok_or("connectivity overflow")?).map_err(|e| e.to_string())?;
+            dest.copy_from_slice(&disk.to_ne_bytes());
+        }
+        Conv::I64ToI32 => dest.copy_from_slice(&i32::try_from(i64::from_ne_bytes(src.try_into().unwrap())).map_err(|e| e.to_string())?.to_ne_bytes()),
+        Conv::U8ToI32 => dest.copy_from_slice(&(src[0] as i32).to_ne_bytes()),
+        Conv::F32ToF64 => dest.copy_from_slice(&(f32::from_ne_bytes(src.try_into().unwrap()) as f64).to_ne_bytes()),
+        Conv::F64ToF32 => dest.copy_from_slice(&(f64::from_ne_bytes(src.try_into().unwrap()) as f32).to_ne_bytes()),
+    }
+    Ok(())
+}
+
+// Rows of the last output axis, each a strided walk of the input. Large
+// variables are split over every core in output order; the first failing word
+// in output order is the error reported, as in the serial loop. Same bytes.
+fn permute(raw: &[u8], target: &mut [u8], shape: &[usize], strides: &[usize], isz: usize, osz: usize,
+           conv: Conv) -> std::result::Result<(),String> {
+    let ndim=shape.len();
+    let inner=if ndim==0 {1} else {shape[ndim-1]};
+    let inner_stride=if ndim==0 {0} else {strides[ndim-1]};
+    let rows=target.len()/osz/inner;
+    let run=|r0: usize, chunk: &mut [u8]| -> std::result::Result<(),String> {
+        for (i,row) in chunk.chunks_exact_mut(inner*osz).enumerate() {
+            let mut rem=r0+i; let mut base=0;
+            for axis in (0..ndim.saturating_sub(1)).rev() { base+=(rem%shape[axis])*strides[axis]; rem/=shape[axis]; }
+            for (j,dest) in row.chunks_exact_mut(osz).enumerate() {
+                let s=(base+j*inner_stride)*isz;
+                convert(conv,&raw[s..s+isz],dest)?;
+            }
+        }
+        Ok(())
+    };
+    let workers=std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(32).min(rows);
+    if workers<2 || target.len()<(4<<20) { return run(0,target); }
+    let per=rows.div_ceil(workers);
+    let results:Vec<_>=std::thread::scope(|scope| {
+        let handles:Vec<_>=target.chunks_mut(per*inner*osz).enumerate()
+            .map(|(k,chunk)| { let run=&run; scope.spawn(move || run(k*per,chunk)) }).collect();
+        handles.into_iter().map(|h| h.join().unwrap_or_else(|_| Err("stream encode worker panicked".into()))).collect()
+    });
+    results.into_iter().collect()
 }
 // MPAS v8.4.2 src/framework/mpas_io_streams.F:3254-3927: native primitive/layout semantics.
 fn write(req: &Request) -> Result<Value> {
@@ -566,5 +615,60 @@ mod tests {
         for order in [vec!["one"],vec!["one","one"],vec!["one","other"]] {
             assert!(ordered_keys(&map,&order.into_iter().map(str::to_owned).collect::<Vec<_>>()).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests_permute {
+    use super::*;
+
+    // The serial per-word loop this replaced, kept as the referee.
+    fn serial(raw: &[u8], out_shape: &[usize], dims: &[&str], in_dims: &[&str], in_shape: &[usize], conv: Conv,
+              isz: usize, osz: usize) -> std::result::Result<Vec<u8>,String> {
+        let count: usize = out_shape.iter().product();
+        let mut target = vec![0u8; count*osz];
+        for flat in 0..count {
+            let mut residual=flat; let mut coords=vec![0;out_shape.len()];
+            for axis in (0..coords.len()).rev() { coords[axis]=residual%out_shape[axis]; residual/=out_shape[axis]; }
+            let mut input_index=0;
+            for (d,n) in in_dims.iter().zip(in_shape) { input_index=input_index*n+coords[dims.iter().position(|a| a==d).unwrap()]; }
+            convert(conv,&raw[input_index*isz..(input_index+1)*isz],&mut target[flat*osz..(flat+1)*osz])?;
+        }
+        Ok(target)
+    }
+
+    fn strides(dims: &[&str], in_dims: &[&str], in_shape: &[usize]) -> Vec<usize> {
+        dims.iter().map(|d| in_dims.iter().position(|a| a==d).map(|p| in_shape[p+1..].iter().product()).unwrap_or(0)).collect()
+    }
+
+    #[test]
+    fn threaded_permutation_matches_the_serial_loop() {
+        // (Time, nCells, nVertLevels) from (nVertLevels, nCells), large enough to split over workers.
+        let (nl, nc) = (55usize, 40_000usize);
+        let raw: Vec<u8> = (0..nl*nc*4).map(|i| (i*2654435761usize >> 7) as u8).collect();
+        let dims = ["Time","nCells","nVertLevels"]; let in_dims = ["nVertLevels","nCells"]; let in_shape = [nl,nc];
+        let shape = [1,nc,nl];
+        let mut fast = vec![0u8; nl*nc*4];
+        permute(&raw,&mut fast,&shape,&strides(&dims,&in_dims,&in_shape),4,4,Conv::Copy).unwrap();
+        assert_eq!(fast, serial(&raw,&shape,&dims,&in_dims,&in_shape,Conv::Copy,4,4).unwrap());
+        // Widening to double, and a scalar.
+        let mut wide = vec![0u8; nl*nc*8];
+        permute(&raw,&mut wide,&shape,&strides(&dims,&in_dims,&in_shape),4,8,Conv::F32ToF64).unwrap();
+        assert_eq!(wide, serial(&raw,&shape,&dims,&in_dims,&in_shape,Conv::F32ToF64,4,8).unwrap());
+        let mut one = vec![0u8; 4];
+        permute(&raw[..4],&mut one,&[],&[],4,4,Conv::Copy).unwrap();
+        assert_eq!(one, raw[..4]);
+    }
+
+    #[test]
+    fn first_failing_word_in_output_order_is_reported() {
+        // Two out-of-range connectivity words; the earlier one in output order names the error.
+        let n = 2_000_000usize;
+        let mut values = vec![1i64; n]; values[n-10] = i64::MAX; values[1_500_000] = i64::from(i32::MAX);
+        let raw: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+        let mut out = vec![0u8; n*4];
+        let fast = permute(&raw,&mut out,&[n],&[1],8,4,Conv::Connectivity{wide:true,offset:1}).unwrap_err();
+        let slow = serial(&raw,&[n],&["nCells"],&["nCells"],&[n],Conv::Connectivity{wide:true,offset:1},8,4).unwrap_err();
+        assert_eq!(fast, slow);
     }
 }

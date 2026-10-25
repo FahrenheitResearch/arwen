@@ -19,99 +19,819 @@
       "owner": "astra-c-hydro-data",
       "id_namespace": 0,
       "hf_source": "NHDPlusV2",
-      "crs": "EPSG:5070",
-      "vertical_datum": "NAVD88",
+      "crs": "laea-domain-centroid",
+      "vertical_datum": "EGM2008 reservoir and terrain elevations from shared Copernicus DEM; native smoothed elevations used for channel gradients only",
       "inputs": {
         "river_network": {
-          "dataset": "EPA/USGS NHDPlus V2.1 PlusFlow + PlusFlowlineVAA",
-          "version": "2.1",
+          "dataset": "EPA/USGS NHDPlus V2.1 NHDSnapshot/Hydrography/NHDFlowline.shp",
+          "version": "2.1; per-VPU content editions pinned in archives",
           "url": null,
-          "format": "dbf in 7z",
+          "format": "NAD83 geographic shapefile / dBASE attributes in 7z; native downstream from strictly decreasing Hydroseq -> DnHydroseq",
           "columns": {
-            "FROMCOMID": "upstream reach id",
-            "TOCOMID": "downstream reach id",
-            "ComID": "reach id"
+            "ComID": "id"
           },
           "licence": {
             "status": "verified",
             "name": "EPA/USGS NHDPlus V2.1; access and use constraints None",
             "quote": "Access_Constraints: None. Use_Constraints: None.",
             "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Documentation/Metadata/NHDPlusV2_metadata.htm",
-            "read_utc": "2026-10-18",
+            "read_utc": "2026-10-21",
             "read_by": "astra-c-hydro-data; saved source SHA-256 c4a6c790321f87f69666b0ed28669acc5eb73c0771a9a0ee5dc9a93a4ccdbb22"
-          }
+          },
+          "archives": [
+            {
+              "region": "01",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusNE/NHDPlusV21_NE_01_NHDSnapshot_04.7z",
+              "archive": "nhdplus-v21/01/NHDSnapshot/NHDPlusV21_NE_01_NHDSnapshot_04.7z",
+              "extracted": "nhdplus-v21/01/NHDSnapshot/extracted",
+              "local": "nhdplus-v21/01/NHDSnapshot/extracted/NHDPlusNE/NHDPlus01/NHDSnapshot/Hydrography/NHDFlowline.shp"
+            },
+            {
+              "region": "02",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusMA/NHDPlusV21_MA_02_NHDSnapshot_04.7z",
+              "archive": "nhdplus-v21/02/NHDSnapshot/NHDPlusV21_MA_02_NHDSnapshot_04.7z",
+              "extracted": "nhdplus-v21/02/NHDSnapshot/extracted",
+              "local": "nhdplus-v21/02/NHDSnapshot/extracted/NHDPlusMA/NHDPlus02/NHDSnapshot/Hydrography/NHDFlowline.shp"
+            },
+            {
+              "region": "03N",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusSA/NHDPlus03N/NHDPlusV21_SA_03N_NHDSnapshot_04.7z",
+              "archive": "nhdplus-v21/03N/NHDSnapshot/NHDPlusV21_SA_03N_NHDSnapshot_04.7z",
+              "extracted": "nhdplus-v21/03N/NHDSnapshot/extracted",
+              "local": "nhdplus-v21/03N/NHDSnapshot/extracted/NHDPlusSA/NHDPlus03N/NHDSnapshot/Hydrography/NHDFlowline.shp"
+            },
+            {
+              "region": "03S",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusSA/NHDPlus03S/NHDPlusV21_SA_03S_NHDSnapshot_06.7z",
+              "archive": "nhdplus-v21/03S/NHDSnapshot/NHDPlusV21_SA_03S_NHDSnapshot_06.7z",
+              "extracted": "nhdplus-v21/03S/NHDSnapshot/extracted",
+              "local": "nhdplus-v21/03S/NHDSnapshot/extracted/NHDPlusSA/NHDPlus03S/NHDSnapshot/Hydrography/NHDFlowline.shp"
+            },
+            {
+              "region": "03W",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusSA/NHDPlus03W/NHDPlusV21_SA_03W_NHDSnapshot_04.7z",
+              "archive": "nhdplus-v21/03W/NHDSnapshot/NHDPlusV21_SA_03W_NHDSnapshot_04.7z",
+              "extracted": "nhdplus-v21/03W/NHDSnapshot/extracted",
+              "local": "nhdplus-v21/03W/NHDSnapshot/extracted/NHDPlusSA/NHDPlus03W/NHDSnapshot/Hydrography/NHDFlowline.shp"
+            },
+            {
+              "region": "04",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusGL/NHDPlusV21_GL_04_NHDSnapshot_08.7z",
+              "archive": "nhdplus-v21/04/NHDSnapshot/NHDPlusV21_GL_04_NHDSnapshot_08.7z",
+              "extracted": "nhdplus-v21/04/NHDSnapshot/extracted",
+              "local": "nhdplus-v21/04/NHDSnapshot/extracted/NHDPlusGL/NHDPlus04/NHDSnapshot/Hydrography/NHDFlowline.shp"
+            },
+            {
+              "region": "05",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusMS/NHDPlus05/NHDPlusV21_MS_05_NHDSnapshot_06.7z",
+              "archive": "nhdplus-v21/05/NHDSnapshot/NHDPlusV21_MS_05_NHDSnapshot_06.7z",
+              "extracted": "nhdplus-v21/05/NHDSnapshot/extracted",
+              "local": "nhdplus-v21/05/NHDSnapshot/extracted/NHDPlusMS/NHDPlus05/NHDSnapshot/Hydrography/NHDFlowline.shp"
+            },
+            {
+              "region": "06",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusMS/NHDPlus06/NHDPlusV21_MS_06_NHDSnapshot_09.7z",
+              "archive": "nhdplus-v21/06/NHDSnapshot/NHDPlusV21_MS_06_NHDSnapshot_09.7z",
+              "extracted": "nhdplus-v21/06/NHDSnapshot/extracted",
+              "local": "nhdplus-v21/06/NHDSnapshot/extracted/NHDPlusMS/NHDPlus06/NHDSnapshot/Hydrography/NHDFlowline.shp"
+            },
+            {
+              "region": "07",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusMS/NHDPlus07/NHDPlusV21_MS_07_NHDSnapshot_08.7z",
+              "archive": "nhdplus-v21/07/NHDSnapshot/NHDPlusV21_MS_07_NHDSnapshot_08.7z",
+              "extracted": "nhdplus-v21/07/NHDSnapshot/extracted",
+              "local": "nhdplus-v21/07/NHDSnapshot/extracted/NHDPlusMS/NHDPlus07/NHDSnapshot/Hydrography/NHDFlowline.shp"
+            },
+            {
+              "region": "08",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusMS/NHDPlus08/NHDPlusV21_MS_08_NHDSnapshot_07.7z",
+              "archive": "nhdplus-v21/08/NHDSnapshot/NHDPlusV21_MS_08_NHDSnapshot_07.7z",
+              "extracted": "nhdplus-v21/08/NHDSnapshot/extracted",
+              "local": "nhdplus-v21/08/NHDSnapshot/extracted/NHDPlusMS/NHDPlus08/NHDSnapshot/Hydrography/NHDFlowline.shp"
+            },
+            {
+              "region": "09",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusSR/NHDPlusV21_SR_09_NHDSnapshot_07.7z",
+              "archive": "nhdplus-v21/09/NHDSnapshot/NHDPlusV21_SR_09_NHDSnapshot_07.7z",
+              "extracted": "nhdplus-v21/09/NHDSnapshot/extracted",
+              "local": "nhdplus-v21/09/NHDSnapshot/extracted/NHDPlusSR/NHDPlus09/NHDSnapshot/Hydrography/NHDFlowline.shp"
+            },
+            {
+              "region": "10U",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusMS/NHDPlus10U/NHDPlusV21_MS_10U_NHDSnapshot_07.7z",
+              "archive": "nhdplus-v21/10U/NHDSnapshot/NHDPlusV21_MS_10U_NHDSnapshot_07.7z",
+              "extracted": "nhdplus-v21/10U/NHDSnapshot/extracted",
+              "local": "nhdplus-v21/10U/NHDSnapshot/extracted/NHDPlusMS/NHDPlus10U/NHDSnapshot/Hydrography/NHDFlowline.shp"
+            },
+            {
+              "region": "10L",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusMS/NHDPlus10L/NHDPlusV21_MS_10L_NHDSnapshot_06.7z",
+              "archive": "nhdplus-v21/10L/NHDSnapshot/NHDPlusV21_MS_10L_NHDSnapshot_06.7z",
+              "extracted": "nhdplus-v21/10L/NHDSnapshot/extracted",
+              "local": "nhdplus-v21/10L/NHDSnapshot/extracted/NHDPlusMS/NHDPlus10L/NHDSnapshot/Hydrography/NHDFlowline.shp"
+            },
+            {
+              "region": "11",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusMS/NHDPlus11/NHDPlusV21_MS_11_NHDSnapshot_06.7z",
+              "archive": "nhdplus-v21/11/NHDSnapshot/NHDPlusV21_MS_11_NHDSnapshot_06.7z",
+              "extracted": "nhdplus-v21/11/NHDSnapshot/extracted",
+              "local": "nhdplus-v21/11/NHDSnapshot/extracted/NHDPlusMS/NHDPlus11/NHDSnapshot/Hydrography/NHDFlowline.shp"
+            },
+            {
+              "region": "12",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusTX/NHDPlusV21_TX_12_NHDSnapshot_05.7z",
+              "archive": "nhdplus-v21/12/NHDSnapshot/NHDPlusV21_TX_12_NHDSnapshot_05.7z",
+              "extracted": "nhdplus-v21/12/NHDSnapshot/extracted",
+              "local": "nhdplus-v21/12/NHDSnapshot/extracted/NHDPlusTX/NHDPlus12/NHDSnapshot/Hydrography/NHDFlowline.shp"
+            },
+            {
+              "region": "13",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusRG/NHDPlusV21_RG_13_NHDSnapshot_05.7z",
+              "archive": "nhdplus-v21/13/NHDSnapshot/NHDPlusV21_RG_13_NHDSnapshot_05.7z",
+              "extracted": "nhdplus-v21/13/NHDSnapshot/extracted",
+              "local": "nhdplus-v21/13/NHDSnapshot/extracted/NHDPlusRG/NHDPlus13/NHDSnapshot/Hydrography/NHDFlowline.shp"
+            },
+            {
+              "region": "14",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusCO/NHDPlus14/NHDPlusV21_CO_14_NHDSnapshot_07.7z",
+              "archive": "nhdplus-v21/14/NHDSnapshot/NHDPlusV21_CO_14_NHDSnapshot_07.7z",
+              "extracted": "nhdplus-v21/14/NHDSnapshot/extracted",
+              "local": "nhdplus-v21/14/NHDSnapshot/extracted/NHDPlusCO/NHDPlus14/NHDSnapshot/Hydrography/NHDFlowline.shp"
+            },
+            {
+              "region": "15",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusCO/NHDPlus15/NHDPlusV21_CO_15_NHDSnapshot_04.7z",
+              "archive": "nhdplus-v21/15/NHDSnapshot/NHDPlusV21_CO_15_NHDSnapshot_04.7z",
+              "extracted": "nhdplus-v21/15/NHDSnapshot/extracted",
+              "local": "nhdplus-v21/15/NHDSnapshot/extracted/NHDPlusCO/NHDPlus15/NHDSnapshot/Hydrography/NHDFlowline.shp"
+            },
+            {
+              "region": "16",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusGB/NHDPlusV21_GB_16_NHDSnapshot_06.7z",
+              "archive": "nhdplus-v21/16/NHDSnapshot/NHDPlusV21_GB_16_NHDSnapshot_06.7z",
+              "extracted": "nhdplus-v21/16/NHDSnapshot/extracted",
+              "local": "nhdplus-v21/16/NHDSnapshot/extracted/NHDPlusGB/NHDPlus16/NHDSnapshot/Hydrography/NHDFlowline.shp"
+            },
+            {
+              "region": "17",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusPN/NHDPlusV21_PN_17_NHDSnapshot_08.7z",
+              "archive": "nhdplus-v21/17/NHDSnapshot/NHDPlusV21_PN_17_NHDSnapshot_08.7z",
+              "extracted": "nhdplus-v21/17/NHDSnapshot/extracted",
+              "local": "nhdplus-v21/17/NHDSnapshot/extracted/NHDPlusPN/NHDPlus17/NHDSnapshot/Hydrography/NHDFlowline.shp"
+            },
+            {
+              "region": "18",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusCA/NHDPlusV21_CA_18_NHDSnapshot_05.7z",
+              "archive": "nhdplus-v21/18/NHDSnapshot/NHDPlusV21_CA_18_NHDSnapshot_05.7z",
+              "extracted": "nhdplus-v21/18/NHDSnapshot/extracted",
+              "local": "nhdplus-v21/18/NHDSnapshot/extracted/NHDPlusCA/NHDPlus18/NHDSnapshot/Hydrography/NHDFlowline.shp"
+            }
+          ]
         },
         "catchments": {
-          "dataset": "EPA/USGS NHDPlus V2.1 NHDPlusCatchment",
-          "version": "2.1",
+          "dataset": "EPA/USGS NHDPlus V2.1 NHDPlusCatchment/Catchment.shp",
+          "version": "2.1; per-VPU content editions pinned in archives",
           "url": null,
-          "format": "shapefile in 7z",
+          "format": "NAD83 geographic shapefile / dBASE attributes in 7z; native downstream from strictly decreasing Hydroseq -> DnHydroseq",
           "columns": {
-            "FEATUREID": "catchment id = reach ComID"
+            "FEATUREID": "id"
           },
           "licence": {
             "status": "verified",
             "name": "EPA/USGS NHDPlus V2.1; access and use constraints None",
             "quote": "Access_Constraints: None. Use_Constraints: None.",
             "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Documentation/Metadata/NHDPlusV2_metadata.htm",
-            "read_utc": "2026-10-18",
+            "read_utc": "2026-10-21",
             "read_by": "astra-c-hydro-data; saved source SHA-256 c4a6c790321f87f69666b0ed28669acc5eb73c0771a9a0ee5dc9a93a4ccdbb22"
-          }
+          },
+          "archives": [
+            {
+              "region": "01",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusNE/NHDPlusV21_NE_01_NHDPlusCatchment_01.7z",
+              "archive": "nhdplus-v21/01/NHDPlusCatchment/NHDPlusV21_NE_01_NHDPlusCatchment_01.7z",
+              "extracted": "nhdplus-v21/01/NHDPlusCatchment/extracted",
+              "local": "nhdplus-v21/01/NHDPlusCatchment/extracted/NHDPlusNE/NHDPlus01/NHDPlusCatchment/Catchment.shp"
+            },
+            {
+              "region": "02",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusMA/NHDPlusV21_MA_02_NHDPlusCatchment_01.7z",
+              "archive": "nhdplus-v21/02/NHDPlusCatchment/NHDPlusV21_MA_02_NHDPlusCatchment_01.7z",
+              "extracted": "nhdplus-v21/02/NHDPlusCatchment/extracted",
+              "local": "nhdplus-v21/02/NHDPlusCatchment/extracted/NHDPlusMA/NHDPlus02/NHDPlusCatchment/Catchment.shp"
+            },
+            {
+              "region": "03N",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusSA/NHDPlus03N/NHDPlusV21_SA_03N_NHDPlusCatchment_01.7z",
+              "archive": "nhdplus-v21/03N/NHDPlusCatchment/NHDPlusV21_SA_03N_NHDPlusCatchment_01.7z",
+              "extracted": "nhdplus-v21/03N/NHDPlusCatchment/extracted",
+              "local": "nhdplus-v21/03N/NHDPlusCatchment/extracted/NHDPlusSA/NHDPlus03N/NHDPlusCatchment/Catchment.shp"
+            },
+            {
+              "region": "03S",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusSA/NHDPlus03S/NHDPlusV21_SA_03S_NHDPlusCatchment_01.7z",
+              "archive": "nhdplus-v21/03S/NHDPlusCatchment/NHDPlusV21_SA_03S_NHDPlusCatchment_01.7z",
+              "extracted": "nhdplus-v21/03S/NHDPlusCatchment/extracted",
+              "local": "nhdplus-v21/03S/NHDPlusCatchment/extracted/NHDPlusSA/NHDPlus03S/NHDPlusCatchment/Catchment.shp"
+            },
+            {
+              "region": "03W",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusSA/NHDPlus03W/NHDPlusV21_SA_03W_NHDPlusCatchment_01.7z",
+              "archive": "nhdplus-v21/03W/NHDPlusCatchment/NHDPlusV21_SA_03W_NHDPlusCatchment_01.7z",
+              "extracted": "nhdplus-v21/03W/NHDPlusCatchment/extracted",
+              "local": "nhdplus-v21/03W/NHDPlusCatchment/extracted/NHDPlusSA/NHDPlus03W/NHDPlusCatchment/Catchment.shp"
+            },
+            {
+              "region": "04",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusGL/NHDPlusV21_GL_04_NHDPlusCatchment_05.7z",
+              "archive": "nhdplus-v21/04/NHDPlusCatchment/NHDPlusV21_GL_04_NHDPlusCatchment_05.7z",
+              "extracted": "nhdplus-v21/04/NHDPlusCatchment/extracted",
+              "local": "nhdplus-v21/04/NHDPlusCatchment/extracted/NHDPlusGL/NHDPlus04/NHDPlusCatchment/Catchment.shp"
+            },
+            {
+              "region": "05",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusMS/NHDPlus05/NHDPlusV21_MS_05_NHDPlusCatchment_01.7z",
+              "archive": "nhdplus-v21/05/NHDPlusCatchment/NHDPlusV21_MS_05_NHDPlusCatchment_01.7z",
+              "extracted": "nhdplus-v21/05/NHDPlusCatchment/extracted",
+              "local": "nhdplus-v21/05/NHDPlusCatchment/extracted/NHDPlusMS/NHDPlus05/NHDPlusCatchment/Catchment.shp"
+            },
+            {
+              "region": "06",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusMS/NHDPlus06/NHDPlusV21_MS_06_NHDPlusCatchment_05.7z",
+              "archive": "nhdplus-v21/06/NHDPlusCatchment/NHDPlusV21_MS_06_NHDPlusCatchment_05.7z",
+              "extracted": "nhdplus-v21/06/NHDPlusCatchment/extracted",
+              "local": "nhdplus-v21/06/NHDPlusCatchment/extracted/NHDPlusMS/NHDPlus06/NHDPlusCatchment/Catchment.shp"
+            },
+            {
+              "region": "07",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusMS/NHDPlus07/NHDPlusV21_MS_07_NHDPlusCatchment_01.7z",
+              "archive": "nhdplus-v21/07/NHDPlusCatchment/NHDPlusV21_MS_07_NHDPlusCatchment_01.7z",
+              "extracted": "nhdplus-v21/07/NHDPlusCatchment/extracted",
+              "local": "nhdplus-v21/07/NHDPlusCatchment/extracted/NHDPlusMS/NHDPlus07/NHDPlusCatchment/Catchment.shp"
+            },
+            {
+              "region": "08",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusMS/NHDPlus08/NHDPlusV21_MS_08_NHDPlusCatchment_01.7z",
+              "archive": "nhdplus-v21/08/NHDPlusCatchment/NHDPlusV21_MS_08_NHDPlusCatchment_01.7z",
+              "extracted": "nhdplus-v21/08/NHDPlusCatchment/extracted",
+              "local": "nhdplus-v21/08/NHDPlusCatchment/extracted/NHDPlusMS/NHDPlus08/NHDPlusCatchment/Catchment.shp"
+            },
+            {
+              "region": "09",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusSR/NHDPlusV21_SR_09_NHDPlusCatchment_01.7z",
+              "archive": "nhdplus-v21/09/NHDPlusCatchment/NHDPlusV21_SR_09_NHDPlusCatchment_01.7z",
+              "extracted": "nhdplus-v21/09/NHDPlusCatchment/extracted",
+              "local": "nhdplus-v21/09/NHDPlusCatchment/extracted/NHDPlusSR/NHDPlus09/NHDPlusCatchment/Catchment.shp"
+            },
+            {
+              "region": "10U",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusMS/NHDPlus10U/NHDPlusV21_MS_10U_NHDPlusCatchment_02.7z",
+              "archive": "nhdplus-v21/10U/NHDPlusCatchment/NHDPlusV21_MS_10U_NHDPlusCatchment_02.7z",
+              "extracted": "nhdplus-v21/10U/NHDPlusCatchment/extracted",
+              "local": "nhdplus-v21/10U/NHDPlusCatchment/extracted/NHDPlusMS/NHDPlus10U/NHDPlusCatchment/Catchment.shp"
+            },
+            {
+              "region": "10L",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusMS/NHDPlus10L/NHDPlusV21_MS_10L_NHDPlusCatchment_01.7z",
+              "archive": "nhdplus-v21/10L/NHDPlusCatchment/NHDPlusV21_MS_10L_NHDPlusCatchment_01.7z",
+              "extracted": "nhdplus-v21/10L/NHDPlusCatchment/extracted",
+              "local": "nhdplus-v21/10L/NHDPlusCatchment/extracted/NHDPlusMS/NHDPlus10L/NHDPlusCatchment/Catchment.shp"
+            },
+            {
+              "region": "11",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusMS/NHDPlus11/NHDPlusV21_MS_11_NHDPlusCatchment_01.7z",
+              "archive": "nhdplus-v21/11/NHDPlusCatchment/NHDPlusV21_MS_11_NHDPlusCatchment_01.7z",
+              "extracted": "nhdplus-v21/11/NHDPlusCatchment/extracted",
+              "local": "nhdplus-v21/11/NHDPlusCatchment/extracted/NHDPlusMS/NHDPlus11/NHDPlusCatchment/Catchment.shp"
+            },
+            {
+              "region": "12",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusTX/NHDPlusV21_TX_12_NHDPlusCatchment_01.7z",
+              "archive": "nhdplus-v21/12/NHDPlusCatchment/NHDPlusV21_TX_12_NHDPlusCatchment_01.7z",
+              "extracted": "nhdplus-v21/12/NHDPlusCatchment/extracted",
+              "local": "nhdplus-v21/12/NHDPlusCatchment/extracted/NHDPlusTX/NHDPlus12/NHDPlusCatchment/Catchment.shp"
+            },
+            {
+              "region": "13",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusRG/NHDPlusV21_RG_13_NHDPlusCatchment_02.7z",
+              "archive": "nhdplus-v21/13/NHDPlusCatchment/NHDPlusV21_RG_13_NHDPlusCatchment_02.7z",
+              "extracted": "nhdplus-v21/13/NHDPlusCatchment/extracted",
+              "local": "nhdplus-v21/13/NHDPlusCatchment/extracted/NHDPlusRG/NHDPlus13/NHDPlusCatchment/Catchment.shp"
+            },
+            {
+              "region": "14",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusCO/NHDPlus14/NHDPlusV21_CO_14_NHDPlusCatchment_01.7z",
+              "archive": "nhdplus-v21/14/NHDPlusCatchment/NHDPlusV21_CO_14_NHDPlusCatchment_01.7z",
+              "extracted": "nhdplus-v21/14/NHDPlusCatchment/extracted",
+              "local": "nhdplus-v21/14/NHDPlusCatchment/extracted/NHDPlusCO/NHDPlus14/NHDPlusCatchment/Catchment.shp"
+            },
+            {
+              "region": "15",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusCO/NHDPlus15/NHDPlusV21_CO_15_NHDPlusCatchment_01.7z",
+              "archive": "nhdplus-v21/15/NHDPlusCatchment/NHDPlusV21_CO_15_NHDPlusCatchment_01.7z",
+              "extracted": "nhdplus-v21/15/NHDPlusCatchment/extracted",
+              "local": "nhdplus-v21/15/NHDPlusCatchment/extracted/NHDPlusCO/NHDPlus15/NHDPlusCatchment/Catchment.shp"
+            },
+            {
+              "region": "16",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusGB/NHDPlusV21_GB_16_NHDPlusCatchment_01.7z",
+              "archive": "nhdplus-v21/16/NHDPlusCatchment/NHDPlusV21_GB_16_NHDPlusCatchment_01.7z",
+              "extracted": "nhdplus-v21/16/NHDPlusCatchment/extracted",
+              "local": "nhdplus-v21/16/NHDPlusCatchment/extracted/NHDPlusGB/NHDPlus16/NHDPlusCatchment/Catchment.shp"
+            },
+            {
+              "region": "17",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusPN/NHDPlusV21_PN_17_NHDPlusCatchment_02.7z",
+              "archive": "nhdplus-v21/17/NHDPlusCatchment/NHDPlusV21_PN_17_NHDPlusCatchment_02.7z",
+              "extracted": "nhdplus-v21/17/NHDPlusCatchment/extracted",
+              "local": "nhdplus-v21/17/NHDPlusCatchment/extracted/NHDPlusPN/NHDPlus17/NHDPlusCatchment/Catchment.shp"
+            },
+            {
+              "region": "18",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusCA/NHDPlusV21_CA_18_NHDPlusCatchment_01.7z",
+              "archive": "nhdplus-v21/18/NHDPlusCatchment/NHDPlusV21_CA_18_NHDPlusCatchment_01.7z",
+              "extracted": "nhdplus-v21/18/NHDPlusCatchment/extracted",
+              "local": "nhdplus-v21/18/NHDPlusCatchment/extracted/NHDPlusCA/NHDPlus18/NHDPlusCatchment/Catchment.shp"
+            }
+          ]
         },
         "dem": {
-          "dataset": "USGS 3DEP seamless 1-arc-second DEM (CONUS, NAVD88 orthometric metres)",
-          "version": "Seamless DEM specifications 2017; acquired tile editions must be pinned",
-          "url": null,
-          "format": "seamless elevation raster; exact native tile objects and format to be pinned at acquisition",
+          "dataset": "Copernicus DEM GLO-90",
+          "version": "2021_1 (COG bucket copernicus-dem-90m)",
+          "url": "https://copernicus-dem-90m.s3.amazonaws.com/Copernicus_DSM_COG_30_{NS}{lat2}_00_{EW}{lon3}_00_DEM/Copernicus_DSM_COG_30_{NS}{lat2}_00_{EW}{lon3}_00_DEM.tif",
+          "format": "1-degree Cloud Optimized GeoTIFF tiles, float32, deflate, floating-point predictor; no tile over open sea",
+          "local": "copernicus-dem-glo90/tiles/Copernicus_DSM_COG_30_{NS}{lat2}_00_{EW}{lon3}_00_DEM.tif",
+          "columns": {},
           "licence": {
             "status": "verified",
-            "name": "USGS 3DEP public domain",
-            "quote": "All 3DEP products are public domain.",
-            "url": "https://pubs.usgs.gov/tm/11b9/tm11B9.pdf",
+            "name": "Copernicus WorldDEM-90 licence (GLO-90-F)",
+            "quote": "\"The Licensor grants to the User the following non-exclusive rights of use regarding the Copernicus WorldDEM-30: (a) reproduction; (b) distribution; (c) communication to the General Public; (d) adaptation, modification and combination with other data and information.\" ... \"The rights granted under this Licence are worldwide and without limitation in time.\" (the GLO-90-F licence in the same document grants the same rights). Attribution: produced using Copernicus WorldDEM-90 (c) DLR e.V. 2010-2014 and (c) Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved. The organisations in charge of the Copernicus programme by law or by delegation do not incur any liability for any use of the Copernicus WorldDEM-90.",
+            "url": "https://dataspace.copernicus.eu/sites/default/files/media/files/2025-06/copernicus_contributing_mission_data_access_v2_cop_dem_licenses.pdf",
             "read_utc": "2026-10-18",
-            "read_by": "astra-c-hydro-data; source SHA-256 2faf2fbaddb9f2217dd18a2c907f22a33609294a963725a3a0067ccefb34000e"
+            "read_by": "hydro-world-licences (tip 5c1bbd89eb4, docs/public/HYDRO-WORLD-LICENCES.md)"
           }
         },
         "soil": {
-          "dataset": "ISRIC SoilGrids 2.0 (250 m soil properties)",
-          "version": "2.0; acquired property/depth/statistic objects must be pinned",
-          "url": null,
-          "format": "VRT with referenced raster tiles, per official WebDAV guide",
+          "dataset": "SoilGrids 250m",
+          "version": "2.0",
+          "url": "https://files.isric.org/soilgrids/latest/data/",
+          "format": "Cloud Optimized GeoTIFF (consumed by hydro-world-params, not by this builder)",
+          "columns": {},
           "licence": {
             "status": "verified",
-            "name": "Creative Commons Attribution 4.0 International (CC BY 4.0)",
-            "quote": "CC-BY 4.0 License",
-            "url": "https://isric.org/explore/soilgrids",
+            "name": "CC BY 4.0",
+            "quote": "\"The SoilGrids maps are publicly available on the SoilGrids website under the CC-BY 4.0 License.\" Attribution: Contains SoilGrids 2.0 data, ISRIC World Soil Information, CC BY 4.0 (Poggio et al. 2021, SOIL 7, 217-240).",
+            "url": "https://www.isric.org/explore/soilgrids",
             "read_utc": "2026-10-18",
-            "read_by": "astra-c-hydro-data; source SHA-256 b96ec5d5f9127c849895f114cb018f767dc8c223eb09811a61ee85e97a39b12f"
+            "read_by": "hydro-world-licences (tip 5c1bbd89eb4, docs/public/HYDRO-WORLD-LICENCES.md)"
           }
         },
         "land_cover": {
-          "dataset": "ESA WorldCover 10 m 2021",
+          "dataset": "ESA WorldCover 10 m",
           "version": "v200 (2021)",
-          "url": null,
-          "format": "3 by 3 degree Cloud Optimized GeoTIFF map tiles, EPSG:4326, 11 classes",
+          "url": "https://esa-worldcover.s3.eu-central-1.amazonaws.com/",
+          "format": "Cloud Optimized GeoTIFF tiles (consumed by hydro-world-params, not by this builder)",
+          "columns": {},
           "licence": {
             "status": "verified",
-            "name": "Creative Commons Attribution 4.0 International (CC BY 4.0)",
-            "quote": "Creative Commons Attribution 4.0 International License",
+            "name": "CC BY 4.0",
+            "quote": "\"The ESA WorldCover product is provided free of charge, without restriction of use. For the full license information see the Creative Commons Attribution 4.0 International License.\" Attribution: (c) ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data (2021) processed by ESA WorldCover consortium.",
             "url": "https://esa-worldcover.org/en/data-access",
             "read_utc": "2026-10-18",
-            "read_by": "astra-c-hydro-data; source SHA-256 71dccb4c949d489a903865f97ff3bddab75dbefad7f1c277acd1ba94967ed0e8"
+            "read_by": "hydro-world-licences (tip 5c1bbd89eb4, docs/public/HYDRO-WORLD-LICENCES.md)"
           }
         },
         "lakes": {
-          "dataset": "HydroLAKES pour points (source attributes; NHDPlus crosswalk not yet admitted)",
+          "dataset": "HydroLAKES points",
           "version": "1.0",
           "url": "https://data.hydrosheds.org/file/hydrolakes/HydroLAKES_points_v10_shp.zip",
-          "format": "shapefile archive, pour points including attributes",
+          "format": "shapefile (attribute table only is read)",
+          "local": "hydrolakes/extracted/HydroLAKES_points_v10_shp/HydroLAKES_points_v10.shp",
+          "columns": {
+            "Hylak_id": "id -> lakes.hl_link",
+            "Lake_area": "area_km2 -> LkArea",
+            "Depth_avg": "mean_depth_m -> pool depth",
+            "Wshd_area": "catchment_km2 (snap check)",
+            "Pour_long": "outlet_lon",
+            "Pour_lat": "outlet_lat"
+          },
           "licence": {
             "status": "verified",
-            "name": "Creative Commons Attribution 4.0 International (CC BY 4.0)",
-            "quote": "The HydroLAKES database is licensed under a Creative Commons Attribution (CC-BY) 4.0 International License",
+            "name": "CC BY 4.0",
+            "quote": "\"The HydroLAKES database (version 1.a) is licensed under a Creative Commons Attribution 4.0 International License.\" Attribution: Contains HydroLAKES v1.0 data (Messager, M.L., Lehner, B., Grill, G., Nedeva, I., Schmitt, O. (2016), Nature Communications 13603, doi:10.1038/ncomms13603), CC BY 4.0, www.hydrosheds.org. The authors ask that the raw files are not redistributed in whole in their original format; the builder never ships them.",
             "url": "https://www.hydrosheds.org/products/hydrolakes",
             "read_utc": "2026-10-18",
-            "read_by": "astra-c-hydro-data; source SHA-256 0dcef6c4613a86b418f228b15aec4a9aa5e5cc424f5bfc3459f8b51d31b36b25"
+            "read_by": "hydro-world-licences (tip 5c1bbd89eb4, docs/public/HYDRO-WORLD-LICENCES.md)"
+          }
+        },
+        "dams": {
+          "dataset": "GDW (Global Dam Watch) barriers",
+          "version": "1.0",
+          "url": "https://ndownloader.figshare.com/files/47913754",
+          "format": "shapefile GDW_v1_0_shp.zip (attribute table of GDW_barriers_v1_0 is read; dam points from LONG_DAM/LAT_DAM)",
+          "local": "gdw/extracted/GDW_v1_0_shp/GDW_barriers_v1_0.shp",
+          "columns": {
+            "GDW_ID": "id",
+            "DAM_NAME": "name",
+            "HYLAK_ID": "lake_id -> the fabric lake with that HydroLAKES Hylak_id",
+            "DAM_HGT_M": "height_m",
+            "DAM_LEN_M": "length_m",
+            "CAP_MCM": "capacity_mcm",
+            "YEAR_DAM": "year",
+            "MAIN_USE": "main_use",
+            "LAKE_CTRL": "lake_control",
+            "CATCH_SKM": "catchment_km2 (snap check)",
+            "LONG_DAM": "lon",
+            "LAT_DAM": "lat"
+          },
+          "licence": {
+            "status": "verified",
+            "name": "CC BY 4.0",
+            "quote": "\"The Global Dam Watch (GDW) database is licensed under a Creative Commons Attribution 4.0 International License.\" (GDW TechDoc 4.1; figshare licence field \"CC BY 4.0\"). GRanD v1.3 is merged into GDW and is used only through GDW. Attribution: Contains Global Dam Watch database v1.0 (Lehner et al. 2024, Scientific Data, doi:10.1038/s41597-024-03752-9; data doi:10.6084/m9.figshare.25988293), CC BY 4.0. The authors ask that raw files are not mirrored; the builder never ships them.",
+            "url": "https://doi.org/10.6084/m9.figshare.25988293",
+            "read_utc": "2026-10-18",
+            "read_by": "hydro-world-licences (docs/public/HYDRO-WORLD-LICENCES.md, GDW v1.0 row)"
+          }
+        },
+        "network_attributes": {
+          "dataset": "EPA/USGS NHDPlus V2.1 NHDPlusAttributes/PlusFlowlineVAA.dbf",
+          "version": "2.1; per-VPU content editions pinned in archives",
+          "url": null,
+          "format": "NAD83 geographic shapefile / dBASE attributes in 7z; native downstream from strictly decreasing Hydroseq -> DnHydroseq",
+          "columns": {
+            "ComID": "id",
+            "Hydroseq": "sequence",
+            "DnHydroseq": "down_sequence",
+            "AreaSqKM": "area_km2",
+            "TotDASqKM": "upstream_km2"
+          },
+          "licence": {
+            "status": "verified",
+            "name": "EPA/USGS NHDPlus V2.1; access and use constraints None",
+            "quote": "Access_Constraints: None. Use_Constraints: None.",
+            "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Documentation/Metadata/NHDPlusV2_metadata.htm",
+            "read_utc": "2026-10-21",
+            "read_by": "astra-c-hydro-data; saved source SHA-256 c4a6c790321f87f69666b0ed28669acc5eb73c0771a9a0ee5dc9a93a4ccdbb22"
+          },
+          "archives": [
+            {
+              "region": "01",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusNE/NHDPlusV21_NE_01_NHDPlusAttributes_09.7z",
+              "archive": "nhdplus-v21/01/NHDPlusAttributes/NHDPlusV21_NE_01_NHDPlusAttributes_09.7z",
+              "extracted": "nhdplus-v21/01/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/01/NHDPlusAttributes/extracted/NHDPlusNE/NHDPlus01/NHDPlusAttributes/PlusFlowlineVAA.dbf"
+            },
+            {
+              "region": "02",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusMA/NHDPlusV21_MA_02_NHDPlusAttributes_09.7z",
+              "archive": "nhdplus-v21/02/NHDPlusAttributes/NHDPlusV21_MA_02_NHDPlusAttributes_09.7z",
+              "extracted": "nhdplus-v21/02/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/02/NHDPlusAttributes/extracted/NHDPlusMA/NHDPlus02/NHDPlusAttributes/PlusFlowlineVAA.dbf"
+            },
+            {
+              "region": "03N",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusSA/NHDPlus03N/NHDPlusV21_SA_03N_NHDPlusAttributes_07.7z",
+              "archive": "nhdplus-v21/03N/NHDPlusAttributes/NHDPlusV21_SA_03N_NHDPlusAttributes_07.7z",
+              "extracted": "nhdplus-v21/03N/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/03N/NHDPlusAttributes/extracted/NHDPlusSA/NHDPlus03N/NHDPlusAttributes/PlusFlowlineVAA.dbf"
+            },
+            {
+              "region": "03S",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusSA/NHDPlus03S/NHDPlusV21_SA_03S_NHDPlusAttributes_07.7z",
+              "archive": "nhdplus-v21/03S/NHDPlusAttributes/NHDPlusV21_SA_03S_NHDPlusAttributes_07.7z",
+              "extracted": "nhdplus-v21/03S/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/03S/NHDPlusAttributes/extracted/NHDPlusSA/NHDPlus03S/NHDPlusAttributes/PlusFlowlineVAA.dbf"
+            },
+            {
+              "region": "03W",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusSA/NHDPlus03W/NHDPlusV21_SA_03W_NHDPlusAttributes_07.7z",
+              "archive": "nhdplus-v21/03W/NHDPlusAttributes/NHDPlusV21_SA_03W_NHDPlusAttributes_07.7z",
+              "extracted": "nhdplus-v21/03W/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/03W/NHDPlusAttributes/extracted/NHDPlusSA/NHDPlus03W/NHDPlusAttributes/PlusFlowlineVAA.dbf"
+            },
+            {
+              "region": "04",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusGL/NHDPlusV21_GL_04_NHDPlusAttributes_14.7z",
+              "archive": "nhdplus-v21/04/NHDPlusAttributes/NHDPlusV21_GL_04_NHDPlusAttributes_14.7z",
+              "extracted": "nhdplus-v21/04/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/04/NHDPlusAttributes/extracted/NHDPlusGL/NHDPlus04/NHDPlusAttributes/PlusFlowlineVAA.dbf"
+            },
+            {
+              "region": "05",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusMS/NHDPlus05/NHDPlusV21_MS_05_NHDPlusAttributes_09.7z",
+              "archive": "nhdplus-v21/05/NHDPlusAttributes/NHDPlusV21_MS_05_NHDPlusAttributes_09.7z",
+              "extracted": "nhdplus-v21/05/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/05/NHDPlusAttributes/extracted/NHDPlusMS/NHDPlus05/NHDPlusAttributes/PlusFlowlineVAA.dbf"
+            },
+            {
+              "region": "06",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusMS/NHDPlus06/NHDPlusV21_MS_06_NHDPlusAttributes_10.7z",
+              "archive": "nhdplus-v21/06/NHDPlusAttributes/NHDPlusV21_MS_06_NHDPlusAttributes_10.7z",
+              "extracted": "nhdplus-v21/06/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/06/NHDPlusAttributes/extracted/NHDPlusMS/NHDPlus06/NHDPlusAttributes/PlusFlowlineVAA.dbf"
+            },
+            {
+              "region": "07",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusMS/NHDPlus07/NHDPlusV21_MS_07_NHDPlusAttributes_10.7z",
+              "archive": "nhdplus-v21/07/NHDPlusAttributes/NHDPlusV21_MS_07_NHDPlusAttributes_10.7z",
+              "extracted": "nhdplus-v21/07/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/07/NHDPlusAttributes/extracted/NHDPlusMS/NHDPlus07/NHDPlusAttributes/PlusFlowlineVAA.dbf"
+            },
+            {
+              "region": "08",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusMS/NHDPlus08/NHDPlusV21_MS_08_NHDPlusAttributes_09.7z",
+              "archive": "nhdplus-v21/08/NHDPlusAttributes/NHDPlusV21_MS_08_NHDPlusAttributes_09.7z",
+              "extracted": "nhdplus-v21/08/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/08/NHDPlusAttributes/extracted/NHDPlusMS/NHDPlus08/NHDPlusAttributes/PlusFlowlineVAA.dbf"
+            },
+            {
+              "region": "09",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusSR/NHDPlusV21_SR_09_NHDPlusAttributes_07.7z",
+              "archive": "nhdplus-v21/09/NHDPlusAttributes/NHDPlusV21_SR_09_NHDPlusAttributes_07.7z",
+              "extracted": "nhdplus-v21/09/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/09/NHDPlusAttributes/extracted/NHDPlusSR/NHDPlus09/NHDPlusAttributes/PlusFlowlineVAA.dbf"
+            },
+            {
+              "region": "10U",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusMS/NHDPlus10U/NHDPlusV21_MS_10U_NHDPlusAttributes_10.7z",
+              "archive": "nhdplus-v21/10U/NHDPlusAttributes/NHDPlusV21_MS_10U_NHDPlusAttributes_10.7z",
+              "extracted": "nhdplus-v21/10U/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/10U/NHDPlusAttributes/extracted/NHDPlusMS/NHDPlus10U/NHDPlusAttributes/PlusFlowlineVAA.dbf"
+            },
+            {
+              "region": "10L",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusMS/NHDPlus10L/NHDPlusV21_MS_10L_NHDPlusAttributes_12.7z",
+              "archive": "nhdplus-v21/10L/NHDPlusAttributes/NHDPlusV21_MS_10L_NHDPlusAttributes_12.7z",
+              "extracted": "nhdplus-v21/10L/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/10L/NHDPlusAttributes/extracted/NHDPlusMS/NHDPlus10L/NHDPlusAttributes/PlusFlowlineVAA.dbf"
+            },
+            {
+              "region": "11",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusMS/NHDPlus11/NHDPlusV21_MS_11_NHDPlusAttributes_08.7z",
+              "archive": "nhdplus-v21/11/NHDPlusAttributes/NHDPlusV21_MS_11_NHDPlusAttributes_08.7z",
+              "extracted": "nhdplus-v21/11/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/11/NHDPlusAttributes/extracted/NHDPlusMS/NHDPlus11/NHDPlusAttributes/PlusFlowlineVAA.dbf"
+            },
+            {
+              "region": "12",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusTX/NHDPlusV21_TX_12_NHDPlusAttributes_09.7z",
+              "archive": "nhdplus-v21/12/NHDPlusAttributes/NHDPlusV21_TX_12_NHDPlusAttributes_09.7z",
+              "extracted": "nhdplus-v21/12/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/12/NHDPlusAttributes/extracted/NHDPlusTX/NHDPlus12/NHDPlusAttributes/PlusFlowlineVAA.dbf"
+            },
+            {
+              "region": "13",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusRG/NHDPlusV21_RG_13_NHDPlusAttributes_07.7z",
+              "archive": "nhdplus-v21/13/NHDPlusAttributes/NHDPlusV21_RG_13_NHDPlusAttributes_07.7z",
+              "extracted": "nhdplus-v21/13/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/13/NHDPlusAttributes/extracted/NHDPlusRG/NHDPlus13/NHDPlusAttributes/PlusFlowlineVAA.dbf"
+            },
+            {
+              "region": "14",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusCO/NHDPlus14/NHDPlusV21_CO_14_NHDPlusAttributes_10.7z",
+              "archive": "nhdplus-v21/14/NHDPlusAttributes/NHDPlusV21_CO_14_NHDPlusAttributes_10.7z",
+              "extracted": "nhdplus-v21/14/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/14/NHDPlusAttributes/extracted/NHDPlusCO/NHDPlus14/NHDPlusAttributes/PlusFlowlineVAA.dbf"
+            },
+            {
+              "region": "15",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusCO/NHDPlus15/NHDPlusV21_CO_15_NHDPlusAttributes_09.7z",
+              "archive": "nhdplus-v21/15/NHDPlusAttributes/NHDPlusV21_CO_15_NHDPlusAttributes_09.7z",
+              "extracted": "nhdplus-v21/15/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/15/NHDPlusAttributes/extracted/NHDPlusCO/NHDPlus15/NHDPlusAttributes/PlusFlowlineVAA.dbf"
+            },
+            {
+              "region": "16",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusGB/NHDPlusV21_GB_16_NHDPlusAttributes_06.7z",
+              "archive": "nhdplus-v21/16/NHDPlusAttributes/NHDPlusV21_GB_16_NHDPlusAttributes_06.7z",
+              "extracted": "nhdplus-v21/16/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/16/NHDPlusAttributes/extracted/NHDPlusGB/NHDPlus16/NHDPlusAttributes/PlusFlowlineVAA.dbf"
+            },
+            {
+              "region": "17",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusPN/NHDPlusV21_PN_17_NHDPlusAttributes_10.7z",
+              "archive": "nhdplus-v21/17/NHDPlusAttributes/NHDPlusV21_PN_17_NHDPlusAttributes_10.7z",
+              "extracted": "nhdplus-v21/17/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/17/NHDPlusAttributes/extracted/NHDPlusPN/NHDPlus17/NHDPlusAttributes/PlusFlowlineVAA.dbf"
+            },
+            {
+              "region": "18",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusCA/NHDPlusV21_CA_18_NHDPlusAttributes_08.7z",
+              "archive": "nhdplus-v21/18/NHDPlusAttributes/NHDPlusV21_CA_18_NHDPlusAttributes_08.7z",
+              "extracted": "nhdplus-v21/18/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/18/NHDPlusAttributes/extracted/NHDPlusCA/NHDPlus18/NHDPlusAttributes/PlusFlowlineVAA.dbf"
+            }
+          ]
+        },
+        "elevation_attributes": {
+          "dataset": "EPA/USGS NHDPlus V2.1 NHDPlusAttributes/elevslope.dbf",
+          "version": "2.1; per-VPU content editions pinned in archives",
+          "url": null,
+          "format": "NAD83 geographic shapefile / dBASE attributes in 7z; native downstream from strictly decreasing Hydroseq -> DnHydroseq",
+          "columns": {
+            "COMID": "id",
+            "SLOPE": "slope",
+            "MINELEVSMO": "outlet_elevation_cm",
+            "MAXELEVSMO": "upper_elevation_cm",
+            "SLOPELENKM": "slope_length_km"
+          },
+          "licence": {
+            "status": "verified",
+            "name": "EPA/USGS NHDPlus V2.1; access and use constraints None",
+            "quote": "Access_Constraints: None. Use_Constraints: None.",
+            "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Documentation/Metadata/NHDPlusV2_metadata.htm",
+            "read_utc": "2026-10-21",
+            "read_by": "astra-c-hydro-data; saved source SHA-256 c4a6c790321f87f69666b0ed28669acc5eb73c0771a9a0ee5dc9a93a4ccdbb22"
+          },
+          "archives": [
+            {
+              "region": "01",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusNE/NHDPlusV21_NE_01_NHDPlusAttributes_09.7z",
+              "archive": "nhdplus-v21/01/NHDPlusAttributes/NHDPlusV21_NE_01_NHDPlusAttributes_09.7z",
+              "extracted": "nhdplus-v21/01/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/01/NHDPlusAttributes/extracted/NHDPlusNE/NHDPlus01/NHDPlusAttributes/elevslope.dbf"
+            },
+            {
+              "region": "02",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusMA/NHDPlusV21_MA_02_NHDPlusAttributes_09.7z",
+              "archive": "nhdplus-v21/02/NHDPlusAttributes/NHDPlusV21_MA_02_NHDPlusAttributes_09.7z",
+              "extracted": "nhdplus-v21/02/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/02/NHDPlusAttributes/extracted/NHDPlusMA/NHDPlus02/NHDPlusAttributes/elevslope.dbf"
+            },
+            {
+              "region": "03N",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusSA/NHDPlus03N/NHDPlusV21_SA_03N_NHDPlusAttributes_07.7z",
+              "archive": "nhdplus-v21/03N/NHDPlusAttributes/NHDPlusV21_SA_03N_NHDPlusAttributes_07.7z",
+              "extracted": "nhdplus-v21/03N/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/03N/NHDPlusAttributes/extracted/NHDPlusSA/NHDPlus03N/NHDPlusAttributes/elevslope.dbf"
+            },
+            {
+              "region": "03S",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusSA/NHDPlus03S/NHDPlusV21_SA_03S_NHDPlusAttributes_07.7z",
+              "archive": "nhdplus-v21/03S/NHDPlusAttributes/NHDPlusV21_SA_03S_NHDPlusAttributes_07.7z",
+              "extracted": "nhdplus-v21/03S/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/03S/NHDPlusAttributes/extracted/NHDPlusSA/NHDPlus03S/NHDPlusAttributes/elevslope.dbf"
+            },
+            {
+              "region": "03W",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusSA/NHDPlus03W/NHDPlusV21_SA_03W_NHDPlusAttributes_07.7z",
+              "archive": "nhdplus-v21/03W/NHDPlusAttributes/NHDPlusV21_SA_03W_NHDPlusAttributes_07.7z",
+              "extracted": "nhdplus-v21/03W/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/03W/NHDPlusAttributes/extracted/NHDPlusSA/NHDPlus03W/NHDPlusAttributes/elevslope.dbf"
+            },
+            {
+              "region": "04",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusGL/NHDPlusV21_GL_04_NHDPlusAttributes_14.7z",
+              "archive": "nhdplus-v21/04/NHDPlusAttributes/NHDPlusV21_GL_04_NHDPlusAttributes_14.7z",
+              "extracted": "nhdplus-v21/04/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/04/NHDPlusAttributes/extracted/NHDPlusGL/NHDPlus04/NHDPlusAttributes/elevslope.dbf"
+            },
+            {
+              "region": "05",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusMS/NHDPlus05/NHDPlusV21_MS_05_NHDPlusAttributes_09.7z",
+              "archive": "nhdplus-v21/05/NHDPlusAttributes/NHDPlusV21_MS_05_NHDPlusAttributes_09.7z",
+              "extracted": "nhdplus-v21/05/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/05/NHDPlusAttributes/extracted/NHDPlusMS/NHDPlus05/NHDPlusAttributes/elevslope.dbf"
+            },
+            {
+              "region": "06",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusMS/NHDPlus06/NHDPlusV21_MS_06_NHDPlusAttributes_10.7z",
+              "archive": "nhdplus-v21/06/NHDPlusAttributes/NHDPlusV21_MS_06_NHDPlusAttributes_10.7z",
+              "extracted": "nhdplus-v21/06/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/06/NHDPlusAttributes/extracted/NHDPlusMS/NHDPlus06/NHDPlusAttributes/elevslope.dbf"
+            },
+            {
+              "region": "07",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusMS/NHDPlus07/NHDPlusV21_MS_07_NHDPlusAttributes_10.7z",
+              "archive": "nhdplus-v21/07/NHDPlusAttributes/NHDPlusV21_MS_07_NHDPlusAttributes_10.7z",
+              "extracted": "nhdplus-v21/07/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/07/NHDPlusAttributes/extracted/NHDPlusMS/NHDPlus07/NHDPlusAttributes/elevslope.dbf"
+            },
+            {
+              "region": "08",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusMS/NHDPlus08/NHDPlusV21_MS_08_NHDPlusAttributes_09.7z",
+              "archive": "nhdplus-v21/08/NHDPlusAttributes/NHDPlusV21_MS_08_NHDPlusAttributes_09.7z",
+              "extracted": "nhdplus-v21/08/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/08/NHDPlusAttributes/extracted/NHDPlusMS/NHDPlus08/NHDPlusAttributes/elevslope.dbf"
+            },
+            {
+              "region": "09",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusSR/NHDPlusV21_SR_09_NHDPlusAttributes_07.7z",
+              "archive": "nhdplus-v21/09/NHDPlusAttributes/NHDPlusV21_SR_09_NHDPlusAttributes_07.7z",
+              "extracted": "nhdplus-v21/09/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/09/NHDPlusAttributes/extracted/NHDPlusSR/NHDPlus09/NHDPlusAttributes/elevslope.dbf"
+            },
+            {
+              "region": "10U",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusMS/NHDPlus10U/NHDPlusV21_MS_10U_NHDPlusAttributes_10.7z",
+              "archive": "nhdplus-v21/10U/NHDPlusAttributes/NHDPlusV21_MS_10U_NHDPlusAttributes_10.7z",
+              "extracted": "nhdplus-v21/10U/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/10U/NHDPlusAttributes/extracted/NHDPlusMS/NHDPlus10U/NHDPlusAttributes/elevslope.dbf"
+            },
+            {
+              "region": "10L",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusMS/NHDPlus10L/NHDPlusV21_MS_10L_NHDPlusAttributes_12.7z",
+              "archive": "nhdplus-v21/10L/NHDPlusAttributes/NHDPlusV21_MS_10L_NHDPlusAttributes_12.7z",
+              "extracted": "nhdplus-v21/10L/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/10L/NHDPlusAttributes/extracted/NHDPlusMS/NHDPlus10L/NHDPlusAttributes/elevslope.dbf"
+            },
+            {
+              "region": "11",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusMS/NHDPlus11/NHDPlusV21_MS_11_NHDPlusAttributes_08.7z",
+              "archive": "nhdplus-v21/11/NHDPlusAttributes/NHDPlusV21_MS_11_NHDPlusAttributes_08.7z",
+              "extracted": "nhdplus-v21/11/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/11/NHDPlusAttributes/extracted/NHDPlusMS/NHDPlus11/NHDPlusAttributes/elevslope.dbf"
+            },
+            {
+              "region": "12",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusTX/NHDPlusV21_TX_12_NHDPlusAttributes_09.7z",
+              "archive": "nhdplus-v21/12/NHDPlusAttributes/NHDPlusV21_TX_12_NHDPlusAttributes_09.7z",
+              "extracted": "nhdplus-v21/12/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/12/NHDPlusAttributes/extracted/NHDPlusTX/NHDPlus12/NHDPlusAttributes/elevslope.dbf"
+            },
+            {
+              "region": "13",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusRG/NHDPlusV21_RG_13_NHDPlusAttributes_07.7z",
+              "archive": "nhdplus-v21/13/NHDPlusAttributes/NHDPlusV21_RG_13_NHDPlusAttributes_07.7z",
+              "extracted": "nhdplus-v21/13/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/13/NHDPlusAttributes/extracted/NHDPlusRG/NHDPlus13/NHDPlusAttributes/elevslope.dbf"
+            },
+            {
+              "region": "14",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusCO/NHDPlus14/NHDPlusV21_CO_14_NHDPlusAttributes_10.7z",
+              "archive": "nhdplus-v21/14/NHDPlusAttributes/NHDPlusV21_CO_14_NHDPlusAttributes_10.7z",
+              "extracted": "nhdplus-v21/14/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/14/NHDPlusAttributes/extracted/NHDPlusCO/NHDPlus14/NHDPlusAttributes/elevslope.dbf"
+            },
+            {
+              "region": "15",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusCO/NHDPlus15/NHDPlusV21_CO_15_NHDPlusAttributes_09.7z",
+              "archive": "nhdplus-v21/15/NHDPlusAttributes/NHDPlusV21_CO_15_NHDPlusAttributes_09.7z",
+              "extracted": "nhdplus-v21/15/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/15/NHDPlusAttributes/extracted/NHDPlusCO/NHDPlus15/NHDPlusAttributes/elevslope.dbf"
+            },
+            {
+              "region": "16",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusGB/NHDPlusV21_GB_16_NHDPlusAttributes_06.7z",
+              "archive": "nhdplus-v21/16/NHDPlusAttributes/NHDPlusV21_GB_16_NHDPlusAttributes_06.7z",
+              "extracted": "nhdplus-v21/16/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/16/NHDPlusAttributes/extracted/NHDPlusGB/NHDPlus16/NHDPlusAttributes/elevslope.dbf"
+            },
+            {
+              "region": "17",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusPN/NHDPlusV21_PN_17_NHDPlusAttributes_10.7z",
+              "archive": "nhdplus-v21/17/NHDPlusAttributes/NHDPlusV21_PN_17_NHDPlusAttributes_10.7z",
+              "extracted": "nhdplus-v21/17/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/17/NHDPlusAttributes/extracted/NHDPlusPN/NHDPlus17/NHDPlusAttributes/elevslope.dbf"
+            },
+            {
+              "region": "18",
+              "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/NHDPlusCA/NHDPlusV21_CA_18_NHDPlusAttributes_08.7z",
+              "archive": "nhdplus-v21/18/NHDPlusAttributes/NHDPlusV21_CA_18_NHDPlusAttributes_08.7z",
+              "extracted": "nhdplus-v21/18/NHDPlusAttributes/extracted",
+              "local": "nhdplus-v21/18/NHDPlusAttributes/extracted/NHDPlusCA/NHDPlus18/NHDPlusAttributes/elevslope.dbf"
+            }
+          ]
+        },
+        "processing_units": {
+          "dataset": "EPA/USGS NHDPlus V2.1 processing-unit boundaries (BoundaryUnit)",
+          "version": "03",
+          "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Data/GlobalData/NHDPlusV21_NHDPlusGlobalData_03.7z",
+          "format": "NAD83 geographic shapefile in 7z",
+          "local": "nhdplus-v21/global/extracted/NHDPlusGlobalData/BoundaryUnit.shp",
+          "regions": [
+            "01",
+            "02",
+            "03N",
+            "03S",
+            "03W",
+            "04",
+            "05",
+            "06",
+            "07",
+            "08",
+            "09",
+            "10U",
+            "10L",
+            "11",
+            "12",
+            "13",
+            "14",
+            "15",
+            "16",
+            "17",
+            "18"
+          ],
+          "columns": {
+            "UnitID": "region",
+            "UnitType": "kind"
+          },
+          "licence": {
+            "status": "verified",
+            "name": "EPA/USGS NHDPlus V2.1; access and use constraints None",
+            "quote": "Access_Constraints: None. Use_Constraints: None.",
+            "url": "https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Documentation/Metadata/NHDPlusV2_metadata.htm",
+            "read_utc": "2026-10-21",
+            "read_by": "astra-c-hydro-data; saved source SHA-256 c4a6c790321f87f69666b0ed28669acc5eb73c0771a9a0ee5dc9a93a4ccdbb22"
           }
         }
       },
@@ -130,7 +850,18 @@
             "read_by": null
           }
         }
-      ]
+      ],
+      "build": {
+        "method": "vector-attributes",
+        "lake_snap_radius": 2.0,
+        "lake_min_area_km2": 1.0,
+        "lake_snap_area_ratio": 2.0,
+        "recipes": "recipes.v1.json",
+        "soil_class_table": "STAS",
+        "veg_class_table": "MODIFIED_IGBP_MODIS_NOAH",
+        "grid_arcsec": 3.0,
+        "grid_max_cells": 250000000
+      }
     },
     {
       "id": "global-copernicus-glo90",

@@ -1,0 +1,15 @@
+[package]
+name = "hydro-proj"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+links = "hydro_proj"
+description = "Pinned static PROJ 9.7.1, SQLite and embedded projection database for hydro bridges"
+
+[build-dependencies]
+cmake = "0.1"
+flate2 = "1"
+tar = "0.4"
+sha2 = "0.10"
+
+[workspace]

@@ -121,6 +121,9 @@ pub static FIELD_MAP: &[FieldMapping] = &[
     f("QFX", Some("qfx"), Rank::Surface, "kg m-2 s-1", "UPWARD MOISTURE FLUX AT THE SURFACE", FieldSource::History, ""),
     f("SWDOWN", Some("swdown"), Rank::Surface, "W m-2", "DOWNWARD SHORT WAVE FLUX AT GROUND SURFACE", FieldSource::History, ""),
     f("GLW", Some("glw"), Rank::Surface, "W m-2", "DOWNWARD LONG WAVE FLUX AT GROUND SURFACE", FieldSource::History, ""),
+    f("REFC", Some("refl10cm_max"), Rank::Surface, "dBZ", "COMPOSITE REFLECTIVITY (COLUMN MAXIMUM, LAMBDA = 10 CM)",
+      FieldSource::History,
+      "the model's own column-maximum reflectivity; MPAS-A writes it to the diagnostics stream (diag.*.nc), not to output, so a run that writes no 3-D refl10cm still delivers its radar picture"),
     // --- precipitation accumulations ----------------------------------------
     f("RAINC", Some("rainc"), Rank::Surface, "mm", "ACCUMULATED TOTAL CUMULUS PRECIPITATION", FieldSource::History, ""),
     f("RAINNC", Some("rainnc"), Rank::Surface, "mm", "ACCUMULATED TOTAL GRID SCALE PRECIPITATION", FieldSource::History, ""),

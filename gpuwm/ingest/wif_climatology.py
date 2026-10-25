@@ -959,6 +959,70 @@ def resolve_wif_climatology(path=None, *, env=None, cwd=None,
                                portable)
 
 
+def _download_wif_dataset(root) -> int:
+    """`gpuwm fetch-tables --wif` into ``root``: 0 staged, 2 refused."""
+    from gpuwm.table_assets import stage_wif_dataset
+
+    return stage_wif_dataset(None, root)
+
+
+def acquire_wif_climatology(path=None, *, env=None, cwd=None,
+                            requested_by=None):
+    """Locate the dataset, download it when it is not here, or refuse by name.
+
+    What a run that COMMITS to the climatology calls (``mp28_aerosol_source``
+    'auto' or 'climatology' on a real-data mp=28 preparation).  Named
+    breakage (a real-data mp=28 run, 2026-10-23
+    12:58Z): with no copy on the machine, 'auto' used to fall back to
+    thompson_init's synthetic CCN/IN profile with only a warning, so a run
+    on a box missing one 225 MB file was a different forecast from the same
+    run on a box that had it, and nothing failed.  Now the search below is
+    followed by the pinned download `gpuwm fetch-tables --wif` performs
+    (exact size and SHA-256 before the atomic install into
+    ``$GPUWM_WIF_DATA_ROOT``, default ~/.gpuwm/wif), and when that fails too
+    the run is refused with the ways out.  The synthetic profile is reached
+    only by naming it (``mp28_aerosol_source='synthetic'``).
+
+    A path a human chose that is not the dataset raises exactly as
+    :func:`resolve_wif_climatology` does; it is never replaced by a download.
+    """
+
+    resolution = resolve_wif_climatology(path, env=env, cwd=cwd,
+                                         requested_by=requested_by)
+    if resolution.resolved:
+        return resolution
+    import os
+    import sys
+    from pathlib import Path
+
+    environ = os.environ if env is None else env
+    root = resolve_wif_data_root(None, env=environ)
+    print(f"mp_physics=28 aerosol: {WIF_CLIMATOLOGY_FILE} is not on this "
+          f"machine; downloading the pinned copy into {root}", file=sys.stderr)
+    if _download_wif_dataset(root) == 0:
+        resolution = resolve_wif_climatology(path, env=env, cwd=cwd,
+                                             requested_by=requested_by)
+        if resolution.resolved:
+            return resolution
+    searched = str(resolution.fallback_reason or _not_found_sentence(
+        str(root / WIF_CLIMATOLOGY_FILE),
+        str(Path.cwd() / WIF_CLIMATOLOGY_FILE))).rstrip()
+    if not searched.endswith("."):
+        searched += "."
+    raise MissingWifClimatologyDataset(
+        (requested_by or "mp28_aerosol_source='auto'")
+        + " needs WRF's monthly WIF aerosol climatology to initialize "
+        "mp_physics=28, and " + searched
+        + " The pinned download into " + str(root) + " failed as well "
+        "(its reason is printed above). Without the dataset the aerosol "
+        "would start from thompson_init's synthetic CCN/IN profile, a "
+        "different forecast from WRF's, so the run stops here. Stage it "
+        "with `gpuwm fetch-tables --wif` (or `--wif --from DIR` offline), "
+        "set [shared] wif_climatology_path or $" + WIF_CLIMATOLOGY_PATH_ENV
+        + ", or select [shared] mp28_aerosol_source='synthetic' to take the "
+        "synthetic profile deliberately.")
+
+
 def _not_found_sentence(staged: str, probe: str) -> str:
     return (
         "no " + WIF_CLIMATOLOGY_FILE + " was found. Searched, in order: "

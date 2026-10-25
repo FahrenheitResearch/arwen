@@ -9,10 +9,10 @@
     "cupy.ReductionKernel",
     "cupy.cuda.compiler.compile_using_nvrtc"
   ],
-  "site_count": 351,
+  "site_count": 353,
   "site_count_by_kind": {
-    "cupy.ElementwiseKernel": 28,
-    "cupy.RawKernel": 42,
+    "cupy.ElementwiseKernel": 29,
+    "cupy.RawKernel": 43,
     "cupy.RawModule": 196,
     "cupy.ReductionKernel": 11,
     "cupy.cuda.compiler.compile_using_nvrtc": 74
@@ -22,8 +22,8 @@
       "cupy.RawKernel": 2
     },
     "package": {
-      "cupy.ElementwiseKernel": 18,
-      "cupy.RawKernel": 5,
+      "cupy.ElementwiseKernel": 19,
+      "cupy.RawKernel": 6,
       "cupy.RawModule": 60,
       "cupy.ReductionKernel": 7,
       "cupy.cuda.compiler.compile_using_nvrtc": 40
@@ -336,7 +336,7 @@
     },
     {
       "file": "gpuwm/core/kernels/__init__.py",
-      "line": 561,
+      "line": 565,
       "column": 20,
       "surface": "package",
       "constructor": "compiler.compile_using_nvrtc",
@@ -352,7 +352,7 @@
     },
     {
       "file": "gpuwm/core/kernels/__init__.py",
-      "line": 643,
+      "line": 647,
       "column": 19,
       "surface": "package",
       "constructor": "compiler.compile_using_nvrtc",
@@ -368,7 +368,7 @@
     },
     {
       "file": "gpuwm/core/kernels/__init__.py",
-      "line": 657,
+      "line": 661,
       "column": 10,
       "surface": "package",
       "constructor": "cp.RawModule",
@@ -384,7 +384,7 @@
     },
     {
       "file": "gpuwm/core/kernels/__init__.py",
-      "line": 685,
+      "line": 689,
       "column": 10,
       "surface": "package",
       "constructor": "cp.RawModule",
@@ -406,7 +406,7 @@
     },
     {
       "file": "gpuwm/core/kernels/__init__.py",
-      "line": 714,
+      "line": 718,
       "column": 26,
       "surface": "package",
       "constructor": "nvrtc_ptx_cache.compile_using_nvrtc",
@@ -422,7 +422,7 @@
     },
     {
       "file": "gpuwm/core/kernels/__init__.py",
-      "line": 737,
+      "line": 741,
       "column": 20,
       "surface": "package",
       "constructor": "compiler.compile_using_nvrtc",
@@ -438,7 +438,7 @@
     },
     {
       "file": "gpuwm/core/kernels/__init__.py",
-      "line": 801,
+      "line": 805,
       "column": 23,
       "surface": "package",
       "constructor": "compiler.compile_using_nvrtc",
@@ -462,7 +462,7 @@
     },
     {
       "file": "gpuwm/core/kernels/__init__.py",
-      "line": 815,
+      "line": 819,
       "column": 10,
       "surface": "package",
       "constructor": "cp.RawModule",
@@ -482,7 +482,7 @@
     },
     {
       "file": "gpuwm/core/kernels/__init__.py",
-      "line": 858,
+      "line": 862,
       "column": 10,
       "surface": "package",
       "constructor": "cp.RawModule",
@@ -502,7 +502,7 @@
     },
     {
       "file": "gpuwm/core/kernels/__init__.py",
-      "line": 881,
+      "line": 885,
       "column": 10,
       "surface": "package",
       "constructor": "cp.RawModule",
@@ -524,7 +524,7 @@
     },
     {
       "file": "gpuwm/core/kernels/__init__.py",
-      "line": 935,
+      "line": 942,
       "column": 26,
       "surface": "package",
       "constructor": "nvrtc_ptx_cache.compile_using_nvrtc",
@@ -585,6 +585,22 @@
       "options_element_expressions": null,
       "options_are_literal": false,
       "text": "kernel = cp.ElementwiseKernel("
+    },
+    {
+      "file": "gpuwm/core/microphysics_transition.py",
+      "line": 1501,
+      "column": 31,
+      "surface": "package",
+      "constructor": "cp.ElementwiseKernel",
+      "constructor_kind": "cupy.ElementwiseKernel",
+      "enclosing": "_carry_number_field",
+      "takes_caller_options": true,
+      "options_argument_present": false,
+      "options_expression": null,
+      "options": null,
+      "options_element_expressions": null,
+      "options_are_literal": false,
+      "text": "_CARRY_NUMBER_KERNEL = cp.ElementwiseKernel("
     },
     {
       "file": "gpuwm/core/moist.py",
@@ -1794,7 +1810,7 @@
     },
     {
       "file": "gpuwm/ensemble/batch_product_output.py",
-      "line": 954,
+      "line": 986,
       "column": 21,
       "surface": "package",
       "constructor": "self.xp.RawModule",
@@ -1891,6 +1907,22 @@
       ],
       "options_are_literal": true,
       "text": "module = xp.RawModule(code=source, options=(\"-std=c++17\",))"
+    },
+    {
+      "file": "gpuwm/ensemble/device_digest.py",
+      "line": 71,
+      "column": 18,
+      "surface": "package",
+      "constructor": "cp.RawKernel",
+      "constructor_kind": "cupy.RawKernel",
+      "enclosing": "tree_digest",
+      "takes_caller_options": true,
+      "options_argument_present": false,
+      "options_expression": null,
+      "options": null,
+      "options_element_expressions": null,
+      "options_are_literal": false,
+      "text": "_KERNEL = cp.RawKernel(_SOURCE, 'hash_blocks')"
     },
     {
       "file": "gpuwm/ensemble/ice_accretion.py",
@@ -1994,7 +2026,7 @@
     },
     {
       "file": "gpuwm/hydro/driver.py",
-      "line": 348,
+      "line": 454,
       "column": 25,
       "surface": "package",
       "constructor": "cp.ReductionKernel",
@@ -2046,7 +2078,7 @@
     },
     {
       "file": "gpuwm/hydro/output.py",
-      "line": 171,
+      "line": 174,
       "column": 17,
       "surface": "package",
       "constructor": "cp.RawModule",
@@ -2232,7 +2264,7 @@
     },
     {
       "file": "gpuwm/tc_accumulator.py",
-      "line": 241,
+      "line": 287,
       "column": 13,
       "surface": "package",
       "constructor": "cp.RawModule",

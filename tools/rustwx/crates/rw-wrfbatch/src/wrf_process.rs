@@ -1274,6 +1274,7 @@ struct NestMoves {
     tolerance_deg: f64,
     /// Per plan: the move onto the target, `None` for a source already there.
     shifts: Vec<Option<crate::nest_move::NestShift>>,
+    union: Option<(LatLonGrid, (usize, usize))>,
 }
 
 /// Plan how a series that spans a nest's moves lands on one grid, or `None`
@@ -1302,7 +1303,7 @@ fn plan_nest_moves(plans: &[WrfSourcePlan]) -> Result<Option<NestMoves>, String>
         .max_by_key(|&index| last_valid(&plans[index]))
         .ok_or("a series with no source cannot move")?;
     let target = placements[target_index];
-    let Some(shifts) = placements
+    let Some(mut shifts) = placements
         .iter()
         .map(|placement| {
             NestShift::between(*placement, target).map(|shift| (!shift.is_null()).then_some(shift))
@@ -1333,13 +1334,66 @@ fn plan_nest_moves(plans: &[WrfSourcePlan]) -> Result<Option<NestMoves>, String>
         lon.iter().map(|value| *value as f32).collect(),
     )
     .map_err(|err| err.to_string())?;
+    let tolerance = coordinate_tolerance_deg(target_plan.dx_m.unwrap_or(f64::NAN));
+    let union = nest_union_grid(plans, &placements, target, tolerance)?;
+    if union.is_some() {
+        // Even the final placement must be embedded in the larger fixed grid.
+        for shift in &mut shifts {
+            if shift.is_none() { *shift = Some(NestShift { dx: 0, dy: 0 }); }
+        }
+    }
     Ok(Some(NestMoves {
         target,
         target_path: target_plan.path.clone(),
         target_grid,
         tolerance_deg: coordinate_tolerance_deg(target_plan.dx_m.unwrap_or(f64::NAN)),
         shifts,
+        union,
     }))
+}
+
+fn nest_union_grid(plans: &[WrfSourcePlan], placements: &[crate::nest_move::NestPlacement],
+                   target: crate::nest_move::NestPlacement, tolerance: f64)
+                   -> Result<Option<(LatLonGrid, (usize, usize))>, String> {
+    let min_i = placements.iter().map(|p| p.i_parent_start).min().unwrap();
+    let min_j = placements.iter().map(|p| p.j_parent_start).min().unwrap();
+    let ratio = i64::from(target.parent_grid_ratio);
+    let offsets: Vec<_> = placements.iter().map(|p|
+        (((i64::from(p.i_parent_start)-i64::from(min_i))*ratio) as usize,
+         ((i64::from(p.j_parent_start)-i64::from(min_j))*ratio) as usize)).collect();
+    let mut coordinates = Vec::new();
+    let (mut nx, mut ny) = (0, 0);
+    for (plan, &(x,y)) in plans.iter().zip(&offsets) {
+        let file = WrfFile::open(&plan.path).map_err(|e| e.to_string())?;
+        let t = plan.records.last().ok_or("nest source has no record")?.time_index;
+        nx = nx.max(x.checked_add(file.nx).ok_or("nest union width overflow")?);
+        ny = ny.max(y.checked_add(file.ny).ok_or("nest union height overflow")?);
+        coordinates.push((file.nx, file.ny,
+            file.xlat(t).map_err(|e| e.to_string())?, file.xlong(t).map_err(|e| e.to_string())?));
+    }
+    let cells = nx.checked_mul(ny).ok_or("nest union cells overflow")?;
+    if cells > 16_777_216 { return Err("moving nest fixed frame exceeds 16 million cells".into()); }
+    let mut lat = vec![f32::NAN; cells];
+    let mut lon = vec![f32::NAN; cells];
+    for ((sx, sy, source_lat, source_lon), &(x,y)) in coordinates.iter().zip(&offsets) {
+        for j in 0..*sy { for i in 0..*sx {
+            let dst = (j+y)*nx+i+x;
+            let src = j*sx+i;
+            let a = source_lat[src] as f32;
+            let b = source_lon[src] as f32;
+            if lat[dst].is_finite() && ((lat[dst]-a).abs() as f64 > tolerance
+                || ((lon[dst]-b+180.).rem_euclid(360.)-180.).abs() as f64 > tolerance) {
+                // An ancestor moved. Keep the existing coordinate-verified
+                // alignment route, rather than inventing a fixed parent.
+                return Ok(None);
+            }
+            lat[dst] = a; lon[dst] = b;
+        }}
+    }
+    let last_offset = (((i64::from(target.i_parent_start)-i64::from(min_i))*ratio) as usize,
+                       ((i64::from(target.j_parent_start)-i64::from(min_j))*ratio) as usize);
+    Ok(Some((LatLonGrid::new(GridShape::new(nx, ny).map_err(|e| e.to_string())?, lat, lon)
+        .map_err(|e| e.to_string())?, last_offset)))
 }
 
 /// Move one hour's fields from a place the nest has since left onto the
@@ -1364,6 +1418,32 @@ fn move_hour_fields(
     label: &str,
 ) -> Result<(), String> {
     use crate::nest_move::{locate_shift, shift_plane, verify_shift};
+
+    if let Some((grid, (last_x, last_y))) = &moves.union {
+        use crate::nest_move::embed_plane;
+        let source = (fields.grid.shape.nx, fields.grid.shape.ny);
+        let target = (grid.shape.nx, grid.shape.ny);
+        let offset = (usize::try_from(*last_x as i64-shift.dx).map_err(|e| e.to_string())?,
+                      usize::try_from(*last_y as i64-shift.dy).map_err(|e| e.to_string())?);
+        for (_, field) in fields.canonical.iter_mut() {
+            field.values = embed_plane(&field.values, source, target, offset)?;
+            field.grid = grid.clone();
+        }
+        for field in fields.derived.iter_mut() {
+            field.values = embed_plane(&field.values, source, target, offset)?;
+        }
+        for volume in fields.volumes.iter_mut() {
+            for (_, plane) in volume.levels.iter_mut() {
+                *plane = embed_plane(plane, source, target, offset)?;
+            }
+        }
+        let footprint = embed_plane(&vec![1.; source.0*source.1], source, target, offset)?;
+        fields.derived.push(OwnedDerivedField {name: "nest_sample_coverage".into(), units: "1".into(),
+            values: footprint.into_iter().map(|v| if v.is_finite() {1.} else {0.}).collect()});
+        fields.grid = grid.clone();
+        fields.notes.push(format!("{} ({label}): native nest placement on the fixed union of visited footprints; unvisited cells missing", display_name(path)));
+        return Ok(());
+    }
 
     let (nx, ny) = (moves.target_grid.shape.nx, moves.target_grid.shape.ny);
     let (shift, shared, read_from) =
@@ -3232,7 +3312,7 @@ fn push_reflectivity_products(
     options: &WrfProcessOptions,
     progress: &mut impl FnMut(String),
 ) {
-    let want_composite = options.should_process(
+    let mut want_composite = options.should_process(
         COMPOSITE_REFLECTIVITY_FILTER,
         Some(COMPOSITE_REFLECTIVITY_STORE),
         WrfProductGroup::Core,
@@ -3247,6 +3327,50 @@ fn push_reflectivity_products(
     }
 
     let native_present = file.has_var("REFL_10CM");
+    // The model's own column maximum (REFC: an MPAS run's refl10cm_max from
+    // its diagnostics stream, carried by rw_mpas_convert) draws the composite
+    // when there is no REFL_10CM volume, instead of the hydrometeor fallback.
+    // THE BREAKAGE THIS PREVENTS (case study 2025-05-19, H2, 2026-10-24): the
+    // hex MPAS-physics route writes no 3-D refl10cm, so its composite maps
+    // were the renderer's estimate, not the model's diagnostic.
+    if want_composite && !native_present && file.has_var("REFC") {
+        let read = isolate_panics("native REFC", || {
+            let values = file.read_var("REFC", timeidx).map_err(|err| err.to_string())?;
+            if values.len() != grid.shape.len() {
+                return Err(format!(
+                    "native REFC has {} values, the grid {}",
+                    values.len(),
+                    grid.shape.len()
+                ));
+            }
+            Ok(values
+                .into_iter()
+                .map(|v| if valid_reflectivity_dbz(v) { v } else { f64::NAN })
+                .collect::<Vec<f64>>())
+        });
+        match read {
+            Ok(values) => {
+                progress("Reading native column-maximum reflectivity REFC".to_string());
+                push_canonical_values(
+                    fields,
+                    grid,
+                    projection.clone(),
+                    COMPOSITE_REFLECTIVITY_STORE,
+                    composite_reflectivity_selector(),
+                    "dBZ",
+                    clean_values(&values),
+                );
+                if !want_1km {
+                    return;
+                }
+                // The 1 km product still needs a volume: read it below.
+                want_composite = false;
+            }
+            Err(err) => fields.notes.push(format!(
+                "native REFC unreadable ({err}); composite falls back to the hydrometeor dbz"
+            )),
+        }
+    }
     progress(if native_present {
         "Reading native WRF REFL_10CM reflectivity volume".to_string()
     } else {

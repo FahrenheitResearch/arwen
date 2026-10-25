@@ -1250,6 +1250,35 @@ fn open_dataset(source: &str) -> Result<Vec<NcVariable>> {
     Ok(inventory(&file, variables))
 }
 
+/// What a whole-object decode of `files` can hold at once, in bytes.
+///
+/// Read from the headers only.  Every indexed variable of every object is
+/// counted as if decoded, promoted to `f64` and held twice (its values and
+/// one working copy while it is stacked and converted), plus each object's
+/// own bytes three times (read, staged, parsed), the factor the GRIB2
+/// price uses.  The selectors read a subset, so this bounds the decode
+/// from above; `threads::admit_width` holds it to a declared budget.
+pub fn whole_object_price(files: &[String]) -> Result<u64> {
+    let mut total: u64 = 0;
+    for source in files {
+        let bytes = std::fs::metadata(source).map(|meta| meta.len()).unwrap_or(0);
+        let mut elements: u64 = 0;
+        for variable in open_dataset(source)? {
+            if let NcSource::Indexed(indexed) = &variable.source {
+                let count = indexed
+                    .shape()
+                    .iter()
+                    .fold(1u64, |acc, &length| acc.saturating_mul(length as u64));
+                elements = elements.saturating_add(count);
+            }
+        }
+        total = total
+            .saturating_add(elements.saturating_mul(16))
+            .saturating_add(bytes.saturating_mul(3));
+    }
+    Ok(total)
+}
+
 /// Everything the file offers a selector: the NetCDF variable index, plus
 /// the NetCDF-4 coordinate variables that index omits.
 fn inventory(file: &NcFile, indexed: Vec<Variable>) -> Vec<NcVariable> {

@@ -41,7 +41,8 @@ Writes, per point:
   <slug>/meteogram_<slug>_<YYYYMMDD_HH>.png            every frame, one chart
 and a JSON receipt with every value drawn.  --brand puts the model's name and
 start in bold at the top right of every picture (e.g. 'WOOF Hex · Global
-120 km · Init GFS 22 Oct 2026 00Z'); without it the top right is empty.  A
+120 km · Init GFS 22 Oct 2026 00Z'); without it the top right names the
+model and its start ('WOOF Hex · Init 22 Oct 2026 00Z').  A
 point off a limited-area mesh is refused by name rather than drawn from the
 boundary ring.";
 
@@ -943,6 +944,16 @@ fn padded(lo: f64, hi: f64, min_span: f64) -> (f64, f64) {
 /// The model's name and start, bold and right-aligned at the top right (the
 /// picture's identity, as on the website sounding window).  It steps down in
 /// size before it would run into the headline; nothing is drawn without it.
+/// The top-right label when the caller passed no `--brand`: "WOOF Hex · Init 22 Oct 2026 00Z" (a model label that
+/// already names WOOF is kept as it is).
+fn default_brand(model_label: &str, init: &Timestamp) -> String {
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let label = model_label.trim();
+    let model = if label.starts_with("WOOF") { label.to_string() } else { "WOOF Hex".to_string() };
+    let month = MONTHS.get(init.month.saturating_sub(1) as usize).copied().unwrap_or("?");
+    format!("{model} · Init {} {month} {} {:02}Z", init.day, init.year, init.hour)
+}
+
 fn draw_brand(img: &mut RgbaImage, brand: Option<&str>, headline: &str) {
     let Some(brand) = brand else { return };
     let right = img.width() as i32 - 30;
@@ -980,7 +991,11 @@ fn draw_meteogram(
     let lead_max = s.leads_h.last().copied().unwrap_or(1.0).max(1e-6);
     let lead_min = s.leads_h.first().copied().unwrap_or(0.0);
     let span = (lead_max - lead_min).max(1e-6);
-    let xof = |lead: f64| x0 + (lead - lead_min) / span * (x1 - x0);
+    // The first and last leads sit one barb length inside the panel frame, so
+    // a wind barb (26 px shaft plus its feathers) drawn at the final lead stays
+    // inside the panel instead of running over the frame and off the picture.
+    const LEAD_INSET: f64 = 40.0;
+    let xof = |lead: f64| (x0 + LEAD_INSET) + (lead - lead_min) / span * (x1 - x0 - 2.0 * LEAD_INSET);
     let xs: Vec<f64> = s.leads_h.iter().map(|l| xof(*l)).collect();
     let tops = [150.0, 430.0, 680.0, 930.0];
     let heights = [220.0, 190.0, 190.0, 220.0];
@@ -1121,6 +1136,9 @@ fn run() -> Result<(), String> {
     }
     frames.sort_by_key(|(t, _)| t.label());
     let init = args.simulation_start.unwrap_or(frames[0].0);
+    // Top right: the caller's brand, else the model and its start. Never empty, never a tool's name.
+    let brand = args.brand.clone().unwrap_or_else(|| default_brand(&args.model_label, &init));
+    let brand = Some(brand);
     let n = sampler.points.len();
     let mut series: Vec<Series> = (0..n)
         .map(|_| Series {
@@ -1186,7 +1204,7 @@ fn run() -> Result<(), String> {
                     valid.minute,
                     lead_h.round() as i64
                 ));
-                draw_sounding(&file, c, p, &headline, args.brand.as_deref(), &init, valid, lead_h, &idx)?;
+                draw_sounding(&file, c, p, &headline, brand.as_deref(), &init, valid, lead_h, &idx)?;
                 println!(
                     "SOUNDING\t{}\t{}\tf{:03}\tsbcape={:.0}\tsbcin={:.0}\tpw_mm={:.1}",
                     p.slug(),
@@ -1233,7 +1251,7 @@ fn run() -> Result<(), String> {
             init.day,
             init.hour
         ));
-        draw_meteogram(&file, &series[k], p, &headline, args.brand.as_deref(), &init)?;
+        draw_meteogram(&file, &series[k], p, &headline, brand.as_deref(), &init)?;
         println!("METEOGRAM\t{}\t{}\tframes={}", p.slug(), file.display(), series[k].leads_h.len());
         let s = &series[k];
         let list = |v: &[f64]| v.iter().map(|x| json_num(*x)).collect::<Vec<_>>().join(", ");
@@ -1258,7 +1276,7 @@ fn run() -> Result<(), String> {
         let body = format!(
             "{{\n  \"schema\": \"gpuwm-hex.points/v1\",\n  \"engine\": \"rw_hex_points (rust)\",\n  \"interpolation\": \"linear barycentric on the mesh Delaunay triangles (cellsOnVertex)\",\n  \"mslp\": \"NCEP Shuell reduction (as the GFS post computes PRMSL) from the lowest model level: a 6.5 K/km column below the terrain, its sea-level temperature adjusted only above 290.66 K\",\n  \"headline\": \"{}\",\n  \"brand\": {},\n  \"init\": \"{}\",\n  \"linear\": {{\"contained\": {}, \"widened\": {}, \"clamped\": {}}},\n  \"soundings\": [\n    {}\n  ],\n  \"meteograms\": [\n    {}\n  ]\n}}\n",
             headline,
-            args.brand.as_ref().map_or("null".to_string(), |b| format!("\"{}\"", b.replace('\\', "\\\\").replace('"', "\\\""))),
+            brand.as_ref().map_or("null".to_string(), |b| format!("\"{}\"", b.replace('\\', "\\\\").replace('"', "\\\""))),
             init.iso(),
             sampler.linear.contained,
             sampler.linear.widened,
@@ -1304,6 +1322,13 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_brand_still_names_the_model_and_its_start() {
+        let init = Timestamp::parse("2026-10-23_18:00:00").unwrap();
+        assert_eq!(default_brand("hex", &init), "WOOF Hex · Init 23 Oct 2026 18Z");
+        assert_eq!(default_brand("WOOF Hex", &init), "WOOF Hex · Init 23 Oct 2026 18Z");
+    }
 
     #[test]
     fn absent_samples_have_a_finite_empty_axis() {

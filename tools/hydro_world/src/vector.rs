@@ -45,7 +45,7 @@ fn region_files(root: &Path, inp: &Input, b: &BBox) -> Result<Vec<std::path::Pat
 }
 
 /// Sutherland-Hodgman clip of one ring against the box (lon/lat).
-fn clip_ring(r: &[(f64, f64)], b: &BBox) -> Vec<(f64, f64)> {
+pub(crate) fn clip_ring(r: &[(f64, f64)], b: &BBox) -> Vec<(f64, f64)> {
     let mut pts: Vec<(f64, f64)> = r.to_vec();
     if pts.len() > 1 && pts.first() == pts.last() {
         pts.pop();
@@ -221,6 +221,7 @@ pub fn vector_hydro(row: &SourceRow, spec: &BuildSpec, b: &BBox, root: &Path, co
                     _ => 0.0,
                 };
                 ReachIn {
+                    esri_parts: false,
                     down: if kept_ids.contains(&bs.down) { index.get(&bs.down).copied() } else { None },
                     line,
                     divide: Some((bs.exterior.clone(), bs.holes.clone())),

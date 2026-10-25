@@ -57,6 +57,7 @@ pub mod health_scan;
 pub mod ozone;
 pub mod cold_start;
 pub mod host_arrays;
+pub mod analysis_exchange;
 pub mod preparation_fingerprints;
 pub mod noah_init;
 // IMS daily snow and ice (NSIDC G02156) sampled at target points: the

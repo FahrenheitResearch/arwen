@@ -67,6 +67,7 @@ CANONICAL_LAZY_MEMBER_CLASSES = (
     "microphysics carrying accumulators",
     "cumulus carrying accumulators",
     "KF W0AVG trigger history",
+    "nest precipitation placement archive",
 )
 
 _CANONICAL_NEST_FIELD_KINDS = (
@@ -661,6 +662,7 @@ def _inventory_member_set(inventory: Mapping[str, object]
 def lazy_inventory_member_class(name: str) -> str | None:
     """Return the documented lazy class for a canonical member path."""
     from gpuwm.io import restart as restart_io
+    from gpuwm.core.nest_accumulation import is_archive_slot
 
     scratch_slot = (name.removeprefix("scratch/")
                     if name.startswith("scratch/") else None)
@@ -677,6 +679,8 @@ def lazy_inventory_member_class(name: str) -> str | None:
                 return CANONICAL_LAZY_MEMBER_CLASSES[3]
             if slot.startswith("cu_"):
                 return CANONICAL_LAZY_MEMBER_CLASSES[4]
+    if is_archive_slot(scratch_slot):
+        return CANONICAL_LAZY_MEMBER_CLASSES[6]
     if name == "cumulus/w0avg":
         return CANONICAL_LAZY_MEMBER_CLASSES[5]
     return None
@@ -732,8 +736,14 @@ def _canonical_extra_manifest(state) -> dict[str, object]:
     it has no frame-time/restart contract and its dead residual bytes are not
     model trajectory state.
     """
+    from gpuwm.io import restart as restart_io
+
     manifest = {}
     for slot, value in sorted(getattr(state, "_scratch", {}).items()):
+        # Already included by _scratch_manifest; do not reject it again
+        # merely because its registered name starts with an audited prefix.
+        if restart_io.classify_scratch_slot(slot) == "serialize":
+            continue
         name = f"scratch/{slot}"
         if slot in _CANONICAL_EXCLUDED_FRAME_SCRATCH:
             continue

@@ -9,10 +9,11 @@ physical initialization inputs are listed in [STARTUP.md](STARTUP.md).
 
 Build **from this directory** with `cargo build --release --offline -j 8`.
 Put CARGO_HOME, CARGO_TARGET_DIR and TMPDIR under your data-disk scratch root.
-The Linux CLI links system SQLite (`libsqlite3.so.0`) and PROJ (`libproj.so.25`).
-Its raw-payload cdylib has neither dependency after dead-code elimination.
-Windows CLI native-library packaging and wheel roster are still outstanding;
-this source tool is not an installed-product acceptance claim.
+The CLI and cdylib use pinned static PROJ 9.7.1 and SQLite 3.46.1 on Linux and
+Windows, with an embedded projection database and network disabled. See
+[`hydro_proj`](../hydro_proj/README.md) for sources and build requirements.
+The `--proj-probe` command and library projection probe exercise that dependency.
+Wheel staging remains the release tooling's separate responsibility.
 
 `rw_hydrofabric prepare CONFIG.json` reads the configured GeoPackage, resolves
 reach->nexus->reach edges, produces upstream CSR and both routing level orders,
@@ -124,9 +125,9 @@ manifest authority.
 `nextgen_hydrofabric` is registered in the existing production bridge artifact
 roster, ABI table, static contract marker and wheel-stager workspace map. Its
 library resolves through the existing package/staged/explicit-override ladder;
-there is no scratch-directory default. The registered raw cdylib does not link
-SQLite, PROJ or any native reference/replay runtime. The GIS CLI remains a
-separate tool requiring SQLite/PROJ. Actual platform binaries still must be built
+there is no scratch-directory default. The cdylib and GIS CLI carry their pinned
+static SQLite and PROJ libraries, with embedded projection resources; neither
+requires a system installation of those libraries. Actual platform binaries still must be built
 and staged by the release owner; registration alone does not qualify a wheel.
 
 The existing manifest is specified in `schema/manifest-v1.schema.json`; its
@@ -588,7 +589,7 @@ record indices, IDs, per-part vertex counts and exact `part_lengths_m_bits` /
 `length_m_bits` u64 IEEE754 words. The source intermediate is joined by source ID
 through the existing shared writer. It is not a collapsed-network routing length,
 native routing parameter, full coverage or runtime provider admission. The
-installed PROJ/proj.db and source pins belong in the receipt; offline NAD83 to
+bundled PROJ/embedded database and source pins belong in the receipt; offline NAD83 to
 WGS84 transformation is not a claim of survey-grade datum accuracy.
 
 `rw_hydrofabric replay-source-lengths --strict LENGTHS.json NATIVE.csv` compares

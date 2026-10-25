@@ -359,6 +359,7 @@ class MpasColumnSuitePhysics(MpasColumnBatchPhysics):
                  cumulus_seconds=None, cumulus_scheme=None,
                  microphysics_scheme="wsm6",
                  gf_ishallow=None, dx_column_m=None,
+                 cumulus_active_column=None,
                  landmask=1.0, xland=None, ivgtyp=10, isltyp=6,
                  vegfra=50.0, tsk=300.0, tmn=285.0, xice=0.0, snow=0.0,
                  snow_depth=0.0, soil_temperature=None,
@@ -471,6 +472,8 @@ class MpasColumnSuitePhysics(MpasColumnBatchPhysics):
                     f"got {dx_column.shape}")
             if not np.all(np.isfinite(dx_column)) or np.any(dx_column <= 0.0):
                 raise ValueError("dx_column_m must be finite and positive")
+        from gpuwm.core.gf import cumulus_active_column as _cu_active
+        active_column = _cu_active(cumulus_active_column, ncol, cumulus_scheme)
         # The soil column: the land surface's own geometry, never a default.
         n_soil = int(assignments["num_soil_layers"])
         soil = {}
@@ -577,6 +580,10 @@ class MpasColumnSuitePhysics(MpasColumnBatchPhysics):
             "gf_ishallow": int(gf_ishallow),
             "gf_dx_column": ("per-column" if dx_column is not None
                              else "scalar"),
+            # Present only with a mask, so an unmasked identity is unchanged.
+            **({} if active_column is None else {
+                "gf_active_column": (f"per-column: {int(active_column.sum())}"
+                                     f" of {ncol} active")}),
             "wsm6_hail_opt": int(wsm6_hail_opt),
             "xice_threshold": threshold,
             "fractional_seaice": seaice.get("fractional_seaice"),
@@ -646,6 +653,8 @@ class MpasColumnSuitePhysics(MpasColumnBatchPhysics):
             terrain_drag_static=(dict(oro, HGT_M=terrain.reshape(1, ncol))
                                  if oro else None),
             cumulus=self._momentum_cumulus)
+        self.seaice_optics_seed = _seed_ruc_fractional_seaice_optics(
+            self._driver, cfg, lat, start_time)
         if not {"du", "dv"} <= set(self._driver.pbl_raw_rates):
             raise RuntimeError(
                 "the driver holds no raw PBL momentum rates "
@@ -668,6 +677,9 @@ class MpasColumnSuitePhysics(MpasColumnBatchPhysics):
         if dx_column is not None:
             self._driver.gf_dx_column = cp.asarray(
                 dx_column.reshape(1, ncol))
+        if active_column is not None:
+            self._driver.gf_active_column = cp.asarray(
+                active_column.reshape(1, ncol))
         # The buffer set the frozen run_phase1 (inherited) fills: u, v,
         # the interface fields and a caller exner are read in place for
         # the call, not mirrored (mpas_column_batch, census item 10).
@@ -811,6 +823,70 @@ def _capturing_momentum_cumulus():
             return result
 
     return Capturing()
+
+
+def _seed_ruc_fractional_seaice_optics(driver, cfg, latitude_deg,
+                                       start_time):
+    """MPAS ``landuse_init_forMPAS``'s sea-ice branch for a RUC column seam.
+
+    THE BREAKAGE THIS PREVENTS: a column seam builds its driver without a
+    land-use initialization, so ALBEDO/EMISS start at the allocator's flat
+    0.20/0.95 on every column.  Under ``fractional_seaice = 1`` the RUC arm
+    de-blends them each call as the ice part of an ice/open-water mixture
+    (module_surface_driver.F:3461-3473, ``(ALBEDO - (1-XICE)*0.08)/XICE``),
+    so a 2 % ice cell handed 0.20 became an ice albedo of 6.1 and an ice
+    emissivity below zero, and step 0 died with "RUC CUDA snow preparation
+    alb must be below 1" (hex 60-15 km zoom globe, GFS 2025-05-19 12Z,
+    HRRR-shape and rrfs_v2_dev suites; worked around by
+    config_frac_seaice=false).
+
+    MPAS-A v8.4 (mpas_atmphys_landuse.F:265-301) and WRF's landuse_init
+    (module_physics_init.F:1979-1990) both seed a sea-ice cell
+    (XICE >= the RUC threshold, 0.02 here) from the table's ice row and
+    blend it with open water: ALBBCK = ALBD(ISICE)/100, EMBCK =
+    SFEM(ISICE), ALBEDO = XICE*ALBBCK + (1-XICE)*0.08, EMISS = XICE*EMBCK
+    + (1-XICE)*0.98.  This is that branch, with MPAS's per-cell season
+    (winter for day < 105 or >= 288, flipped south of the equator) because
+    a column seam is one MPAS mesh, not one WRF domain.  Other cells are
+    left as they are.  Returns a small receipt, or None when the seam is
+    not RUC with fractional sea ice.
+    """
+    if (int(cfg.sf_surface_physics) != 3
+            or int(getattr(cfg, "fractional_seaice", 0)) != 1):
+        return None
+    import cupy as cp
+    from gpuwm.core.landuse import load_landuse_table
+    from gpuwm.core.ruc import ruc_ice_category
+
+    params = driver.ruc_params
+    fields = driver.fields
+    table = load_landuse_table(params.dataset_identifier)
+    isice = ruc_ice_category(params.vegetation)
+    shape = fields["xice"].shape
+    lat = np.asarray(latitude_deg, dtype=np.float32).reshape(shape)
+    julday = int(start_time.timetuple().tm_yday)
+    base = 2 if (julday < 105 or julday >= 288) else 1
+    season = np.where(lat < np.float32(0.0), 3 - base, base)
+    if table.luseas == 1:
+        season = np.ones(shape, dtype=np.int64)
+    row = table.values[season - 1, isice - 1]
+    # LANDUSE.TBL is read as default REAL, then ALBD/100. in REAL.
+    albbck_ice = cp.asarray(
+        row[..., 0].astype(np.float32) / np.float32(100.0))
+    embck_ice = cp.asarray(row[..., 2].astype(np.float32))
+    xice = fields["xice"]
+    ice = xice >= cp.float32(params.xice_threshold)
+    water = cp.float32(1.0) - xice
+    albedo = xice * albbck_ice + water * cp.float32(0.08)
+    emiss = xice * embck_ice + water * cp.float32(0.98)
+    for name, value in (("albbck", albbck_ice), ("embck", embck_ice),
+                        ("albedo", albedo), ("emiss", emiss)):
+        fields[name][...] = cp.where(ice, value, fields[name]).astype(
+            cp.float32)
+    return {"policy": "mpas-landuse-init-seaice-v1",
+            "ice_category": int(isice),
+            "xice_threshold": float(params.xice_threshold),
+            "seeded_cells": int(cp.count_nonzero(ice))}
 
 
 def _initialize_suite_driver(state, cfg, **kwargs):
@@ -1297,7 +1373,7 @@ class MpasColumnPhysics(MpasColumnBatchPhysics):
                  start_time, latitude_deg, longitude_deg,
                  terrain_height_m, z_interface_nominal_m, p_top_pa, dx_m,
                  cumulus_seconds=None, dx_column_m=None, cell_area_m2=None,
-                 surface=None, statics=None):
+                 surface=None, statics=None, cumulus_active_column=None):
         # ---- pure validation FIRST (no device allocation before it) ----
         if not isinstance(n_levels, numbers.Integral) or n_levels < 3:
             raise ValueError(
@@ -1346,6 +1422,8 @@ class MpasColumnPhysics(MpasColumnBatchPhysics):
                     f"got {dx_column.shape}")
             if not np.all(np.isfinite(dx_column)) or np.any(dx_column <= 0.0):
                 raise ValueError("dx_column_m must be finite and positive")
+        from gpuwm.core.gf import cumulus_active_column as _cu_active
+        active_column = _cu_active(cumulus_active_column, ncol, ("gf" if int(cfg.cu_physics or 0) == 3 else f"cu_physics={int(cfg.cu_physics or 0)}"))
         area = None
         if cell_area_m2 is not None:
             area = np.asarray(cell_area_m2, dtype=np.float64).reshape(-1)
@@ -1428,6 +1506,9 @@ class MpasColumnPhysics(MpasColumnBatchPhysics):
             stepcu=cadences["stepcu"],
             start_time=start_time.isoformat(), p_top_pa=p_top, dx_m=dx,
             dx_column=("per-column" if dx_column is not None else "scalar"),
+            **({} if active_column is None else {
+                "gf_active_column": (f"per-column: {int(active_column.sum())}"
+                                     f" of {ncol} active")}),
             surface=sorted(given), physics=dict(plan.identity["physics"]),
             species=list(plan.species),
             static_fields=list(plan.static_fields))
@@ -1462,6 +1543,8 @@ class MpasColumnPhysics(MpasColumnBatchPhysics):
             radiation_longitude=lon.reshape(1, ncol),
             terrain_drag_static=(dict(oro, HGT_M=terrain.reshape(1, ncol))
                                  if oro else None))
+        self.seaice_optics_seed = _seed_ruc_fractional_seaice_optics(
+            self._driver, cfg, lat, start_time)
         self._cumulus_momentum = {"pair": None, "seen": False}
         _capture_cumulus_momentum(self._driver, self._cumulus_momentum)
 
@@ -1491,6 +1574,9 @@ class MpasColumnPhysics(MpasColumnBatchPhysics):
         if dx_column is not None:
             self._driver.gf_dx_column = cp.asarray(
                 dx_column.reshape(1, ncol))
+        if active_column is not None:
+            self._driver.gf_active_column = cp.asarray(
+                active_column.reshape(1, ncol))
         # THE STATE'S ARRAYS ARE THE STATE'S, FOR GOOD.  A scheme may bind
         # state arrays when the driver is built (NSSL's production
         # coordinator does, and checks their identity on every call), so

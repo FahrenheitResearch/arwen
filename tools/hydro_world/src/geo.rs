@@ -217,6 +217,31 @@ pub fn gpkg_polygon(srs: i32, exterior: &[(f64, f64)], holes: &[Vec<(f64, f64)>]
     b
 }
 
+/// Encode all ESRI parts, grouping positive (hole) rings under their negative
+/// exterior. Disconnected exteriors become MULTIPOLYGON, never discarded.
+pub fn gpkg_esri_parts(srs: i32, rings: &[Vec<(f64, f64)>]) -> Vec<u8> {
+    let exteriors: Vec<_> = rings.iter().filter(|r| ring_area(r) < 0.0).collect();
+    let contains = |r: &[(f64, f64)], p: (f64, f64)| {
+        let mut inside = false;
+        for i in 0..r.len() {
+            let (a,b) = (r[i],r[(i+1)%r.len()]);
+            if (a.1 > p.1) != (b.1 > p.1) && p.0 < (b.0-a.0)*(p.1-a.1)/(b.1-a.1)+a.0 { inside = !inside; }
+        }
+        inside
+    };
+    let polys: Vec<_> = exteriors.iter().map(|e| {
+        let holes = rings.iter().filter(|h| ring_area(h) > 0.0 && contains(e, h[0])).cloned().collect::<Vec<_>>();
+        gpkg_polygon(srs,e,&holes)
+    }).collect();
+    if polys.len() == 1 { return polys.into_iter().next().unwrap(); }
+    let mut out = Vec::new();
+    header(&mut out,srs,Some(envelope(rings.iter().flatten().copied())));
+    out.push(1); out.extend_from_slice(&6u32.to_le_bytes());
+    out.extend_from_slice(&(polys.len() as u32).to_le_bytes());
+    for p in polys { out.extend_from_slice(&p[40..]); }
+    out
+}
+
 /// Decode the 2D vertices of a contract GPKG geometry (point, linestring or
 /// polygon rings), used by the comparison tool and tests.
 pub fn gpkg_rings(b: &[u8]) -> Option<Vec<Vec<(f64, f64)>>> {
@@ -293,6 +318,27 @@ pub fn gpkg_rings(b: &[u8]) -> Option<Vec<Vec<(f64, f64)>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_catchment_preserves_islands_and_holes() {
+        let outer = vec![(0.,0.),(0.,4.),(4.,4.),(4.,0.),(0.,0.)];
+        let hole = vec![(1.,1.),(2.,1.),(2.,2.),(1.,2.),(1.,1.)];
+        let island = vec![(5.,0.),(5.,1.),(6.,1.),(6.,0.),(5.,0.)];
+        let parts = vec![outer, hole, island];
+        let encoded = gpkg_esri_parts(9999, &parts);
+        let g=crate::contract::Geometry(encoded.clone());
+        let json=serde_json::to_string(&g).unwrap();
+        assert_eq!(serde_json::from_str::<crate::contract::Geometry>(&json).unwrap(),g);
+        assert!(serde_json::from_str::<crate::contract::Geometry>("\"é\"").is_err());
+        assert_eq!(u32::from_le_bytes(encoded[41..45].try_into().unwrap()), 6);
+        let decoded = gpkg_rings(&encoded).unwrap();
+        assert_eq!(decoded.len(), 3);
+        // Polygon writer normalizes winding and the starting vertex.
+        for (actual, expected) in decoded.iter().zip(parts.iter()) {
+            assert_eq!(actual.len(), expected.len());
+            assert!(expected.iter().all(|v| actual.contains(v)));
+            assert_eq!(ring_area(actual).abs(), ring_area(expected).abs());
+        }
+    }
     #[test]
     fn ellipsoid_total_area() {
         let total = quad_area_m2(-90.0, 90.0, 360.0);

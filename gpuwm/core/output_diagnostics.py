@@ -15,8 +15,9 @@ PRECIP_HISTORY = {
         ("snow_acc_nc", "Interval snow including frozen convective rain"),
         ("graup_acc_nc", "Interval grid-scale graupel"))}
 from gpuwm.core.gsd_diagnostics import HISTORY as GSD_HISTORY, PERSISTENT as GSD_PERSISTENT
-HISTORY = PRECIP_HISTORY | GSD_HISTORY
-PERSISTENT = (*PRECIP_HISTORY, *GSD_PERSISTENT)
+from gpuwm.core.climate_diagnostics import HISTORY as CLIMATE_HISTORY, PERSISTENT as CLIMATE_PERSISTENT
+HISTORY = PRECIP_HISTORY | GSD_HISTORY | CLIMATE_HISTORY
+PERSISTENT = (*PRECIP_HISTORY, *GSD_PERSISTENT, *CLIMATE_PERSISTENT)
 
 def scratch_shapes(cfg):
     shapes = {slot: (cfg.ny, cfg.nx) for slot in PRECIP_HISTORY
@@ -25,6 +26,8 @@ def scratch_shapes(cfg):
         shapes["output_zero"] = (cfg.ny, cfg.nx)
     from gpuwm.core.gsd_diagnostics import scratch_shapes as gsd_shapes
     shapes.update(gsd_shapes(cfg))
+    from gpuwm.core.climate_diagnostics import scratch_shapes as climate_shapes
+    shapes.update(climate_shapes(cfg))
     return shapes
 
 def initialize(state, cfg):

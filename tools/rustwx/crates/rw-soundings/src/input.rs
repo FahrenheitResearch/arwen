@@ -6,7 +6,7 @@ use rw_store::{
 };
 use netcdf_reader::{NcFile, NcSliceInfo, NcSliceInfoElem};
 use rayon::prelude::*;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{path::PathBuf, sync::Arc};
 use wrf_core::{pure_reader::PureRustFile, WrfFile};
 
@@ -27,6 +27,70 @@ pub struct Frame {
     pub member: String,
     pub valid: i64,
     pub columns: Vec<RawColumn>,
+    /// What the run says about itself (its start, model, shape, init source), for the sounding's top-right label.
+    pub run: RunInfo,
+}
+
+/// A run's own description of itself, read from its files: the start (ISO, 2024-04-26T18:00:00Z), the model words
+/// ("Regional", "Hex"), the shape ("Global 120 km") and the init source ("HRRR"). Each part is only what the file
+/// states; a missing part stays missing. Column stores carry it in their header (`run`), JSON column frames as
+/// top-level keys, wrfouts as their globals.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+pub struct RunInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub init: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shape: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+impl RunInfo {
+    /// Every part `self` lacks, taken from `other`.
+    pub fn or(mut self, other: &RunInfo) -> RunInfo {
+        let take = |a: &mut Option<String>, b: &Option<String>| {
+            if a.as_deref().is_none_or(|s| s.trim().is_empty()) {
+                *a = b.clone().filter(|s| !s.trim().is_empty());
+            }
+        };
+        take(&mut self.init, &other.init);
+        take(&mut self.model, &other.model);
+        take(&mut self.shape, &other.shape);
+        take(&mut self.source, &other.source);
+        self
+    }
+    /// What a wrfout's globals say: its start (SIMULATION_START_DATE, else START_DATE), the init source an ArWen
+    /// run records (GPUWM_INITIAL_CONDITION_SOURCE, else the prepared route's TITLE), and the model: "Hex" for a hex export (its GPUWM_MODEL_LABEL
+    /// names hex, or its TITLE names the MPAS port), "Regional" for an ArWen wrfout (GPUWM_VERSION).
+    pub fn from_wrf(f: &WrfFile) -> RunInfo {
+        let attr = |k: &str| f.global_attr_str(k).ok().map(|s| s.trim().trim_matches('\0').to_string()).filter(|s| !s.is_empty());
+        let init = ["SIMULATION_START_DATE", "START_DATE"]
+            .iter()
+            .find_map(|k| attr(k).and_then(|s| timestamp(&s).ok()))
+            .map(iso);
+        let label = attr("GPUWM_MODEL_LABEL").unwrap_or_default();
+        let title = attr("TITLE").unwrap_or_default();
+        // The prepared-domain route titles its files "gpuwm prepared HRRR domain tree ..." and writes no
+        // GPUWM_INITIAL_CONDITION_SOURCE, so its source is the title's word after "prepared".
+        let source = attr("GPUWM_INITIAL_CONDITION_SOURCE")
+            .filter(|s| !s.eq_ignore_ascii_case("unknown"))
+            .or_else(|| title.strip_prefix("gpuwm prepared ").and_then(|t| t.split_whitespace().next()).map(str::to_string));
+        let model = if label.starts_with("WOOF") {
+            Some(label.trim_start_matches("WOOF").trim().to_string()).filter(|s| !s.is_empty())
+        } else if label.to_ascii_lowercase().contains("hex") || title.contains("MPAS") {
+            Some("Hex".to_string())
+        } else if attr("GPUWM_VERSION").is_some() || title.contains("GPUWM") {
+            Some("Regional".to_string())
+        } else {
+            None
+        };
+        RunInfo { init, model, shape: None, source }
+    }
+}
+/// Unix seconds as ISO UTC (2024-04-26T18:00:00Z).
+pub fn iso(t: i64) -> String {
+    chrono::DateTime::from_timestamp(t, 0).unwrap().format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
@@ -63,13 +127,15 @@ pub(crate) fn dewpoint(p_pa: f64, q: f64) -> f64 {
 pub fn read(source: &Source, points: &[Point]) -> Res<Vec<Frame>> {
     if source.path.extension().is_some_and(|x| x == "rws") {
         let r = HourReader::open(&source.path).map_err(err)?;
-        let valid = r.meta().exact_time().map(|t| t.valid_unix).or_else(|| {
-            // Older whole-hour stores encode their UTC origin in the run key.
+        // Whole-hour stores encode their UTC origin in the run key.
+        let origin = {
             let run = &r.meta().run;
             let stamp = run.strip_prefix("local_").and_then(|s| s.split('_').next()).unwrap_or(run);
-            let origin = ["%Y%m%d%H%M%S", "%Y%m%d%H%M", "%Y%m%d%H"].iter().find_map(|fmt| {
+            ["%Y%m%d%H%M%S", "%Y%m%d%H%M", "%Y%m%d%H"].iter().find_map(|fmt| {
                 chrono::NaiveDateTime::parse_from_str(stamp, fmt).ok().map(|t|t.and_utc().timestamp())
-            });
+            })
+        };
+        let valid = r.meta().exact_time().map(|t| t.valid_unix).or_else(|| {
             origin.map(|t| t + i64::from(r.meta().forecast_hour)*3600)
         }).ok_or("rw-store input needs exact time metadata or a UTC run origin; cannot infer valid time from a storage slot")?;
         let grid = GridFile::open(&source.path.parent().unwrap().join("grid.rwg")).map_err(err)?;
@@ -85,12 +151,17 @@ pub fn read(source: &Source, points: &[Point]) -> Res<Vec<Frame>> {
             member: source.member.clone(),
             valid,
             columns,
+            run: RunInfo { init: origin.map(iso), ..Default::default() },
         }]);
     }
     if source.path.extension().is_some_and(|x| x == "json") {
         return read_json_frame(source, points);
     }
+    if source.path.extension().is_some_and(|x| x == "wcol") {
+        return read_column_store(source, points);
+    }
     let f = WrfFile::open(&source.path).map_err(err)?;
+    let run = RunInfo::from_wrf(&f);
     // Classic, 64-bit-offset and CDF-5 files (ArWen wrfouts, hex exports) are memory-mapped, so a
     // hyperslab read touches only the profile columns. NetCDF-4 files fall back to whole slices.
     let classic = match f.hdf5() {
@@ -137,6 +208,7 @@ pub fn read(source: &Source, points: &[Point]) -> Res<Vec<Frame>> {
             member: source.member.clone(),
             valid: timestamp(time)?,
             columns,
+            run: run.clone(),
         });
     }
     Ok(frames)
@@ -466,11 +538,63 @@ impl WrfGrid {
 
 /// A column frame already sampled elsewhere (the any-point sounding service reads one column of a run's column store
 /// and hands it over as JSON): `{"valid": "2024-07-14T16:00:00Z", "columns": [RawColumn, ...]}`, one column per
-/// requested point in order. Missing values are null.
+/// requested point in order. Missing values are null. The run's own description (`init`, `model`, `shape`,
+/// `source`, as the column store's header `run` holds them) may ride along for the label.
 #[derive(Deserialize)]
 struct JsonFrame {
     valid: String,
     columns: Vec<RawColumn>,
+    #[serde(flatten)]
+    run: RunInfo,
+}
+
+/// One any-point column store file (rw-store version 2, or a 2.9.6 `GPWMCOL1` file): the grid from its own
+/// lat/lon, each point located on it as on a history file, then the one tile that holds the point, sampled
+/// bilinearly. The stored units are the bridge units already (hPa, m MSL, C, m/s, Pa/s).
+fn read_column_store(source: &Source, points: &[Point]) -> Res<Vec<Frame>> {
+    use rw_store::columns::ColumnFile;
+    let at = |e: String| format!("{}: {e}", source.path.display());
+    let f = ColumnFile::open(&source.path).map_err(|e| at(e.to_string()))?;
+    let h = &f.header;
+    let valid = match h.valid_unix {
+        Some(t) => t,
+        None => timestamp(&h.valid).map_err(at)?,
+    };
+    let (lat, lon) = f.lat_lon().map_err(|e| at(e.to_string()))?;
+    let grid = GridFile { nx: h.nx, ny: h.ny, lat, lon, projection: None, hash: String::new() };
+    let f3 = |name: &str| h.field3(name).ok_or_else(|| at(format!("the store has no {name}")));
+    let f2 = |name: &str| h.field2(name).ok_or_else(|| at(format!("the store has no {name}")));
+    let (ip, iz, it, itd, iu, iv) = (f3("p_hpa")?, f3("z_m")?, f3("t_c")?, f3("td_c")?, f3("u_ms")?, f3("v_ms")?);
+    let iw = h.field3("omega_pas");
+    let surface = [f2("psfc_hpa")?, f2("orog_m")?, f2("t2_c")?, f2("td2_c")?, f2("u10_ms")?, f2("v10_ms")?];
+    let mut columns = Vec::with_capacity(points.len());
+    for p in points {
+        let (x, y) = locate(&grid, p)?;
+        let tile = f.tile_at(x, y).map_err(|e| at(e.to_string()))?;
+        let prof = |i: usize| tile.profile3(i, x, y, h.nx, h.ny).into_iter().map(f64::from).collect::<Vec<_>>();
+        let (x0, y0) = (x.floor() as usize, y.floor() as usize);
+        let (x1, y1) = ((x0 + 1).min(h.nx - 1), (y0 + 1).min(h.ny - 1));
+        let (ax, ay) = (x - x0 as f64, y - y0 as f64);
+        let point = |i: usize| {
+            let g = |ix, iy| f64::from(tile.point2(i, ix, iy));
+            (g(x0, y0) * (1.0 - ax) + g(x1, y0) * ax) * (1.0 - ay) + (g(x0, y1) * (1.0 - ax) + g(x1, y1) * ax) * ay
+        };
+        let s: Vec<f64> = surface.iter().map(|i| point(*i)).collect();
+        let p3 = prof(ip);
+        columns.push(RawColumn {
+            omega: iw.map(prof).unwrap_or_else(|| vec![f64::NAN; p3.len()]),
+            p: p3,
+            z: prof(iz),
+            t: prof(it),
+            td: prof(itd),
+            u: prof(iu),
+            v: prof(iv),
+            sfc: Sfc { psfc_hpa: s[0], orog_m: s[1], t2_c: s[2], td2_c: s[3], u10: s[4], v10: s[5] },
+        });
+    }
+    // The writer's record of its run (`meta.run`: init, model, shape, source), for the label.
+    let run = h.meta.get("run").and_then(|v| serde_json::from_value::<RunInfo>(v.clone()).ok()).unwrap_or_default();
+    Ok(vec![Frame { domain: source.domain.clone(), member: source.member.clone(), valid, columns, run }])
 }
 
 fn read_json_frame(source: &Source, points: &[Point]) -> Res<Vec<Frame>> {
@@ -501,6 +625,7 @@ fn read_json_frame(source: &Source, points: &[Point]) -> Res<Vec<Frame>> {
         member: source.member.clone(),
         valid: timestamp(&frame.valid)?,
         columns: frame.columns,
+        run: frame.run,
     }])
 }
 /// Common log-pressure ladder for ensemble statistics. Never average unrelated model levels.

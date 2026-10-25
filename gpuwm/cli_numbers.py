@@ -57,6 +57,24 @@ def positive_float(text: str) -> float:
     return value
 
 
+def positive_float_list(text: str) -> float | tuple[float, ...]:
+    """One finite number above zero, or several separated by commas.
+
+    One value is returned as a float, exactly as :func:`positive_float`
+    returns it, so an option that grows a list keeps every existing
+    spelling.  Several are a tuple in the order written: the per-domain
+    form (``--nest-history-interval 1800,600`` is d02 every 30 min and
+    d03 every 10 min).
+    """
+    parts = [part.strip() for part in str(text).split(",")]
+    if len(parts) == 1:
+        return positive_float(parts[0])
+    if any(not part for part in parts):
+        raise argparse.ArgumentTypeError(
+            f"must be numbers above zero separated by commas, not {text!r}")
+    return tuple(positive_float(part) for part in parts)
+
+
 def nonnegative_float(text: str) -> float:
     """A finite number of zero or more."""
     need = "a finite number of zero or more"

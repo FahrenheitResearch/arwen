@@ -17,7 +17,7 @@ use crate::derived::DerivedParams;
 use crate::skewt::SkewTStyle;
 use crate::utils::{int2str, qc};
 
-use super::hodo_map_data;
+use super::basemap;
 
 // SPC default colors of the original (config defaults hardcoded, like the
 // Python widget does for everything the preferences dialog cannot change).
@@ -494,12 +494,17 @@ fn zoom_bounds(lat: f64, lon: f64) -> (f64, f64, f64, f64) {
     let half_lat = 4.0;
     let cos_lat = lat.to_radians().cos().max(0.35);
     let half_lon = half_lat * 1.35 / cos_lat;
-    (
-        lon - half_lon,
-        lat - half_lat,
-        lon + half_lon,
-        lat + half_lat,
-    )
+    let ext = basemap::widen_until_outline(
+        basemap::Extent {
+            west: lon - half_lon,
+            south: lat - half_lat,
+            east: lon + half_lon,
+            north: lat + half_lat,
+        },
+        lon,
+        lat,
+    );
+    (ext.west, ext.south, ext.east, ext.north)
 }
 
 fn draw_locator(p: &Painter, g: &Geom, prof: &Profile, style: &SkewTStyle) {
@@ -548,27 +553,18 @@ fn draw_locator(p: &Painter, g: &Geom, prof: &Profile, style: &SkewTStyle) {
         )
     };
 
-    // State boundary / coastline polylines (embedded basemap).
-    let outline = Stroke::new(1.0, style.fg_color);
-    for seg in hodo_map_data::SEGMENTS {
-        // Skip segments entirely outside the view (cheap bbox reject).
-        let visible = seg.iter().any(|(slon, slat)| {
-            (*slon as f64) >= west - 6.0
-                && (*slon as f64) <= east + 6.0
-                && (*slat as f64) >= south - 6.0
-                && (*slat as f64) <= north + 6.0
-        });
-        if !visible {
-            continue;
-        }
-        let pts: Vec<Pos2> = seg
-            .iter()
-            .map(|(slon, slat)| map_point(*slon as f64, *slat as f64))
-            .collect();
-        if pts.len() >= 2 {
-            mp.add(Shape::line(pts, outline));
-        }
-    }
+    // Coastline / border / state polylines (embedded world basemap).
+    basemap::draw(
+        &mp,
+        basemap::Extent {
+            west,
+            south,
+            east,
+            north,
+        },
+        map_point,
+        Stroke::new(1.0, style.fg_color),
+    );
 
     // Crosshair at the sounding point.
     let c = map_point(lon, lat);

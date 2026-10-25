@@ -6,6 +6,7 @@
 //! (Q m3/s, velocity m/s, depth m) per flowpath, the routing_state triple
 //! the engine's MC component takes as initial_state_component.
 use crate::Result;
+use rayon::prelude::*;
 use hydro_world::contract::Fabric;
 use std::collections::{BTreeMap, VecDeque};
 
@@ -42,15 +43,32 @@ fn normal_depth(q: f64, n: f64, bw: f64, cs: f64, s0: f64) -> (f64, f64) {
 
 /// `lateral` maps a divide id (cat-n) to its steady inflow in m3/s.
 pub fn steady_state(f: &Fabric, lateral: &BTreeMap<String, f64>) -> Result<ChannelInit> {
-    let ids: Vec<String> = f.flowpaths.iter().map(|p| p.id.clone().ok_or("flowpath without id")).collect::<std::result::Result<_, _>>()?;
-    let index: BTreeMap<&str, usize> = ids.iter().enumerate().map(|(i, s)| (s.as_str(), i)).collect();
-    let nexus_to: BTreeMap<&str, &str> = f.nexus.iter().filter_map(|n| Some((n.id.as_deref()?, n.toid.as_deref()?))).collect();
+    let ids: Vec<String> = f
+        .flowpaths
+        .iter()
+        .map(|p| p.id.clone().ok_or("flowpath without id"))
+        .collect::<std::result::Result<_, _>>()?;
+    let index: BTreeMap<&str, usize> = ids
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.as_str(), i))
+        .collect();
+    let nexus_to: BTreeMap<&str, &str> = f
+        .nexus
+        .iter()
+        .filter_map(|n| Some((n.id.as_deref()?, n.toid.as_deref()?)))
+        .collect();
     let n = ids.len();
     let mut down = vec![usize::MAX; n];
     let mut indeg = vec![0usize; n];
     for (i, p) in f.flowpaths.iter().enumerate() {
-        let Some(nx) = p.toid.as_deref() else { continue };
-        let target = nexus_to.get(nx).copied().or_else(|| index.contains_key(nx).then_some(nx));
+        let Some(nx) = p.toid.as_deref() else {
+            continue;
+        };
+        let target = nexus_to
+            .get(nx)
+            .copied()
+            .or_else(|| index.contains_key(nx).then_some(nx));
         if let Some(t) = target {
             if let Some(&j) = index.get(t) {
                 down[i] = j;
@@ -83,30 +101,35 @@ pub fn steady_state(f: &Fabric, lateral: &BTreeMap<String, f64>) -> Result<Chann
     if seen != n {
         return Err(format!("flowpath network has a cycle ({} of {n} ordered)", seen).into());
     }
-    let attrs: BTreeMap<&str, &hydro_world::contract::FlowpathAttributes> =
-        f.flowpath_attributes.iter().filter_map(|a| Some((a.id.as_deref()?, a))).collect();
-    let mut missing = 0;
-    let state = ids
+    let attrs: BTreeMap<&str, &hydro_world::contract::FlowpathAttributes> = f
+        .flowpath_attributes
         .iter()
+        .filter_map(|a| Some((a.id.as_deref()?, a)))
+        .collect();
+    let (state, missing_rows): (Vec<_>, Vec<_>) = ids
+        .par_iter()
         .zip(&q)
         .map(|(id, &qq)| match attrs.get(id.as_str()) {
             Some(a) if a.n.is_some() && a.btm_wdth.is_some() && a.so.is_some() => {
                 let s0 = a.so.unwrap().max(1e-5);
-                let (h, v) = normal_depth(qq, a.n.unwrap(), a.btm_wdth.unwrap(), a.ch_slp.unwrap_or(0.0), s0);
-                [qq, v, h]
+                let (h, v) = normal_depth(
+                    qq,
+                    a.n.unwrap(),
+                    a.btm_wdth.unwrap(),
+                    a.ch_slp.unwrap_or(0.0),
+                    s0,
+                );
+                ([qq, v, h], false)
             }
-            _ => {
-                missing += 1;
-                [qq, 0.0, 0.0]
-            }
+            _ => ([qq, 0.0, 0.0], true),
         })
-        .collect();
+        .unzip();
     Ok(ChannelInit {
         terminal: down.iter().filter(|d| **d == usize::MAX).count(),
         levels: level.iter().max().map(|m| m + 1).unwrap_or(0),
         ids,
         state,
-        missing_geometry: missing,
+        missing_geometry: missing_rows.into_iter().filter(|x| *x).count(),
     })
 }
 

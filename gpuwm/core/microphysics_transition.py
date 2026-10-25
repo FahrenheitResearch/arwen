@@ -185,7 +185,8 @@ _MP28_EDGE_ENTRY_VALUES = {
 MIXED_EDGE_ENTRY_NOTES = {
     16: ("WDM6 child: nc and nr enter at zero and the CCN reservoir nn at "
          "this domain's wdm6_ccn_conc, the seed a WDM6 inflow face uses."),
-    28: ("Thompson aerosol-aware child: nr and ni are diagnosed as on the "
+    28: ("Thompson aerosol-aware child: nr and ni are carried from a "
+         "Morrison or Thompson parent and otherwise diagnosed as on the "
          "mp=8 edge; nc, nwfa and nifa enter at WRF's non-aerosol-aware "
          "values."),
 }
@@ -336,6 +337,22 @@ _MOMENT_FIELDS = {
     # Thompson aerosol-aware, in gpuwm/core/state.py's allocation order.
     28: ("nc", "nr", "ni", "nwfa", "nifa"),
 }
+
+#: Number moments a mixed edge CARRIES instead of re-diagnosing: rain and
+#: cloud-ice numbers between schemes whose rain and cloud ice are both
+#: inverse-exponential (mu = 0) -- Morrison (10), Thompson (8) and aerosol
+#: Thompson (28).  Between those, the same mass and number describe the same
+#: size distribution, so the parent's number IS the child's.
+#:
+#: THE BREAKAGE THIS PREVENTS (CP-CHILD-PHYSICS-2026-10-24): a 1 km
+#: Thompson child of a 3 km Morrison parent re-diagnosed rain number from
+#: rain mass; Thompson's closure gave about 400 drops per kg where the parent
+#: carried about 3,500, nine times larger drops by volume, so the child's
+#: analysis frame drew a 15-28 dBZ blanket over 9,704 columns that the parent
+#: does not have (gone by +15 min), and the ring drew 10-25 dBZ strips along
+#: the inflow edges for the whole run.
+_CARRIED_NUMBER_SCHEMES = frozenset({8, 10, 28})
+_CARRIED_NUMBERS = ("nr", "ni")
 
 #: What a mixed edge touching each refused selector WOULD have to move,
 #: recorded so the refusal is specific and so a future package does not have
@@ -530,6 +547,30 @@ class MicrophysicsTransitionContract:
     #: column-local either way; what differs is whose grid it runs on and
     #: what the spatial operator after it does.
     translation_order: str = TRANSITION_ORDER
+    #: Whether this edge carries the parent's rain and cloud-ice numbers
+    #: (:data:`_CARRIED_NUMBER_SCHEMES`).  The carry is part of correct-mode
+    #: finding HN1 (key ``hydrometeor_handover_numbers``, read off the
+    #: TARGET domain's configuration by the resolver): exact mode switches
+    #: it off and the edge re-diagnoses both numbers from mass, as 2.9.6
+    #: did, so an exact-mode mixed edge is byte-identical to 2.9.6.
+    carry_numbers: bool = True
+
+    def number_source(self, target_field: str) -> str | None:
+        """The source number a mixed edge carries into ``target_field``.
+
+        ``None`` when the number is diagnosed from mass (or seeded) instead:
+        see :data:`_CARRIED_NUMBER_SCHEMES` for the edges that carry, and
+        :attr:`carry_numbers` for the exact-mode switch.
+        """
+
+        if (self.mixed and self.carry_numbers
+                and target_field in _CARRIED_NUMBERS
+                and self.source_mp_physics in _CARRIED_NUMBER_SCHEMES
+                and self.target_mp_physics in _CARRIED_NUMBER_SCHEMES
+                and target_field in _MOMENT_FIELDS[self.source_mp_physics]
+                and target_field in _MOMENT_FIELDS[self.target_mp_physics]):
+            return target_field
+        return None
 
     def mass_source(self, target_field: str) -> str | None:
         """Source mass field for one target mass, or ``None`` for default."""
@@ -630,7 +671,18 @@ class MicrophysicsTransitionContract:
                     "target_field": target,
                     "reason": "shared_physical_mass_species",
                 })
+        carried: set[str] = set()
         for target in _MOMENT_FIELDS[self.target_mp_physics]:
+            source = self.number_source(target)
+            if source is not None:
+                carried.add(source)
+                rows.append({
+                    "action": "mapped",
+                    "source_field": source,
+                    "target_field": target,
+                    "reason": "shared_exponential_number_moment",
+                })
+                continue
             row = {
                 "action": "diagnosed",
                 "source_field": None,
@@ -675,6 +727,8 @@ class MicrophysicsTransitionContract:
                         if source == "qir"
                         else "p3_rime_volume_sets_partition_weight"),
                 })
+                continue
+            if source in carried:
                 continue
             rows.append({
                 "action": "dropped",
@@ -1057,9 +1111,13 @@ def resolve_microphysics_transition(
         and int(getattr(child_cfg, "morr_rimed_ice", 1)) == 0
         else 900.0
     )
+    # HN1: the target domain's key decides whether the edge carries numbers
+    # (off in exact mode and in a strict WRF process).
+    from gpuwm.ingest.handover_numbers import closure_active
     return MicrophysicsTransitionContract(
         source_mp_physics=source, target_mp_physics=target,
         policy_id=policy, mixed=True,
+        carry_numbers=closure_active(child_cfg),
         source_rimed_category=_rimed_category(parent_cfg),
         target_rimed_category=_rimed_category(child_cfg),
         target_morrison_rimed_density=target_density,
@@ -1188,6 +1246,9 @@ def transition_source_field_shape(state, field_name: str) -> tuple[int, ...]:
 _WINDOWED_EDGE_PLANES = (
     "alt", "qv", "qc", "qr", "qi", "qs", "qg", "qh",
     "qir", "qib", "mub2d", "mup", "thp", "p",
+    # The numbers a mixed edge carries (_CARRIED_NUMBERS); a parent without
+    # them skips them, as an mp8 parent skips qh.
+    "nr", "ni",
 )
 
 
@@ -1333,6 +1394,13 @@ def launch_microphysics_edge_field(
     if (contract.source_mp_physics, contract.target_mp_physics) == (8, 18):
         return launch_mp8_to_mp18_parent_field(
             state, field_name, out=out, coupled=coupled)
+    if (contract.number_source(field_name) is not None
+            and getattr(state, field_name, None) is not None):
+        # A parent that does not hold the number (a frame written without
+        # it) falls through to the target's own closure below.
+        return _carry_number_field(
+            state, contract.number_source(field_name), out=out,
+            coupled=coupled)
 
     shape = transition_source_field_shape(state, field_name)
     _validate_transition_arrays(contract, state, out, shape)
@@ -1401,6 +1469,48 @@ def launch_microphysics_edge_field(
             np.int32(coupled), np.int32(shape[0]), np.int32(ny),
             np.int32(nx),
         ))
+    return out
+
+
+_CARRY_NUMBER_KERNEL = None
+
+
+def _carry_number_field(state, source_name: str, *, out, coupled: bool):
+    """The source number, mass-coupled exactly as the edge kernel couples.
+
+    ``coupled`` multiplies by the hybrid column mass
+    ``(c1h*mub + c2h) + c1h*mup`` in the kernel's own rounding order.
+    """
+
+    import cupy as cp
+
+    global _CARRY_NUMBER_KERNEL
+    source = getattr(state, source_name, None)
+    shape = tuple(int(v) for v in state.qv.shape)
+    if source is None or tuple(source.shape) != shape:
+        raise ValueError(
+            f"microphysics transition source {source_name} must have "
+            f"shape {shape}")
+    if tuple(out.shape) != shape or out.dtype != cp.float32:
+        raise ValueError(
+            f"microphysics transition output must be float32 with shape {shape}")
+    if not coupled:
+        out[...] = cp.asarray(source, dtype=cp.float32)
+        return out
+    if _CARRY_NUMBER_KERNEL is None:
+        _CARRY_NUMBER_KERNEL = cp.ElementwiseKernel(
+            "float32 value, float32 c1, float32 c2, float32 mub, float32 mup",
+            "float32 out",
+            "out = __fmul_rn(__fadd_rn(__fadd_rn(__fmul_rn(c1, mub), c2), "
+            "__fmul_rn(c1, mup)), value)",
+            "gpuwm_edge_carry_number")
+    nz, ny, nx = shape
+    _CARRY_NUMBER_KERNEL(
+        cp.asarray(source, dtype=cp.float32),
+        cp.asarray(state.c1h, dtype=cp.float32).reshape(nz, 1, 1),
+        cp.asarray(state.c2h, dtype=cp.float32).reshape(nz, 1, 1),
+        cp.asarray(state.mub2d, dtype=cp.float32).reshape(1, ny, nx),
+        cp.asarray(state.mup, dtype=cp.float32).reshape(1, ny, nx), out)
     return out
 
 

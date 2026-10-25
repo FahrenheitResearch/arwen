@@ -61,6 +61,21 @@ def construct(packet):
     return resource, route
 
 
+def test_continental_replay_prices_one_sealed_slab_instead_of_90_days(packet):
+    path, manifest, settings, context, options, roptions, runoff = packet
+    n, hours = 2_638_932, 2160
+    manifest['routing']['initial_replay'] = {
+        'payload': {'shape': [n, hours], 'dtype': '<f8', 'bytes': n*hours*8},
+        'chunks': [{'shape': [n, 24], 'dtype': '<f8', 'bytes': n*24*8}]}
+    path.write_text(json.dumps(manifest))
+    resource = reservoirs(settings=settings, options=options, context=context, components={})
+    route = mc(settings=settings, options=dict(roptions, continuous_initialization=True),
+               context=context, components={'runoff': runoff, 'reservoirs': resource})
+    workspace = next(a for a in route.arrays if a.name == 'workspace/initial_runoff_replay')
+    assert workspace.nbytes == 506_674_944
+    assert workspace.nbytes < 1024**3 < n*hours*8
+
+
 def test_local_uploads_carriers_and_embedded_roots_match_runtime_contract(packet):
     path, manifest, settings, context, _, _, runoff = packet
     before = set(sys.modules)

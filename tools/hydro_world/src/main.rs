@@ -15,7 +15,7 @@ fn main() {
 }
 
 const USAGE: &str = "usage: rw_hydro_world schema | check FABRIC.gpkg | roundtrip IN.gpkg OUT.gpkg | sources TABLE.json | admit TABLE.json ROW|auto [--accept-licence NAME]
-  | tiles --sources TABLE.json --row ROW --bbox W,S,E,N --data-root DIR
+  | tiles|regions --sources TABLE.json --row ROW --bbox W,S,E,N --data-root DIR
   | build --sources TABLE.json --row ROW|auto --bbox W,S,E,N --data-root DIR --out FABRIC.gpkg [--device auto|cuda|cpu] [--parent-grid GRID.json] [--accept-licence NAME]... [--params PARAMS.json] [--receipt RECEIPT.json]
   | hydrography-compare --sources TABLE.json --row ROW|auto --bbox W,S,E,N --data-root DIR [--out OUT.json]
   (--table is accepted for --sources; --data-root defaults to $GPUWM_HYDRO_WORLD_TILES)
@@ -78,6 +78,7 @@ fn run() -> hydro_world::Result<()> {
     let a = std::env::args().collect::<Vec<_>>();
     let arg = |i: usize| a.get(i).map(String::as_str).ok_or(USAGE);
     match a.get(1).map(String::as_str) {
+        Some("--proj-probe") => println!("{}", hydro_world::parent_grid::proj_probe()?),
         Some("schema") => println!("{}", serde_json::to_string_pretty(&json!({"contract": contract::CONTRACT, "tables": contract::TABLES, "metadata_keys": contract::METADATA_KEYS}))?),
         Some("check") => {
             let (f, read) = gpkg::read(arg(2)?)?;
@@ -121,6 +122,14 @@ fn run() -> hydro_world::Result<()> {
             }
             println!("{requested} admitted: {}", ids.join(", "));
         }
+        Some("regions") => {
+            let t = source::load(&sources_flag(&a)?)?;
+            let rid = need(&a, "--row")?;
+            let row = t.rows.iter().find(|r| r.id == rid).ok_or("no such source row")?;
+            source::admit(row)?;
+            let b = grid::BBox::parse(&need(&a, "--bbox")?)?;
+            println!("{}", serde_json::to_string(&source::regions(row, &data_root_flag(&a)?, &b)?)?);
+        }
         Some("tiles") => {
             let t = source::load(&sources_flag(&a)?)?;
             let b = grid::BBox::parse(&need(&a, "--bbox")?)?;
@@ -150,7 +159,7 @@ fn run() -> hydro_world::Result<()> {
                 std::fs::remove_file(&out)?;
             }
             gpkg::write(&b.fabric, &out)?;
-            b.receipt.stages.push(build::StageTime { stage: "9 write GeoPackage".into(), ms: tw.elapsed().as_secs_f64() * 1e3, parallelism: format!("row encoding {} threads; SQLite insert 1 thread (single-writer database, one transaction)", rayon::current_num_threads()) });
+            b.receipt.stages.push(build::StageTime { stage: "9 write GeoPackage".into(), ms: tw.elapsed().as_secs_f64() * 1e3, parallelism: format!("{} threads encode and bind large-table SQLite fragments; ordered bulk merge on one final writer", rayon::current_num_threads()) });
             let terrain_path = format!("{out}.terrain.json");
             std::fs::write(&terrain_path, serde_json::to_vec_pretty(&b.terrain)?)?;
             let dams_path = (!b.dams.is_empty()).then(|| format!("{out}.dams.json"));

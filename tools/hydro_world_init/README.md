@@ -131,7 +131,9 @@ CARGO_TARGET_DIR=<scratch>/target TMPDIR=<scratch>/tmp cargo build --release --o
 export GPUWM_RW_HYDRO_INIT=<scratch>/target/release/rw_hydro_init GPUWM_RW_ZARR=<rw_zarr from tools/zarr_bridge>
 ```
 
-Links system libproj (`libproj.so.25`) and SQLite through the hydro_world crate.
+Links pinned static PROJ 9.7.1 and SQLite 3.46.1 through
+[`hydro_proj`](../hydro_proj/README.md); the projection database is embedded and
+network access is disabled. No system PROJ or SQLite installation is required.
 
 ## Proof receipts
 

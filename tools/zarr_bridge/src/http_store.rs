@@ -30,6 +30,10 @@ use zarrs::storage::{
 /// One request may take this long: an 80 MB chunk at 150 kB/s.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+// A CONUS 90-day extract left its last slice idle inside one HTTP read for
+// minutes. Keep the 600 s whole-transfer allowance for large slow chunks,
+// but retry a connection that delivers no bytes for a minute.
+const READ_TIMEOUT: Duration = Duration::from_secs(60);
 /// Tries per request; a dropped transfer, a 5xx or a 429 is tried again after
 /// a backoff of 2, 4, 8 and 16 s (at most 30 s of waiting per request).
 const TRIES: u32 = 5;
@@ -45,7 +49,8 @@ fn transient(status: StatusCode) -> bool {
 #[derive(Debug)]
 pub struct HttpStore {
     base_url: Url,
-    client: reqwest::blocking::Client,
+    client: reqwest::Client,
+    runtime: tokio::runtime::Runtime,
 }
 
 fn other(err: impl ToString) -> StorageError {
@@ -54,13 +59,20 @@ fn other(err: impl ToString) -> StorageError {
 
 impl HttpStore {
     pub fn new(base_url: &str) -> Result<Self, String> {
+        Self::with_read_timeout(base_url, READ_TIMEOUT)
+    }
+
+    fn with_read_timeout(base_url: &str, read_timeout: Duration) -> Result<Self, String> {
         let base_url = Url::from_str(base_url).map_err(|_| format!("base URL {base_url} is not valid"))?;
-        let client = reqwest::blocking::Client::builder()
+        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2)
+            .enable_all().build().map_err(|e| e.to_string())?;
+        let client = reqwest::Client::builder()
             .timeout(REQUEST_TIMEOUT)
             .connect_timeout(CONNECT_TIMEOUT)
+            .read_timeout(read_timeout)
             .build()
             .map_err(|e| e.to_string())?;
-        Ok(Self { base_url, client })
+        Ok(Self { base_url, client, runtime })
     }
 
     fn url(&self, key: &StoreKey) -> Result<Url, StorageError> {
@@ -76,7 +88,7 @@ impl HttpStore {
     fn fetch(
         &self,
         what: &str,
-        build: impl Fn() -> reqwest::blocking::RequestBuilder,
+        build: impl Fn() -> reqwest::RequestBuilder,
     ) -> Result<(StatusCode, Option<bytes::Bytes>, Option<u64>), StorageError> {
         let mut last = String::new();
         for attempt in 0..TRIES {
@@ -89,7 +101,7 @@ impl HttpStore {
                 );
                 std::thread::sleep(wait);
             }
-            let response = match build().send() {
+            let response = match self.runtime.block_on(async { build().send().await }) {
                 Ok(r) => r,
                 Err(e) => {
                     last = e.to_string();
@@ -112,7 +124,7 @@ impl HttpStore {
                 }
                 return Ok((status, None, length));
             }
-            match response.bytes() {
+            match self.runtime.block_on(async { response.bytes().await }) {
                 Ok(body) => return Ok((status, Some(body), length)),
                 Err(e) => last = e.to_string(),
             }
@@ -183,6 +195,33 @@ mod tests {
     use std::net::TcpListener;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
+
+    #[test]
+    fn stalled_partial_body_retries_without_shortening_whole_chunk_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/era5.zarr", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            for (attempt, stream) in listener.incoming().take(2).enumerate() {
+                let mut stream = stream.unwrap();
+                let mut request = Vec::new();
+                let mut byte = [0u8; 1];
+                while !request.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap() == 1 {
+                    request.push(byte[0]);
+                }
+                stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\n").unwrap();
+                if attempt == 0 {
+                    stream.write_all(b"a").unwrap();
+                    std::thread::sleep(Duration::from_millis(250));
+                } else {
+                    stream.write_all(b"abcd").unwrap();
+                }
+            }
+        });
+        let store = HttpStore::with_read_timeout(&url, Duration::from_millis(50)).unwrap();
+        let bytes = store.get(&StoreKey::new("chunk").unwrap()).unwrap().unwrap();
+        assert_eq!(bytes.as_ref(), b"abcd");
+        server.join().unwrap();
+    }
 
     /// The defect: one HTTP 500 from the store aborted the init door.  A HEAD
     /// that gets 500 once and then 200 must return the size, after one retry.

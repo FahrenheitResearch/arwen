@@ -1,0 +1,5 @@
+Native header inventory of NOAA NCEP GFS data, public domain.
+Source: https://data.gdex.ucar.edu/d084001/2020/20200803/gfs.0p25.2020080300.f000.grib2
+Source SHA256: a2c36ed492a9aee36be6716d9d66b56b46c630bb4ed844ecbff4f33ca9f3f0ac
+Archive: NSF NCAR GDEX, dataset DOI 10.5065/D65D8PWK, CC BY 4.0.
+Generated with the published gpuwm 2.9.4 grib2_inventory, without decoding payloads.

@@ -153,3 +153,43 @@ def test_resume_recovers_worker_commit_after_coordinator_crash(tmp_path):
     assert resume_completed(tmp_path, receipt, source, members, 3) == []
     with pytest.raises(ValueError, match='same parent'):
         resume_completed(tmp_path, receipt, source, members, 18)
+
+
+def test_members_per_card_auto_sizes_by_memory_and_caps():
+    from gpuwm.ensemble.mass_launcher import (AUTO_MEMBERS_PER_CARD_CAP, members_per_card,
+                                              parse_members_per_card)
+    gib = 1 << 30
+    # A 6.4 GiB member on a free 95 GiB card: memory allows 14, the cap binds.
+    slots, receipt = members_per_card('auto', member_bytes=int(6.4*gib), free_bytes=95*gib,
+                                      members=20, cards=1, cpus=16)
+    assert (slots, receipt['binding']) == (AUTO_MEMBERS_PER_CARD_CAP, 'cap')
+    # A 30 GiB member on a 32 GiB card: one.
+    assert members_per_card('auto', member_bytes=30*gib, free_bytes=32*gib, members=20, cards=1, cpus=16)[0] == 1
+    # Memory binds below the cap.
+    slots, receipt = members_per_card('auto', member_bytes=10*gib, free_bytes=32*gib, members=20, cards=1, cpus=16)
+    assert (slots, receipt['binding']) == (3, 'card memory')
+    # Never more processes than the card's members, or than half the host cores.
+    assert members_per_card('auto', member_bytes=gib, free_bytes=95*gib, members=3, cards=1, cpus=16)[0] == 3
+    assert members_per_card('auto', member_bytes=gib, free_bytes=95*gib, members=20, cards=2, cpus=4)[0] == 1
+    # Unpriced member or unreadable card: one, and said so.
+    slots, receipt = members_per_card('auto', member_bytes=None, free_bytes=95*gib, members=20, cards=1, cpus=16)
+    assert slots == 1 and 'unpriced' in receipt['binding']
+    assert members_per_card(6, member_bytes=None, free_bytes=None, members=20, cards=1)[0] == 6
+    assert parse_members_per_card('auto') == 'auto' and parse_members_per_card('3') == 3
+    for bad in ('0', '-1', 'two'):
+        with pytest.raises(ValueError, match='members-per-card'):
+            parse_members_per_card(bad)
+
+
+def test_member_sharing_contexts_and_missing_controller(tmp_path, monkeypatch):
+    import shutil
+    from gpuwm.ensemble.mass_launcher import member_sharing
+    with member_sharing('contexts', tmp_path, ()) as sharing:
+        assert sharing['mode'] == 'contexts'
+    monkeypatch.delenv('CUDA_MPS_PIPE_DIRECTORY', raising=False)
+    monkeypatch.setattr(shutil, 'which', lambda name: None)
+    with member_sharing('auto', tmp_path, ()) as sharing:
+        assert sharing['mode'] == 'contexts' and 'no MPS controller' in sharing['reason']
+    with pytest.raises(RuntimeError, match='nvidia-cuda-mps-control'):
+        with member_sharing('mps', tmp_path, ()):
+            pass

@@ -564,8 +564,10 @@ def numpy_pseudo_state(nz=8, ny=16, nx=20, dz=1150.0):
         # coefficients and the layer thickness; a state without them is
         # refused by name rather than balanced silently.
         dnw=np.full((nz,), -1.0 / nz, f32),
-        rdn=np.concatenate([[0.0], np.full((nz - 1,), -float(nz)),
-                            [0.0]]).astype(f32),
+        # WRF's rdn has one value per mass level (DomainState.rdn is nz
+        # long); the native column balance (gpuwm.da.host_analysis) holds it
+        # to that shape.
+        rdn=np.concatenate([[0.0], np.full((nz - 1,), -float(nz))]).astype(f32),
         c1f=np.ones((nz + 1,), f32), c2f=np.zeros((nz + 1,), f32),
         c1h=np.ones((nz,), f32), c2h=np.zeros((nz,), f32),
         c3h=np.ones((nz,), f32), c4h=np.zeros((nz,), f32),

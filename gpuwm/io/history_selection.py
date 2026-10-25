@@ -234,7 +234,8 @@ PRODUCT_COUNT_BASIS = (
 
 #: The keys ``[output]`` accepts.
 OUTPUT_KEYS: frozenset[str] = frozenset(
-    {"preset", "history_vars", "history_drop"})
+    {"preset", "history_vars", "history_drop",
+     "full_history_interval_s", "between_preset", "between_history_add"})
 
 #: How many dropped names the plan-time warning spells out before it
 #: switches to a count.  See :meth:`HistorySelection.warn_lost_products`.
@@ -343,6 +344,22 @@ class HistorySelection:
     preset: str = "full"
     history_vars: tuple[str, ...] = ()
     history_drop: tuple[str, ...] = ()
+    #: Sub-hourly output the way HRRR writes it: a full history frame only
+    #: at leads that are whole multiples of ``full_history_interval_s``,
+    #: and between them the 2-D subset ``between_preset`` plus
+    #: ``between_history_add`` (HRRR's 15-minute wrfsubh files are 2-D
+    #: fields; its 3-D history is hourly).  0 (the default) writes every
+    #: frame with this selection, as before.
+    #:
+    #: Breakage it prevents (V61 8x RTX 5090, 2026-10-21): the HRRR v4
+    #: recipe's 15-minute history wrote an 18.7 GB full frame every 15
+    #: model minutes; the writer lands one in about 40 s while the model
+    #: makes 15 minutes in about 15 s, so frames queued behind each other
+    #: and the step loop blocked 10-30 s per write, growing over the run
+    #: (fh3 171 s/fh against about 62 without output).
+    full_history_interval_s: float = 0.0
+    between_preset: str = "minimal"
+    between_history_add: tuple[str, ...] = ()
     #: Where this block was read from, for refusal text only.
     source: str = "<config>"
 
@@ -410,6 +427,31 @@ class HistorySelection:
                     f"{sorted(STRUCTURAL_FIELDS)}.  Drop the science "
                     "fields you do not need instead, or use preset = "
                     "'minimal'.")
+        if self.full_history_interval_s < 0 or (
+                self.full_history_interval_s != self.full_history_interval_s):
+            raise ValueError(
+                f"[output] full_history_interval_s of {self.source} must be "
+                f"a non-negative number of seconds, got "
+                f"{self.full_history_interval_s!r}.")
+        if self.between_preset not in HISTORY_PRESETS:
+            raise ValueError(
+                f"[output] between_preset = {self.between_preset!r} in "
+                f"{self.source} is not a known history preset; choose one "
+                f"of {sorted(HISTORY_PRESETS)}.")
+        for name in self.between_history_add:
+            if name not in HISTORY_VOCABULARY:
+                raise ValueError(
+                    f"[output] between_history_add of {self.source} names "
+                    f"{name!r}, which is not a wrfout history variable."
+                    f"{_did_you_mean(name, HISTORY_VOCABULARY)}")
+        if (self.between_preset != "minimal" or self.between_history_add) \
+                and not self.full_history_interval_s:
+            raise ValueError(
+                f"[output] of {self.source} sets between_preset or "
+                "between_history_add without full_history_interval_s: the "
+                "between-hours subset applies only to frames between the "
+                "full-history leads, so name that interval (3600 for "
+                "hourly full history).")
         include: frozenset[str] | None
         if self.history_vars:
             include = frozenset(self.history_vars)
@@ -463,12 +505,45 @@ class HistorySelection:
                     "with no science in it, and an empty history_drop "
                     "sheds nothing -- name the variables you mean, or "
                     "delete the key.")
+        add = table.get("between_history_add", ()) or ()
+        if isinstance(add, str) or not isinstance(add, (list, tuple)):
+            raise ValueError(
+                f"[output] between_history_add of {source} must be a LIST of "
+                f"wrfout variable names, got {add!r}.")
+        interval = table.get("full_history_interval_s", 0.0) or 0.0
+        if isinstance(interval, bool) or not isinstance(interval, (int, float)):
+            raise ValueError(
+                f"[output] full_history_interval_s of {source} must be a "
+                f"number of seconds, got {interval!r}.")
         return cls(
             preset=str(table.get("preset", "full")),
             history_vars=tuple(table.get("history_vars", ()) or ()),
             history_drop=tuple(table.get("history_drop", ()) or ()),
+            full_history_interval_s=float(interval),
+            between_preset=str(table.get("between_preset", "minimal")),
+            between_history_add=tuple(add),
             source=source,
         )
+
+    def for_lead(self, lead_seconds) -> "HistorySelection":
+        """The selection one frame at ``lead_seconds`` is written with.
+
+        Itself at a full-history lead (or with no sub-hourly subset set, or
+        an unknown lead); otherwise the between-hours subset.
+        """
+        interval = float(self.full_history_interval_s or 0.0)
+        if not interval or lead_seconds is None:
+            return self
+        steps = float(lead_seconds) / interval
+        if abs(steps - round(steps)) * interval < 0.5:
+            return self
+        return _between_selection(self.between_preset,
+                                  self.between_history_add, self.source)
+
+    @property
+    def subhourly(self) -> bool:
+        """Whether some frames are written with the between-hours subset."""
+        return bool(self.full_history_interval_s)
 
     @property
     def writes_everything(self) -> bool:
@@ -649,6 +724,24 @@ class HistorySelection:
 
 #: The default: write everything the run produces, stamp nothing.
 FULL = HistorySelection()
+
+
+_BETWEEN_CACHE: dict = {}
+
+
+def _between_selection(preset, add, source) -> HistorySelection:
+    """The between-hours subset as an ordinary selection (cached)."""
+    key = (preset, tuple(add), source)
+    found = _BETWEEN_CACHE.get(key)
+    if found is None:
+        base = HISTORY_PRESETS[preset]
+        names = (tuple(sorted(base | frozenset(add))) if base is not None
+                 else ())
+        found = (HistorySelection(history_vars=names,
+                                  source=f"{source} (between full-history leads)")
+                 if names else FULL)
+        _BETWEEN_CACHE[key] = found
+    return found
 
 
 def resolve(tree, domain) -> HistorySelection:

@@ -26,8 +26,8 @@ pub mod interface;
 pub use interface::{
     InterfaceStencil, Interfaces, STANDARD_GRAVITY, column_isobaric_height, interface_bracket,
     interface_log_pressures_into, interfaces_from_layer_thickness, isobaric_height_from_interfaces,
-    isobaric_heights_f64_into, isobaric_heights_from_interfaces, isobaric_heights_into, ln,
-    mass_level_heights_into,
+    isobaric_heights_block_into, isobaric_heights_f64_into, isobaric_heights_from_interfaces,
+    isobaric_heights_into, ln, mass_level_heights_into,
 };
 
 /// Locate the native levels bracketing `target` in a column (pressure

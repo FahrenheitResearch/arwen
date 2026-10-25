@@ -16,7 +16,7 @@ licence-verified in those tables; nothing NC-licensed is reachable.
 """
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 import json
 import math
 import os
@@ -237,9 +237,21 @@ def _extract(archive, destination):
     staging = destination.with_name(destination.name + f".partial.{os.getpid()}")
     shutil.rmtree(staging, ignore_errors=True)
     staging.mkdir(parents=True)
-    with zipfile.ZipFile(archive) as bundle:
+    if Path(archive).suffix.lower() == '.7z':
+        try:
+            import py7zr
+        except ImportError as error:
+            # LGPL-2.1+ decoder, an explicit extra (pyproject [hydro-conus]);
+            # the door falls back to the worldwide fabric on this refusal.
+            raise RuntimeError(f"{Path(archive).name} is a 7z archive; reading it needs the "
+                               "LGPL-2.1+ py7zr decoder: pip install 'gpuwm[hydro-conus]'") from error
+        bundle = py7zr.SevenZipFile(archive)
+    else:
+        bundle = zipfile.ZipFile(archive)
+    with bundle:
         root = staging.resolve()
-        for member in bundle.namelist():
+        names = bundle.getnames() if hasattr(bundle, 'getnames') else bundle.namelist()
+        for member in names:
             target = (staging / member).resolve()
             if not target.is_relative_to(root):
                 raise RuntimeError(f"archive member escapes its directory: {archive}: {member}")
@@ -254,25 +266,70 @@ def _extract(archive, destination):
     stamp.write_text(str(archive) + "\n")
 
 
-def _archive_jobs(source_table, rows):
+def _archive_jobs(source_table, rows, regions=()):
     """Archive inputs (lakes, dams) of the builder rows: url + ``<dir>/extracted/...``."""
     jobs = {}
     for row in source_table["rows"]:
         if row["id"] not in rows:
             continue
         for name, spec in row["inputs"].items():
+            for asset in spec.get('archives', ()):
+                if asset['region'] in regions:
+                    jobs[(asset['extracted'], asset['url'])] = dict(asset, input=name)
             url, local = spec.get("url"), spec.get("local")
             if not url or not local or "{" in url or "/extracted/" not in local:
                 continue
             folder = local.split("/extracted/")[0]
             archive = url.rstrip("/").rsplit("/", 1)[-1]
-            if not archive.endswith(".zip"):
+            if not archive.endswith((".zip", ".7z")):
                 # A download id (figshare) names its archive in the row's format text.
                 named = [word for word in spec.get("format", "").split() if word.endswith(".zip")]
                 archive = named[0] if named else f"{name}.zip"
             jobs[(folder, url)] = {"input": name, "url": url, "archive": f"{folder}/{archive}",
                                    "extracted": f"{folder}/extracted", "local": local}
     return list(jobs.values())
+
+
+def _unpack(job):
+    archive, destination = job
+    start = time.perf_counter()
+    _extract(archive, destination)
+    return time.perf_counter() - start
+
+
+def _unpack_archives(root, archives):
+    """Independent archive processes use all cores, including 7z filters."""
+    jobs = list({item['extracted']: (root / item['archive'], root / item['extracted'])
+                 for item in archives}.values())
+    if not jobs:
+        return []
+    with ProcessPoolExecutor(max_workers=os.cpu_count() or 1) as pool:
+        timings = list(pool.map(_unpack, jobs))
+    for item in archives:
+        if not (root / item['local']).exists():
+            raise RuntimeError(f"archive {item['archive']} has no {item['local']}")
+    return [{'archive': str(path), 'seconds': seconds} for (path, _), seconds in zip(jobs, timings)]
+
+
+def _partition_archives(source_table, row_id, root, bbox, builder_exe):
+    """Acquire the boundary roster first; Rust selects the touched partitions."""
+    row = next(row for row in source_table['rows'] if row['id'] == row_id)
+    if 'processing_units' not in row['inputs']:
+        return [], []
+    common = _archive_jobs(source_table, {row_id})
+    boundary = [item for item in common if item['input'] == 'processing_units']
+    for item in boundary:
+        _download(item['url'], root / item['archive'])
+    _unpack_archives(root, boundary)
+    argv = [str(builder_exe), 'regions', '--sources', str(source_table_path()), '--row', row_id,
+            '--data-root', str(root), '--bbox', ','.join(map(str, bbox))]
+    result = subprocess.run(argv, capture_output=True, text=True, timeout=120)
+    if result.returncode:
+        raise RuntimeError(f"hydro processing-unit selection: {result.stderr[-1000:]}")
+    regions = json.loads(result.stdout)
+    if not regions:
+        raise RuntimeError('no native processing unit intersects this footprint')
+    return regions, _archive_jobs(source_table, {row_id}, regions)
 
 
 def _builder_rows(source_table, requested):
@@ -325,6 +382,12 @@ def acquire(*, footprint, data_root, builder_exe, builder_row, recipe, progress=
     bbox = [footprint[k] for k in ("west", "south", "east", "north")]
     source_table = json.loads(source_table_path().read_text())
     params = json.loads(params_table_path().read_text())
+    partition_started = time.perf_counter()
+    partition_archives, regions = [], []
+    if builder_row != 'auto':
+        with Lease(root / '.partition.lock', timeout=float('inf')):
+            regions, partition_archives = _partition_archives(source_table, builder_row, root, bbox, builder_exe)
+    partition_seconds = time.perf_counter() - partition_started
     sources, cells = land_cells(root, progress)
     jobs = []  # (kind, url, path, absent_ok)
     sea = []   # tiles the land rosters place over open sea: never requested
@@ -334,7 +397,7 @@ def acquire(*, footprint, data_root, builder_exe, builder_row, recipe, progress=
                 jobs.append(("builder-dem", tile["url"], root / tile["local"], True))
             else:
                 sea.append(("builder-dem", root / tile["local"]))
-    archives = _archive_jobs(source_table, _builder_rows(source_table, builder_row))
+    archives = partition_archives or _archive_jobs(source_table, _builder_rows(source_table, builder_row))
     for item in archives:
         jobs.append(("archive", item["url"], root / item["archive"], False))
     margin = 0.05
@@ -489,12 +552,14 @@ def acquire(*, footprint, data_root, builder_exe, builder_row, recipe, progress=
             counts.setdefault(kind, {}).setdefault(status, 0)
             counts[kind][status] += 1
             fetched_bytes += size
-        for item in archives:
-            _extract(root / item["archive"], root / item["extracted"])
-            if not (root / item["local"]).exists():
-                raise RuntimeError(f"archive {item['archive']} has no {item['local']}")
+        unpack_start = time.perf_counter()
+        unpack = _unpack_archives(root, archives)
+        unpack_seconds = time.perf_counter() - unpack_start
     receipt = {"schema": "gpuwm-hydro-acquire.v1", "data_root": str(root), "bbox": bbox,
                "counts": counts, "fetched_bytes": fetched_bytes,
+               "processing_units": regions, "partition_seconds": partition_seconds,
+               "unpack_seconds": unpack_seconds, "unpack": unpack,
+               "unpack_parallelism": f"{os.cpu_count() or 1} archive processes (all cores)",
                "soil": ({"source": "WPS_GEOG soilgrids/soilcomp (our geography mirror)", "dir": geog_soilcomp,
                          **({"reason": "SoilGrids WCS out of reach"} if primary is None else {})}
                         if geog_soilcomp else

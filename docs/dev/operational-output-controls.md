@@ -78,8 +78,66 @@ clock-hour reset in `module_diag_gsd`.
 They gate `phys/module_diag_cl.F::clwrf_output_calc`, called under
 `output_diagnostics=1` in `module_diagnostics_driver.F:1095`.
 The climate-statistics module tests these periods at lines 171 and 292.
-ArWen has no `clwrf_output_calc` port; the importer explicitly records that
-missing output capability rather than substituting a GSD reset cadence.
+The GPU port carries all 48 produced fields: min/max, their times, mean and
+population standard deviation for T2, Q2, SKINTEMP, SWRAD and SWNORM;
+U10/V10 at the speed maximum, speed maximum and its time, and U10/V10/speed
+means and standard deviations; RAINCV/RAINNCV flux maxima, their times,
+means and standard deviations. Names follow the Registry (for example
+T2MIN, TT2MIN, SWRADMEAN and TRAINNCVMAX). Times are forecast minutes.
+
+RunConfig/import/export retain WRF's `output_diagnostics`, `diag_int` and
+`wind_int`, with Registry defaults 0, 15 and 5. Both packaged recipe copies
+enable the output. The default-off checkpoint echo omits these defaults;
+prepared-cache identity treats them as default-tolerant output controls.
+
+The port retains REAL MOD tolerance, INT(period/dt) counters, strict extrema
+ties, reset timestamps left untouched by the source, and its speed-maximum
+U/V reset quirk. Means/std slots hold raw sums until the closing step,
+then the routine divides them in place; history does not finalize or reset
+them. All 48 fields and both counters survive restart and tile transport.
+ArWen checkpoint continuation restores the absolute forecast clock and window
+arrays. The replay API also exposes the native restart flag and restart-relative
+clock; native WRF restart-file interchange is not claimed.
+
+`tools/climate_output_oracle/run.py` compiles the entire unmodified pinned
+module with gfortran and framework-only stubs. Its frozen 106-call receipt
+covers every field at every call, both cadences, changing/nondivisible dt,
+native restart suppression and untouched reset values. Strict-numerics GPU
+results match all binary32 words. Fast production numerics retain FMA.
+Tests also cover real-step trajectory inertness, asynchronous Rust history
+snapshots, restart restore, and pinned host gather/update/scatter with tile reuse.
+
+## Initial-time reflectivity
+
+With `gsd_diagnostics=1`, `do_radar_ref=true` and Thompson microphysics
+8/28, the first history frame calls the fork's
+`module_diag_gsd.F:17-153::gsd_refl_first_time_step` on the GPU. Before
+`calc_refl10cm`, nonpositive rain number with rain mass at least 1.e-12
+uses the native Marshall-Palmer intercept of 8.e6 m-4. This fallback is
+private to the radar calculation; prognostic NR and all other inputs stay
+unchanged. The first-call flag disables melting-layer bright-band treatment,
+and the output retains the native -35 dBZ floor. Later history frames still
+consume the microphysics-time diagnostic.
+
+The history route supports resident arrays, host arrays and store-direct
+domains through bounded 64-row GPU slabs. It prepares theta, Exner and
+moist density with the fork's initial phy_prep expressions. Exact mode uses
+this helper for the HRRR configuration too; stock exact-mode t=0 zeros
+remain for configurations without GSD. Its 87-byte-per-level/thread arena
+is bounded to threads in flight and included in preflight pricing and
+kernel prewarm. The launched helper reads zero local-frame bytes on
+RTX 3080 / sm_86 / NVRTC 13.0.48.
+
+`tools/gsd_initial_reflectivity_oracle/run.py` compiles the unmodified
+extracted Fortran helper and `calc_refl10cm`, plus the complete native radar
+module, using desktop WSL gfortran. Only framework stubs and a harness are
+added. The 16-call reference covers both selectors, supplied rain numbers,
+fallback thresholds, warm/cold/mixed columns and native state preparation.
+Strict-numerics GPU results match all 3,456 binary32 output words. Tests also
+write native reference values through the Rust NetCDF history path for all
+three placements. Fast production numerics retain FMA; word identity is
+claimed with strict numerics on these fixtures. The desktop fast-mode probe
+differs in 50 of 3,456 words, with maximum absolute error 1.90735e-5 dBZ.
 
 ## Evidence and qualification limits
 
@@ -90,9 +148,12 @@ probes match float32 output words exactly. Other tests use manufactured
 columns, metric helicity, reset boundaries, restart and real GPU model steps;
 they do not establish full operational WRF forecast or complete-file parity.
 The output kernels join preflight memory pricing and the parallel static
-compile plan. Every exported entry measured zero local frame through the
-production loaders on RTX 3080 / sm_86 / NVRTC 13.0.48; the recording names
-that platform rather than claiming measurements on other architectures.
+compile plan. The output-window entries and launched initial-history helper
+measured zero local frame through the production loaders on RTX 3080 /
+sm_86 / NVRTC 13.0.48; the recording names that platform rather than claiming
+measurements on other architectures. The initial-helper unit also compiles
+an unused older Thompson entry from its device header; that entry is never
+launched here and is excluded from the zero-frame claim.
 
 The separate `diag_print=1` DPSDT/DMUDT console-budget path has no history
 flag in Registry.EM_COMMON:1922-1923 and is not implemented here. The
@@ -102,18 +163,18 @@ NCI/NCA convection-initiation counters and QR_MAX_CI/QG_MAX_CI, but the pinned
 GSD producer does not update them. This lane does not invent values for them.
 GSD hail tables for microphysics other than 0/8/28 are explicitly refused.
 
-The native t=0 reflectivity initialization and a full native output-file
-comparison remain outside the focused evidence. The precipitation block's
+A full native output-file comparison remains outside the focused evidence.
+The precipitation block's
 additional runoff resets and ACSNOW/ACGRAUP/ACFRAIN accounting are not claimed
 as part of the eight interval buckets; their physical land-surface carriers
 need a separate units/ownership audit before being changed.
 
 ## Full-grid history cost
 
-The resolved 1799 x 1059 x 50 recipe has 306 planned history fields and
-**17,253,740,324 bytes (16.069 GiB)** per uncompressed full frame, including
+The resolved 1799 x 1059 x 50 recipe has 369 planned history fields and
+**19,227,482,528 bytes (17.907 GiB)** per uncompressed full frame, including
 the planner's bounded header allowance. At 48 hours, 103 frames total
-1.616 TiB, compared with 49 hourly frames (before any data-dependent
+1.801 TiB, compared with 49 hourly frames (before any data-dependent
 compression). This is an inventory calculation; it allocates no full grid.
 
 `gpuwm/io/wrfout.py::AsyncDomainWrfoutWriter` already has a side CUDA stream,

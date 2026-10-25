@@ -21,7 +21,7 @@ from gpuwm.ingest.hrrr_target import (
 )
 from tools.write_hrrr_stock_wrf_namelist import render_namelist
 from tools.hrrr_build_native_static import validate_static
-from tools.seal_hrrr_native_bridge import _series_hours, _window_shape
+from tools.seal_hrrr_native_bridge import _series_hours, _window_shape, expected_atmosphere_selected
 
 
 def _target(**updates) -> HrrrTargetDomain:
@@ -1147,3 +1147,28 @@ def test_the_one_row_trim_maps_hrrr_with_no_halo_past_its_edge():
     field = np.full((window.ny, window.nx), 287.5, dtype=np.float32)
     mapped = plan.apply(field)
     np.testing.assert_allclose(mapped, 287.5, rtol=0.0, atol=1e-4)
+
+
+# 2.9.4 rolling test (2026-10-21): the native bridge began selecting the cycle's HPBL as an optional
+# surface field (776a6ab41b) and the seal kept counting 561 + 50 * hybrid, so every native-HRRR preparation
+# whose wrfnat carries HPBL stopped at "gate atmosphere_selected_per_time='562', expected '561'". The seal now
+# counts exactly as gpuwm.ingest.hrrr reads the same gate.
+@pytest.mark.parametrize("extra_gate, expected", [
+    ({}, 561),
+    ({"optional_surface_fields": "PBLH", "optional_surface_units": "PBLH=m"}, 562),
+    ({"optional_hybrid_fields": "QNWFA,QNIFA", "optional_hybrid_units": "QNWFA=kg-1,QNIFA=kg-1",
+      "optional_surface_fields": "PBLH", "optional_surface_units": "PBLH=m"}, 662),
+    ({"extra_fields": "MASSDEN",
+      "extra_MASSDEN": "PASS discipline=0 category=20 parameter=0 level_type=105",
+      "optional_surface_fields": "PBLH", "optional_surface_units": "PBLH=m"}, 612),
+])
+def test_seal_counts_native_records_as_the_reader_does(extra_gate, expected):
+    gate = {"status": "PASS", **extra_gate}
+    assert expected_atmosphere_selected(gate) == expected
+    values = dict(gate, atmosphere_selected_per_time=str(expected))
+    from gpuwm.ingest.native_extras import gate_extra_fields
+    from gpuwm.ingest.native_supplements import (gate_optional_hybrid_fields,
+                                                 gate_optional_surface_fields)
+    reader = (561 + 50 * (len(gate_optional_hybrid_fields(values)) + len(gate_extra_fields(values)))
+              + len(gate_optional_surface_fields(values)))
+    assert reader == expected

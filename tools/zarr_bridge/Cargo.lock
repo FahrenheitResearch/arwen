@@ -1713,6 +1713,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "tokio",
  "zarrs",
  "zarrs_http",
 ]

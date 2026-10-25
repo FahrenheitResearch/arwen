@@ -96,10 +96,10 @@ extern "C" __global__ void capture(
     REAL* hq, REAL* hv, REAL* hd, REAL* hn,
     const unsigned long long* step, unsigned long long* overflow,
     unsigned long long reaches, unsigned long long capacity,
-    unsigned long long cadence) {
-    const unsigned long long tick = *step + 1;
-    if (tick % cadence) return;
-    const unsigned long long frame = tick / cadence - 1;
+    unsigned long long cadence, int final) {
+    const unsigned long long tick = *step + (final == 2 ? 0 : 1);
+    if ((tick % cadence) && !final) return;
+    const unsigned long long frame = (tick + cadence - 1) / cadence - 1;
     if (frame >= capacity) { if (!threadIdx.x && !blockIdx.x) *overflow=1; return; }
     const unsigned long long r = (unsigned long long)blockIdx.x * blockDim.x + threadIdx.x;
     if (r >= reaches) return;
@@ -123,9 +123,12 @@ class History:
         self.interval = float(settings["interval_seconds"])
         self.cadence = int(options.get("cadence_steps", 1))
         self.capacity_steps = int(options["capacity_steps"])
-        if self.cadence < 1 or self.capacity_steps < self.cadence:
+        self.routing_clock = bool(options.get('routing_clock'))
+        self.final_time_seconds = None
+        if self.cadence < 1 or self.capacity_steps < (1 if self.routing_clock else self.cadence):
             raise ValueError("history capacity must contain at least one chosen output interval")
-        self.capacity = self.capacity_steps // self.cadence
+        self.capacity = ((self.capacity_steps + self.cadence - 1) // self.cadence
+                         if self.routing_clock else self.capacity_steps // self.cadence)
         fields = source.reach_output()
         self.reaches = int(fields["reach_id"].size)
         flow = fields["discharge_m3_s"]
@@ -178,12 +181,35 @@ class History:
                       np.uint64(self.reaches), np.uint64(self.capacity), np.uint64(self.cadence))
         self._tick_args = (arrays["step"],)
         self.parallelism = "GPU history: one thread per reach; capture then scalar cursor launch"
+        if self.routing_clock:
+            self.restart_identity['routing_clock'] = True
+        else:
+            # Fixed-cadence histories have no additional host clock. Retain
+            # their pre-clock checkpoint envelope and continuation identity.
+            self.checkpoint_metadata = self.validate_checkpoint = self.restore_metadata = None
 
-    def advance(self, dt_seconds, *, stream=None):
+    def advance(self, dt_seconds, *, stream=None, final=False, time_seconds=None, recapture=False):
+        import numpy as np
         if dt_seconds != self.interval:
             raise ValueError("history cadence differs from the routing interval")
-        self._copy(self._grid, (256,), self._args, stream=stream)
-        self._tick((1,), (1,), self._tick_args, stream=stream)
+        self._copy(self._grid, (256,), self._args + (np.int32(2 if recapture else final),), stream=stream)
+        if not recapture:
+            self._tick((1,), (1,), self._tick_args, stream=stream)
+        if final:
+            self.final_time_seconds = time_seconds
+
+    def checkpoint_metadata(self):
+        return {'final_time_seconds': self.final_time_seconds}
+
+    def validate_checkpoint(self, metadata):
+        import math
+        time = metadata.get('final_time_seconds')
+        if set(metadata) != {'final_time_seconds'} or (time is not None and
+                (type(time) not in (float, int) or not math.isfinite(time) or time <= 0)):
+            raise ValueError('history continuation needs its final capture clock')
+
+    def restore_metadata(self, metadata):
+        self.final_time_seconds = metadata['final_time_seconds']
 
 
 def prepare_history(*, settings, options, state, physics, device_id, mode, components):
@@ -308,6 +334,8 @@ class Writer:
         return restore_checkpoint(path, driver)
 
     def finish(self, driver, receipt):
+        if getattr(driver, 'routing_clock', None):
+            driver.finish_clock()
         # A caller may have populated the path since preparation. Recover again
         # before allocating host buffers or publishing any checkpoint/product.
         directory = _select_output_directory(self.outdir)
@@ -320,7 +348,8 @@ class Writer:
         # Validate every history before publishing even the restart envelope.
         completed = []
         for name, history in self.histories:
-            frames = _history_steps(history) // history.cadence
+            steps = _history_steps(history)
+            frames = (steps + (history.cadence - 1 if history.final_time_seconds is not None else 0)) // history.cadence
             if frames > history.capacity:
                 raise ValueError("history buffer exhausted; increase realization capacity_steps before running")
             completed.append((name, history, frames))
@@ -341,6 +370,7 @@ class Writer:
             plan = {"output_directory": str(self.outdir / name), "origin": options["origin"],
                     "interval_seconds": int(history.interval),
                     "cadence_steps": history.cadence, "frames": frames,
+                    "final_time_seconds": history.final_time_seconds,
                     "capacity": history.capacity, "reaches": history.reaches,
                     "dtype": _DTYPES[history.dtype], "ids_offset": offsets[base + "reach_id"],
                     "flow_offset": offsets[base + "flow"],

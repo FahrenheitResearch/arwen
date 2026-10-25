@@ -70,10 +70,12 @@ def test_boundary_preprocessing_uses_shared_carried_mass_key():
 
 
 def test_morrison_keeps_chunked_scratch_and_validator_restore():
-    from gpuwm.core.morrison_constants import NWORK, work_chunk_columns, work_slot_shape
+    from gpuwm.core.morrison_constants import (
+        NWORK, WORK_FLOOR_BYTES, work_chunk_columns, work_slot_shape)
     for ncol in (1, 21, 22, 25600):
         assert work_chunk_columns(ncol) == (ncol + NWORK - 1) // NWORK
-        assert work_slot_shape(50, ncol)[0] <= 50 * (ncol + NWORK)
+        assert work_slot_shape(50, ncol)[0] <= max(
+            50 * (ncol + NWORK), WORK_FLOOR_BYTES // 4)
     source = (ROOT / "tools/morrison_wrf461_oracle/validate_morrison_oracle.py").read_text()
     assert "finally:" in source
     assert "kernels.load_module = original" in source

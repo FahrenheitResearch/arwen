@@ -70,7 +70,7 @@ def prepare(*, settings, options, state, physics, device_id, mode, components):
         # interval; MC's own launch checks this substep.
         sub = options["dt_seconds"]
         if (type(sub) not in (int, float) or not 0 < sub < float("inf")
-                or (dt % sub if sub <= dt else sub % dt)):
+                or (not settings.get('routing_clock') and (dt % sub if sub <= dt else sub % dt))):
             raise ValueError("MC interval must divide or span whole parent intervals")
         if sub > dt and getattr(lateral_source, "restart_identity", {}).get("routing_period_seconds") != sub:
             raise ValueError("multi-LSM routing requires runoff accumulated over that routing period")
@@ -141,6 +141,7 @@ def prepare(*, settings, options, state, physics, device_id, mode, components):
                     validated_mapping=routing["validated_reservoir_mapping"])
                 hooks.setdefault(selection["level"], []).append(hook)
             router.bind_level_hooks(hooks)
+        router.prepare_graph()
         if options.get("continuous_initialization"):
             if "initial_replay" not in routing:
                 raise ValueError("default coupled provider lacks the complete historical runoff replay")
@@ -388,6 +389,24 @@ class MuskingumCunge:
         self._sequence = sequence
         self._hooks = {level: tuple(bound) for level, bound in hooks.items() if bound}
         self.profile_stages = tuple(profiles)
+        self._graph = None
+        self.restart_identity.pop('submission', None)
+
+    def prepare_graph(self):
+        """Capture the fixed kernel sequence once, without advancing water.
+
+        Deep continental networks otherwise submit thousands of dependent
+        kernels from Python on every routing step. CUDA retains their exact
+        order and bound pointers; changing hooks invalidates this graph.
+        """
+        import cupy as cp
+        if self._sequence:
+            stream = cp.cuda.Stream(non_blocking=True)
+            with stream:
+                stream.begin_capture()
+                self._launch_direct(stream=stream)
+                self._graph = stream.end_capture()
+        self.restart_identity['submission'] = 'CUDA graph of the unchanged ordered kernel sequence'
 
     def replay_schedule(self):
         """One routing step's dependency stages, in launch order, for the
@@ -406,6 +425,16 @@ class MuskingumCunge:
         """Enqueue prepared levels and reservoir hooks without host data work."""
         if dt_seconds != self.dt_seconds:
             raise ValueError("prepare a new MC stage when routing cadence changes")
+        import cupy as cp
+        actual_stream = stream if stream is not None else cp.cuda.get_current_stream()
+        if self._graph is not None and not actual_stream.is_capturing():
+            self._graph.launch(stream=actual_stream)
+        else:
+            # CUDA cannot launch an executable graph during stream capture.
+            # Expose the same kernels to an enclosing forecast graph instead.
+            self._launch_direct(stream=actual_stream)
+
+    def _launch_direct(self, *, stream=None):
         for launch in self._sequence:
             if isinstance(launch, tuple):
                 kernel, grid, block, args = launch

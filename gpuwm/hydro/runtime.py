@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import wraps
 import importlib
+import json
 import os
 from pathlib import Path
 import threading
@@ -15,12 +16,15 @@ from gpuwm.ensemble.optional_routing import activation_settings, activation_rece
 from . import door as _door
 
 _SETTINGS = ContextVar("arwen_nextgen_settings", default=None)
+_LAUNCH_ARGS = ContextVar("arwen_nextgen_launch_args", default=None)
 ENV_SETTINGS = "GPUWM_NEXTGEN_SETTINGS"
 ENV_ENABLED = "GPUWM_NEXTGEN_ENABLED"
 
 
 def read_settings(path):
     path = Path(path).expanduser().resolve()
+    from .retention import reference
+    reference(path)
     with path.open("rb") as stream:
         document = tomllib.load(stream)
     settings = document.get("hydro", {})
@@ -43,6 +47,11 @@ def settings_scope(settings):
 def cli_disabled():
     """Inspect the launch scope without opening an inherited settings file."""
     return (_SETTINGS.get() or {}).get("activation_reason") == "cli_off"
+
+
+def pending_launch_args():
+    decision = _door.inherited_decision()
+    return _LAUNCH_ARGS.get() if decision and decision.get("reason") == ADMISSION_PENDING else None
 
 
 def current_settings():
@@ -279,6 +288,8 @@ def _bind_launch(settings, path, decision, requested):
     if settings.get("enabled"):
         if path is not None:
             os.environ[ENV_SETTINGS] = str(Path(path).resolve())
+            from .retention import reference
+            reference(path)
         os.environ[ENV_ENABLED] = "1"
     elif requested == "off":
         os.environ.pop(ENV_SETTINGS, None)
@@ -320,7 +331,7 @@ def _cycle_pending(args, requested, config):
             and config is not None and Path(config).is_file())
 
 
-#: The reason bound while an ensemble's disk and card admission is pending:
+#: The reason bound while a launch's disk and card admission is pending:
 #: the door builds the covering fabric only once that admission passes.
 ADMISSION_PENDING = "admission_pending"
 
@@ -333,13 +344,44 @@ HYDRO_START_BYTES_PER_DEG2 = 15e6
 HYDRO_TILE_BYTES_PER_DEG2 = 35e6
 
 
-def _admission_pending(args):
-    """True for a launch whose members are admitted (disk, card) after go_main
-    starts: the ensemble and recipe routes. Breakage it prevents: the 4-member
-    WoFS ensemble spent 369 s fetching hydro sources and 276 s on initial water,
-    then its disk admission refused the run and said nothing was spent."""
+def _hydro_asked(args):
+    """Did this launch ask for hydro: ``--hydro on``/a settings path, or a [hydro] table enabling it?"""
+    requested = getattr(args, "hydro", None)
+    if requested is not None:
+        return requested != "off"
+    config = getattr(args, "config", None)
+    if config is None or not Path(config).is_file():
+        return False
+    try:
+        with Path(config).open("rb") as stream:
+            table = tomllib.load(stream).get("hydro", {})
+        return bool((activation_settings(dict(table)) or {}).get("enabled"))
+    except Exception:  # noqa: BLE001 - an unreadable table is decided by the door itself
+        return True
+
+
+def _admission_pending(args, *, go=False):
+    """True for a launch whose disk and card admission comes after go_main starts.
+
+    The ``gpuwm go`` door (``go``, its go_scope(beside=True)) admits disk on every
+    executing route before it builds hydro, then binds the door with
+    ``rebind_launch(args, admitted=True, beside=True)``. Breakage: plain go
+    --prepare-only built a fabric before refusing disk, then claimed nothing
+    was spent. The ensemble and recipe routes admit their members the same way.
+    Breakage: the 4-member WoFS ensemble spent 369 s fetching hydro sources and
+    276 s on initial water, then its disk admission refused the run and said
+    nothing was spent. Other launchers (standby, run) admit nothing after entry
+    and bind the final answer there.
+    """
     if _plan_only(args) or getattr(args, "hydro", None) == "off":
         return False
+    if not _hydro_asked(args):
+        # Hydro is opt-in (2.9.4.1): a launch that never asked for it is decided
+        # default_off at once. Breakage: every bare `gpuwm go` printed "waiting for
+        # disk and card admission" for a hydro run nobody requested.
+        return False
+    if go:
+        return True
     members = getattr(args, "members", None) or 1
     return (getattr(args, "command", None) == "ensemble" or members > 1
             or getattr(args, "recipe", None) is not None)
@@ -349,8 +391,8 @@ def _admission_decision(requested):
     return {"schema": _door.SCHEMA, "requested": requested, "enabled": False,
             "reason": ADMISSION_PENDING,
             "gaps": [{"owner": "hydro-world-door",
-                      "gap": "decided once the ensemble's disk and card admission passes; "
-                             "this launch stopped before that"}]}
+                      "gap": "waiting for the launch's disk and card admission; "
+                             "hydro preparation has not started"}]}
 
 
 def _bind_pending(args, requested, decision):
@@ -367,7 +409,8 @@ def hydro_disk_estimate(config, args=None):
     if requested == "off" or config is None or not Path(config).is_file():
         return 0, None
     try:
-        settings, _path, decision = _launch_settings(requested, config, plan_only=True)
+        settings = read_settings(config if requested in (None, "") else requested)
+        decision = _door.decide(settings=settings, requested=requested, config_path=config)
     except Exception:  # noqa: BLE001 - an unanswerable door prices nothing; it decides later
         return 0, None
     if decision.get("reason") != "fabric_covered":
@@ -379,7 +422,24 @@ def hydro_disk_estimate(config, args=None):
     except (KeyError, TypeError):
         return 0, None
     root = _door.cache_root(config) / str(decision.get("provider"))
-    static = any(root.glob("static-*/static-ready.json")) if root.is_dir() else False
+    row = decision.get("_row")
+    if row is None or row.get("kind") == "prepared":
+        return 0, None
+    try:
+        request, _ = _door.preparation_request(row, foot)
+    except (OSError, ValueError, RuntimeError):
+        return 0, None
+    for start in (root / _door._digest(request)[:16], root / _door._digest(foot)[:16]):
+        try:
+            receipt = json.loads((start / "door-prepared.json").read_text())
+            if ((start / "hydro-door.toml").is_file()
+                    and Path(receipt["manifest"]).is_file()
+                    and json.loads((start / "door-request.json").read_text()) == request):
+                return 0, None
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+    static_request = dict(request, footprint={k: v for k, v in foot.items() if k not in _door._TIME_KEYS})
+    static = (root / ("static-" + _door._digest(static_request)[:16]) / "static-ready.json").is_file()
     fabric = area * (HYDRO_START_BYTES_PER_DEG2 if static else HYDRO_FULL_BYTES_PER_DEG2)
     tiles = 0.0 if static else area * HYDRO_TILE_BYTES_PER_DEG2
     total = int(fabric + tiles)
@@ -418,14 +478,14 @@ def rebind_launch(args, *, cycle_applied=False, admitted=False, beside=False):
     if (decision is None or decision.get("reason") not in reasons
             or requested == "off" or config is None or not Path(config).is_file()):
         return None
-    if not admitted and _admission_pending(args):
+    if not admitted and _admission_pending(args, go=beside):
         # The ensemble door admits its members (disk, card) first; the
         # fabric is built after that (rebind_launch(args, admitted=True)).
         return _bind_pending(args, requested, _admission_decision(requested))
     settings, path, decision = _launch_settings(
         requested, config, plan_only=_plan_only(args),
         prepared_launch=getattr(args, "prepared_root", None) is not None,
-        beside=beside and not admitted)
+        beside=beside)
     _bind_launch(settings, path, decision, requested)
     _SETTINGS.set(settings)
     return decision
@@ -483,7 +543,7 @@ def go_scope(function=None, *, beside=False):
         # launch before go_main writes its domain; see rebind_launch) has no
         # settings file to read and no parent grid for the door to cover yet.
         config = getattr(args, "config", None)
-        if (not _cycle_pending(args, requested, config) and _admission_pending(args)
+        if (not _cycle_pending(args, requested, config) and _admission_pending(args, go=beside)
                 and config is not None and Path(config).is_file()):
             settings, path, decision = (activation_settings({}) | {"enabled": False,
                                         "activation_reason": ADMISSION_PENDING},
@@ -504,6 +564,7 @@ def go_scope(function=None, *, beside=False):
         previous_enabled = os.environ.get(ENV_ENABLED)
         token = None
         enclosing = outer
+        args_token = _LAUNCH_ARGS.set(args)
         try:
             _bind_launch(settings, path, decision, requested)
             # A plain token (not settings_scope) so rebind_launch can replace
@@ -517,6 +578,7 @@ def go_scope(function=None, *, beside=False):
             return result
         finally:
             _Beside.abandon(keep=enclosing)
+            _LAUNCH_ARGS.reset(args_token)
             if token is not None:
                 _SETTINGS.reset(token)
             if previous_decision is None:

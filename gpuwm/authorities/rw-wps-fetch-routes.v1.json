@@ -806,7 +806,7 @@
           "why": "the AWS Open Data operational bucket is the unbounded archive; it lags publication, and serves what it has caught up with several times quicker at peak hours"
         }
       ],
-      "host_note": "Published under rrfsens.YYYYMMDD/CC/mMMM in the operational-layout bucket and NOMADS v1.0. The preparation row refuses the missing upper atmosphere and land state.",
+      "host_note": "Published under rrfsens.YYYYMMDD/CC/mMMM in the operational-layout bucket and NOMADS v1.0. The member subset stops at 250 hPa and has no land state, so every lead also fetches the member's declared companion, the deterministic prslev and 2dfld pair of the same cycle and lead, from the same host; the composition stacks the companion's levels above 250 hPa onto the member's columns and lends it the land state.",
       "cycle_note": "Four full member cycles, 00/06/12/18 UTC, hourly through60h. NCO product inventory and complete20261001/00 m001 listing.",
       "cycle_hours": [
         0,
@@ -857,15 +857,34 @@
           "leads": "all",
           "path": "rrfsens.{YYYYMMDD}/{HH}/{MEMBER}/rrfs.t{HH}z.{MEMBER}.2dfldnomads.3km.f{FFF}.conus.grib2",
           "idx_sidecar": ".idx"
+        },
+        {
+          "role": "companion_prslev",
+          "primary": false,
+          "leads": "all",
+          "path": "rrfs.{YYYYMMDD}/{HH}/rrfs.t{HH}z.prslev.3km.f{FFF}.conus.grib2",
+          "idx_sidecar": ".idx"
+        },
+        {
+          "role": "companion_2dfld",
+          "primary": false,
+          "leads": "all",
+          "path": "rrfs.{YYYYMMDD}/{HH}/rrfs.t{HH}z.2dfld.3km.f{FFF}.conus.grib2",
+          "idx_sidecar": ".idx"
         }
       ],
       "record_subset": {
         "supported": false,
-        "why": "The member subset is already incomplete for a full-column initial state; no field-selection contract for a still smaller subset is declared."
+        "why": "The member subset is already incomplete for a full-column initial state, and its declared companion (the deterministic prslev and 2dfld pair of the same cycle, whose nine RUC soil layers collide on the ecCodes level key) is fetched whole; no field-selection contract for a smaller subset is declared."
       },
       "prep": {
         "source": "rrfs-ens",
-        "member_prep": "rrfs-ops-subset-grib2-members-v1"
+        "member_prep": "rrfs-ops-subset-grib2-members-v1",
+        "supplement": {"from": "role:2dfldnomads", "role": "rrfs_ens_member_in_band_surface"},
+        "extra_supplements": [
+          {"from": "role:companion_prslev", "role": "rrfs_ens_companion_data"},
+          {"from": "role:companion_2dfld", "role": "rrfs_ens_companion_data"}
+        ]
       },
       "members": {
         "default": "m001",
@@ -1695,6 +1714,176 @@
       }
     },
 
+    "ecmwf-open-data-0p1": {
+      "label": "ECMWF open-data IFS HRES 0.1 deg (pl + sfc pair)",
+      "measured": "2026-10-24",
+      "hosts": [
+        {
+          "name": "google",
+          "base": "https://storage.googleapis.com/ecmwf-open-data",
+          "default": true,
+          "retention_hours": 72,
+          "why": "the official open-data mirror; measured 2026-10-24 from a rented box at 90 MB/s against 24 MB/s from the AWS mirror for the same 97 MB object, and the 0.1-degree pair is about 440 MB per lead"
+        },
+        {
+          "name": "aws",
+          "base": "https://ecmwf-forecasts.s3.eu-central-1.amazonaws.com",
+          "retention_hours": null,
+          "why": "the mirror that keeps every cycle the rolling doors drop; it lists the 0.1-degree tree from the 2026-10-20 cycles"
+        },
+        {
+          "name": "ecmwf",
+          "base": "https://data.ecmwf.int/forecasts",
+          "retention_hours": 72,
+          "why": "the publisher's own door (last four days of cycles)"
+        }
+      ],
+      "host_note": "CC-BY-4.0 ECMWF open data. ECMWF publishes the 0.1-degree set from the 2026-10-20 cycles onward, about 2 h after the 0.25-degree set (its schedule, not lateness), split into a pressure-level and a surface file per lead.",
+      "publication_eras": [
+        {
+          "label": "IFS HRES open data 0.1 degree",
+          "valid_from": "2026-10-20T00",
+          "valid_until": null,
+          "cycle_hours": [
+            0,
+            12
+          ],
+          "resolution_degrees": 0.1,
+          "steps": [
+            [
+              144,
+              3
+            ],
+            [
+              360,
+              6
+            ]
+          ]
+        },
+        {
+          "label": "IFS HRES open data 0.1 degree",
+          "valid_from": "2026-10-20T00",
+          "valid_until": null,
+          "cycle_hours": [
+            6,
+            18
+          ],
+          "resolution_degrees": 0.1,
+          "steps": [
+            [
+              144,
+              3
+            ]
+          ]
+        }
+      ],
+      "publication_era_measured": "2026-10-24",
+      "publication_era_sources": [
+        "https://data.ecmwf.int/forecasts/20261023/12z/ifs/0p1/oper/",
+        "https://data.ecmwf.int/forecasts/20261023/18z/ifs/0p1/oper/",
+        "https://confluence.ecmwf.int/x/-5z9Kw"
+      ],
+      "cycle_hours": [
+        0,
+        6,
+        12,
+        18
+      ],
+      "publication_lag": [
+        {
+          "cycle_hours": [
+            0,
+            12
+          ],
+          "hours": 9.6,
+          "per_lead_hours": 0,
+          "late_hours": 0.25,
+          "measured": "2026-10-24 listing of data.ecmwf.int: every object of the 2026-10-23 12Z 0.1-degree run stamped 21:34Z (cycle + 9 h 34 min), the 0.25-degree run 19:34Z"
+        },
+        {
+          "cycle_hours": null,
+          "hours": 8.5,
+          "per_lead_hours": 0,
+          "late_hours": 0.25,
+          "measured": "2026-10-24 listing: every object of the 2026-10-23 18Z 0.1-degree run stamped 02:27Z (cycle + 8 h 27 min), the 0.25-degree run 00:27Z"
+        }
+      ],
+      "posting": {
+        "shape": "whole_cycle",
+        "ready_check": "objects",
+        "late_after_minutes": 60,
+        "poll_seconds": 30,
+        "why": "every lead of a run lands within a minute, 2 h after the same run's 0.25-degree set"
+      },
+      "ladders": [
+        {
+          "cycle_hours": [
+            0,
+            12
+          ],
+          "steps": [
+            [
+              144,
+              3
+            ],
+            [
+              360,
+              6
+            ]
+          ]
+        },
+        {
+          "cycle_hours": null,
+          "steps": [
+            [
+              144,
+              3
+            ]
+          ]
+        }
+      ],
+      "default_cadence": 3,
+      "layout": "flat",
+      "files": [
+        {
+          "role": "oper-fc-pl",
+          "primary": false,
+          "leads": "all",
+          "path": "{YYYYMMDD}/{HH}z/ifs/0p1/oper/{YYYYMMDDHHMMSS}-{F}h-oper-fc-pl.grib2",
+          "idx_sidecar": null
+        },
+        {
+          "role": "oper-fc-sfc",
+          "primary": false,
+          "leads": "all",
+          "path": "{YYYYMMDD}/{HH}z/ifs/0p1/oper/{YYYYMMDDHHMMSS}-{F}h-oper-fc-sfc.grib2",
+          "idx_sidecar": null
+        }
+      ],
+      "compose": [
+        {
+          "kind": "concat_per_lead",
+          "roles": [
+            "oper-fc-pl",
+            "oper-fc-sfc"
+          ],
+          "primary": true,
+          "name": "pairs/{YYYYMMDDHHMMSS}-{F}h-oper-fc.0p1.grib2",
+          "why": "ECMWF splits the 0.1-degree lead into a pressure-level and a surface file with disjoint records; GRIB2 messages are self-delimiting, so the pair concatenated is the one multi-record object the 0.25-degree oper profile decodes (same parameters, same 14 levels, same soil ordinals; the grid is read from the records)"
+        }
+      ],
+      "record_subset": {
+        "supported": false,
+        "why": "the pair is required whole; the profile binds every pressure, surface and soil record"
+      },
+      "prep": {
+        "source": "ecmwf-open-data-0p1",
+        "supplement": {
+          "from": "every_input",
+          "role": "ecmwf_open_data_in_band_surface"
+        }
+      }
+    },
     "ecmwf-ens": {
       "label": "ECMWF ENS open-data perturbed member",
       "measured": "2026-10-02",

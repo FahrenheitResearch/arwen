@@ -763,6 +763,39 @@ _PACKAGED_PROFILES = MappingProxyType({
         data_role="rrfs_prslev_2dfld_in_band_surface",
         provenance_role="rrfs_prslev_2dfld_in_band_surface_provenance",
     ),
+    # One RRFS ensemble MEMBER from the public rrfsens subset, completed by
+    # its DECLARED COMPANION: the deterministic prslev+2dfld pair of the
+    # same cycle, decoded through the deterministic RRFS mapping above as
+    # a pinned contributing authority.  The member subset stops at 250 hPa
+    # and has no soil, skin temperature or land mask.  Every member field
+    # pins product definition template 1, so the member's own decode never
+    # mixes runs; the composition's companion row stacks the companion's
+    # 14 levels above 250 hPa onto the member's columns and lends the land
+    # state through the ordinary field_sources grammar.  The composition
+    # receipt names which levels and fields came from which run.  Without
+    # the companion's files there is no soil state and the model top sits
+    # above the data, and the front door refuses with the row's words.
+    "rrfs-ens-member-companion-grib2-v1": _profile(
+        "rw-wps-rrfs-ens-member-companion-grib2",
+        source_format="grib2",
+        mapping="d7386655a10547a8e95a4a44e1edae7d9258e668258a5a19b70657be58ce6644",
+        composition="242d529a511e21bbb2a62195a49320b1547fb4f606cd03e58d0af5d4a776b7b6",
+        provenance="e1c3997fb2b0e24cfcc671347d3cd6aea68af7f39523e5bc86040a87102649e9",
+        data_role="rrfs_ens_member_in_band_surface",
+        provenance_role="rrfs_ens_member_in_band_surface_provenance",
+        contributing_provenances={
+            "rrfs_ens_companion_provenance": {
+                "file": "rw-wps-rrfs-prslev-2dfld-grib2.provenance.json",
+                "sha256": "e364f22ec917bfd991ec3bb756aa49b697d03c7cd425d40a35501dd769f279de",
+            },
+        },
+        contributing_mappings={
+            "rrfs_ens_companion_mapping": {
+                "file": "rw-wps-rrfs-prslev-2dfld-grib2.mapping.json",
+                "sha256": "6b89a9d1eed5ad8868505e5560301599736837340ca2fb8d87dd4fdf872d68cb",
+            },
+        },
+    ),
     # ERA5 on its NATIVE 137 hybrid sigma-pressure model levels -- the
     # first shipped profile whose vertical coordinate is not a pressure
     # ladder.  The A/B interface coefficients ride IN BAND as the GRIB2

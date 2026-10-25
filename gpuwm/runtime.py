@@ -2105,6 +2105,7 @@ class RealRelocationChildPreparer:
                                                      capture_continuation)
         from gpuwm.ingest.relocation_init import (
             LAND_SURFACE_CONTINUATION_FIELDS)
+        from gpuwm.core import nest_accumulation
 
         stream = getattr(node.state, "_streamed_domain", None)
         store = None if stream is None else stream.store
@@ -2138,6 +2139,7 @@ class RealRelocationChildPreparer:
             # cold-restarting on the whole child (the 2026-08-16 moving-
             # nest KF artifact report).
             "continuation": capture_continuation(source_state, driver, store=store),
+            "precipitation_archive": nest_accumulation.capture(source_state, store),
             # THE SURFACE-RADIATION CARRIERS and their ledger.  A carrier
             # is consumed on every surface step but produced only on the
             # radiation cadence, so a child rebuilt from cold between two
@@ -2182,10 +2184,11 @@ class RealRelocationChildPreparer:
             restore_continuation, shift_carriers, shift_continuation)
 
         continuation_capture = captured.get("continuation", {}) or {}
-        strip, strip_receipt = parent_strip_accumulations(
-            parent_node, new_dc, continuation_capture)
         ring = accumulation_ring(getattr(new_dc, "run", None))
-        strip_receipt["old_ring_cells"] = ring
+        from gpuwm.core import nest_accumulation
+        archive, strip, strip_receipt = nest_accumulation.relocate(
+            captured.get("precipitation_archive") or {}, continuation_capture,
+            plan, ring, parent_node, new_dc)
         shifted = shift_continuation(continuation_capture, plan, strip=strip,
                                      ring=ring)
         new_state = getattr(initialized, "state", None)
@@ -2193,6 +2196,7 @@ class RealRelocationChildPreparer:
         if new_state is not None and new_driver is not None:
             continuation = restore_continuation(
                 new_state, new_driver, shifted)
+            nest_accumulation.install(new_state, archive)
             continuation["restored"] = True
         else:
             continuation = {
@@ -2270,10 +2274,11 @@ class RealRelocationChildPreparer:
         if scalars is None:
             raise RelocationRefusal("window reconstruction requires canonical streamed scalar carriers")
         continuation_capture = captured.get("continuation") or {}
-        strip, strip_receipt = parent_strip_accumulations(
-            parent_node, new_dc, continuation_capture)
         ring = accumulation_ring(getattr(new_dc, "run", None))
-        strip_receipt["old_ring_cells"] = ring
+        from gpuwm.core import nest_accumulation
+        archive, strip, strip_receipt = nest_accumulation.relocate(
+            captured.get("precipitation_archive") or {}, continuation_capture,
+            staged.plan, ring, parent_node, new_dc)
         shifted = shift_continuation(continuation_capture, staged.plan,
                                      strip=strip, ring=ring)
         radiation = captured.get("carriers") or {}
@@ -2317,6 +2322,7 @@ class RealRelocationChildPreparer:
             }
 
         prepare.staged = staged
+        prepare.precipitation_archive = archive
         self._pending_refresh = (int(new_dc.grid_id), footprint.grid, footprint.static_fields)
         return prepare
 
@@ -6531,9 +6537,11 @@ def _run_built_experiment(exp, data, outdir, model, *, restart=None,
             # "prepared forecast: "), so the receipt's own tag is the one
             # thing not to repeat.
             print(f"  {streaming_report['summary']}")
-        from gpuwm.ensemble.runtime_context import current_capture, observe_current_counters
+        from gpuwm.ensemble.runtime_context import (current_capture,
+            observe_current_counters, observe_initial_diagnostics)
         committed_progress = progress_callback
         if current_capture() is not None:
+            observe_initial_diagnostics(model)
             observe_current_counters(model, start_time=exp.start_time)
             def committed_progress(**event):
                 observe_current_counters(model, start_time=exp.start_time)
@@ -6702,8 +6710,14 @@ def _submit_tree_history_frame(writers, node, ticks: int) -> None:
                 ticks, domain_start_ticks=domain_start_ticks_of(node)):
             from gpuwm.core.refl import consume_refl_10cm
             refl_field = consume_refl_10cm(node.state)
-        elif domain_start_ticks_of(node) == 0:
-            # A run's analysis frame writes WRF's initial array, not nothing.
+        else:
+            # The domain's own analysis frame (tick 0 for the root, the
+            # activation epoch for a spawned or delayed nest) writes WRF's
+            # initial array, not nothing.  A newborn's birth frame used to
+            # carry no REFL_10CM at all (box D 2026-10-21, storm nests d02/d03
+            # at 18:15Z and 18:30Z), so its first picture had no reflectivity.
+            # This also covers HRRR's GSD initial-reflectivity helper, which
+            # analysis_refl_10cm consults for every domain's first frame.
             from gpuwm.core.refl import analysis_refl_10cm
             refl_field = analysis_refl_10cm(
                 node.state, shape=(node.cfg.run.nz, node.cfg.run.ny, node.cfg.run.nx))
@@ -6712,6 +6726,24 @@ def _submit_tree_history_frame(writers, node, ticks: int) -> None:
     # ordering: submit's producer-stream wait_event fences the side-stream
     # D2H snapshot ahead of any later default-stream mutation, so zeroing
     # here can never race the staged copy.
+    reset_history_windows_after_frame(node, ticks)
+
+
+def reset_history_windows_after_frame(node, ticks: int) -> None:
+    """Zero the domain's history-window maxima (UP_HELI_MAX and the hail
+    window, ``uh_diag.reset_up_heli_max``) after a FULL history frame.
+
+    A quick-look frame (``quicklook = {...}`` on the domain, so the history
+    alarm rings at the quick-look cadence) does not close the window: it
+    reports the running maximum and leaves it running, so the next full
+    frame's maxima cover the whole full interval.  Resetting at every
+    alarm made a full frame's UH and hail maxima cover only the last
+    quick-look interval (release review 2.9.7 HIGH 5).  With no quick-look
+    stream every frame is full and this is the reset it always was.
+    """
+    from gpuwm.io.wrfout import quicklook_selection
+    if quicklook_selection(node, ticks) is not None:
+        return
     from gpuwm.core.uh_diag import reset_up_heli_max
     reset_up_heli_max(node.state)
 

@@ -108,6 +108,12 @@ class SourceAdapter:
     hydro_forcing_profile: str | None = None
     # A recommendation only; runtime capability never depends on this name.
     default_physics_profile: str | None = None
+    #: The recommendation for a run whose finest grid is convection-permitting
+    #: (finer than :data:`gpuwm.physics_menu.CONVECTION_PERMITTING_BELOW_M`),
+    #: binding ahead of ``default_physics_profile`` there.  A row, not a code
+    #: path: a source whose coarse-grid default is wrong at storm scale names
+    #: the suite here.
+    convection_permitting_physics_profile: str | None = None
     #: Published static source selected by this source's configuration.
     #: An absent declaration leaves existing configuration bytes unchanged.
     static_source: str | None = None
@@ -158,6 +164,16 @@ class SourceAdapter:
     forcing_interval_seconds: float | None = None
     #: The acquisition consumes every native frame; a cadence cannot subsample it.
     fetch_entire_window: bool = False
+    #: How a run on the same machine publishes this source's leads as it
+    #: writes them (``gpuwm.local_posting``), for a source that is produced,
+    #: not downloaded.  Set, ``gpuwm prep --as-posted`` prepares it lead by
+    #: lead with no network posting row; ``None`` keeps the posting-row rule.
+    local_posting: str | None = None
+    #: Hours of this source's 2 m air temperature that inland water beyond
+    #: the source's reach averages (WRF use_tavg_for_tsk, WPS avg_tsfc).
+    #: ``None`` keeps the WPS day (24 h); ``0`` takes the start time's own
+    #: 2 m air temperature, so the initial state needs no later lead.
+    inland_air_mean_hours: float | None = None
     #: The default fetch transport writes a template unless retrieval is requested.
     fetch_requires_retrieve: bool = False
     #: The smallest pressure (Pa) this source's CERTIFIED inventory serves
@@ -388,6 +404,7 @@ def _adapter(
     packaged_profile: str | None = None,
     hydro_forcing_profile: str | None = None,
     default_physics_profile: str | None = None,
+    convection_permitting_physics_profile: str | None = None,
     static_source: str | None = None,
     runtime_surface_fields: tuple[tuple, ...] = (),
     same_grid_pairing: str | None = None,
@@ -398,6 +415,8 @@ def _adapter(
     requires_ensemble_calibration: bool = False,
     forcing_interval_seconds: float | None = None,
     fetch_entire_window: bool = False,
+    local_posting: str | None = None,
+    inland_air_mean_hours: float | None = None,
     fetch_requires_retrieve: bool = False,
     certified_source_top_pa: float | None = None,
     extendable_source_top_pa: float | None = None,
@@ -455,6 +474,8 @@ def _adapter(
         packaged_profile=packaged_profile,
         hydro_forcing_profile=hydro_forcing_profile,
         default_physics_profile=default_physics_profile,
+        convection_permitting_physics_profile=(
+            convection_permitting_physics_profile),
         static_source=static_source,
         runtime_surface_fields=runtime_surface_fields,
         same_grid_pairing=same_grid_pairing,
@@ -465,6 +486,8 @@ def _adapter(
         requires_ensemble_calibration=requires_ensemble_calibration,
         forcing_interval_seconds=forcing_interval_seconds,
         fetch_entire_window=fetch_entire_window,
+        local_posting=local_posting,
+        inland_air_mean_hours=inland_air_mean_hours,
         fetch_requires_retrieve=fetch_requires_retrieve,
         certified_source_top_pa=certified_source_top_pa,
         extendable_source_top_pa=extendable_source_top_pa,
@@ -1526,6 +1549,40 @@ _ADAPTERS = (
         ),
     ),
     _adapter(
+        "ecmwf-open-data-0p1",
+        archives=(_ECMWF_OPEN_DOOR,),
+        name="ECMWF IFS HRES (open data, 0.1 degree)",
+        aliases=("ifs-0p1", "ifs-hres", "ecmwf-hres", "ecmwf-0p1"),
+        file_family="GRIB2",
+        decoder=(
+            "packaged ECMWF open-data oper profile over the concatenated "
+            "0.1-degree pl + sfc pair + vendored rusty-weather GRIB2 bridges"
+        ),
+        default_product="oper", max_hour=360,
+        upstream_ingest="declarative_mapping_v1_over_packaged_profile",
+        status=AdapterStatus.RUNNABLE_NOT_CERTIFIED,
+        field_mapping="packaged-rw-wps-ecmwf-open-data-oper-grib2-v1",
+        level_mapping="14-pressure-level-to-explicit-wrf-eta-v2",
+        cadence_mapping="uniform-three-hour-forecast-series-v1",
+        stock_wrf_gate="live-unchanged-stock-wrf-gate-pending",
+        runnable=True,
+        runner="mapped_composition_v1",
+        packaged_profile="ecmwf-open-data-oper-grib2-v1",
+        forcing_interval_seconds=10800.0,
+        notes=(
+            "ECMWF's IFS HRES open data at 0.1 degree, published from the "
+            "2026-10-20 cycles under CC-BY-4.0, about 2 h after the "
+            "0.25-degree set. Each lead is a pressure-level file and a "
+            "surface file with disjoint records; the route concatenates "
+            "the pair and the 0.25-degree oper profile decodes it (same "
+            "14 levels, parameters and soil ordinals; the grid is read "
+            "from the records). Surface geopotential is published at step "
+            "0 only, so a start past step 0 takes terrain from the "
+            "mapping's height-at-surface-pressure derivation, as the "
+            "0.25-degree route does."
+        ),
+    ),
+    _adapter(
         "ecmwf-ens",
         ensemble_source="ecmwf-ens",
         ensemble_control_source="ecmwf-open-data",
@@ -1896,24 +1953,35 @@ _ADAPTERS = (
         ensemble_source="rrfs-ens",
         name="RRFS ensemble (public member subset)", aliases=("rrfsens",),
         kind=SourceKind.ENSEMBLE_MEMBERS,
+        file_family="GRIB2",
+        decoder=(
+            "packaged RRFS member-with-companion profile + "
+            "vendored rusty-weather GRIB2 bridges"
+        ),
         default_product="prslevnomads+2dfldnomads/member",
-        required_products=("prslevnomads", "2dfldnomads"), max_hour=60,
-        status=AdapterStatus.COMPOSITION_REQUIRED,
+        required_products=("prslevnomads", "2dfldnomads", "prslev", "2dfld"),
+        max_hour=60,
+        upstream_ingest="declarative_mapping_v1_over_packaged_profile",
+        status=AdapterStatus.RUNNABLE_NOT_CERTIFIED,
+        field_mapping="packaged-rw-wps-rrfs-ens-member-companion-grib2-v1",
+        level_mapping="28-pressure-level-to-explicit-wrf-eta-v2",
+        cadence_mapping="uniform-hourly-forecast-series-v1",
+        stock_wrf_gate="live-unchanged-stock-wrf-gate-pending",
+        runnable=True,
+        runner="mapped_composition_v1",
+        packaged_profile="rrfs-ens-member-companion-grib2-v1",
         member_set="rrfs-ops-subset-grib2-members-v1",
         forcing_interval_seconds=3600.0,
-        certified_source_top_pa=25000.0,
         coverage=_CONUS_3KM_LAMBERT,
         composition=(
-            "The public member column stops at 250 hPa and publishes no "
+            "Initialize from one verified member's prslevnomads+2dfldnomads "
+            "pair together with its declared companion, the RRFS "
+            "deterministic prslev+2dfld pair of the same cycle and valid "
+            "time. The member column stops at 250 hPa and publishes no "
             "soil temperature, soil moisture, skin temperature or land "
-            "mask: alone it has no soil state and the model top sits above "
-            "the data. The same-cycle RRFS deterministic run (same grid) "
-            "can supply the land state through the cross-source "
-            "composition, but the levels above 250 hPa need a vertical "
-            "extension of the member's ladder from that companion, which "
-            "the composition does not have (it refuses a vertical borrow on "
-            "a different ladder, and one decode may not mix members or "
-            "generating processes). No automatic top lowering."
+            "mask, so without the companion there is no soil state and "
+            "the model top sits above the data; such a member is refused. "
+            "No automatic top lowering."
         ),
         notes=(
             "Five real member trajectories, m001 through m005, are posted "
@@ -1921,9 +1989,16 @@ _ADAPTERS = (
             "and NOMADS v1.0. Member 1 pressure and surface samples carry "
             "PDT 1, perturbation number 1, ensemble type 3 and size 5. "
             "The subset supplies 14 pressure levels from 250 to 1000 hPa. "
-            "Acquisition and byte identity are implemented; complete "
-            "initialization is not. Ensemble statistics remain the separate "
-            "REFS source and cannot substitute for a member."
+            "The packaged profile is table work on the generic mapped "
+            "route: every member field pins product definition template 1, "
+            "and the composition declares the deterministic run of the same "
+            "cycle as the member's companion, which stacks its 14 levels "
+            "above 250 hPa onto the member's columns and lends the skin "
+            "temperature, land mask, sea ice, snow and the nine-node RUC "
+            "soil column. The composition receipt names which levels and "
+            "fields came from the member and which from the companion. "
+            "Ensemble statistics remain the separate REFS source and cannot "
+            "substitute for a member."
         ),
     ),
     _adapter(
@@ -2205,6 +2280,13 @@ _ADAPTERS = (
     _adapter(
         "hex-global",
         time_axis="supplied_times",
+        # THE BREAKAGE THIS PREVENTS (HEX-REGIONAL-2026-10-23/WET-BIAS.md):
+        # a 3 km child of a hex run took the gfs/era5-class Morrison default,
+        # whose wet-snow REFL_10CM drew a 55-65 dBZ shield over the trailing
+        # stratiform where MRMS had 25-40 (Kansas nest +6 h: 42,822 km2 at
+        # 50+ dBZ against MRMS 1,107; 4,302 on this suite).
+        convection_permitting_physics_profile=(
+            "thompson-mp28-mynn-gsd41-mynn-ruc-rrtmg-legacy-v1"),
         name="gpuwm-hex forecast export (global or regional window, NetCDF)",
         aliases=("hex", "gpuwm-hex", "hex-regional"),
         upstream_model_id=None,
@@ -2229,6 +2311,17 @@ _ADAPTERS = (
         runnable=True,
         runner="mapped_composition_v1",
         packaged_profile="hex-history-netcdf-v1",
+        local_posting=(
+            "gpuwm-hex export RUN --follow writes each frame as the parent "
+            "forecast closes it; python -m gpuwm.local_posting --source "
+            "hex-global --ready-list EXPORT/export-ready.jsonl publishes "
+            "them for gpuwm prep --as-posted"),
+        # A parent produced beside the nest posts a lead per parent hour: a
+        # daily mean over its first 24 h held the nest's head until the whole
+        # parent forecast was done (box G 2026-10-23: the as-posted head
+        # waited for f012 of a 12 h window).  Inland water the parent does
+        # not resolve takes the start time's own 2 m air temperature.
+        inland_air_mean_hours=0.0,
         notes=(
             "A gpuwm-hex run (any mesh: the 60 km global row, a regional "
             "mesh, an ensemble member) as the initial and lateral boundary "

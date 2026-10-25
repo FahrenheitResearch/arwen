@@ -55,6 +55,22 @@ def _series_hours(path: Path) -> tuple[int, ...]:
             f"{path}: expected contiguous source forecast hours: {error}") from error
 
 
+def expected_atmosphere_selected(gate: dict) -> int:
+    """The native atmosphere records one time must hold, counted as gpuwm.ingest.hrrr counts them.
+
+    561 records, plus 50 for each optional hybrid field (the analysed aerosol pair) and each native
+    extra record a caller requested, plus one for each optional surface field (the cycle's PBL height,
+    776a6ab41b). Breakage this prevents (2.9.4 rolling test, 2026-10-21): the seal still
+    expected 561 + 50 * hybrid after the bridge began selecting HPBL, so every native-HRRR preparation
+    whose wrfnat carries HPBL stopped at "gate atmosphere_selected_per_time='562', expected '561'".
+    """
+    from gpuwm.ingest.native_extras import gate_extra_fields
+    from gpuwm.ingest.native_supplements import (gate_optional_hybrid_fields,
+                                                 gate_optional_surface_fields)
+    return (561 + 50 * (len(gate_optional_hybrid_fields(gate)) + len(gate_extra_fields(gate)))
+            + len(gate_optional_surface_fields(gate)))
+
+
 def main():
     started = time.perf_counter()
     parser = argparse.ArgumentParser(description=__doc__)
@@ -73,18 +89,17 @@ def main():
     gate = dict(
         line.split("\t", 1)
         for line in (args.root / "gate.txt").read_text().splitlines())
-    from gpuwm.ingest.native_supplements import (
-        gate_optional_hybrid_fields, gate_optional_surface_fields)
+    from gpuwm.ingest.native_extras import gate_extra_fields
+    from gpuwm.ingest.native_supplements import (gate_optional_hybrid_fields,
+                                                 gate_optional_surface_fields)
     optional_hybrid = gate_optional_hybrid_fields(gate)
-    # The cycle's PBL height (HPBL), one record and one payload when the
-    # wrfnat publishes it (hrrr_grib2_bridge OPTIONAL_SURFACE_SPECS).
+    optional_extras = gate_extra_fields(gate)
     optional_surface = gate_optional_surface_fields(gate)
     required = {
         "status": "PASS",
         "forecast_hours": ",".join(map(str, hours)),
         "series_count": str(len(hours)),
-        "atmosphere_selected_per_time": str(
-            561 + 50 * len(optional_hybrid) + len(optional_surface)),
+        "atmosphere_selected_per_time": str(expected_atmosphere_selected(gate)),
         "soil_selected_per_time": "18",
         "window_shape": args.expected_window_shape,
     }
@@ -115,7 +130,7 @@ def main():
             raise ValueError("native supplement publication lacks its GRIB selection receipt")
     for hour in hours:
         for role, expected_files in (("atmosphere", 22 + len(fields)
-                                      + len(optional_hybrid)
+                                      + len(optional_hybrid) + len(optional_extras)
                                       + len(optional_surface)),
                                      ("soil", 2 + len(soil_surface_fields))):
             directory = args.root / f"{role}-f{hour:02d}"
@@ -123,6 +138,12 @@ def main():
             if len(files) != expected_files:
                 raise ValueError(
                     f"{directory} has {len(files)} payloads, expected {expected_files}")
+        for name in optional_surface:
+            payload = args.root / f"atmosphere-f{hour:02d}" / f"{name}.f32le"
+            if not payload.is_file() or payload.stat().st_size != 4 * ny * nx:
+                raise ValueError(
+                    f"{payload} must carry one float32 {ny}x{nx} surface; "
+                    "another payload shape would seed the wrong PBL height")
         for name in soil_surface_fields:
             payload = args.root / f"soil-f{hour:02d}" / f"{name}.f32le"
             if not payload.is_file() or payload.stat().st_size != 4 * ny * nx:

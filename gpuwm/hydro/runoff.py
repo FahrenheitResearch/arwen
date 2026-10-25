@@ -40,7 +40,7 @@ class PreparedRunoffRouting:
     """
 
     def __init__(self, *, depth, area, catchment_to_node, node_count,
-                 period_seconds, area_units, identity, routing_period_seconds=None):
+                 period_seconds, area_units, identity, routing_period_seconds=None, routing_clock=False):
         import cupy as cp
         import numpy as np
         from gpuwm.numerics import is_strict
@@ -54,9 +54,11 @@ class PreparedRunoffRouting:
             raise ValueError("runoff area units must explicitly be m2 or km2")
         routing_period = period_seconds if routing_period_seconds is None else routing_period_seconds
         if (type(routing_period) not in (int, float) or not math.isfinite(routing_period)
-                or routing_period < period_seconds or routing_period % period_seconds):
+                or routing_period <= 0 or (not routing_clock and
+                    (routing_period < period_seconds or routing_period % period_seconds))):
             raise ValueError("runoff routing window must contain whole producer periods")
-        self._window = int(routing_period / period_seconds)
+        self._window = max(1, int(routing_period / period_seconds))
+        self.routing_clock = bool(routing_clock)
         self._steps = 0
         self.device_id = cp.cuda.runtime.getDevice()
         for name, value, dtypes in (("depth", depth, (cp.float32, cp.float64)),
@@ -104,11 +106,19 @@ class PreparedRunoffRouting:
         self._reset_args = self._args + (np.int32(1),)
         self._continue_args = self._args + (np.int32(0),)
         self._grid, self._block = ((node_count + 127) // 128,), (128,)
+        if self.routing_clock:
+            self.restart_identity['routing_clock'] = 'fractional producer volumes; fixed routing dt'
 
-    def advance(self, dt_seconds, *, stream=None):
-        if dt_seconds != self.period_seconds:
+    def advance(self, dt_seconds, *, stream=None, fraction=1.0, reset=False):
+        import numpy as np
+        if dt_seconds != self.period_seconds and not self.routing_clock:
             raise ValueError("runoff transfer interval differs from its prepared producer period")
-        args = self._reset_args if self._steps % self._window == 0 else self._continue_args
+        if self.routing_clock:
+            # Exact whole-window arithmetic is retained when no split is needed.
+            accumulate = not (reset and fraction == 1.0 and dt_seconds == self._args[-2])
+            args = self._args[:-1] + (np.int32(accumulate), np.int32(reset), np.float64(fraction))
+        else:
+            args = (self._reset_args if self._steps % self._window == 0 else self._continue_args) + (np.float64(1),)
         self.kernel(self._grid, self._block, args, stream=stream)
         self._steps += 1
 
@@ -176,6 +186,7 @@ def prepare(*, settings, options, state, physics, device_id, mode, components):
             catchment_to_node=network.arrays["catchment_to_node"], node_count=len(network.node_ids),
             period_seconds=period, area_units=options["area_units"],
             routing_period_seconds=options.get("routing_period_seconds"),
+            routing_clock=options.get("routing_clock", False),
             identity=dict(source=source.restart_identity, network=network.restart_identity,
                           area=areas.restart_identity, catchment_ids=list(source_ids),
                           depth_field=options["depth_field"], area_array=options["area_array"],

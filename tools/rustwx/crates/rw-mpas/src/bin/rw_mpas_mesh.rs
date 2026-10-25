@@ -100,7 +100,10 @@ fn usage() -> String {
         \x20                 MPAS-Limited-Area v2.2 cull for the same region: bdyMask rings\n\
         \x20                 0..7, parent-subset ordering, contiguous reindex, 0 sentinels\n\
         \x20                 on outermost-ring connectivity, and the METIS graph file.\n\
-         --region         the piece to keep, as a Shape row -- the SAME rows a spec's\n\
+         --cull-mark-parent GRID  mark the region on this file of the same mesh (its\n\
+        \x20                 binary64 coordinates) instead of the parent's own, so a binary32\n\
+        \x20                 native static is cut to the grid cut's cells and rings\n\
+         --region        the piece to keep, as a Shape row -- the SAME rows a spec's\n\
         \x20                 refinement regions use, so a new region is data, never code:\n\
         \x20                 {{\"kind\": \"polygon\", \"vertices_deg\": [[50,-129],[50,-65],...]}}\n\
         \x20                 {{\"kind\": \"cap\", \"center_deg\": [39,-98], \"radius_km\": 1200}}\n\
@@ -596,12 +599,14 @@ fn cull_region(args: &Args, parent: &str) -> Result<String, String> {
     }
 
     let provenance_grid: Option<PathBuf> = args.get("cull-provenance-grid").map(PathBuf::from);
-    let receipt = rw_mpas::mesh::cull::cull_file_with_provenance(
+    let mark_parent: Option<PathBuf> = args.get("cull-mark-parent").map(PathBuf::from);
+    let receipt = rw_mpas::mesh::cull::cull_file_marked_on(
         Path::new(parent),
         &shape,
         &out,
         graph.as_deref(),
         provenance_grid.as_deref(),
+        mark_parent.as_deref(),
     )
     .map_err(|e| e.to_string())?;
 

@@ -297,7 +297,47 @@ pub fn isobaric_heights_into(
         stencil,
         cells,
         levels,
+        0..cells,
         |level, cell, value| planes[level][cell] = value.map_or(f32::NAN, |v| v as f32),
+    )
+}
+
+/// [`isobaric_heights_into`] for the columns `first .. first + n` alone, into
+/// one slice of `n` values per target level (`planes[level][cell - first]`),
+/// so a caller can hand disjoint column blocks to its own threads.  Each
+/// column is read exactly as the whole-grid call reads it, so every value is
+/// the same bits whichever way the grid is split.  This crate stays
+/// single-threaded (the C ABI is loaded into Python); the renderer splits.
+pub fn isobaric_heights_block_into(
+    interface: &[f64],
+    per_metre: f64,
+    p_mass: &[f64],
+    stencil: &InterfaceStencil,
+    cells: usize,
+    levels: &[f64],
+    first: usize,
+    planes: &mut [&mut [f32]],
+) -> Result<(), String> {
+    let n = planes.first().map_or(0, |plane| plane.len());
+    if planes.len() != levels.len()
+        || planes.iter().any(|plane| plane.len() != n)
+        || first.checked_add(n).is_none_or(|end| end > cells)
+    {
+        return Err(format!(
+            "isobaric height block writes {} plane(s) of one length inside {cells} columns from column {first}; \
+             was given {} plane(s)",
+            levels.len(),
+            planes.len()
+        ));
+    }
+    for_each_isobaric_height(
+        &Interfaces::new(interface, per_metre),
+        p_mass,
+        stencil,
+        cells,
+        levels,
+        first..first + n,
+        |level, cell, value| planes[level][cell - first] = value.map_or(f32::NAN, |v| v as f32),
     )
 }
 
@@ -319,7 +359,7 @@ pub fn isobaric_heights_f64_into(
             out.len()
         ));
     }
-    for_each_isobaric_height(interfaces, p_mass, stencil, cells, levels, |level, cell, value| {
+    for_each_isobaric_height(interfaces, p_mass, stencil, cells, levels, 0..cells, |level, cell, value| {
         out[level * cells + cell] = value.unwrap_or(f64::NAN)
     })
 }
@@ -349,6 +389,7 @@ fn for_each_isobaric_height(
     stencil: &InterfaceStencil,
     cells: usize,
     levels: &[f64],
+    columns: std::ops::Range<usize>,
     mut write: impl FnMut(usize, usize, Option<f64>),
 ) -> Result<(), String> {
     let nz = check_columns(interfaces, p_mass, stencil, cells)?;
@@ -357,7 +398,7 @@ fn for_each_isobaric_height(
     }
     let targets: Vec<f64> = levels.iter().map(|level| ln(*level)).collect();
     let mut ln_p = vec![0.0f64; nz + 1];
-    for cell in 0..cells {
+    for cell in columns {
         let usable = stencil.interface_ln_pressures(|k| p_mass[k * cells + cell], &mut ln_p);
         for (level, &target) in targets.iter().enumerate() {
             let value = if usable {
@@ -639,5 +680,48 @@ mod tests {
         assert!(InterfaceStencil::from_interfaces(&[1.0, 0.0]).is_err());
         assert!(InterfaceStencil::new(&[0.75, 0.75], &[1.0, 0.5, 0.0]).is_err());
         assert!(isobaric_heights_from_interfaces(&[0.0, 1.0, 2.0], 0.0, &[600.0, 500.0], &stencil, 1, &[550.0]).is_err());
+    }
+
+    /// Column blocks, however the grid is split, write the same bits as one
+    /// pass over every column (the renderer reads blocks on many threads),
+    /// and a block that does not fit inside the grid is refused.
+    #[test]
+    fn column_blocks_are_the_whole_grid_bit_for_bit() {
+        let surfaces = [101_000.0, 84_000.0, 70_500.0, 99_000.0, 92_000.0, 101_500.0, 76_000.0];
+        let built: Vec<_> = surfaces
+            .iter()
+            .enumerate()
+            .map(|(i, &surface)| isothermal_column(surface, 2_000.0, 40, 7_000.0 + 100.0 * i as f64))
+            .collect();
+        let (levels, cells) = (40, surfaces.len());
+        let mut z = Vec::new();
+        let mut p = Vec::new();
+        for k in 0..=levels {
+            z.extend(built.iter().map(|column| column.0[k]));
+        }
+        for k in 0..levels {
+            p.extend(built.iter().map(|column| column.1[k]));
+        }
+        let stencil = InterfaceStencil::new(&built[0].2, &built[0].3).unwrap();
+        let targets = [100_000.0, 85_000.0, 70_000.0, 50_000.0, 25_000.0];
+        let whole = isobaric_heights_from_interfaces(&z, 1.0, &p, &stencil, cells, &targets).unwrap();
+        for block in 1..=cells {
+            let mut planes = vec![vec![0.0f32; cells]; targets.len()];
+            let mut first = 0;
+            while first < cells {
+                let n = block.min(cells - first);
+                let mut slices: Vec<&mut [f32]> =
+                    planes.iter_mut().map(|plane| &mut plane[first..first + n]).collect();
+                isobaric_heights_block_into(&z, 1.0, &p, &stencil, cells, &targets, first, &mut slices)
+                    .unwrap();
+                first += n;
+            }
+            for (a, b) in planes.iter().flatten().zip(whole.iter().flatten()) {
+                assert_eq!(a.to_bits(), b.to_bits(), "blocks of {block}");
+            }
+        }
+        let mut short = vec![0.0f32; 2];
+        let mut slices: Vec<&mut [f32]> = vec![&mut short[..]];
+        assert!(isobaric_heights_block_into(&z, 1.0, &p, &stencil, cells, &[50_000.0], cells - 1, &mut slices).is_err());
     }
 }

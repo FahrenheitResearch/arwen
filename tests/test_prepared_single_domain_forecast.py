@@ -392,7 +392,10 @@ def test_prepared_runner_capability_query_is_side_effect_free_without_run_args(
         # lane/cap-gefs-archive (6a3b8fd50bf): the indexed GEFS retrospectives.
         "gefs-reforecast", "gefs-reforecast-weekly", "gefs-v11", "gefs-v11-flat",
         "gem-gdps", "gfs", "hex-global", "hrrr", "hrrr-native", "hrrr-prs", "icon-d2", "icon-eu",
-        "icon-global", "mapped", "rap", "rap-native", "rrfs"} | model_table_rows)
+        "icon-global", "mapped", "rap", "rap-native", "rrfs",
+        # 2.9.7: IFS HRES open data at 0.1 degree (E-SRC) and the RRFS
+        # ensemble member with its deterministic companion (S9).
+        "ecmwf-open-data-0p1", "rrfs-ens"} | model_table_rows)
     assert payload["physics_profile_ids"] == list(runner.PHYSICS_PROFILES)
     assert payload["report_schema"] == runner.REPORT_SCHEMA
     assert payload["window"]["limit_policy"] \

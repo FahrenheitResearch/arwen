@@ -165,6 +165,17 @@ _PER_COLUMN_STRIDE_NAMES = frozenset((
 #: the no-``DomainState`` path used by the standalone harnesses, and the
 #: 256-byte validity words, built once per process.
 _PHYSICS_ALLOCATION_INVENTORY = {
+    # HRRR output windows use declared persistent scratch only.
+    'gpuwm/core/climate_diagnostics.py': {},
+    'gpuwm/core/output_diagnostics.py': {},
+    # Streamed history finalization owns one replacement LTG3 plane,
+    # 4*ny*nx bytes, beside the assembled history planes.
+    'gpuwm/core/gsd_diagnostics.py': {'finalize_history_fields': 1},
+    # Initial GSD radar: one float32, float64 and bool column arena.
+    # 87*(nz+1)*tile_threads bytes; bounded by SMs, once per initial frame,
+    # priced by preflight.gsd_initial_reflectivity_workspace_bytes and
+    # checked against the launcher's sizing in test_gsd_initial_reflectivity.
+    'gpuwm/core/gsd_initial_reflectivity.py': {'launch': 3},
     "gpuwm/core/lin.py": {},  # Persistent DomainState scratch, no raw allocation sites.
     # Integer-define launchers are part of the same kernel family. Chem
     # vertical mixing and IEVA draw only declared caller/state buffers;
@@ -515,8 +526,15 @@ _PHYSICS_ALLOCATION_INVENTORY = {
     # gf_workspace_floats(nz, tile) * 4 bytes, priced by
     # preflight.gf_column_workspace_bytes.  Bound: at most 132 B per cell
     # plus 108 B per column, freed when the call returns.
+    # With a per-column active mask (driver gf_active_column, lane/gf-column-mask
+    # 2b923cb282) the packed inputs and outputs above hold only the n launched
+    # columns, and three more transients scatter them back to every column:
+    # full_lev (ncol, 16, nz) and full_sca (ncol, 9) float32, full_isc (ncol, 6)
+    # int32, zero where the scheme does not run.  Masked bound: at most 132 B
+    # per launched cell plus 108 B per launched column, plus 64 B per cell and
+    # 60 B per column, freed when the call returns; the unmasked call is unchanged.
     'gpuwm/core/gf.py': {
-        '__call__': 9,
+        '__call__': 12,
     },
     'gpuwm/core/health.py': {},
     # ``w0avg`` moved out of ``update_trigger_history`` and into

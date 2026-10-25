@@ -58,6 +58,13 @@ def test_unnamed_namelist_keeps_the_global_default(tmp_path):
     # The pin also predates the capabilities campaign's three import lines.
     from capability_campaign_import import without_campaign_import_lines
     historical = without_campaign_import_lines(historical)
+    # ... and the HRRR v4 climate statistics this namelist turns on
+    # (output_diagnostics = 1), imported since lane/hrrr-v4-clwrf ported them
+    # (3aec2abd31; the pinned importer dropped them as not ported).
+    climate = ("output_diagnostics = 1\n", "diag_int = 15\n", "wind_int = 5\n")
+    assert all(historical.count(line) == 1 for line in climate)
+    historical = "".join(line for line in historical.splitlines(keepends=True)
+                         if line not in climate)
     # The namelist omits &dynamics top_lid: the pinned importer resolved the
     # rigid lid, this one reads WRF's open top (2026-10-12).  That one line
     # put back, the pinned hash holds.

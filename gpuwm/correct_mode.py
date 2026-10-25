@@ -53,6 +53,15 @@ WB5  WSM6 sedimentation books the below-ground part of the straddling cell
      nislfv_rain_plm) and the same defect (up to 0.0082 kg m-2 per call on
      the same columns); from 2.9.1 their keys are WB5's third to fifth.
 
+HN1  A hydrometeor mass handed from one model to another (prep from a
+     hex or other parent, ``gpuwm downscale``, a specified ring) arrives
+     with number concentration 0, which a two-moment scheme sizes at its
+     slope limit (Morrison: 2.8 mm rain; empty first maps, NaN reflectivity,
+     40-55 dBZ edge strips).  Correct mode diagnoses the number from the mass
+     with the child scheme's relations and forces a ring number back with
+     its mass (gpuwm/ingest/handover_numbers.py).  Exact mode keeps
+     real.exe's zeros and WRF's tendency-only scalar ring.
+
 WHICH SCHEMES CARRY EACH FINDING is data too (:attr:`Correction.carriers`),
 separate from which schemes a key corrects (:data:`KEY_SCOPE`).  A domain
 whose schemes carry a finding that no key in scope corrects is listed as
@@ -147,6 +156,19 @@ CORRECTIONS: tuple[Correction, ...] = (
         # with its own profile already: neither carries it.
         carriers=(("mp_physics", (3, 4, 6, 16, 24)),),
     ),
+    Correction(
+        finding="HN1",
+        keys=("hydrometeor_handover_numbers",),
+        summary=(
+            "Hydrometeor number handed over with its mass: a number at zero "
+            "(or, for Morrison, far under its limiter) beside a handed-over "
+            "mass is diagnosed from the mass with the child scheme's "
+            "relations, and a specified ring forces the number back with "
+            "its mass"),
+        # Thompson (8, 28): the ring force-back and the downscale closure;
+        # Morrison (10): the prep, downscale and ring closure.
+        carriers=(("mp_physics", (8, 10, 28)),),
+    ),
 )
 
 #: Key -> ``(selector, values)``: the scheme selection under which the key is
@@ -163,6 +185,8 @@ KEY_SCOPE: Mapping[str, tuple[str, tuple[int, ...]]] = {
     # Classic (8) and aerosol-aware (28) Thompson run the same cloud fallout
     # and both drop the flux out of the lowest level.
     "thompson_cloud_surface_booking": ("mp_physics", (8, 28)),
+    # HN1: the schemes whose number moments the handover closure writes.
+    "hydrometeor_handover_numbers": ("mp_physics", (8, 10, 28)),
 }
 
 

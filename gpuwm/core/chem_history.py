@@ -15,6 +15,9 @@ would have left in place at that time, without paying for them every step.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
+
 import numpy as np
 
 __all__ = ["history_fields", "history_schema", "dz8w"]
@@ -117,7 +120,11 @@ def history_fields(state) -> dict:
         return _history_fields(state)
 
 
-def _history_fields(state) -> dict:
+def _history_fields(state, compute: bool = True) -> dict:
+    """``compute=False`` names the current buffers without evaluating them:
+    no process ``prepare_history`` and no diagnostic program runs, and a
+    diagnostic takes its previously streamed buffer (one that has none yet is
+    evaluated, so the first call still allocates and fills it)."""
     chem = state.chem
     out: dict = {}
     for row in (*chem.transported, *chem.prescribed):
@@ -135,7 +142,7 @@ def _history_fields(state) -> dict:
         from gpuwm.core.chem_context import chem_processes
         processes = chem_processes(chem.table) if chem.table.processes else []
     for _key, module in processes:
-        prepare = getattr(module, "prepare_history", None)
+        prepare = getattr(module, "prepare_history", None) if compute else None
         if prepare is not None:
             prepare(state)
         for name, attr, index, alloc, description, _nrows in _process_output_rows(
@@ -153,14 +160,18 @@ def _history_fields(state) -> dict:
 
         thickness = None
         nz, ny, nx = state.alt.shape
+        saved = getattr(chem, 'streamed_history', None) or {}
         for diag in diagnostics:
+            held = None if compute else saved.get(diag.output_name)
+            if held is not None:
+                out[diag.output_name] = (held, diag.description, diag.units)
+                continue
             program = compile_diagnostic(diag, chem.table)
             if program is None:
                 continue
             if program.kind == "column_integral" and thickness is None:
                 thickness = cp.ascontiguousarray(dz8w(state))
             shape = (nz, ny, nx) if program.kind == "term_sum_3d" else (ny, nx)
-            saved = getattr(chem, 'streamed_history', {})
             array = saved.get(diag.output_name)
             if array is None:
                 array = cp.empty(shape, dtype=cp.float32)
@@ -177,5 +188,49 @@ def streaming_fields(state):
     if chem is None:
         return {}
     fields = history_fields(state)
+    chem.streamed_history = {name: entry[0] for name, entry in fields.items()}
+    return chem.streamed_history
+
+
+_POINTERS_ONLY = contextvars.ContextVar("chem_history_pointers_only", default=False)
+
+
+@contextlib.contextmanager
+def pointer_inventory():
+    """Inventory reads inside this block name the chem history buffers
+    (:func:`streaming_members`) instead of evaluating them
+    (:func:`streaming_fields`).  For a caller that re-reads an inventory only
+    to pick up rebound pointers, never to publish its values."""
+    token = _POINTERS_ONLY.set(True)
+    try:
+        yield
+    finally:
+        _POINTERS_ONLY.reset(token)
+
+
+def pointers_only() -> bool:
+    return _POINTERS_ONLY.get()
+
+
+def streaming_members(state):
+    """:func:`streaming_fields`' buffers by name, WITHOUT evaluating them.
+
+    ``tilestream.multigpu`` re-reads every rank's carrier inventory after
+    each step (``refresh_rank``) to pick up rebound pointers for the seam
+    exchange.  Evaluating the history fields there ran the all-cell GOCART
+    optics, every chem diagnostic program and a device sync on every rank
+    every step: HRRR-Smoke on two desktop ranks stepped in 0.30 s against
+    0.079 s smoke off, and ~10x on full-CONUS 8 x RTX 5090 (V61,
+    2026-10-21).  Frames, drains and the resident inventory still evaluate
+    (:func:`streaming_fields`); only the pointer refresh reads names.  A
+    state that has never streamed its fields evaluates them once here.
+    """
+    chem = getattr(state, 'chem', None)
+    if chem is None:
+        return {}
+    if getattr(chem, 'streamed_history', None) is None:
+        return streaming_fields(state)
+    with _state_card(state):
+        fields = _history_fields(state, compute=False)
     chem.streamed_history = {name: entry[0] for name, entry in fields.items()}
     return chem.streamed_history

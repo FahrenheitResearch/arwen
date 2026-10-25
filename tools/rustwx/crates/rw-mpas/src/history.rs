@@ -221,6 +221,31 @@ pub struct MpasFrame {
     /// fields came from.  `None` for every history that carries its own
     /// centres, which are read exactly as before.
     pub split: Option<SplitSources>,
+    /// Set only for a history that carries its own centres AND lacked a
+    /// mapped field that its `diag` stream file of the same time carried:
+    /// that file and the WRF names read from it.  `None` whenever the
+    /// history alone answered every field, so such a frame converts to the
+    /// same bytes as before.
+    pub companion_diag: Option<DiagCompanion>,
+}
+
+/// The `diag` stream file a history that carries its own cell centres was
+/// completed from.
+///
+/// THE BREAKAGE THIS PREVENTS (case study 2025-05-19, config H2, 2026-10-24):
+/// MPAS-A's own `output` stream, which the hex MPAS-physics route writes as
+/// `history.*.nc`, carries `latCell`/`lonCell` but no reflectivity; MPAS writes
+/// `refl10cm_max` (and its 2 m, 10 m and precipitation diagnostics) to the
+/// `diagnostics` stream, `diag.*.nc`.  The converter read the diag file only
+/// for a split-stream history, so every export, column store and map of that
+/// route had no model reflectivity (the case sheets' H2 radar panels were
+/// empty and its reflectivity scores read 0).
+#[derive(Debug, Clone)]
+pub struct DiagCompanion {
+    pub path: PathBuf,
+    pub sha256: Option<String>,
+    /// WRF names whose values came from the diag file.
+    pub fields: Vec<String>,
 }
 
 /// Where a split-stream frame's cell centres and diag fields were read from.
@@ -338,8 +363,30 @@ pub struct InitFields {
     pub absent: Vec<String>,
 }
 
+/// Invariant fields a history may omit, read from the run's init only when the
+/// history does not carry them (WRF name, MPAS name).
+///
+/// THE BREAKAGE THIS PREVENTS (gpuwm-hex F-PG4 and F-MPAS-PRODUCTS,
+/// 2026-10-24): MPAS-A's own `output` stream writes no `ter`, and the hex
+/// MPAS-physics route writes exactly that stream, so every lat-lon frame from
+/// it had no `HGT`.  The renderer's wrfout import then dropped everything that
+/// needs the ground: MSLP ("mslp unavailable: HGT"), and with it the 2 m
+/// temperature and dewpoint maps that contour it, SBCAPE/MUCAPE, the 0 C
+/// height, IVT and simulated IR (column planes "read terrain"), precipitation
+/// type (height above ground); `gpuwm prep --source hex-global` refused the
+/// export (`terrain_height`) and no column store was written.  The init the
+/// converter already reads for PHB holds the terrain that run integrated on.
+/// A history that carries `ter` (the ArWen-physics route's) keeps its own
+/// words, so its frames are unchanged.
+pub const INIT_FALLBACK_FIELDS: &[(&str, &str)] = &[("HGT", "ter")];
+
+fn is_init_fallback(wrf_name: &str) -> bool {
+    INIT_FALLBACK_FIELDS.iter().any(|(wrf, _)| *wrf == wrf_name)
+}
+
 /// Hash `path` (refusing a mismatch against `init_sha256`) and read every
-/// init-sourced field of the field map from it.
+/// init-sourced field of the field map from it, plus the
+/// [`INIT_FALLBACK_FIELDS`] it carries.
 pub fn read_init_fields(path: &Path, init_sha256: Option<&str>) -> MpasResult<InitFields> {
     // The digest and the field reads are independent passes over the same
     // file: run them side by side, then refuse a digest mismatch first, as
@@ -356,6 +403,7 @@ pub fn read_init_fields(path: &Path, init_sha256: Option<&str>) -> MpasResult<In
                 .iter()
                 .filter(|mapping| mapping.source == FieldSource::Init)
                 .filter_map(|mapping| mapping.mpas_name.map(|name| (mapping.wrf_name, name)))
+                .chain(INIT_FALLBACK_FIELDS.iter().copied())
                 .collect();
             let names: Vec<&str> = wanted.iter().map(|(_, name)| *name).collect();
             let read = read_cell_fields_parallel(&init, &names, n_cells);
@@ -366,6 +414,8 @@ pub fn read_init_fields(path: &Path, init_sha256: Option<&str>) -> MpasResult<In
                     Some(value) => {
                         fields.insert(wrf_name.to_string(), value);
                     }
+                    // A fallback the init lacks is the history's to report.
+                    None if is_init_fallback(wrf_name) => {}
                     None => absent.push(wrf_name.to_string()),
                 }
             }
@@ -490,29 +540,9 @@ fn open_split_sources(
     }
     let mut diag_path = None;
     let mut diag_sha256 = None;
-    match diag_companion(history_path).filter(|p| p.is_file()) {
-        Some(path) => {
-            let opened = netcrust::File::open(&path)?;
-            let diag_cells = opened.dimension("nCells").map(|d| d.len());
-            if diag_cells != Some(n_cells) {
-                return Err(MpasError::Refusal(format!(
-                    "diag {} has {diag_cells:?} cells and its history {n_cells}; it is \
-                     not this run's diag stream",
-                    path.display()
-                )));
-            }
-            if let Some(levels) = opened.dimension("nVertLevels").map(|d| d.len()) {
-                if levels != n_levels {
-                    return Err(MpasError::Refusal(format!(
-                        "diag {} has {levels} levels and its history {n_levels}; it is \
-                         not this run's diag stream",
-                        path.display()
-                    )));
-                }
-            }
-            if hash_diag {
-                diag_sha256 = Some(crate::sha256_file(&path)?);
-            }
+    match open_diag_companion(history_path, n_cells, n_levels, hash_diag)? {
+        Some((path, sha256, opened)) => {
+            diag_sha256 = sha256;
             diag_path = Some(path);
             diag = Some(opened);
         }
@@ -533,6 +563,48 @@ fn open_split_sources(
         },
         diag,
     ))
+}
+
+/// The `diag` stream file beside `history_path` ([`diag_companion`]), opened
+/// and checked to be this run's (same cell count, same level count when it
+/// carries levels), with its digest when `hash` is set; `None` when there is
+/// no such file.  A diag file of another mesh is refused, not skipped: its
+/// values would land on the wrong cells.
+fn open_diag_companion(
+    history_path: &Path,
+    n_cells: usize,
+    n_levels: usize,
+    hash: bool,
+) -> MpasResult<Option<(PathBuf, Option<String>, netcrust::File)>> {
+    let Some(path) = diag_companion(history_path).filter(|p| p.is_file()) else {
+        return Ok(None);
+    };
+    let opened = netcrust::File::open(&path)?;
+    let diag_cells = opened.dimension("nCells").map(|d| d.len());
+    if diag_cells != Some(n_cells) {
+        return Err(MpasError::Refusal(format!(
+            "diag {} has {diag_cells:?} cells and its history {n_cells}; it is \
+             not this run's diag stream",
+            path.display()
+        )));
+    }
+    if let Some(levels) = opened.dimension("nVertLevels").map(|d| d.len()) {
+        if levels != n_levels {
+            return Err(MpasError::Refusal(format!(
+                "diag {} has {levels} levels and its history {n_levels}; it is \
+                 not this run's diag stream",
+                path.display()
+            )));
+        }
+    }
+    let sha256 = if hash { Some(crate::sha256_file(&path)?) } else { None };
+    Ok(Some((path, sha256, opened)))
+}
+
+/// Whether a mapped field is carried by `file` under either spelling.
+fn carries_mapped(file: &netcrust::File, wrf_name: &str, mpas_name: &str) -> bool {
+    file.variable(mpas_name).is_some()
+        || native_history_name(wrf_name).is_some_and(|name| file.variable(name).is_some())
 }
 
 /// [`read_history_with_init`] that also reads a split-stream history: one
@@ -661,6 +733,28 @@ fn read_history_body(
             diag = opened;
         }
     }
+    // A history with its own centres that lacks a requested mapped field is
+    // completed from its diag stream file of the same time (MPAS-A writes
+    // refl10cm_max there, not in `output`); see [`DiagCompanion`].  Opened only
+    // when a field is missing, so a complete history reads exactly as before.
+    let mut companion: Option<DiagCompanion> = None;
+    if own_centres.is_some() {
+        let lacks_a_field = FIELD_MAP.iter().any(|mapping| {
+            mapping.source == FieldSource::History
+                && field_set_allows(field_set, mapping)
+                && mapping
+                    .mpas_name
+                    .is_some_and(|mpas| !carries_mapped(&file, mapping.wrf_name, mpas))
+        });
+        if lacks_a_field {
+            if let Some((path, sha256, opened)) =
+                open_diag_companion(history_path, n_cells, n_levels, true)?
+            {
+                companion = Some(DiagCompanion { path, sha256, fields: Vec::new() });
+                diag = Some(opened);
+            }
+        }
+    }
     // Which file carries each mapped field is a header question; the reads
     // themselves run one task per field, and their results are taken in
     // FIELD_MAP order, so `fields`, `absent` and the split receipt are what
@@ -688,8 +782,9 @@ fn read_history_body(
             continue;
         }
         // A split-stream run writes this field to its diag stream, under the
-        // same Registry names.
-        if let (Some(diag), Some(_)) = (diag.as_ref(), split.as_ref()) {
+        // same Registry names; so does MPAS-A for the fields its `output`
+        // stream leaves out (the companion opened above).
+        if let Some(diag) = diag.as_ref() {
             let name = native_history_name(mapping.wrf_name)
                 .filter(|name| diag.variable(name).is_some())
                 .unwrap_or(mpas_name);
@@ -721,6 +816,8 @@ fn read_history_body(
                 fields.insert(wrf_name.to_string(), value);
                 if let Some(split) = split.as_mut() {
                     split.diag_fields.push(wrf_name.to_string());
+                } else if let Some(companion) = companion.as_mut() {
+                    companion.fields.push(wrf_name.to_string());
                 }
             }
             (_, Some(value)) => {
@@ -743,9 +840,19 @@ fn read_history_body(
                 )));
             }
             for (name, value) in &init.fields {
-                if requested(name) {
-                    fields.insert(name.clone(), value.clone());
+                if !requested(name) {
+                    continue;
                 }
+                // An invariant the history omitted comes from the init; one it
+                // carries keeps the history's words.
+                if is_init_fallback(name) {
+                    if !fields.contains_key(name) {
+                        fields.insert(name.clone(), value.clone());
+                        absent.retain(|missing| missing != name);
+                    }
+                    continue;
+                }
+                fields.insert(name.clone(), value.clone());
             }
             absent.extend(init.absent.iter().filter(|name| requested(name)).cloned());
             init_resolved = Some(init.path.clone());
@@ -809,6 +916,7 @@ fn read_history_body(
         absent,
         science_attributes,
         split,
+        companion_diag: companion.filter(|c| !c.fields.is_empty()),
     })
 }
 
@@ -971,6 +1079,8 @@ pub fn read_history_cells_on_mesh(
         .find(|name| file.variable(name).is_none());
     let deg = 180.0 / std::f64::consts::PI;
     let mut split: Option<SplitSources> = None;
+    let mut companion: Option<Option<(PathBuf, netcrust::File)>> = None;
+    let mut companion_fields: Vec<String> = Vec::new();
     let (latitude_degrees, longitude_degrees): (Vec<f64>, Vec<f64>) = match (missing_centre, mesh) {
         (None, _) => {
             let centre = |name: &str| -> MpasResult<Vec<f64>> {
@@ -986,13 +1096,33 @@ pub fn read_history_cells_on_mesh(
                 // Registry spelling (`uReconstructZonal`, `t2m`, as current hex
                 // output does) used to leave the field absent, and a sounding
                 // then refused ("carries no U").
-                let value = match read_cell_field_at(&file, mpas_name, mesh_cells, cells)? {
+                let mut value = match read_cell_field_at(&file, mpas_name, mesh_cells, cells)? {
                     Some(value) => Some(value),
                     None => match native_history_name(wrf_name) {
                         Some(native) => read_cell_field_at(&file, native, mesh_cells, cells)?,
                         None => None,
                     },
                 };
+                // A field MPAS-A's `output` stream leaves out comes from its
+                // diag stream file of the same time ([`DiagCompanion`]), as the
+                // converter reads it; opened only once a wanted field is missing.
+                if value.is_none() {
+                    if companion.is_none() {
+                        companion = Some(
+                            open_diag_companion(history_path, mesh_cells, n_levels, false)?
+                                .map(|(path, _, opened)| (path, opened)),
+                        );
+                    }
+                    if let Some(Some((_, diag))) = companion.as_ref() {
+                        let name = native_history_name(wrf_name)
+                            .filter(|native| diag.variable(native).is_some())
+                            .unwrap_or(mpas_name);
+                        value = read_cell_field_at(diag, name, mesh_cells, cells)?;
+                        if value.is_some() {
+                            companion_fields.push(wrf_name.to_string());
+                        }
+                    }
+                }
                 match value {
                     Some(value) => {
                         fields.insert(wrf_name.to_string(), value);
@@ -1074,6 +1204,17 @@ pub fn read_history_cells_on_mesh(
                     None => absent.push(wrf_name.to_string()),
                 }
             }
+            // The same invariants the frame path completes from the init
+            // ([`INIT_FALLBACK_FIELDS`]), for a wanted one the history omitted.
+            for (wrf_name, mpas_name) in INIT_FALLBACK_FIELDS.iter().copied() {
+                if !wanted.contains(&wrf_name) || fields.contains_key(wrf_name) {
+                    continue;
+                }
+                if let Some(value) = read_cell_field_at(&init, mpas_name, mesh_cells, cells)? {
+                    fields.insert(wrf_name.to_string(), value);
+                    absent.retain(|missing| missing != wrf_name);
+                }
+            }
             init_resolved = Some(path.to_path_buf());
         }
         None => absent.extend(wanted_from(FieldSource::Init).map(|(w, _)| w.to_string())),
@@ -1111,6 +1252,12 @@ pub fn read_history_cells_on_mesh(
         absent,
         science_attributes,
         split,
+        companion_diag: match (companion, companion_fields.is_empty()) {
+            (Some(Some((path, _))), false) => {
+                Some(DiagCompanion { path, sha256: None, fields: companion_fields })
+            }
+            _ => None,
+        },
     })
 }
 

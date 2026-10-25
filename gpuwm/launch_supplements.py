@@ -61,8 +61,8 @@ def hrrr_source_manifest(values, *, source_root, fetched_manifest, output):
     # partial checksum prefix. Wait for its writer, then detach this run's
     # binding before the next writer starts. Never hold this lock through
     # decoding: independent member preparations must remain parallel.
-    from gpuwm.fetch_guard import hold
-    with hold("fetch-out", source_root):
+    from gpuwm.fetch_guard import DirectoryProgress, hold
+    with hold("fetch-out", source_root, holder_progress=DirectoryProgress(source_root)):
         entries = _parse_manifest(fetched_manifest)
     for _, path in supplement_bindings(values):
         relative = path.relative_to(Path(source_root).resolve()).as_posix()

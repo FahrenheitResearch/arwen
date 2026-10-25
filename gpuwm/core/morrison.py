@@ -333,7 +333,7 @@ def apply(state: DomainState, cfg: RunConfig, dt: float, *,
                     qicuten=(None if cu_rates is None else
                               cu_rates["rqicuten"]),
                     morr_rimed_ice=cfg.morr_rimed_ice,
-                    columns_per_call=work_chunk_columns(ny * nx),
+                    columns_per_call=work_chunk_columns(ny * nx, nz),
                     t1d_out=t1d,
                     _work_scratch=work, _ltrue_scratch=ltrue)
     if refl_10cm_due:

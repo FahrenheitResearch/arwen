@@ -201,6 +201,14 @@ def probe(row):
         # footprint (gpuwm.hydro.acquire); only an unresolvable root is a gap.
         if resolved is None or (not resolved.is_dir() and not need.get("acquire")):
             reasons.append(f"{need['label']} not available (set {need['env']})")
+    # Python decoders a row's acquisition needs that a bare install does not
+    # carry (an explicit extra). Checked here, before anything is fetched, so a
+    # missing decoder rejects the row instead of failing after its download.
+    for module in row.get("python_modules", ()):
+        import importlib.util
+        if importlib.util.find_spec(module["module"]) is None:
+            reasons.append(f"{module['module']} ({module['licence']}) is not installed: "
+                           f"pip install 'gpuwm[{module['extra']}]'")
     if row.get("preparation"):
         from .provider import recipe_path
         for name in ("parameters", "hydrofabric", "reservoirs", "initial_state"):
@@ -235,16 +243,35 @@ def _realization_reasons(row, parent_lsm=None, adaptive_clock=False):
         return [f"no admitted coupled realization: {row.get('realization_gap', 'none named')}"]
     from .config import resolve_configuration
     try:
-        selected = resolve_configuration(name)
+        resolve_configuration(name)
     except ValueError as error:
         return [str(error)]
-    exchange = selected.as_dict().get("parent_exchange", {})
-    if adaptive_clock and exchange and exchange.get("cadence") != "routing":
-        # gpuwm.hydro.driver.allow_variable_interval would refuse it at attach,
-        # after the forecast had started; name the gap here instead.
-        return [f"realization {name} needs a fixed parent LSM interval and this parent clock is "
-                "adaptive (use_adaptive_time_step); owner astra-c-hydro-coupling"]
     return []
+
+
+def _coupling_reasons(row, geometry):
+    """Reject invalid clocks before even an availability probe can fetch tools.
+
+    Divisibility is not a constraint: the prepared provider conservatively
+    splits producer volumes onto a fixed routing clock, including the tail.
+    """
+    reasons = []
+    for key in ('interval_seconds', 'duration_seconds'):
+        value = geometry.get(key)
+        if key in geometry and (type(value) not in (int, float) or
+                                 not math.isfinite(value) or value <= 0):
+            reasons.append(f'coupling_interval_invalid: {key} must be finite and positive; '
+                           'nonpositive/nonfinite clocks cannot advance runoff or publish history')
+    policy = row.get('preparation')
+    if policy:
+        value = policy.get('routing_interval_seconds')
+        if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+            reasons.append('coupling_routing_interval_invalid: routing_interval_seconds must be '
+                           'finite and positive; routing cannot advance with an invalid dt')
+        elif 3600 % value:
+            reasons.append('coupling_spinup_interval_unsupported: hourly initial-water replay needs '
+                           'whole fixed routing substeps within each hour')
+    return reasons
 
 
 def evaluate(row, geometry, *, probe_row=None):
@@ -263,7 +290,9 @@ def evaluate(row, geometry, *, probe_row=None):
         reasons.append(f"data licence {licence['status']} ({licence['name']}): {licence['reason']}")
     reasons.extend(_realization_reasons(row, geometry["parent_lsm"],
                                         geometry.get("adaptive_clock", False)))
-    if fraction > 0.0:
+    clock_reasons = _coupling_reasons(row, geometry)
+    reasons.extend(clock_reasons)
+    if fraction > 0.0 and not clock_reasons:
         try:
             reasons.extend(probe_row(row))
         except Exception as error:  # noqa: BLE001 - a failing probe is a named gap
@@ -285,12 +314,12 @@ def _summary(geometry):
         return None
     keys = ("south", "north", "west", "east", "crosses_dateline", "parent_lsm", "grid_key",
             "nx", "ny", "dx_m", "parent_grid_contract",
-            "time_origin", "duration_seconds", "interval_seconds")
+            "time_origin", "duration_seconds", "interval_seconds", "adaptive_clock")
     return {key: geometry[key] for key in keys if key in geometry}
 
 
 def decide(*, settings, requested, config_path=None, table=None, geometry=None,
-           probe_row=None, geometry_reader=None):
+           probe_row=None, geometry_reader=None, excluded_providers=()):
     """Return the door decision for one forecast; never touches a GPU.
 
     ``requested`` is the CLI value: None (default), "" (bare ``--hydro``),
@@ -329,6 +358,10 @@ def decide(*, settings, requested, config_path=None, table=None, geometry=None,
                           "gap": "no experiment configuration, so no parent grid to cover"}]}
     base["footprint"] = _summary(geometry)
     candidates = [evaluate(row, geometry, probe_row=probe_row) for row in providers["providers"]]
+    for candidate in candidates:
+        if candidate['id'] in excluded_providers:
+            candidate['reasons'].append('preparation failed earlier in this launch')
+            candidate['verdict'] = 'rejected'
     base["candidates"] = candidates
     allowed = providers["coupled_parent_lsm"]
     if geometry["parent_lsm"] not in allowed["values"]:
@@ -347,6 +380,7 @@ def decide(*, settings, requested, config_path=None, table=None, geometry=None,
     return {**base, "enabled": True, "reason": "fabric_covered", "provider": row["id"],
             "provider_kind": row["kind"], "realization": chosen["realization"],
             "manifest_binding": row.get("manifest_binding", "fabric_manifest"),
+            "coverage_scope": row.get('coverage_scope', 'whole parent domain'),
             "attribution": row["data_licence"].get("attribution"), "gaps": [],
             "_row": row}
 
@@ -410,6 +444,66 @@ def _build_lock(path):
             msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
 
 
+def source_footprint(row, footprint):
+    """Limit native source work to its coverage; retain the parent-grid contract."""
+    if row.get("coverage_policy") != "source-land":
+        return footprint
+    coverage = row["coverage"]
+    if len(coverage) != 1:
+        raise RuntimeError(f"{row['id']} source-land coverage requires one contiguous box")
+    bounds = coverage[0]
+    clipped = dict(footprint)
+    for key, limit, operation in zip(
+            ("west", "south", "east", "north"), bounds,
+            (max, max, min, min)):
+        clipped[key] = operation(footprint[key], limit)
+    if clipped["west"] >= clipped["east"] or clipped["south"] >= clipped["north"]:
+        raise RuntimeError(f"{row['id']} has no source coverage in the parent domain")
+    return clipped
+
+
+def _build_location(root, request):
+    """Reuse a complete matching build; preserve incomplete attempts on retry.
+
+    A failed initial-water fetch can leave a valid fabric and parameter output.
+    Running their non-overwriting producers into that directory again refuses
+    every subsequent forecast, so retries select a fresh owned sibling.
+    """
+    attempt = 0
+    while True:
+        candidate = root if not attempt else root.with_name(f"{root.name}-retry-{attempt:04d}")
+        try:
+            if json.loads((candidate / "door-request.json").read_text()) == request:
+                manifest = Path(json.loads((candidate / "door-prepared.json").read_text())["manifest"])
+                if manifest.is_file() and manifest.resolve().is_relative_to(candidate.resolve()):
+                    return candidate, manifest
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        if not candidate.exists() or (candidate.is_dir() and not any(candidate.iterdir())):
+            return candidate, None
+        attempt += 1
+
+
+def preparation_request(row, footprint):
+    """The cache identity and inputs, resolved without acquiring or building."""
+    paths, acquirers = {}, []
+    for need in row["builder"].get("paths", ()):
+        if "argument" in need:
+            resolved = _builder_path(need)
+            if resolved is not None and need.get("acquire"):
+                acquirers.append((need, resolved))
+            elif resolved is None or not resolved.is_dir():
+                raise RuntimeError(f"{need['label']} not available (set {need['env']})")
+            paths[need["argument"]] = str(resolved)
+    request = {"preparation": row.get("preparation"), "provider": row["id"], "footprint": footprint,
+               "builder": row["builder"], "data_licence": row["data_licence"],
+               "paths": paths}
+    if row.get("preparation"):
+        from .provider import preparation_identity
+        request["source_recipe"] = preparation_identity(row)
+    return request, acquirers
+
+
 def materialize(decision, *, config_path, runner=subprocess.run, prepare=None):
     """Build (or reuse) the covering fabric, one builder per provider at a time.
 
@@ -431,33 +525,27 @@ def _materialize(decision, *, config_path, runner=subprocess.run, prepare=None):
     """
     row = decision["_row"]
     footprint = decision["footprint"]
+    source_domain = source_footprint(row, footprint)
+    from .retention import reference, reclaim
     started = time.perf_counter()
     build = {"provider": row["id"], "kind": row["kind"]}
     if row["kind"] == "prepared":
         manifest = _expand(row["manifest"])
         out = cache_root(config_path) / row["id"] / _digest(footprint)[:16]
+        reference(out / "hydro-door.toml", root=cache_root(config_path))
         build["reused"] = True
     else:
         out = cache_root(config_path) / row["id"] / _digest(footprint)[:16]
+        # Publish a live reference under the reclaimer's lock before reading
+        # an existing start. Otherwise a concurrent launch could unlink it
+        # between reading its receipt and binding the reused settings.
+        reference(out / "hydro-door.toml", root=cache_root(config_path))
         receipt = out / "door-prepared.json"
         manifest = None
         if receipt.is_file():
             manifest = Path(json.loads(receipt.read_text())["manifest"])
-        paths, acquirers = {}, []
-        for need in row["builder"].get("paths", ()):
-            if "argument" in need:
-                resolved = _builder_path(need)
-                if resolved is not None and need.get("acquire"):
-                    acquirers.append((need, resolved))
-                elif resolved is None or not resolved.is_dir():
-                    raise RuntimeError(f"{need['label']} not available (set {need['env']})")
-                paths[need["argument"]] = str(resolved)
-        request = {"preparation": row.get("preparation"), "provider": row["id"], "footprint": footprint,
-                   "builder": row["builder"], "data_licence": row["data_licence"],
-                   "paths": paths}
-        if row.get("preparation"):
-            from .provider import preparation_identity
-            request["source_recipe"] = preparation_identity(row)
+        request, acquirers = preparation_request(row, footprint)
+        paths = request["paths"]
         # A different recipe or initialization policy needs fresh preparation.
         # Keep the legacy footprint address only when its complete stamp matches;
         # rebuilding into it would overwrite an existing fabric and warm state.
@@ -465,9 +553,14 @@ def _materialize(decision, *, config_path, runner=subprocess.run, prepare=None):
         if not (manifest is not None and manifest.is_file() and legacy_stamp.is_file()
                 and json.loads(legacy_stamp.read_text()) == request):
             out = cache_root(config_path) / row["id"] / _digest(request)[:16]
+            reference(out / "hydro-door.toml", root=cache_root(config_path))
             receipt = out / "door-prepared.json"
             manifest = (Path(json.loads(receipt.read_text())["manifest"])
                         if receipt.is_file() else None)
+        out, manifest = _build_location(out, request)
+        # A retry sibling is this launch's start too: reference it before use.
+        reference(out / "hydro-door.toml", root=cache_root(config_path))
+        receipt = out / "door-prepared.json"
         stamp = out / "door-request.json"
         # The fabric and its parameters do not depend on the forecast's start
         # time: they are kept once per domain and request (hard links into
@@ -497,7 +590,7 @@ def _materialize(decision, *, config_path, runner=subprocess.run, prepare=None):
                 config["parent_grid_contract"] = footprint["parent_grid_contract"]
             (out / "prepare.json").write_text(json.dumps(config, indent=2) + "\n")
             from .provider import prepare as prepare_provider
-            prepared = prepare_provider(row=row, footprint=footprint, out=out, config=config,
+            prepared = prepare_provider(row=row, footprint=source_domain, out=out, config=config,
                                         runner=runner, static_ready=True)
             if isinstance(prepared, Mapping) and not prepared.get("manifest") and prepared.get("output"):
                 prepared = dict(prepared, manifest=str(Path(prepared["output"]) / "manifest.json"))
@@ -527,13 +620,13 @@ def _materialize(decision, *, config_path, runner=subprocess.run, prepare=None):
                     from .provider import recipe_path
                     recipe = json.loads(recipe_path(row).read_text())
                 sources, acquired = getattr(importlib.import_module(module), entry)(
-                    footprint=footprint, data_root=resolved, builder_exe=exe,
+                    footprint=source_domain, data_root=resolved, builder_exe=exe,
                     builder_row=table.get("row", ""), recipe=recipe)
                 build.setdefault("acquisition", []).append(acquired)
             values = {"exe": exe, "out": out, "row": table.get("row", ""),
                       "table": _repo_root() / table["path"] if table else "",
-                      "west": footprint["west"], "south": footprint["south"],
-                      "east": footprint["east"], "north": footprint["north"]}
+                      "west": source_domain["west"], "south": source_domain["south"],
+                      "east": source_domain["east"], "north": source_domain["north"]}
             values.update(paths)
             if "parent_grid_contract" in footprint:
                 (out / "parent-grid.json").write_text(json.dumps(footprint["parent_grid_contract"]["grid"], indent=2) + "\n")
@@ -554,7 +647,7 @@ def _materialize(decision, *, config_path, runner=subprocess.run, prepare=None):
             (out / "prepare.json").write_text(json.dumps(config, indent=2) + "\n")
             if row.get("preparation"):
                 from .provider import prepare as prepare_provider
-                prepared = prepare_provider(row=row, footprint=footprint, out=out,
+                prepared = prepare_provider(row=row, footprint=source_domain, out=out,
                                             config=config, runner=runner, sources=sources,
                                             water_prefetch=water_prefetch)
             else:
@@ -599,6 +692,13 @@ def _materialize(decision, *, config_path, runner=subprocess.run, prepare=None):
     out.mkdir(parents=True, exist_ok=True)
     settings_path = out / "hydro-door.toml"
     settings_path.write_text(to_toml(composed))
+    reference(settings_path, root=cache_root(config_path))
+    if not build.get("reused"):
+        (out / "retention-managed.json").write_text(json.dumps({"schema": "gpuwm-hydro-retained-start.v1"}) + "\n")
+    try:
+        build["retention"] = reclaim(cache_root(config_path))
+    except OSError as error:
+        build["retention"] = {"blocked": str(error), "removed": [], "reclaimed_bytes": 0}
     return composed, settings_path, build
 
 
@@ -653,11 +753,15 @@ def launch_line(decision):
     """
     if decision is None:
         return "go: hydro -- off: no door decision for this launch"
+    if decision.get("reason") == "admission_pending":
+        return "go: hydro -- waiting for disk and card admission; preparation has not started"
     candidates = {c["id"]: c for c in decision.get("candidates", ())}
     if decision.get("enabled"):
         provider = decision.get("provider") or decision.get("fabric") or "explicit settings"
         covered = candidates.get(provider, {}).get("covered_fraction")
         cover = "" if covered is None else f", covering {covered:.3f} of the parent grid"
+        if decision.get('coverage_scope') not in (None, 'whole parent domain'):
+            cover += '; ' + decision['coverage_scope']
         build = decision.get("build") or {}
         beside = ""
         if build.get("beside") and build.get("seconds") is not None:
@@ -743,7 +847,7 @@ def _failure_memo(decision, config_path):
 
 
 def resolve_launch(settings, *, requested, config_path, table=None, plan_only=False,
-                   prepared_launch=False, decision=None):
+                   prepared_launch=False, decision=None, _failed=()):
     """Launcher entry: the decision, the settings to run, and the settings file.
 
     Returns (settings, settings_path_or_None, decision). Explicit ``--hydro``
@@ -755,9 +859,24 @@ def resolve_launch(settings, *, requested, config_path, table=None, plan_only=Fa
     when the caller already holds it (the launcher that prepares the fabric
     beside the fetch, gpuwm.hydro.runtime), so the door does not decide twice.
     """
-    if decision is None:
+    if decision is None or _failed:
         decision = decide(settings=settings, requested=requested, config_path=config_path,
-                          table=table)
+                          table=table, excluded_providers=[item['provider'] for item in _failed])
+    if _failed:
+        decision['preparation_fallbacks'] = list(_failed)
+
+    def fallback(gap):
+        row = decision.get('_row') or {}
+        target = row.get('fallback_provider')
+        available = any(c['id'] == target and c['verdict'] == 'available'
+                        for c in decision.get('candidates', ()))
+        if target and available:
+            import sys
+            print(f"hydro: {row['id']} preparation unavailable ({gap}); trying {target}", file=sys.stderr)
+            return resolve_launch(settings, requested=requested, config_path=config_path,
+                                  table=table, plan_only=plan_only, prepared_launch=prepared_launch,
+                                  _failed=(*_failed, {'provider': row['id'], 'gap': gap}))
+        return None
     if decision["reason"] == "fabric_covered" and plan_only:
         decision.pop("_row", None)
         decision["build"] = {"deferred": "dry run: the covering fabric is prepared when this launch runs"}
@@ -769,6 +888,9 @@ def resolve_launch(settings, *, requested, config_path, table=None, plan_only=Fa
         # Breakage it prevents: the Milton forecast retried 739 hydro inputs
         # its preparation had given up on, after the preparation's 516 s.
         recorded = json.loads(memo.read_text())
+        alternative = fallback(recorded.get('gap', '') + ' (recorded at preparation; not fetched again)')
+        if alternative is not None:
+            return alternative
         decision.pop("_row", None)
         decision.update(enabled=False, reason="fabric_preparation_failed",
                         gaps=[{"owner": recorded.get("owner"), "provider": decision["provider"],
@@ -784,6 +906,9 @@ def resolve_launch(settings, *, requested, config_path, table=None, plan_only=Fa
             if memo is not None:
                 memo.unlink(missing_ok=True)
         except Exception as error:  # noqa: BLE001 - default runs keep the forecast, loudly
+            alternative = fallback(f'{type(error).__name__}: {error}')
+            if alternative is not None:
+                return alternative
             if requested == "":
                 raise HydroDoorRefusal(f"--hydro was requested but preparing the covering fabric "
                                        f"{decision['provider']} failed: {type(error).__name__}: {error}") from error

@@ -53,8 +53,14 @@ _TABLE_ORDER = ("experiment", "projection", "shared")
 #: the table stopped the root preparation of every multi-card HRRR run
 #: after its fetch ("unsupported experiment table(s) ['devices']",
 #: measured on configs/recipes/hrrr_v4_gsd41.toml on two cards).
+#: ``output`` rides with it as well: the HRRR recipe's [output] names the
+#: 2-D subset written between whole hours (lane/upp-history-subset), the
+#: forecast reads it from the published authority, and a document that could
+#: not carry it refused the root preparation of every HRRR-recipe run
+#: ("unsupported experiment table(s) ['output']",
+#: tests/test_go_prepare_only.py on configs/recipes/hrrr_v4_gsd41.toml).
 _COMPANION_TABLES = ("case_data", "static", "ingest", "perturbation",
-                     "simulated_radar", "devices")
+                     "simulated_radar", "devices", "output")
 
 #: Long numeric arrays (eta ladders) wrap at this many values per line.
 _ARRAY_WRAP = 5

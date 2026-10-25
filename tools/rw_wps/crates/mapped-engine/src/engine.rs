@@ -961,6 +961,17 @@ impl<'a> DecodeStream<'a> {
         keep_whole: &std::collections::BTreeSet<String>,
     ) -> Result<Self> {
         let format = mapping.format()?.to_owned();
+        if format == "netcdf" {
+            // A whole-object decode holds every listed object at once; it is
+            // priced from the objects' own headers before any payload is read,
+            // so a chained preparation can reserve and cap its later decodes
+            // (box G 2026-10-23: an unpriced NetCDF decode refused the hex
+            // parent's as-posted nest head until the whole parent had run).
+            let price = crate::ncdf::whole_object_price(files)?;
+            crate::threads::admit_width(price, &[], price)?;
+            let collection = decode_collection(mapping, files, progress)?;
+            return Ok(Self::whole(mapping, collection));
+        }
         crate::threads::require_priced_format(&format)?;
         if format != "grib2" {
             let collection = decode_collection(mapping, files, progress)?;

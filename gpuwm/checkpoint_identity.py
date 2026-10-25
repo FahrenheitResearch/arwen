@@ -102,6 +102,11 @@ def drop_default_output_controls(values: dict) -> None:
                 "history_interval_change_s"):
         if float(values.get(key, 0.0) or 0.0) == 0.0:
             values.pop(key, None)
+    if int(values.get("output_diagnostics", 0) or 0) == 0:
+        values.pop("output_diagnostics", None)
+        for key, default in (("diag_int", 15), ("wind_int", 5)):
+            if values.get(key, default) == default:
+                values.pop(key, None)
     if int(values.get("gsd_diagnostics", 0) or 0) == 0:
         values.pop("gsd_diagnostics", None)
         if int(values.get("reset_interval1", 60)) == 60:

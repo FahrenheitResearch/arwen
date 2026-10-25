@@ -583,9 +583,16 @@ def test_check_on_a_config_that_does_not_stream_is_byte_identical(
     # 5,120 B): (7,392 - 5,120) * 170 SMs * 1,536 threads = 593,264,640 B more
     # local-memory reservation, so the envelope moves by 888,601,440 B
     # (15,378,265,207 before).
-    assert payload["peak_envelope_bytes"] == 16266866647
-    assert payload["observed_peak_envelope_bytes"] == 16266866647
-    assert payload["alloc_estimate_bytes"] == 12387917783
+    # 2.9.7 HN1 (F22, dac8d35028): the specified ring forces a Morrison
+    # number back with its mass, so the boundary tables now carry nr/ni/ns/ng
+    # beside the five masses: 4 x 2 x (2 x 49 x 550 x 5 + 2 x 49 x 5 x 550)
+    # FP32 = 17,248,000 B for the retained interval, 19,490,240 B with the
+    # 1.13 pool margin (16,266,866,647 before).
+    assert payload["peak_envelope_bytes"] == 16286356887
+    assert payload["observed_peak_envelope_bytes"] == 16286356887
+    # HN1's four Morrison number tables (above) move the estimate by the
+    # same 19,490,240 B (12,387,917,783 before).
+    assert payload["alloc_estimate_bytes"] == 12407408023
     # The reserve's 0.03 retention term follows the estimate: A163 moved
     # it by 0.03 x -212,355,128 = -6,370,653 B.
     # The density addition raises its retention reserve by 2,009,931 B, and
@@ -598,7 +605,9 @@ def test_check_on_a_config_that_does_not_stream_is_byte_identical(
     # The cap-solar + cap-hail allocations raise it by 0.03 x 295,336,800 =
     # 8,860,104 B and the hail frame's local memory by 593,264,640 B
     # (3,648,461,654 before).
-    assert payload["reserve_bytes"] == 4250586398
+    # HN1's number tables raise it by 0.03 x 19,490,240 = 584,707 B
+    # (4,250,586,398 before).
+    assert payload["reserve_bytes"] == 4251171105
     assert payload["budget_bytes"] == _FITS_STREAMED_GIB * GIB
     assert payload["gates"]["alloc_estimate_le_wddm_budget"] is False
     assert rc == 1
@@ -615,7 +624,9 @@ def test_check_on_a_config_that_does_not_stream_is_byte_identical(
     assert (estimate.domains[0].category_bytes("lbc")
             - preflight.estimate_experiment(
                 exp, vram_gib=None).domains[0].category_bytes("lbc")
-            == 21_560_000)
+            # five masses, plus HN1's four Morrison numbers forced back with
+            # them (17,248,000 B, 2.9.7)
+            == 21_560_000 + 17_248_000)
     assert payload["alloc_estimate_bytes"] == estimate.alloc_estimate_bytes
 
     # Attribution control. Before 267900003, domain_kernel_modules checked
@@ -654,10 +665,10 @@ def test_check_on_a_config_that_does_not_stream_is_byte_identical(
     # change nothing this configuration is charged. The density allocation
     # and its unchanged pool and retention margins remain present in both,
     # as does the priced CLDFRA buffer, and the strict-rim health table.
-    assert old_payload["peak_envelope_bytes"] == 16266866647
-    assert old_payload["observed_peak_envelope_bytes"] == 16266866647
-    assert old_payload["alloc_estimate_bytes"] == 12387917783
-    assert old_payload["reserve_bytes"] == 4250586398
+    assert old_payload["peak_envelope_bytes"] == 16286356887
+    assert old_payload["observed_peak_envelope_bytes"] == 16286356887
+    assert old_payload["alloc_estimate_bytes"] == 12407408023
+    assert old_payload["reserve_bytes"] == 4251171105
     assert old_rc == rc == 1
     assert old_estimate == estimate
     for key in ("peak_envelope_bytes", "observed_peak_envelope_bytes",

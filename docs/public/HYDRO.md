@@ -245,6 +245,16 @@ This source-checkout door requires the Rust hydrofabric executable and its
 system SQLite/PROJ dependencies. Installed-platform packaging remains pending.
 It supplies no DEM, runoff calibration or completed realization automatically.
 
+On a CONUS domain, `--hydro on` can build its fabric from EPA's NHDPlus V2.1
+source archives, which are `.7z` files. Their decoder, py7zr, is LGPL-2.1+, so
+it is an explicit extra rather than a base dependency:
+
+```sh
+pip install "gpuwm[hydro-conus]"
+```
+
+Without it the door prepares the worldwide fabric instead and says why.
+
 ## Gauges and observation skill
 
 The registered gauge door delegates acquisition, decoding, alignment and

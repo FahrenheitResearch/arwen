@@ -40,6 +40,7 @@ mod compose_source;
 mod storm_diagnostics;
 mod composition_stack;
 mod aeronet_aod;
+mod stored_words;
 
 /// The contract marker. Printed by `--abi`, and -- because it is a
 /// literal in the binary -- readable straight out of the bytes by the
@@ -53,6 +54,7 @@ const ABI: &str = concat!(
     "\tdump_sample_window_masked_v1",
     "\tbind_published_invariants_v1",
     "\tcompose_source_v1 storm_diagnostics_v1 composition_stack_v1 aeronet_aod_v1",
+    "\tstored_words_v1",
 );
 
 const INVENTORY_SCHEMA: &str = "gpuwm-rw-netcdf-inventory-v1";
@@ -68,6 +70,7 @@ pub static GPUWM_BRIDGE_SOURCE_REV_STAMP: &str =
 
 const USAGE: &str = "\
 usage: rw_netcdf inventory FILE
+       rw_netcdf stored-words FILE OUTPUT_DIR VARIABLE [VARIABLE...]
        rw_netcdf dump [--raw|--no-mask] [--unit-scale=N] [--unit-offset=N] [--water-layer-thickness=VARIABLE] [--window=I0:NI,J0:NJ] [--sample-window=X0:NI,Y0:NJ --sample-method=nearest|bilinear|bilinear-masked [--sample-mask=VARIABLE]] FILE OUTPUT_DIR VARIABLE [VARIABLE...]
        rw_netcdf recover-wrf-soil WRFINPUT MET_EM AUTHORITY_JSON OUTPUT_DIR
        rw_netcdf bind-invariants HEIGHT_FILE HEIGHT_VAR LAND_FILE LAND_VAR OUTPUT_FILE TIME_FILE [TIME_FILE...]
@@ -546,6 +549,12 @@ fn main() {
         }
         "--help" | "-h" => {
             print!("{USAGE}");
+        }
+        "stored-words" => {
+            if args.len() < 4 { fail("stored-words takes FILE OUTPUT_DIR VARIABLE [VARIABLE...]"); }
+            if let Err(error) = stored_words::run(Path::new(&args[1]), Path::new(&args[2]), &args[3..]) {
+                fail(&error);
+            }
         }
         "inventory" => {
             if args.len() != 2 {

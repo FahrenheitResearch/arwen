@@ -133,6 +133,16 @@ def observe_current_counters(model, *, start_time):
         capture.observe_model_counters(model, start_time=start_time)
 
 
+def observe_initial_diagnostics(model):
+    """Hand the restored, perturbed state to diagnostics once before stepping."""
+    capture = current_capture()
+    if capture is not None:
+        owner = getattr(capture.callback, "__self__", capture.callback)
+        observe = getattr(owner, "observe_initial_state", None)
+        if callable(observe):
+            observe(model=model)
+
+
 def bind_current_member_model(model):
     """Attach member pattern owners before original restart validation."""
     capture = current_capture()

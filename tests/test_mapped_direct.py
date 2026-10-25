@@ -878,7 +878,7 @@ def test_separate_analysis_starts_the_boundary_from_itself_and_uses_donor_aeroso
     def initialize(met, *positional, **kwargs):
         calls_to_initializer.append(kwargs)
         if "aerosol_snapshot" in kwargs:
-            assert kwargs["aerosol_snapshot"] is expected.mets[0]
+            assert _is_donor_cut_of(kwargs["aerosol_snapshot"], expected.mets[0])
             return donor_result
         return original(met, *positional, **kwargs)
 
@@ -900,8 +900,23 @@ def test_separate_analysis_starts_the_boundary_from_itself_and_uses_donor_aeroso
     assert calls["cache_stream"]["head"]["initial_result"] is donor_result
     assert proof["initial_source"]["source"] == "distinct-analysis"
     assert proof["initial_source"]["aerosol_source"] == "boundary-analysis"
-    assert calls_to_initializer[1]["aerosol_snapshot"] is expected.mets[0]
+    assert _is_donor_cut_of(calls_to_initializer[1]["aerosol_snapshot"], expected.mets[0])
     assert (args["output_root"] / "source-evidence" / "initial" / "request.json").read_bytes() == b"bound donor"
+
+
+def _is_donor_cut_of(donor, boundary_analysis):
+    """The donor is the boundary analysis cut to the fields a donor is read for.
+
+    The rest of the boundary analysis is released before the initial
+    analysis is built (gpuwm.ingest.real.aerosol_donor_snapshot); the kept
+    fields are the boundary analysis' own arrays, not copies.
+    """
+    from gpuwm.ingest.real import AEROSOL_DONOR_COORDINATE_FIELDS
+    keep = {*AEROSOL_DONOR_COORDINATE_FIELDS, "QNWFA", "QNIFA", "QNWFA_SFC", "QNIFA_SFC"}
+    return (donor is not boundary_analysis
+            and set(donor.fields) == keep & set(boundary_analysis.fields)
+            and all(donor.fields[name] is boundary_analysis.fields[name]
+                    for name in donor.fields))
 
 
 def test_the_chained_admission_is_priced_with_the_mapping_it_prepares_from(

@@ -63,6 +63,7 @@ NEXTGEN-BRIEF.md
 tools/native_nextgen_reference/**
 
 # Campaign handoffs and internal project history (developer paths inside).
+final.md
 docs/gpuwm-controller-handoff.md
 docs/lead-handoff-2026-07-26.md
 docs/gpuwm-project-history.md

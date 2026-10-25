@@ -53,6 +53,15 @@ def test_a_reader_older_than_the_contract_is_passed_over(tmp_path, monkeypatch):
     assert zarr_bridge.resolve_zarr_bin() == home.resolve()
 
 
+def test_cached_reader_without_coverage_cannot_break_live_hydro(tmp_path, monkeypatch):
+    build, home = _ladder(tmp_path, monkeypatch)
+    _write(home, b"\x7fELF arwen.geog-soiltemp-climatology.v1 reader")
+    with pytest.raises(bridges.DecoderContractError, match="coverage query"):
+        zarr_bridge.resolve_zarr_bin()
+    _write(build, CURRENT)
+    assert zarr_bridge.resolve_zarr_bin() == build.resolve()
+
+
 def test_only_an_older_reader_is_refused_in_plain_words(tmp_path, monkeypatch):
     _build, home = _ladder(tmp_path, monkeypatch)
     _write(home, OLDER)

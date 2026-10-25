@@ -143,15 +143,19 @@ def point(text: str, stations=None) -> dict:
 
 
 def inventory(run: Path, *, domain=None) -> list[dict]:
-    """Plain single-run, members/<id>/..., and rw-store folders."""
+    """Plain single-run, members/<id>/..., rw-store v1 folders, and column stores (``*.wcol``)."""
     run = Path(run).resolve()
     if not run.exists():
         raise FileNotFoundError(run)
     files = [run] if run.is_file() else sorted(run.rglob("wrfout*"))
     files = [p for p in files if p.is_file() and (p.name.startswith("wrfout") and
-             p.suffix not in {".json", ".partial", ".tmp", ".lock"} or p.suffix == ".rws")]
+             p.suffix not in {".json", ".partial", ".tmp", ".lock"} or p.suffix in (".rws", ".wcol"))]
     if not files and run.is_dir():
         files = sorted(run.rglob("*.rws"))
+    if not files and run.is_dir():
+        # The any-point column store (rw-store v2): a run that keeps no histories, such as a default ensemble,
+        # still has every member's columns under columns/members/<member>/<domain>/.
+        files = sorted(run.rglob("*.wcol"))
     rows = []
     for path in files:
         relative = path.relative_to(run if run.is_dir() else run.parent)
@@ -177,7 +181,7 @@ def inventory(run: Path, *, domain=None) -> list[dict]:
             continue
         rows.append({"path": str(path), "domain": selected_domain, "member": member})
     if not rows:
-        raise ValueError(f"no wrfout or rw-store sounding files found in {run}")
+        raise ValueError(f"no wrfout, rw-store or column store sounding files found in {run}")
     return rows
 
 
@@ -224,11 +228,16 @@ def render_run(run, *, points, out=None, modes=("mean", "all"), domain=None,
 COLUMNS_ABI = "columns-v1"
 
 
-def write_columns(run, out, *, domain=None, threads=None, tile=16, every_minutes=0):
-    """The run's any-point column store (``gpuwm-columns.v1``): every column of every domain at each history time,
+def write_columns(run, out, *, domain=None, threads=None, tile=16, every_minutes=0, exact=False, member=None,
+                  as_domain=None, timeout=None):
+    """The run's any-point column store (rw-store version 2, ``rw-store.columns.v2``): every column of every domain at each history time,
     one file per domain and time under ``out/<domain>/<YYYYMMDDTHHMMSSZ>.wcol``, chunked so one sounding anywhere is
     one small read. ``every_minutes`` keeps only valid times on that cadence (0 keeps every time). Returns the
-    renderer's ``COLUMNS <path> bytes=<n> ms=<t>`` rows as dicts."""
+    renderer's ``COLUMNS <path> bytes=<n> ms=<t>`` rows as dicts. ``exact`` stores every 3-D value's f32 instead of
+    the quantized default. ``member`` and ``as_domain`` name the files' member and domain instead of the ones read
+    off the path (an ensemble member's frame: ``out/members/<member>/<domain>/``). ``timeout`` (seconds) kills a
+    writer that has not finished and raises, so a hung or stalled ``rw_soundings`` never holds its caller (the live
+    store passes :func:`gpuwm.live_columns.frame_timeout_seconds`)."""
     exe = binary()
     abi = subprocess.run([str(exe), "--abi"], capture_output=True, text=True, timeout=30).stdout
     if COLUMNS_ABI not in abi:
@@ -239,14 +248,22 @@ def write_columns(run, out, *, domain=None, threads=None, tile=16, every_minutes
             m = re.search(r"(\d{4}-\d{2}-\d{2})_(\d{2})[_:](\d{2})[_:](\d{2})", Path(row["path"]).name)
             return m is None or (int(m[2]) * 60 + int(m[3])) % every_minutes == 0
         sources = [row for row in sources if keep(row)]
+    if member is not None or as_domain is not None:
+        sources = [{**row, **({"member": str(member)} if member is not None else {}),
+                    **({"domain": str(as_domain)} if as_domain is not None else {})} for row in sources]
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
-    request = {"sources": sources, "out": str(out.resolve()), "tile": tile,
+    request = {"sources": sources, "out": str(out.resolve()), "tile": tile, "exact": bool(exact),
                **({"threads": threads} if threads else {})}
     with tempfile.TemporaryDirectory(prefix="gpuwm-columns-") as temporary:
         path = Path(temporary) / "request.json"
         path.write_text(json.dumps(request), encoding="utf-8")
-        result = subprocess.run([str(exe), "--columns", str(path)], capture_output=True, text=True)
+        try:
+            result = subprocess.run([str(exe), "--columns", str(path)], capture_output=True, text=True,
+                                    timeout=timeout)
+        except subprocess.TimeoutExpired:  # subprocess.run has killed and reaped the writer
+            raise RuntimeError(f"column store not written: rw_soundings --columns did not finish in {timeout:g} s; "
+                               "it was stopped") from None
     if result.returncode:
         raise RuntimeError("column store not written: " + (_cause(result.stderr) or f"exit {result.returncode}"))
     rows = []

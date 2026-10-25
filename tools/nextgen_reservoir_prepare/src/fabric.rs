@@ -3,10 +3,14 @@
 use super::{doubles, floats, hash, CONTROLS, PARAMETERS, PIN};
 use rayon::prelude::*;
 use serde_json::{json, Value};
+use serde::Deserialize;
 use std::{collections::{BTreeMap, BTreeSet}, fs, path::{Component, Path}, time::Instant};
 
 type Result<T> = std::result::Result<T, String>;
 type Payload = (String, &'static str, Vec<usize>, Vec<u8>);
+
+#[derive(Deserialize)]
+struct LakeAttributes { lakes: Vec<Value> }
 
 fn read(path: &Path) -> Result<Vec<u8>> {
     fs::read(path).map_err(|e| format!("{}: {e}", path.display()))
@@ -42,9 +46,11 @@ pub fn run(manifest_path: &Path, initial_path: &Path, output: &Path) -> Result<(
     let relative = Path::new(spec.get("path").and_then(Value::as_str).unwrap_or("attributes.json"));
     if relative.is_absolute() || !relative.components().all(|c| matches!(c, Component::Normal(_))) { return Err("attributes path escapes prepared fabric".into()); }
     let attrs_bytes = read(&manifest_path.parent().unwrap_or(Path::new(".")).join(relative))?;
-    if text(spec, "sha256")? != hash(&attrs_bytes) { return Err("attributes SHA256 mismatch".into()); }
-    let attrs: Value = serde_json::from_slice(&attrs_bytes).map_err(|e| e.to_string())?;
-    let lakes = attrs["lakes"].as_array().ok_or("missing lakes table; do not silently drop reservoirs")?;
+    let attrs_sha = hash(&attrs_bytes);
+    if text(spec, "sha256")? != attrs_sha { return Err("attributes SHA256 mismatch".into()); }
+    let attrs: LakeAttributes = serde_json::from_slice(&attrs_bytes).map_err(|e| e.to_string())?;
+    drop(attrs_bytes);
+    let lakes = &attrs.lakes;
     let initial_bytes = read(initial_path)?;
     let initial: Value = serde_json::from_slice(&initial_bytes).map_err(|e| e.to_string())?;
     if initial["schema"] != "arwen.nextgen.reservoir-initial.v1" { return Err("expected reservoir-initial.v1 packet".into()); }
@@ -116,7 +122,7 @@ pub fn run(manifest_path: &Path, initial_path: &Path, output: &Path) -> Result<(
         "reservoirs":{"arrays":bindings,"source_pin":PIN,"parameter_columns":PARAMETERS,"control_columns":CONTROLS,"validated_csr":true,"time_origin":origin,"reservoir_order_sha256":hash(&ids),"initialization":{"method":source["method"],"source_sha256":source["sha256"],"packet_sha256":hash(&initial_bytes),"vertical_datum":datum}},
         "reservoir_ids":{"path":"reservoir_ids.i64","dtype":"<i8","shape":[n],"sha256":hash(&ids)},
         "lake_outlets":rows.iter().map(|r|&r.3).collect::<Vec<_>>(),
-        "source_manifest":{"path":manifest_path,"sha256":hash(&bytes)},"attributes_sha256":hash(&attrs_bytes),
+        "source_manifest":{"path":manifest_path,"sha256":hash(&bytes)},"attributes_sha256":attrs_sha,
         "data_license":manifest["input"]["data_license"],"data_scope":"inherits producer data terms; no licence clearance inferred by this packer",
         "scope":"native-free type1 level-pool startup fragment; no topology collapse, DA acquisition, physical parameter derivation or native trajectory proof",
         "rows":n,"parallelism":{"rayon_threads":rayon::current_num_threads(),"work":"independent lake validation and payload writes; no CPU reservoir step"},"wall_ms":started.elapsed().as_secs_f64()*1000.});
@@ -178,6 +184,21 @@ mod tests {
         }
         // Retain this tiny actual Rust output for the CUDA factory consumer.
         fs::write(Path::new(&std::env::var("HYDRO_TEST_ROOT").unwrap()).join("cuda-input-path.txt"),root.to_string_lossy().as_bytes()).unwrap();
+    }
+    #[test]
+    fn unrelated_continental_attributes_leave_reservoir_payloads_unchanged() {
+        let mut c=Case::new(); c.invoke("before").unwrap();
+        c.attrs["divides"] = json!([{"divide_id":"cat-1","model_parameters":vec![1.2345678901234567;8193]}]);
+        c.attrs["flowpath_attributes"] = json!([{"id":"wb-1","unused_nested":{"rows":[1,2,3]}}]);
+        c.seal(); c.invoke("after").unwrap();
+        let m: Value=serde_json::from_slice(&read(&c.root.join("before/manifest.json")).unwrap()).unwrap();
+        for spec in m["files"].as_object().unwrap().values() {
+            let path=text(spec,"path").unwrap();
+            assert_eq!(read(&c.root.join("before").join(path)).unwrap(),read(&c.root.join("after").join(path)).unwrap());
+        }
+        let after: Value=serde_json::from_slice(&read(&c.root.join("after/manifest.json")).unwrap()).unwrap();
+        assert_eq!(after["attributes_sha256"],c.manifest["auxiliary"]["attributes.json"]["sha256"]);
+        fs::write(c.root.join("attributes.json"),b"{}").unwrap();c.refused("SHA256");
     }
     #[test]
     fn initial_release_preserves_float64_words() {

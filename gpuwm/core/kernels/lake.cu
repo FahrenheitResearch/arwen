@@ -886,6 +886,14 @@ extern "C" __global__ void lake_bind_source_columns(int n, const float* src,
     float depth=statics[q];
     bool has_fraction=isfinite(fraction)&&fraction>=0.f&&fraction<=1.f;
     bool has_ice=has_fraction&&isfinite(ice)&&ice>=0.f;
+    // A column the source did not cover keeps lakeini's state.  It used to
+    // fall through to the surface word below and take the top layer's
+    // temperature as T_GRND, so an unobserved lake's start depended on
+    // whether some OTHER lake in the same call was observed: the resident
+    // 5 km CONUS run (GLSEA covers the Great Lakes) and its slab-built
+    // streamed twin disagreed in every lake column outside the Great Lakes
+    // (X12).
+    if(!has_water&&!has_fraction) return;
     float remaining=has_ice?ice*fraction:0.f;
     for(int k=0;k<10;k++) {
         float t=columns[(5+k)*n+q];

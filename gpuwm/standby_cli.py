@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-import json
 import math
 from pathlib import Path
 import sys
@@ -25,10 +24,8 @@ def recipe_document(recipe, *, table=None):
         path = Path(recipe).resolve()
         row = {"id": path.stem, "config": str(path)}
     else:
-        rows = json.loads(table.read_text())["recipes"]
-        row = next((r for r in rows if recipe == r["id"] or recipe in r.get("aliases", ())), None)
-        if row is None:
-            raise ValueError(f"recipe table has no recipe or alias {recipe!r}")
+        from gpuwm.region_recipe import recipe_row
+        row = recipe_row(recipe, table)
         path = table.parent / row["config"]
     return row, path, tomllib.loads(path.read_text(encoding="utf-8-sig"))
 

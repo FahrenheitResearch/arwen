@@ -17,11 +17,20 @@ class CommonWind:
             cp.linspace(g['west'], g['east'], g['nx'], dtype=cp.float32), indexing='ij')
         self.maximum = cp.zeros(self.lat.shape, cp.float32)
         self.coverage = cp.ones(self.lat.shape, cp.bool_)
+        # A swath records every visited cell. Full-window coverage remains
+        # separate: a below-threshold partial record cannot prove a non-event.
+        self.visited = cp.zeros(self.lat.shape, cp.bool_)
+        self.sample_count = cp.zeros(self.lat.shape, cp.uint32)
         self.onset = cp.full(self.lat.shape, cp.nan, cp.float32)
         self.duration = cp.zeros(self.lat.shape, cp.float32)
         self.key = None
         self.last_seconds = None
         self.samples = 0
+        self.rain = (cp.zeros(self.lat.shape, cp.float32)
+                     if 'rain' in request.get('products', ()) else None)
+        if self.rain is not None:
+            self.rain_visited = cp.zeros(self.lat.shape, cp.bool_)
+            self.rain_seconds = cp.zeros(self.lat.shape, cp.float32)
 
     def bind(self, node, model):
         cp = self.cp
@@ -94,6 +103,24 @@ class CommonWind:
         finite = self.inside&cp.isfinite(wind)&cp.isfinite(east)&cp.isfinite(north)
         self.maximum = cp.maximum(self.maximum, cp.where(finite, wind, 0))
         self.coverage &= finite
+        self.visited |= finite
+        self.sample_count += finite
+        if self.rain is not None:
+            nc = node.state.existing_scratch('mp_rainnc')
+            cu = node.state.existing_scratch('cu_rainc')
+            if nc is None:
+                raise ValueError('nest rain swath requires a prognostic precipitation counter')
+            total = self.sample(nc if cu is None else nc + cu)
+            from gpuwm.core.physics_continuation import accumulation_ring
+            ring = accumulation_ring(node.cfg.run)
+            ny, nx = nc.shape
+            valid = (self.inside & cp.isfinite(total) & (self.i >= ring)
+                     & (self.j >= ring) & (self.i + 1 < nx-ring)
+                     & (self.j + 1 < ny-ring))
+            self.rain = cp.maximum(self.rain, cp.where(valid, total, 0))
+            self.rain_visited |= valid
+            if self.last_seconds is not None:
+                self.rain_seconds += valid * (seconds-self.last_seconds)
         onshore = self.coast&finite&(east*self.normal[0]+north*self.normal[1] >= self.request.get('onshore_threshold_m_s', 10.))
         self.onset = cp.where(onshore&cp.isnan(self.onset), seconds, self.onset)
         if self.last_seconds is not None:
@@ -106,14 +133,21 @@ class CommonWind:
         directory = Path(directory)
         directory.mkdir(parents=True, exist_ok=True)
         arrays = {'latitude': self.lat, 'longitude': self.lon,
-            'time_max_wind10': cp.where(self.coverage, self.maximum, cp.nan),
+            'time_max_wind10': cp.where(self.visited, self.maximum, cp.nan),
+            'time_max_wind10_full_coverage': cp.where(self.coverage, self.maximum, cp.nan),
+            'wind_sample_count': self.sample_count,
             'onshore_onset': cp.where(self.coverage&self.coast, self.onset, cp.nan),
             'onshore_duration': cp.where(self.coverage&self.coast, self.duration/3600, cp.nan)}
+        if self.rain is not None:
+            arrays['nest_sampled_rain'] = cp.where(self.rain_visited, self.rain, cp.nan)
+            arrays['nest_rain_exposure_hours'] = cp.where(
+                self.rain_visited, self.rain_seconds / 3600, cp.nan)
         for name, array in arrays.items():
             cp.asnumpy(array.astype(cp.float32)).tofile(directory/f'{name}.f32')
         return {'directory': str(directory), 'shape': list(self.lat.shape), 'samples': self.samples,
             'sampling': 'every committed fine-domain step, including restored initial state',
-            'coverage': 'finite at every step; no denominator renormalization',
+            'coverage': 'time_max_wind10 is the union of finite sampled footprints; wind_sample_count records exposure; full_coverage and duration require every step',
+            'full_coverage_wind': 'time_max_wind10_full_coverage',
             'duration': 'right endpoint integration; hours; onshore component threshold in request'}
 
 
@@ -178,6 +212,55 @@ def _remove_owned_tree(root):
     return deleted
 
 
+def _track_member(trajectory, member, store, count):
+    """Export model clocks as explicit UTC at the track-manifest boundary."""
+    from gpuwm import tc_tracks
+    from gpuwm.tc_accumulator import utc_datetime
+    return dict(member_id=trajectory.get('track_member_id', str(member)), family='arwen', source='arwen',
+        init=tc_tracks.stamp(utc_datetime(trajectory['cycle'])), file=str(store),
+        vocabulary=tc_tracks.history_export_vocabulary(),
+        weight=trajectory.get('weight', 1/count), ancestry=dict(trajectory, ensemble_member_id=member))
+
+
+def _member_map_plan(rows, products):
+    """Use each output footprint and only rain windows with exact endpoints.
+
+    Initial hours before an accumulation closes are unavailable, not failed
+    maps. A missing endpoint after that warmup remains a history defect.
+    Independent imports keep an early moving nest out of the final viewport.
+    """
+    from datetime import datetime, timedelta
+    import re
+
+    rows = sorted(rows, key=lambda row: row['valid_time'])
+    times = [datetime.fromisoformat(row['valid_time'].replace('_', 'T').replace('Z', '+00:00'))
+             for row in rows]
+    if not rows or len(set(times)) != len(times):
+        raise ValueError('member maps require distinct writer times')
+    by_time = dict(zip(times, rows))
+    instant, windows = [], []
+    for product in products:
+        match = re.fullmatch(r'qpf_(\d+)h', product)
+        if match and int(match[1]) > 0:
+            windows.append((product, timedelta(hours=int(match[1]))))
+        else:
+            instant.append(product)
+    jobs, unavailable = [], []
+    for index, (valid, row) in enumerate(zip(times, rows)):
+        if instant:
+            jobs.append((f'instant-{index:06d}', [row], instant))
+        for product, interval in windows:
+            previous = valid - interval
+            if previous < times[0]:
+                unavailable.append(dict(product=product, valid_time=row['valid_time'],
+                    reason='accumulation window precedes the first stored frame'))
+                continue
+            if previous not in by_time:
+                raise RuntimeError(f"{product} at {row['valid_time']}: missing exact accumulation endpoint {previous.isoformat()}")
+            jobs.append((f'{product}-{index:06d}', [by_time[previous], row], [product]))
+    return jobs, unavailable
+
+
 def render_roster(root, trajectories, request, *, member_order, history_ledger):
     """Render each ordinary member grid, then track the completed ArWen parents.
 
@@ -225,16 +308,27 @@ def render_roster(root, trajectories, request, *, member_order, history_ledger):
             (member, domain), rows = item
             rows.sort(key=lambda row: row['valid_time'])
             label = f'member-{member:04d}/{domain}'
-            store = scratch/f'maps-{member:04d}-{domain}'
-            maps, failed, skipped = rustwx.run_renderer_series(renderer,
-                [root/row['path'] for row in rows], store_root=store,
-                out_dir=directory/'members'/label, products=','.join(request['member_maps']),
-                frames='all', source_label=f'{label} weight={metadata[member_order.index(member)].get("weight", 1/len(member_order)):.12g}',
-                threads=1)
-            if failed or skipped or not maps:
-                raise RuntimeError(f'{label}: member maps incomplete: failures={failed}, skipped={skipped}')
+            jobs, unavailable = _member_map_plan(rows, request['member_maps'])
+            maps = []
+            for key, inputs, products in jobs:
+                store = scratch/f'maps-{member:04d}-{domain}'/key
+                rendered, failed, skipped = rustwx.run_renderer_series(renderer,
+                    [root/row['path'] for row in inputs], store_root=store,
+                    out_dir=directory/'members'/label, products=','.join(products),
+                    frames=str(len(inputs)-1),
+                    source_label=f'{label} weight={metadata[member_order.index(member)].get("weight", 1/len(member_order)):.12g}',
+                    threads=1)
+                if failed or skipped or not rendered:
+                    raise RuntimeError(f'{label}: member maps incomplete: failures={failed}, skipped={skipped}')
+                maps.extend(rendered)
+                # No later window needs this native import; bound scratch by
+                # the active endpoint pair, not by the forecast duration.
+                _remove_owned_tree(store)
+            if not maps:
+                raise RuntimeError(f'{label}: no requested member map has a complete window')
             return dict(member_id=member, domain=domain, products=request['member_maps'],
                 frames=len(rows), maps=[str(Path(p).resolve().relative_to(root)) for p in maps],
+                unavailable_windows=unavailable,
                 **weight_receipt(member_order, weights, [member]))
         with ThreadPoolExecutor(max_workers=workers) as pool:
             receipt['member_products'] = list(pool.map(member_maps, sorted(groups.items())))
@@ -259,9 +353,7 @@ def render_roster(root, trajectories, request, *, member_order, history_ledger):
             stores = sorted(export.glob('*.zarr'))
             if len(stores) != 1:
                 raise RuntimeError(f'member {member}: ml-export did not produce one parent store')
-            return dict(member_id=trajectory.get('track_member_id', str(member)), family='arwen', source='arwen',
-                init=trajectory['cycle'], file=str(stores[0]), vocabulary=tc_tracks.history_export_vocabulary(),
-                weight=trajectory.get('weight', 1/len(member_order)), ancestry=dict(trajectory, ensemble_member_id=member))
+            return _track_member(trajectory, member, stores[0], len(member_order))
         with ThreadPoolExecutor(max_workers=min(workers, len(member_order))) as pool:
             members = list(pool.map(export_member, zip(member_order, trajectories)))
         stages.append(dict(stage='member-history-export', seconds=time.monotonic()-begin,

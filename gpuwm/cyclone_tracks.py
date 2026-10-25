@@ -160,8 +160,9 @@ def fix_at(fixes, moment):
 def early_start_fix(fixes, start, member):
     """Bounded placement estimate for a developing track, not a detection.
 
-    Only the leading gap of a forecast can be filled. Two consecutive early
-    detections establish motion; intensity is held rather than extrapolated.
+    Only the leading gap of a forecast can be filled. Two early detections
+    establish motion across at most the configured number of missed fixes;
+    intensity is held rather than extrapolated.
     The live nest follower subsequently diagnoses centres from its own fields.
     """
     from gpuwm.cyclone_search import TABLE
@@ -169,12 +170,16 @@ def early_start_fix(fixes, start, member):
     if not member.get("init") or start < _time(member["init"]):
         return None, {}
     indices = [i for i,f in enumerate(fixes) if f is not None and f["lat"] is not None]
-    if len(indices) < 2 or indices[1] != indices[0]+1:
+    if len(indices) < 2:
+        return None, {}
+    missed = indices[1] - indices[0] - 1
+    if missed > policy["maximum_missing_fixes"]:
         return None, {}
     first, second = (fixes[i] for i in indices[:2])
     delay = (_time(first["valid"])-start).total_seconds()/3600
     interval = (_time(second["valid"])-_time(first["valid"])).total_seconds()/3600
-    if not 0 < delay <= policy["maximum_hours"] or not 0 < interval <= policy["maximum_fix_interval_hours"]:
+    if (not 0 < delay <= policy["maximum_hours"]
+            or not 0 < interval <= policy["maximum_fix_interval_hours"] * (missed + 1)):
         return None, {}
     a,b = math.radians(first["lat"]),math.radians(second["lat"])
     dl = math.radians(second["lon"]-first["lon"])
@@ -192,6 +197,7 @@ def early_start_fix(fixes, start, member):
                   flags=list(first["flags"])+["estimated-start-position", "first-detection-intensity-held"])
     return center, dict(method="bounded-constant-motion-back-projection", valid=[first["valid"],second["valid"]],
                         estimated=True, delay_hours=delay, displacement_km=distance,
+                        missed_fixes=missed, motion_interval_hours=interval,
                         pressure_valid=first["valid"], pressure_basis="first detection held; cycle pressure unknown", policy=policy)
 
 

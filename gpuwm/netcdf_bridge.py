@@ -716,6 +716,43 @@ class Dataset:
         )
         return values, times
 
+    def stored_words(self, names) -> dict[str, np.ndarray]:
+        """Read stored numeric or character words in one Rust process.
+
+        Unlike promoted CF reads, this preserves integer bits and NaN payloads.
+        Python maps the bridge output using its declared dtype and shape only.
+        """
+        names = list(dict.fromkeys(names))
+        if not names:
+            return {}
+        with tempfile.TemporaryDirectory(prefix="gpuwm-netcdf-words-") as temporary:
+            out = Path(temporary)
+            _run([os.fspath(self._executable), "stored-words", os.fspath(self.path),
+                  os.fspath(out), *names], what=f"stored-word read failed for {self.path}", file=self.path)
+            document = json.loads((out / "metadata.json").read_text("utf-8"))
+            if document.get("schema") != "gpuwm-rw-netcdf-stored-words-v1":
+                raise NetcdfDecodeError("stored-word bridge schema mismatch; rebuild rw_netcdf")
+            records = document.get("variables", [])
+            if len(records) != len(names) or [r.get("name") for r in records] != names:
+                raise NetcdfDecodeError("stored-word bridge returned different variables")
+            arrays = {}
+            for record in records:
+                name = record["name"]
+                variable = self.variables[name]
+                dtype = np.dtype(record["dtype"])
+                shape = tuple(record["shape"])
+                expected_dtype = np.dtype("S1") if variable.is_character else variable.dtype
+                if dtype != expected_dtype or shape != variable.shape:
+                    raise NetcdfDecodeError(f"{name}: stored-word dtype or shape changed")
+                filename = str(record["filename"])
+                if Path(filename).name != filename:
+                    raise NetcdfDecodeError("stored-word filename leaves output directory")
+                data = np.fromfile(out / filename, dtype=dtype)
+                if data.size != variable.size:
+                    raise NetcdfDecodeError(f"{name}: stored-word extent changed")
+                arrays[name] = data.reshape(shape)
+            return arrays
+
     def prefetch(self, names) -> int:
         """Decode several variables in one ``rw_netcdf`` run and cache them.
 

@@ -157,6 +157,8 @@ EVENT_TAGS = (
     "plan_accepted", "resolved_plan", "stage_started", "stage_finished",
     "model_progress", "output_committed", "first_products_ready",
     "live_products_ready", "grib2_export_progress",
+    # The any-point column store (gpuwm.live_columns): each frame written, then the total.
+    "columns_progress", "columns_written",
     "fetch_started", "fetch_progress", "fetch_completed",
     # Chained preparation: the prepared head is published (the forecast
     # starts beside the rest of the preparation), and later the seal.
@@ -286,6 +288,13 @@ WARNING_CODES = {
     "grib2_export_failed":
         "native GRIB2 export failed; the message names the cause and "
         "the GRIB2 output is incomplete",
+    "columns_not_armed":
+        "the any-point column store (gpuwm.live_columns) could not start; "
+        "the run goes on and writes no store, and the message says why",
+    "columns_not_written":
+        "one committed frame's any-point column store file was not "
+        "written (the frame is named); the run and its other frames are "
+        "unaffected, and soundings at that hour answer \"no column store\"",
     "live_products_empty":
         "a frame drawn as it landed produced no picture; the end-of-run "
         "render draws it with the rest",
@@ -2428,6 +2437,8 @@ class RunObserver:
         self._grib2_export = None
         self._grib2_base_out = None
         self._grib2_attempt = 1
+        #: The any-point column store written as frames land (:mod:`gpuwm.live_columns`), on by default.
+        self._columns = None
         #: The plan both were armed with, to arm them again when the
         #: hosted forecast restarts (:meth:`restarting`).
         self._render_plan = None
@@ -2650,9 +2661,28 @@ class RunObserver:
                     "forecast restart refused: a render is still reading "
                     "the previous attempt's history; refusing output rewind")
 
+        # The any-point column store, the same way.  THE BREAKAGE: left
+        # armed, its writer remembered every frame path it had written, so
+        # the new attempt's frames at the same paths were skipped and the
+        # store kept the failed attempt's columns for every rewound hour;
+        # and its writer could still be reading a frame the runner moves
+        # aside next (on Windows that move fails on the open file).  The
+        # queued frames are dropped, the frame in hand is waited for (its
+        # write is killed at its own timeout), and a fresh writer is armed
+        # on the same folder after the restart record.
+        columns = self._columns
+        if columns is not None:
+            summary = self.stop_columns(halt=True, timeout=columns.restart_wait_seconds)
+            if summary is not None and not summary.get("stopped", True):
+                raise RuntimeError(
+                    "forecast restart refused: the column store is still "
+                    "reading the previous attempt's history; refusing output rewind")
+
         hook = getattr(self._heartbeat, "restarting", None)
         if hook is not None:
             hook(reason)
+        if columns is not None:
+            self.arm_columns(columns.out)
         if self._grib2_export is not None:
             self.stop_grib2(halt=True)
             self._grib2_export = None
@@ -2813,6 +2843,33 @@ class RunObserver:
             out, report=self._grib2_progress, warn=self.warn)
         self._grib2_progress({"event": "armed", "out": str(out), "attempt": self._grib2_attempt})
 
+    def arm_columns(self, out) -> None:
+        """Write the run's any-point column store (rw-store v2) for every output hour as frames land."""
+        if self._columns is not None:
+            return
+        from gpuwm.live_columns import LiveColumns
+        try:
+            self._columns = LiveColumns(Path(out), report=self._columns_progress, warn=self.warn)
+        except Exception as error:  # noqa: BLE001 - a store that cannot start never stops the run
+            self.warn("columns_not_armed", f"no column store for this run: {type(error).__name__}: {error}")
+
+    def _columns_progress(self, event) -> None:
+        self._events.emit("columns_progress", progress=dict(event))
+
+    def stop_columns(self, *, halt: bool = False, timeout: float | None = None) -> dict | None:
+        """End the column store: ``halt`` drops what is queued (a stopped or restarting run), otherwise the queue
+        and each grid's last frame are written. Both waits are bounded (:meth:`gpuwm.live_columns.LiveColumns.stop`)."""
+        columns, self._columns = self._columns, None
+        if columns is None:
+            return None
+        if halt:
+            summary = columns.halt() if timeout is None else columns.halt(timeout)
+        else:
+            summary = columns.stop(timeout)
+        self._events.emit("columns_written", files=summary["files"], bytes=summary["bytes"],
+                          seconds=summary["seconds"], failed=len(summary["failed"]), out=summary["out"])
+        return summary
+
     def _grib2_progress(self, event) -> None:
         self._events.emit("grib2_export_progress", progress=dict(event))
 
@@ -2957,6 +3014,12 @@ class RunObserver:
                 export.frame_committed(domain=int(domain), valid_time=valid_time, path=path)
             except Exception as error:  # output callbacks must not stop stepping
                 self.warn("grib2_export_failed", f"committed frame could not be queued: {error}", frame=str(path))
+        columns = self._columns
+        if columns is not None:
+            try:
+                columns.frame_committed(domain=int(domain), valid_time=valid_time, path=path)
+            except Exception as error:  # noqa: BLE001 - output callbacks must not stop stepping
+                self.warn("columns_not_written", f"committed frame could not be queued: {error}", frame=str(path))
         trigger = self._first_products
         claimed = False
         if trigger is not None and int(domain) == self._root_domain:
@@ -2991,6 +3054,10 @@ class RunObserver:
 
     def complete(self, model_elapsed_seconds: float) -> None:
         self.stop_grib2()
+        try:
+            self.stop_columns()
+        except Exception as error:  # noqa: BLE001
+            self.warn("columns_not_written", str(error))
         if self._heartbeat is not None:
             self._heartbeat.complete(model_elapsed_seconds)
 
@@ -2999,6 +3066,10 @@ class RunObserver:
             self.stop_grib2()
         except Exception as error:
             self.warn("grib2_export_failed", str(error))
+        try:
+            self.stop_columns()
+        except Exception as error:  # noqa: BLE001
+            self.warn("columns_not_written", str(error))
         if self._heartbeat is not None:
             self._heartbeat.failed()
 
@@ -4017,6 +4088,7 @@ def disk_admission_refusal(plan: RunPlan, exp, *, raw: Mapping[str, Any], data,
                            download_keyed: bool | None = None,
                            prep_root: Path | None = None,
                            warn: Callable[[str, str, str | None], None] | None = None,
+                           hydro_config=None, hydro_args=None,
                            ) -> DiskRefusal | None:
     """The refusal for a run its disks cannot hold, or None: the one disk admission.
 
@@ -4051,9 +4123,32 @@ def disk_admission_refusal(plan: RunPlan, exp, *, raw: Mapping[str, Any], data,
 
     from gpuwm import disk_budget
 
+    from gpuwm.hydro.runtime import pending_launch_args
+    pending_hydro = pending_launch_args()
+    if hydro_config is None and pending_hydro is not None:
+        hydro_config = getattr(pending_hydro, "config", None)
+        hydro_args = pending_hydro
     projection = _disk_projection(
         plan, exp, raw=raw, data=data, fetch_arguments=fetch_arguments,
         run_dir=run_dir, download_keyed=download_keyed)
+    hydro_basis = None
+    if hydro_config is not None:
+        from gpuwm.hydro.runtime import hydro_disk_estimate
+        from gpuwm.hydro.door import cache_root
+        hydro_bytes, hydro_basis = hydro_disk_estimate(hydro_config, hydro_args)
+        hydro_root = cache_root(hydro_config)
+        if hydro_bytes and not disk_budget.same_disk(hydro_root, run_dir):
+            hydro_free = disk_budget.free_bytes(hydro_root)
+            if hydro_free is not None and hydro_bytes > hydro_free:
+                return DiskRefusal(layered(
+                    f"Hydro preparation would write about {hydro_bytes / 2**30:.1f} GiB "
+                    f"into {hydro_root}, which has {hydro_free / 2**30:.1f} GiB free, "
+                    "so it would stop partway when that disk fills.",
+                    "Refused before the download and before hydro preparation, so nothing was spent. "
+                    "Free some disk in the hydro cache. " + (hydro_basis or "")),
+                    folders=(str(hydro_root),))
+        else:
+            projection["preparation_bytes"] = int(projection.get("preparation_bytes") or 0) + hydro_bytes
     if (projection.get("compose_scratch") or {}).get("composes"):
         from gpuwm.ingest.source_coverage import (COMPOSE_SCRATCH_ENV,
                                                   compose_scratch_override_refusal)
@@ -4081,10 +4176,13 @@ def disk_admission_refusal(plan: RunPlan, exp, *, raw: Mapping[str, Any], data,
     if refusal is not None:
         return DiskRefusal(layered(
             refusal[0].upper() + refusal[1:] + ".",
-            "Refused before the download, so nothing was spent.  "
+            ("Refused before the download and before hydro preparation, so nothing was spent.  "
+             if hydro_basis else "Refused before the download, so nothing was spent.  ")
+            +
             f"Download: {projection['download']['basis']}.  "
             f"Preparation: {projection['preparation']['basis']}.  "
             + stream_basis
+            + (f"Hydro: {hydro_basis}.  " if hydro_basis else "")
             + f"Bytes per cell: {disk_budget.MEASURED}."),
             folders=((str(scratch_folder),)
                      if scratch_folder is not None and str(scratch_folder) in refusal
@@ -7040,6 +7138,8 @@ def _staged_chain(plan: RunPlan, *, config_path: Path, exp,
 def _prepared_chain_result(root: Path, config: Path, namelist: Path | None, *, bundle=None) -> dict:
     """Relay a prepared bundle and its authority paths without forecasting."""
     from gpuwm.stage_cli import resolve_bundle
+    from gpuwm.hydro.retention import pin_current
+    pin_current(root)
     bundle = resolve_bundle(root) if bundle is None else bundle
     return {'schema': 'gpuwm-preparation-result-v1', 'prepared_root': str(root.resolve()),
             'bundle': bundle, 'experiment_config': str(config.resolve()),
@@ -7056,6 +7156,9 @@ def _staged_forecast(argv: list[str], *, layout: str,
     reach the observer directly, so time-to-first-plot is real.
     """
 
+    from gpuwm.hydro.retention import pin_current
+    if "--prepared-root" in argv:
+        pin_current(argv[argv.index("--prepared-root") + 1])
     if layout == "tree":
         from gpuwm import prepared_domain_tree_forecast as runner
     else:
@@ -7974,6 +8077,10 @@ def execute_plan(plan: RunPlan, *, events: EventStream) -> int:
                 error.folders = refusal.folders
             raise error
 
+        from gpuwm.hydro.runtime import pending_launch_args, rebind_launch
+        if (hydro_args := pending_launch_args()) is not None:
+            rebind_launch(hydro_args, admitted=True)
+
         heartbeat = RuntimeHeartbeat(
             run_dir / HEARTBEAT_NAME, run_id=run_id,
             config_sha256=resolution["plan"]["config_sha256"],
@@ -7983,6 +8090,9 @@ def execute_plan(plan: RunPlan, *, events: EventStream) -> int:
             accepted_wall=accepted_wall)
         if plan.run_options.get("grib2"):
             observer.arm_grib2(run_dir / "grib2")
+        from gpuwm.live_columns import columns_enabled
+        if columns_enabled(plan.run_options):
+            observer.arm_columns(run_dir / "columns")
         heartbeat.starting()
 
         if fetch_arguments is not None:
@@ -8056,6 +8166,8 @@ def execute_plan(plan: RunPlan, *, events: EventStream) -> int:
         stage = "finalize"
         observer.enter_stage("finalize")
         grib2_summary = observer.stop_grib2()
+        # Every grid's last frame too when the run ended off the hour; the files are already on disk.
+        observer.stop_columns()
         receipts = _receipts(run_dir)
         observer.finish_stage(receipts=receipts)
         heartbeat.complete(_finite_seconds(
@@ -8091,6 +8203,10 @@ def execute_plan(plan: RunPlan, *, events: EventStream) -> int:
                 pass
             try:
                 observer.stop_live_products(halt=interrupted)
+            except Exception:  # noqa: BLE001 - the failure is the event
+                pass
+            try:
+                observer.stop_columns(halt=interrupted)
             except Exception:  # noqa: BLE001 - the failure is the event
                 pass
             observer.finish_stage(outcome="failed")

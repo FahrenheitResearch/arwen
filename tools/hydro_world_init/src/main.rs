@@ -70,7 +70,7 @@ fn read_fabric(path: &str) -> Result<(hydro_world::contract::Fabric, String)> {
     // The file hash and the table read run side by side.
     let (fab, sha) = rayon::join(
         || hydro_world::gpkg::read(path).map(|(fab, _report)| fab),
-        || std::fs::read(path).map(|bytes| packet::sha256_hex(&bytes)).map_err(|e| format!("{path}: {e}")),
+        || packet::sha256_file(std::path::Path::new(path)),
     );
     Ok((fab?, sha?))
 }
@@ -119,7 +119,7 @@ fn cmd_weights(r: &Value) -> Result<Value> {
     let fabric_path = s(r, "fabric")?;
     let (fab, sha) = read_fabric(fabric_path)?;
     let divides = grid::read_divides(&fab)?;
-    c.stage("read fabric", "1 thread (SQLite read)");
+    c.stage("read fabric", "9 SQLite readers; all-core bounded conversion, geometry decode and parallel file hash");
     let src = ncread::open(s(r, "grid_file")?)?;
     let g = ncread::grid(&src, row)?;
     c.stage("read grid", "1 thread (coordinates only)");
@@ -227,7 +227,7 @@ fn cmd_state(r: &Value) -> Result<Value> {
         return Err("weights were built for a different fabric file".into());
     }
     let (params, _inis, pinfo) = packet::params_for(&fab, &w.catchment_ids, r["params"].as_str())?;
-    c.stage("read fabric, weights, parameters", "1 thread");
+    c.stage("read fabric, weights, parameters", "9 SQLite readers, all-core bounded decode and hash; all-core CFE parameters; ordered weights JSON");
     let src = ncread::open(s(r, "source_file")?)?;
     let valid = s(r, "valid_time")?;
     let rec = ncread::record_index(&src, time::parse(valid)?)?;
@@ -272,10 +272,14 @@ fn cmd_state(r: &Value) -> Result<Value> {
     let violations: usize = bad.values().sum();
     let dir = new_dir(s(r, "output")?)?;
     let entries = write_arrays(dir, &arrays)?;
-    let cfe_init: serde_json::Map<String, Value> = w.catchment_ids.iter().zip(&m.states).map(|(id, x)| (id.clone(), json!({"soil_storage": x.cfe_soil_storage, "gw_storage": x.cfe_gw_storage}))).collect();
-    let noah: serde_json::Map<String, Value> = w.catchment_ids.iter().zip(&m.states).map(|(id, x)| (id.clone(), json!({"sh2o": x.sh2o, "sice": x.sice}))).collect();
-    write_json(&dir.join("cfe-initial.json"), &Value::Object(cfe_init))?;
-    write_json(&dir.join("noahowp-overrides.json"), &Value::Object(noah))?;
+    let (cfe_result, noah_result) = rayon::join(
+        || packet::write_keyed_json(&dir.join("cfe-initial.json"), &w.catchment_ids,
+            |k| json!({"soil_storage": m.states[k].cfe_soil_storage, "gw_storage": m.states[k].cfe_gw_storage})),
+        || packet::write_keyed_json(&dir.join("noahowp-overrides.json"), &w.catchment_ids,
+            |k| json!({"sh2o": m.states[k].sh2o, "sice": m.states[k].sice})),
+    );
+    cfe_result?;
+    noah_result?;
     let stats: serde_json::Map<String, Value> = arrays.iter().map(|a| (a.name.clone(), serde_json::to_value(state::stat(a.data.iter().copied())).unwrap())).collect();
     let layer_stats: Vec<Value> = (0..nl).map(|j| json!({"layer": j, "smc": state::stat(m.states.iter().map(|x| x.smc[j])), "sice": state::stat(m.states.iter().map(|x| x.sice[j])), "stc": state::stat(m.states.iter().map(|x| x.stc[j]))})).collect();
     let manifest = json!({"schema": "arwen.hydro-world.init-state.v1", "row": row_name, "licence": row.licence.spdx, "attribution": row.licence.attribution,
@@ -284,7 +288,7 @@ fn cmd_state(r: &Value) -> Result<Value> {
         "engine_handoff": {"cfe": "cfe-initial.json gives soil_storage/gw_storage per catchment for hydro_world::derive::cfe_ini (CfeInitial) -> nextgen-cfe-prepare",
                            "noahowp": "noahowp-overrides.json gives sh2o/sice per catchment as arwen-noahowp-init overrides (namelist keys)",
                            "thermal_and_snow_state": "engine-packets binds soil_temperature_noah and aggregate SWE/depth/temperature to arwen-noahowp-init; snow recipe aggregate-all-ice-divide-v1"}});
-    c.stage("write packet", "rayon over arrays");
+    c.stage("write packet", "all-core array and keyed JSON encoding; ordered file joins");
     let msha = write_json(&dir.join("manifest.json"), &manifest)?;
     let receipt = json!({"schema": "arwen.hydro-world.init-state-receipt.v1", "row": row_name, "valid_time": valid, "catchments": n,
         "counts": m.counts, "bounds_violations": violations, "bounds_checks": bad, "stats": stats, "noah_layers": layer_stats,
@@ -331,7 +335,7 @@ fn cmd_spinup(r: &Value) -> Result<Value> {
     let row_name = s(r, "row")?;
     let row = table::admit(&tbl, row_name)?;
     let (fab, fsha) = read_fabric(s(r, "fabric")?)?;
-    c.stage("read fabric", "table read beside the file hash (2 tasks)");
+    c.stage("read fabric", "9 SQLite readers; all-core bounded conversion, geometry decode and parallel file hash");
     let w = load_weights(s(r, "weights")?)?;
     if w.fabric_sha256 != fsha {
         return Err("weights were built for a different fabric file".into());
@@ -349,7 +353,8 @@ fn cmd_spinup(r: &Value) -> Result<Value> {
             gw0.iter_mut().for_each(|v| *v = x);
         }
     }
-    let (mut params, inis, pinfo) = packet::params_for(&fab, &w.catchment_ids, r["params"].as_str())?;
+    let (mut params, inis, pinfo) =
+        packet::params_for(&fab, &w.catchment_ids, r["params"].as_str())?;
     for (k, p) in params.iter_mut().enumerate() {
         p.soil_storage = soil0[k];
         p.gw_storage = gw0[k];
@@ -373,24 +378,47 @@ fn cmd_spinup(r: &Value) -> Result<Value> {
             + "\n"
     };
     // Every catchment's INI round trip, checked on all cores.
-    params.par_iter().enumerate().try_for_each(|(k, p)| -> Result<()> {
-        if cfe::parse_ini(&ini_for(k))? != *p {
-            return Err(format!("{}: INI text does not reproduce the spin-up parameters", w.catchment_ids[k]).into());
-        }
-        Ok(())
-    })?;
-    c.stage("initial state, parameters", "reads 1 thread; INI round-trip check on all cores");
+    params
+        .par_iter()
+        .enumerate()
+        .try_for_each(|(k, p)| -> Result<()> {
+            if cfe::parse_ini(&ini_for(k))? != *p {
+                return Err(format!(
+                    "{}: INI text does not reproduce the spin-up parameters",
+                    w.catchment_ids[k]
+                )
+                .into());
+            }
+            Ok(())
+        })?;
+    c.stage(
+        "initial state, parameters",
+        "reads 1 thread; INI round-trip check on all cores",
+    );
     // land weights from the state file's land fraction, if the row has one
-    let land = match row.state.land_fraction.as_ref().and_then(|v| v.get("variable")).and_then(|v| v.as_str()) {
+    let land = match row
+        .state
+        .land_fraction
+        .as_ref()
+        .and_then(|v| v.get("variable"))
+        .and_then(|v| v.as_str())
+    {
         Some(var) => {
-            let lf = r["land_file"].as_str().ok_or("spinup needs land_file (the state file) when the row has a land fraction")?;
+            let lf = r["land_file"].as_str().ok_or(
+                "spinup needs land_file (the state file) when the row has a land fraction",
+            )?;
             let ls = ncread::open(lf)?;
             Some(ncread::field(&ls, var, 0)?)
         }
         None => None,
     };
     let lw = state::land_weights(&w, land.as_deref())?;
-    let files: Vec<String> = r["forcing_files"].as_array().ok_or("forcing_files")?.iter().map(|v| v.as_str().unwrap_or("").to_string()).collect();
+    let files: Vec<String> = r["forcing_files"]
+        .as_array()
+        .ok_or("forcing_files")?
+        .iter()
+        .map(|v| v.as_str().unwrap_or("").to_string())
+        .collect();
     let start = time::parse(s(r, "start")?)?;
     let hours = r["hours"].as_u64().ok_or("hours")? as usize;
     let days = hours / 24;
@@ -400,14 +428,23 @@ fn cmd_spinup(r: &Value) -> Result<Value> {
         inp: f64,
         out_et: f64,
         runoff: Vec<f64>,
+        first_runoff: f64,
         daily: Vec<[f64; 6]>,
         resid: f64,
         q_last_day_m_h: f64,
         totals: [f64; 3],
     }
     // Catchments traced for the native comparison: their exact per-hour inputs.
-    let trace_k: Vec<usize> = r["trace"].as_array().cloned().unwrap_or_default().iter()
-        .map(|v| v.as_u64().map(|k| k as usize).ok_or("trace entries are catchment indices"))
+    let trace_k: Vec<usize> = r["trace"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(|v| {
+            v.as_u64()
+                .map(|k| k as usize)
+                .ok_or("trace entries are catchment indices")
+        })
         .collect::<std::result::Result<_, _>>()?;
     let mut trace_csv: Vec<String> = vec![String::new(); trace_k.len()];
     let mut outs: Vec<Out> = params
@@ -415,8 +452,18 @@ fn cmd_spinup(r: &Value) -> Result<Value> {
         .map(|p| {
             let m = cfe::Cfe::new(p);
             let s0 = m.storage();
-            Out { cfe: m, s0, inp: 0.0, out_et: 0.0, runoff: Vec::with_capacity(hours), daily: vec![[0.0f64; 6]; days.max(1)],
-                  resid: 0.0, q_last_day_m_h: 0.0, totals: [0.0; 3] }
+            Out {
+                cfe: m,
+                s0,
+                inp: 0.0,
+                out_et: 0.0,
+                runoff: Vec::with_capacity(24),
+                first_runoff: 0.0,
+                daily: vec![[0.0f64; 6]; days.max(1)],
+                resid: 0.0,
+                q_last_day_m_h: 0.0,
+                totals: [0.0; 3],
+            }
         })
         .collect();
     // Forcing and CFE advance together in 24 h chunks, so only the files a
@@ -430,6 +477,13 @@ fn cmd_spinup(r: &Value) -> Result<Value> {
     let carrying = r["carry_to"].as_str().is_some();
     let mut truncated = Value::Null;
     let mut hours = hours;
+    let continuous = r["retain_runoff_replay"].as_bool().unwrap_or(false);
+    let dir = new_dir(s(r, "output")?)?;
+    let history_dir = dir.join("history-slabs");
+    let mut history_slabs = Vec::new();
+    if continuous {
+        std::fs::create_dir(&history_dir)?;
+    }
     for h0 in (0..hours).step_by(24) {
         let h1 = (h0 + 24).min(hours);
         let (water_m, pet_m) = match stream.chunk(h0, h1) {
@@ -443,6 +497,7 @@ fn cmd_spinup(r: &Value) -> Result<Value> {
             Err(e) => return Err(e),
         };
         outs.par_iter_mut().enumerate().for_each(|(k, o)| {
+            o.runoff.clear();
             let m = &mut o.cfe;
             for h in h0..h1 {
                 let precip_mm_h = water_m[h - h0][k] * 1000.0;
@@ -453,6 +508,9 @@ fn cmd_spinup(r: &Value) -> Result<Value> {
                 o.out_et += m.actual_et_m;
                 o.totals[2] += m.qout_m;
                 o.runoff.push(m.qout_m);
+                if h == 0 {
+                    o.first_runoff = m.qout_m;
+                }
                 let d = (h / 24).min(o.daily.len() - 1);
                 o.daily[d][0] += m.soil.storage_m / m.soil.storage_max_m / 24.0;
                 o.daily[d][1] += m.gw.storage_m / m.gw.storage_max_m / 24.0;
@@ -465,10 +523,21 @@ fn cmd_spinup(r: &Value) -> Result<Value> {
                 }
             }
         });
+        if continuous {
+            let part = history_dir.join(format!("{h0:06}"));
+            std::fs::create_dir(&part)?;
+            let rows: Vec<&[f64]> = outs.iter().map(|o| o.runoff.as_slice()).collect();
+            packet::write_history(&part, &rows, h1 - h0)?;
+            history_slabs.push((part.join("runoff_replay.f64"), h1 - h0));
+        }
         for (slot, &k) in trace_csv.iter_mut().zip(&trace_k) {
             if k < params.len() {
                 for h in h0..h1 {
-                    slot.push_str(&format!("{:e},{:e}\n", water_m[h - h0][k] * 1000.0, pet_m[h - h0][k] / 3600.0));
+                    slot.push_str(&format!(
+                        "{:e},{:e}\n",
+                        water_m[h - h0][k] * 1000.0,
+                        pet_m[h - h0][k] / 3600.0
+                    ));
                 }
             }
         }
@@ -494,25 +563,38 @@ fn cmd_spinup(r: &Value) -> Result<Value> {
     // the spun-up state. The mass-balance residual above is the spin-up's own.
     let mut soil_override = Value::Null;
     if let Some(dir) = r["soil_override"].as_str() {
-        let man: Value = serde_json::from_str(&std::fs::read_to_string(std::path::Path::new(dir).join("manifest.json"))?)?;
+        let man: Value = serde_json::from_str(&std::fs::read_to_string(
+            std::path::Path::new(dir).join("manifest.json"),
+        )?)?;
         if man["fabric_sha256"] != fsha {
             return Err(format!("{dir}: soil override was made for another fabric").into());
         }
         if man["catchment_ids"] != json!(w.catchment_ids) {
-            return Err(format!("{dir}: soil override catchment order differs from the spin-up").into());
+            return Err(
+                format!("{dir}: soil override catchment order differs from the spin-up").into(),
+            );
         }
         let frac = read_state_packet(dir, "cfe_soil_storage")?;
         if frac.len() != outs.len() {
-            return Err(format!("{dir}: soil override has {} catchments, spin-up {}", frac.len(), outs.len()).into());
+            return Err(format!(
+                "{dir}: soil override has {} catchments, spin-up {}",
+                frac.len(),
+                outs.len()
+            )
+            .into());
         }
-        let changes: Vec<Option<f64>> = outs.par_iter_mut().zip(&frac).map(|(o, f)| {
-            if !(f.is_finite() && (0.0..=1.0).contains(f)) {
-                return None;
-            }
-            let before = o.cfe.soil.storage_m;
-            o.cfe.soil.storage_m = f * o.cfe.soil.storage_max_m;
-            Some(o.cfe.soil.storage_m - before)
-        }).collect();
+        let changes: Vec<Option<f64>> = outs
+            .par_iter_mut()
+            .zip(&frac)
+            .map(|(o, f)| {
+                if !(f.is_finite() && (0.0..=1.0).contains(f)) {
+                    return None;
+                }
+                let before = o.cfe.soil.storage_m;
+                o.cfe.soil.storage_m = f * o.cfe.soil.storage_max_m;
+                Some(o.cfe.soil.storage_m - before)
+            })
+            .collect();
         let applied: Vec<f64> = changes.iter().flatten().copied().collect();
         soil_override = json!({"state_packet": dir, "valid_time": man["valid_time"], "row": man["row"],
             "catchments_overridden": applied.len(), "catchments_kept_spun_up": outs.len() - applied.len(),
@@ -520,9 +602,14 @@ fn cmd_spinup(r: &Value) -> Result<Value> {
         c.stage("live analysis soil override", &cores());
     }
     let n = outs.len();
-    let finite = outs.iter().all(|o| o.cfe.storage().is_finite() && o.daily.iter().flatten().all(|x| x.is_finite()));
+    let finite = outs
+        .iter()
+        .all(|o| o.cfe.storage().is_finite() && o.daily.iter().flatten().all(|x| x.is_finite()));
     let inside = outs.iter().all(|o| {
-        o.cfe.soil.storage_m >= 0.0 && o.cfe.soil.storage_m <= o.cfe.soil.storage_max_m + 1e-12 && o.cfe.gw.storage_m >= 0.0 && o.cfe.gw.storage_m <= o.cfe.gw.storage_max_m + 1e-12
+        o.cfe.soil.storage_m >= 0.0
+            && o.cfe.soil.storage_m <= o.cfe.soil.storage_max_m + 1e-12
+            && o.cfe.gw.storage_m >= 0.0
+            && o.cfe.gw.storage_m <= o.cfe.gw.storage_max_m + 1e-12
     });
     let max_resid = outs.iter().map(|o| o.resid.abs()).fold(0.0, f64::max);
     let overflow: u64 = outs.iter().map(|o| o.cfe.perc_overflow_events).sum();
@@ -543,19 +630,49 @@ fn cmd_spinup(r: &Value) -> Result<Value> {
     // drift over the last 7 days, per catchment, of daily mean total storage relative to that week's water input
     let last = days.saturating_sub(1);
     let first_of_week = days.saturating_sub(7);
-    let drift: Vec<f64> = outs.iter().map(|o| (o.daily[last][2] - o.daily[first_of_week][2]) * 1000.0).collect();
+    let drift: Vec<f64> = outs
+        .iter()
+        .map(|o| (o.daily[last][2] - o.daily[first_of_week][2]) * 1000.0)
+        .collect();
     let mut sorted = drift.iter().map(|x| x.abs()).collect::<Vec<_>>();
     sorted.sort_by(f64::total_cmp);
-    let p95 = sorted.get(((sorted.len() as f64) * 0.95) as usize).copied().unwrap_or(0.0);
-    let gw_drift: Vec<f64> = outs.iter().map(|o| o.daily[last][1] - o.daily[first_of_week][1]).collect();
+    let p95 = sorted
+        .get(((sorted.len() as f64) * 0.95) as usize)
+        .copied()
+        .unwrap_or(0.0);
+    let gw_drift: Vec<f64> = outs
+        .iter()
+        .map(|o| o.daily[last][1] - o.daily[first_of_week][1])
+        .collect();
     // A replay seed is tied to the first forcing hour, not the final day's
     // equilibrium. The coupled GPU initializer then routes EVERY hour through
     // MC and level-pool reservoirs before accepting the forecast initial state.
-    let continuous = r["retain_runoff_replay"].as_bool().unwrap_or(false);
-    let lateral: BTreeMap<String, f64> = w.catchment_ids.iter().zip(&outs).zip(&w.catchment_area_m2).map(|((id, o), a)| (id.clone(), (if continuous { o.runoff[0] } else { o.q_last_day_m_h }) * a / 3600.0)).collect();
-    let channel = if fab.flowpaths.is_empty() { None } else { Some(channel::steady_state(&fab, &lateral)?) };
-    c.stage("channel steady state", "1 thread (topological accumulation, < 1 s)");
-    let dir = new_dir(s(r, "output")?)?;
+    let lateral: BTreeMap<String, f64> = w
+        .catchment_ids
+        .iter()
+        .zip(&outs)
+        .zip(&w.catchment_area_m2)
+        .map(|((id, o), a)| {
+            (
+                id.clone(),
+                (if continuous {
+                    o.first_runoff
+                } else {
+                    o.q_last_day_m_h
+                }) * a
+                    / 3600.0,
+            )
+        })
+        .collect();
+    let channel = if fab.flowpaths.is_empty() {
+        None
+    } else {
+        Some(channel::steady_state(&fab, &lateral)?)
+    };
+    c.stage(
+        "channel steady state",
+        "topological accumulation 1 thread; independent Manning inversions on all cores",
+    );
     // Native-comparison inputs for chosen catchments: the exact INI and the
     // exact per-hour BMI inputs (shortest round-trip text) the spin-up used.
     let mut traced = Vec::new();
@@ -565,26 +682,98 @@ fn cmd_spinup(r: &Value) -> Result<Value> {
         std::fs::write(dir.join(format!("trace-{id}.csv")), csv)?;
         traced.push(id.clone());
     }
-    let soil_frac: Vec<f64> = outs.iter().map(|o| o.cfe.soil.storage_m / o.cfe.soil.storage_max_m).collect();
-    let gw_frac: Vec<f64> = outs.iter().map(|o| o.cfe.gw.storage_m / o.cfe.gw.storage_max_m).collect();
+    let soil_frac: Vec<f64> = outs
+        .iter()
+        .map(|o| o.cfe.soil.storage_m / o.cfe.soil.storage_max_m)
+        .collect();
+    let gw_frac: Vec<f64> = outs
+        .iter()
+        .map(|o| o.cfe.gw.storage_m / o.cfe.gw.storage_max_m)
+        .collect();
     let nn = outs.iter().map(|o| o.cfe.nash.len()).max().unwrap_or(0);
     let ng = outs.iter().map(|o| o.cfe.giuh.len()).max().unwrap_or(0);
     let mut arrays = vec![
-        Array { name: "cfe_soil_storage_m".into(), shape: vec![n], data: outs.iter().map(|o| o.cfe.soil.storage_m).collect(), units: "m".into(), meaning: "raw CFE soil reservoir storage after spin-up, without a fraction round trip".into() },
-        Array { name: "cfe_gw_storage_m".into(), shape: vec![n], data: outs.iter().map(|o| o.cfe.gw.storage_m).collect(), units: "m".into(), meaning: "raw CFE groundwater reservoir storage after spin-up, without a fraction round trip".into() },
-        Array { name: "cfe_soil_storage".into(), shape: vec![n], data: soil_frac.clone(), units: "1".into(), meaning: "CFE soil_storage after spin-up, fraction of smcmax*depth".into() },
-        Array { name: "cfe_gw_storage".into(), shape: vec![n], data: gw_frac.clone(), units: "1".into(), meaning: "CFE gw_storage after spin-up, fraction of max_gw_storage".into() },
-        Array { name: "cfe_nash_storage_subsurface".into(), shape: vec![n, nn], data: outs.iter().flat_map(|o| { let mut v = o.cfe.nash.clone(); v.resize(nn, 0.0); v }).collect(), units: "m".into(), meaning: "lateral-flow Nash cascade storages".into() },
-        Array { name: "cfe_giuh_queue".into(), shape: vec![n, ng], data: outs.iter().flat_map(|o| { let mut v = o.cfe.queue[..o.cfe.giuh.len()].to_vec(); v.resize(ng, 0.0); v }).collect(), units: "m".into(), meaning: "GIUH runoff queue".into() },
-        Array { name: "cfe_flux_perc_carry".into(), shape: vec![n], data: outs.iter().map(|o| o.cfe.flux_perc_m).collect(), units: "m".into(), meaning: "percolation flux the next CFE step reads (C carries it between calls)".into() },
-        Array { name: "runoff_last_day_mean".into(), shape: vec![n], data: outs.iter().map(|o| o.q_last_day_m_h).collect(), units: "m h-1".into(), meaning: "mean CFE Qout over the last 24 h of spin-up".into() },
-        Array { name: "mass_balance_residual".into(), shape: vec![n], data: outs.iter().map(|o| o.resid).collect(), units: "m".into(), meaning: "input - AET - Qout - storage change over the spin-up".into() },
+        Array {
+            name: "cfe_soil_storage_m".into(),
+            shape: vec![n],
+            data: outs.iter().map(|o| o.cfe.soil.storage_m).collect(),
+            units: "m".into(),
+            meaning: "raw CFE soil reservoir storage after spin-up, without a fraction round trip"
+                .into(),
+        },
+        Array {
+            name: "cfe_gw_storage_m".into(),
+            shape: vec![n],
+            data: outs.iter().map(|o| o.cfe.gw.storage_m).collect(),
+            units: "m".into(),
+            meaning:
+                "raw CFE groundwater reservoir storage after spin-up, without a fraction round trip"
+                    .into(),
+        },
+        Array {
+            name: "cfe_soil_storage".into(),
+            shape: vec![n],
+            data: soil_frac.clone(),
+            units: "1".into(),
+            meaning: "CFE soil_storage after spin-up, fraction of smcmax*depth".into(),
+        },
+        Array {
+            name: "cfe_gw_storage".into(),
+            shape: vec![n],
+            data: gw_frac.clone(),
+            units: "1".into(),
+            meaning: "CFE gw_storage after spin-up, fraction of max_gw_storage".into(),
+        },
+        Array {
+            name: "cfe_nash_storage_subsurface".into(),
+            shape: vec![n, nn],
+            data: outs
+                .iter()
+                .flat_map(|o| {
+                    let mut v = o.cfe.nash.clone();
+                    v.resize(nn, 0.0);
+                    v
+                })
+                .collect(),
+            units: "m".into(),
+            meaning: "lateral-flow Nash cascade storages".into(),
+        },
+        Array {
+            name: "cfe_giuh_queue".into(),
+            shape: vec![n, ng],
+            data: outs
+                .iter()
+                .flat_map(|o| {
+                    let mut v = o.cfe.queue[..o.cfe.giuh.len()].to_vec();
+                    v.resize(ng, 0.0);
+                    v
+                })
+                .collect(),
+            units: "m".into(),
+            meaning: "GIUH runoff queue".into(),
+        },
+        Array {
+            name: "cfe_flux_perc_carry".into(),
+            shape: vec![n],
+            data: outs.iter().map(|o| o.cfe.flux_perc_m).collect(),
+            units: "m".into(),
+            meaning: "percolation flux the next CFE step reads (C carries it between calls)".into(),
+        },
+        Array {
+            name: "runoff_last_day_mean".into(),
+            shape: vec![n],
+            data: outs.iter().map(|o| o.q_last_day_m_h).collect(),
+            units: "m h-1".into(),
+            meaning: "mean CFE Qout over the last 24 h of spin-up".into(),
+        },
+        Array {
+            name: "mass_balance_residual".into(),
+            shape: vec![n],
+            data: outs.iter().map(|o| o.resid).collect(),
+            units: "m".into(),
+            meaning: "input - AET - Qout - storage change over the spin-up".into(),
+        },
     ];
-    if continuous {
-        arrays.push(Array { name: "runoff_replay".into(), shape: vec![n, hours],
-            data: outs.iter().flat_map(|o| o.runoff.iter().copied()).collect(),
-            units: "m per hour".into(), meaning: "CFE Qout at every replay hour; catchment-major, chronological within each catchment".into() });
-    }
     let routing_ids = if let Some(ch) = &channel {
         arrays.push(Array { name: "routing_state".into(), shape: vec![ch.state.len(), 3], data: ch.state.iter().flatten().copied().collect(), units: "m3 s-1, m s-1, m".into(), meaning: "steady-state (Q, velocity, depth) per flowpath, flowpaths table order (routing_ids.json)".into() });
         // Bind the ordered ID axis and the state array in the same manifest.
@@ -594,11 +783,15 @@ fn cmd_spinup(r: &Value) -> Result<Value> {
     } else {
         None
     };
-    let entries = write_arrays(dir, &arrays)?;
-    let cfe_init: serde_json::Map<String, Value> = w.catchment_ids.iter().zip(soil_frac.iter().zip(&gw_frac)).map(|(id, (s, g))| (id.clone(), json!({"soil_storage": s, "gw_storage": g}))).collect();
-    write_json(&dir.join("cfe-initial.json"), &Value::Object(cfe_init))?;
-    let raw_initial = raw_cfe::write(dir, w.catchment_ids.iter().enumerate()
-        .map(|(k, id)| json!({"id": id, "ini": ini_for(k)})).collect())?;
+    let mut entries = write_arrays(dir, &arrays)?;
+    if continuous {
+        entries.push(packet::combine_history(dir, &history_slabs, n)?);
+        std::fs::remove_dir_all(&history_dir)?;
+    }
+    packet::write_keyed_json(&dir.join("cfe-initial.json"), &w.catchment_ids,
+        |k| json!({"soil_storage": soil_frac[k], "gw_storage": gw_frac[k]}))?;
+    let raw_initial = raw_cfe::write_generated(dir, w.catchment_ids.len(),
+        |k| json!({"id": w.catchment_ids[k], "ini": ini_for(k)}))?;
     // carry_to: the forecast starts after the source's last hour. The state
     // spun up to that hour is the state at carry_to (held, persistence), and
     // the packet says so; routing binds it at the forecast origin.
@@ -607,11 +800,19 @@ fn cmd_spinup(r: &Value) -> Result<Value> {
         Some(to) => {
             let t = time::parse(to)?;
             if t < spin_end || (t - spin_end) % 3600 != 0 {
-                return Err(format!("carry_to {to} must be whole hours at or after the spin-up end {}", time::iso(spin_end)).into());
+                return Err(format!(
+                    "carry_to {to} must be whole hours at or after the spin-up end {}",
+                    time::iso(spin_end)
+                )
+                .into());
             }
-            (t, t - spin_end, json!({"method": "persistence: the state spun up to the source's last hour is held to the forecast start",
+            (
+                t,
+                t - spin_end,
+                json!({"method": "persistence: the state spun up to the source's last hour is held to the forecast start",
                 "spinup_end": time::iso(spin_end), "carried_to": to, "hours": (t - spin_end) / 3600,
-                "reason": r["carry_reason"].clone(), "spinup_truncated": truncated.clone()}))
+                "reason": r["carry_reason"].clone(), "spinup_truncated": truncated.clone()}),
+            )
         }
         None => (spin_end, 0, Value::Null),
     };
@@ -638,13 +839,16 @@ fn cmd_spinup(r: &Value) -> Result<Value> {
         }
     }
     let msha = write_json(&dir.join("manifest.json"), &manifest)?;
-    let tot = outs.iter().zip(&w.catchment_area_m2).fold([0.0; 3], |mut a, (o, ar)| {
-        for i in 0..3 {
-            a[i] += o.totals[i] * ar / area;
-        }
-        a
-    });
-    c.stage("write packet", "rayon over arrays");
+    let tot = outs
+        .iter()
+        .zip(&w.catchment_area_m2)
+        .fold([0.0; 3], |mut a, (o, ar)| {
+            for i in 0..3 {
+                a[i] += o.totals[i] * ar / area;
+            }
+            a
+        });
+    c.stage("write packet", "all-core array and keyed JSON encoding; ordered file joins");
     let receipt = json!({"schema": "arwen.hydro-world.init-spinup-receipt.v1", "row": row_name, "catchments": n, "hours": hours, "end": time::iso(end), "carry_over": carry, "soil_override": soil_override,
         "forcing_records_read": stream.records_read, "all_finite": finite, "storages_inside_bounds": inside,
         "max_abs_mass_balance_residual_m": max_resid, "percolation_overflow_branch_events": overflow,
@@ -699,7 +903,7 @@ fn cmd_engine_packets(r: &Value) -> Result<Value> {
     let attrs = fab.model_attributes.as_ref().ok_or("fabric has no model_attributes (run hydro-world-params first)")?;
     let by_id: BTreeMap<&str, &hydro_world::contract::ModelAttributes> =
         attrs.iter().filter_map(|m| m.divide_id.as_deref().map(|d| (d, m))).collect();
-    c.stage("read fabric", "1 thread (SQLite read)");
+    c.stage("read fabric", "9 SQLite readers; all-core bounded conversion, geometry decode and parallel file hash");
     let (state_dir, spin_dir) = (s(r, "state")?, s(r, "spinup")?);
     let mut layer_bounds = Vec::new();
     let mut spin_manifest = Value::Null;
@@ -827,6 +1031,18 @@ const SOURCE_REV_STAMP: &str = concat!("GPUWM_BRIDGE_SOURCE_REV=", env!("GPUWM_B
 fn main() {
     std::hint::black_box(SOURCE_REV_STAMP);
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--proj-probe") {
+        let p = proj::Transform::new("EPSG:4326", "EPSG:5070").and_then(|t| t.apply(-97., 35.));
+        match p {
+            Ok(p) if (p[0] + 90515.4982698843).abs() < 0.001 && (p[1] - 1327277.0317004607).abs() < 0.001 => {
+                println!("{}", json!({"proj_version": hydro_proj::VERSION, "resources": "embedded-only",
+                    "network": false, "output": p, "output_bits": p.map(f64::to_bits)}));
+                return;
+            }
+            other => { eprintln!("PROJ probe failed: {other:?}"); std::process::exit(1); }
+        }
+    }
+
     if args.len() != 3 {
         eprintln!("usage: rw_hydro_init <tessellate|bbox|weights|state|spinup|forcing-gaps|forcing-fill|cfe-trace|engine-packets> REQUEST.json");
         std::process::exit(2);

@@ -280,6 +280,20 @@ class GeogSelection:
         from .orographic import orographic_request
         return replace(self, orographic=orographic_request(names))
 
+    def with_off_grid_tokens(self, tokens: str | None) -> "GeogSelection":
+        """Apply a source's off-grid recipe only to the default selection.
+
+        Planning and building share this resolution without requiring staged
+        files. Explicit namelist selectors and non-dataset settings survive.
+        """
+        if tokens is None or self.resolution_tokens != ("default",):
+            return self
+        from dataclasses import replace
+        resolved = self.from_tokens(self.root, tokens)
+        return replace(self, resolution_tokens=resolved.resolution_tokens,
+                       **{field: getattr(resolved, field)
+                          for field in _DEFAULT_GEOG_DIRS})
+
     @classmethod
     def fallback(cls, geog_root) -> "GeogSelection":
         return cls(root=Path(geog_root), resolution_tokens=("default",),
@@ -1719,10 +1733,9 @@ def _with_off_grid_recipe(selection: GeogSelection, tokens: str | None, grid,
     it on 63% of land cells and read 0.05 wetter in RUC's moisture
     availability.
     """
-    if tokens is None or selection.resolution_tokens != ("default",):
+    resolved = selection.with_off_grid_tokens(tokens)
+    if resolved is selection:
         return selection
-    from dataclasses import replace
-    resolved = GeogSelection.from_tokens(selection.root, tokens)
     changed = {field: getattr(resolved, field) for field in _DEFAULT_GEOG_DIRS
                if getattr(resolved, field) != getattr(selection, field)}
     missing = sorted(directory for directory in set(changed.values())
@@ -1751,9 +1764,7 @@ def _with_off_grid_recipe(selection: GeogSelection, tokens: str | None, grid,
           f"with the source's own datasets (geog_data_res {tokens}: "
           + ", ".join(f"{field}={directory}" for field, directory
                       in sorted(changed.items())) + ")", flush=True)
-    return replace(selection, resolution_tokens=resolved.resolution_tokens,
-                   **{field: getattr(resolved, field)
-                      for field in _DEFAULT_GEOG_DIRS})
+    return resolved
 
 
 def _build_static_routed(

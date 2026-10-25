@@ -122,3 +122,53 @@ def test_unknown_provider_prices_only_known_storage_with_named_gaps():
     assert value.non_pool_bytes is None
     depth = inundation_memory(settings={}, options={"terrain_component": "missing"}, context=context, components={})
     assert depth.gaps and [a.name for a in depth.arrays] == ["health"]
+
+
+def test_continental_array_bindings_decode_each_provider_evidence_once(monkeypatch):
+    from gpuwm.hydro import terrain_memory as module
+    from gpuwm.hydro.memory import ArrayMemory, StageMemory, MemoryContext
+    source = StageMemory((ArrayMemory('rows', (17,), 'int32'),),
+                         json.dumps({'context': {'numerics': 'fast'}, 'ordered_ids': list(range(8193))}))
+    context = MemoryContext('coupled', 'fast', 60)
+    bindings = module._Bindings({'fabric': source}, context)
+    loads = module.json.loads
+    calls = []
+    def counted(value):
+        calls.append(value)
+        return loads(value)
+    monkeypatch.setattr(module.json, 'loads', counted)
+    for i in range(1000):
+        array = bindings.get('fabric', 'rows', f'selection/{i}')
+        assert array.alias_of == 'fabric/rows' and array.shape == (17,)
+    assert calls == [source.evidence]
+    assert bindings.sources == {'fabric': source.evidence}
+    # A new binding scope must still reject a different numerics context.
+    strict = module._Bindings({'fabric': source}, MemoryContext('coupled', 'strict', 60))
+    with pytest.raises(ValueError, match='numerics differs'):
+        strict.get('fabric', 'rows', 'selection')
+
+
+def test_borrower_evidence_seals_prior_roster_without_recursive_embedding():
+    import hashlib
+    from gpuwm.hydro.terrain_memory import _Bindings
+    from gpuwm.hydro.memory import ArrayMemory, StageMemory, MemoryContext, HydroMemoryPlan
+    evidence = json.dumps({'context': {'numerics': 'fast'},
+                           'ordered_ids': ['cat-"\\\u00e9'] * 8193}, ensure_ascii=False)
+    source = StageMemory((ArrayMemory('rows', (17,), 'int32'),), evidence)
+    context = MemoryContext('coupled', 'fast', 60)
+    bindings = _Bindings({'fabric': source}, context)
+    view = bindings.get('fabric', 'rows', 'rows')
+    references = bindings.evidence_references()
+    assert references == {'fabric': {'stage': 'fabric', 'bytes': len(evidence.encode()),
+                                    'sha256': hashlib.sha256(evidence.encode()).hexdigest()}}
+    borrower = StageMemory((view,), json.dumps({'providers': references}))
+    row = HydroMemoryPlan(context, (('fabric', source), ('borrower', borrower)), (), 'sha').inventory()
+    assert row['evidence']['fabric'] == evidence
+    assert len(row['evidence']['borrower']) < 256
+    assert row['resident_bytes'] == 512  # the borrowed view adds no allocation
+    # A direct-manifest provider has no earlier stage; retain its full proof.
+    bindings.sources['local_fabric'] = evidence
+    assert bindings.evidence_references()['local_fabric']['inline'] == evidence
+    # A changed byte must change the reference, even with unchanged extents.
+    bindings.sources['fabric'] += ' '
+    assert bindings.evidence_references()['fabric']['sha256'] != references['fabric']['sha256']

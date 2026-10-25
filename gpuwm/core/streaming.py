@@ -1924,6 +1924,37 @@ def planner_machine(*, vram_bytes: int | None, name: str, device_profile=None):
                             device_profile=device_profile)
 
 
+class _solar_split_as:
+    """Measure a frame plan on ``state`` with its driver's split flag at ``value``.
+
+    The planned state's own driver never steps on a streamed domain, so its
+    ``_swdd_from_scheme`` is the pre-radiation default; the live tile
+    buffers' value is put in for the measurement and taken out after.
+    ``value`` ``None`` changes nothing.
+    """
+
+    def __init__(self, state, value):
+        self.physics = getattr(state, "physics", None) if value is not None else None
+        self.value = value
+
+    def __enter__(self):
+        physics = self.physics
+        if physics is not None:
+            self.owned = "_swdd_from_scheme" in vars(physics)
+            self.previous = getattr(physics, "_swdd_from_scheme", False)
+            physics._swdd_from_scheme = bool(self.value)
+        return self
+
+    def __exit__(self, *exc):
+        physics = self.physics
+        if physics is not None:
+            if self.owned:
+                physics._swdd_from_scheme = self.previous
+            else:
+                del physics._swdd_from_scheme
+        return False
+
+
 class StreamedDomain:
     """One domain integrated tile-by-tile, one sweep per ``__call__``.
 
@@ -2252,6 +2283,23 @@ class StreamedDomain:
         the statics are the domain's own arrays, and the gate is that a domain
         small enough to run both ways publishes byte-identical files.
         """
+        # THE SOLAR SPLIT ROWS JOIN THE FRAME WHEN THE PRODUCER HANDS THEM
+        # OVER, on a streamed domain as on a resident one.  SWDDIR, SWDDIF and
+        # SWDDNI are written only once a radiation call has handed over its
+        # direct/diffuse split (``io.history_layout``: ``_swdd_from_scheme``),
+        # so a resident run's first frame lacks them and every later frame has
+        # them.  The plan used to be taken once, at the first frame, against a
+        # state whose driver never steps (the prepared template, or the
+        # resident state the store was attached from) -- so a streamed run
+        # published none of the three in any frame.  MEASURED (X12): 5 km CONUS
+        # HRRR recipe, 1 h, the f01 file of a streamed run had 238 variables
+        # against the resident run's 241.  The flag is read off a live tile
+        # buffer, the planned state is measured with it, and the plan is taken
+        # again when it changes.
+        live_split = self._live_solar_split()
+        if (self._frame is not None and live_split is not None
+                and live_split != getattr(self, "_frame_solar_split", None)):
+            self._frame = None
         if self._frame is None:
             from tilestream import output as _output
 
@@ -2259,16 +2307,18 @@ class StreamedDomain:
             # come later, by the frame's own download (_ranked_frame).
             planning = self._planning_store()
             if self._state is not None and self._template is None:
-                plan = _output.frame_plan(
-                    self._state, extra_available=planning.keys())
+                with _solar_split_as(self._state, live_split):
+                    plan = _output.frame_plan(
+                        self._state, extra_available=planning.keys())
             elif self._template is not None:
                 # Resident ranks retain the live producer, while the prepared
                 # template predates the first radiation call and its native
                 # direct/diffuse output flag. Measure against a live rank.
                 template = self.template_state if self._ranked_road() else self._template
-                plan = _output.store_frame_plan(
-                    template, planning, self._run.cfg,
-                    extra_available=planning.keys())
+                with _solar_split_as(template, live_split):
+                    plan = _output.store_frame_plan(
+                        template, planning, self._run.cfg,
+                        extra_available=planning.keys())
             else:
                 raise StreamingRefused(
                     "this streamed domain was attached with neither a "
@@ -2285,6 +2335,7 @@ class StreamedDomain:
             self._frame = _output.StoreFrame(plan, planning,
                                              self.output_setup(),
                                              self._run.cfg, scalars=lambda: self.scalars)
+            self._frame_solar_split = live_split
         if self._ranked_road():
             return self._ranked_frame()
         # The frame's non-derived rows are zero-copy VIEWS of the pinned
@@ -2308,6 +2359,20 @@ class StreamedDomain:
     # stepping lost per frame against 0.25 s on one card.  A frame needs a
     # few dozen members; the road downloads those, on a stream of its own,
     # and the writer thread assembles the frame once they land.
+
+    def _live_solar_split(self) -> bool | None:
+        """Whether the tile buffers' last radiation call handed over SWDDIR/SWDDIF.
+
+        ``None`` when there is no live buffer driver to ask (the frame plan
+        is then taken exactly as before).
+        """
+        tiles = getattr(self._run, "tiles", None)
+        if not tiles:
+            return None
+        physics = getattr(tiles[0], "physics", None)
+        if physics is None or not hasattr(physics, "_swdd_from_scheme"):
+            return None
+        return bool(physics._swdd_from_scheme)
 
     def _ranked_road(self) -> bool:
         return bool(getattr(self._run, "ranked", False)) and hasattr(
@@ -2598,6 +2663,19 @@ class StreamedDomain:
         """One tile buffer.  The restart header's shape/dtype template."""
         return self._run.tiles[0]
 
+    def _nest_archive_state(self):
+        """Where this domain keeps its nest accumulation archive.
+
+        The archive is domain-level: the domain template on a store-direct
+        domain (where a move installs it and the next move reads it,
+        gpuwm.runtime capture_outgoing), else the resident state; a tile
+        buffer only when neither exists.
+        """
+        if self._template is not None:
+            return self._template
+        state = getattr(self, "_state", None)
+        return state if state is not None else self.template_state
+
     def restart_setup(self):
         """The :class:`tilestream.restart_stream.DomainSetup` for the header.
 
@@ -2712,6 +2790,7 @@ class StreamedDomain:
         return restart_stream.write_streamed_restart(
             path, self.store, cfg, scalars=self.scalars,
             setup=self.restart_setup(), template_state=self.template_state,
+            archive_state=self._nest_archive_state(),
             run_trackers=run_trackers, tree_header=tree_header,
             extra_scratch_slots=extra_scratch_slots,
             stochastic_binding=StreamedDomain._ensemble_stochastic_binding(self),
@@ -2741,6 +2820,7 @@ class StreamedDomain:
         publish = restart_stream.prepare_streamed_restart(
             path, store, cfg, scalars=self.scalars,
             setup=self.restart_setup(), template_state=self.template_state,
+            archive_state=self._nest_archive_state(),
             run_trackers=run_trackers, tree_header=tree_header,
             extra_scratch_slots=extra_scratch_slots,
             stochastic_binding=StreamedDomain._ensemble_stochastic_binding(self),
@@ -2772,6 +2852,7 @@ class StreamedDomain:
         return restart_stream.validate_streamed_restart(
             path, self.store, cfg, setup=self.restart_setup(),
             template_state=self.template_state, scalars=self.scalars,
+            archive_state=self._nest_archive_state(),
             extra_scratch_slots=extra_scratch_slots,
             stochastic_binding=StreamedDomain._ensemble_stochastic_binding(self))
 
@@ -4468,7 +4549,14 @@ def refl_handoff_hook():
     def hook(tile_state, tspec, itile, stream):
         if refl_10cm_is_stashed(tile_state):
             consume_refl_10cm(tile_state)
-        if getattr(tile_state, 'chem', None) is not None:
+        # Only on a step that ends on a history time.  Built every step, the
+        # chem history fields (all-cell 4-wavelength GOCART optics for
+        # AOD5502D/EXTCOF55 plus every chem diagnostic) cost each rank
+        # seconds per step: full-CONUS HRRR-Smoke on 8 x RTX 5090 stepped in
+        # 3.50 s with smoke on against 0.295 s off (V61, 2026-10-21).  A state
+        # that never stepped (no flag) keeps the old every-call behaviour.
+        if (getattr(tile_state, 'chem', None) is not None
+                and getattr(tile_state.chem, 'history_due', True)):
             from gpuwm.core.chem_history import streaming_fields
             streaming_fields(tile_state)
 
@@ -5495,6 +5583,12 @@ def prepared_tile_state_factory(state, cfg, *, tables0=None, seed: int = 4242,
         # the warm-up step this replaces stepped an analytic sounding against
         # the domain's real lateral forcing.
         make.primed = prime_lazy_carriers(tile, tile_cfg)
+        if driver is not None and getattr(tile, "physics", None) is not None:
+            # The sea ice model activates on the DOMAIN's data (ocean ice),
+            # never on this buffer's neutral geography (X12).
+            from gpuwm.ocean.seaice import prime_like
+            make.primed = make.primed + prime_like(
+                tile.physics.fields, driver.fields)
         if tables0 is not None:
             # A buffer retains one interval, whether the host series is
             # sealed or still arriving. The tile hook uses this same mirror

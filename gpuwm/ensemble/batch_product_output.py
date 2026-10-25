@@ -867,7 +867,8 @@ class HeadlineDiagnosticCollector:
                  thresholds=None, comparison=None, keep_member_files=False, available_bytes=None,
                  tile_rows=32, render_products=("mean", "spread", "min", "max", "prob", "paintball", "postage", "pmm", "spaghetti"),
                  events=None, array_module=None, member_order=None, member_metadata=(),
-                 retain_member_diagnostics=False, defer_replay=False, gpu_replay=False, resume=False):
+                 retain_member_diagnostics=False, defer_replay=False, gpu_replay=False, resume=False,
+                 columns_end_time=None):
         if array_module is None:
             import cupy as array_module
         self.xp, self.root, self.members = array_module, Path(root), index(members)
@@ -875,6 +876,9 @@ class HeadlineDiagnosticCollector:
         self.member_metadata = tuple(member_metadata)
         self.member_weights = roster_weights(self.member_order, self.member_metadata)
         self.member_archive = None
+        self.cyclone_request = None
+        self.cyclone_captures = {}
+        self.cyclone_swaths = {}
         self.renderer, self.start_time = Path(renderer), start_time
         # NumPy is the explicit host-only planning facade. Real collectors
         # require the native CPU contract before a member starts stepping.
@@ -918,6 +922,34 @@ class HeadlineDiagnosticCollector:
         self.product_consumer = DiagnosticProductConsumer(self.xp, gpu_replay=self.gpu_replay)
         self.history_ledger = EnsembleHistoryLedger(self.root, member_order=self.member_order, resume=resume)
         self.defer_replay = bool(defer_replay)
+        #: Each member's any-point column store (rw-store v2), written as its frames land
+        #: (:class:`gpuwm.live_columns.MemberColumns`); armed on the first member frame, off with GPUWM_COLUMNS=off.
+        self.member_columns = None
+        self._columns_end_time = columns_end_time
+
+    def _member_column_frame(self, *, state, streamed, fields, metadata, valid_time, domain, member_id):
+        """Queue this member frame for its column store when it is due. Never raises into the member."""
+        if self.xp is np:      # the host-only planning facade carries no model state
+            return
+        try:
+            if self.member_columns is None:
+                from gpuwm.live_columns import MemberColumns, columns_enabled
+                if not columns_enabled():
+                    self.member_columns = False
+                    return
+                self.member_columns = MemberColumns(self.root, end_time=self._columns_end_time)
+            if self.member_columns:
+                self.member_columns.submit(member=f"member-{index(member_id):04d}", domain=domain,
+                    valid_time=valid_time, state=None if streamed is not None else state,
+                    streamed_fields=fields if streamed is not None else None, metadata=metadata)
+        except Exception as error:  # noqa: BLE001 - a store never stops a member
+            print(f"member columns: frame not queued: {type(error).__name__}: {error}", file=sys.stderr, flush=True)
+
+    def stop_member_columns(self):
+        columns, self.member_columns = self.member_columns, False
+        if columns:
+            self._member_columns_summary = columns.stop()
+        return getattr(self, "_member_columns_summary", None)
 
     def save_resume(self, *, timeout=60):
         with self._lock:
@@ -1036,7 +1068,7 @@ class HeadlineDiagnosticCollector:
                 previous = next((old for old in reversed(self.rain_history)
                     if old != key and old[:3] == key[:3] and self.rain_history[old]), None)
                 # The ordinary relocation preparer carries overlap accumulators
-                # and seeds new ground from the parent (physics_continuation).
+                # and seeds strips under its declared accumulation policy.
                 # A proven zero forecast origin is coordinate independent. Keep
                 # it: subtracting the first moved frame would erase prior rain.
                 # Nonzero origins need a remap; never invent their new values.
@@ -1053,7 +1085,7 @@ class HeadlineDiagnosticCollector:
                     "previous_geometry": None if previous is None else previous[3],
                     "geometry": key[3],
                     "reason": "grid coordinates changed; reset comparison and rolling-window endpoints to avoid comparing different ground by index",
-                    "rain_total": ("preserved forecast-zero origin; engine carries overlap and parent-seeded strips"
+                    "rain_total": ("preserved forecast-zero origin; engine supplies placement counters under its declared accumulation policy"
                         if origin is not None else "unavailable: nonzero or missing forecast origin needs remapping"),
                     "rolling_qpf": "unavailable across relocation; requires both endpoints in this uninterrupted placement"})
         history[tick] = cumulative
@@ -1169,9 +1201,12 @@ class HeadlineDiagnosticCollector:
                 "gridded_aggregate_policy": "unavailable when member coordinates differ; member products retain native coordinates",
                 "native_product_consumer": self.product_consumer.receipt(),
                 "deferred_replay": self.defer_replay,
+                "cyclone_swaths": dict(self.cyclone_swaths),
                 "history_identity_ledger": (self.history_ledger.path.relative_to(self.root.resolve()).as_posix()
                     if self.history_ledger.records else None),
                 "member_diagnostics": (None if self.member_archive is None else self.member_archive.receipt()),
+                "member_columns": (self.member_columns.summary() if self.member_columns
+                                   else getattr(self, "_member_columns_summary", None)),
                 "domain_manifests": domains, "pending_rosters": pending,
                 "unavailable_products": unavailable, "member_files": list(self.member_files),
                 "events": {name: [{"field": c.field, "units": c.units,
@@ -1198,6 +1233,7 @@ class HeadlineDiagnosticCollector:
 
     def cancel_products(self):
         self.product_consumer.close(cancel=True)
+        self.stop_member_columns()
 
     def require_complete(self):
         """Check aligned output rosters; differing member grids stay explicit.
@@ -1210,6 +1246,8 @@ class HeadlineDiagnosticCollector:
         failure raises as itself here.
         """
         self.product_consumer.wait_idle(timeout=None)
+        if self.cyclone_request is not None and set(self.cyclone_captures) != set(self.member_order):
+            raise RuntimeError("every-step cyclone swaths are missing member captures")
         missing = self.receipt()["pending_rosters"]
         if self.defer_replay:
             missing = [row for row in missing if row["members_received"] != sorted(self.member_order)]
@@ -1219,10 +1257,54 @@ class HeadlineDiagnosticCollector:
                 f"received {first['members_received']} of {self.members}; publishing probability would bias its denominator")
         return self.receipt()
 
+    def observe_initial_state(self, *, model):
+        """Capture the restored analysis before the first integration step.
+
+        The counter handoff runs after member perturbations and restoration.
+        Without this sample an ordinary ensemble starts at its first step,
+        shortening exposure by that step and omitting analysis extrema.
+        """
+        if self.cyclone_request is None:
+            return
+        from gpuwm.ensemble.runtime_context import current_capture
+        if current_capture().member_id in self.cyclone_captures:
+            return
+        for node in model.walk_parent_first():
+            if getattr(node, '_started', True):
+                self.committed_step(node=node, model=model)
+
+    def committed_step(self, *, node, model):
+        """Keep each original member's extrema before its nest can move."""
+        request = self.cyclone_request
+        if request is None or node.cfg.grid_id != request.get('grid_id', 2):
+            return
+        from gpuwm.ensemble.runtime_context import current_capture
+        member = current_capture().member_id
+        capture = self.cyclone_captures.get(member)
+        if capture is None:
+            from gpuwm.tc_accumulator import Capture, utc_datetime
+            with self._lock:
+                capture = self.cyclone_captures.get(member)
+                if capture is None:
+                    options = dict(request, grid_id=request.get('grid_id', 2),
+                        analysis_time=utc_datetime(self.start_time).isoformat(),
+                        products=request.get('products', ['max-wind', 'rain', 'track']),
+                        experiment_label=f'original member {member}')
+                    capture = Capture(options)
+                    capture.root = self.root/'cyclone'/'members'/f'member-{member:04d}'/'swath'
+                    self.cyclone_captures[member] = capture
+        capture.committed_step(node=node, model=model)
+
     def finish_run(self):
         """Retire unpublishable products and release only owned diagnostics."""
+        self.stop_member_columns()
         self.product_consumer.close()
         with self._lock:
+            for member, capture in self.cyclone_captures.items():
+                if member not in self.cyclone_swaths:
+                    with capture.common.maximum.device:
+                        capture.finish()
+                    self.cyclone_swaths[member] = str((capture.root/'receipt.json').relative_to(self.root))
             if self.member_archive is not None:
                 self.member_archive.finish()
             for (_, _, valid), entries in self.cohorts.items():
@@ -1352,6 +1434,8 @@ class HeadlineDiagnosticCollector:
         tick = self._tick(valid_time)
         if (rain_key, tick) in self._resume_output_ticks:
             return None
+        self._member_column_frame(state=state, streamed=streamed, fields=fields, metadata=metadata,
+            valid_time=valid_time, domain=domain, member_id=member_id)
         if key not in self.spools:
             self.spools[key] = NativeDiagnosticSpool(self.root, members=self.members,
                 requests=self.requests, latitude=latitude, longitude=longitude,

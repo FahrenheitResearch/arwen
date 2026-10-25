@@ -3514,7 +3514,38 @@ mod cli_contracts;
 #[path = "bin/scorecard.rs"] mod scorecard_cli;
 #[path = "bin/nowcast_frames.rs"] mod nowcast_frames;
 
+/// Stack of each worker in this binary's global rayon pool (std's default is
+/// 2 MiB).  THE BREAKAGE THIS PREVENTS (hex graded-plateau 1 km region, box J,
+/// 2026-10-24): `rw_wrfbatch --list-products` on a 973x971 frame aborted with
+/// "fatal runtime error: stack overflow" in 3 of 5 door runs.  The import
+/// computes its twelve product groups in one `rayon::scope`, and their
+/// per-column `par_iter`s (wrf-core's CAPE/CIN among them) wait in `join`;
+/// a waiting worker steals and runs other halves on top of its own stack, so
+/// on a busy 384-thread host the steal chain inside `compute_cape_cin` grew
+/// past 2 MiB (gdb: SIGSEGV in a pool worker, every frame
+/// `join_context`/`bridge_producer_consumer::helper`/`wait_until_cold`).
+/// The steal depth is a scheduling outcome, not a property of the data, so
+/// the pool gets room for it; the computed values do not depend on it.
+/// Pages are touched only as deep as a chain reaches.
+const RAYON_WORKER_STACK_BYTES: usize = 32 << 20;
+
+/// Build the global rayon pool with [`RAYON_WORKER_STACK_BYTES`] (or a larger
+/// `RUST_MIN_STACK`) before anything uses it.  The thread count stays
+/// rayon's own default (`RAYON_NUM_THREADS`, else every core).
+fn install_rayon_worker_stack() {
+    let requested = std::env::var("RUST_MIN_STACK")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(0);
+    // An error here only means a pool already exists, which cannot happen
+    // before the first line of main; the default pool then stands.
+    let _ = rayon::ThreadPoolBuilder::new()
+        .stack_size(RAYON_WORKER_STACK_BYTES.max(requested))
+        .build_global();
+}
+
 fn main() -> ExitCode {
+    install_rayon_worker_stack();
     if std::env::args().any(|arg| arg == "--cf") {
         return rw_wrfbatch::cf_render::main();
     }

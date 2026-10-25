@@ -403,12 +403,19 @@ def history_frames(root) -> list["HistoryFrame"]:
     that nest reported that it published no history after writing a
     full one.
 
-    Two things this does that a bare ``rglob`` does not.
+    Three things this does that a bare ``rglob`` does not.
 
     It SKIPS readiness JSON sidecars and the writer's in-flight temporaries (``wrfout*.tmp*``,
     ``gpuwm.io.wrfout``'s own spelling) and anything that is not a
     regular file, so a half-written frame is never handed to a reader
     as though it were finished.
+
+    It SKIPS every frame under a dot-prefixed folder, the rule
+    :func:`gpuwm.io.wrfout.is_wrfout_frame` makes: ``.quarantine`` holds
+    swept frames and a head-bound attempt the forecast discarded
+    (:data:`gpuwm.prepared_domain_tree_forecast.STREAMED_ATTEMPT_PARENT`),
+    whose frames carry the sealed forecast's names and are not its
+    history.
 
     It orders on ``(name, episode)`` rather than on the path string.
     ``p.name`` already carries domain-then-valid-time, so it is the time
@@ -430,6 +437,8 @@ def history_frames(root) -> list["HistoryFrame"]:
         if ".tmp" in path.name or path.suffix.lower() == ".json" or not path.is_file():
             continue
         relative = path.relative_to(walk_root)
+        if any(part.startswith(".") for part in relative.parts[:-1]):
+            continue
         grid = _HISTORY_NAME.match(path.name)
         found.append(HistoryFrame(
             root / relative,

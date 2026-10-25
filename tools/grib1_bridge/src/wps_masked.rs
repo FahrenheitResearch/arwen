@@ -32,6 +32,8 @@ pub const ERR_TARGET_OFF_GRID: i32 = 10;
 /// A chain operator this library does not know was reached by a target
 /// that was still waiting; `unknown_op` receives its chain position.
 pub const ERR_UNKNOWN_OPERATOR: i32 = 11;
+/// Matching support reaches an open edge of a cropped source window.
+pub const ERR_SURFACE_SUPPORT: i32 = 12;
 
 pub const OP_SIXTEEN_PT: u8 = 0;
 pub const OP_FOUR_PT: u8 = 1;
@@ -57,6 +59,10 @@ pub const COUNT_RECOVERED: usize = 7;
 pub const COUNT_SLOTS: usize = 8;
 /// Unit scan slots per layer: land cells, carried (finite), inside range.
 pub const SCAN_SLOTS: usize = 3;
+
+/// Coastal surface matching: mixed support, matching answer, no matching
+/// answer, ordinary search, search past unusable values, inactive fill.
+pub const SURFACE_MATCH_COUNT_SLOTS: usize = 6;
 
 /// `interp_opts` search depth cap (interp_module.F:267).
 const SEARCH_DEPTH: i64 = 1200;
@@ -228,6 +234,7 @@ struct Call<'a> {
     /// distance in source cells (`dx * dx + dy * dy`, the search's own
     /// metric).  None searches the whole array, as metgrid does.
     reach: Option<(&'a [bool], f64)>,
+    closed_edges: u32,
 }
 
 impl Call<'_> {
@@ -249,6 +256,7 @@ struct Stats {
     fill: u64,
     roundoff: u64,
     unknown: Option<usize>,
+    incomplete: Option<usize>,
 }
 
 impl Stats {
@@ -261,6 +269,7 @@ impl Stats {
             fill: 0,
             roundoff: 0,
             unknown: None,
+            incomplete: None,
         }
     }
 
@@ -274,6 +283,11 @@ impl Stats {
         self.fill += other.fill;
         self.roundoff += other.roundoff;
         self.unknown = match (self.unknown, other.unknown) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, None) => a,
+            (None, b) => b,
+        };
+        self.incomplete = match (self.incomplete, other.incomplete) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, None) => a,
             (None, b) => b,
@@ -464,6 +478,7 @@ struct SearchScratch {
     /// (None when no usable cell is reachable).  One call has one usable
     /// mask, so a walk depends on its start cell alone.
     walks: HashMap<usize, Option<Box<[u32]>>>,
+    walk_edges: HashMap<usize, u32>,
     walk_cells: usize,
 }
 
@@ -478,6 +493,7 @@ impl SearchScratch {
             stamp: 0,
             queue: VecDeque::new(),
             walks: HashMap::new(),
+            walk_edges: HashMap::new(),
             walk_cells: 0,
         }
     }
@@ -501,7 +517,7 @@ impl SearchScratch {
 /// neighbours), neighbour order is x-1, x+1, y-1, y+1, and the depth
 /// counter is WRF's in-place `qdata%depth` mutation, capped at 1200.  The
 /// walk depends on the start cell, the grid and the usable mask only.
-fn walk(c: &Call, ix: i64, jy: i64, scratch: &mut SearchScratch) -> Option<Box<[u32]>> {
+fn walk(c: &Call, ix: i64, jy: i64, scratch: &mut SearchScratch) -> (Option<Box<[u32]>>, u32) {
     let nx = c.nx as i64;
     let ny = c.ny as i64;
     let stamp = scratch.next_stamp();
@@ -511,12 +527,19 @@ fn walk(c: &Call, ix: i64, jy: i64, scratch: &mut SearchScratch) -> Option<Box<[
     scratch.visited[at(ix, jy)] = stamp;
     let usable = &c.pro.usable;
     let mut found: Option<usize> = None;
+    let mut edges = 0u32;
     while found.is_none() {
         let Some((i, j, depth)) = scratch.queue.pop_front() else {
             break;
         };
         let mut dd = depth;
         for (ni, nj) in [(i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1)] {
+            if dd < SEARCH_DEPTH {
+                if ni < 0 { edges |= 1; }
+                if ni >= nx { edges |= 2; }
+                if nj < 0 { edges |= 4; }
+                if nj >= ny { edges |= 8; }
+            }
             if ni >= 0 && ni < nx && nj >= 0 && nj < ny && dd < SEARCH_DEPTH && scratch.visited[at(ni, nj)] != stamp
             {
                 dd += 1;
@@ -528,7 +551,7 @@ fn walk(c: &Call, ix: i64, jy: i64, scratch: &mut SearchScratch) -> Option<Box<[
             found = Some(at(i, j));
         }
     }
-    let first = found?;
+    let Some(first) = found else { return (None, edges); };
     let mut cells = vec![first as u32];
     cells.extend(
         scratch
@@ -538,7 +561,7 @@ fn walk(c: &Call, ix: i64, jy: i64, scratch: &mut SearchScratch) -> Option<Box<[
             .filter(|&flat| usable[flat])
             .map(|flat| flat as u32),
     );
-    Some(cells.into_boxed_slice())
+    (Some(cells.into_boxed_slice()), edges)
 }
 
 /// Metgrid `search_extrap` for one target (interp_module.F:484-607), as
@@ -556,14 +579,16 @@ fn search(c: &Call, t: usize, yy: f64, xx: f64, scratch: &mut SearchScratch) -> 
     }
     let start = (jy * nx + ix) as usize;
     if !scratch.walks.contains_key(&start) {
-        let cells = walk(c, ix, jy, scratch);
+        let (cells, edges) = walk(c, ix, jy, scratch);
         let size = cells.as_ref().map_or(1, |w| w.len());
         if scratch.walk_cells + size > WALK_CACHE_CELLS {
             scratch.walks.clear();
+            scratch.walk_edges.clear();
             scratch.walk_cells = 0;
         }
         scratch.walk_cells += size;
         scratch.walks.insert(start, cells);
+        scratch.walk_edges.insert(start, edges);
     }
     let Some(cells) = &scratch.walks[&start] else {
         return f64::NAN;
@@ -670,6 +695,19 @@ fn chain_target(
                 } else {
                     f64::NAN
                 };
+                // A cropped walk is the full-source WPS walk only while it
+                // has not tried to enqueue a point beyond an open edge.
+                // This also checks missing-source fallback: absence in a
+                // crop cannot establish absence in the full source.
+                let reached_open_edge = scratch.as_ref().map_or(false, |work| {
+                    let start = ((yy + 0.5).floor() as usize) * c.nx
+                        + (xx + 0.5).floor() as usize;
+                    work.walk_edges.get(&start).map_or(false, |edges| edges & !c.closed_edges != 0)
+                });
+                if reached_open_edge || (!c.pro.any_usable && c.closed_edges != 15) {
+                    stats.incomplete = Some(stats.incomplete.map_or(t, |old| old.min(t)));
+                    return None;
+                }
                 if value.is_finite() {
                     stats.produced[pos] += 1;
                     if unusable_within_reach(c, yy, xx) {
@@ -694,6 +732,7 @@ fn chain_target(
 #[derive(Debug, PartialEq)]
 pub enum ChainError {
     UnknownOperator(usize),
+    IncompleteSurfaceSupport(usize),
 }
 
 /// One `wps_masked_field_interpolate` call: values for every target (the
@@ -711,6 +750,16 @@ fn run_call(
     range: Option<(f64, f64)>,
     fill: f64,
     workers: usize,
+    reach: Option<(&[bool], f64)>,
+) -> Result<(Vec<f64>, [u64; 6]), ChainError> {
+    run_call_with_edges(field, ny, nx, donors, yy, xx, active, chain, range, fill, workers, 15, reach)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_call_with_edges(
+    field: &[f64], ny: usize, nx: usize, donors: &[bool],
+    yy: &[f64], xx: &[f64], active: &[bool], chain: &[u8],
+    range: Option<(f64, f64)>, fill: f64, workers: usize, closed_edges: u32,
     reach: Option<(&[bool], f64)>,
 ) -> Result<(Vec<f64>, [u64; 6]), ChainError> {
     let pro = prologue(field, donors, range, ny, nx, workers);
@@ -755,6 +804,7 @@ fn run_call(
         chain,
         range,
         reach,
+        closed_edges,
     };
     let mut stats = Stats::new(chain.len());
     if any_active && ntarget > 0 {
@@ -813,6 +863,9 @@ fn run_call(
     }
     if let Some(pos) = stats.unknown {
         return Err(ChainError::UnknownOperator(pos));
+    }
+    if let Some(target) = stats.incomplete {
+        return Err(ChainError::IncompleteSurfaceSupport(target));
     }
     // NumPy assigns these at the chain position that made them; a later
     // position that made none leaves the earlier assignment standing.
@@ -987,6 +1040,215 @@ fn run_layer(
             Ok((values, counts))
         }
     }
+}
+
+/// Whether the original FP32 operator reads a donor on the other surface.
+/// Its exact integer donor is retained independently of the fraction, so a
+/// projected window cannot move support by rounding a local coordinate.
+#[allow(clippy::too_many_arguments)]
+fn mixed_surface_support(
+    land: &[bool], ny: usize, nx: usize, iy: i32, ix: i32,
+    fy: f32, fx: f32, target_land: bool, method: i32,
+) -> bool {
+    // At an exact point only the central value contributes. Along an exact
+    // grid line the overlapping parabola reads only that row or column.
+    let offsets = |fraction: f32| -> &[i64] {
+        if fraction == 0.0 { &[0] }
+        else if fraction == 1.0 { &[1] }
+        else if method == 1 { &[0, 1] }
+        else { &[-1, 0, 1, 2] }
+    };
+    offsets(fy).iter().any(|&dy| {
+        let j = clip_index(iy as i64 + dy, ny - 1);
+        offsets(fx).iter().any(|&dx| {
+            let i = clip_index(ix as i64 + dx, nx - 1);
+            land[j * nx + i] != target_land
+        })
+    })
+}
+
+/// Keep the original operator's bits except where its contributing support
+/// crosses the target surface. Those targets take the existing masked WPS
+/// chain. Surface thermodynamics keep the original answer when no matching
+/// donor is reachable; a land-only field instead keeps its declared fill.
+///
+/// `method` is 1=bilinear or 2=overlapping parabola. `land_only` fills mixed
+/// water targets. Uniform support retains the original operator's result.
+#[allow(clippy::too_many_arguments)]
+fn surface_match_layer(
+    field: &[f32], original: &[f32], land: &[bool],
+    ny: usize, nx: usize, iy: &[i32], ix: &[i32],
+    fy: &[f32], fx: &[f32], target_land: &[bool],
+    chain: &[u8], method: i32, land_only: bool, fill: f32, workers: usize,
+    closed_edges: u32,
+) -> Result<(Vec<f32>, [u64; SURFACE_MATCH_COUNT_SLOTS]), ChainError> {
+    surface_match_layer_with_nearest(
+        field, original, land, ny, nx, iy, ix, fy, fx, target_land,
+        chain, method, land_only, fill, workers, closed_edges, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn surface_match_layer_with_nearest(
+    field: &[f32], original: &[f32], land: &[bool],
+    ny: usize, nx: usize, iy: &[i32], ix: &[i32],
+    fy: &[f32], fx: &[f32], target_land: &[bool],
+    chain: &[u8], method: i32, land_only: bool, fill: f32, workers: usize,
+    closed_edges: u32, nearest: Option<(&[i32], &[i32])>,
+) -> Result<(Vec<f32>, [u64; SURFACE_MATCH_COUNT_SLOTS]), ChainError> {
+    let mut output = original.to_vec();
+    let mut counts = [0u64; SURFACE_MATCH_COUNT_SLOTS];
+    let mut land_active = vec![false; original.len()];
+    let mut water_active = vec![false; original.len()];
+    for t in 0..original.len() {
+        let mixed = if let Some((nearest_y, nearest_x)) = nearest {
+            land[nearest_y[t] as usize * nx + nearest_x[t] as usize] != target_land[t]
+        } else {
+            mixed_surface_support(
+                land, ny, nx, iy[t], ix[t], fy[t], fx[t], target_land[t], method)
+        };
+        if !mixed { continue; }
+        counts[0] += 1;
+        if land_only && !target_land[t] {
+            if output[t].to_bits() != fill.to_bits() {
+                counts[5] += 1;
+            }
+            output[t] = fill;
+            continue;
+        }
+        if mixed {
+            // The masked chain must not invent a halo by clamping an open
+            // crop edge. Closed edges are genuine full-source boundaries.
+            let sixteen = chain.contains(&OP_SIXTEEN_PT);
+            let exact = (fy[t] == 0.0 || fy[t] == 1.0)
+                && (fx[t] == 0.0 || fx[t] == 1.0);
+            if (sixteen && !exact
+                    && ((iy[t] == 0 && closed_edges & 4 == 0)
+                        || (iy[t] as usize + 2 >= ny && closed_edges & 8 == 0)))
+                || (sixteen && !exact
+                    && ((ix[t] == 0 && closed_edges & 1 == 0)
+                        || (ix[t] as usize + 2 >= nx && closed_edges & 2 == 0))) {
+                return Err(ChainError::IncompleteSurfaceSupport(t));
+            }
+            if target_land[t] { land_active[t] = true; }
+            else { water_active[t] = true; }
+        }
+    }
+    if !land_active.iter().chain(&water_active).any(|&v| v) {
+        return Ok((output, counts));
+    }
+    let values: Vec<f64> = field.iter().map(|&v| v as f64).collect();
+    let yy: Vec<f64> = iy.iter().zip(fy).map(|(&i, &f)| i as f64 + f as f64).collect();
+    let xx: Vec<f64> = ix.iter().zip(fx).map(|(&i, &f)| i as f64 + f as f64).collect();
+    let water: Vec<bool> = land.iter().map(|&v| !v).collect();
+    for (donors, active) in [(land, &land_active[..]), (&water[..], &water_active[..])] {
+        if !active.iter().any(|&v| v) { continue; }
+        let (answer, passes) = run_call_with_edges(
+            &values, ny, nx, donors, &yy, &xx, active, chain,
+            None, f64::NAN, workers, closed_edges, None)?;
+        counts[3] += passes[COUNT_SEARCH];
+        counts[4] += passes[COUNT_SEARCH_PAST_UNUSABLE];
+        for t in 0..original.len() {
+            if !active[t] { continue; }
+            if answer[t].is_finite() {
+                output[t] = answer[t] as f32;
+                counts[1] += 1;
+            } else {
+                counts[2] += 1;
+                if land_only { output[t] = fill; }
+            }
+        }
+    }
+    Ok((output, counts))
+}
+
+/// Coastal matching over FP32 fields and the original mapped result.
+///
+/// # Safety
+/// Every pointer addresses the contiguous buffer implied by the dimensions.
+/// Input and output buffers do not overlap. Counts contain six slots per
+/// layer, and `unknown_op` receives a reached unknown chain position.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn gpuwm_surface_match_f32(
+    source: *const f32, original: *const f32, source_land: *const u8,
+    donor_y: *const i32, donor_x: *const i32,
+    fraction_y: *const f32, fraction_x: *const f32,
+    nearest_y: *const i32, nearest_x: *const i32, target_land: *const u8,
+    chain: *const u8, nchain: usize, method: i32, land_only: i32, fill: f32,
+    closed_edges: u32,
+    output: *mut f32, counts: *mut u64, unknown_op: *mut u64,
+    nlayer: usize, ny: usize, nx: usize, ntarget: usize, workers: usize,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if source.is_null() || original.is_null() || source_land.is_null()
+            || donor_y.is_null() || donor_x.is_null() || fraction_y.is_null()
+            || fraction_x.is_null() || target_land.is_null() || output.is_null()
+            || counts.is_null() || unknown_op.is_null() || (nchain > 0 && chain.is_null()) {
+            return ERR_NULL;
+        }
+        if nlayer == 0 || ny == 0 || nx == 0 || ntarget == 0 || workers == 0
+            || !(0..=2).contains(&method) || !(0..=1).contains(&land_only)
+            || closed_edges & !15 != 0 {
+            return ERR_DIMENSION;
+        }
+        let Some(nsource) = ny.checked_mul(nx) else { return ERR_DIMENSION; };
+        let Some(source_length) = nlayer.checked_mul(nsource) else { return ERR_DIMENSION; };
+        let Some(output_length) = nlayer.checked_mul(ntarget) else { return ERR_DIMENSION; };
+        let Some(count_length) = nlayer.checked_mul(SURFACE_MATCH_COUNT_SLOTS) else { return ERR_DIMENSION; };
+        let field = std::slice::from_raw_parts(source, source_length);
+        let original = std::slice::from_raw_parts(original, output_length);
+        let iy = std::slice::from_raw_parts(donor_y, ntarget);
+        let ix = std::slice::from_raw_parts(donor_x, ntarget);
+        let fy = std::slice::from_raw_parts(fraction_y, ntarget);
+        let fx = std::slice::from_raw_parts(fraction_x, ntarget);
+        let nearest = if method == 0 {
+            if nearest_y.is_null() || nearest_x.is_null() { return ERR_NULL; }
+            let jy = std::slice::from_raw_parts(nearest_y, ntarget);
+            let jx = std::slice::from_raw_parts(nearest_x, ntarget);
+            if (0..ntarget).any(|t| jy[t] < 0 || jx[t] < 0
+                || jy[t] as usize >= ny || jx[t] as usize >= nx) {
+                return ERR_TARGET_OFF_GRID;
+            }
+            Some((jy, jx))
+        } else { None };
+        // Never reinterpret a cropped window's missing halo as a donor.
+        if (0..ntarget).any(|t| !fy[t].is_finite() || !fx[t].is_finite()
+            || !(0.0..=1.0).contains(&fy[t]) || !(0.0..=1.0).contains(&fx[t])
+            || iy[t] < 0 || ix[t] < 0
+            || iy[t] as usize >= ny || ix[t] as usize >= nx
+            || iy[t] as f64 + fy[t] as f64 > (ny - 1) as f64
+            || ix[t] as f64 + fx[t] as f64 > (nx - 1) as f64) {
+            return ERR_TARGET_OFF_GRID;
+        }
+        let land = mask(source_land, nsource);
+        let targets = mask(target_land, ntarget);
+        let ops = if nchain == 0 { &[][..] } else { std::slice::from_raw_parts(chain, nchain) };
+        let output = std::slice::from_raw_parts_mut(output, output_length);
+        let counts = std::slice::from_raw_parts_mut(counts, count_length);
+        *unknown_op = u64::MAX;
+        for layer in 0..nlayer {
+            let result = surface_match_layer_with_nearest(
+                &field[layer * nsource..(layer + 1) * nsource],
+                &original[layer * ntarget..(layer + 1) * ntarget],
+                &land, ny, nx, iy, ix, fy, fx, &targets, ops,
+                method, land_only != 0, fill, workers, closed_edges, nearest);
+            match result {
+                Ok((values, tally)) => {
+                    output[layer * ntarget..(layer + 1) * ntarget].copy_from_slice(&values);
+                    counts[layer * SURFACE_MATCH_COUNT_SLOTS..(layer + 1) * SURFACE_MATCH_COUNT_SLOTS].copy_from_slice(&tally);
+                }
+                Err(ChainError::UnknownOperator(pos)) => {
+                    *unknown_op = pos as u64;
+                    return ERR_UNKNOWN_OPERATOR;
+                }
+                Err(ChainError::IncompleteSurfaceSupport(target)) => {
+                    *unknown_op = target as u64;
+                    return ERR_SURFACE_SUPPORT;
+                }
+            }
+        }
+        OK
+    })).unwrap_or(ERR_PANIC)
 }
 
 unsafe fn mask(pointer: *const u8, length: usize) -> Vec<bool> {
@@ -1189,6 +1451,10 @@ pub unsafe extern "C" fn gpuwm_wps_masked_chain_reach_f64(
                 Err(ChainError::UnknownOperator(position)) => {
                     *unknown_op = position as u64;
                     return ERR_UNKNOWN_OPERATOR;
+                }
+                Err(ChainError::IncompleteSurfaceSupport(target)) => {
+                    *unknown_op = target as u64;
+                    return ERR_SURFACE_SUPPORT;
                 }
             }
         }
@@ -1524,6 +1790,120 @@ mod tests {
             assert!(serial.1.iter().zip(parallel.1.iter()).all(|(a, b)| a.to_bits() == b.to_bits()));
             assert_eq!(serial.2, parallel.2, "counts moved at {workers} workers");
         }
+    }
+
+    const SURFACE_CHAIN: [u8; 5] = [
+        OP_SIXTEEN_PT, OP_FOUR_PT, OP_WT_AVERAGE_4PT,
+        OP_WT_AVERAGE_16PT, OP_SEARCH,
+    ];
+
+    #[test]
+    fn uniform_surface_support_copies_original_fp32_bits() {
+        for surface in [false, true] {
+            let field = vec![290.125f32; 25];
+            let land = vec![surface; 25];
+            let original = [f32::from_bits(1), -0.0f32, 296.12347];
+            let (answer, counts) = surface_match_layer(
+                &field, &original, &land, 5, 5, &[1, 2, 3], &[1, 2, 3],
+                &[0.125, 0.0, 0.75], &[0.75, 0.0, 0.25], &[surface; 3],
+                &SURFACE_CHAIN, 2, false, 0.0, 3, 15).unwrap();
+            assert!(answer.iter().zip(original).all(|(a, b)| a.to_bits() == b.to_bits()));
+            assert_eq!(counts, [0; SURFACE_MATCH_COUNT_SLOTS]);
+        }
+    }
+
+    #[test]
+    fn coastal_surface_support_excludes_water_temperature() {
+        let field = [
+            290.01953125, 290.20703125, 290.51953125, 296.51953125,
+            289.76953125, 290.01953125, 290.70703125, 298.20703125,
+            289.64453125, 289.89453125, 296.26953125, 298.95703125,
+            289.58203125, 290.33203125, 298.33203125, 298.70703125,
+        ];
+        let land = [
+            false, false, false, true, false, false, false, true,
+            false, false, true, true, false, false, true, true,
+        ];
+        let (answer, counts) = surface_match_layer(
+            &field, &[292.659362793], &land, 4, 4, &[1], &[1],
+            &[596.93147925019f64 as f32 - 596.0],
+            &[182.485568546024f64 as f32 - 182.0], &[true],
+            &SURFACE_CHAIN, 2, false, 0.0, 1, 15).unwrap();
+        assert_eq!(answer[0].to_bits(), 296.26953125f32.to_bits());
+        assert_eq!(counts[0..3], [1, 1, 0]);
+    }
+
+    #[test]
+    fn absent_matching_surface_keeps_original_with_receipt() {
+        let original = [291.76543f32];
+        let (answer, counts) = surface_match_layer(
+            &[289.0; 16], &original, &[false; 16], 4, 4,
+            &[1], &[1], &[0.2], &[0.3], &[true],
+            &SURFACE_CHAIN, 2, false, 0.0, 1, 15).unwrap();
+        assert_eq!(answer[0].to_bits(), original[0].to_bits());
+        assert_eq!(counts[0..3], [1, 0, 1]);
+    }
+
+    #[test]
+    fn exact_coordinate_reads_only_its_contributing_surface() {
+        let mut land = vec![false; 25];
+        land[2 * 5 + 2] = true;
+        let original = [296.0f32];
+        let (answer, counts) = surface_match_layer(
+            &[290.0; 25], &original, &land, 5, 5,
+            &[2], &[2], &[0.0], &[0.0], &[true],
+            &SURFACE_CHAIN, 2, false, 0.0, 1, 15).unwrap();
+        assert_eq!(answer, original);
+        assert_eq!(counts[0], 0);
+    }
+
+    #[test]
+    fn land_only_coastal_water_fills_but_uniform_water_keeps_bits() {
+        let mut land = vec![false; 25];
+        land[2 * 5 + 2] = true;
+        let (answer, counts) = surface_match_layer(
+            &[2.0; 25], &[1.0, -0.0], &land, 5, 5,
+            &[1, 4], &[1, 4], &[0.5, 0.0], &[0.5, 0.0], &[false; 2],
+            &[OP_FOUR_PT, OP_AVERAGE_4PT], 2, true, 0.0, 1, 15).unwrap();
+        assert_eq!(answer[0].to_bits(), 0.0f32.to_bits());
+        assert_eq!(answer[1].to_bits(), (-0.0f32).to_bits());
+        assert_eq!(counts[5], 1);
+    }
+
+    #[test]
+    fn coastal_search_requires_the_full_queue_walk_inside_open_crop() {
+        let mut land = vec![false; 49];
+        land[3 * 7] = true;
+        let result = surface_match_layer(
+            &[296.0; 49], &[289.0], &land, 7, 7,
+            &[3], &[3], &[0.0], &[0.25], &[true], &[OP_SEARCH],
+            2, false, 0.0, 1, 14);
+        assert_eq!(result.unwrap_err(), ChainError::IncompleteSurfaceSupport(0));
+        let result = surface_match_layer(
+            &[296.0; 49], &[289.0], &land, 7, 7,
+            &[3], &[3], &[0.0], &[0.25], &[true], &[OP_SEARCH],
+            2, false, 0.0, 1, 15).unwrap();
+        assert_eq!(result.0, [296.0]);
+        assert_eq!(result.1[3], 1);
+    }
+
+    #[test]
+    fn coastal_matching_is_worker_invariant() {
+        let land: Vec<bool> = (0..81).map(|k| k % 9 >= 4).collect();
+        let field: Vec<f32> = land.iter().enumerate()
+            .map(|(k, &v)| if v { 296.0 + k as f32 * 0.01 } else { 289.0 }).collect();
+        let n = 9000;
+        let original = vec![292.0; n];
+        let iy = vec![3; n];
+        let ix = vec![3; n];
+        let fy = vec![0.75; n];
+        let fx = vec![0.25; n];
+        let targets: Vec<bool> = (0..n).map(|k| k % 2 == 0).collect();
+        let serial = surface_match_layer(&field, &original, &land, 9, 9,
+            &iy, &ix, &fy, &fx, &targets, &SURFACE_CHAIN, 2, false, 0.0, 1, 15).unwrap();
+        let parallel = surface_match_layer(&field, &original, &land, 9, 9,
+            &iy, &ix, &fy, &fx, &targets, &SURFACE_CHAIN, 2, false, 0.0, 7, 15).unwrap();
+        assert_eq!(serial, parallel);
     }
 
     #[test]

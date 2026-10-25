@@ -19,6 +19,12 @@ so headwaters run ahead of the outlet), so the routed state is byte-identical
 to the per-step sequence. One launch with a barrier per level instead would
 still be 82 dependent stages per step on the measured basin (19.8 s on the
 5070 Ti); dataflow is 0.33 s there. The host sleeps on a blocking event.
+
+A continental payload arrives in day chunks (lane/hydro-conus-route): the whole
+catchment x hour matrix of a CONUS fabric does not fit on a card or in pinned
+host memory. Each chunk is one launch of the same kernel, continuing from the
+state the previous one wrote back, so the routed state is the same as one
+launch over the whole replay; a payload that fits stays one chunk.
 """
 from __future__ import annotations
 
@@ -175,18 +181,7 @@ def replay(*, router, network, runoff, reservoirs, manifest):
             raise ValueError('continuous routing initialization lacks historical observations for assimilating reservoirs')
         launch('routed_replay_fill', count, reservoirs.arrays['clock'], np.int32(count),
                np.float64(-hours * 3600.))
-    path = (Path(manifest).parent / field['path']).resolve()
-    if not path.is_relative_to(Path(manifest).parent.resolve()):
-        raise ValueError('routing replay payload escapes its prepared directory')
     start = time.perf_counter()
-    size = field['bytes']
-    pinned = cp.cuda.alloc_pinned_memory(max(1, size))
-    pointer = ctypes.addressof(ctypes.c_char.from_buffer(pinned))
-    RawPayloadReader().read_into(path, field['sha256'], pointer, size)
-    depth = cp.empty(shape, cp.float64)
-    cp.cuda.runtime.memcpy(depth.data.ptr, pointer, size, cp.cuda.runtime.memcpyHostToDevice)
-    del pinned
-    read = time.perf_counter()
     kernel = compiled.get_function('routed_replay')
     a, m = runoff.arrays, router.arrays
     n = m['state'].shape[0]
@@ -194,7 +189,7 @@ def replay(*, router, network, runoff, reservoirs, manifest):
         raise ValueError('routing replay: the lateral inflow axis and the channel state differ in length')
     scale = np.float64(1e6 if runoff.restart_identity['area_units'] == 'km2' else 1.)
     substeps = int(3600 / router.dt_seconds)
-    order, kind, down_offsets, downstream, done, node_indices = _tasks(router, reservoirs)
+    order, kind, down_offsets, downstream, done_initial, node_indices = _tasks(router, reservoirs)
     if reservoirs is not None:
         r = reservoirs.arrays
         reservoir = (np.int32(r['height'].size), r['parameters'], r['previous_inflow'],
@@ -206,19 +201,9 @@ def replay(*, router, network, runoff, reservoirs, manifest):
         f32, f64, i32 = cp.zeros(1, cp.float32), cp.zeros(1, cp.float64), cp.zeros(1, cp.int32)
         reservoir = (np.int32(0), f32, f32, f32, f32, np.float32(router.dt_seconds),
                      np.float64(router.dt_seconds), f32, f32, f32, f32, f64, f64, f64, i32, i32)
-    # Every slot starts as the initial state: step 0's "previous", and the
-    # unchanging value of nodes no stage advances.
     ring = cp.empty((SLOTS, n, 3), cp.float32)
-    for slot in range(SLOTS):
-        cp.cuda.runtime.memcpyAsync(ring[slot].data.ptr, m['state'].data.ptr, m['state'].nbytes,
-                                    cp.cuda.runtime.memcpyDeviceToDevice, stream.ptr)
+    done = cp.empty_like(done_initial)
     tasks = int(order.size)
-    args = (depth, a['area'], a['offsets'], a['indices'], a['routing_lateral'], a['status'],
-            np.int32(hours), scale, np.int32(n), np.int32(substeps), np.float32(router.dt_seconds),
-            np.int32(router.assume_short_ts), m['upstream_offsets'], m['upstream_indices'],
-            down_offsets, downstream, m['parameters'], m['lateral'], m['boundary_previous'],
-            m['boundary_current'], m['previous'], m['state'], m['diagnostics'],
-            ring, np.int32(SLOTS), done, order, kind, np.int32(tasks), node_indices, *reservoir)
     # One worker (warp) per task up to what the card holds at once; the launch
     # is cooperative, so every worker is resident while others wait on it.
     resident = _resident_blocks(kernel)
@@ -227,11 +212,57 @@ def replay(*, router, network, runoff, reservoirs, manifest):
     per_block = BLOCK // 32
     blocks = max(1, min(-(-tasks // per_block), resident))
     workers = min(tasks, blocks * per_block)
-    began, ended = cp.cuda.Event(), cp.cuda.Event()
+    chunks = declaration.get('chunks') or [dict(field, first_hour=0)]
+    reader = RawPayloadReader()
+    first = peak = 0
+    read_seconds = kernel_seconds = 0.0
     prepared = time.perf_counter()
-    began.record(stream)
-    kernel.function((blocks,), (BLOCK,), args, stream=stream, enable_cooperative_groups=True)
-    ended.record(stream)
+    for part in chunks:
+        part_shape = tuple(part['shape'])
+        if (part.get('first_hour') != first or len(part_shape) != 2 or part_shape[0] != shape[0]
+                or part_shape[1] <= 0 or first + part_shape[1] > hours
+                or part['dtype'] != '<f8' or part['bytes'] != math.prod(part_shape) * 8):
+            raise ValueError('routing replay chunks must partition the exact catchment/hour axes')
+        path = (Path(manifest).parent / part['path']).resolve()
+        if not path.is_relative_to(Path(manifest).parent.resolve()):
+            raise ValueError('routing replay payload escapes its prepared directory')
+        began_read = time.perf_counter()
+        size = part['bytes']
+        peak = max(peak, size)
+        pinned = cp.cuda.alloc_pinned_memory(max(1, size))
+        pointer = ctypes.addressof(ctypes.c_char.from_buffer(pinned))
+        reader.read_into(path, part['sha256'], pointer, size)
+        depth = cp.empty(part_shape, cp.float64)
+        cp.cuda.runtime.memcpy(depth.data.ptr, pointer, size, cp.cuda.runtime.memcpyHostToDevice)
+        del pinned
+        read_seconds += time.perf_counter() - began_read
+        # Every slot starts as the state the previous chunk wrote back (the
+        # initial state for the first): step 0's "previous", and the unchanging
+        # value of nodes no stage advances. Readiness restarts at step -1.
+        for slot in range(SLOTS):
+            cp.cuda.runtime.memcpyAsync(ring[slot].data.ptr, m['state'].data.ptr, m['state'].nbytes,
+                                        cp.cuda.runtime.memcpyDeviceToDevice, stream.ptr)
+        cp.cuda.runtime.memcpyAsync(done.data.ptr, done_initial.data.ptr, done.nbytes,
+                                    cp.cuda.runtime.memcpyDeviceToDevice, stream.ptr)
+        args = (depth, a['area'], a['offsets'], a['indices'], a['routing_lateral'], a['status'],
+                np.int32(part_shape[1]), scale, np.int32(n), np.int32(substeps),
+                np.float32(router.dt_seconds), np.int32(router.assume_short_ts),
+                m['upstream_offsets'], m['upstream_indices'], down_offsets, downstream,
+                m['parameters'], m['lateral'], m['boundary_previous'], m['boundary_current'],
+                m['previous'], m['state'], m['diagnostics'], ring, np.int32(SLOTS), done,
+                order, kind, np.int32(tasks), node_indices, *reservoir)
+        began, ended = cp.cuda.Event(), cp.cuda.Event()
+        began.record(stream)
+        kernel.function((blocks,), (BLOCK,), args, stream=stream, enable_cooperative_groups=True)
+        ended.record(stream)
+        chunk_done = cp.cuda.Event(block=True, disable_timing=True)
+        chunk_done.record(stream)
+        chunk_done.synchronize()  # the host sleeps; the next chunk reuses the pinned budget
+        kernel_seconds += cp.cuda.get_elapsed_time(began, ended) / 1e3
+        del depth, args
+        first += part_shape[1]
+    if first != hours:
+        raise ValueError('routing replay chunks do not cover every spin-up hour')
     # Final publication: the sequence published after every step; only the
     # last one is ever read.
     if router._publish is not None:
@@ -241,7 +272,6 @@ def replay(*, router, network, runoff, reservoirs, manifest):
     finished.record(stream)
     finished.synchronize()  # the host sleeps; it does not spin a core for the replay
     waited = time.perf_counter()
-    kernel_seconds = cp.cuda.get_elapsed_time(began, ended) / 1e3
     del ring, done
     height = reservoirs.arrays['height'] if reservoirs is not None else cp.zeros(1, cp.float32)
     fault = reservoirs.arrays['fault'] if reservoirs is not None else cp.zeros(1, cp.int32)
@@ -259,15 +289,16 @@ def replay(*, router, network, runoff, reservoirs, manifest):
     record = dict(declaration, method='continuous MC and level-pool routing of every replay hour',
                   routing_steps=hours * substeps, routing_interval_seconds=router.dt_seconds,
                   seconds=time.perf_counter() - start,
-                  stages={'read_seconds': round(read - start, 4),
-                          'prepare_seconds': round(prepared - read, 4),
+                  stages={'read_seconds': round(read_seconds, 4),
+                          'prepare_seconds': round(prepared - start, 4),
                           'kernel_seconds': round(kernel_seconds, 4),
-                          'wait_seconds': round(waited - prepared, 4),
+                          'wait_seconds': round(waited - prepared - read_seconds, 4),
                           'check_seconds': round(time.perf_counter() - waited, 4)},
-                  parallelism=(f'GPU: one launch for all {hours * substeps} routing steps, '
-                               f'{workers} warp workers for {tasks} nodes, dataflow by node; '
-                               'host sleeps on a blocking event'),
-                  temporary_device_bytes=size, temporary_pinned_bytes=size)
+                  parallelism=(('GPU: one launch for all' if len(chunks) == 1 else
+                                f'GPU: one launch per replay chunk ({len(chunks)} chunks) for all')
+                               + f' {hours * substeps} routing steps, {workers} warp workers for '
+                               f'{tasks} nodes, dataflow by node; host sleeps on a blocking event'),
+                  temporary_device_bytes=peak, temporary_pinned_bytes=peak, replay_chunks=len(chunks))
     router.initialization_receipt = record
     router.restart_identity['initial_routing_replay'] = declaration
     if reservoirs is not None:

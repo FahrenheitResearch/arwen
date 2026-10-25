@@ -239,6 +239,7 @@ def test_fetch_records_extras_and_refetches_a_changed_selector(tmp_path, monkeyp
     from datetime import datetime
     import json
     from gpuwm import fetch
+    from gpuwm import runtime_surface_fetch
     from tools import download_hrrr_native_subset as transport
     calls = []
 
@@ -250,6 +251,18 @@ def test_fetch_records_extras_and_refetches_a_changed_selector(tmp_path, monkeyp
         return {"kind": request.kind}
 
     monkeypatch.setattr(transport, "_download_product", product)
+    # This test substitutes the native product transport. Substitute its
+    # runtime-surface companion as well, so the synthetic GRIB envelopes
+    # cannot escape into a real network fetch or a user's installed binary.
+    # Runtime surface extraction itself is covered by test_fetch.py and
+    # test_runtime_surface_fallback.py. Keep its table inventory in the
+    # receipt so a repeated unchanged request remains reusable here.
+    def runtime_records(path, *, adapter, **kwargs):
+        return [{"field": name, "units": units, "selector": selector}
+                for name, _product, selector, units, *_ in
+                adapter.runtime_surface_fields]
+
+    monkeypatch.setattr(runtime_surface_fetch, "append_runtime_surface_records", runtime_records)
     options = dict(cycle=datetime(2025, 8, 1), hours=(0, 1), area=None,
                    out=tmp_path / "inputs", progress=lambda _: None, file_workers=1)
     default = json.loads(fetch.fetch_hrrr(**options).read_text())

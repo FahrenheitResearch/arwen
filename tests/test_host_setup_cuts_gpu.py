@@ -79,6 +79,9 @@ def test_device_perimeter_matches_full_readback_for_all_bit_classes(monkeypatch)
     bits.ravel()[:6] = [0, 0x80000000, 1, 0x80000001, 0x7fc00001, 0xffc00001]
     fields = {'qv': cp.asarray(bits.view(np.float32))}
     monkeypatch.setattr(lateral_bc, '_coupled_device_fields', lambda state: fields)
+    # add_state forms one coupled field at a time (the per-field perimeter frames).
+    monkeypatch.setattr(lateral_bc, '_coupled_device_field_names', lambda state: list(fields))
+    monkeypatch.setattr(lateral_bc, '_coupled_device_field_items', lambda state: iter(fields.items()))
     old = lateral_bc.StateBoundaryFrames(spec_bdy_width=3, spec_zone=1, relax_zone=2)
     new = lateral_bc.StateBoundaryFrames(spec_bdy_width=3, spec_zone=1, relax_zone=2)
     with np.errstate(all='ignore'):

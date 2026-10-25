@@ -84,6 +84,7 @@ CANONICAL_LAZY_MEMBER_CLASSES = (
     "microphysics carrying accumulators",
     "cumulus carrying accumulators",
     "KF W0AVG trigger history",
+    "nest precipitation placement archive",
 )
 # The digest's nest-slot membership is derived from the SAME shared
 # inventory the coupling machinery reads (COUPLED_SCALAR_STATE_FIELDS),
@@ -163,6 +164,7 @@ def _inventory_sha256(members: Iterable[Mapping[str, object]]) -> str:
 def lazy_inventory_member_class(name: str) -> str | None:
     """Return the documented lazy class for a canonical member path."""
     from gpuwm.io import restart as restart_io
+    from gpuwm.core.nest_accumulation import is_archive_slot
 
     scratch_slot = (
         name.removeprefix("scratch/") if name.startswith("scratch/") else None
@@ -181,15 +183,28 @@ def lazy_inventory_member_class(name: str) -> str | None:
                 return CANONICAL_LAZY_MEMBER_CLASSES[3]
             if slot.startswith("cu_"):
                 return CANONICAL_LAZY_MEMBER_CLASSES[4]
+    if is_archive_slot(scratch_slot):
+        return CANONICAL_LAZY_MEMBER_CLASSES[6]
     if name == "cumulus/w0avg":
         return CANONICAL_LAZY_MEMBER_CLASSES[5]
     return None
 
 
 def _canonical_extra_manifest(state) -> dict[str, object]:
+    from gpuwm.io import restart as restart_io
+
     manifest = {}
     for slot, value in sorted(getattr(state, "_scratch", {}).items()):
+        # Already included by _scratch_manifest; do not reject it again
+        # merely because its registered name starts with an audited prefix.
+        if restart_io.classify_scratch_slot(slot) == "serialize":
+            continue
         name = f"scratch/{slot}"
+        # GSD's held refl_10cm_1km/4km planes are already registered in
+        # restart's persistent output inventory and hashed by _scratch_manifest.
+        # The extra lazy-prefix audit must not reject those same members.
+        if slot in restart_io.SERIALIZED_SCRATCH_SLOTS:
+            continue
         if slot in _CANONICAL_EXCLUDED_FRAME_SCRATCH:
             continue
         if lazy_inventory_member_class(name) in CANONICAL_LAZY_MEMBER_CLASSES[:3]:

@@ -805,7 +805,7 @@ RESTART_ONLY_DRIVER_SLOTS = frozenset({
 #: rebuilds are EXACT names only â€” a future accumulator slot under those
 #: prefixes must be classified explicitly instead of silently dropping.
 REBUILT_SCRATCH_SLOTS = frozenset({
-    "output_zero", "gsd_zero", "gsd_uh_use", "gsd_pressure_w", "gsd_temperature", "gsd_density", "gsd_wind10", "gsd_wind80",
+    "cl_zero", "output_zero", "gsd_zero", "gsd_uh_use", "gsd_pressure_w", "gsd_temperature", "gsd_density", "gsd_wind10", "gsd_wind80",
     "hail_zero", "hail_temperature", "hail_height", "hail_density",
     "hail_new_mask", "hail_new_duration",
     # Lin overwrites geometry and thermodynamics before each column call.
@@ -1264,7 +1264,7 @@ DRIVER_REBUILT_ATTRS = frozenset({
     # Dynamics forcing is integrator-owned: the restart-carried state pair
     # on ARW, or buffers refilled before phase 1 on MPAS. Column spacing is
     # static constructor input. Raw PBL forcing is serialized above.
-    "gf_rthdynten", "gf_rqvdynten", "gf_dx_column",
+    "gf_rthdynten", "gf_rqvdynten", "gf_dx_column", "gf_active_column",
     # The Shin-Hong passenger-repair advisory latch (task #206): a
     # print-once flag, not state.  Rebuilt False at driver init, so a
     # resumed run that needs the repair says so once again -- an
@@ -1955,6 +1955,9 @@ def classify_scratch_slot(slot: str) -> str:
     per-follower window family is generated per declared child and so is
     matched by prefix; see :data:`CARRIED_SCRATCH_PREFIXES`.
     """
+    from gpuwm.core.nest_accumulation import is_archive_slot
+    if is_archive_slot(slot):
+        return "serialize"
     if slot in SERIALIZED_SCRATCH_SLOTS:
         return "serialize"
     if slot in CARRIED_SCRATCH_SLOTS:
@@ -2726,6 +2729,7 @@ def _drop_default_off_run_keys(values: dict) -> None:
     joins this list, naming the commit that added it.
     """
     from gpuwm.config import drop_inert_g3_fields
+    _drop_inert_nest_archive(values)
     drop_inert_g3_fields(values)
     _drop_inert_chem_block(values)
     _drop_inert_fire_block(values)
@@ -2910,6 +2914,11 @@ def _drop_default_off_run_keys(values: dict) -> None:
     for key in ("swint_opt", "aer_opt", "alb_sol"):
         if not values.get(key, 0):
             values.pop(key, None)
+
+
+def _drop_inert_nest_archive(values):
+    if not values.get('nested') or not values.get('nest_accumulation_archive', False):
+        values.pop('nest_accumulation_archive', None)
 
 
 def configuration_echo(cfg) -> dict:
@@ -4371,6 +4380,8 @@ def _publish_restart_payload(path: Path, payload: dict) -> Path:
         fsync_file(temp)
         os.replace(temp, path)
         _fsync_directory(path.parent)
+        from gpuwm.hydro.retention import pin_current
+        pin_current(path)
     except BaseException:
         temp.unlink(missing_ok=True)
         raise
@@ -4483,6 +4494,8 @@ def _require_config_match(stored_config: dict, cfg, path) -> None:
     CHEM_RUN_FIELDS = _chem_run_fields()
     stored_config = _mosaic_checkpoint_config(stored_config)
     live_config = _mosaic_checkpoint_config(dataclasses.asdict(cfg))
+    _drop_inert_nest_archive(stored_config)
+    _drop_inert_nest_archive(live_config)
     _drop_inert_chem_block(stored_config)
     _drop_inert_chem_block(live_config)
     _drop_inert_fire_block(stored_config)
@@ -6995,6 +7008,12 @@ def restore_tree_restart(path, model, *,
 def _validate_scratch_target(state, slot: str, host: np.ndarray,
                              key: str) -> None:
     """Prove a scratch copy can be applied without creating a live slot."""
+    from gpuwm.core.nest_accumulation import META
+    if slot == META:
+        if host.shape != (4,) or host.dtype != np.dtype(np.int64):
+            raise RestartMismatchError(
+                f"{key}: nest archive origin must contain four int64 coordinates")
+        return
     if slot == "refl_10cm":
         # This carried diagnostic has the native mass-grid volume layout.
         # Check it even when the restored state has not allocated it yet.

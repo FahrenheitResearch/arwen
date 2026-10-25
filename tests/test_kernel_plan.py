@@ -734,3 +734,26 @@ def test_parallel_member_initialization_installs_one_compile_funnel(monkeypatch,
     result = compiler._compile_using_nvrtc_no_warning("headline")
     assert result[0].startswith(b"image:headline:")
     assert len(compiler.calls) == 1
+
+
+def test_an_idle_compile_worker_does_not_hold_the_exit():
+    """The hl-3 headline run (2026-10-24): a finished hex forecast sat in multiprocessing's exit join
+    on one idle spawn worker of this pool. The exit drop terminates the workers, even when the
+    pool's shutdown raises."""
+    import concurrent.futures
+    import multiprocessing
+    import time
+    from gpuwm import kernel_plan
+    pool = concurrent.futures.ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn"))
+    processes = pool._processes
+    pool.submit(time.sleep, 0).result(60)   # the worker is up and idle
+
+    class Raising:
+        def shutdown(self, **_kwargs):
+            raise OSError("wakeup pipe closed")
+
+    kernel_plan._drop_at_exit(Raising(), processes)
+    for process in list(processes.values()):
+        process.join(10)
+        assert not process.is_alive()
+    pool.shutdown(wait=True, cancel_futures=True)

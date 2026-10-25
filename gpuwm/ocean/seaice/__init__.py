@@ -82,6 +82,30 @@ def initialize(fields, cfg):
 COLD_SEEDED = frozenset(STATE) | {"ice_thickness", "ice_snow_depth"}
 
 
+def prime_like(fields, domain_fields):
+    """Give a tile buffer the ice carriers its domain holds; returns their names.
+
+    :func:`initialize` activates the model only on a domain containing ocean
+    ice, so the carriers are a property of the DOMAIN's data.  A tile buffer
+    is built on neutral geography with no ice, so it never activated, and a
+    streamed domain whose state holds them was refused at attach ("missing
+    on tile ['fields/ice_concentration_change', ...]"; X12: the 5 km CONUS
+    WRF-input door, whose namelist import leaves ``seaice_prognostic`` on,
+    with ocean ice in the domain).  Zeros are enough: every carrier is
+    gathered from the store before the buffer serves a tile, and every kernel
+    here is column-local, so a tile steps its columns exactly as the domain.
+    """
+    import cupy as cp
+    if "ice_volume" not in domain_fields or "ice_volume" in fields:
+        return ()
+    primed = []
+    for key in sorted(COLD_SEEDED):
+        if key in domain_fields and key not in fields:
+            fields[key] = cp.zeros_like(fields["tsk"])
+            primed.append(f"fields/{key}")
+    return tuple(primed)
+
+
 def cold_seed_in_place(fields, cfg, absent):
     """Seed an existing ice column in place, as :func:`initialize` seeds it.
 

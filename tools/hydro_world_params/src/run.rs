@@ -12,6 +12,23 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::Instant;
+use std::io::Write;
+
+/// Ordered JSON array bytes, with row serialization spread over all workers.
+fn write_json_rows<T: Serialize + Sync>(path: &str, rows: &[T]) -> Result<()> {
+    let chunks = rows.par_chunks(4096).map(serde_json::to_vec)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
+    file.write_all(b"[")?;
+    for (i, chunk) in chunks.iter().enumerate() {
+        if i != 0 { file.write_all(b",")?; }
+        file.write_all(&chunk[1..chunk.len()-1])?;
+    }
+    file.write_all(b"]")?;
+    file.flush()?;
+    Ok(())
+}
+
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct InputRef {
@@ -331,14 +348,24 @@ pub fn run(cfg_path: &str) -> Result<Value> {
             let mut list: Vec<u32> = cells[start[k]..start[k + 1]].to_vec();
             let mut centroid_only = false;
             if list.is_empty() {
-                // too small for a cell centre: the cell under the centroid
-                if let Some((lon, lat)) = cat.centroid[k] {
-                    let i = ((lon - g.west) * g.cells_per_degree as f64).floor();
-                    let j = ((g.north - lat) * g.cells_per_degree as f64).floor();
-                    if i >= 0.0 && j >= 0.0 && (i as usize) < g.nx && (j as usize) < g.ny {
-                        list.push((j as usize * g.nx + i as usize) as u32);
-                        centroid_only = true;
-                    }
+                // Too small for a cell centre: the cell under the centroid. A native
+                // catchment whose outline leaves the analysis window (its outlet is in
+                // the parent domain, its centroid is not) takes the window's nearest
+                // cell. Breakage it prevents: rw_hydro_params panicked "index out of
+                // bounds: the len is 0 but the index is 18446744073709551615" in
+                // terrain::giuh for such a catchment of conus-nhdplus-v21 on a 300 km
+                // domain, so the native CONUS provider failed and the run fell back
+                // to the worldwide fabric (2.9.7 straggler fold, box J, 2026-10-24).
+                let cpd = g.cells_per_degree as f64;
+                let (lon, lat) = cat.centroid[k].unwrap_or((g.west + g.nx as f64 / (2.0 * cpd),
+                                                            g.north - g.ny as f64 / (2.0 * cpd)));
+                let i = ((lon - g.west) * cpd).floor();
+                let j = ((g.north - lat) * cpd).floor();
+                if g.nx > 0 && g.ny > 0 && i.is_finite() && j.is_finite() {
+                    let i = i.clamp(0.0, (g.nx - 1) as f64) as usize;
+                    let j = j.clamp(0.0, (g.ny - 1) as f64) as usize;
+                    list.push((j * g.nx + i) as u32);
+                    centroid_only = true;
                 }
             }
             let (mut a_tot, mut a_e, mut e_sum, mut a_s, mut s_sum, mut asin, mut acos, mut lon_s, mut lat_s) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
@@ -676,11 +703,13 @@ pub fn run(cfg_path: &str) -> Result<Value> {
     // outputs
     let t0 = Instant::now();
     let od = &cfg.out_dir;
-    std::fs::write(format!("{od}/model_attributes.json"), serde_json::to_vec(&rows)?)?;
-    std::fs::write(format!("{od}/catchment_diagnostics.json"), serde_json::to_vec(&diags)?)?;
-    std::fs::write(format!("{od}/lgar_attributes.json"), serde_json::to_vec(&lgars)?)?;
-    let mut csv = String::from("divide_id,elevation_mean_m,slope_mean_deg,aspect_mean_deg,centroid_lat_deg,centroid_lon_deg,soil_class,veg_class,soil_color,impervious_fraction,soil_depth_m,soil_b,soil_satdk_m_s,soil_satpsi_m,soil_slop,soil_smcmax,soil_wltsmc,refkdt,alpha_fc,max_gw_storage_m,cgw_m_h,gw_expon,k_lf,k_nash,giuh_n,giuh_ordinates\n");
-    for m in &rows {
+    write_json_rows(&format!("{od}/model_attributes.json"), &rows)?;
+    write_json_rows(&format!("{od}/catchment_diagnostics.json"), &diags)?;
+    write_json_rows(&format!("{od}/lgar_attributes.json"), &lgars)?;
+    let header = String::from("divide_id,elevation_mean_m,slope_mean_deg,aspect_mean_deg,centroid_lat_deg,centroid_lon_deg,soil_class,veg_class,soil_color,impervious_fraction,soil_depth_m,soil_b,soil_satdk_m_s,soil_satpsi_m,soil_slop,soil_smcmax,soil_wltsmc,refkdt,alpha_fc,max_gw_storage_m,cgw_m_h,gw_expon,k_lf,k_nash,giuh_n,giuh_ordinates\n");
+    let csv_chunks: Vec<_> = rows.par_chunks(4096).map(|chunk| {
+      let mut csv = String::new();
+      for m in chunk {
         let gi = m.giuh_ordinates.as_ref().unwrap();
         csv.push_str(&format!(
             "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},\"{}\"\n",
@@ -712,7 +741,14 @@ pub fn run(cfg_path: &str) -> Result<Value> {
             gi
         ));
     }
-    std::fs::write(format!("{od}/model_attributes.csv"), csv)?;
+      csv
+    }).collect();
+    let mut file = std::io::BufWriter::new(std::fs::File::create(format!("{od}/model_attributes.csv"))?);
+    file.write_all(header.as_bytes())?;
+    for chunk in csv_chunks { file.write_all(chunk.as_bytes())?; }
+    file.flush()?;
+    st.mark("parameter JSON + CSV", &format!("{par}; ordered file writes"), t0, json!({}));
+    let t0 = Instant::now();
     // label raster for referee comparisons and maps (u32 LE, 0 = none, k+1 = canonical rank k)
     let mut rank_of = vec![0u32; ncat];
     for (r, &k) in order.iter().enumerate() {
@@ -721,6 +757,7 @@ pub fn run(cfg_path: &str) -> Result<Value> {
     let lab: Vec<u8> = cat.labels.par_iter().flat_map_iter(|&l| (if l == 0 { 0 } else { rank_of[l as usize - 1] }).to_le_bytes()).collect();
     std::fs::write(format!("{od}/labels_u32le.bin"), lab)?;
     std::fs::write(format!("{od}/grid.json"), serde_json::to_vec_pretty(&json!({"grid": g, "labels": "labels_u32le.bin: u32 little-endian, row-major north row first; 0 none, r = fid of model_attributes row r"}))?)?;
+    st.mark("labels + grid output", &par, t0, json!({}));
     // contract fabric with model_attributes, when the catchments came from one
     let mut fabric_check = Value::Null;
     if let (Some(mut fab), Some(fo)) = (fabric, fabric_out) {
@@ -742,12 +779,16 @@ pub fn run(cfg_path: &str) -> Result<Value> {
         if std::path::Path::new(&fo).exists() {
             std::fs::remove_file(&fo)?;
         }
+        let t0 = Instant::now();
         hydro_world::gpkg::write(&fab, &fo)?;
+        st.mark("parameterized GeoPackage write", &format!("{par} encode and bind SQLite fragments; ordered bulk merge on one final writer"), t0, json!({}));
+        let t0 = Instant::now();
         let (back, _) = hydro_world::gpkg::read(&fo)?;
         let r = hydro_world::check::check(&back);
         fabric_check = json!({"path": fo, "check": r, "model_attributes_roundtrip_equal": back.model_attributes == fab.model_attributes});
+        st.mark("parameterized GeoPackage readback + check", &format!("{par} row decoding; 9 table readers; topology check 1 thread"), t0, json!({}));
     }
-    st.mark("write outputs", "1 thread (file writes)", t0, json!({}));
+
 
     let total = t_all.elapsed().as_secs_f64();
     let mut inputs: Vec<Value> = vec![];
@@ -836,6 +877,28 @@ fn tab_path_abs(p: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_large_lake_catchment_keeps_nwm_volume_coefficient() {
+        let tab = ParamTable::load(concat!(env!("CARGO_MANIFEST_DIR"), "/data/params.v1.json")).unwrap();
+        let area_m2 = 65_014.0 * 1e6;
+        let depth_rate = tab.c("gw_coeff_m3_s") * 3600.0 / area_m2;
+        assert!(depth_rate > 0.0 && depth_rate < 1e-9);
+        let [lo, hi] = tab.bounds["cgw_m_h"];
+        assert!(depth_rate >= lo && depth_rate <= hi);
+        close(depth_rate * area_m2 / 3600.0, tab.c("gw_coeff_m3_s"));
+    }
+
+    #[test]
+    fn native_parallel_json_output_preserves_canonical_bytes() {
+        let path = std::env::temp_dir().join(format!("hydro-params-json-{}.json", std::process::id()));
+        for count in [0, 1, 4097] {
+            let rows: Vec<_> = (0..count).map(|i| json!({"id":i,"text":"quoted \"水\"","value":1.0/3.0})).collect();
+            write_json_rows(path.to_str().unwrap(), &rows).unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), serde_json::to_vec(&rows).unwrap());
+        }
+        std::fs::remove_file(path).unwrap();
+    }
 
     fn shipped_recipe() -> crate::table::CfeRecipe {
         let tab = ParamTable::load(concat!(env!("CARGO_MANIFEST_DIR"), "/data/params.v1.json")).unwrap();

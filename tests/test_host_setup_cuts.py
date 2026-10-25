@@ -11,12 +11,14 @@ from test_real_init_forcing_time_cost import _assert_same_state
 
 @pytest.mark.parametrize('scheme', [8, 28])
 def test_boundary_only_does_not_fingerprint_or_read_geopotential(monkeypatch, scheme):
-    root, _ = _analyzed_hrrr_real_init(scheme)
+    # mp=28 names the synthetic aerosol profile: 'auto' needs the WIF dataset.
+    aerosol = {'mp28_aerosol_source': 'synthetic'} if scheme == 28 else {}
+    root, _ = _analyzed_hrrr_real_init(scheme, **aerosol)
     def forbidden(value):
         raise AssertionError('boundary receipt fingerprint was evaluated')
     monkeypatch.setattr(real, 'array_correspondence_fingerprint', forbidden)
     boundary, _ = _analyzed_hrrr_real_init(
-        scheme, init_kwargs={'boundary_only': True})
+        scheme, init_kwargs={'boundary_only': True}, **aerosol)
     _assert_same_state(root, boundary)
     assert boundary.total_geopotential is None
     assert boundary.hydrometeor_initialization['vertical_disposition'] == {}
@@ -31,6 +33,9 @@ def test_frame_owner_selection_matches_full_snapshot(monkeypatch, width):
               for name, shape in {'mu': (12, 16), 'u': (4, 12, 17),
                                   'v': (4, 13, 16), 'phi': (5, 12, 16)}.items()}
     monkeypatch.setattr(lateral_bc, '_coupled_device_fields', lambda state: fields)
+    # add_state forms one coupled field at a time (the per-field perimeter frames).
+    monkeypatch.setattr(lateral_bc, '_coupled_device_field_names', lambda state: list(fields))
+    monkeypatch.setattr(lateral_bc, '_coupled_device_field_items', lambda state: iter(fields.items()))
     old = lateral_bc.StateBoundaryFrames(spec_bdy_width=width, spec_zone=1, relax_zone=2)
     new = lateral_bc.StateBoundaryFrames(spec_bdy_width=width, spec_zone=1, relax_zone=2)
     state = SimpleNamespace()

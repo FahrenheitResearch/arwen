@@ -14,8 +14,12 @@ struct Column { id: String, ini: String }
 
 /// Seal the actual INIs used by spin-up, including column-specific counts.
 pub fn write(dir: &Path, columns: Vec<Value>) -> Result<Value> {
-    let count = columns.len();
-    let sha = packet::write_json(&dir.join(FILE), &json!(columns))?;
+    write_generated(dir, columns.len(), |k| columns[k].clone())
+}
+
+pub fn write_generated<F>(dir: &Path, count: usize, column: F) -> Result<Value>
+where F: Fn(usize) -> Value + Sync {
+    let sha = packet::write_json_rows(&dir.join(FILE), count, column)?;
     Ok(json!({"schema": SCHEMA, "parameters": {"file": FILE, "sha256": sha, "count": count}}))
 }
 

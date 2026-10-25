@@ -142,3 +142,42 @@ def test_native_request_coverage_wraps_longitude_and_ignores_missing():
     assert coordinate_coverage([0.], [0.], row)['covered'] == 0
     with pytest.raises(ValueError, match='no finite geographic coordinates'):
         coordinate_coverage([np.nan], [-80.], row)
+
+
+def test_a_source_with_an_extent_is_requested_whole_whatever_the_targets(monkeypatch, tmp_path):
+    """X12: per-slab crops sampled the same lake cell off different windows."""
+    import gpuwm.ingest.lake_state as obs
+    asked = []
+    monkeypatch.setattr(obs, 'acquire_field', lambda row, field, valid_time, bounds, cache:
+                        (asked.append(dict(bounds)) or (tmp_path / 'x.nc', 'url')))
+    monkeypatch.setattr(obs, 'decode_field', lambda path, row, field, valid_time, lat, lon:
+                        (np.full(lat.shape, 1.), dict(covered_targets=int(lat.size))))
+    row = source_rows()['glsea']
+    valid = datetime(2025, 3, 14, 12, tzinfo=timezone.utc)
+    load_state('glsea', valid, np.array([42.2]), np.array([-80.6]), cache=tmp_path)
+    load_state('glsea', valid, np.array([42.2, 46.5]), np.array([-80.6, -86.]), cache=tmp_path)
+    whole = {key: row[key] for key in ('south', 'north', 'west', 'east')}
+    assert asked and all(bounds == whole for bounds in asked)
+
+
+@pytest.mark.gpu
+@requires_gpu
+def test_an_uncovered_column_keeps_its_lakeini_state(monkeypatch, tmp_path):
+    """X12: binding an all-missing column rewrote its T_GRND from the top layer."""
+    import cupy as cp
+    from gpuwm.core.lake import initialize_lake
+    from gpuwm.ingest.lake_state import FIELDS
+    shape = (1, 2)
+    def plane(v): return cp.full(shape, v, cp.float32)
+    def surface():
+        return dict(tsk=cp.asarray([[290., 276.]], cp.float32), sst=plane(285), xice=plane(0),
+                    xicem=plane(0), lakemask=plane(1), isltyp=plane(3), snow=plane(0),
+                    ivgtyp=plane(17), xland=plane(2))
+    plain = surface()
+    initialize_lake(plain, latitude=plane(42), lake_depth=plane(20))
+    bound = surface()
+    supplied = {name: cp.full(shape, cp.nan, cp.float32) for name in FIELDS}
+    supplied['water_temperature'][0, 0] = 280.
+    initialize_lake(bound, latitude=plane(42), lake_depth=plane(20), initial_state=supplied)
+    cp.testing.assert_array_equal(bound['lake_columns'][:, 0, 1], plain['lake_columns'][:, 0, 1])
+    assert float(bound['lake_columns'][4, 0, 0]) == 280.

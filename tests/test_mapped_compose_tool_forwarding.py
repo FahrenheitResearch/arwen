@@ -218,6 +218,20 @@ def _prep_argv(source, *, inputs, output_root, work, supplements=None,
         argv += ["--input", str(path)]
     for path in (inputs if supplements is None else supplements):
         argv += ["--supplement", str(path)]
+    # A composition that declares a companion is refused at the door
+    # without the companion's files, so a bare prep names them under the
+    # companion binding's own role, as the fetch handoff does.
+    from gpuwm.source_authorities import packaged_composition
+
+    from gpuwm.source_adapters import get_source_adapter
+
+    profile = get_source_adapter(source).packaged_profile
+    if profile is not None:
+        for binding in packaged_composition(profile).get(
+                "field_sources", {}).values():
+            if "companion" in binding:
+                argv += ["--supplement",
+                         f"{binding['data_role']}=/data/companion.grib2"]
     return argv + [
         "--wps-namelist", str(work / "namelist.wps"),
         "--geog-root", str(work / "WPS_GEOG"),

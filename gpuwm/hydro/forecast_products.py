@@ -158,6 +158,17 @@ def finalize_forecast(physics, *, outdir, dx_m, forecast_seconds, atmosphere_ste
                                       atmosphere_steps=atmosphere_steps),
                 "hydro_products": publish(physics, None, outdir=outdir, dx_m=dx_m)}
     from .runtime import current_settings
+    if getattr(physics.hydro, 'routing_clock', None) and not physics.hydro._clock_finalized:
+        # Meter the output-boundary tail as well as the ordinary LSM hooks.
+        meter = getattr(physics, 'hydro_cost', None)
+        if meter is not None:
+            meter.before_lsm_start()
+            meter.before_lsm_end()
+            meter.advance_start()
+        physics.hydro.finish_clock()
+        if meter is not None:
+            meter.advance_end()
+            meter.boundary_flush_calls += 1
     block = {"schema": "gpuwm-coupled-forecast.v1",
              "hydro_cost": receipt(physics, forecast_seconds=forecast_seconds,
                                    atmosphere_steps=atmosphere_steps)}

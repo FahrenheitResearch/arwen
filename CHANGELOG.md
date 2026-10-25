@@ -1,5 +1,39 @@
 # Changelog
 
+## 2.9.7 (2026-10-24)
+
+New:
+- Run controls: per-nest history intervals, a quick-look stream between full frames (`quicklook = { every_s, history_vars }`), an LES closure below 250 m, the storm nest size and an inner nest.
+- Moving nest-downs: `gpuwm downscale --follow storm|parent|fixed|target` and `--warm-from`.
+- Every run and ensemble member writes the any-point column store (rw-store v2), so soundings can be drawn at any point and hour after the run.
+- IFS HRES open data at 0.1 degree (`ecmwf-open-data-0p1`) at any posted cycle and lead.
+- RRFS ensemble members start with their same-cycle deterministic companion, which supplies the land state and the column above the member's 250 hPa top.
+- HRRR v4 climate statistics (`output_diagnostics`, `diag_int`, `wind_int`) and the HRRR initial-history reflectivity.
+- A sub-hourly history subset beside hourly full frames (`[output] full_history_interval_s`).
+- Children finer than 4 km (`gpuwm downscale --point`, `--source hex-global`) default to the HRRR-shape suite; `--physics-profile ID` or `parent` chooses.
+- A hydrometeor handed to a child (another model's analysis, a downscale, the specified ring) arrives with a number that matches its mass.
+- Cyclone runs: a rain swath product, and moving-nest accumulations kept in one fixed frame across moves.
+- 5 km CONUS forecasts stream on a 32 GB card.
+- CONUS hydro from EPA NHDPlus V2.1 with `pip install "gpuwm[hydro-conus]"`.
+- Remote resumes find prepared bundles and checkpoints across chain names.
+- Branched ensembles (`gpuwm ensemble --branch-from`) share each card among several members (`--members-per-card auto`) and draw their maps on every core; branched members write column stores, and ensemble maps carry their map transform for any-point soundings.
+
+Fixed:
+- `gpuwm go` with the default products on grids whose spacing is not a whole kilometre.
+- Maps: isobar labels and H/L marks are drawn over wind barbs; the sounding location inset has world coastlines; the ensemble paintball map has a member legend; the meteogram's end barbs stay inside the panel.
+- `--cyclone-products` works with ensembles and with tiles; gzipped b-decks, track times in UTC, and Earth-2 `storm: auto` picks the named storm's low.
+- The 30 m terrain overlay takes a following nest's all-ocean first footprint; the corridor terrain mosaic and its resample run on every core.
+- Morrison runs a small domain in one launch; the start state, the regional hex static and polygon meshes build on every core; nested adaptive runs land on output times with fewer steps; `rw_mpas_stream` encodes on every core.
+- `rw_wrfbatch` no longer overflows its stack importing a 1 km hex region frame.
+- mp=28 downloads the pinned WIF aerosol climatology or refuses by name; the synthetic profile is used only when named. `--recipe hrrr` and `hrrr_v4` are accepted, and `--recipe` takes `--forecast-start-hour`.
+- Ensemble preparation: one download per object and an atomic HRRR bridge gate.
+- RUC: the soil-moisture floor after the 0 m anchor, and partial sea-ice albedo and emissivity seeds.
+- MPAS-route exports read reflectivity from the diag stream.
+- A streamed moving nest's checkpoint keeps its accumulation archive.
+- `gpuwm run --wrfinput` and `--met-em` stream a forecast the card cannot hold resident instead of refusing it.
+- GFS archive cycles with no index read their level ladder from the object; HRRR coastal matching works at an open window edge; hydro parameters handle catchments leaving the window; two `--prepare-only` launches in one second get two run folders.
+- The 1 km nest of an HRRR 3-1 tree and ICON global source normalization initialise on every core.
+
 ## 2.9.6 (2026-10-23)
 
 New:
@@ -603,6 +637,7 @@ New:
 
 Fixed:
 
+- Preparation matches source and target land/water support for 2 m temperature and its dewpoint, relative-humidity or specific-humidity input. This applies by default to regular sources carrying a land-sea mask and to native hybrid preparation. Corrected surface values feed the existing vertical surface anchor, moisture integration and low atmospheric initialization; pressure and hybrid-level fields keep their operators. Stock WPS leaves these atmospheric fields unmasked, so the 2 m rule is a declared departure that prevents coastal contrast dilution. Native skin temperature, snow and sea ice also use matching land/water support at coastlines, as their WPS table masks require. Answers change where the old stencil used the other surface. Uniform matching stencils retain the earlier FP32 result byte for byte, and sources without a land-sea mask retain their earlier interpolation. Receipts count matching-surface corrections and targets without a usable matching donor. Native snow and sea ice keep their earlier operators away from coastlines; their coastal masked chains use WPS's four-point and average-four-point operators.
 - RUC soil water no longer refills a dry top soil level from below at the WRF v4.6.1 rate. v4.6.1's SOILPROP normalises diffusivity and conductivity by total moisture over porosity, 2.5 to 8 times the v4.0 to v4.5 value in dry soil, so evaporation ran high and the near-surface air turned moist. New key `ruc_soilprop`, default `"wrf_45"`: the v4.0 to v4.5 form, also the operational RAP and HRRR form, with diffusivity and conductivity over the moisture above the residual. `"wrf_461"` keeps the v4.6.1 form by name and reproduces the earlier output byte for byte. In one cycle (2026-10-02 21Z, full HRRR configuration), 2 m dewpoint bias against 2,287 / 2,255 stations went from +1.16 / +1.59 K to +0.92 / +1.22 K at f01 / f02, and 2 m temperature bias went from -0.51 / -0.56 to -0.40 / -0.42 K. A RUC checkpoint written by an earlier build is refused on resume by its land-surface algorithm identity. Answers change for every RUC run.
 - Multi-card `[devices]` forecasts and streamed `[tiles]` forecasts pass sub-grid orographic statistics and topographic wind inputs to each tile, including its halo, so `gwd_opt` and `topo_wind` initialize on split domains. Topographic wind curvature uses the true neighboring terrain across stored row slabs and prepared slab seams. The terrain-drag kernels and their WRF arithmetic are unchanged.
 - MYNN initializes turbulent moments using water vapor, matching WRF's driver. It previously included cloud condensate in that input, changing cold-start cloudy columns. Answers change for those columns.

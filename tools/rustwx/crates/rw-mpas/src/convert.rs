@@ -692,6 +692,14 @@ fn convert_frame_inner(
         ));
         gattrs.push(NcAttr::text("MPAS_DIAG_FIELDS", split.diag_fields.join(",")));
     }
+    // A history with its own centres that took fields from its diag stream
+    // (MPAS-A's `output` leaves refl10cm_max there) names that file the same
+    // way; written only for such a frame, so every other frame is unchanged.
+    if let Some(diag) = &frame.companion_diag {
+        gattrs.push(NcAttr::text("MPAS_DIAG_FILE", file_name(Some(&diag.path))));
+        gattrs.push(NcAttr::text("MPAS_DIAG_SHA256", diag.sha256.clone().unwrap_or_default()));
+        gattrs.push(NcAttr::text("MPAS_DIAG_FIELDS", diag.fields.join(",")));
+    }
     if let Some(r) = remap {
         gattrs.push(NcAttr::text("MPAS_PRODUCT_REMAP", r.identity_json()));
         gattrs.push(NcAttr::text("MPAS_PRODUCT_REMAP_SHA256", r.sha256.clone()));

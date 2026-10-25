@@ -186,6 +186,52 @@ SPACING_DEFAULTS: tuple[dict[str, Any], ...] = (
 )
 
 
+#: Below this finest grid spacing a run resolves deep convection and runs no
+#: cumulus scheme: the line a source's ``convection_permitting_physics_profile``
+#: row binds under, and the line ``gpuwm downscale`` hands a refined child the
+#: HRRR-shape suite under (:func:`convection_permitting_child_profile`).
+CONVECTION_PERMITTING_BELOW_M = 4000.0
+
+
+def _convection_permitting_recommendation(source: str) -> str | None:
+    from gpuwm.source_adapters import source_adapters
+    return next((adapter.convection_permitting_physics_profile
+                 for adapter in source_adapters()
+                 if adapter.source_id == source), None)
+
+
+def convection_permitting_default(source: str, finest_dx_m: float | None,
+                                  domains: int = 1) -> str | None:
+    """The source's convection-permitting row, when it binds this grid."""
+
+    if finest_dx_m is None or float(finest_dx_m) >= CONVECTION_PERMITTING_BELOW_M:
+        return None
+    profile = _convection_permitting_recommendation(source)
+    if profile is None or profile_route_blocker(profile, source,
+                                                domains=domains) is not None:
+        return None
+    return profile
+
+
+def convection_permitting_child_profile(child_dx_m: float) -> str | None:
+    """The suite a refined child finer than the line runs when none is named.
+
+    THE BREAKAGE THIS PREVENTS (WOOF-INIT-FROM-ANY-RUN-2026-10-24/FOLLOW-UPS,
+    item 1): a 1 km ``gpuwm downscale`` of a 3 km Morrison parent inherited
+    Morrison, whose size sorting drew ghost-rain streaks in 9.6 % of columns
+    and let the parent's graupel fall out as a block inside the relaxation
+    zone.  On Thompson the ghost columns fell to 1.4 %, the block was gone and
+    the reflectivity bias against MRMS went from +13.9 to +9.0 dB.  The suite
+    is the HRRR route's own default, so add-nest, hex-global children and
+    nest-downs all run one storm-scale suite.
+    """
+
+    if float(child_dx_m) >= CONVECTION_PERMITTING_BELOW_M:
+        return None
+    from gpuwm.hrrr_route_inputs import ROUTE_DEFAULT_PHYSICS_PROFILE
+    return ROUTE_DEFAULT_PHYSICS_PROFILE
+
+
 def _route_emission_physics_gates() -> dict[str, Any]:
     """Emission-route physics gates, by source id.
 
@@ -642,6 +688,10 @@ def default_profile_for(source: str, finest_dx_m: float | None = None,
     by_spacing = spacing_default(source, finest_dx_m, domains)
     if by_spacing is not None:
         return by_spacing["profile_id"]
+    convection_permitting = convection_permitting_default(
+        source, finest_dx_m, domains)
+    if convection_permitting is not None:
+        return convection_permitting
     preferred = _recommended_profile(source) or declared
     admissible = admissible_profiles(source)
     if preferred in admissible and not day_only(preferred):
@@ -663,6 +713,10 @@ def default_basis(source: str, finest_dx_m: float | None = None,
     by_spacing = spacing_default(source, finest_dx_m, domains)
     if by_spacing is not None:
         return by_spacing["basis"]
+    if convection_permitting_default(source, finest_dx_m, domains) is not None:
+        return ("the source's convection-permitting recommendation below "
+                f"{CONVECTION_PERMITTING_BELOW_M / 1000:g} km; other "
+                "implemented suites remain selectable")
     recommendation = _recommended_profile(source)
     if recommendation is not None and default_profile_for(source) == recommendation:
         return "the source's declared recommendation; other implemented suites remain selectable"
@@ -897,7 +951,9 @@ def source_menu(source: str, *, display_name: str | None = None,
 
 
 __all__ = [
-    "SPACING_DEFAULTS", "WIZARD_PHYSICS_PROFILES", "profile_route_blocker",
+    "CONVECTION_PERMITTING_BELOW_M", "SPACING_DEFAULTS",
+    "WIZARD_PHYSICS_PROFILES", "convection_permitting_child_profile",
+    "convection_permitting_default", "profile_route_blocker",
     "spacing_default", "spacing_default_menu_rows", "spacing_default_rows",
     "admissibility_rules", "admissible_profiles", "day_only",
     "day_only_reason", "default_basis", "default_profile_for", "maturity",

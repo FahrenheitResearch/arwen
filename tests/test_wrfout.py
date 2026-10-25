@@ -1232,60 +1232,6 @@ def test_async_shutdown_terminates_for_dead_worker_with_full_queue(operation):
     assert raised[0].__cause__ is failure
 
 
-def test_async_ticket_queues_bound_synchronized_four_domain_bursts():
-    from gpuwm.io.wrfout import AsyncDomainWrfoutWriter
-
-    class Ticket:
-        admitted = False
-
-    domain_count = 4
-    ticket_queues = [
-        AsyncDomainWrfoutWriter._new_ticket_queue()
-        for _ in range(domain_count)
-    ]
-    first_burst = [Ticket() for _ in range(domain_count)]
-    second_burst = [Ticket() for _ in range(domain_count)]
-    third_burst = [Ticket() for _ in range(domain_count)]
-
-    for ticket_queue, ticket in zip(ticket_queues, first_burst):
-        ticket_queue.put(ticket)
-    worker_held = [ticket_queue.get() for ticket_queue in ticket_queues]
-    assert worker_held == first_burst
-    for ticket_queue, ticket in zip(ticket_queues, second_burst):
-        ticket_queue.put(ticket)
-
-    # One complete history burst may wait across the domain queues while each
-    # worker owns its current handoff: eight admitted tickets, globally.
-    assert len(worker_held) + sum(q.qsize() for q in ticket_queues) == (
-        2 * domain_count)
-
-    admitted = [threading.Event() for _ in range(domain_count)]
-
-    def submit_third(domain_index):
-        ticket_queues[domain_index].put(third_burst[domain_index])
-        admitted[domain_index].set()
-
-    producers = [
-        threading.Thread(target=submit_third, args=(domain_index,))
-        for domain_index in range(domain_count)
-    ]
-    for producer in producers:
-        producer.start()
-    assert all(not event.wait(timeout=0.05) for event in admitted)
-
-    for ticket_queue in ticket_queues:
-        ticket_queue.task_done()
-    worker_held = [ticket_queue.get() for ticket_queue in ticket_queues]
-    assert worker_held == second_burst
-    assert all(event.wait(timeout=1.0) for event in admitted)
-    for producer in producers:
-        producer.join(timeout=1.0)
-        assert not producer.is_alive()
-    assert len(worker_held) + sum(q.qsize() for q in ticket_queues) == (
-        2 * domain_count)
-    assert [ticket_queue.get() for ticket_queue in ticket_queues] == third_burst
-
-
 def test_per_domain_writer_builds_static_metadata_once(
         monkeypatch, tmp_path):
     import gpuwm.io.wrfout as wrfout

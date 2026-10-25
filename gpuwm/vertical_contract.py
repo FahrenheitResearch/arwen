@@ -46,7 +46,32 @@ def planned_source_top_pressure_pa(source: str) -> float | None:
         return float(adapter.certified_source_top_pa)
     if adapter.packaged_profile is None:
         return None
-    mapping = json.loads(packaged_authorities(adapter.packaged_profile)["mapping"].read_text())
+    top = _mapping_top_pa(
+        source, json.loads(packaged_authorities(adapter.packaged_profile)["mapping"].read_text()))
+    if top is None:
+        return None
+    # A composition whose companion extends the column above the primary top
+    # (the RRFS ensemble member's 250 hPa column and its deterministic RRFS
+    # companion, lane/leftovers-295): the composed atmosphere reaches the
+    # companion's top, so the plan reads that one.  Breakage: every rrfs-ens
+    # plan at the default 50 hPa model top was refused before acquisition.
+    from gpuwm.source_authorities import (packaged_composition,
+                                          packaged_contributing_mappings)
+    composition = packaged_composition(adapter.packaged_profile)
+    contributing = packaged_contributing_mappings(adapter.packaged_profile)
+    for binding in (composition.get("field_sources") or {}).values():
+        companion = (binding or {}).get("companion") or {}
+        path = contributing.get((binding or {}).get("mapping_role"))
+        if companion.get("vertical_extension") != "above_primary_top" or path is None:
+            continue
+        reach = _mapping_top_pa(source, json.loads(Path(path).read_text()))
+        if reach is not None:
+            top = min(top, reach)
+    return top
+
+
+def _mapping_top_pa(source, mapping) -> float | None:
+    """The lowest pressure (Pa) a mapping's pressure inventory reaches, or None."""
     vertical = mapping.get("coordinates", {}).get("vertical", {})
     if vertical.get("kind") != "pressure" or not vertical.get("levels"):
         return None

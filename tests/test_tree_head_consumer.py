@@ -651,7 +651,8 @@ class _Renders:
 
     def halt(self, timeout=None):
         self.halted_before_set_aside = not (
-            self.outdir / tree.STREAMED_ATTEMPT_DIRNAME).exists()
+            self.outdir / tree.STREAMED_ATTEMPT_PARENT
+            / tree.STREAMED_ATTEMPT_DIRNAME).exists()
 
     def render_threads(self):
         return []
@@ -772,8 +773,9 @@ def test_a_moved_clock_runs_the_forecast_again_on_the_sealed_tree(
     assert first_renders is renders[0][0]
     assert first_renders.halted_before_set_aside is True
     assert second_renders is renders[1][0] and renders[1][1] is None
-    # The attempt is kept, named, beside the sealed forecast.
-    attempt = outdir / tree.STREAMED_ATTEMPT_DIRNAME
+    # The attempt is kept, named, out of the sealed forecast's history.
+    attempt = (outdir / tree.STREAMED_ATTEMPT_PARENT
+               / tree.STREAMED_ATTEMPT_DIRNAME)
     assert (attempt / "wrfout" / "wrfout_d01_2026-09-29_12_00_00"
             ).read_text() == "attempt"
     assert (outdir / "wrfout" / "wrfout_d01_2026-09-29_12_00_00"
@@ -790,13 +792,54 @@ def test_each_streamed_attempt_keeps_its_own_folder(tmp_path):
         (outdir / "wrfout" / "frame").write_text(str(number))
         (outdir / "progress.json").write_text(str(number))
         tree._set_aside_streamed_attempt(outdir)
-    assert sorted(entry.name for entry in outdir.iterdir()) == [
+    assert sorted(entry.name for entry in outdir.iterdir()) == [".quarantine"]
+    kept = outdir / ".quarantine"
+    assert sorted(entry.name for entry in kept.iterdir()) == [
         "streamed-attempt", "streamed-attempt-2"]
     for name, number in (("streamed-attempt", "1"),
                          ("streamed-attempt-2", "2")):
-        assert (outdir / name / "wrfout" / "frame").read_text() == number
-        assert sorted(entry.name for entry in (outdir / name).iterdir()) \
+        assert (kept / name / "wrfout" / "frame").read_text() == number
+        assert sorted(entry.name for entry in (kept / name).iterdir()) \
             == ["progress.json", "wrfout"]
+
+
+def test_a_set_aside_attempt_is_not_read_as_the_sealed_history(tmp_path):
+    """Every frame reader sees only the sealed forecast's frames.
+
+    THE BREAKAGE: the attempt was kept at ``<outdir>/streamed-attempt/``
+    with frames named exactly as the sealed run's.  The WOOF worker walks
+    the run folder and keeps the first path per name in sorted order, and
+    ``streamed-attempt/`` sorts before ``wrfout/``, so a published LA run
+    carried the attempt's frames up to 15Z and the sealed run's after it:
+    d01 RAINNC fell between 15Z and 16Z and ``gpuwm ml-export`` refused.
+    """
+
+    from gpuwm.io.wrfout import iter_wrfout_files
+    from gpuwm.render_layout import history_frames
+
+    outdir = tmp_path / "chain" / "run"
+    outdir.mkdir(parents=True)
+    names = [f"wrfout_d01_2026-10-21_{hour:02d}_00_00" for hour in (12, 15)]
+    (outdir / "wrfout").mkdir()
+    for name in names:
+        (outdir / "wrfout" / name).write_text("attempt")
+    tree._set_aside_streamed_attempt(outdir)
+    (outdir / "wrfout").mkdir()
+    sealed = names + ["wrfout_d01_2026-10-21_16_00_00"]
+    for name in sealed:
+        (outdir / "wrfout" / name).write_text("sealed")
+    expected = [outdir / "wrfout" / name for name in sealed]
+
+    assert iter_wrfout_files(tmp_path, "wrfout_d*") == expected
+    assert [frame.path for frame in history_frames(tmp_path)] == expected
+    # A history consumer's rule: sorted walk,
+    # first path per name, ".quarantine" and "ready" parts left out.
+    first = {}
+    for path in sorted(tmp_path.rglob("wrfout_d*")):
+        if ".quarantine" not in path.parts and "ready" not in path.parts:
+            first.setdefault(path.name, path)
+    assert sorted(first.values()) == expected
+    assert {path.read_text() for path in first.values()} == {"sealed"}
 
 
 # ---------------------------------------------------------------------------
@@ -964,7 +1007,8 @@ def test_a_moved_clock_rerun_passes_the_forecast_watchdog(
     assert statuses[-1] == ("complete", 2)
     assert watchdog.last.status == "complete"
     # The heartbeat never left the run folder; the attempt's outputs did.
-    attempt = outdir / tree.STREAMED_ATTEMPT_DIRNAME
+    attempt = (outdir / tree.STREAMED_ATTEMPT_PARENT
+               / tree.STREAMED_ATTEMPT_DIRNAME)
     assert (outdir / supervisor.HEARTBEAT_NAME).is_file()
     assert not (attempt / supervisor.HEARTBEAT_NAME).exists()
     assert (attempt / "wrfout" / "wrfout_d01").read_text() == "attempt"

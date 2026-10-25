@@ -36,12 +36,8 @@ struct Geodesic {
     c3x: [f64; 15],
     c4x: [f64; 21],
 }
-// Static link off Linux and Windows (unchanged); on Linux libproj is opened at run time so the binary
-// carries no libproj.so.25 DT_NEEDED (manylinux_2_28 policy), and on Windows so the build needs no
-// proj.lib and the binary no PROJ DLL import. Call sites are unchanged: each function below is a
-// thin wrapper over the table `dyn_proj::api()` resolves (dlsym / GetProcAddress).
-#[cfg(not(any(target_os = "linux", windows)))]
-#[link(name = "proj")]
+// Pinned bundled PROJ/SQLite; no host library lookup.
+extern crate hydro_proj;
 extern "C" {
     fn geod_init(g: *mut Geodesic, a: f64, f: f64);
     fn geod_inverse(
@@ -56,120 +52,7 @@ extern "C" {
     );
 }
 
-#[cfg(any(target_os = "linux", windows))]
-#[allow(clippy::missing_safety_doc, clippy::too_many_arguments)]
-mod dyn_proj {
-    use super::*;
-    use std::ffi::c_void;
-    use std::sync::OnceLock;
 
-    // The platform loader: dlopen/dlsym on Linux, LoadLibraryA/GetProcAddress (kernel32) on Windows.
-    #[cfg(target_os = "linux")]
-    mod sys {
-        use std::ffi::{c_char, c_int, c_void, CStr};
-        #[link(name = "dl")]
-        extern "C" {
-            fn dlopen(filename: *const c_char, flags: c_int) -> *mut c_void;
-            fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
-            fn dlerror() -> *const c_char;
-        }
-        const RTLD_NOW: c_int = 2;
-        pub unsafe fn open(name: &[u8]) -> *mut c_void {
-            dlopen(name.as_ptr().cast(), RTLD_NOW)
-        }
-        pub unsafe fn sym(handle: *mut c_void, name: *const c_char) -> *mut c_void {
-            dlsym(handle, name)
-        }
-        pub unsafe fn last_error() -> String {
-            let p = dlerror();
-            if p.is_null() { String::new() } else { CStr::from_ptr(p).to_string_lossy().into_owned() }
-        }
-    }
-    #[cfg(windows)]
-    mod sys {
-        use std::ffi::{c_char, c_void};
-        #[link(name = "kernel32")]
-        extern "system" {
-            fn LoadLibraryA(name: *const c_char) -> *mut c_void;
-            fn GetProcAddress(module: *mut c_void, name: *const c_char) -> *mut c_void;
-            fn GetLastError() -> u32;
-        }
-        pub unsafe fn open(name: &[u8]) -> *mut c_void {
-            LoadLibraryA(name.as_ptr().cast())
-        }
-        pub unsafe fn sym(handle: *mut c_void, name: *const c_char) -> *mut c_void {
-            GetProcAddress(handle, name)
-        }
-        pub unsafe fn last_error() -> String {
-            match GetLastError() {
-                126 => "Windows error 126: the module or one of its dependent DLLs was not found".into(),
-                127 => "Windows error 127: the procedure was not found".into(),
-                193 => "Windows error 193: the DLL is not a valid 64-bit Windows library".into(),
-                code => format!("Windows error {code}"),
-            }
-        }
-    }
-    #[cfg(target_os = "linux")]
-    const SONAMES: [&[u8]; 2] = [b"libproj.so.25\0", b"libproj.so\0"];
-    #[cfg(windows)]
-    const SONAMES: [&[u8]; 12] = [b"proj_9.dll\0", b"proj_9_9.dll\0", b"proj_9_8.dll\0", b"proj_9_7.dll\0", b"proj_9_6.dll\0", b"proj_9_5.dll\0", b"proj_9_4.dll\0", b"proj_9_3.dll\0", b"proj_9_2.dll\0", b"proj_9_1.dll\0", b"proj_9_0.dll\0", b"proj.dll\0"];
-
-    pub struct Api {
-        pub geod_init: unsafe extern "C" fn(*mut Geodesic, f64, f64),
-        pub geod_inverse: unsafe extern "C" fn(*const Geodesic, f64, f64, f64, f64, *mut f64, *mut f64, *mut f64),
-    }
-
-    static API: OnceLock<std::result::Result<Api, String>> = OnceLock::new();
-
-    unsafe fn message() -> String {
-        sys::last_error()
-    }
-
-    unsafe fn sym(handle: *mut c_void, name: &[u8]) -> std::result::Result<*mut c_void, String> {
-        let p = sys::sym(handle, name.as_ptr().cast());
-        if p.is_null() {
-            Err(format!("libproj has no {}: {}", String::from_utf8_lossy(&name[..name.len() - 1]), message()))
-        } else {
-            Ok(p)
-        }
-    }
-
-    unsafe fn load() -> std::result::Result<Api, String> {
-        let mut handle = std::ptr::null_mut();
-        for soname in SONAMES {
-            handle = sys::open(soname);
-            if !handle.is_null() {
-                break;
-            }
-        }
-        if handle.is_null() {
-            #[cfg(target_os = "linux")]
-            return Err(format!("PROJ (libproj.so.25) is not installed on this host: {}; install the system PROJ library (Ubuntu: libproj25, RHEL: proj)", message()));
-            #[cfg(windows)]
-            return Err(format!("PROJ (proj_9_*.dll or proj.dll) was not found on this host: {}; install PROJ 9 (OSGeo4W, conda-forge proj or vcpkg) and put its bin directory on PATH", message()));
-        }
-        Ok(Api {
-            geod_init: std::mem::transmute(sym(handle, b"geod_init\0")?),
-            geod_inverse: std::mem::transmute(sym(handle, b"geod_inverse\0")?),
-        })
-    }
-
-    fn api() -> &'static Api {
-        match API.get_or_init(|| unsafe { load() }) {
-            Ok(api) => api,
-            Err(e) => panic!("{e}"),
-        }
-    }
-
-    pub unsafe fn geod_init(g: *mut Geodesic, a: f64, f: f64) {
-        (api().geod_init)(g, a, f)
-    }
-    pub unsafe fn geod_inverse(g: *const Geodesic, lat1: f64, lon1: f64, lat2: f64, lon2: f64, distance: *mut f64, azi1: *mut f64, azi2: *mut f64) {
-        (api().geod_inverse)(g, lat1, lon1, lat2, lon2, distance, azi1, azi2)
-    }
-}
-#[cfg(any(target_os = "linux", windows))]
-use dyn_proj::*;
 impl Geodesic {
     fn wgs84() -> Self {
         // The C initializer fills the public struct before it is read.

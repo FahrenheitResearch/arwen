@@ -191,6 +191,46 @@ def test_prepare_only_claims_a_stamped_run_folder_under_outdir(
     assert prepared.parents[1] == flat.resolve()
 
 
+def test_two_prepare_only_launches_in_one_second_get_two_run_folders(
+        tmp_path, monkeypatch, capsys):
+    """Release review 17 (2.9.7): the folder was only predicted before the
+    admission and then made with exist_ok=True, so a second launch of the
+    same second that predicted while the first was being admitted ran in
+    the first one's folder. Launch B runs whole inside launch A's admission."""
+
+    import datetime
+
+    from gpuwm import run_stamp
+    from gpuwm import runplan as runplan_module
+
+    config = _nested_config(tmp_path)
+    _forecast_tripwires(monkeypatch)
+    _captured_stages(monkeypatch)
+    frozen = datetime.datetime(2026, 10, 24, 8, 0, 0, tzinfo=datetime.timezone.utc)
+    monkeypatch.setattr(run_stamp, "utcnow", lambda: frozen)
+    out = tmp_path / "out"
+
+    admit = runplan_module.disk_admission_refusal
+    inner = []
+
+    def admission(*args, **kwargs):
+        if not inner:
+            inner.append(None)
+            rc = main(["go", str(config), "--prepare-only", "--outdir", str(out)])
+            assert rc == 0
+            inner[0] = Path(json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+                            ["prepared_root"]).parents[1]
+        return admit(*args, **kwargs)
+
+    monkeypatch.setattr(runplan_module, "disk_admission_refusal", admission)
+    rc, said = _go([str(config), "--prepare-only", "--outdir", str(out)], capsys)
+    outer = Path(json.loads(said.strip().splitlines()[-1])["prepared_root"]).parents[1]
+    assert inner[0] is not None
+    assert outer != inner[0], "two launches shared one run folder"
+    assert {outer.parent, inner[0].parent} == {out.resolve()}
+    assert run_stamp.latest(out).resolve() == outer.resolve()
+
+
 def test_prepare_only_dry_run_spends_nothing(tmp_path, monkeypatch, capsys):
     config = _nested_config(tmp_path)
     _forecast_tripwires(monkeypatch)

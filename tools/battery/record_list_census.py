@@ -52,6 +52,10 @@ def _listed(list_path: Path) -> list[str]:
 def _collect(entries: list[str], markexpr: str, environment: dict) -> dict:
     env = dict(os.environ)
     env.update({k: str(v) for k, v in environment.items()})
+    # This child measures the new floor. The old floor cannot veto its own
+    # replacement. The guard accepts this only with --collect-only and still
+    # rejects zero collection; pytest import/collection errors remain fatal.
+    env["GPUWM_RECORD_CENSUS"] = "1"
     cmd = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
            "--collect-only", "-m", markexpr, *entries]
     proc = subprocess.run(cmd, cwd=REPO_ROOT, env=env, capture_output=True,
@@ -63,7 +67,9 @@ def _collect(entries: list[str], markexpr: str, environment: dict) -> dict:
         file_part = line.split("::", 1)[0].replace("\\", "/")
         if file_part in counts:
             counts[file_part] += 1
-    if proc.returncode not in (0, 5) and sum(counts.values()) == 0:
+    # Pytest can emit node IDs before reporting an import/collection error.
+    # Those partial counts must never replace the last complete census.
+    if proc.returncode not in (0, 5):
         sys.stderr.write(proc.stdout[-4000:])
         sys.stderr.write(proc.stderr[-4000:])
         raise SystemExit(f"collection failed (rc={proc.returncode})")

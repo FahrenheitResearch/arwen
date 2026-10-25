@@ -111,6 +111,7 @@ def prepare(*, settings, state, physics, device_id, mode):
                                resources=resources,
                                reach_output=output, channel_output=channel_output,
                                status_fatal_masks=status_fatal_masks,
+                               routing_clock=settings.get("routing_clock"),
                                after_schedule=settings.get("after_schedule"),
                                stage_clocks=stage_clocks)
     driver.memory_admission = memory_admission

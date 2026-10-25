@@ -9,6 +9,11 @@ from gpuwm.core.gsd_diagnostics import HISTORY, reset_interval, update, update_h
 
 ROOT=Path(__file__).resolve().parents[1]
 
+
+def test_history_reset_accepts_a_reduced_state_without_a_scratch_pool():
+    from gpuwm.core.uh_diag import reset_up_heli_max
+    reset_up_heli_max(SimpleNamespace())
+
 def test_gsd_native_route_round_trip(tmp_path):
     from test_route_round_trip_fields import _emit,_replay
     _,paths=_emit(tmp_path,"gsd-windows",gsd_diagnostics=1,reset_interval1=30)

@@ -258,7 +258,10 @@ def test_a_stencil_holding_both_infinities_agrees_on_nan_not_on_its_sign():
     native = plan.apply(field, method="parabolic")
     value, nan_only = _differing(mirror, native)
     assert value == 0
-    assert nan_only > 0, "the arm did not reach the corner it exists for"
+    # A compiler may propagate identical NaN sign bits. Exercise the NaN
+    # arm without requiring a disagreement that IEEE-754 does not promise.
+    assert np.any(np.isnan(mirror)), "the arm did not reach a NaN"
+    np.testing.assert_array_equal(np.isnan(mirror), np.isnan(native))
     differing = _bits(mirror) != _bits(native)
     assert np.all(np.isnan(mirror).reshape(-1)[differing])
     assert np.all(np.isnan(native).reshape(-1)[differing])

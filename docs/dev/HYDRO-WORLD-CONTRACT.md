@@ -340,7 +340,7 @@ a new row, never a new code path. Each row names:
 | `inputs.soil`, `inputs.land_cover` | consumed by hydro-world-params for `model_attributes` |
 | `attribute_mapping` | `model_attributes` column -> recipe (parameter rows owned by hydro-world-params) |
 | `gauges` | gauge feeds (agency code, service, licence) for hydrolocations |
-| `build` | method (`dem-d8` or `vector-basins`) and every number it uses: grid resolution, fill tile, sea value, stream threshold, minimum reach length, lake minimum area and snap rules, recipe table, soil/veg class table names |
+| `build` | method (`dem-d8`, `vector-basins` or `vector-attributes`) and every number it uses: grid resolution, fill tile, sea value, stream threshold, minimum reach length, lake minimum area and snap rules, recipe table, soil/veg class table names |
 | `licence` on every input and feed | `status` unverified / verified / conditional / research-only / excluded, `name`, verbatim `quote`, `url`, `read_utc`, `read_by` |
 
 Rows today (licence verdicts from hydro-world-licences, tip 5c1bbd89eb4):
@@ -349,7 +349,7 @@ Rows today (licence verdicts from hydro-world-licences, tip 5c1bbd89eb4):
 |---|---|---|---|---|
 | `global-copernicus-glo90` (worldwide default) | 2 | dem-d8 | Copernicus GLO-90 tiles, HydroLAKES points (SoilGrids, WorldCover for params) | yes, every input verified |
 | `global-hydrosheds-v1` (cross-check) | 1 | vector-basins | HydroRIVERS + HydroBASINS level 12 (research-only), Copernicus GLO-90, HydroLAKES | private research only with `--accept-licence 'WWF HydroSHEDS v1 License Agreement'`; never bundled, fetched by default or shipped |
-| `conus-nhdplus-v21` | 0 | owner's tool (astra-c-hydro-data), build spec pending | NHDPlus V2.1, NAVD88 USGS 3DEP, SoilGrids 2.0, WorldCover 2021, HydroLAKES | source terms yes (DATA 2026-10-18); physical build/covering fabric/parameters/realization pending |
+| `conus-nhdplus-v21` | 0 | vector-attributes | NHDPlus V2.1 VPU flowlines/catchments/VAA/elevations, Copernicus GLO-90, SoilGrids-derived geography, WorldCover, HydroLAKES, GDW | verified source terms; shared native contract build and worldwide preparation pipeline; parent LSM 2/3/4 realizations; native CONUS land scope with worldwide preparation fallback, without boundary composition |
 
 Licence law in code: default `source::admit(row)` requires verified inputs. A limited source marked
 `research-only` remains refused with its licence named. `source::admit_with(row, accept)` allows an

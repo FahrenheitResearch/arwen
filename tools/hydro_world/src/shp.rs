@@ -49,7 +49,11 @@ impl Dbf {
         Ok(Dbf { bytes, n, header_len, rec_len, fields })
     }
     fn raw(&self, field: &str) -> Result<(usize, usize)> {
-        let &(p, l, _) = self.fields.get(field).ok_or_else(|| format!("dbf column {field} missing"))?;
+        // NHDPlus editions vary DBF field-name case between VPUs. dBASE
+        // identifiers are case-insensitive; the semantic mapping stays in the table.
+        let &(p, l, _) = self.fields.get(field)
+            .or_else(|| self.fields.iter().find(|(name,_)| name.eq_ignore_ascii_case(field)).map(|(_,v)|v))
+            .ok_or_else(|| format!("dbf column {field} missing"))?;
         Ok((p, l))
     }
     /// Numeric column as f64 for every record (blank -> NaN), in parallel.
@@ -123,4 +127,16 @@ pub fn read_shapes(shp: &Path) -> Result<Vec<Shape>> {
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod native_tests {
+    use super::*;
+    #[test]
+    fn native_vpu_column_case_is_not_a_different_field() {
+        let d=Dbf { bytes:b" 42".to_vec(),n:1,header_len:0,rec_len:3,
+            fields:HashMap::from([("ComID".into(),(1,2,b'N'))]) };
+        assert_eq!(d.i64s("COMID").unwrap(),vec![42]);
+        assert!(d.i64s("FEATUREID").is_err());
+    }
 }

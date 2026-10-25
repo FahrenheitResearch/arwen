@@ -71,7 +71,9 @@ def _digest_without_the_adaptive_config_keys(
         # leave every array and non-config header bound.
         for key in ADAPTIVE_TIMESTEP_RUN_FIELDS + (
                 "eta_levels", "relax_timescale_s", "relax_w",
-                "sf_urban_physics", "use_wudapt_lcz", "num_urban_hi"):
+                "sf_urban_physics", "use_wudapt_lcz", "num_urban_hi",
+                # tc/nest's fixed-frame archive (2.9.7), echoed on a nested domain.
+                "nest_accumulation_archive"):
             header["config"].pop(key, None)
         # The historical anchor predates the e13fa45c0 / 59f7e280f
         # moist_cq default flip. Retain the key and unwind only its value.

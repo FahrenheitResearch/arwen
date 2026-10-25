@@ -110,10 +110,7 @@ pub struct Divides {
 
 /// Divide polygons and areas from a contract GeoPackage, in file order.
 pub fn read_divides(fabric: &hydro_world::contract::Fabric) -> Result<Divides> {
-    let mut ids = Vec::new();
-    let mut polys = Vec::new();
-    let mut area = Vec::new();
-    for d in &fabric.divides {
+    let rows=fabric.divides.par_iter().map(|d| -> Result<_> {
         let id = d.divide_id.clone().ok_or("divide without divide_id")?;
         let g = d.geom.as_ref().ok_or_else(|| format!("{id}: divide has no geometry"))?;
         let p: Vec<Polygon> = geom::parse_gpkg(&g.0)?
@@ -121,11 +118,13 @@ pub fn read_divides(fabric: &hydro_world::contract::Fabric) -> Result<Divides> {
             .map(|poly| poly.into_iter().map(geom::open_ring).collect())
             .collect();
         let planar: f64 = p.iter().map(|poly| signed_poly(poly, geom::planar_area)).sum();
-        // areasqkm is the contract's planar equal-area value; fall back to the geometry.
-        area.push(d.areasqkm.filter(|a| a.is_finite() && *a > 0.0).map(|a| a * 1e6).unwrap_or(planar));
-        ids.push(id);
-        polys.push(p);
-    }
+        let area=d.areasqkm.filter(|a| a.is_finite() && *a > 0.0).map(|a| a * 1e6).unwrap_or(planar);
+        Ok((id,p,area))
+    }).collect::<Result<Vec<_>>>()?;
+    let mut ids=Vec::with_capacity(rows.len());
+    let mut polys=Vec::with_capacity(rows.len());
+    let mut area=Vec::with_capacity(rows.len());
+    for (id,p,a) in rows { ids.push(id);polys.push(p);area.push(a); }
     Ok(Divides { ids, polys, area_m2: area })
 }
 
@@ -225,4 +224,25 @@ pub fn compute(divides: &Divides, fabric_crs: &str, grid: &GridSpec, densify_m: 
         out.push(r.map_err(|e| format!("{}: {e}", divides.ids[k]))?);
     }
     Ok((out, rayon::current_num_threads()))
+}
+
+#[cfg(test)]
+mod divide_tests {
+    use super::*;
+    #[test]
+    fn parallel_divide_decode_preserves_polygon_axis_and_area_words() {
+        let mut fabric=crate::tessellate::build("parallel-divides",30.,-98.,30.2,-97.8,1000.).unwrap();
+        // Exercise both the authoritative area and geometry-derived fallback.
+        for (i,d) in fabric.divides.iter_mut().enumerate() { if i%2==0 { d.areasqkm=None; } }
+        let got=read_divides(&fabric).unwrap();
+        for (i,d) in fabric.divides.iter().enumerate() {
+            let p:Vec<Polygon>=geom::parse_gpkg(&d.geom.as_ref().unwrap().0).unwrap().into_iter()
+                .map(|poly|poly.into_iter().map(geom::open_ring).collect()).collect();
+            let planar:f64=p.iter().map(|poly|signed_poly(poly,geom::planar_area)).sum();
+            let area=d.areasqkm.filter(|a|a.is_finite() && *a>0.).map(|a|a*1e6).unwrap_or(planar);
+            assert_eq!(got.ids[i],d.divide_id.as_ref().unwrap().as_str());
+            assert_eq!(got.polys[i],p);
+            assert_eq!(got.area_m2[i].to_bits(),area.to_bits());
+        }
+    }
 }

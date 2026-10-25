@@ -51,7 +51,7 @@ def test_real_dry_run_names_every_step_products(config, request_file, capsys):
     assert launch(SimpleNamespace(config=config,cyclone_products=request_file,dry_run=True)) == 0
     assert called == [True]
     assert 'every committed step on a fixed Earth grid' in capsys.readouterr().out
-    assert load_request(request_file,config)['products'] == ['max-wind','gust','min-pressure','track']
+    assert load_request(request_file,config)['products'] == ['max-wind','gust','min-pressure','track','rain']
 
 
 def test_stage_only_does_not_claim_products(config,request_file):
@@ -121,3 +121,24 @@ def test_naive_model_clock_initializes_utc_track(config,request_file):
     capture.initialize(model=SimpleNamespace(_declared_experiment=
         SimpleNamespace(start_time=datetime(2022,9,27))))
     assert capture.request['analysis_time']=='2022-09-27T00:00:00+00:00'
+
+
+def test_cyclone_setup_tiles_auto_is_accepted_and_on_refused(tmp_path, request_file):
+    # cyclone-setup --vram-gib authors [tiles] mode = "auto"; --cyclone-products refused it
+    # (TC phase 1: arwenrun.sh had to sed the mode to "off").  "auto" keeps the domain
+    # resident when it fits, so only "on" (streams every domain) refuses up front.
+    base = '[experiment]\nname="test"\nstart_time=2022-09-27T00:00:00\n[[domain]]\ngrid_id=1\n[[domain]]\ngrid_id=2\n'
+    auto, on = tmp_path/'auto.toml', tmp_path/'on.toml'
+    auto.write_text(base + '["tiles"]\n"mode" = "auto"\n"store" = "host"\n')
+    on.write_text(base + '["tiles"]\n"mode" = "on"\n')
+    assert load_request(request_file, auto)['grid_id'] == 2
+    with pytest.raises(GoRefusal, match="mode = 'on' streams every domain"):
+        load_request(request_file, on)
+
+
+def test_auto_tiles_that_stream_the_observed_domain_refuse_at_first_sample(config, request_file):
+    from gpuwm.tc_accumulator import Capture
+    capture = Capture(load_request(request_file, config))
+    node = SimpleNamespace(cfg=SimpleNamespace(grid_id=2), state=SimpleNamespace(_streamed_domain=object()))
+    with pytest.raises(RuntimeError, match="streamed d02"):
+        capture.committed_step(node=node, model=None)

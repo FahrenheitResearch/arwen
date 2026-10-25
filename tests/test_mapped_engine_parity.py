@@ -2567,6 +2567,14 @@ def test_the_compose_registry_covers_every_registered_composition_source():
         # be permanently skipped rather than covered.  It is reported by
         # `--kind compose --list` the moment the bytes appear.
         "20crv3-cf": "no staged NetCDF-CF corpus",
+        # Historical GEFS products have distinct member/surface archives.
+        # This battery's current GEFS corpus contains operational products,
+        # not these retained historical pairs. Route tests cover their
+        # metadata; no dual-engine historical-array comparison is claimed.
+        "gefs-reforecast": "no staged GEFSv12 reforecast member/surface pair",
+        "gefs-reforecast-weekly": "no staged extended-lead GEFSv12 reforecast pair",
+        "gefs-v11": "no staged GEFSv11 historical member/surface pair",
+        "gefs-v11-flat": "no staged flattened GEFSv11 member/surface pair",
         # One perturbed member, cut out of ECMWF's enfo-ef object by its
         # JSON index ranges.  The staging tree holds the oper product only
         # (ifs/*-oper-fc.grib2): no member has been cut and staged on any
@@ -2587,6 +2595,18 @@ def test_the_compose_registry_covers_every_registered_composition_source():
         # The same GDT-101 normalization, on DWD's regional mesh.
         "icon-d2": "compose inputs are produced by the normalization "
                    "stage, not published",
+        # One RRFS ensemble member composed with its declared companion
+        # (the same cycle's deterministic prslev+2dfld pair).  No member or
+        # companion bytes are retained in the gauntlet corpus, and
+        # the row recipe above hands ONE supplement role, while this
+        # composition binds two (the member's terrain and the companion's
+        # data), so a row would be permanently skipped rather than covered.
+        # Its archived dual-engine evidence is the 2026-10-05 12Z m001 prep on
+        # both engines (lane pi-c11b): every composed array identical except
+        # the declared libm-dependent 2 m humidity.
+        "rrfs-ens": "no staged member+companion bytes; the row recipe "
+                    "hands one supplement role and this composition binds "
+                    "two",
     }
     # Inference products are generated with a same-cycle donor, rather than
     # published objects in this battery's agency staging corpus. Whole-job

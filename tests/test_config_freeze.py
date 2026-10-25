@@ -76,7 +76,13 @@ def test_new_fields_are_reviewed_defaults_appended_last():
     # sea ice's real.exe threshold (4c82704f8f, Registry default 100 K
     # converts nothing) and the HRRR v4 output controls (lane/hrrr-v4-output:
     # e55b68accb, bd4a1c2090, f80ac46aeb).
-    for name, default in (("smoke_off_reason", ""),
+    # 2.9.7, keyword-only and appended last: tc/nest's fixed-frame nest
+    # accumulation archive (on; read only on a nested domain) and the HRRR v4
+    # climate statistics (lane/hrrr-v4-clwrf 3aec2abd31, off).
+    for name, default in (("nest_accumulation_archive", True),
+                          ("wind_int", 5), ("diag_int", 15),
+                          ("output_diagnostics", 0),
+                          ("smoke_off_reason", ""),
                           ("history_interval_change_s", 0.0),
                           ("history_interval2_s", 0.0),
                           ("reset_interval1", 60),
@@ -140,6 +146,9 @@ def test_new_fields_are_reviewed_defaults_appended_last():
     from gpuwm import correct_mode
     assert names[-4:] == ['sf_ocean_physics', 'oml_hml0', 'oml_gamma', 'oml_relaxation_time']
     names = names[:-4]
+    # 2.9.7 HN1: keyword-only, so the positional constructor is unchanged.
+    assert names.pop() == 'hydrometeor_handover_numbers'
+    assert RunConfig.__dataclass_fields__['hydrometeor_handover_numbers'].kw_only
     assert names.pop() == 'wsm7_conservative_surface'
     assert names.pop() == 'wsm5_conservative_surface'
     assert names.pop() == 'wsm3_conservative_surface'
@@ -150,7 +159,7 @@ def test_new_fields_are_reviewed_defaults_appended_last():
     for field in ('ntiedtke_dry_mass_coupling', 'wsm6_conservative_surface',
      'wdm6_conservative_surface', 'thompson_cloud_surface_booking',
      'wsm3_conservative_surface', 'wsm5_conservative_surface',
-     'wsm7_conservative_surface'):
+     'wsm7_conservative_surface', 'hydrometeor_handover_numbers'):
         assert RunConfig.__dataclass_fields__[field].default is correct_mode.CORRECT_KEYS_DEFAULT
         assert correct_mode.CORRECT_KEYS_DEFAULT is (not correct_mode.STRICT)
     from gpuwm.lightning_contract import LIGHTNING_DEFAULTS
@@ -490,7 +499,11 @@ def _check_frozen_defaults(actual):
                          ("prec_acc_dt1", 0.0), ("gsd_diagnostics", 0),
                          ("reset_interval1", 60), ("history_interval2_s", 0.0),
                          ("history_interval_change_s", 0.0),
-                         ("smoke_off_reason", "")):
+                         ("smoke_off_reason", ""),
+                         # 2.9.7: the HRRR v4 climate statistics (off) and
+                         # tc/nest's archive (read only on a nested domain).
+                         ("output_diagnostics", 0), ("diag_int", 15),
+                         ("wind_int", 5), ("nest_accumulation_archive", True)):
         assert actual.pop(field) == value, field
     for field,value in (("urban_ucm_generation","wrf_471"),("urban_treeoption",-1),
                         ("urban_ttscheme",-1),("urban_fvg",-1.),("urban_table_dir","")):
@@ -516,6 +529,8 @@ def _check_frozen_defaults(actual):
     assert actual.pop("wsm3_conservative_surface") is CORRECT_KEYS_DEFAULT
     assert actual.pop("wsm5_conservative_surface") is CORRECT_KEYS_DEFAULT
     assert actual.pop("wsm7_conservative_surface") is CORRECT_KEYS_DEFAULT
+    # 2.9.7: HN1, the hydrometeor handover numbers, same default.
+    assert actual.pop("hydrometeor_handover_numbers") is CORRECT_KEYS_DEFAULT
     # Declared default correction, 2.8.8 (test above).
     assert actual.pop("terrain_clock") == "local_face"
     assert actual.pop("use_rap_aero_icbc") is False

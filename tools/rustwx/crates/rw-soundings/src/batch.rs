@@ -101,6 +101,29 @@ fn mode_label(mode: &str, members: usize) -> String {
         }
     }
 }
+/// What the sounding says top right when the caller set no `brand`: the model, its shape and its start, from the
+/// run's own description with the `model`, `shape`, `source` and `init` settings taking precedence:
+/// "WOOF Regional · Init HRRR 23 Oct 2026 12Z", "WOOF Hex · Global 120 km · Init GFS 22 Oct 2026 00Z". A part the run
+/// does not state is left out; with nothing stated it is just "WOOF". Never a tool's name.
+pub fn brand_from(run: &input::RunInfo, init: Option<i64>) -> String {
+    let words = |s: &Option<String>| s.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    let mut parts = vec![match words(&run.model) {
+        Some(m) if m.starts_with("WOOF") => m,
+        Some(m) => format!("WOOF {m}"),
+        None => "WOOF".to_string(),
+    }];
+    if let Some(shape) = words(&run.shape) {
+        parts.push(shape);
+    }
+    let source = words(&run.source).map(|s| s.to_uppercase());
+    match (source, init) {
+        (Some(src), Some(t)) => parts.push(format!("Init {src} {}", stamp(t, "%-d %b %Y %HZ"))),
+        (None, Some(t)) => parts.push(format!("Init {}", stamp(t, "%-d %b %Y %HZ"))),
+        (Some(src), None) => parts.push(format!("Init {src}")),
+        (None, None) => {}
+    }
+    parts.join(" · ")
+}
 /// The `title` setting's {point} {latlon} {valid} {lead} {init} {mode} {domain} filled in.
 fn fill(template: &str, fields: &[(&str, &str)]) -> String {
     let mut out = template.to_string();
@@ -134,7 +157,11 @@ pub fn run(req: Request) -> Res<()> {
     let mut groups: BTreeMap<(String, i64), BTreeMap<String, Frame>> = BTreeMap::new();
     let mut origins: BTreeMap<String, i64> = BTreeMap::new();
     let mut roster: BTreeMap<String, std::collections::BTreeSet<String>> = BTreeMap::new();
+    // What each domain's files say about the run (the first file that states a part wins).
+    let mut runs: BTreeMap<String, input::RunInfo> = BTreeMap::new();
     for f in frames {
+        let known = runs.remove(&f.domain).unwrap_or_default().or(&f.run);
+        runs.insert(f.domain.clone(), known);
         origins
             .entry(f.domain.clone())
             .and_modify(|t| *t = (*t).min(f.valid))
@@ -166,6 +193,13 @@ pub fn run(req: Request) -> Res<()> {
     let ao = options::parse_analysis(&req.settings)?;
     let display = options::parse_display(&req.settings)?;
     let init_setting = options::qs(&req.settings, "init").map(parse_init).transpose()?;
+    // The settings describe the run first; the files fill what they leave out.
+    let said = input::RunInfo {
+        init: None,
+        model: options::qs(&req.settings, "model").map(str::to_string),
+        shape: options::qs(&req.settings, "shape").map(str::to_string),
+        source: options::qs(&req.settings, "source").map(str::to_string),
+    };
     let many_domains = roster.len() > 1;
     let mut pages: BTreeMap<PathBuf, Vec<(String, String)>> = BTreeMap::new();
     let mut receipt = vec![];
@@ -212,7 +246,10 @@ pub fn run(req: Request) -> Res<()> {
                 pool.install(|| raw.par_iter().map(analyze).collect::<Res<Vec<_>>>())?;
             for mode in &req.modes {
                 // Top left says what the picture is: the point, its valid time and lead, and which member(s).
-                let init = init_setting.unwrap_or(origins[&domain]);
+                let run = said.clone().or(&runs[&domain]);
+                // The run's start: the `init` setting, else the start its files state, else the domain's first time.
+                let stated = init_setting.or_else(|| run.init.as_deref().and_then(|t| parse_init(t).ok()));
+                let init = stated.unwrap_or(origins[&domain]);
                 let latlon = latlon_label(point.lat, point.lon);
                 let valid_text = stamp(valid, "%a %d %b %Y %H:%MZ");
                 let lead = lead_label(valid, init);
@@ -220,8 +257,11 @@ pub fn run(req: Request) -> Res<()> {
                 let what = mode_label(mode, names.len());
                 let fields = [("point", point.label.as_str()), ("latlon", latlon.as_str()), ("valid", valid_text.as_str()),
                     ("lead", lead.as_str()), ("init", init_text.as_str()), ("mode", what.as_str()), ("domain", domain.as_str())];
-                // Top right is the model's name and start (the `brand` setting, e.g. "WOOF Hex · GFS 22 Oct 2026 00Z").
-                let brand = fill(&display.brand, &fields);
+                // Top right is the model's name and start: the `brand` setting, else the run's own description.
+                let brand = match &display.brand {
+                    Some(b) => fill(b, &fields),
+                    None => brand_from(&run, stated),
+                };
                 let title = match &display.title {
                     Some(t) => fill(t, &fields),
                     None => {
@@ -385,6 +425,26 @@ mod label_tests {
     fn points_say_hemisphere() {
         assert_eq!(latlon_label(35.39, -97.6), "35.39N 97.60W");
         assert_eq!(latlon_label(-33.87, 151.21), "33.87S 151.21E");
+    }
+
+    #[test]
+    fn the_label_is_the_run_never_a_tool() {
+        let init = parse_init("2026-10-23T12:00Z").ok();
+        let run = |m: Option<&str>, sh: Option<&str>, src: Option<&str>| input::RunInfo {
+            init: None,
+            model: m.map(str::to_string),
+            shape: sh.map(str::to_string),
+            source: src.map(str::to_string),
+        };
+        assert_eq!(brand_from(&run(None, None, None), None), "WOOF");
+        assert_eq!(brand_from(&run(Some("Regional"), None, Some("hrrr")), init), "WOOF Regional · Init HRRR 23 Oct 2026 12Z");
+        assert_eq!(
+            brand_from(&run(Some("Hex"), Some("Global 120 km"), Some("GFS")), parse_init("2026-10-22T00").ok()),
+            "WOOF Hex · Global 120 km · Init GFS 22 Oct 2026 00Z"
+        );
+        assert_eq!(brand_from(&run(Some("WOOF Live ensemble"), None, None), None), "WOOF Live ensemble");
+        assert_eq!(brand_from(&run(None, None, None), init), "WOOF · Init 23 Oct 2026 12Z");
+        assert!(!brand_from(&run(None, None, None), None).contains("sharppy"));
     }
 
     #[test]

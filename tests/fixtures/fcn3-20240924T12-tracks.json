@@ -1,0 +1,549 @@
+{
+  "schema": "gpuwm.tc-tracks.v1",
+  "tracker": {
+    "backend": "wuduan",
+    "config": {
+      "fields": [
+        "u10m",
+        "v10m",
+        "msl",
+        "u850",
+        "v850"
+      ],
+      "path_search_distance": 300,
+      "path_search_window_size": 2,
+      "edge_radius_km": 300,
+      "constructor": {
+        "path_search_distance": 300,
+        "path_search_window_size": 2
+      },
+      "vorticity_threshold": 0.00014,
+      "code_sha256": {
+        "orchestrator": "a8b966db0be5adeced04b16c9e48248225a8b41630ada080824315e023092f2d",
+        "gpu_driver": "a0a9f3893b61be3aff46417fd59e306acd39d7bd4bb7c8e7df5ac64da821044e",
+        "native_reader": "6153721a71ad2f853cb59d909f4ff17bb80dabf6082cb9c0582102f1cee551cf",
+        "renderer": "f9a5c62f0949026d5728223a52cd92dc9048ed8ebb5acf297105fc6738752b97"
+      },
+      "field_authority_sha256": "38044231e1d0b19de1e1956797c1a727df3c333b55d9258550ae70126788f1e2",
+      "cadence_hours": {
+        "0": [
+          6.0,
+          6.0,
+          6.0,
+          6.0
+        ]
+      }
+    },
+    "config_sha256": "71945dc3d88221bd286a09ae12163a5410b9ff7c45923e5fea5e0944547d5f3d",
+    "code_revision": "unknown"
+  },
+  "members": [
+    {
+      "member_id": "0",
+      "family": "ai",
+      "source": "earth2-fcn3",
+      "init": "2024-09-24T12:00:00Z",
+      "weight": 1.0,
+      "ancestry": {
+        "model": "fcn3",
+        "parent_receipt": "earth2-run.json"
+      },
+      "inputs": [
+        {
+          "path": "earth2-fcn3-20240924T12-m0000-f0000.nc",
+          "sha256": "de1771d38e500fd0c61e1b66f04d4023c9caf3dba84de0c856fd3a396c54393d"
+        },
+        {
+          "path": "earth2-fcn3-20240924T12-m0000-f0006.nc",
+          "sha256": "39c8553232efc7c050d874ec6366dc3a7f6d04b21f12e3efd906585e03197a16"
+        },
+        {
+          "path": "earth2-fcn3-20240924T12-m0000-f0012.nc",
+          "sha256": "5051e8de39c6f7fcec28ee04e0d4ba0c995df9964ca7887586a2c5094f56e954"
+        },
+        {
+          "path": "earth2-fcn3-20240924T12-m0000-f0018.nc",
+          "sha256": "c31642785b47458ad8c1a8a5374a678ff0d9b8ebb604d5ab5b3efa1fb5aff8a9"
+        },
+        {
+          "path": "earth2-fcn3-20240924T12-m0000-f0024.nc",
+          "sha256": "dcefeb2eff476e25e6618425ed38c323fcc9e82ae804e7bc9092155bf51bf5df"
+        }
+      ]
+    }
+  ],
+  "tracks": [
+    {
+      "track_id": "0-000",
+      "member_id": "0",
+      "weight": 1.0,
+      "fixes": [
+        {
+          "valid": "2024-09-24T12:00:00Z",
+          "lead_hours": 0.0,
+          "lat": 39.263346341039586,
+          "lon": -101.21014291175567,
+          "mslp_pa": 100981.1640625,
+          "max_wind10_ms": 7.613544464111328,
+          "flags": []
+        },
+        {
+          "valid": "2024-09-24T18:00:00Z",
+          "lead_hours": 6.0,
+          "lat": null,
+          "lon": null,
+          "mslp_pa": null,
+          "max_wind10_ms": null,
+          "flags": [
+            "missing"
+          ]
+        },
+        {
+          "valid": "2024-09-25T00:00:00Z",
+          "lead_hours": 12.0,
+          "lat": null,
+          "lon": null,
+          "mslp_pa": null,
+          "max_wind10_ms": null,
+          "flags": [
+            "missing"
+          ]
+        },
+        {
+          "valid": "2024-09-25T06:00:00Z",
+          "lead_hours": 18.0,
+          "lat": null,
+          "lon": null,
+          "mslp_pa": null,
+          "max_wind10_ms": null,
+          "flags": [
+            "missing"
+          ]
+        },
+        {
+          "valid": "2024-09-25T12:00:00Z",
+          "lead_hours": 24.0,
+          "lat": null,
+          "lon": null,
+          "mslp_pa": null,
+          "max_wind10_ms": null,
+          "flags": [
+            "missing"
+          ]
+        }
+      ]
+    },
+    {
+      "track_id": "0-001",
+      "member_id": "0",
+      "weight": 1.0,
+      "fixes": [
+        {
+          "valid": "2024-09-24T12:00:00Z",
+          "lead_hours": 0.0,
+          "lat": 38.94443057097202,
+          "lon": -58.60474054628969,
+          "mslp_pa": 100445.6640625,
+          "max_wind10_ms": 18.338516235351562,
+          "flags": []
+        },
+        {
+          "valid": "2024-09-24T18:00:00Z",
+          "lead_hours": 6.0,
+          "lat": null,
+          "lon": null,
+          "mslp_pa": null,
+          "max_wind10_ms": null,
+          "flags": [
+            "missing"
+          ]
+        },
+        {
+          "valid": "2024-09-25T00:00:00Z",
+          "lead_hours": 12.0,
+          "lat": null,
+          "lon": null,
+          "mslp_pa": null,
+          "max_wind10_ms": null,
+          "flags": [
+            "missing"
+          ]
+        },
+        {
+          "valid": "2024-09-25T06:00:00Z",
+          "lead_hours": 18.0,
+          "lat": null,
+          "lon": null,
+          "mslp_pa": null,
+          "max_wind10_ms": null,
+          "flags": [
+            "missing"
+          ]
+        },
+        {
+          "valid": "2024-09-25T12:00:00Z",
+          "lead_hours": 24.0,
+          "lat": null,
+          "lon": null,
+          "mslp_pa": null,
+          "max_wind10_ms": null,
+          "flags": [
+            "missing"
+          ]
+        }
+      ]
+    },
+    {
+      "track_id": "0-002",
+      "member_id": "0",
+      "weight": 1.0,
+      "fixes": [
+        {
+          "valid": "2024-09-24T12:00:00Z",
+          "lead_hours": 0.0,
+          "lat": 16.396468403227274,
+          "lon": -99.82119069400795,
+          "mslp_pa": 100275.484375,
+          "max_wind10_ms": 12.643677711486816,
+          "flags": []
+        },
+        {
+          "valid": "2024-09-24T18:00:00Z",
+          "lead_hours": 6.0,
+          "lat": null,
+          "lon": null,
+          "mslp_pa": null,
+          "max_wind10_ms": null,
+          "flags": [
+            "missing"
+          ]
+        },
+        {
+          "valid": "2024-09-25T00:00:00Z",
+          "lead_hours": 12.0,
+          "lat": null,
+          "lon": null,
+          "mslp_pa": null,
+          "max_wind10_ms": null,
+          "flags": [
+            "missing"
+          ]
+        },
+        {
+          "valid": "2024-09-25T06:00:00Z",
+          "lead_hours": 18.0,
+          "lat": null,
+          "lon": null,
+          "mslp_pa": null,
+          "max_wind10_ms": null,
+          "flags": [
+            "missing"
+          ]
+        },
+        {
+          "valid": "2024-09-25T12:00:00Z",
+          "lead_hours": 24.0,
+          "lat": null,
+          "lon": null,
+          "mslp_pa": null,
+          "max_wind10_ms": null,
+          "flags": [
+            "missing"
+          ]
+        }
+      ]
+    },
+    {
+      "track_id": "0-003",
+      "member_id": "0",
+      "weight": 1.0,
+      "fixes": [
+        {
+          "valid": "2024-09-24T12:00:00Z",
+          "lead_hours": 0.0,
+          "lat": -34.630872337907675,
+          "lon": 145.24735785518533,
+          "mslp_pa": 101147.3671875,
+          "max_wind10_ms": 6.596988201141357,
+          "flags": []
+        },
+        {
+          "valid": "2024-09-24T18:00:00Z",
+          "lead_hours": 6.0,
+          "lat": null,
+          "lon": null,
+          "mslp_pa": null,
+          "max_wind10_ms": null,
+          "flags": [
+            "missing"
+          ]
+        },
+        {
+          "valid": "2024-09-25T00:00:00Z",
+          "lead_hours": 12.0,
+          "lat": null,
+          "lon": null,
+          "mslp_pa": null,
+          "max_wind10_ms": null,
+          "flags": [
+            "missing"
+          ]
+        },
+        {
+          "valid": "2024-09-25T06:00:00Z",
+          "lead_hours": 18.0,
+          "lat": null,
+          "lon": null,
+          "mslp_pa": null,
+          "max_wind10_ms": null,
+          "flags": [
+            "missing"
+          ]
+        },
+        {
+          "valid": "2024-09-25T12:00:00Z",
+          "lead_hours": 24.0,
+          "lat": null,
+          "lon": null,
+          "mslp_pa": null,
+          "max_wind10_ms": null,
+          "flags": [
+            "missing"
+          ]
+        }
+      ]
+    },
+    {
+      "track_id": "0-004",
+      "member_id": "0",
+      "weight": 1.0,
+      "fixes": [
+        {
+          "valid": "2024-09-24T12:00:00Z",
+          "lead_hours": 0.0,
+          "lat": null,
+          "lon": null,
+          "mslp_pa": null,
+          "max_wind10_ms": null,
+          "flags": [
+            "missing"
+          ]
+        },
+        {
+          "valid": "2024-09-24T18:00:00Z",
+          "lead_hours": 6.0,
+          "lat": 19.762220720735158,
+          "lon": -84.29973109088331,
+          "mslp_pa": 100184.1484375,
+          "max_wind10_ms": 16.775657653808594,
+          "flags": []
+        },
+        {
+          "valid": "2024-09-25T00:00:00Z",
+          "lead_hours": 12.0,
+          "lat": null,
+          "lon": null,
+          "mslp_pa": null,
+          "max_wind10_ms": null,
+          "flags": [
+            "missing"
+          ]
+        },
+        {
+          "valid": "2024-09-25T06:00:00Z",
+          "lead_hours": 18.0,
+          "lat": 20.417807108442247,
+          "lon": -85.44671472789628,
+          "mslp_pa": 99323.390625,
+          "max_wind10_ms": 19.544111251831055,
+          "flags": []
+        },
+        {
+          "valid": "2024-09-25T12:00:00Z",
+          "lead_hours": 24.0,
+          "lat": 21.233576549960404,
+          "lon": -86.05167226615976,
+          "mslp_pa": 98693.96875,
+          "max_wind10_ms": 21.141820907592773,
+          "flags": []
+        }
+      ]
+    },
+    {
+      "track_id": "0-005",
+      "member_id": "0",
+      "weight": 1.0,
+      "fixes": [
+        {
+          "valid": "2024-09-24T12:00:00Z",
+          "lead_hours": 0.0,
+          "lat": null,
+          "lon": null,
+          "mslp_pa": null,
+          "max_wind10_ms": null,
+          "flags": [
+            "missing"
+          ]
+        },
+        {
+          "valid": "2024-09-24T18:00:00Z",
+          "lead_hours": 6.0,
+          "lat": null,
+          "lon": null,
+          "mslp_pa": null,
+          "max_wind10_ms": null,
+          "flags": [
+            "missing"
+          ]
+        },
+        {
+          "valid": "2024-09-25T00:00:00Z",
+          "lead_hours": 12.0,
+          "lat": 10.862144321380782,
+          "lon": -170.49435846196127,
+          "mslp_pa": 100775.0703125,
+          "max_wind10_ms": 13.89299201965332,
+          "flags": []
+        },
+        {
+          "valid": "2024-09-25T06:00:00Z",
+          "lead_hours": 18.0,
+          "lat": 11.836617247256498,
+          "lon": -169.40240527672063,
+          "mslp_pa": 100798.078125,
+          "max_wind10_ms": 11.009923934936523,
+          "flags": []
+        },
+        {
+          "valid": "2024-09-25T12:00:00Z",
+          "lead_hours": 24.0,
+          "lat": 12.543727745742189,
+          "lon": -169.04510094227555,
+          "mslp_pa": 100984.5703125,
+          "max_wind10_ms": 11.435444831848145,
+          "flags": []
+        }
+      ]
+    },
+    {
+      "track_id": "0-006",
+      "member_id": "0",
+      "weight": 1.0,
+      "fixes": [
+        {
+          "valid": "2024-09-24T12:00:00Z",
+          "lead_hours": 0.0,
+          "lat": null,
+          "lon": null,
+          "mslp_pa": null,
+          "max_wind10_ms": null,
+          "flags": [
+            "missing"
+          ]
+        },
+        {
+          "valid": "2024-09-24T18:00:00Z",
+          "lead_hours": 6.0,
+          "lat": null,
+          "lon": null,
+          "mslp_pa": null,
+          "max_wind10_ms": null,
+          "flags": [
+            "missing"
+          ]
+        },
+        {
+          "valid": "2024-09-25T00:00:00Z",
+          "lead_hours": 12.0,
+          "lat": null,
+          "lon": null,
+          "mslp_pa": null,
+          "max_wind10_ms": null,
+          "flags": [
+            "missing"
+          ]
+        },
+        {
+          "valid": "2024-09-25T06:00:00Z",
+          "lead_hours": 18.0,
+          "lat": 10.888125252133463,
+          "lon": -151.08141070081172,
+          "mslp_pa": 101095.7421875,
+          "max_wind10_ms": 8.7933349609375,
+          "flags": []
+        },
+        {
+          "valid": "2024-09-25T12:00:00Z",
+          "lead_hours": 24.0,
+          "lat": null,
+          "lon": null,
+          "mslp_pa": null,
+          "max_wind10_ms": null,
+          "flags": [
+            "missing"
+          ]
+        }
+      ]
+    },
+    {
+      "track_id": "0-007",
+      "member_id": "0",
+      "weight": 1.0,
+      "fixes": [
+        {
+          "valid": "2024-09-24T12:00:00Z",
+          "lead_hours": 0.0,
+          "lat": null,
+          "lon": null,
+          "mslp_pa": null,
+          "max_wind10_ms": null,
+          "flags": [
+            "missing"
+          ]
+        },
+        {
+          "valid": "2024-09-24T18:00:00Z",
+          "lead_hours": 6.0,
+          "lat": null,
+          "lon": null,
+          "mslp_pa": null,
+          "max_wind10_ms": null,
+          "flags": [
+            "missing"
+          ]
+        },
+        {
+          "valid": "2024-09-25T00:00:00Z",
+          "lead_hours": 12.0,
+          "lat": null,
+          "lon": null,
+          "mslp_pa": null,
+          "max_wind10_ms": null,
+          "flags": [
+            "missing"
+          ]
+        },
+        {
+          "valid": "2024-09-25T06:00:00Z",
+          "lead_hours": 18.0,
+          "lat": null,
+          "lon": null,
+          "mslp_pa": null,
+          "max_wind10_ms": null,
+          "flags": [
+            "missing"
+          ]
+        },
+        {
+          "valid": "2024-09-25T12:00:00Z",
+          "lead_hours": 24.0,
+          "lat": 15.29592950881991,
+          "lon": 148.9734969789231,
+          "mslp_pa": 100778.6875,
+          "max_wind10_ms": 13.006589889526367,
+          "flags": []
+        }
+      ]
+    }
+  ]
+}

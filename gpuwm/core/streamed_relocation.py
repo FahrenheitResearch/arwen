@@ -182,6 +182,8 @@ class StreamedChildReconstruction:
             new_dc, parent, rows_per_slab=rows,
             device_budget_bytes=self.device_budget_bytes, host_budget_bytes=self.host_budget_bytes,
             prepare=prepare, reservation=self.reservation)
+        from gpuwm.core.nest_accumulation import install
+        install(self.bundle.template, prepare.precipitation_archive)
         reservation = self.reservation
         def scratch(shape, slot, dtype=None):
             with reservation.activate():

@@ -196,6 +196,10 @@ def _column_dphp(state, before: Mapping[str, object],
     byte for byte, which is what every existing caller gets."""
     xp = _xp(state.p)
     nz = int(state.p.shape[0])
+    if xp is np:
+        from gpuwm.da.host_analysis import hydrostatic
+        return hydrostatic(state, before, after, hypsometric_opt=hypsometric_opt,
+                           mup_after=mup_after)
     masses = loading_masses(state)
     if "qv" not in masses:
         raise HydrostaticError(

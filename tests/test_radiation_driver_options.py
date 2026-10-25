@@ -99,7 +99,11 @@ def test_the_checkpoint_echo_drops_both_at_their_default():
     # (lane/hrrr-v4-output: e55b68accb, bd4a1c2090, f80ac46aeb).
     later = ["seaice_threshold", "prec_acc_dt", "prec_acc_dt1",
              "gsd_diagnostics", "reset_interval1", "history_interval2_s",
-             "history_interval_change_s", "smoke_off_reason"]
+             "history_interval_change_s", "smoke_off_reason",
+             # 2.9.7, keyword-only: the HRRR v4 climate statistics
+             # (lane/hrrr-v4-clwrf) and tc/nest's fixed-frame archive.
+             "output_diagnostics", "diag_int", "wind_int",
+             "nest_accumulation_archive"]
     assert names[-len(later):] == later
     names = names[:-len(later)]
     # The 2.9.4 capabilities campaign's keyword-only keys follow the fire
@@ -143,6 +147,8 @@ def test_the_checkpoint_echo_drops_both_at_their_default():
         "wdm6_conservative_surface", "thompson_cloud_surface_booking",
         "wsm3_conservative_surface", "wsm5_conservative_surface",
         "wsm7_conservative_surface",
+        # 2.9.7: HN1, the keyword-only hydrometeor handover numbers key.
+        "hydrometeor_handover_numbers",
         # 2.9.1: WRF's ocean mixed layer, appended after the correct-mode keys.
         "sf_ocean_physics",
         # lane/cap-slab-ocean: the keyword-only 3-D PWP controls.

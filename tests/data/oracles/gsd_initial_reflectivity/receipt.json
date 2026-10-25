@@ -1,0 +1,17 @@
+{
+  "authority": "NOAA-EMC/HRRR 40ee6058c2fc6624cbfbbe8cf1c20c59e6a45827",
+  "source_sha256": {
+    "module_diag_gsd.F": "c5771bcd5bf9cefd642e79832453cb8f2a951471d81351850596cc761c53dd64",
+    "module_mp_thompson.F": "4d60011188443eb432294f7693beb64bdbc8f812541a15c7800013060c877283",
+    "module_mp_radar.F": "08329c87604b234efab53f7986163a4f6050f58823da9099cb464163c1920f08",
+    "module_model_constants.F": "0d0ee7d243fe673288efafcdcdc470ee028ad8d083648f12225ce2d168f8e87c"
+  },
+  "helper_sha256": "0fef8f2e45b69fbf145551f0aeb464a583eb368ddf443e33f4a3ebfb4bea9da3",
+  "calc_refl10cm_sha256": "386b9e691da979b573c6e20309f933c7fc62af1e8c0d264c1e3da9f9d6e6b807",
+  "compiler": "GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+  "flags": "-O2 -ffp-contract=off -fno-tree-vectorize",
+  "calls": 16,
+  "columns_per_call": 24,
+  "levels": 9,
+  "compared_float32_words": 3456
+}

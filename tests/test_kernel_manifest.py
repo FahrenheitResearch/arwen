@@ -119,6 +119,10 @@ EXPECTED_SITE_COUNT = 30
 #: anywhere else fails the census below until it is either made a site or
 #: explained here.
 RAWMODULE_CONSTRUCTORS_OUTSIDE_THE_MANIFEST = {
+    "gpuwm/ensemble/device_digest.py": (
+        "an integer XXH64 tree checksum over an ensemble member bank's bytes "
+        "for integrity receipts; it does no floating arithmetic, computes no "
+        "forecast field and is not a translation unit the manifest freezes"),
     "gpuwm/kernel_aot.py": (
         "the AOT loader opens a verified precompiled image using path alone; "
         "it never compiles source or supplies numerical options, and its "

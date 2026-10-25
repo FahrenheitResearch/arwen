@@ -2713,10 +2713,26 @@ def _initial_hrrr_microphysics_receipt(
     seeded_numbers = cold_start_seeded_numbers(cfg)
     closure = (initialization.get("cold_start_moment_closure")
                if seeded_numbers else None)
+    from gpuwm.ingest.handover_numbers import closure_active as _hn1_active
+    morrison_hn1 = int(cfg.mp_physics) == 10 and _hn1_active(cfg)
     for name, raw_expected in defaults.items():
         value = getattr(state, name, None)
         expected = np.float32(raw_expected)
         dtype = None if value is None else np.dtype(value.dtype)
+        if morrison_hn1 and name == "nc":
+            # Correct-mode HN1 (gpuwm.ingest.handover_numbers): Morrison's
+            # droplet number starts at the scheme's own NDCNST diagnostic
+            # everywhere (morrison.cu nc3d = NDCNST*1e6/rho), not zero.
+            if (value is None or dtype != np.dtype(np.float32)
+                    or not bool(scalar(((value > 0) & (value < np.inf)).all()))):
+                raise ValueError(
+                    f"native HRRR selection {selection_label!r} Morrison nc must be "
+                    "the finite, positive NDCNST droplet number under correct-mode "
+                    "hydrometeor_handover_numbers")
+            exact_fields[name] = {"ndcnst_droplet_number": True,
+                                  "all_finite_above_zero": True}
+            numbers[name] = {"ndcnst_droplet_number": True}
+            continue
         if name in seeded_numbers:
             mass_name, seed_key = seeded_numbers[name]
             label = (f"native HRRR selection {selection_label!r} Thompson "
@@ -2792,7 +2808,12 @@ def _initial_hrrr_microphysics_receipt(
                     "all_exact_expected": True,
                 }
             )
-    if seeded_numbers:
+    if morrison_hn1:
+        number_policy = (
+            "correct-mode HN1 Morrison: nc at the NDCNST droplet number; "
+            "QNRAIN/QNICE/QNSNOW/QNGRAUPEL exact zero where the paired mass "
+            "is zero and closed from it where it is above zero")
+    elif seeded_numbers:
         makers = {"nc": "make_DropletNumber", "nr": "make_RainNumber",
                   "ni": "make_IceNumber"}
         number_policy = (
@@ -5067,13 +5088,24 @@ def run(args):
                     shared_posted.context.physical_stream.times[0])
                 root_surface = shared_surface(shared_posted.checked,
                     base_met=base_store.read(0), member_met=initial_physical.read(0))
+            # THE START STATE TAKES THE HOST'S COLUMN THREADS, NOT THE JOB
+            # SLOTS.  --prepare-workers counts the forcing times prepared at
+            # once (default 2); f00 runs alone before any of them, so handing
+            # it that count left a 1262 x 1224 1 km start state at 1.1-1.6
+            # busy cores for 108 s while the card waited. The column helpers are slab-exact
+            # (tests/test_real_init.py), so the count moves no byte; the
+            # backend's own host-step budget bounds the threads and their RAM.
+            from gpuwm.ingest.real import (
+                _column_worker_count, _default_column_workers)
+            f00_column_workers = _column_worker_count(
+                _default_column_workers(f00_preprocess, f00_native_workers))
             with _prep_step(args, "root_initialize",
                             label="Initialize the start state"):
                 result, met, horizontal, vertical, state_timing = _initialize_state(
                     snapshot, dc, grid, static, eta, mapping,
                     p_top=p_top, sfcp_to_sfcp=case_policy["sfcp_to_sfcp"],
                     water_temperature_statics=water_statics,
-                    column_workers=args.prepare_workers,
+                    column_workers=f00_column_workers,
                     surface_fallback_radius=(
                         target.surface_fallback_radius_cells),
                     preprocess_backend=f00_preprocess,
@@ -5119,7 +5151,7 @@ def run(args):
                 "horizontal_seconds": horizontal,
                 "state_seconds": vertical,
                 "state_timing_seconds": state_timing,
-                "column_workers": int(args.prepare_workers),
+                "column_workers": int(f00_column_workers),
                 "preprocess_worker_slot": f00_worker_slot,
                 "effective_native_workers": f00_native_workers,
                 "completed_seconds_from_startup": (

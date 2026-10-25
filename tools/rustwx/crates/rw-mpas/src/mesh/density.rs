@@ -822,13 +822,24 @@ impl ShellProbes {
     }
 }
 
-/// `cos(best + half)`, the dot-product threshold below which an edge whose
-/// midpoint is that far away cannot beat `best`. Saturates to -1 (accept
+/// `cos(best + half + slack)`, the dot-product threshold below which an edge
+/// whose midpoint is that far away cannot beat `best`. Saturates to -1 (accept
 /// everything) when the sum passes half a turn, where the cosine stops being
 /// monotone in the arc.
+///
+/// The slack ([`POLYGON_INDEX_SLACK`]) keeps the skip off the rounding edge.
+/// Without it an edge that TIES `best` (a point on a ring vertex: one edge
+/// gives 0, its neighbour a few ulps through the end-point arc) sat exactly on
+/// the gate, `dot(p, mid) = cos(half)` against `cos(best + half)`, and was
+/// skipped or not by one ulp of the platform's `cos`. The minimum then depended
+/// on visiting order, so the polygon index and the full walk returned -0 and
+/// -2.7e-15 at the same point on Windows (2.9.7 R8, rw-mpas
+/// `the_polygon_index_returns_the_full_walks_bits`). With the slack every edge
+/// that can hold the minimum is evaluated, so both walks take the minimum over
+/// the same values in any order.
 #[inline]
 fn cos_gate_for(best: f64, half: f64) -> f64 {
-    let limit = best + half;
+    let limit = best + half + POLYGON_INDEX_SLACK;
     if limit >= std::f64::consts::PI {
         -1.0
     } else {
@@ -1213,6 +1224,9 @@ pub struct PreparedSpec {
     background_inv_m: f64,
     finest_m: f64,
     regions: Vec<PreparedRegion>,
+    /// Region indices by descending [`PreparedRegion::ceiling`], the order
+    /// [`PreparedSpec::spacing_m`] visits them in.
+    order: Vec<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -1221,9 +1235,330 @@ struct PreparedRegion {
     /// A cap that provably contains the shape, when one under a quarter turn
     /// exists. See [`PreparedSpec::spacing_m`] for what it is used for.
     bound: Option<(V3, f64)>,
+    /// The polygon's bucket index, built by [`PreparedSpec::indexed`] for the
+    /// hot loops (the relaxation, the gradient reading). `None` evaluates the
+    /// shape directly, which is the same number.
+    index: Option<PolygonIndex>,
     width_rad: f64,
     fine_inv_m: f64,
     back_inv_m: f64,
+    /// The largest `here` this region can evaluate to: the ramp expression at
+    /// `blend == 1.0` (or the background, for a region coarser than it).
+    /// Rounding is monotone, so every `blend` in `[0, 1]` gives `here` at or
+    /// under it.
+    ceiling: f64,
+}
+
+impl PreparedRegion {
+    #[inline]
+    fn signed_distance(&self, p: V3) -> f64 {
+        match &self.index {
+            Some(index) => index.signed_distance(&self.shape, p),
+            None => self.shape.signed_distance(p),
+        }
+    }
+}
+
+/// A polygon below this many edges is evaluated directly: its whole edge loop
+/// is already about as cheap as a bucket lookup.
+const POLYGON_INDEX_MIN_EDGES: usize = 8;
+
+/// Slack, in radians, added to every bound the index proves with, so a bound
+/// that rounding moved by a few ulps still holds. 1e-9 rad is 6 mm on the
+/// Earth; the rounding it absorbs is about 1e-15.
+const POLYGON_INDEX_SLACK: f64 = 1e-9;
+
+/// A cube-sphere bucket index over one polygon's edges, answering
+/// [`PreparedShape::signed_distance`] with the SAME NUMBER at a fraction of
+/// the work.
+///
+/// WHY IT EXISTS (HEX-FAST-START shapes, 2026-10-23, "still open"): a drawn
+/// polygon core built its mesh in 100 s against 5 s for a circle of the same
+/// size. Measured with `GPUWM_MESH_PROFILE=1` on a 24-core host, Oklahoma (five
+/// polygon rungs, 32 to 48 vertices each): the centroid sweep was 111.9 s of
+/// the 136.9 s wall against 6.8 s for the circle, because every density
+/// evaluation walked every edge of every rung twice -- once for the distance
+/// and once for the winding number, an `atan2` and two normalisations per
+/// edge.
+///
+/// WHAT IT PROVES, PER BUCKET, with `c` the bucket centre, `r` a radius that
+/// contains the bucket and `d = min_e dist(c, e)`:
+///
+/// * **Distance.** For `p` in the bucket, `min_e dist(p, e) <= d + r`, and an
+///   edge with `dist(c, e) > d + 2r` has `dist(p, e) > d + r`. So the minimum
+///   is attained on the bucket's CANDIDATES, and the minimum of a set is
+///   unchanged by dropping members that are provably not the minimum. The
+///   candidates are walked in order of their distance from `c` under the same
+///   midpoint gate the full walk uses, through the same `edge_distance`, so
+///   the value returned is the same `f64`.
+/// * **Side.** When `d > r`, no boundary point is within `r` of `c`, so every
+///   `p` in the bucket is joined to `c` by an arc that never touches the ring
+///   and has the side `c` has. The winding number also changes where `-p`
+///   crosses the ring, so the side is cached only when the ANTIPODAL bucket is
+///   clear of the ring as well.
+/// * **Side beside the ring.** When the ring passes through the bucket but
+///   `c` itself is clear of it (and the antipodal bucket is clear), `p` has
+///   `c`'s side flipped once per edge the arc `c -> p` crosses. That arc is no
+///   longer than `r`, so only edges within `r` of `c` can cross it: the head
+///   of the bucket's sorted candidates. The crossing test is sign tests on dot
+///   products, no `atan2`; the two answers can differ only for a point within
+///   rounding (about 1e-15 rad) of the ring itself.
+/// * Every other bucket (the ring within slack of `c`) evaluates the winding
+///   number per point, exactly as before.
+///
+/// Every bound carries [`POLYGON_INDEX_SLACK`]. Nothing here is an
+/// approximation: the index only decides which exact evaluations to skip.
+#[derive(Debug, Clone)]
+pub struct PolygonIndex {
+    /// Buckets per cube-face side.
+    n: usize,
+    /// `offsets[b]..offsets[b + 1]` are bucket `b`'s candidates in `cands`.
+    offsets: Vec<u32>,
+    /// Edge indices, each bucket's sorted by distance from its centre.
+    cands: Vec<u32>,
+    /// Per bucket: 0 = evaluate the winding number, 1 = outside, 2 = inside,
+    /// 3 / 4 = outside / inside at the centre, flipped per crossed edge.
+    side: Vec<u8>,
+    /// Per bucket: how many leading candidates lie within the bucket radius
+    /// of its centre (the only edges an arc from the centre can cross).
+    near: Vec<u32>,
+    /// Per bucket: its centre, the start of every crossing arc.
+    centres: Vec<V3>,
+}
+
+/// Whether the short arc `c -> p` crosses the polygon edge `e` at an interior
+/// point of both: `c` and `p` strictly on opposite sides of the edge's great
+/// circle, `a` and `b` strictly on opposite sides of the arc's, and the
+/// crossing taken on the near side (not the antipodal intersection).
+///
+/// `None` when a sign test is within [`CROSSING_EPS`] of zero: `p` or `c`
+/// on the edge's great circle, or the arc passing through an end of the
+/// edge (where two edges meet and a strict test could count the crossing
+/// twice or not at all). The caller then takes the winding number, so the
+/// answer never rests on a sign rounding could flip.
+#[inline]
+fn short_arc_crosses(c: V3, p: V3, e: &PreparedEdge) -> Option<bool> {
+    let Some(n) = e.normal else {
+        return None;
+    };
+    let (s1, s2) = (dot(n, c), dot(n, p));
+    if s1.abs() < CROSSING_EPS || s2.abs() < CROSSING_EPS {
+        return None;
+    }
+    if (s1 < 0.0) == (s2 < 0.0) {
+        return Some(false);
+    }
+    let m = cross(c, p);
+    let scale = dot(m, m).sqrt();
+    if scale < CROSSING_EPS {
+        // p is c to within rounding, and c is clear of the ring.
+        return Some(false);
+    }
+    let (t1, t2) = (dot(m, e.a), dot(m, e.b));
+    if t1.abs() < CROSSING_EPS * scale || t2.abs() < CROSSING_EPS * scale {
+        return None;
+    }
+    if (t1 < 0.0) == (t2 < 0.0) {
+        return Some(false);
+    }
+    Some(dot(crate::mesh::geom::add(e.a, e.b), crate::mesh::geom::add(c, p)) > 0.0)
+}
+
+/// How close to zero a crossing sign test may come before the index hands
+/// the point to the winding number instead: 1e-12 rad is 6 micrometres on
+/// the Earth, a thousand times the rounding of the dot products.
+const CROSSING_EPS: f64 = 1e-12;
+
+/// The cube-face bucket holding `p`: face by the dominant axis, then the two
+/// gnomonic coordinates in `[-1, 1]`, cut into `n` slices each.
+#[inline]
+fn cube_bucket(p: V3, n: usize) -> usize {
+    let (ax, ay, az) = (p[0].abs(), p[1].abs(), p[2].abs());
+    let (face, u, v) = if ax >= ay && ax >= az {
+        (usize::from(p[0] < 0.0), p[1] / ax, p[2] / ax)
+    } else if ay >= az {
+        (2 + usize::from(p[1] < 0.0), p[0] / ay, p[2] / ay)
+    } else {
+        (4 + usize::from(p[2] < 0.0), p[0] / az, p[1] / az)
+    };
+    let slice = |t: f64| {
+        let k = ((t + 1.0) * 0.5 * n as f64).floor();
+        if k.is_nan() || k < 0.0 {
+            0
+        } else {
+            (k as usize).min(n - 1)
+        }
+    };
+    face * n * n + slice(u) * n + slice(v)
+}
+
+/// The point on the cube face `face` at gnomonic coordinates `(u, v)`, the
+/// inverse of [`cube_bucket`]'s face choice (not normalised).
+fn cube_face_point(face: usize, u: f64, v: f64) -> V3 {
+    match face {
+        0 => [1.0, u, v],
+        1 => [-1.0, u, v],
+        2 => [u, 1.0, v],
+        3 => [u, -1.0, v],
+        4 => [u, v, 1.0],
+        _ => [u, v, -1.0],
+    }
+}
+
+impl PolygonIndex {
+    /// Index a prepared polygon, or `None` for any other shape and for a
+    /// polygon too small to gain from it.
+    pub fn build(shape: &PreparedShape) -> Option<PolygonIndex> {
+        let PreparedShape::Polygon {
+            ring,
+            edges,
+            left_is_region,
+            ..
+        } = shape
+        else {
+            return None;
+        };
+        if edges.len() < POLYGON_INDEX_MIN_EDGES || edges.len() > u32::MAX as usize {
+            return None;
+        }
+        // Buckets about a sixteenth of the polygon's own radius near it, so
+        // a bucket beside the ring carries a handful of edges; clamped so a
+        // country-sized ring and a city-sized one both build in milliseconds.
+        let radius = shape
+            .probe_bound()
+            .map(|(_, r)| r)
+            .unwrap_or(std::f64::consts::FRAC_PI_2)
+            .max(1e-6);
+        let n = ((std::f64::consts::FRAC_PI_2 * 16.0 / radius).ceil() as usize).clamp(32, 256);
+        let buckets = 6 * n * n;
+        let step = 2.0 / n as f64;
+        let geometry = |b: usize| -> (V3, f64) {
+            let face = b / (n * n);
+            let (i, j) = ((b / n) % n, b % n);
+            let (u0, v0) = (-1.0 + step * i as f64, -1.0 + step * j as f64);
+            let centre = unit(cube_face_point(face, u0 + 0.5 * step, v0 + 0.5 * step))
+                .unwrap_or([0.0, 0.0, 1.0]);
+            let mut r = 0.0f64;
+            for (du, dv) in [(0.0, 0.0), (step, 0.0), (0.0, step), (step, step)] {
+                if let Some(corner) = unit(cube_face_point(face, u0 + du, v0 + dv)) {
+                    r = r.max(arc(centre, corner));
+                }
+            }
+            (centre, r * (1.0 + 1e-9) + POLYGON_INDEX_SLACK)
+        };
+        let per_bucket: Vec<(Vec<u32>, u8, u32, V3)> = (0..buckets)
+            .into_par_iter()
+            .map(|b| {
+                let (c, r) = geometry(b);
+                let mut dist: Vec<(f64, u32)> = edges
+                    .iter()
+                    .enumerate()
+                    .map(|(k, e)| (edge_distance(c, e), k as u32))
+                    .collect();
+                let d = dist.iter().map(|x| x.0).fold(f64::INFINITY, f64::min);
+                let keep = d + 2.0 * r + POLYGON_INDEX_SLACK;
+                dist.retain(|x| x.0 <= keep);
+                dist.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+                let anti = [-c[0], -c[1], -c[2]];
+                let d_anti = edges
+                    .iter()
+                    .map(|e| edge_distance(anti, e))
+                    .fold(f64::INFINITY, f64::min);
+                let anti_clear = d_anti > r + POLYGON_INDEX_SLACK;
+                let near = dist.iter().take_while(|x| x.0 <= r + POLYGON_INDEX_SLACK).count();
+                let side = if anti_clear && d > r + POLYGON_INDEX_SLACK {
+                    if polygon_contains_wound(ring, *left_is_region, c) { 2 } else { 1 }
+                } else if anti_clear && d > POLYGON_INDEX_SLACK {
+                    if polygon_contains_wound(ring, *left_is_region, c) { 4 } else { 3 }
+                } else {
+                    0
+                };
+                (dist.into_iter().map(|x| x.1).collect(), side, near as u32, c)
+            })
+            .collect();
+        let mut offsets = Vec::with_capacity(buckets + 1);
+        let mut cands = Vec::new();
+        let mut side = Vec::with_capacity(buckets);
+        let mut near = Vec::with_capacity(buckets);
+        let mut centres = Vec::with_capacity(buckets);
+        offsets.push(0u32);
+        for (list, s, k, c) in per_bucket {
+            cands.extend_from_slice(&list);
+            if cands.len() > u32::MAX as usize {
+                return None;
+            }
+            offsets.push(cands.len() as u32);
+            side.push(s);
+            near.push(k);
+            centres.push(c);
+        }
+        Some(PolygonIndex {
+            n,
+            offsets,
+            cands,
+            side,
+            near,
+            centres,
+        })
+    }
+
+    /// [`PreparedShape::signed_distance`] of the polygon this index was built
+    /// from, through the bucket's candidates and cached side. Same `f64`.
+    #[inline]
+    pub fn signed_distance(&self, shape: &PreparedShape, p: V3) -> f64 {
+        let PreparedShape::Polygon {
+            ring,
+            edges,
+            widest_half,
+            left_is_region,
+        } = shape
+        else {
+            return shape.signed_distance(p);
+        };
+        let b = cube_bucket(p, self.n);
+        let list = &self.cands[self.offsets[b] as usize..self.offsets[b + 1] as usize];
+        let Some((&first, rest)) = list.split_first() else {
+            return shape.signed_distance(p);
+        };
+        let mut best = edge_distance(p, &edges[first as usize]);
+        let mut cos_gate = cos_gate_for(best, *widest_half);
+        for &k in rest {
+            let e = &edges[k as usize];
+            if dot(p, e.mid) < cos_gate {
+                continue;
+            }
+            let d = edge_distance(p, e);
+            if d < best {
+                best = d;
+                cos_gate = cos_gate_for(best, *widest_half);
+            }
+        }
+        // A point within the slack of the ring takes the winding number: on
+        // the ring itself (distance 0) the side is a convention, and it must
+        // be the full walk's to give the same bits (-0 against +0).
+        let inside = match self.side[b] {
+            _ if best <= POLYGON_INDEX_SLACK => polygon_contains_wound(ring, *left_is_region, p),
+            2 => true,
+            1 => false,
+            s @ (3 | 4) => {
+                let c = self.centres[b];
+                let mut inside = Some(s == 4);
+                for &k in &list[..self.near[b] as usize] {
+                    match short_arc_crosses(c, p, &edges[k as usize]) {
+                        Some(true) => inside = inside.map(|v| !v),
+                        Some(false) => {}
+                        None => {
+                            inside = None;
+                            break;
+                        }
+                    }
+                }
+                inside.unwrap_or_else(|| polygon_contains_wound(ring, *left_is_region, p))
+            }
+            _ => polygon_contains_wound(ring, *left_is_region, p),
+        };
+        if inside { -best } else { best }
+    }
 }
 
 impl PreparedSpec {
@@ -1231,7 +1566,19 @@ impl PreparedSpec {
     /// as [`MeshSpec::spacing_m`].
     pub fn spacing_m(&self, p: V3) -> f64 {
         let mut inv = self.background_inv_m;
-        for r in &self.regions {
+        // FINEST CEILING FIRST, AND STOP WHEN NOTHING LEFT CAN WIN. `inv` is
+        // a max, and a max of the same floats is the same float in any order,
+        // so visiting the regions by descending ceiling moves no bit. Once
+        // `inv` reaches the next ceiling, no remaining region can satisfy
+        // `here > inv`. Inside a nested rung stack (a drawn core and the
+        // rings grown around it) only the finest rung is then evaluated.
+        // MEASURED, Oklahoma core, five polygon rungs (HEX-FAST-START shapes,
+        // "still open"): see the commit; same grid bytes.
+        for &i in &self.order {
+            let r = &self.regions[i];
+            if inv >= r.ceiling {
+                break;
+            }
             // THE SATURATION SKIP, and why it cannot move a bit.
             //
             // `blend` falls monotonically with the signed distance and is
@@ -1250,7 +1597,7 @@ impl PreparedSpec {
                     continue;
                 }
             }
-            let s = r.shape.signed_distance(p);
+            let s = r.signed_distance(p);
             let blend = 0.5 * (1.0 - (s / r.width_rad).tanh());
             let here = r.back_inv_m + (r.fine_inv_m - r.back_inv_m) * blend;
             if here > inv {
@@ -1264,6 +1611,22 @@ impl PreparedSpec {
     pub fn density(&self, p: V3) -> f64 {
         let ratio = self.finest_m / self.spacing_m(p);
         ratio.powi(4)
+    }
+
+    /// This field with every polygon region's [`PolygonIndex`] built, for a
+    /// caller that evaluates it millions of times (the relaxation, the
+    /// gradient reading). Same field, same bits; a one-off caller keeps
+    /// [`MeshSpec::prepared`] and skips the build.
+    pub fn indexed(mut self) -> PreparedSpec {
+        let built: Vec<Option<PolygonIndex>> = self
+            .regions
+            .par_iter()
+            .map(|r| PolygonIndex::build(&r.shape))
+            .collect();
+        for (r, index) in self.regions.iter_mut().zip(built) {
+            r.index = index;
+        }
+        self
     }
 
     /// This field clamped below at one refinement level's spacing.
@@ -1476,24 +1839,31 @@ impl MeshSpec {
     /// This request with every per-region constant solved once.
     pub fn prepared(&self) -> PreparedSpec {
         let back_inv_m = 1.0 / (self.background_km * 1000.0);
+        let regions: Vec<PreparedRegion> = self
+            .regions
+            .iter()
+            .map(|r| {
+                let shape = r.shape.prepare();
+                let bound = shape.enclosing_cap();
+                let fine_inv_m = 1.0 / (r.spacing_km * 1000.0);
+                PreparedRegion {
+                    shape,
+                    bound,
+                    index: None,
+                    width_rad: r.transition.width_rad(r.spacing_km),
+                    fine_inv_m,
+                    back_inv_m,
+                    ceiling: back_inv_m.max(back_inv_m + (fine_inv_m - back_inv_m) * 1.0),
+                }
+            })
+            .collect();
+        let mut order: Vec<usize> = (0..regions.len()).collect();
+        order.sort_by(|&a, &b| regions[b].ceiling.total_cmp(&regions[a].ceiling).then(a.cmp(&b)));
         PreparedSpec {
             background_inv_m: back_inv_m,
             finest_m: self.finest_km() * 1000.0,
-            regions: self
-                .regions
-                .iter()
-                .map(|r| {
-                    let shape = r.shape.prepare();
-                    let bound = shape.enclosing_cap();
-                    PreparedRegion {
-                        shape,
-                        bound,
-                        width_rad: r.transition.width_rad(r.spacing_km),
-                        fine_inv_m: 1.0 / (r.spacing_km * 1000.0),
-                        back_inv_m,
-                    }
-                })
-                .collect(),
+            regions,
+            order,
         }
     }
 
@@ -1656,7 +2026,7 @@ impl MeshSpec {
     /// caller's choice, because it was never a choice a caller could make
     /// correctly -- see [`steepest_gradient_reading_of`].
     pub fn steepest_gradient_reading(&self, lattice_samples: usize) -> GradientReading {
-        steepest_gradient_reading_of(&self.prepared(), lattice_samples)
+        steepest_gradient_reading_of(&self.prepared().indexed(), lattice_samples)
     }
 }
 
@@ -1849,6 +2219,65 @@ mod tests {
             vertices_deg.push([14.4 + r * t.sin(), -141.0 + r * t.cos() / 0.97]);
         }
         Shape::Polygon { vertices_deg }
+    }
+
+    /// THE BREAKAGE THIS PREVENTS: the polygon bucket index (HEX-FAST-START
+    /// shapes, "still open": Oklahoma 100 s against 5 s for a circle) answers
+    /// the relaxation's density evaluations, and a registry pins grid files
+    /// by SHA-256. One moved bit in the signed distance is a different mesh.
+    /// Bit equality against the full edge walk and winding number, on the
+    /// whole globe and in a band hugging the ring (where the cached side is
+    /// not allowed to answer), for a lobed ring wound both ways.
+    #[test]
+    fn the_polygon_index_returns_the_full_walks_bits() {
+        let Shape::Polygon { vertices_deg } = corridor_polygon() else {
+            unreachable!()
+        };
+        let mut reversed = vertices_deg.clone();
+        reversed.reverse();
+        for ring in [vertices_deg, reversed] {
+            let shape = Shape::Polygon {
+                vertices_deg: ring.clone(),
+            }
+            .prepare();
+            let index = PolygonIndex::build(&shape).expect("a 38-edge ring is indexed");
+            let mut points: Vec<V3> = fibonacci_lattice(400_000).collect();
+            // A band across every edge: points a few metres to tens of km off it.
+            for k in 0..ring.len() {
+                let a = ring[k];
+                let b = ring[(k + 1) % ring.len()];
+                for s in 0..40 {
+                    let t = s as f64 / 40.0;
+                    for off in [-0.3, -0.01, -1e-5, 0.0, 1e-5, 0.01, 0.3] {
+                        let lat = a[0] + t * (b[0] - a[0]) + off;
+                        let lon = a[1] + t * (b[1] - a[1]) - off;
+                        points.push(from_lat_lon(lat.to_radians(), lon.to_radians()));
+                    }
+                }
+            }
+            let mut cached = 0usize;
+            let mut crossing = 0usize;
+            for &p in &points {
+                let want = shape.signed_distance(p);
+                let got = index.signed_distance(&shape, p);
+                assert_eq!(
+                    want.to_bits(),
+                    got.to_bits(),
+                    "indexed signed distance moved at {p:?}: {want} vs {got}"
+                );
+                match index.side[cube_bucket(p, index.n)] {
+                    1 | 2 => cached += 1,
+                    3 | 4 => crossing += 1,
+                    _ => {}
+                }
+            }
+            assert!(
+                cached * 2 > points.len(),
+                "only {cached} of {} points took the cached side, so the index saves nothing",
+                points.len()
+            );
+            assert!(crossing > 1000, "only {crossing} points took the crossing side, so it is untested");
+        }
     }
 
     /// THE BREAKAGE THIS PREVENTS: the resolution field was hoisted out of the

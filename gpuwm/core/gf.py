@@ -67,6 +67,18 @@ are about what the engine can hand it today):
    ([ny, nx], metres); the scalar ``cfg.dx`` otherwise.  WRF's own GFDRV
    takes dx(i,j), so the per-column feed is the WRF interface, not an
    extension.
+5. **Active columns.**  When the driver carries ``gf_active_column``
+   ([ny, nx], bool) the scheme runs only in the columns marked True, and
+   every output of a column marked False is zero: no rate, no rain, no
+   cloud top.  This is how a variable-resolution mesh runs a cumulus
+   scheme in its coarse cells and none in its convection-allowing region
+   (HRRR's own choice at 3 km), which a scalar switch cannot say.  The
+   kernel maps one thread to one column and no column reads another, so
+   an active column's outputs are bitwise those of the same column in an
+   unmasked call; the inactive columns are never packed or launched, so a
+   mesh whose fine region holds most of its cells pays only for the rest.
+   The mask is static constructor input (like ``gf_dx_column``): its
+   compacted index is built once per mask array, never per step.
 
 Default ice routing folds the 258 K split back into RQCCUTEN when there is
 no prognostic ice. Strict mode retains GFDRV's split even in that case,
@@ -82,6 +94,52 @@ import numpy as np
 from gpuwm.core.kf import _model_clock_dt
 
 DTYPE = np.float32
+
+
+def cumulus_active_column(mask, ncol: int, cumulus_scheme):
+    """Validate a per-column cumulus mask for the column seams, host side.
+
+    ``None`` is "every column" (the unmasked scheme, byte-unchanged).  A
+    mask is refused unless it is one boolean per column and the selected
+    scheme is Grell-Freitas, the only adapter that reads it: a mask handed
+    to another scheme would be recorded and never applied.
+    """
+    if mask is None:
+        return None
+    values = np.asarray(mask)
+    if values.dtype != np.bool_:
+        raise ValueError(
+            "cumulus_active_column must be boolean (True = the cumulus "
+            f"scheme runs in that column), got dtype {values.dtype}")
+    values = values.reshape(-1)
+    if values.shape != (ncol,):
+        raise ValueError(
+            "cumulus_active_column must have one value per column "
+            f"({ncol},), got {values.shape}")
+    if cumulus_scheme != "gf":
+        raise ValueError(
+            "cumulus_active_column is read by the Grell-Freitas adapter "
+            f"only; cumulus_scheme={cumulus_scheme!r} would ignore it.  "
+            "Follow-up: the same carrier in gpuwm.core.ntiedtke")
+    return values
+
+
+def _active_index(adapter, active, ny: int, nx: int):
+    """The compacted column index of a static mask, cached per array."""
+    import cupy as cp
+
+    if active.shape != (ny, nx):
+        raise ValueError(
+            f"driver gf_active_column must be [ny, nx]={ny, nx}, "
+            f"got {active.shape}")
+    if active.dtype != cp.bool_:
+        raise ValueError("driver gf_active_column must be boolean")
+    cached = adapter._active_cache
+    if cached is not None and cached[0] is active:
+        return cached[1]
+    index = cp.flatnonzero(active.reshape(ny * nx)).astype(cp.int64)
+    adapter._active_cache = (active, index)
+    return index
 
 
 def _mask_output_support(value, cfg):
@@ -340,6 +398,8 @@ class GrellFreitas:
     def __init__(self):
         self._driver = None
 
+    _active_cache = None
+
     def bind_driver(self, driver) -> None:
         """Optional driver hook: gives the adapter the held radiation rates.
 
@@ -395,9 +455,21 @@ class GrellFreitas:
             if not bool(cp.all(cp.isfinite(pattern)).item()):
                 raise ValueError("GF SPP pattern must be finite")
 
+        active = (None if self._driver is None
+                  else getattr(self._driver, "gf_active_column", None))
+        index = None if active is None else _active_index(self, active, ny, nx)
+        # n: the columns packed and launched (all of them without a mask).
+        n = ncol if index is None else int(index.size)
+
         def cols(a):
             # Assignment into lvin packs this view without a temporary copy.
-            return cp.asarray(a, dtype=DTYPE).reshape(nz, ncol).T
+            view = cp.asarray(a, dtype=DTYPE).reshape(nz, ncol).T
+            return view if index is None else view[index]
+
+        def flat(a):
+            # One value per column, compacted like cols().
+            view = cp.asarray(a).reshape(ncol)
+            return view if index is None else view[index]
 
         # GFDRV consumes lower-face W, including in its closure. Keep the
         # same physical convention in strict and default arithmetic.
@@ -408,7 +480,7 @@ class GrellFreitas:
                         self._driver.rthratenlw + self._driver.rthratensw)
         else:
             rthraten = cp.zeros((nz, ny, nx), dtype=DTYPE)
-        zeros_lev = cp.zeros((ncol, nz), dtype=DTYPE)
+        zeros_lev = cp.zeros((n, nz), dtype=DTYPE)
         forcing_mass = None
         from gpuwm.wrf_exact import ENABLED as WRF_EXACT
 
@@ -437,7 +509,7 @@ class GrellFreitas:
                 return cols(lane / forcing_mass)
             return cols(lane)
 
-        lvin = cp.empty((ncol, len(_IN_LEV), nz), dtype=DTYPE)
+        lvin = cp.empty((n, len(_IN_LEV), nz), dtype=DTYPE)
         lvin[:, _IN_LEV.index("u"), :] = cols(atmosphere["u"])
         lvin[:, _IN_LEV.index("v"), :] = cols(atmosphere["v"])
         lvin[:, _IN_LEV.index("w"), :] = cols(w_lower_face)
@@ -459,16 +531,19 @@ class GrellFreitas:
         # -- the outer clock when the case integrates internal substeps,
         # the same idiom as the KF adapter.
         clock_dt = DTYPE(_model_clock_dt(cfg))
-        scin = cp.zeros((ncol, len(_IN_SCA) + (4 if stochastic else 0)), dtype=DTYPE)
-        scin[:, 0] = state.ht.reshape(ncol)
-        scin[:, 1] = fields["hfx"].reshape(ncol)
-        scin[:, 2] = fields["qfx"].reshape(ncol)
-        scin[:, 3] = fields["xland"].reshape(ncol)
+        scin = cp.zeros((n, len(_IN_SCA) + (4 if stochastic else 0)), dtype=DTYPE)
+        scin[:, 0] = flat(state.ht)
+        scin[:, 1] = flat(fields["hfx"])
+        scin[:, 2] = flat(fields["qfx"])
+        scin[:, 3] = flat(fields["xland"])
         scin[:, 4] = clock_dt
         if stochastic:
             # Native GFDRV clips four closure channels to [-1,1]. The
             # enabled specialization routes them into native rand_clos.
-            scin[:, len(_IN_SCA):] = cp.clip(pattern.reshape(4, ncol).T, -1.0, 1.0)
+            closure = pattern.reshape(4, ncol).T
+            if index is not None:
+                closure = closure[index]
+            scin[:, len(_IN_SCA):] = cp.clip(closure, -1.0, 1.0)
         # slots 6/7/8 stay 0: fzu is COMPUTED, not pinned, on this path.
         dx_column = (None if self._driver is None
                      else getattr(self._driver, "gf_dx_column", None))
@@ -479,18 +554,18 @@ class GrellFreitas:
                 raise ValueError(
                     f"driver gf_dx_column must be [ny, nx]={ny, nx}, "
                     f"got {dx_column.shape}")
-            scin[:, 5] = cp.asarray(
-                dx_column, dtype=DTYPE).reshape(ncol)
+            scin[:, 5] = flat(cp.asarray(dx_column, dtype=DTYPE))
 
-        iin = cp.empty((ncol, 3), dtype=cp.int32)
-        iin[:, 0] = fields["kpbl"].reshape(ncol)
+        iin = cp.empty((n, 3), dtype=cp.int32)
+        iin[:, 0] = flat(fields["kpbl"])
         iin[:, 1] = np.int32(int(cfg.ishallow))
         iin[:, 2] = np.int32(int(cfg.clos_choice))
 
-        # GFDRV writes every output slot, so clearing these slabs is redundant.
-        lev = cp.empty((ncol, len(_OUT_LEV), nz), dtype=DTYPE)
-        sca = cp.empty((ncol, len(_OUT_SCA)), dtype=DTYPE)
-        isc = cp.empty((ncol, len(_OUT_ISCA)), dtype=cp.int32)
+        # GFDRV writes every output slot, so clearing these slabs is redundant
+        # for the launched columns; an inactive column's outputs are zero.
+        lev = cp.empty((n, len(_OUT_LEV), nz), dtype=DTYPE)
+        sca = cp.empty((n, len(_OUT_SCA)), dtype=DTYPE)
+        isc = cp.empty((n, len(_OUT_ISCA)), dtype=cp.int32)
 
         module = _gf_module(nz, spp_conv=int(stochastic))
         fn = module.get_function("gf_gfdrv_stage")
@@ -501,16 +576,25 @@ class GrellFreitas:
         # in tiles of `tile`, each tile launched with the SAME one-thread-
         # one-column mapping the kernel has always had -- the slices below
         # are contiguous views, so the kernel indexes them exactly as before.
-        tile = gf_tile_columns(fn, ncol)
+        tile = gf_tile_columns(fn, max(n, 1))
         ws = cp.empty(gf_workspace_floats(nz, tile), dtype=DTYPE)
-        for lo in range(0, ncol, tile):
-            hi = min(lo + tile, ncol)
+        for lo in range(0, n, tile):
+            hi = min(lo + tile, n)
             fn((((hi - lo) + block - 1) // block,), (block,),
                (lvin[lo:hi], scin[lo:hi], iin[lo:hi],
                 lev[lo:hi], sca[lo:hi], isc[lo:hi], ws,
                 np.int32(0),      # SHIPPED default: corrected k22 indexing
                 np.int32(hi - lo), np.int32(nz)))
         del ws
+        if index is not None:
+            # Scatter the launched columns back; every other column is zero.
+            full_lev = cp.zeros((ncol, len(_OUT_LEV), nz), dtype=DTYPE)
+            full_sca = cp.zeros((ncol, len(_OUT_SCA)), dtype=DTYPE)
+            full_isc = cp.zeros((ncol, len(_OUT_ISCA)), dtype=cp.int32)
+            full_lev[index] = lev
+            full_sca[index] = sca
+            full_isc[index] = isc
+            lev, sca, isc = full_lev, full_sca, full_isc
         if cfg.lightning_option == 11:
             cloud_top = state.scratch((ny, nx), "ltng_ktop_deep", dtype=np.int32)
             cloud_top[...] = isc[:, _OUT_ISCA.index("ktop_deep")].reshape(ny, nx)

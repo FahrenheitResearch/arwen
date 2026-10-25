@@ -534,10 +534,13 @@ class RelocationRunner:
             if owner is not self:
                 model._relocation_runner = self
         if self.receipts_path is not None:
+            # A re-armed slot's runner is a fresh one on the same path: the
+            # earlier lives' rows (prior_receipts, handed on by the
+            # collection) stay in the file ahead of this life's.
             _atomic_json(self.receipts_path, {
                 "contract": RELOCATION_RUNNER_CONTRACT,
                 "config": self.config.receipt(),
-                "receipts": self.receipts,
+                "receipts": [*getattr(self, "prior_receipts", ()), *self.receipts],
             })
         return entry
 
@@ -1539,6 +1542,11 @@ class RelocationRunnerCollection:
         # One ordered tree ledger for the order-sensitive restart move chain.
         # Per-runner JSON receipts remain independent and unchanged.
         self.receipts = []
+        # Receipt rows of runners retired with their nest, per grid id, so a
+        # re-armed slot's new runner writes them ahead of its own: the 6 h
+        # storm-nest run (box D 2026-10-21) lost d03's whole first life of
+        # moves when its second life's runner rewrote relocation_receipts.d03.json.
+        self.retired_receipts: dict[int, list] = {}
 
     def record(self, grid_id, entry, *, unique=False):
         if unique:
@@ -1589,7 +1597,11 @@ class RelocationRunnerCollection:
             return self
         incoming = (other.runners if isinstance(other, RelocationRunnerCollection)
                     else {int(other.config.grid_id): other})
+        for gid, rows in getattr(other, "retired_receipts", {}).items():
+            self.retired_receipts.setdefault(int(gid), []).extend(rows)
         for gid, runner in incoming.items():
+            if int(gid) not in self.runners and self.retired_receipts.get(int(gid)):
+                runner.prior_receipts = list(self.retired_receipts[int(gid)])
             self.runners.setdefault(int(gid), runner)
         return self
 
@@ -1598,7 +1610,9 @@ class RelocationRunnerCollection:
         # and therefore a fresh episode-local cooldown/window.
         for gid in list(self.runners):
             if gid not in model.nodes_by_grid_id:
-                self.runners.pop(gid, None)
+                runner = self.runners.pop(gid, None)
+                self.retired_receipts[gid] = [
+                    *getattr(runner, "prior_receipts", ()), *runner.receipts]
 
     def adopt_placement(self, model, node, **placement):
         """Restore through the target's own initializer and physics preparer."""

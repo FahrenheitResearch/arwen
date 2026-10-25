@@ -216,9 +216,15 @@ def _under_the_anchor_clock(exp):
     assert all(domain.run.terrain_clock == "local_face" for domain in exp.domains)
     # ... and 2.9.0's WRF 4.8 solar default (golden/wrf-fixes), likewise.
     assert all(domain.run.solar_generation == "wrf_480" for domain in exp.domains)
+    # ... and the two 2.9.7 keys a moist nest echoes on: correct-mode HN1
+    # (hydrometeor_handover_numbers, read under this scaffold's Thompson,
+    # F22) and tc/nest's fixed-frame nest_accumulation_archive.  Off, each
+    # leaves the payload, which is the payload every recorded anchor carried.
     historical = replace(exp, domains=tuple(replace(
         domain, run=replace(domain.run, terrain_clock="measured",
-                            solar_generation="wrf_461"))
+                            solar_generation="wrf_461",
+                            hydrometeor_handover_numbers=False,
+                            nest_accumulation_archive=False))
         for domain in exp.domains))
     current_payload = restart_identity_payload(exp)
     historical_payload = restart_identity_payload(historical)
@@ -228,6 +234,9 @@ def _under_the_anchor_clock(exp):
         assert "terrain_clock" not in historical_domain["run"]
         assert current_domain["run"].pop("solar_generation") == "wrf_480"
         assert "solar_generation" not in historical_domain["run"]
+        for key in ("hydrometeor_handover_numbers", "nest_accumulation_archive"):
+            assert current_domain["run"].pop(key, None) in (None, True), key
+            assert key not in historical_domain["run"], key
     assert current_payload == historical_payload
     assert experiment_fingerprint(exp, _stability_anchor_catalog()) != (
         experiment_fingerprint(historical, _stability_anchor_catalog()))

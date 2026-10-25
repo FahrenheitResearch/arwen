@@ -1598,9 +1598,9 @@ def plan(cfg, machine: Machine, *, footprint: Footprint | None = None,
         window_cells = _max_window_cells(fp, nbuffers, vram_budget)
         if window_cells <= 0:
             continue
-        cand = _best_tile(nx, ny, nz, halo, window_cells, periodic_x,
-                          periodic_y, allow_ragged, prefer_exact,
-                          band=band)
+        cand = _fitting_tile(fp, nx, ny, nz, halo, window_cells, nbuffers,
+                             vram_budget, periodic_x, periodic_y,
+                             allow_ragged, prefer_exact, band=band)
         if cand is None:
             continue
         if cand.get("ragged_only"):
@@ -1944,6 +1944,44 @@ def _too_small_to_tile_message(nx: int, ny: int, halo: int, periodic_x: bool,
             f"{zone}  "
             f"No card size changes this; {remedy}.  A larger domain tiles "
             f"fine, which is why a size sweep sees its SMALLEST arm refused.")
+
+
+#: How many times :func:`_fitting_tile` narrows the window before giving up
+#: on a buffer count; each pass drops at least one column, and in practice
+#: one pass clears a step in the price.
+_FIT_PASSES = 64
+
+
+def _fitting_tile(fp: Footprint, nx: int, ny: int, nz: int, halo: int,
+                  window_cells: int, nbuffers: int, vram_budget: int,
+                  periodic_x: bool, periodic_y: bool, allow_ragged: bool,
+                  prefer_exact: bool = True, *, band: int = 0) -> dict | None:
+    """:func:`_best_tile`, held to the budget at the window it chose.
+
+    ``window_cells`` comes from a shape-free bound priced at an area at least
+    the window's, which admits only what fits while no smaller window costs
+    more.  A term that steps DOWN as the window grows breaks that: Morrison
+    takes one call (the whole WORK stack, up to 128 MiB) below its floor and
+    one-volume chunks above it, so a 224 x 145 window cost 119 MB more than
+    the 32,945-column bound that admitted it and the plan exceeded its own
+    budget (2.9.7 R5, tests/test_prepared_tile_memory.py, 563 x 326 Morrison
+    at 6.41 GiB).  The chosen window is priced exactly; when it does not fit,
+    the search runs again strictly below it.  Only the itemized prepared
+    model carries such a term; the rung footprint's bound is its price.
+    """
+    for _ in range(_FIT_PASSES):
+        cand = _best_tile(nx, ny, nz, halo, window_cells, periodic_x,
+                          periodic_y, allow_ragged, prefer_exact, band=band)
+        if cand is None or cand.get("ragged_only") or fp.prepared_memory is None:
+            return cand
+        cells = cand["window_nx"] * cand["window_ny"] * nz
+        if fp.vram_bytes(cells, nbuffers,
+                         (cand["window_nx"], cand["window_ny"])) <= vram_budget:
+            return cand
+        window_cells = cells - nz
+        if window_cells <= 0:
+            return None
+    return None
 
 
 def _best_tile(nx: int, ny: int, nz: int, halo: int, window_cells: int,

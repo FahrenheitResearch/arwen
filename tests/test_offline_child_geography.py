@@ -427,7 +427,7 @@ def _door(tmp_path, *extra):
              dt=3.0, run_seconds=7200.0, nested=False, specified=False))
     return [
         "downscale", str(tmp_path), "--parent-restart", str(restart),
-        "--point", "35.0,-97.0", "--ratio", "1", "--child-size", "12,10",
+        "--point", "35.0,-97.0", "--ratio", "1", "--child-size", "12,10", "--physics-profile", "parent",
         "--child-levels", "4,2.5", "--hours", "0.25",
         "--output-interval-seconds", "900",
         "--out", str(tmp_path / "child-run"), *extra]

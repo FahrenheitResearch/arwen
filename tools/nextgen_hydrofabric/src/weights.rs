@@ -177,12 +177,8 @@ struct Coord {
     z: f64,
     t: f64,
 }
-// Static link off Linux and Windows (unchanged); on Linux libproj is opened at run time so the binary
-// carries no libproj.so.25 DT_NEEDED (manylinux_2_28 policy), and on Windows so the build needs no
-// proj.lib and the binary no PROJ DLL import. Call sites are unchanged: each function below is a
-// thin wrapper over the table `dyn_proj::api()` resolves (dlsym / GetProcAddress).
-#[cfg(not(any(target_os = "linux", windows)))]
-#[link(name = "proj")]
+// Pinned bundled PROJ/SQLite; no host library lookup.
+extern crate hydro_proj;
 extern "C" {
     fn proj_create(c: *mut c_void, definition: *const c_char) -> *mut c_void;
     fn proj_crs_get_coordinate_system(c: *mut c_void, crs: *const c_void) -> *mut c_void;
@@ -214,170 +210,7 @@ extern "C" {
     fn proj_destroy(p: *mut c_void) -> *mut c_void;
 }
 
-#[cfg(any(target_os = "linux", windows))]
-#[allow(clippy::missing_safety_doc, clippy::too_many_arguments)]
-mod dyn_proj {
-    use super::*;
-    use std::ffi::{c_char, c_void};
-    use std::sync::OnceLock;
 
-    // The platform loader: dlopen/dlsym on Linux, LoadLibraryA/GetProcAddress (kernel32) on Windows.
-    #[cfg(target_os = "linux")]
-    mod sys {
-        use std::ffi::{c_char, c_int, c_void, CStr};
-        #[link(name = "dl")]
-        extern "C" {
-            fn dlopen(filename: *const c_char, flags: c_int) -> *mut c_void;
-            fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
-            fn dlerror() -> *const c_char;
-        }
-        const RTLD_NOW: c_int = 2;
-        pub unsafe fn open(name: &[u8]) -> *mut c_void {
-            dlopen(name.as_ptr().cast(), RTLD_NOW)
-        }
-        pub unsafe fn sym(handle: *mut c_void, name: *const c_char) -> *mut c_void {
-            dlsym(handle, name)
-        }
-        pub unsafe fn last_error() -> String {
-            let p = dlerror();
-            if p.is_null() { String::new() } else { CStr::from_ptr(p).to_string_lossy().into_owned() }
-        }
-    }
-    #[cfg(windows)]
-    mod sys {
-        use std::ffi::{c_char, c_void};
-        #[link(name = "kernel32")]
-        extern "system" {
-            fn LoadLibraryA(name: *const c_char) -> *mut c_void;
-            fn GetProcAddress(module: *mut c_void, name: *const c_char) -> *mut c_void;
-            fn GetLastError() -> u32;
-        }
-        pub unsafe fn open(name: &[u8]) -> *mut c_void {
-            LoadLibraryA(name.as_ptr().cast())
-        }
-        pub unsafe fn sym(handle: *mut c_void, name: *const c_char) -> *mut c_void {
-            GetProcAddress(handle, name)
-        }
-        pub unsafe fn last_error() -> String {
-            match GetLastError() {
-                126 => "Windows error 126: the module or one of its dependent DLLs was not found".into(),
-                127 => "Windows error 127: the procedure was not found".into(),
-                193 => "Windows error 193: the DLL is not a valid 64-bit Windows library".into(),
-                code => format!("Windows error {code}"),
-            }
-        }
-    }
-    #[cfg(target_os = "linux")]
-    const SONAMES: [&[u8]; 2] = [b"libproj.so.25\0", b"libproj.so\0"];
-    #[cfg(windows)]
-    const SONAMES: [&[u8]; 12] = [b"proj_9.dll\0", b"proj_9_9.dll\0", b"proj_9_8.dll\0", b"proj_9_7.dll\0", b"proj_9_6.dll\0", b"proj_9_5.dll\0", b"proj_9_4.dll\0", b"proj_9_3.dll\0", b"proj_9_2.dll\0", b"proj_9_1.dll\0", b"proj_9_0.dll\0", b"proj.dll\0"];
-
-    pub struct Api {
-        pub proj_create: unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void,
-        pub proj_crs_get_coordinate_system: unsafe extern "C" fn(*mut c_void, *const c_void) -> *mut c_void,
-        pub proj_cs_get_type: unsafe extern "C" fn(*mut c_void, *const c_void) -> c_int,
-        pub proj_cs_get_axis_count: unsafe extern "C" fn(*mut c_void, *const c_void) -> c_int,
-        pub proj_cs_get_axis_info: unsafe extern "C" fn(*mut c_void, *const c_void, c_int, *mut *const c_char, *mut *const c_char, *mut *const c_char, *mut f64, *mut *const c_char, *mut *const c_char, *mut *const c_char) -> c_int,
-        pub proj_context_create: unsafe extern "C" fn() -> *mut c_void,
-        pub proj_context_destroy: unsafe extern "C" fn(*mut c_void),
-        pub proj_context_set_enable_network: unsafe extern "C" fn(*mut c_void, c_int) -> c_int,
-        pub proj_create_crs_to_crs: unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char, *mut c_void) -> *mut c_void,
-        pub proj_normalize_for_visualization: unsafe extern "C" fn(*mut c_void, *const c_void) -> *mut c_void,
-        pub proj_trans: unsafe extern "C" fn(*mut c_void, c_int, Coord) -> Coord,
-        pub proj_destroy: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
-    }
-
-    static API: OnceLock<std::result::Result<Api, String>> = OnceLock::new();
-
-    unsafe fn message() -> String {
-        sys::last_error()
-    }
-
-    unsafe fn sym(handle: *mut c_void, name: &[u8]) -> std::result::Result<*mut c_void, String> {
-        let p = sys::sym(handle, name.as_ptr().cast());
-        if p.is_null() {
-            Err(format!("libproj has no {}: {}", String::from_utf8_lossy(&name[..name.len() - 1]), message()))
-        } else {
-            Ok(p)
-        }
-    }
-
-    unsafe fn load() -> std::result::Result<Api, String> {
-        let mut handle = std::ptr::null_mut();
-        for soname in SONAMES {
-            handle = sys::open(soname);
-            if !handle.is_null() {
-                break;
-            }
-        }
-        if handle.is_null() {
-            #[cfg(target_os = "linux")]
-            return Err(format!("PROJ (libproj.so.25) is not installed on this host: {}; install the system PROJ library (Ubuntu: libproj25, RHEL: proj)", message()));
-            #[cfg(windows)]
-            return Err(format!("PROJ (proj_9_*.dll or proj.dll) was not found on this host: {}; install PROJ 9 (OSGeo4W, conda-forge proj or vcpkg) and put its bin directory on PATH", message()));
-        }
-        Ok(Api {
-            proj_create: std::mem::transmute(sym(handle, b"proj_create\0")?),
-            proj_crs_get_coordinate_system: std::mem::transmute(sym(handle, b"proj_crs_get_coordinate_system\0")?),
-            proj_cs_get_type: std::mem::transmute(sym(handle, b"proj_cs_get_type\0")?),
-            proj_cs_get_axis_count: std::mem::transmute(sym(handle, b"proj_cs_get_axis_count\0")?),
-            proj_cs_get_axis_info: std::mem::transmute(sym(handle, b"proj_cs_get_axis_info\0")?),
-            proj_context_create: std::mem::transmute(sym(handle, b"proj_context_create\0")?),
-            proj_context_destroy: std::mem::transmute(sym(handle, b"proj_context_destroy\0")?),
-            proj_context_set_enable_network: std::mem::transmute(sym(handle, b"proj_context_set_enable_network\0")?),
-            proj_create_crs_to_crs: std::mem::transmute(sym(handle, b"proj_create_crs_to_crs\0")?),
-            proj_normalize_for_visualization: std::mem::transmute(sym(handle, b"proj_normalize_for_visualization\0")?),
-            proj_trans: std::mem::transmute(sym(handle, b"proj_trans\0")?),
-            proj_destroy: std::mem::transmute(sym(handle, b"proj_destroy\0")?),
-        })
-    }
-
-    fn api() -> &'static Api {
-        match API.get_or_init(|| unsafe { load() }) {
-            Ok(api) => api,
-            Err(e) => panic!("{e}"),
-        }
-    }
-
-    pub unsafe fn proj_create(c: *mut c_void, definition: *const c_char) -> *mut c_void {
-        (api().proj_create)(c, definition)
-    }
-    pub unsafe fn proj_crs_get_coordinate_system(c: *mut c_void, crs: *const c_void) -> *mut c_void {
-        (api().proj_crs_get_coordinate_system)(c, crs)
-    }
-    pub unsafe fn proj_cs_get_type(c: *mut c_void, cs: *const c_void) -> c_int {
-        (api().proj_cs_get_type)(c, cs)
-    }
-    pub unsafe fn proj_cs_get_axis_count(c: *mut c_void, cs: *const c_void) -> c_int {
-        (api().proj_cs_get_axis_count)(c, cs)
-    }
-    pub unsafe fn proj_cs_get_axis_info(c: *mut c_void, cs: *const c_void, index: c_int, name: *mut *const c_char, abbrev: *mut *const c_char, direction: *mut *const c_char, factor: *mut f64, unit_name: *mut *const c_char, unit_authority: *mut *const c_char, unit_code: *mut *const c_char) -> c_int {
-        (api().proj_cs_get_axis_info)(c, cs, index, name, abbrev, direction, factor, unit_name, unit_authority, unit_code)
-    }
-    pub unsafe fn proj_context_create() -> *mut c_void {
-        (api().proj_context_create)()
-    }
-    pub unsafe fn proj_context_destroy(c: *mut c_void) {
-        (api().proj_context_destroy)(c)
-    }
-    pub unsafe fn proj_context_set_enable_network(c: *mut c_void, e: c_int) -> c_int {
-        (api().proj_context_set_enable_network)(c, e)
-    }
-    pub unsafe fn proj_create_crs_to_crs(c: *mut c_void, s: *const c_char, t: *const c_char, a: *mut c_void) -> *mut c_void {
-        (api().proj_create_crs_to_crs)(c, s, t, a)
-    }
-    pub unsafe fn proj_normalize_for_visualization(c: *mut c_void, p: *const c_void) -> *mut c_void {
-        (api().proj_normalize_for_visualization)(c, p)
-    }
-    pub unsafe fn proj_trans(p: *mut c_void, d: c_int, c: Coord) -> Coord {
-        (api().proj_trans)(p, d, c)
-    }
-    pub unsafe fn proj_destroy(p: *mut c_void) -> *mut c_void {
-        (api().proj_destroy)(p)
-    }
-}
-#[cfg(any(target_os = "linux", windows))]
-use dyn_proj::*;
 /// Use the CRS coordinate system's actual units, never assume an EPSG identifier means metres.
 pub(crate) fn validate_grid_crs(definition: &str) -> Result<()> {
     let text = CString::new(definition)?;
@@ -646,7 +479,9 @@ pub fn build(prepared: &Prepared, grid: &Grid) -> Result<Weights> {
                     }
                 }
                 if edges.is_empty() {
-                    return Err(format!("divide {s} has no parent grid overlap").into());
+                    return Err(format!("divide {s} has no parent grid overlap; projected divide bounds={bbox:?}, parent bounds={:?}",
+                        [grid.x0, grid.y0, grid.x0 + grid.nx as f64 * grid.dx,
+                         grid.y0 + grid.ny as f64 * grid.dy]).into());
                 }
                 Ok((edges, total))
             },
@@ -957,4 +792,15 @@ mod raster_tests {
         segment_cells([-1., -1.], [-2., -2.], &g, &mut out);
         assert!(out.is_empty());
     }
+}
+
+/// Doctor exercises the same transform used by the data path.
+pub fn proj_probe() -> Result<serde_json::Value> {
+    let p = Projection::new("EPSG:4326", "EPSG:5070")?.transform([-97., 35.])?;
+    if (p[0] + 90515.4982698843).abs() > 0.001 || (p[1] - 1327277.0317004607).abs() > 0.001 {
+        return Err(format!("PROJ probe returned unexpected coordinates {p:?}").into());
+    }
+    Ok(serde_json::json!({"proj_version": hydro_proj::VERSION, "resources": "embedded-only",
+        "network": false, "source": "EPSG:4326", "target": "EPSG:5070",
+        "input": [-97., 35.], "output": p, "output_bits": p.map(f64::to_bits)}))
 }

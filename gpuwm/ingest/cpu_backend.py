@@ -79,11 +79,17 @@ _ERRORS = {
     9: "input file is not the declared intermediate format",
     10: "target point escapes the source grid",
     11: "unknown WPS interpolation operator",
+    12: "coastal matching support reaches an open source-window edge",
     30: "a lake target's search found no source water anywhere",
     31: "a bilinear corner lies outside the source grid",
     32: "a water-body label is negative or above the bodies declared",
     127: "native CPU backend panicked",
 }
+
+class OpenSourceWindowEdge(ValueError):
+    """Coastal matching support reached an edge of the decoded window that is
+    not an edge of the source grid (native code 12)."""
+
 
 #: The masked-chain entry, and the code of each WPS operator it runs.  A
 #: name this table does not hold travels as 255 and is refused by name
@@ -93,6 +99,12 @@ WPS_MASKED_CHAIN_ENTRY: Final[str] = "gpuwm_wps_masked_chain_f64"
 #: call goes through it, with no reach unless the caller gives one.
 WPS_MASKED_REACH_ENTRY: Final[str] = "gpuwm_wps_masked_chain_reach_f64"
 WPS_MASKED_CHAIN_IMPLEMENTATION: Final[str] = "rust-wps-masked-chain-f64-v3"
+WPS_LAND_UNIT_SCAN_ENTRY: Final[str] = "gpuwm_wps_land_unit_scan_f64"
+SURFACE_MATCH_ENTRY: Final[str] = "gpuwm_surface_match_f32"
+SURFACE_MATCH_COUNT_KEYS: Final[tuple[str, ...]] = (
+    "mixed_surface", "matched_surface", "no_matching_surface",
+    "search", "search_past_unusable", "inactive_surface_fill",
+)
 #: The native HRRR route's soil stencil (build, then apply).
 MASKED_STENCIL_ENTRY: Final[str] = "gpuwm_masked_bilinear_stencil_f64"
 MASKED_STENCIL_IMPLEMENTATION: Final[str] = "rust-masked-bilinear-stencil-f64-v1"
@@ -699,6 +711,21 @@ class CpuPreprocessBackend:
             scan.restype = ctypes.c_int32
             self.wps_masked_chain_entry = True
 
+        self.surface_match_entry = False
+        try:
+            surface_match = library.gpuwm_surface_match_f32
+        except AttributeError:
+            pass
+        else:
+            surface_match.argtypes = [
+                pointer, pointer, pointer, pointer, pointer,
+                pointer, pointer, pointer, pointer, pointer, pointer, size,
+                ctypes.c_int32, ctypes.c_int32, ctypes.c_float, ctypes.c_uint32,
+                pointer, pointer, pointer, size, size, size, size, size,
+            ]
+            surface_match.restype = ctypes.c_int32
+            self.surface_match_entry = True
+
         # The native HRRR route's soil stencil: looked up the same way and
         # required the same way (require_masked_stencil).
         self.masked_stencil_entry = False
@@ -846,12 +873,16 @@ class CpuPreprocessBackend:
             raise ValueError(reason or f"WRF eta generation failed with native code {code}")
         return out
 
-    def surface_pressure_from_sea_level(self, pressure, height, terrain, slp, *, workers=1):
+    def surface_pressure_from_sea_level(self, pressure, height, terrain, slp, *, workers=1,
+                                        level_order=None, row_offset=0):
         """WRF sfcprs3, parallel by column with strict REAL arithmetic.
 
         Accept setup's existing f64 storage. The native routine casts each
         scalar in place and follows an index permutation, avoiding two full
         f32 copies and a reordered copy of both atmospheric profiles.
+        ``level_order`` is that permutation read from the whole domain's
+        first column, for a caller handing in one row block of it, and
+        ``row_offset`` that block's first row, for the refusal's position.
         """
         pressure, height, terrain, slp = (
             np.require(value, dtype=np.float64, requirements=("C", "A"))
@@ -869,7 +900,8 @@ class CpuPreprocessBackend:
         pointer, size = ctypes.c_void_p, ctypes.c_size_t
         call.argtypes = [pointer] * 6 + [size] * 3 + [pointer]
         call.restype = ctypes.c_int32
-        order = np.argsort(-pressure[:, 0, 0]).astype(np.uint64)
+        order = (np.argsort(-pressure[:, 0, 0]) if level_order is None
+                 else np.asarray(level_order)).astype(np.uint64)
         out = np.empty(terrain.shape, dtype=np.float32)
         failed_column = size()
         code = int(call(height.ctypes.data, pressure.ctypes.data, terrain.ctypes.data,
@@ -879,7 +911,7 @@ class CpuPreprocessBackend:
         if code:
             if failed_column.value < terrain.size:
                 row, column = divmod(failed_column.value, terrain.shape[1])
-                position = f" at row {row}, column {column}"
+                position = f" at row {row + int(row_offset)}, column {column}"
             else:
                 position = ""
             reason = _ERRORS.get(code, f"native error {code}")
@@ -1207,6 +1239,93 @@ class CpuPreprocessBackend:
         self._raise_native(code, "masked surface interpolation")
         if reach is not None:
             return output, counts, beyond
+        return output, counts
+
+    def surface_match(self, source, original, source_land,
+                      donor_y, donor_x, fraction_y, fraction_x, target_land,
+                      chain, *, method="parabolic", land_only=False,
+                      fill_value=0.0, closed_edges=15,
+                      nearest_y=None, nearest_x=None,
+                      workers: int | None = None):
+        """Preserve the original FP32 result outside mixed surface support.
+
+        Exact integer donors and FP32 fractions are the original operator's
+        geometry. Mixed targets take the matching WPS masked chain; a surface
+        analysis with no reachable matching donor retains its original value.
+        Land-only fields take their declared fill on mixed water support or where
+        no matching answer exists. All selection and blending run in Rust.
+        """
+        if not self.surface_match_entry:
+            from gpuwm.bridges import cpu_bridge_remedy
+            raise MaskedChainUnavailable(
+                f"the CPU preprocessing library at {self.path} predates "
+                f"{SURFACE_MATCH_ENTRY}, which prevents coastal surface "
+                "analyses from mixing land and water donors; rebuild or "
+                "re-fetch it\n" + cpu_bridge_remedy(self.path.name))
+        if method not in {"nearest", "bilinear", "parabolic"}:
+            raise ValueError("surface matching method must be nearest, bilinear or parabolic")
+        source = _host_f32(source)
+        original = _host_f32(original)
+        if source.ndim < 2 or min(source.shape[-2:]) < 1:
+            raise ValueError("surface matching source must end in (y, x)")
+        shape = source.shape[:-2]
+        nlayer = int(np.prod(shape, dtype=np.int64)) or 1
+        ny, nx = source.shape[-2:]
+        source = np.ascontiguousarray(source.reshape((nlayer, ny, nx)))
+        land = np.ascontiguousarray(source_land, dtype=np.bool_)
+        targets = np.ascontiguousarray(target_land, dtype=np.bool_)
+        if land.shape != (ny, nx):
+            raise ValueError("source land flag shape does not match source")
+        if original.shape != (*shape, *targets.shape) or targets.size == 0:
+            raise ValueError("original surface result shape does not match target")
+        arrays = []
+        for value, dtype in ((donor_y, np.int32), (donor_x, np.int32),
+                             (fraction_y, np.float32), (fraction_x, np.float32)):
+            array = np.asarray(value)
+            if array.shape != targets.shape:
+                raise ValueError("surface matching geometry shape does not match target")
+            arrays.append(np.ascontiguousarray(array, dtype=dtype))
+        nearest = [None, None]
+        if method == "nearest":
+            for slot, value in enumerate((nearest_y, nearest_x)):
+                array = np.asarray(value)
+                if array.shape != targets.shape:
+                    raise ValueError("exact nearest donor shape does not match target")
+                nearest[slot] = np.ascontiguousarray(array, dtype=np.int32)
+        chain = tuple(chain)
+        codes = np.ascontiguousarray([
+            _WPS_OPERATOR_CODES.get(op, _WPS_UNKNOWN_OPERATOR) for op in chain
+        ], dtype=np.uint8)
+        ntarget = targets.size
+        output = np.empty(original.shape, dtype=np.float32)
+        counts = np.zeros((nlayer, len(SURFACE_MATCH_COUNT_KEYS)), dtype=np.uint64)
+        unknown = ctypes.c_uint64(0)
+        count = available_cpu_count() if workers is None else int(workers)
+        if count < 1:
+            raise ValueError("workers must be positive")
+
+        def address(array):
+            return ctypes.c_void_p(None if array is None else array.ctypes.data)
+
+        code = int(self._library.gpuwm_surface_match_f32(
+            address(source), address(original), address(land.view(np.uint8)),
+            *(address(array) for array in arrays),
+            *(address(array) for array in nearest), address(targets.view(np.uint8)),
+            address(codes if codes.size else None), codes.size,
+            {"nearest": 0, "bilinear": 1, "parabolic": 2}[method], int(bool(land_only)),
+            float(fill_value), int(closed_edges), address(output), address(counts),
+            ctypes.byref(unknown), nlayer, ny, nx, ntarget, count,
+        ))
+        if code == 11:
+            raise ValueError(f"unknown WPS interpolation operator {chain[int(unknown.value)]!r}")
+        if code == 12:
+            target = np.unravel_index(int(unknown.value), targets.shape)
+            raise OpenSourceWindowEdge(
+                f"coastal matching support at target {target} reaches an "
+                "open source-window edge; expand the decoded source window "
+                "so the matching-surface search and interpolation halo "
+                "are fully covered")
+        self._raise_native(code, "coastal surface interpolation")
         return output, counts
 
     def land_unit_scan(self, layers, land, partial, physical_range, *,

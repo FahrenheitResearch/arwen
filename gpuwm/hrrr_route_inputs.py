@@ -933,6 +933,10 @@ def render_namelist_input(exp, *, stock: bool = False,
            f" history_interval_change             = {_column(int(r.history_interval_change_s / 60) for r in runs)}"]
           if any(r.history_interval2_s for r in runs) else []),
         f" frames_per_outfile                  = {_repeated(1, count)}",
+        *([f" output_diagnostics                  = {root.run.output_diagnostics},",
+           f" diag_int                            = {root.run.diag_int},",
+           f" wind_int                            = {root.run.wind_int},"]
+          if root.run.output_diagnostics or root.run.diag_int != 15 or root.run.wind_int != 5 else []),
         *([f" gsd_diagnostics                     = {root.run.gsd_diagnostics},",
            f" reset_interval1                     = {_column(r.reset_interval1 for r in runs)}"]
           if root.run.gsd_diagnostics else []),

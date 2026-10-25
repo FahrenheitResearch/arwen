@@ -94,6 +94,13 @@ pub struct SoilCounts {
     /// ever brackets against the anchor and the quirk is unreachable, however
     /// large `deep_moisture_max_difference` looks.
     pub deep_moisture_anchor_reached: usize,
+    /// RUC from a layer source: values raised to real.exe's 0.005 floor
+    /// (`module_initialize_real.F:3441`), the columns holding them, and the
+    /// smallest value before the floor (null when none).  The extrapolated
+    /// 0 m anchor off a dry top layer is what goes below.
+    pub ruc_layer_floor_values: usize,
+    pub ruc_layer_floor_columns: usize,
+    pub ruc_layer_floor_min: Option<f32>,
 }
 
 /// Differences below this are round-off in the first-guess field itself and

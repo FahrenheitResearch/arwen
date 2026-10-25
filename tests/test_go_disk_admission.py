@@ -95,6 +95,23 @@ def test_a_disk_with_room_goes_on_to_the_first_stage(
     assert stages == ["authority"]
 
 
+@pytest.mark.parametrize("flags", [(), ("--prepare-only",)])
+@pytest.mark.parametrize("same_disk", [True, False])
+def test_hydro_is_priced_and_never_built_on_disk_refusal(
+        tmp_path, monkeypatch, gfs_config, staged_geog, flags, same_disk):
+    from gpuwm.hydro import runtime
+    built = []
+    monkeypatch.setattr(disk_budget, "same_disk", lambda *a: same_disk)
+    monkeypatch.setattr(runtime, "hydro_disk_estimate", lambda *a: (2**40, "hydro fake: 1024 GiB"))
+    monkeypatch.setattr(runtime, "_launch_settings", lambda *a, **k: built.append(k))
+    stages, refused = _go(tmp_path, monkeypatch, gfs_config, staged_geog, *flags, free=2**30)
+    assert not stages and not built
+    assert "Refused before the download and before hydro preparation, so nothing was spent." in refused
+    assert "hydro fake: 1024 GiB" in refused
+    assert not (tmp_path / "case").exists()
+    (tmp_path / "exact-hydro-refusal.txt").write_text(refused)
+
+
 def test_a_section_request_is_admitted_with_its_line(
         tmp_path, monkeypatch, gfs_config, staged_geog):
     """The run described to the admission carries the section line.

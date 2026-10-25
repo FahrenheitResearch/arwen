@@ -60,6 +60,9 @@
   {"source": "ecmwf-open-data", "mode": "full-file",
    "objects": {"oper-fc": 139800000},
    "measured": "mean of 6 oper-fc objects, 2026-09-26 00Z f00 to f06, two fetches"},
+  {"source": "ecmwf-open-data-0p1", "mode": "full-file",
+   "objects": {"oper-fc-pl": 361000000, "oper-fc-sfc": 88000000},
+   "measured": "data.ecmwf.int listing of the 2026-10-23 12Z and 18Z 0.1-degree runs: pl 343-357 MB, sfc 74-92 MB per lead"},
   {"source": "aifs", "mode": "full-file",
    "objects": {"oper-fc": 87400000},
    "measured": "mean of 4 oper-fc objects, 2026-09-26 00Z f00 and f06, two fetches"},
@@ -133,6 +136,17 @@
     "global_axes": {"longitude_first": -180.0, "latitude_first": -90.0, "step_degrees": 0.25, "nx": 1440, "ny": 721},
     "bytes_per_value": 8,
     "measured": "the engine's frame stream for a real two-time fetch of 2026-09-27 00Z, composed whole by gpuwm_mapped_engine on 2026-09-28: 838,897,920 bytes per valid time"
+   },
+   "ecmwf-open-data-0p1": {
+    "mapping": "rw-wps-ecmwf-open-data-oper-grib2.mapping.json",
+    "grid": "3600 x 1801, 0.1 degree global",
+    "grid_points": 6483600,
+    "layers_per_valid_time": 101,
+    "soil_layers": 8,
+    "windowed_layers": 84,
+    "global_axes": {"longitude_first": -180.0, "latitude_first": -90.0, "step_degrees": 0.1, "nx": 3600, "ny": 1801},
+    "bytes_per_value": 8,
+    "measured": "scaled from the 0.25-degree oper frame stream (838,897,920 bytes per valid time at 1,038,240 points; the same 101 layers) to the 0.1-degree grid: 5,238,748,800 bytes per valid time"
    },
    "ecmwf-ens": {
     "mapping": "rw-wps-ecmwf-ens-open-grib2.mapping.json",

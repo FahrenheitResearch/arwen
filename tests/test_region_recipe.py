@@ -97,6 +97,25 @@ def test_ordinary_cli_recipe_with_new_row(tmp_path):
     assert out.with_suffix(".recipe.json").is_file()
 
 
+def test_every_registry_alias_is_the_row_at_every_door(tmp_path):
+    """`gpuwm domain --recipe hrrr` refused the alias the registry lists."""
+    from gpuwm import race
+    from gpuwm.region_recipe import recipe_row, recipe_row_defaults
+    from gpuwm.standby_cli import recipe_document
+    rows = json.loads(Path(recipe_table()).read_text(encoding="utf-8"))["recipes"]
+    aliased = [(row, alias) for row in rows for alias in row.get("aliases", ())]
+    assert {alias for _, alias in aliased} >= {"hrrr", "hrrr_v4"}
+    for row, alias in aliased:
+        assert recipe_row(alias)["id"] == row["id"]
+        assert recipe_row_defaults(alias) == recipe_row_defaults(row["id"])
+        assert recipe_document(alias)[0]["id"] == row["id"]
+        if "race" in row:
+            assert race.recipe_row(alias)["id"] == row["id"]
+        text, receipt = emit(tmp_path, recipe=alias)
+        assert text == emit(tmp_path, recipe=row["id"])[0]
+        assert receipt["recipe"] == row["id"]
+
+
 def test_recipe_cli_implicit_source_comes_from_metadata(tmp_path):
     from gpuwm.cli import main
     emit(tmp_path)

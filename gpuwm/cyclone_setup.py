@@ -213,6 +213,50 @@ def _following_nest_dims(experiment) -> tuple[int, int]:
     return int(child.run.nx), int(child.run.ny)
 
 
+#: The inner nest's ratio to the following nest: 3 km -> 1 km is 3.
+INNER_NEST_RATIOS = (2, 3, 4, 5)
+
+
+def parse_inner_nest(text: str) -> tuple[int, float]:
+    """``--inner-nest RATIO,KM``: the ratio to the following nest and the side, km."""
+    import argparse
+    try:
+        ratio_text, side_text = (part.strip() for part in str(text).split(","))
+        ratio, side = int(ratio_text), float(side_text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"must be RATIO,KM (for example 3,200), not {text!r}") from None
+    if ratio not in INNER_NEST_RATIOS or not (math.isfinite(side) and side > 0):
+        raise argparse.ArgumentTypeError(
+            f"RATIO must be one of {INNER_NEST_RATIOS} and KM a size above "
+            f"zero, not {text!r}")
+    return ratio, side
+
+
+def inner_nest_dimensions(follower_dims, inner_nest, *, nest_km: float) -> tuple[int, int]:
+    """(nx, ny) of the inner nest: the asked side, inside the follower's ring.
+
+    The side is rounded to whole following-nest cells (WPS: n * ratio + 1
+    staggered points), and capped so the inner nest clears the follower's
+    own spec + blend rows on every side -- a follower the memory budget
+    shrank keeps a valid inner nest, smaller, rather than a refused file.
+    """
+    from gpuwm import domain_wizard as dw
+
+    ratio, side_km = int(inner_nest[0]), float(inner_nest[1])
+    ring = dw._SPEC_BDY_WIDTH + dw._BLEND_WIDTH
+    spans = []
+    for parent_cells in follower_dims:
+        want = max(1, round(side_km / float(nest_km)))
+        room = int(parent_cells) - 2 * ring - 2
+        if room < 4:
+            raise ValueError(
+                f"the following nest ({follower_dims[0]}x{follower_dims[1]}) "
+                "has no room for an inner nest inside its boundary ring")
+        spans.append(min(want, room))
+    return spans[0] * ratio, spans[1] * ratio
+
+
 def configuration_text(*, cycle: str, point: tuple[float, float], hours: int = 6,
                        name: str | None = None, tiles: str = "auto",
                        source: str = "cyclone-setup.toml",
@@ -224,7 +268,9 @@ def configuration_text(*, cycle: str, point: tuple[float, float], hours: int = 6
                        history_interval_s: float | None = None,
                        nest_history_interval_s: float | None = None,
                        nest_km: float = 3., track_selection: dict | None = None,
-                       model: str | None = None) -> tuple[str, object]:
+                       model: str | None = None,
+                       inner_nest: tuple[int, float] | None = None,
+                       quicklook_interval_s: float | None = None) -> tuple[str, object]:
     from gpuwm import domain_wizard as dw
     from gpuwm.companion_domains import VORTEX_PRESET_SOURCE
     from gpuwm.cyclone_sources import (declared_case_data, fetch_hints,
@@ -258,9 +304,10 @@ def configuration_text(*, cycle: str, point: tuple[float, float], hours: int = 6
     # on this path and it names the sources that do cover the point.
     validate_center(forcing_source, point)
     dims = [ROOT_DIMS, CHILD_DIMS] if dimensions is None else list(dimensions)
-    if (len(dims) != 2 or any(len(pair) != 2 for pair in dims)
+    if (len(dims) not in (2, 3) or any(len(pair) != 2 for pair in dims)
             or any(type(n) is not int or n <= 0 for pair in dims for n in pair)):
         raise ValueError("Cyclone dimensions must be two positive integer axis pairs")
+    dims = dims[:2]
     projection = dw._projection_entries(lat, lon, "auto")
     if track_selection is not None:
         from gpuwm.cyclone_tracks import layout
@@ -279,16 +326,25 @@ def configuration_text(*, cycle: str, point: tuple[float, float], hours: int = 6
                         projection=projection, dims=tuple(dims[0]),
                         dx_m=root_dx_m, member=member, start_hour=start_hour, model=model)
     profile = _default_profile(forcing_source, nest_km)
+    # THE INNER NEST (--inner-nest RATIO,KM): a third domain centred in the
+    # following nest, which rides with it as it moves (the prepared tree's
+    # descendant regrounding), sized to the asked side and kept inside the
+    # following nest's own boundary ring.
+    ratios = (RATIO,)
+    if inner_nest is not None:
+        inner = inner_nest_dimensions(dims[1], inner_nest, nest_km=nest_km)
+        dims = [*dims, inner]
+        ratios = (RATIO, int(inner_nest[0]))
     text = dw.render_config(
         name=_config_name(adapter, name, nest_km),
         start_time=start_time, hours=hours, projection=projection,
-        dims=dims, ratios=(RATIO,), root_dx_m=root_dx_m,
+        dims=dims, ratios=ratios, root_dx_m=root_dx_m,
         profile=profile, cumulus_requested=False, tiles=tiles,
         fetch_hints=hints,
         case_data=declared_case_data(forcing_source, hints, source),
         history_interval_s=3600. if history_interval_s is None else float(history_interval_s),
         nest_history_interval_s=(900. if nest_history_interval_s is None
-                                 else float(nest_history_interval_s)))
+                                 else nest_history_interval_s))
     raw = tomllib.loads(text)
     child = next(row for row in raw["domain"] if row["grid_id"] == 2)
     # The maximums come from the dimensions this document actually
@@ -337,6 +393,8 @@ def configuration_text(*, cycle: str, point: tuple[float, float], hours: int = 6
             + limit
             + render_tables(raw))
     text = dw.with_surface_flux_option(text, isftcflx)
+    # The quick-look stream on the finest domain (gpuwm domain --quicklook-interval's own writer).
+    text = dw.with_quicklook(text, quicklook_interval_s)
     experiment = dw.experiment_from_text(text, source=source)
     return text, experiment
 
@@ -1214,7 +1272,10 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
                  history_interval_s: float | None = None,
                  nest_history_interval_s: float | None = None,
                  nest_km: float = 3., track_selection: dict | None = None,
-                 model: str | None = None) -> dict:
+                 model: str | None = None,
+                 inner_nest: tuple[int, float] | None = None,
+                 nest_cells: int | None = None,
+                 quicklook_interval_s: float | None = None) -> dict:
     from gpuwm import domain_wizard as dw
     from gpuwm.companion_domains import VORTEX_PRESET_SOURCE
     from gpuwm.configuration_recovery import MemoryAdmissionError
@@ -1240,7 +1301,8 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
                   start_hour=start_hour, isftcflx=isftcflx,
                   history_interval_s=history_interval_s,
                   nest_history_interval_s=nest_history_interval_s,
-                  nest_km=nest_km, track_selection=track_selection, model=model)
+                  nest_km=nest_km, track_selection=track_selection, model=model,
+                  inner_nest=inner_nest, quicklook_interval_s=quicklook_interval_s)
     if nest_budget_gib is not None and (
             not isinstance(nest_budget_gib, (int, float))
             or isinstance(nest_budget_gib, bool)
@@ -1253,6 +1315,18 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
     # BEFORE anything is priced, because the budget is the allowance every
     # later number is measured against -- including the tile planner's.
     sizing, budget_bound = _budget_sizing(sizing, nest_budget_gib)
+    # --nest-cells N: the following nest's side in its own cells, chosen
+    # directly (the slider's size) rather than through a memory budget.
+    # The requested layout is then priced and admitted like the preset's.
+    if nest_cells is not None:
+        if nest_budget_gib is not None:
+            raise ValueError("--nest-cells and --nest-budget-gib both size the "
+                             "following nest; give one")
+        n = int(nest_cells)
+        if n % RATIO or n < 4 * RATIO:
+            raise ValueError(f"--nest-cells {n} must be a whole number of parent "
+                             f"cells (a multiple of {RATIO}) of at least {4 * RATIO}")
+        intent["dimensions"] = [list(ROOT_DIMS), [n, n]]
     # One hardware snapshot for the whole search. Never redetect/inflate VRAM
     # or force a different streaming mode to make a candidate appear to fit.
     if tiles != "off" and target_machine is None:
@@ -1840,7 +1914,10 @@ def _main(args) -> int:
                     isftcflx=getattr(args, "isftcflx", None),
                     history_interval_s=getattr(args, "history_interval", None),
                     nest_history_interval_s=getattr(args, "nest_history_interval", None),
-                    nest_km=getattr(args, "nest_km", 3.), track_selection=track_selection, model=model)
+                    nest_km=getattr(args, "nest_km", 3.), track_selection=track_selection, model=model,
+                    inner_nest=getattr(args, "inner_nest", None),
+                    nest_cells=getattr(args, "nest_cells", None),
+                    quicklook_interval_s=getattr(args, "quicklook_interval", None))
                 result["seed"] = seed.to_dict()
                 if result.get("track_placement", {}).get("leaves_follower_clearance"):
                     print("warning: " + result["fitting"]["notice"])
@@ -1941,7 +2018,7 @@ def _main(args) -> int:
 
 
 def register_cli(subparsers):
-    from gpuwm.cli_numbers import positive_float
+    from gpuwm.cli_numbers import positive_float, positive_float_list, positive_int
     parser = subparsers.add_parser("cyclone-setup", help="select a cyclone on any planable source's chosen cycle and lead and author a 12/3 km following nest")
     from gpuwm.earth2_licensing import add_licence_argument
     add_licence_argument(parser)
@@ -1991,7 +2068,16 @@ def register_cli(subparsers):
                              "default: the suite's own (0)")
     parser.add_argument("--history-interval", type=positive_float, default=None, metavar="SECONDS",
                         help="how often the 12 km parent writes a wrfout (default 3600)")
-    parser.add_argument("--nest-history-interval", type=positive_float, default=None, metavar="SECONDS",
+    parser.add_argument("--quicklook-interval", type=positive_float, default=None, metavar="SECONDS",
+                        help="a quick-look subset on the finest domain every SECONDS between its full frames "
+                             "(quicklook/wrfout_dNN_*); must divide that domain's history interval")
+    parser.add_argument("--nest-cells", type=positive_int, default=None, metavar="N",
+                        help="the following nest's side in its own cells (a multiple of the parent ratio), "
+                             "instead of the preset or --nest-budget-gib")
+    parser.add_argument("--inner-nest", type=parse_inner_nest, default=None, metavar="RATIO,KM",
+                        help="a third domain centred in the following nest and moving with it: "
+                             "RATIO to the following nest (3 turns 3 km into 1 km) and its side in km")
+    parser.add_argument("--nest-history-interval", type=positive_float_list, default=None, metavar="SECONDS[,SECONDS]",
                         help="how often the following nest writes a wrfout (default 900); a "
                              "longer interval is how a multi-day run fits its disk")
     parser.add_argument("--name", help="configuration name (default: the selected source's own title)")

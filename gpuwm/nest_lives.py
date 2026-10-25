@@ -11,12 +11,13 @@ from __future__ import annotations
 from pathlib import Path
 
 
-def nest_lives(outdir) -> list[dict]:
+def nest_lives(outdir, run_end_s=None) -> list[dict]:
     """One row per nest life from a run's receipts (``evidence/nest-lives.json``).
 
     Reads ``spawn_receipts.jsonl`` (births, retirements with their stop
     reason) and ``relocation_receipts.dNN.json`` (follow moves).  A life
-    still running when the run ended has ``stop_reason = "run-ended"``.
+    still running when the run ended has ``stop_reason = "run-ended"`` and
+    stops at ``run_end_s`` (the run's length; else the last spawn boundary).
     """
     import json
 
@@ -73,8 +74,13 @@ def nest_lives(outdir) -> list[dict]:
         for move in payload.get("receipts") or ():
             gid = move.get("grid_id")
             t = move.get("elapsed_seconds", move.get("t"))
-            placement = (move.get("new_placement") or move.get("placement_after")
-                         or move.get("to"))
+            # The relocation runner writes placement_to (gpuwm-nest-relocation-
+            # runner.v1); the 1 h door run's summary read none of it and said
+            # "0 moves" for two nests that moved (box D, 2026-10-21).
+            if move.get("event", "relocated") != "relocated":
+                continue
+            placement = (move.get("placement_to") or move.get("new_placement")
+                         or move.get("placement_after") or move.get("to"))
             if gid is None or t is None or placement is None:
                 continue
             if isinstance(placement, dict):
@@ -89,15 +95,15 @@ def nest_lives(outdir) -> list[dict]:
         life["track"].sort(key=lambda row: (row["t"] is None, row["t"]))
         if life["stop_reason"] is None:
             life["stop_reason"] = "run-ended"
-            life["stop_s"] = end_t
+            life["stop_s"] = float(run_end_s) if run_end_s is not None else end_t
     return [lives[key] for key in sorted(lives, key=lambda k: (lives[k]["spawn_s"] or 0.0, k))]
 
 
-def write_nest_lives(outdir) -> Path | None:
+def write_nest_lives(outdir, run_end_s=None) -> Path | None:
     """Write ``evidence/nest-lives.json`` beside a run, or nothing if no nest lived."""
     import json
 
-    lives = nest_lives(outdir)
+    lives = nest_lives(outdir, run_end_s=run_end_s)
     if not lives:
         return None
     path = Path(outdir) / "evidence" / "nest-lives.json"

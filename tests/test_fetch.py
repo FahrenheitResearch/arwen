@@ -795,6 +795,26 @@ def test_fetch_gfs_fullfile_takes_whole_objects_and_records_the_route(
             path.read_bytes()).hexdigest()
 
 
+def test_fullfile_without_index_binds_archived_ladder_before_publication(tmp_path, monkeypatch):
+    _fullfile_env(monkeypatch, idx_records=None)
+    calls = []
+    available = (1., 2., 3., 5., 7., 10., 20., 30., 50., 70.,
+                 *gfs_transport.PRESSURE_LEVELS_HPA)
+    def inventory(path, source):
+        calls.append(path)
+        assert path.is_file() and source == 'gfs'
+        return available, dict(method='native-file-inventory', file=path.name)
+    monkeypatch.setattr(fetch, '_gfs_file_levels', inventory)
+    out = tmp_path / 'archived'
+    manifest = json.loads(fetch.fetch_gfs_fullfile(
+        cycle=datetime(2026, 7, 28, 6), hours=(0, 3), area=None,
+        out=out, top_pressure_pa=5000, progress=lambda line: None).read_text())
+    assert len(calls) == 1
+    assert manifest['pressure_levels_hpa'][:4] == [30., 50., 70., 100.]
+    assert manifest['source_top_pressure_pa'] == 3000
+    assert manifest['pressure_ladder_basis']['file_sha256'] == manifest['files'][0]['sha256']
+
+
 def test_fetch_gfs_fullfile_pools_transfers_and_receipts(tmp_path,
                                                          monkeypatch):
     """The S3 whole-object route rides the same default pool: no NOMADS

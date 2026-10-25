@@ -265,3 +265,25 @@ def test_history_attributes_of_a_lake_free_static_say_twenty_categories():
     twenty_one = {"LANDUSEF": np.zeros((21, 2, 2), np.float32)}
     assert _global_wrf_attrs(grid, start, static_fields=twenty_one) == default
     assert default["NUM_LAND_CAT"] == 21 and default["ISLAKE"] == 21
+
+
+def test_a_nest_off_the_hrrr_static_grid_plans_the_sources_own_datasets(tmp_path):
+    """A 1 km nest under ``[static] source = "hrrr-conus-v4"`` is rebuilt from
+    the source's off-grid datasets; fetch-geog --config and go's preflight
+    must name them.  Defect (2026-10-24): the plan named the default
+    inventory and preparation refused at the nest for bnu_soiltype_top,
+    bnu_soiltype_bot and lai_modis_30s."""
+    import tomllib
+    from gpuwm.cli import main
+    from gpuwm.geog_assets import geography_for_run
+
+    config = tmp_path / "nest.toml"
+    assert main(["domain", "--point=33.455,-106.162", "--card", "96gb",
+                 "--root-dx", "3", "--chain", "3", "--source", "hrrr",
+                 "--cycle", "2026-10-24T14", "--hours", "3",
+                 "--out", str(config)]) == 0
+    raw = tomllib.loads(config.read_text(encoding="utf-8"))
+    assert (raw.get("static") or {}).get("source") == "hrrr-conus-v4"
+    plan = geography_for_run(config)
+    for name in ("bnu_soiltype_top", "bnu_soiltype_bot", "lai_modis_30s"):
+        assert name in plan["datasets"], plan

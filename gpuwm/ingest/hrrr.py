@@ -1898,7 +1898,10 @@ def interpolate_hrrr_to_lambert(
     # library under both backends: the CPU backend's own library and
     # worker count, or the ladder's library on every CPU under CUDA.  A
     # library without the stencil is refused here, before any field.
-    from gpuwm.ingest.horiz import _masked_chain_for_backend
+    from gpuwm.ingest.horiz import (
+        _coastal_surface_match, _masked_chain_for_backend,
+        _WPS_FULL_CHAIN, _WPS_SNOW_CHAIN,
+    )
 
     stencil_native, stencil_workers = _stencil_engine(
         *_masked_chain_for_backend(engine))
@@ -1922,11 +1925,29 @@ def interpolate_hrrr_to_lambert(
                 error, snapshot, target_name, target_land.shape)
         ) from error
     out: dict[str, object] = {}
+    coastal_repairs: dict[str, dict[str, int]] = {}
+    operators: dict[str, str] = {}
     for name in (
             "PRES", "HGT", "TT",
             "SPFH", "PSFC", "SOILHGT", "SKINTEMP", "SNOW", "SNOWH",
             "T2", "Q2"):
         out[name] = mass_plan.apply(source[name], method="parabolic")
+        operators[name] = "parabolic"
+        if name in {"T2", "Q2", "SKINTEMP", "SNOW", "SNOWH"}:
+            # Surface anchors and skin keep coastal land/water support;
+            # snow takes METGRID.TBL's land-only support and water fill.
+            # The exact projected donor split remains the original plan's.
+            snow = name in {"SNOW", "SNOWH"}
+            chain = _WPS_SNOW_CHAIN if snow else _WPS_FULL_CHAIN
+            donor_y, donor_x = mass_plan.iy, mass_plan.ix
+            fraction_y, fraction_x = mass_plan.fy, mass_plan.fx
+            out[name], coastal_repairs[name] = _coastal_surface_match(
+                source[name], out[name], source_land, target_land,
+                donor_y, donor_x, fraction_y, fraction_x, engine=engine,
+                native=stencil_native, workers=stencil_workers,
+                method="parabolic", chain=chain, land_only=snow,
+                closed_edges=sum(_EDGE_BITS[edge] for edge in _native_edges_of(snapshot)))
+            operators[name] = "parabolic;coastal-matching:" + "+".join(chain)
     _zero_snow_undershoot(out, source, xp, target_name=target_name,
                           valid_time=snapshot.valid_time)
     # WPS METGRID.TBL routes hydrometeor mass through
@@ -2004,6 +2025,17 @@ def interpolate_hrrr_to_lambert(
         source["LANDSEA"], method="nearest")
     out["LANDSEA"] = engine.float32(target_landmask)
     out["XICE"] = mass_plan.apply(source["XICE"], method="nearest")
+    # Sea ice takes matching water support and fill on coastal land. Exact
+    # nearest donors decide whether the original result needs correction;
+    # the masked four-point chain retains the actual fractional target.
+    out["XICE"], coastal_repairs["XICE"] = _coastal_surface_match(
+        source["XICE"], out["XICE"], ~source_land, ~target_land,
+        mass_plan.iy, mass_plan.ix, mass_plan.fy, mass_plan.fx,
+        engine=engine, native=stencil_native, workers=stencil_workers,
+        method="nearest", chain=_WPS_SNOW_CHAIN, land_only=True,
+        closed_edges=sum(_EDGE_BITS[edge] for edge in _native_edges_of(snapshot)),
+        nearest_y=mass_plan.nearest_iy, nearest_x=mass_plan.nearest_ix)
+    operators["XICE"] = "nearest;coastal-matching:" + "+".join(_WPS_SNOW_CHAIN)
     source_sina, source_cosa = _source_window_rotation(snapshot)
 
     def map_grid_relative_wind(u_name, v_name):
@@ -2064,6 +2096,7 @@ def interpolate_hrrr_to_lambert(
         # could not tell a slow run from a fast one after the fact.
         "projected_horizontal_operator": mass_plan.operator,
         "aerosol_missing": aerosol_mapping_counts,
+        "coastal_surface_repairs": coastal_repairs,
         "wind_rotation": {
             "policy": (
                 "source_grid_to_earth_then_earth_to_target_grid; "
@@ -2104,6 +2137,8 @@ def interpolate_hrrr_to_lambert(
         fields=out,
         boundary_tracers=boundary_tracers,
         withheld_fields=getattr(snapshot, "withheld_fields", None) or None,
+        horizontal_operators=operators,
+        masked_field_repairs=coastal_repairs,
     )
 
 

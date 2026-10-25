@@ -17,8 +17,8 @@ The contract the consume sites now hold: a domain's stash exists only
 after a microphysics step OF THAT DOMAIN has run with ``refl_10cm_due``.
 The frame due at the domain's OWN start tick precedes every one of its
 steps -- for a domain that starts with the experiment that tick is 0, for
-an activating nest it is the activation epoch -- so that one frame carries
-no REFL_10CM, exactly as the root's analysis frame always has.
+an activating nest it is the activation epoch -- so that one frame consumes
+no stash and writes the analysis diagnostic, exactly as the root's does.
 """
 
 from __future__ import annotations
@@ -210,9 +210,9 @@ def test_a_delayed_child_survives_its_activation_epoch_frame(monkeypatch):
     child_frames = [(ticks, refl) for gid, ticks, refl in writers.frames
                     if gid == 2]
     assert [ticks for ticks, _refl in child_frames] == [120, 180, 240, 300]
-    # The activation-epoch frame: no stash, the same shape the root's own
-    # analysis frame has always had.
-    assert child_frames[0][1] is None
+    # The activation-epoch frame consumes no stash; it writes the analysis
+    # diagnostic, exactly as the root's own analysis frame does.
+    assert np.all(np.asarray(child_frames[0][1]) == ANALYSIS_DBZ)
     # Every frame after it follows a step of THAT domain, so it carries
     # the field that step stashed.
     assert all(refl is not None for _ticks, refl in child_frames[1:])

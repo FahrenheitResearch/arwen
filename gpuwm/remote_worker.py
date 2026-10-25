@@ -491,7 +491,7 @@ def _resolve_checkpoint(old, spec):
     from gpuwm.resume import _check_set, discover_checkpoint_sets, resolve_resume_checkpoint
     from gpuwm.io.restart import read_restart_header
     from gpuwm.supervisor import validate_manifest_checkpoint
-    root = Path(old["outdir"])
+    root = _parent_run_root(old).resolve()
     # These are the output routes owned by Go/run-plan, under this job's unique
     # output root. Never glob another job or an arbitrary user's directory.
     directories = [root, root / "run", root / "chain" / "run"]
@@ -539,20 +539,6 @@ def _restart_cadence_note(config_path):
     if not interval > 0:
         return f"; the source job declared restart_interval_s = {interval}, so it wrote no checkpoints"
     return f"; the source job declared restart_interval_s = {interval}"
-
-
-#: Where a finished run leaves a prepared bundle, relative to its own run tree.
-#: Spelled once, because two copies of this list drift and each copy carries a
-#: path a case happened to use. The second entry is the chain route's folder as
-#: gpuwm/runplan.py writes it and gpuwm/domain_wizard.py names it today; it is
-#: kept here only as a reader of trees already on disk, and it retires with the
-#: follow-up that renames that folder to a neutral name at both writers.
-PREPARED_LOCATIONS = ("prepared", "chain/hrrr-root-prep", "chain/prepared", "chain/prep")
-
-
-def _prepared_candidates(root):
-    """The prepared bundles a finished run's own tree may hold."""
-    return [Path(root).joinpath(*location.split("/")) for location in PREPARED_LOCATIONS]
 
 
 def _parent_run_root(record):
@@ -685,14 +671,13 @@ def _review(request, workspace):
                          f"{_parent_run_root(old)}; a sibling run folder beside it is fine")
     prepared = _requested(request, old, "prepared_root")
     wps = _requested(request, old, "wps_namelist", "snapshot_wps_namelist")
+    prepared_basis = None
     if old and plan_document is None and prepared is None and "case_data" not in tomllib.loads(_read(source).decode("utf-8")):
-        from gpuwm.stage_cli import BUNDLE_DOCUMENTS
-        candidates = _prepared_candidates(_parent_run_root(old))
-        prepared = next((str(path) for path in candidates if any((path / name).is_file() for name in BUNDLE_DOCUMENTS)), None)
-        if prepared is None:
-            # Give checkpointless routes their public, specific refusal first.
-            _checkpoint(old, request.get("from_checkpoint", "latest"))
-            raise ValueError("source job has no recorded reusable prepared bundle; resume cannot rebuild one implicitly")
+        from gpuwm.resume import select_prepared_root
+        # Checkpointless routes retain their specific refusal before bundle discovery.
+        resume_checkpoint = _checkpoint(old, request.get("from_checkpoint", "latest"))
+        root, prepared_basis = select_prepared_root(_parent_run_root(old), resume_checkpoint)
+        prepared = str(root)
         candidate = source.with_suffix(".namelist.wps")
         if wps is None:
             wps = str(candidate) if candidate.is_file() else None
@@ -791,6 +776,7 @@ def _review(request, workspace):
              "cwd": str(cwd), "section": section,
              "geog_root": geog, "products": products, "checkpoint": None if checkpoint is None else str(checkpoint),
              "prepared_root": None if prepared is None else str(prepared), "wps_namelist": None if wps is None else str(wps),
+             "prepared_basis": prepared_basis,
              "parent_job": None if old is None else old["id"], "runtime": runtime(), "memory": memory,
              "device": None if device is None else str(device),
              # What gpuwm resume would print about this checkpoint: which memory
@@ -828,14 +814,9 @@ def _resumed_plan(document, old, outdir, checkpoint, overrides=None):
     if checkpoint is not None:
         options["restart"] = str(checkpoint)
     if resumed.get("route") == "prepared" and options.get("prepared_root") is None and checkpoint is not None:
-        from gpuwm.stage_cli import BUNDLE_DOCUMENTS
-        found = next((path for path in _prepared_candidates(_parent_run_root(old))
-                      if any((path / name).is_file() for name in BUNDLE_DOCUMENTS)), None)
-        if found is None:
-            raise ValueError("This staged map plan takes the prepared route, so resuming its checkpoint "
-                             "needs the prepared bundle that wrote it, and the source job's recorded "
-                             "output tree holds none. Start a new run from that bundle instead.")
-        options["prepared_root"] = str(found)
+        from gpuwm.resume import select_prepared_root
+        root, _ = select_prepared_root(_parent_run_root(old), checkpoint)
+        options["prepared_root"] = str(root)
     return resumed
 
 

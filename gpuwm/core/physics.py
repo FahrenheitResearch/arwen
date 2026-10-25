@@ -2408,6 +2408,10 @@ class PhysicsDriver:
                 shared if shared is not None
                 else cp.zeros(state.p.shape, dtype=DTYPE))
         self.gf_dx_column: cp.ndarray | None = None
+        # gf_active_column optionally marks the columns the Grell-Freitas
+        # adapter runs in ([ny, nx], bool; static, like gf_dx_column);
+        # None runs every column.
+        self.gf_active_column: cp.ndarray | None = None
         # OLR, WRF's TOA outgoing longwave (Registry.EM_COMMON:1839).  The
         # buffer exists exactly when the attached longwave scheme declares
         # it computes a top-of-atmosphere upward flux, so the variable's

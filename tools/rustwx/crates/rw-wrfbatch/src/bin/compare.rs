@@ -2336,7 +2336,7 @@ fn extra_difference_step(name: &str, units: &str) -> Option<f64> {
         "mi" => 1.0,
         "km" => 2.0,
         "0/1" | "1" => 0.2,
-        "1e-5 s-1" => 2.0,
+        "1e-5 s-1" | "10^-5 s^-1" => 2.0,
         "hPa" | "mb" => 1.0,
         "Pa/s" => 0.2,
         "g/kg" => 0.5,
@@ -4061,6 +4061,20 @@ mod tests {
         }
         let liquid = product_specs().into_iter().find(|s| s.name == "qpf1h").unwrap();
         assert_eq!(product_difference_step(&liquid, "in"), Some(0.1));
+    }
+
+    #[test]
+    fn vorticity_comparisons_keep_the_difference_in_production_display_units() {
+        for spec in product_specs().into_iter().filter(|s| s.name.ends_with("absolute_vorticity")) {
+            let RunPlane::Selector(selector) = spec.run else { panic!("vorticity selector") };
+            let style = rustwx_products::viewer::operational_style_for_store_variable(
+                spec.slug, &serde_json::to_value(selector).unwrap(), "s-1", ModelId::WrfGdex,
+            ).or_else(|| rustwx_products::viewer::curated_style_for_store_variable(
+                spec.slug, &serde_json::to_value(selector).unwrap(), "s-1", ModelId::WrfGdex,
+            )).expect("production vorticity style");
+            assert_eq!(style.display_units, "10^-5 s^-1");
+            assert_eq!(product_difference_step(&spec, &style.display_units), Some(2.0), "{}", spec.name);
+        }
     }
 
     #[test]

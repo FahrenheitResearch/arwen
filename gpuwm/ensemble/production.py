@@ -15,6 +15,7 @@ import inspect
 from pathlib import Path
 import re
 import time
+from datetime import timedelta
 
 from gpuwm.ensemble.execution import (
     MemberRunControl, execute_member_packing, failed_member_rows, member_run_scope,
@@ -417,7 +418,17 @@ class PreparedEnsembleSession:
                 member_order=self.member_order,
                 member_metadata=metadata,
                 retain_member_diagnostics=self.request.retain_member_diagnostics,
+                columns_end_time=exp.start_time + timedelta(seconds=float(exp.run_seconds)),
                 **({"resume": True} if resumed is not None else {}))
+        if self.request.cyclone_products and 'common_grid' in self.request.cyclone_products:
+            from gpuwm.tc_accumulator import validate_swath_request
+            validate_swath_request(self.request.cyclone_products)
+            if resumed is not None:
+                raise ValueError('every-step ensemble swaths require an uninterrupted run; their diagnostic archive is not in the restart roster')
+            grid_id = self.request.cyclone_products.get('grid_id', 2)
+            if not any(domain.grid_id == grid_id for domain in exp.domains):
+                raise ValueError(f'cyclone swath grid_id {grid_id} is absent from the member domains')
+            self.collector.cyclone_request = self.request.cyclone_products
         from gpuwm.ensemble.optional_routing import member_settings, member_settings_scope, activation_receipt
         # Snapshot metadata before admission threads: ContextVars need not be
         # inherited by the worker on every supported Python runtime.
@@ -572,6 +583,10 @@ class PreparedEnsembleSession:
         # can enter the admitted concurrent wave together.
         from gpuwm.ensemble.ordinary_execution import OrdinaryRecipeExecution
         original_source = self.source_execution is None or isinstance(self.source_execution, OrdinaryRecipeExecution)
+        if getattr(self.collector, 'cyclone_request', None) is not None:
+            native = False
+            original_reasons = {member: ['every-step cyclone swaths retain each original member callback']
+                                for member in member_inputs_by_id}
         if self.request.members > 1 and self.native_executor is None and original_source:
             from gpuwm.ensemble.suite_capabilities import plan_suite
             for member, prepared in member_inputs_by_id.items():
@@ -583,7 +598,7 @@ class PreparedEnsembleSession:
                 if len(domains) > 1:
                     reasons.append("nested members retain the original parent FORCE, child clocks and feedback")
                 if reasons:
-                    original_reasons[member] = list(dict.fromkeys(reasons))
+                    original_reasons[member] = list(dict.fromkeys(original_reasons.get(member, []) + reasons))
         ordinary_cuda_available = cp is not None and callable(getattr(getattr(cp, "cuda", None), "Stream", None))
         from gpuwm.ensemble.ordinary_concurrency import plan_ordinary_concurrency
         concurrency_plans = {member: plan_ordinary_concurrency(prepared.experiment)

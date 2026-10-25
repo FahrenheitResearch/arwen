@@ -2141,17 +2141,33 @@ def test_hrrr_morrison_initialization_receipts_every_source_absent_moment():
 
     assert receipt["source_absent_wrf_fields"] == [
         "QNRAIN", "QNICE", "QNSNOW", "QNGRAUPEL"]
-    assert receipt["state_number_fields"] == {
-        name: {"all_exact_zero": True}
-        for name in ("nc", "nr", "ni", "ns", "ng")
-    }
-    assert all(
-        item["expected_uint32_bits"] == 0
-        and item["all_exact_expected"] is True
-        for item in receipt["state_source_absent_fields"].values())
-
-    state.ng.flat[0] = np.float32(1.0)
-    with pytest.raises(ValueError, match="source-absent state ng"):
+    from gpuwm.ingest.handover_numbers import closure_active
+    if not closure_active(None):
+        # Exact mode (and a strict process): real.exe's zeros.
+        assert receipt["state_number_fields"] == {
+            name: {"all_exact_zero": True}
+            for name in ("nc", "nr", "ni", "ns", "ng")
+        }
+        assert all(
+            item["expected_uint32_bits"] == 0
+            and item["all_exact_expected"] is True
+            for item in receipt["state_source_absent_fields"].values())
+        state.ng.flat[0] = np.float32(1.0)
+        with pytest.raises(ValueError, match="source-absent state ng"):
+            _initial_hrrr_microphysics_receipt(
+                state, MORRISON_PROFILE_ID,
+                result.hydrometeor_initialization)
+        return
+    # Correct-mode HN1 (2.9.7): nc starts at Morrison's NDCNST droplet number,
+    # and each other number is exact zero where its mass is zero and closed
+    # from the mass where it is above zero, as the closure receipt records.
+    numbers = receipt["state_number_fields"]
+    assert numbers["nc"] == {"ndcnst_droplet_number": True}
+    for name, mass in (("nr", "qr"), ("ni", "qi"), ("ns", "qs"), ("ng", "qg")):
+        assert numbers[name]["all_exact_zero_where_mass_is_zero"] is True
+        assert numbers[name]["paired_mass_field"] == mass
+    state.ng.flat[0] = np.float32(-1.0)
+    with pytest.raises(ValueError, match="number moment ng must be"):
         _initial_hrrr_microphysics_receipt(
             state, MORRISON_PROFILE_ID,
             result.hydrometeor_initialization)

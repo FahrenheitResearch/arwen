@@ -255,3 +255,78 @@ def test_a_nest_takes_its_parents_adaptive_step_over_its_ratio():
     exp = experiment_from_text(storm_nests._emit(doc), source="adaptive.toml")
     assert (exp.domains[1].run.max_time_step, exp.domains[1].run.max_time_step_den) == (10, 1)
     assert (exp.domains[1].run.min_time_step, exp.domains[1].run.min_time_step_den) == (20, 3)
+
+
+
+def test_slots_sharing_whole_frame_ground_link_one_corridor_cache(tmp_path):
+    """Every dormant slot of a CONUS 1 km whole frame wrote and hashed its own
+    10 GB corridor on one core (box D, 2026-10-21). A slot whose corridor is
+    another's ground links that cache: same bytes, same digest, one inode."""
+    import os
+
+    import numpy as np
+
+    from gpuwm.static.corridor import CorridorBuild, write_statics_corridor_set
+
+    fields = {"HGT_M": np.arange(12.0).reshape(3, 4)}
+    builds = [CorridorBuild(grid_id=2, fields=fields, entry={"corridor_nx": 4}),
+              CorridorBuild(grid_id=3, fields=fields,
+                            entry={"corridor_nx": 4, "shared_ground_with": "d02"})]
+    receipt = write_statics_corridor_set(tmp_path / "set", builds)
+    d02, d03 = (receipt["domains"][k]["cache"] for k in ("d02", "d03"))
+    assert d03 == {**d02, "path": "d03.npz"}
+    assert os.stat(tmp_path / "set" / "d02.npz").st_ino == os.stat(tmp_path / "set" / "d03.npz").st_ino
+    assert np.load(tmp_path / "set" / "d03.npz")["HGT_M"].tolist() == fields["HGT_M"].tolist()
+
+
+def test_nest_lives_reads_the_relocation_runners_moves_and_the_run_end(tmp_path):
+    """The 1 h door run (box D, 2026-10-21) said "0 moves, stopped 2700 s" for
+    two nests that moved and lived to 3600 s: the summary looked for keys the
+    relocation runner does not write and stamped the last spawn boundary."""
+    import json
+
+    from gpuwm.nest_lives import nest_lives
+
+    (tmp_path / "spawn_receipts.jsonl").write_text("\n".join(json.dumps(row) for row in (
+        {"elapsed_seconds": 900.0, "born": [{"grid_id": 2, "episode": 1, "placement": [742, 362]}]},
+        {"elapsed_seconds": 2700.0},
+    )) + "\n", encoding="utf-8")
+    (tmp_path / "relocation_receipts.d02.json").write_text(json.dumps({"receipts": [
+        {"event": "relocated", "elapsed_seconds": 1800.0, "grid_id": 2,
+         "placement_from": {"i_parent_start": 742, "j_parent_start": 362},
+         "placement_to": {"i_parent_start": 734, "j_parent_start": 370}},
+        {"event": "held", "elapsed_seconds": 2700.0, "grid_id": 2},
+    ]}), encoding="utf-8")
+    (life,) = nest_lives(tmp_path, run_end_s=3600.0)
+    assert [(row["event"], row["placement"]) for row in life["track"]] == [
+        ("spawn", [742, 362]), ("move", [734, 370])]
+    assert (life["stop_s"], life["stop_reason"]) == (3600.0, "run-ended")
+
+
+def test_a_rearmed_slot_keeps_its_earlier_lifes_move_receipts(tmp_path):
+    """The 6 h storm-nest run (box D, 2026-10-21) lost d03's first life of
+    moves: its second life's fresh runner rewrote relocation_receipts.d03.json
+    with only its own rows."""
+    import json
+    from types import SimpleNamespace
+
+    from gpuwm.core.relocation_runner import RelocationRunner, RelocationRunnerCollection
+
+    path = tmp_path / "relocation_receipts.d03.json"
+
+    def runner(rows):
+        return SimpleNamespace(
+            config=SimpleNamespace(grid_id=3, receipt=lambda: {"grid_id": 3}),
+            receipts=list(rows), receipts_path=path, provider=None)
+
+    first = runner([{"event": "relocated", "elapsed_seconds": 2700.0}])
+    collection = RelocationRunnerCollection()
+    collection.runners[3] = first
+    collection.drop_absent(SimpleNamespace(nodes_by_grid_id={}))
+    second = runner([])
+    collection.merge_from(second)
+    assert collection.runners[3] is second
+    RelocationRunner._record(second, SimpleNamespace(_relocation_runner=None),
+                             {"event": "relocated", "elapsed_seconds": 9900.0})
+    rows = json.loads(path.read_text(encoding="utf-8"))["receipts"]
+    assert [row["elapsed_seconds"] for row in rows] == [2700.0, 9900.0]

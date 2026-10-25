@@ -890,7 +890,11 @@ pub fn run_batch_render(
 ///
 /// Ordinary batch renders use half the logical processors, as the derived
 /// lane does. Live frames reserve one processor for the foreground forecast
-/// and divide the remainder between `RUSTWX_LIVE_RENDER_SLOTS` processes.
+/// and divide the remainder between the frames drawing as this one starts
+/// (`RUSTWX_LIVE_RENDER_DRAWING`, this one included), or between
+/// `RUSTWX_LIVE_RENDER_SLOTS` processes when the driver does not say.
+/// The free-memory share below stays divided by the slots: frames that may
+/// start later need their memory, not the processors this frame uses now.
 /// The existing `RUSTWX_RENDER_THREADS` variable still overrides the default;
 /// `RUSTWX_BATCH_RENDER_THREADS` narrows this loop alone, which is the
 /// knob for a memory-tight box (each concurrent product holds its own
@@ -947,7 +951,7 @@ fn product_worker_count_within(item_count: usize, available_bytes: Option<u64>) 
     }
     let live_slots = live_render_slots();
     let detected = std::thread::available_parallelism()
-        .map(|count| default_product_worker_count(count.get(), live_slots))
+        .map(|count| default_product_worker_count(count.get(), live_processor_share()))
         .unwrap_or(1);
     let affordable = match available_bytes {
         Some(bytes) => {
@@ -969,6 +973,23 @@ fn live_render_slots() -> Option<usize> {
         .ok()
         .and_then(|value| value.parse().ok())
         .filter(|value| *value > 0)
+}
+
+/// How many live frames share the processors now: the frames drawing as this
+/// one starts (`RUSTWX_LIVE_RENDER_DRAWING`, never more than the slots), else
+/// the slots. THE BREAKAGE: divided by the planned three slots, a lone live
+/// frame on an eight-processor box drew its products two at a time while
+/// five processors sat idle (2.25 km / 750 m HRRR nest, 2026-10-24:
+/// 1.4 s of a 4.6 s frame render at two cores).
+fn live_processor_share() -> Option<usize> {
+    let drawing = std::env::var("RUSTWX_LIVE_RENDER_DRAWING")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0);
+    match (drawing, live_render_slots()) {
+        (Some(drawing), Some(slots)) => Some(drawing.min(slots)),
+        (drawing, slots) => drawing.or(slots),
+    }
 }
 
 fn default_product_worker_count(processors: usize, live_slots: Option<usize>) -> usize {
@@ -1009,7 +1030,7 @@ fn advise_if_memory_bound(width: usize, item_count: usize, available_bytes: Opti
         return;
     }
     let uncapped = std::thread::available_parallelism()
-        .map(|count| default_product_worker_count(count.get(), live_render_slots()))
+        .map(|count| default_product_worker_count(count.get(), live_processor_share()))
         .unwrap_or(1)
         .min(item_count);
     if width >= uncapped {
@@ -2420,7 +2441,7 @@ mod tests {
     #[test]
     fn the_default_width_is_capped_by_free_memory() {
         let cores = std::thread::available_parallelism()
-            .map(|count| default_product_worker_count(count.get(), live_render_slots()))
+            .map(|count| default_product_worker_count(count.get(), live_processor_share()))
             .unwrap_or(1);
         let plenty = PRODUCT_LOOP_BASE_BYTES * 8 + PRODUCT_WORKER_BYTES * 4096;
 
@@ -2454,7 +2475,7 @@ mod tests {
     #[test]
     fn a_memory_bound_width_advises_and_an_unbound_one_does_not() {
         let cores = std::thread::available_parallelism()
-            .map(|count| default_product_worker_count(count.get(), live_render_slots()))
+            .map(|count| default_product_worker_count(count.get(), live_processor_share()))
             .unwrap_or(1);
         if cores < 2 {
             return; // Nothing to be capped below.

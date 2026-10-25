@@ -1531,6 +1531,22 @@ def _apply_packaged_profile(
         else:
             bound.append(f"{role}={text}")
     args.supplement = bound
+    # A composition that declares a companion (a run of the same grid and
+    # cycle that completes a subset the primary alone cannot initialize
+    # from) is refused here, in the row's own words, when none of the
+    # companion's files were supplied: the decode would otherwise refuse
+    # later as a bare role-inventory mismatch, which names no breakage.
+    supplied_roles = {text.split("=", 1)[0] for text in bound}
+    for binding_name, binding in sorted(field_sources.items()):
+        if "companion" in binding and binding["data_role"] not in supplied_roles:
+            return [
+                f"--supplement {binding['data_role']}=PATH: the packaged "
+                f"{adapter.source_id} composition declares "
+                f"{binding_name!r} as its companion and none of its files "
+                "were supplied. "
+                + (adapter.composition_requirement
+                   or "Without them the start would be incomplete.")
+            ]
     return []
 
 
@@ -2216,6 +2232,14 @@ def _mapped_command(args: argparse.Namespace) -> list[str]:
     # hand lands on proof.json's `proof_content_sha256`, which is the
     # one value --proof-sha256 never accepts.
     command.extend(("--prepared-forecast-source", str(args.source)))
+    # The source row's inland-water air-temperature window (table data).
+    from gpuwm.source_adapters import get_source_adapter
+    try:
+        hours = get_source_adapter(args.source).inland_air_mean_hours
+    except (KeyError, ValueError):
+        hours = None
+    if hours is not None:
+        command.extend(("--inland-air-mean-hours", repr(float(hours))))
     return command
 
 
@@ -2463,6 +2487,49 @@ def _apply_configuration_statics_default(args: argparse.Namespace) -> None:
               "following nests (--statics-corridor).", file=sys.stderr)
 
 
+def _stage_configuration_wif(args: argparse.Namespace) -> None:
+    """Stage the mp=28 WIF aerosol climatology a configured domain needs.
+
+    THE BREAKAGE THIS PREVENTS (box L, 2026-10-24): a convection-permitting
+    hex-global child runs aerosol-aware Thompson (the HRRR-shape suite), and
+    prep refused it -- "mp_physics=28 on a domain with external lateral
+    boundaries (specified) needs WRF's monthly WIF aerosol climatology" --
+    on a box where nobody had run `gpuwm fetch-tables --wif`.  The dataset is
+    a pinned table asset, not forecast input: it is staged into the table
+    cache by the same SHA-256-verified routine `gpuwm fetch-tables --wif`
+    runs, and a staged, valid copy costs one hash.  A named file or root, a
+    synthetic or analyzed aerosol source, and `[fetch] wif = false` are left
+    as they are (``gpuwm.preparation_assets.wif_fetch_domains``).  A failed
+    acquisition is left to the preparation's own refusal, which names the
+    ways out.
+    """
+    path = getattr(args, "experiment_config", None)
+    source = getattr(args, "source", None)
+    if path is None or source is None:
+        return
+    import tomllib
+    from gpuwm.config_authority import read_config_authority
+    from gpuwm.experiment import load_experiment
+    from gpuwm.preparation_assets import wif_fetch_domains
+
+    try:
+        experiment = load_experiment(path)
+        tables = tomllib.loads(
+            read_config_authority(path).payload.decode("utf-8-sig"))
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError):
+        return
+    hints = {**(tables.get("fetch") or {}), "source": source}
+    domains = wif_fetch_domains(experiment, hints)
+    if not domains:
+        return
+    from gpuwm.table_assets import stage_wif_dataset
+
+    labels = ", ".join(f"d{int(d):02d}" for d in domains)
+    print(f"prep: staging the WIF aerosol climatology mp_physics=28 needs "
+          f"on {labels}", file=sys.stderr)
+    stage_wif_dataset()
+
+
 def _experiment_coverage_refusal(args: argparse.Namespace,
                                  adapter) -> str | None:
     """Why ``--source`` cannot force the ``--experiment-config`` root.
@@ -2659,10 +2726,13 @@ def as_posted_refusal(source: str) -> str | None:
         row = posting(adapter.source_id)
     except (KeyError, ValueError):
         row = None
-    if row is None:
+    produced_here = row is None and bool(getattr(adapter, "local_posting", None))
+    if row is None and not produced_here:
         return (f"--source {source} declares no posting row, so nothing "
                 "says when a lead of it posts")
-    if not row.streams:
+    # A source produced on this machine (its row's local_posting) posts lead
+    # by lead through gpuwm.local_posting, which writes the posting folder.
+    if not produced_here and not row.streams:
         return (f"--source {source} does not post lead by lead (its "
                 f"posting shape is {row.shape}), so there is no lead to "
                 "prepare as it posts")
@@ -3471,6 +3541,7 @@ def _dispatch(args: argparse.Namespace, *,
     try:
         _apply_configuration_preprocess_default(args)
         _apply_configuration_statics_default(args)
+        _stage_configuration_wif(args)
     except (OSError, ValueError, RuntimeError) as error:
         print(f"Cannot resolve preprocessing from --experiment-config: {error}",
               file=sys.stderr)

@@ -716,8 +716,10 @@ def test_run_experiment_front_door_lift_and_residual_refusals(
     # inside the front door and never reaches the refusal under test.
     single = SimpleNamespace(relocation=manual, domains=(object(),),
                              feedback=0, tiles=_STREAMING_OFF, simulated_radar=RADAR_OFF)
+    # The gate lives in run_experiment's body: the wrapper opens the step
+    # log off exp.start_time first (01d3e4ec2f), which this double omits.
     with pytest.raises(ValueError, match="no nest to move"):
-        runtime.run_experiment(single, None, tmp_path / "out")
+        runtime._run_experiment(single, None, tmp_path / "out")
 
     # Multi-domain: the old front-door ValueError is GONE.  The config
     # passes the gate and reaches ordinary preparation (witnessed by a
@@ -736,7 +738,7 @@ def test_run_experiment_front_door_lift_and_residual_refusals(
                            domains=(object(), object()), feedback=0,
                            tiles=_STREAMING_OFF, simulated_radar=RADAR_OFF)
     with pytest.raises(_ReachedPreparation):
-        runtime.run_experiment(tree, None, tmp_path / "out2")
+        runtime._run_experiment(tree, None, tmp_path / "out2")
 
 
 def test_prepared_tree_route_still_refuses_a_corridor_less_follow_source():

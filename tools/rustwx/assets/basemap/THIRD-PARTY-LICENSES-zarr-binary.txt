@@ -7,7 +7,7 @@ including build-time packages. It is not a claim that every resolved
 package is linked into both binaries. The first-party reader uses the
 repository Apache-2.0 licence; dependencies retain the grants below.
 
-Cargo.lock sha256 ede24c77959987eb9df504486b5a593cd22b9c068f75a6c3bf1fed130f326729
+Cargo.lock sha256 31594509414e59817e805a6eda8d0c1fb53ecbd1ac80999bc2a9ec2cb297085b
 x86_64-unknown-linux-gnu: 236 resolved packages
 x86_64-pc-windows-msvc: 237 resolved packages
 
@@ -6401,7 +6401,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------------
-[ZARR-089] sha256 d9b1c2fdbff87b1720cf432ce3bb19e96b25560eb81800f5b86d2a0bca872df9
+[ZARR-089] sha256 ed56870e0c7485009719642d97c9e45124119737f2be3ed1f691736bd9362cac
 As carried by:
   licenses/THIRD-PARTY-LICENSES-bridge-binaries.txt
 ------------------------------------------------------------------------------
@@ -23949,8 +23949,8 @@ All LICENSE, LICENCE, COPYING, COPYRIGHT and NOTICE files at each
 resolved vendored package root are reproduced, deduplicated by raw SHA-256.
 The TUI itself uses the repository Apache-2.0 licence.
 
-tools/arwen-tui/Cargo.toml sha256 ece3b0855b4b50c2d1db2f5926caf2a40a35840295ccd9579339d391e10f88a8
-tools/arwen-tui/Cargo.lock sha256 d9e07b8d986d8fa3a7cb4e8e7cae7430bad6f37b3727265424a6baea7f6fc041
+tools/arwen-tui/Cargo.toml sha256 55a9bb9efd1fa7697c795f2d63177a46d080a9d001720f9fc35d21717920af55
+tools/arwen-tui/Cargo.lock sha256 c56184b1aee67ad76b121ed5e9c4529d1e71bb48ee7d4d275e8af72a3aab8702
 x86_64-unknown-linux-gnu: 70 external packages
 x86_64-pc-windows-msvc: 67 external packages
 

@@ -44,12 +44,16 @@ def test_index_selection_never_includes_other_members_or_statistics():
         select_member_ranges(data, INDEX, 3)
 
 
-def test_public_regional_members_do_not_claim_missing_initialization_state(tmp_path):
+def test_public_regional_members_initialize_only_with_their_declared_companion(tmp_path):
     row = source_adapters.get_source_adapter("rrfs-ens")
     assert source_adapters.get_source_adapter("rrfs").ensemble_source == row.source_id
-    assert not row.runnable
+    # Runnable as table work: the member's atmosphere plus the declared
+    # deterministic companion of the same cycle.  The row still names the
+    # breakage a member without its companion has.
+    assert row.runnable
+    assert row.packaged_profile == "rrfs-ens-member-companion-grib2-v1"
+    assert "companion" in row.composition_requirement
     assert "250 hPa" in row.composition_requirement
-    assert "soil" in row.composition_requirement
     assert "no soil state" in row.composition_requirement
     assert "model top sits above the data" in row.composition_requirement
     grammar = load_member_grammar(packaged_member_grammar(row.member_set))
@@ -57,10 +61,22 @@ def test_public_regional_members_do_not_claim_missing_initialization_state(tmp_p
     assert grammar.member_for_ordinal(0) is None
     plan = fetch_routes.resolve_request("rrfsens", cycle=datetime(2026, 10, 1),
                                         hours=1, member="m005")
-    assert len(plan.objects) == 4
-    assert all("/m005/" in obj.key for obj in plan.objects)
+    member = [obj for obj in plan.objects if "/m005/" in obj.key]
+    companion = [obj for obj in plan.objects if obj not in member]
+    assert len(member) == 4
+    assert sorted(obj.key.rsplit("/", 1)[-1] for obj in companion) == sorted(
+        f"rrfs.t00z.{product}.3km.f{lead:03d}.conus.grib2"
+        for product in ("prslev", "2dfld") for lead in (0, 1))
+    assert all(obj.key.startswith("rrfs.20261001/00/") for obj in companion)
     assert all(obj.relpath == "upstream/" + obj.key for obj in plan.objects)
     assert plan.route.posting.streams
+    # The companion is never a primary input: the member's own decode
+    # stays one member and one generating process.
+    assert {str(path) for path in plan.primary_files} == {
+        obj.relpath for obj in member}
+    assert sorted(str(path) for role, path in plan.extra_supplement_files
+                  if role == "rrfs_ens_companion_data") == sorted(
+        obj.relpath for obj in companion)
     for obj in plan.objects:
         path = tmp_path / obj.relpath
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -69,7 +85,77 @@ def test_public_regional_members_do_not_claim_missing_initialization_state(tmp_p
     from pathlib import Path
     handoff = json.loads((tmp_path / fetch_routes.PREP_ARGUMENTS_NAME).read_text())
     assert all((Path(handoff["member_prep"]["inputs"]) / obj.key).is_file()
-               for obj in plan.objects)
+               for obj in member)
+    tokens = [value for value in json.dumps(handoff).split('"')]
+    for obj in companion:
+        binding = f"rrfs_ens_companion_data={(tmp_path / obj.relpath).resolve()}"
+        assert json.dumps(binding)[1:-1] in tokens
+
+
+def test_member_profile_declares_its_companion_as_composition_rows():
+    """The rrfs-ens profile is rows, not a code path.
+
+    Every member field pins product definition template 1 on the member's
+    own 14 levels; the composition's one binding declares the deterministic
+    RRFS mapping as the member's companion, which stacks its levels above
+    250 hPa onto the member's columns and lends the land state.
+    """
+    from gpuwm.mapped_composition import load_composition
+    from gpuwm.source_authorities import (packaged_authorities,
+                                          packaged_contributing_mappings)
+
+    profile = source_adapters.get_source_adapter("rrfs-ens").packaged_profile
+    authorities = packaged_authorities(profile)
+    contract = load_composition(authorities["composition"], authorities["mapping"])
+    assert contract["supplements"]["terrain_height"]["data_role"] == (
+        "rrfs_ens_member_in_band_surface")
+    (name, binding), = contract["field_sources"].items()
+    assert binding["companion"] == {
+        "vertical_extension": "above_primary_top",
+        "fields": ["air_temperature", "specific_humidity", "eastward_wind",
+                   "northward_wind", "geopotential_height"]}
+    assert binding["time_alignment"] == "valid_time_exact"
+    assert set(binding["fields"]) == {
+        "skin_temperature", "land_fraction", "sea_ice_fraction",
+        "snow_water_equivalent", "snow_depth", "soil_temperature",
+        "volumetric_soil_moisture"}
+    donor = packaged_contributing_mappings(profile)[binding["mapping_role"]]
+    assert json.loads(donor.read_text())["name"] == binding["source_id"]
+    mapping = json.loads(authorities["mapping"].read_text(encoding="utf-8"))
+    assert mapping["coordinates"]["vertical"]["levels"] == [
+        25000, 30000, 40000, 50000, 60000, 70000, 75000, 80000, 85000,
+        90000, 92500, 95000, 97500, 100000]
+    for field_name, field in mapping["fields"].items():
+        if field.get("provider") == "composition_bound":
+            assert field_name in binding["fields"]
+        for selector in field.get("selectors", ()):
+            assert selector["pdt"] == 1, field_name
+    assert mapping["fields"]["specific_humidity_2m"]["derivation"] == (
+        "humidity-2m-from-dewpoint")
+    provenance = json.loads(authorities["provenance"].read_text(encoding="utf-8"))
+    assert provenance["companion"]["binding"] == name
+
+
+def test_a_member_without_its_companion_is_refused_in_the_rows_words(tmp_path):
+    import argparse
+    from gpuwm import source_cli
+
+    adapter = source_adapters.get_source_adapter("rrfs-ens")
+    args = argparse.Namespace(
+        mapping=None, composition=None, provenance=None, descriptor=None,
+        author_mapping=None, contributing_mapping=None, source_format=None,
+        supplement=[str(tmp_path / "member.2dfldnomads.grib2")])
+    errors = source_cli._apply_packaged_profile(args, adapter, "gpuwm prep")
+    assert len(errors) == 1
+    assert "rrfs_ens_companion_data" in errors[0]
+    assert "no soil state" in errors[0]
+    assert "model top sits above the data" in errors[0]
+    args.supplement = [str(tmp_path / "member.2dfldnomads.grib2"),
+                       f"rrfs_ens_companion_data={tmp_path / 'prslev.grib2'}"]
+    args.mapping = args.composition = args.provenance = None
+    args.contributing_mapping = None
+    args.source_format = None
+    assert source_cli._apply_packaged_profile(args, adapter, "gpuwm prep") == []
 
 
 @pytest.mark.parametrize("changed", [{"member": "2"}, {"pdt": "2"},

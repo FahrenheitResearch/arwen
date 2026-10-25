@@ -157,6 +157,13 @@ RE_PINNED_DRIFT: dict[str, tuple[str, str]] = {
 MP28_ACCUMULATOR_REWORK = "lane/cut286-mp28-g3 (2.8.6)"
 
 BASELINE_PINNED: dict[str, str] = {
+    # HRRR initial helper: all 3456 native output words, both selectors.
+    "gsd_initial_reflectivity": "de41b659db22ffa2262fe52308d402a5de940a3d3c0c326d35c366e07709dd1d",
+    # All 48 pinned-fork climate outputs, 106 native gfortran calls.
+    # 2.9.7 fold: the minute conversion is __fdiv_rn(dt, 60.f), the A146
+    # literal-division rule; an IEEE division, as the gfortran reference divides.
+    # Previously 7686eceb.
+    "climate_diagnostics": "da46de7a67990141cb1d4a64f2e97672adbce7a01fe911d258ce02312736158d",
     # golden/ports-rad: four translation units that joined with their ports,
     # each graded word for word against WRF v4.6.1's own routines on its lane
     # (OPUS-PORTS-2026-10-08 receipts) and re-run at this tip's GPU legs.
@@ -266,7 +273,12 @@ BASELINE_PINNED: dict[str, str] = {
     # lake_bind_source_columns, binds table-driven lake analyses to the CLM
     # restart layers.  Appended after the existing units; no statement of
     # lakeini or the lake column changed.  Previously 0624bfb3.
-    "lake": "b36729b9e1b58b0f58ce51a244b515f943cafb0e52cab7cd417b579176eebde7",
+    # RE-PINNED by fix/conus5km-32gb (e8b9269ce2, X12): a column the lake
+    # source did not cover keeps lakeini's state in lake_bind_source_columns
+    # (it took the top layer as T_GRND whenever another lake in the same call
+    # was observed); a streamed 5 km CONUS hour then equals the resident hour
+    # bit for bit (241/241 variables).  Previously b36729b9.
+    "lake": "b57ad46930d5db97b68b37c7e9db81bab469da481f7342ec0141994f693241a8",
     # Native bulk source/units bridge, both GPU receipts; FTZ disabled.
     "chem_sfire": "01a0c2dd43046d33254e4365d4cd87ee472b468d65077dfc06716b9bfe6e6596",
     # lane/283-sfire: compiled WRF v4.7.1 routine controls at 0 ULP
@@ -1280,6 +1292,9 @@ _merge_extension_pins(PINNED, _EXTENSION_PINS["modules"])
 # docs/gf_gamma_known_delta.md and tests/test_gf_gamma_correctly_rounded.py;
 # header assembly is independently checked by test_kernel_loader_inert.py.
 PINNED_HEADERS = {
+    # Existing fork radar transcription, reused unchanged by the initial helper.
+    "thompson_fork.cu": "c7313ce62d863bdeb9478b7a503c8faffae6d17c8a20cbb1b6d458c216e4c947",
+
     # New Goddard band and sounding tables (lane ra5-goddard), prepended to
     # the goddard unit only (kernels._EXTRA_HEADERS).
     # 2.9.0 round 2: eight constant divisions spelled g_div (A146), whose

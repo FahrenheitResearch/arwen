@@ -11,7 +11,7 @@ import tomllib
 from pathlib import Path
 
 from gpuwm.namelist_import import (
-    _Section, _translate_operational_fork_time_controls, import_namelists)
+    import_namelists)
 from gpuwm.physics_source_defaults import with_physics_selector_comment
 
 FIXTURES = Path(__file__).parent / "fixtures" / "source_requests"
@@ -66,16 +66,3 @@ def test_cycling_true_reaches_the_model_under_both_mynn_generations(tmp_path):
         assert "cycling" not in {s.key for s in report.substitutions}
         assert ("time_control", "cycling") not in {
             (d.section, d.key) for d in report.dropped}
-
-
-def test_the_fork_time_control_translation_leaves_cycling_alone():
-    """Whatever order the importer calls it in, the fork translation must
-    not consume cycling: that is the one key _translate_namelists maps
-    onto [shared] cycling, and a consumer here would turn it into a drop."""
-    section = _Section("time_control", {"cycling": [True]}, "namelist.input")
-    dropped, substitutions = [], []
-    _translate_operational_fork_time_controls(
-        section, 3600.0, lambda *args: dropped.append(args), substitutions)
-    assert section.entries == {"cycling": [True]}
-    assert all(args[1] != "cycling" for args in dropped)
-    assert all(item.key != "cycling" for item in substitutions)

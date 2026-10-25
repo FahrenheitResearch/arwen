@@ -45,7 +45,12 @@ def reduce_set(root, receipt):
     def load(path):
         with np.load(path, allow_pickle=False) as archive:
             return {key: archive[key] for key in archive.files}
-    with ThreadPoolExecutor(max_workers=reader_count) as readers:
+    # Each map is one Rust renderer process on one core (~0.6 s); a 20-member
+    # 9 h set draws ~1,000 of them, so they run side by side on every core
+    # while the GPU reduces the next field. Files are independent, so the
+    # drawn bytes do not depend on the order they finish in.
+    with (ThreadPoolExecutor(max_workers=reader_count) as readers,
+          ThreadPoolExecutor(max_workers=reader_count) as renders):
         for (grid, episode, valid), rows in sorted(frames.items()):
             started = time.perf_counter()
             arrays = list(readers.map(load, [rows[member] for member in order]))
@@ -74,11 +79,11 @@ def reduce_set(root, receipt):
                         family_path.parent.mkdir(parents=True, exist_ok=True)
                         write_product_frame(family_path, reduced, valid_time=valid, latitude=lat, longitude=lon,
                                             global_attrs=attrs)
-                        drawn, _ = rustwx.run_ensemble_product_renderer(renderer, family_path,
+                        drawn = renders.submit(rustwx.run_ensemble_product_renderer, renderer, family_path,
                             out_dir=root/'maps'/'families'/family, fields=(field,), domain=f'd{grid:02d}',
                             products=('mean', 'prob', 'pmm'), source_label=family)
                         family_outputs.append({'family': family, 'product': str(family_path),
-                                               'maps': [str(p) for p in drawn]})
+                                               'maps': drawn})
                     del reduced
                 stamp = valid.replace(':', '-').replace('+', '_')
                 product_path = root/'products'/f'd{grid:02d}'/field/f'{stamp}.nc'
@@ -88,15 +93,18 @@ def reduce_set(root, receipt):
                                         'GPUWM_ENSEMBLE_PROVENANCE': json.dumps([m['provenance']['label'] for m in members]),
                                         'member_probability_weights': json.dumps(cp.asnumpy(weights).tolist()),
                                         'family_weights': json.dumps(roster['family_weights'] if roster else {})})
-                maps, _ = rustwx.run_ensemble_product_renderer(renderer, product_path,
+                maps = renders.submit(rustwx.run_ensemble_product_renderer, renderer, product_path,
                     out_dir=root/'maps', fields=(field,), domain=f'd{grid:02d}',
                     products=('prob', 'paintball', 'pmm') if field in ('refl', 'rain_total') else ('prob', 'paintball'))
                 row = {'valid_time': valid, 'field': field, 'product': str(product_path), 'families': family_outputs,
-                       'maps': [str(path) for path in maps]}
+                       'maps': maps}
                 row['seconds_since_frame_start'] = time.perf_counter()-started
                 outputs.append(row)
                 del products, stack
             del arrays
+    for row in outputs:
+        for item in (row, *row['families']):
+            item['maps'] = [str(path) for path in item['maps'].result()[0]]
     track_path = root/'tracks.json'
     track_path.write_text(json.dumps({'schema': 'gpuwm-ensemble-echo-plume.v1',
         'signal': '35 dBZ echo weighted centroid; not cyclone centre',
@@ -133,4 +141,5 @@ def reduce_set(root, receipt):
             source_label='Echo centroid, 2-cell radius')
         plume_maps.extend(str(path) for path in maps)
     return {'frames': outputs, 'track_plume': str(track_path), 'track_plume_maps': plume_maps,
-            'parallelism': {'reduction': 'GPU', 'diagnostic_read': f'{reader_count} host threads', 'render': 'Rust Rayon'}}
+            'parallelism': {'reduction': 'GPU', 'diagnostic_read': f'{reader_count} host threads',
+                            'render': f'Rust renderer processes, {reader_count} at once'}}

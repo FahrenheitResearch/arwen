@@ -37,6 +37,8 @@ pub struct Plan {
     pub origin: String,
     pub interval_seconds: u64,
     pub cadence_steps: u64,
+    #[serde(default)]
+    pub final_time_seconds: Option<f64>,
     pub frames: usize,
     pub capacity: usize,
     pub reaches: usize,
@@ -58,6 +60,25 @@ pub struct Plan {
     pub parquet: Option<crate::parquet::Options>,
     #[serde(default)]
     pub renderer: Option<Renderer>,
+}
+
+impl Plan {
+    pub fn time_seconds(&self, frame: usize) -> Result<f64> {
+        let nominal = (frame as u64 + 1)
+            .checked_mul(self.cadence_steps)
+            .and_then(|n| n.checked_mul(self.interval_seconds))
+            .ok_or("history clock overflow")? as f64;
+        if frame + 1 == self.frames {
+            if let Some(seconds) = self.final_time_seconds {
+                let previous = frame as f64 * self.cadence_steps as f64 * self.interval_seconds as f64;
+                if !seconds.is_finite() || seconds <= previous || seconds > nominal {
+                    return Err("final history time must follow the preceding frame within its output period".into());
+                }
+                return Ok(seconds);
+            }
+        }
+        Ok(nominal)
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -465,6 +486,7 @@ pub fn capture_native(path: &Path, directory: &Path) -> Result<serde_json::Value
         raw.extend_from_slice(&field);
     }
     let plan = Plan {
+        final_time_seconds: None,
         output_directory: directory.join("rewritten"),
         origin: origin.into(),
         interval_seconds: interval as u64,
@@ -580,21 +602,15 @@ pub fn write(plan: &Plan, payload: &[u8]) -> Result<serde_json::Value> {
     let depth = field(plan.depth_offset)?;
     let nudge = field(plan.nudge_offset)?;
     let origin = parse_origin(&plan.origin)?;
-    let period = plan
-        .cadence_steps
-        .checked_mul(plan.interval_seconds)
-        .ok_or("history clock overflow")?;
     let frames = (0..plan.frames)
         .map(|frame| -> Result<Frame> {
-            let seconds = (frame as u64 + 1)
-                .checked_mul(period)
-                .ok_or("history clock overflow")?;
+            let seconds = plan.time_seconds(frame)?;
             let date = origin
-                .checked_add_signed(TimeDelta::seconds(seconds.try_into()?))
+                .checked_add_signed(TimeDelta::microseconds((seconds * 1e6).round() as i64))
                 .ok_or("timestamp overflow")?;
             Ok(Frame {
                 index: frame.try_into()?,
-                timestamp: date.format("%Y-%m-%d %H:%M:%S").to_string(),
+                timestamp: date.format("%Y-%m-%d %H:%M:%S%.f").to_string(),
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -864,7 +880,7 @@ pub fn write(plan: &Plan, payload: &[u8]) -> Result<serde_json::Value> {
                     strings: vec![],
                 };
                 for t in 0..plan.frames {
-                    bytes.extend_from_slice(&(((t + 1) as u64 * period) as f64).to_le_bytes());
+                    bytes.extend_from_slice(&plan.time_seconds(t)?.to_le_bytes());
                 }
                 schema.variables.push(time);
                 schema.variables.push(Variable {

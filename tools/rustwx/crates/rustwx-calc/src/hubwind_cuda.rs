@@ -9,6 +9,7 @@ use std::{
 type Handle = *mut c_void;
 type Init = unsafe extern "C" fn(u32) -> i32;
 type Device = unsafe extern "C" fn(*mut i32, i32) -> i32;
+type Attribute = unsafe extern "C" fn(*mut i32, i32, i32) -> i32;
 type Count = unsafe extern "C" fn(*mut i32) -> i32;
 type Create = unsafe extern "C" fn(*mut Handle, u32, i32) -> i32;
 type Destroy = unsafe extern "C" fn(Handle) -> i32;
@@ -143,7 +144,7 @@ impl Session {
         Ok(p)
     }
 }
-fn ptx(nvrtc: &Library) -> Result<Vec<u8>, String> {
+fn compile_image(nvrtc: &Library, architecture: &str, cubin: bool) -> Result<Vec<u8>, String> {
     type New = unsafe extern "C" fn(
         *mut Handle,
         *const c_char,
@@ -159,8 +160,8 @@ fn ptx(nvrtc: &Library) -> Result<Vec<u8>, String> {
     unsafe {
         let new: New = symbol(nvrtc, b"nvrtcCreateProgram\0")?;
         let compile: Compile = symbol(nvrtc, b"nvrtcCompileProgram\0")?;
-        let size: Size = symbol(nvrtc, b"nvrtcGetPTXSize\0")?;
-        let get: Get = symbol(nvrtc, b"nvrtcGetPTX\0")?;
+        let size: Size = symbol(nvrtc, if cubin { b"nvrtcGetCUBINSize\0" } else { b"nvrtcGetPTXSize\0" })?;
+        let get: Get = symbol(nvrtc, if cubin { b"nvrtcGetCUBIN\0" } else { b"nvrtcGetPTX\0" })?;
         let log_size: Size = symbol(nvrtc, b"nvrtcGetProgramLogSize\0")?;
         let log_get: Get = symbol(nvrtc, b"nvrtcGetProgramLog\0")?;
         let delete: Delete = symbol(nvrtc, b"nvrtcDestroyProgram\0")?;
@@ -178,9 +179,8 @@ fn ptx(nvrtc: &Library) -> Result<Vec<u8>, String> {
             ),
             "create NVRTC program",
         )?;
-        // Architecture is virtual PTX for JIT on current/future supported devices.
         let opts = [
-            CString::new("--gpu-architecture=compute_80").unwrap(),
+            CString::new(format!("--gpu-architecture={architecture}")).unwrap(),
             CString::new("--fmad=false").unwrap(),
         ];
         let ptrs: Vec<_> = opts.iter().map(|o| o.as_ptr()).collect();
@@ -262,8 +262,22 @@ pub fn try_interpolate(
         let mut ordinal = 0;
         check(device(&mut ordinal, 0), "select device")?;
         check(create(&mut s.context, 0, ordinal), "create context")?;
-        let code = ptx(&nvrtc)?;
-        check(load(&mut s.module, code.as_ptr().cast()), "load PTX")?;
+        let code = compile_image(&nvrtc, "compute_80", false)?;
+        let loaded = load(&mut s.module, code.as_ptr().cast());
+        if loaded == 222 {
+            // A newer installed NVRTC can emit a PTX ISA the installed driver
+            // cannot JIT (13.4 NVRTC / 13.3 driver reproduced this). Compile
+            // the identical kernel to this card's machine code instead. Never
+            // rewrite a PTX version header or silently substitute CPU results.
+            let attribute: Attribute = symbol(&s._driver, b"cuDeviceGetAttribute\0")?;
+            let (mut major, mut minor) = (0, 0);
+            check(attribute(&mut major, 75, ordinal), "compute capability major")?;
+            check(attribute(&mut minor, 76, ordinal), "compute capability minor")?;
+            let image = compile_image(&nvrtc, &format!("sm_{major}{minor}"), true)?;
+            check(load(&mut s.module, image.as_ptr().cast()), "load native image after unsupported PTX")?;
+        } else {
+            check(loaded, "load PTX")?;
+        }
         let mut kernel = ptr::null_mut();
         check(
             function(&mut kernel, s.module, c"hubwind".as_ptr()),
@@ -364,3 +378,40 @@ extern "C" __global__ void hubwind(const double*z,const double*u,const double*v,
  double speed=sqrt(ue*ue+ve*ve);if(!isfinite(speed))return;out[idx]=(float)speed;if(speed>1e-6){double d=fmod(270.-atan2(ve,ue)*57.2957795130823208768,360.);if(d<0.)d+=360.;out[total+idx]=(float)d;if(isfinite(t)&&t>=0.)out[2*total+idx]=(float)(sqrt(2.*t/3.)/speed);}
 }
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires an installed CUDA device and NVRTC; exercises the real module loader"]
+    fn installed_nvrtc_hubwind_matches_cpu() {
+        let columns = Columns {
+            cells: 2,
+            levels: 3,
+            z_agl_m: &[50., 50., 150., 150., 300., 300.],
+            u_ms: &[5., 6., 10., 12., 15., 18.],
+            v_ms: &[1., -2., 3., -4., 5., -6.],
+            sin: &[0., 1.],
+            cos: &[1., 0.],
+            tke: Some(&[1.5; 6]),
+            surface: Some((&[2., 3.], &[1., 0.])),
+        };
+        let heights = [10., 25., 50., 100., 150., 300., 400.];
+        let (gpu, bytes) = try_interpolate(&columns, &heights)
+            .expect("installed compiler/driver kernel load must work")
+            .expect("this explicit GPU check requires a CUDA device");
+        assert!(bytes > 0);
+        let cpu = crate::hubwind::interpolate(columns, &heights).unwrap();
+        for (actual, expected) in gpu.iter().zip(&cpu) {
+            for (a, b) in actual.speed.iter().chain(&actual.direction).chain(&actual.ti)
+                .zip(expected.speed.iter().chain(&expected.direction).chain(&expected.ti)) {
+                if b.is_nan() {
+                    assert!(a.is_nan());
+                } else {
+                    assert!((a - b).abs() < 2e-5, "GPU {a} differs from CPU {b}");
+                }
+            }
+        }
+    }
+}

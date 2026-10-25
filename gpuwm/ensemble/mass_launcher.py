@@ -7,6 +7,7 @@ arguments. No DA driver, observation operator or private harness is imported.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import replace
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
@@ -249,6 +250,12 @@ class ThinCapture:
         if cyclone_request is not None:
             from gpuwm.ensemble.cyclone_products import CommonWind
             self.common = CommonWind(cyclone_request)
+        #: This member's any-point column store (:class:`gpuwm.live_columns.MemberColumns`), under its own attempt
+        #: folder (``columns/members/member-NNNN/<domain>/*.wcol``), armed on its first frame, off with
+        #: GPUWM_COLUMNS=off. THE BREAKAGE IT CLOSES: a branched ensemble (WOOF run_6a0d19f802e9bb6c, 20 members)
+        #: kept only these thin planes, so no member had a column store and the ensemble sounding (every member,
+        #: the P10-P90 band, the mean) had nothing to read; only the parent's soundings existed.
+        self.columns = None
 
     def committed_step(self, *, node, model):
         if self.common is not None:
@@ -301,6 +308,8 @@ class ThinCapture:
             self.pending = [self.pool.submit(write_raw)]
             self.frames.append(row)
             return
+        self._column_frame(state=state, metadata=metadata, valid_time=valid_time, grid_id=grid_id,
+                           member_id=member_id)
         rain = self.rain(state)
         key = grid_id
         if key not in self.initial_rain:
@@ -332,14 +341,116 @@ class ThinCapture:
         self.pending = [self.pool.submit(write)]
         self.frames.append(row)
 
+    def _column_frame(self, *, state, metadata, valid_time, grid_id, member_id):
+        """Queue this frame for the member's column store when it is due (whole hours). Never raises."""
+        try:
+            if self.columns is None:
+                from gpuwm.live_columns import MemberColumns, columns_enabled
+                self.columns = MemberColumns(self.root) if columns_enabled() else False
+            if self.columns:
+                self.columns.submit(member=f"member-{int(member_id):04d}", domain=f"d{int(grid_id):02d}",
+                                    valid_time=valid_time, state=state, metadata=metadata)
+        except Exception as error:  # noqa: BLE001 - a store never stops a member
+            print(f"member columns: frame not queued: {type(error).__name__}: {error}", flush=True)
+
     def finish(self):
         for future in self.pending:
             future.result()
+        columns, self.columns = self.columns, False
+        if columns:
+            self.columns_summary = columns.stop()
         return self.frames
 
 
-def _card_worker(connection, card, parents, root, hours, amplitude, keep_member_files=False, cyclone_request=None):
+def _mps_answers(env):
+    """The MPS controller at ``env``'s pipe directory lists its servers."""
+    import subprocess
+    try:
+        result = subprocess.run(['nvidia-cuda-mps-control'], input=b'get_server_list\n', env=env,
+                                capture_output=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+@contextmanager
+def member_sharing(mode, root, cards):
+    """How co-resident member processes share a card.
+
+    ``mps`` (and ``auto`` where the controller exists): a private MPS
+    controller for this launch, its pipe directory named only to this
+    launch's workers, so their kernels run side by side instead of
+    time-slicing; it is shut down when the launch ends. Processes that do
+    not name the pipe directory (other jobs on the card) keep ordinary
+    contexts. A controller the caller already runs (``CUDA_MPS_PIPE_DIRECTORY``
+    set and answering) is used as is. ``contexts``: one ordinary CUDA
+    context per member process. ``auto`` falls back to contexts, and says
+    why, when no controller can start.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+    mode = (mode or 'auto').lower()
+    if mode not in ('auto', 'mps', 'contexts'):
+        raise ValueError('--member-sharing needs auto, mps or contexts')
+    if mode == 'contexts':
+        yield {'mode': 'contexts', 'reason': 'requested'}
+        return
+    inherited = os.environ.get('CUDA_MPS_PIPE_DIRECTORY')
+    if inherited and _mps_answers(dict(os.environ)):
+        yield {'mode': 'mps', 'reason': 'caller-owned MPS controller', 'pipe_directory': inherited, 'env': {}}
+        return
+    control = shutil.which('nvidia-cuda-mps-control')
+    if os.name != 'posix' or control is None:
+        if mode == 'mps':
+            raise RuntimeError('--member-sharing mps needs nvidia-cuda-mps-control on PATH (Linux)')
+        yield {'mode': 'contexts', 'reason': 'no MPS controller on this host'}
+        return
+    # Unix socket paths are short (108 bytes): the pipe lives in /tmp.
+    pipe = Path(tempfile.mkdtemp(prefix='gpuwm-mps-'))
+    log = pipe/'log'
+    log.mkdir()
+    names = {'CUDA_MPS_PIPE_DIRECTORY': str(pipe), 'CUDA_MPS_LOG_DIRECTORY': str(log)}
+    env = {**os.environ, **names, 'CUDA_VISIBLE_DEVICES': ','.join(card.uuid for card in cards),
+           'CUDA_DEVICE_ORDER': 'PCI_BUS_ID'}
+    try:
+        started = subprocess.run([control, '-d'], env=env, capture_output=True, text=True, timeout=30)
+        ok = started.returncode == 0 and _mps_answers(env)
+        if ok:
+            # A real client per card: the server starts on first contact, and
+            # a card that cannot host it (another user's controller, an
+            # exclusive compute mode) must fail here, not in every member.
+            import sys
+            for card in cards:
+                started = subprocess.run([sys.executable, '-c', 'import cupy; cupy.zeros(1).sum().item()'],
+                    env={**env, 'CUDA_VISIBLE_DEVICES': card.uuid}, capture_output=True, text=True, timeout=120)
+                ok = ok and started.returncode == 0
+    except (OSError, subprocess.TimeoutExpired) as error:
+        started, ok = error, False
+    def stop():
+        try:
+            subprocess.run([control], input=b'quit\n', env=env, capture_output=True, timeout=60)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        shutil.rmtree(pipe, ignore_errors=True)
+    if not ok:
+        stop()
+        reason = f'MPS controller did not start ({getattr(started, "stderr", started)!s:.200})'
+        if mode == 'mps':
+            raise RuntimeError(reason)
+        yield {'mode': 'contexts', 'reason': reason}
+        return
+    try:
+        yield {'mode': 'mps', 'reason': 'private MPS controller for this launch',
+               'pipe_directory': str(pipe), 'env': names}
+    finally:
+        stop()
+
+
+def _card_worker(connection, card, parents, root, hours, amplitude, keep_member_files=False, cyclone_request=None,
+                 sharing_env=None, slot=0):
     """No CUDA import before the physical card's visibility is set."""
+    os.environ.update(sharing_env or {})
     os.environ['CUDA_VISIBLE_DEVICES'] = card
     os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
     try:
@@ -366,7 +477,8 @@ def _card_worker(connection, card, parents, root, hours, amplitude, keep_member_
                 capture = ThinCapture(directory, member, writes, cyclone_request)
                 inputs = original = payload = None
                 initializer = BranchInitialization(None, member, amplitude, capture)
-                row = {**member, 'attempt': attempt, 'card': card, 'status': 'running', 'started_unix': time.time(),
+                row = {**member, 'attempt': attempt, 'card': card, 'card_slot': slot,
+                       'status': 'running', 'started_unix': time.time(),
                        'timing_parallelism': {'parent_archive_read': 'parallel archive prefetch; one-parent bounded cache/card',
                                               'restore': 'GPU copies + host validation', 'forecast': 'GPU',
                                               'diagnostic_write': '2 host workers beside forecast'}}
@@ -459,6 +571,67 @@ def resume_completed(root, receipt, parents, members, hours):
     return list(completed.values())
 
 
+#: Auto co-residency cap: Drew's ruling that co-resident members are fine
+#: (hex up to 4 per card), carried to ArWen and sized by memory below it.
+AUTO_MEMBERS_PER_CARD_CAP = 4
+#: Free memory kept back on each card beyond the priced members.
+CARD_MARGIN_BYTES = 2 << 30
+
+
+def parse_members_per_card(value):
+    """``auto`` or a positive integer (argparse type)."""
+    if value is None or str(value).strip().lower() == 'auto':
+        return 'auto'
+    try:
+        count = int(str(value).strip())
+    except ValueError:
+        count = 0
+    if count < 1:
+        raise ValueError('--members-per-card needs auto or a positive integer')
+    return count
+
+
+def card_free_bytes(card_uuid):
+    """NVML device total minus device-wide used, or None when unreadable."""
+    try:
+        from gpuwm.core.preflight import device_physical_total_bytes, device_wide_used_bytes
+        total = device_physical_total_bytes(device_id=card_uuid)
+        return None if total is None else max(0, int(total) - int(device_wide_used_bytes(device_id=card_uuid)))
+    except Exception:  # noqa: BLE001 - an unreadable card is sized at one member
+        return None
+
+
+def members_per_card(spec, *, member_bytes, free_bytes, members, cards, cpus=None):
+    """Concurrent member processes per card, and the receipt saying why.
+
+    ``auto`` fits as many priced members as the card's measured free memory
+    holds after a fixed margin, capped at ``AUTO_MEMBERS_PER_CARD_CAP``, at
+    the members each card actually gets and at half the host cores per card
+    (each member process drives its card from one host thread). An
+    unpriceable member or unreadable card runs one member per card and says
+    so. An explicit count is honoured; the card admission prices it.
+    """
+    per_card_members = max(1, math.ceil(members / max(1, cards)))
+    if cpus is None:
+        from gpuwm.ingest.cpu_backend import available_cpu_count
+        cpus = available_cpu_count()
+    by_host = max(1, (cpus or 2) // 2 // max(1, cards))
+    if spec != 'auto':
+        return int(spec), {'source': 'explicit', 'members_per_card': int(spec)}
+    receipt = {'source': 'auto', 'cap': AUTO_MEMBERS_PER_CARD_CAP, 'member_bytes': member_bytes,
+               'card_free_bytes': free_bytes, 'margin_bytes': CARD_MARGIN_BYTES,
+               'members_per_card_needed': per_card_members, 'host_cores': cpus, 'by_host_cores': by_host}
+    if not member_bytes or free_bytes is None:
+        receipt.update(members_per_card=1, binding='member memory unpriced or card free memory unreadable')
+        return 1, receipt
+    by_memory = max(1, (int(free_bytes) - CARD_MARGIN_BYTES) // int(member_bytes))
+    limits = {'card memory': by_memory, 'cap': AUTO_MEMBERS_PER_CARD_CAP,
+              'members per card': per_card_members, 'host cores': by_host}
+    binding = min(limits, key=limits.get)
+    receipt.update(by_memory=int(by_memory), members_per_card=int(limits[binding]), binding=binding)
+    return int(limits[binding]), receipt
+
+
 def priced_card_reservation(parents):
     """One card worker's priced reservation, from the parents it forecasts.
 
@@ -524,9 +697,11 @@ def run(args):
     hours = args.branch_hours
     if not math.isfinite(hours) or hours <= 0:
         raise ValueError('--branch-hours must be positive finite forecast hours')
+    per_card_spec = parse_members_per_card(getattr(args, 'members_per_card', 'auto'))
     if args.dry_run:
         print(json.dumps({'schema': SCHEMA, 'members': members, 'cards': args.cards,
-                          'branch_hours': hours, 'placement': 'one long-lived worker per card; completion-driven queues'}, indent=2))
+                          'branch_hours': hours, 'members_per_card': per_card_spec,
+                          'placement': 'members-per-card long-lived worker processes per card; completion-driven queues'}, indent=2))
         return 0
     cards = select_cards(args.cards, supervisor.query_gpus(), visibility=os.environ.get('CUDA_VISIBLE_DEVICES'))
     from gpuwm import run_stamp
@@ -549,31 +724,68 @@ def run(args):
     elif (root/'ensemble-set.json').exists():
         raise ValueError('this ensemble set already exists; use --resume-ensemble RUN to retry its unfinished members')
     done = {m['member_id'] for m in receipt['completed']}
-    queue = CardQueue([i for i in range(count) if i not in done], [CardPlacement(card.uuid) for card in cards])
+    remaining = [i for i in range(count) if i not in done]
     started = time.perf_counter()
     processes, channels = [], {}
     atomic_json(root/'ensemble-set.json', receipt)
     reservation_bytes = priced_card_reservation(parents)
-    receipt['card_reservation_bytes'] = reservation_bytes
+    # One process (one CUDA context) per concurrent member: a small member
+    # leaves most of a large card idle and one host core pinned, so a card
+    # runs several. Sized against the emptiest selected card.
+    free = [card_free_bytes(card.uuid) for card in cards]
+    slots, slot_receipt = members_per_card(
+        per_card_spec,
+        member_bytes=reservation_bytes, free_bytes=None if None in free else min(free),
+        members=max(1, len(remaining)), cards=len(cards))
+    sharing = {'mode': 'contexts', 'reason': 'one member per card' if slots == 1 else
+               'one CUDA context per member process'}
+    sharing_mode = getattr(args, 'member_sharing', 'auto') or 'auto'
     with ExitStack() as leases:
+        import signal
+        import threading
+        if threading.current_thread() is threading.main_thread() and hasattr(signal, 'SIGTERM'):
+            # A cancel (SIGTERM) unwinds like an error: workers terminated,
+            # the private MPS controller quit, card locks released. The
+            # default handler exits at once and orphans all three.
+            def _terminate(signum, frame):
+                raise SystemExit(128 + signum)
+            leases.callback(signal.signal, signal.SIGTERM, signal.signal(signal.SIGTERM, _terminate))
         try:
             for card in sorted(cards, key=lambda card: card.uuid):
                 leases.enter_context(supervisor.GPUFileLock(card.uuid, run_id=str(root)))
                 supervisor.preflight_exclusive_gpu(card.uuid, approved_pids={os.getpid()}, allow_shared_gpu=False,
-                                                   reservation_bytes=reservation_bytes)
+                    reservation_bytes=None if reservation_bytes is None else reservation_bytes*slots)
+            if slots > 1:
+                sharing = leases.enter_context(member_sharing(sharing_mode, root, cards))
+                if sharing['mode'] == 'contexts' and per_card_spec == 'auto' and sharing_mode == 'auto':
+                    # Ordinary contexts time-slice the card: four co-resident
+                    # 12-3 km members ran 0.93x the serial rate on an RTX PRO
+                    # 6000 (MPS: docs/public/MASS-ENSEMBLE.md). Without MPS,
+                    # auto keeps one member per card.
+                    slots = 1
+                    slot_receipt.update(members_per_card=1, binding='no MPS controller: ordinary '
+                                        'contexts time-slice the card, measured slower than one member')
         except BaseException as error:
             receipt.update(status='failed', error=f'{type(error).__name__}: {error}',
                            wall_seconds=time.perf_counter()-started)
             atomic_json(root/'ensemble-set.json', receipt)
             raise
+        receipt.update(card_reservation_bytes=reservation_bytes, members_per_card=slots,
+                       members_per_card_policy=slot_receipt,
+                       member_sharing={key: value for key, value in sharing.items() if key != 'env'})
+        queue = CardQueue(remaining, [CardPlacement(card.uuid, slots) for card in cards])
+        print(f"ensemble: {slots} member(s) per card on {len(cards)} card(s), "
+              f"{sharing['mode']} ({slot_receipt.get('binding', slot_receipt['source'])})", flush=True)
         try:
             context = multiprocessing.get_context('spawn')
             for card in cards:
-                connection, child = context.Pipe()
-                process = context.Process(target=_card_worker, args=(child, card.uuid, parents,
-                                          str(root), hours, amplitude, bool(getattr(args, 'keep_member_files', False)), cyclone_request))
-                process.start(); child.close()
-                processes.append(process); channels[connection] = (card.uuid, process)
+                for slot in range(slots):
+                    connection, child = context.Pipe()
+                    process = context.Process(target=_card_worker, args=(child, card.uuid, parents,
+                                              str(root), hours, amplitude, bool(getattr(args, 'keep_member_files', False)),
+                                              cyclone_request, sharing.get('env', {}), slot))
+                    process.start(); child.close()
+                    processes.append(process); channels[connection] = (card.uuid, process)
             while channels:
                 ready = wait(list(channels), timeout=1.)
                 for connection in ready:

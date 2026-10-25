@@ -716,9 +716,11 @@ def diagnostic_members(obj) -> dict:
         return {}
     members: dict = {}
     if getattr(obj, 'chem', None) is not None:
-        from gpuwm.core.chem_history import streaming_fields
+        from gpuwm.core.chem_history import (pointers_only, streaming_fields,
+                                             streaming_members)
+        read = streaming_members if pointers_only() else streaming_fields
         members.update({'diag/chem/' + name: value
-                        for name, value in streaming_fields(obj).items()})
+                        for name, value in read(obj).items()})
     driver = getattr(obj, "physics", None)
     for attr in physinv.OUTPUT_ONLY_DRIVER_ATTRS:
         held = getattr(driver, attr, None)

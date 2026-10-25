@@ -774,7 +774,10 @@ def surface_on_child_geography(parent_frame, *, placement, geography,
                                      OfflineChildContractError,
                                      _ParentHistory, _require_finite,
                                      _DAMAGED_PARENT_HISTORY,
-                                     _SURFACE_IDENTITY_ATTRS)
+                                     _SURFACE_IDENTITY_ATTRS,
+                                     noah_soil_onto_ruc_levels,
+                                     noah_soil_onto_ruc_receipt,
+                                     parent_soil_onto_child_levels)
     from gpuwm.static.build import monthly_interp_to_date
 
     path = Path(parent_frame)
@@ -810,6 +813,8 @@ def surface_on_child_geography(parent_frame, *, placement, geography,
             _require_finite(path, name, value, dims,
                             remedy=_DAMAGED_PARENT_HISTORY)
             parent[name] = value
+        parent_zs = (np.asarray(dataset.variables["ZS"][:]).reshape(-1)
+                     if "ZS" in dataset.variables else None)
     child_identity = {"MMINLU": str(attrs["MMINLU"]).strip(),
                       "ISWATER": int(attrs["ISWATER"]),
                       "ISLAKE": int(attrs["ISLAKE"]),
@@ -875,6 +880,14 @@ def surface_on_child_geography(parent_frame, *, placement, geography,
         "SHDMIN": 100.0 * np.asarray(statics["GREENFRAC"]).min(axis=0),
         "SHDMAX": 100.0 * np.asarray(statics["GREENFRAC"]).max(axis=0),
     })
+    # A Noah parent under a RUC child (a refined nest-down on the HRRR-shape
+    # suite): the column is rebuilt on RUC's levels from the lapsed layers
+    # against the child's own TMN and land mask, as real.exe builds it.
+    parent_soil = int(np.asarray(fields["TSLB"]).shape[0])
+    remap_soil = parent_soil_onto_child_levels(parent_soil, num_soil_layers)
+    if remap_soil:
+        fields = noah_soil_onto_ruc_levels(
+            fields, parent_zs_m=parent_zs, num_soil_layers=num_soil_layers)
     if "LAI12M" in statics:
         fields["LAI"] = monthly_interp_to_date(statics["LAI12M"], valid_time)
     if "SNOALB" in statics:
@@ -897,6 +910,8 @@ def surface_on_child_geography(parent_frame, *, placement, geography,
     identity["ISOILWATER"] = parent_identity["ISOILWATER"]
     lapse_cells = int(np.count_nonzero(delta))
     receipt = MappingProxyType({
+        **({"soil_levels_rebuilt": noah_soil_onto_ruc_receipt(
+            parent_zs, num_soil_layers)} if remap_soil else {}),
         "path": str(path.resolve()),
         "source": "child-own-geography",
         "identity": dict(identity),

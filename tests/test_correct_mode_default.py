@@ -38,7 +38,8 @@ def test_exact_mode_authors_every_key_off():
                             "wdm6_conservative_surface": False,
                             "wsm3_conservative_surface": False,
                             "wsm5_conservative_surface": False,
-                            "wsm7_conservative_surface": False}
+                            "wsm7_conservative_surface": False,
+                            "hydrometeor_handover_numbers": False}
     assert res.applied == ()
     assert "forced_by" not in res.receipt()
 
@@ -51,8 +52,9 @@ def test_correct_mode_sets_every_registered_key():
                             "wdm6_conservative_surface": True,
                             "wsm3_conservative_surface": True,
                             "wsm5_conservative_surface": True,
-                            "wsm7_conservative_surface": True}
-    assert res.receipt()["applied_findings"] == ["WB1", "WB4", "WB5"]
+                            "wsm7_conservative_surface": True,
+                            "hydrometeor_handover_numbers": True}
+    assert res.receipt()["applied_findings"] == ["WB1", "WB4", "WB5", "HN1"]
 
 
 def test_correct_skip_drops_one_correction():
@@ -63,7 +65,8 @@ def test_correct_skip_drops_one_correction():
                             "wdm6_conservative_surface": False,
                             "wsm3_conservative_surface": False,
                             "wsm5_conservative_surface": False,
-                            "wsm7_conservative_surface": False}
+                            "wsm7_conservative_surface": False,
+                            "hydrometeor_handover_numbers": True}
     assert res.receipt()["physics.correct_skip"] == ["WB5"]
 
 
@@ -74,7 +77,7 @@ def test_the_default_is_correct_in_a_default_process():
         pytest.skip("strict process; see the strict subprocess test")
     assert correct_mode.PHYSICS_MODE_DEFAULT == "correct"
     assert correct_mode.resolve() == correct_mode.resolve("correct")
-    assert correct_mode.resolve(None, ["WB4"]).applied == ("WB1", "WB5")
+    assert correct_mode.resolve(None, ["WB4"]).applied == ("WB1", "WB5", "HN1")
 
 
 def test_strict_wrf_mode_forces_exact_and_records_it():
@@ -186,13 +189,14 @@ def test_wb5_spans_wsm6_and_wdm6_and_a_one_key_arm_reads_as_itself():
                     **{**correct_mode.resolve("correct").settings,
                        "wsm6_conservative_surface": False})
     receipt = correct_mode.resolution_of(arm).receipt()
-    assert receipt["applied_findings"] == ["WB1", "WB4", "WB5"]
+    assert receipt["applied_findings"] == ["WB1", "WB4", "WB5", "HN1"]
     assert receipt["keys"] == {"thompson_cloud_surface_booking": True,
                                "ntiedtke_dry_mass_coupling": True,
                                "wdm6_conservative_surface": True,
                                "wsm3_conservative_surface": True,
                                "wsm5_conservative_surface": True,
-                               "wsm7_conservative_surface": True}
+                               "wsm7_conservative_surface": True,
+                               "hydrometeor_handover_numbers": True}
 
 
 def test_run_receipt_names_each_domains_mode():
@@ -213,20 +217,22 @@ def test_run_receipt_says_which_corrections_reached_the_run():
     """A correct-mode domain lists every key on, but only the keys its
     schemes read are in effect, and (receipt v2) applied_findings names only
     those: WSM6 without New Tiedtke is WB5 alone, a Thompson domain is WB1
-    alone, WSM3/WSM5/WSM7 are WB5 alone, Morrison is none (the matched
-    arithmetic), and an exact domain is none.  Breakage prevented: a receipt
+    with HN1, WSM3/WSM5/WSM7 are WB5 alone, Morrison is HN1 alone (the
+    hydrometeor handover numbers), and an exact domain is none.  Breakage prevented: a receipt
     that reads as if WB4 and WB5 changed a Thompson-only run, or WB1 a
     WSM5 run."""
     correct = correct_mode.resolve("correct").settings
     cases = (
         ({"mp_physics": 6}, ["WB5"], ["wsm6_conservative_surface"]),
         ({"mp_physics": 16}, ["WB5"], ["wdm6_conservative_surface"]),
-        ({"mp_physics": 8}, ["WB1"], ["thompson_cloud_surface_booking"]),
-        ({"mp_physics": 28}, ["WB1"], ["thompson_cloud_surface_booking"]),
+        ({"mp_physics": 8}, ["WB1", "HN1"], ["thompson_cloud_surface_booking",
+                                             "hydrometeor_handover_numbers"]),
+        ({"mp_physics": 28}, ["WB1", "HN1"], ["thompson_cloud_surface_booking",
+                                              "hydrometeor_handover_numbers"]),
         ({"mp_physics": 3}, ["WB5"], ["wsm3_conservative_surface"]),
         ({"mp_physics": 4}, ["WB5"], ["wsm5_conservative_surface"]),
         ({"mp_physics": 24}, ["WB5"], ["wsm7_conservative_surface"]),
-        ({"mp_physics": 10}, [], []),
+        ({"mp_physics": 10}, ["HN1"], ["hydrometeor_handover_numbers"]),
         ({"mp_physics": 6, "cu_physics": 16}, ["WB4", "WB5"],
          ["ntiedtke_dry_mass_coupling", "wsm6_conservative_surface"]),
     )
@@ -275,12 +281,19 @@ def test_a_289_checkpoint_resumes_only_in_exact_mode_and_says_how():
     assert "wsm6_conservative_surface" in str(refused.value)
     assert "matched (exact) arithmetic" in str(refused.value)
     _require_config_match(stored, exact, "ckpt.nc")
-    # A Thompson checkpoint is untouched by the flip: the keys reach nothing.
+    # A Thompson checkpoint written before HN1 (2.9.7) is exact for it: the
+    # handover key binds (the specified ring forces nr/ni back with their
+    # masses), so the default refuses it with the remedy named, and naming
+    # exact resumes it.
     thompson = RunConfig(**{**_TINY, "mp_physics": 8})
-    _require_config_match(
-        configuration_echo(RunConfig(**{**_TINY, "mp_physics": 8},
-                                     **correct_mode.resolve("exact").settings)),
-        thompson, "ckpt.nc")
+    thompson_exact = RunConfig(**{**_TINY, "mp_physics": 8},
+                               **correct_mode.resolve("exact").settings)
+    stored = configuration_echo(thompson_exact)
+    assert "hydrometeor_handover_numbers" not in stored
+    with pytest.raises(RestartMismatchError) as refused:
+        _require_config_match(stored, thompson, "ckpt.nc")
+    assert "hydrometeor_handover_numbers" in str(refused.value)
+    _require_config_match(stored, thompson_exact, "ckpt.nc")
 
 
 def test_runconfig_refuses_a_truthy_non_bool():
@@ -330,8 +343,12 @@ def test_wb1_is_output_only_and_moves_no_thompson_identity():
                                   _require_config_match, configuration_echo)
     assert set(correct_mode.OUTPUT_ONLY_KEYS) <= CONFIG_DIAGNOSTIC_FIELDS
     thompson = RunConfig(**{**_TINY, "mp_physics": 8})
+    # Every key off but HN1 (a trajectory key, which binds; its own test
+    # is above): WB1 alone flips between the two.
     exact = RunConfig(**{**_TINY, "mp_physics": 8},
-                      **correct_mode.resolve("exact").settings)
+                      **{**correct_mode.resolve("exact").settings,
+                         "hydrometeor_handover_numbers":
+                             thompson.hydrometeor_handover_numbers})
     assert configuration_echo(thompson) == configuration_echo(exact)
     assert (_configuration_digest_values(dataclasses.asdict(thompson))
             == _configuration_digest_values(dataclasses.asdict(exact)))
@@ -421,7 +438,7 @@ def test_an_uncorrected_carrier_is_listed_and_logged(monkeypatch):
                     **correct_mode.resolve("correct").settings)
     block = correct_mode.run_receipt({2: cfg})["domains"]["2"]
     assert block["uncorrected"] == ["WB5"]
-    assert block["applied_findings"] == []
+    assert block["applied_findings"] == ["HN1"]
     line = correct_mode.uncorrected_notice({2: cfg})
     assert line is not None and "d02 WB5" in line
     # Exact mode and a named skip are what the run asked for: nothing listed.

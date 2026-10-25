@@ -282,9 +282,9 @@ fn paint_mosaic(
     ))
 }
 
-/// Threads that read and encode a streamed terrain mosaic
-/// ([`mosaic_tiffs`]), one output tile row each.
-pub const MOSAIC_WORKERS: usize = 8;
+/// Decoded-block cache of one source reader in [`mosaic_tiffs`]: four
+/// 1024 x 1024 float32 blocks, the most one 1024-pixel output group touches.
+pub const MOSAIC_READER_CACHE: usize = 16 * 1024 * 1024;
 
 /// Mosaic directly from source TIFF windows into deterministic output tiles.
 /// Source payloads, mosaic pixels and compressed output are never held whole.
@@ -361,13 +361,16 @@ pub fn mosaic_tiffs(
         oy - row0 as f64 * ry,
     ];
     let holes = std::sync::atomic::AtomicUsize::new(0);
-    // Output tile rows are read and encoded on MOSAIC_WORKERS threads
-    // (fewer when the rayon pool is smaller); the file is the same bytes as
-    // one thread writes.  Each row keeps at most eight open source files
-    // and 64 MiB of decoded block cache, so the whole mosaic holds at most
-    // 8 x MOSAIC_WORKERS readers and their caches plus MOSAIC_WORKERS rows
-    // of encoded tiles, regardless of the number of terrain tiles.
-    let workers = MOSAIC_WORKERS.min(rayon::current_num_threads()).max(1);
+    // Output tiles are read and encoded on every thread of the rayon pool
+    // (RAYON_NUM_THREADS, else all cores) in 1024-pixel groups; the file is
+    // the same bytes as one thread writes.  Each worker's reader state keeps
+    // at most eight open source files with 16 MiB of decoded block cache
+    // each (the 2 x 2 GLO-30 blocks a group can touch, so each block is
+    // decoded once per group), plus about eight groups of encoded tiles per
+    // worker, regardless of the number of terrain tiles.  Before 2.9.7 this
+    // was capped at eight whole rows and a storm corridor built on 2-3
+    // cores (TC phase 1, 228 s).
+    let workers = rayon::current_num_threads().max(1);
     geotiff::write_band1_tiles_parallel(
         out_path,
         ny,
@@ -403,7 +406,7 @@ pub fn mosaic_tiffs(
                         readers.pop_front();
                     }
                     let mut reader = TiffReader::open(&paths[index])?;
-                    reader.set_cache_budget(8 * 1024 * 1024);
+                    reader.set_cache_budget(MOSAIC_READER_CACHE);
                     readers.push_back((index, reader));
                 }
                 let reader = &mut readers.back_mut().unwrap().1;
@@ -455,12 +458,17 @@ pub fn mosaic_tiffs(
                     }
                 }
             }
+            // Holes are counted per tile and added once: one shared atomic
+            // bumped per hole pixel (4.5 billion of them over a storm
+            // corridor's ocean) bounced its cache line between every worker
+            // and held the mosaic near 16 cores whatever the pool size.
+            let mut tile_holes = 0usize;
             for value in &mut out {
                 if source_nodata == Some(*value) {
                     *value = f64::NAN;
                 }
                 if value.is_nan() {
-                    holes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    tile_holes += 1;
                     if let Some(fill) = fill {
                         *value = fill as f32 as f64;
                     }
@@ -468,6 +476,7 @@ pub fn mosaic_tiffs(
                     *value = *value as f32 as f64;
                 }
             }
+            holes.fetch_add(tile_holes, std::sync::atomic::Ordering::Relaxed);
             Ok(out)
         },
     )?;
@@ -809,16 +818,24 @@ pub fn reproject_category_fractions(
 // can change an averaged cell's bytes.
 const WARP_BLOCK: usize = 32;
 const MAX_WINDOW_PIXELS: usize = 4 * 1024 * 1024;
-pub const CONTINUOUS_WORKER_CAP: usize = 4;
+/// Most continuous-warp workers: each holds one source window (at most
+/// 32 MiB) and one 8 MiB block cache, so 64 workers stay under 2.6 GiB.
+/// Before 2.9.7 this was 4, and the 30 m terrain of a TC phase-1 storm
+/// corridor resampled onto its domain on 4 threads (52.7 s, 2026-10-24).
+pub const CONTINUOUS_WORKER_CAP: usize = 64;
 pub const CONTINUOUS_READER_CACHE_BYTES: usize = 8 * 1024 * 1024;
+/// Output bands per worker, so a band of land cannot leave the workers that
+/// drew bands of ocean idle.
+const CONTINUOUS_BANDS_PER_WORKER: usize = 4;
 
-/// Respect a smaller CPU guard while never taking the case's 48-worker budget.
+/// The case's own thread budget (RAYON_NUM_THREADS, else every core), up to
+/// [`CONTINUOUS_WORKER_CAP`].
 pub fn continuous_worker_limit() -> usize {
     std::env::var("RAYON_NUM_THREADS")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|count| *count > 0)
-        .unwrap_or(CONTINUOUS_WORKER_CAP)
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |count| count.get()))
         .min(CONTINUOUS_WORKER_CAP)
 }
 
@@ -1064,8 +1081,10 @@ fn write_continuous_block(
     }
 }
 
-/// Fixed-worker continuous warp. Exactly one reader per output-band worker
-/// is alive, with at most four source windows and four decoded-block caches.
+/// Bounded-worker continuous warp. The output is cut into
+/// `CONTINUOUS_BANDS_PER_WORKER` bands per worker; each band opens its own
+/// reader, so at most one reader per worker is alive (one source window and
+/// one decoded-block cache each).
 #[allow(clippy::too_many_arguments)]
 pub fn reproject_continuous_windowed_parallel<T: Send>(
     source: &Raster,
@@ -1089,7 +1108,8 @@ pub fn reproject_continuous_windowed_parallel<T: Send>(
     let workers = requested_workers
         .clamp(1, CONTINUOUS_WORKER_CAP)
         .min(dst_ny);
-    let rows_per_worker = dst_ny.div_ceil(workers);
+    let bands = (workers * CONTINUOUS_BANDS_PER_WORKER).min(dst_ny);
+    let rows_per_worker = dst_ny.div_ceil(bands);
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(workers)
         .build()

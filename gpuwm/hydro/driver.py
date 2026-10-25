@@ -79,7 +79,7 @@ class ResidentHydroDriver:
     def __init__(self, *, device_id, interval_seconds, identity,
                  before=(), after=(), resources=(), parent_grid_id=1, reach_output=None,
                  channel_output=None, status_fatal_masks=None, after_schedule=None,
-                 stage_clocks=False):
+                 stage_clocks=False, routing_clock=None):
         from gpuwm.numerics import mode
         from .runtime import current_member_id
         self._member_id = current_member_id()
@@ -91,6 +91,7 @@ class ResidentHydroDriver:
             raise ValueError("hydro needs the fixed parent grid and a positive LSM interval")
         self._before = tuple(before)
         self._after = tuple(after)
+        self.routing_clock = _json(routing_clock) if routing_clock else None
         if not self._after:
             raise ValueError("hydro has no bound runoff/routing stages")
         arrays, identities, components, statuses, component_masks = {}, {}, {}, {}, {}
@@ -103,7 +104,8 @@ class ResidentHydroDriver:
                        and not any(stage is bound for bound in self._before))
             if (type(stage.cadence_steps) is not int or stage.cadence_steps < 1
                     or (stage.interval_seconds is not None and not clocked
-                        and stage.interval_seconds != self.interval_seconds * stage.cadence_steps)):
+                        and stage.interval_seconds != self.interval_seconds * stage.cadence_steps
+                        and not self.routing_clock)):
                 raise ValueError("stage interval must span its whole number of parent LSM calls")
             if any(stage is bound for bound in self._before) and stage.cadence_steps != 1:
                 raise ValueError("pre-LSM exchange must run at every LSM call")
@@ -241,21 +243,41 @@ class ResidentHydroDriver:
         # the first LSM call at or after each multiple of their period (the
         # adaptive-parent schedule), so a forecast whose root step go lowered
         # below the prepared one keeps hydro on instead of dying at attach.
+        # The routing clock (below) supersedes it for the provider's
+        # exchange/runoff/routing/history rows, which it conserves across
+        # boundaries the parent step does not divide.
         self.variable_interval = bool(stage_clocks)
+        self.stage_launches = {stage.name: 0 for stage in self.prepared_stages}
+        if self.routing_clock:
+            if self._before or after_schedule or {s.name for s in self._after} != {'exchange', 'runoff', 'routing', 'history'}:
+                raise ValueError('routing clock requires exchange, runoff, routing and history after the parent LSM')
+            self._identity["routing_clock"] = self.routing_clock
+            self._clock_period = float(self.routing_clock["period_seconds"])
+            self._clock_duration = float(self.routing_clock["duration_seconds"])
+            if not all(math.isfinite(v) and v > 0 for v in (self._clock_period, self._clock_duration)):
+                raise ValueError('routing clock period and duration must be finite and positive')
+            self._clock_calls = {s.name: s.launch for s in self._after}
+            self._clock_exchange_time = 0.0
+            self._clock_routed = 0
+            self._clock_finalized = False
 
     def allow_variable_interval(self):
         """Follow an adaptive parent clock whose LSM interval changes every call.
 
-        Every post-LSM stage must then run on a fixed time interval of its own
+        The routing clock samples instantaneous parents every call and accumulated
+        parents on boundary crossings; both carry water across fixed routing dt.
+        Legacy schedules must run on a fixed time interval of their own
         (``interval_seconds``) and is launched at the first LSM call at or after
         each multiple of it, with that interval; no stage may need every LSM
         call. Breakage it prevents (2.9.3 improve-1): the default product suite
         runs ``use_adaptive_time_step`` with ``bldt = 0``, so the parent LSM
         interval moves with the integration step and every coupled forecast
         stopped at the first LSM call with "hydro interval differs from the
-        parent LSM cadence". A stage that needs every LSM call (Noah-MP's
-        per-step RUNSRF exchange) still refuses, by name.
+        parent LSM cadence".
         """
+        if self.routing_clock:
+            self.variable_interval = True
+            return
         if self._before:
             raise ValueError("an adaptive parent clock cannot drive pre-LSM hydro stages: "
                              + ", ".join(stage.name for stage in self._before))
@@ -296,6 +318,8 @@ class ResidentHydroDriver:
             launch(self.interval_seconds, stream=stream)
 
     def advance(self, dt_seconds=None, *, stream=None):
+        if self.routing_clock:
+            return self._advance_clock(dt_seconds, stream=stream)
         if self.variable_interval:
             return self._advance_variable(dt_seconds, stream=stream)
         if dt_seconds is not None and dt_seconds != self.interval_seconds:
@@ -308,6 +332,88 @@ class ResidentHydroDriver:
         self.steps += 1
         self.elapsed_seconds = self.steps * self.interval_seconds
         self._pending = False
+
+    def _advance_clock(self, dt_seconds, *, stream=None):
+        """Split resident runoff volumes at routing boundaries, never parent steps.
+
+        Accumulated parents are sampled only on a crossing (or the last call).
+        A sampled span is uniform in time; its excess volume stays in the next
+        routing bucket. Instantaneous parents supply a depth on every call.
+        All splitting and summation is in the runoff CUDA gather. Only clocks
+        and launch decisions live here; no resident value is read by the host.
+        """
+        dt = self.interval_seconds if dt_seconds is None else float(dt_seconds)
+        if not math.isfinite(dt) or dt <= 0:
+            raise ValueError("hydro needs a positive parent LSM interval")
+        if not self.variable_interval and dt != self.interval_seconds:
+            raise ValueError("hydro interval differs from the fixed parent LSM cadence")
+        if not self._pending:
+            raise RuntimeError("hydro advance requires its matching before_lsm call")
+        if self._clock_finalized:
+            raise RuntimeError("hydro routing clock already published its forecast end")
+        start = self.elapsed_seconds
+        end = start + dt if self.variable_interval else (self.steps + 1) * self.interval_seconds
+        # Tolerance is floating clock roundoff, not a fraction of a model step.
+        tol = 16 * math.ulp(max(end, self._clock_duration, self._clock_period))
+        final = end >= self._clock_duration - tol
+        boundary = (self._clock_routed + 1) * self._clock_period
+        accumulated = self.routing_clock["accumulated_parent"]
+        sample = not accumulated or end >= boundary - tol or final
+        if sample:
+            span_start = self._clock_exchange_time if accumulated else start
+            self._sample_clock(span_start, end, final=final, stream=stream)
+        self.steps += 1
+        self.elapsed_seconds = end
+        self._clock_finalized = final
+        self._pending = False
+
+    def _sample_clock(self, start, end, *, final, stream=None):
+        span = end - start
+        self._launch_clock("exchange", span, stream=stream)
+        tol = 16 * math.ulp(max(end, self._clock_duration, self._clock_period))
+        cursor = start
+        while cursor < end - tol:
+            boundary = (self._clock_routed + 1) * self._clock_period
+            stop = min(end, boundary)
+            fraction = (stop - cursor) / span
+            self._launch_clock("runoff", span, stream=stream, fraction=fraction,
+                   reset=abs(cursor - self._clock_routed * self._clock_period) <= tol)
+            cursor = stop
+            terminal = final and cursor >= end - tol
+            if cursor >= boundary - tol or terminal:
+                self._launch_clock("routing", self._clock_period, stream=stream)
+                self._launch_clock("history", self._clock_period, stream=stream, final=terminal,
+                       time_seconds=end if terminal else boundary)
+                self._clock_routed += 1
+        self._clock_exchange_time = end
+
+    def finish_clock(self, *, stream=None):
+        """Flush a stopped forecast's partial bucket at the publication boundary.
+
+        A fixed-step atmosphere may stop below its requested end time. Publish
+        at the actual parent clock, consuming only water it really produced.
+        This method enqueues CUDA work; it does not read a device value.
+        """
+        if not self.routing_clock or self._clock_finalized or not self.steps:
+            return
+        if self._pending:
+            raise RuntimeError("cannot finish hydro between parent and routing launches")
+        end = self.elapsed_seconds
+        if self.routing_clock['accumulated_parent'] and self._clock_exchange_time < end:
+            self._sample_clock(self._clock_exchange_time, end, final=True, stream=stream)
+        elif end > self._clock_routed * self._clock_period:
+            self._launch_clock("routing", self._clock_period, stream=stream)
+            self._launch_clock("history", self._clock_period, stream=stream,
+                               final=True, time_seconds=end)
+            self._clock_routed += 1
+        else:
+            self._launch_clock("history", self._clock_period, stream=stream,
+                               final=True, time_seconds=end, recapture=True)
+        self._clock_finalized = True
+
+    def _launch_clock(self, name, span, *, stream=None, **kwargs):
+        self._clock_calls[name](span, stream=stream, **kwargs)
+        self.stage_launches[name] += 1
 
     def _advance_variable(self, dt_seconds, *, stream=None):
         dt = self.interval_seconds if dt_seconds is None else float(dt_seconds)
@@ -377,6 +483,11 @@ class ResidentHydroDriver:
         metadata = {"identity": self.restart_identity, "steps": self.steps,
                     "elapsed_seconds": self.elapsed_seconds,
                     "inventory": _json(self._inventory), "components": continuation}
+        if self.routing_clock:
+            metadata["routing_clock"] = {"exchange_time": self._clock_exchange_time,
+                                         "routed": self._clock_routed,
+                                         "finalized": self._clock_finalized,
+                                         "launches": self.stage_launches}
         if diagnostics:
             metadata["diagnostics"] = diagnostics
         return metadata
@@ -401,6 +512,15 @@ class ResidentHydroDriver:
                     if callable(getattr(component, "checkpoint_metadata", None))}
         if not isinstance(metadata.get("components"), dict) or set(metadata["components"]) != expected:
             raise ValueError("NextGen checkpoint continuation metadata is incomplete")
+        if self.routing_clock:
+            clock = metadata.get("routing_clock", {})
+            if (set(clock) != {"exchange_time", "routed", "finalized", "launches"}
+                    or type(clock["routed"]) is not int or clock["routed"] < 0
+                    or type(clock["finalized"]) is not bool
+                    or not 0 <= clock["exchange_time"] <= elapsed
+                    or set(clock["launches"]) != set(self.stage_launches)
+                    or any(type(n) is not int or n < 0 for n in clock["launches"].values())):
+                raise ValueError("NextGen checkpoint has inconsistent routing clock")
         for name, component in self._components:
             hook = getattr(component, "validate_checkpoint", None)
             if hook is not None:
@@ -413,4 +533,10 @@ class ResidentHydroDriver:
                 hook(metadata["components"][name])
         self.steps = metadata["steps"]
         self.elapsed_seconds = metadata["elapsed_seconds"]
+        if self.routing_clock:
+            clock = metadata["routing_clock"]
+            self._clock_exchange_time = clock["exchange_time"]
+            self._clock_routed = clock["routed"]
+            self._clock_finalized = clock["finalized"]
+            self.stage_launches = dict(clock["launches"])
         self._pending = False

@@ -376,3 +376,293 @@ def test_resume_uses_explicit_inputs_or_saved_defaults(tmp_path, monkeypatch, ov
     assert review["checkpoint"] == str(checkpoint)
     assert old == original and list(output.iterdir()) == [checkpoint]
     assert not (tmp_path / "new output").exists()
+
+
+# Original L6G02 regressions retained with the current worker contracts.
+
+def test_resume_finds_the_prepared_bundle_the_source_job_actually_wrote(tmp_path, monkeypatch):
+    """The bundle is located by what the output tree carries, not by a path table.
+
+    The old four-entry candidate table (outdir/prepared and three chain
+    subdirectories) refused this resume outright: the bundle is real, the
+    checkpoint is valid, and the only thing wrong was that the chain wrote
+    its bundle to a directory the table did not list.
+    """
+    from gpuwm import stage_cli
+    source = config(tmp_path)
+    outdir = tmp_path / "old output"
+    forecast = outdir / "chain" / "run"
+    forecast.mkdir(parents=True)
+    checkpoint = _restart(forecast / "gpuwmrst_d01_2026-09-05_01_00_00.npz")
+    prepared = outdir / "chain" / "prepared-tree"
+    prepared.mkdir(parents=True)
+    schema = next(name for name, entry in stage_cli._schema_index().items() if entry["layout"] == "tree")
+    receipt = prepared / "receipt.json"
+    receipt.write_text(json.dumps({"schema": schema}), encoding="utf-8")
+
+    old = {"id": "old-job", "snapshot_config": str(source), "outdir": str(outdir),
+           "cwd": str(tmp_path), "products": "t2"}
+    monkeypatch.setattr(rw, "_directory", lambda workspace, job: tmp_path)
+    monkeypatch.setattr(rw, "_record", lambda directory: old)
+    monkeypatch.setattr(rw, "_status", lambda directory: {"state": "stopped"})
+    review = rw._launch(request(tmp_path, source, action="resume", job="old-job", dry_run=True), tmp_path)["review"]
+
+    assert review["prepared_root"] == str(prepared)
+    assert review["prepared_document"] == str(receipt)
+    assert review["prepared_sha256"] == rw._file_sha(receipt)
+    argv = review["argv"]
+    assert ["--prepared-root", str(prepared)] == argv[argv.index("--prepared-root"):argv.index("--prepared-root") + 2]
+    assert review["checkpoint"] == str(checkpoint)
+
+
+def test_a_source_job_with_no_bundle_is_refused_with_the_way_out(tmp_path, monkeypatch):
+    """Zero bundles is still a refusal, and it names prepared_root."""
+    source = config(tmp_path)
+    outdir = tmp_path / "old output"
+    forecast = outdir / "chain" / "run"
+    forecast.mkdir(parents=True)
+    _restart(forecast / "gpuwmrst_d01_2026-09-05_01_00_00.npz")
+
+    old = {"id": "old-job", "snapshot_config": str(source), "outdir": str(outdir),
+           "cwd": str(tmp_path), "products": "t2"}
+    monkeypatch.setattr(rw, "_directory", lambda workspace, job: tmp_path)
+    monkeypatch.setattr(rw, "_record", lambda directory: old)
+    monkeypatch.setattr(rw, "_status", lambda directory: {"state": "stopped"})
+    with pytest.raises(ValueError) as excinfo:
+        rw._launch(request(tmp_path, source, action="resume", job="old-job", dry_run=True), tmp_path)
+    message = str(excinfo.value)
+    assert "no bundle document" in message
+    assert "prepared_root" in message
+
+
+def _tree_bundle(root: Path, schema: str, *, grids=(1, 2, 3)) -> Path:
+    """A prepared TREE bundle with the INTERIOR the forecast stage requires.
+
+    ``gpuwm/prepared_domain_tree_forecast.py`` requires
+    ``<root>/hierarchy-artifacts/receipt.json`` at :1129 and
+    ``<root>/hierarchy-artifacts/domains/dNN/receipt.json`` for every grid
+    at :1254, so a real bundle carries the bundle-document NAME four more
+    times inside itself.  A fixture whose bundle has no interior cannot see
+    that, which is why this one has one.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "receipt.json").write_text(
+        json.dumps({"schema": schema}), encoding="utf-8")
+    hierarchy = root / "hierarchy-artifacts"
+    hierarchy.mkdir(parents=True, exist_ok=True)
+    (hierarchy / "receipt.json").write_text(
+        json.dumps({"artifact": "hierarchy"}), encoding="utf-8")
+    (hierarchy / "domain-artifacts.json").write_text(
+        json.dumps({"domains": list(grids)}), encoding="utf-8")
+    for grid in grids:
+        domain = hierarchy / "domains" / f"d{grid:02d}"
+        domain.mkdir(parents=True, exist_ok=True)
+        (domain / "receipt.json").write_text(
+            json.dumps({"grid_id": grid}), encoding="utf-8")
+        (domain / "geometry-receipt.json").write_text("{}", encoding="utf-8")
+    return root
+
+
+def _tree_schema():
+    from gpuwm import stage_cli
+    return next(name for name, entry in stage_cli._schema_index().items()
+                if entry["layout"] == "tree")
+
+
+def _resume_request(tmp_path, source, outdir, monkeypatch):
+    old = {"id": "old-job", "snapshot_config": str(source), "outdir": str(outdir),
+           "cwd": str(tmp_path), "products": "t2"}
+    monkeypatch.setattr(rw, "_directory", lambda workspace, job: tmp_path)
+    monkeypatch.setattr(rw, "_record", lambda directory: old)
+    monkeypatch.setattr(rw, "_status", lambda directory: {"state": "stopped"})
+    return request(tmp_path, source, action="resume", job="old-job", dry_run=True)
+
+
+@pytest.mark.parametrize("bundle_name", ["prepared", "prepared-tree"])
+def test_a_real_tree_bundles_own_interior_is_not_four_rival_bundles(
+        tmp_path, monkeypatch, bundle_name):
+    """The bundle is ONE bundle, and its nested receipts belong to it.
+
+    A prepared tree bundle carries ``receipt.json`` five times over: once
+    at its root and once under each of hierarchy-artifacts/ and
+    hierarchy-artifacts/domains/dNN/.  Counting those as rival bundles
+    turned one sound resume into an ambiguous one; the crashed run beside
+    them writes ``evidence/failed-run-receipt.json``, which carries no
+    input block, so no receipt could ever have named a winner.
+
+    Both names are exercised because they fail for DIFFERENT reasons.
+    ``chain/prepared`` is the case a crashed tree run actually leaves and
+    the one the discovery broke.  ``chain/prepared-tree`` is a chain that
+    named its own directory, which the four-entry path table this lane
+    deleted refused outright.
+    """
+    source = config(tmp_path)
+    outdir = tmp_path / "old output"
+    forecast = outdir / "chain" / "run"
+    forecast.mkdir(parents=True)
+    checkpoint = _restart(forecast / "gpuwmrst_d01_2026-09-05_01_00_00.npz")
+    prepared = _tree_bundle(outdir / "chain" / bundle_name, _tree_schema())
+    evidence = outdir / "evidence"
+    evidence.mkdir(parents=True)
+    (evidence / "failed-run-receipt.json").write_text(
+        json.dumps({"status": "FAIL", "error_type": "RuntimeError",
+                    "error": "the run died"}), encoding="utf-8")
+
+    # The end-to-end answer FIRST, so a failure here is the resume being
+    # refused rather than a helper that does not exist yet.
+    review = rw._launch(
+        _resume_request(tmp_path, source, outdir, monkeypatch), tmp_path)["review"]
+    assert review["prepared_root"] == str(prepared)
+    assert review["checkpoint"] == str(checkpoint)
+    assert review["prepared_basis"] == \
+        "the only prepared bundle in the source job's output tree"
+
+    from gpuwm.resume import discover_prepared_roots
+    assert discover_prepared_roots(outdir) == [prepared.resolve()]
+
+
+def test_several_bundles_with_no_receipt_bind_the_checkpoints_own_chain(tmp_path, monkeypatch):
+    """An UNRECORDED run is resumed, on a stated basis, never refused.
+
+    Two chains under one output tree and a run that died before writing a
+    receipt: the run receipt narrows this choice and does not decide it,
+    so the bundle the checkpoint was written beside is bound and the
+    review says on what basis.  Refusing here would refuse the one case
+    resume exists for.
+    """
+    source = config(tmp_path)
+    outdir = tmp_path / "old output"
+    schema = _tree_schema()
+    forecast = outdir / "chain" / "run"
+    forecast.mkdir(parents=True)
+    checkpoint = _restart(forecast / "gpuwmrst_d01_2026-09-05_01_00_00.npz")
+    elsewhere = _tree_bundle(outdir / "prepared", schema)
+    beside = _tree_bundle(outdir / "chain" / "prepared", schema)
+
+    wanted_request = _resume_request(tmp_path, source, outdir, monkeypatch)
+    review = rw._launch(wanted_request, tmp_path)["review"]
+    assert review["prepared_root"] == str(beside)
+    assert review["checkpoint"] == str(checkpoint)
+    basis = review["prepared_basis"]
+    assert "nearest the checkpoint being resumed" in basis
+    assert "2 bundles and no receipt" in basis
+    assert "pass prepared_root" in basis
+
+    from gpuwm.resume import discover_prepared_roots
+    assert discover_prepared_roots(outdir) == sorted(
+        [elsewhere.resolve(), beside.resolve()])
+
+
+def test_several_bundles_are_narrowed_by_the_runs_own_receipt(tmp_path, monkeypatch):
+    """A run that FINISHED names the bundle it bound, and that wins."""
+    source = config(tmp_path)
+    outdir = tmp_path / "old output"
+    schema = _tree_schema()
+    forecast = outdir / "chain" / "run"
+    forecast.mkdir(parents=True)
+    _restart(forecast / "gpuwmrst_d01_2026-09-05_01_00_00.npz")
+    # The receipt names a bundle that is neither the nearest one nor the
+    # first the deleted path table listed, so nothing but the receipt can
+    # produce this answer.
+    wanted = _tree_bundle(outdir / "chain" / "zprep", schema)
+    _tree_bundle(outdir / "prepared", schema)
+    _tree_bundle(outdir / "chain" / "prepared", schema)
+    evidence = outdir / "evidence"
+    evidence.mkdir(parents=True)
+    (evidence / "run-receipt.json").write_text(
+        json.dumps({"input": {"prepared_root": str(wanted)}}), encoding="utf-8")
+
+    review = rw._launch(
+        _resume_request(tmp_path, source, outdir, monkeypatch), tmp_path)["review"]
+    assert review["prepared_root"] == str(wanted)
+    assert review["prepared_basis"] == \
+        "the bundle the source job's own run receipt names"
+
+
+def test_the_bound_bundle_survives_an_output_tree_reached_through_a_link(
+        tmp_path, monkeypatch):
+    """A link above the output tree must not change which bundle is bound.
+
+    A source job's recorded outdir routinely arrives through a symlink --
+    a scratch mount, a per-job link -- and ``rw._checkpoint`` returns the
+    checkpoint path UNRESOLVED (``gpuwm/remote_worker.py`` :314 globs the
+    recorded outdir as written).  The discovered bundles are resolved.
+    Comparing the two spellings component by component then found nothing
+    in common, so the nearest-bundle answer degraded to the sorted-first
+    bundle: the wrong scientific input, bound while the review reported
+    it had been chosen for nearness.
+
+    The three bundles here make both failures visible instead of
+    coinciding with the right answer: ``aaa/prepared`` is the one the
+    degraded comparison picks, ``prepared`` is the one the deleted
+    per-chain path table picked, and ``chain/prepared`` -- the bundle the
+    checkpoint was written beside -- is the answer.
+    """
+    source = config(tmp_path)
+    schema = _tree_schema()
+    real = tmp_path / "mount"
+    outdir = real / "job-out"
+    forecast = outdir / "chain" / "run"
+    forecast.mkdir(parents=True)
+    checkpoint = _restart(forecast / "gpuwmrst_d01_2026-09-05_01_00_00.npz")
+    first_by_name = _tree_bundle(outdir / "aaa" / "prepared", schema)
+    table_pick = _tree_bundle(outdir / "prepared", schema)
+    beside = _tree_bundle(outdir / "chain" / "prepared", schema)
+
+    link = tmp_path / "scratch"
+    try:
+        link.symlink_to(real, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("this filesystem does not support directory symlinks")
+    seen = link / "job-out"
+
+    review = rw._launch(
+        _resume_request(tmp_path, source, seen, monkeypatch), tmp_path)["review"]
+    assert Path(review["prepared_root"]).resolve() == beside.resolve()
+    assert Path(review["prepared_root"]).resolve() != first_by_name.resolve()
+    assert Path(review["prepared_root"]).resolve() != table_pick.resolve()
+    assert Path(review["checkpoint"]).resolve() == checkpoint.resolve()
+    # The stated basis is the basis actually used, which is the half of
+    # this defect that no path comparison would have caught.
+    assert "nearest the checkpoint being resumed" in review["prepared_basis"]
+    assert "3 bundles" in review["prepared_basis"]
+
+    # The same tree with no link in it binds the same bundle: the link is
+    # not what decides this, which is the whole point.
+    plain = rw._launch(
+        _resume_request(tmp_path, source, outdir, monkeypatch), tmp_path)["review"]
+    assert plain["prepared_root"] == review["prepared_root"]
+
+
+def test_staged_resume_uses_the_checkpoints_chain_and_the_recorded_run_root(tmp_path):
+    run = tmp_path / "source" / "stamped-run"
+    schema = _tree_schema()
+    _tree_bundle(run / "aaa" / "prepared", schema)
+    beside = _tree_bundle(run / "chain" / "renamed-input", schema)
+    checkpoint = run / "chain" / "run" / "checkpoint.npz"
+    old = {"outdir": str(tmp_path / "source"), "run_root": str(run)}
+    plan = rw._resumed_plan({"route": "prepared"}, old, tmp_path / "next", checkpoint)
+    assert plan["run_options"]["prepared_root"] == str(beside.resolve())
+    evidence = run / "evidence"
+    evidence.mkdir()
+    wanted = _tree_bundle(run / "other" / "prepared", schema)
+    (evidence / "run-receipt.json").write_text(json.dumps(
+        {"input": {"prepared_root": "../other/prepared"}}), encoding="utf-8")
+    plan = rw._resumed_plan({"route": "prepared"}, old, tmp_path / "next", checkpoint)
+    assert plan["run_options"]["prepared_root"] == str(wanted.resolve())
+
+
+def test_checkpoint_resolution_stays_in_the_source_jobs_stamped_run(tmp_path):
+    source = config(tmp_path)
+    outdir = tmp_path / "old output"
+    run_root = outdir / "source-run"
+    forecast = run_root / "chain" / "run"
+    forecast.mkdir(parents=True)
+    wanted = _restart(forecast / "gpuwmrst_d01_2026-09-05_01_00_00.npz")
+    # Another run in the same output parent must not outrank this source job.
+    other = _restart(outdir / "gpuwmrst_d01_2026-09-05_02_00_00.npz")
+    old = {"snapshot_config": str(source), "outdir": str(outdir), "run_root": str(run_root)}
+    assert rw._resolve_checkpoint(old, "latest").checkpoint == wanted
+    assert rw._resolve_checkpoint(old, str(wanted)).checkpoint == wanted
+    with pytest.raises(ValueError, match="must belong to the source job"):
+        rw._resolve_checkpoint(old, str(other))

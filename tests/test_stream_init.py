@@ -673,7 +673,10 @@ def test_the_operational_output_carriers_are_priced_in_the_store():
     shapes = scratch_shapes(run)
     carried = sum(4 * math.prod(shapes[s]) for s in PERSISTENT if s in shapes)
     assert carried > 0.5 * 2**30
-    off = replace(run, gsd_diagnostics=0, prec_acc_dt=0.0, prec_acc_dt1=0.0)
+    # The recipe also turns on the HRRR v4 climate statistics (S5,
+    # lane/hrrr-v4-clwrf): their window carriers are persistent too.
+    off = replace(run, gsd_diagnostics=0, prec_acc_dt=0.0, prec_acc_dt1=0.0,
+                  output_diagnostics=0)
     cells = run.nx * run.ny * run.nz
     on_fp, off_fp = autoplan.footprint_for(run), autoplan.footprint_for(off)
     assert on_fp.store_bytes_per_cell - off_fp.store_bytes_per_cell == pytest.approx(carried / cells)

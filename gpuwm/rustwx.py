@@ -2129,7 +2129,31 @@ def run_ensemble_product_renderer(renderer: Path, product_frame: Path, *,
         raise RuntimeError("; ".join(failures))
     if not written or any(not path.is_file() for path in written):
         raise RuntimeError("resident probability render completed without all reported map files")
+    _fold_ensemble_georefs(Path(out_dir), result.stdout)
     return written, result.stdout
+
+
+def _fold_ensemble_georefs(out_dir: Path, stdout: str) -> None:
+    """Each drawn map's transform (the renderer's ``GEOREF<TAB>path<TAB>json`` lines) into ``out_dir``'s
+    ``render-georef.json``, keyed by the map's path under ``out_dir``, as every other render door records it.
+    THE BREAKAGE THIS CLOSES: ensemble product maps carried no transform, so a click on one could not become a
+    latitude and longitude (no soundings on 2,016 maps of a 20-member branched ensemble). Best effort: a record
+    not written never fails the maps it describes."""
+    import json
+    from gpuwm import render_georef
+    panels = {}
+    for line in stdout.splitlines():
+        if not line.startswith("GEOREF\t"):
+            continue
+        try:
+            _, path, text = line.split("\t", 2)
+            key = Path(os.path.abspath(path)).relative_to(Path(os.path.abspath(out_dir))).as_posix()
+            panels[key] = json.loads(text)
+        except (ValueError, OSError):
+            continue
+    if panels:
+        render_georef.fold(out_dir, {"schema": render_georef.GEOREF_SCHEMA, "panels": panels,
+                                     "without_georeference": []})
 
 
 def compose_ensemble_sheet(renderer: Path, rows, output: Path, *, title, valid_time):

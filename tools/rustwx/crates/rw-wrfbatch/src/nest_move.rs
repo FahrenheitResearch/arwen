@@ -1,4 +1,4 @@
-//! A moving nest's earlier frames, re-indexed onto the nest's latest place.
+//! A moving nest's frames, embedded on their fixed native union lattice.
 //!
 //! A following nest moves by whole parent cells, and every history frame
 //! records where it sat: WRF's `I_PARENT_START`, `J_PARENT_START` and
@@ -15,8 +15,11 @@
 //! following nest was drawn only at the hours in which the nest did not move
 //! (4 of 12 on a live tropical storm), and the render step ended failed.
 //!
-//! Here an earlier frame is moved onto the grid of the series' LAST frame
-//! (the frame the pictures are drawn for) by the move the two frames record:
+//! Compatible recorded placements use a bounding grid covering every frame.
+//! Coordinates are checked before embedding, and departed strips survive.
+//! For moving ancestors whose parent-relative placements cannot define that
+//! fixed Earth frame, the coordinate-verified last-frame fallback remains.
+//! In that fallback an earlier frame moves onto the series' LAST frame:
 //! the cell that sits on the same ground takes its value, and a cell the
 //! earlier place did not cover holds NaN, the store's missing value.  A
 //! window folded from it is missing there for that window, never zero and
@@ -111,6 +114,38 @@ pub(crate) fn shift_plane(values: &[f32], nx: usize, ny: usize, shift: NestShift
         }
     }
     shifted
+}
+
+/// Copy a native placement onto the bounding fixed frame of all placements.
+/// No interpolation and no cropped departure footprint. Holes stay missing.
+pub(crate) fn embed_plane(values: &[f32], source: (usize, usize), target: (usize, usize),
+                          offset: (usize, usize)) -> Result<Vec<f32>, String> {
+    let (nx, ny) = source;
+    let (tx, ty) = target;
+    let (x, y) = offset;
+    if values.len() != nx.checked_mul(ny).ok_or("source grid overflow")?
+        || x.checked_add(nx).is_none_or(|n| n > tx)
+        || y.checked_add(ny).is_none_or(|n| n > ty) {
+        return Err("nest footprint lies outside its fixed frame".into());
+    }
+    let mut result = vec![f32::NAN; tx.checked_mul(ty).ok_or("fixed grid overflow")?];
+    for row in 0..ny {
+        result[(row+y)*tx+x..(row+y)*tx+x+nx].copy_from_slice(&values[row*nx..(row+1)*nx]);
+    }
+    Ok(result)
+}
+
+#[cfg(test)]
+mod swath_tests {
+    use super::embed_plane;
+    #[test]
+    fn departed_and_exposed_strips_survive_fixed_frame_embedding() {
+        let first = embed_plane(&[25., 20., 25., 20.], (2, 2), (3, 2), (0, 0)).unwrap();
+        let last = embed_plane(&[30., 35., 30., 35.], (2, 2), (3, 2), (1, 0)).unwrap();
+        let maxima: Vec<_> = first.iter().zip(&last).map(|(a,b)| a.max(*b)).collect();
+        assert_eq!(maxima, vec![25., 30., 35., 25., 30., 35.]);
+        assert!(first[2].is_nan() && last[0].is_nan());
+    }
 }
 
 /// How far two coordinates of one cell may differ and still be the same

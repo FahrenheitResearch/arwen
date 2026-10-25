@@ -5,7 +5,7 @@
 pub mod advection;
 pub mod hazard;
 pub mod hodo;
-pub(crate) mod hodo_map_data;
+pub(crate) mod basemap;
 pub mod index_board;
 pub mod locator;
 pub mod ship_inset;
@@ -15,3 +15,4 @@ pub mod srwinds;
 pub mod stp;
 pub mod streamwiseness;
 pub mod thetae;
+pub(crate) mod world_map_data;

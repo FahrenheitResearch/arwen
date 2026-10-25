@@ -168,6 +168,23 @@ pub(super) fn build_render_request(
             ),
         )
     };
+    // Keep a fixed hurricane-range ceiling across member/frame sheets.
+    // An unset override preserves the operational standalone wind scale.
+    if recipe.slug == "10m_wind_speed_and_direction" {
+        if let Ok(text) = std::env::var("RUSTWX_WIND_MAX_KT") {
+            let ceiling = text.parse::<f64>()
+                .map_err(|_| "RUSTWX_WIND_MAX_KT must be numeric")?;
+            if !ceiling.is_finite() || ceiling <= 0. {
+                return Err("RUSTWX_WIND_MAX_KT must be finite and positive".into());
+            }
+            let mut scale = request.scale.resolved_discrete();
+            let intervals = scale.levels.len() - 1;
+            scale.levels = (0..=intervals)
+                .map(|i| ceiling * i as f64 / intervals as f64).collect();
+            scale.mask_below = None;
+            request.scale = ColorScale::Discrete(scale);
+        }
+    }
     crate::plot_design::StaticPlotDesign::new(bounds, visual_mode)
         .overlay_only(overlay_only)
         .apply_to_request(&mut request);

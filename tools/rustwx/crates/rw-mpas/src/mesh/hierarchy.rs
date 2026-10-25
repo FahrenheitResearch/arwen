@@ -66,6 +66,43 @@ const SURGERY_LOCALITY_CELLS: f64 = 3.0;
 /// to sit, never how bad a reading has to be to be asked about.
 const Q_DISLOCATION: f64 = 0.10;
 
+/// Fewest interior plateau cells the plateau top-up reads its delivered area
+/// ratio from. Below this the "interior" is a few rings of boundary cells,
+/// whose Voronoi areas reach into the unrefined ramp beside them, so the
+/// ratio would measure the boundary and not the plateau's crystal; such a
+/// plateau holds too few cells to move any median either.
+const PLATEAU_MIN_INTERIOR: usize = 64;
+
+/// What one level's plateau top-up measured and did, for the receipt.
+///
+/// THE BREAKAGE IT FIXES (box J, 2026-10-24, hex 0.4.4 / gpuwm 2.9.6): every
+/// refined plateau was an exact doubled copy of the level before, so it
+/// inherited that level's packing shortfall, and the count-exact top-up was
+/// barred from the plateau, so the cells the plateau was short went to the
+/// ramps instead. A 1 km core of 150 km on the 64 km ladder delivered
+/// 1.029 km in its core while the all-hexagon median read the background and
+/// passed; the same core at 300 km, two thirds of the mesh, was refused at
+/// 1.0209 against 1.0201.
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct PlateauTopUp {
+    /// Points inside the plateau (level field held at exactly `h_l`) right
+    /// after its doubling.
+    pub cells: usize,
+    /// Of those, the ones whose whole ring is also in the plateau: the cells
+    /// the area ratio is read from.
+    pub interior_cells: usize,
+    /// Mean interior Voronoi area over the area one `h_l` hexagon owns,
+    /// `(sqrt 3 / 2) h_l^2` -- the same convention as the sizing integral.
+    /// 1.0 is a plateau holding exactly its count.
+    pub delivered_area_ratio: f64,
+    /// Cells the plateau is owed: `cells * (delivered_area_ratio - 1)`,
+    /// rounded; zero or negative means no top-up (a surplus is left to the
+    /// anneal, as the global top-up leaves one).
+    pub owed: i64,
+    /// Top-up points actually placed inside the plateau.
+    pub inserted: usize,
+}
+
 /// What one level measured, for the receipt.
 #[derive(Debug, Clone, Serialize)]
 pub struct LevelReport {
@@ -86,6 +123,12 @@ pub struct LevelReport {
     pub delivered_median: f64,
     pub delivered_p05: f64,
     pub delivered_p95: f64,
+    /// The plateau top-up's measurement and insertion.
+    pub plateau: PlateauTopUp,
+    /// Delivered-over-requested median over the plateau's hexagons alone,
+    /// after surgery. The all-hexagon median above reads whichever part of
+    /// the mesh is the majority; this reads the core the level was bought for.
+    pub delivered_plateau_median: Option<f64>,
 }
 
 /// The level ladder in metres: `h_l = h_bg * 2^-l`, last level clamped to
@@ -109,28 +152,234 @@ pub fn ladder(spec: &MeshSpec) -> Vec<f64> {
 /// Delivered spacing per cell in metres, from the Voronoi cell areas of the
 /// current triangulation: `h = sqrt(2A / sqrt(3))`, the regular-hexagon
 /// across-flats inversion, the same convention `MpasMesh::spacing_m` uses.
+///
+/// On every core: each cell is independent and the result is collected by
+/// cell index, so it is the serial vector bit for bit (THE BREAKAGE: a
+/// whole-mesh pass on one thread at every level gate).
 fn delivered_spacing_m(points: &[V3], rings: &Rings) -> Vec<f64> {
-    use crate::mesh::geom::{circumcenter, tri_area};
     (0..points.len())
-        .map(|i| {
-            let ring = rings.ring(i);
-            let deg = ring.len();
-            let mut verts: Vec<V3> = Vec::with_capacity(deg);
-            for k in 0..deg {
-                let prev = ring[(k + deg - 1) % deg] as usize;
-                let cur = ring[k] as usize;
-                match circumcenter(points[i], points[prev], points[cur]) {
-                    Some(v) => verts.push(v),
-                    None => return 0.0,
-                }
-            }
-            let mut area = 0.0;
-            for k in 0..deg {
-                area += tri_area(points[i], verts[k], verts[(k + 1) % deg]);
-            }
-            (2.0 * area.abs() / 3f64.sqrt()).sqrt() * EARTH_RADIUS_M
-        })
+        .into_par_iter()
+        .map(|i| (2.0 * voronoi_area_sr(points, rings, i) / 3f64.sqrt()).sqrt() * EARTH_RADIUS_M)
         .collect()
+}
+
+/// Voronoi area of cell `i` on the unit sphere (steradians), from the
+/// circumcentres of its Delaunay fan; 0.0 for a degenerate fan.
+fn voronoi_area_sr(points: &[V3], rings: &Rings, i: usize) -> f64 {
+    use crate::mesh::geom::{circumcenter, tri_area};
+    let ring = rings.ring(i);
+    let deg = ring.len();
+    let mut verts: Vec<V3> = Vec::with_capacity(deg);
+    for k in 0..deg {
+        let prev = ring[(k + deg - 1) % deg] as usize;
+        let cur = ring[k] as usize;
+        match circumcenter(points[i], points[prev], points[cur]) {
+            Some(v) => verts.push(v),
+            None => return 0.0,
+        }
+    }
+    let mut area = 0.0;
+    for k in 0..deg {
+        area += tri_area(points[i], verts[k], verts[(k + 1) % deg]);
+    }
+    area.abs()
+}
+
+/// A fixed 64-bit mix of a canonical edge id: a deterministic, spatially
+/// uncorrelated ranking for the plateau top-up (SplitMix64's finaliser; no
+/// generator state, so the rank of an edge is a function of the edge alone).
+fn edge_rank(i: u32, j: u32) -> u64 {
+    let mut z = ((i as u64) << 32 | j as u64).wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// How close to `h_l` the level field must read for a point to be on the
+/// level's PLATEAU: a tenth of a percent, twenty times inside the 2% level
+/// delivery bound.
+///
+/// THE BREAKAGE A ROUNDING TOLERANCE HAD: a region core is a tanh plateau,
+/// and the tanh saturates to exactly 1.0 only 19 ramp widths inside the
+/// boundary. A 150 km core under an 18 km ramp is 8.3 widths deep at its
+/// centre, so its field reads h_l * (1 + 6e-8) there and never reaches h_l
+/// within 1e-9 anywhere: the whole core counted as "graded". MEASURED on the
+/// 300 km core scaled by 4 (box L): a 1e-9 test found 46,543 plateau cells
+/// of the 296,000 in the core.
+const PLATEAU_TOLERANCE: f64 = 1e-3;
+
+/// Is `p` on this level's plateau -- the level field at `h_l` to within
+/// [`PLATEAU_TOLERANCE`]? The same predicate keeps the global top-up off the
+/// plateau, so the plateau's cells come from its own top-up and the ramps'
+/// from theirs, never one from the other.
+fn on_plateau(field: &LevelClamp<'_>, p: V3) -> bool {
+    field.spacing_m(p) <= field.level_spacing_m * (1.0 + PLATEAU_TOLERANCE)
+}
+
+/// WHAT THE PLATEAU IS OWED, read on the PARENT triangulation before the
+/// level splits anything.
+///
+/// A doubled plateau holds four times the cells its parent held in the same
+/// ground (each cell keeps its point and gains three edge midpoints), so it
+/// carries the parent's shortfall forward, and each level's anneal adds its
+/// own: MEASURED, the level-0 Goldberg crystal's local spacing under a core
+/// was off by a few percent (area ratio 1.045 under 35N 97W, 0.968 under
+/// 48N 10E), and a 1 km core came out 2.9% coarse after six levels. The count
+/// it is owed is read from the cells themselves: the mean Voronoi area of the
+/// plateau's INTERIOR parent cells (whole ring on the plateau, so no area
+/// reaches into the ramp beside it), shared among the children the doubling
+/// makes of each parent, over the area one `h_l` hexagon owns. That ratio, less one, times the plateau's doubled
+/// count is what it is short.
+///
+/// Read BEFORE the split so the level still splits every edge it qualifies
+/// in one pass of one triangulation -- the consistent one-to-four doubling --
+/// and only the count the ramps may take changes (the caller reserves it).
+/// MEASURED: splitting the plateau as its own pass first and reading it after
+/// moved the plateau's rim edges between two triangulations, and the defect
+/// census rose from 1.52% to 2.30% of cells on the 80 -> 5 km CONUS globe,
+/// which owed nothing.
+fn plateau_owed(points: &[V3], rings: &Rings, field: &LevelClamp<'_>) -> PlateauTopUp {
+    let n = points.len();
+    let in_plateau: Vec<bool> = (0..n)
+        .into_par_iter()
+        .map(|i| on_plateau(field, points[i]))
+        .collect();
+    let parents = in_plateau.iter().filter(|&&b| b).count();
+    // The doubled plateau: its parents plus one child per edge whose midpoint
+    // is on it (V + E, which is GP(2m,2n)'s count on a whole sphere).
+    let midpoints: usize = (0..n)
+        .into_par_iter()
+        .map(|i| {
+            rings
+                .ring(i)
+                .iter()
+                .filter(|&&j| {
+                    (j as usize) > i
+                        && unit(add(points[i], points[j as usize])).is_some_and(|m| on_plateau(field, m))
+                })
+                .count()
+        })
+        .sum();
+    let cells = parents + midpoints;
+    let h_rad = field.level_spacing_m / EARTH_RADIUS_M;
+    let target_area_sr = 3f64.sqrt() / 2.0 * h_rad * h_rad;
+    // Per-cell areas on every core, summed in cell order so the count is the
+    // same to the bit on any thread count.
+    let areas: Vec<Option<f64>> = (0..n)
+        .into_par_iter()
+        .map(|i| {
+            if !in_plateau[i] || !rings.ring(i).iter().all(|&j| in_plateau[j as usize]) {
+                return None;
+            }
+            Some(voronoi_area_sr(points, rings, i))
+        })
+        .collect();
+    let mut interior_cells = 0usize;
+    let mut sum = 0.0f64;
+    for a in areas.into_iter().flatten() {
+        interior_cells += 1;
+        sum += a;
+    }
+    let mut out = PlateauTopUp {
+        cells,
+        interior_cells,
+        delivered_area_ratio: 0.0,
+        owed: 0,
+        inserted: 0,
+    };
+    if interior_cells < PLATEAU_MIN_INTERIOR || parents == 0 {
+        return out;
+    }
+    // A parent's area shared among the children the doubling makes of it
+    // (cells / parents, four in a crystal), over one h_l hexagon's area.
+    let child_area_sr = sum / interior_cells as f64 * parents as f64 / cells as f64;
+    out.delivered_area_ratio = child_area_sr / target_area_sr;
+    out.owed = (out.cells as f64 * (out.delivered_area_ratio - 1.0)).round() as i64;
+    out
+}
+
+/// TOP THE DOUBLED PLATEAU UP by `owed` points.
+///
+/// The points go on plateau edges ranked by a fixed hash of the edge id, and
+/// each placed point first keeps the cells next to the last one free, so the
+/// insertions spread over the plateau like blue noise instead of clumping:
+/// the anneal and surgery then absorb each as a separate small defect. This
+/// does put insertions into the doubled crystal, which the old global top-up
+/// refused to do; the crystal it kept was the wrong spacing, and G4 already
+/// explains plateau irregularity by the front (`h_l` is always inside it).
+fn plateau_insert(
+    points: &mut Vec<V3>,
+    field: &LevelClamp<'_>,
+    owed: usize,
+    front_spacing_m: &mut f64,
+) -> MpasResult<usize> {
+    if owed == 0 {
+        return Ok(0);
+    }
+    let rings = delaunay_rings(points)?;
+    let n = points.len();
+    let in_plateau: Vec<bool> = (0..n)
+        .into_par_iter()
+        .map(|i| on_plateau(field, points[i]))
+        .collect();
+    // Candidate edges: both ends on the plateau, ranked by the edge hash.
+    let mut candidates: Vec<(u64, u32, u32)> = (0..n)
+        .into_par_iter()
+        .map(|i| {
+            let mut local: Vec<(u64, u32, u32)> = Vec::new();
+            if !in_plateau[i] {
+                return local;
+            }
+            for &j in rings.ring(i) {
+                let j = j as usize;
+                if j <= i || !in_plateau[j] {
+                    continue;
+                }
+                local.push((edge_rank(i as u32, j as u32), i as u32, j as u32));
+            }
+            local
+        })
+        .collect::<Vec<_>>()
+        .concat();
+    // A total order: the hash, then the unique canonical id.
+    candidates.par_sort_unstable();
+    let mut chosen: Vec<(u32, u32)> = Vec::with_capacity(owed);
+    // Pass 1 keeps a one-ring gap around every placed point; pass 2, only if
+    // the plateau is owed more than that spacing allows, only forbids a
+    // shared cell (the global top-up's own rule).
+    let mut blocked = vec![false; n];
+    let mut used = vec![false; n];
+    for pass in 0..2 {
+        for &(_, i, j) in &candidates {
+            if chosen.len() >= owed {
+                break;
+            }
+            let (iu, ju) = (i as usize, j as usize);
+            if used[iu] || used[ju] || (pass == 0 && (blocked[iu] || blocked[ju])) {
+                continue;
+            }
+            used[iu] = true;
+            used[ju] = true;
+            for &c in rings.ring(iu).iter().chain(rings.ring(ju)) {
+                blocked[c as usize] = true;
+            }
+            blocked[iu] = true;
+            blocked[ju] = true;
+            chosen.push((i, j));
+        }
+    }
+    let new_points: Vec<V3> = chosen
+        .par_iter()
+        .map(|&(i, j)| surgery::spacing_true_point(field, points[i as usize], points[j as usize]))
+        .collect();
+    // Plateau points sit at h_l, inside every front the ladder has; the
+    // front is still advanced through the same reading for one rule.
+    if !chosen.is_empty() {
+        *front_spacing_m = front_spacing_m.max(field.level_spacing_m);
+    }
+    let added = new_points.len();
+    points.extend(new_points);
+    Ok(added)
 }
 
 /// What one level's insertion pass did.
@@ -146,6 +395,7 @@ struct InsertOutcome {
     inserted: usize,
     batches: usize,
     front_spacing_m: f64,
+    plateau: PlateauTopUp,
 }
 
 /// One level's insertion pass: split every Delaunay edge longer than
@@ -182,13 +432,29 @@ fn insert_level(
     let mut batches_used = 0usize;
     // The outermost field value this level inserted at; 0.0 until it does.
     let mut front_spacing_m = 0.0f64;
+
+    // ---- the plateau's own count -----------------------------------------
+    // Measured on the parent triangulation in batch 0 (`plateau_owed`); what
+    // it is owed is RESERVED out of the level count the splitting may take,
+    // and placed inside the doubled plateau once splitting is done, so the
+    // level stays count-exact and the ramps stop receiving the plateau's
+    // cells.
+    let mut plateau = PlateauTopUp::default();
+    let mut reserve = 0i64;
     for batch in 0..=MAX_INSERT_BATCHES {
-        let need = n_target - points.len() as i64;
+        let need = n_target - points.len() as i64 - reserve;
         if need <= 0 {
             batches_used = batch;
             break;
         }
         let rings = delaunay_rings(points)?;
+        if batch == 0 {
+            plateau = plateau_owed(points, &rings, field);
+            if plateau.owed > 0 {
+                reserve = plateau.owed.min(need - 1);
+            }
+        }
+        let need = n_target - points.len() as i64 - reserve;
         // Canonical edge order: (i, j) ascending with i < j; ranked
         // worst-first by ratio with the canonical id as the tie-break.
         // PARALLEL, and the same list. Every edge is independent and the sort
@@ -248,13 +514,19 @@ fn insert_level(
             }
         }
         let new_points: Vec<V3> = qualifying
-            .iter()
+            .par_iter()
             .map(|&(_, i, j)| {
                 surgery::spacing_true_point(field, points[i as usize], points[j as usize])
             })
             .collect();
         inserted_total += new_points.len();
         points.extend(new_points);
+    }
+
+    // ---- the plateau's reserved points, inside the doubled plateau -------
+    if reserve > 0 && inserted_total > 0 {
+        plateau.inserted = plateau_insert(points, field, reserve as usize, &mut front_spacing_m)?;
+        inserted_total += plateau.inserted;
     }
 
     // ---- count-exact top-up ----------------------------------------------
@@ -265,6 +537,7 @@ fn insert_level(
             inserted: 0,
             batches: batches_used,
             front_spacing_m: 0.0,
+            plateau,
         });
     }
     let predicted = n_target as f64;
@@ -297,18 +570,17 @@ fn insert_level(
                         continue;
                     };
                     // Only edges where the level field genuinely VARIES: the
-                    // deficit lives in the annulus and the tanh tail, and a
-                    // top-up point dropped into the uniform crystal (where
-                    // the clamp holds the field at exactly h_l) would break
-                    // the GP-doubled interior for a deficit that is not local
-                    // to it.
+                    // plateau (where the clamp holds the field at exactly
+                    // h_l) was already topped up to its OWN count by
+                    // `plateau_top_up`, so what is left here is the annulus
+                    // and the tanh tail, and a point dropped on the plateau
+                    // now would be one it is not owed.
                     let h_bar_m = field.spacing_m(mid);
-                    // AT the level means within rounding of it. THE BREAKAGE:
-                    // an exact `<=` let a uniform plateau whose field spacing
-                    // came out one ulp above the level (a km -> m round trip)
-                    // top up cells the level does not ask for, so the count
-                    // hinged on the last bit of the spacing.
-                    if h_bar_m <= field.level_spacing_m * (1.0 + 1e-9) {
+                    // AT the level means within the plateau tolerance of it
+                    // (never an exact `<=`, which made the count hinge on the
+                    // last bit of a km -> m round trip): the plateau's own
+                    // top-up already served every edge that reads it.
+                    if on_plateau(field, mid) {
                         continue;
                     }
                     let h_bar = h_bar_m / EARTH_RADIUS_M;
@@ -357,6 +629,7 @@ fn insert_level(
         inserted: inserted_total,
         batches: batches_used,
         front_spacing_m,
+        plateau,
     })
 }
 
@@ -604,7 +877,8 @@ pub fn generate_graded(
     let snap_median_offset = 0.5 * (choice.cells as f64 / n0.max(12) as f64 - 1.0).abs();
     // The resolution field is asked about 10^9 times over a ladder this size;
     // prepared ONCE here, and every level clamp is a view over this one.
-    let prepared = spec.prepared();
+    // Indexed: a polygon rung is answered from its bucket index, same bits.
+    let prepared = spec.prepared().indexed();
     let clamp0 = prepared.clamped(steps[0]);
     let mut outcome = relax(&mut points, &clamp0, lloyd)?;
     progress(&format!(
@@ -647,12 +921,21 @@ pub fn generate_graded(
             inserted,
             batches,
             front_spacing_m,
+            plateau,
         } = crate::mesh::profile::timed(
             &crate::mesh::profile::INSERT,
             points.len() as u64,
             || insert_level(&mut points, &clamp, beta, sizing_samples),
         )?;
         progress(&format!("INSERTED\t{l}\t{inserted}\t{batches}"));
+        progress(&format!(
+            "PLATEAU\t{l}\t{}\t{}\t{:.4}\t{}\t{}",
+            plateau.cells,
+            plateau.interior_cells,
+            plateau.delivered_area_ratio,
+            plateau.owed,
+            plateau.inserted
+        ));
         if inserted == 0 {
             // A level with no band (spec never crosses h_l) is a no-op level.
             continue;
@@ -776,7 +1059,7 @@ pub fn generate_graded(
         let (rings_after, ledger) = crate::mesh::profile::timed(
             &crate::mesh::profile::SURGERY,
             points.len() as u64,
-            || surgery::drain(&mut points, &clamp, surgery_opts, drift_budget),
+            || surgery::drain_with_retry(&mut points, &clamp, surgery_opts, drift_budget),
         )?;
         progress(&format!(
             "SURGERY\t{l}\t{}\t{}\t{:.4e}",
@@ -784,6 +1067,12 @@ pub fn generate_graded(
             ledger.ops.len(),
             ledger.min_q_after
         ));
+        if ledger.retried_at_ship_floor.is_some() {
+            progress(&format!(
+                "SURGERY\t{l}\tdrained again at the {} ship floor after a stubborn site",
+                surgery_opts.ship_floor
+            ));
+        }
 
         // Level gate: delivered percentiles against the LEVEL field, over
         // the HEXAGONAL cells. The area estimator reads a correctly spaced
@@ -795,11 +1084,27 @@ pub fn generate_graded(
         // all-cells percentiles remain the campaign's G7 reading, where the
         // canonical defect fraction (~10^-3) cannot move a percentile.
         let delivered = delivered_spacing_m(&points, &rings_after);
-        let mut ratios: Vec<f64> = (0..points.len())
+        let hex_cells: Vec<usize> = (0..points.len())
             .filter(|&i| rings_after.degree(i) == 6)
-            .map(|i| delivered[i] / DensityField::spacing_m(&clamp, points[i]))
             .collect();
-        ratios.sort_by(|a, b| a.total_cmp(b));
+        let mut ratios: Vec<f64> = hex_cells
+            .par_iter()
+            .map(|&i| delivered[i] / DensityField::spacing_m(&clamp, points[i]))
+            .collect();
+        let mut plateau_ratios: Vec<f64> = hex_cells
+            .par_iter()
+            .filter(|&&i| on_plateau(&clamp, points[i]))
+            .map(|&i| delivered[i] / clamp.level_spacing_m)
+            .collect();
+        ratios.par_sort_unstable_by(|a, b| a.total_cmp(b));
+        plateau_ratios.par_sort_unstable_by(|a, b| a.total_cmp(b));
+        let delivered_plateau_median = (!plateau_ratios.is_empty())
+            .then(|| plateau_ratios[(plateau_ratios.len() - 1) / 2]);
+        progress(&format!(
+            "PLATEAU_DELIVERED\t{l}\t{}\t{}",
+            plateau_ratios.len(),
+            delivered_plateau_median.map_or("-".to_string(), |m| format!("{m:.4}"))
+        ));
         let at = |q: f64| ratios[((ratios.len() - 1) as f64 * q).round() as usize];
         let (p05, p50, p95) = (at(0.05), at(0.50), at(0.95));
         // 2% + the seed snap: the LEVEL gate is a tripwire against gross
@@ -867,6 +1172,8 @@ pub fn generate_graded(
             delivered_median: p50,
             delivered_p05: p05,
             delivered_p95: p95,
+            plateau,
+            delivered_plateau_median,
         });
     }
 
@@ -948,6 +1255,47 @@ mod tests {
         assert_eq!(ladder(&MeshSpec::uniform(120.0)), vec![120_000.0]);
     }
 
+    /// The spacing whose hexagons, `(sqrt 3 / 2) h^2` each, tile the sphere
+    /// with exactly `cells` cells -- the sizing integral's own convention.
+    fn area_equivalent_spacing_m(cells: usize) -> f64 {
+        let sphere = 4.0 * std::f64::consts::PI * EARTH_RADIUS_M * EARTH_RADIUS_M;
+        (sphere / (cells as f64 * 3f64.sqrt() / 2.0)).sqrt()
+    }
+
+    /// THE DEFECT: a doubled plateau keeps its parent's count, so a plateau
+    /// that is short stays short, level after level (box J, 2026-10-24: a
+    /// 1 km core delivered at 1.029 km; at 300 km the level gate refused it).
+    /// A plateau owed cells must get them, inside itself, and come out at its
+    /// own count.
+    #[test]
+    fn a_short_plateau_is_topped_up_to_its_own_count() {
+        let (m, n) = (4u32, 0u32);
+        let doubled = crate::mesh::icosa::goldberg_cells(2 * m, 2 * n);
+        // 3% finer than GP(2m,2n) holds: the doubled crystal is ~6% short.
+        let h = 0.97 * area_equivalent_spacing_m(doubled);
+        let spec = MeshSpec::uniform(h / 1000.0);
+        let prepared = spec.prepared();
+        let clamp = prepared.clamped(h);
+        let mut pts = crate::mesh::icosa::seed(m, n).unwrap();
+        let out = insert_level(&mut pts, &clamp, DEFAULT_BETA, 50_000).unwrap();
+        let p = out.plateau;
+        assert_eq!(p.cells, doubled, "the plateau pass did not double the crystal: {p:?}");
+        assert!(p.owed > 0, "a 6%-short plateau read no deficit: {p:?}");
+        assert_eq!(p.inserted as i64, p.owed, "the plateau was not given what it is owed: {p:?}");
+        let target = crate::mesh::density::predicted_cells_of(&clamp, 50_000);
+        let off = pts.len() as f64 / target - 1.0;
+        assert!(
+            off.abs() < 0.01,
+            "{} cells against the {target:.0} the level owes ({:+.2}%) -- the plateau is still off its own count",
+            pts.len(),
+            100.0 * off
+        );
+        // Deterministic: the same level twice is bit-identical.
+        let mut again = crate::mesh::icosa::seed(m, n).unwrap();
+        insert_level(&mut again, &clamp, DEFAULT_BETA, 50_000).unwrap();
+        assert_eq!(pts, again);
+    }
+
     #[test]
     fn full_midpoint_insertion_on_a_goldberg_patch_is_exact_gp_doubling() {
         // A UNIFORM interior under a level whose spacing is half the current
@@ -956,26 +1304,23 @@ mod tests {
         let m = 4u32;
         let n = 0u32;
         let mut pts = crate::mesh::icosa::seed(m, n).unwrap();
-        // GP(4,0) delivered spacing on the unit sphere in "metres" of the
-        // earth-scaled field: mean arc * R. Halving it is the level request.
-        let rings = delaunay_rings(&pts).unwrap();
-        let mut mean_arc = 0.0;
-        let mut count = 0usize;
-        for i in 0..pts.len() {
-            for &j in rings.ring(i) {
-                if (j as usize) > i {
-                    mean_arc += arc(pts[i], pts[j as usize]);
-                    count += 1;
-                }
-            }
-        }
-        mean_arc /= count as f64;
-        let uniform_half = MeshSpec::uniform(mean_arc * EARTH_RADIUS_M / 2.0 / 1000.0);
+        // The level request: the spacing whose hexagons tile the sphere with
+        // exactly GP(2m,2n)'s count, so the level is owed exactly the doubled
+        // count and the doubled plateau holds it (its cells' areas sum to the
+        // sphere): the top-up owes nothing and the doubling is the whole
+        // insertion. (A plateau that is OWED cells is the test above.)
+        let half_m = area_equivalent_spacing_m(crate::mesh::icosa::goldberg_cells(2 * m, 2 * n));
+        let uniform_half = MeshSpec::uniform(half_m / 1000.0);
         let prepared_half = uniform_half.prepared();
-        let clamp = prepared_half.clamped(mean_arc * EARTH_RADIUS_M / 2.0);
+        let clamp = prepared_half.clamped(half_m);
         let InsertOutcome {
-            inserted, batches, ..
+            inserted,
+            batches,
+            plateau,
+            ..
         } = insert_level(&mut pts, &clamp, DEFAULT_BETA, 50_000).unwrap();
+        assert!(plateau.owed <= 0, "the plateau was owed {} cells: {plateau:?}", plateau.owed);
+        assert_eq!(plateau.inserted, 0);
         assert_eq!(
             pts.len(),
             crate::mesh::icosa::goldberg_cells(2 * m, 2 * n),

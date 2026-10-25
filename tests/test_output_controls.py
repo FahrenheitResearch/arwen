@@ -18,10 +18,11 @@ def test_history_switch_matches_clock_fixed_runner_and_inventory(tmp_path):
     # NOAA HRRR's two-cadence history (15 min to f18, then hourly), written
     # into a copy of the recipe: 2.9.4's recipe is hourly, the switch stays.
     recipe = (ROOT / "gpuwm/data/recipes/hrrr_v4_gsd41.toml").read_text(encoding="utf-8")
-    assert recipe.count("history_interval_s = 3600.0\n") == 1
+    # Line-anchored: the [output] table's full_history_interval_s ends the same way.
+    assert recipe.count("\nhistory_interval_s = 3600.0\n") == 1
     copy = tmp_path / "hrrr_v4_gsd41.toml"
-    copy.write_text(recipe.replace("history_interval_s = 3600.0\n",
-        "history_interval_s = 900.0\nhistory_interval2_s = 3600.0\n"
+    copy.write_text(recipe.replace("\nhistory_interval_s = 3600.0\n",
+        "\nhistory_interval_s = 900.0\nhistory_interval2_s = 3600.0\n"
         "history_interval_change_s = 64800.0\n"), encoding="utf-8")
     exp = load_experiment(copy)
     exp = replace(exp, run_seconds=48*3600)

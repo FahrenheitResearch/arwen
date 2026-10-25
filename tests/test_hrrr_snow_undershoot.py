@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 
 from gpuwm.ingest.hrrr import interpolate_hrrr_to_lambert
-from test_hrrr_island_donor import (_HostBackend, _ISLAND, _nest_grid,
+from test_hrrr_island_donor import (_HostBackend, _nest_grid,
                                     _window_snapshot)
 
 
@@ -34,9 +34,13 @@ def _bare_patches_in_snow(shape, depth):
 
 
 def _map(snapshot):
-    landmask = np.zeros((216, 222))
-    for row, column in _ISLAND:
-        landmask[row, column] = 1.0
+    # Isolate the unmasked operator's inland snow undershoot. Coastal support
+    # has its own matching-chain tests and can correctly require a larger
+    # source window when a mismatched surface search reaches an open edge.
+    fields = dict(snapshot.fields)
+    fields["LANDSEA"] = np.ones((snapshot.ny, snapshot.nx), dtype=np.float32)
+    snapshot = replace(snapshot, fields=fields)
+    landmask = np.ones((216, 222))
     return interpolate_hrrr_to_lambert(
         snapshot, _nest_grid(), target_landmask=landmask,
         surface_fallback_radius=8, backend=_HostBackend(),

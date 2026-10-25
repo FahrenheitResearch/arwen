@@ -149,6 +149,19 @@ class CorridorRefusal(ValueError):
     silently static nest."""
 
 
+def _link_or_copy(source: Path, target: Path) -> bool:
+    """Hard-link ``target`` to ``source``; copy where links are not
+    possible (another filesystem).  True when linked."""
+    import shutil
+
+    try:
+        os.link(source, target)
+        return True
+    except OSError:
+        shutil.copyfile(source, target)
+        return False
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with Path(path).open("rb") as stream:
@@ -1105,8 +1118,21 @@ def write_statics_corridor_set(directory: Path,
             raise ValueError(f"duplicate statics corridor for {label}")
         directory.mkdir(parents=True, exist_ok=True)
         cache_path = directory / f"{label}.npz"
-        _write_deterministic_npz(cache_path, build.fields)
         entry = dict(build.entry)
+        twin = domains.get(str(entry.get("shared_ground_with", "")))
+        if twin is not None:
+            # Same ground, same arrays (emit_statics_corridor_set hands the
+            # first slot's fields on), and the writer is byte-deterministic,
+            # so the twin's file IS this cache: linked, not rewritten and
+            # re-hashed.  Breakage: every dormant slot of a 1 km CONUS whole
+            # frame wrote and hashed its own 10 GB on one core (box D,
+            # 2026-10-21, ~1 min per slot on the prepare path).
+            del build
+            _link_or_copy(directory / twin["cache"]["path"], cache_path)
+            entry["cache"] = {**twin["cache"], "path": cache_path.name}
+            domains[label] = entry
+            continue
+        _write_deterministic_npz(cache_path, build.fields)
         del build
         entry["cache"] = {
             "path": cache_path.name,
@@ -1189,7 +1215,10 @@ def copy_statics_corridor_set(source: Path, directory: Path, *,
     directory.mkdir(parents=True)
     for label, entry in sorted(domains.items()):
         name = str(entry["cache"]["path"])
-        shutil.copyfile(source / name, directory / name)
+        if _link_or_copy(source / name, directory / name):
+            # A hard link is the checked file itself (one inode), so the
+            # after-copy check would re-read the same bytes it just read.
+            continue
         check(directory, entry["cache"], label)
     shutil.copyfile(source / STATICS_CORRIDOR_RECEIPT,
                     directory / STATICS_CORRIDOR_RECEIPT)

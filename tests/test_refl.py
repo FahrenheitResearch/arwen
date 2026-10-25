@@ -306,7 +306,7 @@ def test_refl_stash_is_consumed_once_and_missing_is_loud():
 
 
 def test_refl_stash_has_no_trajectory_or_restart_reader():
-    """D2: the one-frame handoff can feed output only, never the model."""
+    """The handoff feeds history/lightning diagnostics, never prognostics."""
     repo = Path(__file__).resolve().parents[1]
     gpuwm = repo / "gpuwm"
 
@@ -375,6 +375,11 @@ def test_refl_stash_has_no_trajectory_or_restart_reader():
         # an unconsumed stash would be the same cadence refusal one call
         # later.
         "gpuwm/core/mpas_column_batch.py",
+        # The configurable column suite builds the same history receipt.
+        "gpuwm/core/mpas_column_suite.py",
+        # Lightning consumes only to clear a diagnostic-only handoff when
+        # history is not due; its flash diagnostics read the native field.
+        "gpuwm/core/lightning.py",
     }
 
     # Prevent a direct attribute read or constant-name getattr from bypassing
@@ -398,6 +403,10 @@ def test_refl_stash_has_no_trajectory_or_restart_reader():
                     and isinstance(node.args[1], ast.Constant)
                     and node.args[1].value == "refl_10cm"))
         ]
+        if path == gpuwm / "core" / "lightning.py":
+            assert len(readers) == 1
+            assert ast.unparse(readers[0]) == "state.physics.refl_10cm"
+            continue
         assert not readers, f"package code reads REFL_10CM: {path}"
 
 

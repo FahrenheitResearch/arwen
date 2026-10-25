@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import shutil
 from pathlib import Path
@@ -58,6 +59,15 @@ def preparation_identity(row):
     path = recipe_path(row)
     identity = {'parameter_recipe': path.name,
                 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+    # Archive editions and the native recipe are part of the prepared fabric,
+    # even when the parameter template and the executable path stay the same.
+    from .door import _repo_root
+    table = row.get('builder', {}).get('source_table', {}).get('path')
+    if table:
+        source = _repo_root() / table
+        identity['sources_sha256'] = hashlib.sha256(source.read_bytes()).hexdigest()
+    from .acquire import params_table_path
+    identity['parameters_sha256'] = hashlib.sha256(params_table_path().read_bytes()).hexdigest()
     gauges = json.loads(path.read_text()).get('gauges')
     if gauges:
         identity['gauges'] = {name: {'name': Path(gauges[name]).name,
@@ -156,7 +166,15 @@ def prepare(*, row, footprint, out, config, runner, sources=None, static_ready=F
                        'seconds': time.perf_counter() - start, 'returncode': result.returncode})
         _write(out / 'provider-stages.json', stages)
         if result.returncode:
-            raise RuntimeError(f"hydro provider {name}: {(result.stderr or result.stdout)[-2000:]}")
+            termination = f"return code {result.returncode}"
+            if result.returncode < 0:
+                import signal
+                try:
+                    termination += f" ({signal.Signals(-result.returncode).name})"
+                except ValueError:
+                    pass
+            detail = (result.stderr or result.stdout).strip() or 'no tool diagnostic'
+            raise RuntimeError(f"hydro provider {name}: {termination}: {detail[-2000:]}")
         return json.loads(result.stdout) if json_output else None
 
     source_recipe = recipe_path(row)
@@ -306,11 +324,7 @@ def composition(*, manifest, footprint, realization=None):
     interval = float(footprint['interval_seconds'])
     routing_interval = float(metadata['routing']['dt_seconds'])
     duration = float(footprint['duration_seconds'])
-    if interval <= 0 or duration < interval or duration % interval:
-        raise ValueError('forecast duration must contain whole hydro intervals')
-    if routing_interval < interval or routing_interval % interval or duration % routing_interval:
-        raise ValueError('routing period and forecast duration must contain whole LSM/routing intervals')
-    routing_cadence = int(routing_interval / interval)
+    routing_cadence = max(1, int(routing_interval / interval))
     payloads = metadata['files']
     weights_sha = payloads['exchange_weights']['sha256']
     stages = [
@@ -326,12 +340,13 @@ def composition(*, manifest, footprint, realization=None):
                      'area_component': 'areas', 'depth_field': 'runoff_depth_m',
                      'area_array': 'areasqkm', 'area_units': 'km2',
                      'routing_period_seconds': routing_interval,
+                     'routing_clock': True,
                      'source_partition': exchange['source_partition']}}]
-    if exchange.get('cadence') == 'routing':
+    accumulated = exchange.get('cadence') == 'routing'
+    if accumulated:
         # An accumulated parent (Noah, RUC) differences its totals over any span,
-        # so exchange and transfer run once per routing interval: the same water
-        # in one launch instead of one per LSM call, and a clock the adaptive
-        # parent can drive (gpuwm.hydro.driver.allow_variable_interval).
+        # so exchange runs at routing-boundary crossings. Transfer splits that
+        # sampled volume between the completed bucket and its carried remainder.
         for row in stages:
             if row['name'] in ('exchange', 'runoff'):
                 row.update(cadence_steps=routing_cadence, interval_seconds=routing_interval)
@@ -358,8 +373,12 @@ def composition(*, manifest, footprint, realization=None):
                    'cadence_steps': routing_cadence, 'interval_seconds': routing_interval,
                    'options': {'source': 'routing', 'origin': footprint['time_origin'],
                                'interval_seconds': routing_interval,
-                               'capacity_steps': int(duration / routing_interval),
+                               'capacity_steps': math.ceil(duration / routing_interval),
+                               'routing_clock': True,
+                               'duration_seconds': duration,
                                'cadence_steps': history_cadence,
                                'types': ['flowpath'] * count}})
     return {'driver_factory': 'gpuwm.hydro.assembly:prepare', 'stages': stages,
+            'routing_clock': {'period_seconds': routing_interval, 'duration_seconds': duration,
+                              'accumulated_parent': accumulated},
             'time_origin': footprint['time_origin'], 'interval_seconds': interval}

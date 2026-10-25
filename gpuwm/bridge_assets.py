@@ -1440,6 +1440,15 @@ NATIVE_BUILD_INPUTS["tools/nextgen_reservoir_prepare"] = ("tools/nextgen_reservo
 NATIVE_BUILD_INPUTS["tools/hydro_world_init"] = (
     "tools/hydro_world_init", "tools/hydro_world", *NATIVE_BUILD_INPUTS["tools/rustwx"])
 
+# These bridges compile the pinned static projection library, including its
+# embedded database. A change there must invalidate every dependent artifact.
+for _hydro_crate in ("tools/hydro_world", "tools/hydro_world_params",
+                     "tools/hydro_world_init", "tools/nextgen_hydrofabric",
+                     "tools/nextgen_verify"):
+    NATIVE_BUILD_INPUTS[_hydro_crate] += ("tools/hydro_proj",)
+    if "tools/rustwx/vendor/crates-io" not in NATIVE_BUILD_INPUTS[_hydro_crate]:
+        NATIVE_BUILD_INPUTS[_hydro_crate] += ("tools/rustwx/vendor/crates-io",)
+
 # The 2.9.4 ocean preparation (lane/cap-slab-ocean, rw_ocean) and bathymetry
 # (rw_bathy) tools build against the renderer workspace's shared NetCDF
 # reader, static-fields and the NetCDF writer by path, so they keep that

@@ -149,7 +149,8 @@ boundary interval at its seam. This holds for `mode = "on"` and for
 `auto` when the planner streams the root. A
 time step derived from the terrain reads the root's boundary winds over
 the whole run, so a later interval can move it; the forecast so far is
-then kept in `streamed-attempt/` and the forecast runs again on the
+then kept in `.quarantine/streamed-attempt/`, out of the run's history,
+and the forecast runs again on the
 sealed tree in the same process, so its output is the sealed tree's.
 
 Chained preparation is on by default. A chained forecast writes the same

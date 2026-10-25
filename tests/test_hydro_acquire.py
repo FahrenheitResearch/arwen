@@ -68,3 +68,29 @@ def test_a_transient_answer_retries_with_backoff(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="410"):
         a._download("https://example.invalid/g", tmp_path / "g")
     assert len(calls) == 1
+
+
+def test_native_vpu_archives_are_versioned_and_shared_components_fetch_once():
+    table = json.loads(a.source_table_path().read_text())
+    jobs = a._archive_jobs(table, {'conus-nhdplus-v21'}, ['13'])
+    native = [j for j in jobs if j.get('region')]
+    assert len(native) == 3  # flowlines, catchments, VAA + elevations together
+    assert all(j['region'] == '13' and j['url'].endswith('.7z') for j in native)
+    assert any('NHDPlusAttributes_07.7z' in j['url'] for j in native)
+    assert not any('10U' in j['url'] for j in jobs)
+    assert any(j['input'] == 'processing_units' and j['archive'].endswith('.7z') for j in jobs)
+
+
+def test_sevenzip_unpack_is_reusable_and_preserves_archive_layout(tmp_path):
+    py7zr = pytest.importorskip("py7zr")
+    source = tmp_path / 'Catchment.shp'
+    source.write_bytes(b'layout-proof')
+    archive = tmp_path / 'vpu.7z'
+    with py7zr.SevenZipFile(archive, 'w') as bundle:
+        bundle.write(source, 'NHDPlusRG/NHDPlus13/NHDPlusCatchment/Catchment.shp')
+    destination = tmp_path / 'extracted'
+    a._extract(archive, destination)
+    out = destination / 'NHDPlusRG/NHDPlus13/NHDPlusCatchment/Catchment.shp'
+    before = out.stat().st_mtime_ns
+    a._extract(archive, destination)
+    assert out.read_bytes() == b'layout-proof' and out.stat().st_mtime_ns == before

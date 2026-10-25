@@ -136,7 +136,12 @@ class _Guard:
         markexpr = getattr(config.option, "markexpr", "") or ""
         self.subset_run = bool(getattr(config.option, "keyword", "")
                                or getattr(config.option, "deselect", None))
-        self.floors = {} if self.subset_run else _floors(self.root, markexpr)
+        recording = os.environ.get("GPUWM_RECORD_CENSUS") == "1"
+        if recording and not getattr(config.option, "collectonly", False):
+            import pytest
+            raise pytest.UsageError("GPUWM_RECORD_CENSUS requires --collect-only; "
+                                    "a test run must enforce the recorded floor")
+        self.floors = {} if self.subset_run or recording else _floors(self.root, markexpr)
         if getattr(config.option, "dist", "no") not in ("no", None) and not \
                 hasattr(config, "workerinput"):
             self.blind = (

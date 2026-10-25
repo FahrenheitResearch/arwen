@@ -67,6 +67,10 @@ class FakeRun:
     cu_physics: int = 0
     bldt: float = 0.0
     min_time_step_sound: int = 0
+    # The grid size: a nested landing weighs its candidates by cell-steps.
+    nx: int = 50
+    ny: int = 50
+    nz: int = 40
 
 
 @dataclass

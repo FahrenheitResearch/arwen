@@ -1313,6 +1313,22 @@ fn validate_supersample(factor: usize) -> MpasResult<()> {
 
 /// MPAS: mpas_init_atm_static.F:1294-1461 (init_atm_map_static_data).
 /// Rust visits archive tiles directly; integer accumulations retain native words.
+///
+/// Two things keep a REGIONAL mesh off one core (WOOF run controls:
+/// a 937.5 m region of 382k cells spent 590 s in its
+/// halo static, every 30-second dataset building 648 tile maps of 5.8 M kd
+/// lookups each, and the few tiles under the fine core finishing on one or two
+/// threads while the rest of the pool sat idle):
+///
+/// * A tile no pixel of which can reach a cell is answered without a lookup.
+///   Its centre's nearest cell, searched within `sqrt(max_d2) + R + slack`
+///   (R contains the tile from its centre), is absent, so by the triangle
+///   inequality every pixel is farther than `sqrt(max_d2)` from every cell:
+///   `nearest_bounded` would refuse each one, and the map is all `-1`. The
+///   slack (1 km) is many orders above the f32 rounding of the coordinates.
+/// * `parallel_rows`: the rows of a tile are filled on the pool. Each row is
+///   the same pure function of its pixels, written to its own slice, so the
+///   map is the same `Vec` in the same order.
 fn tile_map(
     mesh: &Mesh,
     tree: &KdTree,
@@ -1320,41 +1336,114 @@ fn tile_map(
     ds: &GeogDataset,
     tile: &TileRef,
     factor: usize,
+    parallel_rows: bool,
 ) -> MpasResult<Vec<i32>> {
     validate_supersample(factor)?;
     let pixels = (ds.index.tile_x as usize)
         .checked_mul(ds.index.tile_y as usize)
         .and_then(|v| v.checked_mul(factor * factor))
         .ok_or_else(|| MpasError::Refusal("tile-map element count overflow".to_string()))?;
-    let mut out = Vec::new();
+    let mut out: Vec<i32> = Vec::new();
     out.try_reserve_exact(pixels).map_err(|e| {
         MpasError::Refusal(format!(
             "host memory allocation failed for tile destination map: {pixels} i32 values: {e}"
         ))
     })?;
-    for j in 0..ds.index.tile_y as usize {
+    if tile_reaches_no_cell(mesh, tree, max_distance2, ds, tile, factor) {
+        out.resize(pixels, -1);
+        return Ok(out);
+    }
+    out.resize(pixels, -1);
+    let row = ds.index.tile_x as usize * factor * factor;
+    if row == 0 {
+        return Ok(out);
+    }
+    let fill = |j: usize, dst: &mut [i32]| {
+        let mut k = 0usize;
         for i in 0..ds.index.tile_x as usize {
             for sj in 0..factor {
                 for si in 0..factor {
                     let (lat, lon) = ds.tile_to_latlon(tile, i * factor + si, j * factor + sj, factor);
                     let p = crate::static_native::xyz(mesh.sphere_radius as f32, lat, lon).map(f64::from);
-                    let Some((cell, d2)) = tree.nearest_bounded(p,max_distance2) else {
-                        out.push(-1); continue;
+                    dst[k] = match tree.nearest_bounded(p, max_distance2) {
+                        None => -1,
+                        Some((cell, d2)) => {
+                            // The native regional rule (init_atm_static, nBdyLayers=7):
+                            // a pixel is accepted unconditionally at mask < 7, and on
+                            // an outermost-ring cell only when it is geometrically
+                            // INSIDE that cell -- otherwise its true owner was culled
+                            // and the pixel belongs to nobody in this mesh.
+                            let accepted = d2 < max_distance2
+                                && (mesh.bdy_mask_cell[cell] != REGIONAL_OUTERMOST_MASK
+                                    || point_in_cell(mesh, cell, p));
+                            if accepted { cell as i32 } else { -1 }
+                        }
                     };
-                    // The native regional rule (init_atm_static, nBdyLayers=7):
-                    // a pixel is accepted unconditionally at mask < 7, and on
-                    // an outermost-ring cell only when it is geometrically
-                    // INSIDE that cell -- otherwise its true owner was culled
-                    // and the pixel belongs to nobody in this mesh.
-                    let accepted = d2 < max_distance2
-                        && (mesh.bdy_mask_cell[cell] != REGIONAL_OUTERMOST_MASK
-                            || point_in_cell(mesh, cell, p));
-                    out.push(if accepted { cell as i32 } else { -1 });
+                    k += 1;
                 }
             }
         }
+    };
+    if parallel_rows {
+        out.par_chunks_mut(row).enumerate().for_each(|(j, dst)| fill(j, dst));
+    } else {
+        for (j, dst) in out.chunks_mut(row).enumerate() {
+            fill(j, dst);
+        }
     }
     Ok(out)
+}
+
+/// True when no pixel of `tile` can lie within `sqrt(max_distance2)` of any
+/// cell (see [`tile_map`]). Decided from the tile's centre and corners and one
+/// bounded kd search; `false` whenever the bound is not finite.
+fn tile_reaches_no_cell(
+    mesh: &Mesh,
+    tree: &KdTree,
+    max_distance2: f64,
+    ds: &GeogDataset,
+    tile: &TileRef,
+    factor: usize,
+) -> bool {
+    if !max_distance2.is_finite() || max_distance2 <= 0.0 {
+        return false;
+    }
+    let nx = ds.index.tile_x as usize * factor;
+    let ny = ds.index.tile_y as usize * factor;
+    if nx == 0 || ny == 0 {
+        return false;
+    }
+    // The corner bound below holds only while the tile spans at most 180
+    // degrees of longitude (beyond that the farthest point can be an edge
+    // midpoint or the antipode, e.g. (0, 180) of a one-tile global grid
+    // centred at (0, 0), 2 R away against the corners' 1.41 R). Release
+    // review 14 (2.9.7): such a tile was skipped and a CONUS region got no
+    // samples. Tiles wider than 90 degrees either way take the full lookup.
+    if ds.index.tile_x as f64 * ds.index.dx.abs() > 90.0
+        || ds.index.tile_y as f64 * ds.index.dy.abs() > 90.0
+    {
+        return false;
+    }
+    let at = |i: usize, j: usize| -> [f64; 3] {
+        let (lat, lon) = ds.tile_to_latlon(tile, i, j, factor);
+        crate::static_native::xyz(mesh.sphere_radius as f32, lat, lon).map(f64::from)
+    };
+    let d = |a: [f64; 3], b: [f64; 3]| {
+        ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+    };
+    let centre = at(nx / 2, ny / 2);
+    // On a latitude-longitude box the farthest point from an interior point
+    // is a corner; the 1 % and the one-pixel pad cover the corner pixels'
+    // own extent and the sampling offsets.
+    let corners = [at(0, 0), at(nx - 1, 0), at(0, ny - 1), at(nx - 1, ny - 1)];
+    let reach = corners.iter().map(|&c| d(centre, c)).fold(0.0f64, f64::max);
+    let pixel = d(at(0, 0), at(1.min(nx - 1), 1.min(ny - 1))).max(1.0);
+    const SLACK_M: f64 = 1000.0;
+    let bound = max_distance2.sqrt() + reach * 1.01 + pixel + SLACK_M;
+    if !bound.is_finite() {
+        return false;
+    }
+    tree.nearest_bounded(centre, bound * bound).is_none()
 }
 
 // ---------------------------------------------------------------------------
@@ -1555,7 +1644,15 @@ impl GeogContext<'_> {
         if let Some(hit) = self.cache.get(&key, len)? {
             return Ok(hit);
         }
-        let map = tile_map(self.mesh, self.tree, self.max_d2, ds, tile, factor)?;
+        // The rows of one tile go to the admitted pool (the same threads the
+        // tiles run on), so the few tiles under a regional mesh's fine core
+        // no longer finish on one thread each while the rest wait.
+        let map = match self.pool {
+            Some(pool) if self.workers > 1 => pool.install(|| {
+                tile_map(self.mesh, self.tree, self.max_d2, ds, tile, factor, true)
+            })?,
+            _ => tile_map(self.mesh, self.tree, self.max_d2, ds, tile, factor, false)?,
+        };
         self.cache.insert(key, &map)?;
         Ok(map)
     }
@@ -5130,6 +5227,60 @@ mod tests {
         );
         let (serial, _) = run_case(&gutted, &mesh, 1, 0, "skip-gutted-serial");
         assert_eq!(sha256_file(&serial).unwrap(), sha256_file(&skipped).unwrap());
+    }
+
+    #[test]
+    fn a_one_tile_global_grid_is_never_skipped_for_a_far_region() {
+        // Release review 14 (2.9.7): a 1 degree global grid stored as one
+        // tile, centred about 160 degrees of longitude from the region. Its
+        // corners sit near the poles, so the corner bound came out near 93
+        // degrees of arc and the tile was skipped although the region lies
+        // inside it: every cell lost its samples.
+        let mesh = synthetic_regional_mesh();
+        let tree = KdTree::new(&mesh);
+        let index = crate::static_geog::GeogIndex {
+            kind: SourceKind::Continuous,
+            projection: "regular_ll".to_string(),
+            dx: 1.0,
+            dy: 1.0,
+            known_x: 1.0,
+            known_y: 1.0,
+            known_lat: -89.5,
+            known_lon: 20.5,
+            wordsize: 2,
+            tile_x: 360,
+            tile_y: 180,
+            tile_z_start: 1,
+            tile_z_end: 1,
+            tile_bdr: 0,
+            signed: false,
+            big_endian: true,
+            scale_factor: 1.0,
+            missing_value: None,
+            missing_value_rkind: None,
+            category_min: None,
+            category_max: None,
+            iswater: None,
+            islake: None,
+            isice: None,
+            isoilwater: None,
+            mminlu: String::new(),
+            row_order_top_bottom: false,
+        };
+        let tile = TileRef { xs: 1, xe: 360, ys: 1, ye: 180, path: PathBuf::from("00001-00360.00001-00180") };
+        let ds = GeogDataset {
+            path: PathBuf::from("global-one-tile"),
+            index,
+            tiles: vec![tile.clone()],
+            nx_global: 360,
+            ny_global: 180,
+            wraps_x: true,
+        };
+        let max_d2 = mesh.max_search_distance2();
+        assert!(!tile_reaches_no_cell(&mesh, &tree, max_d2, &ds, &tile, 1),
+            "a tile containing the region must not be skipped");
+        let map = tile_map(&mesh, &tree, max_d2, &ds, &tile, 1, false).expect("tile map");
+        assert!(map.iter().any(|&c| c >= 0), "the region's cells must receive samples");
     }
 
     #[test]

@@ -19,15 +19,29 @@ def _read_table(path):
 
 
 def _row(table, key, name):
+    """The row whose ``id`` or one of whose declared ``aliases`` is ``name``.
+
+    A row's aliases are part of its metadata, so every door that takes a
+    row name accepts them (``gpuwm domain --recipe hrrr`` refused the
+    ``hrrr`` alias the recipe registry lists for ``hrrr_v4_gsd41``).
+    """
     rows = table[key]
     if isinstance(rows, dict):
         if name in rows:
             return rows[name]
-    else:
-        for row in rows:
-            if row.get("id") == name:
-                return row
-    raise ValueError(f"{key} table has no row {name!r}; missing metadata cannot define a grid or its forcing")
+        rows = [{"id": ident, **row} for ident, row in rows.items() if isinstance(row, dict)]
+    for row in rows:
+        if row.get("id") == name:
+            return row
+    for row in rows:
+        if name in row.get("aliases", ()):
+            return row
+    raise ValueError(f"{key} table has no row or alias {name!r}; missing metadata cannot define a grid or its forcing")
+
+
+def recipe_row(name, recipe_table=None):
+    """The packaged recipe registry row for an id or a declared alias."""
+    return _row(_read_table(Path(recipe_table or RECIPE_TABLE)), "recipes", name)
 
 
 def _region_polygon(value, table_path):
@@ -66,7 +80,7 @@ def recipe_row_defaults(recipe, recipe_table=None):
     """
     if Path(recipe).is_file():
         return None
-    row = _row(_read_table(Path(recipe_table or RECIPE_TABLE)), "recipes", recipe)
+    row = recipe_row(recipe, recipe_table)
     region, spacing = row.get("default_region"), row.get("default_spacing_km")
     if region is None or spacing is None:
         return None
@@ -76,7 +90,9 @@ def recipe_row_defaults(recipe, recipe_table=None):
 def emit_recipe(*, recipe, region, spacing_km, source, cycle, hours,
                 recipe_table=None, region_table=None, buffer_km=0.0,
                 projection="auto", history_interval_s=None, name=None, cadence=None,
-                smoke=False):
+                smoke=False, forecast_start_hour=0):
+    from datetime import timedelta
+
     from gpuwm import domain_wizard as wizard
     spacing_km = float(spacing_km)
     if not math.isfinite(spacing_km) or not wizard.MIN_ROOT_DX_KM <= spacing_km <= wizard.MAX_ROOT_DX_KM:
@@ -92,6 +108,7 @@ def emit_recipe(*, recipe, region, spacing_km, source, cycle, hours,
         default_source = registry.get("default_source")
     else:
         row = _row(registry, "recipes", recipe)
+        recipe = row["id"]
         recipe_path = recipe_table.parent / row["config"]
         policy = row.get("aerosol_sources", [])
         default_source = row.get("default_source")
@@ -131,7 +148,20 @@ def emit_recipe(*, recipe, region, spacing_km, source, cycle, hours,
             # Named so a table row that does not fit its source reads as the
             # row and the source, not as a bare grid.
             raise ValueError(f"region {region!r} with source {source}: {reason}")
-    start = wizard._resolve_cycle(cycle, source=source, hours=hours)
+    # --forecast-start-hour K: time zero is the cycle's fK lead and the
+    # boundaries come from f(K+i), as the wizard door writes it.  --recipe
+    # used to refuse the lead, so a recipe run could only start at a cycle.
+    start_hour = int(forecast_start_hour or 0)
+    lead_refusal = wizard.forecast_start_hour_refusal(source, start_hour, hours)
+    if lead_refusal:
+        raise ValueError(lead_refusal)
+    cycle_time = wizard._resolve_cycle(cycle, source=source, hours=hours,
+                                       start_hour=start_hour)
+    if start_hour and source == "hrrr":
+        from gpuwm.hrrr_forecast import hrrr_source_window
+        hrrr_source_window(cycle=cycle_time, start_hour=start_hour,
+                           run_seconds=float(hours) * 3600.0)
+    start = cycle_time + timedelta(hours=start_hour)
     # A recipe's [static] source binds published native-grid fields to the
     # recipe's OWN grid (hrrr_v4_gsd41: the HRRR CONUS v4 statics).  This door
     # lays out a new grid on a new projection, where that source refuses
@@ -158,9 +188,11 @@ def emit_recipe(*, recipe, region, spacing_km, source, cycle, hours,
     from gpuwm.fetch import fetch_accepts_area, fetch_accepts_cadence
     if cadence is None and fetch_accepts_cadence(source):
         cadence = document.get("fetch", {}).get("cadence")
-    spacing, length = wizard.fetch_window(source, hours, cadence=cadence)
-    document["fetch"] = {"source": source, "cycle": start.strftime("%Y-%m-%dT%H"),
+    spacing, length = wizard.fetch_window(source, hours, start_hour, cadence=cadence)
+    document["fetch"] = {"source": source, "cycle": cycle_time.strftime("%Y-%m-%dT%H"),
         "hours": length}
+    if start_hour:
+        document["fetch"]["forecast_start_hour"] = start_hour
     # Whole-object routes crop at preparation, so an acquisition crop would
     # make the emitted configuration refuse before it reaches that stage.
     if fetch_accepts_area(source):
@@ -182,6 +214,7 @@ def emit_recipe(*, recipe, region, spacing_km, source, cycle, hours,
         "polygon_sha256": hashlib.sha256(json.dumps(polygon, sort_keys=True).encode()).hexdigest(),
         "region": str(region), "shape": [nx, ny, document["shared"].get("nz")],
         "spacing_km": spacing_km, "projection": projected, "forcing_source": source,
+        "forecast_start_hour": start_hour,
         "aerosol_candidate": selected, "aerosol_rejected": rejected,
         "aerosol_actual_use": "recorded by the preparation and forecast aerosol_initialization receipt",
         "native_static_set_aside": native_static,
@@ -212,7 +245,7 @@ def domain_recipe_main(args):
     if spacing_km is None:
         raise ValueError("--recipe requires --spacing-km; the original recipe grid spacing must not silently become the requested grid")
     # Refuse competing settings rather than silently discarding a wizard request.
-    for key in ("physics_profile", "physics_choices", "nz", "chain", "ladder", "forecast_start_hour", "member"):
+    for key in ("physics_profile", "physics_choices", "nz", "chain", "ladder", "member"):
         if getattr(args, key, None) is not None:
             raise ValueError(f"--recipe cannot also select --{key.replace('_', '-')}; competing metadata would change the complete recipe")
     buffers = wizard.parse_level_buffers(getattr(args, "buffer_km", None)) or (0.0,)
@@ -224,7 +257,8 @@ def domain_recipe_main(args):
         hours=args.hours, recipe_table=args.recipe_table, region_table=args.region_table,
         buffer_km=buffers[0], projection=args.projection,
         history_interval_s=args.history_interval, name=args.name, cadence=args.cadence,
-        smoke=bool(getattr(args, "smoke", False)))
+        smoke=bool(getattr(args, "smoke", False)),
+        forecast_start_hour=getattr(args, "forecast_start_hour", None) or 0)
     if row_defaults is not None:
         receipt["defaults_from_recipe_row"] = row_defaults
         print(f"--recipe {args.recipe}: no --region/--spacing-km given; using the recipe row's "

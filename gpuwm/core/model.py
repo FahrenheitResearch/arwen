@@ -619,6 +619,9 @@ def restart_identity_payload(exp) -> dict:
         # that wrote the full inventory must resume trimmed, and one that
         # trimmed must resume full.
         domain.pop("output", None)
+        # The quick-look stream is output-only on the same terms.
+        domain.pop("full_history_interval_s", None)
+        domain.pop("quicklook_output", None)
         run = domain.get("run", {})
         drop_default_diffusion_selectors(run)
         drop_default_spp_selectors(run)

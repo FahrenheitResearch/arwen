@@ -882,7 +882,7 @@ def _point_args(tmp_path, *, ny=18, nx=20):
     return [
         "downscale", str(tmp_path),
         "--parent-restart", str(restart),
-        "--point", "39.5,-84.0",
+        "--point", "39.5,-84.0", "--physics-profile", "parent",
         "--ratio", "1", "--child-size", "12,10",
         # _history's compact archive has two levels; the runnable child
         # requires at least four and declares its own remapping ladder.
@@ -1034,7 +1034,7 @@ def _controller_point_args(tmp_path, *, restart, extra):
     return [
         "downscale", str(tmp_path),
         "--parent-restart", restart,
-        "--point", "39.5,-84.0",
+        "--point", "39.5,-84.0", "--physics-profile", "parent",
         "--ratio", "1",
         "--child-levels", "4,2.5",
         "--hours", "0.25", "--output-interval-seconds", "900",
@@ -1357,7 +1357,7 @@ def test_a_downscaled_run_is_accepted_as_a_parent(tmp_path, capsys):
              dt=3.0, run_seconds=7200.0, nested=False, specified=True))
     assert cli_main([
         "downscale", str(child_run), "--parent-domain", "2",
-        "--parent-restart", "latest", "--point", "39.5,-84.0",
+        "--parent-restart", "latest", "--point", "39.5,-84.0", "--physics-profile", "parent",
         "--ratio", "1", "--child-size", "12,10", "--child-levels", "4,2.5",
         "--hours", "0.25", "--output-interval-seconds", "900",
         "--out", str(tmp_path / "grandchild" / "child-run"), "--dry-run"]) == 0
@@ -1607,7 +1607,7 @@ def test_the_parents_restart_is_the_member_of_the_domain_the_frames_come_from(
     def door(run: Path, domain: int, out: str) -> int:
         return cli_main([
             "downscale", str(run), "--parent-domain", str(domain),
-            "--parent-restart", "latest", "--point", "39.5,-84.0",
+            "--parent-restart", "latest", "--point", "39.5,-84.0", "--physics-profile", "parent",
             "--ratio", "1", "--child-size", "12,10", "--child-levels", "4,2.5",
             "--hours", "0.25", "--output-interval-seconds", "900",
             "--out", str(tmp_path / out / "child-run"), "--dry-run"])

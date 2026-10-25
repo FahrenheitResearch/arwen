@@ -237,3 +237,45 @@ is unknown or the key set is not the one this build reads; the block names a
 domain the member set does not carry, or names a retired domain that still owns
 a member; or the leg cadence differs from the one the resuming run stops on,
 which would evaluate the same policy at different instants.
+
+### Nest precipitation and fixed-frame swaths
+
+`nest_accumulation_archive = true` (the default) preserves each nest's own
+integrated precipitation across placements. Relocation archives the outgoing
+interior on its native fixed lattice, restores revisited cells, and initializes
+unvisited strips to zero. The specified boundary ring cannot overwrite an
+archived interior total. Parent interpolation still supplies prognostic fields,
+including hydrometeors, but supplies no accumulated precipitation. A late birth
+also starts its counters at zero. Counters describe sampled nest exposure,
+not an estimate of rainfall while the nest was absent.
+
+Archive arrays are checkpointed with their lattice origin. Streamed relocation
+keeps the archive on the domain template, outside the per-tile transport set.
+Old parent-seeded checkpoints cannot resume into the new counter policy. Set
+`nest_accumulation_archive = false` explicitly to reproduce the historical
+parent-seeded counters and their restart identity for a control run.
+
+The committed-step cyclone products retain extrema over the union of sampled
+footprints. Strict full-duration coverage is a separate wind field used for
+ensemble probabilities and coastal duration. Request `rain` for both nest-only
+rain and its sampling-exposure map. Neither partial wind coverage nor partial
+rain exposure proves a complete-window non-event. Native history imports with
+a fixed parent retain the union of all recorded nest placements rather than
+cropping every frame onto the final placement. A moving ancestor whose recorded
+placements disagree with Earth coordinates retains the existing verified
+coordinate-alignment path.
+
+For comparable history wind sheets, `RUSTWX_WINDOWED_WIND_MAX_KT` sets a
+fixed positive ceiling in knots on native stored windowed wind maps. It
+leaves field values unchanged. An unset value keeps the existing scale;
+set the same ceiling for every frame and check that no core exceeds it.
+
+`RUSTWX_WIND_MAX_KT` supplies the same kind of fixed positive ceiling for
+standalone `10m_wind_speed_and_direction` member maps. It leaves the default
+scale unchanged when unset.
+
+History-only moving-nest rain swaths retain the largest saved counter at
+each visited point. They can miss increments between the last saved frame
+and departure from a strip. Committed-step cyclone rain retains that last
+integrated sample; use it for complete sampled-exposure totals. Hourly
+wind fallback maps likewise bound the every-step wind maximum from below.

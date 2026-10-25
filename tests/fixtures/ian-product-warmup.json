@@ -1,0 +1,24 @@
+{
+  "writer_record": {
+    "bytes": 11581400,
+    "domain": "d02",
+    "episode": 0,
+    "grid_id": 2,
+    "member_id": 0,
+    "path": "members/member-0000/wrfout/wrfout_d02_2022-09-26_00_00_00",
+    "retirement_state": "registered",
+    "sha256": "3d5959c55aa78f3ad1e414c21e6d21129de000062c146f890d405710c8cf0b56",
+    "valid_time": "2022-09-26_00:00:00"
+  },
+  "maps": [],
+  "failed": [
+    "runs/ian-short-smoke/run-20261024-041129Z_i202209260000Z/run/members/member-0000/wrfout/wrfout_d02_2022-09-26_00_00_00: batch render incomplete: rendered=0 skipped=1 failed=0"
+  ],
+  "skipped": [
+    [
+      "qpf_6h",
+      "runs/ian-short-smoke/run-20261024-041129Z_i202209260000Z/run/members/member-0000/wrfout/wrfout_d02_2022-09-26_00_00_00: F000: 6-h QPF requires forecast hour >= 6; this run's stored frames end at F000, so none of them closes this window"
+    ]
+  ],
+  "current_cyclone_products_would_refuse": true
+}

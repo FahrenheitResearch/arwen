@@ -1446,15 +1446,26 @@ pub fn write_band1_tiles(
     })
 }
 
-/// [`write_band1_tiles`] with output tile ROWS read and encoded on
-/// `workers` threads, `workers` rows at a time, and written in order: the
-/// same file, byte for byte.  Each row starts from a fresh `init()` state
-/// (its own source readers), so no reader is shared between threads.  At
-/// most `workers` rows of encoded tiles are resident.
+/// [`write_band1_tiles`] with output tiles read and encoded on `workers`
+/// threads and written in order: the same file, byte for byte.
+///
+/// The unit of work is a GROUP of [`TILE_GROUP`] x [`TILE_GROUP`] output
+/// tiles (1024 x 1024 pixels, the block size of a Copernicus GLO-30 COG),
+/// so each source block a group touches is decoded once for the group
+/// instead of once per output tile row.  A batch holds enough whole bands
+/// of groups that every worker has about [`GROUPS_PER_WORKER`] to take, so
+/// a slow stretch of land (or a fast one of ocean) cannot leave the other
+/// workers idle.  Each run of groups shares one fresh `init()` state (its
+/// own source readers), so no reader is shared between threads.  A writer
+/// thread writes one batch while the workers encode the next.
 ///
 /// Origin: the Copernicus GLO-30 mosaic of a 1 km CONUS footprint is
 /// 17.15 billion source pixels; read, predicted and deflated on one thread
-/// it ran about an hour inside "Prepare root static fields".
+/// it ran about an hour inside "Prepare root static fields".  Then, with
+/// one whole tile row per worker capped at eight workers, a TC phase-1
+/// storm corridor (10.9 billion pixels, 2026-10-24) still built on 2-3
+/// cores in 228-313 s: a batch waited for its slowest row, every row
+/// decoded its source blocks again, and the write was serial.
 #[allow(clippy::too_many_arguments)]
 pub fn write_band1_tiles_parallel<S>(
     path: &Path,
@@ -1465,8 +1476,8 @@ pub fn write_band1_tiles_parallel<S>(
     sample: SampleType,
     nodata: Option<f64>,
     workers: usize,
-    init: impl Fn() -> S + Sync,
-    tile_values: impl Fn(&mut S, usize, usize, usize, usize) -> Result<Vec<f64>> + Sync,
+    init: impl Fn() -> S + Sync + Send,
+    tile_values: impl Fn(&mut S, usize, usize, usize, usize) -> Result<Vec<f64>> + Sync + Send,
 ) -> Result<()> {
     use rayon::prelude::*;
     let workers = workers.max(1);
@@ -1475,28 +1486,53 @@ pub fn write_band1_tiles_parallel<S>(
         .build()
         .map_err(|error| invalid(format!("tile writer pool: {error}")))?;
     let tiles_across = nx.div_ceil(WRITE_TILE);
-    write_band1_tile_batches(path, ny, nx, transform, crs, sample, nodata, workers, |first, rows| {
-        let encoded: Vec<Result<Vec<Vec<u8>>>> = pool.install(|| {
-            (first..first + rows)
+    let tiles_down = ny.div_ceil(WRITE_TILE);
+    let groups_across = tiles_across.div_ceil(TILE_GROUP).max(1);
+    let bands = (workers * GROUPS_PER_WORKER)
+        .div_ceil(groups_across)
+        .clamp(1, MAX_BATCH_BANDS);
+    let batch_rows = (bands * TILE_GROUP).min(tiles_down).max(1);
+    write_band1_tile_batches(path, ny, nx, transform, crs, sample, nodata, batch_rows, |first, rows| {
+        let groups = rows.div_ceil(TILE_GROUP) * groups_across;
+        let encoded: Vec<Result<Vec<(usize, Vec<u8>)>>> = pool.install(|| {
+            (0..groups)
                 .into_par_iter()
-                .map(|tile_row| {
-                    let mut state = init();
-                    (0..tiles_across)
-                        .map(|tile_col| {
-                            let (col0, row0, w, h) = tile_window(tile_col, tile_row, nx, ny);
-                            encode_tile(tile_values(&mut state, col0, row0, w, h)?, w, h, sample, nodata)
-                        })
-                        .collect()
+                .map_init(&init, |state, group| {
+                    let band_row = (group / groups_across) * TILE_GROUP;
+                    let group_col = (group % groups_across) * TILE_GROUP;
+                    let mut payloads = Vec::with_capacity(TILE_GROUP * TILE_GROUP);
+                    for row in band_row..(band_row + TILE_GROUP).min(rows) {
+                        for col in group_col..(group_col + TILE_GROUP).min(tiles_across) {
+                            let (col0, row0, w, h) = tile_window(col, first + row, nx, ny);
+                            let values = tile_values(state, col0, row0, w, h)?;
+                            payloads.push((row * tiles_across + col, encode_tile(values, w, h, sample, nodata)?));
+                        }
+                    }
+                    Ok(payloads)
                 })
                 .collect()
         });
-        let mut payloads = Vec::with_capacity(rows * tiles_across);
-        for row in encoded {
-            payloads.extend(row?);
+        let mut payloads = vec![Vec::new(); rows * tiles_across];
+        for group in encoded {
+            for (at, payload) in group? {
+                payloads[at] = payload;
+            }
         }
         Ok(payloads)
     })
 }
+
+/// Output tiles on a side of one work group of
+/// [`write_band1_tiles_parallel`]: 4 x 256 = 1024 pixels, one GLO-30 block.
+pub const TILE_GROUP: usize = 4;
+
+/// Groups each worker has to take in one batch of
+/// [`write_band1_tiles_parallel`]: enough that the batch's tail is short.
+pub const GROUPS_PER_WORKER: usize = 8;
+
+/// At most this many bands of groups (4 tile rows each) in one batch, so a
+/// very wide pool keeps a bounded number of encoded tiles resident.
+pub const MAX_BATCH_BANDS: usize = 8;
 
 /// The writer both tile writers share.  `produce(first_tile_row, rows)`
 /// returns the payloads of those whole tile rows in row-major order.
@@ -1815,30 +1851,62 @@ fn write_band1_tile_batches(
         handle.write_all(&0u32.to_le_bytes())?;
     }
     handle.write_all(&extra)?;
-    let mut tile_offsets = Vec::with_capacity(tile_count);
-    let mut tile_counts = Vec::with_capacity(tile_count);
-    let mut cursor = data_start as u64;
-    let mut tile_row = 0;
-    while tile_row < tiles_down {
-        let rows = batch_rows.max(1).min(tiles_down - tile_row);
-        let payloads = produce(tile_row, rows)?;
-        if payloads.len() != rows * tiles_across {
-            return Err(invalid("tile producer returned the wrong tile count"));
-        }
-        for payload in payloads {
-            if !big && cursor > u32::MAX as u64 {
-                return Err(invalid("derived GeoTIFF exceeds classic TIFF offsets"));
+    // The producer encodes batch N+1 while this writer thread writes batch
+    // N; the payloads, their order and so the file bytes are unchanged.
+    let (tile_offsets, tile_counts, mut handle) = std::thread::scope(|scope| -> Result<_> {
+        let (sender, receiver) = std::sync::mpsc::sync_channel::<Vec<Vec<u8>>>(1);
+        let writer = scope.spawn(move || -> Result<(Vec<u64>, Vec<u32>, File)> {
+            // Tile payloads average ~30 KB; buffered into 8 MiB writes a
+            // shared overlay disk takes them several times faster.
+            let mut handle = std::io::BufWriter::with_capacity(8 << 20, handle);
+            let mut tile_offsets = Vec::with_capacity(tile_count);
+            let mut tile_counts = Vec::with_capacity(tile_count);
+            let mut cursor = data_start as u64;
+            for payloads in receiver {
+                for payload in payloads {
+                    if !big && cursor > u32::MAX as u64 {
+                        return Err(invalid("derived GeoTIFF exceeds classic TIFF offsets"));
+                    }
+                    tile_offsets.push(cursor);
+                    tile_counts.push(payload.len() as u32);
+                    handle.write_all(&payload)?;
+                    if payload.len() & 1 == 1 {
+                        handle.write_all(&[0])?;
+                    }
+                    cursor += (payload.len() + (payload.len() & 1)) as u64;
+                }
             }
-            tile_offsets.push(cursor);
-            tile_counts.push(payload.len() as u32);
-            handle.write_all(&payload)?;
-            if payload.len() & 1 == 1 {
-                handle.write_all(&[0])?;
+            let handle = handle.into_inner().map_err(|error| StaticError::from(error.into_error()))?;
+            Ok((tile_offsets, tile_counts, handle))
+        });
+        let mut produced: Result<()> = Ok(());
+        let mut tile_row = 0;
+        while tile_row < tiles_down {
+            let rows = batch_rows.max(1).min(tiles_down - tile_row);
+            match produce(tile_row, rows) {
+                Ok(payloads) if payloads.len() == rows * tiles_across => {
+                    if sender.send(payloads).is_err() {
+                        break; // the writer stopped; its error is returned below
+                    }
+                }
+                Ok(_) => {
+                    produced = Err(invalid("tile producer returned the wrong tile count"));
+                    break;
+                }
+                Err(error) => {
+                    produced = Err(error);
+                    break;
+                }
             }
-            cursor += (payload.len() + (payload.len() & 1)) as u64;
+            tile_row += rows;
         }
-        tile_row += rows;
-    }
+        drop(sender);
+        let written = writer
+            .join()
+            .map_err(|_| invalid("tile writer thread panicked"))??;
+        produced?;
+        Ok(written)
+    })?;
     let mut extra_cursor = (ifd_offset as usize + ifd_size) as u64;
     for (index, tag) in tag_list.iter().enumerate() {
         if tag.tag == 324 || tag.tag == 325 {

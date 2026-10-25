@@ -54,6 +54,8 @@ _ALLOWED_AEROSOL_MODULES = frozenset({
 #: at max_ulp 0, which is a stronger gate than source identity and the only
 #: reason the trade was takeable.
 _EXPECTED_HEADERS = {
+    "gsd_initial_reflectivity": ("glibc_flt32.cuh", "glibc_flt64.cuh",
+                                 "thompson_fork_constants.cuh", "thompson_fork.cu"),
     # A new full-column generation unit; existing classic and aerosol units
     # keep their assembled source bytes and their published oracle gates.
     "thompson_column": ("glibc_flt32.cuh", "glibc_flt64.cuh",
@@ -230,7 +232,7 @@ def test_lake_compile_options_do_not_change_existing_modules(monkeypatch, strict
     # A global option change must still fail for every other actual module.
     no_fmad = {"lake", "g3", "ysu", "shinhong", "mynn_pbl", "mynn_dmp_sibling",
                "wsm6", "kessler", "myjpbl", "milbrandt2", "milbrandt2_zet",
-               "wdm6", "wdm6_refl", "wsm3", "wsm6r", "noah"}
+               "wdm6", "wdm6_refl", "wsm3", "wsm6r", "noah", "climate_diagnostics"}
     if strict:
         no_fmad |= {"morrison", "rrtmgp_rte", "noah_init", "wdm6",
             "milbrandt2_zet", "wdm6_refl", "rrtmgp_gas", "milbrandt2",
@@ -375,7 +377,8 @@ def test_allow_listed_headers_exist_and_translation_units_are_explicit():
                 ("noah_init", "noah.cu"), ("pd_vertical_sl", "pd_advection.cu"),
                 ("urban_ucm480", "urban_ucm.cu"),
                 ("lin_refl", "refl.cu"),
-                ("gsd_helicity", "uh_diag.cu")), (
+                ("gsd_helicity", "uh_diag.cu"),
+                ("gsd_initial_reflectivity", "thompson_fork.cu")), (
                 "only the explicitly reused initialization and scalar units may supply a .cu header")
 
 

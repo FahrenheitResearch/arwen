@@ -375,7 +375,16 @@ def _prepare_native(plan, *, config_path, exp, observer, run_dir, prepare_only):
     for name, command in (('authority', go_cli.authority_command(go)),
                           ('fetch', go_cli.fetch_command(go)),
                           ('manifest', go_cli.manifest_command(go, bridge))):
+        if name == 'fetch' and observer is not None:
+            # The fetch is a stage on the stream: an ensemble's members that
+            # share this download wait for its end (recipe_door._SharedDownloads).
+            observer.enter_stage('fetch', phase='fetch')
         go_cli._run_stage(name, command, explain=False)
+        if name == 'fetch' and observer is not None:
+            # Everything after the download is preparation: an ensemble
+            # member takes its host-RAM slot here, once its inputs are on
+            # disk (recipe_door._MemberStages).
+            observer.enter_stage('prepare', phase='prepare')
     if not manifest.is_file():
         raise MissingPreparationManifest('The preparation route did not publish its input manifest; repair the source fetch before forecasting.')
     command = go_cli.prepare_command(go, bridge, manifest=manifest,

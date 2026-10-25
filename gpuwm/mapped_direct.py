@@ -67,7 +67,7 @@ from gpuwm.ingest.preprocess_backend import (
     release_backend_memory,
     resolve_preprocess_backend,
 )
-from gpuwm.ingest.real import initialize_real
+from gpuwm.ingest.real import aerosol_donor_snapshot, initialize_real
 from gpuwm.ingest.soil import (
     door_reconciled_soil_category, soil_temperature_repair_proof)
 from gpuwm.ingest.source_coverage import (
@@ -964,8 +964,12 @@ class _PostedMappedSource:
                 if lead not in self.markers:
                     self._read_marker(lead, self.posted.wait(lead))
                 end = self._next
+                # A NetCDF decode holds its whole batch at once (it is priced
+                # per batch, not per time), so its later batches are one lead:
+                # each then fits the cap the first decode's price set.
+                batch = 1 if self.source_format == "netcdf" else POSTED_BATCH_LEADS
                 last = (max(int(until), position) if until is not None
-                        else self._next + POSTED_BATCH_LEADS - 1)
+                        else self._next + batch - 1)
                 last = min(last, len(self.leads) - 1)
                 while end + 1 <= last:
                     later = self.leads[end + 1]
@@ -1523,6 +1527,7 @@ def prepare_mapped_wrf(
     physical_output_store: str | Path | None = None,
     physical_input_provider=None,
     physical_member_index: int | None = None,
+    inland_air_mean_hours: float | None = None,
 ) -> dict[str, object]:
     """Build native WRF inputs from one complete mapped-source composition.
 
@@ -2211,7 +2216,8 @@ def prepare_mapped_wrf(
         landuse_attrs=selection.landuse_global_attrs())
     # Inland water the source does not resolve takes the forcing's
     # daily-mean 2 m air temperature (WRF use_tavg_for_tsk).
-    water_statics = with_inland_air_temperature(water_statics, snapshots)
+    water_statics = with_inland_air_temperature(
+        water_statics, snapshots, hours=inland_air_mean_hours)
     with prep_stage("root_initialize", label="Initialize root forcing states",
                     backend=str(preprocess_receipt["backend"]),
                     count=(len(snapshots) if hierarchy and not chain_tree
@@ -2475,7 +2481,11 @@ def prepare_mapped_wrf(
                 from gpuwm.initial_source import decode_initial_analysis
                 boundary_head_backend = preprocess
                 boundary_head_preprocessing = copy.deepcopy(preprocess.receipt())
-                aerosol_met = (initial_met if cfg.use_rap_aero_icbc else None)
+                # Only the donor's aerosol and its coordinate stay held for
+                # the initial analysis' build; the rest of the boundary
+                # analysis is released here.
+                aerosol_met = (aerosol_donor_snapshot(initial_met)
+                               if cfg.use_rap_aero_icbc else None)
                 initial_met = None
                 del initial_result
                 release_backend_memory(preprocess)
@@ -3810,6 +3820,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--initial-inputs", type=Path)
     parser.add_argument("--input-manifest-sha256")
     parser.add_argument(
+        "--inland-air-mean-hours", type=float, default=None, metavar="HOURS",
+        help="hours of source 2 m air temperature that inland water beyond "
+             "the source reach averages (the source row's "
+             "inland_air_mean_hours; 0 = the start time's own; default 24)")
+    parser.add_argument(
         "--as-posted", type=Path, default=None, metavar="POSTING_DIR",
         help=("an as-posted fetch's posting/ folder: prepare as the leads "
               "post, decoding each lead batch as its marker appears, and "
@@ -4126,6 +4141,8 @@ def _main(argv: Sequence[str] | None = None) -> int:
             hierarchy_workers=args.hierarchy_workers,
             stock_wrf_export=args.stock_wrf_export,
             statics_corridor=statics_corridor,
+            **({"inland_air_mean_hours": args.inland_air_mean_hours}
+               if args.inland_air_mean_hours is not None else {}),
         )
     except InitializationMemoryRefused as error:
         # A preparation the card cannot hold under an explicit

@@ -1938,7 +1938,8 @@ def geography_for_run(config_path: Path) -> dict:
     from gpuwm.case_data import optional_case_data_from_tables
     from gpuwm.experiment import load_experiment
     from gpuwm.static.build import GeogSelection, _DEFAULT_GEOG_DIRS, _BASE_STATIC_FIELDS
-    from gpuwm.static.external_source import sampling_window, served_names
+    from gpuwm.static.external_source import (off_grid_tokens, sampling_window,
+                                             served_names)
     from gpuwm.static.projection import grids_from_wps_namelist, grids_from_projection_config
     from gpuwm.static.highres_production import resolve_static_highres
     from gpuwm.wps_domain_ids import domain_ids_from_wps_text
@@ -1982,9 +1983,16 @@ def geography_for_run(config_path: Path) -> dict:
             selection = replace(GeogSelection.fallback(Path(".")), static_source=static_source_for(carrier))
         source = selection.static_source
         served = frozenset()
-        if source is not None and sampling_window(source.row, grid) is not None:
-            served = served_names(source)
-            statics.add(source.row.id)
+        if source is not None:
+            if sampling_window(source.row, grid) is not None:
+                served = served_names(source)
+                statics.add(source.row.id)
+            else:
+                # A native source's child can rebuild from different WPS
+                # datasets. Resolve its row's recipe exactly as build_static
+                # does, before fetch-geog stages or go checks those datasets.
+                selection = selection.with_off_grid_tokens(
+                    off_grid_tokens(source, grid))
         if _BASE_STATIC_FIELDS <= served:
             from gpuwm.static.geog import DEFAULT_LANDUSE_ATTRS as _DEFAULT_LANDUSE_ATTRS
             attrs = source.row.attrs_map
@@ -1993,7 +2001,20 @@ def geography_for_run(config_path: Path) -> dict:
                     or any(attrs.get(key) != _DEFAULT_LANDUSE_ATTRS[key] for key in keys)):
                 required.add(selection.landuse)
         else:
-            required.update(getattr(selection, role) for role in _DEFAULT_GEOG_DIRS)
+            # A grid the static source does not describe rebuilds its statics
+            # from the source's own off-grid datasets (gpuwm.static.build.
+            # _with_off_grid_recipe), so the plan names those.  Defect
+            # (2026-10-24, WOOF HRRR 3 km/1 km runs): this plan named the
+            # default inventory, go's preflight passed, and preparation then
+            # refused at the 1 km nest for bnu_soiltype_top, bnu_soiltype_bot
+            # and lai_modis_30s, which `fetch-geog --config` never staged.
+            rebuilt = selection
+            if source is not None and selection.resolution_tokens == ("default",):
+                from gpuwm.static.external_source import off_grid_tokens
+                tokens = off_grid_tokens(source, grid)
+                if tokens:
+                    rebuilt = GeogSelection.from_tokens(selection.root, tokens)
+            required.update(getattr(rebuilt, role) for role in _DEFAULT_GEOG_DIRS)
         cfg = domains[domain_id].run
         if getattr(cfg, "sf_lake_physics", 0) and "LAKE_DEPTH" not in served:
             required.add("lake_depth")

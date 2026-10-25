@@ -649,6 +649,7 @@ class MpasColumnBatchPhysics:
                  start_time, latitude_deg, longitude_deg,
                  terrain_height_m, z_interface_nominal_m,
                  p_top_pa, dx_m, gf_ishallow=None, dx_column_m=None,
+                 cumulus_active_column=None,
                  landmask=1.0, xland=None, ivgtyp=10, isltyp=6,
                  vegfra=50.0, tsk=300.0, tmn=285.0, xice=0.0, snow=0.0,
                  snow_depth=0.0, soil_temperature=285.0,
@@ -749,6 +750,8 @@ class MpasColumnBatchPhysics:
                     dx_column <= 0.0):
                 raise ValueError(
                     "dx_column_m must be finite and positive")
+        from gpuwm.core.gf import cumulus_active_column as _cu_active
+        active_column = _cu_active(cumulus_active_column, ncol, cumulus_scheme)
         top_nominal = float(np.asarray(
             z_interface_nominal_m, dtype=np.float64)[-1])
 
@@ -808,6 +811,10 @@ class MpasColumnBatchPhysics:
             "gf_ishallow": int(gf_ishallow),
             "gf_dx_column": ("per-column" if dx_column is not None
                              else "scalar"),
+            # Present only with a mask, so an unmasked identity is unchanged.
+            **({} if active_column is None else {
+                "gf_active_column": (f"per-column: {int(active_column.sum())}"
+                                     f" of {ncol} active")}),
             "wsm6_hail_opt": int(wsm6_hail_opt),
             # The surface classification identity: the threshold that
             # partitions sea ice from land, and whether XLAND came from
@@ -913,6 +920,9 @@ class MpasColumnBatchPhysics:
         if dx_column is not None:
             self._driver.gf_dx_column = cp.asarray(
                 dx_column.reshape(1, ncol))
+        if active_column is not None:
+            self._driver.gf_active_column = cp.asarray(
+                active_column.reshape(1, ncol))
         # Seam-owned atmosphere buffers.  theta and pressure stay bound to
         # state.thp/state.p between calls; temperature, dz and rho are
         # derived here; exner is derived when the caller supplies none

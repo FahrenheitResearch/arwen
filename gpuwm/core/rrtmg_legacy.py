@@ -1804,6 +1804,49 @@ class RRTMGLegacyRadiation:
         from gpuwm.core.deferred_device_checks import check
         check(cp.where(mask, eff_um, cp.float32(-np.inf)).max(), verdict)
 
+    #: How many saturation widths one engine chunk may span when the card
+    #: has the room (see :meth:`_wide_chunk`).
+    WIDE_CHUNK_FACTORS = (4, 2)
+    #: Free device memory kept back beyond the priced transient.
+    WIDE_CHUNK_MARGIN_BYTES = 1 << 30
+
+    def _wide_chunk(self, ncol, nz, p_top, nday):
+        """Engine chunk width for this call: wider than one wave when it fits.
+
+        THE BREAKAGE THIS PREVENTS (radiation-ranks, V61 8 x RTX 5090,
+        nsys of a full-CONUS HRRR radiation step, 2026-10-21): the default
+        width is one resident-thread wave (2,048 LW / 2,560 SW columns on a
+        5090), so a 238,000-column rank slab runs 116 LW and 93 SW engine
+        chunks, about 26,000 CUDA API calls (12,500 launches) per call.
+        The card finished its 0.75 s of radiation kernels inside a 1.6-3.8 s
+        span because the rank's host thread could not issue the chunks
+        fast enough beside seven other rank threads.  Chunk width is
+        workspace shape only (per-column results are bitwise identical at
+        any width: the engines' own contract), so where the priced
+        transient of a 4x or 2x width fits in the memory the card has free
+        now, the call takes it and issues a quarter or half of the chunks.
+        An explicit ``column_chunk`` is used as given; a card without the
+        room keeps the one-wave width, exactly as before.
+        """
+        if self.column_chunk is not None:
+            return self.column_chunk
+        import cupy as cp
+        base = int(_lw.LW_BATCH_COLUMN_CHUNK)
+        if base >= ncol:
+            return None
+        free, _total = cp.cuda.runtime.memGetInfo()
+        free += int(cp.get_default_memory_pool().free_bytes())
+        for factor in self.WIDE_CHUNK_FACTORS:
+            width = base * factor
+            need = legacy_radiation_vram_bytes(
+                ncol=ncol, nz=nz, p_top=p_top, column_chunk=width,
+                ncol_day=nday, lw_coefficients=self._C,
+                longwave=self.longwave, shortwave=self.shortwave,
+                o3input=self.o3input, aer_opt=self.aer_opt)
+            if need + self.WIDE_CHUNK_MARGIN_BYTES <= free:
+                return width
+        return None
+
     def _mcica_generator(self, gpu_entry):
         """Device McICA twin, resolved through the module attribute at
         call time so the wiring booby-traps can intercept it."""
@@ -2274,7 +2317,8 @@ class RRTMGLegacyRadiation:
         day_seconds = F(86400.0)
 
         # ---- LW: all columns, adapter chunk == engine chunk -----------
-        chunk_lw = self.column_chunk or _lw.LW_BATCH_COLUMN_CHUNK
+        wide = self._wide_chunk(ncol, nz, p_top, int(np.count_nonzero(coszen > F(0.0))))
+        chunk_lw = wide or _lw.LW_BATCH_COLUMN_CHUNK
         # Result grids live on the device for the whole call. Night SW
         # columns retain the driver's positive zero initialization.
         rthratenlw = cp.zeros((nz, ncol), dtype=cp.float32)
@@ -2405,7 +2449,7 @@ class RRTMGLegacyRadiation:
         # The engine sizes the chunk to this device once per layer count
         # (swrad_prep_batch's nlay is kte + 1 = nz + 1, as the pricing
         # assumes); an explicit column_chunk is untouched.
-        chunk_sw = (self.column_chunk
+        chunk_sw = (wide
                     or (_cuda_sw(self._sw_tables).batch_column_chunk(nz + 1)
                         if self.shortwave else _sw.SW_BATCH_COLUMN_CHUNK))
         aerosol_aod = cp.empty((nz,ncol),cp.float32) if self.aer_opt==2 else None
@@ -2497,7 +2541,9 @@ class RRTMGLegacyRadiation:
                     aerosol_w = (None if aerosol is None
                                  else tuple(a[rows] for a in aerosol))
                 mc = window(w0, w1)
-                adjes = np.full(nc, ps["adjes"], np.float32)
+                # Built on the card: a host array here was one pinned-staged
+                # upload (and one CUDA event) per SW window (_window_tables).
+                adjes = cp.full(nc, np.float32(ps["adjes"]), dtype=cp.float32)
                 res = _cuda_sw(self._sw_tables).rrtmg_sw_batched_device(
                     nc, ps["nlay"], ps["icld"], ps["play"][rows],
                     ps["plev"][rows], ps["tlay"][rows], ps["tlev"][rows],

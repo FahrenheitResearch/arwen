@@ -102,7 +102,7 @@ def main():
         f"{frame_bytes/1024**3:.3f} GiB per uncompressed frame. "
         f"{frame_bytes*len(hours)/1024**4:.3f} TiB over {args.hours} h.\n"
         "Schedule/inventory evidence only. Snapshot capture and queue backpressure can delay stepping.\n"
-        "diag_int=15 / wind_int=5 belong to the unported clwrf_output_calc climate module."
+        "diag_int=15 / wind_int=5 control the independent GPU climate-statistics windows."
     )
     fig.text(.11, .025, caption, fontsize=10, color="#374754", va="bottom")
     fig.tight_layout(rect=(0, .14, 1, .95))

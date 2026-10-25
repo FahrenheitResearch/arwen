@@ -353,6 +353,34 @@ def test_hrrr_recipe_prewarm_receipt_says_first_step_ready(monkeypatch):
     assert kernel_prewarm.first_step_ready({**receipt, "forecast_columns": 0}, forecast=True) is False
 
 
+def test_synthetic_column_does_not_construct_inherited_forecast_hydro(monkeypatch):
+    from gpuwm import warm_kernels
+    from gpuwm.core import physics
+    from gpuwm.hydro.runtime import current_settings, settings_scope
+
+    settings = {"enabled": True, "fabric_manifest": "actual-parent-grid/manifest.json"}
+    seen = []
+
+    def initialize(*args, **kwargs):
+        seen.append((args, kwargs, current_settings()))
+        return "column driver"
+
+    monkeypatch.setattr(physics, "initialize_physics", initialize)
+    monkeypatch.setenv("GPUWM_NEXTGEN_ENABLED", "1")
+    with settings_scope(settings):
+        assert warm_kernels._initialize_column_physics("state", cfg="column") == "column driver"
+        assert current_settings() is settings
+        def fail(*args, **kwargs):
+            raise ValueError("column failed")
+        monkeypatch.setattr(physics, "initialize_physics", fail)
+        import pytest
+        with pytest.raises(ValueError, match="column failed"):
+            warm_kernels._initialize_column_physics("state")
+        assert current_settings() is settings
+    assert seen == [(("state",), {"cfg": "column"},
+                     {"enabled": False, "activation_reason": "synthetic_kernel_probe"})]
+
+
 def test_hrrr_recipe_column_carries_mosaic_fractions_and_orographic_statics():
     # 2026-10-21, hrrr_v4_gsd41 (mosaic_lu = mosaic_soil = 1, gwd_opt = 3): the forecast column refused
     # "RUC mosaic needs LANDUSEF category fractions", then "this initialization route hands the physics no static

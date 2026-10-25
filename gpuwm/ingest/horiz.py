@@ -1532,6 +1532,11 @@ def regular_horizontal_method(name: str, ndim: int) -> str:
 
 
 _MATCH_SURFACE_FIELDS = {"SKINTEMP"}
+# Surface atmospheric anchors use matching land/water support at coastlines.
+# Stock METGRID.TBL leaves atmospheric fields unmasked; this correction is
+# limited to the surface anchors, which real initialization uses for the low
+# column. Pressure and model levels retain their original support.
+_COASTAL_SURFACE_FIELDS = frozenset({"T2", "D2", "RH2", "Q2"})
 _WATER_FIELDS = {"SST", "SEAICE", "XICE"}
 _LAND_FIELDS = {
     "ST000007", "ST007028", "ST028100", "ST100289",
@@ -1603,6 +1608,80 @@ def _as_host_float64(value):
     if hasattr(value, "get"):
         value = value.get()
     return np.asarray(value, dtype=np.float64)
+
+
+def _coastal_surface_match(field, original, source_land, target_land,
+                           donor_y, donor_x, fraction_y, fraction_x, *,
+                           engine, native, workers, method, chain,
+                           land_only=False, closed_edges=15,
+                           nearest_y=None, nearest_x=None):
+    """Map mixed coastal support in Rust while retaining all other bits."""
+    from gpuwm.ingest.cpu_backend import SURFACE_MATCH_COUNT_KEYS
+
+    def host(value):
+        return value.get() if hasattr(value, "get") else value
+
+    from gpuwm.ingest.cpu_backend import OpenSourceWindowEdge
+
+    def run(edges):
+        return native.surface_match(
+            host(field), host(original), _as_host_bool(source_land),
+            host(donor_y), host(donor_x), host(fraction_y), host(fraction_x),
+            _as_host_bool(target_land), chain, method=method,
+            land_only=land_only, fill_value=0.0, closed_edges=edges,
+            nearest_y=None if nearest_y is None else host(nearest_y),
+            nearest_x=None if nearest_x is None else host(nearest_x),
+            workers=workers)
+
+    retried = None
+    try:
+        values, counts = run(closed_edges)
+    except OpenSourceWindowEdge as error:
+        if closed_edges == 15:
+            raise
+        # The matching-surface search reached an edge of the decoded window
+        # that is not an edge of the source grid. No knob lets a user widen
+        # that window (it is the route's own required source window), so the
+        # match runs again with the window's edges taken as closed: such a
+        # target takes the nearest matching donor inside the window, or keeps
+        # its original value, and the receipt counts it. Breakage it prevents:
+        # the HRRR soil-donor cases at a window edge (tests/test_hrrr_target.py)
+        # and an all-water boundary strip refused the whole preparation with a
+        # remedy ("expand the decoded source window") nobody can apply.
+        import sys
+        print(f"note: coastal surface matching: {error}; matched inside the decoded "
+              "window instead (open_window_edge_retried in the receipt)", file=sys.stderr)
+        retried = 1
+        values, counts = run(15)
+    tally = {key: int(np.sum(counts[:, slot]))
+             for slot, key in enumerate(SURFACE_MATCH_COUNT_KEYS)}
+    if retried:
+        tally["open_window_edge_retried"] = retried
+    return engine.float32(values), tally
+
+
+def _coastal_regular_geometry(source_shape, target_y, target_x, method):
+    """The original regular plan's exact crop donor and FP32 fractions."""
+    from gpuwm.ingest.interpolation_support import regular_source_support
+
+    support = regular_source_support(source_shape, target_y, target_x)
+    origin_y = 0 if support is None else support.rows.start
+    origin_x = 0 if support is None else support.columns.start
+    if support is not None:
+        target_y, target_x = support.y, support.x
+        shape = support.shape
+    else:
+        target_y = np.asarray(target_y, dtype=np.float32)
+        target_x = np.asarray(target_x, dtype=np.float32)
+        shape = source_shape
+    donor_y = np.floor(target_y).astype(np.int32)
+    donor_x = np.floor(target_x).astype(np.int32)
+    if method == "bilinear":
+        donor_y = np.minimum(donor_y, shape[0] - 2)
+        donor_x = np.minimum(donor_x, shape[1] - 2)
+    fraction_y = target_y - donor_y.astype(np.float32)
+    fraction_x = target_x - donor_x.astype(np.float32)
+    return donor_y + origin_y, donor_x + origin_x, fraction_y, fraction_x
 
 
 def _land_pass_with_fractional_second_chance(
@@ -1836,6 +1915,11 @@ def _refuse_land_layers_not_in_their_unit(
 
 #: What each masked-chain count means, in the order the receipt reads them.
 _MASKED_REPAIR_WORDING = (
+    ("matched_surface",
+     "coastal value(s) mapped from source donors on the target surface"),
+    ("no_matching_surface",
+     "coastal value(s) with no reachable usable source donor on the target "
+     "surface kept their original analysis (single-surface fields kept their fill)"),
     ("sixteen_pt_outside_range",
      "value(s) where WPS sixteen_pt left {range} took four_pt's weighted "
      "mean of the same source cells"),
@@ -2265,20 +2349,27 @@ class DailyMeanAirTemperature:
 _INLAND_AIR_PROVIDERS: list = []
 
 
-def with_inland_air_temperature(statics, snapshots):
+def with_inland_air_temperature(statics, snapshots, *, hours=None):
     """``statics`` carrying the forcing series' daily-mean 2 m air temperature.
 
     One :class:`DailyMeanAirTemperature` per forcing series, shared by the
     root and every child mapped from it, so the series is averaged once.
-    ``statics`` None or no series: returned unchanged.
+    ``statics`` None or no series: returned unchanged.  ``hours`` is the
+    source row's window (``inland_air_mean_hours``): None is the WPS day,
+    0 leaves the statics without a provider, so inland water takes each
+    snapshot's own 2 m air temperature and the start state reads no later
+    lead (a parent posting beside its nest).
     """
     if statics is None or snapshots is None:
         return statics
+    if hours is not None and float(hours) <= 0.0:
+        return statics
+    window = 24.0 if hours is None else float(hours)
     for series, provider in _INLAND_AIR_PROVIDERS:
-        if series is snapshots:
+        if series is snapshots and provider._hours == window:
             break
     else:
-        provider = DailyMeanAirTemperature(snapshots)
+        provider = DailyMeanAirTemperature(snapshots, hours=window)
         _INLAND_AIR_PROVIDERS.append((snapshots, provider))
         del _INLAND_AIR_PROVIDERS[:-2]
     return replace(statics, inland_air_temperature=provider)
@@ -2386,8 +2477,10 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
     # The masked chain's library is bound here, before any field is
     # mapped, so a library that cannot run it is refused at the front of
     # the work with its remedy (both backends run the same Rust chain).
+    coastal_names = (_COASTAL_SURFACE_FIELDS.intersection(source_fields)
+                     if "LANDSEA" in source_fields else set())
     masked_chain = (_masked_chain_for_backend(engine)
-                    if (masked_names | set(METGRID_NUMBER_FIELDS)).intersection(source_fields) else None)
+                    if (masked_names | set(METGRID_NUMBER_FIELDS) | coastal_names).intersection(source_fields) else None)
     mass_coordinates: list = []
 
     def masked_target_coordinates():
@@ -2710,6 +2803,21 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
                         mapped_from, _device=getattr(engine, "name", None) == "cuda"))
             out[output_name] = mass_plan.apply(
                 mapped_from, method=method, source_support=True)
+            if name in coastal_names:
+                # Preserve the exact FP32 geometry of the original regular
+                # operator, including source-support crops' exact shifts.
+                target_y, target_x = masked_target_coordinates()
+                geometry = _coastal_regular_geometry(
+                    (len(snapshot.latitude), len(snapshot.longitude)),
+                    target_y, target_x, method)
+                native, chain_workers = masked_chain
+                out[output_name], coastal_counts = _coastal_surface_match(
+                    field, out[output_name], source_land, target_land,
+                    *geometry, engine=engine,
+                    native=native, workers=chain_workers, method=method,
+                    chain=_WPS_FULL_CHAIN)
+                masked_repairs[output_name] = coastal_counts
+                operators[output_name] = method + ";coastal-matching:" + "+".join(_WPS_FULL_CHAIN)
             if name == "Z":
                 out[output_name] = (
                     engine.divide_float32(out[output_name], 9.81)

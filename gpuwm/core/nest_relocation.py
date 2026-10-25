@@ -1,11 +1,13 @@
 """Discrete relocation of a child domain to a new parent-cell placement.
 
-WHAT THIS IS.  A moving nest here is **a sequence of static nests joined by
-a re-grid at cycle boundaries** -- not WRF's per-step continuous motion.
+WHAT THIS IS. A moving nest here is a sequence of static nests joined by
+a re-grid at synchronized integration-leg boundaries. These are internal
+forecast boundaries: a 900-second follower checks within an ensemble
+member's forecast, without waiting for a data-assimilation cycle boundary.
 The distinction is the whole design.  WRF's mechanism moves the child by
 one parent cell inside the integration and therefore invalidates the SINT
 donor index/weight tables constantly; this module moves the child at a
-cycle boundary, rebuilds the tables **once per placement generation**, and
+leg boundary, rebuilds the tables **once per placement generation**, and
 leaves the per-step numerics exactly as they were.  That is why the
 namelist keys guarding the per-step mechanism stay rejected
 (``gpuwm.experiment._MOVING_NEST_KEYS``) while this path is admissible:

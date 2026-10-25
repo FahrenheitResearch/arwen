@@ -4780,6 +4780,18 @@ fn draw_variable_layers(
             &mut contour_label_placer,
         ));
     }
+    let contour_line_ms = contour_start.elapsed().as_millis();
+
+    let barb_start = Instant::now();
+    for barb in &opts.barbs {
+        draw_barbs(img, layout, barb, projected_pixels, draw_clip_mask);
+    }
+    let barb_ms = streamline_ms.saturating_add(barb_start.elapsed().as_millis());
+
+    // Contour labels and H/L extrema go on top of the barbs: a barb drawn
+    // after them covered isobar values on MSLP / 10 m wind maps (2.9.6 R10
+    // look, U10).  Lines stay beneath the barbs.
+    let contour_label_start = Instant::now();
     let label_draw_start = Instant::now();
     contour_label_placer.draw(img);
     contour_profile.label_draw_ms = contour_profile
@@ -4794,13 +4806,7 @@ fn draw_variable_layers(
                 .saturating_add(extrema_start.elapsed().as_millis());
         }
     }
-    let contour_ms = contour_start.elapsed().as_millis();
-
-    let barb_start = Instant::now();
-    for barb in &opts.barbs {
-        draw_barbs(img, layout, barb, projected_pixels, draw_clip_mask);
-    }
-    let barb_ms = streamline_ms.saturating_add(barb_start.elapsed().as_millis());
+    let contour_ms = contour_line_ms.saturating_add(contour_label_start.elapsed().as_millis());
 
     let label_start = Instant::now();
     if let Some(ref extent) = opts.map_extent {

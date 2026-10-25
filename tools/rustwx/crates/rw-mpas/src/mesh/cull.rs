@@ -1265,6 +1265,33 @@ pub fn cull_file(
     cull_file_with_provenance(parent_path, shape, out_path, graph_path, None)
 }
 
+/// [`cull_file_with_provenance`] with the region MARKED on another file of
+/// the same mesh.
+///
+/// THE BREAKAGE THIS PREVENTS (hex shapes study, 2026-10-23). The mark
+/// (nearest cells to the region's boundary, the great-circle cell walk
+/// between them, the flood fill and the seven rings) reads latCell/lonCell,
+/// and its walk breaks near-ties on them. A native MPAS static stores them
+/// in binary32 while its grid stores binary64, so a static cut on its own
+/// coordinates can walk a different boundary path from the grid cut: on
+/// NCAR x1.163842 with a CONUS outline both cuts kept the same 4,766 cells
+/// but six of them landed in different boundary rings, and
+/// `--cull-provenance-grid` then refused the static ("provenance grid
+/// bdyMaskCell differs"). Marking every file of the mesh on the grid's own
+/// coordinates gives every cut the grid cut's cells and rings. The mark
+/// parent must be the same mesh: same cell count, same neighbours, and each
+/// coordinate word equal to the parent's under [`same_scaled_word`].
+pub fn cull_file_marked_on(
+    parent_path: &Path,
+    shape: &Shape,
+    out_path: &Path,
+    graph_path: Option<&Path>,
+    provenance_grid: Option<&Path>,
+    mark_parent: Option<&Path>,
+) -> MpasResult<CullReceipt> {
+    cull_file_inner(parent_path, shape, out_path, graph_path, provenance_grid, mark_parent)
+}
+
 /// Cull a static or vertical artifact with provenance bound to the final
 /// regional grid. The upstream build identity remains in the cull receipt.
 pub fn cull_file_with_provenance(
@@ -1273,6 +1300,17 @@ pub fn cull_file_with_provenance(
     out_path: &Path,
     graph_path: Option<&Path>,
     provenance_grid: Option<&Path>,
+) -> MpasResult<CullReceipt> {
+    cull_file_inner(parent_path, shape, out_path, graph_path, provenance_grid, None)
+}
+
+fn cull_file_inner(
+    parent_path: &Path,
+    shape: &Shape,
+    out_path: &Path,
+    graph_path: Option<&Path>,
+    provenance_grid: Option<&Path>,
+    mark_parent: Option<&Path>,
 ) -> MpasResult<CullReceipt> {
     let parent = RawNc::open(parent_path)?;
 
@@ -1297,9 +1335,50 @@ pub fn cull_file_with_provenance(
         }
     }
 
-    let lat_cell = parent.read_coords("latCell")?;
-    let lon_cell = parent.read_coords("lonCell")?;
+    let mut lat_cell = parent.read_coords("latCell")?;
+    let mut lon_cell = parent.read_coords("lonCell")?;
     let n_edges_on_cell = parent.read_i32("nEdgesOnCell")?;
+    if let Some(path) = mark_parent {
+        let mark = RawNc::open(path)?;
+        if mark.dim_len("nCells")? != n_cells {
+            return Err(MpasError::Refusal(format!(
+                "--cull-mark-parent {} has {} cells and the parent {n_cells}; the region can only be marked on the same mesh",
+                path.display(),
+                mark.dim_len("nCells")?
+            )));
+        }
+        let mark_max_edges = mark.dim_len("maxEdges")?;
+        let (mark_counts, mark_neighbours) = (mark.read_i32("nEdgesOnCell")?, mark.read_i32("cellsOnCell")?);
+        let parent_neighbours = parent.read_i32("cellsOnCell")?;
+        let same_topology = mark_counts == n_edges_on_cell
+            && (0..n_cells).all(|c| {
+                let used = (n_edges_on_cell[c].max(0) as usize).min(max_edges).min(mark_max_edges);
+                parent_neighbours[c * max_edges..c * max_edges + used]
+                    == mark_neighbours[c * mark_max_edges..c * mark_max_edges + used]
+            });
+        if !same_topology {
+            return Err(MpasError::Refusal(format!(
+                "--cull-mark-parent {} has other neighbours than the parent; the region can only be marked on the same mesh",
+                path.display()
+            )));
+        }
+        let mut marked = Vec::with_capacity(2);
+        for (field, own) in [("latCell", &lat_cell), ("lonCell", &lon_cell)] {
+            let theirs = mark.read_coords(field)?;
+            let narrow = parent.var(field).map(|v| v.nc_type == raw::NC_FLOAT).unwrap_or(false);
+            if theirs.len() != own.len()
+                || own.iter().zip(&theirs).any(|(&o, &t)| !same_scaled_word(o, t, 1.0, narrow))
+            {
+                return Err(MpasError::Refusal(format!(
+                    "--cull-mark-parent {} has another {field} than the parent; the region can only be marked on the same mesh",
+                    path.display()
+                )));
+            }
+            marked.push(theirs);
+        }
+        lon_cell = marked.pop().expect("two fields");
+        lat_cell = marked.pop().expect("two fields");
+    }
     let mut cells_on_cell = parent.read_i32("cellsOnCell")?;
     let mut cells_on_edge = parent.read_i32("cellsOnEdge")?;
     let mut cells_on_vertex = parent.read_i32("cellsOnVertex")?;
@@ -1519,10 +1598,7 @@ pub fn cull_file_with_provenance(
                 let before = parent.read_coords(&field)?;
                 let after = target.read_coords(&field)?;
                 let narrow = parent.var(&field).map(|v| v.nc_type == raw::NC_FLOAT).unwrap_or(false);
-                if ids.iter().enumerate().any(|(k, &i)| {
-                    if narrow { (before[i] as f32).to_bits() != ((after[k] * scale) as f32).to_bits() }
-                    else { before[i].to_bits() != (after[k] * scale).to_bits() }
-                }) {
+                if ids.iter().enumerate().any(|(k, &i)| !same_scaled_word(before[i], after[k], scale, narrow)) {
                     return Err(MpasError::Refusal(format!("provenance grid {field} differs from the regional cut; its hash would identify another mesh")));
                 }
             }
@@ -1547,18 +1623,18 @@ pub fn cull_file_with_provenance(
             let narrow = parent.var(field).map(|v| v.nc_type == raw::NC_FLOAT).unwrap_or(false);
             for (k, &id) in ids.iter().enumerate() {
                 for slot in 0..width {
-                    let original = before[id * width + slot];
-                    let final_grid = after[k * width + slot] * scale;
-                    let same = if narrow { (original as f32).to_bits() == (final_grid as f32).to_bits() }
-                        else { original.to_bits() == final_grid.to_bits() };
-                    if !same {
+                    if !same_scaled_word(before[id * width + slot], after[k * width + slot], scale, narrow) {
                         return Err(MpasError::Refusal(format!("provenance grid {field} differs from the regional cut; its hash would identify another metric")));
                     }
                 }
             }
         }
-        if parent.read_coords("nominalMinDc")?.first().map(|&v| (v as f32).to_bits())
-            != target.read_coords("nominalMinDc")?.first().map(|&v| ((v * radius_scale) as f32).to_bits()) {
+        let same_nominal = match (parent.read_coords("nominalMinDc")?.first(), target.read_coords("nominalMinDc")?.first()) {
+            (Some(&original), Some(&final_grid)) => same_scaled_word(original, final_grid, radius_scale, true),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same_nominal {
             return Err(MpasError::Refusal("provenance grid nominalMinDc identifies another nominal spacing".to_string()));
         }
 
@@ -1863,6 +1939,28 @@ pub fn cull_file_with_provenance(
     })
 }
 
+/// Whether a parent word is the provenance grid's word at the parent's radius.
+///
+/// A binary64 parent must equal `after * scale` to the bit. A binary32 parent may hold either of the
+/// two exact single-rounding routes from a binary64 unit-sphere grid to a binary32 Earth-radius file:
+/// `f32(after * scale)` (this crate's static builder scales in binary64 and stores once) or
+/// `f32(after) * f32(scale)` in binary32 (native MPAS init_atmosphere, single precision, reads the grid
+/// into real(4) and then multiplies by the radius). THE BREAKAGE THIS PREVENTS (hex shapes study,
+/// 2026-10-23): `gpuwm-hex cull --parent-grid x1.163842.grid.nc --parent-static
+/// x1.163842.native.static.nc` refused the static cut with "provenance grid xCell differs" on the
+/// same mesh, because the native static's xCell is the second route (41,399 of 163,842 words differ
+/// from the first by one binary32 unit; 0 differ from the second, and likewise for every scaled
+/// field). Both routes are exact arithmetic on the same grid word, so another mesh still refuses.
+fn same_scaled_word(original: f64, final_grid: f64, scale: f64, narrow: bool) -> bool {
+    if narrow {
+        let want = (original as f32).to_bits();
+        want == ((final_grid * scale) as f32).to_bits()
+            || want == ((final_grid as f32) * (scale as f32)).to_bits()
+    } else {
+        original.to_bits() == (final_grid * scale).to_bits()
+    }
+}
+
 fn stored_sphere_radius(file: &RawNc) -> MpasResult<f64> {
     let attribute = file.gattrs.iter().find(|a| a.name == "sphere_radius")
         .ok_or_else(|| MpasError::Refusal("provenance grid has no sphere_radius".to_string()))?;
@@ -2111,5 +2209,36 @@ mod canonical_static_provenance_tests {
         assert_eq!(out["nominal_dx_m"], 937.5);
         assert!(out.get("gwd_variance_smoothed_cells").is_none());
         assert_eq!(a["gwd_variance_smoothed_cells"], 20);
+    }
+}
+
+#[cfg(test)]
+mod same_scaled_word_tests {
+    use super::same_scaled_word;
+
+    /// The native static's route (binary32 read, binary32 multiply) and this
+    /// crate's (binary64 multiply, one store) both identify the grid word;
+    /// a word one binary32 unit off both does not.
+    #[test]
+    fn both_single_rounding_routes_match_and_another_word_does_not() {
+        let radius = 6_371_229.0f64;
+        let mut native_only = 0;
+        for k in 1..20_000u32 {
+            let unit = (k as f64 * 0.618_033_988_749_895).fract() * 2.0 - 1.0;
+            let native = ((unit as f32) * (radius as f32)) as f64;
+            let builder = ((unit * radius) as f32) as f64;
+            assert!(same_scaled_word(native, unit, radius, true));
+            assert!(same_scaled_word(builder, unit, radius, true));
+            if native.to_bits() != builder.to_bits() {
+                native_only += 1;
+                let off = f32::from_bits((native as f32).to_bits() + 1) as f64;
+                if off.to_bits() != builder.to_bits() {
+                    assert!(!same_scaled_word(off, unit, radius, true));
+                }
+            }
+            assert!(!same_scaled_word(unit * radius * (1.0 + 1e-6), unit, radius, true));
+            assert!(same_scaled_word(unit * radius, unit, radius, false));
+        }
+        assert!(native_only > 0, "the two routes never differed, so nothing was tested");
     }
 }

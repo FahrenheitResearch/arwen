@@ -6,7 +6,7 @@
 template<class Real> __device__ void route_depth(const Real* depth, const double* area,
     const long long* offsets, const int* indices, float* lateral, double* discharge,
     double* volume, int* status, int nc, int nn, double scale, double seconds,
-    int accumulate, int reset) {
+    int accumulate, int reset, double fraction) {
     int node = blockIdx.x * blockDim.x + threadIdx.x;
     if (node >= nn) return;
     double q = 0., v = 0.; int bad = 0;
@@ -18,6 +18,7 @@ template<class Real> __device__ void route_depth(const Real* depth, const double
         double d = (double)depth[c], a = area[c];
         if (!isfinite(d) || d < 0. || !isfinite(a) || a <= 0.) { bad |= 1; continue; }
         double part = d * (a * scale);
+        if (fraction != 1.) part *= fraction;
         v += part; q += part / seconds;
     }
     // Sum actual producer volumes across the routing window. Never sample
@@ -35,7 +36,7 @@ template<class Real> __device__ void route_depth(const Real* depth, const double
 
 #define ENTRY(NAME, REAL) \
 extern "C" __global__ void NAME(const REAL* d, const double* a, const long long* o, \
-    const int* i, float* l, double* q, double* v, int* s, int nc, int nn, double scale, double dt, int acc, int reset) { \
-    route_depth(d,a,o,i,l,q,v,s,nc,nn,scale,dt,acc,reset); }
+    const int* i, float* l, double* q, double* v, int* s, int nc, int nn, double scale, double dt, int acc, int reset, double fraction) { \
+    route_depth(d,a,o,i,l,q,v,s,nc,nn,scale,dt,acc,reset,fraction); }
 ENTRY(route_depth_f32, float)
 ENTRY(route_depth_f64, double)

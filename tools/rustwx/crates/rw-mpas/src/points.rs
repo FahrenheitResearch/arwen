@@ -363,7 +363,7 @@ mod tests {
             history_path: "unused".into(), history_sha256: String::new(), init_path: None, init_sha256: None,
             valid_time: crate::history::Timestamp::parse("2024-01-01_00:00:00").unwrap(),
             n_cells: 3, n_levels: 1, n_soil_levels: 0, fields: Default::default(),
-            latitude_degrees: vec![], longitude_degrees: vec![], absent: vec![], science_attributes: vec![], split: None,
+            latitude_degrees: vec![], longitude_degrees: vec![], absent: vec![], science_attributes: vec![], split: None, companion_diag: None,
         };
         for fill in [-1e30, 9.96921e36, f32::NAN] {
             frame.fields.insert("U10".into(), (vec![fill, 8.0, 12.0], 1));

@@ -10,6 +10,7 @@ name = "rw_hydro_init"
 path = "src/main.rs"
 
 [dependencies]
+hydro-proj = { path = "../hydro_proj" }
 hydro-world = { path = "../hydro_world" }
 netcrust = { path = "../rustwx/vendor/netcrust" }
 # forcing-fill patches a fetched file in place of its holes (NcPatcher keeps every other byte).

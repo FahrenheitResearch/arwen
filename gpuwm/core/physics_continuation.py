@@ -46,28 +46,14 @@ which is 0 for every slot except ``cu_nca``, whose cold value is the
 -100 eligibility sentinel (gpuwm/core/physics.py driver init;
 module_cu_kfeta.F:3152-3156).
 
-ACCUMULATED PRECIPITATION IS THE EXCEPTION (:data:`STRIP_ACCUMULATORS`).
-Fresh ground has had rain since the run began; only the nest has not been
-there to see it.  A strip started at zero drew a band of too little total
-rain along every leading edge, one per move (a 12 h tropical storm run
-moved its 3 km nest 8 times).  WRF interpolates RAINC, RAINNC, RAINSH,
-SNOWNC, GRAUPELNC and HAILNC from the parent onto the exposed cells
-(Registry.EM_COMMON flag ``d``; share/mediation_nest_move.F runs
-med_interp_domain after shift_domain_em on the exposed mask), so a cell's
-total is the parent's rain before the nest arrived plus the nest's after,
-which is what a gauge there measures.  The route preparers pass those
-parent values (:func:`parent_strip_accumulations`, WRF's SINT) as
-``strip`` to :func:`shift_continuation`.  The same holds for the old
-footprint's specified ring where it lands inside the new one: the nest's
-microphysics never touches that ring (WRF's clipped tiles,
-:func:`gpuwm.core.physics_inventory.spec_zone_ring_slices`), so its rain total
-is what the cell had when it arrived, and after a move it drew a one-cell
-line of too little rain inside the nest, one per move (the ring column
-held 24.3 mm beside 32 to 34 mm at 12 h).  It takes the parent's too.
-A nest spawned mid-run starts from the parent's at birth by the same rule
-(:func:`seed_birth_accumulations`); born at zero, the ground it held since
-birth counted from a later start than the ground each move seeded, and
-every move left a band of too much rain instead.
+ACCUMULATED PRECIPITATION belongs to the nest that integrated it. The
+route preparers use core.nest_accumulation to archive the outgoing interior
+in a fixed native frame and restore previously visited cells. Unvisited
+strips start at zero. Products must report their sampled exposure, since the
+nest cannot estimate precipitation while absent. Parent SINT still fills
+prognostic fields, including hydrometeors; it does not seed rain totals.
+The parent_strip_accumulations helper below retains the historical policy
+only as an explicit reference for reproduction of pre-fix runs.
 """
 
 from __future__ import annotations
@@ -179,14 +165,9 @@ def capture_continuation(state, driver, *, store=None) -> dict[str, np.ndarray]:
     return captured
 
 
-#: The accumulated-precipitation slots a moving nest's fresh ground takes
-#: from its parent instead of from cold (module notes).  RAINSH has no slot:
-#: the driver writes it as zero on every domain.  ``mp_cloudnc`` is correct
-#: mode's settled-cloud total (finding WB1, gpuwm/core/thompson_cloud_booking
-#: .py), a run-long accumulator like RAINNC: fresh ground takes the parent's
-#: total, so a moved nest holds the settled cloud since the run began, not a
-#: zero band along its leading edge.  A parent that does not book it seeds
-#: nothing and the strip stays cold, as for any slot the parent lacks.
+#: Integrated precipitation counters carried on the fixed nest lattice.
+#: Fresh unvisited ground starts at zero. The legacy OFF control alone
+#: uses parent totals. RAINSH is written as zero and has no scratch slot.
 STRIP_ACCUMULATORS = ("mp_rainnc", "mp_snownc", "mp_graupelnc", "mp_hailnc",
                       "cu_rainc", "mp_cloudnc")
 
@@ -267,43 +248,20 @@ def parent_strip_accumulations(parent_node, child_dc,
 
 
 def seed_birth_accumulations(state, parent_node, child_dc) -> dict:
-    """A spawned nest starts its accumulated precipitation from its
-    parent's, the same rule a move applies to its new ground.
-
-    WHY (a stated physics ruling, :data:`STRIP_ACCUMULATION_RULE`).  A move
-    seeds new ground with the parent's rain since the run began.  A living
-    nest born at zero holds only its rain since birth on the ground it
-    already covers, so every move after a mid-run spawn left a band of too
-    much rain (the parent's rain from before the birth) along its leading
-    edge: the stripe the move rule exists to remove, the other way round.
-    WRF zeroes a late nest's accumulators (mp_init when not a restart) and
-    interpolates the parent's onto a moved nest's exposed cells, which is
-    that same inconsistency.  Here the nest arrives on all of its ground at
-    birth, so all of it starts from the parent's.  The
-    history's run total, whose lead the renderer measures from the
-    simulation start, then holds the rain since that start everywhere on
-    the nest, which is what a gauge there measured over the same window.
-    A nest that exists from the start is unchanged: its parent holds no
-    rain yet.
-
-    Seeds the accumulator slots the child already carries (its driver
-    aliases them at construction), in place, and returns the receipt of
-    :func:`parent_strip_accumulations` with ``event = "birth"``.
-    """
+    """Start nest-only counters at birth, without importing parent history."""
     existing = getattr(state, "existing_scratch", None)
     slots = ([slot for slot in STRIP_ACCUMULATORS if existing(slot) is not None]
              if callable(existing) else [])
-    seed, receipt = parent_strip_accumulations(parent_node, child_dc, slots)
-    receipt["event"] = "birth"
-    for slot, values in seed.items():
-        target = state.scratch(values.shape, slot)
-        if hasattr(target, "__cuda_array_interface__"):
-            import cupy as cp
-
-            target[...] = cp.asarray(values)
-        else:
-            target[...] = values
-    return receipt
+    if not getattr(getattr(child_dc, 'run', None), 'nest_accumulation_archive', True):
+        seeds, receipt = parent_strip_accumulations(parent_node, child_dc, slots)
+        for slot, value in seeds.items():
+            existing(slot)[...] = _array_module(existing(slot)).asarray(value)
+        receipt['event'] = 'birth'
+        return receipt
+    for slot in slots:
+        existing(slot)[...] = 0
+    return dict(event="birth", rule="nest-only totals since birth", seeded=slots,
+                convective_in_rainnc=False, parent_precipitation=False)
 
 
 def shift_continuation(captured: dict[str, np.ndarray],
@@ -314,8 +272,7 @@ def shift_continuation(captured: dict[str, np.ndarray],
     arithmetic, and therefore the same cells, as the serialised-state
     transplant -- and the strip is the slot's cold value, or, for a slot
     ``strip`` names, that array's values there (a moving nest's fresh
-    ground takes the parent's accumulated precipitation,
-    :func:`parent_strip_accumulations`).  For those slots the cells of the
+    ground takes its archived nest-only total, or zero if unvisited).  For those slots the cells of the
     old footprint's ``ring``-wide specified ring that land inside the new
     footprint take ``strip`` too: the nest never accumulated there.  A
     disjoint plan (nothing shared) yields all-cold arrays, which is

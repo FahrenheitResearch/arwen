@@ -102,7 +102,7 @@ def _finish(network, arrays, settings, options, context, factory, **details):
                root.parent / "core/kernels/nextgen_reservoirs.cuh"]
     evidence = json.dumps(dict(schema="arwen.hydro.routing-memory/v1", context=asdict(context),
         factory=factory, options=options, manifest=network.seal,
-        providers=network.bindings.sources,
+        providers=network.bindings.evidence_references(),
         sources={str(p.relative_to(root.parent)): hashlib.sha256(p.read_bytes()).hexdigest()
                  for p in sources}, **details), sort_keys=True)
     return StageMemory(tuple(arrays), evidence, non_pool_bytes=None,
@@ -147,8 +147,12 @@ def reservoir_memory(*, settings, options, context, components):
 def mc_memory(*, settings, options, context, components):
     network = _Network(settings, options, context, components)
     arrays, bindings = network.arrays, network.bindings
+    bindings.gaps.append('CUDA routing graph executable memory is driver-owned and unpriced')
     dt = options.get("dt_seconds", context.interval_seconds)
-    if type(dt) not in (int, float) or not 0 < dt or (dt <= context.interval_seconds and context.interval_seconds % dt) or (dt > context.interval_seconds and dt % context.interval_seconds):
+    if type(dt) not in (int, float) or not math.isfinite(dt) or dt <= 0:
+        raise ValueError("MC dt_seconds must be finite and positive")
+    parent = context.interval_seconds
+    if not settings.get('routing_clock') and (parent % dt if dt <= parent else dt % parent):
         raise ValueError("MC dt_seconds must divide or span whole parent intervals")
     if options.get("time_origin", settings.get("time_origin")) is None:
         raise ValueError("MC needs the realization time_origin for restart identity")
@@ -245,8 +249,10 @@ def mc_memory(*, settings, options, context, components):
         shape = tuple(replay["shape"])
         if replay["dtype"] != "<f8" or replay["bytes"] != math.prod(shape) * 8:
             raise ValueError("continuous routing replay extent or dtype differs")
-        arrays.append(ArrayMemory("workspace/initial_runoff_replay", shape, "float64", lifetime="prepare"))
-        bindings.gaps.append("continuous replay has a pinned host staging buffer of " + str(replay["bytes"]) + " bytes (host, not VRAM)")
+        chunks = routing.get('initial_replay', {}).get('chunks') or [replay]
+        largest = max(chunks, key=lambda part: part['bytes'])
+        arrays.append(ArrayMemory("workspace/initial_runoff_replay", tuple(largest['shape']), "float64", lifetime="prepare"))
+        bindings.gaps.append("continuous replay has a pinned host staging buffer of " + str(largest["bytes"]) + " bytes (host, not VRAM)")
     if options.get("publish_channels", False):
         bindings.gaps.append("MC channel-ID gather implementation workspace is unpriced")
     return _finish(network, arrays, settings, options, context, "gpuwm.hydro.troute_mc:prepare",

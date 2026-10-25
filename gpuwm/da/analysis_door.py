@@ -257,9 +257,13 @@ def mass_mode() -> str:
     return mode
 
 
-def split_increment(increment: Mapping[str, Any], *, mode: str, fields: str, background: Path | None,
+def split_increment(increment: Mapping[str, Any], *, mode: str, fields: str, background: Any,
                     hypsometric_opt: int, coordinate: Path | None = None) -> tuple[dict, dict, dict[str, Any]]:
     """``(at_once, spread, record)``, by WRF name.
+
+    ``background`` is the rebuilt background file (with ``coordinate``, the run's wrfinput), or
+    its column already formed in memory (:func:`gpuwm.io.analysis_bundle.column_from_arrays`,
+    no ``coordinate``): the same geopotential either way.
 
     oneshot: everything at once.  3d: everything forced over the window, except what the RK
     forcing cannot carry or the field set puts in at once, which goes in at the window start
@@ -301,7 +305,9 @@ def split_increment(increment: Mapping[str, Any], *, mode: str, fields: str, bac
         share, balance = balanced_geopotential(background, at_once, hypsometric_opt=hypsometric_opt,
                                                coordinate=coordinate)
         at_once["PH"] = share
-        spread["PH"] = np.asarray(increment["PH"], dtype=np.float64) - share
+        from gpuwm.da.host_analysis import binary
+
+        spread["PH"] = binary(increment["PH"], share, subtract=True)[0]
         record["geopotential_split"] = balance
     record["at_once"] = sorted(at_once)
     record["spread"] = sorted(spread)
@@ -532,6 +538,97 @@ def _write_plan(bundle, options, *, request, directory, inputs, outdir, work, re
             "plan": work / PLAN, "forecast_defaults": defaults}
 
 
+def hypsometric_opt_of(namelist: Path) -> int:
+    """The run's hypsometric_opt as the door reads it from its namelist (the split's geopotential)."""
+
+    return _hypsometric_opt(Path(namelist))
+
+
+class _ExchangeAsBundle:
+    """What :func:`_resolve_options` reads of a bundle, for an exchange."""
+
+    def __init__(self, exchange):
+        self.increment = None if exchange.increment is None else "in memory"
+        self.iau_window_seconds = exchange.iau_window_seconds
+
+
+#: The plan form of an analysis held in memory: the door's own keys, the forcing as arrays.
+IN_MEMORY = "in-memory"
+
+
+def plan_from_exchange(exchange, request: Mapping[str, Any] | None = None, *, hypsometric_opt: int,
+                       coordinate: Mapping[str, Any], run_grid: Mapping[str, Any] | None = None,
+                       run_static_sha256: str | None = None, run_seconds: float | None = None) -> dict[str, Any]:
+    """The door's cycling-restart plan for an analysis held in memory: :func:`resolve` and
+    :func:`_write_plan` (``--restart CKPT --analysis BUNDLE``) and :func:`read_split`, with nothing
+    written.
+
+    ``exchange`` is a :class:`gpuwm.io.analysis_bundle.AnalysisExchange`; ``request`` the door's
+    flags as :func:`request_from_args` names them (``iau``, ``iau_mode``, ``iau_fields``,
+    ``iau_window_seconds``; ``iau_boundary`` is a cold start's and is refused, as for any
+    restart); ``hypsometric_opt`` the run's namelist value; ``coordinate`` the run's wrfinput's
+    coefficients (:data:`gpuwm.io.analysis_bundle._COLUMN_COORDINATE`); ``run_grid`` and
+    ``run_static_sha256`` that wrfinput's ``grid_fingerprint`` and ``static_fingerprint`` (the
+    door's ``check_run``; None records that the caller checked them).  The background the
+    increment was computed against is rebuilt from the exchange exactly as ``write_background``
+    rebuilds ``background.nc``, its column formed exactly as ``column_from_file`` forms it, and
+    the increment split by :func:`split_increment` itself, so ``forcing`` holds the words the
+    door's ``iau-split.npz`` holds.
+    """
+
+    from collections import ChainMap
+
+    import numpy as np
+
+    from gpuwm.io.analysis_bundle import (BundleRefusal, _background_core, check_exchange_run,
+                                          column_from_arrays, parse_forecast_args)
+
+    request = dict(request or {})
+    for name in ("analysis", "analysis_work", "plan"):
+        if request.get(name) is not None:
+            raise _refuse(f"{name} names a file; an exchange is held in memory and its plan writes nothing")
+    view = _ExchangeAsBundle(exchange)
+    options = _resolve_options(request, view, restarting=True)
+    if options["on"] and run_seconds is not None and options["window_seconds"] > float(run_seconds) + 1e-6:
+        raise _refuse(f"the IAU window is {options['window_seconds']:g} s and the run {float(run_seconds):g} s; "
+                      "the forecast would end with part of the increment never applied (G10)")
+    record: dict[str, Any] = {"options": dict(options)}
+    metadata = exchange.metadata
+    if run_grid is not None:
+        if run_static_sha256 is None:
+            raise _refuse("run_grid without run_static_sha256: the door checks the run's grid and static fields "
+                          "together")
+        try:
+            record["checks"] = check_exchange_run(metadata["grid"], metadata["static"]["sha256"], run_grid,
+                                                  run_static_sha256, "the run's wrfinput")
+        except BundleRefusal as error:
+            raise _refuse(str(error)) from None
+    else:
+        record["checks"] = {"measured": False, "reason": "the caller checked the run's grid and static fields"}
+    increment = exchange.increment_float64()
+    state = exchange.state()
+    rows = ((name, np.asarray(state[name], dtype=np.float64), np.asarray(state[name]).dtype)
+            for name in sorted(increment))
+    background, record["background"] = _background_core(rows, increment, exchange.increment_precision())
+    column = column_from_arrays(ChainMap(background, state), coordinate)
+    at_once, spread, record["split"] = split_increment(
+        increment, mode=options["mode"], fields=options.get("fields", DEFAULT_FIELDS), background=column,
+        hypsometric_opt=int(hypsometric_opt))
+    at_once = {name: np.asarray(value, dtype=np.float64) for name, value in at_once.items()}
+    spread = {name: np.asarray(value, dtype=np.float64) for name, value in spread.items()}
+    defaults = {}
+    for flag, value in parse_forecast_args((metadata.get("forecast") or {}).get("args") or []):
+        defaults[flag.lstrip("-").replace("-", "_")] = value
+    return {
+        "schema": PLAN_SCHEMA, "form": IN_MEMORY, "start": "cycling-restart", "bundle": exchange.receipt(),
+        "valid_time": exchange.valid_time, "iau": options, "hypsometric_opt": int(hypsometric_opt),
+        "forcing": {"at_once": at_once, "spread": spread, "names": {"at_once": sorted(at_once),
+                                                                     "spread": sorted(spread)}},
+        "background": background, "record": record, "boundary_pair_file": None, "derived": {},
+        "forecast_defaults": defaults,
+    }
+
+
 def load_plan(path: Path) -> dict[str, Any]:
     plan = json.loads(Path(path).read_text(encoding="utf-8"))
     if plan.get("schema") != PLAN_SCHEMA:
@@ -585,7 +682,9 @@ class AnalysisInitialization:
         self.lateral_boundaries = getattr(base, "lateral_boundaries", None)
         self._receipt: dict[str, Any] = {"schema": RECEIPT_SCHEMA, "start": plan["start"],
                                          "bundle": plan["bundle"], "iau": plan["iau"],
-                                         "plan": str(Path(plan["work"]) / PLAN), "record": plan["record"]}
+                                         "plan": (None if plan.get("form") == IN_MEMORY else
+                                                  str(Path(plan["work"]) / PLAN)),
+                                         "record": plan["record"]}
         self._forcing = None
         self._mass = None
         self._mass_state = None
@@ -614,9 +713,11 @@ class AnalysisInitialization:
     def _first_application(self, restart: Path | None) -> tuple[bool, str]:
         """Whether the analysis goes in now, at the analysis instant, and why."""
 
-        ledger = Path(self.plan["work"]) / LEDGER
         if restart is None:
             return True, "a cold start at the analysis time"
+        if self.plan.get("form") == IN_MEMORY:
+            return True, "a restored background at the exchange's analysis instant; no file-backed ledger"
+        ledger = Path(self.plan["work"]) / LEDGER
         source = _sha(Path(restart))
         if self.plan["start"] in ("direct-insertion", "iau"):
             return False, ("a resume of the door's own cold start at its first instant: what went in at the "
@@ -629,12 +730,36 @@ class AnalysisInitialization:
                           "started from")
         return False, "the restart is this leg's own checkpoint after the analysis went in"
 
+    #: ``continuation`` values :meth:`apply_door_plan` takes besides the door's own restore.
+    CONTINUATIONS = ("in-memory",)
+
     def after_restore(self, *, model, nodes, start_time, run_seconds: float, restart=None) -> None:
+        self.apply_door_plan(model=model, nodes=nodes, start_time=start_time, run_seconds=run_seconds,
+                             restart=restart)
+
+    def apply_door_plan(self, *, model, nodes=None, start_time, run_seconds: float, restart=None,
+                        continuation: str | None = None) -> None:
+        """The door's act on a model whose clocks stand where the run continues.
+
+        The body of :meth:`after_restore`, which calls it: the door's restore and a resident
+        member session run this one function.  ``continuation="in-memory"`` is the session's
+        restart-equivalent continuation (the door's cycling restart without the checkpoint
+        round trip): the live model at the analysis instant is the state the analysis was
+        computed against, so the analysis goes in now, and there is no restart file to record
+        in the ledger.  It is refused at any other instant, because a forcing rebuilt part-way
+        through a window would be a resume, which the session never is.
+        """
         import numpy as np
 
         from gpuwm.da import iau
         from gpuwm.io.analysis_bundle import parse_valid_time
 
+        if continuation is not None and continuation not in self.CONTINUATIONS:
+            raise _refuse(f"continuation {continuation!r}: one of {list(self.CONTINUATIONS)}")
+        if continuation is not None and restart is not None:
+            raise _refuse("an in-memory continuation restores nothing, so it names no restart file")
+        if nodes is None:
+            nodes = {int(node.cfg.grid_id): node for node in model.walk_parent_first()}
         root = nodes[min(nodes)]
         if len(nodes) != 1:
             raise _refuse("the restored tree has nests; named gap G7")
@@ -644,13 +769,24 @@ class AnalysisInitialization:
         elapsed = float(state.elapsed_seconds)
         self._receipt["window_start_seconds"] = t0
         self._receipt["restored_at_seconds"] = elapsed
+        if continuation is not None:
+            self._receipt["continuation"] = continuation
         if elapsed < t0 - 1e-6:
             raise _refuse(f"the run is at {elapsed:g} s and the analysis is valid at {t0:g} s; the door adds an "
                           "analysis at its own instant, not before it")
+        if continuation is not None and abs(elapsed - t0) > 1e-6:
+            raise _refuse(f"an in-memory continuation is at {elapsed:g} s and the analysis is valid at {t0:g} s; "
+                          "the session applies an analysis at its own instant only (a forcing rebuilt part-way "
+                          "through its window would be a resume)")
         options = self.plan["iau"]
         forcing_plan = self.plan.get("forcing")
         at_once = spread = {}
-        if forcing_plan is not None:
+        if forcing_plan is not None and isinstance(forcing_plan.get("at_once"), Mapping):
+            # An in-memory plan (plan_from_exchange): the split's words are held in the plan itself, the words
+            # iau-split.npz would hold for the same exchange.
+            at_once = {name: np.asarray(value, dtype=np.float64) for name, value in forcing_plan["at_once"].items()}
+            spread = {name: np.asarray(value, dtype=np.float64) for name, value in forcing_plan["spread"].items()}
+        elif forcing_plan is not None:
             at_once, spread = read_split(Path(forcing_plan["path"]), forcing_plan["sha256"])
         mass = {}
         if options["on"] and "MU" in at_once:
@@ -663,9 +799,13 @@ class AnalysisInitialization:
                     "mode": "at-once",
                     "why": ("GPUWM_IAU_MASS=at-once" if mass_mode() == "at-once" else
                             "other fields go in at once too; their geopotential share is one with the mass's")}
-        first, why = (self._first_application(None if restart is None else Path(restart))
-                      if abs(elapsed - t0) <= 1e-6 else
-                      (False, "a resume after the analysis instant: the forcing is rebuilt from the bundle"))
+        if continuation is not None:
+            first, why = True, ("the resident session's live state at the analysis instant: the background the "
+                                "analysis was computed against, continued in memory")
+        else:
+            first, why = (self._first_application(None if restart is None else Path(restart))
+                          if abs(elapsed - t0) <= 1e-6 else
+                          (False, "a resume after the analysis instant: the forcing is rebuilt from the bundle"))
         self._receipt["applied_now"] = {"applied": bool(first), "why": why}
         hopt = int(getattr(cfg, "hypsometric_opt", 2))
         if options["on"] and t0 + float(options["window_seconds"]) > float(run_seconds) + 1e-6:
@@ -693,7 +833,7 @@ class AnalysisInitialization:
                                         "non_negative_clips": dict(insert.clipped),
                                         "rule": "added in float64 at the analysis instant, moisture clipped "
                                                 "at zero, pressure and density re-diagnosed"}
-            if restart is not None:
+            if restart is not None and self.plan.get("form") != IN_MEMORY:
                 _atomic_json(Path(self.plan["work"]) / LEDGER,
                              {"restart_sha256": _sha(Path(restart)), "applied_at_seconds": t0,
                               "fields": sorted(at_once)})
@@ -734,7 +874,7 @@ class AnalysisInitialization:
             "schema": START_SCHEMA, "start": self.plan["start"], "valid_time": self.plan["valid_time"],
             "grid": self.plan["bundle"]["grid"]["id"],
             "horizontal_sha256": self.plan["bundle"]["grid"]["horizontal_sha256"],
-            "run_directory": self.plan["run_directory"],
+            "run_directory": self.plan.get("run_directory"),
             "analysis_bundle": self.plan["bundle"]["manifest_sha256"],
             "start_seconds": elapsed})
 
@@ -745,19 +885,28 @@ class AnalysisInitialization:
 
         import numpy as np
 
+        held = self.plan.get("background") if isinstance(self.plan.get("background"), Mapping) else None
         entry = self.plan.get("derived", {}).get("background.nc")
-        if entry is None:
+        if entry is None and held is None:
             return {"measured": False, "reason": "no background was rebuilt for this start"}
-        from gpuwm.io.analysis_bundle import _first_record, _open, _prefetch_unmasked
+        if held is not None:
+            # An in-memory plan carries the rebuilt background's words itself (plan_from_exchange).
+            def background(name):
+                return None if name not in held else np.asarray(held[name], dtype=np.float64)
+        else:
+            from gpuwm.io.analysis_bundle import _first_record, _open, _prefetch_unmasked
 
-        dataset = _open(entry["path"])
-        # one decoder run for the fields read below, not one each (this runs before the first step)
-        _prefetch_unmasked(dataset, [name for name in ("U", "V", "W", "PH", "MU", "QVAPOR", "T")
-                                     if name in dataset.variables])
+            dataset = _open(entry["path"])
+            _prefetch_unmasked(dataset, [name for name in ("U", "V", "W", "PH", "MU", "QVAPOR", "T")
+                                         if name in dataset.variables])
+
+            def background(name):
+                return None if name not in dataset.variables else _first_record(dataset.variables[name])
         out: dict[str, Any] = {"measured": True}
         for wrf_name, state_name in (("U", "u"), ("V", "v"), ("W", "w"), ("PH", "php"), ("MU", "mup"),
                                      ("QVAPOR", "qv"), ("T", "thp")):
-            if wrf_name not in dataset.variables or getattr(state, state_name, None) is None:
+            reference = background(wrf_name)
+            if reference is None or getattr(state, state_name, None) is None:
                 continue
             live = getattr(state, state_name)
             host = (live.get() if hasattr(live, "get") else np.asarray(live)).astype(np.float64)
@@ -765,7 +914,7 @@ class AnalysisInitialization:
                 thb = state.thb.get() if hasattr(state.thb, "get") else np.asarray(state.thb)
                 thb = np.asarray(thb, np.float64)
                 host = host + (thb if thb.ndim == 3 else thb.reshape(-1)[:, None, None]) - 300.0
-            out[wrf_name] = float(np.max(np.abs(host - _first_record(dataset.variables[wrf_name]))))
+            out[wrf_name] = float(np.max(np.abs(host - reference)))
         return out
 
     def step_observer(self, *, grid_id, model_seconds, **_event) -> None:
@@ -813,7 +962,35 @@ class AnalysisInitialization:
                                f"{forcing.applied_fraction!r} of the increment applied (G10)")
         return {"analysis_bundle": receipt}
 
+    def retire_window(self, model) -> dict[str, Any]:
+        """Close this analysis on a model that integrates on (a resident member session).
 
-__all__ = ["AnalysisDoorRefusal", "AnalysisInitialization", "add_analysis_arguments", "load_plan",
-           "read_split", "refuse_unrouted", "request_from_args", "resolve", "split_increment",
-           "state_increments"]
+        The door's own G10 check (:meth:`run_report_blocks`) at the window's end, then the
+        forcing detached, so the next analysis attaches its own.  THE BREAKAGE IT PREVENTS: a
+        session that attached the next analysis over a window still open would either be
+        refused by :func:`gpuwm.da.iau.attach` or, detaching early, drop part of the increment
+        the files path forces in full.  Returns the receipt block the door's run receipt
+        carries (``analysis_bundle``)."""
+
+        from gpuwm.da import iau
+
+        state = model.root.state
+        if self._forcing is not None:
+            end = self._window[1]
+            reached = float(state.elapsed_seconds)
+            if reached < end - 1e-6:
+                raise _refuse(f"the IAU window ends at {end:g} s and the model is at {reached:g} s; a window is "
+                              "retired at its end, with all of its increment applied (G10)")
+        receipt = self.run_report_blocks(model)["analysis_bundle"]
+        if self._forcing is not None:
+            if getattr(state, iau.IAU_STATE_ATTRIBUTE, None) is not self._forcing:
+                raise _refuse("the state carries another forcing than this analysis's; two analyses would share "
+                              "one window")
+            iau.detach(state)
+            receipt["retired_at_seconds"] = float(state.elapsed_seconds)
+        return receipt
+
+
+__all__ = ["AnalysisDoorRefusal", "AnalysisInitialization", "add_analysis_arguments", "hypsometric_opt_of",
+           "load_plan", "plan_from_exchange", "read_split", "refuse_unrouted", "request_from_args", "resolve",
+           "split_increment", "state_increments"]

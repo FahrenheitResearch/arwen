@@ -791,8 +791,15 @@ def start(device_id: int | None = None) -> dict[str, Any] | None:
     if identity is not None:
         import multiprocessing
 
-        _state["compiler_pool"] = concurrent.futures.ProcessPoolExecutor(
+        cpu_pool = concurrent.futures.ProcessPoolExecutor(
             workers, mp_context=multiprocessing.get_context("spawn"))
+        _state["compiler_pool"] = cpu_pool
+        register = getattr(threading, "_register_atexit", None)
+        if register is not None:
+            # Registered after concurrent.futures' own exit hook, so it runs first.
+            # The dict, not the attribute: shutdown() sets the attribute to None.
+            register(lambda pool=cpu_pool, processes=getattr(cpu_pool, "_processes", None):
+                     _drop_at_exit(pool, processes))
         _state["worker_identity"] = identity
         record.update(compiler_executor="process", pool_cpu_seconds=0.0, pool_processes=[])
         if os.environ.get("GPUWM_KERNEL_PLAN_TRACE") == "1":
@@ -974,6 +981,27 @@ def submit(job, *args: Any) -> concurrent.futures.Future | None:
                     _state["replay"]["last_done"] = time.monotonic()
 
     return pool.submit(run)
+
+
+def _drop_at_exit(cpu_pool, processes=None) -> None:
+    """At interpreter exit, stop the compiler pool's workers instead of joining them.
+
+    THE BREAKAGE: a hex forecast (the hl-3 headline run, 2026-10-24) wrote its receipt and its
+    products, then sat in multiprocessing's exit join on one idle spawn compile worker of
+    this pool until the worker was killed (twice, 16 min the first time). Unrequested
+    compiles are pure waste at exit; a worker returns its image and writes nothing itself.
+    Each step runs on its own so a shutdown that raises still terminates the workers.
+    """
+    try:
+        cpu_pool.shutdown(wait=False, cancel_futures=True)
+    except Exception:
+        pass
+    try:
+        for process in list((processes or {}).values()):
+            if process.is_alive():
+                process.terminate()
+    except Exception:
+        pass
 
 
 def close(*, wait: bool = False) -> None:

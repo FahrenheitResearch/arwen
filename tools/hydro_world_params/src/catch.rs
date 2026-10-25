@@ -236,18 +236,15 @@ fn gpkg_rings(b: &[u8]) -> Result<Vec<Ring>> {
 pub fn from_gpkg(g: &Grid, path: &str) -> Result<(Catchments, hydro_world::contract::Fabric)> {
     let (fab, _rep) = hydro_world::gpkg::read(path)?;
     let crs = Crs::from_srs(&fab.srs.organization, fab.srs.organization_coordsys_id, &fab.srs.definition)?;
-    let mut ids = vec![];
-    let mut polys = vec![];
-    let mut declared = vec![];
-    for d in &fab.divides {
+    let rows = fab.divides.par_iter().map(|d| -> Result<_> {
         let id = d.divide_id.clone().ok_or_else(|| format!("{path}: divide without divide_id"))?;
         let geom = d.geom.as_ref().ok_or_else(|| format!("{path}: {id} has no geometry"))?;
         let rings = gpkg_rings(&geom.0)?;
         let rings: Vec<Ring> = rings.into_iter().map(|r| r.into_iter().map(|(x, y)| crs.inverse(x, y)).collect()).collect();
-        ids.push(id);
-        polys.push(rings);
-        declared.push(d.areasqkm);
-    }
+        Ok((id,rings,d.areasqkm))
+    }).collect::<Result<Vec<_>>>()?;
+    let (mut ids,mut polys,mut declared)=(Vec::with_capacity(rows.len()),Vec::with_capacity(rows.len()),Vec::with_capacity(rows.len()));
+    for (id,rings,area) in rows {ids.push(id);polys.push(rings);declared.push(area);}
     Ok((finish(g, ids, polys, declared, "gpkg"), fab))
 }
 

@@ -593,6 +593,35 @@ def _mcica_dev_f32(cp, arr, shape, name):
     return out
 
 
+def _window_tables(cp, optrs, sptrs, kinds, clears, band_offsets):
+    """The five small kernel tables of one McICA window, in ONE upload.
+
+    THE BREAKAGE THIS PREVENTS (radiation-ranks, V61 8 x RTX 5090 nsys,
+    2026-10-21): five ``cp.asarray(numpy)`` uploads per window were 1,045 of
+    the 1,208 host-to-device copies of one legacy radiation call per rank.
+    Each went through CuPy's pinned staging, which creates, records, queries
+    and destroys a CUDA event; with eight rank threads the event destroys
+    contended on the driver's write lock (0.34 s of one rank's 3.8 s
+    radiation span) and the host fell behind the card.  One pageable
+    ``set`` into one device buffer carries the same bytes with no event.
+    The kernels read the same values; only the number of copies changes.
+    """
+    nout = len(optrs)
+    ngpt = len(band_offsets)
+    host = np.empty(24 * nout + 4 * ngpt, dtype=np.uint8)
+    host[0:8 * nout].view(np.uint64)[...] = np.asarray(optrs, dtype=np.uint64)
+    host[8 * nout:16 * nout].view(np.uint64)[...] = np.asarray(sptrs, dtype=np.uint64)
+    host[16 * nout:20 * nout].view(np.int32)[...] = np.asarray(kinds, dtype=np.int32)
+    host[20 * nout:24 * nout].view(np.float32)[...] = np.asarray(clears, dtype=np.float32)
+    host[24 * nout:].view(np.int32)[...] = np.asarray(band_offsets, dtype=np.int32)
+    dev = cp.empty(host.size, dtype=cp.uint8)
+    dev.set(host)
+    return (dev[0:8 * nout].view(cp.uint64), dev[8 * nout:16 * nout].view(cp.uint64),
+            dev[16 * nout:20 * nout].view(cp.int32),
+            dev[20 * nout:24 * nout].view(cp.float32),
+            dev[24 * nout:].view(cp.int32))
+
+
 def _gpu_generate_subcolumns(ncol, nlay, ngpt, icld, permuteseed, irng,
                              play, cldfrac, hgt, percol_srcs, band_srcs,
                              nbnd, band_offsets, out_specs, passthrough,
@@ -681,12 +710,8 @@ def _gpu_generate_subcolumns(ncol, nlay, ngpt, icld, permuteseed, irng,
         kinds.append(kind)
         clears.append(clear)
     nout = len(out_specs)
-    outptrs_d = cp.asarray(np.asarray(optrs, dtype=np.uint64))
-    srcptrs_d = cp.asarray(np.asarray(sptrs, dtype=np.uint64))
-    kinds_d = cp.asarray(np.asarray(kinds, dtype=np.int32))
-    clears_d = cp.asarray(np.asarray(clears, dtype=np.float32))
-    bandoff_d = cp.asarray(np.ascontiguousarray(
-        np.asarray(band_offsets, dtype=np.int32)))
+    outptrs_d, srcptrs_d, kinds_d, clears_d, bandoff_d = _window_tables(
+        cp, optrs, sptrs, kinds, clears, band_offsets)
 
     tb = _MCICA_GPU_THREADS
     if fused:

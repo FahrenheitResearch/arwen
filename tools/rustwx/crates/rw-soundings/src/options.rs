@@ -45,7 +45,9 @@ pub struct DisplayOpts {
     pub corner: CornerPanel,
     pub parcel: ParcelType,
     pub title: Option<String>,
-    pub brand: String,
+    /// The `brand` setting (top right), when the caller gave one. Unset, the label is built from the run's own
+    /// description (batch.rs `brand_from`), never a tool name.
+    pub brand: Option<String>,
     pub style: SkewTStyle,
     pub blank: Vec<(DiagnosticTablePanelKind, String)>,
     pub spag_t: bool,
@@ -290,7 +292,7 @@ pub fn parse_display(q: &Q) -> Res<DisplayOpts> {
         corner,
         parcel,
         title: qs(q, "title").map(str::to_string),
-        brand: qs(q, "brand").unwrap_or("gpuwm · sharppyrs").to_string(),
+        brand: qs(q, "brand").map(str::trim).filter(|s| !s.is_empty()).map(str::to_string),
         style,
         blank,
         spag_t: spag.split(',').any(|s| s == "t"),

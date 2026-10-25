@@ -292,6 +292,8 @@ _EXTRA_HEADERS: dict[str, tuple[str, ...]] = {
                          "glibc_flt64.cuh", "thompson_classic_constants.cuh"),
     "morrison": ("glibc_flt32.cuh", "glibc_flt32_extra.cuh", "glibc_flt64.cuh",
                  "glibc_trig_flt32.cuh", "morrison_constants.cuh"),
+    "gsd_initial_reflectivity": ("glibc_flt32.cuh", "glibc_flt64.cuh",
+                                 "thompson_fork_constants.cuh", "thompson_fork.cu"),
     "thompson_fork": ("glibc_flt32.cuh", "glibc_flt64.cuh",
                       "thompson_fork_constants.cuh"),
     "nssl2_nucond": ("glibc_flt32.cuh", "nssl2_wrf_math.cuh"),
@@ -450,7 +452,9 @@ def module_source(name: str, *, kernel_dir: Path = _KDIR) -> str:
 #: contraction; with it a default column read hfx 802 and noahres 606208 ULP
 #: from WRF 4.6.1 and failed the WRF 4.7.1 urban hand-over oracle
 #: (tests/test_noah_wrf461_parity.py, tests/test_urban_noah_hook_wrf471_parity.py).
-_NO_FMAD_MODULES = frozenset({"hail", "lake", "g3", "ysu", "shinhong", "mynn_pbl",
+#: climate_diagnostics: all 48 climate fields match the pinned gfortran
+#: oracle only with separate rounding in strict mode; fast strips this option.
+_NO_FMAD_MODULES = frozenset({"climate_diagnostics", "hail", "lake", "g3", "ysu", "shinhong", "mynn_pbl",
                               "mynn_dmp_sibling", "wsm6", "kessler", "myjpbl",
                               "milbrandt2", "milbrandt2_zet", "wdm6",
                               "wdm6_refl", "wsm3", "wsm6r", "noah"})
@@ -898,7 +902,10 @@ UNFLUSHED_OPTIONS = ("-std=c++17", "--fmad=false", "--ftz=false")
 #: WRF's own build (tests/test_wsm5.py), whose trajectories carry subnormal
 #: hydrometeor words in the default arithmetic users run, not only under
 #: GPUWM_WRF_EXACT=1.
-_UNFLUSHED_MODULES = frozenset({"wsm5"})
+#: gsd_initial_reflectivity: the pinned HRRR helper shares the fork's
+#: radar transcription; retain IEEE subnormals in its PSD powers. Strict
+#: tests disable contraction; the default numerics policy still permits FMA.
+_UNFLUSHED_MODULES = frozenset({"wsm5", "gsd_initial_reflectivity"})
 
 
 @cuda_cache(maxsize=None)

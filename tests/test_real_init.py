@@ -1150,6 +1150,16 @@ from test_real_init_dry_slot import (
     _ReferencePreprocessBackend, _ReferenceVerticalPlan)
 
 
+def _SYNTHETIC_IF_28(mp_physics):
+    """mp=28 tests about numbers or the ingest name the synthetic aerosol profile.
+
+    Since 2.9.7 'auto' needs the 225 MB WIF dataset or refuses by name (the
+    suite keeps its download offline), so a test that is not about the aerosol
+    source names the profile it reads, as a user would.
+    """
+    return {"mp28_aerosol_source": "synthetic"} if int(mp_physics) == 28 else {}
+
+
 def _analyzed_hrrr_real_init(
         mp_physics, *, state_backend="cpu", terrain_m=0.0,
         drop=(), reshape=None, wif_grid_latlon=None, wif_valid_date=None,
@@ -1258,7 +1268,7 @@ def test_mp28_real_ingest_retains_every_analyzed_hydrometeor():
     28 from the three mp tuples this state was identically zero and nothing
     raised.
     """
-    result, _ = _analyzed_hrrr_real_init(28)
+    result, _ = _analyzed_hrrr_real_init(28, mp28_aerosol_source="synthetic")
     state = result.state
 
     evidence = result.hydrometeor_initialization
@@ -1657,7 +1667,7 @@ def test_mp28_real_ingest_leaves_the_aerosols_for_the_init_hook():
     both 3-D fields (dyn_em/module_initialize_real.F:2332-2345) and both 2-D
     emissions (:4501-4510) under aer_init_opt=0.
     """
-    result, cfg = _analyzed_hrrr_real_init(28)
+    result, cfg = _analyzed_hrrr_real_init(28, mp28_aerosol_source="synthetic")
     state = result.state
     for name in ("nwfa", "nifa", "nwfa2d", "nifa2d"):
         live = _host_array(getattr(state, name))
@@ -1927,23 +1937,30 @@ def test_mp28_real_ingest_receipt_announces_the_synthetic_fallback(
     monkeypatch.setenv("GPUWM_WIF_DATA_ROOT", str(tmp_path / "no-staged-wif"))
     monkeypatch.chdir(tmp_path)
 
-    result, _ = _analyzed_hrrr_real_init(28)
+    # 2.9.7: 'auto' no longer REACHES the synthetic profile.  With no copy
+    # on the machine and the pinned download failing (the suite keeps it
+    # offline), the run is refused by name with the deliberate way out
+    # (a real-data mp=28 run, 2026-10-23 12:58Z, ran synthetic
+    # aerosol with only a warning).
+    with pytest.raises(wif_climatology.MissingWifClimatologyDataset) as refused:
+        _analyzed_hrrr_real_init(28)
+    said = str(refused.value)
+    assert "QNWFA_QNIFA_SIGMA_MONTHLY.dat" in said
+    assert "pinned download" in said
+    assert "mp28_aerosol_source='synthetic'" in said
+
+    # The profile taken BY NAME still says so in the receipt.
+    result, _ = _analyzed_hrrr_real_init(28, mp28_aerosol_source="synthetic")
     receipt = result.aerosol_initialization
 
     assert receipt["aerosol_source"] == "thompson_init-synthetic-profile"
     assert receipt["synthetic_fallback_in_use"] is True
-    assert receipt["synthetic_fallback_requested"] is False
+    assert receipt["synthetic_fallback_requested"] is True
     assert receipt["aerosol_source_statement"] == (
         MP28_AEROSOL_SYNTHETIC_FALLBACK)
     # The retired deviation's surviving clauses, on the branch they describe.
     assert "thompson_init" in receipt["aerosol_source_statement"]
     assert "not be reported as one" in receipt["aerosol_source_statement"]
-    # It says WHY there was no data, concretely -- a fallback whose reason is
-    # "unavailable" is a fallback nobody can fix.
-    assert receipt["dataset"]["resolved"] is False
-    assert "QNWFA_QNIFA_SIGMA_MONTHLY.dat" in (
-        receipt["dataset"]["fallback_reason"])
-    assert receipt["dataset"]["candidates"]
     # Unchanged: the fields are still left at exact zero for thompson_init.
     assert "module_mp_thompson.F" in receipt["microphysics_citation"]
     assert receipt["awaiting_profile_fill"] is True
@@ -2045,7 +2062,7 @@ def _pressure_level_real_init(mp_physics, *, init_kwargs=None, shape=(2, 3),
 
 def test_mp28_pressure_level_lane_also_publishes_the_aerosol_policy():
     """ERA5/GFS forcing reaches mp=28 too, and gets the same policy."""
-    result, _ = _pressure_level_real_init(28)
+    result, _ = _pressure_level_real_init(28, mp28_aerosol_source="synthetic")
     state = result.state
 
     # No analyzed condensate exists on this lane; qc/qr are explicitly zeroed
@@ -2171,7 +2188,7 @@ def test_mp28_real_ingest_state_is_shaped_typed_and_physical():
     required to be IDENTICAL to it, because the aerosol scheme changes no
     part of the mass/thermodynamic setup.
     """
-    result, cfg = _analyzed_hrrr_real_init(28)
+    result, cfg = _analyzed_hrrr_real_init(28, mp28_aerosol_source="synthetic")
     control, _ = _analyzed_hrrr_real_init(8)
     state = result.state
     nz, ny, nx = cfg.nz, cfg.ny, cfg.nx
@@ -2370,7 +2387,7 @@ def test_mp28_cold_start_closes_the_number_moments_over_the_imported_mass():
     from gpuwm.da.moments import moment_consistency_report, scheme_moments
     from gpuwm.core.thompson_entry import R1
 
-    result, _ = _analyzed_hrrr_real_init(28)
+    result, _ = _analyzed_hrrr_real_init(28, mp28_aerosol_source="synthetic")
     state = result.state
     view = {name: _host_array(getattr(state, name))
             for name in ("qc", "qr", "qi", "nc", "nr", "ni")}
@@ -2418,7 +2435,7 @@ def test_mp28_cold_start_droplet_number_is_real_exe_make_droplet_number(
         droplet_mean_diameter_m, make_droplet_number)
 
     result, _ = _analyzed_hrrr_real_init(
-        28, cloud_water=_CLOUDY_COLUMN_KG_KG, landmask=landmask)
+        28, cloud_water=_CLOUDY_COLUMN_KG_KG, landmask=landmask, mp28_aerosol_source="synthetic")
     state = result.state
     qc = _host_array(state.qc)
     nc = _host_array(state.nc)
@@ -2448,7 +2465,7 @@ def test_mp28_cold_start_droplet_number_is_real_exe_make_droplet_number(
 def test_mp28_cold_start_without_a_landmask_refuses_to_guess_the_drop_size():
     with pytest.raises(ValueError, match="LANDMASK"):
         _analyzed_hrrr_real_init(
-            28, cloud_water=_CLOUDY_COLUMN_KG_KG, landmask=None)
+            28, cloud_water=_CLOUDY_COLUMN_KG_KG, landmask=None, mp28_aerosol_source="synthetic")
 
 
 def _real_exe_seed_then_entry(species, mass, alt, temperature):
@@ -2495,7 +2512,7 @@ def test_cold_start_rain_and_ice_numbers_are_real_exe_make_numbers(
     """
     from gpuwm.core.thompson_entry import rain_median_volume_diameter_m
 
-    result, _ = _analyzed_hrrr_real_init(mp_physics)
+    result, _ = _analyzed_hrrr_real_init(mp_physics, **_SYNTHETIC_IF_28(mp_physics))
     state = result.state
     alt = np.asarray(result.total_specific_volume, dtype=np.float32)
     rho = (np.float32(1.0) / alt).astype(np.float32)
@@ -2544,8 +2561,8 @@ def test_analysed_zero_numbers_are_seeded_like_absent_ones():
     extra = {"QNR": 0.0, "QNR_SFC": 0.0, "QNI": 0.0, "QNI_SFC": 0.0}
     analysed, _ = _analyzed_hrrr_real_init(
         28, extra_fields=extra,
-        init_kwargs={"analyzed_number_fields": ("QNI", "QNR")})
-    absent, _ = _analyzed_hrrr_real_init(28)
+        init_kwargs={"analyzed_number_fields": ("QNI", "QNR")}, mp28_aerosol_source="synthetic")
+    absent, _ = _analyzed_hrrr_real_init(28, mp28_aerosol_source="synthetic")
     assert "number_moments" in analysed.hydrometeor_initialization
     for number_name, mass_name in (("nr", "qr"), ("ni", "qi")):
         got = _host_array(getattr(analysed.state, number_name))

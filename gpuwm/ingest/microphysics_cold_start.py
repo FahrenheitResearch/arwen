@@ -129,6 +129,17 @@ def cold_start_seeded_numbers(cfg):
     if mp in (8, 28):
         seeded["nr"] = ("qr", "rain_number_seed")
         seeded["ni"] = ("qi", "ice_number_seed")
+    if mp == 10:
+        # Morrison: no real.exe seed; the handover closure
+        # (gpuwm.ingest.handover_numbers) seeds all four from their masses
+        # where correct-mode key hydrometeor_handover_numbers is on (off in
+        # exact mode and in a strict WRF process), under the same receipt keys.
+        from gpuwm.ingest.handover_numbers import closure_active
+        if closure_active(cfg):
+            seeded["nr"] = ("qr", "rain_number_seed")
+            seeded["ni"] = ("qi", "ice_number_seed")
+            seeded["ns"] = ("qs", "snow_number_seed")
+            seeded["ng"] = ("qg", "graupel_number_seed")
     # Named schemes seed nothing here: their own entry blocks set every
     # number moment from its mass under the scheme's assumed distribution
     # and their adapters seed graupel

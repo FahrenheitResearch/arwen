@@ -123,7 +123,23 @@ def render(args):
         for path in args.wrfout:
             match = re.search(r'wrfout_(d\d+)', Path(path).name)
             groups.setdefault(match.group(1) if match else 'd01', []).append(path)
+        # Hub-height statistics accumulate on one stationary grid (the Rust
+        # renderer refuses anything else).  A moving nest's frames sit on as
+        # many grids as places it held, so each place is its own accumulation:
+        # the 1 h --source hrrr door run with storm nests (box D, 2026-10-21)
+        # handed d02's frames from two places to one request and the whole
+        # render stage exited 2 with "hubwind statistics require one
+        # stationary grid".  A stationary domain stays one request, as before.
+        stationary = []
         for tag, inputs in groups.items():
+            series = {}
+            for path in inputs:
+                key, _stamps = rendering._history_series_record(Path(path))
+                series.setdefault(key, []).append(path)
+            places = list(series.values())
+            for index, members in enumerate(places):
+                stationary.append((tag, members, None if len(places) == 1 else index + 1))
+        for tag, inputs, place in stationary:
             # The domain folder is the render tree's token (d01-3km), so hub-height maps file
             # beside every other product of the same grid instead of in a bare d01/ folder.
             domain = rendering.domain_token(tag, rendering._grid_spacing_m(Path(inputs[0])))
@@ -134,8 +150,9 @@ def render(args):
             # Maps follow out/domain/product/day. Receipt/native statistics
             # reside beside the product folders, without another domain layer.
             request['out'] = str(out.resolve())
-            request['receipt_prefix'] = domain + '-'
-            manifest = out / f'{domain}-hubwind-request.json'
+            label = domain if place is None else f'{domain}-place{place}'
+            request['receipt_prefix'] = label + '-'
+            manifest = out / f'{label}-hubwind-request.json'
             manifest.parent.mkdir(parents=True, exist_ok=True)
             manifest.write_text(json.dumps(request, indent=2) + '\n', encoding='utf-8')
             result = rustwx.run_hubwind_renderer(renderer, manifest)

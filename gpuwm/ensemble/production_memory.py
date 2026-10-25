@@ -10,6 +10,56 @@ from gpuwm.ensemble.admission import (
 )
 
 
+def cyclone_swath_memory_components(experiments, collector):
+    """Reserve completed members' device swaths before admitting the roster.
+
+    Capture keeps its maps and six-word fix rows until finish_run, including
+    members from previous waves. They therefore belong to the full roster,
+    not just to the concurrently live forecast. Bounds include CuPy's
+    allocation granularity and the temporary final stack of fix rows.
+    """
+    request = getattr(collector, 'cyclone_request', None)
+    if request is None:
+        return ()
+    from gpuwm.core.clock import resolve_clock
+    from gpuwm.tc_accumulator import validate_swath_request
+    validate_swath_request(request)
+    grid = request['common_grid']
+    points = grid['nx'] * grid['ny']
+    gid = request.get('grid_id', 2)
+    native_points = native_columns = samples = 0
+    for experiment in experiments:
+        domain = next(d for d in experiment.domains if d.grid_id == gid)
+        clock = resolve_clock(experiment)
+        spec = clock.spec(gid)
+        # Fixed clocks commit exactly one row per domain step. Adaptive
+        # clocks may split at output/parent deadlines: one positive tick is
+        # the rigorous lower bound, deliberately conservative for admission.
+        step = (1 if any(d.run.use_adaptive_time_step for d in experiment.domains)
+                else spec.step_ticks)
+        samples = max(samples, clock.run_ticks // step + 1)
+        n = domain.run.nx * domain.run.ny
+        native_points = max(native_points, n)
+        native_columns = max(native_columns, n * (domain.run.nz + 1))
+    # CommonWind owns 85 bytes/cell with rain enabled, including float64
+    # interpolation/coast workspaces; Capture adds 10 bytes/cell. Round
+    # that to 96 and allow 40 separately rounded allocations. Native
+    # coordinates and rotation own four float32 planes. Each separate
+    # six-float64 fix row occupies a 512-byte pool block, not 48 bytes.
+    retained = 96 * points + 16 * native_points + 40 * 512 + samples * 512
+    # One active bind/observe has at most 32 double common-grid planes;
+    # pressure/gust diagnosis has four native 3-D float32 temporaries.
+    transient = 256 * points + 16 * native_columns + samples * 48
+    return (
+        MemoryComponent('cyclone_full_roster_swaths', 'products',
+            fixed_bytes=collector.members * retained, basis='envelope',
+            evidence='all member CommonWind/Capture retained arrays and 512-byte per-step fix rows, including previous waves'),
+        MemoryComponent('cyclone_swath_call_peak', 'products',
+            fixed_bytes=transient, basis='envelope',
+            evidence='one bind/diagnostic transient workspace and the final six-word fix stack; adaptive rows bounded by positive clock ticks'),
+    )
+
+
 def ordinary_output_memory_components(experiment, collector, *, other_experiments=()):
     """Declared collector buffers for every possible original domain shape.
 
@@ -42,7 +92,7 @@ def ordinary_output_memory_components(experiment, collector, *, other_experiment
             member_weights=getattr(collector, "member_weights", None))
         replays.append(replay.required_bytes(collector.members))
     points = getattr(collector, "nextgen_points", None)
-    return (() if points is None else (MemoryComponent("nextgen_reach_products", "products",
+    return cyclone_swath_memory_components((experiment,) + tuple(other_experiments), collector) + (() if points is None else (MemoryComponent("nextgen_reach_products", "products",
         fixed_bytes=points.options["device_budget_bytes"],
         evidence="private per-card CUDA pool hard limit; output-deadline integer counts, IDs and final merge"),)) + (
         MemoryComponent("ensemble_diagnostic_qpf_buffers", "products",

@@ -92,6 +92,56 @@ def test_the_census_records_at_least_the_two_cpu_legs() -> None:
         "gate exists to catch, one level up.")
 
 
+@pytest.mark.parametrize("returncode", [1, 2, 3, 4])
+def test_recorder_refuses_partial_collection(returncode, monkeypatch, capsys):
+    from subprocess import CompletedProcess
+    from tools.battery import record_list_census as recorder
+
+    partial = CompletedProcess([], returncode,
+                               "tests/example.py::test_collected\nERROR collection failed\n",
+                               "missing dependency\n")
+    monkeypatch.setattr(recorder.subprocess, "run", lambda *a, **kw: partial)
+    with pytest.raises(SystemExit, match=f"collection failed \\(rc={returncode}\\)"):
+        recorder._collect(["tests/example.py"], "not gpu", {})
+    diagnostics = capsys.readouterr().err
+    assert "ERROR collection failed" in diagnostics
+    assert "missing dependency" in diagnostics
+
+
+def test_recorder_counts_only_complete_collection(monkeypatch):
+    from subprocess import CompletedProcess
+    from tools.battery import record_list_census as recorder
+
+    complete = CompletedProcess([], 0,
+                                "tests/example.py::test_one\n"
+                                "tests/example.py::test_two\n", "")
+    monkeypatch.setattr(recorder.subprocess, "run", lambda *a, **kw: complete)
+    assert recorder._collect(["tests/example.py"], "not gpu", {}) == {
+        "tests/example.py": 2}
+
+
+@pytest.mark.parametrize("collectonly", [False, True])
+def test_recording_cannot_disable_a_test_run_floor(monkeypatch, collectonly):
+    from types import SimpleNamespace
+    from tools.battery.no_silent_deselection import _Guard
+
+    monkeypatch.setenv("GPUWM_RECORD_CENSUS", "1")
+    config = SimpleNamespace(rootpath=REPOSITORY_ROOT, args=[],
+                             option=SimpleNamespace(collectonly=collectonly))
+    guard = _Guard()
+    if collectonly:
+        guard.pytest_cmdline_main(config)
+        assert guard.floors == {}
+        # Measuring the floor still rejects zero collection.
+        guard.requested = {"tests/example.py"}
+        session = SimpleNamespace(exitstatus=0)
+        guard.pytest_sessionfinish(session, 0)
+        assert session.exitstatus == 1
+    else:
+        with pytest.raises(pytest.UsageError, match="requires --collect-only"):
+            guard.pytest_cmdline_main(config)
+
+
 @pytest.mark.parametrize("leg,entry", ROWS, ids=lambda value: value)
 def test_every_census_row_is_still_listed(leg: str, entry: str) -> None:
     """THE F20 DIRECTION.  A row with no entry is coverage that left."""

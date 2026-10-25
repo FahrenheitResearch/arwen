@@ -845,6 +845,50 @@ def _derive_child_run_config(parent_config: dict, *, parent, ratio: int,
     return merged
 
 
+#: The ``--physics-profile`` spelling that keeps the parent's physics
+#: verbatim at any child spacing.
+PHYSICS_PROFILE_PARENT = "parent"
+
+
+def child_physics_config(parent_config: dict, *, child_dx_m: float,
+                         requested: str | None) -> tuple[dict, str | None, str]:
+    """``(config the child is derived from, suite id or None, basis)``.
+
+    A child finer than :data:`gpuwm.physics_menu.CONVECTION_PERMITTING_BELOW_M`
+    runs the HRRR-shape suite when no suite is named
+    (:func:`gpuwm.physics_menu.convection_permitting_child_profile` names the
+    breakage); a coarser child inherits the parent's physics verbatim, as
+    before.  ``--physics-profile ID`` names any shipped suite and
+    ``--physics-profile parent`` keeps the parent's at any spacing.  The
+    suite replaces every switch it owns except ``epssm``, which stays the
+    parent's so its off-centering label and the child's own-ground floor
+    (``_with_parent_epssm_label``) still apply.
+    """
+
+    from gpuwm.physics_menu import (CONVECTION_PERMITTING_BELOW_M,
+                                    convection_permitting_child_profile)
+
+    if requested == PHYSICS_PROFILE_PARENT:
+        return dict(parent_config), None, "the parent's physics, as asked"
+    if requested:
+        profile, basis = requested, "named by --physics-profile"
+    else:
+        profile = convection_permitting_child_profile(child_dx_m)
+        if profile is None:
+            return (dict(parent_config), None,
+                    "the parent's physics (child at or coarser than "
+                    f"{CONVECTION_PERMITTING_BELOW_M / 1000:g} km)")
+        basis = (f"the default for a child finer than "
+                 f"{CONVECTION_PERMITTING_BELOW_M / 1000:g} km")
+    from gpuwm.domain_wizard import profile_switches
+    from gpuwm.physics_registry import canonical_template_id
+
+    profile = canonical_template_id(profile)
+    switches = dict(profile_switches(profile))
+    switches.pop("epssm", None)
+    return {**parent_config, **switches}, profile, basis
+
+
 def _with_parent_epssm_label(merged: dict, parent_header) -> dict:
     """The derived child's config with its parent's ``epssm`` provenance.
 
@@ -1587,6 +1631,10 @@ def downscale_main(args) -> int:
         # the same path as a Ctrl-C, so the reservation below is released
         # and a child already running records its stop.
         with stop_on_signal(), collect_warnings(warnings):
+            if getattr(args, "follow", None) is not None:
+                from gpuwm.moving_downscale import moving_downscale_main
+
+                return moving_downscale_main(args)
             return _downscale_main(args, reservation, warnings)
     except BaseException:
         # Every exit that is not this command's own success releases the
@@ -1815,10 +1863,17 @@ def _downscale_main(args, reservation: _OutputReservation,
         contract.end_time - contract.start_time).total_seconds()
 
     outdir_reserved = False
+    child_physics = None
     if args.child_config is not None:
         if args.point is not None:
             raise OfflineChildContractError(
                 "pass --child-config or --point, not both")
+        if getattr(args, "physics_profile", None) is not None:
+            # Breakage: the flag would be read and silently not applied --
+            # a supplied child config carries its own physics switches.
+            raise OfflineChildContractError(
+                "--physics-profile chooses the physics of a child derived "
+                "with --point; a --child-config TOML names its own physics")
         for name in ("ratio", "i_parent_start", "j_parent_start"):
             if getattr(args, name) is None:
                 raise OfflineChildContractError(
@@ -1870,6 +1925,13 @@ def _downscale_main(args, reservation: _OutputReservation,
         j0, i0 = _nearest_parent_index(
             parent["xlat"], parent["xlong"], lat, lon)
         ratio = int(args.ratio if args.ratio is not None else 3)
+        # THE CHILD'S PHYSICS, chosen before the child is sized: a suite
+        # with more transported species prices a larger state.
+        parent_config, child_profile, physics_basis = child_physics_config(
+            parent_config, child_dx_m=float(parent["dx"]) / ratio,
+            requested=getattr(args, "physics_profile", None))
+        child_physics = {"physics_profile": child_profile,
+                         "basis": physics_basis}
         run_seconds = (float(args.hours) * 3600.0
                        if args.hours is not None else window_seconds)
         _validate_child_window(run_seconds, window_seconds)
@@ -1971,6 +2033,9 @@ def _downscale_main(args, reservation: _OutputReservation,
               f"dx={merged['dx']:g} m (ratio {ratio}) centered on "
               f"({lat:g}, {lon:g}); parent start ({i_start}, {j_start}); "
               f"wrote {child_config}")
+        print("gpuwm downscale: child physics: "
+              + (child_profile or "inherited from the parent")
+              + f" ({physics_basis})")
         if child_config.parent != outdir:
             print("gpuwm downscale: --dry-run does not reserve "
                   f"{outdir} (a run refuses if it already exists), so the "
@@ -2189,6 +2254,7 @@ def _downscale_main(args, reservation: _OutputReservation,
         "max_boundary_interval_seconds": max_interval,
         "accepted_parent_cadence": bool(cadence_is_parents),
         "physics_binding": dict(binding.receipt()),
+        "child_physics": child_physics,
         "child_config": str(child_config),
         "child_config_sha256": child_config_sha256,
         "child_settings": child_settings_document(cfg),
@@ -2342,6 +2408,9 @@ def _downscale_main(args, reservation: _OutputReservation,
         return 0
 
     from gpuwm import offline_child_run
+    warm_start = offline_child_run.warm_start_argument(
+        getattr(args, "warm_from", None), getattr(args, "warm_shift", None),
+        getattr(args, "warm_strip", None))
     namespace = argparse.Namespace(
         parent_history=[Path(p) for p in frames],
         parent_restart=(None if args.parent_restart is None
@@ -2373,7 +2442,10 @@ def _downscale_main(args, reservation: _OutputReservation,
         outdir_reserved=outdir_reserved,
         # The retention the plan priced the disk on, settled once: 0
         # keeps every set.
-        keep_checkpoints=int(keep_checkpoints or 0))
+        keep_checkpoints=int(keep_checkpoints or 0),
+        warm_start=warm_start,
+        # A segment of a moving step-down: the forecast's own start.
+        simulation_start=getattr(args, "simulation_start", None))
     # From here the directory belongs to the run: a forecast that dies
     # mid-integration leaves frames a reader needs, and a report.json
     # whose `result` is FAIL rather than one claiming it finished.
@@ -2522,6 +2594,13 @@ def register_cli(subparsers) -> None:
                              "(specified=true, nested=false)")
     parser.add_argument("--child-config-sha256", default=None,
                         help="require the exact reviewed child configuration bytes")
+    parser.add_argument("--physics-profile", default=None, metavar="ID|parent",
+                        help="the --point child's physics suite, a `gpuwm "
+                             "domain --physics-profile` id, or 'parent' to "
+                             "keep the parent's physics verbatim (default: "
+                             "thompson-mp28-mynn-gsd41-mynn-ruc-rrtmg-legacy-v1, "
+                             "the HRRR-shape suite, for a child finer than "
+                             "4 km; the parent's physics otherwise)")
     parser.add_argument("--point", default=None, metavar="LAT,LON",
                         help="derive the child around this point instead "
                              "of --child-config (gpuwm parents only)")
@@ -2671,6 +2750,71 @@ def register_cli(subparsers) -> None:
     parser.add_argument("--dry-run", action="store_true",
                         help="validate contracts, derive/print the plan, "
                              "write the derived TOML, run nothing")
+    # A STEP-DOWN THAT MOVES (gpuwm.moving_downscale).  A parent whose grid
+    # moves between frames -- a storm run's following nest -- is read frame
+    # by frame from its own footprint, and the child is re-placed on a track
+    # every --follow-every seconds, each segment continuing the last
+    # (--warm-from below).
+    from gpuwm.moving_downscale import FOLLOW_MODES
+    parser.add_argument("--follow", choices=FOLLOW_MODES, default=None,
+                        help="step down inside a moving parent and follow: "
+                             "'storm' keeps the child on the storm (the "
+                             "parent run's storm track, else the moving "
+                             "parent's own centre), 'parent' keeps its place "
+                             "in the moving parent, 'fixed' holds it on the "
+                             "ground, 'target' follows a severe-weather setup "
+                             "(--follow-target).  Needs --child-size; --point is where "
+                             "it starts (default: on the storm, else the "
+                             "moving parent's centre)")
+    parser.add_argument("--follow-target", default=None, dest="follow_target",
+                        choices=("low", "cape-shear", "boundary", "object", "path"),
+                        help="with --follow target: what the child follows, fixed on "
+                             "the parent's own frames: a surface low, the dominant "
+                             "MLCAPE x 0-6 km shear area, a dryline/front "
+                             "(--follow-segment), a thresholded feature "
+                             "(--follow-field), or the user's own timed path "
+                             "(--follow-path; not a tracker)")
+    parser.add_argument("--follow-path", type=Path, default=None, dest="follow_path",
+                        metavar="FILE",
+                        help="--follow-target path: timed points, JSON "
+                             "{\"rows\":[{\"time\",\"lat\",\"lon\"}]} or CSV "
+                             "valid_time,lat,lon")
+    parser.add_argument("--follow-segment", default=None, dest="follow_segment",
+                        metavar="LAT,LON,LAT,LON",
+                        help="--follow-target boundary: the dryline or front as drawn "
+                             "at the start")
+    parser.add_argument("--follow-boundary-field", default=None,
+                        dest="follow_boundary_field",
+                        choices=("dewpoint", "theta_e", "temperature"),
+                        help="--follow-target boundary: 2 m dewpoint (dryline, the "
+                             "default), theta-e or temperature (fronts)")
+    parser.add_argument("--follow-field", default=None, dest="follow_field",
+                        metavar="NAME",
+                        help="--follow-target object: the frame field (default "
+                             "REFL_10CM, column maximum; UP_HELI_MAX for rotation)")
+    parser.add_argument("--follow-threshold", type=float, default=None,
+                        dest="follow_threshold",
+                        help="the target's threshold (cape-shear index 0.25, "
+                             "boundary 4 K/100 km, object 35 dBZ, low 1 hPa)")
+    parser.add_argument("--follow-every", type=positive_float, default=None,
+                        metavar="SECONDS",
+                        help="how often a following child is re-placed "
+                             "(default 3600, a whole number of the parent's "
+                             "frame interval)")
+    parser.add_argument("--warm-from", type=Path, default=None,
+                        dest="warm_from", metavar="CHECKPOINT",
+                        help="start from the parent as usual, but carry this "
+                             "earlier child's state onto the ground both "
+                             "share (the seam a following child's segments "
+                             "join on); needs --warm-shift")
+    parser.add_argument("--warm-shift", default=None, dest="warm_shift",
+                        metavar="DI,DJ",
+                        help="this child's placement minus the earlier "
+                             "one's, in child cells")
+    parser.add_argument("--warm-strip", type=Path, default=None,
+                        dest="warm_strip", metavar="NPZ",
+                        help="accumulated precipitation for the freshly "
+                             "covered strip of a warm start, per slot")
     parser.set_defaults(func=downscale_main)
     parent_query = subparsers.add_parser('downscale-parent',
         help='read the selected parent history geometry as JSON, with '
@@ -2683,5 +2827,6 @@ def register_cli(subparsers) -> None:
 
 
 __all__ = ["DOWNSCALE_PLAN_NAME", "DOWNSCALE_PLAN_SCHEMA",
-           "PARENT_RESTART_LATEST", "downscale_main",
+           "PARENT_RESTART_LATEST", "PHYSICS_PROFILE_PARENT",
+           "child_physics_config", "downscale_main",
            "downscale_plan_path", "register_cli"]

@@ -116,6 +116,8 @@ def test_pending_child_inputs_overlap_and_collect_in_parent_order(monkeypatch):
         return SimpleNamespace(domain=domain)
 
     monkeypatch.setattr(ni, "_prepare_child_input_on_grid", prepare)
+    # A three-thread host: the budget is the host's, split over the slots.
+    monkeypatch.setattr("gpuwm.ingest.cpu_backend.automatic_workers", lambda: 3)
     pending = ni.PendingChildInputs(
         domains, grids, "catalog", "orography", workers=3)
     result = pending.result()
@@ -230,6 +232,100 @@ def test_pending_child_inputs_carries_the_cause_and_its_remedy(monkeypatch):
     assert message.startswith("d02 independent input preparation failed: ")
     assert "Raising surface_fallback_radius_cells to 24" in message
     assert caught.value.__cause__.args == (refusal,)
+
+
+def test_one_child_takes_the_hosts_threads_not_the_job_slots(monkeypatch):
+    """An HRRR 3-1 tree's one 1 km nest ran on 8 of 48 cores (F-CHILD-INIT-1KM)."""
+    seen = []
+    monkeypatch.setattr("gpuwm.ingest.cpu_backend.automatic_workers", lambda: 48)
+    monkeypatch.setattr(
+        ni, "_prepare_child_input_on_grid",
+        lambda domain, *args: seen.append(args[4]) or SimpleNamespace(domain=domain))
+    domain = SimpleNamespace(grid_id=2)
+    pending = ni.PendingChildInputs((domain,), {2: object()}, object(), None,
+                                    workers=8)
+    pending.result()
+    assert seen == [48]
+    assert dict(pending.preprocess_workers_by_domain) == {2: 48}
+    # Two children prepared at once split the host's threads between them.
+    two = ni.PendingChildInputs(
+        (SimpleNamespace(grid_id=2), SimpleNamespace(grid_id=3)),
+        {2: object(), 3: object()}, object(), None, workers=2)
+    two.close()
+    assert dict(two.preprocess_workers_by_domain) == {2: 24, 3: 24}
+
+
+def test_blend_frame_capture_is_the_whole_capture_on_the_frame():
+    """The frame-only SINT is the full SINT to the bit wherever the blend reads it."""
+    from gpuwm.core.nest_interp import blend_terrain, register_nest, sint
+
+    rng = np.random.default_rng(7)
+    nxp, nyp, nx, ny, nz = 40, 34, 61, 52, 4
+    parent = SimpleNamespace(
+        ht=rng.uniform(0, 3000, (nyp, nxp)).astype(np.float32),
+        mub2d=rng.uniform(6e4, 9.5e4, (nyp, nxp)).astype(np.float32),
+        phb=rng.uniform(0, 2e5, (nz, nyp, nxp)).astype(np.float32))
+    child_dc = SimpleNamespace(
+        parent_grid_ratio=3, i_parent_start=5, j_parent_start=6,
+        run=SimpleNamespace(nx=nx, ny=ny))
+    parent_node = SimpleNamespace(
+        cfg=SimpleNamespace(run=SimpleNamespace(nx=nxp, ny=nyp)), state=parent)
+    full = ni._capture_parent_blend_fields(child_dc, parent_node)
+    framed = ni._capture_parent_blend_frame(child_dc, parent_node, frame=10)
+    reg = register_nest(nri=3, nrj=3, i_parent_start=5, j_parent_start=6,
+                        child_nx=nx, child_ny=ny, parent_nx=nxp, parent_ny=nyp)
+    np.testing.assert_array_equal(full[2], sint(parent.phb, reg))
+    for whole, frame in zip(full, framed):
+        assert frame.shape == whole.shape and frame.dtype == whole.dtype
+        ring = np.ones(whole.shape[-2:], dtype=bool)
+        ring[10:-10, 10:-10] = False
+        np.testing.assert_array_equal(frame[..., ring], whole[..., ring])
+        fine = rng.uniform(0, 1, whole.shape)
+        a, b = fine.copy(), fine.copy()
+        blend_terrain(whole.astype(np.float64), a, spec_bdy_width=5, blend_width=5)
+        blend_terrain(frame.astype(np.float64), b, spec_bdy_width=5, blend_width=5)
+        assert a.tobytes() == b.tobytes()
+    # A frame that covers the child captures it whole.
+    assert ni._blend_frame_windows(20, 61, 10) is None
+
+
+def test_level_slabs_write_the_one_call_bytes(monkeypatch):
+    from gpuwm.core.nest_interp import blend_terrain
+
+    monkeypatch.setattr("gpuwm.ingest.cpu_backend.automatic_workers", lambda: 7)
+    monkeypatch.setattr(ni, "_LEVEL_SLAB_MIN_CELLS", 1)
+    rng = np.random.default_rng(3)
+    coarse, fine = rng.uniform(0, 1, (2, 23, 40, 50))
+    one = fine.copy()
+    blend_terrain(coarse, one, spec_bdy_width=5, blend_width=5)
+    sliced = fine.copy()
+    ni._on_level_slabs(23, lambda k0, k1: blend_terrain(
+        coarse[k0:k1], sliced[k0:k1], spec_bdy_width=5, blend_width=5),
+        cells=sliced.size)
+    assert one.tobytes() == sliced.tobytes()
+
+
+def test_adjust_tempqv_on_level_slabs_writes_the_one_call_bytes(monkeypatch):
+    from gpuwm.core.nest_interp import adjust_tempqv
+
+    monkeypatch.setattr("gpuwm.ingest.cpu_backend.automatic_workers", lambda: 4)
+    monkeypatch.setattr(ni, "_LEVEL_SLAB_MIN_CELLS", 1)
+    rng = np.random.default_rng(5)
+    nz, ny, nx = 9, 6, 7
+    mub = rng.uniform(8e4, 9e4, (ny, nx)).astype(np.float32)
+    save = (mub + rng.uniform(-300, 300, (ny, nx))).astype(np.float32)
+    c3 = np.linspace(1.0, 0.0, nz).astype(np.float32)
+    c4 = np.linspace(0.0, 4000.0, nz).astype(np.float32)
+    th = rng.uniform(-10, 40, (nz, ny, nx)).astype(np.float32)
+    pp = rng.uniform(-50, 50, (nz, ny, nx)).astype(np.float32)
+    qv = rng.uniform(1e-5, 1.5e-2, (nz, ny, nx)).astype(np.float32)
+    th1, qv1 = th.copy(), qv.copy()
+    adjust_tempqv(mub, save, c3, c4, 1e4, th1, pp, qv1)
+    th2, qv2 = th.copy(), qv.copy()
+    ni._on_level_slabs(nz, lambda k0, k1: adjust_tempqv(
+        mub, save, c3[k0:k1], c4[k0:k1], 1e4, th2[k0:k1], pp[k0:k1],
+        qv2[k0:k1]), cells=th2.size)
+    assert th1.tobytes() == th2.tobytes() and qv1.tobytes() == qv2.tobytes()
 
 
 def test_pending_child_inputs_empty_hierarchy_allocates_no_workers():

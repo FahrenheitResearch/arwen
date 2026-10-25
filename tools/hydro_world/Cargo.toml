@@ -22,6 +22,7 @@ default = ["cuda"]
 cuda = ["dep:cudarc"]
 
 [dependencies]
+hydro-proj = { path = "../hydro_proj" }
 serde = { version = "1", features = ["derive"] }
 # float_roundtrip: JSON interchange must reproduce every f64 bit exactly.
 serde_json = { version = "1", features = ["float_roundtrip"] }

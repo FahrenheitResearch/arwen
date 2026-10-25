@@ -76,6 +76,7 @@ def test_roster_completion_renders_every_grid_tracks_weights_and_retires_raw(tmp
     def render(renderer, wrfouts, **kwargs):
         assert len(wrfouts) == 1
         assert kwargs['products'] == 'refl,wind10,mslp'
+        kwargs['store_root'].mkdir(parents=True)
         paths = []
         for field in ('refl', 'wind10', 'mslp'):
             path = kwargs['out_dir']/field/'frame.png'

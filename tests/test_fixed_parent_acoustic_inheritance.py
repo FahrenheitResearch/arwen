@@ -294,6 +294,10 @@ def _assert_downscale_inheritance(
         "--ratio", "3", "--child-size", "18,18",
         "--output-interval-seconds", "300", "--out", str(outdir),
         "--dry-run", "--render-products", "none",
+        # The parent's own physics: this test is about the acoustic choice, and a
+        # child finer than 4 km otherwise takes the HRRR-shape suite (F25),
+        # whose MYNN needs more levels than this 4-level fixture has.
+        "--physics-profile", "parent",
     ])
     captured = capsys.readouterr()
     refused = footprint == "steep" and choice in {"explicit-low", "legacy"}

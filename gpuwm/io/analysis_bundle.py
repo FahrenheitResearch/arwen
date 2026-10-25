@@ -257,9 +257,16 @@ def _float_digest(dataset: Any, names: Sequence[str], what: str, path: Path) -> 
     if missing:
         raise _refuse(f"{path.name} lacks {missing}, so its {what} cannot be identified")
     _prefetch_unmasked(dataset, list(names))
+    return _float_digest_values((name, _first_record(dataset.variables[name])) for name in names)
+
+
+def _float_digest_values(pairs) -> str:
+    """SHA-256 over (name, values) pairs as little-endian float64: the one rule a file's fields
+    and the same words held in memory are fingerprinted by."""
+
     digest = hashlib.sha256()
-    for name in names:
-        values = np.ascontiguousarray(_first_record(dataset.variables[name]), dtype="<f8")
+    for name, values in pairs:
+        values = np.ascontiguousarray(np.asarray(values, dtype=np.float64), dtype="<f8")
         digest.update(name.encode("ascii") + b"\0" + repr(values.shape).encode("ascii") + b"\0")
         digest.update(values.tobytes())
     return digest.hexdigest()
@@ -311,21 +318,31 @@ def grid_fingerprint(path: str | Path) -> dict[str, Any]:
         raise _refuse(f"{path.name} lacks ZNW, so its vertical coordinate cannot be identified")
     if "P_TOP" not in dataset.variables:
         raise _refuse(f"{path.name} lacks P_TOP, so its model top cannot be identified")
-    znw = np.ascontiguousarray(_first_record(dataset.variables["ZNW"]), dtype="<f8")
-    p_top = float(np.asarray(_first_record(dataset.variables["P_TOP"])).reshape(-1)[0])
-    projection = {name.lower(): _number(_attribute(dataset, name)) for name in PROJECTION_ATTRIBUTES}
+    return _grid_fingerprint(
+        dims, _first_record(dataset.variables["ZNW"]), _first_record(dataset.variables["P_TOP"]),
+        lambda name: _attribute(dataset, name),
+        _float_digest(dataset, HORIZONTAL_FIELDS, "horizontal grid", path), path.name)
+
+
+def _grid_fingerprint(dims: Mapping[str, int], znw: Any, p_top: Any, attribute, horizontal_sha256: str,
+                      what: str) -> dict[str, Any]:
+    """The grid block from its parts: one rule for a file and for the same words in memory."""
+
+    znw = np.ascontiguousarray(np.asarray(znw, dtype=np.float64), dtype="<f8")
+    p_top = float(np.asarray(p_top, dtype=np.float64).reshape(-1)[0])
+    projection = {name.lower(): _number(attribute(name)) for name in PROJECTION_ATTRIBUTES}
     missing = [name for name in ("MAP_PROJ", "TRUELAT1", "TRUELAT2", "STAND_LON")
                if projection[name.lower()] is None]
     if missing:
-        raise _refuse(f"{path.name} does not state {missing}, so its projection cannot be identified")
+        raise _refuse(f"{what} does not state {missing}, so its projection cannot be identified")
     projection["map_proj"] = int(projection["map_proj"])
-    hybrid = _attribute(dataset, "HYBRID_OPT")
-    etac = _attribute(dataset, "ETAC")
+    hybrid = attribute("HYBRID_OPT")
+    etac = attribute("ETAC")
     return {
         "nx": int(dims["west_east"]), "ny": int(dims["south_north"]), "nz": int(dims["bottom_top"]),
-        "dx_m": float(_attribute(dataset, "DX")), "dy_m": float(_attribute(dataset, "DY")),
+        "dx_m": float(attribute("DX")), "dy_m": float(attribute("DY")),
         "projection": projection,
-        "horizontal_sha256": _float_digest(dataset, HORIZONTAL_FIELDS, "horizontal grid", path),
+        "horizontal_sha256": horizontal_sha256,
         "vertical": {"znw_sha256": hashlib.sha256(znw.tobytes()).hexdigest(), "p_top_pa": p_top,
                      "hybrid_opt": None if hybrid is None else int(hybrid),
                      "etac": None if etac is None else float(etac)},
@@ -840,29 +857,40 @@ def write_increment(analysis: str | Path, background: str | Path, out: str | Pat
         raise _refuse(f"{missing} are missing from the analysis or the background")
     _prefetch_unmasked(a, names)
     _prefetch_unmasked(b, names)
+    arrays, record = _increment_core(
+        ((name, _first_record(a.variables[name]), a.variables[name].dtype, _first_record(b.variables[name]),
+          b.variables[name].dtype) for name in names), precision=precision, fields=fields)
+    stamp = _times(a)[0]
+    _write_increment_file(out, arrays, sizes=_sizes(a), valid_time=stamp, precision=precision)
+    return {"increment": str(out), "valid_time": stamp, **record}
+
+
+def _increment_core(rows, *, precision: str, fields: str) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+    """analysis minus background, field by field: ``rows`` of (name, analysis float64, analysis
+    type, background float64, background type), in the order the increment is written.  The one
+    arithmetic of :func:`write_increment` (files) and :func:`make_exchange` (words in memory)."""
+
+    from gpuwm.da.host_analysis import binary
+
     arrays: dict[str, np.ndarray] = {}
     rms: dict[str, float] = {}
     exact: dict[str, bool] = {}
-    for name in names:
-        va, vb = a.variables[name], b.variables[name]
-        av, bv = _first_record(va), _first_record(vb)
-        delta = av - bv
-        if not np.all(np.isfinite(delta)):
-            raise _refuse(f"{name} increment is not finite")
-        if fields == "differing" and name not in REQUIRED_INCREMENT and not np.any(delta != 0.0):
+    for name, av, adtype, bv, bdtype in rows:
+        try:
+            delta, stats = binary(av, bv, subtract=True)
+        except ValueError as exc:
+            raise _refuse(f"{name} increment is not finite") from exc
+        if fields == "differing" and name not in REQUIRED_INCREMENT and not stats["nonzero"]:
             continue
         stored = delta if precision == "f8" else delta.astype(np.float32)
-        rebuilt = (av - stored.astype(np.float64)).astype(va.dtype)
-        background_words = bv.astype(vb.dtype)
+        rebuilt = binary(av, stored, subtract=True)[0].astype(adtype)
+        background_words = bv.astype(bdtype)
         exact[name] = bool(np.array_equal(rebuilt.view(f"u{rebuilt.dtype.itemsize}"),
                                           background_words.view(f"u{background_words.dtype.itemsize}")))
         arrays[name] = stored
-        rms[name] = float(np.sqrt(np.mean(delta * delta)))
-    stamp = _times(a)[0]
-    _write_increment_file(out, arrays, sizes=_sizes(a), valid_time=stamp, precision=precision)
-    return {"increment": str(out), "valid_time": stamp, "precision": precision, "fields": sorted(arrays),
-            "rms": rms, "exact_background": exact,
-            "exact_background_all": bool(exact) and all(exact.values())}
+        rms[name] = stats["rms"]
+    return arrays, {"precision": precision, "fields": sorted(arrays), "rms": rms, "exact_background": exact,
+                    "exact_background_all": bool(exact) and all(exact.values())}
 
 
 def _patched_copy(template: Path, out: Path, updates: Mapping[str, np.ndarray]) -> None:
@@ -897,26 +925,36 @@ def write_background(analysis: str | Path, increment: str | Path, out: str | Pat
     precision = increment_precision(increment)
     a = _open(analysis)
     _prefetch_unmasked(a, list(variables))
+    updates, record = _background_core(
+        ((name, _first_record(a.variables[name]), a.variables[name].dtype) for name in sorted(variables)),
+        deltas, precision)
+    _patched_copy(analysis, out, updates)
+    return {"background": str(out), **record}
+
+
+def _background_core(rows, deltas: Mapping[str, np.ndarray],
+                     precision: Mapping[str, str]) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+    """analysis minus increment, rounded to each variable's type: ``rows`` of (name, analysis
+    float64, analysis type); ``deltas`` float64; ``precision`` each increment's stored type
+    (numpy ``dtype.str``).  The one arithmetic of :func:`write_background` and of the in-memory
+    plan (:func:`gpuwm.da.analysis_door.plan_from_exchange`)."""
+
+    from gpuwm.da.host_analysis import binary
+
     updates: dict[str, np.ndarray] = {}
     clipped: dict[str, dict[str, float]] = {}
     kept: dict[str, dict[str, float]] = {}
-    for name in sorted(variables):
-        variable = a.variables[name]
-        values = _first_record(variable) - deltas[name]
-        if name.startswith(_NON_NEGATIVE_PREFIX):
-            negative = values < 0
-            if negative.any():
-                record = {"values": int(negative.sum()), "min": float(values[negative].min())}
-                if precision[name] == np.dtype(np.float32).str:
-                    clipped[name] = record
-                    values = np.where(negative, 0.0, values)
-                else:
-                    kept[name] = record
-        updates[name] = values.astype(variable.dtype)
-    _patched_copy(analysis, out, updates)
-    return {"background": str(out), "changed": sorted(updates), "increment_precision": precision,
-            "clipped_negative": clipped, "negative_kept_from_producer": kept,
-            "unchanged": "every variable with no increment (land and surface state among them): the analysis's own"}
+    for name, a64, dtype in rows:
+        clip = name.startswith(_NON_NEGATIVE_PREFIX) and precision[name] == np.dtype(np.float32).str
+        values, stats = binary(a64, deltas[name], subtract=True, clip=clip)
+        if name.startswith(_NON_NEGATIVE_PREFIX) and stats["values"]:
+            record = {key: stats[key] for key in ("values", "min")}
+            (clipped if clip else kept)[name] = record
+        updates[name] = values.astype(dtype)
+    return updates, {"changed": sorted(updates), "increment_precision": dict(precision),
+                     "clipped_negative": clipped, "negative_kept_from_producer": kept,
+                     "unchanged": "every variable with no increment (land and surface state among them): the "
+                                  "analysis's own"}
 
 
 def write_analysis(background: str | Path, increments: Mapping[str, np.ndarray], out: str | Path) -> dict[str, Any]:
@@ -936,23 +974,34 @@ def write_analysis(background: str | Path, increments: Mapping[str, np.ndarray],
     require_classic(background, "the background")
     b = _open(background)
     _prefetch_unmasked(b, list(increments))
-    updates = {}
-    clipped: dict[str, dict[str, float]] = {}
-    for name, delta in sorted(increments.items()):
+    for name in increments:
         if name not in b.variables:
             raise _refuse(f"the increment carries {name} and the background has no {name}")
-        variable = b.variables[name]
-        values = _first_record(variable) + np.asarray(delta, dtype=np.float64)
-        if not np.all(np.isfinite(values)):
-            raise _refuse(f"background {name} plus its increment is not finite")
-        if name.startswith(_NON_NEGATIVE_PREFIX):
-            negative = values < 0
-            if negative.any():
-                clipped[name] = {"values": int(negative.sum()), "min": float(values[negative].min())}
-                values = np.where(negative, 0.0, values)
-        updates[name] = values.astype(variable.dtype)
+    updates, record = _analysis_core(
+        ((name, _first_record(b.variables[name]), b.variables[name].dtype, delta)
+         for name, delta in sorted(increments.items())))
     _patched_copy(background, out, updates)
-    return {"analysis": str(out), "changed": sorted(updates), "clipped_negative": clipped}
+    return {"analysis": str(out), **record}
+
+
+def _analysis_core(rows) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+    """background plus increment, rounded to each variable's type, moisture clipped at zero:
+    ``rows`` of (name, background float64, background type, increment).  The one arithmetic of
+    :func:`write_analysis` and :func:`make_exchange`."""
+
+    from gpuwm.da.host_analysis import binary
+
+    updates = {}
+    clipped: dict[str, dict[str, float]] = {}
+    for name, b64, dtype, delta in rows:
+        try:
+            values, stats = binary(b64, delta, clip=name.startswith(_NON_NEGATIVE_PREFIX))
+        except ValueError as exc:
+            raise _refuse(f"background {name} plus its increment is not finite") from exc
+        if name.startswith(_NON_NEGATIVE_PREFIX) and stats["values"]:
+            clipped[name] = {key: stats[key] for key in ("values", "min")}
+        updates[name] = values.astype(dtype)
+    return updates, {"changed": sorted(updates), "clipped_negative": clipped}
 
 
 # ---------------------------------------------------------------------------
@@ -994,11 +1043,51 @@ def column_from_file(path: str | Path, *, coordinate: str | Path | None = None):
     loading = [name for name in _LOADING if name in dataset.variables]
     _prefetch_unmasked(dataset, list(_COLUMN_STATE) + loading)
     _prefetch_unmasked(coefficients, list(_COLUMN_COORDINATE))
-    values = {name: _first_record(dataset.variables[name]) for name in list(_COLUMN_STATE) + loading}
-    values.update({name: _first_record(coefficients.variables[name]) for name in _COLUMN_COORDINATE})
+    state = {name: _first_record(dataset.variables[name]) for name in list(_COLUMN_STATE) + loading}
+    return column_from_arrays(state, {name: _first_record(coefficients.variables[name])
+                                      for name in _COLUMN_COORDINATE})
+
+
+def coordinate_of(path: str | Path) -> dict[str, np.ndarray]:
+    """The vertical coordinate's coefficients of a WRF-form file (the run's wrfinput), as
+    :func:`column_from_file` reads them: float64 by WRF name.  Read once per member by a caller
+    that forms columns in memory."""
+
+    path = Path(path)
+    dataset = _open(path)
+    missing = [name for name in _COLUMN_COORDINATE if name not in dataset.variables]
+    if missing:
+        raise _refuse(f"{path.name} lacks the coordinate coefficients {missing}; name a WRF-form file of the "
+                      "same grid that carries them (the run's wrfinput) as the coordinate")
+    _prefetch_unmasked(dataset, list(_COLUMN_COORDINATE))
+    return {name: _first_record(dataset.variables[name]) for name in _COLUMN_COORDINATE}
+
+
+def column_from_arrays(state: Mapping[str, Any], coordinate: Mapping[str, Any]):
+    """:func:`column_from_file` on words held in memory: ``state`` maps the WRF names of
+    :data:`_COLUMN_STATE` and every loading species the state carries to their values (any
+    float type, read as float64 the way a file's record is), ``coordinate`` the coefficients of
+    :data:`_COLUMN_COORDINATE` (the run's wrfinput's).  The loading species are those ``state``
+    carries, exactly as a file's variables decide them, so a caller hands every species its
+    history frame holds."""
+
+    from types import SimpleNamespace
+
+    missing = [name for name in _COLUMN_STATE if name not in state]
+    if missing:
+        raise _refuse(f"the state lacks {missing}, which the engine's hydrostatic geopotential reads")
+    missing = [name for name in _COLUMN_COORDINATE if name not in coordinate]
+    if missing:
+        raise _refuse(f"the coordinate lacks the coefficients {missing} (the run's wrfinput carries them)")
+    values = {name: np.asarray(state[name], dtype=np.float64) for name in _COLUMN_STATE}
+    values.update({name: np.asarray(coordinate[name], dtype=np.float64) for name in _COLUMN_COORDINATE})
+    loading = [name for name in _LOADING if name in state]
+    values.update({name: np.asarray(state[name], dtype=np.float64) for name in loading})
+    from gpuwm.da.host_analysis import binary
+
     nz = values["T"].shape[0]
     column = SimpleNamespace(
-        p=values["P"] + values["PB"], mub2d=values["MUB"], mup=values["MU"],
+        p=binary(values["P"], values["PB"])[0], mub2d=values["MUB"], mup=values["MU"],
         thb=np.full(nz, 300.0), thp=values["T"],
         c1f=values["C1F"], c2f=values["C2F"], c1h=values["C1H"], c2h=values["C2H"],
         c3f=values["C3F"], c4f=values["C4F"], c3h=values["C3H"], c4h=values["C4H"],
@@ -1009,32 +1098,58 @@ def column_from_file(path: str | Path, *, coordinate: str | Path | None = None):
     return column
 
 
-def balanced_geopotential(background: str | Path, increments: Mapping[str, np.ndarray], *,
+def balanced_geopotential(background: Any, increments: Mapping[str, np.ndarray], *,
                           hypsometric_opt: int = 2,
                           coordinate: str | Path | None = None) -> tuple[np.ndarray, dict[str, Any]]:
     """The ``PH`` increment that keeps the analysed columns hydrostatic at their own dry mass.
 
     :func:`gpuwm.da.hydrostatic.mass_aware_geopotential_change` on the background's column
     and the ``T``, loading-moisture and ``MU`` increments (any other name is ignored).  Exactly
-    zero in a column none of them touches.
+    zero in a column none of them touches.  ``background`` is a WRF-form file (its column read
+    with :func:`column_from_file`) or a column already formed (:func:`column_from_arrays`;
+    ``coordinate`` must then be None, the column carries its coefficients).
     """
 
     from gpuwm.da import hydrostatic as hydro
 
-    column = column_from_file(background, coordinate=coordinate)
-    after = {"thp": column.thp + np.asarray(increments.get("T", 0.0), dtype=np.float64)}
-    if "MU" in increments and np.any(np.asarray(increments["MU"]) != 0.0):
+    if isinstance(background, (str, Path)):
+        column = column_from_file(background, coordinate=coordinate)
+    else:
+        if coordinate is not None:
+            raise _refuse("a column formed in memory carries its own coordinate coefficients; name no "
+                          "coordinate file beside it")
+        column = background
+    from gpuwm.da.host_analysis import binary
+
+    after = {"thp": binary(column.thp, increments.get("T", 0.0))[0]}
+    if "MU" in increments and binary(increments["MU"], 0.0)[1]["nonzero"]:
         # Only a mass that moves takes the mass-aware integration; otherwise the operator is
         # the fixed-mass one the cycle's rebalance uses, byte for byte.
-        after["mup"] = column.mup + np.asarray(increments["MU"], dtype=np.float64)
+        after["mup"] = binary(column.mup, increments["MU"])[0]
     for wrf_name, name in _LOADING.items():
         current = getattr(column, name, None)
         if current is None:
-            if wrf_name in increments and np.any(np.asarray(increments[wrf_name]) != 0.0):
+            if wrf_name in increments and binary(increments[wrf_name], 0.0)[1]["nonzero"]:
                 raise _refuse(f"the increment moves {wrf_name} and the background carries no {wrf_name}")
             continue
-        after[name] = np.maximum(current + np.asarray(increments.get(wrf_name, 0.0), dtype=np.float64), 0.0)
+        after[name] = binary(current, increments.get(wrf_name, 0.0), clip=2)[0]
     return hydro.mass_aware_geopotential_change(column, after, hypsometric_opt=hypsometric_opt)
+
+
+def _balance_core(analysis: Mapping[str, np.ndarray], background: Mapping[str, np.ndarray], names: Sequence[str],
+                  balance) -> tuple[np.ndarray, dict[str, Any]]:
+    """``--ph balance``: the background's PH plus the engine's geopotential of the analysis's
+    ``names`` changes (``balance(changes)`` is :func:`balanced_geopotential` on the background's
+    column), as float64; the record carries how far the producer's own PH was from it.  The one
+    arithmetic of :func:`make_bundle` and :func:`make_exchange`."""
+
+    from gpuwm.da.host_analysis import binary
+
+    changes = {name: binary(analysis[name], background[name], subtract=True)[0] for name in names}
+    dphp, record = balance(changes)
+    balanced = binary(background["PH"], dphp)[0]
+    record["producer_ph_departure_max_abs_m2s2"] = binary(balanced, analysis["PH"], subtract=True)[1]["max_abs"]
+    return balanced, record
 
 
 # ---------------------------------------------------------------------------
@@ -1152,13 +1267,11 @@ def make_bundle(out: str | Path, *, background: str | Path, grid_id: str, static
         names = [name for name in ("T", "MU", *_LOADING) if name in a.variables and name in b.variables]
         _prefetch_unmasked(a, names + ["PH"])
         _prefetch_unmasked(b, names + ["PH"])
-        changes = {name: _first_record(a.variables[name]) - _first_record(b.variables[name]) for name in names}
-        dphp, balance = balanced_geopotential(background, changes, hypsometric_opt=hypsometric_opt,
-                                              coordinate=coordinate)
-        producer_ph = _first_record(a.variables["PH"])
-        balanced = _first_record(b.variables["PH"]) + dphp
-        balance["producer_ph_departure_max_abs_m2s2"] = float(np.max(np.abs(balanced - producer_ph)))
-        record["balance"] = balance
+        balanced, record["balance"] = _balance_core(
+            {name: _first_record(a.variables[name]) for name in names + ["PH"]},
+            {name: _first_record(b.variables[name]) for name in names + ["PH"]}, names,
+            lambda changes: balanced_geopotential(background, changes, hypsometric_opt=hypsometric_opt,
+                                                  coordinate=coordinate))
         work = target.with_name(target.name + ".balanced")
         _patched_copy(target, work, {"PH": balanced})
         work.replace(target)
@@ -1180,6 +1293,405 @@ def make_bundle(out: str | Path, *, background: str | Path, grid_id: str, static
         iau=None if iau_window_s is None else {"window_s": float(iau_window_s)},
         notes=notes, forecast_args=forecast_args)
     return load_bundle(out), record
+
+
+# ---------------------------------------------------------------------------
+# the exchange: one analysis held in memory (wrf-analysis-exchange/1)
+# ---------------------------------------------------------------------------
+EXCHANGE_SCHEMA = "wrf-analysis-exchange/1"
+#: ``analysis.form`` of an exchange: the analysis is words held in memory, not a file.
+EXCHANGE_FORM = "exchange"
+#: The integrity digest the record's ``arrays.<name>.digest`` names (XXH64 of each 1 MiB leaf of
+#: the logical C-order bytes, then of the little-endian leaf digests; seed zero).
+EXCHANGE_DIGEST = "xxh64-tree-1MiB"
+_DIGEST16 = re.compile(r"^[0-9a-f]{16}$")
+
+
+def _attribute_of(attributes: Mapping[str, Any], name: str) -> Any:
+    """:func:`_attribute` on a mapping of global attributes held in memory."""
+
+    value = attributes.get(name)
+    if isinstance(value, np.ndarray) and value.size == 1:
+        value = value.reshape(-1)[0]
+    if isinstance(value, (list, tuple)) and len(value) == 1:
+        value = value[0]
+    if isinstance(value, np.generic):
+        value = value.item()
+    return value
+
+
+def frame_sizes(state: Mapping[str, Any]) -> dict[str, int]:
+    """The six grid dimensions of a history frame held in memory, from its ``T`` (nz, ny, nx)."""
+
+    if "T" not in state:
+        raise _refuse("the state carries no T, so its grid dimensions cannot be read")
+    nz, ny, nx = np.shape(state["T"])
+    return {"west_east": nx, "west_east_stag": nx + 1, "south_north": ny, "south_north_stag": ny + 1,
+            "bottom_top": nz, "bottom_top_stag": nz + 1}
+
+
+def _shape_of(dims: Sequence[str], sizes: Mapping[str, int]) -> tuple[int, ...]:
+    return tuple(int(sizes[name]) for name in dims)
+
+
+def frame_prognostics(state: Mapping[str, Any], *, dimensions: Mapping[str, Sequence[str]] | None = None
+                      ) -> list[str]:
+    """:func:`candidate_prognostics` on words in memory: every floating field whose name is a
+    prognostic over its own staggering (``dimensions`` when the producer states them, else the
+    shape that staggering has on this grid), in a fixed order."""
+
+    sizes = frame_sizes(state)
+    names = []
+    for name, values in state.items():
+        expected = prognostic_dimensions(name)
+        if expected is None or np.asarray(values).dtype.kind != "f":
+            continue
+        if dimensions is not None and name in dimensions:
+            if tuple(dimensions[name]) != expected:
+                continue
+        elif tuple(np.shape(values)) != _shape_of(expected, sizes):
+            continue
+        names.append(name)
+    return sorted(names)
+
+
+def increment_arrays(increment: Mapping[str, Any], sizes: Mapping[str, int]) -> dict[str, np.ndarray]:
+    """:func:`read_increment` on arrays: every field a prognostic over its own staggering, floating
+    point, finite, the required core and vapour present; float64 by WRF name."""
+
+    out: dict[str, np.ndarray] = {}
+    for name in sorted(increment):
+        expected = prognostic_dimensions(name)
+        if expected is None:
+            raise _refuse(f"the increment carries {name}, which is not a prognostic the forecast integrates "
+                          f"(the dycore core {list(CORE_FIELDS)} and the moisture species and numbers)")
+        values = np.asarray(increment[name])
+        if tuple(values.shape) != _shape_of(expected, sizes):
+            raise _refuse(f"the increment's {name} is {values.shape}; it increments a field over {expected} "
+                          f"{_shape_of(expected, sizes)}")
+        if values.dtype.kind != "f":
+            raise _refuse(f"the increment's {name} is {values.dtype}, not floating point")
+        out[name] = values
+    missing = [name for name in REQUIRED_INCREMENT if name not in out]
+    if missing:
+        raise _refuse(f"the increment lacks {missing}; every increment carries the dycore core and vapour "
+                      "(zeros where the analysis left a field alone)")
+    for name, values in out.items():
+        if not np.all(np.isfinite(values)):
+            raise _refuse(f"the increment's {name} carries non-finite values")
+    return {name: np.ascontiguousarray(np.asarray(values, dtype=np.float64)) for name, values in out.items()}
+
+
+def grid_of_state(grid_id: str, state: Mapping[str, Any], attributes: Mapping[str, Any], *,
+                  geo_em_sha256: str | None = None) -> dict[str, Any]:
+    """:func:`describe_grid` on a frame held in memory (the same words, the same rule)."""
+
+    missing = [name for name in ("ZNW", "P_TOP", *HORIZONTAL_FIELDS) if name not in state]
+    if missing:
+        raise _refuse(f"the state lacks {missing}, so its grid cannot be identified")
+    measured = _grid_fingerprint(frame_sizes(state), state["ZNW"], state["P_TOP"],
+                                 lambda name: _attribute_of(attributes, name),
+                                 _float_digest_values((name, state[name]) for name in HORIZONTAL_FIELDS),
+                                 "the state")
+    return {"id": str(grid_id), "geo_em_sha256": geo_em_sha256, **measured}
+
+
+def static_of_state(state: Mapping[str, Any]) -> str:
+    """:func:`static_fingerprint` on a frame held in memory."""
+
+    missing = [name for name in STATIC_FIELDS if name not in state]
+    if missing:
+        raise _refuse(f"the state lacks {missing}, so its static fields cannot be identified")
+    return _float_digest_values((name, state[name]) for name in STATIC_FIELDS)
+
+
+def check_exchange_run(grid: Mapping[str, Any], static_sha256: str, run_grid: Mapping[str, Any],
+                       run_static_sha256: str, what: str = "the run") -> dict[str, Any]:
+    """:func:`check_run` for an exchange: the run's grid (``grid_fingerprint`` of its wrfinput) and
+    static fields against the analysis's, refused by name."""
+
+    _compare_grid(grid, run_grid, what)
+    if run_static_sha256 != static_sha256:
+        raise _refuse(f"the analysis was made over static fields {static_sha256}; {what} has "
+                      f"{run_static_sha256}.  Other terrain or land under the analysed columns")
+    return {"run_file": what, "grid": dict(run_grid), "static_sha256": run_static_sha256}
+
+
+@dataclass(frozen=True)
+class AnalysisExchange:
+    """One member's analysis held in memory: exactly the words :func:`make_bundle` writes.
+
+    ``analysis`` holds the analysed words of every prognostic the analysis changed (``PH``
+    included, the engine's balance), each in its stored type; every other field of the analysis
+    is the background frame's own (``background``, borrowed, never copied).  ``increment`` holds
+    what ``increment.nc`` holds, in its stored precision (None without IAU).  ``metadata`` is the
+    bundle manifest's keys outside ``files`` with ``analysis.form = "exchange"``; ``form`` is the
+    form :meth:`write` gives the bundle (a history frame's: ``wrfout``).
+    """
+
+    metadata: Mapping[str, Any]
+    analysis: Mapping[str, np.ndarray]
+    increment: Mapping[str, np.ndarray] | None
+    background: Mapping[str, Any]
+    attributes: Mapping[str, Any]
+    dimensions: Mapping[str, Sequence[str]] | None
+    form: str
+    record: Mapping[str, Any]
+
+    @property
+    def valid_time(self) -> str:
+        return wrf_time(self.metadata["valid_time"])
+
+    @property
+    def iau_window_seconds(self) -> float | None:
+        iau = self.metadata.get("iau")
+        return None if iau is None else float(iau["window_s"])
+
+    @property
+    def sizes(self) -> dict[str, int]:
+        return frame_sizes(self.background)
+
+    def state(self) -> Mapping[str, Any]:
+        """The analysed state: the changed words over the background frame's."""
+
+        from collections import ChainMap
+
+        return ChainMap(dict(self.analysis), dict(self.background))
+
+    def increment_float64(self) -> dict[str, np.ndarray] | None:
+        """The increment as :func:`read_increment` hands it to the door: float64 by WRF name."""
+
+        if self.increment is None:
+            return None
+        return {name: np.ascontiguousarray(np.asarray(values, dtype=np.float64))
+                for name, values in self.increment.items()}
+
+    def increment_precision(self) -> dict[str, str]:
+        return {} if self.increment is None else {name: np.asarray(values).dtype.str
+                                                  for name, values in self.increment.items()}
+
+    def manifest_sha256(self) -> str:
+        """SHA-256 of the canonical metadata: the exchange's identity in receipts (a bundle's is its
+        manifest's, which also hashes its files)."""
+
+        return hashlib.sha256(manifest_bytes(self.metadata)).hexdigest()
+
+    def receipt(self) -> dict[str, Any]:
+        """The ``bundle`` block of a door plan, for an exchange."""
+
+        m = self.metadata
+        return {"schema": EXCHANGE_SCHEMA, "root": None, "manifest_sha256": self.manifest_sha256(),
+                "valid_time": self.valid_time, "form": EXCHANGE_FORM, "grid": dict(m["grid"]),
+                "static": dict(m["static"]), "physics": dict(m["physics"]), "analysis": dict(m["analysis"]),
+                "iau": None if m.get("iau") is None else dict(m["iau"]), "versions": dict(m["versions"]),
+                "files": {}, "files_verified": [], "forecast": m.get("forecast"), "notes": m.get("notes")}
+
+    def exchange_record(self, digest) -> dict[str, Any]:
+        """The ``wrf-analysis-exchange/1`` record: the metadata with ``arrays`` (dtype, shape and the
+        :data:`EXCHANGE_DIGEST` digest ``digest(array)`` of every increment field)."""
+
+        if self.increment is None:
+            raise _refuse("an exchange record lists the increment's arrays; this exchange carries none (no IAU)")
+        record = json.loads(json.dumps(dict(self.metadata)))
+        arrays = {}
+        for name in sorted(self.increment):
+            values = np.asarray(self.increment[name])
+            value = digest(values)
+            if not isinstance(value, str) or not _DIGEST16.fullmatch(value):
+                raise _refuse(f"the digest of {name} is {value!r}, not a lowercase 16-digit {EXCHANGE_DIGEST}")
+            arrays[name] = {"dtype": values.dtype.str[1:], "shape": [int(n) for n in values.shape], "digest": value}
+        record["arrays"] = arrays
+        return record
+
+    def write(self, out: str | Path, *, template: str | Path | None = None,
+              container: str = "cdf2") -> AnalysisBundle:
+        """The bundle :func:`make_bundle` writes for this analysis.  ``template``: the background's own
+        history file (the files path's): analysis.nc is its patched copy and the bundle is
+        make_bundle's byte for byte.  Without it, analysis.nc is written from the frame's words
+        (every variable the frame carries, ``dimensions`` naming each one's), so its arrays are
+        make_bundle's and its bytes are not."""
+
+        out = Path(out)
+        if out.exists() and any(out.iterdir()):
+            raise _refuse(f"{out} exists and is not empty")
+        out.mkdir(parents=True, exist_ok=True)
+        target = out / ANALYSIS
+        if template is not None:
+            template = Path(template)
+            require_classic(template, "the background")
+            _compare_grid(self.metadata["grid"], grid_fingerprint(template), template.name)
+            if self.valid_time not in _times(_open(template)):
+                raise _refuse(f"{template.name} holds no record at the exchange's valid time {self.valid_time}")
+            _patched_copy(template, target, self.analysis)
+        else:
+            _write_state_file(target, self.state(), dimensions=self.dimensions, attributes=self.attributes,
+                              valid_time=self.valid_time, container=container)
+        if self.increment is not None:
+            precision = self.record["increment"]["precision"]
+            _write_increment_file(out / INCREMENT, self.increment, sizes=self.sizes, valid_time=self.valid_time,
+                                  precision=precision)
+        m = self.metadata
+        analysis = dict(m["analysis"], form=self.form)
+        write_manifest(out, valid_time=m["valid_time"], grid=m["grid"], static=m["static"], physics=m["physics"],
+                       analysis=analysis, versions=m["versions"], iau=m.get("iau"), notes=m.get("notes"),
+                       forecast_args=(m.get("forecast") or {}).get("args"))
+        return load_bundle(out)
+
+
+def _write_state_file(target: Path, state: Mapping[str, Any], *, dimensions, attributes, valid_time: str,
+                      container: str) -> None:
+    """A classic WRF-form file of one record from words in memory (every variable over Time and
+    its own dimensions, the global attributes as given)."""
+
+    from gpuwm.io.nc_writer_bridge import ClassicSchema
+
+    if dimensions is None:
+        raise _refuse("writing an analysis from memory needs each variable's dimensions (the frame's own); "
+                      "give the background's history file as the template instead")
+    names = [name for name in state if name != "Times"]
+    missing = [name for name in names if name not in dimensions]
+    if missing:
+        raise _refuse(f"the frame states no dimensions for {missing[:5]}")
+    sizes: dict[str, int] = {}
+    for name in names:
+        for dim, n in zip(dimensions[name], np.shape(state[name])):
+            if sizes.setdefault(dim, int(n)) != int(n):
+                raise _refuse(f"{name}: dimension {dim} is {n} here and {sizes[dim]} elsewhere")
+    schema = ClassicSchema(container)
+    dimids = {"Time": schema.def_dim("Time", 0, unlimited=True), "DateStrLen": schema.def_dim("DateStrLen", 19)}
+    for dim, n in sizes.items():
+        if dim not in dimids:
+            dimids[dim] = schema.def_dim(dim, n)
+    for key, value in attributes.items():
+        value = _attribute_of(attributes, key)
+        if value is None:
+            continue
+        schema.put_global_attr(key, value if isinstance(value, str) else np.asarray(attributes[key]))
+    times = schema.def_var("Times", "S1", (dimids["Time"], dimids["DateStrLen"]))
+    varids = {name: schema.def_var(name, np.asarray(state[name]).dtype,
+                                   (dimids["Time"],) + tuple(dimids[d] for d in dimensions[name]))
+              for name in names}
+    partial = _partial(target)
+    with schema.create(partial) as writer:
+        writer.write_record(0, times, valid_time.encode("ascii"))
+        for name, varid in varids.items():
+            writer.write_record(0, varid, np.ascontiguousarray(state[name]))
+    partial.replace(target)
+
+
+def make_exchange(*, state: Mapping[str, Any], attributes: Mapping[str, Any], valid_time: str,
+                  coordinate: Mapping[str, Any], increment: Mapping[str, Any], grid_id: str, static_builder: str,
+                  physics_suite: str, physics_mode: str, kind: str, members: int, recipe_id: str,
+                  recipe_sha256: str, cycles: int, window: float | None, producer: str,
+                  iau_window_s: float | None = None, form: str = "wrfout", ph: str = "balance",
+                  hypsometric_opt: int = 2, fields: str = "differing", increment_precision: str = "f8",
+                  geo_em_sha256: str | None = None, notes: Mapping[str, Any] | None = None,
+                  forecast_args: Sequence[str] | None = None,
+                  dimensions: Mapping[str, Sequence[str]] | None = None,
+                  coordinate_grid: Mapping[str, Any] | None = None) -> AnalysisExchange:
+    """:func:`make_bundle` (``increment=``, ``ph``, ``coordinate=``) on words held in memory.
+
+    ``state`` is the background history frame (WRF name -> its stored words at ``valid_time``,
+    no Time axis; every loading species it holds, as the column reads them); ``attributes`` its
+    global attributes; ``coordinate`` the vertical coordinate's coefficients
+    (:data:`_COLUMN_COORDINATE`, the run's wrfinput's) and ``coordinate_grid`` that file's
+    ``grid_fingerprint`` (checked against the frame's, as :func:`column_from_file` checks a
+    coordinate file); ``increment`` the producer's increment form as arrays (float64 or float32,
+    the required core and vapour among them, ``PH`` zeros: the engine's balance replaces it).
+    Every arithmetic step is the bundle's own function (:func:`_analysis_core`,
+    :func:`_balance_core`, :func:`_increment_core`), so the exchange holds make_bundle's words.
+    """
+
+    if ph not in ("balance", "analysis"):
+        raise _refuse(f"--ph {ph!r} is not balance or analysis")
+    if increment_precision not in ("f4", "f8"):
+        raise _refuse(f"increment precision {increment_precision!r} is not f4 or f8")
+    if fields not in ("differing", "all"):
+        raise _refuse(f"increment fields {fields!r} is not differing or all")
+    if form not in ANALYSIS_FORMS:
+        raise _refuse(f"form {form!r}: one of {ANALYSIS_FORMS}")
+    valid = wrf_time(valid_time)
+    sizes = frame_sizes(state)
+    increments = increment_arrays(increment, sizes)
+    for name in increments:
+        if name not in state:
+            raise _refuse(f"the increment carries {name} and the background has no {name}")
+    record: dict[str, Any] = {"ph": ph}
+    updates, record["analysis_from_increment"] = _analysis_core(
+        (name, np.asarray(state[name], dtype=np.float64), np.asarray(state[name]).dtype, delta)
+        for name, delta in sorted(increments.items()))
+    analysis = dict(updates)
+
+    def current(name):
+        return analysis[name] if name in analysis else state[name]
+
+    # describe_grid of the analysis: its identity fields are the background's (no increment touches
+    # them), read through the analysed state all the same, as the files path reads analysis.nc
+    grid = grid_of_state(grid_id, {name: current(name) for name in state}, attributes,
+                         geo_em_sha256=geo_em_sha256)
+    if ph == "balance":
+        names = [name for name in ("T", "MU", *_LOADING) if name in state]
+        if coordinate_grid is not None:
+            measured = {key: value for key, value in grid.items() if key not in ("id", "geo_em_sha256")}
+            if dict(coordinate_grid) != measured:
+                raise _refuse("the coordinate is not on the state's grid and vertical coordinate, so its "
+                              "coordinate coefficients are not this column's")
+        column = column_from_arrays(state, coordinate)
+        balanced, record["balance"] = _balance_core(
+            {name: np.asarray(current(name), dtype=np.float64) for name in names + ["PH"]},
+            {name: np.asarray(state[name], dtype=np.float64) for name in names + ["PH"]}, names,
+            lambda changes: balanced_geopotential(column, changes, hypsometric_opt=hypsometric_opt))
+        analysis["PH"] = np.ascontiguousarray(balanced, dtype=np.asarray(state["PH"]).dtype)
+    increment_out = None
+    if iau_window_s is not None:
+        names = frame_prognostics(state, dimensions=dimensions)
+        missing = [name for name in REQUIRED_INCREMENT if name not in names]
+        if missing:
+            raise _refuse(f"{missing} are missing from the analysis or the background")
+        increment_out, made = _increment_core(
+            ((name, np.asarray(current(name), dtype=np.float64), np.asarray(current(name)).dtype,
+              np.asarray(state[name], dtype=np.float64), np.asarray(state[name]).dtype) for name in names),
+            precision=increment_precision, fields=fields)
+        record["increment"] = {"increment": None, "valid_time": valid, **made}
+    metadata = {"schema": EXCHANGE_SCHEMA, "valid_time": iso_time(valid), "grid": grid,
+                "static": {"sha256": static_of_state({name: current(name) for name in state}),
+                           "builder": static_builder},
+                "physics": {"suite": physics_suite, "mode": physics_mode},
+                "analysis": {"kind": kind, "members": int(members), "recipe_id": recipe_id,
+                             "recipe_sha256": recipe_sha256, "cycles": int(cycles),
+                             "window": None if window is None else float(window), "form": EXCHANGE_FORM},
+                "versions": _versions(producer)}
+    if iau_window_s is not None:
+        metadata["iau"] = {"window_s": float(iau_window_s)}
+    if notes is not None:
+        metadata["notes"] = json.loads(json.dumps(dict(notes)))
+    if forecast_args:
+        metadata["forecast"] = {"args": [str(item) for item in forecast_args]}
+    validate_exchange_metadata(metadata, bundle_form=form)
+    return AnalysisExchange(metadata=metadata, analysis=analysis, increment=increment_out, background=state,
+                            attributes=dict(attributes), dimensions=None if dimensions is None else dict(dimensions),
+                            form=form, record=record)
+
+
+def validate_exchange_metadata(metadata: Mapping[str, Any], *, bundle_form: str = "wrfout") -> dict[str, Any]:
+    """Every rule of the v1 manifest on an exchange's metadata: the bundle it writes as
+    (``bundle_form``, with its files) must be one a reader takes."""
+
+    if not isinstance(metadata, Mapping) or metadata.get("schema") != EXCHANGE_SCHEMA:
+        raise _refuse(f"an exchange's schema is {EXCHANGE_SCHEMA}")
+    if "files" in metadata or "arrays" in metadata:
+        raise _refuse("an exchange's metadata names no files and no arrays (the record adds the arrays)")
+    analysis = metadata.get("analysis")
+    if not isinstance(analysis, Mapping) or analysis.get("form") != EXCHANGE_FORM:
+        raise _refuse(f"an exchange's analysis.form is {EXCHANGE_FORM}")
+    mirror = json.loads(json.dumps(dict(metadata)))
+    mirror["schema"] = SCHEMA
+    mirror["analysis"]["form"] = bundle_form
+    mirror["files"] = {ANALYSIS: {"sha256": "0" * 64, "bytes": 1}}
+    if mirror.get("iau") is not None:
+        mirror["files"][INCREMENT] = {"sha256": "0" * 64, "bytes": 1}
+    validate_manifest(mirror)
+    return dict(metadata)
 
 
 def check_run(bundle: AnalysisBundle, run_file: str | Path) -> dict[str, Any]:

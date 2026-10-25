@@ -198,8 +198,13 @@ def _frames_after_resume(exp, domain, run_seconds: float,
 
 
 def history_frames(exp, domain, run_seconds: float | None = None, *,
-                   after_seconds: float | None = None) -> int:
+                   after_seconds: float | None = None,
+                   full_interval: float | None = None) -> int:
     """Count the writer's domain-local alarms, including begin/end and resume.
+
+    With ``full_interval`` (an [output] full_history_interval_s), count only
+    the alarms the writer gives the full history; the others are the
+    between-hours subset.
 
     The first alarm rounds onto the same step lattice as DomainClock.
     Counting the closed interval algebraically avoids materializing a
@@ -232,6 +237,28 @@ def history_frames(exp, domain, run_seconds: float | None = None, *,
 
     run = getattr(domain, "run", None)
     interval2 = Fraction(str(getattr(run, "history_interval2_s", 0)))
+    if full_interval is not None:
+        # Only the alarms on a full-history lead: the writer's own rule
+        # (HistorySelection.for_lead, leads from the run's START_DATE).
+        full = Fraction(str(full_interval))
+
+        def on_full(origin, period, limit):
+            last = (limit - origin) // period
+            first = max(0, -((origin - begin) // period))
+            if after is not None:
+                first = max(first, (after - origin) // period + 1)
+            hits = 0
+            for k in range(int(first), int(last) + 1):
+                lead = start + origin + k * period
+                steps = lead / full
+                if abs(float(steps - round(steps))) * float(full) < 0.5:
+                    hits += 1
+            return hits
+        if interval2 <= 0:
+            return on_full(begin, interval, end)
+        change = Fraction(str(run.history_interval_change_s))
+        return (on_full(begin, interval, min(end, change))
+                + on_full(change + interval2, interval2, end))
     if interval2 <= 0:
         return count(begin, interval, end)
     change = Fraction(str(run.history_interval_change_s))
@@ -335,6 +362,17 @@ def projected_run_bytes(exp, *, keep_checkpoints: int | None,
         selection = resolve(getattr(exp, "output", None), getattr(domain, "output", None))
         frame_bytes = history_frame_bytes(run, selection)
         h = frame_bytes * frames
+        if selection.subhourly and frames:
+            # Frames between full-history leads carry only the 2-D subset
+            # (lane/upp-history-subset). Breakage it prevents: the HRRR
+            # recipe's 15-minute cadence priced every frame as full history,
+            # 147.7 GiB for a 2 h full-CONUS run that writes about a third of
+            # that, and refused on a disk it fits (2.9.7 straggler fold, box J).
+            interval = selection.full_history_interval_s
+            full = history_frames(exp, domain, run_seconds, full_interval=interval,
+                                  after_seconds=(float(resume_seconds) if resumed else None))
+            between = history_frame_bytes(run, selection.for_lead(interval / 2.0))
+            h = frame_bytes * full + between * (frames - full)
         c = cells * per_cell * held
         begin, end = _history_window_seconds(exp, domain)
         # A tick-zero analysis writes the zero reflectivity array. Only a

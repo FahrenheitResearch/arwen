@@ -97,7 +97,13 @@ ROUTE_TABLE_SHA256 = (
     # Moved by fix/go-posted-cycle-default: the rap-native and hrrr-native
     # publication_lag rows are measured (they were an unmeasured 1.5 h
     # estimate, so a default `gpuwm go` waited ~40 min for a posted cycle).
-    "13ff2bb4c79ab84f40fab639f4fc6e8f70a63d13ec3599319b9bfd68f2238d7b"
+    # rrfs-ens fetches its declared companion (the deterministic prslev and
+    # 2dfld pair of the same cycle) as non-primary rows bound to the
+    # composition's companion data role.
+    # Moved by the ecmwf-open-data-0p1 route (IFS HRES open data at 0.1
+    # degree, published from the 2026-10-20 cycles).
+    # Both, merged for 2.9.7.
+    "c695f3f32156a4e64a8e7d5d8872465dcb395381cfbe74781449a34b4f84d154"
 )
 
 #: Sources whose acquisition predates the route table and keeps its own

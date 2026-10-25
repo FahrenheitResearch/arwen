@@ -414,21 +414,16 @@ def test_half_an_analyzed_aerosol_pair_is_warned_about_and_never_claimed(
     # specified=False so the lateral-forcing floor stays out of the way and
     # this test grades the aerosol resolver and nothing else.
     snapshot, cfg, coord, terrain, orography = _metem_root_case(specified=False)
-    result = initialize_real(snapshot, cfg, coord, terrain,
-        source_orography=orography, p_top=5000., preprocess_backend="cpu",
-        state_backend="preprocess", analyzed_species=(),
-        analyzed_number_fields=("QNWFA",))
-    aerosol = result.aerosol_initialization
-    assert aerosol["aerosol_source"] == "thompson_init-synthetic-profile"
-    assert aerosol["awaiting_profile_fill"] is True
-    assert "analyzed_aerosol_fields" not in aerosol
-    for name in ("nwfa", "nifa", "nwfa2d", "nifa2d"):
-        assert np.count_nonzero(getattr(result.state, name)) == 0
-    assert result.state._external_scalar_boundary_fields == ("qv",)
-    receipt = result.hydrometeor_initialization["number_moments"]
-    assert receipt["discarded_by_incomplete_analyzed_aerosol_pair"] == {
-        "fields": ["QNWFA"], "missing": ["QNIFA"]}
-    assert "QNWFA" not in receipt["retained_correspondence"]
+    # The half pair is discarded by name; with no climatology on the
+    # machine (and the download offline) the run then refuses instead of
+    # starting from the synthetic profile (2.9.7: no silent fallback).
+    from gpuwm.ingest.wif_climatology import MissingWifClimatologyDataset
+    with pytest.raises(MissingWifClimatologyDataset) as refused:
+        initialize_real(snapshot, cfg, coord, terrain,
+            source_orography=orography, p_top=5000., preprocess_backend="cpu",
+            state_backend="preprocess", analyzed_species=(),
+            analyzed_number_fields=("QNWFA",))
+    assert "mp28_aerosol_source='synthetic'" in str(refused.value)
     said = capsys.readouterr().err
     assert "carries QNWFA" in said and "but not QNIFA" in said
     assert "FLAG_QNWFA=1 and FLAG_QNIFA=1" in said
@@ -499,21 +494,20 @@ def test_the_analyzed_discard_warning_names_the_namelist_pair_that_asked(
     # this test grades the discard warning and nothing else.
     snapshot, cfg, coord, terrain, orography = _namelist_climatology_case(
         specified=False)
-    result = initialize_real(snapshot, cfg, coord, terrain,
-        source_orography=orography, p_top=5000., preprocess_backend="cpu",
-        state_backend="preprocess", analyzed_species=(),
-        analyzed_number_fields=METGRID_NUMBER_FIELDS)
+    # The requested climatology is not on the machine (download offline),
+    # so after the discard warning the run refuses, naming the pair.
+    from gpuwm.ingest.wif_climatology import MissingWifClimatologyDataset
+    with pytest.raises(MissingWifClimatologyDataset) as refused:
+        initialize_real(snapshot, cfg, coord, terrain,
+            source_orography=orography, p_top=5000., preprocess_backend="cpu",
+            state_backend="preprocess", analyzed_species=(),
+            analyzed_number_fields=METGRID_NUMBER_FIELDS)
+    assert str(refused.value).startswith("(aer_init_opt, wif_input_opt) = (1, 1)")
     said = capsys.readouterr().err
     assert "this analysis carries QNWFA/QNIFA" in said
     assert "(aer_init_opt, wif_input_opt) = (1, 1) asks for the WIF" in said
     assert "Set either selector to 0" in said
     assert "was requested explicitly" not in said
-    discarded = result.hydrometeor_initialization["number_moments"][
-        "discarded_by_requested_aerosol_source"]
-    assert discarded["fields"] == ["QNWFA", "QNIFA"]
-    assert discarded["mp28_aerosol_source"] == "climatology"
-    assert discarded["requested_by"] == "namelist"
-    assert discarded["aer_init_opt"] == 1 and discarded["wif_input_opt"] == 1
 
 
 def test_an_explicitly_named_source_is_still_attributed_to_the_field(capsys):

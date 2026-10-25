@@ -20,6 +20,7 @@ required-features = ["source-netcdf"]
 source-archive = []
 source-netcdf = []
 [dependencies]
+hydro-proj = { path = "../hydro_proj" }
 rayon = "1.12"
 serde = { version = "1", features = ["derive"] }
 # float_roundtrip: the parent_grid_contract (and every f64 in a request)

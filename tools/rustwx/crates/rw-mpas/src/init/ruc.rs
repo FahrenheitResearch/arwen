@@ -52,6 +52,28 @@ pub fn layer_column(mid_cm: &[f32], st: &[f32], sm: &[f32], tsk: f32, tmn: f32)
     Ok((remap(&depths, &t)?, remap(&depths, &m)?))
 }
 
+/// real.exe's dry floor for RUC from a layer source (WRF v4.6.1
+/// `dyn_em/module_initialize_real.F:3435-3446`, `account_for_zero_soil_moisture`,
+/// `CASE (RUCLSMSCHEME)`, `flag_soil_layers` arm): `SMOIS = MAX(SMOIS, 0.005)`
+/// on every level.  The linear surface anchor [`layer_column`] builds off a
+/// dry top layer goes negative (desert cells), and the 0 and 1 cm nodes with
+/// it; real.exe never hands RUC that column.  A node source gets no floor
+/// (the `flag_soil_levels` arm is a no-op).  Returns how many values were
+/// raised and the smallest value before the floor.
+pub const LAYER_MOISTURE_FLOOR: f32 = 0.005;
+pub fn floor_layer_moisture(smois: &mut [f32]) -> (usize, f32) {
+    let mut raised = 0;
+    let mut lowest = f32::INFINITY;
+    for value in smois.iter_mut() {
+        if *value < LAYER_MOISTURE_FLOOR {
+            raised += 1;
+            lowest = lowest.min(*value);
+            *value = LAYER_MOISTURE_FLOOR;
+        }
+    }
+    (raised, lowest)
+}
+
 /// One land column from a node source (WPS `FLAG_SOIL_LEVELS`, e.g. HRRR,
 /// RAP or RRFS): the nodes are the samples, with no anchors.
 pub fn node_column(depth_cm: &[f32], st: &[f32], sm: &[f32]) -> MpasResult<(Vec<f32>, Vec<f32>)> {
@@ -98,6 +120,29 @@ pub fn node_column(depth_cm: &[f32], st: &[f32], sm: &[f32]) -> MpasResult<(Vec<
         assert_eq!(remap(&DEPTHS, &samples).unwrap(), samples);
         let out = remap(&[0., 0.05, 0.25, 0.70, 1.50, 3.], &[280.,281.,285.,294.,310.,340.]).unwrap();
         for (z, value) in DEPTHS.iter().zip(out) { assert!((value-(280.+20.*z)).abs() < 0.0001); }
+    }
+    /// The 2025-05-19 GFS desert column shape: a dry 0-10 cm layer over a
+    /// moister 10-40 cm one extrapolates a negative 0 m anchor, so the 0 and
+    /// 1 cm RUC nodes came out negative and the forecast stopped at hour 1.
+    /// After real.exe's floor every node is at least 0.005, the nodes below
+    /// the anchor's reach are untouched, and the floor is a no-op on a
+    /// column that never went below it.
+    #[test] fn layer_floor_lifts_the_negative_desert_anchor_only() {
+        let (t, mut m) = layer_column(&[5., 25., 70., 150.], &[300., 299., 297., 293.],
+            &[0.01, 0.10, 0.12, 0.13], 310., 290.).unwrap();
+        assert!(m[0] < 0. && m[1] < 0., "the WRF anchor must go negative here: {m:?}");
+        let before = m.clone();
+        let (raised, lowest) = floor_layer_moisture(&mut m);
+        assert_eq!(raised, 2);
+        assert_eq!(lowest, before[0]);
+        assert_eq!(&m[..2], &[LAYER_MOISTURE_FLOOR; 2]);
+        assert_eq!(&m[2..], &before[2..]);
+        assert_eq!(t.len(), 9);
+        let (_, mut wet) = layer_column(&[5., 25., 70., 150.], &[300.; 4],
+            &[0.30, 0.28, 0.27, 0.26], 300., 290.).unwrap();
+        let wet_before = wet.clone();
+        assert_eq!(floor_layer_moisture(&mut wet).0, 0);
+        assert_eq!(wet, wet_before);
     }
     #[test] fn refuses_missing_deep_source_and_nan() {
         assert!(remap(&[0.,1.], &[280.,290.]).is_err());

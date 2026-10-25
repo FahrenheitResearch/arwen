@@ -31,9 +31,17 @@ the same cold start as the start time, so the ring's number is the one
 the rule gives its own analysed mass, and the ring's sizes are the start
 state's sizes.  Left flow-dependent the ring would bring the analysed
 mass in with zero number, and Thompson's entry block would size it at its
-limits (2.5 mm rain, drizzle-sized droplets).  A scheme whose cold start
-seeds no number (WSM6, Morrison, WDM6, NSSL, Milbrandt-Yau, P3) keeps its
-numbers flow-dependent, which is the zero the start state gives them too.
+limits (2.5 mm rain, drizzle-sized droplets).  Morrison (mp=10) joins
+them through the handover closure (:mod:`gpuwm.ingest.handover_numbers`):
+real.exe seeds no Morrison number, and a flow-dependent Morrison ring
+brought the analysed mass in at N = 0, which Morrison sizes at its slope
+limit (2.8 mm rain, 2 mm snow and graupel): 469-518 such columns per hour
+in a hex-forced 3 km child's outer rows, drawn as 40-55 dBZ edge bands.
+Exact mode (correct-mode key hydrometeor_handover_numbers off) and a strict
+WRF process keep real.exe's flow-dependent Morrison ring.  A
+scheme whose cold start seeds no number (WSM6, WDM6, NSSL, Milbrandt-Yau,
+P3) keeps its numbers flow-dependent, which is the zero the start state
+gives them too.
 """
 from __future__ import annotations
 
@@ -103,9 +111,13 @@ def boundary_hydrometeor_fields(cfg, species) -> tuple[str, ...]:
     if not getattr(cfg, "moist", False) or not getattr(cfg, "specified", True):
         return ()
     masses = _carried_masses(cfg, species)
+    # The seeded numbers: real.exe's Thompson rows, and the Morrison
+    # handover closure (gpuwm.ingest.handover_numbers), so a ring that
+    # brings a mass in brings its number too.
+    from gpuwm.ingest.handover_numbers import handover_number_pairs
     numbers = tuple(
-        number for mass, number in COLD_START_SEEDED_NUMBERS.get(
-            int(getattr(cfg, "mp_physics", 0)), ())
+        number for mass, number in handover_number_pairs(
+            int(getattr(cfg, "mp_physics", 0)), cfg)
         if mass in masses)
     return (*masses, *numbers)
 

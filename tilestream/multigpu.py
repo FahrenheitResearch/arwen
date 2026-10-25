@@ -1614,7 +1614,11 @@ class MultiGPUDomain:
     def refresh_rank(self, g: int) -> None:
         """:meth:`refresh_arrays` for one sub-domain (its step has issued)."""
         if True:
-            fresh = self.inventory_fn(self.states[g])
+            # Pointers only: the chem history buffers are evaluated where a
+            # frame reads them, not on every step's refresh.
+            from gpuwm.core.chem_history import pointer_inventory
+            with pointer_inventory():
+                fresh = self.inventory_fn(self.states[g])
             old = self.arrays[g]
             if list(fresh.keys()) != self.names:
                 raise MultiGPUError(

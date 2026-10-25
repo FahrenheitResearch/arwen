@@ -910,7 +910,7 @@
   "gw_coeff_m3_s": {
    "value": 0.004999999888241291,
    "unit": "m3 s-1",
-   "source": "NOAA NWM v3.1.6 GWBUCKPARM_CONUS_FullRouting.nc (https://www.nco.ncep.noaa.gov/pmb/codes/nwprod/nwm.v3.1.6/parm/domain/GWBUCKPARM_CONUS_FullRouting.nc, sha256 27b815ad99ffb3adf3cc38c7c677a33ba29630c60d8336788ba2b9cb9053f3e3), 2724837 CONUS buckets: Coeff is 0.005..0.005 (one value) for every bucket. CFE Cgw [m h-1] = Coeff * 3600 / catchment area [m2] (the NWM bucket outflow Q = Coeff (exp(Expon z/Zmax) - 1) is a volume rate per catchment; CFE takes the same law as a depth rate)"
+   "source": "NOAA NWM v3.1.6 GWBUCKPARM_CONUS_FullRouting.nc (https://www.nco.ncep.noaa.gov/pmb/codes/nwprod/nwm.v3.1.6/parm/domain/GWBUCKPARM_CONUS_FullRouting.nc, sha256 27b815ad99ffb3adf3cc38c7c677a33ba29630c60d8336788ba2b9cb9053f3e3), 2724837 CONUS buckets: Coeff is 0.005..0.005 (one value) for every bucket. CFE Cgw [m h-1] = Coeff * 3600 / catchment area [m2] (the NWM bucket outflow Q = Coeff (exp(Expon z/Zmax) - 1) is a volume rate per catchment; CFE takes the same law as a depth rate). Its depth-rate bound admits values down to zero because the unchanged positive volume coefficient divided by large native lake catchments can fall below 1e-9 m/h"
   },
   "gw_expon": {
    "value": 3.1791605949401855,
@@ -1049,7 +1049,7 @@
    10.0
   ],
   "cgw_m_h": [
-   1e-09,
+   0.0,
    10.0
   ],
   "gw_expon": [

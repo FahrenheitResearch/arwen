@@ -36,6 +36,9 @@ _SEAICE_BOUND = ("seaice_prognostic", "seaice_initial_thickness",
 #: Every default-off field restart._drop_default_off_run_keys drops at its
 #: default, moved, as (overrides, the keys the echo must then carry).
 MOVED = {
+    "output_diagnostics": (dict(output_diagnostics=1), {"output_diagnostics", "diag_int", "wind_int"}),
+    "diag_int": (dict(diag_int=30), {"diag_int"}),
+    "wind_int": (dict(wind_int=10), {"wind_int"}),
     "thompson_version": (dict(mp_physics=28, moist=True, thompson_version="wrf_39_noaa"), {"thompson_version"}),
     "thompson_fork_snow_fall": (dict(mp_physics=28, moist=True, thompson_version="wrf_39_noaa", thompson_fork_snow_fall="wrf_39_noaa"), {"thompson_version", "thompson_fork_snow_fall"}),
     "upper_wind_limiter_form": (dict(upper_wind_limiter_form="noaa_wrf39"),
@@ -122,6 +125,7 @@ MOVED = {
 
 #: The keys an echo at every default leaves out.
 DEFAULT_OFF = frozenset({
+    "output_diagnostics", "diag_int", "wind_int",
     # The ocean mixed layer (2.9.1) off: dropped, as in a header written
     # before the keys existed.
     "sf_ocean_physics", "oml_hml0", "oml_gamma", "oml_relaxation_time",
@@ -204,6 +208,13 @@ DEFAULT_OFF = frozenset({
     "wdm6_conservative_surface", "thompson_cloud_surface_booking",
     "wsm3_conservative_surface", "wsm5_conservative_surface",
     "wsm7_conservative_surface",
+    # 2.9.7 HN1 (hydrometeor handover numbers): read by Thompson and
+    # Morrison only, so absent here, as in a 2.9.6 header.
+    "hydrometeor_handover_numbers",
+    # 2.9.7 tc/nest: the nest accumulation archive is echoed only on a nested
+    # domain with the archive on (restart._drop_inert_nest_archive); this
+    # fixture is not nested, so it is absent, as in a 2.9.6 header.
+    "nest_accumulation_archive",
     # 2.9.4 capabilities campaign, each absent at its default as in a 2.9.3
     # header: lane/cap-slab-ocean's 3-D PWP controls (dropped with the
     # ocean off), lane/cap-eclipse's default-on shadow (explicit 0 binds),
@@ -430,8 +441,12 @@ def test_chemistry_off_emitted_config_bytes_match_recovery_staging(
     # ... and under the WRF 4.6.1 solar generation, the default until 2.9.0;
     # the WRF 4.8 default is echoed (tests/test_restart.py
     # test_the_wrf480_solar_default_moves_only_the_solar_binding).
+    # ... and before the 2.9.7 hydrometeor handover numbers (HN1), which
+    # bind under the moist case's Thompson; off is every earlier header's ring.
     cfg = RunConfig(**{"terrain_clock": "measured",
-                       "solar_generation": "wrf_461", **row["constructor"]})
+                       "solar_generation": "wrf_461",
+                       "hydrometeor_handover_numbers": False,
+                       **row["constructor"]})
     if inactive_nondefaults:
         cfg = dataclasses.replace(cfg, chem_adv_opt=2, kemit=17,
                                   dust_alpha=3.0, aer_ra_feedback=1)
@@ -475,10 +490,22 @@ def test_member_surface_provenance_does_not_change_checkpoint_config_echo_bytes(
         assert not {"ensemble", "perturbation", "seed", "member_id"} & echo.keys()
 
 
+def _with_handover(cfg, kept):
+    """HN1 (2.9.7) is default on and echoed where its scheme reads it
+    (Thompson and Morrison), so a moved field selected under Thompson keeps
+    it as well."""
+    from gpuwm.correct_mode import key_in_scope
+    key = "hydrometeor_handover_numbers"
+    if getattr(cfg, key) is True and key_in_scope(key, dataclasses.asdict(cfg)):
+        return set(kept) | {key}
+    return set(kept)
+
+
 @pytest.mark.parametrize("field", sorted(MOVED))
 def test_every_writer_echoes_a_moved_field_alike(monkeypatch, tmp_path, field):
     overrides, kept = MOVED[field]
     cfg = _cfg(**overrides)
+    kept = _with_handover(cfg, kept)
     echoes = _echoes(cfg, monkeypatch, tmp_path)
     expected = restart.configuration_echo(cfg)
     for road, echo in echoes.items():
@@ -496,7 +523,7 @@ def test_the_digest_drops_what_the_echo_drops():
     for overrides, kept in [({}, set())] + list(MOVED.values()):
         cfg = _cfg(**overrides)
         digest = restart._configuration_digest_values(dataclasses.asdict(cfg))
-        assert DEFAULT_OFF & set(digest) == kept, overrides
+        assert DEFAULT_OFF & set(digest) == _with_handover(cfg, kept), overrides
 
 
 @pytest.mark.parametrize("field", (

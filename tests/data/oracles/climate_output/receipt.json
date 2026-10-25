@@ -1,0 +1,9 @@
+{
+  "source_sha256": "5484278bb52e817ff83ba2033104070d386ea3f71d95e69fef8b14891811c2bd",
+  "authority": "NOAA-EMC/HRRR 40ee6058c2fc6624cbfbbe8cf1c20c59e6a45827",
+  "flags": "-O0 -ffp-contract=off -fno-tree-vectorize",
+  "calls": 106,
+  "fields": 48,
+  "compared_float32_words": 30740,
+  "compiler": "GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0"
+}

@@ -126,6 +126,10 @@ def test_named_import_emitted_bytes_select_the_pbl_source(
     # (tests/capability_campaign_import.py).
     from capability_campaign_import import CAMPAIGN_IMPORT_LINES
     carried_rows += list(CAMPAIGN_IMPORT_LINES)
+    # 2.9.7 lane/hrrr-v4-clwrf: the namelist's climate statistics
+    # (output_diagnostics = 1 with its intervals) are imported since that
+    # port; the historical capture predates it.
+    carried_rows += ['output_diagnostics = 1\n', 'diag_int = 15\n', 'wind_int = 5\n']
     for carried in carried_rows:
         assert previous.count(carried) == 1
         previous = previous.replace(carried, "")

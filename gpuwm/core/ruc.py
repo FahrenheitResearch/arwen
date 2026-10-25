@@ -9177,6 +9177,17 @@ def _ruc_driver_soil_geometry(
     return zsmain, ruc_zshalf(zsmain)
 
 
+def ruc_ice_category(vegetation) -> int:
+    """The sea-ice land-use category of a RUC VEGPARM section.
+
+    module_sf_ruclsm.F has no ISICE table scalar for its sections, so the
+    category follows the section: 24 for USGS-RUC, 15 for MODI-RUC.  The
+    one place that rule lives; the driver and the column seam's sea-ice
+    optics seed (gpuwm/core/mpas_column_suite.py) both read it here.
+    """
+    return 24 if vegetation.name == "USGS-RUC" else 15
+
+
 def ruc_land_surface_step(
     values: Mapping[str, object],
     *,
@@ -9433,7 +9444,7 @@ def ruc_land_surface_step(
     else:
         raise ValueError(f"RUC iswater {iswater!r} is outside 1..{ncategory}")
     if isice is None:
-        ice_category = 24 if vegetation.name == "USGS-RUC" else 15
+        ice_category = ruc_ice_category(vegetation)
     elif type(isice) is int and 1 <= isice <= ncategory:
         ice_category = isice
     else:

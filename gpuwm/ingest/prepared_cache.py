@@ -262,6 +262,7 @@ DEFAULT_TOLERANT_IDENTITY_FIELDS = frozenset({
     # what every older tree was prepared and run with; a stated value
     # against an older header re-prepares (the safe side).
     "run.prec_acc_dt", "run.prec_acc_dt1", "run.gsd_diagnostics", "run.reset_interval1",
+    "run.output_diagnostics", "run.diag_int", "run.wind_int",
     # G3 controls are absent from older trees; only their declared defaults tolerate absence.
     "run.maxiens",
     "run.maxens",
@@ -306,6 +307,11 @@ DEFAULT_TOLERANT_IDENTITY_FIELDS = frozenset({
     "run.wdm6_conservative_surface",
     "run.wsm3_conservative_surface", "run.wsm5_conservative_surface",
     "run.wsm7_conservative_surface",
+    # HN1 (2.9.7), read by preparation (the handover closure on every
+    # forcing frame).  An older tree was prepared with it off; as for the
+    # keys above, its absence is tolerated at the RunConfig default, and an
+    # exact-mode run (off) against an older header re-prepares.
+    "run.hydrometeor_handover_numbers",
     # The New SAS knobs (cu_physics = 96 port), on the p3_backend argument
     # below: scheme-scoped (gpuwm.config refuses a non-default value under
     # any other cumulus scheme), so a tree prepared before they existed
@@ -679,6 +685,15 @@ NON_TRAJECTORY_IDENTITY_FIELDS = frozenset({
     # WRF's history_begin / history_end: when the forecast writes, like
     # the cadence beside them.
     "history_begin_s", "history_end_s",
+    # Which variables reach the history tape, per domain, and the
+    # quick-look stream's cadence and subset: output-only on the restart
+    # identity's own terms (gpuwm.core.model drops all three).  Binding
+    # them refused a prepared tree whose d03 asked for a quick-look stream
+    # ("these identity fields differ: full_history_interval_s,
+    # quicklook_output"), and a per-domain `output = {...}` subset on a
+    # bundle prepared without one (WOOF run-controls feasibility, defect 7),
+    # although preparation reads none of them.
+    "output", "full_history_interval_s", "quicklook_output",
 })
 
 #: Output-only diagnostic toggles, on the same footing as the cadences
@@ -1042,6 +1057,10 @@ PREPARATION_INERT_RUN_FIELDS = SFIRE_PREPARATION_INERT_RUN_FIELDS | frozenset({
     # array depends on.  It stays in the experiment fingerprint and the
     # restart identity.
     "run.moist_cq",
+    # Placement rain history begins at forecast initialization. Neither
+    # prepared prognostics nor parent boundary tables depend on its policy.
+    # Forecast/restart identity still binds the policy and its archive.
+    "run.nest_accumulation_archive",
 })
 
 

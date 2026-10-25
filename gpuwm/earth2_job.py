@@ -261,9 +261,13 @@ def run_job(spec, out, *, earth2_input=None, geog_root=None):
             else:
                 track_input = ["--input", forecasts]
             _command("track", [*cli, "tc-tracks", *track_input, "--out", root / "tracks", "--workers", "4"], root, receipt)
-            # Only explicit job bounds override the selector's configured polygon.
-            # The acquisition envelope is not itself the basin boundary.
+            # A reused regional forecast has receipt-checked job bounds even
+            # when --area was omitted. Carry those to the selector, while
+            # retaining the configured basin polygon for global forecasts.
             search_area = spec["area"]
+            if (search_area is None and spec["storm"] == "auto"
+                    and coverage.get("search_region", {}).get("id") == "forecast-area"):
+                search_area = coverage["search_region"]["area"]
             search_args = (["--search-area=" + ",".join(str(v) for v in search_area)]
                            if search_area is not None else [])
             _command("setup", [*cli, "cyclone-setup", "--source", source, "--cycle", cycle_token,

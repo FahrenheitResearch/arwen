@@ -1570,6 +1570,14 @@ pub fn render_windowed_products_from_store_grids(
         cycle: rustwx_core::CycleSpec::new(request.date_yyyymmdd.clone(), cycle_utc)?,
         source: request.source,
     };
+    // An explicit ceiling keeps all frames of a cyclone sheet comparable
+    // without saturating hurricane-force cores at the default 70 kt.
+    let wind_ceiling = std::env::var("RUSTWX_WINDOWED_WIND_MAX_KT").ok()
+        .map(|text| text.parse::<f64>().map_err(|_| "RUSTWX_WINDOWED_WIND_MAX_KT must be numeric"))
+        .transpose()?;
+    if wind_ceiling.is_some_and(|value| !value.is_finite() || value <= 0.) {
+        return Err("RUSTWX_WINDOWED_WIND_MAX_KT must be finite and positive".into());
+    }
     let cells = full_grid.shape.len();
     let mut products = Vec::with_capacity(grids.len());
     for grid in grids {
@@ -1599,7 +1607,18 @@ pub fn render_windowed_products_from_store_grids(
                     contributing_forecast_hours: grid.hours_used.clone(),
                     window_hours: grid.window_hours,
                 },
-                scale: crate::windowed_decoder::windowed_product_scale(product),
+                scale: {
+                    let mut scale = crate::windowed_decoder::windowed_product_scale(product);
+                    if let Some(ceiling) = wind_ceiling.filter(|_| product.is_wind10m()) {
+                        let mut discrete = scale.resolved_discrete();
+                        let intervals = discrete.levels.len() - 1;
+                        discrete.levels = (0..=intervals)
+                            .map(|i| ceiling * i as f64 / intervals as f64).collect();
+                        discrete.mask_below = None;
+                        scale = rustwx_render::ColorScale::Discrete(discrete);
+                    }
+                    scale
+                },
             },
         });
     }

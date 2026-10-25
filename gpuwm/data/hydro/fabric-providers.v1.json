@@ -28,15 +28,14 @@
           49.5
         ]
       ],
-      "min_covered_fraction": 1.0,
-      "realization": null,
-      "realization_gap": "the coupled runoff -> transfer -> routing realization row (CFE/Noah-OWP producers, runoff transfer f8d7c435, routing) is not in configurations.v1.json yet; physical admission held on same-network parameters, initial state and native phase (owners c-hydro-runoff, c-hydro-coupling)",
+      "min_covered_fraction": 0.0,
+      "realization": "parent-noahmp-routed",
       "manifest_binding": "fabric_manifest",
       "data_licence": {
         "status": "verified",
-        "name": "NHDPlus V2.1 and USGS 3DEP (federal/public domain); SoilGrids 2.0, ESA WorldCover 2021 and HydroLAKES (CC BY 4.0)",
-        "attribution": "NHDPlus V2.1: US EPA and USGS; 3DEP: USGS; SoilGrids 2.0: ISRIC/Poggio et al. 2021; ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data (2021) processed by ESA WorldCover consortium; HydroLAKES: Messager et al. 2016",
-        "reason": "Every input of this row is US government public domain or CC BY 4.0, read at the source: NHDPlus V2.1 metadata (https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Documentation/Metadata/NHDPlusV2_metadata.htm) states Access_Constraints: None. Use_Constraints: None. (re-read 2026-10-21); USGS 3DEP is public domain (https://pubs.usgs.gov/tm/11b9/tm11B9.pdf, read 2026-10-18); SoilGrids 2.0, ESA WorldCover 2021 and HydroLAKES are CC BY 4.0 (tools/hydro_world/data/sources.v1.json records each quote). This is a licence verdict only: the row stays unavailable until its CONUS recipe, same-network parameters, HydroLAKES-to-NHDPlus crosswalk and coupled realization land (realization_gap, builder.pending; owner astra-c-hydro-data). It is not a verdict for NOAA RouteLink/reference fabrics."
+        "name": "EPA/USGS NHDPlus V2.1 (public domain), Copernicus DEM, SoilGrids, WorldCover, HydroLAKES and GDW (verified open/permissive sources)",
+        "attribution": "EPA/USGS NHDPlus V2.1; Contains modified Copernicus DEM data; HydroLAKES (Messager et al. 2016); SoilGrids 2.0 (ISRIC); ESA WorldCover 2021; Global Dam Watch (Lehner et al. 2024)",
+        "reason": "NHDPlus V2.1 official metadata (https://dmap-data-commons-ow.s3.amazonaws.com/NHDPlusV21/Documentation/Metadata/NHDPlusV2_metadata.htm), re-read 2026-10-21: Access_Constraints: None. Use_Constraints: None. Native flowlines, catchments, VAA, elevations and processing units are from those archives. Shared parameter and lake inputs carry the verified source-specific quotes in tools/hydro_world/data/sources.v1.json. No NOAA RouteLink or NextGen v2.2 fabric is consumed."
       },
       "builder": {
         "executable": {
@@ -45,7 +44,6 @@
           "crate": "tools/hydro_world"
         },
         "subcommand": "build",
-        "pending": "CONUS native recipe/build specification, exact source acquisition, same-network parameters and lake crosswalk through the shared HYDRO-WORLD contract, owner astra-c-hydro-data",
         "source_table": {
           "path": "tools/hydro_world/data/sources.v1.json",
           "row": "conus-nhdplus-v21"
@@ -62,19 +60,78 @@
           "--bbox",
           "{west},{south},{east},{north}",
           "--out",
-          "{out}/fabric.gpkg"
+          "{out}/fabric.gpkg",
+          "--parent-grid",
+          "{out}/parent-grid.json",
+          "--receipt",
+          "{out}/builder-receipt.json"
         ],
         "geopackage": "fabric.gpkg",
         "timeout_seconds": 1800,
         "paths": [
           {
-            "env": "GPUWM_HYDRO_CONUS_SOURCES",
+            "env": "GPUWM_HYDRO_WORLD_TILES",
             "argument": "data_root",
-            "default": null,
-            "label": "NHDPlus V2.1 source tiles"
+            "default": "~/.gpuwm/hydro-world",
+            "label": "NHDPlus V2.1 VPUs and shared parameter/lake inputs",
+            "acquire": "gpuwm.hydro.acquire:acquire"
           }
-        ]
-      }
+        ],
+        "recipe": "Native vector-attributes recipe, version-pinned VPU archives fetched by footprint at preparation"
+      },
+      "python_modules": [
+        {"module": "py7zr", "extra": "hydro-conus", "licence": "LGPL-2.1-or-later", "reason": "decodes the NHDPlus V2.1 .7z VPU archives"}
+      ],
+      "realization_by_parent_lsm": {
+        "2": "parent-noah-routed",
+        "3": "parent-ruc-routed",
+        "4": "parent-noahmp-routed"
+      },
+      "parent_lsm": [
+        2,
+        3,
+        4
+      ],
+      "preparation": {
+        "parameter_recipe": {
+          "env": "GPUWM_HYDRO_PARAMETER_RECIPE",
+          "relative": "parameter-recipe.json",
+          "template": "parameter-recipe.world.v1.json"
+        },
+        "parameters": {
+          "env": "GPUWM_RW_HYDRO_PARAMS",
+          "filename": "rw_hydro_params",
+          "crate": "tools/hydro_world_params"
+        },
+        "hydrofabric": {
+          "env": "GPUWM_RW_HYDROFABRIC",
+          "filename": "rw_hydrofabric",
+          "crate": "tools/nextgen_hydrofabric"
+        },
+        "reservoirs": {
+          "env": "GPUWM_NEXTGEN_RESERVOIR_PREPARE",
+          "filename": "nextgen-reservoir-prepare",
+          "crate": "tools/nextgen_reservoir_prepare"
+        },
+        "initial_source": "era5-arco",
+        "spinup_days": 90,
+        "vertical_datum": "Copernicus DEM EGM2008 orthometric heights; HydroLAKES reported surface elevation",
+        "timeout_seconds": 3600,
+        "routing_interval_seconds": 300,
+        "routed_initialization": "continuous-runoff-replay",
+        "gauges": {
+          "filename": "rw_nextgen_verify",
+          "env": "GPUWM_RW_NEXTGEN_VERIFY"
+        },
+        "initial_state": {
+          "env": "GPUWM_RW_HYDRO_INIT",
+          "filename": "rw_hydro_init",
+          "crate": "tools/hydro_world_init"
+        }
+      },
+      "coverage_scope": "CONUS land catchments with outlets in the parent domain; outside CONUS is not composed in this route",
+      "coverage_policy": "source-land",
+      "fallback_provider": "hydro-world-global"
     },
     {
       "id": "hydro-world-global",

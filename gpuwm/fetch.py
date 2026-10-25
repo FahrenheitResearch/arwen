@@ -2625,6 +2625,10 @@ def _fetch_out(out, **options):
     file and stays.
     """
     global _FETCH_OUT_HOLDS
+    # A second writer of this folder waits as long as the holder's bytes
+    # keep arriving and refuses only a holder that stalls for the budget
+    # (fetch_guard.DirectoryProgress names the breakage).
+    options.setdefault("holder_progress", fetch_guard.DirectoryProgress(out))
     with fetch_guard.hold("fetch-out", out, **options):
         with _STREAM_FACTS_LOCK:
             _FETCH_OUT_HOLDS += 1
@@ -3415,6 +3419,44 @@ def _manifest_payload(*, source: str, cycle: datetime,
 # GFS
 # ---------------------------------------------------------------------------
 
+def _gfs_file_levels(path: Path, source: str) -> tuple[tuple[float, ...], dict]:
+    """Read the archived object's complete pressure levels without decoding fields.
+
+    An unavailable live index cannot establish an old archive's upper ladder.
+    In particular, a 2020 object carries temperature at 40 hPa but no humidity
+    or wind there. The modern fallback table used to declare that partial level.
+    """
+    import csv
+    import io
+    import subprocess
+    from gpuwm.bridges import find_bridge, bridge_remedy
+
+    executable = find_bridge("grib2_inventory")
+    if executable is None:
+        raise RuntimeError(bridge_remedy("grib2_inventory"))
+    started = time.perf_counter()
+    result = subprocess.run([str(executable), str(path)], capture_output=True,
+                            text=True, check=True)
+    # GRIB2 discipline/category/parameter codes, not display-name aliases.
+    required = {(0, 3, 5), (0, 0, 0), (0, 1, 0 if source == "gdas" else 1),
+                (0, 2, 2), (0, 2, 3)}
+    fields = {key: set() for key in required}
+    rows = csv.DictReader(io.StringIO("\n".join(
+        line for line in result.stdout.splitlines() if not line.startswith("#"))), delimiter="\t")
+    for row in rows:
+        key = tuple(int(row[name]) for name in ("discipline", "category", "parameter"))
+        if key in fields and int(row["level_type"]) == 100:
+            level = float(row["level_value"]) / 100
+            if math.isfinite(level) and level > 0:
+                fields[key].add(level)
+    levels = tuple(sorted(set.intersection(*fields.values())))
+    if not levels:
+        raise ValueError(f"{path}: no complete {source} pressure level in native inventory")
+    return levels, dict(method="native-file-inventory", file=path.name,
+        inventory_sha256=hashlib.sha256(result.stdout.encode()).hexdigest(),
+        wall_seconds=round(time.perf_counter() - started, 6))
+
+
 def gfs_live_index(cycle: datetime, *, progress=print, opener=None,
                    source: str = "gfs") -> str | None:
     """The live ``.idx`` behind one GFS/GDAS cycle, or None.
@@ -3475,6 +3517,59 @@ def gfs_available_levels(cycle: datetime, *, progress=print, opener=None,
                  f"{', '.join(transport.PRESSURE_FIELDS)}; the certified "
                  "ladder stands in")
     return transport.CERTIFIED_AVAILABLE_LEVELS_HPA
+
+
+#: The GRIB2 (discipline, category, number) of each 3-D field the selection
+#: takes on every isobaric level (``PRESSURE_FIELDS``; GDAS carries SPFH
+#: where GFS carries RH).
+_GFS_PRESSURE_PARAMETERS = {
+    "HGT": (0, 3, 5), "TMP": (0, 0, 0), "RH": (0, 1, 1), "SPFH": (0, 1, 0),
+    "UGRD": (0, 2, 2), "VGRD": (0, 2, 3),
+}
+
+
+def gfs_object_levels(path: Path, *, source: str = "gfs") -> tuple[float, ...]:
+    """The isobaric levels (hPa) one downloaded GFS/GDAS object carries for
+    every 3-D field, read from the object by the engine's Rust GRIB2
+    inventory; ``()`` when the inventory cannot be run or names none.
+
+    The object is the authority when its live ``.idx`` cannot be read: an
+    archive copy with no index (NCAR GDEX d084001) of a cycle from before
+    the 2021-03-22 12Z GFS v16 implementation carries 1-70 hPa as 1, 2, 3,
+    5, 7, 10, 20, 30, 50, 70, not v16's 15 and 40 hPa, so the certified
+    v16 ladder declared levels the file does not hold and the bridge
+    refused it ("missing required GFS field RH at 4000 Pa").
+    """
+
+    from gpuwm.bridges import find_bridge
+    from gpuwm.mapped_source import _grib2_inventory
+    from tools import download_gfs_native_subset as transport
+
+    executable = find_bridge("grib2_inventory")
+    if executable is None:
+        return ()
+    try:
+        rows = _grib2_inventory(Path(path), executable)
+    except (ValueError, RuntimeError, OSError):
+        return ()
+    names = tuple("SPFH" if source == "gdas" and name == "RH" else name
+                  for name in transport.PRESSURE_FIELDS)
+    per_field: dict[str, set[float]] = {name: set() for name in names}
+    for row in rows:
+        try:
+            if int(row["level_type"]) != 100:
+                continue
+            key = (int(row["discipline"]), int(row["category"]),
+                   int(row["parameter"]))
+            level = float(format(float(row["level_value"]) / 100.0, "g"))
+        except (KeyError, ValueError):
+            continue
+        for name in names:
+            if _GFS_PRESSURE_PARAMETERS[name] == key:
+                per_field[name].add(level)
+    if not all(per_field.values()):
+        return ()
+    return tuple(sorted(set.intersection(*per_field.values())))
 
 
 def gfs_derived_record_bar(cycle: datetime, *, progress=print,
@@ -4163,11 +4258,15 @@ def _fetch_gfs_fullfile_locked(*, cycle: datetime, hours: tuple[int, ...],
         out, force=force, source=source, cycle=cycle, area=area,
         hours=hours, mode="full-file")
     available = _recorded_published_levels(receipt)
+    # True while the ladder is the certified stand-in (no live index): the
+    # first downloaded object then names what it really carries.
+    ladder_from_object = False
     if available is None:
         index_text = gfs_live_index(cycle, progress=progress,
                                     source=source)
         available = available_levels(cycle, progress=progress,
                                      source=source, index_text=index_text)
+        ladder_from_object = index_text is None
     if all_levels:
         levels = tuple(float(level) for level in available)
         progress(f"fetch {source}: --all-levels declares the whole "
@@ -4192,12 +4291,29 @@ def _fetch_gfs_fullfile_locked(*, cycle: datetime, hours: tuple[int, ...],
     prior_entries = _prior_manifest_entries(out)
     files: list[dict] = []
     pool_summary: dict = {}
+    file_ladder_receipt = None
 
     def publish_manifest() -> Path:
+        nonlocal available, levels, source_top_pa, ladder_from_object
         # Keep a completed shared series stable while a second member checks
         # cached files. Only a fresh/interrupted fetch needs prefix receipts.
         if receipt is not None and len(files) < len(hours):
             return out / FETCH_MANIFEST_NAME
+        if ladder_from_object and files:
+            first = min(files, key=lambda item: int(item["forecast_hour"]))
+            carried = gfs_object_levels(out / first["name"], source=source)
+            if carried:
+                ladder_from_object = False
+                if tuple(carried) != tuple(available):
+                    progress(f"fetch {source}: no live index; {first['name']} "
+                             f"carries {len(carried)} isobaric levels "
+                             f"({min(carried):g}..{max(carried):g} hPa), and the "
+                             "decode ladder is resolved against them")
+                available = carried
+                levels = (tuple(float(level) for level in available) if all_levels
+                          else transport.levels_for_top(top_pressure_pa,
+                                                        available=available))
+                source_top_pa = min(levels) * 100.0
         # Relative names: gfs_grib2_bridge resolves them against the
         # TSV's own directory, so the fetched directory stays relocatable.
         series = out / f"{prefix}-series.tsv"
@@ -4264,6 +4380,8 @@ def _fetch_gfs_fullfile_locked(*, cycle: datetime, hours: tuple[int, ...],
         payload["source_top_pressure_pa"] = source_top_pa
         payload["published_pressure_levels_hpa"] = [
             float(format(float(level), "g")) for level in available]
+        if file_ladder_receipt is not None:
+            payload["pressure_ladder_basis"] = file_ladder_receipt
         if pool_summary:
             # The completed run's concurrency receipt; absent from
             # interrupted manifests, which measured no complete run.
@@ -4433,6 +4551,21 @@ def _fetch_gfs_fullfile_locked(*, cycle: datetime, hours: tuple[int, ...],
         }
 
     def admit(index: int, entry: dict) -> Path:
+        nonlocal available, levels, source_top_pa, file_ladder_receipt, receipt
+        if index == 0 and entry.get("idx_records") is None and (
+                top_pressure_pa is not None or all_levels):
+            available, file_ladder_receipt = _gfs_file_levels(out / entry["name"], source)
+            file_ladder_receipt["file_sha256"] = entry["sha256"]
+            levels = (available if all_levels else
+                      transport.levels_for_top(top_pressure_pa, available=available))
+            source_top_pa = min(levels) * 100.0
+            if receipt is not None and tuple(receipt.get(
+                    "pressure_levels_hpa", ())) != tuple(levels):
+                # A corrected declaration must reach as-posted consumers
+                # before they start decoding the first admitted lead.
+                receipt = None
+            progress(f"fetch {source}: archived file inventory declares {len(levels)} "
+                     f"complete pressure levels, source top {source_top_pa:g} Pa")
         files.append(entry)
         return publish_manifest()
 

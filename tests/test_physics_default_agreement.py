@@ -115,7 +115,12 @@ def _served(source, when):
            for era in route.publication_eras):
         return when
     era = max(route.publication_eras, key=lambda era: era.valid_from)
-    moved = (era.valid_until - timedelta(days=2)).replace(hour=when.hour)
+    if era.valid_until is None:
+        # An open era that began after the fixture's epoch (ECMWF's 0.1 degree
+        # open data, published from 2026-10-20) is read just inside its start.
+        moved = (era.valid_from + timedelta(days=2)).replace(hour=when.hour)
+    else:
+        moved = (era.valid_until - timedelta(days=2)).replace(hour=when.hour)
     return moved.replace(tzinfo=when.tzinfo)
 
 

@@ -592,14 +592,17 @@ pub fn compute(
             "gwd-band",
             "land-use band in the terrain frame",
         )?;
-        let rows = (y_hi - y_lo + 1) as usize;
-        for r in 0..rows {
-            let src = r * nx as usize;
-            for i in 0..nx {
-                let li = (i + align.dx_offset).rem_euclid(nx) as usize;
-                landuse_band[src + i as usize] = lu_band[src + li];
-            }
-        }
+        // Row by row on the pool: each row is its own slice (same bytes).
+        landuse_band
+            .par_chunks_mut(nx as usize)
+            .enumerate()
+            .for_each(|(r, dst)| {
+                let src = r * nx as usize;
+                for i in 0..nx {
+                    let li = (i + align.dx_offset).rem_euclid(nx) as usize;
+                    dst[i as usize] = lu_band[src + li];
+                }
+            });
         drop(lu_band);
         let band = Band {
             y_lo,

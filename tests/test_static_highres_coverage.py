@@ -767,3 +767,53 @@ def test_a_config_carrying_the_overlay_block_loads_on_the_prepared_route(
         experiment_from_text(
             text + block.replace("cache_root", "cache_roots"),
             source=str(out))
+
+
+# ---------------------------------------------------------------------------
+# An all-water first footprint is not a broken overlay (TC phase 1)
+# ---------------------------------------------------------------------------
+
+def _overlay_that_changes_nothing(monkeypatch, cells):
+    """Published terrain reaches every cell and changes none of them."""
+    from types import SimpleNamespace
+    from gpuwm.static import highres_production as production
+    monkeypatch.setattr(production, "_fetch_terrain",
+                        lambda *a, **k: (None, {"terrain_bytes_fetched": 1}))
+    coverage = {"fields": {"terrain": {"cells_outside_coverage": 0,
+                                       "cell_count": cells}}}
+    monkeypatch.setattr(production, "build_terrain_override",
+                        lambda grid, **k: ({}, {"coverage": coverage,
+                                                "sources": []}))
+    monkeypatch.setattr(production, "merge_terrain_override",
+                        lambda baseline, overrides: (
+                            {k: np.array(v, copy=True)
+                             for k, v in baseline.items()}, {}))
+    return SimpleNamespace(source_id="copernicus-dem-glo30",
+                           echo=lambda: "copernicus-dem-glo30",
+                           attribution="Copernicus DEM GLO-30")
+
+
+def test_all_water_footprint_takes_the_overlay_without_refusal(
+        tmp_path, monkeypatch):
+    # helene-2024092400-1km: the 1 km following nest starts over open water;
+    # the overlay refused it (zero-cells-replaced) and the case had to run
+    # on_refuse = "fallback-30s", losing 30 m terrain for the whole corridor.
+    from gpuwm.static.highres_production import HighresRefusal, _apply_terrain_only
+    grid = LambertGrid(ref_lat=26.0, ref_lon=-86.0, truelat1=30.0,
+                       truelat2=60.0, stand_lon=-86.0, dx=1000.0, dy=1000.0,
+                       e_we=17, e_sn=13)
+    coverage = _overlay_that_changes_nothing(monkeypatch, 12 * 16)
+    config = HighresStaticConfig(enabled=True, cache_root=tmp_path,
+                                 fields="terrain")
+    sea = _noah_baseline(12, 16, sea_columns=16)
+    merged, detail = _apply_terrain_only(
+        sea, grid, config=config, coverage=coverage,
+        bbox=domain_footprint(grid, HALO))
+    np.testing.assert_array_equal(merged["HGT_M"], sea["HGT_M"])
+    assert detail["cells_replaced"]["total"] == 0
+    assert detail["unchanged_reason"].startswith("all-water footprint")
+    # Land that the overlay leaves untouched is still a broken overlay.
+    with pytest.raises(HighresRefusal, match="zero-cells-replaced"):
+        _apply_terrain_only(_noah_baseline(12, 16, sea_columns=4), grid,
+                            config=config, coverage=coverage,
+                            bbox=domain_footprint(grid, HALO))

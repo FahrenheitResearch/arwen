@@ -343,7 +343,11 @@ class RankedRun(multigpu.MultiGPUDomain):
             self.smoke_ledger = RankedSmokeLedger(self)
         self.fire_names = tuple(name for name in self.names
                                if name.startswith(("fire/", "driver/fire_tendencies/")))
-        self.exchange_names = [name for name in self.names if name not in self.fire_names]
+        # diag/chem/... are output-only buffers (aliases of state carriers,
+        # or per-column products a frame evaluates on each rank over its whole
+        # window and reads interior-only), so no seam carries them.
+        self.exchange_names = [name for name in self.names if name not in self.fire_names
+                               and not name.startswith("diag/chem/")]
         self._build_channels()
         self._streams = self.compute_streams
         self.observer = None

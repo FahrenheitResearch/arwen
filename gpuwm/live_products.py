@@ -838,18 +838,35 @@ LIVE_RENDER_NICE = 10
 
 
 def _run_render(command: Sequence[str], *, width: int | None = None,
-                finishing: bool = False, **options: Any
-                ) -> subprocess.CompletedProcess:
-    """Spawn the render exactly as the early and finalize renders do."""
+                finishing: bool = False, drawing: int | None = None,
+                **options: Any) -> subprocess.CompletedProcess:
+    """Spawn the render exactly as the early and finalize renders do.
+
+    ``width`` is how many frames may draw at once (the memory share each
+    renderer's workers get, ``RUSTWX_LIVE_RENDER_SLOTS``); ``drawing`` is
+    how many are drawing as this one starts, this one included.  The
+    processors are shared among the frames drawing NOW, never the planned
+    width: split three ways while frames landed one at a time, a lone
+    live render on an eight-processor box ran on two threads and the
+    other five sat idle (2.9.5, RTX PRO 4500, 2026-10-23: the render after
+    a 6 h nest ran 9 to 12 min at about 130% CPU).  ``None`` keeps the
+    planned width, for a caller that does not count.
+    """
 
     from gpuwm.first_products import _run_render as run
 
     available = _available_cpus()
     concurrency = _render_concurrency() if width is None else width
+    sharing = concurrency if drawing is None else max(1, min(concurrency, int(drawing)))
     options["env_overrides"] = {
         "RUSTWX_LIVE_RENDER_SLOTS": str(concurrency),
+        # The renderer's product loop takes its width from this too, not from
+        # the slots: divided by three slots, a lone frame on an eight-processor
+        # box drew its products two at a time (2.25 km / 750 m HRRR nest,
+        # 2026-10-24). The slots still divide each renderer's memory.
+        "RUSTWX_LIVE_RENDER_DRAWING": str(sharing),
         "RAYON_NUM_THREADS": os.environ.get(
-            "RAYON_NUM_THREADS", str(max(1, (available - (0 if finishing else 1)) // concurrency))),
+            "RAYON_NUM_THREADS", str(max(1, (available - (0 if finishing else 1)) // sharing))),
     }
     options.setdefault("nice", 0 if finishing else LIVE_RENDER_NICE)
     return run(command, **options)
@@ -1011,13 +1028,17 @@ class LiveProducts:
 
         frame = Path(path)
         from gpuwm.product_publish import instant
+        # A quick-look frame (gpuwm.io.wrfout.quicklook_path) carries the
+        # subset only: it is drawn alone, with the quick-look maps, and is
+        # never the baseline of an hour's window products.
+        quicklook = is_quicklook_frame(frame)
         with self._cond:
             if self._closed:
                 return
             if self._web.cycle is None:
                 self._web.cycle = instant(valid_time)
-            closes = self._closes_a_window(frame)
-            context = self._closing_frames(frame)
+            closes = False if quicklook else self._closes_a_window(frame)
+            context = [] if quicklook else self._closing_frames(frame)
             if not draw:
                 return
             self._queue.append({"domain": int(domain),
@@ -1339,10 +1360,17 @@ class LiveProducts:
             # expensive pressure volumes/parcel diagnostics of the full set.
             # Explicit subsets retain their meaning; never add unasked products.
             terms = {p.strip() for p in (self.render_products or "all").split(",")}
+            plan = dict(self._plan)
+            if is_quicklook_frame(frame):
+                # The quick-look subset draws only the maps its variables
+                # make; asking it for the full set failed every frame
+                # ("produced no picture as it landed (render exited 1)").
+                plan["render_products"] = quicklook_products(self.render_products)
+                terms = set(plan["render_products"].split(","))
             priority = [p for p in PRIORITY_PRODUCTS if "all" in terms or p in terms]
             if len(priority) == len(PRIORITY_PRODUCTS) and terms != set(priority):
                 priority_done = self._run_render(render_command(
-                    {**self._plan, "render": scratch,
+                    {**plan, "render": scratch,
                      "render_products": ",".join(priority)}, [frame],
                     context_frames=baselines))
                 if self._abandoned or _render_was_stopped(priority_done.returncode):
@@ -1357,7 +1385,7 @@ class LiveProducts:
                             valid_time=valid_time, hour_closed_at=hour_closed_at,
                             render_start=render_start, render_end=utc_now(), complete=False)
             completed = self._run_render(render_command(
-                {**self._plan, "render": scratch}, [frame],
+                {**plan, "render": scratch}, [frame],
                 context_frames=baselines))
             render_end = utc_now()
             if self._abandoned:
@@ -1433,9 +1461,12 @@ class LiveProducts:
 
         kwargs = {"own_group": True} if self._own_group else {}
         with self._cond:
-            finishing = self._closed and not self._queue and self._active == 1
-        if finishing and self._runner is self._default_runner:
-            return _run_render(command, width=1, finishing=True, **kwargs)
+            drawing = self._active
+            finishing = self._closed and not self._queue and drawing == 1
+        if self._runner is self._default_runner:
+            if finishing:
+                return _run_render(command, width=1, finishing=True, **kwargs)
+            return self._runner(command, drawing=drawing, **kwargs)
         return self._runner(command, **kwargs)
 
     def _publish_frame(self, scratch: Path, render_dir: Path,
@@ -2078,6 +2109,29 @@ def published_frames(frames: Sequence[Path], plan: Mapping[str, Any]
 
 _FRAME_TIME = re.compile(
     r"_d(\d{2})_\d{4}-\d{2}-\d{2}_\d{2}[_:](\d{2})[_:](\d{2})$")
+
+
+#: The maps a quick-look frame's subset makes (gpuwm.experiment
+#: QUICKLOOK_DEFAULT_VARS: reflectivity, updraft helicity, 10 m wind, 2 m
+#: temperature and moisture, surface pressure and accumulated rain; no
+#: sea-level pressure, so no map that overlays it).
+QUICKLOOK_PRODUCTS = ("composite_reflectivity", "2m_temperature",
+                      "10m_wind_speed_and_direction", "total_qpf")
+
+
+def is_quicklook_frame(frame) -> bool:
+    """Whether ``frame`` is a quick-look subset frame (gpuwm.io.wrfout)."""
+    from gpuwm.io.wrfout import is_quicklook_frame as by_folder
+    return by_folder(frame)
+
+
+def quicklook_products(requested: str | None) -> str:
+    """The run's asked maps that a quick-look frame can make, else all of those."""
+    terms = [p.strip() for p in (requested or "all").split(",") if p.strip()]
+    if "all" in terms:
+        return ",".join(QUICKLOOK_PRODUCTS)
+    chosen = [p for p in QUICKLOOK_PRODUCTS if p in terms]
+    return ",".join(chosen or QUICKLOOK_PRODUCTS)
 
 
 def _grid_and_whole_hour(frame: Path) -> tuple[str, bool] | None:

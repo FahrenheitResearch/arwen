@@ -3003,3 +3003,24 @@ KERNEL_LOCAL_FRAME_RECORDINGS += (KernelFrameRecording(
     measured='2026-10-22', complete=False,
     frames=MappingProxyType({'fast_sbm': 28576}),
 ),)
+
+# clwrf_output_calc through the production loader; all 48 fields fused,
+# measured with fast and strict numerics, local_size_bytes=0, 2026-10-21.
+KERNEL_LOCAL_FRAME_RECORDINGS += (KernelFrameRecording(
+    box="desktop", device="NVIDIA GeForce RTX 3080",
+    compute_capability="86", nvrtc_build="13.0.48", platform_family="windows",
+    measured="2026-10-21", complete=False,
+    frames=MappingProxyType({"climate_diagnostics": 0}),
+),)
+
+# HRRR initial radar helper, production unflushed loader, fast and strict.
+# Only gsd_refl_first_time_step is launched by this unit; it reads 0 B.
+KERNEL_LOCAL_FRAME_RECORDINGS = tuple(
+    replace(row, complete=False) if "gsd_initial_reflectivity" not in row.frames else row
+    for row in KERNEL_LOCAL_FRAME_RECORDINGS)
+KERNEL_LOCAL_FRAME_RECORDINGS += (KernelFrameRecording(
+    box="desktop", device="NVIDIA GeForce RTX 3080",
+    compute_capability="86", nvrtc_build="13.0.48", platform_family="windows",
+    measured="2026-10-21", complete=False,
+    frames=MappingProxyType({"gsd_initial_reflectivity": 0}),
+),)

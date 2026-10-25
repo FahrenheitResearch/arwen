@@ -1652,6 +1652,40 @@ fn write_atomic_signal(path: &Path, lines: &[String]) -> Result<(), Box<dyn Erro
     Ok(())
 }
 
+/// Replace `path` with `bytes` so a concurrent reader sees the old file or
+/// the new one, never a prefix: a unique temp beside it, flushed and synced,
+/// then renamed over it.  Windows refuses the rename while a reader holds
+/// the target open without delete sharing (Python's `open`), so it is
+/// retried for a few seconds there; a POSIX rename never waits.
+fn replace_file_atomically(path: &Path, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+    let name = path.file_name().ok_or("atomic replace target has no file name")?;
+    let temporary = path.with_file_name(format!(
+        ".{}.replace-{}",
+        name.to_string_lossy(),
+        std::process::id()
+    ));
+    {
+        let mut file = File::create(&temporary)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+    }
+    let mut attempts = 0u32;
+    loop {
+        match fs::rename(&temporary, path) {
+            Ok(()) => return Ok(()),
+            Err(error) if cfg!(windows) && attempts < 200
+                && error.kind() == std::io::ErrorKind::PermissionDenied => {
+                attempts += 1;
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(error) => {
+                let _ = fs::remove_file(&temporary);
+                return Err(error.into());
+            }
+        }
+    }
+}
+
 fn clone_tree_for_publish(source: &Path, destination: &Path) -> Result<(), Box<dyn Error>> {
     fs::create_dir(destination)?;
     for entry in fs::read_dir(source)? {
@@ -2414,7 +2448,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         // Counters are reduced in lead order, after every decoder finished.
         // Early streaming consumers see the policy; the completed gate and
         // its sealed hash carry the final counts for all leads.
-        let mut gate = fs::OpenOptions::new().append(true).open(partial.join("gate.txt"))?;
+        //
+        // The completed gate replaces the early one whole (temp + rename),
+        // never by appending in place.  A streaming consumer re-reads
+        // gate.txt for every lead while this runs; the unbuffered append
+        // issued one write per format piece, so a reader could see
+        // "aerosol_QNWFA_" with no tab yet and refuse "malformed gate.txt
+        // line 23/25" (36-member HRRR ensemble, members 13 and 33,
+        // 2026-10-24).  A reader now sees the early gate or the final one.
+        drop(gate);
+        let gate_path = partial.join("gate.txt");
+        let mut completed = fs::read_to_string(&gate_path)?;
         let text = fs::read_to_string(partial.join("inventory.tsv"))?;
         for variable in OPTIONAL_HYBRID_NAMES {
             let mut total = gpuwm_preprocess_cpu::missing_value_chain::Counts::default();
@@ -2428,9 +2472,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             for (stage, count) in [("masked", total.masked), ("nearest_neighbor", total.nearest_neighbor),
                 ("four_pt", total.four_pt), ("average_4pt", total.average_4pt), ("zero", total.zero)] {
-                writeln!(gate, "aerosol_{variable}_{stage}\t{count}")?;
+                completed.push_str(&format!("aerosol_{variable}_{stage}\t{count}\n"));
             }
         }
+        replace_file_atomically(&gate_path, completed.as_bytes())?;
         Ok(())
     })();
     if let Err(error) = result {

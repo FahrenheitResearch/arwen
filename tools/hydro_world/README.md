@@ -55,7 +55,9 @@ the engine equivalence test.
 
 ## Licence
 
-Apache-2.0. No third-party source code; the system SQLite is linked. Data terms: Copernicus WorldDEM-90
+Apache-2.0. PROJ 9.7.1 and SQLite 3.46.1 are vendored and linked statically via
+[`hydro_proj`](../hydro_proj/README.md), with an embedded database and network off.
+Data terms: Copernicus WorldDEM-90
 licence (attribution and no-liability sentence), HydroLAKES CC BY 4.0, both recorded in every fabric's
 `fabric_metadata.data_terms`. Fabrics derived from HydroSHEDS v1 are never committed or bundled.
 
@@ -169,33 +171,48 @@ read on 2026-10-18 has SHA-256
 `c4a6c790321f87f69666b0ed28669acc5eb73c0771a9a0ee5dc9a93a4ccdbb22`
 (335,058 bytes, UTF-16). These two input terms are verified in the source table.
 
-This evidence covers the original NHDPlus dataset, including its topology and
-catchment geometry. It does not grant terms to separate NOAA parameter or
-reference-fabric products. The four ancillary selections are now also verified
-from their publishers: [USGS 3DEP seamless 1-arc-second DEM](https://pubs.usgs.gov/tm/11b9/tm11B9.pdf)
-(public domain; CONUS orthometric metres in NAVD88, matching this row),
-[SoilGrids 2.0](https://isric.org/explore/soilgrids),
-[ESA WorldCover 2021 v200](https://esa-worldcover.org/en/data-access) and
-[HydroLAKES pour points v1.0](https://www.hydrosheds.org/products/hydrolakes)
-(the latter three CC BY 4.0). Their source-page byte hashes, read date and short
-licence evidence are in the table. Preserve ISRIC/Poggio et al. (2021), ESA's
-WorldCover/Sentinel attribution and Messager et al. (2016) credit. The CONUS
-recipe is therefore a mix of federal data and attribution-licensed inputs;
-CC BY 4.0 inputs are not described as public domain.
+The native row now builds through the shared contract writer and checker:
 
-The native `admit` command now passes **source terms only** for this row. It does
-not establish valid geometry, complete domain coverage, correct parameters,
-initialized stores or a connected native phase. The CONUS build specification
-is still absent, so `build` refuses before writing a fabric. Its provider stays
-pending and has no admitted coupled realization. No new guard is introduced.
+```sh
+rw_hydro_world build --sources tools/hydro_world/data/sources.v1.json \
+  --row conus-nhdplus-v21 --bbox=-125,24,-66.5,49.5 \
+  --data-root ~/.gpuwm/hydro-world --out conus.gpkg
+```
 
-Only the HydroLAKES archive URL is an exact verified acquisition object here.
-NHDPlus region packages, 3DEP tile editions, SoilGrids property/depth/statistic
-VRTs and their referenced rasters, and WorldCover covering tiles still need exact
-object selection and byte pins. Their `url` fields remain null; publisher
-landing pages or bucket roots are not substituted for data objects. No raster,
-lake archive or source dataset was downloaded for this source-terms update.
-HydroLAKES IDs are co-registered to HydroSHEDS, not NHDPlus ComIDs; a same-network
-lake crosswalk must be proved before using its attributes in the CONUS fabric.
-The shared world-fabric writer/checker remains authoritative; this table change
-does not add a competing writer, silently repair geometry or invent parameters.
+`gpuwm go` acquires missing inputs automatically. `gpuwm.hydro.acquire` first
+fetches the table's VPU boundary archive, asks `rw_hydro_world regions` for the
+intersecting VPUs, and downloads their version-pinned flowline, catchment and
+attribute archives with 16 transfer workers and retries. Seven-zip extraction
+uses all CPU cores. Both archive bytes and extracted inputs persist under
+`GPUWM_HYDRO_WORLD_TILES` (default `~/.gpuwm/hydro-world`); no CONUS source
+variable is required. URLs, archive layouts, source columns and licence quotes
+are in `data/sources.v1.json`.
+
+The `vector-attributes` recipe joins catchments to flowlines by COMID and joins
+downstream reaches by VAA Hydroseq/DnHydroseq across VPUs. An outlet inside the
+source footprint owns its whole catchment, including islands and holes. Native
+slopes use the published elevation/slope attributes; missing values use the
+shared Copernicus DEM. HydroLAKES outlet candidates are matched by distance and
+upstream area, and the retained Hylak-to-COMID crosswalk travels in the build
+receipt. GDW reservoirs bind through those matched lakes. Reservoir elevations
+use the shared EGM2008 DEM. The auxiliary continental analysis grid fits the
+same 250-million-cell budget as the worldwide builder; native catchment and
+flowline geometry is preserved.
+
+Copernicus DEM, SoilGrids-derived geography, WorldCover, HydroLAKES and GDW keep
+their separately verified attribution/permissive terms in the table. These
+ancillaries are not described as public domain. The recipe consumes neither
+MERIT nor the NC-licensed NextGen v2.2 fabric. It reuses the worldwide parameter,
+projected-fabric, ERA5 spin-up/live-soil, reservoir and routing preparation
+pipeline and the admitted Noah, RUC and Noah-MP parent realizations. Parameters
+are the existing NWM-style priors on this native network, not a claim of
+catchment-specific NWM calibration or observed forecast skill.
+
+For a partly covered parent grid, the native provider covers its CONUS land
+catchments and leaves outside-CONUS land uncomposed. Preparation clips source
+work to the CONUS row while retaining the original parent-grid identity and
+clock. If native preparation cannot supply that network, the door tries the
+worldwide provider. This is the allowed CONUS-land coverage route; it does not
+splice the two routing networks at the national boundary. Receipts and the
+launch line state that scope explicitly. A full HRRR v4 grid's approximately
+0.809 rectangular coverage therefore no longer rejects the native row.

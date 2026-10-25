@@ -362,7 +362,14 @@ def coordinate(s, scale):
 def best_track(path, storm=None, *, start=None):
     """Normalize observed files in Rust, retaining one event identity."""
     # Reuse a saved reader result (gpuwm.tc-tracks.v1) without reinterpreting ATCF/HURDAT units.
-    text = Path(path).read_text() if Path(path).is_file() else ''
+    text = ''
+    if Path(path).is_file():
+        with Path(path).open('rb') as stream:
+            compressed = stream.read(2) == b'\x1f\x8b'
+        # The native ATCF reader already owns gzip decoding. Only probe plain
+        # text for saved JSON; decoding a compressed b-deck here aborts first.
+        if not compressed:
+            text = Path(path).read_text()
     if text.lstrip().startswith('{'):
         saved = json.loads(text)
         if saved.get('schema') == 'gpuwm.tc-tracks.v1':

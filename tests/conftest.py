@@ -1014,6 +1014,25 @@ def _chain_static_staging_kept_off_the_network(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _wif_climatology_download_kept_off_the_network(monkeypatch):
+    """Keep mp=28's automatic WIF climatology download out of this suite.
+
+    Since 2.9.7 an mp=28 preparation with no copy of
+    QNWFA_QNIFA_SIGMA_MONTHLY.dat downloads the pinned 215 MiB dataset
+    (gpuwm.ingest.wif_climatology.acquire_wif_climatology) instead of
+    falling back to the synthetic profile.  Here the download answers as an
+    offline machine does, so the refusal path is what a test without a
+    staged dataset sees.  The staging itself is tested through
+    gpuwm.table_assets.stage_wif_dataset directly.
+    """
+
+    from gpuwm.ingest import wif_climatology
+
+    monkeypatch.setattr(wif_climatology, "_download_wif_dataset",
+                        lambda root: 2)
+
+
+@pytest.fixture(autouse=True)
 def _lake_ice_analysis_kept_off_the_network(monkeypatch, tmp_path_factory):
     """Keep the GFS route's observed lake ice from downloading in this suite.
 

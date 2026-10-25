@@ -4240,6 +4240,7 @@ dependencies = [
 name = "rw-store"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "fs4",
  "memmap2",
  "rayon",

@@ -169,7 +169,11 @@ def test_the_chem_block_is_appended_after_every_older_field():
     # (lane/hrrr-v4-output: e55b68accb, bd4a1c2090, f80ac46aeb).
     later = ["seaice_threshold", "prec_acc_dt", "prec_acc_dt1",
              "gsd_diagnostics", "reset_interval1", "history_interval2_s",
-             "history_interval_change_s", "smoke_off_reason"]
+             "history_interval_change_s", "smoke_off_reason",
+             # 2.9.7, keyword-only: the HRRR v4 climate statistics
+             # (lane/hrrr-v4-clwrf) and tc/nest's fixed-frame archive.
+             "output_diagnostics", "diag_int", "wind_int",
+             "nest_accumulation_archive"]
     assert names[-len(later):] == later
     names = names[:-len(later)]
     # The 2.9.4 capabilities campaign's keyword-only keys follow the fire

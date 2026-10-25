@@ -132,6 +132,10 @@ mp_zero_out_all = 1
 hailcast_opt = 1
 # Operational GSD output with the fork's 60-minute maxima reset.
 nwp_diagnostics = 1
+# module_diag_cl climate-statistics windows (minutes).
+output_diagnostics = 1
+diag_int = 15
+wind_int = 5
 gsd_diagnostics = 1
 reset_interval1 = 60
 prec_acc_dt = 60.0
@@ -230,6 +234,19 @@ history_interval_s = 3600.0
 radt = 15.0
 cu_physics = 0
 diff_6th_factor = 0.12
+
+[output]
+# HRRR's own output shape: the 15-minute frames are a 2-D subset (its
+# wrfsubh files) and the full 3-D history is hourly.  Every frame at a whole
+# hour is the full history; the frames between are the surface state,
+# accumulators and column maxima plus REFL_10CM, about 1.3 GB instead of
+# 18.7 GB on the CONUS grid.  Full 15-minute history wrote 18.7 GB every
+# 15 model minutes, faster than the writer lands it, and the step loop
+# blocked 10-30 s per write (V61 8x RTX 5090, 2026-10-21).
+full_history_interval_s = 3600.0
+between_preset = "minimal"
+between_history_add = ["REFL_10CM", "REFD_MAX", "WSPD10MAX", "W_UP_MAX", "W_DN_MAX",
+    "UP_HELI_MAX16", "GRPL_MAX", "HAIL_MAX2D", "SR"]
 
 [fetch]
 source = "rap-native"

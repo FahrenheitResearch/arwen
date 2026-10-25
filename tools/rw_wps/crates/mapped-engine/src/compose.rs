@@ -9,7 +9,7 @@
 //! partition decode, the coordinate-subset solve, terrain composition, the
 //! bound-field borrow, the union mapping, frame materialization and the two
 //! evidence products only that work can produce.  Everything above it stays
-//! in `mapped_composition` and runs around this call —  manifest
+//! in `mapped_composition` and runs around this call â€”  manifest
 //! verification, the authority hash window, the role inventory, the
 //! contributing-mapping hash pins, the primary-versus-donor field
 //! agreement, the soil-layer contract against the donor table, and the two
@@ -21,7 +21,7 @@
 //! `load_composition` runs first and refuses first.  It is ported anyway
 //! because the engine must not proceed on a contract it has not read, and
 //! it is transcribed condition for condition so it can never refuse a
-//! composition Python accepts — a stricter engine here would refuse a
+//! composition Python accepts â€” a stricter engine here would refuse a
 //! preparation that is in fact correct.  Where Python raises `TypeError`
 //! for a non-object, the engine refuses `mapping_invalid` (`ValueError`);
 //! that divergence is reachable only by calling the exe directly with a
@@ -96,6 +96,24 @@ pub struct TerrainSupplement {
     pub time_alignment: String,
 }
 
+/// `mapped_composition._BINDING_OPTIONAL_KEYS`.
+const BINDING_OPTIONAL_KEYS: [&str; 1] = ["companion"];
+/// `mapped_composition._COMPANION_KEYS`.
+const COMPANION_KEYS: [&str; 2] = ["fields", "vertical_extension"];
+/// `mapped_composition._COMPANION_VERTICAL_EXTENSIONS`.
+pub const COMPANION_VERTICAL_EXTENSIONS: [&str; 1] = ["above_primary_top"];
+/// `mapped_composition._COMPANION_VERTICAL_KINDS`.
+const COMPANION_VERTICAL_KINDS: [&str; 1] = ["pressure"];
+
+/// A binding's `companion` declaration: the contributing source is a
+/// declared companion of the primary (same grid and cycle) whose levels
+/// above the primary's top are stacked onto the primary's own columns.
+#[derive(Debug, Clone)]
+pub struct Companion {
+    pub vertical_extension: String,
+    pub fields: Vec<String>,
+}
+
 /// One `composition.field_sources[name]` binding.
 #[derive(Debug, Clone)]
 pub struct Binding {
@@ -109,6 +127,19 @@ pub struct Binding {
     pub grid_alignment: String,
     pub time_alignment: String,
     pub vertical_merge: Option<crate::vertical::VerticalMerge>,
+    pub companion: Option<Companion>,
+}
+
+impl Binding {
+    /// Every field the donor decode must carry: the borrowed fields and
+    /// the companion's extended fields, in that order.
+    pub fn donor_fields(&self) -> Vec<String> {
+        let mut names = self.fields.clone();
+        if let Some(companion) = &self.companion {
+            names.extend(companion.fields.iter().cloned());
+        }
+        names
+    }
 }
 
 /// The composition document, validated against the mapping's own bytes.
@@ -392,11 +423,20 @@ fn validate_field_sources(
     let mut bindings: Vec<Binding> = Vec::new();
     let mut covered: BTreeMap<String, String> = BTreeMap::new();
     let mut roles: BTreeMap<String, String> = BTreeMap::new();
+    let mut companions: Vec<String> = Vec::new();
     for (binding_name, raw) in value.entries() {
         string(Some(&Node::String(binding_name.clone())), "field_sources binding name")?;
         let label = format!("composition.field_sources.{binding_name}");
-        object(raw, &label, &BINDING_KEYS, &BINDING_KEYS[..8])?;
+        let allowed: Vec<&str> = BINDING_KEYS
+            .iter()
+            .chain(BINDING_OPTIONAL_KEYS.iter())
+            .copied()
+            .collect();
+        object(raw, &label, &allowed, &BINDING_KEYS[..8])?;
         let vertical_merge = raw.get("vertical_merge").map(crate::vertical::VerticalMerge::parse).transpose()?;
+        if vertical_merge.is_some() && raw.get("companion").is_some() {
+            return Err(mapping_invalid(format!("{label}: companion and vertical_merge both rewrite the column ladder")));
+        }
         let source_id = string(raw.get("source_id"), &format!("{label}.source_id"))?.to_owned();
         let mapping_sha256 = digest(
             raw.get("mapping_sha256"),
@@ -439,9 +479,28 @@ fn validate_field_sources(
                 python_list_repr(&allowed)
             )));
         }
+        let companion = match raw.field("companion") {
+            Some(value) => {
+                let companion = validate_companion(value, mapping, &label, time_alignment)?;
+                companions.push(binding_name.clone());
+                if companions.len() > 1 {
+                    return Err(mapping_invalid(format!(
+                        "bindings {} and {} both declare a companion; two \
+                         companions extending one primary ladder would leave \
+                         the levels above its top with two sources",
+                        python_repr(&companions[0]),
+                        python_repr(binding_name)
+                    )));
+                }
+                Some(companion)
+            }
+            None => None,
+        };
+        // A declared companion may lend nothing but the levels above the
+        // primary's top; every other binding exists to lend fields.
         let raw_fields = raw.get("fields").filter(|node| node.is_array());
         let names: Vec<String> = match raw_fields {
-            Some(node) if !node.items().is_empty() => node
+            Some(node) if !node.items().is_empty() || companion.is_some() => node
                 .items()
                 .iter()
                 .map(|item| {
@@ -494,10 +553,109 @@ fn validate_field_sources(
             grid_alignment: grid_alignment.to_owned(),
             time_alignment: time_alignment.to_owned(),
             vertical_merge,
+            companion,
         });
     }
     bindings.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(bindings)
+}
+
+/// `mapped_composition._companion_vertical_fields`: the primary's own
+/// directly decoded fields that stack on its ladder, sorted.
+fn companion_vertical_fields(mapping: &Mapping) -> Result<Vec<String>> {
+    let mut names: BTreeSet<String> = BTreeSet::new();
+    for field in mapping.fields()? {
+        if field.provider() != Some("composition_bound")
+            && field.derivation().is_none()
+            && !field.selectors().is_empty()
+            && field.source_axes()?.iter().any(|axis| axis == "vertical")
+        {
+            names.insert(field.name.clone());
+        }
+    }
+    Ok(names.into_iter().collect())
+}
+
+/// `mapped_composition._validate_companion`, sentence for sentence.
+fn validate_companion(
+    value: &Node,
+    mapping: &Mapping,
+    label: &str,
+    time_alignment: &str,
+) -> Result<Companion> {
+    object(value, &format!("{label}.companion"), &COMPANION_KEYS, &COMPANION_KEYS)?;
+    let extension = value
+        .get("vertical_extension")
+        .and_then(Node::as_str)
+        .unwrap_or("");
+    if !COMPANION_VERTICAL_EXTENSIONS.contains(&extension) {
+        return Err(mapping_invalid(format!(
+            "{label}.companion.vertical_extension must be one of {}",
+            python_list_repr(&COMPANION_VERTICAL_EXTENSIONS)
+        )));
+    }
+    if time_alignment != "valid_time_exact" {
+        return Err(mapping_invalid(format!(
+            "{label} declares a companion on the {} clock; a companion \
+             extends every valid time's column with its own valid time, and \
+             a broadcast would freeze the top of a moving column, so it \
+             requires valid_time_exact",
+            python_repr(time_alignment)
+        )));
+    }
+    let kind = mapping.vertical()?.get("kind").and_then(Node::as_str);
+    if !kind.is_some_and(|kind| COMPANION_VERTICAL_KINDS.contains(&kind)) {
+        return Err(mapping_invalid(format!(
+            "{label} declares a companion over a {} ladder; only a pressure \
+             ladder says which levels lie above its top, and a hybrid ladder \
+             would need its coefficients spliced as well",
+            kind.map_or_else(|| "None".to_owned(), python_repr)
+        )));
+    }
+    let names: Vec<String> = match value.get("fields").filter(|node| node.is_array()) {
+        Some(node) if !node.items().is_empty() => node
+            .items()
+            .iter()
+            .map(|item| {
+                string(Some(item), &format!("{label}.companion.fields[]")).map(str::to_owned)
+            })
+            .collect::<Result<Vec<String>>>()?,
+        _ => {
+            return Err(mapping_invalid(format!(
+                "{label}.companion.fields must be a non-empty list"
+            )))
+        }
+    };
+    if names.iter().collect::<BTreeSet<&String>>().len() != names.len() {
+        return Err(mapping_invalid(format!(
+            "{label}.companion.fields repeats a field"
+        )));
+    }
+    let stacked = companion_vertical_fields(mapping)?;
+    for name in &names {
+        if !stacked.contains(name) {
+            return Err(mapping_invalid(format!(
+                "{label}.companion extends {}, which the primary mapping does \
+                 not decode directly on its vertical ladder; a companion \
+                 extends the primary's own columns and lends nothing else \
+                 through this declaration",
+                python_repr(name)
+            )));
+        }
+    }
+    let short: Vec<&String> = stacked.iter().filter(|name| !names.contains(name)).collect();
+    if !short.is_empty() {
+        return Err(mapping_invalid(format!(
+            "{label}.companion leaves {} on the primary's ladder alone: those \
+             fields would stop at the primary's top while the extended fields \
+             reach above it, so one frame would carry columns of two heights",
+            python_list_repr(&short)
+        )));
+    }
+    Ok(Companion {
+        vertical_extension: extension.to_owned(),
+        fields: names,
+    })
 }
 
 /// `mapped_composition._pending_composition_refusal`.
@@ -809,9 +967,16 @@ fn complete_donor_fields(mapping: &Mapping, mut collection: crate::assemble::Dec
     Ok(collection)
 }
 
+/// Preserve both borrowed surface fields and the companion's upper column.
+/// Filtering to `binding.fields` alone drops the column after decoding it.
+fn complete_binding_donor(mapping: &Mapping, collection: crate::assemble::DecodedCollection,
+                          binding: &Binding) -> Result<crate::assemble::DecodedCollection> {
+    complete_donor_fields(mapping, collection, &binding.donor_fields())
+}
+
 /// The UNION view a composed frameset materializes against: the primary
 /// mapping's own fields, plus each borrowed field's spec taken from the
-/// DONOR mapping — the decode authority for those octets.
+/// DONOR mapping â€” the decode authority for those octets.
 ///
 /// Built structurally, never through JSON text: the crate's own
 /// `Cargo.toml` records a one-ULP float parse that moved every cell of a
@@ -1045,7 +1210,7 @@ fn single_role(inventory: &BTreeMap<String, Vec<String>>, kind: &str) -> Result<
     Ok(single)
 }
 
-/// `compose`: mapping + composition + role bindings → a frameset directory
+/// `compose`: mapping + composition + role bindings â†’ a frameset directory
 /// plus the composition evidence document.
 pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> Result<Value> {
     let mapping = Mapping::load(&invocation.mapping)?;
@@ -1230,6 +1395,12 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
     let mut terrain_binding_receipt: Option<Value> = None;
     // Fields of bindings recorded as unpublished: off the composed frame.
     let mut unpublished: BTreeSet<String> = BTreeSet::new();
+    // The ladder the composed slices carry: the primary's own until a
+    // declared companion stacks its levels above the top, after which
+    // every later binding is judged against the composed ladder, exactly
+    // as `decode_composed_source` judges it against the composed decode.
+    let mut composed_ladder: Vec<f64> = stream.vertical_values().to_vec();
+    let mut extension_bytes: u64 = 0;
     for binding in &composition.bindings {
         let donor_path = &contributing[&binding.mapping_role];
         let donor = Mapping::load(donor_path)?;
@@ -1251,8 +1422,27 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
                 python_repr(donor.name()?)
             )));
         }
+        if binding.companion.is_some() {
+            // Twin of the companion check in `decode_composed_source`.
+            for aspect in ["kind", "units"] {
+                let ours = mapping.vertical()?.get(aspect).and_then(Node::as_str);
+                let theirs = donor.vertical()?.get(aspect).and_then(Node::as_str);
+                if ours != theirs {
+                    let spell = |value: Option<&str>| value.map_or_else(|| "None".to_owned(), python_repr);
+                    return Err(mapping_invalid(format!(
+                        "contributing source binding {} is a companion whose \
+                         vertical {aspect} is {} where the primary's is {}; \
+                         levels on two coordinates cannot be stacked into one \
+                         column",
+                        python_repr(&binding.name),
+                        spell(theirs),
+                        spell(ours)
+                    )));
+                }
+            }
+        }
         let donor_files = &supplements[&binding.data_role];
-        let donor_partition = partition_contributing(&donor, &binding.fields, &binding.name)?;
+        let donor_partition = partition_contributing(&donor, &binding.donor_fields(), &binding.name)?;
         let donor_collection = match crate::engine::decode_collection_or_unmatched(
             &donor_partition,
             donor_files,
@@ -1260,6 +1450,10 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
         )? {
             Ok(collection) => collection,
             Err(unmatched) => {
+                if binding.companion.is_some() {
+                    // Land fallbacks cannot supply the absent upper column.
+                    return Err(unmatched);
+                }
                 // The files publish no record at all for this binding's
                 // fields (HRRR wrfsfc before 2020-12-02 carries no VEG).
                 // When the caller gave a fallback for EVERY bound field the
@@ -1289,7 +1483,7 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
                 continue;
             }
         };
-        let mut donor_collection = complete_donor_fields(&donor_partition, donor_collection, &binding.fields)?;
+        let mut donor_collection = complete_binding_donor(&donor_partition, donor_collection, binding)?;
         crate::join::register_projected_subset(&mapping, &donor, &mut donor_collection)?;
         let (donor_collection, regrid) = if binding.grid_alignment == crate::regrid::ALIGNMENT {
             let (donor, receipt) = crate::regrid::align(donor_collection, stream.latitude(), stream.longitude())?;
@@ -1300,7 +1494,7 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
             &crate::join::PrimaryHeader {
                 latitude: stream.latitude(),
                 longitude: stream.longitude(),
-                vertical_values: stream.vertical_values(),
+                vertical_values: &composed_ladder,
                 source_cycles: &stream.summary().source_cycles,
                 direct_names: &composed_names,
             },
@@ -1314,6 +1508,10 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
             receipt.as_object_mut().unwrap().remove("latitude_index_range");
             receipt.as_object_mut().unwrap().remove("longitude_index_range");
         }
+        if let Some(ladder) = plan.composed_ladder() {
+            composed_ladder = ladder.to_vec();
+        }
+        extension_bytes = extension_bytes.saturating_add(plan.extension_bytes());
         borrowed.push((plan, donor_collection));
         composed_names.extend(binding.fields.iter().cloned());
         let provenance_path = &provenance[&binding.provenance_role];
@@ -1405,6 +1603,7 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
         }
         Ok(())
     };
+    let composition_window = decode_window.clone();
     let splice_receipts = std::sync::Mutex::new(Vec::<Value>::new());
     let compose_slice = |mut slice: crate::assemble::DecodedCollection,
                          source_key: &crate::assemble::TimeKey| {
@@ -1412,7 +1611,7 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
             crate::join::apply_terrain(plan, &mut slice, source_key)?;
         }
         for (plan, donor) in &borrowed {
-            if let Some(receipt) = crate::join::apply_bound_fields(plan, donor, &mut slice, source_key)? {
+            if let Some(receipt) = crate::join::apply_bound_fields(plan, donor, &mut slice, source_key, composition_window.as_ref())? {
                 splice_receipts.lock().unwrap().push(receipt);
             }
         }
@@ -1431,10 +1630,12 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
     // Shared-object streams remain serial but still recheck retained donor
     // memory before dispatch. A forced single lane is not an admission bypass.
     let admitted_times = if stream.times_are_independent() { source_keys.len() } else { 1 };
+    // A declared companion's levels ride every valid time on top of its
+    // decode, so they are priced with it.
     let lanes = crate::threads::lanes(
-        stream.per_time_bytes(), &stream.field_bytes(), stream.held_bytes(), admitted_times)?;
+        stream.per_time_bytes().saturating_add(extension_bytes), &stream.field_bytes(), stream.held_bytes(), admitted_times)?;
     let overlap_write = lanes == 1 && source_keys.len() > 1 && crate::threads::overlap_write(
-        stream.per_time_bytes(), &stream.field_bytes(), stream.held_bytes())?;
+        stream.per_time_bytes().saturating_add(extension_bytes), &stream.field_bytes(), stream.held_bytes())?;
     let document = if lanes > 1 {
         let first = std::sync::Mutex::new(stream.take_first());
         let stream = &stream;
@@ -1634,6 +1835,118 @@ mod tests {
         assert!(composition.bindings.is_empty());
     }
 
+    fn companion_mapping(kind: &str, extra_fields: &str) -> String {
+        format!(
+            r#"{{"schema": "rw-wps.mapping.v1", "format": "grib2", "name": "m",
+                "coordinates": {{"vertical": {{"kind": "{kind}", "units": "Pa"}}}},
+                "fields": {{"terrain_height": {TERRAIN_FIELD},
+                    "air_temperature": {{"selectors": [{{"parameter": "TMP"}}],
+                        "source_axes": ["vertical", "y", "x"],
+                        "target_axes": ["vertical", "y", "x"],
+                        "location": "mass", "units": {{"target": "K"}},
+                        "missing": {{"kind": "reject"}}}},
+                    "land_fraction": {{"provider": "composition_bound",
+                        "source_axes": ["y", "x"], "target_axes": ["y", "x"],
+                        "location": "surface", "units": {{"target": "1"}},
+                        "missing": {{"kind": "reject"}}}}{extra_fields}}}}}"#
+        )
+    }
+
+    fn companion_sources(clock: &str, extended: &str) -> String {
+        format!(
+            r#", "field_sources": {{"companion": {{
+                "source_id": "d", "mapping_role": "companion_mapping",
+                "mapping_sha256": "{zeros}", "data_role": "companion_data",
+                "provenance_role": "companion_provenance",
+                "fields": ["land_fraction"],
+                "grid_alignment": "exact_coordinate_subset",
+                "time_alignment": "{clock}",
+                "companion": {{"vertical_extension": "above_primary_top",
+                               "fields": [{extended}]}}}}}}"#,
+            zeros = "0".repeat(64)
+        )
+    }
+
+    #[test]
+    fn a_declared_companion_parses_as_composition_rows() {
+        let mapping = Mapping::load(&write("mc1.json", &companion_mapping("pressure", ""))).unwrap();
+        let path = write(
+            "cc1.json",
+            &composition_document(
+                TERRAIN_SUPPLEMENT,
+                &companion_sources("valid_time_exact", r#""air_temperature""#),
+            ),
+        );
+        let composition = Composition::load(&path, &mapping).unwrap();
+        let binding = &composition.bindings[0];
+        let companion = binding.companion.as_ref().unwrap();
+        assert_eq!(companion.fields, vec!["air_temperature".to_owned()]);
+        assert_eq!(
+            binding.donor_fields(),
+            vec!["land_fraction".to_owned(), "air_temperature".to_owned()]
+        );
+    }
+
+    #[test]
+    fn companion_refusals_are_the_python_sentences() {
+        let short = Mapping::load(&write(
+            "mc2.json",
+            &companion_mapping(
+                "pressure",
+                r#", "specific_humidity": {"selectors": [{"parameter": "SPFH"}],
+                    "source_axes": ["vertical", "y", "x"],
+                    "target_axes": ["vertical", "y", "x"],
+                    "location": "mass", "units": {"target": "kg kg-1"},
+                    "missing": {"kind": "reject"}}"#,
+            ),
+        ))
+        .unwrap();
+        let path = write(
+            "cc2.json",
+            &composition_document(
+                TERRAIN_SUPPLEMENT,
+                &companion_sources("valid_time_exact", r#""air_temperature""#),
+            ),
+        );
+        let refusal = Composition::load(&path, &short).unwrap_err();
+        assert_eq!(
+            refusal.message,
+            "composition.field_sources.companion.companion leaves \
+             ['specific_humidity'] on the primary's ladder alone: those fields \
+             would stop at the primary's top while the extended fields reach \
+             above it, so one frame would carry columns of two heights"
+        );
+
+        let hybrid =
+            Mapping::load(&write("mc3.json", &companion_mapping("hybrid_sigma_pressure", ""))).unwrap();
+        let refusal = Composition::load(&path, &hybrid).unwrap_err();
+        assert!(refusal.message.contains("only a pressure ladder"), "{refusal}");
+
+        let mapping = Mapping::load(&write("mc4.json", &companion_mapping("pressure", ""))).unwrap();
+        let path = write(
+            "cc4.json",
+            &composition_document(
+                TERRAIN_SUPPLEMENT,
+                &companion_sources("cycle_invariant_broadcast", r#""air_temperature""#),
+            ),
+        );
+        let refusal = Composition::load(&path, &mapping).unwrap_err();
+        assert!(refusal.message.contains("freeze the top of a moving column"), "{refusal}");
+
+        let path = write(
+            "cc5.json",
+            &composition_document(
+                TERRAIN_SUPPLEMENT,
+                &companion_sources("valid_time_exact", r#""air_temperature", "land_fraction""#),
+            ),
+        );
+        let refusal = Composition::load(&path, &mapping).unwrap_err();
+        assert!(
+            refusal.message.contains("does not decode directly on its vertical ladder"),
+            "{refusal}"
+        );
+    }
+
     #[test]
     fn a_composition_bound_field_with_no_contributing_source_refuses() {
         // The named breakage: the mapping declares a gap, the composition
@@ -1759,6 +2072,7 @@ mod tests {
             grid_alignment: "exact_coordinate_subset".to_owned(),
             time_alignment: "valid_time_exact".to_owned(),
             vertical_merge: None,
+            companion: None,
         };
         let donors = BTreeMap::from([("donor".to_owned(), donor)]);
         let union = union_mapping(&primary, &donors, &[binding]).unwrap();
@@ -1785,6 +2099,7 @@ mod tests {
             grid_alignment: "exact_coordinate_subset".to_owned(),
             time_alignment: "source_cycle_analysis_broadcast".to_owned(),
             vertical_merge: None,
+            companion: None,
         };
         let fallbacks = vec![(
             "vegetation_fraction".to_owned(),
@@ -1872,6 +2187,29 @@ mod tests {
             hybrid_a: Vec::new(),
             hybrid_b: Vec::new(),
         }
+    }
+
+    #[test]
+    fn donor_completion_preserves_the_companion_upper_column() {
+        let mapping = Mapping::load(&write("mc-complete.json", &companion_mapping("pressure", ""))).unwrap();
+        let path = write("cc-complete.json", &composition_document(TERRAIN_SUPPLEMENT,
+            &companion_sources("valid_time_exact", r#""air_temperature""#)));
+        let composition = Composition::load(&path, &mapping).unwrap();
+        let mut collection = member_collection(None);
+        let mut value = collection.direct.values().next().unwrap().clone();
+        collection.direct.clear();
+        value.name = "land_fraction".into();
+        value.values.fill(1.0);
+        collection.direct.insert((value.valid_time, None, value.name.clone()), value.clone());
+        value.name = "air_temperature".into();
+        value.axes = vec!["vertical".into(), "y".into(), "x".into()];
+        value.values = ndarray::ArrayD::from_elem(ndarray::IxDyn(&[1, 2, 2]), 250.0);
+        collection.direct.insert((value.valid_time, None, value.name.clone()), value);
+        let completed = complete_binding_donor(&mapping, collection, &composition.bindings[0]).unwrap();
+        assert_eq!(completed.direct.len(), 2);
+        let column = completed.direct.values().find(|v| v.name == "air_temperature").unwrap();
+        assert_eq!(column.values.shape(), &[1, 2, 2]);
+        assert!(column.values.iter().all(|v| *v == 250.0));
     }
 
     #[test]

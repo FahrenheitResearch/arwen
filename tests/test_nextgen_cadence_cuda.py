@@ -52,7 +52,12 @@ class CadenceTests(unittest.TestCase):
                 dict(stages=["route", "reservoir"], interval_seconds=routing_dt, repeat=repeat),
                 dict(stages=["history"], interval_seconds=3600, repeat=1)]
         factory = SimpleNamespace(prepare=lambda *, options, **unused: components[options["name"]])
-        with patch.dict(sys.modules, {"gpuwm._cadence_protocol": factory}):
+        # This protocol recorder tests ordering, not hydrologic allocation
+        # admission. Its shared trace has no production factory memory hook.
+        with (patch.dict(sys.modules, {"gpuwm._cadence_protocol": factory}),
+              patch('gpuwm.hydro.memory.construction_plan'),
+              patch('gpuwm.hydro.memory.admit_plan'),
+              patch('gpuwm.hydro.memory.verify_driver')):
             driver = prepare(settings=settings, state=None, physics=None,
                              device_id=cp.cuda.runtime.getDevice(), mode="standalone")
         return driver, components

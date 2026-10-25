@@ -104,6 +104,9 @@ def test_operational_namelist_imports_with_its_smoke_mapped(tmp_path):
             shared["prec_acc_dt1"]) == (1, 60.0, 15.0)
     for key in ("gsd_diagnostics", "prec_acc_dt", "prec_acc_dt1"):
         assert key not in divergences, key
+    assert (shared["output_diagnostics"], shared["diag_int"], shared["wind_int"]) == (1, 15, 5)
+    for key in ("output_diagnostics", "diag_int", "wind_int"):
+        assert key not in divergences
     # real.exe's open-water-to-ice threshold is carried, not substituted
     # (RunConfig.seaice_threshold, gpuwm/ingest/soil.py).
     assert shared["seaice_threshold"] == 271.4
@@ -123,7 +126,6 @@ def test_operational_namelist_imports_with_its_smoke_mapped(tmp_path):
                          ("logging", "stderr_logging"),
                          ("chem", "phot_opt"),
                          ("chem", "simple_dir_fdb"),
-                         ("time_control", "diag_int"),
                          ("physics", "co2tf"),
                          ("dynamics", "tke_mix6_off")):
         assert (section, key) in dropped, (section, key)

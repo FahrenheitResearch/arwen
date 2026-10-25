@@ -14,6 +14,7 @@ import binascii
 from collections.abc import Mapping, MutableMapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 import hashlib
 import json
@@ -106,10 +107,22 @@ def _return_freed_host_memory() -> None:
         _MALLOC_TRIM(0)
 
 
+#: Whether a column helper's pool hands its freed pages back when it
+#: closes.  A column-blocked initialization turns it off and trims once per
+#: block instead.  THE BREAKAGE: ``malloc_trim`` walks every arena of a
+#: process holding 150 GiB, and a blocked 1 km forcing time closes some
+#: 25 helper pools per block over 39 blocks, about a thousand trims where
+#: the whole-domain build made 25.
+_POOL_TRIM: ContextVar[bool] = ContextVar("initialization_pool_trim", default=True)
+#: Measurement only: True restores a trim at every pool close in blocks.
+_BLOCK_POOL_TRIM = False
+
+
 @contextmanager
 def _column_pool(max_workers: int):
     """Threads for one setup column helper; their freed memory is returned
-    to the operating system when the pool closes."""
+    to the operating system when the pool closes (once per block instead,
+    in a column-blocked initialization)."""
     try:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             binding = pm.current_cpu_bridge_binding()
@@ -128,7 +141,8 @@ def _column_pool(max_workers: int):
                         return getattr(executor, name)
                 yield BoundExecutor()
     finally:
-        _return_freed_host_memory()
+        if _POOL_TRIM.get():
+            _return_freed_host_memory()
 
 
 def _column_worker_count(value) -> int:
@@ -1482,6 +1496,31 @@ def _receipt_array_fingerprint(value):
             **reductions}
 
 
+def _receipt_mask_float32(mask):
+    """``np.asarray(mask, dtype=np.float32)`` for a boolean replay mask,
+    widened in slabs side by side (the same 0/1 floats).
+
+    Breakage it removes: a CPU-prepared 1 km child (678 x 534 x 50) widened
+    its 18 M-cell mask once per source level on the receipt thread, 1.4 s of
+    the receipt the start joins.
+    """
+    mask = np.asarray(mask)
+    if mask.size < _RECEIPT_HASH_MIN_CELLS or not mask.flags.c_contiguous:
+        return np.asarray(mask, dtype=np.float32)
+    out = np.empty(mask.shape, dtype=np.float32)
+    flat_in, flat_out = mask.reshape(-1), out.reshape(-1)
+    step = 1 << 21
+    from os import cpu_count
+
+    def widen(start):
+        flat_out[start:start + step] = flat_in[start:start + step]
+    with ThreadPoolExecutor(max_workers=max(1, min(16, cpu_count() or 1)),
+                            thread_name_prefix="receipt-mask") as pool:
+        for _ in pool.map(widen, range(0, flat_in.size, step)):
+            pass
+    return out
+
+
 def _receipt_nonnegative_finite(value):
     valid = getattr(value, "receipt_valid", None)
     if valid is not None:
@@ -2822,9 +2861,10 @@ _PROGNOSTIC_QV_FLOOR_WRF_REFERENCE = {
 }
 
 
-def _refuse_non_finite_prognostic_qv(qv):
+def _refuse_non_finite_prognostic_qv(qv, *, row_offset=0):
     """The garbage guard, kept: a non-finite interpolated vapour value is
-    refused naming where it is, because no floor is a remedy for it."""
+    refused naming where it is, because no floor is a remedy for it.
+    ``row_offset`` is the first domain row of a row block."""
     finite = np.isfinite(qv)
     if finite.all():
         return
@@ -2832,7 +2872,8 @@ def _refuse_non_finite_prognostic_qv(qv):
     k, j, i = (int(v) for v in bad[0])
     raise ValueError(
         "interpolated specific-humidity qv is invalid | observed: "
-        f"non_finite_cells={int(bad.shape[0])}, first at level {k} row {j} "
+        f"non_finite_cells={int(bad.shape[0])}, first at level {k} row "
+        f"{j + int(row_offset)} "
         f"column {i} value {float(qv[k, j, i])!r}, levels "
         f"{sorted({int(v) for v in bad[:, 0]})}; the vertical operator was "
         "handed a finite column, admitted against the horizontal "
@@ -2880,34 +2921,74 @@ def _floor_sh_vertical_undershoot(qv, pressure):
     negative = qv < 0.0
     if not negative.any():
         return qv, {}
-    unreached = int(np.count_nonzero(negative & ~(pressure < _WRF_QV_MIN_P_SAFE)))
     floored = np.where(negative, _WRF_QV_MIN_VALUE, qv)
+    return floored, _sh_vertical_undershoot_receipt(
+        [_sh_vertical_undershoot_stats(qv, pressure)])
+
+
+def _sh_vertical_undershoot_stats(qv, pressure, *, row_offset=0):
+    """What :func:`_floor_sh_vertical_undershoot` floors in one row block.
+
+    ``None`` when nothing in it is negative.  ``row_offset`` is the block's
+    first domain row, so blocks of one domain merge into the receipt the
+    whole domain gives (:func:`_sh_vertical_undershoot_receipt`).
+    """
+    negative = qv < 0.0
+    if not negative.any():
+        return None
     cells = np.argwhere(negative)
-    levels = sorted({int(v) for v in cells[:, 0]})
-    columns = int(np.unique(cells[:, 1:], axis=0).shape[0])
-    minimum = float(np.min(qv[negative]))
     at = np.unravel_index(
         int(np.argmin(np.where(negative, qv, np.inf))), qv.shape)
+    return {
+        "floored": int(cells.shape[0]),
+        "unreached": int(np.count_nonzero(
+            negative & ~(pressure < _WRF_QV_MIN_P_SAFE))),
+        "levels": {int(v) for v in cells[:, 0]},
+        "columns": int(np.unique(cells[:, 1:], axis=0).shape[0]),
+        "minimum": float(np.min(qv[negative])),
+        "at": (int(at[0]), int(at[1]) + int(row_offset), int(at[2])),
+        "pressure_pa": float(pressure[at]),
+    }
+
+
+def _sh_vertical_undershoot_receipt(parts):
+    """The floor receipt (and its one stderr line) for disjoint row blocks.
+
+    Counts add, levels unite, and the minimum is the first in the domain's
+    C order among equal values, which is what ``argmin`` over the whole
+    domain picks.  Empty when no block floored anything.
+    """
+    parts = [part for part in parts if part is not None]
+    if not parts:
+        return {}
+    first = min(parts, key=lambda part: (part["minimum"], part["at"]))
+    count = sum(part["floored"] for part in parts)
+    unreached = sum(part["unreached"] for part in parts)
+    columns = sum(part["columns"] for part in parts)
+    levels = sorted(set().union(*(part["levels"] for part in parts)))
+    minimum = first["minimum"]
+    at = first["at"]
+    pressure_at = first["pressure_pa"]
     receipt = {
         "policy": "use-sh-qv-vertical-undershoot-floored-to-wrf-qv-min-value",
         "wrf_reference": dict(_PROGNOSTIC_QV_FLOOR_WRF_REFERENCE),
         "qv_min_value": _WRF_QV_MIN_VALUE,
         "qv_min_p_safe": _WRF_QV_MIN_P_SAFE,
-        "floored_cells": int(cells.shape[0]),
+        "floored_cells": count,
         "floored_cells_at_or_above_qv_min_p_safe": unreached,
         "columns": columns,
         "levels": levels,
         "min_pre_floor": minimum,
         "min_pre_floor_at": {
-            "level": int(at[0]), "row": int(at[1]), "column": int(at[2]),
-            "pressure_pa": float(pressure[at])},
+            "level": at[0], "row": at[1], "column": at[2],
+            "pressure_pa": pressure_at},
     }
     print(
-        f"prognostic moisture floor: {cells.shape[0]} interpolated vapour "
+        f"prognostic moisture floor: {count} interpolated vapour "
         f"value(s) in {columns} column(s) on level(s) {levels} were taken "
         "below zero by WRF's second-order vertical operator at a sharp dry "
         f"slot (min {minimum:.6g} at level {at[0]} row {at[1]} column "
-        f"{at[2]}, {float(pressure[at]):.0f} Pa) and are floored to WRF's "
+        f"{at[2]}, {pressure_at:.0f} Pa) and are floored to WRF's "
         f"qv_min_value {_WRF_QV_MIN_VALUE:g}, the floor rh_to_mxrat1 applies "
         "on the RH lane and real.exe never applies on the use_sh_qv lane "
         "(module_initialize_real.F:1744-1758, :1831)"
@@ -2915,7 +2996,7 @@ def _floor_sh_vertical_undershoot(qv, pressure):
            f"{_WRF_QV_MIN_P_SAFE:g} Pa, where only the RH lane's "
            "unconditional floor reaches" if unreached else ""),
         file=sys.stderr)
-    return floored, receipt
+    return receipt
 
 
 def _mixing_ratio_to_relative_humidity_serial(
@@ -3105,15 +3186,30 @@ def _wrf_flag_sh_surface_specific_humidity(
         raise ValueError("SPFH and pressure must share shape (level, y, x)")
     if q2.shape != spfh.shape[1:]:
         raise ValueError("Q2 must match the SPFH horizontal grid")
+    nearest = _flag_sh_surface_level(q2, pressure, force_fallback)
+    if nearest is None:
+        return q2
+    return spfh[nearest].copy()
+
+
+def _flag_sh_surface_level(q2, pressure, force_fallback=None):
+    """The SPFH level real.exe's FLAG_SH fallback substitutes for Q2, or None.
+
+    One decision for the whole domain, read at its first horizontal point
+    (:func:`_wrf_flag_sh_surface_specific_humidity`).  A column-blocked
+    initialization makes it here once, on the whole domain's first point,
+    and hands every block the same surface, so no block reads its own
+    first column as the domain's.
+    """
     if force_fallback is not None and not isinstance(
             force_fallback, (bool, np.bool_)):
         raise TypeError("force_fallback must be boolean or None")
-    fallback = (q2[0, 0] < 1.0e-6
+    fallback = (np.float64(q2[0, 0]) < 1.0e-6
                 if force_fallback is None else bool(force_fallback))
     if not fallback:
-        return q2
-    nearest = 0 if pressure[-1, 0, 0] < pressure[0, 0, 0] else -1
-    return spfh[nearest].copy()
+        return None
+    return (0 if np.float64(pressure[-1, 0, 0]) < np.float64(pressure[0, 0, 0])
+            else -1)
 
 
 def _surface_relative_humidity(dewpoint, temperature):
@@ -3298,7 +3394,8 @@ def _integrate_moisture_vectorized_slab(
 
 
 def _integrate_moisture(qv, pressure, temperature, height, psfc, tsfc, qsfc,
-                        surface_height, *, column_workers=1):
+                        surface_height, *, column_workers=1,
+                        level_order=None, row_offset=0):
     """Column-parallel transcription of WRF ``integ_moist``.
 
     The original Python row/column loop is vectorized within each row slab.
@@ -3307,18 +3404,24 @@ def _integrate_moisture(qv, pressure, temperature, height, psfc, tsfc, qsfc,
     vertical operation order, and source-level ordering is resolved once from
     the complete domain, so the threaded result is byte-identical to the
     single-thread vectorized implementation.
+
+    ``level_order`` is that domain-wide ordering, for a caller handing in
+    one row block of the domain (``row_offset`` is the block's first row):
+    the block's own first column is not the domain's.
     """
     workers = _column_worker_count(column_workers)
     pressure = np.asarray(pressure)
     if pressure.ndim != 3:
         raise ValueError("pressure must have shape (level, y, x)")
-    order = np.argsort(-pressure[:, 0, 0])
+    order = (np.argsort(-pressure[:, 0, 0]) if level_order is None
+             else np.asarray(level_order))
     pd = np.empty(pressure.shape, dtype=pressure.dtype)
     intq = np.empty(pressure.shape[1:], dtype=pressure.dtype)
     if workers == 1 or pressure.shape[1] < 2:
         _integrate_moisture_vectorized_slab(
             qv, pressure, temperature, height, psfc, tsfc, qsfc,
-            surface_height, order=order, out_pd=pd, out_intq=intq)
+            surface_height, order=order, out_pd=pd, out_intq=intq,
+            row_offset=row_offset)
         return pd, intq, order
 
     chunks = _axis0_chunks(pressure.shape[1], workers)
@@ -3331,7 +3434,7 @@ def _integrate_moisture(qv, pressure, temperature, height, psfc, tsfc, qsfc,
                 psfc[start:stop], tsfc[start:stop], qsfc[start:stop],
                 surface_height[start:stop], order=order,
                 out_pd=pd[:, start:stop], out_intq=intq[start:stop],
-                row_offset=start)
+                row_offset=row_offset + start)
             for start, stop in chunks
         ]
         for future in futures:
@@ -3884,6 +3987,117 @@ def _wif_grid_latlon_from(grid, state):
     return None
 
 
+#: The donor fields besides its aerosol numbers that
+#: :func:`initialize_real` reads from an ``aerosol_snapshot``: its own
+#: dry-pressure coordinate.
+AEROSOL_DONOR_COORDINATE_FIELDS = ("PRES", "SPFH", "Q2", "PSFC", "T2", "TT",
+                                   "GHT", "SOURCE_OROGRAPHY")
+
+
+def aerosol_donor_snapshot(snapshot):
+    """``snapshot`` cut to the fields an aerosol donor is read for.
+
+    The aerosol numbers with their surface pseudo-levels, and the donor's
+    own dry-pressure coordinate (:data:`AEROSOL_DONOR_COORDINATE_FIELDS`);
+    :func:`initialize_real` reads nothing else from a donor.  THE BREAKAGE:
+    a preparation that takes its aerosol from the boundary analysis kept
+    that whole mapped analysis alive through the initial analysis' decode
+    and build, about 20 GiB of fields nothing would read again at 4160 x
+    2450 (pi-a4, box G).
+    """
+    import copy
+    from dataclasses import is_dataclass, replace
+    from gpuwm.ingest.analyzed_numbers import AEROSOL_NUMBER_FIELDS
+
+    keep = (*AEROSOL_DONOR_COORDINATE_FIELDS, *AEROSOL_NUMBER_FIELDS,
+            *(name + "_SFC" for name in AEROSOL_NUMBER_FIELDS))
+    fields = {name: value for name, value in snapshot.fields.items() if name in keep}
+    if is_dataclass(snapshot):
+        return replace(snapshot, fields=fields)
+    donor = copy.copy(snapshot)
+    donor.fields = fields
+    return donor
+
+
+#: How many columns one block of a CPU initialization builds at least
+#: (:func:`initialize_real`).  At 50 levels a block's float64 work arrays
+#: come to about 3.5 GiB, against about 174 GiB for a 4160 x 2450 root
+#: built whole.
+INITIALIZATION_BLOCK_COLUMNS = 1 << 18
+_INITIALIZATION_MIN_BLOCK_ROWS = 16
+#: The rows each column worker takes of one block where host memory
+#: allows it.  THE BREAKAGE: blocks of INITIALIZATION_BLOCK_COLUMNS alone
+#: gave each of 48 workers one or two rows of a 4160-wide block, so the
+#: setup columns' per-level NumPy steps ran on a few thousand elements
+#: each, the threads queued on the interpreter lock, and a boundary-only
+#: 1 km forcing time took 352 s where the whole-domain build took 145 s
+#: (pi-a4b, box J); at 16 rows per worker it took 126-130 s.
+_INITIALIZATION_MIN_ROWS_PER_WORKER = 16
+#: The share of available host memory one block's work arrays may take
+#: before the block is narrowed toward INITIALIZATION_BLOCK_COLUMNS.
+_INITIALIZATION_BLOCK_MEMORY_SHARE = 0.125
+
+
+def initialization_column_bytes(cfg, source_levels: int) -> int:
+    """Host bytes one column's float64 work arrays take while its block is built.
+
+    Measured on the 4160 x 2450 x 50 root with 50 source levels: about 174
+    GiB of work arrays over 10,192,000 columns built whole, 18 KB a column,
+    which is 23 float64 values per model or source level and per column.
+    """
+    return 8 * 23 * (int(cfg.nz) + int(source_levels) + 2)
+
+
+def _initialization_host_available():
+    """Host bytes this preparation may still take (cgroup-aware), or None."""
+    try:
+        from gpuwm.ingest.preparation_workers import host_available_bytes
+        return host_available_bytes()
+    except Exception:  # an unreadable probe sizes for speed, as before
+        return None
+
+
+def _initialization_block_rows(cfg, requested, *, eligible, workers=1,
+                               source_levels=None, available=None) -> int:
+    """Rows per column block of one initialization; ``cfg.ny`` builds whole.
+
+    ``requested`` is the caller's explicit count.  ``None`` sizes it: the
+    fastest block, :data:`_INITIALIZATION_MIN_ROWS_PER_WORKER` rows for
+    each column worker (``workers``), when its work arrays
+    (:func:`initialization_column_bytes`) fit
+    :data:`_INITIALIZATION_BLOCK_MEMORY_SHARE` of ``available`` host bytes;
+    narrower where they do not, down to :data:`INITIALIZATION_BLOCK_COLUMNS`,
+    the least host memory the blocks take.  Every count gives the same bytes.
+    Only the CPU preparation's host state is built in blocks
+    (``eligible``); asking for blocks anywhere else is refused, because the
+    card routes hold their state on the device and a perturbed start places
+    its bubbles on the whole domain.
+    """
+    ny, nx = int(cfg.ny), int(cfg.nx)
+    if requested is not None:
+        if isinstance(requested, (bool, np.bool_)) or not isinstance(
+                requested, (int, np.integer)):
+            raise TypeError("column_block_rows must be an integer")
+        if int(requested) < 1:
+            raise ValueError("column_block_rows must be positive")
+        if int(requested) < ny and not eligible:
+            raise ValueError(
+                "column_block_rows builds the CPU preparation's host state in "
+                "row blocks; this initialization holds its state on the card "
+                "or perturbs the whole domain, so it is built whole")
+        return min(int(requested), ny)
+    if not eligible:
+        return ny
+    least = max(_INITIALIZATION_MIN_BLOCK_ROWS,
+                -(-INITIALIZATION_BLOCK_COLUMNS // max(1, nx)))
+    rows = max(least, _INITIALIZATION_MIN_ROWS_PER_WORKER * max(1, int(workers)))
+    if available is not None and source_levels is not None:
+        affordable = int(_INITIALIZATION_BLOCK_MEMORY_SHARE * max(0, int(available))) // (
+            initialization_column_bytes(cfg, source_levels) * max(1, nx))
+        rows = max(least, min(rows, affordable))
+    return ny if 2 * rows > ny else rows
+
+
 @preprocess_math_call
 def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                     coord: VerticalCoord, terrain, *, source_orography=None,
@@ -3908,8 +4122,16 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                     aerosol_snapshot=None,
                     boundary_only=False,
                     landmask=None,
-                    boundary_species=()) -> RealInitResult:
+                    boundary_species=(),
+                    column_block_rows=None,
+                    receipt_joins=None) -> RealInitResult:
     """Construct a moist, discretely hydrostatic :class:`DomainState`.
+
+    ``receipt_joins``, a list, defers the hydrometeor disposition receipt's
+    join to the caller: its slot is reserved in ``hydrometeor_initialization``
+    and a zero-argument join is appended, which the caller runs before it
+    hands the result on (a child joins it after its blend, so the receipt
+    thread runs beside the blend instead of the blend waiting for it).
 
     ``analyzed_species`` optionally declares the actual analyzed mass inventory
     from source metadata. An empty tuple declares no analyzed mass fields;
@@ -3998,6 +4220,11 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     receipts, so the hydrometeor vertical disposition receipt, one operator
     replay per source level over the whole domain, is not built for it.
     The state is the same either way.
+    ``column_block_rows`` is how many rows of columns the CPU preparation
+    builds at once (:func:`_initialization_block_rows`); ``None`` sizes the
+    blocks from the domain.  Every count gives the same bytes; only the
+    host RAM the work arrays take changes.  The card and bounded routes,
+    and a perturbed start, build the whole domain at once.
     """
     # The CPU implementation remains the reference. Device twins share only
     # this orchestration; no host helper is substituted on the CPU route.
@@ -4093,10 +4320,12 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     timing_start = timing_last = perf_counter()
 
     def mark_timing(name):
+        # A column-blocked initialization passes each stage once per block;
+        # the report keeps one total per stage.
         nonlocal timing_last
         now = perf_counter()
         if timing_report is not None:
-            timing_report[name] = now - timing_last
+            timing_report[name] = timing_report.get(name, 0.0) + (now - timing_last)
         timing_last = now
 
     if not isinstance(sfcp_to_sfcp, (bool, np.bool_)):
@@ -4306,9 +4535,33 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         host_required.update({"PRES", "SPFH", "Q2"})
     else:
         host_required.update({"RH", surface_rh_name})
+    # COLUMN BLOCKS.  Every step from the source moisture to the specific
+    # volume is column-local (the winds' v staggering reads one row below,
+    # which each block carries as a halo row), so the CPU preparation builds
+    # them one block of rows at a time and keeps only the finished fields
+    # whole.  THE BREAKAGE: built whole, a 4160 x 2450 x 50 root held about
+    # 174 GiB of float64 work arrays in this function at once (the 1 km
+    # CONUS preparation, pi-a4 on box G), so every 1 km preparation needed
+    # 115-245 GB of host RAM and two of them were SIGKILLed together by a
+    # container's memory limit.  Blocks give the same bytes: the
+    # domain-wide decisions (source level order, the FLAG_SH surface
+    # fallback, the analytic base state) are made once on the whole domain,
+    # and every receipt is taken on the assembled whole arrays.
+    block_rows = _initialization_block_rows(
+        cfg, column_block_rows, eligible=(
+            route_name == "cpu" and not bounded_cuda and not device_route
+            and state_route in ("cpu", "preprocess")
+            and initial_perturbation is None and scratch_arena is None
+            and dycore_state_workspace is None), workers=column_workers,
+        source_levels=snapshot.levels_hpa.size,
+        available=(None if column_block_rows is not None or route_name != "cpu"
+                   else _initialization_host_available()))
+    blocked = block_rows < cfg.ny
     fields = {
         name: (_setup(snapshot.fields[name])
-               if name in host_required else snapshot.fields[name])
+               if name in host_required
+               and not (blocked and np.ndim(snapshot.fields[name]) == 3)
+               else snapshot.fields[name])
         for name in required
     }
     # The source's vertical velocity, when the join packed one: geometric
@@ -4354,134 +4607,16 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         raise ValueError("U10 does not have WRF u staggering")
     if fields["V10"].shape != (cfg.ny + 1, cfg.nx):
         raise ValueError("V10 does not have WRF v staggering")
-
-    if has_specific_humidity:
-        pressure = fields["PRES"]
-        if (not np.isfinite(pressure).all() or np.any(pressure <= 0.0)):
-            raise ValueError("PRES must be finite and positive")
-        surface_specific = _ops._wrf_flag_sh_surface_specific_humidity(
-            fields["Q2"], fields["SPFH"], pressure,
-            force_fallback=flag_sh_surface_fallback)
-        # The WPS undershoot envelope is ADMITTED here, exactly as WRF
-        # admits it, and it stays admitted through sfcprs2, integ_moist
-        # and the vertical-interpolation pseudo-level, because those are
-        # the uses real.exe is DEFINED for and it hands them the raw
-        # value.  Only the value this function PUBLISHES as Q2 is floored,
-        # and that happens once at the result, below.
-        surface_qv = _ops._specific_humidity_to_mixing_ratio(
-            surface_specific, allow_wps_undershoot=True,
-            column_workers=column_workers)
-        # The same envelope on both use_sh_qv lanes, because the SAME
-        # operator makes the undershoot whether or not the source claims
-        # specific-humidity authority.  The surface conversion above keeps
-        # the WPS gate constant instead: its operand is bilinear-mapped
-        # Q2, which carries no negative weights and cannot undershoot, so
-        # there is no envelope of its own to record.  This used to be
-        # `not use_sh_qv`, which refused the direct-qv lane any horizontal
-        # undershoot at all -- and the undershoot is ours:
-        # `fields["SPFH"]` is already mapped onto the model grid by WPS's
-        # overshooting sixteen_pt.  Whether a window met one was a
-        # question of how much ground it covered, so an ERA5 window sized
-        # for a 16 GiB card refused in initialization while the same
-        # centre sized for an 8 GiB card ran.  Everything below zero is
-        # floored at WRF's own qv_min before it is published, by
-        # _floor_sh_vertical_undershoot and
-        # _floor_flag_sh_surface_mixing_ratio.
-        source_qv = _ops._specific_humidity_to_mixing_ratio(
-            fields["SPFH"], allow_wps_undershoot=True,
-            undershoot_floor=getattr(
-                snapshot, "specific_humidity_undershoot_floor", None),
-            column_workers=column_workers)
-    else:
-        pressure = np.broadcast_to(
-            np.asarray(snapshot.levels_hpa)[:, None, None] * 100.0, mass_shape).copy()
-        if surface_rh_name == "D2":
-            surface_qv = _ops._saturation_mixing_ratio(
-                fields["D2"], fields["PSFC"], 100.0,
-                column_workers=column_workers)
-        else:
-            surface_qv = _ops._saturation_mixing_ratio(
-                fields["T2"], fields["PSFC"], fields["RH2"],
-                column_workers=column_workers)
-        source_qv = _ops._cap_stratospheric_qv(
-            _ops._saturation_mixing_ratio(
-                fields["TT"], pressure, fields["RH"],
-                column_workers=column_workers),
-            pressure, column_workers=column_workers)
+    block_chunks = (_axis0_chunks(cfg.ny, -(-cfg.ny // block_rows))
+                    if blocked else ((0, cfg.ny),))
+    if has_specific_humidity and blocked:
+        # The whole-domain check each block build below makes on its rows.
+        for row_start, row_stop in block_chunks:
+            part = fields["PRES"][:, row_start:row_stop]
+            if not np.isfinite(part).all() or np.any(part <= 0.0):
+                raise ValueError("PRES must be finite and positive")
     if source_orography is None:
         raise ValueError("source_orography is required for the analyzed surface and column moisture")
-    if sfcp_to_sfcp:
-        with pm.worker_limit(column_workers):
-            surface_pressure = _ops.surface_pressure_from_surface(
-                fields["PSFC"], source_orography, terrain, fields["T2"],
-                surface_qv)
-    else:
-        from gpuwm.ingest.cpu_backend import CpuPreprocessBackend
-        surface_pressure = _setup(CpuPreprocessBackend().surface_pressure_from_sea_level(
-            pressure, fields["GHT"], terrain, fields["PMSL"], workers=column_workers))
-    # WRF integrates moisture on the ORIGINAL met surface (integ_moist is
-    # called with p_gc whose level 1 is the met PSFC on SOILHGT,
-    # module_initialize_real.F:1457/7022); only p_dts (:1482) pairs the
-    # sfcprs2-adjusted psfc with the resulting intq for the dry mass.
-    source_pd, intq, order = _ops._integrate_moisture(
-        source_qv, pressure, fields["TT"], fields["GHT"], fields["PSFC"],
-        fields["T2"], surface_qv,
-        _setup(source_orography) if source_orography is not None else terrain,
-        column_workers=column_workers)
-    pressure = _ops._ordered_levels(pressure, order)
-    source_temperature = _ops._ordered_levels(fields["TT"], order)
-    source_qv = _ops._ordered_levels(source_qv, order)
-    if use_sh_qv:
-        source_rh = None
-    elif has_specific_humidity:
-        # module_initialize_real.F:1138-1167: FLAG_SH first converts the
-        # horizontally mapped SPECHUMD to qv_gc, then overwrites rh_gc at the
-        # same target points.  Deriving RH on the HRRR source grid and mapping
-        # it separately is not equivalent because both transforms are
-        # nonlinear.  Negative WPS SPFH undershoots produce negative RH here;
-        # rh_to_mxrat1 clips that RH to zero only after vertical interpolation.
-        source_rh = _ops._mixing_ratio_to_relative_humidity(
-            source_temperature, pressure, source_qv,
-            allow_wps_undershoot=True,
-            column_workers=column_workers)
-    else:
-        source_rh = _ops._ordered_levels(fields["RH"], order)
-    # WRF's vert-interp source column carries the surface pseudo-level at
-    # the met-source dry surface pressure pd_gc(:,1,:) = p_gc(:,1,:) - intq
-    # (integ_moist:7130), i.e. the ORIGINAL met PSFC minus the vapor column.
-    surface_pd = fields["PSFC"] - intq
-    if use_sh_qv:
-        surface_rh = None
-    elif has_specific_humidity:
-        surface_rh = _ops._mixing_ratio_to_relative_humidity(
-            fields["T2"], fields["PSFC"], surface_qv,
-            allow_wps_undershoot=True,
-            column_workers=column_workers)
-    elif surface_rh_name == "D2":
-        with pm.worker_limit(column_workers):
-            surface_rh = _ops._surface_relative_humidity(fields["D2"], fields["T2"])
-    else:
-        surface_rh = fields["RH2"].copy()
-    dry_mass = surface_pressure - intq - float(p_top)
-    if np.any(dry_mass <= 0.0):
-        raise ValueError("non-positive dry column mass")
-    if device_route:
-        dry_pressure = _ops.dry_pressure_ladder(dry_mass, coord.c3h, coord.c4h, p_top)
-        dry_pressure_full = _ops.dry_pressure_ladder(dry_mass, coord.c3f, coord.c4f, p_top)
-    else:
-        dry_pressure = (coord.c3h[:, None, None] * dry_mass[None]
-                        + coord.c4h[:, None, None] + float(p_top))
-        dry_pressure_full = (coord.c3f[:, None, None] * dry_mass[None]
-                             + coord.c4f[:, None, None] + float(p_top))
-    if (not np.all(np.diff(dry_pressure, axis=0) < 0.0)
-            or not np.all(np.diff(dry_pressure_full, axis=0) < 0.0)):
-        raise ValueError(hybrid_column_ordering_refusal(
-            coord, float(p_top), _host(dry_mass + float(p_top)),
-            quantity="target dry pressure")
-            or "target dry pressure is not monotonic")
-    if release_completed_host:
-        del dry_pressure_full
-    mark_timing("source_moisture_and_dry_mass")
 
     # Backend-selected FP32 vertical interpolation, after the float64
     # pressure/mass setup.
@@ -4510,167 +4645,664 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         raise ValueError(
             "state_backend must be 'cuda', 'cpu', or 'preprocess'")
     plan_float32 = _ops.float32 if device_route else preprocess.float32
-    order_backend = backend_xp.asarray(order, dtype=backend_xp.int32)
 
-    def backend_ordered_levels(value):
-        value = plan_float32(value)
-        if backend_xp is host_numpy and value.ndim == 3 and value.size >= _RECEIPT_HASH_MIN_CELLS:
-            # The same take, one source level per copy, side by side: on the
-            # host roads a CONUS volume per field was one 4.6 s single-core
-            # np.take (bounded CUDA road, a 5090 host, 2026-10-21).
-            out = host_numpy.empty((len(order), *value.shape[1:]), dtype=value.dtype)
-            def copy(level):
-                out[level] = value[int(order[level])]
-            from os import cpu_count
-            with ThreadPoolExecutor(max_workers=max(1, min(16, cpu_count() or 1)),
-                                    thread_name_prefix="ordered-levels") as pool:
-                list(pool.map(copy, range(len(order))))
-            return out
-        return backend_xp.take(value, order_backend, axis=0)
+    def every_block_valid(value, check):
+        """``check`` holds on ``value`` one row block at a time."""
+        if not blocked:
+            return check(value)
+        return all(check(value[..., row_start:row_stop, :])
+                   for row_start, row_stop in block_chunks)
 
-    mass_source_pd_f32 = plan_float32(source_pd)
-    mass_surface_pd_f32 = plan_float32(surface_pd)
-    mass_target_pd_f32 = plan_float32(dry_pressure)
-    mass_vertical_plan = preprocess.prepare_wrf_vertical(
-        mass_source_pd_f32, mass_surface_pd_f32, mass_target_pd_f32)
-    temperature = mass_vertical_plan.apply(
-        plan_float32(source_temperature),
-        plan_float32(fields["T2"]),
-        interp_in_logp=True, extrap="temperature")
-    if use_sh_qv:
-        qv = mass_vertical_plan.apply(
-            plan_float32(source_qv),
-            plan_float32(surface_qv),
-            interp_in_logp=True, extrap="constant")
-        rh = None
-    else:
-        rh = mass_vertical_plan.apply(
-            plan_float32(source_rh),
-            plan_float32(surface_rh),
-            interp_in_logp=True, extrap="constant")
-        qv = None
-    total_pressure = mass_vertical_plan.apply(
-        plan_float32(pressure),
-        plan_float32(fields["PSFC"]),
-        interp_in_logp=False, extrap="temperature")
-    # The source's vertical velocity rides the same mass-level plan as
-    # pressure (linear in p); below the source's lowest level it holds
-    # that level's value, and the surface pseudo-level is zero, the
-    # kinematic ground value, so nothing is invented beneath the source.
-    source_w_target = None
-    if vertical_velocity_source is not None:
-        source_w_target = mass_vertical_plan.apply(
-            backend_ordered_levels(fields[vertical_velocity_source]),
-            plan_float32(np.zeros((cfg.ny, cfg.nx), dtype=np.float32)),
-            interp_in_logp=False, extrap="constant")
-    temperature_h = (_setup(temperature).astype(np.float64) if device_route
-                     else _host_owned_float64(temperature))
-    rh_h = (None if rh is None else
-            _setup(rh).astype(np.float64) if device_route else
-            _host_owned_float64(rh))
-    total_pressure_h = (_setup(total_pressure).astype(np.float64) if device_route
-                        else _host_owned_float64(total_pressure))
-    # NOT clamped to the target dry pressure.  This line used to read
-    # ``np.maximum(total_pressure_h, dry_pressure)``; real.exe has no such
-    # step.  WRF interpolates p_gc onto pd_gc with var_type 'T' and
-    # t_extrap_type=2 (module_initialize_real.F:1795-1807) and hands the
-    # RESULT straight to rh_to_mxrat1 (:1827) and t_to_theta (:1850-1853)
-    # -- there is no MAX, no floor and no comparison against grid%pb
-    # anywhere between the vert_interp call and those two uses.  The clamp
-    # mattered because theta is formed HERE, once, and never recomputed:
-    # the two-pass moist rebalance below replaces total_pressure_h but
-    # leaves theta_h standing, so a pressure raised at this line is baked
-    # into the initial state permanently.  It fired exactly where the
-    # target column's lowest eta levels fall BELOW the source column's
-    # surface pseudo-level, which is the below-surface extrapolation
-    # branch, and in that branch WRF's own CRC formula deliberately
-    # returns a pressure lower than the target dry pressure.  Measured
-    # against the real.exe that read the same forcing, on the 2021-12-30
-    # 3 km case, the clamp displaced theta by up to 3.56 K over 3229
-    # columns; the oracle that measured it is
-    # gpuwm/verify/metem_differential.py, graded by
-    # tests/test_metem_differential.py.  (The upstream file token for
-    # that forcing is deliberately not spelled here: tests/test_runtime.py
-    # ::test_generic_ingest_and_runtime_have_no_metgrid-output_reader asserts
-    # nothing under gpuwm/ingest names it, and a comment that did would
-    # retire that instrument.)
-    if (not np.isfinite(total_pressure_h).all()
-            or np.any(total_pressure_h <= 0.0)):
-        raise ValueError(
-            "interpolated total pressure is non-finite or non-positive: "
-            "the vertical interpolation of p_gc produced a value no "
-            "thermodynamic conversion can use.  This is a defect in the "
-            "forcing column, not a value to be clamped away")
-    theta_h = _ops._potential_temperature_from_temperature(
-        temperature_h, total_pressure_h,
-        column_workers=column_workers)
-    prognostic_qv_floor: dict[str, object] = {}
-    if use_sh_qv:
-        qv_h = _setup(qv).astype(np.float64)
-        _ops._refuse_non_finite_prognostic_qv(qv_h)
-        # What reaches the plan was admitted against the horizontal
-        # operator's own undershoot envelope for the source it mapped, so
-        # a negative here is a polynomial's own: this vertical one's at a
-        # sharp dry slot, or the horizontal one's carried into it, within
-        # that envelope.  WRF's qv_min floor, the one the RH lane gets
-        # from rh_to_mxrat1, is applied here and receipted
-        # (_PROGNOSTIC_QV_FLOOR_WRF_REFERENCE).
-        qv_h, prognostic_qv_floor = _ops._floor_sh_vertical_undershoot(
-            qv_h, total_pressure_h)
-    else:
-        qv_h = _ops._cap_stratospheric_qv(
-            _ops._saturation_mixing_ratio(
-                temperature_h, total_pressure_h, rh_h,
-                column_workers=column_workers),
-            total_pressure_h, column_workers=column_workers)
-    mark_timing("thermodynamic_vertical_interpolation")
-    # The carried vertical velocity on the target mass levels, in m s-1,
-    # converted from omega with this column's own interpolated T, qv and
-    # p (vertical_velocity_from_omega) or taken as published (WW).  Held
-    # as one FP32 field until the state's W interfaces are formed below;
-    # the receipt it fills is the one hydrometeor_initialization carries.
-    w_mass_h = None
-    vertical_velocity_initialization = dict(WRF_REAL_VERTICAL_VELOCITY_POLICY)
-    if source_w_target is not None:
-        carried_w = (_setup(source_w_target).astype(np.float64) if device_route
-                     else _host_owned_float64(source_w_target))
-        if vertical_velocity_source == "OMEGA":
-            carried_w = vertical_velocity_from_omega(
-                carried_w, temperature_h, qv_h, total_pressure_h, xp=np)
-        if not bool(np.isfinite(carried_w).all()):
-            raise ValueError(
-                f"the source vertical velocity ({vertical_velocity_source}) "
-                "interpolated to a non-finite value: a defect in the forcing "
-                "column, not a value to be clamped away")
-        w_mass_h = carried_w.astype(np.float32)
-        del carried_w, source_w_target
-        if release_completed_host:
-            del fields[vertical_velocity_source]
-    mark_timing("vertical_velocity_conversion")
-    if release_completed_host:
-        # Their final consumers have finished. Retaining widened source
-        # fields beside the finished host state needlessly doubled host RAM.
-        del source_temperature, source_qv, source_rh, pressure
-        del temperature, rh, total_pressure, qv
-        for name in ("TT", "GHT", "PRES", "SPFH", "RH"):
-            if name in fields:
-                fields[name] = snapshot.fields[name]
-
-    # WRF interpolates the analyzed hydrometeors BEFORE the moist
-    # pressure recurrence -- the vert_interp calls for QR/QC/QI/QS/QG/QH
-    # are at module_initialize_real.F:1862-1982 and the recurrence at
-    # :3908 -- because that recurrence loads TOTAL water (:3913-3916),
-    # not vapour.  The order is essential, not cosmetic.
-    hydrometeors = {}
-    hydrometeor_initialization: dict[str, object] = {}
-    vertical_disposition_job = None
+    # The analyzed inventory's whole-domain refusals, made once before any
+    # column is built (a block sees only its own rows).
+    retained_names = ()
+    moist_package = None
     if decoded_species:
-        # WRF's Q interpolation uses the metgrid surface pseudo-level.
-        # Native HRRR has no supplied surface analysis and retains zero.
-        # vboundb above the target keeps the shared kernel linear throughout.
-        zero_surface = backend_xp.zeros(
-            (cfg.ny, cfg.nx), dtype=backend_xp.float32)
+        invalid_source = []
+        for name in decoded_species:
+            if not every_block_valid(fields[name], lambda part: (
+                    bool(backend_xp.isfinite(plan_float32(part)).all())
+                    and not bool((plan_float32(part) < 0.0).any()))):
+                invalid_source.append(name)
+            if name in supplied_mass_surfaces:
+                surface = plan_float32(fields[name+"_SFC"])
+                if not bool(backend_xp.isfinite(surface).all()) or bool((surface < 0).any()):
+                    invalid_source.append(name+"_SFC")
+        if invalid_source:
+            raise ValueError(
+                "mapped HRRR hydrometeor forcing is non-finite or negative: "
+                f"{invalid_source}")
+        # Retention is READ from the Registry-package mapping, never decided
+        # here: the membership test above and the species this loop writes
+        # have to be answers to the same question, and an if-ladder is how
+        # they stop being.  The lookup cannot miss -- the mapping's keys ARE
+        # HRRR_ANALYZED_HYDROMETEOR_MP_PHYSICS, pinned by
+        # test_the_analyzed_inventory_tuple_and_its_moist_packages_agree.
+        moist_package = ({"registry_citation": "Registry/Registry.EM_COMMON:3014",
+                          "retained": ()}
+                         if analyzed_species is not None and cfg.mp_physics == 0
+                         else HRRR_ANALYZED_HYDROMETEOR_MOIST_PACKAGE[int(cfg.mp_physics)])
+        retained_names = tuple(name for name in moist_package["retained"] if name in decoded_species)
+        if "QH" in decoded_species:
+            from gpuwm.core.nest_fields import nest_field_kinds
+            if "qh" in nest_field_kinds(cfg):
+                retained_names += ("QH",)
+    required_donor = ()
+    if decoded_numbers and donor_numbers:
+        # Aerosols retain their donor's own dry-pressure coordinate.
+        # Pairing donor numbers with the initial meteorology's PRES
+        # silently shifts every layer when their hybrid ladders differ.
+        required_donor = (*AEROSOL_DONOR_COORDINATE_FIELDS, *donor_numbers,
+                          *(name + "_SFC" for name in donor_numbers))
+        missing = sorted(set(required_donor) - set(aerosol_snapshot.fields))
+        if missing:
+            raise ValueError(f"aerosol donor dry-pressure coordinate is missing {missing}")
+        donor_shape = (len(aerosol_snapshot.levels_hpa), cfg.ny, cfg.nx)
+        for name in ("PRES", "SPFH", "TT", "GHT", *donor_numbers):
+            if aerosol_snapshot.fields[name].shape != donor_shape:
+                raise ValueError(f"aerosol donor {name} must match its own levels and the target mass grid")
+        for name in ("PSFC", "Q2", "T2", "SOURCE_OROGRAPHY",
+                     *(name + "_SFC" for name in donor_numbers)):
+            if aerosol_snapshot.fields[name].shape != (cfg.ny, cfg.nx):
+                raise ValueError(f"aerosol donor {name} must match the target mass grid")
+    if decoded_numbers:
+        for name in decoded_numbers:
+            number_fields = (aerosol_snapshot.fields if name in donor_numbers
+                             else fields)
+            if any(not every_block_valid(value, lambda part: (
+                    bool(backend_xp.isfinite(plan_float32(part)).all())
+                    and not bool((plan_float32(part) < 0).any())))
+                   for value in (number_fields[name], number_fields[name+"_SFC"])):
+                raise ValueError(f"analyzed number field {name} is non-finite or negative")
 
+    # THE DOMAIN-WIDE DECISIONS a row block cannot make from its own rows:
+    # the source level order and the FLAG_SH surface fallback are read at
+    # the domain's first column (integ_moist, sfcprs3, real.exe's FLAG_SH
+    # test), and the analytic base state is built once and sliced.
+    level_order = sea_level_order = donor_level_order = None
+    surface_specific_whole = donor_surface_specific_whole = None
+    host_base_whole = None
+    if blocked:
+        if has_specific_humidity:
+            first_column = _host(fields["PRES"][:, 0:1, 0:1])
+            surface_level = _flag_sh_surface_level(
+                fields["Q2"], first_column, flag_sh_surface_fallback)
+            surface_specific_whole = (
+                np.asarray(fields["Q2"], dtype=np.float64) if surface_level is None
+                else _host(fields["SPFH"][surface_level]).copy())
+        else:
+            first_column = np.broadcast_to(
+                np.asarray(snapshot.levels_hpa)[:, None, None] * 100.0,
+                (nsource, 1, 1)).copy()
+        level_order = np.argsort(-np.asarray(first_column)[:, 0, 0])
+        sea_level_order = np.argsort(
+            -np.asarray(first_column, dtype=np.float64)[:, 0, 0])
+        if required_donor:
+            donor_first = _host(aerosol_snapshot.fields["PRES"][:, 0:1, 0:1])
+            donor_level = _flag_sh_surface_level(
+                _host(aerosol_snapshot.fields["Q2"][0:1, 0:1]), donor_first)
+            donor_surface_specific_whole = (
+                _host(aerosol_snapshot.fields["Q2"]) if donor_level is None
+                else _host(aerosol_snapshot.fields["SPFH"][donor_level]).copy())
+            donor_level_order = np.argsort(-donor_first[:, 0, 0])
+        host_base_whole = _make_real_base(
+            coord, _host(terrain), float(p_top), cfg.base_temp,
+            hypsometric_opt=cfg.hypsometric_opt,
+            column_workers=column_workers)
+
+    def initialize_columns(start, stop, owned_start=0, owned_stop=None):
+        """Every column-local field of rows ``start:stop`` (all rows, whole).
+
+        Unblocked, this is the initialization's own column phase on the
+        whole domain.  Blocked, the block owns rows ``owned_start:stop`` and
+        ``start`` may sit one row above them: the halo row the v-point
+        pressures average with.
+        """
+        def rows(value, staggered_v=False):
+            if not blocked or value is None:
+                return value
+            return value[..., start:stop + (1 if staggered_v else 0), :]
+
+        fields_b = {}
+        for name, value in fields.items():
+            part = rows(value, staggered_v=name in ("VV", "V10"))
+            if blocked and name in host_required and np.ndim(value) == 3:
+                part = _setup(part)
+            fields_b[name] = part
+        terrain_b = rows(terrain)
+        orography_b = rows(source_orography)
+        block_shape = (stop - start, cfg.nx) if blocked else (cfg.ny, cfg.nx)
+        offsets = {"level_order": level_order, "row_offset": start} if blocked else {}
+        out = {}
+
+        if has_specific_humidity:
+            pressure = fields_b["PRES"]
+            if not blocked and (
+                    not np.isfinite(pressure).all() or np.any(pressure <= 0.0)):
+                raise ValueError("PRES must be finite and positive")
+            surface_specific = (rows(surface_specific_whole) if blocked else
+                                _ops._wrf_flag_sh_surface_specific_humidity(
+                                    fields_b["Q2"], fields_b["SPFH"], pressure,
+                                    force_fallback=flag_sh_surface_fallback))
+            # The WPS undershoot envelope is ADMITTED here, exactly as WRF
+            # admits it, and it stays admitted through sfcprs2, integ_moist
+            # and the vertical-interpolation pseudo-level, because those are
+            # the uses real.exe is DEFINED for and it hands them the raw
+            # value.  Only the value this function PUBLISHES as Q2 is floored,
+            # and that happens once at the result, below.
+            surface_qv = _ops._specific_humidity_to_mixing_ratio(
+                surface_specific, allow_wps_undershoot=True,
+                column_workers=column_workers)
+            # The same envelope on both use_sh_qv lanes, because the SAME
+            # operator makes the undershoot whether or not the source claims
+            # specific-humidity authority.  The surface conversion above keeps
+            # the WPS gate constant instead: its operand is bilinear-mapped
+            # Q2, which carries no negative weights and cannot undershoot, so
+            # there is no envelope of its own to record.  This used to be
+            # `not use_sh_qv`, which refused the direct-qv lane any horizontal
+            # undershoot at all -- and the undershoot is ours:
+            # `fields["SPFH"]` is already mapped onto the model grid by WPS's
+            # overshooting sixteen_pt.  Whether a window met one was a
+            # question of how much ground it covered, so an ERA5 window sized
+            # for a 16 GiB card refused in initialization while the same
+            # centre sized for an 8 GiB card ran.  Everything below zero is
+            # floored at WRF's own qv_min before it is published, by
+            # _floor_sh_vertical_undershoot and
+            # _floor_flag_sh_surface_mixing_ratio.
+            source_qv = _ops._specific_humidity_to_mixing_ratio(
+                fields_b["SPFH"], allow_wps_undershoot=True,
+                undershoot_floor=getattr(
+                    snapshot, "specific_humidity_undershoot_floor", None),
+                column_workers=column_workers)
+        else:
+            pressure = np.broadcast_to(
+                np.asarray(snapshot.levels_hpa)[:, None, None] * 100.0,
+                (nsource,) + block_shape).copy()
+            if surface_rh_name == "D2":
+                surface_qv = _ops._saturation_mixing_ratio(
+                    fields_b["D2"], fields_b["PSFC"], 100.0,
+                    column_workers=column_workers)
+            else:
+                surface_qv = _ops._saturation_mixing_ratio(
+                    fields_b["T2"], fields_b["PSFC"], fields_b["RH2"],
+                    column_workers=column_workers)
+            source_qv = _ops._cap_stratospheric_qv(
+                _ops._saturation_mixing_ratio(
+                    fields_b["TT"], pressure, fields_b["RH"],
+                    column_workers=column_workers),
+                pressure, column_workers=column_workers)
+        if sfcp_to_sfcp:
+            with pm.worker_limit(column_workers):
+                surface_pressure = _ops.surface_pressure_from_surface(
+                    fields_b["PSFC"], orography_b, terrain_b, fields_b["T2"],
+                    surface_qv)
+        else:
+            from gpuwm.ingest.cpu_backend import CpuPreprocessBackend
+            surface_pressure = _setup(CpuPreprocessBackend().surface_pressure_from_sea_level(
+                pressure, fields_b["GHT"], terrain_b, fields_b["PMSL"], workers=column_workers,
+                **({"level_order": sea_level_order, "row_offset": start} if blocked else {})))
+        # WRF integrates moisture on the ORIGINAL met surface (integ_moist is
+        # called with p_gc whose level 1 is the met PSFC on SOILHGT,
+        # module_initialize_real.F:1457/7022); only p_dts (:1482) pairs the
+        # sfcprs2-adjusted psfc with the resulting intq for the dry mass.
+        source_pd, intq, order = _ops._integrate_moisture(
+            source_qv, pressure, fields_b["TT"], fields_b["GHT"], fields_b["PSFC"],
+            fields_b["T2"], surface_qv,
+            _setup(orography_b) if orography_b is not None else terrain_b,
+            column_workers=column_workers, **offsets)
+        pressure = _ops._ordered_levels(pressure, order)
+        source_temperature = _ops._ordered_levels(fields_b["TT"], order)
+        source_qv = _ops._ordered_levels(source_qv, order)
+        if use_sh_qv:
+            source_rh = None
+        elif has_specific_humidity:
+            # module_initialize_real.F:1138-1167: FLAG_SH first converts the
+            # horizontally mapped SPECHUMD to qv_gc, then overwrites rh_gc at the
+            # same target points.  Deriving RH on the HRRR source grid and mapping
+            # it separately is not equivalent because both transforms are
+            # nonlinear.  Negative WPS SPFH undershoots produce negative RH here;
+            # rh_to_mxrat1 clips that RH to zero only after vertical interpolation.
+            source_rh = _ops._mixing_ratio_to_relative_humidity(
+                source_temperature, pressure, source_qv,
+                allow_wps_undershoot=True,
+                column_workers=column_workers)
+        else:
+            source_rh = _ops._ordered_levels(fields_b["RH"], order)
+        # WRF's vert-interp source column carries the surface pseudo-level at
+        # the met-source dry surface pressure pd_gc(:,1,:) = p_gc(:,1,:) - intq
+        # (integ_moist:7130), i.e. the ORIGINAL met PSFC minus the vapor column.
+        surface_pd = fields_b["PSFC"] - intq
+        if use_sh_qv:
+            surface_rh = None
+        elif has_specific_humidity:
+            surface_rh = _ops._mixing_ratio_to_relative_humidity(
+                fields_b["T2"], fields_b["PSFC"], surface_qv,
+                allow_wps_undershoot=True,
+                column_workers=column_workers)
+        elif surface_rh_name == "D2":
+            with pm.worker_limit(column_workers):
+                surface_rh = _ops._surface_relative_humidity(fields_b["D2"], fields_b["T2"])
+        else:
+            surface_rh = fields_b["RH2"].copy()
+        dry_mass = surface_pressure - intq - float(p_top)
+        if np.any(dry_mass <= 0.0):
+            raise ValueError("non-positive dry column mass")
+        if device_route:
+            dry_pressure = _ops.dry_pressure_ladder(dry_mass, coord.c3h, coord.c4h, p_top)
+            dry_pressure_full = _ops.dry_pressure_ladder(dry_mass, coord.c3f, coord.c4f, p_top)
+        else:
+            dry_pressure = (coord.c3h[:, None, None] * dry_mass[None]
+                            + coord.c4h[:, None, None] + float(p_top))
+            dry_pressure_full = (coord.c3f[:, None, None] * dry_mass[None]
+                                 + coord.c4f[:, None, None] + float(p_top))
+        if (not np.all(np.diff(dry_pressure, axis=0) < 0.0)
+                or not np.all(np.diff(dry_pressure_full, axis=0) < 0.0)):
+            raise ValueError(hybrid_column_ordering_refusal(
+                coord, float(p_top), _host(dry_mass + float(p_top)),
+                quantity="target dry pressure", row_offset=start)
+                or "target dry pressure is not monotonic")
+        if release_completed_host:
+            del dry_pressure_full
+        mark_timing("source_moisture_and_dry_mass")
+
+        order_backend = backend_xp.asarray(order, dtype=backend_xp.int32)
+
+        def backend_ordered_levels(value):
+            value = plan_float32(value)
+            if backend_xp is host_numpy and value.ndim == 3 and value.size >= _RECEIPT_HASH_MIN_CELLS:
+                # The same take, one source level per copy, side by side: on the
+                # host roads a CONUS volume per field was one 4.6 s single-core
+                # np.take (bounded CUDA road, a 5090 host, 2026-10-21).
+                out = host_numpy.empty((len(order), *value.shape[1:]), dtype=value.dtype)
+                def copy(level):
+                    out[level] = value[int(order[level])]
+                from os import cpu_count
+                with ThreadPoolExecutor(max_workers=max(1, min(16, cpu_count() or 1)),
+                                        thread_name_prefix="ordered-levels") as pool:
+                    list(pool.map(copy, range(len(order))))
+                return out
+            return backend_xp.take(value, order_backend, axis=0)
+
+        mass_source_pd_f32 = plan_float32(source_pd)
+        mass_surface_pd_f32 = plan_float32(surface_pd)
+        mass_target_pd_f32 = plan_float32(dry_pressure)
+        mass_vertical_plan = preprocess.prepare_wrf_vertical(
+            mass_source_pd_f32, mass_surface_pd_f32, mass_target_pd_f32)
+        temperature = mass_vertical_plan.apply(
+            plan_float32(source_temperature),
+            plan_float32(fields_b["T2"]),
+            interp_in_logp=True, extrap="temperature")
+        if use_sh_qv:
+            qv = mass_vertical_plan.apply(
+                plan_float32(source_qv),
+                plan_float32(surface_qv),
+                interp_in_logp=True, extrap="constant")
+            rh = None
+        else:
+            rh = mass_vertical_plan.apply(
+                plan_float32(source_rh),
+                plan_float32(surface_rh),
+                interp_in_logp=True, extrap="constant")
+            qv = None
+        total_pressure = mass_vertical_plan.apply(
+            plan_float32(pressure),
+            plan_float32(fields_b["PSFC"]),
+            interp_in_logp=False, extrap="temperature")
+        # The source's vertical velocity rides the same mass-level plan as
+        # pressure (linear in p); below the source's lowest level it holds
+        # that level's value, and the surface pseudo-level is zero, the
+        # kinematic ground value, so nothing is invented beneath the source.
+        source_w_target = None
+        if vertical_velocity_source is not None:
+            source_w_target = mass_vertical_plan.apply(
+                backend_ordered_levels(fields_b[vertical_velocity_source]),
+                plan_float32(np.zeros(block_shape, dtype=np.float32)),
+                interp_in_logp=False, extrap="constant")
+        temperature_h = (_setup(temperature).astype(np.float64) if device_route
+                         else _host_owned_float64(temperature))
+        rh_h = (None if rh is None else
+                _setup(rh).astype(np.float64) if device_route else
+                _host_owned_float64(rh))
+        total_pressure_h = (_setup(total_pressure).astype(np.float64) if device_route
+                            else _host_owned_float64(total_pressure))
+        # NOT clamped to the target dry pressure.  This line used to read
+        # ``np.maximum(total_pressure_h, dry_pressure)``; real.exe has no such
+        # step.  WRF interpolates p_gc onto pd_gc with var_type 'T' and
+        # t_extrap_type=2 (module_initialize_real.F:1795-1807) and hands the
+        # RESULT straight to rh_to_mxrat1 (:1827) and t_to_theta (:1850-1853)
+        # -- there is no MAX, no floor and no comparison against grid%pb
+        # anywhere between the vert_interp call and those two uses.  The clamp
+        # mattered because theta is formed HERE, once, and never recomputed:
+        # the two-pass moist rebalance below replaces total_pressure_h but
+        # leaves theta_h standing, so a pressure raised at this line is baked
+        # into the initial state permanently.  It fired exactly where the
+        # target column's lowest eta levels fall BELOW the source column's
+        # surface pseudo-level, which is the below-surface extrapolation
+        # branch, and in that branch WRF's own CRC formula deliberately
+        # returns a pressure lower than the target dry pressure.  Measured
+        # against the real.exe that read the same forcing, on the 2021-12-30
+        # 3 km case, the clamp displaced theta by up to 3.56 K over 3229
+        # columns; the oracle that measured it is
+        # gpuwm/verify/metem_differential.py, graded by
+        # tests/test_metem_differential.py.  (The upstream file token for
+        # that forcing is deliberately not spelled here: tests/test_runtime.py
+        # ::test_generic_ingest_and_runtime_have_no_metgrid-output_reader asserts
+        # nothing under gpuwm/ingest names it, and a comment that did would
+        # retire that instrument.)
+        if (not np.isfinite(total_pressure_h).all()
+                or np.any(total_pressure_h <= 0.0)):
+            raise ValueError(
+                "interpolated total pressure is non-finite or non-positive: "
+                "the vertical interpolation of p_gc produced a value no "
+                "thermodynamic conversion can use.  This is a defect in the "
+                "forcing column, not a value to be clamped away")
+        theta_h = _ops._potential_temperature_from_temperature(
+            temperature_h, total_pressure_h,
+            column_workers=column_workers)
+        prognostic_qv_floor: dict[str, object] = {}
+        if use_sh_qv:
+            qv_h = _setup(qv).astype(np.float64)
+            if blocked:
+                _refuse_non_finite_prognostic_qv(qv_h, row_offset=start)
+                # Floored here on the block's every row; counted only on the
+                # rows the block owns, and receipted once for the domain.
+                owned = slice(owned_start - start, stop - start)
+                out["prognostic_qv_floor_stats"] = _sh_vertical_undershoot_stats(
+                    qv_h[:, owned], total_pressure_h[:, owned],
+                    row_offset=owned_start)
+                qv_h = np.where(qv_h < 0.0, _WRF_QV_MIN_VALUE, qv_h)
+            else:
+                _ops._refuse_non_finite_prognostic_qv(qv_h)
+                # What reaches the plan was admitted against the horizontal
+                # operator's own undershoot envelope for the source it mapped, so
+                # a negative here is a polynomial's own: this vertical one's at a
+                # sharp dry slot, or the horizontal one's carried into it, within
+                # that envelope.  WRF's qv_min floor, the one the RH lane gets
+                # from rh_to_mxrat1, is applied here and receipted
+                # (_PROGNOSTIC_QV_FLOOR_WRF_REFERENCE).
+                qv_h, prognostic_qv_floor = _ops._floor_sh_vertical_undershoot(
+                    qv_h, total_pressure_h)
+        else:
+            qv_h = _ops._cap_stratospheric_qv(
+                _ops._saturation_mixing_ratio(
+                    temperature_h, total_pressure_h, rh_h,
+                    column_workers=column_workers),
+                total_pressure_h, column_workers=column_workers)
+        mark_timing("thermodynamic_vertical_interpolation")
+        # The carried vertical velocity on the target mass levels, in m s-1,
+        # converted from omega with this column's own interpolated T, qv and
+        # p (vertical_velocity_from_omega) or taken as published (WW).  Held
+        # as one FP32 field until the state's W interfaces are formed below;
+        # the receipt it fills is the one hydrometeor_initialization carries.
+        w_mass_h = None
+        if source_w_target is not None:
+            carried_w = (_setup(source_w_target).astype(np.float64) if device_route
+                         else _host_owned_float64(source_w_target))
+            if vertical_velocity_source == "OMEGA":
+                carried_w = vertical_velocity_from_omega(
+                    carried_w, temperature_h, qv_h, total_pressure_h, xp=np)
+            if not bool(np.isfinite(carried_w).all()):
+                raise ValueError(
+                    f"the source vertical velocity ({vertical_velocity_source}) "
+                    "interpolated to a non-finite value: a defect in the forcing "
+                    "column, not a value to be clamped away")
+            w_mass_h = carried_w.astype(np.float32)
+            del carried_w, source_w_target
+            if release_completed_host:
+                fields_b[vertical_velocity_source] = rows(snapshot.fields[vertical_velocity_source])
+        mark_timing("vertical_velocity_conversion")
+        if release_completed_host:
+            # Their final consumers have finished. Retaining widened source
+            # fields beside the finished host state needlessly doubled host RAM.
+            del source_temperature, source_qv, source_rh, pressure
+            del temperature, rh, total_pressure, qv
+            for name in ("TT", "GHT", "PRES", "SPFH", "RH"):
+                if name in fields_b:
+                    fields_b[name] = rows(snapshot.fields[name])
+
+        # WRF interpolates the analyzed hydrometeors BEFORE the moist
+        # pressure recurrence -- the vert_interp calls for QR/QC/QI/QS/QG/QH
+        # are at module_initialize_real.F:1862-1982 and the recurrence at
+        # :3908 -- because that recurrence loads TOTAL water (:3913-3916),
+        # not vapour.  The order is essential, not cosmetic.
+        hydrometeors = {}
+        if decoded_species:
+            # WRF's Q interpolation uses the metgrid surface pseudo-level.
+            # Native HRRR has no supplied surface analysis and retains zero.
+            # vboundb above the target keeps the shared kernel linear throughout.
+            zero_surface = backend_xp.zeros(block_shape, dtype=backend_xp.float32)
+            for name in retained_names:
+                value = mass_vertical_plan.apply(
+                    backend_ordered_levels(fields_b[name]),
+                    (plan_float32(fields_b[name+"_SFC"])
+                     if name in supplied_mass_surfaces else zero_surface),
+                    interp_in_logp=True, extrap="constant",
+                    vboundb=cfg.nz + 1, values_are_finite=True)
+                if (not bool(backend_xp.isfinite(value).all())
+                        or bool((value < 0.0).any())):
+                    raise ValueError(
+                        f"interpolated HRRR hydrometeor {name} is invalid")
+                hydrometeors[name] = value
+            if not blocked:
+                out["hydrometeor_initialization"] = hydrometeor_receipts(
+                    order, mass_source_pd_f32, mass_surface_pd_f32,
+                    mass_target_pd_f32, mass_vertical_plan, hydrometeors,
+                    zero_surface)
+        from gpuwm.ingest.native_extras import interpolate_boundary_tracers
+        # A snapshot-shaped namespace (the HRRR runner's boundary strips, a
+        # detached mapped hour) may carry no tracer mapping at all: no tracers.
+        source_tracers = {name: rows(value) for name, value in
+                          (getattr(snapshot, "boundary_tracers", None) or {}).items()}
+        boundary_tracers = interpolate_boundary_tracers(
+            source_tracers, mass_vertical_plan, backend_ordered_levels,
+            backend_xp.zeros(block_shape, dtype=backend_xp.float32), cfg.nz
+        ) if source_tracers else {}
+        mark_timing("hydrometeor_vertical_interpolation")
+
+        number_moments = {}
+        if decoded_numbers:
+            if required_donor:
+                donor_fields = {
+                    name: _setup(rows(aerosol_snapshot.fields[name]))
+                    for name in required_donor}
+                donor_surface_specific = (
+                    rows(donor_surface_specific_whole) if blocked else
+                    _ops._wrf_flag_sh_surface_specific_humidity(
+                        donor_fields["Q2"], donor_fields["SPFH"], donor_fields["PRES"]))
+                donor_surface_qv = _ops._specific_humidity_to_mixing_ratio(
+                    donor_surface_specific, allow_wps_undershoot=True,
+                    column_workers=column_workers)
+                donor_qv = _ops._specific_humidity_to_mixing_ratio(
+                    donor_fields["SPFH"], allow_wps_undershoot=True,
+                    undershoot_floor=getattr(aerosol_snapshot, "specific_humidity_undershoot_floor", None),
+                    column_workers=column_workers)
+                donor_pd, donor_intq, donor_order = _ops._integrate_moisture(
+                    donor_qv, donor_fields["PRES"], donor_fields["TT"],
+                    donor_fields["GHT"], donor_fields["PSFC"], donor_fields["T2"],
+                    donor_surface_qv, donor_fields["SOURCE_OROGRAPHY"],
+                    column_workers=column_workers,
+                    **({"level_order": donor_level_order, "row_offset": start}
+                       if blocked else {}))
+                donor_plan = preprocess.prepare_wrf_vertical(
+                    plan_float32(donor_pd),
+                    plan_float32(donor_fields["PSFC"] - donor_intq),
+                    mass_target_pd_f32)
+                donor_order_backend = backend_xp.asarray(donor_order, dtype=backend_xp.int32)
+            for name in decoded_numbers:
+                if name not in number_targets:
+                    continue
+                number_fields = donor_fields if name in donor_numbers else fields_b
+                surface = plan_float32(number_fields[name+"_SFC"])
+                number_plan = donor_plan if name in donor_numbers else mass_vertical_plan
+                ordered_number = (backend_xp.take(plan_float32(number_fields[name]),
+                                                  donor_order_backend, axis=0)
+                                  if name in donor_numbers
+                                  else backend_ordered_levels(fields_b[name]))
+                value = number_plan.apply(
+                    ordered_number, surface,
+                    interp_in_logp=True, extrap="constant",
+                    vboundb=cfg.nz + 1, values_are_finite=True)
+                if not bool(backend_xp.isfinite(value).all()) or bool((value < 0).any()):
+                    raise ValueError(f"interpolated number field {name} is invalid")
+                number_moments[number_targets[name]] = value
+            if required_donor:
+                del donor_fields, donor_plan
+            mark_timing("number_moment_vertical_interpolation")
+        if blocked:
+            out["mass_source_pd_f32"] = mass_source_pd_f32
+        if release_completed_host:
+            del mass_vertical_plan, mass_source_pd_f32
+            del mass_surface_pd_f32, mass_target_pd_f32
+
+        # WRF's qtot for the pressure recurrence is a sum over the ACTIVE moist
+        # package (module_initialize_real.F:3913-3916, PARAM_FIRST_SCALAR ..
+        # num_3d_m = num_moist at :1856), so a species the package does not
+        # carry contributes nothing there either -- ``hydrometeors`` holds
+        # exactly the retained set, in the package's own qc/qr/qi/qs/qg order,
+        # and the accumulation below is WRF's own left-to-right one.
+        condensate_h = (None if device_route else _host_arrays.sum_fields(
+            hydrometeors.values(), workers=column_workers))
+        if condensate_h is None:
+            for analyzed in hydrometeors.values():
+                contribution = _setup(analyzed).astype(np.float64)
+                condensate_h = (contribution if condensate_h is None
+                                else condensate_h + contribution)
+            if hydrometeors:
+                del contribution, analyzed
+
+        def moist_total(vapour):
+            """WRF ``qtot``: vapour plus every analyzed condensate species."""
+            if condensate_h is None:
+                return vapour
+            total = (None if device_route else _host_arrays.sum_fields(
+                (vapour, condensate_h), workers=column_workers))
+            return vapour + condensate_h if total is None else total
+
+        host_base = (_slice_base_rows(host_base_whole, start, stop) if blocked else
+                     _make_real_base(coord, _host(terrain), float(p_top), cfg.base_temp,
+                                     hypsometric_opt=cfg.hypsometric_opt,
+                                     column_workers=column_workers))
+        base = _ops.upload_base(host_base) if device_route else host_base
+        if use_sh_qv:
+            # WRF use_sh_qv retains the directly interpolated dry-air mixing
+            # ratio while diagnosing the final moist-hydrostatic pressure.
+            total_pressure_h = _ops._rebalance_moist_pressure(
+                total_pressure_h, moist_total(qv_h), dry_mass, base, coord,
+                column_workers=column_workers)
+        else:
+            # WRF diagnoses qv from interpolated RH, then recomputes a
+            # hydrostatic pressure and diagnoses qv once more from that pressure.
+            # Two passes make the q/pressure coupling converge below FP32 setup
+            # precision.
+            for _ in range(2):
+                total_pressure_h = _ops._rebalance_moist_pressure(
+                    total_pressure_h, moist_total(qv_h), dry_mass, base, coord,
+                    column_workers=column_workers)
+                temperature_h = _ops._temperature_from_potential_temperature(
+                    theta_h, total_pressure_h,
+                    column_workers=column_workers)
+                qv_h = _ops._cap_stratospheric_qv(
+                    _ops._saturation_mixing_ratio(
+                        temperature_h, total_pressure_h, rh_h,
+                        column_workers=column_workers),
+                    total_pressure_h, column_workers=column_workers)
+            total_pressure_h = _ops._rebalance_moist_pressure(
+                total_pressure_h, moist_total(qv_h), dry_mass, base, coord,
+                column_workers=column_workers)
+            # WRF invokes rh_to_mxrat1 again against its final hydrostatic
+            # pressure; apply the strict pressure-side cap once more in case a
+            # target level crossed 10 kPa during the last rebalance.
+            qv_h = _ops._cap_stratospheric_qv(
+                qv_h, total_pressure_h, column_workers=column_workers)
+        mark_timing("base_state_and_moist_rebalance")
+
+        # U/V columns include the 10 m surface pseudo-level with pd averaged to
+        # the staggered points exactly like the interior levels
+        # (module_initialize_real.F:2785-2811 with vert_interp's 'U'/'V'
+        # pressure averaging at :5664-5713; extrap_type=2 constant).
+        def stagger_pressure(value, axis):
+            result = (None if device_route else _host_arrays.stagger_pressure(
+                value, axis, workers=column_workers))
+            if result is not None:
+                return result
+            return (_ops._pressure_at_u(value) if axis == 2
+                    else _ops._pressure_at_v(value))
+
+        source_pd_u = stagger_pressure(source_pd, 2)
+        source_pd_v = stagger_pressure(source_pd, 1)
+        surface_pd_u = stagger_pressure(surface_pd[None], 2)[0]
+        surface_pd_v = stagger_pressure(surface_pd[None], 1)[0]
+        target_pd_u = stagger_pressure(dry_pressure, 2)
+        target_pd_v = stagger_pressure(dry_pressure, 1)
+        u_plan = preprocess.prepare_wrf_vertical(
+            plan_float32(source_pd_u),
+            plan_float32(surface_pd_u),
+            plan_float32(target_pd_u))
+        v_plan = preprocess.prepare_wrf_vertical(
+            plan_float32(source_pd_v),
+            plan_float32(surface_pd_v),
+            plan_float32(target_pd_v))
+        u = u_plan.apply(
+            backend_ordered_levels(fields_b["UU"]),
+            plan_float32(fields_b["U10"]),
+            interp_in_logp=True, extrap="constant")
+        v = v_plan.apply(
+            backend_ordered_levels(fields_b["VV"]),
+            plan_float32(fields_b["V10"]),
+            interp_in_logp=True, extrap="constant")
+        if release_completed_host:
+            del u_plan, v_plan, source_pd_u, source_pd_v
+            del surface_pd_u, surface_pd_v, target_pd_u, target_pd_v, source_pd
+            del condensate_h, temperature_h, rh_h
+            _return_freed_host_memory()
+
+        # -- Configured initial-state perturbation (theta bubbles) ----------
+        # Applied ONCE, here, after the base real-data state is final (the
+        # WRF two-pass moist rebalance above) and BEFORE the specific volume
+        # and geopotential are formed, so alpha/thp/php below are computed
+        # FROM the perturbed theta/qv and the state stays discretely
+        # hydrostatic at the analyzed pressure -- the em_quarter_ss
+        # convention (bubble at constant column mass, geopotential
+        # rebalanced), which hydrostatic_residual then grades unchanged.
+        # ``initial_perturbation is None`` is the whole OFF contract: not one
+        # instruction of this block runs and the state is byte-identical to a
+        # build without the feature.  (A perturbed initialization is never
+        # row-blocked: its bubbles are placed on the whole domain.)
+        perturbation_receipt: dict[str, object] = {}
+        if initial_perturbation is not None:
+            alpha_unperturbed = _ops._moist_specific_volume(
+                theta_h, qv_h, total_pressure_h,
+                column_workers=column_workers)
+            with pm.worker_limit(column_workers):
+                z_half_agl = _half_level_height_agl(
+                    base, coord, dry_mass, alpha_unperturbed,
+                    hypsometric_opt=cfg.hypsometric_opt)
+                perturbation_receipt = initial_perturbation.apply(
+                    theta=theta_h, qv=qv_h, pressure=total_pressure_h,
+                    z_half_agl=z_half_agl)
+            del alpha_unperturbed, z_half_agl
+            mark_timing("initial_perturbation")
+
+        alpha = _ops._moist_specific_volume(
+            theta_h, qv_h, total_pressure_h,
+            column_workers=column_workers)
+        mark_timing("wind_interpolation_and_alpha")
+        out.update(
+            surface_qv=surface_qv, surface_pressure=surface_pressure,
+            intq=intq, order=order, dry_mass=dry_mass, dry_pressure=dry_pressure,
+            total_pressure_h=total_pressure_h, theta_h=theta_h, qv_h=qv_h,
+            alpha=alpha, host_base=host_base, base=base,
+            hydrometeors=hydrometeors, number_moments=number_moments,
+            u=u, v=v, w_mass_h=w_mass_h, boundary_tracers=boundary_tracers,
+            prognostic_qv_floor=prognostic_qv_floor,
+            perturbation_receipt=perturbation_receipt)
+        return out
+
+    def hydrometeor_receipts(order, mass_source_pd_f32, mass_surface_pd_f32,
+                             mass_target_pd_f32, mass_vertical_plan,
+                             initialized, zero_surface):
+        """The analyzed-hydrometeor correspondence receipt, on whole arrays."""
+        nonlocal vertical_disposition_job
         # The plan and surface are bound at definition: the replay runs on
         # the receipt thread after this function has released its own names.
         def replay_hydrometeor_support(ordered_mask, _plan=mass_vertical_plan,
@@ -4690,6 +5322,10 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                 # transfer per replay (5.6 s of the receipt thread at
                 # HRRR CONUS, one replay per source level).
                 operand = _xp.asarray(ordered_mask).astype(_xp.float32)
+            elif (_xp is host_numpy and isinstance(ordered_mask, host_numpy.ndarray)
+                    and ordered_mask.dtype == host_numpy.bool_):
+                # The host plan takes floats: widen the mask on every core.
+                operand = _receipt_mask_float32(ordered_mask)
             else:
                 operand = _xp.asarray(ordered_mask, dtype=_xp.float32)
             return _plan.apply(
@@ -4698,49 +5334,8 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                 interp_in_logp=True, extrap="constant",
                 vboundb=_vboundb, values_are_finite=True)
 
-        invalid_source = []
-        for name in decoded_species:
-            source_value = plan_float32(fields[name])
-            if (not bool(backend_xp.isfinite(source_value).all())
-                    or bool((source_value < 0.0).any())):
-                invalid_source.append(name)
-            if name in supplied_mass_surfaces:
-                surface = plan_float32(fields[name+"_SFC"])
-                if not bool(backend_xp.isfinite(surface).all()) or bool((surface < 0).any()):
-                    invalid_source.append(name+"_SFC")
-        if invalid_source:
-            raise ValueError(
-                "mapped HRRR hydrometeor forcing is non-finite or negative: "
-                f"{invalid_source}")
         source_fingerprints = receipt_fingerprints(
             decoded_species, lambda name: plan_float32(fields[name]))
-        # Retention is READ from the Registry-package mapping, never decided
-        # here: the membership test above and the species this loop writes
-        # have to be answers to the same question, and an if-ladder is how
-        # they stop being.  The lookup cannot miss -- the mapping's keys ARE
-        # HRRR_ANALYZED_HYDROMETEOR_MP_PHYSICS, pinned by
-        # test_the_analyzed_inventory_tuple_and_its_moist_packages_agree.
-        moist_package = ({"registry_citation": "Registry/Registry.EM_COMMON:3014",
-                          "retained": ()}
-                         if analyzed_species is not None and cfg.mp_physics == 0
-                         else HRRR_ANALYZED_HYDROMETEOR_MOIST_PACKAGE[int(cfg.mp_physics)])
-        retained_names = tuple(name for name in moist_package["retained"] if name in decoded_species)
-        if "QH" in decoded_species:
-            from gpuwm.core.nest_fields import nest_field_kinds
-            if "qh" in nest_field_kinds(cfg):
-                retained_names += ("QH",)
-        for name in retained_names:
-            value = mass_vertical_plan.apply(
-                backend_ordered_levels(fields[name]),
-                (plan_float32(fields[name+"_SFC"])
-                 if name in supplied_mass_surfaces else zero_surface),
-                interp_in_logp=True, extrap="constant",
-                vboundb=cfg.nz + 1, values_are_finite=True)
-            if (not bool(backend_xp.isfinite(value).all())
-                    or bool((value < 0.0).any())):
-                raise ValueError(
-                    f"interpolated HRRR hydrometeor {name} is invalid")
-            hydrometeors[name] = value
         # Everything decoded and not retained is discarded BY THE PACKAGE,
         # and is named as such with that package's own Registry line.  The
         # partition is derived from one source (retained + discarded is the
@@ -4765,7 +5360,7 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
             mass_source_pd_f32,
             mass_surface_pd_f32,
             mass_target_pd_f32,
-            dict(hydrometeors),
+            initialized,
             operator_replay=replay_hydrometeor_support,
         ) if (retained_names and not supplied_mass_surfaces
               and not boundary_only) else None
@@ -4778,7 +5373,7 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         # non-negativity check above would have refused.
         horizontal_operators = getattr(
             snapshot, "horizontal_operators", None) or {}
-        hydrometeor_initialization = {
+        receipt = {
             "schema": HRRR_HYDROMETEOR_CORRESPONDENCE_SCHEMA_V2,
             "source": "native-hrrr-horizontal-decoder-output",
             "mp_physics": int(cfg.mp_physics),
@@ -4795,11 +5390,11 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
             "vertical_velocity": vertical_velocity_initialization,
         }
         if supplied_mass_surfaces:
-            hydrometeor_initialization["schema"] = "gpuwm-metgrid-hydrometeor-initialization-v1"
-            hydrometeor_initialization.pop("vertical_disposition")
-            hydrometeor_initialization["surface_pseudo_levels"] = receipt_fingerprints(
+            receipt["schema"] = "gpuwm-metgrid-hydrometeor-initialization-v1"
+            receipt.pop("vertical_disposition")
+            receipt["surface_pseudo_levels"] = receipt_fingerprints(
                 supplied_mass_surfaces, lambda name: plan_float32(fields[name+"_SFC"]))
-            hydrometeor_initialization["vertical_operator"] = {
+            receipt["vertical_operator"] = {
                 "source": "WRF module_initialize_real.F:1862-1997",
                 "operation": "linear Q interpolation with supplied surface before moist-pressure recurrence",
                 "source_level_order": order.tolist(),
@@ -4809,81 +5404,17 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                                                     mass_surface_pd_f32,
                                                     mass_target_pd_f32)))),
             }
-    from gpuwm.ingest.native_extras import interpolate_boundary_tracers
-    # A snapshot-shaped namespace (the HRRR runner's boundary strips, a
-    # detached mapped hour) may carry no tracer mapping at all: no tracers.
-    source_tracers = getattr(snapshot, "boundary_tracers", None)
-    boundary_tracers = interpolate_boundary_tracers(
-        source_tracers, mass_vertical_plan, backend_ordered_levels,
-        backend_xp.zeros((cfg.ny, cfg.nx), dtype=backend_xp.float32), cfg.nz
-    ) if source_tracers else {}
-    mark_timing("hydrometeor_vertical_interpolation")
+        return receipt
 
-    number_moments, number_receipt = {}, {}
-    if decoded_numbers:
-        donor_fields = None
-        if donor_numbers:
-            # Aerosols retain their donor's own dry-pressure coordinate.
-            # Pairing donor numbers with the initial meteorology's PRES
-            # silently shifts every layer when their hybrid ladders differ.
-            required_donor = ("PRES", "SPFH", "Q2", "PSFC", "T2", "TT",
-                              "GHT", "SOURCE_OROGRAPHY", *donor_numbers,
-                              *(name + "_SFC" for name in donor_numbers))
-            missing = sorted(set(required_donor) - set(aerosol_snapshot.fields))
-            if missing:
-                raise ValueError(f"aerosol donor dry-pressure coordinate is missing {missing}")
-            donor_fields = {name: _setup(aerosol_snapshot.fields[name])
-                            for name in required_donor}
-            donor_shape = (len(aerosol_snapshot.levels_hpa), cfg.ny, cfg.nx)
-            for name in ("PRES", "SPFH", "TT", "GHT", *donor_numbers):
-                if donor_fields[name].shape != donor_shape:
-                    raise ValueError(f"aerosol donor {name} must match its own levels and the target mass grid")
-            for name in ("PSFC", "Q2", "T2", "SOURCE_OROGRAPHY",
-                         *(name + "_SFC" for name in donor_numbers)):
-                if donor_fields[name].shape != (cfg.ny, cfg.nx):
-                    raise ValueError(f"aerosol donor {name} must match the target mass grid")
-            donor_surface_specific = _ops._wrf_flag_sh_surface_specific_humidity(
-                donor_fields["Q2"], donor_fields["SPFH"], donor_fields["PRES"])
-            donor_surface_qv = _ops._specific_humidity_to_mixing_ratio(
-                donor_surface_specific, allow_wps_undershoot=True,
-                column_workers=column_workers)
-            donor_qv = _ops._specific_humidity_to_mixing_ratio(
-                donor_fields["SPFH"], allow_wps_undershoot=True,
-                undershoot_floor=getattr(aerosol_snapshot, "specific_humidity_undershoot_floor", None),
-                column_workers=column_workers)
-            donor_pd, donor_intq, donor_order = _ops._integrate_moisture(
-                donor_qv, donor_fields["PRES"], donor_fields["TT"],
-                donor_fields["GHT"], donor_fields["PSFC"], donor_fields["T2"],
-                donor_surface_qv, donor_fields["SOURCE_OROGRAPHY"],
-                column_workers=column_workers)
-            donor_plan = preprocess.prepare_wrf_vertical(
-                plan_float32(donor_pd),
-                plan_float32(donor_fields["PSFC"] - donor_intq),
-                mass_target_pd_f32)
-            donor_order_backend = backend_xp.asarray(donor_order, dtype=backend_xp.int32)
+    def number_moment_receipt():
+        """The analyzed-number receipt's source half, on whole arrays."""
         source_numbers, surface_numbers = {}, {}
         for name in decoded_numbers:
-            number_fields = donor_fields if name in donor_numbers else fields
-            source = plan_float32(number_fields[name])
-            surface = plan_float32(number_fields[name+"_SFC"])
-            if any(not bool(backend_xp.isfinite(value).all()) or bool((value < 0).any())
-                   for value in (source, surface)):
-                raise ValueError(f"analyzed number field {name} is non-finite or negative")
+            number_fields = (aerosol_snapshot.fields if name in donor_numbers
+                             else fields)
             source_numbers[name], surface_numbers[name] = receipt_fingerprints_of(
-                (source, surface))
-            if name not in number_targets:
-                continue
-            number_plan = donor_plan if name in donor_numbers else mass_vertical_plan
-            ordered_number = (backend_xp.take(source, donor_order_backend, axis=0)
-                              if name in donor_numbers else backend_ordered_levels(fields[name]))
-            value = number_plan.apply(
-                ordered_number, surface,
-                interp_in_logp=True, extrap="constant",
-                vboundb=cfg.nz + 1, values_are_finite=True)
-            if not bool(backend_xp.isfinite(value).all()) or bool((value < 0).any()):
-                raise ValueError(f"interpolated number field {name} is invalid")
-            number_moments[number_targets[name]] = value
-        number_receipt = {
+                (plan_float32(number_fields[name]), plan_float32(number_fields[name+"_SFC"])))
+        return {
             "schema": "gpuwm-metgrid-number-initialization-v1",
             "source": source_numbers,
             "surface_pseudo_level": surface_numbers,
@@ -4895,187 +5426,196 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
             "operator": "WRF module_initialize_real.F:1999-2120; linear Q vertical interpolation with supplied surface pseudo-level",
             "boundary_policy": "initial analysis; default flow-dependent scalar boundaries are unchanged",
         }
-        mark_timing("number_moment_vertical_interpolation")
-    if release_completed_host:
-        del mass_vertical_plan, mass_source_pd_f32
-        del mass_surface_pd_f32, mass_target_pd_f32
 
-    # WRF's qtot for the pressure recurrence is a sum over the ACTIVE moist
-    # package (module_initialize_real.F:3913-3916, PARAM_FIRST_SCALAR ..
-    # num_3d_m = num_moist at :1856), so a species the package does not
-    # carry contributes nothing there either -- ``hydrometeors`` holds
-    # exactly the retained set, in the package's own qc/qr/qi/qs/qg order,
-    # and the accumulation below is WRF's own left-to-right one.
-    # The host setup route (every mp=28 start) sums on all its workers only
-    # host arrays: a full-device start's CuPy hydrometeors fell to the
-    # one-thread loop below (about 4 s of the HRRR CONUS start).  Their
-    # host copies take the native sum, the one a bounded start's NumPy
-    # fields take; the loop stays the fallback.
-    condensate_h = (None if device_route else _host_arrays.sum_fields(
-        [value.get() if hasattr(value, "get") else value
-         for value in hydrometeors.values()], workers=column_workers))
-    if condensate_h is None:
-        for analyzed in hydrometeors.values():
-            contribution = _setup(analyzed).astype(np.float64)
-            condensate_h = (contribution if condensate_h is None
-                            else condensate_h + contribution)
-        if hydrometeors:
-            del contribution, analyzed
-
-    def moist_total(vapour):
-        """WRF ``qtot``: vapour plus every analyzed condensate species."""
-        if condensate_h is None:
-            return vapour
-        total = (None if device_route else _host_arrays.sum_fields(
-            (vapour, condensate_h), workers=column_workers))
-        return vapour + condensate_h if total is None else total
-
-    host_base = _make_real_base(coord, _host(terrain), float(p_top), cfg.base_temp,
-                                hypsometric_opt=cfg.hypsometric_opt,
-                                column_workers=column_workers)
-    base = _ops.upload_base(host_base) if device_route else host_base
-    if use_sh_qv:
-        # WRF use_sh_qv retains the directly interpolated dry-air mixing
-        # ratio while diagnosing the final moist-hydrostatic pressure.
-        total_pressure_h = _ops._rebalance_moist_pressure(
-            total_pressure_h, moist_total(qv_h), dry_mass, base, coord,
-            column_workers=column_workers)
-    else:
-        # WRF diagnoses qv from interpolated RH, then recomputes a
-        # hydrostatic pressure and diagnoses qv once more from that pressure.
-        # Two passes make the q/pressure coupling converge below FP32 setup
-        # precision.
-        for _ in range(2):
-            total_pressure_h = _ops._rebalance_moist_pressure(
-                total_pressure_h, moist_total(qv_h), dry_mass, base, coord,
-                column_workers=column_workers)
-            temperature_h = _ops._temperature_from_potential_temperature(
-                theta_h, total_pressure_h,
-                column_workers=column_workers)
-            qv_h = _ops._cap_stratospheric_qv(
-                _ops._saturation_mixing_ratio(
-                    temperature_h, total_pressure_h, rh_h,
-                    column_workers=column_workers),
-                total_pressure_h, column_workers=column_workers)
-        total_pressure_h = _ops._rebalance_moist_pressure(
-            total_pressure_h, moist_total(qv_h), dry_mass, base, coord,
-            column_workers=column_workers)
-        # WRF invokes rh_to_mxrat1 again against its final hydrostatic
-        # pressure; apply the strict pressure-side cap once more in case a
-        # target level crossed 10 kPa during the last rebalance.
-        qv_h = _ops._cap_stratospheric_qv(
-            qv_h, total_pressure_h, column_workers=column_workers)
-    mark_timing("base_state_and_moist_rebalance")
-
-    # U/V columns include the 10 m surface pseudo-level with pd averaged to
-    # the staggered points exactly like the interior levels
-    # (module_initialize_real.F:2785-2811 with vert_interp's 'U'/'V'
-    # pressure averaging at :5664-5713; extrap_type=2 constant).
-    def stagger_pressure(value, axis):
-        result = (None if device_route else _host_arrays.stagger_pressure(
-            value, axis, workers=column_workers))
-        if result is not None:
-            return result
-        return (_ops._pressure_at_u(value) if axis == 2
-                else _ops._pressure_at_v(value))
-
-    source_pd_u = stagger_pressure(source_pd, 2)
-    source_pd_v = stagger_pressure(source_pd, 1)
-    surface_pd_u = stagger_pressure(surface_pd[None], 2)[0]
-    surface_pd_v = stagger_pressure(surface_pd[None], 1)[0]
-    target_pd_u = stagger_pressure(dry_pressure, 2)
-    target_pd_v = stagger_pressure(dry_pressure, 1)
-    u_plan = preprocess.prepare_wrf_vertical(
-        plan_float32(source_pd_u),
-        plan_float32(surface_pd_u),
-        plan_float32(target_pd_u))
-    v_plan = preprocess.prepare_wrf_vertical(
-        plan_float32(source_pd_v),
-        plan_float32(surface_pd_v),
-        plan_float32(target_pd_v))
-    u = u_plan.apply(
-        backend_ordered_levels(fields["UU"]),
-        plan_float32(fields["U10"]),
-        interp_in_logp=True, extrap="constant")
-    v = v_plan.apply(
-        backend_ordered_levels(fields["VV"]),
-        plan_float32(fields["V10"]),
-        interp_in_logp=True, extrap="constant")
-    if release_completed_host:
-        del u_plan, v_plan, source_pd_u, source_pd_v
-        del surface_pd_u, surface_pd_v, target_pd_u, target_pd_v, source_pd
-        del condensate_h, temperature_h, rh_h
-        _return_freed_host_memory()
-
-    # -- Configured initial-state perturbation (theta bubbles) ----------
-    # Applied ONCE, here, after the base real-data state is final (the
-    # WRF two-pass moist rebalance above) and BEFORE the specific volume
-    # and geopotential are formed, so alpha/thp/php below are computed
-    # FROM the perturbed theta/qv and the state stays discretely
-    # hydrostatic at the analyzed pressure -- the em_quarter_ss
-    # convention (bubble at constant column mass, geopotential
-    # rebalanced), which hydrostatic_residual then grades unchanged.
-    # ``initial_perturbation is None`` is the whole OFF contract: not one
-    # instruction of this block runs and the state is byte-identical to a
-    # build without the feature.
-    perturbation_receipt: dict[str, object] = {}
-    if initial_perturbation is not None:
-        alpha_unperturbed = _ops._moist_specific_volume(
-            theta_h, qv_h, total_pressure_h,
-            column_workers=column_workers)
-        with pm.worker_limit(column_workers):
-            z_half_agl = _half_level_height_agl(
-                base, coord, dry_mass, alpha_unperturbed,
-                hypsometric_opt=cfg.hypsometric_opt)
-            perturbation_receipt = initial_perturbation.apply(
-                theta=theta_h, qv=qv_h, pressure=total_pressure_h,
-                z_half_agl=z_half_agl)
-        del alpha_unperturbed, z_half_agl
-        mark_timing("initial_perturbation")
-
-    alpha = _ops._moist_specific_volume(
-        theta_h, qv_h, total_pressure_h,
-        column_workers=column_workers)
-    mark_timing("wind_interpolation_and_alpha")
-
+    vertical_disposition_job = None
+    vertical_velocity_initialization = dict(WRF_REAL_VERTICAL_VELOCITY_POLICY)
+    hydrometeor_initialization: dict[str, object] = {}
+    number_receipt = {}
     state_kwargs = {}
     if scratch_arena is not None:
         state_kwargs["scratch_arena"] = scratch_arena
     if dycore_state_workspace is not None:
         state_kwargs["dycore_state_workspace"] = dycore_state_workspace
-    state = DomainState(cfg, array_module=state_xp, **state_kwargs)
-    mark_timing("domain_state_allocation")
-    if device_route:
-        _ops.load_base(state, coord, host_base, base)
+    if not blocked:
+        columns = initialize_columns(0, cfg.ny)
+        hydrometeor_initialization = columns.pop("hydrometeor_initialization", {})
+        if decoded_numbers:
+            number_receipt = number_moment_receipt()
+        (surface_qv, surface_pressure, intq, order, dry_mass, dry_pressure,
+         total_pressure_h, theta_h, qv_h, alpha, host_base, base, hydrometeors,
+         number_moments, u, v, prognostic_qv_floor, perturbation_receipt) = (
+            columns[name] for name in (
+                "surface_qv", "surface_pressure", "intq", "order", "dry_mass",
+                "dry_pressure", "total_pressure_h", "theta_h", "qv_h", "alpha",
+                "host_base", "base", "hydrometeors", "number_moments", "u", "v",
+                "prognostic_qv_floor", "perturbation_receipt"))
+        w_mass_h = columns.pop("w_mass_h")
+        boundary_tracers = columns.pop("boundary_tracers")
+        del columns
+
+        state = DomainState(cfg, array_module=state_xp, **state_kwargs)
+        mark_timing("domain_state_allocation")
+        if device_route:
+            _ops.load_base(state, coord, host_base, base)
+        else:
+            with pm.worker_limit(column_workers):
+                state.load_base(coord, host_base, native_host=True)
+        mark_timing("base_state_upload")
+        if not (state_xp is host_numpy and _host_arrays.difference_float32(
+                state.mup, dry_mass, base.mub, workers=column_workers)):
+            state.mup[...] = (plan_float32(dry_mass - base.mub) if device_route else
+                              state_xp.asarray(dry_mass - base.mub, dtype=state_xp.float32))
+        if not (state_xp is host_numpy and _host_arrays.difference_float32(
+                state.thp, theta_h, base.thb, workers=column_workers)):
+            state.thp[...] = (plan_float32(theta_h - base.thb) if device_route else
+                              state_xp.asarray(theta_h - base.thb, dtype=state_xp.float32))
+        mark_timing("mass_theta_upload")
+        state.php[...] = state_xp.asarray(
+            _ops._fp32_geopotential_split(base, coord, dry_mass, alpha,
+                                     hypsometric_opt=cfg.hypsometric_opt,
+                                     column_workers=column_workers),
+            dtype=state_xp.float32)
+        mark_timing("fp32_geopotential_split_and_upload")
+        if not (state_xp is host_numpy and _host_arrays.copy_float32(
+                state.qv, qv_h, workers=column_workers)):
+            state.qv[...] = (plan_float32(qv_h) if device_route else
+                             state_xp.asarray(qv_h, dtype=state_xp.float32))
+        if hydrometeors:
+            for source_name, value in hydrometeors.items():
+                if state_xp is host_numpy:
+                    value = _host_float32(value)
+                getattr(state, source_name.lower())[...] = state_xp.asarray(
+                    value, dtype=state_xp.float32)
     else:
+        # One block of rows at a time: its fields are finished into the
+        # whole state and the whole result arrays, then released.
+        state = DomainState(cfg, array_module=state_xp, **state_kwargs)
+        mark_timing("domain_state_allocation")
+        host_base = base = host_base_whole
+        keep_theta = bool(retained_names) and cfg.mp_physics in (8, 28)
+        keep_source_pd = bool(decoded_species) and not boundary_only and bool(
+            retained_names or supplied_mass_surfaces)
+        whole: dict[str, np.ndarray] = {}
+        number_moments = {}
+        boundary_tracers = {}
+        floor_parts = []
+        order = level_order
+        def block_float32_difference(first, second):
+            """``float32(first - second)`` as the whole build forms it."""
+            out = np.empty(first.shape, dtype=np.float32)
+            second = np.ascontiguousarray(second)
+            if not _host_arrays.difference_float32(out, first, second,
+                                                   workers=column_workers):
+                out[...] = np.asarray(first - second, dtype=np.float32)
+            return out
+
+        pool_trim = _POOL_TRIM.set(_BLOCK_POOL_TRIM)
+        try:
+            for owned_start, owned_stop in block_chunks:
+                start = max(0, owned_start - 1)
+                columns = initialize_columns(start, owned_stop, owned_start)
+                owned = slice(owned_start - start, owned_stop - start)
+                last = owned_stop == cfg.ny
+
+                def keep(name, value, dtype=None):
+                    target = whole.get(name)
+                    if target is None:
+                        shape = value.shape[:-2] + (cfg.ny, value.shape[-1])
+                        target = whole[name] = np.empty(shape, dtype=dtype or value.dtype)
+                    target[..., owned_start:owned_stop, :] = value[..., owned, :]
+
+                for name in ("surface_qv", "surface_pressure", "intq", "dry_mass",
+                             "dry_pressure", "total_pressure_h", "alpha"):
+                    keep(name, columns[name])
+                if columns["w_mass_h"] is not None:
+                    keep("w_mass_h", columns["w_mass_h"])
+                for name, value in columns["boundary_tracers"].items():
+                    part = boundary_tracers.get(name)
+                    if part is None:
+                        part = boundary_tracers[name] = np.empty(
+                            value.shape[:-2] + (cfg.ny, cfg.nx), dtype=value.dtype)
+                    part[..., owned_start:owned_stop, :] = value[..., owned, :]
+                if keep_theta:
+                    keep("theta_h", columns["theta_h"])
+                if keep_source_pd:
+                    keep("mass_source_pd_f32", columns["mass_source_pd_f32"])
+                for name, value in columns["number_moments"].items():
+                    part = number_moments.get(name)
+                    if part is None:
+                        part = number_moments[name] = np.empty(
+                            value.shape[:-2] + (cfg.ny, cfg.nx), dtype=value.dtype)
+                    part[..., owned_start:owned_stop, :] = value[..., owned, :]
+                floor_parts.append(columns.get("prognostic_qv_floor_stats"))
+                # The whole-domain build's own float32 kernels, on the
+                # block's contiguous arrays; only the owned rows are kept.
+                block_base = _slice_base_rows(host_base_whole, start, owned_stop)
+                state.mup[owned_start:owned_stop] = block_float32_difference(
+                    columns["dry_mass"], block_base.mub)[owned]
+                state.thp[:, owned_start:owned_stop] = block_float32_difference(
+                    columns["theta_h"], block_base.thb)[:, owned]
+                mark_timing("mass_theta_upload")
+                # On the block's contiguous arrays (halo row included), as
+                # the whole-domain build does; only the owned rows are kept.
+                state.php[:, owned_start:owned_stop] = np.asarray(
+                    _ops._fp32_geopotential_split(
+                        _slice_base_rows(host_base_whole, start, owned_stop), coord,
+                        columns["dry_mass"], columns["alpha"],
+                        hypsometric_opt=cfg.hypsometric_opt,
+                        column_workers=column_workers)[:, owned],
+                    dtype=np.float32)
+                mark_timing("fp32_geopotential_split_and_upload")
+                qv_b = np.empty(columns["qv_h"].shape, dtype=np.float32)
+                if not _host_arrays.copy_float32(qv_b, columns["qv_h"], workers=column_workers):
+                    qv_b[...] = np.asarray(columns["qv_h"], dtype=np.float32)
+                state.qv[:, owned_start:owned_stop] = qv_b[:, owned]
+                del qv_b
+                for source_name, value in columns["hydrometeors"].items():
+                    getattr(state, source_name.lower())[:, owned_start:owned_stop] = (
+                        _host_float32(value[:, owned]))
+                state.u[:, owned_start:owned_stop] = _host_float32(columns["u"][:, owned])
+                v_rows = slice(owned.start, owned.stop + (1 if last else 0))
+                state.v[:, owned_start:owned_stop + (1 if last else 0)] = (
+                    _host_float32(columns["v"][:, v_rows]))
+                del columns
+                _return_freed_host_memory()
+        finally:
+            _POOL_TRIM.reset(pool_trim)
+        (surface_qv, surface_pressure, intq, dry_mass, dry_pressure,
+         total_pressure_h, alpha) = (whole.pop(name) for name in (
+             "surface_qv", "surface_pressure", "intq", "dry_mass",
+             "dry_pressure", "total_pressure_h", "alpha"))
+        w_mass_h = whole.pop("w_mass_h", None)
+        theta_h = whole.pop("theta_h", None)
+        perturbation_receipt = {}
+        prognostic_qv_floor = (_sh_vertical_undershoot_receipt(floor_parts)
+                               if use_sh_qv else {})
+        hydrometeors = {name: getattr(state, name.lower()) for name in retained_names}
+        if decoded_species:
+            # The receipts the column blocks cannot give, on the assembled
+            # whole arrays: the replay reads the whole domain's operator.
+            source_pd_whole = whole.pop("mass_source_pd_f32", None)
+            target_pd_whole = plan_float32(dry_pressure)
+            surface_pd_whole = plan_float32(fields["PSFC"] - intq)
+            receipt_plan = (preprocess.prepare_wrf_vertical(
+                source_pd_whole, surface_pd_whole, target_pd_whole)
+                if source_pd_whole is not None else None)
+            hydrometeor_initialization = hydrometeor_receipts(
+                order, source_pd_whole, surface_pd_whole, target_pd_whole,
+                receipt_plan, hydrometeors,
+                backend_xp.zeros((cfg.ny, cfg.nx), dtype=backend_xp.float32))
+            del receipt_plan, source_pd_whole, target_pd_whole, surface_pd_whole
+            _return_freed_host_memory()
+        if decoded_numbers:
+            number_receipt = number_moment_receipt()
+        del whole
+        # The base state's float32 copies and its float64 geopotential cache
+        # (about 13 GiB at 4160 x 2450 x 50) are installed after the
+        # receipts above, which read none of them, so they are not resident
+        # under the receipts' whole-domain replay.
         with pm.worker_limit(column_workers):
             state.load_base(coord, host_base, native_host=True)
-    mark_timing("base_state_upload")
-    if not (state_xp is host_numpy and _host_arrays.difference_float32(
-            state.mup, dry_mass, base.mub, workers=column_workers)):
-        state.mup[...] = (plan_float32(dry_mass - base.mub) if device_route else
-                          state_xp.asarray(dry_mass - base.mub, dtype=state_xp.float32))
-    if not (state_xp is host_numpy and _host_arrays.difference_float32(
-            state.thp, theta_h, base.thb, workers=column_workers)):
-        state.thp[...] = (plan_float32(theta_h - base.thb) if device_route else
-                          state_xp.asarray(theta_h - base.thb, dtype=state_xp.float32))
-    mark_timing("mass_theta_upload")
-    state.php[...] = state_xp.asarray(
-        _ops._fp32_geopotential_split(base, coord, dry_mass, alpha,
-                                 hypsometric_opt=cfg.hypsometric_opt,
-                                 column_workers=column_workers),
-        dtype=state_xp.float32)
-    mark_timing("fp32_geopotential_split_and_upload")
-    if not (state_xp is host_numpy and _host_arrays.copy_float32(
-            state.qv, qv_h, workers=column_workers)):
-        state.qv[...] = (plan_float32(qv_h) if device_route else
-                         state_xp.asarray(qv_h, dtype=state_xp.float32))
+        mark_timing("base_state_upload")
     if hydrometeors:
-        for source_name, value in hydrometeors.items():
-            if state_xp is host_numpy:
-                value = _host_float32(value)
-            getattr(state, source_name.lower())[...] = state_xp.asarray(
-                value, dtype=state_xp.float32)
         hydrometeor_initialization["initialized_state_species"] = receipt_fingerprints(
             hydrometeor_initialization["retained_correspondence"].values(),
             lambda name: getattr(state, name))
@@ -5214,7 +5754,7 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         # find" anything, so it is not a fallback and must not be reported
         # as one.
         from gpuwm.ingest.wif_climatology import (
-            describe_wif_source, resolve_wif_climatology)
+            describe_wif_source)
         # aer_init_opt=1/wif_input_opt=1 is real.exe's own spelling of
         # "use the climatology"; the shared resolver honours it as the
         # strict form, and the run-door floor above reads the same one.
@@ -5333,9 +5873,13 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         if _metgrid_analyzed_aerosol or _source_choice == "synthetic":
             wif_resolution = None
         else:
-            wif_resolution = resolve_wif_climatology(
+            # 'auto' and 'climatology' both COMMIT to the dataset: found,
+            # else downloaded under its pin, else refused by name.  'auto'
+            # used to fall through to the synthetic profile with a warning
+            # (a real-data mp=28 run, 2026-10-23 12:58Z).
+            from gpuwm.ingest.wif_climatology import acquire_wif_climatology
+            wif_resolution = acquire_wif_climatology(
                 cfg.wif_climatology_path or None,
-                explicit_required=(_source_choice == "climatology"),
                 requested_by=_source_request)
         wif_climatology_selected = (
             wif_resolution is not None and wif_resolution.resolved)
@@ -5472,8 +6016,9 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
             from gpuwm.ingest.wif_climatology import (
                 load_wif_climatology, wif_lowest_number_for_grid)
             from gpuwm.ingest.cpu_backend import CpuPreprocessBackend
-            emission_resolution = resolve_wif_climatology(
-                cfg.wif_climatology_path or None, explicit_required=True,
+            from gpuwm.ingest.wif_climatology import acquire_wif_climatology
+            emission_resolution = acquire_wif_climatology(
+                cfg.wif_climatology_path or None,
                 requested_by="use_rap_aero_icbc surface emissions")
             emission_latlon = wif_grid_latlon or _wif_grid_latlon_from(grid, state)
             if emission_latlon is None:
@@ -5681,13 +6226,47 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                         theta_h, total_pressure_h,
                         column_workers=column_workers).astype(np.float32))
         hydrometeor_initialization["cold_start_moment_closure"] = closure_receipt
+    elif int(cfg.mp_physics) == 10:
+        # Morrison: real.exe seeds no number, and a mass at N = 0 is sized
+        # at the slope limit (gpuwm/ingest/handover_numbers.py).  The
+        # droplet number is the scheme's own diagnostic NDCNST everywhere;
+        # rain, ice, snow and graupel are diagnosed where an analysed mass
+        # has no number, on every forcing frame, so the ring that carries
+        # the mass carries its number (gpuwm.boundary_fields).
+        from gpuwm.ingest import handover_numbers as _handover
+        if _handover.closure_active(cfg):
+            if getattr(state, "nc", None) is not None:
+                state.nc[...] = state_xp.asarray(
+                    state_xp.float32(_handover.MORRISON_NDCNST_PER_CM3 * 1.0e6)
+                    * state_xp.asarray(alpha, dtype=state_xp.float32),
+                    dtype=state_xp.float32)
+            if hydrometeors:
+                masses = {m: getattr(state, m) for m, _ in
+                          _handover.MORRISON_HANDOVER_NUMBERS
+                          if getattr(state, m, None) is not None}
+                numbers = {n: getattr(state, n) for _, n in
+                           _handover.MORRISON_HANDOVER_NUMBERS
+                           if getattr(state, n, None) is not None}
+                closure_receipt = _handover.close_numbers(
+                    10, masses, numbers,
+                    rho=lambda idx: 1.0 / _handover.take(
+                        alpha, idx, masses["qr"].shape).astype("float64"),
+                    temperature=lambda idx: _handover.temperature_from_theta(
+                        _handover.take(theta_h, idx, masses["qr"].shape),
+                        _handover.take(total_pressure_h, idx, masses["qr"].shape)),
+                    rimed=int(getattr(cfg, "morr_rimed_ice", 1)))
+                if closure_receipt is not None and not boundary_only:
+                    closure_receipt["droplet_number"] = "NDCNST/rho everywhere"
+                    hydrometeor_initialization["cold_start_moment_closure"] = closure_receipt
     mark_timing("cold_start_moment_closure")
     # CUDA transforms may feed a host setup state. Transfer their FP32
     # wind arrays explicitly; NumPy cannot implicitly consume a CuPy array.
-    if state_xp is host_numpy:
-        u, v = _host_float32(u), _host_float32(v)
-    state.u[...] = state_xp.asarray(u, dtype=state_xp.float32)
-    state.v[...] = state_xp.asarray(v, dtype=state_xp.float32)
+    # Column blocks already installed their horizontal winds.
+    if not blocked:
+        if state_xp is host_numpy:
+            u, v = _host_float32(u), _host_float32(v)
+        state.u[...] = state_xp.asarray(u, dtype=state_xp.float32)
+        state.v[...] = state_xp.asarray(v, dtype=state_xp.float32)
     if w_mass_h is None:
         # WRF_REAL_VERTICAL_VELOCITY_POLICY: the source carried no vertical
         # velocity, so W starts at exact zero and the receipt says so.
@@ -5717,7 +6296,16 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     # The native and preprocessing workers above free on their own threads
     # too; the next forcing time and the companion files start without it.
     _return_freed_host_memory()
-    if vertical_disposition_job is not None:
+    if vertical_disposition_job is not None and receipt_joins is not None:
+        # The slot is taken here, where the join writes it, so the receipt's
+        # key order is the joined call's.
+        hydrometeor_initialization["vertical_disposition"] = None
+
+        def join_vertical_disposition(job=vertical_disposition_job,
+                                      into=hydrometeor_initialization):
+            into["vertical_disposition"] = job.result()
+        receipt_joins.append(join_vertical_disposition)
+    elif vertical_disposition_job is not None:
         hydrometeor_initialization["vertical_disposition"] = (
             vertical_disposition_job.result())
         mark_timing("hydrometeor_disposition_receipt_join")

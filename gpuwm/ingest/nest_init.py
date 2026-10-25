@@ -335,7 +335,17 @@ class PendingChildInputs:
                 "parallel child input preparation requires the explicit CPU "
                 "backend; CUDA/custom/auto backends must use workers=1")
         if normalized_backend == "cpu" and self.workers:
-            quotient, remainder = divmod(workers, self.workers)
+            # THE CHILDREN TAKE THE HOST'S THREADS, NOT THE JOB SLOTS.
+            # ``workers`` counts the children prepared at once (default 8);
+            # splitting only that count left the one 1 km nest of an HRRR
+            # 3-1 tree (678 x 534) on eight threads of a 48-core box, its
+            # whole initialization 85-154 s while the card waited.  The
+            # host-step budget (CPU count and memory) is split over the
+            # concurrent children instead; the CPU host steps and the
+            # setup columns are slab-exact, so the count moves no byte.
+            from gpuwm.ingest.cpu_backend import automatic_workers
+            thread_budget = max(int(workers), int(automatic_workers()))
+            quotient, remainder = divmod(thread_budget, self.workers)
             per_slot = tuple(
                 quotient + (1 if index < remainder else 0)
                 for index in range(self.workers))
@@ -676,6 +686,72 @@ def _capture_parent_blend_fields(child_dc: DomainConfig,
             _reconstruction_sint(parent.phb, reg, **sint_args))
 
 
+def _blend_frame_windows(ny: int, nx: int, frame: int):
+    """The child rectangles in which the terrain blend reads its capture.
+
+    :func:`gpuwm.core.nest_interp.blend_terrain` takes the parent value on
+    the ``spec_bdy_width`` outer rows and weights it on the next
+    ``blend_width``; every cell further in keeps the child's own value, so
+    the capture there is never read.  ``None`` when the frame covers the
+    whole child (capture it whole).
+    """
+    frame = int(frame)
+    if frame < 1 or 2 * frame >= ny or 2 * frame >= nx:
+        return None
+    return ((slice(0, frame), slice(0, nx)),
+            (slice(ny - frame, ny), slice(0, nx)),
+            (slice(frame, ny - frame), slice(0, frame)),
+            (slice(frame, ny - frame), slice(nx - frame, nx)))
+
+
+def _capture_parent_blend_frame(child_dc: DomainConfig,
+                                parent_node: DomainNode, *, frame: int):
+    """:func:`_capture_parent_blend_fields` on the blend frame only.
+
+    SINT is a local +-2 stencil, so a window's cells are the full-domain
+    capture's cells to the bit (:func:`gpuwm.core.nest_interp.sint`,
+    ``window``).  The interior, which the blend never reads, is left zero.
+    Breakage it removes: the host SINT of the whole 3-D ``phb`` of a
+    678 x 534 x 50 1 km child ran 17 s on one core, every cell but the
+    outer ten rows thrown away by the blend.
+    """
+    windows = _blend_frame_windows(
+        int(child_dc.run.ny), int(child_dc.run.nx), frame)
+    if windows is None:
+        return _capture_parent_blend_fields(child_dc, parent_node)
+    reg = _mass_registration(child_dc, parent_node)
+    parent = parent_node.state
+    if parent.phb.ndim != 3:
+        raise ValueError(
+            "real child initialization requires a terrain parent with "
+            "three-dimensional phb")
+    sources = (parent.ht, parent.mub2d, parent.phb)
+    captures = []
+    for source in sources:
+        xp = np
+        if not isinstance(source, np.ndarray):
+            import cupy as xp
+        captures.append(xp.zeros(
+            tuple(source.shape[:-2]) + (reg.nyc, reg.nxc), dtype=xp.float32))
+    jobs = [(capture, source, window)
+            for capture, source in zip(captures, sources)
+            for window in windows]
+
+    def fill(job):
+        capture, source, window = job
+        capture[(...,) + window] = sint(source, reg, window=window)
+
+    if all(isinstance(source, np.ndarray) for source in sources):
+        with ThreadPoolExecutor(max_workers=len(jobs),
+                                thread_name_prefix="gpuwm-blend-frame") as pool:
+            for _ in pool.map(fill, jobs):
+                pass
+    else:
+        for job in jobs:
+            fill(job)
+    return tuple(captures)
+
+
 def _blend_terrain_triple(state: DomainState, captures, fine: BaseState,
                           **blend_args) -> tuple[np.ndarray, ...]:
     """WRF's three-operand terrain blend, carried in float64.
@@ -712,10 +788,45 @@ def _blend_terrain_triple(state: DomainState, captures, fine: BaseState,
                 f"terrain blend operands {coarse.shape} (parent capture) and "
                 f"{value.shape} (child base) do not match the child state's "
                 f"{tuple(target.shape)}")
-        blend_terrain(coarse, value, **blend_args)
+        # k is inert in the blend, so each level slab blends on its own
+        # thread into its own rows of ``value`` (same bytes).
+        if value.ndim == 3:
+            _on_level_slabs(
+                value.shape[0],
+                lambda k0, k1, coarse=coarse, value=value: blend_terrain(
+                    coarse[k0:k1], value[k0:k1], **blend_args),
+                cells=value.size)
+        else:
+            blend_terrain(coarse, value, **blend_args)
         target[...] = _as_like(value, target)
         blended.append(value)
     return tuple(blended)
+
+
+#: Below this many cells a level pass stays on the calling thread.
+_LEVEL_SLAB_MIN_CELLS = 1_000_000
+
+
+def _on_level_slabs(levels: int, work, *, cells: int) -> None:
+    """Run ``work(k0, k1)`` over contiguous level slabs on the host's threads.
+
+    For the host-side child adjustments whose levels are independent (the
+    terrain blend, ``adjust_tempqv``): each slab writes only its own rows,
+    so the result is the one-call result to the bit.  Breakage it removes:
+    on a 678 x 534 x 50 1 km child these NumPy passes ran 5 s on one core.
+    """
+    from gpuwm.ingest.cpu_backend import automatic_workers
+    from gpuwm.ingest.real import _axis0_chunks, _column_pool
+
+    slabs = (((0, int(levels)),) if cells < _LEVEL_SLAB_MIN_CELLS else
+             _axis0_chunks(levels, max(1, min(int(levels),
+                                              int(automatic_workers())))))
+    if len(slabs) == 1:
+        work(*slabs[0])
+        return
+    with _column_pool(len(slabs)) as pool:
+        for future in [pool.submit(work, k0, k1) for k0, k1 in slabs]:
+            future.result()
 
 
 def _base_from_blended(cfg, coord: VerticalCoord, p_top: float,
@@ -835,10 +946,20 @@ def _adjust_and_rederive(state: DomainState, cfg, coord: VerticalCoord,
     if column_mass_correction:
         pb = state.pb if state.pb.ndim == 3 else state.pb[:, None, None]
         pressure_perturbation = state.p - pb
-        adjust_tempqv(
-            state.mub2d, save_mub, state.c3h, state.c4h,
-            float(state.p_top), theta_300, pressure_perturbation, state.qv,
-            use_theta_m=0)
+        if isinstance(theta_300, np.ndarray):
+            # Columns are independent level by level: one slab per thread,
+            # each writing only its own rows of theta and qv.
+            c3h, c4h = np.asarray(state.c3h), np.asarray(state.c4h)
+            _on_level_slabs(theta_300.shape[0], lambda k0, k1: adjust_tempqv(
+                state.mub2d, save_mub, c3h[k0:k1], c4h[k0:k1],
+                float(state.p_top), theta_300[k0:k1],
+                pressure_perturbation[k0:k1], state.qv[k0:k1],
+                use_theta_m=0), cells=theta_300.size)
+        else:
+            adjust_tempqv(
+                state.mub2d, save_mub, state.c3h, state.c4h,
+                float(state.p_top), theta_300, pressure_perturbation,
+                state.qv, use_theta_m=0)
     adjusted_theta = theta_300 + np.float32(300.0)
     base = _base_from_blended(cfg, coord, float(state.p_top), blended)
     state.load_base(coord, base)
@@ -1296,6 +1417,10 @@ def finalize_prepared_child(
         init_kwargs["scratch_arena"] = scratch_arena
     if dycore_state_workspace is not None:
         init_kwargs["dycore_state_workspace"] = dycore_state_workspace
+    # The hydrometeor disposition receipt describes the state and decides
+    # nothing below, so it is joined after the blend (end of this function).
+    receipt_joins: list = []
+    init_kwargs["receipt_joins"] = receipt_joins
     if initial_perturbation is not None:
         from gpuwm.ingest.init_perturbation import (
             build_initial_state_perturbation)
@@ -1384,9 +1509,12 @@ def finalize_prepared_child(
         route=_WATER_ROUTE)
     save_mub = state.mub2d.copy()
 
-    # (2) Scope-trimmed SINT capture: ht/mub/phb ONLY.
-    ht_int, mub_int, phb_int = _capture_parent_blend_fields(
-        child_dc, parent_node)
+    # (2) Scope-trimmed SINT capture: ht/mub/phb ONLY, and only on the
+    # blend frame the blend below reads it in.
+    spec_width = int(cfg.spec_bdy_width)
+    blend_width = int(getattr(child_dc, "blend_width", 5))
+    ht_int, mub_int, phb_int = _capture_parent_blend_frame(
+        child_dc, parent_node, frame=spec_width + max(blend_width, 0))
     # A sealed root can have been prepared on CUDA while deterministic child
     # workers use the CPU backend (or vice versa).  SINT follows the parent
     # backend, so move its three retained operands to the new child's backend
@@ -1399,8 +1527,6 @@ def finalize_prepared_child(
     # blend-ht-then-derive: base-state construction is nonlinear.  The
     # fine operand is the child's own float64 base, so the blended base
     # stays float64 (_blend_terrain_triple).
-    spec_width = int(cfg.spec_bdy_width)
-    blend_width = int(getattr(child_dc, "blend_width", 5))
     blended = _blend_terrain_triple(
         state, (ht_int, mub_int, phb_int), real.base,
         spec_bdy_width=spec_width, blend_width=blend_width)
@@ -1415,6 +1541,8 @@ def finalize_prepared_child(
     # The three SINT captures and adjustment work arrays are init-only.  Soil
     # remains exactly the pre-blend object constructed above.
     del ht_int, mub_int, phb_int, save_mub, blended
+    for join in receipt_joins:
+        join()
     return ChildInitResult(
         state=state, grid=grid, coord=coord, real=updated,
         static_fields=static_fields, horizontal=horizontal, soil=soil,

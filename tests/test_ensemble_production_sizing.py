@@ -131,6 +131,23 @@ def test_original_forecast_and_health_peak_is_added_once_with_external_allocator
     assert "health" in margin.evidence and "EXTERNAL_MARGIN_BYTES" in margin.evidence
 
 
+def test_completed_member_cyclone_swaths_still_count_in_next_wave_admission():
+    inputs, collector = prepared(), Collector(31)
+    collector.cyclone_request = dict(grid_id=1, products=['max-wind', 'rain'],
+        common_grid=dict(south=18, north=30, west=-98, east=-80, ny=401, nx=601))
+    components = ordinary_output_memory_components(inputs.experiment, collector)
+    rows = {row.name: row for row in components}
+    retained = rows['cyclone_full_roster_swaths'].inventory(1)['required_bytes']
+    # Even one active forecast must reserve maps for all 31 completed/live
+    # captures. Pricing only its ordinary history workspace admitted a card
+    # too small to hold the final roster's common-grid planes.
+    assert retained >= 31 * 401 * 601 * 95
+    assert rows['cyclone_swath_call_peak'].fixed_bytes > 401 * 601 * 8
+    collector.cyclone_request = None
+    assert all(not row.name.startswith('cyclone_')
+               for row in ordinary_output_memory_components(inputs.experiment, collector))
+
+
 def test_default_session_uses_every_visible_card_and_original_member_clocks(tmp_path, monkeypatch):
     seen = preflight(monkeypatch)
     inputs, xp = prepared(), DeviceModule(2, reusable=128)

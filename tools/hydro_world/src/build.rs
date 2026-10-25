@@ -112,6 +112,8 @@ pub struct ReachIn {
     pub line: Vec<(f64, f64)>,
     /// Exterior and holes, lon/lat.
     pub divide: Option<(Vec<(f64, f64)>, Vec<Vec<(f64, f64)>>)>,
+    /// ESRI parts may contain several exteriors; preserve every part.
+    pub esri_parts: bool,
     pub local_area_km2: f64,
     pub slope: f64,
     pub hf_id: f64,
@@ -186,7 +188,8 @@ pub fn resolve_row(table: &source::SourceTable, row: &str, b: &BBox) -> Result<S
 pub fn resolve(table: &source::SourceTable, row: &str, b: &BBox) -> Result<(String, u32)> {
     let base = |id: &str| table.rows.iter().find(|r| r.id == id).and_then(|r| r.build.as_ref()).and_then(|s| s.grid_arcsec);
     if row != "auto" {
-        return Ok((row.to_string(), base(row).map_or(1, |res| grid::coarsening(b, res, None))));
+        let limit = table.rows.iter().find(|r| r.id == row).and_then(|r| r.build.as_ref()).and_then(|s| s.grid_max_cells);
+        return Ok((row.to_string(), base(row).map_or(1, |res| grid::coarsening(b, res, limit))));
     }
     for rule in &table.auto {
         table.rows.iter().find(|r| r.id == rule.row).ok_or_else(|| format!("auto rule names unknown row {}", rule.row))?;
@@ -231,7 +234,15 @@ pub fn build(o: &Options) -> Result<Built> {
     let hydro = match spec.method.as_str() {
         "dem-d8" => dem_hydro(row, &spec, &o.bbox, &o.data_root, coarsen, o.device, o.parent_grid.as_ref(), &mut rc)?,
         "vector-basins" => crate::vector::vector_hydro(row, &spec, &o.bbox, &o.data_root, coarsen, &mut rc)?,
-        m => return Err(format!("build method {m} is not dem-d8 or vector-basins").into()),
+        "vector-attributes" => {
+            // The native polygons stay intact. Only the shared parameter
+            // sampling grid follows the same bounded-grid policy as DEM rows.
+            if let Some(res) = spec.grid_arcsec {
+                rc.count("grid", Grid::for_box(&o.bbox, res * coarsen as f64)?);
+            }
+            crate::native::hydro(row, &spec, &o.bbox, &o.data_root, o.parent_grid.as_ref(), &mut rc)?
+        },
+        m => return Err(format!("unknown build method {m}").into()),
     };
     let params = match &o.params {
         Some(p) => Some(serde_json::from_slice::<BTreeMap<String, Value>>(&std::fs::read(p)?)?),
@@ -682,6 +693,7 @@ fn dem_hydro(row: &SourceRow, spec: &BuildSpec, b: &BBox, root: &Path, coarsen: 
                 });
                 let zt = &zonal[k];
                 ReachIn {
+                    esri_parts: false,
                     down: reaches.down[k].map(|d| d as usize),
                     line,
                     divide,
@@ -975,7 +987,9 @@ pub fn assemble(row: &SourceRow, spec: &BuildSpec, rec: &Recipes, b: &BBox, h: &
             };
             let dv = Divide {
                 fid: 0,
-                geom: r.divide.as_ref().map(|(e, holes)| Geometry(geo::gpkg_polygon(srs_i, &proj_line(e), &holes.iter().map(|h| proj_line(h)).collect::<Vec<_>>()))),
+                geom: r.divide.as_ref().map(|(e, holes)| Geometry(if r.esri_parts {
+                    geo::gpkg_esri_parts(srs_i, &std::iter::once(e).chain(holes.iter()).map(|r| proj_line(r)).collect::<Vec<_>>())
+                } else { geo::gpkg_polygon(srs_i, &proj_line(e), &holes.iter().map(|h| proj_line(h)).collect::<Vec<_>>()) })),
                 divide_id: Some(format!("cat-{n}")),
                 toid: Some(toid(k)),
                 kind: Some(if terminal { "terminal" } else { "network" }.into()),

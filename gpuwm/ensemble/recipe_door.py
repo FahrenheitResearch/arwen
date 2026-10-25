@@ -123,6 +123,170 @@ class _PreparationAdmission:
                 "limit_now": self.limit(), "peak_concurrent": self.peak_running,
                 "basis": "min of CPU workers and host headroom share / per-preparation peak"}
 
+
+#: Box fetch sockets one source download needs to make headway; the most
+#: downloads that run at once is the box's fetch connection cap over this.
+DOWNLOAD_MIN_STREAMS = 4
+#: Seconds a newly admitted download is given to lease its sockets before
+#: the free-socket probe decides whether another one may start.
+DOWNLOAD_SETTLE_SECONDS = 5.0
+
+
+def _folder_bytes(root):
+    total = 0
+    for directory, _folders, files in os.walk(root):
+        for name in files:
+            try:
+                total += os.stat(os.path.join(directory, name)).st_size
+            except OSError:
+                pass
+    return total
+
+
+class _DownloadAdmission:
+    """Source downloads run beside the host-RAM preparation slots, bounded by sockets.
+
+    A download holds no host-RAM preparation slot (:class:`_PreparationAdmission`):
+    it is network work.  Its own bound is the box's fetch sockets
+    (:mod:`gpuwm.fetch_connections`, shared with every gpuwm process on the
+    box): one download always runs; another starts only while the running
+    ones leave at least ``DOWNLOAD_MIN_STREAMS`` box sockets idle (a link the
+    running downloads already fill gains nothing from one more, and a socket
+    starved download only waits on the slot budget), and never more than the
+    cap over ``DOWNLOAD_MIN_STREAMS`` at once.  Waiters start in member order,
+    so the earliest members' inputs arrive first.  The concrete breakage it
+    prevents: a cold 36-member HRRR ensemble (box J, 2026-10-24, 3,286 s) ran
+    each leader's download inside its host-RAM slot (10 at once), so 10 of 20
+    downloads queued behind decodes while the link sat idle.
+    """
+
+    def __init__(self, *, clock=None, free_slots=None, cap=None):
+        import threading
+        import time as _time
+        from gpuwm import fetch_connections
+        self._clock = clock or _time.monotonic
+        self._free_slots = free_slots or fetch_connections.free_slots
+        self.cap = int(cap if cap is not None else fetch_connections.max_connections())
+        self.limit = max(1, self.cap // DOWNLOAD_MIN_STREAMS)
+        self.running = 0
+        self.peak_running = 0
+        self.admitted = 0
+        self._waiting = set()
+        self._last_admit = None
+        self._first_start = None
+        self._last_end = None
+        self.bytes = 0
+        self.condition = threading.Condition()
+
+    def _admissible(self):
+        if self.running == 0:
+            return True
+        if self.running >= self.limit:
+            return False
+        if self._clock() - self._last_admit < DOWNLOAD_SETTLE_SECONDS:
+            return False
+        try:
+            return self._free_slots() >= DOWNLOAD_MIN_STREAMS
+        except Exception:  # noqa: BLE001 - an unreadable socket table admits by the cap alone
+            return True
+
+    def acquire(self, order):
+        with self.condition:
+            self._waiting.add(order)
+            try:
+                while not (order == min(self._waiting) and self._admissible()):
+                    self.condition.wait(timeout=1.0)
+            finally:
+                self._waiting.discard(order)
+            self.running += 1
+            self.admitted += 1
+            self.peak_running = max(self.peak_running, self.running)
+            self._last_admit = self._clock()
+            if self._first_start is None:
+                self._first_start = self._last_admit
+            self.condition.notify_all()
+
+    def release(self, folder=None):
+        moved = 0 if folder is None else _folder_bytes(folder)
+        with self.condition:
+            self.running -= 1
+            self.bytes += moved
+            self._last_end = self._clock()
+            self.condition.notify_all()
+
+    def receipt(self):
+        span = (None if self._first_start is None or self._last_end is None
+                else round(self._last_end - self._first_start, 3))
+        return {"box_fetch_connection_cap": self.cap, "most_at_once": self.limit,
+                "min_idle_sockets_to_start_another": DOWNLOAD_MIN_STREAMS,
+                "downloads": self.admitted, "peak_concurrent": self.peak_running,
+                "folder_bytes": self.bytes, "span_seconds": span,
+                "mean_mib_per_second": (None if not span else round(self.bytes / span / 2**20, 2)),
+                "basis": "outside the host-RAM preparation slots; started while box fetch sockets sit idle"}
+
+
+class _MemberStages:
+    """Which bound one member preparation is under, from the stages it enters.
+
+    Its fetch stage (a leader's download) runs under the download admission
+    and outside the host-RAM slots; the first stage after it (the decode,
+    whatever the chain calls it) takes a host-RAM slot, so a decode starts
+    only once its inputs are on disk.  A follower's fetch only verifies its
+    leader's folder, so it takes no download admission.  Leaving the
+    download releases the folder's followers.
+    """
+
+    def __init__(self, *, admission, downloads, order, leader, folder, fetched):
+        import threading
+        import time as _time
+        self._clock = _time.monotonic
+        self._lock = threading.RLock()
+        self.admission, self.downloads = admission, downloads
+        self.order, self.leader, self.folder, self.fetched = order, leader, folder, fetched
+        self.download_held = self.slot_held = False
+        self.timings = {}
+        self._download_began = None
+
+    def __call__(self, event, fields):
+        if event != "stage_started":
+            return
+        with self._lock:
+            if fields.get("stage") == "fetch":
+                if self.leader and not (self.download_held or self.slot_held
+                                        or "download_seconds" in self.timings):
+                    waited = self._clock()
+                    self.downloads.acquire(self.order)
+                    self._download_began = self._clock()
+                    self.timings["download_admission_wait_seconds"] = round(
+                        self._download_began - waited, 3)
+                    self.download_held = True
+                return
+            self._enter_slot()
+
+    def _leave_download(self):
+        if self.download_held:
+            self.download_held = False
+            self.timings["download_seconds"] = round(self._clock() - self._download_began, 3)
+            self.downloads.release(self.folder)
+        if self.fetched is not None:
+            self.fetched.set()
+
+    def _enter_slot(self):
+        if self.slot_held:
+            return
+        self._leave_download()
+        waited = self._clock()
+        self.admission.__enter__()
+        self.slot_held = True
+        self.timings["preparation_slot_wait_seconds"] = round(self._clock() - waited, 3)
+
+    def close(self):
+        with self._lock:
+            self._leave_download()
+            if self.slot_held:
+                self.slot_held = False
+                self.admission.__exit__(None, None, None)
+
 #: The recipes a front door can select.  ``input-ensemble`` is the
 #: automatic choice for a source with operational members and
 #: ``recentered`` has no observation-calibrated amplitude, so neither is
@@ -663,30 +827,81 @@ def _fetch_seconds(directories, start_unix, end_unix):
     return union_seconds(spans)
 
 
+def member_download_request(config, experiment, options=None):
+    """The request a member's chain fetch makes, and its cache key.
+
+    Keyed on the request the chain's fetch stage makes: the model top this
+    config's ladder needs and the host the door pins.
+    """
+    import tomllib
+
+    from gpuwm.go_cli import fetch_request, managed_download_key, pin_request, pinned_transport
+
+    posting = _posting(options or {})
+    hints = tomllib.loads(Path(config).read_text(encoding="utf-8"))["fetch"]
+    pinned, _basis = pinned_transport(hints, posting.get("transport"))
+    request = pin_request(fetch_request(hints, p_top=experiment.vertical.p_top), pinned)
+    return request, managed_download_key(request)
+
+
+class _SharedDownloads:
+    """One download per shared source folder; its other members wait for it.
+
+    Members whose preparations make the same fetch request (one earlier
+    HRRR cycle under several physics tails, say) share one download
+    folder.  The first preparation of a folder is its downloader; every
+    other one waits here, before it takes a preparation slot, until the
+    downloader has left its download (its first stage after the fetch, or
+    the end of its preparation, whichever is first; :class:`_MemberStages`),
+    and then runs its own chain, whose fetch finds the folder complete and
+    only verifies it.  The concrete breakage it prevents: a
+    36-member HRRR ensemble (2026-10-24) ran every such fetch at once; the
+    losers sat in their CPU slots on the folder's writer lock, and member
+    4 refused after 600 s while its sibling was still downloading.
+    """
+
+    def __init__(self):
+        import threading
+        self._guard = threading.Lock()
+        self._folders = {}
+
+    def claim(self, key, member_id, folder):
+        """``(leader, row)`` for this request key; ``folder()`` names it once."""
+        import threading
+        with self._guard:
+            row = self._folders.get(key)
+            if row is not None:
+                return False, row
+            row = {"folder": folder(), "member_id": member_id, "fetched": threading.Event()}
+            self._folders[key] = row
+            return True, row
+
+
 def prepare_member(config, experiment, *, source, directory, downloads, geog_root,
                    recipe_sha256, options=None, composition_bank=None,
-                   composition_source_key=None, member_id=None):
+                   composition_source_key=None, member_id=None, download_dir=None,
+                   stage_gate=None):
     """Prepare every domain from one trajectory through its ordinary source chain.
 
     The chain consumes this member's complete experiment, including its
     nests.  Its prepare-only result names the sealed tree when there is
     more than one domain, so no child can inherit another member's inputs.
+    ``download_dir`` is the folder the door chose for this request (see
+    :class:`_SharedDownloads`); ``stage_gate(event, fields)`` sees every
+    event before it is written and may block there (:class:`_MemberStages`
+    holds a stage until its admission lets it start).
     """
-    import tomllib
-
     from gpuwm import regional_preparation, runplan
-    from gpuwm.go_cli import fetch_request, managed_download_dir, pin_request, pinned_transport
+    from gpuwm.go_cli import managed_download_dir
 
     posting = _posting(options or {})
     chain = regional_preparation.member_preparation_chain(source)
     owner = regional_preparation.preparation_chains()[chain]
-    hints = tomllib.loads(Path(config).read_text(encoding="utf-8"))["fetch"]
-    # Keyed on the request the chain's fetch stage makes: the model top
-    # this config's ladder needs and the host the door pins.
-    pinned, _basis = pinned_transport(hints, posting.get("transport"))
-    request = pin_request(fetch_request(hints, p_top=experiment.vertical.p_top), pinned)
+    if download_dir is None:
+        request, _key = member_download_request(config, experiment, options)
+        download_dir = managed_download_dir(downloads, request)
     run_options = {"geog_root": str(geog_root), "supplement": [],
-                   "data_dir": str(managed_download_dir(downloads, request)), **posting}
+                   "data_dir": str(download_dir), **posting}
     plan = SimpleNamespace(run_options=run_options, config_intent={}, sha256=recipe_sha256)
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
@@ -704,6 +919,8 @@ def prepare_member(config, experiment, *, source, directory, downloads, geog_roo
             # A deterministic canary refusal stops the producer at its next
             # progress event instead of paying for every remaining boundary.
             check()
+            if stage_gate is not None:
+                stage_gate(event, fields)
             return super().emit(event, **fields)
     events = _CanaryEvents(directory / "prepare-events.jsonl", mirror=None)
     observer = runplan.RunObserver(events)
@@ -1244,17 +1461,30 @@ def run_recipe_ensemble(args, request, *, observer=None, options=None) -> int:
         except AttributeError:
             cpu_workers = os.cpu_count() or 1
         workers = max(1, min(len(plans), cpu_workers))
+        # Concurrent members each own a decoded staging tree. Limit that
+        # concurrency on scratch-constrained hosts without restricting the
+        # native threads within an individual preparation.
+        worker_cap = os.environ.get("GPUWM_ENSEMBLE_PREPARATION_WORKERS")
+        if worker_cap is not None:
+            if not worker_cap.isdecimal() or int(worker_cap) < 1:
+                raise ValueError("GPUWM_ENSEMBLE_PREPARATION_WORKERS must be a positive integer")
+            workers = min(workers, int(worker_cap))
         preparation_started = time.monotonic()
         preparation_started_unix = time.time()
         admission = _PreparationAdmission(workers)
+        download_admission = _DownloadAdmission()
         receipt["preparation_execution"] = {"backend": "independent_member_workers",
             "workers": workers, "available_cpu_workers": cpu_workers,
+            "requested_worker_cap": worker_cap,
             "host_admission": admission.receipt(),
             "shared_binding_policy": "one preparation per exact source and physics binding"}
         jobs, by_binding = [], {}
+        shared_downloads = _SharedDownloads()
 
         def prepare_job(member, member_config, member_wps, member_experiment, binding, directory):
             started = time.monotonic()
+            download = None
+            leader = False
             try:
                 reused_run = None
                 if binding.key in reusable:
@@ -1263,22 +1493,54 @@ def run_recipe_ensemble(args, request, *, observer=None, options=None) -> int:
                     if canaries is not None:
                         canaries.submit({"source": member.trajectory.source, **result})
                 else:
-                  with admission:
-                    result = prepare_member(
-                        member_config, member_experiment, source=member.trajectory.source,
-                        directory=directory, downloads=case_root, geog_root=geog_root,
-                        composition_bank=(composition_banks[binding.source_key].name
-                                          if binding.source_key in composition_banks else None),
-                        composition_source_key=binding.source_key,
-                        recipe_sha256=recipe.sha256, member_id=member.index, options={**options,
-                        "_head_canaries": canaries, "_canary_namelist": member_wps})
-                return result, reused_run, time.monotonic() - started
+                    from gpuwm.go_cli import managed_download_dir
+                    request, key = member_download_request(member_config, member_experiment, options)
+                    leader, row = shared_downloads.claim(
+                        key, member.index, lambda: managed_download_dir(case_root, request))
+                    download = {"folder": str(row["folder"]),
+                                "downloaded_by_member": row["member_id"], "wait_seconds": 0.0}
+                    if not leader:
+                        if not row["fetched"].is_set():
+                            _say(f"member {member.index} waits for member {row['member_id']}'s "
+                                 f"download of {Path(row['folder']).name}")
+                        waited = time.monotonic()
+                        row["fetched"].wait()
+                        download["wait_seconds"] = round(time.monotonic() - waited, 3)
+                    # The download runs under its own admission; the decode
+                    # takes a host-RAM slot only once its inputs are on disk.
+                    gate = _MemberStages(admission=admission, downloads=download_admission,
+                                         order=member.index, leader=leader, folder=row["folder"],
+                                         fetched=row["fetched"] if leader else None)
+                    try:
+                        result = prepare_member(
+                            member_config, member_experiment, source=member.trajectory.source,
+                            directory=directory, downloads=case_root, geog_root=geog_root,
+                            composition_bank=(composition_banks[binding.source_key].name
+                                              if binding.source_key in composition_banks else None),
+                            composition_source_key=binding.source_key,
+                            recipe_sha256=recipe.sha256, member_id=member.index, options={**options,
+                            "_head_canaries": canaries, "_canary_namelist": member_wps},
+                            download_dir=row["folder"], stage_gate=gate)
+                    finally:
+                        gate.close()
+                        download.update(gate.timings)
+                return result, reused_run, time.monotonic() - started, download
             except BaseException as error:
                 from gpuwm.ensemble.execution import name_failing_members
                 name_failing_members(error, (member.index,))
                 raise
+            finally:
+                if leader:
+                    # A failed or fetch-less downloader still releases its
+                    # followers; each one's own fetch then resumes the folder.
+                    row["fetched"].set()
 
-        pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ensemble-prepare")
+        # One thread per preparation: a thread waiting on a download or a
+        # leader's folder holds no CPU, and the host-RAM admission bounds
+        # the decodes.  With only ``workers`` threads, later cycles' leaders
+        # could not start their downloads until an earlier decode ended.
+        pool = ThreadPoolExecutor(max_workers=max(workers, min(len(plans), 512)),
+                                  thread_name_prefix="ensemble-prepare")
         try:
             for plan in plans:
                 member = plan.member
@@ -1306,7 +1568,7 @@ def run_recipe_ensemble(args, request, *, observer=None, options=None) -> int:
             for plan, binding, original_member, future in jobs:
                 member = plan.member
                 where.update(stage="prepare", member_id=member.index)
-                result, reused_run, elapsed = future.result()
+                result, reused_run, elapsed, download = future.result()
                 prepared[member.index] = dict(result)
                 if original_member is not None:
                     _say(f"member {member.index} reuses member {original_member}'s prepared source; "
@@ -1321,6 +1583,7 @@ def run_recipe_ensemble(args, request, *, observer=None, options=None) -> int:
                     "physics_tail_sha256": binding.physics_tail,
                     "start_lead_hours": plan.start_lead,
                     "preparation_elapsed_seconds": elapsed,
+                    **({} if download is None else {"download": download}),
                     **({} if not recipe.member_variants else
                        {"variant": recipe.member_variants[member.index]}),
                     **({} if original_member is None else
@@ -1350,6 +1613,7 @@ def run_recipe_ensemble(args, request, *, observer=None, options=None) -> int:
                        "fetch": fetched,
                        "prepare": receipt["preparation_execution"]["elapsed_seconds"] - fetched}
         receipt["preparation_execution"]["host_admission"] = admission.receipt()
+        receipt["preparation_execution"]["download_admission"] = download_admission.receipt()
 
         for bank in composition_banks.values():
             bank.cleanup()

@@ -1613,7 +1613,11 @@ def validate_parent_history(
             "offline child forcing requires at least two parent history frames")
     if len({frame.geometry_sha256 for frame in frames}) != 1:
         raise OfflineChildContractError(
-            "parent history geometry/static state changes between frames")
+            "parent history geometry/static state changes between frames "
+            "(a moving parent, such as a storm run's following nest: a child "
+            "placed once on one frame's grid would read the others at the "
+            "wrong ground); gpuwm downscale --follow storm|parent|fixed "
+            "reads each frame on its own footprint")
     if len({frame.source_kind for frame in frames}) != 1:
         raise OfflineChildContractError(
             "parent history mixes gpuwm and stock-WRF producers")
@@ -1767,6 +1771,11 @@ def _offline_transition_contract(
 
     source_mp, target_mp = int(source_mp_physics), int(target_mp_physics)
     _require_cross_scheme_contract(source_mp, target_mp)
+    # HN1 (correct-mode key hydrometeor_handover_numbers) rides to the
+    # resolver, which reads it off the child to decide whether the edge
+    # carries the parent's numbers; exact mode turns the carry off.
+    from gpuwm.ingest.handover_numbers import closure_active
+    handover_numbers = closure_active(child_cfg)
     parent = SimpleNamespace(
         mp_physics=source_mp, moist=True, moist_cq=True,
         morr_rimed_ice=(1 if morr_rimed_ice is None else int(morr_rimed_ice)),
@@ -1778,6 +1787,7 @@ def _offline_transition_contract(
             mp_physics=target_mp, moist=True, moist_cq=True,
             morr_rimed_ice=1, wsm6_hail_opt=0, wdm6_hail_opt=0,
             wdm6_ccn_conc=1.0e8,
+            hydrometeor_handover_numbers=handover_numbers,
             nest_microphysics_transition=_mt.SAME_SCHEME_POLICY)
     else:
         if int(getattr(child_cfg, "mp_physics")) != target_mp:
@@ -1792,6 +1802,7 @@ def _offline_transition_contract(
             wsm6_hail_opt=int(getattr(child_cfg, "wsm6_hail_opt", 0)),
             wdm6_hail_opt=int(getattr(child_cfg, "wdm6_hail_opt", 0)),
             wdm6_ccn_conc=float(getattr(child_cfg, "wdm6_ccn_conc", 1.0e8)),
+            hydrometeor_handover_numbers=handover_numbers,
             nest_microphysics_transition=_mt.SAME_SCHEME_POLICY)
     try:
         return _mt.resolve_microphysics_transition(parent, child)
@@ -1870,7 +1881,11 @@ def _parent_transition_donor(raw, moisture, coeffs, *, p_top: float,
         "c1h": np.ascontiguousarray(coeffs["c1h"], dtype=np.float32),
         "c2h": np.ascontiguousarray(coeffs["c2h"], dtype=np.float32),
     }
-    for name in ("qv", "qc", "qr", "qi", "qs", "qg", "qh", "qir", "qib"):
+    # nr/ni: the numbers a mixed edge carries rather than re-diagnoses
+    # (microphysics_transition._CARRIED_NUMBERS); None when the parent
+    # scheme has none, and the kernel's closure then runs.
+    for name in ("qv", "qc", "qr", "qi", "qs", "qg", "qh", "qir", "qib",
+                 "nr", "ni"):
         value = moisture.get(name)
         planes[name] = (None if value is None
                         else np.ascontiguousarray(value, dtype=np.float32))
@@ -1992,6 +2007,77 @@ _SURFACE_OPTIONAL_FIELDS = (
 )
 _SURFACE_CATEGORY_FIELDS = frozenset({"LU_INDEX", "ISLTYP"})
 _SURFACE_SOIL_FIELDS = frozenset({"TSLB", "SMOIS", "SH2O"})
+
+#: Noah's four layer midpoints in whole centimetres (0-10, 10-40, 40-100 and
+#: 100-200 cm), the ladder a parent history without a ZS record is read on.
+NOAH_LAYER_MIDPOINTS_CM = (5, 25, 70, 150)
+
+
+def parent_soil_onto_child_levels(parent_layers: int,
+                                  num_soil_layers: int) -> bool:
+    """Whether a parent's soil column is rebuilt on the child LSM's levels.
+
+    One edge: a four-layer Noah parent under a RUC child (six or nine
+    levels), the child a refined nest-down takes when it runs the HRRR-shape
+    suite under a Noah parent (:func:`gpuwm.physics_menu.
+    convection_permitting_child_profile`).  Every other mismatch stays the
+    refusal it was.
+    """
+
+    from gpuwm.ingest.ruc_soil import RUC_LEVEL_DEPTHS_M
+
+    return (int(parent_layers) == len(NOAH_LAYER_MIDPOINTS_CM)
+            and int(num_soil_layers) in RUC_LEVEL_DEPTHS_M
+            and int(num_soil_layers) != int(parent_layers))
+
+
+def noah_soil_onto_ruc_levels(fields: dict, *, parent_zs_m,
+                              num_soil_layers: int) -> dict:
+    """``fields`` with TSLB/SMOIS rebuilt on RUC's levels, SH2O dropped.
+
+    The parent's four Noah layers are a LAYER source in WRF's sense, so the
+    column is real.exe's ``init_soil_3_real`` for a layer source
+    (:func:`gpuwm.ingest.ruc_soil.remap_soil_to_ruc_levels`): anchored at
+    0 m by the skin temperature and at 3 m by the child's deep temperature
+    (TMN), moisture extrapolated to the surface off the top two layers.
+    SH2O is left to the land model's own initialization, as a RUC cold start
+    has it.  Water columns take the skin temperature and saturated moisture,
+    as that routine writes them.
+    """
+
+    from gpuwm.ingest.ruc_soil import remap_soil_to_ruc_levels
+
+    if parent_zs_m is None:
+        levels_cm = np.asarray(NOAH_LAYER_MIDPOINTS_CM, dtype=np.int64)
+    else:
+        levels_cm = np.rint(np.asarray(parent_zs_m, dtype=np.float64)
+                            .reshape(-1) * 100.0).astype(np.int64)
+    columns = remap_soil_to_ruc_levels(
+        source_temperature=np.asarray(fields["TSLB"], dtype=np.float32),
+        source_moisture=np.asarray(fields["SMOIS"], dtype=np.float32),
+        source_levels_cm=levels_cm, source_geometry="layers",
+        skin_temperature=np.asarray(fields["TSK"], dtype=np.float32),
+        deep_temperature=np.asarray(fields["TMN"], dtype=np.float32),
+        landmask=np.asarray(fields["LANDMASK"], dtype=np.float32),
+        num_soil_layers=int(num_soil_layers))
+    out = {name: value for name, value in fields.items() if name != "SH2O"}
+    out["TSLB"] = columns.soil_temperature
+    out["SMOIS"] = columns.soil_moisture
+    out["TSK"] = columns.skin_temperature
+    return out
+
+
+def noah_soil_onto_ruc_receipt(parent_zs_m, num_soil_layers: int) -> dict:
+    return {
+        "law": "init_soil_3_real, layer source (module_soil_pre.F)",
+        "source_layer_midpoints_cm": (
+            list(NOAH_LAYER_MIDPOINTS_CM) if parent_zs_m is None else
+            [int(v) for v in np.rint(np.asarray(parent_zs_m).reshape(-1)
+                                     * 100.0)]),
+        "child_levels": int(num_soil_layers),
+        "sh2o": "dropped; the land model initializes it",
+    }
+
 
 #: The remedy half of the child-surface refusal, shared by the front
 #: door's early check (`gpuwm downscale`) and the runner's late guard so
@@ -2315,10 +2401,16 @@ def derive_child_surface_from_parent(
         if int(num_soil_layers) > 0:
             soil_dim = ("soil_layers_stag" in dataset.dimensions
                         and len(dataset.dimensions["soil_layers_stag"]))
-            if soil_dim != int(num_soil_layers):
+            remap_soil = bool(soil_dim) and parent_soil_onto_child_levels(
+                soil_dim, num_soil_layers)
+            if soil_dim != int(num_soil_layers) and not remap_soil:
                 raise OfflineChildContractError(
                     f"{path} soil_layers_stag={soil_dim} does not match "
                     f"the child LSM's {num_soil_layers} soil layers")
+        else:
+            remap_soil = False
+        parent_zs = (np.asarray(dataset.variables["ZS"][:]).reshape(-1)
+                     if remap_soil and "ZS" in dataset.variables else None)
         parent_fields: dict[str, np.ndarray] = {}
         for name in (_SURFACE_REQUIRED_FIELDS + _SURFACE_OPTIONAL_FIELDS):
             if name in _SURFACE_NOT_DERIVED_FIELDS:
@@ -2357,7 +2449,9 @@ def derive_child_surface_from_parent(
                 flag_category=flag)
             branch_counts[name] = dict(counts)
         result = np.ascontiguousarray(result, dtype=np.float32)
-        expected_shape = ((int(num_soil_layers), child_ny, child_nx)
+        soil_count = (result.shape[0] if remap_soil
+                      else int(num_soil_layers))
+        expected_shape = ((soil_count, child_ny, child_nx)
                           if name in _SURFACE_SOIL_FIELDS
                           else (child_ny, child_nx))
         if tuple(result.shape) != expected_shape:
@@ -2373,8 +2467,13 @@ def derive_child_surface_from_parent(
             raise OfflineChildContractError(
                 f"{path}/{name} derived a non-finite child value")
         fields[name] = result
+    if remap_soil:
+        fields = noah_soil_onto_ruc_levels(
+            fields, parent_zs_m=parent_zs, num_soil_layers=num_soil_layers)
 
     receipt = MappingProxyType({
+        **({"soil_levels_rebuilt": noah_soil_onto_ruc_receipt(
+            parent_zs, num_soil_layers)} if remap_soil else {}),
         "path": str(path.resolve()),
         "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         "source": "parent-history-interpolated",
@@ -2892,6 +2991,21 @@ def interpolate_parent_initial_state(
             coupled=False, backend=backend, hypsometric_opt=hypsometric_opt)
         conversion_receipt = converted.receipt()
         donor = converted.fields
+        from gpuwm.ingest.handover_numbers import (
+            MORRISON_HANDOVER_NUMBERS, closure_active)
+        if target_mp == 10 and closure_active(child_cfg):
+            # The edge kernel enters Morrison at its slope limit (the N = 0
+            # Morrison would size by itself: morrison_edge_number), which is
+            # the very defect gpuwm/ingest/handover_numbers.py closes.  On
+            # this offline route the numbers are diagnosed from the
+            # converted masses instead, on the parent's own grid.
+            donor = {name: np.array(_to_host(value), dtype=np.float32)
+                     for name, value in donor.items()}
+            for _, number in MORRISON_HANDOVER_NUMBERS:
+                if number in donor:
+                    donor[number][...] = 0.0
+            close_child_numbers(10, donor, raw, morr_rimed_ice=morr_rimed_ice,
+                                cfg=child_cfg)
     source_mixing = {
         name: sint(_backend_array(value, backend), registrations[""])
         for name, value in donor.items()
@@ -2945,6 +3059,27 @@ def interpolate_parent_initial_state(
         fields, terrain_receipt = _onto_child_terrain(
             fields, source_mixing, geography=geography, child_cfg=child_cfg,
             hybrid_opt=hybrid_opt, etac=etac, p_top=p_top)
+    # Every child number beside a mass, last, on the child's own state: the
+    # parent's numbers ride the interpolation, and what is still at zero
+    # beside a positive mass (a moment the parent's scheme does not carry,
+    # or a SINT clamp) is diagnosed (gpuwm/ingest/handover_numbers.py).
+    # This state is also every own-terrain boundary frame
+    # (_own_geography_boundary_snapshot), so the ring gets the same numbers.
+    # Exact mode (correct-mode key hydrometeor_handover_numbers off) hands
+    # back the interpolated species untouched, as before the closure.
+    from gpuwm.ingest.handover_numbers import closure_active
+    number_closure = None
+    if closure_active(child_cfg):
+        source_mixing = {name: np.array(_to_host(value), dtype=np.float32)
+                         for name, value in source_mixing.items()}
+        number_closure = close_child_numbers(
+            target_mp, source_mixing, fields,
+            morr_rimed_ice=(morr_rimed_ice if morr_rimed_ice is not None
+                            else getattr(child_cfg, "morr_rimed_ice", 1)),
+            cfg=child_cfg)
+    else:
+        source_mixing = {name: _to_host(value)
+                         for name, value in source_mixing.items()}
     receipt = MappingProxyType({
         "path": str(Path(path).resolve()),
         "valid_time": info.valid_time.isoformat(),
@@ -2977,13 +3112,55 @@ def interpolate_parent_initial_state(
                 default=0.0),
         },
         "conversion": None if conversion_receipt is None else dict(conversion_receipt),
+        "number_closure": number_closure,
         "seconds": time.perf_counter() - started,
         **({} if terrain_receipt is None else {"terrain": terrain_receipt}),
     })
     return InterpolatedInitialState(
         info.valid_time, MappingProxyType(fields),
-        MappingProxyType({name: _to_host(value)
-                          for name, value in source_mixing.items()}), receipt)
+        MappingProxyType(source_mixing), receipt)
+
+
+def close_child_numbers(target_mp, mixing, fields, *, morr_rimed_ice=1, cfg):
+    """Diagnose the child's numbers that sit at zero beside a positive mass.
+
+    ``mixing`` holds the child's uncoupled species (per kg), changed in
+    place; ``fields`` the child's T (perturbation theta), P and PB on the
+    same grid; ``cfg`` the child's RunConfig.  Returns the closure receipt,
+    or None when the scheme closes nothing (single-moment, or the closure off:
+    exact mode or a strict WRF process).
+    """
+
+    from gpuwm.ingest import handover_numbers as hn
+
+    if not hn.closure_active(cfg):
+        return None
+    pairs = hn.handover_number_pairs(int(target_mp), cfg)
+    if not pairs:
+        return None
+    masses = {m: mixing[m] for m, _ in pairs if m in mixing}
+    numbers = {n: mixing[n] for _, n in pairs if n in mixing}
+    shape = next(iter(masses.values())).shape if masses else None
+
+    def temperature(idx):
+        theta = hn.take(fields["T"], idx, shape).astype(np.float64) + 300.0
+        pressure = (hn.take(fields["P"], idx, shape).astype(np.float64)
+                    + hn.take(fields["PB"], idx, shape).astype(np.float64))
+        return hn.temperature_from_theta(theta, pressure)
+
+    def density(idx):
+        pressure = (hn.take(fields["P"], idx, shape).astype(np.float64)
+                    + hn.take(fields["PB"], idx, shape).astype(np.float64))
+        return hn.density_from_state(pressure, temperature(idx),
+                                     hn.take(mixing["qv"], idx, shape))
+
+    xland = fields.get("XLAND")
+    return hn.close_numbers(
+        int(target_mp), masses, numbers, rho=density, temperature=temperature,
+        rimed=int(morr_rimed_ice if morr_rimed_ice is not None else 1),
+        nwfa=mixing.get("nwfa"),
+        xland=None if xland is None else np.asarray(xland)[None],
+        bound_thompson=True)
 
 
 def _onto_child_terrain(fields, source_mixing, *, geography, child_cfg,
@@ -3357,6 +3534,47 @@ def require_runnable_child_radiation_from_archive(cfg, parent_frame):
     return require_runnable_child_radiation(cfg, p_top)
 
 
+def _climatology_surface_emission(initial, cfg) -> dict:
+    """QNWFA2D/QNIFA2D for an mp=28 child of a parent of another scheme.
+
+    WRF's climatology branch (module_initialize_real.F:4530-4536, through
+    :func:`gpuwm.ingest.wif_climatology.wif_surface_emission`): the monthly
+    lowest-level water-friendly number on the child's mass points, dated to
+    the child's start, over the child's first-layer thickness; QNIFA2D is
+    zero, as WRF leaves it.  The dataset is staged by the pinned,
+    SHA-verified routine when it is not on the machine; with no dataset at
+    all the child is refused by name rather than run with zero emission.
+    """
+
+    from gpuwm.ingest.wif_climatology import (
+        load_wif_climatology, resolve_wif_climatology,
+        wif_lowest_number_for_grid, wif_surface_emission)
+
+    named = getattr(cfg, "wif_climatology_path", "") or None
+    resolution = resolve_wif_climatology(named)
+    if not resolution.resolved and named is None:
+        from gpuwm.table_assets import stage_wif_dataset
+
+        stage_wif_dataset()
+        resolution = resolve_wif_climatology(None)
+    if not resolution.resolved:
+        raise OfflineChildContractError(
+            "an mp_physics=28 child of a parent of another scheme takes its "
+            "surface aerosol emission (QNWFA2D) from WRF's monthly WIF "
+            "climatology, and none resolved: "
+            f"{resolution.fallback_reason}  Stage it with `gpuwm "
+            "fetch-tables --wif`, or name another suite with "
+            "--physics-profile")
+    number = wif_lowest_number_for_grid(
+        load_wif_climatology(resolution.path),
+        np.asarray(initial.fields["XLAT"], dtype=np.float32),
+        np.asarray(initial.fields["XLONG"], dtype=np.float32),
+        initial.valid_time.isoformat())
+    nwfa2d, nifa2d = wif_surface_emission(
+        number, np.asarray(initial.fields["PHB"], dtype=np.float32))
+    return {"QNWFA2D": nwfa2d, "QNIFA2D": nifa2d}
+
+
 def build_offline_child_domain_state(
         initial: InterpolatedInitialState, cfg, *, array_module=None):
     """Upload an interpolated parent-only cold start into ``DomainState``.
@@ -3435,18 +3653,30 @@ def build_offline_child_domain_state(
         # NOT in ``initial.microphysics`` because they are not transported
         # scalars; they arrive through ``initial.fields`` alongside the
         # geometry.  See _AEROSOL_SURFACE_EMISSION_WRF for why the child
-        # cannot re-derive them.
+        # cannot re-derive them from its own state.  A parent of another
+        # scheme has none to hand on, so a mixed edge into mp=28 takes them
+        # from WRF's monthly WIF climatology on the child's grid, as
+        # real.exe builds them for a cold mp=28 domain
+        # (:func:`_climatology_surface_emission`).
+        conversion = initial.receipt.get("conversion") or {}
+        mixed_into_28 = (conversion.get("source_mp_physics") is not None
+                         and int(conversion["source_mp_physics"]) != 28)
+        emission = (_climatology_surface_emission(initial, cfg)
+                    if mixed_into_28 and any(
+                        name not in initial.fields
+                        for name in _AEROSOL_SURFACE_EMISSION_WRF) else {})
         for wrf_name, state_name in _AEROSOL_SURFACE_EMISSION_STATE.items():
             if getattr(state, state_name, None) is None:
                 raise OfflineChildContractError(
                     "mp_physics=28 child DomainState has no surface aerosol "
                     f"emission field {state_name!r}")
-            if wrf_name not in initial.fields:
+            value = initial.fields.get(wrf_name, emission.get(wrf_name))
+            if value is None:
                 raise OfflineChildContractError(
                     "mp_physics=28 offline child requires the parent's "
                     f"{wrf_name}; without it the child would integrate with "
                     "zero surface aerosol emission and nothing would raise")
-            assign(state_name, initial.fields[wrf_name])
+            assign(state_name, value)
     # The online nest lane's own seeding table
     # (gpuwm/ingest/nest_init.py::RK_TIME_T_SEED_PAIRS), not a local copy.
     # The local copy this replaced had already drifted: it stopped at the
@@ -3458,6 +3688,15 @@ def build_offline_child_domain_state(
     # None-guarded, so schemes without a field skip it, as before.
     seed_rk_time_t_copies(state)
     update_diagnostics(state, cfg.hypsometric_opt)
+    if target_mp == 10 and getattr(state, "nc", None) is not None:
+        # Morrison's droplet number is not transported, so no parent value
+        # reaches it: it starts as the scheme writes it on every call
+        # (NDCNST per cm3 over the density), not at the zero the first
+        # frame used to publish beside the parent's cloud water.
+        from gpuwm.ingest import handover_numbers as hn
+        if hn.closure_active(cfg):
+            state.nc[...] = xp.asarray(
+                hn.MORRISON_NDCNST_PER_CM3 * 1.0e6 * state.alt, dtype=xp.float32)
     return state
 
 
@@ -3558,6 +3797,24 @@ def interpolate_parent_boundary_snapshot(
             # temperature per cell from theta and the full pressure.
             raw["P"] = _read_record(dataset, "P")
             raw["PB"] = _read_record(dataset, "PB")
+        from gpuwm.ingest.handover_numbers import (closure_active,
+                                                   handover_number_pairs)
+        close_ring = (transition is None and closure_active(child_cfg)
+                      and bool(handover_number_pairs(target_mp, child_cfg)))
+        if close_ring:
+            for name in ("P", "PB"):
+                if name not in raw:
+                    raw[name] = _read_record(dataset, name)
+    if close_ring:
+        # A same-scheme ring: numbers the parent left at zero beside a mass
+        # are closed on the parent before coupling, so the ring never brings
+        # a mass in without its number (gpuwm/ingest/handover_numbers.py).
+        moisture = {name: np.array(value, dtype=np.float32)
+                    for name, value in moisture.items()}
+        close_child_numbers(target_mp, moisture, raw,
+                            morr_rimed_ice=(morr_rimed_ice if morr_rimed_ice is not None
+                                            else getattr(child_cfg, "morr_rimed_ice", 1)),
+                            cfg=child_cfg)
     conversion_receipt = None
     converted = None
     if transition is not None:

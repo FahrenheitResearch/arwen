@@ -1218,6 +1218,27 @@ def _launch_state_relaxation(state, field_name, tendency, boundary, *,
 
 def _coupled_device_fields(state):
     """Fields in the same coupled units as WRF boundary tendencies."""
+    return dict(_coupled_device_field_items(state))
+
+
+def _coupled_device_field_names(state):
+    """The names :func:`_coupled_device_field_items` yields, in its order."""
+    names = ["u", "v", "theta", "phi", "mu"]
+    for name in getattr(state, "_external_scalar_boundary_fields", ("qv",)):
+        if getattr(state, name, None) is None:
+            if name == "qv":
+                continue
+            raise ValueError(f"analysis boundary field {name} has no state array")
+        names.append(name)
+    return names
+
+
+def _coupled_device_field_items(state):
+    """Each coupled field of :func:`_coupled_device_fields`, one at a time.
+
+    A caller that keeps only part of each field (the perimeter frames)
+    holds one whole-domain coupled field at a time instead of all of them.
+    """
     from gpuwm.core.state import mu_at_u_faces, mu_at_v_faces
 
     mu = state.total_mu()
@@ -1235,35 +1256,28 @@ def _coupled_device_fields(state):
     c2f = state.c2f[:, None, None]
     chm = c1h * mu[None] + c2h
     chf = c1f * mu[None] + c2f
-    result = {
-        "u": (c1h * mux[None] + c2h) * state.u,
-        "v": (c1h * muy[None] + c2h) * state.v,
-        # WRF module_bc.F:2081,2139-2142: boundary scalars use mu-only
-        # coupling; 1/msf belongs only to u/v/w.  T is perturbation theta.
-        "theta": chm * (state.total_theta() - _THETA_OFFSET_K),
-        "phi": chf * state.php,
-        "mu": state.mup[None],
-    }
+    names = _coupled_device_field_names(state)
+    u = (c1h * mux[None] + c2h) * state.u
     if state.has_msf:
-        result["u"] /= state.msfu[None]
-        result["v"] /= state.msfv[None]
+        u /= state.msfu[None]
+    yield "u", u
+    del u
+    v = (c1h * muy[None] + c2h) * state.v
+    if state.has_msf:
+        v /= state.msfv[None]
+    yield "v", v
+    del v
+    # WRF module_bc.F:2081,2139-2142: boundary scalars use mu-only
+    # coupling; 1/msf belongs only to u/v/w.  T is perturbation theta.
+    yield "theta", chm * (state.total_theta() - _THETA_OFFSET_K)
+    yield "phi", chf * state.php
+    yield "mu", state.mup[None]
     # The decision belongs to the analysis producer, before any tile
     # cloning. Runtime consumers use the bound table inventory itself.
-    for name in getattr(state, "_external_scalar_boundary_fields", ("qv",)):
-        if getattr(state, name, None) is None:
-            if name == "qv":  # dry legacy/direct snapshot callers
-                continue
-            raise ValueError(f"analysis boundary field {name} has no state array")
-        if _is_chem_field(name):
-            # WRF-Chem's chem boundary arrays hold the species' own mixing
-            # ratio, not a mass-coupled one: flow_dep_bdy_chem takes
-            # max(epsilc, chem_b + chem_bt*dt) straight into chem
-            # (bdy_chem_value_gcm, chem/module_input_chem_data.F:2331-2357),
-            # and nothing relaxes or specifies a chem row on the root.
-            result[name] = getattr(state, name)
-            continue
-        result[name] = chm * getattr(state, name)
-    return result
+    # Chemistry boundaries retain species mixing ratio, without mass coupling.
+    for name in names[5:]:
+        value = getattr(state, name)
+        yield name, value if _is_chem_field(name) else chm * value
 
 
 def couple_nest_field(state, field_name: str, *, out, window=None, frame_width=None):
@@ -1706,8 +1720,12 @@ class StateBoundaryFrames:
         position in the forcing sequence when the caller is not building
         them in time order.
         """
-        snapshot = _coupled_device_fields(state)
-        names = frozenset(snapshot)
+        # ONE coupled field at a time: each whole-domain coupled field is
+        # cut to its four perimeter frames and released before the next is
+        # formed.  THE BREAKAGE: forming them all at once held seven or
+        # more whole-domain float32 fields beside the state (about 13 GiB
+        # at 4160 x 2450 x 50), on top of the forcing time it was reading.
+        names = frozenset(_coupled_device_field_names(state))
         if not names:
             raise ValueError("boundary snapshot field inventory is empty")
         if self._inventory is None:
@@ -1715,17 +1733,22 @@ class StateBoundaryFrames:
         elif names != self._inventory:
             raise ValueError("boundary snapshot field inventories differ")
         width = self.spec_bdy_width
-        for value in snapshot.values():
+        sides = ("west", "east", "south", "north")
+        frames = {side: {} for side in sides}
+        for name, value in _coupled_device_field_items(state):
             if value.ndim not in (2, 3):
                 raise ValueError(
                     "boundary fields must be matching 2-D or 3-D arrays")
             if min(value.shape[-2:]) < 2 * width:
                 raise ValueError(
                     "domain is too small for the requested boundary width")
+            for side in sides:
+                frames[side].update(extract_lateral_side({name: value}, side, width))
+            del value
         position = self._position(index)
         self._frames[position] = MappingProxyType({
-            side: extract_lateral_side(snapshot, side, width)
-            for side in ("west", "east", "south", "north")
+            side: {name: frames[side][name] for name in sorted(frames[side])}
+            for side in sides
         })
 
     def replace_start_state(self, state, *, index: int = 0) -> None:
@@ -2599,6 +2622,23 @@ def apply_state_boundary_values(state, cfg, elapsed_seconds=None) -> None:
     scalars = tuple(name for name in device_interval.fields
                     if name in COUPLED_SCALAR_STATE_FIELDS
                     and name not in SCALAR_ARRAY_BOUNDARY_FIELDS)
+    # A hydrometeor number is forced back WITH its mass.  The mass is a
+    # moist-array species and is put back on the table every step; left to
+    # its tendency alone, its number reached exactly 0 on the outermost row
+    # wherever the microphysics there had removed the mass (and its number)
+    # before the force-back restored the mass: 3-18 columns per frame of a
+    # 1 km downscale child carried mass at number 0 on that row
+    # (gpuwm/ingest/handover_numbers.py).  Exact mode (and a strict WRF
+    # process) keeps WRF's tendency-only scalar ring: correct-mode key
+    # hydrometeor_handover_numbers off.
+    from gpuwm.ingest.handover_numbers import (PAIRED_NUMBER_OF_MASS,
+                                               closure_active)
+    handover = bool(cfg.specified) and closure_active(cfg)
+    if handover:
+        scalars += tuple(
+            number for mass, number in PAIRED_NUMBER_OF_MASS.items()
+            if mass in device_interval.fields
+            and number in device_interval.fields and number not in scalars)
     # ``w`` joins a specified domain's list when it relaxes w
     # (``specified_relaxes_w``): the table's w is then forced back on the
     # specified rows, as on a nest, instead of the zero-gradient copy.
@@ -2613,6 +2653,73 @@ def apply_state_boundary_values(state, cfg, elapsed_seconds=None) -> None:
         _launch_finalize_field(
             state, name, device_interval.fields[name], old_mup_frame,
             dtbc, cfg.spec_zone)
+    if handover:
+        forced_pairs = tuple(
+            (mass, number) for mass, number in PAIRED_NUMBER_OF_MASS.items()
+            if mass in names and number in names
+            and mass in device_interval.fields and number in device_interval.fields)
+        if forced_pairs and _ring_at_record_end(state, cfg):
+            close_ring_numbers(state, cfg, forced_pairs)
+
+
+def _ring_at_record_end(state, cfg) -> bool:
+    """Whether this step's ring values are its interval's END-of-record values.
+
+    On the step that ends exactly on a new forcing record the bound clock
+    serves the OLD interval at ``dtbc`` = its full length, and the finalizer
+    forms ``value + tendency*dtbc`` in FP32.  A number falling across the
+    interval by eight decades (2.4e4 -> 6.6e-5 per kg on a 1 km downscale
+    ring) cancels there to 0 or a negative the ring clamps to 0, while its
+    mass (1.8e-9 kg/kg) survives: the frame written on every record time
+    carried mass with number 0 on the outermost row (4 points above 1e-9
+    kg/kg in 3 of 13 frames, 44-189 smaller ones in every record-time frame).
+    One step earlier the true value is 1/180 of the start and representable.
+    """
+    resident = getattr(state, "_lateral_boundary_device", None)
+    if resident is None or resident.clock is None or getattr(cfg, "nested", False):
+        return False   # the unbound lookup serves the new record at dtbc = 0
+    interval, dtbc = _served_external_interval(state, resident)
+    duration = float(interval.end_seconds) - float(interval.start_seconds)
+    return float(dtbc) > duration - 0.5 * float(lateral_boundary_clock_dt(cfg))
+
+
+def close_ring_numbers(state, cfg, pairs) -> int:
+    """Close a ring number left at or below zero beside a positive mass.
+
+    Runs on the specified rows only (``cfg.spec_zone`` wide), with the
+    handover closure of the domain's scheme (:func:`gpuwm.ingest.
+    handover_numbers.close_numbers`: the number the parent frame's own
+    closure gives that mass).  Returns the number of cells written.
+    """
+    from gpuwm.ingest.handover_numbers import close_numbers
+
+    sz = int(cfg.spec_zone)
+    probe = getattr(state, pairs[0][0])
+    nz, ny, nx = probe.shape
+    strips = ((slice(None), slice(0, sz), slice(None)),
+              (slice(None), slice(ny - sz, ny), slice(None)),
+              (slice(None), slice(sz, ny - sz), slice(0, sz)),
+              (slice(None), slice(sz, ny - sz), slice(nx - sz, nx)))
+    thb = state.thb if state.thb.ndim == 3 else state.thb[:, None, None]
+    xland = getattr(state, "xland", None)
+    nwfa = getattr(state, "nwfa", None)
+    written = 0
+    for strip in strips:
+        masses = {mass: getattr(state, mass)[strip] for mass, _ in pairs}
+        numbers = {number: getattr(state, number)[strip] for _, number in pairs}
+        alt = state.alt[strip]
+        p = state.p[strip]
+        theta = state.thp[strip] + (thb[strip] if thb.shape[1] > 1 else thb)
+        receipt = close_numbers(
+            int(cfg.mp_physics), masses, numbers,
+            rho=lambda idx, alt=alt: 1.0 / alt[idx],
+            temperature=lambda idx, p=p, theta=theta: theta[idx] * (p[idx] / 1.0e5) ** (287.04 / 1004.5),
+            rimed=int(getattr(cfg, "morr_rimed_ice", 1)),
+            nwfa=None if nwfa is None else nwfa[strip],
+            xland=None if xland is None else xland[strip[1:]])
+        if receipt is not None:
+            written += int(receipt["cells_total"])
+    return written
 
 
 def _raw_float32_c_arrays(arrays, cp) -> bool:

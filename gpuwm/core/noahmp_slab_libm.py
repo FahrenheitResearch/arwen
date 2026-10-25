@@ -159,7 +159,13 @@ def slab_powf(x, y):
     import cupy as cp
 
     x = _contiguous(x)
-    y = _contiguous(cp.broadcast_to(cp.asarray(y, dtype=cp.float32), x.shape))
+    if isinstance(y, cp.ndarray) or np.ndim(y) != 0:
+        y = _contiguous(cp.broadcast_to(cp.asarray(y, dtype=cp.float32), x.shape))
+    else:
+        # A host scalar fills on the card: cp.asarray of it was one pinned
+        # staged upload (and one CUDA event) per call, 62 per legacy
+        # radiation call (rrtmg_mcica._window_tables names the breakage).
+        y = cp.full(x.shape, np.float32(y), dtype=cp.float32)
     out = cp.empty_like(x)
     n = int(x.size)
     if n:

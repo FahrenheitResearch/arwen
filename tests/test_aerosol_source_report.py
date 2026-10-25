@@ -198,16 +198,23 @@ def test_the_fallback_and_the_inapplicable_scheme_are_not_the_same_absence(
         monkeypatch, tmp_path):
     """THE DISTINCTION, asserted as a difference rather than as two facts.
 
-    An mp=28 run that searched for the dataset and found none DID run
-    without aerosol data: that is reported loudly, with the reason the
-    search failed.  A WSM6 run reports nothing at all.  A reader holding
-    the two receipts must be able to separate them, and this is the
-    comparison that proves they can.
+    An mp=28 run that finds no dataset (and cannot download it) no longer
+    runs on the synthetic profile with a warning: it is refused, naming the
+    dataset and the deliberate way out (a real-data
+    mp=28 run, 2026-10-23).  The synthetic profile taken BY NAME is reported loudly as
+    requested; a WSM6 run reports nothing at all.  A reader holding the
+    receipts must be able to separate them.
     """
-    _empty_wif_search(monkeypatch, tmp_path)
-    result, cfg = _analyzed_hrrr_real_init(28)
-    assert cfg.mp_physics == 28
+    from gpuwm.ingest.wif_climatology import MissingWifClimatologyDataset
 
+    _empty_wif_search(monkeypatch, tmp_path)
+    with pytest.raises(MissingWifClimatologyDataset) as refused:
+        _analyzed_hrrr_real_init(28)
+    assert "QNWFA_QNIFA_SIGMA_MONTHLY.dat" in str(refused.value)
+    assert "mp28_aerosol_source='synthetic'" in str(refused.value)
+
+    result, cfg = _analyzed_hrrr_real_init(28, mp28_aerosol_source="synthetic")
+    assert cfg.mp_physics == 28
     fallback = {}
     fallback.update(aerosol_source_report_entry(
         result.aerosol_initialization, mp_physics=cfg.mp_physics,
@@ -221,14 +228,8 @@ def test_the_fallback_and_the_inapplicable_scheme_are_not_the_same_absence(
     assert entry["recorded"] is True
     assert entry["dataset_used"] is False
     assert entry["synthetic_fallback_in_use"] is True
-    assert entry["synthetic_fallback_requested"] is False
+    assert entry["synthetic_fallback_requested"] is True
     assert entry["aerosol_source"] == "thompson_init-synthetic-profile"
-    # It says WHY there was no dataset, concretely.  A fallback whose
-    # reason is "unavailable" is a fallback nobody can act on.
-    assert entry["dataset"]["resolved"] is False
-    assert "QNWFA_QNIFA_SIGMA_MONTHLY.dat" in (
-        entry["dataset"]["fallback_reason"])
-    assert entry["dataset"]["candidates"]
 
 
 def test_an_unrecorded_receipt_is_not_reported_as_no_dataset():
@@ -488,7 +489,7 @@ def test_the_report_block_is_a_single_key(monkeypatch, tmp_path):
     that a bundle tool has to find by name.
     """
     _empty_wif_search(monkeypatch, tmp_path)
-    result, cfg = _analyzed_hrrr_real_init(28)
+    result, cfg = _analyzed_hrrr_real_init(28, mp28_aerosol_source="synthetic")
     before = {"schema": "test-report-v1", "status": "PASS"}
     report = dict(before)
     report.update(aerosol_source_report_entry(
@@ -506,7 +507,7 @@ def test_the_receipt_travels_whole(monkeypatch, tmp_path):
     that has exited.
     """
     _empty_wif_search(monkeypatch, tmp_path)
-    result, cfg = _analyzed_hrrr_real_init(28)
+    result, cfg = _analyzed_hrrr_real_init(28, mp28_aerosol_source="synthetic")
     entry = aerosol_source_report_entry(
         result.aerosol_initialization, mp_physics=cfg.mp_physics,
         when_unrecorded="unused")[AEROSOL_SOURCE_KEY]

@@ -1564,7 +1564,7 @@
    "environment": {
     "GPUWM_NO_LOCAL_GPU": "1"
    },
-   "collected_total": 29899,
+   "collected_total": 29912,
    "files": {
     "tests/test_runplan.py": 169,
     "tests/test_nest_spawn_soil.py": 20,
@@ -1885,7 +1885,7 @@
     "tests/test_tui_products.py": 10,
     "tests/test_tui_sim_products.py": 7,
     "tests/test_remote_cli.py": 42,
-    "tests/test_remote_snapshot.py": 29,
+    "tests/test_remote_snapshot.py": 38,
     "tests/test_remote_worker_linux.py": 8,
     "tests/test_research_catalog.py": 164,
     "tests/test_research_workspaces.py": 44,
@@ -2125,7 +2125,7 @@
     "tests/test_ensemble_amplitude_select.py": 8,
     "tests/test_ensemble_recipe_time_axes.py": 15,
     "tests/test_ensemble_source_recipes.py": 14,
-    "tests/test_ensemble_source_routes.py": 20,
+    "tests/test_ensemble_source_routes.py": 22,
     "tests/test_ensemble_source_preparation.py": 16,
     "tests/test_ensemble_automatic_sources.py": 24,
     "tests/test_ensemble_automatic_preparation.py": 4,
@@ -2323,7 +2323,7 @@
     "tests/test_mynn_cycling_import.py": 4,
     "tests/test_mynn_exact_gate.py": 6,
     "tests/test_mynn_generation_door.py": 62,
-    "tests/test_mynn_restart.py": 4,
+    "tests/test_mynn_restart.py": 6,
     "tests/test_checkpoint_identity_288.py": 40,
     "tests/test_operational_namelist_door.py": 6,
     "tests/test_hrrr_route_cycling.py": 4,

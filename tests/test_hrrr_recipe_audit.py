@@ -43,6 +43,9 @@ def _nl(section, key):
 #: (namelist section, namelist key, resolved RunConfig field).  The value
 #: must be equal after bool/float normalisation.
 NAMELIST_ROWS = (
+    ("time_control", "output_diagnostics", "output_diagnostics"),
+    ("time_control", "diag_int", "diag_int"),
+    ("time_control", "wind_int", "wind_int"),
     ("time_control", "gsd_diagnostics", "gsd_diagnostics"),
     ("physics", "prec_acc_dt", "prec_acc_dt"),
     ("physics", "prec_acc_dt1", "prec_acc_dt1"),

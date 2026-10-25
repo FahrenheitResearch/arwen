@@ -99,7 +99,7 @@ from gpuwm.core.preflight import (CUDA_CONTEXT_BYTES,
                                   estimate_phases,
                                   profile_from_device_probe,
                                   unknown_platform_note)
-from gpuwm.cli_numbers import positive_float, positive_int
+from gpuwm.cli_numbers import positive_float, positive_float_list, positive_int
 from gpuwm.experiment import ExperimentConfig, build_experiment
 from gpuwm.explain import explain_enabled, muted_warnings, warn
 from gpuwm.fetch import parse_cycle
@@ -819,6 +819,39 @@ def source_reaches_forecast_leads(source: str) -> bool:
     """
 
     return get_source_adapter(source).max_forecast_hour > 0
+
+
+def forecast_start_hour_refusal(source: str, start_hour: int,
+                                hours: float) -> str | None:
+    """Why a run of ``hours`` cannot begin at lead f{start_hour}, or None.
+
+    One spelling for every door that takes ``--forecast-start-hour`` (the
+    domain wizard and ``--recipe``), asked from the source's registry row
+    before any cycle is resolved or byte fetched.
+    """
+
+    if start_hour < 0:
+        return "--forecast-start-hour must be a nonnegative forecast lead"
+    if start_hour and not source_reaches_forecast_leads(source):
+        return (
+            f"--forecast-start-hour: {source} publishes no forecast "
+            "leads (its registry row declares max_forecast_hour = 0), so "
+            "every time in it is an analysis at its own valid time and "
+            "there is no lead to begin at; name the analysis time you want "
+            "with --cycle")
+    horizon = get_source_adapter(source).max_forecast_hour
+    if horizon and start_hour + hours > horizon:
+        # Named here, from the source's own declared horizon, rather than
+        # after the acquisition.  gdas stops at f009 and rap at f051; a
+        # window that walks past either is a window the product never
+        # published, and it used to be discovered by whichever stage first
+        # went looking for the missing lead.
+        return (
+            f"--hours {hours} beginning at f{start_hour:03d} reaches "
+            f"f{start_hour + hours:03d}, past {source}'s declared "
+            f"f{horizon:03d} horizon; shorten the window, start earlier, or "
+            "choose a source with a longer forecast")
+    return None
 
 
 def _fetch_cadence_h(source: str, start_hour: int,
@@ -2352,6 +2385,34 @@ def root_time_step_s(ref_lat: float,
     return seconds_per_km(ref_lat) * Fraction(float(root_dx_m)) / 1000
 
 
+def nest_history_interval_at(nest_history_interval_s, nest_index: int,
+                             nests: int | None = None) -> float:
+    """The history interval of the ``nest_index``-th nest (0 is d02).
+
+    ``nest_history_interval_s`` is what ``--nest-history-interval``
+    parsed to: ``None`` (the default for every nest), one number (every
+    nest), or one number per nest, outer to inner.  A list whose length
+    is not the number of nests is refused by name: a 3-domain ladder
+    given three intervals would otherwise drop or invent one.
+    """
+    value = nest_history_interval_s
+    if value is None:
+        return float(DEFAULT_NEST_HISTORY_INTERVAL_S)
+    if isinstance(value, (list, tuple)):
+        if nests is not None and len(value) != nests:
+            raise ValueError(
+                f"--nest-history-interval names {len(value)} intervals but "
+                f"the ladder has {nests} nest(s); give one per nest, outer "
+                "to inner, or one value for every nest")
+        if nest_index >= len(value):
+            raise ValueError(
+                f"--nest-history-interval names {len(value)} intervals but "
+                f"the ladder has a nest number {nest_index + 1}; give one "
+                "per nest, outer to inner, or one value for every nest")
+        return float(value[nest_index])
+    return float(value)
+
+
 def derived_time_step_s(ref_lat: float, root_dx_m: float, *,
                         run_seconds: float, ratios: tuple[int, ...],
                         history_interval_s: float | None = None,
@@ -2372,15 +2433,15 @@ def derived_time_step_s(ref_lat: float, root_dx_m: float, *,
         raise ValueError("the derived root time step must be positive")
     root_history = (DEFAULT_ROOT_HISTORY_INTERVAL_S if history_interval_s is None
                     else float(history_interval_s))
-    child_history = (DEFAULT_NEST_HISTORY_INTERVAL_S if nest_history_interval_s is None
-                     else float(nest_history_interval_s))
+    child_histories = [nest_history_interval_at(nest_history_interval_s, i,
+                                                len(ratios))
+                       for i in range(len(ratios))]
     # Fraction() raises OverflowError on an infinity and ValueError on a
     # NaN, neither naming the interval; the parser refuses both by option
     # name, and a programmatic caller gets a named sentence here.  The
     # nest interval is read only when there is a nest.
     intervals = [("history interval", root_history)]
-    if ratios:
-        intervals.append(("nest history interval", child_history))
+    intervals.extend(("nest history interval", child) for child in child_histories)
     for name, value in intervals:
         if not (math.isfinite(value) and value > 0):
             raise ValueError(f"the {name} must be a finite number of seconds "
@@ -2388,7 +2449,7 @@ def derived_time_step_s(ref_lat: float, root_dx_m: float, *,
     # Match the loader's exact event representations; no epsilon or rounding.
     periods = [Fraction(str(run_seconds)), Fraction(root_history)]
     ratio_product = 1
-    for ratio in ratios:
+    for ratio, child_history in zip(ratios, child_histories):
         ratio_product *= ratio
         periods.append(Fraction(child_history) * ratio_product)
     if restart_interval_s:
@@ -2719,10 +2780,8 @@ def _domain_tables(dims: list[tuple[int, int]],
                 "parent_grid_ratio": ratio,
                 "parent_time_step_ratio": ratio, "nx": nx, "ny": ny,
                 "specified": False, "nested": True,
-                "history_interval_s": (
-                    DEFAULT_NEST_HISTORY_INTERVAL_S
-                    if nest_history_interval_s is None
-                    else float(nest_history_interval_s)),
+                "history_interval_s": nest_history_interval_at(
+                    nest_history_interval_s, index - 1, len(ratios)),
                 "epssm": epssm,
                 "radt": radt[index], "cu_physics": 0,
                 "diff_6th_factor": diff6[index],
@@ -4252,6 +4311,119 @@ def with_surface_flux_option(text: str, isftcflx: int | None) -> str:
                                  if not line.lstrip().startswith("isftcflx")] + lines[end:]
     note = f"# Surface flux over water: isftcflx = {value}, {ISFTCFLX_WORDS[value]}.\n"
     lines[start + 1:start + 1] = [note, f"isftcflx = {value}\n"]
+    return "".join(lines)
+
+
+#: The resolved-turbulence closure a domain at or below the LES spacing
+#: takes (docs/public/LES.md; configs/les_nest_250m_km3.toml's child, the
+#: recipe the gray-zone advisory names): 3-D Smagorinsky with the 1-D PBL
+#: off, one isotropic mixing length, and surface fluxes from the surface
+#: layer.  Per domain, so a PBL parent carries a PBL-off child.
+LES_CLOSURE = (("km_opt", 3), ("bl_pbl_physics", 0), ("c_s", 0.25),
+               ("mix_isotropic", 1), ("mix_upper_bound", 0.1), ("isfflx", 1))
+#: The spacing at and below which ``gpuwm domain`` writes LES_CLOSURE on a
+#: domain unless ``--les-below-m 0`` (the advisory's "coarse LES" bound).
+DEFAULT_LES_BELOW_M = 250.0
+
+
+def _domain_blocks(lines: list[str]) -> list[tuple[int, int]]:
+    """(start, end) line spans of every ``[[domain]]`` block, in order."""
+    starts = [i for i, line in enumerate(lines)
+              if line.strip() in ("[[domain]]", '[["domain"]]')]
+    spans = []
+    for start in starts:
+        end = next((i for i in range(start + 1, len(lines))
+                    if lines[i].lstrip().startswith("[")), len(lines))
+        spans.append((start, end))
+    return spans
+
+
+def _domain_spacings_m(text: str) -> list[float]:
+    """Each [[domain]]'s grid spacing in metres, in file order."""
+    raw = tomllib.loads(text)
+    domains = raw.get("domain", [])
+    by_id = {int(d["grid_id"]): d for d in domains}
+    out = []
+    for d in domains:
+        dx, node = None, d
+        ratio = 1
+        while node is not None:
+            if "dx" in node:
+                dx = float(node["dx"]) / ratio
+                break
+            ratio *= int(node.get("parent_grid_ratio", 1))
+            node = by_id.get(int(node.get("parent_id", 0)))
+        out.append(float("nan") if dx is None else dx)
+    return out
+
+
+def with_les_closure(text: str, below_m: float | None) -> str:
+    """``text`` with LES_CLOSURE on every nest at or below ``below_m``.
+
+    The fix for the door only ADVISING the closure: a 100 m nest written
+    by this door ran the parent's 1-D PBL inside an LES grid unless the
+    user edited the file (WOOF run-controls feasibility, defect 6).  The
+    root is never changed (a root this fine is an idealised case, not a
+    ladder), a key the block already writes is kept, and ``below_m``
+    ``None`` or 0 leaves the text as is.
+    """
+    if not below_m:
+        return text
+    spacings = _domain_spacings_m(text)
+    lines = text.splitlines(keepends=True)
+    spans = _domain_blocks(lines)
+    for index in reversed(range(len(spans))):
+        if index == 0 or not spacings[index] <= float(below_m):
+            continue
+        start, end = spans[index]
+        present = {line.split("=", 1)[0].strip() for line in lines[start + 1:end]
+                   if "=" in line and not line.lstrip().startswith("#")}
+        keep = [f"{key} = {_toml_value(value)}\n" for key, value in LES_CLOSURE
+                if key not in present]
+        if not keep:
+            continue
+        note = (f"# LES closure: {spacings[index]:g} m is at or below "
+                f"{float(below_m):g} m, so this nest resolves its boundary "
+                "layer (PBL off, 3-D Smagorinsky).\n")
+        insert = end
+        while insert > start + 1 and not lines[insert - 1].strip():
+            insert -= 1
+        lines[insert:insert] = [note, *keep]
+    return "".join(lines)
+
+
+def with_quicklook(text: str, every_s: float | None,
+                   history_vars: tuple[str, ...] | None = None) -> str:
+    """``text`` with the quick-look stream on its FINEST domain.
+
+    ``quicklook = { every_s, history_vars }`` (gpuwm.experiment
+    DomainConfig.full_history_interval_s): the finest domain keeps its
+    full frames at its history interval and writes the subset every
+    ``every_s`` between them.  ``None`` leaves the text as is.
+    """
+    if every_s is None:
+        return text
+    lines = text.splitlines(keepends=True)
+    spans = _domain_blocks(lines)
+    if not spans:
+        raise ValueError("the emitted config has no [[domain]] to carry "
+                         "--quicklook-interval")
+    spacings = _domain_spacings_m(text)
+    finest = min(range(len(spans)), key=lambda i: spacings[i])
+    start, end = spans[finest]
+    if any(line.split("=", 1)[0].strip() == "quicklook"
+           for line in lines[start + 1:end]):
+        return text
+    table = {"every_s": float(every_s)}
+    if history_vars:
+        table["history_vars"] = list(history_vars)
+    value = "{ " + ", ".join(f"{k} = {_toml_value(v)}" for k, v in table.items()) + " }"
+    note = (f"# Quick-look stream: the subset every {float(every_s):g} s "
+            "between this domain's full frames (quicklook/wrfout_dNN_*).\n")
+    insert = end
+    while insert > start + 1 and not lines[insert - 1].strip():
+        insert -= 1
+    lines[insert:insert] = [note, f"quicklook = {value}\n"]
     return "".join(lines)
 
 
@@ -6642,28 +6814,9 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None,
     # complete through lead + length and a bad lead should not spend a
     # network round trip to be refused.
     start_hour = getattr(args, "forecast_start_hour", None) or 0
-    if start_hour < 0:
-        raise ValueError(
-            "--forecast-start-hour must be a nonnegative forecast lead")
-    if start_hour and not source_reaches_forecast_leads(args.source):
-        raise ValueError(
-            f"--forecast-start-hour: {args.source} publishes no forecast "
-            "leads (its registry row declares max_forecast_hour = 0), so "
-            "every time in it is an analysis at its own valid time and "
-            "there is no lead to begin at; name the analysis time you want "
-            "with --cycle")
-    horizon = get_source_adapter(args.source).max_forecast_hour
-    if horizon and start_hour + args.hours > horizon:
-        # Named here, from the source's own declared horizon, rather than
-        # after the acquisition.  gdas stops at f009 and rap at f051; a
-        # window that walks past either is a window the product never
-        # published, and it used to be discovered by whichever stage first
-        # went looking for the missing lead.
-        raise ValueError(
-            f"--hours {args.hours} beginning at f{start_hour:03d} reaches "
-            f"f{start_hour + args.hours:03d}, past {args.source}'s declared "
-            f"f{horizon:03d} horizon; shorten the window, start earlier, or "
-            "choose a source with a longer forecast")
+    lead_refusal = forecast_start_hour_refusal(args.source, start_hour, args.hours)
+    if lead_refusal:
+        raise ValueError(lead_refusal)
     from gpuwm.fetch import era5_combined_name, validate_fetch_hints
     acquisition = {"source": args.source, "cycle": args.cycle,
                    "hours": args.hours, "forecast_start_hour": start_hour}
@@ -7241,6 +7394,9 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None,
         acknowledgements=acknowledgements, nz=nz, tiles=tiles,
         physics_mix=physics_mix, clock=clock)
     text = with_surface_flux_option(text, getattr(args, "isftcflx", None))
+    text = with_les_closure(text, getattr(args, "les_below_m", None))
+    text = with_quicklook(text, getattr(args, "quicklook_interval", None),
+                          getattr(args, "quicklook_vars", None))
     from gpuwm.static.source_defaults import with_source_static_defaults_text
     text = with_source_static_defaults_text(text, args.source)
     if args.geog_root and case_data is None:
@@ -7982,13 +8138,34 @@ def register_cli(subparsers) -> None:
              "exact rational dt and refuses the emitted file otherwise, "
              "before it is written")
     parser.add_argument(
-        "--nest-history-interval", type=positive_float, default=None,
-        metavar="SECONDS",
-        help="the same, for every NESTED domain (default "
-             f"{DEFAULT_NEST_HISTORY_INTERVAL_S:g}).  Nests write more "
+        "--nest-history-interval", type=positive_float_list, default=None,
+        metavar="SECONDS[,SECONDS...]",
+        help="the same, for the NESTED domains (default "
+             f"{DEFAULT_NEST_HISTORY_INTERVAL_S:g}): one value for every "
+             "nest, or one per nest, outer to inner (1800,600 is d02 "
+             "every 30 min and d03 every 10 min).  Nests write more "
              "often than the root by default because resolving what the "
              "root cannot, over a shorter window, is the point of "
              "running one.  Ignored for a single-domain ladder")
+    parser.add_argument(
+        "--quicklook-interval", type=positive_float, default=None,
+        metavar="SECONDS",
+        help="a quick-look stream on the FINEST domain: a small subset "
+             "(--quicklook-vars) every SECONDS between its full frames, "
+             "written to quicklook/wrfout_dNN_<time>.  Must divide that "
+             "domain's history interval.  Measured 13 B a cell against "
+             "172 for a full frame")
+    parser.add_argument(
+        "--quicklook-vars", default=None, metavar="VAR[,VAR...]",
+        type=lambda text: tuple(v.strip() for v in text.split(",") if v.strip()),
+        help="the quick-look subset's wrfout variables (default: "
+             "REFL_10CM, UP_HELI_MAX, U10, V10, T2, Q2, PSFC, RAINNC, RAINC)")
+    parser.add_argument(
+        "--les-below-m", type=float, default=DEFAULT_LES_BELOW_M,
+        metavar="METRES",
+        help="write the resolved-turbulence closure (PBL off, 3-D "
+             "Smagorinsky, isotropic mixing) on every nest at or below "
+             f"this spacing (default {DEFAULT_LES_BELOW_M:g} m; 0 never)")
     parser.add_argument("--sf-surface-mosaic", type=int, choices=(0, 1), default=None,
                         help="Noah land-use tiles on every grid (WRF sf_surface_mosaic)")
     parser.add_argument("--mosaic-cat", type=int, default=None,

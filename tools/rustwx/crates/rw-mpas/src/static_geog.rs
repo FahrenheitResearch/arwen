@@ -631,14 +631,15 @@ impl GeogDataset {
     /// Rows outside `[1, ny_global]` and any absent tile are left at `fill`.
     /// One tile plane is decoded, copied and dropped before the next is
     /// opened, so the transient is a tile and never the band's own source.
-    pub fn read_band_with<T: Copy + Default>(
+    pub fn read_band_with<T: Copy + Default + Send + Sync>(
         &self,
         y_lo: i64,
         y_hi: i64,
         z: usize,
         fill: T,
-        map: impl Fn(i64) -> T,
+        map: impl Fn(i64) -> T + Sync,
     ) -> MpasResult<Vec<T>> {
+        use rayon::prelude::*;
         if y_hi < y_lo {
             return Err(MpasError::Refusal(format!(
                 "WPS_GEOG {} band rows {y_lo}..{y_hi} are empty",
@@ -656,15 +657,14 @@ impl GeogDataset {
             "geog-band",
             "full-width source band",
         )?;
-        let ty = self.index.tile_y;
-        let tx = self.index.tile_x;
         let bdr = self.index.tile_bdr as usize;
         let full_nx = self.index.full_tile_nx();
+        // The tiles this band touches, each with the rectangle it fills.
+        let mut work: Vec<(&TileRef, i64, i64, i64, i64)> = Vec::new();
         for tile in &self.tiles {
             if tile.ye < y_lo.max(1) || tile.ys > y_hi.min(self.ny_global) {
                 continue;
             }
-            let plane = self.read_plane(tile, z)?;
             let j0 = tile.ys.max(y_lo).max(1);
             let j1 = tile.ye.min(y_hi).min(self.ny_global);
             let i0 = tile.xs.max(1);
@@ -672,16 +672,40 @@ impl GeogDataset {
             if j1 < j0 || i1 < i0 {
                 continue;
             }
-            for j in j0..=j1 {
-                let src_row = (j - tile.ys) as usize + bdr;
-                let dst_row = (j - y_lo) as usize;
-                for i in i0..=i1 {
-                    let src = src_row * full_nx + (i - tile.xs) as usize + bdr;
-                    out[dst_row * nx + (i - 1) as usize] = map(plane[src]);
+            work.push((tile, j0, j1, i0, i1));
+        }
+        // READ ON EVERY CORE, PLACE IN TILE ORDER. A band of a 30-second
+        // archive is a row of 36 tiles read and decoded one after another,
+        // about a second a band on one core: the sub-grid orography pass of a
+        // global mesh reads 28 bands, the 31 s single-core tail every static
+        // carried (WOOF run controls). The tiles'
+        // rectangles are disjoint, so each is decoded on the pool and copied
+        // into the band in the original tile order: the same bytes. At most
+        // one batch (the pool's width) of planes is held at a time.
+        let batch = rayon::current_num_threads().max(1);
+        for chunk in work.chunks(batch) {
+            let rects: Vec<MpasResult<Vec<T>>> = chunk
+                .par_iter()
+                .map(|&(tile, j0, j1, i0, i1)| {
+                    let plane = self.read_plane(tile, z)?;
+                    let w = (i1 - i0 + 1) as usize;
+                    let mut rect = Vec::with_capacity(w * (j1 - j0 + 1) as usize);
+                    for j in j0..=j1 {
+                        let src_row = (j - tile.ys) as usize + bdr;
+                        let src = src_row * full_nx + (i0 - tile.xs) as usize + bdr;
+                        rect.extend(plane[src..src + w].iter().map(|&raw| map(raw)));
+                    }
+                    Ok(rect)
+                })
+                .collect();
+            for (&(_, j0, j1, i0, i1), rect) in chunk.iter().zip(rects) {
+                let rect = rect?;
+                let w = (i1 - i0 + 1) as usize;
+                for (r, j) in (j0..=j1).enumerate() {
+                    let dst = (j - y_lo) as usize * nx + (i0 - 1) as usize;
+                    out[dst..dst + w].copy_from_slice(&rect[r * w..(r + 1) * w]);
                 }
             }
-            drop(plane);
-            let _ = (ty, tx);
         }
         Ok(out)
     }

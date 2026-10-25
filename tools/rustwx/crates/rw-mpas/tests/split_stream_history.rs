@@ -144,7 +144,7 @@ fn a_mesh_that_is_not_the_runs_is_refused_by_name() {
 }
 
 #[test]
-fn a_history_with_its_own_centres_reads_exactly_as_before_even_beside_a_diag() {
+fn a_history_with_its_own_centres_reads_exactly_as_before_and_completes_from_its_diag() {
     let dir = scratch("mpas-a");
     let mesh_path = dir.join("static.nc");
     let history = dir.join("history.2023-03-31_13.00.00.nc");
@@ -161,7 +161,13 @@ fn a_history_with_its_own_centres_reads_exactly_as_before_even_beside_a_diag() {
         assert_eq!(bits(values), bits(&after.fields[name].0), "{name}");
     }
     assert_eq!(before.absent, after.absent);
-    assert!(after.absent.iter().any(|n| n == "T2"), "the diag stream is not read for an MPAS-A history");
+    // Since F-DIAG (ef31c5508b) an MPAS-A history missing a mapped field
+    // completes it from its diag stream of the same time, with or without
+    // the mesh: T2 comes from diag.*.nc and the frame names the file.
+    assert!(!after.absent.iter().any(|n| n == "T2"), "T2 is read from the diag stream");
+    assert_eq!(bits(&after.fields["T2"].0), bits(&T2M));
+    let diag = after.companion_diag.as_ref().expect("the frame records its diag companion");
+    assert!(diag.fields.iter().any(|n| n == "T2"), "{:?}", diag.fields);
     let to_bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
     assert_eq!(to_bits(&before.latitude_degrees), to_bits(&after.latitude_degrees));
     assert_eq!(to_bits(&before.longitude_degrees), to_bits(&after.longitude_degrees));

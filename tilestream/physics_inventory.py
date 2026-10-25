@@ -275,6 +275,11 @@ def carrier_manifest(state) -> dict[str, object]:
     manifest.update(restart.state_manifest(state))
     manifest.update(restart._scratch_manifest(state))
     manifest.update(restart.carried_scratch_manifest(state))
+    # A fixed-frame nest archive is restart state but is not a tile field.
+    # Sweeping it would both crop its Earth coordinates and copy it per step.
+    from gpuwm.core.nest_accumulation import is_archive_slot
+    manifest = {k: v for k, v in manifest.items()
+                if not (k.startswith('scratch/') and is_archive_slot(k[8:]))}
     driver = getattr(state, "physics", None)
     if driver is not None:
         manifest.update(restart._driver_manifest(driver))

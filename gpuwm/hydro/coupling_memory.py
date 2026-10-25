@@ -20,7 +20,7 @@ def _finish(arrays, bindings, context, options, *, sources, **pins):
     root = Path(__file__).parents[1]
     paths = [Path(__file__), *(root / name for name in sources)]
     evidence = json.dumps(dict(schema="arwen.hydro.coupling-memory/v1",
-        context=asdict(context), options=options, providers=bindings.sources,
+        context=asdict(context), options=options, providers=bindings.evidence_references(),
         sources={str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
                  for p in paths}, **pins), sort_keys=True)
     return StageMemory(tuple(arrays), evidence, non_pool_bytes=None,
@@ -122,9 +122,10 @@ def accumulated_exchange_memory(*, settings, options, context, components):
 def history_memory(*, settings, options, context, components):
     bindings, arrays = _Bindings(components, context), []
     steps, cadence = options["capacity_steps"], options.get("cadence_steps", 1)
-    if type(steps) is not int or type(cadence) is not int or cadence < 1 or steps < cadence:
+    clock = bool(options.get('routing_clock'))
+    if type(steps) is not int or type(cadence) is not int or cadence < 1 or steps < (1 if clock else cadence):
         raise ValueError("history capacity must contain at least one chosen output interval")
-    capacity = steps // cadence
+    capacity = (steps + cadence - 1) // cadence if clock else steps // cadence
     arrays.extend(ArrayMemory(name, (), "uint64", checkpointed=True) for name in ("step", "overflow"))
     owner = options["source"]
     source = components.get(owner)

@@ -899,6 +899,20 @@ def _any_cell_covered(coverage) -> bool:
         for key in ("terrain", "land_use") if key in fields)
 
 
+def _footprint_is_all_water(baseline) -> bool:
+    """Whether the 30-arc-second baseline calls every cell of the domain water.
+
+    Over open water the high-resolution terrain is sea level, exactly what
+    the baseline already holds, so an overlay that changes nothing there is
+    the right answer, not a broken overlay.  A storm-following nest starts
+    over open ocean in most cycles (TC phase 1, helene-2024092400-1km: the
+    zero-cells refusal stopped its preparation) and reaches land only
+    through its move corridor.
+    """
+    landmask = baseline.get("LANDMASK")
+    return landmask is not None and not bool(np.any(np.asarray(landmask) > 0.5))
+
+
 def _anchor_is_given(grid) -> bool:
     return bool(getattr(grid, "anchor_is_given", True))
 
@@ -1279,7 +1293,8 @@ def _apply_terrain_only(baseline, grid, *, config: HighresStaticConfig,
     cell_count = int(np.asarray(baseline["HGT_M"]).size)
     total_changed = counts["HGT_M"]
     field_coverage = source_audit.pop("coverage")
-    if total_changed == 0 and _any_cell_covered(field_coverage):
+    all_water = total_changed == 0 and _footprint_is_all_water(baseline)
+    if total_changed == 0 and _any_cell_covered(field_coverage) and not all_water:
         raise HighresRefusal(
             "zero-cells-replaced",
             f"the enabled high-resolution terrain overlay "
@@ -1315,6 +1330,10 @@ def _apply_terrain_only(baseline, grid, *, config: HighresStaticConfig,
         "attribution": coverage.attribution,
         "tmn": "recomputed from baseline SOILTEMP over the new HGT_M",
     }
+    if all_water:
+        detail["unchanged_reason"] = (
+            "all-water footprint: the baseline calls every cell water, where "
+            "the high-resolution terrain is sea level too, so no cell changed")
     return merged, detail
 
 
@@ -1439,7 +1458,8 @@ def _apply(baseline, grid, *, config: HighresStaticConfig,
             changed = changed.any(axis=0)
         changed_any |= changed
     total_changed = int(np.count_nonzero(changed_any))
-    if total_changed == 0 and _any_cell_covered(field_coverage):
+    all_water = total_changed == 0 and _footprint_is_all_water(baseline)
+    if total_changed == 0 and _any_cell_covered(field_coverage) and not all_water:
         raise HighresRefusal(
             "zero-cells-replaced",
             "the enabled high-resolution overlay produced fields identical "
@@ -1495,6 +1515,10 @@ def _apply(baseline, grid, *, config: HighresStaticConfig,
         detail["attributions"]["soil"] = "selected WPS geography"
     if "anachronism" in landcover_record:
         detail["anachronism"] = landcover_record["anachronism"]
+    if all_water:
+        detail["unchanged_reason"] = (
+            "all-water footprint: the baseline calls every cell water, and "
+            "the high-resolution sources agree, so no cell changed")
     return merged, detail
 
 

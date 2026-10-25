@@ -193,10 +193,10 @@ bytes are outside the numerical oracle.
   `cupy.cuda.compiler` line 585 (`options += ('-ftz=true',)`), after the
   caller's options, and NVRTC honours the last occurrence.
   The inventory records 12 distinct caller-supplied option tuples across the
-  130 compile sites in the shipped package, each listed here with a site
+  132 compile sites in the shipped package, each listed here with a site
   that supplies it:
   - no caller options -- `gpuwm/core/attribute_tracking.py:99`
-    (xp.ElementwiseKernel), and 85 other site(s)
+    (xp.ElementwiseKernel), and 87 other site(s)
   - `-std=c++17` -- `gpuwm/core/acoustic_fusion.py:403` (cp.RawModule), and
     13 other site(s)
   - `--std=c++17` -- `gpuwm/ensemble/batch_perturbation.py:51`
@@ -207,7 +207,7 @@ bytes are outside the numerical oracle.
     2 other site(s)
   - `-fmad=false` -- `gpuwm/core/dycore.py:302` (cp.ElementwiseKernel), and
     2 other site(s)
-  - `-std=c++17` `--fmad=false` -- `gpuwm/core/kernels/__init__.py:685`
+  - `-std=c++17` `--fmad=false` -- `gpuwm/core/kernels/__init__.py:689`
     (cp.RawModule), and 1 other site(s)
   - `-std=c++17` `--fmad=false` `--ftz=false` --
     `gpuwm/core/thompson_fork.py:109` (compiler.compile_using_nvrtc), and 1
@@ -217,7 +217,7 @@ bytes are outside the numerical oracle.
   - `--std=c++17` a target flag built from the device architecture at run
     time -- `gpuwm/ocean/waves/model.py:73` (cp.RawModule)
   - `-std=c++17` `--ftz=false` `--fmad=false` --
-    `gpuwm/core/kernels/__init__.py:801` (compiler.compile_using_nvrtc)
+    `gpuwm/core/kernels/__init__.py:805` (compiler.compile_using_nvrtc)
   - `-std=c++17` `-fmad=false` -- `gpuwm/core/nest_interp.py:261`
     (cp.RawModule)
   `R5` and `R1` are kernels inside ONE compiled object -- same device, same

@@ -1036,3 +1036,211 @@ def test_cli_resume_refuses_a_blown_up_child_that_recorded_no_config(
     # the checkpoint ladder nor the experiment ladder ran.
     assert "checkpoint files" not in err
     assert "is not a readable configuration file" not in err
+
+
+# Original L6G02 regressions retained with the current worker contracts.
+
+def _bundle(root: Path, *, name="receipt.json"):
+    root.mkdir(parents=True, exist_ok=True)
+    (root / name).write_text('{"schema": "fixture"}', encoding="utf-8")
+    return root
+
+
+def test_prepared_roots_are_found_wherever_the_run_wrote_them(tmp_path):
+    from gpuwm.resume import discover_prepared_roots
+
+    deep = _bundle(tmp_path / "chain" / "prepared-tree")
+    (tmp_path / "chain" / "run").mkdir(parents=True)
+    (tmp_path / "chain" / "run" / "wrfout_d01").write_bytes(b"not a bundle")
+
+    assert discover_prepared_roots(tmp_path) == [deep.resolve()]
+    assert discover_prepared_roots(tmp_path / "chain" / "run") == []
+
+
+def test_prepared_root_discovery_reports_every_bundle_it_finds(tmp_path):
+    from gpuwm.resume import discover_prepared_roots
+
+    first = _bundle(tmp_path / "chain" / "a", name="proof.json")
+    second = _bundle(tmp_path / "chain" / "b")
+    assert discover_prepared_roots(tmp_path) == \
+        sorted([first.resolve(), second.resolve()])
+
+
+def test_prepared_root_discovery_never_leaves_the_output_tree(tmp_path):
+    """A link out of the tree is not something THIS run wrote."""
+    from gpuwm.resume import discover_prepared_roots
+
+    outside = _bundle(tmp_path / "elsewhere" / "prepared")
+    outdir = tmp_path / "old output"
+    outdir.mkdir()
+    try:
+        (outdir / "link").symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("this filesystem does not support directory symlinks")
+    assert discover_prepared_roots(outdir) == []
+
+
+def test_prepared_root_discovery_stops_at_its_depth_bound(tmp_path):
+    from gpuwm.resume import PREPARED_SEARCH_DEPTH, discover_prepared_roots
+
+    too_deep = tmp_path.joinpath(*[f"d{n}" for n in
+                                   range(PREPARED_SEARCH_DEPTH + 1)])
+    _bundle(too_deep)
+    assert discover_prepared_roots(tmp_path) == []
+    assert discover_prepared_roots(too_deep.parent) == [too_deep.resolve()]
+
+
+def test_declared_prepared_roots_reads_only_the_receipts_input_field(tmp_path):
+    from gpuwm.resume import declared_prepared_roots
+
+    (tmp_path / "evidence").mkdir()
+    (tmp_path / "evidence" / "run-receipt.json").write_text(
+        json.dumps({"input": {"prepared_root": str(tmp_path / "bundle")}}),
+        encoding="utf-8")
+    # A failed run's report carries no input block, and must not be read
+    # as if it named a bundle.
+    (tmp_path / "report.json").write_text(
+        json.dumps({"status": "failed"}), encoding="utf-8")
+    assert declared_prepared_roots(tmp_path) == [(tmp_path / "bundle").resolve()]
+    assert declared_prepared_roots(tmp_path / "nowhere") == []
+
+
+def _tree_bundle(root: Path, *, grids=(1, 2, 3)) -> Path:
+    """A prepared TREE bundle carrying the interior the stage requires.
+
+    ``gpuwm/prepared_domain_tree_forecast.py`` requires
+    ``<root>/hierarchy-artifacts/receipt.json`` at :1129 and
+    ``<root>/hierarchy-artifacts/domains/dNN/receipt.json`` for every
+    grid at :1254.  So the bundle-document NAME appears inside a real
+    bundle once per grid plus once, and the discovery has to know that
+    those belong to the bundle rather than rival it.
+    """
+    _bundle(root)
+    hierarchy = root / "hierarchy-artifacts"
+    _bundle(hierarchy)
+    (hierarchy / "domain-artifacts.json").write_text(
+        json.dumps({"domains": list(grids)}), encoding="utf-8")
+    for grid in grids:
+        _bundle(hierarchy / "domains" / f"d{grid:02d}")
+    return root
+
+
+def test_a_tree_bundles_own_interior_is_not_four_more_bundles(tmp_path):
+    """Discovery returns bundle ROOTS: the walk is pruned at the first one.
+
+    A real tree bundle holds five receipt.json documents, every one of
+    them inside the root that owns it.  Reporting five roots for one
+    bundle is what made a sound resume look ambiguous.
+    """
+    from gpuwm.resume import discover_prepared_roots
+
+    outdir = tmp_path / "old output"
+    prepared = _tree_bundle(outdir / "chain" / "prepared")
+    (outdir / "chain" / "run").mkdir(parents=True)
+    evidence = outdir / "evidence"
+    evidence.mkdir(parents=True)
+    # The receipt a run that STARTED and DIED writes: no input block, so
+    # no tie-break could ever have named a winner among the five.
+    (evidence / "failed-run-receipt.json").write_text(
+        json.dumps({"status": "FAIL", "error": "the run died"}),
+        encoding="utf-8")
+
+    # Every nested document is inside the depth bound, so only the
+    # pruning keeps them out of the answer.
+    assert (prepared / "hierarchy-artifacts" / "domains" / "d03"
+            / "receipt.json").is_file()
+    assert discover_prepared_roots(outdir) == [prepared.resolve()]
+
+
+def test_two_bundles_are_still_two_bundles(tmp_path):
+    """The pruning stops at a root; it does not hide a sibling bundle."""
+    from gpuwm.resume import discover_prepared_roots
+
+    outdir = tmp_path / "old output"
+    first = _tree_bundle(outdir / "chain-a" / "prepared")
+    second = _tree_bundle(outdir / "chain-b" / "prepared")
+    assert discover_prepared_roots(outdir) == \
+        sorted([first.resolve(), second.resolve()])
+
+
+def test_the_nearest_bundle_is_the_one_the_checkpoint_sits_beside(tmp_path):
+    """No receipt is not a refusal: the checkpoint's own chain answers."""
+    from gpuwm.resume import nearest_prepared_root
+
+    outdir = tmp_path / "old output"
+    beside = outdir / "chain" / "prepared"
+    elsewhere = outdir / "prepared"
+    checkpoint = outdir / "chain" / "run" / "gpuwmrst_d01_1974-04-03_13_00_00.npz"
+    assert nearest_prepared_root([elsewhere, beside], checkpoint) == beside
+    assert nearest_prepared_root([beside, elsewhere], checkpoint) == beside
+    # Deterministic on a genuine tie: the sorted path, on every node.
+    tie = [outdir / "b" / "prepared", outdir / "a" / "prepared"]
+    assert nearest_prepared_root(tie, outdir / "run" / "ckpt.npz") == \
+        outdir / "a" / "prepared"
+
+
+def test_the_nearest_bundle_is_the_same_bundle_through_a_symlink(tmp_path):
+    """One namespace, both sides, or nearness means nothing.
+
+    ``discover_prepared_roots`` answers with resolved paths; the
+    checkpoint arrives spelled the way the source job recorded its outdir
+    (``gpuwm/remote_worker.py`` :314).  When a link sits above the output
+    tree those two spellings share no component at all, every count is 0,
+    and the answer collapses to the sorted-first bundle -- silently, and
+    while the review says the bundle was chosen for nearness.  The names
+    below make that collapse visible: ``aaa`` sorts first, ``chain`` is
+    the answer.
+    """
+    from gpuwm.resume import discover_prepared_roots, nearest_prepared_root
+
+    real = tmp_path / "mount"
+    outdir = real / "job-out"
+    first_by_name = _tree_bundle(outdir / "aaa" / "prepared")
+    beside = _tree_bundle(outdir / "chain" / "prepared")
+    checkpoint = outdir / "chain" / "run" / "gpuwmrst_d01_1974-04-03_13_00_00.npz"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_bytes(b"not read here")
+
+    link = tmp_path / "scratch"
+    try:
+        link.symlink_to(real, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("this filesystem does not support directory symlinks")
+    seen = link / "job-out"
+
+    found = discover_prepared_roots(seen)
+    assert found == sorted([first_by_name.resolve(), beside.resolve()])
+    linked_checkpoint = seen / "chain" / "run" / checkpoint.name
+    assert nearest_prepared_root(found, linked_checkpoint) == beside.resolve()
+    # CONTROL: the unlinked spelling of the same tree, same answer.
+    assert nearest_prepared_root(found, checkpoint) == beside.resolve()
+
+
+def test_a_receipts_relative_bundle_is_read_against_the_receipt(tmp_path):
+    """A recorded path means what it meant where it was recorded.
+
+    ``prepared_root`` is written by a run on another node and read here
+    by a process whose working directory has nothing to do with it, so a
+    relative value resolved against THIS cwd names a bundle in an
+    unrelated tree.  The narrowing keeps only names that are also in the
+    discovered set, so such a name matches nothing and the receipt
+    silently stops narrowing.
+    """
+    from gpuwm.resume import declared_prepared_roots
+
+    outdir = tmp_path / "old output"
+    bundle = _tree_bundle(outdir / "chain" / "prepared")
+    evidence = outdir / "evidence"
+    evidence.mkdir(parents=True)
+    (evidence / "run-receipt.json").write_text(
+        json.dumps({"input": {"prepared_root": "../chain/prepared"}}),
+        encoding="utf-8")
+
+    monkeypatched_cwd = tmp_path / "somewhere else"
+    monkeypatched_cwd.mkdir()
+    previous = os.getcwd()
+    os.chdir(monkeypatched_cwd)
+    try:
+        assert declared_prepared_roots(outdir) == [bundle.resolve()]
+    finally:
+        os.chdir(previous)

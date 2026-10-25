@@ -62,8 +62,9 @@ def resolve_zarr_bin() -> Path:
     if stale:
         raise DecoderContractError(
             "The native Zarr reader rw_zarr found here is older than this gpuwm: "
-            + "; ".join(stale) + ". An older reader refuses ARCO ERA5 requests it "
-            "should read (for example the level axis written as Hectopascal(hPa)). "
+            + "; ".join(stale) + ". An older reader lacks the coverage query needed "
+            "to carry live hydro spin-up past ERA5's published boundary, or refuses "
+            "source units such as Hectopascal(hPa). "
             + _remedy(filename))
     raise FileNotFoundError(
         "The native Zarr reader rw_zarr is not installed. " + _remedy(filename))

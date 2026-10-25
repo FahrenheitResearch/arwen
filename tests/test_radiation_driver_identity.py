@@ -56,7 +56,12 @@ def test_off_radiation_options_keep_complete_public_document_bytes():
     # Keep the clock selected by the recorded historical document explicit.
     # The later default local-face clock is a separate identity change, and
     # so is 2.9.0's WRF 4.8 solar generation (recorded under WRF 4.6.1's).
-    exp = _experiment(terrain_clock="measured", solar_generation="wrf_461")
+    exp = _experiment(terrain_clock="measured", solar_generation="wrf_461",
+                      # 2.9.7's correct-mode HN1 is read under this mp=28 domain
+                      # and written while on; the recorded documents predate it.
+                      hydrometeor_handover_numbers=False)
+    assert "hydrometeor_handover_numbers" in domain_config_document(
+        _experiment(terrain_clock="measured", solar_generation="wrf_461").root)["run"]
     # These bytes came from the exact staging serializers with their real
     # 220-field RunConfig, before the three neutral radiation fields existed.
     # A synthetic dataclass skips earlier RunConfig-specific omission rules.

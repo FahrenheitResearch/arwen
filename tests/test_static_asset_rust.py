@@ -233,14 +233,16 @@ def test_table_rows_keep_raw_pins():
             assert not any("huggingface.co" in row["url"] for row in rows[:-1])
 
 
-def test_selected_tree_uses_wrf_inventory_without_mesh_land_use():
+def test_selected_off_grid_tree_uses_sources_recipe_without_mesh_land_use():
     from gpuwm.geog_assets import geography_for_run, datasets_required_by
     plan = geography_for_run(Path(__file__).parent / "fixtures/static_asset_configs/selected-tree.toml")
-    assert tuple(plan["datasets"]) == datasets_required_by("wrf")
+    expected = (set(datasets_required_by("wrf")) - {"soilgrids", "lai_modis_10m"}
+                | {"bnu_soiltype_top", "bnu_soiltype_bot", "lai_modis_30s"})
+    assert set(plan["datasets"]) == expected
     assert plan["static_sources"] == []
-    # The WRF pins' download bill: the eight tarballs plus the ERA5 read
-    # that builds the deep-soil temperature.
-    assert plan["archive_bytes"] == 2613939673
+    # The source's off-grid recipe replaces default soil and LAI; the
+    # ERA5 read still builds the deep-soil temperature.
+    assert plan["archive_bytes"] == 2513156063
 
 
 def test_selected_source_uses_its_identical_legend_metadata():

@@ -145,3 +145,63 @@ def test_a_fetching_launch_runs_a_restated_copy(tmp_path):
     assert without == original
     # Asked again for the mode it already states: the same file runs.
     assert go_cli._at_flag_tiles(args, out, restated) == (out, restated)
+
+
+def _demo(tmp_path):
+    import shutil
+    import tomllib
+
+    root = Path(__file__).parents[1] / "configs"
+    for path in root.glob("hrrr_prs_3km_demo.*"):
+        shutil.copy(path, tmp_path / path.name)
+    config = tmp_path / "hrrr_prs_3km_demo.toml"
+    return config, tomllib.loads(config.read_text(encoding="utf-8"))
+
+
+def _resident_refusal(**extra):
+    """The gate dict of X12: a resident 53.69 GiB envelope on a 30.96 GiB card."""
+
+    phases = SimpleNamespace(streamed_forecast=False,
+                             peak_envelope_bytes=int(53.69 * 2**30))
+    return {"refuse": True, "card_refuse": True, "free_bytes": int(30.96 * 2**30),
+            "preparation_refusal": None, "phases": phases, **extra}
+
+
+def test_a_bare_config_the_card_cannot_hold_streams_instead(tmp_path, capsys):
+    """X12: the 5 km CONUS run was refused although it streams in 27 GiB."""
+
+    config, payload = _demo(tmp_path)
+    args = SimpleNamespace(tiles=None, prepared_root=None, restart=None,
+                           devices=None, outdir=tmp_path / "out", config=config)
+    out, restated = go_cli._streams_instead(args, _resident_refusal(), config, payload)
+    assert restated["tiles"] == {"mode": "auto"} and args.tiles == "auto"
+    assert out == tmp_path / "out" / "tiles" / "auto" / config.name
+    said = capsys.readouterr().out
+    assert "53.69 GiB against 30.96 GiB free" in said and "streams" in said
+
+
+@pytest.mark.parametrize("change", [
+    "fits", "flag", "table", "domain-table", "streamed", "host", "no-card", "devices"])
+def test_the_refusal_stands_wherever_streaming_is_not_the_answer(tmp_path, change):
+    config, payload = _demo(tmp_path)
+    args = SimpleNamespace(tiles=None, prepared_root=None, restart=None,
+                           devices=None, outdir=tmp_path / "out", config=config)
+    gate = _resident_refusal()
+    if change == "fits":
+        gate["refuse"] = False
+    elif change == "flag":
+        args.tiles = "off"
+    elif change == "table":
+        payload["tiles"] = {"mode": "off"}
+    elif change == "domain-table":
+        payload["domain"][0]["tiles"] = {"mode": "off"}
+    elif change == "streamed":
+        gate["phases"].streamed_forecast = True
+    elif change == "host":
+        gate["preparation_refusal"] = "the preparation needs more RAM"
+    elif change == "no-card":
+        gate["free_bytes"] = None
+    elif change == "devices":
+        args.devices = 2
+    assert go_cli._streams_instead(args, gate, config, payload) is None
+    assert args.tiles in (None, "off")

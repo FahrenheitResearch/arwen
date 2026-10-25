@@ -6,6 +6,26 @@ from gpuwm.core.physics_inventory import cumulus_state_layout, CUMULUS_HISTORY_L
 from gpuwm.io.wrf_output_schema import SCHEME_OUTPUT_FIELDS, HISTORY_FIELDS_BY_NETCDF_NAME
 
 
+@pytest.fixture
+def array_only_driver(monkeypatch):
+    """Keep structural adapter tests from importing physics with fake CuPy.
+
+    Both tests stop before constructing a result. Mock the imported driver
+    contracts as well as CuPy, so physics and its dependencies cannot retain
+    NumPy as their GPU backend for later tests in the same process.
+    """
+    import sys
+    import numpy as np
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    monkeypatch.setitem(sys.modules, "cupy", np)
+    monkeypatch.setitem(sys.modules, "gpuwm.core.physics", SimpleNamespace(
+        CumulusResult=Mock(side_effect=AssertionError("unexpected result construction")),
+        _model_clock_dt=Mock(return_value=60.0),
+    ))
+
+
 def test_diagnostics_are_scoped_and_have_real_output_schema():
     from gpuwm.core.g3 import run_g3_diag
     assert callable(run_g3_diag)
@@ -50,8 +70,7 @@ def test_native_integer_carriers_and_workspace_have_manifest_policies():
     ({"specified":True},(False,False)),
     ({"nested":True},(False,False)),
 ])
-def test_driver_preserves_the_domain_boundary_flags(monkeypatch,boundary,expected):
-    import sys
+def test_driver_preserves_the_domain_boundary_flags(monkeypatch,array_only_driver,boundary,expected):
     import numpy as np
     from types import SimpleNamespace
     import gpuwm.core.g3 as g3
@@ -59,7 +78,6 @@ def test_driver_preserves_the_domain_boundary_flags(monkeypatch,boundary,expecte
     def capture(**kw):
         assert (kw['periodic_x'],kw['periodic_y']) == expected
         raise StopAtColumn
-    monkeypatch.setitem(sys.modules,'cupy',np)
     monkeypatch.setattr(g3,'run_g3',capture)
     cfg=RunConfig(nx=16,ny=16,nz=30,dx=12000.,dy=12000.,ztop=16000.,dt=60.,run_seconds=0.,cu_physics=5,cudt_minutes=0.,**boundary)
     vol=np.ones((30,16,16),dtype='f4')
@@ -73,7 +91,7 @@ def test_driver_preserves_the_domain_boundary_flags(monkeypatch,boundary,expecte
 
 
 @pytest.mark.parametrize("option", (0, 11))
-def test_grell3d_publishes_wrfs_ktop_deep_for_pr92_cloud_top(monkeypatch, option):
+def test_grell3d_publishes_wrfs_ktop_deep_for_pr92_cloud_top(monkeypatch, array_only_driver, option):
     """lightning_option = 11 reads the cumulus scheme's deep-cloud top.
 
     G3DRV writes ktop_deep (module_cu_g3.F, graded word for word by
@@ -81,7 +99,6 @@ def test_grell3d_publishes_wrfs_ktop_deep_for_pr92_cloud_top(monkeypatch, option
     ltng_ktop_deep slot lightning reads, or PR92z refuses for want of a cloud
     top. Off, the slot is never created.
     """
-    import sys
     import numpy as np
     from types import SimpleNamespace
     import gpuwm.core.g3 as g3
@@ -110,7 +127,6 @@ def test_grell3d_publishes_wrfs_ktop_deep_for_pr92_cloud_top(monkeypatch, option
         slots[name] = np.full(shape, -7, dtype=dtype)
         return slots[name]
 
-    monkeypatch.setitem(sys.modules, "cupy", np)
     monkeypatch.setattr(g3, "run_g3", column)
     cfg = RunConfig(nx=16, ny=16, nz=30, dx=12000., dy=12000., ztop=16000.,
                     dt=60., run_seconds=0., cu_physics=5, cudt_minutes=0.,

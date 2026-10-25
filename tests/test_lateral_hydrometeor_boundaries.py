@@ -90,7 +90,10 @@ def test_the_cold_start_closure_and_the_ring_seed_the_same_numbers():
     (1, ("qc", "qr")),
     (6, FIVE),
     (8, (*FIVE, "nr", "ni")),
-    (10, FIVE),
+    # Morrison: the handover closure's numbers ride with the masses
+    # (gpuwm/ingest/handover_numbers.py); a flow-dependent Morrison ring
+    # brought the mass in at N = 0, sized at the slope limit.
+    (10, (*FIVE, "nr", "ni", "ns", "ng")),
     (28, (*FIVE, "nc", "nr", "ni")),
     (50, ("qc", "qr", "qi")),
 ])
@@ -189,10 +192,13 @@ def test_an_unknown_boundary_species_is_refused():
 
 # ------------------------------------------------------- end-of-step forcing
 
-def test_spec_bdy_final_forces_the_masses_back_and_leaves_the_numbers():
-    """Masses are WRF moist-array species (forced back, solve_em.F:4703);
-    the seeded numbers are scalar-array species, forced back only on a
-    nest, so a specified ring's number moves by its tendency."""
+def test_spec_bdy_final_forces_the_masses_back_with_their_numbers():
+    """Masses are WRF moist-array species (forced back, solve_em.F:4703).
+    The seeded numbers are scalar-array species, which WRF forces back only
+    on a nest; ArWen forces a number back WITH its mass on a specified ring
+    too, because left to its tendency it reached 0 on the outermost row
+    under a restored mass (gpuwm/ingest/handover_numbers.py).  A strict WRF
+    process keeps WRF's ring (test below)."""
     from gpuwm.ingest import lateral_bc
 
     fields = dict.fromkeys(
@@ -213,10 +219,82 @@ def test_spec_bdy_final_forces_the_masses_back_and_leaves_the_numbers():
                        lambda *a: None)
             mp.setattr(lateral_bc, "_launch_finalize_field",
                        lambda s, name, *a: calls.append(name))
+            mp.setattr(lateral_bc, "_ring_at_record_end", lambda *a: False)
             lateral_bc.apply_state_boundary_values(state, cfg)
         forced.append(calls)
-    assert forced[0] == ["u", "v", "theta", "phi", "qv", *FIVE]
+    assert forced[0] == ["u", "v", "theta", "phi", "qv", *FIVE, "nr", "ni"]
     assert forced[1] == ["u", "v", "theta", "phi", "qv", *FIVE, "nr", "ni"]
+
+
+def test_strict_specified_ring_leaves_the_numbers_to_their_tendency(monkeypatch):
+    from gpuwm import correct_mode
+    from gpuwm.ingest import lateral_bc
+
+    monkeypatch.setattr(correct_mode, "STRICT", True)
+    fields = dict.fromkeys(
+        ("u", "v", "theta", "phi", "mu", "qv", *FIVE, "nr", "ni"), 0)
+    cfg = SimpleNamespace(specified=True, nested=False, spec_zone=1)
+    state = SimpleNamespace(
+        qv=object(), lateral_boundaries=object(),
+        _lateral_boundary_device=SimpleNamespace(clock=object()))
+    calls = []
+    interval = SimpleNamespace(fields=fields)
+    monkeypatch.setattr(lateral_bc, "_active_device_interval",
+                        lambda *a: (interval, 0., None, None))
+    monkeypatch.setattr(lateral_bc, "_launch_mu_boundary_values", lambda *a: None)
+    monkeypatch.setattr(lateral_bc, "_launch_finalize_field",
+                        lambda s, name, *a: calls.append(name))
+    lateral_bc.apply_state_boundary_values(state, cfg)
+    assert calls == ["u", "v", "theta", "phi", "qv", *FIVE]
+
+
+def _ring_state(nz=4, ny=6, nx=6):
+    zeros = lambda: np.zeros((nz, ny, nx), np.float32)
+    state = SimpleNamespace(qr=zeros(), nr=zeros(), qs=zeros(), ns=zeros(),
+                            alt=np.full((nz, ny, nx), 1.0 / 1.1, np.float32),
+                            p=np.full((nz, ny, nx), 8.5e4, np.float32),
+                            thp=zeros(), thb=np.full(nz, 300.0, np.float32))
+    return state
+
+
+def test_a_record_end_ring_number_cancelled_to_zero_is_closed_from_its_mass():
+    """The step ending on a new forcing record serves the old interval at its
+    full length; value + tendency*dtbc cancelled a number falling 2.4e4 ->
+    6.6e-5 per kg to 0 beside 1.8e-9 kg/kg of rain on the 1 km downscale
+    ring (GFS 2024-05-06 case).  The ring pass closes it from the mass; the
+    interior is not the ring's to touch."""
+    from gpuwm.ingest import lateral_bc
+
+    state = _ring_state()
+    state.qr[2, 0, 3] = 1.8e-9          # south ring row, number cancelled
+    state.qr[2, 3, 5] = 4.0e-7          # east ring column
+    state.qr[2, 3, 3] = 5.0e-7          # interior
+    state.qs[1, 5, 2] = 2.0e-6          # north ring row, snow
+    state.nr[2, 1, 1] = 7.0             # an interior number is kept
+    cfg = SimpleNamespace(spec_zone=1, mp_physics=10, morr_rimed_ice=1)
+    written = lateral_bc.close_ring_numbers(state, cfg, (("qr", "nr"), ("qs", "ns")))
+    assert written == 3
+    assert state.nr[2, 0, 3] > 0 and state.nr[2, 3, 5] > 0 and state.ns[1, 5, 2] > 0
+    assert np.isfinite(state.nr).all() and np.isfinite(state.ns).all()
+    assert state.nr[2, 3, 3] == 0.0, "the interior is left to the scheme"
+    assert state.nr[2, 1, 1] == 7.0
+    assert np.count_nonzero(state.nr) == 3 and np.count_nonzero(state.ns) == 1
+
+
+def test_the_ring_pass_runs_only_on_the_step_that_ends_on_a_record():
+    from gpuwm.ingest import lateral_bc
+
+    interval = SimpleNamespace(start_seconds=900.0, end_seconds=1800.0)
+    cfg = SimpleNamespace(nested=False, dt=5.0)
+    def state_at(dtbc, clock=True):
+        resident = SimpleNamespace(clock=SimpleNamespace(
+            dtbc_launch_fp32=np.float32(dtbc), elapsed_seconds=900.0 + dtbc) if clock else None)
+        return SimpleNamespace(_lateral_boundary_device=resident,
+                               lateral_boundaries=SimpleNamespace(interval_at=lambda t: interval))
+    assert lateral_bc._ring_at_record_end(state_at(900.0), cfg)
+    assert not lateral_bc._ring_at_record_end(state_at(895.0), cfg)
+    assert not lateral_bc._ring_at_record_end(state_at(450.0), cfg)
+    assert not lateral_bc._ring_at_record_end(state_at(900.0, clock=False), cfg)
 
 
 # ----------------------------------------------------------- cache admission

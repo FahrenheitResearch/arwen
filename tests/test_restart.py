@@ -3062,9 +3062,20 @@ def _member_names(path) -> list[str]:
 #: dropping exactly those members and rows recovers the previous pair, and
 #: every older reconstruction unwinds the same members
 #: (_digest_without_config_keys unwind_hailcast).
+#:
+#: RE-PINNED for tc/nest's fixed-frame nest accumulation archive (2.9.7):
+#: a nested domain's echo carries nest_accumulation_archive at its default
+#: True, so the child's header and its two derived physics hashes move; the
+#: root is not nested and keeps its digest.  The attribution is
+#: test_the_checkpoint_pins_moved_for_the_nest_archive_and_nothing_else:
+#: dropping that key recovers the previous child digest
+#: (_PRE_NEST_ARCHIVE_CHILD_DIGEST), and every older reconstruction unwinds it
+#: (_digest_without_config_keys unwind_nest_archive).
 _LIFECYCLE_FREE_ROOT_DIGEST = \
     "72c1bf64128f7686fb82e04d6430d3140a899faa3c6aba319bfe73e1f01ef5e8"
 _LIFECYCLE_FREE_CHILD_DIGEST = \
+    "c63b17c9cb1bb4966f81f9f9ca15ca448629c483356ad828f3f824596d8c62d3"
+_PRE_NEST_ARCHIVE_CHILD_DIGEST = \
     "cce75c2551272396fa9cdbbb69701612922d73ce5e006054cb2a510546d05354"
 
 #: The pair above before the HAILCAST slots joined the checkpoint.
@@ -3155,7 +3166,8 @@ _WIF_CONFIG_KEYS = ("mp28_aerosol_source", "wif_climatology_path",
 
 def _digest_without_config_keys(path, keys, *, config_overrides=None,
                                 algorithm_overrides=None,
-                                unwind_hailcast=True) -> str:
+                                unwind_hailcast=True,
+                                unwind_nest_archive=True) -> str:
     """The canonical member digest as it would read WITHOUT ``keys``.
 
     Same construction as :func:`_canonical_member_digest`, with exactly
@@ -3178,6 +3190,10 @@ def _digest_without_config_keys(path, keys, *, config_overrides=None,
     their manifest rows, and asserts each was there, so a missing or extra
     slot still leaves the reconstruction short.
 
+    ``unwind_nest_archive`` (default on: every digest this reconstructs
+    predates tc/nest) drops ``nest_accumulation_archive`` from the echo, which
+    a nested domain writes at its default True.
+
     ``algorithm_overrides`` reconstructs a declared scheme identity move
     (``physics_setup.algorithms``) the same way: the named components take
     their previous identity and the fingerprint is recomputed; nothing
@@ -3198,6 +3214,8 @@ def _digest_without_config_keys(path, keys, *, config_overrides=None,
         header["format_version"] = _HISTORICAL_FORMAT_VERSION
         for key in keys:
             header["config"].pop(key, None)
+        if unwind_nest_archive:
+            header["config"].pop("nest_accumulation_archive", None)
         for key, value in (config_overrides or {}).items():
             assert key in header["config"], key
             header["config"][key] = value
@@ -3404,6 +3422,22 @@ def test_a_lifecycle_free_tree_checkpoint_is_byte_identical(
         _LIFECYCLE_FREE_CHILD_DIGEST
 
 
+def test_the_checkpoint_pins_moved_for_the_nest_archive_and_nothing_else(
+        monkeypatch, tmp_path):
+    """tc/nest's archive key moved the nested child's echo, not the format."""
+    source, start = _sealed_tree_fixture(
+        monkeypatch, forcing_count=2, run_seconds=3600.0, payload_seed=31,
+        run_overrides=_PINNED_UNDER_MEASURED_CLOCK)
+    restart.write_tree_restart(tmp_path, source, start + timedelta(seconds=3600))
+    child_path = next(p for p in tmp_path.glob("gpuwmrst_d02_*.npz"))
+    assert restart.read_restart_header(child_path)["config"][
+        "nest_accumulation_archive"] is True
+    assert _canonical_member_digest(child_path) == _LIFECYCLE_FREE_CHILD_DIGEST
+    assert _LIFECYCLE_FREE_CHILD_DIGEST != _PRE_NEST_ARCHIVE_CHILD_DIGEST
+    assert _digest_without_config_keys(
+        child_path, (), unwind_hailcast=False) == _PRE_NEST_ARCHIVE_CHILD_DIGEST
+
+
 def test_the_checkpoint_pins_moved_for_the_moist_cq_default_and_nothing_else(
         monkeypatch, tmp_path):
     """e13fa45c0 / 59f7e280f changed one bound default, not the format."""
@@ -3486,7 +3520,8 @@ def test_the_checkpoint_pins_moved_for_the_hailcast_slots_and_nothing_else(
         assert set(_HAILCAST_PERSISTENT_MEMBERS) <= set(_member_names(path))
         assert _canonical_member_digest(path) == current_digest
         assert _digest_without_config_keys(
-            path, (), unwind_hailcast=False) == current_digest
+            path, (), unwind_hailcast=False,
+            unwind_nest_archive=False) == current_digest
         assert current_digest != old_digest
         assert _digest_without_config_keys(path, ()) == old_digest
 

@@ -242,6 +242,20 @@ _BINDING_KEYS = {
     "source_id", "mapping_role", "mapping_sha256", "data_role",
     "provenance_role", "fields", "grid_alignment", "time_alignment", "vertical_merge",
 }
+#: Optional binding keys.  ``companion`` declares the contributing source a
+#: DECLARED COMPANION of the primary: a run of the same grid and cycle
+#: whose column extends the primary's vertical ladder above the primary's
+#: top (a member-only ensemble subset completed by its deterministic run).
+_BINDING_OPTIONAL_KEYS = {"companion"}
+_COMPANION_KEYS = {"vertical_extension", "fields"}
+#: The one declared way a companion extends the primary ladder: the
+#: companion's levels strictly above the primary's top are stacked on top
+#: of the primary column, and every primary level stays the primary's.
+_COMPANION_VERTICAL_EXTENSIONS = frozenset({"above_primary_top"})
+#: The vertical coordinate whose "above" this composition can name:
+#: pressure, where above is lower pressure.  A hybrid ladder would need its
+#: A/B coefficients spliced as well, which is not declared here.
+_COMPANION_VERTICAL_KINDS = frozenset({"pressure"})
 
 
 def _digest(value: object, label: str) -> str:
@@ -443,11 +457,13 @@ def _validate_field_sources(
     bindings: dict[str, dict[str, object]] = {}
     covered: dict[str, str] = {}
     roles: dict[str, str] = {}
+    companions: list[str] = []
     for binding_name, raw_binding in value.items():
         _string(binding_name, "field_sources binding name")
         label = f"composition.field_sources.{binding_name}"
         binding = _object(
-            raw_binding, label, allowed=_BINDING_KEYS, required=_BINDING_KEYS - {"vertical_merge"},
+            raw_binding, label, allowed=_BINDING_KEYS | _BINDING_OPTIONAL_KEYS,
+            required=_BINDING_KEYS - {"vertical_merge"},
         )
         _string(binding["source_id"], f"{label}.source_id")
         _digest(binding["mapping_sha256"], f"{label}.mapping_sha256")
@@ -487,8 +503,26 @@ def _validate_field_sources(
                 expected = {"Pa": 1, "hPa": 100}.get(vertical["units"])
             if merge["primary_pressure_scale"] != expected:
                 raise ValueError(f"{label}: primary pressure scale disagrees with coordinate units")
+        if merge is not None and "companion" in binding:
+            raise ValueError(f"{label}: companion and vertical_merge both rewrite the column ladder")
+        companion = None
+        if "companion" in binding:
+            companion = _validate_companion(
+                binding["companion"], mapping, label=label,
+                time_alignment=binding["time_alignment"],
+            )
+            companions.append(binding_name)
+            if len(companions) > 1:
+                raise ValueError(
+                    f"bindings {companions[0]!r} and {binding_name!r} both "
+                    "declare a companion; two companions extending one "
+                    "primary ladder would leave the levels above its top "
+                    "with two sources"
+                )
         fields = binding["fields"]
-        if not isinstance(fields, list) or not fields:
+        # A declared companion may lend nothing but the levels above the
+        # primary's top; every other binding exists to lend fields.
+        if not isinstance(fields, list) or (not fields and companion is None):
             raise ValueError(f"{label}.fields must be a non-empty list")
         names = [_string(name, f"{label}.fields[]") for name in fields]
         if merge:
@@ -516,7 +550,87 @@ def _validate_field_sources(
                 )
             covered[name] = binding_name
         bindings[binding_name] = dict(binding, fields=list(names))
+        if companion is not None:
+            bindings[binding_name]["companion"] = companion
     return bindings
+
+
+def _companion_vertical_fields(mapping: Mapping[str, object]) -> list[str]:
+    """The primary's own directly decoded fields that stack on its ladder."""
+
+    return sorted(
+        name for name, field in mapping["fields"].items()
+        if field.get("provider") != "composition_bound"
+        and field.get("derivation") is None
+        and field.get("selectors")
+        and "vertical" in tuple(field.get("source_axes", ()))
+    )
+
+
+def _validate_companion(
+    value: object,
+    mapping: Mapping[str, object],
+    *,
+    label: str,
+    time_alignment: object,
+) -> dict[str, object]:
+    """Validate one binding's ``companion`` declaration.
+
+    A declared companion is the only contributing source whose values may
+    share a column with the primary's: its levels above the primary's top
+    are stacked onto the primary's own fields.  Every refusal names what a
+    looser rule would let through.
+    """
+
+    spec = _object(
+        value, f"{label}.companion",
+        allowed=_COMPANION_KEYS, required=_COMPANION_KEYS,
+    )
+    if spec["vertical_extension"] not in _COMPANION_VERTICAL_EXTENSIONS:
+        raise ValueError(
+            f"{label}.companion.vertical_extension must be one of "
+            f"{sorted(_COMPANION_VERTICAL_EXTENSIONS)}"
+        )
+    if time_alignment != "valid_time_exact":
+        raise ValueError(
+            f"{label} declares a companion on the {time_alignment!r} clock; "
+            "a companion extends every valid time's column with its own "
+            "valid time, and a broadcast would freeze the top of a moving "
+            "column, so it requires valid_time_exact"
+        )
+    vertical = mapping["coordinates"]["vertical"]
+    if str(vertical.get("kind")) not in _COMPANION_VERTICAL_KINDS:
+        raise ValueError(
+            f"{label} declares a companion over a {vertical.get('kind')!r} "
+            "ladder; only a pressure ladder says which levels lie above "
+            "its top, and a hybrid ladder would need its coefficients "
+            "spliced as well"
+        )
+    fields = spec["fields"]
+    if not isinstance(fields, list) or not fields:
+        raise ValueError(f"{label}.companion.fields must be a non-empty list")
+    names = [_string(name, f"{label}.companion.fields[]") for name in fields]
+    if len(set(names)) != len(names):
+        raise ValueError(f"{label}.companion.fields repeats a field")
+    stacked = _companion_vertical_fields(mapping)
+    for name in names:
+        if name not in stacked:
+            raise ValueError(
+                f"{label}.companion extends {name!r}, which the primary "
+                "mapping does not decode directly on its vertical ladder; "
+                "a companion extends the primary's own columns and lends "
+                "nothing else through this declaration"
+            )
+    short = [name for name in stacked if name not in names]
+    if short:
+        raise ValueError(
+            f"{label}.companion leaves {short} on the primary's ladder "
+            "alone: those fields would stop at the primary's top while the "
+            "extended fields reach above it, so one frame would carry "
+            "columns of two heights"
+        )
+    return {"vertical_extension": str(spec["vertical_extension"]),
+            "fields": list(names)}
 
 
 def _pending_composition_refusal(raw: Mapping[str, object], path: Path) -> str:
@@ -1124,6 +1238,11 @@ def _compose_bound_fields(
     """
 
     fields = tuple(str(name) for name in binding["fields"])
+    companion = binding.get("companion")
+    extended = (
+        tuple(str(name) for name in companion["fields"])
+        if companion is not None else ()
+    )
     alignment = str(binding["time_alignment"])
     if alignment not in _BOUND_TIME_ALIGNMENTS:
         raise ValueError(
@@ -1138,11 +1257,30 @@ def _compose_bound_fields(
             "member-alignment capability and requires a single-member donor"
         )
     donor_member = next(iter(donor_members))
+    primary_members = sorted(
+        {member for _time, member in primary.source_cycles},
+        key=lambda value: (value is not None, str(value)),
+    )
+    # Two product-declared members that differ are two trajectories.  A
+    # donor that declares no member (a deterministic run or an analysis)
+    # lends land state under any member, as the hybrids always have; a
+    # member lending to ANOTHER member is refused unless it is the
+    # declared companion, whose receipt names both.
+    other = [member for member in primary_members
+             if member is not None and member != donor_member]
+    if companion is None and donor_member is not None and other:
+        raise ValueError(
+            f"contributing source binding {binding_name!r} decoded member "
+            f"{donor_member!r} under primary member {other[0]!r}; borrowing "
+            "another member's fields would mix two trajectories in one "
+            "frame, which only a declared companion may do"
+        )
     donor_inventory = {key[2] for key in donor.direct}
-    if donor_inventory != set(fields):
+    if donor_inventory != set(fields) | set(extended):
         raise ValueError(
             f"contributing source binding {binding_name!r} decoded fields "
-            f"{sorted(donor_inventory)} instead of the bound {sorted(fields)}"
+            f"{sorted(donor_inventory)} instead of the bound "
+            f"{sorted(set(fields) | set(extended))}"
         )
     provided_twice = sorted(
         {key[2] for key in primary.direct if key[2] in set(fields)}
@@ -1152,7 +1290,8 @@ def _compose_bound_fields(
             f"field {provided_twice[0]!r} has two providers: the primary "
             f"decode and contributing source binding {binding_name!r}"
         )
-    if any("vertical" in value.axes for value in donor.direct.values()) \
+    if any("vertical" in value.axes for value in donor.direct.values()
+           if value.name not in extended) \
             and not np.array_equal(donor.vertical_values, primary.vertical_values):
         raise ValueError(
             f"contributing source binding {binding_name!r} borrows a "
@@ -1300,19 +1439,192 @@ def _compose_bound_fields(
                 longitude_indices, donor.longitude.size,
                 _closed_longitude_circle(donor.longitude)),
         })
+    vertical_values = primary.vertical_values
+    if companion is not None:
+        vertical_values, receipt["companion"] = _extend_above_top(
+            primary, donor, direct,
+            binding_name=binding_name,
+            fields=extended,
+            extension=str(companion["vertical_extension"]),
+            primary_keys=primary_keys,
+            primary_members=primary_members,
+            donor_member=donor_member,
+            latitude_indices=latitude_indices,
+            longitude_indices=longitude_indices,
+        )
     return _DecodedCollection(
         latitude=primary.latitude,
         longitude=primary.longitude,
-        vertical_values=primary.vertical_values,
+        vertical_values=vertical_values,
         direct=MappingProxyType(direct),
         source_cycles=primary.source_cycles,
         grid_fingerprint=primary.grid_fingerprint,
         # The composed frame keeps the PRIMARY's vertical identity, its
         # hybrid coefficient ladder included: the borrow injects surface
-        # and soil planes, never a vertical coordinate.
+        # and soil planes, never a vertical coordinate.  A declared
+        # companion is the one exception, and only on a pressure ladder:
+        # it stacks its levels above the primary's top.
         hybrid_a=primary.hybrid_a,
         hybrid_b=primary.hybrid_b,
     ), receipt
+
+
+def companion_ladder(
+    primary_levels: np.ndarray,
+    companion_levels: np.ndarray,
+    *,
+    binding_name: str,
+) -> tuple[np.ndarray, list[int]]:
+    """The composed ladder and the companion level indices above the top.
+
+    On a pressure ladder "above the top" is every companion level whose
+    pressure is lower than the primary's lowest; they are stacked in the
+    primary's own order (top first for an ascending ladder), and every
+    primary level stays the primary's.  Refuses when there is nothing above
+    the top, because the receipt would then claim an extension that did
+    not happen.
+    """
+
+    primary_levels = np.asarray(primary_levels, dtype=np.float64)
+    companion_levels = np.asarray(companion_levels, dtype=np.float64)
+    if primary_levels.size == 0:
+        raise ValueError(
+            f"contributing source binding {binding_name!r} declares a "
+            "companion, but the primary decode carries no vertical ladder "
+            "to extend"
+        )
+    top = float(primary_levels.min())
+    above = [index for index, level in enumerate(companion_levels)
+             if float(level) < top]
+    if not above:
+        raise ValueError(
+            f"contributing source binding {binding_name!r} declares a "
+            "companion that extends the ladder above the primary's top "
+            f"({top!r}), but the companion carries no level above it"
+        )
+    ascending = primary_levels.size < 2 \
+        or float(primary_levels[0]) < float(primary_levels[-1])
+    above.sort(key=lambda index: float(companion_levels[index]),
+               reverse=not ascending)
+    stacked = companion_levels[above]
+    composed = (np.concatenate([stacked, primary_levels]) if ascending
+                else np.concatenate([primary_levels, stacked]))
+    return composed, above
+
+
+def _extend_above_top(
+    primary: _DecodedCollection,
+    donor: _DecodedCollection,
+    direct: dict,
+    *,
+    binding_name: str,
+    fields: Sequence[str],
+    extension: str,
+    primary_keys,
+    primary_members,
+    donor_member,
+    latitude_indices: np.ndarray,
+    longitude_indices: np.ndarray,
+) -> tuple[np.ndarray, dict[str, object]]:
+    """Stack a declared companion's levels above the primary's top.
+
+    ``direct`` (the composed field table, already a copy) is updated in
+    place: each extended field at each primary valid time becomes the
+    companion's levels above the primary's top, cut to the primary grid,
+    joined to the primary's own column along the vertical axis.  The
+    returned receipt names exactly which levels of which field came from
+    which source, and both members, so the mix is never silent.
+    """
+
+    if extension not in _COMPANION_VERTICAL_EXTENSIONS:
+        raise ValueError(
+            f"companion vertical_extension must be one of "
+            f"{sorted(_COMPANION_VERTICAL_EXTENSIONS)}, got {extension!r}"
+        )
+    composed, above = companion_ladder(
+        primary.vertical_values, donor.vertical_values,
+        binding_name=binding_name,
+    )
+    ascending = primary.vertical_values.size < 2 or float(
+        primary.vertical_values[0]) < float(primary.vertical_values[-1])
+    stacked_short = sorted({
+        key[2] for key, value in primary.direct.items()
+        if "vertical" in value.axes and key[2] not in set(fields)
+    })
+    if stacked_short:
+        raise ValueError(
+            f"contributing source binding {binding_name!r} extends "
+            f"{sorted(fields)} above the primary's top, but the primary also "
+            f"decoded {stacked_short} on its ladder; those columns would stop "
+            "at the primary's top"
+        )
+    above_array = np.asarray(above, dtype=np.intp)
+    slab_hashes: dict[str, str] = {}
+    for name in fields:
+        supplied = {
+            key[0]: value for key, value in donor.direct.items()
+            if key[2] == name
+        }
+        for valid_time, member in primary_keys:
+            own = primary.direct.get((valid_time, member, name))
+            if own is None:
+                raise ValueError(
+                    f"contributing source binding {binding_name!r} extends "
+                    f"{name!r}, which the primary decode does not carry at "
+                    f"{valid_time.isoformat()}"
+                )
+            value = supplied.get(valid_time)
+            if value is None:
+                raise ValueError(
+                    f"contributing source binding {binding_name!r} lacks "
+                    f"{name!r} at primary valid time(s) [{valid_time!r}]"
+                )
+            cycle = primary.source_cycles[(valid_time, member)]
+            if value.source_cycle != cycle:
+                raise ValueError(
+                    f"contributing source binding {binding_name!r} is a "
+                    f"companion from cycle {value.source_cycle.isoformat()} "
+                    f"under primary cycle {cycle.isoformat()}; a companion "
+                    "from another cycle would put a different forecast on "
+                    "top of this one's column"
+                )
+            if tuple(value.axes) != tuple(own.axes):
+                raise ValueError(
+                    f"contributing source binding {binding_name!r} field "
+                    f"{name!r} has axes {list(value.axes)} where the primary "
+                    f"has {list(own.axes)}; a column is joined on one axis "
+                    "order"
+                )
+            axis = tuple(own.axes).index("vertical")
+            slab = _take_subset(
+                value.values, value.axes, latitude_indices, longitude_indices,
+            ).take(above_array, axis=axis)
+            if name not in slab_hashes:
+                slab_hashes[name] = _array_sha256(slab)
+            parts = [slab, own.values] if ascending else [own.values, slab]
+            values = np.concatenate(parts, axis=axis)
+            direct[(valid_time, member, name)] = _DirectValue(
+                name=name,
+                valid_time=valid_time,
+                member=member,
+                source_cycle=own.source_cycle,
+                axes=own.axes,
+                values=values,
+                missing_count=int(np.isnan(values).sum()),
+                references=tuple(own.references) + tuple(value.references),
+            )
+    real_members = [member for member in primary_members if member is not None]
+    receipt = {
+        "vertical_extension": extension,
+        "fields": sorted(fields),
+        "primary_member": real_members[0] if len(real_members) == 1 else None,
+        "companion_member": donor_member,
+        "primary_levels": [float(level) for level in primary.vertical_values],
+        "companion_levels": [float(level) for level in donor.vertical_values[above_array]],
+        "composed_levels": [float(level) for level in composed],
+        "companion_slab_sha256": slab_hashes,
+    }
+    return composed, receipt
 
 
 @dataclass(frozen=True)
@@ -2031,7 +2343,7 @@ def _compose_through_engine(
     Everything above this call has already run: manifest verification,
     the role inventory, the primary-versus-donor field agreement, the
     authority hash window.  What crosses the seam is the byte work the
-    design's §1.1 names -- partition decode, terrain composition, bound
+    design's Ã‚Â§1.1 names -- partition decode, terrain composition, bound
     fields, frame materialization -- and what comes back is a frameset
     plus the two evidence products only that work can produce.
 
@@ -2432,7 +2744,21 @@ def decode_composed_source(
                 f"source_id {binding['source_id']!r} but the pinned mapping "
                 f"is {donor_mapping['name']!r}"
             )
-        for name in binding["fields"]:
+        companion = binding.get("companion")
+        extended = [str(name) for name in (companion or {}).get("fields", ())]
+        if companion is not None:
+            ours = mapping["coordinates"]["vertical"]
+            theirs = donor_mapping["coordinates"]["vertical"]
+            for aspect in ("kind", "units"):
+                if ours.get(aspect) != theirs.get(aspect):
+                    raise ValueError(
+                        f"contributing source binding {binding_name!r} is a "
+                        f"companion whose vertical {aspect} is "
+                        f"{theirs.get(aspect)!r} where the primary's is "
+                        f"{ours.get(aspect)!r}; levels on two coordinates "
+                        "cannot be stacked into one column"
+                    )
+        for name in [*binding["fields"], *extended]:
             name = str(name)
             declared = mapping["fields"][name]
             donor_field = donor_mapping["fields"].get(name)
@@ -2620,16 +2946,23 @@ def decode_composed_source(
     for binding_name in sorted(bindings):
         binding = bindings[binding_name]
         bound_names = [str(name) for name in binding["fields"]]
+        extended_names = [
+            str(name)
+            for name in (binding.get("companion") or {}).get("fields", ())
+        ]
         donor_files = supplements[str(binding["data_role"])]
         try:
             donor_collection = _decode_partition(
                 _partition_contributing(
-                    donor_mappings[binding_name], bound_names,
+                    donor_mappings[binding_name], bound_names + extended_names,
                     binding_name=binding_name,
                 ),
                 donor_files, decoders,
             )
         except NothingMatched:
+            if binding.get("companion") is not None:
+                # Land fallbacks cannot supply the absent upper column.
+                raise
             # Twin of the engine's unpublished binding (compose.rs
             # unpublished_record): files that publish no record for any
             # bound field, every one of which has a field-keyed fallback.

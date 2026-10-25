@@ -4766,6 +4766,13 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
     # divided by.  Report-only (gpuwm/core/tke_budget.py); a no-op unless
     # cfg.tke_budget is on.
     tke_budget.accumulate(state, cfg)
+    # Whether this step ends on a history time: the streamed/ranked post-step
+    # hook builds the chem history fields (the GOCART 550 nm optics among
+    # them) only then (gpuwm/core/streaming.py refl_handoff_hook).
+    # Held on the chem object, not the state: a state attribute would join
+    # the carrier inventory the rank seam plan is built from.
+    if getattr(state, "chem", None) is not None:
+        state.chem.history_due = bool(refl_10cm_due)
     if WRF_EXACT:
         _wrf_step_epilogue(state, cfg, refl_10cm_due)
     else:
@@ -4834,6 +4841,8 @@ def _step_epilogue(state: DomainState, cfg: RunConfig,
     update_gsd(state, cfg, history_due=refl_10cm_due)
     from gpuwm.core.output_diagnostics import update_precipitation
     update_precipitation(state, cfg)
+    from gpuwm.core.climate_diagnostics import update as update_climate
+    update_climate(state, cfg)
 
 
 def _wrf_step_epilogue(state: DomainState, cfg: RunConfig,
@@ -4885,6 +4894,8 @@ def _wrf_step_epilogue(state: DomainState, cfg: RunConfig,
     update_gsd(state, cfg, history_due=refl_10cm_due)
     from gpuwm.core.output_diagnostics import update_precipitation
     update_precipitation(state, cfg)
+    from gpuwm.core.climate_diagnostics import update as update_climate
+    update_climate(state, cfg)
 
 
 def _wrf_reuse_diagnostics(state: DomainState) -> bool:

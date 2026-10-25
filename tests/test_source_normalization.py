@@ -247,3 +247,29 @@ def test_a_cycle_hour_outside_the_declared_grid_is_named(tmp_path, shipped):
             "icon_global_icosahedral_time-invariant_2026091503_CLAT.grib2")
     with pytest.raises(ValueError, match="not 03"):
         spec.horizon_hours(3)
+
+
+def test_per_object_steps_run_side_by_side_in_object_order(monkeypatch):
+    """Named breakage (WOOF canary gate 2026-10-24, ICON 3-1-0.5 km): the stage
+    expanded, remapped and hashed ICON global's 234 objects one after another,
+    54 s on one core.  The per-object steps now run on the host's cores and
+    the rows still come back in object order."""
+
+    import threading
+    import time
+
+    monkeypatch.setattr(norm, "_stage_workers", lambda count: min(count, 4))
+    active = {"now": 0, "most": 0}
+    lock = threading.Lock()
+
+    def step(index):
+        with lock:
+            active["now"] += 1
+            active["most"] = max(active["most"], active["now"])
+        time.sleep(0.05)
+        with lock:
+            active["now"] -= 1
+        return index * index
+
+    assert norm._parallel_map(step, range(12)) == [i * i for i in range(12)]
+    assert active["most"] > 1

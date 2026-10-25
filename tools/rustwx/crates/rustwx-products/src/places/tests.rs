@@ -590,3 +590,74 @@ fn an_interior_label_is_offset_away_from_its_own_marker() {
         assert_eq!(style.label_offset_y_px.signum(), sign_y, "{placement:?}");
     }
 }
+
+#[test]
+fn place_labels_use_the_panel_frame_not_the_native_latlon_one() {
+    // A regular lat-lon grid (MAP_PROJ 6: a hex export window) is drawn in a
+    // regional Lambert frame (metres).  Projecting the places with the native
+    // plate carree put every city a few metres from the cone's origin, so all
+    // the labels piled at one point in central Kansas (box G sheet, 2026-10-23).
+    let grid = rustwx_render::LatLonGrid::new(
+        rustwx_render::GridShape::new(2, 2).unwrap(),
+        vec![29.65, 29.65, 41.35, 41.35],
+        vec![-105.28, -89.72, -105.28, -89.72],
+    )
+    .unwrap();
+    let field = rustwx_render::Field2D::new(
+        rustwx_render::ProductKey::named("place_label_frame_test"),
+        "unitless",
+        grid,
+        vec![0.0, 0.0, 0.0, 0.0],
+    )
+    .unwrap();
+    let mut request = MapRenderRequest::contour_only(field);
+    request.projected_domain = Some(rustwx_render::ProjectedDomain {
+        x: vec![-753_981.0, 753_981.0, -753_981.0, 753_981.0],
+        y: vec![-1_038_328.0, -1_038_328.0, 287_071.0, 287_071.0],
+        extent: rustwx_render::ProjectedExtent {
+            x_min: -753_981.0,
+            x_max: 753_981.0,
+            y_min: -1_038_328.0,
+            y_max: 287_071.0,
+        },
+    });
+    let frame = rustwx_render::ResolvedProjection::LambertConformal {
+        standard_parallel_1_deg: 31.6,
+        standard_parallel_2_deg: 39.4,
+        central_meridian_deg: -97.5,
+        reference_latitude_deg: 39.0,
+    };
+    request.resolved_projection = Some(frame);
+    let lat = request.field.grid.lat_deg.clone();
+    let lon = request.field.grid.lon_deg.clone();
+    let overlay = PlaceLabelOverlay::major_us_cities()
+        .with_included_place_slugs(["ok_oklahoma_city", "tx_austin", "ks_wichita"]);
+    // The wrfout render path names a regional lat-lon window by the CONUS plan.
+    let domain = DomainSpec::new("conus", (-105.28, -89.72, 29.65, 41.35));
+
+    apply_place_label_overlay(
+        &mut request,
+        &overlay,
+        &domain,
+        &lat,
+        &lon,
+        Some(&GridProjection::Geographic),
+    )
+    .expect("overlay should project");
+
+    let labels = &request.projected_place_labels;
+    assert!(labels.len() >= 2, "expected the cities in the window, got {}", labels.len());
+    let okc = labels
+        .iter()
+        .find(|l| l.label.as_deref().unwrap_or_default().starts_with("Oklahoma City"))
+        .expect("Oklahoma City is in the window");
+    let (x, y) = frame.project(35.47, -97.52);
+    assert!((okc.x - x).abs() < 1.0 && (okc.y - y).abs() < 1.0);
+    // Distinct cities are hundreds of km apart in the frame, not stacked.
+    for (i, a) in labels.iter().enumerate() {
+        for b in &labels[i + 1..] {
+            let d = ((a.x - b.x).powi(2) + (a.y - b.y).powi(2)).sqrt();
+            assert!(d > 100_000.0, "{:?} and {:?} are {d} m apart", a.label, b.label);
+        }
+    }
+}

@@ -440,6 +440,66 @@ pub struct SurgeryLedger {
     /// The smallest cell coordination in the mesh at exit. Below
     /// [`MIN_COORDINATION`] is unreachable -- `drain` refuses instead.
     pub min_coordination_after: usize,
+    /// The first drain's stubborn-site refusal, when [`drain_with_retry`]
+    /// drained again at the ship floor and that second drain held. Absent
+    /// (and absent from every receipt) on a drain that held first time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retried_at_ship_floor: Option<String>,
+}
+
+/// The words a stubborn-site refusal starts with, so [`drain_with_retry`]
+/// can tell that refusal from every other one without a second spelling.
+pub const STUBBORN_REFUSAL: &str = "surgery leaves ";
+
+/// [`drain`], and when it leaves a stubborn site, ONE more drain from the
+/// same points with the flag floor lowered to the ship floor.
+///
+/// THE BREAKAGE THIS PREVENTS (hex shapes study, 2026-10-23). A 60 km global
+/// VR spec with a 100-vertex ellipse core was refused after 202 s: "surgery
+/// leaves 1 stubborn site(s) ... dv/dc = 3.289e-2 ... this drain's own floor
+/// is 0.03". Traced: the site entered the drain at dv/dc 0.031, ALREADY above
+/// the 0.03 ship floor, and was flagged only because it was under the 0.04
+/// hysteresis flag floor. Three operations took it to 0.011, its cavity
+/// resample left a 4-coordinated neighbour and a 2.5e-4 quad beside it, and
+/// the drain then refused a site it had made worse than it found it. The
+/// same ellipse at 48 vertices rolled no such site and built.
+///
+/// The second drain leaves alone every quad that already clears the floor
+/// the mesh is held to, so a site like that one is never touched; every
+/// other floor, budget and gate is the first drain's, the level gate after
+/// it still asserts the ship floor on the whole level, and a second
+/// refusal is reported with the first. Only a drain that REFUSED takes this
+/// path, so every mesh that built before builds to the same bytes.
+pub fn drain_with_retry<F: DensityField + Sync>(
+    points: &mut Vec<V3>,
+    field: &F,
+    opts: &SurgeryOptions,
+    drift_budget_points: usize,
+) -> MpasResult<(Rings, SurgeryLedger)> {
+    let before = points.clone();
+    match drain(points, field, opts, drift_budget_points) {
+        Err(MpasError::Refusal(first))
+            if first.starts_with(STUBBORN_REFUSAL) && opts.flag_floor > opts.ship_floor =>
+        {
+            *points = before;
+            let at_ship_floor = SurgeryOptions {
+                flag_floor: opts.ship_floor,
+                ..*opts
+            };
+            match drain(points, field, &at_ship_floor, drift_budget_points) {
+                Ok((rings, mut ledger)) => {
+                    ledger.retried_at_ship_floor = Some(first);
+                    Ok((rings, ledger))
+                }
+                Err(MpasError::Refusal(second)) => Err(MpasError::Refusal(format!(
+                    "{first}. Drained once more from the same points with the flag floor at the {} ship floor, so quads that already clear it are left alone, and that drain refused too: {second}",
+                    opts.ship_floor
+                ))),
+                Err(other) => Err(other),
+            }
+        }
+        other => other,
+    }
 }
 
 /// Site bookkeeping across rounds. Sites are POSITIONS, not indices: an
@@ -898,7 +958,7 @@ pub fn drain<F: DensityField + Sync>(
                 .min_by(|x, y| x.q.total_cmp(&y.q))
                 .expect("non-empty");
             return Err(MpasError::Refusal(format!(
-                "surgery leaves {} stubborn site(s): the worst, at unit vector [{:.6}, {:.6}, {:.6}], still reads dv/dc = {:.3e} after {} operations and its one cavity resample. The TRiSK tangential weights divide by dvEdge, so shipping this site would amplify the wind term across its edge by dc/dv = {:.0}x; the admission gate refuses below 0.02 and this drain's own floor is {}. A stubborn site is a refusal, not a waiver",
+                "{STUBBORN_REFUSAL}{} stubborn site(s): the worst, at unit vector [{:.6}, {:.6}, {:.6}], still reads dv/dc = {:.3e} after {} operations and its one cavity resample. The TRiSK tangential weights divide by dvEdge, so shipping this site would amplify the wind term across its edge by dc/dv = {:.0}x; the admission gate refuses below 0.02 and this drain's own floor is {}. A stubborn site is a refusal, not a waiver",
                 ledger.stubborn.len(),
                 worst.site[0],
                 worst.site[1],
@@ -1460,6 +1520,8 @@ pub struct SurgerySummary {
     pub coordination_reanneal_rounds: usize,
     pub coordination_deletions: usize,
     pub min_coordination_after: usize,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub retried_at_ship_floor: bool,
 }
 
 impl From<&SurgeryLedger> for SurgerySummary {
@@ -1478,6 +1540,7 @@ impl From<&SurgeryLedger> for SurgerySummary {
             coordination_reanneal_rounds: l.coordination_reanneal_rounds,
             coordination_deletions: l.coordination_deletions,
             min_coordination_after: l.min_coordination_after,
+            retried_at_ship_floor: l.retried_at_ship_floor.is_some(),
         }
     }
 }

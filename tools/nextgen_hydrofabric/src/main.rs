@@ -8,6 +8,7 @@ fn run() -> nextgen_hydrofabric::Result<()> {
     let args = std::env::args().collect::<Vec<_>>();
     std::hint::black_box(nextgen_hydrofabric::SOURCE_REVISION);
     match args.get(1).map(String::as_str) {
+        Some("--proj-probe") => println!("{}", nextgen_hydrofabric::weights::proj_probe()?),
         Some("--abi") => println!(
             "arwen.nextgen.hydrofabric.v1 {}",
             nextgen_hydrofabric::SOURCE_REVISION

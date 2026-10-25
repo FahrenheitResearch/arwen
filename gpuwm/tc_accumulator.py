@@ -11,7 +11,7 @@ import math
 import time
 
 _ACTIVE = ContextVar("gpuwm_go_cyclone", default=None)
-PRODUCTS = ("max-wind", "gust", "min-pressure", "track")
+PRODUCTS = ("max-wind", "gust", "min-pressure", "track", "rain")
 
 
 def utc_datetime(value):
@@ -38,6 +38,34 @@ def load_request(path, config):
     if unknown:
         raise GoRefusal("--cyclone-products unknown request keys: " + ", ".join(unknown)
                         + "; these would otherwise be silently ignored")
+    products = validate_swath_request(request)
+    import tomllib
+    payload = tomllib.loads(Path(config).read_text())
+    domains = payload.get("domain", [])
+    grid_id = request.get("grid_id", 2 if len(domains) > 1 else 1)
+    if type(grid_id) is not int or grid_id not in {d["grid_id"] for d in domains}:
+        raise GoRefusal(f"--cyclone-products grid_id {grid_id!r} is absent from CONFIG; no committed steps could be observed")
+    # [tiles] mode = "auto" (what cyclone-setup authors) keeps a domain resident whenever
+    # it fits the card; only a domain the forecast actually streams lacks the complete
+    # every-step plane, and committed_step refuses that one by name.  "on" streams every
+    # domain, so it can never supply the plane.
+    if payload.get("tiles", {}).get("mode", "off") not in ("off", "auto"):
+        raise GoRefusal("--cyclone-products requires resident columns: [tiles] mode = 'on' streams every domain, and a streamed state holds only one tile and cannot supply a complete every-step pressure/gust plane; use mode 'auto' or 'off'")
+    if payload.get("ensemble", {}).get("members", 1) > 1:
+        raise GoRefusal("--cyclone-products ordinary go currently binds one trajectory; multiple members would overwrite its single-track receipt. Use the branch ensemble cyclone product route")
+    request = {**request, "grid_id": grid_id, "products": products}
+    request.setdefault("experiment_label", payload["experiment"]["name"])
+    request.setdefault("analysis_time", payload["experiment"]["start_time"].isoformat() + ("Z" if payload["experiment"]["start_time"].tzinfo is None else ""))
+    try:
+        request['analysis_time'] = utc_datetime(request['analysis_time']).isoformat()
+    except (ValueError, TypeError, AttributeError):
+        raise GoRefusal("--cyclone-products analysis_time must be an ISO timestamp; an invalid epoch would misdate the whole track") from None
+    return request
+
+
+def validate_swath_request(request):
+    """Validate the shared fixed-frame geometry and supported products."""
+    from gpuwm.go_cli import GoRefusal
     products = request.get("products", list(PRODUCTS))
     if not isinstance(products, list) or not products or any(p not in PRODUCTS for p in products):
         raise GoRefusal(f"--cyclone-products unknown or empty products {products!r}; supported: {', '.join(PRODUCTS)}")
@@ -54,24 +82,7 @@ def load_request(path, config):
         valid = False
     if not valid:
         raise GoRefusal("--cyclone-products needs finite ordered latitude/longitude bounds; this request cannot define a fixed Earth grid")
-    import tomllib
-    payload = tomllib.loads(Path(config).read_text())
-    domains = payload.get("domain", [])
-    grid_id = request.get("grid_id", 2 if len(domains) > 1 else 1)
-    if type(grid_id) is not int or grid_id not in {d["grid_id"] for d in domains}:
-        raise GoRefusal(f"--cyclone-products grid_id {grid_id!r} is absent from CONFIG; no committed steps could be observed")
-    if payload.get("tiles", {}).get("mode", "off") != "off":
-        raise GoRefusal("--cyclone-products requires resident columns: a streamed state holds only one tile and cannot supply a complete every-step pressure/gust plane")
-    if payload.get("ensemble", {}).get("members", 1) > 1:
-        raise GoRefusal("--cyclone-products ordinary go currently binds one trajectory; multiple members would overwrite its single-track receipt. Use the branch ensemble cyclone product route")
-    request = {**request, "grid_id": grid_id, "products": products}
-    request.setdefault("experiment_label", payload["experiment"]["name"])
-    request.setdefault("analysis_time", payload["experiment"]["start_time"].isoformat() + ("Z" if payload["experiment"]["start_time"].tzinfo is None else ""))
-    try:
-        request['analysis_time'] = utc_datetime(request['analysis_time']).isoformat()
-    except (ValueError, TypeError, AttributeError):
-        raise GoRefusal("--cyclone-products analysis_time must be an ISO timestamp; an invalid epoch would misdate the whole track") from None
-    return request
+    return products
 
 
 def bind_output(path):
@@ -84,16 +95,39 @@ def active():
     return _ACTIVE.get() is not None
 
 
+def _ensemble_call(args):
+    """Leave roster diagnostics to the ensemble door that owns the members."""
+    if (getattr(args, "command", None) == "ensemble"
+            or (getattr(args, "members", None) or 1) > 1
+            or getattr(args, "recipe", None) is not None
+            or getattr(args, "trajectories", None) is not None):
+        return True
+    source = getattr(args, "source", None)
+    if source:
+        from gpuwm.ensemble.wofs_recipe import parse_source_spec
+        if len(parse_source_spec(source)) > 1:
+            return True
+    config = getattr(args, "config", None)
+    if config is not None and Path(config).is_file():
+        import tomllib
+        value = tomllib.loads(Path(config).read_text()).get("ensemble", {})
+        if isinstance(value, dict):
+            return (value.get("members", 1) > 1 or value.get("recipe") is not None
+                    or bool(value.get("trajectories")))
+        return isinstance(value, int) and value > 1
+    return False
+
+
 def go_scope(function):
     @wraps(function)
     def invoke(args, **kwargs):
         path = getattr(args, "cyclone_products", None)
-        if path is None or getattr(args, "branch_from", None) is not None:
+        if path is None or getattr(args, "branch_from", None) is not None or _ensemble_call(args):
             return function(args, **kwargs)
         from gpuwm.go_cli import GoRefusal
         request = load_request(path, args.config)
-        if getattr(args, "tiles", None) not in (None, 'off'):
-            raise GoRefusal("--cyclone-products requires --tiles off: a streamed state cannot supply a complete every-step pressure/gust plane")
+        if getattr(args, "tiles", None) not in (None, 'off', 'auto'):
+            raise GoRefusal("--cyclone-products requires --tiles off or auto: --tiles on streams every domain, and a streamed state cannot supply a complete every-step pressure/gust plane")
         if getattr(args, "prepare_only", False) or getattr(args, "readiness", False) or getattr(args, "no_probe", False):
             raise GoRefusal("--cyclone-products needs forecast steps; this stage-only command would produce none")
         print(f"go: cyclone products {', '.join(request['products'])}; d{request['grid_id']:02d}; every committed step on a fixed Earth grid")
@@ -156,21 +190,32 @@ class Capture:
     def committed_step(self, *, node, model):
         if node.cfg.grid_id != self.request['grid_id']:
             return
+        if getattr(node.state, '_streamed_domain', None) is not None:
+            raise RuntimeError(
+                f"--cyclone-products: [tiles] mode 'auto' streamed d{node.cfg.grid_id:02d} on this card, "
+                "and a streamed state holds only one tile, so it cannot supply the complete every-step "
+                "pressure/gust plane; run with --tiles off or on a card where the domain fits resident")
         if self.common is None:
             from gpuwm.ensemble.cyclone_products import CommonWind
             self.common = CommonWind(self.request)
             cp = self.common.cp
             self.gust = cp.zeros(self.common.lat.shape, cp.float32)
             self.pressure = cp.full(self.common.lat.shape, cp.inf, cp.float32)
+            self.gust_visited = cp.zeros(self.common.lat.shape, cp.bool_)
+            self.pressure_visited = cp.zeros(self.common.lat.shape, cp.bool_)
         common, cp = self.common, self.common.cp
         if common.last_seconds == float(node.state.elapsed_seconds):
             return
         started = time.perf_counter()
         common.observe(node=node, model=model)
         gust, pressure = diagnose(node.state)
-        self.gust = cp.maximum(self.gust, cp.where(common.inside, common.sample(gust), 0))
-        self.pressure = cp.minimum(self.pressure, cp.where(common.inside, common.sample(pressure), cp.inf))
-        common.coverage &= cp.isfinite(common.sample(gust)) & cp.isfinite(common.sample(pressure))
+        sampled_gust, sampled_pressure = common.sample(gust), common.sample(pressure)
+        gust_valid = common.inside & cp.isfinite(sampled_gust)
+        pressure_valid = common.inside & cp.isfinite(sampled_pressure)
+        self.gust = cp.maximum(self.gust, cp.where(gust_valid, sampled_gust, 0))
+        self.pressure = cp.minimum(self.pressure, cp.where(pressure_valid, sampled_pressure, cp.inf))
+        self.gust_visited |= gust_valid
+        self.pressure_visited |= pressure_valid
         # Only a six-number device row per step; no host synchronization in
         # the step path. Download and timestamp formatting happen at finish.
         from gpuwm.io.history_layout import metadata_history_fields
@@ -194,8 +239,9 @@ class Capture:
         cp, common = self.common.cp, self.common
         self.root.mkdir(parents=True, exist_ok=True)
         common_receipt = common.finish(self.root/'fields')
-        for name, array in (("time_max_gust", self.gust), ("time_min_mslp", self.pressure)):
-            cp.asnumpy(cp.where(common.coverage, array, cp.nan).astype('<f4')).tofile(self.root/'fields'/f'{name}.f32')
+        for name, array, valid in (("time_max_gust", self.gust, self.gust_visited),
+                                   ("time_min_mslp", self.pressure, self.pressure_visited)):
+            cp.asnumpy(cp.where(valid, array, cp.nan).astype('<f4')).tofile(self.root/'fields'/f'{name}.f32')
         analysis = utc_datetime(self.request['analysis_time'])
         fixes = []
         for seconds, lat, lon, pressure, wind, gust in cp.asnumpy(cp.stack(self.fixes)):

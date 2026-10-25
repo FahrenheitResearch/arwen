@@ -1657,6 +1657,8 @@ _IMPORT_NAME = {
     # what a reader needs -- an importable gpuwm_data is what
     # gpuwm.data_assets resolves against.
     "gpuwm-data": "gpuwm_data",
+    # The 7z decoder ([hydro-conus] extra) for EPA's NHDPlus V2.1 archives.
+    "py7zr": "py7zr",
 }
 
 
@@ -1877,6 +1879,16 @@ class _ExtraFacts:
 #: every door named here must be a real door, and every extra the
 #: installed metadata declares must appear here.
 _EXTRA_FACTS: dict[str, _ExtraFacts] = {
+    # The LGPL-2.1+ 7z decoder for EPA's NHDPlus V2.1 source archives.  Absent
+    # is normal: `--hydro on` over CONUS then prepares the worldwide fabric
+    # and says why (gpuwm.hydro.acquire), so nothing stops.
+    "hydro-conus": _ExtraFacts(
+        doors=("gpuwm go --hydro on over CONUS with the NHDPlus V2.1 provider",),
+        still_works="every forecast door, and --hydro on itself, which falls "
+                    "back to the worldwide fabric",
+        blocking=False, severity=SEVERITY_DEGRADED,
+        deferred_to="py7zr (7z decoder)",
+        expected_absent=True),
     # The MCP server dependency (the Model Context Protocol SDK).  Absent
     # is the normal state of a forecasting install: only a machine that
     # SERVES agents needs it, and every CLI door works without it.  The
@@ -5125,6 +5137,63 @@ def _hydro_door_tool_checks() -> list[Check]:
     return checks
 
 
+def _hydro_proj_checks() -> list[Check]:
+    """Load each hydro bridge's PROJ and transform one EPSG point.
+
+    A bare usage call never loaded the former dlopen dependency, so doctor
+    reported green on hosts whose default-on hydro silently turned off.
+    """
+    from gpuwm import bridge_assets
+    import ctypes
+    wanted = {"rw_hydro_world", "rw_hydrofabric", "rw_hydro_init", "nextgen_hydrofabric"}
+    checks = []
+    for artifact in bridge_assets.BUNDLED_ARTIFACTS:
+        if artifact.name not in wanted:
+            continue
+        label = f"hydro PROJ {artifact.name}"
+        filename = bridge_assets.artifact_filename(artifact, bridge_assets.host_platform() or "linux-x86_64")
+        with bridges.inspection_only():
+            candidates = bridges.artifact_candidates(artifact.env_var, filename, crate_relative=artifact.crate)
+        path = next((p for p in candidates if p.is_file()), None)
+        if path is None:
+            # An on-demand hydro bridge the platform wheel leaves to the bundle: its first use stages it, and
+            # the projection is proved then.  Breakage it prevents (2.9.7 pass 5 R12, Windows wheel smoke): a
+            # fresh install showed "MISSING rust engines (3)" for the three hydro executables that hydro, opt-in
+            # since 2.9.4.1, had never needed to stage.
+            row = _on_demand_row(label, artifact.name, "gpuwm run --hydro on", crate_relative=artifact.crate)
+            if row is not None:
+                checks.append(row)
+                continue
+        try:
+            if path is None:
+                raise FileNotFoundError(f"{filename} is not staged")
+            if artifact.name == "nextgen_hydrofabric":
+                with bridges.quiet_loader_errors():
+                    library = ctypes.CDLL(str(path))
+                probe = library.arwen_hydrofabric_proj_probe
+                probe.argtypes, probe.restype = [], ctypes.c_int
+                if probe() != 0:
+                    raise ValueError("the loaded library's EPSG:4326 -> EPSG:5070 transform failed")
+            else:
+                answer = subprocess.run([str(path), "--proj-probe"], capture_output=True, text=True, timeout=30)
+                if answer.returncode:
+                    raise ValueError((answer.stderr or answer.stdout).strip()[-1000:])
+                result = json.loads(answer.stdout)
+                if (result.get("proj_version") != "9.7.1" or result.get("network") is not False
+                        or result.get("resources") != "embedded-only"):
+                    raise ValueError(f"unexpected projection probe: {result}")
+            checks.append(Check(label, "verified", f"{path} -- transforms (-97, 35) from EPSG:4326 to EPSG:5070; "
+                                "static PROJ 9.7.1, embedded database, network off",
+                                brief="loaded; one point transformed", group=_GROUP_ENGINES))
+        except (OSError, ValueError, AttributeError, subprocess.SubprocessError) as error:
+            checks.append(Check(label, "missing", f"{error} -- this bridge cannot prove its hydro projection",
+                                bridges.artifact_remedy(env_var=artifact.env_var, filename=filename,
+                                    subject=label, crate_relative=artifact.crate, artifact=artifact.name),
+                                action=_build_action(artifact.crate), group=_GROUP_ENGINES,
+                                severity=SEVERITY_DEGRADED, blocking=False))
+    return checks
+
+
 def _radar_superob_check() -> Check:
     """The radar superob the default radar observation build calls.
 
@@ -7214,6 +7283,7 @@ def _collect_checks(sources: tuple[str, ...] | None = None,
     checks.append(_projected_intermediate_check())
     checks.extend(_nextgen_checks())
     checks.extend(_hydro_door_tool_checks())
+    checks.extend(_hydro_proj_checks())
     checks.extend(_capability_tool_checks())
     checks.append(_globe_pack_check())
     checks.append(_radar_superob_check())

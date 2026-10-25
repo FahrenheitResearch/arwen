@@ -76,6 +76,24 @@ def test_a_forecast_run_still_asks_for_the_card(tmp_path, monkeypatch):
         main(["go", str(config), "--outdir", str(tmp_path / "out")])
 
 
+def test_prepare_only_prices_hydro_before_the_registered_producer(tmp_path, monkeypatch, capsys):
+    from gpuwm import disk_budget
+    from gpuwm.hydro import runtime
+    config = _hrrr_config(tmp_path)
+    calls = []
+    monkeypatch.setattr(runtime, "hydro_disk_estimate", lambda *a: (2**40, "hydro fake: 1024 GiB"))
+    monkeypatch.setattr(runtime, "_launch_settings", lambda *a, **k: calls.append("hydro"))
+    monkeypatch.setattr(runplan, "_hrrr_chain", lambda *a, **k: calls.append("producer"))
+    monkeypatch.setattr(disk_budget, "free_bytes", lambda *a: 2**30)
+    monkeypatch.setattr(disk_budget, "same_disk", lambda *a: True)
+    # Hydro is opt-in (2.9.4.1): the launch asks for it, so the door prices it.
+    rc = main(["go", str(config), "--prepare-only", "--explain", "--hydro", "on",
+               "--outdir", str(tmp_path / "out")])
+    assert rc != 0 and not calls
+    assert "Refused before the download and before hydro preparation, so nothing was spent." in capsys.readouterr().err
+    assert not (tmp_path / "out").exists()
+
+
 def test_a_failed_preparation_returns_its_code_without_a_traceback(
         tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(go_cli, "_require_forecast_device", lambda: None)

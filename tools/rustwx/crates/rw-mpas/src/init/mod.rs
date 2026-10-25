@@ -1071,6 +1071,12 @@ pub fn build_init(cfg: &InitConfig) -> MpasResult<InitReceipt> {
             } else {
                 (tslb[c], smois[c]) = ruc::layer_column(&layer_mid_cm, &fg.st[c], &fg.sm[c], skintemp[c], tmn[c])
                     .map_err(|e| MpasError::Refusal(format!("cell {c}: {e}")))?;
+                let (raised, lowest) = ruc::floor_layer_moisture(&mut smois[c]);
+                if raised > 0 {
+                    soil_counts.ruc_layer_floor_values += raised;
+                    soil_counts.ruc_layer_floor_columns += 1;
+                    soil_counts.ruc_layer_floor_min = Some(soil_counts.ruc_layer_floor_min.map_or(lowest, |m| m.min(lowest)));
+                }
             }
             sh2o[c] = smois[c].clone(); smcrel[c] = vec![0.;9];
         }

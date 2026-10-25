@@ -1181,7 +1181,8 @@ def analysis_refl_10cm(state, cfg=None, *, shape=None, array_module=None):
     zero: ``refl_10cm`` is history-only (Registry ``hdu``) and only the
     microphysics driver fills it; measured on the stock 4.6.1 combo
     recording (iowa-convective A088, WSM6, do_radar_ref = 1), frame 0 is an
-    all-zero array.
+    all-zero array. HRRR's GSD path instead calls its first-step Thompson
+    helper when gsd_diagnostics and do_radar_ref are enabled (mp=8/28).
     """
     import numpy as np
     from gpuwm.wrf_exact import ENABLED
@@ -1191,7 +1192,11 @@ def analysis_refl_10cm(state, cfg=None, *, shape=None, array_module=None):
         shape = state.qv.shape
     shape = tuple(shape)
     host = streamed or array_module is np or isinstance(state.qv, np.ndarray)
-    if ENABLED:
+    cfg = cfg if cfg is not None else getattr(
+        getattr(state, "physics", None), "refl_config", None)
+    from gpuwm.core.gsd_initial_reflectivity import enabled as gsd_initial_enabled
+    initial_gsd = gsd_initial_enabled(cfg)
+    if ENABLED and not initial_gsd:
         if host:
             return np.zeros(shape, dtype=np.float32)
         import cupy as cp
@@ -1200,7 +1205,10 @@ def analysis_refl_10cm(state, cfg=None, *, shape=None, array_module=None):
     from types import SimpleNamespace
     from gpuwm.core.state_reflectivity import diagnose
 
-    cfg = cfg if cfg is not None else state.physics.refl_config
+    if cfg is None:
+        cfg = state.physics.refl_config
+    if initial_gsd:
+        from gpuwm.core.gsd_initial_reflectivity import diagnose
     if not host:
         # The scheme diagnostics write the resident state's shared
         # ``refl_10cm`` scratch, which the forecast microphysics later fills
