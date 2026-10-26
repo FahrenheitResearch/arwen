@@ -219,8 +219,20 @@ jobs:
           echo "RUSTUP_TOOLCHAIN=1.94.0" >> "$GITHUB_ENV"
           rustup run 1.94.0 rustc --version
           rustup run 1.94.0 cargo --version
+      # Every workspace keeps its own target folder until the gates end. On the hosted ubuntu runner (about 14 GB
+      # free) that filled the disk and the job died mid-gate ("No space left on device", public ci runs 40298046087
+      # and 40322451147, 2026-10-26). The runner's preinstalled SDKs this job never uses are removed first, and
+      # incremental caches, which only speed rebuilds, are not written.
+      - name: free the hosted runner's disk for the Rust gates
+        if: runner.os == 'Linux'
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
       - name: offline Rust package gates with their existing coverage floors
         run: python tools/battery/run_cargo_gates.py --target-dir "$RUNNER_TEMP/gpuwm-cargo-tests"
+        env:
+          CARGO_INCREMENTAL: "0"
       # The zero-dependency dealiaser is outside the battery workspaces.
       - name: region-global dealiasing tests
         working-directory: tools/region_global_dealias

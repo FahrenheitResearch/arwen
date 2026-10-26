@@ -274,6 +274,9 @@ def test_declared_tier_never_asks_the_probe(tmp_path, monkeypatch):
     assert out.is_file()
 
 
+# gpu-mutex pool leases are matched by /proc/<pid>/stat birth ticks (core.device_probe); off Linux there is no
+# such lease and pool_lease_budget_bytes returns None (public ci cpu windows-2025 read /proc and failed).
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="gpu-mutex pool leases exist only on Linux (/proc)")
 def test_pool_lease_budget_replaces_busy_card_free_for_sizing(tmp_path, monkeypatch):
     import json
     from gpuwm.core import preflight

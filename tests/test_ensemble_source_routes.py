@@ -72,9 +72,10 @@ def test_public_regional_members_initialize_only_with_their_declared_companion(t
     assert plan.route.posting.streams
     # The companion is never a primary input: the member's own decode
     # stays one member and one generating process.
-    assert {str(path) for path in plan.primary_files} == {
+    # Object keys are POSIX relpaths; the plan holds platform paths (backslashes on Windows).
+    assert {str(path).replace("\\", "/") for path in plan.primary_files} == {
         obj.relpath for obj in member}
-    assert sorted(str(path) for role, path in plan.extra_supplement_files
+    assert sorted(str(path).replace("\\", "/") for role, path in plan.extra_supplement_files
                   if role == "rrfs_ens_companion_data") == sorted(
         obj.relpath for obj in companion)
     for obj in plan.objects:
@@ -87,8 +88,10 @@ def test_public_regional_members_initialize_only_with_their_declared_companion(t
     assert all((Path(handoff["member_prep"]["inputs"]) / obj.key).is_file()
                for obj in member)
     tokens = [value for value in json.dumps(handoff).split('"')]
+    # write_handoff spells paths for I/O (io_path: the extended-length form on Windows, unchanged on POSIX).
+    from gpuwm.filesystem_paths import io_path
     for obj in companion:
-        binding = f"rrfs_ens_companion_data={(tmp_path / obj.relpath).resolve()}"
+        binding = f"rrfs_ens_companion_data={(io_path(tmp_path) / obj.relpath).resolve()}"
         assert json.dumps(binding)[1:-1] in tokens
 
 

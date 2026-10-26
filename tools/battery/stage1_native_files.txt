@@ -96,6 +96,7 @@ tests/test_bnu_soil_geog.py # static-fields executes the baseline soil-category 
 tests/test_chem_hrrr_smoke_ic.py # the vendored Rust fetch backbone records extras and refetches a changed selector; 1 of its 21 tests needs it.
 tests/test_chem_outputs.py # gpuwm_preprocess_cpu evaluates the chemistry output diagnostics; 9 of its 23 tests need it.
 tests/test_chem_remap_operators.py # gpuwm_preprocess_cpu executes the hybrid-pressure chemistry remap operators; 19 of its 21 tests need it.
+tests/test_chem_mp_coupling.py # gpuwm_preprocess_cpu executes the host NIFA/NWFA aerosol numbers graded bitwise against GSL; 1 of its 5 tests needs it.
 tests/test_grib2_stack.py # gpuwm_preprocess_cpu stacks GRIB2 records and grib2_inventory and grib2_dump read them back; 20 of its 21 tests need them.
 tests/test_obs_allradar.py # rw_superob superobs and merges each site's radar contribution; 9 of its 16 tests need it.
 tests/test_obs_front_doors_are_shipped.py # rw_airnow answers the AirNow front door with its native fixture bytes; 2 of its 39 tests need it.

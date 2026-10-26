@@ -53,6 +53,9 @@ def test_derived_tables_are_wrfs_bit_for_bit(build):
     assert int(d["ikr_spon_break"][0]) == int(der["ikr_spon_break"])
 
 
+# The packed tables were computed with glibc's libm, so comparing against them needs it too (public ci
+# cpu windows-2025, 2026-10-25/26: the MinGW host build's ecoal_own differed from the pack).
+@glibc_bits
 def test_own_bin_efficiencies_match_the_packed_tables():
     """D10 corrected: each bin uses its own fall speed; compare the pinned pack."""
     mine = RP.host_for("o64", H.flags_corrected()).derived()["ecoal_own"]
