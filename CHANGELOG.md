@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.9.8 (2026-10-26)
+
+Fixed:
+- A cycle younger than an archive holds (GDEX 48 h, NCEI 0.5 degree 72 h) is fetched from the next source instead of failing on the archive.
+- Ensemble members that share a download folder no longer rewrite each other's composed files (gem-gdps, ecmwf-open-data-0p1, GEFS).
+- Moving nest-downs finer than 4 km drop the parent's MM5-only surface-layer options with the parent's surface layer.
+- GOES-17 ABI windows (full disk and PACUS) fetch.
+- The radar-tendency receipt records a slot with no covered point.
+- `rw_mpas_static` builds global statics about twice as fast, with identical output.
+
 ## 2.9.7 (2026-10-24)
 
 New:

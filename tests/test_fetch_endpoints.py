@@ -609,3 +609,17 @@ def test_a_pinned_host_on_the_whole_object_route_does_not_fall_through(
             out=tmp_path / "gfs", transport="nomads",
             progress=lambda line: None)
     assert all(url.startswith(fetch.GFS_NOMADS_BASE) for url in urls)
+
+
+def test_archives_that_lag_do_not_serve_a_cycle_younger_than_their_delay():
+    """WOOF production run_6452d3110cf0705f (2026-10-26): GFS 06Z asked for at 07:29Z, before it posted, was refused as
+    NCAR GDEX's 404. An archive that takes a cycle some hours after it runs is not asked for a younger one."""
+    from datetime import datetime
+    from gpuwm.fetch_endpoints import serving_ladder
+    now = datetime(2026, 10, 26, 7, 29)
+    young = [e.name for e in serving_ladder("gfs", cycle=datetime(2026, 10, 26, 6), now=now)]
+    assert "gdex" not in young and "ncei-0p5" not in young and young[:2] == ["nomads", "s3"]
+    day_old = [e.name for e in serving_ladder("gfs", cycle=datetime(2026, 10, 25, 0), now=now)]
+    assert "gdex" not in day_old
+    old = [e.name for e in serving_ladder("gfs", cycle=datetime(2026, 10, 20, 0), now=now)]
+    assert "gdex" in old and "ncei-0p5" in old

@@ -50,6 +50,24 @@
       "note": "GOES-West CONUS sector (the PACUS view: west US and the east Pacific), every 5 min starting at minute 1"
     },
     {
+      "satellite": "G17", "instrument": "abi", "sector": "F", "bucket": "noaa-goes17",
+      "cadence_minutes": 10, "offset_minutes": 0,
+      "prefix": "ABI-L1b-RadF/{Y}/{j}/{H}/",
+      "file": "OR_ABI-L1b-RadF-M*{band}_G17_s{Y}{j}{H}{M}*.nc",
+      "bands": {"7": "C07", "8": "C08", "9": "C09", "10": "C10", "11": "C11", "12": "C12", "13": "C13", "14": "C14", "15": "C15", "16": "C16"},
+      "companions": {"acm": {"prefix": "ABI-L2-ACMF/{Y}/{j}/{H}/", "file": "OR_ABI-L2-ACMF-M*_G17_s{Y}{j}{H}{M}*.nc"}},
+      "note": "archive: GOES-17 was GOES-West from 2019-02-12 until GOES-18 took over on 2023-01-04; the bucket keeps the archive (full disk, mode 6: every 10 min)"
+    },
+    {
+      "satellite": "G17", "instrument": "abi", "sector": "C", "bucket": "noaa-goes17",
+      "cadence_minutes": 5, "offset_minutes": 1,
+      "prefix": "ABI-L1b-RadC/{Y}/{j}/{H}/",
+      "file": "OR_ABI-L1b-RadC-M*{band}_G17_s{Y}{j}{H}{M}*.nc",
+      "bands": {"7": "C07", "8": "C08", "9": "C09", "10": "C10", "11": "C11", "12": "C12", "13": "C13", "14": "C14", "15": "C15", "16": "C16"},
+      "companions": {"acm": {"prefix": "ABI-L2-ACMC/{Y}/{j}/{H}/", "file": "OR_ABI-L2-ACMC-M*_G17_s{Y}{j}{H}{M}*.nc"}},
+      "note": "archive: GOES-17 was GOES-West from 2019-02-12 until GOES-18 took over on 2023-01-04; the bucket keeps the archive (PACUS view, every 5 min starting at minute 1)"
+    },
+    {
       "satellite": "G19", "instrument": "abi", "sector": "F", "bucket": "noaa-goes19",
       "cadence_minutes": 10, "offset_minutes": 0,
       "prefix": "ABI-L1b-RadF/{Y}/{j}/{H}/",

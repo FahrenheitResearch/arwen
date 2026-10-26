@@ -63,9 +63,10 @@ class RadarTendency:
             "covered_points_by_slot": [
                 int(np.count_nonzero((slot[:-1] >= -1.0) & (slot[:-1] <= 1.0)))
                 for slot in self.slots],
+            # a slot with no covered point (a release slot) has no maximum: None, not -inf, which the receipt's
+            # strict JSON refuses (2026-10-25 no-radar box test: satellite-rain heating with its release slot)
             "max_heating_k_per_s_by_slot": [
-                float(np.max(np.where((slot[:-1] >= -1.0) & (slot[:-1] <= 1.0),
-                                      slot[:-1], -np.inf), initial=-np.inf))
+                (float(np.max(slot[:-1][m])) if (m := (slot[:-1] >= -1.0) & (slot[:-1] <= 1.0)).any() else None)
                 for slot in self.slots],
         }
 

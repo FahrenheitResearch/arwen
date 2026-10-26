@@ -32,6 +32,16 @@ def test_a_child_finer_than_4km_takes_the_hrrr_shape_suite_and_a_named_one_wins(
         assert profile is None and cfg["mp_physics"] == 10
 
 
+def test_a_storm_parents_mm5_surface_layer_options_stay_with_its_surface_layer():
+    """A 1 km step-down of a storm run (MM5 surface layer, isftcflx=2) was refused on the suite's MYNN surface layer."""
+    storm = {**_MORRISON_PARENT, "sf_sfclay_physics": 1, "isftcflx": 2, "iz0tlnd": 1}
+    cfg, profile, _ = child_physics_config(storm, child_dx_m=1000.0, requested=None)
+    assert profile == ROUTE_DEFAULT_PHYSICS_PROFILE and cfg["sf_sfclay_physics"] not in (1, 91)
+    assert (cfg["isftcflx"], cfg["iz0tlnd"]) == (0, 0)
+    cfg, profile, _ = child_physics_config(storm, child_dx_m=1000.0, requested="parent")
+    assert profile is None and (cfg["sf_sfclay_physics"], cfg["isftcflx"], cfg["iz0tlnd"]) == (1, 2, 1)
+
+
 def test_a_hex_global_child_finer_than_4km_defaults_to_the_same_suite():
     assert default_profile_for("hex-global", 3000.0, 1) == ROUTE_DEFAULT_PHYSICS_PROFILE
     assert default_profile_for("hex-global", 9000.0, 1) != ROUTE_DEFAULT_PHYSICS_PROFILE

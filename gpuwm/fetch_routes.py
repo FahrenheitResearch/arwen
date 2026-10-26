@@ -2817,7 +2817,43 @@ def _endpoint_receipt(plan: FetchPlan,
     }
 
 
+def _composed_already(dest: Path, out: Path, parts) -> tuple[str, int] | None:
+    """``(sha256, bytes)`` when ``dest`` already holds exactly the parts' concatenation, else None."""
+
+    try:
+        if not dest.is_file():
+            return None
+        want = hashlib.sha256()
+        size = 0
+        for part in parts:
+            data = (out / part.relpath).read_bytes()
+            want.update(data)
+            size += len(data)
+        if dest.stat().st_size != size:
+            return None
+        have = hashlib.sha256()
+        with dest.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                have.update(chunk)
+    except OSError:
+        return None
+    return (want.hexdigest(), size) if have.hexdigest() == want.hexdigest() else None
+
+
 def _run_compose(plan: FetchPlan, out: Path, *, progress=print) -> list[dict]:
+    """Concatenate each composed valid time from its parts.
+
+    A composed file that already holds exactly its parts' bytes is left as
+    it is, and a changed one is written beside it and renamed into place.
+    THE BREAKAGE THIS PREVENTS (WOOF sensitivity smoke, 2026-10-25,
+    three gem-gdps members of one cycle with different physics): members of
+    one ensemble share one download folder (recipe_door._SharedDownloads)
+    and each member's chain runs this fetch again; the in-place rewrite of
+    ``composed/gdps_*.grib2`` by a later member moved the file an earlier
+    member's preparation had hashed, and that member's deferred re-read
+    refused with "authority changed while it was re-read". Every composed
+    route (gem-gdps, ecmwf-open-data-0p1, the GEFS routes) was exposed.
+    """
     composed: list[dict] = []
     for step in plan.compose:
         if step.kind != "concat_per_lead":
@@ -2825,15 +2861,24 @@ def _run_compose(plan: FetchPlan, out: Path, *, progress=print) -> list[dict]:
                 f"{ROUTE_TABLE_NAME}: unknown compose kind {step.kind!r}")
         dest = out / step.name
         dest.parent.mkdir(parents=True, exist_ok=True)
+        already = _composed_already(dest, out, step.parts)
+        if already is not None:
+            composed.append({
+                "name": step.name, "bytes": already[1],
+                "sha256": already[0], "lead": step.lead,
+                "parts": [part.relpath for part in step.parts]})
+            continue
         digest = hashlib.sha256()
         written = 0
-        with dest.open("wb") as handle:
+        temporary = dest.with_name(dest.name + ".composing")
+        with temporary.open("wb") as handle:
             for part in step.parts:
                 data = (out / part.relpath).read_bytes()
                 handle.write(data)
                 digest.update(data)
                 written += len(data)
-        _verify_payload(dest, magic="GRIB", label=step.name)
+        _verify_payload(temporary, magic="GRIB", label=step.name)
+        replace_file_with_retry(temporary, dest)
         composed.append({
             "name": step.name, "bytes": written,
             "sha256": digest.hexdigest(), "lead": step.lead,

@@ -59,6 +59,8 @@
     {
       "source_id": "gfs",
       "transport": "gdex",
+      "available_after_hours": 48,
+      "available_after_basis": "measured 2026-10-26 07:45Z: d084001 held 2026-10-24 12Z, not 18Z (37.75 to 43.75 h behind), rounded up",
       "rust_source": "gdex",
       "product": "pgrb2.0p25",
       "base": "https://data.gdex.ucar.edu/d084001",
@@ -96,6 +98,8 @@
     {
       "source_id": "gfs",
       "transport": "ncei-0p5",
+      "available_after_hours": 72,
+      "available_after_basis": "measured 2026-10-26 08:20Z: grid-004 held 2026-10-23 18Z, not 2026-10-24 00Z (56 to 62 h behind), rounded up",
       "rust_source": "ncei",
       "product": "pgrb2.0p50",
       "base": "https://www.ncei.noaa.gov/oa/prod-model/global-forecast-system/access/grid-004-0.5-degree/forecast",
