@@ -223,16 +223,24 @@ jobs:
       # free) that filled the disk and the job died mid-gate ("No space left on device", public ci runs 40298046087
       # and 40322451147, 2026-10-26). The runner's preinstalled SDKs this job never uses are removed first, and
       # incremental caches, which only speed rebuilds, are not written.
+      # Run 40418223243 (2026-10-26) still filled all 105 GB left after that cleanup: the 60 workspace folders hold
+      # full debug info. The test builds carry none (CARGO_PROFILE_DEV_DEBUG=0; no gate reads debug info, test
+      # results and counts are unchanged), and the rest of the unused preinstalled toolchains go too.
       - name: free the hosted runner's disk for the Rust gates
         if: runner.os == 'Linux'
         run: |
           df -h /
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift /usr/local/share/boost /usr/lib/jvm /usr/local/lib/node_modules /usr/local/share/chromium \
+            /usr/local/share/powershell /opt/microsoft /opt/google /opt/az /usr/local/julia* \
+            /opt/hostedtoolcache/go /opt/hostedtoolcache/PyPy /opt/hostedtoolcache/Ruby /opt/hostedtoolcache/Java_*
+          sudo docker image prune --all --force > /dev/null 2>&1 || true
           df -h /
       - name: offline Rust package gates with their existing coverage floors
         run: python tools/battery/run_cargo_gates.py --target-dir "$RUNNER_TEMP/gpuwm-cargo-tests"
         env:
           CARGO_INCREMENTAL: "0"
+          CARGO_PROFILE_DEV_DEBUG: "0"
       # The zero-dependency dealiaser is outside the battery workspaces.
       - name: region-global dealiasing tests
         working-directory: tools/region_global_dealias

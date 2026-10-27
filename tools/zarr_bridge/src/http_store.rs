@@ -208,11 +208,16 @@ mod tests {
                 while !request.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap() == 1 {
                     request.push(byte[0]);
                 }
-                stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\n").unwrap();
+                let header = b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\n";
                 if attempt == 0 {
-                    stream.write_all(b"a").unwrap();
+                    // The stalled attempt's client may already have timed out and closed (its read timeout is
+                    // 50 ms), so its writes may fail. Breakage this prevents (public ci native windows-2025, run
+                    // 40418223243): the unwrap panicked on WSAECONNABORTED (10053), the server thread died, and
+                    // every retry then failed to connect.
+                    let _ = stream.write_all(header).and_then(|_| stream.write_all(b"a"));
                     std::thread::sleep(Duration::from_millis(250));
                 } else {
+                    stream.write_all(header).unwrap();
                     stream.write_all(b"abcd").unwrap();
                 }
             }
